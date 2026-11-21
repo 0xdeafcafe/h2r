@@ -178,6 +178,33 @@ fn renders_text_with_kerning_and_lines() {
 }
 
 #[test]
+fn a_transparent_leading_glyph_keeps_its_advance_and_kerning() {
+    let bytes = build(
+        1,
+        1,
+        0,
+        &[
+            G {
+                data: vec![0x04], // Four alpha-zero pixels.
+                ..solid(u16::from(b'A'), 5, 1)
+            },
+            solid(u16::from(b'V'), 3, 1),
+        ],
+        &[(b'A', b'V', -2)],
+    );
+    let font = Font::parse(&bytes).unwrap();
+    let text = [u16::from(b'A'), u16::from(b'V')];
+    let bitmap = render(&font, &text, RenderOptions::default()).unwrap();
+
+    // A is invisible. V starts at x = 1 + 5 - 2 + 1 = 5.
+    assert_eq!((bitmap.width, bitmap.height), (8, 2));
+    for row in bitmap.rgba.chunks_exact(8 * 4) {
+        let alpha: Vec<_> = row.chunks_exact(4).map(|pixel| pixel[3]).collect();
+        assert_eq!(alpha, [0, 0, 0, 0, 0, 255, 255, 0]);
+    }
+}
+
+#[test]
 fn glyph_colors_are_optional() {
     // literal word 0xf0f0 (colour 0x0f0, green), then a 1-pixel opaque run in that colour
     let g = G {

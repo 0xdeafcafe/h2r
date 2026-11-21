@@ -14,6 +14,8 @@ export interface SessionSlots {
 export interface Session extends DedicatedHostFields {
   session_id: string;
   host_xuid: string;
+  /** Reserved for a matchmaking assignment. */
+  assigned?: boolean;
   host_gamertag: string;
   /** `open`, `deleted` or `expired`. */
   state: string;
@@ -108,6 +110,7 @@ export function parseSession(raw: unknown): Session | null {
   return {
     session_id: id,
     host_xuid: text(r.host_xuid) ?? "",
+    assigned: r.matchmaking != null,
     host_gamertag: tag ?? "",
     host_lease,
     dedicated_region: text(r.dedicated_region),

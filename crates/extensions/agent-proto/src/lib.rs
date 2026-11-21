@@ -132,6 +132,10 @@ pub mod method {
     // when the game has XAPI input, the rest by boot's agent glue. So
     // `session.methods` lists them only there.
 
+    /// Submit a website join through the same inbox as the OS and CLI.
+    pub const LIVE_JOIN_OPEN: &str = "live.join.open";
+    /// The latest web join and its outcome, if any.
+    pub const LIVE_JOIN_STATUS: &str = "live.join.status";
     /// Queue pad steps for a player ([`crate::PadParams`]).
     pub const INPUT_PAD: &str = "input.pad";
     /// Drop the queued steps and let go of everything.
@@ -198,6 +202,8 @@ pub mod method {
     /// The pregame session's player slots, peer indices, names and connection bars.
     pub const UI_LOBBY_PLAYERS: &str = "ui.lobby.players";
     pub const UI_SCREEN: &str = "ui.screen";
+    /// Main-menu attract movie, idle timer and last attempt.
+    pub const UI_ATTRACT: &str = "ui.attract";
     /// The visible option lines in the active pregame custom lobby.
     pub const UI_LOBBY_OPTIONS: &str = "ui.lobby_options";
     /// Active widget panes, resolved text and audit findings at this boundary.
@@ -219,6 +225,10 @@ pub mod method {
     pub const RENDER_CAPTURE: &str = "render.capture";
     /// Position the world camera at a loaded player starting location.
     pub const RENDER_SPAWN_VIEW: &str = "render.spawn_view";
+    /// Arm a sequence of headless display presents, including in-between frames.
+    pub const RENDER_CAPTURE_CLIP: &str = "render.capture_clip";
+    /// Read the number of display frames written by a clip capture.
+    pub const RENDER_CAPTURE_CLIP_STATUS: &str = "render.capture_clip.status";
     /// The last sealed `FrameScene`'s counts ([`crate::SceneParams`]).
     pub const RENDER_SCENE: &str = "render.scene";
     /// Arm the in-process two-path comparison for one frame

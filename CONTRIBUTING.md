@@ -17,12 +17,38 @@ images, extracted files, XBE or map files, Ghidra projects and exports, and
 any output produced from them, even small snippets. If you are unsure whether
 something is derived from the disc, leave it out.
 
-The one exception is documentation screenshots, such as the editor guide's.
-They are rendered by a script in `scripts/` (for example
-`scripts/editor-screenshots.sh`), live under `docs/images/`, and are stored in
-Git LFS (`.gitattributes` covers `docs/images/**`; run `git lfs install` once).
-Don't commit one-off screenshots, debug frames or captures from test or agent
-runs, anywhere in the repo.
+Scripted documentation screenshots and gameplay footage are the exception.
+Render them from your own disc with a script in `scripts/` and commit the
+finished media under `docs/images/` in Git LFS. Run `git lfs install` once.
+Keep raw frame sequences, one-off screenshots, debug frames and test captures
+out of Git.
+
+### README media
+
+`scripts/readme-video.sh` captures a six-second clip per level from an
+existing game image. Pass the image with `--out-image`, match its build's
+`H2_OPT` (default 2), and pass your ISO with `--disc` if needed. The
+script uses `h2 serve` and `jq` to wait for gameplay, hide the HUD, move
+the camera and capture the display through the agent API.
+
+`--fps 30|60|120` selects the capture rate (default 30). The camera moves
+at the game's 30 Hz tick rate and the game renders the in-between
+frames. `--size 3840x2160` takes a centered 16:9 crop of the 6× render.
+`--scale` can increase the game's render scale for a smaller output.
+Use `--dest` to keep the raw frames outside the checkout.
+
+`scripts/readme-art.sh` takes the captured frame folders via `--frames`.
+It writes `header.webp`, `header@2x.webp` and `gameplay.webp` under
+`docs/images/readme/` by default. The embedded gameplay WebP uses 1280×720
+at 30 fps. If a level has no clip, the script uses its JPEG from
+`scripts/readme-screenshots.sh`. Install `jq` and `webp` with Homebrew and
+use a Python 3 environment with Pillow and NumPy for encoding.
+
+`--master <dir>` also writes a `clip-<level>.mp4` for each captured level
+and a joined `gameplay.mp4`. FFmpeg with libx265 encodes the source
+dimensions and frame rate, including 3840×2160 at 120 fps. Keep the
+masters outside Git and commit only the final documentation media
+under `docs/images/**` in Git LFS.
 
 ## Checks
 

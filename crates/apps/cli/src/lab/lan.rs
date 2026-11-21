@@ -27,6 +27,9 @@ const PAIR: u8 = 2;
 const ACCEPTED: u8 = 1;
 const DENIED: u8 = 0;
 const MAX_CONNECTIONS: usize = 64;
+const MAX_HANDSHAKES: usize = 32;
+const MAX_HANDSHAKES_PER_IP: usize = 4;
+const SERVER_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_ATTEMPT_SOURCES: usize = 1024;
 const MAX_FAILURES: usize = 8;
 const FAILURE_WINDOW: Duration = Duration::from_secs(60);
@@ -55,6 +58,7 @@ pub struct Server {
     store: Arc<Store>,
     tls: Arc<rustls::ServerConfig>,
     connections: Arc<AtomicUsize>,
+    handshakes: Arc<Mutex<Handshakes>>,
     attempts: Mutex<Attempts>,
 }
 
@@ -66,7 +70,28 @@ impl Server {
             store,
             tls,
             connections: Arc::new(AtomicUsize::new(0)),
+            handshakes: Arc::default(),
             attempts: Mutex::default(),
+        })
+    }
+
+    /// Reserve capacity before starting a socket worker. The accept loop drops
+    /// the reservation after the handshake, including on failure.
+    pub(super) fn reserve_handshake(&self, ip: IpAddr) -> Option<HandshakeReservation> {
+        let ip = ip.to_canonical();
+        let mut state = self.handshakes.lock().unwrap();
+        if state.total >= MAX_HANDSHAKES {
+            return None;
+        }
+        let active = state.by_ip.entry(ip).or_default();
+        if *active >= MAX_HANDSHAKES_PER_IP {
+            return None;
+        }
+        *active += 1;
+        state.total += 1;
+        Some(HandshakeReservation {
+            ip,
+            handshakes: Arc::clone(&self.handshakes),
         })
     }
 
@@ -74,7 +99,7 @@ impl Server {
     /// Pairing and authentication failures both end after the handshake.
     pub fn authenticate(&self, socket: TcpStream) -> Result<Option<Authenticated>> {
         let slot = ConnectionSlot::take(&self.connections)?;
-        let ip = socket.peer_addr()?.ip();
+        let ip = socket.peer_addr()?.ip().to_canonical();
         let mut stream = tls::accept(Arc::clone(&self.tls), socket)?;
         match read_array::<1>(&mut stream)?[0] {
             AUTH => {
@@ -96,7 +121,7 @@ impl Server {
                     &[if key.is_some() { ACCEPTED } else { DENIED }],
                 )?;
                 let Some(key) = key else { return Ok(None) };
-                stream.sock.authenticated()?;
+                stream.sock.authenticated(Some(SERVER_IDLE_TIMEOUT))?;
                 Ok(Some(Authenticated {
                     stream,
                     store: Arc::clone(&self.store),
@@ -160,9 +185,9 @@ impl Write for Authenticated {
 }
 
 pub fn connect(host: &str, addr: SocketAddr) -> Result<impl Read + Write + Send + use<>> {
-    let peer = credentials::read_peer(host)?;
-    let mut stream = authenticate(addr, &peer)?;
-    stream.sock.authenticated()?;
+    let peers = credentials::trusted_peers(host)?;
+    let mut stream = authenticate(addr, &peers)?;
+    stream.sock.authenticated(None)?;
     Ok(stream)
 }
 
@@ -177,8 +202,13 @@ pub fn pair(host: &str, addr: SocketAddr, code: &str) -> Result<()> {
     pending.publish()
 }
 
-fn authenticate(addr: SocketAddr, peer: &Peer) -> Result<tls::ClientStream> {
-    let mut stream = tls::connect(addr, peer.pin)?;
+fn authenticate(addr: SocketAddr, peers: &[Peer]) -> Result<tls::ClientStream> {
+    let pins = peers.iter().map(|peer| peer.pin).collect();
+    let (mut stream, verified_pin) = tls::connect(addr, pins)?;
+    let peer = peers
+        .iter()
+        .find(|peer| peer.pin == verified_pin)
+        .context("the lab host's TLS key does not match a pairing")?;
     send(&mut stream, &[AUTH])?;
     let challenge = read_array(&mut stream)?;
     send(&mut stream, proof(&peer.key, &challenge).as_ref())?;
@@ -190,7 +220,7 @@ fn authenticate(addr: SocketAddr, peer: &Peer) -> Result<tls::ClientStream> {
 }
 
 fn pair_with(addr: SocketAddr, peer: &Peer, secret: &PairSecret) -> Result<()> {
-    let mut stream = tls::connect(addr, peer.pin)?;
+    let (mut stream, _) = tls::connect(addr, vec![peer.pin])?;
     let mut request = [0; 1 + size_of::<PairSecret>() + size_of::<Key>()];
     request[0] = PAIR;
     request[1..1 + secret.len()].copy_from_slice(secret);
@@ -257,6 +287,29 @@ fn send(stream: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
     stream.flush()
 }
 
+#[derive(Default)]
+struct Handshakes {
+    total: usize,
+    by_ip: HashMap<IpAddr, usize>,
+}
+
+pub(super) struct HandshakeReservation {
+    ip: IpAddr,
+    handshakes: Arc<Mutex<Handshakes>>,
+}
+
+impl Drop for HandshakeReservation {
+    fn drop(&mut self) {
+        let mut state = self.handshakes.lock().unwrap();
+        state.total -= 1;
+        let active = state.by_ip.get_mut(&self.ip).unwrap();
+        *active -= 1;
+        if *active == 0 {
+            state.by_ip.remove(&self.ip);
+        }
+    }
+}
+
 struct ConnectionSlot(Arc<AtomicUsize>);
 
 impl ConnectionSlot {
@@ -291,22 +344,26 @@ impl Attempts {
     ) -> Result<Option<T>> {
         self.failures
             .retain(|_, (start, _)| now.duration_since(*start) < FAILURE_WINDOW);
-        let full = self.failures.len() == MAX_ATTEMPT_SOURCES;
-        let failures = self.failures.get_mut(&ip);
-        if failures
-            .as_ref()
-            .map_or(full, |(_, count)| *count >= MAX_FAILURES)
+        if self
+            .failures
+            .get(&ip)
+            .is_some_and(|(_, count)| *count >= MAX_FAILURES)
         {
             return Ok(None);
         }
 
         let result = check()?;
         if result.is_none() {
-            match failures {
-                Some((_, count)) => *count += 1,
-                None => {
-                    self.failures.insert(ip, (now, 1));
+            if let Some((_, count)) = self.failures.get_mut(&ip) {
+                *count += 1;
+            } else {
+                if self.failures.len() == MAX_ATTEMPT_SOURCES
+                    && let Some((&oldest, _)) =
+                        self.failures.iter().min_by_key(|(_, (start, _))| *start)
+                {
+                    self.failures.remove(&oldest);
                 }
+                self.failures.insert(ip, (now, 1));
             }
         }
         Ok(result)
@@ -316,8 +373,8 @@ impl Attempts {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::net::TcpListener;
-    use std::os::unix::fs::PermissionsExt;
+    use std::net::{Ipv6Addr, TcpListener};
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     use std::path::PathBuf;
     use std::thread::{self, JoinHandle};
 
@@ -403,14 +460,14 @@ mod tests {
 
         let (addr, task) = serve_once(&server);
         let wrong = Peer { pin, key: [9; 32] };
-        let error = authenticate(addr, &wrong)
+        let error = authenticate(addr, std::slice::from_ref(&wrong))
             .err()
             .expect("the wrong key must fail");
         assert!(error.to_string().contains("authentication refused"));
         assert!(task.join().unwrap().unwrap().is_none());
 
         let (addr, task) = serve_once(&server);
-        let mut client = tls::connect(addr, pin).unwrap();
+        let (mut client, _) = tls::connect(addr, vec![pin]).unwrap();
         send(&mut client, &[AUTH]).unwrap();
         let challenge = read_array(&mut client).unwrap();
         let first_proof = proof(&peer.key, &challenge);
@@ -422,7 +479,7 @@ mod tests {
         assert_eq!(read_array::<7>(&mut session).unwrap(), *b"request");
 
         let (addr, task) = serve_once(&server);
-        let mut replay = tls::connect(addr, pin).unwrap();
+        let (mut replay, _) = tls::connect(addr, vec![pin]).unwrap();
         send(&mut replay, &[AUTH]).unwrap();
         assert_ne!(read_array::<32>(&mut replay).unwrap(), challenge);
         send(&mut replay, first_proof.as_ref()).unwrap();
@@ -432,8 +489,130 @@ mod tests {
         revoke(&root.0).unwrap();
         assert!(!session.is_authorized().unwrap());
         let (addr, task) = serve_once(&server);
-        assert!(authenticate(addr, &peer).is_err());
+        assert!(authenticate(addr, std::slice::from_ref(&peer)).is_err());
         assert!(task.join().unwrap().unwrap().is_none());
+    }
+
+    fn paired_server(key: Key) -> (TestRoot, Arc<Server>, Peer) {
+        let root = TestRoot::new();
+        let code = new_pairing(&root.0).unwrap();
+        let (pin, secret) = parse_pair_code(&code).unwrap();
+        assert!(
+            Store::new(&root.0)
+                .unwrap()
+                .pair(&secret, key, credentials::now().unwrap())
+                .unwrap()
+        );
+        let server = Arc::new(Server::new(&root.0).unwrap());
+        (root, server, Peer { pin, key })
+    }
+
+    fn save_peer(dir: &Path, host: &str, peer: &Peer) {
+        let file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(credentials::peer_path(dir, host))
+            .unwrap();
+        serde_json::to_writer(file, peer).unwrap();
+    }
+
+    #[test]
+    fn lan_numeric_host_uses_only_the_tls_matched_peer() {
+        let (_first_root, first, first_peer) = paired_server([32; 32]);
+        let (_second_root, second, second_peer) = paired_server([64; 32]);
+        let (_third_root, third, _) = paired_server([128; 32]);
+        let peers = TestRoot::new();
+        save_peer(&peers.0, "first", &first_peer);
+        save_peer(&peers.0, "second", &second_peer);
+
+        for (server, with_port) in [(&first, false), (&second, true)] {
+            let (addr, task) = serve_once(server);
+            let host = if with_port {
+                addr.to_string()
+            } else {
+                addr.ip().to_string()
+            };
+            let trusted = credentials::trusted_peers_in(&peers.0, &host).unwrap();
+            assert_eq!(trusted.len(), 2);
+            assert!(authenticate(addr, &trusted).is_ok());
+            assert!(task.join().unwrap().unwrap().is_some());
+        }
+
+        // A numeric address provides no trust when the host presents a new key.
+        let (addr, task) = serve_once(&third);
+        let trusted = credentials::trusted_peers_in(&peers.0, &addr.to_string()).unwrap();
+        assert!(authenticate(addr, &trusted).is_err());
+        assert!(task.join().unwrap().is_err());
+
+        // The pin recorded for a name stays binding even for another paired host.
+        assert!(credentials::trusted_peers_in(&peers.0, "unknown").is_err());
+        let (addr, task) = serve_once(&second);
+        let trusted = credentials::trusted_peers_in(&peers.0, "FIRST").unwrap();
+        assert_eq!(trusted.len(), 1);
+        assert!(authenticate(addr, &trusted).is_err());
+        assert!(task.join().unwrap().is_err());
+
+        // An exact address entry also stays binding.
+        let (addr, task) = serve_once(&second);
+        save_peer(&peers.0, &addr.to_string(), &first_peer);
+        let trusted = credentials::trusted_peers_in(&peers.0, &addr.to_string()).unwrap();
+        assert_eq!(trusted.len(), 1);
+        assert!(authenticate(addr, &trusted).is_err());
+        assert!(task.join().unwrap().is_err());
+    }
+
+    #[test]
+    fn lan_handshakes_reserve_per_ip_and_global_capacity() {
+        let root = TestRoot::new();
+        let server = Server::new(&root.0).unwrap();
+        let ip = "192.0.2.1".parse().unwrap();
+        let mut reservations = Vec::new();
+        for _ in 0..MAX_HANDSHAKES_PER_IP {
+            reservations.push(server.reserve_handshake(ip).unwrap());
+        }
+        let mapped_ip = "::ffff:192.0.2.1".parse().unwrap();
+        assert!(server.reserve_handshake(mapped_ip).is_none());
+        for n in reservations.len()..MAX_HANDSHAKES {
+            let ip = Ipv6Addr::from(n as u128).into();
+            reservations.push(server.reserve_handshake(ip).unwrap());
+        }
+        let other = "192.0.2.2".parse().unwrap();
+        assert!(server.reserve_handshake(other).is_none());
+
+        drop(reservations.pop());
+        assert!(server.reserve_handshake(other).is_some());
+        drop(reservations);
+        assert!(server.reserve_handshake(mapped_ip).is_some());
+        assert!(server.handshakes.lock().unwrap().by_ip.is_empty());
+    }
+
+    #[test]
+    fn lan_attempt_cache_evicts_old_sources_without_blocking_new_ones() {
+        let mut attempts = Attempts::default();
+        let at = Instant::now();
+        for n in 0..MAX_ATTEMPT_SOURCES {
+            let ip = Ipv6Addr::from(n as u128).into();
+            attempts
+                .check(ip, at + Duration::from_nanos(n as u64), || Ok(None::<()>))
+                .unwrap();
+        }
+        let oldest = IpAddr::V6(Ipv6Addr::UNSPECIFIED);
+        assert!(attempts.failures.contains_key(&oldest));
+
+        let new_ip = "192.0.2.1".parse().unwrap();
+        let now = at + Duration::from_millis(1);
+        assert!(
+            attempts
+                .check(new_ip, now, || Ok(Some(())))
+                .unwrap()
+                .is_some()
+        );
+        attempts.check(new_ip, now, || Ok(None::<()>)).unwrap();
+
+        assert_eq!(attempts.failures.len(), MAX_ATTEMPT_SOURCES);
+        assert!(attempts.failures.contains_key(&new_ip));
+        assert!(!attempts.failures.contains_key(&oldest));
     }
 
     #[test]

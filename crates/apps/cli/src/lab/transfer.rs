@@ -6,12 +6,58 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex};
 
 use anyhow::{Context, Result, ensure};
 
 use super::proto;
 
 const CHUNK: usize = 64 << 10;
+
+#[derive(Default)]
+pub(super) struct Transfers {
+    state: Mutex<TransferState>,
+    finished: Condvar,
+}
+
+#[derive(Default)]
+struct TransferState {
+    active: usize,
+    draining: bool,
+}
+
+impl Transfers {
+    pub(super) fn begin(&self) -> Result<Transfer<'_>> {
+        let mut state = self.state.lock().unwrap();
+        ensure!(!state.draining, "the lab host is restarting");
+        state.active += 1;
+        Ok(Transfer(self))
+    }
+
+    /// Stop admitting transfers and wait for every admitted request to finish
+    /// its transfer. Called once the replacement is installed and restart follows.
+    pub(super) fn drain(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.draining = true;
+        drop(
+            self.finished
+                .wait_while(state, |state| state.active != 0)
+                .unwrap(),
+        );
+    }
+}
+
+pub(super) struct Transfer<'a>(&'a Transfers);
+
+impl Drop for Transfer<'_> {
+    fn drop(&mut self) {
+        let mut state = self.0.state.lock().unwrap();
+        state.active -= 1;
+        if state.active == 0 {
+            self.0.finished.notify_all();
+        }
+    }
+}
 
 pub(super) struct TempFile {
     pub file: File,
@@ -167,4 +213,33 @@ pub(super) fn import_bundle(repo: &Path, bundle: &Path, source: &str, commit: &s
         String::from_utf8_lossy(&out.stderr).trim()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::*;
+
+    #[test]
+    fn restart_closes_admission_and_waits_for_every_transfer() {
+        let transfers = Transfers::default();
+        std::thread::scope(|scope| {
+            let upload = transfers.begin().unwrap();
+            let download = transfers.begin().unwrap();
+            let restart = scope.spawn(|| transfers.drain());
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !transfers.state.lock().unwrap().draining {
+                assert!(Instant::now() < deadline, "restart never closed admission");
+                std::thread::yield_now();
+            }
+
+            assert!(transfers.begin().is_err());
+            assert!(!restart.is_finished());
+            drop(upload);
+            assert!(!restart.is_finished());
+            drop(download);
+            restart.join().unwrap();
+        });
+    }
 }

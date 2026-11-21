@@ -1,4 +1,4 @@
-//! What a server says about itself (docs/live/live-api.md "Server"; docs/live/live-admin.md §5):
+//! What a server says about itself (docs/live/live-api.md "Read endpoints"; docs/live/live-admin.md §5):
 //!
 //! - `GET /v1/server`: the public facts — id, software, public URL, whether
 //!   sign-up needs an invite, whether reads are private, and counts. A read

@@ -400,6 +400,67 @@ fn only_frame_sized_surfaces_scale() {
 }
 
 #[test]
+fn polygon_stipple_is_anchored_to_the_guest_framebuffer() {
+    let Some(ctx) = context() else { return };
+    for single_copy in [false, true] {
+        for scale in [1, 2, 3, 6] {
+            let backend = ScaledBackend::with_single_copy(
+                GfxBackend::new(share(&ctx)),
+                GfxBackend::new(share(&ctx)),
+                scale,
+                single_copy,
+            )
+            .unwrap();
+            let (mut d, mut m) = create(backend, UploadPolicy::Tracked);
+            set_states(&mut d, &mut m);
+            d.clear(&mut m, 0, 0, 0xF0, 0xFF00_0000, 1.0, 0).unwrap();
+
+            // The set bits cover guest pixels (4,4), (8,4) and (5,5),
+            // repeated in each 32x32 tile. The scissor has another origin.
+            let mut pattern = [0; 32];
+            pattern[27] = 1 << 3 | 1 << 15;
+            pattern[26] = 1 << 2;
+            let mut commands = vec![(32 << 18) | hw::STIPPLE_PATTERN];
+            commands.extend(pattern);
+            commands.extend([(1 << 18) | hw::STIPPLE_CONTROL, 1]);
+            push_words(&mut m, &commands);
+            rects(&mut m, &[[3, 2, W - 3, H - 2]]);
+            d.set_scissors(&mut m, 1, 0, RECTS).unwrap();
+            flat_quad(
+                &mut d,
+                &mut m,
+                (0.0, 0.0, W as f32, H as f32),
+                0xFFFF_FFFF,
+            );
+
+            let bb = d.back_buffer().unwrap();
+            let (image, (width, height)) = if scale == 1 {
+                pixels(d.backend.reference_mut(), bb.reference)
+            } else {
+                let view = d.backend.view_surface(&bb).expect("scaled back buffer");
+                pixels(d.backend.view_mut(), view)
+            };
+            assert_eq!((width, height), (W * scale, H * scale));
+            for y in 0..height {
+                for x in 0..width {
+                    let (gx, gy) = (x / scale, y / scale);
+                    let visible = (3..W - 3).contains(&gx)
+                        && (2..H - 2).contains(&gy)
+                        && matches!((gx % 32, gy % 32), (4, 4) | (8, 4) | (5, 5));
+                    let expected = if visible { [255; 4] } else { [0, 0, 0, 255] };
+                    let i = ((y * width + x) * 4) as usize;
+                    assert_eq!(
+                        image[i..i + 4],
+                        expected,
+                        "{scale}x single_copy={single_copy} at host ({x},{y})",
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn rejects_scales_outside_one_to_six() {
     let Some(ctx) = context() else { return };
     for bad in [0, 7] {

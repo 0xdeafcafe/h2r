@@ -16,7 +16,9 @@ use crate::map_select::Catalogue;
 use crate::new_maps::{Disc, IsoDisc};
 
 mod retail;
+pub(crate) use retail::LEAVE_SESSIONS;
 pub use retail::{Machine as PlayerlessLobby, SimStart};
+pub(crate) use retail::{SimOpen, SquadId};
 mod variants;
 use self::variants::Variants;
 #[cfg(test)]
@@ -221,6 +223,60 @@ pub fn exclude_local_profiles(b: &mut Builder) {
         });
 }
 
+pub(crate) fn playerless_hooks(
+    b: &mut Builder,
+    owner: impl Fn() -> Option<SquadId> + Clone + Send + Sync + 'static,
+) {
+    exclude_local_profiles(b);
+
+    // A human's menu follows the lobby into the pregame screen. With no
+    // controller the same UI reconciliation leaves the session instead.
+    let current = owner.clone();
+    b.raw().before(
+        &points::UI_SYNC_NETWORK_SCREEN,
+        "machine owns the lobby UI",
+        move |c| sync_playerless_screen(c, current()),
+    );
+
+    // The initial title screen can finish constructing after Create. Its
+    // controller reset asks for a graceful leave even with no local users.
+    // Create's own immediate leave and explicit host close still run.
+    b.raw().before(
+        &points::UI_LEAVE_SESSIONS,
+        "keep squad on title screen reset",
+        move |c| keep_on_title_reset(c, owner()),
+    );
+}
+
+fn sync_playerless_screen(
+    c: &mut hooks::Call<'_>,
+    owner: Option<SquadId>,
+) -> Result<Flow, runtime::GuestFault> {
+    if owner.is_some_and(|id| {
+        let m = c.ctx.memory();
+        matches!(m.u32(bots::lobby::SESSION_TYPE), Ok(1 | 2)) && id.playerless_host(&*m)
+    }) {
+        return Ok(Flow::Return(c.ret(0)?));
+    }
+    Ok(Flow::Continue)
+}
+
+fn keep_on_title_reset(
+    c: &mut hooks::Call<'_>,
+    owner: Option<SquadId>,
+) -> Result<Flow, runtime::GuestFault> {
+    if owner.is_some_and(|id| {
+        let m = c.ctx.memory();
+        m.u32(c.cpu.esp).ok() == Some(TITLE_RESET_AFTER_LEAVE) && id.playerless_host(&*m)
+    }) {
+        return Ok(Flow::Return(c.ret(4)?));
+    }
+    Ok(Flow::Continue)
+}
+
+/// Return site of the controller reset's UI_LEAVE_SESSIONS(0).
+const TITLE_RESET_AFTER_LEAVE: u32 = 0x0019_06d8;
+
 impl Feature for Lobby {
     fn manifest(&self) -> Manifest {
         Manifest::new("host-lobby", "Playerless dedicated network lobby")
@@ -240,17 +296,30 @@ impl Feature for Lobby {
                 (q.stage != TickStage::Idle || q.job.is_some() || !q.readers.is_empty())
                     .then(|| "dedicated lobby command in flight".into())
             },
-            move || save.lock().unwrap_or_else(|e| e.into_inner()).machine.save(),
-            move |bytes, _| {
+            move || {
+                save.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .machine
+                    .save()
+            },
+            move |bytes, rt| {
                 if !crate::theater::in_keyframe() {
                     return Err("dedicated lobby requires a film keyframe".into());
                 }
-                let machine = retail::Machine::load(bytes).map_err(|e| e.to_string())?;
+                let machine =
+                    retail::Machine::load(bytes, &*rt.memory()).map_err(|e| e.to_string())?;
                 load.lock().unwrap_or_else(|e| e.into_inner()).machine = machine;
                 Ok(())
             },
         ));
-        exclude_local_profiles(b);
+        let owner = self.q.clone();
+        playerless_hooks(b, move || {
+            owner
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .machine
+                .owned_squad()
+        });
         let scratch = b.guest_alloc(
             crate::level_boot::VARIANT_SIZE,
             runtime::guest::Permissions::RW,

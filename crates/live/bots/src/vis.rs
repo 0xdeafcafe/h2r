@@ -39,11 +39,16 @@
 use std::io::Read;
 use std::mem::size_of;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use rustc_hash::FxHashMap;
+
+use content::Sha256;
+
+use crate::autonav::shared_cache;
 use crate::cache::{self, MapData, Stamp};
-use crate::los::{V3, Walls};
+use crate::los::{BuildRays, RayOrigin, V3, Walls};
 use crate::nav::NavMesh;
 
 pub const MAGIC: &[u8; 4] = b"H2VS";
@@ -473,7 +478,29 @@ pub fn rebuild_resumable(
     threads: Threads,
     stop: &dyn Fn() -> bool,
 ) -> Result<Option<MapData>, String> {
-    let mut all = Vec::new();
+    rebuild_cached(dir, map, threads, stop, None).map(|done| done.map(|done| done.data))
+}
+
+/// A decoded BSP with the identity of the exact .bots file it came from.
+pub(crate) struct GridInput {
+    pub data: MapData,
+    pub stamp: Stamp,
+    pub digest: Option<Sha256>,
+}
+
+pub(crate) struct GridBuild {
+    pub data: MapData,
+    pub restored: usize,
+}
+
+pub(crate) fn rebuild_cached(
+    dir: &Path,
+    map: &str,
+    threads: Threads,
+    stop: &dyn Fn() -> bool,
+    shared: Option<&Path>,
+) -> Result<Option<GridBuild>, String> {
+    let mut all: Vec<GridInput> = Vec::new();
     for k in 0.. {
         let path = dir.join(cache::file_name(map, k));
         let bytes = match std::fs::read(&path) {
@@ -481,24 +508,62 @@ pub fn rebuild_resumable(
             Err(e) if k > 0 && e.kind() == std::io::ErrorKind::NotFound => break,
             Err(e) => return Err(format!("reading {}: {e}", path.display())),
         };
-        let (d, stamp) =
+        // The map can have shrunk to fewer BSPs. Only build grids for
+        // the same generation as the BSP zero file.
+        if let Some(first) = all.first()
+            && let Some((_, stamp)) = cache::read_header(&bytes)
+            && stamp != Some(first.stamp)
+        {
+            break;
+        }
+        let (data, stamp) =
             MapData::from_bytes(&bytes).ok_or_else(|| format!("{} is damaged", path.display()))?;
-        all.push((d, stamp));
+        all.push(GridInput {
+            data,
+            stamp,
+            digest: shared.map(|_| Sha256::of(&bytes)),
+        });
     }
+    rebuild_prepared(dir, map, threads, stop, shared, all)
+}
+
+pub(crate) fn rebuild_prepared(
+    dir: &Path,
+    map: &str,
+    threads: Threads,
+    stop: &dyn Fn() -> bool,
+    shared: Option<&Path>,
+    all: Vec<GridInput>,
+) -> Result<Option<GridBuild>, String> {
+    let mut restored = 0;
     // BSP 0 last: once its grid is there, so are the rest.
     let order = (1..all.len()).chain(0..1);
     for k in order {
-        let (d, stamp) = &all[k];
-        let vis = match current(dir, map, k, *stamp, &d.walls) {
-            Some(v) => v,
-            None => match build_file(dir, map, k, *stamp, &d.nav, &d.walls, threads, stop)? {
-                Some(v) => v,
-                None => return Ok(None),
-            },
+        let GridInput { data, stamp, digest } = &all[k];
+        let entry = shared.zip(*digest);
+        let hit = |(root, key)| shared_cache::restore_grid(root, key, *stamp, &data.walls);
+        let grid = if let Some(grid) = current(dir, map, k, *stamp, &data.walls) {
+            grid
+        } else if let Some((grid, bytes)) = entry.and_then(hit) {
+            let path = dir.join(file_name(map, k));
+            crate::autonav::write_atomic(&path, &bytes)
+                .map_err(|e| format!("writing {}: {e}", path.display()))?;
+            let _ = std::fs::remove_file(dir.join(part_name(map, k)));
+            restored += 1;
+            grid
+        } else {
+            let Some(grid) = build_file(dir, map, k, *stamp, &data.nav, &data.walls, threads, stop)?
+            else {
+                return Ok(None);
+            };
+            if let Some((root, key)) = entry {
+                shared_cache::save_grid(root, key, *stamp, &grid);
+            }
+            grid
         };
-        d.walls.set_vis(Arc::new(vis));
+        data.walls.set_vis(Arc::new(grid));
     }
-    Ok(all.into_iter().next().map(|(d, _)| d))
+    Ok(all.into_iter().next().map(|input| GridBuild { data: input.data, restored }))
 }
 
 /// `dir/<map>.<bsp>.vis` when it is current for the `.bots` build with
@@ -597,6 +662,24 @@ impl Box3 {
         })
     }
 
+    /// The corners with the minimum and maximum projection on `normal`.
+    fn plane_extremes(&self, normal: D3) -> (D3, D3) {
+        let low = std::array::from_fn(|k| if normal[k] < 0.0 { self.hi[k] } else { self.lo[k] });
+        let high = std::array::from_fn(|k| if normal[k] < 0.0 { self.lo[k] } else { self.hi[k] });
+        (low, high)
+    }
+
+    fn longest_to(&self, other: &Self) -> f64 {
+        let far = std::array::from_fn(|k| {
+            (other.hi[k] - self.lo[k]).abs().max((other.lo[k] - self.hi[k]).abs())
+        });
+        dlen(far)
+    }
+
+    fn coordinate_scale(&self) -> f64 {
+        self.lo.iter().chain(&self.hi).fold(1.0_f64, |m, c| m.max(c.abs()))
+    }
+
     /// The longest side and the box cut in half across it.
     fn split(&self) -> (f64, Box3, Box3) {
         let k = (0..3)
@@ -631,130 +714,225 @@ fn dlen(a: D3) -> f64 {
     ddot(a, a).sqrt()
 }
 
-/// Whether triangle `t` alone blocks every segment from box `a` to box
-/// `b`, with the margins in the module docs.
-fn covers(t: &[V3; 3], a: &Box3, b: &Box3) -> bool {
-    let v = t.map(d3);
-    let n = dcross(dsub(v[1], v[0]), dsub(v[2], v[0]));
-    let area2 = dlen(n);
-    if area2 < 1e-6 {
-        return false;
+struct Occluder {
+    vertices: [D3; 3],
+    normal: D3,
+    area2: f64,
+    inward: [D3; 3],
+    min_altitude: f64,
+    coordinate_scale: f64,
+}
+
+impl Occluder {
+    fn new(t: &[V3; 3]) -> Option<Self> {
+        let vertices = t.map(d3);
+        let n = dcross(dsub(vertices[1], vertices[0]), dsub(vertices[2], vertices[0]));
+        let area2 = dlen(n);
+        if !area2.is_finite() || area2 < 1e-6 {
+            return None;
+        }
+        let normal = n.map(|c| c / area2);
+        let mut inward = [[0.0; 3]; 3];
+        let mut min_altitude = f64::MAX;
+        for k in 0..3 {
+            let (p, q, r) = (vertices[k], vertices[(k + 1) % 3], vertices[(k + 2) % 3]);
+            let m = dcross(normal, dsub(q, p));
+            let length = dlen(m);
+            if length < 1e-9 {
+                return None;
+            }
+            let m = m.map(|c| c / length);
+            let altitude = ddot(m, dsub(r, p));
+            min_altitude = min_altitude.min(altitude.abs());
+            inward[k] = if altitude < 0.0 { m.map(|c| -c) } else { m };
+        }
+        let coordinate_scale = vertices.iter().flatten().fold(1.0_f64, |m, c| m.max(c.abs()));
+        Some(Self {
+            vertices,
+            normal,
+            area2,
+            inward,
+            min_altitude,
+            coordinate_scale,
+        })
     }
-    let nh = n.map(|c| c / area2);
-    let side = |p: D3| ddot(nh, dsub(p, v[0]));
-    let (ca, cb) = (a.corners(), b.corners());
-    let mut fa = ca.map(side);
-    let mut fb = cb.map(side);
-    if fa[0] < 0.0 {
-        fa = fa.map(|f| -f);
-        fb = fb.map(|f| -f);
-    }
-    // `a` in front by PLANE_GAP, `b` behind by as much; `gb` its depth.
-    let gb = fb.map(|f| -f);
-    let (fa_min, fa_max) = fa.iter().fold((f64::MAX, f64::MIN), |(l, h), &f| (l.min(f), h.max(f)));
-    let (gb_min, gb_max) = gb.iter().fold((f64::MAX, f64::MIN), |(l, h), &f| (l.min(f), h.max(f)));
-    if fa_min < PLANE_GAP || gb_min < PLANE_GAP {
-        return false;
-    }
-    // The crossing's place along a segment, `fa / (fa + gb)`, rises with
-    // `fa` and falls with `gb`: its bounds are at the corners.
-    if fa_min / (fa_min + gb_max) < T_END || fa_max / (fa_max + gb_min) > 1.0 - T_END {
-        return false;
-    }
-    // Moller-Trumbore's determinant is `area2 * (fa + gb)`; `clear`
-    // refuses below 1e-9.
-    if area2 * (fa_min + gb_min) < 1e-5 {
-        return false;
-    }
-    let longest = ca
-        .iter()
-        .flat_map(|p| cb.iter().map(move |q| dlen(dsub(*q, *p))))
-        .fold(0.0, f64::max);
-    if (fa_min + gb_min) < MIN_COS * longest {
-        return false;
-    }
-    let edge = EDGE + EDGE_PER_LENGTH * longest;
-    // Each edge's inward normal in the plane.
-    let mut inward = [[0.0; 3]; 3];
-    for k in 0..3 {
-        let (p, q, r) = (v[k], v[(k + 1) % 3], v[(k + 2) % 3]);
-        let mut m = dcross(nh, dsub(q, p));
-        let l = dlen(m);
-        if l < 1e-9 {
+
+    /// Whether this triangle alone blocks every segment between the boxes.
+    fn covers(&self, a: &Box3, b: &Box3) -> bool {
+        let side = |p: D3| ddot(self.normal, dsub(p, self.vertices[0]));
+        let (a_lo, a_hi) = a.plane_extremes(self.normal);
+        let (b_lo, b_hi) = b.plane_extremes(self.normal);
+        // The ordered f64 operations in `side` are monotonic on each
+        // axis, so these corners give the same distances as the full scan.
+        let sign = if side(a.lo) < 0.0 { -1.0 } else { 1.0 };
+        let (fa_min, fa_max, gb_min, gb_max) = if sign < 0.0 {
+            (-side(a_hi), -side(a_lo), side(b_lo), side(b_hi))
+        } else {
+            (side(a_lo), side(a_hi), -side(b_hi), -side(b_lo))
+        };
+        if fa_min < PLANE_GAP || gb_min < PLANE_GAP {
             return false;
         }
-        m = m.map(|c| c / l);
-        let alt = ddot(m, dsub(r, p));
-        if alt < 0.0 {
-            m = m.map(|c| -c);
-        }
-        if alt.abs() <= 2.0 * edge {
+        // t = fa / (fa + gb) rises with fa and falls with gb.
+        if fa_min / (fa_min + gb_max) < T_END || fa_max / (fa_max + gb_min) > 1.0 - T_END {
             return false;
         }
-        inward[k] = m;
-    }
-    for (i, p) in ca.iter().enumerate() {
-        for (j, q) in cb.iter().enumerate() {
-            let (f, g) = (fa[i], gb[j]);
-            let x: D3 = std::array::from_fn(|k| (g * p[k] + f * q[k]) / (f + g));
-            for k in 0..3 {
-                if ddot(inward[k], dsub(x, v[k])) < edge {
-                    return false;
+        if self.area2 * (fa_min + gb_min) < 1e-5 {
+            return false;
+        }
+        // Corner choices are independent across the three axes. Find the
+        // longest segment with one norm instead of 64.
+        let longest = a.longest_to(b);
+        if (fa_min + gb_min) < MIN_COS * longest {
+            return false;
+        }
+        let edge = EDGE + EDGE_PER_LENGTH * longest;
+        if self.min_altitude <= 2.0 * edge {
+            return false;
+        }
+
+        let (ca, cb) = (a.corners(), b.corners());
+        let fa = ca.map(|p| sign * side(p));
+        let gb = cb.map(|p| -sign * side(p));
+        let inv_a = fa.map(f64::recip);
+        let inv_b = gb.map(f64::recip);
+        let scale = a.coordinate_scale().max(b.coordinate_scale()).max(self.coordinate_scale);
+        // For signed edge distance E, the crossing of corners p and q
+        // passes iff (E(p)-edge)/fa + (E(q)-edge)/gb >= 0. The scale of
+        // the terms is bounded by the input coordinate magnitude. Both the
+        // original projection/dot and the factored subtractions, dot and
+        // division contribute less than 128 epsilons at that scale (three
+        // unit-normal components, positive weights and no f64 overflow for
+        // f32 map coordinates). The inverse minimum depths carry this
+        // absolute error into the scaled sum. At ambiguous values, use
+        // the original rounded projection and comparison.
+        let tolerance = scale * (128.0 * f64::EPSILON) * (fa_min.recip() + gb_min.recip());
+        let mut ambiguous = false;
+        for k in 0..3 {
+            let distance = |p| ddot(self.inward[k], dsub(p, self.vertices[k])) - edge;
+            let least = |corners: &[D3; 8], inverse: [f64; 8]| {
+                corners.iter().zip(inverse).fold(f64::MAX, |min, (&p, inv)| {
+                    min.min(distance(p) * inv)
+                })
+            };
+            let sum = least(&ca, inv_a) + least(&cb, inv_b);
+            if sum < -tolerance {
+                return false;
+            }
+            ambiguous |= sum <= tolerance;
+        }
+        if !ambiguous {
+            return true;
+        }
+        for (i, p) in ca.iter().enumerate() {
+            for (j, q) in cb.iter().enumerate() {
+                let (f, g) = (fa[i], gb[j]);
+                let x = std::array::from_fn(|k| (g * p[k] + f * q[k]) / (f + g));
+                for k in 0..3 {
+                    if ddot(self.inward[k], dsub(x, self.vertices[k])) < edge {
+                        return false;
+                    }
                 }
             }
         }
+        true
     }
-    true
 }
 
-/// Whether every segment from `a` to `b` is certainly blocked, within
-/// `budget` pieces.
-fn prove(walls: &Walls, a: Box3, b: Box3, inherited: &[u32], budget: &mut u32, depth: u32) -> bool {
-    if *budget == 0 {
-        return false;
+struct RootRay<'a> {
+    origin: &'a mut RayOrigin,
+    candidates: Option<&'a [u32]>,
+}
+
+struct Proof<'a> {
+    walls: &'a Walls,
+    rays: BuildRays<'a>,
+    occluders: Vec<Option<Occluder>>,
+}
+
+impl<'a> Proof<'a> {
+    fn new(walls: &'a Walls) -> Self {
+        Self {
+            walls,
+            rays: BuildRays::new(walls),
+            occluders: walls.tris.iter().map(Occluder::new).collect(),
+        }
     }
-    *budget -= 1;
-    let mut hit = Vec::new();
-    walls.crossed(a.center(), b.center(), &mut hit);
-    if hit.is_empty() {
-        // A clear ray: they can see each other.
-        return false;
+
+    fn covers(&self, t: u32, a: &Box3, b: &Box3) -> bool {
+        self.occluders[t as usize]
+            .as_ref()
+            .is_some_and(|triangle| triangle.covers(a, b))
     }
-    if hit.iter().chain(inherited).any(|&t| covers(&walls.tris[t as usize], &a, &b)) {
-        return true;
-    }
-    if depth == 0 {
-        // Before splitting: another clear ray settles it at once.
-        let (ca, cb) = (a.corners(), b.corners());
-        let f = |p: [f64; 3]| p.map(|c| c as f32);
-        if (0..8).any(|c| walls.clear(f(ca[c]), f(cb[7 - c]))) {
+
+    /// Whether every segment from `a` to `b` is certainly blocked, within
+    /// `budget` pieces. Each recursion level reuses its hit list.
+    #[allow(clippy::too_many_arguments)]
+    fn prove(
+        &self,
+        a: Box3,
+        b: Box3,
+        inherited: &[u32],
+        budget: &mut u32,
+        scratch: &mut [Vec<u32>],
+        root: Option<RootRay<'_>>,
+    ) -> bool {
+        if *budget == 0 {
             return false;
         }
-    }
-    if depth >= DEPTH {
-        return false;
-    }
-    for t in inherited {
-        if hit.len() >= CANDIDATES {
-            break;
+        *budget -= 1;
+        let check_corners = root.is_some();
+        let (hit, scratch) = scratch.split_first_mut().expect("one candidate list per depth");
+        hit.clear();
+        let test = |t| {
+            if self.covers(t, &a, &b) {
+                return false;
+            }
+            hit.push(t);
+            true
+        };
+        let all = match root {
+            Some(ray) => self.rays.crossed_from(ray.origin, b.center(), ray.candidates, test),
+            None => self.rays.crossed(a.center(), b.center(), test),
+        };
+        if !all {
+            return true;
         }
-        if !hit.contains(t) {
-            hit.push(*t);
+        if hit.is_empty() {
+            // A clear ray: they can see each other.
+            return false;
+        }
+        if inherited.iter().any(|&t| self.covers(t, &a, &b)) {
+            return true;
+        }
+        if check_corners {
+            let (ca, cb) = (a.corners(), b.corners());
+            let f = |p: D3| p.map(|c| c as f32);
+            if (0..8).any(|c| self.walls.clear(f(ca[c]), f(cb[7 - c]))) {
+                return false;
+            }
+        }
+        if scratch.is_empty() {
+            return false;
+        }
+        for t in inherited {
+            if hit.len() >= CANDIDATES {
+                break;
+            }
+            if !hit.contains(t) {
+                hit.push(*t);
+            }
+        }
+        let (la, a1, a2) = a.split();
+        let (lb, b1, b2) = b.split();
+        if la >= lb {
+            self.prove(a1, b, hit, budget, scratch, None)
+                && self.prove(a2, b, hit, budget, scratch, None)
+        } else {
+            self.prove(a, b1, hit, budget, scratch, None)
+                && self.prove(a, b2, hit, budget, scratch, None)
         }
     }
-    let (la, a1, a2) = a.split();
-    let (lb, b1, b2) = b.split();
-    if la >= lb {
-        prove(walls, a1, b, &hit, budget, depth + 1) && prove(walls, a2, b, &hit, budget, depth + 1)
-    } else {
-        prove(walls, a, b1, &hit, budget, depth + 1) && prove(walls, a, b2, &hit, budget, depth + 1)
-    }
-}
-
-/// Whether the two boxes certainly never see each other.
-fn never_between(walls: &Walls, a: Box3, b: Box3) -> bool {
-    let mut budget = LEAVES;
-    prove(walls, a, b, &[], &mut budget, 0)
 }
 
 /// Points over the walkable polygons: their corners, sides and inside.
@@ -828,7 +1006,7 @@ fn voxelise(samples: &[V3], size: V3) -> Option<(V3, [u32; 3], Vec<u32>)> {
     Some((origin, dims, voxels))
 }
 
-/// The threads a grid build spreads its pairs over.
+/// The thread budget and priority for a bot nav or visibility build.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Threads {
     pub count: usize,
@@ -896,12 +1074,87 @@ fn layout(nav: &NavMesh, walls: &Walls) -> Vis {
     }
 }
 
+/// Cell groups with the same projected XY center. Their cell numbers
+/// remain ascending so each row still tests only its original `j > i` pairs.
+fn columns(vis: &Vis) -> Vec<Vec<usize>> {
+    let xy = vis.dims[0] * vis.dims[1];
+    let mut indices: FxHashMap<u32, usize> = FxHashMap::default();
+    let mut columns: Vec<Vec<usize>> = Vec::new();
+    for (i, &voxel) in vis.voxels.iter().enumerate() {
+        let k = *indices.entry(voxel % xy).or_insert_with(|| {
+            columns.push(Vec::new());
+            columns.len() - 1
+        });
+        columns[k].push(i);
+    }
+    columns
+}
+
+struct RowScratch {
+    origin: RayOrigin,
+    levels: [Vec<u32>; DEPTH as usize + 1],
+    candidates: Vec<u32>,
+    bits: Vec<u64>,
+}
+
+impl RowScratch {
+    fn new(triangles: usize) -> Self {
+        Self {
+            origin: RayOrigin::new(triangles),
+            levels: Default::default(),
+            candidates: Vec::new(),
+            bits: Vec::new(),
+        }
+    }
+
+    fn prove(
+        &mut self,
+        proof: &Proof<'_>,
+        boxes: &[Box3],
+        columns: &[Vec<usize>],
+        i: usize,
+        found: &mut Vec<(usize, u64)>,
+    ) {
+        let a = boxes[i];
+        let source = a.center();
+        self.origin.reset(source);
+        let n = boxes.len();
+        let first = pair_bit(n, i, i + 1);
+        let base_word = first / 64;
+        self.bits.clear();
+        self.bits.resize((first + n - 1 - i).div_ceil(64) - base_word, 0);
+        for column in columns {
+            let destinations = &column[column.partition_point(|&j| j <= i)..];
+            let candidates = if let [j, _, ..] = destinations {
+                Some(proof.rays.candidates(source, boxes[*j].center(), &mut self.candidates))
+            } else {
+                None
+            };
+            for &j in destinations {
+                let mut budget = LEAVES;
+                let root = RootRay {
+                    origin: &mut self.origin,
+                    candidates,
+                };
+                if proof.prove(a, boxes[j], &[], &mut budget, &mut self.levels, Some(root)) {
+                    let bit = pair_bit(n, i, j);
+                    self.bits[bit / 64 - base_word] |= 1 << (bit % 64);
+                }
+            }
+        }
+        found.extend(self.bits.iter().enumerate().filter_map(|(word, &bits)| {
+            (bits != 0).then_some((base_word + word, bits))
+        }));
+    }
+}
+
 /// About this many chunks of pairs a grid is built in; progress is saved
 /// and `stop` asked between them.
 const CHUNKS: usize = 64;
 
 /// Proves the pairs of rows `row..` of `vis` (row `i` is the pairs
-/// `(i, j > i)`), a chunk of rows at a time on `threads`. After a chunk it
+/// `(i, j > i)`). Persistent workers take rows from one chunk at a
+/// time. After a chunk the build
 /// saves (`save(grid, first row not done)`) when [`SAVE_EVERY`] has passed,
 /// and when `stop` says so it saves and returns `None`. The rows done are
 /// the same whatever the chunks, so a build carried on from a save ends
@@ -914,60 +1167,77 @@ fn fill(
     save: &mut dyn FnMut(&Vis, usize) -> std::io::Result<()>,
     stop: &dyn Fn() -> bool,
 ) -> std::io::Result<Option<Vis>> {
-    let Threads { count: threads, background: lower } = threads;
-    let threads = threads.max(1);
     let n = vis.cells();
-    let boxes: Vec<Box3> = vis.voxels.iter().map(|&v| vis.voxel_box(v)).collect();
-    let per_chunk = (pairs(n) / CHUNKS).max(1);
-    let mut saved = std::time::Instant::now();
-    while row + 1 < n {
-        let (start, mut end, mut count) = (row, row, 0);
-        while end + 1 < n && count < per_chunk {
-            count += n - 1 - end;
-            end += 1;
-        }
-        let found: Vec<Vec<(u32, u32)>> = std::thread::scope(|s| {
-            let jobs: Vec<_> = (0..threads)
-                .map(|k| {
-                    let boxes = &boxes;
-                    s.spawn(move || {
-                        // A QoS class does not carry to a spawned thread:
-                        // each lowers itself.
-                        if lower {
-                            background::lower_current();
-                        }
-                        let mut never = Vec::new();
-                        for i in (start + k..end).step_by(threads) {
-                            for j in i + 1..n {
-                                if never_between(walls, boxes[i], boxes[j]) {
-                                    never.push((i as u32, j as u32));
-                                }
-                            }
-                        }
-                        never
-                    })
-                })
-                .collect();
-            jobs.into_iter().map(|j| j.join().unwrap_or_default()).collect()
-        });
-        for (i, j) in found.into_iter().flatten() {
-            let bit = pair_bit(n, i as usize, j as usize);
-            vis.bits[bit / 64] |= 1 << (bit % 64);
-        }
-        row = end;
-        if row + 1 >= n {
-            break;
-        }
-        if stop() {
-            save(&vis, row)?;
-            return Ok(None);
-        }
-        if saved.elapsed() >= SAVE_EVERY {
-            save(&vis, row)?;
-            saved = std::time::Instant::now();
-        }
+    if row + 1 >= n || walls.tris.is_empty() {
+        return Ok(Some(vis));
     }
-    Ok(Some(vis))
+    let proof = Proof::new(walls);
+    let boxes: Vec<Box3> = vis.voxels.iter().map(|&v| vis.voxel_box(v)).collect();
+    let columns = columns(&vis);
+    let per_chunk = pairs(n).div_ceil(CHUNKS).max(1);
+    let next = AtomicUsize::new(row);
+    let mut saved = std::time::Instant::now();
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads.count.max(1).min(n - 1 - row))
+            .map(|_| {
+                let (send, work) = mpsc::channel();
+                let (done, receive) = mpsc::channel();
+                let (proof, boxes, columns, next) = (&proof, &boxes, &columns, &next);
+                scope.spawn(move || {
+                    // A QoS class does not carry to a spawned thread.
+                    if threads.background {
+                        background::lower_current();
+                    }
+                    let mut scratch = RowScratch::new(proof.occluders.len());
+                    while let Ok(end) = work.recv() {
+                        let mut found = Vec::new();
+                        loop {
+                            let i = next.fetch_add(1, Ordering::Relaxed);
+                            if i >= end {
+                                break;
+                            }
+                            scratch.prove(proof, boxes, columns, i, &mut found);
+                        }
+                        if done.send(found).is_err() {
+                            break;
+                        }
+                    }
+                });
+                (send, receive)
+            })
+            .collect();
+        while row + 1 < n {
+            let (mut end, mut count) = (row, 0);
+            // Late rows have less work. Keep enough in the checkpoint to
+            // use the workers, while keeping the same contiguous row prefix.
+            while end + 1 < n && (count < per_chunk || end - row < workers.len()) {
+                count += n - 1 - end;
+                end += 1;
+            }
+            next.store(row, Ordering::Relaxed);
+            for (work, _) in &workers {
+                work.send(end).expect("visibility worker stopped");
+            }
+            for (_, done) in &workers {
+                for (index, word) in done.recv().expect("visibility worker stopped") {
+                    vis.bits[index] |= word;
+                }
+            }
+            row = end;
+            if row + 1 >= n {
+                break;
+            }
+            if stop() {
+                save(&vis, row)?;
+                return Ok(None);
+            }
+            if saved.elapsed() >= SAVE_EVERY {
+                save(&vis, row)?;
+                saved = std::time::Instant::now();
+            }
+        }
+        Ok(Some(vis))
+    })
 }
 
 impl Vis {
@@ -982,5 +1252,7 @@ impl Vis {
     }
 }
 
+#[cfg(test)]
+mod legacy;
 #[cfg(test)]
 mod tests;

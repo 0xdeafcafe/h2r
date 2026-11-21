@@ -725,14 +725,15 @@ pub fn frame_vertex(base: &VertexUniforms, view: &ViewInputs) -> VertexUniforms 
     u
 }
 
-/// `base` with the frame's depth scale.
+/// `base` with the frame's depth and raster scales.
 pub fn frame_pixel(base: &PixelUniforms, view: &ViewInputs) -> PixelUniforms {
     PixelUniforms {
         depth: [view.z_scale, 0.0, 0.0, 1.0],
-        depth_range: {
-            let [lo, hi] = view.w_clip.map_or([0.0, view.z_scale], |(range, _)| range);
-            [lo, hi, 0.0, 0.0]
-        },
+        depth_range: view.w_clip.map_or([0.0, view.z_scale], |(range, _)| range),
+        stipple_scale: [
+            view.size.0.max(1) as f32 / view.guest_size.0.max(1) as f32,
+            view.size.1.max(1) as f32 / view.guest_size.1.max(1) as f32,
+        ],
         ..*base
     }
 }
@@ -1639,7 +1640,8 @@ mod tests {
         let u = frame_vertex(&base, &clipped);
         assert_eq!((u.w_clip, u.w_clamp), (Some([0.0, 33_554_430.0]), true));
         let p = frame_pixel(&PixelUniforms::default(), &clipped);
-        assert_eq!(p.depth_range, [0.0, 33_554_430.0, 0.0, 0.0]);
+        assert_eq!(p.depth_range, [0.0, 33_554_430.0]);
+        assert_eq!(p.stipple_scale, [2.0; 2]);
         assert!(!frame_vertex(&base, &view).w_clamp, "none: the whole range, culled");
     }
 

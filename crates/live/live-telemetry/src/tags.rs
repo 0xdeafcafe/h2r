@@ -38,6 +38,9 @@ pub type MapIdLocator =
 /// memory held, so it must not wait.
 pub type PlaylistLocator = Box<dyn Fn() -> Option<crate::session::Playlist> + Send + Sync>;
 
+/// The starting multiplayer game's own Live advertisement, read from the local HLE.
+pub type HostedSessionLocator = Box<dyn Fn() -> Option<String> + Send + Sync>;
+
 /// Names the Clankers a starting multiplayer game runs with, and the server
 /// bot roster if one is in force (docs/game/bots.md §6, stage 6c): the boot
 /// answers it from the Clankers driver and the local and phantom books. It runs with guest memory held, so it

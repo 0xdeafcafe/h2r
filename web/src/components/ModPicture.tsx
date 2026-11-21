@@ -1,5 +1,4 @@
 import { Show, createEffect, createSignal, onCleanup, type JSX } from "solid-js";
-import { withAuthMark } from "../api/http";
 import { issueToken } from "../admin/token";
 import { identity } from "../state/identity";
 import { live } from "../state/live";
@@ -28,7 +27,7 @@ export function ModPhoto(props: { src: string; alt: string; fullSize?: boolean; 
     });
     void (async () => {
       const token = await issueToken(me, wk.id, "read");
-      const res = await fetch(withAuthMark(src), { signal: controller.signal, headers: { authorization: `Bearer ${token}` } });
+      const res = await fetch(src, { signal: controller.signal, headers: { authorization: `Bearer ${token}` } });
       if (!res.ok) throw new Error(res.statusText);
       const blob = await res.blob();
       if (controller.signal.aborted) return;

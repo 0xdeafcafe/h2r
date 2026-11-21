@@ -181,11 +181,13 @@ h2 live mods capture PACK_OR_MAP_ID
 h2 live assets extract [--disc PATH] [--out DIR] [--mappack ISO] [--installed DATA]
 h2 live assets check [--out DIR]
 h2 live store copy [--from DB --to DB] [--from-blobs LOC --to-blobs LOC]
+h2 live invite grant <gamertag> [--open-cap N] [--server URL] [--data DIR]
+h2 live invite ungrant <gamertag> [--server URL] [--data DIR]
 h2 live invite create [--days N] [--code TEXT] [--as GAMERTAG] [--server URL] [--data DIR]
 h2 live invite list [--as GAMERTAG] [--server URL] [--data DIR]
 h2 live invite revoke <jti> --as GAMERTAG [--server URL]
 h2 live q <what> [--server URL] [--json|--jsonl]
-h2 play <disc> [--live | --live-server URL | --live-local | --offline] [--live-listen ADDR] [--gamertag NAME] [--invite CODE]
+h2 play <disc> [--live | --live-server URL | --live-local | --offline] [--live-listen ADDR] [--gamertag NAME] [--invite CODE] [--join URL]
 ```
 
 `h2 live serve` serves the web app from `web/dist` (or `$H2_LIVE_WEB`) at
@@ -253,6 +255,7 @@ other way round: on by default (below).
 |---|---|---|
 | none, `--offline`, `--no-live` | offline | ignored |
 | `--live` | signed in to `https://live.forbes.red` | a URL replaces it; `off` (`none`, `0`) plays offline with a line |
+| `--join URL` | opens a [session link](live-custom-games.md#join-in-halo-2) on the service selected by the ordinary Live flags; implies `--live` | as for `--live` |
 | `--live-server URL` | signed in to `URL` | ignored (the flag wins) |
 | `--live-local` | an embedded server in the process | ignored |
 | `--live-listen ADDR`, `--live-tunnel`, `--live-tunnel-name NAME` | as `--live-local` (they imply it) | ignored |
@@ -459,8 +462,8 @@ the CLI sign with exactly this code. `crates/live/live-server` is the service
 
 The API is [live-api.md](live-api.md) on `127.0.0.1:8074`. Built: health,
 discovery, accounts (create, list, one, keys by gamertag and by XUID),
-presence (with `POST /v1/presence/ping`), invites (`POST /v1/invites`,
-operator), the event log (`GET /v1/events` with `from`/`cursor`, `type`,
+presence (with `POST /v1/presence/ping`), [server invites](live-api.md#server-invites),
+the event log (`GET /v1/events` with `from`/`cursor`, `type`,
 `exclude`, `stream`, `limit`; `POST /v1/events` for one signed event), the
 `/v1/stream` WebSocket (replay from `?from=`, `caught_up`, then live events
 and game frames, with `types`/`exclude`/`stream`/`games`), title files,

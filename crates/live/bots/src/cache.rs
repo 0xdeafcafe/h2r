@@ -5,7 +5,7 @@
 
 use tags::collision::Bsp;
 
-use crate::los::{V3, Walls};
+use crate::los::Walls;
 use crate::nav::{Build, NavMesh};
 
 /// The loaded map's data, for every bot's mind; `None` until a map with a
@@ -111,16 +111,21 @@ pub fn file_name(map: &str, bsp: usize) -> String {
 
 /// Builds a structure BSP's data from its collision.
 pub fn build(bsp: &Bsp) -> Result<MapData, String> {
-    let pf = pathfind::generate::generate(bsp, 0, 0, &pathfind::generate::Options::default())
-        .map_err(|e| e.to_string())?;
-    let mut polys: Vec<Vec<V3>> = Vec::with_capacity(bsp.surfaces.len());
-    for s in 0..bsp.surfaces.len() {
-        if let Some(ring) = pathfind::generate::surface_edges(bsp, s) {
-            polys.push(ring.iter().map(|&(_, v)| bsp.vertices[v].point).collect());
-        }
-    }
-    let walls = Walls::from_polygons(polys.iter().map(Vec::as_slice));
-    let nav = NavMesh::from_collision(&pf, &Build::default(), &walls);
+    build_with(bsp, crate::vis::Threads::foreground())
+}
+
+pub(crate) fn build_with(bsp: &Bsp, threads: crate::vis::Threads) -> Result<MapData, String> {
+    let mut tris = Vec::with_capacity(bsp.surfaces.len());
+    let pf = pathfind::generate::generate_with_surfaces(
+        bsp,
+        0,
+        0,
+        &pathfind::generate::Options::default(),
+        |ring| Walls::fan_polygon(ring.iter().map(|&(_, v)| bsp.vertices[v].point), &mut tris),
+    )
+    .map_err(|e| e.to_string())?;
+    let walls = Walls::new(tris);
+    let nav = NavMesh::from_collision(&pf, &Build::default(), &walls, threads);
     Ok(MapData {
         nav,
         walls,

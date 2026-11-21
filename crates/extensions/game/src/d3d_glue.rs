@@ -11,6 +11,9 @@ use d3d::{DeviceConfig, GuestRange, UploadPolicy};
 #[cfg(feature = "desktop-runtime")]
 use d3d::RecordingBackend;
 
+#[cfg(feature = "gpu")]
+mod clip_png;
+
 pub const PUSH_BASE: u32 = 0xa0e0_0000;
 pub const PUSH_LEN: u32 = 0x8_0000;
 pub const SCRATCH_BASE: u32 = 0xa0e8_0000;
@@ -229,6 +232,15 @@ pub fn install_headless_for_profile(
             let lighting = d3d::scaled::lighting().map_err(anyhow::Error::msg)?;
             let ctx = gfx::GfxContext::headless()
                 .map_err(|e| anyhow::anyhow!("gfx headless context: {e}"))?;
+            let clip_size = std::env::var_os("H2_BOOT_GFX_SIZE")
+                .map(|raw| {
+                    clip_png::parse_size(
+                        raw.to_str().unwrap_or_default(),
+                        ctx.device.limits().max_texture_dimension_2d,
+                    ).map_err(anyhow::Error::msg)
+                })
+                .transpose()?;
+            let clip = Arc::new(Mutex::new(clip_png::ClipPng::new(clip_size)));
             // `H2_BOOT_GFX_SHADOWS=N`: also the first N frames that sample
             // a shadow map (`d3d_diag::samples_shadow_map`, the same frames
             // in every run of the same input) and show something, whatever
@@ -254,6 +266,7 @@ pub fn install_headless_for_profile(
                          shadow_limit: u64,
                          between: Option<Arc<BetweenShots>>| {
                 let dir = dir.clone();
+                let clip = Arc::clone(&clip);
                 let mut swaps = 0u64;
                 let mut shadows = 0u64;
                 // The display's frames (`frame-N.png`) are what the agent's
@@ -269,6 +282,9 @@ pub fn install_headless_for_profile(
                       _flags,
                       _gamma: Option<&[u8; 768]>| {
                     swaps += 1;
+                    if display {
+                        clip.lock().unwrap().guest(swaps, ctx, store, id);
+                    }
                     if display && let Some(path) = agent::render::CAPTURE.wanted(swaps) {
                         let r = path
                             .parent()
@@ -304,6 +320,16 @@ pub fn install_headless_for_profile(
                         Err(e) => eprintln!("boot: gfx screenshot {swaps}: {e}"),
                     }
                 }
+            };
+            let mut between_hook = between.hook(dir.clone(), "");
+            let replay_clip = Arc::clone(&clip);
+            let replay = move |ctx: &gfx::GfxContext,
+                               store: &gfx::surface::SurfaceStore,
+                               id,
+                               flags,
+                               gamma: Option<&[u8; 768]>| {
+                replay_clip.lock().unwrap().replay(ctx, store, id);
+                between_hook(ctx, store, id, flags, gamma);
             };
             if std::env::var_os("H2_BOOT_GFX_LIGHTING_AB").is_some_and(|v| v != "0") {
                 // One run, both lighting modes: the 1x reference answers the
@@ -407,6 +433,15 @@ pub fn install_headless_for_profile(
                 }?;
                 return Ok(installed.with_gpu_view(Some(scale_stats)));
             }
+            let max_slots = match interp.as_ref() {
+                Some(i) if i.mode == d3d::interp::Mode::Replay => match (i.rate)() {
+                    120 => 4,
+                    60 => 2,
+                    _ => 1,
+                },
+                _ => 1,
+            };
+            agent::render::clip::CLIPS.set_writer(dir.canonicalize()?, max_slots);
             if scale > 1 || lighting != d3d::Lighting::Retail {
                 // The display presents scaled frames. Exact reference captures
                 // use their own hook and swap count on the shared device.
@@ -418,7 +453,7 @@ pub fn install_headless_for_profile(
                 let view = configure_gfx(
                     d3d::GfxBackend::new(ctx)
                         .on_present(shots("", shadow_shots, Some(Arc::clone(&between))))
-                        .on_present_replay(between.hook(dir.clone(), "")),
+                        .on_present_replay(replay),
                 );
                 let single = single_copy(settings)?;
                 let mut b =
@@ -430,7 +465,7 @@ pub fn install_headless_for_profile(
                 let scale_stats = b.shared_stats();
                 let report = scale_report(&mut b);
                 let installed = if render_thread_requested() {
-                    install_threaded_for_profile(rt, b, Some(report), interp, profile)
+                    install_render_thread(rt, b, Some(report), interp, profile, max_slots > 1)
                 } else {
                     install_for_profile(rt, b, Some(report), profile)
                 }?;
@@ -439,7 +474,7 @@ pub fn install_headless_for_profile(
             let mut backend = configure_gfx(
                 d3d::GfxBackend::new(ctx)
                     .on_present(shots("", shadow_shots, Some(Arc::clone(&between))))
-                    .on_present_replay(between.hook(dir.clone(), "")),
+                    .on_present_replay(replay),
             );
             if interp.is_none() {
                 crate::native_shadows_glue::configure_single(&mut backend);
@@ -449,7 +484,7 @@ pub fn install_headless_for_profile(
             // (docs/graphics/render-thread.md), unless H2_RENDER_THREAD=0;
             // behind the in-between frames when `interp` is given.
             let installed = if render_thread_requested() {
-                install_threaded_for_profile(rt, backend, None, interp, profile)
+                install_render_thread(rt, backend, None, interp, profile, max_slots > 1)
             } else {
                 install_for_profile(rt, backend, None, profile)
             }?;
@@ -846,9 +881,32 @@ where
     B: d3d::backend::Backend + Send + 'static,
     B::Texture: Sync,
 {
+    install_render_thread(rt, backend, extra, interp, profile, false)
+}
+
+#[cfg(feature = "gpu")]
+fn install_render_thread<B>(
+    rt: &runtime::Runtime,
+    backend: B,
+    extra: Option<ExtraReport>,
+    interp: Option<Interpolation>,
+    profile: film::RenderHooks,
+    clip_capture: bool,
+) -> anyhow::Result<Installed>
+where
+    B: d3d::backend::Backend + Send + 'static,
+    B::Texture: Sync,
+{
     match interp {
         Some(Interpolation { rate, mode }) => {
-            let interp = d3d::InterpBackend::new(backend, rate).with_mode(mode);
+            let mut interp = d3d::InterpBackend::new(backend, rate).with_mode(mode);
+            if clip_capture {
+                let mut present = 0;
+                interp = interp.with_capture_slots(move || {
+                    present += 1;
+                    agent::render::clip::CLIPS.slots(present)
+                });
+            }
             // The agent's render.stats reads its counters.
             crate::render_probe::set_interp(interp.stats());
             crate::render_probe::set_interp_holds(interp.holds());
@@ -913,7 +971,9 @@ pub fn write_png(path: &std::path::Path, px: &[u8], w: u32, h: u32) -> anyhow::R
     let mut enc = png::Encoder::new(f, w, h);
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Eight);
-    enc.write_header()?.write_image_data(px)?;
+    let mut writer = enc.write_header()?;
+    writer.write_image_data(px)?;
+    writer.finish()?;
     Ok(())
 }
 

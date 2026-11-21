@@ -1010,6 +1010,7 @@ pub struct Device<B: Backend> {
     /// A latched push-buffer failure.
     fault: Option<String>,
     swap_count: u32,
+    /// Current GPU time, also the completion time in the synchronous model.
     fence: u32,
     /// The push-buffer position the last fence was issued at.
     fence_at: u32,
@@ -3363,26 +3364,25 @@ impl<B: Backend> Device<B> {
         Ok(())
     }
 
-    /// `D3D_SetFence`: the GPU is synchronous here, so every fence has
-    /// passed by the time it is returned. The GPU time (`+0x2C`) and the
-    /// completion word (`[+0x30]`, [`Device::gpu_completed`]) both become
-    /// the new fence.
+    /// `D3D_SetFence` returns the current GPU time and advances it by two
+    /// (`0x3fa69e..0x3fa73b`). The synchronous model publishes the advanced
+    /// time to both `+0x2C` and the completion word pointed to by `+0x30`.
     pub fn set_fence(&mut self, mem: &mut dyn GuestMemory) -> Result<u32, D3dError> {
         self.live("D3D_SetFence")?;
         self.sync_push_buffer(mem)?;
-        self.fence = self.fence.wrapping_add(1);
+        let fence = self.fence;
+        self.fence = fence.wrapping_add(2);
         self.fence_at = self.consumed;
         let dev = self.cfg.layout.device;
         mem.write_u32(dev + field::GPU_TIME, self.fence)?;
         mem.write_u32(self.gpu_completed_word()?, self.fence)?;
         self.sync_registers(mem)?;
-        Ok(self.fence)
+        Ok(fence)
     }
 
-    /// The GPU's completion time: the last fence whose work has executed.
-    /// The device executes the push buffer synchronously at every entry, so
-    /// once the queued words are drained this is the last fence handed out.
-    /// The guest sees it at `[device + 0x30]`.
+    /// The GPU's completion time. The device executes the push buffer
+    /// synchronously, so completion keeps pace with the current GPU time.
+    /// The guest sees it in the word pointed to by `device + 0x30`.
     pub fn gpu_completed(&self) -> u32 {
         self.fence
     }
@@ -4807,13 +4807,9 @@ impl<B: Backend> Device<B> {
     /// `Lock` (its parent's, for a level) takes the GPU time, and a new
     /// fence is recorded at `+0x1974[swap count & 1]`.
     ///
-    /// The order of stamp, fence and slot matches the original, the numbers
-    /// do not: retail `D3D_SetFence` (`0x3fa69e..0x3fa73b`) returns the old
-    /// GPU time and advances `+0x2C` by 2, while [`Device::set_fence`]
-    /// advances it by 1 and returns the new time (the completion word
-    /// always equals it, so no wait can stall). From zero, a flip's
-    /// pre-flip fence plus this leave `Lock` 2, slot 2, `+0x2C` 4 on the
-    /// Xbox and `Lock` 1, slot 2, `+0x2C` 2 here.
+    /// [`Device::set_fence`] returns the time used for the stamp, so the
+    /// parity slot records the same value. From zero, a flip's two fences
+    /// leave `Lock` and the slot at 2 and `+0x2C` at 4.
     fn finish_swap(&mut self, mem: &mut dyn GuestMemory) -> Result<(), D3dError> {
         let dev = self.cfg.layout.device;
         let display = mem.read_u32(dev + field::DISPLAY_SURFACE)?;

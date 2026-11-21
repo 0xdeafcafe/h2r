@@ -562,20 +562,8 @@ impl Spool {
                 host,
                 game: new,
             };
-            let key = &live.identity.key;
-            let body = EventBody::at_unix(
-                key,
-                &live.identity.author(),
-                &game::stream(id),
-                game::GAME_STARTED,
-                json!(started),
-                start,
-            );
-            events.push(NewEvent {
-                jws: body.sign(key).into(),
-                jws_index: None,
-                body,
-            });
+            let at = time::OffsetDateTime::from_unix_timestamp(start).expect("bounded film start");
+            events.extend(live.game_start_events(started, at));
         } else {
             events.push(live.server_event(
                 game::stream(id),

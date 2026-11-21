@@ -120,7 +120,7 @@ out.sign_up = { ms: +(performance.now() - t3).toFixed(1), accounts: [a!.gamertag
 
 // 4. Sign in: a read with the account's own token.
 const token = await issueToken(a!, aud, "read");
-const mine = await timed(api + "/snapshot?auth=1", { headers: { authorization: `Bearer ${token}` } });
+const mine = await timed(api + "/snapshot", { headers: { authorization: `Bearer ${token}` } });
 if (!mine.r.ok) fail("sign-in", `${mine.r.status} ${mine.body}`);
 const seen = (JSON.parse(mine.body).accounts?.items ?? []).some((x: { xuid: string }) => x.xuid === a!.xuid);
 if (!seen) fail("sign-in", "the new account is not in the snapshot");
@@ -229,7 +229,7 @@ const eventsUrl = `${api}/events?stream=account-${a!.xuid}&from=${position! - 1}
 const publicLog = await timed(eventsUrl);
 if (!publicLog.r.ok || JSON.parse(publicLog.body).items.some((e: {position: number}) => e.position === position))
   fail("anonymous-private-event", publicLog.r.status);
-const participantLog = await timed(eventsUrl + "&auth=1", {
+const participantLog = await timed(eventsUrl, {
   headers: {authorization: `Bearer ${await issueToken(a!, aud, "read")}`},
 });
 if (!participantLog.r.ok) fail("append-read", `${participantLog.r.status} ${participantLog.body}`);

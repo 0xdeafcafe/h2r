@@ -259,6 +259,58 @@ impl State {
         Some((live_proto::Xuid(xuid), account.gamertag.clone()))
     }
 
+    pub fn join_controller(&self) -> Option<usize> {
+        if !self.connected() || self.service.is_none() {
+            return None;
+        }
+        (0..4).find(|&c| self.signed_in_account(c as u32).is_some())
+    }
+
+    pub fn resolve_join_link(
+        &self,
+        id: &str,
+    ) -> std::result::Result<crate::join_resolver::JoinLookup, String> {
+        let signed_out = "Sign in to Xbox Live to join this game.";
+        let controller = self.join_controller().ok_or(signed_out)?;
+        let logon = self.session().ok_or(signed_out)?;
+        let pending = self
+            .service
+            .as_ref()
+            .ok_or(signed_out)?
+            .social(
+                &logon,
+                self.user_ids[controller],
+                client::SocialRequest::JoinLink(id.to_owned()),
+            )
+            .map_err(|_| "Xbox Live is busy. Try again.")?;
+        Ok(crate::join_resolver::JoinLookup {
+            pending,
+            logon,
+            controller,
+        })
+    }
+
+    pub fn accept_join_link(
+        &mut self,
+        target: crate::join_resolver::ResolvedJoin,
+    ) -> std::result::Result<crate::join_resolver::JoinReceipt, String> {
+        if !self.connected()
+            || !self.session().is_some_and(|s| s.same_logon(&target.logon))
+            || self.user_ids[target.controller] != target.invite.to.0
+        {
+            return Err("Your Xbox Live sign-in changed. Open the link again.".into());
+        }
+        let delivery = crate::join_resolver::Delivery::default();
+        self.invites.queue_accepted(
+            target.invite,
+            target.controller,
+            self.user_ids,
+            self.user_flags,
+            Some(delivery.clone()),
+        );
+        Ok(crate::join_resolver::JoinReceipt(delivery))
+    }
+
     /// The sign-in prompt now, if a sign-in is waiting for one.
     pub fn signin(&mut self) -> Option<crate::signin::Prompt> {
         self.signin.as_mut().map(|s| s.prompt())
@@ -734,6 +786,12 @@ impl State {
             .set_coop(campaign, skulls, self.service.as_ref(), session.as_ref());
         let _ = self.set_activity(activity.as_deref());
     }
+    pub fn sync_squad_slots(&mut self, slots: crate::SessionSlots) {
+        let connection = self.session();
+        self.sessions
+            .sync_squad_slots(slots, self.service.as_ref(), connection.as_ref());
+    }
+
     pub fn set_coop_ping(&mut self, ms: Option<u16>) {
         let session = self.session();
         self.sessions

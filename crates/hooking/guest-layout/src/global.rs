@@ -98,6 +98,8 @@ crate::globals! { GLOBALS;
     UI_ATTRACT_TIMEOUT @ 0x0047_01bc; "docs/audio/bink-hle.md";
     /// The menu music controller's current and requested modes (+0 and +4).
     UI_MUSIC_STATE @ 0x0054_e7e0; "docs/audio/bink-hle.md";
+    /// Pending cache copy flag read by the movie wrapper's busy check.
+    CACHE_COPY_PENDING @ 0x0055_bf28; "docs/audio/bink-hle.md";
     /// Pointer to the active looping-sound datum array (0x21a0d6).
     LOOPING_SOUNDS @ 0x0050_2110; "docs/runtime/agent-api.md";
     /// Pointer to the sound instance datum array (0x1254c3).

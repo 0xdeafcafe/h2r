@@ -6,6 +6,8 @@ import {
   customCodeError,
   fetchAdminStatus,
   fetchInvites,
+  fetchMyInvites,
+  writeInviteGrant,
   fetchServerFacts,
   formatUptime,
   inviteBody,
@@ -20,6 +22,7 @@ import {
   HALO_ADMIN,
   LIVE_ADMIN_USAGE,
 } from "../src/admin/server";
+import { applyAccountsSnapshot, applyEvent, initialState } from "../src/state/reducer";
 import type { LocalAccount } from "../src/state/account";
 import { canonicalJson, parseJws, b64urlDecode } from "../src/state/verify";
 import { Admin, inviteKey } from "../mock/admin";
@@ -300,6 +303,54 @@ describe("the mock's server endpoints", () => {
     expect(list[0]!.state).toBe("revoked");
     expect(list[0]!.invite).toBeNull();
     await expect(revokeInvite("http://m/v1", HOST, account, made.jti, f)).rejects.toMatchObject({ status: 409 });
+  });
+
+  test("enabling and revoking invite access signs admin requests and updates the player projection", async () => {
+    const { world, account, f } = await setup(true);
+    const target = world.createAccount("Player One");
+    const player = { ...me(target.xuid, HOST), gamertag: target.gamertag };
+    const s = initialState();
+    applyAccountsSnapshot(s, [world.publicAccount(target)]);
+    expect(s.accounts[target.xuid]?.invite_grant).toBeNull();
+    await expect(fetchMyInvites("http://m/v1", HOST, player, f)).rejects.toMatchObject({ status: 403 });
+
+    const calls: Request[] = [];
+    const send = (async (url: string, init: RequestInit) => {
+      calls.push(new Request(url, init));
+      return f(url, init);
+    }) as unknown as typeof fetch;
+    await writeInviteGrant("http://m/v1", HOST, account, target.gamertag, { open_cap: 1 }, send);
+    const grant = world.log.at(-1)!;
+    expect(grant.type).toBe("InviteGrantSet");
+    applyEvent(s, grant);
+    expect(s.accounts[target.xuid]?.invite_grant).toEqual({ open_cap: 1 });
+    const made = await createInvite("http://m/v1", HOST, player, 7, f);
+    expect(await fetchMyInvites("http://m/v1", HOST, player, f)).toMatchObject([{ jti: made.jti, invite: made.invite }]);
+    await expect(createInvite("http://m/v1", HOST, player, 7, f)).rejects.toMatchObject({ status: 409 });
+
+    await writeInviteGrant("http://m/v1", HOST, account, target.gamertag, null, send);
+    const revoke = world.log.at(-1)!;
+    expect(revoke.type).toBe("InviteGrantRevoked");
+    applyEvent(s, revoke);
+    expect(s.accounts[target.xuid]?.invite_grant).toBeNull();
+    await expect(fetchMyInvites("http://m/v1", HOST, player, f)).rejects.toMatchObject({ status: 403 });
+    expect(calls.map((r) => r.method)).toEqual(["POST", "DELETE"]);
+    for (const r of calls) {
+      expect(r.url).toBe(`http://m/v1/accounts/${encodeURIComponent(target.gamertag)}/invite-grant`);
+      const token = r.headers.get("authorization")!.slice(7);
+      expect(parseJws(token)?.payload).toMatchObject({ iss: account.id, aud: HOST, lxm: "invite-grants.write" });
+      expect(await verifies(token)).toBe(true);
+    }
+  });
+
+  test("an admin keeps both open codes after removing a one-invite grant", async () => {
+    const { account, f } = await setup(true);
+    await writeInviteGrant("http://m/v1", HOST, account, account.gamertag, { open_cap: 1 }, f);
+    const first = await createInvite("http://m/v1", HOST, account, 7, f);
+    const second = await createInvite("http://m/v1", HOST, account, 7, f);
+    await writeInviteGrant("http://m/v1", HOST, account, account.gamertag, null, f);
+    const open = await fetchMyInvites("http://m/v1", HOST, account, f);
+    expect(open.map((i) => i.jti)).toEqual([second.jti, first.jti]);
   });
 
   test("a custom code: made, listed as custom without the code, matched loosely, unique while open", async () => {

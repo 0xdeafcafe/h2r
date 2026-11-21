@@ -63,6 +63,7 @@ pub fn resolve(
         ..PixelUniforms::default()
     };
     pu.stipple = draw.hw.stipple_pattern;
+    pu.stipple_scale = [scale.max(1) as f32; 2];
     let w_buffer = key.pixel_options.w_buffer;
     if w_clipped(&key.vertex, draw) {
         vu.w_clip = Some(w_clip_range(&draw.hw, vu.z_max));
@@ -92,7 +93,7 @@ pub fn resolve(
         );
         pu.depth = [vu.z_max, units, slope, if integer { 1.0 } else { 0.0 }];
         let [lo, hi] = vu.w_clip.unwrap_or([0.0, vu.z_max]);
-        pu.depth_range = [lo, hi, 0.0, 0.0];
+        pu.depth_range = [lo, hi];
     }
     pu.lod_bias = std::array::from_fn(|n| {
         let bias = draw.state.stages[n].mip_lod_bias;

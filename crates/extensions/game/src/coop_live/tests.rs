@@ -19,6 +19,7 @@ struct FakeLive {
     /// The guest's report the host reads, and what it advertised.
     reported: Option<u16>,
     advertised: Mutex<Vec<Option<u16>>>,
+    slots: Mutex<Vec<live_hle::SessionSlots>>,
 }
 
 impl Live for FakeLive {
@@ -45,6 +46,9 @@ impl Live for FakeLive {
     }
     fn guest_ping(&self) -> Option<u16> {
         self.reported
+    }
+    fn sync_squad_slots(&self, slots: live_hle::SessionSlots) {
+        self.slots.lock().unwrap().push(slots);
     }
     fn set_coop_ping(&self, ms: Option<u16>) {
         self.advertised.lock().unwrap().push(ms);
@@ -1320,4 +1324,50 @@ fn the_co_op_rows_lobby_mode_waits_only_inside_its_window() {
     assert!(coop_mode_waits(Some(now), now));
     let late = now + COOP_MODE_WINDOW + std::time::Duration::from_secs(1);
     assert!(!coop_mode_waits(Some(now + COOP_MODE_WINDOW), late));
+}
+
+#[test]
+fn advertised_squad_room_respects_both_peer_and_player_limits() {
+    let mut squad = coop_probe::Session {
+        state: 5,
+        class: 2,
+        players: 2,
+        peers: 1,
+        max_players: 8,
+        max_peers: 4,
+        ..Default::default()
+    };
+    let slots = squad_slots(squad, None).unwrap();
+    assert_eq!((slots.public_filled, slots.public_open), (2, 3));
+    assert_eq!(squad_slots(squad, Some(2)).unwrap().public_open, 0);
+    squad.local_peer = 4;
+    squad.host_peer = 4;
+    assert!(squad_slots(squad, None).is_some(), "sparse peer indices");
+    squad.peers = squad.max_peers;
+    assert_eq!(squad_slots(squad, None).unwrap().public_open, 0);
+    squad.local_peer = 2;
+    assert!(squad_slots(squad, None).is_none());
+}
+
+#[test]
+fn only_the_observed_live_host_supplies_slots() {
+    let live = Arc::new(FakeLive::default());
+    let (lobby, _) = lobby_with(Arc::clone(&live));
+    for (squad, live_network, open) in [
+        (Some(session(1, 1)), true, 1),
+        (Some(session(1, 1)), false, 0),
+        (
+            Some(coop_probe::Session {
+                local_peer: 3,
+                ..session(2, 2)
+            }),
+            true,
+            0,
+        ),
+        (None, true, 0),
+    ] {
+        lobby.observe_network(squad, live_network);
+        lobby.ping_once();
+        assert_eq!(live.slots.lock().unwrap().last().unwrap().public_open, open);
+    }
 }

@@ -2,6 +2,7 @@
 
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::net::{IpAddr, SocketAddr};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -122,19 +123,52 @@ pub(super) fn now() -> Result<u64> {
     Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())
 }
 
-pub(super) fn read_peer(host: &str) -> Result<Peer> {
-    read_json(&peer_path(host)?)?
-        .with_context(|| format!("lab host {host:?} is unpaired (run `h2 lab pair {host} <code>`)"))
+pub(super) fn trusted_peers(host: &str) -> Result<Vec<Peer>> {
+    trusted_peers_in(&peer_dir()?, host)
+}
+
+pub(super) fn trusted_peers_in(dir: &Path, host: &str) -> Result<Vec<Peer>> {
+    if let Some(peer) = read_json(&peer_path(dir, host))? {
+        return Ok(vec![peer]);
+    }
+
+    if host.parse::<IpAddr>().is_ok() || host.parse::<SocketAddr>().is_ok() {
+        let mut candidates = Vec::new();
+        let entries = match fs::read_dir(dir) {
+            Ok(entries) => Some(entries),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e).with_context(|| format!("reading {}", dir.display())),
+        };
+        for entry in entries.into_iter().flatten() {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "json")
+                && let Ok(Some(peer)) = read_json::<Peer>(&path)
+            {
+                let modified = entry.metadata().and_then(|meta| meta.modified()).ok();
+                candidates.push((modified, peer));
+            }
+        }
+
+        // A host accepts only its latest paired driver key. When several
+        // aliases pin the same host, prefer the most recently saved pairing.
+        candidates.sort_by(|(a, _), (b, _)| b.cmp(a));
+        if !candidates.is_empty() {
+            return Ok(candidates.into_iter().map(|(_, peer)| peer).collect());
+        }
+    }
+
+    anyhow::bail!("lab host {host:?} is unpaired (run `h2 lab pair {host} <code>`)")
 }
 
 pub(super) fn stage_peer(host: &str, peer: &Peer) -> Result<PendingWrite> {
-    let path = peer_path(host)?;
-    private_dir(path.parent().unwrap())?;
+    let dir = peer_dir()?;
+    private_dir(&dir)?;
     // Finish writing the driver key before asking the host to spend the code.
-    PendingWrite::new(&path, &serde_json::to_vec(peer)?)
+    PendingWrite::new(&peer_path(&dir, host), &serde_json::to_vec(peer)?)
 }
 
-fn peer_path(host: &str) -> Result<PathBuf> {
+fn peer_dir() -> Result<PathBuf> {
     let home = || std::env::var_os("HOME").map(PathBuf::from);
     let config = if cfg!(target_os = "macos") {
         home().map(|home| home.join("Library/Application Support"))
@@ -145,12 +179,14 @@ fn peer_path(host: &str) -> Result<PathBuf> {
             .or_else(|| home().map(|home| home.join(".config")))
     }
     .context("finding the lab driver configuration directory")?;
+    Ok(config.join("h2recomp/lab/peers"))
+}
+
+pub(super) fn peer_path(dir: &Path, host: &str) -> PathBuf {
     // Bonjour instance names are case-insensitive. Hashing also lets an IP
     // address with a port use the same layout without escaping file names.
     let name = to_hex(&super::fingerprint(host.to_ascii_lowercase().as_bytes()));
-    Ok(config
-        .join("h2recomp/lab/peers")
-        .join(format!("{name}.json")))
+    dir.join(format!("{name}.json"))
 }
 
 fn private_dir(path: &Path) -> Result<()> {
@@ -164,7 +200,7 @@ fn private_dir(path: &Path) -> Result<()> {
 fn read_private(path: &Path) -> Result<Option<Vec<u8>>> {
     let mut input = match OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)
     {
         Ok(input) => input,

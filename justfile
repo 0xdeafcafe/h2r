@@ -62,6 +62,16 @@ mac-play *args:
     fi
     cargo h2 play "$iso"
 
+# Install the macOS app and register the Live website's join links [iso=]
+[group('mac')]
+mac-install *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    . scripts/just.sh
+    h2_args "iso" "$@"
+    h2_iso
+    platform/macos/install.sh "$iso"
+
 # Build the Apple TV app's inputs: runtime, module, disc [maps=demo|all module=build|skip iso= mappack=]
 [group('apple')]
 tvos *args:

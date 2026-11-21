@@ -424,12 +424,24 @@ impl Live {
     /// as [`Live::read_caller`] does); the operator and admin accounts are
     /// [`Viewer::Admin`].
     pub fn read_viewer(&self, bearer: Option<&str>) -> Result<Viewer, ApiError> {
+        self.read_viewer_account(bearer).map(|(viewer, _)| viewer)
+    }
+
+    /// Keeps the account identity even when an admin can also read private game reports.
+    pub(crate) fn read_viewer_account(
+        &self,
+        bearer: Option<&str>,
+    ) -> Result<(Viewer, Option<live_proto::Xuid>), ApiError> {
         if bearer.is_none() {
             self.authorize_read(None)?;
-            return Ok(Viewer::Anonymous);
+            return Ok((Viewer::Anonymous, None));
         }
         let author = self.authenticate(bearer, lxm::READ)?;
-        Ok(self.viewer_of(&author))
+        let account = match &author {
+            Author::Account { xuid, .. } => Some(*xuid),
+            Author::Server(_) => None,
+        };
+        Ok((self.viewer_of(&author), account))
     }
 
     /// The reader behind a `read` token sent on a stream, and the token's
@@ -496,6 +508,9 @@ impl Live {
 /// follow its current visibility with [`finished_shows_to`]'s rule (who was
 /// in it counts). Only admins and the operator read host lifecycle and Theater events.
 pub fn event_shows_to(s: &State, stream: &str, viewer: Viewer) -> bool {
+    if stream == crate::games::SESSION_LINKS {
+        return viewer == Viewer::Operator;
+    }
     if viewer.is_admin() {
         return true;
     }
