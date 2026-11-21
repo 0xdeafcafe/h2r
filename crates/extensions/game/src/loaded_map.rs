@@ -5,6 +5,8 @@
 //! rather than the last `.map` file it opened. One read per map load; the
 //! panel's draw only reads the published slot.
 
+use std::sync::{Arc, Mutex, Weak};
+
 use engine::memory::GuestMemory;
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 
@@ -12,6 +14,59 @@ use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 pub fn republish(m: &dyn GuestMemory) {
     if let Ok(name) = crate::health::loaded_map_name(m) {
         kernel::level::publish(&name);
+    }
+}
+
+type MapChange = Box<dyn Fn(Option<&vfs::HostFile>) + Send + Sync>;
+
+/// Derived map data stays with the activated file. Publishing a DVD source
+/// alone cannot change which skulls, symbols or navigation the guest uses.
+pub struct EditorSources {
+    mount: Weak<Mutex<vfs::Vfs>>,
+    binding: vfs::MapRebind,
+    last: Mutex<Option<std::path::PathBuf>>,
+    observers: Mutex<Vec<MapChange>>,
+}
+
+impl EditorSources {
+    pub fn new(mount: &Arc<Mutex<vfs::Vfs>>, binding: vfs::MapRebind) -> Self {
+        Self {
+            mount: Arc::downgrade(mount),
+            binding,
+            last: Mutex::default(),
+            observers: Mutex::default(),
+        }
+    }
+
+    pub fn on_change(&self, f: impl Fn(Option<&vfs::HostFile>) + Send + Sync + 'static) {
+        self.observers.lock().unwrap_or_else(|e| e.into_inner()).push(Box::new(f));
+    }
+
+    pub fn activated(&self, guest: &dyn GuestMemory) {
+        if !self.binding.has_ever_bound() {
+            return;
+        }
+        let path = crate::map_slots::active_file(&crate::layout_glue::ReadGm(guest));
+        let file = path.as_deref()
+            .and_then(|path| self.mount.upgrade()?.lock().ok()?.host_file(path))
+            .filter(|file| file.generation.is_some());
+        #[cfg(feature = "gpu")]
+        if let Ok(name) = crate::health::loaded_map_name(guest) {
+            crate::native_map::set_active_source(&name, path, file.clone());
+        }
+        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        if last.as_ref() == file.as_ref().map(|file| &file.path) {
+            return;
+        }
+        *last = file.as_ref().map(|file| file.path.clone());
+        drop(last);
+        // GAME_ACTIVATE already ran. Retry native jobs that stood down while
+        // the DVD had the replacement but this full start had not returned.
+        #[cfg(feature = "gpu")]
+        render_bridge::native_map_work::reset();
+        for notify in self.observers.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+            notify(file.as_ref());
+        }
     }
 }
 

@@ -221,7 +221,7 @@ impl<B: Backend> VariantFiles<B> {
                 }
                 Some(ServerPack {
                     mapping: crate::disc::map_read_only(&file)?,
-                    file: HostFile { path: source, offset: 0, len: size },
+                    file: HostFile { generation: None, path: source, offset: 0, len: size },
                     source: file,
                 })
             })();
@@ -276,6 +276,10 @@ impl<B: Backend> VariantFiles<B> {
 }
 
 impl<B: Backend> Backend for VariantFiles<B> {
+    fn snapshot_map_bindings(&self) -> std::result::Result<Vec<(String, String)>, crate::StateError> {
+        self.inner.snapshot_map_bindings()
+    }
+
     fn read_only(&self) -> bool {
         self.inner.read_only()
     }
@@ -373,6 +377,7 @@ impl<B: Backend> Backend for VariantFiles<B> {
         };
         let len = self.served(path)?.ok()?.len;
         Some(HostFile {
+            generation: None,
             path: pair.pick(halo1).file.clone(),
             offset: 0,
             len,

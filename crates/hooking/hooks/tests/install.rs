@@ -57,6 +57,35 @@ fn at(point: &'static Point) -> Remap {
     Remap::new(&[(point, LEAF)])
 }
 
+#[test]
+fn late_observers_preserve_the_boot_handler_and_reuse_its_shadow_page() {
+    let rt = runtime();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let feature = |id: &'static str| {
+        let seen = seen.clone();
+        from_fn(id, move |b| {
+            let seen = seen.clone();
+            b.frame().on_tick("count", move |o| seen.lock().unwrap().push((id, o.cpu.eax)));
+            Ok(())
+        })
+    };
+    let mut boot = Registry::new(Switches::default());
+    boot.add(&feature("boot")).unwrap();
+    let plan = boot.build(&at(&points::GAME_TICK)).unwrap();
+    plan.install(&rt).unwrap();
+    let page = plan.chains[&LEAF].shadow.unwrap();
+    let mut late = Registry::new(Switches::default());
+    late.add(&feature("editor")).unwrap();
+    let late = late.build(&at(&points::GAME_TICK)).unwrap();
+
+    assert_eq!(call(&rt, LEAF, 0).eax, 41);
+    assert!(rt.read_dispatch(|d| d.override_name(page + 4).is_none()));
+    late.attach_observers(&rt, page).unwrap();
+    assert!(rt.read_dispatch(|d| d.override_name(page + 4).is_some()));
+    assert_eq!(call(&rt, LEAF, 0).eax, 41);
+    assert_eq!(*seen.lock().unwrap(), [("boot", 41), ("boot", 41), ("editor", 41)]);
+}
+
 /// The tick collision: lockstep's hash and Live telemetry's sample used to
 /// be two overrides on `game_tick`, and lockstep refused to install when
 /// telemetry was there. Both now run, once each per tick, after the

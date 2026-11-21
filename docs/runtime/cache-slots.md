@@ -166,6 +166,34 @@ thing checked.
   - The copy failure table (`0x55acac`): a path that failed three times
     stays refused for the session.
 
+**Reloading an editor play copy.** Queueing the same scenario can hit the
+active slot without opening the source. The copier closes the DVD source
+after publishing its header. Subsequent resource reads use the cache slot's
+file handle. The warm lookup, source close and resource routing are covered
+in `crates/runtime/kernel/tests/cache_slots.rs`.
+
+For `map.reload {file}`, a worker prepares and validates the play copy.
+At the tick boundary the agent checks the active source, idle copier and
+readability of the pending options and their flag. It reserves the DVD source and clears the first byte of each matching
+resident path. An open guest handle refuses the reservation. If a write
+fails, the host retains the original keys for rollback. It restores a
+key only while that slot still belongs to the old source. A slot claimed
+by a later load keeps its new key.
+The cache file, slot handle and other header fields stay intact.
+
+After an interrupted queue call, the host compares the pending options
+with the reload's options before the transition runs. A match publishes
+the binding and applies the staged skull selection. Missing, superseded
+or unreadable options finish the request with an error and release the
+DVD reservation. Later ticks retry any outstanding key restoration.
+
+The expected sequence for a same-map reload is a **static inference**.
+The pending transition tears down the active slot, the path lookup at
+`0x214a60` misses, and state 1 reopens the DVD source for the retail
+copier. The storage fixture exercises the individual copy and warm-lookup
+paths. An end-to-end fixture for active-slot teardown followed by that
+reopen is pending. [Level boot](level-boot.md#how-the-game-starts-its-first-map)
+
 Tests: `map_slots` (synthetic guest memory: drops, the current slot, a
 copy in flight, the shared slots, a refilled slot) and
 `crates/runtime/vfs/tests/packages.rs` (`map_changed`). Nothing here is checked
@@ -176,8 +204,8 @@ Known gaps:
 - An explicit `H2_MAP_DIR` override for `shared`, `single_player_shared`
   or `mainmenu` takes effect when its slot is refilled. Slots 0–1 are on
   Z:, which survives a reboot.
-- If a map is loaded again straight after itself without the menu in
-  between, its slot stays current and is not dropped. The multiplayer
+- Without an explicit file rebind, a map loaded again straight after itself
+  can reuse its current slot. The multiplayer
   lobby runs on the main menu (slot 2), so between games slot 3 is not
   current. That is expected, not checked.
 

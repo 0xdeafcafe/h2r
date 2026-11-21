@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::json;
 
-use super::{host, host::HostConfig, host_config, install_config, lan};
+use super::{DEFAULT_MAX_JOBS, host, host::HostConfig, host_config, install_config, lan};
 
 const LABEL: &str = "com.0xdeafcafe.h2recomp.lab";
 const SERVICE_ABI: &str = "h2 lab LaunchAgent 1";
@@ -22,6 +22,30 @@ const SERVE_INSTALLED: &str = "serve-installed";
 const OUT_LOG: &str = "logs/host.stdout.log";
 const ERR_LOG: &str = "logs/host.stderr.log";
 const UPDATE_LOG: &str = "logs/host-update.log";
+const ACCESS_LOG: &str = "logs/host-access.log";
+
+pub(super) const WATCH_LOGS: &[&str] = &[OUT_LOG, ERR_LOG, UPDATE_LOG, ACCESS_LOG];
+
+/// Pairing writes come from both the daemon and local commands. Lock a
+/// separate file so rotation can replace the log while keeping the lock.
+pub(super) fn access_event(root: &Path, event: &str) {
+    let result = (|| {
+        let logs = root.join("logs");
+        fs::create_dir_all(&logs)?;
+        let lock = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(logs.join(".host-access.lock"))?;
+        lock.lock()?;
+        writeln!(log::Log::open(root.join(ACCESS_LOG))?, "lab access: {event}")
+    })();
+    if let Err(error) = result {
+        let _ = writeln!(io::stderr().lock(), "lab: writing access log: {error}");
+    }
+}
 
 fn home() -> Result<PathBuf> {
     std::env::var_os("HOME")
@@ -173,7 +197,10 @@ pub(super) fn command(op: &str, args: &[String]) -> Result<()> {
             return Ok(());
         }
         "service-abi" => {
-            ensure!(args.is_empty(), "unexpected host service arguments");
+            ensure!(
+                args.is_empty() || matches!(args, [flag] if flag == "--max-jobs"),
+                "unexpected host service arguments"
+            );
             println!("{SERVICE_ABI}");
             return Ok(());
         }
@@ -286,7 +313,7 @@ fn install(job: &Job, ctl: &impl Launchctl, path: &Path, mut cfg: HostConfig) ->
         }
         fs::create_dir_all(cfg.dir("logs"))?;
         if !installed || !stable_binary(&cfg).is_file() {
-            install_binary(&std::env::current_exe()?, &stable_binary(&cfg), None)?;
+            install_binary(&std::env::current_exe()?, &cfg, None)?;
         }
         let code = lan::new_pairing(&cfg.root)?;
         if !installed {
@@ -461,6 +488,10 @@ fn launch_args(cfg: &HostConfig) -> Result<Vec<String>> {
             args.extend([flag.into(), path_str(path)?.into()]);
         }
     }
+    // Keep the default arguments compatible with existing installations.
+    if cfg.max_jobs != DEFAULT_MAX_JOBS {
+        args.extend(["--max-jobs".into(), cfg.max_jobs.to_string()]);
+    }
     if let Some(lan) = &cfg.lan {
         args.extend(["--listen".into(), lan.addr.to_string()]);
         if let Some(name) = &lan.name {
@@ -552,18 +583,25 @@ pub(super) fn stage_update(cfg: &HostConfig) -> Result<()> {
     ensure!(cfg.managed, "updates require an installed lab LaunchAgent");
     fs::create_dir_all(cfg.dir("logs"))?;
     let mut log = log::Log::open(cfg.dir(UPDATE_LOG))?;
-    let mut git = Command::new("git");
-    git.args(["pull", "--ff-only"])
-        .env("GIT_TERMINAL_PROMPT", "0");
-    run_update_step(cfg, git, &mut log, "git pull")?;
+    let result = (|| {
+        let mut git = Command::new("git");
+        git.args(["pull", "--ff-only"])
+            .env("GIT_TERMINAL_PROMPT", "0");
+        run_update_step(cfg, git, &mut log, "git pull")?;
 
-    let mut cargo = crate::follow::niced(&cfg.cargo);
-    cargo.env("CARGO_BUILD_JOBS", super::build_cache::workers().to_string());
-    cargo
-        .args(["build", "--release", "-p", "cli", "--bin", "h2"])
-        .env("CARGO_TARGET_DIR", cfg.repo.join("target"));
-    run_update_step(cfg, cargo, &mut log, "cargo build")?;
-    install_binary(&built_binary(cfg), &stable_binary(cfg), None)
+        let mut cargo = crate::follow::niced(&cfg.cargo);
+        cargo.env("CARGO_BUILD_JOBS", super::build_cache::workers().to_string());
+        cargo
+            .args(["build", "--release", "-p", "cli", "--bin", "h2"])
+            .env("CARGO_TARGET_DIR", cfg.repo.join("target"));
+        run_update_step(cfg, cargo, &mut log, "cargo build")?;
+        install_binary(&built_binary(cfg), cfg, None)
+    })();
+    let _ = match &result {
+        Ok(()) => writeln!(log, "lab host update: installed replacement"),
+        Err(error) => writeln!(log, "lab host update: failed: {error:#}"),
+    };
+    result
 }
 
 fn run_update_step(
@@ -643,7 +681,14 @@ impl AutoUpdate {
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.into()),
         }
-        install_binary(&source, &dest, Some(binary_identity(&src)))?;
+        install_binary(&source, cfg, Some(binary_identity(&src)))?;
+        // Write before the host exits so the line survives the restart.
+        let _ = fs::create_dir_all(cfg.dir("logs")).and_then(|()| {
+            writeln!(
+                log::Log::open(cfg.dir(UPDATE_LOG))?,
+                "lab host update: installed automatic update"
+            )
+        });
         Ok(true)
     }
 }
@@ -679,7 +724,7 @@ fn same_bytes(
     Ok(true)
 }
 
-fn install_binary(source: &Path, dest: &Path, expected: Option<BinaryIdentity>) -> Result<()> {
+fn install_binary(source: &Path, cfg: &HostConfig, expected: Option<BinaryIdentity>) -> Result<()> {
     let mut input = File::open(source).with_context(|| format!("opening {}", source.display()))?;
     let before = input.metadata()?;
     let source_id = binary_identity(&before);
@@ -694,7 +739,7 @@ fn install_binary(source: &Path, dest: &Path, expected: Option<BinaryIdentity>) 
         source.display()
     );
     replace(
-        dest,
+        &stable_binary(cfg),
         0o700,
         |output| {
             io::copy(&mut input, output)?;
@@ -704,12 +749,15 @@ fn install_binary(source: &Path, dest: &Path, expected: Option<BinaryIdentity>) 
         |temporary| {
             // Check the staged executable before replacing the program
             // launchd needs. An older branch may omit this entry point.
-            let result = Command::new(temporary)
-                .args(["lab", "host", "service-abi"])
-                .output()
-                .with_context(|| {
-                    format!("checking the lab host executable at {}", source.display())
-                })?;
+            let mut check = Command::new(temporary);
+            check.args(["lab", "host", "service-abi"]);
+            if cfg.max_jobs != DEFAULT_MAX_JOBS {
+                // Older hosts reject this probe and cannot start with the cap.
+                check.arg("--max-jobs");
+            }
+            let result = check.output().with_context(|| {
+                format!("checking the lab host executable at {}", source.display())
+            })?;
             ensure!(
                 result.status.success() && result.stdout == format!("{SERVICE_ABI}\n").as_bytes(),
                 "{} does not support this lab LaunchAgent",
@@ -833,6 +881,7 @@ mod tests {
             cargo: "/opt/tool chain/cargo".into(),
             obj_cache_limit: super::super::build_cache::DEFAULT_OBJECT_LIMIT,
             target_limit: super::super::build_cache::DEFAULT_TARGET_LIMIT,
+            max_jobs: DEFAULT_MAX_JOBS,
             grace: Duration::from_secs(5),
             takeover: super::super::takeover::Config::default(),
             lan: Some(lan::Listen {
@@ -886,6 +935,10 @@ mod tests {
         assert!(update.adopt_newer(&cfg).unwrap());
         assert_eq!(fs::read_to_string(&stable).unwrap(), changed);
         assert!(!update.adopt_newer(&cfg).unwrap());
+        assert_eq!(
+            fs::read_to_string(cfg.dir(UPDATE_LOG)).unwrap(),
+            "lab host update: installed automatic update\n"
+        );
     }
 
     #[test]
@@ -936,6 +989,38 @@ mod tests {
         ] {
             assert!(xml.contains(field), "{field} missing from {xml}");
         }
+    }
+
+    #[test]
+    fn plist_persists_a_custom_job_cap() {
+        let cfg = HostConfig {
+            max_jobs: 2,
+            ..fixture()
+        };
+        let args = launch_args(&cfg).unwrap();
+        let xml = plist(&cfg, &args, "/usr/bin").unwrap();
+        assert!(xml.contains("<string>--max-jobs</string>\n        <string>2</string>"));
+    }
+
+    #[test]
+    fn a_custom_cap_keeps_the_stable_binary_if_an_update_lacks_support() {
+        let scratch = Scratch::new();
+        let cfg = HostConfig {
+            root: scratch.0.join("lab"),
+            max_jobs: 2,
+            ..fixture()
+        };
+        let stable = stable_binary(&cfg);
+        fs::create_dir_all(stable.parent().unwrap()).unwrap();
+        fs::write(&stable, b"installed host").unwrap();
+        let old = scratch.0.join("old-h2");
+        let script =
+            format!("#!/bin/sh\n[ \"$#\" -eq 3 ] || exit 1\nprintf '%s\\n' '{SERVICE_ABI}'\n");
+        fs::write(&old, script).unwrap();
+        fs::set_permissions(&old, fs::Permissions::from_mode(0o700)).unwrap();
+
+        assert!(install_binary(&old, &cfg, None).is_err());
+        assert_eq!(fs::read(stable).unwrap(), b"installed host");
     }
 
     struct FakeLaunchctl {

@@ -134,6 +134,9 @@ refuses the plan at boot instead of one hook silently replacing another.
   on earlier in the boot but not chosen is turned off. `H2_FEATURES`
   switching `skulls` off leaves both out. Headless runs (no
   settings store) have neither.
+  For an editor `map.reload`, the hook stages the selection on the
+  requesting ticket. The selection takes effect when retail's pending
+  options match the request, before the transition consumes them.
 
 ### What it logs
 
@@ -707,8 +710,10 @@ outside the repo). On a campaign level with a spot, once its BSP is the
 active one (`[[0x4e6948]+2]`), and while any signed-in profile has not
 collected that skull, we create the retail skull weapon there:
 `objects\weapons\multiplayer\ball\head_sp` (`head` on High Charity), its
-tag datum read from the loaded map's own file on the host (so map packages
-and patches work) and checked against the guest's scenario datum.
+tag datum read from the mounted source for the active cache slot and
+checked against the guest's scenario datum. If the slot has no known
+source, the locator looks up the loaded map name. This includes packages
+and editor play copies (`skulls_custom::Custom::skull_tag_for`).
 Creation is the game's own: `placement_data_new` (`0xb7930`, ESI a
 `0xc4`-byte placement, stdcall definition, owner -1, 0) then position at
 placement `+0x1c` (as the netgame equipment spawn at `0x15ab9d` copies it)

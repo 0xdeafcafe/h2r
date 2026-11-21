@@ -22,7 +22,7 @@ use std::sync::Mutex;
 
 use agent_proto::trace::{
     DumpParams, FlightParams, FlightStatus, InputRead, MAX_OBJECTS, TICKS_PER_SECOND, TickRow,
-    TraceParams, TraceStatus, method,
+    TraceParams, TraceStatus, method, valid_file_name,
 };
 use agent_proto::{At, OBJECT_FIELDS, Object, ObjectId, RpcError, code};
 use input::gamepad::Gamepad;
@@ -287,8 +287,7 @@ impl Recorders {
         }
     }
 
-    /// Answers a `trace.*` or `flight.*` method. `dir` is the cache
-    /// directory (files go under its `traces/` and `flights/`).
+    /// Answers a recorder method. Files go under `dir` in `traces/` and `flights/`.
     pub fn handle(
         &mut self,
         m: &str,
@@ -299,6 +298,8 @@ impl Recorders {
     ) -> Result<Value, RpcError> {
         let _scope = mem_watch::scope("trace.record");
         match m {
+            method::TRACE_LIST => crate::outputs::trace_list(dir),
+            method::TRACE_READ => crate::outputs::trace_read(dir, params(p)?),
             method::TRACE_START => {
                 let p: TraceParams = params(p)?;
                 if self.trace.as_ref().is_some_and(|t| t.out.is_some()) {
@@ -417,16 +418,11 @@ fn not_flying() -> RpcError {
 
 /// `path` as a bare file name under `dir/sub`, or a fresh name there. The
 /// socket may be TCP with no authentication, so a caller never picks where
-/// outside the cache directory the game writes.
+/// outside the output directory the game writes.
 fn place(dir: &Path, sub: &str, stem: &str, path: Option<&str>) -> Result<PathBuf, RpcError> {
     match path {
         Some(p) => {
-            let name = Path::new(p);
-            let bare = matches!(
-                name.components().collect::<Vec<_>>().as_slice(),
-                [std::path::Component::Normal(_)]
-            );
-            if !bare {
+            if !valid_file_name(p) {
                 return Err(RpcError::new(
                     code::INVALID_PARAMS,
                     format!(
@@ -435,7 +431,7 @@ fn place(dir: &Path, sub: &str, stem: &str, path: Option<&str>) -> Result<PathBu
                     ),
                 ));
             }
-            Ok(dir.join(sub).join(name))
+            Ok(dir.join(sub).join(p))
         }
         None => {
             let ms = std::time::SystemTime::now()

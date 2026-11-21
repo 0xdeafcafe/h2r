@@ -64,7 +64,10 @@ impl ForgeWorld {
                 .into_iter()
                 .map(|(tag, frame)| Ok((resolve(&tag)?, frame)))
                 .collect::<Result<Vec<_>, String>>()?;
-            Some(calls::lock(queue).submit_watched(Call::ForgeSpawn { guard, placements })?)
+            Some(calls::submit(
+                queue,
+                Call::ForgeSpawn { guard, placements },
+            )?)
         };
         Ok(ForgeEdit {
             candidate: Some((candidate, result)),
@@ -101,9 +104,10 @@ fn staged_handle(index: u16) -> u32 {
 }
 
 /// The host serializes editing until this result is ready or the map ends.
+/// Dropping it withdraws a placement the game has yet to start.
 pub struct ForgeEdit<T> {
     candidate: Option<(Session, T)>,
-    pending: Option<mpsc::Receiver<calls::Outcome>>,
+    pending: Option<calls::PendingCall>,
     count: usize,
 }
 
@@ -111,13 +115,12 @@ impl<T> ForgeEdit<T> {
     /// Returns the candidate once, and only on confirmed success.
     pub fn poll(&mut self) -> Option<Result<(Session, T), String>> {
         let handles = if let Some(reply) = &self.pending {
-            let made = match reply.try_recv() {
-                Ok(made) => made,
-                Err(mpsc::TryRecvError::Empty) => return None,
-                Err(mpsc::TryRecvError::Disconnected) => Err("the game call queue closed".into()),
-            };
+            let made = reply.outcome()?;
             self.pending = None;
-            match made.and_then(|made| spawned_handles(made, self.count)) {
+            match made
+                .map_err(|e| e.message)
+                .and_then(|made| spawned_handles(made, self.count))
+            {
                 Ok(handles) => handles,
                 Err(err) => {
                     self.candidate = None;

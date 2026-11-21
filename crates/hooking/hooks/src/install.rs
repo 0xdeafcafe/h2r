@@ -178,6 +178,54 @@ impl Plan {
         Ok(())
     }
 
+    /// Layer a host-only observer plan over the currently installed handlers.
+    /// The boot installer owns a page per return shadow and uses only its first
+    /// address. Late observations use free selectors in the existing page,
+    /// preserving both the boot dispatch and guest memory until adoption.
+    pub fn attach_observers(&self, rt: &Runtime, shadow_page: u32) -> Result<(), String> {
+        if !self.entries.is_empty() || self.allocs.iter().any(|a| a.feature != "(plan)")
+            || self.chains.values().any(|c| c.implement.is_some())
+        {
+            return Err("late observers cannot allocate guest memory or replace a body".into());
+        }
+        if let Some((_, why)) = crate::verify::mismatches(rt, self.chains.values()).into_iter().next() {
+            return Err(why);
+        }
+        let originals = self.chains.values().map(|chain| {
+            rt.resolve_original(chain.addr)
+                .map(|body| (chain.clone(), body))
+                .ok_or_else(|| format!("{} has no generated original", chain.point.name))
+        }).collect::<Result<Vec<_>, _>>()?;
+        rt.edit_dispatch(|dispatch| {
+            if dispatch.override_handler(shadow_page).is_none() {
+                return Err("the boot return shadow is unavailable".into());
+            }
+            let mut selectors = (4..0x1000).step_by(4).map(|off| shadow_page + off)
+                .filter(|addr| dispatch.override_name(*addr).is_none());
+            // Validate the entire extension before publishing its first handler.
+            let mut ready = Vec::with_capacity(originals.len());
+            for (mut chain, original) in originals {
+                chain.shadow = if chain.needs_shadow() {
+                    Some(selectors.next().ok_or("the return shadow page is full")?)
+                } else {
+                    None
+                };
+                let body = match dispatch.override_handler(chain.addr) {
+                    Some(handler) => handler,
+                    None if dispatch.override_name(chain.addr).is_some() => {
+                        return Err(format!("the installed {} override is disabled", chain.point.name));
+                    }
+                    None => original,
+                };
+                ready.push((chain, Body::Original(Arc::new(body))));
+            }
+            for (chain, body) in ready {
+                place(dispatch, chain, body);
+            }
+            Ok(())
+        })
+    }
+
     /// Installs every chain, or nothing when an address is occupied.
     /// Resolves originals before taking the dispatch write lock.
     pub fn install(&self, rt: &Runtime) -> Result<Installed, InstallError> {

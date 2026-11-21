@@ -1229,6 +1229,7 @@ impl Backend for HostBackend {
         }
         let meta = fs::metadata(&host).ok().filter(fs::Metadata::is_file)?;
         Some(HostFile {
+            generation: None,
             path: host,
             offset: 0,
             len: meta.len(),

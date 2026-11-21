@@ -487,6 +487,9 @@ impl Feature for Driver {
                     })
                 },
             )
+            // The Live join link also runs before UI_UPDATE; a pending join
+            // goes first and the lab request waits a frame.
+            .after_feature("live-join-link")
             .optional();
         Ok(())
     }

@@ -1,6 +1,6 @@
 //! `h2 lab host`: the lab's side on the machine that plays. One job at a
 //! time (a build, or a run that may build first), each in `runs/<id>/` with
-//! its log and metadata. See docs/runtime/lab.md.
+//! its log and metadata; later jobs wait in a FIFO. See docs/runtime/lab.md.
 
 mod memory;
 
@@ -17,7 +17,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use agent_proto::takeover::{Operation, Request as TakeoverRequest};
-use anyhow::{Context, Result, anyhow, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -25,7 +25,7 @@ use sha2::{Digest, Sha256};
 use super::proto::{self, BuildSpec, INPUT_FILE, Manifest, Request, RunReq};
 use super::forensics::Summary;
 use super::transfer::{Artifacts, Transfers};
-use super::{build_cache, discovery, lan, service, takeover, transfer};
+use super::{build_cache, discovery, lan, service, takeover, transfer, watch};
 
 /// Where the host keeps everything, and what it runs.
 #[derive(Clone, Debug)]
@@ -44,6 +44,9 @@ pub struct HostConfig {
     pub cargo: PathBuf,
     pub obj_cache_limit: u64,
     pub target_limit: u64,
+    /// Always 1: the lab runs one build or game at a time. Kept so
+    /// `--max-jobs 1` and status's `max_jobs` keep their meaning.
+    pub max_jobs: usize,
     pub lan: Option<lan::Listen>,
     pub managed: bool,
     pub explicit_h2: bool,
@@ -79,6 +82,11 @@ pub struct Meta {
     pub build_env: BTreeMap<String, String>,
     pub level: Option<String>,
     pub created: u64,
+    /// Persist phase times so file readers can see transitions between polls.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build_elapsed_s: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_elapsed_s: Option<f64>,
     pub duration_s: Option<f64>,
     pub exit_code: Option<i32>,
     pub signal: Option<i32>,
@@ -98,7 +106,7 @@ pub struct Meta {
     pub h2: Option<String>,
 }
 
-fn is_final(state: &str) -> bool {
+pub(super) fn is_final(state: &str) -> bool {
     matches!(state, "done" | "failed" | "stopped" | "skipped")
 }
 
@@ -139,7 +147,7 @@ impl std::fmt::Display for Stopped {
 }
 impl std::error::Error for Stopped {}
 
-fn now() -> u64 {
+pub(super) fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
@@ -429,6 +437,11 @@ fn connection<S: Read + Write>(
                 fetch(sh, &mut conn, &id, Artifacts::Memory)?;
                 return Ok(());
             }
+            Request::Logs { id, follow } => {
+                // A continuous feed must let an idle host restart.
+                drop(transfer);
+                return logs(sh, &mut conn, &id, follow, &authorized);
+            }
             Request::Sync {
                 branch,
                 commit,
@@ -506,6 +519,60 @@ fn fetch(sh: &Shared, conn: &mut BufReader<impl Read + Write>, id: &str, artifac
     reply(conn.get_mut(), result)
 }
 
+fn logs<S: Read + Write>(
+    sh: &Shared,
+    conn: &mut BufReader<S>,
+    id: &str,
+    follow: bool,
+    authorized: &impl Fn(&S) -> Result<bool>,
+) -> Result<()> {
+    let id = (id != proto::CURRENT_JOB).then_some(id);
+    let mut feed = match watch::Watch::new(&sh.cfg.root, id) {
+        Ok(feed) => feed,
+        Err(error) => return reply(conn.get_mut(), Err(error)),
+    };
+    reply(conn.get_mut(), Ok(json!({})))?;
+
+    // Check revocation while idle and when a large tail takes multiple
+    // frames to send. Heartbeats notice clients that close an idle feed.
+    let mut last_write = Instant::now();
+    let mut wire_failed = false;
+    let result = (|| {
+        loop {
+            // Keep checking the driver even if there is nothing to send.
+            ensure!(authorized(conn.get_ref())?, "the lab pairing was revoked");
+            let mut checked_at = Instant::now();
+            let finished = feed.poll(!follow, &mut |line| {
+                if checked_at.elapsed() >= watch::POLL_INTERVAL {
+                    ensure!(authorized(conn.get_ref())?, "the lab pairing was revoked");
+                    checked_at = Instant::now();
+                }
+                let mut frame = line.as_bytes().to_vec();
+                frame.push(b'\n');
+                let sent = transfer::send_log_frame(conn.get_mut(), &frame);
+                wire_failed = sent.is_err();
+                last_write = Instant::now();
+                sent
+            })?;
+            if finished || !follow {
+                return Ok(json!({}));
+            }
+            if last_write.elapsed() >= Duration::from_secs(5) {
+                let sent = transfer::send_log_frame(conn.get_mut(), transfer::LOG_HEARTBEAT);
+                wire_failed = sent.is_err();
+                sent?;
+                last_write = Instant::now();
+            }
+            std::thread::sleep(watch::POLL_INTERVAL);
+        }
+    })();
+    if wire_failed {
+        return result.map(|_| ());
+    }
+    transfer::send_log_frame(conn.get_mut(), b"")?;
+    reply(conn.get_mut(), result)
+}
+
 fn sync<S: Read + Write>(
     sh: &Shared,
     conn: &mut BufReader<S>,
@@ -563,6 +630,8 @@ fn handle(sh: &Arc<Shared>, r: Request, requester: &str) -> Result<Value> {
             let pressure = mem_watch::pressure();
             let inner = sh.inner.lock().unwrap();
             let active = inner.active.as_ref().and_then(|a| inner.jobs.get(&a.id));
+            // One job at a time: `jobs_active` holds at most the active job.
+            let jobs_active: Vec<_> = active.into_iter().collect();
             Ok(json!({
                 "version": proto::VERSION,
                 "build_version": env!("CARGO_PKG_VERSION"),
@@ -578,6 +647,8 @@ fn handle(sh: &Arc<Shared>, r: Request, requester: &str) -> Result<Value> {
                 "disc": cfg.disc,
                 "h2": cfg.h2,
                 "active": active,
+                "jobs_active": jobs_active,
+                "max_jobs": cfg.max_jobs,
                 "queued": inner.queue.iter().map(|p| &p.id).collect::<Vec<_>>(),
             }))
         }
@@ -594,7 +665,11 @@ fn handle(sh: &Arc<Shared>, r: Request, requester: &str) -> Result<Value> {
             }
             Ok(json!({ "known": known, "bases": bases }))
         }
-        Request::Fetch { .. } | Request::Mem { .. } | Request::Sync { .. } | Request::Update => unreachable!(),
+        Request::Fetch { .. }
+        | Request::Mem { .. }
+        | Request::Logs { .. }
+        | Request::Sync { .. }
+        | Request::Update => unreachable!(),
         Request::Run(run) => start(sh, Job::Run(run), requester),
         Request::Build(b) => start(sh, Job::Build(b), requester),
         Request::Wait { id, timeout } => wait(sh, &id, timeout.map(Duration::from_secs_f64)),
@@ -834,6 +909,25 @@ impl Shared {
         inner.active.as_ref().is_some_and(|a| a.id == id && a.stop)
     }
 
+    /// Whether a game the consent check found is this host's running job.
+    fn owns_game(&self, socket: Option<&Path>, pid: Option<u32>) -> bool {
+        let inner = self.inner.lock().unwrap();
+        let group = pid
+            .and_then(|pid| i32::try_from(pid).ok())
+            .filter(|&pid| pid > 0)
+            .map(|pid| {
+                // SAFETY: getpgid only queries the process group of a positive PID.
+                unsafe { libc::getpgid(pid) }
+            });
+        inner.active.as_ref().is_some_and(|active| {
+            inner.jobs.get(&active.id).is_some_and(|m| m.state == "running")
+                && ((group.is_some() && group == active.pgid)
+                    || socket.is_some_and(|path| {
+                        path == agent_socket_path(&self.cfg, &active.id).as_path()
+                    }))
+        })
+    }
+
     /// Runs one step of job `id` in its own process group, so stop reaches
     /// what it starts (cargo's rustc, the game's helpers) too.
     fn step(&self, id: &str, mut cmd: Command, log: &File) -> Result<std::process::ExitStatus> {
@@ -898,7 +992,7 @@ fn execute(
 ) {
     let t = Instant::now();
     let (outcome, memory_error) = memory::supervise(sh, id, &job, || {
-        run_job(sh, id, &job, commit.as_deref(), requester)
+        run_job(sh, id, &job, commit.as_deref(), requester, t)
     });
     let (state, error) = match &outcome {
         Ok(JobOutcome::Finished(Some(st))) if st.success() => ("done", None),
@@ -1013,6 +1107,7 @@ fn request_takeover(
         request,
         |phase| sh.update(id, |m| m.state = phase.into()),
         || sh.stop_requested(id),
+        |socket, pid| sh.owns_game(socket, pid),
     );
     match outcome {
         _ if sh.stop_requested(id) => Err(Stopped.into()),
@@ -1028,6 +1123,7 @@ fn run_job(
     job: &Job,
     commit: Option<&str>,
     requester: &str,
+    started: Instant,
 ) -> Result<JobOutcome> {
     let cfg = &sh.cfg;
     let run_dir = cfg.dir("runs").join(id);
@@ -1045,7 +1141,10 @@ fn run_job(
     }
     let image = match (commit, planned) {
         (Some(c), Some(planned)) => {
-            sh.update(id, |m| m.state = "building".into());
+            sh.update(id, |m| {
+                m.state = "building".into();
+                m.build_elapsed_s = Some(started.elapsed().as_secs_f64());
+            });
             let log = File::create(run_dir.join("build.log"))?;
             ensure_image(sh, id, job.spec(), c, planned, &log)?
         }
@@ -1067,6 +1166,7 @@ fn run_job(
     let sock = agent_socket_path(cfg, id);
     sh.update(id, |m| {
         m.state = "running".into();
+        m.run_elapsed_s = Some(started.elapsed().as_secs_f64());
         m.agent_socket = Some(sock.display().to_string());
         m.h2 = Some(image.h2.display().to_string());
     });
@@ -1167,8 +1267,8 @@ fn play_command(
         cmd.env("H2_PERF_FROM", "level");
     }
     cmd.envs(&run.env);
-    // Every run answers the agent API, for `h2 lab agent`. After the
-    // run's own variables, which can't name it (proto::RUN_ENV).
+    // The host owns the agent socket, the output root and the memory
+    // report directory (proto::RUN_ENV).
     let sock = agent_socket_path(cfg, id);
     if let Some(dir) = sock.parent() {
         fs::create_dir_all(dir)?;
@@ -1177,6 +1277,7 @@ fn play_command(
     cmd.env("H2_LAB_JOB_ID", id)
         .env("H2_LAB_JOB_NAME", &run.name)
         .env(agent_proto::ENV, &sock)
+        .env(agent_proto::OUT_ENV, &run_dir)
         .env("H2_MEM_REPORT_DIR", run_dir.join("mem"));
     if let Some(l) = &level {
         cmd.arg("--level").arg(l);
@@ -1250,9 +1351,16 @@ fn agent_call(
         std::thread::sleep(Duration::from_millis(100));
     };
     let mut cmd = Command::new(&h2);
-    cmd.arg("agent")
-        .args(args)
-        .arg("--socket")
+    cmd.arg("agent");
+    if let [domain, verb, rest @ ..] = args
+        && domain == "flight"
+        && verb == "show"
+    {
+        cmd.args(["flight", "show", "--remote"]).args(rest);
+    } else {
+        cmd.args(args);
+    }
+    cmd.arg("--socket")
         .arg(&sock)
         .arg("--timeout")
         .arg(secs.to_string());
@@ -1574,9 +1682,30 @@ fn write_meta(cfg: &HostConfig, m: &Meta) -> Result<()> {
 }
 
 fn read_meta(cfg: &HostConfig, id: &str) -> Result<Meta> {
-    let p = meta_path(cfg, id);
-    let b = fs::read(&p).map_err(|_| anyhow!("no job {id}"))?;
-    Ok(serde_json::from_slice(&b)?)
+    load_meta(&cfg.dir("runs").join(id))?.with_context(|| format!("no job {id}"))
+}
+
+pub(super) fn load_meta(run_dir: &Path) -> Result<Option<Meta>> {
+    let path = run_dir.join("meta.json");
+    let mut file = match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&path)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).with_context(|| format!("opening {}", path.display())),
+    };
+    ensure!(
+        file.metadata()?.is_file(),
+        "{} is not a metadata file",
+        path.display()
+    );
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    let meta = serde_json::from_slice(&bytes)
+        .with_context(|| format!("reading {}", path.display()))?;
+    Ok(Some(meta))
 }
 
 fn disk_metas(cfg: &HostConfig) -> Vec<Meta> {

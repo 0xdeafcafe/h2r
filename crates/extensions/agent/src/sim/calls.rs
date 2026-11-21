@@ -45,6 +45,9 @@
 //!   `placement_data_new` with owner -1, the position at placement `+0x1c`,
 //!   forward and up at `+0x28` and `+0x34` (`0x11df60` fills them from the
 //!   entry's angles at `0x15abcc`), then `object_new`.
+//! - **Forge spawn** makes each of a local Forge batch's placements the
+//!   same way, forward and up from the frame's rotation. A refusal deletes
+//!   the objects the batch already made, newest first.
 //! - **Queue a game** is the level boot's sequence (docs/runtime/level-boot.md)
 //!   run from a tick: the host gives the steps ([`GameStep`]: the game's
 //!   option builders, our field writes, its options check and its queue,
@@ -55,8 +58,10 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 
+use super::edits::{PreparedMapReload, ReservedMapReload, active_options, refused, replay_options};
+use agent_proto::{ObjectId, RpcError, code};
 use engine::GuestMemory;
 use engine::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
 use engine::handle::DatumHandle;
@@ -94,6 +99,10 @@ const SCRATCH_UP: u32 = 0xe8;
 pub const SCRATCH_OPTIONS: u32 = 0x100;
 /// The game options block's size (docs/runtime/level-boot.md).
 pub const OPTIONS_SIZE: u32 = 0x1118;
+/// OPTIONS_QUEUE marks its single pending options block (docs/runtime/level-boot.md).
+pub(super) const OPTIONS_PENDING: u32 = 0x004e_d39d;
+/// Destination of OPTIONS_QUEUE's copy (docs/runtime/level-boot.md).
+pub(super) const PENDING_OPTIONS: u32 = 0x004e_d3a8;
 /// The scratch [`CallsFeature`] allocates.
 pub const SCRATCH_SIZE: u32 = 0x1300;
 const _: () = assert!(SCRATCH_OPTIONS + OPTIONS_SIZE <= SCRATCH_SIZE);
@@ -133,6 +142,13 @@ pub enum GameStep {
     },
 }
 
+/// A salted object or an entry of the loaded scenario.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RespawnTarget {
+    Object(ObjectId),
+    Placement(agent_proto::sim::Placement),
+}
+
 /// One piece of work for the game.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Call {
@@ -155,6 +171,14 @@ pub enum Call {
         /// Forge's probe rechecks the distributed host and scenario at execution.
         mp_scenario: Option<u32>,
     },
+    ObjectSet {
+        id: ObjectId,
+        pos: Option<[f32; 3]>,
+        forward: Option<[f32; 3]>,
+        up: Option<[f32; 3]>,
+    },
+    ObjectDelete { id: ObjectId },
+    ObjectRespawn { target: RespawnTarget },
     /// A local Forge placement, rechecking its admission at the next tick.
     ForgeSpawn {
         guard: crate::forge::local::Guard,
@@ -166,11 +190,11 @@ pub enum Call {
 }
 
 /// What came of a call: the answer's fields, or why not.
-pub type Outcome = Result<Value, String>;
+pub type Outcome = Result<Value, RpcError>;
 
-/// Outcomes kept for answers that never came for them (a timed-out
-/// client): the oldest go past this many.
-const DONE_KEEP: usize = 64;
+fn unavailable(why: impl Into<String>) -> RpcError {
+    RpcError::new(code::UNAVAILABLE, why)
+}
 
 /// The calls waiting for the next tick, and the outcomes waiting for their
 /// answers.
@@ -181,10 +205,168 @@ pub struct Queue {
     spawn_enrollment: Option<SpawnEnrollment>,
     next: u64,
     pending: Vec<(u64, Call)>,
-    done: BTreeMap<u64, Outcome>,
-    // A local editor awaits a specific engine result to commit its document.
-    // Its result must survive even when more than DONE_KEEP RPCs finish.
-    watchers: BTreeMap<u64, std::sync::mpsc::Sender<Outcome>>,
+    waiting: BTreeMap<u64, QueuedCall>,
+    previews: placement::Previews,
+    active_scenario: Option<(String, u32)>,
+    game_ticket: Option<u64>,
+    reload: Option<Reload>,
+    handoff: Option<ReloadHandoff>,
+    transition: Option<activation::Transition>,
+    // A failed restore keeps only its outstanding keys, never the DVD reservation.
+    repair: Option<CacheRepair>,
+}
+
+struct CacheRepair(Box<dyn FnMut() -> Result<(), String> + Send>);
+
+impl std::fmt::Debug for CacheRepair {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("retired map cache keys")
+    }
+}
+
+/// Captured at dispatch and checked again by the hook before queuing a reload.
+#[derive(Debug)]
+struct Reload {
+    ticket: u64,
+    options: Vec<u8>,
+    binding: Option<PreparedMapReload>,
+}
+
+/// Lives in the queue even if the runtime discards the OPTIONS_QUEUE
+/// continuation while it owns the guest-memory lock. Only the pending
+/// byte can tell whether the guest queued the transition on that path.
+struct ReloadHandoff {
+    ticket: u64,
+    options: u32,
+    binding: Option<ReservedMapReload>,
+    interrupted: bool,
+    skulls: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl ReloadHandoff {
+    fn publish(self) {
+        if let Some(binding) = self.binding {
+            (binding.publish)();
+        }
+        if let Some(apply) = self.skulls {
+            apply();
+        }
+    }
+}
+
+impl std::fmt::Debug for ReloadHandoff {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReloadHandoff")
+            .field("ticket", &self.ticket)
+            .field("interrupted", &self.interrupted)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Recheck the map and session at the execution boundary.
+pub(super) type EditCheck = Box<dyn FnOnce(&dyn GuestMemory) -> Result<(), RpcError> + Send>;
+
+struct QueuedCall {
+    queues_game: bool,
+    check: Option<EditCheck>,
+    answer: Option<mpsc::Sender<Outcome>>,
+}
+
+impl std::fmt::Debug for QueuedCall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QueuedCall")
+            .field("awaiting_check", &self.check.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+/// The deferred RPC owns its answer until it consumes it or stops waiting.
+/// Dropping the ticket cancels any work the hook has yet to start.
+pub struct PendingCall {
+    queue: Shared,
+    ticket: u64,
+    answer: mpsc::Receiver<Outcome>,
+    preparing: bool,
+}
+
+impl PendingCall {
+    /// Tickets and unrelated full starts draw from the same process-local
+    /// sequence. A superseded reload's identity is never issued again.
+    pub(super) fn activation(&self) -> u64 {
+        self.ticket
+    }
+
+    /// What came of this call, once. Pending calls have no outcome yet.
+    pub fn outcome(&self) -> Option<Outcome> {
+        self.answer.try_recv().ok()
+    }
+
+    /// Make this ticket runnable after its optional file preparation.
+    pub(super) fn schedule_reload(&mut self, options: Vec<u8>, binding: Option<PreparedMapReload>) {
+        debug_assert!(self.preparing);
+        let mut q = lock(&self.queue);
+        q.pending.push((self.ticket, replay_options(options.clone())));
+        q.reload = Some(Reload {
+            ticket: self.ticket,
+            options,
+            binding,
+        });
+        self.preparing = false;
+    }
+}
+
+impl Drop for PendingCall {
+    fn drop(&mut self) {
+        let mut q = lock(&self.queue);
+        if self.preparing {
+            q.waiting.remove(&self.ticket);
+            q.release_game(self.ticket);
+        } else if let Some(index) = q.pending.iter().position(|(t, _)| *t == self.ticket) {
+            q.pending.remove(index);
+            q.waiting.remove(&self.ticket);
+            q.release_game(self.ticket);
+        } else if let Some(waiter) = q.waiting.get_mut(&self.ticket) {
+            // Drained, possibly behind a suspended guest call. The hook
+            // checks the receiver before starting and still accounts for
+            // this ticket until the batch finishes or is dropped.
+            waiter.answer = None;
+        }
+    }
+}
+
+/// Queue a guest call and keep its result for the deferred caller.
+pub fn submit(queue: &Shared, call: Call) -> Result<PendingCall, String> {
+    lock(queue).submit(queue, call, None)
+}
+
+pub(super) fn queue_edit(
+    queue: &Shared,
+    call: Call,
+    check: EditCheck,
+) -> Result<PendingCall, RpcError> {
+    lock(queue).submit(queue, call, Some(check)).map_err(refused)
+}
+
+pub(super) fn hold_reload(queue: &Shared, check: EditCheck) -> Result<PendingCall, RpcError> {
+    let mut calls = lock(queue);
+    if calls.waiting.values().any(|call| call.queues_game) {
+        return Err(refused("another game transition is already queued"));
+    }
+    let mut ticket = calls.admit(queue, true, Some(check)).map_err(refused)?;
+    calls.game_ticket = Some(ticket.ticket);
+    ticket.preparing = true;
+    Ok(ticket)
+}
+
+#[cfg(test)]
+fn queue_reload(
+    queue: &Shared,
+    options: Vec<u8>,
+    binding: Option<PreparedMapReload>,
+) -> Result<PendingCall, RpcError> {
+    let mut ticket = hold_reload(queue, Box::new(|_| Ok(())))?;
+    ticket.schedule_reload(options, binding);
+    Ok(ticket)
 }
 
 /// Optional distributed enrollment for an object just made by `sim.spawn`.
@@ -202,7 +384,63 @@ pub fn lock(q: &Shared) -> MutexGuard<'_, Queue> {
     q.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// The cache name and game mode of the timeline which owns a preview.
+pub(crate) fn preview_scenario(m: &dyn engine::GuestMemory) -> Option<(String, u32)> {
+    let mut name = [0u8; 32];
+    m.read(guest_layout::global::CACHE_MAP_NAME.base, &mut name).ok()?;
+    let len = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+    if len == 0 {
+        return None;
+    }
+    let game = guest_layout::game::GameGlobals::current(m).ok()??;
+    Some((String::from_utf8_lossy(&name[..len]).into_owned(), game.options().mode(m).ok()?))
+}
+
 impl Queue {
+    /// The skull hook normally applies its selection before OPTIONS_QUEUE.
+    /// An editor reload applies it only once retail has accepted these options.
+    pub fn stage_reload_skulls<F: FnOnce() + Send + 'static>(
+        &mut self, options: u32, apply: impl FnOnce() -> F,
+    ) -> bool {
+        if let Some(handoff) = self.handoff.as_mut().filter(|h| !h.interrupted && h.options == options) {
+            handoff.skulls = Some(Box::new(apply()));
+            true
+        } else {
+            false
+        }
+    }
+
+    /// A campaign reactivates the same mission when restoring a checkpoint.
+    /// Retain tag history while handles on that timeline are ambiguous.
+    pub fn map_activated(&mut self, scenario: Option<(String, u32)>) {
+        let fresh = scenario.as_ref().is_some_and(|(name, mode)| {
+            *mode != guest_layout::game::MODE_CAMPAIGN || self.active_scenario.as_ref()
+                .is_some_and(|(old, _)| !old.eq_ignore_ascii_case(name))
+        });
+        if fresh {
+            self.previews = placement::Previews::default();
+        } else {
+            self.checkpoint_reverted();
+        }
+        self.active_scenario = scenario;
+    }
+
+    pub fn checkpoint_reverted(&mut self) {
+        self.previews.checkpoint_reverted();
+    }
+
+    pub fn preview_refusal(&self) -> Option<String> {
+        (!self.previews.is_empty()).then(|| {
+            "snapshots cannot reproduce an unlinked editor preview; change maps first".into()
+        })
+    }
+
+    fn preview_deleted(&mut self, id: ObjectId) {
+        let campaign = self.active_scenario.as_ref()
+            .is_none_or(|(_, mode)| *mode == guest_layout::game::MODE_CAMPAIGN);
+        self.previews.deleted(id, campaign);
+    }
+
     /// Something makes the calls (the feature is built).
     pub fn arm(&mut self) {
         self.armed = true;
@@ -216,8 +454,26 @@ impl Queue {
         self.spawn_enrollment = Some(enroll);
     }
 
-    /// Queues `call` for the next tick; its ticket.
-    pub fn submit(&mut self, call: Call) -> Result<u64, String> {
+    fn submit(
+        &mut self,
+        queue: &Shared,
+        call: Call,
+        check: Option<EditCheck>,
+    ) -> Result<PendingCall, String> {
+        let queues_game = matches!(&call, Call::QueueGame { steps } if steps.iter().any(|step| {
+            matches!(step, GameStep::Call { target, .. } if *target == engine::points::OPTIONS_QUEUE.base)
+        }));
+        let ticket = self.admit(queue, queues_game, check)?;
+        self.pending.push((ticket.ticket, call));
+        Ok(ticket)
+    }
+
+    fn admit(
+        &mut self,
+        queue: &Shared,
+        game: bool,
+        check: Option<EditCheck>,
+    ) -> Result<PendingCall, String> {
         if !self.armed {
             return Err(
                 "the game's own functions aren't reachable here: the agent-calls feature isn't \
@@ -225,19 +481,30 @@ impl Queue {
                     .into(),
             );
         }
+        if game && self.game_ticket.is_some() {
+            return Err("an editor reload already owns the pending transition".into());
+        }
         self.next += 1;
-        self.pending.push((self.next, call));
-        Ok(self.next)
+        let ticket = self.next;
+        let (answer, rx) = mpsc::channel();
+        self.waiting.insert(ticket, QueuedCall {
+            queues_game: game,
+            check,
+            answer: Some(answer),
+        });
+        Ok(PendingCall {
+            queue: queue.clone(),
+            ticket,
+            answer: rx,
+            preparing: false,
+        })
     }
 
-    pub(crate) fn submit_watched(
-        &mut self,
-        call: Call,
-    ) -> Result<std::sync::mpsc::Receiver<Outcome>, String> {
-        let ticket = self.submit(call)?;
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.watchers.insert(ticket, tx);
-        Ok(rx)
+    fn release_game(&mut self, ticket: u64) {
+        if self.game_ticket == Some(ticket) {
+            self.game_ticket = None;
+            self.reload = None;
+        }
     }
 
     /// The calls to make now.
@@ -249,31 +516,35 @@ impl Queue {
         !self.pending.is_empty()
     }
 
+    pub(crate) fn blocks_input_log(&self) -> bool {
+        self.game_ticket.is_some() || self.reload_transition_pending()
+    }
+
     /// Records what came of `ticket`.
     pub fn finish(&mut self, ticket: u64, out: Outcome) {
-        if let Some(tx) = self.watchers.remove(&ticket) {
-            let _ = tx.send(out);
-            return;
-        }
-        self.done.insert(ticket, out);
-        while self.done.len() > DONE_KEEP {
-            self.done.pop_first();
+        self.release_game(ticket);
+        if let Some(waiter) = self.waiting.remove(&ticket) {
+            if let Some(answer) = waiter.answer {
+                let _ = answer.send(out);
+            }
         }
     }
 
-    /// What came of `ticket`, once (`None` until the game made it).
-    pub fn take(&mut self, ticket: u64) -> Option<Outcome> {
-        self.done.remove(&ticket)
+    /// The editor's options were accepted, but their game has yet to start.
+    pub(crate) fn reload_transition_pending(&self) -> bool {
+        self.transition.is_some()
     }
 
-    /// Why a machine snapshot can't be taken now: calls queued would be
-    /// lost, or made twice after a load.
+    /// Why a machine snapshot would lose or repeat pending work.
     pub fn live(&self) -> Option<String> {
-        (!self.pending.is_empty()).then(|| {
-            format!(
-                "{} agent call(s) queued for the next tick",
-                self.pending.len()
-            )
+        if self.reload_transition_pending() {
+            return Some("an editor reload is waiting for its map to start".into());
+        }
+        if self.repair.is_some() {
+            return Some("an editor reload still has map cache keys to restore".into());
+        }
+        (!self.waiting.is_empty()).then(|| {
+            format!("{} agent call(s) awaiting completion", self.waiting.len())
         })
     }
 }
@@ -382,13 +653,77 @@ fn hex(v: u32) -> String {
     format!("{v:08x}")
 }
 
+/// The ownerless placement used by both spawn and scenario previews.
+async fn prepare_spawn(
+    cx: &Cx,
+    scratch: u32,
+    tag: u32,
+    pos: [f32; 3],
+    axes: Option<([f32; 3], [f32; 3])>,
+) -> Result<(), EntryError> {
+    cx.call(
+        GuestCall::new(addr::PLACEMENT_NEW)
+            .esi(scratch)
+            .args([tag, u32::MAX, 0]),
+    )
+    .await?;
+    cx.write(|m| {
+        put_vec(m, scratch + addr::PLACEMENT_POSITION, pos)?;
+        if let Some((forward, up)) = axes {
+            put_vec(m, scratch + addr::PLACEMENT_FORWARD, forward)?;
+            put_vec(m, scratch + addr::PLACEMENT_UP, up)?;
+        }
+        Ok::<_, engine::MemFault>(())
+    })?;
+    Ok(())
+}
+
+/// `sim.spawn` and Forge make an ownerless object the same way: the
+/// placement [`prepare_spawn`] fills, then `object_new`.
+async fn spawn(
+    cx: &Cx,
+    scratch: u32,
+    tag: u32,
+    pos: [f32; 3],
+    axes: Option<([f32; 3], [f32; 3])>,
+) -> Result<Result<u32, RpcError>, EntryError> {
+    prepare_spawn(cx, scratch, tag, pos, axes).await?;
+    let made = cx.call(GuestCall::new(addr::OBJECT_NEW).args([scratch])).await?.eax;
+    if made == u32::MAX {
+        return Ok(Err(unavailable(format!(
+            "object_new (0xb7b40) refused to make tag {tag:#010x} there"
+        ))));
+    }
+    Ok(Ok(made))
+}
+
+/// Release an object made by the current command after an engine refusal.
+/// sim.give uses this when the unit cannot take the new weapon, and a Forge
+/// batch to unwind its earlier placements when a later one is refused.
+async fn discard_new(cx: &Cx, made: u32) -> Result<(), EntryError> {
+    cx.call(GuestCall::new(addr::OBJECT_DELETE).args([made]))
+        .await?;
+    Ok(())
+}
+
 /// Makes one call. A guest call that faults ends the tick's work
 /// (`EntryError`); a refusal is the outcome.
+#[cfg(test)]
 async fn run(
     cx: &Cx,
     call: &Call,
     scratch: u32,
-    spawn_enrollment: Option<SpawnEnrollment>,
+    queue: &Shared,
+) -> Result<Outcome, EntryError> {
+    run_call(cx, call, scratch, queue, None).await
+}
+
+async fn run_call(
+    cx: &Cx,
+    call: &Call,
+    scratch: u32,
+    queue: &Shared,
+    ticket: Option<u64>,
 ) -> Result<Outcome, EntryError> {
     match *call {
         Call::Teleport {
@@ -398,8 +733,8 @@ async fn run(
         } => {
             let unit = match cx.read(|m| player_unit(m, player)) {
                 Ok(Some(u)) => u,
-                Ok(None) => return Ok(Err("the player has no unit now (between lives)".into())),
-                Err(e) => return Ok(Err(e)),
+                Ok(None) => return Ok(Err(unavailable("the player has no unit now (between lives)"))),
+                Err(e) => return Ok(Err(unavailable(e))),
             };
             let (unit, body, user) = unit;
             let mut out = serde_json::Map::new();
@@ -414,11 +749,10 @@ async fn run(
                     )
                     .await?;
                 if r.eax & 0xff == 0 {
-                    return Ok(Err(
+                    return Ok(Err(unavailable(
                         "the game's placement (PLAYER_PLACE_NEAR 0x14e970) refused: no unit, or no \
-                         room for it there"
-                            .into(),
-                    ));
+                         room for it there",
+                    )));
                 }
             }
             if let Some(f) = facing {
@@ -471,7 +805,7 @@ async fn run(
         }
         Call::Give { unit, weapon, mode } => {
             if cx.read(|m| body_of(m, unit)).is_none() {
-                return Ok(Err("the unit is gone (it died?)".into()));
+                return Ok(Err(unavailable("the unit is gone (it died?)")));
             }
             cx.call(
                 GuestCall::new(addr::PLACEMENT_NEW)
@@ -484,9 +818,9 @@ async fn run(
                 .await?
                 .eax;
             if made == u32::MAX {
-                return Ok(Err(format!(
+                return Ok(Err(unavailable(format!(
                     "object_new (0xb7b40) refused to make tag {weapon:#010x}"
-                )));
+                ))));
             }
             let added = cx
                 .call(GuestCall::new(addr::UNIT_ADD_WEAPON).args([unit, made, mode]))
@@ -495,10 +829,10 @@ async fn run(
                 & 0xff;
             if added == 0 {
                 discard_new(cx, made).await?;
-                return Ok(Err(format!(
+                return Ok(Err(unavailable(format!(
                     "unit_add_weapon (0xcd0c0, mode {mode}) refused it (a full inventory, or a \
                      unit that takes no weapons); the weapon was deleted"
-                )));
+                ))));
             }
             Ok(Ok(
                 json!({ "object": hex(made), "unit": hex(unit), "mode": mode }),
@@ -523,16 +857,16 @@ async fn run(
                             == Some(agent_proto::sim::SessionKind::MpHost)
                 });
                 if !still_host {
-                    return Ok(Err(
-                        "the replication probe's multiplayer host or scenario changed".into(),
-                    ));
+                    return Ok(Err(unavailable(
+                        "the replication probe's multiplayer host or scenario changed",
+                    )));
                 }
             }
-            let axes = facing.map(|f| (f, up_of(f)));
-            let made = match spawn(cx, scratch, tag, pos, axes).await? {
+            let made = match spawn(cx, scratch, tag, pos, facing.map(|f| (f, up_of(f)))).await? {
                 Ok(made) => made,
-                Err(reason) => return Ok(Err(reason)),
+                Err(e) => return Ok(Err(e)),
             };
+            let spawn_enrollment = lock(queue).spawn_enrollment;
             if let Some(enroll) = spawn_enrollment
                 && let Some(call) = cx.read(|m| enroll(m, made))
             {
@@ -541,23 +875,123 @@ async fn run(
             let at = cx.read(|m| body_of(m, made).and_then(|b| b.position(m).ok()));
             Ok(Ok(json!({ "object": hex(made), "pos": at })))
         }
+        Call::ObjectSet {
+            id,
+            pos,
+            forward,
+            up,
+        } => {
+            let body = match cx.read(|m| placement::resolve(m, id)) {
+                Ok(body) => body,
+                Err(e) => return Ok(Err(e)),
+            };
+            let turning = forward.is_some() || up.is_some();
+            if turning {
+                let axes = cx.read(|m| -> Result<_, engine::MemFault> {
+                    Ok((
+                        match forward {
+                            Some(f) => f,
+                            None => body.forward(m)?,
+                        },
+                        match up {
+                            Some(u) => u,
+                            None => body.up(m)?,
+                        },
+                    ))
+                });
+                let (f, u) = match axes {
+                    Ok(axes) => axes,
+                    Err(e) => {
+                        return Ok(Err(unavailable(format!(
+                            "cannot read the object's unchanged orientation at {:#x}",
+                            e.addr
+                        ))));
+                    }
+                };
+                if !super::edits::valid_axes(f, u) {
+                    return Ok(Err(super::invalid(
+                        "forward and up must be perpendicular unit vectors",
+                    )));
+                }
+                cx.write(|m| {
+                    put_vec(m, scratch + SCRATCH_FORWARD, f)?;
+                    put_vec(m, scratch + SCRATCH_UP, u)
+                })?;
+            }
+            if let Some(p) = pos {
+                cx.write(|m| put_vec(m, scratch + SCRATCH_POS, p))?;
+            }
+            cx.call(
+                GuestCall::new(addr::OBJECT_SET_POSITION)
+                    .eax(if pos.is_some() { scratch + SCRATCH_POS } else { 0 })
+                    .ecx(if turning { scratch + SCRATCH_FORWARD } else { 0 })
+                    .edx(if turning { scratch + SCRATCH_UP } else { 0 })
+                    .args([id.key, 0, 0]),
+            )
+            .await?;
+            Ok(Ok(json!({ "object": id.to_string() })))
+        }
+        Call::ObjectDelete { id } => {
+            if let Err(e) = cx.read(|m| placement::resolve(m, id)) {
+                return Ok(Err(e));
+            }
+            cx.call(GuestCall::new(addr::OBJECT_DELETE).args([id.key]))
+                .await?;
+            lock(queue).preview_deleted(id);
+            Ok(Ok(json!({ "deleted": id.to_string() })))
+        }
+        Call::ObjectRespawn { ref target } => {
+            let entry = match cx.read(|m| placement::read(m, target, &lock(queue).previews)) {
+                Ok(entry) => entry,
+                Err(e) => return Ok(Err(e)),
+            };
+            prepare_spawn(cx, scratch, entry.tag, entry.pos, Some(entry.axes)).await?;
+            let previous = cx.read(|m| {
+                let mut q = lock(queue);
+                if q.previews.is_empty() {
+                    // A machine restore can enter a different map without
+                    // running GAME_ACTIVATE. Read the origin from this guest.
+                    q.active_scenario = preview_scenario(m);
+                }
+                q.previews.creating(&entry)
+            });
+            let made = cx.call(GuestCall::new(addr::OBJECT_NEW).args([scratch])).await?.eax;
+            let old = entry.old.map(|id| id.to_string());
+            if made == u32::MAX {
+                lock(queue).previews.refused(&entry, previous);
+                return Ok(Err(refused("object_new refused the replacement")));
+            }
+            let object = ObjectId {
+                kind: entry.kind,
+                key: made,
+            };
+            // Keep the uncertain preview marked until the old object's deletion
+            // returns. If retail interrupts the transfer, another placement
+            // request must not make a third object beside the unlinked one.
+            if let Some(old) = entry.old {
+                cx.call(GuestCall::new(addr::OBJECT_DELETE).args([old.key]))
+                    .await?;
+            }
+            lock(queue).previews.remember(&entry, object);
+            Ok(Ok(json!({ "old": old, "object": object.to_string(), "linked": false })))
+        }
         Call::ForgeSpawn {
             guard,
             ref placements,
         } => {
             if !cx.read(|m| guard.allows(m)) {
-                return Ok(Err(
-                    "the local Forge session changed before placement".into()
-                ));
+                return Ok(Err(unavailable(
+                    "the local Forge session changed before placement",
+                )));
             }
             match cx.read(crate::forge::object_pool) {
                 Ok(pool) if placements.len() <= (pool.limit - pool.used) as usize => {}
                 Ok(_) => {
-                    return Ok(Err(
-                        "the game object pool has insufficient free slots".into()
-                    ));
+                    return Ok(Err(unavailable(
+                        "the game object pool has insufficient free slots",
+                    )));
                 }
-                Err(e) => return Ok(Err(e.message)),
+                Err(e) => return Ok(Err(e)),
             }
             let mut handles = Vec::with_capacity(placements.len());
             for &(tag, frame) in placements {
@@ -565,13 +999,13 @@ async fn run(
                 let axes = (forward.map(|v| v as f32), up.map(|v| v as f32));
                 match spawn(cx, scratch, tag, frame.position, Some(axes)).await? {
                     Ok(handle) => handles.push(handle),
-                    Err(reason) => {
+                    Err(e) => {
                         // Unwind only this command's newly created objects, before
                         // the game tick can give them to another player or system.
                         for handle in handles.into_iter().rev() {
                             discard_new(cx, handle).await?;
                         }
-                        return Ok(Err(reason));
+                        return Ok(Err(e));
                     }
                 }
             }
@@ -585,9 +1019,9 @@ async fn run(
                 match step {
                     GameStep::Write { offset, bytes } => {
                         if offset.saturating_add(bytes.len() as u32) > OPTIONS_SIZE {
-                            return Ok(Err(format!(
+                            return Ok(Err(unavailable(format!(
                                 "a write at {offset:#x} runs past the options block"
-                            )));
+                            ))));
                         }
                         cx.write(|m| m.write(options + offset, bytes))?;
                     }
@@ -606,6 +1040,12 @@ async fn run(
                         if let Some(a) = esi {
                             c = c.esi(a.resolve(options));
                         }
+                        if *target == engine::points::OPTIONS_QUEUE.base
+                            && let Some(ticket) = ticket
+                            && let Err(why) = reserve_reload(queue, ticket, options)
+                        {
+                            return Ok(Err(refused(why)));
+                        }
                         let r = cx.call(c).await?;
                         calls += 1;
                         if let Some(name) = report {
@@ -621,82 +1061,254 @@ async fn run(
     }
 }
 
-/// Both spawn routes use the same retail placement buffer and object constructor.
-async fn spawn(
-    cx: &Cx,
-    scratch: u32,
-    tag: u32,
-    pos: [f32; 3],
-    axes: Option<([f32; 3], [f32; 3])>,
-) -> Result<Result<u32, String>, EntryError> {
-    cx.call(
-        GuestCall::new(addr::PLACEMENT_NEW)
-            .esi(scratch)
-            .args([tag, u32::MAX, 0]),
-    )
-    .await?;
-    cx.write(|m| {
-        put_vec(m, scratch + addr::PLACEMENT_POSITION, pos)?;
-        if let Some((forward, up)) = axes {
-            put_vec(m, scratch + addr::PLACEMENT_FORWARD, forward)?;
-            put_vec(m, scratch + addr::PLACEMENT_UP, up)?;
+/// The options block is complete and no guest function has run for this
+/// reload. Reserve its source and retire the cache keys before OPTIONS_QUEUE
+/// and its skull hooks can change game state.
+fn reserve_reload(queue: &Shared, ticket: u64, options: u32) -> Result<(), String> {
+    let reload = {
+        let mut q = lock(queue);
+        if !q.reload.as_ref().is_some_and(|r| r.ticket == ticket) {
+            return Ok(());
         }
-        Ok::<_, engine::MemFault>(())
-    })?;
-    let made = cx
-        .call(GuestCall::new(addr::OBJECT_NEW).args([scratch]))
-        .await?
-        .eax;
-    if made == u32::MAX {
-        return Ok(Err(format!(
-            "object_new (0xb7b40) refused to make tag {tag:#010x} there"
-        )));
+        q.reload.take().expect("matched reload")
+    };
+    if reload.binding.is_some() && lock(queue).repair.is_some() {
+        return Err("an earlier editor reload still has map cache keys to restore".into());
     }
-    Ok(Ok(made))
+    let mut binding = reload.binding.map(PreparedMapReload::reserve).transpose()?;
+    if let Some(why) = binding.as_mut().and_then(|b| b.retirement_error.take()) {
+        return Err(cancel_binding(queue, binding, why));
+    }
+    lock(queue).handoff = Some(ReloadHandoff {
+        ticket,
+        options,
+        binding,
+        interrupted: false,
+        skulls: None,
+    });
+    Ok(())
 }
 
-/// Release an object made by the current command after an engine refusal.
-/// sim.give uses this when the unit cannot take the new weapon.
-async fn discard_new(cx: &Cx, made: u32) -> Result<(), EntryError> {
-    cx.call(GuestCall::new(addr::OBJECT_DELETE).args([made]))
-        .await?;
-    Ok(())
+/// A nested guest transfer may drop the entry future without returning an
+/// EntryError. Every dispatched ticket still needs an answer on that path.
+struct DrainedCalls {
+    queue: Shared,
+    remaining: std::vec::IntoIter<(u64, Call)>,
+    current: Option<u64>,
+}
+
+impl DrainedCalls {
+    fn next(&mut self) -> Option<(u64, Call)> {
+        let next = self.remaining.next()?;
+        self.current = Some(next.0);
+        Some(next)
+    }
+
+    fn finish(&mut self, ticket: u64, out: Outcome) {
+        lock(&self.queue).finish(ticket, out);
+        self.current = None;
+    }
+}
+
+impl Drop for DrainedCalls {
+    fn drop(&mut self) {
+        let mut q = lock(&self.queue);
+        if let Some(ticket) = self.current {
+            if let Some(load) = q.handoff.as_mut().filter(|load| load.ticket == ticket) {
+                // Do not take guest memory from Drop. The transfer driver may
+                // be holding it. The transition/tick boundary reconciles this.
+                load.interrupted = true;
+            } else {
+                q.finish(ticket, Err(unavailable("the guest call was interrupted")));
+            }
+        }
+        for (ticket, _) in &mut self.remaining {
+            q.finish(ticket, Err(unavailable("an earlier guest call was interrupted")));
+        }
+    }
+}
+
+struct TickReentry(Arc<AtomicBool>);
+
+impl Drop for TickReentry {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 /// The `before` on `game_tick`'s body: makes the queued calls, records
 /// each outcome, then runs the tick with `reentry` set so this hook (and
 /// the queue) let it through.
-pub async fn run_queued(
+pub fn run_queued(
     cx: Cx,
     queue: Shared,
     work: Vec<(u64, Call)>,
     scratch: u32,
     reentry: Arc<AtomicBool>,
+) -> impl std::future::Future<Output = Result<Ret, EntryError>> {
+    let work = DrainedCalls {
+        queue: queue.clone(),
+        remaining: work.into_iter(),
+        current: None,
+    };
+    run_batch(cx, queue, work, scratch, reentry)
+}
+
+async fn run_batch(
+    cx: Cx,
+    queue: Shared,
+    mut work: DrainedCalls,
+    scratch: u32,
+    reentry: Arc<AtomicBool>,
 ) -> Result<Ret, EntryError> {
-    let spawn_enrollment = lock(&queue).spawn_enrollment;
-    let mut work = work.into_iter();
     while let Some((ticket, call)) = work.next() {
-        let out = match run(&cx, &call, scratch, spawn_enrollment).await {
+        let check = lock(&queue)
+            .waiting
+            .get_mut(&ticket)
+            .filter(|w| w.answer.is_some())
+            .map(|w| w.check.take());
+        let editor_reload = matches!(&check, Some(Some(_))) && matches!(&call, Call::QueueGame { .. });
+        let authorized = match check {
+            Some(Some(check)) => cx.read(check),
+            Some(None) => Ok(()),
+            None => Err(unavailable("the caller stopped waiting for the call")),
+        };
+        if let Err(e) = authorized {
+            work.finish(ticket, Err(e));
+            continue;
+        }
+        if editor_reload {
+            let ready = cx.read(|m| {
+                let q = lock(&queue);
+                let Some(reload) = q.reload.as_ref().filter(|r| r.ticket == ticket) else {
+                    return Err(unavailable("the editor reload ticket was withdrawn"));
+                };
+                if active_options(m)? != reload.options {
+                    return Err(refused("the active game options changed before reload"));
+                }
+                let fault = |e: engine::MemFault| {
+                    refused(format!("cannot read the pending game transition at {:#x}", e.addr))
+                };
+                if m.u8(OPTIONS_PENDING).map_err(fault)? != 0 {
+                    return Err(refused("the game already has a pending map transition"));
+                }
+                // Reconciliation must be able to read the entire retail
+                // destination even when the flag at dispatch is clear.
+                let mut bytes = [0; OPTIONS_SIZE as usize];
+                m.read(PENDING_OPTIONS, &mut bytes).map_err(fault)
+            });
+            if let Err(e) = ready {
+                work.finish(ticket, Err(e));
+                continue;
+            }
+        }
+        let out = match run_call(&cx, &call, scratch, &queue, editor_reload.then_some(ticket)).await {
             Ok(out) => out,
             Err(e) => {
-                let mut q = lock(&queue);
-                q.finish(ticket, Err(format!("the game faulted: {e}")));
-                for (skipped, _) in work {
-                    q.finish(skipped, Err("an earlier guest call faulted".into()));
+                if !editor_reload || !lock(&queue).handoff.as_ref().is_some_and(|h| h.ticket == ticket) {
+                    work.finish(ticket, Err(unavailable(format!("the game faulted: {e}"))));
                 }
                 return Err(e);
             }
         };
-        lock(&queue).finish(ticket, out);
+        let handoff = if editor_reload {
+            lock(&queue).handoff.take_if(|h| h.ticket == ticket)
+        } else {
+            None
+        };
+        if let Some(handoff) = handoff {
+            let pending = cx.read(|m| pending_options(m, handoff.options));
+            if let Err(error) = settle_reload(&queue, handoff, pending) {
+                work.finish(ticket, Err(error));
+                continue;
+            }
+        }
+        work.finish(ticket, out);
     }
     reentry.store(true, Ordering::SeqCst);
-    let r = cx
-        .call(GuestCall::new(engine::points::GAME_TICK.base))
-        .await;
-    reentry.store(false, Ordering::SeqCst);
-    r?;
+    let _reentry = TickReentry(reentry);
+    cx.call(GuestCall::new(engine::points::GAME_TICK.base)).await?;
     Ok(Ret::new(0, 0))
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PendingOptions {
+    Empty,
+    Reload,
+    Other,
+}
+
+fn pending_options(m: &dyn GuestMemory, options: u32) -> Result<PendingOptions, String> {
+    let fault = |e: engine::MemFault| format!("cannot read queued options at {:#x}", e.addr);
+    if m.u8(OPTIONS_PENDING).map_err(fault)? == 0 {
+        return Ok(PendingOptions::Empty);
+    }
+    // OPTIONS_QUEUE copies the block from EAX. The scratch still holds
+    // exactly what retail's before hooks left there.
+    // It belongs to this ticket until reconciliation releases game_ticket.
+    let queued = m.bytes(PENDING_OPTIONS, OPTIONS_SIZE as usize).map_err(fault)?;
+    let requested = m.bytes(options, OPTIONS_SIZE as usize).map_err(fault)?;
+    Ok(if queued == requested { PendingOptions::Reload } else { PendingOptions::Other })
+}
+
+/// Drop the DVD reservation even if a cache key is temporarily unwritable.
+/// Retry only the failed keys, without holding up the ticket or another tick.
+fn cancel_binding(queue: &Shared, binding: Option<ReservedMapReload>, why: String) -> String {
+    if let Some(mut binding) = binding
+        && let Err(restore) = (binding.restore)()
+    {
+        lock(queue).repair = Some(CacheRepair(binding.restore));
+        return format!("{why}; {restore}");
+    }
+    why
+}
+
+/// An interrupted guest call may still have queued this reload. Resolve
+/// that outcome at the first safe boundary, before retail can use the cache.
+fn reconcile_reload(queue: &Shared, pending_options: impl FnOnce(u32) -> Result<PendingOptions, String>) {
+    let (repair, handoff) = {
+        let mut q = lock(queue);
+        (q.repair.take(), q.handoff.take_if(|h| h.interrupted))
+    };
+    if let Some(mut repair) = repair
+        && (repair.0)().is_err()
+    {
+        lock(queue).repair = Some(repair);
+    }
+    let Some(load) = handoff else { return };
+    let ticket = load.ticket;
+    let pending = pending_options(load.options);
+    let result = settle_reload(queue, load, pending).map(|()| json!({ "queued": true }));
+    lock(queue).finish(ticket, result);
+}
+
+fn settle_reload(
+    queue: &Shared,
+    load: ReloadHandoff,
+    pending: Result<PendingOptions, String>,
+) -> Result<(), RpcError> {
+    let why = match pending {
+        Ok(PendingOptions::Reload) => {
+            let transition = activation::Transition::queued(load.ticket, load.options);
+            load.publish();
+            lock(queue).transition = Some(transition);
+            return Ok(());
+        }
+        Ok(PendingOptions::Other) => "another game transition superseded the reload".into(),
+        Ok(PendingOptions::Empty) => "the game did not queue the reload".into(),
+        Err(why) => why,
+    };
+    Err(unavailable(cancel_binding(queue, load.binding, why)))
+}
+
+fn recover_before(c: &mut hooks::Call<'_>, queue: &Shared) -> Result<hooks::Flow, runtime::GuestFault> {
+    reconcile_reload(queue, |options| pending_options(&*c.ctx.runtime().memory(), options));
+    Ok(hooks::Flow::Continue)
+}
+
+mod activation;
+pub use activation::reload_hook_points;
+pub(crate) use activation::install_reload_recovery;
 
 /// The feature id (`H2_FEATURES=-agent-calls` leaves the calls out).
 pub const FEATURE: &str = "agent-calls";
@@ -743,6 +1355,8 @@ impl hooks::Feature for CallsFeature {
         Ok(())
     }
 }
+
+mod placement;
 
 #[cfg(test)]
 mod tests;

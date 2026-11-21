@@ -183,8 +183,10 @@ machines"):
   with those values. Earlier recordings keep their world-pose playback.
 
 For a retail-based mod, the game start reports the retail base in
-`map` and the installed package in `map_id`. The cache header's short alias
-resolves to that package. The join uses the content ID and the report can
+`map` and the installed package in `map_id`. Both come from the VFS
+entry named by the active cache slot (`crates/extensions/game/src/map_slots.rs`).
+A DVD override reports its own content ID even when an installed package
+shares its name. The join uses the content ID and the report can
 group with games on the same base. [Map packages](../game/maps.md#package-offers)
 
 Game starts say their `kind`: `campaign` for campaign mode, with
@@ -267,10 +269,10 @@ still read every other frame.
 
 Tag names are (likely) not in guest memory: nothing in the XBE refers to
 the cache header's tag-name fields, and the loader reads the tag index and
-metadata. On map activation telemetry asks the boot for the
-map's file (`\Device\CdRom0\maps\<short name>.map` through the VFS),
-reads its tag names with `crates/formats/map`, and keeps only `bipd` and `weap`
-rows. The table is used only if the file's scenario datum equals the
+metadata. On map activation telemetry asks boot for the active cache
+slot's file through the VFS. When the slot cannot identify an unbound
+map, the boot locator uses the cache name. Telemetry reads the tag names
+with `crates/formats/map` and keeps only `bipd` and `weap` rows. The table is used only if the file's scenario datum equals the
 guest's (tag index header `[0x00547f00]+0x0c`), since both indexes hold the
 same salted datums. Without a match, or without a locator (tests, a raw
 XBE), `species` and `weapon` are left out.
@@ -1247,7 +1249,7 @@ relying on live output, check in this order:
    driver and the gunner's on the turret, `body`/`shield` falling with
    hits and recharging, an overshield above 1.
 8. Frame models: `species` for both bipeds, `weapon` names for each
-   multiplayer weapon (the map-file lookup by short name), `aim` following
+   multiplayer weapon (the active cache slot's tag names), `aim` following
    the reticle (and not lagging it: `+0x15c` is the other candidate),
    `shots` matching trigger pulls (battle rifle 3 per burst, shotgun 1 per
    pull, plasma weapons and the sentinel beam counted at all), and the fire

@@ -143,10 +143,11 @@ it for the font files ([button-icons.md](../input/button-icons.md)).
 
 `MapOverrideBackend::new(inner, dir)` serves `maps\<name>.map` from
 `<dir>/<name>.map` when the inner backend (the disc) has that map and the
-directory holds a file of that name. The boot mounts the disc through it
-when `H2_MAP_DIR` names a directory (`crates/extensions/game/src/map_override.rs`);
-unset or empty, the disc is mounted with `with_disc`/`with_disc_rewrite`
-exactly as before. The font rewrite wraps it, so both apply.
+directory holds a file of that name. Boot mounts the startup override
+layer when `H2_MAP_DIR` names a directory. A writable full host can also
+attach an editor override to its mounted DVD on the first file reload.
+Both use the existing drive links and open-file table.
+See `crates/extensions/game/src/map_override.rs`.
 
 - Only names exactly one level under `maps` ending in `.map` are
   overridden, and only ones the disc has: a new name stays missing,
@@ -157,10 +158,27 @@ exactly as before. The font rewrite wraps it, so both apply.
   `read_at` streams from the host file (seek and read, no buffering, no
   size cap below the 4 GiB XDVDFS limit). `host_file` gives the override
   file, so telemetry and the speaker index read the edited map.
-- The choice is made once per map, on first use, and logged once
-  (`map override: maps\<name> from <path> (<n> bytes; disc <n> bytes)`).
-  The open file is kept for the session, so a later replacement is seen
-  only after a restart; a file truncated under it reads as `FileCorrupt`.
+- Listing the maps directory selects and caches the startup override just
+  like the first open. Guest reads use the selected file descriptor across
+  an atomic replacement. A name absent at selection stays on the disc. A paired
+  editor can explicitly select another file with `map.reload {file}`.
+  The first private generation reaps abandoned copies from dead processes.
+  A worker prepares the generation, checks the slot type and
+  capacity, parses the tag index and verifies the payload checksum.
+  An RPC timeout releases the pending claim immediately. The worker checks
+  for cancellation between copy and checksum chunks.
+  An open guest file prevents reservation. After publication, size,
+  bytes, host file and map identity come from the replacement. A private
+  file stays available to native readers that hold its generation across
+  another save. The live renderer waits for the guest to activate a
+  published file before it opens that generation for the world
+  (`crates/extensions/game/src/native_map.rs`). Publishing a replacement
+  or shutting down the host releases the mount's reference. The last
+  reader releases the private copy.
+  Each rebind logs one line.
+  A successful binding excludes external Live sign-in until restart.
+  A bound editor file prevents machine snapshots and film keyframes.
+  A server-map mount accepts only its startup inventory.
 - Refused with a warning, falling back to the disc's map: a symlink whose
   target leaves the directory (a symlink inside it is followed), anything
   but a regular file, two host names that differ only in case, a file

@@ -30,6 +30,8 @@ live-proto.workspace = true
 timeline = { path = "../../runtime/timeline" }
 xapi = { path = "../../platform/xapi" }
 input = { path = "../../platform/input", default-features = false }
+# The retail object types and their scenario placement/palette layout.
+tags.workspace = true
 # Hot iteration: live tag edits and render overrides (src/hot.rs).
 hot-render = { path = "../../platform/hot-render", optional = true }
 hot-tags = { path = "../hot-tags" }
@@ -42,8 +44,10 @@ snapshot = { path = "../../runtime/snapshot" }
 png = "0.18"
 
 background.workspace = true
-tags.workspace = true
 map.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 # A synthetic lifted original for the shadow.* tests.
@@ -51,3 +55,5 @@ lifted = { path = "../../runtime/lifted" }
 # sim.hashes' rows against the sim report's (src/sim/hashes.rs); renamed
 # so it can't be mistaken for this crate's `sim` module.
 sim-report = { package = "sim-bench", path = "../../live/sim-bench" }
+# Synthetic maps for src/hot/tests.rs.
+map.workspace = true

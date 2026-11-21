@@ -162,7 +162,7 @@ impl Telemetry {
         }
         let file = {
             let maps = self.maps.lock().unwrap();
-            (maps.as_ref()?)(map)?
+            (maps.as_ref()?)(guest)?
         };
         Some(Names {
             map: map.to_owned(),
@@ -274,7 +274,7 @@ impl Telemetry {
                 .lock()
                 .unwrap()
                 .as_ref()
-                .and_then(|locate| locate(&info.map))
+                .and_then(|locate| locate(guest))
         } else {
             None
         };
@@ -709,8 +709,9 @@ mod tests {
         let id = live_proto::maps::MapId([0x5c; 32]);
         let asked = std::sync::Arc::new(Mutex::new(Vec::new()));
         let seen = asked.clone();
-        telemetry.set_map_id_locator(Box::new(move |map| {
-            seen.lock().unwrap().push(map.to_string());
+        telemetry.set_map_id_locator(Box::new(move |guest| {
+            let map = memory::loaded_map_name(guest).ok()?;
+            seen.lock().unwrap().push(map.clone());
             (map == "mod-lockout").then_some((id, Some("lockout".into())))
         }));
         let mut guest = fixture::memory();

@@ -52,10 +52,14 @@ impl Snapshots for Store {
 struct Machine {
     shelf: Shelf,
     busy: u64,
+    refused: Option<String>,
     calls: Vec<String>,
 }
 
 impl SnapshotMachine for Machine {
+    fn refusal(&self) -> Option<String> {
+        self.refused.clone()
+    }
     fn blockers(&mut self) -> Vec<String> {
         self.calls.push("blockers".into());
         if self.busy > 0 {
@@ -166,6 +170,23 @@ fn a_save_waits_for_a_tick_and_runs_between_slices() {
     assert_eq!(v["result"]["snapshots"][0]["name"], "fight");
     assert_eq!(v["result"]["snapshots"][0]["tick"], 101);
     assert!(v["result"]["at"].is_object());
+}
+
+#[test]
+fn an_editor_snapshot_refusal_answers_on_the_first_boundary() {
+    let (a, mut m) = agent();
+    let (c, rx) = client(&a);
+    let mut g = Game(1);
+    a.on_tick(&mut g);
+    m.refused = Some("editor play copy".into());
+    ask(&a, c, 1, state::SAVE, json!({"name": "fixture", "max_ticks": 90}));
+    a.on_tick(&mut g);
+    a.run_snapshots(&mut m);
+    let error = &next(&rx)["error"];
+    assert_eq!(error["code"], agent_proto::sim::REFUSED);
+    assert_eq!(error["message"], "editor play copy");
+    assert!(!a.snapshot_pending());
+    assert!(m.calls.is_empty());
 }
 
 #[test]

@@ -469,7 +469,13 @@ fn local_edits_publish_the_engine_handle_only_after_a_confirmed_spawn() {
         matches!(call, calls::Call::ForgeSpawn { placements, .. } if placements == [(TAG,Frame::default())])
     );
     assert!(edit.poll().is_none());
-    calls::lock(&q).finish(ticket, Err("object_new refused".into()));
+    calls::lock(&q).finish(
+        ticket,
+        Err(agent_proto::RpcError::new(
+            agent_proto::code::UNAVAILABLE,
+            "object_new refused",
+        )),
+    );
     assert_eq!(edit.poll().unwrap().unwrap_err(), "object_new refused");
     assert!(session.log().is_empty());
     let mut edit = place();

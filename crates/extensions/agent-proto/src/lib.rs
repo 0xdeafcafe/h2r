@@ -58,6 +58,9 @@ pub const PROTOCOL: u32 = 1;
 /// path, or `tcp://HOST:PORT` ([`Endpoint`]).
 pub const ENV: &str = "H2_AGENT";
 
+/// The root for the game's traces, flights and input logs.
+pub const OUT_ENV: &str = "H2_AGENT_OUT";
+
 /// The TCP port the Xbox app listens on (docs/runtime/xbox.md, "Remote
 /// control").
 pub const XBOX_PORT: u16 = 4720;
@@ -75,8 +78,8 @@ pub fn default_socket() -> std::path::PathBuf {
 
 /// The user's cache directory for h2recomp (`~/Library/Caches/h2recomp`
 /// on macOS, `$XDG_CACHE_HOME/h2recomp` or `~/.cache/h2recomp` elsewhere).
-/// The agent keeps its input logs (`inputs/`) and captures (`captures/`)
-/// here, never in the repository.
+/// The agent keeps its captures (`captures/`) here. It also defaults to
+/// this root for traces, flights and input logs.
 pub fn cache_dir() -> std::path::PathBuf {
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
     let cache = if cfg!(target_os = "macos") {
@@ -87,6 +90,15 @@ pub fn cache_dir() -> std::path::PathBuf {
             .or_else(|| home.map(|h| h.join(".cache")))
     };
     cache.unwrap_or_else(std::env::temp_dir).join("h2recomp")
+}
+
+/// Where the game keeps its `traces/`, `flights/` and `inputs/` directories.
+pub fn output_dir() -> std::path::PathBuf {
+    output_dir_from(std::env::var_os(OUT_ENV))
+}
+
+fn output_dir_from(value: Option<std::ffi::OsString>) -> std::path::PathBuf {
+    value.filter(|p| !p.is_empty()).map_or_else(cache_dir, Into::into)
 }
 
 /// Method names. `session.methods` lists them at run time.
@@ -109,6 +121,10 @@ pub mod method {
     /// Level loads, BSP switches and stalls: how long, and what the frames
     /// in them read, uploaded and compiled ([`crate::LoadParams`]).
     pub const LOAD_TIMELINE: &str = "load.timeline";
+    /// List the names of saved input logs.
+    pub const INPUT_LIST: &str = "input.list";
+    /// Read a page of a saved input log.
+    pub const INPUT_LOG_READ: &str = "input.log.read";
 
     /// Every method, in the order `session.methods` lists them.
     pub const ALL: &[&str] = &[
@@ -128,6 +144,8 @@ pub mod method {
         PROFILE_CAPTURE,
         FEATURES,
         LOAD_TIMELINE,
+        INPUT_LIST,
+        INPUT_LOG_READ,
     ];
 
     /// Methods that change the run; they need `session.claim` first.
@@ -439,6 +457,9 @@ pub struct At {
     pub tick: Option<u64>,
     /// Ticks the server has seen since the game started; never resets.
     pub ticks: u64,
+    /// Identity of the last observed full game start. Zero until one is observed.
+    #[serde(default)]
+    pub activation: u64,
     /// Ticks since the current map loaded. A level's scripts start its
     /// opening cutscene in its first ticks, so "in control" is better
     /// asked as `{"phase":"gameplay","map_ticks":30}` than as the phase
@@ -494,6 +515,9 @@ pub struct StepParams {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Until {
+    /// The exact full game start to observe, as returned by map.reload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation: Option<u64>,
     /// The game's own tick is at least this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tick: Option<u64>,
@@ -1146,7 +1170,7 @@ pub struct Capture {
 pub const PORTS: u32 = 4;
 
 /// `input.record`: start logging every controller read the game makes
-/// to the cache directory's `inputs/<name>.input` (an `xapi::tap` input
+/// to the agent output directory's `inputs/<name>.input` (an `xapi::tap` input
 /// log, the format `H2_INPUT_RECORD` writes).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1238,6 +1262,14 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn agent_output_directory_uses_the_override_or_the_cache() {
+        let run_dir = std::path::PathBuf::from("runs/0007");
+        assert_eq!(output_dir_from(Some(run_dir.clone().into_os_string())), run_dir);
+        assert_eq!(output_dir_from(None), cache_dir());
+        assert_eq!(output_dir_from(Some("".into())), cache_dir());
+    }
+
+    #[test]
     fn ids_round_trip_and_keep_the_salt() {
         let id = ObjectId {
             kind: Kind::Actor,
@@ -1277,6 +1309,7 @@ mod tests {
         let at = At {
             tick: Some(5),
             ticks: 5,
+            activation: 1,
             map_ticks: 5,
             present: 9,
             map: None,

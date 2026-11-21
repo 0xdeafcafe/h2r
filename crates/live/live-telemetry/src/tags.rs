@@ -13,25 +13,38 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek};
-use std::path::PathBuf;
 
-/// Where a map file sits on the host: a whole file, or a region inside a
-/// disc image.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A host region for the telemetry worker. A private source can supply a
+/// guard to keep its path alive until the worker has finished with it.
 pub struct MapFile {
-    pub path: PathBuf,
+    pub path: std::path::PathBuf,
     pub offset: u64,
     pub len: u64,
+    _guard: Option<Box<dyn Send + Sync>>,
 }
 
-/// Finds the file of the map the game loaded, by its cache short name (the
-/// name is `[A-Za-z0-9_-]{1,64}`, checked before the call).
-pub type MapLocator = Box<dyn Fn(&str) -> Option<MapFile> + Send + Sync>;
+impl MapFile {
+    pub fn new<G: Send + Sync + 'static>(
+        path: std::path::PathBuf,
+        offset: u64,
+        len: u64,
+        guard: Option<G>,
+    ) -> Self {
+        Self {
+            path,
+            offset,
+            len,
+            _guard: guard.map(|g| Box::new(g) as Box<dyn Send + Sync>),
+        }
+    }
+}
 
-/// The package identity and optional base name, from the cache short
-/// name. An alias can identify a mod while reports group it by base.
+/// Finds the loaded map file from the guest's active cache slot.
+pub type MapLocator = Box<dyn Fn(&runtime::Guest) -> Option<MapFile> + Send + Sync>;
+
+/// The active slot's identity and optional package base for match reports.
 pub type MapIdLocator =
-    Box<dyn Fn(&str) -> Option<(live_proto::maps::MapId, Option<String>)> + Send + Sync>;
+    Box<dyn Fn(&runtime::Guest) -> Option<(live_proto::maps::MapId, Option<String>)> + Send + Sync>;
 
 /// The playlist of the game starting, asked at each multiplayer start; the
 /// boot answers it with `live_hle::Hle::playlist`. It runs with guest

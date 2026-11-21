@@ -1088,16 +1088,31 @@ pub fn offer_vis(map: &str, vis: Arc<crate::vis::Vis>) -> bool {
     }
 }
 
-static HANDLE: std::sync::OnceLock<Handle> = std::sync::OnceLock::new();
+static HANDLE: Mutex<Option<Handle>> = Mutex::new(None);
 
-/// Makes `h` the game's running worker, for [`handle`].
-pub fn set_handle(h: Handle) {
-    let _ = HANDLE.set(h);
+/// Owns a boot's worker. Dropping an old boot cannot stop its replacement.
+pub struct RunningWorker(Handle);
+
+impl Drop for RunningWorker {
+    fn drop(&mut self) {
+        let mut active = HANDLE.lock().unwrap_or_else(|e| e.into_inner());
+        if active.as_ref().is_some_and(|h| Arc::ptr_eq(&h.0, &self.0.0)) {
+            active.take();
+        }
+        self.0.stop();
+    }
 }
 
-/// The game's running worker, if the automatic build is on.
-pub fn handle() -> Option<&'static Handle> {
-    HANDLE.get()
+/// Publishes the worker of the current boot.
+pub fn set_handle(h: Handle) -> RunningWorker {
+    if let Some(old) = HANDLE.lock().unwrap_or_else(|e| e.into_inner()).replace(h.clone()) {
+        old.stop();
+    }
+    RunningWorker(h)
+}
+
+pub fn handle() -> Option<Handle> {
+    HANDLE.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// Builds `map`'s nav mesh next if it is missing or stale (the map the

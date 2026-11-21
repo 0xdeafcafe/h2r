@@ -15,6 +15,7 @@ pub mod proto;
 mod service;
 mod takeover;
 mod transfer;
+mod watch;
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
@@ -23,17 +24,22 @@ use std::time::Duration;
 use agent_proto::takeover::MAX_TIMEOUT_SECONDS;
 use anyhow::{Context, Result, bail, ensure};
 
+const DEFAULT_MAX_JOBS: usize = 1;
+
 const USAGE: &str = "usage:
   h2 lab host [install] [--root DIR] [--socket PATH] [--repo DIR] [--disc ISO]
               [--h2 PATH] [--out DIR] [--data DIR] [--cargo PATH]
               [--obj-cache-limit SIZE] [--target-limit SIZE]
-              [--listen IP:PORT] [--name NAME]
+              [--listen IP:PORT] [--name NAME] [--max-jobs 1]
               [--takeover-timeout SECONDS] [--takeover-cooldown SECONDS]
                           serve on the private Unix socket; --listen enables LAN
                           install starts an Aqua LaunchAgent with LAN enabled
                           (default 0.0.0.0:29422) and prints a pairing code
+                          one build or run at a time; later jobs queue
   h2 lab host status | update | uninstall
                           inspect, update or remove the local LaunchAgent
+  h2 lab host watch [--root DIR]
+                          follow jobs and LaunchAgent logs on the host
   h2 lab host pair-code | unpair [--root DIR]
                           issue a fresh code or revoke the paired driver
   h2 lab pair HOST CODE   pair with a Bonjour name, IP, or IP:port
@@ -42,7 +48,7 @@ const USAGE: &str = "usage:
                           (through the host when it runs, else directly)
 
   h2 lab <command> --host NAME|IP[:PORT]|local [--socket PATH for local]
-    status                the host, its checkout and the job running
+    status                the host, its checkout and active jobs
     update                pull, build and restart an idle installed host
     run --name TEXT [--level MAP] [--difficulty D] [--frames N] [--stats-from N] [--no-stats]
         [--replay NAME | --record NAME] [--perf] [--env KEY=VALUE]...
@@ -67,6 +73,8 @@ const USAGE: &str = "usage:
     stop <id>             SIGTERM, then SIGKILL after 5 s
     runs [--limit N] [--json]
     mem <id> [--to DIR]   fetch memory evidence and print its largest growers
+    logs <id|current> [--follow]
+                          show recent output for one job or the active job
     fetch <id> [--to DIR] copy runs/<id> here (default $RUSH_KEEP/lab, else ./lab)
     put <file> [--as NAME] [--level MAP] [--difficulty D] [--commit SHA] [--pgo]
                           upload an input recording (or with --pgo a PGO profile)
@@ -88,6 +96,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let rest = args[1..].to_vec();
     match cmd.as_str() {
         "host" => match rest.first().map(String::as_str) {
+            Some("watch") => watch::local(&rest[1..]),
             Some("serve-installed") => service::managed(&rest[1..]),
             Some(
                 op @ ("install" | "uninstall" | "status" | "update" | "pair-code" | "unpair"
@@ -162,6 +171,7 @@ fn parse_host_config(
     let mut cargo = None;
     let mut obj_cache_limit = build_cache::DEFAULT_OBJECT_LIMIT;
     let mut target_limit = build_cache::DEFAULT_TARGET_LIMIT;
+    let mut max_jobs = DEFAULT_MAX_JOBS;
     let mut listen = None;
     let mut name = None;
     let mut local_only = false;
@@ -190,6 +200,19 @@ fn parse_host_config(
                 } else {
                     target_limit = bytes;
                 }
+            }
+            "--max-jobs" => {
+                max_jobs = it
+                    .next()
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .filter(|&n| n > 0)
+                    .context("--max-jobs needs a positive integer")?;
+                // One build or game at a time keeps runs measurable and the
+                // one image and checkout consistent (docs/runtime/lab.md).
+                ensure!(
+                    max_jobs == DEFAULT_MAX_JOBS,
+                    "--max-jobs {max_jobs}: the lab runs one job at a time; later jobs queue"
+                );
             }
             "--listen" => {
                 listen = Some(
@@ -264,6 +287,7 @@ fn parse_host_config(
         cargo: cargo.unwrap_or_else(|| "cargo".into()),
         obj_cache_limit,
         target_limit,
+        max_jobs,
         lan: listen.map(|addr| lan::Listen { addr, name }),
         explicit_h2,
         managed: false,
@@ -275,6 +299,35 @@ fn parse_host_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_and_install_accept_only_a_job_cap_of_one() {
+        let mut args = vec!["--disc".into(), "disc.iso".into()];
+        assert_eq!(host_config(&args).unwrap().max_jobs, 1);
+        assert_eq!(install_config(&args).unwrap().max_jobs, 1);
+
+        args.extend(["--max-jobs".into(), "1".into()]);
+        assert_eq!(host_config(&args).unwrap().max_jobs, 1);
+        assert_eq!(install_config(&args).unwrap().max_jobs, 1);
+
+        *args.last_mut().unwrap() = "2".into();
+        for refused in [host_config(&args), install_config(&args)] {
+            assert!(
+                refused
+                    .unwrap_err()
+                    .to_string()
+                    .contains("one job at a time")
+            );
+        }
+
+        for value in ["0", "-1", "many"] {
+            *args.last_mut().unwrap() = value.into();
+            assert_eq!(
+                host_config(&args).unwrap_err().to_string(),
+                "--max-jobs needs a positive integer"
+            );
+        }
+    }
 
     #[test]
     fn only_install_defaults_to_a_lan_listener() {

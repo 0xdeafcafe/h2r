@@ -17,7 +17,8 @@ use serde::{Deserialize, Serialize};
 pub const VERSION: u32 = 1;
 
 /// Run-time environment a request may set. Paths the game writes (frame
-/// stats CSV, input recording, profile directory) are the host's to choose.
+/// stats CSV, input recording, profile and agent output directories) are
+/// the host's to choose.
 pub const RUN_ENV: &[&str] = &[
     "H2_FRAME_STATS",
     "H2_FRAME_STATS_FROM",
@@ -150,6 +151,8 @@ pub struct Manifest {
 /// The input log's file name inside a recording.
 pub const INPUT_FILE: &str = "input.bin";
 
+pub(super) const CURRENT_JOB: &str = "current";
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
@@ -160,6 +163,12 @@ pub enum Request {
     },
     Mem {
         id: String,
+    },
+    /// The log feed for one job ID or all current jobs, using transfer frames.
+    Logs {
+        id: String,
+        #[serde(default)]
+        follow: bool,
     },
     SyncBases {
         branch: String,
@@ -254,6 +263,7 @@ pub fn validate(r: &Request) -> Result<()> {
     match r {
         Request::Status | Request::Update | Request::Recordings | Request::Runs { .. } => Ok(()),
         Request::Fetch { id } | Request::Mem { id } => check_job_id(id),
+        Request::Logs { id, .. } => check_log_id(id),
         Request::SyncBases { branch, commit } | Request::Sync { branch, commit, .. } => {
             check_rev(branch)?;
             check_commit(commit)?;
@@ -335,10 +345,16 @@ pub fn validate(r: &Request) -> Result<()> {
     }
 }
 
-/// What follows `h2 agent` in an `agent` request. Any call goes through
-/// (the host does not know the methods); what is refused is naming a
-/// different socket or console, which the run's own socket replaces, and
-/// the two forms that read files on the host instead of talking to a game.
+pub(super) fn check_log_id(id: &str) -> Result<()> {
+    if id == CURRENT_JOB {
+        return Ok(());
+    }
+    check_job_id(id)
+}
+
+/// What follows `h2 agent` in an `agent` request. The host uses the run's
+/// socket for calls, including `flight show`, which reads a bare file name
+/// through the game's API. `raw-diff` only reads local files.
 pub fn check_agent_args(args: &[String]) -> Result<()> {
     ensure!(
         !args.is_empty() && args.len() <= 64,
@@ -358,10 +374,16 @@ pub fn check_agent_args(args: &[String]) -> Result<()> {
         );
     }
     ensure!(
-        !matches!(args[0].as_str(), "flight" | "raw-diff"),
+        args[0] != "raw-diff",
         "`h2 agent {}` reads files on the machine it runs on; the lab doesn't forward it",
         args[0]
     );
+    if let [domain, verb, show_args @ ..] = args
+        && domain == "flight"
+        && verb == "show"
+    {
+        crate::agent_flight::check_remote_show_args(show_args)?;
+    }
     Ok(())
 }
 
@@ -670,12 +692,36 @@ mod tests {
     }
 
     #[test]
+    fn logs_request_accepts_only_job_ids_or_current() {
+        assert_eq!(
+            run(r#"{"cmd":"logs","id":"0003"}"#).unwrap(),
+            Request::Logs {
+                id: "0003".into(),
+                follow: false,
+            }
+        );
+        assert_eq!(
+            run(r#"{"cmd":"logs","id":"current","follow":true}"#).unwrap(),
+            Request::Logs {
+                id: CURRENT_JOB.into(),
+                follow: true,
+            }
+        );
+        for bad in ["..", "../auth/pairing.json", "some-name", ""] {
+            let request = serde_json::json!({"cmd": "logs", "id": bad});
+            assert!(run(&request.to_string()).is_err(), "{request}");
+        }
+        assert!(run(r#"{"cmd":"logs","id":"current","path":"host.log"}"#).is_err());
+    }
+
+    #[test]
     fn run_env_is_an_allowlist() {
         for k in [
             "H2_FRAME_STATS_CSV",
             "H2_INPUT_REPLAY",
             "H2_PROFILE",
             "H2_AGENT",
+            agent_proto::OUT_ENV,
             "PATH",
             "DYLD_INSERT_LIBRARIES",
             "H2_OPT",
@@ -759,19 +805,25 @@ mod tests {
     }
 
     #[test]
-    fn agent_calls_pass_through_but_not_sockets_or_file_readers() {
+    fn agent_calls_use_the_runs_socket() {
         let ok = r#"{"cmd":"agent","id":"0003","args":["capture","600"],"timeout":90}"#;
         assert!(run(ok).is_ok());
         assert!(
             run(r#"{"cmd":"agent","id":"0003","args":["session.wait","{\"until\":{\"phase\":\"gameplay\"}}"]}"#)
                 .is_ok()
         );
+        assert!(
+            run(r#"{"cmd":"agent","id":"0003","args":["flight","show","walk.jsonl","--field","physics.crouch"]}"#)
+                .is_ok()
+        );
+        assert!(run(r#"{"cmd":"agent","id":"0003","args":["flight","dump","walk.jsonl"]}"#).is_ok());
         for bad in [
             r#"{"cmd":"agent","id":"0003","args":[]}"#,
             r#"{"cmd":"agent","id":"../x","args":["status"]}"#,
             r#"{"cmd":"agent","id":"0003","args":["status","--socket","/tmp/x"]}"#,
             r#"{"cmd":"agent","id":"0003","args":["status","--xbox"]}"#,
             r#"{"cmd":"agent","id":"0003","args":["flight","show","/etc/passwd"]}"#,
+            r#"{"cmd":"agent","id":"0003","args":["flight","show","walk.jsonl","--field"]}"#,
             r#"{"cmd":"agent","id":"0003","args":["raw-diff","a","b"]}"#,
             r#"{"cmd":"agent","id":"0003","args":["status"],"timeout":0}"#,
             r#"{"cmd":"agent","id":"0003","args":["status"],"timeout":-1}"#,

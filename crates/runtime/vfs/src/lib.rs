@@ -31,7 +31,9 @@ pub use content_maps::{ContentMap, ContentMaps};
 pub use dir_disc::{AnyDisc, DirDiscBackend, open_disc, open_disc_with_mapping};
 pub use disc::DiscBackend;
 pub use host::{HostBackend, METADATA_STALE, flush_pending_metadata};
-pub use map_override::{MapOverrideBackend, MapOverrideNotice};
+pub use map_override::{
+    MapGeneration, MapOverrideBackend, MapOverrideNotice, MapRebind, PreparedMapRebind, ReservedMapRebind,
+};
 pub use packages::{PackageBackend, Scope as PackageScope};
 pub use rewrite::{Chain, MAX_REWRITE_BYTES, Rewrite, RewriteBackend};
 pub use sim_store::SimStoreBackend;
@@ -487,6 +489,16 @@ impl Vfs {
         Some(self.content_maps.get(&path)?.package.manifest.base.map)
     }
 
+    /// The base of the package at this device path. A DVD slot can share a
+    /// filename with a package on the data partition.
+    pub fn content_base_at(&self, name: &str) -> Option<String> {
+        let (mount, path) = self.resolve(name).ok()?;
+        if !self.mounts[mount].device.eq_ignore_ascii_case(DATA_DEVICE) {
+            return None;
+        }
+        Some(self.content_maps.get(&path)?.package.manifest.base.map)
+    }
+
     /// Look again at map packages (`<data>/maps`) on every mount, after
     /// one was installed or edited while the game runs: a map whose
     /// package changed is resolved again at its next open; a file open now
@@ -498,9 +510,8 @@ impl Vfs {
             m.backend.rescan();
         }
     }
-    /// Whether the map `name` would now be served differently than at its
-    /// last open (see [`Backend::map_changed`]); looks at the maps folder
-    /// first.
+    /// Whether a cached copy of `name` needs to be refreshed from its
+    /// source (see [`Backend::map_changed`]).
     pub fn map_changed(&mut self, name: &str) -> bool {
         let Ok((mount, path)) = self.resolve(name) else {
             return false;

@@ -87,9 +87,10 @@ pub struct CoreInputs<'a> {
 
 /// What [`register_core`] decided, for the install lines after the plan.
 pub struct Core {
+    pub editor_sources: Option<Arc<crate::loaded_map::EditorSources>>,
     pub telemetry: Option<Arc<telemetry::Telemetry>>,
     pub ui_navigation: Arc<ui_back::Navigation>,
-    pub skulls_on: bool,
+    pub skulls: Option<Arc<skulls::Tracker>>,
     pub skulls_mp_on: bool,
     pub skulls_custom_on: bool,
     pub health_on: bool,
@@ -101,7 +102,7 @@ pub struct Core {
 
 /// Registers everything from the telemetry hooks to the touch glue.
 pub fn register_core(features: &mut hooks::Registry, i: CoreInputs<'_>) -> anyhow::Result<Core> {
-    register_core_film(features, i, None, false)
+    register_core_film(features, i, None, false, None)
 }
 
 pub(crate) fn register_core_film(
@@ -109,7 +110,11 @@ pub(crate) fn register_core_film(
     i: CoreInputs<'_>,
     film: Option<Arc<crate::theater::Session>>,
     non_player: bool,
+    editor: Option<vfs::MapRebind>,
 ) -> anyhow::Result<Core> {
+    let sources = editor.zip(i.vfs.as_ref()).map(|(handle, vfs)| {
+        Arc::new(crate::loaded_map::EditorSources::new(vfs, handle))
+    });
     let rt: &Runtime = i.rt;
     let creature_probe = features
         .add(&crate::actor_net::creature::CreatureProbe)
@@ -241,7 +246,7 @@ pub(crate) fn register_core_film(
     // campaign start turns on the profile's chosen skulls (docs/game/skulls.md).
     // Headless runs (no settings store) leave skulls as retail. Hooks on
     // the feature plan; the line after the plan installs says where.
-    let skulls_on = skulls::install(features, i.settings.clone()).context("installing the skulls")?;
+    let skulls = skulls::install(features, i.settings.clone()).context("installing the skulls")?;
     // Skulls in multiplayer games: the host's set, advertised to guests on
     // our Live service and applied on every machine at game start
     // (docs/game/skulls.md "In multiplayer").
@@ -265,13 +270,14 @@ pub(crate) fn register_core_film(
     // ours on the tick (docs/game/skulls.md "Our skulls"). The skull weapon's
     // tag comes from the loaded map's file, found through the VFS.
     let custom_maps: Option<skulls_custom::MapLocator> = i.vfs.map(|vfs| -> skulls_custom::MapLocator {
-        Box::new(move |map| {
+        Box::new(move |name, path| {
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-            let file = crate::map_override::map_file(&mut v, map)?;
-            Some(telemetry::MapFile { path: file.path, offset: file.offset, len: file.len })
+            crate::map_override::map_file_at(&mut v, name, path)
         })
     });
-    let skulls_custom_on = skulls_custom::install(features, i.settings.clone(), telemetry.clone(), custom_maps)
+    let skulls_custom_on = skulls_custom::install_for_maps(
+        features, i.settings.clone(), telemetry.clone(), custom_maps, sources.as_deref(),
+    )
         .context("installing our skulls")?;
     for effect in [
         &crate::h1_particle_physics::H1ParticlePhysics as &dyn hooks::Feature,
@@ -328,7 +334,8 @@ pub(crate) fn register_core_film(
         crate::clanker_card::install(features, i.live.clone())
             .context("installing Clanker player options")?;
         let bot_tape = film.filter(|f| f.has_bot_tape());
-        bots_on = bot_glue::install_film(features, i.data_root, bot_tape).context("installing the bots")?;
+        bots_on = bot_glue::install_for_maps(features, i.data_root, bot_tape, sources.as_deref())
+            .context("installing the bots")?;
         // The Clankers page and its Game Setup row (stage 7).
         if let Some(store) = i.settings.as_ref() {
             clankers::install(features, store, i.live.clone(), telemetry.as_ref()).context("installing the Clankers page")?;
@@ -354,9 +361,10 @@ pub(crate) fn register_core_film(
     // seat and weapon. Idle while no touch controls show.
     touch_glue::install(features).context("installing the touch glue")?;
     Ok(Core {
+        editor_sources: sources,
         telemetry,
         ui_navigation,
-        skulls_on,
+        skulls,
         skulls_mp_on,
         skulls_custom_on,
         health_on,

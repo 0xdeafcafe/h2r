@@ -1835,6 +1835,7 @@ fn opens_are_observed_with_their_host_bytes() {
     assert_eq!(
         host,
         HostFile {
+            generation: None,
             path: iso.clone(),
             offset: 36 * 2048,
             len: 3

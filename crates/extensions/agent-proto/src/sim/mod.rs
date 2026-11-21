@@ -93,6 +93,10 @@ pub mod method {
         SPAWN,
         OBJECTS,
         EVENTS,
+        OBJECT_SET,
+        OBJECT_DELETE,
+        OBJECT_RESPAWN,
+        MAP_RELOAD,
     ];
 }
 
