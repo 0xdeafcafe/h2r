@@ -2,6 +2,7 @@
 //! Stage a graph report on the renderer until the whole draw succeeds.
 
 use std::collections::BTreeSet;
+use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
@@ -9,6 +10,7 @@ use std::time::Instant;
 use agent_proto::frame_graph::{DisplayStats, E3Report, FrameGraphStats, PassSlot, Source};
 use agent_proto::{FrameRecord, OpRecord, PassRecord, SnapRecord};
 
+use super::private_capture::Written;
 use super::{DrawInfo, FrameProbe, Recording, Stage};
 use crate::compare::{Rgba, write_png};
 
@@ -50,9 +52,16 @@ pub fn display_declined(swap: u64) {
     }
     let mut p = super::PROBE.lock();
     if matches!(&p.stage, Stage::Routing { swap: pending, .. } if *pending == swap)
-        && let Stage::Routing { original, .. } = std::mem::replace(&mut p.stage, Stage::Idle)
+        && let Stage::Routing {
+            original,
+            original_files,
+            ..
+        } = std::mem::replace(&mut p.stage, Stage::Idle)
     {
         p.last = Some(*original);
+        for file in original_files {
+            file.retain();
+        }
         super::PROBE.armed.store(false, Ordering::Relaxed);
     }
 }
@@ -62,9 +71,15 @@ pub fn display_declined(swap: u64) {
 pub fn discard_display(swap: u64) {
     let mut p = super::PROBE.lock();
     if matches!(&p.stage, Stage::Routing { swap: pending, .. } if *pending == swap)
-        && let Stage::Routing { arming, .. } = std::mem::replace(&mut p.stage, Stage::Idle)
+        && let Stage::Routing {
+            arming,
+            original_files,
+            ..
+        } = std::mem::replace(&mut p.stage, Stage::Idle)
     {
         p.stage = Stage::Waiting(arming);
+        drop(p);
+        drop(original_files);
     }
 }
 
@@ -73,9 +88,16 @@ pub fn display_stopped() {
     state.display = None;
     let mut p = super::PROBE.lock();
     if matches!(p.stage, Stage::Routing { .. })
-        && let Stage::Routing { arming, .. } = std::mem::replace(&mut p.stage, Stage::Idle)
+        && let Stage::Routing {
+            arming,
+            original_files,
+            ..
+        } = std::mem::replace(&mut p.stage, Stage::Idle)
     {
         p.stage = Stage::Waiting(arming);
+        drop(p);
+        drop(state);
+        drop(original_files);
     }
 }
 
@@ -127,6 +149,7 @@ impl GraphRecording {
             swap: pending,
             arming,
             original,
+            ..
         } = &p.stage
         else {
             return None;
@@ -163,6 +186,7 @@ impl GraphRecording {
             began: Instant::now(),
             targets: BTreeSet::new(),
             key: None,
+            files: Vec::new(),
         });
         Self {
             epoch,
@@ -239,15 +263,43 @@ impl GraphRecording {
         }
     }
 
-    /// The callback reads this pass's actual colour before any later op
-    /// can change it. Only requested passes incur a GPU readback.
+    fn probe(&self) -> &'static FrameProbe {
+        match self.source {
+            Source::Private => &PROBE,
+            Source::Display => &super::PROBE,
+        }
+    }
+
+    fn owns(&self, stage: &Stage, seq: u64) -> bool {
+        match stage {
+            Stage::Graph(active) => self.source == Source::Private && active.seq == seq,
+            Stage::Routing {
+                arming, original, ..
+            } => {
+                self.source == Source::Display
+                    && arming.seq == seq
+                    && original.present == self.stats.present
+            }
+            _ => false,
+        }
+    }
+
+    fn active(&self, seq: u64) -> bool {
+        self.owns(&self.probe().lock().stage, seq)
+    }
+
+    /// Read the colour at the pass boundary only for the current request.
+    /// A read already in progress can finish after a reset or replacement.
     pub fn snapshot(&mut self, index: usize, read: impl FnOnce() -> Result<Rgba, String>) {
-        if self
-            .recording
-            .as_ref()
-            .is_some_and(|r| r.arming.snap.contains(&index))
-        {
-            self.snaps.push((index, read()));
+        let Some(r) = self.recording.as_ref() else {
+            return;
+        };
+        if !r.arming.snap.contains(&index) || !self.active(r.arming.seq) {
+            return;
+        }
+        let result = read();
+        if self.active(r.arming.seq) {
+            self.snaps.push((index, result));
         }
     }
 
@@ -266,84 +318,98 @@ impl GraphRecording {
         self.stats.render_passes = render_passes;
         self.stats.backend_draws = backend_draws;
         self.stats.submits = submits;
-        let finished = self.recording.take().map(|mut r| {
-            r.rec.ms = r.began.elapsed().as_secs_f64() * 1000.0;
-            r.rec.totals.passes = r.rec.passes.len();
-            r.rec.totals.targets = r.targets.len();
-            match self.source {
-                Source::Private => r.rec.private_frame = Some(self.stats.clone()),
-                Source::Display => r.rec.display_frame = Some(self.stats.clone()),
+        let report = self
+            .recording
+            .take()
+            .filter(|r| self.active(r.arming.seq))
+            .map(|r| self.finish_report(r, &agent_proto::cache_dir().join("frames")));
+        self.publish(report);
+    }
+
+    fn finish_report(&mut self, mut r: Recording, dir: &Path) -> Recording {
+        r.rec.ms = r.began.elapsed().as_secs_f64() * 1000.0;
+        r.rec.totals.passes = r.rec.passes.len();
+        r.rec.totals.targets = r.targets.len();
+        let prefix = match self.source {
+            Source::Private => {
+                r.rec.private_frame = Some(self.stats.clone());
+                "private"
             }
-            for (pass, result) in self.snaps.drain(..) {
-                let result = result.and_then(|rgba| {
-                    let prefix = match self.source {
-                        Source::Private => "private",
-                        Source::Display => "display",
-                    };
-                    let name = format!(
-                        "{prefix}-{}-{}-pass-{pass}.png",
-                        std::process::id(),
-                        r.arming.seq
-                    );
-                    let path = agent_proto::cache_dir().join("frames").join(name);
-                    write_png(&path, &rgba).map_err(|e| e.to_string())?;
-                    Ok(path.display().to_string())
-                });
-                r.rec.snaps.push(match result {
-                    Ok(file) => SnapRecord {
-                        pass,
-                        file: Some(file),
-                        error: None,
-                    },
-                    Err(error) => SnapRecord {
-                        pass,
-                        file: None,
-                        error: Some(error),
-                    },
-                });
+            Source::Display => {
+                r.rec.display_frame = Some(self.stats.clone());
+                "display"
             }
-            for &pass in r.arming.snap.range(r.rec.passes.len()..) {
-                r.rec.snaps.push(SnapRecord {
+        };
+        for (pass, result) in std::mem::take(&mut self.snaps) {
+            if !self.active(r.arming.seq) {
+                break;
+            }
+            let result = result.and_then(|rgba| {
+                let name = format!(
+                    "{prefix}-{}-{}-frame-{}-pass-{pass}.png",
+                    std::process::id(),
+                    r.arming.seq,
+                    self.stats.present
+                );
+                let file = Written::new(dir.join(name));
+                write_png(file.path(), &rgba).map_err(|e| e.to_string())?;
+                let path = file.path().display().to_string();
+                r.files.push(file);
+                Ok(path)
+            });
+            r.rec.snaps.push(match result {
+                Ok(file) => SnapRecord {
+                    pass,
+                    file: Some(file),
+                    error: None,
+                },
+                Err(error) => SnapRecord {
                     pass,
                     file: None,
-                    error: Some("no such graph pass".into()),
-                });
-            }
-            r.rec
-        });
+                    error: Some(error),
+                },
+            });
+        }
+        for &pass in r.arming.snap.range(r.rec.passes.len()..) {
+            r.rec.snaps.push(SnapRecord {
+                pass,
+                file: None,
+                error: Some("no such graph pass".into()),
+            });
+        }
+        r
+    }
+
+    /// Files remain unclaimed until the owning probe accepts this report.
+    /// The guards outlive both locks, including on the discard paths.
+    fn publish(&self, report: Option<Recording>) {
         let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
         if self.source == Source::Private && state.epoch != self.epoch {
             return;
         }
-        let probe = match self.source {
-            Source::Private => {
-                state.last = Some(self.stats.clone());
-                &PROBE
-            }
-            Source::Display => &super::PROBE,
-        };
+        let probe = self.probe();
         let mut p = probe.lock();
         if self.source == Source::Private {
+            state.last = Some(self.stats.clone());
             p.presents = self.stats.present;
         }
-        if let Some(frame) = finished {
-            let expected = match &p.stage {
-                Stage::Graph(active) => self.source == Source::Private && active.seq == frame.seq,
-                Stage::Routing {
-                    arming, original, ..
-                } => {
-                    self.source == Source::Display
-                        && arming.seq == frame.seq
-                        && original.present == frame.present
-                }
-                _ => false,
-            };
-            if !expected {
-                return;
-            }
-            p.last = Some(frame);
-            p.stage = Stage::Idle;
+        if report
+            .as_ref()
+            .is_some_and(|r| !self.owns(&p.stage, r.arming.seq))
+        {
+            return;
+        }
+        if let Some(r) = report {
+            p.last = Some(r.rec);
+            let previous = std::mem::replace(&mut p.stage, Stage::Idle);
             probe.armed.store(false, Ordering::Relaxed);
+            for file in r.files {
+                file.retain();
+            }
+            drop(p);
+            drop(state);
+            // The original display recording can own rejected snapshots.
+            drop(previous);
         }
     }
 }
@@ -365,6 +431,8 @@ impl Drop for GraphRecording {
 mod tests {
     use super::*;
     use agent_proto::{CaptureLighting, FrameParams};
+
+    static PRIVATE_TEST: Mutex<()> = Mutex::new(());
 
     fn stats() -> FrameGraphStats {
         FrameGraphStats {
@@ -391,6 +459,7 @@ mod tests {
 
     #[test]
     fn an_armed_private_graph_reports_only_the_completed_draw_and_requested_snapshots() {
+        let _guard = PRIVATE_TEST.lock().unwrap_or_else(|e| e.into_inner());
         reset();
         let p = FrameParams {
             arm: true,
@@ -404,6 +473,7 @@ mod tests {
         interrupted.pass(|| "SceneColour".into(), || None);
         let current = PROBE.arm(&p).unwrap().seq.unwrap();
         assert_ne!(old, current);
+        interrupted.snapshot(1, || panic!("superseded graph read the GPU"));
         interrupted.complete(10, 1, 0, 1, None);
         assert_eq!(PROBE.reply().seq, Some(current));
         assert!(PROBE.reply().frame.is_none());
@@ -482,6 +552,68 @@ mod tests {
     }
 
     #[test]
+    fn graph_snapshots_live_only_when_the_owning_report_is_published() {
+        let _guard = PRIVATE_TEST.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+        let dir = std::env::temp_dir().join(format!("h2-graph-snapshot-{}", std::process::id()));
+        let arm = FrameParams {
+            arm: true,
+            snap: vec![0],
+            ..Default::default()
+        };
+        let image = || {
+            Ok(Rgba {
+                width: 1,
+                height: 1,
+                pixels: vec![1, 2, 3, 255],
+            })
+        };
+        PROBE.arm(&arm).unwrap();
+        let mut interrupted = begin();
+        interrupted.pass(|| "SceneColour".into(), || None);
+        interrupted.snapshot(0, || {
+            // An external arming can arrive while the GPU read is in progress.
+            PROBE.arm(&arm).unwrap();
+            image()
+        });
+        assert!(interrupted.snaps.is_empty());
+        interrupted.complete(10, 1, 0, 1, None);
+
+        for cancellation in ["replace", "reset", "publish"] {
+            PROBE.arm(&arm).unwrap();
+            let mut graph = begin();
+            graph.pass(|| "SceneColour".into(), || None);
+            graph.snapshot(0, image);
+            let recording = graph.recording.take().unwrap();
+            let report = graph.finish_report(recording, &dir);
+            let path = report.files[0].path().to_owned();
+            assert!(path.is_file());
+            assert_eq!(report.rec.snaps[0].file.as_deref(), path.to_str());
+            match cancellation {
+                "replace" => {
+                    PROBE.arm(&arm).unwrap();
+                }
+                "reset" => reset(),
+                _ => {}
+            }
+            graph.publish(Some(report));
+            if cancellation == "publish" {
+                let published = PROBE.reply().frame.unwrap();
+                assert_eq!(published.snaps[0].file.as_deref(), path.to_str());
+                assert!(path.is_file());
+                std::fs::remove_file(path).unwrap();
+            } else {
+                assert!(PROBE.reply().frame.is_none());
+                assert!(
+                    !path.exists(),
+                    "unpublished snapshot survived {cancellation}"
+                );
+            }
+        }
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
     fn the_display_recorder_waits_for_the_worker_to_choose_the_commands_actually_presented() {
         let p = &super::super::PROBE;
         let arm = FrameParams {
@@ -539,5 +671,21 @@ mod tests {
         p.clear("next", None);
         p.present(107);
         assert_eq!(p.reply().frame.unwrap().present, 107);
+
+        p.arm(&snap).unwrap();
+        p.present_routed(108, Some(7));
+        p.clear("original", None);
+        p.present_routed(109, Some(8));
+        let mut retired = GraphRecording::begin_display(8, stats).unwrap();
+        display_stopped();
+        retired.snapshot(0, || panic!("retired display graph read the GPU"));
+        retired.complete(123, 1, 0, 1, None);
+        assert!(p.reply().armed);
+        assert!(p.reply().frame.is_none());
+        p.arm(&arm).unwrap();
+        p.present(110);
+        p.clear("next", None);
+        p.present(111);
+        assert_eq!(p.reply().frame.unwrap().present, 111);
     }
 }
