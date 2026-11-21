@@ -313,9 +313,12 @@ fn quick_builtins() -> [Def; 3] {
     })
 }
 
-/// Random kills, deaths and sight lines from a seed.
+/// Random kills, deaths and sight lines from a seed. Every fourth seed is
+/// lethal (players die far faster than the lives pools refill), so some
+/// matches are lost; the rest almost never drain the pool.
 fn random_script(seed: u64) -> impl FnMut(u32, &mut World) {
     let mut rng = TestRng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+    let death_one_in = if seed % 4 == 0 { 15 } else { 300 };
     move |_, world| {
         let alive: Vec<u8> = world
             .players
@@ -333,7 +336,7 @@ fn random_script(seed: u64) -> impl FnMut(u32, &mut World) {
             }
         }
         for alive in world.players.values_mut() {
-            if *alive && rng.one_in(300) {
+            if *alive && rng.one_in(death_one_in) {
                 *alive = false;
             }
         }
