@@ -45,7 +45,7 @@ works, and its page says which part. **Design**: written up, not built.
 | | More than one campaign: picker and per-campaign progress | Built | [campaigns](halo1/campaign-picker.md) |
 | | Halo 1 health model and meter | Built | [health](halo1/health.md) |
 | | Theater: `.h2film` films recorded by dedicated hosts, played back with the game's renderer and director cameras | Partly built | [theater](game/theater.md), [film format](game/film-format.md) |
-| | Forge | Design | [forge](game/forge.md) |
+| | Forge | Design | [forge](game/forge.md), [design](game/forge-design.md) |
 | Halo 1 | Halo 1 campaign levels convert offline into Halo 2 maps for the Halo 2 engine, with Halo 1 assets and a Halo 2 setting | Partly built | [campaign](halo1/campaign.md) |
 | | The 13 Halo 1 multiplayer maps convert to Halo 2 maps (collision, BSP, MOPP, objects, shaders) | Built | [h1 multiplayer](halo1/multiplayer.md) |
 | | Halo 1 maps, bitmaps, models and animations read and converted to Halo 2 tags | Built | [h1 format](halo1/map-format.md), [models](halo1/models.md) |
