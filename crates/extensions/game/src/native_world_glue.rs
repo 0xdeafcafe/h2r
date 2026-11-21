@@ -127,12 +127,13 @@ pub type State = Arc<Mutex<MapState>>;
 
 /// Match the guest's active BSP even if it changed before the next layer 3.
 pub fn current_ready<'a>(state: &'a MapState, mem: &dyn GuestMemory) -> Option<&'a Arc<Ready>> {
+    let ready = state.ready.as_ref()?;
     let key = state.key.as_ref()?;
     (key.current()
         && mem.u32(render_bridge::native_world::ACTIVE_BSP).ok() == Some(key.bsp)
         && active_bsp_index(mem) == Some(key.index)
-        && crate::health::loaded_map_name(mem).ok().as_ref() == Some(&key.map))
-        .then_some(state.ready.as_ref()?)
+        && crate::health::read_map_name(mem, &mut [0; 32]).ok().as_deref() == Some(key.map.as_str()))
+        .then_some(ready)
 }
 
 /// The host: the device and the current world.
