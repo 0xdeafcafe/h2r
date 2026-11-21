@@ -2570,6 +2570,104 @@ fn a_coop_lobby_advertises_its_campaign_and_the_invited_guest_reads_it() {
     assert_eq!(host.hle.activity(), None);
     assert!(guest.hle.joined(wait).campaign().is_none());
 }
+#[test]
+fn browser_filters_stay_with_the_retail_search_and_refresh_host_metadata() {
+    use live_proto::{
+        optimatch::{PARAMS, Query, attr::HOPPER},
+        session::{AttributeValue, BrowserFilters, BrowserMetadata, MapCategory},
+    };
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let s = Server::new();
+    let a = s.account("Host");
+    let b = s.account("Browser");
+    let mut host = World::new(&s.embedded.url, &[&a]);
+    let mut reader = World::raw_network(
+        &s.embedded.url,
+        json!([b.json()]),
+        Duration::from_millis(100),
+        32000,
+    );
+    host.logon();
+    reader.logon();
+
+    let clankers = Arc::new(AtomicBool::new(true));
+    let flag = clankers.clone();
+    host.hle.set_browser_probe(Arc::new(move |_, _| {
+        Some(BrowserMetadata {
+            clankers: Some(flag.load(Ordering::Relaxed)),
+            game_type: Some(2),
+            variant: Some("Short Team Night".into()),
+            map_category: Some(MapCategory::Halo2),
+        })
+    }));
+    attr(&host, MATCH_ATTR, HOPPER, u64::MAX);
+    assert_eq!(
+        host.call("XOnlineMatchSessionCreate", &[1, 7, 0, 0, 1, MATCH_ATTR, 0, OUT]),
+        0
+    );
+    let create = host.u32(OUT);
+    assert_eq!(host.wait(create), TASK_SUCCESS);
+    assert!(s.events().iter().any(|event| {
+        event.kind == "SessionCreated"
+            && event.data["advertisement"]["browser"]["clankers"] == json!(true)
+    }));
+
+    let query = Query {
+        hopper: -1,
+        average: 0,
+        lowest: None,
+        highest: None,
+        party: None,
+        has_map_pack: false,
+    };
+    for (i, value) in query.to_params().into_iter().enumerate() {
+        let at = MATCH_ATTR + i as u32 * 16;
+        match value {
+            AttributeValue::Integer(value) => attr(&reader, at, 0, value),
+            AttributeValue::Null => attr(&reader, at, 0x00f0_0000, 0),
+            other => panic!("unexpected browser parameter {other:?}"),
+        }
+    }
+    let cap = reader.call("XOnlineMatchSearchResultsLen", &[50, 7, MATCH_SPEC]);
+    let params = PARAMS as u32;
+    let without = BrowserFilters { clankers: Some(false), ..Default::default() };
+    reader.hle.set_browser_filters(without.clone());
+    assert_eq!(match_search(&mut reader, 1, params, cap).2, 0);
+    let status = reader.hle.browser_status();
+    assert_eq!(status.matching, Some(0));
+    assert_eq!(status.variants, ["Short Team Night"]);
+    assert_eq!(status.filtering_supported, Some(true));
+    assert_eq!(match_search(&mut reader, 1, 0, cap).2, 1);
+
+    // A pending search cannot hand its old rows back after the filter changes,
+    // even if the worker finished before the guest polled the handle.
+    reader.hle.set_browser_filters(BrowserFilters::default());
+    assert_eq!(
+        reader.call("XOnlineMatchSearch", &[1, 50, params, MATCH_ATTR, cap, 0, OUT]),
+        0
+    );
+    let stale = reader.u32(OUT);
+    reader.hle.set_browser_filters(without);
+    assert_eq!(reader.wait(stale), TASK_SUCCESS);
+    assert_eq!(
+        reader.call("XOnlineMatchSearchGetResults", &[stale, OUT, OUT + 4]),
+        0
+    );
+    assert_eq!(reader.u32(OUT + 4), 0);
+    assert_eq!(reader.hle.browser_status().matching, None);
+
+    clankers.store(false, Ordering::Relaxed);
+    host.hle.lobby_browser_changed(&host.rt.memory());
+    s.until(|| {
+        s.events().iter().any(|event| {
+            event.kind == "SessionUpdated" && event.data["browser"]["clankers"] == json!(false)
+        })
+    });
+    assert_eq!(match_search(&mut reader, 1, params, cap).2, 1);
+    assert_eq!(reader.hle.browser_status().matching, Some(1));
+}
+
 /// The custom games browser (docs/live/live-custom-games.md) is the retail
 /// System Link browser in its Live mode: its search is `0x0008fa80`'s
 /// procedure 1 with 50 results, and `0x0008fb30` keeps rows with exactly

@@ -32,6 +32,44 @@ Labels follow [live-boundary.md](live-boundary.md): **confirmed** means read
 statically in the retail code, **likely** means consistent with that code but
 not proven. Addresses are guest VAs in the retail 5849 image.
 
+## Filter games
+
+Open **Custom Game Browser** from Xbox Live and press **Y** to open
+**Game Filters**. Each row shows its selected value. Press **A** on a row
+to open its picker, then choose a value or **Any**. Press **B** to return
+to the browser. The browser header shows how many filters are active.
+
+| Row | Choices besides Any |
+|---|---|
+| Type | Multiplayer, Campaign co-op |
+| Clankers | With Clankers, Without Clankers |
+| Game type | Slayer, CTF, Oddball, King of the Hill, Juggernaut, Territories, Assault |
+| Variant | Names advertised by games you can discover, including custom variants |
+| Map category | Halo 2, Map Pack, Mods, Halo: CE |
+| Player spaces | Has space |
+| Campaign | Halo 2, Halo: CE |
+| Difficulty | Easy, Normal, Heroic, Legendary |
+
+Filters apply together. Game type and variant apply to multiplayer.
+Campaign and difficulty apply to co-op. **Has space** looks for an open
+public seat, including the host's latest roster report. Older
+advertisements with unknown fields remain eligible for those criteria.
+The service applies the same filtering for the game and the web before
+it limits the results. Visibility still applies to results and to
+variant suggestions.
+
+Press **X** in the filter page or browser to clear every filter. An
+empty filtered search shows **No games match. Press X to clear filters**.
+Choices are saved in `<data>/live-browser-filters.toml`. The agent can
+read them with
+[`ui.browser.filters`](../runtime/agent-api.md#ui-what-the-menus-show).
+
+The filter page and browser text live in
+`crates/extensions/game/src/custom_games/browser_filters.rs` and its
+`guest` module. The Live HLE sends the choices with its custom browser
+search. The [session API](live-api.md#sessions) serves them through the
+shared router in native Live and the Cloudflare Worker.
+
 ## Join in Halo 2
 
 On the Live website, **Join in Halo 2** opens a joinable game in the
@@ -146,14 +184,10 @@ needs. Phase 1 already implemented each piece it calls:
 | QoS listener data | Answered between HLE peers on UDP base+2 ([live.md](live.md), sockets) |
 | XNKID | The server's session ID. The host registered the same ID through `XOnlineMatchSessionGetInfo` (`0x72f39`), so its find-by-XNKID matches |
 
-Two things remain:
-
-1. **Reaching the screen.** The Xbox Live menu gets a fifth row that opens the
-   Live-mode loader (§5). No new screen and no packet synthesis are needed.
-2. **Who sees what.** The session gets a visibility. The server filters its
-   list by the reader, and the HLE already sends a signed `read` token with
-   every search, so the browser shows exactly what the server lists for that
-   player.
+The Xbox Live menu opens the Live-mode loader (§5). The HLE sends a
+signed `read` token and any active browser filters with each search.
+The server uses the reader's visibility and selections to decide which
+advertisements to return.
 
 Rejected alternatives:
 
@@ -388,7 +422,9 @@ label is not shortened.
 | HLE: advertisement and change-only update carry it; `Hle::set_session_visibility`; `Hle::set_visibility_probe` | `crates/live/live-hle/src/sessions.rs` | `crates/live/live-hle/tests/server.rs`: `browser_search_rows_follow_the_hosts_visibility_setting` (procedure 1, 50 rows, seven columns, as the browser asks; friend sees it, stranger not; live switch; FindFromID still works), `the_titles_privacy_probe_decides_a_new_advertisement` |
 | `live.visibility` setting, HLE binding | `crates/extensions/game/src/setting_defs.rs`, `live_glue::bind_visibility` | setting env and steps reach the HLE |
 | Live menu rows, fifth item widget, tag, Map Pack dialog, back from the Live browser, privacy hook and probe | `crates/extensions/game/src/custom_games.rs`, `layout_glue::install` | count grows only the Live list; row order, texts and panes; the fifth child item; the tag's fifth pane and moved blocks on a synthetic tag (and what is left alone); the dialog entry; row/mask argument reads; only a Live-mode browser is redirected, only a back request is rewritten, our press stores a row the cursor restore takes; privacy mapping and squad gates; install without a game |
-| Web Open Games omits invite-only sessions | `web/src/lib/sessions.ts`, `web/src/stats/Home.tsx` | `web/test/sessions.test.ts` |
+| Server-side browser queries and variant choices | `crates/live/live-proto/src/session/browser.rs`, `crates/live/live-server/src/sessions.rs` | Shared route scenarios on native SQLite and the Worker's SQL adapter |
+| Filter page, pickers and saved choices | `crates/extensions/game/src/custom_games/browser_filters.rs` | Page model, picker, preferences and text fit |
+| Web Open Games and its filters | `web/src/stats/Home.tsx`, `web/src/stats/OpenGameFilters.tsx` | `web/test/sessions.test.ts`, `web/test/http.test.ts`, `web/test/stats-home-render.test.ts` |
 
 With Live on, a further row, **Co-op Campaign**, sits directly above Custom
 Game (the rows read Quickmatch, OptiMatch, Clankermatch, Co-op Campaign,
@@ -441,7 +477,12 @@ friends. Then check:
 3. **The browser.** Pressing Custom Game Browser opens the System Link browser screen.
    - It should search over Live: the HLE logs a session search, and no LAN
      broadcast goes out.
-   - The title may still say "System Link" in its header.
+   - The header reads "Custom Games" and reports how many filters are active.
+   - Press Y, open each filter picker with A and check the value fits its
+     row. Return to the browser with B and check the results refresh.
+   - Choose filters with no matches. Check the empty message, then press X
+     and check the full list returns. Reopen the browser after restarting
+     the game to check that it restores choices you leave set.
    - Press B. The Xbox Live menu comes back with the cursor on Custom Game
      Browser, not the controller screen. stderr: `custom games: back from
      the live browser to the xbox live menu`.
@@ -469,10 +510,6 @@ friends. Then check:
 - How the fifth row and the moved hint text look on screen (§7, 1).
 - The joiner's session class when joining from a Live-mode entry, and
   whether class-2-only paths after admission (`0x6e468`) misbehave.
-- The meanings of the browser's seven search attributes, and whether the
-  browser should filter out hopper (matchmaking) lobbies. The server lists
-  every open session today; a `flags=custom` filter is one query parameter
-  away once procedure 1's parameters are identified.
 - Pushing the saved `live.visibility` into a new party's privacy, so a
   player's choice carries to their next party. Today the title's default
   wins.

@@ -3,6 +3,9 @@ use crate::Xuid;
 pub use content::MapId;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, net::Ipv4Addr};
+mod browser;
+pub use browser::{BrowserFilters, BrowserKind, BrowserMetadata, CampaignTitle, MapCategory};
+
 pub const CREATED: &str = "SessionCreated";
 pub const UPDATED: &str = "SessionUpdated";
 pub const DELETED: &str = "SessionDeleted";
@@ -37,7 +40,7 @@ pub struct Slots {
     pub private_open: u32,
 }
 impl Slots {
-    pub fn validate(self) -> bool {
+    pub fn capacity(self) -> u64 {
         [
             self.public_filled,
             self.public_open,
@@ -46,8 +49,11 @@ impl Slots {
         ]
         .into_iter()
         .map(u64::from)
-        .sum::<u64>()
-            <= 16
+        .sum()
+    }
+
+    pub fn validate(self) -> bool {
+        self.capacity() <= 16
     }
 }
 /// Who may find a session in `GET /v1/sessions` (and so in the game's
@@ -164,6 +170,9 @@ pub struct NewSession {
     /// host that sends none (System Link, every build before this field).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variant_ext: Option<VariantExt>,
+    /// Optional facts for custom game discovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<BrowserMetadata>,
 }
 /// The bytes of a variant's extension block ([`VariantExt::block`]).
 pub const VARIANT_EXT_LEN: usize = 0x24;
@@ -307,6 +316,9 @@ pub struct Update {
     /// absent keeps them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variant_ext: Option<VariantExt>,
+    /// Replaces all browser metadata. An empty object clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<BrowserMetadata>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -373,6 +385,9 @@ impl NewSession {
             }
             c.validate()?;
         }
+        if let Some(browser) = &self.browser {
+            browser.validate()?;
+        }
         validate_attributes(&self.attributes)
     }
 }
@@ -435,8 +450,7 @@ impl Session {
             return Err("You are already in this game.".into());
         }
         let slots = ad.slots;
-        let capacity =
-            slots.public_open + slots.public_filled + slots.private_open + slots.private_filled;
+        let capacity = slots.capacity();
         if capacity == 0 {
             return Err(format!("{host}'s game is not advertising any seats."));
         }
@@ -493,6 +507,9 @@ impl Session {
         }
         if let Some(v) = &u.variant_ext {
             next.variant_ext = Some(v.clone());
+        }
+        if let Some(browser) = &u.browser {
+            next.browser = (browser != &BrowserMetadata::default()).then(|| browser.clone());
         }
         next.validate()?;
         let changed = next != self.advertisement;
@@ -586,8 +603,41 @@ mod tests {
             campaign: None,
             ping_ms: None,
             variant_ext: None,
+            browser: None,
         }
     }
+    #[test]
+    fn browser_metadata_is_optional_and_updates_replace_it() {
+        let mut s = session("declared", "192.168.1.10", Visibility::Public);
+        let wire = serde_json::to_value(&s.advertisement).unwrap();
+        assert!(wire.get("browser").is_none());
+        assert_eq!(
+            serde_json::from_value::<NewSession>(wire).unwrap().browser,
+            None
+        );
+
+        let update = |browser| Update {
+            browser: Some(browser),
+            ..Update::default()
+        };
+        let metadata = BrowserMetadata {
+            clankers: Some(false),
+            game_type: Some(2),
+            variant: Some("Team Slayer".into()),
+            map_category: Some(MapCategory::Halo2),
+        };
+        assert!(s.update(&update(metadata.clone())).unwrap());
+        assert_eq!(s.advertisement.browser, Some(metadata.clone()));
+        assert!(!s.update(&Update::default()).unwrap());
+        assert!(s.update(&update(BrowserMetadata {
+            game_type: Some(5),
+            ..Default::default()
+        })).is_err());
+        assert_eq!(s.advertisement.browser, Some(metadata));
+        assert!(s.update(&update(BrowserMetadata::default())).unwrap());
+        assert_eq!(s.advertisement.browser, None);
+    }
+
     #[test]
     fn attributes_and_slots_are_typed_and_bounded() {
         let mut n = new();

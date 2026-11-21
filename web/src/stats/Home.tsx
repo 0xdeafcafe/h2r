@@ -13,7 +13,7 @@ import { social } from "../state/social";
 import { dedicatedHostLabel } from "../lib/hosts";
 import { JoinLink } from "../components/JoinLink";
 import { canJoinSession, joinHref } from "../lib/join";
-import { useSessions } from "../state/sessions";
+import { useSessionFilters, useSessions } from "../state/sessions";
 import { useStatsSummary, type SummaryStatus } from "../state/statsSummary";
 import { endedGames, isCampaign, liveGames, type GameState } from "../state/reducer";
 import { gameMapTitle } from "../state/maps";
@@ -39,6 +39,7 @@ import { DidYouKnow, MapPreview, MapThumb, Pills, Who, fireteam, gameTitle } fro
 import { ScoreLine } from "./Games";
 import { ClanEmblem } from "./clanBits";
 import LiveIdle from "./LiveIdle";
+import OpenGameFilters from "./OpenGameFilters";
 import MapPicture from "../components/MapPicture";
 import { clanHref } from "./modes";
 import { agoWords, count, num, ratio, usDate } from "./fmt";
@@ -72,8 +73,11 @@ function LiveNow(props: { week: StatsSummary | null }) {
   const games = createMemo(() => [...liveGames(live.state)].sort((a, b) =>
     Number(isCampaign(a)) - Number(isCampaign(b)) || Object.keys(b.players).length - Object.keys(a.players).length));
   const online = createMemo(() => Object.values(live.state.accounts).filter((a) => a.online).length);
-  const feed = useSessions();
+  const { filters, apply } = useSessionFilters();
+  const feed = useSessions(undefined, filters);
   const open = createMemo(() => sortSessions(feed.items().filter((s) => s.state === "open" && listed(s))));
+  const filtering = () => Object.values(filters()).some((value) => value !== undefined);
+  const loaded = () => feed.status() === "ok" || feed.status() === "unfiltered";
   return (
     <section id="live" aria-labelledby="s-live-h">
       <div class="s-capbar">
@@ -82,7 +86,9 @@ function LiveNow(props: { week: StatsSummary | null }) {
         <span class="s-capbar-right s-livecounts">
           <span><b>{num(online())}</b> {online() === 1 ? "player" : "players"} online</span>
           <span><b>{num(games().length)}</b> {games().length === 1 ? "game" : "games"} in progress</span>
-          <Show when={feed.status() !== "unsupported"}><span><b>{num(open().length)}</b> open {open().length === 1 ? "game" : "games"}</span></Show>
+          <Show when={loaded()}>
+            <span><b>{num(open().length)}</b> {filtering() && feed.status() === "ok" ? "matching" : "open"} {open().length === 1 ? "game" : "games"}</span>
+          </Show>
         </span>
       </div>
       <div class="s-matte s-live">
@@ -90,26 +96,44 @@ function LiveNow(props: { week: StatsSummary | null }) {
           {(g) => <LiveCard game={g} />}
         </For>
         <Show when={games().length > 4}><p class="s-items-more"><A href={statsPath("/games")}>{games().length - 4} more live {games().length - 4 === 1 ? "game" : "games"}</A></p></Show>
-        <Show when={open().length}>
-          <div class="s-grid-wrap s-open">
-            <table class="s-grid">
-              <caption class="sr-only">Open games looking for players</caption>
-              <thead><tr><th>Open Games</th><th>Map</th><th class="hide-s">Type</th><th class="num">Players</th><th><span class="sr-only">Join game</span></th></tr></thead>
-              <tbody>
-                <Index each={open().slice(0, 5)}>
-                  {(s) => (
-                    <tr>
-                      <td><Show when={dedicatedHostLabel(s())} fallback={<Who xuid={s().host_xuid} name={s().host_gamertag} />}>{(label) => label()}</Show> <span class="s-dim">{gametype(s())}</span></td>
-                      <td><Show when={campaignLine(s(), mapTitle)} fallback={<span class="s-who"><Show when={s().map}><MapPreview map={s().map!} mapId={s().map_id} /></Show>{mapName(s(), mapTitle)}</span>}>{(c) => <span class="s-who">{c()}</span>}</Show></td>
-                      <td class="hide-s">{sessionKind(s())}</td>
-                      <td class="num">{seats(s()).filled} of {seats(s()).max}<Show when={pingText(s())}>{(p) => <span class="s-dim"> · {p()}</span>}</Show></td>
-                      <td><Show when={feed.status() === "ok" && canJoinSession(s(), identity.me()?.xuid) && joinHref(live.server().base, s().session_id)}>{(href) => <JoinLink href={href()} />}</Show></td>
-                    </tr>
-                  )}
-                </Index>
-              </tbody>
-            </table>
-          </div>
+        <Show when={feed.status() !== "unsupported"}>
+          <section class="s-grid-wrap s-open" aria-labelledby="s-open-h">
+            <OpenGameFilters value={filters()} variants={feed.variants()} apply={apply} />
+            <Show when={feed.status() === "unfiltered"}>
+              <div class="s-open-status">
+                <p role="status">This server does not support filters.</p>
+                <button type="button" class="s-btn" onClick={() => apply({})}>Clear filters</button>
+              </div>
+            </Show>
+            <Show when={open().length} fallback={
+              <div class="s-open-status">
+                <p role="status">{feed.status() === "loading" ? "Loading open games…"
+                  : feed.status() === "error" ? "Could not load open games."
+                  : filtering() && feed.status() === "ok" ? "No games match." : "No open games."}</p>
+                <Show when={feed.status() === "ok" && filtering()}>
+                  <button type="button" class="s-btn" onClick={() => apply({})}>Clear filters</button>
+                </Show>
+              </div>
+            }>
+              <table class="s-grid">
+                <caption class="sr-only">Open games looking for players</caption>
+                <thead><tr><th>Host</th><th>Map</th><th class="hide-s">Type</th><th class="num">Players</th><th><span class="sr-only">Join game</span></th></tr></thead>
+                <tbody>
+                  <Index each={open().slice(0, 5)}>
+                    {(s) => (
+                      <tr>
+                        <td><Show when={dedicatedHostLabel(s())} fallback={<Who xuid={s().host_xuid} name={s().host_gamertag} />}>{(label) => label()}</Show> <span class="s-dim">{gametype(s())}</span></td>
+                        <td><Show when={campaignLine(s(), mapTitle)} fallback={<span class="s-who"><Show when={s().map}><MapPreview map={s().map!} mapId={s().map_id} /></Show>{mapName(s(), mapTitle)}</span>}>{(c) => <span class="s-who">{c()}</span>}</Show></td>
+                        <td class="hide-s">{sessionKind(s())}</td>
+                        <td class="num">{seats(s()).filled} of {seats(s()).max}<Show when={pingText(s())}>{(p) => <span class="s-dim"> · {p()}</span>}</Show></td>
+                        <td><Show when={loaded() && canJoinSession(s(), identity.me()?.xuid) && joinHref(live.server().base, s().session_id)}>{(href) => <JoinLink href={href()} />}</Show></td>
+                      </tr>
+                    )}
+                  </Index>
+                </tbody>
+              </table>
+            </Show>
+          </section>
         </Show>
       </div>
     </section>

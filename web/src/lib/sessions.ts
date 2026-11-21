@@ -32,6 +32,8 @@ export interface Session extends DedicatedHostFields {
   map_id: string | null;
   /** The host's name for the game, usually its gametype. */
   name: string | null;
+  /** The game variant's title, when a host advertises it. */
+  variant?: string;
   /** Who finds it in lists: everyone, the host's friends, or nobody
    *  (invitations only). Older servers don't say: public. */
   visibility: Visibility;
@@ -103,6 +105,7 @@ export function parseSession(raw: unknown): Session | null {
   if (!id || (!tag && !host_lease)) return null;
   const ad = (r.advertisement && typeof r.advertisement === "object" ? r.advertisement : {}) as Record<string, unknown>;
   const s = (ad.slots && typeof ad.slots === "object" ? ad.slots : {}) as Record<string, unknown>;
+  const browser = ad.browser as Record<string, unknown> | null | undefined;
   const players: Record<string, string> = {};
   if (r.players && typeof r.players === "object") {
     for (const [xuid, slot] of Object.entries(r.players as Record<string, unknown>)) players[xuid] = typeof slot === "string" ? slot : "";
@@ -122,6 +125,7 @@ export function parseSession(raw: unknown): Session | null {
     map: text(ad.map),
     map_id: typeof ad.map_id === "string" && /^[0-9a-f]{64}$/i.test(ad.map_id) ? ad.map_id.toLowerCase() : null,
     name: text(ad.name),
+    variant: text(browser?.variant) ?? undefined,
     visibility: visibility(ad.visibility),
     slots: { public_filled: count(s.public_filled), public_open: count(s.public_open), private_filled: count(s.private_filled), private_open: count(s.private_open) },
     players,
@@ -157,7 +161,7 @@ export function seats(s: Session): { filled: number; max: number; open: number }
 /** What kind of game it is: the host's name for it, else the kind of session. */
 export function gametype(s: Session): string {
   if (isCoop(s)) return "Co-op campaign";
-  return s.name ?? kind(s);
+  return s.name ?? s.variant ?? kind(s);
 }
 
 /** How the session was made. */

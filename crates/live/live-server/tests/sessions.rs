@@ -1,5 +1,7 @@
 //! Session router, signed batches, projection/replay and trusted tunnel source IP.
 mod common;
+#[path = "common/session_browser.rs"]
+mod session_browser;
 use axum::{
     body::Body,
     extract::ConnectInfo,
@@ -40,6 +42,7 @@ fn new() -> NewSession {
         campaign: None,
         ping_ms: None,
         variant_ext: None,
+        browser: None,
     }
 }
 async fn create(h: &Harness, u: &User, data: &NewSession) -> Resp {
@@ -570,4 +573,16 @@ async fn sessions_carry_the_hosts_variant_options() {
             .status,
         StatusCode::BAD_REQUEST
     );
+}
+
+#[tokio::test]
+async fn browser_filters_cover_native_sessions() {
+    let dir = temp_dir();
+    let store = live_server::sqlite::SqliteStore::open(&dir.join("sessions.db"))
+        .await
+        .unwrap();
+    let h = start_driven(Arc::new(store), Policy::default()).await;
+    session_browser::run(h.app.clone()).await;
+    drop(h);
+    let _ = std::fs::remove_dir_all(dir);
 }

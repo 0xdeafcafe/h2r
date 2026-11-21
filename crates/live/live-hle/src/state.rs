@@ -1241,6 +1241,23 @@ impl State {
     pub fn set_visibility_probe(&mut self, probe: Option<crate::sessions::VisibilityProbe>) {
         self.sessions.set_probe(probe);
     }
+    pub fn set_browser_filters(&mut self, filters: live_proto::session::BrowserFilters) {
+        self.sessions.set_browser_filters(filters);
+    }
+    pub fn browser_result(&self) -> (Option<usize>, Option<bool>) {
+        self.sessions.browser_result()
+    }
+    pub fn browser_status(&self) -> crate::BrowserStatus {
+        self.sessions.browser_status()
+    }
+    pub fn set_browser_probe(&mut self, probe: crate::BrowserProbe) {
+        self.sessions.set_browser_probe(probe);
+    }
+    pub fn lobby_browser_changed(&mut self, guest: &Guest) {
+        let connection = self.session();
+        self.sessions
+            .lobby_browser_changed(guest, self.service.as_ref(), connection.as_ref());
+    }
     pub fn set_map_probe(&mut self, probe: Option<crate::sessions::MapProbe>) {
         self.sessions.set_map_probe(probe);
     }

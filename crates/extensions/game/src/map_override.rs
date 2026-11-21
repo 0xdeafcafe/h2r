@@ -34,7 +34,18 @@ pub fn lobby_map_id(vfs: &mut vfs::Vfs, g: &runtime::Guest) -> Option<content::M
         if !session.is_host() || session.is_campaign() {
             return None;
         }
-        return vfs.map_id(&crate::map_select::selected_path(session.map)?);
+        if let Some(path) = crate::map_select::selected_path(session.map) {
+            return vfs.map_id(&path);
+        }
+        let path = crate::mod_slots::selected_path(g, session.map)?;
+        if let Some(file) = crate::map_slots::slot_file(&path)
+            .or_else(|| crate::map_slots::slot_file(&format!("{path}.map")))
+        {
+            return vfs.map_id(&file);
+        }
+        // Disc slots can name scenarios\multi\… instead of d:\maps\….
+        let stem = path.rsplit('\\').next()?.to_ascii_lowercase();
+        return map_id(vfs, stem.strip_suffix(".map").unwrap_or(&stem));
     }
     let loaded = crate::telemetry::loaded_map_name(g).ok();
     if let Some(name) = loaded

@@ -7,6 +7,7 @@ import { createEffect, createSignal, onCleanup, type Accessor } from "solid-js";
 import { ApiError } from "../api/http";
 import { parseCoopGames, type CoopGame } from "../lib/coop";
 import { parseSessions, type Session } from "../lib/sessions";
+import { readSessionFilters, sessionFiltersParam, type SessionFilters } from "../lib/sessionFilters";
 import { live } from "./live";
 import { identity } from "./identity";
 import { issueToken } from "../admin/token";
@@ -22,7 +23,7 @@ async function readToken(): Promise<string | null> {
 
 export const SESSIONS_REFRESH_MS = 4000;
 
-export type SessionsStatus = "loading" | "ok" | "unsupported" | "error";
+export type SessionsStatus = "loading" | "ok" | "unfiltered" | "unsupported" | "error";
 
 /** Runs `load` now and every `everyMs` while the tab is visible, again at
  *  once when it becomes visible, and from scratch when the server changes. */
@@ -49,24 +50,60 @@ export function poll(load: (signal: AbortSignal) => Promise<void>, reset: () => 
   });
 }
 
-/** The server's open sessions. `unsupported` is a server that has no
- *  session list at all (an older one answers 404). On a failed refresh the
- *  last list stays up and the status says so. */
-export function useSessions(everyMs = SESSIONS_REFRESH_MS): { items: Accessor<Session[]>; status: Accessor<SessionsStatus> } {
+/** The server's open sessions. A changed filter aborts the old read and
+ *  starts a fresh list. On a failed refresh the last list stays up. */
+export function useSessions(everyMs = SESSIONS_REFRESH_MS, filters?: Accessor<SessionFilters>) {
   const [items, setItems] = createSignal<Session[]>([]);
   const [status, setStatus] = createSignal<SessionsStatus>("loading");
+  const [variants, setVariants] = createSignal<string[]>([]);
   poll(async (signal) => {
     try {
-      const page = await live.api().sessions(signal);
+      const active = filters?.();
+      const page = await live.api().sessions(signal, active);
       if (signal.aborted) return;
       setItems(parseSessions(page.items));
-      setStatus("ok");
+      setVariants(page.variants ?? []);
+      setStatus(active && page.variants === undefined && sessionFiltersParam(active) ? "unfiltered" : "ok");
     } catch (e) {
       if (signal.aborted) return;
-      if (e instanceof ApiError && e.status === 404) { setItems([]); setStatus("unsupported"); } else setStatus("error");
+      if (e instanceof ApiError && e.status === 404) {
+        setItems([]);
+        setVariants([]);
+        setStatus("unsupported");
+      } else {
+        setStatus("error");
+      }
     }
-  }, () => { identity.me(); setItems([]); setStatus("loading"); }, everyMs);
-  return { items, status };
+  }, () => {
+    identity.me();
+    filters?.();
+    setItems([]);
+    setVariants([]);
+    setStatus("loading");
+  }, everyMs);
+  return { items, status, variants };
+}
+
+const FILTERS_KEY = "h2live.sessionFilters";
+
+export function useSessionFilters() {
+  const [filters, setFilters] = createSignal<SessionFilters>(savedSessionFilters());
+  function apply(next: SessionFilters) {
+    const value = readSessionFilters(next);
+    const param = sessionFiltersParam(value);
+    if (param === sessionFiltersParam(filters())) return;
+    setFilters(value);
+    try {
+      if (param) localStorage.setItem(FILTERS_KEY, param);
+      else localStorage.removeItem(FILTERS_KEY);
+    } catch { /* storage unavailable */ }
+  }
+  return { filters, apply };
+}
+
+function savedSessionFilters(): SessionFilters {
+  try { return readSessionFilters(JSON.parse(localStorage.getItem(FILTERS_KEY) ?? "{}")); }
+  catch { return {}; }
 }
 
 /** The reader's current link for a specific game, including a game opened by a deep link. */

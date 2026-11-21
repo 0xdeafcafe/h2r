@@ -468,6 +468,10 @@ impl<S: Sql> EventStore for SqlStore<S> {
 }
 
 #[cfg(test)]
+#[path = "../../live-server/tests/common/session_browser.rs"]
+mod session_browser;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use live_server::sqlite::SqliteStore;
@@ -576,6 +580,20 @@ mod tests {
         let path = temp_db("conforms");
         let store = SqlStore::open(Sqlite(pool(&path).await)).await.unwrap();
         conformance::run(&store, "sql").await;
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn browser_filters_cover_worker_sessions() {
+        use live_server::{Live, Policy, ServerIdentity, app::Timers};
+
+        let path = temp_db("session-browser");
+        let store = SqlStore::open(Sqlite(pool(&path).await)).await.unwrap();
+        let identity = ServerIdentity::open(path.parent().unwrap(), Some("live.test")).unwrap();
+        let live = Live::start_with(Arc::new(store), identity, Policy::default(), Timers::Driven)
+            .await
+            .unwrap();
+        super::session_browser::run(live_server::http::router(live)).await;
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -1021,6 +1039,7 @@ mod tests {
             campaign: None,
             ping_ms: None,
             variant_ext: None,
+            browser: None,
         })
         .unwrap();
         let (status, session) = call(

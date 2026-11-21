@@ -1104,7 +1104,13 @@ game, 72 lowercase hex digits, and the variant's key, 16; omitted when the
 host sends none; docs/game/game-options.md section 3). The ID's datatype bits must agree. Limits are 16 total slots,
 64 attributes, 400 UTF-16 units per string, 800 bytes per blob, 256 bytes per
 metadata string and 32 open advertisements per host. Unknown input fields are
-rejected; addresses must be unicast IPv4 and ports 1..65529.
+rejected. Addresses must be unicast IPv4 and ports 1..65529.
+
+An optional `browser` object holds discovery metadata. Each of its fields
+can be omitted independently. `clankers` is a boolean for whether the host
+plans bot seats. `game_type` is the multiplayer engine index. `variant`
+is the host's full variant name. `map_category` names the map source as
+`halo2`, `map_pack`, `mods` or `halo_ce`.
 
 The server writes a server-signed `SessionCreated` with the full session. Its
 `host`, `host_xuid` and `host_gamertag` come from the authenticated account;
@@ -1123,7 +1129,9 @@ Only the authenticated host may append events, signed with its registered key:
   one). Use `clear_map_id: true` when a host returns to retail.
   `skulls: []` turns them all off. A `variant_ext` replaces the last.
   A server from before `skulls` refuses an update that has it, so the HLE
-  sends it only when the host's set changed; the same for `variant_ext`.
+  sends it only when the host's set changed. The same applies to
+  `variant_ext`. An update with `browser` replaces the discovery metadata
+  as a whole. `browser: {}` clears it.
 - `PlayerJoined`: `{xuid, slot?}`; the account must exist and not be in the
   roster, which is bounded to 16. Slot is an optional display string.
 - `PlayerLeft`: `{xuid}`; the account must be in the roster.
@@ -1151,6 +1159,40 @@ declared address is a local-network one. When a listed session is created
 from a non-loopback IPv4, the observed address replaces any declared one
 ([live-custom-games.md](live-custom-games.md) §3–§4). Reading one session by
 ID ignores visibility. `SessionUpdated` may also set `visibility`.
+
+### Browser filters
+
+`GET /v1/sessions` accepts an optional URL-encoded JSON object in
+`filters`. Omit any field to leave that criterion unset.
+
+| Field | Values |
+|---|---|
+| `kind` | `multiplayer` or `coop` |
+| `clankers` | `true` with Clankers, `false` without |
+| `game_type` | `1` CTF, `2` Slayer, `3` Oddball, `4` King of the Hill, `7` Juggernaut, `8` Territories, `9` Assault |
+| `variant` | Full multiplayer variant name, matched case-insensitively after trimming |
+| `map_category` | `halo2`, `map_pack`, `mods` or `halo_ce` |
+| `has_space` | `true` requires a public opening and room in the advertised capacity. `false` leaves room unrestricted |
+| `campaign` | `halo2` or `halo_ce`, inferred from a known co-op level |
+| `difficulty` | Co-op difficulty, `0` Easy through `3` Legendary |
+
+Each active criterion excludes known mismatches. For example, a host
+with unknown Clanker or variant metadata remains eligible for either
+value. Co-op sessions are excluded by multiplayer game type or variant
+criteria, and multiplayer sessions by campaign or difficulty criteria.
+The map filter can recover a category from package provenance or a
+recognized map name when the host omits it. The server applies the filters
+before the page limit and retains the visibility and endpoint rules above.
+Send the same filters with each cursor.
+
+With `browser_variants=true`, the first page also has a `variants` array
+with up to 64 distinct multiplayer variant names. It comes from sessions
+visible to the reader and eligible for the list, before the browser
+criteria and limit. The game uses this with the retail custom browser's
+search query. The next cursor page omits `variants`. List items include advertised
+`browser` metadata when the request uses `filters` or
+`browser_variants=true`. Plain lists and session details use the legacy
+advertisement shape.
 
 ### Network addresses
 

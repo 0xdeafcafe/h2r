@@ -162,6 +162,9 @@ pub(crate) fn register_core_film(
         );
         game_setup_help::install(features).context("installing the Game Setup help")?;
     }
+    let live_browser = i.live.as_ref().filter(|_| i.settings.is_some() && !non_player);
+    custom_games::browser_filters::install(features, live_browser, i.data_root)
+        .context("installing the custom games browser filters")?;
     // The game variant editor's More Options row and page (our options in
     // the record's extension block; docs/game/game-options.md section 3).
     {
@@ -288,6 +291,12 @@ pub(crate) fn register_core_film(
         if let Some(store) = i.settings.as_ref() {
             clankers::install(features, store, i.live.clone(), telemetry.as_ref()).context("installing the Clankers page")?;
         }
+    }
+    if let Some(hle) = i.live.as_ref().filter(|_| film.is_none()) {
+        crate::live_glue::install_browser_advertisement(
+            features, hle, i.settings.as_ref(), bots_on,
+        )
+        .context("installing Live browser advertisements")?;
     }
     if let Some(store) = i.settings.as_ref() {
         features

@@ -36,6 +36,8 @@ pub use outbox::{
     BuiltMessage, MessageProperty, MessageRecipient, MessageSend, MessageSendKind, MessageUser,
     MessageValue, RecruitProperties,
 };
+mod browser;
+pub use browser::{BrowserProbe, BrowserStatus};
 mod qos;
 mod qos_memory;
 mod socket_wait;
@@ -427,6 +429,28 @@ impl Hle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .set_visibility_probe(probe)
+    }
+    /// Change the next Live custom browser search, preserving other title searches.
+    pub fn set_browser_filters(&self, filters: live_proto::session::BrowserFilters) {
+        self.lock().set_browser_filters(filters);
+    }
+    /// The last match count and whether the server supports browser filters,
+    /// sampled by the browser footer without copying the variant names.
+    pub fn browser_result(&self) -> (Option<usize>, Option<bool>) {
+        self.lock().browser_result()
+    }
+    /// The last completed search for the current filters and its variant choices.
+    pub fn browser_status(&self) -> BrowserStatus {
+        self.lock().browser_status()
+    }
+    /// Collect the host's multiplayer browser metadata while the title advertises.
+    pub fn set_browser_probe(&self, probe: BrowserProbe) {
+        self.lock().set_browser_probe(probe);
+    }
+    /// Refresh discovery metadata after lobby selections change, even if
+    /// the title has no new matchmaking attributes to send.
+    pub fn lobby_browser_changed(&self, guest: &runtime::Guest) {
+        self.lock().lobby_browser_changed(guest);
     }
     /// Lets advertisements name the host's selected map
     /// (`NewSession.map_id`, docs/game/maps.md §5). Without it they name none.

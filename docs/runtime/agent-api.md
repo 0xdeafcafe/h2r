@@ -50,7 +50,7 @@ connection to hold `session.claim`.
 | `host.metrics`, `host.audit`, `host.perf` | read | [`host`](#host-the-process-and-its-lobby) |
 | `host.lobby.open`, `close`, `start` | act | [`host.lobby`](#hostlobby) |
 | `host.lobby.state` | read | [`host.lobby`](#hostlobby) |
-| `ui.screen`, `ui.campaign`, `ui.audit`, `ui.stack`, `ui.lobby.players`, `ui.attract` | read | [`ui`](#ui-what-the-menus-show) |
+| `ui.screen`, `ui.campaign`, `ui.audit`, `ui.stack`, `ui.lobby.players`, `ui.browser.filters`, `ui.attract` | read | [`ui`](#ui-what-the-menus-show) |
 | `ui.press` | act | [Menu inspection and navigation](#menu-inspection-and-navigation) |
 | `audio.voices`, `audio.listeners`, `audio.loops` | read | [`audio`](#audio-voice-routing) |
 | `hs.threads`, `hs.globals`, `hs.player_actions` | read | [HaloScript state](#haloscript-state) |
@@ -1127,7 +1127,9 @@ mutations respect `session.claim`, and a concurrent mutation is `BUSY`.
 
 ## `ui`: what the menus show
 
-`ui.screen` needs `H2_UI_WATCH=1`. The other UI methods read the current guest widgets directly. All of them are read-only except `ui.press`.
+`ui.screen` needs `H2_UI_WATCH=1`. Other UI methods read guest widgets
+or the game's UI state without UI watch. All are read-only except
+`ui.press`.
 
 - **`ui.screen`** (`h2 agent ui`): the menu screen player one's input goes
   to, read each UI update, including during a campaign pause
@@ -1210,6 +1212,14 @@ mutations respect `session.claim`, and a concurrent mutation is `BUSY`.
   campaign dialog from `0x230888`; the picker intercepts it before the
   later profile-dependent solo branch at `0x2b16ad`. With UI watch on,
   `lobby mode campaign` also recognizes the installed picker.
+
+- **`ui.browser.filters`** (`h2 agent ui.browser.filters`, no parameters):
+  reads the active Custom Game Browser preferences, even when the browser
+  is closed. The result is `{"filters":{...}}` with the same field names
+  and values as the [Live session query](../live/live-api.md#browser-filters).
+  Unset fields are omitted. With the default choices, it returns
+  `{"filters":{}}`. After opening Game Filters with Y and choosing a row
+  value with A, read this method to verify the selection.
 
 - **`ui.lobby_options`** (`h2 agent ui.lobby_options`, no parameters):
   `{"lines":[...]}` with the active custom game panel's visible Quick
