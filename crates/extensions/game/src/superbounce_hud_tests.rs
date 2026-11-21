@@ -417,3 +417,35 @@ fn off_hides_everything() {
     assert!(hidden().0.iter().all(|(_, v)| !v.shown));
     assert_eq!(hidden().0.len(), sb::hud().elements.len());
 }
+
+#[test]
+fn the_tutorial_counts_game_ticks_not_presents_or_wall_time() {
+    use hud_kit_core::huds::superbounce::{Change, STEP3_SECS, Tutorial, Watch};
+    assert_eq!(tutorial_seconds(0), 0.0);
+    assert_eq!(tutorial_seconds(30), 1.0);
+    // Step 3 gives way after 600 ticks without a bounce, whatever the
+    // display rate (a tick is a tick at 60 and 120 fps) and however slow
+    // the wall clock runs below 30 fps.
+    let near = Watch {
+        primed: true,
+        strip_m: Some(1.0),
+        bounced: false,
+    };
+    let mut t = Tutorial::new(true);
+    let mut tick = 0;
+    for _ in 0..3 {
+        t.update(Some(near), tutorial_seconds(tick));
+        tick += 1;
+    }
+    assert_eq!(t.step(), Some(3));
+    let limit = (STEP3_SECS * 30.0) as u64;
+    let shown = tick - 1;
+    while t.update(Some(near), tutorial_seconds(tick)) == Change::None {
+        tick += 1;
+        assert!(tick < shown + 2 * limit, "step 3 never gave way");
+    }
+    // To a tick (the float sum of 1/30s).
+    let after = tick - shown;
+    assert!((limit..=limit + 1).contains(&after), "after {after} ticks");
+    assert_eq!(t.step(), Some(4));
+}

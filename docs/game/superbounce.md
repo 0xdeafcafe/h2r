@@ -738,7 +738,8 @@ by its row.
 
 Priming moves step 1 to 2, a bounce spot within 8 m moves 2 to 3, a
 bounce landing or 20 s moves 3 to 4, and a bounce or 15 s closes 4
-(`hud_kit_core::huds::superbounce::Tutorial`). A training text of the
+(`hud_kit_core::huds::superbounce::Tutorial`), in game seconds: 600 and
+450 ticks at any frame rate. A training text of the
 game's own takes the box while it shows. Closing the last step sets the
 `superbounce.tutorial_seen` setting; setting it back to false
 (`h2 settings set superbounce.tutorial_seen false`) shows the steps again
@@ -1073,9 +1074,11 @@ pass (`crates/extensions/game/src/superbounce_world.rs`, the geometry;
 - **The lip.** The `lip` edges, a thin line where the scan found them, at
   head height: what to get under.
 - **The way.** Floor chevrons along `out`, from 1.2 out to just outside
-  the ring (`chevrons`), flowing in toward the ring until the phase is
-  `held`, then flowing out: walk in, then walk out. They travel at 0.4
-  units/s, 0.25 apart.
+  the ring, flowing in toward the ring until the phase is `held`, then
+  flowing out: walk in, then walk out. They are the style's arrowheads
+  (`LineStyle::chevrons`, no line under them), 0.25 apart at 0.4
+  units/s, so the window moves them at each present by its own clock and
+  they flow smoothly at any frame rate.
 - **The label.** `Crouch` 0.15 over the lip (0.8 over `stand` without
   one) of the nearest spot within 3 units; none on the others. The verb
   with the button is on the HUD's prompt line.

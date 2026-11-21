@@ -1131,48 +1131,74 @@ fn follow_banner(path: PathBuf) -> app::Banner {
 }
 
 fn mark_frame() -> app::overlay::marks::FrameMarks {
-    use app::overlay::marks::{FrameMarks, ImageSamples, ProjectedMarks};
-    use d3d::present_camera::Present;
+    use app::overlay::marks::{FrameMarks, ImageSamples, MarkCameraSource, ProjectedMarks};
+    use d3d::present_camera::{Present, ViewShift};
 
-    let project = |image: Arc<d3d::present_camera::Image>, reference| {
+    let project = |image: Arc<d3d::present_camera::Image>,
+                   reference,
+                   shifts: &[ViewShift],
+                   source: MarkCameraSource| {
         let Ok(samples) = image.payload.clone().downcast::<ImageSamples>() else {
             return Ok(None);
         };
         if !samples.has_visible_sample(&Instant::now) {
             return Ok(None);
         }
-        let Some(cameras) = mark_cameras(&image.views, reference) else {
+        let Some(cameras) = mark_cameras(&image.views, reference, shifts) else {
             let editor_visible = samples
                 .editor
                 .as_ref()
                 .is_some_and(|editor| editor.validity(&Instant::now).is_some());
             return if editor_visible { Err(()) } else { Ok(None) };
         };
-        Ok(Some(Arc::new(ProjectedMarks { cameras, samples })))
+        Ok(Some(Arc::new(ProjectedMarks {
+            cameras,
+            samples,
+            source,
+        })))
     };
 
     match d3d::present_camera::current() {
         Some(Present::Guest { image: Some(image), reference }) => {
-            match project(image, reference) {
+            match project(image, reference, &[], MarkCameraSource::Tick) {
                 Ok(sample) => FrameMarks::Guest(sample),
                 Err(()) => FrameMarks::GuestWithoutWorldView,
             }
         }
         Some(Present::Guest { image: None, .. }) => FrameMarks::Guest(None),
-        Some(Present::Synthetic { frozen, reference }) => FrameMarks::Synthetic(
-            frozen.and_then(|image| project(image, reference).ok().flatten()),
-        ),
+        Some(Present::Synthetic {
+            source,
+            shifts,
+            fraction,
+            reference,
+        }) => FrameMarks::Synthetic(source.and_then(|image| {
+            let camera = MarkCameraSource::Made {
+                fraction,
+                shifted: shifts.iter().any(|s| !s.is_identity()),
+            };
+            project(image, reference, &shifts, camera).ok().flatten()
+        })),
         None => FrameMarks::Raw,
     }
 }
 
+/// Each view's mark camera, moved by its shift where a made frame drew it
+/// with another camera than the image's own (`d3d::interp::marks`).
 fn mark_cameras(
     views: &[Option<d3d::present_camera::View>; 4],
     reference: bool,
+    shifts: &[d3d::present_camera::ViewShift],
 ) -> Option<app::overlay::marks::MarkCameras> {
+    let count = views.iter().flatten().count();
     let cameras = views.map(|slot| {
         let view = slot?;
-        mark_camera(view, reference)
+        let mut camera = mark_camera(view, reference)?;
+        if let Some(shift) =
+            d3d::present_camera::ViewShift::find(shifts, camera.viewport, count)
+        {
+            camera.view_projection = shift.apply(camera.view_projection);
+        }
+        Some(camera)
     });
     cameras.iter().any(Option::is_some).then_some(cameras)
 }
@@ -1326,8 +1352,32 @@ mod tests {
         let mut view = test_mark_view();
         view.camera.viewport[1] = -1;
         assert!(view.camera.is_usable());
-        assert!(mark_cameras(&[Some(view), None, None, None], false).is_none());
-        assert!(mark_cameras(&[Some(view), Some(test_mark_view()), None, None], false).is_some());
+        assert!(mark_cameras(&[Some(view), None, None, None], false, &[]).is_none());
+        assert!(
+            mark_cameras(&[Some(view), Some(test_mark_view()), None, None], false, &[]).is_some()
+        );
+    }
+
+    #[test]
+    fn made_frames_move_the_mark_camera_by_their_shift() {
+        use d3d::present_camera::ViewShift;
+        let view = test_mark_view();
+        let plain = mark_cameras(&[Some(view), None, None, None], false, &[]).unwrap()[0].unwrap();
+        // The frame drew the view one unit further along +y.
+        let mut world = [[0.0; 4]; 4];
+        for (i, row) in world.iter_mut().enumerate() {
+            row[i] = 1.0;
+        }
+        world[1][3] = 1.0;
+        let shift = ViewShift {
+            viewport: [0.0, 0.0, 1.0, 1.0],
+            world,
+        };
+        let moved =
+            mark_cameras(&[Some(view), None, None, None], false, &[shift]).unwrap()[0].unwrap();
+        assert_eq!(moved.view_projection, shift.apply(plain.view_projection));
+        assert_ne!(moved.view_projection, plain.view_projection);
+        assert_eq!(moved.viewport, plain.viewport);
     }
 
     fn test_mark_view() -> d3d::present_camera::View {

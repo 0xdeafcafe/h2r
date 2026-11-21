@@ -1368,11 +1368,18 @@ impl<B: Backend> InterpBackend<B> {
         self.reset();
     }
 
+    /// What the window's marks project with on the frame made at
+    /// `fraction`: the cameras it drew each view with (`super::marks`).
     fn synthetic_metadata(&self, fraction: f32) -> crate::present_camera::Present {
-        crate::present_camera::Present::synthetic(
+        let empty = FrameModel::default();
+        let prev = self.prev.as_ref();
+        let cur = self.cur.as_ref();
+        super::marks::metadata(
+            self.mode,
+            prev.map_or((&empty, None), |f| (&f.model, f.mark_image.as_ref())),
+            cur.map_or((&empty, None), |f| (&f.model, f.mark_image.as_ref())),
             fraction,
-            self.prev.as_ref().and_then(|frame| frame.mark_image.as_ref()),
-            self.cur.as_ref().and_then(|frame| frame.mark_image.as_ref()),
+            &self.tuning,
         )
     }
 

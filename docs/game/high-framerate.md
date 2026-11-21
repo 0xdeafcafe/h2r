@@ -10,6 +10,7 @@ In short:
 
 - **The guest is untouched.** Same 60 Hz logical vblanks, same two-vblank frame interval, same one tick per frame, same input polls. No guest code, guest global or guest timing changes.
 - **The in-between frames are made on the host.** Every guest frame is a list of resolved draws that hold no guest pointers ([d3d.md](../graphics/d3d.md), "Draws"). With interpolated replay (on by default), the host keeps the last two guest frames and blends camera and object matrices between the two ticks. By default the window repeats the newest frame. The guest never sees these frames.
+- **Host world marks follow the made frame's camera.** The window's marks (editor marks, the superbounce figures) project with the camera each in-between frame drew the world with, and animate by the window's clock (section 9).
 - **The proof is the guest's own state.** The same input recording gives the same guest-memory hash at every present and every tick with the mode off, at 60 and at 120 (section 6).
 
 The mode only helps once a level holds a steady 30 fps ([gameplay-budget.md](../perf/notes/gameplay-budget.md)); below that the pacer rebases and the game plays in slow motion.
@@ -732,3 +733,34 @@ No pass tag is wired. The pass in progress is the return address of the call the
 - Whether a loading screen is held by one of the unseen draw kinds above or is a centred camera scene the warp shows correctly.
 - A full-target quad that copies the screen made that frame (seen in a converted Halo 1 level, [the note](notes/high-framerate.md), "Camera pick") still holds: showing such frames needs either that pass on top of the warped world (only if nothing after it in the world depends on it) or the copy made from the overscanned world image; neither is proven.
 - Not built: drawing the world image by copying the guest's frame at a pass boundary with a wider projection set by the guest instead of a second world draw (halves the cost), the pass tag, and 120 Hz (a warp per display frame is cheap).
+
+## 9. World marks on made frames
+
+Status: Built, tested on synthetic cameras only; not run in the game.
+Code: `crates/platform/d3d/src/interp/marks.rs`, `crates/platform/d3d/src/present_camera.rs`, `crates/apps/cli/src/play_cmd.rs` (`mark_frame`, `mark_cameras`), `crates/apps/app/src/overlay/marks.rs`, `crates/extensions/game/src/superbounce_world.rs`.
+
+The window draws world marks (the editor's marks, the superbounce figures) over the finished frame, projecting each world point with a camera ([agent-api.md](../runtime/agent-api.md), "Drawing world-space lines over the frame"). A mark is captured with a genuine guest image and that image's per-view cameras. On a made frame the world is drawn with another camera, so a mark projected with the image's own would swim against the world by up to a tick of camera motion while the player turns.
+
+### The camera per present
+
+- **A genuine image:** its own cameras.
+- **A made frame (D):** per view, the camera the replay drew it with, by the rule `substitute` uses (`model::between`): the blended camera, or the newest frame's own when the camera did not move, on a cut (jump, sharp turn, zoom) and at a fraction of 1.
+- **A made frame (E1, with or without `_ahead`):** the newest frame's eye and projection turned to the display rotation (`reproject::display_rotation`, `reproject::display_camera`); a cut keeps the newest rotation.
+
+`interp::marks::metadata` puts this into `Present::Synthetic` as one `ViewShift` per view: `C⁻¹ B`, the source image's camera `C` for that view and the shown one `B`, both the guest's view-projection, in world space. `mark_cameras` multiplies each mark camera by its view's shift (matched by viewport, within a hundredth of the image on each side; a single view on each side pairs). The mark camera's own conventions (aspect factor, depth range) are left as they are: `M · C⁻¹ · B` projects a world point where `B` draws it, through `M`'s mapping.
+
+The marks come from the newest image, or from the frame before while a D replay that blends is under fraction 0.5, so what a mark shows (where it is, which spots are listed) lags the world by at most half a tick. Marks fixed to a moving object step at the tick rate while the object blends.
+
+### Motion in marks
+
+A mark's geometry is captured once a guest frame. Anything that moves within it goes in its style, which the window runs at each present by its own clock: `Pulse`, `Chevrons` with a speed, and `Fade` by distance. The superbounce way is the style's chevrons with no line under them (`LineStyle::stroke` off). `superbounce_world::Scene::seconds` is the capture time and steps at the tick rate; nothing draws from it.
+
+The superbounce logic counts game ticks, not presents or wall time: the mode's state, the charge tracker (38 still ticks to lose a charge, the 30 and 150 tick windows after it), the medals and the HUD values run in `GAME_TICK` observers, and the tutorial's step limits are game seconds (`superbounce_hud::tutorial_seconds`). Below 30 fps the game plays in slow motion and they slow with it.
+
+### Tests
+
+`cargo test -p d3d --lib interp::marks` (a mark at fractions 0.25, 0.5 and 0.75 lands where the blended camera draws the point, through a mark camera with conventions of its own; a zoom blend moves it with the projection; a cut, a still camera and fraction 1 give no shift and the newest marks; E1 marks follow the turned camera with and without `_ahead`, and a cut holds), `cargo test -p d3d --lib reproject` (`display_camera` draws a point where the warp shows it), `cargo test -p d3d --lib present_camera`, `cargo test -p cli made_frames_move_the_mark_camera`, `cargo test -p app --lib overlay::marks`, `cargo test -p gfx --lib probe`, `cargo test -p game --lib -- world_lines superbounce_world superbounce_hud`.
+
+### Checking it in the game
+
+`render.marks` ([agent-api.md](../runtime/agent-api.md), "render.marks") gives each present's frame kind, a made frame's fraction and `shifted`, and the first anchors' window pixels. Turning at a steady rate with a mark on screen at `H2_FPS=60`, an anchor's `x` steps by about the same amount on every present, and the made frames say `shifted: true`; with the tick camera held it would move on genuine presents only.

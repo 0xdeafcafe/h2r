@@ -6,7 +6,7 @@
 //! falling, the predicted landing and the speed it touches down at. All of
 //! it in the HUD's colour, labels in the HUD's font ([`Look`]).
 //!
-//! The builders are pure: [`ring`], [`chevrons`], [`slot_marks`],
+//! The builders are pure: [`ring`], [`slot_marks`],
 //! [`post`], [`cross`] and [`speed_fill`] make geometry, [`figures`] puts a
 //! frame's together from the nearest spots ([`Item`]) and the player's
 //! [`Scene`], and [`frame`] reads both from the mode and adds the prompts
@@ -138,7 +138,10 @@ pub struct Scene {
     pub target: Option<[Vec3; 2]>,
     /// The player has turned the fall assist on (`superbounce.fall_assist`).
     pub assist: bool,
-    /// Seconds on a steady clock, for the chevrons' flow.
+    /// Seconds on a steady clock when the figures were captured, once a
+    /// guest frame. Not for animation: a figure drawn from it steps at the
+    /// tick rate at 60 and 120 fps. Motion goes in the style ([`Pulse`],
+    /// [`Chevrons`]), which the window runs at each present.
     pub seconds: f32,
 }
 
@@ -258,39 +261,6 @@ pub fn cross(centre: Vec3, half: f32) -> Vec<[Vec3; 2]> {
         [[c[0] - d, c[1] - d, c[2]], [c[0] + d, c[1] + d, c[2]]],
         [[c[0] - d, c[1] + d, c[2]], [c[0] + d, c[1] - d, c[2]]],
     ]
-}
-
-/// Arrowheads lying flat from `from` toward `to`, pointing that way,
-/// `spacing` apart and `size` long, [`LIFT`] up. `phase` (0..1, of a
-/// spacing) moves them along, wrapping at the end: flowing as it grows.
-/// Each is two edges, wing to tip. None along a run with no length.
-pub fn chevrons(from: Vec3, to: Vec3, spacing: f32, size: f32, phase: f32) -> Vec<[Vec3; 2]> {
-    let length = horizontal(from, to);
-    let Some(u) = flat_unit([to[0] - from[0], to[1] - from[1]]) else {
-        return Vec::new();
-    };
-    if spacing.is_nan() || spacing <= 0.0 {
-        return Vec::new();
-    }
-    let count = ((length / spacing) as usize).max(1);
-    let span = count as f32 * spacing;
-    let phase = if phase.is_finite() {
-        phase.rem_euclid(1.0)
-    } else {
-        0.0
-    };
-    let n = [-u[1], u[0]];
-    let mut out = Vec::with_capacity(count * 2);
-    for i in 0..count {
-        let t = ((i as f32 + 0.5 + phase) * spacing).rem_euclid(span) * length / span;
-        let z = from[2] + (to[2] - from[2]) * t / length.max(1e-6) + LIFT;
-        let c = [from[0] + u[0] * t, from[1] + u[1] * t, z];
-        let tip = offset(c, u, size * 0.5);
-        let back = offset(c, u, -size * 0.5);
-        out.push([offset(back, n, size * 0.7), tip]);
-        out.push([offset(back, n, -size * 0.7), tip]);
-    }
-    out
 }
 
 /// The slot's outline over its ribbon: a cap across each end of `edge`,
@@ -503,12 +473,24 @@ fn crouch_figure(
         // Walk in, and once the button is up, walk out.
         let leaving = matches!(phase, Some(Phase::Held | Phase::Primed));
         let (from, to) = if leaving { (near, far) } else { (far, near) };
-        let flow = (scene.seconds * CHEVRON_SPEED / CHEVRON_SPACING).fract();
+        // The window moves the arrowheads at each present, by its clock, so
+        // they flow smoothly at any frame rate (a figure is captured once a
+        // guest frame); no line under them.
         out.push(callout(
-            chevrons(from, to, CHEVRON_SPACING, CHEVRON_SIZE, flow),
+            vec![[up(from, LIFT), up(to, LIFT)]],
             c.stand,
             look,
-            style(look, 1.5, alpha),
+            LineStyle {
+                stroke: false,
+                chevrons: Some(Chevrons {
+                    direction: [to[0] - from[0], to[1] - from[1], 0.0],
+                    spacing: CHEVRON_SPACING,
+                    size: CHEVRON_SIZE,
+                    speed: CHEVRON_SPEED,
+                }),
+                // The window draws arrowheads at 0.8 of the line width.
+                ..style(look, 1.5 / 0.8, alpha)
+            },
         ));
     }
 }
@@ -769,32 +751,6 @@ mod tests {
     }
 
     #[test]
-    fn chevrons_point_toward_the_end_and_flow_without_leaving_the_run() {
-        let (from, to) = ([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
-        for phase in [0.0, 0.3, 0.99, 1.7, f32::NAN] {
-            let c = chevrons(from, to, 0.25, 0.1, phase);
-            assert_eq!(c.len(), 8, "four arrowheads of two edges");
-            for pair in c.chunks(2) {
-                let tip = pair[0][1];
-                assert_eq!(tip, pair[1][1]);
-                // Pointing toward `to` (down X): the tip is nearer it.
-                assert!(tip[0] < pair[0][0][0] && tip[0] < pair[1][0][0]);
-                // The wings are either side.
-                assert!(pair[0][0][1] * pair[1][0][1] < 0.0);
-                let centre = tip[0] + 0.05;
-                assert!((0.0..=1.0).contains(&centre), "{centre} at phase {phase}");
-            }
-        }
-        // The flow moves them along.
-        let a = chevrons(from, to, 0.25, 0.1, 0.0);
-        let b = chevrons(from, to, 0.25, 0.1, 0.5);
-        assert!(close(a[0][1][0] - b[0][1][0], 0.125));
-        // No run, no arrows; a run shorter than the spacing still has one.
-        assert!(chevrons(from, from, 0.25, 0.1, 0.0).is_empty());
-        assert_eq!(chevrons(from, [0.9, 0.0, 0.0], 0.25, 0.1, 0.0).len(), 2);
-    }
-
-    #[test]
     fn the_slot_is_closed_at_both_ends_and_ticked_at_the_stand() {
         let s = strip(2.0, 0.0);
         let m = slot_marks(s.edge, [2.0, 0.1, 0.0], 0.12);
@@ -887,10 +843,14 @@ mod tests {
         let way = |phase| {
             let s = Scene { phase, ..scene() };
             let out = figures(&items, &s, &LOOK);
-            // Ring, lip, way.
-            let tip = out[2].edges[0][1];
-            let wing = out[2].edges[0][0];
-            (tip[0] - wing[0]).signum()
+            // Ring, lip, way: arrowheads alone, flowing by the window's clock.
+            let way = &out[2];
+            assert!(!way.style.stroke);
+            let chevrons = way.style.chevrons.unwrap();
+            assert_eq!(chevrons.speed, CHEVRON_SPEED);
+            let [from, to] = way.edges[0];
+            assert_eq!((to[0] - from[0]).signum(), chevrons.direction[0].signum());
+            chevrons.direction[0].signum()
         };
         // `out` is +X: walking in points -X, walking out +X.
         assert_eq!(way(Some(Phase::Near)), -1.0);

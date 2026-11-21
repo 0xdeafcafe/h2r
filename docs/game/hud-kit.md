@@ -1062,7 +1062,9 @@ step 3, the widest line (its unit test checks that); which
 step is widest in font 6 is S until the disc's checks run. The tutorial
 is fullscreen only. The step machine is
 `hud_kit_core::huds::superbounce::Tutorial` (its thresholds);
-`superbounce_hud` runs it and sets the `superbounce.tutorial_seen`
+`superbounce_hud` runs it once a game tick on game seconds (ticks over
+30, `tutorial_seconds`), so 20 s is 600 ticks at every frame rate, and
+sets the `superbounce.tutorial_seen`
 setting when it closes (`H2_SUPERBOUNCE_TUTORIAL=1` shows it anyway). A
 game training prompt of its own takes the box while it shows; the
 tutorial's step waits.
