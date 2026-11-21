@@ -1,6 +1,6 @@
 # Retiring the guest D3D path
 
-Status: Design. Nothing here is built; the stages it builds on are in [native-renderer.md](native-renderer.md) and [framescene.md](framescene.md).
+Status: Design. Slice R0 (`render.residual` and the three frame counters, [agent-api.md](../runtime/agent-api.md#renderresidual-residual-d3d-work)) is built; nothing after it is. The stages it builds on are in [native-renderer.md](native-renderer.md) and [framescene.md](framescene.md).
 Code: `crates/platform/d3d/src` (what is deleted), `crates/rewrites/scene-extract/src` and `crates/rewrites/native-render/src` (what replaces it), `crates/rewrites/render-bridge/src` (the frame step and the census). Tests: named per slice below.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md). It is removed with the crate. No slice adds a switch.
 
@@ -228,12 +228,12 @@ caller, what the guest front-end still asks `d3d` to do.
   arrays), `clears`, `binds`, `copies`, `uploads`, `locks`, `queries`,
   `presents`, and `d3d_ms`.
 - **`producers`**, at most `top`, by `residual` then `entries`:
-  `{producer, status, slot, calls, draws, claimed, residual, refused,
-  entries, push_words, state_words, clears, binds, copies, uploads,
-  d3d_ms, guest_ms}`. `status` is `native`, `d3d` or `unknown` from the
-  registry below. `refused` maps a stage's refusal reason to a count.
-  `guest_ms` is the producer's exclusive guest time and is `null` without
-  `render-timing`.
+  `{producer, status, slot, calls, draws, claimed, residual, entries,
+  push_words, state_words, clears, binds, copies, uploads, d3d_ms,
+  guest_ms}`. `status` is `native`, `d3d` or `unknown` from the registry
+  below. `guest_ms` is the producer's exclusive guest time and is `null`
+  without `render-timing`. A stage's refusals are not filed by producer;
+  the capture's `native_<stage>_refused_*` counters give them by stage.
 - **`callers`**, at most `top`: `{function, sites, entries, draws,
   inline_draws, residual, d3d_ms}`. `function` is the analysed guest
   function that holds the return address of the entry call, named as
@@ -251,11 +251,15 @@ is exact because the device decodes the push buffer before a producer
 boundary moves, as it does before the sink's slot moves
 (`render_bridge::carried_slots::Drain`).
 
-**Producers** are a fixed registry in a new
-`crates/rewrites/render-bridge/src/residual_census.rs`, one row per
-caller in the inventory table, each with its entry point, its name and
-its status. It reuses the entries of `render_bridge::entry_census` and
-adds the ones that table has and the census lacks. `outside_render` is
+**Producers** are a fixed registry in
+`crates/rewrites/render-bridge/src/residual_census.rs` (`REGISTRY`), one
+row per caller in the inventory table that has a named point, each with
+its entry point, its name, its status and its slot, and the layer draw by
+site and layer as `render_bridge::entry_census` names it. Work goes to the
+innermost open producer, so the rows sum to `totals`. Callers with no
+point yet (movies, the flares, target selection, the untraced `Begin`
+callers, the first person's own entry) fall to the producer around them
+or to `unknown`, and `callers` names their functions. `outside_render` is
 every entry call made with no render frame open (boot, the caches, the
 sim). A draw or entry under no registered producer is `unknown`, and
 `unknown` is never folded into a neighbour.
@@ -269,10 +273,12 @@ counters are added for the gates and are always on: `d3d_entries`,
 `d3d_residual_draws` and `d3d_push_words`.
 
 **Code.** Types in `crates/extensions/agent-proto/src/render.rs`, logic in
-`crates/extensions/agent/src/render.rs`, the registry and window in
-`render_bridge::residual_census`, the adapter's hook in `d3d`, glue in
-`crates/extensions/game/src/scene_glue.rs`, the CLI short form, and a
-section in [agent-api.md](../runtime/agent-api.md).
+`crates/extensions/agent/src/render/residual.rs`, the registry and window
+in `render_bridge::residual_census`, the adapter's hook in
+`crates/platform/d3d/src/residual.rs` and `runtime_glue.rs`, glue in
+`crates/extensions/game/src/scene_glue.rs` and `d3d_glue.rs`, the CLI
+short form (`h2 agent residual N`), and a section in
+[agent-api.md](../runtime/agent-api.md#renderresidual-residual-d3d-work).
 
 **Tests** (synthetic, the device's draw rig): entry calls from two return
 addresses land in two caller rows; an inline draw written under one

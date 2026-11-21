@@ -227,6 +227,15 @@ pub fn shadow_original() -> Result<Box<dyn lifted::Code>, String> {
     Ok(Box::new(lifted::Original::new(analysis, x)?))
 }
 
+/// The analysed function start at or below `addr`, as `profile.fallbacks`
+/// names a site's function; `None` before the analysis is built (this
+/// never builds it).
+pub fn function_at(addr: u32) -> Option<u32> {
+    let st = STATE.get()?.lock().unwrap_or_else(|e| e.into_inner());
+    let i = st.functions.partition_point(|&e| e <= addr);
+    i.checked_sub(1).map(|i| st.functions[i])
+}
+
 fn state() -> &'static Mutex<State> {
     if let Some(s) = STATE.get() {
         return s;
