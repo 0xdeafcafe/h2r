@@ -468,9 +468,12 @@ fn walk_prime(primes: bool) -> (Option<Result<(), &'static str>>, OrderRun, Vec<
     let mut out_since: Option<u32> = None;
     for tick in 0..2000 {
         // The word: 0 until the bot walks out 0.06 past the stand after
-        // a crouch.
+        // a crouch, then -3 for good (the game keeps it until a crouch or
+        // a landing).
         let crouched = seen.iter().any(|m: &RouteMotion| m.crouch);
-        let word = if primes && crouched && at[1] > 0.06 && run.status().phase == "out" {
+        let word = if out_since.is_some()
+            || (primes && crouched && at[1] > 0.06 && run.status().phase == "out")
+        {
             out_since.get_or_insert(tick);
             PRIMED_WORD
         } else {
