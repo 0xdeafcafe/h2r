@@ -27,6 +27,8 @@ pub struct Player {
     pub medals: std::collections::BTreeMap<String, u32>,
     pub name: String,
     #[serde(default)]
+    pub emblem_colour: Option<[u8; 3]>,
+    #[serde(default)]
     pub team: Option<String>,
     #[serde(default)]
     pub score: Option<i64>,
@@ -51,6 +53,8 @@ pub struct FilmMeta {
     pub ticks_per_second: Option<u16>,
     pub version: Option<u32>,
     pub scoreboard: Vec<Player>,
+    /// The film can identify camera subjects even when its stats are absent.
+    pub roster: Vec<Player>,
     pub source: Source,
     pub image_stamp: String,
     pub compatibility: CompatibilityState,
@@ -101,6 +105,10 @@ impl FilmSummary for FilmMeta {
 }
 
 impl FilmMeta {
+    pub(super) fn camera_roster(&self) -> &[Player] {
+        if self.roster.is_empty() { &self.scoreboard } else { &self.roster }
+    }
+
     pub(super) fn tick_rate(&self) -> u64 {
         u64::from(
             self.ticks_per_second
@@ -160,6 +168,7 @@ impl FilmMeta {
                     kills: ledger.and_then(|p| p.kills),
                     deaths: ledger.and_then(|p| p.deaths),
                     medals: player.medals,
+                    emblem_colour: ledger.and_then(|p| p.emblem_colour),
                 }
             })
             .collect();
@@ -311,6 +320,20 @@ impl TryFrom<live_hle::films::RecentFilm> for FilmMeta {
         }
         Ok(row)
     }
+}
+
+pub(super) fn team_colour(team: &str) -> Option<[u8; 3]> {
+    Some(match team {
+        "Red" => [219, 98, 96],
+        "Blue" => [100, 154, 247],
+        "Green" => [103, 192, 134],
+        "Orange" => [238, 153, 83],
+        "Purple" => [180, 131, 229],
+        "Gold" => [229, 194, 101],
+        "Brown" => [186, 146, 116],
+        "Pink" => [237, 137, 184],
+        _ => return None,
+    })
 }
 
 fn team_name(team: i32) -> String {
@@ -574,4 +597,27 @@ impl Rpc for SocketRpc {
     fn recv(&mut self) -> Vec<(u64, Result<Value, String>)> {
         self.answers.try_iter().collect()
     }
+}
+
+/// Pin an exact recording in Saved. A cached Live recording can share its
+/// local data with the library through a hard link.
+pub(super) fn save_playback(recording: &Path, dir: &Path) -> anyhow::Result<()> {
+    use std::fs;
+    let entry = film::LibraryEntry::read(recording)?;
+    let library = film::Library::open(dir)?;
+    if recording.canonicalize()?.parent() != Some(dir.canonicalize()?.as_path()) {
+        if library.get(&entry.meta.id).is_ok() {
+            return library.save(&entry.meta.id);
+        }
+        let target = dir.join(format!("saved-{}.h2film", live_proto::sign::random_id()));
+        fs::hard_link(recording, &target)?;
+        let stats = recording.with_extension("h2stats");
+        if let Err(error) = fs::hard_link(&stats, target.with_extension("h2stats"))
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            let _ = fs::remove_file(&target);
+            return Err(error.into());
+        }
+    }
+    library.save(&entry.meta.id)
 }

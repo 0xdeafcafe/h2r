@@ -3,20 +3,24 @@
 pub mod adapter;
 mod overlay;
 mod pages;
+mod playback_page;
+mod prepare;
 pub mod preview;
 mod selector;
+pub mod stats;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use adapter::{Clip, FilmMeta, Library, OpenLibrary};
-pub use overlay::{Control, Key, OverlayView};
+pub use overlay::{Control, Key};
 use selector::Selector;
 
 pub const FILMS: &str = "theater.films";
 pub const DETAIL: &str = "theater.film";
 pub const OVERLAY: &str = "theater.playback";
+pub const PAUSE_MENU: &str = "theater.pause-menu";
 
 /// The main menu's retail list constructor, item text and press.
 pub(crate) mod menu {
@@ -138,6 +142,7 @@ struct State {
     recent_archives: HashSet<String>,
     archive_clips: Vec<Entry>,
     working: bool,
+    preparation: Option<prepare::Preparation>,
     status: String,
     clips: Vec<Clip>,
     clips_error: Option<String>,
@@ -226,6 +231,11 @@ impl State {
         self.changed();
     }
 
+    fn selected_preparation(&self) -> Option<&prepare::Preparation> {
+        let entry = self.selected.as_ref()?;
+        self.preparation.as_ref().filter(|job| job.id == entry.film.id)
+    }
+
     fn change_tab(&mut self, right: bool) {
         self.tab = self.tab.next(right);
         self.selector.clear_filters();
@@ -254,6 +264,7 @@ struct Shared {
     playback: Mutex<overlay::Session>,
     archive_done: Mutex<Vec<(u64, pages::Action, Entry, Result<Option<Clip>, String>)>>,
     playback_dir: Option<PathBuf>,
+    playback_recording: Option<PathBuf>,
 }
 
 impl Theater {
@@ -264,6 +275,7 @@ impl Theater {
         clip_marks: [Option<u64>; 2],
         socket: PathBuf,
         dir: PathBuf,
+        recording: PathBuf,
     ) -> std::io::Result<Self> {
         let clip = range.map(|[from_tick, to_tick]| Clip {
             film: film.id.clone(),
@@ -282,6 +294,7 @@ impl Theater {
                 clip_marks,
             )),
             playback_dir: Some(dir),
+            playback_recording: Some(recording),
             ..Shared::default()
         })))
     }
@@ -560,7 +573,7 @@ impl Theater {
             }
             state.working = true;
             state.status = match action {
-                pages::Action::Watch => "Downloading host film...",
+                pages::Action::Watch | pages::Action::Prepare => "Downloading host film...",
                 _ => "Updating account films...",
             }
             .into();
@@ -580,7 +593,7 @@ impl Theater {
                         .ok_or("Missing Live film ID")?
                         .to_owned();
                     match action {
-                        pages::Action::Watch => adapter::download_film(
+                        pages::Action::Watch | pages::Action::Prepare => adapter::download_film(
                             &archive,
                             &location.dir,
                             &game,
@@ -623,7 +636,7 @@ impl Theater {
         result: Result<Option<Clip>, String>,
     ) {
         let result = result.and_then(|playback_clip| {
-            if action != pages::Action::Watch {
+            if !matches!(action, pages::Action::Watch | pages::Action::Prepare) {
                 return Ok(());
             }
             if let Some(reason) = entry.film.watch_unavailable() {
@@ -636,6 +649,9 @@ impl Theater {
                     .as_ref()
                     .is_some_and(|e| e.film.id == entry.film.id && e.clip == entry.clip);
             drop(state);
+            if action == pages::Action::Prepare {
+                return self.session().prepare(&entry);
+            }
             if still_selected {
                 let mut playback = entry.clone();
                 if playback_clip.is_some() {
@@ -655,7 +671,7 @@ impl Theater {
             .selected
             .as_ref()
             .is_some_and(|e| e.film.id == entry.film.id && e.clip == entry.clip);
-        if action == pages::Action::Watch && entry.film.version.is_some() {
+        if matches!(action, pages::Action::Watch | pages::Action::Prepare) && entry.film.version.is_some() {
             let update = |film: &mut FilmMeta| {
                 film.version = entry.film.version;
                 film.compatibility = entry.film.compatibility;
@@ -682,6 +698,7 @@ impl Theater {
             Err(error) => error,
             Ok(()) => match action {
                 pages::Action::Watch => "Opening film...".into(),
+                pages::Action::Prepare => String::new(),
                 pages::Action::Save => {
                     let saved = !entry.film.saved;
                     if let Load::Ready(films) = &mut state.load
@@ -730,8 +747,12 @@ impl Theater {
         self.0.playback.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    pub fn overlay(&self) -> Option<OverlayView> {
+    pub fn playback_page(&self) -> Option<crate::ui_kit::spec::ScreenSpec> {
         self.session().view()
+    }
+
+    pub fn playback_timeline(&self) -> Option<[u32; 4]> {
+        self.session().timeline()
     }
 
     pub fn key(&self, key: Key, down: bool, repeat: bool) -> bool {
@@ -748,6 +769,59 @@ impl Theater {
 
     pub fn scrub(&self, fraction: f32) -> bool {
         self.session().scrub(fraction)
+    }
+
+    fn save_playback(&self) {
+        let Some(recording) = &self.0.playback_recording else { return };
+        let Some(dir) = &self.0.playback_dir else { return };
+        let notice = match adapter::save_playback(recording, dir) {
+            Ok(()) => "Film added to Saved".into(),
+            Err(error) => format!("Couldn't save film: {error}"),
+        };
+        self.session().notice = Some(notice);
+    }
+
+    pub fn add_playback_methods(&self, agent: &agent::Agent) {
+        use agent_proto::{RpcError, code, method};
+        use serde::Deserialize;
+        use serde_json::json;
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Press {
+            input: String,
+        }
+
+        fn screen(page: Option<crate::ui_kit::spec::ScreenSpec>) -> serde_json::Value {
+            let top = page.as_ref().map(|s| s.underlay.as_deref().unwrap_or(s));
+            let dialog = page.as_ref().filter(|spec| spec.dialog.is_some())
+                .map(|spec| json!({"name": spec.name, "focus": spec.focus}));
+            json!({
+                "screen": top.map(|s| &s.name),
+                "focus": top.map(|s| s.focus),
+                "dialog": dialog,
+                "native": false,
+                "age_ms": 0,
+                "page": page,
+            })
+        }
+
+        let this = self.clone();
+        agent.add_method(method::UI_SCREEN, agent::Access::Read, move |p| {
+            if !(p.is_null() || p.as_object().is_some_and(|p| p.is_empty())) {
+                return Err(RpcError::new(code::INVALID_PARAMS, "expected no parameters"));
+            }
+            Ok(screen(this.playback_page()))
+        });
+        let this = self.clone();
+        agent.add_method(method::UI_INPUT, agent::Access::Act, move |p| {
+            let press: Press = serde_json::from_value(p)
+                .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?;
+            let input = crate::ui_kit::input::Input::named(&press.input)
+                .ok_or_else(|| RpcError::new(code::INVALID_PARAMS, "unknown playback input"))?;
+            let mut session = this.session();
+            session.press(input);
+            Ok(screen(session.view()))
+        });
     }
 
     pub fn playing(&self) -> bool {
@@ -794,11 +868,22 @@ impl Theater {
         for (generation, action, entry, result) in done {
             self.finish_archive_action(generation, action, entry, result);
         }
-        let (clip, open_error) = {
+        let (clip, open_error, preparation, save) = {
             let mut session = self.session();
             session.pump();
-            (session.completed_clip.take(), session.open_error.take())
+            (session.completed_clip.take(), session.open_error.take(), session.preparation.clone(),
+                std::mem::take(&mut session.save_requested))
         };
+        if let Some(preparation) = preparation {
+            let mut state = self.state();
+            if state.preparation.as_ref() != Some(&preparation) {
+                state.preparation = Some(preparation);
+                state.changed();
+            }
+        }
+        if save {
+            self.save_playback();
+        }
         if let Some(error) = open_error {
             let mut state = self.state();
             state.status = error;

@@ -1,4 +1,4 @@
-//! Host-side Theater plates and clean screenshots of the published game
+//! Host-rendered Theater pages and clean screenshots of the published game
 //! frame. The shell calls these after the guest blit.
 
 #[cfg(not(any(target_os = "tvos", target_os = "ios")))]
@@ -6,11 +6,11 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use debug_menu::Line;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
     Space,
+    Accept,
+    Step,
     Left,
     Right,
     Up,
@@ -31,11 +31,17 @@ pub enum Key {
     Leave,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub struct Page {
+    pub rgba: Vec<u8>,
+    pub size: (u32, u32),
+    /// Scrub hit target in page pixels, when the playback bar is active.
+    pub timeline: Option<[u32; 4]>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct View {
-    pub players: Vec<Line>,
-    pub camera: Vec<Line>,
-    pub transport: Vec<Line>,
+    pub page: Option<Arc<Page>>,
     pub playing: bool,
 }
 

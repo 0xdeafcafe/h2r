@@ -358,7 +358,7 @@ impl Shell {
         }
         if let Some(renderer) = &mut g.theater {
             renderer.draw(&g.ctx, &mut enc, &self.theater_view, &view,
-                g.surface.config.format, g.surface.size(), viewport);
+                g.surface.config.format, viewport);
         }
         // The debug menu over everything but the banner.
         if let Some(lines) = self

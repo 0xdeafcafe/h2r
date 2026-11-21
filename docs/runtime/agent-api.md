@@ -2054,6 +2054,14 @@ player's name or seat to select a drawn viewport. Headless playback
 Transport state carries `id`, `tick`, `length_ticks`, `paused`, `speed`,
 `seeking`, `compatibility`, `camera`, optional `camera_player` and `camera_seat`, and
 discovered kill marker ticks in `kills`, alongside the usual `at` stamp.
+The desktop playback socket also exposes these host page methods. They
+work while the guest is paused.
+
+| Method | Parameters | Result |
+|---|---|---|
+| `ui.screen` | `{}` | `screen` names `theater.playback` or `theater.pause-menu`, with its `focus` and the UI-builder `page`. `dialog` names the open picker and its focus, or is null. `native` is false for these host-drawn pages |
+| `ui.input` | `{"input":"start"}` | Applies one named page input and returns the updated screen. Inputs are `a`, `b`, `x`, `y`, `start`, `back`, `up`, `down`, `left` and `right` |
+
 Tick zero is boot. A paused seek holds at its target until play. The HLE
 compares the recorded call index and game-thread hash samples during
 fast-forward ([theater.md](../game/theater.md)).

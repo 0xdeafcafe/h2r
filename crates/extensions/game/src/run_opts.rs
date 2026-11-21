@@ -118,6 +118,8 @@ pub struct Host {
     pub debug_menu: Option<debug_menu::Shared>,
     /// Desktop Theater controller and the film library opener supplied by the host.
     pub theater: Option<(crate::theater_ui::Theater, crate::theater_ui::adapter::OpenLibrary)>,
+    /// The isolated player's host-rendered pages and input model.
+    pub theater_playback: Option<crate::theater_ui::Theater>,
     /// Open the agent socket in the agents directory when `H2_AGENT` is
     /// unset, so editors and agents find the game
     /// ([`crate::agent_glue::discoverable_socket`]; `H2_AGENT=off` keeps

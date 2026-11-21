@@ -1,17 +1,17 @@
 //! Offline samples exercise the guest list class, detail actions and the
-//! same transport model as the desktop plates.
+//! same playback page models as the desktop shell.
 
 use std::sync::{Arc, Mutex};
 
-use debug_menu::Tone;
-
 use super::adapter::{Clip, FilmMeta, Library, Player, Source};
 use super::overlay::Track;
-use super::{Control, DETAIL, Entry, FILMS, Load, OVERLAY, Tab, Theater, pages};
+use super::playback_page::{self, Command, Divergence, Jump, Keyframes, Menu};
+use super::prepare::{Preparation, Status as PrepareStatus};
+use super::{Control, DETAIL, Entry, FILMS, Load, OVERLAY, PAUSE_MENU, Tab, Theater, pages};
 use crate::ui_kit::input::Input;
 use crate::ui_kit::page::{Focus, ListEffect, ListPage, Live, Page, described};
 use crate::ui_kit::picker;
-use crate::ui_kit::spec::{PaneText, ScreenSpec};
+use crate::ui_kit::spec::ScreenSpec;
 use pages::BROWSE_ROWS;
 
 struct SampleLibrary(Mutex<Vec<FilmMeta>>);
@@ -97,6 +97,7 @@ enum Kind {
     Films,
     Detail,
     Playback,
+    Pause,
 }
 
 impl Kind {
@@ -114,8 +115,15 @@ impl Kind {
                 "full-library",
                 "unplayable",
             ],
-            Self::Detail => &["list", "unplayable", "summary", "players", "confirm-delete"],
-            Self::Playback => &["playing", "paused"],
+            Self::Detail => &["list", "unplayable", "summary", "players", "confirm-delete", "preparing"],
+            Self::Playback => &[
+                "playing", "paused", "opening", "jumping", "divergence", "unavailable",
+                "hidden", "preparing", "pause-menu",
+            ],
+            Self::Pause => &[
+                "menu", "no-stats", "no-marks", "player-picker", "camera-picker",
+                "mark-picker", "export-picker", "share-picker", "end-dialog",
+            ],
         }
     }
 }
@@ -129,6 +137,8 @@ struct Preview {
     /// The kit's modal, above the library whose focus stays on the option.
     picker: Option<(ListPage, Focus)>,
     track: Option<Track>,
+    menu: Option<Menu>,
+    ready: bool,
 }
 
 impl Preview {
@@ -141,49 +151,56 @@ impl Preview {
             parent_focus: Focus::default(),
             picker: None,
             track: None,
+            menu: None,
+            ready: true,
         };
         view.go(kind.states()[0]);
         view
     }
 
-    fn overlay_spec(&self) -> ScreenSpec {
-        let mut spec = ScreenSpec::new(OVERLAY, "");
-        let Some(track) = &self.track else {
-            return spec;
-        };
-        if !track.visible {
-            return spec;
-        }
-        let view = track.view(None);
-        // The disc's body font is 19 pixels tall. Leave a gutter between
-        // rows and grow the transport upward when it has a clip or notice.
-        const ROW_STEP: i16 = 22;
-        let transport_top = -208 + view.bottom.len() as i16 * ROW_STEP;
-        for (lines, top, left, right) in [
-            (&view.players, 148, -260, 8),
-            (&view.top_right, 190, 24, 264),
-            (&view.bottom, transport_top, -220, 220),
-        ] {
-            for (i, line) in lines.iter().enumerate() {
-                let top = top - i as i16 * ROW_STEP;
-                let colour = match line.tone {
-                    Tone::Title => [1.0, 0.84, 0.47],
-                    Tone::Selected => [1.0, 1.0, 1.0],
-                    Tone::Greyed => [0.65, 0.68, 0.73],
-                    _ => [0.83, 0.88, 0.94],
-                };
-                spec.texts.push(PaneText {
-                    id: format!("transport.{}", spec.texts.len()),
-                    rect: [top, left, top - ROW_STEP, right],
-                    font: 1,
-                    right: false,
-                    colour,
-                    text: line.text.clone(),
-                });
+    fn play_input(&mut self, input: Input) -> String {
+        let Some(track) = &mut self.track else { return String::new() };
+        if let Some(menu) = &mut self.menu {
+            let command = menu.press(track, input);
+            match command {
+                Some(Command::Resume) => {
+                    track.paused = false;
+                    self.menu = None;
+                }
+                Some(Command::Restart) => {
+                    track.tick = track.bounds().0;
+                    self.menu = None;
+                }
+                Some(Command::Player(player)) => track.selected_player = player,
+                Some(Command::Camera(mode)) => track.camera = mode,
+                Some(Command::MarkIn) => track.marks = (Some(track.tick), None),
+                Some(Command::MarkOut) => track.marks.1 = Some(track.tick),
+                Some(Command::ClearMarks) => track.marks = (None, None),
+                Some(Command::End) => self.show = Kind::Detail,
+                _ => {}
             }
+            return format!("{command:?}");
         }
-        spec
+        let control = match input {
+            Input::A => Control::Pause,
+            Input::B => Control::CancelJump,
+            Input::Up => Control::Screenshot,
+            Input::Down => Control::Step,
+            Input::Left => Control::Skip(-5),
+            Input::Right => Control::Skip(5),
+            Input::X => Control::Mark,
+            Input::Y => Control::Camera,
+            Input::Back => Control::Hide,
+            Input::Start => {
+                track.paused = true;
+                self.menu = Some(Menu::default());
+                return "Opened pause menu".into();
+            }
+        };
+        track.simulate(control);
+        format!("{control:?}")
     }
+
 }
 
 impl Live for Preview {
@@ -196,25 +213,8 @@ impl Live for Preview {
             return format!("{effect:?}");
         }
         let list = matches!(self.show, Kind::Films);
-        if matches!(self.show, Kind::Playback) {
-            let control = match input {
-                Input::A => Control::Pause,
-                Input::B => {
-                    self.show = Kind::Detail;
-                    return "Left playback".into();
-                }
-                Input::Up => Control::Player(false),
-                Input::Down => Control::Player(true),
-                Input::Left => Control::Skip(-5),
-                Input::Right => Control::Skip(5),
-                Input::X => Control::Mark,
-                Input::Back => Control::Hide,
-                Input::Start | Input::Y => return "No action".into(),
-            };
-            if let Some(track) = &mut self.track {
-                track.simulate(control);
-            }
-            return format!("{control:?}");
+        if matches!(self.show, Kind::Playback | Kind::Pause) {
+            return self.play_input(input);
         }
         let effect = pages::preview_page(&self.theater, list).step(&mut self.focus, input);
         match effect {
@@ -240,6 +240,7 @@ impl Live for Preview {
                     .filter(|e| pages::Action::at(e, self.focus.0) == Some(pages::Action::Watch))
                 {
                     self.track = Some(Track::from_entry(&entry));
+                    self.menu = None;
                     self.show = Kind::Playback;
                 } else if self.theater.step_detail(self.focus.0 as i16) {
                     self.show = Kind::Films;
@@ -265,7 +266,14 @@ impl Live for Preview {
                 focus: self.focus.0,
                 ..pages::spec(&self.theater, matches!(self.show, Kind::Films))
             },
-            Kind::Playback => self.overlay_spec(),
+            Kind::Playback | Kind::Pause => {
+                let track = self.track.as_ref().expect("playback sample has a track");
+                if let Some(menu) = &self.menu {
+                    menu.spec(track, None)
+                } else {
+                    playback_page::bar(track, self.ready, None)
+                }
+            }
         }
     }
 
@@ -302,6 +310,8 @@ impl Live for Preview {
         self.parent_focus = Focus(0);
         self.picker = None;
         self.track = None;
+        self.menu = None;
+        self.ready = name != "opening";
         let first = fixture("game-1", "lockout", "Team Slayer", true);
         let second = fixture("game-2", "zanzibar", "CTF", false);
         let mut films = vec![first.clone(), second.clone()];
@@ -344,7 +354,7 @@ impl Live for Preview {
             };
         }
         let mut entry = Entry {
-            film: if name == "unplayable" { second } else { first },
+            film: if matches!(name, "unplayable" | "unavailable") { second } else { first },
             clip: None,
             archive_clip: None,
         };
@@ -372,13 +382,56 @@ impl Live for Preview {
             state.status = "Press A again to delete".into();
             self.focus = Focus(2);
         }
-        if matches!(self.initial, Kind::Playback) {
+        if name == "preparing" {
+            self.show = Kind::Detail;
+            self.focus = Focus(3);
+            state.preparation = Some(Preparation {
+                id: entry.film.id.clone(),
+                tick: 4800,
+                length_ticks: entry.film.length_ticks,
+                status: PrepareStatus::Running,
+            });
+        } else if matches!(self.initial, Kind::Playback | Kind::Pause) {
             let mut track = Track::from_entry(&entry);
             track.tick = 4_692;
-            track.paused = name == "paused";
+            track.paused = matches!(name, "paused" | "pause-menu") || matches!(self.initial, Kind::Pause);
+            track.speed_reached = Some(0.98);
             track.kills = vec![800, 1024, 4400, 4800, 7900, 12_500];
-            track.bookmarks = vec![501, 6000];
-            track.marks.0 = Some(4380);
+            track.keyframes = Keyframes { sidecar: vec![501, 6000], ring: vec![3600, 4100, 4500] };
+            track.marks = (Some(4380), Some(4620));
+            match name {
+                "jumping" => {
+                    track.seeking = true;
+                    track.jump = Some(Jump { target: 9_000, from_tick: 3_000, remaining_ticks: 4_308 });
+                }
+                "divergence" => track.divergence = Some(Divergence { tick: 4692, kind: "simulation digest".into() }),
+                "hidden" => track.visible = false,
+                "no-stats" => {
+                    track.scoreboard.clear();
+                    track.kills.clear();
+                }
+                "no-marks" => track.marks = (None, None),
+                _ => {}
+            }
+            if name == "pause-menu" || matches!(self.initial, Kind::Pause) {
+                let mut menu = Menu::default();
+                let row = match name {
+                    "player-picker" => Some(2),
+                    "camera-picker" => Some(3),
+                    "mark-picker" => Some(5),
+                    "export-picker" => Some(6),
+                    "share-picker" => Some(8),
+                    "end-dialog" => Some(9),
+                    _ => None,
+                };
+                if let Some(row) = row {
+                    for _ in 0..row {
+                        menu.press(&track, Input::Down);
+                    }
+                    menu.press(&track, Input::A);
+                }
+                self.menu = Some(menu);
+            }
             self.track = Some(track);
         }
         *self.theater.0.library.lock().unwrap() = Some(Box::new(SampleLibrary(Mutex::new(films))));
@@ -392,6 +445,7 @@ pub fn live(name: &str) -> Option<Box<dyn Live>> {
         FILMS => Kind::Films,
         DETAIL => Kind::Detail,
         OVERLAY => Kind::Playback,
+        PAUSE_MENU => Kind::Pause,
         _ => return None,
     };
     Some(Box::new(Preview::new(kind)))

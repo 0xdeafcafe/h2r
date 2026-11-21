@@ -234,6 +234,8 @@ fn child(opts: Options, work: &Path) -> Result<()> {
     };
     #[cfg(feature = "desktop")]
     let film_parent = opts.film.parent().unwrap_or(Path::new(".")).to_owned();
+    #[cfg(feature = "desktop")]
+    let theater_disc = boot.disc.clone();
     let camera = boot::theater::FilmCamera::default();
     let presentation: boot::theater::Presentation =
         serde_json::from_reader(fs::File::open(work.join("view.json"))?)?;
@@ -308,6 +310,9 @@ fn child(opts: Options, work: &Path) -> Result<()> {
         // observer can present the match without changing that device's answers.
         let observer = film.header.version >= 2 && local_gpu != Some(true);
         let mut meta = film_entry(film::LibraryEntry::read(&opts.film)?);
+        if let Err(error) = boot::theater_ui::stats::read_playback(&opts.film, &mut meta) {
+            eprintln!("theater: reading stats for {}: {error:#}", meta.id);
+        }
         let title = meta.map.clone();
         if let Ok(id) = std::env::var("H2_THEATER_FILM_ID") {
             meta.id = id;
@@ -318,8 +323,9 @@ fn child(opts: Options, work: &Path) -> Result<()> {
             clip_marks,
             opts.socket,
             dir.clone(),
+            opts.film,
         )?;
-        let (overlay, controller) = overlay(theater, dir.join("screenshots"));
+        let (overlay, controller) = overlay(theater.clone(), dir.join("screenshots"), Some(&theater_disc));
         let data = opts.data.unwrap_or_else(content::store::default_data_root);
         let config = app::AppConfig {
             title: format!("Theater — {}", title),
@@ -379,6 +385,7 @@ fn child(opts: Options, work: &Path) -> Result<()> {
                     gfx,
                     gfx_view,
                     film_view,
+                    theater_playback: Some(theater),
                     between_slices: Some(Box::new(move |_| !window.should_stop())),
                     host_light: true,
                     host_bots,

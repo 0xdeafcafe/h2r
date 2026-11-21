@@ -1,13 +1,17 @@
 use winit::keyboard::KeyCode;
 
-use crate::menu_overlay::{MenuRenderer, PlatePosition, line_area};
-use crate::scale::Viewport;
+use std::sync::Arc;
 
-use super::{Key, View};
+use crate::overlay::Sprite;
+use crate::scale::{Viewport, fit};
+
+use super::{Key, Page, View};
 
 pub(crate) fn key(code: KeyCode) -> Option<Key> {
     Some(match code {
         KeyCode::Space => Key::Space,
+        KeyCode::Enter | KeyCode::NumpadEnter => Key::Accept,
+        KeyCode::Period => Key::Step,
         KeyCode::ArrowLeft => Key::Left,
         KeyCode::ArrowRight => Key::Right,
         KeyCode::ArrowUp => Key::Up,
@@ -31,14 +35,16 @@ pub(crate) fn key(code: KeyCode) -> Option<Key> {
 }
 
 pub(crate) struct Renderer {
-    plates: [MenuRenderer; 3],
+    sprite: Sprite,
+    uploaded: Option<Arc<Page>>,
     timeline: Option<Viewport>,
 }
 
 impl Renderer {
     pub fn new(device: &wgpu::Device) -> Self {
         Self {
-            plates: std::array::from_fn(|_| MenuRenderer::new(device)),
+            sprite: Sprite::new(device, "Theater page"),
+            uploaded: None,
             timeline: None,
         }
     }
@@ -60,30 +66,33 @@ impl Renderer {
         model: &View,
         dst: &wgpu::TextureView,
         format: wgpu::TextureFormat,
-        size: (u32, u32),
         area: Viewport,
     ) {
         self.timeline = None;
+        let Some(page) = &model.page else { return };
         if area.is_empty() {
             return;
         }
-        self.timeline = line_area(&model.transport, 1, area, PlatePosition::BottomCenter);
-        for (renderer, (lines, pos)) in self.plates.iter_mut().zip([
-            (&model.players, PlatePosition::LeftCenter),
-            (&model.camera, PlatePosition::TopRight),
-            (&model.transport, PlatePosition::BottomCenter),
-        ]) {
-            renderer.draw_at(
-                &ctx.device,
-                &ctx.queue,
-                encoder,
-                lines,
-                dst,
-                format,
-                size,
-                area,
-                pos,
-            );
+        let rect = fit(page.size.0 as f32 / page.size.1 as f32, (area.width, area.height));
+        let rect = Viewport {
+            x: area.x + rect.x,
+            y: area.y + rect.y,
+            ..rect
+        };
+        if let Some([x, y, width, height]) = page.timeline {
+            let sx = |x| (u64::from(x) * u64::from(rect.width) / u64::from(page.size.0)) as u32;
+            let sy = |y| (u64::from(y) * u64::from(rect.height) / u64::from(page.size.1)) as u32;
+            self.timeline = Some(Viewport {
+                x: rect.x + sx(x),
+                y: rect.y + sy(y),
+                width: sx(width),
+                height: sy(height),
+            });
         }
+        if self.uploaded.as_ref().is_none_or(|old| !Arc::ptr_eq(old, page)) {
+            self.sprite.upload(&ctx.device, &ctx.queue, page.size, &page.rgba);
+            self.uploaded = Some(page.clone());
+        }
+        self.sprite.draw_in(&ctx.device, encoder, dst, format, rect);
     }
 }

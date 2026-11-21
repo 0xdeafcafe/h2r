@@ -363,6 +363,7 @@ fn hosted(
         pad_speaker,
         debug_menu: None,
         theater: None,
+        theater_playback: None,
         perf_overlay: None,
         discoverable_agent: false,
         embedded_live: false,
@@ -776,6 +777,7 @@ pub(crate) fn run_with_theater(
         let (overlay, _) = theater::overlay(
             controller.clone(),
             opts.data_root.join("films/screenshots"),
+            None,
         );
         config.theater = Some(overlay);
     }

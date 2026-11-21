@@ -1164,6 +1164,9 @@ fn run_configured(
             film.add_methods(&a.agent);
         }
     }
+    if let (Some(theater), Some(a)) = (&host.theater_playback, &agent) {
+        theater.add_playback_methods(&a.agent);
+    }
     if !replaying && let Some(a) = &agent {
         theater::library_methods(
             &a.agent,

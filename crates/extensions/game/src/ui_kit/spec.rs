@@ -303,6 +303,8 @@ pub struct ScreenSpec {
     /// `list_class::FOOTER`), as on the game's own screens, rather than
     /// under the description.
     pub footer: bool,
+    /// The host composites the page over a live picture.
+    pub transparent: bool,
     /// The screen's own ids (title and the like).
     pub ids: Vec<u32>,
     /// Retail art the screen adds of its own (a frame, a picture), drawn
@@ -338,6 +340,7 @@ impl ScreenSpec {
             inputs: Vec::new(),
             scrolls: false,
             footer: false,
+            transparent: false,
             ids: Vec::new(),
             art: Vec::new(),
             panel: Vec::new(),

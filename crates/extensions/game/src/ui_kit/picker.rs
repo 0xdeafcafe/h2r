@@ -411,31 +411,46 @@ impl Rows for Picker {
 
 impl Describe for Picker {
     fn spec(&self) -> ScreenSpec {
-        let p = current();
-        let title = p.as_ref().map(|p| p.title.clone()).unwrap_or_default();
-        let mut s = ScreenSpec::new(self.name, &title);
-        s.list = ListPlace::from(Some(Self::layout()));
-        s.style = self.base.style();
-        s.description = Some(PICKER_HELP_TEXT.into());
-        s.prompts = prompts();
-        s.inputs = vec![Input::Up, Input::Down, Input::A, Input::B];
-        s.footer = true;
-        if let Some(p) = &p {
-            s.rows = p
-                .values
-                .iter()
-                .map(|v| RowSpec::action(v).describe(&p.description))
-                .collect();
-            s.focus = p.current;
-            s.scrolls = p.values.len() > PICKER_LIST_ROWS;
-        }
-        s.dialog = Some(DialogSpec {
-            base: self.base,
-            rows: s.rows.clone(),
-            ..DialogSpec::new("", p.map_or(Opener::MAIN_MENU, |p| p.opener))
-        });
-        s
+        let pick = current();
+        let (title, values, focus, description, opener) = pick.as_ref().map_or(
+            ("", &[][..], 0, "", Opener::MAIN_MENU),
+            |p| (p.title.as_str(), p.values.as_slice(), p.current, p.description.as_str(), p.opener),
+        );
+        picker_spec(self.name, self.base, title, values, focus, description, opener)
     }
+}
+
+/// Playback owns the dialog and its selection while the replayed guest
+/// remains paused. Use the same in-game picker geometry and legend.
+pub(crate) fn playback_spec(title: &str, values: &[String], focus: usize, help: &str) -> ScreenSpec {
+    picker_spec(GAME_NAME, DialogBase::Large, title, values, focus, help, Opener::MAIN_MENU)
+}
+
+fn picker_spec(
+    name: &str,
+    base: DialogBase,
+    title: &str,
+    values: &[String],
+    focus: usize,
+    help: &str,
+    opener: Opener,
+) -> ScreenSpec {
+    let mut s = ScreenSpec::new(name, title);
+    s.list = ListPlace::from(Some(Picker::layout()));
+    s.style = base.style();
+    s.description = Some(PICKER_HELP_TEXT.into());
+    s.prompts = prompts();
+    s.inputs = vec![Input::Up, Input::Down, Input::A, Input::B];
+    s.footer = true;
+    s.rows = values.iter().map(|v| RowSpec::action(v).describe(help)).collect();
+    s.focus = focus;
+    s.scrolls = values.len() > PICKER_LIST_ROWS;
+    s.dialog = Some(DialogSpec {
+        base,
+        rows: s.rows.clone(),
+        ..DialogSpec::new("", opener)
+    });
+    s
 }
 
 /// The picker's texts as a locale source, as [`crate::ui_kit::screen::KitTexts`]

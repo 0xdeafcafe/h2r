@@ -301,9 +301,9 @@ replays the recording. The library checks the cached header for an account
 film and checks the exact recording after the first download. Playback
 needs a compatible installed game image and the
 same initial files where the film references them by digest. An archive
-with only telemetry still has a film page and scoreboard. The selector
-reads the version 3 summary for local and host recordings and opens the
-exact player for supported films.
+with only telemetry still has a film page and scoreboard. A recording's
+scoreboard comes from the adjacent `.h2stats` file. The film page offers
+**Prepare** to build seek data in the background and shows its progress.
 
 Rendered host playback opens in **Fly cam**. Local playback opens in the
 recorded retail view. **Orbit** circles the selected
@@ -327,16 +327,28 @@ full local frame or selects the first available player in a version 3 host film.
 | Change orbit radius | Left stick forward / back | Mouse wheel |
 | Mark clip in, then out | X | X |
 | Toggle transport and scoreboard | Back | H |
-| Toggle game HUD | Start | J |
+| Toggle game HUD | L3 + R3 | J |
 | Save a screenshot | D-pad Up | F12 |
-| Leave playback | B | Escape |
+| Step one tick while paused | D-pad Down | `.` |
+| Open the pause menu | Start | Escape |
+| Cancel an active jump | B | Escape |
+| Choose a pause menu item | D-pad Up/Down, A | Up/Down, Enter |
 
-The timeline marks kills as the replay encounters them. Seeking carries
-those markers and any in/out marks across the restart. Completed clip
-ranges appear in Clips and loop when watched. Screenshots are saved under
-`<data>/films/screenshots`. Pad and keyboard controls stay with the
-playback window while the overlay is hidden. Paused camera changes apply
-to the next rendered frame.
+The playback bar shows the current and total time, requested and achieved
+speed, camera and subject. Its timeline uses the adjacent stats file for
+kills and reads keyframe marks from the local sidecar and session ring.
+When the stats file is missing, playback still works and the pause menu
+shows that no match stats are available. During a jump the rail highlights
+progress toward the target. Completed clip ranges appear in Clips and loop
+when watched.
+
+The pause menu offers **Resume**, **Restart Film**, **Change Player**,
+**Camera**, **Take Screenshot**, **Mark Clip**, **Export Clip**, **Save
+Film**, **Share** and **End Film**. Press A or Enter on a choice row to open
+its picker. B or Escape dismisses a picker and returns to the same row.
+The playback window captures these inputs before the replayed guest sees
+them. Screenshots omit the host pages and are written under
+`<data>/films/screenshots`.
 
 The library uses the retail settings list beneath a tab strip and preview.
 The film page uses the pregame lobby's action skin, text and row spacing.
@@ -349,8 +361,9 @@ metadata from `film::Library` and the signed Live listing. Live's
 participants. The menu and playback window use
 [the Theater agent methods](../runtime/agent-api.md#theater-transport).
 
-Offline samples are `theater.films`, `theater.film` and
-`theater.playback` in `h2 ui preview`. The browser includes empty Recent,
+Offline samples are `theater.films`, `theater.film`, `theater.playback`
+and `theater.pause-menu` in `h2 ui preview`. The playback samples include
+jumping, divergence, preparing and unavailable states. The browser includes empty Recent,
 Saved, Clips and filtered states. Film details include a summary without
 a recording and a paged roster with names only. The main-menu selection
 dialog reports `kit.picker` through `ui.screen`.

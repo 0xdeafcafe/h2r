@@ -353,9 +353,9 @@ second renderer for it.
 
 The bar and the pause menu are pages of the UI builder
 ([ui-builder.md](ui-builder.md)), drawn in the retail skin by the same
-kit as the film selector, with the `theater.playback` sample as the
-offline preview. The host captures their input before it reaches the
-replayed simulation.
+kit as the film selector. The `theater.playback` and
+`theater.pause-menu` samples use the live page models. The host
+captures page input before it reaches the replayed simulation.
 
 - **Bar** (bottom of the screen, hidden with Back or H): play state,
   speed asked and reached, time and length, a timeline with kill

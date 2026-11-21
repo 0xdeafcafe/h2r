@@ -292,6 +292,7 @@ pub const NAMES: [&str; 25] = [
     crate::theater_ui::FILMS,
     crate::theater_ui::DETAIL,
     crate::theater_ui::OVERLAY,
+    crate::theater_ui::PAUSE_MENU,
     "kit.picker",
     "kit.picker.game",
 ];
@@ -322,7 +323,8 @@ pub fn live(name: &str) -> Option<Box<dyn Live>> {
             use crate::mods_screen::spec::{Sample, preview::Preview};
             Some(Box::new(Preview::new(Sample::named(name)?)))
         }
-        crate::theater_ui::FILMS | crate::theater_ui::DETAIL | crate::theater_ui::OVERLAY => {
+        crate::theater_ui::FILMS | crate::theater_ui::DETAIL | crate::theater_ui::OVERLAY
+        | crate::theater_ui::PAUSE_MENU => {
             crate::theater_ui::preview::live(name)
         }
         _ => Some(Box::new(Driven::new(list_page(name)?))),

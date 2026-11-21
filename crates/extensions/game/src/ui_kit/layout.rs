@@ -413,10 +413,19 @@ type Mask = (Vec<(u32, u32)>, usize);
 /// as canvas pixels, and how many opaque pixels fall off the canvas. `None`
 /// when the source has no image for it.
 fn opaque(w: &Widget, src: &dyn Source) -> Option<Mask> {
-    let Kind::Art { art, .. } = &w.kind else {
+    let Kind::Art { art, size } = &w.kind else {
         return None;
     };
-    let img = src.art(art)?;
+    let img = if let Art::Solid { rgba } = art {
+        let [width, height] = size.map(u32::from);
+        crate::ui_kit::preview::Image {
+            width,
+            height,
+            rgba: rgba.repeat((width * height) as usize),
+        }
+    } else {
+        src.art(art)?
+    };
     let (x0, y0) = (320 + i32::from(w.rect[1]), 240 - i32::from(w.rect[0]));
     let mut on = Vec::new();
     let mut off = 0;

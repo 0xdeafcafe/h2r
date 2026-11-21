@@ -32,7 +32,7 @@ impl Agent {
         let mut keep = VecDeque::new();
         while let Some((conn, req)) = s.pending.pop_front() {
             if agent_proto::theater::METHODS.contains(&req.method.as_str())
-                || req.method == method::METHODS
+                || matches!(req.method.as_str(), method::METHODS | method::UI_SCREEN | method::UI_INPUT)
                 || (req.method == debug_menu::sources::method::CHEAT_SET
                     && req.params["name"].as_str() == Some("hide_hud"))
             {

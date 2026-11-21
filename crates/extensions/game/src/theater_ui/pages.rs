@@ -31,7 +31,7 @@ pub(super) const FILM_ROWS: usize = 40;
 pub(super) const BROWSE_ROWS: usize = OptionRow::ALL.len();
 const MAX_ROWS: usize = FILM_ROWS + BROWSE_ROWS + 1; // Also allow a retry row.
 const DETAIL_ROWS: u32 = ROWS + MAX_ROWS as u32;
-const TAB_PANEL: u32 = DETAIL_ROWS + 3;
+const TAB_PANEL: u32 = DETAIL_ROWS + 4;
 const TAB_TEXTS: usize = 2 * Tab::ALL.len();
 const PANEL: u32 = TAB_PANEL + TAB_TEXTS as u32 + 2;
 const _: () = assert!(PANEL + crate::list_class::MAX_PANEL_TEXTS as u32 <= TEXTS.len);
@@ -48,7 +48,7 @@ const LIST_PICTURE: PictureSpec = PictureSpec {
 };
 const FILM_LAYOUT: ListLayout = ListLayout {
     anchor: [lobby::LIST.anchor[0], -77],
-    visible: 3,
+    visible: 4,
     ..lobby::LIST
 };
 const FILM_PICTURE: PictureSpec = PictureSpec {
@@ -70,7 +70,7 @@ const LIST_STATUS: TextBlock = TextBlock {
     ..lobby::BODY
 };
 const FILM_STATUS: TextBlock = TextBlock {
-    rect: [-125, -258, -179, -36],
+    rect: [-148, -258, -187, -36],
     ..lobby::STATUS
 };
 
@@ -79,14 +79,16 @@ pub(super) enum Action {
     Watch,
     Save,
     Delete,
+    Prepare,
 }
 
 impl Action {
     fn for_entry(entry: &Entry) -> impl Iterator<Item = Self> {
-        [Self::Watch, Self::Save, Self::Delete]
+        [Self::Watch, Self::Save, Self::Delete, Self::Prepare]
             .into_iter()
             .filter(move |action| match action {
                 Self::Watch => entry.film.watch_unavailable().is_none(),
+                Self::Prepare => entry.clip.is_none() && entry.film.watch_unavailable().is_none(),
                 Self::Save => entry.clip.is_none(),
                 Self::Delete => entry.clip.is_some() || entry.film.archive_id().is_none(),
             })
@@ -119,7 +121,8 @@ impl Theater {
 
     pub fn step_detail(&self, row: i16) -> bool {
         let mut state = self.state();
-        let Some(entry) = state.selected.clone().filter(|_| !state.working) else {
+        let preparing = state.selected_preparation().is_some_and(super::prepare::Preparation::active);
+        let Some(entry) = state.selected.clone().filter(|_| !state.working && !preparing) else {
             return false;
         };
         let Some(action) = usize::try_from(row)
@@ -146,6 +149,27 @@ impl Theater {
                     let mut state = self.state();
                     state.status = error;
                     state.changed();
+                }
+                return false;
+            }
+            Action::Prepare => {
+                if entry.film.archive_id().is_some() && entry.film.version.is_none() {
+                    drop(state);
+                    self.archive_action(Action::Prepare, entry);
+                    return false;
+                }
+                drop(state);
+                match self.session().prepare(&entry) {
+                    Ok(()) => {
+                        let mut state = self.state();
+                        state.preparation = Some(super::prepare::Preparation::starting(&entry.film.id, entry.film.length_ticks));
+                        state.changed();
+                    }
+                    Err(error) => {
+                        let mut state = self.state();
+                        state.status = error;
+                        state.changed();
+                    }
                 }
                 return false;
             }
@@ -298,6 +322,7 @@ fn detail_model(state: &super::State) -> Vec<RowSpec> {
         return vec![RowSpec::info("Film unavailable", "")];
     };
     let film = &entry.film;
+    let preparing = state.selected_preparation().is_some_and(super::prepare::Preparation::active);
     Action::for_entry(entry)
         .map(|action| {
             let label = match action {
@@ -306,8 +331,10 @@ fn detail_model(state: &super::State) -> Vec<RowSpec> {
                 Action::Save => "Save",
                 Action::Delete if state.confirm_delete => "Confirm delete",
                 Action::Delete => "Delete",
+                Action::Prepare if preparing => "Preparing…",
+                Action::Prepare => "Prepare",
             };
-            if state.working {
+            if state.working || preparing {
                 RowSpec::info(label, "")
             } else {
                 RowSpec::action(label)
@@ -426,16 +453,10 @@ fn header_values(entry: &Entry, player: Option<&str>) -> Vec<String> {
         values.push(format!("Result: {result}"));
     }
     values.resize(HEADER_LINES, String::new());
-    values.push(if film.source == super::adapter::Source::Host
-        && film.archive_id().is_some()
-        && film.version.is_none()
-    {
-        "Compatibility checked on download".into()
-    } else if film.watch_unavailable().is_some() {
-        "Unavailable".into()
-    } else {
-        "Playable".into()
-    });
+    values.push(match film.compatibility {
+        agent_proto::theater::CompatibilityState::Playable => "Playable",
+        agent_proto::theater::CompatibilityState::Unavailable => "Unavailable",
+    }.into());
 
     values
 }
@@ -608,25 +629,16 @@ pub(super) fn spec(theater: &Theater, list: bool) -> ScreenSpec {
                 pane_text(i, t, text_fit::line(&value, i32::from(right - left)))
             })
             .collect();
-        s.help = if state.status.is_empty() {
-            state
-                .selected
-                .as_ref()
-                .and_then(|e| e.film.watch_unavailable())
-                .map(|reason| {
-                    text_fit::paragraph(
-                        reason,
-                        i32::from(FILM_STATUS.rect[3] - FILM_STATUS.rect[1]),
-                        2,
-                    )
-                })
-        } else {
-            Some(text_fit::paragraph(
-                &state.status,
-                i32::from(FILM_STATUS.rect[3] - FILM_STATUS.rect[1]),
-                2,
-            ))
-        };
+        let room = i32::from(FILM_STATUS.rect[3] - FILM_STATUS.rect[1]);
+        s.help = state.selected.as_ref().and_then(|entry| {
+            if !state.status.is_empty() {
+                Some(text_fit::paragraph(&state.status, room, 2))
+            } else if let Some(message) = state.selected_preparation().and_then(|job| job.copy(entry.film.tick_rate())) {
+                Some(text_fit::paragraph(&message, room, 2))
+            } else {
+                entry.film.watch_unavailable().map(|reason| text_fit::paragraph(reason, room, 2))
+            }
+        });
     }
     s
 }
