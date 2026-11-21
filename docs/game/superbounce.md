@@ -678,46 +678,48 @@ one PNG a state at 1280x720 (and `primed` at 1920x1080 too): `scanning`,
 `not-primed`, `primed`, `primed-airborne` and `tutorial-1` to
 `tutorial-4`.
 
-**The lines.** Each spot is a world-space line (the window's world-line
-pass, no depth test; the styles are described in
-[the agent API](../runtime/agent-api.md#drawing-world-space-lines-over-the-frame)):
+**The lines.** The spots are figures on the map, drawn by the window's
+world-line pass with no depth test (the styles are described in
+[the agent API](../runtime/agent-api.md#drawing-world-space-lines-over-the-frame)),
+from `crates/extensions/game/src/superbounce_world.rs` (`frame`): a crouch
+spot's footprint, lip and way, a bounce strip's slot and post, and the
+predicted landing, as [Crouch spots in the world](#crouch-spots-in-the-world)
+and [Landings](#landings) describe.
 
-- A bounce spot's edge is coloured by the fall onto it: green for a
-  standing jump (0), yellow at 1.5 world units, red at 3 and more (a hue
-  sweep, clamped). It is a 3 px core with a soft halo, over a floor ribbon
-  as wide as the strip's slot (0.2). When the spot has a drift, small
-  chevrons on the floor point along it, the way to come in.
-- While the player is primed a bounce line pulses and its chevrons flow.
-  While not, it is dimmed to 35% and still, so a bright, moving line means
-  a landing there launches.
-- A forced-crouch spot is a thin dashed cyan line with a soft halo, steady
-  and at full brightness.
-- Both kinds fade out between 25 and 45 world units from the camera.
-- Only the 40 spots nearest the player are drawn. Of those, only the
-  nearest 3 bounce strips carry their launch label (`+17.9`) and only the
-  nearest 2 crouch spots carry `crouch`.
+- Only the 40 spots nearest the player are drawn, nearest first by the
+  middle of their edges. Everything fades out between 25 and 45 world
+  units from the camera.
+- While the player is primed a strip pulses and its drift chevrons flow;
+  while not it is at 35% and still, so a bright, moving strip means a
+  landing there launches. The strip the assist would steer onto is drawn
+  at full strength with a bolder, faster-pulsing core.
+- Lines are in the user's HUD colour and labels in the HUD's font
+  (`crates/extensions/game/src/superbounce_font.rs`, below).
 
 **The prompts.** While the player is primed, the window also draws big,
 centred, shadowed labels with a pulse, on the spots they say something
 about (`crates/extensions/game/src/superbounce_prompts.rs`):
 
 - Airborne and falling toward a strip the assist can steer onto (its
-  pick), `HOLD X` floats 0.3 units above the strip's stand point. It grows
-  as the player nears: 1x at 6 units and more, 3x at 0.5 and less, linear
-  between (`label_scale`). The strip itself is drawn bright, with a bold,
-  pulsing core. A guide runs along the floor from where the player lands if
-  nothing is done to the stand point, and a short post stands at that
-  landing.
-- Once X is held and the assist is steering, the label reads `GUIDING` in
-  green and stops pulsing.
+  pick), `Hold X` (the X button's glyph) floats 0.3 units above the
+  strip's stand point. It grows as the player nears: 1x at 6 units and
+  more, 3x at 0.5 and less, linear between (`label_scale`). A guide runs
+  along the floor from where the player lands if nothing is done to the
+  stand point; the landing itself is the predicted-landing ring
+  ([Landings](#landings)).
+- Once X is held and the assist is steering, the label reads `Guiding`
+  and stops pulsing.
 - On the ground, within 1.5 units of a strip whose fall is at most 0.05 (a
-  standing jump does it), `JUMP` is drawn at the take-off spot, 0.2 units
+  standing jump does it), `Jump` is drawn at the take-off spot, 0.2 units
   back from the stand point against the drift (`takeoff`), with a small
   ring on the floor there. Within 0.1 units of the take-off spot it
-  flashes `JUMP NOW`. Only the nearest such strip gets one.
+  flashes `Jump now`. Only the nearest such strip gets one.
 - On the ground, within 3 units of a strip whose fall is more than 0.3,
-  `DROP >= 3.0 m` (the fall in metres) is drawn in orange over it, so the
-  player knows to come from above. Only the nearest gets one.
+  `Drop 3 m` (the fall in whole metres, `whole_metres`) is drawn over it,
+  so the player knows to come from above. Only the nearest gets one.
+
+The prompts are in sentence case, in the HUD's colour and font, the
+words told apart by what they say and how they pulse, not by colour.
 
 `prompt_for` decides what a strip says from whether the player is primed,
 airborne, targeted and engaged, the strip's fall and the distances to its
@@ -832,6 +834,8 @@ for the tracker and the landing classifier,
 `superbounce_capsule.rs` for the capsule test, `superbounce_assist.rs`'s
 `predict` for the predicted landing), and `superbounce.state` returns
 them ([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type)).
+The world overlay ("Crouch spots in the world", and "Landings" but
+"What happened") is built in `superbounce_world.rs`.
 
 ### Charge
 
@@ -942,19 +946,23 @@ each kept spot (below), and one that primes becomes a row in `PROVEN`.
 ### Crouch spots in the world
 
 One spot is one figure on the floor, drawn by the window's world-line
-pass (`crates/apps/app/src/overlay/marks.rs`):
+pass (`crates/extensions/game/src/superbounce_world.rs`, the geometry;
+`crates/apps/app/src/overlay/marks.rs`, the drawing):
 
 - **The footprint.** A ring of the capsule's radius (0.175) round
-  `stand`, on the floor: the size of the player's own feet, where to be.
-  It is thin while the player is elsewhere and solid and pulsing once
-  the phase is `under`.
-- **The lip.** The `lip` edges, a thin line at head height: what to get
-  under.
-- **The way.** Floor chevrons along `out`, flowing in toward the ring
-  until the phase is `held`, then flowing out: walk in, then walk out.
-- **The label.** `Crouch` over the nearest spot within 3 units, in whole
-  words as the HUD writes them; none on the others. The verb with the
-  button is on the HUD's prompt line.
+  `stand`, 0.02 above the floor (`ring`): the size of the player's own
+  feet, where to be. It is thin while the player is elsewhere, and bold
+  and pulsing while the phase is `under` or `held`. The phase belongs to
+  the nearest crouch spot within 1 unit of the player, sideways.
+- **The lip.** The `lip` edges, a thin line where the scan found them, at
+  head height: what to get under.
+- **The way.** Floor chevrons along `out`, from 1.2 out to just outside
+  the ring (`chevrons`), flowing in toward the ring until the phase is
+  `held`, then flowing out: walk in, then walk out. They travel at 0.4
+  units/s, 0.25 apart.
+- **The label.** `Crouch` 0.15 over the lip (0.8 over `stand` without
+  one) of the nearest spot within 3 units; none on the others. The verb
+  with the button is on the HUD's prompt line.
 
 Only the nearest 3 get the lip and the way; the rest are the ring alone.
 A `likely` spot is drawn at half strength, a `proven` one at full. While
@@ -968,28 +976,35 @@ The scanner's bounce spot carries `width` (the gap between its two
 joints) and `need` (the touchdown speed its `fall` is worked from;
 [Bounce](#bounce)).
 
-- **Where.** The floor ribbon is the slot itself: `width` across, not a
-  fixed 0.2, the overlap long, closed at both ends, with a cross tick at
-  `stand`, under the line down its middle.
-- **How high.** A thin post stands at `stand` with a tick at `fall`
-  above the strip: jump from a floor at or above the tick. The tick's
-  label is the height in whole metres. A strip a standing jump reaches
-  (`fall` at most 0.05) has no post.
-- **From here?** A strip's colour says whether the player's own floor is
-  high enough: full strength when their feet are at least `fall` above
-  it (or it needs no fall), half when they must climb. A sweep from
-  green to red by `fall` alone leaves the player to do that sum.
-- **On course.** While primed and falling, the landing the assist
-  predicts (`predicted_landing`) is a ring of the capsule's radius on
-  the strip's floor: solid when it is inside the slot, open when the
-  assist can still bring it in (`Hold X`), and a cross when it cannot.
-  Beside it, the speed the player will touch down at, `√(vz² + 2 × 4.15
-  × height)`, is a short bar that fills to `need`. The state is the
-  mode's `landing` (`superbounce_assist::predict`), there whenever the
-  player is airborne and falling, primed or not: of the strips below
-  whose stand point the coasting landing is within 3 units of, the one
-  it lands nearest the slot of, with its `verdict` (`OnSlot`, `Fixable`
-  by the assist's reach gate, else `Miss`), `speed` and `need`.
+The figures are `crates/extensions/game/src/superbounce_world.rs`'s.
+
+- **Where.** The floor ribbon is the slot itself: `width` across, the
+  overlap long, under the line down its middle; a cap across each end
+  closes it and a tick across marks `stand` (`slot_marks`).
+- **How high.** A thin post stands at `stand` to `fall` above the strip,
+  with a small cross at its top (`post`): jump from a floor at or above
+  it. Its label is the height in whole metres (`3 m`, at least 1), on the
+  nearest 3 strips. A strip a standing jump reaches (`fall` at most
+  0.05) has no post.
+- **From here?** A strip's strength says whether the player's own floor
+  is high enough (`high_enough`): full when their feet (the unit's
+  origin) are at least `fall` above `stand` or it needs no fall, half
+  when they must climb; and 35% of that while not primed
+  (`strip_strength`). Every strip is the same colour, so the player does
+  not have to turn a colour into a height.
+- **On course.** While primed, airborne and moving down, the landing the
+  state predicts (`landing`) is drawn where it is: a ring of the capsule's
+  radius when it is inside the slot, the ring broken into every other
+  segment when the assist can still bring it in (`Hold X`), and a cross
+  when it cannot. 0.35 to its side, across the line from the player, a
+  0.5-high post fills from the floor with the touchdown speed over `need`
+  (`speed_fill`), full at `need`.
+  The state is the mode's `landing` (`superbounce_assist::predict`),
+  there whenever the player is airborne and falling, primed or not: of
+  the strips below whose stand point the coasting landing is within 3
+  units of, the one it lands nearest the slot of, with its `verdict`
+  (`OnSlot`, `Fixable` by the assist's reach gate, else `Miss`), `speed`
+  and `need`.
 - **What happened.** On the tick a primed or unprimed player touches
   down within 0.5 of a strip the mode files the landing: `bounce` when
   the vertical speed comes out over 8 units/s, else the first of
@@ -1003,11 +1018,37 @@ joints) and `need` (the touchdown speed its `fall` is worked from;
   notification list, and `superbounce.state` returns the last landing as
   `last_landing`: the outcome, the game tick and the origin.
 
-The colours are the game's: lines take the user's HUD colour
-(`0x0013927e`, as the navpoint does), and a warning takes the `hudg`
-timer-warning record's peak. Labels are drawn in the disc's HUD font
-(font 6) with its button glyphs, in sentence case, numbers in whole
+The colours are the game's: lines take the user's HUD colour, the
+three floats at `0x00468c84` (the human triple `0x0013927e` returns),
+read from the guest each frame (`superbounce_font::hud_colour`). The
+Elite triple and the `hudg` timer-warning colour are not used: a miss is
+told by its cross, not its colour. Labels are drawn in the disc's HUD
+font (font 6) with its button glyphs, in sentence case, numbers in whole
 metres. No colour or letter shape is ours.
+
+**The font.** `superbounce_font::Capture`, chained after the font
+rewrites in the boot runner's VFS (`crates/apps/boot/src/lib.rs`),
+serves every file unchanged and keeps `font_table.txt` and the file on
+its line 6, counted from 0, as the game reads them: the HUD's font, with
+the icon sets' and bot mark's glyphs in it. The first frame that draws
+packs its printable ASCII and button glyphs (U+E100 to U+E111) into a
+512-wide atlas (`gfx::world_lines::LabelFont`, built in
+`superbounce_font::atlas`) and publishes it. The window uploads the
+atlas once per font and draws each glyph as a textured quad in the same
+draw as the lines, laid out as the engine lays text out (kerning,
+`x_offset`, `y_offset` from the ascent). A plain glyph takes the label's
+colour; a glyph with coloured pixels (the face buttons) keeps its own. A
+font pixel is a HUD pixel (the HUD is 480 lines) at `label_scale` 2, the
+size the world labels use. Centred labels have a black drop shadow one
+font pixel down and right; the HUD's own shadow colour
+(`[0x004686d4]`) is not read.
+
+Without the font (a host that does not mount the disc through the boot
+runner, or a font that does not parse) the labels are drawn in the
+window's 8x8 debug font, the X button is written `X`, and the log says
+`superbounce: world labels use the 8x8 debug font and button letters`
+with the reason, once. Without the HUD colour the lines are white and
+the log says so, once.
 
 ### Checking it on the lab
 

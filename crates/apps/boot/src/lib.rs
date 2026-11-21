@@ -537,7 +537,13 @@ fn run_configured(
     );
     #[cfg(not(feature = "desktop-runtime"))]
     let fonts = bot_mark::GearRewrite;
-    let rewrites = Some(vfs::Chain(fonts, cards));
+    // The superbounce world labels keep the HUD font as the game reads it,
+    // after the font rewrites (docs/game/superbounce.md, "Crouch spots in
+    // the world").
+    let rewrites = Some(vfs::Chain(
+        vfs::Chain(fonts, cards),
+        superbounce_font::Capture,
+    ));
     let mounted = map_override::mount_for_agent(
         cfg.clone(),
         &opts.disc,

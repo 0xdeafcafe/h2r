@@ -1018,31 +1018,15 @@ mod gpu {
         }
 
         fn capture(&self, guest: &dyn GuestMemory) -> Option<Arc<dyn ImageMarks>> {
-            use crate::superbounce_assist as assist;
-            use crate::superbounce_prompts as prompts;
             let s = state();
             let spots = current_spots();
-            let mut drawn = lines(&spots, s.position, s.primed(), MAX_LINES);
-            let mut callouts = Vec::new();
-            if s.primed()
-                && let Some(body) = assist::read_body(guest, assist::PORT)
-            {
-                let target = assist::pick(&spots, &body);
-                if let Some((spot, _)) = target
-                    && let Some(line) = drawn.iter_mut().find(|l| l.edge == spot.edge)
-                {
-                    highlight(line, spot);
-                }
-                callouts = prompts::callouts(
-                    &spots,
-                    &body,
-                    true,
-                    target.as_ref().map(|(spot, reach)| (*spot, reach)),
-                    assist::assisting(),
-                );
-            }
-            (!drawn.is_empty() || !callouts.is_empty())
-                .then(|| Arc::new(Sample { lines: drawn, callouts }) as Arc<dyn ImageMarks>)
+            let callouts = crate::superbounce_world::frame(guest, &s, &spots);
+            (!callouts.is_empty()).then(|| {
+                Arc::new(Sample {
+                    lines: Vec::new(),
+                    callouts,
+                }) as Arc<dyn ImageMarks>
+            })
         }
     }
 

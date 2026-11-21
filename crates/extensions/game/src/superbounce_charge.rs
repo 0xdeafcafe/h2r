@@ -451,6 +451,7 @@ mod tests {
             launch: if kind == Kind::Bounce { 17.9 } else { 0.0 },
             drift: [0.0, 0.0],
             score: 1.0,
+            ..Spot::default()
         }
     }
 
