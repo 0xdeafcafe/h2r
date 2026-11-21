@@ -712,12 +712,12 @@ impl Studio {
             if ui.is_window_hovered_with_flags(WindowHoveredFlags::CHILD_WINDOWS) && map_is_visible(app) {
                 self.hint = Some("Click to select · Cmd/Ctrl toggles · Shift selects a range".into());
             }
-            layers::section(ui, app, actions);
             if let Some(view) = app.halo1_view() {
                 halo1_outliner(ui, app, view, actions);
                 return;
             }
             if !app.session.is_open() {
+                layers::section(ui, app, actions);
                 theme::empty_card(ui, &self.fonts, "Open a map to see its scene", || {});
                 return;
             }
@@ -768,7 +768,8 @@ impl Studio {
             let io = ui.io();
             let (toggle, range) = (io.key_ctrl() || io.key_super(), io.key_shift());
             let mut place = None;
-            ui.child_window("##outliner-tree").build(ui, || {
+            theme::panel_body(ui, "##outliner-body", || {
+                layers::section(ui, app, actions);
                 for b in &scenario.blocks {
                     let kind = b.def.kind;
                     let shown: Vec<usize> = (0..b.len())
@@ -904,7 +905,7 @@ impl Studio {
 
     fn log_window(&mut self, ui: &Ui, app: &App) {
         ui.window(&self.keys.log).build(|| {
-            ui.child_window("##log-lines").build(ui, || {
+            theme::panel_body(ui, "##log-lines", || {
                 for line in app.log() {
                     let (color, mark) = match &line.status {
                         Status::Info(_) => (theme::DIM, icon::INFO),
@@ -1390,7 +1391,8 @@ fn halo1_outliner(
     ui.text_colored(theme::WARN, format!("{} Halo 1: read only", icon::EYE));
     ui.separator();
     let sel = app.session.selected();
-    ui.child_window("##h1-outliner-tree").build(ui, || {
+    theme::panel_body(ui, "##h1-outliner-body", || {
+        layers::section(ui, app, actions);
         for kind in editor_core::halo1::H1Kind::ALL {
             let block = block_of(kind);
             let n = view.of(kind).count();

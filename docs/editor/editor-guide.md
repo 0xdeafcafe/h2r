@@ -541,7 +541,8 @@ an agent socket of its own (in the `agents` folder of the h2recomp cache;
 Pairing with an already-running game starts in View. Turn **Edit** on
 when you're ready to send tag and placement edits. Open **Pending** to see
 when each edit takes effect, resolve a conflict, or reload the play copy
-for structural edits. A red mark on a field or tree row shows why a write
+for structural edits. **Send**, **Reload map** and **Respawn now** are at
+the top of Pending, above the rows they act on. A red mark on a field or tree row shows why a write
 was refused. An amber conflict offers **Take the game's value** and
 **Overwrite**. Click the count on the game link to open Pending. Failed
 game actions also appear in the viewport for four seconds. If a co-op session or
@@ -1036,12 +1037,15 @@ count spilling out of its box.
     campaign levels, your packages and **Halo 1 sandbox variants**,
     then **Shared and menu**. Pick a map to open it in the HUD tool.
     The filter matches source maps by display name and file name.
-  - **HUDs**: every HUD of that map, grouped by who uses it: players and
+  - **Filter**: one filter under the menu narrows the HUDs and the widgets.
+  - **HUDs** (a folding header): every HUD of that map, grouped by who uses it: players and
     bipeds, weapons, vehicles, the globals, and the converted Halo 1
     HUDs. Hover one to see who names it. Click one to show it. A `*`
     marks a HUD with unsaved edits.
-  - **Widgets**: the HUD's pieces in the order the game draws them, art
-    (a box) then text (a page). Click one to select it.
+  - **Widgets** (a folding header): the HUD's pieces in the order the game
+    draws them, art (a box) then text (a page). Click one to select it.
+    The two lists share the panel's one scroll, so a short window scrolls
+    the panel instead of squeezing a list.
 - **HUD** (centre): the HUD on a 640 by 480 screen.
   - The menu at the top picks **fullscreen**, **half screen** or
     **quarter screen** (split screen; each widget has its own placement

@@ -420,6 +420,9 @@ mod tests {
             meaning: String::new(),
             doc: None,
             applies: None,
+            label: None,
+            unit: None,
+            axes: Vec::new(),
         }
     }
 
@@ -429,6 +432,8 @@ mod tests {
             size,
             align: 4,
             fields,
+            title: None,
+            section_titles: Default::default(),
         }
     }
 

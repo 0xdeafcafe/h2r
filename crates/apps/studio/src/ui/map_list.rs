@@ -303,9 +303,11 @@ pub(super) fn source_grid(
     }
 
     let _padding = ui.push_style_var(StyleVar::WindowPadding([16.0, 12.0]));
-    ui.child_window("##map-grid")
-        .child_flags(ChildFlags::ALWAYS_USE_WINDOW_PADDING)
-        .build(ui, || {
+    theme::panel_body_with(
+        ui,
+        "##map-grid",
+        ChildFlags::ALWAYS_USE_WINDOW_PADDING,
+        || {
             {
                 let _title = ui.push_font(fonts.title);
                 ui.text("Choose a map");
@@ -322,7 +324,8 @@ pub(super) fn source_grid(
                     draw_source_rows(ui, app, st, gpu, group, true, actions);
                 }
             }
-        });
+        },
+    );
 }
 
 fn draw_source_rows(

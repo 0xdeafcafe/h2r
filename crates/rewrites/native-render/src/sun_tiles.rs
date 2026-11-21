@@ -132,9 +132,14 @@ pub fn screen_diameter(rows: &[[f32; 4]; 4], height: u32, centre: [f32; 3], radi
 /// A stable hash of a caster's blended node rows: equal rows give equal
 /// hashes, so a still caster's tile is kept.
 pub fn rows_hash(rows: &[[f32; 4]]) -> u64 {
+    floats_hash(rows.as_flattened())
+}
+
+/// [`rows_hash`] over any floats, such as a caster's node matrices.
+pub fn floats_hash(values: &[f32]) -> u64 {
     // FNV-1a over the bit patterns.
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for v in rows.iter().flatten() {
+    for v in values {
         for b in v.to_bits().to_le_bytes() {
             h ^= u64::from(b);
             h = h.wrapping_mul(0x0100_0000_01b3);
@@ -161,10 +166,10 @@ pub struct SunTilePlanner {
 
 impl SunTilePlanner {
     /// `atlas_edge` is a power of two no smaller than [`MIN_EDGE`].
-    pub fn new(atlas_edge: u32) -> Self {
-        debug_assert!(atlas_edge.is_power_of_two() && atlas_edge >= MIN_EDGE);
+    pub fn new(edge: u32) -> Self {
+        debug_assert!(edge.is_power_of_two() && edge >= MIN_EDGE);
         Self {
-            atlas_edge,
+            atlas_edge: edge,
             drawn: HashMap::new(),
         }
     }

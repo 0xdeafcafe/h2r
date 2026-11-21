@@ -745,6 +745,104 @@ mod tests {
         check(&src.join("ui"));
     }
 
+    /// `theme::panel_body` and `theme::bounded_list` are the only callers of
+    /// `child_window` in `ui.rs` and `ui/`. `ui/tags.rs` and `fields.rs`
+    /// are allowed until slice T2 of docs/editor/tag-editing.md moves them
+    /// onto the helpers; then this list is empty.
+    #[test]
+    fn child_windows_come_from_the_panel_helpers() {
+        const UNTIL_T2: [&str; 2] = ["tags.rs", "fields.rs"];
+        fn check(file: &Path) {
+            if file.is_dir() {
+                for entry in file.read_dir().unwrap() {
+                    check(&entry.unwrap().path());
+                }
+                return;
+            }
+            if file.extension().and_then(|e| e.to_str()) != Some("rs") {
+                return;
+            }
+            let name = file.file_name().and_then(|n| n.to_str()).unwrap();
+            if UNTIL_T2.contains(&name) {
+                return;
+            }
+            let source = std::fs::read_to_string(file).unwrap();
+            for line in source.lines() {
+                let code = line.split_once("//").map_or(line, |(code, _)| code);
+                assert!(
+                    !code.contains("child_window("),
+                    "{} calls child_window; use theme::panel_body or theme::bounded_list",
+                    file.display()
+                );
+            }
+        }
+
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        check(&src.join("ui.rs"));
+        check(&src.join("ui"));
+    }
+
+    /// At 1000 by 420 every tool draws no child window but a panel body or
+    /// a bounded list, and the scene outliner's filter is above its body.
+    /// Skipped without a wgpu adapter.
+    #[test]
+    fn every_panel_scrolls_as_a_whole_on_a_short_window() {
+        use crate::ToolKind;
+        let turn = ONE_CONTEXT.lock().unwrap_or_else(|e| e.into_inner());
+        let mut h = match Headless::new([1000.0, 420.0], 1.0) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("skipping: {e}");
+                return;
+            }
+        };
+        let dir = std::env::temp_dir().join(format!("h2-editor-short-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let map = dir.join("example.map");
+        std::fs::write(&map, fixture::fixture()).unwrap();
+        let mut app = App::new();
+        app.set_data_root(dir.join("data"));
+        app.dispatch(Action::OpenSource(map));
+        // The ids of `theme::panel_body` and `theme::bounded_list` callers
+        // (and the empty card), plus the tags tool's own until T2.
+        const ALLOWED: [&str; 10] = [
+            "##outliner-body",
+            "##h1-outliner-body",
+            "##log-lines",
+            "##map-grid",
+            "##variant-list",
+            "##playlist-list",
+            "##palette-results",
+            "##empty-card",
+            "##fields",
+            "##bsp-bytes",
+        ];
+        for tool in [
+            ToolKind::Scenario,
+            ToolKind::Tags,
+            ToolKind::Variants,
+            ToolKind::Playlists,
+            ToolKind::UiScreens,
+            ToolKind::Hud,
+        ] {
+            app.dispatch(Action::SetTool(tool));
+            h.frames(&mut app, 4).unwrap();
+            for window in &h.scene.windows {
+                let Some((_, child)) = window.name.rsplit_once('/') else {
+                    continue;
+                };
+                let id = child.rsplit_once('_').map_or(child, |(id, _)| id);
+                assert!(
+                    !id.starts_with("##") || ALLOWED.contains(&id) || id.starts_with("##Table"),
+                    "{tool:?} draws child window {:?}",
+                    window.name
+                );
+            }
+        }
+        drop(turn);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// One real frame of the shell over the invented test map, read back:
     /// the UI drew something other than the clear colour, and the PNG
     /// writes. Skipped when the machine has no wgpu adapter.

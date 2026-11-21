@@ -216,7 +216,7 @@ impl ReplayFrame {
                 ReplayOp::EndFlareQuery(_) if feedback && !query_defined => {
                     return Some("flare_needs_previous_depth");
                 }
-                ReplayOp::EndFlareQuery(_) => {}
+                ReplayOp::EndFlareQuery(_) | ReplayOp::ObjectShadow(_) => {}
             }
         }
         if all {
