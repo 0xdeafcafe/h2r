@@ -312,25 +312,14 @@ fn camera(app: &mut App, p: &P) -> Reply {
             ));
         }
     };
-    if let Some(target) = p.opt_str("target")? {
-        let index: u16 = target
-            .strip_prefix("player.")
-            .and_then(|s| s.parse().ok())
-            .ok_or_else(|| err(code::INVALID_PARAMS, "target must be player.<index>"))?;
-        if mode == CameraMode::Free || Play::camera_target(app) != Some(index) {
-            return Err(err(
-                code::REFUSED,
-                "the shared camera follows the local player",
-            ));
-        }
+    let target = p.opt_str("target")?.map(|target| {
+        target.strip_prefix("player.").and_then(|s| s.parse::<u16>().ok())
+            .ok_or_else(|| err(code::INVALID_PARAMS, "target must be player.<index>"))
+    }).transpose()?;
+    if p.has("mode") || target.is_some() {
+        Play::set_camera_target(app, mode, target).map_err(|why| err(code::REFUSED, why))?;
     }
-    if p.has("mode") {
-        Play::set_camera_mode(app, mode).map_err(|why| err(code::REFUSED, why))?;
-    }
-    let target = match mode {
-        CameraMode::Free => None,
-        CameraMode::Follow | CameraMode::Eyes => Play::camera_target(app),
-    };
+    let target = Play::camera_target(app);
     Ok(json!({"mode":mode.name(),"target":target.map(|index| format!("player.{index}"))}))
 }
 

@@ -1980,6 +1980,7 @@ mod mirror_presence {
     use crate::play::{Conn, Play, select::EYE_HEIGHT, testing::fake};
     use agent_proto::{editor, live, sim};
     use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
 
     const WEAPON: u32 = 0x0010_0003;
 
@@ -2013,6 +2014,7 @@ mod mirror_presence {
                 p.edits_blocked(a).as_deref() == Some("View mode")
                     && a.pairing.shown.as_ref().is_some_and(|s| {
                         a.pairing.matches_sample(a, s)
+                            && !s.stale
                             && !s.players.is_empty()
                             && s.objects.iter().any(|o| o.placement == Some(0))
                     })
@@ -2138,23 +2140,18 @@ mod mirror_presence {
             m::SCENARIO_SELECT,
             json!({"block":"weapons","index":0}),
         );
-        fake::until(&mut play, &mut app, "first selected mark", |_, _| {
-            game.calls(editor::method::MARKS)
-                .last()
-                .is_some_and(|p| marked(p, "selected", WEAPON))
-        });
+        let start = Instant::now();
+        fake::presence_at(&mut play, &mut app, start);
         let first = game.calls(editor::method::MARKS);
-        let start = std::time::Instant::now();
-        for _ in 0..10 {
-            play.update(&mut app);
+        assert_eq!(first.len(), 1);
+        assert!(marked(&first[0], "selected", WEAPON));
+        let deadline = start + Duration::from_secs(1);
+        for when in [start, start + Duration::from_millis(300), deadline - Duration::from_nanos(1)] {
+            fake::presence_at(&mut play, &mut app, when);
+            assert_eq!(game.calls(editor::method::MARKS), first);
         }
-        fake::until(&mut play, &mut app, "lease renewal", |_, _| {
-            game.calls(editor::method::MARKS).len() > first.len()
-        });
-        let renewed = game.calls(editor::method::MARKS);
-        assert_eq!(renewed.len(), first.len() + 1);
-        assert_eq!(renewed.last(), first.last());
-        assert!(start.elapsed() < std::time::Duration::from_millis(editor::LINK_TTL_MS));
+        fake::presence_at(&mut play, &mut app, deadline);
+        assert_eq!(game.calls(editor::method::MARKS), [first[0].clone(), first[0].clone()]);
         // View mode keeps presentation after the edit switch is turned off.
         call(&mut api, &mut app, m::PAIR_EDIT, json!({"enabled":true}));
         fake::until(&mut play, &mut app, "edit indicator", |_, _| {
@@ -2206,6 +2203,91 @@ mod mirror_presence {
             call(&mut api, &mut app, m::MIRROR_AIM_SELECT, json!({})),
             json!({"enabled":false,"candidate":null})
         );
+    }
+
+    #[test]
+    fn a_rejected_clear_retries_at_the_deadline_and_on_close() {
+        for close in [false, true] {
+            let name = if close { "marks-close" } else { "marks-retry" };
+            let t = Temp::new(name);
+            let game = game(name, WEAPON, Some(true));
+            let (mut api, mut app, mut play) = (Api::new(), app(&t), Play::new());
+            connect(&mut api, &mut app, &mut play, &game);
+            call(&mut api, &mut app, m::SCENARIO_SELECT, json!({"block":"weapons","index":0}));
+            let now = Instant::now();
+            fake::presence_at(&mut play, &mut app, now);
+            game.edits.lock().unwrap().mark_replies.push_back(Err(
+                agent_proto::RpcError::new(agent_proto::code::UNAVAILABLE, "fixture clear failed"),
+            ));
+            call(&mut api, &mut app, m::SCENARIO_SELECT, json!({}));
+            fake::presence_at(&mut play, &mut app, now);
+            let failed = game.calls(editor::method::MARKS);
+            assert_eq!(failed.len(), 2);
+            assert!(marked(&failed[0], "selected", WEAPON));
+            assert_eq!(failed[1]["marks"], json!([]));
+            assert!(play.link_view(&app).unavailable.iter().any(|s| s.contains("fixture clear failed")));
+            let due = now + Duration::from_secs(1);
+            fake::presence_at(&mut play, &mut app, due - Duration::from_nanos(1));
+            assert_eq!(game.calls(editor::method::MARKS), failed);
+            if close {
+                play.unpair(&mut app);
+                fake::until(&mut play, &mut app, "final clear", |_, _| {
+                    game.calls(editor::method::MARKS).len() == 3
+                });
+            } else {
+                fake::presence_at(&mut play, &mut app, due);
+                assert!(!play.link_view(&app).unavailable.iter().any(|s| s.contains("fixture clear failed")));
+                fake::presence_at(&mut play, &mut app, due + Duration::from_secs(3));
+            }
+            let sent = game.calls(editor::method::MARKS);
+            assert_eq!(sent.len(), 3);
+            assert_eq!(sent[2]["marks"], json!([]));
+        }
+    }
+
+    #[test]
+    fn a_held_set_renews_until_drawn_and_reports_refused_indices_independently() {
+        let t = Temp::new("marks-camera");
+        let game = game("marks-camera", WEAPON, Some(true));
+        let (mut api, mut app, mut play) = (Api::new(), app(&t), Play::new());
+        connect(&mut api, &mut app, &mut play, &game);
+        app.session.select_many(vec![(BlockKind::Weapons, 0), (BlockKind::NetgameFlags, 0)]);
+        // The weapon has both a selected and a candidate mark. The flag has a
+        // fixed box which the host still holds if the weapon disappears.
+        let start = Instant::now();
+        call(&mut api, &mut app, m::MIRROR_AIM_SELECT, json!({"enabled":true}));
+        let why = "no camera for the presented frame";
+        let refused = json!([
+            {"index":0,"why":"object is gone"}, {"index":2,"why":"object is gone"}
+        ]);
+        game.edits.lock().unwrap().mark_replies.extend([
+            Ok(json!({"held":1,"drawn":false,"why":why,"refused":refused})),
+            Ok(json!({"held":1,"drawn":true,"refused":refused})),
+        ]);
+        fake::presence_at(&mut play, &mut app, start);
+        let first = game.calls(editor::method::MARKS);
+        assert_eq!(first.len(), 1);
+        let marks = first[0]["marks"].as_array().unwrap();
+        assert_eq!(marks.len(), 3);
+        assert_eq!(marks[0]["object"], format!("{WEAPON:08x}"));
+        assert!(marks[1]["box"].is_object());
+        assert_eq!(marks[2]["style"], "candidate");
+        let waiting = format!("editor.marks: {why}");
+        let refused_lines = [0, 2].map(|i| format!("editor.marks: mark {i}: object is gone"));
+        let view = play.link_view(&app);
+        assert!(view.unavailable.contains(&waiting));
+        assert!(refused_lines.iter().all(|line| view.unavailable.contains(line)));
+        assert!(!app.log().iter().any(|l| l.status.text() == waiting.as_str()));
+
+        fake::presence_at(&mut play, &mut app, start + Duration::from_secs(1));
+        let renewed = game.calls(editor::method::MARKS);
+        assert_eq!(renewed, [first[0].clone(), first[0].clone()]);
+        let view = play.link_view(&app);
+        assert!(!view.unavailable.contains(&waiting));
+        assert!(refused_lines.iter().all(|line| view.unavailable.contains(line)));
+        for reason in &refused_lines {
+            assert_eq!(app.log().iter().filter(|l| l.status.text() == reason.as_str()).count(), 1);
+        }
     }
 
     #[test]

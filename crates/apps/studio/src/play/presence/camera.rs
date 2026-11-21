@@ -5,7 +5,7 @@ use scenario_edit::geometry::{Camera, Ray, Vec3, add, dot, scale, sub};
 use serde_json::json;
 
 use crate::App;
-use crate::play::{Play, link::Purpose, select, surface_under_ray};
+use crate::play::{Play, link::Purpose, playtest::Waiting, select, surface_under_ray};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum CameraMode {
@@ -41,6 +41,8 @@ pub(crate) struct SharedCamera {
     /// Map revision and stream epoch whose coordinate system the camera uses.
     scope: Option<(u64, u64)>,
     target: Option<u16>,
+    /// Establish the orbit offset on the first sample with this target's unit.
+    entering: bool,
     /// The hovered ray in the document and camera pose used to draw the frame.
     pub(crate) cursor: Option<(Ray, u64)>,
 }
@@ -79,13 +81,22 @@ fn eyes(cam: &mut Camera, ray: Ray) {
 
 impl Play {
     pub(crate) fn camera_target(app: &App) -> Option<u16> {
-        let (player, _) = app.pairing.player()?;
-        player.local_user?;
-        Some(player.index)
+        app.pairing.camera.target
     }
 
     pub(crate) fn set_camera_mode(app: &mut App, mode: CameraMode) -> Result<(), &'static str> {
+        Self::set_camera_target(app, mode, None)
+    }
+
+    pub(crate) fn set_camera_target(
+        app: &mut App,
+        mode: CameraMode,
+        target: Option<u16>,
+    ) -> Result<(), &'static str> {
         if mode == CameraMode::Free {
+            if target.is_some() {
+                return Err("Free camera has no player target");
+            }
             app.pairing.camera.mode = mode;
             app.pairing.camera.target = None;
             app.pairing.camera.scope = None;
@@ -96,49 +107,87 @@ impl Play {
             .shown
             .as_ref()
             .ok_or("waiting for a game sample")?;
+        if !select::matching(app) {
+            return Err("open the streamed map to follow its player");
+        }
         let scope = (app.session.world_rev(), sample.epoch);
-        let old = &app.pairing.camera;
-        let enter = old.mode != mode || old.scope != Some(scope);
-        let index = match mode {
-            CameraMode::Follow => {
-                let (index, pos, _) = select::local_pose(app)
-                    .ok_or("Follow needs the local player on the open map")?;
-                if enter || old.target != Some(index) {
-                    enter_follow(app.session.camera_mut(), pos);
-                } else {
-                    follow(app.session.camera_mut(), pos);
+        let camera = &app.pairing.camera;
+        let current = camera.target.filter(|_| camera.scope == Some(scope));
+        // Keep the selected index across a switch from Follow to Eyes. A
+        // split-screen player's temporary lack of a unit never selects a peer.
+        let index = match target.or(current) {
+            Some(index) if Some(index) == current => index,
+            Some(index) => {
+                if !sample
+                    .players
+                    .iter()
+                    .any(|p| p.index == index && p.local_user.is_some())
+                {
+                    return Err("the shared camera needs a local player");
                 }
                 index
             }
-            CameraMode::Eyes => {
-                let ray = select::player_ray(app)
-                    .ok_or("Player's eyes needs the local player's view on the open map")?;
-                let (player, _) = app.pairing.player().ok_or("no local player")?;
-                let index = player.index;
-                eyes(app.session.camera_mut(), ray);
-                index
+            None => {
+                sample
+                    .players
+                    .iter()
+                    .filter(|p| p.local_user.is_some())
+                    .min_by_key(|p| (p.local_user, p.index))
+                    .ok_or("the shared camera needs a local player")?
+                    .index
             }
-            CameraMode::Free => unreachable!(),
         };
-        app.pairing.camera.mode = mode;
-        app.pairing.camera.scope = Some(scope);
-        app.pairing.camera.target = Some(index);
+        let enter = camera.mode != mode || current != Some(index);
+        let camera = &mut app.pairing.camera;
+        camera.mode = mode;
+        camera.target = Some(index);
+        camera.scope = Some(scope);
+        camera.entering |= enter;
+        Self::track_camera(app, index);
         Ok(())
+    }
+
+    fn track_camera(app: &mut App, index: u16) {
+        let Some((pos, aim)) = select::pose_for(app, index) else {
+            return;
+        };
+        match app.pairing.camera.mode {
+            CameraMode::Follow if app.pairing.camera.entering => {
+                enter_follow(app.session.camera_mut(), pos)
+            }
+            CameraMode::Follow => follow(app.session.camera_mut(), pos),
+            CameraMode::Eyes => {
+                let eye = add(pos, [0.0, 0.0, select::EYE_HEIGHT]);
+                let Some(ray) = select::unit_ray(eye, aim) else {
+                    return;
+                };
+                eyes(app.session.camera_mut(), ray);
+            }
+            CameraMode::Free => return,
+        }
+        app.pairing.camera.entering = false;
     }
 
     pub(in crate::play) fn update_shared_camera(app: &mut App) {
         app.pairing.camera.cursor = None;
-        let mode = app.pairing.camera.mode;
-        if mode == CameraMode::Free {
+        let Some((world, epoch)) = app.pairing.camera.scope else {
+            return;
+        };
+        if world != app.session.world_rev()
+            || app
+                .pairing
+                .shown
+                .as_ref()
+                .is_some_and(|s| s.epoch != epoch || !select::matching(app))
+            || app.pairing.stream_map["epoch"]
+                .as_u64()
+                .is_some_and(|e| e != epoch)
+        {
+            app.pairing.camera = SharedCamera::default();
             return;
         }
-        let scope = app
-            .pairing
-            .shown
-            .as_ref()
-            .map(|s| (app.session.world_rev(), s.epoch));
-        if scope != app.pairing.camera.scope || Self::set_camera_mode(app, mode).is_err() {
-            app.pairing.camera = SharedCamera::default();
+        if let Some(index) = app.pairing.camera.target {
+            Self::track_camera(app, index);
         }
     }
 
@@ -150,56 +199,65 @@ impl Play {
         surface_under_ray(app, &ray)
     }
 
-    pub(crate) fn player_move_refusal(&self, app: &App) -> Option<String> {
+    /// Shared by publication, immediate UI moves and queued socket dispatch.
+    pub(in crate::play) fn player_move_scope<'a>(
+        &self,
+        app: &App,
+        edits_blocked: Option<&'a str>,
+    ) -> Result<(u64, u64, u64), &'a str> {
         if !self.is_paired() {
-            return Some("not paired with a game".into());
+            return Err("not paired with a game");
         }
-        self.require_method(sim::method::STATE_SET)
-            .err()
-            .or_else(|| self.edits_blocked(app))
-            .or_else(|| {
-                self.session
-                    .and_then(|s| s.writes().err())
-                    .map(str::to_owned)
-            })
-    }
-
-    fn player_move_scope(&self, app: &App) -> Result<(u64, u64, u64), String> {
-        if let Some(why) = self.player_move_refusal(app) {
+        if !self.has_method(sim::method::STATE_SET) {
+            return Err("moving the player requires sim.state.set");
+        }
+        if self.reload_copy.is_some() || self.waiting != Waiting::Idle {
+            return Err("wait for the playtest or map reload to finish before moving the player");
+        }
+        if let Some(why) = edits_blocked {
             return Err(why);
         }
+        self.session.ok_or("waiting for the session")?.writes()?;
         let epoch = self.edits.epoch.ok_or("waiting for the loaded map")?;
         Ok((self.pairing_id, app.session.world_rev(), epoch))
     }
 
-    /// Resolve the controller again just before dispatch. A queued command cannot
-    /// move a respawned unit or run on a replacement map or socket.
     pub(crate) fn send_player_move(&self, app: &App, request: PlayerMove) -> Result<(), String> {
-        if self.player_move_scope(app)? != request.scope
-            || local_unit(app, request.scope) != Some((request.player, request.unit))
-        {
-            return Err("the game, map or local player changed before the move".into());
+        if self.player_move_scope(app, self.edits_blocked(app).as_deref())? != request.scope {
+            return Err("the game or map changed before the move".into());
         }
-        self.send_move(request);
+        let shown = app
+            .pairing
+            .shown
+            .as_ref()
+            .ok_or("waiting for a game sample")?;
+        request.check_unit(app, shown)?;
+        // The UI can still be drawing an older tick when a respawn has
+        // already arrived on the binary connection.
+        let exact = app
+            .pairing
+            .mirror
+            .as_ref()
+            .and_then(|stream| stream.sample(true))
+            .ok_or("waiting for the game's latest exact sample")?;
+        request.check_unit(app, &exact)?;
+        self.call(
+            sim::method::STATE_SET,
+            request.state_set_params(),
+            Purpose::Teleport,
+        );
         Ok(())
     }
 
     pub(crate) fn player_here(&mut self, app: &mut App, pos: Vec3, facing: bool) {
-        let request = self.player_move_scope(app)
-            .and_then(|scope| PlayerMove::at(app, scope, pos, facing));
-        match request {
-            Ok(request) => self.send_move(request),
-            Err(why) => self.game_refusal(app, why),
+        let result = self
+            .player_move_scope(app, self.edits_blocked(app).as_deref())
+            .map_err(str::to_owned)
+            .and_then(|scope| PlayerMove::at(app, scope, pos, facing))
+            .and_then(|request| self.send_player_move(app, request));
+        if let Err(why) = result {
+            self.game_refusal(app, why);
         }
-    }
-
-    fn send_move(&self, request: PlayerMove) {
-        let mut params = json!({"player":format!("player.{}", request.player), "pos":request.pos});
-        if let Some((yaw, pitch)) = request.facing {
-            params["yaw"] = json!(yaw);
-            params["pitch"] = json!(pitch);
-        }
-        self.call(sim::method::STATE_SET, params, Purpose::Teleport);
     }
 }
 
@@ -214,41 +272,56 @@ pub struct PlayerMove {
     facing: Option<(f64, f64)>,
 }
 
-fn local_unit(app: &App, (_, world, epoch): (u64, u64, u64)) -> Option<(u16, u32)> {
-    let sample = app.pairing.shown.as_ref()?;
-    if app.session.world_rev() != world
-        || sample.epoch != epoch
-        || !app.pairing.matches_sample(app, sample)
-    {
-        return None;
-    }
-    let (player, unit) = app.pairing.player()?;
-    player.local_user?;
-    Some((player.index, unit.id))
-}
-
 impl PlayerMove {
     pub(crate) fn capture(app: &App, pos: Vec3, facing: bool) -> Result<Self, String> {
-        let scope = app.pairing.player_scope.ok_or_else(|| {
-            app.pairing
-                .published
-                .as_ref()
-                .and_then(|status| {
-                    if status["state"] == "connected" && !app.pairing.player_move_available {
-                        Some("moving the player requires sim.state.set")
-                    } else {
-                        status["edits_blocked"].as_str()
-                    }
-                })
-                .unwrap_or("waiting for the editor to pair in Edit mode")
-                .to_owned()
-        })?;
+        let scope = app.pairing.player_scope.clone()?;
         Self::at(app, scope, pos, facing)
     }
 
+    fn check_unit(&self, app: &App, sample: &live_mirror::Sample) -> Result<(), &'static str> {
+        if sample.stale {
+            return Err("the player sample is stale");
+        }
+        let (_, world, epoch) = self.scope;
+        if app.session.world_rev() != world
+            || sample.epoch != epoch
+            || !app.pairing.matches_sample(app, sample)
+        {
+            return Err("the game or map changed before the move");
+        }
+        if !sample
+            .players
+            .iter()
+            .any(|p| p.index == self.player && p.local_user.is_some() && p.unit == Some(self.unit))
+            || !sample.objects.iter().any(|o| o.id == self.unit)
+        {
+            return Err("the local player's unit changed before the move");
+        }
+        Ok(())
+    }
+
+    /// sim.state.set identifies the player by index. This is the wire boundary
+    /// for an expected salted unit and epoch when the game supports those guards.
+    fn state_set_params(&self) -> serde_json::Value {
+        let mut params = json!({"player":format!("player.{}", self.player), "pos":self.pos});
+        if let Some((yaw, pitch)) = self.facing {
+            params["yaw"] = json!(yaw);
+            params["pitch"] = json!(pitch);
+        }
+        params
+    }
+
     fn at(app: &App, scope: (u64, u64, u64), pos: Vec3, facing: bool) -> Result<Self, String> {
-        let (player, unit) =
-            local_unit(app, scope).ok_or("moving the player needs a local unit on the open map")?;
+        let sample = app
+            .pairing
+            .shown
+            .as_ref()
+            .ok_or("waiting for a game sample")?;
+        let (player, unit) = app
+            .pairing
+            .player()
+            .filter(|(p, _)| p.local_user.is_some())
+            .ok_or("moving the player needs a local unit on the open map")?;
         if !pos.iter().all(|v| v.is_finite()) {
             return Err("player position must be finite".into());
         }
@@ -259,13 +332,15 @@ impl PlayerMove {
         } else {
             None
         };
-        Ok(Self {
+        let request = Self {
             scope,
-            player,
-            unit,
+            player: player.index,
+            unit: unit.id,
             pos,
             facing,
-        })
+        };
+        request.check_unit(app, sample)?;
+        Ok(request)
     }
 }
 
@@ -307,3 +382,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(all(test, unix))]
+mod move_and_target_tests;

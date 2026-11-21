@@ -119,7 +119,6 @@ impl WorldPoses {
 pub(crate) struct ModelBounds {
     world: Option<u64>,
     entries: HashMap<TagId, Option<Bounds>>,
-    sample: Option<(u64, u64)>,
 }
 
 impl ModelBounds {
@@ -127,13 +126,7 @@ impl ModelBounds {
         if self.world != Some(session.world_rev()) {
             self.world = Some(session.world_rev());
             self.entries.clear();
-            self.sample = None;
         }
-        let stamp = Some((sample.epoch, sample.tick));
-        if self.sample == stamp {
-            return;
-        }
-        self.sample = stamp;
         let mut missing = Vec::new();
         for tag in sample.objects.iter().filter_map(|o| o.tag.map(TagId)) {
             let std::collections::hash_map::Entry::Vacant(entry) = self.entries.entry(tag) else {
@@ -181,30 +174,27 @@ impl ModelBounds {
             else {
                 continue;
             };
-            let mut bounds = Bounds::EMPTY;
-            for index in model.default_sections() {
-                let Some(section) = model.sections.get(index) else {
-                    continue;
-                };
-                for part in section.geometry.parts.iter().filter(|p| p.is_drawn()) {
-                    for tri in section.geometry.part_triangles(part) {
-                        if tri[0] == tri[1] || tri[1] == tri[2] || tri[2] == tri[0] {
-                            continue;
-                        }
-                        let [Some(a), Some(b), Some(c)] =
-                            tri.map(|i| section.vertices.positions.get(usize::from(i)))
-                        else {
-                            continue;
-                        };
-                        for &point in [a, b, c] {
-                            bounds.add(point);
-                        }
-                    }
-                }
-            }
-            if !bounds.is_empty() {
-                self.entries.insert(tag, Some(bounds));
-            }
+            let triangles = model
+                .default_sections()
+                .into_iter()
+                .filter_map(|index| model.sections.get(index))
+                .flat_map(|section| {
+                    section
+                        .geometry
+                        .parts
+                        .iter()
+                        .filter(|p| p.is_drawn())
+                        .flat_map(move |part| section.geometry.part_triangles(part))
+                        .filter_map(move |tri| {
+                            if tri[0] == tri[1] || tri[1] == tri[2] || tri[2] == tri[0] {
+                                return None;
+                            }
+                            let [a, b, c] =
+                                tri.map(|i| section.vertices.positions.get(usize::from(i)));
+                            Some([*a?, *b?, *c?])
+                        })
+                });
+            self.entries.insert(tag, streamed_bounds(triangles));
         }
     }
 
@@ -218,6 +208,21 @@ impl ModelBounds {
     fn bounds(&self, tag: Option<u32>) -> Option<Bounds> {
         self.entries.get(&TagId(tag?)).copied().flatten()
     }
+}
+
+/// The renderer rejects the entire bare mesh when its drawable triangles
+/// exceed this limit. Both picking and the fallback glyph use this result.
+fn streamed_bounds(triangles: impl IntoIterator<Item = [Vec3; 3]>) -> Option<Bounds> {
+    let mut bounds = Bounds::EMPTY;
+    for (i, triangle) in triangles.into_iter().enumerate() {
+        if i == scenario_edit::scene::MAX_MODEL_TRIANGLES {
+            return None;
+        }
+        for point in triangle {
+            bounds.add(point);
+        }
+    }
+    (!bounds.is_empty()).then_some(bounds)
 }
 
 /// The interpolator can move an object within one tick. Compare its displayed
@@ -661,6 +666,35 @@ mod tests {
     use agent_proto::live::Player as LivePlayer;
     use scenario_edit::Reference;
     use scenario_edit::geometry::Marker;
+
+    #[test]
+    fn oversized_streamed_mesh_uses_the_pick_sphere_and_glyph_fallback() {
+        let triangle = [[7.0, 0.0, 0.0], [8.0, 0.0, 0.0], [7.0, 1.0, 0.0]];
+        let limit = scenario_edit::scene::MAX_MODEL_TRIANGLES;
+        assert!(streamed_bounds(std::iter::repeat_n(triangle, limit)).is_some());
+        let rejected = streamed_bounds(std::iter::repeat_n(triangle, limit + 1));
+        assert!(rejected.is_none());
+        let mut bounds = ModelBounds::default();
+        bounds.entries.insert(TagId(42), rejected);
+        assert_eq!(bounds.sphere(Some(42)), ([0.0; 3], geometry::MARKER_RADIUS));
+        let sample = Sample {
+            epoch: 1,
+            tick: 1,
+            stale: false,
+            players: vec![],
+            objects: vec![Object {
+                id: 1,
+                tag: Some(42),
+                scale: 2.0,
+                ..Default::default()
+            }],
+        };
+        let scene = Scene::new(&sample, &Session::default(), &bounds, None, 0);
+        assert_eq!(
+            scene.glyphs,
+            vec![([0.0; 3], geometry::MARKER_RADIUS * 2.0, false)]
+        );
+    }
 
     #[test]
     fn gameplay_labels_are_culled_by_distance_and_viewport() {

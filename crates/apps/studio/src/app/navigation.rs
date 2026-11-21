@@ -3,7 +3,7 @@
 use map::TagId;
 use scenario_edit::{BlockKind, Session};
 
-use super::{App, Selection, tag_api};
+use super::{App, Selection, SelectionRevision, tag_api};
 
 const HISTORY_LIMIT: usize = 128;
 
@@ -116,8 +116,12 @@ impl NavHistory {
 
 impl App {
     /// Changes to any source of the inspector's selection, without cloning its history.
-    pub(crate) fn selection_revision(&self) -> (u64, u64, u64) {
-        (self.session.world_rev(), self.session.markers_rev(), self.nav.revision)
+    pub(crate) fn selection_revision(&self) -> SelectionRevision {
+        SelectionRevision {
+            world: self.session.world_rev(),
+            primary: self.session.selected(),
+            navigation: self.nav.revision,
+        }
     }
 
     pub fn nav_location(&self) -> NavLocation {
@@ -137,6 +141,9 @@ impl App {
             self.tags.seal();
             self.nav.sync(self.session.world_rev(), before);
             self.nav.push(after);
+        } else {
+            // Re-selecting or clearing the current subject releases a loose object.
+            self.nav.revision += 1;
         }
     }
 
@@ -266,5 +273,35 @@ impl App {
         }
         // Jumping to an arbitrary tag starts a new breadcrumb at that tag.
         vec![tag]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::Action;
+    use crate::play::testing::Temp;
+
+    #[test]
+    fn explicit_and_implicit_placement_selection_change_the_revision() {
+        let t = Temp::new("placement-selection-revision");
+        let mut app = App::new();
+        app.set_data_root(t.0.join("data"));
+        app.dispatch(Action::OpenSource(t.map("example")));
+        let a = (BlockKind::Weapons, 0);
+        let b = (BlockKind::Weapons, 1);
+        for action in [
+            Action::Select(None), Action::Select(None),
+            Action::Select(Some(a)), Action::Select(Some(a)),
+            Action::SelectMany(vec![a, b]), Action::SelectMany(vec![a]),
+        ] {
+            let before = app.selection_revision();
+            app.dispatch(action);
+            assert_ne!(app.selection_revision(), before);
+        }
+
+        let before = app.selection_revision();
+        app.session.select(Some(b));
+        assert_ne!(app.selection_revision(), before);
     }
 }

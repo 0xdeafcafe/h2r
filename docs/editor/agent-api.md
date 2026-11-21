@@ -383,8 +383,10 @@ Notes on some:
   `{point: [x,y,z], radius}` in world space. Bind-pose objects have no
   streamed nodes. Pairing and presentation are described in [live-mirror.md](live-mirror.md).
 - **Live selection.** `mirror.pick {"from":"aim"}` uses the local player's
-  aim. Supply `{"ray":{"origin":[x,y,z],"dir":[dx,dy,dz]}}` for a world
-  ray. The first live object in front of the level returns
+  aim and skips that player's unit and held weapon. A viewport click in
+  Player's eyes skips the viewed player's unit and held weapon. Supply
+  `{"ray":{"origin":[x,y,z],"dir":[dx,dy,dz]}}` for an unrestricted world ray.
+  The first live object in front of the level returns
   `{object, placement, tag, point, distance}`. Handles are hex strings,
   `placement` is a linked `{block,index}` or null, and a miss returns null.
   The link uses the object's kind and placement index in the loaded block
@@ -393,26 +395,32 @@ Notes on some:
   Picking over the socket leaves selection alone. Clicking in the viewport
   selects the linked placement or the live object and its available definition.
   `mirror.aim_select {enabled?}` returns `{enabled,candidate}`. The
-  candidate has the same shape as a pick. Holding it for 0.6 seconds selects
-  it. In View and Edit the paired window renews its selection and candidate
+  candidate has the same shape as a pick. Holding the displayed aim on one
+  object for 0.6 seconds selects it.
+  In View and Edit the paired window renews its selection and candidate
   marks once a second on the game's display. Unpairing clears the link
   plate and marks. A dropped connection lets their three-second leases
   expire. `pair.status.link.unavailable` reports
   missing presentation methods and the host's display refusal. While the
   game waits for a genuine frame, a `drawn: false` reply keeps the marks
-  pending without a warning. The game plate shows the largest link issue
-  count, or `Aim select` when aim selection is on and the count is zero.
+  pending without a warning. Individual refused marks still report their
+  indices. A failed clear retries at the renewal interval. The game plate
+  shows the largest link issue count, or `Aim select` when aim selection
+  is on and the count is zero.
 - **Shared camera.** `mirror.camera {mode?,target?}` returns `{mode,target}`.
   `free` releases the editor viewport, `follow` keeps the eye's orbit offset
   as the local player moves, and `eyes` looks along the player's aim from
-  eye height. A following camera reports the local `player.<index>` as its
-  target. The free camera reports null. The viewport toolbar has the same
-  modes. `mirror.player {to,facing?}` queues a move in Edit and returns
-  `{"requested":true}`. Give a world position, `"camera"` for the ground
-  under the editor camera's focus, or `"cursor"` for the level under the
+  eye height. An explicit `player.<index>` keeps the camera on that local
+  player across samples. While its unit is missing, the viewport holds its
+  pose and resumes following when the unit returns. A map change or unpair
+  releases the camera. The free camera reports null. The viewport toolbar
+  has the same modes. `mirror.player {to,facing?}` queues a move in Edit
+  and returns `{"requested":true}`. Give a world position, `"camera"` for
+  the ground under the editor camera's focus, or `"cursor"` for the level under the
   viewport pointer. T uses the cursor. Shift+T or `facing:true` also sends
-  the camera's yaw and pitch. A missing destination, player, permission or
-  game method returns `REFUSED`.
+  the camera's yaw and pitch. A missing destination, current player sample,
+  permission or game method returns `REFUSED`, as does a pending reload or
+  a playtest transition.
 - **Viewport layers.** `view.layers {}` returns `{layers, xray}`. Each layer
   has a stable `name` for calls, a display `label`, a `group`, the visibility
   switch `on`, a `count` and its legend `color` (RGB, each channel 0 to 1).

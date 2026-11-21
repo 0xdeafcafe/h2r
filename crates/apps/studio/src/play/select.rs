@@ -9,7 +9,7 @@ use scenario_edit::geometry::{self, Ray, Tri, Vec3, add, dot, scale, sub};
 use scenario_edit::{BlockKind, Session};
 use serde_json::{Value, json};
 
-use crate::app::{Action, App, NavAction};
+use crate::app::{Action, App, NavAction, SelectionRevision};
 use crate::viewport::mirror::WorldPoses;
 
 /// Eye above the unit origin in world units until the stream supplies its camera.
@@ -84,7 +84,7 @@ pub(crate) struct LiveSelection {
     tick: Option<u64>,
     marker_revision: u64,
     // A loose live object remains distinct from a tag selected in the tree.
-    selected: Option<(u32, (u64, u64, u64))>,
+    selected: Option<(u32, SelectionRevision)>,
 }
 
 #[derive(Debug, Default)]
@@ -126,16 +126,36 @@ pub(crate) fn matching(app: &App) -> bool {
         .map_or_else(|| app.pairing.matches_sample(app, sample), |id| id.matches)
 }
 
+fn pose(
+    sample: &Sample,
+    player: &agent_proto::live::Player,
+    unit: &Object,
+) -> Option<(Vec3, Vec3)> {
+    player.local_user?;
+    let pos = WorldPoses::unit_position(sample, unit)?;
+    pos.into_iter()
+        .all(f32::is_finite)
+        .then_some((pos, player.aim))
+}
+
+pub(crate) fn pose_for(app: &App, index: u16) -> Option<(Vec3, Vec3)> {
+    if !matching(app) {
+        return None;
+    }
+    let sample = app.pairing.shown.as_ref()?;
+    let player = sample.players.iter().find(|p| p.index == index)?;
+    let id = player.unit?;
+    let unit = sample.objects.iter().find(|o| o.id == id)?;
+    pose(sample, player, unit)
+}
+
 pub(crate) fn local_pose(app: &App) -> Option<(u16, Vec3, Vec3)> {
     if !matching(app) {
         return None;
     }
     let (player, unit) = app.pairing.player()?;
-    player.local_user?;
-    let pos = WorldPoses::unit_position(app.pairing.shown.as_ref()?, unit)?;
-    pos.into_iter()
-        .all(f32::is_finite)
-        .then_some((player.index, pos, player.aim))
+    let (pos, aim) = pose(app.pairing.shown.as_ref()?, player, unit)?;
+    Some((player.index, pos, aim))
 }
 
 pub(crate) fn player_ray(app: &App) -> Option<Ray> {
@@ -227,7 +247,21 @@ pub(crate) fn viewport_pick(app: &App, ray: &Ray) -> Option<Hit> {
     } else {
         &[]
     };
-    pick_sample(app, ray, wall, [None; 2])
+    let omit = if app.pairing.camera.mode == super::presence::CameraMode::Eyes {
+        super::Play::camera_target(app)
+            .and_then(|index| {
+                app.pairing
+                    .shown
+                    .as_ref()?
+                    .players
+                    .iter()
+                    .find(|p| p.index == index)
+            })
+            .map_or([None; 2], |p| [p.unit, p.held])
+    } else {
+        [None; 2]
+    };
+    pick_sample(app, ray, wall, omit)
 }
 
 pub(crate) fn from_aim(app: &App) -> Option<Hit> {
@@ -241,26 +275,32 @@ pub(crate) fn selected_object(app: &App) -> Option<u32> {
     (revision == app.selection_revision() && matching(app)).then_some(id)
 }
 
-pub(crate) fn apply(app: &mut App, hit: Hit, extend: bool) {
-    if let Some(entry) = hit
-        .placement
-        .filter(|(kind, _)| app.pairing.placement_matches(&app.session, *kind))
-    {
-        app.pairing.selection.selected = None;
-        app.dispatch(if extend {
-            Action::ToggleSelect(entry)
-        } else {
-            Action::Select(Some(entry))
-        });
+pub(crate) fn placement_action(app: &App, hit: Hit, extend: bool) -> Option<Action> {
+    let entry = hit.placement
+        .filter(|(kind, _)| app.pairing.placement_matches(&app.session, *kind))?;
+    Some(if extend {
+        Action::ToggleSelect(entry)
     } else {
-        app.sync_tags();
-        let tag = hit.tag.map(TagId).filter(|&t| app.tags.tag(t).is_some());
-        if let Some(tag) = tag {
-            app.dispatch(Action::Navigate(NavAction::SelectTag(tag)));
-        } else {
-            app.dispatch(Action::Select(None));
-        }
-        app.pairing.selection.selected = Some((hit.object, app.selection_revision()));
+        Action::Select(Some(entry))
+    })
+}
+
+pub(crate) fn apply_loose(app: &mut App, hit: Hit) {
+    app.sync_tags();
+    let tag = hit.tag.map(TagId).filter(|&t| app.tags.tag(t).is_some());
+    if let Some(tag) = tag {
+        app.dispatch(Action::Navigate(NavAction::SelectTag(tag)));
+    } else {
+        app.dispatch(Action::Select(None));
+    }
+    app.pairing.selection.selected = Some((hit.object, app.selection_revision()));
+}
+
+pub(crate) fn apply(app: &mut App, hit: Hit, extend: bool) {
+    if let Some(action) = placement_action(app, hit, extend) {
+        app.dispatch(action);
+    } else {
+        apply_loose(app, hit);
     }
 }
 
@@ -369,6 +409,64 @@ mod tests {
             objects,
             players: vec![],
         }
+    }
+
+    fn matching_app(name: &str) -> (crate::play::testing::Temp, App) {
+        let temp = crate::play::testing::Temp::new(name);
+        let mut app = App::new();
+        app.set_data_root(temp.0.join("data"));
+        app.dispatch(Action::OpenSource(temp.map("example")));
+        app.pairing.stream_map = json!({
+            "epoch": 1, "name": "example", "checksum": app.session.source_checksum(),
+        });
+        app.layers.set(scenario_edit::layers::LayerId::Live, true);
+        (temp, app)
+    }
+
+    #[test]
+    fn eyes_click_omits_its_pinned_unit_and_weapon_but_socket_rays_pick_both() {
+        use crate::play::{Play, presence::CameraMode};
+        use agent_proto::live::Player;
+        let (_temp, mut app) = matching_app("eyes-excludes-own-unit");
+        let mut shown = sample(vec![
+            object(1, 110.0),
+            object(2, 101.0),
+            object(3, 102.0),
+            object(4, 104.0),
+        ]);
+        shown.players = vec![
+            Player {
+                index: 0,
+                local_user: Some(0),
+                unit: Some(1),
+                aim: [1.0, 0.0, 0.0],
+                ..Default::default()
+            },
+            Player {
+                index: 1,
+                local_user: Some(1),
+                unit: Some(2),
+                held: Some(3),
+                aim: [1.0, 0.0, 0.0],
+                ..Default::default()
+            },
+        ];
+        app.pairing.shown = Some(shown);
+        let ray = Ray {
+            origin: [100.0, 0.0, 0.0],
+            dir: [1.0, 0.0, 0.0],
+        };
+        assert_eq!(viewport_pick(&app, &ray).unwrap().object, 2);
+        Play::set_camera_target(&mut app, CameraMode::Eyes, Some(1)).unwrap();
+        assert_eq!(viewport_pick(&app, &ray).unwrap().object, 4);
+        assert_eq!(pick(&app, &ray).unwrap().object, 2);
+        let beyond_unit = Ray {
+            origin: [101.5, 0.0, 0.0],
+            ..ray
+        };
+        assert_eq!(pick(&app, &beyond_unit).unwrap().object, 3);
+        Play::set_camera_mode(&mut app, CameraMode::Free).unwrap();
+        assert_eq!(viewport_pick(&app, &beyond_unit).unwrap().object, 3);
     }
 
     #[test]

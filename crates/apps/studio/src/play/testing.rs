@@ -147,6 +147,7 @@ pub(crate) mod fake {
         former_checksum: Option<u32>,
         pub(crate) hold_reload_reply: bool,
         pub(crate) indicator_failure: Option<&'static str>,
+        pub(crate) mark_replies: std::collections::VecDeque<Result<Value, RpcError>>,
         pub(crate) teleport_map_ticks: u64,
         pub(crate) external_live: bool,
         pub(crate) peers: Option<u32>,
@@ -404,9 +405,13 @@ pub(crate) mod fake {
                     "why":(!window).then_some("this host has no window")}))
             });
             let calls = self.calls.clone();
+            let edits = self.edits.clone();
             self.agent.add_method(method::MARKS, Access::Read, move |params| {
                 let marks: MarksParams = serde_json::from_value(params.clone()).unwrap();
                 calls.lock().unwrap().push((method::MARKS.into(), params));
+                if let Some(reply) = edits.lock().unwrap().mark_replies.pop_front() {
+                    return reply;
+                }
                 Ok(json!({"held":marks.marks.len(), "drawn":window && !marks.marks.is_empty(),
                     "why":(!window).then_some("this host has no window"), "refused":[]}))
             });
@@ -453,6 +458,28 @@ pub(crate) mod fake {
             "timed out waiting for {what}; log: {:?}",
             app.log().iter().map(|l| &l.status).collect::<Vec<_>>()
         );
+    }
+
+    /// Advance just the presentation clock. The ordered control reply proves that
+    /// every replacement issued at this instant has reached the fake game.
+    pub(crate) fn presence_at(play: &mut Play, app: &mut App, now: Instant) {
+        use crate::play::link::{Event, Purpose};
+
+        play.update_presence(app, now);
+        play.call(agent_proto::method::STATUS, Value::Null, Purpose::Other);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let wait = deadline.saturating_duration_since(Instant::now());
+            let event = play.link.as_ref().unwrap().next(wait)
+                .expect("the fake game's ordered control reply");
+            if matches!(&event, Event::Answer { purpose: Purpose::Other, method, result: Ok(_) }
+                if method == agent_proto::method::STATUS)
+            {
+                break;
+            }
+            play.on_event(app, event);
+        }
+        play.publish(app);
     }
 
     pub(crate) fn batch_pending(play: &Play) -> bool {

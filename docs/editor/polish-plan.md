@@ -1,6 +1,6 @@
 # h2-editor polish: what is wrong, the design, and the slices
 
-Status: P1 to P7, P12, P18, G1 to G3, G5, G6, the editor camera modes and player move in G7, G8 and G9 are implemented. The remaining slices describe the design.
+Status: P1 to P7, P12, P18, G1 to G3, G5, G6, the editor camera modes and player move in G7, G8 and G9 are implemented. Trigger and kill volume marks depend on P8. The remaining slices describe the design.
 Code: `crates/apps/studio/src` (the window: `ui.rs`, `ui/`, `play.rs`, `viewport.rs`, `theme.rs`), `crates/tools/scenario-edit/src` (the scene and its renderer). Tests: named per slice.
 Switch: none.
 
@@ -292,9 +292,11 @@ holds (`play::presence`):
 | Selected | Mark |
 |---|---|
 | a placement whose object is in the stream | `{object}`: the game draws that object's bounds and follows it |
-| a placement with no live object, a trigger or kill volume | `{box}` at the entry's frame and size |
+| a placement with no live object | `{box}` at the entry's frame and size |
 | a tag from the tag tree | `{object}` for every live object made from it, up to 64 |
 | the aim candidate | `{object}` in the candidate style |
+
+Trigger and kill volume marks depend on P8 making those entries selectable.
 
 The window overlay draws wire boxes and crosses over the finished game
 frame. A genuine frame carries the camera and object bounds that
@@ -889,6 +891,10 @@ The tests use invented data.
 
 ## Not verified
 
+- A move can still reach a replacement unit if the player respawns between
+  the editor's last exact-sample check and execution. `sim.state.set`
+  identifies the player by slot. An execution-time check requires the
+  game to accept the expected salted unit and map epoch with the request.
 - Whether the fixed path's look (step 1) is close enough to the game's
   on maps with many unlit or multi-pass materials; a side-by-side of
   `view.snapshot` and the game's frame on the user's disc shows it.

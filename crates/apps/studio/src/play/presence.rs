@@ -124,7 +124,8 @@ fn targets(
 
 #[derive(Clone, Copy, PartialEq)]
 struct MarkInputs {
-    selection: (u64, u64, u64),
+    selection: crate::app::SelectionRevision,
+    placement_geometry: Option<u64>,
     sample: Option<(u64, u64)>,
     epoch: Option<u64>,
     matching: bool,
@@ -141,8 +142,11 @@ pub(super) struct Presence {
     marks_sent: Option<Instant>,
     marks_pending: bool,
     marks_why: Option<String>,
-    // A disconnected socket might have accepted the last call without answering.
-    replace_on_return: bool,
+    marks_waiting: Option<String>,
+    marks_refused: Vec<String>,
+    // A replacement may have reached the game even if its reply was lost.
+    // Keep renewing an empty set until the host acknowledges its clear.
+    clear_required: bool,
     sent_epoch: Option<u64>,
     sent: Vec<Target>,
     desired: Vec<Target>,
@@ -156,14 +160,14 @@ impl Presence {
         self.link_why
             .iter()
             .chain(&self.marks_why)
+            .chain(&self.marks_waiting)
+            .chain(&self.marks_refused)
             .map(String::as_str)
     }
 
     pub(super) fn transport_lost(&mut self) {
-        let replace_on_return =
-            self.marks_pending || !self.sent.is_empty() || self.replace_on_return;
         *self = Self {
-            replace_on_return,
+            clear_required: self.clear_required,
             ..Default::default()
         };
     }
@@ -173,27 +177,19 @@ fn due(last: Option<Instant>, now: Instant) -> bool {
     last.is_none_or(|t| now.saturating_duration_since(t) >= RENEW)
 }
 
-/// A held mark can wait across menu or interpolated frames until the game
-/// presents a genuine world frame. An explicit rejection still takes priority.
-fn mark_problem(reply: &Value) -> Option<String> {
-    if let Some(mark) = reply["refused"].as_array().and_then(|marks| marks.first())
-        && let Some(why) = mark["why"].as_str()
-    {
-        return Some(format!("mark {}: {why}", mark["index"]));
-    }
-    if reply["drawn"] != false {
-        return None;
-    }
-    let why = reply["why"].as_str()?;
-    if why.starts_with("waiting") || why == "no camera for the presented frame" {
-        return None;
-    }
-    Some(why.to_owned())
+/// Windowed hosts can accept a lease before they present a frame with a camera.
+fn waiting_for_frame(reason: &str) -> bool {
+    reason == "no camera for the presented frame"
+        || reason.split_ascii_whitespace().next()
+            .is_some_and(|word| word.eq_ignore_ascii_case("waiting"))
 }
 
 impl Play {
     pub(super) fn update_presence(&mut self, app: &App, now: Instant) {
-        if !self.is_paired() {
+        self.closing_links.retain(super::link::ClosingLink::pending);
+        if !self.is_paired()
+            || self.closing_links.iter().any(|old| Some(&old.endpoint) == self.endpoint())
+        {
             return;
         }
         if self.has_method(editor::method::LINK)
@@ -234,28 +230,30 @@ impl Play {
         let matching = !other_map
             && sample.is_some_and(|s| self.edits.epoch.is_none_or(|epoch| epoch == s.epoch))
             && select::matching(app);
+        let selection = app.selection_revision();
+        if self
+            .presence
+            .inputs
+            .is_none_or(|old| old.selection != selection)
+        {
+            self.presence.selection = app.selection();
+        }
         let inputs = MarkInputs {
-            selection: app.selection_revision(),
+            selection,
+            placement_geometry: matches!(self.presence.selection, Some(Selection::Placement(..)))
+                .then(|| app.session.markers_rev()),
             sample: sample.map(|s| (s.epoch, s.tick)),
             epoch: self.edits.epoch,
             matching,
             live: select::selected_object(app),
             candidate: app.pairing.selection.candidate.map(|h| h.object),
         };
-        let renew = !self.presence.sent.is_empty() && due(self.presence.marks_sent, now);
+        let renew = self.presence.clear_required && due(self.presence.marks_sent, now);
         if self.presence.inputs == Some(inputs)
-            && !self.presence.replace_on_return
             && !renew
             && !due(self.presence.last_check, now)
         {
             return;
-        }
-        if self
-            .presence
-            .inputs
-            .is_none_or(|old| old.selection != inputs.selection)
-        {
-            self.presence.selection = app.selection();
         }
         self.presence.inputs = Some(inputs);
         self.presence.last_check = Some(now);
@@ -279,7 +277,7 @@ impl Play {
         let epoch = inputs.sample.map(|(epoch, _)| epoch).or(inputs.epoch);
         let changed = self.presence.sent != self.presence.desired
             || (!self.presence.desired.is_empty() && self.presence.sent_epoch != epoch);
-        if !changed && !renew && !self.presence.replace_on_return {
+        if !changed && !renew {
             return;
         }
         let params = json!({
@@ -291,7 +289,7 @@ impl Play {
         self.presence.sent_epoch = epoch;
         self.presence.marks_sent = Some(now);
         self.presence.marks_pending = true;
-        self.presence.replace_on_return = false;
+        self.presence.clear_required |= !self.presence.sent.is_empty();
     }
 
     pub(super) fn presence_answer(
@@ -324,10 +322,40 @@ impl Play {
             }
             Purpose::Marks => {
                 self.presence.marks_pending = false;
-                let why = match result {
-                    Ok(_) if self.presence.sent.is_empty() => None,
-                    Ok(v) => mark_problem(&v),
-                    Err(e) => Some(e.to_string()),
+                let reply = result.map_err(|e| e.to_string()).and_then(|v| {
+                    serde_json::from_value::<editor::MarksResult>(v)
+                        .map_err(|e| format!("unreadable marks reply: {e}"))
+                });
+                let why = match reply {
+                    Ok(reply) => {
+                        let clear = self.presence.sent.is_empty();
+                        let cleared = clear && reply.held == 0
+                            && reply.refused.is_empty() && !reply.drawn;
+                        if cleared {
+                            self.presence.clear_required = false;
+                        }
+                        let refused: Vec<_> = reply.refused.iter().map(|mark| {
+                            format!("{}: mark {}: {}", editor::method::MARKS, mark.index, mark.why)
+                        }).collect();
+                        for reason in &refused {
+                            if !self.presence.marks_refused.contains(reason) {
+                                self.feedback.problem(app, reason.clone());
+                            }
+                        }
+                        self.presence.marks_refused = refused;
+
+                        self.presence.marks_waiting = None;
+                        match reply.why {
+                            _ if clear && !cleared => Some("the host did not acknowledge the marks clear".into()),
+                            _ if clear || reply.drawn => None,
+                            Some(why) if waiting_for_frame(&why) => {
+                                self.presence.marks_waiting = Some(format!("{}: {why}", editor::method::MARKS));
+                                None
+                            }
+                            problem => problem,
+                        }
+                    }
+                    Err(reason) => Some(reason),
                 };
                 let why = why.map(|reason| format!("{}: {reason}", editor::method::MARKS));
                 if self.presence.marks_why != why {
@@ -346,11 +374,7 @@ impl Play {
     pub(super) fn close_presence(&mut self) {
         let Some(link) = self.link.take() else { return };
         let mut calls = Vec::new();
-        if self.has_method(editor::method::MARKS)
-            && (!self.presence.sent.is_empty()
-                || self.presence.marks_pending
-                || self.presence.replace_on_return)
-        {
+        if self.has_method(editor::method::MARKS) && self.presence.clear_required {
             calls.push(Call {
                 method: editor::method::MARKS.into(),
                 params: json!({"marks":[]}),
@@ -367,7 +391,7 @@ impl Play {
                 purpose: Purpose::Indicator,
             });
         }
-        link.close_with(calls);
+        self.closing_links.push(link.close_with(calls));
     }
 }
 
@@ -409,17 +433,121 @@ mod tests {
     }
 
     #[test]
-    fn loose_object_marks_only_the_selected_handle_even_when_inspecting_its_tag() {
-        let mut marks = Vec::new();
-        targets(
-            &App::new(),
-            Some(Selection::Tag(map::TagId(42))),
-            &[],
-            Some(59),
-            None,
-            &mut marks,
+    fn a_drag_updates_the_mark_box_and_unrelated_edits_keep_a_loose_handle_selected() {
+        use crate::app::{Action, NavAction};
+        use crate::play::{Conn, testing::Temp};
+        use scenario_edit::fixture;
+
+        let temp = Temp::new("presence-drag-selection");
+        let mut app = App::new();
+        app.set_data_root(temp.0.join("data"));
+        app.dispatch(Action::OpenSource(temp.map("example")));
+        let tag = fixture::id(2);
+        app.pairing.stream_map = json!({
+            "epoch": 1, "name": "example", "checksum": app.session.source_checksum()
+        });
+        app.pairing.shown = Some(live_mirror::Sample {
+            epoch: 1,
+            tick: 1,
+            stale: false,
+            players: Vec::new(),
+            objects: [51, 59]
+                .map(|id| Object {
+                    id,
+                    tag: Some(tag.0),
+                    ..Default::default()
+                })
+                .to_vec(),
+        });
+        let now = Instant::now();
+        let mut play = Play::new();
+        play.conn = Conn::Connected;
+        play.methods = Some([editor::method::MARKS.to_owned()].into_iter().collect());
+        let acknowledge = |play: &mut Play, app: &mut App| {
+            play.presence_answer(
+                app,
+                Purpose::Marks,
+                Ok(json!({"held":1,"drawn":true,"refused":[]})),
+            );
+        };
+        app.dispatch(Action::Select(Some((BlockKind::Weapons, 0))));
+        select::update(&mut app, now);
+        play.update_presence(&app, now);
+        let [Target::Box(before)] = play.presence.sent.as_slice() else {
+            panic!("expected the authored placement's box");
+        };
+        let origin = before.origin;
+        acknowledge(&mut play, &mut app);
+
+        // Run the gizmo's real drag path with a fixed stream tick and lease clock.
+        let selection = app.selection_revision();
+        let markers = app.session.markers_rev();
+        app.dispatch(Action::GestureSet {
+            position: [9., 8., 7.],
+            ypr: [0.; 3],
+        });
+        assert!(app.session.in_gesture());
+        assert!(app.session.markers_rev() > markers);
+        assert_eq!(app.selection_revision(), selection);
+        play.update_presence(&app, now);
+        let [Target::Box(after)] = play.presence.sent.as_slice() else {
+            panic!("expected the moved box");
+        };
+        assert_ne!(after.origin, origin);
+        acknowledge(&mut play, &mut app);
+
+        // Aim can pick a loose weapon during a drag. Its definition is the
+        // inspector subject, while only its own salted handle is marked.
+        select::apply(
+            &mut app,
+            select::Hit {
+                object: 59,
+                placement: None,
+                tag: Some(tag.0),
+                point: [0.; 3],
+                distance: 1.,
+            },
+            false,
         );
-        assert_eq!(marks, [Target::Object(59, MarkStyle::Selected)]);
+        play.update_presence(&app, now);
+        assert_eq!(app.selection(), Some(Selection::Tag(tag)));
+        assert_eq!(
+            play.presence.sent,
+            [Target::Object(59, MarkStyle::Selected)]
+        );
+        acknowledge(&mut play, &mut app);
+        let selection = app.selection_revision();
+        let markers = app.session.markers_rev();
+        app.dispatch(Action::MovePlacement {
+            block: BlockKind::Weapons,
+            index: 0,
+            position: [4., 3., 2.],
+            ypr: None,
+        });
+        app.dispatch(Action::EndGesture);
+        select::update(&mut app, now);
+        assert!(app.session.markers_rev() > markers);
+        assert_eq!(selection, app.selection_revision());
+        assert_eq!(select::selected_object(&app), Some(59));
+        play.update_presence(&app, now);
+        assert_eq!(
+            play.presence.sent,
+            [Target::Object(59, MarkStyle::Selected)]
+        );
+        assert!(
+            !play.presence.marks_pending,
+            "an unrelated drag edit must not replace the loose object mark"
+        );
+
+        app.dispatch(Action::Navigate(NavAction::SelectTag(tag)));
+        play.update_presence(&app, now);
+        assert_eq!(
+            play.presence.sent,
+            [
+                Target::Object(51, MarkStyle::Selected),
+                Target::Object(59, MarkStyle::Selected),
+            ]
+        );
     }
 
     #[test]
@@ -475,13 +603,14 @@ mod tests {
         assert!(RENEW < Duration::from_millis(editor::LINK_TTL_MS));
         let mut state = Presence {
             marks_pending: true,
+            clear_required: true,
             link_pending: true,
             link_sent: Some(now),
             link_why: Some("first host had no window".into()),
             ..Default::default()
         };
         state.transport_lost();
-        assert!(state.replace_on_return);
+        assert!(state.clear_required);
         assert!(!state.marks_pending && !state.link_pending);
         assert!(state.link_sent.is_none() && state.link_why.is_none());
     }

@@ -13,6 +13,7 @@
 //! calls its methods; tests drive it against the agent crate's server.
 
 pub mod auto;
+pub(crate) mod display;
 pub mod issues;
 pub mod launch;
 pub mod link;
@@ -209,6 +210,7 @@ pub(super) fn session_label(kind: SessionKind) -> &'static str {
 /// A pairing with a game, launched or attached.
 pub struct Play {
     link: Option<Link>,
+    closing_links: Vec<link::ClosingLink>,
     /// The endpoint to retry after the link drops.
     retry: Option<Endpoint>,
     pair_source: pair::Source,
@@ -280,6 +282,7 @@ impl Play {
     pub fn new() -> Self {
         Self {
             link: None,
+            closing_links: Vec::new(),
             retry: None,
             pair_source: pair::Source::Finder,
             paired_pid: None,
@@ -1006,10 +1009,8 @@ impl Play {
         app.pairing.peer_confirmation = self.peer_confirmation();
         let at = self.status.as_ref().map(|s| &s.at);
         let edits_blocked = self.edits_blocked(app);
-        app.pairing.player_move_available = self.has_method(agent_proto::sim::method::STATE_SET);
-        app.pairing.player_scope = self.edits.epoch
-            .filter(|_| edits_blocked.is_none() && app.pairing.player_move_available)
-            .map(|epoch| (self.pairing_id, app.session.world_rev(), epoch));
+        let player_scope = self.player_move_scope(app, edits_blocked.as_deref());
+        app.pairing.set_player_scope(player_scope);
         let published = json!({
             "state": state,
             "why": why,

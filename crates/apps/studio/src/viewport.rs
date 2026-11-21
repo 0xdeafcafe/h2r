@@ -367,11 +367,10 @@ impl ViewportView {
         let double =
             hovered && !alt && !over_gizmo && ui.is_mouse_double_clicked(MouseButton::Left);
         if (clicked || double)
-            && let Some(hit) = clicked_live(app, &ray, &live.linked)
+            && let Some(point) = select_live_at(app, &ray, &live.linked, cmd && !double, actions)
         {
-            select::apply(app, hit, cmd && !double);
             if double {
-                let to = camera::focus_point(app.session.camera(), hit.point, 30.0);
+                let to = camera::focus_point(app.session.camera(), point, 30.0);
                 self.camera.go_to(app.session.camera_mut(), to);
             }
             return;
@@ -484,6 +483,23 @@ impl ViewportView {
         }
         (over, using)
     }
+}
+
+/// A linked hit uses the same frame action as an authored placement click.
+fn select_live_at(
+    app: &mut App,
+    ray: &geometry::Ray,
+    linked: &BTreeSet<(BlockKind, usize)>,
+    extend: bool,
+    actions: &mut Vec<Action>,
+) -> Option<geometry::Vec3> {
+    let hit = clicked_live(app, ray, linked)?;
+    if let Some(action) = select::placement_action(app, hit, extend) {
+        actions.push(action);
+    } else {
+        select::apply_loose(app, hit);
+    }
+    Some(hit.point)
 }
 
 /// A foreground authoring glyph or static mesh can cover a live object.
@@ -720,11 +736,25 @@ mod live_click_tests {
             dir: [1.0, 0.0, 0.0],
         };
         let live = mirror::Scene::shown(&app);
-        let hit = clicked_live(&app, &ray, &live.linked).unwrap();
-        assert_eq!(hit.object, id);
-        select::apply(&mut app, hit, false);
+        let mut actions = Vec::new();
+        app.dispatch(Action::SetTool(crate::app::ToolKind::Tags));
+        assert!(select_live_at(&mut app, &ray, &live.linked, false, &mut actions).is_some());
+        assert_eq!(actions, [Action::Select(Some((BlockKind::Weapons, 0)))]);
+        assert_eq!(app.tool, crate::app::ToolKind::Tags);
+        assert_eq!(app.session.selected(), None);
+        crate::ui::dispatch_actions(&mut app, actions);
+        assert_eq!(app.tool, crate::app::ToolKind::Scenario);
         assert_eq!(app.session.selected(), Some((BlockKind::Weapons, 0)));
         assert_eq!(app.session.world_rev(), world);
+
+        // Extending selection goes through the same queue and inspector switch.
+        app.dispatch(Action::SetTool(crate::app::ToolKind::Tags));
+        let mut actions = Vec::new();
+        assert!(select_live_at(&mut app, &ray, &live.linked, true, &mut actions).is_some());
+        assert_eq!(actions, [Action::ToggleSelect((BlockKind::Weapons, 0))]);
+        crate::ui::dispatch_actions(&mut app, actions);
+        assert_eq!(app.tool, crate::app::ToolKind::Scenario);
+        assert_eq!(app.session.selected(), None);
 
         // Removing entry 0 moves the old entry 1 into that slot.
         app.session.remove_entry(BlockKind::Weapons, 0).unwrap();

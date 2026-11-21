@@ -282,8 +282,7 @@ pub struct Bridge {
     /// Slot layouts verified against a loaded play copy. An absent baseline uses source slots.
     layouts: Vec<(scenario_edit::BlockKind, Option<u64>)>,
     /// Pairing, editor document and game epoch that accept a player move.
-    pub(crate) player_scope: Option<(u64, u64, u64)>,
-    pub(crate) player_move_available: bool,
+    pub(crate) player_scope: Result<(u64, u64, u64), String>,
     /// Counters reported by the game's writer for this stream.
     pub counters: Option<Value>,
     /// Map identity from the handshake, refreshed over live.status after a cut.
@@ -315,8 +314,7 @@ impl Default for Bridge {
             selection: Default::default(),
             camera: Default::default(),
             layouts: Vec::new(),
-            player_scope: None,
-            player_move_available: false,
+            player_scope: Err("waiting for the editor to pair in Edit mode".into()),
             counters: None,
             stream_map: Value::Null,
             play_copy: None,
@@ -325,6 +323,17 @@ impl Default for Bridge {
 }
 
 impl Bridge {
+    pub(super) fn set_player_scope(&mut self, scope: Result<(u64, u64, u64), &str>) {
+        match (&mut self.player_scope, scope) {
+            (Err(last), Err(why)) => {
+                if last.as_str() != why {
+                    why.clone_into(last);
+                }
+            }
+            (slot, next) => *slot = next.map_err(str::to_owned),
+        }
+    }
+
     pub(crate) fn show_prompt(&mut self, prompt: Option<super::playtest::Prompt>) {
         if let Some(prompt) = &prompt {
             self.next_prompt = prompt.id + 1;
@@ -346,8 +355,7 @@ impl Bridge {
         self.selection = Default::default();
         self.camera = Default::default();
         self.layouts.clear();
-        self.player_scope = None;
-        self.player_move_available = false;
+        self.set_player_scope(Err("waiting for the editor to pair in Edit mode"));
         self.mirror = None;
         self.shown = None;
         self.counters = None;

@@ -152,14 +152,7 @@ impl Studio {
         self.status_bar(ui, app);
         self.modals(ui, app, &mut actions);
         actions.extend(self.palette.draw(ui, app));
-        for a in actions {
-            if app.tool == ToolKind::Tags
-                && matches!(a, Action::Select(_) | Action::SelectMany(_) | Action::ToggleSelect(_))
-            {
-                app.dispatch(Action::SetTool(ToolKind::Scenario));
-            }
-            app.dispatch(a);
-        }
+        dispatch_actions(app, actions);
     }
 
     fn shortcuts(&mut self, ui: &Ui, app: &App, actions: &mut Vec<Action>) {
@@ -1150,6 +1143,18 @@ impl Studio {
                 ui.close_current_popup();
             }
         }
+    }
+}
+
+/// Dispatch the window's frame queue in order, including the placement inspector switch.
+pub(crate) fn dispatch_actions(app: &mut App, actions: Vec<Action>) {
+    for a in actions {
+        if app.tool == ToolKind::Tags
+            && matches!(a, Action::Select(_) | Action::SelectMany(_) | Action::ToggleSelect(_))
+        {
+            app.dispatch(Action::SetTool(ToolKind::Scenario));
+        }
+        app.dispatch(a);
     }
 }
 
