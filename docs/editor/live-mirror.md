@@ -21,7 +21,7 @@ tag editor, and Halo 1 tags are in [click-to-edit.md](click-to-edit.md).
 
 | Part | State | Where |
 |---|---|---|
-| Pairing, auto-pair, the status chip | Built | `studio::play` (`play.rs`, `play/pair.rs`), `pair.*` ([agent-api.md](agent-api.md)) |
+| Pairing, auto-pair, game link pill | Built | `studio::play` (`play.rs`, `play/pair.rs`), `pair.*` ([agent-api.md](agent-api.md)) |
 | Live objects and players | Built: a binary stream on a second connection, interpolated bind-pose models and player overlays | `agent_proto::live`, `live_mirror::Store`, `studio::play` |
 | Pause, step, resume, go to player, teleport | Built | `play.rs`; `session.claim`, `pause`, `step`, `sim.state.set` |
 | Placement field edits sent live | Built: a diff against `sync::Baseline` every 200 ms, each field as one `edit.set` raw path on the game's `scnr`; shows when the object is next made | `play/sync.rs` |
@@ -228,10 +228,10 @@ normalized blend, scale and translation linearly. It does not blend
 across a key frame after a cut, an object's first sample, or a move
 larger than four times what its velocity explains: those snap. When the
 next frame is late it extrapolates by velocity for one interval, then
-holds and greys the status chip. **Latest** (no delay, no blend) is a
-toggle, for watching an edit land.
+holds. The Game panel reports when it is waiting for live frames.
+**Latest** (no delay, no blend) is a toggle for watching an edit land.
 
-Pause, step and resume are the Game panel's, unchanged. A step sends its
+Pause, step and resume are in the bar and Game menu. A step sends its
 frame, so stepping one tick moves the viewport one tick. In `h2 play` a
 pause stops the game window's event loop (agent-api.md, "Control").
 
@@ -254,7 +254,7 @@ one from a player's aim.
 
 ## Live edit
 
-**View** and **Edit** are a switch in the Game panel and the toolbar.
+The **Edit** switch in the bar and Game panel changes between View and Edit.
 Pairing starts in View: nothing is written. Edit is the user's choice. A
 game the editor started with Play starts in Edit, since it is the
 editor's own copy of the map.
@@ -376,8 +376,9 @@ game, every machine loads the same saved map, as now
   film: an `.h2film` replays the game itself in Theater
   ([film-format.md](../game/film-format.md)); a recording is what the
   mirror saw and cannot be played by the game.
-- **Status chip**: as now, plus the stream's frame rate, delay, dropped
-  and skipped counts, and the game's notice when it shed a layer.
+- **Session** in the Game panel reports the stream's frame rate, delay,
+  dropped and skipped counts. It also shows the game's notice when it
+  sheds a layer.
 - **Pending** (in the Game panel): every edit not in the game, by class,
   with why (View mode, another map, the session, needs a reload), and
   the buttons that clear them: Send, Respawn now, Reload map.

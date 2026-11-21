@@ -18,7 +18,7 @@ use agent_proto::Endpoint;
 use agent_proto::discover::{self, Found, MapMatch};
 use serde_json::Value;
 
-use super::launch;
+use super::{LinkState, LinkView, launch};
 
 /// How often the finder looks again.
 pub const SCAN_EVERY: Duration = Duration::from_secs(2);
@@ -127,13 +127,14 @@ pub fn relation_text(m: MapMatch, game: Option<&str>, open: Option<&str>) -> Str
 /// What the editor tells the user about a game it can pair with.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Notice {
-    /// For the status bar.
+    /// For the game link pill.
     pub short: String,
-    /// For the Game panel.
+    /// The relationship between the game's map and the editor's.
     pub text: String,
     /// The socket the Pair button pairs with; `None` with several games
     /// (the user picks one).
     pub socket: Option<PathBuf>,
+    pub map: Option<String>,
     pub matches: MapMatch,
 }
 
@@ -146,24 +147,21 @@ pub fn notice(games: &[&Found], open: Option<&str>) -> Option<Notice> {
             let m = MapMatch::of(open, map);
             let shown = map.unwrap_or("no map yet");
             let text = match m {
-                MapMatch::Same => format!(
-                    "Halo 2 is running {shown}, the map open here. It can pair: edits to its placements reach it as you make them."
-                ),
+                MapMatch::Same => format!("Halo 2 is running {shown}, the map open here."),
                 MapMatch::Different => format!(
-                    "Halo 2 is running {shown}; the editor has {} open. It can pair, but edits stay here until the maps match.",
+                    "Halo 2 is running {shown}. The editor has {} open.",
                     open.unwrap_or("-")
                 ),
-                MapMatch::Unknown => format!(
-                    "Halo 2 is running ({shown}). It can pair; edits start once it is on the map open here."
-                ),
+                MapMatch::Unknown => format!("Halo 2 is running ({shown})."),
             };
             Some(Notice {
-                short: match m {
-                    MapMatch::Same => format!("Halo 2 is running {shown} (matches)"),
-                    _ => format!("Halo 2 is running ({shown})"),
-                },
+                short: map.map_or_else(
+                    || "Halo 2 is running".into(),
+                    |map| format!("Halo 2 is running {map}"),
+                ),
                 text,
                 socket: Some(g.path.clone()),
+                map: map.map(str::to_owned),
                 matches: m,
             })
         }
@@ -171,6 +169,7 @@ pub fn notice(games: &[&Found], open: Option<&str>) -> Option<Notice> {
             short: format!("{} games are running", many.len()),
             text: format!("{} Halo 2 games are running: pick one under Pair.", many.len()),
             socket: None,
+            map: None,
             matches: MapMatch::Unknown,
         }),
     }
@@ -181,21 +180,45 @@ pub fn notice(games: &[&Found], open: Option<&str>) -> Option<Notice> {
 pub enum Request {
     Pair(Endpoint),
     Unpair,
+    Play,
+    Stop,
+    Edit(bool),
+    Pause,
+    Resume,
+    Step(u64),
+}
+
+impl Request {
+    pub fn refusal(&self, link: &LinkView) -> Option<&'static str> {
+        match self {
+            Self::Play if link.state == LinkState::Connecting => {
+                Some("wait for the game link to connect or cancel it")
+            }
+            Self::Play if !link.can_play => Some("open a map first"),
+            Self::Stop if !link.can_stop => Some("the editor has no game of its own to stop"),
+            Self::Edit(_) if !link.state.can_edit() => Some("pair with a game first"),
+            Self::Pause | Self::Resume | Self::Step(_) if !link.can_pause => {
+                Some("pair with a game first")
+            }
+            Self::Step(_) if !link.paused => Some("pause the game before stepping"),
+            _ => None,
+        }
+    }
 }
 
 /// Where the agent API and the window's [`super::Play`] meet, on the app
 /// they both see.
 #[derive(Debug)]
 pub struct Bridge {
-    /// Pair on its own with the one game running, once per game. On by
-    /// default: pairing only reads the game; nothing is sent until an
-    /// edit is made on a matching map.
+    /// Pair on its own with the one game running, once per game. On by default.
     pub auto_pair: bool,
-    /// Left by `pair.connect` and `pair.disconnect`, taken once a frame.
+    /// Left by `pair.*`, taken once a frame.
     pub requests: Vec<Request>,
     /// What `Play` last published: `None` until a window has drawn a
     /// frame (headless, there is no pairing).
     pub published: Option<Value>,
+    /// The same game-link state the bar and Game panel read.
+    pub link: Option<LinkView>,
     /// One socket and its exact tick samples for the current pairing.
     pub mirror: Option<live_mirror::Stream>,
     /// The sample shown this editor frame, shared by the viewport and API.
@@ -216,6 +239,7 @@ impl Default for Bridge {
             auto_pair: true,
             requests: Vec::new(),
             published: None,
+            link: None,
             mirror: None,
             shown: None,
             latest: false,

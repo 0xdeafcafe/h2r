@@ -221,6 +221,9 @@ fn paired(tag: &str, map: &str, kind: SessionKind) -> (Temp, Game, App, Play) {
     until(&mut play, &mut app, "the paired stream", |p, a| {
         p.is_paired() && p.session.is_some() && p.scenario_tag.is_some() && a.pairing.player().is_some()
     });
+    // These tests exercise the game with live placement edits requested.
+    play.request(Request::Edit(true));
+    play.update(&mut app);
     (t, game, app, play)
 }
 
@@ -239,11 +242,7 @@ fn move_flag(app: &mut App, to: [f32; 3]) {
 fn pairing_shows_the_game_and_its_objects() {
     let (_t, _game, mut app, mut play) = paired("show", "example", SessionKind::MpHost);
     assert_eq!(play.map(), Some("example"));
-    assert!(
-        play.chip().starts_with("Game: example playing tick"),
-        "{}",
-        play.chip()
-    );
+    assert_eq!(play.link_view(&app).text, "Editing example live");
     let sample = app.pairing.shown.as_ref().unwrap();
     let ids: Vec<u32> = sample.objects.iter().map(|o| o.id).collect();
     assert_eq!(ids, [UNIT, VEHICLE]);
@@ -257,7 +256,7 @@ fn pairing_shows_the_game_and_its_objects() {
     assert!(f[1] > 0.9 && f[0].abs() < 1e-3, "{f:?}");
     // Unpairing ends it.
     play.unpair(&mut app);
-    assert_eq!(play.chip(), "Game: not paired");
+    assert_eq!(play.link_view(&app).state, LinkState::NoGame);
     assert!(app.pairing.mirror.is_none() && app.pairing.shown.is_none());
 }
 
@@ -431,7 +430,7 @@ fn pause_step_and_resume_hold_control_only_while_needed() {
         p.status.as_ref().is_some_and(|s| s.at.paused)
     });
     assert!(game.agent.is_paused());
-    assert!(play.chip().contains("paused"), "{}", play.chip());
+    assert!(play.link_view(&app).paused);
     assert!(play.controller);
     play.step(2);
     until(&mut play, &mut app, "the step", |_, a| {
@@ -455,7 +454,7 @@ fn a_game_that_goes_away_is_lost() {
     until(&mut play, &mut app, "the loss", |p, _| {
         matches!(p.conn, Conn::Lost(_))
     });
-    assert_eq!(play.chip(), "Game: lost");
+    assert_eq!(play.link_view(&app).text, "Game lost");
 }
 
 #[test]
@@ -527,18 +526,18 @@ fn a_running_game_is_offered_with_its_map_and_pairs_on_request() {
     assert_eq!(n.matches, MapMatch::Same);
     assert!(n.text.contains("example"), "{}", n.text);
     assert_eq!(n.socket, Some(game.path.clone()));
-    assert!(
-        play.chip_in(&app).starts_with("Game: Halo 2 is running example"),
-        "{}",
-        play.chip_in(&app)
-    );
+    assert_eq!(play.link_view(&app).text, "Halo 2 is running example");
     // Auto-pair is off: it waits for the button.
     assert_eq!(play.conn, Conn::Off);
     assert_eq!(play.auto_target(false), None);
     play.request(Request::Pair(Endpoint::Unix(game.path.clone())));
     until(&mut play, &mut app, "the pairing", |p, _| p.is_paired() && p.map().is_some());
     assert!(play.notice(&app).is_none(), "paired: nothing to offer");
-    assert!(play.chip_in(&app).contains("(the open map)"), "{}", play.chip_in(&app));
+    assert_eq!(play.map_match(&app), MapMatch::Same);
+    assert!(matches!(
+        play.link_view(&app).state,
+        LinkState::Viewing { .. }
+    ));
 }
 
 #[test]
@@ -554,8 +553,18 @@ fn a_game_on_another_map_is_offered_and_says_so() {
     assert_eq!(n.matches, MapMatch::Different);
     assert!(n.text.contains("zanzibar") && n.text.contains("example"), "{}", n.text);
     play.request(Request::Pair(Endpoint::Unix(game.path.clone())));
-    until(&mut play, &mut app, "the pairing", |p, _| p.is_paired() && p.map().is_some());
-    assert!(play.chip_in(&app).contains("the editor has example"), "{}", play.chip_in(&app));
+    until(&mut play, &mut app, "the pairing", |p, _| {
+        p.is_paired() && p.map().is_some()
+    });
+    assert_eq!(
+        play.link_view(&app).state,
+        LinkState::OtherMap {
+            game: "zanzibar".into(),
+            open: "example".into(),
+        }
+    );
+    play.request(Request::Edit(true));
+    play.update(&mut app);
     assert!(play.edits_blocked(&app).unwrap().contains("zanzibar"));
 }
 
@@ -570,6 +579,7 @@ fn the_one_running_game_is_paired_on_its_own_once() {
     until(&mut play, &mut app, "the automatic pairing", |p, _| {
         p.is_paired() && p.map().is_some()
     });
+    assert!(!play.live_edits, "auto-pair starts in View mode");
     // After Unpair it stays unpaired, however often it looks.
     play.unpair(&mut app);
     for _ in 0..3 {
@@ -638,6 +648,7 @@ fn the_agent_api_lists_pairs_and_unpairs() {
     play.update(&mut app);
     let s = api.call(&mut app, "pair.status", Value::Null).unwrap();
     assert_eq!((s["state"].as_str(), s["open_map"].as_str()), (Some("off"), Some("example")));
+    assert_eq!(s["link"]["state"], "no_game");
     let socket = game.path.display().to_string();
     let r = api.call(&mut app, "pair.connect", json!({"socket": socket})).unwrap();
     assert_eq!(r["requested"], socket);
@@ -647,8 +658,115 @@ fn the_agent_api_lists_pairs_and_unpairs() {
     assert_eq!(s["map"], "example");
     assert_eq!(s["matches"], "same");
     assert_eq!(s["socket"], socket);
+    assert_eq!(s["link"]["state"], "viewing");
+    assert_eq!(s["live_edits"], false);
+    api.call(&mut app, "pair.edit", json!({"enabled": true}))
+        .unwrap();
+    until(&mut play, &mut app, "live edits", |p, a| {
+        p.edits_blocked(a).is_none()
+    });
+    let s = api.call(&mut app, "pair.status", Value::Null).unwrap();
+    assert_eq!(
+        s["link"],
+        json!({"state":"editing", "text":"Editing example live", "why":null})
+    );
+
+    let control = studio_proto::method::PAIR_CONTROL;
+    let refused = api
+        .call(&mut app, control, json!({"action": "step"}))
+        .unwrap_err();
+    assert_eq!(refused.code, studio_proto::code::REFUSED);
+    api.call(&mut app, control, json!({"action": "pause"}))
+        .unwrap();
+    until(&mut play, &mut app, "the API pause", |p, _| p.paused);
+    api.call(&mut app, control, json!({"action": "step"}))
+        .unwrap();
+    until(&mut play, &mut app, "the API step", |_, a| {
+        a.log().iter().any(|l| l.status.text() == "game: step")
+    });
+    api.call(&mut app, control, json!({"action": "resume"}))
+        .unwrap();
+    until(&mut play, &mut app, "the API resume", |p, _| !p.paused);
+
     api.call(&mut app, "pair.disconnect", Value::Null).unwrap();
     until(&mut play, &mut app, "the unpairing", |p, _| p.conn == Conn::Off);
     let s = api.call(&mut app, "pair.status", Value::Null).unwrap();
     assert_eq!(s["state"], "off");
+}
+
+#[test]
+fn the_link_view_names_every_state() {
+    let t = Temp::new("link-view");
+    let game = Game::start("link-local", "example", SessionKind::Local);
+    let mut app = editor(&t);
+    app.pairing.auto_pair = false;
+    let mut play = Play::new();
+    fn check(play: &Play, app: &App, state: &str, tone: LinkTone) -> LinkView {
+        let view = play.link_view(app);
+        assert_eq!(view.state.name(), state, "{view:?}");
+        assert_eq!(view.tone, tone, "{view:?}");
+        assert!(!view.text.is_empty());
+        view
+    }
+
+    let idle = check(&play, &app, "no_game", LinkTone::Idle);
+    assert!(idle.can_play && !idle.can_stop && !idle.can_pause && !idle.paused);
+    play.finder = finder_for(&[&game]);
+    until(&mut play, &mut app, "the game to be found", |p, a| {
+        p.notice(a).is_some()
+    });
+    assert_eq!(
+        check(&play, &app, "found", LinkTone::Notice).state,
+        LinkState::Found {
+            map: Some("example".into()),
+            matches: MapMatch::Same
+        }
+    );
+    play.pair(&mut app, Endpoint::Unix(game.path.clone()));
+    check(&play, &app, "connecting", LinkTone::Notice);
+    until(&mut play, &mut app, "the paired game", |p, _| {
+        p.is_paired() && p.map().is_some()
+    });
+    assert!(check(&play, &app, "viewing", LinkTone::View).can_pause);
+    assert!(!play.live_edits);
+
+    play.request(Request::Edit(true));
+    until(&mut play, &mut app, "the writable session", |p, a| {
+        p.edits_blocked(a).is_none()
+    });
+    check(&play, &app, "editing", LinkTone::Live);
+
+    let other = Game::start("link-other", "other", SessionKind::Local);
+    play.pair(&mut app, Endpoint::Unix(other.path.clone()));
+    until(&mut play, &mut app, "the other map", |p, _| {
+        p.map() == Some("other")
+    });
+    check(&play, &app, "other_map", LinkTone::Warn);
+    assert!(!play.live_edits, "a new pairing starts in View mode");
+
+    let coop = Game::start("link-coop", "example", SessionKind::CoopHost);
+    let endpoint = Endpoint::Unix(coop.path.clone());
+    play.pair(&mut app, endpoint.clone());
+    until(&mut play, &mut app, "the co-op session", |p, _| {
+        p.session == Some(SessionKind::CoopHost) && p.scenario_tag.is_some()
+    });
+    play.request(Request::Edit(true));
+    play.update(&mut app);
+    check(&play, &app, "blocked", LinkTone::Warn);
+    drop(coop);
+    until(&mut play, &mut app, "the loss", |p, _| {
+        matches!(p.conn, Conn::Lost(_))
+    });
+    assert!(check(&play, &app, "lost", LinkTone::Error).why.is_some());
+    assert_eq!(play.retry_endpoint(), Some(&endpoint));
+}
+
+#[test]
+fn blocked_names_the_reason() {
+    let (_t, _game, app, play) = paired("blocked-reason", "example", SessionKind::CoopGuest);
+    let why = SessionKind::CoopGuest.writes().unwrap_err();
+    let view = play.link_view(&app);
+    assert_eq!(view.state, LinkState::Blocked { why: why.into() });
+    assert_eq!(view.why.as_deref(), Some(why));
+    assert_eq!(view.text, "Edits stay here: co-op session");
 }

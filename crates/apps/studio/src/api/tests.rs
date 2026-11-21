@@ -209,7 +209,7 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
         ),
         // The window's pairing, as its first frame publishes it.
         n if n.starts_with("pair.") => {
-            app.pairing.published = Some(json!({"state": "off"}));
+            crate::play::Play::new().update(app);
         }
         n if n.starts_with("hud.") => {
             // The HUD fixture's map as the source (it has no scenario).
@@ -244,6 +244,10 @@ fn every_method_in_methods_has_a_test() {
             (Some(_), Ok(v)) => panic!("{} is planned but answered {v}", d.name),
             // No renderer on this machine: the snapshot says so.
             (None, Err(e)) if d.name == m::VIEW_SNAPSHOT && e.code == code::NO_GPU => {}
+            // The first frame has no paired or editor-launched game.
+            (None, Err(e))
+                if matches!(d.name, m::PAIR_STOP | m::PAIR_EDIT | m::PAIR_CONTROL)
+                    && e.code == code::REFUSED => {}
             (None, Err(e)) => panic!("{} {params}: {e}", d.name),
             (None, Ok(v)) => assert!(!v.is_null() || d.name == m::METHODS, "{}", d.name),
         }
@@ -259,6 +263,29 @@ fn every_method_in_methods_has_a_test() {
         );
     }
     assert_eq!(ran.len(), Api::new().methods().len());
+}
+
+#[test]
+fn pair_status_carries_link_view() {
+    use crate::play::{Conn, Play};
+
+    let t = Temp::new("pair-link");
+    let mut app = app(&t);
+    let mut play = Play::new();
+    let mut api = Api::new();
+    play.update(&mut app);
+    let status = call(&mut api, &mut app, m::PAIR_STATUS, Value::Null);
+    assert_eq!(status["state"], "off");
+    assert_eq!(
+        status["link"],
+        json!({"state":"no_game", "text":"No game", "why":null})
+    );
+    play.conn = Conn::Connected;
+    play.update(&mut app);
+    let status = call(&mut api, &mut app, m::PAIR_STATUS, Value::Null);
+    assert_eq!(status["state"], "connected");
+    assert_eq!(status["link"]["state"], "viewing");
+    assert_eq!(status["link"]["text"], play.link_view(&app).text);
 }
 
 #[test]

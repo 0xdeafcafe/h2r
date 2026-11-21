@@ -1,12 +1,14 @@
 //! The Dear ImGui shell: main menu bar, a dockspace with the default
 //! layout (tools and maps left over the outliner, the viewport in the
-//! middle, the inspector right, the log at the bottom), a status bar, and
-//! the modals (unsaved changes, packages). The outliner, centre and
+//! middle, the inspector right, Game and Log at the bottom), a game link
+//! bar, a status bar, and the modals (unsaved changes, packages). The
+//! outliner, centre and
 //! inspector windows show the active tool: the scenario's placements, 3D
 //! viewport and fields here; the game variant and playlist tools' in
 //! [`variants`] and [`playlists`]. Everything goes back to [`App`] as
 //! [`Action`]s.
 
+mod bar;
 pub(crate) mod inspector;
 pub mod map_list;
 pub mod map_pack;
@@ -75,7 +77,7 @@ impl Keys {
                 DockLayout::split(
                     DockSplit::Down,
                     0.22,
-                    DockLayout::tabs([&self.log, &self.game]),
+                    DockLayout::tabs([&self.game, &self.log]),
                     DockLayout::tabs([&self.viewport]),
                 ),
             ),
@@ -95,6 +97,7 @@ pub struct Studio {
     pub viewport: ViewportView,
     show_open_package: bool,
     reset_layout: bool,
+    focus_game: bool,
     /// Log lines already seen (to scroll to new ones).
     log_seen: usize,
     /// Native file dialogs. Off in headless renders and tests.
@@ -123,6 +126,7 @@ impl Studio {
             viewport: ViewportView::new(),
             show_open_package: false,
             reset_layout: false,
+            focus_game: false,
             log_seen: 0,
             dialogs: true,
             variants: variants::VariantsUi::default(),
@@ -143,7 +147,10 @@ impl Studio {
         self.play.update(app);
         let mut actions = Vec::new();
         self.shortcuts(ui, app, &mut actions);
+        self.play.shortcuts(ui);
         self.menu_bar(ui, app, &mut actions);
+        bar::draw(ui, app, &mut self.play, &self.fonts);
+        let focus_game = std::mem::take(&mut self.focus_game);
         self.dockspace(ui);
         self.tools_window(ui, app, gpu, &mut actions);
         match app.tool {
@@ -151,8 +158,6 @@ impl Studio {
                 self.outliner_window(ui, app, &mut actions);
                 self.viewport_window(ui, app, gpu, &mut actions);
                 self.inspector_window(ui, app);
-                self.play.shortcuts(ui, app);
-                self.play.window(ui, app, &self.keys.game);
             }
             ToolKind::Variants => self.variant_windows(ui, app, &mut actions),
             ToolKind::Playlists => self.playlist_windows(ui, app, &mut actions),
@@ -160,7 +165,11 @@ impl Studio {
             ToolKind::Hud => self.hud_windows(ui, app, gpu, &mut actions),
             ToolKind::Tags => self.tag_windows(ui, app, gpu, &mut actions),
         }
+        self.play.window(ui, app, &self.keys.game);
         self.log_window(ui, app);
+        if focus_game {
+            ui.set_window_focus(Some("###game"));
+        }
         self.status_bar(ui, app);
         self.modals(ui, app, &mut actions);
         for a in actions {
@@ -456,10 +465,10 @@ impl Studio {
                 self.reset_layout = true;
             }
         }
+        self.play.menu(ui, app);
     }
 
-    /// A full-viewport host window (above the status bar) holding the
-    /// dockspace.
+    /// The dockspace host between the bar and the status bar.
     fn dockspace(&mut self, ui: &Ui) {
         let vp = ui.main_viewport();
         let (pos, size) = (vp.work_pos(), vp.work_size());
@@ -476,18 +485,24 @@ impl Studio {
         let border = ui.push_style_var(StyleVar::WindowBorderSize(0.0));
         let padding = ui.push_style_var(StyleVar::WindowPadding([4.0, 4.0]));
         let root = ui.get_id("studio-dockspace");
-        let apply = if std::mem::take(&mut self.reset_layout) {
+        let reset = std::mem::take(&mut self.reset_layout);
+        let apply = if reset {
             DockLayoutApply::Replace
         } else {
             DockLayoutApply::IfMissing
         };
         let layout = &self.layout;
+        // This lookup runs with the current frame's context bound. The
+        // pointer is only checked for null before the builder runs.
+        let missing = ui.binding().with_bound_context(|| unsafe {
+            dear_imgui_rs::sys::igDockBuilderGetNode(root.raw()).is_null()
+        });
         let mut result = Ok(root);
         ui.window("##dock-host")
             .flags(flags)
-            .position(pos, Condition::Always)
+            .position([pos[0], pos[1] + theme::BAR], Condition::Always)
             .size(
-                [size[0], (size[1] - theme::STATUS_BAR).max(1.0)],
+                [size[0], (size[1] - theme::BAR - theme::STATUS_BAR).max(1.0)],
                 Condition::Always,
             )
             .build(|| {
@@ -503,6 +518,10 @@ impl Studio {
         rounding.pop();
         if let Err(e) = result {
             eprintln!("dockspace: {e}");
+        } else if reset || missing {
+            // ImGui selects the last new tab when the windows first dock.
+            // Select Game once both tabs have appeared in the default layout.
+            self.focus_game = true;
         }
     }
 
@@ -916,6 +935,16 @@ impl Studio {
         let mut actions = Vec::new();
         let mut state = std::mem::take(&mut self.inspector);
         ui.window(&self.keys.inspector).build(|| {
+            let link = self.play.play.link_view(app);
+            if matches!(
+                link.state,
+                crate::play::LinkState::Editing { .. } | crate::play::LinkState::Blocked { .. }
+            ) {
+                theme::link_badge(ui, link.tone, "Live");
+                if let Some(why) = &link.why {
+                    ui.set_item_tooltip(why);
+                }
+            }
             if let Some(view) = app.halo1_view() {
                 self.halo1_inspector(ui, app, view, &mut actions);
                 return;
@@ -980,11 +1009,6 @@ impl Studio {
                     }
                     Some(Status::Info(m)) => ui.text(format!("{} {m}", icon::CHECK)),
                     None => ui.text_disabled("Ready"),
-                }
-                if app.tool == ToolKind::Scenario {
-                    ui.same_line_with_spacing(0.0, 24.0);
-                    play::status_chip(ui, &self.play.chip(app));
-                    self.play.status_pair_button(ui, app);
                 }
                 let mut right = String::new();
                 if app.tool == ToolKind::Playlists {

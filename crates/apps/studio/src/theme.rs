@@ -2,8 +2,10 @@
 //! small rounding, roomy spacing) and the bundled fonts, Inter for text
 //! and a Lucide subset for icons (`assets/fonts`, OFL and ISC licensed).
 use dear_imgui_rs::{
-    Context, FontConfig, FontId, FontSource, StbTrueTypeFontData, Style, StyleColor,
+    Context, FontConfig, FontId, FontSource, StbTrueTypeFontData, Style, StyleColor, StyleVar, Ui,
 };
+
+use crate::play::LinkTone;
 
 /// Text size in logical points. Dear ImGui 1.92 rasterises at the
 /// framebuffer scale, so this stays crisp on HiDPI displays.
@@ -64,8 +66,142 @@ pub const ERROR: [f32; 4] = rgb(235, 96, 88);
 pub const OK: [f32; 4] = rgb(110, 200, 125);
 /// Warnings (unsaved changes).
 pub const WARN: [f32; 4] = rgb(230, 180, 80);
+/// The bar between the menu and the dockspace.
+pub const BAR: f32 = 36.0;
+pub const BAR_BG: [f32; 4] = rgb(30, 31, 35);
+pub const BAR_SPACING: f32 = 8.0;
+pub const BAR_BUTTON: f32 = 30.0;
+pub const LIVE_FRAME: f32 = 2.0;
 /// The status bar height in points.
 pub const STATUS_BAR: f32 = 26.0;
+
+pub fn link_colour(tone: LinkTone) -> [f32; 4] {
+    match tone {
+        LinkTone::Idle => DIM,
+        LinkTone::Notice => rgb(224, 190, 116),
+        LinkTone::View => rgb(120, 175, 243),
+        LinkTone::Live => OK,
+        LinkTone::Warn => WARN,
+        LinkTone::Error => ERROR,
+    }
+}
+
+pub fn section(ui: &Ui, text: &str) {
+    ui.separator_with_text(text);
+}
+
+const PILL_PADDING: [f32; 2] = [17.0, 5.0];
+
+pub fn pill_width(ui: &Ui, icon: &str, text: &str) -> f32 {
+    ui.calc_text_size(format!("{text}  {icon}"))[0] + 2.0 * PILL_PADDING[0]
+}
+
+fn pill_fill(colour: [f32; 4], tint: f32) -> [f32; 4] {
+    std::array::from_fn(|i| BAR_BG[i] + (colour[i] - BAR_BG[i]) * tint)
+}
+
+/// A rounded status button with a coloured dot, a label and an icon.
+pub fn pill(ui: &Ui, colour: [f32; 4], icon: &str, text: &str) -> bool {
+    let _rounding = ui.push_style_var(StyleVar::FrameRounding(16.0));
+    let _padding = ui.push_style_var(StyleVar::FramePadding(PILL_PADDING));
+    let _bg = ui.push_style_color(StyleColor::Button, pill_fill(colour, 0.16));
+    let _hover = ui.push_style_color(StyleColor::ButtonHovered, pill_fill(colour, 0.26));
+    let _active = ui.push_style_color(StyleColor::ButtonActive, pill_fill(colour, 0.32));
+    let clicked = ui.button(format!("{text}  {icon}###link-pill"));
+    let [x, y] = ui.item_rect_min();
+    let height = ui.item_rect_max()[1] - y;
+    ui.get_window_draw_list()
+        .add_circle([x + 9.0, y + height * 0.5], 2.5, colour)
+        .filled(true)
+        .build();
+    clicked
+}
+
+pub fn link_badge(ui: &Ui, tone: LinkTone, text: &str) {
+    let colour = link_colour(tone);
+    let [w, h] = ui.calc_text_size(text);
+    let [x, y] = ui.cursor_screen_pos();
+    let size = [w + 18.0, h + 4.0];
+    let dl = ui.get_window_draw_list();
+    dl.add_rect([x, y], [x + size[0], y + size[1]], pill_fill(colour, 0.16))
+        .rounding(size[1] * 0.5)
+        .filled(true)
+        .build();
+    dl.add_text([x + 9.0, y + 2.0], colour, text);
+    ui.dummy(size);
+}
+
+pub fn edit_switch_width(ui: &Ui) -> f32 {
+    40.0 + ui.calc_text_size("Edit")[0]
+}
+
+pub fn edit_switch(ui: &Ui, on: bool) -> bool {
+    let _align = ui.push_style_var(StyleVar::ButtonTextAlign([1.0, 0.5]));
+    let clicked = ui.button_with_size(
+        "Edit###edit-switch",
+        [edit_switch_width(ui), ui.frame_height()],
+    );
+    let [x, y0] = ui.item_rect_min();
+    let y = (y0 + ui.item_rect_max()[1]) * 0.5;
+    let dl = ui.get_window_draw_list();
+    dl.add_rect(
+        [x + 8.0, y - 6.0],
+        [x + 28.0, y + 6.0],
+        if on { OK } else { DIM },
+    )
+    .rounding(6.0)
+    .filled(true)
+    .build();
+    dl.add_circle([x + if on { 22.0 } else { 14.0 }, y], 4.0, BAR_BG)
+        .filled(true)
+        .build();
+    clicked
+}
+
+pub enum TransportIcon {
+    Play,
+    Stop,
+    Pause,
+    Step,
+}
+
+pub fn transport_button(ui: &Ui, icon: TransportIcon, tooltip: &str) -> bool {
+    let clicked = ui.button_with_size(format!("##{tooltip}"), [BAR_BUTTON, ui.frame_height()]);
+    let min = ui.item_rect_min();
+    let max = ui.item_rect_max();
+    let [x, y] = [(min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5];
+    let colour = ui.style_color(StyleColor::Text);
+    let dl = ui.get_window_draw_list();
+    let rect = |x0, x1| {
+        dl.add_rect([x + x0, y - 5.0], [x + x1, y + 5.0], colour)
+            .filled(true)
+            .build();
+    };
+    let triangle = |dx| {
+        dl.add_triangle(
+            [x - 4.0 + dx, y - 5.0],
+            [x + 5.0 + dx, y],
+            [x - 4.0 + dx, y + 5.0],
+            colour,
+        )
+        .filled(true)
+        .build();
+    };
+    match icon {
+        TransportIcon::Play => triangle(0.0),
+        TransportIcon::Stop => rect(-5.0, 5.0),
+        TransportIcon::Pause => {
+            rect(-5.0, -2.0);
+            rect(2.0, 5.0);
+        }
+        TransportIcon::Step => {
+            triangle(-1.5);
+            rect(4.0, 6.0);
+        }
+    }
+    ui.set_item_tooltip(tooltip);
+    clicked
+}
 
 /// Apply the theme to a style.
 pub fn apply(style: &mut Style) {

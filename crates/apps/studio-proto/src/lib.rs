@@ -134,6 +134,10 @@ pub mod method {
     pub const PAIR_CONNECT: &str = "pair.connect";
     pub const PAIR_DISCONNECT: &str = "pair.disconnect";
     pub const PAIR_AUTO: &str = "pair.auto";
+    pub const PAIR_PLAY: &str = "pair.play";
+    pub const PAIR_STOP: &str = "pair.stop";
+    pub const PAIR_EDIT: &str = "pair.edit";
+    pub const PAIR_CONTROL: &str = "pair.control";
 
     pub const MIRROR_STATUS: &str = "mirror.status";
     pub const MIRROR_OBJECTS: &str = "mirror.objects";

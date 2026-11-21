@@ -506,6 +506,70 @@ mod tests {
     use crate::app::Action;
     use scenario_edit::{BlockKind, fixture};
 
+    #[test]
+    fn the_game_link_shows_in_every_tool() {
+        use crate::ToolKind;
+        use crate::play::{Conn, Play};
+
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let mut app = App::new();
+        // This test's link is independent of any real game on the machine.
+        h.studio.play.play = Play::new();
+        for tool in ToolKind::ALL {
+            app.dispatch(Action::SetTool(tool));
+            h.frames(&mut app, 3).unwrap();
+            assert!(
+                h.scene
+                    .items
+                    .iter()
+                    .any(|i| { i.window == "##studio-bar" && i.label.starts_with("No game") }),
+                "game link missing in {tool:?}",
+            );
+            assert!(
+                h.scene
+                    .items
+                    .iter()
+                    .any(|i| { i.window.ends_with("###game") && i.label.starts_with("No game") }),
+                "Game tab missing in {tool:?}",
+            );
+            // No map is open, so F5 reaches Play and reports the missing map.
+            let log_len = app.log().len();
+            h.step(&mut app, &Step::Key(dear_imgui_rs::Key::F5, 1))
+                .unwrap();
+            assert!(app.log().len() > log_len);
+            assert!(
+                app.status()
+                    .is_some_and(|s| s.text().contains("open a map"))
+            );
+        }
+
+        h.studio.play.play.conn = Conn::Connected;
+        h.frames(&mut app, 3).unwrap();
+        assert!(!h.studio.play.play.live_edits);
+        assert!(
+            h.scene
+                .items
+                .iter()
+                .any(|i| { i.window == "##studio-bar" && i.label.starts_with("Viewing") }),
+        );
+        let edit = h
+            .scene
+            .items
+            .iter()
+            .find(|i| i.window == "##studio-bar" && i.label.starts_with("Edit"))
+            .unwrap()
+            .label
+            .clone();
+        h.step(
+            &mut app,
+            &Step::Click(format!("##studio-bar>{edit}"), Button::Left),
+        )
+        .unwrap();
+        assert!(h.studio.play.play.live_edits);
+    }
+
     /// One real frame of the shell over the invented test map, read back:
     /// the UI drew something other than the clear colour, and the PNG
     /// writes. Skipped when the machine has no wgpu adapter.

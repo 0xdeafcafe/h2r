@@ -1,6 +1,6 @@
 # h2-editor polish: what is wrong, the design, and the slices
 
-Status: Design. Nothing here is built; each slice below ships part of it.
+Status: P1 is implemented. The remaining slices describe the design.
 Code: `crates/apps/studio/src` (the window: `ui.rs`, `ui/`, `play.rs`, `viewport.rs`, `theme.rs`), `crates/tools/scenario-edit/src` (the scene and its renderer). Tests: named per slice.
 Switch: none.
 
@@ -33,10 +33,10 @@ during the read, so nothing here comes from the socket API.
 | R2 | Picking a tool swaps what three windows mean. The window with the ID `viewport` is titled Viewport, Settings, Entries, Preview, HUD or Fields; `outliner` and `inspector` change the same way. A user who docks "the inspector" somewhere finds a hex dump there in the Tags tool. | `ui.rs:576` to `ui.rs:664` (`variant_windows` through `tag_windows`) |
 | R3 | Scenario and Tags are two tools over one map. They have separate selections, a second map picker, and separate undo: the inspector's tag section carries its own **Undo tag edit** and **Redo tag edit** buttons because Cmd+Z goes to the active tool's stack. | `ui/tags.rs:62` (`map_picker`), `ui/inspector.rs:245` to `ui/inspector.rs:251`, `app.rs:585` (`can_undo`) |
 | R4 | The viewport toolbar is a row of small text buttons with the keys in their labels (`Move (W)`), followed by a line of dim help text that is cut off in a narrow window. Snap steps are behind a right-click that only a tooltip mentions. | `ui.rs:1213` (`viewport_toolbar`), `ui.rs:1278`, `ui.rs:1297`, `ui.rs:1314` |
-| R5 | Nothing chooses what the viewport shows. The View menu holds gizmo modes and snapping; the only show or hide switches are **Halo 1 overlay** and, in the Game panel, **Show live objects**. Markers, the sky, models and fog cannot be turned off. | `ui.rs:390` to `ui.rs:459`, `ui/play.rs:269` |
+| R5 | Nothing chooses what the viewport shows. The View menu holds gizmo modes and snapping; the only show or hide switches are **Halo 1 overlay** and, in the Game panel, **Show live objects**. Markers, the sky, models and fog cannot be turned off. | `ui.rs:390` to `ui.rs:459`, `ui/play.rs` (`PlayUi::session`) |
 | R6 | Save is always "Save as". Cmd+S opens a file dialog every time for a map, and a package opened from the Maps list is saved through a different menu item with a form. | `ui.rs:189`, `ui.rs:316` to `ui.rs:335` |
 | R7 | Empty states do not say what to do next. With no source: "Pick a map to see it here." and "No map open." With no selection: two lines about click modifiers. No button opens a disc from the centre of the window. | `ui.rs:909`, `ui.rs:780`, `ui/inspector.rs:100` |
-| R8 | The status bar is three unseparated runs of text (the last message, the game chip, the counts) in one colour family; the message repeats the last log line. Its background is a literal colour outside the theme. | `ui.rs:956` (`status_bar`), `ui.rs:968` |
+| R8 | The status bar puts the last message and the counts in one colour family. The message repeats the last log line. Its background is a literal colour outside the theme. | `ui.rs:956` (`status_bar`), `ui.rs:968` |
 | R9 | No search across the app. Maps, tags and placements each have their own filter box, and commands are only in menus. | `ui.rs:784`, `ui/tags.rs:132` |
 | R10 | The look is flat: one font size for everything, 24 `small_button`s for primary actions, section headings that are bold text, marker colours set as literals in the scene crate. | `theme.rs:71` (`apply`), `crates/tools/scenario-edit/src/geometry.rs:698` |
 
@@ -44,11 +44,6 @@ during the read, so nothing here comes from the socket API.
 
 | # | Problem | Where |
 |---|---|---|
-| R11 | The Game panel is the second tab behind the Log, so it is hidden at start. | `ui.rs:78` |
-| R12 | The panel, the F5 shortcut and the status chip exist only in the Scenario tool. The link itself runs in every tool (`self.play.update`), so edits can be going to a game while nothing on screen says so. | `ui.rs:143`, `ui.rs:154`, `ui.rs:155`, `ui.rs:984` to `ui.rs:988` |
-| R13 | The chip is a line of coloured text in the status bar ("Game: zanzibar playing tick 1234 (the open map) · 60 Hz · 12 ms · 0 dropped, 0 skipped"). It is not a control, and colour alone carries its state. | `ui/play.rs:354` (`status_chip`), `ui/play.rs:54` (`chip`), `play.rs:224` |
-| R14 | The panel is one column of about thirty controls in the order they were built: Play, Stop, the spawn, a path field for the `h2` binary, the log path, a notice, Auto-pair, a socket field, two different **Pair** buttons, **Find**, a list of games, a list of raw socket paths, Unpair, then the paired controls. | `ui/play.rs:102` to `ui/play.rs:313` |
-| R15 | Whether edits are going to the game is a checkbox and a sentence inside that panel. The viewport and the inspector look the same paired and unpaired. | `ui/play.rs:248` to `ui/play.rs:259` |
 | R16 | Only placement fields are sent. A tag edit made in the Tags tool or the inspector stays in the document; the game has `edit.set` for it and the editor never calls it for a tag other than the scenario. | `play.rs:731` (`push_edits`), `play/sync.rs` |
 | R17 | The game's `edit.set` and `edit.revert` do not check the session. `sim.state.set` refuses in co-op and as a client (`crates/extensions/agent/src/sim/mod.rs:408`); the edit methods have no such check, so the editor's own check (`play.rs:726`) is the only one. | `crates/extensions/agent/src/hot.rs:121` |
 
@@ -164,23 +159,23 @@ UI types, that the bar, the Game panel and `pair.status` all read:
 | `OtherMap { game, open }` | amber, "Game runs lockout" | **Open lockout** |
 | `Lost { why }` | red, "Game lost" | **Pair again** |
 
-- The pill is in the bar in every tool (R12). Clicking it opens a
-  popover: the games found, by map name and phase, one click to pair;
-  Unpair; Auto-pair. The socket path field, **Find**, the `h2` binary
-  path and the launch log are under **Advanced** in the Game panel
-  (R14).
+- The pill is in the bar in every tool. Clicking it opens a
+  popover with games by map name and phase, Unpair and Auto-pair.
+  Clicking the pill when one game is offered pairs directly. The socket
+  path field, **Find**, the `h2` binary path and the launch log are under
+  **Advanced** in the Game panel.
 - **Play**, **Stop**, **Pause**, **Step** and **Resume** are icon
   buttons beside the pill, shown when they apply. A **Game** menu holds
   the same commands with their keys, so F5 works in every tool.
-- **View and Edit** are live-mirror.md's switch. It replaces the "Send
-  edits live" checkbox (R15). While `Editing`, the viewport has a 2 pt
-  green frame and the inspector's title row shows a "Live" pill; while
-  `Blocked`, both are amber. Unpaired, neither is drawn.
-- The Game panel keeps the detail in three sections drawn by
-  `theme::section`: **Session** (map, phase, tick, stream rate and
-  delay, the session kind), **Player** (go to player, teleport, the
-  spawn choice) and **Advanced**. The pending list is its own tab.
-- The status bar loses the chip.
+- The **Edit** switch uses `Play::live_edits`. A game that is already
+  running pairs in View mode. While `Editing`, the viewport has a 2 pt
+  green frame and the inspector shows a "Live" pill. While `Blocked`,
+  both are amber. P12 adds the pending edits and apply classes described
+  in [live-mirror.md](live-mirror.md).
+- The Game panel's **Session** section shows the map, phase, tick,
+  stream rate, delay and session kind. **Player** holds go to player,
+  teleport and the spawn choice. Both use `theme::section`. **Advanced**
+  starts collapsed. P12 adds the Pending tab.
 
 ### The scenario tag tree
 
@@ -466,8 +461,8 @@ and `edit.revert`.
 
 | Method | Params | Result |
 |---|---|---|
-| `pair.status` | none | gains `link`: `{state, text, why, actions: [name]}`, the `LinkView` |
-| `pair.edit` | `{enabled}` | the mode after it; `REFUSED` with the reason |
+| `pair.status` | none | includes `link` with `{state, text, why}` from `LinkView` |
+| `pair.edit` | `{enabled}` | queues the Edit switch change and returns `{requested}`. Read the mode in `pair.status`. |
 | `tag.tree` | `{root?, depth?}` | the scenario tree: sections, rows with `tag`, `group`, `name`, `placed`, `children` |
 | `tag.refs` | `{tag}` | `[{to, via, found: field \| scan}]` |
 | `view.layers` | `{set?: {name: bool}, preset?, xray?}` | every layer: `name`, `group`, `on`, `count` |
@@ -491,7 +486,7 @@ under 2,500, L more.
 
 | # | Slice | Size | Needs | Files | Tests and acceptance |
 |---|---|---|---|---|---|
-| P1 | **The game link in the bar** | S | nothing | below | below |
+| P1 | **The game link in the bar** | S | nothing | `play.rs`, `ui/bar.rs`, `ui/play.rs`, `api/pair.rs` | below |
 | P2 | **The bar and the layout**: tool tabs; Maps, Scene as tabs of one column; per-tool window keys; icon toolbar with tooltips and step combos; status-bar hint slot; empty-state cards; `theme` tokens, `section`, type sizes | M | P1 | `ui.rs`, `ui/bar.rs`, `ui/map_list.rs`, `theme.rs`, `headless.rs` | `the_default_layout_places_every_window` (each tool's windows exist and none shares an ID); a saved layout with the three old IDs loads; `--do` scripts that click `Scenario` in the Tools list click the Map tab (the script step maps the old label); no colour literal outside `theme.rs` in `ui/` (a source test); the guide's screenshots are re-shot by `scripts/editor-screenshots.sh` |
 | P3 | **Save where it came from, and Go to anything** | S | P2 | `app.rs`, `app/commands.rs`, `ui/palette.rs`, `api/ui_screens.rs` (for `ui.palette`) | Cmd+S on an opened package rewrites it with no dialog; on a disc map opens the package form; `ui.palette "zan"` lists the map, its tags and matching placements in that order; Enter on a command dispatches its `Action` |
 | P4 | **The scenario tag tree** | M | nothing | `app/tag_tree.rs`, `app/tag_api/chain.rs` (`scan_refs`), `ui/tags.rs`, `api/tags.rs`, `crates/apps/studio-proto/src/lib.rs` | fixture scenario with a palette, a sky and a BSP: `tag.tree` lists them under their sections with placement counts; `scan_refs` on an invented tag with no layout finds a planted reference and rejects a pair whose group does not match the datum's tag; a tag only a UI tag names is under Not reachable; a 5,000-tag invented group draws every row (list clipper) |
@@ -514,85 +509,26 @@ after P1. Click-to-edit's C3 to C6 and live-mirror's M2 to M11 keep
 their own rows on their pages; P2 is where C4's "the Tags windows docked
 into Map" lands.
 
-### P1, ready to hand off
+### P1. The game link in the bar
 
-**Goal.** In every tool, the user can see whether a game is linked and
-whether edits are going to it, and can Play, Pair, Unpair, Pause and
-switch edits on or off without opening a panel.
+`play.rs` reduces the connection, game status, discovery and edit
+permission to `LinkView`. The bar and Game panel draw that state.
+`play::pair::Bridge` publishes it for `pair.status`. The Game menu and
+the bar use the same `play::pair::Request` commands as the socket API.
+The stable Game and Log window keys allow saved dock layouts to load.
 
-**Build.**
+The tests use invented data.
 
-1. `play.rs`: add `LinkState` (the eight variants of the table in "The
-   game link"), `LinkTone` (`Idle`, `Notice`, `View`, `Live`, `Warn`,
-   `Error`) and `LinkView { state, tone, text, why: Option<String>,
-   can_play, can_stop, can_pause, paused }`. Add
-   `Play::link_view(&self, app: &App) -> LinkView`, built from `conn`,
-   `status`, `notice(app)`, `map_match(app)`, `live_edits` and
-   `edits_blocked(app)`. `Blocked` is "paired, edits wanted, and
-   `edits_blocked` gives a reason other than the switch being off";
-   `OtherMap` is `MapMatch::Different`. No ImGui types.
-2. `theme.rs`: `BAR: f32 = 36.0`; `pill(ui, tone_colour, icon, text) ->
-   bool` (a filled rounded rect behind the text, returns clicked); a
-   colour per `LinkTone` beside `OK`, `WARN` and `ERROR`.
-3. `ui/bar.rs` (new): `draw(ui, app, play: &mut PlayUi, fonts)`. A
-   fixed window under the menu bar, built as `status_bar` builds its own
-   (`ui.rs:956`), at the main viewport's `work_pos`, height `BAR`. This
-   slice fills only its right side: the pill, then Play or Stop, Pause
-   or Resume and Step when `LinkView` allows, then the **Edit** switch
-   bound to `Play::live_edits`. The pill's popover lists
-   `play.finder.games` by map and phase with a **Pair** row action,
-   **Unpair** when paired, and the Auto-pair checkbox. A pill click with
-   one found game pairs with it.
-4. `ui.rs`: call `bar::draw` after `menu_bar` in `frame`; move the
-   dock host down by `theme::BAR` (`dockspace`, `ui.rs:463`); draw the
-   Game window in every tool (move `self.play.window` out of the
-   `ToolKind::Scenario` arm at `ui.rs:155`) and move
-   `self.play.shortcuts` beside the global shortcuts; add a **Game**
-   menu (Play, Stop, Pair with the running game, Unpair, Pause, Step,
-   Send edits live); remove the chip and `status_pair_button` from
-   `status_bar` (`ui.rs:984` to `ui.rs:988`). The default layout puts
-   Game before Log (`ui.rs:78`).
-5. `ui/play.rs`: the panel opens with the same pill; the socket field,
-   **Find**, the socket list, the `h2` path and the log path go under a
-   collapsed **Advanced** header; one **Pair** button remains. While
-   `Live`, `viewport_window` draws a 2 pt frame in the tone's colour
-   around the image rect (`ViewportView::shown`).
-6. `api/pair.rs`: `pair.status` gains `link` (`state`, `text`, `why`).
-   Update its `MethodDef` result text and
-   [agent-api.md](agent-api.md)'s row. `Bridge` publishes the
-   `LinkView` beside what it already publishes.
-7. Docs in the same branch: editor.md's "The window" and "Play and
-   pair" (the bar, the Game menu, the pill's states; the status chip
-   sentence goes), editor-guide.md where it tells the user to open the
-   Game tab, and this page's R11 to R15 deleted.
-
-**Tests** (no game data; the fake game of `play::tests`).
-
-- `play::tests::the_link_view_names_every_state`: drive the fake game
-  through no game, found, connecting, paired with the same map, paired
-  with another map, edits on, a co-op session and a dropped socket;
-  assert `state`, `tone` and that `text` is not empty for each.
-- `play::tests::blocked_names_the_reason`: co-op gives `Blocked` whose
-  `why` is `SessionKind::writes`' text.
-- `api::tests`: `pair.status` carries `link.state` for off and
-  connected (it already runs against a published bridge).
-- `headless::tests::the_game_link_shows_in_every_tool`: for each
-  `ToolKind`, render three frames and find the pill's item by its label
-  prefix in `h.scene.items`, as
-  `the_tags_tool_edits_a_field_through_its_widgets` finds its widgets;
-  click **Edit** and assert `play.live_edits` flipped. Skipped without
-  an adapter.
-- Existing `play::tests` pass unchanged.
-
-**Acceptance.** The pill and its buttons are on screen in all six
-tools; F5 starts the game from any tool; with a game paired and edits
-on, the viewport is framed and the pill reads "Editing <map> live";
-unpaired there is no frame; the status bar holds no game text; a layout
-saved before the change loads with the Game tab present.
-
-**Not in P1.** The tool tabs and the document name in the bar (P2);
-View and Edit as live-mirror defines them with a pending list (P12):
-here the switch is the existing `live_edits` flag under its new name.
+- `play::tests::the_link_view_names_every_state` goes through all eight
+  states against the fake game and checks the state, tone and label.
+- `play::tests::blocked_names_the_reason` checks the co-op explanation
+  from `SessionKind::writes`.
+- `api::tests::pair_status_carries_link_view` checks the link published
+  for the off and connected states. The fake game pairing test also
+  switches from View to Edit through `pair.edit`.
+- `headless::tests::the_game_link_shows_in_every_tool` finds the pill and
+  exercises F5 in all six tools, then toggles Edit through the bar.
+  It skips on machines without a wgpu adapter.
 
 ## Rules and limits
 
@@ -618,9 +554,6 @@ here the switch is the existing `live_edits` flag under its new name.
 
 ## Evidence
 
-- **Code**: the Game panel, F5 and the chip are in the Scenario arm
-  only (`crates/apps/studio/src/ui.rs`, `Studio::frame` and
-  `status_bar`), while `PlayUi::update` runs before the tool match.
 - **Code**: `edit.set` is registered with no session check
   (`crates/extensions/agent/src/hot.rs`); `sim.state.set` has one
   (`crates/extensions/agent/src/sim/mod.rs`).

@@ -108,6 +108,9 @@ map...**, or drop a disc image, `.map` file or folder onto the window.
 
 The window is made of panels that dock together:
 
+- **Game link** (below the menu) stays visible in every tool. Click the
+  pill to pair, manage the link or choose a running game. Play, Stop,
+  Pause, Step, Resume and the Edit switch appear beside it as available.
 - **Tools** (top left): the tools, **Scenario**, **Tags**, **Game
   variants**, **Playlists**, **UI Screens** and **HUD**. Click one to switch to it. A tool with unsaved
   changes shows a `*` after its name. Switching tools never loses
@@ -125,7 +128,8 @@ The window is made of panels that dock together:
   (right) show the tool you are in. In Game variants the outliner becomes
   **Variants** and the viewport **Settings**; in Playlists they become
   **Playlists** and **Entries**.
-- **Log** (under the viewport): everything the editor did, newest last,
+- **Game** (under the centre window) holds session and player details.
+  **Log** beside it shows everything the editor did, newest last, with
   errors in red.
 - **Status bar** (bottom): the last message on the left; on the right,
   `unsaved` when the open tool has changes, a summary of what is open,
@@ -133,8 +137,8 @@ The window is made of panels that dock together:
 
 The menus at the top: **File** (open, save, packages, quit), **Edit**
 (**Undo**, **Redo**, **Duplicate**, **Delete**, **Allow growing full
-blocks**) and **View** (**Frame map**, **Focus selection**, the gizmo
-mode, **Reset layout**).
+blocks**), **View** (**Frame map**, **Focus selection**, the gizmo
+mode, **Reset layout**) and **Game** (play, pair and game controls).
 
 ![The File menu open: Open disc or map..., Open maps folder..., Save map as..., Save as package... (highlighted), Open package... and Quit, with their shortcuts](../images/editor/menu-file.png)
 
@@ -467,24 +471,29 @@ multiplayer, everyone in the game needs the same edited map.
 
 ### Play from the editor
 
-The quickest way: press **F5** (or **Play** in the **Game** tab beside the
-log). The game opens in its own window straight into the map, with your
-edits, saved or not; nothing is saved for it. Pick where you start under
-**Spawn**: the level's own spawn, under the editor camera, or at the
-selected placement. **Shift+F5** closes that game. Play needs `h2`
-installed (`~/.cargo/bin/h2`, or name it in the Game tab) and the disc.
+Press **F5**, click the Play button beside the game link, or choose
+**Game > Play** in any tool. The game opens in its own window on a copy
+of the open map with your edits. The Game tab's **Spawn** picker lets
+you start at the level's own spawn, under the editor camera or at the
+selected placement. Press **Shift+F5** or click Stop to close that
+game. Play needs the disc and `h2` installed (`~/.cargo/bin/h2`, or set
+the path under **Advanced** in the Game tab).
 
 While the game runs, the editor stays paired with it:
 
-- the status bar shows the game's map, whether it is playing or paused,
-  and its tick;
+- the game link shows the map and whether you're viewing or editing
+  live. The Game tab's Session section shows the phase, tick and stream
+  details;
 - live objects move with their bind-pose models. Player labels show the
   name and team, and a line shows where each player aims;
 - **Go to player** brings the camera to you; **Teleport player here**
   moves you to the spot the camera looks at, and **T** over the viewport
   to the spot under the mouse;
-- **Pause**, **Step** and **Resume** freeze and step the game;
-- moving a placement, or changing its fields, goes to the game at once.
+- **Pause**, **Step** and **Resume** are beside the game link and in
+  the Game menu. Set the step count under **Advanced**;
+- with **Edit** on, moving a placement or changing its fields goes to
+  the game. The green viewport frame and **Live** pill in the inspector
+  show when live edits are active.
   The game only reads a placement when it makes the object, so you see
   it at the next respawn (a weapon or vehicle spawn, your own respawn at
   a starting location) or after **Play** again. Things already in the
@@ -495,27 +504,28 @@ an agent socket of its own (in the `agents` folder of the h2recomp cache;
 `H2_AGENT=off` closes it), and the editor looks for those every couple of
 seconds:
 
-- With one game running, the Game panel and the status bar say
-  "Halo 2 is running (map)", with a **Pair** button, and whether its map is
-  the one open here. A game on another map pairs too; edits stay here until
-  the maps match.
-- **Auto-pair** (in the Game panel, on by default) pairs by itself with
-  the one game running, once per game: after **Unpair** the editor leaves
-  it alone. Pairing only reads the game; nothing is sent until you edit on
-  a map the game is running.
-- With several games the panel lists each with its map and process id;
-  pick one.
+- With one game running, the pill says "Halo 2 is running" with the
+  map name. Click it to pair. If the game is on another map, click
+  the pill and choose **Open** with the game's map name to switch maps.
+- **Auto-pair** in the pill's popover is on by default. It pairs with
+  a sole running game once per socket. To disconnect, click the pill
+  and choose **Unpair**.
+- With several games, open the pill's list and choose **Pair** beside
+  the map and phase you want.
 - A game started another way (`h2 serve`, or `H2_AGENT=<path> h2 play`)
   is listed too when its socket is the default one or in the cache; any
-  other goes in the **Pair** box, and **Find** looks again.
+  other socket goes under **Advanced** in the Game tab. **Find** refreshes
+  the list.
 
-While paired the status bar reads, for example, "Game: ascension playing
-tick 812 (the open map)", or "(the editor has zanzibar)" when the maps
-differ. In a co-op game the editor sends nothing to the game: one machine
-changing alone would split it from the others.
+Pairing with an already-running game starts in View. Turn **Edit** on
+when you're ready to send your placement edits. If a co-op session or
+another restriction prevents writes, the pill says "Edits stay here"
+and the frame and **Live** pill turn amber. Hover the pill for the
+reason. If the connection drops, open the pill and use **Pair again**.
 
 An agent drives the same with `pair.list`, `pair.status`, `pair.connect`,
-`pair.disconnect` and `pair.auto` ([agent-api.md](agent-api.md)).
+`pair.disconnect`, `pair.auto`, `pair.play`, `pair.stop`, `pair.control`
+and `pair.edit` ([agent-api.md](agent-api.md)).
 
 ### Your packages in the Maps list
 

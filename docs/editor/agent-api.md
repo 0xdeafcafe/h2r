@@ -83,6 +83,7 @@ What goes through actions, from both sides:
 | Variant edits | `OpenVariant`, `NewVariant`, `CopyBuiltin`, `SetVariantName`, `SetSetting`, `ImportVariant*`, `DeleteVariant` | the variant tool | `doc.open`, `variant.*` |
 | Playlist edits | `EditPlaylist(PlaylistEdit)`, `SetEntryVariant` | the title and description fields, the table's row buttons, weights, Add, the unused slot's "Make a … playlist" buttons and "Remove playlist" apply the same `PlaylistEdit`s | `playlist.set`, `playlist.entry`, `playlist.entry_variant` |
 | UI screens | `UiPick`, `UiPress` | the UI Screens tool | `ui.pick`, `ui.press` |
+| Game link | `play::pair::Request` | game link bar, Game menu and Game panel | `pair.connect`, `pair.disconnect`, `pair.auto`, `pair.play`, `pair.stop`, `pair.control`, `pair.edit` |
 
 The playlist fields apply their `PlaylistEdit`s inside the frame's
 `HopperSession::edit_with`, so a typing run stays one undo step (merged
@@ -149,7 +150,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `variant` | `list`, `get`, `set {setting, value}`, `rename`, `copy`, `export`, `import`, `delete` |
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
 | `ui` | `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}` |
-| `pair` | `list`, `status`, `connect {socket}`, `disconnect`, `auto {enabled}` |
+| `pair` | `list`, `status`, `connect {socket?}`, `disconnect`, `auto {enabled?}`, `play`, `stop`, `control {action, ticks?}`, `edit {enabled}` |
 | `mirror` | `status`, `objects {kind?, near?, limit?, at_tick?}` |
 | `view` | `camera {yaw, pitch, distance, target, focus, all}`, `snapshot {out, size, camera}`, `stats` |
 | `hud` | `list {map \| package}`, `read {hud, state}`, `set {hud, widget, field, value, merge}`, `move {hud, widget, x, y, mode, merge}`, `render {hud, state, out}`, `check {hud, state}`, `save_as {path}` |
@@ -226,8 +227,8 @@ Notes on some:
   `GROWTH_REFUSAL` the window shows; `data` has the count and capacity);
   `.delete` where something refers to entries by index. A new entry goes
   to `position`, else the camera focus, in one undo step.
-- **Pairing.** The editor pairs with a running game (the Game panel's
-  Pair; [editor-guide.md](editor-guide.md), "Play from the editor").
+- **Pairing.** The editor pairs with a running game through the game
+  link in the bar. [Editor guide](editor-guide.md#play-from-the-editor)
   `pair.list` looks at the games now: the sockets in the agents directory
   where `h2 play` listens by default (`agent_proto::discover`), plus the
   default and `$H2_AGENT` sockets and Play's own. Each entry has its
@@ -241,6 +242,22 @@ Notes on some:
   `pair.status` for `state: "connected"`. `pair.connect` with no `socket`
   takes the one game running, and is refused with none or several.
   `pair.auto {enabled}` reads or sets auto-pair, on by default.
+  The `link` object in `pair.status` contains `state`, the pill's
+  `text` and its `why` tooltip (string or null). Its states are
+  `no_game`, `found`, `connecting`, `viewing`, `editing`, `blocked`,
+  `other_map` and `lost`. The top-level `state` continues to report the
+  socket connection.
+- **Game controls.** `pair.play` starts the open map. `pair.stop` stops
+  the editor's own game. `pair.control` accepts `pause`, `resume` or
+  `step` as `action`. Step requires a paused game and accepts `ticks`
+  from 1 to 600 (default 1). `pair.edit {enabled}` sets the Edit switch
+  on the pairing. A game that is already running pairs in View mode.
+  Play starts its own game in Edit mode. The four calls need the window,
+  queue a request on it and return `{"requested":true}`. Read
+  `pair.status` for the result in a later frame. A call that needs a
+  game, an open map or a pause returns `REFUSED` when that requirement
+  is missing. The pill's **Open** action uses the normal map selection
+  path (`doc.open {map}` for a map in the source).
 - **Live mirror.** The paired window reads the game's `objects` and
   `players` stream. `mirror.status` reports the stream state, layers,
   frame rate, presentation delay, dropped and skipped counts, and the

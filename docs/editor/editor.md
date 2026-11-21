@@ -100,7 +100,12 @@ boxes and numbers are drawn by the headless renderer's `--callout`.*
   playlist tools' file commands, quit), Edit (undo, redo, duplicate,
   delete, allow growing full blocks), View (frame the map, frame the
   selection, gizmo mode (move, rotate, scale) and local or world axes,
-  grid and angle snapping, reset layout).
+  grid and angle snapping, reset layout), and Game (Play, Stop, Pair,
+  Unpair, Pause, Step, Resume and Edit).
+- **Game link** (bar below the menu, `ui/bar.rs`). The pill shows the
+  pairing and whether placement edits can reach the game. The controls
+  beside it provide Play or Stop, Pause or Resume, Step and the Edit
+  switch as they become available. The bar is visible in every tool.
 - **Tools** (left, top): the tools (Scenario, Tags, Game variants,
   Playlists, UI Screens; a
   `*` marks one with unsaved edits), then **Maps**: the opened source and
@@ -161,7 +166,9 @@ boxes and numbers are drawn by the headless renderer's `--callout`.*
   any ancestor. **Back** and **Forward**, Alt+Left and Alt+Right, and the
   mouse's back and forward buttons step through tag and placement
   history. Returning to a field opens its block and scrolls to it.
-- **Log** (bottom): every action's result, errors in red.
+- **Game** and **Log** (under the centre window). Game shows the session,
+  player and advanced pairing controls. Log shows every action's result,
+  with errors in red.
 - **Status bar**: the last message, unsaved state, a summary of what is
   open, the camera's fly speed, frame rate.
 - **Unsaved changes**: anything that would drop a tool's unsaved edits
@@ -173,11 +180,12 @@ boxes and numbers are drawn by the headless renderer's `--callout`.*
 
 Shortcuts: Cmd/Ctrl+O open, Cmd/Ctrl+S save (the map as a new file, the
 variant, the playlist file), Cmd/Ctrl+Z undo and Shift+Cmd/Ctrl+Z or
-Cmd/Ctrl+Y redo (in the active tool), and in the scenario tool
+Cmd/Ctrl+Y redo (in the active tool), F5 Play, Shift+F5 stop the
+game the editor started, and Cmd/Ctrl+Q quit. In the scenario tool,
 Cmd/Ctrl+D duplicate and Delete or Backspace delete (the whole
 selection), F frame the selection, Home frame all, W/E/R gizmo mode, X
-local or world axes, F5 Play and Shift+F5 stop the game, T (over the
-viewport, paired) teleport the player to the cursor; Cmd/Ctrl+Q quit.
+local or world axes, and T (over the viewport, paired) teleport the player
+to the cursor.
 Dropping a disc image, map or folder on the window
 opens it.
 
@@ -662,15 +670,16 @@ the game's agent socket ([agent-api.md](../runtime/agent-api.md)). The
 code is `studio::play` (`play.rs`, `play/{launch,link,sync}.rs`) and
 `ui/play.rs`; nothing of it runs the game in the editor's process.
 
-**Play** (F5; Shift+F5 stops the game Play started) runs, in its own
-window:
+**Play** (F5) starts the open map in its own window. **Stop** (Shift+F5)
+closes the game the editor started. The bar and Game menu provide these
+commands in every tool. Play runs this command:
 
 ```
 H2_AGENT=<cache>/h2recomp/editor-<pid>-<n>.sock H2_MAP_DIR=$TMPDIR/h2-editor-play-<pid>/maps \
   h2 play <disc> --data <data root> --level <map> --title 'Halo 2 - <map> (h2-editor)'
 ```
 
-- `h2` is the panel's path, else `$H2_BIN`, else `~/.cargo/bin/h2`, else
+- `h2` is the path in Game > Advanced, else `$H2_BIN`, else `~/.cargo/bin/h2`, else
   `h2` on the `PATH` (`launch::find_h2`). The editor never builds it.
 - The disc is the open disc image, else `H2_DISC` or the repository's
   `disc/halo2.iso` (`editor_core::default_disc`). For a Map Pack map this
@@ -692,9 +701,9 @@ H2_AGENT=<cache>/h2recomp/editor-<pid>-<n>.sock H2_MAP_DIR=$TMPDIR/h2-editor-pla
   or the selected placement. Once the game reports gameplay 30 ticks
   into the map, the editor moves player one there with `sim.state.set
   {player, pos}`.
-- The game's output goes to `play-<n>.log` in the scratch directory (the
-  panel shows the path); the editor waits up to 20 minutes for the
-  socket, since `h2 play` may build its image first.
+- The game's output goes to `play-<n>.log` in the scratch directory.
+  Game > Advanced shows the path. The editor waits up to 20 minutes for
+  the socket because `h2 play` may build its image first.
 
 **Pair** attaches to a running game: one it found, or a path typed (or
 `tcp://HOST:PORT`). `play::pair::Finder` looks every two seconds on its
@@ -702,26 +711,42 @@ own thread: the agents directory (`agent_proto::discover`, where `h2 play`
 opens `<pid>.sock` unless `H2_AGENT` is set; leftover sockets nothing
 answers on are removed) and the sockets **Find** lists (`$H2_AGENT`, the
 default socket, and every socket in the agent's cache directory, where
-Play puts its own). Each is asked `session.status`. `Play::notice` turns
-one running game into "Halo 2 is running (map)" for the Game panel and
-the status bar, with `MapMatch` saying whether its map is the open one
-(`same`, `different`, or `unknown` when either has none), and the **Pair**
-button pairs with it. With **Auto-pair** (`Bridge::auto_pair`, on by
-default, not kept between runs) the editor pairs by itself with the one
-game running, once per socket (`Play::auto_tried`), so Unpair sticks. An
-empty path pairs with the default socket. The game is then taken to hold
-the map as the editor shows it at that moment.
+Play puts its own). Each is asked `session.status`. Click the game link
+pill to pair with the single discovered game or choose from the list
+when several are running. The list shows each game's map and phase.
+It also offers **Unpair** and **Auto-pair**. Auto-pair defaults to on and
+pairs with a sole game once per socket (`Play::auto_tried`), so Unpair
+sticks. An empty path in Game > Advanced pairs with the default socket.
+The game is taken to hold the map as the editor shows it at that moment.
+
+`Play::link_view` supplies the pill in the bar and the Game panel, and
+the `link` in `pair.status`.
+
+| Pill | Meaning |
+|---|---|
+| No game | Play is available when a map is open. |
+| `Halo 2 is running <map>` | Click to pair. |
+| Connecting… | Click for **Cancel**. |
+| `Viewing <map> · <phase>` | The editor reads the running game in View mode. |
+| `Editing <map> live` | The Edit switch is on and placement edits can reach the game. The viewport frame and the inspector's Live pill are green. |
+| Edits stay here | The Edit switch is on and the game is blocking writes. Hover for the reason. The frame and Live pill are amber. |
+| `Game runs <map>` | The game is on another map. Click for `Open <map>`. |
+| Game lost | Hover for the reason or click for **Pair again**. |
+
+Pairing with an already-running game starts in View. Play starts its own
+game in Edit. Use the **Edit** switch in the bar or Game panel to change
+mode. The Game panel's Session section shows the map, phase, tick,
+session kind, stream rate, delay and counters. Player holds the camera,
+teleport and spawn controls.
 
 While paired, `play::Play` keeps a control connection for commands and
 status, and a second connection for the binary live mirror.
 
-- **Status chip** in the status bar: the connection, the game's map, its
-  phase (playing, paused, loading, menu, cinematic) and tick.
 - **Live objects** use their definition's model in the bind pose.
   Player labels show the name and team, and an aim line follows the
   unit's targeting vector. The viewport interpolates streamed transforms
   between game ticks ([live-mirror.md](live-mirror.md)).
-- **Edits sent live.** Every 200 ms the editor compares the placements
+- **Edits sent live.** In Edit mode, every 200 ms the editor compares the placements
   with what the game is taken to hold (`sync::Baseline`) and sends each
   changed field of a placement with `edit.set` on the game's `scnr`,
   through a raw block path (`+<block>/<stride>[i].+<field>:bytes[n]`,
@@ -739,7 +764,7 @@ status, and a second connection for the binary live mirror.
   they face. **Teleport player here** moves them to the ground under the
   camera's focus; **T** over the viewport moves them to the point under
   the cursor (`sim.state.set`).
-- **Pause**, **Step** (1 to 600 ticks) and **Resume** (`session.claim`,
+- **Pause**, **Step** (1 to 600 ticks, set in Game > Advanced) and **Resume** (`session.claim`,
   `pause` with the 10-minute limit, `step`, `resume`, then `release`, so
   other clients may act again). In `h2 play` a pause also stops the
   window's event loop (agent-api.md).
@@ -1276,8 +1301,9 @@ studio crate only draws them and turns input into actions.
     camera input, picking, placing, snapping and the gizmo.
   - `play.rs` and `play/`: Play and pair (above): the `h2 play` command
     and socket discovery (`launch`), the agent link thread (`link`), the
-    placement diff sent as `edit.set` (`sync`); `ui/play.rs` draws the
-    Game panel, the live objects over the viewport and the status chip.
+    placement diff sent as `edit.set` (`sync`). `ui/bar.rs` draws the
+    link and transport. `ui/play.rs` draws the Game panel and the live
+    viewport frame.
   - `theme.rs`: colours, spacing, fonts (Inter 15 pt with a Lucide icon
     subset merged in; Dear ImGui 1.92 rasterises at the framebuffer scale,
     so text is crisp on HiDPI).
