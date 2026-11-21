@@ -29,6 +29,12 @@ struct Parked {
 }
 static PARKED: Mutex<Option<Parked>> = Mutex::new(None);
 
+/// The unit the monitor parks and hides, while one is: `forge.status`'s
+/// `parked`, so a check can tell a hidden biped from a missed park.
+pub fn parked() -> Option<u32> {
+    Some(HIDDEN.load(Ordering::Relaxed)).filter(|&unit| unit != u32::MAX)
+}
+
 /// A new map can reuse both a slot and its salt. Drop the old epoch's
 /// bookkeeping without touching the new map.
 pub fn forget_park() {
@@ -217,8 +223,10 @@ mod tests {
             .put_u32(object.addr + ObjectHeader::BODY.offset, body)
             .put_u16(body + BODY_DAMAGE_FLAGS, 1);
         forget_park();
+        assert_eq!(parked(), None);
         park(&mut m, true);
         assert_eq!(HIDDEN.load(Ordering::Relaxed), unit.raw());
+        assert_eq!(parked(), Some(unit.raw()));
         assert_eq!(
             m.u16(body + BODY_DAMAGE_FLAGS).unwrap(),
             1 | CANNOT_TAKE_DAMAGE
