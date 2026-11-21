@@ -672,10 +672,11 @@ It lands in three steps, each a better picture than the last.
    `RenderCamera` from the editor's camera, and calls `prepare` and
    `encode` with the viewport's own colour and depth views
    (`native-render/src/gpu.rs`). The lightmap page decode and the
-   first-bitmap decode move from the game crate
-   (`native_world_glue::decode_lightmap`, `decode_first`) into
-   `native_render::load`, so the editor does not depend on the game
-   host. `scenario-edit`'s world, model and sky pipelines and their
+   bitmap decodes are `native_render::load::decode_lightmap`,
+   `decode_first` and `decode_image`, and the draw filter is
+   `native_render::world::keep_draws`; the game's glue and Theater's
+   host view use them from there, so the editor does not depend on the
+   game host. `scenario-edit`'s world, model and sky pipelines and their
    shaders are deleted; `view.stats` reports from the native world. The
    look is the renderer's `world.wgsl`: base map times lightmap, as the
    game's fixed path.

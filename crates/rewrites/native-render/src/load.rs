@@ -10,6 +10,7 @@ use tags::geometry::{RawSource, Section, TagView, VertexKind};
 use tags::lighting::{VertexLighting, vertex_lighting};
 use tags::structure::{Lightmap, LightmapGroup, LightmapRenderInfo, StructureRender, load_bucket};
 
+use crate::gpu::Image;
 use crate::world::{self, LightmapKey, Owner, PartInput, Placement, SectionInput, World, WorldBuilder};
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -312,6 +313,65 @@ pub fn expand_page(indices: &[u8], palette: &[u32; 256]) -> Vec<u8> {
         .collect()
 }
 
+/// A P8 lightmap page decoded and expanded through `palette` to RGBA8,
+/// with its mip chain. `refuse_linear` refuses a linear (unswizzled)
+/// page, whose coordinates the game gives in texels.
+pub fn decode_lightmap(
+    image: &tags::Image,
+    palette: &[u32; 256],
+    files: &mut assets::ResourceFiles,
+    refuse_linear: bool,
+) -> Result<Image, String> {
+    if image.format != tags::PixelFormat::P8 {
+        return Err(format!("unsupported lightmap format {:?}", image.format));
+    }
+    let decoded = assets::decode_image(image, files).map_err(|e| e.to_string())?;
+    if refuse_linear && decoded.desc.format.layout() == gfx::format::Layout::Linear {
+        return Err("linear lightmap coordinates are in texels".into());
+    }
+    expand_levels(decoded.levels, palette).ok_or_else(|| "no usable lightmap mip levels".into())
+}
+
+/// A P8 page's decoded levels (the index in every channel) through
+/// `palette`, largest first, as one image with its mip chain.
+pub fn expand_levels(levels: Vec<assets::Level>, palette: &[u32; 256]) -> Option<Image> {
+    let mut levels: Vec<_> = levels.into_iter().filter(|l| l.face == 0 && l.depth <= 1).collect();
+    levels.sort_by_key(|l| l.level);
+    Image::from_levels(
+        levels
+            .into_iter()
+            .map(|l| {
+                // P8 decodes as L8: the index in every channel.
+                let indices: Vec<u8> = l.rgba.chunks_exact(4).map(|p| p[0]).collect();
+                (l.width, l.height, expand_page(&indices, palette))
+            })
+            .collect(),
+    )
+}
+
+/// The first image of a bitmap as RGBA, with its mip chain.
+pub fn decode_first<R: Read + Seek>(map: &mut Map<R>, files: &mut assets::ResourceFiles, id: TagId) -> Option<Image> {
+    decode_image(map, files, id, 0)
+}
+
+/// Image `index` of a bitmap as RGBA, with its mip chain.
+pub fn decode_image<R: Read + Seek>(
+    map: &mut Map<R>,
+    files: &mut assets::ResourceFiles,
+    id: TagId,
+    index: usize,
+) -> Option<Image> {
+    let tags::TagData::Bitmap(b) = tags::DecodedTag::read(map, id).ok()?.data else {
+        return None;
+    };
+    let d = assets::decode_image(b.images.get(index)?, files).ok()?;
+    let mut levels: Vec<_> = d.levels.into_iter().filter(|l| l.face == 0 && l.depth <= 1).collect();
+    levels.sort_by_key(|l| l.level);
+    // The whole decoded chain: the native pass samples with mipmaps, as
+    // the D3D path does.
+    Image::from_levels(levels.into_iter().map(|l| (l.width, l.height, l.rgba)).collect())
+}
+
 /// A shader's template name and its bitmaps in parameter order: `shad +4`
 /// the template's datum, `shad +0x20` the compiled postprocess (first
 /// element, `0x7c` bytes) whose `+4` block lists the bitmap parameters
@@ -369,6 +429,29 @@ pub fn base_map<R: Read + Seek>(map: &mut Map<R>, shader: TagId) -> Option<TagId
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A P8 page's levels go through the palette, largest first; a
+    /// cube face past the first and a level that is not half the last
+    /// are left out.
+    #[test]
+    fn a_p8_pages_levels_expand_through_the_palette() {
+        let mut palette = [0u32; 256];
+        palette[1] = 0x8010_2030;
+        palette[2] = 0xff40_5060;
+        let level = |level: u32, size: u32, index: u8, face: u32| assets::Level {
+            face,
+            level,
+            width: size,
+            height: size,
+            depth: 1,
+            rgba: [index, index, index, 255].repeat((size * size) as usize),
+        };
+        let image = expand_levels(vec![level(1, 1, 2, 0), level(0, 2, 1, 0), level(0, 2, 2, 1)], &palette).unwrap();
+        assert_eq!((image.width, image.height), (2, 2));
+        assert_eq!(image.rgba, [0x10, 0x20, 0x30, 0x80].repeat(4));
+        assert_eq!(image.mips, vec![vec![0x40, 0x50, 0x60, 0xff]]);
+        assert!(expand_levels(vec![level(0, 2, 1, 1)], &palette).is_none(), "no first face");
+    }
 
     #[test]
     fn an_instance_takes_its_run_of_the_bucket() {

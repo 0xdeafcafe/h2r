@@ -4166,6 +4166,7 @@ name = "native-render"
 version = "0.1.0"
 dependencies = [
  "analyze",
+ "assets",
  "background",
  "bytemuck",
  "d3d",

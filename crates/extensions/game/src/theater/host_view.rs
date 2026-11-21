@@ -361,7 +361,7 @@ fn textures(
         .iter()
         .filter_map(|&m| {
             let bitmap = load::base_map(map, *shaders.get(usize::from(m))?)?;
-            Some((m, world_glue::decode_first(map, &mut raw.0, bitmap)?))
+            Some((m, load::decode_first(map, &mut raw.0, bitmap)?))
         })
         .collect()
 }
@@ -403,11 +403,11 @@ impl Scene {
                 let palette = loaded.palettes.get(usize::from(k.palette))?;
                 Some((
                     k,
-                    world_glue::decode_lightmap(image, palette, &mut raw.0, false).ok()?,
+                    load::decode_lightmap(image, palette, &mut raw.0, false).ok()?,
                 ))
             })
             .collect();
-        let world = world_glue::keep_draws(loaded.world, &|d| {
+        let world = native_render::world::keep_draws(loaded.world, &|d| {
             base.contains_key(&d.material) && d.lightmap.is_none_or(|k| pages.contains_key(&k))
         });
         if world.draws.is_empty() {

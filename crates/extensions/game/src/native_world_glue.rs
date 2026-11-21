@@ -40,6 +40,10 @@ use native_render::camera::RenderCamera;
 use native_render::gpu::{DepthRule, GpuWorld, Image, PassStencil, PassViewport, WorldSelection};
 use native_render::light_gpu::{LayeredImage, TextureDim};
 use native_render::load::{self, LoadedWorld};
+/// The decodes and the draw filter live in the renderer, where the editor
+/// and Theater's host view share them.
+pub use native_render::load::{decode_first, decode_image, decode_lightmap};
+pub use native_render::world::keep_draws;
 use native_render::look::{self, Stage};
 use native_render::program::{self, MaterialProgram, ProgramSet, ViewInputs};
 use native_render::skip::StencilPlan;
@@ -1000,39 +1004,6 @@ fn load_ready(
     Ok(())
 }
 
-pub fn decode_lightmap(
-    image: &tags::Image,
-    palette: &[u32; 256],
-    files: &mut assets::ResourceFiles,
-    refuse_linear: bool,
-) -> Result<Image, String> {
-    if image.format != tags::PixelFormat::P8 {
-        return Err(format!("unsupported lightmap format {:?}", image.format));
-    }
-    let decoded = assets::decode_image(image, files).map_err(|e| e.to_string())?;
-    if refuse_linear && decoded.desc.format.layout() == gfx::format::Layout::Linear {
-        return Err("linear lightmap coordinates are in texels".into());
-    }
-    expand_levels(decoded.levels, palette).ok_or_else(|| "no usable lightmap mip levels".into())
-}
-
-/// A P8 page's decoded levels (the index in every channel) through
-/// `palette`, largest first, as one image with its mip chain.
-fn expand_levels(levels: Vec<assets::Level>, palette: &[u32; 256]) -> Option<Image> {
-    let mut levels: Vec<_> = levels.into_iter().filter(|l| l.face == 0 && l.depth <= 1).collect();
-    levels.sort_by_key(|l| l.level);
-    Image::from_levels(
-        levels
-            .into_iter()
-            .map(|l| {
-                // P8 decodes as L8: the index in every channel.
-                let indices: Vec<u8> = l.rgba.chunks_exact(4).map(|p| p[0]).collect();
-                (l.width, l.height, load::expand_page(&indices, palette))
-            })
-            .collect(),
-    )
-}
-
 /// The skip's table: each part the world draws (by owner and part index),
 /// with its material's full shader datum. `world` holds only native
 /// materials' draws ([`keep_draws`]).
@@ -1090,26 +1061,6 @@ fn log_coverage<R: std::io::Read + std::io::Seek>(
             .unwrap_or_default();
         eprintln!("native-world: D3D keeps {} materials ({n} parts): {why}; e.g. {example}", ms.len());
     }
-}
-
-/// The world with only the draws `keep` takes, batched again (the draws
-/// stay in their order, so a batch is a run of one material and page).
-pub fn keep_draws(mut world: World, keep: &dyn Fn(&WorldDraw) -> bool) -> World {
-    world.draws.retain(|d| keep(d));
-    world.batches.clear();
-    for (i, d) in world.draws.iter_mut().enumerate() {
-        match world.batches.last_mut() {
-            Some(b) if b.material == d.material && b.lightmap == d.lightmap => b.draw_count += 1,
-            _ => world.batches.push(native_render::world::Batch {
-                material: d.material,
-                lightmap: d.lightmap,
-                first_draw: i as u32,
-                draw_count: 1,
-            }),
-        }
-        d.batch = world.batches.len() as u32 - 1;
-    }
-    world
 }
 
 /// Stage images by (bitmap, image index).
@@ -1528,29 +1479,6 @@ pub fn light_image<R: std::io::Read + std::io::Seek>(
     }
     let (image, palettized) = stage_image(image.format, d.levels, stage, palette).ok()?;
     Some((with_blocks(image, blocks), palettized))
-}
-
-/// The first image of a bitmap as RGBA, with its mip chain.
-pub fn decode_first<R: std::io::Read + std::io::Seek>(map: &mut Map<R>, files: &mut assets::ResourceFiles, id: TagId) -> Option<Image> {
-    decode_image(map, files, id, 0)
-}
-
-/// Image `index` of a bitmap as RGBA, with its mip chain.
-pub fn decode_image<R: std::io::Read + std::io::Seek>(
-    map: &mut Map<R>,
-    files: &mut assets::ResourceFiles,
-    id: TagId,
-    index: usize,
-) -> Option<Image> {
-    let tags::TagData::Bitmap(b) = tags::DecodedTag::read(map, id).ok()?.data else {
-        return None;
-    };
-    let d = assets::decode_image(b.images.get(index)?, files).ok()?;
-    let mut levels: Vec<_> = d.levels.into_iter().filter(|l| l.face == 0 && l.depth <= 1).collect();
-    levels.sort_by_key(|l| l.level);
-    // The whole decoded chain: the native pass samples with mipmaps, as
-    // the D3D path does.
-    Image::from_levels(levels.into_iter().map(|l| (l.width, l.height, l.rgba)).collect())
 }
 
 #[cfg(test)]
