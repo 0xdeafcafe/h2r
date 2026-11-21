@@ -1019,11 +1019,12 @@ mod tests {
                 method::STATE,
                 method::SET,
                 method::SPOTS,
+                MEDAL_TEST,
                 ASSIST,
                 ASSIST_TEST,
                 VERIFY,
                 VERIFY_STATUS,
-                VERIFY_CANCEL
+                VERIFY_CANCEL,
             ]
         );
     }

@@ -1233,6 +1233,9 @@ pub fn validate(kind: &str, data: &Value, players: &[Player]) -> Result<(), Stri
         FIREFIGHT_SCORE => {
             let d: crate::firefight::FirefightScore = parse(data)?;
             d.validate()?;
+            if !known(d.player) {
+                return Err("player must be a player of the game".into());
+            }
         }
         SUPERBOUNCE => {
             let d: Superbounce = parse(data)?;

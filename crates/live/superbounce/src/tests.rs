@@ -1287,7 +1287,7 @@ fn a_slot_outranks_its_own_crease_and_the_crouch_rules_ignore_creases() {
         !rule(r, "by a strip").pass || rule(r, "by a strip").note.contains("fewer than 3"),
         "{r:?}"
     );
-    assert!(rule(r, "by a strip").note.contains("(-10.6"), "{r:?}");
+    assert!(rule(r, "by a strip").note.contains("(-10.54"), "{r:?}");
 }
 
 #[test]

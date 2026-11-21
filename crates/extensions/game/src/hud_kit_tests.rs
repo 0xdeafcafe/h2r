@@ -21,7 +21,7 @@ const SP: u32 = 0x0054_0000;
 const GLOBALS: u32 = 0x0054_1000;
 
 fn memory() -> FlatMemory {
-    let mut m = FlatMemory::new(BASE, 0x0018_0000);
+    let mut m = FlatMemory::new(BASE, 0x0020_0000);
     // Two retail bitmap widgets and one text widget, each byte its index.
     m.set_u32(ROOT + records::ROOT_BITMAPS, 2).unwrap();
     m.set_u32(ROOT + records::ROOT_BITMAPS + 4, RETAIL_BITMAPS)
