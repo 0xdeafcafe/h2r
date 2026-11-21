@@ -188,7 +188,12 @@ fn main_menu_to_the_lobby_to_start() {
 
 #[test]
 fn split_screen_is_backed_out_of_and_said() {
-    for (marker, ups) in [("", 1), (MAIN_MENU_THEATER_MARKER, 2)] {
+    let rows = agent_proto::sim::menu::main_menu_marker(true, 3);
+    for (marker, ups) in [
+        ("", 1),
+        (agent_proto::sim::menu::MAIN_MENU_THEATER_MARKER, 2),
+        (rows.as_str(), 4),
+    ] {
         let mut d = at_main();
         presses(&mut d, 2500, 5000);
         d.line(

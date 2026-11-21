@@ -24,9 +24,12 @@ pub const DETAIL: &str = "theater.film";
 pub const OVERLAY: &str = "theater.playback";
 pub const PAUSE_MENU: &str = "theater.pause-menu";
 
-/// The main menu's retail list constructor, item text and press.
+/// The main menu's retail list constructor, item text and press, and the
+/// rows of ours after Xbox Live: THEATER, then FORGE and FIREFIGHT where
+/// their features are on (docs/game/forge-design.md "The UI",
+/// docs/game/firefight.md "The lobby").
 pub(crate) mod menu {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicU8, Ordering};
 
     pub const LIST_NAME: u32 = 0x0045_8b38;
     pub const VTABLE: u32 = 0x0045_8a70;
@@ -35,34 +38,119 @@ pub(crate) mod menu {
     pub const LAST_ROW: u32 = 0x0051_0a14;
     pub const LABEL: &str = "THEATER";
     pub const LABEL_ID: u32 = crate::ui_kit::ids::family("theater menu").id(0);
+    pub const FORGE_LABEL: &str = "FORGE";
+    pub const FORGE_LABEL_ID: u32 = crate::ui_kit::ids::family("main menu rows").id(0);
+    pub const FIREFIGHT_LABEL: &str = "FIREFIGHT";
+    pub const FIREFIGHT_LABEL_ID: u32 = crate::ui_kit::ids::family("main menu rows").id(1);
 
     const VANILLA_ROWS: u32 = 5;
     const XBOX_LIVE_ROW: i16 = 1;
+    /// The first row of ours: immediately after Xbox Live.
     pub const ROW: i16 = XBOX_LIVE_ROW + 1;
-    static INSTALLED: AtomicBool = AtomicBool::new(false);
 
-    pub fn set_installed(installed: bool) {
-        INSTALLED.store(installed, Ordering::Relaxed);
+    /// A row of ours.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Entry {
+        Theater,
+        Forge,
+        Firefight,
     }
 
-    pub fn installed() -> bool {
-        INSTALLED.load(Ordering::Relaxed)
-    }
+    impl Entry {
+        pub const fn label(self) -> &'static str {
+            match self {
+                Entry::Theater => LABEL,
+                Entry::Forge => FORGE_LABEL,
+                Entry::Firefight => FIREFIGHT_LABEL,
+            }
+        }
 
-    pub fn count(name: u32, count: u32) -> u32 {
-        // The retail tag's pane already has room for six item widgets.
-        if name == LIST_NAME && count == VANILLA_ROWS {
-            count + 1
-        } else {
-            count
+        pub const fn label_id(self) -> u32 {
+            match self {
+                Entry::Theater => LABEL_ID,
+                Entry::Forge => FORGE_LABEL_ID,
+                Entry::Firefight => FIREFIGHT_LABEL_ID,
+            }
         }
     }
 
-    /// Rows after Theater still use their retail text and press handlers.
-    pub fn shifted_retail_row(row: i16) -> Option<i16> {
-        (ROW + 1..=VANILLA_ROWS as i16)
-            .contains(&row)
-            .then(|| row - 1)
+    /// Which rows of ours the menu has.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct Rows {
+        pub theater: bool,
+        pub forge: bool,
+        pub firefight: bool,
+    }
+
+    impl Rows {
+        /// The rows, top to bottom.
+        pub fn entries(self) -> Vec<Entry> {
+            [
+                (self.theater, Entry::Theater),
+                (self.forge, Entry::Forge),
+                (self.firefight, Entry::Firefight),
+            ]
+            .into_iter()
+            .filter_map(|(on, entry)| on.then_some(entry))
+            .collect()
+        }
+
+        /// How many rows of ours.
+        pub fn len(self) -> i16 {
+            self.entries().len() as i16
+        }
+
+        pub fn any(self) -> bool {
+            self.len() > 0
+        }
+
+        /// The row of ours at menu row `row`.
+        pub fn entry_at(self, row: i16) -> Option<Entry> {
+            let n = usize::try_from(row.checked_sub(ROW)?).ok()?;
+            self.entries().get(n).copied()
+        }
+
+        /// The list's row count with ours added, for the retail list's
+        /// constructor (`count` rows of the list named `name`).
+        pub fn count(self, name: u32, count: u32) -> u32 {
+            // The retail tag's pane has room for six item widgets: one is
+            // added, and the rows past it scroll as any list's do.
+            if name == LIST_NAME && count == VANILLA_ROWS {
+                count + self.len() as u32
+            } else {
+                count
+            }
+        }
+
+        /// Rows after ours still use their retail text and press handlers:
+        /// the retail row a displayed row shows.
+        pub fn shifted_retail_row(self, row: i16) -> Option<i16> {
+            let n = self.len();
+            (n > 0 && (ROW + n..=VANILLA_ROWS as i16 + n - 1).contains(&row)).then(|| row - n)
+        }
+    }
+
+    const THEATER: u8 = 1;
+    const FORGE: u8 = 2;
+    const FIREFIGHT: u8 = 4;
+    static INSTALLED: AtomicU8 = AtomicU8::new(0);
+
+    /// Records the rows the hooks installed.
+    pub fn set_rows(rows: Rows) {
+        let bits = u8::from(rows.theater) * THEATER
+            | u8::from(rows.forge) * FORGE
+            | u8::from(rows.firefight) * FIREFIGHT;
+        INSTALLED.store(bits, Ordering::Relaxed);
+    }
+
+    /// The rows installed.
+    pub fn rows() -> Rows {
+        let bits = INSTALLED.load(Ordering::Relaxed);
+        Rows {
+            theater: bits & THEATER != 0,
+            forge: bits & FORGE != 0,
+            firefight: bits & FIREFIGHT != 0,
+        }
     }
 
     #[cfg(test)]
@@ -70,27 +158,97 @@ pub(crate) mod menu {
         use super::*;
         use crate::ui_kit::view::Opener;
 
+        const ALL: Rows = Rows {
+            theater: true,
+            forge: true,
+            firefight: true,
+        };
+        const THEATER_ONLY: Rows = Rows {
+            theater: true,
+            forge: false,
+            firefight: false,
+        };
+
         #[test]
         fn the_main_menu_puts_theater_immediately_after_xbox_live() {
             let rows = Opener::MAIN_MENU.rows;
-            assert_eq!(count(LIST_NAME, VANILLA_ROWS) as usize, rows.len());
-            assert_eq!(count(LIST_NAME, VANILLA_ROWS + 1), VANILLA_ROWS + 1);
+            assert_eq!(THEATER_ONLY.count(LIST_NAME, VANILLA_ROWS) as usize, 6);
             assert_eq!(
-                count(crate::custom_games::LIST_NAME, VANILLA_ROWS),
+                THEATER_ONLY.count(LIST_NAME, VANILLA_ROWS + 1),
+                VANILLA_ROWS + 1
+            );
+            assert_eq!(
+                THEATER_ONLY.count(crate::custom_games::LIST_NAME, VANILLA_ROWS),
                 VANILLA_ROWS
             );
             assert_eq!(rows[Opener::MAIN_MENU.focus], "Xbox Live");
             assert_eq!(ROW as usize, Opener::MAIN_MENU.focus + 1);
             assert_eq!(rows[ROW as usize], "THEATER");
+            assert_eq!(THEATER_ONLY.entry_at(ROW), Some(Entry::Theater));
+            assert_eq!(THEATER_ONLY.entry_at(ROW + 1), None);
+            assert_eq!(THEATER_ONLY.shifted_retail_row(ROW), None);
+            assert_eq!(THEATER_ONLY.shifted_retail_row(3), Some(2));
+            assert_eq!(THEATER_ONLY.shifted_retail_row(4), Some(3));
+            assert_eq!(THEATER_ONLY.shifted_retail_row(5), Some(4));
+            assert_eq!(THEATER_ONLY.shifted_retail_row(6), None);
+        }
+
+        #[test]
+        fn forge_and_firefight_follow_theater_and_push_the_retail_rows_down() {
             assert_eq!(
-                &rows[ROW as usize + 1..],
-                &["Split Screen", "System Link", "Settings"]
+                ALL.entries(),
+                [Entry::Theater, Entry::Forge, Entry::Firefight]
             );
-            assert_eq!(shifted_retail_row(ROW), None);
-            assert_eq!(shifted_retail_row(3), Some(2));
-            assert_eq!(shifted_retail_row(4), Some(3));
-            assert_eq!(shifted_retail_row(5), Some(4));
-            assert_eq!(shifted_retail_row(6), None);
+            assert_eq!(ALL.count(LIST_NAME, VANILLA_ROWS), 8);
+            assert_eq!(ALL.entry_at(1), None, "Xbox Live is retail's");
+            assert_eq!(ALL.entry_at(2), Some(Entry::Theater));
+            assert_eq!(ALL.entry_at(3), Some(Entry::Forge));
+            assert_eq!(ALL.entry_at(4), Some(Entry::Firefight));
+            assert_eq!(ALL.entry_at(5), None);
+            let retail: Vec<_> = (0..8).map(|r| ALL.shifted_retail_row(r)).collect();
+            assert_eq!(
+                retail,
+                [None, None, None, None, None, Some(2), Some(3), Some(4)]
+            );
+        }
+
+        #[test]
+        fn a_feature_that_is_off_leaves_no_row() {
+            let forge_off = Rows {
+                forge: false,
+                ..ALL
+            };
+            assert_eq!(forge_off.entries(), [Entry::Theater, Entry::Firefight]);
+            assert_eq!(forge_off.entry_at(3), Some(Entry::Firefight));
+            let firefight_off = Rows {
+                firefight: false,
+                ..ALL
+            };
+            assert_eq!(firefight_off.entry_at(4), None);
+            assert_eq!(firefight_off.shifted_retail_row(5), Some(3));
+            let only_forge = Rows {
+                theater: false,
+                forge: true,
+                firefight: false,
+            };
+            assert_eq!(only_forge.entry_at(ROW), Some(Entry::Forge));
+            assert_eq!(only_forge.count(LIST_NAME, VANILLA_ROWS), 6);
+            assert!(!Rows::default().any());
+            assert_eq!(Rows::default().count(LIST_NAME, VANILLA_ROWS), VANILLA_ROWS);
+            assert_eq!(Rows::default().shifted_retail_row(3), None);
+        }
+
+        #[test]
+        fn the_labels_are_the_menu_texts() {
+            assert_eq!(Entry::Forge.label(), "FORGE");
+            assert_eq!(Entry::Firefight.label(), "FIREFIGHT");
+            let ids = [
+                Entry::Theater.label_id(),
+                Entry::Forge.label_id(),
+                Entry::Firefight.label_id(),
+            ];
+            assert!(ids.iter().all(|&id| crate::layout_glue::is_ours(id)));
+            assert!(ids[0] != ids[1] && ids[1] != ids[2] && ids[0] != ids[2]);
         }
     }
 }

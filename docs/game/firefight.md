@@ -37,9 +37,11 @@ Evidence labels are those of [docs-style.md](../meta/docs-style.md).
 
 ## What the player gets
 
-- A **Firefight Options...** row in a custom game's Game Setup, and a
-  Firefight entry in matchmaking (FF9): pick a map, a wave set, a
-  difficulty, the starting lives and whether rounds switch on skulls.
+- A **FIREFIGHT** entry on the main menu, below **THEATER** ([the
+  lobby](#the-lobby)), a **Firefight Options...** row in a custom game's
+  Game Setup, and a Firefight entry in matchmaking (FF9): pick a map, a
+  wave set, a difficulty, the starting lives and whether rounds switch on
+  skulls.
 - Waves arrive from the map's edges. Five waves make a round, three
   rounds a set; each round switches on another skull. A boss wave ends a
   round.
@@ -432,6 +434,25 @@ The choices are the host's. A client of a distributed session does not read
 its own page: the definition and difficulty reach it in the session data
 (FF9), and a definition other than a built-in one is not offered by the
 page.
+
+### The lobby
+
+**FIREFIGHT** on the main menu, below **THEATER** (`layout_glue.rs`,
+`theater_ui::menu`), shows while the `firefight` feature is on and a
+settings store holds the choices. It opens the Firefight lobby
+(`firefight/lobby.rs`): a kit screen on the pregame lobby's skin
+(`lobby_start.rs`) with a status line under three rows.
+
+| Row | A does |
+|---|---|
+| **Map** | Opens a picker of the installed maps that carry the kit, each by its base map's name. The catalogue lists a kit package as `Firefight – <map>` (what `firefight-kit` names it, `lobby_start::is_kit_map`); the probe's `Firefight Probe – <map>` is not offered. With none installed the picker's one entry says so, and its description says how to build one (`h2 firefight kit MAP`). |
+| **Options...** | Opens the Firefight page ([Game Setup](#game-setup)) over the lobby. |
+| **Start** | Queues a local custom game on the map through the agent's guest calls, as the level boot starts one ([level-boot.md](../runtime/level-boot.md)). The runtime then starts the mode from the page's choices, as on any kit map ([The host runtime](#the-host-runtime)). |
+
+Start is refused, with the reason on the status line, when no installed
+map carries the kit, when the options cannot be read, or when Firefight is
+off in them. The game's own refusal of the queued start (its options check)
+reaches the same line. The first kit map is held until another is chosen.
 
 ### The HUD
 

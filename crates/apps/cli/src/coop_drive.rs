@@ -35,7 +35,7 @@
 
 use std::collections::BTreeSet;
 
-use agent_proto::sim::menu::{MAIN_MENU_THEATER_MARKER, Mode};
+use agent_proto::sim::menu::{Mode, inserted_rows};
 
 /// Screen ids, the players' screen's modes and the menu rows, shared with
 /// `h2 agent sim lobby` (`agent_proto::sim::menu`).
@@ -143,7 +143,8 @@ pub struct Driver {
     live_row: Option<u32>,
     /// The players' screen's mode.
     mode: Option<u32>,
-    main_menu_theater: bool,
+    /// Rows of ours between Xbox Live and Split Screen on the main menu.
+    main_menu_rows: u32,
     /// The game said `coop-live: lobby mode`: it has been at the main menu.
     menu_seen: bool,
     /// Presses on screens met while waiting for the invitation.
@@ -186,7 +187,7 @@ impl Driver {
             screen_since: 0,
             live_row: None,
             mode: None,
-            main_menu_theater: false,
+            main_menu_rows: 0,
             menu_seen: false,
             first_poll: None,
             dialog_presses: 0,
@@ -216,7 +217,7 @@ impl Driver {
         if mine {
             if let Some((screen, row, mode)) = parse_screen(text) {
                 self.mode = mode;
-                self.main_menu_theater = text.contains(MAIN_MENU_THEATER_MARKER);
+                self.main_menu_rows = inserted_rows(text);
                 if screen != self.screen {
                     self.screen = screen;
                     self.screen_since = now;
@@ -358,7 +359,7 @@ impl Driver {
                     "the players' screen for Xbox Live: on to the Live menu",
                 )]
             }
-            (false, Some(mode)) => back_to_live(mode, self.main_menu_theater),
+            (false, Some(mode)) => back_to_live(mode, self.main_menu_rows),
         };
         true
     }
@@ -728,14 +729,14 @@ fn press(button: &'static str, why: &str) -> Press {
 }
 
 /// Back from the players' screen to its main-menu row, then up to Xbox Live.
-pub(crate) fn back_to_live(mode: u32, main_menu_theater: bool) -> Vec<Press> {
+pub(crate) fn back_to_live(mode: u32, inserted_rows: u32) -> Vec<Press> {
     let (mode, label) = match mode {
         MODE_SPLIT => (Mode::SplitScreen, "Split Screen"),
         MODE_SYSTEM_LINK => (Mode::SystemLink, "System Link"),
         _ => return vec![press("b", &format!("the players' screen in mode {mode}"))],
     };
     let mut presses = vec![press("b", &format!("that was {label}"))];
-    presses.extend((MAIN_LIVE_ROW..mode.row(main_menu_theater)).map(|_| press("up", "to Xbox Live")));
+    presses.extend((MAIN_LIVE_ROW..mode.row(inserted_rows)).map(|_| press("up", "to Xbox Live")));
     presses.push(press("a", "Xbox Live"));
     presses
 }

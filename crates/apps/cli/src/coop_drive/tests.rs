@@ -491,7 +491,12 @@ fn a_main_menu_that_comes_back_on_campaign_is_corrected() {
 
 #[test]
 fn system_link_recovers_to_xbox_live_with_or_without_theater() {
-    for (marker, ups) in [("", 2), (MAIN_MENU_THEATER_MARKER, 3)] {
+    let rows = agent_proto::sim::menu::main_menu_marker(true, 3);
+    for (marker, ups) in [
+        ("", 2),
+        (agent_proto::sim::menu::MAIN_MENU_THEATER_MARKER, 3),
+        (rows.as_str(), 5),
+    ] {
         let mut d = Driver::new("Bravo", Role::Guest);
         d.line(0, "Bravo", "ui: screen none");
         d.line(10, "Bravo", "coop-live: lobby mode 4294967295");
