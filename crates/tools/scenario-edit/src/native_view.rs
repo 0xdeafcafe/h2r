@@ -249,6 +249,27 @@ impl NativeLoad {
     pub fn world(&self) -> &World {
         &self.world
     }
+
+    /// The drawn triangles in world space, for picking with the same ray
+    /// code as the editor's world ([`crate::geometry::surface`]).
+    pub fn triangles(&self) -> Vec<crate::geometry::Tri> {
+        use crate::geometry::{cross, normalize, sub};
+        let w = &self.world;
+        let at = |i: u32| w.vertices.get(i as usize).map(|v| v.position);
+        w.draws
+            .iter()
+            .flat_map(|d| {
+                let start = d.first_index as usize;
+                let end = start + d.index_count as usize;
+                w.indices.get(start..end).unwrap_or(&[]).chunks_exact(3)
+            })
+            .filter_map(|t| {
+                let p = [at(t[0])?, at(t[1])?, at(t[2])?];
+                let n = normalize(cross(sub(p[1], p[0]), sub(p[2], p[0])));
+                Some(crate::geometry::Tri { p, n })
+            })
+            .collect()
+    }
 }
 
 /// What [`NativeWorld::render`] clears before it draws: the colour to a

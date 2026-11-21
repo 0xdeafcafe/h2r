@@ -467,3 +467,56 @@ fn glyphs_test_depth_against_the_native_floor() {
     assert_ne!(above, floor, "the glyph over the floor is drawn");
     assert_eq!(below, floor, "the floor hides the glyph under it");
 }
+
+/// Step 5: picking against the native world's triangles meets the floor
+/// where picking against the editor's own world triangles does, for rays
+/// over it, beside it and from below; and the session opened on the map
+/// picks the same placement with the native world loaded.
+#[test]
+fn picking_the_native_world_matches_the_editors_world() {
+    use crate::geometry::{Ray, surface};
+    let bytes = crate::fixture::fixture_with_textured_bsp();
+    let dir = std::env::temp_dir().join(format!("native-pick-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("textured.map");
+    std::fs::write(&path, &bytes).unwrap();
+    let mut ed = crate::Session::new();
+    ed.open(crate::save::MapSource::file(&path)).unwrap();
+    let native = ed.native_world().expect("a map is open");
+    assert_eq!(native.len(), 1, "{:?}", ed.native_errors());
+    let ours = ed.world().0.to_vec();
+    assert!(!ours.is_empty(), "the editor reads the floor too");
+    let theirs = native[0].triangles();
+    assert_eq!(theirs.len(), 2);
+    let f = crate::fixture::TEX_FLOOR;
+    for (origin, dir) in [
+        ([f / 2.0, f / 2.0, 10.0], [0.0, 0.0, -1.0]),
+        ([0.3, 3.1, 5.0], [0.1, -0.2, -1.0]),
+        ([f + 1.0, f / 2.0, 10.0], [0.0, 0.0, -1.0]),
+        ([1.0, 1.0, -10.0], [0.0, 0.0, 1.0]),
+    ] {
+        let ray = Ray { origin, dir };
+        let (a, b) = (surface(&ours, &ray), surface(&theirs, &ray));
+        match (a, b) {
+            (Some(a), Some(b)) => {
+                assert!((0..3).all(|k| (a[k] - b[k]).abs() < 1e-4), "{a:?} {b:?}")
+            }
+            (None, None) => {}
+            other => panic!("{origin:?}: {other:?}"),
+        }
+    }
+    let marker = ed.markers()[0];
+    let ray = Ray {
+        origin: [
+            marker.position[0],
+            marker.position[1],
+            marker.position[2] + 20.0,
+        ],
+        dir: [0.0, 0.0, -1.0],
+    };
+    assert_eq!(
+        crate::geometry::pick(ed.markers(), &ray),
+        Some((marker.block, marker.index))
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
