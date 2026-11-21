@@ -54,6 +54,30 @@ fn hello_sends_unassigned_client_id_and_reads_host_address() {
 }
 
 #[test]
+fn only_the_negotiated_client_receives_actor_frames() {
+    let mut socket = FakeSocket::default();
+    for capability in [false, true] {
+        let mut payload = HOST.octets().to_vec();
+        if capability {
+            payload.push(ACTOR_CHANNEL_VERSION);
+        }
+        socket.reads.push_back(Ok(Some(host_frame(Kind::Hello, 0, PEER, &payload))));
+        let hello = handshake(&mut socket).unwrap();
+        assert_eq!(hello.actor_channel, capability);
+
+        let actor = host_frame(Kind::Actor, 0, PEER, &[]);
+        let game = host_frame(Kind::Datagram, 0, PEER, b"game");
+        let actor = incoming(hello, actor).unwrap();
+        if capability {
+            assert!(matches!(actor, Incoming::Actor(_)));
+        } else {
+            assert!(matches!(actor, Incoming::Control));
+        }
+        assert!(matches!(incoming(hello, game), Ok(Incoming::Datagram(_))));
+    }
+}
+
+#[test]
 fn hello_requires_an_assigned_peer_and_exactly_one_synthetic_ipv4() {
     for reply in [
         host_frame(Kind::Hello, 0, 0, &HOST.octets()),
@@ -89,6 +113,7 @@ fn every_channel_delivers_the_original_payload_including_empty_datagrams() {
             let hello = Hello {
                 peer: PEER,
                 host: HOST,
+                actor_channel: false,
             };
             let Incoming::Datagram(delivered) = incoming(hello, message).unwrap() else {
                 panic!("channel {port} did not produce a datagram");
@@ -103,6 +128,7 @@ fn control_and_foreign_frames_never_deliver_game_data() {
     let hello = Hello {
         peer: PEER,
         host: HOST,
+        actor_channel: false,
     };
     let bye = host_frame(Kind::Bye, 0, PEER, &[]);
     assert!(matches!(incoming(hello, bye), Ok(Incoming::Bye)));
@@ -167,6 +193,7 @@ fn a_drop_gets_one_fresh_hello_even_if_the_second_socket_drops_too() {
         Hello {
             peer: PEER,
             host: HOST,
+            actor_channel: false,
         },
         || {
             opened += 1;
@@ -202,6 +229,7 @@ fn a_clean_end_protocol_error_or_local_leave_prevents_reconnect() {
             Hello {
                 peer: PEER,
                 host: HOST,
+                actor_channel: false,
             },
             || panic!("unexpected reconnect"),
             |_, _| outcome.map_err(io::Error::from),
@@ -218,6 +246,7 @@ fn reconnect_to_a_different_host_stops_before_game_traffic() {
         Hello {
             peer: PEER,
             host: HOST,
+            actor_channel: false,
         },
         || {
             let mut socket = FakeSocket::default();
@@ -246,8 +275,10 @@ fn game_send_checks_message_size_and_queue_capacity_before_reporting_success() {
             hello: Mutex::new(Hello {
                 peer: PEER,
                 host: HOST,
+                actor_channel: false,
             }),
             inject: Mutex::default(),
+            actor: Mutex::default(),
             stopping: AtomicBool::new(false),
             wake: Arc::new(Poller::new().unwrap()),
             closed: AtomicBool::new(false),

@@ -370,19 +370,27 @@ pub(super) async fn upgrade(
         return Response::try_from(e.into_response());
     }
     stub(env, binding(&view.lease.class), id, None)?
-        .fetch_with_request(tunnel_request(id, req.headers().get(http::header::SEC_WEBSOCKET_PROTOCOL))?)
+        .fetch_with_request(tunnel_request(id, req.headers())?)
         .await
 }
 
-/// A fresh upgrade request carrying only the WebSocket protocol header.
-fn tunnel_request(id: &str, protocol: Option<&http::HeaderValue>) -> Result<Request> {
+/// A fresh upgrade request carrying the WebSocket protocol and actor offer.
+fn tunnel_request(id: &str, incoming: &http::HeaderMap) -> Result<Request> {
+    use live_proto::tunnel::{ACTOR_CHANNEL_HEADER, ACTOR_CHANNEL_OFFER};
+
     let headers = Headers::new();
     headers.set("upgrade", "websocket")?;
-    if let Some(protocol) = protocol {
+    if let Some(protocol) = incoming.get(http::header::SEC_WEBSOCKET_PROTOCOL) {
         headers.set(
             "sec-websocket-protocol",
             protocol.to_str().map_err(super::rust_error)?,
         )?;
+    }
+    if incoming
+        .get(ACTOR_CHANNEL_HEADER)
+        .is_some_and(|offer| offer == ACTOR_CHANNEL_OFFER)
+    {
+        headers.set(ACTOR_CHANNEL_HEADER, ACTOR_CHANNEL_OFFER)?;
     }
     let mut init = RequestInit::new();
     init.with_headers(headers);

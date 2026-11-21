@@ -4,6 +4,7 @@
 #![deny(unsafe_code)]
 
 pub mod account_setup;
+pub use actor_net;
 mod auto;
 pub mod clankermatch;
 mod client;
