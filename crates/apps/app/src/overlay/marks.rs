@@ -108,17 +108,8 @@ fn project_point(camera: &MarkCamera, area: Viewport, point: [f32; 3]) -> Option
     pixels(camera, area, point)
 }
 
-/// Clip a segment in homogeneous coordinates before dividing by w.
-fn project_segment(
-    camera: &MarkCamera,
-    area: Viewport,
-    edge: [[f32; 3]; 2],
-) -> Option<[[f32; 2]; 2]> {
-    project_segment_depth(camera, area, edge).map(|(points, _)| points)
-}
-
-/// [`project_segment`] with each end's clip w, the distance along the
-/// view axis in world units.
+/// Clip a segment in homogeneous coordinates before dividing by w, with
+/// each end's clip w, the distance along the view axis in world units.
 fn project_segment_depth(
     camera: &MarkCamera,
     area: Viewport,
@@ -1139,14 +1130,10 @@ mod tests {
     }
 
     #[test]
-    fn marks_clip_segments_at_the_near_plane() {
-        let points = project_segment(&CAMERA, AREA, [[0.5, 0.0, 0.0], [0.5, 0.0, -2.0]]).unwrap();
-        assert_eq!(points, [[215.0, 60.0], [202.5, 60.0]]);
-    }
-
-    #[test]
     fn marks_drop_segments_behind_the_camera() {
-        assert!(project_segment(&CAMERA, AREA, [[0.0, 0.0, 1.0], [0.0, 1.0, 2.0]]).is_none());
+        assert!(
+            project_segment_depth(&CAMERA, AREA, [[0.0, 0.0, 1.0], [0.0, 1.0, 2.0]]).is_none()
+        );
     }
 
     #[test]
