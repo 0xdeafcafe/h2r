@@ -1267,6 +1267,10 @@ fn play_command(
         cmd.env("H2_PERF_FROM", "level");
     }
     cmd.envs(&run.env);
+    // `fresh`: an empty pipeline cache of the run's own, beside its logs.
+    if run.env.get("H2_PIPELINE_CACHE").map(String::as_str) == Some(proto::PIPELINE_CACHE_FRESH) {
+        cmd.env("H2_PIPELINE_CACHE", run_dir.join("pipeline-cache.jsonl"));
+    }
     // The host owns the agent socket, the output root and the memory
     // report directory (proto::RUN_ENV).
     let sock = agent_socket_path(cfg, id);

@@ -27,6 +27,8 @@ pub const RUN_ENV: &[&str] = &[
     "H2_PROFILE_HZ",
     "H2_HOST_PERF",
     "H2_MEM_SAMPLE",
+    "H2_PIPELINE_CACHE",
+    "H2_PREWARM_PROGRAMS",
     "H2_AUDIO_STATS",
     "H2_FPS",
     "H2_RENDER_SCALE",
@@ -40,6 +42,14 @@ pub const RUN_ENV: &[&str] = &[
     "H2_LOCKSTEP_TICKS",
     "H2_ICONS",
 ];
+
+/// `H2_PIPELINE_CACHE` values a request may pass: `off`, or
+/// [`PIPELINE_CACHE_FRESH`]. The cache's path is the host's to choose.
+pub const PIPELINE_CACHE_VALUES: &[&str] = &["off", PIPELINE_CACHE_FRESH];
+
+/// `H2_PIPELINE_CACHE=fresh`: the run starts from an empty pipeline cache
+/// of its own, in its run directory (A/B against the shared one).
+pub const PIPELINE_CACHE_FRESH: &str = "fresh";
 
 /// Build environment: it picks the image, so it is part of the image cache
 /// key and is set again on every run of that image (an `h2` whose H2_OPT
@@ -442,6 +452,19 @@ pub fn validate_run(r: &RunReq) -> Result<()> {
         if k == "H2_MEM_SAMPLE" {
             mem_watch::parse_size(v).map_err(anyhow::Error::msg)?;
         }
+        if k == "H2_PIPELINE_CACHE" {
+            ensure!(
+                PIPELINE_CACHE_VALUES.contains(&v.as_str()),
+                "H2_PIPELINE_CACHE is one of {} (the cache's path is the host's to choose)",
+                PIPELINE_CACHE_VALUES.join(" ")
+            );
+        }
+        if k == "H2_PREWARM_PROGRAMS" {
+            ensure!(
+                v == "off" || v.parse::<usize>().is_ok(),
+                "H2_PREWARM_PROGRAMS is a count or off"
+            );
+        }
     }
     check_play_args(&r.args)?;
     if let Some(n) = &r.note {
@@ -734,6 +757,25 @@ mod tests {
         );
         assert!(run(r#"{"cmd":"run","name":"Fixture","env":{"H2_RENDER_SCALE":"4","H2_LOD_DISTANCE":"retail"}}"#).is_ok());
         assert!(run(r#"{"cmd":"run","name":"Fixture","env":{"H2_FPS":"6\n0"}}"#).is_err());
+    }
+
+    /// The pipeline cache can be turned off or started fresh, never pointed
+    /// at a path: the game rewrites that file.
+    #[test]
+    fn pipeline_cache_takes_off_or_fresh() {
+        let env = |k: &str, v: &str| {
+            run(&format!(
+                r#"{{"cmd":"run","name":"Fixture","env":{{"{k}":"{v}"}}}}"#
+            ))
+        };
+        assert!(env("H2_PIPELINE_CACHE", "off").is_ok());
+        assert!(env("H2_PIPELINE_CACHE", "fresh").is_ok());
+        for bad in ["/Users/x/.zshrc", "../cache.jsonl", "pipelines.jsonl", ""] {
+            assert!(env("H2_PIPELINE_CACHE", bad).is_err(), "{bad:?}");
+        }
+        assert!(env("H2_PREWARM_PROGRAMS", "256").is_ok());
+        assert!(env("H2_PREWARM_PROGRAMS", "off").is_ok());
+        assert!(env("H2_PREWARM_PROGRAMS", "lots").is_err());
     }
 
     #[test]
