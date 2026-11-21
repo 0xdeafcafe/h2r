@@ -5,24 +5,66 @@
 //! [`plan`] is pure. From a start, a goal and a map's spots
 //! ([`crate::spots::Known`]) it picks the bounce that best helps reach
 //! the goal, or, for fun, the one with the highest launch within reach,
-//! and lists the steps: walk to a crouch spot, prime
-//! ([`crate::glitches::prime`]), walk (no crouch) to behind the bounce
-//! spot, jump onto it, ride the launch steering toward the goal, then
+//! proven spots before likely ones, and lists the steps: walk to the
+//! crouch spot's start, prime ([`crate::glitches::prime`]: crouch-walk in
+//! under the lip, let go, walk out along the way out until the word reads
+//! -3), walk (no crouch) to behind the bounce spot, or up to a launch
+//! floor above it when the slot needs a drop ([`plan_with`]'s ledge),
+//! jump or drop onto it, ride the launch steering toward the goal, then
 //! walk the rest. With no bounce that helps it is the plain walk.
 //!
 //! [`OrderRun`] plays a plan tick by tick and gives the motion for
 //! [`crate::mind::RoutePad`]. The brain holds one and the pad is the
 //! run's until it is over; the bot fights and picks up nothing meanwhile.
+//! Each step, its phase, its tries and the last landing by a strip are in
+//! [`OrderRun::status`] and [`OrderRun::log`].
 //!
 //! Time in game ticks (30 a second); lengths in world units.
 
 use crate::brain::Vec3;
 use crate::cache::MapData;
-use crate::glitches::prime::{PrimeRun, Primed, is_primed};
+use crate::glitches::prime::{Geo, PrimeRun, Primed, is_primed};
 use crate::glitches::BounceRun;
 use crate::mind::RouteMotion;
 use crate::nav::RouteWalk;
-use crate::spots::{Known, Site, dist_xy};
+use crate::spots::{Crouch, Known, Site, dist_xy};
+
+// ---- the map's walks and launch floors ----
+
+/// How far sideways (world units) a launch floor may be from the slot it
+/// drops onto. **[guess]**: a 2.4-unit drop takes about a second, and the
+/// stick moves a bot about 2.5 units a second in the air.
+pub const LEDGE_REACH: f32 = 3.0;
+/// A launch floor is at most this much (world units) under the drop
+/// height, and at most [`LEDGE_OVER`] over it.
+pub const LEDGE_UNDER: f32 = 0.2;
+pub const LEDGE_OVER: f32 = 2.5;
+
+/// A launch floor for a site that needs a drop: the nav mesh's point
+/// nearest the site's target sideways, within [`LEDGE_REACH`], whose floor
+/// is the drop height over the target, to [`LEDGE_UNDER`] below and
+/// [`LEDGE_OVER`] above it. The [`Ledge`] a plan is made with.
+pub fn launch_floor(m: &MapData, s: &Site) -> Option<Vec3> {
+    let t = s.target();
+    let over = [t[0], t[1], t[2] + s.drop_height()];
+    m.nav
+        .nearest(over, LEDGE_REACH, LEDGE_OVER, LEDGE_UNDER)
+        .map(|(_, p)| p)
+}
+
+/// The length of the walk along the nav mesh from `from` to `to`: the
+/// [`Walk`] a plan is made with.
+pub fn path_length(m: &MapData, from: Vec3, to: Vec3) -> Option<f32> {
+    let path = m.nav.path(from, to)?;
+    let mut at = from;
+    let mut total = 0.0;
+    for w in path {
+        total += ((w.at[0] - at[0]).powi(2) + (w.at[1] - at[1]).powi(2) + (w.at[2] - at[2]).powi(2))
+            .sqrt();
+        at = w.at;
+    }
+    Some(total)
+}
 
 /// Gravity (world units a second squared): the jump model's estimate
 /// (`nav::route`).
@@ -76,10 +118,14 @@ pub enum Step {
     /// Walk along the nav mesh to `to`. `crouch`: crouched the whole
     /// way (into a low ceiling); otherwise never crouching.
     Walk { to: Vec3, crouch: bool },
-    /// Crouch, stand up and be forced, under the ceiling at `at`.
-    Prime { at: Vec3 },
+    /// Crouch, stand up and be forced, at the crouch spot: in under its
+    /// lip and out along its way out when that is known, else in place.
+    Prime(Crouch),
     /// Jump onto the site from behind it, until it launches.
     Bounce(Site),
+    /// Run off the launch floor at `from` and fall onto the site, aiming at
+    /// its target, until it launches.
+    Drop { from: Vec3, site: Site },
     /// Ride the launch, steering toward `to`, until down.
     Fly { to: Vec3 },
     /// Walk the rest, as a plain order.
@@ -93,6 +139,7 @@ impl Step {
             Step::Walk { .. } => "walk",
             Step::Prime { .. } => "prime",
             Step::Bounce(_) => "bounce",
+            Step::Drop { .. } => "drop",
             Step::Fly { .. } => "fly",
             Step::Nav { .. } => "nav",
         }
@@ -108,6 +155,9 @@ pub enum Why {
     Helps,
     /// A bounce for fun.
     Fun,
+    /// The asker named the place: a spot to walk to, prime at or bounce
+    /// on ([`plan_site`], [`prime_steps`]; `player.goto`).
+    Asked,
 }
 
 impl Why {
@@ -116,6 +166,7 @@ impl Why {
             Why::Plain => "plain",
             Why::Helps => "helps",
             Why::Fun => "fun",
+            Why::Asked => "asked",
         }
     }
 }
@@ -146,6 +197,11 @@ pub struct Ask {
 /// The length of the walk between two points on the nav mesh, `None`
 /// when there is none.
 pub type Walk<'a> = &'a dyn Fn(Vec3, Vec3) -> Option<f32>;
+
+/// A launch floor for a site that needs a drop: a point on the nav mesh at
+/// least the site's drop height over its target and near it sideways, to
+/// run off; `None` when there is none.
+pub type Ledge<'a> = &'a dyn Fn(&Site) -> Option<Vec3>;
 
 /// A launch from a site: how it flies.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -193,7 +249,9 @@ pub fn landing(site: &Site, f: &Flight, to: Vec3) -> Vec3 {
 
 struct Candidate {
     site: Site,
-    crouch: Option<Vec3>,
+    crouch: Option<Crouch>,
+    /// The launch floor, for a site that needs a drop.
+    ledge: Option<Vec3>,
     lead: f32,
     tail: f32,
 }
@@ -213,8 +271,53 @@ pub const NEAR_SITES: usize = 8;
 
 /// A crouch spot and the walk to it from the start, made once.
 struct Prime {
-    at: Vec3,
+    at: Crouch,
     lead: f32,
+}
+
+/// Where a prime at `c` starts walking: its first try's start when the
+/// way out is known, else the spot itself.
+pub fn prime_start(c: &Crouch) -> Vec3 {
+    match geo(c) {
+        Some(g) => {
+            let s = g.start(1);
+            [s[0], s[1], c.stand[2]]
+        }
+        None => c.stand,
+    }
+}
+
+/// A crouch spot's walking geometry, when its way out is known.
+pub fn geo(c: &Crouch) -> Option<Geo> {
+    (c.out[0].hypot(c.out[1]) > 0.5).then_some(Geo {
+        stand: c.stand,
+        out: c.out,
+        start: c.start,
+    })
+}
+
+/// The crouch spots a plan may prime at, with the walk to each: none
+/// when the asker is primed already, else the [`NEAR_CROUCHES`] nearest
+/// the start within `limit` (straight line), proven ones first.
+fn primes(ask: &Ask, known: &Known, limit: f32, query: &dyn Fn(Vec3, Vec3) -> Option<f32>) -> Vec<Prime> {
+    if ask.primed {
+        return Vec::new();
+    }
+    let mut near: Vec<Crouch> = known
+        .crouches
+        .iter()
+        .copied()
+        .filter(|c| dist_xy(ask.from, c.stand) <= limit)
+        .collect();
+    near.sort_by(|a, b| {
+        (!a.proven())
+            .cmp(&!b.proven())
+            .then(dist_xy(ask.from, a.stand).total_cmp(&dist_xy(ask.from, b.stand)))
+    });
+    near.into_iter()
+        .take(NEAR_CROUCHES)
+        .filter_map(|at| Some(Prime { at, lead: query(ask.from, prime_start(&at))? }))
+        .collect()
 }
 
 fn candidate(
@@ -222,17 +325,20 @@ fn candidate(
     primes: &[Prime],
     walk: &dyn Fn(Vec3, Vec3) -> Option<f32>,
     site: Site,
+    ledge: Option<Vec3>,
 ) -> Option<Candidate> {
-    let approach = site.bounce.from();
+    let approach = ledge.unwrap_or_else(|| site.bounce.from());
     let (crouch, lead) = if ask.primed {
         (None, walk(ask.from, approach)?)
     } else {
-        // The crouch spot nearest the bounce, by straight line: one
-        // path query a site.
+        // The crouch spot nearest the bounce, by straight line, proven
+        // ones first: one path query a site.
         let c = primes.iter().min_by(|a, b| {
-            dist_xy(a.at, approach).total_cmp(&dist_xy(b.at, approach))
+            (!a.at.proven())
+                .cmp(&!b.at.proven())
+                .then(dist_xy(a.at.stand, approach).total_cmp(&dist_xy(b.at.stand, approach)))
         })?;
-        (Some(c.at), c.lead + walk(c.at, approach)?)
+        (Some(c.at), c.lead + walk(c.at.stand, approach)?)
     };
     // Flying toward the goal's height; for fun, as high as it gets.
     let z = flight_z(ask, &site);
@@ -243,6 +349,7 @@ fn candidate(
     Some(Candidate {
         site,
         crouch,
+        ledge,
         lead,
         tail,
     })
@@ -261,19 +368,23 @@ fn flight_z(ask: &Ask, site: &Site) -> f32 {
 fn route(ask: &Ask, c: &Candidate, why: Why) -> Plan {
     let mut steps = Vec::new();
     if let Some(at) = c.crouch {
-        steps.push(Step::Walk {
-            to: at,
-            crouch: true,
-        });
-        steps.push(Step::Prime { at });
+        steps.extend(prime_steps(&at));
     }
     // From here to the bounce the crouch button stays up: another crouch
     // rebuilds the pair and the word is lost.
-    steps.push(Step::Walk {
-        to: c.site.bounce.from(),
-        crouch: false,
-    });
-    steps.push(Step::Bounce(c.site));
+    match c.ledge {
+        Some(from) => {
+            steps.push(Step::Walk { to: from, crouch: false });
+            steps.push(Step::Drop { from, site: c.site });
+        }
+        None => {
+            steps.push(Step::Walk {
+                to: c.site.bounce.from(),
+                crouch: false,
+            });
+            steps.push(Step::Bounce(c.site));
+        }
+    }
     steps.push(Step::Fly { to: ask.to });
     steps.push(Step::Nav { to: ask.to });
     Plan {
@@ -297,8 +408,15 @@ fn route(ask: &Ask, c: &Candidate, why: Why) -> Plan {
 /// A site needs a crouch spot to prime at unless the bot is primed
 /// already: an unprimed landing does not bounce
 /// (docs/game/superbounce.md). Sites that need a drop onto them are not
-/// used.
+/// used ([`plan_with`] uses them). Proven sites and crouch spots come
+/// before likely ones.
 pub fn plan(ask: &Ask, known: &Known, walk: Walk) -> Plan {
+    plan_with(ask, known, walk, &|_| None)
+}
+
+/// [`plan`], with a site that needs a drop used from its launch floor,
+/// when `ledge` finds one.
+pub fn plan_with(ask: &Ask, known: &Known, walk: Walk, ledge: Ledge) -> Plan {
     let plain = Plan {
         steps: vec![Step::Nav { to: ask.to }],
         why: Why::Plain,
@@ -322,64 +440,125 @@ pub fn plan(ask: &Ask, known: &Known, walk: Walk) -> Plan {
         Mode::Help => plain_cost.unwrap_or(FUN_REACH),
         Mode::Fun => FUN_REACH,
     };
-    let primes: Vec<Prime> = if ask.primed {
-        Vec::new()
-    } else {
-        let mut near: Vec<Vec3> = known
-            .crouches
-            .iter()
-            .copied()
-            .filter(|&c| dist_xy(ask.from, c) <= limit)
-            .collect();
-        near.sort_by(|a, b| dist_xy(ask.from, *a).total_cmp(&dist_xy(ask.from, *b)));
-        near.into_iter()
-            .take(NEAR_CROUCHES)
-            .filter_map(|at| Some(Prime { at, lead: query(ask.from, at)? }))
-            .collect()
-    };
+    let primes = primes(ask, known, limit, &query);
     if !ask.primed && primes.is_empty() {
         return plain;
     }
-    let mut sites: Vec<Site> = known
+    let mut sites: Vec<(Site, Option<Vec3>)> = known
         .sites
         .iter()
         .copied()
-        .filter(|s| s.standing())
         .filter(|s| dist_xy(ask.from, s.bounce.from()) <= limit)
         .filter(|s| flight(s, flight_z(ask, s)).is_some())
+        .map(|s| (s, None))
         .collect();
+    let proven_first = |a: &Site, b: &Site| (!a.proven()).cmp(&!b.proven());
     match ask.mode {
-        Mode::Help => sites.sort_by(|a, b| {
+        Mode::Help => sites.sort_by(|(a, _), (b, _)| {
             let d = |s: &Site| dist_xy(ask.from, s.bounce.stand) + dist_xy(s.bounce.stand, ask.to);
-            d(a).total_cmp(&d(b))
+            proven_first(a, b).then(d(a).total_cmp(&d(b)))
         }),
-        Mode::Fun => sites.sort_by(|a, b| {
-            b.launch.total_cmp(&a.launch).then(
+        Mode::Fun => sites.sort_by(|(a, _), (b, _)| {
+            proven_first(a, b).then(b.launch.total_cmp(&a.launch)).then(
                 dist_xy(ask.from, a.bounce.stand).total_cmp(&dist_xy(ask.from, b.bounce.stand)),
             )
         }),
     }
+    // A site that needs a drop is used from its launch floor, if any.
+    let mut looked = 0;
+    for (s, l) in &mut sites {
+        if !s.standing() && looked < 2 * NEAR_SITES {
+            looked += 1;
+            *l = ledge(s);
+        }
+    }
+    sites.retain(|(s, l)| s.standing() || l.is_some());
     sites.truncate(NEAR_SITES);
     let candidates = sites
         .into_iter()
-        .filter_map(|s| candidate(ask, &primes, &query, s));
+        .filter_map(|(s, l)| candidate(ask, &primes, &query, s, l));
     match ask.mode {
         Mode::Help => {
             let best = candidates
                 .filter(|c| plain_cost.is_none_or(|p| c.cost() + GAIN <= p))
-                .min_by(|a, b| a.cost().total_cmp(&b.cost()));
+                .min_by(|a, b| {
+                    // A proven site before a cheaper likely one.
+                    (!a.site.proven())
+                        .cmp(&!b.site.proven())
+                        .then(a.cost().total_cmp(&b.cost()))
+                });
             best.map_or(plain, |c| route(ask, &c, Why::Helps))
         }
         Mode::Fun => {
             let best = candidates.filter(|c| c.lead <= FUN_REACH).max_by(|a, b| {
+                // A proven site before a higher likely one.
                 a.site
-                    .launch
-                    .total_cmp(&b.site.launch)
+                    .proven()
+                    .cmp(&b.site.proven())
+                    .then(a.site.launch.total_cmp(&b.site.launch))
                     .then(b.cost().total_cmp(&a.cost()))
             });
             best.map_or(plain, |c| route(ask, &c, Why::Fun))
         }
     }
+}
+
+/// Priming at the crouch spot `c`: walk to its start, then prime. With
+/// the way out known the walk there is a plain walk and the prime
+/// crouch-walks in; else the walk goes in crouched, as under a low
+/// ceiling.
+pub fn prime_steps(c: &Crouch) -> [Step; 2] {
+    [
+        Step::Walk {
+            to: prime_start(c),
+            crouch: geo(c).is_none(),
+        },
+        Step::Prime(*c),
+    ]
+}
+
+/// Where a bounce at `site` is taken from: its launch floor when it needs
+/// a drop (`ledge`), else behind it for the standing jump. `None` for a
+/// drop with no launch floor.
+pub fn approach(site: &Site, ledge: Ledge) -> Option<Vec3> {
+    if site.standing() {
+        Some(site.bounce.from())
+    } else {
+        ledge(site)
+    }
+}
+
+/// The route from `from` that bounces on `site` and nothing else, for an
+/// asker who named it (`player.goto`): prime at a crouch spot unless
+/// `primed` (the one with the least walking to the bounce, proven first,
+/// as [`plan_with`] picks), walk to the bounce's approach ([`approach`]),
+/// take the bounce and ride the launch back down. No reach limit and no
+/// walk to beat. `None` when no walk or no crouch spot gets there, or
+/// the site needs a drop with no launch floor.
+pub fn plan_site(
+    from: Vec3,
+    primed: bool,
+    site: Site,
+    known: &Known,
+    walk: Walk,
+    ledge: Ledge,
+) -> Option<Plan> {
+    let ask = Ask {
+        from,
+        to: site.target(),
+        primed,
+        mode: Mode::Fun,
+    };
+    let floor = if site.standing() { None } else { Some(ledge(&site)?) };
+    let primes = primes(&ask, known, f32::INFINITY, walk);
+    if !primed && primes.is_empty() {
+        return None;
+    }
+    let c = candidate(&ask, &primes, walk, site, floor)?;
+    let mut plan = route(&ask, &c, Why::Asked);
+    // Done once down: the asker is where it bounced.
+    plan.steps.retain(|s| !matches!(s, Step::Nav { .. }));
+    Some(plan)
 }
 
 // ---- playing a plan ----
@@ -388,6 +567,9 @@ pub fn plan(ask: &Ask, known: &Known, walk: Walk) -> Plan {
 pub const ORDER_TICKS: u32 = 6000;
 /// Tries at the bounce spot before giving it up.
 pub const BOUNCE_TRIES: u32 = 8;
+/// Drops onto a slot before giving it up: each walks back up to the
+/// launch floor.
+pub const DROP_TRIES: u32 = 3;
 /// Within this of a walk's end it has arrived (world units).
 pub const ARRIVED: f32 = 0.3;
 /// The last walk ends this near the goal.
@@ -402,8 +584,49 @@ pub const LANDED_TICKS: u32 = 2;
 pub const SETTLED: f32 = 0.3;
 /// Falling this fast means the top is passed (world units a second).
 pub const FALLING: f32 = 0.5;
+/// A drop lines up at its launch floor this long (ticks) at most.
+pub const LINE_UP_TICKS: u32 = 45;
+/// Lined up: within this of the launch point (world units).
+pub const LINE_UP: f32 = 0.15;
+/// Running off the launch floor gives up after this long (ticks) without
+/// falling.
+pub const RUN_OFF_TICKS: u32 = 60;
+/// Below the launch floor by this much (world units) the drop has begun.
+pub const LEFT_FLOOR: f32 = 0.15;
+/// The run off the floor (stick, 0..1): a walk, so the landing is not far
+/// past the slot.
+pub const RUN_OFF_SPEED: f32 = 0.5;
+/// In the air the stick asks for this much per world unit the landing is
+/// off the target (to 1).
+pub const AIR_GAIN: f32 = 2.5;
+/// A drop is over this long (ticks) after leaving the floor.
+pub const DROP_AIR_TICKS: u32 = 150;
+/// A rise this far (world units) above the lowest point after falling is
+/// a launch.
+pub const LAUNCH_RISE: f32 = 0.4;
+/// A touchdown: the tick before fell at least this fast (world units a
+/// second), this one at most [`TOUCHED`] (superbounce_charge's
+/// `TOUCHDOWN_VZ` and `LANDED_VZ`).
+pub const TOUCHDOWN: f32 = 1.0;
+pub const TOUCHED: f32 = 0.5;
+/// A touchdown that comes out faster than this (world units a second up)
+/// bounced (superbounce_charge's `BOUNCE_VZ`).
+pub const BOUNCE_VZ: f32 = 8.0;
+/// The route's log keeps this many entries.
+pub const LOG: usize = 64;
 
 const TICKS: f32 = 30.0;
+
+/// A drop's phase.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Dropping {
+    /// At the launch floor, lining up, from the tick.
+    Line(u32),
+    /// Walking off the floor toward the target, from the tick.
+    Run(u32),
+    /// Falling, from the tick; the lowest height seen once falling.
+    Air { since: u32, low: Option<f32> },
+}
 
 #[derive(Clone, Debug)]
 enum State {
@@ -411,7 +634,93 @@ enum State {
     Walk(RouteWalk),
     Prime(PrimeRun),
     Bounce(BounceRun),
+    Drop(Dropping),
     Fly { since: u32, peaked: bool, still: u32 },
+}
+
+/// A touchdown by the route's strip, as the bot saw it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Touchdown {
+    pub tick: u32,
+    /// The origin on the tick before touchdown.
+    pub at: Vec3,
+    /// The speed in, down, world units a second.
+    pub speed_in: f32,
+    /// The vertical speed out (the best of the touchdown tick and the two
+    /// after), world units a second.
+    pub vz_out: f32,
+    /// How far from the target it came down (world units, sideways).
+    pub miss: f32,
+    /// The word on the tick before touchdown, when it could be read.
+    pub word: Option<u32>,
+}
+
+impl Touchdown {
+    pub fn bounced(&self) -> bool {
+        self.vz_out > BOUNCE_VZ
+    }
+
+    /// What it came to, by its first failed test, as the game's landing
+    /// classifier names it: `bounce`, `not_primed`, `missed` (more than
+    /// `width / 2` off the target), `too_slow` (under `need`), `no_bounce`.
+    pub fn result(&self, width: f32, need: f32) -> &'static str {
+        if self.bounced() {
+            "bounce"
+        } else if self.word.is_some_and(|w| !is_primed(w)) {
+            "not_primed"
+        } else if self.miss > width / 2.0 {
+            "missed"
+        } else if need > 0.0 && self.speed_in < need {
+            "too_slow"
+        } else {
+            "no_bounce"
+        }
+    }
+}
+
+/// Watches the vertical speed for touchdowns during a bounce or a drop.
+#[derive(Clone, Copy, Debug, Default)]
+struct Watch {
+    prev: Option<(Vec3, f32, Option<u32>)>,
+    /// The vertical speed the tick before `prev`: the touchdown tick's
+    /// own reads short when the body stops partway through it.
+    before: Option<f32>,
+    /// A touchdown still reading its vertical speed out, and ticks left.
+    open: Option<(Touchdown, u32)>,
+}
+
+impl Watch {
+    /// This tick; a touchdown once its speed out is read.
+    fn step(&mut self, at: Vec3, vz: f32, word: Option<u32>, tick: u32, target: Vec3) -> Option<Touchdown> {
+        let mut done = None;
+        if let Some((mut t, left)) = self.open.take() {
+            t.vz_out = t.vz_out.max(vz);
+            if left <= 1 {
+                done = Some(t);
+            } else {
+                self.open = Some((t, left - 1));
+            }
+        } else if let Some((p, pvz, pword)) = self.prev
+            && -pvz.min(self.before.unwrap_or(pvz)) >= TOUCHDOWN
+            && vz > -TOUCHED
+        {
+            // The speed in: the faster of the last two ticks down, since
+            // a speed worked from positions loses the part of the tick
+            // after contact.
+            let t = Touchdown {
+                tick,
+                at: p,
+                speed_in: -pvz.min(self.before.unwrap_or(pvz)),
+                vz_out: vz,
+                miss: dist_xy(p, target),
+                word: pword,
+            };
+            self.open = Some((t, 2));
+        }
+        self.before = self.prev.map(|(_, v, _)| v);
+        self.prev = Some((at, vz, word));
+        done
+    }
 }
 
 /// What a route asks of the pad this tick.
@@ -423,16 +732,35 @@ pub struct OrderOut {
 }
 
 /// Where a route stands, for the agent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OrderStatus {
     pub step: usize,
     pub steps: usize,
     pub what: &'static str,
+    /// The step's phase: a prime's `start`, `in`, `release`, `out`; a
+    /// drop's `line_up`, `run_off`, `air`; a bounce's `settle` or `air`; a
+    /// walk's `walking`; else empty.
+    pub phase: &'static str,
+    /// The step's try (from 1; 0 for a step that does not retry).
+    pub tries: u32,
     /// The pair word is at -3 (read, or assumed after priming).
     pub primed: bool,
     /// Whether that was read from the game ([`OrderRun::step`]'s `pair`)
     /// or assumed.
     pub read: bool,
+    /// The last touchdown during a bounce or a drop.
+    pub landing: Option<Touchdown>,
+}
+
+/// One line of a route's log: a step begun or ended, or a landing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Logged {
+    pub tick: u32,
+    pub step: &'static str,
+    /// `start`, `done`, `retry`, `reprime`, a landing's result, or why the
+    /// step failed.
+    pub what: &'static str,
+    pub at: Vec3,
 }
 
 /// A plan being played.
@@ -446,9 +774,18 @@ pub struct OrderRun {
     started: u32,
     last: Option<Vec3>,
     reprimes: u32,
+    drops: u32,
     seed: u64,
+    watch: Watch,
+    /// The site touchdowns are read against.
+    watching: Option<Site>,
+    landing: Option<Touchdown>,
+    log: Vec<Logged>,
     /// A show-off: the bot gives it up when it sees an enemy.
     pub show_off: bool,
+    /// How near the goal a [`Step::Nav`] ends ([`GOAL`] unless
+    /// [`OrderRun::arrive_within`] says).
+    goal: f32,
 }
 
 fn norm(d: [f32; 2]) -> ([f32; 2], f32) {
@@ -471,8 +808,29 @@ impl OrderRun {
             started: tick,
             last: None,
             reprimes: 0,
+            drops: 0,
             seed,
+            watch: Watch::default(),
+            watching: None,
+            landing: None,
+            log: Vec::new(),
             show_off: false,
+            goal: GOAL,
+        }
+    }
+
+    /// The same, with the last walk ([`Step::Nav`]) ending within `within`
+    /// of its goal instead of [`GOAL`].
+    pub fn arrive_within(mut self, within: f32) -> OrderRun {
+        self.goal = within;
+        self
+    }
+
+    /// The walk under way, while a walking step is.
+    pub fn walking(&self) -> Option<&RouteWalk> {
+        match &self.state {
+            State::Walk(w) => Some(w),
+            _ => None,
         }
     }
 
@@ -481,17 +839,49 @@ impl OrderRun {
         self.primed
     }
 
+    /// The log, oldest first (at most [`LOG`]).
+    pub fn log(&self) -> &[Logged] {
+        &self.log
+    }
+
+    fn note(&mut self, tick: u32, what: &'static str, at: Vec3) {
+        let step = self.plan.steps.get(self.at).map_or("done", Step::name);
+        if self.log.len() >= LOG {
+            self.log.remove(0);
+        }
+        self.log.push(Logged { tick, step, what, at });
+    }
+
     pub fn status(&self) -> OrderStatus {
+        let (phase, tries) = match &self.state {
+            State::Fresh => ("", 0),
+            State::Walk(_) => ("walking", 0),
+            State::Prime(p) => (p.phase(), p.tries()),
+            State::Bounce(b) => (if b.airborne() { "air" } else { "settle" }, b.tries + 1),
+            State::Drop(d) => (
+                match d {
+                    Dropping::Line(_) => "line_up",
+                    Dropping::Run(_) => "run_off",
+                    Dropping::Air { .. } => "air",
+                },
+                self.drops + 1,
+            ),
+            State::Fly { .. } => ("air", 0),
+        };
         OrderStatus {
             step: self.at,
             steps: self.plan.steps.len(),
             what: self.plan.steps.get(self.at).map_or("done", Step::name),
+            phase,
+            tries,
             primed: self.primed,
             read: self.read,
+            landing: self.landing,
         }
     }
 
-    fn fail(&mut self, why: &'static str) -> OrderOut {
+    fn fail(&mut self, why: &'static str, tick: u32, at: Vec3) -> OrderOut {
+        self.note(tick, why, at);
         self.primed = false;
         OrderOut {
             motion: RouteMotion::default(),
@@ -499,8 +889,16 @@ impl OrderRun {
         }
     }
 
-    fn next(&mut self) {
+    fn next(&mut self, tick: u32, at: Vec3) {
+        self.note(tick, "done", at);
         self.at += 1;
+        self.state = State::Fresh;
+    }
+
+    /// Back to step `i` (a walk), starting it afresh.
+    fn back_to(&mut self, i: usize, tick: u32, at: Vec3, why: &'static str) {
+        self.note(tick, why, at);
+        self.at = i;
         self.state = State::Fresh;
     }
 
@@ -516,25 +914,44 @@ impl OrderRun {
         });
         self.last = Some(at);
         if tick.wrapping_sub(self.started) > ORDER_TICKS {
-            return self.fail("timeout");
+            return self.fail("timeout", tick, at);
+        }
+        // Touchdowns during a bounce or a drop, against the site's target,
+        // read to the end after the step has moved on (a launch moves it
+        // on before the speed out is read).
+        match self.plan.steps.get(self.at) {
+            Some(Step::Bounce(s)) | Some(Step::Drop { site: s, .. }) => self.watching = Some(*s),
+            _ if self.watch.open.is_none() => {
+                self.watching = None;
+                self.watch = Watch::default();
+            }
+            _ => {}
+        }
+        if let (Some(site), Some(v)) = (self.watching, vel)
+            && let Some(t) = self.watch.step(at, v[2], pair, tick, site.target())
+        {
+            self.landing = Some(t);
+            let width = if site.width > 0.0 { site.width } else { crate::spots::SLOT_WIDTH };
+            self.note(tick, t.result(width, site.need), t.at);
         }
         // The word read as something else on the ground: it was lost
         // (the pair was rebuilt). Back to the crouch spot.
-        if self.primed
-            && matches!(self.state, State::Walk(_))
-            && pair.is_some_and(|w| !is_primed(w))
-        {
+        let grounded = match &self.state {
+            State::Walk(_) => true,
+            State::Drop(Dropping::Line(_) | Dropping::Run(_)) => true,
+            _ => false,
+        };
+        if self.primed && grounded && pair.is_some_and(|w| !is_primed(w)) {
             let prime = self.plan.steps[..self.at]
                 .iter()
-                .rposition(|s| matches!(s, Step::Prime { .. }));
+                .rposition(|s| matches!(s, Step::Prime(_)));
             match prime {
                 Some(i) if self.reprimes < REPRIMES => {
                     self.reprimes += 1;
                     self.primed = false;
-                    self.at = i.saturating_sub(1);
-                    self.state = State::Fresh;
+                    self.back_to(i.saturating_sub(1), tick, at, "reprime");
                 }
-                _ => return self.fail("pair_lost"),
+                _ => return self.fail("pair_lost", tick, at),
             }
         }
         for _ in 0..8 {
@@ -545,11 +962,15 @@ impl OrderRun {
                     done: Some(Ok(())),
                 };
             };
+            if matches!(self.state, State::Fresh) {
+                self.note(tick, "start", at);
+            }
             let out = match step {
                 Step::Walk { to, crouch } => self.walk(map, at, tick, to, crouch, ARRIVED),
-                Step::Nav { to } => self.walk(map, at, tick, to, false, GOAL),
-                Step::Prime { .. } => self.prime(tick, pair),
+                Step::Nav { to } => self.walk(map, at, tick, to, false, self.goal),
+                Step::Prime(c) => self.prime(c, at, tick, pair),
                 Step::Bounce(site) => self.bounce(site, at, tick),
+                Step::Drop { from, site } => self.drop(from, site, at, tick),
                 Step::Fly { to } => self.fly(to, at, tick, vel),
             };
             match out {
@@ -561,11 +982,15 @@ impl OrderRun {
                     return OrderOut { motion, done: None };
                 }
                 // The step is over; the next one starts this tick.
-                Ok(None) => self.next(),
-                Err(why) => return self.fail(why),
+                Ok(None) => self.next(tick, at),
+                Err("drop_again") => {
+                    // Back up to the launch floor for another drop.
+                    self.back_to(self.at.saturating_sub(1), tick, at, "retry");
+                }
+                Err(why) => return self.fail(why, tick, at),
             }
         }
-        self.fail("stalled")
+        self.fail("stalled", tick, at)
     }
 
     fn walk(
@@ -586,19 +1011,35 @@ impl OrderRun {
         w.step(map, at, tick, tolerance, 1.0)
     }
 
-    fn prime(&mut self, tick: u32, pair: Option<u32>) -> Result<Option<RouteMotion>, &'static str> {
+    fn prime(
+        &mut self,
+        c: Crouch,
+        at: Vec3,
+        tick: u32,
+        pair: Option<u32>,
+    ) -> Result<Option<RouteMotion>, &'static str> {
         if matches!(self.state, State::Fresh) {
-            self.state = State::Prime(PrimeRun::new(tick));
+            self.state = State::Prime(match geo(&c) {
+                Some(g) => PrimeRun::at(tick, g),
+                None => PrimeRun::new(tick),
+            });
         }
         let State::Prime(run) = &mut self.state else {
             return Err("state");
         };
-        let out = run.step(tick, pair);
+        let out = run.step_at(tick, at, pair);
         match out.done {
-            None => Ok(Some(RouteMotion {
-                crouch: out.crouch,
-                ..RouteMotion::default()
-            })),
+            None => {
+                let (dir, speed) = out.walk.map_or(([0.0; 2], 0.0), norm);
+                Ok(Some(RouteMotion {
+                    dir,
+                    speed: speed.min(1.0),
+                    // Face the way it walks; standing still, as it was.
+                    yaw: (speed > 0.0).then(|| dir[1].atan2(dir[0])),
+                    crouch: out.crouch,
+                    ..RouteMotion::default()
+                }))
+            }
             Some(Primed::Failed) => Err("prime_failed"),
             Some(how) => {
                 self.primed = true;
@@ -616,7 +1057,9 @@ impl OrderRun {
     ) -> Result<Option<RouteMotion>, &'static str> {
         if matches!(self.state, State::Fresh) {
             let seed = self.seed ^ u64::from(tick);
-            self.state = State::Bounce(BounceRun::new(site.bounce, BOUNCE_TRIES, tick, seed));
+            let mut b = site.bounce;
+            b.stand = site.target();
+            self.state = State::Bounce(BounceRun::new(b, BOUNCE_TRIES, tick, seed));
         }
         let State::Bounce(run) = &mut self.state else {
             return Err("state");
@@ -645,6 +1088,74 @@ impl OrderRun {
             jump: o.jump,
             crouch: false,
         }))
+    }
+
+    /// Off the launch floor at `from` and down onto the site's target:
+    /// line up facing it, walk off, steer in the air so the landing is on
+    /// the target, then see whether it launched.
+    fn drop(
+        &mut self,
+        from: Vec3,
+        site: Site,
+        at: Vec3,
+        tick: u32,
+    ) -> Result<Option<RouteMotion>, &'static str> {
+        if matches!(self.state, State::Fresh) {
+            self.state = State::Drop(Dropping::Line(tick));
+        }
+        let State::Drop(d) = &mut self.state else {
+            return Err("state");
+        };
+        let target = site.target();
+        let (to_target, gap) = norm([target[0] - at[0], target[1] - at[1]]);
+        let face = Some(to_target[1].atan2(to_target[0]));
+        let motion = |dir: [f32; 2], speed: f32| RouteMotion {
+            dir,
+            speed,
+            yaw: face,
+            jump: false,
+            crouch: false,
+        };
+        match *d {
+            Dropping::Line(since) => {
+                let (to_from, off) = norm([from[0] - at[0], from[1] - at[1]]);
+                if off <= LINE_UP || tick.wrapping_sub(since) > LINE_UP_TICKS {
+                    *d = Dropping::Run(tick);
+                    return Ok(Some(motion(to_target, RUN_OFF_SPEED)));
+                }
+                Ok(Some(motion(to_from, (off * 4.0).clamp(0.15, 0.6))))
+            }
+            Dropping::Run(since) => {
+                if at[2] < from[2] - LEFT_FLOOR {
+                    *d = Dropping::Air { since: tick, low: None };
+                } else if tick.wrapping_sub(since) > RUN_OFF_TICKS {
+                    return Err("no_drop");
+                }
+                Ok(Some(motion(to_target, RUN_OFF_SPEED)))
+            }
+            Dropping::Air { since, low } => {
+                let low = Some(low.map_or(at[2], |l: f32| l.min(at[2])));
+                *d = Dropping::Air { since, low };
+                if low.is_some_and(|l| at[2] > l + LAUNCH_RISE) {
+                    // Sank into the slot and was thrown up.
+                    self.primed = false;
+                    return Ok(None);
+                }
+                let landed = self
+                    .landing
+                    .is_some_and(|t| t.tick >= since && !t.bounced());
+                if landed || tick.wrapping_sub(since) > DROP_AIR_TICKS {
+                    self.drops += 1;
+                    return if self.drops < DROP_TRIES {
+                        Err("drop_again")
+                    } else {
+                        Err("no_bounce")
+                    };
+                }
+                // Steer the landing onto the target: harder the further off.
+                Ok(Some(motion(to_target, (gap * AIR_GAIN).min(1.0))))
+            }
+        }
     }
 
     fn fly(

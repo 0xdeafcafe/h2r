@@ -53,7 +53,9 @@ fn brain(seed: u64, board: &Mutex<Radio>) -> Brain {
         motor_ticks: Some(0),
         button_sigma_ms: Some(0.0),
         ..Default::default()
-    });
+    })
+    // These test the fight, not the start-of-match warm-up.
+    .without_warmup();
     b.epoch = radio::lock(board).epoch;
     b
 }

@@ -223,6 +223,12 @@ pub(crate) fn register_core_film(
             .add(&variant_page::MoreRow)
             .map_err(|e| anyhow::anyhow!("variant options row: {e}"))?;
     }
+    // The game type list's Tweakers row, after Territories, and its variant
+    // lists: Superbounce and the other tweaked-rules variants
+    // (docs/game/community-gametypes.md "Tweakers").
+    features
+        .add(&crate::tweakers::Tweakers)
+        .map_err(|e| anyhow::anyhow!("tweakers: {e}"))?;
     features.add(&hud::Hud).map_err(|e| anyhow::anyhow!("hud: {e}"))?;
     features
         .add(&crate::loaded_map::LoadedMap)
@@ -321,14 +327,21 @@ pub(crate) fn register_core_film(
         crate::firefight::options::install(features, store)
             .context("installing the Firefight options page")?;
     }
-    // Multiplayer, Forge and Firefight as modes of the lobby, on Game
-    // Setup's Mode row (docs/game/forge-firefight-ui.md, "The lobbies"),
-    // where Game Setup's other rows of ours are: with a settings store.
+    // The party lobby: its mode strip and Multiplayer, Forge and
+    // Firefight as modes of the lobby (docs/game/party-lobby.md). It has
+    // no switch. It is in every run a settings store is opened for, as
+    // Game Setup's other rows of ours are.
     if let Some(store) = i.settings.as_ref() {
         let offer = crate::lobby_start::Offer {
             forge: crate::forge_glue::enabled(features.switches()),
             firefight: firefight_on,
         };
+        // The mode strip's FORGE and FIREFIGHT tabs, with their features
+        // (docs/game/party-lobby.md, "Where each tab runs").
+        crate::lobby_tabs::set_present(|p| {
+            p.forge = offer.forge;
+            p.firefight = offer.firefight;
+        });
         crate::lobby_mode::install(
             features,
             crate::lobby_mode::LobbyMode {
@@ -337,7 +350,7 @@ pub(crate) fn register_core_film(
                 data: i.data_root.to_path_buf(),
             },
         )
-        .context("installing the lobby's modes")?;
+        .context("installing the party lobby")?;
     }
     // Rules scripts (docs/game/rules-engine.md, "The host runtime"): off
     // unless H2_FEATURES names `rules`. A Live host puts the script's hash
@@ -394,11 +407,22 @@ pub(crate) fn register_core_film(
     // The superbounce game type's HUD plate and spot lines
     // (docs/game/superbounce.md): idle unless the variant or
     // H2_SUPERBOUNCE asks for it.
-    crate::superbounce_mode::install(features).context("installing the superbounce mode")?;
-    // Hold X while falling to steer onto a bounce strip
+    crate::superbounce_mode::install(features, telemetry.clone()).context("installing the superbounce mode")?;
+    // Teabags in every game, for the incel medal (docs/game/teabag.md):
+    // recorded to Live and the film on the console that records the game.
+    crate::teabag::install(features, telemetry.clone()).context("installing the teabag watch")?;
+    // HUD elements of ours drawn by the game's HUD (docs/game/hud-kit.md),
+    // and the superbounce HUD on it, fed from the mode's state; its
+    // tutorial's seen flag is a setting.
+    crate::hud_kit::install(features).context("installing the HUD kit")?;
+    crate::superbounce_hud::install(features, i.settings.clone())
+        .context("installing the superbounce HUD")?;
+    // Hold X while falling to steer onto a bounce strip, opt in by the
+    // superbounce.fall_assist setting
     // (docs/game/superbounce.md, "Hold X: the fall assist"). Its input tap
     // goes in with the XAPI input taps (register_late).
-    crate::superbounce_assist::install(features).context("installing the superbounce assist")?;
+    crate::superbounce_assist::install(features, i.settings.clone())
+        .context("installing the superbounce assist")?;
     // Bots (docs/game/bots.md): phantom peers in a session this console
     // hosts. Idle with none.
     let playing_film = film.is_some();
@@ -792,6 +816,7 @@ pub(crate) fn register_late_for_profile(
         }
         let on = crate::coop_live::install(features, i.live.clone(), arm, i.settings.clone(), i.disc)?;
         custom_games::set_coop_row(on);
+        crate::lobby_tabs::set_present(|p| p.co_op = on);
     }
     // The mod repository (docs/game/maps.md §5, "Mod downloads"): the Xbox
     // Live menu's last row opens our Mods screens in place of Content
@@ -802,6 +827,11 @@ pub(crate) fn register_late_for_profile(
     // OptiMatch playlists into the server's clanker hoppers and the rest.
     if i.allow_bot_add {
         crate::clankermatch::install(features, i.live.clone()).context("installing Clankermatch")?;
+        // The mode strip's CLANKERS tab: present with Clankermatch on, and
+        // on where the server lists a Clanker playlist.
+        let clankers = features.switches().feature(crate::clankermatch::FEATURE, true);
+        crate::lobby_tabs::set_present(|p| p.clankers = clankers);
+        crate::lobby_tabs::strip::set_live(i.live.clone());
     }
     // Back to the Xbox Live menu, the cursor is on the browser or co-op
     // row the player chose, past the four rows retail restores.

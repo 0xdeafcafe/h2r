@@ -985,6 +985,41 @@ points! { ALL;
     /// The variant editor's category list row chosen: words 0 to 5 open a
     /// category's screen; any other word returns having done nothing.
     VARIANT_OPTIONS_ROW_CHOSEN @ 0x002b_75e8: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/game/skulls.md";
+    /// The game type list's screen constructor (screens 207 and 60, "SELECT
+    /// GAME"; vtable `0x45aff0`): EDI the screen, then the request's
+    /// window, slot and player, the screen id and three mode flags it
+    /// keeps at `+0xb38..+0xb3a` (settings, create, pick). Builds the list
+    /// at `+0x614` (`0x2c55f8`): a datum array "game engine variant
+    /// category list" of nine, one datum per game type, its word at `+2`
+    /// (0 Slayer, 1 King of the Hill, 3 Oddball, 4 Juggernaut, 6 CTF, 7
+    /// Assault, 8 Territories).
+    VARIANT_CATEGORY_SCREEN_CTOR @ 0x002b_1ab3: [fn(screen: edi, window: stack 0, slot: stack 1, player: stack 2, id: stack 3, settings: stack 4, create: stack 5, pick: stack 6) -> eax ret 28]; "docs/game/community-gametypes.md";
+    /// The game type list's row text: looks the row's word up in a table
+    /// of seven; an unknown word leaves the text as it was.
+    VARIANT_CATEGORY_ROW_TEXT @ 0x002c_5823: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/game/community-gametypes.md";
+    /// The game type list's row chosen: by the row's word, opens that game
+    /// type's variant list (the create flag: a new variant of it); any
+    /// word past the table runs Territories'.
+    VARIANT_CATEGORY_ROW_CHOSEN @ 0x002c_5897: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/game/community-gametypes.md";
+    /// The variant list's screen constructor (screens 208 and 15, vtable
+    /// `0x45d6f8`, `0x4fe0` bytes): EDI the screen, then the screen id and
+    /// the request's window, slot and player. Its 21 loaders (seven game
+    /// types, three modes) then store the content category at `+0x4fd8`.
+    VARIANT_LIST_SCREEN_CTOR @ 0x002c_9ddb: [fn(screen: edi, id: stack 0, window: stack 1, slot: stack 2, player: stack 3) -> eax ret 16]; "docs/game/community-gametypes.md";
+    /// The variant list's per-frame update (screen vtable slot 3): sets
+    /// its title (text 5) and description (text 2) and the picture
+    /// (bitmap 4) by the category at `+0x4fd8`, then the base update
+    /// (`0x22e391`, which updates the children).
+    VARIANT_LIST_UPDATE @ 0x002c_ad45: [fn(screen: ecx) ret 0]; "docs/game/community-gametypes.md";
+    /// The variant list's own loader (screen vtable slot 26), by the
+    /// category at `+0x4fd8` and the mode bytes at `+0x4fdc`, `+0x4fdd`:
+    /// what a screen stack reopens it with.
+    VARIANT_LIST_LOADER @ 0x002c_ac1a: [fn(screen: ecx) -> eax ret 0]; "docs/game/community-gametypes.md";
+    /// The variants of a content category for a player: up to `*count`
+    /// (a `u16`, written back) content handles into `handles`, saved ones
+    /// and, with `builtins`, the built-in ones. The variant list's fill
+    /// (`0x2ca0d9`, the list handler in EBX) calls it from `0x2ca10e`.
+    VARIANTS_ENUMERATE @ 0x0021_5900: [fn(player: stack 0, category: stack 1, count: stack 2, handles: stack 3, builtins: stack 4) ret 20]; "docs/game/community-gametypes.md";
     /// The Edit Profile list's row text (screen 38, `edit_profile_menu`):
     /// switches on the item's row index, 0 to 5 (Controls, Appearance,
     /// Voice Output, Voice Masking, Online Status, Subtitles); any other

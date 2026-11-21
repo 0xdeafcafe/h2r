@@ -79,6 +79,14 @@ pub trait PadSource: Send {
         None
     }
 
+    /// Sends `pad` every sample in place of its own until called with
+    /// `None` (`superbounce.verify`'s trials on a bot seat); `false` for a
+    /// source that cannot be held.
+    fn hold_pad(&mut self, pad: Option<HostPadState>) -> bool {
+        let _ = pad;
+        false
+    }
+
     /// The phantom's action stream was interrupted by a new unit or match.
     fn reset_input(&mut self) {}
 

@@ -182,6 +182,8 @@ mod sound;
 #[cfg(feature = "desktop")]
 mod strings;
 #[cfg(feature = "desktop")]
+mod hud_cmd;
+#[cfg(feature = "desktop")]
 mod superbounce_cmd;
 #[cfg(feature = "desktop")]
 mod tag_repo_cmd;
@@ -277,6 +279,9 @@ const USAGE: &str = "usage: h2 <command> [disc]
   collision --all <map|all>  validate every coll/phmo tag (all = every disc map)
   superbounce scan <map>  bounce strips and forced-crouch spots in a map's
                           collision; --bsp N, --json (docs/game/superbounce.md)
+  hud preview <hud> --out DIR  a HUD kit HUD drawn over the retail player HUD,
+                          PNG and JSON per state, and its checks; hud sheet
+                          for every HUD (docs/game/hud-kit.md)
   bots nav <map|all>      build the bots' nav mesh and walls into <data>/bots
                           (docs/game/bots.md)
   bots test               Clankers in a Live custom game, unattended: a local
@@ -499,6 +504,9 @@ fn desktop_command(cmd: String, mut args: impl Iterator<Item = String>) -> Resul
     }
     if cmd == "superbounce" {
         return superbounce_cmd::run(args.collect());
+    }
+    if cmd == "hud" {
+        return hud_cmd::run(args.collect());
     }
     if cmd == "bots" {
         let args: Vec<String> = args.collect();

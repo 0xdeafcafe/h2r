@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::{
-    campaign_menu, community_variants, coop_live, custom_games, layout_glue, skulls_menu,
+    campaign_menu, community_variants, coop_live, custom_games, hud_kit, layout_glue, skulls_menu,
     variant_options, video_screen,
 };
 
@@ -47,6 +47,7 @@ fn table_members() -> Vec<(&'static str, Vec<u32>)> {
                 .collect(),
         ),
         ("lobby status", ids(crate::lobby_status::STRINGS.to_vec())),
+        ("lobby tabs", ids(crate::lobby_tabs::strings())),
         ("skulls pages", ids(skulls_menu::strings())),
         (
             "variant page",
@@ -82,6 +83,7 @@ fn families() -> Vec<Family> {
                 community_variants::description_id(i),
             ]
         })
+        .chain(community_variants::TWEAKERS_IDS)
         .collect();
     vec![
         Family {
@@ -108,6 +110,11 @@ fn families() -> Vec<Family> {
                 .map(variant_options::label_id)
                 .collect(),
             claims: |id| variant_options::text(id).is_some(),
+        },
+        Family {
+            name: "hud kit",
+            ids: vec![hud_kit::TRAINING_TEXT_ID],
+            claims: hud_kit::owns,
         },
         Family {
             name: "co-op texts",
@@ -197,6 +204,7 @@ fn every_served_id_is_in_its_registered_family() {
                 .collect(),
         ),
         ("lobby status", ids(crate::lobby_status::STRINGS.to_vec())),
+        ("lobby tabs", ids(crate::lobby_tabs::strings())),
         // The model's ids run past the "ui model" block into "ui model
         // more" (video_screen::MORE); each must be in one of the two.
         ("ui model", model_ids.0),
@@ -222,6 +230,7 @@ fn every_served_id_is_in_its_registered_family() {
                         community_variants::description_id(i),
                     ]
                 })
+                .chain(community_variants::TWEAKERS_IDS)
                 .collect(),
         ),
         ("game variants", game_variant_ids()),

@@ -90,16 +90,6 @@ impl Mode {
             Mode::Firefight => "Firefight fights waves of enemies on a Firefight map.",
         }
     }
-
-    /// The lobby's header in this mode, in capitals as retail's headers
-    /// are; `None` keeps retail's.
-    pub const fn header(self) -> Option<&'static str> {
-        match self {
-            Mode::Multiplayer => None,
-            Mode::Forge => Some("FORGE"),
-            Mode::Firefight => Some("FIREFIGHT"),
-        }
-    }
 }
 
 /// Which modes a lobby offers: Multiplayer always, Forge with the `forge`
@@ -364,11 +354,7 @@ mod tests {
             assert!(!label.contains(':') && !label.contains("  "), "{label}");
             assert!(m.description().ends_with('.'), "{m:?}");
             assert!(m.summary().starts_with(label), "{m:?}");
-            if let Some(h) = m.header() {
-                assert_eq!(h, h.to_uppercase(), "a header is in capitals");
-            }
         }
         assert_eq!(Mode::default(), Mode::Multiplayer);
-        assert_eq!(Mode::Multiplayer.header(), None, "retail's header");
     }
 }

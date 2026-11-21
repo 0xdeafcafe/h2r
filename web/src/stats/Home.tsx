@@ -19,7 +19,7 @@ import { endedGames, isCampaign, liveGames, type GameState } from "../state/redu
 import { gameMapTitle } from "../state/maps";
 import { isHalo1Map, mapTitle } from "../state/gameart";
 import { difficultyName, gameTypeLine } from "../state/gametype";
-import { OUTCOME_WORDS, campaignOutcome, countMedals, gameMedals, MEDAL_BY_ID, type MedalId } from "../state/derive";
+import { OUTCOME_WORDS, campaignOutcome, countMedals, gameAwards, MEDAL_BY_ID, type MedalId } from "../state/derive";
 import {
   DAYS, STATS_WINDOWS, alsoPopular, clanStandings, dailyGames, heatmap, missionOfTheWeek, nonZeroRows, hourName, hoursOf, kd, leaderboards, level, ofTheWeek, peak, shares,
   statsWindow, type Board, type StatsSummary, type StatsWindow, type Totals,
@@ -433,7 +433,7 @@ function TopMedals(props: { since: number }) {
     const total = new Map<MedalId, number>();
     for (const g of endedGames(live.state, 500, "multiplayer")) {
       if (Date.parse(g.started_at) < props.since) continue;
-      for (const [id, n] of countMedals(gameMedals(g.kills))) total.set(id, (total.get(id) ?? 0) + n);
+      for (const [id, n] of countMedals(gameAwards(g))) total.set(id, (total.get(id) ?? 0) + n);
     }
     return [...total].sort((a, b) => b[1] - a[1]).slice(0, 6);
   });

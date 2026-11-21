@@ -26,25 +26,9 @@ pub const ROOT_TEXTS: usize = 0x10;
 pub const TEXT_SIZE: usize = 0x54;
 
 /// The three screen modes a widget carries a placement for: fullscreen,
-/// half and quarter screen (split screen).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
-pub enum Mode {
-    #[default]
-    Full = 0,
-    Half = 1,
-    Quarter = 2,
-}
-
-impl Mode {
-    pub const ALL: [Mode; 3] = [Mode::Full, Mode::Half, Mode::Quarter];
-    pub fn label(self) -> &'static str {
-        match self {
-            Mode::Full => "fullscreen",
-            Mode::Half => "half screen",
-            Mode::Quarter => "quarter screen",
-        }
-    }
-}
+/// half and quarter screen (split screen). The HUD kit's model shares the
+/// type (`hud_kit_core::Mode`).
+pub use hud_kit_core::Mode;
 
 /// Bitmap widget fields (E: the gate `0x13ac87`, the inputs `0x13ad48`,
 /// the draw `0x22aff1` and its sprite pick `0x22ae21`).

@@ -927,6 +927,63 @@ pub static VARIANTS_PORT_SCRIPT: Def = Def {
     menu: None,
 };
 
+/// Whether the superbounce HUD's tutorial steps have been seen
+/// (docs/game/superbounce.md, "The superbounce game type").
+/// `superbounce_hud` sets it when the last step closes; `false` shows the
+/// steps again the next time a game starts, and
+/// `H2_SUPERBOUNCE_TUTORIAL=1` shows them whatever it says.
+pub static SUPERBOUNCE_TUTORIAL_SEEN: Def = Def {
+    key: "superbounce.tutorial_seen",
+    label: "Superbounce Tutorial Seen",
+    help: "The superbounce HUD's four tutorial steps have been shown to the end. \
+           Set it to false to see them again.",
+    kind: Kind::Bool,
+    default: Value::Bool(false),
+    env: None,
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::Diagnostic,
+    menu: None,
+};
+
+/// The superbounce fall assist, opt in (docs/game/superbounce.md, "Hold X:
+/// the fall assist"): holding X in the air steers the player onto a
+/// strip. Off, nothing steers and nothing on the map or the HUD asks for
+/// X. Its row is on the Controls screen (`video_screen::model`);
+/// `superbounce_assist` reads it live.
+pub static SUPERBOUNCE_FALL_ASSIST: Def = Def {
+    key: "superbounce.fall_assist",
+    label: "Fall Assist",
+    help: "Superbounce: hold X while falling and the stick is steered so you \
+           land on the strip. Off by default.",
+    kind: Kind::Bool,
+    default: Value::Bool(false),
+    env: None,
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::User,
+    menu: Some(Menu {
+        screen: "controls",
+        order: 70,
+    }),
+};
+
+/// `H2_SUPERBOUNCE_TUTORIAL=1` shows the superbounce tutorial steps even
+/// when [`SUPERBOUNCE_TUTORIAL_SEEN`] is set.
+pub const SUPERBOUNCE_TUTORIAL_ENV: &str = "H2_SUPERBOUNCE_TUTORIAL";
+
+/// Whether the superbounce tutorial shows this run: never seen, or forced
+/// by `env` (the value of [`SUPERBOUNCE_TUTORIAL_ENV`]).
+pub fn superbounce_tutorial_shows(seen: bool, env: Option<&str>) -> bool {
+    !seen || env.is_some_and(|v| v.trim() == "1")
+}
+
 /// Resolve the viewer's memory budget before the child mounts the film's private disk.
 pub fn theater_ring_mib(data: Option<&Path>) -> usize {
     let path = data.map(settings::path_in);
@@ -986,6 +1043,8 @@ pub static ALL: &[&Def] = &[
     &HALO1_SANDBOX,
     &HALO1_ASSETS,
     &HALO1_HUD,
+    &SUPERBOUNCE_TUTORIAL_SEEN,
+    &SUPERBOUNCE_FALL_ASSIST,
     // The campaign skulls, kept per profile (crate::skulls, docs/game/skulls.md).
     &crate::skulls::SKULLS[0],
     &crate::skulls::SKULLS[1],
@@ -1129,6 +1188,40 @@ mod tests {
             assert!(d.key.contains('.'), "{}", d.key);
             assert_eq!(d.check(d.default), Ok(d.default), "{}", d.key);
         }
+    }
+
+    #[test]
+    fn the_superbounce_tutorial_shows_until_seen_or_when_forced() {
+        assert!(superbounce_tutorial_shows(false, None));
+        assert!(!superbounce_tutorial_shows(true, None));
+        assert!(!superbounce_tutorial_shows(true, Some("0")));
+        assert!(superbounce_tutorial_shows(true, Some("1")));
+        let store = Store::defaults(ALL);
+        assert_eq!(
+            store.get(SUPERBOUNCE_TUTORIAL_SEEN.key),
+            Some(Value::Bool(false))
+        );
+        store
+            .set(SUPERBOUNCE_TUTORIAL_SEEN.key, Value::Bool(true))
+            .unwrap();
+        assert!(store.handle::<bool>(SUPERBOUNCE_TUTORIAL_SEEN.key).get());
+    }
+
+    #[test]
+    fn the_fall_assist_is_opt_in_with_a_controls_row() {
+        let store = Store::defaults(ALL);
+        assert_eq!(
+            store.get(SUPERBOUNCE_FALL_ASSIST.key),
+            Some(Value::Bool(false))
+        );
+        assert_eq!(
+            SUPERBOUNCE_FALL_ASSIST.menu.expect("a row").screen,
+            "controls"
+        );
+        store
+            .set(SUPERBOUNCE_FALL_ASSIST.key, Value::Bool(true))
+            .unwrap();
+        assert!(store.handle::<bool>(SUPERBOUNCE_FALL_ASSIST.key).get());
     }
 
     #[test]

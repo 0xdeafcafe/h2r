@@ -12,7 +12,7 @@
 use crate::brain::Vec3;
 
 /// One spot.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Bounce {
     /// The map's short name, as its `.map` file is named (`ascension`).
     pub map: &'static str,

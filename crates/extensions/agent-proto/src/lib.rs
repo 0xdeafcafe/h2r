@@ -24,8 +24,10 @@ pub mod expect;
 pub mod firefight;
 pub mod forge;
 pub mod frame_graph;
+pub mod goto;
 pub mod havok;
 pub mod superbounce;
+pub mod superbounce_view;
 pub mod host_lobby;
 pub mod host_memory;
 pub mod memory_forensics;
@@ -241,6 +243,9 @@ pub mod method {
     pub const UI_CAMPAIGN: &str = "ui.campaign";
     /// The pregame session's player slots, peer indices, names and connection bars.
     pub const UI_LOBBY_PLAYERS: &str = "ui.lobby.players";
+    /// The pregame lobby's mode strip: `{place, leader, selected, tabs:
+    /// [{tab, label, state, reason}], notice}` (docs/game/party-lobby.md).
+    pub const UI_LOBBY_TABS: &str = "ui.lobby.tabs";
     pub const UI_SCREEN: &str = "ui.screen";
     /// Active filters of the Live Custom Game Browser.
     pub const UI_BROWSER_FILTERS: &str = "ui.browser.filters";
@@ -265,6 +270,10 @@ pub mod method {
     /// reasons, the pipelined render, the frame-stats counters
     /// ([`crate::RenderStats`]).
     pub const RENDER_STATS: &str = "render.stats";
+    /// Where the window drew the world marks on its last presents: the
+    /// frame kind, a made frame's blend fraction and camera shift, and the
+    /// first anchors' window pixels (no params; the first call arms it).
+    pub const RENDER_MARKS: &str = "render.marks";
     /// Two PNG files compared pixel by pixel ([`crate::CompareParams`]).
     pub const RENDER_COMPARE: &str = "render.compare";
     /// The frame of a sim tick as a PNG ([`crate::FrameCaptureParams`]).
@@ -876,6 +885,13 @@ pub struct Physics {
     /// character contacts its ground test walks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub support: Option<Support>,
+    /// Bipeds: whether a standing capsule fits at the origin, the test
+    /// that decides whether releasing crouch clears the crouch request.
+    /// The superbounce mode's capsule test against the loaded map's
+    /// collision, while that mode is on and its scan is ready; absent
+    /// otherwise (docs/game/superbounce.md, "Charge").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standing_fits: Option<bool>,
 }
 
 /// A biped's ground support as the engine keeps it (biped `+0x349`,

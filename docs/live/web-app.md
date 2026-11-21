@@ -286,7 +286,22 @@ ids): Opening Act (first kill of a game), Last Word
 (last kill), Payback (kill your last killer within 10 s), Twofer / Hat
 Trick / Full House / Encore (2 / 3 / 4 / 5+ kills, each within 4 s of the
 last), Hot Streak / Wildfire / Untouchable (5 / 10 / 15 kills without
-dying). EXP is games completed plus two per win.
+dying). The superbounce medals come from a game's `Superbounce` and
+`Bounced` events (and the snapshot's `bounces` and `bounced`) rather than
+its kills, by `bounceMedals`, the site's copy of the game's table
+([superbounce.md](../game/superbounce.md#the-rule)): Superbounce for every
+bounce; Double / Triple / Quad / Chain Bounce and Bouncetacular once a chain,
+at 2 / 3 / 4 / 5 / 6 bounces; and Bounced for a death falling out of the map
+while trying one. Incel comes at a finished game's end to every player
+still in it who joined before its first kill and was on neither side of a
+`Teabag` (`gameIncel`, the site's copy of the rule,
+[teabag.md](../game/teabag.md#the-medal); `late` from a join after a
+kill, or the snapshot's `joined_late`). A game's record holds every
+player's, a bot's included; a career holds the player's own. The carnage report's medal chest and a
+player's medal chest list them only once a game or player has one. Their
+pictures are the game's HUD medal glyphs, upscaled (`public/art/ART.md`,
+"Batch 07"). A medal id the pack has no file for shows its name in a round
+badge (`MedalIcon`). EXP is games completed plus two per win.
 
 ### Sign up in the browser
 

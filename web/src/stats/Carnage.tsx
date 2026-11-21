@@ -5,7 +5,7 @@ import { For, Show, createMemo, createSignal } from "solid-js";
 import { A } from "@solidjs/router";
 import type { GameState, Standing } from "../state/reducer";
 import { standings, teamStandings } from "../state/reducer";
-import { bestSprees, countMedals, gameMedals, ordinal, places, gameWeaponReport, MEDALS, type MedalId, type GameWeaponRow } from "../state/derive";
+import { bestSprees, countMedals, gameAwards, isBounceMedal, ordinal, places, gameWeaponReport, MEDALS, type MedalId, type GameWeaponRow } from "../state/derive";
 import Emblem from "../components/Emblem";
 import { BotTag } from "../components/bits";
 import MedalIcon from "../components/MedalIcon";
@@ -31,7 +31,7 @@ export default function Carnage(props: { game: GameState }) {
     const g = props.game;
     const pl = places(g);
     const sprees = bestSprees(g.kills);
-    const medals = gameMedals(g.kills);
+    const medals = gameAwards(g);
     const by = new Map<number, Row>();
     for (const s of standings(g)) {
       by.set(s.index, {
@@ -55,7 +55,9 @@ export default function Carnage(props: { game: GameState }) {
       return { team: t.team as number | null, score: t.score, place: players[0]?.place ?? 0, players };
     });
   });
-  const totalMedals = createMemo(() => [...countMedals(gameMedals(props.game.kills)).entries()].sort((a, b) => b[1] - a[1]));
+  const totalMedals = createMemo(() => [...countMedals(gameAwards(props.game)).entries()].sort((a, b) => b[1] - a[1]));
+  // The bounce medals only in a game that had bounces (a superbounce game).
+  const chest = createMemo(() => (props.game.bounces?.length ? MEDALS : MEDALS.filter((m) => !isBounceMedal(m.id))));
 
   const weapons = createMemo(() => gameWeaponReport(props.game.kills));
   const ended = () => props.game.status === "ended";
@@ -191,7 +193,7 @@ export default function Carnage(props: { game: GameState }) {
           <section class="s-sec s-game-medal-chest">
             <header><span>Total Game Medals</span><Derived /></header>
             <div class="s-game-medal-grid s-game-medal-grid--named">
-              <For each={MEDALS}>{(medal) => {
+              <For each={chest()}>{(medal) => {
                 const count = () => totalMedals().find(([id]) => id === medal.id)?.[1] ?? 0;
                 return <div class="s-game-medal" classList={{ empty: !count() }}>
                   <MedalIcon id={medal.id} size={30} dim={!count()} />

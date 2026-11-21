@@ -1013,6 +1013,7 @@ dependencies = [
  "host-data",
  "host-dirs",
  "hs",
+ "hud-kit",
  "iced-x86",
  "image",
  "input",
@@ -2393,6 +2394,7 @@ dependencies = [
  "hot-render",
  "hot-tags",
  "hs",
+ "hud-kit-core",
  "iced-x86",
  "input",
  "kernel",
@@ -3104,11 +3106,39 @@ dependencies = [
  "h1-assets",
  "h1map",
  "hud-edit",
+ "hud-kit-core",
  "map",
  "png",
  "scenario-edit",
  "tags",
  "xiso",
+]
+
+[[package]]
+name = "hud-kit"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assets",
+ "h1-assets",
+ "h1map",
+ "hud-edit",
+ "hud-kit-core",
+ "map",
+ "scenario-edit",
+ "serde_json",
+ "tags",
+ "xbe",
+ "xiso",
+]
+
+[[package]]
+name = "hud-kit-core"
+version = "0.1.0"
+dependencies = [
+ "assets",
+ "map",
+ "tags",
 ]
 
 [[package]]

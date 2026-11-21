@@ -626,6 +626,36 @@ pub struct Substituted {
     pub held_palette: usize,
 }
 
+/// A view's camera between two frames, as [`substitute`] draws it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Between {
+    /// Not moved: the uploaded value stands (frame `cur`'s camera).
+    Still,
+    /// A cut (a jump, a sharp turn, a zoom): the view snaps to frame
+    /// `cur`'s camera.
+    Cut,
+    /// The in-between camera ([`Persp::lerp_camera`]).
+    Blend(Persp),
+}
+
+/// The camera of `cur`'s view at `t` (0 is `prev`, 1 is `cur`): the one
+/// rule [`substitute`] draws the world with and the window's marks follow
+/// (`super::marks`).
+pub fn between(prev: &ViewCamera, cur: &ViewCamera, t: f64, tuning: &Tuning) -> Between {
+    if prev.raw == cur.raw {
+        Between::Still
+    } else if prev.camera.cut(
+        &cur.camera,
+        tuning.cut_distance,
+        tuning.cut_angle,
+        tuning.cut_zoom,
+    ) {
+        Between::Cut
+    } else {
+        Between::Blend(prev.camera.lerp_camera(&cur.camera, t))
+    }
+}
+
 /// The constants each draw of `cur` replays with at `alpha` between `prev`
 /// (0) and `cur` (1): `None` keeps the draw's own. At `alpha >= 1` every
 /// draw keeps its own, so the replay is frame `cur` exactly.
@@ -649,24 +679,18 @@ pub fn substitute(
         .cameras
         .iter()
         .map(|c| {
-            let between = prev.camera(c.view).and_then(|p| {
-                if p.raw == c.raw {
-                    // Not moved: the uploaded value stands.
-                    None
-                } else if p.camera.cut(
-                    &c.camera,
-                    tuning.cut_distance,
-                    tuning.cut_angle,
-                    tuning.cut_zoom,
-                ) {
+            let blended = match prev.camera(c.view).map(|p| between(p, c, t, tuning)) {
+                Some(Between::Cut) => {
                     stats.snapped += 1;
                     None
-                } else {
-                    stats.cameras += 1;
-                    Some(p.camera.lerp_camera(&c.camera, t))
                 }
-            });
-            (c.view, between, c.camera)
+                Some(Between::Blend(b)) => {
+                    stats.cameras += 1;
+                    Some(b)
+                }
+                Some(Between::Still) | None => None,
+            };
+            (c.view, blended, c.camera)
         })
         .collect();
     for (i, d) in cur.draws.iter().enumerate() {

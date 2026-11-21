@@ -39,12 +39,20 @@ connection to hold `session.claim`.
 | `havok.pair.set` | claim | [`havok.pair.set`](#havokpairset) |
 | `superbounce.state` | read | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `superbounce.set` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
+| `superbounce.medal_test` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `superbounce.assist` | read | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `superbounce.assist_test` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
+| `superbounce.verify`, `superbounce.verify_cancel` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
+| `superbounce.verify_status` | read | [`superbounce`](#superbounce-the-superbounce-game-type) |
+| `superbounce.view` | read | [`superbounce`](#superbounce-the-superbounce-game-type) |
+| `superbounce.view_test` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
+| `superbounce.ghosts` | read | [`superbounce`](#superbounce-the-superbounce-game-type) |
+| `superbounce.ghost_show` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `profile.counters`, `profile.capture`, `profile.fallbacks`, `profile.memory`, `profile.faults` | read | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.start`, `profile.sample.stop` | act | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.status` | read | [`profile`](#profile-where-a-frame-goes) |
 | `render.frame`, `render.stats` | read | [`render`](#render-the-frame-and-the-pipeline) |
+| `render.marks` | read | [`render.marks`](#rendermarks) |
 | `render.frame_layout` | read | [Display raster and texture coordinates](#renderframe_layout) |
 | `render.capture_clip`, `render.capture_clip.status` | act, read | [Headless display clips](#rendercapture_clip) |
 | `render.coop_look` | read | [`render`](#render-the-frame-and-the-pipeline) |
@@ -65,7 +73,7 @@ connection to hold `session.claim`.
 | `host.memory.history`, `heap`, `gpu`, `diff`, `postmortem` | read | [Finding a leak after the fact](#finding-a-leak-after-the-fact) |
 | `host.lobby.open`, `close`, `start` | act | [`host.lobby`](#hostlobby) |
 | `host.lobby.state` | read | [`host.lobby`](#hostlobby) |
-| `ui.screen`, `ui.campaign`, `ui.audit`, `ui.stack`, `ui.lobby.players`, `ui.browser.filters`, `ui.attract` | read | [`ui`](#ui-what-the-menus-show) |
+| `ui.screen`, `ui.campaign`, `ui.audit`, `ui.stack`, `ui.lobby.players`, `ui.lobby.tabs`, `ui.browser.filters`, `ui.attract` | read | [`ui`](#ui-what-the-menus-show) |
 | `ui.press` | act | [Menu inspection and navigation](#menu-inspection-and-navigation) |
 | `audio.voices`, `audio.listeners`, `audio.loops` | read | [`audio`](#audio-voice-routing) |
 | `hs.threads`, `hs.globals`, `hs.player_actions` | read | [HaloScript state](#haloscript-state) |
@@ -77,6 +85,8 @@ connection to hold `session.claim`.
 | `bots.stats` | read | [Bot combat](#bot-combat) |
 | `bots.bounce_to` | act | [Bounce routes](#bounce-routes) |
 | `bots.bounce_status`, `superbounce.spots` | read | [Bounce routes](#bounce-routes) |
+| `player.goto`, `player.goto_cancel` | act | [`player.goto`](#playergoto-drive-the-player-somewhere) |
+| `player.goto_status` | read | [`player.goto`](#playergoto-drive-the-player-somewhere) |
 | `sim.*` | read or act | [`sim`](#sim-simulated-players-and-direct-state) |
 | `forge.status`, `forge.doc`, `forge.log`, `forge.propose`, `forge.input`, `forge.look`, `forge.look.set`, `forge.status.monitors` | read or act | [Local Forge session](#local-forge-session) |
 | `forge.capacity`, `forge.probe` | read, act | [Forge probes](#forge-probes) |
@@ -98,7 +108,7 @@ connection to hold `session.claim`.
 
 A new method gets a row here and a section for its domain. The names
 live in `crates/extensions/agent-proto/src` (`method::ALL`, `hot::method::ALL`,
-`state::method::ALL`, `sim`, `forge`, `firefight`, `rules`, `trace`, `theater`) and where the host adds
+`state::method::ALL`, `sim`, `forge`, `firefight`, `rules`, `trace`, `theater`, `goto`) and where the host adds
 them (`Agent::add_method`, `Agent::add_game_method`).
 
 ## Connecting
@@ -432,6 +442,12 @@ another object answers `GONE` and never another object's data.
   most 32): `key`, `other`, `point`, `normal`, `value` (the first pass
   wants at least 1e-4), `flags`. The airborne bit is decided from these,
   unlike `havok.contacts`, which lists the solver's contact constraints.
+  Bipeds also get `standing_fits`: whether a standing capsule fits at the
+  origin, the test that decides whether letting go of crouch clears
+  `crouch_request`. It is the superbounce mode's capsule test against the
+  loaded map's collision (`crates/extensions/game/src/superbounce_capsule.rs`),
+  so it is there only while that mode is on and its scan is ready
+  ([superbounce.md](../game/superbounce.md#charge)).
   Poll `object player.0` on one `h2 agent -` connection and keep one reply
   per stamped tick for a movement trace, or use [a trace](#tick-traces-and-the-flight-recorder).
 
@@ -663,6 +679,18 @@ with `INVALID_PARAMS`) answers from the state the
 | `position` | the local player's position, world units |
 | `nearest` | the bounce spot nearest the player: `distance` to its edge, `launch` (units/s), `fall` (units) and its `edge` |
 | `scan` | `status` (`idle`, `scanning`, `ready`, `failed`), `map`, `error`, and the `bounce` and `crouch` spot counts |
+| `airborne` | the local player's biped is off the ground (biped flags bit 0, as `world.object`'s `physics.airborne`); absent without a player |
+| `vz` | the local player's vertical velocity, world units a second, up positive |
+| `yaw` | the way the local player's unit aims, radians from +X toward +Y: the first-person camera's yaw |
+| `charge` | the charge meter: `phase` (`near`, `under`, `held`, `primed`, `lost`), `fill` (0, 1/3, 2/3, then 1 less `still_ticks` over 38 while primed, 0 while lost) and `still_ticks`; absent while hidden ([superbounce.md](../game/superbounce.md#charge)) |
+| `verb` | the prompt line's verb: `let_go_of_crouch` while `under`, `walk_out_to_stand` while `held`, `keep_moving` while primed and still for 19 ticks or more, `charge_again` for 150 ticks after a loss while no crouch step has begun |
+| `lost_reason` | why the charge went, while `lost` and while the verb is `charge_again`: `stood_still` (the word left −3 after 30 still ticks or more), `crouched` (a crouch while primed), `unknown` (the word left −3 for another reason); absent otherwise ([superbounce.md](../game/superbounce.md#charge)) |
+| `nav_target` | the navpoint's target: `at` (the spot's stand point), `kind` (`crouch` while not primed, `strip` while primed: the chosen strip, [superbounce.md](../game/superbounce.md#floor-marks)), `distance` (world units), `fall` (a strip's drop, world units; 0 for a crouch spot) |
+| `takeoff` | while primed on the ground, where to jump from for the chosen strip (the floor mark's place); absent when none is found |
+| `landing` | while airborne and falling toward a strip, the landing the assist predicts: `at` (at the strip's floor height), `verdict` (`on_slot`, `fixable`, `miss`), `speed` (the touchdown speed, units/s), the strip's `need`, `miss` (world units outside the slot, 0 inside) and `locked` (in the slot at `need` or faster: the [lock-on](../game/superbounce.md#lock-on) is red) |
+| `last_landing` | the last touchdown within 0.5 of a strip: `result` (`bounce`, `not_primed`, `missed`, `too_slow`, `no_bounce`), the game `tick` and the origin `at` on the tick before ([superbounce.md](../game/superbounce.md#landings)) |
+| `standing_fits` | whether the standing capsule fits at the player's origin, as `world.object`'s `physics.standing_fits`; absent before the scan is ready |
+| `medals` | every player's medals this game, bots included ([superbounce.md](../game/superbounce.md#medals)): `players`, a row for each slot that has a chain or a medal (`player` the slot, `chain` its last chain's count, `live` whether its next bounce adds to it, `counts` each medal id's total), and `recent`, the last 8 awards, oldest first (`player`, `tick`, `chain`, `medals`: the ids, lowest first). The ids are `superbounce`, `double-bounce`, `triple-bounce`, `quad-bounce`, `chain-bounce`, `bouncetacular` and `bounced` |
 
 ```sh
 printf '%s\n' 'superbounce.state' | h2 agent -
@@ -680,6 +708,23 @@ carry `H2_SUPERBOUNCE`, turns the mode on.
 h2 agent superbounce.set '{"on":true}'
 ```
 
+`superbounce.medal_test {"chain": N}` or `{"bounced": true}` (access: act)
+files a bounce at chain count `N` (1 and up), or a Bounced, for the first
+local player with a unit, by the chain's rule
+(`superbounce_chain::bounce_medals`). The chain is left at `N` and live,
+as after a real bounce; a Bounced ends it. The award reaches the HUD (its
+medal line and notification) and `superbounce.state`'s `medals` as a real
+one does. The answer is `{"player", "chain", "medals", "line"}`: the slot,
+the count, the ids filed and the HUD's line (the highest medal's glyph and
+words). It refuses with the mode off, with no local player, with `chain`
+0, or with both or neither of `chain` and `bounced`.
+
+```sh
+h2 agent superbounce.medal_test '{"chain":6}'
+# {"player":0,"chain":6,"medals":["superbounce","bouncetacular"],"line":"\ue2a5 Bouncetacular!"}
+h2 agent superbounce.medal_test '{"bounced":true}'
+```
+
 `superbounce.assist` (access: read; no parameters) says what the hold-X fall
 assist did at its last pad read
 ([superbounce.md](../game/superbounce.md#hold-x-the-fall-assist);
@@ -688,6 +733,7 @@ assist did at its last pad read
 | Field | Meaning |
 |---|---|
 | `active` | the superbounce mode is on; the assist works only then |
+| `enabled` | the player's `superbounce.fall_assist` setting is on; the assist is opt in and never steers while it is off |
 | `test_hold` | `superbounce.assist_test` is holding the button |
 | `engaged` | the assist steered the player at its last read |
 | `target` | the strip's stand point, world units |
@@ -700,13 +746,130 @@ The last five are absent while not engaged.
 
 `superbounce.assist_test {"hold": true|false}` (access: act) holds the
 assist's button as if it were pressed, so an agent can try the assist
-without a pad: with the mode on, a player in the air above a strip in reach
-is steered while it is `true`. The answer is `{"hold": bool}`. It holds
-until set `false`.
+without a pad: with the mode and the setting on, a player in the air above
+a strip in reach is steered while it is `true`. The answer is
+`{"hold": bool}`. It holds until set `false`. The setting is turned on and
+off with `settings.set`, live.
 
 ```sh
+h2 agent settings.set '{"key":"superbounce.fall_assist","value":true}'
 h2 agent superbounce.assist_test '{"hold":true}'
 h2 agent superbounce.assist
+```
+
+`superbounce.verify {kind, ...}` (access: act) starts a batch of trials of
+the loaded map's spots in the game, run tick by tick on one seat by an
+agent ticker (`Agent::add_ticker`), and answers at once with the plan
+([superbounce.md](../game/superbounce.md#verifying-spots);
+`crates/extensions/game/src/superbounce_verify.rs`; wire types
+`agent_proto::superbounce::Verify*`). One batch runs at a time. It needs
+the mode on and its scan ready, except over explicit `points`; the
+`player.<n>` seat needs the `superbounce-assist` feature's pad tap, and
+every kind but `route` needs the `agent-calls` feature's teleport
+(`UNAVAILABLE` otherwise). Every param but `kind` is optional:
+
+| Param | Meaning |
+|---|---|
+| `kind` | `crouch` (crouch outside the lip, walk in, let go under it, walk out: does the word turn −3?), `drop` (a fall onto a strip with the word set: does it launch?) or `route` (a bot's whole `bots.bounce_to` route) |
+| `spots` | the scan's spots of that kind by index, best score first (the order `dry_run` lists); default the first `max_spots` (12) that have not failed |
+| `points` | explicit spots instead: `{stand, out?, edge?, drift?, width?, need?}`; never saved |
+| `seat` | `player.<n>` (default `player.0`, driven through the first controller's pad) or a brain-driven bot by gamertag, handle or `player.<n>` (driven by holding its pad); `route` needs a bot |
+| `turns`, `distances`, `offsets` | crouch: approach turns in degrees from straight in (default `[0,25,-25]`), starts outside the lip along it (default `[0.3,0.6]`), and X/Y offsets (default `[[0,0]]`) |
+| `across`, `along`, `heights` | drop: offsets across the slot toward the drift (default `[-0.05,0,0.05,0.1,0.15]`), along it (`[0]`), and heights over the strip (`[1.5,2.5,3.5]`) |
+| `prime` | drop: `set` (−3, default), `none` (0, the control) or `keep` |
+| `drift_stick` | drop: the stick along the drift while falling, 0 to 1 (default 0) |
+| `settle_ticks`, `hold_ticks`, `out_ticks`, `fall_ticks`, `route_ticks` | 20, 15, 30, 120, 3600 |
+| `to`, `mode`, `repeat` | route: the target (default 6 up from each strip's stand), `help` or `fun` (default), and the routes a spot (3) |
+| `trace` | keep the per-tick trace of this trial index (`phase`, `pos`, `vz`, `airborne`, `request`, `crouch_button`, `crouch`, `standing_fits`, `word`) |
+| `save` | write the map's verified file at the end (default true; never for `points` or `route`) |
+| `dry_run` | plan and list, run nothing |
+
+The answer is `{job, kind, seat, map, spots, trials, estimated_ticks,
+dry_run}`: each spot's `index`, `kind`, `stand`, `status` and `score`, and
+each trial's `spot`, `start`, `yaw`, `distance`, `offset` and `height`.
+
+`superbounce.verify_status {wait_ticks?, brief?}` (access: read) reports
+on the newest batch: `state` (`none`, `running`, `done`, `failed`,
+`cancelled`), `job`, `kind`, `seat`, `map`, `done` and `total` trials,
+`current` (the trial and its phase), `spots`, `results` (each spot's
+`trials`, `ok`, `status` `proven`, `failed` or `untried`, its `best`
+trial and `why` the others failed, by count), `trials` (left out with
+`brief`), `trace`, `lines` (one a spot), `saved` (the verified file
+written) and `error`. With `wait_ticks` (at most 290) it answers when the
+batch ends or that many ticks pass. A crouch trial carries
+`crouched_first`, `under`, `forced`, `primed_tick`, `primed_at` and
+`closest`; a drop `contact_tick`, `speed_in`, `vz_out`, `landed_at`,
+`word_before` and `landing`; a route `route`, `steps` and its
+touchdown. `superbounce.verify_cancel` (access: act; no params) stops the
+batch, lets go of the seat and answers with the report; a cancelled batch
+writes nothing.
+
+```sh
+h2 agent superbounce.set '{"on":true}'
+h2 agent superbounce.verify '{"kind":"crouch","dry_run":true}'
+h2 agent superbounce.verify '{"kind":"crouch","spots":[0,1,2],"trace":0}'
+h2 agent superbounce.verify_status '{"wait_ticks":290,"brief":true}'
+h2 agent superbounce.verify '{"kind":"drop","prime":"none","spots":[0]}'
+```
+
+`superbounce.view` (access: read; no parameters) says what the bounce
+view shows ([superbounce.md](../game/superbounce.md#the-bounce-view);
+`crates/extensions/game/src/superbounce_view.rs`; wire types in
+`crates/extensions/agent-proto/src/superbounce_view.rs`), as of the last
+tick, timed now:
+
+| Field | Meaning |
+|---|---|
+| `active` | the superbounce mode is on; everything below is empty while off |
+| `mode` | `none`, `pulse` (a tap's pulse still shows) or `hold` |
+| `button` | the flashlight action at the last tick |
+| `test_hold` | `superbounce.view_test` is holding |
+| `pulse_age`, `pulse_front` | seconds since the pulse left, and its ring's distance from the player in world units; absent without a pulse |
+| `grow` | the tracker's growth into the map, 0 to 1 |
+| `spots`, `marks`, `hidden`, `tested` | the spots the view knows, those marked in the world now, of those the ones behind a wall, and those with a line-of-sight answer |
+| `tracker` | `enabled` (the variant shows the tracker), `range` (world units) and `blips`: each `kind` (`bounce` or `crouch`), `proven`, `x` and `y` (right and ahead over the range; on the unit circle for a rim chevron), `level` (`same`, `above`, `below`), `rim` and `nav` |
+| `map` | while held or shrinking: `floors`, `edges` and `pairs` drawn, and its `blips` over the map's 50 m |
+
+`superbounce.view_test {"mode": "pulse"|"hold"|"none"}` (access: act)
+drives the view with no pad: `pulse` fires a pulse at the next tick,
+`hold` holds until `none`, `none` lets go and stops the pulse. The answer
+is `{mode, test_hold}`. Refused while the mode is off.
+
+```sh
+h2 agent superbounce.view_test '{"mode":"hold"}'
+h2 agent superbounce.view
+h2 agent superbounce.view_test '{"mode":"none"}'
+```
+
+`superbounce.ghosts` (access: read; no parameters) lists the loaded
+map's ghost runs: recorded runs that bounced off a spot, the best of
+each spot, kept in `<map>.ghosts` in the bots directory
+([superbounce.md](../game/superbounce.md#ghost-runs)). Wire types in
+`crates/extensions/agent-proto/src/superbounce.rs`; the game side is
+`crates/extensions/game/src/superbounce_ghost.rs`.
+
+| Field | Meaning |
+|---|---|
+| `active` | the mode is on |
+| `map` | the map the runs are for, once the mode has ticked on one |
+| `file` | the ghosts file's path, once there is a bots directory |
+| `error` | why the file could not be read (another version, a bad line); it is not written over then |
+| `ghosts` | each run: `index` (what `superbounce.ghost_show` takes), `at` (the spot's stand point), `landing` (the touchdown origin), `source` (`bot`, `verify` or `player`), `ticks` (30 a second), `launch` (units/s up out of the bounce), `crouch_primed` (it primed itself with a crouch), `presses` (`frame` and `button`, `crouch` or `jump`) |
+| `looked_at` | the run whose spot the first local player looks at |
+| `prompt` | the prompt line's ghost verb, as the HUD writes it (X's glyph, U+E102; B's, U+E101, on the Bumper Jumper layout) |
+| `playing` | the playback: `index`, `seconds` since it started by the clock, the run's `tick` then (with the fraction to the next), the figure's `at`, and `done` once it holds on its last frame; absent when none plays |
+| `recorded` | runs kept (a new best for their spot) since the game started |
+
+`superbounce.ghost_show {spot?, stop?}` (access: act) plays run `spot`
+once from its start, or the run looked at without `spot`; `{"stop":
+true}` stops the playback. It answers `playing`, the `index` and the
+run's length in `ticks`. Refused while the mode is off, with no map, or
+for an index the map has no run at.
+
+```sh
+h2 agent superbounce.ghosts
+h2 agent superbounce.ghost_show '{"spot":0}'
+h2 agent superbounce.ghost_show '{"stop":true}'
 ```
 
 ## `profile`: where a frame goes
@@ -1072,6 +1235,40 @@ sequence retains the requested rate.
 
 The state is in `crates/extensions/agent/src/render/clip.rs`. The GPU
 writer is in `crates/extensions/game/src/d3d_glue/clip_png.rs`.
+
+### `render.marks`
+
+`render.marks` (no params) reads where the window drew the world marks
+([Drawing world-space lines over the frame](#drawing-world-space-lines-over-the-frame))
+on its last 32 presents. The first call arms the window's probe and
+returns `armed: false` with no presents. Unarmed, the window pays one
+atomic load a present. Each later call returns `armed: true` and
+`presents`, oldest first. Each present has:
+
+- `seq`, counting the window's draws since the probe was armed;
+- `age_ms`, how long ago the window drew it;
+- `frame`: `guest` (a genuine image), `synthetic` (an in-between frame
+  at 60 or 120 fps), `no_world_view`, `raw` or `loading`;
+- `fraction`: a synthetic frame's blend fraction, 0 the frame before and
+  1 the newest; null otherwise or without marks;
+- `shifted`: the synthetic frame drew some view with another camera than
+  its marks' image, and the marks were moved onto it
+  ([high-framerate.md](../game/high-framerate.md), "World marks on made frames");
+- `anchors`: the first 16 mark groups' anchors in window pixels through
+  the first view's camera, null where off screen or behind it; empty
+  without marks.
+
+A headless host has no window and returns no presents. To check that
+marks stay on the world at 60 fps, turn at a steady rate with a mark in
+view and read twice: an anchor's `x` steps by a similar amount on every
+present, genuine and synthetic alike
+(`crates/platform/gfx/src/world_lines/probe.rs`,
+`crates/apps/app/src/shell.rs`, `crates/extensions/game/src/world_lines.rs`).
+
+```sh
+h2 agent render.marks
+h2 agent render.marks | jq '.presents[] | [.frame, .fraction, .shifted, .anchors[0]]'
+```
 
 ### `render.coop_look`
 
@@ -2006,6 +2203,23 @@ or the game's UI state without UI watch. All are read-only except
   slot order, with an empty list outside pregame.
   For example, `{"players":[{"slot":1,"peer":1,"name":"Clanker","bars":6,"rtt_ms":null}]}`.
 
+- **`ui.lobby.tabs`** (`h2 agent ui.lobby.tabs`, no parameters): the
+  pregame lobby's mode strip ([party-lobby.md](../game/party-lobby.md)),
+  read on a game boundary (`crates/extensions/game/src/lobby_tabs/strip.rs`).
+  The result is `{place, leader, selected, tabs, notice}`: `place` is
+  `split_screen`, `system_link` or `xbox_live`; `leader` is whether this
+  console leads the party (a member's strip has no glyphs and its bumpers
+  do nothing); `selected` is the tab the lobby is on. `tabs` lists the tabs
+  present in strip order, each `{tab, label, state, reason}` with `tab`
+  one of `matchmaking`, `custom_games`, `forge`, `firefight`, `co_op`,
+  `clankers`, `state` one of `selected`, `on`, `off`, and `reason` the
+  status-line sentence of a tab that cannot run here (else null).
+  `notice` is the reason the status line shows after a bumper press, for
+  four seconds, else null. It returns `UNAVAILABLE` when the pregame
+  lobby is not the screen on top or its session cannot be read.
+  For example, a Split Screen lobby's MATCHMAKING entry is
+  `{"tab":"matchmaking","label":"MATCHMAKING","state":"off","reason":"Matchmaking needs Xbox Live."}`.
+
 Screens already moved to Rust (the Video screen, the skulls page, the
 account, co-op and sign-in screens; [feature-engine.md](../engine/feature-engine.md))
 share one list-screen implementation (`crates/extensions/game/src/list_class.rs`).
@@ -2050,8 +2264,11 @@ requires a rendering check. [Transition reader](../../crates/extensions/game/src
 
 `ui.press` accepts `{target, action, row?, phase?}`. Copy the token from
 the latest audit. Actions are `up`, `down`, `left`, `right`, `choose` (A),
-`back` (B), `friends` (Y), and `open_live_menu` (A on the Live players
-screen in mode 3). Move focus, audit again, then send `choose` with the
+`back` (B), `friends` (Y), `open_live_menu` (A on the Live players
+screen in mode 3), and `tab_prev` (White) and `tab_next` (Black), the
+pregame lobby's mode strip bumpers, refused with `GONE` on any other
+screen ([party-lobby.md](../game/party-lobby.md#switching); read the
+result with `ui.lobby.tabs`). Move focus, audit again, then send `choose` with the
 observed row. A changed owner, row or requested phase invalidates the
 press. The XAPI tap checks the target again when the game reads the pad.
 A successful result contains `{delivered:true, target, action, row,
@@ -2635,11 +2852,12 @@ a genuine image with at least one shape from the current set and a
 usable camera. Individual edges still depend on clipping. `drawn: false`
 gives a reason such as a headless host, native rendering or scene
 capture being off, a loading picture, a raw submission, an unusable
-world camera, or waiting for a render with the set. Frozen marks may
-still be visible on synthetic interpolation frames. They use the
-preceding genuine source image's projection, or the current source's
-at the endpoint, if that source carries the current lease's marks
-(`crates/platform/d3d/src/interp/backend.rs`,
+world camera, or waiting for a render with the set. Marks are also
+drawn on in-between frames (60 and 120 fps), from the source image's
+samples if it carries the current lease's marks, with the camera the
+frame drew each view with
+([high-framerate.md](../game/high-framerate.md), "World marks on made frames";
+`crates/platform/d3d/src/interp/marks.rs`,
 `crates/apps/cli/src/play_cmd.rs`, `crates/apps/app/src/shell.rs`).
 
 A shell pause or paused Theater playback blocks the guest loop, so
@@ -2658,7 +2876,8 @@ immutable sample of world-space edges, with an anchor, color, dash
 flag, optional label and style for each group. A sample can live as long as
 its image or carry its own lease. Only the editor sample contributes
 to `editor.marks` status. The superbounce game type is another source, and
-its sample stays image-lived (`crates/extensions/game/src/superbounce_mode.rs`;
+its bounce view a third; their samples stay image-lived (`crates/extensions/game/src/superbounce_mode.rs`,
+`crates/extensions/game/src/superbounce_view.rs`;
 `crates/extensions/game/src/run_opts.rs`,
 `crates/extensions/game/src/world_lines.rs`,
 `crates/platform/gfx/src/world_lines.rs`).
@@ -2675,20 +2894,45 @@ how it is drawn; the default is a thin opaque line. A style has:
   from its end, in world units from the camera;
 - optional `chevrons`, small arrowheads lying flat in the world along
   each edge and pointing along a world direction. They flow along
-  the direction when their speed is not zero;
+  the direction when their speed is not zero, moved by the window's
+  clock at each present;
+- `stroke`, on by default: off leaves only the chevrons, ribbon and
+  label along the edges, with no line;
 - an optional floor `ribbon`, a translucent strip of a world width
-  along each edge, clipped at the near plane.
+  along each edge, clipped at the near plane;
+- a `label_face`: the 8x8 debug font (`Debug`, the default), or the
+  disc's HUD font with its button glyphs (`Hud`), once a source has
+  published one with `gfx::world_lines::set_hud_font`. A `Hud` label is
+  drawn in the 8x8 font while none is published.
+
+A sample may also give marks in the image's HUD space
+(`ImageMarks::hud`, `gfx::world_lines::HudMark`): paths, filled convex
+polygons and text, in guest pixels of the 640 by 480 image with the
+host's HUD fit already applied. The window scales them with the image,
+as the guest's own HUD is scaled, after the world lines. The superbounce
+bounce view draws its tracker blips and map this way
+(`crates/extensions/game/src/superbounce_view.rs`).
 
 The window draws every edge as an anti-aliased screen-space quad, with the
 core, halo and dashes in the fragment shader, and the ribbons, arrowheads
-and label pixels as triangles in the same vertex buffer. All of it is one
-pipeline and one draw per frame
-(`crates/apps/app/src/overlay/marks.rs`).
+and label pixels as triangles in the same vertex buffer. A HUD-font glyph
+is a textured quad sampling the font's atlas, bound once per draw. All of
+it is one pipeline and one draw per frame
+(`crates/apps/app/src/overlay/marks.rs`). A label's opacity is the
+style's `alpha` times its fade and pulse.
+
+A sample is captured once a guest frame, so motion within it belongs
+in the style (pulse, chevron speed), which the window runs at every
+present; geometry built from a capture-time clock steps at the tick
+rate at 60 and 120 fps.
 
 Genuine guest images captured with samples carry their own per-view
 cameras and aspect factors. Repeated scanout keeps the same samples
-and cameras. Synthetic images hold the preceding genuine source's
-projection, or the current source's at the endpoint. The window draws
+and cameras. An in-between frame draws the samples of the newest
+genuine image, or of the one before while a blended replay is under
+half way, with each view's camera moved onto the one the frame drew
+the world with ([high-framerate.md](../game/high-framerate.md), "World
+marks on made frames"). The window draws
 all visible samples together in a 2D pass over the finished frame.
 There is no depth test, so hidden edges draw at full strength
 (`crates/platform/d3d/src/present_camera.rs`,
@@ -2763,21 +3007,37 @@ sample.
 `bots.bounce_status {bot}` reads it back: `state` (`none`, `queued`,
 `running`, `done`, `failed`), `to`, `mode`, `why` (`helps`, `fun`, or
 `plain` when no bounce helped), `steps` (`walk_crouched`, `prime`, `walk`,
-`bounce`, `fly`, `nav`), `step` (the index it is on), `primed` (the level
+`bounce`, `drop`, `fly`, `nav`), `step` (the index it is on), `phase` (the
+step's own: a prime's `start`, `in`, `release`, `out`; a drop's `line`,
+`run`, `air`), `tries` (the step's try, from 1), `primed` (the level
 pair word is at -3, so a landing bounces), `primed_read` (read from the
-game, or assumed after the crouch and stand-up because it could not be)
-and, for a failed route, `error`: `timeout`, `no_map`, `no_path`,
-`goal_off_mesh`, `path_lost`, `prime_failed`, `pair_lost`, `no_bounce`,
-`stalled`, `state` (an internal fault), `enemy`, `no_route`, `died` or
-`map_changed`. While a route runs the bot fights and picks up nothing.
+game, or assumed after the walk out because it could not be), `landing`
+(the last touchdown in a bounce or a drop: `tick`, `at`, `speed_in`,
+`vz_out`, `miss`, `result` `bounce`, `not_primed`, `missed`, `too_slow`
+or `no_bounce`), `log` (each step and phase change, `{tick, step, what,
+at}`, the last 64) and, for a failed route, `error`: `timeout`, `no_map`,
+`no_path`, `goal_off_mesh`, `path_lost`, `prime_failed`, `pair_lost`,
+`no_bounce`, `no_drop`, `stalled`, `state` (an internal fault), `enemy`,
+`no_route`, `practice_off`, `died` or `map_changed`. While a route runs
+the bot fights and picks up nothing. While the superbounce mode is on the
+bots practise bounces instead of fighting, and `practice` gives the tally:
+`state` (`idle`, `route`, `waiting`), `site`, `attempts`, `bounces` and
+`spots` (each site's `stand`, `attempts`, `bounces` and `why`, by count)
+([bots.md](../game/bots.md#practising-bounces)).
 
 `superbounce.spots {map?, kind?}` lists the spots the bots know for a map
 (default the loaded one): `map`, `scanned` (the nav worker has made or
 read a scan; the measured spots are listed regardless) and `spots`, the
 measured ones first, then the scan best first. Each has `kind` (`bounce`
 or `crouch`; `kind` in the request filters), `source` (`measured` or
-`scan`), `edge` (two points), `stand`, `fall`, `launch`, `drift` and
-`score`.
+`scan`), `edge` (two points), `stand`, `fall`, `launch`, `drift`,
+`score`, `width` (a slot's gap between its joints, a crouch band's
+widest), `need` (a slot's touchdown speed down, which `fall` is worked
+from), `status` (`proven` for a crouch spot at a measured priming place
+or one the map's verified file proved, `failed` for one it failed, else
+`likely`), `out` (a crouch spot's way out from `stand`, X and Y) and
+`lip` (a crouch spot's edges overhead at `stand`, up to 8) and `shape`
+(`slot`, or `crease` for a single-crease bounce candidate).
 
 ```sh
 # a bot standing at x, sent to y over a ledge, bouncing on the way
@@ -2785,6 +3045,57 @@ h2 agent sim.state.set '{"player":2,"pos":[-12.0,3.0,-3.2]}'
 h2 agent bots.bounce_to '{"bot":"Clanker","to":[-10.6,9.0,2.4],"mode":"fun"}'
 h2 agent bots.bounce_status '{"bot":"Clanker"}'
 h2 agent superbounce.spots '{"map":"ascension","kind":"crouch"}'
+```
+
+## `player.goto`: drive the player somewhere
+
+`player.goto` drives `player.0` to a point or a spot with the bots'
+route brain, in one call instead of stepping the pad
+([bots.md](../game/bots.md#driving-a-player); the glue is
+`crates/extensions/game/src/player_goto.rs`, the autopilot
+`bots::goto`). It plans over the map's nav mesh, follows the path
+(jumps and drops included), plans again when the player strays or stops
+getting nearer, and holds the first controller's pad through the pad
+tap until it is over. It works with no bots in the game: the map's nav
+mesh is loaded for it (built by the nav worker when stale, else read
+from the cache; `h2 bots nav <map>` builds one by hand).
+
+Params: `to`, a point `[x, y, z]` (world units) or a spot
+`{"spot": n, "kind": "bounce" | "crouch"}` (default `bounce`), by its
+index among the mode's scanned spots of that kind, best first: the
+indices `superbounce.verify` uses (the mode must be on and its scan
+ready). `within` (world units, default 0.3, 0.05 to 10) is how near a
+point counts as there; a spot ends at its approach (a crouch spot's
+start, behind a bounce strip or on its launch floor). `face` turns the
+player to that yaw (radians from +X toward +Y) on arriving, with the
+game's teleport and no move. `timeout_ticks` (default 3600). `then`:
+`stop` (default), `crouch_recipe` (prime at the crouch spot, or at the
+one the planner picks for a bounce spot, then walk to its approach) or
+`bounce` (a bounce spot's whole route: prime unless primed, the jump or
+drop onto the strip, the ride down). The reply is `{job, kind, goal,
+then, map, nav}` (`nav` is `ready` or `loading`). A new `player.goto`
+replaces a running one. It is refused while a `superbounce.verify` batch
+drives `player.0`, and the batch is refused while a drive runs; without
+the pad tap (the `superbounce-assist` feature off) it is `UNAVAILABLE`.
+
+`player.goto_status {wait_ticks?}` reads it back (waiting up to 290
+ticks for the end): `state` (`none`, `loading`, `running`, `facing`,
+`done`, `failed`, `cancelled`), `job`, `kind`, `goal`, `then`, `steps`
+(`walk`, `walk_crouched`, `prime`, `bounce`, `drop`, `fly`, `nav`),
+`step`, `phase`, `primed`, `position`, `distance` (left along the walk
+under way, else straight to the goal), `path` (the player, then the
+waypoints ahead, at most 32), `replans`, `replanned` (`strayed`,
+`stuck`, `path_lost`, `stalled`, `pair_lost`), `ticks` and, for a failed
+drive, `error` (the route's reasons as in `bots.bounce_status`, `stuck`,
+`timeout`, `no_route`, `no_launch_floor`, a missing nav mesh, a changed
+map). `player.goto_cancel` stops it and lets go of the pad. The player
+strafes along the path: it does not turn while it walks.
+
+```sh
+h2 agent player.goto '{"to":[-10.6,9.0,2.4],"within":0.2}'
+h2 agent player.goto_status '{"wait_ticks":280}'
+h2 agent player.goto '{"to":{"spot":0,"kind":"crouch"},"then":"crouch_recipe"}'
+h2 agent player.goto_cancel
 ```
 
 ## `sim`: simulated players and direct state

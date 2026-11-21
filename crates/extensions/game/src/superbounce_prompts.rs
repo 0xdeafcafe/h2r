@@ -1,9 +1,10 @@
 //! The superbounce prompts drawn in the world (docs/game/superbounce.md,
-//! "The superbounce game type", "Hold X: the fall assist"): `HOLD X`
-//! growing on the strip a falling player can be steered onto, `GUIDING`
-//! once the assist has it, and on the ground `JUMP` / `JUMP NOW` at the
-//! spot a standing jump takes off from and `DROP >= x.x m` on strips that
-//! need a fall.
+//! "The superbounce game type", "Hold X: the fall assist"): `Hold X` (the
+//! X button's glyph) growing on the strip a falling player can be steered
+//! onto, `Guiding` once the assist has it, and on the ground `Jump` /
+//! `Jump now` at the spot a standing jump takes off from and `Drop 3 m`
+//! on strips that need a fall. They are in sentence case, in the HUD's
+//! colour and font ([`Look`]), as the HUD writes its prompts.
 //!
 //! The rules are pure: [`prompt_for`] picks what a strip says from a
 //! [`Cue`], [`label_scale`] and [`takeoff`] size and place it, and
@@ -15,6 +16,7 @@ use gfx::world_lines::{LineStyle, Pulse};
 use superbounce::{Kind, Spot, Vec3};
 
 use crate::superbounce_assist::{Body, Reach, drift_unit};
+use crate::superbounce_font::Look;
 use crate::superbounce_mode::METRES_PER_UNIT;
 
 /// Distance (world units) at and beyond which a prompt is at its base size.
@@ -43,14 +45,12 @@ pub const LABEL_RAISE: f32 = 0.3;
 /// The floor ring at the take-off spot.
 pub const RING_RADIUS: f32 = 0.15;
 const RING_SEGMENTS: usize = 12;
-/// The guide's tick at the predicted landing stands this high.
-pub const TICK_HEIGHT: f32 = 0.5;
 
-const HOLD_COLOUR: [f32; 3] = [1.0, 0.9, 0.2];
-const GUIDING_COLOUR: [f32; 3] = [0.2, 1.0, 0.3];
-const JUMP_COLOUR: [f32; 3] = [0.4, 1.0, 0.4];
-const NOW_COLOUR: [f32; 3] = [1.0, 1.0, 0.3];
-const DROP_COLOUR: [f32; 3] = [1.0, 0.55, 0.1];
+/// `units` world units in whole metres, at least 1: how the labels write
+/// a height.
+pub fn whole_metres(units: f32) -> i32 {
+    ((units * METRES_PER_UNIT).round() as i32).max(1)
+}
 
 /// What a strip says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,6 +76,8 @@ pub struct Cue {
     pub targeted: bool,
     /// The assist is steering now.
     pub engaged: bool,
+    /// The player has turned the fall assist on (`superbounce.fall_assist`).
+    pub assist: bool,
     /// The strip's fall, world units.
     pub fall: f32,
     /// Horizontal distance from the player to the strip's stand point.
@@ -84,13 +86,15 @@ pub struct Cue {
     pub takeoff_distance: f32,
 }
 
-/// What a strip says for `cue`. Nothing unless the player is primed.
+/// What a strip says for `cue`. Nothing unless the player is primed; in
+/// the air nothing unless the fall assist is on, as the landing is the
+/// player's own.
 pub fn prompt_for(cue: &Cue) -> Prompt {
     if !cue.primed {
         return Prompt::None;
     }
     if cue.airborne {
-        return match (cue.targeted, cue.engaged) {
+        return match (cue.assist && cue.targeted, cue.engaged) {
             (false, _) => Prompt::None,
             (true, false) => Prompt::HoldX,
             (true, true) => Prompt::Guiding,
@@ -164,9 +168,9 @@ fn ring(centre: Vec3, radius: f32) -> Vec<[Vec3; 2]> {
         .collect()
 }
 
-/// The style of a prompt's label and lines: big centred text, pulsing
-/// when `pulse` says so.
-fn style(scale: f32, width: f32, pulse: Option<Pulse>) -> LineStyle {
+/// The style of a prompt's label and lines: big centred text in the HUD
+/// font, pulsing when `pulse` says so.
+fn style(look: &Look, scale: f32, width: f32, pulse: Option<Pulse>) -> LineStyle {
     LineStyle {
         width,
         glow: Some(gfx::world_lines::Glow {
@@ -176,6 +180,7 @@ fn style(scale: f32, width: f32, pulse: Option<Pulse>) -> LineStyle {
         pulse,
         label_scale: scale,
         label_centered: true,
+        label_face: look.face,
         ..LineStyle::default()
     }
 }
@@ -184,17 +189,25 @@ fn raised(p: Vec3) -> Vec3 {
     [p[0], p[1], p[2] + LABEL_RAISE]
 }
 
-/// The prompts for one frame. `target` is the assist's pick (the strip a
+/// The prompts for one frame. `superbounce_world::frame` asks for them
+/// only in the air: on the ground its floor marks say where to jump from
+/// and land (docs/game/superbounce.md, "Floor marks"), and the ground
+/// prompts here are the rule table's (`prompt_for`), not drawn by the
+/// mode. `target` is the assist's pick (the strip a
 /// falling player can be steered onto, and where the player would land
-/// otherwise); `engaged` is whether the assist is steering. Airborne there
-/// is at most the one for the target; on the ground, at most the nearest
-/// standing-jump strip and the nearest strip that needs a drop.
+/// otherwise); `engaged` is whether the assist is steering, and `assist`
+/// whether the player has it on. Airborne there is at most the one for the
+/// target, and only with the assist on; on the ground, at most the nearest
+/// standing-jump strip and the nearest strip that needs a drop. All of
+/// them are in `look`'s colour and font.
 pub fn callouts(
     spots: &[Spot],
     body: &Body,
     primed: bool,
     target: Option<(&Spot, &Reach)>,
     engaged: bool,
+    assist: bool,
+    look: &Look,
 ) -> Vec<Callout> {
     let mut out = Vec::new();
     if !primed {
@@ -209,27 +222,27 @@ pub fn callouts(
             airborne: true,
             targeted: true,
             engaged,
+            assist,
             fall: spot.fall,
             stand_distance: horizontal(body.position, spot.stand),
             takeoff_distance: f32::INFINITY,
         };
-        let (text, color) = match prompt_for(&cue) {
-            Prompt::HoldX => ("HOLD X", HOLD_COLOUR),
-            Prompt::Guiding => ("GUIDING", GUIDING_COLOUR),
+        let text = match prompt_for(&cue) {
+            Prompt::HoldX => format!("Hold {}", look.x_button()),
+            Prompt::Guiding => "Guiding".into(),
             _ => return out,
         };
         let scale = label_scale(distance3(body.position, spot.stand));
         let land = [reach.landing[0], reach.landing[1], spot.stand[2]];
         out.push(Callout {
-            // The way to go on the floor, and a post where it lands now.
-            edges: vec![
-                [land, spot.stand],
-                [land, [land[0], land[1], land[2] + TICK_HEIGHT]],
-            ],
+            // The way to go on the floor; the landing itself is the
+            // world's lock-on (superbounce_world, "Lock-on").
+            edges: vec![[land, spot.stand]],
             anchor: raised(spot.stand),
-            color,
-            label: Some(text.into()),
+            color: look.colour,
+            label: Some(text),
             style: style(
+                look,
                 scale,
                 2.0,
                 (!engaged).then_some(Pulse {
@@ -251,6 +264,7 @@ pub fn callouts(
             airborne: false,
             targeted: false,
             engaged,
+            assist,
             fall: s.fall,
             stand_distance: horizontal(body.position, s.stand),
             takeoff_distance: horizontal(body.position, takeoff(s)),
@@ -267,10 +281,9 @@ pub fn callouts(
     if let Some((_, s)) = jump {
         let at = takeoff(s);
         let now = horizontal(body.position, at) <= NOW_RADIUS;
-        let (text, color, scale, pulse) = if now {
+        let (text, scale, pulse) = if now {
             (
-                "JUMP NOW",
-                NOW_COLOUR,
+                "Jump now",
                 SCALE_MAX,
                 Pulse {
                     period: 0.25,
@@ -279,8 +292,7 @@ pub fn callouts(
             )
         } else {
             (
-                "JUMP",
-                JUMP_COLOUR,
+                "Jump",
                 2.5,
                 Pulse {
                     period: 0.8,
@@ -291,18 +303,18 @@ pub fn callouts(
         out.push(Callout {
             edges: ring(at, if now { RING_RADIUS * 1.4 } else { RING_RADIUS }),
             anchor: raised(at),
-            color,
+            color: look.colour,
             label: Some(text.into()),
-            style: style(scale, 2.5, Some(pulse)),
+            style: style(look, scale, 2.5, Some(pulse)),
         });
     }
     if let Some((_, s)) = drop {
         out.push(Callout {
             edges: Vec::new(),
             anchor: raised(s.stand),
-            color: DROP_COLOUR,
-            label: Some(format!("DROP >= {:.1} m", s.fall * METRES_PER_UNIT)),
-            style: style(1.5, 1.0, None),
+            color: look.colour,
+            label: Some(format!("Drop {} m", whole_metres(s.fall))),
+            style: style(look, 1.5, 1.0, None),
         });
     }
     out
@@ -318,6 +330,7 @@ mod tests {
             airborne: false,
             targeted: false,
             engaged: false,
+            assist: true,
             fall: 0.0,
             stand_distance: 1.0,
             takeoff_distance: 0.8,
@@ -333,8 +346,15 @@ mod tests {
             launch: 17.9,
             drift,
             score: 1.0,
+            ..Spot::default()
         }
     }
+
+    const LOOK: Look = Look {
+        colour: [0.3, 0.6, 0.9],
+        face: gfx::world_lines::LabelFace::Hud,
+        glyphs: true,
+    };
 
     fn body(position: Vec3, airborne: bool) -> Body {
         Body {
@@ -393,6 +413,26 @@ mod tests {
         );
         // A fall or a standing jump does not matter in the air.
         assert_eq!(prompt_for(&Cue { fall: 5.0, ..c }), Prompt::HoldX);
+    }
+
+    #[test]
+    fn without_the_fall_assist_nothing_is_said_in_the_air() {
+        let c = Cue {
+            airborne: true,
+            targeted: true,
+            assist: false,
+            ..cue()
+        };
+        assert_eq!(prompt_for(&c), Prompt::None);
+        assert_eq!(prompt_for(&Cue { engaged: true, ..c }), Prompt::None);
+        // On the ground the bounce's own prompts stay.
+        assert_eq!(
+            prompt_for(&Cue {
+                assist: false,
+                ..cue()
+            }),
+            Prompt::Jump
+        );
     }
 
     #[test]
@@ -462,6 +502,13 @@ mod tests {
     }
 
     #[test]
+    fn heights_are_written_in_whole_metres_and_never_zero() {
+        assert_eq!(whole_metres(1.0), 3);
+        assert_eq!(whole_metres(0.5), 2);
+        assert_eq!(whole_metres(0.01), 1);
+    }
+
+    #[test]
     fn a_falling_player_gets_the_hold_x_label_and_a_guide() {
         let s = spot([0.0, 0.0, 0.0], 0.0, [0.0, 1.0]);
         let reach = Reach {
@@ -472,22 +519,33 @@ mod tests {
             miss: 0.5,
         };
         let b = body([0.4, 0.2, 1.0], true);
-        let out = callouts(&[s], &b, true, Some((&s, &reach)), false);
+        let out = callouts(&[s], &b, true, Some((&s, &reach)), false, true, &LOOK);
         assert_eq!(out.len(), 1);
         let c = &out[0];
-        assert_eq!(c.label.as_deref(), Some("HOLD X"));
-        assert_eq!(c.color, HOLD_COLOUR);
+        // The X button's glyph, in the HUD's colour and font.
+        assert_eq!(c.label.as_deref(), Some("Hold \u{e102}"));
+        assert_eq!(c.color, LOOK.colour);
+        assert_eq!(c.style.label_face, gfx::world_lines::LabelFace::Hud);
         assert!(c.style.pulse.is_some() && c.style.label_scale > 1.0);
-        assert_eq!(c.edges[0], [[0.4, 0.2, 0.0], [0.0, 0.0, 0.0]]);
-        assert_eq!(c.edges[1][1], [0.4, 0.2, TICK_HEIGHT]);
-        // Engaged: green, steady.
-        let g = &callouts(&[s], &b, true, Some((&s, &reach)), true)[0];
-        assert_eq!(g.label.as_deref(), Some("GUIDING"));
-        assert_eq!(g.color, GUIDING_COLOUR);
+        assert_eq!(c.edges, [[[0.4, 0.2, 0.0], [0.0, 0.0, 0.0]]]);
+        // Without the HUD font the button is its letter.
+        let letters = Look {
+            glyphs: false,
+            ..LOOK
+        };
+        let l = &callouts(&[s], &b, true, Some((&s, &reach)), false, true, &letters)[0];
+        assert_eq!(l.label.as_deref(), Some("Hold X"));
+        // Engaged: steady.
+        let g = &callouts(&[s], &b, true, Some((&s, &reach)), true, true, &LOOK)[0];
+        assert_eq!(g.label.as_deref(), Some("Guiding"));
+        assert_eq!(g.color, LOOK.colour);
         assert!(g.style.pulse.is_none());
+        // The assist off: no Hold X, no Guiding.
+        assert!(callouts(&[s], &b, true, Some((&s, &reach)), false, false, &LOOK).is_empty());
+        assert!(callouts(&[s], &b, true, Some((&s, &reach)), true, false, &LOOK).is_empty());
         // No target, or not primed: nothing.
-        assert!(callouts(&[s], &b, true, None, false).is_empty());
-        assert!(callouts(&[s], &b, false, Some((&s, &reach)), false).is_empty());
+        assert!(callouts(&[s], &b, true, None, false, true, &LOOK).is_empty());
+        assert!(callouts(&[s], &b, false, Some((&s, &reach)), false, true, &LOOK).is_empty());
     }
 
     #[test]
@@ -497,20 +555,69 @@ mod tests {
         let drop = spot([0.0, 2.0, 0.0], 1.0, [0.0, 1.0]);
         let other_floor = spot([0.5, 0.0, 9.0], 0.0, [1.0, 0.0]);
         let spots = [far_flat, flat, drop, other_floor];
-        let out = callouts(&spots, &body([0.0, 0.0, 0.0], false), true, None, false);
+        let out = callouts(
+            &spots,
+            &body([0.0, 0.0, 0.0], false),
+            true,
+            None,
+            false,
+            true,
+            &LOOK,
+        );
         assert_eq!(out.len(), 2);
-        assert_eq!(out[0].label.as_deref(), Some("JUMP"));
+        assert_eq!(out[0].label.as_deref(), Some("Jump"));
         // The nearer flat strip's take-off spot (0.2 back from its stand).
         assert_eq!(out[0].anchor, [0.8, 0.0, LABEL_RAISE]);
         assert_eq!(out[0].edges.len(), RING_SEGMENTS);
-        assert_eq!(out[1].label.as_deref(), Some("DROP >= 3.0 m"));
-        assert_eq!(out[1].color, DROP_COLOUR);
+        assert_eq!(out[1].label.as_deref(), Some("Drop 3 m"));
+        assert!(out.iter().all(|c| c.color == LOOK.colour));
+        // The same with the assist off.
+        let off = callouts(
+            &spots,
+            &body([0.0, 0.0, 0.0], false),
+            true,
+            None,
+            false,
+            false,
+            &LOOK,
+        );
+        assert_eq!(off, out);
         // On the take-off spot it flashes.
-        let on = callouts(&spots, &body([0.8, 0.0, 0.0], false), true, None, false);
-        assert_eq!(on[0].label.as_deref(), Some("JUMP NOW"));
+        let on = callouts(
+            &spots,
+            &body([0.8, 0.0, 0.0], false),
+            true,
+            None,
+            false,
+            true,
+            &LOOK,
+        );
+        assert_eq!(on[0].label.as_deref(), Some("Jump now"));
         assert_eq!(on[0].style.label_scale, SCALE_MAX);
         // Not primed, or in the air with no target: none.
-        assert!(callouts(&spots, &body([0.0; 3], false), false, None, false).is_empty());
-        assert!(callouts(&spots, &body([0.0, 0.0, 2.0], true), true, None, false).is_empty());
+        assert!(
+            callouts(
+                &spots,
+                &body([0.0; 3], false),
+                false,
+                None,
+                false,
+                true,
+                &LOOK
+            )
+            .is_empty()
+        );
+        assert!(
+            callouts(
+                &spots,
+                &body([0.0, 0.0, 2.0], true),
+                true,
+                None,
+                false,
+                true,
+                &LOOK
+            )
+            .is_empty()
+        );
     }
 }

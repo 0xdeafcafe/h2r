@@ -160,7 +160,6 @@ pub fn fit(text: &str, max: usize) -> String {
 }
 
 type MapFn = Arc<dyn Fn() -> Option<String> + Send + Sync>;
-type PlateFn = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
 
 /// Shared handle to the window's watermark: on or off (F3), what it says.
 /// Cloning shares the on/off state.
@@ -170,7 +169,6 @@ pub struct Watermark {
     build: BuildInfo,
     note: String,
     map: Option<MapFn>,
-    plate: Option<PlateFn>,
 }
 
 impl std::fmt::Debug for Watermark {
@@ -197,7 +195,6 @@ impl Watermark {
             build: BuildInfo::baked(),
             note: String::new(),
             map: None,
-            plate: None,
         }
     }
 
@@ -216,21 +213,6 @@ impl Watermark {
     pub fn with_map(mut self, map: impl Fn() -> Option<String> + Send + Sync + 'static) -> Self {
         self.map = Some(Arc::new(map));
         self
-    }
-
-    /// A plate of game-mode lines drawn top centre, whether or not the
-    /// watermark is shown (F3 hides only the build and run numbers). Asked
-    /// for each present; must be cheap. Empty draws nothing. The
-    /// superbounce game type's plate is one
-    /// (docs/game/superbounce.md, "The superbounce game type").
-    pub fn with_plate(mut self, plate: impl Fn() -> Vec<String> + Send + Sync + 'static) -> Self {
-        self.plate = Some(Arc::new(plate));
-        self
-    }
-
-    /// The plate's lines now; empty without one.
-    pub fn plate(&self) -> Vec<String> {
-        self.plate.as_ref().map(|p| p()).unwrap_or_default()
     }
 
     pub fn visible(&self) -> bool {
@@ -282,9 +264,6 @@ pub enum Align {
     Centre,
     /// Right-aligned, in the lower right corner.
     Right,
-    /// Left-aligned lines in a block centred near the top edge, which may
-    /// take half the image's width.
-    Top,
 }
 
 /// Pixels per font pixel for a target `height` pixels tall: 1 up to 1599,
@@ -331,7 +310,7 @@ pub fn rasterize_aligned(lines: &[String], scale: u32, align: Option<Align>) -> 
         .map(|l| {
             let gap = cols as usize - l.chars().count();
             match align {
-                None | Some(Align::Top) => l.clone(),
+                None => l.clone(),
                 Some(Align::Right) => " ".repeat(gap) + l,
                 Some(Align::Centre) => " ".repeat(gap / 2) + l,
             }
@@ -415,14 +394,8 @@ pub struct Placement {
 pub fn place(lines: &[String], area: Viewport, align: Align) -> Placement {
     let scale = scale_for(area.height);
     let margin = MARGIN * scale;
-    // Each panel keeps to its third of the image, so they never overlap;
-    // the top plate has the middle half to itself.
-    let share = if align == Align::Top {
-        area.width / 2
-    } else {
-        area.width / 3
-    };
-    let room = share.saturating_sub(2 * margin) / scale;
+    // Each panel keeps to its third of the image, so they never overlap.
+    let room = (area.width / 3).saturating_sub(2 * margin) / scale;
     let cols = (room.saturating_sub(2 * PAD) / CELL) as usize;
     let lines: Vec<String> = lines.iter().map(|l| fit(l, cols)).collect();
     let rows = lines.len() as u32;
@@ -430,14 +403,10 @@ pub fn place(lines: &[String], area: Viewport, align: Align) -> Placement {
     let w = (widest * CELL + 2 * PAD) * scale;
     let h = (rows.saturating_sub(1) * PITCH + CELL + 2 * PAD) * scale;
     let x = match align {
-        Align::Centre | Align::Top => area.x + area.width.saturating_sub(w) / 2,
+        Align::Centre => area.x + area.width.saturating_sub(w) / 2,
         Align::Right => (area.x + area.width).saturating_sub(margin.saturating_sub(PAD * scale) + w),
     };
-    let y = if align == Align::Top {
-        area.y + (2 * margin).saturating_sub(PAD * scale)
-    } else {
-        (area.y + area.height).saturating_sub(margin.saturating_sub(PAD * scale) + h)
-    };
+    let y = (area.y + area.height).saturating_sub(margin.saturating_sub(PAD * scale) + h);
     Placement {
         lines,
         scale,
@@ -450,7 +419,6 @@ pub fn place(lines: &[String], area: Viewport, align: Align) -> Placement {
 pub struct WatermarkRenderer {
     label: PanelSprite,
     live: PanelSprite,
-    plate: PanelSprite,
 }
 
 struct PanelSprite {
@@ -499,40 +467,7 @@ impl WatermarkRenderer {
                 sprite: Sprite::new(device, "app watermark live"),
                 drawn: None,
             },
-            plate: PanelSprite {
-                sprite: Sprite::new(device, "app mode plate"),
-                drawn: None,
-            },
         }
-    }
-
-    /// Records the pass drawing the mode plate `lines` at the top of `area`
-    /// (the game image) in `dst`. Re-rasterises only when the text changed.
-    #[allow(clippy::too_many_arguments)]
-    pub fn draw_plate(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
-        lines: &[String],
-        dst: &wgpu::TextureView,
-        dst_format: wgpu::TextureFormat,
-        dst_size: (u32, u32),
-        area: Viewport,
-    ) {
-        let area = if area.is_empty() {
-            Viewport {
-                x: 0,
-                y: 0,
-                width: dst_size.0,
-                height: dst_size.1,
-            }
-        } else {
-            area
-        };
-        self.plate.draw(
-            device, queue, encoder, lines, Align::Top, dst, dst_format, dst_size, area,
-        );
     }
 
     /// Records the passes drawing `panels` over `area` (the game image) in
@@ -705,35 +640,6 @@ mod tests {
         assert_eq!(scale_for(960), 1);
         assert_eq!(scale_for(1920), 2);
         assert_eq!(scale_for(10_000), 4);
-    }
-
-    #[test]
-    fn the_plate_sits_top_centre_with_its_lines_left_aligned() {
-        let wm = Watermark::new();
-        assert!(wm.plate().is_empty());
-        let wm = wm.with_plate(|| vec!["abcd".to_string(), "ab".to_string()]);
-        let lines = wm.plate();
-        assert_eq!(lines, ["abcd", "ab"]);
-        let area = Viewport {
-            x: 0,
-            y: 0,
-            width: 1280,
-            height: 960,
-        };
-        let p = place(&lines, area, Align::Top);
-        assert_eq!(p.scale, 1);
-        let (w, _, px) = rasterize_aligned(&p.lines, p.scale, Some(Align::Top));
-        let mid = p.at.0 + w / 2;
-        assert!(mid.abs_diff(640) <= 1, "centre {mid}");
-        assert!(p.at.1 < 2 * MARGIN, "near the top: {}", p.at.1);
-        // The short second line starts at column 0, not centred.
-        let row = PAD + PITCH + CELL / 2;
-        let first = (0..w).find(|&x| px[((row * w + x) * 4 + 3) as usize] > 0).unwrap();
-        assert!(first < PAD + CELL + 1, "starts at {first}");
-        // A long line is cut to half the image.
-        let long = place(&["x".repeat(500)], area, Align::Top);
-        let cols = (1280 / 2 - 2 * MARGIN - 2 * PAD) / CELL;
-        assert_eq!(long.lines[0].chars().count(), cols as usize);
     }
 
     #[test]
