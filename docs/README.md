@@ -270,6 +270,7 @@ Reading and converting Halo 1 data:
 - [live-mirror.md](editor/live-mirror.md): paired game discovery, live world state, conditional edit batches, undo and conflict handling
 - [click-to-edit.md](editor/click-to-edit.md): placement-to-tag navigation, editable tag documents, references and the remaining unified Map work
 - [tag-editing.md](editor/tag-editing.md): design for the tag field panel: rows in plain words, when a change takes effect, folded unnamed fields, lists, pickers, search, the naming workflow and the API additions
+- [rich-editors.md](editor/rich-editors.md): design for editors past raw fields: colour pickers, curves, the shader tab and its preview, script source and compiler, sounds with mouth curves, recordings, and what each can write
 - [modeling.md](editor/modeling.md): mesh kernel and the design for editing geometry, collision, lightmaps and textures
 - [modeling-targets.md](editor/modeling-targets.md): design for the Halo 2 round trip of each modeling target: read path, edit model, write classes, what is recomputed, limits and risks for `sbsp` render geometry and collision, portals, lightmaps, `mode`, `coll` and `phmo`
 - [polish-plan.md](editor/polish-plan.md): editor layout, scenario tag tree, live editing, tag field names and descriptions, and layers, with designs for volume and collision tools and a native renderer viewport
