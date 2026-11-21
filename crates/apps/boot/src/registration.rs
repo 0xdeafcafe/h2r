@@ -397,7 +397,7 @@ pub(crate) fn register_late_for_profile(
         // Over TCP (the Xbox app) a refused port must not stop the game:
         // it runs on, undriven, and says why.
         AgentSource::Socket(path) if matches!(agent_proto::Endpoint::from(path.clone()), agent_proto::Endpoint::Tcp(_)) => {
-            match agent_glue::AgentGlue::install(features, path, xa, input_replay, i.allow_bot_add) {
+            match agent_glue::AgentGlue::install(features, path, xa, input_replay, i.allow_bot_add, i.data_root) {
                 Ok(a) => Some(a),
                 Err(e) => {
                     eprintln!("agent: not listening: {e:#}");
@@ -406,11 +406,11 @@ pub(crate) fn register_late_for_profile(
             }
         }
         AgentSource::Socket(path) => Some(agent_glue::AgentGlue::install(
-            features, path, xa, input_replay, i.allow_bot_add,
+            features, path, xa, input_replay, i.allow_bot_add, i.data_root,
         )?),
         // The debug menu talks to an agent: a local one, with no socket.
         AgentSource::Recording => Some(agent_glue::AgentGlue::with_endpoint(
-            features, None, xa, input_replay, i.allow_bot_add,
+            features, None, xa, input_replay, i.allow_bot_add, i.data_root,
         )?),
         AgentSource::Local => Some(agent_glue::AgentGlue::local()),
         AgentSource::None => None,

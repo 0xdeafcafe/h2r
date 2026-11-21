@@ -81,7 +81,7 @@ pub use reader::{
     player_object, thing_object, vehicle_object,
 };
 pub use server::Server;
-pub use tap::{AgentTap, Chain, Input, MenuPad, MenuReceipt, pad_steps};
+pub use tap::{AgentTap, Chain, Input, MenuPad, MenuReceipt, RoutePad, RoutePorts, pad_steps};
 
 /// The agent as a feature (`agent`): the tick observer, and the cutscene
 /// start and stop observers that set the `cinematic` phase.

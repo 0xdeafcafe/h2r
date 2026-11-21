@@ -458,7 +458,9 @@ impl Agent {
 
     /// Same-map checkpoint restores need a key even if the game clock moves forward.
     pub(crate) fn live_cut(&self) {
-        self.lock().live_epoch += 1;
+        let mut s = self.lock();
+        s.live_epoch += 1;
+        input::lock(&s.input).clear_routes("checkpoint_restored");
     }
 
     /// What a machine snapshot keeps of the game as the agent saw it
@@ -497,6 +499,7 @@ impl Agent {
         s.game.map = map;
         s.map_ticks = map_ticks;
         s.live_epoch += 1;
+        input::lock(&s.input).clear_routes("snapshot_loaded");
         Ok(())
     }
 

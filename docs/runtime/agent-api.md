@@ -56,6 +56,8 @@ connection to hold `session.claim`.
 | `hs.threads`, `hs.globals`, `hs.player_actions` | read | [HaloScript state](#haloscript-state) |
 | `input.pad`, `release`, `record`, `replay`, `stop` | act | [`input`](#input-act-like-a-player) |
 | `input.state`, `input.host` | read | [`input`](#input-act-like-a-player) |
+| `input.route`, `input.route.stop` | act | [Routes](#routes) |
+| `input.route.status` | read | [Routes](#routes) |
 | `state.save`, `load`, `list`, `drop`, `fork` | act (`list` read) | [`state`](#state-machine-snapshots) |
 | `bots.stats` | read | [Bot combat](#bot-combat) |
 | `sim.*` | read or act | [`sim`](#sim-simulated-players-and-direct-state) |
@@ -1493,6 +1495,72 @@ printf 'claim\npress start\nwait {"ticks":30}\ncapture 300\n' | h2 agent -
   run only from the same starting state: the same boot, or the same
   [snapshot](#state-machine-snapshots).
 
+#### Routes
+
+`input.route {player?, legs, timeout_ticks?}` starts a sequence on a local
+controller port (0 to 3, default 0). The timeout covers the whole route
+and defaults to 1800 simulation ticks. The route uses the Clankers' path
+search and movement on the game thread and feeds ordinary pad input
+through the same tap as `input.pad`. It uses the default stick and button
+layout and requires a living local player on foot. The route loads the
+active BSP's bot nav mesh from the game's `bots` data directory, even
+with no Clankers in the game. If the mesh is missing or stale, use
+`h2 bots nav <map>`. See [Clankers' navigation](../game/bots.md#32-navigation).
+
+Each route controls its port's full pad report while active. Starting a
+route on a port that already has a route or queued pad steps returns
+`BUSY`. `input.pad` also returns `BUSY` while the port runs a route.
+
+| Leg | What the controller does |
+|---|---|
+| `{"move_to":[x,y,z],"crouch":false,"tolerance":0.1,"speed":1}` | Follow the bot nav mesh with the left stick and turn with the right stick. Stop within `tolerance` of the goal (default 0.1 map units). `speed` limits stick magnitude from 0 to 1 (default 1). `crouch: false` keeps the crouch button released. |
+| `{"face":yaw_deg}` or `{"face":[x,y]}` | Turn in place to a world yaw in degrees from +x toward +y, or toward a world point. |
+| `{"jump":{"from":[x,y,z],"land":[x,y,z]}}` | Use the bot jump arc to plan a run-up, press A at takeoff and steer toward the landing. The leg succeeds within 0.15 map units of `land` and reports the observed points and speeds. |
+| `{"crouch_into":[x,y,z],"hold_ticks":N,"exit_face":yaw_deg}` | Hold the left-stick click and creep toward the point until movement stalls. Release the click, keeping pressure into the ceiling for `hold_ticks`, then turn toward `exit_face` with the stick forward until the player stands. |
+| `{"wait":ticks}` | Leave the pad idle for the given number of game ticks. |
+
+`input.route.status {player?}` returns `player`, `state` (`idle`,
+`running`, `completed`, `failed` or `stopped`), elapsed `ticks`, the
+current zero-based `leg` (or null) and `legs`. Each leg reports
+`{ok, ticks, reason}`. `ok` is null while the leg is pending or running.
+After a failure or stop, legs the route never started get `ok: false`
+and `reason: "not_run"`. A jump leg includes its available `takeoff`,
+`apex` and `landing` samples in `jump`, each with `position`, `velocity`
+and `speed` in map units per second. The landing position comes from
+the contact tick, or the last descending tick on an immediate rebound.
+The landing velocity is the last observed incoming velocity.
+
+Use `input.route.stop {player?}` to stop the route and release its port.
+`input.release` also stops routes on the ports it releases. The final
+status stays available until a new route starts on that port. The `route`
+short form takes the array of legs. Use the full method to pick the
+port or set the timeout.
+
+```sh
+h2 agent route '[{"move_to":[1,2,3],"crouch":false},{"wait":30}]'
+h2 agent route-status
+h2 agent input.route.stop
+```
+
+**Ascension superbounce setup.** Begin at approximately `(−10.85, 1.16)`
+next to the low lip on Ascension. Face −120.7° for the crouch entry. The
+route releases the button while pushing into the lip, turns to −66° to
+exit, then walks to the upper ledge and jumps toward the floor seam.
+
+```sh
+h2 agent route '[
+  {"face":-120.7},
+  {"crouch_into":[-10.91,0.72,-1.16],"hold_ticks":15,"exit_face":-66},
+  {"move_to":[-8.0,2.2,-0.7],"crouch":false},
+  {"jump":{"from":[-8.42,2.51,-0.76],"land":[-10.39,4.00,-3.19]}}
+]'
+```
+
+Compare the recorded jump with the reference takeoff heading `(-0.8, 0.6)`
+at about 1.6 horizontal units/s and the landing's incoming vertical
+velocity of about −5.4 units/s. See [Superbounce](../game/superbounce.md) for the traces and
+collision geometry.
+
 #### `input.host`: the host controllers
 
 `input.host` (`h2 agent hostpads`, read-only, no params) shows the
@@ -2294,6 +2362,7 @@ tests), `crates/extensions/agent/src/trace/tests.rs`, `crates/extensions/agent/s
   synthetic frames and a fake sampler.
 - `ui.audit`, `ui.press` and the menu crawl against a live game. Their regression
   cases use synthetic memory, input and agent replies.
+- `input.route` and the Ascension recipe against a running game.
 - `state.*` against the real machine: the tests run over fakes.
 - `sim.give`, `sim.spawn` and teleport against a running game: the callees
   are played by the tests.

@@ -1014,3 +1014,111 @@ fn a_vehicle_uses_the_wide_route_around_a_pedestrian_gap() {
         Some([2.0, 4.0, 0.0])
     );
 }
+
+#[test]
+fn a_route_follows_the_floor_corridor_to_its_own_tolerance() {
+    let map = crate::cache::MapData {
+        nav: floors(&[(0., 0., 2., 2., 0.), (2., 0., 4., 2., 0.)]),
+        ..Default::default()
+    };
+    let goal = [3.5, 1.0, 0.0];
+    let mut at = [0.5, 1.0, 0.0];
+    let mut route = RouteWalk::new(&map, at, goal, false, 0).unwrap();
+    let mut pad = crate::mind::RoutePad::default();
+    let mut drove_inside_bot_radius = false;
+    for tick in 0..150 {
+        let Some(motion) = route.step(&map, at, tick, 0.1, 1.0).unwrap() else {
+            assert!(dist(at, goal) <= 0.1);
+            assert!(drove_inside_bot_radius);
+            return;
+        };
+        drove_inside_bot_radius |= dist(at, goal) < REACHED;
+        assert!(!motion.crouch && !motion.jump);
+        let report = pad.report([1.0, 0.0, 0.0], tick, motion);
+        assert_eq!(report.left_stick.0, 0.0);
+        assert!(report.left_stick.1 > 0.0);
+        at[0] += report.left_stick.1 * 0.12;
+    }
+    panic!("route never arrived, last position {at:?}");
+}
+
+#[test]
+fn a_route_cannot_take_a_teleporter_link() {
+    let polys = vec![
+        floor_quad(0.0, 0.0, 0.0, 2.0, 2.0),
+        floor_quad(8.0, 0.0, 0.0, 2.0, 2.0),
+    ];
+    let from = [1.0, 1.0, 0.0];
+    let to = [9.0, 1.0, 0.0];
+    let map = crate::cache::MapData {
+        nav: NavMesh::new(
+            polys,
+            vec![Edge {
+                from: 0,
+                to: 1,
+                a: from,
+                b: to,
+                kind: Kind::Teleporter,
+            }],
+        ),
+        ..Default::default()
+    };
+    assert!(map.nav.path(from, to).is_some());
+    assert!(matches!(RouteWalk::new(&map, from, to, false, 0), Err("no_path")));
+}
+
+#[test]
+fn a_route_jump_hits_a_ledge_on_the_descending_arc() {
+    // Test both an uphill jump and a long drop like the Ascension approach.
+    for (ledge_z, landing_x) in [(0.20, 1.7), (-2.43, 2.47)] {
+        let lower = floor_quad(-2.0, 0.0, 0.0, 3.0, 2.0);
+        let ledge = floor_quad(1.25, 0.0, ledge_z, 3.0, 2.0);
+        let map = crate::cache::MapData {
+            nav: NavMesh::new(vec![lower.clone(), ledge.clone()], Vec::new()),
+            walls: Walls::from_polygons([lower.verts.as_slice(), ledge.verts.as_slice()]),
+            ..Default::default()
+        };
+        let from = [0.0, 1.0, 0.0];
+        let goal = [landing_x, 1.0, ledge_z];
+        let jump = plan_route_jump(&map, from, goal).unwrap();
+        assert!(dist(jump.from, from) <= 0.1);
+        assert!(jump.run_up[0] < jump.from[0]);
+        assert!(jump.flight_seconds > 0.5);
+        assert!(jump.speed > 0.0 && jump.speed < 5.0);
+        // Fly independently in short steps until the ledge's floor height
+        // is crossed on descent. The predicted takeoff speed is the input
+        // to this fixture, just as it is to the real run-up.
+        let dt = 1.0 / 300.0;
+        let mut at = jump.from;
+        let mut vz = 1.935_f32;
+        for _ in 0..600 {
+            at[0] += jump.dir[0] * jump.speed * dt;
+            at[1] += jump.dir[1] * jump.speed * dt;
+            at[2] += vz * dt;
+            vz -= 5.2 * dt;
+            if vz < 0.0 && at[2] <= ledge_z {
+                break;
+            }
+        }
+        assert!(ledge.contains_xy(at));
+        assert!(dist(at, goal) < 0.05, "{at:?} vs {goal:?}");
+
+        let ready = [jump.speed, 0.0, 0.0];
+        assert!(!jump.launch_ready(jump.run_up, ready, 30.0));
+        assert!(!jump.launch_ready(jump.from, [0.0; 3], 30.0));
+        assert!(jump.launch_ready(jump.from, ready, 30.0));
+    }
+}
+
+#[test]
+fn a_route_jump_requires_standing_clearance_along_its_arc() {
+    let floor = floor_quad(-2.0, 0.0, 0.0, 4.0, 2.0);
+    let roof = floor_quad(-2.0, 0.0, 0.8, 4.0, 2.0);
+    let map = crate::cache::MapData {
+        nav: NavMesh::new(vec![floor.clone()], Vec::new()),
+        walls: Walls::from_polygons([floor.verts.as_slice(), roof.verts.as_slice()]),
+        ..Default::default()
+    };
+    assert!(standing_clear(&map.walls, [0.0, 1.0, 0.0]));
+    assert!(plan_route_jump(&map, [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]).is_none());
+}

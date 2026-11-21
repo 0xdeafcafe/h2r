@@ -35,7 +35,7 @@
 //! on the agent and runs due saves and loads between slices
 //! ([`crate::snapshot_glue`]).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use agent::Access;
@@ -103,8 +103,9 @@ impl AgentGlue {
         xapi: Option<&Mutex<xapi::Xapi<S>>>,
         replaying: bool,
         allow_bot_add: bool,
+        data_root: &Path,
     ) -> Result<AgentGlue> {
-        Self::with_endpoint(registry, Some(Endpoint::from(path)), xapi, replaying, allow_bot_add)
+        Self::with_endpoint(registry, Some(Endpoint::from(path)), xapi, replaying, allow_bot_add, data_root)
     }
 
     /// A recording uses the player's observation and input hooks even when no
@@ -116,6 +117,7 @@ impl AgentGlue {
         xapi: Option<&Mutex<xapi::Xapi<S>>>,
         replaying: bool,
         allow_bot_add: bool,
+        data_root: &Path,
     ) -> Result<AgentGlue> {
         if let Some(Endpoint::Unix(p)) = &endpoint
             && let Some(dir) = p.parent()
@@ -164,16 +166,17 @@ impl AgentGlue {
         if let Some(endpoint) = endpoint {
             listeners.push(listen(&endpoint, &agent)?);
         }
-        match registry.add(&agent::AgentFeature(agent.clone())) {
-            Ok(true) => {}
+        let ticks = match registry.add(&agent::AgentFeature(agent.clone())) {
+            Ok(true) => true,
             Ok(false) => {
                 agent.set_no_tick_hook();
                 eprintln!(
                     "agent: switched off by H2_FEATURES; answering between slices only, no pausing"
-                )
+                );
+                false
             }
             Err(e) => anyhow::bail!("agent: {e}"),
-        }
+        };
         // render.capture's tick marks and sim.hashes' rows.
         let frames = crate::agent_frames::AgentFrames::default();
         match registry.add(&frames) {
@@ -195,6 +198,9 @@ impl AgentGlue {
                 let inner = x.take_input_tap().map(|t| (t, chain));
                 let tap = agent.input_tap(inner);
                 crate::ui_press::install(&agent, tap.menu_pad());
+                if ticks {
+                    crate::agent_route::install(registry, &agent, tap.route_ports(), data_root)?;
+                }
                 x.set_input_tap(Some(Box::new(tap)));
             }
             None => eprintln!("agent: no XAPI input; the input methods are off"),

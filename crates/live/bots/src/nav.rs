@@ -33,9 +33,11 @@ use tags::pathfinding::PathfindingData;
 use crate::los::Walls;
 use crate::vis::Threads;
 
+mod route;
 mod search;
 mod traversal;
 mod vehicle;
+pub use route::{RouteJump, RouteWalk, plan_route_jump};
 use search::Search;
 pub(crate) use vehicle::VehiclePaths;
 
@@ -137,6 +139,7 @@ pub(crate) fn standing_clear(walls: &Walls, floor: V3) -> bool {
 }
 
 const JUMP_STEPS: usize = 12;
+const FLAT_JUMP_RISE: f32 = 0.36;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum JumpSweep {
@@ -152,13 +155,17 @@ struct JumpArc {
 
 impl JumpArc {
     fn new(a: V3, b: V3) -> Self {
+        Self::sample(a, b, 4.0 * FLAT_JUMP_RISE)
+    }
+
+    fn sample(a: V3, b: V3, lift: f32) -> Self {
         let side = sub(b, a);
         let line = [side[1], -side[0], 0.0];
         let shoulder = scale(line, 0.16 / len(line).max(1e-6));
         let centers = std::array::from_fn(|i| {
             let t = i as f32 / JUMP_STEPS as f32;
             let p = add(a, scale(side, t));
-            add(p, [0.0, 0.0, 1.44 * t * (1.0 - t)])
+            add(p, [0.0, 0.0, lift * t * (1.0 - t)])
         });
         Self { centers, shoulder }
     }
@@ -1179,6 +1186,16 @@ impl Follower {
         frame: u64,
         clear: impl FnOnce([f32; 2]) -> bool,
     ) -> Steer {
+        self.steer_until(at, frame, clear, false)
+    }
+
+    fn steer_until(
+        &mut self,
+        at: V3,
+        frame: u64,
+        clear: impl FnOnce([f32; 2]) -> bool,
+        precise_end: bool,
+    ) -> Steer {
         while let Some(w) = self.path.get(self.next).copied() {
             if w.kind.traversal() {
                 let Some(exit) = self.path.get(self.next + 1).map(|w| w.at) else {
@@ -1201,7 +1218,7 @@ impl Follower {
                         ..Steer::default()
                     };
                 }
-                if d > REACHED {
+                if d > REACHED || (precise_end && self.next + 1 == self.path.len()) {
                     break;
                 }
                 self.next += 1;

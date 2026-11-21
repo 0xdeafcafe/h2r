@@ -54,6 +54,8 @@ or a short form:
   stick <left|right> <x> <y> [ms]  input.pad: a stick, -1..1, +y up (no ms: until changed)
   pad <JSON>             input.pad, e.g. '{\"steps\":[{\"buttons\":[\"start\"],\"ms\":100},{\"left\":[0,1],\"ms\":2000}]}'
                          or '{\"player\":1,\"at_tick\":900,\"steps\":[{\"buttons\":[\"rt\"],\"ticks\":30}]}'
+  route <JSON legs>      input.route, e.g. '[{\"move_to\":[1,2,3],\"crouch\":false}]'
+  route-status [player]  input.route.status for a controller port (default 0)
   unpress                input.release: let go of everything
   padstate               input.state: every player's pad, recording or replay
   hostpads               input.host: the host controllers (profile, touchpad, buttons)
@@ -771,6 +773,20 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
             }
             (method::INPUT_PAD, p)
         }
+        "route" => {
+            let legs = json_arg(arg)?;
+            if !legs.is_array() {
+                bail!("route needs a JSON array of legs, e.g. '[{{\"wait\":30}}]'");
+            }
+            (method::INPUT_ROUTE, json!({ "legs": legs }))
+        }
+        "route-status" => (
+            method::INPUT_ROUTE_STATUS,
+            match arg {
+                None => Value::Null,
+                Some(_) => json!({ "player": number(arg, "route-status")? }),
+            },
+        ),
         "record" => {
             let name = arg.context("record needs a name")?;
             let p = match words.get(2).map(String::as_str) {
@@ -898,6 +914,18 @@ mod tests {
                 "input.pad".into(),
                 json!({"player": 1, "steps": [{"buttons": ["a"], "ticks": 4}]})
             )
+        );
+        assert_eq!(
+            c(r#"route [{"move_to": [1, 2, 3], "crouch": false}, {"wait": 30}]"#),
+            (
+                "input.route".into(),
+                json!({"legs": [{"move_to": [1, 2, 3], "crouch": false}, {"wait": 30}]})
+            )
+        );
+        assert_eq!(c("route-status"), ("input.route.status".into(), Value::Null));
+        assert_eq!(
+            c("route-status 1"),
+            ("input.route.status".into(), json!({"player": 1}))
         );
         assert_eq!(c("padstate"), ("input.state".into(), Value::Null));
         assert_eq!(c("hostpads"), ("input.host".into(), Value::Null));
@@ -1069,6 +1097,10 @@ mod tests {
             "query {}  extra",
             "pad",
             "pad [1]",
+            "route",
+            "route {}",
+            "route [] extra",
+            "route-status first",
             "record",
             "record a twice",
             "replay",
