@@ -311,7 +311,7 @@ fn bsp_and_lightmap_fields_save_at_their_own_file_offsets_and_undo() {
     assert!(
         pending
             .iter()
-            .all(|row| row["class"] == crate::play::tag_sync::RELOAD)
+            .all(crate::play::tag_sync::Effect::is_reload)
     );
 
     let out = t.0.join("out.map");

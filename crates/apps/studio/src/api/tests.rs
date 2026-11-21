@@ -604,7 +604,9 @@ mod paired_socket {
             assert_eq!(rows[0]["doc"], "tags");
             assert_eq!(rows[0]["at"], WEAP);
             assert!(rows[0]["path"].as_str().unwrap().contains("speed"));
-            assert!(rows[0]["class"].as_str().unwrap().starts_with("Poke"));
+            assert_eq!(rows[0]["effect"], "not_known");
+            assert_eq!(rows[0]["text"], "Not known; reload to be sure.");
+            assert!(rows[0].get("class").is_none());
             assert_eq!(
                 self.call(m::MIRROR_APPLY, json!({"what":"send"})),
                 json!({"queued":"send"})

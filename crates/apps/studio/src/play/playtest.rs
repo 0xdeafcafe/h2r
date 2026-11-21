@@ -122,7 +122,7 @@ impl Changes {
                 if row["refused"] == true || row["unknown"] == true || row["needs_reload"] == true {
                     return Self::Reload;
                 }
-            } else if row["class"] == tag_sync::RELOAD {
+            } else if tag_sync::Effect::is_reload(row) {
                 return Self::Reload;
             } else {
                 result = Self::Send;

@@ -1,6 +1,6 @@
 # Tag editing: the field panel in plain words
 
-Status: Design. Nothing here is built; "The built panel" describes the code this design replaces.
+Status: Design. T1 (effect words, `play::tag_sync::Effect`) is built; the rest is not, and "The built panel" describes the code the rest replaces.
 Code: `crates/apps/studio/src/fields.rs` (`panel_with_marks`), `crates/apps/studio/src/ui/tags.rs` (`fields`, `hex`), `crates/apps/studio/src/play/tag_sync.rs` (`class`), `crates/apps/studio/src/api/tag_fields.rs`. Tests: `crates/apps/studio/src/app/tag_tests.rs`, `headless::tests::the_tags_tool_edits_a_field_through_its_widgets`.
 Switch: none.
 

@@ -323,15 +323,15 @@ impl Cx<'_, '_> {
         }
         self.hover(at, layout, f);
         if self.editable {
-            let (class, why) = crate::play::tag_sync::class(self.doc, self.tag, at + f.offset, f);
-            let tone = if class == crate::play::tag_sync::RELOAD {
+            let (effect, why) = crate::play::tag_sync::effect(self.doc, self.tag, at + f.offset, f);
+            let tone = if effect == crate::play::tag_sync::Effect::Reload {
                 crate::play::LinkTone::Warn
             } else {
                 crate::play::LinkTone::View
             };
-            crate::theme::link_badge(ui, tone, class);
+            crate::theme::link_badge(ui, tone, effect.chip());
             if ui.is_item_hovered() {
-                ui.tooltip_text(why);
+                ui.tooltip_text(format!("{} {why}", effect.sentence()));
             }
         }
         ui.same_line_with_pos(LABEL);

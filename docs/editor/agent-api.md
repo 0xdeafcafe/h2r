@@ -357,7 +357,9 @@ Notes on some:
   together in one `edit.batch`, each with its expected `was` value. Tags use
   the `at` form with hex bytes. The optional `known_epoch` on `edit.map`
   refreshes the loaded datum table used to check reference targets. Undo and redo use the same check.
-  `mirror.pending` returns `pending` rows with `doc,path,class,why` and an optional `tag`,
+  `mirror.pending` returns `pending` rows with `doc,path,effect,text,why` and an optional
+  `tag` and `label`: `effect` is when the change takes effect (`now`, `next_use`,
+  `next_spawn`, `reload` or `not_known`, `play::tag_sync::Effect`) and `text` its sentence,
   the game’s existing `journal` from `edit.changes`, and `leaving`.
   A placement block with a different layout revision from the loaded copy
   appears as one `Reload` row. Its fields stay out of the batch until undo,

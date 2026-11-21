@@ -39,7 +39,7 @@ fn a_moved_field_conflict_is_disabled_until_its_submitted_path_returns() {
     });
     let row = app.pairing.pending.iter().find(|r| r["conflict"] == true).unwrap();
     assert_eq!(row["target"], json!({"panel":"pending"}));
-    assert_eq!(row["class"], tag_sync::RELOAD);
+    assert_eq!(row["effect"], tag_sync::Effect::Reload.id());
     let link = play.link_view(&app);
     let issue = link.issues.iter().find(|issue| issue.kind == issues::Kind::Mismatch).unwrap();
     assert_eq!(issue.target, json!({"panel":"pending"}));

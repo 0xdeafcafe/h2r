@@ -463,15 +463,15 @@ tag. The scenario's placement writes move to the same batch, so one
 undo step that touches a placement and a tag is one tick in the game.
 
 **What is safe, by what the edit is.** The editor classifies an edit
-before sending it; the class is shown as a badge on the field.
+before sending it; the effect is shown as a chip on the field.
 
-| Edit | Class | Why |
+| Edit | Effect | Why |
 |---|---|---|
-| A scalar, flag, enum, colour, angle or bounds field of a tag in the map's own metadata | Poke (frame, use, creation or unknown, from `tags::defs`' `applies`) | same size, same address |
-| A string ID field set to a string the loaded map has | Poke | the value exists in the game |
-| A tag reference or datum set to a tag the loaded map has | Poke, shown as "unknown" until the field has an `applies` | the target is loaded; whether the engine cached the old one is per field |
-| A placement field | Poke, next creation; plus **Respawn now** once `world.object.respawn` exists | read when the object is made |
-| A trigger or kill volume's frame or size | Poke, next use | the volume test reads the scenario each time (**S**) |
+| A scalar, flag, enum, colour, angle or bounds field of a tag in the map's own metadata | A field write (`now`, `next_use`, `next_spawn` or `not_known`, from `tags::defs`' `applies`) | same size, same address |
+| A string ID field set to a string the loaded map has | A field write | the value exists in the game |
+| A tag reference or datum set to a tag the loaded map has | A field write, `not_known` until the field has an `applies` | the target is loaded; whether the engine cached the old one is per field |
+| A placement field | A field write, `next_spawn`; plus **Respawn now** once `world.object.respawn` exists | read when the object is made |
+| A trigger or kill volume's frame or size | A field write, `next_use` | the volume test reads the scenario each time (**S**) |
 | A block element added, duplicated or removed; a block grown (`TagDoc::grown`) | Reload | the game's block is laid out where the map put it |
 | A new string ID (`TagDoc::new_strings`), a new tag, an imported bundle that adds tags, a unique copy | Reload | the game's tables do not hold them |
 | A reference to a tag the loaded map lacks (another map's, a shared cache's not loaded) | Reload | no datum to point at |
