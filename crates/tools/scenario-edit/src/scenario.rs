@@ -89,6 +89,15 @@ pub(crate) struct LayoutChange {
     after: u64,
 }
 
+/// Identity of an entry within its document and block. A swap-removal changes
+/// the last entry's index without changing which placement it represents.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PlacementId {
+    Source(usize),
+    /// The layout revision created by the append. Redo reuses the same revision.
+    Added(u64),
+}
+
 /// One placement block.
 #[derive(Clone, Debug)]
 pub struct Block {
@@ -97,6 +106,7 @@ pub struct Block {
     pub address: u32,
     entries: Vec<Vec<u8>>,
     original: Vec<Vec<u8>>,
+    ids: Vec<PlacementId>,
     layout_rev: u64,
     // unadd takes bytes, so it needs the parent of each consecutive append.
     // A removal carries this trail in its undo receipt.
@@ -128,6 +138,9 @@ impl Block {
     /// Current bytes of an element (including every unknown byte).
     pub fn entry(&self, index: usize) -> Option<&[u8]> {
         self.entries.get(index).map(Vec::as_slice)
+    }
+    pub fn placement_id(&self, index: usize) -> Option<PlacementId> {
+        self.ids.get(index).copied()
     }
     pub fn source_entries(&self) -> &[Vec<u8>] {
         &self.original
@@ -223,6 +236,7 @@ pub struct Removed {
     /// index).
     pub renamed: Vec<(usize, i16)>,
     pub(crate) layout: LayoutChange,
+    id: PlacementId,
     before_appends: Vec<u64>,
 }
 
@@ -399,6 +413,7 @@ impl Scenario {
                 def,
                 address: start,
                 original: entries.clone(),
+                ids: (0..entries.len()).map(PlacementId::Source).collect(),
                 entries,
                 layout_rev: 0,
                 before_appends: Vec::new(),
@@ -714,6 +729,7 @@ impl Scenario {
         let last = block.len() - 1;
         let ty = block.def.object_type;
         let entry = block.entries.swap_remove(index);
+        let id = block.ids.swap_remove(index);
         let layout = block.change_layout(replay);
         let before_appends = std::mem::take(&mut block.before_appends);
         // Names point at placements by (type, index): the removed one's
@@ -742,6 +758,7 @@ impl Scenario {
             kind,
             index,
             entry,
+            id,
             renamed,
             layout,
             before_appends,
@@ -765,9 +782,18 @@ impl Scenario {
         if removed.index > block.len() {
             return Err(Error::NoEntry(removed.kind, removed.index));
         }
+        // unremove can also be applied to a different layout outside History.
+        let id = if block.layout_rev != removed.layout.after && block.ids.contains(&removed.id) {
+            PlacementId::Added(next_layout_rev())
+        } else {
+            removed.id
+        };
         if removed.index == block.len() {
+            block.ids.push(id);
             block.entries.push(removed.entry.clone());
         } else {
+            let last_id = std::mem::replace(&mut block.ids[removed.index], id);
+            block.ids.push(last_id);
             let moved = std::mem::replace(&mut block.entries[removed.index], removed.entry.clone());
             block.entries.push(moved);
         }
@@ -820,6 +846,7 @@ impl Scenario {
         }
         block.entries.push(entry);
         let layout = block.change_layout(replay);
+        block.ids.push(PlacementId::Added(layout.after));
         block.before_appends.push(layout.before);
         Ok((block.len() - 1, layout))
     }
@@ -831,6 +858,7 @@ impl Scenario {
             return Err(Error::Invalid("the added entry is no longer last"));
         }
         block.entries.pop();
+        block.ids.pop();
         block.layout_rev = block.before_appends.pop().unwrap_or_else(next_layout_rev);
         Ok(())
     }

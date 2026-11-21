@@ -1,5 +1,7 @@
 //! The Game panel and the controls shared with the bar and Game menu.
 
+mod toasts;
+
 use std::path::PathBuf;
 
 use agent_proto::Endpoint;
@@ -54,7 +56,7 @@ impl PlayUi {
         let Some(_menu) = ui.begin_menu("Game") else {
             return;
         };
-        let view = self.play.link_view(app);
+        let view = self.play.displayed_link(app);
         for (label, key, enabled, request) in [
             ("Play", "F5", view.can_play, Request::Play),
             ("Stop", "Shift+F5", view.can_stop, Request::Stop),
@@ -71,7 +73,7 @@ impl PlayUi {
         {
             self.open_link_popup = true;
         }
-        if ui.menu_item_enabled_selected_no_shortcut("Unpair", false, view.can_pause) {
+        if ui.menu_item_enabled_selected_no_shortcut("Unpair", false, view.paired) {
             self.play.request(Request::Unpair);
         }
         ui.separator();
@@ -82,15 +84,29 @@ impl PlayUi {
         ) {
             app.pairing.pause_while_editing = !app.pairing.pause_while_editing;
         }
+        let aim = app.pairing.selection.enabled;
+        if ui.menu_item_enabled_selected_no_shortcut("Aim select", aim, Play::can_aim_select(app))
+            && let Err(why) = Play::set_aim_select(app, !aim)
+        {
+            app.error(why);
+        }
         let (label, request) = if view.paused {
             ("Resume", Request::Resume)
         } else {
             ("Pause", Request::Pause)
         };
-        if ui.menu_item_enabled_selected_no_shortcut(label, false, view.can_pause) {
+        if ui.menu_item_enabled_selected_no_shortcut(
+            label,
+            false,
+            view.controls.can_toggle_pause(view.paused),
+        ) {
             self.play.request(request);
         }
-        if ui.menu_item_enabled_selected_no_shortcut("Step", false, view.paused) {
+        if ui.menu_item_enabled_selected_no_shortcut(
+            "Step",
+            false,
+            view.paused && view.controls.step.is_none(),
+        ) {
             self.play.request(Request::Step(self.step_ticks as u64));
         }
         if ui.menu_item_enabled_selected_no_shortcut(
@@ -113,11 +129,11 @@ impl PlayUi {
         }
     }
 
-    pub fn bar_pill(&mut self, ui: &Ui, app: &mut App, view: &LinkView) {
+    pub fn bar_pill(&mut self, ui: &Ui, app: &mut App, view: &LinkView, clicked: bool) {
         let pick = self.play.picking_game();
         let open = std::mem::take(&mut self.open_link_popup) || (pick && !self.picking_game);
         self.picking_game = pick;
-        self.pill(ui, app, view, open);
+        self.link_popup(ui, app, view, open, clicked);
         if pick && !open && !ui.is_popup_open(LINK_POPUP) {
             self.play.cancel_picker();
         }
@@ -165,6 +181,10 @@ impl PlayUi {
         if let Some(why) = &view.why {
             ui.set_item_tooltip(why);
         }
+        self.link_popup(ui, app, view, open, clicked);
+    }
+
+    fn link_popup(&mut self, ui: &Ui, app: &mut App, view: &LinkView, open: bool, clicked: bool) {
         let pair_now = clicked
             && matches!(view.state, LinkState::Found { .. })
             && self.pair_offer(self.play.notice(app));
@@ -225,7 +245,7 @@ impl PlayUi {
             ));
             ui.same_line();
             if current {
-                ui.text_disabled(if view.can_pause {
+                ui.text_disabled(if view.paired {
                     "Paired"
                 } else {
                     "Connecting"
@@ -239,7 +259,7 @@ impl PlayUi {
             ui.close_current_popup();
         }
         ui.separator();
-        if view.can_pause && ui.button("Unpair") {
+        if view.paired && ui.button("Unpair") {
             self.play.request(Request::Unpair);
             ui.close_current_popup();
         }
@@ -266,7 +286,7 @@ impl PlayUi {
 
     pub fn window(&mut self, ui: &Ui, app: &mut App, key: &WindowKey) {
         ui.window(key).build(|| {
-            let view = self.play.link_view(app);
+            let view = self.play.displayed_link(app);
             self.pill(ui, app, &view, false);
             theme::section(ui, "Session");
             self.session(ui, app, &view);
@@ -279,11 +299,11 @@ impl PlayUi {
     }
 
     fn session(&mut self, ui: &Ui, app: &mut App, view: &LinkView) {
-        if view.can_pause {
+        if view.paired {
             self.edit_switch(ui, view);
         }
         let p = &self.play;
-        if view.can_pause {
+        if view.paired {
             if let Some(at) = p.status.as_ref().map(|s| &s.at) {
                 let kind = p
                     .session
@@ -319,14 +339,11 @@ impl PlayUi {
             if !p.reload.is_empty() {
                 ui.text_colored(theme::WARN, format!("Needs Play again: {:?}", p.reload));
             }
-            if matches!(view.state, LinkState::Editing { .. }) {
-                ui.text_wrapped("Placement edits show when the game creates the object again.");
-            }
         }
     }
 
     fn player(&mut self, ui: &Ui, app: &mut App, view: &LinkView) {
-        if view.can_pause {
+        if view.paired {
             if ui.button(format!("{} Go to player", icon::CROSSHAIR)) {
                 self.play.go_to_player(app);
             }
@@ -334,7 +351,7 @@ impl PlayUi {
             if ui.button(format!("{} Teleport player here", icon::MOVE)) {
                 self.play.teleport_to_camera(app);
             }
-            ui.set_item_tooltip("Moves the player to the ground under the camera focus. T over the viewport uses the point under the cursor. Refused in co-op and as a client.");
+            ui.set_item_tooltip("In Edit, move to the ground under the camera focus. T uses the cursor. Shift+T also matches the editor camera’s facing.");
         }
         ui.set_next_item_width(180.0);
         if let Some(_combo) = ui.begin_combo("Spawn", self.play.spawn_choice(app).label()) {
@@ -401,7 +418,8 @@ impl PlayUi {
     /// T over the viewport teleports the player to the point under the cursor.
     pub fn overlay(&mut self, ui: &Ui, app: &mut App, rect: Option<[f32; 4]>) {
         let Some([x, y, w, h]) = rect else { return };
-        let view = self.play.link_view(app);
+        toasts::draw(ui, &self.play, [x, y, w, h]);
+        let view = self.play.displayed_link(app);
         if matches!(
             view.state,
             LinkState::Editing { .. } | LinkState::Blocked { .. }
@@ -422,7 +440,6 @@ impl PlayUi {
         if !p.is_paired() {
             return;
         }
-        let aspect = w / h.max(1.0);
         let m = ui.io().mouse_pos();
         let inside = m[0] >= x && m[0] < x + w && m[1] >= y && m[1] < y + h;
         if inside
@@ -430,11 +447,11 @@ impl PlayUi {
             && !ui.io().want_text_input()
             && !ui.io().key_ctrl()
             && !ui.io().key_super()
-            && ui.is_key_pressed(Key::T)
+            && ui.is_key_pressed_with_repeat(Key::T, false)
         {
-            match play::surface_at(app, (m[0] - x) / w, (m[1] - y) / h, aspect) {
-                Some(q) => self.play.teleport(app, q),
-                None => app.error("no ground under the cursor to teleport to"),
+            match Play::cursor_destination(app) {
+                Some(q) => self.play.player_here(app, q, ui.io().key_shift()),
+                None => self.play.game_refusal(app, "no ground under the cursor to teleport to"),
             }
         }
     }
@@ -454,7 +471,8 @@ impl PlayUi {
         use crate::play::Apply;
         let p = &mut self.play;
         let mut action = None;
-        ui.window(key).build(|| {
+        let focus = std::mem::take(&mut app.pairing.open_pending);
+        ui.window(key).focused(focus).build(|| {
             if !app.pairing.journal.is_empty() {
                 ui.separator_with_text("Already in the game");
                 for c in &app.pairing.journal {
@@ -476,11 +494,16 @@ impl PlayUi {
                     action = Some(Apply::Confirm(scope));
                 }
             }
-            let mut rows: Vec<_> = app.pairing.pending.iter().collect();
-            rows.sort_by(|a, b| a["class"].as_str().cmp(&b["class"].as_str()));
+            let move_refusal = p.refused_move_at(std::time::Instant::now());
+            if let Some(why) = move_refusal {
+                ui.separator_with_text("Player move refused");
+                ui.text_wrapped(why);
+            }
             let mut class = "";
-            for r in rows {
+            let mut has_reload = false;
+            for r in app.pairing.pending.sorted() {
                 let next = r["class"].as_str().unwrap_or("Pending");
+                has_reload |= next == crate::play::tag_sync::RELOAD;
                 if class != next {
                     ui.separator_with_text(next);
                     class = next;
@@ -490,7 +513,8 @@ impl PlayUi {
                     r["path"].as_str().unwrap_or("?"),
                     r["why"].as_str().unwrap_or("")
                 ));
-                if r["conflict"] == true
+                if r["conflict"] == true && r["resolvable"] != false
+                    && crate::play::tag_sync::check_conflict_path(&app.tags, r).is_ok()
                     && let Some(at) = r["at"].as_u64()
                 {
                     let _id = ui.push_id(at as usize);
@@ -504,7 +528,9 @@ impl PlayUi {
                 }
             }
             if app.pairing.pending.is_empty() {
-                ui.text_disabled("No pending edits");
+                if move_refusal.is_none() {
+                    ui.text_disabled("No pending edits");
+                }
             } else {
                 if let Some(why) = p.edits_blocked(app) {
                     ui.text_wrapped(why);
@@ -512,7 +538,7 @@ impl PlayUi {
                 if ui.button("Send") {
                     action = Some(Apply::Send);
                 }
-                if app.pairing.pending.iter().any(|r| r["class"] == "Reload") {
+                if has_reload {
                     ui.same_line();
                     if ui.button("Reload map") {
                         action = Some(Apply::Reload);
@@ -531,7 +557,7 @@ impl PlayUi {
             if ui.button("Keep the game as it is") {
                 action = Some(Apply::Keep);
             }
-            if ui.button("Put it back as it loaded") {
+            if ui.button("Restore journalled fields") {
                 action = Some(Apply::Restore);
             }
             if action.is_some() || !app.pairing.leaving {

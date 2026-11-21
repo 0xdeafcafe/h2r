@@ -738,7 +738,8 @@ H2_AGENT=<cache>/h2recomp/editor-<pid>-<n>.sock H2_MAP_DIR=$TMPDIR/h2-editor-pla
 - **Spawn** offers the level's own spawn, the editor camera, the selected
   placement and **Where I was**. The last becomes the default once the
   stream supplies a local player on this map. After a reload the editor
-  checks the copy's checksum and new epoch and waits for gameplay and
+  checks the copy's checksum and the requested activation (a new epoch on
+  hosts without the activation counter), then waits for gameplay and
   at least 30 ticks before restoring position, yaw and pitch with `sim.state.set`.
 - **Game > Pause the game while I edit** pauses on editor window focus.
   It defaults to off. F5 resumes a paused game.
@@ -792,11 +793,16 @@ status, and a second connection for the binary live mirror.
 - **Edits sent live.** The editor compares changed tag and placement fields
   with the bytes it expects in the loaded map. Edit sends these fields in
   one conditional `edit.batch`. Undo and redo use the same path. A conflict
-  leaves the entire batch unapplied. In **Pending**, choose **Take the game's value**
+  leaves the entire batch unapplied. The inspector and tree mark refused
+  fields in red and conflicts in amber. The bar and the game's editor
+  plate show the largest issue count. Clicking the bar's count opens
+  **Pending**. On a conflicted field, choose **Take the game's value**
   to put the game's value in the document or **Overwrite** to send the
   document's value. The field badge shows when the game reads it.
-  Placements take effect when the object is next created. Block growth
-  and other structural changes appear under **Reload**.
+  Moving or turning a placement also moves its linked live object. Deleting
+  a placement deletes that object. **Respawn now** applies creation-time
+  edits using the loaded placement. Pending shows when a changed block or
+  an appended placement needs **Reload**.
 - **Go to player** puts the camera's focus on player one, looking the way
   they face. **Teleport player here** moves them to the ground under the
   camera's focus; **T** over the viewport moves them to the point under
@@ -823,15 +829,6 @@ diff and the command line.
 
 Not yet:
 
-- **Moving live objects.** Placements reach the game's scenario, not the
-  objects already made from them. Moving one means writing the object's
-  own position and letting the engine re-cluster it, which needs the
-  object update path read first (hot-iteration.md, "What is left"). An
-  agent method for it (`world.object.set {id, pos}`) would let a moved
-  vehicle or weapon follow at once.
-- **Fields beyond placements.** Only the scenario's placement blocks are
-  compared. Other tags (`shad` and the rest `edit.*` names) are edited
-  with `h2 agent edit` today.
 - **Checking the game's copy.** Pairing trusts that the game runs the map
   as the editor shows it; a field whose `old` differs is reported once.
   Reading the game's placements back (`edit.get` per block) would show

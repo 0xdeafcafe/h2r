@@ -22,6 +22,8 @@ use serde_json::{Value, json};
 use crate::expect::Expect;
 use crate::{PadStep, RpcError, code};
 
+mod edits;
+pub use edits::*;
 pub mod events;
 pub mod hashes;
 pub mod menu;

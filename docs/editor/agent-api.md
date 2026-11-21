@@ -89,6 +89,8 @@ What goes through actions, from both sides:
 | UI screens | `UiPick`, `UiPress` | the UI Screens tool | `ui.pick`, `ui.press` |
 | Playtest | `play::playtest::decide` | F5, Play button, Game menu and confirmation dialog | `pair.playtest {confirm?, prompt?}` |
 | Playtest settings | `play::pair::Bridge` | Game menu and Game tab spawn picker | `pair.settings {spawn?, pause_while_editing?}` |
+| Live selection | `play::select` | click a live object, Aim select in the bar or Game menu | `mirror.pick`, `mirror.aim_select` |
+| Shared camera and player moves | `play::presence` | viewport camera menu, T and Shift+T | `mirror.camera`, `mirror.player` |
 | Game link | `play::pair::Request` | game link bar, Game menu and Game panel | `pair.connect`, `pair.disconnect`, `pair.auto`, `pair.play`, `pair.stop`, `pair.control`, `pair.edit` |
 
 The playlist fields apply their `PlaylistEdit`s inside the frame's
@@ -172,7 +174,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
 | `ui` | `palette {query, run?}`, `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}` |
 | `pair` | `list`, `status`, `connect {socket?}`, `disconnect {leave?}`, `auto {enabled?}`, `play`, `stop`, `control {action, ticks?}`, `edit {enabled}` |
-| `mirror` | `status`, `objects {kind?, near?, limit?, at_tick?}`, `pending`, `apply {what, at?, peers?}` |
+| `mirror` | `status`, `objects {kind?, near?, limit?, at_tick?}`, `pick {from? \| ray?}`, `aim_select {enabled?}`, `camera {mode?, target?}`, `player {to, facing?}`, `pending`, `apply {what, at?, peers?}` |
 | `view` | `camera {yaw, pitch, distance, target, focus, all, fly_speed}`, `snapshot {out, size, camera}`, `stats`, `layers {set?, preset?, xray?}` |
 | `hud` | `list {map \| package}`, `read {hud, state}`, `set {hud, widget, field, value, merge}`, `move {hud, widget, x, y, mode, merge}`, `render {hud, state, out}`, `check {hud, state}`, `save_as {path}` |
 | `model` (planned) | `list`, `read`, `render`, `colors`, `emblem` |
@@ -246,7 +248,9 @@ Notes on some:
   a tag the inspector's selection and clears the placement selection.
   `nav.go {"tag":"hlmt","path":"render_model"}` focuses a tag and,
   optionally, one field by its registry path. It keeps the viewport
-  selection. Both resolve tags in the open map. `nav.status`,
+  selection. `nav.go {"block":"weapons","index":0}` selects a placement.
+  `nav.go {"panel":"pending"}` opens the Pending tab. These are also the
+  target forms returned for placement and panel issues. `nav.status`,
   `nav.back` and `nav.forward` take no params. All `nav.*` methods
   return `{selected, tag, path, breadcrumbs, can_back, can_forward}`.
   `selected` is a placement `{block,index}`, a tag `{tag}` or null.
@@ -299,7 +303,14 @@ Notes on some:
   `no_game`, `found`, `connecting`, `reconnecting`, `viewing`, `editing`, `blocked`,
   `other_map` and `lost`. The top-level `state` continues to report the
   socket connection. When a game omits an optional method, `link.unavailable`
-  lists the affected features and methods. During reconnect, `link.elapsed_ms` counts from the drop.
+  lists the affected features and methods. `link.issues` is an array of
+  `{kind,text,target}` rows. The kinds are `waiting`, `reload`,
+  `refused` and `mismatch`. Pass a row's `target` directly to `nav.go`
+  to inspect the field, placement, tag or Pending tab. A refused player
+  move has a target that opens Pending and stays active for up to four seconds.
+  A successful move or a change of scope clears the issue.
+  A clear link reports
+  an empty array. The pill shows the largest count. During reconnect, `link.elapsed_ms` counts from the drop.
 - **Playtest.** `pair.playtest {}` queues F5 and reports the step for the
   window's published state: `launch`, `pair`, `resume`, `reload` or
   `ask`. A reload or launch using the saved player place includes
@@ -334,7 +345,7 @@ Notes on some:
   together in one `edit.batch`, each with its expected `was` value. Tags use
   the `at` form with hex bytes. The optional `known_epoch` on `edit.map`
   refreshes the loaded datum table used to check reference targets. Undo and redo use the same check.
-  `mirror.pending` returns `pending` rows with `doc,tag,path,class,why`,
+  `mirror.pending` returns `pending` rows with `doc,path,class,why` and an optional `tag`,
   the game’s existing `journal` from `edit.changes`, and `leaving`.
   A placement block with a different layout revision from the loaded copy
   appears as one `Reload` row. Its fields stay out of the batch until undo,
@@ -342,14 +353,21 @@ Notes on some:
   `mirror.apply {what:"send"}` enters Edit. On MISMATCH, `take` and
   `overwrite` require the row’s numeric `at`. `take` reads the field at the
   current game boundary before applying the bytes to the document and baseline.
-  An unsuccessful read leaves the conflict pending. On rejoin, `adopt` takes
+  A failed read or a relocated field leaves the conflict pending. A row with
+  `resolvable:false` opens Pending and disables both resolutions. Take and
+  Overwrite require the tag's field path to resolve to the refused address. On rejoin, `adopt` takes
   the game's current bytes as the baseline and preserves the document.
   `revert` uses the game's reported restored and left-alone bytes as the
   baseline for the next send. A System Link host
   confirms the peer count using `confirm` with `peers`, including when
   another map is loaded. Confirmation applies to the paired host, map epoch
   and peer count. Field writes still require the open map. `reload` writes
-  a play copy, and `respawn` uses the game’s optional object method.
+  a play copy. In Edit, `respawn` applies acknowledged creation-time
+  placement edits through `world.object.respawn`. Moving, deleting and
+  undoing placements use the same document actions as the window. The
+  game link calls the advertised object methods with the current host
+  confirmation. Object rows in `mirror.pending` explain changes that
+  need a reload or cannot reach a live object.
   `pair.disconnect {leave:"keep"|"restore"}` makes the leave choice over the
   API. During restore, `mirror.pending.leaving` stays true while the editor
   waits for an outstanding batch, reverts the journal, and disconnects on
@@ -367,6 +385,49 @@ Notes on some:
   of attached objects are relative to their parents. `near` takes
   `{point: [x,y,z], radius}` in world space. Bind-pose objects have no
   streamed nodes. Pairing and presentation are described in [live-mirror.md](live-mirror.md).
+- **Live selection.** `mirror.pick {"from":"aim"}` uses the local player's
+  aim and skips that player's unit and held weapon. A viewport click in
+  Player's eyes skips the viewed player's unit and held weapon. Supply
+  `{"ray":{"origin":[x,y,z],"dir":[dx,dy,dz]}}` for an unrestricted world ray.
+  The first live object in front of the level returns
+  `{object, placement, tag, point, distance}`. Handles are hex strings,
+  `placement` is a linked `{block,index}` or null, and a miss returns null.
+  The link uses the object's kind and placement index in the loaded block
+  layout. If a structural edit changes that layout, the object stays
+  unlinked until undo or a reload restores matching slots. For a preview, the
+  current map’s respawn receipt links its full salted ID to its document
+  placement, including after a swap-removal changes the row index.
+  Picking over the socket leaves selection alone. Clicking in the viewport
+  selects the linked placement or the live object and its available definition.
+  `mirror.aim_select {enabled?}` returns `{enabled,candidate}`. The
+  candidate has the same shape as a pick. Holding the displayed aim on one
+  object for 0.6 seconds selects it. A stream cut restarts the dwell timer.
+  In View and Edit the paired window renews its selection and candidate
+  marks once a second on the game's display. Unpairing clears the link
+  plate and marks. Pairing again to the same endpoint waits for the old
+  connection's clear before sending either lease. A dropped connection
+  lets the three-second leases expire. `pair.status.link.unavailable` reports
+  missing presentation methods and the host's display refusal. While the
+  game waits for a genuine frame, a `drawn: false` reply keeps the marks
+  pending without a warning. Individual refused marks still report their
+  indices. A failed clear retries at the renewal interval. The game plate
+  shows the largest link issue count, or `Aim select` when aim selection
+  is on and the count is zero.
+- **Shared camera.** `mirror.camera {mode?,target?}` returns `{mode,target}`.
+  `free` releases the editor viewport, `follow` keeps the eye's orbit offset
+  as the local player moves, and `eyes` looks along the player's aim from
+  eye height. An explicit `player.<index>` keeps the camera on that local
+  player across samples. While its unit is missing, the viewport holds its
+  pose and resumes following when the unit returns. A map change or unpair
+  releases the camera. The free camera reports null. The viewport toolbar
+  has the same modes. `mirror.player {to,facing?}` queues a move in Edit
+  and returns `{"requested":true}`. Give a world position, `"camera"` for
+  the ground under the editor camera's focus, or `"cursor"` for the level under the
+  viewport pointer. T uses the cursor. Shift+T or `facing:true` also sends
+  the camera's yaw and pitch. A missing destination, current player sample,
+  permission or game method returns `REFUSED`, as does a pending reload or
+  a playtest transition. The control worker checks the latest exact sample
+  for the expected epoch and salted unit immediately before the game call.
 - **Viewport layers.** `view.layers {}` returns `{layers, xray}`. Each layer
   has a stable `name` for calls, a display `label`, a `group`, the visibility
   switch `on`, a `count` and its legend `color` (RGB, each channel 0 to 1).

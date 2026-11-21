@@ -1,6 +1,6 @@
 # h2-editor polish: what is wrong, the design, and the slices
 
-Status: P1 to P7, P12, P18, G1, G2, G3 and G5 are implemented. The remaining slices describe the design.
+Status: P1 to P7, P12, P18, G1 to G3, G5, G6, the editor camera modes and player move in G7, G8 and G9 are implemented. Trigger and kill volume marks depend on P8. The remaining slices describe the design.
 Code: `crates/apps/studio/src` (the window: `ui.rs`, `ui/`, `play.rs`, `viewport.rs`, `theme.rs`), `crates/tools/scenario-edit/src` (the scene and its renderer). Tests: named per slice.
 Switch: none.
 
@@ -223,7 +223,9 @@ pending list and the game's methods, and returns one step:
   relaunch of the editor's own game if the method is absent or the host
   refuses the file. A foreign game in either case leaves edits pending and
   gives the manual-load instruction. The editor checks the queued receipt
-  and waits up to 30 seconds for a new epoch with the copy's checksum.
+  and waits up to 30 seconds for the exact requested activation and copy
+  checksum. When the receipt or status omits the activation, it waits for a
+  changed epoch and the copy checksum.
   A reconnect checks the loaded copy before any further edits go out.
 - Sending edits to a game the editor did not start asks once per
   pairing ("Send your edits to this game?"), since F5 never turns Edit
@@ -250,11 +252,13 @@ A paired editor sends `editor.link {editor, mode, text?, ttl_ms}` once
 a second. `h2 play` draws a small plate in a corner of the game window
 while the lease holds: "Editor · viewing", "Editor · editing live",
 "Editor · edits blocked", with `text` under it for the one line the
-editor wants seen there ("3 edits need a reload", "Aim select"). The
+editor wants seen there. The largest link issue count takes priority over
+"Aim select". The
 plate goes when the editor unpairs (`{clear: true}`), exits or stops
 answering (the lease runs out, 3 seconds by default). A game with no
 window (`h2 serve`) answers `{shown: false, why}` and the editor stops
-asking. The indicator is presentation: it is sent in View mode and in
+asking. A transient failure is logged once until the heartbeat succeeds
+and the next renewal retries it. The indicator is presentation: it is sent in View mode and in
 every session kind.
 
 #### Selection both ways
@@ -277,8 +281,9 @@ every session kind.
   draws it with) and against the level (`geometry::surface`); the
   nearest object in front of the level is the **aim candidate**. A
   candidate held for `AIM_DWELL` (0.6 s) becomes the editor's
-  selection. The candidate and the selection are both marked in the
-  game, so the player sees the cursor land and then take.
+  selection. The editor tracks the displayed pose between ticks, and a
+  stream cut restarts the hold even when the tick repeats. The candidate
+  and the selection are both marked in the game, so the player sees the cursor land and then take.
 - `mirror.pick {from: "aim"}` returns the candidate (`object`,
   `placement`, `tag`, `point`, `distance`) without selecting, and
   `{ray}` does the same for any ray.
@@ -290,9 +295,12 @@ holds (`play::presence`):
 | Selected | Mark |
 |---|---|
 | a placement whose object is in the stream | `{object}`: the game draws that object's bounds and follows it |
-| a placement with no live object, a trigger or kill volume | `{box}` at the entry's frame and size |
+| a placement with no live object | `{box}` at the entry's frame and size |
+| an unlinked live object | `{object}` for the selected salted handle |
 | a tag from the tag tree | `{object}` for every live object made from it, up to 64 |
 | the aim candidate | `{object}` in the candidate style |
+
+Trigger and kill volume marks depend on P8 making those entries selectable.
 
 The window overlay draws wire boxes and crosses over the finished game
 frame. A genuine frame carries the camera and object bounds that
@@ -300,10 +308,12 @@ belong to its pixels. A synthetic interpolation frame holds the
 preceding genuine source's projection until the current source's
 endpoint. All edges show at full strength with no occlusion. Candidate
 edges are dashed, and `xray` is reserved with no effect. Colours are the
-theme's and travel as data. A host without a matching camera for the
-presented frame or without a window answers `{drawn: false, why}` and
-the Game panel says so once. Marks are presentation, sent in View
-mode and in every session kind.
+theme's and travel as data. A host waiting for a
+genuine frame answers `{drawn: false, why}` and the editor keeps
+renewing the marks quietly. A host with no window, or with no camera
+for its frames, says so in `why`; the Game panel shows it and the
+viewport raises one notice per failure. Marks are presentation, sent in
+View mode and in every session kind.
 
 #### Shared camera
 
@@ -338,7 +348,7 @@ Objects follow the document too (`play/objects.rs`):
 | In the editor | In the game |
 |---|---|
 | a placement moved or turned | its `scnr` bytes (`edit.batch`) and, for its live object, `world.object.set` with the new frame |
-| a placement added | `sim.spawn` from the entry's tag and frame; the entry is "a preview until the map reloads" |
+| a placement added | requests a preview with `world.object.respawn {placement}` for an unoccupied new slot. A host that only reads the loaded block refuses an appended slot. Pending shows the reason and the block needs Reload. |
 | a placement deleted | `world.object.delete` on its object; the entry is "still in the game's scenario until the map reloads" |
 | a placement field read at creation changed | the poke, then **Respawn now** (`world.object.respawn`) for the objects that exist |
 
@@ -351,8 +361,11 @@ the preview of an undone add, or respawns the object of an undone
 delete. No second undo log exists, and a step that touched a tag and a
 placement undoes in the game as it does here.
 
-A drag sends `world.object.set` at most once per push interval and
-once more when the gizmo is released. A game without `world.object.*`
+The editor uses a preview’s returned salted object ID for moves, marks
+and picking until a verified map change or a new binding supersedes it.
+A changed block layout keeps field writes out of shifted slots.
+A drag sends at most one `world.object.set` per live object per push
+interval, plus its final frame when the gizmo is released. A game without `world.object.*`
 gets the `scnr` bytes alone and the pending list says objects move at
 their next creation.
 
@@ -370,7 +383,10 @@ their next creation.
 - **On the pill.** `LinkView::issues`, as above.
 - **In the game.** The indicator plate's second line.
 - `pair.status` carries `link.issues` as `[{kind, text, target}]`,
-  where `target` is the field, placement or tag to jump to.
+  where `target` opens the field, placement or tag through `nav.go`.
+  A deleted row or a block-wide issue opens Pending. The bar shows the
+  largest count on its second line. Ties favor refusals, then conflicts,
+  reloads and waiting edits.
 
 ### The scenario tag tree
 
@@ -675,9 +691,9 @@ when built. The game's methods for the link follow in their own table.
 
 | Method | Params | Result |
 |---|---|---|
-| `pair.status` | none | includes `link` with `{state, text, why}` from `LinkView` with `elapsed_ms` while reconnecting and `unavailable?` listing features missing from the host |
+| `pair.status` | none | includes `link` with `{state, text, why, issues: [{kind, text, target}]}` from `LinkView` with `elapsed_ms` while reconnecting and `unavailable?` listing features missing from the host |
 | `pair.edit` | `{enabled}` | queues the Edit switch change and returns `{requested}`. Read the mode in `pair.status`. |
-| `pair.status` | none | G9 adds `issues: [{kind, text, target}]` to `link` |
+| `nav.go` | `{tag, path?}`, `{block, index}` or `{panel: "pending"}` | opens the issue target from `pair.status.link.issues` |
 | `pair.settings` | `{spawn?, pause_while_editing?}` | reads or sets the spawn choice and pause on editor focus |
 | `pair.playtest` | `{confirm?: "send" \| "cancel" \| "load" \| "open", prompt?: integer}` | `{step: launch \| pair \| resume \| reload \| ask, ask?, prompt?, place?, why?, answer?}`. Echo the prompt ID with a choice to answer that ask. A manual reload carries `why`. Cancel and open carry `answer`. |
 | `mirror.pick` | `{from: "aim"}` or `{ray: {origin, dir}}` | the live object hit: `{object, placement, tag, point, distance}`, or `null` |
@@ -759,8 +775,8 @@ crate's server with an invented game behind it, as `play::tests` use.
 | G3 | **The game shows the link**: `editor.link`, `editor.focus`, the plate in `h2 play` | S | nothing | `crates/extensions/agent-proto/src/editor.rs`, `crates/extensions/agent/src/editor.rs`, `crates/apps/app/src/overlay.rs`, `crates/apps/app/src/shell.rs`, `crates/apps/cli/src/play_cmd.rs` | the lease holds for `ttl_ms` and no longer on an invented clock; `clear` drops it; a host with no window answers `shown: false`; the plate's two lines are the mode's text and `text`; `session.methods` lists both where registered |
 | G4 | **The game moves and remakes objects**: `world.object.set`, `.delete`, `.respawn`, `map.reload` | M | nothing | `crates/extensions/agent-proto/src/sim/mod.rs`, `crates/extensions/agent/src/sim/calls.rs`, `crates/extensions/agent/src/sim/mod.rs` | on the fake guest of `sim/calls/tests.rs`: each call reaches its engine entry with the arguments the retail callers pass, in the tick's `before` hook; a gone id answers `GONE`; co-op and client sessions refuse before anything is queued; `respawn` deletes then makes from the scenario entry and reports `linked`; `map.reload` queues the running map through `Call::QueueGame` |
 | G5 | **The game draws marks**: `editor.marks`, the window overlay | M | G3 | `crates/extensions/agent/src/editor/scene.rs`, `crates/apps/app/src/overlay/marks.rs`, `crates/extensions/game/src/editor_glue.rs`, `crates/platform/d3d/src/present_camera.rs` | invented marks: the object box uses the world bounding sphere and object axes, and the explicit box has its frame's twelve edges. The lease expires, stale handles are refused by index, and more than 256 are refused. Queued and repeated guest images keep their own camera, bounds and per-view aspect. The overlay clips at the near plane and draws all edges at full strength without occlusion. A host without a camera for the presented frame answers `drawn: false`. |
-| G6 | **Selection both ways**: live objects pickable, aim select, `mirror.pick`, `mirror.aim_select`, marks from the selection | M | G1 | `play/select.rs`, `play/presence.rs`, `viewport.rs`, `viewport/mirror.rs`, `api/mirror.rs` | `aim_pick` on an invented sample picks the nearest object in front of an invented wall and none behind it; a candidate held for `AIM_DWELL` becomes the selection and a shorter one does not; fake game: selecting a placement with a live object sends one `editor.marks` with its handle, and again within the lease; a click on a live object with a placement link selects the placement |
-| G7 | **Shared camera**: Follow player, Player's eyes, Player here looking my way, `mirror.camera`, `mirror.player` | S | G6 | `play/presence.rs`, `camera.rs`, `ui/toolbar.rs`, `api/mirror.rs` | invented sample: Follow keeps its offset as the player moves, Eyes looks along the aim; fake game: `mirror.player {facing: true}` sends the camera's yaw and pitch |
+| G6 | **Selection both ways** (implemented): live objects pickable, aim select, `mirror.pick`, `mirror.aim_select`, marks from the selection | M | G1 | `play/select.rs`, `play/presence.rs`, `viewport.rs`, `viewport/mirror.rs`, `api/mirror.rs` | `aim_pick` on an invented sample picks the nearest object in front of an invented wall and none behind it; a candidate held for `AIM_DWELL` becomes the selection and a shorter one does not; fake game: selecting a placement with a live object sends one `editor.marks` with its handle, and again within the lease; a click on a live object with a placement link selects the placement |
+| G7 | **Shared camera** (editor modes and player moves implemented): Follow player, Player's eyes, Player here looking my way, `mirror.camera`, `mirror.player` | S | G6 | `play/presence.rs`, `camera.rs`, `ui/toolbar.rs`, `api/mirror.rs` | invented sample: Follow keeps its offset as the player moves, Eyes looks along the aim; fake game: `mirror.player {facing: true}` sends the camera's yaw and pitch |
 | G8 | **Edits land as you make them**: `objects::diff`, objects follow the gizmo, previews, deletes, Respawn now, undo through the document | M | G1, G4 | `play/objects.rs`, `play/edits.rs`, `play.rs`, `api/mirror.rs` | fake game: a gizmo drag sends the `scnr` writes and at most one `world.object.set` a push interval, plus one on release; undo sends the old frame; an added placement spawns a preview and its undo deletes it; a deleted placement's undo respawns it; a game without `world.object.set` receives none and the pending list says why |
 | G9 | **Problems show where you are**: field and row marks, viewport toasts, `LinkView::issues`, the indicator's second line | S | G1 | `play.rs`, `ui/inspector.rs`, `ui/play.rs`, `viewport.rs`, `api/pair.rs` | a refused write and a `MISMATCH` each mark their field and appear in `pair.status.link.issues` with a `target` that `nav.go` accepts; a refused teleport raises one toast that expires; the pill's text carries the largest count |
 
@@ -805,9 +821,10 @@ The tests use invented data.
 - The link indicator and marks are presentation. They
   change no simulation state, hold a lease the editor must renew, and
   are gone when it stops.
-- The editor reaches the game only through methods `session.methods`
-  lists. A method the game lacks turns its feature off with the reason
-  shown; nothing is approximated by another call.
+- The control connection opens with `session.methods` for discovery and
+  `session.status` for its bootstrap status poll. Status polling continues
+  on that connection. Every other game call requires its advertised method.
+  A missing method disables its control and the link shows the reason.
 - The editor never reads the game's memory: live state comes from the
   stream, edits go through named methods.
 - Overlays draw only what the map's own data says. A class whose meaning
@@ -880,6 +897,10 @@ The tests use invented data.
 
 ## Not verified
 
+- A move can still reach a replacement unit if the player respawns between
+  the editor's last exact-sample check and execution. `sim.state.set`
+  identifies the player by slot. An execution-time check requires the
+  game to accept the expected salted unit and map epoch with the request.
 - Whether the fixed path's look (step 1) is close enough to the game's
   on maps with many unlit or multi-pass materials; a side-by-side of
   `view.snapshot` and the game's frame on the user's disc shows it.

@@ -152,14 +152,7 @@ impl Studio {
         self.status_bar(ui, app);
         self.modals(ui, app, &mut actions);
         actions.extend(self.palette.draw(ui, app));
-        for a in actions {
-            if app.tool == ToolKind::Tags
-                && matches!(a, Action::Select(_) | Action::SelectMany(_) | Action::ToggleSelect(_))
-            {
-                app.dispatch(Action::SetTool(ToolKind::Scenario));
-            }
-            app.dispatch(a);
-        }
+        dispatch_actions(app, actions);
     }
 
     fn shortcuts(&mut self, ui: &Ui, app: &App, actions: &mut Vec<Action>) {
@@ -797,12 +790,13 @@ impl Studio {
                     let Some(_node) = node else { continue };
                     for &i in &shown {
                         let label = scenario.label(kind, i);
-                        if ui
-                            .selectable_config(format!("{label}##{kind:?}-{i}"))
-                            .selected(session.is_selected((kind, i)))
-                            .allow_double_click(true)
-                            .build()
-                        {
+                        let issue = inspector::issues(app).placement_row(kind, i);
+                        if inspector::marked_row(ui, label, issue, |label| {
+                            ui.selectable_config(format!("{label}###{kind:?}-{i}"))
+                                .selected(session.is_selected((kind, i)))
+                                .allow_double_click(true)
+                                .build()
+                        }) {
                             actions.push(
                                 match outliner::click((kind, i), toggle, range, sel, &shown) {
                                     outliner::Click::One(e) => Action::Select(Some(e)),
@@ -871,7 +865,7 @@ impl Studio {
         // The closure borrows the whole shell, so the key is its own value.
         let key = self.keys.inspector.clone();
         ui.window(&key).build(|| {
-            let link = self.play.play.link_view(app);
+            let link = self.play.play.displayed_link(app);
             if matches!(
                 link.state,
                 crate::play::LinkState::Editing { .. } | crate::play::LinkState::Blocked { .. }
@@ -1147,6 +1141,18 @@ impl Studio {
                 ui.close_current_popup();
             }
         }
+    }
+}
+
+/// Dispatch the window's frame queue in order, including the placement inspector switch.
+pub(crate) fn dispatch_actions(app: &mut App, actions: Vec<Action>) {
+    for a in actions {
+        if app.tool == ToolKind::Tags
+            && matches!(a, Action::Select(_) | Action::SelectMany(_) | Action::ToggleSelect(_))
+        {
+            app.dispatch(Action::SetTool(ToolKind::Scenario));
+        }
+        app.dispatch(a);
     }
 }
 

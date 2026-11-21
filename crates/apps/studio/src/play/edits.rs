@@ -34,6 +34,7 @@ pub(super) struct ReloadCopy {
     id: u64,
     world: u64,
     before_epoch: u64,
+    activation: Option<u64>,
     checksum: u32,
     file: PathBuf,
     placements: Baseline,
@@ -44,6 +45,25 @@ pub(super) struct ReloadCopy {
 }
 
 impl ReloadCopy {
+    /// Match the exact activation requested by the host, or a new epoch on older hosts.
+    fn reload_complete(&self, app: &App, map: &Value, status_activation: Option<u64>) -> bool {
+        let epoch = map["epoch"].as_u64();
+        let loaded = match self.activation.zip(status_activation) {
+            Some((expected, observed)) => {
+                // The map can activate again between the status and identity replies.
+                expected == observed
+                    && epoch.is_some()
+                    && map["at"]["activation"].as_u64().is_none_or(|at| at == expected)
+            }
+            None => epoch.is_some_and(|epoch| epoch != self.before_epoch),
+        };
+        self.check_identity
+            && loaded
+            && map["checksum"].as_u64() == Some(u64::from(self.checksum))
+            && self.world == app.session.world_rev()
+            && pair::map_match(app, map["name"].as_str()) == MapMatch::Same
+    }
+
     fn acknowledged(&self, app: &App, reply: &Value) -> bool {
         let Some(file) = reply["file"].as_str().map(std::path::Path::new) else {
             return false;
@@ -64,12 +84,12 @@ pub(super) struct Edits {
     pub(super) epoch: Option<u64>,
     loaded: Option<std::sync::Arc<HashSet<TagId>>>,
     last_diff: Option<(u64, u64, u64, bool)>,
-    checksum: Option<u32>,
+    pub(super) checksum: Option<u32>,
     name: Option<String>,
-    world: Option<u64>,
+    pub(super) world: Option<u64>,
     session_reason: Option<String>,
     pub peers: Option<u32>,
-    confirmed: Option<u32>,
+    pub(super) confirmed: Option<u32>,
     pub(super) journal_ready: bool,
     journal_requested: bool,
     reverting: bool,
@@ -79,7 +99,7 @@ pub(super) struct Edits {
     pub(super) sent: Option<Batch>,
     next: u64,
     conflicts: Vec<Value>,
-    created: Vec<sync::Write>,
+    refused: issues::Refusals,
 }
 
 impl Edits {
@@ -109,15 +129,20 @@ type Reply = Result<Value, RpcError>;
 
 impl Play {
     pub(super) fn known_tag_epoch(&self) -> Option<u64> {
-        if matches!(self.conn, Conn::Reconnecting { .. }) {
+        if self.reload_copy.is_some() || matches!(self.conn, Conn::Reconnecting { .. }) {
             None
         } else {
             self.edits.loaded.as_ref().and(self.edits.epoch)
         }
     }
 
+    pub(super) fn retry_refused_fields(&mut self) {
+        self.edits.refused = issues::Refusals::default();
+        self.edits.last_diff = None;
+    }
+
     pub fn can_respawn(&self) -> bool {
-        self.has_method(agent_proto::sim::method::OBJECT_RESPAWN) && !self.edits.created.is_empty()
+        self.has_method(agent_proto::sim::method::OBJECT_RESPAWN) && self.objects.can_respawn()
     }
 
     fn reset_baseline(&mut self, app: &App) {
@@ -164,11 +189,7 @@ impl Play {
         let checksum = v["checksum"].as_u64().and_then(|n| u32::try_from(n).ok());
         let name = v["name"].as_str().map(str::to_owned);
         if let Some(copy) = &self.reload_copy
-            && (!copy.check_identity
-                || epoch.is_none_or(|epoch| epoch == copy.before_epoch)
-                || checksum != Some(copy.checksum)
-                || copy.world != app.session.world_rev()
-                || pair::map_match(app, name.as_deref()) != MapMatch::Same)
+            && !copy.reload_complete(app, &v, self.status_activation)
         {
             // The new epoch and its tag index can become visible on different polls.
             self.session = None;
@@ -185,7 +206,8 @@ impl Play {
             self.conn = Conn::Connected;
             self.retry = None;
         }
-        let changed = (reconnecting && (epoch.is_none() || checksum.is_none()))
+        let changed = resume_edits.is_some()
+            || (reconnecting && (epoch.is_none() || checksum.is_none()))
             || self.edits.epoch != epoch
             || self.edits.checksum != checksum
             || (self.edits.name != name
@@ -199,7 +221,11 @@ impl Play {
             serde_json::from_value::<SessionView>(v["session"].clone()).unwrap_or_default();
         self.session = Some(session.kind);
         self.edits.session_reason = session.kind.writes().err().map(str::to_owned).or_else(|| {
-            (!session.writes).then(|| session.why.unwrap_or_else(|| "game refused edits".into()))
+            if session.kind == SessionKind::MpHost && session.peers.is_none() {
+                Some("the game cannot verify the multiplayer peer count".into())
+            } else {
+                (!session.writes).then(|| session.why.unwrap_or_else(|| "game refused edits".into()))
+            }
         });
         self.edits.peers = (session.kind == SessionKind::MpHost)
             .then_some(session.peers)
@@ -208,7 +234,16 @@ impl Play {
         if self.edits.confirmed != self.edits.peers {
             self.edits.confirmed = None;
         }
-        if epoch != self.edits.epoch {
+        if !changed && self.edits.session_reason.is_none() && self.edits.peers.is_none()
+            && self.objects.waiting_for_permission()
+        {
+            // A fresh writable session with no remote peers needs no confirmation.
+            self.objects.confirm_objects();
+        }
+        if resume_edits.is_some() {
+            self.reset_objects(app);
+        }
+        if resume_edits.is_some() || epoch != self.edits.epoch {
             self.edits.loaded = None;
         }
         if let Some(ids) = v["loaded"].as_array() {
@@ -227,7 +262,7 @@ impl Play {
             app.tags.live_datums = None;
             if reconnecting || self.edits.epoch.is_some() {
                 self.edits.own_start = false;
-                self.live_edits = false;
+                self.enter_view();
             }
             self.edits.epoch = epoch;
             self.edits.checksum = checksum;
@@ -238,7 +273,7 @@ impl Play {
                 app.error("the map changed while leaving; choose how to leave the current map");
             }
             self.edits.conflicts.clear();
-            self.edits.created.clear();
+            self.edits.refused = issues::Refusals::default();
             self.edits.confirmed = None;
             self.edits.journal_ready = false;
             self.edits.reverting = false;
@@ -262,7 +297,7 @@ impl Play {
             app.tags.live_datums = self.edits.loaded.clone();
         }
         if self.map_refusal(app).is_some() || self.edits.session_reason.is_some() {
-            self.live_edits = false;
+            self.enter_view();
         } else if self.edits.own_start && self.edits.journal_ready {
             self.edits.own_start = false;
             self.live_edits = app.pairing.journal.is_empty();
@@ -378,7 +413,7 @@ impl Play {
                     .collect();
                 self.edits.journal_ready = true;
                 if !app.pairing.journal.is_empty() {
-                    self.live_edits = false;
+                    self.enter_view();
                     self.edits.own_start = false;
                 }
             }
@@ -428,8 +463,12 @@ impl Play {
             sync::Diff::default()
         };
         self.reload = d.reload;
+        if self.edits.world != Some(app.session.world_rev()) {
+            self.edits.refused = issues::Refusals::default();
+            self.edits.conflicts.clear();
+        }
         let empty = TagBaseline::default();
-        let (tags, mut pending) = tag_sync::diff(
+        let (mut tags, mut pending) = tag_sync::diff(
             if base.is_some() {
                 &self.edits.tags
             } else {
@@ -439,13 +478,15 @@ impl Play {
         );
         let tag = json!(self.scenario_tag);
         for b in &self.reload {
-            pending.push(tag_sync::row(
+            let mut row = tag_sync::row(
                 "scenario",
                 tag.clone(),
                 &format!("{b:?}"),
                 RELOAD,
                 "placement layout changed",
-            ));
+            );
+            row["target"] = json!({"panel": "pending"});
+            pending.push(row);
         }
         d.writes.retain(|w| {
             let def = scenario_edit::layout::block(w.block).field(w.field);
@@ -453,7 +494,7 @@ impl Play {
                 && sync::unhex(&w.value)
                     .and_then(|b| Some(u32::from_le_bytes(b.get(4..8)?.try_into().ok()?)))
                     .is_some_and(|d| d != u32::MAX && !app.tags.resident(TagId(d)));
-            pending.push(tag_sync::row(
+            let mut row = tag_sync::row(
                 "scenario",
                 tag.clone(),
                 &w.path,
@@ -463,27 +504,37 @@ impl Play {
                 } else {
                     "shows when the object is made"
                 },
-            ));
+            );
+            row["target"] = json!({"block": crate::api::block_name(w.block), "index": w.index});
+            row["field"] = json!(w.field);
+            pending.push(row);
             !absent
         });
+        self.edits.refused.hold(&mut pending, &mut tags, &mut d.writes);
         for c in &self.edits.conflicts {
+            if let Err(why) = self.check_conflict(app, c) {
+                let mut stale = c.clone();
+                stale["why"] = json!(why);
+                stale["resolvable"] = json!(false);
+                stale["class"] = json!(RELOAD);
+                stale["target"] = json!({"panel": "pending"});
+                pending.push(stale);
+                continue;
+            }
             let same = |r: &&mut Value| {
-                if r["at"].is_number() {
-                    r["at"] == c["at"]
-                } else {
-                    r["doc"] == c["doc"] && r["path"] == c["path"]
-                }
+                r["doc"] == c["doc"] && r["target"] == c["target"] && r["path"] == c["path"]
             };
             if let Some(row) = pending.iter_mut().find(same) {
                 row["at"] = c["at"].clone();
                 row["conflict"] = json!(true);
-                row["why"] = json!("the game changed this");
+                row["why"] = c["why"].clone();
                 row["holds"] = c["holds_bytes"].clone();
             } else {
                 pending.push(c.clone());
             }
         }
-        app.pairing.pending = pending;
+        self.objects.publish(&mut pending);
+        *app.pairing.pending = pending;
         if !writable || self.edits.sent.is_some() || self.edits.taking.is_some()
             || !self.edits.conflicts.is_empty()
         {
@@ -517,6 +568,7 @@ impl Play {
             return;
         }
         let batch = self.edits.sent.take().unwrap();
+        self.objects.field_answer();
         let playtest = self.waiting == Waiting::Sent;
         if self.edits.world != Some(app.session.world_rev()) {
             self.edits.restore_after_batch = false;
@@ -533,26 +585,23 @@ impl Play {
                 if let Some((_, base)) = &mut self.baseline {
                     for w in batch.placements {
                         base.wrote(&w);
-                        self.edits
-                            .created
-                            .retain(|p| p.block != w.block || p.index != w.index);
-                        self.edits.created.push(w);
                     }
                 }
                 if playtest {
                     self.playtest_consent = true;
-                    self.finish_playtest();
+                    self.finish_playtest(app);
                 }
             }
             Err(e) if e.code == agent_proto::code::MISMATCH => {
                 self.waiting = Waiting::Idle;
+                let message = e.message;
                 self.edits.conflicts = e
                     .data
                     .and_then(|d| d["fields"].as_array().cloned())
                     .unwrap_or_default();
                 for c in &mut self.edits.conflicts {
                     c["conflict"] = json!(true);
-                    c["why"] = json!("the game changed this");
+                    c["why"] = json!(message);
                     if let Some(w) = batch
                         .tags
                         .iter()
@@ -562,28 +611,36 @@ impl Play {
                         c["tag"] = json!(w.tag.0);
                         c["doc"] = json!("tags");
                         c["class"] = json!(w.class);
+                        // The conflict belongs to the field that was sent. Pending may
+                        // already describe a different field at the same address.
+                        c["target"] = json!({"tag": w.tag.0, "path": w.nav_path});
                     } else {
                         c["doc"] = json!("scenario");
                         c["class"] = json!(CREATION);
+                        if let Some(w) = batch.placements.iter().find(|w| c["path"] == w.path.as_str()) {
+                            c["target"] = json!({"block": crate::api::block_name(w.block), "index": w.index});
+                            c["field"] = json!(w.field);
+                        }
                     }
                 }
                 if !playtest && self.edits.conflicts.is_empty() {
-                    self.live_edits = false;
+                    self.enter_view();
                 }
-                app.error("the game changed a field; resolve it in Pending");
+                self.feedback.problem(app, "the game changed a field; resolve it in Pending".into());
             }
             other => {
                 self.waiting = Waiting::Idle;
-                if !playtest {
-                    self.live_edits = false;
+                if other.is_ok() && !playtest {
+                    // An incomplete success receipt doesn't establish which writes landed.
+                    self.enter_view();
                 }
-                app.error(format!(
-                    "edit.batch: {}",
-                    other
-                        .err()
-                        .map(|e| e.to_string())
-                        .unwrap_or_else(|| "incomplete acknowledgement".into())
-                ));
+                let why = other.err().map_or_else(
+                    || "incomplete acknowledgement".to_owned(),
+                    |e| e.data.as_ref().and_then(|data| data["why"].as_str())
+                        .map(str::to_owned).unwrap_or(e.message),
+                );
+                self.edits.refused.record(&batch.tags, &batch.placements, &why);
+                self.feedback.problem(app, format!("edit.batch: {why}"));
             }
         }
         self.edits.last_diff = None;
@@ -605,7 +662,7 @@ impl Play {
 
     pub(super) fn request_leave(&mut self, app: &mut App) {
         if self.is_paired() {
-            self.live_edits = false;
+            self.enter_view();
             app.pairing.leaving = true;
         } else {
             self.unpair(app);
@@ -618,7 +675,7 @@ impl Play {
         }
         self.edits.reverting = false;
         match result {
-            Err(e) => app.error(format!("edit.revert: {e}")),
+            Err(e) => self.feedback.problem(app, format!("edit.revert: {e}")),
             Ok(v) => {
                 if v["dropped"].as_array().is_some_and(|a| !a.is_empty()) {
                     app.error(
@@ -643,8 +700,8 @@ impl Play {
                         app.error(format!("edit.revert: {why}"));
                     }
                 }
-                self.edits.created.clear();
                 self.edits.conflicts.clear();
+                self.edits.refused = issues::Refusals::default();
                 self.edits.last_diff = None;
                 self.next_push = Instant::now();
                 app.pairing.journal.clear();
@@ -674,6 +731,7 @@ impl Play {
                 return Err("the paired host, map epoch or peer count changed".into());
             }
             self.edits.confirmed = Some(scope.peers);
+            self.objects.confirm_objects();
             self.next_push = Instant::now();
             return Ok(());
         }
@@ -700,11 +758,10 @@ impl Play {
         }
         match action {
             Apply::Take(at) | Apply::Overwrite(at) => {
-                if matches!(action, Apply::Overwrite(_)) {
-                    if let Some(why) = self.edit_refusal(app) {
-                        return Err(why);
-                    }
-                    self.live_edits = true;
+                if matches!(action, Apply::Overwrite(_))
+                    && let Some(why) = self.edit_refusal(app)
+                {
+                    return Err(why);
                 }
                 let i = self
                     .edits
@@ -713,6 +770,7 @@ impl Play {
                     .position(|c| c["at"].as_u64() == Some(u64::from(at)))
                     .ok_or("no conflict at this address")?;
                 let c = self.edits.conflicts[i].clone();
+                self.check_conflict(app, &c)?;
                 if action == Apply::Take(at) {
                     let len = observed_bytes(&c)?.len();
                     let epoch = self.edits.epoch.unwrap();
@@ -732,6 +790,7 @@ impl Play {
                     return Ok(());
                 }
                 self.accept_game_bytes(app, &c, false)?;
+                self.live_edits = true;
                 self.edits.conflicts.remove(i);
             }
             Apply::Adopt => {
@@ -748,7 +807,7 @@ impl Play {
                 if let Some(why) = &self.edits.session_reason {
                     return Err(why.clone());
                 }
-                self.live_edits = false;
+                self.enter_view();
                 self.edits.reverting = true;
                 let epoch = self.edits.epoch.unwrap();
                 self.call(
@@ -764,6 +823,7 @@ impl Play {
                 if let Some(why) = self.edit_refusal(app) {
                     return Err(why);
                 }
+                self.retry_refused_fields();
                 if let Some(copy) = &mut self.reload_copy {
                     copy.resume_edits = true;
                 }
@@ -781,19 +841,7 @@ impl Play {
                 }
                 if action == Apply::Respawn {
                     self.require_method(agent_proto::sim::method::OBJECT_RESPAWN)?;
-                    if !self.can_respawn() {
-                        return Err("no acknowledged placement edits to respawn".into());
-                    }
-                    for w in &self.edits.created {
-                        self.call(
-                            agent_proto::sim::method::OBJECT_RESPAWN,
-                            json!({
-                                "placement": {"block": crate::api::block_name(w.block), "index": w.index},
-                                "confirm_peers": self.edits.confirmed,
-                            }),
-                            Purpose::Other,
-                        );
-                    }
+                    self.respawn_objects(app)?;
                 } else {
                     self.remember_place(app);
                     let route = playtest::Reload::route(
@@ -832,6 +880,7 @@ impl Play {
         };
         match result {
             Ok(v) if copy.acknowledged(app, &v) => {
+                copy.activation = v["activation"].as_u64();
                 copy.check_identity = true;
             }
             Err(e) if e.code == agent_proto::sim::REFUSED => {
@@ -845,7 +894,7 @@ impl Play {
                         app.error(format!("Play: {why}"));
                     }
                 } else {
-                    app.error(format!("map.reload: {why}. Save the map and load it in the game."));
+                    self.feedback.problem(app, format!("map.reload: {why}. Save the map and load it in the game."));
                 }
             }
             other => {
@@ -855,7 +904,7 @@ impl Play {
                     Err(e) => e.to_string(),
                 };
                 self.cancel_reload();
-                app.error(format!("map.reload: {why}"));
+                self.feedback.problem(app, format!("map.reload: {why}"));
             }
         }
     }
@@ -886,6 +935,9 @@ impl Play {
             return self.relaunch_copy(app, destination, self.live_edits);
         }
         self.require_method(agent_proto::sim::method::MAP_RELOAD)?;
+        if self.paused && let Some(why) = self.controls().resume {
+            return Err(why.into());
+        }
         let level = app.loaded_map().ok_or("open a map first")?;
         let scenario = app.session.scenario().ok_or("open a map first")?;
         let before_epoch = self.edits.epoch.ok_or("waiting for the loaded map epoch")?;
@@ -895,10 +947,12 @@ impl Play {
         let saved = scenario_edit::MapSource::file(file.clone())
             .open()
             .map_err(|e| e.to_string())?;
+        self.objects.cancel_unsent();
         self.reload_copy = Some(ReloadCopy {
             id,
             world: app.session.world_rev(),
             before_epoch,
+            activation: None,
             checksum: saved.header().checksum,
             file: file.clone(),
             placements: Baseline::of(scenario),
@@ -911,7 +965,6 @@ impl Play {
         self.pending_spawn = self.destination(app);
         self.waiting = Waiting::Reload;
         if self.paused {
-            self.ensure_claim();
             self.resume();
         }
         self.call(
@@ -922,13 +975,26 @@ impl Play {
         Ok(())
     }
 
+    fn check_conflict(&self, app: &App, field: &Value) -> Result<(), &'static str> {
+        if field["doc"] == "scenario" {
+            let block = crate::api::P(&field["target"]).block().ok();
+            if let (Some((_, base)), Some(scenario), Some(block)) =
+                (&self.baseline, app.session.scenario(), block)
+                && base.layout_matches(scenario, block)
+            {
+                return Ok(());
+            }
+            return Err("reload the changed placement block first");
+        }
+        tag_sync::check_conflict_path(&app.tags, field)
+    }
+
     pub(super) fn take_answer(&mut self, app: &mut App, id: u64, at: u32, result: Reply) {
         if self.edits.taking != Some(id) {
             return;
         }
         self.edits.taking = None;
         let outcome: Result<(), String> = (|| {
-            let reply = result.map_err(|e| e.to_string())?;
             if let Some(why) = self.map_refusal(app) {
                 return Err(why);
             }
@@ -939,6 +1005,8 @@ impl Play {
                 .position(|c| c["at"].as_u64() == Some(u64::from(at)))
                 .ok_or("the conflict has expired")?;
             let mut field = self.edits.conflicts[i].clone();
+            self.check_conflict(app, &field)?;
+            let reply = result.map_err(|e| e.to_string())?;
             let len = observed_bytes(&field)?.len();
             field["holds_bytes"] = if field["doc"] == "scenario" {
                 reply["value"].clone()
@@ -956,7 +1024,7 @@ impl Play {
             Ok(())
         })();
         if let Err(why) = outcome {
-            app.error(format!("take the game's value: {why}"));
+            self.feedback.problem(app, format!("take the game's value: {why}"));
         }
     }
 
@@ -1020,12 +1088,14 @@ impl Play {
             }
         }
         app.sync_tags();
+        tag_sync::check_conflict_path(&app.tags, c)?;
         let entry = app
             .tags
             .tags()
             .iter()
             .find(|t| {
-                at >= t.address
+                (c["doc"] != "tags" || c["tag"] == t.id.0)
+                    && at >= t.address
                     && u64::from(at) + bytes.len() as u64
                         <= u64::from(t.address) + u64::from(t.size)
             })
@@ -1076,3 +1146,6 @@ fn observed_bytes(row: &Value) -> Result<Vec<u8>, String> {
         .filter(|bytes| !bytes.is_empty())
         .ok_or_else(|| "missing or invalid current game bytes".into())
 }
+
+#[cfg(all(test, unix))]
+mod activation_tests;

@@ -210,6 +210,8 @@ pub enum Request {
     Pause,
     Resume,
     Step(u64),
+    MovePlayer(super::presence::PlayerMove),
+    PlayerMoveRefused(super::feedback::MoveContext, String),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -230,10 +232,11 @@ impl Request {
             Self::Play | Self::PlayAnswer(..) if !link.can_play => Some("open a map first"),
             Self::Stop if !link.can_stop => Some("the editor has no game of its own to stop"),
             Self::Edit(_) if !link.state.can_edit() => Some("pair with a game first"),
-            Self::Pause | Self::Resume | Self::Step(_) if !link.can_pause => {
-                Some("pair with a game first")
-            }
-            Self::Step(_) if !link.paused => Some("pause the game before stepping"),
+            Self::Pause => link.controls.pause,
+            Self::Resume => link.controls.resume,
+            Self::Step(_) => link.controls.step.or_else(|| {
+                (!link.paused).then_some("pause the game before stepping")
+            }),
             _ => None,
         }
     }
@@ -254,6 +257,7 @@ pub struct Bridge {
     /// Pair on its own with the one game running, once per game. On by default.
     pub auto_pair: bool,
     pub pause_while_editing: bool,
+    pub open_pending: bool,
     pub spawn: Option<super::Spawn>,
     pub playtest: Option<super::playtest::Offer>,
     pub prompt: Option<super::playtest::Prompt>,
@@ -265,15 +269,24 @@ pub struct Bridge {
     /// frame (headless, there is no pairing).
     pub published: Option<Value>,
     /// The same game-link state the bar and Game panel read.
-    pub link: Option<LinkView>,
-    pub pending: Vec<Value>,
+    pub link: Option<Arc<LinkView>>,
+    pub pending: super::issues::Pending,
     pub journal: Vec<Value>,
     pub leaving: bool,
     /// One socket and its exact tick samples for the current pairing.
-    pub mirror: Option<live_mirror::Stream>,
+    pub mirror: Option<Arc<super::stream::Stream>>,
     /// The sample shown this editor frame, shared by the viewport and API.
     pub shown: Option<live_mirror::Sample>,
+    pub(crate) display: super::display::DisplayState,
     pub latest: bool,
+    pub(crate) selection: super::select::LiveSelection,
+    pub(crate) camera: super::presence::SharedCamera,
+    /// Slot layouts verified against a loaded play copy. An absent baseline uses source slots.
+    layouts: Vec<(scenario_edit::BlockKind, Option<u64>)>,
+    pub(super) previews: super::objects::previews::Previews,
+    /// Pairing, editor document and game epoch that accept a player move.
+    pub(crate) player_scope: Result<(u64, u64, u64), String>,
+    pub(crate) move_context: Option<super::feedback::MoveContext>,
     /// Counters reported by the game's writer for this stream.
     pub counters: Option<Value>,
     /// Map identity from the handshake, refreshed over live.status after a cut.
@@ -287,6 +300,7 @@ impl Default for Bridge {
         Bridge {
             auto_pair: true,
             pause_while_editing: false,
+            open_pending: false,
             spawn: None,
             playtest: None,
             prompt: None,
@@ -295,12 +309,19 @@ impl Default for Bridge {
             requests: Vec::new(),
             published: None,
             link: None,
-            pending: Vec::new(),
+            pending: Default::default(),
             journal: Vec::new(),
             leaving: false,
             mirror: None,
             shown: None,
+            display: Default::default(),
             latest: false,
+            selection: Default::default(),
+            camera: Default::default(),
+            layouts: Vec::new(),
+            previews: Default::default(),
+            player_scope: Err("waiting for the editor to pair in Edit mode".into()),
+            move_context: None,
             counters: None,
             stream_map: Value::Null,
             play_copy: None,
@@ -309,6 +330,17 @@ impl Default for Bridge {
 }
 
 impl Bridge {
+    pub(super) fn set_player_scope(&mut self, scope: Result<(u64, u64, u64), &str>) {
+        match (&mut self.player_scope, scope) {
+            (Err(last), Err(why)) => {
+                if last.as_str() != why {
+                    why.clone_into(last);
+                }
+            }
+            (slot, next) => *slot = next.map_err(str::to_owned),
+        }
+    }
+
     pub(crate) fn show_prompt(&mut self, prompt: Option<super::playtest::Prompt>) {
         if let Some(prompt) = &prompt {
             self.next_prompt = prompt.id + 1;
@@ -323,14 +355,50 @@ impl Bridge {
         self.journal.clear();
         self.leaving = false;
         self.play_copy = None;
+        self.previews.clear();
         self.drop_stream();
     }
 
     pub(super) fn drop_stream(&mut self) {
+        self.selection = Default::default();
+        self.camera = Default::default();
+        self.layouts.clear();
+        self.set_player_scope(Err("waiting for the editor to pair in Edit mode"));
+        self.move_context = None;
         self.mirror = None;
         self.shown = None;
+        self.display.clear();
         self.counters = None;
         self.stream_map = Value::Null;
+    }
+
+    pub(super) fn update_placement_layouts(
+        &mut self,
+        session: &scenario_edit::Session,
+        loaded: Option<&super::sync::Baseline>,
+    ) {
+        self.layouts.clear();
+        if let (Some(scenario), Some(loaded)) = (session.scenario(), loaded) {
+            self.layouts.extend(scenario_edit::layout::BLOCKS.iter().map(|block| {
+                let kind = block.kind;
+                let revision = loaded.layout_matches(scenario, kind)
+                    .then(|| scenario.block(kind).layout_rev());
+                (kind, revision)
+            }));
+        }
+    }
+
+    pub(crate) fn placement_matches(
+        &self,
+        session: &scenario_edit::Session,
+        kind: scenario_edit::BlockKind,
+    ) -> bool {
+        let Some(scenario) = session.scenario() else { return true };
+        let current = scenario.block(kind).layout_rev();
+        match self.layouts.iter().find(|(block, _)| *block == kind) {
+            Some((_, revision)) => *revision == Some(current),
+            None => self.play_copy.is_none() && current == 0,
+        }
     }
 
     /// Only resolve definition handles and world-space coordinates against

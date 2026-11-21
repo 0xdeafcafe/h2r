@@ -2,12 +2,17 @@
 
 use std::collections::HashSet;
 
-use agent_proto::{RpcError, editor, hot, live, sim};
+use agent_proto::{RpcError, editor, hot, live, method, sim};
 use serde_json::Value;
 
 use super::{App, Conn, Play};
 
 const FEATURES: &[(&str, &str)] = &[
+    (method::CLAIM, "Taking game control"),
+    (method::RELEASE, "Releasing game control"),
+    (method::PAUSE, "Pausing the game"),
+    (method::RESUME, "Resuming the game"),
+    (method::STEP, "Stepping the game"),
     (hot::method::EDIT_MAP, "Checking the game's map identity"),
     (hot::method::EDIT_CHANGES, "Checking the edit journal"),
     (hot::method::EDIT_BATCH, "Sending field edits"),
@@ -18,11 +23,53 @@ const FEATURES: &[(&str, &str)] = &[
     (live::STATUS, "Refreshing stream counters and map identity"),
     (sim::method::STATE_SET, "Moving the player to an editor position"),
     (sim::method::MAP_RELOAD, "Loading a play copy in the running game"),
+    (sim::method::OBJECT_SET, "Moving a placement’s live object"),
+    (sim::method::OBJECT_DELETE, "Deleting a placement’s live object"),
     (sim::method::OBJECT_RESPAWN, "Respawning an edited placement"),
+    (editor::method::LINK, "Showing the editor link in the game"),
+    (editor::method::MARKS, "Marking the editor selection in the game"),
     (editor::method::FOCUS, "Focusing the game window"),
 ];
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Controls {
+    pub pause: Option<&'static str>,
+    pub resume: Option<&'static str>,
+    pub step: Option<&'static str>,
+}
+
+impl Controls {
+    pub(crate) fn can_toggle_pause(self, paused: bool) -> bool {
+        if paused {
+            self.resume.is_none()
+        } else {
+            self.pause.is_none()
+        }
+    }
+}
+
 impl Play {
+    pub(super) fn controls(&self) -> Controls {
+        let shared = if !self.is_paired() {
+            Some("pair with a game first")
+        } else if self.methods.is_none() {
+            Some("waiting for the game's method list")
+        } else if !self.controller && !self.has_method(method::CLAIM) {
+            Some("the game does not offer session.claim")
+        } else if !self.controller && !self.has_method(method::RELEASE) {
+            // A new claim must be releasable on this connection.
+            Some("the game does not offer session.release")
+        } else {
+            None
+        };
+        let reason = |name, missing| shared.or_else(|| (!self.has_method(name)).then_some(missing));
+        Controls {
+            pause: reason(method::PAUSE, "the game does not offer session.pause"),
+            resume: reason(method::RESUME, "the game does not offer session.resume"),
+            step: reason(method::STEP, "the game does not offer session.step"),
+        }
+    }
+
     pub(super) fn has_method(&self, name: &str) -> bool {
         self.methods
             .as_ref()
@@ -47,6 +94,7 @@ impl Play {
             .iter()
             .filter(|(method, _)| !self.has_method(method))
             .map(|(method, feature)| format!("{feature} requires {method}."))
+            .chain(self.objects.waiting_for_sample.map(str::to_owned))
             .collect()
     }
 
@@ -64,7 +112,9 @@ impl Play {
         self.methods = Some(methods);
         if self.has_method(live::SUBSCRIBE) {
             if app.pairing.mirror.is_none() {
-                app.pairing.mirror = self.endpoint().cloned().map(live_mirror::Stream::open);
+                app.pairing.mirror = self.endpoint().cloned()
+                    .map(super::stream::Stream::open)
+                    .map(std::sync::Arc::new);
             }
         } else {
             app.pairing.drop_stream();
@@ -74,7 +124,7 @@ impl Play {
             && matches!(self.conn, Conn::Reconnecting { .. })
         {
             self.conn = Conn::Connected;
-            self.live_edits = false;
+            self.enter_view();
             self.playtest_consent = false;
             self.edits.own_start = false;
         }

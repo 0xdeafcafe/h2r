@@ -3,7 +3,7 @@
 use map::TagId;
 use scenario_edit::{BlockKind, Session};
 
-use super::{App, Selection, tag_api};
+use super::{App, Selection, SelectionRevision, tag_api};
 
 const HISTORY_LIMIT: usize = 128;
 
@@ -66,6 +66,7 @@ pub struct NavHistory {
     world_rev: u64,
     entries: Vec<NavLocation>,
     cursor: usize,
+    revision: u64,
 }
 
 impl NavHistory {
@@ -87,6 +88,7 @@ impl NavHistory {
     }
 
     fn push(&mut self, location: NavLocation) {
+        self.revision += 1;
         self.entries.truncate(self.cursor + 1);
         self.entries.push(location);
         if self.entries.len() > HISTORY_LIMIT {
@@ -113,6 +115,15 @@ impl NavHistory {
 }
 
 impl App {
+    /// Changes to any source of the inspector's selection, without cloning its history.
+    pub(crate) fn selection_revision(&self) -> SelectionRevision {
+        SelectionRevision {
+            world: self.session.world_rev(),
+            primary: self.session.selected(),
+            navigation: self.nav.revision,
+        }
+    }
+
     pub fn nav_location(&self) -> NavLocation {
         self.nav
             .at(&self.session)
@@ -130,6 +141,9 @@ impl App {
             self.tags.seal();
             self.nav.sync(self.session.world_rev(), before);
             self.nav.push(after);
+        } else {
+            // Re-selecting or clearing the current subject releases a loose object.
+            self.nav.revision += 1;
         }
     }
 
@@ -137,6 +151,7 @@ impl App {
         if matches!(action, NavAction::Back | NavAction::Forward) {
             if let Some(next) = self.nav.target(action == NavAction::Forward, &self.session) {
                 self.nav.cursor = next;
+                self.nav.revision += 1;
                 let destination = &self.nav.entries[next];
                 if destination.placements != self.session.selection() {
                     self.session.select_many(destination.placements.clone());
@@ -148,6 +163,7 @@ impl App {
         }
 
         self.sync_tags();
+        let choosing_subject = matches!(action, NavAction::SelectTag(_) | NavAction::SelectPalette { .. });
         let before = self.nav_location();
         let mut after = before.clone();
         match action {
@@ -214,6 +230,9 @@ impl App {
             self.nav.sync(self.session.world_rev(), before);
             self.nav.push(after);
             self.tags.seal();
+        } else if choosing_subject {
+            // An explicit click on the inspected definition releases a loose live object.
+            self.nav.revision += 1;
         }
         Ok(())
     }
@@ -254,5 +273,35 @@ impl App {
         }
         // Jumping to an arbitrary tag starts a new breadcrumb at that tag.
         vec![tag]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::Action;
+    use crate::play::testing::Temp;
+
+    #[test]
+    fn explicit_and_implicit_placement_selection_change_the_revision() {
+        let t = Temp::new("placement-selection-revision");
+        let mut app = App::new();
+        app.set_data_root(t.0.join("data"));
+        app.dispatch(Action::OpenSource(t.map("example")));
+        let a = (BlockKind::Weapons, 0);
+        let b = (BlockKind::Weapons, 1);
+        for action in [
+            Action::Select(None), Action::Select(None),
+            Action::Select(Some(a)), Action::Select(Some(a)),
+            Action::SelectMany(vec![a, b]), Action::SelectMany(vec![a]),
+        ] {
+            let before = app.selection_revision();
+            app.dispatch(action);
+            assert_ne!(app.selection_revision(), before);
+        }
+
+        let before = app.selection_revision();
+        app.session.select(Some(b));
+        assert_ne!(app.selection_revision(), before);
     }
 }

@@ -51,6 +51,7 @@ impl TagBaseline {
 pub struct Write {
     pub tag: TagId,
     pub path: String,
+    pub nav_path: String,
     pub at: u32,
     pub value: Vec<u8>,
     pub was: Vec<u8>,
@@ -116,9 +117,9 @@ fn field_at<'a>(
     layout: &'a Layout,
     at: u32,
     depth: u8,
-) -> Option<(u32, &'a Field)> {
+) -> Option<(u32, &'a Field, String)> {
     if let Some(f) = at.checked_sub(root).and_then(|o| layout.field_covering(o)) {
-        return Some((root.checked_add(f.offset)?, f));
+        return Some((root.checked_add(f.offset)?, f, format!("+{:#x}", f.offset)));
     }
     if depth == 0 {
         return None;
@@ -143,7 +144,11 @@ fn field_at<'a>(
         {
             let start = first + index * child.size;
             if let Some(f) = child.field_covering(at - start) {
-                return Some((start + f.offset, f));
+                return Some((
+                    start + f.offset,
+                    f,
+                    format!("+{:#x}[{index}].+{:#x}", field.offset, f.offset),
+                ));
             }
         }
         if child
@@ -152,10 +157,10 @@ fn field_at<'a>(
             .any(|f| matches!(f.kind, Kind::Block(_)))
         {
             for i in 0..count {
-                if let Some(found) =
+                if let Some((start, nested, path)) =
                     field_at(doc, tag, first + i * child.size, child, at, depth - 1)
                 {
-                    return Some(found);
+                    return Some((start, nested, format!("+{:#x}[{i}].{path}", field.offset)));
                 }
             }
         }
@@ -261,7 +266,7 @@ pub fn diff(base: &TagBaseline, doc: &TagDoc) -> (Vec<Write>, Vec<Value>) {
             continue;
         };
         let id = json!(format!("{:#010x}", entry.id.0));
-        let Some((start, f)) = doc
+        let Some((start, f, nav_path)) = doc
             .layout(entry.id)
             .and_then(|l| field_at(doc, entry.id, entry.address, l, at, 12))
         else {
@@ -298,11 +303,15 @@ pub fn diff(base: &TagBaseline, doc: &TagDoc) -> (Vec<Write>, Vec<Value>) {
         let path = format!("{} · {} ({start:#x})", entry.name, f.name);
         let mut pending = row("tags", id, &path, class, why);
         pending["at"] = json!(start);
+        if crate::app::tag_api::field_focus(doc, entry.id, &nav_path).is_ok() {
+            pending["target"] = json!({"tag": entry.id.0, "path": nav_path});
+        }
         rows.push(pending);
         if class != RELOAD {
             writes.push(Write {
                 tag: entry.id,
                 path,
+                nav_path,
                 at: start,
                 value,
                 was,
@@ -311,6 +320,20 @@ pub fn diff(base: &TagBaseline, doc: &TagDoc) -> (Vec<Write>, Vec<Value>) {
         }
     }
     (writes, rows)
+}
+
+/// Re-resolve the submitted tag field, including every indexed block along its path.
+pub(crate) fn check_conflict_path(doc: &TagDoc, row: &Value) -> Result<(), &'static str> {
+    if row["doc"] == "tags" {
+        let current = row["target"]["path"].as_str().and_then(|path| {
+            let tag = crate::app::tag_api::lookup(doc, &row["tag"]).ok()?;
+            crate::app::tag_api::field_focus(doc, tag, path).ok()
+        });
+        if !current.is_some_and(|field| row["at"].as_u64() == Some(u64::from(field.address))) {
+            return Err("the conflicted tag field moved. Undo the layout change or reload the map");
+        }
+    }
+    Ok(())
 }
 
 impl Write {

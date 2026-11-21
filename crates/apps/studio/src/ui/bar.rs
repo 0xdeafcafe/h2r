@@ -72,9 +72,20 @@ pub(super) fn draw(
 
             // The link keeps the right edge. The document name takes what
             // is left between the tabs and the link.
-            let view = play.play.link_view(app);
-            let link_start =
-                (width - EDGE - link_width(ui, &view)).max(tabs_end + theme::BAR_SPACING);
+            let view = play.play.displayed_link(app);
+            let issue_label = view.issue_summary().map(|summary| {
+                let headline = view.text
+                    .strip_suffix(&format!(" · {summary}"))
+                    .unwrap_or(&view.text);
+                format!("{headline}\n{summary}")
+            });
+            let pill_width = {
+                let _font = issue_label.as_ref().map(|_| ui.push_font(fonts.caption));
+                let label = issue_label.as_deref().unwrap_or(&view.text);
+                theme::pill_width(ui, link_icon(view.tone), label)
+            };
+            let link_start = (width - EDGE - link_width(ui, &view, pill_width))
+                .max(tabs_end + theme::BAR_SPACING);
             let document_end = link_start - 16.0;
             if let Some(name) = app.document_caption()
                 && document_end > tabs_end + 24.0
@@ -89,28 +100,50 @@ pub(super) fn draw(
                 theme::clipped_text(ui, &name, theme::TEXT, document_end - start);
             }
 
-            ui.set_cursor_pos([link_start, row]);
-            link(ui, app, play, &view);
+            let clicked = {
+                let _font = issue_label.as_ref().map(|_| ui.push_font(fonts.caption));
+                let label = issue_label.as_deref().unwrap_or(&view.text);
+                let height = ui.calc_text_size(label)[1] + 10.0;
+                ui.set_cursor_pos([link_start, (theme::BAR - height).max(0.0) * 0.5]);
+                theme::pill(ui, theme::link_colour(view.tone), link_icon(view.tone), label)
+            };
+            if issue_label.is_some() {
+                ui.set_item_tooltip("Show pending edits");
+                if clicked {
+                    app.pairing.open_pending = true;
+                }
+            } else if let Some(why) = &view.why {
+                ui.set_item_tooltip(why);
+            }
+            play.bar_pill(ui, app, &view, clicked && issue_label.is_none());
+            link(ui, app, play, &view, row);
         });
 }
 
 /// The width of the link pill and the controls that follow it.
-fn link_width(ui: &Ui, view: &LinkView) -> f32 {
-    let buttons = [view.can_play, view.can_stop, view.can_pause, view.paused];
-    let mut width = theme::pill_width(ui, link_icon(view.tone), &view.text)
+fn link_width(ui: &Ui, view: &LinkView, pill_width: f32) -> f32 {
+    let buttons = [
+        view.can_play,
+        view.can_stop,
+        view.controls.can_toggle_pause(view.paused),
+        view.paused && view.controls.step.is_none(),
+    ];
+    let mut width = pill_width
         + (theme::BAR_BUTTON + theme::BAR_SPACING)
             * buttons.into_iter().filter(|&on| on).count() as f32;
-    if view.can_pause {
-        width += theme::edit_switch_width(ui) + theme::BAR_SPACING;
+    if view.paired {
+        width += theme::edit_switch_width(ui) + theme::BAR_BUTTON + 2.0 * theme::BAR_SPACING;
     }
     width
 }
 
 /// The game link: the pill, then the transport buttons and the Edit
 /// switch when the link allows them.
-fn link(ui: &Ui, app: &mut App, play: &mut PlayUi, view: &LinkView) {
-    play.bar_pill(ui, app, view);
-    let same_line = || ui.same_line_with_spacing(0.0, theme::BAR_SPACING);
+fn link(ui: &Ui, app: &mut App, play: &mut PlayUi, view: &LinkView, row: f32) {
+    let same_line = || {
+        ui.same_line_with_spacing(0.0, theme::BAR_SPACING);
+        ui.set_cursor_pos([ui.cursor_pos()[0], row]);
+    };
     if view.can_play {
         same_line();
         if theme::transport_button(ui, TransportIcon::Play, "Play (F5)") {
@@ -123,7 +156,7 @@ fn link(ui: &Ui, app: &mut App, play: &mut PlayUi, view: &LinkView) {
             play.play.request(Request::Stop);
         }
     }
-    if view.can_pause {
+    if view.controls.can_toggle_pause(view.paused) {
         same_line();
         let (icon, text, request) = if view.paused {
             (TransportIcon::Play, "Resume", Request::Resume)
@@ -134,13 +167,26 @@ fn link(ui: &Ui, app: &mut App, play: &mut PlayUi, view: &LinkView) {
             play.play.request(request);
         }
     }
-    if view.paused {
+    if view.paused && view.controls.step.is_none() {
         same_line();
         if theme::transport_button(ui, TransportIcon::Step, "Step") {
             play.step();
         }
     }
-    if view.can_pause {
+    if view.paired {
+        same_line();
+        let enabled = app.pairing.selection.enabled;
+        let available = crate::play::Play::can_aim_select(app);
+        let disabled = ui.begin_disabled_with_cond(!available);
+        let tone = enabled.then(|| ui.push_style_color(StyleColor::Button, theme::ACCENT));
+        if ui.button_with_size(theme::icon::CROSSHAIR, [theme::BAR_BUTTON, ui.frame_height()])
+            && let Err(why) = crate::play::Play::set_aim_select(app, !enabled)
+        {
+            app.error(why);
+        }
+        ui.set_item_tooltip("Aim select");
+        drop(tone);
+        drop(disabled);
         same_line();
         play.edit_switch(ui, view);
     }

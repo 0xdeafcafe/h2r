@@ -274,6 +274,8 @@ fn reloading_a_play_copy_uses_the_layout_at_save_time() {
 #[test]
 fn teleport_and_spawn_move_the_player() {
     let (_t, game, mut app, mut play) = paired("tp", "example", SessionKind::MpHost);
+    play.apply_edits(&mut app, Apply::Send).unwrap();
+    play.update(&mut app);
     app.session.camera_mut().target = [3.0, 4.0, 5.0];
     play.teleport_to_camera(&mut app);
     until(&mut play, &mut app, "the teleport", |_, _| {
@@ -1067,7 +1069,7 @@ fn the_link_view_names_every_state() {
     }
 
     let idle = check(&play, &app, "no_game", LinkTone::Idle);
-    assert!(idle.can_play && !idle.can_stop && !idle.can_pause && !idle.paused);
+    assert!(idle.can_play && !idle.can_stop && !idle.paired && !idle.paused);
     play.finder = finder_for(&[&game]);
     until(&mut play, &mut app, "the game to be found", |p, a| {
         p.notice(a).is_some()
@@ -1084,7 +1086,7 @@ fn the_link_view_names_every_state() {
     until(&mut play, &mut app, "the paired game", |p, _| {
         p.is_paired() && p.edits.journal_ready
     });
-    assert!(check(&play, &app, "viewing", LinkTone::View).can_pause);
+    assert!(check(&play, &app, "viewing", LinkTone::View).controls.pause.is_none());
     assert!(!play.live_edits);
 
     play.request(Request::Edit(true));
@@ -1524,3 +1526,21 @@ fn a_refused_one_shot_batch_keeps_its_edit_mode() {
         assert!(game.calls("editor.focus").is_empty());
     }
 }
+
+pub(super) mod object_edits;
+
+#[test]
+fn playtest_reloads_for_failed_object_edits_and_resumes_for_receipts() {
+    use playtest::{Ask, Reload, Step, decide};
+    let view = LinkState::Viewing { map: Some("example".into()), phase: None, tick: None };
+    for class in [tag_sync::RELOAD, tag_sync::CREATION] {
+        let mut row = json!({"doc":"object", "class":class});
+        let step = |row: &Value, consent| decide(&view, None, std::slice::from_ref(row), false, consent, true);
+        assert_eq!(step(&row, false), Step::Resume);
+        row["refused"] = json!(true);
+        assert_eq!(step(&row, false), Step::Ask { ask: Ask::Send });
+        assert_eq!(step(&row, true), Step::Reload(Reload::Method));
+    }
+}
+
+mod conflict_paths;

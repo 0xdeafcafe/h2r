@@ -82,6 +82,14 @@ impl ToolKind {
     }
 }
 
+/// The inspected document and subject, including placement changes made by undo.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SelectionRevision {
+    world: u64,
+    primary: Option<(BlockKind, usize)>,
+    navigation: u64,
+}
+
 /// The primary subject of the scenario inspector.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Selection {

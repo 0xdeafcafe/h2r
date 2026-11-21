@@ -5,12 +5,13 @@ use dear_imgui_rs::{SliderFlags, StyleColor, StyleVar, Ui};
 use super::layers;
 use crate::app::{Action, App};
 use crate::camera::{MAX_SPEED, MIN_SPEED};
+use crate::play::{Play, presence::CameraMode};
 use crate::theme::{self, icon};
 use crate::viewport::{ANGLE_STEPS, GRID_STEPS, GizmoOp, ViewportView};
 
 pub(super) fn draw(
     ui: &Ui,
-    app: &App,
+    app: &mut App,
     viewport: &mut ViewportView,
     actions: &mut Vec<Action>,
     hint: &mut Option<String>,
@@ -99,6 +100,23 @@ pub(super) fn draw(
         }
         describe(ui, hint, "Fly speed (wheel while flying)");
     });
+
+    next_group(ui, right, 124.0);
+    ui.set_next_item_width(124.0);
+    let mode = app.pairing.camera.mode;
+    if let Some(_combo) = ui.begin_combo("##Camera mode", mode.label()) {
+        for choice in CameraMode::ALL {
+            if ui
+                .selectable_config(choice.label())
+                .selected(choice == mode)
+                .build()
+                && let Err(why) = Play::set_camera_mode(app, choice)
+            {
+                app.error(why);
+            }
+        }
+    }
+    describe(ui, hint, "Viewport camera mode");
 
     next_group(ui, right, 76.0);
     if layers::show_button(ui, app, actions) {

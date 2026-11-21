@@ -39,6 +39,8 @@ pub fn session(tag: &str) -> (Temp, Session) {
 
 #[cfg(unix)]
 pub(crate) mod fake {
+    mod object_game;
+
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::{Arc, Mutex};
     use std::thread;
@@ -91,9 +93,10 @@ pub(crate) mod fake {
         fn live_capture(&mut self, layers: live::Layers, world: &mut live::World) -> bool {
             world.objects.clear();
             world.players.clear();
+            let local_unit = self.edits.lock().unwrap().replacement_unit.unwrap_or(UNIT);
             if layers.objects {
                 let unit = live::Object {
-                    id: UNIT,
+                    id: local_unit,
                     tag: Some(0x1234),
                     kind: 0,
                     position: PLAYER_AT,
@@ -113,12 +116,16 @@ pub(crate) mod fake {
                     },
                     ..unit
                 });
+                self.edits.lock().unwrap().objects.capture(world);
+            }
+            if layers.objects && let Some(object) = self.edits.lock().unwrap().extra_object {
+                world.objects.push(object);
             }
             if layers.players {
                 world.players.push(live::Player {
                     index: 0,
                     name: "Tester".into(),
-                    unit: Some(UNIT),
+                    unit: Some(local_unit),
                     local_user: Some(0),
                     aim: [0.0, 1.0, 0.0],
                     ..Default::default()
@@ -131,13 +138,20 @@ pub(crate) mod fake {
     /// The invented game: what the host methods were sent.
     #[derive(Default)]
     pub(crate) struct FakeEdits {
+        objects: object_game::Objects,
         pub(crate) checksum: u32,
+        pub(crate) extra_object: Option<live::Object>,
+        pub(crate) replacement_unit: Option<u32>,
         map: Option<String>,
         // While the new tag index loads, edit.map is unavailable, then can still
         // report the former checksum at the new epoch for one poll.
         pub(crate) loading: bool,
         former_checksum: Option<u32>,
         pub(crate) hold_reload_reply: bool,
+        pub(crate) release_batch_reply: Option<Arc<AtomicBool>>,
+        pub(crate) batch_error: Option<RpcError>,
+        pub(crate) indicator_failure: Option<&'static str>,
+        pub(crate) mark_replies: std::collections::VecDeque<Result<Value, RpcError>>,
         pub(crate) teleport_map_ticks: u64,
         pub(crate) external_live: bool,
         pub(crate) peers: Option<u32>,
@@ -147,6 +161,7 @@ pub(crate) mod fake {
     }
     /// The agent server and the state observed at its synthetic game boundaries.
     pub(crate) struct Game {
+        kind: SessionKind,
         pub(crate) edits: Arc<Mutex<FakeEdits>>,
         pub(crate) path: std::path::PathBuf,
         pub(crate) agent: Agent,
@@ -172,7 +187,10 @@ pub(crate) mod fake {
                     v
                 }
             };
-            let edits = Arc::new(Mutex::new(FakeEdits::default()));
+            let edits = Arc::new(Mutex::new(FakeEdits {
+                peers: (kind == SessionKind::MpHost).then_some(1),
+                ..Default::default()
+            }));
             let loaded = map.to_owned();
             let state = edits.clone();
             agent.add_game_method("edit.map", Access::Read, move |_, ctx| {
@@ -184,10 +202,14 @@ pub(crate) mod fake {
                 let checksum = state.former_checksum.take().unwrap_or(state.checksum);
                 let mut session = agent_proto::sim::SessionView {
                     kind,
-                    peers: (kind == SessionKind::MpHost).then(|| state.peers.unwrap_or(1)),
+                    peers: state.peers,
                     ..Default::default()
                 }
                 .settle();
+                if kind == SessionKind::MpHost && state.peers.is_none() {
+                    session.writes = false;
+                    session.why = Some("multiplayer host peer count is unknown".into());
+                }
                 if state.external_live {
                     session.writes = false;
                     session.why = Some("external Live session".into());
@@ -261,6 +283,9 @@ pub(crate) mod fake {
                 }
                 let writes = params["writes"].as_array().unwrap();
                 let mut state = state.lock().unwrap();
+                if let Some(error) = state.batch_error.take() {
+                    return Err(error);
+                }
                 let key = |w: &Value| w.get("at").unwrap_or(&w["path"]).to_string();
                 for w in writes {
                     if let Some(holds) = state.bytes.get(&key(w))
@@ -289,7 +314,14 @@ pub(crate) mod fake {
                         }));
                     }
                 }
-                Ok(json!({"id":1,"applied":writes.len(),"changes":writes}))
+                let reply = json!({"id":1,"applied":writes.len(),"changes":writes});
+                if let Some(release) = state.release_batch_reply.take() {
+                    let held = reply.clone();
+                    ctx.defer(600, Box::new(move |_| {
+                        release.load(Ordering::Acquire).then(|| Ok(held.clone()))
+                    }));
+                }
+                Ok(reply)
             });
             let r = rec("sim.state.set");
             let state = Arc::clone(&edits);
@@ -356,6 +388,7 @@ pub(crate) mod fake {
                 }
             });
             Game {
+                kind,
                 edits,
                 path,
                 agent,
@@ -367,6 +400,35 @@ pub(crate) mod fake {
                 thread: Some(thread),
                 calls,
             }
+        }
+
+        /// Register presentation on this game before the editor asks for its methods.
+        pub(crate) fn presentation(&self, window: bool) {
+            use agent_proto::editor::{LinkParams, MarksParams, method};
+
+            let calls = self.calls.clone();
+            let edits = self.edits.clone();
+            self.agent.add_method(method::LINK, Access::Read, move |params| {
+                let link: LinkParams = serde_json::from_value(params.clone()).unwrap();
+                calls.lock().unwrap().push((method::LINK.into(), params));
+                if let Some(why) = edits.lock().unwrap().indicator_failure {
+                    return Err(RpcError::new(code::UNAVAILABLE, why));
+                }
+                let shown = window && link.clear != Some(true);
+                Ok(json!({"shown":shown, "expires_ms":if shown { 3000 } else { 0 },
+                    "why":(!window).then_some("this host has no window")}))
+            });
+            let calls = self.calls.clone();
+            let edits = self.edits.clone();
+            self.agent.add_method(method::MARKS, Access::Read, move |params| {
+                let marks: MarksParams = serde_json::from_value(params.clone()).unwrap();
+                calls.lock().unwrap().push((method::MARKS.into(), params));
+                if let Some(reply) = edits.lock().unwrap().mark_replies.pop_front() {
+                    return reply;
+                }
+                Ok(json!({"held":marks.marks.len(), "drawn":window && !marks.marks.is_empty(),
+                    "why":(!window).then_some("this host has no window"), "refused":[]}))
+            });
         }
 
         pub(crate) fn calls(&self, name: &str) -> Vec<Value> {
@@ -410,6 +472,28 @@ pub(crate) mod fake {
             "timed out waiting for {what}; log: {:?}",
             app.log().iter().map(|l| &l.status).collect::<Vec<_>>()
         );
+    }
+
+    /// Advance just the presentation clock. The ordered control reply proves that
+    /// every replacement issued at this instant has reached the fake game.
+    pub(crate) fn presence_at(play: &mut Play, app: &mut App, now: Instant) {
+        use crate::play::link::{Event, Purpose};
+
+        play.update_presence(app, now);
+        play.call(agent_proto::method::STATUS, Value::Null, Purpose::Other);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let wait = deadline.saturating_duration_since(Instant::now());
+            let event = play.link.as_ref().unwrap().next(wait)
+                .expect("the fake game's ordered control reply");
+            if matches!(&event, Event::Answer { purpose: Purpose::Other, method, result: Ok(_) }
+                if method == agent_proto::method::STATUS)
+            {
+                break;
+            }
+            play.on_event(app, event);
+        }
+        play.publish(app);
     }
 
     pub(crate) fn batch_pending(play: &Play) -> bool {

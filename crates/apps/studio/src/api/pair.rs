@@ -50,7 +50,7 @@ const METHODS: &[MethodDef] = &[
         m::PAIR_STATUS,
         "The socket connection, game status, edit permissions and auto-pair setting, with the game link pill's state, label and tooltip. Needs the window",
         "{}",
-        r#"{"state":"off|connecting|reconnecting|connected|lost","why":"string|null","socket":"string|null","map":"string|null","phase":"string|null","paused":"boolean|null","tick":"integer|null","matches":"same|different|unknown","open_map":"string|null","live_edits":"boolean","edits_blocked":"string|null","auto_pair":"boolean","games":"integer","ask":"send|load|null","prompt":"integer|null","playtest_busy":"boolean","link":{"state":"no_game|found|connecting|reconnecting|viewing|editing|blocked|other_map|lost","text":"string","why":"string|null","elapsed_ms?":"integer","unavailable?":"[string]"}}"#,
+        r#"{"state":"off|connecting|reconnecting|connected|lost","why":"string|null","socket":"string|null","map":"string|null","phase":"string|null","paused":"boolean|null","tick":"integer|null","matches":"same|different|unknown","open_map":"string|null","live_edits":"boolean","edits_blocked":"string|null","auto_pair":"boolean","games":"integer","ask":"send|load|null","prompt":"integer|null","playtest_busy":"boolean","link":{"state":"no_game|found|connecting|reconnecting|viewing|editing|blocked|other_map|lost","text":"string","why":"string|null","elapsed_ms?":"integer","unavailable?":"[string]","issues":"[{kind,text,target}]"}}"#,
         "null",
     ),
     def(
@@ -132,7 +132,7 @@ impl Provider for Pair {
 }
 
 fn need_window(app: &App) -> Result<(&Value, &LinkView), RpcError> {
-    app.pairing.published.as_ref().zip(app.pairing.link.as_ref()).ok_or_else(|| {
+    app.pairing.published.as_ref().zip(app.pairing.link.as_deref()).ok_or_else(|| {
         err(
             code::REFUSED,
             "pairing runs in the editor window: this editor has none (or has not drawn a frame yet)",
@@ -151,8 +151,12 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 .and(app.pairing.prompt.as_ref());
             status["ask"] = json!(prompt.map(|p| p.ask.name()));
             status["prompt"] = json!(prompt.map(|p| p.id));
-            status["link"] =
-                json!({"state": link.state.name(), "text": link.text, "why": link.why});
+            status["link"] = json!({
+                "state": link.state.name(),
+                "text": link.text,
+                "why": link.why,
+                "issues": link.issues.iter().map(|issue| issue.wire()).collect::<Vec<_>>(),
+            });
             if !link.unavailable.is_empty() {
                 status["link"]["unavailable"] = json!(link.unavailable);
             }
