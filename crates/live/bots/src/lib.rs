@@ -87,6 +87,9 @@ pub struct Brain {
     /// What the read phase left for the think
     /// ([`pad_source::PadSource::observe`]).
     staged: Option<Staged>,
+    /// A pad held over the mind's (`superbounce.verify`'s trials on a bot
+    /// seat, [`pad_source::PadSource::hold_pad`]).
+    held: Option<HostPadState>,
     /// Calls the last think made, published by `Brain::speak`.
     outbox: Outbox,
     /// Its place in the radio's open batch, from its last listen.
@@ -139,6 +142,21 @@ pub fn set_pair_reader(reader: PairReader) {
     let _ = PAIR_READER.set(reader);
 }
 
+static PRACTICE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Turns the bots' bounce practice on or off (the superbounce mode is on,
+/// `superbounce_mode` in the game): every brain stops fighting and
+/// practises bounces instead (`mind::practice`, docs/game/bots.md,
+/// "Practising bounces").
+pub fn set_practice(on: bool) {
+    PRACTICE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether the bots practise bounces ([`set_practice`]).
+pub fn practising() -> bool {
+    PRACTICE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Read-only brain state for phantom bot views.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BrainView {
@@ -178,6 +196,8 @@ impl Brain {
         let known = std::mem::take(&mut self.mind.known);
         let profile = self.name_profile();
         self.mind = mind::Mind::new(self.mind.skill, self.seed);
+        // A new match: the warm-up again (mind::warmup).
+        self.mind.warmup = mind::warmup::Warmup::Due;
         self.mind.name_profile = profile;
         self.mind.experience.enter(&self.map);
         self.mind.emote.taunt = taunt;
@@ -195,8 +215,10 @@ impl Brain {
     }
 
     pub fn new(skill: mind::Skill, seed: u64) -> Self {
+        let mut fresh = mind::Mind::new(skill, seed);
+        fresh.warmup = mind::warmup::Warmup::Due;
         Brain {
-            mind: mind::Mind::new(skill, seed),
+            mind: fresh,
             combat: stats::Recorder::default(),
             seed,
             epoch: radio::lock(radio::host()).epoch,
@@ -215,6 +237,7 @@ impl Brain {
             vehicle_seats: Default::default(),
             radio: radio::host(),
             staged: None,
+            held: None,
             outbox: Outbox::default(),
             seat: None,
         }
@@ -533,6 +556,11 @@ impl pad_source::PadSource for Brain {
         Some(self.mind.order_view())
     }
 
+    fn hold_pad(&mut self, pad: Option<HostPadState>) -> bool {
+        self.held = pad;
+        true
+    }
+
     fn reset_input(&mut self) {
         self.combat.release();
         if let Some((tick, _)) = self.sampled.take() {
@@ -600,6 +628,9 @@ impl Brain {
         map: Option<&Arc<cache::MapData>>,
     ) -> pad_source::Sampled {
         use pad_source::Sampled;
+        if let Some(pad) = self.held {
+            return Sampled::Pad(pad);
+        }
         let mut observation = self.spare_observations.pop().unwrap_or_default();
         let cursor = emote::kills().since_into(self.kills_seen, &mut observation.kills);
         let name_change = autonav::loaded_change(&self.map);
@@ -650,6 +681,8 @@ impl Brain {
             self.spots_gen = spots_gen;
             self.mind.known = spots::Known::for_map(&self.map);
         }
+        // The superbounce mode's practice (mind::practice).
+        self.mind.set_practice(practising());
         self.kills_seen = cursor;
         let p = &mut observation.perception;
         let alive = p.me.is_some();

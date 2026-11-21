@@ -12,7 +12,7 @@ use input::host::HostPadState;
 
 use super::{Mind, Vec3};
 use crate::brain::{Me, Perception, Seen};
-use crate::bounce_route::{self, Ask, Mode, OrderRun, Why};
+use crate::bounce_route::{self, Ask, Logged, Mode, OrderRun, Touchdown, Why};
 use crate::cache::MapData;
 use crate::glitches::prime::is_primed;
 
@@ -44,6 +44,11 @@ pub(super) struct Ended {
     why: Why,
     steps: Vec<&'static str>,
     result: Result<(), &'static str>,
+    /// The step it ended on.
+    step: usize,
+    landing: Option<Touchdown>,
+    log: Vec<Logged>,
+    site: Option<crate::spots::Site>,
 }
 
 /// Where a bot's bounce route stands, for the agent.
@@ -67,6 +72,19 @@ pub struct OrderView {
     pub primed_read: bool,
     /// Why a failed route failed.
     pub error: Option<&'static str>,
+    /// The step's phase ([`crate::bounce_route::OrderStatus::phase`]).
+    pub phase: &'static str,
+    /// The step's try (from 1; 0 for a step that does not retry).
+    pub tries: u32,
+    /// The last touchdown during a bounce or a drop.
+    pub landing: Option<Touchdown>,
+    /// What the route did, oldest first.
+    pub log: Vec<Logged>,
+    /// The bounce the plan uses.
+    pub site: Option<crate::spots::Site>,
+    /// The practice loop's tally while the superbounce mode is on
+    /// (`mind::practice`).
+    pub practice: Option<super::PracticeView>,
 }
 
 impl Mind {
@@ -89,13 +107,7 @@ impl Mind {
         if let Some(o) = self.order.take() {
             self.end_order(o, Err(why), 0);
         } else if let Some(a) = asked {
-            self.ended = Some(Ended {
-                to: a.to,
-                mode: a.mode,
-                why: Why::Plain,
-                steps: Vec::new(),
-                result: Err(why),
-            });
+            self.ended = Some(Ended::empty(a.to, a.mode, Why::Plain, Err(why)));
         }
     }
 
@@ -123,6 +135,12 @@ impl Mind {
             primed: false,
             primed_read: false,
             error: None,
+            phase: "",
+            tries: 0,
+            landing: None,
+            log: Vec::new(),
+            site: None,
+            practice: self.practice_view(),
         };
         if let Some(a) = self.asked {
             return OrderView {
@@ -143,6 +161,11 @@ impl Mind {
                 step: s.step,
                 primed: s.primed,
                 primed_read: s.read,
+                phase: s.phase,
+                tries: s.tries,
+                landing: s.landing,
+                log: o.run.log().to_vec(),
+                site: o.run.plan.site,
                 ..none
             };
         }
@@ -153,8 +176,11 @@ impl Mind {
                 mode: Some(e.mode),
                 why: Some(e.why),
                 steps: e.steps.clone(),
-                step: e.steps.len(),
+                step: e.step,
                 error: e.result.err(),
+                landing: e.landing,
+                log: e.log.clone(),
+                site: e.site,
                 ..none
             },
             None => none,
@@ -196,16 +222,11 @@ impl Mind {
 
     fn begin_order(&mut self, p: &Perception, me: Me, map: Option<&MapData>, a: Asked) {
         let Some(m) = map else {
-            self.ended = Some(Ended {
-                to: a.to,
-                mode: a.mode,
-                why: Why::Plain,
-                steps: Vec::new(),
-                result: Err("no_map"),
-            });
+            self.ended = Some(Ended::empty(a.to, a.mode, Why::Plain, Err("no_map")));
             return;
         };
         let walk = |from: Vec3, to: Vec3| path_length(m, from, to);
+        let ledge = |s: &crate::spots::Site| launch_floor(m, s);
         let primed = self.pair_word.is_some_and(is_primed);
         let ask = Ask {
             from: me.position,
@@ -220,22 +241,17 @@ impl Mind {
                     sites: vec![site],
                     crouches: self.known.crouches.clone(),
                 };
-                bounce_route::plan(&ask, &one, &walk)
+                bounce_route::plan_with(&ask, &one, &walk, &ledge)
             }
-            None => bounce_route::plan(&ask, &self.known, &walk),
+            None => bounce_route::plan_with(&ask, &self.known, &walk, &ledge),
         };
-        if a.show_off && plan.site.is_none() {
-            // No route to show off: give the site up for a while.
+        if (a.show_off || a.site.is_some()) && plan.site.is_none() {
+            // No route by the one site (a show-off's, a practice's): give
+            // the site up for a while.
             if let Some(site) = a.site {
                 self.stuck.blacklist(site.bounce.stand, p.tick);
             }
-            self.ended = Some(Ended {
-                to: a.to,
-                mode: a.mode,
-                why: plan.why,
-                steps: Vec::new(),
-                result: Err("no_route"),
-            });
+            self.ended = Some(Ended::empty(a.to, a.mode, plan.why, Err("no_route")));
             return;
         }
         let seed = u64::from(p.tick) ^ 0xb0_0c5;
@@ -255,14 +271,56 @@ impl Mind {
         {
             self.stuck.blacklist(stand, tick);
         }
+        let status = o.run.status();
         self.ended = Some(Ended {
             to: o.to,
             mode: o.mode,
             why: o.run.plan.why,
             steps: o.run.plan.steps.iter().map(|s| s.name()).collect(),
             result,
+            step: if result.is_ok() { status.steps } else { status.step },
+            landing: status.landing,
+            log: o.run.log().to_vec(),
+            site: o.run.plan.site,
         });
     }
+}
+
+impl Ended {
+    fn empty(to: Vec3, mode: Mode, why: Why, result: Result<(), &'static str>) -> Ended {
+        Ended {
+            to,
+            mode,
+            why,
+            steps: Vec::new(),
+            result,
+            step: 0,
+            landing: None,
+            log: Vec::new(),
+            site: None,
+        }
+    }
+}
+
+/// How far sideways (world units) a launch floor may be from the slot it
+/// drops onto. **[guess]**: a 2.4-unit drop takes about a second, and the
+/// stick moves a bot about 2.5 units a second in the air.
+pub const LEDGE_REACH: f32 = 3.0;
+/// A launch floor is at most this much (world units) under the drop
+/// height, and at most [`LEDGE_OVER`] over it.
+pub const LEDGE_UNDER: f32 = 0.2;
+pub const LEDGE_OVER: f32 = 2.5;
+
+/// A launch floor for a site that needs a drop: the nav mesh's point
+/// nearest the site's target sideways, within [`LEDGE_REACH`], whose floor
+/// is the drop height over the target, to [`LEDGE_UNDER`] below and
+/// [`LEDGE_OVER`] above it.
+pub fn launch_floor(m: &MapData, s: &crate::spots::Site) -> Option<Vec3> {
+    let t = s.target();
+    let over = [t[0], t[1], t[2] + s.drop_height()];
+    m.nav
+        .nearest(over, LEDGE_REACH, LEDGE_OVER, LEDGE_UNDER)
+        .map(|(_, p)| p)
 }
 
 /// The length of the walk along the nav mesh from `from` to `to`.

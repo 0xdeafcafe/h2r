@@ -173,7 +173,11 @@ impl AgentGlue {
         agent::sim::calls::lock(&calls)
             .set_spawn_enrollment(crate::actor_net::creature::spawn_enrollment);
         match registry.add(&agent::sim::calls::CallsFeature(calls.clone())) {
-            Ok(true) => sim.set_calls(calls),
+            Ok(true) => {
+                // The superbounce verifier's trials teleport through it too.
+                crate::superbounce_verify::set_calls(calls.clone());
+                sim.set_calls(calls)
+            }
             Ok(false) => eprintln!(
                 "agent: agent-calls switched off by H2_FEATURES; sim teleports, give and spawn are off"
             ),
@@ -293,6 +297,9 @@ impl AgentGlue {
                     .expect("superbounce.assist_test serialises"))
             },
         );
+        // Trials of the spots in the game (superbounce_verify.rs,
+        // docs/game/superbounce.md, "Verifying spots").
+        crate::superbounce_verify::install(&agent);
         // HaloScript state: the threads and globals of the running scenario.
         agent::hs_state::install(&agent);
         // On the game thread: the sampler's main target.

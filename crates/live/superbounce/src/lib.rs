@@ -16,6 +16,7 @@ mod crouch;
 mod geom;
 mod read;
 mod scan;
+pub mod verified;
 
 /// A point in world units.
 pub type Vec3 = [f32; 3];
@@ -48,8 +49,12 @@ pub enum Status {
     /// Found in the geometry, not measured.
     #[default]
     Likely,
-    /// Within [`PROVEN_NEAR`] of a measured place ([`PROVEN`]).
+    /// Within [`PROVEN_NEAR`] of a measured place ([`PROVEN`]), or shown
+    /// to work by a game run ([`verified`]).
     Proven,
+    /// Tried by a game run and never worked ([`verified`]): hidden from
+    /// players and left alone by the bots.
+    Failed,
 }
 
 impl Status {
@@ -58,6 +63,7 @@ impl Status {
         match self {
             Status::Likely => "likely",
             Status::Proven => "proven",
+            Status::Failed => "failed",
         }
     }
 }
@@ -130,7 +136,9 @@ pub struct Spot {
     pub need: f32,
     /// Crouch: [`Status::Proven`] near a measured priming place, else
     /// [`Status::Likely`]. Bounce spots: `Likely` (the measured bounces
-    /// are the bots' list, `crates/live/bots/src/glitches/spots.rs`).
+    /// are the bots' list, `crates/live/bots/src/glitches/spots.rs`). A
+    /// map's verified file ([`verified::apply`]) makes either kind
+    /// `Proven` or `Failed`.
     pub status: Status,
     /// Crouch: the unit direction (X and Y) from `stand` to the standing
     /// room next to it, the way out. Bounce spots: zero.

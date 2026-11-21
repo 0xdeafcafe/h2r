@@ -214,6 +214,7 @@ pub mod superbounce_hud;
 pub mod superbounce_prompts;
 pub mod superbounce_world;
 pub mod superbounce_mode;
+pub mod superbounce_verify;
 pub mod sweep_diag;
 pub mod theater;
 pub mod theater_ui;

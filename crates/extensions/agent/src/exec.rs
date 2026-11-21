@@ -96,6 +96,15 @@ pub struct GameCtx<'a> {
     later: Option<DeferredAnswer>,
 }
 
+/// Work run at every game tick ([`Agent::add_ticker`]), with the game at
+/// the tick boundary, for an act that spans more ticks than a deferred
+/// answer may wait ([`DEFER_TICKS_MAX`]): a method starts it, the ticker
+/// drives it, a read reports on it.
+pub type Ticker = Box<dyn FnMut(&mut GameCtx<'_>) + Send>;
+
+/// The connection id a [`Ticker`]'s [`GameCtx`] carries: no connection's.
+pub const TICKER_CONN: ConnId = ConnId::MAX;
+
 /// A deferred answer ([`GameCtx::defer`]): polled at each boundary after
 /// the one that asked, `None` until it is ready.
 pub type Later = Box<dyn FnMut(&mut GameCtx<'_>) -> Option<Result<Value, RpcError>> + Send>;
@@ -304,6 +313,8 @@ struct State {
     snap_jobs: VecDeque<snap::Job>,
     /// Game methods' answers still coming ([`GameCtx::defer`]).
     deferred: Vec<Deferred>,
+    /// Work run at every tick ([`Agent::add_ticker`]), by name.
+    tickers: BTreeMap<String, Ticker>,
     /// Names `world.*` results' tags ([`Agent::set_tag_names`]).
     tag_names: Option<Mutex<Box<dyn TagNames>>>,
     /// Fills `world.*` results' `physics.standing_fits`
@@ -571,6 +582,20 @@ impl Agent {
             .insert(name.to_owned(), (access, Box::new(f)));
     }
 
+    /// Runs `f` at every game tick, after the tick's requests are served
+    /// and before deferred answers are polled, once a tick (not again
+    /// while a paused game holds the tick), with the game at the boundary
+    /// ([`GameCtx`]; its `conn` is [`TICKER_CONN`]). Replaces an earlier
+    /// ticker of that name. Like a host method it runs with the agent's
+    /// state locked: it must be quick and must not call the [`Agent`].
+    pub fn add_ticker(
+        &self,
+        name: &str,
+        f: impl FnMut(&mut GameCtx<'_>) + Send + 'static,
+    ) {
+        self.lock().tickers.insert(name.to_owned(), Box::new(f));
+    }
+
     pub fn collision_traces(&self) -> Arc<crate::CollisionTraces> {
         self.shared.collision_traces.clone()
     }
@@ -816,6 +841,7 @@ impl Agent {
             views.refresh(reader, &s.game);
         }
         s.serve(reader, Where::Tick);
+        s.run_tickers(reader);
         s.capture_live(reader, None, stepping);
         s.settle_deferred(reader);
         s.settle_waits();
@@ -1176,6 +1202,32 @@ impl State {
             }
         }
         self.pending = keep;
+    }
+
+    /// Runs every [`Ticker`] once, at this tick.
+    fn run_tickers(&mut self, reader: &mut dyn Reader) {
+        if self.tickers.is_empty() {
+            return;
+        }
+        let at = self.at();
+        let mut tickers = std::mem::take(&mut self.tickers);
+        for f in tickers.values_mut() {
+            let mut ctx = GameCtx {
+                conn: TICKER_CONN,
+                epoch: self.live_epoch,
+                map_epoch: self.map_epoch,
+                map_lifetime: &mut self.map_lifetime,
+                live_session: self.live_session,
+                reader: &mut *reader,
+                at: at.clone(),
+                host: &mut self.host,
+                later: None,
+            };
+            f(&mut ctx);
+        }
+        // A ticker added meanwhile can't be (the state is locked), so the
+        // old set goes back whole.
+        self.tickers = tickers;
     }
 
     /// Polls the deferred answers: answers what is ready, times out what
