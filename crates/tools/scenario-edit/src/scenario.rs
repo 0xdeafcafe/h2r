@@ -3,7 +3,7 @@
 //! only the bytes of the field they name, and [`Scenario::patches`] turns
 //! the difference from the source into fixed-size tag patches.
 use crate::layout::{self, BlockDef, BlockKind, FieldDef, FieldType, Role};
-use crate::volumes::{self, Volumes};
+use crate::volumes::{self, Frame, VolumeBlock, VolumeKind, Volumes};
 use crate::{Error, Result};
 use map::{FourCC, Map, TagId};
 use std::collections::HashMap;
@@ -13,6 +13,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// The `scnr` root is at least this long: the furthest block pair this crate
 /// reads is crates' palette at `+0x330`.
 const ROOT: u32 = 0x338;
+
+/// The compiled script syntax nodes' block pair. Script atoms name
+/// trigger volumes by index; the editor does not read the atoms' types, so
+/// a map with any node keeps its source volumes in their slots.
+const SCRIPT_NODES: usize = 0x238;
 
 /// An 8-byte tag reference.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -176,7 +181,7 @@ pub struct Changes {
     /// the metadata, then the root's `(count, address)` pointed at it.
     pub grown: Vec<Grown>,
     /// Other tags' blocks that outgrew their source (the tag editor's),
-    /// written the same way.
+    /// and the scenario's volume blocks that did, written the same way.
     pub tag_grown: Vec<TagGrown>,
     /// String IDs to add after the map's own, in order (the tag editor's).
     pub strings: Vec<String>,
@@ -241,6 +246,18 @@ pub struct Removed {
     before_appends: Vec<u64>,
 }
 
+/// A volume block removal, recorded so it can be undone exactly.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VolumeRemoved {
+    pub kind: VolumeKind,
+    pub index: usize,
+    /// The removed element's bytes.
+    pub entry: Vec<u8>,
+    /// Kill triggers and BSP switches that named the moved last volume and
+    /// now name its new slot: (kind, entry index, old volume index).
+    pub repointed: Vec<(VolumeKind, usize, i16)>,
+}
+
 /// The scenario object names block, kept so a removal can repoint names.
 #[derive(Clone, Debug, Default)]
 pub struct Names {
@@ -280,8 +297,18 @@ pub struct Scenario {
     pub blocks: Vec<Block>,
     /// Scenario object names (edited only by removals).
     pub names: Names,
-    /// Trigger volumes and what names them (read only).
+    /// Trigger volumes and what names them, decoded from
+    /// [`Self::volume_block`] after every edit.
     pub volumes: Volumes,
+    /// The trigger volume, kill trigger and BSP switch blocks' bytes, by
+    /// [`VolumeKind`].
+    volume_blocks: [VolumeBlock; 3],
+    /// Each trigger volume name's text, by string ID, from the map's table.
+    volume_names: HashMap<u32, String>,
+    /// Why the volume blocks may not be edited, when they may not.
+    volume_lock: Option<String>,
+    /// The scenario has compiled script nodes (see [`SCRIPT_NODES`]).
+    scripted: bool,
     pub tags: HashMap<TagId, TagInfo>,
     /// Patches to other tags' bytes (the tag editor's field edits, kept
     /// outside this tag): `(ordinary metadata virtual address, bytes)`,
@@ -355,6 +382,12 @@ impl Scenario {
         };
         let mut scenario = Self::decode(id, loc.address, &bytes, tags, &mut fetch)?;
         scenario.volumes.resolve_names(map.strings());
+        scenario.volume_names = scenario
+            .volumes
+            .triggers
+            .iter()
+            .filter_map(|v| Some((v.name_id, v.name.clone()?)))
+            .collect();
         Ok(scenario)
     }
 
@@ -431,19 +464,25 @@ impl Scenario {
             original: names_entries.clone(),
             entries: names_entries,
         };
-        // The volumes are only drawn: a block that does not read leaves
-        // them empty with the reason, and the placements still open.
-        let (t, k, w) = (
-            volumes::TRIGGER_VOLUMES,
-            volumes::KILL_TRIGGERS,
-            volumes::BSP_SWITCHES,
-        );
-        let volumes = match (elements(t.0, t.1), elements(k.0, k.1), elements(w.0, w.1)) {
-            (Ok((_, triggers)), Ok((_, kills)), Ok((_, switches))) => {
-                Volumes::from_rows(&triggers, &kills, &switches)
+        // A volume block that does not read leaves the volumes empty and
+        // locked with the reason, and the placements still open.
+        let read = VolumeKind::ALL.map(|kind| {
+            let (offset, stride) = kind.block();
+            elements(offset, stride)
+        });
+        let (volumes, volume_blocks, mut volume_lock) = match read {
+            [Ok(t), Ok(k), Ok(w)] => {
+                let volumes = Volumes::from_rows(&t.1, &k.1, &w.1);
+                let blocks = [t, k, w].map(|(at, rows)| VolumeBlock::new(at, rows));
+                (volumes, blocks, None)
             }
-            (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => Volumes::failed(e.to_string()),
+            [Err(e), ..] | [_, Err(e), _] | [.., Err(e)] => {
+                let why = e.to_string();
+                let lock = format!("the volume blocks do not read: {why}");
+                (Volumes::failed(why), Default::default(), Some(lock))
+            }
         };
+        let scripted = u32_at(bytes, SCRIPT_NODES) != 0;
         // Blocks this editor writes must not overlap each other, or one
         // patch would change another block's element.
         let mut spans: Vec<(u64, u64)> = blocks
@@ -464,6 +503,19 @@ impl Scenario {
         if spans.windows(2).any(|w| w[0].1 > w[1].0) {
             return Err(Error::Invalid("scenario placement blocks overlap"));
         }
+        // The volume blocks are written the same way: one that overlaps
+        // another block is drawn but not edited.
+        for (kind, block) in VolumeKind::ALL.iter().zip(&volume_blocks) {
+            if block.is_empty() {
+                continue;
+            }
+            let a = u64::from(block.address);
+            spans.push((a, a + block.len() as u64 * u64::from(kind.block().1)));
+        }
+        spans.sort();
+        if volume_lock.is_none() && spans.windows(2).any(|w| w[0].1 > w[1].0) {
+            volume_lock = Some("a volume block overlaps another block".into());
+        }
         Ok(Self {
             tag,
             address,
@@ -471,6 +523,10 @@ impl Scenario {
             blocks,
             names,
             volumes,
+            volume_blocks,
+            volume_names: HashMap::new(),
+            volume_lock,
+            scripted,
             tags,
             tag_patches: Vec::new(),
             bsp_patches: Vec::new(),
@@ -600,6 +656,7 @@ impl Scenario {
     pub fn is_modified(&self) -> bool {
         self.blocks.iter().any(|b| b.entries != b.original)
             || self.names.entries != self.names.original
+            || self.volume_blocks.iter().any(VolumeBlock::is_modified)
     }
 
     /// What a save must write: the minimal fixed-size patches for blocks
@@ -645,6 +702,25 @@ impl Scenario {
             &self.names.entries,
             &self.names.original,
         );
+        // The volume blocks, by the same rules; one that outgrew its
+        // source is written as the tag editor's grown blocks are.
+        for (kind, b) in VolumeKind::ALL.iter().zip(&self.volume_blocks) {
+            let (offset, stride) = kind.block();
+            let root = self.address + offset;
+            if b.len() > b.capacity() {
+                out.tag_grown.push(TagGrown {
+                    root,
+                    count: b.len() as u32,
+                    bytes: b.entries.concat(),
+                });
+                continue;
+            }
+            diff_into(&mut out.patches, b.address, stride, &b.entries, &b.original);
+            if b.len() != b.capacity() {
+                out.patches
+                    .push((root, (b.len() as u32).to_le_bytes().to_vec()));
+            }
+        }
         out.patches.sort();
         out
     }
@@ -719,6 +795,226 @@ impl Scenario {
     }
     pub fn tag_strings(&self) -> &[String] {
         &self.tag_strings
+    }
+
+    /// A volume block's bytes.
+    pub fn volume_block(&self, kind: VolumeKind) -> &VolumeBlock {
+        &self.volume_blocks[kind.slot()]
+    }
+
+    /// Whether the map has compiled script nodes, which can name trigger
+    /// volumes by index.
+    pub fn is_scripted(&self) -> bool {
+        self.scripted
+    }
+
+    /// Why entries of a volume block may not be changed or added, if they
+    /// may not. BSP switches are read only: what else names a switch is
+    /// not surveyed.
+    pub fn volume_refusal(&self, kind: VolumeKind) -> Option<String> {
+        if let Some(why) = &self.volume_lock {
+            return Some(why.clone());
+        }
+        (kind == VolumeKind::BspSwitch).then(|| "BSP switches are read only".to_owned())
+    }
+
+    /// Why entry `index` of a volume block may not be removed, if it may
+    /// not: a trigger volume a kill trigger or BSP switch names (each is
+    /// named), or a source volume of a scripted map, whose scripts may
+    /// name it or the last volume by index.
+    pub fn volume_remove_refusal(&self, kind: VolumeKind, index: usize) -> Option<String> {
+        if let Some(why) = self.volume_refusal(kind) {
+            return Some(why);
+        }
+        let block = self.volume_block(kind);
+        if index >= block.len() {
+            return Some(format!(
+                "no {} {index} (the map has {})",
+                kind.noun(),
+                block.len()
+            ));
+        }
+        if kind != VolumeKind::Trigger {
+            return None;
+        }
+        let holders = self.volumes.holders(index);
+        if !holders.is_empty() {
+            let names: Vec<String> = holders.iter().map(|h| h.describe()).collect();
+            return Some(format!(
+                "{} is named by {}",
+                self.volumes.label(index),
+                names.join(" and ")
+            ));
+        }
+        (self.scripted && index < block.capacity()).then(|| {
+            format!(
+                "{} came with the map, whose scripts can name trigger volumes by index; \
+                 only a volume added in this editor can be removed",
+                self.volumes.label(index)
+            )
+        })
+    }
+
+    fn check_volume_entry(&self, kind: VolumeKind, entry: &[u8], count: usize) -> Result<()> {
+        if entry.len() != kind.block().1 as usize {
+            return Err(Error::Invalid("entry is not one element long"));
+        }
+        match kind {
+            VolumeKind::Trigger if volumes::entry_frame(entry).axes().is_none() => {
+                Err(Error::Value(
+                    "frame",
+                    "needs a finite origin, a positive size and two directions that are not parallel",
+                ))
+            }
+            VolumeKind::Kill | VolumeKind::BspSwitch => {
+                let v = volumes::named_volume(entry);
+                if usize::try_from(v).ok().is_some_and(|v| v < count) {
+                    Ok(())
+                } else {
+                    Err(Error::Value("trigger_volume", "names no trigger volume"))
+                }
+            }
+            VolumeKind::Trigger => Ok(()),
+        }
+    }
+
+    fn refresh_volumes(&mut self) {
+        let [t, k, w] = &self.volume_blocks;
+        let mut volumes = Volumes::from_rows(&t.entries, &k.entries, &w.entries);
+        volumes.name_with(|id| self.volume_names.get(&id).cloned());
+        self.volumes = volumes;
+    }
+
+    /// Replace entry `index` of a volume block after validating it.
+    /// Returns the old bytes.
+    pub fn set_volume(
+        &mut self,
+        kind: VolumeKind,
+        index: usize,
+        entry: Vec<u8>,
+    ) -> Result<Vec<u8>> {
+        if let Some(why) = self.volume_refusal(kind) {
+            return Err(Error::Declined(why));
+        }
+        let triggers = self.volume_block(VolumeKind::Trigger).len();
+        self.check_volume_entry(kind, &entry, triggers)?;
+        self.write_volume(kind, index, entry)
+    }
+
+    /// Replace a volume entry without validation (undo).
+    pub(crate) fn write_volume(
+        &mut self,
+        kind: VolumeKind,
+        index: usize,
+        entry: Vec<u8>,
+    ) -> Result<Vec<u8>> {
+        let block = &mut self.volume_blocks[kind.slot()];
+        let slot = block
+            .entries
+            .get_mut(index)
+            .ok_or_else(|| Error::Declined(format!("no {} {index}", kind.noun())))?;
+        if slot.len() != entry.len() {
+            return Err(Error::Invalid("entry is not one element long"));
+        }
+        let old = std::mem::replace(slot, entry);
+        self.refresh_volumes();
+        Ok(old)
+    }
+
+    /// Set trigger volume `index`'s frame (squared, every other byte
+    /// kept). Returns the old entry.
+    pub fn set_volume_frame(&mut self, index: usize, frame: &Frame) -> Result<Vec<u8>> {
+        let like = self
+            .volume_block(VolumeKind::Trigger)
+            .entry(index)
+            .ok_or_else(|| Error::Declined(format!("no trigger volume {index}")))?;
+        let frame = frame.squared().unwrap_or(*frame);
+        let entry = volumes::trigger_entry(Some(like), &frame);
+        self.set_volume(VolumeKind::Trigger, index, entry)
+    }
+
+    /// Append an entry to a volume block. Returns its index. A block that
+    /// grows past its source size is written as a new copy on save.
+    pub fn add_volume(&mut self, kind: VolumeKind, entry: Vec<u8>) -> Result<usize> {
+        if let Some(why) = self.volume_refusal(kind) {
+            return Err(Error::Declined(why));
+        }
+        let triggers = self.volume_block(VolumeKind::Trigger).len();
+        self.check_volume_entry(kind, &entry, triggers)?;
+        let block = &mut self.volume_blocks[kind.slot()];
+        block.entries.push(entry);
+        let index = block.len() - 1;
+        self.refresh_volumes();
+        Ok(index)
+    }
+
+    /// Undo [`Self::add_volume`]: drop the last entry, which must be `entry`.
+    pub fn unadd_volume(&mut self, kind: VolumeKind, entry: &[u8]) -> Result<()> {
+        let block = &mut self.volume_blocks[kind.slot()];
+        if block.entries.last().map(Vec::as_slice) != Some(entry) {
+            return Err(Error::Invalid("the added entry is no longer last"));
+        }
+        block.entries.pop();
+        self.refresh_volumes();
+        Ok(())
+    }
+
+    /// Swap-remove entry `index` of a volume block: the last entry moves
+    /// into its slot, and the kill triggers and BSP switches that named a
+    /// moved trigger volume follow it. Refused as
+    /// [`Self::volume_remove_refusal`] says.
+    pub fn remove_volume(&mut self, kind: VolumeKind, index: usize) -> Result<VolumeRemoved> {
+        if let Some(why) = self.volume_remove_refusal(kind, index) {
+            return Err(Error::Declined(why));
+        }
+        let block = &mut self.volume_blocks[kind.slot()];
+        let last = block.len() - 1;
+        let entry = block.entries.swap_remove(index);
+        let mut repointed = Vec::new();
+        if kind == VolumeKind::Trigger && index != last {
+            for holder in [VolumeKind::Kill, VolumeKind::BspSwitch] {
+                let block = &mut self.volume_blocks[holder.slot()];
+                for (i, e) in block.entries.iter_mut().enumerate() {
+                    let v = volumes::named_volume(e);
+                    if usize::try_from(v).ok() == Some(last) {
+                        repointed.push((holder, i, v));
+                        volumes::set_named_volume(e, index as i16);
+                    }
+                }
+            }
+        }
+        self.refresh_volumes();
+        Ok(VolumeRemoved {
+            kind,
+            index,
+            entry,
+            repointed,
+        })
+    }
+
+    /// Undo [`Self::remove_volume`], byte for byte.
+    pub fn unremove_volume(&mut self, removed: &VolumeRemoved) -> Result<()> {
+        let block = &mut self.volume_blocks[removed.kind.slot()];
+        if removed.index > block.len() {
+            return Err(Error::Declined(format!(
+                "no {} {}",
+                removed.kind.noun(),
+                removed.index
+            )));
+        }
+        if removed.index == block.len() {
+            block.entries.push(removed.entry.clone());
+        } else {
+            let moved = std::mem::replace(&mut block.entries[removed.index], removed.entry.clone());
+            block.entries.push(moved);
+        }
+        for &(holder, i, v) in removed.repointed.iter().rev() {
+            if let Some(e) = self.volume_blocks[holder.slot()].entries.get_mut(i) {
+                volumes::set_named_volume(e, v);
+            }
+        }
+        self.refresh_volumes();
+        Ok(())
     }
 
     /// Why entries of a block may not be removed, if they may not.

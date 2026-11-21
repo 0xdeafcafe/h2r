@@ -363,6 +363,27 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"index":0,"focus":true}"#,
     ),
     def(
+        m::VOLUME_SET,
+        "Give a trigger volume a new box as one undo step: forward, up and size over its own, then the corner origin or the centre (its own when neither is given). Forward and up are squared",
+        r#"{"index":"integer","origin?":"[x,y,z]","center?":"[x,y,z]","forward?":"[x,y,z]","up?":"[x,y,z]","size?":"[x,y,z]"}"#,
+        r#"{"volume":"{index,name,label,kinds,origin,forward,up,size,center,parent,world,named_by}"}"#,
+        r#"{"index":0,"center":[102,102,3],"size":[4,4,6]}"#,
+    ),
+    def(
+        m::VOLUME_ADD,
+        "Add a trigger volume (a 2-unit cube at the camera focus unless the box is given) and select it; kill adds a kill trigger naming it in the same undo step (Make a kill volume). Refused past the block's source size while growth is off",
+        r#"{"kill?":"boolean","center?":"[x,y,z]","origin?":"[x,y,z]","forward?":"[x,y,z]","up?":"[x,y,z]","size?":"[x,y,z]"}"#,
+        r#"{"index":"integer","kill_trigger":"integer|null","volume":"{index,...}"}"#,
+        r#"{"kill":true,"center":[0,0,2]}"#,
+    ),
+    def(
+        m::VOLUME_REMOVE,
+        "Remove a trigger volume or a kill trigger (the last entry takes its slot; kill triggers and BSP switches follow a moved volume). A volume a kill trigger or BSP switch names is refused, naming them, as is a source volume of a scripted map",
+        r#"{"kind?":"trigger|kill","index":"integer"}"#,
+        r#"{"removed":"{kind,index}","triggers":"integer","kill_triggers":"integer","selected":"integer|null"}"#,
+        r#"{"kind":"kill","index":0}"#,
+    ),
+    def(
         m::VARIANT_LIST,
         "The built-in and saved game variants, and the one open",
         "{}",

@@ -123,8 +123,12 @@ palette fields above and the following labelled fields.
 
 ### Trigger volumes, kill triggers and BSP switches
 
-`scenario_edit::volumes` reads three root blocks to draw and pick them.
-They are not edited yet.
+`scenario_edit::volumes` reads three root blocks to draw, pick and edit
+them. The editor keeps them as its own block list
+(`volumes::VolumeBlock`, held by `Scenario` beside the placement blocks),
+not as `map::scenario_layout` blocks: Forge documents validate against
+that layout, so a block added there changes what a Forge document may
+hold.
 
 | Block | Stride | Field | Meaning | Evidence |
 |---|---|---|---|---|
@@ -139,6 +143,25 @@ They are not edited yet.
 The engine's own readers of these blocks have not been disassembled, so
 every row is S. A volume with a parent object keeps its frame relative to
 that object; the editor lists it and does not draw it.
+
+Edits (`Session` in `session/volume_edit.rs`, the `Op::Volume*` commands
+in `edit.rs`) follow the placement rules of §6:
+
+- A trigger volume's frame is written whole: forward and up made unit
+  and square, the size positive, every other byte of the entry kept.
+  Kill trigger entries must name an existing volume.
+- Removal swap-removes, and the kill triggers and BSP switches that named
+  the moved last volume are repointed to its new slot in the same step.
+  It is refused while a kill trigger or BSP switch names the volume (the
+  refusal names them), and, in a map with compiled script nodes
+  (`scnr+0x238` count), for a volume the map came with: script atoms
+  name volumes by index, and the editor does not read the atoms' types.
+- Adding appends, in place up to the source count and as a grown copy
+  past it (saved with the other grown blocks, `Changes::tag_grown`).
+- BSP switches are read only: what else refers to a switch by index has
+  not been surveyed.
+- A volume block that does not read, or overlaps another block, is drawn
+  and not edited.
 
 ## 3. Edit model
 
@@ -380,7 +403,10 @@ Read in the XBE (**E**) unless marked:
   equipment entry wins, so order can matter (S).
 - Not disassembled: the AI, device-group and trigger-volume readers. In
   the public layout they hold name or palette indices, or the reference
-  runs from the placement to them (S).
+  runs from the placement to them (S). Kill triggers, BSP switches and
+  script atoms name trigger volumes by index (S, see "Trigger volumes,
+  kill triggers and BSP switches"), so a volume's removal follows the
+  rules there.
 
 ### Remove
 

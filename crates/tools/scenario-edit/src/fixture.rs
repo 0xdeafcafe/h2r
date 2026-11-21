@@ -206,7 +206,16 @@ pub fn fixture_with_volumes() -> Vec<u8> {
 /// The fixture with its metadata region ending the file, as in retail maps,
 /// so a block can grow.
 pub fn fixture_at_end() -> Vec<u8> {
-    let mut b = fixture();
+    at_end(fixture())
+}
+
+/// [`fixture_with_volumes`] with its metadata ending the file, so the
+/// volume blocks can grow.
+pub fn fixture_with_volumes_at_end() -> Vec<u8> {
+    at_end(fixture_with_volumes())
+}
+
+fn at_end(mut b: Vec<u8>) -> Vec<u8> {
     let end = META_FILE + 0x2000;
     b.truncate(end);
     put(&mut b, 8, end as u32);

@@ -1,6 +1,8 @@
 //! The scenario's trigger volumes, and the kill triggers and BSP switches
 //! that name them by index: read from the `scnr` root, drawn as oriented
-//! boxes and picked by ray (docs/editor/polish-plan.md, slice P8).
+//! boxes and picked by ray (docs/editor/polish-plan.md, slice P8), and
+//! kept as raw blocks the editor edits ([`VolumeBlock`], slice P9;
+//! `Session`'s volume edits in `session/volume_edit.rs`).
 //!
 //! Layouts (docs/editor/scenario-editor.md, "Trigger volumes, kill
 //! triggers and BSP switches"):
@@ -47,6 +49,34 @@ impl VolumeKind {
 
     pub fn from_name(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|k| k.name() == name)
+    }
+
+    /// The block this kind's entries live in: (root offset, stride).
+    /// Trigger is the volume block itself; Kill and BspSwitch are the
+    /// blocks that name volumes.
+    pub const fn block(self) -> (u32, u32) {
+        match self {
+            Self::Trigger => TRIGGER_VOLUMES,
+            Self::Kill => KILL_TRIGGERS,
+            Self::BspSwitch => BSP_SWITCHES,
+        }
+    }
+
+    /// The entry's name in messages.
+    pub const fn noun(self) -> &'static str {
+        match self {
+            Self::Trigger => "trigger volume",
+            Self::Kill => "kill trigger",
+            Self::BspSwitch => "BSP switch",
+        }
+    }
+
+    pub(crate) const fn slot(self) -> usize {
+        match self {
+            Self::Trigger => 0,
+            Self::Kill => 1,
+            Self::BspSwitch => 2,
+        }
     }
 
     /// Which of a box's kinds wins its colour, label and pick: the most
@@ -150,6 +180,56 @@ impl Frame {
         Some(out)
     }
 
+    /// The same box with unit forward and up, up made square to forward
+    /// (the form the editor writes). `None` when [`Self::axes`] is.
+    pub fn squared(&self) -> Option<Self> {
+        let [forward, _, up] = self.axes()?;
+        Some(Self {
+            forward,
+            up,
+            ..*self
+        })
+    }
+
+    /// The box with its centre at `center`, its axes `forward` and `up`
+    /// (squared as [`Self::squared`]) and full lengths `size`.
+    pub fn around(center: Vec3, forward: Vec3, up: Vec3, size: Vec3) -> Option<Self> {
+        let probe = Self {
+            origin: [0.0; 3],
+            forward,
+            up,
+            size,
+        };
+        let axes = probe.axes()?;
+        let half = (0..3).fold([0.0; 3], |p, k| add(p, scale(axes[k], 0.5 * size[k])));
+        Self {
+            origin: sub(center, half),
+            ..probe
+        }
+        .squared()
+    }
+
+    /// A column-major model matrix whose columns are forward, left and up
+    /// scaled by the size, then the centre: the gizmo's view of the box.
+    pub fn matrix(&self) -> Option<[f32; 16]> {
+        let axes = self.axes()?;
+        let c = self.center()?;
+        let [f, l, u] = std::array::from_fn(|k| scale(axes[k], self.size[k]));
+        Some([
+            f[0], f[1], f[2], 0.0, l[0], l[1], l[2], 0.0, u[0], u[1], u[2], 0.0, c[0], c[1], c[2],
+            1.0,
+        ])
+    }
+
+    /// The box a [`Self::matrix`] describes after the gizmo moved, turned
+    /// or stretched it. `None` for a degenerate matrix.
+    pub fn from_matrix(m: &[f32; 16]) -> Option<Self> {
+        let col = |k: usize| [m[4 * k], m[4 * k + 1], m[4 * k + 2]];
+        let len = |v: Vec3| dot(v, v).sqrt();
+        let size = [len(col(0)), len(col(1)), len(col(2))];
+        Self::around([m[12], m[13], m[14]], col(0), col(2), size)
+    }
+
     /// Distance along the ray to where it enters the box. A ray that
     /// starts inside does not hit it, so a camera inside a large volume
     /// still clicks what is in front of it.
@@ -171,6 +251,96 @@ impl Frame {
             far = far.min(a.max(b));
         }
         (near <= far && near > 0.0).then_some(near)
+    }
+}
+
+/// One volume block's elements as raw bytes, the way [`crate::Scenario`]
+/// keeps a placement block. The editor keeps its own list of these three
+/// blocks rather than adding them to `map::scenario_layout`'s `BLOCKS`,
+/// which Forge documents share (docs/editor/polish-plan.md, "Editing
+/// volumes and barriers").
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct VolumeBlock {
+    /// Virtual address of element 0 in the source (0 when it was empty).
+    pub address: u32,
+    pub(crate) entries: Vec<Vec<u8>>,
+    pub(crate) original: Vec<Vec<u8>>,
+}
+
+impl VolumeBlock {
+    pub(crate) fn new(address: u32, entries: Vec<Vec<u8>>) -> Self {
+        Self {
+            address,
+            original: entries.clone(),
+            entries,
+        }
+    }
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+    pub fn entry(&self, index: usize) -> Option<&[u8]> {
+        self.entries.get(index).map(Vec::as_slice)
+    }
+    pub fn entries(&self) -> &[Vec<u8>] {
+        &self.entries
+    }
+    /// Elements the source block holds: up to this many fit in place.
+    pub fn capacity(&self) -> usize {
+        self.original.len()
+    }
+    pub fn is_modified(&self) -> bool {
+        self.entries != self.original
+    }
+}
+
+fn put_vec3(e: &mut [u8], o: usize, v: Vec3) {
+    for (k, x) in v.into_iter().enumerate() {
+        e[o + 4 * k..o + 4 * k + 4].copy_from_slice(&x.to_le_bytes());
+    }
+}
+
+/// A trigger volume entry with `frame` written over `like` (every other
+/// byte kept), or a new one: string ID 0 for its name, no parent object.
+pub fn trigger_entry(like: Option<&[u8]>, frame: &Frame) -> Vec<u8> {
+    let mut e = match like {
+        Some(b) => b.to_vec(),
+        None => {
+            let mut e = vec![0; TRIGGER_VOLUMES.1 as usize];
+            e[4..6].copy_from_slice(&(-1i16).to_le_bytes());
+            e
+        }
+    };
+    put_vec3(&mut e, 0xc, frame.forward);
+    put_vec3(&mut e, 0x18, frame.up);
+    put_vec3(&mut e, 0x24, frame.origin);
+    put_vec3(&mut e, 0x30, frame.size);
+    e
+}
+
+/// A kill trigger entry naming trigger volume `volume`.
+pub fn kill_entry(volume: i16) -> Vec<u8> {
+    volume.to_le_bytes().to_vec()
+}
+
+/// The trigger volume an entry of a kill trigger or BSP switch names.
+pub(crate) fn named_volume(entry: &[u8]) -> i16 {
+    i16_at(entry, 0)
+}
+
+pub(crate) fn set_named_volume(entry: &mut [u8], volume: i16) {
+    entry[0..2].copy_from_slice(&volume.to_le_bytes());
+}
+
+/// The frame a trigger volume entry holds.
+pub fn entry_frame(entry: &[u8]) -> Frame {
+    Frame {
+        forward: vec3_at(entry, 0xc),
+        up: vec3_at(entry, 0x18),
+        origin: vec3_at(entry, 0x24),
+        size: vec3_at(entry, 0x30),
     }
 }
 
@@ -221,6 +391,16 @@ impl Holder {
             Self::Kill(i) | Self::BspSwitch { index: i, .. } => i,
         }
     }
+
+    /// "kill trigger 0", "BSP switch 1 (BSP 0 to 1)".
+    pub fn describe(self) -> String {
+        match self {
+            Self::Kill(i) => format!("kill trigger {i}"),
+            Self::BspSwitch { index, from, to } => {
+                format!("BSP switch {index} (BSP {from} to {to})")
+            }
+        }
+    }
 }
 
 /// The scenario's volumes. A block that does not read leaves all three
@@ -254,12 +434,7 @@ impl Volumes {
                     name_id: u32_at(e, 0),
                     name: None,
                     parent: u16::try_from(i16_at(e, 4)).ok(),
-                    frame: Frame {
-                        forward: vec3_at(e, 0xc),
-                        up: vec3_at(e, 0x18),
-                        origin: vec3_at(e, 0x24),
-                        size: vec3_at(e, 0x30),
-                    },
+                    frame: entry_frame(e),
                 })
                 .collect(),
             kills: kills.iter().map(|e| i16_at(e, 0)).collect(),
@@ -291,6 +466,13 @@ impl Volumes {
                 .cloned()
                 .flatten()
                 .filter(|s| !s.is_empty());
+        }
+    }
+
+    /// Name each volume through `name`, by its string ID.
+    pub fn name_with(&mut self, name: impl Fn(u32) -> Option<String>) {
+        for v in &mut self.triggers {
+            v.name = name(v.name_id);
         }
     }
 

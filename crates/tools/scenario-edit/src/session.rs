@@ -18,7 +18,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 mod multi;
+mod volume_edit;
 pub use multi::FieldEdit;
+pub use volume_edit::NEW_VOLUME_SIZE;
 
 /// An open map.
 struct Doc {
@@ -727,6 +729,12 @@ impl Session {
             && i >= doc.scenario.block(kind).len()
         {
             self.selected = None;
+        }
+        if self
+            .volume
+            .is_some_and(|i| i >= doc.scenario.volumes.triggers.len())
+        {
+            self.volume = None;
         }
         self.refresh_markers();
         match r {

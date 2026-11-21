@@ -187,6 +187,26 @@ pub enum Action {
     Select(Option<(BlockKind, usize)>),
     /// Select a trigger volume by index (clearing the placements), or none.
     SelectVolume(Option<usize>),
+    /// The viewport gizmo's drag on the selected volume: its new box.
+    /// Every one until [`Action::EndGesture`] is one undo step.
+    VolumeGesture(scenario_edit::volumes::Frame),
+    /// Give a trigger volume a new box as one undo step; edits with the
+    /// same merge key in a row are one (an inspector drag).
+    SetVolumeFrame {
+        index: usize,
+        frame: scenario_edit::volumes::Frame,
+        merge: Option<u64>,
+    },
+    /// Add a trigger volume at `frame` (or a small box at the camera
+    /// focus); with `kill`, a kill trigger naming it in the same undo step
+    /// (Make a kill volume).
+    AddVolume {
+        frame: Option<scenario_edit::volumes::Frame>,
+        kill: bool,
+    },
+    /// Remove an entry of a volume block: a trigger volume or a kill
+    /// trigger.
+    RemoveVolume(scenario_edit::volumes::VolumeKind, usize),
     Navigate(NavAction),
     /// Open the Map workspace on the palette's tag or placement.
     GoTo(Selection),
@@ -896,6 +916,42 @@ impl App {
                 self.session.select_volume(index);
                 self.record_placement_selection(before);
             }
+            Action::VolumeGesture(frame) => {
+                if let Err(e) = self.session.volume_gesture(&frame) {
+                    self.error(e.to_string());
+                }
+            }
+            Action::SetVolumeFrame {
+                index,
+                frame,
+                merge,
+            } => {
+                let r = self.session.edit_volume_frame(index, &frame, merge);
+                self.ok_or_log(r);
+            }
+            Action::AddVolume { frame, kill } => {
+                let before = self.nav_location();
+                let r = if kill {
+                    self.session.make_kill_volume(frame)
+                } else {
+                    self.session.add_volume(frame)
+                };
+                if let Some(i) = self.ok_or_log(r) {
+                    let what = if kill {
+                        "kill volume"
+                    } else {
+                        "trigger volume"
+                    };
+                    self.info(format!("added {what} {i}"));
+                    self.record_placement_selection(before);
+                }
+            }
+            Action::RemoveVolume(kind, i) => {
+                let r = self.session.remove_volume(kind, i);
+                if self.ok_or_log(r).is_some() {
+                    self.info(format!("removed {} {i}", kind.noun()));
+                }
+            }
             Action::ToggleSelect(e) => {
                 let before = self.nav_location();
                 self.session.toggle_select(e);
@@ -915,9 +971,13 @@ impl App {
             Action::PlaceAt(kind, like, at) => self.place_at(kind, like, at),
             Action::Delete if self.session.selection().len() > 1 => self.delete_selection(),
             Action::Duplicate if self.session.selection().len() > 1 => self.duplicate_selection(),
-            Action::Delete => match self.session.selected() {
-                Some((kind, i)) => self.run(Action::DeleteEntry(kind, i)),
-                None => self.error("select a placement to delete"),
+            Action::Delete => match (self.session.selected(), self.session.selected_volume()) {
+                (Some((kind, i)), _) => self.run(Action::DeleteEntry(kind, i)),
+                (None, Some(i)) => self.run(Action::RemoveVolume(
+                    scenario_edit::volumes::VolumeKind::Trigger,
+                    i,
+                )),
+                (None, None) => self.error("select a placement to delete"),
             },
             Action::Duplicate => match self.session.selected() {
                 Some((kind, i)) => self.run(Action::DuplicateEntry(kind, i)),

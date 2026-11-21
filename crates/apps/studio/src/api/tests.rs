@@ -158,10 +158,15 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
                 json!({"block": "starting_locations", "index": 1}),
             );
         }
-        m::VOLUME_LIST | m::VOLUME_SELECT => {
+        m::VOLUME_LIST | m::VOLUME_SELECT | m::VOLUME_SET | m::VOLUME_REMOVE | m::VOLUME_ADD => {
             let map = t.path("volumes.map");
             std::fs::write(&map, fixture::fixture_with_volumes()).unwrap();
             c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+            if name == m::VOLUME_ADD {
+                // Both blocks are full: make room for a kill volume.
+                c(m::VOLUME_REMOVE, json!({"kind": "kill", "index": 0}));
+                c(m::VOLUME_REMOVE, json!({"index": 1}));
+            }
         }
         m::DOC_CLOSE | m::PLAYLIST_LIST | m::PLAYLIST_GET | m::PLAYLIST_SET | m::PLAYLIST_ENTRY => {
             c(
@@ -925,6 +930,127 @@ fn volume_list_and_select_read_the_invented_volumes() {
     assert!(
         png_pixels(&out) != hidden,
         "the Kill layer alone draws the kill box"
+    );
+}
+
+/// P9: `volume.set` moves, turns and resizes a box as one undo step each;
+/// `volume.remove` refuses a volume a kill trigger names, naming it, and
+/// takes the kill trigger first; `volume.add` with `kill` adds both
+/// entries, refused past the source size while growth is off.
+#[test]
+fn volume_set_add_and_remove_edit_through_the_command_layer() {
+    let t = Temp::new("volume-edits");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let map = t.path("volumes.map");
+    std::fs::write(&map, fixture::fixture_with_volumes()).unwrap();
+    call(
+        &mut api,
+        &mut app,
+        m::SOURCE_OPEN,
+        json!({"path": map.display().to_string()}),
+    );
+    let undo = |api: &mut Api, app: &mut App| {
+        call(api, app, m::DOC_UNDO, json!({"doc": "map"}));
+    };
+
+    // Move by the centre, then resize keeping it, then turn.
+    let moved = call(
+        &mut api,
+        &mut app,
+        m::VOLUME_SET,
+        json!({"index": 0, "center": [110, 100, 2]}),
+    );
+    assert_eq!(moved["volume"]["center"], json!([110.0, 100.0, 2.0]));
+    assert_eq!(moved["volume"]["size"], json!([4.0, 4.0, 4.0]));
+    let sized = call(
+        &mut api,
+        &mut app,
+        m::VOLUME_SET,
+        json!({"index": 0, "size": [8, 2, 4]}),
+    );
+    assert_eq!(sized["volume"]["center"], json!([110.0, 100.0, 2.0]));
+    assert_eq!(sized["volume"]["origin"], json!([106.0, 99.0, 0.0]));
+    let turned = call(
+        &mut api,
+        &mut app,
+        m::VOLUME_SET,
+        json!({"index": 0, "forward": [0, 2, 0]}),
+    );
+    assert_eq!(turned["volume"]["forward"], json!([0.0, 1.0, 0.0]));
+    assert_eq!(turned["volume"]["center"], json!([110.0, 100.0, 2.0]));
+    assert_eq!(
+        code_of(api.call(
+            &mut app,
+            m::VOLUME_SET,
+            json!({"index": 0, "size": [0, 1, 1]})
+        )),
+        code::INVALID_PARAMS
+    );
+    assert_eq!(
+        code_of(api.call(&mut app, m::VOLUME_SET, json!({"index": 5}))),
+        code::INVALID_PARAMS
+    );
+    for _ in 0..3 {
+        undo(&mut api, &mut app);
+    }
+    let row = &call(&mut api, &mut app, m::VOLUME_LIST, Value::Null)["volumes"][0];
+    assert_eq!(row["origin"], json!(fixture::VOLUMES[0].0));
+    assert_eq!(row["size"], json!(fixture::VOLUMES[0].2));
+    assert!(!app.session.is_dirty());
+
+    // Volume 1 is the kill box: the refusal names its kill trigger.
+    let e = api
+        .call(&mut app, m::VOLUME_REMOVE, json!({"index": 1}))
+        .unwrap_err();
+    assert_eq!(e.code, code::REFUSED);
+    assert!(e.message.contains("kill trigger 0"), "{}", e.message);
+    assert_eq!(
+        e.data.unwrap()["named_by"],
+        json!([{"kind": "kill", "index": 0}])
+    );
+    let gone = call(
+        &mut api,
+        &mut app,
+        m::VOLUME_REMOVE,
+        json!({"kind": "kill", "index": 0}),
+    );
+    assert_eq!(gone["kill_triggers"], 0);
+    let gone = call(&mut api, &mut app, m::VOLUME_REMOVE, json!({"index": 1}));
+    assert_eq!(gone["triggers"], 1);
+
+    // Room for one more of each: Make a kill volume fills it.
+    let made = call(
+        &mut api,
+        &mut app,
+        m::VOLUME_ADD,
+        json!({"kill": true, "center": [0, 0, 2], "size": [10, 10, 1]}),
+    );
+    assert_eq!(
+        (made["index"].clone(), made["kill_trigger"].clone()),
+        (json!(1), json!(0))
+    );
+    assert_eq!(made["volume"]["kinds"], json!(["kill", "trigger"]));
+    assert_eq!(made["volume"]["center"], json!([0.0, 0.0, 2.0]));
+    assert_eq!(app.session.selected_volume(), Some(1));
+    let e = api
+        .call(&mut app, m::VOLUME_ADD, json!({"kill": true}))
+        .unwrap_err();
+    assert_eq!(e.code, code::REFUSED);
+    assert_eq!(e.data.unwrap()["capacity"], 2);
+    // One undo takes both entries away.
+    undo(&mut api, &mut app);
+    let list = call(&mut api, &mut app, m::VOLUME_LIST, Value::Null);
+    assert_eq!(list["volumes"].as_array().unwrap().len(), 1);
+    assert_eq!(list["kill_triggers"], 0);
+    // BSP switches are read only.
+    assert_eq!(
+        code_of(api.call(
+            &mut app,
+            m::VOLUME_REMOVE,
+            json!({"kind": "bsp_switch", "index": 0})
+        )),
+        code::INVALID_PARAMS
     );
 }
 
