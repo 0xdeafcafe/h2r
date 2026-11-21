@@ -16,7 +16,8 @@
 //! Bots (`bot: true`, docs/game/bots.md §6) are game-only: they have no
 //! per-player row (a rostered bot's xuid included), and a kill with a bot
 //! on either side counts in the totals but in nobody's row: not the human's
-//! kills or spree, nor their deaths. The game record keeps them all.
+//! kills or spree, nor their deaths. A bot's superbounces and bounce
+//! deaths count in the totals and in no row. The game record keeps them all.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
@@ -77,6 +78,11 @@ pub struct Totals {
     pub player_seconds: u64,
     /// Campaign levels finished on Legendary (one per game).
     pub legendary: u64,
+    /// Superbounces, every player's (docs/game/superbounce.md, "Medals").
+    pub bounces: u64,
+    /// Deaths falling out of the map while trying a bounce (the `bounced`
+    /// medal).
+    pub bounced: u64,
 }
 
 impl Totals {
@@ -95,6 +101,8 @@ impl Totals {
         self.campaign_deaths += o.campaign_deaths;
         self.player_seconds += o.player_seconds;
         self.legendary += o.legendary;
+        self.bounces += o.bounces;
+        self.bounced += o.bounced;
     }
 }
 
@@ -114,6 +122,8 @@ struct PlayerAgg {
     seconds: u64,
     /// Campaign levels finished on Legendary.
     legendary: BTreeSet<String>,
+    bounces: u64,
+    bounced: u64,
 }
 
 impl PlayerAgg {
@@ -132,6 +142,8 @@ impl PlayerAgg {
         self.best_spree = self.best_spree.max(o.best_spree);
         self.seconds += o.seconds;
         self.legendary.extend(o.legendary.iter().cloned());
+        self.bounces += o.bounces;
+        self.bounced += o.bounced;
     }
 }
 
@@ -319,6 +331,18 @@ impl Inner {
                 };
                 self.killed(id, &k, at);
             }
+            game::SUPERBOUNCE => {
+                let Some(d) = data::<game::Superbounce>(e) else {
+                    return;
+                };
+                self.bounced(id, d.player, at, false);
+            }
+            game::BOUNCED => {
+                let Some(d) = data::<game::Bounced>(e) else {
+                    return;
+                };
+                self.bounced(id, d.player, at, true);
+            }
             game::GAME_ENDED => {
                 let Some(d) = data::<GameEnded>(e) else {
                     return;
@@ -408,6 +432,39 @@ impl Inner {
         self.hour(at, |h| h.add(&delta));
         // A GameStarted for a game already known (it should not happen) starts it over.
         self.games.insert(s.game_id.clone(), g);
+    }
+
+    /// A bounce, or a death trying one (`died`), counts in the totals, and
+    /// in the player's row when it is a player with an account and not a
+    /// bot.
+    fn bounced(&mut self, id: &str, slot: u32, at: i64, died: bool) {
+        let Some(g) = self.games.get(id) else {
+            return;
+        };
+        let player = g
+            .slots
+            .get(&slot)
+            .filter(|_| !g.bots.contains(&slot))
+            .and_then(|(x, name, _)| x.map(|x| (x, name.clone())));
+        let add = |t: &mut Totals| {
+            if died {
+                t.bounced += 1;
+            } else {
+                t.bounces += 1;
+            }
+        };
+        self.bump(at, |b| {
+            add(&mut b.totals);
+            if let Some((x, name)) = &player {
+                let p = b.player(*x, name, at);
+                if died {
+                    p.bounced += 1;
+                } else {
+                    p.bounces += 1;
+                }
+            }
+        });
+        self.hour(at, add);
     }
 
     fn killed(&mut self, id: &str, k: &game::PlayerKilled, at: i64) {
@@ -576,6 +633,8 @@ impl Inner {
                 best_spree: p.best_spree,
                 seconds: p.seconds,
                 legendary: p.legendary.len() as u64,
+                bounces: p.bounces,
+                bounced: p.bounced,
             })
             .collect();
         players.sort_by(|a, b| (b.kills, b.games, &a.xuid).cmp(&(a.kills, a.games, &b.xuid)));
@@ -657,6 +716,8 @@ pub struct PlayerRow {
     pub seconds: u64,
     /// Distinct campaign levels finished on Legendary.
     pub legendary: u64,
+    pub bounces: u64,
+    pub bounced: u64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -784,7 +845,12 @@ impl Stats {
         };
         if !matches!(
             b.kind.as_str(),
-            game::GAME_STARTED | game::PLAYER_JOINED | game::PLAYER_KILLED | game::GAME_ENDED
+            game::GAME_STARTED
+                | game::PLAYER_JOINED
+                | game::PLAYER_KILLED
+                | game::SUPERBOUNCE
+                | game::BOUNCED
+                | game::GAME_ENDED
         ) {
             return Vec::new();
         }
@@ -994,6 +1060,44 @@ mod tests {
         assert_eq!((s.activity[0].games, s.activity[0].kills), (1, 5));
         assert_eq!(s.last_24h, s.totals);
         assert_eq!(s.all_time, s.totals);
+    }
+
+    /// Superbounces and bounce deaths count in the totals, a player's in
+    /// their row; a bot's and an unlinked guest's in no row
+    /// (docs/game/superbounce.md, "Recording").
+    #[test]
+    fn bounces_count_in_the_totals_and_the_rows_of_players_with_accounts() {
+        let mut log = Log::new();
+        log.start("g1", json!({}), T0);
+        log.push(
+            "g1",
+            game::PLAYER_JOINED,
+            json!({"player": {"index": 3, "name": "Clanker", "team": 1, "bot": true}}),
+            T0 + 1,
+        );
+        for (player, chain) in [(0, 1), (0, 2), (1, 1), (2, 1), (3, 1), (3, 2)] {
+            log.push(
+                "g1",
+                game::SUPERBOUNCE,
+                json!({"tick": 5, "player": player, "chain": chain}),
+                T0 + 10,
+            );
+        }
+        for player in [1, 3] {
+            log.push(
+                "g1",
+                game::BOUNCED,
+                json!({"tick": 6, "player": player}),
+                T0 + 20,
+            );
+        }
+        log.end("g1", "finished", json!({"team": 0}), T0 + 60);
+        let s = log.stats.summary_at(Some(1), T0 + 100);
+        assert_eq!((s.totals.bounces, s.totals.bounced), (6, 2));
+        assert_eq!((s.last_24h.bounces, s.last_24h.bounced), (6, 2));
+        assert_eq!((row(&s, A).bounces, row(&s, A).bounced), (2, 0));
+        assert_eq!((row(&s, B).bounces, row(&s, B).bounced), (1, 1));
+        assert_eq!(s.players.len(), 2, "no row for the guest or the bot");
     }
 
     #[test]

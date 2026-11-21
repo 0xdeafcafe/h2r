@@ -48,8 +48,16 @@ pub(crate) const FRAME_KEYFRAME_EVERY: u64 = 150;
 /// leaves are never dropped.
 pub(crate) const MAX_OUTBOX: usize = 4096;
 /// Event kinds the outbox may drop when full: a later `ScoreChanged` and
-/// the `GameEnded` scoreboard carry the scores again.
-const DROPPABLE: [&str; 3] = [game::ACTOR_KILLED, game::PLAYER_KILLED, game::SCORE_CHANGED];
+/// the `GameEnded` scoreboard carry the scores again. A dropped
+/// `Superbounce` or `Bounced` is one the game record misses; the film
+/// keeps it.
+const DROPPABLE: [&str; 5] = [
+    game::ACTOR_KILLED,
+    game::PLAYER_KILLED,
+    game::SCORE_CHANGED,
+    game::SUPERBOUNCE,
+    game::BOUNCED,
+];
 /// A batch signed longer ago than this is signed again before it is sent
 /// (the server refuses an `at` more than five minutes off). New nonces: if
 /// the old copy did land unanswered, the server keeps both.

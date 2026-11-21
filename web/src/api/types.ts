@@ -341,6 +341,11 @@ export interface PlayerKilled {
   headshot?: boolean | null;
   kind: KillKind;
 }
+/** A bounce off a superbounce crease; `chain` is its place in the chain,
+ *  1 for a first bounce (docs/game/superbounce.md, "Recording"). */
+export interface Superbounce { tick: number; player: number; chain: number }
+/** A death falling out of or through the map while trying a bounce. */
+export interface Bounced { tick: number; player: number }
 export interface ScoreChanged { tick: number; players: PlayerScore[]; teams?: TeamScore[] | null }
 /** `{team}` in team games, `{player}` (slot index) otherwise, null for a draw or quit. */
 export type Winner = { team: number } | { player: number };
@@ -386,6 +391,8 @@ export interface GameSummary extends GameKindFields, DedicatedHostFields {
 }
 
 export interface KillRecord extends PlayerKilled { position?: number; at?: string }
+export interface BounceRecord extends Superbounce { position?: number; at?: string }
+export interface BouncedRecord extends Bounced { position?: number; at?: string }
 
 /** `GET /v1/games/{id}`: the summary plus scoreboard and the last 50 kills.
  *  Fields past the summary are read when present. */
@@ -393,6 +400,10 @@ export interface GameDetail extends GameSummary {
   position?: number;
   scoreboard?: PlayerScore[];
   kills?: KillRecord[];
+  /** The last 100 superbounces and the last 100 bounce deaths, oldest
+   *  first; absent from servers before them. */
+  bounces?: BounceRecord[];
+  bounced?: BouncedRecord[];
   team_play?: boolean;
   score_limit?: number | null;
   time_limit_s?: number | null;

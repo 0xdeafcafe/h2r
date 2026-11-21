@@ -497,6 +497,13 @@ records its salted unit and character datums, the credited player's slot
 and the damage-source key when available. The same row goes into the
 public stats stream alongside the recording.
 
+`Superbounce` (`tick`, `player`, `chain`) and `Bounced` (`tick`, `player`)
+come from the superbounce mode through `Telemetry::superbounce` and
+`Telemetry::bounced`, which read the game tick and queue the session's
+`superbounce` and `bounced` ([superbounce.md](../game/superbounce.md#recording)).
+They are sent at the match clock for a player of the match, and not in a
+cinematic or after the end.
+
 ## Server ingest
 
 Starting `h2 play` with Live on (`--live`, `--live-server` or
@@ -552,8 +559,9 @@ were never created.
 - **The outbox.** Game starts and events are kept in order in a bounded
   outbox (4096) until the server has answered for them. A `GameStarted` is
   created with `POST /v1/games` when it reaches the front; the game's events
-  wait behind it. Past the bound the oldest `ActorKilled`, `PlayerKilled`
-  or `ScoreChanged` is dropped; starts, ends, joins and leaves never are.
+  wait behind it. Past the bound the oldest `ActorKilled`, `PlayerKilled`,
+  `ScoreChanged`, `Superbounce` or `Bounced` is dropped; starts, ends, joins
+  and leaves never are.
 - **Answers.** A signed batch leaves the outbox on its answer. A batched
   socket reports frame refusals as `frame_error`, so the sink can handle
   them while it waits for an event acknowledgement. Legacy sockets use

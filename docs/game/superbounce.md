@@ -3,7 +3,8 @@
 Status: Reference, retail research with traces, except [Spots in the
 geometry](#spots-in-the-geometry), which is the design of our scanner
 (`crates/live/superbounce`, `h2 superbounce scan`), and [Medals](#medals),
-a design that is not built.
+a design whose recording, Live and site parts are built and whose chain
+and HUD line in the game are not.
 
 What the retail engine does when a player superbounces: what is
 established, what is measured, and what is still open. The research is a
@@ -1063,11 +1064,14 @@ No game was run for this section.
 
 ## Medals
 
-Design, not built. Four medals for bounces: **Superbounce** for a
-bounce, and **Double Bounce**, **Triple Bounce** and **Chain Bounce**
-for two, three and five bounces with no ground between them. They are
-awarded to every player in the game, bots included, while the mode is
-on. The player sees a medal as Halo 2 shows its own, a line of the
+Built: the table, the events, the film's records, Live and the site
+(`live_proto::film::events::medals`, `live-server`, `web/src/state/derive.ts`).
+Not built: the chain in the game, the `Bounced` trigger and the HUD line.
+Seven medals: **Superbounce** for a bounce; **Double Bounce**, **Triple
+Bounce**, **Quad Bounce**, **Chain Bounce** and **Bouncetacular** for two
+to six bounces with no ground between them; and **Bounced** for a death
+falling out of or through the map while trying one. They are awarded to
+every player in the game, bots included, while the mode is on. The player sees a medal as Halo 2 shows its own, a line of the
 notification list with a medal glyph ([hud-kit.md](hud-kit.md), "The
 medals"); the film and Live count them.
 
@@ -1119,18 +1123,24 @@ multi-kills:
 | 1 | Superbounce |
 | 2 | Superbounce, Double Bounce |
 | 3 | Superbounce, Triple Bounce |
-| 4 | Superbounce |
+| 4 | Superbounce, Quad Bounce |
 | 5 | Superbounce, Chain Bounce |
-| 6 and over | Superbounce |
+| 6 | Superbounce, Bouncetacular |
+| 7 and over | Superbounce |
 
 Superbounce is every bounce, so its count is the player's bounces. A
-chain gives each of the other three once: a chain of seven is seven
-Superbounces, one Double, one Triple and one Chain Bounce. The table is
-one function, `bounce_medals(chain)`, in
+chain gives each of the other five once: a chain of eight is eight
+Superbounces and one each of Double, Triple, Quad and Chain Bounce and
+Bouncetacular. The table is one function, `bounce_medals(chain)`, in
 `crates/live/live-proto/src/film/events/medals.rs`, used by the HUD, the
-film and the agent API; the site has a copy in `web/src/state/derive.ts`,
-as it has of the kill medals. The ids are `superbounce`, `double-bounce`,
-`triple-bounce` and `chain-bounce`.
+film and the agent API; the site has a copy in `web/src/state/derive.ts`
+(`bounceMedals`), as it has of the kill medals. The ids are
+`superbounce`, `double-bounce`, `triple-bounce`, `quad-bounce`,
+`chain-bounce`, `bouncetacular` and `bounced` (`BOUNCE_MEDALS`).
+
+**Bounced** is one medal per death: the player died falling out of or
+through the map while trying a bounce. The mode decides what an attempt
+is; the record is a `Bounced` event beside the death's `PlayerKilled`.
 
 The chain is a module of its own beside
 `crates/extensions/game/src/superbounce_charge.rs`: a `Chain` per player
@@ -1164,7 +1174,7 @@ A chain needs a bounce with no crouch between it and the last one.
 
 One notification per bounce for a local player: the line of the highest
 medal that bounce earned (`Superbounce!`, `Double bounce!`, `Triple
-bounce!`, `Chain bounce!`) behind a medal glyph of the HUD font, queued
+bounce!`, `Quad bounce!`, `Chain bounce!`, `Bouncetacular!`) behind a medal glyph of the HUD font, queued
 through the game's own insert. Halo 2 shows a multi-kill the same way,
 to the earner only and through the same routine, so the line's font,
 colour, place and fade are the game's. No sound. A bot's medals and
@@ -1178,52 +1188,65 @@ The game says that a bounce happened and what the chain's count was;
 the medals are worked out from the count wherever they are shown, as
 kill medals are worked out from kills.
 
-- **The event.** `Superbounce`, with `tick`, `player` (the slot) and
-  `chain` (1 and up): a game event beside `PlayerKilled`
-  (`live_proto::game`, with its validation: a player of the game, a
-  chain of at least 1). The mode sends it for every player it watches
-  through the telemetry session that sends the kills
-  (`crates/live/live-telemetry/src/session.rs`), on the console that
-  records the game: the host, or the one console of a local game. A
-  guest's own HUD line comes from its own simulation of its players;
-  where the two disagree the record is the host's.
-- **The film.** `film::events::Tracker` takes the event as it takes a
-  kill: it writes a `Superbounce { player, chain }` record at the
-  bounce's match tick, then a `Medal` record for each medal of that
-  count (the `Medal` kind as it is: `player`, `earned_at`, and the id
-  in `medal`), and adds them to the counts the summary's `medals` map
-  carries (`medals::Tally`). The film's version does not change: `Medal`'s
-  `medal` and the summary's map are strings, and `Superbounce` is one
-  more highlight kind, which a reader that does not know it passes over
-  (**Code**: `Record::decode_telemetry` returns nothing for it, and
-  `film::privacy` keeps a record it cannot decode private). An older
-  film has no bounces. [film-format.md](film-format.md) lists the kind
-  with the highlights when it is built.
-- **Live.** `Superbounce` joins `game::CLIENT_GAME_EVENTS`, so a
-  console may append it and the server keeps it in the game's events,
-  in both homes (`live-server`, `live-worker`). The server refuses a
-  batch holding a kind it does not know (`games.rs`), so the server is
-  released before the consoles that send it. A game's snapshot serves
-  its `bounces` beside its `kills`, and the site derives the four
-  medals from them (`derive.ts`: `MedalId`, `MEDALS`, a `bounceMedals`
-  beside `gameMedals`) for the Medals tab, the carnage report and the
-  service record. A bot's bounce medals are in the game's record and
-  not in a career, as its kills are ([bots.md](bots.md)).
+- **The events.** `Superbounce`, with `tick`, `player` (the slot) and
+  `chain` (1 and up), and `Bounced`, with `tick` and `player`: game events
+  beside `PlayerKilled` (`live_proto::game`, with their validation: a
+  player of the game, a chain of at least 1). The mode sends them for
+  every player it watches through the telemetry session that sends the
+  kills (`Telemetry::superbounce` and `Telemetry::bounced` in
+  `crates/live/live-telemetry/src/hooks.rs`, which read the game tick and
+  queue `Session::superbounce` and `Session::bounced`), on the console
+  that records the game: the host, or the one console of a local game.
+  Like a kill, neither is sent in a cinematic, after the end, or for a
+  slot that is not in the match. A full outbox may drop them, as it drops
+  kills. A guest's own HUD line comes from its own simulation of its
+  players; where the two disagree the record is the host's.
+- **The film.** `film::events::Tracker` takes the events as it takes a
+  kill: it writes a `Superbounce` (or `Bounced`) record at the match tick,
+  then a `Medal` record for each medal of that count, or `bounced` (the
+  `Medal` kind as it is: `player`, `earned_at`, and the id in `medal`),
+  and adds them to the counts the summary's `medals` map carries
+  (`medals::Tally`). Both are stats records: `Record::decode_telemetry`
+  gives them to Live, and `film::privacy` keeps them in the private import
+  rows. The film's version stays 3: `Medal`'s `medal` and the summary's
+  map are strings, and a reader that does not know the kinds passes over
+  them (**Code**: an older `Record::decode_telemetry` returns nothing for
+  an unknown kind, and an older `film::privacy`, which cannot decode the
+  record, keeps it private). An older film has no bounces.
+  [film-format.md](film-format.md) lists the kinds.
+- **Live.** `Superbounce` and `Bounced` are in `game::CLIENT_GAME_EVENTS`,
+  so the host may append them and the server keeps them in the game's
+  events, in both homes (`live-server`; the Worker runs the same `Live`
+  over its SQL store, `live-worker/src/sqlstore.rs`). Only the host
+  reports them (`games.rs`, 403 for anyone else). A film's import
+  carries them like kills and checks them against the ones sent live. A
+  server refuses a whole batch holding a kind it does not know, and the
+  console drops a refused batch with the kills beside it, so the server
+  is released before the consoles that send them. A game's snapshot
+  serves its last 100 `bounces` and `bounced` beside its `kills`; the
+  stats summary counts `bounces` and `bounced` in the totals and in an
+  account's row ([live-api.md](../live/live-api.md#stats-summary)). The
+  site derives the medals from them (`derive.ts`: `BounceMedalId`,
+  `MEDALS`, `bounceMedals` and `gameBounceMedals` beside `gameMedals`, and
+  `gameAwards` for both) for the carnage report, a game's preview, the
+  medal chest and the service record. A bot's bounces are in the game's
+  record and the summary's totals, and in no player's row.
 - **The site's pictures.** A medal's badge is the art pack's file named
   after its id (`web/public/art/medals/<id>.webp` and `@2x`, original
   art, `web/public/art/ART.md`), or the game's own medal from the
   owner's disc where the server has game art
-  ([web-viewer.md](../live/web-viewer.md), `medalKey`). The four ids
-  need four new pieces in the pack; with game art they take the glyphs
-  the HUD line uses (`medal/killing_spree`, `medal/double_kill`,
-  `medal/triple_kill`, `medal/kill_frenzy`).
+  ([web-viewer.md](../live/web-viewer.md), `medalKey`). The disc has no
+  bounce medal, so `medalKey` gives none for the seven ids, and their
+  pack art is drawn from the new medal glyphs of the HUD fonts. Until an
+  id's files land (`PACK_MEDALS` in `web/src/lib/art.ts`), its badge is
+  the medal's name (ART.md, "Pending: the superbounce medals").
 - **Theater.** A film played in the game runs the simulation again,
   and the mode with it when the film's variant turns it on, so the
   lines show as they did (supposed: a mode forced on by
   `H2_SUPERBOUNCE` or `superbounce.set` is not in the film). The film's
   summary carries the counts to the film list and the post-game panels
-  (`theater_ui::adapter`), and the web Theater reads the `Medal` records
-  as it reads the kill medals'.
+  (`theater_ui::adapter`), and the web Theater reads the `Superbounce` and
+  `Bounced` records as it reads the kills, and derives their medals.
 
 ### The agent API
 

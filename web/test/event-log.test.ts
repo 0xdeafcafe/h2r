@@ -9,7 +9,9 @@ const event = (position: number, type: string, stream: string): WireEvent => ({
 
 describe("stats event log", () => {
   test("allows the game record and rank changes", () => {
-    const gameKinds = ["GameStarted", "PlayerJoined", "PlayerLeft", "PlayerKilled", "ScoreChanged", "GameEnded"];
+    const gameKinds = [
+      "GameStarted", "PlayerJoined", "PlayerLeft", "PlayerKilled", "Superbounce", "Bounced", "ScoreChanged", "GameEnded",
+    ];
     expect(Object.keys(STATS_EVENT_KINDS)).toEqual([...gameKinds, "RankChanged"]);
     for (const kind of gameKinds) expect(isStatsEvent(event(1, kind, "game-x"))).toBe(true);
     expect(isStatsEvent(event(1, "RankChanged", "rank-x"))).toBe(true);
@@ -21,6 +23,7 @@ describe("stats event log", () => {
       ["PlayerReported", "report-x"], ["SignedIn", "presence-x"], ["TeamCreated", "team-x"],
       ["PlayerJoined", "session-x"], ["PlayerLeft", "session-x"], ["GameFrame", "game-x"],
       ["RankChanged", "game-x"], ["FutureEvent", "game-x"], ["constructor", "game-x"],
+      ["Superbounce", "session-x"],
     ] as const) expect(isStatsEvent(event(1, type, stream))).toBe(false);
   });
 });

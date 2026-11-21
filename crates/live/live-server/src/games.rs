@@ -779,6 +779,13 @@ impl Live {
                         "event {i}: only the host reports actor kills"
                     )));
                 }
+                // The console that records the game reports every
+                // player's bounces (docs/game/superbounce.md, "Recording").
+                game::SUPERBOUNCE | game::BOUNCED if !by_host => {
+                    return Err(forbidden(format!(
+                        "event {i}: only the host reports superbounces"
+                    )));
+                }
                 game::GAME_ENDED if !by_host => {
                     return Err(forbidden(format!(
                         "event {i}: only the host ends the game; a player leaves with PlayerLeft"
@@ -1401,6 +1408,8 @@ impl Live {
             last_tick: g.last_tick,
             scoreboard: g.scoreboard.clone(),
             kills: g.kills.iter().cloned().collect(),
+            bounces: g.bounces.iter().cloned().collect(),
+            bounced: g.bounced.iter().cloned().collect(),
             winner: g.ended.as_ref().and_then(|e| e.0.winner.clone()),
             end_reason: g.ended.as_ref().map(|e| e.0.reason.clone()),
             position,

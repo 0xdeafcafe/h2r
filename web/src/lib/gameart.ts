@@ -191,7 +191,9 @@ export function levelForExp(exp: number): number {
 }
 
 /** Our derived medals that mean the same as one of the game's. The rest
- *  (opening-act, last-word, payback) have no counterpart and keep the pack's art. */
+ *  (opening-act, last-word, payback) have no counterpart and keep the pack's
+ *  art, and so do the superbounce medals: the disc has none, and their
+ *  picture is new art (ART.md, "Pending: the superbounce medals"). */
 const MEDAL_ALIASES: Record<string, string> = {
   "twofer": "double_kill", "hat-trick": "triple_kill", "full-house": "killtacular", "encore": "kill_frenzy",
   "hot-streak": "killing_spree", "wildfire": "running_riot", "untouchable": "rampage",

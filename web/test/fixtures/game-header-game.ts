@@ -50,6 +50,7 @@ export function fixtureGame(): GameState {
     },
     teams: { 0: 18, 1: 20 },
     kills: [],
+    bounces: [],
     last_tick: 0,
     first_position: 0,
     positions: [],

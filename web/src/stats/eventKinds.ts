@@ -1,12 +1,15 @@
 import type { WireEvent } from "../api/types";
 
 // PlayerJoined and PlayerLeft also occur on Live session streams.
-// Medals are derived from game kills and have no wire event of their own.
+// Medals are derived from game kills, bounces and bounce deaths and have no
+// wire event of their own.
 export const STATS_EVENT_KINDS: Readonly<Record<string, { stream: string; category: string }>> = {
   GameStarted: { stream: "game-", category: "game" },
   PlayerJoined: { stream: "game-", category: "game" },
   PlayerLeft: { stream: "game-", category: "game" },
   PlayerKilled: { stream: "game-", category: "kill" },
+  Superbounce: { stream: "game-", category: "bounce" },
+  Bounced: { stream: "game-", category: "bounce" },
   ScoreChanged: { stream: "game-", category: "score" },
   GameEnded: { stream: "game-", category: "game" },
   RankChanged: { stream: "rank-", category: "score" },

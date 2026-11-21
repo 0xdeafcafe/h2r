@@ -13,6 +13,10 @@ pub const PLAYER_JOINED: &str = "PlayerJoined";
 pub const PLAYER_LEFT: &str = "PlayerLeft";
 pub const PLAYER_KILLED: &str = "PlayerKilled";
 pub const ACTOR_KILLED: &str = "ActorKilled";
+/// A player bounced off a superbounce crease (docs/game/superbounce.md, "Medals").
+pub const SUPERBOUNCE: &str = "Superbounce";
+/// A player died falling out of or through the map while trying a bounce.
+pub const BOUNCED: &str = "Bounced";
 pub const SCORE_CHANGED: &str = "ScoreChanged";
 pub const GAME_FRAME: &str = "GameFrame";
 pub const GAME_ENDED: &str = "GameEnded";
@@ -21,11 +25,13 @@ pub const MAP_OUTLINE_STORED: &str = "MapOutlineStored";
 
 /// The game event types a player's console may append in a batch; the
 /// server writes `GameStarted` (from `POST /v1/games`) and `GameFrame`.
-pub const CLIENT_GAME_EVENTS: [&str; 6] = [
+pub const CLIENT_GAME_EVENTS: [&str; 8] = [
     PLAYER_JOINED,
     PLAYER_LEFT,
     PLAYER_KILLED,
     ACTOR_KILLED,
+    SUPERBOUNCE,
+    BOUNCED,
     SCORE_CHANGED,
     GAME_ENDED,
 ];
@@ -352,6 +358,29 @@ pub struct ActorKilled {
     /// Stable damage-source key from the killing blow.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weapon: Option<String>,
+}
+
+/// A bounce off a superbounce crease, with the count of the chain it is in
+/// (docs/game/superbounce.md, "The rule"). The medals are worked out from
+/// `chain` wherever they are shown (`film::events::medals::bounce_medals`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Superbounce {
+    pub tick: u64,
+    /// The bouncing player's slot.
+    pub player: u32,
+    /// The bounce's place in its chain: 1 for a first bounce.
+    pub chain: u32,
+}
+
+/// A death falling out of or through the map while trying a bounce: the
+/// `bounced` medal. The superbounce mode decides what an attempt is
+/// (docs/game/superbounce.md, "Medals"); the death itself is the
+/// `PlayerKilled` beside it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Bounced {
+    pub tick: u64,
+    /// The player's slot.
+    pub player: u32,
 }
 
 pub const KILL_KINDS: [&str; 4] = ["kill", "suicide", "betrayal", "world"];
@@ -1041,6 +1070,25 @@ pub struct KillRecord {
     pub at: String,
 }
 
+/// A bounce as `GET /v1/games/{id}` lists it: the event data plus where
+/// it is in the log.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BounceRecord {
+    #[serde(flatten)]
+    pub bounce: Superbounce,
+    pub position: u64,
+    pub at: String,
+}
+
+/// A bounce death as `GET /v1/games/{id}` lists it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BouncedRecord {
+    #[serde(flatten)]
+    pub bounced: Bounced,
+    pub position: u64,
+    pub at: String,
+}
+
 /// `GET /v1/games/{id}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GameDetail {
@@ -1058,6 +1106,13 @@ pub struct GameDetail {
     pub scoreboard: Vec<PlayerScore>,
     /// The last 50, oldest first.
     pub kills: Vec<KillRecord>,
+    /// The last 100 superbounces, oldest first; empty in a game with none
+    /// and from servers before bounces.
+    #[serde(default)]
+    pub bounces: Vec<BounceRecord>,
+    /// The last 100 bounce deaths, oldest first.
+    #[serde(default)]
+    pub bounced: Vec<BouncedRecord>,
     pub winner: Option<Winner>,
     pub end_reason: Option<String>,
     pub position: u64,
@@ -1163,6 +1218,21 @@ pub fn validate(kind: &str, data: &Value, players: &[Player]) -> Result<(), Stri
             }
             if d.weapon.as_deref().is_some_and(|w| !valid_id(w)) {
                 return Err("weapon must be a damage-source key".into());
+            }
+        }
+        SUPERBOUNCE => {
+            let d: Superbounce = parse(data)?;
+            if !known(d.player) {
+                return Err("player must be a player of the game".into());
+            }
+            if d.chain == 0 {
+                return Err("chain must be at least 1".into());
+            }
+        }
+        BOUNCED => {
+            let d: Bounced = parse(data)?;
+            if !known(d.player) {
+                return Err("player must be a player of the game".into());
             }
         }
         SCORE_CHANGED => {
@@ -2092,6 +2162,9 @@ mod tests {
                 GAME_ENDED,
                 json!({"tick": 99, "reason": "quit", "winner": null}),
             ),
+            (SUPERBOUNCE, json!({"tick": 9, "player": 1, "chain": 1})),
+            (SUPERBOUNCE, json!({"tick": 9, "player": 0, "chain": 7})),
+            (BOUNCED, json!({"tick": 9, "player": 1})),
         ] {
             assert_eq!(validate(kind, &data, &p), Ok(()), "{kind} {data}");
         }
@@ -2119,6 +2192,12 @@ mod tests {
                 GAME_ENDED,
                 json!({"tick": 9, "reason": "finished", "winner": {"player": 9}}),
             ),
+            (SUPERBOUNCE, json!({"tick": 9, "player": 5, "chain": 1})),
+            (SUPERBOUNCE, json!({"tick": 9, "player": 0, "chain": 0})),
+            (SUPERBOUNCE, json!({"tick": 9, "player": 0})),
+            (SUPERBOUNCE, json!({"player": 0, "chain": 1})),
+            (BOUNCED, json!({"tick": 9, "player": 5})),
+            (BOUNCED, json!({"tick": 9})),
             (GAME_STARTED, json!({})),
             (GAME_FRAME, json!({})),
         ] {

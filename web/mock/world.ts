@@ -85,6 +85,9 @@ interface SimGame {
   started_at: string;
   ended_at: string | null;
   kills: Array<Record<string, unknown>>;
+  /** Superbounces and bounce deaths, as `GET /v1/games/{id}` serves them. */
+  bounces: Array<Record<string, unknown>>;
+  bounced: Array<Record<string, unknown>>;
   winner: { team: number } | { player: number } | null;
   end_reason: string | null;
   frames: Frame[];
@@ -268,7 +271,7 @@ export class World {
         };
       }),
       teams: new Map(team_play ? [[0, 0], [1, 0]] : []),
-      started_at: new Date(this.now).toISOString(), ended_at: null, kills: [], frames: [], winner: null, end_reason: null,
+      started_at: new Date(this.now).toISOString(), ended_at: null, kills: [], bounces: [], bounced: [], frames: [], winner: null, end_reason: null,
       killRate: coop ? 0.05 + n * 0.02 : 0.12 + n * 0.035,
     };
     if (coop) this.campaignEnd.set(id, coop.reason);
@@ -421,6 +424,33 @@ export class World {
     g.kills.push({ ...kd, position: kev.position, at: kev.at });
   }
 
+  /** A superbounce by slot `player`, `chain` into its chain, as the host
+   *  sends it (docs/game/superbounce.md, "Recording"). The simulated games
+   *  have none of their own; tests and dev tools call this. */
+  bounce(g: SimGame, player: number, chain: number) {
+    const data = { tick: g.tick, player, chain };
+    const ev = this.append(`game-${g.id}`, [{ type: "Superbounce", data }], g.host)[0]!;
+    g.bounces.push({ ...data, position: ev.position, at: ev.at });
+  }
+
+  /** Slot `player` dies falling out of the map trying a bounce: a world
+   *  death and the `Bounced` beside it, in one batch. */
+  bounceDeath(g: SimGame, player: number) {
+    const sp = g.players.find((p) => p.p.index === player);
+    if (!sp) return;
+    sp.alive = false;
+    sp.respawnAt = g.tick + 3 * TICKS;
+    sp.score.deaths += 1;
+    const kd = { tick: g.tick, victim: player, kind: "world", weapon: "fall" };
+    const data = { tick: g.tick, player };
+    const [kev, bev] = this.append(`game-${g.id}`, [
+      { type: "PlayerKilled", data: kd },
+      { type: "Bounced", data },
+    ], g.host);
+    g.kills.push({ ...kd, position: kev!.position, at: kev!.at });
+    g.bounced.push({ ...data, position: bev!.position, at: bev!.at });
+  }
+
   /** A campaign player dies to the level's AI: no killer, the AI's weapon. */
   private campaignDeath(g: SimGame) {
     const alive = g.players.filter((p) => p.alive);
@@ -554,7 +584,8 @@ export class World {
     return {
       ...this.gameSummary(g), host: `acct:${g.host.xuid}@${HOST}`, console: g.console, team_play: g.team_play,
       score_limit: g.mode === "campaign" ? null : g.score_limit, time_limit_s: g.mode === "campaign" ? null : g.time_limit_s, tick: 0, last_tick: g.tick, winner: g.winner, end_reason: g.end_reason,
-      scoreboard: g.players.map((p) => ({ ...p.score })), kills: g.kills.slice(-50), position: this.log.length,
+      scoreboard: g.players.map((p) => ({ ...p.score })), kills: g.kills.slice(-50),
+      bounces: g.bounces.slice(-100), bounced: g.bounced.slice(-100), position: this.log.length,
     };
   }
 
