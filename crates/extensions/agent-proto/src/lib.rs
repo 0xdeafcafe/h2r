@@ -870,6 +870,13 @@ pub struct Physics {
     /// character contacts its ground test walks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub support: Option<Support>,
+    /// Bipeds: whether a standing capsule fits at the origin, the test
+    /// that decides whether releasing crouch clears the crouch request.
+    /// The superbounce mode's capsule test against the loaded map's
+    /// collision, while that mode is on and its scan is ready; absent
+    /// otherwise (docs/game/superbounce.md, "Charge").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standing_fits: Option<bool>,
 }
 
 /// A biped's ground support as the engine keeps it (biped `+0x349`,

@@ -306,6 +306,9 @@ struct State {
     deferred: Vec<Deferred>,
     /// Names `world.*` results' tags ([`Agent::set_tag_names`]).
     tag_names: Option<Mutex<Box<dyn TagNames>>>,
+    /// Fills `world.*` results' `physics.standing_fits`
+    /// ([`Agent::set_standing_fits`]).
+    standing_fits: Option<Mutex<Box<dyn crate::reader::StandingFits>>>,
 }
 
 struct Queued {
@@ -758,6 +761,12 @@ impl Agent {
     /// tag names); without it objects carry only the `tag` datum.
     pub fn set_tag_names(&self, names: Box<dyn TagNames>) {
         self.lock().tag_names = Some(Mutex::new(names));
+    }
+
+    /// Where `world.*` results' `physics.standing_fits` comes from (the
+    /// superbounce mode's capsule test); without it the field is absent.
+    pub fn set_standing_fits(&self, fits: Box<dyn crate::reader::StandingFits>) {
+        self.lock().standing_fits = Some(Mutex::new(fits));
     }
 
     #[cfg(test)]
@@ -1588,6 +1597,10 @@ impl State {
         if let Some(names) = &self.tag_names {
             let mut names = names.lock().unwrap_or_else(|e| e.into_inner());
             crate::reader::name_tags(&mut **names, &mut objects);
+        }
+        if let Some(fits) = &self.standing_fits {
+            let mut fits = fits.lock().unwrap_or_else(|e| e.into_inner());
+            crate::reader::fill_standing_fits(&mut **fits, &mut objects);
         }
         Ok(objects)
     }

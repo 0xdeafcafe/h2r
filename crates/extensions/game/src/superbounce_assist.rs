@@ -19,7 +19,7 @@
 //! stick and the button).
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use engine::memory::{GuestMemory, MemFault};
@@ -257,6 +257,51 @@ pub fn plan(spots: &[Spot], body: &Body) -> Option<Plan> {
     })
 }
 
+/// The landing a falling `body` is headed for, for the HUD and the world
+/// ring (docs/game/superbounce.md, "Landings"): of the bounce strips below
+/// it whose stand point the coasting landing ([`predicted_landing`] at
+/// [`fall_time`]) is within [`REACH_RADIUS`] of, the one it lands nearest
+/// the slot of. `on_slot` when it lands inside the slot, `fixable` when it
+/// does not and [`reach`] says the assist can still bring it in, else
+/// `miss`. `None` on the ground, rising, or with no such strip.
+pub fn predict(spots: &[Spot], body: &Body) -> Option<superbounce_mode::Predicted> {
+    use crate::superbounce_charge::{edge_distance_xy, need_of, slot_miss};
+    use superbounce_mode::{Course, Predicted};
+    let vz = body.velocity[2];
+    if !body.airborne || !vz.is_finite() || vz >= 0.0 {
+        return None;
+    }
+    let p = [body.position[0], body.position[1]];
+    let v = [body.velocity[0], body.velocity[1]];
+    let (spot, landing, height, _) = spots
+        .iter()
+        .filter(|s| s.kind == Kind::Bounce)
+        .filter_map(|s| {
+            let height = body.position[2] - s.stand[2];
+            if height < MIN_DROP {
+                return None;
+            }
+            let time = fall_time(height, vz).filter(|&t| t <= MAX_TIME)?;
+            let landing = predicted_landing(p, v, time);
+            let side = (s.stand[0] - landing[0]).hypot(s.stand[1] - landing[1]);
+            (side <= REACH_RADIUS).then(|| (s, landing, height, edge_distance_xy(s, landing)))
+        })
+        .min_by(|a, b| a.3.total_cmp(&b.3))?;
+    let verdict = if slot_miss(spot, landing) <= 0.0 {
+        Course::OnSlot
+    } else if reach(body, spot).is_some() {
+        Course::Fixable
+    } else {
+        Course::Miss
+    };
+    Some(Predicted {
+        at: [landing[0], landing[1], spot.stand[2]],
+        verdict,
+        speed: (vz * vz + 2.0 * GRAVITY * height).sqrt(),
+        need: need_of(spot),
+    })
+}
+
 /// Whether the button is being swallowed: from the first read the assist
 /// engaged on, until the player lets go. Without it the press that began in
 /// the air would reach the game the moment the strip went out of reach (a
@@ -320,6 +365,69 @@ impl Report {
             stick: Some(p.stick),
         }
     }
+}
+
+// ---- the crouch button ----
+
+/// The player's input settings records (`0x51ea18 + 0x1c × player`), whose
+/// bytes 8 to 0x17 map each action slot to the physical button that drives
+/// it (docs/input/controller-layouts.md, "The action table").
+const ACTION_TABLE: u32 = 0x0051_ea18;
+const ACTION_TABLE_STRIDE: u32 = 0x1c;
+const ACTION_SLOTS: u32 = 8;
+/// Crouch is action slot 10 (docs/game/bots.md, "The action from a pad").
+const CROUCH_SLOT: u32 = 10;
+/// The Default layout's crouch button: the left stick's click.
+const DEFAULT_CROUCH_BUTTON: u8 = 14;
+
+/// Whether physical button `index` of the action table (0 to 7 the analog
+/// buttons A, B, X, Y, Black, White, LT, RT; 8 to 15 the digital bits
+/// d-pad up, down, left, right, Start, Back, left and right stick) is down
+/// in `pad`. `None` for an index past 15.
+pub fn button_down(pad: &Gamepad, index: u8) -> Option<bool> {
+    match index {
+        0..=7 => Some(pad.analog[usize::from(index)] >= PRESSED),
+        8..=15 => Some(pad.buttons.0 & (1 << (index - 8)) != 0),
+        _ => None,
+    }
+}
+
+/// The button the player's layout crouches with, from the action table;
+/// the Default layout's when it cannot be read.
+fn crouch_button(memory: Option<&dyn xapi::GuestMemory>) -> u8 {
+    let at = ACTION_TABLE + ACTION_TABLE_STRIDE * PORT + ACTION_SLOTS + CROUCH_SLOT;
+    let mut b = [0u8; 1];
+    match memory.map(|m| m.read(at, &mut b)) {
+        Some(Ok(())) if b[0] <= 15 => b[0],
+        _ => DEFAULT_CROUCH_BUTTON,
+    }
+}
+
+/// The crouch button as the guest last read it on [`PORT`]:
+/// [`CROUCH_UNKNOWN`], [`CROUCH_UP`] or [`CROUCH_DOWN`].
+static CROUCH: AtomicU8 = AtomicU8::new(CROUCH_UNKNOWN);
+const CROUCH_UNKNOWN: u8 = 0;
+const CROUCH_UP: u8 = 1;
+const CROUCH_DOWN: u8 = 2;
+
+/// Whether the first player holds crouch in the pad the guest last read,
+/// with the agent's steps and before a replay's; `None` when the tap is
+/// not installed or the mode is off. The charge's `held` phase reads it.
+pub fn crouch_held() -> Option<bool> {
+    match CROUCH.load(Ordering::Relaxed) {
+        CROUCH_UP => Some(false),
+        CROUCH_DOWN => Some(true),
+        _ => None,
+    }
+}
+
+fn publish_crouch(held: Option<bool>) {
+    let v = match held {
+        Some(true) => CROUCH_DOWN,
+        Some(false) => CROUCH_UP,
+        None => CROUCH_UNKNOWN,
+    };
+    CROUCH.store(v, Ordering::Relaxed);
 }
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
@@ -473,6 +581,7 @@ impl AssistTap {
             if self.live || self.latch.0 {
                 self.release();
             }
+            publish_crouch(None);
             return;
         }
         if status != 0 || self.ports.get(&handle) != Some(&PORT) {
@@ -482,6 +591,9 @@ impl AssistTap {
             .try_into()
             .expect("a packet is a number and a gamepad");
         let mut pad = Gamepad::from_bytes(raw);
+        // The charge's `held` phase: the crouch button of the player's own
+        // layout, in the pad as the guest gets it.
+        publish_crouch(button_down(&pad, crouch_button(memory)));
         let held = pad.analog(BUTTON) >= PRESSED || TEST_HOLD.load(Ordering::Relaxed);
         if !held && !self.latch.0 {
             self.release();
@@ -963,5 +1075,57 @@ mod tests {
         assert_eq!(Report::EMPTY, Report::default());
         assert!(no_params(&serde_json::json!({})).is_ok());
         assert!(no_params(&serde_json::json!({"hold": true})).is_err());
+    }
+
+    #[test]
+    fn the_predicted_landing_says_on_the_slot_fixable_or_a_miss() {
+        use superbounce_mode::Course;
+        let spots = [spot_at([0.0, 0.0, 0.0], [0.0, 0.0])];
+        let on = predict(&spots, &falling([0.0, 0.0, 2.0], [0.0, 0.0, -1.0])).unwrap();
+        assert_eq!(on.verdict, Course::OnSlot);
+        assert_eq!(on.at, [0.0, 0.0, 0.0]);
+        near(on.speed, (1.0 + 2.0 * GRAVITY * 2.0).sqrt(), 1e-5);
+        near(on.need, (9.0 + 2.0 * GRAVITY * 1.0).sqrt(), 1e-5);
+        // A metre off: the assist can still bring it in.
+        let off = predict(&spots, &falling([1.0, 0.0, 2.0], [0.0, 0.0, -1.0])).unwrap();
+        assert_eq!(off.verdict, Course::Fixable);
+        // Nearly 3 off with a short fall left: it cannot.
+        let far = predict(&spots, &falling([2.8, 0.0, 0.3], [0.0, 0.0, -1.0])).unwrap();
+        assert_eq!(far.verdict, Course::Miss);
+        // Rising, on the ground, under the strip or past its reach: none.
+        assert_eq!(
+            predict(&spots, &falling([0.0, 0.0, 2.0], [0.0, 0.0, 1.0])),
+            None
+        );
+        let ground = Body {
+            airborne: false,
+            ..falling([0.0, 0.0, 2.0], [0.0, 0.0, -1.0])
+        };
+        assert_eq!(predict(&spots, &ground), None);
+        assert_eq!(
+            predict(&spots, &falling([0.0, 0.0, -1.0], [0.0, 0.0, -1.0])),
+            None
+        );
+        assert_eq!(
+            predict(&spots, &falling([5.0, 0.0, 2.0], [0.0, 0.0, -1.0])),
+            None
+        );
+    }
+
+    #[test]
+    fn the_crouch_button_is_read_by_the_layouts_index() {
+        let mut pad = Gamepad::default();
+        assert_eq!(button_down(&pad, DEFAULT_CROUCH_BUTTON), Some(false));
+        pad.buttons = input::gamepad::Buttons::LEFT_THUMB;
+        assert_eq!(button_down(&pad, DEFAULT_CROUCH_BUTTON), Some(true));
+        assert_eq!(button_down(&pad, 15), Some(false));
+        pad.analog[AnalogButton::B.index()] = PRESSED;
+        assert_eq!(button_down(&pad, 1), Some(true));
+        assert_eq!(button_down(&pad, 16), None);
+        assert_eq!(crouch_button(None), DEFAULT_CROUCH_BUTTON);
+        publish_crouch(Some(true));
+        assert_eq!(crouch_held(), Some(true));
+        publish_crouch(None);
+        assert_eq!(crouch_held(), None);
     }
 }

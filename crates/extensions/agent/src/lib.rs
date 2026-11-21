@@ -91,8 +91,8 @@ pub use exec::{
 pub use live::CameraSource;
 pub use loads::{LoadTracker, TimelineTotals, TotalsSource};
 pub use reader::{
-    GameStatus, GuestReader, Reader, TagNames, actor_object, machine_object, name_tags,
-    player_object, thing_object, vehicle_object,
+    GameStatus, GuestReader, Reader, StandingFits, TagNames, actor_object, fill_standing_fits,
+    machine_object, name_tags, player_object, thing_object, vehicle_object,
 };
 pub use server::Server;
 pub use tap::{AgentTap, Chain, Input, MenuPad, MenuReceipt, RoutePad, RoutePorts, pad_steps};

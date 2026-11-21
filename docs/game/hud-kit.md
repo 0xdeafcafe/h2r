@@ -622,9 +622,12 @@ and nothing invented:
 | primed | the word is −3 | 1 less the still ticks over 38 | lit |
 | lost | the word left −3 | 0 for one second, then hidden | inactive |
 
-"The standing capsule fits" is the engine's own answer, output bit 1 of
-the character physics update (E `0x001e55d0`,
-[superbounce.md](superbounce.md), "Forced crouch"), not a test of ours.
+"The standing capsule fits" is the engine's own answer for `held` (the
+request stays set with the button up only while it does not fit), and
+the mode's capsule test against the map's collision for `under`: the
+engine's bit (output bit 1 of the character physics update, E
+`0x001e55d0`) is kept in no field found so far ([superbounce.md](superbounce.md),
+"Charge").
 The still ticks count up while the body's speed is under 0.03 units/s
 and return to 0 when it moves; 38 is the measured time to sleep (S: the
 speed limit, and that Havok counts the same ticks). A crouch while
