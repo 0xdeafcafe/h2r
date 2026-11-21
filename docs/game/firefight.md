@@ -350,12 +350,30 @@ limits").
   down, on top of the killer's points (`ScoreReason::Assist`).
 - In the game: the statborg holds each player's score, so the scoreboard
   and the carnage report need nothing new.
-- In the stats stream: each `Score` command is a film event
-  (`live_proto::film::events::Event::ObjectiveScore` with
-  `game_type: "firefight"`), and `ActorKilled` is its own event. The
-  Live projection gains a Firefight summary: set, rounds cleared, score
-  by player, kills by class, lives used.
-- Firefight scores do not enter ranks. Bots stay game-only, as today.
+- In the stats stream: the host's `Host::post_tick` pairs each `Score`
+  command with the class of the kill it was for (`Credit`) and, on
+  `Finish`, makes the result (`Ended`: the set's name, the outcome,
+  rounds cleared, respawns issued). The runtime reports each
+  ([`runtime::Report`]) to Live telemetry, which writes two public game
+  events the server takes only from the game's host
+  (`live_proto::firefight`): `FirefightScore` (`tick`, `player` slot,
+  `points`, `reason` `kill` or `assist`, `class` on a kill) and
+  `FirefightEnded` (`tick`, `set`, `outcome`, `rounds_cleared`,
+  `lives_used`). In the film the tracker turns each `FirefightScore`
+  into a `live_proto::film::events::Event::FirefightScore` and the
+  player's running total into an `ObjectiveScore` with
+  `game_type: "firefight"`. `ActorKilled` stays its own event.
+- The Live projection (`live-server`'s `stats`, which the Worker
+  composes, so both homes give the same answer) folds them into the
+  summary's `firefight` section: finished matches and wins, rounds
+  cleared, lives used, points, matches by wave set, kills by class, and
+  a row per account (score, kills, assists, matches). A bot has no row;
+  its points and kills count in the totals and classes. A second
+  `FirefightEnded` for one game counts nothing. The stats home shows the
+  section once a match has been played in the window.
+- Firefight scores do not enter ranks: a game that carries either event
+  is never ranked (`ranks::rank_game`). Bots stay game-only, as today.
+  A Firefight match is not multiplayer's kills or deaths.
 
 ### Lives, rounds and skulls
 
@@ -568,7 +586,7 @@ are slices of [ai-networking.md](ai-networking.md); P numbers its probes.
 | **FF3** | The kit, stage 1: sectors, drop zones, zones and firing positions, squad slots, authored Elite characters, the package and its id; the `firefight-probe` test map recipe (one squad of two) | L | nothing | `crates/tools/firefight-kit/`, `crates/apps/cli/` (`h2 firefight kit`), the test-map recipe list ([test-maps.md](test-maps.md)) | `two_builds_of_one_map_are_byte_equal`, `squad_blocks_read_back_through_h1campaign`, `every_drop_zone_has_a_path_to_the_middle`, `a_map_without_headroom_is_refused_with_the_cost`, `the_probe_recipe_places_one_squad`, `the_kit_authors_one_named_hunt_order_over_every_area`, `hunt_spans_every_zone_and_refuses_an_arena_without_areas` | on invented maps the kit's blocks read back; the coordinator's build on a retail map and probe P2 go in notes |
 | **FF4** | The host runtime over the `Game` interface: the AI switch, team setup, `Observed`, applying commands; then the squad, score and game-end entries behind it ("Guest boundary" gives each one's state); the `Game` over the guest bodies and the `firefight` feature at the tick boundary | M | FF2, FF3, AN6, P2 | `crates/extensions/game/src/firefight/{host,guest,runtime,feature}.rs`, `crates/extensions/game/src/actor_net/squads.rs`, `points.rs`, `crates/apps/boot/src/registration.rs`, `crates/extensions/game/src/render_thread.rs` | `place_calls_the_squad_entry_with_class_and_count`, `a_client_applies_no_command`, `score_credits_the_killer`, `entries_apply_at_their_tick_in_seq_order`, `a_map_without_the_kit_refuses_the_mode`, `a_scripted_match_makes_the_expected_engine_calls_in_order`, `a_map_without_the_kit_is_refused_with_its_reason`, `an_operator_command_is_the_engine_call_before_the_next_tick`, `a_kit_map_starts_the_host_switches_ai_on_and_looks_at_each_zone`, `the_plan_builds_with_every_hook_switch_on` | over a fake game, a scripted match produces the expected engine calls in order; over invented guest memory, the runtime makes them through the guest bodies before the tick; boot's plan builds with the feature on |
 | **FF5** | Agent API: `firefight.state`, `firefight.command`, `firefight.kit`; `lives` and `score` on `sim.view`'s `player` root | S | FF4 | `crates/extensions/agent/src/firefight.rs`, `crates/extensions/agent-proto/src/firefight.rs`, `crates/extensions/agent/src/sim/state.rs`, [agent-api.md](../runtime/agent-api.md#firefight) | `state_reports_the_director`, `command_is_refused_on_a_client_and_in_playback`, `kit_reads_the_loaded_scenario`, `the_view_reports_each_players_lives`, `the_view_reports_each_players_score` | the methods answer over a fake game |
-| **FF6** | Stats: `Score` and `ActorKilled` to film events, the Live projection's Firefight summary, the web stats page | M | FF2, AN6 | `crates/live/live-proto/src/{film/events,firefight}.rs`, `crates/live/live-server/`, `crates/live/live-worker/`, `web/` | `a_scripted_match_projects_to_the_golden_summary`, `firefight_scores_do_not_touch_ranks`, the parity suite | both homes give the same summary |
+| **FF6** | Stats: `Score` and `ActorKilled` to film events, the Live projection's Firefight summary, the web stats page | M | FF2, AN6 | `crates/live/live-proto/src/{film/events,firefight}.rs`, `crates/live/live-server/`, `crates/live/live-worker/`, `web/` | `a_scripted_match_projects_to_the_golden_summary`, `the_firefight_summary_is_the_golden_one_and_players_cannot_write_it`, `the_firefight_summary_is_the_same_on_the_worker`, `firefight_scores_do_not_touch_ranks`, `credits_pair_each_kill_with_its_class_and_assist`, `a_firefight_score_is_a_game_event_and_a_running_objective_score_in_the_film`, `firefight_scores_become_running_objective_scores`, `reads the server's golden summary as it is` (web) | both homes give the same summary |
 | **FF7** | Skulls: the host-only AI set, the round schedule, multipliers | S | FF4 | `crates/extensions/game/src/skulls_mp.rs`, `crates/formats/firefight/tests/skulls.rs` | `ai_skulls_apply_on_the_host_only`, `a_round_switches_its_skulls_on`, `multipliers_multiply` | skulls.md's table gains a Firefight column, each cell with a test |
 | **FF8** | HUD and screens: wave banner, enemies left, lives, the Game Setup row and its options page | M | FF2, AN4, AN5 | `crates/extensions/game/src/firefight/{hud,options}.rs`, `crates/extensions/game/src/ui_kit/` | `Page` tables for the options page (`the_options_page_steps_and_opens_pickers`); `the_hud_reads_only_the_mode_blob`; the kit's layout checks in every state (`every_state_passes_the_layout_checks`) | a client with only the mode blob draws the same HUD as the host |
 | **FF9** | Live: the variant bytes, `NewSession.firefight`, 1-to-4-player hopper entries, the lobby's local kit check | M | FF1 | `crates/formats/variants/src/ext.rs`, `crates/live/live-proto/`, `crates/live/live-server/`, `crates/live/live-worker/`, `crates/tools/hopper-edit/` | `the_mode_bytes_round_trip_and_leave_the_crc_valid`, `a_joiner_without_the_kit_map_is_refused_before_load`, `first_playlist_accepts_one_to_four_players`, `an_oversize_def_is_refused`, the parity suite | both homes offer 1 to 4 players and refuse unsupported sizes and missing local kits. A retail variant is unchanged |
