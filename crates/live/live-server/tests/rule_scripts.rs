@@ -127,9 +127,11 @@ async fn builtins_are_listed_with_their_source() {
     let r = h.get("/v1/rules/builtin").await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.error());
     let v = r.json();
-    assert_eq!(v["items"][0]["name"], "Slayer");
-    assert_eq!(v["items"][0]["engine"], 2);
-    assert_eq!(v["items"][0]["source"], rules::builtin::SLAYER);
+    let items = v["items"].as_array().expect("items");
+    assert_eq!(items.len(), rules::builtin::ALL.len());
+    let slayer = items.iter().find(|i| i["name"] == "Slayer").expect("Slayer is listed");
+    assert_eq!(slayer["engine"], 2);
+    assert_eq!(slayer["source"], rules::builtin::SLAYER);
 }
 
 #[tokio::test]

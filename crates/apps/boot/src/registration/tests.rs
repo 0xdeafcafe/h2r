@@ -518,7 +518,7 @@ fn the_rules_runtime_is_planned_only_when_named() {
             .unwrap()
             .features
             .iter()
-            .any(|f| f.id == crate::rules::feature::FEATURE)
+            .any(|f| f.id == crate::rules::feature::FEATURE && f.off.is_none())
     };
     assert!(!has(""));
     assert!(has("rules"));
