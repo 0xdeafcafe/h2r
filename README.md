@@ -1,8 +1,5 @@
 <p align="center">
-  <picture>
-    <source media="(min-resolution: 2dppx)" srcset="docs/images/readme/header@2x.webp">
-    <img src="docs/images/readme/header.webp" alt="A panorama of Old Mombasa, Delta Approach and Ascension" width="100%">
-  </picture>
+  <img src="docs/images/readme/header.webp" alt="A panorama of Old Mombasa, Delta Approach and Ascension" width="100%">
 </p>
 
 # h2recomp
@@ -12,7 +9,7 @@ Halo 2, the original Xbox one, recompiled to native code and running on a Mac, a
 The retail executable comes off your own disc, all 18,700-odd functions of it get lifted to C, and clang builds the lot into a native library. A Rust runtime runs that library in place of the Xbox, with the kernel, Direct3D and DirectSound swapped out underneath it and a native GPU renderer drawing the frame. Then I kept going: Xbox Live is back, there are bots, and Halo 1's maps run in the Halo 2 engine.
 
 <p align="center">
-  <img src="docs/images/readme/gameplay.webp" alt="Looping gameplay footage with slow camera pans through Old Mombasa, Delta Approach and Ascension" width="100%">
+  <img src="docs/images/readme/montage.webp" alt="Old Mombasa, Delta Approach and Ascension at 4x render scale, crossfading" width="100%">
 </p>
 
 You'll need your own legally obtained copy of the game. The documentation images and gameplay footage are rendered from my disc by scripts and kept in Git LFS. [How the README media is made](CONTRIBUTING.md#readme-media).
