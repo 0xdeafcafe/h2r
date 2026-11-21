@@ -1535,6 +1535,8 @@ fn a_stale_forge_object_is_a_named_refusal_before_any_guest_call() {
     );
     assert!(calls.is_empty());
     assert!(out.unwrap_err().message.starts_with(crate::forge::local::OBJECT_GONE));
+}
+
 #[test]
 fn probe_animation_uses_the_units_graph_and_resolves_the_engine_selection() {
     use engine::tags::{GroupTag, TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL};

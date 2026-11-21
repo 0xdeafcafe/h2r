@@ -74,6 +74,7 @@ impl LibraryEntry {
             },
             version: 4,
             runtime_stamp: compat.abi,
+            simulation_hooks: Some(compat.hooks).filter(|h| !h.is_empty()),
             xbe_sha256: compat.xbe,
             guest_image: None,
             ticks_per_second: Some(header[12].into()),
