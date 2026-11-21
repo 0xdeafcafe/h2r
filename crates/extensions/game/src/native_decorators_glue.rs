@@ -324,6 +324,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 continue;
             }
             let Some((device, queue)) = ready.upload_device.as_ref() else { continue };
+            let _handoff = timeline::setup::dispatch();
             let Some(worker) = self.worker.get_or_init(material_worker) else { continue };
             let _capture = timeline::native::Timer::start(timeline::native::Stage::World, timeline::native::Metric::ExtractNs);
             let set = match set_geometry_with(&read, m.set, |at, len| {
