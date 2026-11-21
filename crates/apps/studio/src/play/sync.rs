@@ -272,6 +272,44 @@ mod tests {
     }
 
     #[test]
+    fn undo_and_redo_compare_the_layout_of_the_loaded_copy() {
+        let (_t, mut s) = session("sync-copy-layout");
+        let original = Baseline::source(s.scenario().unwrap());
+        let kind = BlockKind::Weapons;
+        s.remove_entry(kind, 0).unwrap();
+        s.add_entry(kind, None).unwrap();
+
+        let copy = Baseline::of(s.scenario().unwrap());
+        let from_source = diff(&original, s.scenario().unwrap());
+        assert_eq!(from_source.reload, [kind]);
+        assert!(from_source.writes.is_empty());
+        assert_eq!(diff(&copy, s.scenario().unwrap()), Diff::default());
+
+        assert!(s.undo());
+        assert!(s.undo());
+        assert_eq!(diff(&original, s.scenario().unwrap()), Diff::default());
+        let from_copy = diff(&copy, s.scenario().unwrap());
+        assert_eq!(from_copy.reload, [kind]);
+        assert!(from_copy.writes.is_empty());
+
+        assert!(s.redo());
+        assert!(s.redo());
+        assert_eq!(diff(&copy, s.scenario().unwrap()), Diff::default());
+        s.apply(Command::set(
+            kind,
+            0,
+            "position",
+            scenario_edit::Value::Vec3([11.0, 12.0, 13.0]),
+        ))
+        .unwrap();
+        let d = diff(&copy, s.scenario().unwrap());
+        assert!(d.reload.is_empty());
+        assert_eq!(d.writes.len(), 1);
+        assert_eq!(d.writes[0].block, kind);
+        assert_eq!(d.writes[0].index, 0);
+    }
+
+    #[test]
     fn observed_bytes_update_partial_placement_fields_across_slots() {
         let (_t, s) = session("sync-observe");
         let scenario = s.scenario().unwrap();

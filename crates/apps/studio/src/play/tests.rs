@@ -187,6 +187,32 @@ fn a_moved_placement_is_written_to_the_games_scenario() {
 }
 
 #[test]
+fn replacing_a_placement_only_pokes_other_blocks() {
+    let (_t, game, mut app, mut play) = paired("replace-slot", "example", SessionKind::Local);
+    let kind = BlockKind::Weapons;
+    app.session.remove_entry(kind, 0).unwrap();
+    app.session.add_entry(kind, None).unwrap();
+    move_flag(&mut app, [17.0, 18.0, 19.0]);
+
+    play.apply_edits(&mut app, Apply::Send).unwrap();
+    until(&mut play, &mut app, "one flag write", |p, a| {
+        p.edits.sent.is_none() && !game.calls("edit.batch").is_empty()
+            && a.pairing.pending.iter().all(|row| row["class"] == "Reload")
+    });
+    let calls = game.calls("edit.batch");
+    assert_eq!(calls.len(), 1);
+    let writes = calls[0]["writes"].as_array().unwrap();
+    assert_eq!(writes.len(), 1);
+    let flags = scenario_edit::layout::block(BlockKind::NetgameFlags);
+    assert_eq!(
+        writes[0]["path"],
+        sync::path(flags.kind, 0, flags.field("position").unwrap())
+    );
+    assert_eq!(app.pairing.pending.len(), 1);
+    assert_eq!(app.pairing.pending[0]["path"], "Weapons");
+}
+
+#[test]
 fn teleport_and_spawn_move_the_player() {
     let (_t, game, mut app, mut play) = paired("tp", "example", SessionKind::MpHost);
     app.session.camera_mut().target = [3.0, 4.0, 5.0];
