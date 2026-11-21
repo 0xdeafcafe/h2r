@@ -1,7 +1,7 @@
 # Forge monitor appearance
 
-Status: Design. Nothing here is built: the monitor is a camera with no model, and nobody else can see it.
-Code: `crates/extensions/game/src/forge_controls/render.rs` (the parked biped and the monitor's view), `crates/extensions/forge/src/camera.rs` (the pose), `crates/extensions/game/src/ui_kit/forge.rs` (the pages). Tests: none yet; each slice names its own.
+Status: Partly built (ML1 to ML3). The look, its profile keys, its refusals, the census, the marker's projection and the offline agent methods exist; no model is drawn, no page edits a look and nobody else can see a monitor.
+Code: `crates/extensions/forge/src/look.rs` and `look/` (the look, `census`, `saved`), `crates/apps/cli/src/forge_looks.rs` (the disc reader behind `h2 forge looks`), `crates/extensions/forge/src/look/monitors.rs` (the seat's look and the agent methods' rules), `crates/extensions/game/src/forge_glue/marker.rs` (the marker), `crates/extensions/game/src/forge_controls/render.rs` (the parked biped and the monitor's view), `crates/extensions/forge/src/camera.rs` (the pose), `crates/extensions/game/src/ui_kit/forge.rs` (the pages). Tests: `look/tests.rs`, `forge_looks.rs`, `forge_glue/marker.rs` and `crates/extensions/agent/src/forge/tests.rs`; each later slice names its own.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
 What a player looks like while they fly as a monitor in a Forge session:
@@ -55,10 +55,17 @@ MonitorLook
   light_colour: 0..17   palette index
 ```
 
-- `forge::look` (new, in `crates/extensions/forge`) owns the type, its
+- `forge::look` (in `crates/extensions/forge`) owns the type, its
   bounds, its canonical bytes (canonical JSON through
-  `content::canonicalize`, as the document) and `validate`. It has no
-  guest, GPU or disc dependency.
+  `content::canonicalize`, as the document, with the variant left out
+  when absent) and `validate`. It has no guest, GPU or disc dependency.
+- A model key and a variant name are 1 to 32 and 1 to 64 characters of
+  `a-z`, `0-9` and `_`. The marker has no variant, tint or light, so a
+  marker look with any of them is `monitor_look_invalid`; choosing the
+  marker from a disc model clears them.
+- A look is changed by a `Patch` of named fields (`look::apply`): the
+  bounds, then the catalogue, then the locks. A field the model locks is
+  refused as `monitor_look_locked` when the patch would change it.
 - Palette indices are the retail player palette's: 18 colours
   (**Code**, `live_telemetry::layout::PALETTE_COLOURS`). Their RGB is
   read from the loaded map's globals at run time, the block
@@ -89,13 +96,15 @@ needs no Rebuild and works on a map with no kit.
 models this machine can draw:
 
 1. Walk the campaign maps the disc mounts. For each `bipd` tag, take
-   its species key by `live_models::species_of` (the tag's directory
-   name) and keep it when the key is in `forge::look::SPECIES`, a short
-   list in code matched against names read at run time, as
-   `live_models::SPECIES` is.
+   its species key by `species_of` (the tag's directory name). Every
+   campaign biped is a candidate, flying or not, and the player
+   bipeds are included. A tag whose directory is not a key, and the key
+   `marker`, are listed as skipped with the reason.
 2. Where several tags share a key, pick one by `choose_bipeds`' rule
    (the tag named like its directory, else the one on the most maps,
-   else the shortest name).
+   else the shortest name). `species_of` and `choose_bipeds` are
+   `forge::look::census`'s; `live_models` calls them, so the Live art
+   extractor and the census agree on a species.
 3. Resolve it: `Context::resolve_object` gives the `hlmt`, its render
    model and its variants ([objects.md](../formats/objects.md),
    "Resolver").
@@ -104,9 +113,20 @@ models this machine can draw:
    whether any material has a change-colour map, whether the object
    attaches a light, and the node and triangle counts.
 
-The catalogue is cached by the set of source map hashes. An entry is
-identified across machines by `(key, source map SHA-256)`, never by a
-tag index.
+The rules, the cache and the report are `forge::look::census`, over a
+`Disc` trait (campaign maps with their hashes, the biped tags of a map,
+one tag described). `crates/apps/cli/src/forge_looks.rs` implements it
+over the user's disc: `Context::resolve_object` for the variants and the
+attached light, `live_models::read_source` for the nodes, triangles and
+change-colour maps. A tag or variant the census cannot list is a
+`skipped` row with its reason, never dropped.
+
+The census is cached under `<data root>/cache` by the set of source map
+hashes (`forge-looks-<key>.json`), and the latest one is also written as
+`forge-looks.json`, the file the game reads as its catalogue. A game
+with no `forge-looks.json` has an empty catalogue and says why (the
+`catalogue_note` of `forge.look`). An entry is identified across
+machines by `(key, source map SHA-256)`, never by a tag index.
 
 **Variants.** A model with more than one named variant gets a
 **Variant** row. A variant's sections come from
@@ -115,6 +135,17 @@ lists several permutations the look takes the one with the highest
 probability, the first on a tie (**Design**; the game draws by
 `0x0016dad0`, which is not reproduced, objects.md). Damage states are
 never chosen.
+
+**The marker.** `forge_glue::marker::Marker` is the ring: its centre is
+the monitor's position projected through the frame's world camera by the
+function the gizmo's axes use (`gizmo::pixel_of`), its radius is a fixed
+world radius projected the same way, and its label point sits above the
+ring. `Marker::paint` draws the ring into the HUD canvas behind the
+reticle and panels, in the primary colour read from the map's player
+colours (`pad_lightbar::palette_rgb`). The name is drawn by the
+compositor's text path at the label point. Nothing draws a marker yet:
+a monitor never draws its own, and no other seat exists until the
+session channel (ML7).
 
 **Pose.** The body sits at the camera's position, turned to its yaw and
 pitch, in the model's rest pose, with a slow vertical bob computed from
@@ -214,15 +245,28 @@ monitor_light = 1
 monitor_light_colour = 3
 ```
 
-- Each key is a `settings::Def` with `Scope::View`: it changes
-  presentation only.
+- The five numeric keys (`monitor_primary`, `monitor_secondary`,
+  `monitor_tint`, `monitor_light`, `monitor_light_colour`) are
+  `settings::Def`s with `Scope::View`: they change presentation only.
+  Tint and light are choices (`none light medium strong`, `off dim
+  bright`) and are written by name. They are in `forge::look::saved::DEFS`
+  and listed in `setting_defs::ALL`, with no menu row, environment
+  variable or flag.
+- The three names (`monitor_model`, `monitor_source`, `monitor_variant`)
+  are read and written as text through `Store::profile_text` and
+  `profile_text_set`, because a `Def` holds only a bool or a whole
+  number. An empty text is "none".
+- A missing key is its default: the colours are the seat's colour, tint
+  and light are none and off.
 - The file follows the account through cloud saves with the other
   per-profile settings ([live-cloud-saves.md](../live/live-cloud-saves.md)).
-- A saved look whose model this machine's census lacks is not replaced.
-  It is kept in the file, the session starts with the marker, and the
-  HUD strip and the page say why once ("Sentinel needs a campaign map
-  this install does not have"). An out-of-range value is reported by
-  key, as any setting is.
+- A saved look whose model this machine's census lacks, or has from
+  another source map, is not replaced. It is kept in the file, the
+  session starts with the marker in the saved colours, and the HUD strip
+  and the page say why once ("Sentinel needs a campaign map this install
+  does not have"). A variant the model no longer has is said the same
+  way. An out-of-range value is reported by key, as any setting is, and
+  a bad name is reported by key; neither is rewritten.
 
 ### Other players
 
@@ -250,10 +294,10 @@ pose:   {seat, position, yaw, pitch, monitor: bool, held: OpId?}
 
 | Refusal | When |
 |---|---|
-| `monitor_look_invalid` | a field out of bounds, an unknown key, a variant the model lacks |
+| `monitor_look_invalid` `{field, reason}` | a field out of bounds, an unknown key, a model or variant the catalogue lacks |
 | `monitor_look_source_missing` `{machine, map}` | a machine in the session does not hold the model's source map at that hash |
 | `monitor_look_renderer` `{machine}` | a machine in the session runs without the native renderer |
-| `monitor_look_locked` `{field}` | the host set team colours and the look changes primary |
+| `monitor_look_locked` `{field, reason}` | the look changes a field the model or the session locks: the host's team colours lock primary, a model with no colour areas locks both colours, one variant locks the variant, the marker locks variant, tint and light |
 | `monitor_look_version` | at join: the joiner's look version is not the host's; the join is refused before the map loads |
 | `monitor_look_no_session` | a set outside a Forge session through the agent API (the menu writes the profile instead) |
 
@@ -319,18 +363,24 @@ starts with a subtype byte: 0 is a log entry, 1 a look, 2 a pose.
 ## Interfaces
 
 **Agent API** (game), in [agent-api.md](../runtime/agent-api.md),
-"Local Forge session", when built. The methods are added because every
-later look test, lane and tool reads and sets looks through them.
+"Local Forge session". Every look test, lane and tool reads and sets
+looks through these. They are in `crates/extensions/agent/src/forge/local.rs`
+and ride the `forge` feature, like the rest of that section.
 
 | Method | Access | Parameters | Result |
 |---|---|---|---|
-| `forge.look` | read | `{seat?}` | `{look, drawn_as, saved, catalogue: [{key, name, source, sha256, variants, colours, light, available, refusal?}], locks}`; with no session, the profile's saved look and this machine's catalogue |
-| `forge.look.set` | act | any of the look's fields; `reset: true` | `{look}` as accepted, or the refusal with its code and fields |
-| `forge.look.preview` | act | `{look, path?, size?}` | `{path, width, height}`: the preview target as a PNG under the data root, `NO_GPU` where there is none |
-| `forge.status` | read | | gains `monitors: [{seat, name, monitor, pose, look, drawn_as, seen_ticks_ago}]` |
+| `forge.look` | read | `{seat?}` | `{session, look, drawn_as, saved, catalogue: [{key, name, source, sha256, variants, colours, light, available, refusal?}], locks}`; with no session, the profile's saved look and this machine's catalogue |
+| `forge.look.set` | act | any of the look's fields; `reset: true`; `save: true` | `{look, changed, saved, drawn_as}` as accepted, or the refusal with its code and fields |
+| `forge.status.monitors` | read | | `{monitors: [{seat, name, monitor, pose, look, drawn_as, peers_see, seen_ticks_ago}]}` |
+| `forge.look.preview` | act | `{look, path?, size?}` | `{path, width, height}`: the preview target as a PNG under the data root, `NO_GPU` where there is none (ML6) |
 
 `drawn_as` is `model`, `marker` or `hidden`, with the reason when it is
-not what the look asks for. `ui.screen` reports the `forge.look` page
+not what the look asks for. `peers_see` is the same for another
+machine. A set changes the session's look; it writes the profile only
+with `save: true`, so a test does not rewrite the player's settings. The
+set methods speak for the profile signed in on local slot 0 and take its
+primary colour as the seat's colour; with no profile that is the
+`default` profile and palette colour 0. `ui.screen` reports the `forge.look` page
 and its `Scene3d` widget by id like any kit page.
 
 **CLI.** `h2 forge looks [--disc <iso>]` prints the census. `h2 ui
@@ -368,9 +418,8 @@ preview target.
 - Imported models ([forge-features.md](forge-features.md), "Character
   import") are not look sources in this design. They are skins on a
   chassis, and a monitor has no chassis until F10.
-- The census never offers a model from a multiplayer map: none is known
-  to hold a flying biped (**S**, below), and the player bipeds are not
-  monitor looks.
+- The census asks only campaign maps, so it never offers a model from a
+  multiplayer map.
 - At most 16 presentation bodies and 16 host lights exist, one a seat.
 - The look is not sent to Live and does not appear on a stats page or
   in the web viewer. A shared film carries it in its Forge records,
@@ -395,33 +444,35 @@ data.
 | **ML9** | The lobby row and team colours | S | F14, ML6 | the lobby opens the page; the team lock holds and names itself |
 | **ML10** | A real body's look: the Bodies heading, the `body` op's colours, locked rows | M | F10, ML6 | the op writes the unit's change colours over a fake game and folds through the log; two fake peers hash alike |
 
-ML1, ML2 and ML3 can start at once. ML4 is the first that needs the
+ML1, ML2 and ML3 are built. ML4 is the first that needs the
 native renderer's object path. ML7 and ML8 wait for F5; ML9 for F14;
 ML10 for F10.
 
 ## Decisions
 
-For the owner. The design above follows the first option of each.
+The owner's choices, each with the alternative not taken.
 
-1. **Presentation body or real body first.** A disc model drawn by the
-   host process (no transplant, no Rebuild, ML4), or wait for F10's
-   transplanted biped. The first is what the page builds on.
-2. **A peer that cannot draw a look.** Refuse the choice and reset on
-   join with a notice, or refuse that peer's join, as a monitor body's
-   missing map does.
-3. **Which models.** Flying machines only (the Sentinel family and the
-   monitor), or any campaign biped the census finds.
-4. **Default colours.** The seat's colour, or the profile's own colours
-   once their location is validated
+1. **A presentation body, not a real body first.** A disc model is drawn
+   by the host process from the disc (no transplant, no Rebuild, ML4).
+   Waiting for F10's transplanted biped is not taken; F10 adds a real
+   body beside it.
+2. **A peer that cannot draw a look.** The choice is refused, and a
+   joiner who cannot draw a look in use resets that seat on join with a
+   notice. Refusing the peer's join is not taken.
+3. **Which models.** Any campaign biped the census finds, not only
+   flying machines. Narrowing to the Sentinel family and the monitor is
+   not taken.
+4. **Default colours.** The seat's colour. The profile's own colours,
+   pending validation of their location
    ([live-gamestate.md](../live/live-gamestate.md), "Local player slots
-   and profile appearance").
-5. **The light.** A real light on the world (ML5), or a glow on the
-   body only.
-6. **Theater without the source.** Play with the marker and a named
-   reason, or refuse the film.
-7. **Live.** Nothing sent, or a monitor drawn in the web viewer from
-   the art pack's per-species models (live-art.md, "Player and weapon
-   models").
+   and profile appearance"), are not used.
+5. **The light.** A real light on the world (ML5). A glow on the body
+   only is not taken.
+6. **Theater without the source.** The film plays with the marker and a
+   named reason. Refusing the film is not taken.
+7. **Live.** Nothing is sent. A monitor in the web viewer from the art
+   pack's per-species models (live-art.md, "Player and weapon models")
+   is not taken.
 
 ## Evidence
 
@@ -441,8 +492,8 @@ For the owner. The design above follows the first option of each.
 - **Code**: the palette blocks in the map's globals, `pad_lightbar.rs`.
 - **Code**: per-profile values, `crates/formats/settings/src/store.rs`.
 - **S**: that the monitor and each Sentinel is a `bipd` on a campaign
-  map, and which maps hold them (forge-features.md). ML2's census on the
-  owner's disc verifies it; its counts go in a note.
+  map, and which maps hold them (forge-features.md). `h2 forge looks` on
+  the owner's disc verifies it; its counts go in a note.
 - **S**: that the Sentinel and monitor shaders have change-colour maps.
   The census reports it for each model; a model without one keeps its
   disc colours and offers tint only.
@@ -450,8 +501,6 @@ For the owner. The design above follows the first option of each.
   object path ([agent-api.md](../editor/agent-api.md), "`model.*`", "To
   establish first"). ML4 needs it; without it colours are locked and
   tint stands in by the player's choice, not by default.
-- **S**: that no multiplayer map holds a flying biped. The census on
-  the multiplayer maps verifies it.
 - **S**: that the two monitor characters differ by a variant, a
   permutation or a shader (forge-features.md). The census's variant
   list answers it.

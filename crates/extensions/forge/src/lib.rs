@@ -6,6 +6,7 @@
 pub mod camera;
 mod files;
 mod links;
+pub mod look;
 mod scene;
 mod session;
 pub mod tool;

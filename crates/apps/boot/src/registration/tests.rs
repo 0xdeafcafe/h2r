@@ -144,7 +144,10 @@ impl crate::render_aspect::UiLayoutSink for NoDevice {
 }
 
 fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> hooks::Registry {
-    let rt = Arc::new(runtime::Runtime::new(runtime::Guest::new(), runtime::Dispatch::default()));
+    let rt = Arc::new(runtime::Runtime::new(
+        runtime::Guest::new(),
+        runtime::Dispatch::default(),
+    ));
     let settings = case
         .settings
         .then(|| Arc::new(settings::Store::defaults(crate::setting_defs::ALL)));
@@ -153,7 +156,9 @@ fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> hooks::Regis
         case.light,
     ));
     let nowhere = Path::new("");
-    let live = case.live.then(|| live_hle::Hle::new(live_config()).unwrap());
+    let live = case
+        .live
+        .then(|| live_hle::Hle::new(live_config()).unwrap());
     // Boot's order: the Theater first, then the core registrations.
     let theater = case.theater.then(|| {
         let theater = crate::theater_ui::Theater::default();
@@ -170,7 +175,9 @@ fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> hooks::Regis
         theater
     });
     let telemetry = if case.telemetry {
-        Ok(crate::telemetry::TelemetryConfig::file(std::env::temp_dir().join("h2-registration-test.telemetry")))
+        Ok(crate::telemetry::TelemetryConfig::file(
+            std::env::temp_dir().join("h2-registration-test.telemetry"),
+        ))
     } else {
         Ok(crate::telemetry::TelemetryConfig::default())
     };
@@ -210,14 +217,19 @@ fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> hooks::Regis
         .unwrap();
     }
     let lockstep = lockstep_glue::Config {
-        trace: case.lockstep.then(|| PathBuf::from("h2-registration-test.lockstep")),
+        trace: case
+            .lockstep
+            .then(|| PathBuf::from("h2-registration-test.lockstep")),
         ticks: true,
         record: None,
         replay: None,
     };
     let lockstep_on = lockstep.enabled();
     let pipeline = super::pipeline_for(
-        render_bridge::pipeline_render::PipelineRender::with(true, render_bridge::pipeline_render::Addrs::HALO2),
+        render_bridge::pipeline_render::PipelineRender::with(
+            true,
+            render_bridge::pipeline_render::Addrs::HALO2,
+        ),
         lockstep_on,
         case.light,
     );
@@ -232,13 +244,19 @@ fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> hooks::Regis
             world_line_present: None,
             rt: &rt,
             lockstep,
-            agent: if case.agent { AgentSource::Local } else { AgentSource::None },
+            agent: if case.agent {
+                AgentSource::Local
+            } else {
+                AgentSource::None
+            },
             allow_bot_add: !case.light || core.bots_on,
             xa: None,
             pipeline,
-            coop_probe: case
-                .coop_probe
-                .then(|| crate::coop_probe::parse(|k| (k == "H2_COOP_PROBE").then(|| "1".to_owned())).unwrap().unwrap()),
+            coop_probe: case.coop_probe.then(|| {
+                crate::coop_probe::parse(|k| (k == "H2_COOP_PROBE").then(|| "1".to_owned()))
+                    .unwrap()
+                    .unwrap()
+            }),
             live: live.clone(),
             settings,
             map_gate: None,
@@ -255,28 +273,42 @@ fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> hooks::Regis
     }
     // What `run_hosted_with_live` adds after `register_late`, in its order.
     if features.switches().feature("forge", true) && !case.light && !lockstep_on {
-        crate::forge_glue::install(&mut features, late.agent.as_ref(), None, nowhere).unwrap();
+        crate::forge_glue::install(&mut features, late.agent.as_ref(), None, nowhere, None)
+            .unwrap();
     }
     if let Some(a) = &mut late.agent {
-        a.configure_takeover(&mut features, case.takeover && !case.light, case.takeover && !case.light)
-            .unwrap();
+        a.configure_takeover(
+            &mut features,
+            case.takeover && !case.light,
+            case.takeover && !case.light,
+        )
+        .unwrap();
     }
     if let (Some(theater), Some(a)) = (&theater, &late.agent) {
         theater.connect(&a.agent);
     }
     if case.light {
-        features.add(&sim_bridge::sim_native::SimNative::new(&rt)).unwrap();
+        features
+            .add(&sim_bridge::sim_native::SimNative::new(&rt))
+            .unwrap();
     }
     super::register_viewer_skips(&mut features, case.light).unwrap();
     if case.light {
-        assert!(features.add(&sim_bridge::sim_frame::SimFrame::new(0)).unwrap(), "light host requires sim-frame");
+        assert!(
+            features
+                .add(&sim_bridge::sim_frame::SimFrame::new(0))
+                .unwrap(),
+            "light host requires sim-frame"
+        );
     }
     if let Some(a) = &late.agent {
         crate::host_metrics::install(&mut features, &a.agent, case.light).unwrap();
     }
     #[cfg(feature = "gpu")]
     if windowed && !lockstep_on {
-        features.add(&crate::return_to_menu::ReturnToMenu(Arc::new(|_| {}))).unwrap();
+        features
+            .add(&crate::return_to_menu::ReturnToMenu(Arc::new(|_| {})))
+            .unwrap();
     }
     features
 }
@@ -285,7 +317,11 @@ fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> hooks::Regis
 fn plan(case: &Case) -> Result<hooks::Plan, String> {
     registry(case).build(&hooks::Base).map_err(|conflicts| {
         let c: Vec<String> = conflicts.iter().map(ToString::to_string).collect();
-        format!("feature plan refused: {}\n  for {}", c.join("; "), case.describe())
+        format!(
+            "feature plan refused: {}\n  for {}",
+            c.join("; "),
+            case.describe()
+        )
     })
 }
 
@@ -307,7 +343,9 @@ fn the_creature_probe_plan_keeps_admission_on_in_both_arms() {
         case.coop_live = true;
         let plan = plan(&case).unwrap();
         let installed = |id| {
-            plan.chains.values().any(|chain| chain.hooks().any(|hook| hook.feature == id))
+            plan.chains
+                .values()
+                .any(|chain| chain.hooks().any(|hook| hook.feature == id))
         };
 
         assert!(installed(crate::replication_admission::FEATURE));
@@ -333,9 +371,12 @@ fn a_desktop_player_registers_only_the_films_render_groups() {
         assert_eq!(ids.contains(&"native-light-walk"), profile == Gpu);
         assert!(ids.contains(&"h1-scope-zoom"));
         if profile == Slim {
-            assert!(plan.chains.values().flat_map(|c| c.hooks()).all(|h| {
-                h.feature != "render-loop" && !h.feature.starts_with("native-")
-            }));
+            assert!(
+                plan.chains
+                    .values()
+                    .flat_map(|c| c.hooks())
+                    .all(|h| { h.feature != "render-loop" && !h.feature.starts_with("native-") })
+            );
         }
     }
 }
@@ -344,18 +385,27 @@ fn a_desktop_player_registers_only_the_films_render_groups() {
 fn actor_capture_is_on_unless_switched_off_and_observes_the_host_tick_and_dialogue() {
     for (switches, enabled) in [("-actor-net", false), ("", true)] {
         let plan = plan(&Case::full(switches)).unwrap();
-        let mut hooks: Vec<_> = plan.chains.values().flat_map(|chain| {
-            chain.hooks().filter(|hook| hook.feature == "actor-net")
-                .map(move |hook| (chain.point.name, hook.kind().as_str()))
-        }).collect();
+        let mut hooks: Vec<_> = plan
+            .chains
+            .values()
+            .flat_map(|chain| {
+                chain
+                    .hooks()
+                    .filter(|hook| hook.feature == "actor-net")
+                    .map(move |hook| (chain.point.name, hook.kind().as_str()))
+            })
+            .collect();
         hooks.sort_unstable();
         if enabled {
-            assert_eq!(hooks, [
-                ("AI_DIALOGUE_ENQUEUE", "observe_after"),
-                ("AI_DIALOGUE_ENQUEUE", "observe_before"),
-                ("GAME_ACTIVATE", "observe_after"),
-                ("GAME_TICK", "observe_after"),
-            ]);
+            assert_eq!(
+                hooks,
+                [
+                    ("AI_DIALOGUE_ENQUEUE", "observe_after"),
+                    ("AI_DIALOGUE_ENQUEUE", "observe_before"),
+                    ("GAME_ACTIVATE", "observe_after"),
+                    ("GAME_TICK", "observe_after"),
+                ]
+            );
         } else {
             assert!(hooks.is_empty());
         }
@@ -370,10 +420,22 @@ fn lod_distance_requires_a_gpu_profile_and_a_drawing_view() {
         for drawing in [false, true] {
             let mut case = Case::full("");
             case.drawing = drawing;
-            let plan = registry_for_profile(&case, profile).build(&hooks::Base).unwrap();
+            let plan = registry_for_profile(&case, profile)
+                .build(&hooks::Base)
+                .unwrap();
             let enabled = profile == Gpu && drawing;
-            assert_eq!(plan.features.iter().any(|feature| feature.id == "lod-distance"), enabled);
-            assert_eq!(plan.chains.values().any(|chain| chain.point.name == "MODEL_LOD"), enabled);
+            assert_eq!(
+                plan.features
+                    .iter()
+                    .any(|feature| feature.id == "lod-distance"),
+                enabled
+            );
+            assert_eq!(
+                plan.chains
+                    .values()
+                    .any(|chain| chain.point.name == "MODEL_LOD"),
+                enabled
+            );
         }
     }
     // The guest chooser still runs when either set of native replacements
@@ -383,9 +445,14 @@ fn lod_distance_requires_a_gpu_profile_and_a_drawing_view() {
         ("-native-scene-lists", true),
         ("-lod-distance", false),
     ] {
-        let plan = registry_for_profile(&Case::full(switches), Gpu).build(&hooks::Base).unwrap();
+        let plan = registry_for_profile(&Case::full(switches), Gpu)
+            .build(&hooks::Base)
+            .unwrap();
         for point in ["MODEL_LOD", "RESET_SCENE_RECORDS"] {
-            assert_eq!(plan.chains.values().any(|chain| chain.point.name == point), enabled);
+            assert_eq!(
+                plan.chains.values().any(|chain| chain.point.name == point),
+                enabled
+            );
         }
     }
 }
@@ -408,11 +475,8 @@ fn full_profile_allows_explicit_pipelining_for_tick_hashes() {
         (SWITCH, true, false, false),
     ] {
         let mut features = hooks::Registry::new(hooks::Switches::parse(switches).unwrap());
-        let pipeline = super::pipeline_for(
-            PipelineRender::with(false, Addrs::HALO2),
-            lockstep,
-            light,
-        );
+        let pipeline =
+            super::pipeline_for(PipelineRender::with(false, Addrs::HALO2), lockstep, light);
         features.add(&pipeline).unwrap();
         let plan = features.build(&hooks::Base).unwrap();
         assert_eq!(
@@ -470,14 +534,26 @@ fn the_full_case_plans_every_feature_boot_adds_outside_the_registration_function
         // `return_to_menu::ReturnToMenu` on a window with no lockstep run.
         crate::return_to_menu::ID,
     ]);
-    let missing: Vec<_> = expected.iter().copied().filter(|id| !ids.contains(id)).collect();
-    assert!(missing.is_empty(), "the full case leaves out {missing:?}; planned: {ids:?}");
+    let missing: Vec<_> = expected
+        .iter()
+        .copied()
+        .filter(|id| !ids.contains(id))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "the full case leaves out {missing:?}; planned: {ids:?}"
+    );
 
     // The light host's registrations, and Forge, on by default.
     let mut light = Case::full("");
     light.light = true;
     let light = plan(&light).unwrap();
-    assert!(light.features.iter().any(|f| f.id == sim_bridge::sim_frame::ID));
+    assert!(
+        light
+            .features
+            .iter()
+            .any(|f| f.id == sim_bridge::sim_frame::ID)
+    );
     let forge = plan(&Case::full("")).unwrap();
     assert!(forge.features.iter().any(|f| f.id == "forge"));
     let no_forge = plan(&Case::full("-forge")).unwrap();
@@ -491,24 +567,48 @@ fn the_full_case_plans_every_feature_boot_adds_outside_the_registration_function
 /// the fix is a row here and, if a test can build it without a disc, a
 /// step in `registry_for_profile`.
 const BOOT_SITES: &[(&str, &str)] = &[
-    ("campaign_cache::configure", "not covered: its limit feature is private and only added when a map outgrows retail's cache slot"),
+    (
+        "campaign_cache::configure",
+        "not covered: its limit feature is private and only added when a map outgrows retail's cache slot",
+    ),
     ("Theater::install", "Case::theater"),
-    ("register_core_film", "registry_for_profile (a film's session is not covered: it needs a recording)"),
+    (
+        "register_core_film",
+        "registry_for_profile (a film's session is not covered: it needs a recording)",
+    ),
     ("render_aspect::install", "Case::drawing (gpu)"),
     ("register_late_for_profile", "registry_for_profile"),
-    ("forge_glue::install", "Case::full, and `-forge` in the full-case plan test"),
-    ("lobby_start::install_queue", "not covered: the game queue a lobby starts from; needs the agent"),
+    (
+        "forge_glue::install",
+        "Case::full, and `-forge` in the full-case plan test",
+    ),
+    (
+        "lobby_start::install_queue",
+        "not covered: the game queue a lobby starts from; needs the agent",
+    ),
     ("AgentGlue::configure_takeover", "Case::takeover"),
-    ("dsound_glue::add_loop_agent_method", "not covered: needs the audio device (agent-audio)"),
+    (
+        "dsound_glue::add_loop_agent_method",
+        "not covered: needs the audio device (agent-audio)",
+    ),
     ("register_viewer_skips", "Case::light"),
     ("host_metrics::install", "Case::agent"),
-    ("host_lobby::install", "not covered: env-only (H2_HOST_LOBBY) and needs the run options"),
+    (
+        "host_lobby::install",
+        "not covered: env-only (H2_HOST_LOBBY) and needs the run options",
+    ),
     ("Sim::install_with_film", "not covered: needs a sim session"),
-    ("Attract::install", "not covered: its constructor is crate-private to game and needs the bink HLE"),
+    (
+        "Attract::install",
+        "not covered: its constructor is crate-private to game and needs the bink HLE",
+    ),
     ("SimNative", "Case::light"),
     ("SimFrame", "Case::light"),
     ("ReturnToMenu", "Case::drawing (gpu)"),
-    ("host audit", "not covered: needs the generated module and the running stamp"),
+    (
+        "host audit",
+        "not covered: needs the generated module and the running stamp",
+    ),
     ("theater::Observer", "not covered: needs a film session"),
     ("film camera hooks", "not covered: needs a film session"),
 ];
@@ -592,7 +692,12 @@ fn the_plan_builds_with_every_combination_of_optional_features() {
             }
         }
     }
-    assert!(failures.is_empty(), "{} cases refused:\n{}", failures.len(), dedup(failures).join("\n"));
+    assert!(
+        failures.is_empty(),
+        "{} cases refused:\n{}",
+        failures.len(),
+        dedup(failures).join("\n")
+    );
 }
 
 /// `case` with the second group's bits: the Theater, Live, the takeover and
@@ -623,23 +728,44 @@ fn dedup(failures: Vec<String>) -> Vec<String> {
 fn light_native_subsystems_follow_the_profile_and_explicit_overrides() {
     use engine::points::{COLLISION_LOCATION, OBJECT_FUNCTION_VALUE, SIM_ANIMATION_STREAM};
     let runtime = runtime::Runtime::new(runtime::Guest::new(), runtime::Dispatch::default());
-    let points = [&SIM_ANIMATION_STREAM, &COLLISION_LOCATION, &OBJECT_FUNCTION_VALUE];
+    let points = [
+        &SIM_ANIMATION_STREAM,
+        &COLLISION_LOCATION,
+        &OBJECT_FUNCTION_VALUE,
+    ];
     for (light, spec, expected) in [
         (true, "", [false; 3]),
         (false, "host-light-native", [false; 3]),
         (true, "host-light-native", [true; 3]),
-        (true, "-host-light-native,impl.sim.native.anim", [true, false, false]),
-        (true, "host-light-native,-impl.sim.native.collision", [true, false, true]),
+        (
+            true,
+            "-host-light-native,impl.sim.native.anim",
+            [true, false, false],
+        ),
+        (
+            true,
+            "host-light-native,-impl.sim.native.collision",
+            [true, false, true],
+        ),
         (true, "host-light-native,-impl.sim.native", [false; 3]),
-        (true, "host-light-native,-impl.sim,impl.sim.native.objects", [false, false, true]),
+        (
+            true,
+            "host-light-native,-impl.sim,impl.sim.native.objects",
+            [false, false, true],
+        ),
     ] {
         let switches = super::profile_switches(hooks::Switches::parse(spec).unwrap(), light);
         assert!(!switches.implementation("sim.native_unit_pose", false));
         let mut registry = hooks::Registry::new(switches);
-        registry.add(&sim_bridge::sim_native::SimNative::new(&runtime)).unwrap();
+        registry
+            .add(&sim_bridge::sim_native::SimNative::new(&runtime))
+            .unwrap();
         let plan = registry.build(&hooks::Base).unwrap();
         assert_eq!(
-            points.map(|p| plan.chains.get(&p.base).is_some_and(|c| c.implement.is_some())),
+            points.map(|p| plan
+                .chains
+                .get(&p.base)
+                .is_some_and(|c| c.implement.is_some())),
             expected,
             "{light} {spec}"
         );
@@ -682,7 +808,10 @@ mod render_thread_plan {
     /// `campaign_menu`'s own tests build it.
     fn campaign_state() -> crate::campaigns::State {
         use content::campaign_list::{self as cl, CampaignManifest, FIXTURE, HALO1};
-        let ms = [CampaignManifest::parse(HALO1).unwrap(), CampaignManifest::parse(FIXTURE).unwrap()];
+        let ms = [
+            CampaignManifest::parse(HALO1).unwrap(),
+            CampaignManifest::parse(FIXTURE).unwrap(),
+        ];
         crate::campaigns::State {
             built: cl::build(&ms, &[1], &[0x65]).unwrap(),
             selection: crate::campaigns::Selection::default(),
@@ -726,10 +855,12 @@ mod render_thread_plan {
             format!("{ALL_ON},render-census"),
         ] {
             let mut features = registry(&Case::full(&switches));
-            features.add(&crate::campaign_menu::Campaigns {
-                state: Arc::new(campaign_state()),
-                picker: Arc::new(|| 0),
-            }).unwrap();
+            features
+                .add(&crate::campaign_menu::Campaigns {
+                    state: Arc::new(campaign_state()),
+                    picker: Arc::new(|| 0),
+                })
+                .unwrap();
             let plan = features.build(&hooks::Base).unwrap();
             for c in plan.chains.values() {
                 match c.render_thread() {

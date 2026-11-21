@@ -187,6 +187,8 @@ mod testmap_cmd;
 #[cfg(feature = "desktop")]
 mod forge_cmd;
 #[cfg(feature = "desktop")]
+mod forge_looks;
+#[cfg(feature = "desktop")]
 mod tunnel;
 #[cfg(feature = "desktop")]
 mod ui;
@@ -256,6 +258,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
   testmap <map> <script> --out <new.map>  a test map: a JSON edit script over the
                           placements (docs/runtime/agent-api.md, phase 5)
   forge build|check <doc.h2forge> [--disc <iso>]  materialise or verify a local Forge map
+  forge looks [--disc <iso>] [--json]  the models a Forge monitor can look like
   tag <map> <tag name>    decode one tag; optional group and --disc <iso>
   bitmap <map> <tag>      decode a bitmap tag to PNG (--image N --out DIR --mips)
   bitmap --all <map>      bulk decode check of every bitmap in a map

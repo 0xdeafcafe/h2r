@@ -27,31 +27,45 @@ pub(super) fn project(frame: forge::Frame) -> Option<Axes> {
     }
 }
 
+/// A world point in the HUD's 640 by 480 canvas through the frame's
+/// camera, or `None` where the camera is unusable, the viewport leaves the
+/// canvas or the point is behind or outside the view. The gizmo and the
+/// monitor marker (`super::marker`) share it, so they agree on where a
+/// frame is.
+#[cfg(any(feature = "desktop-runtime", test))]
+pub(super) fn pixel_of(camera: &RenderCamera, p: [f32; 3]) -> Option<[i32; 2]> {
+    if !camera.is_usable() {
+        return None;
+    }
+    let [top, left, bottom, right] = camera.viewport.map(f32::from);
+    if top < 0.0 || left < 0.0 || bottom > 480.0 || right > 640.0 {
+        return None;
+    }
+    let vp = camera.view_projection();
+    let [x, y, z, w] = transform(&vp, [p[0], p[1], p[2], 1.0]);
+    if !(w > 0.0 && (0.0..=w).contains(&z)) {
+        return None;
+    }
+    let [x, y] = [x / w, y / w];
+    if ![x, y].into_iter().all(|v| (-1.0..=1.0).contains(&v)) {
+        return None;
+    }
+    Some([
+        (left + (right - left) * (0.5 + x * 0.5)).round() as i32,
+        (top + (bottom - top) * (0.5 - y * 0.5)).round() as i32,
+    ])
+}
+
 impl Axes {
+    /// Where the axes meet.
+    #[cfg(test)]
+    pub(super) fn origin(&self) -> [i32; 2] {
+        self.origin
+    }
+
     #[cfg(any(feature = "desktop-runtime", test))]
-    fn from_frame(frame: forge::Frame, camera: &RenderCamera) -> Option<Self> {
-        if !camera.is_usable() {
-            return None;
-        }
-        let [top, left, bottom, right] = camera.viewport.map(f32::from);
-        if top < 0.0 || left < 0.0 || bottom > 480.0 || right > 640.0 {
-            return None;
-        }
-        let vp = camera.view_projection();
-        let point = |p: [f32; 3]| {
-            let [x, y, z, w] = transform(&vp, [p[0], p[1], p[2], 1.0]);
-            if !(w > 0.0 && (0.0..=w).contains(&z)) {
-                return None;
-            }
-            let [x, y] = [x / w, y / w];
-            if ![x, y].into_iter().all(|v| (-1.0..=1.0).contains(&v)) {
-                return None;
-            }
-            Some([
-                (left + (right - left) * (0.5 + x * 0.5)).round() as i32,
-                (top + (bottom - top) * (0.5 - y * 0.5)).round() as i32,
-            ])
-        };
+    pub(super) fn from_frame(frame: forge::Frame, camera: &RenderCamera) -> Option<Self> {
+        let point = |p: [f32; 3]| pixel_of(camera, p);
         let origin = point(frame.position)?;
         let (x, z) = live_telemetry::rotation_axes(frame.rotation.map(f64::from));
         let y = [

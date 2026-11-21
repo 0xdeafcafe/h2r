@@ -120,6 +120,23 @@ fn local_teams(m: &dyn GuestMemory) -> [Option<u32>; PORTS] {
     teams
 }
 
+/// Local seat `port`'s profile primary colour as a palette index
+/// (`0..forge::look::PALETTE`): the seat's colour for a Forge monitor's
+/// default look. `None` when the port is not signed in or the index is not
+/// in the palette.
+pub fn seat_colour(m: &dyn GuestMemory, port: usize) -> Option<u8> {
+    primary_index(m, port)
+        .and_then(|i| u8::try_from(i).ok())
+        .filter(|i| *i < forge::look::PALETTE)
+}
+
+/// RGB of palette colour `index` from the loaded map's player colours, or
+/// `None` where the map has none or the index is outside them.
+pub fn palette_rgb(m: &dyn GuestMemory, index: u8) -> Option<[u8; 3]> {
+    let matg = pointer(m, points::GLOBALS_TAG.base)?;
+    Palette::read(m, matg.checked_add(MATG_PLAYER_COLOURS)?)?.rgb(m, u32::from(index))
+}
+
 /// The colour of each local seat, or `None` when the guest has no colour
 /// for it. In an active team variant a local player's assigned team wins.
 /// Until a port has a valid team, it shows its profile colour when signed in.
@@ -263,6 +280,20 @@ mod tests {
         profile(&mut m, 0, 0);
         profile(&mut m, 2, u8::MAX);
         assert_eq!(colours(&m), [Some([32, 64, 128]), None, None, None]);
+    }
+
+    #[test]
+    fn a_seats_palette_index_and_any_palette_colour_are_read_from_the_map() {
+        let mut m = basic();
+        assert_eq!(seat_colour(&m, 0), Some(1));
+        assert_eq!(seat_colour(&m, 2), Some(0));
+        assert_eq!(seat_colour(&m, 1), None, "not signed in");
+        profile(&mut m, 1, 100);
+        assert_eq!(seat_colour(&m, 1), None, "outside the retail palette");
+        assert_eq!(palette_rgb(&m, 1), Some([191, 128, 0]));
+        assert_eq!(palette_rgb(&m, 2), None, "outside this map's block");
+        m.put_u32(points::GLOBALS_TAG.base, 0);
+        assert_eq!(palette_rgb(&m, 0), None);
     }
 
     #[test]

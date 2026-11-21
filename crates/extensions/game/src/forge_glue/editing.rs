@@ -92,6 +92,17 @@ impl Editor {
         self.tool.monitor
     }
 
+    /// The monitor camera's position, yaw and pitch, for
+    /// `forge.status.monitors`.
+    pub fn pose(&self) -> Option<([f32; 3], f32, f32)> {
+        self.tool.camera.map(|c| (c.position, c.yaw, c.pitch))
+    }
+
+    /// Says `text` in the HUD strip for a while, as a file notice is.
+    pub fn say(&mut self, text: String, tick: u32) {
+        self.notice = Some((text, tick));
+    }
+
     pub fn ghost(&self) -> Option<forge::Frame> {
         if self.monitor() && self.dialog.is_none() {
             self.tool.ghost
