@@ -601,8 +601,9 @@ fn state_reports_the_seek_route_and_restore_cost_and_lists_keyframes() {
     assert!(measured["boot_to_match_start_ms"].is_null());
 
     // A requested jump names its own route: covered by the tick-30 keyframe
-    // or not. The tick it leaves becomes the next jump's from_tick.
-    let jump = call(api::SEEK, json!({"tick":35}))["result"]["seek"].clone();
+    // or not. The tick it leaves becomes the next jump's from_tick. The film
+    // ends at tick 31, so that is the only target past the keyframe.
+    let jump = call(api::SEEK, json!({"tick":31}))["result"]["seek"].clone();
     assert_eq!(jump["from_tick"], 31);
     assert_eq!(jump["source"], "keyframe");
     let jump = call(api::SEEK, json!({"tick":5}))["result"]["seek"].clone();
