@@ -575,7 +575,8 @@ fn state_reports_the_seek_route_and_restore_cost_and_lists_keyframes() {
     assert_eq!(stored["ring"], json!([]));
     assert_eq!(stored["sidecar"], json!([]));
     assert_eq!(stored["ring_bytes"], 0);
-    assert_eq!(stored["ring_cap"], 0);
+    // The ring is on by default at its 256 MiB budget.
+    assert_eq!(stored["ring_cap"], 256u64 << 20);
     assert_eq!(stored["sidecar_bytes"], 0);
     assert!(call(api::KEYFRAMES, json!({"film":true}))["error"].is_object());
 

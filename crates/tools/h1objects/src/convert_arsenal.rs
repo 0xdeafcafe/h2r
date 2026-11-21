@@ -428,7 +428,7 @@ impl Converter<'_> {
         };
         let attached = self.h1_damage(p.attached_detonation_damage, "attached detonation damage", &mut rep)?;
         parts.halo1 = vec![
-            arsenal::halo1_ref("ref_108", b"jpt!", attached),
+            arsenal::halo1_ref("attached_detonation_damage", b"jpt!", attached),
             arsenal::halo1_ref("super_detonation_damage", b"jpt!", super_damage),
             arsenal::halo1_ref("attached_super_detonation_damage", b"jpt!", super_damage),
             arsenal::halo1_ref(arsenal::PROJECTILE_DETONATION_STARTED, b"effe", started),
@@ -487,7 +487,7 @@ impl Converter<'_> {
         let eb = h1::tag_bytes(self.h1, tag, b"eqip", h1::EQIP_SIZE)?;
         parts.halo1 = self.item_effect_refs(eb, &mut rep)?;
         if let Some((group, id)) = self.weapon_slot(h1::reference(self.h1, eb, 0x310), &mut rep)? {
-            parts.halo1.push(("snd_ref_134".to_owned(), group, id));
+            parts.halo1.push(("pickup_sound".to_owned(), group, id));
         }
         let root = arsenal::equipment(&e, eb, &parts)?;
         let root = self.with_object_attachments(*b"eqip", "item.obje", root, eb, &e.object, &mut rep)?;

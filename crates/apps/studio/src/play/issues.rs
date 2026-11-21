@@ -21,7 +21,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Waiting => "waiting",
             Self::Reload => "reload",
@@ -97,7 +97,7 @@ fn for_pending(app: &App) -> Vec<Issue> {
             Kind::Mismatch
         } else if row["refused"] == true {
             Kind::Refused
-        } else if row["class"] == tag_sync::RELOAD {
+        } else if tag_sync::Effect::is_reload(row) {
             Kind::Reload
         } else {
             Kind::Waiting
@@ -152,12 +152,16 @@ impl Pending {
         *self.changes.get_or_init(|| super::playtest::Changes::of(&self.rows))
     }
 
-    /// The Pending panel groups by class and preserves insertion order within each group.
+    /// The Pending panel groups by effect (in `tag_sync::Effect`'s order,
+    /// rows with none last) and preserves insertion order within each group.
     pub(crate) fn sorted(&self) -> impl Iterator<Item = &Value> {
         let order = self.class_order.get_or_init(|| {
             let mut order: Vec<_> = (0..self.rows.len()).collect();
             order.sort_by(|&a, &b| {
-                self.rows[a]["class"].as_str().cmp(&self.rows[b]["class"].as_str())
+                let key = |n: usize| {
+                    tag_sync::Effect::of_row(&self.rows[n]).map_or(usize::MAX, |e| e as usize)
+                };
+                key(a).cmp(&key(b))
             });
             order
         });
@@ -436,8 +440,13 @@ impl Refusals {
             }
             if !singleton {
                 let mut row = tag_sync::row(
-                    "batch", Value::Null, "Field edits", "Batch refused", &group.why,
+                    "batch",
+                    Value::Null,
+                    "Field edits",
+                    tag_sync::Effect::NotKnown,
+                    &group.why,
                 );
+                row["text"] = json!("Batch refused");
                 row["refused"] = json!(true);
                 row["target"] = json!({"panel": "pending"});
                 rows.push(row);

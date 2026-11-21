@@ -17,8 +17,11 @@ mod cast;
 mod catalog;
 mod check;
 mod expression;
+#[cfg(any(test, feature = "fixture"))]
+pub mod fixture;
 pub mod h1_conversation;
 mod scenario;
+mod script_doc;
 mod source;
 pub mod vm;
 mod wire;
@@ -32,6 +35,7 @@ pub use catalog::*;
 pub use check::*;
 pub use expression::*;
 pub use scenario::*;
+pub use script_doc::*;
 pub use source::*;
 pub use wire::*;
 

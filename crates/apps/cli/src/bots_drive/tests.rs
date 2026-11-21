@@ -200,7 +200,7 @@ fn split_screen_is_backed_out_of_and_said() {
             5100,
             &format!("ui: screen 0x1e (window 5, slot 4){marker}, mode 1"),
         );
-        let p = presses(&mut d, 5200, 9000);
+        let p = presses(&mut d, 5200, 14000);
         assert_eq!(p.len(), ups + 2, "{p:?}");
         assert!(p[0].starts_with("b that was Split Screen"));
         assert!(

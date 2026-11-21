@@ -1002,6 +1002,7 @@ dependencies = [
  "firefight-kit",
  "flate2",
  "font",
+ "forge",
  "forge-build",
  "gltf",
  "h1-assets",
@@ -2181,6 +2182,9 @@ version = "0.1.0"
 dependencies = [
  "content",
  "forge-doc",
+ "serde",
+ "serde_json",
+ "settings",
 ]
 
 [[package]]
@@ -6755,6 +6759,7 @@ dependencies = [
  "anyhow",
  "app-icon",
  "assets",
+ "audio",
  "boot",
  "content",
  "dear-imgui-rs",
@@ -6769,6 +6774,7 @@ dependencies = [
  "h1map",
  "h1objects",
  "hopper-edit",
+ "hs",
  "hud-edit",
  "libc",
  "live-mirror",
@@ -6786,6 +6792,8 @@ dependencies = [
  "vfs",
  "wgpu",
  "winit",
+ "wma",
+ "xbe",
 ]
 
 [[package]]

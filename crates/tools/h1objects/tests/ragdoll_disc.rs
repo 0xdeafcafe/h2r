@@ -383,9 +383,9 @@ fn the_converted_cyborgs_ragdoll_against_retail() {
     let r = defs::from_built(def(b"bipd"), &local(&conv.tree, id).unwrap().root).unwrap();
     // The tag-side gate besides the physics model: `bipd +0x1f0` bit 11
     // (E 0x000e1097, 0x001d6c18) as the Chief's.
-    let word = |r: &Record| match r.at("unknown_1f0") {
-        Some(Val::Bytes(b)) => u32::from_le_bytes(b[..4].try_into().unwrap()),
-        other => panic!("{other:?}"),
+    let word = |r: &Record| match r.bytes("flags", 4) {
+        Some(b) => u32::from_le_bytes(b[..4].try_into().unwrap()),
+        None => panic!("bipd flags"),
     };
     let chief = base
         .record(

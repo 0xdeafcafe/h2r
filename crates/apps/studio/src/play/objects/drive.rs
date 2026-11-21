@@ -100,7 +100,7 @@ impl State {
             // a replacement cannot be previewed to that row.
             if row["layout"] == true
                 && let Some(block) = pending.iter_mut().find(|p| {
-                    p["doc"] == "scenario" && p["class"] == tag_sync::RELOAD
+                    p["doc"] == "scenario" && tag_sync::Effect::is_reload(p)
                         && p["path"] == row["block"]
                 })
             {
@@ -123,12 +123,18 @@ fn row(change: Change, doc: &Rows, why: &str, refused: bool) -> Value {
         |_| json!({"block":name, "index":index}),
     );
     let structural = matches!(change.op, Op::Reload(_) | Op::Respawn { .. } | Op::Delete { .. });
+    let effect = if structural {
+        tag_sync::Effect::Reload
+    } else {
+        tag_sync::Effect::NextSpawn
+    };
     json!({
         "doc": "object",
         "block": format!("{block:?}"),
         "path": format!("{name}[{index}]"),
         "target": target,
-        "class": if structural { tag_sync::RELOAD } else { tag_sync::CREATION },
+        "effect": effect.id(),
+        "text": effect.sentence(),
         "why": why,
         "refused": refused,
         "layout": matches!(change.op, Op::Reload(_)),
@@ -486,7 +492,7 @@ fn failure_row(f: &Failure, doc: &Rows) -> Value {
     if f.is_unknown() {
         issue["why"] = json!(format!("{}; reload the map to verify the object", f.why));
         issue["unknown"] = json!(true);
-        issue["class"] = json!(tag_sync::RELOAD);
+        tag_sync::set_effect(&mut issue, tag_sync::Effect::Reload);
     }
     issue
 }

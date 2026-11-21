@@ -311,6 +311,14 @@ impl Names {
             at(layout::OBJECT_NAME_PLACEMENT),
         ))
     }
+    /// The text of name `i` (its 32 bytes up to the first NUL), or `None`
+    /// past the block or for bytes that are not UTF-8.
+    pub fn name(&self, i: usize) -> Option<&str> {
+        let e = self.entries.get(i)?;
+        let text = &e[..e.len().min(32)];
+        let end = text.iter().position(|&b| b == 0).unwrap_or(text.len());
+        std::str::from_utf8(&text[..end]).ok()
+    }
     fn set_placement(&mut self, i: usize, placement: i16) {
         let o = layout::OBJECT_NAME_PLACEMENT;
         self.entries[i][o..o + 2].copy_from_slice(&placement.to_le_bytes());

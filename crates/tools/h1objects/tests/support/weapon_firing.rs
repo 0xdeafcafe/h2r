@@ -135,7 +135,7 @@ pub(super) fn compare(map: &H1Map, tag: &h1map::Tag, tree: &Tree, rebuilt: &Reco
         .block(h1map::Block::read(src, 0x4fc).unwrap(), 0x114)
         .unwrap();
     let barrels = rows(rebuilt, "barrels");
-    let triggers = rows(rebuilt, "block_2c8");
+    let triggers = rows(rebuilt, "triggers");
     let charging = !raw.is_empty() && f32_at(raw, 0x48) > 0.0;
     assert_eq!(barrels.len(), raw.len() / 0x114, "{name}: barrels");
     assert_eq!(
@@ -232,7 +232,7 @@ pub(super) fn compare(map: &H1Map, tag: &h1map::Tag, tree: &Tree, rebuilt: &Reco
         );
         assert_eq!(u32_at(&h, 0x98), u32::MAX, "{label}: direct damage");
         if !charging || i == 0 {
-            let tr = bytes(d.child("block_2c8").unwrap(), &triggers[i]);
+            let tr = bytes(d.child("triggers").unwrap(), &triggers[i]);
             assert_eq!(
                 (i16_at(&tr, 4), i16_at(&tr, 6)),
                 (i as i16, if charging { 2 } else { i16::from(semi) }),
@@ -276,10 +276,10 @@ pub(super) fn compare(map: &H1Map, tag: &h1map::Tag, tree: &Tree, rebuilt: &Reco
         let fx = map
             .block(h1map::Block::read(t, 0x108).unwrap(), 0x84)
             .unwrap();
-        let effects = rows(r, "block_e4");
+        let effects = rows(r, "firing_effects");
         assert_eq!(effects.len(), fx.len() / 0x84, "{label}: firing feedback");
         for (r, src) in effects.iter().zip(fx.chunks_exact(0x84)) {
-            let rebuilt = bytes(d.child("barrels.block_e4").unwrap(), r);
+            let rebuilt = bytes(d.child("barrels.firing_effects").unwrap(), r);
             words(&label, &rebuilt, src, &[(0, 0)]);
             for (field, offset) in arsenal::FIRING_DAMAGE_REFS.iter().zip([0x54, 0x64, 0x74]) {
                 let id = h1::reference(map, src, offset);
@@ -376,7 +376,7 @@ pub(super) fn compare(map: &H1Map, tag: &h1map::Tag, tree: &Tree, rebuilt: &Reco
             if !normal.is_empty() || attached.is_none() {
                 damage_from(map, tree, &label, &pr, "detonation_damage", &normal);
             }
-            damage_from(map, tree, &label, &pr, "ref_108", attached.as_slice());
+            damage_from(map, tree, &label, &pr, "attached_detonation_damage", attached.as_slice());
             let super_damage = event_damage(map, h1::reference(map, src, 0x18c));
             damage_from(
                 map,
@@ -408,7 +408,7 @@ fn blood_gulch_shotgun_and_ar_firing_profiles() {
         compare(&h1, t, &c.tree, &r);
         let b = bytes(d.child("barrels").unwrap(), &rows(&r, "barrels")[0]);
         let m = &rows(&r, "magazines")[0];
-        let tr = bytes(d.child("block_2c8").unwrap(), &rows(&r, "block_2c8")[0]);
+        let tr = bytes(d.child("triggers").unwrap(), &rows(&r, "triggers")[0]);
         assert_eq!(
             (i16_at(&tr, 6), i16_at(&b, 0x6a), i16_at(&b, 0x2a)),
             (semi, pellets, 1),

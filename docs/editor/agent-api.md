@@ -76,7 +76,9 @@ What goes through actions, from both sides:
 | Open a source, map, package, Halo 1 map | `OpenSource`, `SelectMap`, `OpenPackageEntry` | menus, Maps list | `source.open`, `doc.open` |
 | A placement's field | `EditSelection {field, edit, merge}` (every selected placement), `SetField {block, index, field, value, merge}` (one), `SealEdit` | the inspector dispatches `EditSelection` (a drag merges under one key, sealed when it ends) | `scenario.set`, `tag.set` |
 | Any tag's field or block | `Tag(TagAction)` built by `app::tag_api::{set_field, block}` | the Tags tool | `tag.set`, `tag.block.*` |
-| Inspect tag fields | read the registry layout | Tags panel and inspector | `tag.fields {tag, path?}` |
+| Inspect tag fields | read the registry layout | Tags panel and inspector | `tag.fields {tag, path?, unnamed?}` |
+| Show unnamed fields, Show as, focus a field | `App::tag_fields` (`fields::Settings`), `Navigate(Go)` | the Tags tool's **Show unnamed fields** and **Show as** | `tag.view` |
+| What a field's pick dialog lists | `fields::picker::{values, bits, kinds, tags, views}` | the field panel's pick dialog | `tag.choices {tag, path, query?, kind?, limit?}` |
 | Move and turn a placement | `MovePlacement` (one step); `GestureSet {position, ypr}`, `GestureScale`, `EndGesture` (a drag: one step, a multi-selection riding along) | the viewport gizmo dispatches the gesture actions every frame of a drag | `scenario.move` |
 | Add, duplicate, delete | `Add`, `DuplicateEntry`, `DeleteEntry` | outliner, toolbar, keys | `scenario.add`, `.duplicate`, `.delete`, `tag.block.*` |
 | Select, frame | `Select`, `FocusSelected`, `FrameAll` | Scene, viewport, keys | `scenario.select`, `view.camera` |
@@ -118,7 +120,9 @@ construction.
 A `doc` param names one: `map` (the scenario tool's map), `tags` (the
 Tags tool's edits to the same map: their own undo stack; they save and
 diff with the map), `variant`, `playlists`, `ui`, `hud` (the HUD tool's
-map: its widget edits, with their own undo stack and save). Without one, a `doc.*` call means the tool shown.
+map: its widget edits, with their own undo stack and save), `scripts`
+(the Scripts tool's view of the open map: read only, never dirty;
+`doc.save` and `doc.save_as` refuse it). Without one, a `doc.*` call means the tool shown.
 `doc.list` says, for each, whether it is open, its name, dirty, and
 whether it can undo and redo.
 
@@ -177,6 +181,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `source` | `open {path}`, `maps` |
 | `doc` | `list`, `open {map \| path \| package \| variant \| playlists}`, `save`, `save_as {path}`, `diff`, `undo`, `redo`, `close` |
 | `tag` | `list {group, name, query, path, limit, homes}`, `browse {map}`, `resources {tag}`, `export {tag, out, dependencies, resources}`, `import {path, tag, skip_missing}`, `read {tag, depth, elements, hex}`, `fields {tag, path?}`, `tree {root?, depth?}`, `refs {tag, limit?}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
+| `sound` | `read {tag, range?, permutation?, bins?}`, `play {tag, range?, permutation?, from_ms?}`, `stop` |
 | `scenario` | `blocks`, `list {block}`, `get`, `set {block, index, field, value}`, `add {block, like, position}`, `move {block, index, position, ypr}`, `delete`, `duplicate`, `select` |
 | `volume` | `list {kind?}` (short form `volumes [kind]`), `select {index?, focus?}`, `set {index, origin?, center?, forward?, up?, size?}`, `add {kill?, center?, origin?, forward?, up?, size?}`, `remove {kind?, index}` |
 | `collision` | `surfaces {class?, bsp?, offset?, limit?}`, `at {origin, dir}` or `at {point, within?}` (with `select?`), `select {index?, focus?}`, `objects {block?, index?}` |
@@ -186,6 +191,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `pair` | `list`, `status`, `connect {socket?}`, `disconnect {leave?}`, `auto {enabled?}`, `play`, `stop`, `control {action, ticks?}`, `edit {enabled}` |
 | `mirror` | `status`, `objects {kind?, near?, limit?, at_tick?}`, `pick {from? \| ray?}`, `aim_select {enabled?}`, `camera {mode?, target?}`, `player {to, facing?}`, `pending`, `apply {what, at?, peers?}` |
 | `view` | `camera {yaw, pitch, distance, target, focus, all, fly_speed}`, `snapshot {out, size, camera}`, `stats`, `layers {set?, preset?, xray?}` |
+| `script` | `list {filter?}`, `source {name?}`, `follow {name?, link}`, `uses {kind, name}`, `builtins {filter?, unnamed?}`, `doc {path}` ([rich-editors.md](rich-editors.md#scripts)) |
 | `hud` | `list {map \| package}`, `read {hud, state}`, `set {hud, widget, field, value, merge}`, `move {hud, widget, x, y, mode, merge}`, `render {hud, state, out}`, `check {hud, state}`, `save_as {path}` |
 | `geometry` | `list {model?}`, `open {target}`, `close {target?}`, `read {target?}`, `check {target?}` |
 | `mesh` | `mode {mode}`, `select {ids, op \| all \| none \| invert}`, `transform {translate \| matrix, pivot?, merge?}`, `ops`, `apply {ops}`; each with `target?` |
@@ -197,6 +203,22 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 
 Notes on some:
 
+- **Scripts.** Every `script.*` call reads the open map's script tables
+  with the source's `default.xbe`; without a map it is `NO_DOCUMENT`,
+  and without the executable it is `REFUSED` with the tool's sentence
+  and the paths it looked at. `script.source` shows the definition in
+  the Inspector and gives each link's byte span in `source`, its kind
+  (`script`, `global`, `object`, `volume`, `tag`), its `target` now
+  (`{script}`, `{global}`, `{block, index}`, `{volume}`, `{tag}`) or
+  `null` and `why`. `script.follow` does what a click on the link does
+  and is `REFUSED` with the same `why` for a link that goes nowhere.
+  `script.uses {kind: "recording"}` is `REFUSED` until recordings are
+  read. `script.builtins` gives each builtin's `name` and `from` (`map`,
+  `doc` or `null`), its `label` (the name or `#builtin:<index>`) and its
+  call form. `script.doc {path}` names builtins from the user's script
+  documentation listing, read from that path now and not stored
+  (`null` drops it); its `doc` says how many entries read, agreed with
+  the map's names, disagreed and named.
 - **Tags.** A `tag` param is an id (`"0xe1230045"` or a number), a full
   name, `name.group`, or a group alone when the map has one tag of it
   (`"scnr"`, `"matg"`).
@@ -210,15 +232,72 @@ Notes on some:
   the schema's structural view instead. The scenario tag's edits stay with
   the Scenario tool: `tag.set` paths `netgame_flags[0].position` and
   `tag.block.*` on `netgame_flags` run as the matching `scenario.*` calls.
-- **Field rows.** `tag.fields {tag, path?}` returns `{fields: [...]}` for the
-  root or a block element such as `parts[1]`. Offsets such as `+0x8[1]` also
-  select a block element. Each row has `name`, `offset` in bytes, `kind`,
-  `size` in bytes, `value`, and `description` (the definition's `doc` text,
-  or null). An offset path in `tag.set` addresses the typed field that starts
+- **Field rows.** `tag.fields {tag, path?, unnamed?}` returns `{fields:
+  [...]}` for the root or a block element such as `parts[1]`. Offsets
+  such as `+0x8[1]` also select a block element. The rows are the field
+  panel's (`fields::rows`, [tag-editing.md](tag-editing.md)), in its
+  order: the named rows, then the Unnamed fields group's (padding last);
+  `unnamed: false` leaves those out. Each row has `name`, `offset` in
+  bytes, `kind`, `size` in bytes, `value`, `description` (the
+  definition's `doc` text, or null), `evidence` (its meaning text),
+  `section`, and:
+  - `label` (the name in words), `named`, `type` (the type in words:
+    `Whole number`, `Decimal number`, `Angle`, `Colour`, `Range`,
+    `Choice`, `Switches`, `Name`, `Tag reference`, `List`, `Bytes`,
+    `Internal value`, `Unnamed value`, `Padding`) and `unit` (or null);
+  - `editable`, and `read_only`, the reason as a sentence when not;
+  - `edited` (the value differs from the loaded file) and `file_value`
+    (the file's value when edited, else null);
+  - `effect: {id, text, why}` (an id of the effect table in
+    [live-mirror.md](live-mirror.md), "How an edit applies"), always
+    given; `chip`, the effect
+    the row shows, null with no game connected; `live: {kind, text}`, a
+    changed field's `mismatch` or `refused` mark with a game connected;
+  - `path`, the `tag.set` path from the root by field names
+    (`parts[1].value`, also for an offset path); `summary`, what the row
+    shows on its line: `2 items` or `16 bytes` for a list or data, the
+    value's name for a choice (`Value 7 (not named)` when none names
+    it), `2 of 9 on: Loud, Quiet` for switches, and the kind and last
+    path segment for a tag reference (`No tag` when it is empty);
+  - `choices: [{value, name}]` for a choice, `bits: [{bit, name}]` for
+    switches, `groups` for a tag reference, `count` and `capacity` for a
+    list, and `show_as` (`decimal`, `whole_number` or `hex`) for an
+    unnamed value.
+
+  An offset path in `tag.set` addresses the typed field that starts
   there. Its row gives the width accepted for an integer or enum value.
   A block's value is its element count. Scalar values follow
   `tag.read`. The rows use the open or browsed tag document and include
   its pending edits (`api/tag_fields.rs`).
+- **The field panel.** `tag.view {tag?, field?, unnamed?, show_as?}`
+  drives the Tags tool's panel and returns what it shows. `tag` selects
+  the tag in the Tags tool. `field`, a `tag.set` path, focuses that field
+  through the navigation (as `nav.go`), which opens its lists and its
+  Unnamed fields group. `unnamed` sets **Show unnamed fields**.
+  `show_as: {path, as}` sets how an unnamed value is shown (`decimal`,
+  `whole_number`, `hex`, or null for the guess from its bits), kept for
+  that field of every tag of the group and saved with the layout. With no
+  params it only reads. The result is `{tag, path, breadcrumbs, field,
+  search, changed, unnamed, rows, unnamed_hidden, header}`: `rows` are
+  the root's `tag.fields` rows the panel shows, `unnamed_hidden` the
+  unnamed rows in a folded group (`unnamed: true` adds them to `rows`),
+  `field` the focused path, and `header` the header's lines as drawn,
+  without icons. The panel shows a tag's root and has no search yet, so
+  `path` is always empty, `search` null and `changed` false, and those
+  params are refused.
+- **Pick lists.** `tag.choices {tag, path, query?, kind?, limit?}`
+  returns what the field panel's pick dialog lists for the field at
+  `path` (`fields::picker`). A choice gives `{values: [{value, name}]}`,
+  its named values. Switches give `{bits: [{bit, name, label, on}]}`,
+  every bit of the word, `name` null for a bit nothing names. A tag
+  reference gives `{kinds: [{group, name}], tags: [{id, group, name}],
+  truncated}`: the kinds of the map's tags it takes, and every such tag
+  with no cap. `kind`, a group code, narrows the tags as the dialog's
+  Kind row does; `limit` cuts them and sets `truncated`. An unnamed value
+  gives `{views: [{id, name}], shown}`, the **Show as** choices and the
+  one in use. `query` narrows values and tags as the dialog's search box
+  does: every word in the name, or in `group:name` for a tag. Any other
+  field is refused with `INVALID_PARAMS`.
 - **Scenario tree.** `tag.tree {"root":"scenario","depth":2}` reads the
   open scenario and returns `{root, unreachable, incomplete, truncated}`.
   The root's children are Structure (BSPs with their lightmaps), Skies,
@@ -288,6 +367,22 @@ Notes on some:
   replaces the open map's tags with a bundle's as one undo step of the
   `tags` document. It does not add tags: one the map lacks refuses the
   import unless `skip_missing`.
+- **Sounds.** `sound.read` lists a `snd!` tag of the map the Tags tool
+  shows: its header, every pitch range with its permutations
+  (`encoded_bytes`, `chunks`), and for the permutation asked for (range 0,
+  permutation 0 by default) its decoded `channels`, `rate`, `frames`,
+  `duration_ms` and `bins` waveform columns of `[low, high]` 16-bit
+  peaks. A permutation that cannot be decoded gives `refusal` in place of
+  those (a codec stream without the game's executable says `This sound
+  needs the game's executable to decode.`) or `error` (a bad length, a
+  missing resource file). It also gives `playback`: whether something
+  plays, which, `position_ms` and the `output`. `sound.play` plays a
+  permutation from `from_ms` through the host's default audio output,
+  opened on the first call, and returns at once; a refusal is `REFUSED`,
+  no device or an unreadable resource `FAILED`. `sound.stop` stops it. The
+  executable comes from the source: the disc's `default.xbe`, or the one
+  beside a loose map or folder (`H2_XBE` names another). The window's
+  Sound window calls the same `App::sound_*` methods.
 - **Placements.** `scenario.set` takes a number, `[x, y, z]`, or for a tag
   reference `{"id": "0x..."}` (or `null` for none). The scenario checks it
   first: read-only fields, integer ranges, finite floats, palette indices,
@@ -359,7 +454,9 @@ Notes on some:
   together in one `edit.batch`, each with its expected `was` value. Tags use
   the `at` form with hex bytes. The optional `known_epoch` on `edit.map`
   refreshes the loaded datum table used to check reference targets. Undo and redo use the same check.
-  `mirror.pending` returns `pending` rows with `doc,path,class,why` and an optional `tag`,
+  `mirror.pending` returns `pending` rows with `doc,path,effect,text,why` and an optional
+  `tag` and `label`: `effect` is when the change takes effect (`now`, `next_use`,
+  `next_spawn`, `reload` or `not_known`, `play::tag_sync::Effect`) and `text` its sentence,
   the game’s existing `journal` from `edit.changes`, and `leaving`.
   A placement block with a different layout revision from the loaded copy
   appears as one `Reload` row. Its fields stay out of the batch until undo,
@@ -623,6 +720,10 @@ the window and the API stay one path.
   `Action::BrowseTags`, `Action::TagExport` and `Action::TagImport`.
   `api/tags.rs` registers `TagGraph` for `tag.tree` and `tag.refs`.
   The tree and `tag.follow` share the reference reader with `tag.refs`.
+- **Scripts (rich editors H1).** `api/scripts.rs` registers `Scripts`
+  for `script.*`, over `app/scripts.rs`'s `Loaded`; `script.source`,
+  `script.follow` and `script.doc` are `Action::Script` through
+  `App::perform`.
 - **HUDs (studio-hud, landed).** `api/hud.rs`: `hud.list` opens a map of
   the source (or a package) in the HUD tool and lists its `nhdt` tags
   and who names them; `hud.read` shows one and gives its widgets
@@ -751,8 +852,8 @@ identical profiles.
   `Api::pump` (the window's between-frames answer).
 - `api/server.rs`: the socket. `api/{docs,scenario,tags,variants,playlists,ui_screens,view}.rs`:
   the namespaces (`volume.*` is in `api/scenario.rs`, `collision.*` in `api/collision.rs`). `api/seams.rs`: providers; `api/tag_fields.rs`,
-  `api/tag_io.rs` and `api/hud.rs` the Tags and HUD tools',
-  `api/geometry.rs` the Modeling tool's.
+  `api/tag_io.rs`, `api/sound.rs`, `api/hud.rs` and `api/scripts.rs` the Tags,
+  sound, HUD and Scripts tools', `api/geometry.rs` the Modeling tool's.
 - `app/commands.rs`: the actions added for the API and the window
   (`SetField`, `EditSelection`, `MovePlacement`, `EditPlaylist`,
   `UndoIn`), `PlaylistEdit`, and `App::perform`. The viewport gizmo

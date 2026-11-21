@@ -501,7 +501,7 @@ impl PlayUi {
                     .pairing
                     .pending
                     .sorted()
-                    .any(|r| r["class"].as_str() == Some(crate::play::tag_sync::RELOAD));
+                    .any(crate::play::tag_sync::Effect::is_reload);
                 if let Some(why) = p.edits_blocked(app) {
                     ui.text_wrapped(why);
                 }
@@ -522,16 +522,18 @@ impl PlayUi {
                 ui.separator_with_text("Player move refused");
                 ui.text_wrapped(why);
             }
-            let mut class = "";
+            // Grouped under the effect sentences.
+            let mut heading = "";
             for r in app.pairing.pending.sorted() {
-                let next = r["class"].as_str().unwrap_or("Pending");
-                if class != next {
+                let effect = crate::play::tag_sync::Effect::of_row(r);
+                let next = effect.map_or("Waiting.", |e| e.sentence());
+                if heading != next {
                     ui.separator_with_text(next);
-                    class = next;
+                    heading = next;
                 }
                 ui.text_wrapped(format!(
                     "{} · {}",
-                    r["path"].as_str().unwrap_or("?"),
+                    r["label"].as_str().or(r["path"].as_str()).unwrap_or("?"),
                     r["why"].as_str().unwrap_or("")
                 ));
                 if r["conflict"] == true && r["resolvable"] != false

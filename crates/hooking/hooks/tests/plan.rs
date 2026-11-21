@@ -74,7 +74,10 @@ fn every_leaf_is_on_by_default() {
         leaves("impl.engine.tags=off,impl.engine.datums=off"),
         ["locale_string_id_find", "locale_string_id_exists"]
     );
-    assert!(leaves("impl.engine.locale=off").is_empty());
+    assert_eq!(
+        leaves("impl.engine.locale=off").len(),
+        engine::abi::OVERRIDES.len() - 2
+    );
     assert!(leaves("impl.engine=off").is_empty());
     assert_eq!(leaves("impl.engine=on").len(), engine::abi::OVERRIDES.len());
     let one = leaves("impl.engine=off,impl.engine.tags.tag_get_checked=on");

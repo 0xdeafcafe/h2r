@@ -181,7 +181,7 @@ fn six_transparent_materials_bind_the_source_images_and_programs() {
         }
         let biped = record(named(b"bipd", model));
         assert_eq!(
-            biped.at("unit.obje.functions[0].string_4"),
+            biped.at("unit.obje.functions[0].import_name"),
             Some(&Val::text("current_shield_damage"))
         );
         assert_eq!(

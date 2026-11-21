@@ -267,10 +267,6 @@ impl NativeLoad {
         );
         let mut out = Self::new(loaded.bsp, loaded.world, base, pages);
         out.layers = Some(Arc::new(layers));
-        // The parts only layer 3 draws (no base map) count as drawn.
-        let own = out.layer3_only().len();
-        out.stats.draws += own;
-        out.stats.untextured = out.stats.untextured.saturating_sub(own);
         out.stats.failed_sections = loaded.failed_sections;
         out.lightmap_error = loaded.lightmap_error;
         Ok(out)
@@ -320,8 +316,14 @@ impl NativeLoad {
         }
     }
 
-    pub fn stats(&self) -> NativeStats {
-        self.stats
+    /// What `lighting` draws: in the Game mode the parts only layer 3
+    /// draws (no base map) count as drawn, not left out.
+    pub fn stats(&self, lighting: Lighting) -> NativeStats {
+        let mut s = self.stats;
+        let own = self.layer3_only(lighting).len();
+        s.draws += own;
+        s.untextured = s.untextured.saturating_sub(own);
+        s
     }
 
     /// The world layers and their plans, when they were read.
@@ -334,12 +336,13 @@ impl NativeLoad {
         &self.world
     }
 
-    /// The parts the Game mode draws with their layer-3 pass that the
-    /// drawn world leaves out (no base map, or a lit part with no page):
-    /// counted in the stats and picked as drawn. Their index ranges are in
-    /// the drawn world's buffers (a filter keeps every vertex and index).
-    fn layer3_only(&self) -> Vec<&native_render::world::WorldDraw> {
-        let Some(l) = self.layers() else {
+    /// The parts `lighting` draws with their layer-3 pass (the Game mode
+    /// only) that the drawn world leaves out (no base map, or a lit part
+    /// with no page): counted in the stats and picked as drawn. Their
+    /// index ranges are in the drawn world's buffers (a filter keeps every
+    /// vertex and index).
+    fn layer3_only(&self, lighting: Lighting) -> Vec<&native_render::world::WorldDraw> {
+        let Some(l) = self.layers().filter(|_| lighting == Lighting::Game) else {
             return Vec::new();
         };
         let drawn: std::collections::HashSet<(Owner, u8)> =
@@ -351,16 +354,17 @@ impl NativeLoad {
             .collect()
     }
 
-    /// The drawn triangles in world space, for picking with the same ray
-    /// code as the editor's world ([`crate::geometry::surface`]): the
-    /// drawn world's and the parts only layer 3 draws.
-    pub fn triangles(&self) -> Vec<crate::geometry::Tri> {
+    /// The triangles `lighting` draws in world space, for picking with the
+    /// same ray code as the editor's world ([`crate::geometry::surface`]):
+    /// the drawn world's and, in the Game mode, the parts only layer 3
+    /// draws. What is picked is what is seen.
+    pub fn triangles(&self, lighting: Lighting) -> Vec<crate::geometry::Tri> {
         use crate::geometry::{cross, normalize, sub};
         let w = &self.world;
         let at = |i: u32| w.vertices.get(i as usize).map(|v| v.position);
         w.draws
             .iter()
-            .chain(self.layer3_only())
+            .chain(self.layer3_only(lighting))
             .flat_map(|d| {
                 let start = d.first_index as usize;
                 let end = start + d.index_count as usize;

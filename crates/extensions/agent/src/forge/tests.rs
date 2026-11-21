@@ -739,8 +739,28 @@ fn a_block_without_live_objects_refuses_a_move_by_name() {
 
 #[test]
 fn local_agent_reads_the_session_and_reports_a_refused_proposal() {
-    struct Backend;
+    use ::forge::look::{
+        census::Entry,
+        monitors::{Looks, Who},
+    };
+    use std::sync::{Arc, Mutex};
+    struct Backend(Arc<Mutex<Looks>>);
     impl local::LocalApi for Backend {
+        fn who(&self, m: Option<&dyn engine::GuestMemory>) -> Who {
+            Who {
+                profile: if m.is_some() { "Chief" } else { "default" }.into(),
+                colour: 4,
+            }
+        }
+        fn look(&self, who: &Who, seat: Option<u64>) -> Result<Value, ::forge::look::Refusal> {
+            self.0.lock().unwrap().report(None, who, seat)
+        }
+        fn look_set(&self, who: &Who, params: Value) -> Result<Value, ::forge::look::Refusal> {
+            self.0.lock().unwrap().set(None, who, &params)
+        }
+        fn monitors(&self, who: &Who) -> Value {
+            self.0.lock().unwrap().monitors(who, true, None)
+        }
         fn status(&self) -> Result<Value, String> {
             Ok(json!({"session":"local"}))
         }
@@ -778,10 +798,60 @@ fn local_agent_reads_the_session_and_reports_a_refused_proposal() {
     }
     let h = Harness::new();
     let mut game = game(1);
-    local::install(&h.agent, Backend);
+    let widget = Entry {
+        key: "widget".into(),
+        name: "widget".into(),
+        source: "map_a".into(),
+        sha256: "a".repeat(64),
+        variants: vec!["blue".into(), "red".into()],
+        change_colours: true,
+        light: false,
+        nodes: 4,
+        triangles: 100,
+    };
+    let looks = Arc::new(Mutex::new(Looks::new(vec![widget], None)));
+    local::install(&h.agent, Backend(looks.clone()));
     assert_eq!(
         h.ok(&mut game, method::STATUS, Value::Null)["session"],
         "local"
+    );
+    // The look methods: readable with no session, refused to set, and
+    // each refusal carries its code in the error's data.
+    let read = h.ok(&mut game, method::LOOK, json!({}));
+    assert_eq!(read["session"], false);
+    assert_eq!(read["look"]["model"], "marker");
+    assert_eq!(read["look"]["primary"], 4);
+    assert_eq!(read["catalogue"][0]["key"], "widget");
+    assert_eq!(
+        h.call(&mut game, method::LOOK, json!({"seat": 1}))["error"]["data"]["code"],
+        "monitor_look_invalid"
+    );
+    assert_eq!(
+        h.call(&mut game, method::LOOK, json!({"seats": 1}))["error"]["code"],
+        code::INVALID_PARAMS
+    );
+    let refused = h.call(&mut game, method::LOOK_SET, json!({"tint": 1}));
+    assert_eq!(refused["error"]["data"]["code"], "monitor_look_no_session");
+    let chief = Who {
+        profile: "Chief".into(),
+        colour: 4,
+    };
+    looks.lock().unwrap().open(None, &chief);
+    let set = h.ok(
+        &mut game,
+        method::LOOK_SET,
+        json!({"model": "widget", "variant": "red", "tint": 1}),
+    );
+    assert_eq!(set["look"]["variant"], "red");
+    let refused = h.call(&mut game, method::LOOK_SET, json!({"tint": 7}));
+    assert_eq!(refused["error"]["data"]["code"], "monitor_look_invalid");
+    assert_eq!(refused["error"]["data"]["field"], "tint");
+    let monitors = h.ok(&mut game, method::MONITORS, json!({}));
+    assert_eq!(monitors["monitors"][0]["name"], "Chief");
+    assert_eq!(monitors["monitors"][0]["look"]["model"], "widget");
+    assert_eq!(
+        h.call(&mut game, method::MONITORS, json!({"x": 1}))["error"]["code"],
+        code::INVALID_PARAMS
     );
     assert_eq!(
         h.ok(&mut game, method::DOC, json!({}))["document"],

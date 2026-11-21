@@ -83,18 +83,18 @@ fn retail_vehicle_functions_survey() {
         println!("== {}", t.2);
         if let Some(Val::Block(fs)) = v.at("unit.obje.functions") {
             for f in fs {
-                let data = match f.at("data_14") {
+                let data = match f.at("default_function") {
                     Some(Val::Bytes(b)) => b.clone(),
                     _ => Vec::new(),
                 };
                 println!(
                     "  function {:?} import {:?} export {:?} off {:?} {:?} scale {:?} data {:02x?}",
-                    f.at("unknown_0"),
-                    text(f, "string_4", &strings),
+                    f.at("flags"),
+                    text(f, "import_name", &strings),
                     text(f, "output", &strings),
-                    text(f, "string_c", &strings),
-                    f.at("unknown_10"),
-                    text(f, "string_1c", &strings),
+                    text(f, "turn_off_with", &strings),
+                    f.at("minimum_value"),
+                    text(f, "scale_by", &strings),
                     data
                 );
             }
@@ -112,8 +112,8 @@ fn retail_vehicle_functions_survey() {
                     "  attachment {ty} marker {:?} c {:?} primary {:?} secondary {:?}",
                     text(x, "marker", &strings),
                     x.at("change_colour"),
-                    text(x, "string_10", &strings),
-                    text(x, "string_14", &strings)
+                    text(x, "primary_scale", &strings),
+                    text(x, "secondary_scale", &strings)
                 );
             }
         }
@@ -236,7 +236,7 @@ fn converted_vehicles_scale_attachments_by_their_functions() {
         let v = base.record(def(b"vehi"), t.0).unwrap();
         let Some(Val::Block(fs)) = v.at("unit.obje.functions") else { continue };
         for f in fs {
-            let i = text(f, "string_4", &strings);
+            let i = text(f, "import_name", &strings);
             if !i.is_empty() {
                 assert!(known.contains(&i), "retail {}: {i}", t.2);
                 retail += 1;
@@ -265,9 +265,9 @@ fn converted_vehicles_scale_attachments_by_their_functions() {
             };
             let mut exports = std::collections::BTreeMap::new();
             for f in &fs {
-                let i = text(f, "string_4", &[]);
+                let i = text(f, "import_name", &[]);
                 assert!(known.contains(&i), "{level} {}: import {i}", t.name);
-                let data = match f.at("data_14") {
+                let data = match f.at("default_function") {
                     Some(Val::Data(d)) => d.clone(),
                     x => panic!("{x:?}"),
                 };
@@ -278,7 +278,7 @@ fn converted_vehicles_scale_attachments_by_their_functions() {
             // Attachments convert in Halo 1's order, skipping the ones
             // that don't; match them by marker and primary.
             for a in atts {
-                let p = text(a, "string_10", &[]);
+                let p = text(a, "primary_scale", &[]);
                 if p.is_empty() {
                     continue;
                 }
@@ -300,7 +300,7 @@ fn converted_vehicles_scale_attachments_by_their_functions() {
                 if let Some(i) = exports.get(out) {
                     let name = h1.tag(tag).unwrap().name.clone();
                     seen.insert((t.name.clone(), name), i.clone());
-                    assert!(atts.iter().any(|x| text(x, "string_10", &[]) == out), "{} {out}", t.name);
+                    assert!(atts.iter().any(|x| text(x, "primary_scale", &[]) == out), "{} {out}", t.name);
                 }
             }
         }

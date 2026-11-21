@@ -134,11 +134,58 @@ pub(crate) fn profile_values(
 /// in the file, as [`write_value`] does.
 pub fn write_profile_value(path: &Path, profile: &str, def: &Def, v: Value) -> Result<(), String> {
     let v = def.check(v)?;
+    let (t, k) = def.table_key();
+    write_profile_toml(path, profile, t, k, def.to_toml(v))
+}
+
+/// Writes `profile`'s text `table.key = text` under [`PROFILES`], keeping
+/// every other key in the file. For the few per-profile values that are
+/// names, not numbers: a [`Def`] holds only a bool or a whole number.
+pub fn write_profile_text(path: &Path, profile: &str, key: &str, text: &str) -> Result<(), String> {
+    let (t, k) = split_key(key)?;
+    write_profile_toml(path, profile, t, k, toml::Value::String(text.into()))
+}
+
+/// `profile`'s text `table.key` in `table`: `Ok(None)` when absent, an
+/// error when the value is there and is not a string.
+pub(crate) fn profile_text(
+    table: &toml::Table,
+    profile: &str,
+    key: &str,
+) -> Result<Option<String>, String> {
+    let (t, k) = split_key(key)?;
+    let Some(v) = table
+        .get(PROFILES)
+        .and_then(|p| p.get(profile))
+        .and_then(|p| p.get(t))
+        .and_then(|p| p.get(k))
+    else {
+        return Ok(None);
+    };
+    match v {
+        toml::Value::String(s) => Ok(Some(s.clone())),
+        _ => Err(format!("{PROFILES}.{profile:?}.{key} must be text")),
+    }
+}
+
+/// A key's table and its name in the table: `forge.monitor_model`.
+pub(crate) fn split_key(key: &str) -> Result<(&str, &str), String> {
+    key.split_once('.')
+        .filter(|(t, k)| !t.is_empty() && !k.is_empty() && !k.contains('.'))
+        .ok_or_else(|| format!("{key:?} is not a table.key setting name"))
+}
+
+fn write_profile_toml(
+    path: &Path,
+    profile: &str,
+    t: &str,
+    k: &str,
+    value: toml::Value,
+) -> Result<(), String> {
     let mut table = match read_table(path) {
         Ok(t) => t.unwrap_or_default(),
         Err(e) => return Err(format!("{e}; not overwritten")),
     };
-    let (t, k) = def.table_key();
     let mut at = &mut table;
     for name in [PROFILES, profile, t] {
         let next = at
@@ -152,7 +199,7 @@ pub fn write_profile_value(path: &Path, profile: &str, def: &Def, v: Value) -> R
         };
         at = next;
     }
-    at.insert(k.into(), def.to_toml(v));
+    at.insert(k.into(), value);
     let text = toml::to_string(&table).map_err(|e| format!("{}: {e}", path.display()))?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
