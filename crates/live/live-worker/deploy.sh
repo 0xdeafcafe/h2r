@@ -22,14 +22,15 @@
 #   --dry-run          build and bundle, deploy nothing (no sign-in needed)
 #   --no-hosts         deploy without the dedicated host containers: a copy of
 #                      config with no container applications and LIVE_MAX_HOSTS
-#                      "0" (Live refuses host launches). Needed until the host
-#                      image is staged (deploy/host/build.sh fills deploy/host/stage)
+#                      "0" (Live refuses host launches)
 #
 # Host image: the containers run registry.cloudflare.com/<account>/h2-live-host
 # tagged with a hash of what the Dockerfile copies (the Dockerfile, the
 # entrypoint and deploy/host/stage). A tag the registry already holds is
 # deployed as it is, without Docker; a new one is built and pushed first,
-# which needs Docker running (colima start).
+# which needs Docker running (colima start), and written to
+# deploy/host/image-tag. Without deploy/host/stage (CI) that committed tag
+# is deployed.
 #
 # Environment:
 #   H2_LIVE_KEY_FILE      cutover/production: read the key from this file
@@ -48,7 +49,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../../.." && pwd)
 
 usage() {
-    sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
 }
 
@@ -103,10 +104,9 @@ else
 fi
 trap 'rm -f "$config"; stty echo 2>/dev/null || true' EXIT
 trap 'exit 1' HUP INT TERM
-if [ "$no_hosts" = 0 ] && [ "$dry_run" = 0 ] &&
-    [ "$(toml_value "[env.$env_name.vars]" LIVE_MAX_HOSTS)" != 0 ] &&
-    ! [ -d "$repo/deploy/host/stage" ]; then
-    die "the host containers need the staged image (deploy/host/build.sh); run again with --no-hosts to deploy without them"
+hosts_on=0
+if [ "$no_hosts" = 0 ] && [ "$(toml_value "[env.$env_name.vars]" LIVE_MAX_HOSTS)" != 0 ]; then
+    hosts_on=1
 fi
 
 wrangler() {
@@ -166,17 +166,14 @@ case "$who" in
 esac
 printf '%s\n' "$who" | grep -E "logged in|Account Name|Account ID|email" || true
 
-# The host image, by content: deploy the registry's copy when it has this
-# tag, otherwise build and push it (the one step that needs Docker).
-hosts_on=0
-if [ "$no_hosts" = 0 ] && [ "$(toml_value "[env.$env_name.vars]" LIVE_MAX_HOSTS)" != 0 ]; then
-    hosts_on=1
-fi
+# The host image, by content. With the staged binaries (deploy/host/build.sh)
+# the tag is their hash: the registry's copy is deployed when it has the tag,
+# otherwise it is built and pushed (the one step that needs Docker) and the
+# tag written to deploy/host/image-tag. Without them (CI) the committed tag
+# is deployed, and it has to be in the registry already.
 if [ "$hosts_on" = 1 ]; then
     host_dir="$repo/deploy/host"
-    host_tag=$(cd "$host_dir" && shasum -a 256 Dockerfile entrypoint.sh stage/h2 \
-        stage/image/libh2game.so stage/image/libh2game.so.stamp | shasum -a 256 | cut -c1-16)
-    step "host image: h2-live-host:$host_tag"
+    tag_file="$host_dir/image-tag"
     account=${CLOUDFLARE_ACCOUNT_ID:-}
     if [ -z "$account" ]; then
         ids=$(printf '%s\n' "$who" | grep -owE '[0-9a-f]{32}' | sort -u)
@@ -184,19 +181,40 @@ if [ "$hosts_on" = 1 ]; then
             die "wrangler whoami lists no single account; set CLOUDFLARE_ACCOUNT_ID"
         account=$ids
     fi
-    if wrangler containers images list --json --filter '^h2-live-host$' 2>/dev/null |
-        grep -q "\"$host_tag\""; then
-        echo "in the registry; deploying it without a build"
+    in_registry() { # TAG: does the registry's h2-live-host have it?
+        wrangler containers images list --json 2>/dev/null | python3 -c '
+import json, sys
+tag = sys.argv[1]
+images = json.load(sys.stdin)
+sys.exit(0 if any(i.get("name") == "h2-live-host" and tag in i.get("tags", []) for i in images) else 1)
+' "$1"
+    }
+    if [ -d "$host_dir/stage" ]; then
+        host_tag=$(cd "$host_dir" && shasum -a 256 Dockerfile entrypoint.sh stage/h2 \
+            stage/image/libh2game.so stage/image/libh2game.so.stamp | shasum -a 256 | cut -c1-16)
+        step "host image: h2-live-host:$host_tag, from the staged binaries"
+        if in_registry "$host_tag"; then
+            echo "in the registry; deploying it without a build"
+        else
+            docker info >/dev/null 2>&1 ||
+                die "h2-live-host:$host_tag is not in the registry and Docker is not running: start it (colima start) and run again"
+            echo "not in the registry: building and pushing it"
+            wrangler containers build --push --tag "h2-live-host:$host_tag" "$host_dir"
+        fi
+        if [ "$(cat "$tag_file" 2>/dev/null)" != "$host_tag" ]; then
+            printf '%s\n' "$host_tag" > "$tag_file"
+            echo "wrote deploy/host/image-tag; commit it so CI deploys this image"
+        fi
     else
-        docker info >/dev/null 2>&1 ||
-            die "h2-live-host:$host_tag is not in the registry and Docker is not running: start it (colima start) and run again"
-        echo "not in the registry: building and pushing it"
-        wrangler containers build --push --tag "h2-live-host:$host_tag" "$host_dir"
+        [ -f "$tag_file" ] || die "no staged host binaries and no deploy/host/image-tag; run deploy/host/build.sh, or --no-hosts"
+        host_tag=$(tr -d ' \n' < "$tag_file")
+        step "host image: h2-live-host:$host_tag, from deploy/host/image-tag"
+        in_registry "$host_tag" ||
+            die "h2-live-host:$host_tag is not in the registry; deploy once from a machine with the staged binaries"
     fi
     image="registry.cloudflare.com/$account/h2-live-host:$host_tag"
-    sed "s|^image = \".*deploy/host/Dockerfile\"\$|image = \"$image\"|" "$config" > "$config.new"
-    mv "$config.new" "$config"
-    grep -q "deploy/host/Dockerfile" "$config" && die "the generated config still builds from the Dockerfile"
+    rm -f "$config"
+    config=$(python3 "$here/host_capacity.py" --deploy-file --host-image "$image")
     echo "containers run $image"
 fi
 
