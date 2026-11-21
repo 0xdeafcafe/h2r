@@ -1622,7 +1622,9 @@ ones first, then the scan of the map's collision geometry
 landing launches out of, and **crouch** spots, where a standing player is
 forced into a crouch). The nav worker scans a map when it builds or
 restores the nav mesh (`autonav::Worker::keep_spots`) and saves the
-result beside it as `<map>.spots`, stamped with the nav generator, the
+result beside it as `<map>.spots` (after the mesh is published and saved,
+and the scan is caught if it panics; a failed scan leaves an empty
+stamped file so it is not repeated every launch), stamped with the nav generator, the
 scan version (`spots::SCAN`) and the map's fingerprint. A scanned bounce
 spot becomes a `glitches::Bounce` (source `scan`, spread 0.03) with its
 launch speed (`spots::Site`); one at a measured spot's place is dropped.
@@ -1651,6 +1653,16 @@ cheaper on a tie) and then goes on to the goal. With no bounce that
 qualifies it is the plain walk. A bounce needs a crouch spot to prime at,
 unless the bot's pair word reads -3 already.
 
+A map can have hundreds of spots, so a plan is bounded: spots farther
+than the limit in a straight line (the walk it must beat in Help, 60
+units in Fun) are dropped before any path query; of the rest the 4 crouch
+spots nearest the bot and the 8 likeliest sites are looked at; each crouch
+spot's walk from the bot is asked once, each site is paired with the
+crouch spot nearest it; and a plan makes at most 32 path queries
+(`bounce_route::MAX_QUERIES`). A show-off plans for the one nearest site
+it has not given up on (`Stuck::blocked`), and gives it up when the route
+fails.
+
 The arc: up at the site's launch speed, gravity 5.2 units a second
 squared (`nav::route`), sideways at 2.5 units a second in the air. The
 flight reaches a goal when the horizontal gap is within the time it takes
@@ -1661,7 +1673,8 @@ measured spot, the 12.3 of superbounce.md.
 **Priming state.** The brain asks for the player's level pair word
 through a reader the host installs (`bots::set_pair_reader`: the unit's
 datum in, the word out; the game's reader is `live_telemetry::havok_agents`'s
-`fixed_pair` and `PAIR_WORD`). With it a priming ends when the word reads
+`fixed_pair_word`). It is read only while a route is asked for or under
+way (`Mind::wants_pair`), not on every sample. With it a priming ends when the word reads
 -3, a word that reads anything else on the ground after priming sends
 the bot back to the crouch spot (twice at most), and a priming whose
 word never reaches -3 fails (`prime_failed`). Without it the bot assumes
@@ -1673,7 +1686,8 @@ the bounce, and while a route runs its pad has no crouch button.
 `PadSource::order_bounce`, `Phantoms::order_bounce`) asks for a route;
 it is planned at the next sample from where the bot stands and played as
 the bot's whole pad (`mind::order`, through `RoutePad`, as an
-`input.route` is): the bot fights and picks up nothing until it is over
+`input.route` is; a death or a change of map ends it, recorded as `died`
+or `map_changed`): the bot fights and picks up nothing until it is over
 (the agent API's `bots.bounce_to`, docs/runtime/agent-api.md). A route
 gives up after 200 s. With the Glitches setting on, a show-off at a spot
 with a crouch spot known is a **Fun** route back to where the bot began;

@@ -75,7 +75,10 @@ pub struct BounceStatus {
     /// crouch and the stand-up.
     pub primed_read: bool,
     /// Why a failed route failed: `timeout`, `no_map`, `no_path`,
-    /// `path_lost`, `prime_failed`, `pair_lost`, `no_bounce`, `enemy`.
+    /// `goal_off_mesh`, `path_lost`, `prime_failed`, `pair_lost`,
+    /// `no_bounce`, `stalled`, `state` (an internal fault), `enemy`
+    /// (a show-off), `no_route` (a show-off with no route), `died` or
+    /// `map_changed`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }

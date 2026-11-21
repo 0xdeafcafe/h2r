@@ -641,6 +641,7 @@ impl Brain {
             self.mind.experience.enter(&name);
             self.map = name;
             self.spots_gen = u64::MAX;
+            self.mind.cancel_order("map_changed");
         }
         // The scan of this map's spots lands when the nav worker is done
         // with the map, which can be after the map loads.
@@ -670,10 +671,16 @@ impl Brain {
             self.sampled = None;
         }
         self.player_unit = unit;
+        // The word is read only for a bot priming or bouncing: the walk
+        // that finds it is dear.
         observation.pair_word = unit
-            .filter(|_| alive)
+            .filter(|_| alive && self.mind.wants_pair())
             .and_then(|(_, datum)| PAIR_READER.get().and_then(|read| read(f.guest, datum)));
         if !same_map {
+            if self.map_data.is_some() {
+                // A route was planned on the old mesh.
+                self.mind.cancel_order("map_changed");
+            }
             self.map_data = map.map(Arc::downgrade);
             self.mind.invalidate_routes();
             // Observations filtered against old geometry must not guide a

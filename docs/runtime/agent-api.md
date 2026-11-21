@@ -2296,7 +2296,7 @@ host has no registered shots to report for that seat.
 
 A brain-driven bot can be sent somewhere by way of a superbounce
 ([bots.md](../game/bots.md#superbounce-routes), docs/game/superbounce.md).
-There was no method that sent a bot to a point, so this is its own.
+The API has no other method that sends a bot to a point; these are the way.
 
 `bots.bounce_to {bot, to, mode?}` asks a bot for a route to `to`
 (`[x, y, z]`, world units). `bot` is a `handle` from `bots.stats`, a
@@ -2316,8 +2316,9 @@ sample.
 pair word is at -3, so a landing bounces), `primed_read` (read from the
 game, or assumed after the crouch and stand-up because it could not be)
 and, for a failed route, `error`: `timeout`, `no_map`, `no_path`,
-`goal_off_mesh`, `path_lost`, `prime_failed`, `pair_lost`, `no_bounce` or
-`enemy`. While a route runs the bot fights and picks up nothing.
+`goal_off_mesh`, `path_lost`, `prime_failed`, `pair_lost`, `no_bounce`,
+`stalled`, `state` (an internal fault), `enemy`, `no_route`, `died` or
+`map_changed`. While a route runs the bot fights and picks up nothing.
 
 `superbounce.spots {map?, kind?}` lists the spots the bots know for a map
 (default the loaded one): `map`, `scanned` (the nav worker has made or

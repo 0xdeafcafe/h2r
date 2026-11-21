@@ -620,3 +620,48 @@ fn each_boot_owns_the_worker_serving_its_maps() {
     assert!(second.0.wants.lock().unwrap().stop);
     assert!(handle().is_none());
 }
+
+struct Scanning {
+    scans: Arc<Mutex<u32>>,
+    panic: bool,
+}
+
+impl Source for Scanning {
+    fn key(&self) -> &str {
+        "spotty"
+    }
+    fn header(&mut self) -> Result<Vec<u8>, String> {
+        Ok(header("spotty", MP, 1))
+    }
+    fn build(&mut self) -> Result<Vec<MapData>, String> {
+        Ok(vec![data(0.0)])
+    }
+    fn spots(&mut self) -> Option<Result<Vec<superbounce::Spot>, String>> {
+        *self.scans.lock().unwrap() += 1;
+        if self.panic {
+            panic!("the scanner expected a surface");
+        }
+        Some(Err("no geometry".into()))
+    }
+}
+
+#[test]
+fn a_scan_that_panics_or_fails_leaves_a_marker_and_is_not_repeated() {
+    for panic in [true, false] {
+        let dir = tmp(if panic { "spots-panic" } else { "spots-fail" });
+        let scans = Arc::new(Mutex::new(0u32));
+        for launch in 0..2 {
+            let s = Arc::clone(&scans);
+            let source = move || {
+                vec![Box::new(Scanning { scans: Arc::clone(&s), panic }) as Box<dyn Source>]
+            };
+            let (w, _) = Worker::new(dir.clone(), Box::new(source));
+            let sum = w.run();
+            assert!(sum.failed.is_empty(), "launch {launch}: {:?}", sum.failed);
+        }
+        assert_eq!(*scans.lock().unwrap(), 1, "scanned once, panic {panic}");
+        let stamp = crate::spots::stamp(MapHeader::parse(&header("spotty", MP, 1)).unwrap().fingerprint);
+        assert_eq!(crate::spots::read(&dir, "spotty", stamp), Some(Vec::new()));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
