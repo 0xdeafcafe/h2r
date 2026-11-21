@@ -84,6 +84,7 @@ Compiler flags: part of the dylib stamp, so set them for both build and run.
 | `h2 host run --pack-control IP:PORT` | private supervisor address supplied to the packed child to read its usage at match end ([packed hosts](../live/dedicated-host.md#packed-hosts)) |
 | `h2 live invite grant <gamertag> [--open-cap N]` | grants invite access, optionally limiting a non-admin's open invites ([Live admins](../live/live-admin.md#5-the-dashboards-server-screen-and-admin-invites)) |
 | `h2 live invite ungrant <gamertag>` | removes the explicit grant and closes a non-admin's open invites |
+| `H2_LIVE_SCREENSHOT_CLASSIFIER_URL` | optional native screenshot classifier at a literal loopback HTTP address. Unset holds captures for review when no classifier is installed ([Screenshot review](../live/live-admin.md#screenshot-review)) |
 | Host, Live, deploy and test-data env (`H2_HOST_*`, `H2_LEASE`, `H2_TOKEN`, `H2_LIVE_*`, `H2_DATA*`, `H2_DISC`, `H2_XBE`, `H2_BENCH_*`...) | dedicated hosts, Live, deploys and test data |
 
 ## Waiting for a measurement

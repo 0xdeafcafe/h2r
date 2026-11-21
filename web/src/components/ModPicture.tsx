@@ -9,7 +9,7 @@ import "../styles/mod-picture.css";
 
 /** A signed-in reader can open a full-size private photo by the same local
  * URL used by the thumbnail. Release it when the reader or photo changes. */
-export function ModPhoto(props: { src: string; alt: string; fullSize?: boolean; failed: () => void }) {
+export function ModPhoto(props: { src: string; alt: string; fullSize?: boolean; loaded?: () => void; failed: () => void }) {
   const [local, setLocal] = createSignal<{ src: string; xuid: string; url: string }>();
   const source = () => {
     const me = identity.me();
@@ -36,7 +36,7 @@ export function ModPhoto(props: { src: string; alt: string; fullSize?: boolean; 
       setLocal({ src, xuid: me.xuid, url: blobUrl });
     })().catch(() => { if (!controller.signal.aborted) props.failed(); });
   });
-  const picture = (url: string) => <img src={url} alt={props.alt} loading="lazy" decoding="async" onError={props.failed} />;
+  const picture = (url: string) => <img src={url} alt={props.alt} loading="lazy" decoding="async" onLoad={props.loaded} onError={props.failed} />;
   return <Show when={source()}>{(url) => props.fullSize
     ? <a href={url()} target="_blank" rel="noopener noreferrer">{picture(url())}</a> : picture(url())}</Show>;
 }
@@ -52,10 +52,15 @@ function StockPicture(props: { base?: string; name: string }) {
   </Show>;
 }
 
-export default function ModPicture(props: { sources: string[]; base?: string; name: string }): JSX.Element {
+export default function ModPicture(props: { sources: string[]; base?: string; name: string; onSource?: (src?: string) => void }): JSX.Element {
   const [broken, setBroken] = createSignal<string[]>([]);
+  const [loaded, setLoaded] = createSignal<string>();
   const url = () => props.sources.find((src) => !broken().includes(src));
-  return <span class="mod-picture"><Show when={url()} fallback={<StockPicture base={props.base} name={props.name} />}>
-    {(src) => <ModPhoto src={src()} alt={props.name} failed={() => setBroken((b) => [...b, src()])} />}
+  createEffect(() => {
+    const src = url();
+    props.onSource?.(loaded() === src ? src : undefined);
+  });
+  return <span class="mod-picture"><Show when={url()} keyed fallback={<StockPicture base={props.base} name={props.name} />}>
+    {(src) => <ModPhoto src={src} alt={props.name} loaded={() => setLoaded(src)} failed={() => setBroken((b) => [...b, src])} />}
   </Show></span>;
 }
