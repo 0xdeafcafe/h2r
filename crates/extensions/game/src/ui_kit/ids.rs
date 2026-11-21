@@ -82,6 +82,7 @@ pub const FAMILIES: &[Family] = &[
     Family::new("forge tools", 0x20ff_c300, 0x10),
     Family::new("forge settings", 0x20ff_c310, 0x20),
     Family::new("forge options", 0x20ff_c330, 0x20),
+    Family::new("hud kit", 0x20ff_c350, 0x10),
     Family::new("co-op texts", 0x20ff_d000, 128),
     Family::new("mod texts", 0x20ff_d100, 0x100),
     Family::new("theater", 0x20ff_d200, 0x100),

@@ -1,7 +1,7 @@
 //! The superbounce game type (docs/game/superbounce.md, "The superbounce
-//! game type"): a HUD plate that says whether the local player's level
-//! pair is primed, lines over the map for the spots a primed landing
-//! launches from, and the `superbounce.state` agent method.
+//! game type"): a HUD that says whether the local player's level pair is
+//! primed, lines over the map for the spots a primed landing launches
+//! from, and the `superbounce.state` agent method.
 //!
 //! **When it is on.** The active variant carries the extension block's
 //! superbounce flag ([`variants::ext::Ext::superbounce`], through
@@ -10,13 +10,29 @@
 //! for the flag, so it is told by name), or `H2_SUPERBOUNCE=1` forces it.
 //!
 //! **Each tick** (a tick observer, only while on) it reads the first local
-//! player's unit, its position and the word of its one pair against the
-//! level (`live_telemetry::havok_agents::fixed_pair`, pair `+0x0c`;
-//! -3 is primed), asks for the loaded map's spots (a background scan, once
-//! per map and structure BSP, cached), finds the nearest bounce spot and
-//! publishes all of it as one [`State`]. The HUD plate
-//! ([`plate_lines`], drawn by `app`'s watermark renderer), the world lines
-//! ([`gpu::Lines`]) and the agent method ([`reply`]) read that state.
+//! player's unit, its position, whether it is airborne, its vertical
+//! velocity and aim, and the word of its one pair against the level
+//! (`live_telemetry::havok_agents::fixed_pair`, pair `+0x0c`; -3 is
+//! primed), asks for the loaded map's spots (a background scan, once per
+//! map and structure BSP, cached), finds the nearest bounce spot and
+//! publishes all of it as one [`State`]. The HUD ([`crate::superbounce_hud`],
+//! through [`hud_state`]), the world lines ([`gpu::Lines`])
+//! and the agent method ([`reply`]) read that state.
+//!
+//! **The charge, the next thing to do and the landings**
+//! (docs/game/superbounce.md, "Charge, crouch spots and landings") are on
+//! the same state: [`State::charge`] and [`State::verb`] from the
+//! [`superbounce_charge`](crate::superbounce_charge) tracker, which also
+//! files [`State::last_landing`] and picks [`State::nav_target`];
+//! [`State::landing`] from the assist's prediction
+//! ([`crate::superbounce_assist::predict`]). The standing-capsule test
+//! behind `under` is [`crate::superbounce_capsule`], over the collision the
+//! scan reads.
+//!
+//! **The medals** (docs/game/superbounce.md, "Medals") are on it too:
+//! every player's chain of bounces ([`crate::superbounce_chain`]), stepped
+//! each tick for every listed player, bots included, published as
+//! [`State::medals`].
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek};
@@ -24,8 +40,15 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use engine::GuestMemory;
-use gfx::world_lines::{Chevrons, Fade, Glow, LineStyle, Pulse, Ribbon};
 use superbounce::{Kind, Spot, Vec3};
+
+pub use crate::superbounce_charge::{
+    Charge, ChargePhase, Course, Landing, LandingResult, Lost, LostReason, NavKind, NavTarget,
+    Predicted, Verb,
+};
+use crate::superbounce_capsule::Room;
+use crate::superbounce_chain::{self as chain, Medals};
+use crate::superbounce_charge::{Tick, Tracker};
 
 /// The feature's name.
 pub const FEATURE: &str = "superbounce";
@@ -38,24 +61,18 @@ pub const PRIMED_WORD: i32 = -3;
 /// Metres in a world unit (10 feet).
 pub const METRES_PER_UNIT: f32 = 3.048;
 /// Where an object's position is, in its body.
-const OBJECT_POSITION: u32 = 0x30;
+pub const OBJECT_POSITION: u32 = 0x30;
 /// The most spot lines drawn: the nearest ones.
 pub const MAX_LINES: usize = 40;
 /// A bounce line's brightness while the player is not primed.
 pub const DIM: f32 = 0.35;
-/// The fall (world units) at which a bounce line is fully red.
-pub const FALL_RED: f32 = 3.0;
-/// A crouch spot's colour: always drawn bright.
-pub const CROUCH_COLOUR: [f32; 3] = [0.0, 0.85, 1.0];
 /// Bounce strips that carry their launch label: the nearest few.
 pub const BOUNCE_LABELS: usize = 3;
-/// Crouch spots that carry their label: the nearest few.
-pub const CROUCH_LABELS: usize = 2;
 /// World units (from the camera) where a line starts to fade, and where
 /// it is gone.
 pub const FADE_NEAR: f32 = 25.0;
 pub const FADE_FAR: f32 = 45.0;
-/// A bounce strip's floor ribbon is as wide as the strip's slot.
+/// A slot's width when the scan gives none.
 pub const RIBBON_WIDTH: f32 = 0.2;
 
 // ---- pure rules ----
@@ -65,193 +82,11 @@ pub fn primed(word: u32) -> bool {
     word as i32 == PRIMED_WORD
 }
 
-/// A bounce line's colour for the fall that reaches it: green for a
-/// standing jump (0), through yellow, to red at [`FALL_RED`] and more.
-pub fn fall_colour(fall: f32) -> [f32; 3] {
-    let t = if fall.is_nan() {
-        0.0
-    } else {
-        (fall / FALL_RED).clamp(0.0, 1.0)
-    };
-    // Hue 120 degrees (green) down to 0 (red), full saturation and value.
-    let h = 2.0 * (1.0 - t);
-    if h < 1.0 {
-        [1.0, h, 0.0]
-    } else {
-        [(2.0 - h).max(0.0), 1.0, 0.0]
-    }
-}
-
-/// `colour` as drawn: dimmed unless the player is primed.
-pub fn shade(colour: [f32; 3], primed: bool) -> [f32; 3] {
-    if primed {
-        colour
-    } else {
-        colour.map(|c| c * DIM)
-    }
-}
-
 /// A variant name (as the record or the list holds it, with the list's
 /// trailing icon) that is the built-in Superbounce.
 pub fn is_superbounce_name(name: &str) -> bool {
     name.trim_end_matches(|c: char| c.is_whitespace() || ('\u{e000}'..='\u{f8ff}').contains(&c))
         == VARIANT_NAME
-}
-
-/// One line to draw: a spot, styled.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Line {
-    pub edge: [Vec3; 2],
-    pub anchor: Vec3,
-    pub color: [f32; 3],
-    pub dashed: bool,
-    /// Only the nearest few spots of each kind carry one ([`lines`]).
-    pub label: Option<String>,
-    pub style: LineStyle,
-}
-
-/// How a bounce strip looks: a bold core with a halo and a floor ribbon,
-/// pulsing and with its arrows flowing the way in while primed, still
-/// (and dimmed, by its colour) when not.
-pub fn bounce_style(drift: [f32; 2], primed: bool) -> LineStyle {
-    let chevrons = (drift[0].hypot(drift[1]) > 1e-3).then_some(Chevrons {
-        direction: [drift[0], drift[1], 0.0],
-        spacing: 0.5,
-        size: 0.18,
-        speed: if primed { 0.4 } else { 0.0 },
-    });
-    LineStyle {
-        width: 3.0,
-        alpha: 1.0,
-        glow: Some(Glow {
-            width: 4.0,
-            alpha: 0.35,
-        }),
-        pulse: primed.then_some(Pulse {
-            period: 1.2,
-            depth: 0.35,
-        }),
-        fade: Some(Fade {
-            start: FADE_NEAR,
-            end: FADE_FAR,
-        }),
-        chevrons,
-        ribbon: Some(Ribbon {
-            width: RIBBON_WIDTH,
-            alpha: 0.18,
-        }),
-        ..LineStyle::default()
-    }
-}
-
-/// How a crouch spot looks: a thin dashed core with a soft halo, steady.
-pub fn crouch_style() -> LineStyle {
-    LineStyle {
-        width: 1.5,
-        alpha: 1.0,
-        glow: Some(Glow {
-            width: 3.0,
-            alpha: 0.25,
-        }),
-        pulse: None,
-        fade: Some(Fade {
-            start: FADE_NEAR,
-            end: FADE_FAR,
-        }),
-        chevrons: None,
-        ribbon: None,
-        ..LineStyle::default()
-    }
-}
-
-/// How `spot` is drawn when the player is, or is not, `primed`. Its
-/// label is always set; [`lines`] drops the far ones.
-pub fn line_for(spot: &Spot, primed: bool) -> Line {
-    let anchor = anchor(spot);
-    match spot.kind {
-        Kind::Bounce => Line {
-            edge: spot.edge,
-            anchor,
-            color: shade(fall_colour(spot.fall), primed),
-            dashed: false,
-            label: Some(format!("+{:.1}", spot.launch)),
-            style: bounce_style(spot.drift, primed),
-        },
-        Kind::Crouch => Line {
-            edge: spot.edge,
-            anchor,
-            color: CROUCH_COLOUR,
-            dashed: true,
-            label: Some("crouch".into()),
-            style: crouch_style(),
-        },
-    }
-}
-
-fn distance(a: Vec3, b: Vec3) -> f32 {
-    let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-    (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
-}
-
-/// The middle of a spot's edge, where its line is anchored.
-fn anchor(spot: &Spot) -> Vec3 {
-    let [a, b] = spot.edge;
-    [
-        (a[0] + b[0]) / 2.0,
-        (a[1] + b[1]) / 2.0,
-        (a[2] + b[2]) / 2.0,
-    ]
-}
-
-/// The strip the assist is steering onto, brightened: full colour whether
-/// or not the player is primed, a bolder core and halo, and pulsing.
-pub fn highlight(line: &mut Line, spot: &Spot) {
-    line.color = fall_colour(spot.fall);
-    line.style.width = 4.5;
-    line.style.glow = Some(Glow {
-        width: 7.0,
-        alpha: 0.6,
-    });
-    line.style.pulse = Some(Pulse {
-        period: 0.6,
-        depth: 0.4,
-    });
-}
-
-/// The lines for the `max` spots nearest `at` (by their edges' middle),
-/// nearest first. None without a position. Only the chosen spots get a
-/// styled line; only the nearest [`BOUNCE_LABELS`] bounce strips and
-/// [`CROUCH_LABELS`] crouch spots keep a label. The rest cost a distance.
-pub fn lines(spots: &[Spot], at: Option<Vec3>, primed: bool, max: usize) -> Vec<Line> {
-    let Some(at) = at else { return Vec::new() };
-    if max == 0 {
-        return Vec::new();
-    }
-    let mut near: Vec<(f32, &Spot)> = spots
-        .iter()
-        .map(|s| (distance(anchor(s), at), s))
-        .collect();
-    let by_distance = |a: &(f32, &Spot), b: &(f32, &Spot)| a.0.total_cmp(&b.0);
-    if near.len() > max {
-        near.select_nth_unstable_by(max, by_distance);
-        near.truncate(max);
-    }
-    near.sort_by(by_distance);
-    let (mut bounces, mut crouches) = (0, 0);
-    near.into_iter()
-        .map(|(_, s)| {
-            let mut line = line_for(s, primed);
-            let (seen, labelled) = match s.kind {
-                Kind::Bounce => (&mut bounces, BOUNCE_LABELS),
-                Kind::Crouch => (&mut crouches, CROUCH_LABELS),
-            };
-            if *seen >= labelled {
-                line.label = None;
-            }
-            *seen += 1;
-            line
-        })
-        .collect()
 }
 
 // ---- the published state ----
@@ -290,6 +125,45 @@ pub struct State {
     pub map: Option<String>,
     pub bounce: usize,
     pub crouch: usize,
+    /// The biped is off the ground (biped flags bit 0, as `world.object`'s
+    /// `physics.airborne` reads it); false without a biped.
+    pub airborne: bool,
+    /// Vertical velocity, world units a second, up positive.
+    pub vz: Option<f32>,
+    /// The unit's aim as a yaw, radians from +X toward +Y. The first-person
+    /// camera looks along it.
+    pub yaw: Option<f32>,
+    /// The charge meter: the phase of the recipe and its fill; `None` is
+    /// hidden (not primed, and not crouched by a crouch spot).
+    pub charge: Option<Charge>,
+    /// The recipe's step for the HUD's prompt line, while `under` or
+    /// `held`.
+    pub verb: Option<Verb>,
+    /// The navpoint's target: the nearest crouch spot while not primed;
+    /// while primed the chosen strip (`superbounce_charge::nav_target`),
+    /// and while falling onto a strip that strip
+    /// (`superbounce_charge::nav_to_landing`). `None` without a position
+    /// or a spot of that kind.
+    pub nav_target: Option<NavTarget>,
+    /// Where to jump from for the chosen strip, while primed and on the
+    /// ground (`superbounce_world::takeoff`); `None` when none is found.
+    pub takeoff: Option<Vec3>,
+    /// The landing the assist predicts, while airborne and falling toward
+    /// a strip.
+    pub landing: Option<Predicted>,
+    /// The last landing within 0.5 of a strip, filed at touchdown; kept
+    /// until the next one or the game's end.
+    pub last_landing: Option<Landing>,
+    /// Ticks the primed body has been still (speed under 0.03 units/s);
+    /// 0 while not primed. The primed fill is 1 less this over 38.
+    pub still_ticks: u32,
+    /// Whether the standing capsule fits at the player's origin, by the
+    /// capsule test against the scanned collision
+    /// ([`crate::superbounce_capsule`]); `None` before the scan is ready.
+    pub standing_fits: Option<bool>,
+    /// Every player's medals this game: the records and the last awards
+    /// ([`crate::superbounce_chain`]).
+    pub medals: chain::View,
 }
 
 impl State {
@@ -302,37 +176,56 @@ impl State {
         map: None,
         bounce: 0,
         crouch: 0,
+        airborne: false,
+        vz: None,
+        yaw: None,
+        charge: None,
+        verb: None,
+        nav_target: None,
+        takeoff: None,
+        landing: None,
+        last_landing: None,
+        still_ticks: 0,
+        standing_fits: None,
+        medals: chain::View::EMPTY,
     };
 
     pub fn primed(&self) -> bool {
         self.word.is_some_and(primed)
     }
+
+    /// Where the nearest spot is from where the player looks: radians
+    /// clockwise from straight ahead, in (-pi, pi] (a spot to the right is
+    /// positive, as an arrow on screen turns). None without a position, an
+    /// aim or a spot, or standing on it.
+    pub fn bearing(&self) -> Option<f32> {
+        bearing(self.position?, self.yaw?, self.nearest?.edge)
+    }
 }
 
-/// The plate's lines for `s`: how the pair stands, then the nearest spot.
-pub fn hud_lines(s: &State) -> Vec<String> {
-    let first = match s.word {
-        Some(w) if primed(w) => format!("SUPERBOUNCE  PRIMED ({PRIMED_WORD})"),
-        Some(w) => format!("SUPERBOUNCE  not primed (word {})", w as i32),
-        None => "SUPERBOUNCE  not primed (no pair)".into(),
+/// [`State::bearing`] for a player at `at` aiming along `yaw`, to the
+/// nearest point of `edge`, in the horizontal plane.
+pub fn bearing(at: Vec3, yaw: f32, edge: [Vec3; 2]) -> Option<f32> {
+    use std::f32::consts::{PI, TAU};
+    let [a, b] = edge;
+    let (ex, ey) = (b[0] - a[0], b[1] - a[1]);
+    let len2 = ex * ex + ey * ey;
+    let t = if len2 > 0.0 {
+        (((at[0] - a[0]) * ex + (at[1] - a[1]) * ey) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
     };
-    let second = match &s.scan {
-        ScanState::Scanning | ScanState::Idle if s.nearest.is_none() => "scanning map...".into(),
-        ScanState::Failed(why) => format!("no spots: {why}"),
-        _ => match s.nearest {
-            Some(n) if s.primed() => format!(
-                "nearest spot {:.1} m  launch +{:.1}",
-                n.distance * METRES_PER_UNIT,
-                n.launch
-            ),
-            Some(n) => format!(
-                "nearest spot {:.1} m  crouch-stand to prime",
-                n.distance * METRES_PER_UNIT
-            ),
-            None => "no bounce spots on this map".into(),
-        },
-    };
-    vec![first, second]
+    let (dx, dy) = (a[0] + t * ex - at[0], a[1] + t * ey - at[1]);
+    if dx.hypot(dy) < 0.05 || !yaw.is_finite() {
+        return None;
+    }
+    // World yaw turns from +X toward +Y, which is to the left (Z up).
+    let left = dy.atan2(dx) - yaw;
+    let mut cw = (-left).rem_euclid(TAU);
+    if cw > PI {
+        cw -= TAU;
+    }
+    Some(cw)
 }
 
 static STATE: Mutex<State> = Mutex::new(State::EMPTY);
@@ -352,14 +245,14 @@ pub fn active() -> bool {
     ACTIVE.load(Ordering::Relaxed)
 }
 
-/// The HUD plate's lines; empty while the mode is off. `app`'s watermark
-/// asks for them each refresh.
-pub fn plate_lines() -> Vec<String> {
+/// The state for the HUD: `None` while the mode is off (one atomic load
+/// then). The window asks each present.
+pub fn hud_state() -> Option<State> {
     if !active() {
-        return Vec::new();
+        return None;
     }
     let s = state();
-    if s.active { hud_lines(&s) } else { Vec::new() }
+    s.active.then_some(s)
 }
 
 /// `superbounce.state`'s result for `s`.
@@ -391,7 +284,110 @@ pub fn reply(s: &State) -> agent_proto::superbounce::State {
             bounce: s.bounce,
             crouch: s.crouch,
         },
+        airborne: s.position.map(|_| s.airborne),
+        vz: s.vz.map(f64::from),
+        yaw: s.yaw.map(f64::from),
+        charge: s.charge.map(|c| wire::Charge {
+            phase: match c.phase {
+                ChargePhase::Near => wire::ChargePhase::Near,
+                ChargePhase::Under => wire::ChargePhase::Under,
+                ChargePhase::Held => wire::ChargePhase::Held,
+                ChargePhase::Primed => wire::ChargePhase::Primed,
+                ChargePhase::Lost => wire::ChargePhase::Lost,
+            },
+            fill: f64::from(c.fill),
+            still_ticks: s.still_ticks,
+        }),
+        verb: s.verb.map(|v| match v {
+            Verb::LetGoOfCrouch => wire::Verb::LetGoOfCrouch,
+            Verb::WalkOutToStand => wire::Verb::WalkOutToStand,
+            Verb::KeepMoving => wire::Verb::KeepMoving,
+            Verb::ChargeAgain(_) => wire::Verb::ChargeAgain,
+        }),
+        lost_reason: lost(s).map(|l| match l.reason {
+            LostReason::StoodStill => wire::LostReason::StoodStill,
+            LostReason::Crouched => wire::LostReason::Crouched,
+            LostReason::Unknown => wire::LostReason::Unknown,
+        }),
+        nav_target: s.nav_target.map(|n| wire::NavTarget {
+            at: v3(n.at),
+            kind: match n.kind {
+                NavKind::Crouch => wire::NavKind::Crouch,
+                NavKind::Strip => wire::NavKind::Strip,
+            },
+            distance: f64::from(n.distance),
+            fall: f64::from(n.fall),
+        }),
+        takeoff: s.takeoff.map(v3),
+        landing: s.landing.map(|p| wire::Predicted {
+            at: v3(p.at),
+            verdict: match p.verdict {
+                Course::OnSlot => wire::Course::OnSlot,
+                Course::Fixable => wire::Course::Fixable,
+                Course::Miss => wire::Course::Miss,
+            },
+            speed: f64::from(p.speed),
+            need: f64::from(p.need),
+            miss: f64::from(p.miss()),
+            locked: p.locked(),
+        }),
+        last_landing: s.last_landing.map(|l| wire::Landing {
+            result: match l.result {
+                LandingResult::Bounce => wire::LandingResult::Bounce,
+                LandingResult::NotPrimed => wire::LandingResult::NotPrimed,
+                LandingResult::Missed => wire::LandingResult::Missed,
+                LandingResult::TooSlow => wire::LandingResult::TooSlow,
+                LandingResult::NoBounce => wire::LandingResult::NoBounce,
+            },
+            tick: l.tick,
+            at: v3(l.at),
+        }),
+        standing_fits: s.standing_fits,
+        medals: medals_reply(&s.medals),
     }
+}
+
+/// `superbounce.state`'s `medals` for `m`.
+pub fn medals_reply(m: &chain::View) -> agent_proto::superbounce::Medals {
+    use agent_proto::superbounce as wire;
+    let ids = |medals: &[hud_kit_core::huds::superbounce::Medal]| {
+        medals.iter().map(|m| m.id().to_owned()).collect()
+    };
+    wire::Medals {
+        players: m
+            .players
+            .iter()
+            .map(|(slot, r)| wire::MedalPlayer {
+                player: *slot,
+                chain: r.chain,
+                live: r.live,
+                counts: r
+                    .counts
+                    .iter()
+                    .map(|(m, n)| (m.id().to_owned(), *n))
+                    .collect(),
+            })
+            .collect(),
+        recent: m
+            .recent
+            .iter()
+            .map(|a| wire::MedalAward {
+                player: a.slot,
+                tick: a.tick,
+                chain: a.chain,
+                medals: ids(&a.medals),
+            })
+            .collect(),
+    }
+}
+
+/// The last loss, while the charge shows `lost` or the verb asks for a
+/// new charge.
+pub fn lost(s: &State) -> Option<Lost> {
+    s.charge.and_then(|c| c.lost).or(match s.verb {
+        Some(Verb::ChargeAgain(l)) => Some(l),
+        _ => None,
+    })
 }
 
 /// `superbounce.state` takes no parameters: null or `{}`.
@@ -419,12 +415,28 @@ struct ScanKey {
     bsp: usize,
 }
 
+/// One scan's result: the spots, and the collision they were found in
+/// (for the standing-capsule test).
+struct Scanned {
+    spots: Vec<Spot>,
+    room: Room,
+}
+
 #[derive(Default)]
 struct Scans {
     current: Option<ScanKey>,
+    /// The current key's spots with the map's verified file applied
+    /// (`superbounce::verified`), failed ones too: what the verifier
+    /// indexes.
+    scanned: Arc<Vec<Spot>>,
+    /// The same without the failed spots: what is drawn and steered onto.
     spots: Arc<Vec<Spot>>,
+    /// The bots' spots generation the verified file was applied at.
+    verified_at: u64,
+    /// The current key's collision; empty until its scan is ready.
+    room: Arc<Room>,
     status: ScanState,
-    cache: HashMap<ScanKey, Arc<Vec<Spot>>>,
+    cache: HashMap<ScanKey, (Arc<Vec<Spot>>, Arc<Room>)>,
     /// Scans running now, so leaving a map and coming back does not start a
     /// second one.
     inflight: HashSet<ScanKey>,
@@ -435,21 +447,29 @@ fn scans() -> &'static Mutex<Scans> {
     S.get_or_init(Mutex::default)
 }
 
-/// The spots of the structure BSP `bsp` of an open map. Isolated so that
-/// `superbounce::scan_map` taking a raw resource source is a one-line
-/// change here.
+/// The spots of the structure BSP `bsp` of an open map, and its collision
+/// for the capsule test (`superbounce::scan_map` is `scan` over
+/// `map_polys`). Isolated so that the scan taking a raw resource source is
+/// a one-line change here.
 #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
 fn scan_one<R: Read + Seek>(
     map: &mut map::Map<R>,
     raw: &mut dyn tags::geometry::RawSource,
     bsp: usize,
-) -> Result<Vec<Spot>, String> {
+) -> Result<Scanned, String> {
     let _ = &raw;
-    superbounce::scan_map(map, bsp).map_err(|e| e.to_string())
+    // The starting locations and the measured priming places, as `h2
+    // superbounce scan` and the bots' scan use them.
+    let ctx = superbounce::map_context(map).map_err(|e| e.to_string())?;
+    let polys = superbounce::map_polys(map, bsp).map_err(|e| e.to_string())?;
+    Ok(Scanned {
+        spots: superbounce::scan_in(&polys, &ctx),
+        room: Room::new(&polys),
+    })
 }
 
 #[cfg(feature = "gpu")]
-fn scan(key: &ScanKey) -> Result<Vec<Spot>, String> {
+fn scan(key: &ScanKey) -> Result<Scanned, String> {
     let (mut map, files) = crate::native_map::open(&key.map).map_err(|e| e.to_string())?;
     if map.header().checksum != key.checksum {
         return Err("the mounted map file is not the loaded one".into());
@@ -459,7 +479,7 @@ fn scan(key: &ScanKey) -> Result<Vec<Spot>, String> {
 }
 
 #[cfg(not(feature = "gpu"))]
-fn scan(_: &ScanKey) -> Result<Vec<Spot>, String> {
+fn scan(_: &ScanKey) -> Result<Scanned, String> {
     Err("this build has no map access".into())
 }
 
@@ -467,21 +487,54 @@ fn scan(_: &ScanKey) -> Result<Vec<Spot>, String> {
 /// first time the key is seen.
 struct ScanView {
     spots: Arc<Vec<Spot>>,
+    room: Arc<Room>,
     status: ScanState,
+}
+
+/// `raw` with the map's verified file applied: every spot, and the ones not
+/// failed.
+fn with_verified(map: &str, raw: &[Spot]) -> (Arc<Vec<Spot>>, Arc<Vec<Spot>>) {
+    let mut all = raw.to_vec();
+    superbounce::verified::apply(&mut all, &bots::spots::verified_for(map));
+    let shown: Vec<Spot> = all
+        .iter()
+        .filter(|s| s.status != superbounce::Status::Failed)
+        .copied()
+        .collect();
+    (Arc::new(all), Arc::new(shown))
 }
 
 fn request_scan(key: ScanKey) -> ScanView {
     let mut s = lock(scans());
+    // A verified file written (or read) since: apply it again.
+    let generation = bots::spots::generation();
+    if s.current.as_ref() == Some(&key)
+        && s.verified_at != generation
+        && let Some((raw, _)) = s.cache.get(&key).cloned()
+    {
+        let (all, shown) = with_verified(&key.map, &raw);
+        s.scanned = all;
+        s.spots = shown;
+        s.verified_at = generation;
+    }
     if s.current.as_ref() != Some(&key) {
         s.current = Some(key.clone());
-        if let Some(spots) = s.cache.get(&key).cloned() {
-            s.spots = spots;
+        if let Some((spots, room)) = s.cache.get(&key).cloned() {
+            let (all, shown) = with_verified(&key.map, &spots);
+            s.scanned = all;
+            s.spots = shown;
+            s.verified_at = generation;
+            s.room = room;
             s.status = ScanState::Ready;
         } else if s.inflight.contains(&key) {
             s.spots = Arc::default();
+            s.scanned = Arc::default();
+            s.room = Arc::default();
             s.status = ScanState::Scanning;
         } else {
             s.spots = Arc::default();
+            s.scanned = Arc::default();
+            s.room = Arc::default();
             s.status = ScanState::Scanning;
             s.inflight.insert(key.clone());
             let k = key.clone();
@@ -500,26 +553,31 @@ fn request_scan(key: ScanKey) -> ScanView {
     }
     ScanView {
         spots: Arc::clone(&s.spots),
+        room: Arc::clone(&s.room),
         status: s.status.clone(),
     }
 }
 
-fn finish_scan(key: ScanKey, found: Result<Vec<Spot>, String>) {
+fn finish_scan(key: ScanKey, found: Result<Scanned, String>) {
     let mut s = lock(scans());
     s.inflight.remove(&key);
     let here = s.current.as_ref() == Some(&key);
     match found {
-        Ok(spots) => {
+        Ok(Scanned { spots, room }) => {
             eprintln!(
                 "superbounce: {} spots on {} (BSP {})",
                 spots.len(),
                 key.map,
                 key.bsp
             );
-            let spots = Arc::new(spots);
-            s.cache.insert(key, Arc::clone(&spots));
+            let (spots, room) = (Arc::new(spots), Arc::new(room));
+            s.cache.insert(key.clone(), (Arc::clone(&spots), Arc::clone(&room)));
             if here {
-                s.spots = spots;
+                let (all, shown) = with_verified(&key.map, &spots);
+                s.scanned = all;
+                s.spots = shown;
+                s.verified_at = bots::spots::generation();
+                s.room = room;
                 s.status = ScanState::Ready;
             }
         }
@@ -532,9 +590,46 @@ fn finish_scan(key: ScanKey, found: Result<Vec<Spot>, String>) {
     }
 }
 
-/// The spots of the current scan, for the world lines.
+/// The spots of the current scan, for the world lines: the map's verified
+/// file applied, the failed spots left out.
 pub fn current_spots() -> Arc<Vec<Spot>> {
     Arc::clone(&lock(scans()).spots)
+}
+
+/// Every spot of the current scan with its verified status, failed ones
+/// too, and the map they are for: what `superbounce.verify` indexes.
+pub fn scanned_spots() -> (Option<String>, Arc<Vec<Spot>>) {
+    let s = lock(scans());
+    (
+        s.current.as_ref().map(|k| k.map.clone()),
+        Arc::clone(&s.scanned),
+    )
+}
+
+/// The collision of the current scan, for the standing-capsule test;
+/// empty until the scan is ready.
+pub fn current_room() -> Arc<Room> {
+    Arc::clone(&lock(scans()).room)
+}
+
+/// Whether the standing capsule fits at `origin` on the loaded map, while
+/// the mode is on and its scan is ready (`world.object`'s
+/// `physics.standing_fits`); `None` otherwise.
+pub fn standing_fits_at(origin: Vec3) -> Option<bool> {
+    if !active() {
+        return None;
+    }
+    let room = current_room();
+    (!room.is_empty()).then(|| room.standing_fits(origin))
+}
+
+/// `world.object`'s `physics.standing_fits`, from [`standing_fits_at`].
+pub struct StandingFitsNow;
+
+impl agent::StandingFits for StandingFitsNow {
+    fn standing_fits(&mut self, origin: [f64; 3]) -> Option<bool> {
+        standing_fits_at(origin.map(|v| v as f32))
+    }
 }
 
 // ---- reading the game ----
@@ -585,6 +680,15 @@ pub fn set_override(on: Option<bool>) -> &'static str {
     name
 }
 
+/// The override now: what [`set_override`] was last given.
+pub fn override_now() -> Option<bool> {
+    match OVERRIDE.load(Ordering::Relaxed) {
+        FORCE_ON => Some(true),
+        FORCE_OFF => Some(false),
+        _ => None,
+    }
+}
+
 /// Whether the mode is on in the game running now.
 fn on_now(m: &dyn GuestMemory) -> bool {
     match OVERRIDE.load(Ordering::Relaxed) {
@@ -597,19 +701,42 @@ fn on_now(m: &dyn GuestMemory) -> bool {
         || variant_name(m).is_some_and(|n| is_superbounce_name(&n))
 }
 
-/// The local player's word and position.
+/// The local player's word, position and motion.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Live {
     word: Option<u32>,
     position: Option<Vec3>,
+    airborne: bool,
+    vz: Option<f32>,
+    yaw: Option<f32>,
+    /// World units a second.
+    velocity: Option<Vec3>,
+    /// The crouch request, unit flags bit 23.
+    request: bool,
+    /// The game tick.
+    tick: Option<u32>,
+}
+
+/// The game tick, from the game-time record.
+fn game_tick(m: &dyn GuestMemory) -> Option<u32> {
+    use live_telemetry::layout::{GAME_TIME_PTR, TIME_TICK};
+    let time = m.u32(GAME_TIME_PTR).ok().filter(|&t| t != 0)?;
+    m.u32(time.wrapping_add(TIME_TICK)).ok()
 }
 
 fn read_live(m: &dyn GuestMemory) -> Live {
+    let tick = game_tick(m);
     let Ok(units) = crate::skulls_custom::local_units(m) else {
-        return Live::default();
+        return Live {
+            tick,
+            ..Live::default()
+        };
     };
     let Some(u) = units.first() else {
-        return Live::default();
+        return Live {
+            tick,
+            ..Live::default()
+        };
     };
     let position = (|| {
         let at = u.body.wrapping_add(OBJECT_POSITION);
@@ -619,7 +746,38 @@ fn read_live(m: &dyn GuestMemory) -> Live {
     let word = live_telemetry::havok_agents::fixed_pair_word(m, u.unit)
         .ok()
         .flatten();
-    Live { word, position }
+    use live_telemetry::layout::{
+        BIPED_FLAGS, BODY_VELOCITY, UNIT_AIM, UNIT_FLAG_CROUCH, UNIT_FLAGS,
+    };
+    let f = |at: u32| {
+        m.u32(u.body.wrapping_add(at))
+            .ok()
+            .map(f32::from_bits)
+            .filter(|v| v.is_finite())
+    };
+    let vz = f(BODY_VELOCITY + 8);
+    let velocity = (|| Some([f(BODY_VELOCITY)?, f(BODY_VELOCITY + 4)?, vz?]))();
+    let request = m
+        .u32(u.body.wrapping_add(UNIT_FLAGS))
+        .is_ok_and(|flags| flags & UNIT_FLAG_CROUCH != 0);
+    let yaw = match (f(UNIT_AIM), f(UNIT_AIM + 4)) {
+        (Some(x), Some(y)) if x != 0.0 || y != 0.0 => Some(y.atan2(x)),
+        _ => None,
+    };
+    // Bit 0 of the biped flags, as `world.object` reads `physics.airborne`.
+    let airborne = u.kind == engine::view::objects::BIPED
+        && m.u16(u.body.wrapping_add(BIPED_FLAGS))
+            .is_ok_and(|flags| flags & 1 != 0);
+    Live {
+        word,
+        position,
+        airborne,
+        vz,
+        yaw,
+        velocity,
+        request,
+        tick,
+    }
 }
 
 /// The loaded map's cache header checksum (`+0x2d0` in the header the name
@@ -643,10 +801,56 @@ fn scan_key(m: &dyn GuestMemory) -> Option<ScanKey> {
 /// guest's late host block is picked up. A second at 30 Hz.
 const RECHECK: u32 = 30;
 static TICKS: AtomicU32 = AtomicU32::new(0);
+/// The charge and landing state kept from tick to tick.
+static TRACKER: Mutex<Tracker> = Mutex::new(Tracker::new());
+/// Every player's chain and medals this game.
+static MEDALS: Mutex<Medals> = Mutex::new(Medals::empty());
+/// The first local player's slot and user at the last tick, for
+/// `superbounce.medal_test`.
+static LOCAL: Mutex<Option<(u8, u8)>> = Mutex::new(None);
 
 fn reset() {
     ACTIVE.store(false, Ordering::Relaxed);
+    bots::set_practice(false);
     *lock(&STATE) = State::EMPTY;
+    *lock(&TRACKER) = Tracker::new();
+    *lock(&MEDALS) = Medals::empty();
+    *lock(&LOCAL) = None;
+    crate::superbounce_view::reset();
+    crate::superbounce_ghost::reset();
+}
+
+/// `superbounce.medal_test`: files a bounce at chain count `chain` (or a
+/// Bounced with `bounced`) for the first local player, as the chain's rule
+/// gives it. The HUD line and `medals` show it as a real one's; nothing
+/// is sent or recorded. Refused while the mode is off or there is no
+/// local player.
+pub fn medal_test(
+    p: &agent_proto::superbounce::MedalTestParams,
+) -> Result<agent_proto::superbounce::MedalTest, String> {
+    if !active() {
+        return Err("the superbounce mode is off (superbounce.set {\"on\":true})".into());
+    }
+    let chain = match (p.chain, p.bounced) {
+        (Some(0), _) => return Err("chain is 1 or more".into()),
+        (Some(n), false) => n,
+        (None, true) => 0,
+        (Some(_), true) => return Err("give chain or bounced, not both".into()),
+        (None, false) => return Err("give chain (1 and up) or bounced".into()),
+    };
+    let Some((slot, user)) = *lock(&LOCAL) else {
+        return Err("no local player with a unit".into());
+    };
+    let tick = TICKS.load(Ordering::Relaxed);
+    let a = lock(&MEDALS).test(slot, Some(user), tick, chain, p.bounced);
+    let view = lock(&MEDALS).view();
+    lock(&STATE).medals = view;
+    Ok(agent_proto::superbounce::MedalTest {
+        player: slot,
+        chain: a.chain,
+        medals: a.medals.iter().map(|m| m.id().to_owned()).collect(),
+        line: chain::highest(&a.medals).map(|m| m.line()),
+    })
 }
 
 /// Decides on or off from the game now. Going off clears the state.
@@ -655,8 +859,15 @@ fn decide(o: &hooks::Obs) {
         let guest = o.guest();
         on_now(&*guest)
     };
+    // The bots practise bounces instead of fighting while it is on
+    // (docs/game/bots.md, "Practising bounces").
+    bots::set_practice(on);
     if ACTIVE.swap(on, Ordering::Relaxed) && !on {
         *lock(&STATE) = State::EMPTY;
+        *lock(&TRACKER) = Tracker::new();
+        *lock(&MEDALS) = Medals::empty();
+        *lock(&LOCAL) = None;
+        crate::superbounce_ghost::reset();
     }
 }
 
@@ -669,16 +880,16 @@ fn on_tick(o: &hooks::Obs) {
     if !ACTIVE.load(Ordering::Relaxed) {
         return;
     }
-    let (live, key) = {
+    let (live, key, players) = {
         let guest = o.guest();
         let m: &dyn GuestMemory = &*guest;
-        (read_live(m), scan_key(m))
+        (read_live(m), scan_key(m), chain::read_players(m))
     };
     let map = key.as_ref().map(|k| k.map.clone());
     let view = key.map(request_scan);
-    let (spots, scan) = match view {
-        Some(v) => (v.spots, v.status),
-        None => (Arc::default(), ScanState::Idle),
+    let (spots, room, scan) = match view {
+        Some(v) => (v.spots, v.room, v.status),
+        None => (Arc::default(), Arc::default(), ScanState::Idle),
     };
     let nearest = live.position.and_then(|p| {
         superbounce::nearest(&spots, p).map(|(s, d)| Near {
@@ -689,6 +900,80 @@ fn on_tick(o: &hooks::Obs) {
         })
     });
     let count = |k: Kind| spots.iter().filter(|s| s.kind == k).count();
+    let standing_fits = live
+        .position
+        .filter(|_| !room.is_empty())
+        .map(|p| room.standing_fits(p));
+    let step = lock(&TRACKER).step(
+        &Tick {
+            tick: live.tick,
+            word: live.word,
+            position: live.position,
+            velocity: live.velocity,
+            airborne: live.airborne,
+            request: live.request,
+            crouch_held: crate::superbounce_assist::crouch_held(),
+            standing_fits,
+        },
+        &spots,
+    );
+    let landing = match (live.position, live.velocity) {
+        (Some(position), Some(velocity)) => crate::superbounce_assist::predict(
+            &spots,
+            &crate::superbounce_assist::Body {
+                position,
+                velocity,
+                yaw: live.yaw.unwrap_or(0.0),
+                airborne: live.airborne,
+            },
+        ),
+        _ => None,
+    };
+    // Falling onto a strip, that strip is the target: the navpoint, the
+    // world's marks and the lock agree. A crouch while primed keeps the
+    // tracker's crouch spot.
+    let nav_target = match (&landing, step.nav_target, live.position) {
+        (Some(l), Some(n), Some(p)) if n.kind == NavKind::Strip => {
+            Some(crate::superbounce_charge::nav_to_landing(l, p))
+        }
+        _ => step.nav_target,
+    };
+    let takeoff = match (nav_target, live.position) {
+        (Some(n), Some(p)) if n.kind == NavKind::Strip && !live.airborne => spots
+            .iter()
+            .find(|s| s.kind == Kind::Bounce && s.stand == n.at)
+            .and_then(|s| {
+                crate::superbounce_world::takeoff(s.stand, s.fall, s.drift, p, |xy, top| {
+                    room.floor_at(xy, top)
+                })
+            }),
+        _ => None,
+    };
+    *lock(&LOCAL) = players
+        .iter()
+        .filter(|p| p.tick.is_some())
+        .filter_map(|p| Some((p.slot, p.user?)))
+        .min_by_key(|(_, user)| *user);
+    let tick = live.tick.unwrap_or_else(|| TICKS.load(Ordering::Relaxed));
+    let (awards, medals) = {
+        let mut m = lock(&MEDALS);
+        let awards = m.step(tick, &players, &spots);
+        (awards, m.view())
+    };
+    // The bots' and the verifier's bounces kept as ghost runs, and the
+    // ghost the player asks for (docs/game/superbounce.md, "Ghost runs").
+    {
+        let guest = o.guest();
+        let m: &dyn GuestMemory = &*guest;
+        crate::superbounce_ghost::tick(m, tick, &players, &awards, map.as_deref(), &spots);
+    }
+    // The film and Live get each bounce and Bounced, as the kills.
+    if !awards.is_empty()
+        && let Some(t) = lock(&TELEMETRY).clone()
+    {
+        let guest = o.guest();
+        chain::record(&*t, &guest, &awards);
+    }
     *lock(&STATE) = State {
         active: true,
         word: live.word,
@@ -698,7 +983,21 @@ fn on_tick(o: &hooks::Obs) {
         map,
         bounce: count(Kind::Bounce),
         crouch: count(Kind::Crouch),
+        airborne: live.airborne,
+        vz: live.vz,
+        yaw: live.yaw,
+        charge: step.charge,
+        verb: step.verb,
+        nav_target,
+        takeoff,
+        landing,
+        last_landing: step.last_landing,
+        still_ticks: step.still_ticks,
+        standing_fits,
+        medals,
     };
+    // The bounce view on the flashlight and the tracker.
+    crate::superbounce_view::on_tick(o, &spots, &room);
 }
 
 // ---- the feature ----
@@ -708,7 +1007,7 @@ pub struct SuperbounceMode;
 
 impl hooks::Feature for SuperbounceMode {
     fn manifest(&self) -> hooks::Manifest {
-        hooks::Manifest::new(FEATURE, "Superbounce game type: HUD plate and spot lines")
+        hooks::Manifest::new(FEATURE, "Superbounce game type: HUD and spot lines")
             .doc("docs/game/superbounce.md")
             // A tick observer and start and end observers only: a recorded
             // film's hook digest does not include it.
@@ -717,7 +1016,9 @@ impl hooks::Feature for SuperbounceMode {
 
     fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         // State is rebuilt from guest RAM every tick and the scan cache holds
-        // only map-derived spots, so a snapshot needs nothing from us.
+        // only map-derived spots, so a snapshot needs nothing from us. The
+        // charge tracker (still ticks, the lost second, the last landing)
+        // is presentation only: after a load it restarts from the next tick.
         b.snapshot(hooks::SnapshotPolicy::Stateless);
         b.game().on_start("superbounce: a new game", |o| {
             reset();
@@ -730,8 +1031,16 @@ impl hooks::Feature for SuperbounceMode {
     }
 }
 
-/// Adds the feature to `registry`.
-pub fn install(registry: &mut hooks::Registry) -> anyhow::Result<()> {
+/// Live telemetry, which records the medals' events
+/// (`superbounce_chain::record`); `None` without Live.
+static TELEMETRY: Mutex<Option<Arc<live_telemetry::Telemetry>>> = Mutex::new(None);
+
+/// Adds the feature to `registry`, recording the bounces to `telemetry`.
+pub fn install(
+    registry: &mut hooks::Registry,
+    telemetry: Option<Arc<live_telemetry::Telemetry>>,
+) -> anyhow::Result<()> {
+    *lock(&TELEMETRY) = telemetry;
     registry
         .add(&SuperbounceMode)
         .map(|_| ())
@@ -744,14 +1053,21 @@ pub use gpu::register;
 
 #[cfg(feature = "gpu")]
 mod gpu {
+    use std::time::Instant;
+
     use super::*;
-    use crate::world_lines::{ImageMarks, WorldLine, WorldLineSource};
+    use crate::superbounce_prompts::Callout;
+    use crate::superbounce_world::{LockMarks, lock_callouts};
+    use crate::world_lines::{ImageMarks, ImageValidity, WorldLine, WorldLineSource};
 
     /// Draws the spot lines while the mode is on.
     pub struct Lines;
 
     pub fn register(host: &mut crate::Host) {
         host.add_world_line_source(Arc::new(Lines));
+        host.add_world_line_source(Arc::new(crate::superbounce_view::Source));
+        host.add_world_line_source(Arc::new(crate::superbounce_reticle::Source));
+        crate::superbounce_ghost::register(host);
     }
 
     impl WorldLineSource for Lines {
@@ -760,62 +1076,57 @@ mod gpu {
         }
 
         fn capture(&self, guest: &dyn GuestMemory) -> Option<Arc<dyn ImageMarks>> {
-            use crate::superbounce_assist as assist;
-            use crate::superbounce_prompts as prompts;
             let s = state();
             let spots = current_spots();
-            let mut drawn = lines(&spots, s.position, s.primed(), MAX_LINES);
-            let mut callouts = Vec::new();
-            if s.primed()
-                && let Some(body) = assist::read_body(guest, assist::PORT)
-            {
-                let target = assist::pick(&spots, &body);
-                if let Some((spot, _)) = target
-                    && let Some(line) = drawn.iter_mut().find(|l| l.edge == spot.edge)
-                {
-                    highlight(line, spot);
-                }
-                callouts = prompts::callouts(
-                    &spots,
-                    &body,
-                    true,
-                    target.as_ref().map(|(spot, reach)| (*spot, reach)),
-                    assist::assisting(),
-                );
-            }
-            (!drawn.is_empty() || !callouts.is_empty())
-                .then(|| Arc::new(Sample { lines: drawn, callouts }) as Arc<dyn ImageMarks>)
+            let callouts = crate::superbounce_world::frame(guest, &s, &spots);
+            // The lock-on eases by the wall clock between this tick's
+            // capture and the next (docs/game/superbounce.md, "Lock-on").
+            let lock = LockMarks::capture(guest, &s, Instant::now());
+            (!callouts.is_empty() || lock.is_some())
+                .then(|| Arc::new(Sample { callouts, lock }) as Arc<dyn ImageMarks>)
         }
     }
 
     #[derive(Debug)]
     struct Sample {
-        lines: Vec<Line>,
-        callouts: Vec<crate::superbounce_prompts::Callout>,
+        callouts: Vec<Callout>,
+        lock: Option<LockMarks>,
+    }
+
+    fn draw(callouts: &[Callout], visitor: &mut dyn FnMut(WorldLine<'_>)) {
+        for c in callouts {
+            visitor(WorldLine {
+                edges: &c.edges,
+                anchor: c.anchor,
+                color: c.color,
+                dashed: false,
+                label: c.label.as_deref(),
+                style: c.style,
+            });
+        }
     }
 
     impl ImageMarks for Sample {
+        /// The marks, and the lock-on where its ease ends.
         fn lines(&self, visitor: &mut dyn FnMut(WorldLine<'_>)) {
-            for l in &self.lines {
-                visitor(WorldLine {
-                    edges: std::slice::from_ref(&l.edge),
-                    anchor: l.anchor,
-                    color: l.color,
-                    dashed: l.dashed,
-                    label: l.label.as_deref(),
-                    style: l.style,
-                });
+            draw(&self.callouts, visitor);
+            if let Some(l) = &self.lock {
+                draw(&lock_callouts(&l.ease.to, &l.look), visitor);
             }
-            for c in &self.callouts {
-                visitor(WorldLine {
-                    edges: &c.edges,
-                    anchor: c.anchor,
-                    color: c.color,
-                    dashed: false,
-                    label: c.label.as_deref(),
-                    style: c.style,
-                });
+        }
+
+        /// The marks, and the lock-on as it is at the present's time.
+        fn visit(
+            &self,
+            now: &dyn Fn() -> Instant,
+            visitor: &mut dyn FnMut(WorldLine<'_>),
+        ) -> Option<ImageValidity> {
+            let validity = self.validity(now)?;
+            draw(&self.callouts, visitor);
+            if let Some(l) = &self.lock {
+                draw(&l.callouts(now()), visitor);
             }
+            Some(validity)
         }
     }
 }
@@ -834,18 +1145,6 @@ mod tests {
         assert_eq!(OVERRIDE.load(Ordering::Relaxed), FOLLOW);
     }
 
-    fn spot(kind: Kind, at: f32, fall: f32, launch: f32) -> Spot {
-        Spot {
-            kind,
-            edge: [[at, 0.0, 0.0], [at, 2.0, 0.0]],
-            stand: [at, -1.0, 0.0],
-            fall,
-            launch,
-            drift: [0.0, 0.0],
-            score: 1.0,
-        }
-    }
-
     #[test]
     fn the_word_is_primed_at_minus_three_only() {
         assert!(primed(0xffff_fffd));
@@ -861,117 +1160,6 @@ mod tests {
         assert!(!State::EMPTY.primed());
     }
 
-    #[test]
-    fn fall_goes_from_green_through_yellow_to_red() {
-        assert_eq!(fall_colour(0.0), [0.0, 1.0, 0.0]);
-        assert_eq!(fall_colour(1.5), [1.0, 1.0, 0.0]);
-        assert_eq!(fall_colour(3.0), [1.0, 0.0, 0.0]);
-        // Clamped past the ends, and a NaN is a standing jump.
-        assert_eq!(fall_colour(40.0), [1.0, 0.0, 0.0]);
-        assert_eq!(fall_colour(-2.0), [0.0, 1.0, 0.0]);
-        assert_eq!(fall_colour(f32::NAN), [0.0, 1.0, 0.0]);
-        // Between green and yellow only red rises; past yellow only green falls.
-        let a = fall_colour(0.75);
-        assert!(a[0] > 0.0 && a[0] < 1.0 && a[1] == 1.0);
-        let b = fall_colour(2.25);
-        assert!(b[0] == 1.0 && b[1] > 0.0 && b[1] < 1.0);
-    }
-
-    #[test]
-    fn bounce_lines_dim_unless_primed_and_crouch_never() {
-        let bounce = spot(Kind::Bounce, 0.0, 0.0, 17.9);
-        let on = line_for(&bounce, true);
-        let off = line_for(&bounce, false);
-        assert_eq!(on.color, [0.0, 1.0, 0.0]);
-        assert_eq!(off.color, [0.0, DIM, 0.0]);
-        assert_eq!(on.label.as_deref(), Some("+17.9"));
-        let crouch = spot(Kind::Crouch, 0.0, 0.0, 0.0);
-        assert_eq!(line_for(&crouch, true), line_for(&crouch, false));
-        assert_eq!(line_for(&crouch, false).color, CROUCH_COLOUR);
-        assert_eq!(line_for(&crouch, false).label.as_deref(), Some("crouch"));
-        assert_eq!(on.anchor, [0.0, 1.0, 0.0]);
-    }
-
-    #[test]
-    fn a_primed_strip_pulses_and_flows_and_an_unprimed_one_is_still() {
-        let mut bounce = spot(Kind::Bounce, 0.0, 0.0, 17.9);
-        bounce.drift = [0.0, 1.0];
-        let on = line_for(&bounce, true).style;
-        let off = line_for(&bounce, false).style;
-        assert!(on.pulse.is_some() && off.pulse.is_none());
-        assert!(on.chevrons.unwrap().speed > 0.0);
-        assert_eq!(off.chevrons.unwrap().speed, 0.0);
-        assert_eq!(on.chevrons.unwrap().direction, [0.0, 1.0, 0.0]);
-        assert_eq!(on.ribbon.unwrap().width, RIBBON_WIDTH);
-        assert_eq!(on.width, 3.0);
-        // No drift, no arrows.
-        bounce.drift = [0.0, 0.0];
-        assert!(line_for(&bounce, true).style.chevrons.is_none());
-    }
-
-    #[test]
-    fn crouch_spots_are_thin_steady_and_dashed_and_both_kinds_fade_out() {
-        let crouch = line_for(&spot(Kind::Crouch, 0.0, 0.0, 0.0), true);
-        assert!(crouch.dashed);
-        let s = crouch.style;
-        assert!(s.pulse.is_none() && s.chevrons.is_none() && s.ribbon.is_none());
-        assert!(s.glow.is_some() && s.width < 3.0);
-        let bounce = line_for(&spot(Kind::Bounce, 0.0, 0.0, 1.0), true).style;
-        for fade in [s.fade, bounce.fade] {
-            let fade = fade.unwrap();
-            assert_eq!((fade.start, fade.end), (25.0, 45.0));
-        }
-    }
-
-    #[test]
-    fn only_the_nearest_three_bounces_and_two_crouches_keep_labels() {
-        let mut spots = Vec::new();
-        for i in 0..6 {
-            spots.push(spot(Kind::Bounce, i as f32 * 2.0, 0.0, i as f32));
-            spots.push(spot(Kind::Crouch, i as f32 * 2.0 + 1.0, 0.0, 0.0));
-        }
-        let drawn = lines(&spots, Some([0.0, 1.0, 0.0]), true, 99);
-        let labelled = |crouch: bool| {
-            drawn
-                .iter()
-                .filter(|l| l.dashed == crouch && l.label.is_some())
-                .count()
-        };
-        assert_eq!(labelled(false), BOUNCE_LABELS);
-        assert_eq!(labelled(true), CROUCH_LABELS);
-        // The labelled ones are the nearest of their kind.
-        let first_unlabelled = drawn
-            .iter()
-            .position(|l| !l.dashed && l.label.is_none())
-            .unwrap();
-        assert!(drawn[..first_unlabelled].iter().filter(|l| !l.dashed).all(|l| l.label.is_some()));
-        assert_eq!(drawn.len(), 12);
-    }
-
-    #[test]
-    fn the_assist_target_is_drawn_bright_even_when_unprimed() {
-        let s = spot(Kind::Bounce, 0.0, 1.5, 17.9);
-        let mut dim = line_for(&s, false);
-        assert_eq!(dim.color, [DIM, DIM, 0.0]);
-        highlight(&mut dim, &s);
-        assert_eq!(dim.color, [1.0, 1.0, 0.0]);
-        assert!(dim.style.width > bounce_style([0.0; 2], true).width);
-        assert!(dim.style.pulse.is_some());
-    }
-
-    #[test]
-    fn only_the_nearest_spots_are_drawn_nearest_first() {
-        let spots: Vec<Spot> = (0..10)
-            .rev()
-            .map(|i| spot(Kind::Bounce, i as f32 * 10.0, 0.0, i as f32))
-            .collect();
-        let drawn = lines(&spots, Some([0.0, 1.0, 0.0]), true, 3);
-        let labels: Vec<_> = drawn.iter().map(|l| l.label.as_deref().unwrap()).collect();
-        assert_eq!(labels, ["+0.0", "+1.0", "+2.0"]);
-        assert!(lines(&spots, None, true, 3).is_empty());
-        assert_eq!(lines(&spots, Some([0.0; 3]), true, 99).len(), 10);
-    }
-
     fn near(distance: f32) -> Near {
         Near {
             distance,
@@ -982,70 +1170,35 @@ mod tests {
     }
 
     #[test]
-    fn the_plate_says_primed_and_the_launch() {
+    fn the_bearing_turns_clockwise_from_where_the_player_looks() {
+        use std::f32::consts::{FRAC_PI_2, PI};
+        let edge = |x: f32, y: f32| [[x, y - 1.0, 0.0], [x, y + 1.0, 0.0]];
+        let close = |a: Option<f32>, b: f32| a.is_some_and(|a| (a - b).abs() < 1e-4);
+        // Facing +X: a spot ahead, to the right (-Y), behind.
+        assert!(close(bearing([0.0; 3], 0.0, edge(5.0, 0.0)), 0.0));
+        let right = [[0.0, -5.0, 0.0], [0.0, -5.0, 0.0]];
+        assert!(close(bearing([0.0; 3], 0.0, right), FRAC_PI_2));
+        let behind = bearing([0.0; 3], 0.0, edge(-5.0, 0.0)).unwrap();
+        assert!((behind.abs() - PI).abs() < 1e-4);
+        // Facing +Y (yaw pi/2), a spot on +X is to the right.
+        assert!(close(
+            bearing([0.0; 3], FRAC_PI_2, edge(5.0, 0.0)),
+            FRAC_PI_2
+        ));
+        // The edge's nearest point, not its middle; height is ignored.
+        let long = [[2.0, 0.0, 9.0], [2.0, 50.0, 9.0]];
+        assert!(close(bearing([0.0; 3], 0.0, long), 0.0));
+        // On the spot, or without an aim, there is no arrow.
+        assert_eq!(bearing([5.0, 0.0, 0.0], 0.0, edge(5.0, 0.0)), None);
+        assert_eq!(bearing([0.0; 3], f32::NAN, edge(5.0, 0.0)), None);
         let s = State {
-            active: true,
-            word: Some(0xffff_fffd),
-            nearest: Some(near(2.0)),
-            scan: ScanState::Ready,
+            position: Some([-5.0, 0.0, 0.0]),
+            yaw: Some(0.0),
+            nearest: Some(near(5.0)),
             ..State::EMPTY
         };
-        assert_eq!(
-            hud_lines(&s),
-            ["SUPERBOUNCE  PRIMED (-3)", "nearest spot 6.1 m  launch +17.9"]
-        );
-    }
-
-    #[test]
-    fn the_plate_says_how_to_prime_when_not_primed() {
-        let s = State {
-            active: true,
-            word: Some(0),
-            nearest: Some(near(1.0)),
-            scan: ScanState::Ready,
-            ..State::EMPTY
-        };
-        assert_eq!(
-            hud_lines(&s),
-            [
-                "SUPERBOUNCE  not primed (word 0)",
-                "nearest spot 3.0 m  crouch-stand to prime"
-            ]
-        );
-        let none = State {
-            word: None,
-            nearest: None,
-            scan: ScanState::Ready,
-            ..s.clone()
-        };
-        assert_eq!(
-            hud_lines(&none),
-            [
-                "SUPERBOUNCE  not primed (no pair)",
-                "no bounce spots on this map"
-            ]
-        );
-        let other = State {
-            word: Some(5),
-            ..s
-        };
-        assert_eq!(hud_lines(&other)[0], "SUPERBOUNCE  not primed (word 5)");
-    }
-
-    #[test]
-    fn the_plate_says_scanning_and_failures() {
-        let s = State {
-            active: true,
-            word: Some(0),
-            scan: ScanState::Scanning,
-            ..State::EMPTY
-        };
-        assert_eq!(hud_lines(&s)[1], "scanning map...");
-        let f = State {
-            scan: ScanState::Failed("no collision".into()),
-            ..s
-        };
-        assert_eq!(hud_lines(&f)[1], "no spots: no collision");
+        assert!(close(s.bearing(), 0.0));
+        assert_eq!(State { yaw: None, ..s }.bearing(), None);
     }
 
     #[test]
@@ -1055,12 +1208,6 @@ mod tests {
         assert!(no_params(&json!({})).is_ok());
         assert!(no_params(&json!({"x": 1})).is_err());
         assert!(no_params(&json!([1])).is_err());
-    }
-
-    #[test]
-    fn a_zero_budget_draws_nothing() {
-        let spots = [spot(Kind::Bounce, 0.0, 0.0, 1.0)];
-        assert!(lines(&spots, Some([0.0; 3]), true, 0).is_empty());
     }
 
     #[test]
@@ -1084,6 +1231,10 @@ mod tests {
             map: Some("ascension".into()),
             bounce: 3,
             crouch: 1,
+            airborne: true,
+            vz: Some(12.5),
+            yaw: Some(0.5),
+            ..State::EMPTY
         };
         let r = reply(&s);
         assert!(r.active && r.primed);
@@ -1093,8 +1244,130 @@ mod tests {
         assert_eq!(r.scan.status, "failed");
         assert_eq!(r.scan.error.as_deref(), Some("x"));
         assert_eq!((r.scan.bounce, r.scan.crouch), (3, 1));
+        assert_eq!(r.airborne, Some(true));
+        assert_eq!((r.vz, r.yaw), (Some(12.5), Some(0.5)));
         let idle = reply(&State::EMPTY);
+        assert_eq!((idle.airborne, idle.vz, idle.yaw), (None, None, None));
         assert_eq!(idle.scan.status, "idle");
         assert!(!idle.active && !idle.primed && idle.word.is_none());
+        assert!(idle.charge.is_none() && idle.nav_target.is_none());
+        assert!(idle.landing.is_none() && idle.last_landing.is_none());
+        assert!(idle.verb.is_none() && idle.standing_fits.is_none());
+    }
+
+    #[test]
+    fn the_agent_reply_carries_the_charge_the_target_and_the_landings() {
+        use agent_proto::superbounce as wire;
+        let s = State {
+            active: true,
+            charge: Some(Charge {
+                phase: ChargePhase::Primed,
+                fill: 0.5,
+                lost: None,
+            }),
+            still_ticks: 19,
+            verb: Some(Verb::WalkOutToStand),
+            nav_target: Some(NavTarget {
+                at: [1.0, 2.0, 3.0],
+                kind: NavKind::Strip,
+                distance: 4.0,
+                fall: 1.0,
+            }),
+            takeoff: Some([1.0, 0.5, 4.0]),
+            landing: Some(Predicted {
+                at: [1.0, 2.0, -3.0],
+                verdict: Course::Fixable,
+                speed: 5.5,
+                need: 4.0,
+                edge: [[0.0, 2.0, -3.0], [2.0, 2.0, -3.0]],
+                stand: [1.0, 2.0, -3.0],
+                width: 0.2,
+                fall: 1.0,
+            }),
+            last_landing: Some(Landing {
+                result: LandingResult::TooSlow,
+                tick: 6753,
+                at: [0.5, 0.5, -3.0],
+            }),
+            standing_fits: Some(false),
+            ..State::EMPTY
+        };
+        let r = reply(&s);
+        let c = r.charge.unwrap();
+        assert_eq!(
+            (c.phase, c.fill, c.still_ticks),
+            (wire::ChargePhase::Primed, 0.5, 19)
+        );
+        assert_eq!(r.verb, Some(wire::Verb::WalkOutToStand));
+        let n = r.nav_target.unwrap();
+        assert_eq!(
+            (n.at, n.kind, n.distance, n.fall),
+            ([1.0, 2.0, 3.0], wire::NavKind::Strip, 4.0, 1.0)
+        );
+        assert_eq!(r.takeoff, Some([1.0, 0.5, 4.0]));
+        let p = r.landing.unwrap();
+        assert_eq!(
+            (p.verdict, p.speed, p.need, p.miss, p.locked),
+            (wire::Course::Fixable, 5.5, 4.0, 0.0, false)
+        );
+        let l = r.last_landing.unwrap();
+        assert_eq!(
+            (l.result, l.tick, l.at),
+            (wire::LandingResult::TooSlow, 6753, [0.5, 0.5, -3.0])
+        );
+        assert_eq!(r.standing_fits, Some(false));
+        assert_eq!(r.lost_reason, None);
+    }
+
+    #[test]
+    fn the_agent_reply_says_why_the_charge_went_while_lost_and_after() {
+        use agent_proto::superbounce as wire;
+        let lost = Lost {
+            reason: LostReason::StoodStill,
+            tick: 7000,
+        };
+        let s = State {
+            active: true,
+            charge: Some(Charge {
+                phase: ChargePhase::Lost,
+                fill: 0.0,
+                lost: Some(lost),
+            }),
+            verb: Some(Verb::ChargeAgain(lost)),
+            ..State::EMPTY
+        };
+        let r = reply(&s);
+        assert_eq!(r.lost_reason, Some(wire::LostReason::StoodStill));
+        assert_eq!(r.verb, Some(wire::Verb::ChargeAgain));
+        // After the lost second the charge is hidden; the verb keeps it.
+        let after = State {
+            charge: None,
+            verb: Some(Verb::ChargeAgain(Lost {
+                reason: LostReason::Crouched,
+                ..lost
+            })),
+            ..s.clone()
+        };
+        assert_eq!(reply(&after).lost_reason, Some(wire::LostReason::Crouched));
+        let unknown = State {
+            verb: Some(Verb::ChargeAgain(Lost {
+                reason: LostReason::Unknown,
+                ..lost
+            })),
+            ..after.clone()
+        };
+        assert_eq!(reply(&unknown).lost_reason, Some(wire::LostReason::Unknown));
+        let warned = State {
+            verb: Some(Verb::KeepMoving),
+            ..State::EMPTY
+        };
+        let r = reply(&warned);
+        assert_eq!((r.verb, r.lost_reason), (Some(wire::Verb::KeepMoving), None));
+    }
+
+    #[test]
+    fn standing_fits_is_absent_while_the_mode_is_off() {
+        ACTIVE.store(false, Ordering::Relaxed);
+        assert_eq!(standing_fits_at([0.0; 3]), None);
     }
 }

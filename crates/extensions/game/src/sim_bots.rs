@@ -231,6 +231,12 @@ pub(crate) fn spots(raw: serde_json::Value) -> Result<serde_json::Value, agent_p
             launch: l.spot.launch,
             drift: l.spot.drift,
             score: l.spot.score,
+            width: l.spot.width,
+            need: l.spot.need,
+            status: l.spot.status.name().into(),
+            out: l.spot.out,
+            lip: l.spot.lip.edges().to_vec(),
+            shape: l.spot.shape.name().into(),
         })
         .collect();
     let out = Spots {
@@ -298,7 +304,7 @@ pub(crate) fn bounce_status(
     raw: serde_json::Value,
     phantoms: &bots::phantom::Phantoms,
 ) -> Result<serde_json::Value, agent_proto::RpcError> {
-    use agent_proto::bot_bounce::{BounceStatus, BounceStatusParams};
+    use agent_proto::bot_bounce::{BounceLog, BounceStatus, BounceStatusParams};
     let p: BounceStatusParams = params(raw, "bots.bounce_status")?;
     let bot = seat(phantoms, &p.bot)?;
     let v = phantoms
@@ -313,11 +319,59 @@ pub(crate) fn bounce_status(
         why: v.why.map(|w| w.name().into()),
         steps: v.steps.iter().map(|s| (*s).into()).collect(),
         step: v.step,
+        phase: v.phase.into(),
+        tries: v.tries,
+        landing: v.landing.map(|t| landing_view(&t, v.site)),
+        log: v
+            .log
+            .iter()
+            .map(|l| BounceLog {
+                tick: l.tick,
+                step: l.step.into(),
+                what: l.what.into(),
+                at: l.at,
+            })
+            .collect(),
         primed: v.primed,
         primed_read: v.primed_read,
         error: v.error.map(Into::into),
+        practice: v.practice.map(|p| agent_proto::bot_bounce::BouncePractice {
+            state: p.state.into(),
+            site: p.site,
+            attempts: p.attempts,
+            bounces: p.bounces,
+            spots: p
+                .spots
+                .into_iter()
+                .map(|t| agent_proto::bot_bounce::PracticeSpot {
+                    stand: t.stand,
+                    attempts: t.attempts,
+                    bounces: t.bounces,
+                    why: t.why.into_iter().map(|(k, n)| (k.to_string(), n)).collect(),
+                })
+                .collect(),
+        }),
     })
     .expect("status serialises"))
+}
+
+/// A route's touchdown as `bots.bounce_status` gives it, named against the
+/// site's slot.
+fn landing_view(
+    t: &bots::bounce_route::Touchdown,
+    site: Option<bots::spots::Site>,
+) -> agent_proto::bot_bounce::BounceLanding {
+    let (width, need) = site.map_or((bots::spots::SLOT_WIDTH, 0.0), |s| {
+        (if s.width > 0.0 { s.width } else { bots::spots::SLOT_WIDTH }, s.need)
+    });
+    agent_proto::bot_bounce::BounceLanding {
+        tick: t.tick,
+        at: t.at,
+        speed_in: t.speed_in,
+        vz_out: t.vz_out,
+        miss: t.miss,
+        result: t.result(width, need).into(),
+    }
 }
 
 impl Bots for SimBots {

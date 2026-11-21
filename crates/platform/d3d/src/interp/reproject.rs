@@ -178,6 +178,24 @@ pub fn display_rotation(
     prev.view.rotation.slerp(cur.view.rotation, t)
 }
 
+/// The camera a warped frame shows: the tick camera's eye and projection
+/// turned to `rotation` (world to camera, as [`display_rotation`] gives
+/// it). [`homography`] makes the world image look as if drawn with it, so
+/// the window's marks project with it too (`super::marks`).
+pub fn display_camera(tick: &Persp, rotation: Quat) -> Persp {
+    let eye = tick.eye();
+    let r = rotation.to_rotation();
+    let dot = |a: [f64; 3]| a[0] * eye[0] + a[1] * eye[1] + a[2] * eye[2];
+    Persp {
+        projection: tick.projection,
+        view: super::math::Similarity {
+            rotation,
+            scale: 1.0,
+            translation: [-dot(r[0]), -dot(r[1]), -dot(r[2])],
+        },
+    }
+}
+
 /// The constants the world draws (`..world_draws`) are drawn with into the
 /// world image: each program's own viewport scale (`epilogues[i]`) times
 /// `s`, so the picture shrinks by `s` about the screen's centre and the
@@ -294,6 +312,27 @@ mod tests {
                 (got[0] - w[0]).abs() < 1e-4 && (got[1] - w[1]).abs() < 1e-4,
                 "{x:?}: {got:?} vs {w:?}"
             );
+        }
+    }
+
+    #[test]
+    fn the_display_camera_draws_points_where_the_warp_shows_them() {
+        let eye = [3.0, -2.0, 1.5];
+        let tick = Persp::split(&build::view_projection(1.2, eye, 0.3, 0.05)).unwrap();
+        let turned = Persp::split(&build::view_projection(1.2, eye, 0.42, -0.03)).unwrap();
+        let shown = display_camera(&tick, turned.view.rotation);
+        assert!(super::super::math::max_diff(&shown.matrix(), &turned.matrix()) < 1e-9);
+        let s = overscan_scale();
+        let h = homography(&tick, shown.view.rotation, s, &screen()).unwrap();
+        let mut world_image = tick.matrix();
+        for j in 0..4 {
+            world_image[0][j] *= s;
+            world_image[1][j] *= s;
+        }
+        for x in [[10.0, 2.0, 1.0], [40.0, 20.0, 5.0], [300.0, 100.0, 30.0]] {
+            let got = apply(&h, uv(&shown.matrix(), x, &screen()));
+            let w = uv(&world_image, x, &screen());
+            assert!((got[0] - w[0]).abs() < 1e-4 && (got[1] - w[1]).abs() < 1e-4);
         }
     }
 

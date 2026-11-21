@@ -26,6 +26,11 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "the queued guest calls run at the end of the game tick; the render never meets it",
     ),
     (
+        "teabag",
+        "*",
+        "it watches the game's activate, tick and end, game-thread points; the render never meets them",
+    ),
+    (
         "sim-ext",
         "*",
         "checkpoint save, revert and restore are game-thread points; the render never meets them",
@@ -258,6 +263,14 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ("touch-glue", "GAME_TICK", AFTER),
     ("cheats", "GAME_TICK", AFTER),
     ("superbounce", "*", AFTER),
+    ("superbounce-hud", "*", AFTER),
+    (
+        "hud-kit",
+        "GAME_ACTIVATE",
+        "the match start on the game thread: reads the map file and joins the kit's widgets to \
+         the player HUD tags",
+    ),
+    ("hud-kit", "GAME_TICK", AFTER),
     ("layouts-value", "CONTROLS_ROW_TEXT", AFTER),
     ("controls-text", "CONTROLS_ROW_TEXT", AFTER),
     // Features the test's registry gained when it began calling boot's own
@@ -298,6 +311,12 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "clankers-row",
         "*",
         "the Game Setup list's row, a UI event on the game thread",
+    ),
+    (
+        "tweakers",
+        "*",
+        "the game type list's row and its variant lists, UI events and a per-frame screen \
+         update on the game thread",
     ),
     (
         "firefight-row",

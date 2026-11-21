@@ -51,13 +51,13 @@ crates = ["guest-layout", "hooks", "switches"]
 about = "Rust that replaces a guest subsystem: the native simulation, FrameScene, the native renderer, ported engine functions, and the bridge that installs each one"
 uses = ["formats", "recompiler", "runtime", "platform", "hooking"]
 crates = [
-    "engine", "frame-scene", "native-render", "render-bridge", "scene-extract",
-    "sim-anim", "sim-bridge", "sim-collision", "sim-core", "sim-ext", "sim-objects",
+    "engine", "frame-scene", "hud-kit-core", "native-render", "render-bridge",
+    "scene-extract", "sim-anim", "sim-bridge", "sim-collision", "sim-core", "sim-ext", "sim-objects",
     "sim-state",
 ]
 # Guest-free: these take typed values and may use only `formats`,
 # `platform` and each other. No guest memory, no hook, no lifted code.
-guest_free = ["frame-scene", "native-render", "scene-extract", "sim-anim", "sim-collision", "sim-core", "sim-ext"]
+guest_free = ["frame-scene", "hud-kit-core", "native-render", "scene-extract", "sim-anim", "sim-collision", "sim-core", "sim-ext"]
 
 [live]
 about = "Live, co-op transport, bots, films, cloud saves, the dedicated host's data, the service itself (another session owns this domain)"
@@ -82,7 +82,8 @@ about = "Offline work on game data: the Halo 1 converters, the editor cores, the
 uses = ["formats", "recompiler", "runtime", "platform", "rewrites", "live"]
 crates = [
     "editor-core", "firefight-kit", "forge-build", "geometry-edit", "h1-assets", "h1campaign",
-    "h1convert", "h1map", "h1objects", "hopper-edit", "hud-edit", "live-art", "mesh-edit", "perf",
+    "h1convert", "h1map", "h1objects", "hopper-edit", "hud-edit", "hud-kit", "live-art", "mesh-edit",
+    "perf",
     "scenario-edit", "viewer", "xtask",
 ]
 live_owned = ["live-art"]

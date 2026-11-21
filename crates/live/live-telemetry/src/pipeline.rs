@@ -96,6 +96,21 @@ pub(crate) enum Work {
         owner: Option<u32>,
         weapon: u8,
     },
+    Superbounce {
+        tick: u64,
+        player: u32,
+        chain: u32,
+    },
+    Bounced {
+        tick: u64,
+        player: u32,
+        chain: u32,
+    },
+    Teabag {
+        tick: u64,
+        player: u32,
+        victim: u32,
+    },
     End(Box<Snapshot>),
     FinishSim(serde_json::Value),
 }
@@ -501,6 +516,21 @@ pub(crate) fn apply(session: &mut Session, work: Work) -> Option<Box<Snapshot>> 
         Work::ActorKilled { tick, unit, character, owner, weapon } => {
             session.actor_killed(tick, unit, character, owner, weapon);
         }
+        Work::Superbounce {
+            tick,
+            player,
+            chain,
+        } => session.superbounce(tick, player, chain),
+        Work::Bounced {
+            tick,
+            player,
+            chain,
+        } => session.bounced(tick, player, chain),
+        Work::Teabag {
+            tick,
+            player,
+            victim,
+        } => session.teabag(tick, player, victim),
         Work::Forward(_) | Work::FinishSim(_) => unreachable!("handled by the worker"),
         Work::End(snapshot) => {
             session.end(&snapshot);

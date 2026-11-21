@@ -172,10 +172,12 @@ are under [Reviews](#reviews).
 ## Game features and enhancements (`game/`)
 
 - [settings-menu.md](game/settings-menu.md) (**start here**): the in-game settings screens (Video, Voice, pause menus), FOV, the settings schema and `h2 settings`; how Halo 2's own settings screens work
-- [superbounce.md](game/superbounce.md): how a superbounce happens: a landing in a floor crease next to a seam, the Havok push, the forced-crouch and crouch-height code, per-tick traces on Ascension; the scan for spots in a map's collision (`h2 superbounce scan`)
+- [teabag.md](game/teabag.md): teabags in every game (two crouches over a fresh body), the `Teabag` event and the Incel medal for a game without one
+- [superbounce.md](game/superbounce.md): how a superbounce happens: a landing in a floor crease next to a seam, the Havok push, the forced-crouch and crouch-height code, per-tick traces on Ascension; the scan for spots in a map's collision (`h2 superbounce scan`); the bounce medals (design)
 - [aim-assist.md](game/aim-assist.md): the Aim Assist setting (Auto, Default, Strong, Very Strong), the weapon and globals fields it scales at map load
 - [ui-builder.md](game/ui-builder.md): the UI builder for native screens: pages as pure state machines, one `View` drawn offline from the disc, layout checks, the fidelity loop against game captures
 - [ui-screens.md](game/ui-screens.md): the UI kit for list screens of ours: ids, input, previews, the checklist
+- [hud-kit.md](game/hud-kit.md): the HUD kit (design): what Halo 2's HUD is made of (widgets, messages, training prompts, colours, fonts, anchors), HUD elements of ours drawn by the game's own HUD code, `h2 hud preview` and its checks, the superbounce HUD rebuilt on it
 - [skulls.md](game/skulls.md): campaign skulls per profile, the skulls menu, and our own skulls
 - [community-gametypes.md](game/community-gametypes.md): community classics (Zombies, SWAT and more) as extra built-in game variants
 - [game-options.md](game/game-options.md): game variant options retail doesn't allow (no-weapon starts, instant respawn, gravity) and names with any character (design)
@@ -202,8 +204,9 @@ are under [Reviews](#reviews).
 - [rules-engine.md](game/rules-engine.md): scripted game types: a typed rules language and Forge's logic graph compiled to one verified IR, a host-only VM over named engine entries, script ports of the seven retail engines (design)
 - [theater-design.md](game/theater-design.md): design for the full in-game Theater: stats is the summary and the film is the simulation; rewind and jumps from sidecar keyframes, warm restore, cameras, clips, sharing through Live and the web-to-game link; slices in build order (design)
 - [input-film.md](game/input-film.md): what a film holds (seed, per-seat inputs, joins, digests), every host answer replay depends on, the Halo 3 reference, the column encoding, sizes and memory (design)
-- Notes: [high-framerate.md](game/notes/high-framerate.md) (prior art and measurements for 60 and 120 fps), [halo3-film.md](game/notes/halo3-film.md) (Halo 3's saved film layout and sizes, from public sources), [ai-networking.md](game/notes/ai-networking.md) (what retail's distributed replication carries, read from the image)
+- Notes: [not-adopted.md](game/notes/not-adopted.md) (game designs built and removed), [high-framerate.md](game/notes/high-framerate.md) (prior art and measurements for 60 and 120 fps), [halo3-film.md](game/notes/halo3-film.md) (Halo 3's saved film layout and sizes, from public sources), [ai-networking.md](game/notes/ai-networking.md) (what retail's distributed replication carries, read from the image)
 - [creature-entity.md](game/notes/creature-entity.md) (retail creature-slot registration, scheduler bounds, wire dispatch and session admission)
+- [2026-11-21-h2-custom-hud-mods.md](game/notes/2026-11-21-h2-custom-hud-mods.md) (how Halo 2 mods did custom HUD work and how an `nhdt` meter is made, from public sources), [superbounce-spots.md](game/notes/superbounce-spots.md) (the pair word tick by tick round a forced crouch, the time to sleep, and what a stricter crouch filter keeps per map), [2026-11-21-known-superbounce-spots.md](game/notes/2026-11-21-known-superbounce-spots.md) (the community's documented superbounce spots per map and technique facts, set against our scan)
 
 ## Halo 1 (`halo1/`)
 

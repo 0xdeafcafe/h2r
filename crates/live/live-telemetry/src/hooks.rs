@@ -486,6 +486,59 @@ impl Telemetry {
         })
     }
 
+    /// A bounce off a superbounce crease by the player in slot `player`,
+    /// `chain` bounces into its chain, at the guest's game tick
+    /// (docs/game/superbounce.md, "Recording"). The superbounce mode calls
+    /// it on the console that records the game; the session sends it as a
+    /// `Superbounce` game event and the film records it with its medals.
+    pub fn superbounce(&self, guest: &runtime::Guest, player: u32, chain: u32) {
+        self.bounce_work(guest, |tick| Work::Superbounce {
+            tick,
+            player,
+            chain,
+        });
+    }
+
+    /// The player in slot `player` died falling out of or through the map
+    /// while trying a bounce, ending a chain of `chain` (0 if none), as the
+    /// superbounce mode decides: a `Bounced`
+    /// game event, and the `bounced` medal in the film.
+    pub fn bounced(&self, guest: &runtime::Guest, player: u32, chain: u32) {
+        self.bounce_work(guest, |tick| Work::Bounced {
+            tick,
+            player,
+            chain,
+        });
+    }
+
+    /// The player in slot `player` teabagged the body of the player in slot
+    /// `victim`, as the game's teabag watch decides (docs/game/teabag.md):
+    /// a `Teabag` game event, which takes the `incel` medal from both in
+    /// the film and on Live. The watch calls it on the console that
+    /// records the game.
+    pub fn teabag(&self, guest: &runtime::Guest, player: u32, victim: u32) {
+        self.bounce_work(guest, |tick| Work::Teabag {
+            tick,
+            player,
+            victim,
+        });
+    }
+
+    /// Queues a medal event at the game tick, as a kill: none in a
+    /// cinematic.
+    fn bounce_work(&self, guest: &runtime::Guest, work: impl FnOnce(u64) -> Work) {
+        self.protect(|| {
+            if memory::cinematic(guest).unwrap_or(false) {
+                return Ok(());
+            }
+            let tick = match memory::game_tick(guest) {
+                Ok(tick) => tick,
+                Err(fault) => return self.missing_sample("superbounce_clock", fault),
+            };
+            self.submit(work(tick))
+        });
+    }
+
     fn kill(&self, guest: &runtime::Guest, esp: u32) -> Result<(), String> {
         use guest_layout::damage::{KillingDamage, killing_damage};
 

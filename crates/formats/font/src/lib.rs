@@ -20,6 +20,7 @@ use std::fmt;
 pub mod encode;
 pub mod gear;
 pub mod icons;
+pub mod medals;
 pub mod mod_marks;
 pub mod patch;
 pub mod raster;
@@ -252,6 +253,35 @@ impl<'a> Font<'a> {
     pub fn glyph_index(&self, unit: u16) -> u32 {
         // CHARMAP_OFFSET + 4 * unit is below RECORDS_OFFSET <= data.len() (checked in parse).
         u32_at(self.data, CHARMAP_OFFSET + usize::from(unit) * 4).unwrap_or(0)
+    }
+
+    /// Whether the font has a glyph of its own for `unit`, rather than
+    /// the stand-in it draws for a unit it lacks. An unmapped unit reads
+    /// record 0. Some fonts also map units they lack to a copy of that
+    /// stand-in: MSLCD-14 draws the same box for `.`, `-` and `~`. So a
+    /// unit counts as missing if it reads record 0, the record U+FFFF (a
+    /// noncharacter) reads, or a non-empty bitmap equal to either. The
+    /// space counts as present when it reads record 0, the blank that
+    /// record normally is.
+    pub fn has_glyph(&self, unit: u16) -> bool {
+        let index = self.glyph_index(unit);
+        if index == 0 {
+            return unit == u16::from(b' ');
+        }
+        let Ok(g) = self.glyph_by_index(index) else {
+            return false;
+        };
+        let same = |m: u32| {
+            m == index
+                || (g.record.width > 0
+                    && g.record.height > 0
+                    && self.glyph_by_index(m).is_ok_and(|s| {
+                        s.record.width == g.record.width
+                            && s.record.height == g.record.height
+                            && s.pixels == g.pixels
+                    }))
+        };
+        !(same(0) || same(self.glyph_index(0xffff)))
     }
 
     /// The record with this index, checked for sanity against the file.

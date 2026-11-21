@@ -399,14 +399,17 @@ fn phantom_acquires_an_enemy_on_the_tick_it_clears_cover_and_stops_at_cover() {
         walls: Walls::from_polygons([wall.as_slice()]),
         ..Default::default()
     });
-    let mut brain = Brain::new(Skill::Legendary, 17).with_tuning(Tuning {
-        perception_ticks: Some(0),
-        motor_ticks: Some(0),
-        button_sigma_ms: Some(0.0),
-        aim_model: Some(AimModel::Code),
-        burst: Some(false),
-        ..Default::default()
-    });
+    // The acquisition, not the start-of-match warm-up.
+    let mut brain = Brain::new(Skill::Legendary, 17)
+        .with_tuning(Tuning {
+            perception_ticks: Some(0),
+            motor_ticks: Some(0),
+            button_sigma_ms: Some(0.0),
+            aim_model: Some(AimModel::Code),
+            burst: Some(false),
+            ..Default::default()
+        })
+        .without_warmup();
     // This fixture has zero transport and controller delay so the action
     // carries the current brain report. The skill reaction still applies.
     let (ph, mut g, slot) = game(move |frame| {

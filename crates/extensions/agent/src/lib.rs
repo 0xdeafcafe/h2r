@@ -89,13 +89,13 @@ mod trace;
 pub use capture::{FrameSource, Sampler, TickMark, summarise, write_csv};
 pub use exec::{
     Access, Agent, ConnId, DEFER_TICKS_MAX, GameCtx, GameMethod, HostMethod, Later, LobbyTape,
-    Page, SnapshotMachine, Snapshots, TICK_STALE, query,
+    Page, SnapshotMachine, Snapshots, TICK_STALE, TICKER_CONN, Ticker, query,
 };
 pub use live::CameraSource;
 pub use loads::{LoadTracker, TimelineTotals, TotalsSource};
 pub use reader::{
-    GameStatus, GuestReader, Reader, TagNames, actor_object, machine_object, name_tags,
-    player_object, thing_object, vehicle_object,
+    GameStatus, GuestReader, Reader, StandingFits, TagNames, actor_object, fill_standing_fits,
+    machine_object, name_tags, player_object, thing_object, vehicle_object,
 };
 pub use server::Server;
 pub use tap::{AgentTap, Chain, Input, MenuPad, MenuReceipt, RoutePad, RoutePorts, pad_steps};

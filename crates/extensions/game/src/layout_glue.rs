@@ -66,8 +66,8 @@ const LIST_SELECT: u32 = 0x0024_c591;
 const SCREEN_REFRESH: u32 = 0x0022_f672;
 
 /// Per-player profile settings (`+4` layout byte) and the action tables.
-const SETTINGS_BASE: u32 = 0x0054_e9f4;
-const SETTINGS_STRIDE: u32 = 0xc70;
+pub(crate) const SETTINGS_BASE: u32 = 0x0054_e9f4;
+pub(crate) const SETTINGS_STRIDE: u32 = 0xc70;
 const TABLE_BASE: u32 = 0x0051_ea18;
 const TABLE_STRIDE: u32 = 0x1c;
 const TABLE_SLOTS: u32 = 8;
@@ -934,6 +934,16 @@ pub fn install(
                         mem.set_u32(cpu.esp + 4, live.2 + 4)?;
                     }
                     None => {}
+                }
+                // The game type list's Tweakers row has no pane of its own:
+                // Slayer's, with our title and description over its texts.
+                if crate::tweakers::is_our_pane(&*mem, screen, id, row) {
+                    let base = mem.u8(screen + 0x5f3)? as i8;
+                    drop(mem);
+                    let word = live.2 + 8;
+                    return hooks::entry::start_with(cpu, ctx, PANE_SET, move |cx| {
+                        Box::pin(crate::tweakers::pane(cx, sh, screen, base, word))
+                    });
                 }
                 // The Xbox Live menu: our row shows our pane, Content
                 // Download (moved down one) its own. The row is handed over

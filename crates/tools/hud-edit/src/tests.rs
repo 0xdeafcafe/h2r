@@ -419,3 +419,94 @@ fn the_registry_names_the_widget_fields() {
         }
     }
 }
+
+/// What a hook answers takes the place of the bytes: the gate, a meter's
+/// fill, a text's string and colour, a sprite's turn (the HUD kit's
+/// preview draws its widgets this way, docs/game/hud-kit.md).
+#[test]
+fn answers_take_the_place_of_the_bytes() {
+    use crate::model::Widget;
+    use crate::render::{self, Answers, Art};
+    struct Kit;
+    impl Answers for Kit {
+        fn shown(&self, _: usize, w: &Widget) -> Option<bool> {
+            (w.name == "stray").then_some(false)
+        }
+        fn fill(&self, _: usize, w: &Widget) -> Option<f32> {
+            (w.name == "meter").then_some(0.0)
+        }
+        fn text(&self, _: usize, w: &Widget) -> Option<String> {
+            (w.name == "count").then(|| "ours".to_owned())
+        }
+        fn colour(&self, _: usize, w: &Widget) -> Option<[u8; 4]> {
+            (w.name == "count").then_some([255, 0, 0, 255])
+        }
+        fn angle(&self, _: usize, w: &Widget) -> Option<f32> {
+            (w.name == "panel").then_some(std::f32::consts::PI)
+        }
+    }
+    let (bytes, player, _, _) = fixture::build();
+    let source = MapSource {
+        bytes: Some(bytes.into()),
+        ..MapSource::file("hudtest.map")
+    };
+    let mut map = source.open().unwrap();
+    let hud = crate::model::read(&mut map, player).unwrap();
+    let mut art = Art::new(scenario_edit::scene::resource_files(&source));
+    let st = HudState::default();
+    let plain = render::draw(&mut map, &mut art, None, &[&hud], &st);
+    let kit = render::draw_answered(&mut map, &mut art, None, &[&hud], &st, &Kit);
+    let by = |p: &crate::render::Picture, n: &str| p.placed.iter().find(|w| w.name == n).unwrap().clone();
+    assert!(by(&plain, "stray").drawn && !by(&kit, "stray").drawn);
+    assert_eq!(by(&kit, "count").text.as_deref(), Some("ours"));
+    // "ours" is four stand-in characters wide; the rectangle follows it.
+    assert_eq!(by(&kit, "count").rect.unwrap().width(), 4.0 * crate::render::FALLBACK_CHAR[0]);
+    let px = |p: &crate::render::Picture, x: u32, y: u32| {
+        let i = ((y * p.canvas.width + x) * 4) as usize;
+        p.canvas.rgba[i..i + 3].to_vec()
+    };
+    // The meter at fill 0 is faint where the plain one is full.
+    assert_ne!(px(&plain, 52, 392), px(&kit, 52, 392));
+    // The panel turned half a turn: its left end (blue 0) is now on the
+    // right, so the pixel near the right edge shows the left's blue.
+    let left = px(&plain, 49, 412);
+    assert_eq!(px(&kit, 110, 412)[2], left[2]);
+    // The red text.
+    let r = by(&kit, "count").rect.unwrap();
+    let mid = px(&kit, (r.x0 + 2.0) as u32, (r.y0 + 4.0) as u32);
+    assert_eq!(mid, [255, 0, 0]);
+}
+
+/// A look scales a texel's alpha and greys it to its luma.
+#[test]
+fn a_look_dims_and_greys_a_texel() {
+    use crate::render::Look;
+    let t = [200, 100, 50, 200];
+    assert_eq!(Look { alpha: 1.0, grey: false }.apply(t), t);
+    assert_eq!(Look { alpha: 0.5, grey: false }.apply(t), [200, 100, 50, 100]);
+    let g = Look { alpha: 1.0, grey: true }.apply(t);
+    assert_eq!((g[0], g[1], g[2], g[3]), (124, 124, 124, 200));
+}
+
+/// A crop keeps that part of a sprite's texels and its size.
+#[test]
+fn a_crop_keeps_part_of_a_sprite() {
+    use crate::render::Sprite;
+    // 4 by 2, each texel's red its x and green its y.
+    let rgba: Vec<u8> = (0..2u8)
+        .flat_map(|y| (0..4u8).flat_map(move |x| [x, y, 0, 255]))
+        .collect();
+    let s = Sprite {
+        size: [4.0, 2.0],
+        rgba: Some(rgba),
+        px: [4, 2],
+        note: None,
+    };
+    let c = s.cropped([0.5, 1.0, 0.0, 1.0]);
+    assert_eq!(c.px, [2, 2]);
+    assert_eq!(c.size, [2.0, 2.0]);
+    assert_eq!(
+        c.rgba.unwrap(),
+        [2u8, 0, 0, 255, 3, 0, 0, 255, 2, 1, 0, 255, 3, 1, 0, 255]
+    );
+}

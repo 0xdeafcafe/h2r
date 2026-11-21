@@ -47,7 +47,9 @@ impl Canvas {
             rgba,
         }
     }
-    fn blend(&mut self, x: i32, y: i32, c: [u8; 4]) -> bool {
+    /// Blends `c` over the pixel at `(x, y)`; `false` off the canvas or
+    /// for a clear colour.
+    pub fn blend(&mut self, x: i32, y: i32, c: [u8; 4]) -> bool {
         if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 || c[3] == 0 {
             return false;
         }
@@ -80,6 +82,89 @@ pub struct Sprite {
     pub note: Option<String>,
 }
 
+impl Sprite {
+    /// The part `[u0, u1, v0, v1]` (fractions of the sprite) of it: as a
+    /// HUD shader quad draws a sprite whose texture rectangle is narrowed
+    /// (`0x0022a664` takes the rectangle at EAX).
+    pub fn cropped(&self, [u0, u1, v0, v1]: [f32; 4]) -> Sprite {
+        let [u0, u1, v0, v1] = [u0, u1, v0, v1].map(|v| v.clamp(0.0, 1.0));
+        let [pw, ph] = self.px;
+        let x0 = (u0 * pw as f32).round() as u32;
+        let x1 = ((u1 * pw as f32).round() as u32).max(x0);
+        let y0 = (v0 * ph as f32).round() as u32;
+        let y1 = ((v1 * ph as f32).round() as u32).max(y0);
+        let rgba = self.rgba.as_ref().map(|rgba| {
+            let mut out = Vec::with_capacity(((x1 - x0) * (y1 - y0) * 4) as usize);
+            for y in y0..y1 {
+                let i = ((y * pw + x0) * 4) as usize;
+                out.extend_from_slice(&rgba[i..i + ((x1 - x0) * 4) as usize]);
+            }
+            out
+        });
+        let part = |n: u32, of: u32, size: f32| {
+            if of == 0 {
+                0.0
+            } else {
+                size * n as f32 / of as f32
+            }
+        };
+        Sprite {
+            size: [
+                part(x1 - x0, pw, self.size[0]),
+                part(y1 - y0, ph, self.size[1]),
+            ],
+            rgba,
+            px: [x1 - x0, y1 - y0],
+            note: self.note.clone(),
+        }
+    }
+}
+
+/// Where a widget's sprite is in its bitmap ([`sprite_at`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpriteAt {
+    pub image: usize,
+    /// `[u0, u1, v0, v1]` in the image.
+    pub bounds: [f32; 4],
+    /// In HUD pixels.
+    pub size: [f32; 2],
+    pub note: Option<String>,
+}
+
+/// Bitmap `b`'s sequence `seq` as a widget draws it (E `0x22ae21`): the
+/// sequence's first sprite (its bounds in its image), or with no sprites
+/// its first image whole; a bitmap without sequences (or a sequence out
+/// of range) draws image 0.
+pub fn sprite_at(b: &tags::Bitmap, seq: i8) -> Result<SpriteAt, String> {
+    let mut note = None;
+    let pick = usize::try_from(seq).ok().and_then(|s| b.sequences.get(s));
+    if pick.is_none() && !b.sequences.is_empty() {
+        note = Some(format!("sequence {seq} is not in the bitmap: image 0 drawn"));
+    }
+    let (image, bounds) = match pick {
+        Some(s) if !s.sprites.is_empty() => {
+            let p = &s.sprites[0];
+            (usize::try_from(p.image_index).unwrap_or(0), p.bounds)
+        }
+        Some(s) => (
+            usize::try_from(s.wire.first_image).unwrap_or(0),
+            [0.0, 1.0, 0.0, 1.0],
+        ),
+        None => (0, [0.0, 1.0, 0.0, 1.0]),
+    };
+    let img = b
+        .images
+        .get(image)
+        .ok_or_else(|| format!("image {image} is not in the bitmap"))?;
+    let [iw, ih, _] = img.dimensions.map(f32::from);
+    Ok(SpriteAt {
+        image,
+        bounds,
+        size: [(bounds[1] - bounds[0]) * iw, (bounds[3] - bounds[2]) * ih],
+        note,
+    })
+}
+
 /// The map's bitmaps, decoded once each.
 pub struct Art {
     files: ResourceFiles,
@@ -106,10 +191,7 @@ impl Art {
             .as_ref()
     }
 
-    /// Bitmap `id`'s sequence `seq` as a widget draws it (E `0x22ae21`):
-    /// the sequence's first sprite (its bounds in its image), or with no
-    /// sprites its first image whole; a bitmap without sequences (or a
-    /// sequence out of range) draws image 0.
+    /// Bitmap `id`'s sequence `seq` as a widget draws it ([`sprite_at`]).
     pub fn sprite<R: Read + Seek>(
         &mut self,
         map: &mut Map<R>,
@@ -119,32 +201,14 @@ impl Art {
         let b = self
             .bitmap(map, id)
             .ok_or_else(|| format!("{id} is not a readable bitmap"))?;
-        let mut note = None;
-        let pick = usize::try_from(seq)
-            .ok()
-            .and_then(|s| b.sequences.get(s));
-        if pick.is_none() && !b.sequences.is_empty() {
-            note = Some(format!("sequence {seq} is not in the bitmap: image 0 drawn"));
-        }
-        let (image, bounds) = match pick {
-            Some(s) if !s.sprites.is_empty() => {
-                let p = &s.sprites[0];
-                (usize::try_from(p.image_index).unwrap_or(0), p.bounds)
-            }
-            Some(s) => (
-                usize::try_from(s.wire.first_image).unwrap_or(0),
-                [0.0, 1.0, 0.0, 1.0],
-            ),
-            None => (0, [0.0, 1.0, 0.0, 1.0]),
-        };
-        let img = b
-            .images
-            .get(image)
-            .ok_or_else(|| format!("image {image} is not in the bitmap"))?;
-        let [iw, ih, _] = img.dimensions.map(f32::from);
-        let size = [(bounds[1] - bounds[0]) * iw, (bounds[3] - bounds[2]) * ih];
+        let SpriteAt {
+            image,
+            bounds,
+            size,
+            mut note,
+        } = sprite_at(b, seq)?;
         let px = size.map(|v| v.round().max(0.0) as u32);
-        let img = img.clone();
+        let img = b.images[image].clone();
         let decoded = self
             .images
             .entry((id, image))
@@ -209,7 +273,7 @@ impl Fonts {
             let mut files = HashMap::new();
             for n in &table {
                 if let Some(b) = read(&format!("/maps/fonts/{n}")) {
-                    files.insert(n.clone(), b);
+                    files.insert(n.clone(), Self::as_served(n, b));
                 }
             }
             return Some(Fonts { table, files });
@@ -218,9 +282,18 @@ impl Fonts {
         let table = Self::table(&std::fs::read(dir.join("font_table.txt")).ok()?);
         let files = table
             .iter()
-            .filter_map(|n| Some((n.clone(), std::fs::read(dir.join(n)).ok()?)))
+            .filter_map(|n| {
+                let b = std::fs::read(dir.join(n)).ok()?;
+                Some((n.clone(), Self::as_served(n, b)))
+            })
             .collect();
         Some(Fonts { table, files })
+    }
+    /// Font file `name` as the game's font rewrite serves it: the message
+    /// fonts with the superbounce medals added (`font::medals`,
+    /// docs/game/hud-kit.md, "The medals").
+    fn as_served(name: &str, bytes: Vec<u8>) -> Vec<u8> {
+        font::medals::patch(name, &bytes).unwrap_or(bytes)
     }
     fn table(b: &[u8]) -> Vec<String> {
         String::from_utf8_lossy(b)
@@ -234,25 +307,126 @@ impl Fonts {
         let name = self.table.get(usize::try_from(index).ok()?)?;
         font::Font::parse(self.files.get(name)?).ok()
     }
-    /// `text` in engine font `index`: its picture and the line height.
+    /// Whether engine font `index` has a glyph of its own for UTF-16 unit
+    /// `unit`, not the stand-in box it draws for a unit it lacks
+    /// ([`font::Font::has_glyph`]). `None`: no such font.
+    pub fn has_glyph(&self, index: i16, unit: u16) -> Option<bool> {
+        Some(self.font(index)?.has_glyph(unit))
+    }
+    /// `text` in engine font `index`: its picture and the line height. A
+    /// glyph in colour (a medal) keeps its own colours and the rest takes
+    /// `colour`, as the game's font draw leaves them (S: that the engine
+    /// keeps a coloured glyph's colours; docs/game/hud-kit.md, "Not
+    /// verified"): a pixel whose own colour is not white is drawn in it.
     pub fn render(&self, index: i16, text: &str, colour: [u8; 4]) -> Option<(font::Bitmap, i32)> {
         let f = self.font(index)?;
         let units: Vec<u16> = text.encode_utf16().collect();
-        let b = font::render(
-            &f,
-            &units,
-            font::RenderOptions {
-                color: colour,
-                glyph_colors: false,
-            },
-        )
-        .ok()?;
+        let draw = |glyph_colors| {
+            font::render(
+                &f,
+                &units,
+                font::RenderOptions {
+                    color: colour,
+                    glyph_colors,
+                },
+            )
+            .ok()
+        };
+        let mut b = draw(false)?;
+        // Only a line with a private-use glyph can hold a coloured one.
+        if units.iter().any(|u| (0xe000..=0xe3ff).contains(u))
+            && let Some(own) = draw(true)
+            && own.rgba.len() == b.rgba.len()
+        {
+            for (t, o) in b.rgba.chunks_exact_mut(4).zip(own.rgba.chunks_exact(4)) {
+                if o[3] != 0 && o[..3] != [255, 255, 255] {
+                    t.copy_from_slice(o);
+                }
+            }
+        }
         Some((b, f.line_height()))
     }
 }
 
+/// The colour text widgets are drawn in: a stand-in (how the engine gets
+/// a text widget's colour from its shader is not read).
+pub const TEXT_COLOUR: [u8; 4] = [140, 200, 255, 255];
+
 /// Fallback text metrics without the disc's fonts: per character and line.
 pub const FALLBACK_CHAR: [f32; 2] = [7.0, 12.0];
+
+/// The size `text` takes in engine font `font`, as the preview places it:
+/// the rendered width and the line height (or the picture's height, if
+/// taller); without the disc's fonts, [`FALLBACK_CHAR`] per character.
+pub fn text_size(fonts: Option<&Fonts>, font: i16, text: &str) -> [f32; 2] {
+    match fonts.and_then(|f| f.render(font, text, [255; 4])) {
+        Some((b, line)) => [b.width as f32, line.max(b.height as i32) as f32],
+        None => [FALLBACK_CHAR[0] * text.chars().count() as f32, FALLBACK_CHAR[1]],
+    }
+}
+
+/// What the game's hooks answer for a widget in place of its bytes: the
+/// HUD kit's runtime answers its own widgets' gate, input, string, colour
+/// and turn (docs/game/hud-kit.md, "The runtime"), and its preview draws
+/// them through [`draw_answered`] with the same answers. `hud` is the
+/// widget's HUD's index in the list drawn. `None` keeps what the bytes
+/// and the [`HudState`] say.
+pub trait Answers {
+    /// Shown or hidden, in place of the state gate.
+    fn shown(&self, _hud: usize, _w: &Widget) -> Option<bool> {
+        None
+    }
+    /// A meter's fill (`hud_input1`), 0 to 1.
+    fn fill(&self, _hud: usize, _w: &Widget) -> Option<f32> {
+        None
+    }
+    /// A text widget's text, in place of its string.
+    fn text(&self, _hud: usize, _w: &Widget) -> Option<String> {
+        None
+    }
+    /// A text widget's colour (RGBA).
+    fn colour(&self, _hud: usize, _w: &Widget) -> Option<[u8; 4]> {
+        None
+    }
+    /// A bitmap widget's turn about its centre, radians clockwise.
+    fn angle(&self, _hud: usize, _w: &Widget) -> Option<f32> {
+        None
+    }
+    /// How a bitmap widget's texels are drawn, in place of as they are.
+    fn look(&self, _hud: usize, _w: &Widget) -> Option<Look> {
+        None
+    }
+    /// The part of a bitmap widget's sprite drawn, `[u0, u1, v0, v1]` in
+    /// fractions of it ([`Sprite::cropped`]).
+    fn crop(&self, _hud: usize, _w: &Widget) -> Option<[f32; 4]> {
+        None
+    }
+}
+
+/// A bitmap widget's texels as an [`Answers::look`] draws them: alpha
+/// scaled, and greyed (each texel its luma) or not.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Look {
+    pub alpha: f32,
+    pub grey: bool,
+}
+
+impl Look {
+    pub fn apply(self, [r, g, b, a]: [u8; 4]) -> [u8; 4] {
+        let [r, g, b] = if self.grey {
+            let l = (0.299 * f32::from(r) + 0.587 * f32::from(g) + 0.114 * f32::from(b)).round() as u8;
+            [l, l, l]
+        } else {
+            [r, g, b]
+        };
+        let a = (f32::from(a) * self.alpha.clamp(0.0, 1.0)).round() as u8;
+        [r, g, b, a]
+    }
+}
+
+/// No answers: every widget as its bytes say.
+pub struct Retail;
+impl Answers for Retail {}
 
 /// Where one widget landed.
 #[derive(Clone, Debug)]
@@ -280,10 +454,10 @@ pub struct Placed {
 pub struct Cover(Vec<u64>);
 
 impl Cover {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Cover(vec![0; (W * H).div_ceil(64) as usize])
     }
-    fn set(&mut self, x: i32, y: i32) {
+    pub fn set(&mut self, x: i32, y: i32) {
         if x >= 0 && y >= 0 && (x as u32) < W && (y as u32) < H {
             let i = y as usize * W as usize + x as usize;
             self.0[i / 64] |= 1 << (i % 64);
@@ -294,6 +468,32 @@ impl Cover {
     }
     pub fn overlap(&self, o: &Cover) -> u32 {
         self.0.iter().zip(&o.0).map(|(a, b)| (a & b).count_ones()).sum()
+    }
+    /// Every pixel of `r` (clipped to the screen).
+    /// Adds `o`'s pixels.
+    pub fn add(&mut self, o: &Cover) {
+        for (a, b) in self.0.iter_mut().zip(&o.0) {
+            *a |= b;
+        }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.iter().all(|w| *w == 0)
+    }
+    pub fn rect(r: &Rect) -> Self {
+        let mut c = Cover::new();
+        let [x0, y0, x1, y1] = r.pixels();
+        for y in y0..y1 {
+            for x in x0..x1 {
+                c.set(x, y);
+            }
+        }
+        c
+    }
+}
+
+impl Default for Cover {
+    fn default() -> Self {
+        Cover::new()
     }
 }
 
@@ -357,6 +557,19 @@ pub fn draw<R: Read + Seek>(
     huds: &[&Hud],
     st: &HudState,
 ) -> Picture {
+    draw_answered(map, art, fonts, huds, st, &Retail)
+}
+
+/// [`draw`], with `answers` taking the place of the bytes and the state
+/// where they answer.
+pub fn draw_answered<R: Read + Seek>(
+    map: &mut Map<R>,
+    art: &mut Art,
+    fonts: Option<&Fonts>,
+    huds: &[&Hud],
+    st: &HudState,
+    answers: &dyn Answers,
+) -> Picture {
     let mode: Mode = st.mode;
     let frame = Frame::for_mode(mode);
     let mut canvas = Canvas::backdrop();
@@ -364,7 +577,9 @@ pub fn draw<R: Read + Seek>(
     let masks = st.masks();
     for (h, hud) in huds.iter().enumerate() {
         for w in &hud.widgets {
-            let shown = !st.gate || state::shown(w.state(), masks);
+            let shown = answers
+                .shown(h, w)
+                .unwrap_or_else(|| !st.gate || state::shown(w.state(), masks));
             let mut notes = Vec::new();
             let point = place::widget_point(&frame, w.anchor(), w.offset(mode));
             let point = point.or_else(|| {
@@ -387,8 +602,12 @@ pub fn draw<R: Read + Seek>(
                 notes,
             };
             match w.key.kind {
-                WidgetKind::Bitmap => draw_bitmap(map, art, &mut canvas, w, st, &mut p),
-                WidgetKind::Text => draw_text(map, fonts, &mut canvas, w, st, &mut p),
+                WidgetKind::Bitmap => {
+                    draw_bitmap(map, art, &mut canvas, w, st, (h, answers), &mut p)
+                }
+                WidgetKind::Text => {
+                    draw_text(map, fonts, &mut canvas, w, st, (h, answers), &mut p)
+                }
             }
             placed.push(p);
         }
@@ -407,6 +626,7 @@ fn draw_bitmap<R: Read + Seek>(
     canvas: &mut Canvas,
     w: &Widget,
     st: &HudState,
+    (h, answers): (usize, &dyn Answers),
     p: &mut Placed,
 ) {
     let mode = st.mode;
@@ -422,6 +642,10 @@ fn draw_bitmap<R: Read + Seek>(
             return;
         }
     };
+    let sprite = match answers.crop(h, w) {
+        Some(c) => sprite.cropped(c),
+        None => sprite,
+    };
     p.notes.extend(sprite.note.clone());
     let rect = place::bitmap_rect(point, sprite.size, w.registration(mode));
     p.rect = Some(rect);
@@ -435,7 +659,9 @@ fn draw_bitmap<R: Read + Seek>(
         .shader()
         .and_then(|s| map.tag(s).ok().and_then(|t| t.name.clone()))
         .unwrap_or_default();
-    let fill = if w.special() == SPECIAL_SHIELD {
+    let fill = if let Some(f) = answers.fill(h, w) {
+        Some(f)
+    } else if w.special() == SPECIAL_SHIELD {
         Some(0.2156 + st.shield.clamp(0.0, 1.0) * (0.992 - 0.2156))
     } else if shader.contains("meter") {
         Some(st.input(w.inputs()[0]).0)
@@ -445,20 +671,43 @@ fn draw_bitmap<R: Read + Seek>(
     let flags = w.flags();
     let [x0, y0] = [rect.x0.round() as i32, rect.y0.round() as i32];
     let [pw, ph] = sprite.px;
+    // A turn about the sprite's centre: each pixel reads the texel turned
+    // back, within the sprite's own rectangle (corners turned out of it
+    // are not drawn).
+    let look = answers.look(h, w);
+    let turn = answers
+        .angle(h, w)
+        .filter(|a| *a != 0.0)
+        .map(|a| (a.sin(), a.cos()));
     let mut cover = Cover::new();
     for y in 0..ph {
         for x in 0..pw {
+            // The texel this pixel shows, before mirroring.
+            let (tx, ty) = match turn {
+                None => (x, y),
+                Some((sin, cos)) => {
+                    let (cx, cy) = (pw as f32 / 2.0, ph as f32 / 2.0);
+                    let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
+                    let sx = cos * dx + sin * dy + cx;
+                    let sy = -sin * dx + cos * dy + cy;
+                    if sx < 0.0 || sy < 0.0 || sx >= pw as f32 || sy >= ph as f32 {
+                        continue;
+                    }
+                    (sx as u32, sy as u32)
+                }
+            };
             // Flags bits 0 and 1 mirror the texture (0x22b29c).
-            let sx = if flags & 1 != 0 { pw - 1 - x } else { x };
-            let sy = if flags & 2 != 0 { ph - 1 - y } else { y };
+            let sx = if flags & 1 != 0 { pw - 1 - tx } else { tx };
+            let sy = if flags & 2 != 0 { ph - 1 - ty } else { ty };
             let c = match &sprite.rgba {
                 Some(rgba) => {
                     let i = ((sy * pw + sx) * 4) as usize;
                     let t = [rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]];
-                    match fill {
+                    let t = match fill {
                         Some(f) => meter(t, f),
                         None => t,
-                    }
+                    };
+                    look.map_or(t, |l| l.apply(t))
                 }
                 // No texels: a hatched stand-in of the sprite's size.
                 None => {
@@ -486,6 +735,7 @@ fn draw_text<R: Read + Seek>(
     canvas: &mut Canvas,
     w: &Widget,
     st: &HudState,
+    (h, answers): (usize, &dyn Answers),
     p: &mut Placed,
 ) {
     let mode = st.mode;
@@ -499,9 +749,11 @@ fn draw_text<R: Read + Seek>(
             .push(format!("font byte {} names no font: not drawn", w.font(mode)));
         return;
     };
-    let string = crate::model::string(map, w.string());
-    let text = widget_text(w, string.as_deref(), st);
-    let colour = [140, 200, 255, 255];
+    let text = answers.text(h, w).unwrap_or_else(|| {
+        let string = crate::model::string(map, w.string());
+        widget_text(w, string.as_deref(), st)
+    });
+    let colour = answers.colour(h, w).unwrap_or(TEXT_COLOUR);
     let rendered = fonts.and_then(|f| f.render(font, &text, colour));
     let size = match &rendered {
         Some((b, line)) => [b.width as f32, (*line).max(b.height as i32) as f32],
@@ -538,7 +790,10 @@ fn draw_text<R: Read + Seek>(
             for y in 2..rh - 2 {
                 for x in 0..rw {
                     if x % FALLBACK_CHAR[0] as i32 != 6 {
-                        cover.set(x0 + x, y0 + y);
+                        // Opaque only as the glyphs are (`c[3] > 64`).
+                        if colour[3] > 64 {
+                            cover.set(x0 + x, y0 + y);
+                        }
                         canvas.blend(x0 + x, y0 + y, colour);
                     }
                 }

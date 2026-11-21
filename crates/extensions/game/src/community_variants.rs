@@ -27,6 +27,7 @@ use std::sync::Arc;
 
 use runtime::Guest;
 use runtime::guest::Permissions;
+use variants::ext::Ext;
 
 // ---- guest addresses (hook points; see docs/game/community-gametypes.md) ----
 
@@ -262,9 +263,30 @@ fn score_setting(ty: GameType) -> u32 {
     }
 }
 
+/// Where the custom game's game type list files a variant
+/// (docs/game/community-gametypes.md "Tweakers").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Category {
+    /// Under its game type ([`Variant::ty`]).
+    GameType,
+    /// Under Tweakers, our row after Territories (`crate::tweakers`).
+    /// The game still plays it as its game type; the built-in's record
+    /// carries this extension block, so a copy carries it too and is
+    /// listed under Tweakers as well.
+    Tweakers(Ext),
+}
+
+/// Superbounce's extension block: the game's rules plus the superbounce
+/// flag (docs/game/superbounce.md "The superbounce game type").
+pub const SUPERBOUNCE_EXT: Ext = Ext {
+    superbounce: true,
+    ..Ext::RETAIL
+};
+
 pub struct Variant {
     pub name: &'static str,
     pub ty: GameType,
+    pub category: Category,
     pub settings: &'static [Setting],
     pub description: &'static str,
 }
@@ -277,6 +299,31 @@ impl Variant {
     pub fn display_name(&self) -> String {
         format!("{} {ICON}", self.name)
     }
+    /// The extension block of a Tweakers variant.
+    pub fn tweak(&self) -> Option<Ext> {
+        match self.category {
+            Category::Tweakers(ext) => Some(ext),
+            Category::GameType => None,
+        }
+    }
+}
+
+/// The Tweakers built-in named `name`, as a record or the list holds it
+/// (the list's icon and trailing spaces ignored).
+pub fn tweaker_builtin(name: &str) -> Option<&'static Variant> {
+    let bare = name
+        .trim_end_matches(|c: char| c.is_whitespace() || ('\u{e000}'..='\u{f8ff}').contains(&c));
+    VARIANTS
+        .iter()
+        .find(|v| v.tweak().is_some() && v.name == bare)
+}
+
+/// Whether a variant record with this name and extension block is listed
+/// under Tweakers: its block turns on a mode Tweakers owns (the
+/// superbounce flag), or it has a Tweakers built-in's name (as
+/// `crate::superbounce_mode` turns the mode on by name too).
+pub fn is_tweaker(name: &str, block: &[u8; variants::ext::LEN]) -> bool {
+    Ext::in_effect(block).superbounce || tweaker_builtin(name).is_some()
 }
 
 use Setting::*;
@@ -287,6 +334,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Zombies",
         ty: GameType::Slayer,
+        category: Category::GameType,
         settings: &[
             TeamPlay(true),
             StartingWeapon(Some(Weapon::Shotgun)),
@@ -308,6 +356,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Hide and Seek",
         ty: GameType::Juggernaut,
+        category: Category::GameType,
         settings: &[
             StartingWeapon(Some(Weapon::EnergySword)),
             SecondaryWeapon(None),
@@ -327,6 +376,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Jousting",
         ty: GameType::Slayer,
+        category: Category::GameType,
         settings: &[
             LightVehicle(LightVehicle::Warthog),
             SecondLightVehicle(LightVehicle::None),
@@ -343,6 +393,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "SWAT",
         ty: GameType::Slayer,
+        category: Category::GameType,
         settings: &[
             TeamPlay(true),
             Shields(Shields::None),
@@ -361,6 +412,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Duel",
         ty: GameType::Slayer,
+        category: Category::GameType,
         settings: &[
             MaxPlayers(2),
             StartingWeapon(Some(Weapon::Magnum)),
@@ -373,6 +425,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Clint Eastwood",
         ty: GameType::Juggernaut,
+        category: Category::GameType,
         settings: &[
             Shields(Shields::None),
             StartingWeapon(Some(Weapon::Shotgun)),
@@ -386,6 +439,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Sun King",
         ty: GameType::King,
+        category: Category::GameType,
         settings: &[
             TeamPlay(true),
             Shields(Shields::None),
@@ -402,6 +456,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Tower of Power",
         ty: GameType::Slayer,
+        category: Category::GameType,
         settings: &[
             TeamPlay(true),
             Shields(Shields::None),
@@ -422,6 +477,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Wheeeeee!",
         ty: GameType::Oddball,
+        category: Category::GameType,
         settings: &[
             TeamPlay(true),
             Shields(Shields::None),
@@ -438,6 +494,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Cops and Robbers",
         ty: GameType::Slayer,
+        category: Category::GameType,
         settings: &[
             TeamPlay(true),
             Lives(3),
@@ -453,6 +510,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Bounce Practice",
         ty: GameType::Slayer,
+        category: Category::GameType,
         settings: &[
             ScoreToWin(0),
             TimeLimit(0),
@@ -470,6 +528,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Glitch Hunt",
         ty: GameType::Slayer,
+        category: Category::GameType,
         settings: &[
             ScoreToWin(0),
             TimeLimit(0),
@@ -486,6 +545,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Bumper Cars",
         ty: GameType::Slayer,
+        category: Category::GameType,
         settings: &[
             StartingWeapon(None),
             SecondaryWeapon(None),
@@ -507,6 +567,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Superbounce",
         ty: GameType::Slayer,
+        category: Category::Tweakers(SUPERBOUNCE_EXT),
         settings: &[
             ScoreToWin(0),
             TimeLimit(0),
@@ -564,10 +625,32 @@ pub fn name_id(i: usize) -> u32 {
 pub fn description_id(i: usize) -> u32 {
     ID_BASE | 0x80 | i as u32
 }
+/// The Tweakers row's texts (`crate::tweakers`): the row's label, the
+/// title of its pane and of its variant list, and their description. At
+/// the top of the name range, past every variant's.
+pub const TWEAKERS_LABEL_ID: u32 = ID_BASE | 0x7d;
+pub const TWEAKERS_TITLE_ID: u32 = ID_BASE | 0x7e;
+pub const TWEAKERS_DESCRIPTION_ID: u32 = ID_BASE | 0x7f;
+pub const TWEAKERS_LABEL: &str = "Tweakers";
+pub const TWEAKERS_TITLE: &str = "TWEAKERS";
+pub const TWEAKERS_DESCRIPTION: &str = "Play familiar game types with tweaked rules, from bounce practice to new twists on the classics.";
+pub const TWEAKERS_IDS: [u32; 3] = [
+    TWEAKERS_LABEL_ID,
+    TWEAKERS_TITLE_ID,
+    TWEAKERS_DESCRIPTION_ID,
+];
+const _: () = assert!(VARIANTS.len() < 0x7d);
+
 /// The text for one of our ids.
 pub fn text(id: u32) -> Option<String> {
     if !is_ours(id) {
         return None;
+    }
+    match id {
+        TWEAKERS_LABEL_ID => return Some(TWEAKERS_LABEL.into()),
+        TWEAKERS_TITLE_ID => return Some(TWEAKERS_TITLE.into()),
+        TWEAKERS_DESCRIPTION_ID => return Some(TWEAKERS_DESCRIPTION.into()),
+        _ => {}
     }
     let i = (id & 0x7f) as usize;
     let v = VARIANTS.get(i)?;
@@ -721,6 +804,7 @@ fn register_strings(
         if let Some(t) = status
             .or_else(|| text(cpu.edi))
             .or_else(|| crate::variant_options::text(cpu.edi))
+            .or_else(|| crate::hud_kit::text(cpu.edi))
         {
             let mut mem = ctx.runtime().memory();
             let buf = mem.u32(cpu.esp + 4)?;
@@ -1071,6 +1155,49 @@ mod tests {
         ] {
             assert!(!names.contains(clash));
         }
+    }
+
+    #[test]
+    fn superbounce_is_filed_under_tweakers_with_its_flag() {
+        let sb = VARIANTS.iter().find(|v| v.name == "Superbounce").unwrap();
+        assert_eq!(sb.ty, GameType::Slayer, "played as Slayer underneath");
+        assert_eq!(sb.category, Category::Tweakers(SUPERBOUNCE_EXT));
+        assert!(SUPERBOUNCE_EXT.superbounce && SUPERBOUNCE_EXT.out_of_range().is_none());
+        assert_eq!(
+            Ext::decode(&SUPERBOUNCE_EXT.encode()),
+            variants::ext::Block::Ext(SUPERBOUNCE_EXT)
+        );
+        // Every other variant stays under its game type.
+        for v in VARIANTS.iter().filter(|v| v.name != "Superbounce") {
+            assert_eq!(v.category, Category::GameType, "{}", v.name);
+            assert!(v.tweak().is_none());
+        }
+        // As the list and a record hold its name.
+        assert_eq!(
+            tweaker_builtin(&sb.display_name()).map(|v| v.name),
+            Some("Superbounce")
+        );
+        assert_eq!(
+            tweaker_builtin("Superbounce").map(|v| v.name),
+            Some("Superbounce")
+        );
+        assert!(tweaker_builtin("Zombies \u{e006}").is_none());
+        assert!(tweaker_builtin("Superbounce 2").is_none());
+    }
+
+    #[test]
+    fn the_tweakers_texts_are_ours_and_apart_from_the_variants() {
+        assert_eq!(text(TWEAKERS_LABEL_ID).as_deref(), Some(TWEAKERS_LABEL));
+        assert_eq!(text(TWEAKERS_TITLE_ID).as_deref(), Some(TWEAKERS_TITLE));
+        assert_eq!(
+            text(TWEAKERS_DESCRIPTION_ID).as_deref(),
+            Some(TWEAKERS_DESCRIPTION)
+        );
+        for id in TWEAKERS_IDS {
+            assert!(is_ours(id));
+            assert!((0..VARIANTS.len()).all(|i| id != name_id(i) && id != description_id(i)));
+        }
+        assert!(TWEAKERS_DESCRIPTION.encode_utf16().count() < 0xff);
     }
 
     #[test]

@@ -223,6 +223,12 @@ pub(crate) fn register_core_film(
             .add(&variant_page::MoreRow)
             .map_err(|e| anyhow::anyhow!("variant options row: {e}"))?;
     }
+    // The game type list's Tweakers row, after Territories, and its variant
+    // lists: Superbounce and the other tweaked-rules variants
+    // (docs/game/community-gametypes.md "Tweakers").
+    features
+        .add(&crate::tweakers::Tweakers)
+        .map_err(|e| anyhow::anyhow!("tweakers: {e}"))?;
     features.add(&hud::Hud).map_err(|e| anyhow::anyhow!("hud: {e}"))?;
     features
         .add(&crate::loaded_map::LoadedMap)
@@ -376,11 +382,22 @@ pub(crate) fn register_core_film(
     // The superbounce game type's HUD plate and spot lines
     // (docs/game/superbounce.md): idle unless the variant or
     // H2_SUPERBOUNCE asks for it.
-    crate::superbounce_mode::install(features).context("installing the superbounce mode")?;
-    // Hold X while falling to steer onto a bounce strip
+    crate::superbounce_mode::install(features, telemetry.clone()).context("installing the superbounce mode")?;
+    // Teabags in every game, for the incel medal (docs/game/teabag.md):
+    // recorded to Live and the film on the console that records the game.
+    crate::teabag::install(features, telemetry.clone()).context("installing the teabag watch")?;
+    // HUD elements of ours drawn by the game's HUD (docs/game/hud-kit.md),
+    // and the superbounce HUD on it, fed from the mode's state; its
+    // tutorial's seen flag is a setting.
+    crate::hud_kit::install(features).context("installing the HUD kit")?;
+    crate::superbounce_hud::install(features, i.settings.clone())
+        .context("installing the superbounce HUD")?;
+    // Hold X while falling to steer onto a bounce strip, opt in by the
+    // superbounce.fall_assist setting
     // (docs/game/superbounce.md, "Hold X: the fall assist"). Its input tap
     // goes in with the XAPI input taps (register_late).
-    crate::superbounce_assist::install(features).context("installing the superbounce assist")?;
+    crate::superbounce_assist::install(features, i.settings.clone())
+        .context("installing the superbounce assist")?;
     // Bots (docs/game/bots.md): phantom peers in a session this console
     // hosts. Idle with none.
     let playing_film = film.is_some();

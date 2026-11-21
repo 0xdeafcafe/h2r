@@ -8,6 +8,8 @@ use std::collections::BTreeMap;
 /// Exercise the production observer, completed tick writer, teardown flush
 /// and front-of-file range reader. Ben's last-word is announced after he
 /// left and Cara took his seat. The match clock starts long after boot.
+/// Ada, in it throughout with no teabag, earns incel at the end; Ben left
+/// and Cara joined after the first kill (docs/game/teabag.md, "The medal").
 #[test]
 fn sealed_menu_medals_match_the_recorded_awards_across_a_seat_replacement() {
     let dir = std::env::temp_dir().join(format!("film-medals-{}", live_proto::sign::random_id()));
@@ -105,7 +107,12 @@ fn sealed_menu_medals_match_the_recorded_awards_across_a_seat_replacement() {
                     earned_at,
                     medal,
                 } => {
-                    let name = &killers[&(player, earned_at)];
+                    // Incel is given at the end, to whoever holds the seat.
+                    let name = if medal == "incel" {
+                        &slot[&player]
+                    } else {
+                        &killers[&(player, earned_at)]
+                    };
                     *emitted.get_mut(name).unwrap().entry(medal).or_default() += 1;
                 }
                 _ => {}
@@ -114,13 +121,122 @@ fn sealed_menu_medals_match_the_recorded_awards_across_a_seat_replacement() {
     }
     assert_eq!(
         emitted["Ada"],
-        BTreeMap::from([("opening-act".into(), 1), ("twofer".into(), 1)])
+        BTreeMap::from([
+            ("opening-act".into(), 1),
+            ("twofer".into(), 1),
+            ("incel".into(), 1)
+        ])
     );
     assert_eq!(
         emitted["Ben"],
         BTreeMap::from([("payback".into(), 1), ("last-word".into(), 1)])
     );
     assert!(emitted["Cara"].is_empty());
+    assert_eq!(summary, emitted);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// A recorded game's bounces: each `Superbounce` and `Bounced` is a stats
+/// record, its medals are `Medal` records at its tick, and the sealed menu
+/// counts the same medals (docs/game/superbounce.md, "Recording").
+#[test]
+fn sealed_menu_counts_the_recorded_bounce_medals() {
+    let dir = std::env::temp_dir().join(format!("film-bounces-{}", live_proto::sign::random_id()));
+    std::fs::create_dir(&dir).unwrap();
+    let file = dir.join("match.h2film");
+    let session = Session::open(
+        Some(file.clone()),
+        None,
+        host_facts(),
+        b"xbe",
+        &options(&dir),
+    )
+    .unwrap()
+    .unwrap();
+    let observer = session.film_observer().unwrap();
+    let guest = arena();
+    let emit = |kind, tick, data| {
+        let event = crate::telemetry::GameEvent::new("fixture", kind, data);
+        observer.event(&event, tick).unwrap();
+    };
+    emit(
+        game::GAME_STARTED,
+        1000,
+        json!({
+            "host":"fixture","game_id":"fixture","tick":1000,"map":"lockout","mode":"multiplayer",
+            "variant":"Slayer","team_play":false,"players":[
+                {"index":0,"name":"Ada","team":0},{"index":1,"name":"Ben","team":0}]
+        }),
+    );
+    session.checkpoint(&guest);
+    for (tick, player, chain) in [(1005, 0, 1), (1010, 0, 2), (1015, 0, 3), (1020, 1, 1)] {
+        emit(
+            game::SUPERBOUNCE,
+            tick,
+            json!({"tick":tick,"player":player,"chain":chain}),
+        );
+        session.checkpoint(&guest);
+    }
+    emit(game::BOUNCED, 1030, json!({"tick":1030,"player":1}));
+    session.checkpoint(&guest);
+    emit(
+        game::GAME_ENDED,
+        1050,
+        json!({"tick":1050,"reason":"finished","players":[]}),
+    );
+    session.finish(120, true).unwrap();
+
+    let mut reader = film::range::RangeReader::new(std::fs::File::open(&file).unwrap()).unwrap();
+    let summary: BTreeMap<_, _> = reader
+        .front
+        .summary
+        .players
+        .iter()
+        .map(|p| (p.name.clone(), p.medals.clone()))
+        .collect();
+    let names = BTreeMap::from([(0, "Ada".to_string()), (1, "Ben".to_string())]);
+    let mut bounces = Vec::new();
+    let mut emitted = BTreeMap::<String, BTreeMap<String, u32>>::new();
+    for i in 0..reader.directory.chunks.len() {
+        let raw = reader.chunk(i).unwrap();
+        for r in stream::Chunk::parse(&raw).unwrap().records() {
+            let r = r.unwrap();
+            if r.tag != stream::EVENT || r.payload.first() != Some(&stream::STATS_EVENT) {
+                continue;
+            }
+            match events::Record::decode(&r.payload[1..]).unwrap().event {
+                events::Event::Superbounce(b) => bounces.push((b.player, b.chain)),
+                events::Event::Bounced(b) => bounces.push((b.player, 0)),
+                events::Event::Medal { player, medal, .. } => {
+                    *emitted
+                        .entry(names[&player].clone())
+                        .or_default()
+                        .entry(medal)
+                        .or_default() += 1;
+                }
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(bounces, [(0, 1), (0, 2), (0, 3), (1, 1), (1, 0)]);
+    assert_eq!(
+        emitted["Ada"],
+        BTreeMap::from([
+            ("superbounce".into(), 3),
+            ("double-bounce".into(), 1),
+            ("triple-bounce".into(), 1),
+            ("incel".into(), 1),
+        ])
+    );
+    // No teabag in the game: both completed it clean.
+    assert_eq!(
+        emitted["Ben"],
+        BTreeMap::from([
+            ("superbounce".into(), 1),
+            ("bounced".into(), 1),
+            ("incel".into(), 1)
+        ])
+    );
     assert_eq!(summary, emitted);
     std::fs::remove_dir_all(dir).unwrap();
 }

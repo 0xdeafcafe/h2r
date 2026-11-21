@@ -1,11 +1,12 @@
 use std::collections::BTreeMap;
 
 use live_proto::game::{
-    ActorKilled, Frame, FrameActor, FrameAnim, FrameHit, FrameItem, FrameMachine, FrameObject, FramePlayer,
-    FrameProjectile, FrameVehicle, GameEnded, MAX_FRAME_ACTORS, MAX_FRAME_HITS, MAX_FRAME_ITEMS,
-    MAX_FRAME_MACHINES, MAX_FRAME_OBJECTS, MAX_FRAME_PROJECTILES, MAX_FRAME_SEAT, MAX_FRAME_SHIELD,
-    MAX_FRAME_SHOTS, MAX_FRAME_SPEED, MAX_FRAME_VEHICLES, MAX_MACHINE_POSITIONS,
-    MAX_PROJECTILE_SPEED, MachinePosition, ObjectKind, PlayerKilled, PlayerLeft, ScoreChanged,
+    ActorKilled, Bounced, Frame, FrameActor, FrameAnim, FrameHit, FrameItem, FrameMachine,
+    FrameObject, FramePlayer, FrameProjectile, FrameVehicle, GameEnded, MAX_FRAME_ACTORS,
+    MAX_FRAME_HITS, MAX_FRAME_ITEMS, MAX_FRAME_MACHINES, MAX_FRAME_OBJECTS, MAX_FRAME_PROJECTILES,
+    MAX_FRAME_SEAT, MAX_FRAME_SHIELD, MAX_FRAME_SHOTS, MAX_FRAME_SPEED, MAX_FRAME_VEHICLES,
+    MAX_MACHINE_POSITIONS, MAX_PROJECTILE_SPEED, MachinePosition, ObjectKind, PlayerKilled,
+    PlayerLeft, ScoreChanged, Superbounce, Teabag,
 };
 
 use crate::event::{
@@ -1035,6 +1036,88 @@ impl Session {
         );
     }
 
+    /// A player of the match bounced off a superbounce crease at the
+    /// engine's `tick`, `chain` bounces into its chain
+    /// (docs/game/superbounce.md, "Recording"). The superbounce mode calls
+    /// it, through [`crate::Telemetry::superbounce`], for every player it
+    /// watches. Like a kill it is not sent after the end or in a cinematic,
+    /// and a slot that is not in the match, or a chain of 0, sends nothing.
+    pub fn superbounce(&mut self, tick: u64, player: u32, chain: u32) {
+        let Some(current) = self.current.as_mut().filter(|m| !m.ended && !m.cinematic) else {
+            return;
+        };
+        if chain == 0 || !current.players.iter().any(|p| p.player.index == player) {
+            return;
+        }
+        let tick = current.clock(tick);
+        current.sent_tick = current.sent_tick.max(tick);
+        Self::event_to(
+            &mut self.output,
+            current.game_id.clone(),
+            live_proto::game::SUPERBOUNCE,
+            Superbounce {
+                tick,
+                player,
+                chain,
+            },
+        );
+    }
+
+    /// A player of the match died falling out of or through the map while
+    /// trying a bounce, at the engine's `tick`, ending a chain of `chain`
+    /// (0 if none): the `bounced` medal. The superbounce mode decides what
+    /// counts, and calls it through
+    /// [`crate::Telemetry::bounced`]; the rules are those of
+    /// [`Session::superbounce`].
+    pub fn bounced(&mut self, tick: u64, player: u32, chain: u32) {
+        let Some(current) = self.current.as_mut().filter(|m| !m.ended && !m.cinematic) else {
+            return;
+        };
+        if !current.players.iter().any(|p| p.player.index == player) {
+            return;
+        }
+        let tick = current.clock(tick);
+        current.sent_tick = current.sent_tick.max(tick);
+        Self::event_to(
+            &mut self.output,
+            current.game_id.clone(),
+            live_proto::game::BOUNCED,
+            Bounced {
+                tick,
+                player,
+                chain,
+            },
+        );
+    }
+
+    /// A player of the match teabagged another's body at the engine's
+    /// `tick` (docs/game/teabag.md): `player` crouched, `victim` was the
+    /// body's. The teabag watch calls it, through
+    /// [`crate::Telemetry::teabag`], for every player it watches. The rules
+    /// are those of [`Session::superbounce`]; both must be players of the
+    /// match, and not the same one.
+    pub fn teabag(&mut self, tick: u64, player: u32, victim: u32) {
+        let Some(current) = self.current.as_mut().filter(|m| !m.ended && !m.cinematic) else {
+            return;
+        };
+        let known = |i: u32| current.players.iter().any(|p| p.player.index == i);
+        if player == victim || !known(player) || !known(victim) {
+            return;
+        }
+        let tick = current.clock(tick);
+        current.sent_tick = current.sent_tick.max(tick);
+        Self::event_to(
+            &mut self.output,
+            current.game_id.clone(),
+            live_proto::game::TEABAG,
+            Teabag {
+                tick,
+                player,
+                victim,
+            },
+        );
+    }
+
     pub(crate) fn end_without_scoreboard(&mut self, tick: Option<u64>) {
         if let Some(current) = &self.current {
             self.end(&Snapshot { tick: tick.unwrap_or(current.tick), ..Snapshot::default() });
@@ -1985,6 +2068,93 @@ mod tests {
             assert_eq!(event.data["tick"], tick);
             assert_eq!(event.data["pos"], serde_json::json!([4.0, 5.0, 6.0]));
         }
+    }
+
+    /// A bounce and a bounce death go out as game events at the match's
+    /// clock for a player of the match; a stranger's slot, a chain of 0 and
+    /// anything after the end send nothing. Every one sent is valid for the server.
+    #[test]
+    fn superbounces_are_game_events_for_players_of_the_match() {
+        let mut session = Session::new("test", None);
+        session.start(&info(), vec![player(0, 0), player(1, 0)]);
+        session.take_output();
+        session.superbounce(40, 1, 1);
+        session.superbounce(70, 1, 2);
+        session.superbounce(71, 5, 1);
+        session.superbounce(72, 0, 0);
+        session.bounced(80, 1, 3);
+        session.bounced(81, 5, 0);
+        let events: Vec<_> = session
+            .take_output()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Event(e) => Some(e),
+                Output::Frame(_) => None,
+            })
+            .collect();
+        assert_eq!(events.len(), 3);
+        let roster = [player(0, 0).player, player(1, 0).player];
+        assert_eq!(events[2].kind, live_proto::game::BOUNCED);
+        assert_eq!(
+            events[2].data,
+            serde_json::json!({"tick": 80, "player": 1, "chain": 3})
+        );
+        for event in &events {
+            assert_eq!(
+                live_proto::game::validate(&event.kind, &event.data, &roster),
+                Ok(())
+            );
+        }
+        for (event, (tick, chain)) in events.iter().zip([(40, 1), (70, 2)]) {
+            assert_eq!(event.kind, live_proto::game::SUPERBOUNCE);
+            assert_eq!(
+                event.data,
+                serde_json::json!({"tick": tick, "player": 1, "chain": chain})
+            );
+        }
+        session.end(&snapshot(90, vec![player(0, 0), player(1, 0)]));
+        session.take_output();
+        session.superbounce(95, 1, 1);
+        session.bounced(96, 1, 0);
+        assert!(kinds(&mut session).is_empty());
+    }
+
+    /// A teabag goes out as a game event at the match's clock for two
+    /// players of the match; a stranger on either side, a player's own
+    /// body and anything after the end send nothing. The one sent is valid
+    /// for the server.
+    #[test]
+    fn teabags_are_game_events_for_players_of_the_match() {
+        let mut session = Session::new("test", None);
+        session.start(&info(), vec![player(0, 0), player(1, 0)]);
+        session.take_output();
+        session.teabag(40, 0, 1);
+        session.teabag(41, 5, 1);
+        session.teabag(42, 0, 5);
+        session.teabag(43, 1, 1);
+        let events: Vec<_> = session
+            .take_output()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Event(e) => Some(e),
+                Output::Frame(_) => None,
+            })
+            .collect();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, live_proto::game::TEABAG);
+        assert_eq!(
+            events[0].data,
+            serde_json::json!({"tick": 40, "player": 0, "victim": 1})
+        );
+        let roster = [player(0, 0).player, player(1, 0).player];
+        assert_eq!(
+            live_proto::game::validate(&events[0].kind, &events[0].data, &roster),
+            Ok(())
+        );
+        session.end(&snapshot(90, vec![player(0, 0), player(1, 0)]));
+        session.take_output();
+        session.teabag(95, 0, 1);
+        assert!(kinds(&mut session).is_empty());
     }
 
     fn kill_kinds(session: &mut Session) -> Vec<String> {

@@ -9,7 +9,7 @@ import { live } from "../state/live";
 import { identity } from "../state/identity";
 import { accountByGamertag, type AccountState, type GameState } from "../state/reducer";
 import {
-  MEDALS, OUTCOME_WORDS, RANKS, campaignHistory, countMedals, gameHistory, gameMedals, nextRankAt, ordinal, playedWith, rankIndex,
+  MEDALS, OUTCOME_WORDS, RANKS, campaignHistory, countMedals, gameAwards, gameHistory, isBounceMedal, nextRankAt, ordinal, playedWith, rankIndex,
   serviceRecord, serviceTag, type CampaignRow, type HistoryRow, type MedalId, type ServiceRecord,
 } from "../state/derive";
 import type { GameMode } from "../state/reducer";
@@ -235,7 +235,7 @@ export function ServiceRecordPage() {
                 <header>Recent Medals</header>
                 <div class="s-achieve-body">
                   <dl class="s-facts">
-                    <div><dt>Earned</dt><dd>{rec().medals.size} of {MEDALS.length}</dd></div>
+                    <div><dt>Earned</dt><dd>{rec().medals.size} of {medalsOn(rec()).length}</dd></div>
                     <div><dt>Medal Count</dt><dd><Derived>{num(medalTotal())}</Derived></dd></div>
                     <div><dt>[ <A href={`${base()}/career`}>see the medal chest</A> ]</dt><dd /></div>
                   </dl>
@@ -417,7 +417,7 @@ export function HistoryPage() {
 
 function Preview(props: { row: HistoryRow; gamertag: string }) {
   const g = () => props.row.game;
-  const medals = createMemo(() => [...countMedals(gameMedals(g().kills), new Set(props.row.slots)).entries()].sort((a, b) => b[1] - a[1]));
+  const medals = createMemo(() => [...countMedals(gameAwards(g()), new Set(props.row.slots)).entries()].sort((a, b) => b[1] - a[1]));
   const victim = createMemo(() => {
     const m = new Map<number, number>();
     for (const k of g().kills) if (k.killer !== null && props.row.slots.includes(k.killer) && k.kind === "kill") m.set(k.victim, (m.get(k.victim) ?? 0) + 1);
@@ -462,8 +462,12 @@ const CHEST: MedalId[][] = [
   ["opening-act", "last-word", "payback"],
   ["twofer", "hat-trick", "full-house", "encore"],
   ["hot-streak", "wildfire", "untouchable"],
+  ["superbounce", "double-bounce", "triple-bounce", "quad-bounce", "chain-bounce", "bouncetacular", "bounced"],
 ];
 const MEDAL = Object.fromEntries(MEDALS.map((m) => [m.id, m]));
+const hasBounceMedals = (rec: ServiceRecord) => [...rec.medals.keys()].some(isBounceMedal);
+/** The medals a record can show: the bounce medals once it has one. */
+const medalsOn = (rec: ServiceRecord) => (hasBounceMedals(rec) ? MEDALS : MEDALS.filter((m) => !isBounceMedal(m.id)));
 const perGame = (n: number, games: number) => (games ? n / games : 0).toFixed(3);
 
 export function MedalChest(props: { rec: ServiceRecord; versus?: ServiceRecord | null }) {
@@ -476,7 +480,7 @@ export function MedalChest(props: { rec: ServiceRecord; versus?: ServiceRecord |
   return (
     <div class="s-chest">
       <div class="s-chest-cap">Medal Count (count per game){props.versus ? " - Player with better per game ratio highlighted" : ""}</div>
-      <For each={CHEST}>
+      <For each={CHEST.filter((group) => !group.every(isBounceMedal) || hasBounceMedals(props.rec) || (props.versus && hasBounceMedals(props.versus)))}>
         {(group) => (
           <div class="s-chest-group">
             <For each={group}>

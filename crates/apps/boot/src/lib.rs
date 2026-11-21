@@ -537,7 +537,13 @@ fn run_configured(
     );
     #[cfg(not(feature = "desktop-runtime"))]
     let fonts = bot_mark::GearRewrite;
-    let rewrites = Some(vfs::Chain(fonts, cards));
+    // The superbounce world labels keep the HUD font as the game reads it,
+    // after the font rewrites (docs/game/superbounce.md, "Crouch spots in
+    // the world").
+    let rewrites = Some(vfs::Chain(
+        vfs::Chain(fonts, cards),
+        superbounce_font::Capture,
+    ));
     let mounted = map_override::mount_for_agent(
         cfg.clone(),
         &opts.disc,
@@ -1216,6 +1222,9 @@ fn run_configured(
         ui_stack::install(&a.agent, core.ui_navigation);
         // profile.faults: the fault census (agent_glue.rs).
         agent_glue::add_runtime_methods(&a.agent, &loaded.runtime);
+        // render.marks: where the window drew the world marks (world_lines.rs).
+        #[cfg(feature = "gpu")]
+        world_lines::add_marks_method(&a.agent);
         // sim.give and sim.spawn find tags as edit.* does (agent_glue.rs).
         if let Some(sim) = &a.sim {
             sim.set_tags(Box::new(hot_glue::map_tags(&loaded.runtime, maps())));

@@ -359,3 +359,36 @@ fn every_disc_font_validates() {
     }
     assert!(n >= 30, "only {n} fonts found");
 }
+
+/// A unit that reads record 0, or a copy of it (MSLCD-14 maps `.` to its
+/// missing-glyph box), has no glyph; the space reading record 0 does.
+#[test]
+fn a_copy_of_the_missing_box_is_no_glyph() {
+    let tall = |unit| G {
+        unit,
+        advance: 2,
+        x_offset: 0,
+        y_offset: 1,
+        width: 1,
+        height: 4,
+        data: vec![0x44],
+    };
+    let bytes = build(
+        1,
+        1,
+        0,
+        &[
+            // Record 0: the box an unmapped unit draws.
+            solid(0, 3, 0),
+            tall(b'1' as u16),
+            // A unit mapped to a record of its own that copies the box.
+            solid(b'.' as u16, 3, 0),
+        ],
+        &[],
+    );
+    let f = Font::parse(&bytes).unwrap();
+    assert!(f.has_glyph(b'1' as u16));
+    assert!(!f.has_glyph(b'.' as u16), "a copy of record 0");
+    assert!(!f.has_glyph(b'-' as u16), "unmapped");
+    assert!(f.has_glyph(b' ' as u16), "the space reads record 0");
+}

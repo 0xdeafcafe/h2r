@@ -87,6 +87,48 @@ pub fn present_observer(
     })
 }
 
+/// `render.marks` (docs/runtime/agent-api.md, "render.marks"): where the
+/// window drew the world marks on its last presents. The first call arms
+/// the window's probe ([`gfx::world_lines::probe`]); every call returns
+/// the presents kept since.
+pub fn add_marks_method(agent: &agent::Agent) {
+    use agent_proto::{RpcError, code, method};
+    agent.add_method(method::RENDER_MARKS, agent::Access::Read, |v| {
+        if !(v.is_null() || v.as_object().is_some_and(|o| o.is_empty())) {
+            return Err(RpcError::new(
+                code::INVALID_PARAMS,
+                "render.marks takes no params",
+            ));
+        }
+        Ok(marks_json(
+            &gfx::world_lines::probe::PRESENTED,
+            std::time::Instant::now(),
+        ))
+    });
+}
+
+/// `render.marks`' answer from `probe` at `now`.
+fn marks_json(
+    probe: &gfx::world_lines::probe::Probe,
+    now: std::time::Instant,
+) -> serde_json::Value {
+    let (presents, armed) = probe.read();
+    let presents: Vec<serde_json::Value> = presents
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "seq": p.seq,
+                "age_ms": now.saturating_duration_since(p.at).as_secs_f64() * 1000.0,
+                "frame": p.kind.name(),
+                "fraction": p.fraction,
+                "shifted": p.shifted,
+                "anchors": p.anchors,
+            })
+        })
+        .collect();
+    serde_json::json!({"armed": armed, "presents": presents})
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -175,6 +217,31 @@ mod tests {
         assert_eq!(anchors, [[1.0, 0.0, 0.0]]);
         assert_eq!(shown.editor_generation, None);
         assert_eq!(shown.expires, None);
+    }
+
+    #[test]
+    fn render_marks_arms_the_probe_then_reports_each_present() {
+        use gfx::world_lines::probe::{Kind, Presented, Probe};
+        let probe = Probe::new();
+        let now = Instant::now();
+        let first = marks_json(&probe, now);
+        assert_eq!(first, serde_json::json!({"armed": false, "presents": []}));
+        probe.record(Presented {
+            seq: 0,
+            at: now,
+            kind: Kind::Synthetic,
+            fraction: Some(0.5),
+            shifted: true,
+            anchors: vec![Some([10.0, 20.0]), None],
+        });
+        let r = marks_json(&probe, now);
+        assert_eq!(r["armed"], true);
+        let p = &r["presents"][0];
+        assert_eq!(p["frame"], "synthetic");
+        assert_eq!(p["fraction"], 0.5);
+        assert_eq!(p["shifted"], true);
+        assert_eq!(p["anchors"], serde_json::json!([[10.0, 20.0], null]));
+        assert_eq!(p["age_ms"], 0.0);
     }
 
     #[test]

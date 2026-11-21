@@ -816,6 +816,17 @@ makes the whole pad; on foot, after the order above, boarding a close and
 slow enemy vehicle takes over in a fight or not, and taking a free one
 takes over only when calm and not carrying or rearming.
 
+**Warm-up.** For the first 2 to 4 s of its first life in a match
+(`mind::warmup`: `WARMUP_MIN_TICKS` 60 to `WARMUP_MAX_TICKS` 120) a bot
+picks no target, so it does not shoot, throw or melee; it looks round,
+moves off its spawn and plays the objective as usual. The length is the
+bot's own, from its name's hash (the Clanker personality's
+`NameProfile::seed`; the brain's seed without a name), so it is the same
+every match and differs between bots. Taking damage ends it at once: a
+bot that is shot fights back. A brain makes a fresh mind each match
+(`Brain::reset_mind`), which is when the warm-up is due again; a respawn
+does not start it. A bare `Mind::new` (the tests') has none.
+
 A bot with a known grenade in stock can throw at 3–12 world units. It
 looks for a cluster, an enemy running toward it, or the last position
 where an enemy disappeared within two seconds. Both chasing and holding
@@ -1161,7 +1172,9 @@ their own ordinary kills, at a lower rate.
 
 The bot may emote only when:
 
-- the body is within 8 m;
+- the body is within 1.5 world units (about 4.5 m: `emote::NEAR`, the
+  game's teabag radius, so every emote is a teabag for the Incel medal,
+  [teabag.md](teabag.md#the-rule));
 - no enemy has been in the bot's view for 1.5 s;
 - the bot is not carrying, defending or contesting an objective that is live
   (a flag at risk, a bomb armed, a hill or territory contested);
@@ -1630,21 +1643,57 @@ stamped file so it is not repeated every launch), stamped with the nav generator
 scan version (`spots::SCAN`) and the map's fingerprint. A scanned bounce
 spot becomes a `glitches::Bounce` (source `scan`, spread 0.03) with its
 launch speed (`spots::Site`); one at a measured spot's place is dropped.
-A spot that needs a drop onto it is not used: a bot only jumps in place.
+A site with no fall (0.5 or less) is jumped onto in place; one that needs
+a fall is dropped onto from a ledge (below).
+
+**Verified spots.** The map's verified file (`<data>/bots/<map>.verified`,
+written by `superbounce.verify`, [superbounce.md](superbounce.md),
+"Verifying spots") is read beside the scan (`spots::verified_for`,
+cached; `spots::store_verified` merges a batch in and bumps
+`spots::generation`, so a bot's spots are rebuilt). A proven spot is
+looked at first and scores 1; a failed one, scanned or measured, is left
+out. A proven crouch spot carries where its working trial started and
+its way in (`Crouch::start`); a proven strip carries the working landing
+point (`Site::aim`) and drop height (`Site::height`). The game sets the
+file's directory when it starts (`spots::set_verified_dir`, from
+`bots_nav_auto`).
 
 `bounce_route::plan` plans a route from the bot to a point, purely, from
 a walk-length function over the nav mesh:
 
-1. walk to the nearest useful crouch spot, crouched;
-2. **prime** (`glitches::prime::PrimeRun`): crouch 12 ticks, let go and
-   stand up under the ceiling; the engine refuses the stand-up and the
-   word goes to -3. Done when the word reads -3, or 12 ticks after the
-   release when it cannot be read;
-3. walk to 0.8 units behind the bounce spot, never crouching;
-4. the bounce run (`glitches::BounceRun`) until it launches;
-5. fly: steer toward the goal at full stick until down
+1. walk to the crouch spot's start: outside the lip on the approach,
+   0.35 units from `stand` against the way out, or where its verified
+   trial started;
+2. **prime** (`glitches::prime::PrimeRun::at`), the recipe: crouch and
+   stand still 6 ticks, crouch-walk in under the lip to 0.06 past
+   `stand`, hold 12 ticks, let go (still pushing in, 6 ticks), then walk
+   out along the way out. Done when the word reads -3 on the way out.
+   A word that reads something else for 30 ticks out, or no arrival,
+   tries again from the start, along the approach turned 25 degrees and
+   then −25 (3 tries, the first along a verified way in), then fails
+   (`prime_failed`). When the word cannot be read it is assumed primed
+   0.5 units out. A crouch spot with no way out known primes in place:
+   crouch 12 ticks, let go, stand up;
+3. for a site with no fall, walk to 0.8 units behind it, never
+   crouching, then the bounce run (`glitches::BounceRun`) until it
+   launches. For a site that needs a fall, walk to its **launch
+   floor** (`bounce_route::launch_floor`: the nav mesh's point nearest
+   the site's aim sideways, within 3 units **[guess]**, whose floor is
+   the drop height over the strip, 0.2 under to 2.5 over), then
+   **drop**: line up on that point (45 ticks at most), walk off toward
+   the aim at half stick (60 ticks to leave the floor, else `no_drop`),
+   and steer the fall onto the aim, harder the farther off (2.5 a unit,
+   **[guess]**). It launched when it rises 0.4 over its lowest point; a
+   landing that did not launch walks back to the floor and drops again
+   (3 drops, then `no_bounce`);
+4. fly: steer toward the goal at full stick until down
    (vertical speed under 0.3 for 2 ticks after the top);
-6. walk the rest.
+5. walk the rest.
+
+A touchdown during a bounce or a drop is kept (`bounce_route::Touchdown`:
+the tick, the origin before, the speeds in and out, how far outside the
+slot, the word) and named as the HUD's landings are: `bounce`,
+`not_primed`, `missed`, `too_slow` or `no_bounce`.
 
 The plan is the best bounce under the asker's mode. **Help** (the
 default) takes a bounce only where it reaches the goal and the plain walk
@@ -1691,14 +1740,102 @@ the bot's whole pad (`mind::order`, through `RoutePad`, as an
 `input.route` is; a death or a change of map ends it, recorded as `died`
 or `map_changed`): the bot fights and picks up nothing until it is over
 (the agent API's `bots.bounce_to`, docs/runtime/agent-api.md). A route
-gives up after 200 s. With the Glitches setting on, a show-off at a spot
+gives up after 200 s. `bots.bounce_status` gives its step and the step's
+phase and try, the last touchdown, and a log of each step and phase
+change (the last 64). `PadSource::hold_pad` (`Phantoms::hold_pad`) holds
+a brain's pad at a given state in place of its own until let go: the
+verifier drives a bot seat with it. With the Glitches setting on, a show-off at a spot
 with a crouch spot known is a **Fun** route back to where the bot began;
 it ends when the bot sees an enemy.
+
+#### Practising bounces
+
+While the superbounce mode is on (the Superbounce variant, the variant's
+superbounce flag, `H2_SUPERBOUNCE=1` or `superbounce.set`; the game calls
+`bots::set_practice` from `superbounce_mode`, and each brain follows it
+at its next sample) a bot fights no one: it picks no target, shoots,
+throws and melees nothing, and being shot changes nothing. Its whole pad
+is a practice loop (`mind::practice`, ahead of everything else in
+`Mind::step`):
+
+1. stand a moment, looking round (20 to 60 ticks at first, then 45 to
+   150 between tries, drawn each time);
+2. pick a site within 120 units: weighed by distance (−1 a 60 units), a
+   proven site +2, one another bot practises at −3, the one just tried
+   −1.5, plus a random 0 to 0.8. A failed try blacklists the site for a
+   while (`Stuck::blacklist`), so the next try is somewhere else. With no
+   crouch spot to prime at (and the word not −3) or no site, it waits
+   300 ticks and looks again (`waiting`);
+3. run the bounce route to the site (a **Fun** route by that one site:
+   the walking prime, then the jump or the drop, the touchdown
+   classified), and tally it: a try, a bounce when the route ended done
+   by the site, else why (the route's error, or the landing's result for
+   one that landed without launching).
+
+The bots spread over the sites by claims on a board the process shares
+(`practice::CLAIMS`): a bot renews its claim each tick of its route, and
+a claim lapses 300 ticks after it was last renewed. A route an agent
+asks for (`bots.bounce_to`, `superbounce.verify`'s routes) runs as usual
+and is not tallied. Turning the mode off ends a practice route
+(`practice_off`). `bots.bounce_status` gives the tally while practising
+(`practice`: the state, the site, attempts, bounces, and by site the
+attempts, bounces and reasons), so a game of practising bots is a live
+verifier too.
+
+Each bounce a practising bot makes is recorded by the game as a ghost
+run, and the best run of each spot is kept in `<map>.ghosts` beside the
+spots and verified files, proving the spot as it goes
+([superbounce.md](superbounce.md#ghost-runs)). Nothing in the bots crate
+records it: the game reads the bots' units each tick.
+
+#### Driving a player
+
+The same planner and route runner drive a seat with no brain of its own:
+the local player, sent somewhere by an agent (`player.goto`,
+docs/runtime/agent-api.md). There is one planner. `bounce_route` holds
+the walk length and the launch floor (`path_length`, `launch_floor`) a
+bot's orders plan with, the prime's two steps (`prime_steps`), a site's
+approach (`approach`: behind it, or its launch floor) and the route by one
+named site (`plan_site`: the crouch spot `plan_with` would pair with it,
+proven first, no reach limit and no walk to beat; `why` is `asked`).
+`goto::plan` picks from these by target and what to do there: a point is
+a plain walk (`nav`); a crouch spot is the walk to its start, then its
+recipe for `crouch_recipe`; a bounce site is the walk to its approach, its
+route up to the approach for `crouch_recipe`, or its whole route
+(`plan_site`, ending once down) for `bounce`.
+
+The plan is played by `OrderRun` as a bot's would be, its last walk
+ending within the asker's `within` (`OrderRun::arrive_within`).
+`goto::Goto` adds a watchdog for a body the brain does not own:
+
+- a walk that strays more than 1.5 units sideways from the leg it walks
+  (from the waypoint passed, or where the walk began, to the next one;
+  jumps, drops and lifts are left to the follower) plans again from where
+  the body is (`strayed`);
+- a walk whose distance left along its waypoints has not come down by
+  0.5 units in 150 ticks plans again (`stuck`), except while the next
+  waypoint is a lift, an elevator or a teleporter;
+- a route the runner ends with `path_lost` (the follower's own stuck and
+  fallen checks), `stalled` or `pair_lost` plans again, the word read
+  again or, unread, the last run's priming kept;
+- after 6 plans made again, or the timeout (3600 ticks unless asked),
+  it gives up with the last reason (`strayed` reads `stuck`).
+
+A jump is asked for as a fresh press: the pad never holds A two ticks
+running. The game's glue (`player_goto`) reads `player.0`, steps the
+`Goto` each tick on an agent ticker and holds the first controller's pad
+with the motion, the walk turned into the stick against the player's
+aim (the player does not turn while it walks). With no bot in the game
+nothing has loaded the map's nav mesh (the bots' glue reads it only
+while a phantom plays), so the glue asks for it the same way: the nav
+worker's load (built when stale), else the `.bots` file in the cache
+directory.
 
 **Untested.** The pair-word read, the priming's timings, the air speed
 and the whole route are not checked in a game; the pure planner and the
 state machines are unit tests (`bounce_route/tests.rs`,
-`glitches/tests.rs`, `mind/order/tests.rs`).
+`glitches/tests.rs`, `mind/order/tests.rs`, `mind/practice/tests.rs`,
+`goto/tests.rs`).
 
 **Not built:**
 
