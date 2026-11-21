@@ -529,8 +529,11 @@ sink.
   inside the BSP's world bounds, a tag that exists with a group the
   block accepts, counts inside engine limits and the budget. A proposal
   that fails changes nothing.
-- No edit outside a Forge session; no Forge session on a hopper or
-  ranked session; no edit in Theater.
+- No Forge session on a hopper or ranked session. Outside a Forge
+  session the only edits are those a rules script declares and makes or
+  grants in a match, through the same validated, host-stamped proposals
+  ([rules-engine.md](rules-engine.md#roles-powers-and-capabilities)).
+  No edit in a ranked match; no edit in Theater.
 - The Forge step has a time budget a tick. Emitters and the graph skip
   work past it and say so.
 - Forge files, bundles and materialised packages are user output and

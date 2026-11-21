@@ -10,7 +10,7 @@ record. The host runs the IR in a Rust VM whose state is `SimExt`
 extension state, and the VM changes the game only through named engine
 entries, so what it does replicates as ordinary game state. The seven
 lifted retail engines are the oracles the script ports are proven
-against, and are retired once nothing needs them. The rule that must
+against, and are retired once every port has passed. The rule that must
 hold: the same IR, options, seed and inputs give the same engine calls at
 the same ticks on every machine and platform.
 
@@ -29,8 +29,9 @@ points. No game data is in this page.
    dialect comes later.
 3. **All seven retail engines are ported to scripts**: Slayer, Oddball,
    Juggernaut, King of the Hill, Capture the Flag, Assault, Territories.
-   The lifted engines stay only for replaying old films and for System
-   Link until both are settled, then they are retired. Every retail
+   The lifted engines are retired once the ports pass: System Link runs
+   the built-in scripts, and films recorded on a lifted engine no longer
+   replay. Every retail
    built-in variant and every community variant becomes "engine script +
    option values".
 4. **Firefight, AI-driven modes and superbounce modes are scripts too.**
@@ -38,6 +39,11 @@ points. No game data is in this page.
    they observe bounces and never change physics.
 5. **A phased attack-and-defend mode** with the mechanics of Halo:
    Reach's Invasion is the showcase the API is sized against ("Payoff").
+6. **A script declares its capabilities and can grant players powers by
+   role**: a VIP who moves, turns, deletes and places objects mid-match.
+   Script-granted edits run in any custom or hopper match and never in a
+   ranked one, inside a budget, each one logged
+   ("Roles, powers and capabilities").
 
 ## Goals, non-goals, done
 
@@ -58,9 +64,9 @@ Non-goals:
   ReachVariantTool source text only.
 - A general-purpose language: no I/O, heap, floats or unbounded loops.
 
-Done means every multiplayer game on Live, local or on a dedicated host
-runs a rules script, and the lifted engines run only where "What stays
-lifted" says, until its retirement criteria hold.
+Done means every multiplayer game, on Live, System Link, local or on a
+dedicated host, runs a rules script, and no game reaches a lifted
+engine's rule callbacks.
 
 ## How it works
 
@@ -90,8 +96,9 @@ script everywhere.
 The verifier is separate from the compiler and reads IR, not source. It
 runs at upload, at load on any machine about to host, and in Studio as
 you type. It checks the whole blob, dead branches included: every op,
-slot index, jump target, label, tag path and API call. A blob that fails
-is refused whole.
+slot index, jump target, label, tag path and API call, and that each
+call's capability is one the header declares
+("Roles, powers and capabilities"). A blob that fails is refused whole.
 
 ### Carrying a script
 
@@ -203,7 +210,9 @@ and copies an older build edited are script games with no byte changed.
 The host puts the built-in's hash in the session's `rules` field as for
 any script, and a film records which ran: its `simulation_hooks` SHA
 differs with the feature and it stores the blob. The rule covers Live,
-local and dedicated-host games; System Link is in "What stays lifted".
+local, dedicated-host and System Link games: the built-in scripts are
+compiled in, so a System Link game needs no blob and no session field.
+A System Link game cannot name any other script.
 
 ### The host runtime
 
@@ -232,6 +241,8 @@ checkpoints, snapshots, film keyframes and the sim hash carry them.
 ## The language
 
 A source file is a header, options, variables, functions and handlers.
+The header names the script, its version, its carrier, its teams and the
+capabilities it requires: `requires player.weapons, hud.message`.
 
 **Types.** `int` (32-bit, saturating), `fixed` (16.16, for seconds and
 distances), `bool`, `player`, `team`, `object`, `squad`, `timer` (counts
@@ -256,8 +267,9 @@ read through its owner: `p.infected`, `t.captures`.
 `on pickup(p, o)`, `on drop(p, o)`, `on enter(zone, o)`,
 `on leave(zone, o)`, `on press(p, o)`, `on timer(t)`,
 `on squad_dead(s)`, `on actor_kill(killer, class)`,
-`on bounce(p, spot)`, `on join(p)`, `on quit(p)`, `on round_end`. A
-handler runs to completion.
+`on bounce(p, spot)`, `on edit(p, o)` (a granted power was used),
+`on join(p)`, `on quit(p)`, `on round_end`. A handler runs to
+completion.
 
 **Loops** are `for each` over a finite set only: `players`, `teams`,
 `objects labelled "x"`, each with an optional `where`. There is no
@@ -303,6 +315,7 @@ script has no limit check.
 rules "Infection" 1
 carrier slayer
 teams 2
+requires player.team, player.weapons
 
 option first_zombies: int 1..4 = 1
 
@@ -341,6 +354,7 @@ entry ("The engine API"); Infection waits on it.
 rules "Holdout" 1
 carrier slayer
 teams 1
+requires ai.squads
 
 table waves: (class: Class, per_player: int, min: int, max: int, gap: int) = [ ... ]
 table points: (class: Class, score: int) = [ ... ]
@@ -417,7 +431,8 @@ type's handlers run first.
 ## The IR and the VM
 
 **Shape.** The blob is: a header (magic, IR version, API version,
-carrier, team requirement); a string table; an option table (type,
+carrier, team requirement, and the required capabilities by name, at
+most 32, "Roles, powers and capabilities"); a string table; an option table (type,
 range, default, label); a slot table (scope, type, initial value); a
 label table and a tag-path table; constant tables; a handler table
 (event, argument slots); and code. Code is a register bytecode with typed ops:
@@ -500,7 +515,9 @@ state (film-format.md "Objective and power-up events").
 ## The engine API
 
 The API is a numbered list of entries; a script can call nothing else.
-Status: **named** is a point or layout in `crates/hooking/guest-layout`
+An action's **Cap** column is the capability its script must declare
+("Roles, powers and capabilities"); `core` needs none, and reads need
+none. Status: **named** is a point or layout in `crates/hooking/guest-layout`
 or `crates/rewrites/engine`; **traced** is an address in a doc with no
 named point yet; **untraced** has no known entry.
 
@@ -525,25 +542,31 @@ Reads:
 
 Actions:
 
-| Action | Through | Status |
-|---|---|---|
-| `score(p, n)` | `SCORE_ADD` `0x15b7c0` | named |
-| `end_round(winner)` | `GAME_END` `0x1389c0` ends the game; advancing a round and naming a winner are not traced (winner storage is not recovered, live-gamestate.md) | named; untraced |
-| lives | player `+0x1ac` and `PLAYER_ENTITY_DIRTY` `0xa7840`; gates `PLAYER_OUT_OF_LIVES` `0x15db30`, `PLAYER_RESPAWN_READY` `0x15dd40` | named |
-| `respawn(p)` | `PLAYER_SPAWN` `0x14f2e0` | named |
-| traits for the match: gravity, damage, shield, health | `variant_ext` hooks (`crates/extensions/game/src/variant_ext.rs`) | named |
-| traits per player; movement speed | the engine's trait query `0x24dda0` (vtable `+0x114`) has no direct call site; speed has no reader found (game-options.md "Not built") | untraced |
-| `set_team(p, t)` | no entry known; the field is player `+0xc0` | untraced |
-| `set_loadout` | starting-weapon routine `0x19eda0` | traced |
-| `create(tag, at)`, `delete(o)` | `OBJECT_DELETE` `0xb8540`; creation as Forge's ([forge.md](forge.md)) | named; traced |
-| `register_objective(o, team)`, unregister, picked up, dropped | `0x15e050`, `0x15e130`, `0x15e250`, `0x15e460` | traced |
-| barriers and other map changes | create and delete at labels, as above; a barrier is a labelled placement (forge-features.md "Invisible barriers") | not built |
-| `place_squad(s, class, n, label)` from the palette with its team, `hunt(s)`, erase | `AI_SQUAD_PLACE` `0x201520`, `AI_SET_TEAM` `0x275b60`, `AI_SET_ORDERS` `0x275cb0`, `AI_ERASE` `0x2736c0`, through `actor_net::squads::SquadEntry` (firefight.md "Guest boundary") | named; game runs R1, R2 pending |
-| `spawn_areas(team, label, n)`: which starting locations are live | answer a hook on `PLAYER_SPAWN_LOCATION` `0x14ef00` (picks from `scnr+0x100`) with labelled locations only; how the routine weighs locations is not traced | named point; untraced rule |
-| loadout chosen at spawn | `set_loadout`, plus a picker screen of ours | traced; picker not built |
-| player body per team (Spartan, Elite) | `PLAYER_SPAWN` chooses the unit type; what it reads is not traced | untraced |
-| teleport, device power | Forge's sinks (forge-features.md) | not built |
-| `message(to, text)`, scoreboard text, announcer, waypoint | not traced; the replicated game engine event (type 7) is known only as a type | untraced |
+| Action | Through | Status | Cap |
+|---|---|---|---|
+| `score(p, n)` | `SCORE_ADD` `0x15b7c0` | named | core |
+| `end_round(winner)` | `GAME_END` `0x1389c0` ends the game; advancing a round and naming a winner are not traced (winner storage is not recovered, live-gamestate.md) | named; untraced | core |
+| lives | player `+0x1ac` and `PLAYER_ENTITY_DIRTY` `0xa7840`; gates `PLAYER_OUT_OF_LIVES` `0x15db30`, `PLAYER_RESPAWN_READY` `0x15dd40` | named | core |
+| `respawn(p)` | `PLAYER_SPAWN` `0x14f2e0` | named | core |
+| traits for the match: gravity, damage, shield, health | `variant_ext` hooks (`crates/extensions/game/src/variant_ext.rs`) | named | `game.traits` |
+| traits per player; movement speed | the engine's trait query `0x24dda0` (vtable `+0x114`) has no direct call site; speed has no reader found (game-options.md "Not built") | untraced | `player.traits` |
+| `set_team(p, t)` | no entry known; the field is player `+0xc0` | untraced | `player.team` |
+| `set_loadout` | starting-weapon routine `0x19eda0` | traced | `player.weapons` |
+| `create(tag, at)`, `delete(o)` | `OBJECT_DELETE` `0xb8540`; creation as Forge's ([forge.md](forge.md)) | named; traced | `objects.create`, `objects.delete` |
+| `register_objective(o, team)`, unregister, picked up, dropped | `0x15e050`, `0x15e130`, `0x15e250`, `0x15e460` | traced | core |
+| barriers and other map changes | create and delete at labels, as above; a barrier is a labelled placement (forge-features.md "Invisible barriers") | not built | `objects.create`, `objects.delete` |
+| `place_squad(s, class, n, label)` from the palette with its team, `hunt(s)`, erase | `AI_SQUAD_PLACE` `0x201520`, `AI_SET_TEAM` `0x275b60`, `AI_SET_ORDERS` `0x275cb0`, `AI_ERASE` `0x2736c0`, through `actor_net::squads::SquadEntry` (firefight.md "Guest boundary") | named; game runs R1, R2 pending | `ai.squads` |
+| `spawn_areas(team, label, n)`: which starting locations are live | answer a hook on `PLAYER_SPAWN_LOCATION` `0x14ef00` (picks from `scnr+0x100`) with labelled locations only; how the routine weighs locations is not traced | named point; untraced rule | `player.spawn` |
+| loadout chosen at spawn | `set_loadout`, plus a picker screen of ours | traced; picker not built | `player.weapons` |
+| `give(p, tag)`: a weapon into a living player's hands | no entry proven. The pickup's attach routine `0x10ca80` (item, new unit) is on record as an observer only (**E**, [bots.md](bots.md) "Weapon taken") | untraced | `player.weapons` |
+| `take(p, weapon)` | the inventory removal `0xce920`, reached from the drop path `0xe8de0` (**E**, bots.md, the dual-wield drop); a call outside a drop is not proven | traced | `player.weapons` |
+| player body per team (Spartan, Elite) | `PLAYER_SPAWN` chooses the unit type; what it reads is not traced | untraced | `player.disguise` |
+| `hide(p)`, `show(p)`: a player's biped not drawn, not hit | no entry known. The native renderer can skip the draw; hitboxes and collision are the engine's | untraced | `player.disguise` |
+| `attach(o, to)`: an object follows another | no entry known; the object datum has a parent field (`guest-layout` `object.rs`) | untraced | `objects.move` |
+| `camera(p, mode)`: first or third person | no entry known | untraced | `player.camera` |
+| teleport, device power | Forge's sinks (forge-features.md) | not built | `objects.move` |
+| `message(to, text)`, scoreboard text, announcer, waypoint | not traced; the replicated game engine event (type 7) is known only as a type | untraced | `hud.message` |
+| `forge_move(o, at)`, `forge_delete(o)`, `forge_place(tag, at)`, `forge_scale(o, s)`: an edit through the Forge log | a `forge-doc` op, validated and host-stamped (`crates/formats/forge-doc`, `LogHead::stamp`); edit classes in "Roles, powers and capabilities" | named | `forge.move`, `forge.delete`, `forge.place`, `forge.scale` |
 
 VM built-ins reach no engine entry (status **VM-only**):
 
@@ -554,6 +577,7 @@ VM built-ins reach no engine entry (status **VM-only**):
 | `seconds(n)` | `n` times the tick rate, in ticks |
 | `ticks_held(zone, team)` | a counter the VM keeps per labelled zone and team over the zone test: ticks the team has held it alone |
 | `squad(n)`, `team n`, `text n` | constants: a kit squad slot, a team index, a string-table index |
+| `grant(p, cap, budget n, palette "x")`, `revoke(p, cap)`, `granted(p, cap)` | a player's powers, records in `RulesExt` ("Roles, powers and capabilities") |
 
 The engine update `0x15c150` and the post-game step `0x15ca10` are
 traced (live-gamestate.md) and are where the lifted engines do their
@@ -564,6 +588,116 @@ bots.md section 3.7 gives `0x45c6d8` (Slayer) and `0x453d38`
 (Juggernaut), the base of firefight.md's kill callback at `+0x78`;
 game-options.md gives `0x45c650` and `0x453cb0`, `0x88` lower, with the
 trait query at `+0x114`. Each port reads its engine's vtable again.
+
+## Roles, powers and capabilities
+
+**Design.** A capability is a named group of API actions. The list is
+fixed per API version and compiled into every build with one line of
+plain words each:
+
+| Capability | Shown in the lobby as | Grantable |
+|---|---|---|
+| `game.traits`, `player.traits` | changes gravity, damage, shields and speed | no |
+| `player.team`, `player.spawn` | moves players between teams; chooses where they spawn | no |
+| `player.weapons` | gives and takes weapons | no |
+| `player.disguise`, `player.camera` | hides or changes a player's body; changes the camera | no |
+| `objects.create`, `objects.delete`, `objects.move` | makes, removes and moves objects | no |
+| `ai.squads` | places and commands AI | no |
+| `hud.message` | shows messages | no |
+| `forge.move`, `forge.delete`, `forge.place`, `forge.scale` | lets players move, remove, place and resize objects during the match | yes |
+
+**Declared, then checked everywhere.** The header's `requires` list is
+the most a script can ever do. The verifier refuses a call, or a
+`grant`, whose capability is not declared. The names are in the IR
+header, so every party reads them without running anything:
+
+- **The lobby and the variant screen** show the plain words, from the
+  build's table. A script supplies no text about its own powers.
+- **A host build** that does not know a declared name, or lacks an
+  entry behind it, refuses the script and names the capability. Nothing
+  runs with a call stubbed out.
+- **A hopper** carries a deny list of capability names; a script that
+  declares a denied one is not offered in it. `forge.*` denies the
+  family.
+- **Ranked** denies `forge.*` always: Live's allow-list
+  ("Security and usability") never lists a script that declares one, so
+  no host, modified or not, has a ranked game with edits counted.
+
+**Roles and grants.** A role is the script's own state: an `enum` in a
+player variable (`p.role = Role.vip`). A power is a grant the script
+makes when the role changes:
+
+```text
+requires forge.move, forge.delete, forge.place
+palette "vip" = ["<block-out tag path>", "<barrier tag path>"]
+palette "wrecker" = ["<vehicle tag path>"]
+
+fn crown(p: player) {
+    p.role = Role.vip
+    grant(p, forge.place, budget 20, palette "vip")
+    grant(p, forge.move, budget 40, palette "vip")
+}
+fn uncrown(p: player) { p.role = Role.none; revoke(p, forge.place); revoke(p, forge.move) }
+on spawn(p) { if p.team == team 1 { grant(p, forge.delete, budget 3, palette "wrecker") } }
+```
+
+A grant is a record in `RulesExt`: player, capability, uses left,
+palette. So checkpoints, snapshots and films carry it, and the sim hash
+covers it. A grant never exceeds the declaration, holds at most 255
+uses, and ends on `revoke`, at the player's quit and at the round's end.
+A palette is a constant list of tag paths, checked against the map at
+load. For `forge.place` it is what the player can make. For the other
+three it is which tags' objects the player can touch; with no palette
+they are only objects that this match's edits made, so no grant reaches
+the map's own objects by default. No grant reaches a player's biped, a
+held object or a registered objective.
+
+**A granted power in use.** The player's tool sends a Forge proposal
+(`{author, base_seq, op}`, [forge-design.md](forge-design.md#the-edit-log-and-multiplayer)).
+The host checks it as `forge-doc` checks author and conditions
+(`crates/formats/forge-doc/README.md`, "Document and log"), with the
+author's live grants as the permission: the session is not ranked, a
+grant for the op's capability has uses left, the tag or target is in its
+palette, and the op passes Forge's own validation (bounds, engine
+limits, Forge's budget). An accepted proposal is stamped
+(`LogHead::stamp`), costs one use at its apply tick, and then runs
+`on edit(p, o)`. A refused one changes nothing and is answered with its
+reason. A script's own `forge_*` calls take the same path with the
+reserved author `rules` and no grant. Proposals share `on press`'s rate
+limit.
+
+**What an edit can reach** is forge-design.md's
+[edit-class table](forge-design.md#what-the-engine-allows-at-runtime),
+with no Rebuild in a match:
+
+| Edit | In a match |
+|---|---|
+| move, turn, delete an object that exists | Live |
+| make an object from a tag the map holds | Live, inside the object pool |
+| a placement that outlasts the object (it respawns) | only into the kit's spare entries; refused by name when none is left or the map has no kit |
+| a tag the map does not hold; structure collision, portals, pathfinding | refused: Rebuild-only |
+| scale | the placement's scale field; whether it reaches collision is **S** (forge-design.md "Not verified") |
+
+"Growing geometry" is therefore placing and scaling the kit's block-out
+pieces and barriers (forge-features.md
+[Invisible barriers](forge-features.md#invisible-barriers)); until scale
+is known to reach collision, a size is a piece from the kit's ladder.
+The structure BSP never changes in a match.
+
+**Budgets.** A match holds at most 1,024 scripted and granted edits and
+64 objects alive from them, under Forge's own budget (forge-features.md
+"Objects"). Both are caps of the kind listed in "Security and
+usability".
+
+**The log.** A match with a `forge.*` script keeps a Forge edit log
+whose first entry names the script's hash. Every scripted edit and every
+use of a granted power is an entry: sequence, tick, author (the player,
+or `rules`), op, predecessor hash. The film records each entry at its
+tick as an editing session's film does (forge-design.md "Films and
+determinism"), and the post-game report counts them per player. The
+edits belong to the match; the map's document is not changed. The
+opening entry is a new op, so it takes the document format number that
+labels take ("Forge labels").
 
 ## Security and usability
 
@@ -579,10 +713,13 @@ trait query at `+0x114`. Each port reads its engine's vtable again.
 - **Verified twice**, at upload and at load, by the same code. Live
   stores only blobs that verify.
 - **Capability-limited.** The API table is the whole world: no file,
-  network, clock, address, datum or other process. A tag the map lacks
-  or a label it does not define is a load error naming it.
+  network, clock, address, datum or other process, and a script reaches
+  only the rows whose capability it declares, which the lobby, the
+  hopper and the allow-list read first
+  ("Roles, powers and capabilities"). A tag the map lacks or a label it
+  does not define is a load error naming it.
 - **Bounded.** IR, state, ops per tick, labelled objects, objects made
-  per tick and objects alive all have caps; the engine's object and tag
+  per tick, objects alive, grants and edits in a match all have caps; the engine's object and tag
   limits are checked before a create.
 - **Text.** Labels are at most 32 bytes and messages 128, sanitised by
   the rules for player names (game-options.md section 4) and formatted
@@ -641,24 +778,19 @@ no mode"). Its settings are already option values in the record. Rules
 that were honour rules ([community-gametypes.md](community-gametypes.md),
 Zombies' team switch) become script variants of their own.
 
-**What stays lifted, and why.**
+**Until a port passes.** A no-mode record on an engine whose port has
+not passed parity plays the lifted engine, on every kind of session.
 
-- **Old films.** A film replays only with the hook set and variant
-  bytes it was recorded with (`simulation_hooks`, film-format.md). A
-  film recorded on a lifted engine replays on the lifted engine.
-- **System Link.** The block is off there, because no Live session
-  carries it (game-options.md "How it reaches every player"), so a
-  System Link game cannot name a script. It plays the lifted engine
-  (decision 3). A record with no mode needs neither the block nor a
-  blob, so extending that rule to System Link is how this is settled.
-- **An engine whose port has not passed parity**, for a no-mode record.
+**Old films do not replay.** A film replays only with the hook set and
+variant bytes it was recorded with (`simulation_hooks`, film-format.md).
+A film recorded on a lifted engine is refused with that reason, named in
+the theater; it is never played on the script engine, where it would
+drift. No frozen build keeps them.
 
 **Retirement criteria**, all of them: every engine's port has passed
-parity, so no record with no mode runs lifted on Live; script games
-have been played on Live in every engine; System Link runs the built-in
-scripts or is decided to stay retail-only on a frozen build; films
-recorded on lifted engines are either converted, expired by policy, or
-served by a frozen player build. Then the lifted
+parity; script games have been played in every engine on Live and on
+System Link. Then the `rules` feature is always on, nothing dispatches
+a lifted engine's rule callbacks, and the lifted
 engines' hooks, observers and bot readers that parse per-engine globals
 (`crates/rewrites/engine/src/objectives.rs`,
 `crates/live/bots/src/objective.rs`) move to reading rules state.
@@ -700,8 +832,21 @@ or over-report until it is checked in play.
   ([multiplayer.md](../halo1/multiplayer.md)); labelled checkpoints and
   a Race script give them a use. So do **Halo 1's per-spawn game
   types**: starting locations carry labels and a script filters on them.
-- **Infection** with a real team switch, **Gun Game**, and other modes
-  that were honour rules.
+- **Infection** with a real team switch, and other modes that were
+  honour rules.
+- **Gun Game.** `on kill` takes the killer's weapon and gives the next
+  in a constant table: the weapon progression the variant editor cannot
+  express ([community-gametypes.md](community-gametypes.md)). `take` is
+  traced and `give` is not, so until it is the swap happens at the
+  killer's next spawn through `set_loadout`.
+- **VIP with powers.** The VIP holds a grant to place and move block-out
+  pieces; the hunters hold one to delete vehicles.
+- **Prop Hunt**, the hardest mode here. A hider's biped is hidden, a
+  prop object is attached to the player, damage to the prop is forwarded
+  to the player, and the camera is third person. `hide`, `attach`, the
+  body swap and `camera` are all untraced, and damage forwarding needs
+  an event the API lacks. The native renderer can skip drawing a biped;
+  its hitboxes and collision stay until the engine work is done.
 - **A phased attack-and-defend mode**, with the mechanics of Halo:
   Reach's Invasion and none of its assets or text. "Invasion" is Reach's
   name; ours is open (working name: Siege).
@@ -747,7 +892,7 @@ Each phase lands by itself and ends on its exit criteria.
 |---|---|---|
 | 1 | `SimExt` side arena (forge-design.md slice F7; sim-rewrite.md section 2) | a test record survives checkpoint, revert, snapshot and a film keyframe, and changes the sim hash |
 | 2 | Forge labels | labels round-trip through the document and the edit log; the built-in flag-type table resolves on a disc map (`#[ignore]` test) |
-| 3 | Language, verifier, IR, VM, host runtime | the compiler and verifier pass their suites; a fuzzer finds no panic in the verifier or VM; a script scores a fake game through the `Game`-style trait |
+| 3 | Language, verifier, IR, VM, host runtime, capabilities | the compiler and verifier pass their suites; a fuzzer finds no panic in the verifier or VM; a script scores a fake game through the `Game`-style trait; a call or grant outside `requires` is refused, and a blob naming an unknown capability is refused by that name |
 | 4 | Firefight port | every built-in definition, compiled to IR, gives the Rust director's `Command` log in the director's own tests; `firefight.state` reads the same from both |
 | 5 | Slayer port | parity on every retail Slayer built-in on three maps; a script Slayer game played on Live |
 | 6 | The other six ports, in the order Juggernaut, Oddball, King, CTF with Assault, Territories | parity per engine; the API rows each needs are named points |
@@ -756,9 +901,14 @@ Each phase lands by itself and ends on its exit criteria.
 | 9 | Spawn-area control and the loadout picker | the `PLAYER_SPAWN_LOCATION` rule is traced; a labelled subset is the only one chosen in a headless match; the picker sets a loadout before a spawn |
 | 10 | Editors: Studio's rules editor, and in-game option rows from the script's option table | a variant made in Studio with a custom script plays from a hopper; the in-game editor changes a script option |
 | 11 | Retire the lifted engines | the retirement criteria above |
+| 12 | Capabilities on Live: the lobby's plain-words list, hopper deny lists, the allow-list's `forge.*` rule, in both homes | a script declaring a denied capability is not offered in that hopper; the parity suite passes in both homes |
+| 13 | Research: `give`, and `take` called outside a drop | each is a named point proven by a differential test; Gun Game swaps weapons on the kill's tick |
+| 14 | Forge in a match: grants, the match edit log, the player's tool (after forge-design.md slices F5, F8 and F15) | over a fake game, a granted proposal is stamped and costs one use, and one past the budget, outside the palette or in a ranked session is refused; a film with entries replays to the same `RulesExt` hash |
+| 15 | Research: `hide`, `attach`, the body swap, `camera`, damage forwarding | each is a named point; Prop Hunt plays in a headless match |
 
 Phases 7 to 9 are the phased mode's prerequisites and do not block the
-ports. The Forge graph front end follows phase 3 on Forge's own schedule;
+ports. Phases 12 to 15 follow phase 3 and block no port; 13 feeds Gun
+Game and 15 feeds Prop Hunt. The Forge graph front end follows phase 3 on Forge's own schedule;
 the ReachVariantTool importer follows phase 10.
 
 ## Not verified
@@ -786,6 +936,16 @@ the ReachVariantTool importer follows phase 10.
 - **Round end and the winner.** Only the game-end latch is known.
 - **`set_team`, per-player traits, movement speed, the body a player
   spawns in.** No entry is known.
+- **`give`, `hide`, `attach`, `camera`, and `take` outside a drop.** No
+  entry is proven. `0x10ca80` is known only as an observer of a pickup,
+  and `0xce920` only on the drop path. `set_loadout`'s routine
+  `0x19eda0` takes no player, so a loadout per player rests on knowing
+  the spawning player from the enclosing `PLAYER_SPAWN` (**S**).
+- **Edits in a match.** Whether a placement's scale reaches collision
+  (forge-design.md); which object groups the distributed protocol
+  replicates when the host makes one (forge-design.md slice F3); the
+  player's tool outside a monitor body; where a hopper keeps its deny
+  list.
 - **Spawn areas.** How `PLAYER_SPAWN_LOCATION` weighs starting locations,
   and whether answering it with a subset is enough.
 - **The bounce detector.** Its rule is a signature from traces of one
@@ -795,7 +955,6 @@ the ReachVariantTool importer follows phase 10.
   "What a run settles") settle them for scripts too.
 - **Host migration.** Whether a session of ours moves hosts, and how
   `RulesExt` would reach the new one. There is no handler for it.
-- **System Link.** Whether the no-mode rule can extend to it.
 - **The ReachVariantTool importer.** What of Megalo's slots, object
   types and trigger kinds cannot map onto this API is not surveyed.
 - **The phased mode's name**, and VM time per tick with 16 players.
@@ -827,7 +986,7 @@ No source derived from a leaked build is used.
 ## Related
 
 - [firefight.md](firefight.md): the template for a host-side director over engine entries
-- [forge-design.md](forge-design.md), [forge-features.md](forge-features.md): `SimExt`, `ForgeExt`, the logic graph
+- [forge-design.md](forge-design.md), [forge-features.md](forge-features.md): `SimExt`, `ForgeExt`, the logic graph, edit classes and the edit log
 - [game-options.md](game-options.md): the variant record, the `hx` block and its Live transport
 - [community-gametypes.md](community-gametypes.md): the built-in and community variants
 - [sim-rewrite.md](../engine/sim-rewrite.md): extension state, float and RNG rules, `SimRead`
