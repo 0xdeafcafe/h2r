@@ -16,3 +16,5 @@ runtime.workspace = true
 engine = { path = "../engine", features = ["runtime-glue"] }
 # Shadow checks of the sim ports against the lifted original (shadow.rs).
 lifted = { path = "../../runtime/lifted" }
+# The extension records the checkpoint hooks move (sim_ext.rs).
+sim-ext.workspace = true

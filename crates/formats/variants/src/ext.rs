@@ -30,6 +30,51 @@ pub const GRAVITY: RangeInclusive<u16> = 10..=400;
 /// Team size: 0 means any, otherwise at most the engine's 16 players.
 pub const TEAM_SIZE: RangeInclusive<u8> = 0..=16;
 
+/// What the record's script reference names
+/// (docs/game/rules-engine.md, "Carrying a script").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mode {
+    /// No script: the record plays as its own game type.
+    #[default]
+    None,
+    Firefight,
+    /// A rules script, named by [`Script::prefix`].
+    Rules,
+    /// A mode a newer build wrote: kept and written back as it was,
+    /// never applied.
+    Unknown(u8),
+}
+
+impl Mode {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::None,
+            1 => Self::Firefight,
+            2 => Self::Rules,
+            n => Self::Unknown(n),
+        }
+    }
+
+    pub fn to_u8(self) -> u8 {
+        match self {
+            Self::None => 0,
+            Self::Firefight => 1,
+            Self::Rules => 2,
+            Self::Unknown(n) => n,
+        }
+    }
+}
+
+/// The script reference in the block's former reserved bytes
+/// (`+0x11f..+0x12b`): mode, the first 8 bytes of the definition's
+/// SHA-256, and 32 bits of packed option values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Script {
+    pub mode: Mode,
+    pub prefix: [u8; 8],
+    pub options: u32,
+}
+
 /// The extension's options. [`Ext::default`] is retail: everything at
 /// 100% and nothing else, and it encodes as all zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +98,8 @@ pub struct Ext {
     pub secondary: u16,
     /// Players per team (0: any).
     pub team_size: u8,
+    /// The script reference; edits keep it (it is part of the block).
+    pub script: Script,
 }
 
 impl Default for Ext {
@@ -68,6 +115,7 @@ impl Default for Ext {
             primary: 0,
             secondary: 0,
             team_size: 0,
+            script: Script::default(),
         }
     }
 }
@@ -95,7 +143,8 @@ pub enum Why {
 }
 
 impl Ext {
-    /// Whether this is the game's own rules (encodes as all zero).
+    /// Whether this is the game's own rules (encodes as all zero). A
+    /// script reference is never default.
     pub fn is_default(&self) -> bool {
         *self == Self::default()
     }
@@ -154,6 +203,9 @@ impl Ext {
             b[4 + 2 * i..6 + 2 * i].copy_from_slice(&v.to_le_bytes());
         }
         b[0x12] = self.team_size;
+        b[0x13] = self.script.mode.to_u8();
+        b[0x14..0x1c].copy_from_slice(&self.script.prefix);
+        b[0x1c..0x20].copy_from_slice(&self.script.options.to_le_bytes());
         let crc = crc32(&b[..CRC_AT]);
         b[CRC_AT..].copy_from_slice(&crc.to_le_bytes());
         b
@@ -188,6 +240,11 @@ impl Ext {
             primary: u16_at(5),
             secondary: u16_at(6),
             team_size: b[0x12],
+            script: Script {
+                mode: Mode::from_u8(b[0x13]),
+                prefix: b[0x14..0x1c].try_into().unwrap(),
+                options: u32::from_le_bytes(b[0x1c..0x20].try_into().unwrap()),
+            },
         };
         match e.out_of_range() {
             Some(what) => Block::Ignored(Why::Range(what)),
@@ -230,6 +287,12 @@ impl Ext {
         if self.team_size != 0 {
             parts.push(format!("Teams of {}", self.team_size));
         }
+        match self.script.mode {
+            Mode::None => {}
+            Mode::Firefight => parts.push("Firefight".into()),
+            Mode::Rules => parts.push("Rules script".into()),
+            Mode::Unknown(n) => parts.push(format!("Unknown script mode {n}")),
+        }
         if parts.is_empty() {
             "none".into()
         } else {
@@ -270,6 +333,18 @@ mod tests {
             primary: 7,
             secondary: 0,
             team_size: 4,
+            script: Script::default(),
+        }
+    }
+
+    fn scripted(mode: Mode) -> Ext {
+        Ext {
+            script: Script {
+                mode,
+                prefix: [1, 2, 3, 4, 5, 6, 7, 8],
+                options: 0xa1b2_c3d4,
+            },
+            ..Ext::default()
         }
     }
 
@@ -297,7 +372,7 @@ mod tests {
         assert_eq!(u16::from_le_bytes([b[4], b[5]]), 50, "gravity at +0x110");
         assert_eq!(u16::from_le_bytes([b[8], b[9]]), 0, "100% stores as 0");
         assert_eq!(b[0x12], 4, "team size at +0x11e");
-        assert!(b[0x13..CRC_AT].iter().all(|&x| x == 0), "reserved");
+        assert!(b[0x13..CRC_AT].iter().all(|&x| x == 0), "no script");
         assert_eq!(Ext::decode(&b), Block::Ext(e));
         assert_eq!(
             e.summary(),
@@ -401,5 +476,67 @@ mod tests {
             ..Ext::default()
         };
         assert_eq!(e.out_of_range(), Some("speed"));
+    }
+
+    #[test]
+    fn a_script_reference_round_trips_in_every_mode() {
+        for (mode, text) in [
+            (Mode::Firefight, "Firefight"),
+            (Mode::Rules, "Rules script"),
+            (Mode::Unknown(9), "Unknown script mode 9"),
+        ] {
+            let e = scripted(mode);
+            assert!(!e.is_default());
+            let b = e.encode();
+            assert_ne!(b, [0; LEN], "a script with default extras has a block");
+            assert_eq!(b[0x13], mode.to_u8(), "mode at +0x11f");
+            assert_eq!(&b[0x14..0x1c], &[1, 2, 3, 4, 5, 6, 7, 8], "prefix at +0x120");
+            assert_eq!(
+                u32::from_le_bytes(b[0x1c..0x20].try_into().unwrap()),
+                0xa1b2_c3d4,
+                "options at +0x128"
+            );
+            assert_eq!(Ext::decode(&b), Block::Ext(e));
+            assert_eq!(Ext::in_effect(&b).script, e.script);
+            assert_eq!(e.summary(), text);
+        }
+        assert_eq!(Mode::from_u8(0), Mode::None);
+        assert_eq!(Mode::from_u8(1), Mode::Firefight);
+        assert_eq!(Mode::from_u8(2), Mode::Rules);
+    }
+
+    #[test]
+    fn the_crc_covers_the_script_bytes() {
+        let b = scripted(Mode::Rules).encode();
+        for i in 0x13..CRC_AT {
+            let mut c = b;
+            c[i] ^= 1;
+            assert_eq!(Ext::decode(&c), Block::Ignored(Why::Crc), "+{:#x}", AT + i);
+        }
+    }
+
+    #[test]
+    fn editing_an_extra_keeps_the_script() {
+        use crate::panel::VariantEditor;
+        use crate::record::GameType;
+        let mut e = VariantEditor::new(crate::schema::Schema::fallback(), None);
+        e.new_variant(GameType::Slayer);
+        let s = scripted(Mode::Rules);
+        e.set_ext(&s).unwrap();
+        let mut next = e.current().unwrap().ext();
+        assert_eq!(next, s);
+        next.gravity = 50;
+        e.set_ext(&next).unwrap();
+        let now = e.current().unwrap().ext();
+        assert_eq!(now.gravity, 50);
+        assert_eq!(now.script, s.script);
+        assert!(e.undo());
+        assert_eq!(e.current().unwrap().ext(), s);
+    }
+
+    #[test]
+    fn an_all_zero_block_has_no_script() {
+        assert_eq!(Ext::decode(&[0; LEN]), Block::None);
+        assert_eq!(Ext::in_effect(&[0; LEN]).script, Script::default());
     }
 }

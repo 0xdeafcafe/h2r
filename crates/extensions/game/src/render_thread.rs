@@ -25,6 +25,11 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "GAME_TICK",
         "the queued guest calls run at the end of the game tick; the render never meets it",
     ),
+    (
+        "sim-ext",
+        "*",
+        "checkpoint save, revert and restore are game-thread points; the render never meets them",
+    ),
     // The render path's own points.
     (
         "render-timing",

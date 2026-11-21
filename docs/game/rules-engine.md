@@ -1,7 +1,7 @@
 # Rules engine: scripted game types
 
-Status: Design. Nothing is built; this page is the plan. Decisions by the user, 2026-11-21.
-Code: none. The plan adds a formats crate named `rules` (language, verifier, IR, VM) and a `rules` module in `crates/extensions/game/src`. Tests: none.
+Status: Design, partly built: the `rules` formats crate runs on a fake game in tests only. Decisions by the user, 2026-11-21.
+Code: `crates/formats/rules` (language, verifier, IR codec, capabilities, VM). The plan adds a `rules` module in `crates/extensions/game/src`. Tests: `cargo test -p rules`.
 Switch: a `rules` feature of `H2_FEATURES`, added to [switches.md](../runtime/switches.md) when it is built.
 
 One scriptable engine runs every multiplayer game type. A game type is a
@@ -153,8 +153,13 @@ type area) stay where they are and a script reads them by name.
 bytes (`0x7cc50`/`0x7d520`, **E**, game-options.md "How a variant reaches
 other machines"), so the block already travels as
 `NewSession.variant_ext` (**Code**,
-`crates/live/live-proto/src/session.rs`). The session gains one field
-beside it, `rules`, holding the full 64-digit hash.
+`crates/live/live-proto/src/session.rs`). The session has one field
+beside it, `rules`, holding the full 64-digit hash: lowercase hex, checked
+by `NewSession::validate` (`valid_rules_hash`), kept by an update and
+listed wherever `variant_ext` is. The host publishes it with
+`Hle::set_session_rules` and a guest reads it with `Hle::host_rules`
+(**Code**, `crates/live/live-proto/src/session.rs`,
+`crates/live/live-hle/src/sessions.rs`).
 
 **The blob: by hash.** Built-in scripts are compiled into the binary and
 found by hash with no network. Any other blob is stored once on Live
@@ -236,7 +241,10 @@ replay, where it re-runs from the recorded inputs. Its variables, timers
 and generator state live in a `RulesExt` record in the `SimExt` blob
 ([sim-rewrite.md](../engine/sim-rewrite.md#2-who-owns-state)), so
 checkpoints, snapshots, film keyframes and the sim hash carry them.
-`SimExt` is not built; it is the first prerequisite ("Roadmap").
+`SimExt` is the first prerequisite ("Roadmap"). Its container, hooks and
+hash fold are built and tested on synthetic memory (`crates/rewrites/sim-ext`,
+`crates/rewrites/sim-bridge/src/sim_ext.rs`; sim-rewrite.md, "The `SimExt`
+blob"); `RULES` is registered and holds no VM state yet.
 
 ## The language
 
@@ -245,16 +253,20 @@ The header names the script, its version, its carrier, its teams and the
 capabilities it requires: `requires player.weapons, hud.message`.
 
 **Types.** `int` (32-bit, saturating), `fixed` (16.16, for seconds and
-distances), `bool`, `player`, `team`, `object`, `squad`, `timer` (counts
-ticks down, then fires `on timer`), and `enum` types a script declares.
+distances), `bool`, `player`, `team`, `object`, `squad`, `timer` (a global variable that
+counts ticks down, then fires `on timer`), and `enum` types a script declares.
 `player`, `team` and `object` values may be `none`. A `table` is constant
 rows of typed columns, indexed by `int`. There are no floats and no
 strings at run time: text is a string-table index with typed arguments.
+An `int` indexes a table's rows; a value of the first column's type
+finds the first row holding it (`points[class]`), and a key no row holds
+reads the columns' zero values. A row out of range is a script error.
 
 **Expressions and control.** Ordinary expressions with precedence and
 parentheses (`a = b + c * 2`), `if` / `else if` / `else`, `and` binding
-tighter than `or`. These are the things the ReachVariantTool dialect
-lacks ("Prior art").
+tighter than `or`; both short-circuit. A statement ends at a line break,
+`;` or `}`. A `let` or a parameter is not assigned again. These are the
+things the ReachVariantTool dialect lacks ("Prior art").
 
 **Variables** are declared, named and scoped:
 `global|player|team|object var name: type = init`. The compiler assigns
@@ -394,8 +406,9 @@ fn open(n: int) {
     for each objects labelled "barrier" b where b.number < n { delete(b) }
     spawn_areas(team 0, "attack", n)
     spawn_areas(team 1, "defend", n)
-    if n == 2 { register_objective(create("<core tag path>", first(objects labelled "core")), team 0) }
+    if n == 2 { create("<core tag path>", first(objects labelled "core")) }
 }
+on pickup(p, o) { if phase == 2 and not is_objective(o) { register_objective(o, team 0) } }
 on round_start { open(0) }
 on tick {
     if phase < 2 and ticks_held(labelled "zone" phase, team 0) >= seconds(capture_time) { open(phase + 1) }
@@ -441,6 +454,17 @@ arithmetic, compare, slot load and store, forward conditional jump,
 entry. There is no backward jump and no indirect jump, so termination is
 a property of the format, and the verifier needs no fixpoint.
 
+**Ops** (IR version 1, `crates/formats/rules/src/ir.rs`): `Const`,
+`Move`, `Arith` (add, subtract, multiply, divide, remainder; saturating
+`int` or 16.16 `fixed`), `Neg`, `Cmp`, `Not`, `Load` and `Store` (a slot,
+through an owner register for a scoped slot), `Opt` (a script option),
+`Variant` (a record field), `TableRead`, `TableFind`, `Jump`, `JumpIf`,
+`JumpIfNot`, `ForEach`, `Call`, `Grant`, `Revoke` and `Granted`. Each
+handler declares the type of every register, so the verifier checks
+types op by op, and a jump inside a `ForEach` body cannot leave it. A
+read through `none` gives the slot's initial value and a write through
+`none` does nothing.
+
 **Budget.** A tick may execute 20,000 ops across all its handlers. The
 count is always enforced and nothing is marked proven: a handler's worst
 case follows from the set bounds (16 players, 8 teams, 256 labelled
@@ -475,8 +499,9 @@ entries that replicas and films apply at the tick boundary (firefight.md
 "The director"); and object creation, deletion and teleports, not known
 to be legal inside a damage or AI update (`AI_ERASE` only marks an actor
 the AI is updating, `0x2736fc`). A read sees every call made so far and
-no queued one. `for each` visits players by slot index, teams by index,
-objects by label then placement id.
+no queued one, and a queued call returns nothing to the script. `for
+each` visits players by slot index, teams by index, objects by label
+then placement id.
 
 **Determinism.** The VM uses integers and fixed point only. Where the
 API must look at floats (a position against a zone), the test runs in
@@ -491,7 +516,9 @@ zero gives 0 and a trace warning.
 
 **Versioning.** A build that can host or join script games advertises
 `rules/1` in its presence capabilities, beside `variant-ext/1`
-(**Code**, `live_proto` capabilities in `crates/live/live-proto/src/lib.rs`).
+(**Code**, `live_proto::capability::RULES` in
+`crates/live/live-proto/src/lib.rs`; no build advertises it until the
+`rules` feature exists).
 An older build cannot host a script game. As a guest it is **warned
 about, not refused**. No guest on any build runs the script, so an older
 guest predicts exactly as a newer one does, from the same replicated
@@ -866,7 +893,9 @@ The phased mode is the check that the API is wide enough:
 ## Forge labels
 
 A prerequisite. `crates/formats/forge-doc` has teleporter and device
-links (`links.rs`) and no way to tell a script which placement is which.
+links (`links.rs`) and labels (`labels.rs`) to tell a script which
+placement is which. Status: the document side is built; the `RulesExt`
+table and `objects labelled` are not.
 
 **Design.** A label is a string of at most 32 bytes plus an optional
 number (`"checkpoint" 3`, `"hill" 0`). It is a field of a placement in
@@ -878,11 +907,36 @@ read it through `objects labelled`. Retail maps with no Forge document
 get labels from a built-in table per netgame flag type, so
 `objects labelled "ctf_flag_spawn"` works on every map.
 
-A label is a change of the document format: the format is one number
-(`forge_doc::FORMAT`, 1), the document's structs refuse unknown fields
-and `crates/formats/forge-doc/src/validate.rs` refuses any other number,
-so a labelled document takes the next number and an older build refuses
-it whole.
+**Built.** `Forge::Label { target, label }` sets or clears a label on
+a placement named as a link names one (`Endpoint`: a base entry by
+index, or the entry an add op made), so it follows the entry through
+appends and swap-removes. The text is 1 to 32 bytes of lowercase ASCII,
+digits, `_`, `-` and `.`; the number is an `i32`. A placement has one
+label and a later set replaces it. Labels are not unique: the number
+tells placements with one text apart, and a script asks for all of them.
+The validator refuses bad text, an entry that is missing or removed, a
+clear of an unlabelled entry and the removal of a labelled entry.
+`ForgeDoc::labels` resolves the active labels to final indices and
+`replay` hands them to `Apply::labels` after the links.
+
+`forge_doc::builtin_label(flag_type)` is the built-in table: 0
+`ctf_flag_spawn`, 1 `ctf_flag_return`, 2 `assault_bomb_spawn`, 3
+`assault_bomb_return`, 4 `oddball_spawn`, 7 `teleporter_sender`, 8
+`teleporter_receiver`, 10 `territory`, and 11 to 18 `hill_corner` with
+the hill number 0 to 7 as its number. Types 0, 1, 4, 7, 8, 10 and 11 to
+18 are traced (bots.md 3.7); the names for 2 and 3 are the less certain
+(bots.md calls them "bomb and plate"). Types 5, 6 and 9 have no label.
+The `RulesExt` table applies a placement's own label first and the
+built-in label of its flag type otherwise.
+
+A label is a change of the document format. The format is one number
+(`forge_doc::FORMAT`, 1; `FORMAT_LABELS`, 2). A document takes 2 when
+any op is a label op and 1 otherwise, and
+`crates/formats/forge-doc/src/validate.rs` refuses the other number, so
+a document has one spelling: every document without labels keeps its
+bytes and its identity, and a fold that retracts the last label
+returns to format 1. This build reads both; an older build refuses a
+labelled document whole.
 
 ## Roadmap
 
@@ -891,7 +945,7 @@ Each phase lands by itself and ends on its exit criteria.
 | # | Phase | Exit criteria |
 |---|---|---|
 | 1 | `SimExt` side arena (forge-design.md slice F7; sim-rewrite.md section 2) | a test record survives checkpoint, revert, snapshot and a film keyframe, and changes the sim hash |
-| 2 | Forge labels | labels round-trip through the document and the edit log; the built-in flag-type table resolves on a disc map (`#[ignore]` test) |
+| 2 | Forge labels | labels round-trip through the document and the edit log (built); the built-in flag-type table resolves on a disc map (`#[ignore]` test, not built) |
 | 3 | Language, verifier, IR, VM, host runtime, capabilities | the compiler and verifier pass their suites; a fuzzer finds no panic in the verifier or VM; a script scores a fake game through the `Game`-style trait; a call or grant outside `requires` is refused, and a blob naming an unknown capability is refused by that name |
 | 4 | Firefight port | every built-in definition, compiled to IR, gives the Rust director's `Command` log in the director's own tests; `firefight.state` reads the same from both |
 | 5 | Slayer port | parity on every retail Slayer built-in on three maps; a script Slayer game played on Live |
@@ -929,10 +983,9 @@ the ReachVariantTool importer follows phase 10.
 - **A join gate and the allow-list.** Neither is designed: the session
   and matchmaking path only lets a host log who lacks a capability, and
   where Live keeps the allow-list and which routes consult it is open.
-- **The session's `rules` field** needs the shape checks the server runs
-  on `variant_ext` (`NewSession::validate`,
-  `crates/live/live-proto/src/session.rs`) in both homes: `live-server`
-  and the Cloudflare worker (`crates/live/live-worker`).
+- **The session's `rules` field** is checked in `NewSession::validate`
+  and `Session::apply`, which both homes run (`live-server` and the
+  Cloudflare worker); the worker's own run of the test is not seen.
 - **Round end and the winner.** Only the game-end latch is known.
 - **`set_team`, per-player traits, movement speed, the body a player
   spawns in.** No entry is known.

@@ -1,6 +1,7 @@
 # Simulation rewrite: plan
 
-Status: plan, 2026-11-20. Nothing here is built. It replaces the verdict in
+Status: plan, 2026-11-20. The `SimExt` blob (section 2) is partly built,
+with tests only. The plan replaces the verdict in
 [feature-engine.md](feature-engine.md) ("Subsystem map and ranking", rows
 15-18) that objects, AI and physics "stay recompiled". The user asked on
 2026-11-16 and 2026-11-17 for whole-subsystem rewrites, not per-function
@@ -124,7 +125,52 @@ every 30 ticks), telemetry, and the agent API.
 | **Static** | Decoded animation clips, collision BVHs built from BSP and MOPP, marker tables, object-function tables | per map load; content-addressed; shareable across processes | nothing to save; rebuilt from the map |
 | **Derived** | Per-channel key cursors, last-pose caches, spatial-index acceleration | any time; must never change a result | dropped on an **epoch bump**: map load, revert `0x123f60`, full restore `0x124380`, snapshot load, or tick regression |
 | **Transient** | The SoA working set of one pass (gather, compute, scatter) | inside one Rust call | none |
-| **Extension** | State for new features (Halo 1 health) that has no retail home | the match or campaign | serialised into a versioned `SimExt` blob, saved and restored next to the arena by hooks on `0x123e20`, `0x123f60` and `0x124380`, carried in snapshots and films, and folded into the sim hash when present |
+| **Extension** | State for new features (Halo 1 health) that has no retail home | the match or campaign | serialised into a versioned `SimExt` blob, saved and restored next to the arena by hooks on `0x123e20`, `0x123f60` and `0x124380`, carried in snapshots and films, and folded into the sim hash when present ("The `SimExt` blob", below) |
+
+#### The `SimExt` blob
+
+Partly built, tested on synthetic memory only; no feature stores a record
+yet. Code: `crates/rewrites/sim-ext` (the container and its byte form),
+`crates/rewrites/sim-bridge/src/sim_ext.rs` (the hooks, feature `sim-ext`,
+registered in every run by `crates/apps/boot/src/registration.rs`),
+`lockstep::fold_ext` (the hash).
+
+- **Records.** A feature registers a `sim_ext::Kind` (name, layout
+  version, cap) and stores its record as bytes it encodes itself.
+  `RULES` (`RulesExt`, 16 KiB) and `FORGE` (`ForgeExt`, 64 KiB) are
+  registered from the start and opaque until their owners land. The
+  container is at most 256 KiB.
+- **Bytes.** No records is zero bytes. Otherwise `"SEXT"`, the format
+  (`sim_ext::FORMAT`, 1), the record count, the records in name order
+  (name, version, length, bytes) and a CRC-32 of all of it. The form is
+  canonical: a restore refuses another format, an unregistered kind, a
+  record of another version, a record over its cap, a bad CRC and any
+  non-canonical order, and changes nothing when it refuses.
+- **Checkpoints.** The guest's slot index is the `u16` at `0x004e3b64`
+  (`u16::MAX` before the first save; `crates/platform/xapi/tests/checkpoints.rs`
+  reads it after each commit and sets it before each revert). An
+  observer before `0x123e20` copies the records into the slot the save
+  writes (the other one, slot 0 first). An observer before `0x123f60`
+  reads the slot, and the first observer after it restores that slot's
+  copy. A revert to a slot no save was seen for (one written by an
+  earlier process) clears the records, with a `sim-ext:` line when there
+  were any. A full restore at `0x124380` reads a save
+  file that has no records beside it, so the observer after it clears
+  them, with a line when there were any.
+- **Snapshots and films.** The feature's snapshot section holds the live
+  records and both slot copies, and is empty when all three are. Film
+  keyframes are machine snapshots ([film-format.md](../game/film-format.md)),
+  so they carry the same section.
+- **The hash.** `lockstep::hash_sim`, `hash_sim_buffered` and
+  `hash_sim_blocks` fold the records' FNV-1a digest into the arena hash
+  when there is a record, and return the arena hash unchanged when there
+  is none. So `HASH` chunks, `impl.sim.arena-hash` and `h2 sim diff` see
+  it. The per-block hashes of `h2 sim diff` cover the arena only, so a
+  difference in extension state alone shows in the whole hash.
+- **Not covered.** A full restore from a save file loses the records
+  (campaign save-and-quit). The blob is one per process
+  (`sim_ext::global`), and nothing clears it between matches; each owner
+  sets or removes its record when its game starts.
 
 Why this holds up:
 

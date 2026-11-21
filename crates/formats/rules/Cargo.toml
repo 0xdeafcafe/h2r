@@ -1,0 +1,10 @@
+[package]
+name = "rules"
+description = "Scripted game types: the rules language, verified IR, capabilities and VM"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+content.workspace = true
+thiserror.workspace = true
