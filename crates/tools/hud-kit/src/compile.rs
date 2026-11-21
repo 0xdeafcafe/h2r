@@ -33,6 +33,10 @@ pub struct Widget {
     pub id: &'static str,
     pub kind: WidgetKind,
     pub bytes: Vec<u8>,
+    /// The part of its sprite a bitmap widget draws
+    /// ([`crate::templates::ArtTemplate::crop`]): not in the record, the
+    /// runtime's hook narrows the quad's texture rectangle.
+    pub crop: Option<[f32; 4]>,
 }
 
 /// A HUD compiled: its widgets in the game's draw order (bitmaps, then
@@ -161,7 +165,7 @@ fn bytes(def: &StructDef, r: &Record) -> Result<Vec<u8>> {
     Ok(b.bytes)
 }
 
-fn bitmap(def: &StructDef, e: &Element, t: &Templates) -> Result<Vec<u8>> {
+fn bitmap(def: &StructDef, e: &Element, t: &Templates) -> Result<(Vec<u8>, Option<[f32; 4]>)> {
     let art = e.kind.art().expect("a bitmap element has art");
     let a = t
         .art(&art)
@@ -181,7 +185,7 @@ fn bitmap(def: &StructDef, e: &Element, t: &Templates) -> Result<Vec<u8>> {
             Val::List(e.at.registration.map(Val::Float).into()),
         )?;
     }
-    bytes(def, &r)
+    Ok((bytes(def, &r)?, a.crop))
 }
 
 fn text(def: &StructDef, e: &Element, t: &Templates) -> Result<Vec<u8>> {
@@ -222,15 +226,20 @@ pub fn compile(hud: &Hud, t: &Templates) -> Result<Compiled> {
     let mut channels = Vec::new();
     for e in &hud.elements {
         match &e.kind {
-            Kind::Meter { .. } | Kind::Icon { .. } | Kind::Pointer { .. } => bitmaps.push(Widget {
-                id: e.id,
-                kind: WidgetKind::Bitmap,
-                bytes: bitmap(bdef, e, t)?,
-            }),
+            Kind::Meter { .. } | Kind::Icon { .. } | Kind::Pointer { .. } => {
+                let (bytes, crop) = bitmap(bdef, e, t)?;
+                bitmaps.push(Widget {
+                    id: e.id,
+                    kind: WidgetKind::Bitmap,
+                    bytes,
+                    crop,
+                })
+            }
             Kind::Text { .. } => texts.push(Widget {
                 id: e.id,
                 kind: WidgetKind::Text,
                 bytes: text(tdef, e, t)?,
+                crop: None,
             }),
             _ => channels.push(e.id),
         }

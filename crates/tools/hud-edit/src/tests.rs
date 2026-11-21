@@ -487,3 +487,26 @@ fn a_look_dims_and_greys_a_texel() {
     let g = Look { alpha: 1.0, grey: true }.apply(t);
     assert_eq!((g[0], g[1], g[2], g[3]), (124, 124, 124, 200));
 }
+
+/// A crop keeps that part of a sprite's texels and its size.
+#[test]
+fn a_crop_keeps_part_of_a_sprite() {
+    use crate::render::Sprite;
+    // 4 by 2, each texel's red its x and green its y.
+    let rgba: Vec<u8> = (0..2u8)
+        .flat_map(|y| (0..4u8).flat_map(move |x| [x, y, 0, 255]))
+        .collect();
+    let s = Sprite {
+        size: [4.0, 2.0],
+        rgba: Some(rgba),
+        px: [4, 2],
+        note: None,
+    };
+    let c = s.cropped([0.5, 1.0, 0.0, 1.0]);
+    assert_eq!(c.px, [2, 2]);
+    assert_eq!(c.size, [2.0, 2.0]);
+    assert_eq!(
+        c.rgba.unwrap(),
+        [2u8, 0, 0, 255, 3, 0, 0, 255, 2, 1, 0, 255, 3, 1, 0, 255]
+    );
+}

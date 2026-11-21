@@ -37,9 +37,13 @@ pub const INACTIVE_ALPHA: f32 = 0.7;
 /// frame's width and height from the frame's centre (the runtime's is the
 /// strip's stand point projected, slice 6).
 pub const NAVPOINT_SAMPLE: [f32; 2] = [0.2, -0.25];
-/// Pixels between a navpoint's arrow, marker and number (S: the engine's
-/// spacing, `0x0024e9c7`..`0x0024f55e`, is not read).
-pub const NAVPOINT_GAP: f32 = 2.0;
+/// Pixels between a navpoint's arrow and its marker: the marker is put
+/// out from the point by the arrow's length and one more (E `0x0024ecae`
+/// with `0x0024e9c7`'s return; S: the rest of its sum).
+pub const NAVPOINT_GAP: f32 = 1.0;
+/// Pixels between a navpoint's marker and the kit's number above it
+/// (Design: the game draws no number).
+pub const NAVPOINT_NUMBER_GAP: f32 = 2.0;
 /// The message and training font: font id 6 fullscreen, 5 in split
 /// screen (E `0x0024cfaf`..`0x0024cfc9`, `0x001e71d7`).
 pub const MESSAGE_FONT: [i16; 2] = [6, 5];
@@ -177,6 +181,7 @@ pub fn style_look(style: Style) -> Option<Look> {
 /// What the runtime's hooks answer for the kit's widgets.
 struct KitAnswers<'a> {
     hud: &'a Hud,
+    compiled: &'a Compiled,
     values: &'a Values,
     mode: Mode,
     colours: &'a Colours,
@@ -217,6 +222,10 @@ impl Answers for KitAnswers<'_> {
     fn look(&self, h: usize, w: &Widget) -> Option<Look> {
         let (e, v) = self.of(h, w)?;
         e.kind.art().and_then(|_| style_look(v.style))
+    }
+    fn crop(&self, h: usize, w: &Widget) -> Option<[f32; 4]> {
+        let (e, _) = self.of(h, w)?;
+        self.compiled.widget(e.id)?.crop
     }
 }
 
@@ -473,13 +482,16 @@ fn draw_sprite(canvas: &mut Canvas, cover: &mut Cover, sprite: &Sprite, at: &Rec
     }
 }
 
-/// A navpoint as the game draws one (E `0x0024e59f`): the `hudg`
-/// waypoint marker's in-view sequence centred on the point (`0x0024ecae`),
-/// the navpoint arrow (`hudg::NAVPOINT_ARROW`) above it (`0x0024e9c7`),
-/// both through the HUD
-/// shader in the user's HUD colour (`0x0024dbb0`, the notifications'
-/// colour here) at the style's alpha; then the value's number, centred
-/// under them in [`NAVPOINT_FONT`] (the game draws no number: the kit's).
+/// A navpoint as the game draws one on screen (E `0x0024e59f`): the
+/// navpoint arrow (`hudg::NAVPOINT_ARROW`, `0x0024e9c7`) with its tip on
+/// the point, pointing down at it, and the `hudg` waypoint marker's
+/// in-view sequence (`0x0024ecae`) above the arrow, [`NAVPOINT_GAP`] up;
+/// both through the HUD shader, texels times the user's HUD colour (the
+/// four colours `0x0024da7d` writes are all `0x0013927e`'s, the
+/// notifications' colour here; S: the shader's combine) at the style's
+/// alpha. Then the value's number, centred above the marker in
+/// [`NAVPOINT_FONT`] (the game draws no number: the kit's). The outline
+/// `0x0024f0fc` draws from `arrow_assets +0x1c` is not drawn (decoding 8).
 fn navpoint(
     canvas: &mut Canvas,
     src: &mut Source,
@@ -513,7 +525,7 @@ fn navpoint(
         font: Some(font),
         notes: vec![
             "the point is the preview's sample".into(),
-            "the spacing of arrow, marker and number is the kit's (S)".into(),
+            "the arrow's outline (0x0024f0fc) is not drawn".into(),
         ],
     };
     if !in_mode {
@@ -550,20 +562,21 @@ fn navpoint(
         Some(a) => sprite(a.image, a.sequence, "arrow", &mut d.notes),
         None => None,
     };
-    // Top to bottom: arrow, marker (centred on the point), number.
-    let mrect = marker
+    // Bottom to top: the arrow's tip on the point, the marker, the number.
+    let arect = arrow
         .as_ref()
-        .map(|m| centred(point[0], point[1] - (m.size[1] / 2.0).floor(), m.size));
-    let arect = arrow.as_ref().map(|a| {
-        let bottom = mrect.map_or(point[1] + (a.size[1] / 2.0).floor(), |m| {
-            m.y0 - NAVPOINT_GAP
-        });
-        centred(point[0], bottom - a.size[1], a.size)
+        .map(|a| centred(point[0], point[1] - a.size[1], a.size));
+    let mrect = marker.as_ref().map(|m| {
+        let bottom = arect.map_or(point[1], |a| a.y0 - NAVPOINT_GAP);
+        centred(point[0], bottom - m.size[1], m.size)
     });
-    let below = mrect.or(arect).map_or(point[1], |r| r.y1 + NAVPOINT_GAP);
+    let top = mrect
+        .or(arect)
+        .map_or(point[1], |r| r.y0 - NAVPOINT_NUMBER_GAP);
     let fonts = src.fonts.as_ref();
     let longest = e.kind.longest().unwrap_or("");
-    let lrect = centred(point[0], below, render::text_size(fonts, font, longest));
+    let lsize = render::text_size(fonts, font, longest);
+    let lrect = centred(point[0], top - lsize[1], lsize);
     let mut reserved = None;
     for r in [arect, mrect].into_iter().flatten() {
         reserved = Some(union(reserved, r));
@@ -580,7 +593,8 @@ fn navpoint(
             draw_sprite(canvas, &mut cover, s, &r, colour);
         }
     }
-    let trect = centred(point[0], below, render::text_size(fonts, font, &v.text));
+    let tsize = render::text_size(fonts, font, &v.text);
+    let trect = centred(point[0], top - tsize[1], tsize);
     blit(
         canvas,
         &mut cover,
@@ -612,6 +626,7 @@ pub fn shot(
     let mode = st.mode;
     let answers = KitAnswers {
         hud,
+        compiled,
         values,
         mode,
         colours: &src.colours,

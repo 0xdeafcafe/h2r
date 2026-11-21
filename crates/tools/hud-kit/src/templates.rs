@@ -13,7 +13,7 @@ use map::{FourCC, Map, TagId, TagQuery};
 use hud_edit::Mode;
 
 use crate::hudg::Hudg;
-use crate::model::{Art, Hud, HudRef, Origin};
+use crate::model::{Art, Hud, HudRef, Origin, PILL_BODY, PILL_END, PillPart};
 
 pub const BITM: FourCC = FourCC(*b"bitm");
 
@@ -43,12 +43,15 @@ pub const PLASMA_COUNT_INPUT: u8 = 21;
 /// multiplayer Master Chief's: `hud_edit`'s disc test).
 pub const PLAYER_HUD: &str = "ui\\hud\\masterchief";
 
-/// A bitmap and a shader (group and datum), and a sequence per screen mode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A bitmap and a shader (group and datum), a sequence per screen mode,
+/// and the part of the sprite drawn (`[u0, u1, v0, v1]` in fractions of
+/// it; `None` the whole sprite).
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ArtTemplate {
     pub bitmap: TagId,
     pub shader: (FourCC, TagId),
     pub sequences: [i8; 3],
+    pub crop: Option<[f32; 4]>,
 }
 
 /// A retail text widget's shader and string ID word: a text widget with
@@ -59,16 +62,27 @@ pub struct TextTemplate {
     pub string: u32,
 }
 
-/// Where the player's grenade row would put a next pill and its count:
-/// per screen mode, the frag pill's offset plus the step from the plasma
-/// pill to the frag pill, and the same for the counts, each with the
-/// anchor of the frag widget it steps from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Where the player's grenade row would put a next pill and its count.
+///
+/// Retail's two pill widgets are one panel (V: `ui\hud\masterchief`
+/// widgets 0 and 1, `grenade_bkd` sequences 0 and 1): both at the same
+/// offset, each drawing the whole 103 by 19 sprite with both pills in it,
+/// its own lit. The counts step 53 from the plasma's to the frag's, and
+/// that step is the pills': the frag pill is the panel's last
+/// `panel - |step|` pixels (the plasma's the first, the step's way round).
+/// So per screen mode the next pill's top left is the frag pill's plus
+/// the step, and the next count is the frag count plus the step, each in
+/// the anchor of the frag widget it steps from.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GrenadeRow {
     pub pill_anchor: u16,
     pub pill: [(i16, i16); 3],
     pub count_anchor: u16,
     pub count: [(i16, i16); 3],
+    /// The panel sprite's width, in HUD pixels.
+    pub panel: f32,
+    /// Where the frag pill starts in it, and its width.
+    pub frag: [f32; 2],
 }
 
 impl GrenadeRow {
@@ -81,6 +95,21 @@ impl GrenadeRow {
             Origin::NextGrenadePill => Some((self.pill_anchor, self.pill[m])),
             Origin::NextGrenadeCount => Some((self.count_anchor, self.count[m])),
         }
+    }
+
+    /// The crop of the panel sprite that draws `part` of the frag pill.
+    pub fn crop(&self, part: PillPart) -> [f32; 4] {
+        let [start, width] = self.frag;
+        let (from, to) = match part {
+            PillPart::Body => (0.0, f32::from(PILL_BODY)),
+            PillPart::End => (width - f32::from(PILL_END), width),
+        };
+        [
+            (start + from) / self.panel,
+            (start + to) / self.panel,
+            0.0,
+            1.0,
+        ]
     }
 }
 
@@ -134,15 +163,15 @@ impl Templates {
         hud: &Hud,
     ) -> Templates {
         let text = text_template(map, nhdt);
+        let row = grenade_row(map, nhdt);
         let art = hud
             .arts()
             .into_iter()
             .map(|a| {
-                let t = art_template(map, nhdt, hudg, &a);
+                let t = art_template(map, nhdt, hudg, row.as_ref(), &a);
                 (a, t)
             })
             .collect();
-        let row = grenade_row(map, nhdt);
         Templates {
             nhdt,
             text,
@@ -188,13 +217,25 @@ fn count(hud: &model::Hud, input: u8, word: u16) -> Result<&model::Widget, Strin
         })
 }
 
-/// The next step of a row, per mode: `a` (frag) plus `a - b` (plasma).
-fn step(a: &model::Widget, b: &model::Widget) -> [(i16, i16); 3] {
-    Mode::ALL.map(|m| {
-        let (ax, ay) = a.offset(m);
-        let (bx, by) = b.offset(m);
-        (2 * ax - bx, 2 * ay - by)
-    })
+/// The size of the sprite widget `w` draws in mode `m`, read from its
+/// bitmap (`hud_edit::render::sprite_at`).
+fn sprite_size<R: Read + Seek>(
+    map: &mut Map<R>,
+    hud: &model::Hud,
+    w: &model::Widget,
+    m: Mode,
+) -> Result<[f32; 2], String> {
+    let id = w
+        .bitmap()
+        .ok_or_else(|| format!("{}'s {} has no bitmap", hud.name, w.name))?;
+    let b = match tags::DecodedTag::read(map, id)
+        .map_err(|e| e.to_string())?
+        .data
+    {
+        tags::TagData::Bitmap(b) => b,
+        _ => return Err(format!("{}'s {} names no bitmap", hud.name, w.name)),
+    };
+    Ok(hud_edit::render::sprite_at(&b, w.sequence(m))?.size)
 }
 
 fn grenade_row<R: Read + Seek>(map: &mut Map<R>, nhdt: TagId) -> Result<GrenadeRow, String> {
@@ -208,11 +249,60 @@ fn grenade_row<R: Read + Seek>(map: &mut Map<R>, nhdt: TagId) -> Result<GrenadeR
             hud.name
         ));
     }
+    let mut size = None;
+    for m in Mode::ALL {
+        if frag.offset(m) != plasma.offset(m) {
+            return Err(format!(
+                "{}: the grenade pills are not one panel ({} {:?}, {} {:?} {})",
+                hud.name,
+                frag.name,
+                frag.offset(m),
+                plasma.name,
+                plasma.offset(m),
+                m.label()
+            ));
+        }
+        let s = sprite_size(map, &hud, frag, m)?;
+        if size.is_some_and(|z| z != s) {
+            return Err(format!(
+                "{}'s {} is not one size in every screen mode",
+                hud.name, frag.name
+            ));
+        }
+        size = Some(s);
+    }
+    let panel = size.expect("three modes")[0];
+    let steps = Mode::ALL.map(|m| {
+        let ((fx, fy), (px, py)) = (fc.offset(m), pc.offset(m));
+        (fx - px, fy - py)
+    });
+    let full = f32::from(steps[0].0);
+    let width = panel - full.abs();
+    if full == 0.0 || width <= f32::from(PILL_BODY + PILL_END) {
+        return Err(format!(
+            "{}: a step of {full} between the counts does not split the {panel}-wide pills",
+            hud.name
+        ));
+    }
+    // The frag pill: the panel's far end the step's way.
+    let start = if full > 0.0 { panel - width } else { 0.0 };
+    let pill = std::array::from_fn(|i| {
+        let (x, y) = frag.offset(Mode::ALL[i]);
+        let (sx, sy) = steps[i];
+        (x + start as i16 + sx, y + sy)
+    });
+    let count = std::array::from_fn(|i| {
+        let (x, y) = fc.offset(Mode::ALL[i]);
+        let (sx, sy) = steps[i];
+        (x + sx, y + sy)
+    });
     Ok(GrenadeRow {
         pill_anchor: frag.anchor(),
-        pill: step(frag, plasma),
+        pill,
         count_anchor: fc.anchor(),
-        count: step(fc, pc),
+        count,
+        panel,
+        frag: [start, width],
     })
 }
 
@@ -262,6 +352,7 @@ fn art_template<R: Read + Seek>(
     map: &mut Map<R>,
     nhdt: TagId,
     hudg: Option<&Hudg>,
+    row: Result<&GrenadeRow, &String>,
     a: &Art,
 ) -> Result<ArtTemplate, String> {
     match a {
@@ -272,6 +363,7 @@ fn art_template<R: Read + Seek>(
                 bitmap,
                 shader: (group_of(map, shader)?, shader),
                 sequences: [STRIP_SEQUENCE; 3],
+                crop: None,
             })
         }
         Art::WaypointArrow => {
@@ -285,6 +377,7 @@ fn art_template<R: Read + Seek>(
                 bitmap: arrow.image,
                 shader: (group_of(map, arrow.material)?, arrow.material),
                 sequences: [seq; 3],
+                crop: None,
             })
         }
         Art::NavpointArrow => {
@@ -303,9 +396,11 @@ fn art_template<R: Read + Seek>(
                 bitmap: arrow.image,
                 shader: (group_of(map, arrow.material)?, arrow.material),
                 sequences: [seq; 3],
+                crop: None,
             })
         }
-        Art::GrenadePill => {
+        Art::GrenadePill(part) => {
+            let row = row.map_err(|why| format!("the grenade row: {why}"))?;
             let h = model::read(map, nhdt).map_err(|e| e.to_string())?;
             let w = pill(&h, FRAG_SELECTED)?;
             let bitmap = w
@@ -318,6 +413,7 @@ fn art_template<R: Read + Seek>(
                 bitmap,
                 shader: (group_of(map, shader)?, shader),
                 sequences: Mode::ALL.map(|m| w.sequence(m)),
+                crop: Some(row.crop(*part)),
             })
         }
         Art::Widget { hud, name } => {
@@ -341,6 +437,7 @@ fn art_template<R: Read + Seek>(
                 bitmap,
                 shader: (group_of(map, shader)?, shader),
                 sequences: Mode::ALL.map(|m| w.sequence(m)),
+                crop: None,
             })
         }
     }

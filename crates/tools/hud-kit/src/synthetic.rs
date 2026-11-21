@@ -31,13 +31,20 @@ const FRAG_STATE: [u8; 20] = [
 const PLASMA_STATE: [u8; 20] = [
     0x08, 0, 0, 0, 0, 0, 0, 0, 0x26, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 ];
-/// The invented grenade row, top left, frag then plasma: the plasma pill
-/// at x 0 and the frag pill at 53 (pills 50 by 16, one pixel down), their
-/// counts centred at 12 and 65 (the retail counts' offsets,
-/// docs/halo1/hud.md).
-pub const PILLS: [(i16, i16); 2] = [(53, 1), (0, 1)];
+/// The invented grenade row, top left, as retail's: one panel of two
+/// pills that the frag and the plasma widgets both draw at [`PANEL_AT`],
+/// the plasma pill its first [`PILL_WIDTH`] pixels and the frag pill its
+/// last, and the counts centred at x 65 (frag) and 12 (plasma), the
+/// retail counts' offsets (V: `ui\hud\masterchief`).
+pub const PANEL_AT: (i16, i16) = (0, 0);
+pub const PANEL_SIZE: (u16, u16) = (103, 19);
+pub const PILL_WIDTH: u16 = 50;
 pub const COUNTS: [(i16, i16); 2] = [(65, -1), (12, -1)];
-pub const PILL_SIZE: (u16, u16) = (50, 16);
+/// The frag pill's texels: its red is its x in the pill, so a crop's
+/// texels say where they came from.
+pub fn frag_texel(x: u32) -> [u8; 4] {
+    [x as u8 * 4, 120, 200, 200]
+}
 
 /// A flat bitmap: a `size` power-of-two image whose sequence 0 is one
 /// sprite of `sprite` pixels at its top left, each texel `texel(x, y)`
@@ -212,14 +219,14 @@ pub fn build() -> Result<Vec<u8>> {
         let blue = (x.saturating_sub(13) * 255 / 78).min(255) as u8;
         [80, 190, blue, 255]
     })?;
-    // The arrow: 16 by 16, a triangle pointing up.
+    // The arrow: 16 by 16, a triangle pointing down, as the navpoints'.
     let arrow = bitmap(
         &mut set,
         "synthetic\\hud\\waypoint_arrow",
         (16, 16),
         (16, 16),
         |x, y| {
-            let half = (y + 1) / 2;
+            let half = (16 - y) / 2;
             if x + half >= 8 && x < 8 + half {
                 [240, 220, 90, 255]
             } else {
@@ -227,13 +234,22 @@ pub fn build() -> Result<Vec<u8>> {
             }
         },
     )?;
-    // The grenade pill: a flat blue box.
+    // The grenade panel: the plasma pill a flat box, a gap, the frag pill.
+    let frag_from = u32::from(PANEL_SIZE.0 - PILL_WIDTH);
     let pill = bitmap(
         &mut set,
-        "synthetic\\hud\\grenade_pill",
-        (64, 16),
-        PILL_SIZE,
-        |_, _| [60, 120, 200, 200],
+        "synthetic\\hud\\grenade_panel",
+        (128, 32),
+        PANEL_SIZE,
+        |x, _| {
+            if x < u32::from(PILL_WIDTH) {
+                [60, 120, 200, 200]
+            } else if x >= frag_from {
+                frag_texel(x - frag_from)
+            } else {
+                [0, 0, 0, 0]
+            }
+        },
     )?;
     // The waypoint marker: a 12 by 12 diamond.
     let marker = bitmap(
@@ -264,8 +280,8 @@ pub fn build() -> Result<Vec<u8>> {
                 meter,
                 layout::SPECIAL_SHIELD,
             ),
-            gated_widget("frag_pill", 1, FRAG_STATE, PILLS[0], pill, plain, 0),
-            gated_widget("plasma_pill", 1, PLASMA_STATE, PILLS[1], pill, plain, 0),
+            gated_widget("frag_pill", 1, FRAG_STATE, PANEL_AT, pill, plain, 0),
+            gated_widget("plasma_pill", 1, PLASMA_STATE, PANEL_AT, pill, plain, 0),
         ],
         [
             (

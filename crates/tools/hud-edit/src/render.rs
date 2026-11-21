@@ -82,6 +82,89 @@ pub struct Sprite {
     pub note: Option<String>,
 }
 
+impl Sprite {
+    /// The part `[u0, u1, v0, v1]` (fractions of the sprite) of it: as a
+    /// HUD shader quad draws a sprite whose texture rectangle is narrowed
+    /// (`0x0022a664` takes the rectangle at EAX).
+    pub fn cropped(&self, [u0, u1, v0, v1]: [f32; 4]) -> Sprite {
+        let [u0, u1, v0, v1] = [u0, u1, v0, v1].map(|v| v.clamp(0.0, 1.0));
+        let [pw, ph] = self.px;
+        let x0 = (u0 * pw as f32).round() as u32;
+        let x1 = ((u1 * pw as f32).round() as u32).max(x0);
+        let y0 = (v0 * ph as f32).round() as u32;
+        let y1 = ((v1 * ph as f32).round() as u32).max(y0);
+        let rgba = self.rgba.as_ref().map(|rgba| {
+            let mut out = Vec::with_capacity(((x1 - x0) * (y1 - y0) * 4) as usize);
+            for y in y0..y1 {
+                let i = ((y * pw + x0) * 4) as usize;
+                out.extend_from_slice(&rgba[i..i + ((x1 - x0) * 4) as usize]);
+            }
+            out
+        });
+        let part = |n: u32, of: u32, size: f32| {
+            if of == 0 {
+                0.0
+            } else {
+                size * n as f32 / of as f32
+            }
+        };
+        Sprite {
+            size: [
+                part(x1 - x0, pw, self.size[0]),
+                part(y1 - y0, ph, self.size[1]),
+            ],
+            rgba,
+            px: [x1 - x0, y1 - y0],
+            note: self.note.clone(),
+        }
+    }
+}
+
+/// Where a widget's sprite is in its bitmap ([`sprite_at`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpriteAt {
+    pub image: usize,
+    /// `[u0, u1, v0, v1]` in the image.
+    pub bounds: [f32; 4],
+    /// In HUD pixels.
+    pub size: [f32; 2],
+    pub note: Option<String>,
+}
+
+/// Bitmap `b`'s sequence `seq` as a widget draws it (E `0x22ae21`): the
+/// sequence's first sprite (its bounds in its image), or with no sprites
+/// its first image whole; a bitmap without sequences (or a sequence out
+/// of range) draws image 0.
+pub fn sprite_at(b: &tags::Bitmap, seq: i8) -> Result<SpriteAt, String> {
+    let mut note = None;
+    let pick = usize::try_from(seq).ok().and_then(|s| b.sequences.get(s));
+    if pick.is_none() && !b.sequences.is_empty() {
+        note = Some(format!("sequence {seq} is not in the bitmap: image 0 drawn"));
+    }
+    let (image, bounds) = match pick {
+        Some(s) if !s.sprites.is_empty() => {
+            let p = &s.sprites[0];
+            (usize::try_from(p.image_index).unwrap_or(0), p.bounds)
+        }
+        Some(s) => (
+            usize::try_from(s.wire.first_image).unwrap_or(0),
+            [0.0, 1.0, 0.0, 1.0],
+        ),
+        None => (0, [0.0, 1.0, 0.0, 1.0]),
+    };
+    let img = b
+        .images
+        .get(image)
+        .ok_or_else(|| format!("image {image} is not in the bitmap"))?;
+    let [iw, ih, _] = img.dimensions.map(f32::from);
+    Ok(SpriteAt {
+        image,
+        bounds,
+        size: [(bounds[1] - bounds[0]) * iw, (bounds[3] - bounds[2]) * ih],
+        note,
+    })
+}
+
 /// The map's bitmaps, decoded once each.
 pub struct Art {
     files: ResourceFiles,
@@ -108,10 +191,7 @@ impl Art {
             .as_ref()
     }
 
-    /// Bitmap `id`'s sequence `seq` as a widget draws it (E `0x22ae21`):
-    /// the sequence's first sprite (its bounds in its image), or with no
-    /// sprites its first image whole; a bitmap without sequences (or a
-    /// sequence out of range) draws image 0.
+    /// Bitmap `id`'s sequence `seq` as a widget draws it ([`sprite_at`]).
     pub fn sprite<R: Read + Seek>(
         &mut self,
         map: &mut Map<R>,
@@ -121,32 +201,14 @@ impl Art {
         let b = self
             .bitmap(map, id)
             .ok_or_else(|| format!("{id} is not a readable bitmap"))?;
-        let mut note = None;
-        let pick = usize::try_from(seq)
-            .ok()
-            .and_then(|s| b.sequences.get(s));
-        if pick.is_none() && !b.sequences.is_empty() {
-            note = Some(format!("sequence {seq} is not in the bitmap: image 0 drawn"));
-        }
-        let (image, bounds) = match pick {
-            Some(s) if !s.sprites.is_empty() => {
-                let p = &s.sprites[0];
-                (usize::try_from(p.image_index).unwrap_or(0), p.bounds)
-            }
-            Some(s) => (
-                usize::try_from(s.wire.first_image).unwrap_or(0),
-                [0.0, 1.0, 0.0, 1.0],
-            ),
-            None => (0, [0.0, 1.0, 0.0, 1.0]),
-        };
-        let img = b
-            .images
-            .get(image)
-            .ok_or_else(|| format!("image {image} is not in the bitmap"))?;
-        let [iw, ih, _] = img.dimensions.map(f32::from);
-        let size = [(bounds[1] - bounds[0]) * iw, (bounds[3] - bounds[2]) * ih];
+        let SpriteAt {
+            image,
+            bounds,
+            size,
+            mut note,
+        } = sprite_at(b, seq)?;
         let px = size.map(|v| v.round().max(0.0) as u32);
-        let img = img.clone();
+        let img = b.images[image].clone();
         let decoded = self
             .images
             .entry((id, image))
@@ -305,6 +367,11 @@ pub trait Answers {
     }
     /// How a bitmap widget's texels are drawn, in place of as they are.
     fn look(&self, _hud: usize, _w: &Widget) -> Option<Look> {
+        None
+    }
+    /// The part of a bitmap widget's sprite drawn, `[u0, u1, v0, v1]` in
+    /// fractions of it ([`Sprite::cropped`]).
+    fn crop(&self, _hud: usize, _w: &Widget) -> Option<[f32; 4]> {
         None
     }
 }
@@ -547,6 +614,10 @@ fn draw_bitmap<R: Read + Seek>(
             p.notes.push(e);
             return;
         }
+    };
+    let sprite = match answers.crop(h, w) {
+        Some(c) => sprite.cropped(c),
+        None => sprite,
     };
     p.notes.extend(sprite.note.clone());
     let rect = place::bitmap_rect(point, sprite.size, w.registration(mode));

@@ -39,8 +39,10 @@ the game, **D** assumed here.
     `assets::decode_image`) and the disc's fonts (`font`), and where each
     widget landed (`Placed`: point, rectangle, shown, covered pixels).
     `draw_answered` takes `Answers` in place of a widget's gate, fill,
-    text, colour, turn and a bitmap's look (`Look`: alpha scaled,
-    greyed), as a hook would give them; the HUD kit's
+    text, colour, turn, a bitmap's look (`Look`: alpha scaled,
+    greyed) and the part of its sprite drawn (`crop`,
+    `Sprite::cropped`), as a hook would give them; `sprite_at` is where
+    a widget's sprite is in its bitmap. The HUD kit's
     preview draws its widgets that way ([hud-kit.md](../game/hud-kit.md)).
   - `checks`: the findings.
   - `session`: `HudSession`: the open map, edits by field key, by offset

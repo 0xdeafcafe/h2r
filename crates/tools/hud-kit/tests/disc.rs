@@ -96,6 +96,13 @@ fn the_retail_rectangles_match_the_editors_placement() {
         place::bitmap_rect(pt, [92.0, 8.0], [0.0, 0.0]),
         rects::H1_HEALTH
     );
+    // The grenade row: one 103-wide panel at the anchor, the counts 53
+    // apart, so the next pill one step past the frag pill (at 53).
+    let t = src.templates(&hud_kit::huds::superbounce::hud());
+    let row = t.row.as_ref().unwrap();
+    assert_eq!((row.panel, row.frag), (103.0, [53.0, 50.0]));
+    assert_eq!(row.pill[0], (106, 0));
+    assert_eq!(row.count[0], (118, -1));
 }
 
 /// Every registered HUD passes every check on the disc, nothing skipped,

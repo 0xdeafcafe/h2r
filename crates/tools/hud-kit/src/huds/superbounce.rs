@@ -1,13 +1,14 @@
 //! The superbounce HUD on the kit (docs/game/hud-kit.md, "The superbounce
 //! HUD on the kit"), made of things Halo 2 already draws:
 //!
-//! - a pill in the grenade row, the next one after the frag and plasma
-//!   pills, in the frag pill's own art, with a chevron where a pill's
-//!   count sits: lit while primed, inactive while not, dim while the map
-//!   is scanned, hidden on a map with no strips;
-//! - a navpoint over the nearest strip's stand point, the game's waypoint
-//!   marker and arrow with the distance in whole metres under them: lit
-//!   while primed, dim while not;
+//! - a pill in the grenade row, the next one after the plasma and frag
+//!   pills: a short pill cut from the frag pill's own art (its body and
+//!   its right end, without the frag "x" and picture), with a chevron
+//!   where a pill's count sits: lit while primed, inactive while not, dim
+//!   while the map is scanned, hidden on a map with no strips;
+//! - a navpoint over the nearest strip's stand point, the game's arrow
+//!   pointing down at it and its waypoint marker above, with the distance
+//!   in whole metres over them: lit while primed, dim while not;
 //! - the tutorial in the game's training box.
 //!
 //! [`View`] is what the HUD shows of `superbounce_mode`'s state; slice 6
@@ -15,12 +16,14 @@
 //! they are on the strips' labels in the world and in the agent API.
 
 use crate::model::{
-    Describe, Element, Font, Hud, Justify, Kind, Origin, Place, Style, Value, Values,
+    Art, Describe, Element, Font, Hud, Justify, Kind, Origin, PILL_BODY, PillPart, Place, Style,
+    Value, Values,
 };
 
 pub const NAME: &str = "superbounce";
 
 pub const PILL: &str = "sb.pill";
+pub const PILL_END: &str = "sb.pill.end";
 pub const PILL_ICON: &str = "sb.pill.icon";
 pub const NAVPOINT: &str = "sb.navpoint";
 pub const TUTORIAL: &str = "sb.tutorial";
@@ -82,8 +85,19 @@ pub fn hud() -> Hud {
         elements: vec![
             Element::icon(
                 PILL,
-                crate::model::Art::GrenadePill,
+                Art::GrenadePill(PillPart::Body),
                 Place::in_grenade_row(Origin::NextGrenadePill),
+            ),
+            // The right end, against the body's right edge.
+            Element::icon(
+                PILL_END,
+                Art::GrenadePill(PillPart::End),
+                Place {
+                    full: (PILL_BODY, 0),
+                    half: Some((PILL_BODY, 0)),
+                    quarter: Some((PILL_BODY, 0)),
+                    ..Place::in_grenade_row(Origin::NextGrenadePill)
+                },
             ),
             // Centred where a pill's count is, as the counts are.
             Element::text(
@@ -129,7 +143,8 @@ pub fn values(v: &View) -> Values {
         ),
         None => (Value::hidden(), Value::hidden()),
     };
-    out.set(PILL, p);
+    out.set(PILL, p.clone());
+    out.set(PILL_END, p);
     out.set(PILL_ICON, icon);
     out.set(
         NAVPOINT,
@@ -232,6 +247,8 @@ mod tests {
             x.shown.then_some(x.style)
         };
         assert_eq!(style("primed", PILL), Some(Style::Normal));
+        assert_eq!(style("not-primed", PILL_END), Some(Style::Inactive));
+        assert_eq!(style("no-strips", PILL_END), None);
         assert_eq!(style("primed", PILL_ICON), Some(Style::Normal));
         assert_eq!(style("not-primed", PILL), Some(Style::Inactive));
         assert_eq!(style("scanning", PILL), Some(Style::Dim));
@@ -251,7 +268,7 @@ mod tests {
     fn the_hud_has_no_numbers_but_the_distance() {
         let h = hud();
         let ids: Vec<_> = h.elements.iter().map(|e| e.id).collect();
-        assert_eq!(ids, [PILL, PILL_ICON, NAVPOINT, TUTORIAL]);
+        assert_eq!(ids, [PILL, PILL_END, PILL_ICON, NAVPOINT, TUTORIAL]);
         for (name, v) in Superbounce.states() {
             for (id, val) in &v.0 {
                 if *id != TUTORIAL {

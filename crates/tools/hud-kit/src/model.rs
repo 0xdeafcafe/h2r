@@ -255,12 +255,12 @@ pub struct Place {
 pub enum Origin {
     /// The anchor's corner of the HUD frame.
     Anchor,
-    /// The next pill of the player's grenade row: the frag pill's place
-    /// stepped on by the step from the plasma pill to the frag pill, in
-    /// each screen mode (`templates::GrenadeRow`).
+    /// The top-left corner of the next pill of the player's grenade row:
+    /// the frag pill's stepped on by the step from the plasma count to
+    /// the frag count, in each screen mode (`templates::GrenadeRow`).
     NextGrenadePill,
     /// Where the next pill's count sits: the frag count's place stepped
-    /// on by the step from the plasma count to the frag count.
+    /// on by the same step.
     NextGrenadeCount,
 }
 
@@ -365,12 +365,32 @@ pub enum Art {
     /// `hudg` `arrow_assets[hudg::NAVPOINT_ARROW]`: the arrow the game's
     /// navpoints draw.
     NavpointArrow,
-    /// The player's frag grenade pill: the `nhdt`'s first bitmap widget
-    /// shown on word A `0x04` alone (`templates::FRAG_SELECTED`).
-    GrenadePill,
+    /// A part of the player's frag grenade pill: of the `nhdt`'s first
+    /// bitmap widget shown on word A `0x04` alone
+    /// (`templates::FRAG_SELECTED`), the frag pill's part of its sprite
+    /// (`templates::GrenadeRow::crop`).
+    GrenadePill(PillPart),
     /// A retail widget's bitmap, shader and sequences, by its name string.
     Widget { hud: HudRef, name: &'static str },
 }
+
+/// A part of a grenade pill, in pill pixels from its left edge. Retail's
+/// pill (`ui\hud\masterchief`, 50 by 19) has its count at x 12 and its
+/// "x" and grenade picture from x 22 (V: `grenade_bkd`, image 0): a body
+/// of the first [`PILL_BODY`] pixels and the last [`PILL_END`] put side by
+/// side make a pill with nothing baked in but its outline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PillPart {
+    /// The pill's left end and body, x 0 to [`PILL_BODY`].
+    Body,
+    /// Its right end, the last [`PILL_END`] pixels.
+    End,
+}
+
+/// The width of [`PillPart::Body`]: clear of the "x" at 22 and the seam.
+pub const PILL_BODY: i16 = 20;
+/// The width of [`PillPart::End`]: the right end's curve (V: `grenade_bkd`).
+pub const PILL_END: i16 = 7;
 
 /// Which retail `nhdt` an [`Art::Widget`] is in.
 #[derive(Clone, Debug, PartialEq, Eq)]

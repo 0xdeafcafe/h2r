@@ -229,36 +229,51 @@ fn the_synthetic_sheet_draws_and_passes() {
         drawn,
         [
             superbounce::PILL,
+            superbounce::PILL_END,
             superbounce::PILL_ICON,
             superbounce::NAVPOINT
         ]
     );
     let at = |id| s.element(id).unwrap().rect.unwrap().pixels();
-    // The pill is the grenade row's next: the frag pill at x 53 plus the
-    // 53 from the plasma pill to it, under the top-left anchor (48, 36).
-    let [px, py] = [
-        2 * synthetic::PILLS[0].0 - synthetic::PILLS[1].0,
-        2 * synthetic::PILLS[0].1 - synthetic::PILLS[1].1,
-    ]
-    .map(i32::from);
-    let (pw, ph) = synthetic::PILL_SIZE;
-    assert_eq!(
-        at(superbounce::PILL),
-        [
-            48 + px,
-            36 + py,
-            48 + px + i32::from(pw),
-            36 + py + i32::from(ph)
-        ]
+    // The pill is the grenade row's next: the panel at x 0 under the
+    // top-left anchor (48, 36), the frag pill its last 50 pixels (from
+    // 53), and one count step (53) on. The body is its first 20 pixels,
+    // the end its last 7 against the body, the panel's height.
+    let (sx, sy) = (
+        synthetic::COUNTS[0].0 - synthetic::COUNTS[1].0,
+        synthetic::COUNTS[0].1 - synthetic::COUNTS[1].1,
     );
-    // The icon centred where the next count would be.
+    let left = 48 + i32::from(synthetic::PANEL_AT.0 + sx + sx);
+    let top = 36 + i32::from(synthetic::PANEL_AT.1 + sy);
+    let h = i32::from(synthetic::PANEL_SIZE.1);
+    let (body, end) = (i32::from(PILL_BODY), i32::from(PILL_END));
+    assert_eq!(left, 154);
+    assert_eq!(at(superbounce::PILL), [left, top, left + body, top + h]);
+    assert_eq!(
+        at(superbounce::PILL_END),
+        [left + body, top, left + body + end, top + h]
+    );
+    // The icon where the next count would be, by the count's own rule
+    // (centred: half its width, rounded down, left of the point).
     let icon = s.element(superbounce::PILL_ICON).unwrap().rect.unwrap();
-    let cx = 48.0 + f32::from(2 * synthetic::COUNTS[0].0 - synthetic::COUNTS[1].0);
-    assert_eq!((icon.x0 + icon.x1) / 2.0, cx);
-    // The navpoint at the sample point, right of and above the centre.
+    let point = [
+        48.0 + f32::from(synthetic::COUNTS[0].0 + sx),
+        36.0 + f32::from(synthetic::COUNTS[0].1 + sy),
+    ];
+    let size = render::text_size(None, Font::Hud.engine(), superbounce::ICON_TEXT);
+    assert_eq!(
+        icon,
+        place::text_rect(point, size, Justify::Centre as u16)
+    );
+    // The navpoint at the sample point, right of and above the centre:
+    // the arrow's tip on the point, everything else above it.
     let n = s.element(superbounce::NAVPOINT).unwrap();
     let nr = n.rect.unwrap();
     assert!(nr.x0 > 320.0 && nr.y1 < 240.0, "{nr:?}");
+    let f = s.frame;
+    let sample_y = f.anchor_point(4).unwrap()[1]
+        + preview::NAVPOINT_SAMPLE[1] * f32::from(f.bottom - f.top);
+    assert_eq!(nr.y1, sample_y.round(), "{nr:?}");
     assert_eq!(n.text.as_deref(), Some("12"));
     // The retail tracker and frag pill are in the picture.
     assert!(
@@ -367,7 +382,7 @@ fn the_json_rectangles_are_the_compiled_bytes() {
             compared += 1;
         }
     }
-    assert_eq!(compared, 2 * 8, "the pill and its icon in eight states");
+    assert_eq!(compared, 3 * 8, "the pill's two parts and its icon in eight states");
 }
 
 /// The pill is lit primed (its texels as they are, the icon in the kit
@@ -386,7 +401,7 @@ fn styles_change_the_pill() {
     };
     let sat = |p: [u8; 3]| p.iter().max().unwrap() - p.iter().min().unwrap();
     // The pill's right end, clear of the icon.
-    let pill = |state| px(state, superbounce::PILL, 45.0, 8.0);
+    let pill = |state| px(state, superbounce::PILL_END, 2.0, 8.0);
     let (lit, off, dim) = (pill("primed"), pill("not-primed"), pill("scanning"));
     assert!(sat(off) * 2 < sat(lit), "greyed: {off:?} against {lit:?}");
     assert_ne!(dim, lit, "faded");
@@ -584,4 +599,61 @@ fn each_check_fires_on_a_hud_built_to_break_it() {
         &[],
     ));
     assert!(r.findings.is_empty(), "{:#?}", r.findings);
+}
+
+/// The grenade row on the synthetic map, a panel of two pills as
+/// retail's: the next pill one count step past the frag pill, and its
+/// body and end cut from the frag pill's part of the panel; the preview
+/// draws those texels.
+#[test]
+fn the_next_pill_is_cut_from_the_frag_pill() {
+    let mut src = synthetic();
+    let hud = superbounce::hud();
+    let t = src.templates(&hud);
+    let row = t.row.as_ref().unwrap();
+    let (w, sw) = (f32::from(synthetic::PANEL_SIZE.0), f32::from(synthetic::PILL_WIDTH));
+    assert_eq!(row.panel, w);
+    assert_eq!(row.frag, [w - sw, sw]);
+    assert_eq!(row.pill, [(106, 0); 3]);
+    assert_eq!(row.count, [(118, -1); 3]);
+    let body = t.art(&Art::GrenadePill(PillPart::Body)).unwrap();
+    let end = t.art(&Art::GrenadePill(PillPart::End)).unwrap();
+    assert_eq!(body.crop, Some([53.0 / w, 73.0 / w, 0.0, 1.0]));
+    assert_eq!(end.crop, Some([96.0 / w, 1.0, 0.0, 1.0]));
+    let c = compile(&hud, &t).unwrap();
+    assert_eq!(c.widget(superbounce::PILL_END).unwrap().crop, end.crop);
+    assert_eq!(c.widget(superbounce::PILL_ICON).unwrap().crop, None);
+    // The frag pill's red rises with its x: the body starts at its x 0,
+    // the end at its x 43 and rises to 49.
+    let r = check::hud(&mut src, &Superbounce, &[Mode::Full]).unwrap();
+    let s = r.shots.iter().find(|s| s.state == "primed").unwrap();
+    let red = |id, dx: f32| {
+        let e = s.element(id).unwrap().rect.unwrap();
+        let (x, y) = ((e.x0 + dx) as u32, (e.y0 + 8.0) as u32);
+        s.canvas.rgba[((y * s.canvas.width + x) * 4) as usize]
+    };
+    let (b0, e0, e6) = (
+        red(superbounce::PILL, 0.0),
+        red(superbounce::PILL_END, 0.0),
+        red(superbounce::PILL_END, 6.0),
+    );
+    assert!(b0 < e0 && e0 < e6, "{b0} {e0} {e6}");
+}
+
+/// A crop is the part's span of the frag pill, wherever the frag pill is
+/// in the panel.
+#[test]
+fn a_crop_is_its_part_of_the_frag_pill() {
+    let mut row = templates::GrenadeRow {
+        pill_anchor: 1,
+        pill: [(0, 0); 3],
+        count_anchor: 1,
+        count: [(0, 0); 3],
+        panel: 103.0,
+        frag: [53.0, 50.0],
+    };
+    assert_eq!(row.crop(PillPart::End), [96.0 / 103.0, 1.0, 0.0, 1.0]);
+    row.frag = [0.0, 50.0];
+    assert_eq!(row.crop(PillPart::Body), [0.0, 20.0 / 103.0, 0.0, 1.0]);
+    assert_eq!(row.crop(PillPart::End), [43.0 / 103.0, 50.0 / 103.0, 0.0, 1.0]);
 }

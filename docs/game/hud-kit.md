@@ -335,10 +335,11 @@ pub enum Art {
     StripMeter,                       // the sword's battery strip and its shader
     WaypointArrow,                    // hudg arrow_assets[0]
     NavpointArrow,                    // hudg arrow_assets[1], the navpoints' arrow
-    GrenadePill,                      // the player's frag pill: shown on word A 0x04 alone
+    GrenadePill(PillPart),            // a part of the player's frag pill (shown on word A 0x04 alone)
     Widget { hud: HudRef, name: &'static str }, // a retail widget's bitmap, shader and sequence, by its name string
 }
 pub enum HudRef { Player, Named(&'static str) } // the player's nhdt, or one by tag name
+pub enum PillPart { Body, End }       // the pill's first PILL_BODY (20) pixels, its last PILL_END (7)
 pub enum Style { Normal, Dim, Inactive, Flash(Pulse) }
 pub enum Pulse { Help, Objective, TimeWarning, TimeExpired } // the hudg records
 
@@ -363,9 +364,15 @@ retail text widget of the same `nhdt` (the grenade count: the first text
 widget whose first input is 20). The strip meter is found by the names
 `h1objects::health_hud` uses (`disintegrator_meter`, `ammo_meter`,
 sequence 0). An element placed from the grenade row takes its anchor
-and offsets from the row's (`compile::placed`): the frag pill or count,
-stepped on by the plasma-to-frag step, plus the element's own offsets. The same `Compiled` bytes go to the game and to the
-preview, so what is checked offline is what the game is given.
+and offsets from the row's (`compile::placed`): the next pill or count
+(below, "The pill"), plus the element's own offsets. An `ArtTemplate`
+may carry a crop, `[u0, u1, v0, v1]` of its sprite: the part a
+`GrenadePill` part draws. The crop is not in the widget record; the
+`Compiled` widget carries it, the preview draws it
+(`hud_edit::render::Answers::crop`, `Sprite::cropped`) and the runtime
+narrows the quad's texture rectangle to it. The same `Compiled` bytes go
+to the game and to the preview, so what is checked offline is what the
+game is given.
 
 What the bytes leave to the runtime's hooks: the four show words are
 zero, so the retail gate (E `0x0013ac87`) never draws a kit widget on its
@@ -383,7 +390,7 @@ message, training and navpoint parts, one text each:
 | `Message` | a notification in the pickup list, top left, that fades | the notification queue (`0x0024cbbf`) |
 | `Prompt` | the prompt line, top left, as "Hold X to pick up" | the user's prompt fields (`+0x220`, `+0x440`, `+0x444`), while the game shows no prompt of its own |
 | `Training` | the framed box in the middle of the screen | the scripted training text (`+0x6c0`, `+0x6c4`) |
-| `Navpoint` | the waypoint marker and arrow over a point of the world, a whole number under them | the navpoint list (`0x0024da7d`, below in "The navpoint"), the number the kit's |
+| `Navpoint` | the game's arrow pointing down at a point of the world, its waypoint marker above, a whole number above that | the navpoint list (`0x0024da7d`, below in "The navpoint"), the number the kit's |
 
 Their texts are UTF-16 with the font's button glyphs or action tokens.
 A channel, like a widget, shows only in the screen modes its place has:
@@ -411,8 +418,9 @@ state changes (from its tick hook). The feature `hud-kit` does the rest:
    `Dim` scales the alpha the game chose; `Flash` runs the colour through
    the `hudg` record with `flash::strength` from `since_tick`. `Normal`
    changes nothing.
-6. **Turn** (`HUD_SHADER_QUAD`, before): a pointer's four corners are
-   turned about their centre by `angle`.
+6. **Turn and crop** (`HUD_SHADER_QUAD`, before): a pointer's four
+   corners are turned about their centre by `angle`; a cropped widget's
+   texture rectangle (at EAX, E `0x0022a664`) is narrowed to its crop.
 7. **Channels.** `message` queues through the game's routine at the
    tick, the way `skulls_custom.rs` does. `prompt` writes the prompt
    fields in a hook on `HUD_INTERACTION_VISIBLE` when the game hides its
@@ -541,29 +549,46 @@ h2 hud preview superbounce --state all --synthetic --out DIR
 
 | Element | Kind | Place | Art |
 |---|---|---|---|
-| `sb.pill` | Icon | `Origin::NextGrenadePill`, every mode | `Art::GrenadePill`: the frag pill's bitmap, shader and sequences |
+| `sb.pill` | Icon | `Origin::NextGrenadePill`, every mode | `Art::GrenadePill(Body)`: the frag pill's first 20 pixels |
+| `sb.pill.end` | Icon | `Origin::NextGrenadePill` plus (20, 0), every mode | `Art::GrenadePill(End)`: the frag pill's last 7 pixels |
 | `sb.pill.icon` | Text, `Hud`, centred, over `sb.pill` | `Origin::NextGrenadeCount`, every mode | the text template (the frag count's shader and string); `^` in font 6 |
 
 The grenade row is read from the player's `nhdt`
 (`templates::GrenadeRow`): the frag pill is the first bitmap widget
-shown on word A `0x04` alone, the plasma pill on `0x08` alone (V: retail
-`ui\hud\masterchief` widgets 0 and 1, docs/halo1/hud.md "Grenades"),
-and the counts the first text widgets of inputs 20 and 21 shown on those
-bits. The pill sits where a third pill would: per screen mode, the frag
-pill's offset plus the step from the plasma pill to the frag pill, in
-their anchor; the icon where a third count would, the same way. So the
-pill is the grenade pills' size, in line with them, in every mode, on
-any map whose player HUD has the row. With retail's counts at (12, -1)
-and (65, -1), the icon is centred at (118, -1) from the top-left anchor
-(S: the pills' own offsets are the disc's, read at install).
+shown on word A `0x04` alone, the plasma pill on `0x08` alone, and the
+counts the first text widgets of inputs 20 and 21 shown on those bits
+(V: retail `ui\hud\masterchief` widgets 0 and 1, docs/halo1/hud.md
+"Grenades"). On the disc the two pill widgets are one panel: both at
+offset (0, 0) from the top-left anchor, each drawing the whole 103 by
+19 sprite of `grenade_bkd` with both pills in it, its own lit (sequence
+0 lights the frag pill, the right one, sequence 1 the plasma, the left;
+D: `h2 bitmap lockout 'ui\hud\bitmaps\new_hud\backgrounds\grenade_bkd'`).
+The counts are at (12, -1) and (65, -1): the step from the plasma count
+to the frag count, 53, is the pills' step too, so a pill is 103 - 53 =
+50 wide and the frag pill is the panel's last 50 pixels (x 53 to 103).
+Per screen mode the next pill's top left is the frag pill's plus the
+step, (106, 0) from the anchor, screen x 154 fullscreen; the next count
+is the frag count plus the step, (118, -1). A row whose pill widgets are
+at two offsets, or whose sprite is not one size in every mode, is a
+named error.
+
+Each retail pill has its grenade baked in: "x" and the grenade's picture
+from about x 22, the count at x 12. A third pill cut whole from the frag
+pill would show a frag grenade. So the kit's pill is short: the frag
+pill's first 20 pixels (its left end and body, `PillPart::Body`) with
+its last 7 (the right end, `PillPart::End`) against them, 27 by 19,
+screen x 154 to 181, both cropped from the frag pill's part of the
+panel (`GrenadeRow::crop`). The icon sits where a third count would,
+pill x 12.
 
 The icon is `^`, the chevron of `conduit-13` (font 6, the counts'
 font). The font's arrows (U+2191, U+25B2, U+21E7) are its missing box
 (D: `h2 font conduit-13`), and its d-pad glyph U+E108 is swapped for the
 bound key's picture on the other input sets
-([button-icons.md](../input/button-icons.md)). The pill art is the frag
-pill's whole sprite: if that sprite holds the frag grenade's picture,
-the pill shows it beside the chevron (S until the disc preview is seen).
+([button-icons.md](../input/button-icons.md)). No disc bitmap reads as
+"up" at a count's size: `hud_waypoints`' chevrons and `default_arrow`
+(15 by 24) and `hud_multiplayer`'s triangle (32 by 16) are bigger than
+the pill (D: `h2 bitmap`). Which to use is open (Design, "Not verified").
 
 | State | Pill and icon |
 |---|---|
@@ -582,26 +607,37 @@ point (`0x0002b400`, `0x0002b460`), clamps it into the waypoint area
 shader quads (`0x0022a664`):
 
 - the arrow, `hudg` `arrow_assets[1]` (`+0x408`; image, material and
-  sequence), `0x0024e9c7`: the row is the draw record's `+4`, which
-  `0x0024da7d` sets to 1 (`0x0024db90`; `hudg::NAVPOINT_ARROW`). Row 0
-  is another sprite, the one `Art::WaypointArrow` names;
-- the marker, `hudg` `waypoint_markers[0]` (`+0x410`; the in-view,
-  obscured and outside sequences), `0x0024ecae`, the record's one layer;
-- an outline, `arrow_assets[1]`'s `outline_image`, `0x0024f0fc`.
+  sequence), `0x0024e9c7`, drawn whether or not the point is on screen;
+  it returns the arrow's length. The row is the draw record's `+4`,
+  which `0x0024da7d` sets to 1 (`0x0024db90`; `hudg::NAVPOINT_ARROW`).
+  Row 0 is another sprite, the one `Art::WaypointArrow` names. On the
+  disc row 1 is `hud_multiplayer`'s green triangle pointing down;
+- the marker, `hudg` `waypoint_markers[0]` (`+0x410`), `0x0024ecae`, the
+  record's one layer: its outside sequence when the point is off screen,
+  its obscured one when it is hidden, else its in-view one (on the disc
+  `hud_waypoints`' double chevron). It is put out from the point along
+  the arrow's direction by the arrow's length and one more pixel (S: the
+  rest of the sum), so on screen it sits above the arrow and the arrow
+  points down at the point;
+- an outline, `arrow_assets[1]`'s `outline_image` (`+0x1c`),
+  `0x0024f0fc`, only while the point is on screen.
 
-Their colour is the user's HUD colour (`0x0013927e`, copied to
-`0x004e6950` and `0x004e695c` for the shader), their alpha the user's HUD
-alpha (`0x004e69c0`) times the navpoint's opacity. The game draws no
-number with a navpoint: the distance under it is the kit's, whole
+All three are on screen together. Their colour is the user's HUD colour:
+`0x0024da7d` fills the record's four colours from `0x0013927e`, which
+the shader gets at `0x004e6950` and `0x004e695c`; their alpha is the
+user's HUD alpha (`0x004e69c0`) times the navpoint's opacity (1.0). The
+game draws no number with a navpoint: the distance is the kit's, whole
 metres in font 6, as the grenade counts are whole (the count fonts have
 no `.`, D: `h2 font MSLCD-14 '1.2'`).
 
-The preview draws the marker's in-view sequence centred on a sample
-point (`NAVPOINT_SAMPLE`, right of and above the frame's centre), the
-arrow above it and "12" under it, 2 pixels apart (S: the engine's
-spacing and the outline are not drawn), in the notifications' colour
-(the same `0x0013927e`). Primed it is `Normal`; not primed `Dim`. It is
-hidden while scanning and without a strip.
+The preview draws at a sample point (`NAVPOINT_SAMPLE`, right of and
+above the frame's centre) the arrow with its tip on the point, the
+marker's in-view sequence 1 pixel above it (`NAVPOINT_GAP`) and "12"
+centred 2 pixels above the marker (`NAVPOINT_NUMBER_GAP`), the texels
+times the notifications' colour (the same `0x0013927e`; S: that the HUD
+shader multiplies). The outline is not drawn (decoding 8). Primed it is
+`Normal`; not primed `Dim`. It is hidden while scanning and without a
+strip.
 
 ### States
 
@@ -626,9 +662,10 @@ Three things slice 3 on has to settle; this is the plan, not built.
    map reads behind the `map` crate they already use; `hud-kit` keeps
    the preview, the checks and the synthetic map and depends on it.
 2. **The pill joins the player's `nhdt`.** At install, for each player
-   `nhdt`, resolve the grenade row and compile: `sb.pill` is one more
-   bitmap record and `sb.pill.icon` one more text record after the
-   retail ones (the install step above), drawn by the game's own widget
+   `nhdt`, resolve the grenade row and compile: `sb.pill` and
+   `sb.pill.end` are two more bitmap records and `sb.pill.icon` one more
+   text record after the retail ones, the two bitmaps cropped at
+   `HUD_SHADER_QUAD` (the install step above), drawn by the game's own widget
    loop. The look is the kit's hooks: the gate shows them; `Normal`
    changes nothing; `Dim` scales the alpha the game chose for the quad
    and the text (`HUD_SHADER_QUAD`, `HUD_TEXT_SETUP`); `Inactive` greys
@@ -751,14 +788,21 @@ agent API had no game to attach to, and a design page starts none.
   right under Pinned and Centered at wide aspects.
 - Whether lockstep and co-op hashes cover the tag memory and the
   training state the kit writes.
-- What `arrow_assets[0]` and `[1]` and `waypoint_markers[0]` look like
-  on the disc, and the spacing of a navpoint's arrow, marker and outline
-  (`0x0024e9c7`..`0x0024f55e` read for which assets, not for where).
-- Whether the frag pill's sprite holds the grenade's picture, and which
-  retail widget draws an unselected grenade's pill.
+- The exact spacing of a navpoint's arrow and marker (the marker's
+  offset is read as the arrow's length plus one and more not read), the
+  outline's art and place, and whether the HUD shader multiplies the
+  green arrow's texels by the HUD colour or takes only their alpha.
+- The pill's icon: `^` reads as a stray caret. The choices are a flipped
+  `hud_waypoints` chevron or `default_arrow` beside the pill (not in it),
+  a pill with no icon, or new art (not the kit's to make).
+- Where the "x" of a retail pill starts (about x 22, from the disc
+  bitmap by eye) and so whether 20 pixels of body is clear of it in
+  every sequence, and which retail widget draws an unselected grenade's
+  pill (the `Inactive` look greys the lit one instead).
 - The frame cost.
 - The preview on the disc: `tests/disc.rs` has not been run, so the
-  grenade row's offsets on lockout, the retail state words
+  grenade row on lockout (it asserts the panel, (106, 0) and
+  (118, -1)), the retail state words
   (`RETAIL_WORDS`) and the XBE colour reads are unchecked there.
 - Where a notification is drawn against the first message line (the
   preview puts it below the line's five-line box).
