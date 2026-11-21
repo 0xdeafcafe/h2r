@@ -4,8 +4,10 @@
 //! `check` and `run` compile and run a script with the `rules` crate on
 //! the server, so the web app needs no wasm toolchain: `check` measures a
 //! script (`rules::workbench::check`) and `run` steps a scenario over
-//! `rules::fake::FakeGame` (`rules::workbench::run`). Both are public and
-//! rate-limited per client address. `ide` answers the web editor's
+//! `rules::fake::FakeGame` (`rules::workbench::run`). `simulate` plays
+//! generated matches of a script, one or a batch with a summary
+//! (`rules::sim`). All three are public and rate-limited per client
+//! address. `ide` answers the web editor's
 //! completion, hover, signature, definition, references, tokens, outline,
 //! format and diagnostics requests from `rules::ide`, in LSP's shapes, at
 //! the same rate in a bucket of its own.
@@ -34,7 +36,8 @@ use live_proto::rules::{
 };
 use live_proto::{Author, ErrorCode, Gamertag, Xuid, lxm};
 use rules::vm::Input;
-use rules::workbench::{self, Problem, RunError, Scenario, Seat, Step};
+use rules::sim;
+use rules::workbench::{self, Limit, Object, Problem, RunError, Scenario, Seat, Step};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -250,7 +253,7 @@ struct SourceBody {
 }
 
 /// A seat of `POST /v1/rules/run`'s scenario.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct WireSeat {
     slot: u8,
@@ -260,8 +263,20 @@ struct WireSeat {
     lives: i32,
 }
 
+/// A labelled object of a scenario.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct WireObject {
+    id: u32,
+    label: String,
+    #[serde(default)]
+    number: i32,
+    #[serde(default)]
+    team: Option<u8>,
+}
+
 /// One event of a scenario. `type` is the handler's event name.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum WireEvent {
     Init,
@@ -320,6 +335,13 @@ enum WireEvent {
         killer: Option<u8>,
         class: String,
     },
+    ActorAssist {
+        #[serde(default)]
+        killer: Option<u8>,
+        #[serde(default)]
+        assist: Option<u8>,
+        class: String,
+    },
 }
 
 impl From<WireEvent> for Input {
@@ -342,11 +364,53 @@ impl From<WireEvent> for Input {
             WireEvent::Leave { zone, object } => Input::Leave { zone, object },
             WireEvent::SquadDead { squad } => Input::SquadDead(squad),
             WireEvent::ActorKill { killer, class } => Input::ActorKill { killer, class },
+            WireEvent::ActorAssist {
+                killer,
+                assist,
+                class,
+            } => Input::ActorAssist {
+                killer,
+                assist,
+                class,
+            },
         }
     }
 }
 
-#[derive(Debug, Deserialize)]
+impl From<&Input> for WireEvent {
+    fn from(i: &Input) -> WireEvent {
+        match i.clone() {
+            Input::Init => WireEvent::Init,
+            Input::RoundStart => WireEvent::RoundStart,
+            Input::RoundEnd => WireEvent::RoundEnd,
+            Input::Kill { victim, killer } => WireEvent::Kill { victim, killer },
+            Input::Spawn(player) => WireEvent::Spawn { player },
+            Input::Death(player) => WireEvent::Death { player },
+            Input::Join(player) => WireEvent::Join { player },
+            Input::Quit(player) => WireEvent::Quit { player },
+            Input::Pickup(player, object) => WireEvent::Pickup { player, object },
+            Input::Drop(player, object) => WireEvent::Drop { player, object },
+            Input::Press(player, object) => WireEvent::Press { player, object },
+            Input::Bounce(player, object) => WireEvent::Bounce { player, object },
+            Input::Edit(player, object) => WireEvent::Edit { player, object },
+            Input::Enter { zone, object } => WireEvent::Enter { zone, object },
+            Input::Leave { zone, object } => WireEvent::Leave { zone, object },
+            Input::SquadDead(squad) => WireEvent::SquadDead { squad },
+            Input::ActorKill { killer, class } => WireEvent::ActorKill { killer, class },
+            Input::ActorAssist {
+                killer,
+                assist,
+                class,
+            } => WireEvent::ActorAssist {
+                killer,
+                assist,
+                class,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct WireTick {
     tick: u32,
@@ -358,12 +422,14 @@ fn yes() -> bool {
     true
 }
 
-/// `POST /v1/rules/run`'s scenario.
-#[derive(Debug, Deserialize)]
+/// `POST /v1/rules/run`'s scenario, and a generated match's.
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct WireScenario {
     #[serde(default)]
     players: Vec<WireSeat>,
+    #[serde(default)]
+    objects: Vec<WireObject>,
     #[serde(default)]
     teams: Vec<u8>,
     #[serde(default)]
@@ -407,6 +473,16 @@ impl WireScenario {
                     lives: s.lives,
                 })
                 .collect(),
+            objects: self
+                .objects
+                .into_iter()
+                .map(|o| Object {
+                    id: o.id,
+                    label: o.label,
+                    number: o.number,
+                    team: o.team,
+                })
+                .collect(),
             teams: self.teams,
             variant: self.variant,
             options: self.options,
@@ -415,6 +491,51 @@ impl WireScenario {
             ticks: self.ticks.unwrap_or(last),
             start: self.start,
             steps,
+        }
+    }
+
+    /// A scenario as the route reads one: its events grouped by tick.
+    fn of(s: &Scenario) -> WireScenario {
+        let mut timeline: Vec<WireTick> = Vec::new();
+        let mut steps: Vec<&Step> = s.steps.iter().collect();
+        steps.sort_by_key(|step| step.tick);
+        for step in steps {
+            match timeline.last_mut() {
+                Some(t) if t.tick == step.tick => t.events.push((&step.input).into()),
+                _ => timeline.push(WireTick {
+                    tick: step.tick,
+                    events: vec![(&step.input).into()],
+                }),
+            }
+        }
+        WireScenario {
+            players: s
+                .players
+                .iter()
+                .map(|p| WireSeat {
+                    slot: p.slot,
+                    team: p.team,
+                    lives: p.lives,
+                })
+                .collect(),
+            objects: s
+                .objects
+                .iter()
+                .map(|o| WireObject {
+                    id: o.id,
+                    label: o.label.clone(),
+                    number: o.number,
+                    team: o.team,
+                })
+                .collect(),
+            teams: s.teams.clone(),
+            variant: s.variant.clone(),
+            options: s.options,
+            seed: s.seed,
+            round_time: s.round_time,
+            ticks: Some(s.ticks),
+            start: s.start,
+            timeline,
         }
     }
 }
@@ -481,8 +602,14 @@ pub struct TraceView {
     last_tick: u32,
     error: Option<String>,
     round_ended: Option<u32>,
+    /// Who `end_round` named.
+    round_winner: Option<String>,
+    /// `score` or `time`: the record's limit the run stopped on.
+    limit: Option<&'static str>,
     cut: Option<String>,
     ops: u64,
+    worst_tick_ops: u32,
+    handlers_ran: Vec<String>,
     scores: Vec<WireScore>,
 }
 
@@ -526,14 +653,123 @@ fn trace_view(t: workbench::Trace) -> TraceView {
         last_tick: t.last_tick,
         error: t.error,
         round_ended: t.round_ended,
+        round_winner: t.round_winner,
+        limit: t.limit.map(|l| match l {
+            Limit::Score => "score",
+            Limit::Time => "time",
+        }),
         cut: t.cut,
         ops: t.ops,
+        worst_tick_ops: t.worst_tick_ops,
+        handlers_ran: t.handlers_ran,
         scores: t
             .scores
             .into_iter()
             .map(|(slot, score)| WireScore { slot, score })
             .collect(),
     }
+}
+
+fn eight() -> u8 {
+    8
+}
+
+fn one() -> u64 {
+    1
+}
+
+fn one_match() -> u32 {
+    1
+}
+
+/// `POST /v1/rules/simulate`'s body: the source and what to play.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SimBody {
+    source: String,
+    #[serde(default = "eight")]
+    players: u8,
+    /// 0 or 1 is free for all.
+    #[serde(default)]
+    teams: u8,
+    #[serde(default = "one")]
+    seed: u64,
+    /// Matches to play and sum up, seeds `seed` upwards; the answer's
+    /// `match` is `seed`'s.
+    #[serde(default = "one_match")]
+    matches: u32,
+    /// Seconds a match lasts at most.
+    #[serde(default)]
+    length: Option<u32>,
+    #[serde(default)]
+    score_limit: Option<i32>,
+}
+
+/// A generated match in full.
+#[derive(Debug, Serialize)]
+struct MatchView {
+    seed: u64,
+    end: sim::End,
+    why: Option<String>,
+    winner: sim::Winner,
+    top_score: i32,
+    scenario: WireScenario,
+    trace: TraceView,
+}
+
+/// `POST /v1/rules/simulate`'s answer.
+#[derive(Debug, Serialize)]
+struct SimView {
+    ok: bool,
+    /// The teams played with; 0 is free for all.
+    teams: u8,
+    /// Present for a batch of more than one match.
+    summary: Option<sim::Summary>,
+    rows: Vec<sim::Row>,
+    #[serde(rename = "match")]
+    shown: MatchView,
+}
+
+/// Bucket tokens a simulate request costs: one for a match, two for a
+/// batch, and one more for each further 25 matches.
+fn sim_cost(matches: u32) -> u32 {
+    if matches <= 1 {
+        1
+    } else {
+        2 + (matches - 1) / 25
+    }
+}
+
+fn simulate(b: &SimBody) -> Result<SimView, RunError> {
+    let setup = sim::Setup {
+        players: b.players,
+        teams: b.teams,
+        seed: b.seed,
+        length: b.length,
+        score_limit: b.score_limit,
+    };
+    let (summary, rows) = if b.matches == 1 {
+        (None, Vec::new())
+    } else {
+        let batch = sim::batch(&b.source, &setup, b.matches)?;
+        (Some(batch.summary), batch.rows)
+    };
+    let m = sim::simulate(&b.source, &setup)?;
+    Ok(SimView {
+        ok: true,
+        teams: m.teams,
+        summary,
+        rows,
+        shown: MatchView {
+            seed: m.seed,
+            end: m.end,
+            why: m.why,
+            winner: m.winner,
+            top_score: m.top_score,
+            scenario: WireScenario::of(&m.scenario),
+            trace: trace_view(m.trace),
+        },
+    })
 }
 
 /// `POST /v1/rules/ide`'s body: the source, the operation, and the place
@@ -769,6 +1005,37 @@ async fn post_run(
     }
 }
 
+/// A script that does not build answers like a check.
+fn not_built(errors: Vec<Problem>) -> Response {
+    crate::http::json(
+        StatusCode::OK,
+        &json!({
+            "ok": false,
+            "errors": errors.into_iter().map(WireProblem::from).collect::<Vec<_>>(),
+        }),
+    )
+}
+
+async fn post_simulate(
+    State(live): Shared,
+    Extension(ClientIp(ip)): Extension<ClientIp>,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult<Response> {
+    live.limit_workbench(&ip)?;
+    let bytes = body_bytes(body)?;
+    let b: SimBody = serde_json::from_slice(&bytes).map_err(|e| invalid(format!("body: {e}")))?;
+    capped(&b.source)?;
+    // A batch is charged for before it is played.
+    for _ in 1..sim_cost(b.matches.min(sim::MAX_MATCHES)) {
+        live.limit_workbench(&ip)?;
+    }
+    match simulate(&b) {
+        Ok(view) => Ok(crate::http::json(StatusCode::OK, &view)),
+        Err(RunError::Script(errors)) => Ok(not_built(errors)),
+        Err(RunError::Scenario(m)) => Err(invalid(format!("setup: {m}"))),
+    }
+}
+
 async fn post_ide(
     State(live): Shared,
     Extension(ClientIp(ip)): Extension<ClientIp>,
@@ -894,6 +1161,7 @@ pub(crate) fn routes() -> Router<Arc<Live>> {
         .route("/v1/rules", get(get_list).post(post_save))
         .route("/v1/rules/check", post(post_check))
         .route("/v1/rules/run", post(post_run))
+        .route("/v1/rules/simulate", post(post_simulate))
         .route("/v1/rules/ide", post(post_ide))
         .route("/v1/rules/ide/legend", get(get_ide_legend))
         .route("/v1/rules/builtin", get(get_builtin))

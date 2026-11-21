@@ -15,6 +15,7 @@ pub mod ide;
 pub mod ir;
 pub mod lang;
 pub mod scenario;
+pub mod sim;
 pub mod ty;
 pub mod verify;
 pub mod vm;

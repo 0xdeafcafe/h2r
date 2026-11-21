@@ -348,3 +348,125 @@ async fn saving_with_the_servers_own_timers() {
 async fn saving_with_no_timers() {
     flow(Timers::Driven).await;
 }
+
+#[tokio::test]
+async fn simulate_plays_a_generated_match_and_sums_up_a_batch() {
+    let h = harness().await;
+    let body = json!({"source": rules::builtin::SLAYER, "players": 8, "teams": 2, "seed": 5, "matches": 6});
+    let r = post(&h, "/v1/rules/simulate", body.clone(), &[]).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    let v = r.json();
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["teams"], 2);
+    assert_eq!(v["summary"]["asked"], 6);
+    assert_eq!(v["summary"]["ran"], 6);
+    assert_eq!(v["summary"]["budget"], 20_000);
+    assert!(v["summary"]["worst_tick_ops"].as_u64().unwrap() > 0);
+    let wins: u64 = v["summary"]["wins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["matches"].as_u64().unwrap())
+        .sum();
+    assert_eq!(wins, 6);
+    assert_eq!(v["summary"]["wins"][0]["winner"]["kind"], "team");
+    let seeds: Vec<u64> = v["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["seed"].as_u64().unwrap())
+        .collect();
+    assert_eq!(seeds, [5, 6, 7, 8, 9, 10]);
+    // The shown match is the first seed's, as a scenario and its trace.
+    let m = &v["match"];
+    assert_eq!(m["seed"], 5);
+    assert_eq!(m["end"], v["rows"][0]["end"]);
+    assert_eq!(m["winner"], v["rows"][0]["winner"]);
+    assert_eq!(m["scenario"]["players"].as_array().unwrap().len(), 8);
+    assert_eq!(m["scenario"]["variant"]["team_play"], 1);
+    assert_eq!(m["scenario"]["ticks"], m["trace"]["last_tick"]);
+    let first = &m["scenario"]["timeline"][0]["events"][0];
+    assert!(first["type"] == "kill" || first["type"] == "spawn", "{first}");
+    assert!(m["trace"]["limit"] == "score" || m["trace"]["limit"] == "time");
+    // The same request, the same answer.
+    assert_eq!(post(&h, "/v1/rules/simulate", body, &[]).await.json(), v);
+
+    // The match's scenario runs again through `run`, to the same scores.
+    let again = post(
+        &h,
+        "/v1/rules/run",
+        json!({"source": rules::builtin::SLAYER, "scenario": m["scenario"]}),
+        &[],
+    )
+    .await;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.error());
+    assert_eq!(again.json()["scores"], m["trace"]["scores"]);
+    assert_eq!(again.json()["limit"], m["trace"]["limit"]);
+
+    // One match: no summary, the match alone.
+    let v = post(
+        &h,
+        "/v1/rules/simulate",
+        json!({"source": rules::builtin::SLAYER, "seed": 7}),
+        &[],
+    )
+    .await
+    .json();
+    assert!(v["summary"].is_null());
+    assert_eq!(v["rows"], json!([]));
+    assert_eq!(v["match"]["seed"], 7);
+    assert_eq!(v["teams"], 0);
+}
+
+#[tokio::test]
+async fn simulate_refuses_a_bad_setup_and_reports_a_script_that_does_not_build() {
+    let h = harness().await;
+    let r = post(&h, "/v1/rules/simulate", json!({"source": BROKEN}), &[]).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json()["ok"], false);
+    assert_eq!(r.json()["errors"][0]["line"], 4);
+    for bad in [
+        json!({"players": 0}),
+        json!({"players": 17}),
+        json!({"teams": 9}),
+        json!({"matches": 0}),
+        json!({"matches": 101}),
+        json!({"length": 0}),
+        json!({"length": 1201}),
+        json!({"score_limit": 0}),
+        json!({"nope": 1}),
+    ] {
+        let mut body = bad.clone();
+        body["source"] = json!(rules::builtin::SLAYER);
+        let r = post(&h, "/v1/rules/simulate", body, &[]).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad}: {}", r.error());
+    }
+    let big = "x".repeat(live_proto::rules::MAX_SOURCE + 1);
+    let r = post(&h, "/v1/rules/simulate", json!({"source": big}), &[]).await;
+    assert_eq!(r.status, StatusCode::PAYLOAD_TOO_LARGE, "{}", r.error());
+}
+
+#[tokio::test]
+async fn simulate_shares_the_workbench_bucket_and_a_batch_costs_more() {
+    let h = harness().await;
+    let mut batches = 0;
+    let mut limited = false;
+    for _ in 0..(live_server::rule_scripts::RATE.1 + 5) {
+        let r = post(
+            &h,
+            "/v1/rules/simulate",
+            json!({"source": rules::builtin::SLAYER, "players": 2, "matches": 2, "length": 5}),
+            &[],
+        )
+        .await;
+        if r.status == StatusCode::TOO_MANY_REQUESTS {
+            limited = true;
+            break;
+        }
+        assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+        batches += 1;
+    }
+    assert!(limited, "the burst runs out");
+    // A batch takes two of the bucket's 20.
+    assert!(batches <= live_server::rule_scripts::RATE.1 / 2 + 1, "{batches}");
+}

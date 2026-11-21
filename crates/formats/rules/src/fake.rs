@@ -37,6 +37,11 @@ pub struct FakeGame {
     pub numbers: BTreeMap<u32, i32>,
     /// `(player, zone object)` pairs `inside` answers true for.
     pub inside: BTreeSet<(u8, u32)>,
+    /// Players' own objects, by object: what `player_of` reads.
+    pub units: BTreeMap<u32, u8>,
+    /// Labelled objects' labels, as the index in the blob's label table:
+    /// what `label_of` reads.
+    pub labels: BTreeMap<u32, i32>,
     /// Actions made, as `(entry name, args)`.
     pub calls: Vec<(&'static str, Vec<Arg>)>,
     /// Reads made, by entry name.
@@ -120,6 +125,10 @@ impl Game for FakeGame {
                 .and_then(|o| self.object_teams.get(&o))
                 .map_or(-1, |&t| i32::from(t)),
             id::LABEL_NUMBER => object(0).and_then(|o| self.numbers.get(&o).copied()).unwrap_or(0),
+            id::LABEL_OF => object(0).and_then(|o| self.labels.get(&o).copied()).unwrap_or(0),
+            id::PLAYER_OF => object(0)
+                .and_then(|o| self.units.get(&o))
+                .map_or(-1, |&p| i32::from(p)),
             id::INSIDE => match (call.args.first(), object(1)) {
                 (Some(Arg::Player(Some(p))), Some(z)) => self.inside.contains(&(*p, z)) as i32,
                 _ => 0,
