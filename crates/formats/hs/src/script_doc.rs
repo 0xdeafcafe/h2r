@@ -21,7 +21,9 @@
 //!
 //! Everything else stays unnamed and shows as `#builtin:<index>`. An
 //! entry with optional, repeated or grouped parameters (`[<x>]`,
-//! `<x(s)>`) has no fixed signature and names nothing.
+//! `<x(s)>`) has no fixed signature and names nothing; nor does a builtin
+//! that reads its own arguments (flags bit 1), since its parameter list is
+//! not its argument count.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -247,9 +249,13 @@ impl Naming {
 }
 
 /// The builtin's (return, parameters) by type name; `None` when a type
-/// index has no name.
+/// index has no name, or when the builtin reads its own arguments (flags
+/// bit 1): its parameter list is not its argument count.
 fn builtin_signature(catalog: &Catalog, index: usize) -> Option<(String, Vec<String>)> {
     let f = catalog.functions().get(index)?;
+    if f.flags() & 2 != 0 {
+        return None;
+    }
     let returns = catalog.type_name(f.return_type()).ok()?.to_owned();
     let parameters = f
         .parameters()
@@ -302,6 +308,10 @@ fn name_from_doc(
         let Some(&d) = by_name.get(name.as_str()) else {
             continue;
         };
+        if signatures[i].is_none() {
+            // Its own arguments, or an unnamed type: nothing to compare.
+            continue;
+        }
         if matches(&signatures[i], &entries[d]) {
             anchors.push((i, d));
         } else {
@@ -398,14 +408,25 @@ mod tests {
 
     /// Invented types: 0 `void`, 1 `boolean`, 2 `short`, 3 `real`.
     fn catalog(builtins: &[(u16, &[u16])], named: &[(usize, &str)]) -> Catalog {
+        catalog_with_flags(builtins, named, &[])
+    }
+
+    /// As `catalog`, with flags 2 (own arguments) on the builtins in `own`.
+    fn catalog_with_flags(
+        builtins: &[(u16, &[u16])],
+        named: &[(usize, &str)],
+        own: &[usize],
+    ) -> Catalog {
         let exe = Exe {
             types: ["void", "boolean", "short", "real"]
                 .map(str::to_owned)
                 .to_vec(),
             builtins: builtins
                 .iter()
-                .map(|&(returns, parameters)| Builtin {
+                .enumerate()
+                .map(|(i, &(returns, parameters))| Builtin {
                     returns,
+                    flags: if own.contains(&i) { 2 } else { 0 },
                     parameters: parameters.to_vec(),
                     ..Builtin::default()
                 })
@@ -535,5 +556,19 @@ mod tests {
         let n = Naming::new(&c, Some(&doc));
         assert_eq!((n.name(0), n.name(1)), (None, None));
         assert_eq!(n.report.unwrap().without_signature, 1);
+    }
+
+    #[test]
+    fn a_builtin_that_reads_its_own_arguments_takes_no_listing_name() {
+        // Builtin 0 reads its own arguments; its empty parameter list says
+        // nothing about its arguments, so `(<void> zero)` cannot be checked.
+        // Builtin 1, named by a map, is neither an anchor nor a disagreement.
+        let c = catalog_with_flags(&[(0, &[]), (0, &[])], &[(1, "own")], &[0, 1]);
+        let doc = listing(&["(<void> zero)", "(<void> own <short>)"]);
+        let n = Naming::new(&c, Some(&doc));
+        assert_eq!(n.name(0), None);
+        let r = n.report.unwrap();
+        assert_eq!((r.anchors, r.named), (0, 0));
+        assert!(r.disagree.is_empty());
     }
 }
