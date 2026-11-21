@@ -5,8 +5,9 @@
 //! recipe (`near`, `under`, `held`, then `primed`) and, once primed, the
 //! time a still body has before it sleeps and its pair is rebuilt at 0.
 //! [`Tracker::step`] turns one tick's reads ([`Tick`]) into the
-//! [`ChargePhase`] and its fill, the prompt-line [`Verb`], the
-//! [`NavTarget`] and, on a touchdown by a strip, the filed [`Landing`].
+//! [`ChargePhase`] and its fill, why a lost charge went ([`LostReason`]),
+//! the prompt-line [`Verb`], the [`NavTarget`] and, on a touchdown by a
+//! strip, the filed [`Landing`].
 //! `superbounce_mode` publishes them on its state; the predicted landing
 //! ([`Predicted`]) is `superbounce_assist::predict`'s.
 //!
@@ -27,6 +28,17 @@ pub const STILL_SPEED: f32 = 0.03;
 pub const SLEEP_TICKS: u32 = 38;
 /// Ticks `lost` shows before the charge is hidden: a second at 30 Hz.
 pub const LOST_TICKS: u32 = 30;
+/// Still ticks after which a primed body is warned to keep moving: half
+/// of [`SLEEP_TICKS`], 19, where the fill reaches 0.5.
+pub const WARN_STILL_TICKS: u32 = SLEEP_TICKS / 2;
+/// A charge lost after at least this many still ticks was lost to
+/// standing still: the body slept. 30, under the 38 to 40 measured, so a
+/// sleep a few ticks early still reads as one; a loss after fewer is not
+/// put down to standing still.
+pub const STOOD_STILL_TICKS: u32 = 30;
+/// Ticks after a loss the prompt line asks for a new charge: 5 s at
+/// 30 Hz, the `lost` second and four more.
+pub const AGAIN_TICKS: u32 = 150;
 /// A touchdown within this distance (world units) of a strip's edge is
 /// that strip's landing.
 pub const LANDING_RADIUS: f32 = 0.5;
@@ -65,6 +77,31 @@ pub enum ChargePhase {
     Lost,
 }
 
+/// Why the charge went (docs/game/superbounce.md, "Charge"). A landing
+/// is not a reason: nothing measured has one use the charge up (the word
+/// stays -3 after a bounce until the body sleeps,
+/// docs/game/notes/superbounce-spots.md), so a loss on a landing is
+/// whichever of these it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LostReason {
+    /// The word left -3 after [`STOOD_STILL_TICKS`] still ticks or more:
+    /// the body slept and its pair was rebuilt at 0.
+    StoodStill,
+    /// The crouch request was set: a crouch ends the charge at once.
+    Crouched,
+    /// The word left -3 for another reason (a respawn, a vehicle, the
+    /// pair gone, or a sleep the still count missed).
+    Unknown,
+}
+
+/// A loss: why, and the tick it was on (the game's, or the tracker's own
+/// count where the game's could not be read, as a [`Landing`]'s).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Lost {
+    pub reason: LostReason,
+    pub tick: u32,
+}
+
 /// The charge meter's state: `None` on [`crate::superbounce_mode::State`]
 /// is hidden.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -72,16 +109,24 @@ pub struct Charge {
     pub phase: ChargePhase,
     /// 0..1, the meter's fill.
     pub fill: f32,
+    /// The loss, in [`ChargePhase::Lost`]; `None` in every other phase.
+    pub lost: Option<Lost>,
 }
 
-/// The recipe's step on the HUD's prompt line, with the crouch button the
-/// game draws.
+/// The next thing to do, on the HUD's prompt line (the recipe's steps
+/// with the crouch button the game draws, the warning, the new charge).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Verb {
     /// "Let go of (crouch)": [`ChargePhase::Under`].
     LetGoOfCrouch,
     /// "Walk out to stand up": [`ChargePhase::Held`].
     WalkOutToStand,
+    /// "Keep moving or lose the charge": primed and still for
+    /// [`WARN_STILL_TICKS`] or more.
+    KeepMoving,
+    /// "Find a crouch spot to charge again": for [`AGAIN_TICKS`] after a
+    /// loss, while no recipe step has begun.
+    ChargeAgain(Lost),
 }
 
 /// What the navpoint points at.
@@ -319,6 +364,7 @@ pub struct Tracker {
     still: u32,
     /// The step the charge was lost on.
     lost_at: Option<u32>,
+    lost: Option<Lost>,
     prev: Option<Prev>,
     last_landing: Option<Landing>,
 }
@@ -330,6 +376,7 @@ impl Tracker {
             was_primed: false,
             still: 0,
             lost_at: None,
+            lost: None,
             prev: None,
             last_landing: None,
         }
@@ -354,14 +401,25 @@ impl Tracker {
             self.lost_at = None;
         } else {
             if self.was_primed {
+                // `still` is still the count up to the tick before.
+                let reason = if t.request {
+                    LostReason::Crouched
+                } else if self.still >= STOOD_STILL_TICKS {
+                    LostReason::StoodStill
+                } else {
+                    LostReason::Unknown
+                };
                 self.lost_at = Some(self.count);
+                self.lost = Some(Lost {
+                    reason,
+                    tick: t.tick.unwrap_or(self.count),
+                });
             }
             self.still = 0;
         }
         self.was_primed = primed_now;
-        let lost = self
-            .lost_at
-            .is_some_and(|at| self.count.wrapping_sub(at) < LOST_TICKS);
+        let since_lost = self.lost_at.map(|at| self.count.wrapping_sub(at));
+        let lost = since_lost.is_some_and(|n| n < LOST_TICKS);
         let near = t.position.is_some_and(|p| {
             nearest_stand(spots, Kind::Crouch, p).is_some_and(|(_, d)| d <= NEAR_RADIUS)
         });
@@ -381,10 +439,19 @@ impl Tracker {
         } else {
             None
         };
-        let charge = phase.map(|(phase, fill)| Charge { phase, fill });
+        let charge = phase.map(|(phase, fill)| Charge {
+            phase,
+            fill,
+            lost: self.lost.filter(|_| phase == ChargePhase::Lost),
+        });
         let verb = match charge.map(|c| c.phase) {
             Some(ChargePhase::Under) => Some(Verb::LetGoOfCrouch),
             Some(ChargePhase::Held) => Some(Verb::WalkOutToStand),
+            Some(ChargePhase::Primed) if self.still >= WARN_STILL_TICKS => Some(Verb::KeepMoving),
+            // Near is the HUD's own step ("hold (crouch) and walk under").
+            Some(ChargePhase::Lost) | None if since_lost.is_some_and(|n| n < AGAIN_TICKS) => {
+                self.lost.map(Verb::ChargeAgain)
+            }
             _ => None,
         };
         Step {
@@ -498,7 +565,8 @@ mod tests {
             s.charge,
             Some(Charge {
                 phase: ChargePhase::Near,
-                fill: 0.0
+                fill: 0.0,
+                lost: None,
             })
         );
         assert_eq!(s.verb, None);
@@ -529,10 +597,13 @@ mod tests {
         assert_eq!(phase(&s), Some(ChargePhase::Primed));
         assert!((s.charge.unwrap().fill - (1.0 - 1.0 / SLEEP_TICKS as f32)).abs() < 1e-6);
         assert_eq!((s.verb, s.still_ticks), (None, 1));
-        // Still for 38 ticks in all: the fill reaches 0.
+        // Still for 38 ticks in all: the fill reaches 0, and from 19 the
+        // prompt line warns.
         let mut last = s;
-        for _ in 1..SLEEP_TICKS {
+        for i in 1..SLEEP_TICKS {
             last = t.step(&primed, &spots);
+            let warned = i + 1 >= WARN_STILL_TICKS;
+            assert_eq!(last.verb == Some(Verb::KeepMoving), warned, "{i}");
         }
         assert_eq!(last.still_ticks, SLEEP_TICKS);
         assert_eq!(last.charge.unwrap().fill, 0.0);
@@ -543,20 +614,128 @@ mod tests {
         };
         let s = t.step(&moving, &spots);
         assert_eq!((s.still_ticks, s.charge.unwrap().fill), (0, 1.0));
-        // The body sleeps and wakes at 0: lost for a second, then hidden.
+        assert_eq!(s.verb, None);
+        // The word leaves -3 while moving: lost for a second, then
+        // hidden, for no reason the tracker knows; the prompt line asks
+        // for a new charge for 5 s.
         let woke = standing([5.0, 0.0, 0.0]);
-        for i in 0..LOST_TICKS {
+        let first = t.step(&woke, &spots);
+        let lost = first.charge.unwrap().lost.unwrap();
+        assert_eq!(lost.reason, LostReason::Unknown);
+        for i in 1..LOST_TICKS {
             let s = t.step(&woke, &spots);
             assert_eq!(
                 s.charge,
                 Some(Charge {
                     phase: ChargePhase::Lost,
-                    fill: 0.0
+                    fill: 0.0,
+                    lost: Some(lost),
                 }),
                 "{i}"
             );
+            assert_eq!(s.verb, Some(Verb::ChargeAgain(lost)), "{i}");
         }
-        assert_eq!(t.step(&woke, &spots).charge, None);
+        for i in LOST_TICKS..AGAIN_TICKS {
+            let s = t.step(&woke, &spots);
+            assert_eq!(s.charge, None, "{i}");
+            assert_eq!(s.verb, Some(Verb::ChargeAgain(lost)), "{i}");
+        }
+        assert_eq!(t.step(&woke, &spots).verb, None);
+    }
+
+    /// A primed body still for `still` ticks, then the word gone.
+    fn lost_after(still: u32) -> (Tracker, Step) {
+        let spots = spots();
+        let mut t = Tracker::new();
+        let primed = Tick {
+            tick: Some(100),
+            word: Some(MINUS_3),
+            ..standing([5.0, 0.0, 0.0])
+        };
+        for _ in 0..still {
+            t.step(&primed, &spots);
+        }
+        let slept = Tick {
+            tick: Some(100 + still),
+            word: None,
+            ..primed
+        };
+        let s = t.step(&slept, &spots);
+        (t, s)
+    }
+
+    #[test]
+    fn a_sleep_after_standing_still_is_lost_to_standing_still() {
+        let (_, s) = lost_after(SLEEP_TICKS);
+        assert_eq!(phase(&s), Some(ChargePhase::Lost));
+        let lost = s.charge.unwrap().lost.unwrap();
+        assert_eq!(
+            lost,
+            Lost {
+                reason: LostReason::StoodStill,
+                tick: 100 + SLEEP_TICKS
+            }
+        );
+        assert_eq!(s.verb, Some(Verb::ChargeAgain(lost)));
+        assert_eq!(s.still_ticks, 0);
+        // From STOOD_STILL_TICKS still ticks it is standing still; under,
+        // the tracker does not know.
+        let reason = |still| lost_after(still).1.charge.unwrap().lost.unwrap().reason;
+        assert_eq!(reason(STOOD_STILL_TICKS), LostReason::StoodStill);
+        assert_eq!(reason(STOOD_STILL_TICKS - 1), LostReason::Unknown);
+        assert_eq!(reason(1), LostReason::Unknown);
+    }
+
+    #[test]
+    fn a_warning_shows_from_half_the_sleep_and_lines_up_with_half_the_fill() {
+        assert_eq!(WARN_STILL_TICKS, 19);
+        assert_eq!(1.0 - WARN_STILL_TICKS as f32 / SLEEP_TICKS as f32, 0.5);
+        // Moving clears it.
+        let spots = spots();
+        let mut t = Tracker::new();
+        let primed = Tick {
+            word: Some(MINUS_3),
+            ..standing([5.0, 0.0, 0.0])
+        };
+        for _ in 0..WARN_STILL_TICKS {
+            t.step(&primed, &spots);
+        }
+        assert_eq!(t.step(&primed, &spots).verb, Some(Verb::KeepMoving));
+        let moving = Tick {
+            velocity: Some([1.0, 0.0, 0.0]),
+            ..primed
+        };
+        assert_eq!(t.step(&moving, &spots).verb, None);
+    }
+
+    #[test]
+    fn a_recipe_step_takes_the_line_from_the_new_charge_hint() {
+        let (mut t, s) = lost_after(1);
+        assert!(matches!(s.verb, Some(Verb::ChargeAgain(_))));
+        let spots = spots();
+        // Crouched under a lip: the step's own verb, and the lost meter
+        // gives way to under.
+        let under = Tick {
+            request: true,
+            crouch_held: Some(true),
+            standing_fits: Some(false),
+            ..standing([0.0; 3])
+        };
+        let s = t.step(&under, &spots);
+        assert_eq!(phase(&s), Some(ChargePhase::Under));
+        assert_eq!(s.verb, Some(Verb::LetGoOfCrouch));
+        assert_eq!(s.charge.unwrap().lost, None);
+        // Crouched by a spot with room to stand, after the lost second:
+        // near, which the HUD gives its own verb.
+        let near = Tick {
+            standing_fits: Some(true),
+            ..under
+        };
+        for _ in 0..LOST_TICKS {
+            t.step(&near, &spots);
+        }
+        let s = t.step(&near, &spots);
+        assert_eq!((phase(&s), s.verb), (Some(ChargePhase::Near), None));
     }
 
     #[test]
@@ -574,7 +753,26 @@ mod tests {
             crouch_held: Some(true),
             ..primed
         };
-        assert_eq!(phase(&t.step(&crouch, &spots)), Some(ChargePhase::Lost));
+        let s = t.step(&crouch, &spots);
+        assert_eq!(phase(&s), Some(ChargePhase::Lost));
+        let lost = s.charge.unwrap().lost.unwrap();
+        assert_eq!(lost.reason, LostReason::Crouched);
+        assert_eq!(s.verb, Some(Verb::ChargeAgain(lost)));
+        // Crouched while still a long while: still a crouch.
+        let mut t = Tracker::new();
+        let still = Tick {
+            velocity: Some([0.0; 3]),
+            ..primed
+        };
+        for _ in 0..STOOD_STILL_TICKS {
+            t.step(&still, &spots);
+        }
+        let crouch = Tick {
+            request: true,
+            ..still
+        };
+        let s = t.step(&crouch, &spots);
+        assert_eq!(s.charge.unwrap().lost.unwrap().reason, LostReason::Crouched);
     }
 
     #[test]

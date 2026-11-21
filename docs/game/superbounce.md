@@ -843,10 +843,33 @@ two things the engine does have:
   request is set is `lost`, as is one whose word leaves −3. `lost` shows
   for 30 ticks.
 
-`superbounce_mode`'s state carries it as `charge` (the phase and the
-fill: 0, 1/3, 2/3, then the charge left, 0 while lost), `still_ticks`,
-`verb` (`LetGoOfCrouch` while `under`, `WalkOutToStand` while `held`) and
-`standing_fits`. `superbounce.state` returns them, and `world.object`'s
+**Why it went.** The tracker gives each loss a reason, read on the tick
+the charge goes (`superbounce_charge::LostReason`):
+
+| Reason | When |
+|---|---|
+| `crouched` | the crouch request is set |
+| `stood_still` | the word left −3 after 30 still ticks or more (`STOOD_STILL_TICKS`): the body slept. 30 is under the 38 to 40 measured, so a sleep a few ticks early still reads as one |
+| `unknown` | the word left −3 for another reason: a respawn, a vehicle, the pair gone, or a sleep the still count missed |
+
+A landing is not a reason. Nothing measured has a landing use the
+charge up: the word stays −3 after a bounce until the body sleeps (the
+note), and a landing that does not bounce is filed as a landing, not a
+loss.
+
+**The warning and the new charge.** From 19 still ticks while primed
+(`WARN_STILL_TICKS`, half of 38, where the fill is 0.5) the verb is
+`KeepMoving`. For 150 ticks after a loss (`AGAIN_TICKS`: the `lost`
+second and four more), while the phase is `lost` or hidden, the verb is
+`ChargeAgain`; a crouch step (`near`, `under`, `held`) takes the line
+from it.
+
+`superbounce_mode`'s state carries it as `charge` (the phase, the fill:
+0, 1/3, 2/3, then the charge left, 0 while lost; and the loss, its
+reason and tick, while lost), `still_ticks`, `verb` (`LetGoOfCrouch`
+while `under`, `WalkOutToStand` while `held`, `KeepMoving`, and
+`ChargeAgain` with the loss) and `standing_fits`. `superbounce.state`
+returns them, the reason as `lost_reason`, and `world.object`'s
 `physics` block has `standing_fits` for bipeds.
 
 Two inputs are not the engine's own:

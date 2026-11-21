@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 use hud_kit_core::huds::superbounce::{
-    self as sb, Change, Charge, Landed, Note, Phase, Scan, Superbounce, Target, Tutorial, Verb,
-    View, Watch,
+    self as sb, Change, Charge, Landed, Lost, Note, Phase, Scan, Superbounce, Target, Tutorial,
+    Verb, View, Watch,
 };
 use hud_kit_core::model::Values;
 
@@ -30,13 +30,15 @@ pub const FEATURE: &str = "superbounce-hud";
 ///
 /// - The scan: ready with spots, ready with none, failed, else scanning.
 /// - The charge: the mode's phase and fill as they are.
-/// - The verb: the mode's; in the near phase, not primed and with no verb
-///   of the mode's, "hold (crouch) and walk under".
+/// - The verb: the mode's (a crouch step, the warning to keep moving, the
+///   new charge after a loss); in the near phase, not primed and with no
+///   verb of the mode's, "hold (crouch) and walk under".
 /// - The navpoint: the mode's target and its distance, world units to
 ///   metres (S: the contract's distance is in world units, as the state's
 ///   other distances are).
-/// - The note: the last landing's result at its tick. A bounce has no
-///   height (the state carries none).
+/// - The note: the newer of the loss ([`mode::lost`]: why, at its tick)
+///   and the last landing's result at its tick ([`note`]). A bounce has
+///   no height (the state carries none).
 pub fn view(s: &State, tutorial: Option<u8>) -> View {
     let scan = match &s.scan {
         ScanState::Ready if s.bounce + s.crouch == 0 => Scan::NoStrips,
@@ -57,6 +59,8 @@ pub fn view(s: &State, tutorial: Option<u8>) -> View {
     let verb = match s.verb.as_ref() {
         Some(mode::Verb::LetGoOfCrouch) => Some(Verb::LetGoOfCrouch),
         Some(mode::Verb::WalkOutToStand) => Some(Verb::WalkOutToStand),
+        Some(mode::Verb::KeepMoving) => Some(Verb::KeepMoving),
+        Some(mode::Verb::ChargeAgain(_)) => Some(Verb::ChargeAgain),
         None if !s.primed() && charge.is_some_and(|c| c.phase == Phase::Near) => {
             Some(Verb::HoldAndWalkUnder)
         }
@@ -69,7 +73,31 @@ pub fn view(s: &State, tutorial: Option<u8>) -> View {
         };
         (target, n.distance * METRES_PER_UNIT)
     });
-    let note = s.last_landing.as_ref().map(|l| {
+    View {
+        primed: s.primed(),
+        scan,
+        charge,
+        verb,
+        nav,
+        note: note(s, mode::lost(s)),
+        tutorial,
+    }
+}
+
+/// The notification for `s` with the last loss `lost`: the loss's
+/// reason when it is newer than the last landing (or there is none),
+/// else the landing's result, each at its tick.
+pub fn note(s: &State, lost: Option<mode::Lost>) -> Option<(Note, u32)> {
+    let landing = s.last_landing.as_ref();
+    if let Some(l) = lost.filter(|l| landing.is_none_or(|landing| l.tick > landing.tick)) {
+        let why = match l.reason {
+            mode::LostReason::StoodStill => Lost::StoodStill,
+            mode::LostReason::Crouched => Lost::Crouched,
+            mode::LostReason::Unknown => Lost::Unknown,
+        };
+        return Some((Note::ChargeLost(why), l.tick));
+    }
+    landing.map(|l| {
         let landed = match &l.result {
             mode::LandingResult::Bounce => Landed::Bounce { height_m: None },
             mode::LandingResult::NotPrimed => Landed::NotPrimed,
@@ -78,16 +106,7 @@ pub fn view(s: &State, tutorial: Option<u8>) -> View {
             mode::LandingResult::NoBounce => Landed::NoBounce,
         };
         (Note::Landed(landed), l.tick)
-    });
-    View {
-        primed: s.primed(),
-        scan,
-        charge,
-        verb,
-        nav,
-        note,
-        tutorial,
-    }
+    })
 }
 
 /// What the tutorial watches in `s`: primed, metres to the nearest bounce
@@ -115,6 +134,10 @@ pub fn hidden() -> Values {
 struct Hud {
     handle: Handle,
     tutorial: Tutorial,
+    /// The last loss, kept past the mode's state (which has it for
+    /// [`crate::superbounce_charge::AGAIN_TICKS`]) so its note does not
+    /// give way to an older landing's.
+    lost: Option<mode::Lost>,
     seen_tick: Option<u32>,
     /// A landing older than the HUD's first tick is not a bounce of the
     /// tutorial's.
@@ -130,10 +153,12 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 impl Hud {
     fn tick(&mut self) {
         let Some(s) = mode::hud_state() else {
+            self.lost = None;
             self.handle.publish(hidden());
             self.handle.navpoint(None);
             return;
         };
+        self.lost = mode::lost(&s).or(self.lost);
         let now = self.start.elapsed().as_secs_f64();
         let mut w = watch(&s, self.seen_tick);
         if !self.started {
@@ -144,7 +169,10 @@ impl Hud {
         if self.tutorial.update(Some(w), now) == Change::Done {
             self.mark_seen();
         }
-        let v = view(&s, self.tutorial.step());
+        let v = View {
+            note: note(&s, self.lost),
+            ..view(&s, self.tutorial.step())
+        };
         self.handle.publish(sb::values(&v));
         self.handle.navpoint(
             s.nav_target
@@ -208,6 +236,7 @@ pub fn install(
     let hud = Hud {
         handle,
         tutorial: Tutorial::new(show),
+        lost: None,
         seen_tick: None,
         started: false,
         start: Instant::now(),

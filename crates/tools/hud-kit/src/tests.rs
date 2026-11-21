@@ -213,7 +213,7 @@ fn the_synthetic_sheet_draws_and_passes() {
         [Check::Glyphs]
     );
     let states = Superbounce.states().len();
-    assert_eq!(states, 15);
+    assert_eq!(states, 18);
     assert_eq!(r.shots.len(), states * 3);
     let (sheet, tiles) = preview::sheet(&r.shots, 3);
     assert_eq!((sheet.width, sheet.height), (3 * 320, states as u32 * 240));
@@ -726,12 +726,14 @@ fn the_charge_meter_is_the_strips_end_under_the_pill() {
     assert!(!full("not-primed").drawn, "no charge building");
     assert!(full("primed-full").drawn);
     assert_eq!(full("primed-draining").fill, Some(0.25));
+    assert_eq!(full("primed-still-warning").fill, Some(superbounce::LOW_CHARGE));
     assert_eq!(full("near").fill, Some(superbounce::FILL_NEAR));
     assert_eq!(full("held").fill, Some(superbounce::FILL_HELD));
 }
 
-/// The step verbs go on the prompt line and the landings in the message
-/// area, in the states that have them.
+/// The step verbs, the warning and the new-charge hint go on the prompt
+/// line, and the landings and the losses in the message area, in the
+/// states that have them.
 #[test]
 fn the_prompt_and_message_carry_the_steps_and_landings() {
     let states = Superbounce.states();
@@ -751,5 +753,17 @@ fn the_prompt_and_message_carry_the_steps_and_landings() {
     assert!(!get("primed-full", superbounce::PROMPT).shown);
     assert_eq!(get("primed-full", superbounce::MESSAGE).text, superbounce::MESSAGE_PRIMED);
     assert_eq!(get("lost", superbounce::MESSAGE).text, superbounce::MESSAGE_LOST);
+    assert_eq!(
+        get("primed-still-warning", superbounce::PROMPT).text,
+        superbounce::PROMPT_KEEP_MOVING
+    );
+    for (state, message) in [
+        ("lost", superbounce::MESSAGE_LOST),
+        ("lost-stood-still", superbounce::MESSAGE_LOST_STOOD_STILL),
+        ("lost-crouched", superbounce::MESSAGE_LOST_CROUCHED),
+    ] {
+        assert_eq!(get(state, superbounce::MESSAGE).text, message);
+        assert_eq!(get(state, superbounce::PROMPT).text, superbounce::PROMPT_CHARGE_AGAIN);
+    }
     assert!(get("bounced", superbounce::MESSAGE).text.starts_with("Superbounce"));
 }
