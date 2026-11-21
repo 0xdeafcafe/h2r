@@ -193,11 +193,12 @@ impl Feature for Hooks {
         });
         let driver = self.0.clone();
         b.game().on_end("release the Forge monitor", move |o| {
-            let m = o.guest();
-            if GameGlobals::current(&*m)
+            let guest = o.guest();
+            let m: &dyn engine::GuestMemory = &*guest;
+            if GameGlobals::current(m)
                 .ok()
                 .flatten()
-                .and_then(|g| g.game_ended(&*m).ok())
+                .and_then(|g| g.game_ended(m).ok())
                 .is_some_and(|v| v != 0)
             {
                 driver.lock().unwrap_or_else(|e| e.into_inner()).reset();

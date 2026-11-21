@@ -27,6 +27,10 @@ pub mod hashes;
 pub mod menu;
 pub mod objects;
 
+/// The error code a host returns when it refuses an editor write. Same wire
+/// value as the editor protocol's REFUSED.
+pub const REFUSED: i64 = 11;
+
 /// Method names. They are host methods: `session.methods` lists them where
 /// the game registered them (`agent::sim::install`).
 pub mod method {
