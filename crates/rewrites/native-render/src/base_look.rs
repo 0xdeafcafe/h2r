@@ -23,7 +23,7 @@ use shaders::psh::bits::{
     CHAN_ALPHA, ONE, REG_T0, REG_T3, TEX_NONE, TEX_PROJECT2D, final_efg, inputs, texture_modes,
 };
 use shaders::vsh::encode::{Inst, Operand as O, program};
-use shaders::vsh::{IluOp, MacOp, OutReg};
+use shaders::vsh::{IluOp, MacOp, OutReg, SrcReg};
 
 use crate::fog_gpu::{FogPass, FogProgram, FogWords};
 use crate::look::{PassLook, Stage};
@@ -33,7 +33,8 @@ use crate::program::MODEL_ROWS;
 /// The view position, in the layout the game uploads
 /// (`program::ViewInputs::from_camera`): `r0 = v · c[0..3]` (`dp4`, x
 /// first), `r1.x = rcc r0.w`, `r0.xy *= r1.x`, then the window
-/// `oPos.xy = r0.xy · c[10].xy + c[11].xy` and `oPos.zw = r0.zw`.
+/// `oPos.xy = r0.xy · c[10].xy + c[11].xy` (a `mul` then an `add`: an
+/// instruction reads one constant) and `oPos.zw = r0.zw`.
 /// `position` is the register holding the world position (`v0` for a
 /// cluster, the placed `r10` for a placement).
 pub fn world_position(position: O) -> Vec<Inst> {
@@ -43,30 +44,64 @@ pub fn world_position(position: O) -> Vec<Inst> {
     code.push(Inst::ilu(IluOp::Rcc, O::r(0).swz("w")).ilu_to_temp(1, 8));
     code.push(Inst::mac(MacOp::Mul, Some(O::r(0)), Some(O::r(1).swz("x")), None).to_temp(0, 8 | 4));
     code.push(
-        Inst::mac(
-            MacOp::Mad,
-            Some(O::r(0)),
-            Some(O::c(10).swz("xy")),
-            Some(O::c(11).swz("xy")),
-        )
-        .to_out(false, OutReg::Pos, 8 | 4),
+        Inst::mac(MacOp::Mul, Some(O::r(0)), Some(O::c(10).swz("xy")), None).to_temp(0, 8 | 4),
+    );
+    code.push(
+        Inst::mac(MacOp::Add, Some(O::r(0)), None, Some(O::c(11).swz("xy"))).to_out(
+            false,
+            OutReg::Pos,
+            8 | 4,
+        ),
     );
     code.push(Inst::mac(MacOp::Mov, Some(O::r(0)), None, None).to_out(false, OutReg::Pos, 2 | 1));
     code
 }
 
+/// `code` as a program, or the first instruction the hardware's encoding
+/// cannot hold: one that reads two constant registers or two input
+/// registers (the encoder's own rule, which it asserts).
+pub fn encode(code: &[Inst]) -> Result<Vec<u8>, String> {
+    for (n, inst) in code.iter().enumerate() {
+        let regs = || {
+            [&inst.a, &inst.b, &inst.c]
+                .into_iter()
+                .flatten()
+                .map(|o| o.reg)
+        };
+        let mut constants = regs().filter_map(|r| match r {
+            SrcReg::Const { index, .. } => Some(index),
+            _ => None,
+        });
+        let mut inputs = regs().filter_map(|r| match r {
+            SrcReg::Input(v) => Some(v),
+            _ => None,
+        });
+        if let Some(first) = constants.next()
+            && let Some(other) = constants.find(|&c| c != first)
+        {
+            return Err(format!("instruction {n} reads c[{first}] and c[{other}]"));
+        }
+        if let Some(first) = inputs.next()
+            && let Some(other) = inputs.find(|&v| v != first)
+        {
+            return Err(format!("instruction {n} reads v{first} and v{other}"));
+        }
+    }
+    Ok(program(code))
+}
+
 /// A cluster's world classification: [`world_position`] of `v0`, then
 /// `extra` (the texture coordinates a pass reads).
-pub fn world_program(extra: &[Inst]) -> Vec<u8> {
+pub fn world_program(extra: &[Inst]) -> Result<Vec<u8>, String> {
     let mut code = world_position(O::v(0));
     code.extend_from_slice(extra);
-    program(&code)
+    encode(&code)
 }
 
 /// A placement's rigid classification: `v0` decompressed
 /// (`· c[170] + c[171]`), placed by the model rows `c[50..52]` (`dph`),
 /// then [`world_position`] of it and `extra`.
-pub fn rigid_program(extra: &[Inst]) -> Vec<u8> {
+pub fn rigid_program(extra: &[Inst]) -> Result<Vec<u8>, String> {
     let mut code = vec![
         Inst::mac(MacOp::Mul, Some(O::v(0)), Some(O::c(170)), None).to_temp(10, 0xf),
         Inst::mac(MacOp::Add, Some(O::r(10)), None, Some(O::c(171))).to_temp(10, 0xf),
@@ -85,7 +120,7 @@ pub fn rigid_program(extra: &[Inst]) -> Vec<u8> {
     code.push(Inst::mac(MacOp::Mov, Some(O::r(10).swz("w")), None, None).to_temp(2, 1));
     code.extend(world_position(O::r(2)));
     code.extend_from_slice(extra);
-    program(&code)
+    encode(&code)
 }
 
 /// The base look's texture coordinates: `oT0` the base map's (`v1`),
@@ -179,7 +214,11 @@ pub fn base_program(material: u16, lit: bool) -> Result<FogProgram, String> {
         fog: FogWords::default(),
     };
     let extra = base_coordinates();
-    FogProgram::compile_rigid_pass(&pass, &world_program(&extra), Some(&rigid_program(&extra)))
+    FogProgram::compile_rigid_pass(
+        &pass,
+        &world_program(&extra)?,
+        Some(&rigid_program(&extra)?),
+    )
 }
 
 /// Every material's base look for `draws` (each part's material and
@@ -216,7 +255,8 @@ mod tests {
             "{:?}",
             base_program(3, false).err()
         );
-        let code = world_program(&[]);
+        let code = world_program(&[]).unwrap();
+        assert!(rigid_program(&base_coordinates()).is_ok());
         assert_eq!(
             crate::program::ungiven_view_read(&code, &crate::program::CAMERA_GIVEN),
             None
@@ -230,5 +270,24 @@ mod tests {
         let mut keys: Vec<u16> = keys.into_keys().collect();
         keys.sort_unstable();
         assert_eq!(keys, [0, 0x8000]);
+    }
+
+    /// An instruction naming two constants (or two inputs) is an error,
+    /// not the encoder's panic.
+    #[test]
+    fn an_instruction_reading_two_constants_does_not_encode() {
+        let two =
+            Inst::mac(MacOp::Mad, Some(O::r(0)), Some(O::c(10)), Some(O::c(11))).to_temp(0, 0xf);
+        assert_eq!(
+            encode(&[two]).unwrap_err(),
+            "instruction 0 reads c[10] and c[11]"
+        );
+        let inputs = Inst::mac(MacOp::Add, Some(O::v(0)), None, Some(O::v(1))).to_temp(0, 0xf);
+        assert_eq!(
+            encode(&[inputs]).unwrap_err(),
+            "instruction 0 reads v0 and v1"
+        );
+        let same = Inst::mac(MacOp::Mul, Some(O::c(4)), Some(O::c(4)), None).to_temp(0, 0xf);
+        assert!(encode(&[same]).is_ok());
     }
 }

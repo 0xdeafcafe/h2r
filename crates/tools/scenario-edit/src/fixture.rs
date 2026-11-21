@@ -1001,7 +1001,8 @@ pub fn fixture_with_layered_bsp() -> Vec<u8> {
     // The base look's own position code (`base_look::world_position`):
     // the pass computes the floor's depth as the base look does, bit for
     // bit.
-    let code = native_render::base_look::world_program(&[]);
+    let code =
+        native_render::base_look::world_program(&[]).expect("the base look's position encodes");
     assert!(code_at + code.len() <= LAYERED_VRTX + 0x200);
     put(&mut b, v + 4, 1);
     put(&mut b, v + 8, addr(classification));
