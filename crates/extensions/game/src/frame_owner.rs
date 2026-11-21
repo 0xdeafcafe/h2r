@@ -315,6 +315,13 @@ fn active() -> Option<Arc<Shared>> {
     ACTIVE.lock().unwrap_or_else(|e| e.into_inner()).upgrade()
 }
 
+fn has_game_view(scene: &FrameScene, replay: &ReplayFrame) -> bool {
+    // An empty view never visits a camera-extraction hook. Its actual
+    // entry and fully carried overlay are sufficient to replay that Swap.
+    scene.views.iter().any(|v| v.key.kind == ViewKind::Game)
+        || (replay.entered_game_view && replay.ops.iter().all(|(at, _)| !at.slot.in_game_view()))
+}
+
 fn sealed(sequence: u64, scene: Arc<FrameScene>) {
     let Some(shared) = active() else { return };
     let mut scenes = shared.scenes.lock().unwrap_or_else(|e| e.into_inner());
@@ -337,7 +344,7 @@ fn sealed(sequence: u64, scene: Arc<FrameScene>) {
              mut replay,
              display,
          }| {
-            if !scene.views.iter().any(|v| v.key.kind == ViewKind::Game) {
+            if !has_game_view(&scene, &replay) {
                 return Err("sealed scene has no game view".to_owned());
             }
             if !replay.refusals.is_empty() {
@@ -687,6 +694,24 @@ impl Drop for Service {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_empty_game_view_needs_its_entry_mark_to_replay_without_an_extracted_camera() {
+        use d3d::scene_sink::ReplayOp;
+        use frame_scene::{Slot, SlotAt, TargetRef};
+
+        let scene = FrameScene::default();
+        let mut replay = ReplayFrame::default();
+        assert!(!has_game_view(&scene, &replay));
+        replay.entered_game_view = true;
+        assert!(has_game_view(&scene, &replay));
+        replay.ops.push((SlotAt { slot: Slot::Overlay, view: 0 }, ReplayOp::Clear {
+            colour: TargetRef::SceneColour, depth: TargetRef::None, clear: gfx::Clear::NONE,
+        }));
+        assert!(has_game_view(&scene, &replay));
+        replay.ops[0].0.slot = Slot::Opaque;
+        assert!(!has_game_view(&scene, &replay));
+    }
 
     #[test]
     fn one_present_matches_only_its_own_begin_and_seal() {
