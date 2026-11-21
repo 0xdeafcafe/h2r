@@ -242,11 +242,13 @@ experiment 1 must be resolved before attributing one here to render RNG.
 h2 theater play "$film_run/match.h2film" --disc "$H2_DISC" --out "$H2_IMAGE" --socket "$film_run/play.sock" --render-every 1 --speed 1
 ```
 
-During either run the agent exposes `theater.state`, `play`, `pause`,
-`speed`, `seek` and `camera`. Seek restarts the child at a compatible keyframe, or at boot when one is
+During either run the agent exposes the [Theater transport](../runtime/agent-api.md#theater-transport).
+Seek restarts the child at a compatible keyframe, or at boot when one is
 unavailable, and removes host pacing until the target. It compares hashes throughout. The
 coordinator should also seek backwards across a received packet while
-paused and resume. [Transport parameters](../runtime/agent-api.md#theater-transport)
+paused and resume. `h2 film stat FILE` lists embedded keyframes, recorded
+D3D barriers and per-stream tape counts, byte totals and operations. The
+[measurement procedure](notes/theater-seek.md) uses both tools.
 
 At match end the host uploads the sealed recording under the lease's
 canonical game ID. Live checks `telemetry.ingest` and lease ownership.

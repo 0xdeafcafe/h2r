@@ -8,6 +8,7 @@ use film::blam::{Keyframe, Tick, TrackReader};
 pub(super) struct EngineReplay {
     pub(super) track: TrackReader<File>,
     pub(super) map_vfs: Option<Arc<Mutex<vfs::Vfs>>>,
+    native: bool,
     pending: Option<Tick>,
     keyframe: Option<Keyframe>,
     saw_actions: bool,
@@ -25,12 +26,26 @@ impl EngineReplay {
         Ok(Self {
             track,
             map_vfs: None,
+            native: image == film::image::ImageMatch::Native,
             pending: None,
             keyframe,
             saw_actions: false,
             last_pause: Some(false),
             pause_edges: Vec::new(),
         })
+    }
+
+    pub(super) fn has_keyframe(&self) -> bool {
+        self.keyframe.is_some()
+    }
+
+    /// The route a jump to `target` takes in a fresh player: the film's
+    /// keyframes are usable only on an exactly matching image.
+    pub(super) fn seek_source(&self, target: u64) -> agent_proto::theater::SeekSource {
+        match self.native && self.track.seek_uses_keyframe(target) {
+            true => agent_proto::theater::SeekSource::Keyframe,
+            false => agent_proto::theater::SeekSource::Boot,
+        }
     }
 
     /// Peek at the upcoming tick. A menu/cinematic tick can reach the
@@ -157,6 +172,7 @@ impl Session {
         machine: &mut BootMachine<'_>,
         agent: Option<&crate::agent_glue::AgentGlue>,
     ) -> Result<u64> {
+        let started = std::time::Instant::now();
         let snap = snapshot::Snapshot::open(&frame.snapshot, machine.shelf.build())?;
         ensure!(
             snap.header.tick == frame.tick,
@@ -238,6 +254,9 @@ impl Session {
         let pause = replay.paused_at_target;
         s.tick = frame.tick;
         s.calls = frame.calls;
+        if let Some(seek) = &mut s.seek {
+            seek.restore_ms = Some(started.elapsed().as_millis() as u64);
+        }
         if reached_target {
             s.seeking = None;
             s.paused = pause;

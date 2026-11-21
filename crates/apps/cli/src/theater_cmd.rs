@@ -117,6 +117,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let mut speed = opts.speed;
     let mut paused = false;
     let mut presentation = boot::theater::Presentation::default();
+    let mut from_tick = 0;
     loop {
         let temp = Temp::new()?;
         let restart = temp.0.join("restart.json");
@@ -127,6 +128,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
             .env("H2_AGENT", &opts.socket)
             .env("H2_THEATER_WORK", &temp.0)
             .env("H2_THEATER_TARGET", target.to_string())
+            .env("H2_THEATER_FROM", from_tick.to_string())
             .env("H2_THEATER_SPEED", speed.to_string())
             .env("H2_THEATER_PAUSED", if paused { "1" } else { "0" })
             .env("H2_HOST_LOBBY", if header.lobby { "1" } else { "0" })
@@ -157,11 +159,13 @@ pub fn run(args: Vec<String>) -> Result<()> {
         if !restart.try_exists()? {
             return Ok(());
         }
-        (target, speed, paused, presentation) = serde_json::from_reader(fs::File::open(restart)?)?;
+        (target, speed, paused, presentation, from_tick) =
+            serde_json::from_reader(fs::File::open(restart)?)?;
     }
 }
 
 fn child(opts: Options, work: &Path) -> Result<()> {
+    let child_started = std::time::Instant::now();
     let mut film = film::Reader::open(&opts.film)?;
     let xbe = boot::read_xbe(&opts.disc)?;
     let xbe_sha256 = film::xbe_digest(&xbe);
@@ -244,6 +248,10 @@ fn child(opts: Options, work: &Path) -> Result<()> {
         render_every: opts.every,
         speed: std::env::var("H2_THEATER_SPEED")?.parse()?,
         seek_tick: target,
+        from_tick: std::env::var("H2_THEATER_FROM")
+            .ok()
+            .and_then(|tick| tick.parse().ok())
+            .unwrap_or(0),
         paused_at_target: std::env::var("H2_THEATER_PAUSED")? == "1",
         presentation,
         restart: work.join("restart.json"),
@@ -253,7 +261,7 @@ fn child(opts: Options, work: &Path) -> Result<()> {
     let run = move |host, window_closed| -> Result<()> {
         let mut replay = replay;
         replay.window_closed = window_closed;
-        let r = boot::run_theater(&xbe, &image, &boot, host, replay);
+        let r = boot::run_theater(&xbe, &image, &boot, host, replay, child_started);
         vfs::flush_pending_metadata();
         r.map(|_| ())
     };

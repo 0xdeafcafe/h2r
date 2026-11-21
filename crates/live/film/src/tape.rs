@@ -17,6 +17,10 @@ pub const VSIZ: Tag = *b"VSIZ";
 pub const VIDEO_MENU_SIZE: &str = "Video.MenuSize";
 pub const PDEV: Tag = *b"PDEV";
 
+/// Streams of indexed HLE calls, in report order. PDEV and BOTR carry
+/// separate boundary records and do not advance the call cursor.
+pub const CALL_STREAMS: [Tag; 6] = [crate::NETR, crate::RAND, PADR, TEXT, BTAP, VSIZ];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PortChange {
     /// 0 describes the state before the first pump.
@@ -134,7 +138,7 @@ impl Playback {
                 "unexpected data after film end"
             );
             match e.tag {
-                crate::NETR | crate::RAND | PADR | TEXT | BTAP | VSIZ => streams.push_back(e),
+                tag if CALL_STREAMS.contains(&tag) => streams.push_back(e),
                 crate::DATA => data += 1,
                 crate::HASH => {
                     let check: Check = reader.read(&e)?;
@@ -219,6 +223,11 @@ impl Playback {
         self.checks.retain(|check| check.tick > tick);
         self.lobby.retain(|(at, _, _)| *at > lobby_boundary);
         Ok(())
+    }
+    /// The recorded D3D capture boundaries still ahead of the tape cursor,
+    /// as (file offset, scheduler slice, completed tick, save succeeded).
+    pub fn barriers(&self) -> impl Iterator<Item = (u64, u64, u64, bool)> + '_ {
+        self.barriers.iter().copied()
     }
     /// A linear run repeats D3D's push-buffer drain, target writeback and
     /// visibility queries at the same scheduler boundary as the recorder.

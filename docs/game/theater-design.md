@@ -466,9 +466,9 @@ opens `h2recomp://theater/<film>?clip=<clip>&t=<tick>&seat=<n>&camera=<mode>&ser
 | Replay after a ring restore | worst 150 ticks: 2.1 s at 14.12 ms, 1.1 s at 7.5 ms; mean half that | **Estimate** |
 | Replay after a sidecar keyframe | worst 900 ticks: 12.7 s at 14.12 ms, 6.8 s at 7.5 ms; mean half that | **Estimate** |
 | Replay from the start, 10-minute film | 18,000 ticks: 4.2 min at 14.12 ms, 2.3 min at 7.5 ms | **Estimate** |
-| Warm RAM restore | bounded by one 64 MiB copy | **S**: measure in slice 0 |
-| Process start, boot and cold keyframe restore | not measured | slice 0 |
-| Pages written per 5 s and per 30 s of play | not measured; `guest_written_pages` gives the whole-match count | **Code**: `crates/live/sim-bench/src/metrics.rs`; slice 0 |
+| Warm RAM restore | bounded by one 64 MiB copy | **S**: measure after warm restore is available |
+| Process start, boot and cold keyframe restore | to be measured | [Theater seek measurements](notes/theater-seek.md) |
+| Pages written per 5 s and per 30 s of play | to be measured | [Theater seek measurements](notes/theater-seek.md) |
 | Arena keyframe | 4 MiB plus the extension blob, at most 2 ms to take | [sim-rewrite.md](../engine/sim-rewrite.md) section 1, a target |
 | Arena ring | one entry a second: 60 entries for a minute, 240 MiB before page sharing; worst replay 30 ticks, 0.23 s at 7.5 ms | **Estimate** |
 

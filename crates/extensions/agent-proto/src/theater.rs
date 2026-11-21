@@ -7,7 +7,40 @@ pub const PAUSE: &str = "theater.pause";
 pub const SPEED: &str = "theater.speed";
 pub const SEEK: &str = "theater.seek";
 pub const CAMERA: &str = "theater.camera";
-pub const METHODS: [&str; 6] = [PLAY, STATE, PAUSE, SPEED, SEEK, CAMERA];
+pub const KEYFRAMES: &str = "theater.keyframes";
+pub const MEASUREMENTS: &str = "theater.measurements";
+pub const METHODS: [&str; 8] = [PLAY, STATE, PAUSE, SPEED, SEEK, CAMERA, KEYFRAMES, MEASUREMENTS];
+
+/// Host wall-clock timings and write-watch counts for an instrumented run.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Measurements {
+    pub child_to_first_slice_ms: Option<u64>,
+    pub boot_to_match_start_ms: Option<u64>,
+    pub match_start_tick: Option<u64>,
+    pub fast_forward_ms: Option<u64>,
+    pub fast_forward_ticks: Option<u64>,
+    pub captures: Vec<CaptureMeasurement>,
+    pub page_windows: Vec<PageWindow>,
+    pub captures_omitted: u64,
+    pub page_windows_omitted: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaptureMeasurement {
+    pub tick: u64,
+    pub slices: u64,
+    pub elapsed_ms: u64,
+    pub published: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageWindow {
+    pub seconds: u32,
+    pub from_tick: u64,
+    pub to_tick: u64,
+    pub pages: u64,
+}
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -59,6 +92,29 @@ pub struct Camera {
     #[serde(default)]
     pub zoom: f32,
 }
+/// The cheapest recorded state a seek restored or replays from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SeekSource {
+    Ring,
+    Keyframe,
+    Sidecar,
+    Boot,
+}
+
+/// The jump the player is serving, kept after it completes so the restore
+/// cost stays visible until the next jump. `restore_ms` is null until the
+/// restore finishes, and stays null when no keyframe was restored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeekInfo {
+    pub target: u64,
+    pub from_tick: u64,
+    pub source: SeekSource,
+    pub warm: bool,
+    pub remaining_ticks: u64,
+    pub restore_ms: Option<u64>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct State {
     pub id: String,
@@ -74,4 +130,22 @@ pub struct State {
     pub camera_player: Option<String>,
     #[serde(default)]
     pub kills: Vec<u64>,
+    #[serde(default)]
+    pub seek: Option<SeekInfo>,
+}
+
+/// The recorded states the player can seek from, and the film's capture
+/// points. The session ring and sidecar keyframes do not exist yet: both
+/// lists are empty and the byte counts are zero.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct Keyframes {
+    /// Ticks of the film's own machine keyframes, in order.
+    pub film: Vec<u64>,
+    pub sidecar: Vec<u64>,
+    pub ring: Vec<u64>,
+    /// Ticks of the film's recorded D3D capture boundaries, in order.
+    pub capture_points: Vec<u64>,
+    pub ring_bytes: u64,
+    pub ring_cap: u64,
+    pub sidecar_bytes: u64,
 }
