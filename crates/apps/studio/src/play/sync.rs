@@ -7,10 +7,10 @@
 //! raw paths from `scenario_edit::layout`: `+<block>/<stride>[<i>].+<field>:
 //! bytes[n]`, the field's exact bytes as hex.
 //!
-//! [`Baseline`] is what the game is taken to hold (the loaded file plus every acknowledged write). [`diff`] lists
-//! the fields that changed since, per element. A block whose length
-//! changed (an entry added or removed) can't follow: the game's block is
-//! laid out where the map put it, so that needs a reload.
+//! [`Baseline`] holds the loaded file's block layouts and bytes plus every
+//! acknowledged write. [`diff`] lists field changes only for blocks whose
+//! layout revision still matches the loaded copy. Adding or removing an
+//! entry changes the revision even when the final count stays the same.
 
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -21,7 +21,13 @@ use scenario_edit::{BlockKind, Scenario};
 /// The scenario's placement blocks as the game is taken to hold them.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Baseline {
-    blocks: BTreeMap<BlockKind, Vec<Vec<u8>>>,
+    blocks: BTreeMap<BlockKind, LoadedBlock>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct LoadedBlock {
+    layout_rev: u64,
+    entries: Vec<Vec<u8>>,
 }
 
 /// One field write: what `edit.batch` gets, and what it is for the log.
@@ -43,8 +49,7 @@ pub struct Write {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Diff {
     pub writes: Vec<Write>,
-    /// Blocks whose entry count changed since the baseline: the game needs
-    /// the map loaded again (Play again) to see them.
+    /// Blocks whose slot layout differs from the loaded copy.
     pub reload: Vec<BlockKind>,
 }
 
@@ -53,7 +58,13 @@ impl Baseline {
         Self {
             blocks: BLOCKS
                 .iter()
-                .map(|b| (b.kind, s.block(b.kind).source_entries().to_vec()))
+                .map(|b| {
+                    let block = LoadedBlock {
+                        layout_rev: 0,
+                        entries: s.block(b.kind).source_entries().to_vec(),
+                    };
+                    (b.kind, block)
+                })
                 .collect(),
         }
     }
@@ -67,7 +78,11 @@ impl Baseline {
                 let entries = (0..block.len())
                     .filter_map(|i| block.entry(i).map(<[u8]>::to_vec))
                     .collect();
-                (b.kind, entries)
+                let loaded = LoadedBlock {
+                    layout_rev: block.layout_rev(),
+                    entries,
+                };
+                (b.kind, loaded)
             })
             .collect();
         Baseline { blocks }
@@ -81,7 +96,7 @@ impl Baseline {
         let Some(entry) = self
             .blocks
             .get_mut(&w.block)
-            .and_then(|b| b.get_mut(w.index))
+            .and_then(|b| b.entries.get_mut(w.index))
         else {
             return;
         };
@@ -100,7 +115,8 @@ impl Baseline {
         let start = u64::from(at);
         let end = start + bytes.len() as u64;
         let mut spans = Vec::new();
-        for (kind, entries) in &mut self.blocks {
+        for (kind, loaded) in &mut self.blocks {
+            let entries = &mut loaded.entries;
             let block = s.block(*kind);
             // The map writer relocates a grown block in a play copy. Only a
             // path resolved by the game identifies its slots in that case.
@@ -134,12 +150,14 @@ impl Baseline {
 
     /// Whether an index in this document block still names the game's slot.
     pub fn layout_matches(&self, s: &Scenario, kind: BlockKind) -> bool {
-        self.len(kind) == s.block(kind).len()
+        self.blocks
+            .get(&kind)
+            .is_some_and(|loaded| loaded.layout_rev == s.block(kind).layout_rev())
     }
 
     /// Entries the baseline has in `kind`.
     pub fn len(&self, kind: BlockKind) -> usize {
-        self.blocks.get(&kind).map_or(0, Vec::len)
+        self.blocks.get(&kind).map_or(0, |b| b.entries.len())
     }
 }
 
@@ -163,11 +181,11 @@ pub fn diff(base: &Baseline, now: &Scenario) -> Diff {
         let Some(old) = base.blocks.get(&b.kind) else {
             continue;
         };
-        if !base.layout_matches(now, b.kind) {
+        if old.layout_rev != block.layout_rev() {
             out.reload.push(b.kind);
             continue;
         }
-        for (i, was) in old.iter().enumerate() {
+        for (i, was) in old.entries.iter().enumerate() {
             let Some(cur) = block.entry(i) else { continue };
             if cur == was.as_slice() {
                 continue;
@@ -322,7 +340,7 @@ mod tests {
         let spans = base.observe(scenario, block.address - 1, &bytes);
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0], 1..bytes.len());
-        let entries = &base.blocks[&kind];
+        let entries = &base.blocks[&kind].entries;
         assert_eq!(entries[0], bytes[1..1 + stride]);
         assert_eq!(entries[1][..5], bytes[1 + stride..]);
         assert_eq!(entries[1][5..], block.entry(1).unwrap()[5..]);

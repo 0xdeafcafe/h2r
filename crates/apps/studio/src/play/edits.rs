@@ -325,7 +325,7 @@ impl Play {
                 tag.clone(),
                 &format!("{b:?}"),
                 RELOAD,
-                "placement count changed",
+                "placement layout changed",
             ));
         }
         d.writes.retain(|w| {

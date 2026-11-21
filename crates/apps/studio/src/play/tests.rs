@@ -213,6 +213,64 @@ fn replacing_a_placement_only_pokes_other_blocks() {
 }
 
 #[test]
+fn reloading_a_play_copy_uses_the_layout_at_save_time() {
+    let (_t, game, mut app, mut play) = paired("copy-layout", "example", SessionKind::Local);
+    let kind = BlockKind::Weapons;
+    app.session.remove_entry(kind, 0).unwrap();
+    app.session.add_entry(kind, None).unwrap();
+    play.apply_edits(&mut app, Apply::Send).unwrap();
+    play.push_edits(&mut app);
+    assert_eq!(play.reload, [kind]);
+    {
+        let _boundary = game.boundary.lock().unwrap();
+        play.apply_edits(&mut app, Apply::Reload).unwrap();
+        // Undo in the document after saving, before the game loads the copy.
+        assert!(app.session.undo());
+        assert!(app.session.undo());
+        play.push_edits(&mut app);
+        assert!(play.reload.is_empty());
+    }
+    until(&mut play, &mut app, "the saved layout at the new epoch", |p, a| {
+        p.edits.epoch == Some(2)
+            && p.link_view(a).state.name() == "viewing"
+            && a.pairing.play_copy.is_some()
+            && p.reload == [kind]
+    });
+    let loads = game.calls("map.reload");
+    assert_eq!(loads.len(), 1);
+    std::fs::remove_file(loads[0]["file"].as_str().unwrap()).unwrap();
+
+    // Redo returns to the copy's slot order, so a field edit can reach it.
+    assert!(app.session.redo());
+    assert!(app.session.redo());
+    play.push_edits(&mut app);
+    assert!(app.pairing.pending.is_empty());
+    assert!(game.calls("edit.batch").is_empty());
+    play.apply_edits(&mut app, Apply::Send).unwrap();
+    app.session
+        .apply(Command::set(
+            kind,
+            0,
+            "position",
+            FieldValue::Vec3([3., 4., 5.]),
+        ))
+        .unwrap();
+    until(&mut play, &mut app, "the field in the reloaded block", |p, a| {
+        !game.calls("edit.batch").is_empty()
+            && p.edits.sent.is_none()
+            && a.pairing.pending.is_empty()
+    });
+    let calls = game.calls("edit.batch");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["writes"].as_array().unwrap().len(), 1);
+    let block = scenario_edit::layout::block(kind);
+    assert_eq!(
+        calls[0]["writes"][0]["path"],
+        sync::path(kind, 0, block.field("position").unwrap())
+    );
+}
+
+#[test]
 fn teleport_and_spawn_move_the_player() {
     let (_t, game, mut app, mut play) = paired("tp", "example", SessionKind::MpHost);
     app.session.camera_mut().target = [3.0, 4.0, 5.0];
@@ -343,7 +401,7 @@ fn play_writes_the_edited_map_for_the_override() {
             assert_eq!(p, [5.0, 6.0, 7.0]);
             assert!(!written.is_empty());
             assert!(app.is_dirty(), "writing the play copy is not a save");
-            let _ = std::fs::remove_dir_all(launch::scratch());
+            let _ = std::fs::remove_dir_all(dir);
         }
         Err(e) => assert!(e.contains("disc"), "{e}"),
     }

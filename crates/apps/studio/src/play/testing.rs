@@ -281,6 +281,18 @@ pub(crate) mod fake {
                 r(v);
                 Ok(json!({"wrote": ["pos"]}))
             });
+            let bsp = Arc::new(AtomicU32::new(0));
+            let reload_bsp = Arc::clone(&bsp);
+            let state = Arc::clone(&edits);
+            let r = rec("map.reload");
+            agent.add_method("map.reload", Access::Act, move |params| {
+                let params = r(params);
+                let file = params["file"].as_str().unwrap();
+                let loaded = scenario_edit::MapSource::file(file).open().unwrap();
+                state.lock().unwrap().checksum = loaded.header().checksum;
+                reload_bsp.fetch_add(1, Ordering::Relaxed);
+                Ok(json!({}))
+            });
             let server = Server::listen(&path, agent.clone()).unwrap();
             let stop = Arc::new(AtomicBool::new(false));
             let (s, a) = (Arc::clone(&stop), agent.clone());
@@ -289,7 +301,6 @@ pub(crate) mod fake {
             let game_moved = Arc::clone(&moved);
             let boundary = Arc::new(Mutex::new(()));
             let game_boundary = Arc::clone(&boundary);
-            let bsp = Arc::new(AtomicU32::new(0));
             let game_bsp = Arc::clone(&bsp);
             let thread = thread::spawn(move || {
                 let mut w = World {

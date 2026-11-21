@@ -271,7 +271,7 @@ pending list.
 | **Poke, next creation** | values copied into an object when it is made: a projectile's initial speed, an object's vitality, placement fields | `edit.batch`, then optionally a respawn | objects made after it; **Respawn now** remakes the ones that exist |
 | **Poke, unknown** | any field with no recorded class | `edit.batch` | written at once; the badge says when it shows is not known |
 | **Object** | moving, turning or deleting a thing that exists; previewing a new placement | `world.object.set`, `.delete`, `.respawn`, `sim.spawn` | next tick |
-| **Reload** | a block's count changing (placements added or removed, block elements), new tags, new strings, grown blocks, structure BSP and lightmap edits, bitmap pixels of another size | saving the play copy and loading the map again | after the reload |
+| **Reload** | placement slots added, duplicated or removed, changes to tag block counts, new tags, new strings, grown blocks, structure BSP and lightmap edits, bitmap pixels of another size | saving the play copy and loading the map again | after the reload |
 
 The class of a field is data, not a guess made in the UI: `tags::defs`
 gains an `applies` attribute (`frame`, `use`, `creation`) with its
@@ -289,7 +289,14 @@ reloads". Deleting one deletes its object and marks the entry "still in
 the game's scenario until the map reloads", since a respawn timer may
 make it again.
 
-**Reload.** Pending reload edits collect under one **Reload map** button.
+**Reload.** The editor compares each placement block's layout revision with the
+revision in the loaded file or Play copy. A remove followed by an add can
+leave the count unchanged and still move a placement to a different slot.
+All fields in that block wait for reload. Undoing the structural edits
+restores the earlier revision. Loading a Play copy sets the baseline to
+the layout saved in that copy.
+
+Pending reload edits collect under one **Reload map** button.
 For a game the editor started it is Play again: the play copy is written
 and the game relaunched (`play/launch.rs`). For a game it only paired
 with, the editor writes the play copy and calls `map.reload {file}`; a

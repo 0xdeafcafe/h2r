@@ -288,6 +288,9 @@ Notes on some:
   refreshes the loaded datum table used to check reference targets. Undo and redo use the same check.
   `mirror.pending` returns `pending` rows with `doc,tag,path,class,why`,
   the game’s existing `journal` from `edit.changes`, and `leaving`.
+  A placement block with a different layout revision from the loaded copy
+  appears as one `Reload` row. Its fields stay out of the batch until undo,
+  redo, or loading a Play copy brings the revisions into agreement.
   `mirror.apply {what:"send"}` enters Edit. On MISMATCH, `take` and
   `overwrite` require the row’s numeric `at`. `take` reads the field at the
   current game boundary before applying the bytes to the document and baseline.
