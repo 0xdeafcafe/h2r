@@ -1,5 +1,5 @@
 //! Rust layouts are constant assertions on every compiled target. Clang checks
-//! every header field against those values for the macOS and Linux targets.
+//! every header field against those values for the macOS, Linux and Windows targets.
 use runtime::{CpuAbi, TransferAbi, cpu::X87Abi};
 use std::{
     fs,
@@ -22,7 +22,7 @@ const _: () = {
 };
 
 #[test]
-fn c_header_matches_every_rust_field_on_macos_and_linux() {
+fn c_header_matches_every_rust_field_on_supported_targets() {
     let mut source = String::from("#include \"h2abi.h\"\n");
     macro_rules! check {
         ($ty:ty, $($field:ident),+ $(,)?) => { $( source.push_str(&format!(

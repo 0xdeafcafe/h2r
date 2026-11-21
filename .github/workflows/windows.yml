@@ -45,7 +45,7 @@ jobs:
         with:
           cache-on-failure: true
       - name: Check workspace and tests
-        run: cargo check --workspace --tests
+        run: cargo check --workspace --tests --keep-going
       - name: Run synthetic unit tests
         run: cargo test -p ir -p runtime -p asf -p xiso -p snapshot --lib
       - name: Check the guest C ABI
@@ -58,6 +58,8 @@ jobs:
         run: cargo test -p clif --test differential
       - name: Compile and load a generated DLL
         run: cargo test -p emit --test windows -- --nocapture
+      - name: Prepare and load both desktop tiers
+        run: cargo test -p recomp --features desktop-runtime --lib windows_play_prepares_and_loads_both_tiers
       - name: Link and start h2.exe
         run: cargo run -p cli -- settings list
       - name: Install Vulkan loader and Mesa lavapipe

@@ -689,6 +689,31 @@ mod tests {
         d
     }
 
+    #[cfg(all(windows, feature = "desktop-runtime"))]
+    #[test]
+    fn windows_play_prepares_and_loads_both_tiers() {
+        let dir = std::env::temp_dir().join(format!("h2 windows tiers {}", std::process::id()));
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+        let image = synthetic_xbe(&[0xc3]); // ret
+        for (choice, expected) in [(tier::Choice::Auto, tier::Tier::Fast), (tier::Choice::Clang, tier::Tier::Clang)] {
+            // The desktop starts from the fast module, and uses the clang
+            // module once it is ready. Build it here in the foreground.
+            let plan = tier::prepare(&image, Path::new("synthetic.xbe"), &dir, choice, 1, false).unwrap();
+            assert!(plan.build);
+            assert_eq!(plan.tier, expected);
+            assert_eq!(plan.dylib.file_name().unwrap(), "h2game.dll");
+            // SAFETY: this test prepared the module from its synthetic image with the running host's ABI.
+            let lib = unsafe { open_module(&plan.dylib) }.unwrap();
+            assert_eq!(unsafe { install_bridge(&lib, &shim::bridge()) }.unwrap(), 3);
+        }
+        let warm = tier::plan(&image, &dir, tier::Choice::Auto);
+        assert_eq!(warm.tier, tier::Tier::Clang);
+        assert!(!warm.build && !warm.background_clang);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     /// The cached analysis is keyed by the image and the analyzer, served
     /// whole when both match, recomputed (and rewritten) when the file is
     /// damaged, and bypassed entirely when there is no cache.
