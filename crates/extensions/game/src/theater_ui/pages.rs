@@ -597,6 +597,13 @@ pub(super) fn spec(theater: &Theater, list: bool) -> ScreenSpec {
         if s.rows.iter().all(|row| row.press == Press::Nothing) {
             legend.retain(|p| !p.glyphs.contains(&Glyph::A));
         }
+        // A blocked action (Prepare while it runs) takes no A, so its own
+        // legend leaves Select out.
+        let mut blocked = legend.clone();
+        blocked.retain(|p| !p.glyphs.contains(&Glyph::A));
+        for row in s.rows.iter_mut().filter(|row| row.press == Press::Nothing) {
+            row.prompts = Some(blocked.clone());
+        }
         legend
     };
     s.inputs = vec![
@@ -656,6 +663,14 @@ pub(super) fn spec(theater: &Theater, list: bool) -> ScreenSpec {
                 pane_text(i, t, text_fit::line(&value, i32::from(right - left)))
             })
             .collect();
+        // "Unavailable" is the film's real compatibility, not a missing value.
+        if state.selected.as_ref().is_some_and(|e| {
+            e.film.compatibility == agent_proto::theater::CompatibilityState::Unavailable
+        }) {
+            s.content
+                .unavailable_values
+                .push(format!("theater.panel.{HEADER_LINES}"));
+        }
         let message = if !state.status.is_empty() {
             Some(state.status.as_str())
         } else {

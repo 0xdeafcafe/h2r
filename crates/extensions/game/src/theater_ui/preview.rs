@@ -260,6 +260,12 @@ impl Live for Preview {
             return Some(page.step(focus, input) != ListEffect::None);
         }
         let list = matches!(self.show, Kind::Films);
+        if let (Some(track), Some(menu)) = (&self.track, &mut self.menu) {
+            // The pause menu only reads the sample's track and moves its
+            // own focus and picker; its commands change the track, not the
+            // world.
+            return Some(menu.handles(track, input).1);
+        }
         if matches!(self.show, Kind::Playback | Kind::Pause)
             || list && input == Input::A && self.focus.0 == BROWSE_ROWS
                 && self.theater.state().library_error().is_some()
