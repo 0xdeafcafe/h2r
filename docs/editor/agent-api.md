@@ -89,6 +89,8 @@ What goes through actions, from both sides:
 | UI screens | `UiPick`, `UiPress` | the UI Screens tool | `ui.pick`, `ui.press` |
 | Playtest | `play::playtest::decide` | F5, Play button, Game menu and confirmation dialog | `pair.playtest {confirm?, prompt?}` |
 | Playtest settings | `play::pair::Bridge` | Game menu and Game tab spawn picker | `pair.settings {spawn?, pause_while_editing?}` |
+| Live selection | `play::select` | click a live object, Aim select in the bar or Game menu | `mirror.pick`, `mirror.aim_select` |
+| Shared camera and player moves | `play::presence` | viewport camera menu, T and Shift+T | `mirror.camera`, `mirror.player` |
 | Game link | `play::pair::Request` | game link bar, Game menu and Game panel | `pair.connect`, `pair.disconnect`, `pair.auto`, `pair.play`, `pair.stop`, `pair.control`, `pair.edit` |
 
 The playlist fields apply their `PlaylistEdit`s inside the frame's
@@ -172,7 +174,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
 | `ui` | `palette {query, run?}`, `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}` |
 | `pair` | `list`, `status`, `connect {socket?}`, `disconnect {leave?}`, `auto {enabled?}`, `play`, `stop`, `control {action, ticks?}`, `edit {enabled}` |
-| `mirror` | `status`, `objects {kind?, near?, limit?, at_tick?}`, `pending`, `apply {what, at?, peers?}` |
+| `mirror` | `status`, `objects {kind?, near?, limit?, at_tick?}`, `pick {from? \| ray?}`, `aim_select {enabled?}`, `camera {mode?, target?}`, `player {to, facing?}`, `pending`, `apply {what, at?, peers?}` |
 | `view` | `camera {yaw, pitch, distance, target, focus, all, fly_speed}`, `snapshot {out, size, camera}`, `stats`, `layers {set?, preset?, xray?}` |
 | `hud` | `list {map \| package}`, `read {hud, state}`, `set {hud, widget, field, value, merge}`, `move {hud, widget, x, y, mode, merge}`, `render {hud, state, out}`, `check {hud, state}`, `save_as {path}` |
 | `model` (planned) | `list`, `read`, `render`, `colors`, `emblem` |
@@ -367,6 +369,34 @@ Notes on some:
   of attached objects are relative to their parents. `near` takes
   `{point: [x,y,z], radius}` in world space. Bind-pose objects have no
   streamed nodes. Pairing and presentation are described in [live-mirror.md](live-mirror.md).
+- **Live selection.** `mirror.pick {"from":"aim"}` uses the local player's
+  aim. Supply `{"ray":{"origin":[x,y,z],"dir":[dx,dy,dz]}}` for a world
+  ray. The first live object in front of the level returns
+  `{object, placement, tag, point, distance}`. Handles are hex strings,
+  `placement` is a linked `{block,index}` or null, and a miss returns null.
+  The link uses the object's kind and placement index in the loaded block
+  layout. If a structural edit changes that layout, the object stays
+  unlinked until undo or a reload restores matching slots.
+  Picking over the socket leaves selection alone. Clicking in the viewport
+  selects the linked placement or the live object and its available definition.
+  `mirror.aim_select {enabled?}` returns `{enabled,candidate}`. The
+  candidate has the same shape as a pick. Holding it for 0.6 seconds selects
+  it. In View and Edit the paired window renews its selection and candidate
+  marks once a second on the game's display. Unpairing clears the link
+  plate and marks. A dropped connection lets their three-second leases
+  expire. `pair.status.link.unavailable` reports
+  missing presentation methods and the host's display refusal.
+- **Shared camera.** `mirror.camera {mode?,target?}` returns `{mode,target}`.
+  `free` releases the editor viewport, `follow` keeps the eye's orbit offset
+  as the local player moves, and `eyes` looks along the player's aim from
+  eye height. A following camera reports the local `player.<index>` as its
+  target. The free camera reports null. The viewport toolbar has the same
+  modes. `mirror.player {to,facing?}` queues a move in Edit and returns
+  `{"requested":true}`. Give a world position, `"camera"` for the ground
+  under the editor camera's focus, or `"cursor"` for the level under the
+  viewport pointer. T uses the cursor. Shift+T or `facing:true` also sends
+  the camera's yaw and pitch. A missing destination, player, permission or
+  game method returns `REFUSED`.
 - **Viewport layers.** `view.layers {}` returns `{layers, xray}`. Each layer
   has a stable `name` for calls, a display `label`, a `group`, the visibility
   switch `on`, a `count` and its legend `color` (RGB, each channel 0 to 1).

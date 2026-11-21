@@ -26,6 +26,8 @@ pub enum Purpose {
     Capabilities,
     Reload(u64),
     Focus,
+    Indicator,
+    Marks,
     Journal(u64),
     Revert {
         leave: bool,
@@ -93,7 +95,7 @@ pub struct Link {
     pub endpoint: Endpoint,
     calls: Sender<Call>,
     events: Receiver<Event>,
-    stop: Sender<()>,
+    stop: Sender<Vec<Call>>,
 }
 
 impl Link {
@@ -121,6 +123,12 @@ impl Link {
         });
     }
 
+    /// Discard queued work and release presentation leases on this connection.
+    /// The worker finishes an in-flight call before sending the clears.
+    pub(super) fn close_with(self, clears: Vec<Call>) {
+        let _ = self.stop.send(clears);
+    }
+
     /// Everything reported since the last drain.
     pub fn drain(&self) -> Vec<Event> {
         self.events.try_iter().collect()
@@ -134,11 +142,11 @@ impl Link {
 
 impl Drop for Link {
     fn drop(&mut self) {
-        let _ = self.stop.send(());
+        let _ = self.stop.send(Vec::new());
     }
 }
 
-fn connect(ep: &Endpoint, options: &Options, stop: &Receiver<()>) -> Result<Client, String> {
+fn connect(ep: &Endpoint, options: &Options, stop: &Receiver<Vec<Call>>) -> Result<Client, String> {
     let until = Instant::now() + options.wait;
     loop {
         match Client::connect_to(ep) {
@@ -162,7 +170,7 @@ fn run(
     options: Options,
     calls: Receiver<Call>,
     events: Sender<Event>,
-    stop: Receiver<()>,
+    stop: Receiver<Vec<Call>>,
 ) {
     let mut c = match connect(&ep, &options, &stop) {
         Ok(c) => c,
@@ -175,7 +183,8 @@ fn run(
     let _ = events.send(Event::Connected);
     let mut next_poll = Instant::now();
     loop {
-        if stop.try_recv().is_ok() {
+        if let Ok(clears) = stop.try_recv() {
+            clear_leases(&mut c, clears);
             return;
         }
         let wait = next_poll.saturating_duration_since(Instant::now());
@@ -199,7 +208,12 @@ fn run(
                     }),
                 });
             }
-            Err(RecvTimeoutError::Disconnected) => return,
+            Err(RecvTimeoutError::Disconnected) => {
+                if let Ok(clears) = stop.try_recv() {
+                    clear_leases(&mut c, clears);
+                }
+                return;
+            }
             Err(RecvTimeoutError::Timeout) => {
                 next_poll = Instant::now() + options.poll;
                 match c.call(method::STATUS, Value::Null) {
@@ -213,6 +227,12 @@ fn run(
                 }
             }
         }
+    }
+}
+
+fn clear_leases(client: &mut Client, clears: Vec<Call>) {
+    for clear in clears {
+        let _ = client.call(&clear.method, clear.params);
     }
 }
 

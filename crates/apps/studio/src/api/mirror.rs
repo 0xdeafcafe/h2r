@@ -6,6 +6,13 @@ use studio_proto::{code, method as m};
 
 use super::{MethodDef, P, Provider, Reply, def, err};
 use crate::App;
+use crate::play::{
+    Play,
+    pair::Request,
+    presence::{CameraMode, PlayerMove},
+    select,
+};
+use scenario_edit::geometry::Ray;
 
 pub struct Mirror;
 
@@ -34,6 +41,34 @@ impl Provider for Mirror {
                 r#"{"what":"send"}"#,
             ),
             def(
+                m::MIRROR_PICK,
+                "Pick the first live object before the level surface, or null on a miss, without changing selection",
+                r#"{"from?":"aim","ray?":{"origin":"[x,y,z]","dir":"[x,y,z]"}}"#,
+                r#"[{"object":"handle","placement":"entry|null","tag":"handle|null","point":"[x,y,z]","distance":"number"},null]"#,
+                r#"{"from":"aim"}"#,
+            ),
+            def(
+                m::MIRROR_AIM_SELECT,
+                "Read or toggle selection by dwelling on a live object with the local player's aim",
+                r#"{"enabled?":"boolean"}"#,
+                r#"{"enabled":"boolean","candidate":"hit|null"}"#,
+                "{}",
+            ),
+            def(
+                m::MIRROR_CAMERA,
+                "Read or set the editor viewport's camera mode for the local player",
+                r#"{"mode?":"free|follow|eyes","target?":"player.<index>"}"#,
+                r#"{"mode":"free|follow|eyes","target":"player.<index>|null"}"#,
+                "{}",
+            ),
+            def(
+                m::MIRROR_PLAYER,
+                "Move the local player in Edit mode, optionally matching the editor camera's facing",
+                r#"{"to":"cursor|camera|[x,y,z]","facing?":"boolean"}"#,
+                r#"{"requested":"boolean"}"#,
+                r#"{"to":"camera","facing":true}"#,
+            ),
+            def(
                 m::MIRROR_OBJECTS,
                 "Objects at the shown tick, or an exact retained game tick. Handles, kinds and parent-relative positions use sim.objects conventions",
                 r#"{"at_tick?":"integer","kind?":"tag group","near?":{"point":"[x,y,z]","radius":"number"},"limit?":"integer"}"#,
@@ -50,6 +85,10 @@ impl Provider for Mirror {
                 json!({"pending":app.pairing.pending,"journal":app.pairing.journal,"leaving":app.pairing.leaving}),
             )),
             m::MIRROR_APPLY => Some(apply(app, &P(params))),
+            m::MIRROR_PICK => Some(pick(app, &P(params))),
+            m::MIRROR_AIM_SELECT => Some(aim_select(app, &P(params))),
+            m::MIRROR_CAMERA => Some(camera(app, &P(params))),
+            m::MIRROR_PLAYER => Some(move_player(app, &P(params))),
             m::MIRROR_OBJECTS => Some(objects(app, &P(params))),
             _ => None,
         }
@@ -213,4 +252,96 @@ fn objects(app: &App, p: &P) -> Reply {
         }));
     }
     Ok(json!({"tick":sample.tick, "objects":objects, "truncated":truncated}))
+}
+
+fn pick(app: &App, p: &P) -> Reply {
+    let hit = match (p.opt_str("from")?, p.get("ray")) {
+        (Some("aim"), None) => select::from_aim(app),
+        (None, Some(value)) => {
+            let ray = P(value);
+            let origin = ray.vec3("origin")?;
+            let dir = ray.vec3("dir")?;
+            let length_sq = scenario_edit::geometry::dot(dir, dir);
+            if !origin.iter().all(|v| v.is_finite()) || !length_sq.is_finite() || length_sq <= 0.0 {
+                return Err(err(
+                    code::INVALID_PARAMS,
+                    "ray needs a finite origin and nonzero finite direction",
+                ));
+            }
+            select::pick(app, &Ray { origin, dir })
+        }
+        _ => {
+            return Err(err(
+                code::INVALID_PARAMS,
+                "use either from: aim or a ray with origin and dir",
+            ));
+        }
+    };
+    Ok(hit.map_or(Value::Null, |hit| hit.json()))
+}
+
+fn aim_select(app: &mut App, p: &P) -> Reply {
+    if p.has("enabled") {
+        Play::set_aim_select(app, p.bool("enabled")?).map_err(|why| err(code::REFUSED, why))?;
+    }
+    let state = &app.pairing.selection;
+    Ok(json!({"enabled":state.enabled,"candidate":state.candidate.as_ref().map(|hit| hit.json())}))
+}
+
+fn camera(app: &mut App, p: &P) -> Reply {
+    let mode = match p.opt_str("mode")? {
+        Some("free") => CameraMode::Free,
+        Some("follow") => CameraMode::Follow,
+        Some("eyes") => CameraMode::Eyes,
+        None => app.pairing.camera.mode,
+        Some(_) => {
+            return Err(err(
+                code::INVALID_PARAMS,
+                "mode must be free, follow or eyes",
+            ));
+        }
+    };
+    if let Some(target) = p.opt_str("target")? {
+        let index: u16 = target
+            .strip_prefix("player.")
+            .and_then(|s| s.parse().ok())
+            .ok_or_else(|| err(code::INVALID_PARAMS, "target must be player.<index>"))?;
+        if mode == CameraMode::Free || Play::camera_target(app) != Some(index) {
+            return Err(err(
+                code::REFUSED,
+                "the shared camera follows the local player",
+            ));
+        }
+    }
+    if p.has("mode") {
+        Play::set_camera_mode(app, mode).map_err(|why| err(code::REFUSED, why))?;
+    }
+    let target = match mode {
+        CameraMode::Free => None,
+        CameraMode::Follow | CameraMode::Eyes => Play::camera_target(app),
+    };
+    Ok(json!({"mode":mode.name(),"target":target.map(|index| format!("player.{index}"))}))
+}
+
+fn move_player(app: &mut App, p: &P) -> Reply {
+    let facing = p.bool("facing")?;
+    let position = match p.get("to").and_then(Value::as_str) {
+        Some("cursor") => Play::cursor_destination(app)
+            .ok_or_else(|| err(code::REFUSED, "no level surface under the viewport cursor"))?,
+        Some("camera") => crate::play::ground(app, app.session.camera().target),
+        None => p.vec3("to")?,
+        Some(_) => {
+            return Err(err(
+                code::INVALID_PARAMS,
+                "to must be cursor, camera or [x,y,z]",
+            ));
+        }
+    };
+    if !position.iter().all(|v| v.is_finite()) {
+        return Err(err(code::INVALID_PARAMS, "player position must be finite"));
+    }
+    let request =
+        PlayerMove::capture(app, position, facing).map_err(|why| err(code::REFUSED, why))?;
+    app.pairing.requests.push(Request::MovePlayer(request));
+    Ok(json!({"requested":true}))
 }

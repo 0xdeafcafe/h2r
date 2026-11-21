@@ -17,6 +17,8 @@ pub mod launch;
 pub mod link;
 pub mod pair;
 pub mod playtest;
+pub(crate) mod presence;
+pub(crate) mod select;
 pub mod sync;
 pub mod tag_sync;
 mod capabilities;
@@ -221,6 +223,7 @@ pub struct Play {
     pub live_edits: bool,
     next_push: Instant,
     edits: Edits,
+    presence: presence::Presence,
     reload_copy: Option<edits::ReloadCopy>,
     launch_baseline: Option<(Baseline, tag_sync::TagBaseline)>,
     /// Blocks with entries added or removed since the baseline.
@@ -284,6 +287,7 @@ impl Play {
             live_edits: false,
             next_push: Instant::now(),
             edits: Edits::default(),
+            presence: Default::default(),
             reload_copy: None,
             launch_baseline: None,
             reload: Vec::new(),
@@ -437,12 +441,14 @@ impl Play {
                 }
             }
         };
+        let mut unavailable = self.unavailable_features();
+        unavailable.extend(self.presence.reasons().map(str::to_owned));
         LinkView {
             state,
             tone,
             text,
             why,
-            unavailable: self.unavailable_features(),
+            unavailable,
             can_play: app.loaded_map().is_some()
                 && matches!(self.waiting, Waiting::Idle | Waiting::Pick)
                 && !matches!(self.conn, Conn::Connecting | Conn::Reconnecting { .. }),
@@ -534,6 +540,8 @@ impl Play {
     }
 
     fn start(&mut self, app: &mut App, endpoint: Endpoint, options: Options) {
+        self.close_presence();
+        self.presence = Default::default();
         self.pair_source = pair::Source::Finder;
         self.paired_pid = self.pid_for(&endpoint);
         if let Endpoint::Unix(path) = &endpoint {
@@ -578,7 +586,7 @@ impl Play {
             self.auto_tried.remove(&path);
             self.unpaired.remember(path, self.paired_pid);
         }
-        if self.link.take().is_some() {
+        if self.link.is_some() {
             app.info("unpaired from the game");
         }
         self.disconnect(app);
@@ -747,8 +755,6 @@ impl Play {
                     || matches!(&self.child_endpoint, Some(Endpoint::Unix(own)) if own == path)
             });
         }
-        self.take_requests(app);
-        self.auto_pair(app);
         if let Some(c) = &mut self.child
             && let Ok(Some(code)) = c.try_wait()
         {
@@ -782,6 +788,9 @@ impl Play {
                 }
             }
         }
+        // Revalidate queued controls against the newest map, session and local unit.
+        self.take_requests(app);
+        self.auto_pair(app);
         self.remember_place(app);
         self.maybe_spawn(app);
         self.continue_playtest(app);
@@ -796,7 +805,15 @@ impl Play {
                 self.refresh_pending(app, false);
             }
         }
+        let loaded = self.baseline.as_ref()
+            .filter(|_| self.edits.world == Some(app.session.world_rev()))
+            .map(|(_, base)| base);
+        app.pairing.update_placement_layouts(&app.session, loaded);
+        let now = Instant::now();
+        select::update(app, now);
+        Self::update_shared_camera(app);
         self.publish(app);
+        self.update_presence(app, now);
     }
 
     /// Game-link controls requested by the UI and by `pair.*`.
@@ -843,6 +860,11 @@ impl Play {
                 Request::Pause => self.pause(),
                 Request::Resume => self.resume(),
                 Request::Step(ticks) => self.step(ticks),
+                Request::MovePlayer(request) => {
+                    if let Err(why) = self.send_player_move(app, request) {
+                        app.error(why);
+                    }
+                }
             }
         }
     }
@@ -897,7 +919,8 @@ impl Play {
     }
 
     fn disconnect(&mut self, app: &mut App) {
-        self.link = None;
+        self.close_presence();
+        self.presence = Default::default();
         self.retry = None;
         self.pair_source = pair::Source::Finder;
         self.paired_pid = None;
@@ -957,6 +980,11 @@ impl Play {
         app.pairing.playtest = Some(offer);
         app.pairing.peer_confirmation = self.peer_confirmation();
         let at = self.status.as_ref().map(|s| &s.at);
+        let edits_blocked = self.edits_blocked(app);
+        app.pairing.player_move_available = self.has_method(agent_proto::sim::method::STATE_SET);
+        app.pairing.player_scope = self.edits.epoch
+            .filter(|_| edits_blocked.is_none() && app.pairing.player_move_available)
+            .map(|epoch| (self.pairing_id, app.session.world_rev(), epoch));
         let published = json!({
             "state": state,
             "why": why,
@@ -972,7 +1000,7 @@ impl Play {
             },
             "open_map": app.loaded_map(),
             "live_edits": self.live_edits,
-            "edits_blocked": self.edits_blocked(app),
+            "edits_blocked": edits_blocked,
             "edit_refusal": self.edit_refusal(app),
             "edit_peers": self.edits.peers,
             "auto_pair": app.pairing.auto_pair,
@@ -1007,6 +1035,7 @@ impl Play {
                 if matches!(self.waiting, Waiting::Spawn(_)) {
                     app.error("game link closed before the player move was acknowledged");
                 }
+                self.presence.transport_lost();
                 self.retry = self.link.take().map(|l| l.endpoint.clone()).or(self.retry.take());
                 self.controller = false;
                 self.paused = false;
@@ -1092,6 +1121,9 @@ impl Play {
                     app.pairing.stream_map = reply["map"].clone();
                     reply["streams"].as_array()?.iter().find(|s| s["stream"] == id).cloned()
                 });
+            }
+            (kind @ (Purpose::Indicator | Purpose::Marks), result) => {
+                self.presence_answer(app, kind, result);
             }
             (Purpose::Capabilities, result) => self.received_methods(app, result),
             (Purpose::Map, result) => self.edit_map(app, result),
@@ -1253,33 +1285,9 @@ impl Play {
     /// Move the player to `pos` (`sim.state.set`; refused by the game in a
     /// co-op or client session, and here first).
     pub fn teleport(&self, app: &mut App, pos: Vec3) {
-        if !self.is_paired() {
-            app.error("not paired with a game");
-            return;
+        if let Err(why) = self.player_here(app, pos, false) {
+            app.error(why);
         }
-        if !self.has_method(agent_proto::sim::method::STATE_SET) {
-            app.error("this game does not offer sim.state.set to move the player");
-            return;
-        }
-        if let Some(why) = self.map_refusal(app) {
-            app.error(format!("cannot move the player: {why}"));
-            return;
-        }
-        if app.pairing.shown.as_ref().is_some_and(|s| !app.pairing.matches_sample(app, s)) {
-            app.error("open the streamed map to teleport the player to an editor position");
-            return;
-        }
-        if let Some(Err(e)) = self.session.map(SessionKind::writes) {
-            app.error(format!("not moving the player: {e}"));
-            return;
-        }
-        let index = app.pairing.player().map_or(0, |(player, _)| player.index);
-        let player = format!("player.{index}");
-        self.call(
-            agent_proto::sim::method::STATE_SET,
-            json!({"player": player, "pos": [pos[0], pos[1], pos[2]]}),
-            Purpose::Teleport,
-        );
     }
 
     /// Move the player to the ground under the camera's focus.
@@ -1336,8 +1344,11 @@ pub fn ground(app: &App, p: Vec3) -> Vec3 {
 /// The structure's surface under a viewport point (0..1), for "teleport
 /// to the cursor".
 pub fn surface_at(app: &App, u: f32, v: f32, aspect: f32) -> Option<Vec3> {
-    let ray = app.session.camera().ray(u, v, aspect);
+    surface_under_ray(app, &app.session.camera().ray(u, v, aspect))
+}
+
+fn surface_under_ray(app: &App, ray: &Ray) -> Option<Vec3> {
     // A hidden structure is not a surface the cursor can land on.
-    let at = app.session.surface_hit_visible(&ray, &app.layers)?;
+    let at = app.session.surface_hit_visible(ray, &app.layers)?;
     Some([at[0], at[1], at[2] + LIFT])
 }

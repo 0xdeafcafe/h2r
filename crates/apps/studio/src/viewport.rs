@@ -18,6 +18,7 @@ use scenario_edit::{BlockKind, Session, geometry};
 
 use crate::app::{Action, App};
 use crate::camera;
+use crate::play::select;
 
 /// The gizmo's operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,6 +106,7 @@ pub struct ViewportView {
     overlay_rev: Option<u64>,
     layers: Option<Layers>,
     labels: Vec<mirror::Label>,
+    live_scene: mirror::SceneCache,
     pub op: GizmoOp,
     /// Gizmo axes follow the placement (local) or the world.
     pub local: bool,
@@ -143,6 +145,7 @@ impl ViewportView {
             overlay_rev: None,
             layers: None,
             labels: Vec::new(),
+            live_scene: Default::default(),
             op: GizmoOp::Translate,
             local: false,
             snap: Snap::default(),
@@ -178,7 +181,14 @@ impl ViewportView {
     }
 
     /// Render the scene at `size_px` and return the ImGui texture showing it.
-    fn prepare(&mut self, gpu: &mut Gpu<'_>, app: &App, live: &mirror::Scene, size_px: [u32; 2]) -> Option<TextureId> {
+    fn prepare(
+        &mut self,
+        gpu: &mut Gpu<'_>,
+        app: &App,
+        live: &mirror::Scene,
+        live_changed: bool,
+        size_px: [u32; 2],
+    ) -> Option<TextureId> {
         let vp = self.vp.get_or_insert_with(|| Viewport::new(gpu.device));
         let session = &app.session;
         // The map's textured world and models when it has them (built once
@@ -205,7 +215,9 @@ impl ViewportView {
             self.markers_rev = Some(session.markers_rev());
             self.linked.clone_from(&live.linked);
         }
-        vp.set_live_instances(gpu.device, gpu.queue, session.source(), &live.instances);
+        if world_changed || live_changed {
+            vp.set_live_instances(gpu.device, gpu.queue, session.source(), &live.instances);
+        }
         if self.overlay_rev != Some(app.overlay_rev()) {
             upload_overlays(vp, gpu.device, app);
             self.overlay_rev = Some(app.overlay_rev());
@@ -242,8 +254,8 @@ impl ViewportView {
         ];
         let origin = ui.cursor_screen_pos();
         self.hovered = false;
-        let live = mirror::Scene::shown(app);
-        let Some(texture) = self.prepare(gpu, app, &live, px) else {
+        let (live, live_changed) = self.live_scene.shown(app);
+        let Some(texture) = self.prepare(gpu, app, &live, live_changed, px) else {
             ui.text_disabled("The viewport could not create its render target.");
             return;
         };
@@ -263,6 +275,8 @@ impl ViewportView {
         let cmd = io.key_ctrl() || io.key_super();
         let m = io.mouse_pos();
         let uv = [(m[0] - origin[0]) / size[0], (m[1] - origin[1]) / size[1]];
+        let ray = app.session.camera().ray(uv[0], uv[1], aspect);
+        app.pairing.camera.cursor = hovered.then_some((ray, app.session.world_rev()));
 
         // Camera: right button looks and flies, Alt + left orbits, middle
         // pans, the wheel dollies (or sets the fly speed while flying).
@@ -273,7 +287,6 @@ impl ViewportView {
             self.flying = false;
         }
         if hovered && alt && !using_gizmo && ui.is_mouse_clicked(MouseButton::Left) {
-            let ray = app.session.camera().ray(uv[0], uv[1], aspect);
             let pivot = app
                 .session
                 .selection_sphere()
@@ -322,9 +335,9 @@ impl ViewportView {
             height: size[1],
         };
         self.camera.speed = app.fly_speed();
-        self.camera.update(app.session.camera_mut(), &input);
+        self.camera
+            .update_shared(app.session.camera_mut(), &input, app.pairing.camera.mode);
         app.set_fly_speed(self.camera.speed);
-        let ray = app.session.camera().ray(uv[0], uv[1], aspect);
 
         if self.placing.is_some() && ui.is_key_pressed(Key::Escape) {
             self.placing = None;
@@ -351,9 +364,21 @@ impl ViewportView {
             }
             return;
         }
+        let double =
+            hovered && !alt && !over_gizmo && ui.is_mouse_double_clicked(MouseButton::Left);
+        if (clicked || double)
+            && let Some(hit) = clicked_live(app, &ray, &live.linked)
+        {
+            select::apply(app, hit, cmd && !double);
+            if double {
+                let to = camera::focus_point(app.session.camera(), hit.point, 30.0);
+                self.camera.go_to(app.session.camera_mut(), to);
+            }
+            return;
+        }
         // Double-click focuses what is under the cursor: a placement, else
         // the surface.
-        if hovered && !alt && !over_gizmo && ui.is_mouse_double_clicked(MouseButton::Left) {
+        if double {
             match app.session.pick_visible_linked(&ray, &app.layers, &live.linked) {
                 Some(hit) => {
                     actions.push(Action::Select(Some(hit)));
@@ -459,6 +484,53 @@ impl ViewportView {
         }
         (over, using)
     }
+}
+
+/// A foreground authoring glyph or static mesh can cover a live object.
+fn clicked_live(
+    app: &App,
+    ray: &geometry::Ray,
+    linked: &BTreeSet<(BlockKind, usize)>,
+) -> Option<select::Hit> {
+    let live = select::viewport_pick(app, ray)?;
+    let session = &app.session;
+    let Some(entry) = session.pick_visible_linked(ray, &app.layers, linked) else {
+        return Some(live);
+    };
+    let Some(marker) = session
+        .markers()
+        .iter()
+        .find(|m| (m.block, m.index) == entry)
+    else {
+        return Some(live);
+    };
+    let model = session
+        .scene()
+        .and_then(|s| s.models.get(s.model_of(marker)?));
+    let glyph_drawn = app.layers.visible(LayerId::Markers)
+        && (model.is_none() || linked.contains(&entry) || session.selection().contains(&entry));
+    if glyph_drawn && geometry::pick_glyph([marker], ray).is_some_and(|(t, _, _)| t < live.distance)
+    {
+        return None;
+    }
+    if app.layers.visible(LayerId::Objects)
+        && !linked.contains(&entry)
+        && let Some(model) = model
+    {
+        let scale = marker.scale.max(1e-6);
+        let project = |v| marker.axes.map(|a| geometry::dot(v, a));
+        let local = geometry::Ray {
+            origin: geometry::scale(
+                project(geometry::sub(ray.origin, marker.position)),
+                scale.recip(),
+            ),
+            dir: project(ray.dir),
+        };
+        if model.hit(&local).is_some_and(|t| t * scale < live.distance) {
+            return None;
+        }
+    }
+    Some(live)
 }
 
 pub(crate) fn pick_action(
@@ -605,5 +677,68 @@ mod tests {
             gizmo_operation(GizmoOp::Scale, &facing, false),
             Operation::TRANSLATE
         );
+    }
+}
+
+#[cfg(test)]
+mod live_click_tests {
+    use super::*;
+    use crate::play::testing::Temp;
+    use agent_proto::live::Object;
+
+    #[test]
+    fn click_on_moved_live_object_selects_its_authored_placement() {
+        let temp = Temp::new("viewport-live-click");
+        let mut app = App::new();
+        app.set_data_root(temp.0.join("data"));
+        app.dispatch(Action::OpenSource(temp.map("example")));
+        let world = app.session.world_rev();
+        let id = 0x0200_0003;
+        app.pairing.stream_map = serde_json::json!({
+            "epoch": 1, "name": "example", "checksum": app.session.source_checksum()
+        });
+        app.pairing.shown = Some(live_mirror::Sample {
+            tick: 1,
+            epoch: 1,
+            stale: false,
+            players: vec![],
+            objects: vec![Object {
+                id,
+                tag: Some(scenario_edit::fixture::id(2).0),
+                kind: 2,
+                placement: Some(0),
+                position: [92.0, 12.0, 0.0],
+                forward: [1.0, 0.0, 0.0],
+                up: [0.0, 0.0, 1.0],
+                scale: 1.0,
+                ..Default::default()
+            }],
+        });
+        app.layers.set(LayerId::Live, true);
+        let ray = geometry::Ray {
+            origin: [90.0, 12.0, 0.0],
+            dir: [1.0, 0.0, 0.0],
+        };
+        let live = mirror::Scene::shown(&app);
+        let hit = clicked_live(&app, &ray, &live.linked).unwrap();
+        assert_eq!(hit.object, id);
+        select::apply(&mut app, hit, false);
+        assert_eq!(app.session.selected(), Some((BlockKind::Weapons, 0)));
+        assert_eq!(app.session.world_rev(), world);
+
+        // Removing entry 0 moves the old entry 1 into that slot.
+        app.session.remove_entry(BlockKind::Weapons, 0).unwrap();
+        let live = mirror::Scene::shown(&app);
+        assert!(live.linked.is_empty());
+        let hit = clicked_live(&app, &ray, &live.linked).unwrap();
+        assert_eq!(hit.placement, None);
+        select::apply(&mut app, hit, false);
+        assert_eq!(select::selected_object(&app), Some(id));
+        assert_eq!(app.selection(), Some(crate::app::Selection::Tag(scenario_edit::fixture::id(2))));
+        // Choosing this same definition in the tag tree selects all instances of it.
+        app.dispatch(Action::Navigate(crate::app::NavAction::SelectTag(
+            scenario_edit::fixture::id(2),
+        )));
+        assert_eq!(select::selected_object(&app), None);
     }
 }

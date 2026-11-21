@@ -5,7 +5,9 @@ use std::collections::{BTreeSet, HashMap};
 use agent_proto::live::Object;
 use live_mirror::Sample;
 use map::TagId;
-use scenario_edit::geometry::{Camera, Gameplay, Vec3, add, cross, dot, scale, sub, transform};
+use scenario_edit::geometry::{
+    self, Bounds, Camera, Gameplay, Vec3, add, cross, dot, scale, sub, transform,
+};
 use scenario_edit::layers::LayerId;
 use scenario_edit::render::{Instance, object_light};
 use scenario_edit::{BlockKind, Session};
@@ -51,6 +53,21 @@ impl Pose {
 pub(crate) struct WorldPoses(HashMap<u32, Option<Pose>>);
 
 impl WorldPoses {
+    /// One camera target does not need a pose table for the whole sample.
+    pub(crate) fn unit_position(sample: &Sample, unit: &Object) -> Option<Vec3> {
+        let mut pose = Pose::of(unit);
+        let mut next = unit.parent;
+        for _ in 0..sample.objects.len() {
+            let Some(id) = next else {
+                return Some(pose.position);
+            };
+            let parent = sample.objects.iter().find(|o| o.id == id)?;
+            pose = Pose::of(parent).child(pose);
+            next = parent.parent;
+        }
+        next.is_none().then_some(pose.position)
+    }
+
     pub(crate) fn new(sample: &Sample) -> Self {
         let by_id: HashMap<_, _> = sample.objects.iter().map(|o| (o.id, o)).collect();
         let mut poses = HashMap::<u32, Option<Pose>>::with_capacity(by_id.len());
@@ -85,8 +102,166 @@ impl WorldPoses {
         Self(poses)
     }
 
+    pub(crate) fn sphere(&self, id: u32, offset: Vec3, radius: f32) -> Option<(Vec3, f32)> {
+        let pose = self.0.get(&id).copied().flatten()?;
+        let center = add(pose.position, scale(pose.direction(offset), pose.scale));
+        let radius = radius * pose.scale.abs();
+        (radius > 0.0 && radius.is_finite()).then_some((center, radius))
+    }
+
     pub(crate) fn position(&self, id: u32) -> Option<Vec3> {
         Some(self.0.get(&id).copied().flatten()?.position)
+    }
+}
+
+/// CPU picking also needs the bounds of definitions first seen in the stream.
+#[derive(Debug, Default)]
+pub(crate) struct ModelBounds {
+    world: Option<u64>,
+    entries: HashMap<TagId, Option<Bounds>>,
+    sample: Option<(u64, u64)>,
+}
+
+impl ModelBounds {
+    pub(crate) fn prepare(&mut self, session: &Session, sample: &Sample) {
+        if self.world != Some(session.world_rev()) {
+            self.world = Some(session.world_rev());
+            self.entries.clear();
+            self.sample = None;
+        }
+        let stamp = Some((sample.epoch, sample.tick));
+        if self.sample == stamp {
+            return;
+        }
+        self.sample = stamp;
+        let mut missing = Vec::new();
+        for tag in sample.objects.iter().filter_map(|o| o.tag.map(TagId)) {
+            let std::collections::hash_map::Entry::Vacant(entry) = self.entries.entry(tag) else {
+                continue;
+            };
+            // Composite placement art includes attached children. Live children
+            // have their own records, so use the bare model for the parent.
+            let mesh = session.scene().and_then(|s| {
+                if s.composite_objects.contains(&tag) {
+                    return None;
+                }
+                s.models.get(*s.objects.get(&tag)?)
+            });
+            let bounds = mesh.map(|m| m.bounds).filter(|b| !b.is_empty());
+            entry.insert(bounds);
+            if bounds.is_none() {
+                missing.push(tag);
+            }
+        }
+        if !missing.is_empty()
+            && let Some(source) = session.source()
+        {
+            self.load_streamed(source, missing);
+        }
+    }
+
+    fn load_streamed(&mut self, source: &scenario_edit::MapSource, tags: Vec<TagId>) {
+        let Ok(mut map) = source.open() else { return };
+        let Ok(ctx) = tags::object::Context::read(&mut map) else {
+            return;
+        };
+        let Ok(local) = source.open() else { return };
+        let mut files = vec![(map::ResourceFile::Local, local)];
+        files.extend(
+            geometry::shared_sources(source)
+                .into_iter()
+                .filter_map(|(kind, source)| Some((kind, source.open().ok()?))),
+        );
+        let mut raw = geometry::RawFiles::new(files);
+        for tag in tags {
+            let Some(model) = scenario_edit::scene::render_model_of(&ctx, tag) else {
+                continue;
+            };
+            let Ok(model) = tags::model::RenderModelGeometry::read(&mut map, model, &mut raw)
+            else {
+                continue;
+            };
+            let mut bounds = Bounds::EMPTY;
+            for index in model.default_sections() {
+                let Some(section) = model.sections.get(index) else {
+                    continue;
+                };
+                for part in section.geometry.parts.iter().filter(|p| p.is_drawn()) {
+                    for tri in section.geometry.part_triangles(part) {
+                        if tri[0] == tri[1] || tri[1] == tri[2] || tri[2] == tri[0] {
+                            continue;
+                        }
+                        let [Some(a), Some(b), Some(c)] =
+                            tri.map(|i| section.vertices.positions.get(usize::from(i)))
+                        else {
+                            continue;
+                        };
+                        for &point in [a, b, c] {
+                            bounds.add(point);
+                        }
+                    }
+                }
+            }
+            if !bounds.is_empty() {
+                self.entries.insert(tag, Some(bounds));
+            }
+        }
+    }
+
+    pub(crate) fn sphere(&self, tag: Option<u32>) -> (Vec3, f32) {
+        self.bounds(tag)
+            .map_or(([0.0; 3], geometry::MARKER_RADIUS), |b| {
+                (b.center(), b.radius())
+            })
+    }
+
+    fn bounds(&self, tag: Option<u32>) -> Option<Bounds> {
+        self.entries.get(&TagId(tag?)).copied().flatten()
+    }
+}
+
+/// The interpolator can move an object within one tick. Compare its displayed
+/// transforms before reusing a scene, and release the old scene when unpaired.
+#[derive(Default)]
+pub(super) struct SceneCache {
+    scene: std::sync::Arc<Scene>,
+    inputs: Option<(u64, u64, u64, Option<u32>, u32)>,
+    objects: Vec<Object>,
+    players: Vec<agent_proto::live::Player>,
+}
+
+impl SceneCache {
+    pub(super) fn shown(&mut self, app: &App) -> (std::sync::Arc<Scene>, bool) {
+        let mut changed = false;
+        let sample =
+            app.pairing.shown.as_ref().filter(|_| {
+                app.layers.visible(LayerId::Live) && crate::play::select::matching(app)
+            });
+        if let Some(sample) = sample {
+            let inputs = Some((
+                app.session.world_rev(),
+                app.session.markers_rev(),
+                sample.epoch,
+                crate::play::select::selected_object(app),
+                placement_mask(app),
+            ));
+            if self.inputs != inputs
+                || self.objects != sample.objects
+                || self.players != sample.players
+            {
+                self.scene = std::sync::Arc::new(Scene::shown(app));
+                changed = true;
+                self.inputs = inputs;
+                self.objects.clone_from(&sample.objects);
+                self.players.clone_from(&sample.players);
+            }
+        } else if self.inputs.take().is_some() {
+            self.scene = Default::default();
+            changed = true;
+            self.objects.clear();
+            self.players.clear();
+        }
+        (self.scene.clone(), changed)
     }
 }
 
@@ -96,6 +271,7 @@ pub(crate) struct Scene {
     pub(crate) linked: BTreeSet<(BlockKind, usize)>,
     links: Vec<(Vec3, Vec3)>,
     players: Vec<Player>,
+    glyphs: Vec<(Vec3, f32, bool)>,
 }
 
 struct Player {
@@ -171,25 +347,52 @@ pub(crate) fn snapshot_labels(rgba: &mut [u8], size: [u32; 2], cam: &Camera, lab
     paint_marks(rgba, size, projected_labels(cam, size.map(|n| n as f32), labels));
 }
 
+/// Only placements whose block still has the game's index layout can link.
+fn placement_mask(app: &App) -> u32 {
+    scenario_edit::layout::BLOCKS
+        .iter()
+        .filter_map(|def| {
+            let kind = u32::try_from(def.object_type?).ok()?;
+            app.pairing
+                .placement_matches(&app.session, def.kind)
+                .then_some(1 << kind)
+        })
+        .fold(0, |a, b| a | b)
+}
+
 impl Scene {
     pub(crate) fn shown(app: &App) -> Self {
         let Some(sample) = app.pairing.shown.as_ref() else {
             return Self::default();
         };
-        if !app.layers.visible(scenario_edit::layers::LayerId::Live) || !app.pairing.matches_sample(app, sample) {
+        if !app.layers.visible(LayerId::Live) || !crate::play::select::matching(app) {
             return Self::default();
         }
-        Self::new(sample, &app.session)
+        let mut bounds = app.pairing.selection.bounds.borrow_mut();
+        bounds.prepare(&app.session, sample);
+        Self::new(
+            sample,
+            &app.session,
+            &bounds,
+            crate::play::select::selected_object(app),
+            placement_mask(app),
+        )
     }
 
-    fn new(sample: &Sample, session: &Session) -> Self {
+    fn new(
+        sample: &Sample,
+        session: &Session,
+        bounds: &ModelBounds,
+        selected_object: Option<u32>,
+        linked_kinds: u32,
+    ) -> Self {
         let poses = WorldPoses::new(sample);
         let markers: HashMap<_, _> = session
             .markers()
             .iter()
             .filter_map(|m| {
                 let kind = scenario_edit::layout::block(m.block).object_type?;
-                Some(((kind, m.index), m))
+                (linked_kinds & (1 << kind) != 0).then_some(((kind, m.index), m))
             })
             .collect();
         let players: HashMap<_, _> = sample
@@ -206,7 +409,15 @@ impl Scene {
             let placed = object
                 .placement
                 .and_then(|i| markers.get(&(i16::from(object.kind), usize::from(i))));
-            let selected_here = placed.is_some_and(|m| selected.contains(&(m.block, m.index)));
+            let selected_here = Some(object.id) == selected_object
+                || placed.is_some_and(|m| selected.contains(&(m.block, m.index)));
+            if bounds.bounds(object.tag).is_none() {
+                scene.glyphs.push((
+                    pose.position,
+                    geometry::MARKER_RADIUS * pose.scale.abs(),
+                    selected_here,
+                ));
+            }
             if let Some(tag) = object.tag {
                 let mut instance =
                     Instance::at(pose.position, pose.axes, pose.scale, selected_here);
@@ -242,43 +453,53 @@ impl Scene {
     }
 
     /// Pixel coordinates relative to the viewport, at this camera and size.
-    fn annotations(&self, camera: &Camera, size: [f32; 2]) -> Vec<Mark<'_>> {
-        let project = |p| {
+    fn annotations<'a>(
+        &'a self,
+        camera: &'a Camera,
+        size: [f32; 2],
+    ) -> impl Iterator<Item = Mark<'a>> {
+        let project = move |p| {
             camera
                 .project(p, size[0] / size[1])
                 .map(|q| [q[0] * size[0], q[1] * size[1]])
                 .filter(|q| q.iter().all(|v| v.is_finite()))
         };
-        let mut marks = Vec::new();
-        for &(a, b) in &self.links {
-            if let (Some(a), Some(b)) = (project(a), project(b)) {
-                marks.push(Mark::Line(a, b, [190, 176, 140], 1.0));
-            }
-        }
-        for p in &self.players {
-            let Some(pos) = project(p.pos) else { continue };
-            if let Some(end) = project(add(p.pos, scale(p.aim, 2.5))) {
-                marks.push(Mark::Line(pos, end, p.color, 2.0));
-            }
+        let glyphs = self
+            .glyphs
+            .iter()
+            .flat_map(move |&(center, radius, selected)| {
+                let color = if selected { theme::ACCENT } else { theme::DIM };
+                let color = [color[0], color[1], color[2]].map(|c| (c * 255.0).round() as u8);
+                (0..3).filter_map(move |axis| {
+                    let mut extent = [0.0; 3];
+                    extent[axis] = radius;
+                    let a = project(sub(center, extent))?;
+                    let b = project(add(center, extent))?;
+                    Some(Mark::Line(a, b, color, 1.0))
+                })
+            });
+        let links = self.links.iter().filter_map(move |&(a, b)| {
+            Some(Mark::Line(project(a)?, project(b)?, [190, 176, 140], 1.0))
+        });
+        let players = self.players.iter().filter_map(move |p| {
+            let pos = project(p.pos)?;
+            let aim = project(add(p.pos, scale(p.aim, 2.5)))
+                .map(|end| Mark::Line(pos, end, p.color, 2.0));
             let origin = [pos[0] + 7.0, pos[1] - 25.0];
-            marks.push(Mark::Text(origin, &p.label, p.color));
-            for (offset, value, color) in [
-                (18.0, p.shield, [96, 194, 255]),
-                (22.0, p.body, [112, 220, 134]),
-            ] {
+            let label = Some(Mark::Text(origin, &p.label, p.color));
+            let bar = |offset: f32, value: f32, color| {
                 let a = [origin[0], origin[1] + offset];
-                marks.push(Mark::Line(a, [a[0] + 38.0, a[1]], [40, 44, 48], 3.0));
-                if value > 0.0 {
-                    marks.push(Mark::Line(
-                        a,
-                        [a[0] + 38.0 * value.min(1.0), a[1]],
-                        color,
-                        3.0,
-                    ));
-                }
-            }
-        }
-        marks
+                let track = Mark::Line(a, [a[0] + 38.0, a[1]], [40, 44, 48], 3.0);
+                let fill = (value > 0.0).then(|| {
+                    Mark::Line(a, [a[0] + 38.0 * value.min(1.0), a[1]], color, 3.0)
+                });
+                [Some(track), fill]
+            };
+            let [st, sf] = bar(18.0, p.shield, [96, 194, 255]);
+            let [bt, bf] = bar(22.0, p.body, [112, 220, 134]);
+            Some([aim, label, st, sf, bt, bf].into_iter().flatten())
+        }).flatten();
+        glyphs.chain(links).chain(players)
     }
 
     pub(super) fn overlay(&self, ui: &dear_imgui_rs::Ui, cam: &Camera, rect: [f32; 4]) {
@@ -523,7 +744,7 @@ mod tests {
             scene: None,
         });
 
-        let scene = Scene::new(&sample, &session);
+        let scene = Scene::new(&sample, &session, &ModelBounds::default(), None, u32::MAX);
         assert_eq!(scene.instances.len(), 2);
         assert_eq!(scene.instances[0].0, TagId(51));
         assert_eq!(scene.instances[0].1.t, [3.0, 6.0, 5.0, 1.0]);

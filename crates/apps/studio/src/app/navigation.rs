@@ -66,6 +66,7 @@ pub struct NavHistory {
     world_rev: u64,
     entries: Vec<NavLocation>,
     cursor: usize,
+    revision: u64,
 }
 
 impl NavHistory {
@@ -87,6 +88,7 @@ impl NavHistory {
     }
 
     fn push(&mut self, location: NavLocation) {
+        self.revision += 1;
         self.entries.truncate(self.cursor + 1);
         self.entries.push(location);
         if self.entries.len() > HISTORY_LIMIT {
@@ -113,6 +115,11 @@ impl NavHistory {
 }
 
 impl App {
+    /// Changes to any source of the inspector's selection, without cloning its history.
+    pub(crate) fn selection_revision(&self) -> (u64, u64, u64) {
+        (self.session.world_rev(), self.session.markers_rev(), self.nav.revision)
+    }
+
     pub fn nav_location(&self) -> NavLocation {
         self.nav
             .at(&self.session)
@@ -137,6 +144,7 @@ impl App {
         if matches!(action, NavAction::Back | NavAction::Forward) {
             if let Some(next) = self.nav.target(action == NavAction::Forward, &self.session) {
                 self.nav.cursor = next;
+                self.nav.revision += 1;
                 let destination = &self.nav.entries[next];
                 if destination.placements != self.session.selection() {
                     self.session.select_many(destination.placements.clone());
@@ -148,6 +156,7 @@ impl App {
         }
 
         self.sync_tags();
+        let choosing_subject = matches!(action, NavAction::SelectTag(_) | NavAction::SelectPalette { .. });
         let before = self.nav_location();
         let mut after = before.clone();
         match action {
@@ -214,6 +223,9 @@ impl App {
             self.nav.sync(self.session.world_rev(), before);
             self.nav.push(after);
             self.tags.seal();
+        } else if choosing_subject {
+            // An explicit click on the inspected definition releases a loose live object.
+            self.nav.revision += 1;
         }
         Ok(())
     }

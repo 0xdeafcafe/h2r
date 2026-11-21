@@ -274,6 +274,8 @@ fn reloading_a_play_copy_uses_the_layout_at_save_time() {
 #[test]
 fn teleport_and_spawn_move_the_player() {
     let (_t, game, mut app, mut play) = paired("tp", "example", SessionKind::MpHost);
+    play.apply_edits(&mut app, Apply::Send).unwrap();
+    play.update(&mut app);
     app.session.camera_mut().target = [3.0, 4.0, 5.0];
     play.teleport_to_camera(&mut app);
     until(&mut play, &mut app, "the teleport", |_, _| {

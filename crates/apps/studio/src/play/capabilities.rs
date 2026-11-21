@@ -19,6 +19,8 @@ const FEATURES: &[(&str, &str)] = &[
     (sim::method::STATE_SET, "Moving the player to an editor position"),
     (sim::method::MAP_RELOAD, "Loading a play copy in the running game"),
     (sim::method::OBJECT_RESPAWN, "Respawning an edited placement"),
+    (editor::method::LINK, "Showing the editor link in the game"),
+    (editor::method::MARKS, "Marking the editor selection in the game"),
     (editor::method::FOCUS, "Focusing the game window"),
 ];
 

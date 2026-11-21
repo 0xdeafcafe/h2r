@@ -210,6 +210,7 @@ pub enum Request {
     Pause,
     Resume,
     Step(u64),
+    MovePlayer(super::presence::PlayerMove),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -274,6 +275,13 @@ pub struct Bridge {
     /// The sample shown this editor frame, shared by the viewport and API.
     pub shown: Option<live_mirror::Sample>,
     pub latest: bool,
+    pub(crate) selection: super::select::LiveSelection,
+    pub(crate) camera: super::presence::SharedCamera,
+    /// Slot layouts verified against a loaded play copy. An absent baseline uses source slots.
+    layouts: Vec<(scenario_edit::BlockKind, Option<u64>)>,
+    /// Pairing, editor document and game epoch that accept a player move.
+    pub(crate) player_scope: Option<(u64, u64, u64)>,
+    pub(crate) player_move_available: bool,
     /// Counters reported by the game's writer for this stream.
     pub counters: Option<Value>,
     /// Map identity from the handshake, refreshed over live.status after a cut.
@@ -301,6 +309,11 @@ impl Default for Bridge {
             mirror: None,
             shown: None,
             latest: false,
+            selection: Default::default(),
+            camera: Default::default(),
+            layouts: Vec::new(),
+            player_scope: None,
+            player_move_available: false,
             counters: None,
             stream_map: Value::Null,
             play_copy: None,
@@ -327,10 +340,44 @@ impl Bridge {
     }
 
     pub(super) fn drop_stream(&mut self) {
+        self.selection = Default::default();
+        self.camera = Default::default();
+        self.layouts.clear();
+        self.player_scope = None;
+        self.player_move_available = false;
         self.mirror = None;
         self.shown = None;
         self.counters = None;
         self.stream_map = Value::Null;
+    }
+
+    pub(super) fn update_placement_layouts(
+        &mut self,
+        session: &scenario_edit::Session,
+        loaded: Option<&super::sync::Baseline>,
+    ) {
+        self.layouts.clear();
+        if let (Some(scenario), Some(loaded)) = (session.scenario(), loaded) {
+            self.layouts.extend(scenario_edit::layout::BLOCKS.iter().map(|block| {
+                let kind = block.kind;
+                let revision = loaded.layout_matches(scenario, kind)
+                    .then(|| scenario.block(kind).layout_rev());
+                (kind, revision)
+            }));
+        }
+    }
+
+    pub(crate) fn placement_matches(
+        &self,
+        session: &scenario_edit::Session,
+        kind: scenario_edit::BlockKind,
+    ) -> bool {
+        let Some(scenario) = session.scenario() else { return true };
+        let current = scenario.block(kind).layout_rev();
+        match self.layouts.iter().find(|(block, _)| *block == kind) {
+            Some((_, revision)) => *revision == Some(current),
+            None => self.play_copy.is_none() && current == 0,
+        }
     }
 
     /// Only resolve definition handles and world-space coordinates against

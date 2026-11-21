@@ -82,6 +82,12 @@ impl PlayUi {
         ) {
             app.pairing.pause_while_editing = !app.pairing.pause_while_editing;
         }
+        let aim = app.pairing.selection.enabled;
+        if ui.menu_item_enabled_selected_no_shortcut("Aim select", aim, Play::can_aim_select(app))
+            && let Err(why) = Play::set_aim_select(app, !aim)
+        {
+            app.error(why);
+        }
         let (label, request) = if view.paused {
             ("Resume", Request::Resume)
         } else {
@@ -334,7 +340,7 @@ impl PlayUi {
             if ui.button(format!("{} Teleport player here", icon::MOVE)) {
                 self.play.teleport_to_camera(app);
             }
-            ui.set_item_tooltip("Moves the player to the ground under the camera focus. T over the viewport uses the point under the cursor. Refused in co-op and as a client.");
+            ui.set_item_tooltip("In Edit, move to the ground under the camera focus. T uses the cursor. Shift+T also matches the editor camera’s facing.");
         }
         ui.set_next_item_width(180.0);
         if let Some(_combo) = ui.begin_combo("Spawn", self.play.spawn_choice(app).label()) {
@@ -422,7 +428,6 @@ impl PlayUi {
         if !p.is_paired() {
             return;
         }
-        let aspect = w / h.max(1.0);
         let m = ui.io().mouse_pos();
         let inside = m[0] >= x && m[0] < x + w && m[1] >= y && m[1] < y + h;
         if inside
@@ -430,10 +435,14 @@ impl PlayUi {
             && !ui.io().want_text_input()
             && !ui.io().key_ctrl()
             && !ui.io().key_super()
-            && ui.is_key_pressed(Key::T)
+            && ui.is_key_pressed_with_repeat(Key::T, false)
         {
-            match play::surface_at(app, (m[0] - x) / w, (m[1] - y) / h, aspect) {
-                Some(q) => self.play.teleport(app, q),
+            match Play::cursor_destination(app) {
+                Some(q) => {
+                    if let Err(why) = self.play.player_here(app, q, ui.io().key_shift()) {
+                        app.error(why);
+                    }
+                }
                 None => app.error("no ground under the cursor to teleport to"),
             }
         }

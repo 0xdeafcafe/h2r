@@ -389,10 +389,10 @@ fn every_method_in_methods_has_a_test() {
             (None, Err(e))
                 if matches!(
                     d.name,
-                    m::PAIR_STOP | m::PAIR_EDIT | m::PAIR_CONTROL | m::MIRROR_APPLY
+                    m::PAIR_STOP | m::PAIR_EDIT | m::PAIR_CONTROL | m::MIRROR_APPLY | m::MIRROR_PLAYER
                 ) && e.code == code::REFUSED => {}
             (None, Err(e)) => panic!("{} {params}: {e}", d.name),
-            (None, Ok(v)) => assert!(!v.is_null() || d.name == m::METHODS, "{}", d.name),
+            (None, Ok(v)) => assert!(!v.is_null() || matches!(d.name, m::METHODS | m::MIRROR_PICK), "{}", d.name),
         }
         ran.push(d.name);
     }
@@ -507,7 +507,7 @@ mod paired_socket {
 
     // The editor socket is pumped by the same thread that advances Play,
     // just as it is between frames of the window.
-    struct Editor {
+    pub(super) struct Editor {
         client: agent_proto::Client,
         _listener: server::Listener,
         rx: Receiver<server::Incoming>,
@@ -517,7 +517,7 @@ mod paired_socket {
     }
 
     impl Editor {
-        fn paired(t: &Temp, tag: &str) -> (Game, Self) {
+        pub(super) fn paired(t: &Temp, tag: &str) -> (Game, Self) {
             let game = Game::start(tag, "example", SessionKind::Local);
             let (mut app, ..) = tag_tests::app(&t.0);
             let mut play = Play::new();
@@ -546,7 +546,7 @@ mod paired_socket {
             )
         }
 
-        fn call(&mut self, method: &str, params: Value) -> Value {
+        pub(super) fn call(&mut self, method: &str, params: Value) -> Value {
             let client = &mut self.client;
             std::thread::scope(|scope| {
                 let request = scope.spawn(move || client.call(method, params));
@@ -559,7 +559,7 @@ mod paired_socket {
             })
         }
 
-        fn wait(&mut self, what: &str, done: impl FnMut(&Play, &App) -> bool) {
+        pub(super) fn wait(&mut self, what: &str, done: impl FnMut(&Play, &App) -> bool) {
             until(&mut self.play, &mut self.app, what, done);
         }
 
@@ -1972,4 +1972,459 @@ fn viewport_pick_pushes_one_history_entry() {
     back["can_forward"] = json!(false);
     assert_eq!(back, before);
     assert_eq!(call(&mut api, &mut app, m::NAV_FORWARD, json!({})), after);
+}
+
+#[cfg(unix)]
+mod mirror_presence {
+    use super::*;
+    use crate::play::{Conn, Play, select::EYE_HEIGHT, testing::fake};
+    use agent_proto::{editor, live, sim};
+    use std::sync::atomic::Ordering;
+
+    const WEAPON: u32 = 0x0010_0003;
+
+    fn game(tag: &str, weapon: u32, window: Option<bool>) -> fake::Game {
+        let game = fake::Game::start(tag, "example", sim::SessionKind::Local);
+        game.edits.lock().unwrap().extra_object = Some(live::Object {
+            id: weapon,
+            tag: Some(fixture::id(2).0),
+            kind: 2,
+            placement: Some(0),
+            position: [10.0, -1.0, 2.0 + EYE_HEIGHT],
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            scale: 1.0,
+            ..Default::default()
+        });
+        if let Some(window) = window {
+            game.presentation(window);
+        }
+        game
+    }
+
+    fn connect(api: &mut Api, app: &mut App, play: &mut Play, game: &fake::Game) {
+        play.update(app);
+        call(api, app, m::PAIR_CONNECT, json!({"socket": game.path}));
+        fake::until(
+            play,
+            app,
+            "the local player and the matching map",
+            |p, a| {
+                p.edits_blocked(a).as_deref() == Some("View mode")
+                    && a.pairing.shown.as_ref().is_some_and(|s| {
+                        a.pairing.matches_sample(a, s)
+                            && !s.players.is_empty()
+                            && s.objects.iter().any(|o| o.placement == Some(0))
+                    })
+            },
+        );
+    }
+
+    fn marked(params: &Value, style: &str, object: u32) -> bool {
+        let handle = format!("{object:08x}");
+        params["marks"].as_array().is_some_and(|marks| {
+            marks
+                .iter()
+                .any(|m| m["style"] == style && m["object"].as_str() == Some(handle.as_str()))
+        })
+    }
+
+    #[test]
+    fn mirror_pick_queries_without_selecting_and_aim_select_marks_the_dwell() {
+        let t = Temp::new("presence-aim");
+        let game = game("presence-aim", WEAPON, Some(true));
+        let (mut api, mut app, mut play) = (Api::new(), app(&t), Play::new());
+        connect(&mut api, &mut app, &mut play, &game);
+        let before = app.session.selected();
+        let pick = call(&mut api, &mut app, m::MIRROR_PICK, json!({"from":"aim"}));
+        assert_eq!(pick["object"], sim::objects::handle(WEAPON));
+        assert_eq!(pick["placement"], json!({"block":"weapons","index":0}));
+        assert_eq!(pick["tag"], sim::objects::handle(fixture::id(2).0));
+        assert!(pick["distance"].as_f64().unwrap() > 0.);
+        // An explicit ray includes the player's unit. Start this one beyond it.
+        let ray = json!({"ray":{"origin":[10.,-2.,2. + EYE_HEIGHT], "dir":[0.,1.,0.]}});
+        let hit = call(&mut api, &mut app, m::MIRROR_PICK, ray);
+        assert_eq!(hit["object"], pick["object"]);
+        assert_eq!(hit["placement"], pick["placement"]);
+        assert!(hit["distance"].as_f64().unwrap() < pick["distance"].as_f64().unwrap());
+        let miss = json!({"ray":{"origin":[99.,99.,99.],"dir":[0.,0.,1.]}});
+        assert!(call(&mut api, &mut app, m::MIRROR_PICK, miss).is_null());
+        assert_eq!(app.session.selected(), before);
+
+        call(
+            &mut api,
+            &mut app,
+            m::MIRROR_AIM_SELECT,
+            json!({"enabled":true}),
+        );
+        fake::until(
+            &mut play,
+            &mut app,
+            "candidate and selected marks",
+            |_, a| {
+                a.session.selected() == Some((BlockKind::Weapons, 0))
+                    && game
+                        .calls(editor::method::MARKS)
+                        .iter()
+                        .any(|p| marked(p, "candidate", WEAPON))
+            },
+        );
+        let cursor = call(&mut api, &mut app, m::MIRROR_AIM_SELECT, json!({}));
+        assert_eq!(cursor["enabled"], true);
+        assert_eq!(cursor["candidate"]["object"], pick["object"]);
+        fake::until(&mut play, &mut app, "aim indicator", |_, _| {
+            game.calls(editor::method::LINK)
+                .iter()
+                .any(|p| p["mode"] == "view" && p["text"] == "Aim select")
+        });
+        call(
+            &mut api,
+            &mut app,
+            m::MIRROR_AIM_SELECT,
+            json!({"enabled":false}),
+        );
+        fake::until(
+            &mut play,
+            &mut app,
+            "selection without the candidate",
+            |_, _| {
+                game.calls(editor::method::MARKS).last().is_some_and(|p| {
+                    p["marks"].as_array().is_some_and(|m| m.len() == 1)
+                        && marked(p, "selected", WEAPON)
+                })
+            },
+        );
+    }
+
+    #[test]
+    fn placement_marks_renew_in_view_and_clear_on_unpair() {
+        let t = Temp::new("presence-lease");
+        let game = game("presence-lease", WEAPON, Some(true));
+        let (mut api, mut app, mut play) = (Api::new(), app(&t), Play::new());
+        connect(&mut api, &mut app, &mut play, &game);
+        call(
+            &mut api,
+            &mut app,
+            m::SCENARIO_SELECT,
+            json!({"block":"weapons","index":0}),
+        );
+        fake::until(&mut play, &mut app, "first selected mark", |_, _| {
+            game.calls(editor::method::MARKS)
+                .last()
+                .is_some_and(|p| marked(p, "selected", WEAPON))
+        });
+        let first = game.calls(editor::method::MARKS);
+        let start = std::time::Instant::now();
+        for _ in 0..10 {
+            play.update(&mut app);
+        }
+        fake::until(&mut play, &mut app, "lease renewal", |_, _| {
+            game.calls(editor::method::MARKS).len() > first.len()
+        });
+        let renewed = game.calls(editor::method::MARKS);
+        assert_eq!(renewed.len(), first.len() + 1);
+        assert_eq!(renewed.last(), first.last());
+        assert!(start.elapsed() < std::time::Duration::from_millis(editor::LINK_TTL_MS));
+        // View mode keeps presentation after the edit switch is turned off.
+        call(&mut api, &mut app, m::PAIR_EDIT, json!({"enabled":true}));
+        fake::until(&mut play, &mut app, "edit indicator", |_, _| {
+            game.calls(editor::method::LINK)
+                .last()
+                .is_some_and(|p| p["mode"] == "edit")
+        });
+        call(&mut api, &mut app, m::PAIR_EDIT, json!({"enabled":false}));
+        fake::until(&mut play, &mut app, "view indicator", |_, _| {
+            game.calls(editor::method::LINK)
+                .last()
+                .is_some_and(|p| p["mode"] == "view")
+        });
+        assert!(marked(
+            game.calls(editor::method::MARKS).last().unwrap(),
+            "selected",
+            WEAPON
+        ));
+
+        call(&mut api, &mut app, m::MIRROR_CAMERA, json!({"mode":"eyes"}));
+        call(
+            &mut api,
+            &mut app,
+            m::MIRROR_AIM_SELECT,
+            json!({"enabled":true}),
+        );
+        call(
+            &mut api,
+            &mut app,
+            m::PAIR_DISCONNECT,
+            json!({"leave":"keep"}),
+        );
+        fake::until(&mut play, &mut app, "release of both leases", |p, _| {
+            p.conn == Conn::Off
+                && game
+                    .calls(editor::method::LINK)
+                    .last()
+                    .is_some_and(|p| p["clear"] == true)
+                && game
+                    .calls(editor::method::MARKS)
+                    .last()
+                    .is_some_and(|p| p["marks"] == json!([]))
+        });
+        assert_eq!(
+            call(&mut api, &mut app, m::MIRROR_CAMERA, json!({})),
+            json!({"mode":"free","target":null})
+        );
+        assert_eq!(
+            call(&mut api, &mut app, m::MIRROR_AIM_SELECT, json!({})),
+            json!({"enabled":false,"candidate":null})
+        );
+    }
+
+    #[test]
+    fn mirror_player_faces_the_camera_in_edit_and_refuses_view() {
+        let t = Temp::new("presence-player");
+        let game = game("presence-player", WEAPON, None);
+        let (mut api, mut app, mut play) = (Api::new(), app(&t), Play::new());
+        connect(&mut api, &mut app, &mut play, &game);
+        let move_here = json!({"to":[1.,2.,3.],"facing":true});
+        assert_eq!(
+            code_of(api.call(&mut app, m::MIRROR_PLAYER, move_here.clone())),
+            code::REFUSED
+        );
+        assert!(game.calls(sim::method::STATE_SET).is_empty());
+
+        let camera = app.session.camera_mut();
+        camera.yaw = 0.41;
+        camera.pitch = -0.32;
+        let forward = camera.forward().map(f64::from);
+        let (yaw, pitch) = sim::yaw_pitch(forward).unwrap();
+        call(&mut api, &mut app, m::PAIR_EDIT, json!({"enabled":true}));
+        fake::until(&mut play, &mut app, "Edit", |p, a| {
+            p.edits_blocked(a).is_none()
+        });
+        assert_eq!(
+            call(&mut api, &mut app, m::MIRROR_PLAYER, move_here),
+            json!({"requested":true})
+        );
+        fake::until(&mut play, &mut app, "teleport with facing", |_, _| {
+            !game.calls(sim::method::STATE_SET).is_empty()
+        });
+        let moves = game.calls(sim::method::STATE_SET);
+        assert_eq!(moves.len(), 1);
+        assert_eq!(moves[0]["player"], "player.0");
+        assert_eq!(moves[0]["pos"], json!([1., 2., 3.]));
+        assert!((moves[0]["yaw"].as_f64().unwrap() - yaw).abs() < 1e-4);
+        assert!((moves[0]["pitch"].as_f64().unwrap() - pitch).abs() < 1e-4);
+
+        // The last published status is still Edit when the two socket calls arrive.
+        // The ordered window requests turn off Edit before the move reaches the game.
+        call(&mut api, &mut app, m::PAIR_EDIT, json!({"enabled":false}));
+        call(
+            &mut api,
+            &mut app,
+            m::MIRROR_PLAYER,
+            json!({"to":[9.,8.,7.]}),
+        );
+        fake::until(
+            &mut play,
+            &mut app,
+            "the queued move refused in View",
+            |_, a| {
+                a.log()
+                    .iter()
+                    .any(|line| line.status.text().contains("View mode"))
+            },
+        );
+        assert_eq!(game.calls(sim::method::STATE_SET).len(), 1);
+    }
+
+    #[test]
+    fn absent_presentation_methods_are_named_and_receive_no_requests() {
+        let t = Temp::new("presence-methods");
+        let game = game("presence-methods", WEAPON, None);
+        let (mut api, mut app, mut play) = (Api::new(), app(&t), Play::new());
+        connect(&mut api, &mut app, &mut play, &game);
+        let status = call(&mut api, &mut app, m::PAIR_STATUS, Value::Null);
+        let reasons = status["link"]["unavailable"].as_array().unwrap();
+        for method in [editor::method::LINK, editor::method::MARKS] {
+            assert!(reasons.iter().any(|r| r.as_str().unwrap().contains(method)));
+        }
+        // Install recording handlers after the handshake. They are callable on
+        // the transport, but the editor has never seen them in session.methods.
+        game.presentation(true);
+        call(
+            &mut api,
+            &mut app,
+            m::SCENARIO_SELECT,
+            json!({"block":"weapons","index":0}),
+        );
+        call(&mut api, &mut app, m::PAIR_EDIT, json!({"enabled":true}));
+        fake::until(&mut play, &mut app, "edit switch", |p, a| {
+            p.edits_blocked(a).is_none()
+        });
+        call(
+            &mut api,
+            &mut app,
+            m::MIRROR_PLAYER,
+            json!({"to":[7.,8.,9.]}),
+        );
+        fake::until(&mut play, &mut app, "ordered game request", |_, _| {
+            !game.calls(sim::method::STATE_SET).is_empty()
+        });
+        assert!(game.calls(editor::method::LINK).is_empty());
+        assert!(game.calls(editor::method::MARKS).is_empty());
+    }
+
+    #[test]
+    fn headless_presentation_explains_the_refusal_once() {
+        let t = Temp::new("presence-headless");
+        let game = game("presence-headless", WEAPON, Some(false));
+        let (mut api, mut app, mut play) = (Api::new(), app(&t), Play::new());
+        connect(&mut api, &mut app, &mut play, &game);
+        call(
+            &mut api,
+            &mut app,
+            m::SCENARIO_SELECT,
+            json!({"block":"weapons","index":0}),
+        );
+        fake::until(
+            &mut play,
+            &mut app,
+            "another mark lease on the windowless host",
+            |_, _| {
+                game.calls(editor::method::MARKS)
+                    .iter()
+                    .filter(|p| marked(p, "selected", WEAPON))
+                    .count()
+                    >= 2
+            },
+        );
+        let status = call(&mut api, &mut app, m::PAIR_STATUS, Value::Null);
+        let reasons = status["link"]["unavailable"].as_array().unwrap();
+        for method in [editor::method::LINK, editor::method::MARKS] {
+            let reason = format!("{method}: this host has no window");
+            assert!(reasons.contains(&json!(reason)));
+            assert_eq!(
+                app.log()
+                    .iter()
+                    .filter(|line| line.status.text().contains(reason.as_str()))
+                    .count(),
+                1
+            );
+        }
+        assert_eq!(game.calls(editor::method::LINK).len(), 1);
+    }
+
+    #[test]
+    fn epoch_changes_release_the_shared_camera_and_replace_salted_marks() {
+        let t = Temp::new("presence-epoch");
+        let game = game("presence-epoch", WEAPON, Some(true));
+        let (mut api, mut app, mut play) = (Api::new(), app(&t), Play::new());
+        connect(&mut api, &mut app, &mut play, &game);
+        call(
+            &mut api,
+            &mut app,
+            m::SCENARIO_SELECT,
+            json!({"block":"weapons","index":0}),
+        );
+        fake::until(&mut play, &mut app, "old placement", |_, _| {
+            game.calls(editor::method::MARKS)
+                .last()
+                .is_some_and(|p| marked(p, "selected", WEAPON))
+        });
+        for mode in ["follow", "eyes"] {
+            let camera = call(&mut api, &mut app, m::MIRROR_CAMERA, json!({"mode":mode}));
+            assert_eq!(camera["mode"], mode);
+            assert_eq!(camera["target"], "player.0");
+            play.update(&mut app);
+        }
+        let new_handle = WEAPON + 0x10000;
+        {
+            let _hold = game.boundary.lock().unwrap();
+            game.edits.lock().unwrap().extra_object.as_mut().unwrap().id = new_handle;
+            game.bsp.store(1, Ordering::Relaxed);
+        }
+        fake::until(
+            &mut play,
+            &mut app,
+            "marks from the replacement epoch",
+            |_, a| {
+                a.pairing.shown.as_ref().is_some_and(|s| s.epoch == 2)
+                    && game.calls(editor::method::MARKS).last().is_some_and(|p| {
+                        marked(p, "selected", new_handle) && !marked(p, "selected", WEAPON)
+                    })
+            },
+        );
+        assert_eq!(
+            call(&mut api, &mut app, m::MIRROR_CAMERA, json!({}))["mode"],
+            "free"
+        );
+    }
+
+    #[test]
+    fn reconnect_sends_the_selection_from_the_new_stream() {
+        let t = Temp::new("presence-retry");
+        let first = game("presence-retry", WEAPON, Some(true));
+        let (mut api, mut app, mut play) = (Api::new(), app(&t), Play::new());
+        connect(&mut api, &mut app, &mut play, &first);
+        call(
+            &mut api,
+            &mut app,
+            m::SCENARIO_SELECT,
+            json!({"block":"weapons","index":0}),
+        );
+        fake::until(&mut play, &mut app, "first game's selection", |_, _| {
+            first
+                .calls(editor::method::MARKS)
+                .last()
+                .is_some_and(|p| marked(p, "selected", WEAPON))
+        });
+        drop(first);
+        fake::until(&mut play, &mut app, "lost named socket", |p, _| {
+            matches!(p.conn, Conn::Reconnecting { .. })
+        });
+        let new_handle = WEAPON + 0x20000;
+        let second = game("presence-retry", new_handle, Some(true));
+        fake::until(&mut play, &mut app, "reconnected presentation", |p, _| {
+            p.is_paired()
+                && !second.calls(editor::method::LINK).is_empty()
+                && second
+                    .calls(editor::method::MARKS)
+                    .iter()
+                    .any(|p| marked(p, "selected", new_handle))
+        });
+        assert!(
+            !second
+                .calls(editor::method::MARKS)
+                .iter()
+                .any(|p| marked(p, "selected", WEAPON))
+        );
+    }
+
+    #[test]
+    fn mirror_controls_cross_the_editor_and_game_sockets() {
+        let t = Temp::new("presence-wire");
+        let (game, mut editor) = paired_socket::Editor::paired(&t, "presence-wire");
+        editor.wait("the matching player sample", |_, a| {
+            a.pairing
+                .shown
+                .as_ref()
+                .is_some_and(|s| a.pairing.matches_sample(a, s) && !s.players.is_empty())
+        });
+        assert!(editor.call(m::MIRROR_PICK, json!({"from":"aim"})).is_null());
+        assert_eq!(
+            editor.call(m::MIRROR_AIM_SELECT, json!({"enabled":true}))["enabled"],
+            true
+        );
+        let camera = editor.call(m::MIRROR_CAMERA, json!({"mode":"eyes","target":"player.0"}));
+        assert_eq!(camera, json!({"mode":"eyes","target":"player.0"}));
+        editor.call(m::PAIR_EDIT, json!({"enabled":true}));
+        editor.wait("Edit", |p, a| p.edits_blocked(a).is_none());
+        let moved = editor.call(m::MIRROR_PLAYER, json!({"to":[2.,3.,4.]}));
+        assert_eq!(moved, json!({"requested":true}));
+        editor.wait("the game's player move", |_, _| {
+            !game.calls(sim::method::STATE_SET).is_empty()
+        });
+        let moves = game.calls(sim::method::STATE_SET);
+        assert_eq!(moves[0]["pos"], json!([2., 3., 4.]));
+        assert!(moves[0].get("yaw").is_none() && moves[0].get("pitch").is_none());
+    }
 }

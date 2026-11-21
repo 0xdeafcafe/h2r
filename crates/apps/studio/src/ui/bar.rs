@@ -101,7 +101,7 @@ fn link_width(ui: &Ui, view: &LinkView) -> f32 {
         + (theme::BAR_BUTTON + theme::BAR_SPACING)
             * buttons.into_iter().filter(|&on| on).count() as f32;
     if view.can_pause {
-        width += theme::edit_switch_width(ui) + theme::BAR_SPACING;
+        width += theme::edit_switch_width(ui) + theme::BAR_BUTTON + 2.0 * theme::BAR_SPACING;
     }
     width
 }
@@ -141,6 +141,19 @@ fn link(ui: &Ui, app: &mut App, play: &mut PlayUi, view: &LinkView) {
         }
     }
     if view.can_pause {
+        same_line();
+        let enabled = app.pairing.selection.enabled;
+        let available = crate::play::Play::can_aim_select(app);
+        let disabled = ui.begin_disabled_with_cond(!available);
+        let tone = enabled.then(|| ui.push_style_color(StyleColor::Button, theme::ACCENT));
+        if ui.button_with_size(theme::icon::CROSSHAIR, [theme::BAR_BUTTON, ui.frame_height()])
+            && let Err(why) = crate::play::Play::set_aim_select(app, !enabled)
+        {
+            app.error(why);
+        }
+        ui.set_item_tooltip("Aim select");
+        drop(tone);
+        drop(disabled);
         same_line();
         play.edit_switch(ui, view);
     }

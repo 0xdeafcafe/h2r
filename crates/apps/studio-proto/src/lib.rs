@@ -147,6 +147,10 @@ pub mod method {
     pub const MIRROR_STATUS: &str = "mirror.status";
     pub const MIRROR_PENDING: &str = "mirror.pending";
     pub const MIRROR_APPLY: &str = "mirror.apply";
+    pub const MIRROR_PICK: &str = "mirror.pick";
+    pub const MIRROR_AIM_SELECT: &str = "mirror.aim_select";
+    pub const MIRROR_CAMERA: &str = "mirror.camera";
+    pub const MIRROR_PLAYER: &str = "mirror.player";
     pub const MIRROR_OBJECTS: &str = "mirror.objects";
 
     pub const VIEW_CAMERA: &str = "view.camera";

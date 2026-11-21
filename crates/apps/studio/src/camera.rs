@@ -11,6 +11,7 @@
 //!   point when it gets close, rather than stopping at it).
 //! - **Frame** ([`frame_sphere`]) and **focus** ([`focus_point`]) give a
 //!   camera to go to; the controller glides there over [`GLIDE`] seconds.
+use crate::play::presence::CameraMode;
 use scenario_edit::geometry::{Camera, Vec3, add, cross, dot, normalize, scale, sub};
 
 /// Fly speed when the editor starts, in world units a second.
@@ -137,6 +138,24 @@ impl Controller {
     /// Start orbiting about `pivot` (Alt + left button went down).
     pub fn begin_orbit(&mut self, pivot: Vec3) {
         self.pivot = Some(pivot);
+    }
+
+    /// A tracked camera takes its pose from the displayed game sample. Orbit
+    /// and zoom in Follow adjust the offset the next sample will keep.
+    pub(crate) fn update_shared(&mut self, cam: &mut Camera, input: &Input, mode: CameraMode) {
+        if mode == CameraMode::Free {
+            self.update(cam, input);
+            return;
+        }
+        self.reset();
+        if mode == CameraMode::Follow {
+            if input.orbit {
+                cam.orbit(-input.mouse[0] * LOOK, input.mouse[1] * LOOK);
+            }
+            if input.wheel != 0.0 {
+                cam.zoom((1.0 - DOLLY_STEP).powf(input.wheel));
+            }
+        }
     }
 
     /// Apply one frame of input to `cam`. A camera changed since the last
@@ -540,6 +559,36 @@ mod tests {
         let before = c;
         ctl.update(&mut c, &drag);
         assert_eq!(c, before);
+    }
+
+    #[test]
+    fn tracked_cameras_cancel_free_motion_and_only_follow_orbits() {
+        let mut ctl = Controller::new();
+        let mut cam = cam();
+        let drag = Input {
+            fly: true,
+            orbit: true,
+            pan: true,
+            keys: [1.0; 3],
+            mouse: [20.0, 30.0],
+            wheel: 1.0,
+            dt: 1.0 / 60.0,
+            ..Input::default()
+        };
+        ctl.update(&mut cam, &drag);
+        let eyes = cam;
+        ctl.update_shared(&mut cam, &drag, CameraMode::Eyes);
+        assert_eq!(cam, eyes);
+        assert!(!ctl.moving());
+
+        ctl.update_shared(&mut cam, &drag, CameraMode::Follow);
+        assert_eq!(cam.target, eyes.target);
+        assert_ne!(cam.yaw, eyes.yaw);
+        assert!(cam.distance < eyes.distance);
+
+        let released = cam;
+        ctl.update_shared(&mut cam, &Input::default(), CameraMode::Free);
+        assert_eq!(cam, released);
     }
 
     #[test]

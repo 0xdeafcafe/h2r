@@ -114,6 +114,9 @@ pub(crate) mod fake {
                     ..unit
                 });
             }
+            if layers.objects && let Some(object) = self.edits.lock().unwrap().extra_object {
+                world.objects.push(object);
+            }
             if layers.players {
                 world.players.push(live::Player {
                     index: 0,
@@ -132,6 +135,7 @@ pub(crate) mod fake {
     #[derive(Default)]
     pub(crate) struct FakeEdits {
         pub(crate) checksum: u32,
+        pub(crate) extra_object: Option<live::Object>,
         map: Option<String>,
         // While the new tag index loads, edit.map is unavailable, then can still
         // report the former checksum at the new epoch for one poll.
@@ -367,6 +371,27 @@ pub(crate) mod fake {
                 thread: Some(thread),
                 calls,
             }
+        }
+
+        /// Register presentation on this game before the editor asks for its methods.
+        pub(crate) fn presentation(&self, window: bool) {
+            use agent_proto::editor::{LinkParams, MarksParams, method};
+
+            let calls = self.calls.clone();
+            self.agent.add_method(method::LINK, Access::Read, move |params| {
+                let link: LinkParams = serde_json::from_value(params.clone()).unwrap();
+                calls.lock().unwrap().push((method::LINK.into(), params));
+                let shown = window && link.clear != Some(true);
+                Ok(json!({"shown":shown, "expires_ms":if shown { 3000 } else { 0 },
+                    "why":(!window).then_some("this host has no window")}))
+            });
+            let calls = self.calls.clone();
+            self.agent.add_method(method::MARKS, Access::Read, move |params| {
+                let marks: MarksParams = serde_json::from_value(params.clone()).unwrap();
+                calls.lock().unwrap().push((method::MARKS.into(), params));
+                Ok(json!({"held":marks.marks.len(), "drawn":window && !marks.marks.is_empty(),
+                    "why":(!window).then_some("this host has no window"), "refused":[]}))
+            });
         }
 
         pub(crate) fn calls(&self, name: &str) -> Vec<Value> {
