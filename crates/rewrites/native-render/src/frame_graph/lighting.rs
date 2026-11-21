@@ -17,7 +17,11 @@ pub struct PassWork {
 /// guest's selections retained in the sealed scene.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct E3Report {
+    /// Caster draws into the local lights' tiles.
     pub tiles: PassWork,
+    /// Caster draws into the sun's tiles.
+    pub sun_tile_draws: PassWork,
+    /// Receivers of the sun's tiles.
     pub sun: PassWork,
     pub marks: PassWork,
     pub lights: PassWork,
@@ -42,11 +46,11 @@ impl E3Report {
         self.tiles_refused += work.refused;
     }
 
-    /// Sun tiles from objects: their caster draws join `e3.tiles`, their
-    /// receivers are `e3.sun`, and a caster left without a tile keeps
+    /// Sun tiles from objects: their caster draws are `e3.sun_tiles`,
+    /// their receivers `e3.sun`, and a caster left without a tile keeps
     /// retail's object shadow and joins `tiles_refused`.
     pub fn add_sun(&mut self, work: SunWork) {
-        self.tiles.draws += work.tile_draws;
+        self.sun_tile_draws.draws += work.tile_draws;
         self.sun.draws += work.receiver_draws;
         self.sun_tiles += work.sun_tiles;
         self.sun_tiles_redrawn += work.sun_tiles_redrawn;
@@ -88,8 +92,8 @@ mod tests {
         );
     }
 
-    /// Sun casters share `e3.tiles` with the local lights; their
-    /// receivers are `e3.sun`.
+    /// Sun casters are `e3.sun_tiles`, apart from the local lights'
+    /// `e3.tiles`; their receivers are `e3.sun`.
     #[test]
     fn sun_work_fills_the_sun_row_and_its_counters() {
         let mut report = E3Report::default();
@@ -101,7 +105,8 @@ mod tests {
             tile_draws: 1,
             receiver_draws: 7,
         });
-        assert_eq!(report.tiles.draws, 1);
+        assert_eq!(report.sun_tile_draws.draws, 1);
+        assert_eq!(report.tiles, PassWork::default());
         assert_eq!(report.sun.draws, 7);
         assert_eq!(
             (

@@ -1000,7 +1000,7 @@ summary hash.
 A completed native E3 draw includes an `e3` object in its
 `display_frame` or `private_frame`. The armed `render.frame` record
 includes it for the corresponding draw. Its `passes` array contains
-`e3.tiles`, `e3.sun`, `e3.marks` and `e3.lights`. Each row has
+`e3.tiles`, `e3.sun_tiles`, `e3.sun`, `e3.marks` and `e3.lights`. Each row has
 `name`, submitted `draws` and `gpu_ns` (null for an empty or unmeasured
 stage). Snapshot indices refer to the attachment runs in the frame
 record. The seven per-frame counters are `lights_lit`, `lights_shadowed`,
@@ -1014,7 +1014,7 @@ per shadowed light of the guest's) and `tiles_refused` the shadow maps
 left at the guest's size. The display on the guest's live attachments
 draws no tiles. The other stages and counters are zero: the lights lit
 are still the guest's, and no game frame hands the renderer sun casters
-yet (`e3.sun`, `sun_tiles`, `sun_tiles_redrawn`, `atlas_halved`). The guest's light selections are in
+yet (`e3.sun_tiles`, `e3.sun`, `sun_tiles`, `sun_tiles_redrawn`, `atlas_halved`). The guest's light selections are in
 `render.scene.views`.
 Retail graph draws omit `e3`.
 
