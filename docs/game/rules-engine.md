@@ -379,9 +379,10 @@ full hash and run, and each fetch failure refused by name.
 
 ### Live game variants in the game
 
-A game variant is a self-contained bundle: the `.h2variant` format 2
-shape (name, description, author, engine, the 0x130-byte record with its
-`hx` block, and the script it names: its name, full hash and IR). The
+A game variant is a self-contained bundle: a `.h2variant` version 2 file
+(`variants::portable`: name, description, author, engine, the 0x130-byte
+record with its `hx` block, and the script it names: its name, full hash
+and IR). The
 game keeps a store of them, `<data>/game-variants`
 (`crates/extensions/game/src/game_variants/`, **Code**, tests only):
 
@@ -389,15 +390,18 @@ game keeps a store of them, `<data>/game-variants`
 |---|---|
 | `*.h2variant` | bundles the player put there |
 | `live/<id>.h2variant` | the signed-in player's Live variants |
+| `live/<id>.pending.json` | a Live variant whose script's IR is not here yet: the server's variant record, with the script's full hash |
 | `ported/<key>.h2variant` | saved variants ported at boot |
 | `scripts/<hash>.ir` | rules blobs fetched from Live, by full hash |
 
-The store keeps one entry per bundle id (the first 16 hex digits of the
-record's SHA-256, so a Live variant and a file of the same record are
-one), and its scripts by full hash with an index by the record's 8-byte
-prefix (`store::Store`). A bundle is checked when read: a 0x130-byte
-record of its engine, a block naming the script's prefix, and an IR that
-hashes to the script's hash. A file that fails is left out with a line.
+The store keeps one entry per bundle id (`Bundle::id`, the SHA-256 of
+the file's canonical form), and its scripts by full hash with an index by
+the record's 8-byte prefix (`store::Store`). Every bundle must hold to the
+format when read (`Bundle::integrity`); a file that fails is left out
+with a line. A pending Live variant is not a bundle and is not listed in
+the game; its full hash is in the prefix index, so a host can still fetch
+the script, and once the IR is here (a refresh, or a fetched script found
+at the next open) it is written as its bundle and the pending file goes.
 
 - **In the variant list.** At each load of the main menu's tags the
   store's variants join the built-ins after the community variants
@@ -412,12 +416,14 @@ hashes to the script's hash. A file that fails is left out with a line.
   its own (`game_variants::refresh_live`): `GET /v1/variants?author=<xuid>`
   as the first signed-in account (`Hle::my_game_variants`, 5 s), then each
   script the store lacks by full hash (`Hle::fetch_rules_ir`), each
-  variant saved as its bundle with its IR. The next load lists them, and
+  variant saved as its bundle with its IR (pending while its script's
+  fetch fails). The next load lists them, and
   a later game, offline or on System Link, finds the script on disk.
   Offline or signed out, a line says why and the store keeps what it had.
 - **Porting.** At boot, on a thread of its own, every saved variant under
   `UDATA\4D530064` (`variants::save::SaveStore`) not yet ported becomes
-  a bundle under `ported/`, keyed by the SHA-256 of its record and
+  a bundle under `ported/` (`variants::portable::port`), keyed by the
+  SHA-256 of its record and
   signature, so an edited save ports again and the rest are skipped. The
   saves are only read. `variants.port.script` decides the script:
   `keep` (the record as it is, its engine's lifted rules) or `builtin`

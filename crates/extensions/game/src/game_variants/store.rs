@@ -4,21 +4,29 @@
 //! | Path under the store root | What |
 //! |---|---|
 //! | `*.h2variant` | bundles the player put there (imported files) |
-//! | `live/<id>.h2variant` | the signed-in player's Live variants, as fetched |
+//! | `live/<id>.h2variant` | the signed-in player's Live variants, with their scripts |
+//! | `live/<id>.pending.json` | a Live variant whose script's IR is not here yet: its metadata and full hash |
 //! | `ported/<key>.h2variant` | saved variants ported at boot ([`super::port`]) |
 //! | `scripts/<hash>.ir` | rules IR blobs fetched from Live, by full hash |
 //!
-//! The root is `<data>/game-variants` ([`default_root`]). Scripts are kept by
-//! full SHA-256 with an index by the 8-byte prefix a record carries; a
-//! bundle naming a script by hash only still puts that hash in the index,
-//! so a host can fetch the blob by its full hash.
+//! The root is `<data>/game-variants` ([`default_root`]). Every
+//! `.h2variant` is a whole format 2 file (`variants::portable`). Scripts are
+//! kept by full SHA-256 with an index by the 8-byte prefix a record
+//! carries; a pending Live variant puts its script's full hash in the index
+//! too, so a host can fetch the blob by it. Once the IR is here the pending
+//! variant is written as its bundle and its pending file removed.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use content::Sha256;
 
-use super::bundle::{Bundle, EXTENSION};
+use live_hle::game_variants::LiveVariant;
+
+use super::bundle::{self, Bundle, EXTENSION};
+
+/// A pending Live variant's file suffix.
+pub const PENDING: &str = ".pending.json";
 
 /// The store's directory name under the data root.
 pub const DIR: &str = "game-variants";
@@ -58,6 +66,8 @@ pub struct Store {
     prefixes: HashMap<[u8; 8], Sha256>,
     /// The ported sources' keys seen in this run.
     ported: std::collections::HashSet<String>,
+    /// Live variants whose script's IR is not here yet.
+    pending: Vec<LiveVariant>,
 }
 
 fn prefix(h: &Sha256) -> [u8; 8] {
@@ -131,14 +141,55 @@ impl Store {
             for (p, text) in bundles_in(&dir) {
                 let added = text
                     .map_err(|e| e.to_string())
-                    .and_then(|t| Bundle::parse(&t))
+                    .and_then(|t| variants::portable::read(&t).map_err(|e| e.to_string()))
                     .and_then(|b| s.add(origin, b));
                 if let Err(why) = added {
                     lines.push(format!("game variants: {} left out: {why}", p.display()));
                 }
             }
         }
+        if let Ok(rd) = std::fs::read_dir(root.join(LIVE_DIR)) {
+            let mut paths: Vec<PathBuf> = rd
+                .filter_map(Result::ok)
+                .map(|e| e.path())
+                .filter(|p| p.to_string_lossy().ends_with(PENDING))
+                .collect();
+            paths.sort();
+            for p in paths {
+                let read = std::fs::read_to_string(&p)
+                    .map_err(|e| e.to_string())
+                    .and_then(|t| {
+                        serde_json::from_str::<LiveVariant>(&t).map_err(|e| e.to_string())
+                    })
+                    .and_then(|v| s.add_pending(v));
+                if let Err(why) = read {
+                    lines.push(format!("game variants: {} left out: {why}", p.display()));
+                }
+            }
+        }
+        // A pending variant whose IR has arrived since becomes its bundle.
+        for v in s.pending.clone() {
+            let here = bundle::live_hash(&v).is_some_and(|h| s.scripts.contains_key(&h));
+            if here && let Err(why) = s.put_live(&v) {
+                lines.push(format!("game variants: Live variant {} left out: {why}", v.name));
+            }
+        }
         (s, lines)
+    }
+
+    /// Live variants whose script's IR is not here yet.
+    pub fn pending(&self) -> &[LiveVariant] {
+        &self.pending
+    }
+
+    /// Keeps a Live variant whose script is named by full hash only, and
+    /// indexes the hash by its prefix.
+    pub fn add_pending(&mut self, v: LiveVariant) -> Result<(), String> {
+        let h = bundle::live_hash(&v).ok_or("it names no script by a 64-digit hash")?;
+        self.prefixes.entry(prefix(&h)).or_insert(h);
+        self.pending.retain(|p| p.id != v.id);
+        self.pending.push(v);
+        Ok(())
     }
 
     pub fn root(&self) -> Option<&Path> {
@@ -149,17 +200,15 @@ impl Store {
         &self.entries
     }
 
-    /// Adds a checked bundle. One of the same id already kept stays (a
-    /// Live variant and a file of the same record are one), taking the
-    /// newcomer's IR if it had none. Returns whether it was new.
+    /// Adds a bundle that holds to the format (`Bundle::integrity`): its
+    /// script's IR joins the scripts. One of the same bundle id already
+    /// kept stays. Returns whether it was new.
     pub fn add(&mut self, origin: Origin, bundle: Bundle) -> Result<bool, String> {
-        let checked = bundle.check()?;
-        if let Some(ir) = checked.ir.clone() {
-            self.add_script(ir)?;
-        }
-        if let Some(h) = checked.hash {
-            self.prefixes.entry(prefix(&h)).or_insert(h);
-        }
+        let checked = bundle.integrity().map_err(|e| e.to_string())?;
+        let hash = match checked.script {
+            Some((ir, _)) => Some(self.add_script(ir)?),
+            None => None,
+        };
         let id = bundle.id();
         if self.entries.iter().any(|e| e.bundle.id() == id) {
             return Ok(false);
@@ -167,8 +216,8 @@ impl Store {
         self.entries.push(Entry {
             origin,
             bundle,
-            record: checked.record,
-            hash: checked.hash,
+            record: *checked.variant.bytes(),
+            hash,
         });
         Ok(true)
     }
@@ -231,12 +280,12 @@ impl Store {
         name: &str,
         bundle: Bundle,
     ) -> Result<bool, String> {
-        bundle.check()?;
+        bundle.integrity().map_err(|e| e.to_string())?;
         if let Some(root) = &self.root {
             let dir = root.join(dir);
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
             let path = dir.join(format!("{}.{EXTENSION}", safe(name)));
-            let text = bundle.to_json();
+            let text = bundle.canonical();
             if std::fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
                 std::fs::write(&path, text).map_err(|e| e.to_string())?;
             }
@@ -244,24 +293,45 @@ impl Store {
         self.add(origin, bundle)
     }
 
-    /// A Live variant, saved as its bundle (with its IR when the store has
-    /// it) under `live/<id>.h2variant`.
-    pub fn put_live(&mut self, v: &live_hle::game_variants::LiveVariant) -> Result<bool, String> {
-        let mut b = Bundle::from_live(v);
-        let ir = b
-            .script
-            .as_ref()
-            .and_then(|s| s.hash.parse::<Sha256>().ok())
-            .and_then(|h| self.scripts.get(&h).cloned());
-        if let Some(ir) = ir {
-            b = b.with_ir(&ir);
-        }
+    /// A Live variant: saved as its bundle under `live/<id>.h2variant`
+    /// when it names no script or its script's IR is here, else kept
+    /// pending (`live/<id>.pending.json`) until the IR arrives. Returns
+    /// whether a new bundle was added.
+    pub fn put_live(&mut self, v: &LiveVariant) -> Result<bool, String> {
         let name = if v.id.is_empty() {
-            b.id()
+            bundle::hex(&Sha256::of(v.record_hex.as_bytes()).0[..8])
         } else {
-            v.id.clone()
+            safe(&v.id)
         };
-        self.put(Origin::Live, LIVE_DIR, &name, b)
+        let ir = match &v.script_hash {
+            None => None,
+            Some(h) => {
+                let hash: Sha256 = h
+                    .parse()
+                    .map_err(|_| format!("its script hash {h:?} is not 64 hex digits"))?;
+                match self.scripts.get(&hash).cloned() {
+                    Some(ir) => Some(ir),
+                    None => {
+                        self.add_pending(v.clone())?;
+                        if let Some(root) = &self.root {
+                            let dir = root.join(LIVE_DIR);
+                            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                            let text = serde_json::to_string(v).map_err(|e| e.to_string())?;
+                            std::fs::write(dir.join(format!("{name}{PENDING}")), text)
+                                .map_err(|e| e.to_string())?;
+                        }
+                        return Ok(false);
+                    }
+                }
+            }
+        };
+        let b = bundle::from_live(v, ir.as_deref())?;
+        let added = self.put(Origin::Live, LIVE_DIR, &name, b)?;
+        self.pending.retain(|p| p.id != v.id);
+        if let Some(root) = &self.root {
+            let _ = std::fs::remove_file(root.join(LIVE_DIR).join(format!("{name}{PENDING}")));
+        }
+        Ok(added)
     }
 
     /// Whether `ported/<key>.h2variant` exists (in memory: whether a

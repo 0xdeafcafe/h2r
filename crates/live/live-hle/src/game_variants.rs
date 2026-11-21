@@ -12,7 +12,7 @@
 //! Neither touches guest memory. The blob is returned as the server sent
 //! it; the caller checks its hash and verifies it.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// The largest IR blob the server stores (docs/game/rules-engine.md,
 /// "Limits"), and so the largest answer read.
@@ -21,7 +21,7 @@ pub const MAX_IR: usize = 64 * 1024;
 pub const MAX_LIST: usize = 1 << 20;
 
 /// A variant's author as the server names it.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Author {
     pub xuid: String,
     pub gamertag: String,
@@ -30,7 +30,7 @@ pub struct Author {
 /// One Live game variant (`GET /v1/variants/{id}`): the record
 /// (`record_hex`, 0x130 bytes as 520 hex digits, its `hx` block naming the
 /// script by hash prefix) and the script's full hash.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LiveVariant {
     pub id: String,
     pub name: String,

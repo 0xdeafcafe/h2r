@@ -339,5 +339,5 @@ impl hooks::Feature for StartHook {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "rules"))]
 mod tests;

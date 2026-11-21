@@ -1,5 +1,5 @@
 //! Porting variants into self-contained bundles (docs/game/rules-engine.md,
-//! "Live game variants in the game"):
+//! "Live game variants in the game"), through `variants::portable::port`:
 //!
 //! - [`port_saves`]: the player's saved variants (the XAPI save-game
 //!   variants under `UDATA\4D530064`, `variants::save::SaveStore`), once per
@@ -7,116 +7,33 @@
 //! - [`port_builtins`]: the retail built-ins and the community variants, on
 //!   request (they are already in the game's list, so they are not put in
 //!   the store at boot).
-//!
-//! [`port`] is the store's stand-in for `variants::portable::port`.
 
 use content::Sha256;
-use variants::ext::{Mode, Script};
+pub use variants::portable::PortScript;
 use variants::record::GameVariant;
 use variants::save::SaveStore;
 
 use super::bundle::Bundle;
 use super::store::Store;
 
-/// What a ported variant's script is.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PortScript {
-    /// The record as it is: a retail record names no script and plays as
-    /// its engine's lifted rules.
-    Keep,
-    /// The built-in script of the record's engine (`rules::builtin`),
-    /// named in the record's block and carried in the bundle.
-    Builtin,
-    /// A given script: its name and IR.
-    Given { name: String, ir: Vec<u8> },
-}
-
-impl PortScript {
-    /// `variants.port.script`'s value: `keep` (0) or `builtin` (1).
-    pub fn from_setting(v: i64) -> Self {
-        if v == 1 { Self::Builtin } else { Self::Keep }
+/// `variants.port.script`'s value: `keep` (0) or `builtin` (1).
+pub fn script_setting(v: i64) -> PortScript {
+    if v == 1 {
+        PortScript::Builtin
+    } else {
+        PortScript::Keep
     }
 }
 
-/// The built-in script of engine `engine`: its name and IR.
-#[cfg(feature = "rules")]
-fn builtin_script(engine: i32) -> Result<(String, Vec<u8>, u32), String> {
-    let b = crate::rules::runtime::builtins()
-        .iter()
-        .find(|b| i32::from(b.engine) == engine)
-        .ok_or_else(|| format!("no built-in script rides engine {engine}"))?;
-    let (ir, _) = ::rules::verify::load(&b.blob).map_err(|e| format!("the built-in: {e}"))?;
-    Ok((ir.header.name.clone(), b.blob.clone(), ir.default_options()))
-}
-
-#[cfg(not(feature = "rules"))]
-fn builtin_script(_engine: i32) -> Result<(String, Vec<u8>, u32), String> {
-    Err("this build has no built-in scripts (the rules feature is not compiled in)".into())
-}
-
-/// The default option bits of a given IR.
-#[cfg(feature = "rules")]
-fn options_of(ir: &[u8]) -> Result<u32, String> {
-    ::rules::verify::load(ir)
-        .map(|(ir, _)| ir.default_options())
-        .map_err(|e| format!("the script does not verify: {e}"))
-}
-
-#[cfg(not(feature = "rules"))]
-fn options_of(_ir: &[u8]) -> Result<u32, String> {
-    Ok(0)
-}
-
-/// `record` as a bundle named `name`, its script per `script`. A record
-/// that already names a script keeps it under [`PortScript::Builtin`]
-/// (only [`PortScript::Given`] replaces one), and then needs its IR given.
+/// `v` as a bundle named `name` with `description`, its script per
+/// `script` (`variants::portable::port`), or why not.
 pub fn port(
-    record: &GameVariant,
+    v: &GameVariant,
     name: &str,
     description: &str,
     script: PortScript,
 ) -> Result<Bundle, String> {
-    let mut v = record.clone();
-    let named = v.ext().script.mode == Mode::Rules;
-    let attach = match script {
-        PortScript::Keep if named => {
-            return Err("the record names a script whose IR this port does not have".into());
-        }
-        PortScript::Keep => None,
-        PortScript::Builtin if named => {
-            return Err("the record names a script whose IR this port does not have".into());
-        }
-        PortScript::Builtin => {
-            let (n, ir, options) = builtin_script(v.game_type().engine())?;
-            Some((n, ir, options))
-        }
-        PortScript::Given { name, ir } => {
-            let options = options_of(&ir)?;
-            Some((name, ir, options))
-        }
-    };
-    let Some((script_name, ir, options)) = attach else {
-        return Ok(Bundle::new(name, description, v.bytes()));
-    };
-    let hash = Sha256::of(&ir);
-    let mut e = v.ext();
-    let mut prefix = [0; 8];
-    prefix.copy_from_slice(&hash.0[..8]);
-    e.script = Script {
-        mode: Mode::Rules,
-        prefix,
-        options,
-    };
-    v.set_ext(&e)
-        .map_err(|e| format!("the record's block: {e}"))?;
-    let mut b = Bundle::new(name, description, v.bytes());
-    b.script = Some(super::bundle::BundleScript {
-        name: script_name,
-        hash: hash.to_string(),
-        ir_b64: None,
-        source: None,
-    });
-    Ok(b.with_ir(&ir))
+    variants::portable::port(v, Some(name), Some(description), script).map_err(|e| e.to_string())
 }
 
 /// One run's porting: how many were ported, skipped (already ported) and

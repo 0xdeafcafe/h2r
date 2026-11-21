@@ -262,7 +262,7 @@ pub(crate) fn register_core_film(
     // ported at boot (docs/game/rules-engine.md, "Live game variants in the
     // game").
     let port = i.settings.as_ref().map_or(crate::game_variants::port::PortScript::Keep, |s| {
-        crate::game_variants::port::PortScript::from_setting(
+        crate::game_variants::port::script_setting(
             s.handle::<i64>(crate::setting_defs::VARIANTS_PORT_SCRIPT.key).get(),
         )
     });

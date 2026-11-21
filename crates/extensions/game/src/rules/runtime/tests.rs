@@ -401,8 +401,8 @@ fn the_game_reads_the_roster_the_statborg_and_the_record() {
 // ---- scripts from the game-variant store and Live ----
 
 use crate::game_variants::GameScripts;
-use crate::game_variants::bundle::{Bundle, BundleScript};
 use crate::game_variants::store::{Origin, Store as VariantStore};
+use live_hle::game_variants::LiveVariant;
 
 const POINTS: &str = "rules \"Double Points\" 1\ncarrier slayer\n\non kill(victim, killer) { score(killer, 2) }\n";
 
@@ -414,10 +414,17 @@ fn answer(
     Box::new(f)
 }
 
-/// A Slayer record naming `id`, as a bundle naming it by hash, with its IR
-/// when `ir` is given.
-fn bundle_naming(id: &Sha256, ir: Option<&[u8]>) -> Bundle {
+/// A Slayer variant carrying `blob`, as a format 2 bundle.
+fn stored_bundle(blob: Vec<u8>) -> variants::portable::Bundle {
     let mut v = variants::GameVariant::blank(variants::GameType::Slayer);
+    v.set_name("Double Points").unwrap();
+    variants::portable::port(&v, None, None, variants::portable::PortScript::Ir(blob)).unwrap()
+}
+
+/// A Live variant whose record names `id` and whose IR is not here.
+fn pending(id: &Sha256) -> LiveVariant {
+    let mut v = variants::GameVariant::blank(variants::GameType::Slayer);
+    v.set_name("Double Points").unwrap();
     let mut e = v.ext();
     e.script = Script {
         mode: Mode::Rules,
@@ -425,16 +432,21 @@ fn bundle_naming(id: &Sha256, ir: Option<&[u8]>) -> Bundle {
         options: 0,
     };
     v.set_ext(&e).unwrap();
-    let mut b = Bundle::new("Double Points", "", v.bytes());
-    b.script = Some(BundleScript {
+    LiveVariant {
+        id: "v1".into(),
         name: "Double Points".into(),
-        hash: id.to_string(),
-        ir_b64: None,
-        source: None,
-    });
-    match ir {
-        Some(ir) => b.with_ir(ir),
-        None => b,
+        description: String::new(),
+        author: live_hle::game_variants::Author {
+            xuid: "9000000000000001".into(),
+            gamertag: "Alex".into(),
+        },
+        engine: 2,
+        game_type: "slayer".into(),
+        record_hex: v.bytes().iter().map(|b| format!("{b:02x}")).collect(),
+        script_hash: Some(id.to_string()),
+        script_name: Some("Double Points".into()),
+        visibility: "public".into(),
+        created: String::new(),
     }
 }
 
@@ -456,7 +468,7 @@ fn a_stored_script_runs_with_no_live_client_and_on_system_link() {
     let ir = ::rules::compile(POINTS).unwrap();
     let (blob, id) = (ir.encode(), ir.id());
     let mut vs = VariantStore::in_memory();
-    assert_eq!(vs.add(Origin::Imported, bundle_naming(&id, Some(blob.as_slice()))), Ok(true));
+    assert_eq!(vs.add(Origin::Imported, stored_bundle(blob.clone())), Ok(true));
     let scripts = scripts_over(vs, answer(|_, _| panic!("a stored script is never fetched")));
     for system_link in [false, true] {
         let store = Local::default();
@@ -477,7 +489,7 @@ fn a_live_variants_script_is_fetched_by_its_full_hash_verified_and_run() {
     let ir = ::rules::compile(POINTS).unwrap();
     let (blob, id) = (ir.encode(), ir.id());
     let mut vs = VariantStore::in_memory();
-    vs.add(Origin::Live, bundle_naming(&id, None)).unwrap();
+    vs.add_pending(pending(&id)).unwrap();
     let asked = Arc::new(Mutex::new(Vec::new()));
     let seen = Arc::clone(&asked);
     let served = blob.clone();
@@ -530,7 +542,7 @@ fn each_fetch_failure_is_refused_by_name() {
     ];
     for (named, answer, want) in cases {
         let mut vs = VariantStore::in_memory();
-        vs.add(Origin::Live, bundle_naming(&named, None)).unwrap();
+        vs.add_pending(pending(&named)).unwrap();
         let scripts = scripts_over(vs, answer);
         let store = Local::default();
         let s = composed(&store, &scripts);
