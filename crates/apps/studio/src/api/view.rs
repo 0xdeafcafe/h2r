@@ -313,11 +313,12 @@ fn base_look_stats(load: &scenario_edit::native_view::NativeLoad) -> Value {
     }
 }
 
-/// One BSP's world layers 1, 5, 7, 8 and 20 (`NativeLayers`): the world
-/// materials that did not resolve, by cause, and for each layer the
-/// materials whose passes compiled, those drawn and their parts, and
-/// every other material's cause with how many. They draw in the Game
-/// lighting mode only. Null when the BSP's layers were not read.
+/// One BSP's world layers 1, 3, 5, 7, 8 and 20 (`NativeLayers`): the
+/// world materials that did not resolve, by cause, and for each layer
+/// the materials whose passes compiled, those drawn and their parts,
+/// every other material's cause with how many, and (layer 3) the parts
+/// left to the base look by cause. They draw in the Game lighting mode
+/// only. Null when the BSP's layers were not read.
 fn layer_stats(load: &scenario_edit::native_view::NativeLoad) -> Value {
     let Some(read) = load.layers() else { return Value::Null };
     let by_layer: Vec<Value> = read
@@ -330,6 +331,7 @@ fn layer_stats(load: &scenario_edit::native_view::NativeLoad) -> Value {
                 "drawn": plan.drawn.len(),
                 "parts": plan.parts.len(),
                 "refused": plan.refused,
+                "parts_refused": plan.parts_refused,
             })
         })
         .collect();

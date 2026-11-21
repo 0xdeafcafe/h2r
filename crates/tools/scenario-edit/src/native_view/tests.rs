@@ -369,7 +369,7 @@ fn the_invented_bsps_layers_name_what_does_not_draw() {
     let load = NativeLoad::read(&mut map, &mut files, 0).unwrap();
     let layers = load.layers().expect("read from the map");
     let planned: Vec<u8> = layers.plans().keys().copied().collect();
-    assert_eq!(planned, native_render::layer_pass::LAYERS);
+    assert_eq!(planned, [1, 3, 5, 7, 8, 20], "layer 3 is planned too");
     for plan in layers.plans().values() {
         assert_eq!(plan.compiled, 0, "{plan:?}");
         assert!(plan.drawn.is_empty() && plan.parts.is_empty(), "{plan:?}");
@@ -401,6 +401,69 @@ fn a_base_look_that_cannot_be_translated_is_named() {
     );
     let load = NativeLoad::new(TagId(7), b.finish(), base, HashMap::new());
     assert_eq!(load.base_fallback(), Some("placement 4 has no model rows"));
+}
+
+/// In the Game mode a part its material's layer-3 pass takes draws that
+/// pass (a part with no base map too); every other drawn part draws its
+/// base look. The other modes draw the base look alone.
+#[test]
+fn the_game_mode_draws_layer_3_where_it_compiled() {
+    let w = world(&[(0, true), (1, false), (2, true)]);
+    let base: HashMap<u16, Image> = [0u16, 1]
+        .into_iter()
+        .map(|m| (m, Image::solid([m as u8; 4])))
+        .collect();
+    let pages = HashMap::from([(PAGE, Image::solid([128; 4]))]);
+    let mut load = NativeLoad::new(TagId(7), w.clone(), base, pages);
+    let mut layer3 = layers_load::Layer3::default();
+    for d in w.draws.iter().filter(|d| d.material != 1) {
+        layer3.data.parts.push((
+            (d.owner, d.part),
+            (d.first_index, d.index_count, d.lightmap, d.material),
+        ));
+    }
+    load.layers = Some(Arc::new(NativeLayers {
+        view: LayersView::default(),
+        world: w,
+        images: StageImages::new(),
+        layer3,
+        plans: BTreeMap::new(),
+    }));
+    let keys = |layer3: Option<&layers_load::LayerData>| -> Vec<PassKey> {
+        base_parts(&load, layer3)
+            .into_iter()
+            .map(|(_, k)| k)
+            .collect()
+    };
+    // Material 2 has no base map: only layer 3 draws it, and it picks.
+    let own: Vec<u16> = load.layer3_only().iter().map(|d| d.material).collect();
+    assert_eq!(own, [2]);
+    assert_eq!(load.triangles().len(), 6, "three quads of two triangles");
+    let data = &load.layers().unwrap().layer3.data;
+    assert_eq!(
+        keys(Some(data)),
+        [
+            PassKey::Layer3(0),
+            PassKey::Base {
+                material: 1,
+                lit: false
+            },
+            PassKey::Layer3(2),
+        ]
+    );
+    assert_eq!(
+        keys(None),
+        [
+            PassKey::Base {
+                material: 0,
+                lit: true
+            },
+            PassKey::Base {
+                material: 1,
+                lit: false
+            },
+        ]
+    );
 }
 
 /// Layer 1 is refused whole and named; the other layers keep their plan.

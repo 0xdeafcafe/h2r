@@ -555,13 +555,15 @@ Notes on some:
   true: no world layer draws over it), its world `layers` (null
   when not read from the map: `unresolved`, the world materials that
   did not resolve by cause with how many, and `by_layer`, for each of
-  layers 1, 5, 7, 8 and 20 the `layer`, the materials whose passes
-  `compiled`, those `drawn` and their `parts`, and every other
-  material's cause with how many, `refused`, as `cause: detail`:
-  `program` for the load's refusals, such as a view constant the camera
-  does not give, then the plan's causes, `animated`, `fog`, and for
-  layer 1 `layer 1: stencil mode not checked against the game`; they draw
-  in the `game` mode only), the `errors` of BSPs that
+  layers 1, 3, 5, 7, 8 and 20 the `layer`, the materials whose passes
+  `compiled`, those `drawn` and their `parts`, every other material's
+  cause with how many, `refused`, as `cause: detail`: `program` for the
+  load's refusals, such as a view constant the camera does not give or
+  a layer-3 stage bitmap that is not 2D, then the plan's causes,
+  `animated`, `fog`, and for layer 1 `layer 1: stencil mode not checked
+  against the game`; and `parts_refused`, layer 3's parts of a drawn
+  material that its pass does not take, by cause with how many, which
+  draw the base look; they draw in the `game` mode only), the `errors` of BSPs that
   did not load, and the placed `objects`: how many object tags have a
   native model (`models`), how many placements draw one (`placed`), and
   each tag left to the scene's model with why (`errors`, `tag` and
