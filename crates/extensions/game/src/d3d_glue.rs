@@ -1562,7 +1562,7 @@ fn install_device<B: d3d::backend::Backend + Send + 'static>(
     #[cfg(feature = "gpu")]
     let backend = {
         crate::scene_glue::set_present_window(window.as_ref());
-        backend.with_present_window(window, render_bridge::carried_slots::take_present_game_view)
+        backend.with_present_window(window.clone(), render_bridge::carried_slots::take_present_game_view)
     };
     #[cfg(feature = "gpu")]
     let (backend, worker) = if let Some(worker) = worker {
@@ -1602,7 +1602,11 @@ fn install_device<B: d3d::backend::Backend + Send + 'static>(
     d3d::runtime_glue::map_device_memory(&mut rt.memory(), &cfg)?;
     let device = d3d::runtime_glue::shared(cfg, backend);
     #[cfg(feature = "desktop-runtime")]
-    render_bridge::carried_slots::set_drain(Arc::new(SinkDrain(Arc::clone(&device))));
+    render_bridge::carried_slots::set_drain(Arc::new(SinkDrain {
+        device: Arc::clone(&device),
+        #[cfg(feature = "gpu")]
+        window,
+    }));
     let watch = subscribe_write_barrier(rt)?;
     #[cfg(feature = "gpu")]
     let shadow_admission = if profile == film::RenderHooks::Gpu {
@@ -1698,10 +1702,21 @@ fn install_device<B: d3d::backend::Backend + Send + 'static>(
 /// device decodes what game code wrote into the push buffer before the
 /// frame step moves the slot.
 #[cfg(feature = "desktop-runtime")]
-struct SinkDrain<B: d3d::backend::Backend>(d3d::abi::SharedDevice<B>);
+struct SinkDrain<B: d3d::backend::Backend> {
+    device: d3d::abi::SharedDevice<B>,
+    #[cfg(feature = "gpu")]
+    window: Option<Arc<d3d::scene_sink::window::PresentWindow>>,
+}
 
 #[cfg(feature = "desktop-runtime")]
 impl<B: d3d::backend::Backend + Send + 'static> render_bridge::carried_slots::Drain for SinkDrain<B> {
+    #[cfg(feature = "gpu")]
+    fn game_view(&self) {
+        if let Some(window) = &self.window {
+            window.game_view(crate::native_objects_glue::palette_ready());
+        }
+    }
+
     fn drain(&self, mem: &mut dyn engine::memory::GuestMemory) {
         struct Mem<'a>(&'a mut dyn engine::memory::GuestMemory);
         impl d3d::GuestMemory for Mem<'_> {
@@ -1713,7 +1728,7 @@ impl<B: d3d::backend::Backend + Send + 'static> render_bridge::carried_slots::Dr
             }
         }
         // A latched fault answers every later entry; nothing to add here.
-        if let Ok(mut d) = self.0.lock() {
+        if let Ok(mut d) = self.device.lock() {
             let _ = d.sync_push_buffer(&mut Mem(mem));
         }
     }

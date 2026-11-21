@@ -54,6 +54,8 @@ static DRAIN: Mutex<Option<Arc<dyn Drain>>> = Mutex::new(None);
 /// is decoded and handed to the backend under the slot it was written in.
 pub trait Drain: Send + Sync {
     fn drain(&self, mem: &mut dyn GuestMemory);
+    /// Observe map residency at game-view entry after the prior slot drained.
+    fn game_view(&self) {}
 }
 
 /// Registers the device's [`Drain`] (the host's D3D install).
@@ -87,6 +89,7 @@ fn at_entry(mem: &mut dyn GuestMemory, event: SlotEvent) {
     let drain = DRAIN.lock().unwrap_or_else(|e| e.into_inner()).clone();
     if let Some(d) = drain {
         d.drain(mem);
+        if matches!(event, SlotEvent::GameView(_)) { d.game_view(); }
     }
     on(event);
 }
