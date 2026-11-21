@@ -838,9 +838,11 @@ group mode 0x8 align 4
         defs.parse_into("placement fixture", "\
 group weap 0x38
   0x0 f32 speed
+  0x4 pad 4
   0x8 block parts 0xc align 4
     0x0 tagref item groups=itmc
     0x8 u32 value
+  0x14 pad 0x1c
   0x30 tagref model groups=hlmt
 group hlmt 0x8
   0x0 tagref render_model groups=mode
