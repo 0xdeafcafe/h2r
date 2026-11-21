@@ -1,4 +1,4 @@
-//! How a value moves between ticks (docs/game/hud-kit.md, "Motion"): a
+//! How a value moves between ticks (docs/game/hud-kit.md, "The arming bar"): a
 //! [`Motion`] and the curves the draw hooks sample, pure functions of the
 //! milliseconds since the value changed.
 //!
