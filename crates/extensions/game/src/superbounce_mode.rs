@@ -20,7 +20,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use engine::GuestMemory;
@@ -467,8 +467,33 @@ fn variant_name(m: &dyn GuestMemory) -> Option<String> {
     Some(String::from_utf16_lossy(&units))
 }
 
+/// The agent's override (`superbounce.set`): [`FOLLOW`], [`FORCE_ON`] or
+/// [`FORCE_OFF`].
+static OVERRIDE: AtomicU8 = AtomicU8::new(FOLLOW);
+const FOLLOW: u8 = 0;
+const FORCE_ON: u8 = 1;
+const FORCE_OFF: u8 = 2;
+
+/// `superbounce.set`: `Some(true)` forces the mode on, `Some(false)` off,
+/// `None` follows the game again. Returns the override's name. The tick
+/// picks it up at its next check (within [`RECHECK`] ticks).
+pub fn set_override(on: Option<bool>) -> &'static str {
+    let (v, name) = match on {
+        Some(true) => (FORCE_ON, "on"),
+        Some(false) => (FORCE_OFF, "off"),
+        None => (FOLLOW, "game"),
+    };
+    OVERRIDE.store(v, Ordering::Relaxed);
+    name
+}
+
 /// Whether the mode is on in the game running now.
 fn on_now(m: &dyn GuestMemory) -> bool {
+    match OVERRIDE.load(Ordering::Relaxed) {
+        FORCE_ON => return true,
+        FORCE_OFF => return false,
+        _ => {}
+    }
     forced()
         || crate::variant_ext::in_game(&crate::layout_glue::ReadGm(m)).superbounce()
         || variant_name(m).is_some_and(|n| is_superbounce_name(&n))
@@ -664,6 +689,16 @@ mod gpu {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_agent_override_names_itself_and_can_be_undone() {
+        assert_eq!(set_override(Some(true)), "on");
+        assert_eq!(OVERRIDE.load(Ordering::Relaxed), FORCE_ON);
+        assert_eq!(set_override(Some(false)), "off");
+        assert_eq!(OVERRIDE.load(Ordering::Relaxed), FORCE_OFF);
+        assert_eq!(set_override(None), "game");
+        assert_eq!(OVERRIDE.load(Ordering::Relaxed), FOLLOW);
+    }
 
     fn spot(kind: Kind, at: f32, fall: f32, launch: f32) -> Spot {
         Spot {

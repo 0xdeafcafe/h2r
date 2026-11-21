@@ -38,6 +38,7 @@ connection to hold `session.claim`.
 | `havok.bodies`, `havok.agents`, `havok.contacts` | read | [`havok`](#havok-the-physics-world) |
 | `havok.pair.set` | claim | [`havok.pair.set`](#havokpairset) |
 | `superbounce.state` | read | [`superbounce`](#superbounce-the-superbounce-game-type) |
+| `superbounce.set` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `profile.counters`, `profile.capture`, `profile.fallbacks`, `profile.memory`, `profile.faults` | read | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.start`, `profile.sample.stop` | act | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.status` | read | [`profile`](#profile-where-a-frame-goes) |
@@ -634,7 +635,7 @@ with `INVALID_PARAMS`) answers from the state the
 
 | Field | Meaning |
 |---|---|
-| `active` | the mode is on: the variant's flag, the built-in Superbounce variant, or `H2_SUPERBOUNCE=1`. Everything below is empty or `idle` while it is off |
+| `active` | the mode is on: the variant's flag, the built-in Superbounce variant, `H2_SUPERBOUNCE=1`, or `superbounce.set`. Everything below is empty or `idle` while it is off |
 | `primed` | the local player's level pair word is -3 |
 | `word`, `word_signed` | the pair word as eight hex digits and as a signed number; absent without a level pair (between lives) |
 | `position` | the local player's position, world units |
@@ -643,6 +644,18 @@ with `INVALID_PARAMS`) answers from the state the
 
 ```sh
 printf '%s\n' 'superbounce.state' | h2 agent -
+```
+
+`superbounce.set {"on": true|false|null}` (access: act) overrides whether
+the mode is on: `true` forces it on and `false` off in any game, and
+`null` or `{}` follows the game again (the variant, its flag and
+`H2_SUPERBOUNCE`). The answer is `{"mode": "on"|"off"|"game"}`. The
+tick's on/off check runs every 30 ticks, so `superbounce.state` shows the
+change within a second. It is how a lab run, whose environment can't
+carry `H2_SUPERBOUNCE`, turns the mode on.
+
+```sh
+h2 agent superbounce.set '{"on":true}'
 ```
 
 ## `profile`: where a frame goes

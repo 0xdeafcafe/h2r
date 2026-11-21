@@ -12,10 +12,14 @@ pub mod method {
     /// ([`super::State`]; no params).
     pub const STATE: &str = "superbounce.state";
 
+    /// Turns the mode on or off in the running game, over the game type
+    /// and `H2_SUPERBOUNCE` ([`super::SetParams`], [`super::Set`]).
+    pub const SET: &str = "superbounce.set";
+
     /// The spots the bots know for a map ([`super::SPOTS`]).
     pub const SPOTS: &str = super::SPOTS;
 
-    pub const ALL: &[&str] = &[STATE, SPOTS];
+    pub const ALL: &[&str] = &[STATE, SET, SPOTS];
 }
 
 // ---- superbounce.state ----
@@ -70,6 +74,26 @@ pub struct State {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nearest: Option<Nearest>,
     pub scan: Scan,
+}
+
+// ---- superbounce.set ----
+
+/// `superbounce.set`'s params.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetParams {
+    /// `true` forces the mode on, `false` forces it off, `null` (or absent)
+    /// follows the game again: the variant, its flag and `H2_SUPERBOUNCE`.
+    #[serde(default)]
+    pub on: Option<bool>,
+}
+
+/// `superbounce.set`'s result. The mode follows within a second (the
+/// on/off check runs every 30 ticks); `superbounce.state` says when.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Set {
+    /// The override now: `on`, `off` or `game`.
+    pub mode: String,
 }
 
 // ---- superbounce.spots ----
@@ -149,6 +173,6 @@ mod tests {
         assert_eq!(v["word"], "fffffffd");
         assert!(v.get("nearest").is_none() && v["scan"].get("error").is_none());
         assert_eq!(serde_json::from_value::<State>(v).unwrap(), s);
-        assert_eq!(method::ALL, [method::STATE, method::SPOTS]);
+        assert_eq!(method::ALL, [method::STATE, method::SET, method::SPOTS]);
     }
 }

@@ -544,7 +544,9 @@ built-in Superbounce (told by its name,
 `crates/extensions/game/src/community_variants.rs` has no field for the
 flag), when the variant's extension block has the superbounce flag (bit 2
 of `+0x10f`, [game-options.md](game-options.md)), or with
-`H2_SUPERBOUNCE=1` ([switches](../runtime/switches.md)). It is
+`H2_SUPERBOUNCE=1` ([switches](../runtime/switches.md)). An agent can
+force it on or off in any game with `superbounce.set`
+([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type)). It is
 `crates/extensions/game/src/superbounce_mode.rs`.
 
 **State.** On or off is decided when a game starts and again every 30

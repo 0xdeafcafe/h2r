@@ -233,6 +233,24 @@ impl AgentGlue {
                     .expect("superbounce.state serialises"))
             },
         );
+        // Turns the superbounce mode on or off over the game type, so a
+        // run whose environment can't carry H2_SUPERBOUNCE (the lab) can
+        // still use it.
+        agent.add_game_method(
+            agent_proto::superbounce::method::SET,
+            Access::Act,
+            |params, _ctx| {
+                let p: agent_proto::superbounce::SetParams = if params.is_null() {
+                    Default::default()
+                } else {
+                    serde_json::from_value(params)
+                        .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?
+                };
+                let mode = crate::superbounce_mode::set_override(p.on).to_string();
+                Ok(serde_json::to_value(agent_proto::superbounce::Set { mode })
+                    .expect("superbounce.set serialises"))
+            },
+        );
         // HaloScript state: the threads and globals of the running scenario.
         agent::hs_state::install(&agent);
         // On the game thread: the sampler's main target.
