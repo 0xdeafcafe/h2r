@@ -145,6 +145,8 @@ pub struct Manifest {
 /// The input log's file name inside a recording.
 pub const INPUT_FILE: &str = "input.bin";
 
+pub(super) const CURRENT_JOB: &str = "current";
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
@@ -152,6 +154,12 @@ pub enum Request {
     Update,
     Fetch {
         id: String,
+    },
+    /// The log feed for one job ID or all current jobs, using transfer frames.
+    Logs {
+        id: String,
+        #[serde(default)]
+        follow: bool,
     },
     SyncBases {
         branch: String,
@@ -243,6 +251,7 @@ pub fn validate(r: &Request) -> Result<()> {
     match r {
         Request::Status | Request::Update | Request::Recordings | Request::Runs { .. } => Ok(()),
         Request::Fetch { id } => check_job_id(id),
+        Request::Logs { id, .. } => check_log_id(id),
         Request::SyncBases { branch, commit } | Request::Sync { branch, commit, .. } => {
             check_rev(branch)?;
             check_commit(commit)?;
@@ -322,6 +331,13 @@ pub fn validate(r: &Request) -> Result<()> {
             Ok(())
         }
     }
+}
+
+pub(super) fn check_log_id(id: &str) -> Result<()> {
+    if id == CURRENT_JOB {
+        return Ok(());
+    }
+    check_job_id(id)
 }
 
 /// What follows `h2 agent` in an `agent` request. The host uses the run's
@@ -608,6 +624,29 @@ mod tests {
             run(r#"{"cmd":"run","h2":"/bin/sh"}"#).is_err(),
             "unknown fields are refused"
         );
+    }
+
+    #[test]
+    fn logs_request_accepts_only_job_ids_or_current() {
+        assert_eq!(
+            run(r#"{"cmd":"logs","id":"0003"}"#).unwrap(),
+            Request::Logs {
+                id: "0003".into(),
+                follow: false,
+            }
+        );
+        assert_eq!(
+            run(r#"{"cmd":"logs","id":"current","follow":true}"#).unwrap(),
+            Request::Logs {
+                id: CURRENT_JOB.into(),
+                follow: true,
+            }
+        );
+        for bad in ["..", "../auth/pairing.json", "some-name", ""] {
+            let request = serde_json::json!({"cmd": "logs", "id": bad});
+            assert!(run(&request.to_string()).is_err(), "{request}");
+        }
+        assert!(run(r#"{"cmd":"logs","id":"current","path":"host.log"}"#).is_err());
     }
 
     #[test]

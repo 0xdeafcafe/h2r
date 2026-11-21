@@ -981,6 +981,14 @@ fn cached_serve_runs_share_an_image_and_stop_independently() {
         let out = ok(&lab.local(&["agent", id, "socket"]));
         assert_eq!(out.trim_end(), socket.to_str().unwrap());
     }
+    let current = ok(&lab.lan(&["logs", "current"]));
+    for id in [first, second] {
+        assert!(current.contains(&format!("[{id}] running")), "{current}");
+        assert!(current.contains(&format!("[{id}] run | fake play")), "{current}");
+    }
+    let named = ok(&lab.lan(&["logs", second]));
+    assert!(named.contains(&format!("[{second}] run | fake play")), "{named}");
+    assert!(!named.contains(&format!("[{first}]")), "{named}");
     assert!(first_window.requests.lock().unwrap().is_empty());
     fs::write(first_data.join("profile"), b"changed").unwrap();
     fs::write(first_data.join("linked-profile"), b"changed").unwrap();
@@ -1009,6 +1017,8 @@ fn cached_serve_runs_share_an_image_and_stop_independently() {
         json(&String::from_utf8_lossy(&waited.stdout))["job"]["state"],
         "stopped"
     );
+    let stopped = ok(&lab.lan(&["logs", first, "--follow"]));
+    assert!(stopped.contains(&format!("[{first}] cancelled")), "{stopped}");
     assert!(!first_socket.exists());
     assert!(!first_data.exists());
 

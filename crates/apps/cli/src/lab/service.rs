@@ -22,6 +22,30 @@ const SERVE_INSTALLED: &str = "serve-installed";
 const OUT_LOG: &str = "logs/host.stdout.log";
 const ERR_LOG: &str = "logs/host.stderr.log";
 const UPDATE_LOG: &str = "logs/host-update.log";
+const ACCESS_LOG: &str = "logs/host-access.log";
+
+pub(super) const WATCH_LOGS: &[&str] = &[OUT_LOG, ERR_LOG, UPDATE_LOG, ACCESS_LOG];
+
+/// Pairing writes come from both the daemon and local commands. Lock a
+/// separate file so rotation can replace the log while keeping the lock.
+pub(super) fn access_event(root: &Path, event: &str) {
+    let result = (|| {
+        let logs = root.join("logs");
+        fs::create_dir_all(&logs)?;
+        let lock = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(logs.join(".host-access.lock"))?;
+        lock.lock()?;
+        writeln!(log::Log::open(root.join(ACCESS_LOG))?, "lab access: {event}")
+    })();
+    if let Err(error) = result {
+        let _ = writeln!(io::stderr().lock(), "lab: writing access log: {error}");
+    }
+}
 
 fn home() -> Result<PathBuf> {
     std::env::var_os("HOME")
@@ -551,17 +575,24 @@ pub(super) fn stage_update(cfg: &HostConfig) -> Result<()> {
     ensure!(cfg.managed, "updates require an installed lab LaunchAgent");
     fs::create_dir_all(cfg.dir("logs"))?;
     let mut log = log::Log::open(cfg.dir(UPDATE_LOG))?;
-    let mut git = Command::new("git");
-    git.args(["pull", "--ff-only"])
-        .env("GIT_TERMINAL_PROMPT", "0");
-    run_update_step(cfg, git, &mut log, "git pull")?;
+    let result = (|| {
+        let mut git = Command::new("git");
+        git.args(["pull", "--ff-only"])
+            .env("GIT_TERMINAL_PROMPT", "0");
+        run_update_step(cfg, git, &mut log, "git pull")?;
 
-    let mut cargo = Command::new(&cfg.cargo);
-    cargo
-        .args(["build", "--release", "-p", "cli", "--bin", "h2"])
-        .env("CARGO_TARGET_DIR", cfg.repo.join("target"));
-    run_update_step(cfg, cargo, &mut log, "cargo build")?;
-    install_binary(&built_binary(cfg), cfg, None)
+        let mut cargo = Command::new(&cfg.cargo);
+        cargo
+            .args(["build", "--release", "-p", "cli", "--bin", "h2"])
+            .env("CARGO_TARGET_DIR", cfg.repo.join("target"));
+        run_update_step(cfg, cargo, &mut log, "cargo build")?;
+        install_binary(&built_binary(cfg), cfg, None)
+    })();
+    let _ = match &result {
+        Ok(()) => writeln!(log, "lab host update: installed replacement"),
+        Err(error) => writeln!(log, "lab host update: failed: {error:#}"),
+    };
+    result
 }
 
 fn run_update_step(
@@ -642,6 +673,13 @@ impl AutoUpdate {
             Err(e) => return Err(e.into()),
         }
         install_binary(&source, cfg, Some(binary_identity(&src)))?;
+        // Write before the host exits so the line survives the restart.
+        let _ = fs::create_dir_all(cfg.dir("logs")).and_then(|()| {
+            writeln!(
+                log::Log::open(cfg.dir(UPDATE_LOG))?,
+                "lab host update: installed automatic update"
+            )
+        });
         Ok(true)
     }
 }
@@ -886,6 +924,10 @@ mod tests {
         assert!(update.adopt_newer(&cfg).unwrap());
         assert_eq!(fs::read_to_string(&stable).unwrap(), changed);
         assert!(!update.adopt_newer(&cfg).unwrap());
+        assert_eq!(
+            fs::read_to_string(cfg.dir(UPDATE_LOG)).unwrap(),
+            "lab host update: installed automatic update\n"
+        );
     }
 
     #[test]

@@ -12,7 +12,8 @@ use anyhow::{Context, Result, ensure};
 
 use super::proto;
 
-const CHUNK: usize = 64 << 10;
+pub(super) const FRAME_MAX: usize = 64 << 10;
+pub(super) const LOG_HEARTBEAT: &[u8] = b"\0";
 
 #[derive(Default)]
 pub(super) struct Transfers {
@@ -91,32 +92,75 @@ impl Drop for TempFile {
     }
 }
 
+fn send_frame(dst: &mut impl Write, data: &[u8]) -> Result<()> {
+    ensure!(data.len() <= FRAME_MAX, "invalid lab frame size");
+    dst.write_all(&(data.len() as u32).to_be_bytes())?;
+    dst.write_all(data)?;
+    Ok(())
+}
+
+fn receive_frame<'a>(src: &mut impl Read, buf: &'a mut [u8; FRAME_MAX]) -> Result<&'a [u8]> {
+    let mut len = [0; 4];
+    src.read_exact(&mut len)?;
+    let n = u32::from_be_bytes(len) as usize;
+    ensure!(n <= FRAME_MAX, "invalid lab frame size");
+    src.read_exact(&mut buf[..n])?;
+    Ok(&buf[..n])
+}
+
 /// A tar stream uses bounded frames and a zero-length terminator so the
 /// host can report tar's exit status after delivering the data.
 pub(super) fn send_archive(mut src: impl Read, mut dst: impl Write) -> Result<()> {
-    let mut buf = [0; CHUNK];
+    let mut buf = [0; FRAME_MAX];
     loop {
         let n = src.read(&mut buf)?;
-        dst.write_all(&(n as u32).to_be_bytes())?;
+        send_frame(&mut dst, &buf[..n])?;
         if n == 0 {
             return Ok(());
         }
-        dst.write_all(&buf[..n])?;
     }
 }
 
 pub(super) fn receive_archive(mut src: impl Read, mut dst: impl Write) -> Result<()> {
-    let mut buf = [0; CHUNK];
+    let mut buf = [0; FRAME_MAX];
     loop {
-        let mut len = [0; 4];
-        src.read_exact(&mut len)?;
-        let n = u32::from_be_bytes(len) as usize;
-        ensure!(n <= CHUNK, "invalid archive frame size");
-        if n == 0 {
+        let data = receive_frame(&mut src, &mut buf)?;
+        if data.is_empty() {
             return Ok(());
         }
-        src.read_exact(&mut buf[..n])?;
-        dst.write_all(&buf[..n])?;
+        dst.write_all(data)?;
+    }
+}
+
+/// Log data frames contain one UTF-8 line ending in LF. An idle frame is
+/// one NUL byte, and an empty frame ends the stream before its JSON result.
+pub(super) fn send_log_frame(dst: &mut impl Write, data: &[u8]) -> Result<()> {
+    send_frame(dst, data)?;
+    dst.flush()?;
+    Ok(())
+}
+
+pub(super) fn receive_logs(
+    mut src: impl Read,
+    mut line_received: impl FnMut(&str) -> io::Result<()>,
+) -> Result<()> {
+    let mut buf = [0; FRAME_MAX];
+    loop {
+        let data = receive_frame(&mut src, &mut buf)?;
+        if data.is_empty() {
+            return Ok(());
+        }
+        if data == LOG_HEARTBEAT {
+            continue;
+        }
+        let line = std::str::from_utf8(data)?
+            .strip_suffix('\n')
+            .context("unterminated lab log line")?;
+        ensure!(
+            !line.chars().any(|ch| ch.is_control() && ch != '\t'),
+            "control character in lab log line"
+        );
+        line_received(line)?;
     }
 }
 
@@ -332,6 +376,63 @@ mod tests {
         assert!(extract_run(&archive, &dest, "0001").is_err());
         assert!(!run.join("link").exists());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn remote_log_frames_keep_lines_and_skip_heartbeats() {
+        let first: &[u8] = b"[0007] building\n";
+        let second: &[u8] = "[host] update complete ✓\n".as_bytes();
+        let mut wire = Vec::new();
+        for data in [first, LOG_HEARTBEAT, second, b""] {
+            send_log_frame(&mut wire, data).unwrap();
+        }
+        assert_eq!(&wire[..4], &(first.len() as u32).to_be_bytes());
+        assert_eq!(&wire[wire.len() - 4..], &[0; 4]);
+
+        let reply = b"{\"ok\":true}\n";
+        wire.extend_from_slice(reply);
+        let mut wire = wire.as_slice();
+        let mut lines = Vec::new();
+        receive_logs(&mut wire, |line| {
+            lines.push(line.to_owned());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(lines, ["[0007] building", "[host] update complete ✓"]);
+        assert_eq!(wire, reply);
+    }
+
+    #[test]
+    fn remote_log_frames_reject_oversized_and_truncated_frames() {
+        let too_large = vec![b'x'; FRAME_MAX + 1];
+        let mut wire = Vec::new();
+        assert!(send_log_frame(&mut wire, &too_large).is_err());
+        assert!(wire.is_empty());
+
+        let oversized_header = ((FRAME_MAX + 1) as u32).to_be_bytes();
+        assert!(
+            receive_logs(oversized_header.as_slice(), |_| Ok(()))
+                .unwrap_err()
+                .to_string()
+                .contains("frame size")
+        );
+        assert!(receive_logs(&b"\0\0\0\x02x"[..], |_| Ok(())).is_err());
+        assert!(receive_logs(&b"\0\0\0\x01\0"[..], |_| Ok(())).is_err());
+    }
+
+    #[test]
+    fn remote_log_frames_refuse_malformed_lines() {
+        for data in [
+            &b"no newline"[..],
+            b"two\nlines\n",
+            b"escape \x1b[0m\n",
+            b"invalid UTF-8 \xff\n",
+        ] {
+            let mut wire = Vec::new();
+            send_log_frame(&mut wire, data).unwrap();
+            send_log_frame(&mut wire, b"").unwrap();
+            assert!(receive_logs(wire.as_slice(), |_| Ok(())).is_err());
+        }
     }
 
     #[test]

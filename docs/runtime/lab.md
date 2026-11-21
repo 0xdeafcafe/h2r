@@ -16,6 +16,7 @@ h2 lab run --host laptop ...  --TLS-->  h2 lab host (Aqua LaunchAgent)
                                           |-- cargo build, h2 build (cached)
                                           `-- h2 play --level ... (a window)
 h2 lab fetch <id>              <--TLS--  archive of runs/<id>
+h2 lab logs current --follow   <--TLS--  job and LaunchAgent logs
 h2 lab agent <id> <call>        --TLS-->  h2 agent <call> --socket a/<id>.sock
 ```
 
@@ -104,7 +105,7 @@ The host keeps its files under `--root`, by default
 | Path | What |
 |---|---|
 | `bin/h2` | stable LaunchAgent executable |
-| `logs/` | LaunchAgent stdout, stderr and explicit update log, with a current file and one rotated copy of up to 8 MiB each |
+| `logs/` | LaunchAgent stdout and stderr, host updates, and pairing offers, successful pairings and revocations. Each log has a current file and one rotated copy of up to 8 MiB each. |
 | `auth/` | TLS identity and pairing state |
 | `runs/<id>/` | one job: `meta.json`, `build.log`, `run.log`, `frames.csv`, `profile/`, `traces/`, `flights/`, `inputs/` |
 | `a/<id>.sock` | the run's game's agent API socket, removed when the run ends |
@@ -132,9 +133,42 @@ uninstalling and reinstalling the LaunchAgent.
 The local socket is `~/Library/Caches/h2recomp/lab.sock` (mode 0600),
 or a path set by `--socket` or the lab socket environment setting in
 [Switches](switches.md#tools). To stop a foreground host, stop each
-active job first (`h2 lab stop <id>`), then press Ctrl-C. During startup,
-the host waits for exclusive access to the lab root before marking any
+active job (`h2 lab stop <id>`), then press Ctrl-C. During startup, the
+host waits for exclusive access to the lab root before marking any
 unfinished jobs failed.
+
+### Watching jobs
+
+Run `h2 lab host watch [--root DIR]` on the laptop. The watcher reads
+`runs/<id>/meta.json`, `build.log`, `run.log` and the logs in `logs/`
+directly from the lab root, so it works while the host is busy or
+restarting. On attachment it shows every active job, or the latest job
+when the host is idle. It follows each new job and keeps streaming older
+jobs until they finish. Each job shows its build log before its run log.
+State changes include the job ID, kind, level, short commit, elapsed time
+and note. A job using the host's own image shows `commit=current`. Host events
+use the `[host]` prefix and include pairing offers, successful pairings,
+revocations and updates. On attachment the watcher starts with up to 16
+KiB per log, then prints new lines as the files grow. Prefix
+color is enabled on a terminal. See `crates/apps/cli/src/lab/watch.rs`
+and `crates/apps/cli/src/lab/service.rs`.
+
+On the driving Mac, use the paired connection:
+
+```sh
+h2 lab logs current --follow --host laptop
+h2 lab logs 0007 --follow --host laptop
+h2 lab logs 0007 --host laptop
+```
+
+`current --follow` follows the same feed as `host watch`. A named job
+shows its own state and logs, and `--follow` keeps the stream open until
+that job finishes, fails, is skipped or is cancelled. Omit `--follow`
+for a snapshot of the current feed or a named job. Run the command again
+to resume following after a host restart. The stream uses the existing lab
+connection and transfer framing, with at most 64 KiB of payload per
+frame. See `crates/apps/cli/src/lab/proto.rs`,
+`crates/apps/cli/src/lab/host.rs` and `crates/apps/cli/src/lab/transfer.rs`.
 
 ## The agent's side
 
@@ -443,7 +477,9 @@ The test suite exercises the Unix socket and paired TLS on loopback,
 job lifecycle, the image cache, Git bundle sync, artifact transfers, and
 `lab agent` and `bench` against a fake game. Unit tests cover pairing
 expiry, single use, rejected keys and replays, and LaunchAgent generation
-and lifecycle commands through a fake controller.
+and lifecycle commands through a fake controller. Synthetic log feed tests
+cover job transitions, overlapping jobs, log growth and rotation, and
+stream framing.
 
 Live checks remaining include Bonjour across two Macs, macOS Firewall,
 LaunchAgent startup after login, and the game's window, Metal device and

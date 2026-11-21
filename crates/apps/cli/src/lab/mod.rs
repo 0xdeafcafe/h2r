@@ -13,6 +13,7 @@ pub mod proto;
 mod service;
 mod takeover;
 mod transfer;
+mod watch;
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
@@ -35,6 +36,8 @@ const USAGE: &str = "usage:
                           only one build can run at a time
   h2 lab host status | update | uninstall
                           inspect, update or remove the local LaunchAgent
+  h2 lab host watch [--root DIR]
+                          follow jobs and LaunchAgent logs on the host
   h2 lab host pair-code | unpair [--root DIR]
                           issue a fresh code or revoke the paired driver
   h2 lab pair HOST CODE   pair with a Bonjour name, IP, or IP:port
@@ -67,6 +70,8 @@ const USAGE: &str = "usage:
     wait <id> [--timeout SECONDS]
     stop <id>             SIGTERM, then SIGKILL after 5 s
     runs [--limit N] [--json]
+    logs <id|current> [--follow]
+                          show recent output for one job or all active jobs
     fetch <id> [--to DIR] copy runs/<id> here (default $RUSH_KEEP/lab, else ./lab)
     put <file> [--as NAME] [--level MAP] [--difficulty D] [--commit SHA] [--pgo]
                           upload an input recording (or with --pgo a PGO profile)
@@ -88,6 +93,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let rest = args[1..].to_vec();
     match cmd.as_str() {
         "host" => match rest.first().map(String::as_str) {
+            Some("watch") => watch::local(&rest[1..]),
             Some("serve-installed") => service::managed(&rest[1..]),
             Some(
                 op @ ("install" | "uninstall" | "status" | "update" | "pair-code" | "unpair"
