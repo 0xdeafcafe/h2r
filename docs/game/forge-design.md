@@ -190,6 +190,10 @@ proposal:  {author, base_seq, op, was?}        peer -> host
 entry:     {seq, tick, author, op, prev_hash}  host -> every peer
 ```
 
+The log itself (entries, the hash chain, the head) is the
+`host-log` crate that [ai-networking.md](ai-networking.md) specifies;
+`forge-doc`'s `Entry` is `host_log::Entry<Op>`.
+
 - The host validates a proposal (schema, permission, budget, bounds,
   `was` against what it holds), assigns the next `seq` and an apply
   `tick` a few ticks ahead, and sends the entry to every machine on a
@@ -246,11 +250,13 @@ Forge's replication fills what the engine's does not:
   projectiles are local predictions of the same shots; hits and damage
   are the host's. A sink that changes game state (teleport, kill, device
   power, squad place) runs on the host only.
-- **Actors as puppets.** AI runs on the host; the engine replicates no
-  actors (**S**: retail multiplayer has none, [bots.md](bots.md) 2.4). Each actor's biped reaches
-  clients as a mirror with a pose stream (the `poses` layer), so a
-  client draws and can shoot it; the shot is judged by the host. Clients
-  run no AI.
+- **Actors as puppets.** AI runs on the host; a client never runs it
+  (**E**, [ai-networking.md](ai-networking.md), "What retail's
+  replication carries"). Each actor's body reaches clients as a unit
+  entity of the engine's own replication, and posture and dialogue on
+  the actor channel, so a client draws and can shoot it; the shot is
+  judged by the host. The layer is ai-networking.md's, shared with
+  Firefight.
 
 Proof in this mode is the log head, each definition entry's `was`, and
 a hash of `ForgeExt`'s definition part in the keep-alive. A map marks
@@ -516,7 +522,7 @@ and the game. Sizes as under Features.
 | **F12** | `asset-import`: glTF props, then skins on a chassis, then FBX | L | modeling slices 2, 6, 8 | invented glTF files in, tags out that `tags` decodes to the same mesh within quantisation; a mapping that drops a chassis node is refused; a missing bundle materialises with aliases and equal tag indices |
 | **F13** | Shape and Paint in game: instance moves, face push and pull, strokes, previews | L | F4, modeling slices 1 to 3, 5 to 7, 11 | a face pull over a fake game is one Mesh op and one preview; replaying the document gives the editor's bytes for the same ops |
 | **F14** | Live: `ForgePublished`, the gate, the Forge lobby and browse rows, both homes | M | F2 | the server refuses a non-document and an oversize one; a joiner without the base is refused before load; the parity suite passes in both homes |
-| **F15** | Host-replicated mode: the definition and world split, mirrors, shared schedules, actor puppets, the `ForgeExt` definition hash, the per-map capability mark | L | F5, F7, F11, F3's replication results | a fake host and two fake clients: a mirror follows its host object within one correction; an emitter's shots fall on the same ticks on all three; a client's `ForgeExt` definition hash equals the host's after reordered delivery; a puppet's pose matches the host actor's; a map with AI is refused in this mode while puppets are off |
+| **F15** | Host-replicated mode: the definition and world split, mirrors, shared schedules, actor puppets (the actor channel of [ai-networking.md](ai-networking.md), slices AN2 to AN5), the `ForgeExt` definition hash, the per-map capability mark | L | F5, F7, F11, F3's replication results, AN2 to AN5 | a fake host and two fake clients: a mirror follows its host object within one correction; an emitter's shots fall on the same ticks on all three; a client's `ForgeExt` definition hash equals the host's after reordered delivery; a puppet's pose matches the host actor's; a map with AI is refused in this mode while puppets are off |
 | **F16** | Full vertex editing in game: vert, edge and face modes, loop and ring select, loop cut, merge and weld, bevel and inset, texture coordinates, on a pad and with mouse and keyboard | L | F13, modeling slice 4 | every pad gesture is one `MeshOp` equal to the editor's for the same edit; `Page` tables for the radial menu and each tool's options; a session's ops replay to the editor's bytes |
 | **F17** | Custom models on Live: the `model_uploads` flag and request, the `model-bundle` kind, the upload and publish checks in both homes, reports with `third_party_asset`, the Models queue in Halo Admin, the gate's bundle download, **Show other players' models** | M | F12, F14 | each refusal in the check's table, in both homes through the parity suite; approval and revocation replay from the log; three reports hide a bundle; a taken-down bundle makes a joiner draw the chassis; an unapproved account's publish naming a bundle is refused |
 
@@ -543,7 +549,9 @@ arena cursors scenario-editor.md section 6 names and the block counts.
 group on an `mp_host` and returns its id for the client's `sim.objects`
 to be asked for. `{what: "sync"}` reports the protocol and the hash
 series of a session started on a multiplayer map with no variant.
-`{what: "ai"}` reports the AI flag and the actor count.
+`{what: "ai"}` reports the AI flag and the actor count. The
+replication and AI questions can also be read with `net.replication`
+and `world.ai` ([ai-networking.md](ai-networking.md), probes P1 and P2).
 
 ## Decisions
 
