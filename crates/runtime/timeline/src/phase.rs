@@ -182,6 +182,14 @@ pub enum Counter {
     MapSlotVfsWaitNs,
     /// Foreground time checking the mounted sources of inactive map slots.
     MapSlotCheckNs,
+    /// Guest calls of D3D entry points that ran (`d3d::runtime_glue`), on
+    /// any thread. Always on (docs/graphics/retire-d3d.md, slice R0).
+    D3dEntries,
+    /// Guest draws `d3d` handed to its backend: what no native replacement
+    /// claimed (`d3d::device::backend_draws`'s growth). Always on.
+    D3dResidualDraws,
+    /// Push-buffer words `d3d` decoded, counted once per drain. Always on.
+    D3dPushWords,
 }
 
 /// Number of [`Counter`]s.
@@ -195,7 +203,7 @@ pub fn counter_columns() -> impl Iterator<Item = (usize, &'static str)> {
 }
 
 impl Counter {
-    pub const ALL: [Counter; 33] = [
+    pub const ALL: [Counter; 36] = [
         Counter::Draws,
         Counter::Submits,
         Counter::Pipelines,
@@ -229,6 +237,9 @@ impl Counter {
         Counter::OrderedWrites,
         Counter::MapSlotVfsWaitNs,
         Counter::MapSlotCheckNs,
+        Counter::D3dEntries,
+        Counter::D3dResidualDraws,
+        Counter::D3dPushWords,
     ];
 
     pub fn label(self) -> &'static str {
@@ -265,6 +276,9 @@ impl Counter {
             Counter::OrderedWrites => "ordered_writes",
             Counter::MapSlotVfsWaitNs => "map_slot_vfs_wait_ns",
             Counter::MapSlotCheckNs => "map_slot_check_ns",
+            Counter::D3dEntries => "d3d_entries",
+            Counter::D3dResidualDraws => "d3d_residual_draws",
+            Counter::D3dPushWords => "d3d_push_words",
             Counter::FileIoUs => "file_io_us",
         }
     }

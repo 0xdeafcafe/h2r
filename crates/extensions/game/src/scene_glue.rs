@@ -18,11 +18,34 @@ use agent_proto::{
 };
 use frame_scene::{CarriedSummary, FrameScene, OpCounts, Readback, Slot, ViewKind};
 
-/// Registers the source with the agent, and the D3D draw counter with the
-/// entry census.
+/// Registers the source with the agent, the D3D draw counter with the
+/// entry census, and `render.residual`'s wiring: the adapter's entry calls
+/// to `render_bridge::residual_census`, its host hooks, and the function
+/// lookup that names callers (docs/graphics/retire-d3d.md, slice R0).
 pub fn install() {
     agent::render::set_scene_source(source);
     render_bridge::entry_census::set_draw_counter(d3d::device::backend_draws);
+    d3d::residual::set_sink(residual_call);
+    render_bridge::residual_census::set_host(render_bridge::residual_census::Host {
+        arm: d3d::residual::arm,
+        tick: || agent::render::HOSTED.last_tick(),
+        map: || d3d::pipeline_store::current_map().1,
+    });
+    agent::render::residual::set_functions(recomp::fallback::function_at);
+}
+
+/// One armed entry call, forwarded (the device is locked; the census takes
+/// only its own lock).
+fn residual_call(c: &d3d::residual::EntryCall) {
+    render_bridge::residual_census::call(&render_bridge::residual_census::Call {
+        entry: c.name,
+        ret: c.ret,
+        inline: crate::d3d_glue::residual_tally(c.inline),
+        own: crate::d3d_glue::residual_tally(c.own),
+        ns: c.ns,
+        ran: c.ran,
+        present: c.present,
+    });
 }
 
 /// The live mirror's `camera` layer (docs/editor/live-mirror.md,
