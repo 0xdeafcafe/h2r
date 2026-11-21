@@ -59,7 +59,7 @@ fn newer(n: u32, old: u32) -> bool {
     (n.wrapping_sub(old) as i32) > 0
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub(super) struct Prediction {
     queue: VecDeque<Sent>,
     pub update: Option<u32>,

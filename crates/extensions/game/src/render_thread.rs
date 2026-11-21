@@ -108,21 +108,27 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "CACHE_COPY_STEP",
         "the loading screen's cache copy on the game thread; steps it with guest calls",
     ),
+    // Co-op over Live: the session, the simulation's update apply and the
+    // script teleports, all on the game thread. The look prediction's one
+    // render-met hook, RENDER_GAME_VIEW, is context-only and is not here
+    // (`a_look_prediction_render_hook_runs_on_the_render_thread`).
     (
         "coop-look-prediction",
-        "RENDER_GAME_VIEW",
-        "draws the pending guest look from prediction state the simulation's observers update (shared, and it writes it)",
+        "*",
+        "the simulation's observers write the prediction the render hook's published copy comes from",
     ),
     (
         "coop-jip",
-        "SESSION_JOIN_CHECK",
-        "the session's join check on the game thread; reads live RAM through the runtime and answers with an async guest call",
+        "*",
+        "the session's join check and player-set changes on the game thread; read live RAM through the runtime",
     ),
     (
         "coop-live",
-        "SESSION_JOINABLE",
-        "the session's joinable query on the game thread; reads live RAM through the runtime and shared co-op state",
+        "*",
+        "the retail synchronous campaign path: session, game start and joinable queries on the game thread",
     ),
+    ("coop-players", "*", "players 3 to 16 spawn and follow teleports on the simulation thread"),
+    ("coop-latency", "*", "samples update arrival on the simulation thread into shared counters"),
     // Game-thread points: the simulation, the UI and the level start.
     ("actor-net", "*", "capture and dialogue share per-match state on the simulation thread"),
     (

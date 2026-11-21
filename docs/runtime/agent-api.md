@@ -984,7 +984,9 @@ feature (`crates/extensions/game/src/coop_look.rs`). With no parameters it retur
 the most recent 256 rendered local views, oldest first; `{"after":123}`
 returns samples newer than that cursor. `latest` is the most recent
 sample number, initially zero; a gap in sample numbers means the reader
-fell behind. One frame can contain several local users.
+fell behind. One frame can contain several local users. The render hook
+posts each draw and the game thread logs it at its next co-op hook, so a
+sample shows up a tick after its frame.
 
 ```sh
 h2 agent --socket ~/Library/Caches/h2recomp/coop-bravo.sock render.coop_look
