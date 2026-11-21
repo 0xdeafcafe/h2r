@@ -1040,6 +1040,7 @@ dependencies = [
  "sim-bench",
  "studio-proto",
  "subtle",
+ "superbounce",
  "symbols",
  "tags",
  "time",

@@ -52,6 +52,9 @@ boot = { path = "../boot", default-features = false }
 host-data = { path = "../../live/host-data" }
 # Bots for sim runs and `h2 bots nav` (docs/game/bots.md).
 bots = { path = "../../live/bots" }
+# `h2 superbounce scan`: bounce and forced-crouch spots in a map's
+# collision (docs/game/superbounce.md, "Spots in the geometry").
+superbounce = { path = "../../live/superbounce", optional = true }
 # h2 sim: match, batch and report files, the comparison (docs/runtime/sim.md).
 sim-bench = { path = "../../live/sim-bench" }
 # `h2 agent` and `h2 serve` (docs/runtime/agent-api.md).
@@ -145,6 +148,7 @@ desktop = [
     "dep:font",
     "dep:assets",
     "dep:map",
+    "dep:superbounce",
     "dep:xiso",
     "dep:h1map",
     "dep:h1convert",
