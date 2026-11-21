@@ -3567,6 +3567,30 @@ lobby never started.
   lobby that returns to the party, `live.matchmaking.trace` retains these
   inputs, the guest matchmaking result and the target key release.
   [Agent API](../runtime/agent-api.md#matchmaking-transitions)
+- **Arbitration starts when the lobby fills.** Only a full, map-ready
+  lobby reaches `0x71ac2`: it makes the round (`0x73ae0`,
+  `XOnlineArbitrationCreateRoundID`) and sets it on the target
+  (`0x5c1c0`, `+0x49e8`). The update's every-frame `0x72170` then
+  registers it (`0x73bc0` → `0x924e0` → `XOnlineArbitrationRegister`), and
+  `0x755d0` polls the task: success sets the arbitration state
+  (`0x510518`) to 2, a failure calls `0x73dc0(1)` (state 0, result 1).
+  This console's peer status (`0x73b10`, peer `+0xec`) reads 1 while
+  registering, 2 registered, 5 after that failure. The phantoms copy
+  it with the rest of the host's properties, so `0x72140` passes when
+  the host's own registration does. `0x72260` checks the target peers
+  that are also in the party (this console's own): a status above 2
+  sets the matchmaking result to `0x11`, and `0x706f0` (`0x70932`)
+  sends any result but 2 and 3 back to the party lobby (life cycle 1)
+  with MATCHMAKING FAILED. The target key release and the session
+  delete follow. Nothing before the fill registers, so a full
+  Clankermatch lobby that drops to the party within a second of filling
+  most likely took this branch; the logged result says which.
+  The Live HLE logs each refused arbitration call (`live: arbitration
+  <session>/<round>/register for <gamertag> failed: ...`) and the game
+  logs the result (`live: matchmaking ended with result 0x11: this
+  console's arbitration registration failed ...`). Registration and
+  report retry through an outage, because the server writes a second
+  one as nothing (live-matchmaking.md, "Arbitration (built)").
 - **Live.** The match's bots went to the party's Live session too, and
   each was refused there (§9.5): now only the roster's session is told.
 

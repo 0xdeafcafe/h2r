@@ -1322,6 +1322,22 @@ return address as `caller`. The state includes the guest lifecycle
 (`6` is matchmaking progress and `1` is the party lobby), the matchmaking
 update's `result` (`3` while active), and the arbitration state and result.
 
+`result` `2` is a started match. Any other value but `3` sends the party
+back to its lobby with the title's matchmaking failure, and the game logs
+`live: matchmaking ended with result R: <reason> (arbitration state S,
+result A)` once, from `game::agent_glue::matchmaking::result_reason`:
+
+| `result` | set by | meaning |
+|---|---|---|
+| `1` | `0x72330` | the matchmaking setup failed |
+| `4` | `0x72260` | the party leader cancelled (squad `+0x49fc`) |
+| `5` | `0x707d0` | a party console failed to load the map |
+| `6` | `0x72540` | the party changed or left the hopper |
+| `7` | `0x66050`, `0x718b1` | the party or the target has no hopper or roster for it |
+| `0xe` | `0x717b6` | the target session left its lobby states |
+| `0x11` | `0x72260` | this console's arbitration registration failed (peer status above 2) |
+| `0x13` | `0x70765` | the update's `+0x10` flag is clear |
+
 `squad` and `target` are null when the session is absent. Each includes its
 session id when it has a key, its state and class, hopper index, host and
 local peer indices, player and roster counts, whether an arbitration round
