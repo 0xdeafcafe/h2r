@@ -371,6 +371,17 @@ impl Studio {
             if ui.is_item_hovered() {
                 ui.tooltip_text(scenario_edit::GROWTH_REFUSAL);
             }
+            menu_action(
+                ui,
+                app,
+                MenuCommand::AllowUnverifiedGeometry,
+                None,
+                app.modeling.allow_unverified,
+                actions,
+            );
+            if ui.is_item_hovered() {
+                ui.tooltip_text(crate::app::modeling::UNVERIFIED_REFUSAL);
+            }
         }
         if let Some(_m) = ui.begin_menu("View") {
             menu_action(ui, app, MenuCommand::FrameAll, Some(icon::MAXIMIZE), false, actions);

@@ -6732,6 +6732,7 @@ dependencies = [
  "dear-imgui-winit",
  "dear-imguizmo",
  "editor-core",
+ "geometry-edit",
  "gfx",
  "guest-layout",
  "h1convert",

@@ -129,6 +129,8 @@ pub struct ViewportView {
     markers_rev: Option<u64>,
     /// The session's native models last uploaded: a placement of a tag
     /// first placed after the map opened gives the session new ones.
+    /// The geometry session revision the native world last redrew.
+    modeling_rev: Option<u64>,
     native_models: Option<std::sync::Arc<scenario_edit::native_view::NativeModels>>,
     linked: BTreeSet<(BlockKind, usize)>,
     overlay_rev: Option<u64>,
@@ -169,6 +171,7 @@ impl ViewportView {
             texture: None,
             world_rev: None,
             markers_rev: None,
+            modeling_rev: None,
             native_models: None,
             linked: BTreeSet::new(),
             overlay_rev: None,
@@ -234,6 +237,20 @@ impl ViewportView {
             let native = session.native_world().map_or(&[][..], |n| n.as_slice());
             vp.set_native(gpu.device, gpu.queue, native);
             self.world_rev = Some(session.world_rev());
+        }
+        // The Modeling tool's in-place edits, redrawn over the sections
+        // they came from (docs/editor/modeling.md, "Preview").
+        if world_changed || self.modeling_rev != Some(app.modeling_rev()) {
+            for p in app.modeling_previews() {
+                for d in &p.drawn {
+                    let owner = match *d {
+                        geometry_edit::Drawn::Cluster(i) => render::SectionOwner::Cluster(i),
+                        geometry_edit::Drawn::Instance(i) => render::SectionOwner::Instance(i),
+                    };
+                    vp.set_native_section(gpu.queue, p.bsp, owner, &p.positions, None);
+                }
+            }
+            self.modeling_rev = Some(app.modeling_rev());
         }
         if vp.lighting() != app.lighting {
             let native = session.native_world().map_or(&[][..], |n| n.as_slice());

@@ -15,6 +15,7 @@ mod library;
 mod navigation;
 pub mod map_cards;
 pub mod map_pack;
+pub mod modeling;
 pub mod shared_refs;
 pub mod tag_api;
 pub mod tag_browse;
@@ -236,6 +237,11 @@ pub enum Action {
     FocusSelected,
     SetFlySpeed(f32),
     SetAllowGrowth(bool),
+    /// "Allow unverified geometry writes": while off, a save with
+    /// Modeling edits is refused (docs/editor/modeling.md).
+    SetAllowUnverifiedGeometry(bool),
+    /// A Modeling command: open, edit, undo a structure or model section.
+    Model(modeling::ModelAction),
     /// Show another tool.
     SetTool(ToolKind),
 
@@ -490,6 +496,8 @@ pub struct App {
     pub pairing: crate::play::pair::Bridge,
     /// The tag editor's document over the open map.
     pub tags: TagDoc,
+    /// The Modeling tool: the open map's geometry session.
+    pub modeling: modeling::Modeling,
     /// The selected tag's shared-map line, for the tag and revision.
     tag_homes: std::cell::RefCell<Option<(map::TagId, u64, Option<String>, Option<String>)>>,
     /// Another map of the source shown read-only in the Tags tool (a
@@ -560,6 +568,7 @@ impl App {
             hud: HudTool::default(),
             pairing: Default::default(),
             tags: TagDoc::default(),
+            modeling: Default::default(),
             tag_homes: Default::default(),
             tag_browse: None,
             nav: NavHistory::default(),
@@ -656,6 +665,9 @@ impl App {
     /// The active tool can undo or redo.
     pub fn can_undo(&self) -> bool {
         match self.tool {
+            ToolKind::Scenario if self.modeling.session.active.is_some() => {
+                self.modeling.session.can_undo()
+            }
             ToolKind::Scenario => self.session.can_undo(),
             ToolKind::Variants => self.variants.as_ref().is_some_and(|e| e.can_undo()),
             ToolKind::Playlists => self.hoppers.can_undo(),
@@ -666,6 +678,9 @@ impl App {
     }
     pub fn can_redo(&self) -> bool {
         match self.tool {
+            ToolKind::Scenario if self.modeling.session.active.is_some() => {
+                self.modeling.session.can_redo()
+            }
             ToolKind::Scenario => self.session.can_redo(),
             ToolKind::Variants => self.variants.as_ref().is_some_and(|e| e.can_redo()),
             ToolKind::Playlists => self.hoppers.can_redo(),
@@ -1026,6 +1041,8 @@ impl App {
                 self.session.set_allow_growth(allow);
                 self.tags.allow_growth = allow;
             }
+            Action::SetAllowUnverifiedGeometry(allow) => self.set_allow_unverified_geometry(allow),
+            Action::Model(a) => self.run_model(a),
             Action::SetTool(tool) => self.set_tool(tool),
             Action::Quit => self.quit = true,
             Action::UiPick(pick) => {
@@ -1154,6 +1171,14 @@ impl App {
     }
 
     fn undo_redo(&mut self, tool: ToolKind, undo: bool) {
+        // A target in edit mode takes the map's undo (docs/editor/modeling.md).
+        if tool == ToolKind::Scenario && self.modeling.session.active.is_some() {
+            return self.run_model(if undo {
+                modeling::ModelAction::Undo
+            } else {
+                modeling::ModelAction::Redo
+            });
+        }
         let done = match tool {
             ToolKind::Scenario => {
                 let done = if undo {
