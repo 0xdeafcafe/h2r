@@ -621,7 +621,10 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   (`scenario_edit::native_view`), one world per BSP; the toolbar's
   **Lighting** menu picks Game (base map times lightmap), Flat (no
   lightmap), Lightmap only (the lightmap on white) or Collision (Flat at a
-  third, for the collision layers). The placed objects draw through the
+  third, for the collision layers). The level's base look is a
+  translated pass (`native_render::base_look`), so its depth is the one a
+  material's pass computes for the same vertex; when it does not compile
+  the level draws with the renderer's `world.wgsl`. The placed objects draw through the
   native renderer too (`native_view::NativeObjects`, `GpuModels`), each
   in its rest pose with its base maps in the same mode, and a selected
   one mixed towards the selection orange as the scene's models are

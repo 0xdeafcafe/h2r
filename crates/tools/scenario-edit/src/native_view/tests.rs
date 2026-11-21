@@ -533,11 +533,11 @@ fn frame(
 /// in Game every pixel of the floor the base look draws (Flat: the base
 /// map, no layers) is the pass's colour, so the pass passed its
 /// less-or-equal depth test against the base look's depth there, and
-/// the depth it wrote is the base look's within a relative 1e-4: the
-/// translated program and the base look put the same floor at the same
-/// depth, so the layer does not flicker against it. The floor is seen
-/// at a slant, so its depth varies across the view. Off the floor
-/// nothing draws. Skipped without a wgpu adapter.
+/// the depth it wrote is the base look's, bit for bit: the base look and
+/// the pass share one position (`base_look::world_position`) and the
+/// translated depth, so the layer does not flicker against it. The floor
+/// is seen at a slant, so its depth varies across the view. Off the
+/// floor nothing draws. Skipped without a wgpu adapter.
 #[test]
 fn the_layered_floor_draws_its_pass_over_the_base_look() {
     let Some((device, queue)) = device() else {
@@ -567,21 +567,28 @@ fn the_layered_floor_draws_its_pass_over_the_base_look() {
     let lost: Vec<usize> = floor.iter().copied().filter(|&i| !green(game[i])).collect();
     assert!(
         lost.is_empty(),
-        "the pass lost the depth test on {} of {} floor pixels, e.g. pixel {} {:?} at depth {} over {}",
+        "the pass lost the depth test on {} of {} floor pixels, e.g. pixel {} {:?}, base look depth {:e} ({:#010x})",
         lost.len(),
         floor.len(),
         lost[0],
         game[lost[0]],
-        game_depth[lost[0]],
         flat_depth[lost[0]],
+        flat_depth[lost[0]].to_bits(),
     );
-    let worst = floor
+    let differ: Vec<usize> = floor
         .iter()
-        .map(|&i| (game_depth[i] - flat_depth[i]).abs() / flat_depth[i])
-        .fold(0.0f32, f32::max);
+        .copied()
+        .filter(|&i| game_depth[i].to_bits() != flat_depth[i].to_bits())
+        .collect();
     assert!(
-        worst < 1e-4,
-        "the pass's depth differs from the base look's by {worst}"
+        differ.is_empty(),
+        "the pass's depth differs from the base look's on {} floor pixels, e.g. pixel {}: {:e} ({:#010x}) over {:e} ({:#010x})",
+        differ.len(),
+        differ[0],
+        game_depth[differ[0]],
+        game_depth[differ[0]].to_bits(),
+        flat_depth[differ[0]],
+        flat_depth[differ[0]].to_bits(),
     );
     for i in (0..flat.len()).filter(|i| !floor.contains(i)) {
         assert_eq!(game[i][..3], [0, 0, 0], "off the floor, pixel {i}");

@@ -858,16 +858,16 @@ pub const LAYERED_COLOR: u32 = 0xff00_ff00;
 /// [`fixture_with_textured_bsp`] with the floor's shader given a template
 /// (`id(10)`) that draws one pass (`id(11)`) in layer [`LAYERED_LAYER`]
 /// at the first level of detail, with one implementation: a vertex shader
-/// (`id(12)`) whose world classification places the vertex with the
-/// view's rows (`dp4 oPos, v0, c[0..3]`) and nothing else, a pixel shader
+/// (`id(12)`) whose world classification is the view position the
+/// editor's base look takes (`native_render::base_look::world_program`:
+/// the view's rows, then the game's window epilogue) and nothing else, a
+/// pixel shader
 /// whose final combiner outputs [`LAYERED_COLOR`], no textures, and its
 /// own states: no blending, depth written, nothing culled. The base map
 /// and lightmap are the textured map's, so the base look is unchanged.
 /// Everything is invented.
 pub fn fixture_with_layered_bsp() -> Vec<u8> {
     use shaders::psh::bits::{CHAN_ALPHA, REG_C0, final_efg, inputs};
-    use shaders::vsh::encode::{Inst, Operand as O, program};
-    use shaders::vsh::{MacOp, OutReg};
 
     let mut b = fixture_with_textured_bsp();
     // The metadata region reaches the end of the file.
@@ -998,10 +998,10 @@ pub fn fixture_with_layered_bsp() -> Vec<u8> {
     // The vertex shader: one classification, the world's.
     let v = file(LAYERED_VRTX);
     let (classification, code_at) = (LAYERED_VRTX + 0x20, LAYERED_VRTX + 0x80);
-    let row = |c: u8, mask: u8| {
-        Inst::mac(MacOp::Dp4, Some(O::v(0)), Some(O::c(c)), None).to_out(false, OutReg::Pos, mask)
-    };
-    let code = program(&[row(0, 8), row(1, 4), row(2, 2), row(3, 1)]);
+    // The base look's own position code (`base_look::world_position`):
+    // the pass computes the floor's depth as the base look does, bit for
+    // bit.
+    let code = native_render::base_look::world_program(&[]);
     assert!(code_at + code.len() <= LAYERED_VRTX + 0x200);
     put(&mut b, v + 4, 1);
     put(&mut b, v + 8, addr(classification));

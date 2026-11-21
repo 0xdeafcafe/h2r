@@ -3,9 +3,10 @@
 //! loaded with `native_render::load::load_world`, its base maps and
 //! lightmap pages decoded by the renderer's own decodes, uploaded with
 //! `GpuWorld::new` and drawn with the editor's camera into the viewport's
-//! colour and depth targets. The look is the renderer's `world.wgsl`: base
-//! map times lightmap. The Lighting menu's modes swap the images the
-//! world is uploaded with ([`Lighting`]).
+//! colour and depth targets. The look is base map times lightmap, drawn
+//! as a translated pass (`native_render::base_look`; the renderer's
+//! `world.wgsl` when that does not compile). The Lighting menu's modes
+//! swap the images the world is uploaded with ([`Lighting`]).
 //!
 //! Step 2 (slice P15) adds the world layers 1, 5, 7, 8 and 20 with their
 //! own translated passes ([`NativeLayers`]): loaded as the game loads
@@ -15,6 +16,7 @@
 use crate::geometry::{Camera, Marker};
 use assets::ResourceFiles;
 use map::{Map, TagId};
+use native_render::base_look;
 use native_render::camera::RenderCamera;
 use native_render::cull::CullStats;
 use native_render::gpu::{DepthRule, GpuWorld, Image, PassViewport};
@@ -109,10 +111,12 @@ fn scaled(image: &Image, num: u16, den: u16) -> Image {
     }
 }
 
-/// The depth rule the editor's world pass writes: view depth over the far
-/// plane, unfloored (the viewport's depth is `Depth32Float`). The overlay
-/// pass that draws after the world writes the same depth
-/// ([`depth_of`]), so its depth test agrees with the picture.
+/// The depth rule the editor's `world.wgsl` pass writes: view depth over
+/// the far plane, unfloored (the viewport's depth is `Depth32Float`). The
+/// overlay pass that draws after the world writes the same depth
+/// ([`depth_of`]), so its depth test agrees with the picture. The
+/// translated base look (`base_look`) floors it to the W-buffer's step,
+/// which is within the overlays' margins.
 pub const DEPTH_RULE: DepthRule = DepthRule {
     full_scale: native_render::camera::D24_SCALE,
     floor: false,
@@ -453,8 +457,104 @@ pub struct NativeWorld {
     gpu: GpuWorld,
     lighting: Lighting,
     pool: gfx::ring::UploadPool,
+    /// The base look as a translated pass ([`base_look`]): what it draws.
+    /// `None` when it did not compile: `world.wgsl` draws the base look
+    /// then, and no layer is drawn over it (their depths would not agree).
+    base: Option<DrawnLayer>,
     /// The uploaded layers (the Game mode only): what each draws.
     layers: Vec<DrawnLayer>,
+}
+
+/// The key the base look's set is held under in the `GpuWorld` (the
+/// game's layer 3, which the base look stands in for).
+const BASE_LAYER: u8 = 3;
+
+/// `load`'s base look in `lighting` as a translated pass
+/// ([`base_look::base_programs`]): each draw's base map (the mode's),
+/// times its lightmap page (the mode's, white where the mode has none)
+/// or white when unlit. `None`, with the cause printed, when a program
+/// does not compile or no part binds.
+fn base_set(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    load: &NativeLoad,
+    lighting: Lighting,
+) -> Option<(native_render::fog_gpu::FogSet, DrawnLayer)> {
+    let w = &load.world;
+    let key = |d: &native_render::world::WorldDraw| {
+        if d.lightmap.is_some() {
+            d.material
+        } else {
+            base_look::unlit(d.material)
+        }
+    };
+    let programs = match base_look::base_programs(
+        w.draws.iter().map(|d| (d.material, d.lightmap.is_some())),
+    ) {
+        Ok(p) => p,
+        Err(why) => {
+            eprintln!("editor native world: the base look does not compile ({why})");
+            return None;
+        }
+    };
+    let parts: Vec<layers_load::Part> = w
+        .draws
+        .iter()
+        .map(|d| {
+            (
+                (d.owner, d.part),
+                (d.first_index, d.index_count, d.lightmap, key(d)),
+            )
+        })
+        .collect();
+    let white = Image::solid([255; 4]);
+    let set = native_render::fog_gpu::FogSet::new(
+        device,
+        queue,
+        w,
+        parts.clone(),
+        programs,
+        &mut |s| {
+            if s == base_look::WHITE_STAGE {
+                return Some(white.clone());
+            }
+            let m = base_look::base_material(s)?;
+            load.base.get(&m).map(|i| lighting.base(i))
+        },
+        &mut |k| {
+            Some(
+                load.pages
+                    .get(&k)
+                    .and_then(|i| lighting.page(i))
+                    .unwrap_or_else(|| white.clone()),
+            )
+        },
+    );
+    let selected: Vec<(Owner, u8)> = parts
+        .iter()
+        .map(|&(k, _)| k)
+        .filter(|&(owner, part)| set.draws_part(owner, part))
+        .collect();
+    if selected.len() != parts.len() {
+        eprintln!(
+            "editor native world: the base look binds {} of {} parts",
+            selected.len(),
+            parts.len()
+        );
+        return None;
+    }
+    let fogs = parts
+        .iter()
+        .map(|&(_, (_, _, _, m))| (m, (shaders::psh::fog::Fog::OFF, [0.0; 4])))
+        .collect();
+    Some((
+        set,
+        DrawnLayer {
+            layer: BASE_LAYER,
+            selected,
+            fogs,
+        },
+    ))
 }
 
 /// One uploaded layer: the parts its set draws and the fog they draw
@@ -479,10 +579,18 @@ impl NativeWorld {
             &mut |m| load.base.get(&m).map(|i| lighting.base(i)),
             &mut |k| load.pages.get(&k).and_then(|i| lighting.page(i)),
         );
+        let base = base_set(device, queue, load, lighting).map(|(set, drawn)| {
+            gpu.set_layer(BASE_LAYER, set);
+            drawn
+        });
         // The layers are the game's look: the other modes draw the base
-        // look alone.
+        // look alone. They draw only over the translated base look, whose
+        // depth is theirs.
         let mut layers = Vec::new();
-        if let Some(l) = load.layers().filter(|_| lighting == Lighting::Game) {
+        if let Some(l) = load
+            .layers()
+            .filter(|_| lighting == Lighting::Game && base.is_some())
+        {
             for (&layer, plan) in &l.plans {
                 let Some(set) = layers_load::upload_static(
                     &l.view,
@@ -508,6 +616,7 @@ impl NativeWorld {
             gpu,
             lighting,
             pool: Default::default(),
+            base,
             layers,
         }
     }
@@ -580,7 +689,7 @@ impl NativeWorld {
                 arena: &arena,
             };
             let inputs = ViewInputs::from_camera(&view, (size[0], size[1]));
-            for l in &self.layers {
+            for l in self.base.iter().chain(&self.layers) {
                 self.gpu
                     .prepare_layer(l.layer, &mut uploads, &inputs, &l.fogs);
             }
@@ -596,21 +705,35 @@ impl NativeWorld {
             depth_format,
             size,
         );
-        self.gpu.encode(
-            device,
-            &mut encoder,
-            color,
-            color_format,
-            depth,
-            depth_format,
-            PassViewport {
-                x: 0.0,
-                y: 0.0,
-                width: size[0] as f32,
-                height: size[1] as f32,
-            },
-            (size[0], size[1]),
-        );
+        if let Some(b) = &self.base {
+            self.gpu.encode_layer(
+                BASE_LAYER,
+                device,
+                &mut encoder,
+                color,
+                color_format,
+                depth,
+                depth_format,
+                (size[0], size[1]),
+                &b.selected,
+            );
+        } else {
+            self.gpu.encode(
+                device,
+                &mut encoder,
+                color,
+                color_format,
+                depth,
+                depth_format,
+                PassViewport {
+                    x: 0.0,
+                    y: 0.0,
+                    width: size[0] as f32,
+                    height: size[1] as f32,
+                },
+                (size[0], size[1]),
+            );
+        }
         self.encode_layers(
             &LAYERS_AFTER,
             device,
