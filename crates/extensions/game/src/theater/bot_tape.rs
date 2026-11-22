@@ -82,19 +82,12 @@ impl Session {
     pub fn enable_bot_tape(&self) {
         self.bots.lock().unwrap_or_else(|e| e.into_inner()).enabled = true;
     }
-    pub fn bot_cursor(&self) -> u64 {
-        self.bots.lock().unwrap_or_else(|e| e.into_inner()).cursor
-    }
     /// Index the next *unapplied* change. A prefetched roster can be decoded
     /// from its entry again without storing a second copy in a ring snapshot.
     pub(crate) fn bot_snapshot_cursor(&self) -> (u64, Option<usize>) {
         let t = self.bots.lock().unwrap_or_else(|e| e.into_inner());
         let next = self.replaying.then(|| t.next - usize::from(t.pending.is_some()));
         (t.cursor, next)
-    }
-
-    pub fn resume_bot_cursor(&self, cursor: u64) -> Result<(), String> {
-        self.resume_bot_row(cursor, None)
     }
 
     pub(crate) fn resume_bot_row(&self, cursor: u64, row: Option<usize>) -> Result<(), String> {

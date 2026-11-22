@@ -1,5 +1,7 @@
 //! The script editor's pure helpers: positions, colour spans, problem
-//! rows, completion text and the reload's params and row.
+//! rows, completion text and the reload's params and row; and the
+//! language features over `rules::ide` (completion as you type, quick
+//! fixes, rename, go to definition, uses, hover).
 
 use super::*;
 use agent_proto::rules::Reloaded;
@@ -76,6 +78,7 @@ fn snippets_insert_their_defaults_and_words_end_at_the_cursor() {
         documentation: ide::Markup::markdown(""),
         insert_text: "score(${1:p}, ${2:n})$0".into(),
         insert_text_format: ide::SNIPPET,
+        sort_text: String::new(),
     };
     assert_eq!(plain_insert(&item), "score(p, n)");
     let text = "    sco";
@@ -83,7 +86,13 @@ fn snippets_insert_their_defaults_and_words_end_at_the_cursor() {
     assert_eq!(word_start(text, 4), 4);
     let mut ed = RulesEditor { text: text.into(), cursor: text.len(), ..Default::default() };
     ed.complete_with(&item);
-    assert_eq!(ed.insert, Some((4, "score(p, n)".into())));
+    // The word is replaced, the first placeholder selected, and the widget
+    // gets the same edit.
+    assert_eq!(ed.text, "    score(p, n)");
+    let edit = ed.edit.clone().expect("an edit for the widget");
+    assert_eq!(edit.text, ed.text);
+    assert_eq!(edit.select, Some((10, 11)));
+    assert_eq!(&ed.text[10..11], "p");
 }
 
 #[test]
@@ -152,4 +161,420 @@ fn the_analysis_follows_the_text() {
     ed.text.push_str("\nnonsense here\n");
     assert!(!ed.refresh().diagnostics.is_empty());
     assert!(!ed.refresh().check.as_ref().unwrap().ok);
+}
+
+/// The bug behind "can't see the text" was in the drawing (see
+/// `headless::the_script_editor_shows_its_text`); the state half: an
+/// open fills the buffer the widget draws and hands the widget the same
+/// text while it has the keyboard.
+#[test]
+fn opening_a_script_fills_the_buffer_and_hands_it_to_the_widget() {
+    let mut ed = RulesEditor::default();
+    assert_eq!(ed.text, BLANK);
+    ed.open_starter("slayer").unwrap();
+    assert_eq!(ed.text, rules::builtin::SLAYER);
+    assert_eq!(ed.edit, Some(Edit::to(rules::builtin::SLAYER.to_string(), 0)));
+    assert!(ed.show, "an open picks the window's tab");
+    assert!(ed.menu.is_none());
+
+    // `rules.set` with the widget idle: the text, and no keyboard grab.
+    let mut ed = RulesEditor::default();
+    ed.set_text("rules \"A\" 1\n".into());
+    assert_eq!(ed.text, "rules \"A\" 1\n");
+    assert!(ed.edit.is_none());
+    // While typing: the widget takes it.
+    ed.typing = true;
+    ed.set_text("rules \"B\" 1\n".into());
+    assert_eq!(ed.edit.as_ref().map(|e| e.text.as_str()), Some("rules \"B\" 1\n"));
+}
+
+#[test]
+fn snippets_expand_to_their_defaults_with_the_first_selected() {
+    let e = expand_snippet("score(${1:player}, ${2:int})", "");
+    assert_eq!(e.text, "score(player, int)");
+    assert_eq!(e.select, Some((6, 12)));
+    assert_eq!(e.cursor, 12);
+
+    // New lines take the line's indent, tabs become spaces, and $0 is the
+    // cursor when no placeholder comes first.
+    let e = expand_snippet("kill(${1:victim}, ${2:killer}) {\n\t$0\n}", "    ");
+    assert_eq!(e.text, "kill(victim, killer) {\n        \n    }");
+    assert_eq!(e.select, Some((5, 11)));
+    let e = expand_snippet("a $0b", "");
+    assert_eq!((e.text.as_str(), e.cursor, e.select), ("a b", 2, None));
+
+    // Choices give their first; nesting and escapes read through.
+    assert_eq!(expand_snippet("list ${1|tweakers|}", "").text, "list tweakers");
+    assert_eq!(expand_snippet("carrier ${1|slayer,ctf|}", "").text, "carrier slayer");
+    let e = expand_snippet("${1:outer ${2:inner}}", "");
+    assert_eq!((e.text.as_str(), e.select), ("outer inner", Some((0, 11))));
+    assert_eq!(expand_snippet(r"\$x", "").text, "$x");
+    let e = expand_snippet("plain", "");
+    assert_eq!((e.cursor, e.select), (5, None));
+}
+
+fn item(label: &str, sort: &str) -> ide::CompletionItem {
+    ide::CompletionItem {
+        label: label.into(),
+        kind: ide::kind::FUNCTION,
+        detail: String::new(),
+        documentation: ide::Markup::markdown(""),
+        insert_text: label.into(),
+        insert_text_format: ide::PLAIN_TEXT,
+        sort_text: sort.into(),
+    }
+}
+
+#[test]
+fn completions_rank_by_the_word_then_the_languages_order() {
+    let items = [item("score", "0002"), item("player", "0000"), item("set_score", "0001"), item("kills", "0003")];
+    let labels = |word: &str| -> Vec<String> { rank(&items, word).iter().map(|i| i.label.clone()).collect() };
+    assert_eq!(labels(""), ["player", "set_score", "score", "kills"]);
+    // Starts with, then holds, then has its letters in order; case ignored.
+    assert_eq!(labels("sc"), ["score", "set_score"]);
+    assert_eq!(labels("SC"), ["score", "set_score"]);
+    assert_eq!(labels("plr"), ["player"]);
+    assert!(labels("zzz").is_empty());
+}
+
+#[test]
+fn typing_opens_narrows_takes_and_closes_the_completions() {
+    let text = "rules \"T\" 1\ncarrier slayer\non kill(victim, killer) {\n    sco\n}\n";
+    let at = text.find("sco").unwrap() + 3;
+    let mut ed = RulesEditor { text: text.into(), cursor: at, ..Default::default() };
+    ed.after_typing(Some('o'));
+    let menu = ed.menu.clone().expect("typing a name opens the list");
+    assert_eq!(menu.kind, MenuKind::Completions);
+    assert!(menu.choices[0].label.to_lowercase().starts_with("sco"), "{:?}", menu.choices[0]);
+    let i = menu.choices.iter().position(|c| c.label == "score").expect("score is offered");
+
+    // Up and Down move the selection, wrapping.
+    ed.menu_move(-1);
+    assert_eq!(ed.menu.as_ref().unwrap().selected, menu.choices.len() - 1);
+    ed.menu_move(1);
+    assert_eq!(ed.menu.as_ref().unwrap().selected, 0);
+    assert_eq!(ed.menu_edit(), Some(menu.choices[0].edit.clone()));
+
+    // Taking one: the snippet's defaults, the first selected, the list shut.
+    ed.choose(i);
+    assert!(ed.text.contains("    score(player, int)\n"), "{}", ed.text);
+    let edit = ed.edit.clone().unwrap();
+    let (a, b) = edit.select.unwrap();
+    assert_eq!(&ed.text[a..b], "player");
+    assert!(ed.menu.is_none());
+
+    // A space closes the list; so does a deletion that empties the word.
+    let mut ed = RulesEditor { text: text.into(), cursor: at, ..Default::default() };
+    ed.after_typing(Some('o'));
+    ed.after_typing(Some(' '));
+    assert!(ed.menu.is_none());
+    ed.after_typing(Some('o'));
+    assert!(ed.menu.is_some());
+    ed.text = text.replace("sco", "");
+    ed.cursor = at - 3;
+    ed.after_typing(None);
+    assert!(ed.menu.is_none(), "opened by typing, nothing typed now: closed");
+
+    // Ctrl+Space shows the list with nothing typed.
+    ed.open_completions(true);
+    let menu = ed.menu.as_ref().expect("a list with nothing typed");
+    assert!(menu.manual && !menu.choices.is_empty());
+
+    assert_eq!(trigger('a'), Trigger::Open);
+    assert_eq!(trigger('_'), Trigger::Open);
+    assert_eq!(trigger('.'), Trigger::Open);
+    assert_eq!(trigger(' '), Trigger::Close);
+    assert_eq!(trigger('('), Trigger::Close);
+}
+
+#[test]
+fn text_edits_apply_together_and_carry_the_cursor() {
+    let text = "abc def ghi";
+    let edit = |a: u32, b: u32, new: &str| TextEdit {
+        range: Range { start: Position::new(0, a), end: Position::new(0, b) },
+        new_text: new.into(),
+    };
+    let edits = [edit(4, 7, "yyyy"), edit(0, 3, "x")];
+    let out = apply_text_edits(text, 8, &edits);
+    assert_eq!(out.text, "x yyyy ghi");
+    assert_eq!(&out.text[out.cursor..], "ghi", "edits before the cursor shift it");
+    let out = apply_text_edits(text, 5, &edits);
+    assert_eq!(out.cursor, "x yyyy".len(), "an edit around the cursor puts it at the edit's end");
+}
+
+#[test]
+fn quick_fixes_at_the_cursor_and_on_the_problem_rows() {
+    let src = "rules \"T\" 1\ncarrier slayer\nlabel barrier: objects\non tick { for each barier b { } }\n";
+    let mut ed = RulesEditor { text: src.into(), cursor: src.find("barier").unwrap() + 2, ..Default::default() };
+    ed.open_fixes().unwrap();
+    let menu = ed.menu.clone().unwrap();
+    assert_eq!(menu.kind, MenuKind::Fixes);
+    let titles: Vec<&str> = menu.choices.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(titles, ["Change to `barrier`", "Declare label `barier`"]);
+    ed.choose(0);
+    assert!(ed.text.contains("for each barrier b"), "{}", ed.text);
+    assert!(ed.edit.is_some() && ed.menu.is_none());
+
+    // Nothing to fix on the header.
+    let mut ed = RulesEditor { text: src.into(), cursor: 1, ..Default::default() };
+    assert!(ed.open_fixes().is_err());
+
+    // The same fixes on the problem's row.
+    let rows = problems(src, &ide::diagnostics(src));
+    let row = rows.iter().find(|r| r.code == "label.unknown").unwrap();
+    assert_eq!(row.fixes.len(), 2);
+    ed.apply_fix(&row.fixes[0]);
+    assert!(ed.text.contains("for each barrier b"), "{}", ed.text);
+}
+
+#[test]
+fn rename_definition_and_uses_follow_the_name() {
+    let decl = BLANK.find("kill_points").unwrap();
+    let used = BLANK.rfind("kill_points").unwrap();
+    assert_ne!(decl, used);
+    assert_eq!(definition_at(BLANK, used + 3), Some(decl));
+    assert_eq!(word_at(BLANK, used + 3), Some((used, used + "kill_points".len())));
+    assert_eq!(word_at(BLANK, BLANK.find("1..5").unwrap()), None, "a number is no name");
+
+    let marks = occurrences(BLANK, used + 3);
+    assert_eq!(marks.len(), 2, "{marks:?}");
+    for m in &marks {
+        let line = BLANK.split('\n').nth(m.line).unwrap();
+        assert_eq!(&line[m.start..m.end], "kill_points");
+    }
+
+    let mut ed = RulesEditor { cursor: used + 3, ..Default::default() };
+    ed.go_to_definition(ed.cursor).unwrap();
+    assert_eq!(ed.want_cursor, Some(decl));
+
+    ed.cursor = used + 3;
+    ed.start_rename().unwrap();
+    assert_eq!(ed.renaming.as_ref().map(|r| r.old.as_str()), Some("kill_points"));
+    ed.renaming.as_mut().unwrap().name = "points".into();
+    ed.finish_rename().unwrap();
+    assert!(!ed.text.contains("kill_points"), "{}", ed.text);
+    assert!(ed.text.contains("option points:") && ed.text.contains("score(killer, points)"), "{}", ed.text);
+    assert!(ed.renaming.is_none() && ed.edit.is_some());
+
+    // A keyword is refused, and the field stays open.
+    ed.cursor = ed.text.find("points").unwrap();
+    ed.start_rename().unwrap();
+    ed.renaming.as_mut().unwrap().name = "if".into();
+    assert!(ed.finish_rename().is_err());
+    assert!(ed.renaming.is_some());
+    assert!(rename_edit(BLANK, used, "if").is_err());
+}
+
+#[test]
+fn hovers_read_as_code_and_prose_and_find_their_problems() {
+    let blocks = hover_blocks("```rules\nscore(player, int)\n```\nAdds **points** to `p`.");
+    assert_eq!(
+        blocks,
+        [
+            HoverBlock { code: true, text: "score(player, int)".into() },
+            HoverBlock { code: false, text: "Adds points to p.".into() },
+        ]
+    );
+    let text = "rules \"x\" 1\ncarrier slayer\n\non kill(victim, killer) {\n    score(victim, nope)\n}\n";
+    let diags = ide::diagnostics(text);
+    let d = diags.iter().find(|d| d.message.contains("nope")).unwrap();
+    assert!(diagnostics_at(&diags, d.range.start).contains(&d));
+    assert!(diagnostics_at(&diags, Position::new(0, 0)).is_empty());
+}
+
+#[test]
+fn format_hands_the_widget_the_laid_out_text() {
+    let src = "rules \"T\" 1\ncarrier slayer\non kill(victim, killer) {\nif killer != none {\nscore(killer, 1)\n}\n}\n";
+    let want = ide::format(src).unwrap();
+    let mut ed = RulesEditor { text: src.into(), ..Default::default() };
+    ed.format().unwrap();
+    assert_eq!(ed.text, want);
+    assert_eq!(ed.edit.is_some(), want != src);
+}
+
+#[test]
+fn open_in_editor_names_the_file_after_the_script() {
+    assert_eq!(script_file_name("Slayer (built in)"), "slayer.rules");
+    assert_eq!(script_file_name("King of the Hill (example)"), "king_of_the_hill.rules");
+    assert_eq!(script_file_name("mine.rules"), "mine.rules");
+    assert_eq!(script_file_name("Untitled"), "untitled.rules");
+    assert_eq!(script_file_name("a/b: c?"), "ab_c.rules");
+    assert_eq!(script_file_name(""), "script.rules");
+
+    let root = Path::new("/data");
+    let own = Path::new("/work/x.rules");
+    assert_eq!(external_path(Some(own), "Slayer (built in)", root, |_| true).as_path(), own, "its own file wins");
+    assert_eq!(
+        external_path(None, "Slayer (built in)", root, |_| false).as_path(),
+        Path::new("/data/scripts/slayer.rules")
+    );
+    let taken = [PathBuf::from("/data/scripts/slayer.rules"), PathBuf::from("/data/scripts/slayer-2.rules")];
+    assert_eq!(
+        external_path(None, "Slayer (built in)", root, |p| taken.iter().any(|t| t == p)).as_path(),
+        Path::new("/data/scripts/slayer-3.rules"),
+        "a name in use gets a number"
+    );
+}
+
+#[test]
+fn open_in_editor_tries_an_editor_with_the_extension_then_the_users_editors() {
+    let file = Path::new("/s/x.rules");
+    let bin = |name: &str| Some(PathBuf::from(format!("/bin/{name}")));
+    let env = |k: &str| match k {
+        "VISUAL" => Some("subl -w".to_string()),
+        "EDITOR" => Some("vim".to_string()),
+        _ => None,
+    };
+    let describe = |got: Vec<Launch>| -> Vec<String> { got.iter().map(Launch::describe).collect() };
+
+    // Zed has the extension: it comes first, and once.
+    let got = editor_launches(file, env, bin, |e| e == "zed", true);
+    assert_eq!(
+        describe(got),
+        [
+            "/bin/zed /s/x.rules",
+            "subl -w /s/x.rules",
+            // vim needs a terminal: passed over.
+            "/bin/code /s/x.rules",
+            "open -t /s/x.rules",
+        ]
+    );
+
+    // Neither has it: $VISUAL first, then VS Code and Zed as they are.
+    let got = editor_launches(file, env, bin, |_| false, true);
+    assert_eq!(
+        describe(got),
+        ["subl -w /s/x.rules", "/bin/code /s/x.rules", "/bin/zed /s/x.rules", "open -t /s/x.rules"]
+    );
+
+    // An extension in an editor that is not found counts for nothing;
+    // nothing found and not macOS: nothing to try.
+    let got = editor_launches(file, |_| None, |_| None, |_| true, false);
+    assert!(got.is_empty());
+
+    // $VISUAL and $EDITOR the same, and VS Code with the extension: tried
+    // once each.
+    let env = |k: &str| matches!(k, "VISUAL" | "EDITOR").then(|| "code --wait".to_string());
+    let got = editor_launches(file, env, bin, |e| e == "code", true);
+    assert_eq!(
+        describe(got),
+        ["/bin/code /s/x.rules", "code --wait /s/x.rules", "/bin/zed /s/x.rules", "open -t /s/x.rules"]
+    );
+
+    // Where each editor keeps the extension.
+    let home = Path::new("/home/me");
+    let vscode = |dir: &Path| -> Vec<String> {
+        if dir == Path::new("/home/me/.vscode/extensions") {
+            vec!["rust-lang.rust-analyzer-0.3.1".into(), "h2recomp.h2-rules-0.1.0".into()]
+        } else {
+            Vec::new()
+        }
+    };
+    assert!(extension_installed("code", home, true, |_| false, vscode));
+    assert!(!extension_installed("code", home, true, |_| false, |_| Vec::new()));
+    let zed_mac = |p: &Path| p == Path::new("/home/me/Library/Application Support/Zed/extensions/installed/h2-rules");
+    assert!(extension_installed("zed", home, true, zed_mac, |_| Vec::new()));
+    assert!(!extension_installed("zed", home, false, zed_mac, |_| Vec::new()));
+    let zed_linux = |p: &Path| p == Path::new("/home/me/.local/share/zed/extensions/installed/h2-rules");
+    assert!(extension_installed("zed", home, false, zed_linux, |_| Vec::new()));
+    assert!(!extension_installed("subl", home, true, |_| true, vscode));
+
+    assert!(is_terminal_editor("/usr/bin/nvim") && is_terminal_editor("nano"));
+    assert!(!is_terminal_editor("code") && !is_terminal_editor("/usr/local/bin/zed"));
+    let dirs = program_dirs(Some("/a:/usr/local/bin::/b"));
+    assert_eq!(dirs, ["/a", "/usr/local/bin", "/b", "/opt/homebrew/bin"].map(PathBuf::from));
+    assert_eq!(find_program("zed", &dirs, |p| p == Path::new("/b/zed")), Some(PathBuf::from("/b/zed")));
+}
+
+#[test]
+fn a_started_editor_counts_as_open_once_it_succeeds_or_keeps_running() {
+    let early = Duration::from_millis(200);
+    assert_eq!(launch_step(None, early), LaunchStep::Wait);
+    assert_eq!(launch_step(None, LAUNCH_GRACE), LaunchStep::Done, "a GUI editor still running");
+    assert_eq!(launch_step(Some(true), early), LaunchStep::Done, "code and open exit at once");
+    assert_eq!(launch_step(Some(false), early), LaunchStep::Next, "an editor that failed to start");
+}
+
+#[test]
+fn an_outside_save_comes_back_or_asks_when_both_changed() {
+    assert_eq!(disk_change("a", "a", "a"), DiskChange::Same);
+    assert_eq!(disk_change("b", "a", "b"), DiskChange::Same, "the file caught up with the buffer");
+    assert_eq!(disk_change("a", "a", "c"), DiskChange::Take);
+    assert_eq!(disk_change("b", "a", "c"), DiskChange::Ask);
+
+    // No unsaved edits: the buffer takes the file's text, saved.
+    let mut ed = RulesEditor::default();
+    let theirs = BLANK.replace("New game type", "Theirs");
+    assert_eq!(ed.disk_text(theirs.clone()), DiskPoll::Took);
+    assert_eq!(ed.text, theirs);
+    assert!(!ed.dirty() && ed.conflict.is_none());
+
+    // Unsaved edits here: asked, nothing lost until answered.
+    let mine = BLANK.replace("New game type", "Mine");
+    ed.text = mine.clone();
+    let newer = BLANK.replace("New game type", "Newer");
+    assert_eq!(ed.disk_text(newer.clone()), DiskPoll::Asked);
+    assert_eq!(ed.text, mine);
+    assert_eq!(ed.conflict.as_deref(), Some(newer.as_str()));
+    ed.keep_mine();
+    assert!(ed.conflict.is_none() && ed.text == mine && ed.dirty(), "kept, still unsaved");
+
+    assert_eq!(ed.disk_text(newer.clone()), DiskPoll::Asked);
+    assert!(ed.take_conflict());
+    assert_eq!(ed.text, newer);
+    assert!(!ed.dirty() && ed.conflict.is_none());
+    assert!(!ed.take_conflict(), "nothing left to take");
+
+    // The file catching up with the buffer just marks it saved.
+    ed.text = mine.clone();
+    assert_eq!(ed.disk_text(mine.clone()), DiskPoll::Nothing);
+    assert!(!ed.dirty());
+}
+
+#[test]
+fn the_watch_checks_once_a_second_and_sees_new_times() {
+    let t0 = Instant::now();
+    let then = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+    let later = then + Duration::from_secs(5);
+    let mut w = Watch::new(PathBuf::from("/x.rules"), Some(then));
+    assert!(w.due(t0));
+    assert!(!w.due(t0 + Duration::from_millis(500)));
+    assert!(w.due(t0 + WATCH_EVERY));
+    assert!(!w.changed(Some(then)));
+    assert!(w.changed(Some(later)));
+    assert!(!w.changed(Some(later)), "seen once");
+    assert!(!w.changed(None), "gone mid-save is no change");
+    assert!(w.changed(Some(later)), "back again is one");
+}
+
+#[test]
+fn open_in_editor_writes_the_script_and_watches_its_file() {
+    let root = std::env::temp_dir().join(format!("h2-editor-rules-ext-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut ed = RulesEditor::default();
+    ed.open_starter("slayer").unwrap();
+    let path = ed.prepare_external(&root).unwrap();
+    assert_eq!(path, root.join("scripts").join("slayer.rules"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), rules::builtin::SLAYER);
+    assert_eq!(ed.path.as_deref(), Some(path.as_path()));
+    assert!(!ed.dirty());
+    assert_eq!(ed.watch.as_ref().map(|w| w.path.clone()), Some(path.clone()));
+    assert_eq!(ed.poll_disk(Instant::now()), DiskPoll::Nothing, "unchanged");
+
+    // The outside editor saves: the next due poll takes it.
+    let theirs = rules::builtin::SLAYER.replace("Slayer", "Theirs");
+    std::fs::write(&path, &theirs).unwrap();
+    if let Some(w) = &mut ed.watch {
+        w.seen = Some(SystemTime::UNIX_EPOCH);
+        w.next = None;
+    }
+    assert_eq!(ed.poll_disk(Instant::now()), DiskPoll::Took);
+    assert_eq!(ed.text, theirs);
+
+    // A second open keeps the same file; opening another script stops
+    // the watch.
+    assert_eq!(ed.prepare_external(&root).unwrap(), path);
+    ed.open_starter("slayer").unwrap();
+    assert!(ed.watch.is_none());
+    std::fs::remove_dir_all(&root).unwrap();
 }

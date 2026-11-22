@@ -180,6 +180,19 @@ scripts/ghidra decompile <address>
 Ghidra is pinned to 12.1.4 because the XBE loader only loads on the
 version it was built for.
 
+## CI
+
+Public code builds in CI on every push to `master` and pull request, one
+workflow per platform: [buck.yml](../../.github/workflows/buck.yml)
+(`//crates/apps/cli:h2` through Buck2, and `update-buck.py --check`,
+[buck.md](../dev/buck.md#ci)), [ios.yml](../../.github/workflows/ios.yml)
+([ios.md](ios.md#ci)), [xbox.yml](../../.github/workflows/xbox.yml)
+([xbox.md](xbox.md#building)) and
+[windows.yml](../../.github/workflows/windows.yml)
+([windows.md](windows.md#windows-ci)); [ci.yml](../../.github/workflows/ci.yml)
+covers macOS and the Linux desktop host. No workflow touches the disc, so
+none builds the game module: the iOS and Xbox jobs stop at the runtime.
+
 ## Tests
 
 `scripts/tests/just_test.sh` runs the justfile in a scratch copy of the

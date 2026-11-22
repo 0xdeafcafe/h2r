@@ -344,6 +344,162 @@ fn surface(ui: &Ui, fonts: &theme::Fonts, app: &mut App) {
     }
 }
 
+/// The selected navigation thing, read only: a pathfinding sector's
+/// flags and links, a bot polygon's links, a bot link's kind and ends, or
+/// a spot's state and what the files say of it.
+fn nav_pick(ui: &Ui, fonts: &theme::Fonts, app: &mut App, pick: scenario_edit::nav_view::NavPick) {
+    use scenario_edit::nav_view::NavPick;
+    let f = ui.push_font(fonts.title);
+    ui.text(format!(
+        "{}  {}",
+        icon::BOX,
+        crate::viewport::nav::label(app, pick)
+    ));
+    f.pop();
+    if ui.button(format!("{} Frame", icon::FOCUS)) {
+        app.dispatch(Action::FocusSelected);
+    }
+    let v3 = |p: [f32; 3]| format!("{:.3}, {:.3}, {:.3}", p[0], p[1], p[2]);
+    let mut rows: Vec<(&str, String)> = Vec::new();
+    let mut list: Vec<String> = Vec::new();
+    let session = &app.session;
+    match pick {
+        NavPick::Sector(i) => {
+            let Some(s) = session.pathfinding().and_then(|p| p.sectors.get(i)) else {
+                return;
+            };
+            ui.text_disabled("Halo 2's own AI pathfinding: what the AI walks on.");
+            rows.push(("Sector", s.sector.to_string()));
+            rows.push(("Flags", format!("0x{:04x}", s.flags)));
+            rows.push((
+                "Hint",
+                if s.hint == 0xffff {
+                    "none".into()
+                } else {
+                    s.hint.to_string()
+                },
+            ));
+            rows.push((
+                "Floor",
+                if s.floor() {
+                    "yes"
+                } else {
+                    "no (a wall or ceiling)"
+                }
+                .into(),
+            ));
+            rows.push(("Links", s.links.len().to_string()));
+            let p = session
+                .pathfinding()
+                .map(|p| p.links.as_slice())
+                .unwrap_or_default();
+            for &l in &s.links {
+                let other = p
+                    .iter()
+                    .find(|k| k.bsp == s.bsp && k.link == l)
+                    .and_then(|k| {
+                        if k.left == Some(s.sector) {
+                            k.right
+                        } else {
+                            k.left
+                        }
+                    });
+                list.push(match other {
+                    Some(o) => format!("link {l}: to sector {o}"),
+                    None => format!("link {l}: edge"),
+                });
+            }
+        }
+        NavPick::BotPoly(i) => {
+            let Some(b) = session.bot_nav() else { return };
+            let Some(p) = b.polys.get(i) else { return };
+            ui.text_disabled("The bots' own nav mesh polygon.");
+            rows.push(("Polygon", p.poly.to_string()));
+            rows.push(("Centre", v3(p.center())));
+            rows.push(("Corners", p.verts.len().to_string()));
+            rows.push((
+                "In the map",
+                if p.out_of_map {
+                    "no: only a glitch reaches it"
+                } else {
+                    "yes"
+                }
+                .into(),
+            ));
+            for l in b.links.iter().filter(|l| l.from == i || l.to == i) {
+                let (dir, other) = if l.from == i {
+                    ("to", l.to)
+                } else {
+                    ("from", l.from)
+                };
+                list.push(format!(
+                    "{} {dir} polygon {}",
+                    l.kind.name(),
+                    b.polys[other].poly
+                ));
+            }
+        }
+        NavPick::BotLink(i) => {
+            let Some(b) = session.bot_nav() else { return };
+            let Some(l) = b.links.get(i) else { return };
+            rows.push(("Kind", l.kind.name().into()));
+            rows.push(("From polygon", b.polys[l.from].poly.to_string()));
+            rows.push(("To polygon", b.polys[l.to].poly.to_string()));
+            rows.push(("One way", if l.one_way { "yes" } else { "no" }.into()));
+            rows.push((
+                if l.kind.traversal() {
+                    "Takeoff"
+                } else {
+                    "Crossing from"
+                },
+                v3(l.a),
+            ));
+            rows.push((
+                if l.kind.traversal() {
+                    "Landing"
+                } else {
+                    "Crossing to"
+                },
+                v3(l.b),
+            ));
+        }
+        NavPick::Spot(i) => {
+            let Some(s) = session.bot_nav().and_then(|b| b.spots.get(i)) else {
+                return;
+            };
+            rows.push(("Kind", s.kind().name().into()));
+            rows.push(("Source", s.source.into()));
+            rows.push(("State", s.state().name().into()));
+            rows.push(("Stand", v3(s.stand)));
+            rows.push(("Score", format!("{:.2}", s.score)));
+            if s.kind() != scenario_edit::nav_view::SpotKind::Crouch {
+                rows.push(("Launch", format!("{:.2}", s.launch)));
+                rows.push(("Fall", format!("{:.2}", s.fall)));
+            }
+            if let Some(line) = s.line {
+                rows.push((
+                    "Learned",
+                    format!("{line}: {} of {} tries bounced", s.hits, s.tries),
+                ));
+            }
+            if s.trials > 0 {
+                rows.push(("Verified", format!("{} of {} trials", s.ok, s.trials)));
+            }
+            rows.push(("Ghost run", if s.ghost { "kept" } else { "none" }.into()));
+        }
+    }
+    theme::section(ui, "Navigation");
+    for (label, value) in rows {
+        ui.label_text(label, value);
+    }
+    if !list.is_empty() {
+        theme::section(ui, "Links");
+        for line in list {
+            ui.text(line);
+        }
+    }
+}
+
 /// Draw the inspector for the selection and apply its edits.
 pub fn draw(ui: &Ui, fonts: &theme::Fonts, app: &mut App, state: &mut InspectorState) {
     if let Some(index) = app.session.selected_volume() {
@@ -352,6 +508,10 @@ pub fn draw(ui: &Ui, fonts: &theme::Fonts, app: &mut App, state: &mut InspectorS
     }
     if app.session.selected_surface().is_some() {
         surface(ui, fonts, app);
+        return;
+    }
+    if let Some(pick) = app.session.selected_nav() {
+        nav_pick(ui, fonts, app, pick);
         return;
     }
     let location = app.nav_location();

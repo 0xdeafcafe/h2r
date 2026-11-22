@@ -94,6 +94,8 @@ impl hooks::Feature for Bots {
         let phantoms = self.phantoms.clone();
         let workspace = b.guest_alloc(retail_input::WORK_BYTES, runtime::guest::Permissions::RW)?;
         let input = Arc::new(std::sync::Mutex::new(None));
+        // impl.sim.phantom-alias (docs/perf/sim-phantom-build.md).
+        let path = retail_input::path_for(b.switches());
         let film = self.film.clone();
         b.raw().before(
             &points::SIMULATION_SLOT_ACTION,
@@ -116,6 +118,7 @@ impl hooks::Feature for Bots {
                                     &input,
                                     &rt,
                                     workspace,
+                                    path,
                                     cpu,
                                     sample,
                                     &cx,
@@ -194,9 +197,23 @@ impl hooks::Feature for Bots {
                                 .flatten();
                             s.or_else(|| bots::phantom::session::host_team(&*mem).ok().flatten())
                         },
+                        // The party a Clankermatch's bots fill around
+                        // (docs/game/bots.md §8.4).
+                        || {
+                            let mem = rt.memory();
+                            let facts = bots::lobby::membership(&*mem).ok()?;
+                            bots::lobby::party_players(&*mem, &facts).ok().flatten()
+                        },
                         // Co-op and matchmaking lobbies take none of the
                         // Clanker Options bots (docs/game/party-lobby.md).
                         || crate::lobby_tabs::strip::retail_now(&*rt.memory()),
+                        // Why a Clankermatch lobby sits (docs/game/bots.md
+                        // §8.4): the host update's checks, read the same way.
+                        || match bots::lobby::match_wait::read(&*rt.memory()).ok()? {
+                            Ok(None) => None,
+                            Ok(Some(w)) => Some((w.reason(), w.line())),
+                            Err(why) => Some((why.clone(), why)),
+                        },
                     );
                 }
                 if let Some(session) = &film

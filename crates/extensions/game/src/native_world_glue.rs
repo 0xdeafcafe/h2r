@@ -30,7 +30,8 @@
 //!   (`native_lights_glue::load`).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, mpsc};
 
 use engine::memory::GuestMemory;
 use render_bridge::native_map_work::{self, Stage as MapStage};
@@ -45,7 +46,7 @@ use native_render::load::{self, LoadedWorld};
 pub use native_render::load::{decode_first, decode_image, decode_lightmap};
 pub use native_render::world::keep_draws;
 // The stage decoder moved to native-render, so the editor decodes stage
-// images the same way (docs/editor/polish-plan.md, P15).
+// images the same way (docs/editor/editor.md).
 pub use native_render::stage_images::{StageDecoder, StageImages, StagePalettes};
 #[cfg(test)]
 use native_render::stage_images::StageRefusal;
@@ -76,7 +77,13 @@ pub struct Ready {
     /// The parts the native pass draws, with their shaders: what the skip
     /// clears.
     parts: Arc<PartSet>,
-    part_bounds: HashMap<(Owner, u8), native_render::world::Aabb>,
+    /// Each drawn part's world bounds, what the guest's admission culls
+    /// by; a live edit's refresh recomputes an edited section's
+    /// ([`refresh_world`]).
+    part_bounds: RwLock<HashMap<(Owner, u8), native_render::world::Aabb>>,
+    /// The structure BSP tag this world was loaded from: what a live
+    /// edit's `Section` names.
+    bsp_tag: Option<TagId>,
     /// The fog of this load (`native_fog_glue`): the compiled layer-16
     /// passes, their fog words and the parts the fog pass draws.
     pub fog: OnceLock<(Arc<crate::native_fog_glue::FogView>, StagePalettes)>,
@@ -164,6 +171,9 @@ pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
     state: State,
     switches: hooks::Switches,
     ordered_scene_world: bool,
+    /// A live edit's refresh is running ([`refresh_world`]); edits wait
+    /// in the queue until it ends, so they apply in order.
+    refreshing: Arc<AtomicBool>,
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
@@ -221,6 +231,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
 
     fn begin_frame(&self) {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).publish();
+        self.refresh_edits();
     }
 
     fn use_resolved_scene(&self, _mem: &dyn GuestMemory, _bsp: u32) -> bool {
@@ -313,11 +324,14 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             scene_view.camera, d.projection_factor_for_target(target.surface_size).min(1.),
         );
         let frustum = GpuWorld::draw_frustum(&admission_camera.view_projection(), true);
-        let (masks, cleared, selected) = render_bridge::native_world::plan_parts(
-            &render_bridge::native_world::Mem(mem), &ready.parts, |owner, part| {
-                ready.part_bounds.get(&(owner, part)).is_some_and(|b| frustum.may_see(b))
-            },
-        )?;
+        let (masks, cleared, selected) = {
+            let bounds = ready.part_bounds.read().unwrap_or_else(|e| e.into_inner());
+            render_bridge::native_world::plan_parts(
+                &render_bridge::native_world::Mem(mem), &ready.parts, |owner, part| {
+                    bounds.get(&(owner, part)).is_some_and(|b| frustum.may_see(b))
+                },
+            )?
+        };
         let ranges = selected.len();
         if ranges == 0 { return None; }
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
@@ -373,6 +387,169 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }
         Some(cleared)
     }
+}
+
+impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+    /// Starts a live edit's refresh of the current world
+    /// (docs/editor/realtime-edits.md, "The native refresh") once the
+    /// world is resident and no refresh is running: the queued edits are
+    /// decoded again from the map file, which the raw overlay serves
+    /// edited, on a worker, and applied under the world's GPU lock
+    /// ([`refresh_world`]). While the world loads they wait: the load
+    /// may have read the file before the edit.
+    fn refresh_edits(&self) {
+        use render_bridge::native_edits::{self, Consumer};
+        if !native_edits::pending(Consumer::World) || self.refreshing.load(Ordering::Acquire) {
+            return;
+        }
+        let (ready, key) = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            match (state.ready.as_ref(), state.key.as_ref()) {
+                (Some(ready), Some(key)) if key.current() => (Arc::clone(ready), key.clone()),
+                _ => return,
+            }
+        };
+        let edits = native_edits::drain(Consumer::World);
+        if edits.is_empty() {
+            return;
+        }
+        self.refreshing.store(true, Ordering::Release);
+        let refreshing = Arc::clone(&self.refreshing);
+        let launched = background::spawn("native-world edits", move || {
+            refresh_world(&key, &ready, &edits);
+            refreshing.store(false, Ordering::Release);
+        });
+        if let Err(e) = launched {
+            self.refreshing.store(false, Ordering::Release);
+            eprintln!("native-world: could not start the live edit refresh ({e}); the world reloads");
+            native_map_work::reload_bsp();
+        }
+    }
+}
+
+/// What one drain of live edits asks of the world loaded from BSP tag
+/// `bsp` ([`refresh_plan`]).
+#[derive(Debug, Default, PartialEq)]
+struct RefreshPlan {
+    /// Why the world reloads instead, if it does.
+    reload: Option<String>,
+    /// Sections of this world replaced in place.
+    sections: Vec<load::SectionOwner>,
+    /// Images whose textures are rewritten in place.
+    images: Vec<(TagId, u32)>,
+}
+
+/// Sorts `edits` for the world loaded from `bsp`: a section of it is
+/// replaced in place, or reloads the world when its counts grew (or its
+/// kind is unknown); another BSP's section waits for that BSP's own load,
+/// which reads the edited file; an image is rewritten. Tags match by
+/// index, as `native_map::tag_of` does.
+fn refresh_plan(bsp: Option<TagId>, edits: &[render_bridge::native_edits::Edit]) -> RefreshPlan {
+    use render_bridge::native_edits::{Edit, KIND_CLUSTER, KIND_INSTANCE_DEF};
+    let ours = |tag: u32| bsp.is_some_and(|b| b.0 & 0xffff == tag & 0xffff);
+    let mut plan = RefreshPlan::default();
+    for &edit in edits {
+        match edit {
+            Edit::Section { bsp, .. } if !ours(bsp) => {}
+            Edit::Section { kind, index, grown: true, .. } => {
+                plan.reload.get_or_insert(format!("section {kind}:{index} changed its counts"));
+            }
+            Edit::Section { kind: KIND_CLUSTER, index, .. } => plan.sections.push(load::SectionOwner::Cluster(index)),
+            Edit::Section { kind: KIND_INSTANCE_DEF, index, .. } => {
+                plan.sections.push(load::SectionOwner::InstanceDefinition(index));
+            }
+            Edit::Section { kind, index, .. } => {
+                plan.reload.get_or_insert(format!("section {kind}:{index} is of an unknown kind"));
+            }
+            Edit::Image { bitmap, image } => plan.images.push((TagId(bitmap), image)),
+            Edit::Model { .. } => {}
+        }
+    }
+    plan
+}
+
+/// Applies one drain of live edits to `ready`, the world of `key`: the
+/// sections decoded again and replaced in place with their bounds
+/// recomputed (the GPU world's and the admission's), the images decoded
+/// again at each stage that samples them and their textures rewritten.
+/// A section the world cannot take in place reloads the world
+/// (`native_map_work::reload_bsp`): until the reload publishes, its parts
+/// keep their D3D draws from guest memory. An image whose size, levels or
+/// format changed keeps its pixels until the map reloads, and says so.
+fn refresh_world(key: &BspKey, ready: &Ready, edits: &[render_bridge::native_edits::Edit]) {
+    let reload = |why: String| {
+        eprintln!("native-world: {} BSP {}: a live edit reloads the world ({why})", key.map, key.index);
+        native_map_work::reload_bsp();
+    };
+    let plan = refresh_plan(ready.bsp_tag, edits);
+    if let Some(why) = &plan.reload {
+        return reload(why.clone());
+    }
+    if plan.sections.is_empty() && plan.images.is_empty() {
+        return;
+    }
+    let Some((_, queue)) = ready.upload_device.as_ref() else { return };
+    let (mut map, files) = match crate::native_map::open(&key.map) {
+        Ok(opened) => opened,
+        Err(e) => return reload(format!("the map does not open: {e}")),
+    };
+    let mut raw = Raw(files);
+    let sections = match ready.bsp_tag.filter(|_| !plan.sections.is_empty()) {
+        Some(bsp) => match load::load_sections(&mut map, &mut raw, bsp, &plan.sections) {
+            Ok(sections) => sections,
+            Err(e) => return reload(e.to_string()),
+        },
+        None => Vec::new(),
+    };
+    // Which stages sample each image, read under the lock; the decodes
+    // run without it.
+    let stages: Vec<((TagId, u32), Vec<usize>)> = {
+        let gpu = ready.gpu();
+        let Some(gpu) = gpu.as_ref() else { return };
+        plan.images.iter().map(|&(bitmap, image)| ((bitmap, image), gpu.image_stages(bitmap, image))).collect()
+    };
+    let decoded: Vec<_> = stages
+        .into_iter()
+        .map(|((bitmap, image), at)| {
+            ((bitmap, image), native_render::stage_images::decode_stages(&mut map, &mut raw.0, &ready.palettes, bitmap, image, &at))
+        })
+        .collect();
+    if !key.current() {
+        return;
+    }
+    let mut guard = ready.gpu();
+    let Some(gpu) = guard.as_mut() else { return };
+    let mut edited = HashSet::new();
+    for (owner, input) in &sections {
+        match gpu.replace_section(queue, *owner, input) {
+            Ok(_) => {
+                edited.insert(*owner);
+            }
+            // It did not decode at load: the D3D path draws it.
+            Err(native_render::world::SectionRefusal::NoSection) => {}
+            Err(why) => {
+                drop(guard);
+                return reload(format!("{owner:?}: {why:?}"));
+            }
+        }
+    }
+    for ((bitmap, image), pixels) in &decoded {
+        if let Err(why) = gpu.rewrite_image(queue, *bitmap, *image, pixels) {
+            eprintln!(
+                "native-world: {} BSP {}: bitmap {:#010x} image {image} keeps its pixels until the map reloads ({why:?})",
+                key.map, key.index, bitmap.0
+            );
+        }
+    }
+    if !edited.is_empty() {
+        let mut bounds = ready.part_bounds.write().unwrap_or_else(|e| e.into_inner());
+        for d in gpu.world().draws.iter().filter(|d| edited.contains(&d.owner)) {
+            bounds.insert((d.owner, d.part), d.bounds);
+        }
+    }
+    drop(guard);
+    // Flush the writes before the next admitted draw.
+    queue.submit([]);
 }
 
 /// The ordinary ABI takes dirty pages on entry. The sorted handler bypasses
@@ -490,6 +667,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
         state: Arc::clone(&state),
         ordered_scene_world: crate::native_world_layers_glue::owns_scene_world(&switches),
         switches,
+        refreshing: Arc::default(),
     }));
     crate::native_transparents_glue::install(device);
     crate::native_fog_glue::install(device, Arc::clone(&state));
@@ -781,6 +959,7 @@ fn load_ready(
         .map(|(id, _)| map.tag(*id).ok().and_then(|t| t.location).map(|l| l.address))
         .collect();
     let index = active_scenario_bsp(&addresses, key.index, key.bsp).ok_or("the active BSP index is not a scenario BSP at the active BSP's address")?;
+    let bsp_tag = bsps[index].0;
     let mut raw = Raw(files);
     let LoadedWorld {
         world,
@@ -889,7 +1068,7 @@ fn load_ready(
     let declared = world.materials().len();
     let world = keep_draws(world, &accepts);
     let parts = part_set(&world, &shaders);
-    let part_bounds = world.draws.iter().map(|d| ((d.owner, d.part), d.bounds)).collect();
+    let part_bounds = RwLock::new(world.draws.iter().map(|d| ((d.owner, d.part), d.bounds)).collect());
     let empty_world = parts.is_empty() && opaque.is_empty();
     let stage_bitmap = |images: &StageImages, stage: Stage| match stage {
         Stage::Bitmap { bitmap, image } => images.get(&(bitmap, image)).cloned(),
@@ -912,7 +1091,7 @@ fn load_ready(
         finished.send(stage).is_ok()
     };
     if !send(StageReady::World(Arc::new(Ready {
-        retire: Some(retire), opaque, part_bounds, gpu: Mutex::new(Some(gpu)), parts: Arc::new(parts),
+        retire: Some(retire), opaque, part_bounds, bsp_tag: Some(bsp_tag), gpu: Mutex::new(Some(gpu)), parts: Arc::new(parts),
         upload_device: Some((device.clone(), queue.clone())), palettes: decoder.used().clone(),
         fog: OnceLock::new(), water: OnceLock::new(), layers: OnceLock::new(),
         decorators: OnceLock::new(), lights: OnceLock::new(),
@@ -1273,6 +1452,35 @@ pub fn light_image<R: std::io::Read + std::io::Seek>(
 mod tests {
     use super::*;
     use native_render::world::{Owner, PartInput, Placement, SectionInput, WorldBuilder};
+
+    /// A live edit's drain, sorted for the world of one BSP: its sections
+    /// in place, another BSP's left for that BSP's load, a grown section
+    /// (or one of an unknown kind) reloading the world, images rewritten,
+    /// models left to the objects.
+    #[test]
+    fn a_drain_of_live_edits_sorts_into_in_place_refreshes_and_reloads() {
+        use render_bridge::native_edits::{Edit, KIND_CLUSTER, KIND_INSTANCE_DEF};
+        let bsp = Some(TagId(0xe2b4_0012));
+        let section = |bsp, kind, index, grown| Edit::Section { bsp, kind, index, grown };
+        let plan = refresh_plan(bsp, &[
+            section(0xe2b4_0012, KIND_CLUSTER, 4, false),
+            section(0x0000_0012, KIND_INSTANCE_DEF, 2, false),
+            section(0xe2b4_0013, KIND_CLUSTER, 9, true),
+            Edit::Image { bitmap: 0xe000_0100, image: 3 },
+            Edit::Model { tag: 0xe000_0200 },
+        ]);
+        assert_eq!(plan, RefreshPlan {
+            reload: None,
+            sections: vec![load::SectionOwner::Cluster(4), load::SectionOwner::InstanceDefinition(2)],
+            images: vec![(TagId(0xe000_0100), 3)],
+        });
+        let grown = refresh_plan(bsp, &[section(0xe2b4_0012, KIND_CLUSTER, 4, true)]);
+        assert!(grown.reload.is_some());
+        let unknown = refresh_plan(bsp, &[section(0xe2b4_0012, 9, 4, false)]);
+        assert!(unknown.reload.is_some());
+        assert_eq!(refresh_plan(None, &[section(0xe2b4_0012, KIND_CLUSTER, 4, true)]), RefreshPlan::default(),
+            "no world loaded from a BSP: nothing of it to refresh");
+    }
 
     /// Whether a native material's part was kept: a
     /// cluster's, and a placement's when the material has a rigid program

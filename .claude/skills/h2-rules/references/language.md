@@ -14,20 +14,22 @@ teams 2                   // optional, 1 to 8
 requires player.weapons, hud.message   // optional, at most 32, no repeats
 ```
 
-Then any order: `option`, `palette`, `enum`, `label`, `var`, `table`,
+Then any order: `const`, `option`, `palette`, `enum`, `label`, `var`, `table`,
 `fn`, `on`.
 `//` starts a comment. A statement ends at a newline, `;` or `}`. Strings
 take `\"`, `\\` and `\n`. A number with a fraction (`0.5`, `1.25`) is a
-`fixed`; a whole number is an `int`.
+`fixed`; a whole number is an `int`. A number followed by `s` or `t` is a
+`time`: `5s`, `300t`, `1.5s` (a whole number of ticks, 30 a second).
 
 Keywords (not usable as names): `rules carrier teams requires option
 palette enum global var table fn on if else for each where let and or not
-true false none label is text budget`. Field and enum-variant names may be
+const match true false none label is text budget`. Field and enum-variant names may be
 keywords (`enum Role { none, vip }`). Type and kind words (`zone`,
 `weapon`, `objects`, `numbered`, `per`) are read by place and stay names.
 
 Carriers (`caps::CARRIERS`): `ctf` 1, `slayer` 2, `oddball` 3, `king` 4,
-`juggernaut` 7, `territories` 8, `assault` 9.
+`juggernaut` 7, `territories` 8, `assault` 9. `variant.engine` is a `carrier`:
+compare it with `carrier.assault`, not `9`.
 
 ## Types
 
@@ -39,7 +41,9 @@ Carriers (`caps::CARRIERS`): `ctf` 1, `slayer` 2, `oddball` 3, `king` 4,
 | `player`, `team`, `object` | handles; never `none` (see `T?`) |
 | `zone` | an object with a volume (a Forge trigger volume or a netgame flag); goes where an `object` is wanted, not the reverse |
 | `squad` | a kit squad slot 0 to 15, `squad(n)` |
-| `timer` | a global variable of ticks left; 0 is stopped; read and written as `int` |
+| `time` | a duration in ticks: `5s`, `300t`; `seconds(n)` from an `int`, `whole_seconds(t)` and `ticks(t)` to an `int` |
+| `timer` | a global variable of ticks left; 0 is stopped; read and written as `time` |
+| `carrier` | the built-in enum of `variant.engine`: `carrier.ctf`, `carrier.assault`, ... |
 | `tag` | a tag path string (a table column or `set_loadout` argument) |
 | `weapon` | a tag path that must be a weapon's (checked against the weapon group at load); goes where a `tag` is wanted |
 | `T?` | `player?`, `team?`, `object?`, `zone?`, `tag?`, `weapon?`: a handle that may be `none` |
@@ -50,7 +54,11 @@ Carriers (`caps::CARRIERS`): `ctf` 1, `slayer` 2, `oddball` 3, `king` 4,
 Literals: `team 0` to `team 7` (a team), `text 9`, `none`. A string
 literal takes the type its place wants (a tag, a weapon, a class or a
 text); a string is never a label. Compare any two values of one type with `==` and `!=`;
-`<`, `<=`, `>`, `>=` take `int` and `fixed` only. `and`, `or`, `not` take
+`<`, `<=`, `>`, `>=` take `int`, `fixed` and `time` only. `time` adds,
+subtracts, takes `%` and compares with `time`, multiplies and divides by
+an `int`, and `time / time` is an `int`; any other mix of `time` and
+`int` is an error that gives the fix (`Write 1s for a second or 30t for
+ticks.`). `and`, `or`, `not` take
 bools and short-circuit; `and` binds tighter than `or`; `not` is below
 comparisons. Precedence, lowest first: `or`, `and`, `not`, comparison,
 `+ -`, `* / %`, unary `-`, then `.field`, `[index]`, calls.
@@ -59,13 +67,15 @@ comparisons. Precedence, lowest first: `or`, `and`, `not`, comparison,
 
 | Form | Notes |
 |---|---|
-| `option name: int lo..hi = d "Label" "Description"` | an `int` option needs a range; also `bool` and an enum type; label and description are optional strings on the same line; at most 32 options and 32 bits in all; read as a bare `name`, read-only |
+| `const name = expr` | folded at compile time from `int` and `time` literals, other constants, `len(table)` and `+ - * / %`; stands wherever a literal does (option ranges and defaults, initial values, table cells, label counts) |
+| `option name: int lo..hi = d "Label" "Description"` | an `int` option needs a range; also `time lo..hi` (whole seconds: `time 5s..60s = 20s`, the bits of the `int` option of the same range, label ending ` (seconds)`), `bool` and an enum type; label and description are optional strings on the same line; at most 32 options and 32 bits in all; read as a bare `name`, read-only |
 | `palette "name" = ["tag/path", ...]` | 1 to 64 tags; used by `grant`; at most 255 palettes |
 | `enum Name { a, b, c }` | commas or newlines |
 | `global var x: type = const` | the initial value is a constant; none means the type's zero (`none` for handles) |
 | `player var`, `team var`, `object var` | per-owner variables, read as `p.x`, `t.x`, `o.x` |
 | `table name: (c1: type, c2: type) = [(v, v), ...]` | at most 16 columns and 256 rows; constants only; no timers |
 | `fn name(a: type, b: type) { ... }` | inlined; no return value; no recursion; nests at most 16 deep; a parameter is not a `timer` |
+| `fn name(a: type) -> type = expr` | a value function: one expression, inlined at each call; called only for its value |
 | `label name: kind requirements = "map text"` | a Forge label the map supplies; below |
 | `on event(args) { ... }` | several handlers of one event run in source order; trailing arguments may be left out; naming more than the event gives is refused |
 
@@ -127,6 +137,11 @@ for each objectives o { ... }                 // the objective registry, at most
 for each barrier o where cond { ... }        // a declared objects or zones label
 if let k = killer and k != victim { ... }    // binds a T? as T, then tests
 for each pick(players, n) p { ... }           // n members, drawn with the VM generator
+match victim.role {                           // an enum or carrier value
+    Role.vip { ... }
+    Role.a, Role.b { ... }                    // several variants in one arm
+    else { ... }                              // the rest; without it every variant needs an arm
+}
 ```
 
 A bare name in a `where` over `players`, `teams` or a label's set also
@@ -137,8 +152,8 @@ Set-valued built-ins, only with a set as their first argument:
 `count(set)` (int), `first(set)` (member or `none`, in `for each` order),
 `pick(set, n)` (a set, only inside `for each` or `count`).
 
-Value built-ins: `clamp(v, lo, hi)`, `min(a, b)`, `max(a, b)`, `len(table)`,
-`seconds(n)` (n x 30 ticks), `squad(n)`, `now()` (the tick), `random(n)` (a
+Value built-ins: `clamp(v, lo, hi)`, `min(a, b)`, `max(a, b)` (all `int`s or all `time`s), `len(table)`,
+`seconds(n)` (n x 30 ticks, a `time`), `whole_seconds(t)`, `ticks(t)`, `squad(n)`, `now()` (the tick, a `time`), `random(n)` (a
 draw modulo `n`; 0 with no draw for `n <= 0`).
 
 Powers: `grant(p, forge.place, budget 20, palette "x")` (a palette is
@@ -198,7 +213,7 @@ a host refuse the script) or `vm`.
 | `team_score(t)` | team -> int | named |
 | `alive(p)` | player -> bool | named |
 | `team_of(p)` | player -> team | named |
-| `round_time_left()` | -> int | named |
+| `round_time_left()` | -> time | named |
 | `is_objective(o)` | object -> bool | named |
 | `squad_alive(s)` | squad -> int | named |
 | `carrier_of(o)` | object -> player | named |
@@ -206,7 +221,7 @@ a host refuse the script) or `vm`.
 | `object_team(o)` | object -> team | traced |
 | `player_of(o)` | object -> player | traced |
 | `label_number(o)`, `zone_id(o)` | object -> int | not built |
-| `ticks_held(o, t)` | object, team -> int | vm, not built on a host (below) |
+| `ticks_held(o, t)` | object, team -> time | vm, not built on a host (below) |
 | `inside(p, o)` | player, object -> bool | not built |
 
 The field forms (`p.score`, `o.number`, `o.id`, `o.carrier`,
@@ -253,6 +268,19 @@ the host has a zone test; a scenario's fake game answers it.
 | `ff_respawn` | player | `firefight.director` | queued | named |
 | `ff_finish` | bool | `firefight.director` | queued | named |
 
+A `message` text written in the call may hold holes: `message(victim,
+"{k} scored, {left} to go")`. A hole is one name in scope (a local, a
+global, an option or a constant) whose value is a `player`, `team`,
+`int`, `time` (shown as `m:ss`) or enum (shown by its variant's name); a
+`player?` shows once narrowed (`if let k = killer { ... }`). At most four
+holes; `{{` and `}}` write a brace. The compiler stores the text as
+`{player} scored, {int} to go` and passes the values through VM-only
+`fmt_player`, `fmt_team`, `fmt_int`, `fmt_time` and `fmt_enum` calls,
+which a script cannot name. `h2 rules run` and the workbench list the
+`message` call with the template and then the values; the fake game
+(`FakeGame::messages`) also keeps the line a player reads
+(`player 1 scored`).
+
 An action has no value: `let x = score(p, 1)` is an error (`score has no
 value`). A function call has none either. Passing `none` is allowed where
 the type may be `none` (`set_loadout(p, "tag", none)`).
@@ -280,6 +308,12 @@ exits 1.
 | `a set is only allowed in for each, count, first and pick` | a set used as a value |
 | `fn x calls itself; recursion is not allowed` | recursion |
 | `an int option needs a range: int 1..5` | `option n: int = 3` |
+| `can't compare time with int in "p.held >= 1". Write 1s for a second or 30t for ticks.` (`unit.mix`) | a `time` mixed with an `int`; also a `timer` set from an `int` option |
+| `0.01s is not a whole number of ticks (30 a second).` (`unit.literal`) | a time literal between ticks |
+| `match on Role has no arm for Role.guard. ...` (`match.missing`) | a `match` with no arm for a variant and no `else` |
+| `ladder[12]: ladder has 12 rows, 0 to 11.` (`const.range`) | a constant index out of a table's rows or a label's `numbered` range, or a constant outside the `int` range |
+| `division by zero in the constant "step".` (`const.zero`) | a constant divided by zero |
+| `{q} in this message is not a name here. Names in scope: p, n.` (`text.hole`) | a message hole names nothing in scope; the other `text.hole` errors are a value a message cannot show (`an object can't be shown in a message.`), a `player?` not narrowed, a hole that is not one name (`{p.team}`), an unpaired brace, and more than four holes |
 | `the options take N bits; a variant carries 32` | too many or too wide options |
 | `a grant needs a budget: budget n` | `grant` with no `budget` |
 | `on kill takes 2 arguments` | wrong argument count |

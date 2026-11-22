@@ -612,34 +612,6 @@ linear texture, alpha blend and alpha test) and a fixed-function textured
 quad through the device and checks pixels; `cargo run -p d3d --example
 window` shows the same through `crates/apps/app` in a real window.
 
-`crates/tools/viewer` is the first consumer of real assets: it decodes a `mode` tag
-(`tags::model`, see map-format.md "Render-model geometry") and draws it with
-its own small WGSL pipeline through `GfxContext`/`Presenter`, or into an
-`OffscreenTarget` for `--png` screenshots. Flat, vertex-normal or normal-colour
-shading only; no shaders or textures yet. Its `bsp` binary validates and
-software-renders structure BSPs through the same shared geometry decoder
-(`tags::geometry`, see structure-bsp.md). Its `shadowlab` binary compares shadow volumes with shadow maps
-(notes/e3-lighting.md).
-
-All three open a map by its name on the disc (`/maps/<name>.map`), else a
-`.map` file by path, else a Halo 1 map `h2 import halo1` converted under the
-runtime data root (`$H2_DATA`, else
-`~/Library/Application Support/h2recomp/data`): `campaigns/halo1/<name>.map` for a campaign level,
-`maps/<name>/h1/<name>.map` (or `h2/`) for a multiplayer map, so `bsp a30`
-or `viewer h1_<map> <mode tag>` works once the import has run
-(`viewer::disc::converted`). An installed mod (a map package under
-`<data>/maps/`, docs/game/maps.md) opens as `mod:<package dir>`, or by its
-directory name when nothing else has that name: the package is resolved
-as the game resolves it (its patch layers over the disc's map of its base,
-or over the map pack map `h2 import-mappack` installed, the base checked
-against the package's SHA-256) into memory, once per run. Nothing is
-written, except that a BPS package is materialised into
-`<data>/maps/cache/<MapId>.map` as the game's resolver does (and read from
-there once it is). `viewer --list` prints the disc's maps, then each mod as
-`mod:<dir>  <name> (on <base>, map_id <first 16 hex>)`. A map from
-outside the disc reads its shared resources from the disc's `shared`,
-`single_player_shared` and `mainmenu` maps, as the game does.
-
 ## Not supported yet (future work)
 
 The register-combiner and vertex-microcode translators exist in

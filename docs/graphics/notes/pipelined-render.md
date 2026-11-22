@@ -1,17 +1,22 @@
 # Pipelined rendering: census, prototype and measurements
 
-Evidence for [pipelined-render.md](../pipelined-render.md). Nothing here
-states what the code does today; the design page does. The whole-frame
-design below was the first plan for a render one frame behind the
-simulation, with its `render-census` readings and the prototype that
-followed; the shipped worker is the narrower frame-end split on the design
-page. Variables named here that no longer exist (`H2_PIPELINE_RENDER`)
-were replaced by the switch `impl.render.pipelined_frame`.
+Research record. The code this note describes, the pipelined COW render
+worker (`impl.render.pipelined_frame`, `H2_PIPELINE_*`,
+`crates/rewrites/render-bridge/src/pipeline_*.rs`), was deleted on
+2026-11-22; it is in git history up to `1afa616a6`. It was a research
+switch, not a speed-up (see the measurements below), and its design page
+went with it. Nothing here states what the code does today. The
+`render-census` feature this note introduced stays. The whole-frame design
+below was the first plan for a render one frame behind the simulation, with
+its `render-census` readings and the prototype that followed; the worker
+that shipped was the narrower frame-end split. Variables named here that
+no longer exist (`H2_PIPELINE_RENDER`) were replaced by the switch
+`impl.render.pipelined_frame`, which is gone too.
 
 Entries are from 2026-11-17 and 2026-11-18. Commit: not recorded; the
 page they come from was last revised at `b8b163968`. Method: `render-census`
 (`crates/rewrites/render-bridge/src/render_census.rs`) and the prototype
-(`crates/rewrites/render-bridge/src/pipeline_render.rs`) on the owner's disc, headless.
+(`crates/rewrites/render-bridge/src/pipeline_render.rs`, deleted) on the owner's disc, headless.
 Not re-run.
 
 ## What it would buy

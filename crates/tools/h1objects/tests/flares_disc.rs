@@ -130,7 +130,7 @@ fn print_words(words: &BTreeMap<usize, Words>) {
 /// blocks (a count then an address inside the tag's own bytes), with the
 /// strides that tile them.
 #[test]
-#[ignore]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn halo1_layout_survey() {
     let g = std::env::var("H1_GROUP").unwrap_or_else(|_| "lens".into());
     let root = usize::from_str_radix(
@@ -234,7 +234,7 @@ fn halo1_layout_survey() {
 /// 16-byte reference whose id resolves to a tag of its group), by the
 /// naming tag's group; and the light fixtures' object attachments.
 #[test]
-#[ignore]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn halo1_reference_survey() {
     let wanted = [b"lens", b"garb", b"lifi", b"ligh"];
     let mut by: BTreeMap<String, usize> = BTreeMap::new();
@@ -299,7 +299,7 @@ fn halo1_reference_survey() {
 /// 8-byte reference whose datum is a tag of that group), the classes
 /// effect `obje` parts create, and the `garb` and `lens` counts.
 #[test]
-#[ignore]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn halo2_reference_survey() {
     let mut by: BTreeMap<String, usize> = BTreeMap::new();
     let mut part_classes: BTreeMap<String, usize> = BTreeMap::new();
@@ -376,7 +376,7 @@ fn halo2_reference_survey() {
 /// Survey: the Halo 2 scenario's light placements (`scnr +0xe8`, `0x6c`)
 /// and palette (`+0xf0`, `0x28`): every word's values over the disc.
 #[test]
-#[ignore]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn halo2_light_placement_survey() {
     use tags::effects::Memory;
     let mut words: BTreeMap<usize, Words> = BTreeMap::new();
@@ -436,7 +436,7 @@ fn show(b: &[u8]) -> String {
 /// `H1_ROOT`) and first reflection (`H1_REFLECTION` at `H1_REFLECTIONS`)
 /// beside Halo 2's.
 #[test]
-#[ignore]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn lens_pair_survey() {
     let hex = |k: &str, d: &str| {
         usize::from_str_radix(
@@ -506,7 +506,7 @@ fn lens_pair_survey() {
 
 /// Survey: every Halo 2 lens flare's root words and reflection words.
 #[test]
-#[ignore]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn halo2_lens_survey() {
     let mut root: BTreeMap<usize, Words> = BTreeMap::new();
     let mut refl: BTreeMap<usize, Words> = BTreeMap::new();

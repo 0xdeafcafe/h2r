@@ -1,20 +1,42 @@
 # Modeling: mesh, BSP and texture editing in h2-editor
 
-Status: Partly built. The mesh kernel (slice 1) and the in-place
+Status: Partly built. The mesh kernel (slice 1), the in-place
 geometry path (slices 2 and 3, for clusters, instanced definitions and
-`mode` sections) are implemented; the Modeling window is a section of the
-map inspector with buttons, not yet the gizmo, overlays and keymap below.
-Grown writes, collision, markers, the Textures tool and the collision
-compiler are designs.
+`mode` sections), grown raw writes (slice 7, with
+`MapEditor::append_raw` and **Use for lower LODs** in the session), the
+collision compiler with `coll` BSPs as meshes (slice 8, the crate only),
+adding solids to a structure's level collision (slice 11, the crates and
+the map's save only) and the Textures tool (slices 5 and 6: painting,
+exporting, and writing the edited images with the map's save) are
+implemented; the Modeling window is a section of the map inspector with
+buttons, not yet the gizmo, overlays and keymap below, and has no control
+or API method for **Use for lower LODs** yet. A `coll` BSP and a
+structure's collision are not yet `geometry-edit` targets, so the window,
+`geometry.*` and the session do not reach them; nothing in the editor
+calls `geometry_edit::level_collision` yet. Rebuilding a level's collision
+and markers are designs.
 Code: `crates/tools/mesh-edit`, `crates/tools/geometry-edit`,
+`crates/tools/collision-build`,
+`crates/tools/collision-build/src/{merge,level}.rs`,
+`crates/tools/geometry-edit/src/level_collision.rs`,
 `crates/formats/tags/src/geometry_write.rs`,
-`crates/apps/studio/src/app/modeling.rs`,
+`crates/formats/map/src/writer.rs` (`append_raw`, `append_metadata`),
+`crates/tools/scenario-edit/src/save.rs`,
+`crates/platform/assets/src/{encode,write}.rs`,
+`crates/apps/studio/src/app/{modeling,textures}.rs`,
+`crates/apps/studio/src/api/bitmaps.rs`,
 `crates/apps/studio/src/api/geometry.rs`,
 `crates/apps/studio/src/ui/modeling.rs`.
 Tests: `crates/tools/mesh-edit/tests`,
-`crates/tools/geometry-edit/src/{session,write}_tests.rs`,
-`crates/formats/tags/src/geometry_write_tests.rs`, the `geometry_*` and
-`doc_undo_on_the_map_*` tests in `crates/apps/studio/src/api/tests.rs`.
+`crates/tools/geometry-edit/src/{session,write,grow,level_collision}_tests.rs`,
+`crates/tools/collision-build/src/{build,coll,merge}_tests.rs`,
+`crates/formats/tags/src/geometry_write_tests.rs`, the `append*raw*`
+tests in `crates/formats/map/src/tests.rs`,
+`a_geometry_raw_append_*`, `a_geometry_grown_block_*` and `bitmap_changes_*` in
+`crates/tools/scenario-edit/src/tests.rs`,
+`crates/platform/assets/src/encode_tests.rs`, the write tests in
+`crates/apps/studio/src/api/tests/bitmaps_tests.rs`, the `geometry_*` and `doc_undo_on_the_map_*` tests in
+`crates/apps/studio/src/api/tests.rs`.
 Switch: none in the environment. Two session switches in the Edit menu: **Allow growing full blocks** (the existing one) and **Allow unverified geometry writes** (off by default).
 
 The editor gains two tools. **Modeling** edits the triangles the game
@@ -39,13 +61,13 @@ evidence.
 | Section decoder (parts, subparts, indices, vertex streams) for `sbsp`, `ltmp` and `mode` | `crates/formats/tags/src/geometry.rs` (`decode_section`, `Section::vertices`), [structure-bsp.md](../formats/structure-bsp.md) | read only (**Code**) |
 | Section writers | `h1convert::structure::raw_block` (structure, `0x44` struct), `crates/tools/h1-assets/src/models/mode.rs` (`build_section`, `0x70` struct) | each writes its own layout from Halo 1 data (**Code**) |
 | Collision BSP codec and validator | `tags::collision::Bsp` (`decode_blocks`, `decode_structure`, `encode_blocks`, `validate`), [collision.md](../formats/collision.md) | reads and writes the eight blocks (**Code**) |
-| Collision BSP from polygons | nowhere | `h1convert` re-encodes Halo 1's compiled tree and unites trees (`h1convert::scenery_collision::{transformed, merge}`); nothing compiles a tree from faces (**Code**) |
-| Engine's collision walks, modelled | `h1convert::surface_query` (`vector`, `locate`, `surface_at`) | the oracle a compiled tree is tested against (**Code**) |
+| Collision BSP from polygons | `collision_build::build` (below, "The collision compiler") | compiles a tree from convex polygons; `h1convert` also re-encodes Halo 1's compiled tree and unites trees (`h1convert::scenery_collision::{transformed, merge}`) (**Code**) |
+| Engine's collision walks, modelled | `collision_build::query` (`vector`, `locate`, `surface_at`), and the same model over both games' encodings in `h1convert::surface_query` | the oracle a compiled tree is tested against (**Code**) |
 | Havok MOPP, pathfinding | `mopp::build_structure`, `mopp::build`, `pathfind::generate` | regenerate from a `Bsp` (**Code**) |
 | Clusters, portals, visibility MOPP per section | `h1convert::clusters`, `h1convert::structure::visibility_mopp`, `h1convert::flood` | written from Halo 1's data; the flood model checks portals (**Code**) |
-| In-place map patches, metadata growth | `map::MapEditor` (`patch_tag`, `patch_metadata`, `append_metadata`), [map-format.md](../formats/map-format.md) "Growing the metadata" | no raw-data patch or append (**Code**) |
+| In-place map patches, metadata growth, raw data | `map::MapEditor` (`patch_tag`, `patch_metadata`, `append_metadata`, `patch_raw`, `append_raw`), [map-format.md](../formats/map-format.md) "Growing the metadata" and "Inserting raw data" | `append_raw` places new raw data where the tag index starts; the index and metadata follow (**Code**) |
 | Whole-map builder with pinned retail tags | `map::build::TagSet` ([map-builder.md](../formats/map-builder.md)) | adds raw data and built tags; retail `sbsp` and `ltmp` do not relocate ([tag-repo.md](../formats/tag-repo.md)) (**Code**) |
-| Bitmap decode | `assets::bitmap` (`texture_desc`, `decode_bytes`, `decode_image`), `gfx::swizzle` (both directions), [bitmaps.md](../formats/bitmaps.md) | no encoder but `h1_assets::bitmaps::mask::encode_dxt5` and `tags::rgba_bitmap` (linear ARGB) (**Code**) |
+| Bitmap decode and encode | `assets::bitmap` (`texture_desc`, `decode_bytes`, `decode_image`), `assets::encode` (`encode_lod`, `encode_tiles`), `assets::write` (`plan_image`, `reshaped`), `gfx::swizzle` (both directions), [bitmaps.md](../formats/bitmaps.md) | the editor's encoder; `h1_assets::bitmaps::mask::encode_dxt5` and `tags::rgba_bitmap` (linear ARGB) are the converters' (**Code**) |
 | Viewport, picking, gizmo, snapshot undo | `scenario_edit::render::Viewport`, `scenario_edit::scene`, `crates/apps/studio/src/viewport.rs`, `editor_core::UndoStack` | reused as they are (**Code**) |
 
 ## The mesh kernel (`crates/tools/mesh-edit`)
@@ -176,6 +198,117 @@ mesh; `geometry-edit` tests that after every op in its fixtures. The log
 is what `doc.diff` prints, what an agent sends, and what a converted
 Halo 1 map stores (below).
 
+## The collision compiler (`crates/tools/collision-build`)
+
+`collision_build::build(&[Polygon]) -> Result<Compiled>` (**Code**). A
+`Polygon` is convex and planar, wound counter-clockwise seen from its
+open side, with a material, surface flags (bit 0 two-sided) and a
+breakable-surface byte. `Compiled` holds the `tags::collision::Bsp` and,
+per surface, the input polygon it came from. The steps are
+modeling-targets.md's ("Structure collision", step 1):
+
+- **Prepare** (`prep.rs`): weld within 0.001 world units; drop a polygon
+  left with under three corners or no area; triangulate one that is not
+  planar within 0.001 or not convex; split a ring over eight into fans
+  of at most eight. `Report` names each polygon so treated.
+- **Planes**: one per distinct plane (normals within 1e-6 of cosine,
+  distances within 0.001); a surface facing the plane's back sets bit 15.
+- **Edges** (`edges.rs`): the surface that runs an edge from start to
+  end is its left surface and names its next edge as the forward edge;
+  one running it the other way is the right surface and names its next
+  edge as the reverse edge. So `Bsp::surface_ring` gives every ring in
+  its input winding. An edge with no right surface names itself as its
+  reverse edge.
+- **3D tree** (`tree.rs`): partition on a fragment's plane, fewest
+  splits, then best balance, then lowest plane index (48 candidate
+  planes per node, sampled evenly past that). Fragments on the plane stay
+  at the node. An empty side is solid when a one-sided fragment there
+  faces away from it and none faces it, else an open leaf.
+- **References and 2D trees** (`tree.rs`, `tree2d.rs`): an open leaf
+  takes one reference per plane of its path where a fragment kept at that
+  node, seen from its side, still has area clipped to the leaf; the flip
+  bit is set on the back. The 2D tree over those surfaces splits on their
+  edge lines; a surface reaching both sides goes to both, unsplit.
+  Overlapping coplanar surfaces have no separating line and are refused.
+  Leaf flag bit 0 is set where a reference reaches a two-sided surface.
+
+`Limits::HALO2` refuses what the packed fields cannot hold: 32,767
+surfaces, 65,535 edges and vertices, 32,768 planes and 2D nodes, 65,535
+references, 2^23 3D nodes, 2^23 - 1 leaves (leaf `0x7fffff` would encode
+as the "none" child), 255 references a leaf. `verify::check` is the
+acceptance and the check an edited BSP gets: `Bsp::validate`, rings of
+at most eight, every centroid walking its reference's 2D tree back to
+its surface, every reference on its leaf's path on its flip bit's side,
+and the leaf flag rule.
+
+**`coll`** (`coll.rs`). `mesh_from_bsp` opens a BSP as a mesh: a vert per
+BSP vertex, a face per surface wound about its open side, the material
+as the face material, and the surface flags and breakable byte as the
+face group (`group_of`: flags low, breakable high), so kernel ops carry
+them. `polygons_from_mesh` turns it back. `rebuild` compiles polygons
+into a permutation's BSP, keeps its leading word, refuses a material
+past the tag's list, and gives a BSP physics slot its box
+(`bsp_box`) and a MOPP code object keyed by plain surface index
+(`bsp_mopp`), keeping the slot's `+0x30` datum. `encode_collision`
+writes a whole `coll` payload, every block 16-aligned after the root,
+with retail's slot words (`0x81`, `0x80`, `0x81`). `stage_blocks` gives
+one BSP's eight blocks by name (`BLOCK_NAMES`, the fields of
+`tags::collision::Bsp`) for `edit.collision.stage`
+([realtime-edits.md](realtime-edits.md), "Collision").
+
+**Adding solids** (`merge.rs`, `level.rs`; slice 11).
+`merge::merge(level, piece)` appends a compiled solid to a level's BSP
+by modeling-targets.md's method ("Structure collision", step 2), the
+method of `h1convert::scenery_collision::merge` on this crate's types
+and `Limits`: the piece's planes, 2D nodes, surfaces, edges, vertices and
+references go after the level's, one copy of its 3D tree serves every
+open level leaf its solid reaches, each through six nodes testing its box
+grown by `BOX_MARGIN` (0.05), and the copy's open leaves carry the
+references of the level leaves they stand in whose planes their cells
+touch. Every existing index holds; only the parent of a gated leaf
+changes a child. The piece's surfaces keep material and flags but get no
+breakable surface (bit 3 cleared, byte `0xff`). `Merged` names, per added
+leaf, its stand-in (the first level leaf it stands in) and every host.
+A copy that serves several level leaves carries all their references, so
+`verify::check`'s path rule names a reference off one of its paths; the
+engine's matcher only spends a lookup on it, and the rule holds for a
+solid inside one level leaf.
+
+`level::Level` is a structure's level collision as plain data: the BSP,
+the per-leaf block (`sbsp+0x2c`, `LEAF_SIZE` 8 bytes a leaf, the cluster
+an `i16` at `+0`), the MOPP block (`sbsp+0x1e0`) and the collision
+material count (`sbsp+0x0c`). `Level::add_solid(polygons, options)`
+compiles the solid, refuses a material past the list, merges it, refuses
+a solid that reaches no open space or a merged BSP that fails
+`Bsp::validate`, copies each added leaf's stand-in element whole (so the
+leaf is in its stand-in's cluster), and rebuilds the MOPP over every
+structure surface plus every other key of the old program as the box its
+old path guarantees (`level::rebuild_mopp`, as `replaced_retail_levels`
+in `crates/formats/mopp/tests/disc.rs` does; an old program that does not
+parse is refused, not dropped). `Added::stage` gives the eight blocks by
+name, the per-leaf block and the MOPP for `edit.collision.stage`
+(`level::LevelStage`). The structure checksum (`sbsp+0x08`) is kept: it
+is not a hash of the collision.
+
+`geometry_edit::level_collision` reads a `Level` from a map (`read`,
+each block where its pair points, in the structure's region or the
+ordinary metadata) and writes an added solid back
+(`LevelEdit::writes`): a block whose count holds is patched in place, one
+whose count grows is a `GrownBlock`, appended to the ordinary metadata
+16-aligned with its pair pointed there, and the MOPP goes over the old
+program when it fits (count set to the new length, the old tail zeroed),
+else it grows too. Adding a solid grows all eight blocks that gain
+elements and the per-leaf block. The save takes grown blocks as
+`scenario_edit::GeometryChanges::grown` (`MapEditor::append_metadata`,
+then `patch_metadata` or `patch_bsp` for the pair), and the writer
+repairs the header checksum. `LevelEdit::stage` sends the same bytes.
+
+**From render** (`from_render.rs`): weld, drop degenerate and repeated
+triangles (one drawn both ways becomes two-sided), then join neighbours
+across shared edges, of one material and flags, within 0.5 degrees and
+0.001 of each other's plane, while the result is convex with at most
+eight vertices.
+
 ## Targets and the save
 
 [modeling-targets.md](modeling-targets.md) has the round trip for each
@@ -203,7 +336,13 @@ new raw block; behind Allow unverified geometry writes until a game run
 has loaded one) and **grown blocks** (a tag block with more elements;
 behind Allow growing full blocks as well).
 
-## Texture editing (proposed `bitmap-edit`)
+## Texture editing (`bitmap-edit`)
+
+Status: built (`crates/tools/bitmap-edit`, `crates/platform/assets/src/{encode,write}.rs`,
+`app/textures.rs`, `ui/textures.rs`, `api/bitmaps.rs`). Edits live in the
+editor until a save, which encodes what changed and writes it with the map.
+The live preview is the canvas; the 3D viewport does not show them yet. P8
+pages open read-only.
 
 - **Decode.** `assets::bitmap::decode_image` gives every level, face and
   slice of an image as RGBA8. The canvas keeps the source's stored bytes
@@ -222,30 +361,60 @@ behind Allow growing full blocks as well).
   selection from a PNG, resampled (box down, bilinear up) when sizes
   differ; **Export** writes a PNG outside any Git checkout, as every
   render does ([agent-api.md](agent-api.md), "Documents").
-- **Encode** (an encoder in `assets`, new). Linear and
-  swizzled packers for every format whose row is `Pixels` or
-  `LayoutOnly` (`gfx::swizzle::swizzle`, rows padded to 64 bytes for
-  linear images); DXT1, DXT3 and DXT5 by a deterministic block
-  compressor in Rust (principal-axis endpoints refined over the four
-  nearest pairs; DXT1 with one-bit alpha when the source image used it);
-  mips by a box filter in linear light, alpha by coverage for cut-out
-  textures; chains laid out as the decoder reads them (DXT chains stop
-  at one block, cube faces aligned to 128, an LOD rounded up to 128).
-  A `P8` page is quantised back to its palette, which does not change.
-  Tests: decode(encode(x)) equals x for the exact formats, is within a
-  stated error for DXT, and encode(decode(stored)) is the stored bytes
-  for every exact format; a tile no stroke touched keeps its stored
-  blocks, so painting one corner of a DXT image changes only the blocks
-  under the brush and their mips.
-- **Write.** Same size and format: `raw_patches` over the image's three
-  LOD chains (each is a whole chain from mip 0, 1 or 2). A new size or
-  format: new raw data, and fixed patches of the `0x74` image record
-  (size, format, mip count, LOD pointers and sizes; the cache handles
-  stay `0xffffffff`, [multiplayer.md](../halo1/multiplayer.md) "Bitmap
-  images say not cached"). An image whose pixels are in a shared cache,
-  or whose raw range another image also names, takes the new-raw path.
-  Sizes stay powers of two for swizzled and mipped images, depth fits a
-  byte, DXT volumes are refused as the decoder refuses them.
+- **Encode** (`assets::encode`). Texels invert `gfx::convert` for
+  `A8`, `Y8`, `AY8`, `A8Y8`, `R5G6B5`, `A1R5G5B5`, `A4R4G4B4`,
+  `X8R8G8B8` and `A8R8G8B8`, each channel quantised with rounding, so
+  decode, encode, decode is the identity; `Y8` and `AY8` take the
+  Rec. 601 luma, `A8` the alpha. Swizzled levels go through
+  `gfx::swizzle`, linear rows are padded to the descriptor's pitch,
+  DXT1, DXT3 and DXT5 are range fitted blocks (the inset bounding box of
+  the block's colours along the diagonal their covariance picks, 5:6:5
+  endpoints, nearest palette entry; DXT1 uses the three colour mode and
+  a transparent index for texels under half alpha; DXT3 alpha is 4 bits,
+  DXT5 alpha the interpolated set). Mips are a box filter from mip 0 in
+  the stored encoding, so a region encoded alone equals the same region
+  of a whole chain. Chains are laid out as the decoder reads them (DXT
+  chains stop at one block, cube faces `face_stride` apart, a LOD rounded
+  up to 128). The formats whose channels are hypotheses (`P8`, `P8Bump`,
+  `V8U8`, `G8B8`) and the float formats are not written.
+  `encode_lod(image, lod, planes)` writes a whole LOD chain.
+  `encode_tiles(image, planes, dirty)` writes only the units (a texel, or
+  a 4x4 block) that dirty rectangles of mip 0 touch, in every LOD the
+  image stores and every level of each (the rectangle maps to the texels
+  that read it at each mip), and returns byte `Span`s (LOD, offset,
+  bytes), adjacent units joined. A block is re-encoded whole from its
+  pixels, so an untouched block keeps its stored bytes and painting one
+  corner of a DXT image changes only the blocks under it and their mips.
+  The live push of docs/editor/realtime-edits.md sends these spans
+  (`App::bitmap_tile_spans`, `bitmap.spans`).
+- **Write** (`assets::write::plan_image`; the Textures tool's
+  `App::push_bitmap_changes`, which every map save runs first, hands the
+  plan to the scenario session as `Session::set_bitmap_changes`, which
+  saves with the map and counts toward its dirty mark). Same size and
+  format, pixels in this map: `RawWrite`s, `MapEditor::patch_raw` over the
+  spans, in each LOD chain the image stores (each is a whole chain from
+  mip 0, 1 or 2). Pixels in a shared cache (`shared`, `mainmenu`,
+  `single_player_shared`), which the editor never writes: the LOD's
+  stored bytes are read, the spans patched in the copy, the copy appended
+  with `MapEditor::append_raw` and the image's LOD pointer word pointed at
+  it. A new size or format (`bitmap.reshape`, an image-level request, not
+  an undo step): every LOD the image stores is encoded whole from the
+  layers resampled to the new size and appended, and the `0x74` image
+  record's width, height, format, flags and mip count are patched, with
+  each LOD's pointer and size (a LOD the new size cannot hold gets no
+  pointer, `0xffffffff`, and size 0; the cache handles stay
+  `0xffffffff`, [multiplayer.md](../halo1/multiplayer.md) "Bitmap images
+  say not cached"). The mip count stays a full chain when the image had
+  mips and is 0 otherwise; DXT needs power of two sides; a side that is
+  not a power of two is linear with no mips; a cube stays square; DXT
+  volumes are refused as the decoder refuses them. The old blocks stay as
+  dead data. The changes are recomputed from the source map at every save
+  (the session never rebases onto a saved file), so a second save carries
+  the first edit too, and undoing every edit saves the source again. A
+  plan that fails (a locked image, a format not written, a LOD shorter
+  than the edit) is the session's `bitmap_refusal`: the save fails by
+  name before it writes. A map that cannot take a new raw block
+  (`raw_append_refusal`) refuses a shared-cache copy or a reshape.
 - **Preview.** The viewport's texture for the bitmap
   (`scenario_edit::scene`) is updated from the canvas after each stamp
   (`Queue::write_texture` on the touched rectangle, mips at the stroke's
@@ -256,7 +425,9 @@ behind Allow growing full blocks as well).
   canvas.
 - **Deferred.** Layers, text, sprite sheet and sequence editing, a UV
   editor, the low-detail copy (header `+0x158`), which stays as the
-  source's.
+  source's (and so goes stale when the picture changes), a window control
+  for a new size or format (only `bitmap.reshape` asks for one), and a
+  LOD 1 or 2 where the map stored no LOD 0.
 
 ## The tools in the window
 
@@ -319,9 +490,18 @@ There is no `geometry` document: while a target is in edit mode the
 map's undo (`doc.undo {"doc":"map"}`, Cmd+Z) is the geometry session's,
 and the edits save with the map, counted in its dirty mark. After every
 command the session's writes go to the save
-(`scenario_edit::GeometryChanges`); with **Allow unverified geometry
-writes** off, or an edit that is not in place, the save is refused with
-the reason (`geometry.check`'s `save_refusal`) and writes nothing. The
+(`scenario_edit::GeometryChanges`): tag patches, raw patches and, for a
+grown section, a `RawAppend` (the new block, and the block info word that
+takes its raw pointer), which the save inserts with
+`MapEditor::append_raw`. With **Allow unverified geometry writes** off, or
+an edit the format cannot hold (a bucket-lit structure section or a sky
+model's strips grown, a part or material the section does not have, a map
+whose metadata does not end the file), the save is refused with the reason
+(`geometry.check`'s `save_refusal`) and writes nothing.
+`geometry_edit::RawAppend` keeps a grown section's bytes, alignment,
+pointer word and dependent writes together, and `Patches::raw` the
+changed spans of an in-place edit, so the live path sends the same bytes
+([realtime-edits.md](realtime-edits.md), "Geometry"). The
 viewport redraws an open cluster, or each placement of an open
 definition, in the native world from `GeometrySession::previews`; a
 `mode` section has no live preview yet.
@@ -356,7 +536,9 @@ namespace (player models and looks) is separate and unchanged.
 | `mesh.set_material {material}`, `mesh.uv {matrix \| project}` | |
 | `mesh.ops {target}` | the op log |
 | `mesh.apply {ops}` | a list of `MeshOp`s as one undo step: how a recorded log is replayed |
-| `bitmap.list {name?, used_by?}`, `bitmap.read {bitmap, image?}` | images with size, format, mips, where the pixels are, write class |
+| `bitmap.list {name?}`, `bitmap.read {bitmap, image?}` | images with size, format, mips, where the pixels are, write class (`in_place`, `appended`, `none`) and any reshape |
+| `bitmap.reshape {bitmap, image?, width?, height?, format?}` | asks for a new size or format; a save writes the image whole |
+| `bitmap.spans {bitmap, image?, face?, slice?, rect?}` | the stored bytes the edits change, by LOD and offset; nothing is written |
 | `bitmap.export {bitmap, image?, mip?, out}`, `bitmap.import {bitmap, image?, path, rect?}` | PNG out and in |
 | `bitmap.paint {bitmap, image?, points, color, size, hardness?, opacity?, erase?}` | one stroke through pixel points, one undo step |
 | `bitmap.fill {bitmap, image?, at \| rect, color, tolerance?}` | |
@@ -463,14 +645,27 @@ Slices 4 and 5 need nothing from 2 and 3 and can run beside them.
 
 - **Code**: `editor_core::UndoStack` is a snapshot stack with coalescing
   keys; every tool's undo is one. The mesh document follows it.
-- **Code**: the only DXT encoder in the tree is
-  `h1_assets::bitmaps::mask::encode_dxt5`, for one mask; `gfx::swizzle`
-  has both directions.
+- **Code**: `assets::encode` is the editor's encoder; the converters'
+  are `h1_assets::bitmaps::mask::encode_dxt5` (one mask) and
+  `tags::rgba_bitmap` (linear ARGB). `gfx::swizzle` has both directions.
+- **Design**: which LODs a new size stores (the ones the image had that
+  the new chain still holds) and how the mips of a reshaped image are
+  filtered (box, in the stored encoding) are choices, not measured
+  against the engine's own tools.
 - **V** ([bitmaps.md](../formats/bitmaps.md)): each of an image's three
   LOD pointers is a whole chain; DXT chains stop at one block; LOD sizes
   round up to 128 bytes; linear rows pad to 64.
 - **Design**: radial-edge mesh, snapshot undo with an op log, stable
   export, the write classes, converted maps edited at the source.
+- **Design**: the collision compiler's splitter choice, its solid rule
+  for an empty side and its 2D trees over unsplit surfaces; they are
+  accepted by the engine's walks as `collision_build::query` models them
+  (E, [collision.md](../formats/collision.md), "What the engine does with
+  a BSP") on invented shapes.
+- **S**: surface flag bit 0 is "two-sided". It is Halo 1's bit, which
+  `h1convert::collision` copies unchanged, and retail sets leaf flag bit
+  0 exactly where a reference reaches a surface so flagged
+  (collision.md); no engine read of the surface bit is cited.
 - The evidence for each target's layout and write is in
   [modeling-targets.md](modeling-targets.md), "Evidence".
 
@@ -481,6 +676,15 @@ Slices 4 and 5 need nothing from 2 and 3 and can run beside them.
   plays each class of geometry write.
 - How a re-encoded DXT texture looks beside its neighbours in game, and
   the texture cache's behaviour with a resized image.
+- That a compiled collision BSP plays as retail's does (modeling-targets.md,
+  "Not verified"), and that Havok's surface shape, which copies a ring as
+  one polygon, takes rings in the compiler's winding (counter-clockwise
+  about the open side, as the converted Halo 1 rings run).
+- That a level with an added solid loads and plays: its collision blocks,
+  per-leaf block and MOPP pointed from a BSP region into the ordinary
+  metadata (modeling-targets.md, "Not verified": an `sbsp` block in
+  ordinary metadata), and Havok's structure shape built over the
+  rebuilt MOPP. No game run has loaded one.
 - That the Blender preset's keys do not collide with Dear ImGui's own
   on every platform's keyboard.
 

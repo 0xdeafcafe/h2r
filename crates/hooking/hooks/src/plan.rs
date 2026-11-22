@@ -10,7 +10,8 @@
 //! two implementations at one address; two `before` or two `after` hooks
 //! of different features at one address with nothing ordering them; an
 //! `after_feature` cycle; a `before` on an opaque point; two point names
-//! for one address; two features with one id.
+//! for one address; two features with one id; hooked points that need a
+//! return shadow when the guest arena has no room left for one.
 //!
 //! **Missing points.** [`ImageAddrs`] maps a point to this image's address
 //! or to nothing. A missing point drops an optional hook (point class
@@ -21,8 +22,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use engine::points::{Class, Point};
 
-use crate::arena::Arena;
-use crate::{Alloc, Hook, Kind, Manifest};
+use crate::arena::{self, Arena};
+use crate::{Alloc, GuestMapping, Hook, Kind, Manifest};
 
 /// Where a point is in the running image.
 pub trait ImageAddrs {
@@ -106,6 +107,13 @@ pub enum Conflict {
         b: &'static str,
     },
     DuplicateFeature(&'static str),
+    /// The guest arena ([`crate::arena`]) had no room for these points'
+    /// return shadows; `used` of `size` bytes were handed out.
+    ArenaFull {
+        points: Vec<&'static str>,
+        used: u32,
+        size: u32,
+    },
 }
 
 impl std::fmt::Display for Conflict {
@@ -142,6 +150,12 @@ impl std::fmt::Display for Conflict {
                 write!(f, "{addr:#010x} is named both {a} and {b}")
             }
             Conflict::DuplicateFeature(id) => write!(f, "two features have the id {id}"),
+            Conflict::ArenaFull { points, used, size } => write!(
+                f,
+                "guest arena full ({used:#x} of {size:#x} bytes used): no return shadow for {} hooked points: {}",
+                points.len(),
+                points.join(", ")
+            ),
         }
     }
 }
@@ -360,6 +374,7 @@ pub(crate) fn build(
         .map(|f| f.id).collect::<BTreeSet<_>>();
     let mut chains = BTreeMap::new();
     let mut warnings = Vec::new();
+    let mut no_shadow = Vec::new();
     for (addr, hooks) in by_addr {
         let point = hooks[0].point;
         if let Some(other) = hooks.iter().find(|h| h.point.name != point.name) {
@@ -427,22 +442,28 @@ pub(crate) fn build(
         if chain.needs_shadow() {
             let presentation_only = chain.after.iter().chain(&chain.observe_after)
                 .all(|h| presentation.contains(h.feature));
-            let shadow = if presentation_only { arena.alloc_high(4) } else { arena.alloc(4) };
-            match shadow {
+            match arena.alloc_shadow(presentation_only) {
                 Some(s) => {
                     chain.shadow = Some(s);
                     allocs.push(Alloc {
                         feature: "(plan)",
                         addr: s,
-                        len: 0x1000,
+                        len: arena::SHADOW_STRIDE,
                         perms: runtime::guest::Permissions::RX,
                         presentation_only,
                     });
                 }
-                None => notes.push(format!("{}: guest arena full", point.name)),
+                None => no_shadow.push(point.name),
             }
         }
         chains.insert(addr, chain);
+    }
+    if !no_shadow.is_empty() {
+        conflicts.push(Conflict::ArenaFull {
+            points: no_shadow,
+            used: arena.used(),
+            size: arena::ARENA_SIZE,
+        });
     }
     if conflicts.is_empty() {
         // Mapping order also determines physical placement in guest RAM.
@@ -635,6 +656,38 @@ impl Plan {
             text.push('\n');
         }
         text
+    }
+
+    /// The guest pages to map for the allocations `keep` accepts, each
+    /// page once, in allocation order (which sets their physical placement
+    /// in guest RAM).
+    pub fn mappings(&self, keep: impl Fn(&Alloc) -> bool) -> Vec<GuestMapping> {
+        let mut seen = BTreeSet::new();
+        let mut out = Vec::new();
+        for a in self.allocs.iter().filter(|a| keep(a)) {
+            let (addr, len) = arena::mapping(a.addr, a.len);
+            if seen.insert(addr) {
+                out.push(GuestMapping {
+                    addr,
+                    len,
+                    perms: a.perms,
+                    presentation_only: a.presentation_only,
+                });
+            } else {
+                debug_assert!(
+                    out.iter().any(|m| m.addr == addr && m.len == len && m.perms == a.perms),
+                    "{}'s allocation at {:#010x} shares a page with another protection",
+                    a.feature,
+                    a.addr
+                );
+            }
+        }
+        out
+    }
+
+    /// Bytes of guest pages the plan maps (`len` of every [`Self::mappings`]).
+    pub fn arena_used(&self) -> u32 {
+        self.mappings(|_| true).iter().map(|m| m.len).sum()
     }
 
     /// Whether `feature` is in the plan and on.

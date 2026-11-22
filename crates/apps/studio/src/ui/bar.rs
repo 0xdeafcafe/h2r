@@ -9,12 +9,13 @@ use crate::play::LinkView;
 use crate::play::pair::Request;
 use crate::theme::{self, Fonts, TransportIcon};
 
-const TABS: [(ToolKind, &str); 5] = [
+const TABS: [(ToolKind, &str); 6] = [
     (ToolKind::Scenario, "Map"),
     (ToolKind::Variants, "Variants"),
     (ToolKind::Playlists, "Playlists"),
     (ToolKind::UiScreens, "UI"),
     (ToolKind::Hud, "HUD"),
+    (ToolKind::Textures, "Textures"),
 ];
 
 /// The window's padding at its left and right edges.

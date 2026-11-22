@@ -117,10 +117,10 @@ you manage yourself. A name without a URL also skips them and just runs
 the tunnel; the server cannot know its URL then, so it is not printed or
 published.
 
-**Use a different tunnel and host name from the Docker deploy.** The
-Docker setup below serves `live.forbes.red` through its own tunnel
-(`h2live`, token-run). Pointing `h2 play` at the same tunnel name or host
-would put two servers with different ids behind one address. Pick another
+**Use a different tunnel and host name for each server.** Pointing
+`h2 play` at the tunnel name or host another server already uses (say the
+one `live.forbes.red` is served through) would put two servers with
+different ids behind one address. Pick another
 pair, such as `h2play` and `play.forbes.red`.
 
 `serve` runs `cloudflared tunnel --no-autoupdate --grace-period 1s run --url
@@ -146,7 +146,7 @@ sets the URL shown in discovery and the startup lines. It does not trust
 any proxy header.
 
 `--public-url https://HOST --behind-cloudflared` says the proxy is a
-cloudflared you run yourself (a system service, or the Docker setup below)
+cloudflared you run yourself (a system service)
 that reaches the server on loopback. The server then treats it like its
 own named tunnel: `CF-Connecting-IP` names the client on requests from
 loopback, the dashboard shows a named tunnel, and on a first start with no
@@ -154,188 +154,6 @@ loopback, the dashboard shows a named tunnel, and on a first start with no
 an `http://` URL or one with a port). It does not go with `--tunnel`. Only
 use it when cloudflared is the one thing that can reach the port: anything
 else on this machine could send its own `CF-Connecting-IP`.
-
-## Docker with a named tunnel
-
-`deploy/live/` runs the server and cloudflared with Docker Compose (the
-log is SQLite in `data/`; blobs there or in R2, [below](#free-hosting-sqlite-and-cloudflare-r2)): the API, the web dashboard and the stats site at one lasting
-address (here `https://live.forbes.red`), with the game art shared. The
-image has no disc and no art in it; you extract the art once on a machine
-with the disc and the containers read it from there.
-
-- `deploy/live/Dockerfile`: builds the web app with bun and
-  `h2-live-server` (`crates/live/live-server/src/bin`, `standalone.rs`: the
-  server and its `serve` flags without the rest of `h2`, so it builds on
-  Linux in a few minutes), into a distroless image that runs as a non-root
-  user. The web app is at `/srv/web` (`H2_LIVE_WEB`); `/data` is the
-  server's key and id, `/art` the art.
-- `deploy/live/compose.yaml`: two services, and a third for backups.
-  - `cloudflared` runs `tunnel run` with the token in `TUNNEL_TOKEN`.
-  - `server` runs in cloudflared's network namespace
-    (`network_mode: service:cloudflared`) and listens on `127.0.0.1:8074`
-    with `--share-game-art --public-url https://live.forbes.red
-    --behind-cloudflared`; admins come from `H2_LIVE_ADMINS`, and
-    `H2_LIVE_INVITE_ONLY=1` (setup.sh asks; off by default) makes sign-up
-    need an invite. Its root filesystem is read-only and it has no
-    capabilities.
-  - `litestream` (only with `COMPOSE_PROFILES=backup`) copies `live.db`
-    to R2 as it is written ([Backups](#backups-to-r2-litestream)).
-  All of them restart unless stopped. `compose.postgres.yaml` adds a
-  Postgres 17 container and points the server at it, for a server that
-  stays on Postgres (`docker compose -f compose.yaml -f
-  compose.postgres.yaml up -d`, `POSTGRES_PASSWORD` in `.env`).
-- `deploy/live/.env.example`: the settings; copy it to `.env`, which git
-  ignores along with `data/` and `art/`.
-
-Why the server shares cloudflared's namespace instead of listening on
-`0.0.0.0`: on the compose network every container, and Docker's own
-gateway, could reach it, and a request from one of them is not from
-loopback, so the server could not tell "this machine" from a neighbour.
-`0.0.0.0` also needs TLS or `--insecure-http` (security §6). In a shared
-namespace the server keeps loopback and plain HTTP, nothing is published on
-the host, cloudflared is the one thing that can reach port 8074, and every
-request it delivers carries Cloudflare's headers, so local sign-in and
-other this-machine-only routes refuse it exactly as they do behind
-`h2 live serve --tunnel`. The server joins cloudflared's namespace rather
-than the other way round because the server is the one more likely to
-restart (a new image); a restarted server rejoins the
-namespace, while a container joined to a restarted one is left with a dead
-namespace. If cloudflared itself is recreated, Compose restarts the server
-with it (`depends_on: restart: true`).
-
-### One-time Cloudflare setup
-
-The domain (`forbes.red`) must be on your Cloudflare account.
-
-1. In the Cloudflare dashboard, Zero Trust → Networks → Tunnels → Create a
-   tunnel. Choose **Cloudflared**, name it (`h2live`), save.
-2. On the install page, copy the token: the long `eyJ...` string after
-   `--token` in any of the install commands. Do not run the install
-   command; Docker runs cloudflared. Put the token in `.env` as
-   `TUNNEL_TOKEN`. It is a secret: anyone with it can serve your tunnel.
-3. Add a public hostname: subdomain `live`, domain `forbes.red`, service
-   type **HTTP**, URL `127.0.0.1:8074` (not `localhost`, which may resolve
-   to `::1`; the server binds IPv4 loopback). Cloudflare makes the DNS
-   record. WebSockets need nothing: they are on by default.
-
-### Game art
-
-On the Mac with the disc and a built `h2`, from the repository root:
-
-```
-h2 live assets extract --disc /path/to/halo2.iso --out deploy/live/art
-```
-
-(`--disc` defaults to `$H2_DISC`, else the ISO in `disc/`.) It writes PNGs,
-the map models and views and `manifest.json` ([live.md](live.md#game-art),
-[live-art.md](live-art.md)). Compose mounts the directory read-only at
-`/art`; the server will not start if `--game-art` has no `manifest.json`.
-With `--share-game-art` anyone can download these files: you are
-redistributing your copy of the game's art, so decide that knowingly. Run
-the command again after updating `h2` if the extractor changed; the server
-reads the files as they are.
-
-### Start it
-
-```
-cd deploy/live
-cp .env.example .env          # TUNNEL_TOKEN, H2_LIVE_ADMINS; R2 optional
-mkdir -p data
-docker compose up -d --build
-docker compose logs -f server
-```
-
-Make `data/` before the first start: if Docker creates it, it may be owned
-by root and the server, which runs as uid 65532, cannot write to it. On
-Linux set `H2_LIVE_UID`/`H2_LIVE_GID` in `.env` to your own ids so the
-files stay yours (Docker Desktop on macOS maps ownership for you).
-
-`H2_LIVE_DATA_DIR` and `H2_LIVE_ART_DIR` in `.env` (default `./data` and
-`./art`; `setup.sh` writes both) say where on the host the state and the
-extracted art live; compose mounts them at `/data` and `/art`.
-
-The first start creates `data/server.key` and `data/server.json` with the
-id `live.forbes.red`, from `--public-url` (`--behind-cloudflared`, above).
-Among the first lines of the log:
-
-```
-h2 live: public at https://live.forbes.red (through cloudflared)
-h2 live: live.forbes.red on http://127.0.0.1:8074, log at position 0 (sqlite sqlite:///data/live.db, public reads)
-h2 live: blobs in /data
-h2 live: web app from /srv/web
-h2 live: serving game art from /art to everyone: ...
-```
-
-The id never changes after this. If the first start had the wrong
-`H2_LIVE_PUBLIC_URL`, stop it, delete `data/` (and, on Postgres, the `pg`
-volume: `docker compose down -v`), and start again before anyone signs up.
-
-### The first admin account
-
-Sign up in the web app or with `h2 live account create`. If you made the
-server invite-only, the first account needs an invite. The operator
-commands sign with the key in `data/` and work against the public URL from
-the machine that has it:
-
-```
-h2 live invite create --server https://live.forbes.red --data deploy/live/data
-h2 live account create afr --server https://live.forbes.red --operator-data deploy/live/data --invite <code>
-```
-
-For an unreserved name, sign up in the web app at `https://live.forbes.red` with the invite.
-For this signup flow, configure admin names after registration. Verify the
-account's key, then add its name to `H2_LIVE_ADMINS` and restart, or grant
-the account the role with the operator key:
-
-```
-h2 live admin grant afr --server https://live.forbes.red --data deploy/live/data
-```
-
-Admins then make further invites in the dashboard (Settings → Server →
-Invites, [live-admin.md](live-admin.md) §5). To change invite-only, set
-`H2_LIVE_INVITE_ONLY` in `.env`; to add `--private`, edit the server's
-`command` in `compose.yaml`.
-
-### Backups
-
-What holds the server's state:
-
-- `data/server.key`, `data/server.json`: the server key and id. Lose them
-  and every token and author id the server has issued is orphaned. Copy
-  them somewhere private (the key is a secret). They never go to R2.
-- `data/live.db`: the event log (accounts, friends, games, title files).
-  With `COMPOSE_PROFILES=backup` Litestream keeps a copy in R2
-  ([below](#backups-to-r2-litestream)); otherwise snapshot it while the
-  server runs with `sqlite3 data/live.db "vacuum into 'h2live.db'"` (a
-  plain file copy of a database in WAL mode can miss recent writes). On
-  Postgres: `docker compose exec -T db pg_dump -U h2live h2live > h2live.sql`.
-- Blobs (custom content, cloud saves): `data/content/` and `data/storage/`,
-  or the private R2 bucket, which is its own copy.
-
-The art can always be extracted again.
-
-### Updating
-
-```
-git pull
-cd deploy/live
-docker compose up -d --build
-docker image prune -f
-```
-
-The server rebuilds and restarts; the data, the database and the id are
-kept. `docker compose pull` updates cloudflared and Litestream (and
-Postgres if you use it: stay on major version 17 unless you dump and
-restore). If a server restart ever leaves
-the site down while cloudflared is up, `docker compose restart cloudflared
-server` puts both back in one namespace.
-
-### What Docker does not change
-
-Only the service goes through the tunnel. Game traffic is UDP straight
-between players' machines ([below](#what-the-tunnel-does-not-carry)), not
-through this server, so hosting a game still needs UDP 3074-3080 reachable
-on the host player's side.
 
 ## Free hosting (SQLite and Cloudflare R2)
 
@@ -399,8 +217,8 @@ h2 live serve --blobs s3://h2live \
   --public-blobs s3://h2live-public --public-blobs-url https://art.forbes.red ...
 ```
 
-or the same in `.env` for Docker (`H2_LIVE_BLOBS`, `H2_LIVE_PUBLIC_BLOBS`,
-`H2_LIVE_PUBLIC_BLOBS_URL`; `deploy/live/setup.sh` asks for them). Requests
+or the same in the environment (`H2_LIVE_BLOBS`, `H2_LIVE_PUBLIC_BLOBS`,
+`H2_LIVE_PUBLIC_BLOBS_URL`). Requests
 are path-style, signed with SigV4 for region `auto`; `s3://BUCKET/PREFIX`
 keeps a server's keys under a prefix. Any S3-compatible store works the
 same way (MinIO, Backblaze B2).
@@ -417,8 +235,8 @@ export H2_LIVE_S3_SECRET_ACCESS_KEY=...    # the token's Secret Access Key
 h2 live store check --blobs s3://h2live
 ```
 
-(`h2-live-server store check --blobs s3://h2live` does the same in the
-Docker image; `H2_LIVE_S3_REGION` stays `auto` for R2, and `--blobs` falls
+(`h2-live-server store check --blobs s3://h2live` does the same on a
+machine without `h2`; `H2_LIVE_S3_REGION` stays `auto` for R2, and `--blobs` falls
 back to `$H2_LIVE_BLOBS`.) For the public art bucket, with the same or a
 scoped token:
 
@@ -519,8 +337,6 @@ the same `H2_LIVE_S3_*` keys, `LITESTREAM_BUCKET` (the private bucket) and
 `LITESTREAM_DB` (the database file). Backups go under `litestream/` in the
 bucket, a daily snapshot is kept for a week.
 
-- **Docker**: `COMPOSE_PROFILES=backup` and `LITESTREAM_BUCKET=h2live` in
-  `.env` start the `litestream` service beside the server.
 - **Bare metal or a Mac**: `brew install litestream` (or the release
   binary), then run, beside the server,
 
@@ -680,7 +496,7 @@ UDP 3074-3080 reachable for internet play.
   implies `--live-local`); a named `--live-tunnel` session logs in, creates,
   routes and then runs, and only runs with `--no-tunnel-setup`.
 - `crates/live/live-server/src/standalone.rs`: `h2-live-server`'s flags,
-  including the command line `deploy/live/compose.yaml` runs (loopback,
+  including the `--behind-cloudflared` command line (loopback,
   the id from `--public-url` on a first start only, `CF-Connecting-IP`
   trusted, the art shared, the web app from `H2_LIVE_WEB`); `public.rs`,
   `identity.rs`, `art.rs`: the lasting host, the first-start id and

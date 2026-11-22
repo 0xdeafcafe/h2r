@@ -16,7 +16,6 @@ Exact software x87: the 80-bit extended arithmetic that the recompiler treats as
 ## Features
 
 - `abi` (default): the C ABI structs and `h2x87_v1_*` functions.
-- `fast-trans` (default): guarded 128-bit evaluation for the gameplay transcendentals, bit-identical to the 512-bit reference.
 
 ## Tests
 

@@ -51,7 +51,59 @@ pub struct FakeGame {
     pub calls: Vec<(&'static str, Vec<Arg>)>,
     /// Reads made, by entry name.
     pub reads: Vec<&'static str>,
+    /// Messages shown, in call order (each is in [`FakeGame::calls`] too).
+    pub messages: Vec<FakeMessage>,
     pub script_error: Option<ScriptError>,
+}
+
+/// A message the script showed: to whom, its stored template, the values
+/// of its holes, and the line a player reads (a player as `player 2`, a
+/// team as `team 1`, a time as `m:ss`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FakeMessage {
+    /// A player or a team; `None` for everyone.
+    pub to: Option<Arg>,
+    pub template: String,
+    pub values: Vec<Arg>,
+    pub line: String,
+}
+
+impl FakeMessage {
+    /// The message of a `message` call: `[to, text, values...]`, or
+    /// `[text, values...]` for everyone.
+    fn of(call: &Call) -> Option<FakeMessage> {
+        let own = call.entry.args.len();
+        let to = (own == 2).then(|| call.args.first().cloned()).flatten();
+        let Some(Arg::Text(template)) = call.args.get(own - 1) else {
+            return None;
+        };
+        let values: Vec<Arg> = call.args[own..].to_vec();
+        let holes = crate::caps::holes(template).unwrap_or_default();
+        let shown: Vec<String> = values
+            .iter()
+            .zip(holes.iter().copied().map(Some).chain(std::iter::repeat(None)))
+            .map(|(v, h)| show(v, h))
+            .collect();
+        Some(FakeMessage {
+            to,
+            template: template.clone(),
+            line: crate::caps::fill(template, &shown),
+            values,
+        })
+    }
+}
+
+/// A hole's value as the fake shows it.
+fn show(v: &Arg, hole: Option<crate::caps::Hole>) -> String {
+    match (v, hole) {
+        (Arg::Int(n), Some(crate::caps::Hole::Time)) => crate::caps::show_time(*n),
+        (Arg::Int(n), _) => n.to_string(),
+        (Arg::Player(Some(p)), _) => format!("player {p}"),
+        (Arg::Team(Some(t)), _) => format!("team {t}"),
+        (Arg::Player(None) | Arg::Team(None), _) => "none".into(),
+        (Arg::Text(s), _) => s.clone(),
+        (other, _) => format!("{other:?}"),
+    }
 }
 
 /// The fields of the stock record of engine `carrier` (the game's
@@ -333,6 +385,10 @@ impl Game for FakeGame {
 
     fn act(&mut self, call: &Call) {
         self.calls.push((call.entry.name, call.args.clone()));
+        if crate::caps::is_message(call.entry.id) {
+            self.messages.extend(FakeMessage::of(call));
+            return;
+        }
         if call.entry.id == id::REGISTER_OBJECTIVE
             && let Some(Arg::Object(Some(o))) = call.args.first()
         {
@@ -400,6 +456,59 @@ mod tests {
         // An object that is no objective has no carrier.
         g.apply(&Input::Pickup(0, 77));
         assert!(!g.objectives.contains_key(&77));
+    }
+
+    #[test]
+    fn salted_datums_are_keys_like_any_other() {
+        let mut g = FakeGame::with_players(2);
+        let ball = 0xE1A3_0012u32;
+        g.objectives.insert(ball, None);
+        assert_eq!(g.objectives(), [ball]);
+        g.apply(&Input::Pickup(1, ball));
+        assert_eq!(g.objectives[&ball], Some(1));
+        let is = Call {
+            entry: crate::caps::entry_named("is_objective").unwrap(),
+            args: vec![Arg::Object(Some(ball))],
+        };
+        assert_eq!(g.read(&is), 1);
+        let carrier = Call {
+            entry: crate::caps::entry_named("carrier_of").unwrap(),
+            args: vec![Arg::Object(Some(ball))],
+        };
+        assert_eq!(g.read(&carrier), 1);
+    }
+
+    #[test]
+    fn a_message_is_logged_with_its_values() {
+        let mut g = FakeGame::with_players(2);
+        let call = Call {
+            entry: crate::caps::entry(id::MESSAGE, crate::caps::API_VERSION).unwrap(),
+            args: vec![
+                Arg::Player(Some(0)),
+                Arg::Text("{player} scored, {time} left".into()),
+                Arg::Player(Some(1)),
+                Arg::Int(95 * crate::caps::TICKS_PER_SECOND),
+            ],
+        };
+        g.act(&call);
+        assert_eq!(
+            g.messages,
+            [FakeMessage {
+                to: Some(Arg::Player(Some(0))),
+                template: "{player} scored, {time} left".into(),
+                values: vec![Arg::Player(Some(1)), Arg::Int(95 * crate::caps::TICKS_PER_SECOND)],
+                line: "player 1 scored, 1:35 left".into(),
+            }]
+        );
+        assert_eq!(g.calls_to("message").len(), 1);
+        // Everyone's form has no `to`; an enum's value is its name.
+        let all = Call {
+            entry: crate::caps::entry(id::MESSAGE_ALL, crate::caps::API_VERSION).unwrap(),
+            args: vec![Arg::Text("{{phase}} {enum}".into()), Arg::Text("attack".into())],
+        };
+        g.act(&all);
+        assert_eq!(g.messages[1].to, None);
+        assert_eq!(g.messages[1].line, "{phase} attack");
     }
 
     #[test]

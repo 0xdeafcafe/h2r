@@ -34,7 +34,7 @@ pub const VERSION: u32 = 4;
 /// generator. Every file built by another version is stale and is built
 /// again (`crate::autonav`); the `generator_output_is_pinned` test in
 /// `nav/tests.rs` fails when the output changes and this does not.
-pub const GENERATOR: u32 = 6;
+pub const GENERATOR: u32 = 7;
 
 /// The header's length: magic, format version, [`Stamp`].
 pub const HEADER_LEN: usize = 20;

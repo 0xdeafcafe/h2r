@@ -7,7 +7,9 @@
 //! within a line, so the token sequence is the same but for `;`. It
 //! checks that: a script that compiled compiles to the same blob after.
 
+use super::model::LineIndex;
 use super::scan::{self, K, Tk};
+use super::{Position, Range, TextEdit};
 use crate::lang::parse::KEYWORDS;
 use crate::lang::{CompileError, Pos, lex, parse};
 
@@ -34,6 +36,112 @@ pub fn format(src: &str) -> Result<String, CompileError> {
         }
     }
     Ok(out)
+}
+
+/// The edits that format the lines `range` touches: [`format`] over the
+/// whole script, then a line diff, keeping each changed run of lines that
+/// meets the range. A run the formatter joins or splits across the
+/// range's edge is kept whole. An error as [`format`]'s.
+pub fn format_range(src: &str, range: Range) -> Result<Vec<TextEdit>, CompileError> {
+    let out = format(src)?;
+    let first = range.start.line as usize;
+    let last = range.end.line.max(range.start.line) as usize;
+    let li = LineIndex::new(src);
+    let old: Vec<&str> = src.split_inclusive('\n').collect();
+    let new: Vec<&str> = out.split_inclusive('\n').collect();
+    let at = |line: usize| {
+        if line < old.len() {
+            Position::new(line as u32, 0)
+        } else {
+            li.position(src.len())
+        }
+    };
+    Ok(hunks(&old, &new)
+        .into_iter()
+        .filter(|h| {
+            // A replacement meets the range over the lines it replaces;
+            // an insertion at its line.
+            let end = h.old.end.max(h.old.start + 1) - 1;
+            h.old.start <= last && end >= first
+        })
+        .map(|h| TextEdit {
+            range: Range {
+                start: at(h.old.start),
+                end: at(h.old.end),
+            },
+            new_text: new[h.new.clone()].concat(),
+        })
+        .collect())
+}
+
+/// A run of lines that differs: old lines `old` become new lines `new`.
+#[derive(Debug, PartialEq, Eq)]
+struct Hunk {
+    old: std::ops::Range<usize>,
+    new: std::ops::Range<usize>,
+}
+
+/// The runs between the matches of the longest common subsequence of
+/// lines. A script is a few hundred lines; past a size where the table
+/// would be large, the whole middle (after the common prefix and suffix)
+/// is one run.
+fn hunks(old: &[&str], new: &[&str]) -> Vec<Hunk> {
+    let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    let suffix = old[prefix..]
+        .iter()
+        .rev()
+        .zip(new[prefix..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let a = &old[prefix..old.len() - suffix];
+    let b = &new[prefix..new.len() - suffix];
+    if a.is_empty() && b.is_empty() {
+        return Vec::new();
+    }
+    if a.len().saturating_mul(b.len()) > 4_000_000 {
+        return vec![Hunk {
+            old: prefix..prefix + a.len(),
+            new: prefix..prefix + b.len(),
+        }];
+    }
+    // lcs[i * w + j]: the length of the common subsequence of a[i..] and
+    // b[j..].
+    let w = b.len() + 1;
+    let mut lcs = vec![0u32; (a.len() + 1) * w];
+    for i in (0..a.len()).rev() {
+        for j in (0..b.len()).rev() {
+            lcs[i * w + j] = if a[i] == b[j] {
+                lcs[(i + 1) * w + j + 1] + 1
+            } else {
+                lcs[(i + 1) * w + j].max(lcs[i * w + j + 1])
+            };
+        }
+    }
+    let mut out = Vec::new();
+    let mut push = |si: usize, i: usize, sj: usize, j: usize| {
+        if si < i || sj < j {
+            out.push(Hunk {
+                old: prefix + si..prefix + i,
+                new: prefix + sj..prefix + j,
+            });
+        }
+    };
+    let (mut i, mut j, mut si, mut sj) = (0, 0, 0, 0);
+    while i < a.len() || j < b.len() {
+        if i < a.len() && j < b.len() && a[i] == b[j] {
+            push(si, i, sj, j);
+            i += 1;
+            j += 1;
+            si = i;
+            sj = j;
+        } else if j < b.len() && (i == a.len() || lcs[i * w + j + 1] >= lcs[(i + 1) * w + j]) {
+            j += 1;
+        } else {
+            i += 1;
+        }
+    }
+    push(si, i, sj, j);
+    out
 }
 
 fn text_of<'a>(src: &'a str, t: &Tk) -> &'a str {
@@ -199,4 +307,29 @@ fn space_between(prev: Option<(K, &str)>, after_unary: bool, k: K, tx: &str) -> 
         return !(callee || (pk == K::Punct && matches!(ptx, ")" | "]")));
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn runs(old: &[&str], new: &[&str]) -> Vec<(usize, usize, usize, usize)> {
+        hunks(old, new)
+            .into_iter()
+            .map(|h| (h.old.start, h.old.end, h.new.start, h.new.end))
+            .collect()
+    }
+
+    #[test]
+    fn hunks_are_the_runs_between_common_lines() {
+        assert!(runs(&["a", "b"], &["a", "b"]).is_empty());
+        assert_eq!(
+            runs(&["a", "x", "c", "y", "e"], &["a", "b", "c", "d", "e"]),
+            vec![(1, 2, 1, 2), (3, 4, 3, 4)]
+        );
+        // An insertion, a deletion and a split.
+        assert_eq!(runs(&["a", "c"], &["a", "b", "c"]), vec![(1, 1, 1, 2)]);
+        assert_eq!(runs(&["a", "b", "c"], &["a", "c"]), vec![(1, 2, 1, 1)]);
+        assert_eq!(runs(&["a{b}", "c"], &["a{", "b", "}", "c"]), vec![(0, 1, 0, 3)]);
+    }
 }

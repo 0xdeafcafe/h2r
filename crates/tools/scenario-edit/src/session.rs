@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 mod collision;
 mod multi;
+mod nav;
 mod volume_edit;
 pub use multi::FieldEdit;
 pub use volume_edit::NEW_VOLUME_SIZE;
@@ -46,6 +47,11 @@ struct Doc {
     /// The placed object tags' collision, read once per tag when the map
     /// opens or a placement first places it ([`crate::object_collision`]).
     objects: crate::object_collision::ObjectCollisions,
+    /// The structure BSPs' own pathfinding data ([`crate::nav_view`]).
+    pathfinding: crate::nav_view::LevelPathfinding,
+    /// The bots' nav mesh and spots, when the editor has given them
+    /// ([`Session::set_bot_nav`]); they go with the map.
+    bot_nav: Option<Arc<crate::nav_view::BotNav>>,
     /// The textured BSP and the placed objects' models, when the map's art
     /// could be read.
     scene: Option<Arc<Scene>>,
@@ -127,6 +133,9 @@ pub struct Session {
     /// [`crate::collision_view::LevelCollision::surfaces`]. Cleared as the
     /// volume is.
     surface: Option<usize>,
+    /// The selected pathfinding sector, bot polygon, bot link or spot.
+    /// Cleared as the surface is.
+    nav: Option<crate::nav_view::NavPick>,
     camera: Camera,
     markers: Vec<Marker>,
     /// Bumped whenever the markers or the selection change, so a viewport
@@ -169,6 +178,7 @@ impl Session {
             extra: Vec::new(),
             volume: None,
             surface: None,
+            nav: None,
             camera: Camera::default(),
             markers: Vec::new(),
             markers_rev: 0,
@@ -405,6 +415,7 @@ impl Session {
         self.selected = None;
         self.volume = None;
         self.surface = None;
+        self.nav = None;
         self.drag = None;
         self.gesture = None;
         self.camera = Camera::frame(&frame_bounds(&reference.world, &reference.markers));
@@ -442,6 +453,7 @@ impl Session {
             &crate::collision_view::render_triangles(&lit.parts),
         )
         .unwrap_or_default();
+        let pathfinding = crate::nav_view::LevelPathfinding::read(&mut map).unwrap_or_default();
         let markers = geometry::markers(&scenario);
         let objects = crate::object_collision::ObjectCollisions::read(
             &mut map,
@@ -502,6 +514,8 @@ impl Session {
             world_failed,
             collision,
             objects,
+            pathfinding,
+            bot_nav: None,
             scene,
             native: Arc::new(native),
             native_errors,
@@ -512,6 +526,7 @@ impl Session {
         self.selected = None;
         self.volume = None;
         self.surface = None;
+        self.nav = None;
         self.drag = None;
         self.gesture = None;
         self.world_rev += 1;
@@ -526,6 +541,7 @@ impl Session {
         self.selected = None;
         self.volume = None;
         self.surface = None;
+        self.nav = None;
         self.drag = None;
         self.gesture = None;
         self.world_rev += 1;
@@ -734,6 +750,7 @@ impl Session {
         self.extra.clear();
         self.volume = None;
         self.surface = None;
+        self.nav = None;
         if selection != self.selected
             && let Some(doc) = self.doc.as_mut()
         {
@@ -902,6 +919,14 @@ impl Session {
     pub fn set_geometry_changes(&mut self, changes: crate::GeometryChanges) -> Result<()> {
         let doc = self.doc.as_mut().ok_or(Error::Save("no map is open"))?;
         doc.scenario.set_geometry_changes(changes)
+    }
+
+    /// Replace the Textures tool's writes (see
+    /// [`Scenario::set_bitmap_changes`]), which save with the map and
+    /// count toward [`Self::is_dirty`].
+    pub fn set_bitmap_changes(&mut self, changes: crate::GeometryChanges) -> Result<()> {
+        let doc = self.doc.as_mut().ok_or(Error::Save("no map is open"))?;
+        doc.scenario.set_bitmap_changes(changes)
     }
 
     /// Replace the string IDs the tag editor adds (see

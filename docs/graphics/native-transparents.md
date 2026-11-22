@@ -42,7 +42,7 @@ Other handlers in the list (effects, particles, contrails, decals) keep their D3
 
 Observers identify the sorted entry from the live guest stack and clear
 the scope at the end of the sorted loop (`0x0001e406`). The dispatcher and
-its cleanup can run on the pipelined render thread. The standard handler
+its cleanup run on whichever context calls them. The standard handler
 runs its material builds, state writes, bindings and restores. The D3D indexed draw drains pending push-buffer work, then
 resolves its own state and bindings. Stage 3 may substitute one immutable
 GPU vertex binding at that draw. It uses the original indices, shader

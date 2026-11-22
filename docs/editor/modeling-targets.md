@@ -1,8 +1,13 @@
 # Modeling targets: the Halo 2 round trip
 
-Status: Design. The geometry targets and map write path are planned.
-Code: `crates/tools/mesh-edit` provides the mesh kernel. The target
-readers and encoders below describe the proposed interfaces.
+Status: Partly built. Structure render geometry and render models are
+read and written in place and grown (`crates/tools/geometry-edit`,
+`crates/formats/tags/src/geometry_write.rs`, `MapEditor::patch_raw` and
+`append_raw`); collision, portals, lightmap rebakes and physics models
+are designs.
+Code: `crates/tools/mesh-edit`, `crates/tools/geometry-edit`,
+`crates/formats/tags/src/geometry_write.rs`,
+`crates/formats/map/src/writer.rs`.
 Switch: none in the environment. The session switches **Allow growing full blocks** and **Allow unverified geometry writes** (both off by default) gate the write classes below.
 
 How each thing the Modeling tool of [modeling.md](modeling.md) edits is
@@ -29,8 +34,8 @@ as...** and packages count them as they count tag patches.
 | List | Written by | Rule |
 |---|---|---|
 | `tag_patches`: `(TagId, offset, bytes)` | `MapEditor::patch_tag` | fixed length, in the tag's own space, so it reaches `sbsp` and `ltmp` in a BSP region |
-| `raw_patches`: `(file offset, bytes)` | `MapEditor::patch_raw` (new) | fixed length, inside one local raw block, never the header, index or tables |
-| `raw_new`: bytes, alignment, and the `(TagId, offset)` words that take its file offset | `MapEditor::append_raw` (new) | placed where the tag index starts, as `map::build` places raw data; the index and metadata follow it, header `+0x10` and `+8` grow; the metadata still ends the file, so `append_metadata` still works |
+| `raw_patches`: `(file offset, bytes)` | `MapEditor::patch_raw` | fixed length, inside one local raw block, never the header, index or tables |
+| `raw_appends`: bytes, alignment, and the tag word that takes its raw pointer | `MapEditor::append_raw` | placed where the tag index starts, as `map::build` places raw data; the index and metadata follow it, header `+0x10` and `+8` grow by the bytes padded to a page; the metadata still ends the file, so `append_metadata` still works. Refused on a map whose metadata does not end the file, or with a BSP region or string table past the index (`Map::raw_append_refusal`) |
 
 Three write classes follow from them. A target's edit is in the lowest
 class that holds it, and the status bar and `geometry.check` name it.
@@ -39,13 +44,13 @@ class that holds it, and the status bar and `geometry.check` name it.
 |---|---|---|---|
 | **In place** | no element count changes: verts moved, coordinates or normals changed | `raw_patches` over the old block, `tag_patches` for bounds | Allow unverified geometry writes, until a game run has loaded one |
 | **Grown raw** | vertex, index or part counts change | a new raw block in `raw_new`; `tag_patches` for the block info, resource entries and counts | Allow unverified geometry writes, until a game run has loaded one |
-| **Grown blocks** | a tag block gets more elements (collision, a new material) | `raw_new` as needed, and the block appended to the ordinary metadata with its `(count, address)` pointed there (`Changes::tag_grown`) | Allow growing full blocks, and for a block of an `sbsp` also Allow unverified geometry writes |
+| **Grown blocks** | a tag block gets more elements (collision, a new material) | `raw_new` as needed, and the block appended to the ordinary metadata with its `(count, address)` pointed there (`Changes::tag_grown`; a structure's level collision through `Changes::geometry_grown`, whose pair may lie in a BSP region) | Allow growing full blocks, and for a block of an `sbsp` also Allow unverified geometry writes |
 
 A package of such a map is a BPS patch when the length changed, as for
 grown scenario blocks, and its `[result] geometry` hash
 (`scenario_edit::package::geometry_hash`) differs from its base's.
 
-The proposed section encoder in `tags` is the one section
+The section encoder in `tags` is the one section
 encoder: `encode_section(layout: &SectionLayout, data: &SectionData)`
 returns the framed raw block (`blkh`, struct, `rsrc` resources, `blkf`)
 and its resource entries, for `STRUCTURE_SECTION` and `MODEL_SECTION`. It
@@ -77,6 +82,14 @@ source block `encode(decode(block))` is the block.
   and its `2n` table (`h1convert::structure::visibility_mopp`, checked by
   `check_visibility`), part spheres and boxes, cluster bounds. The
   cluster's predicted resources stay, since no material is added.
+  Built in `geometry_edit::grow`: a part left with no face is dropped,
+  a new vertex starts from the bytes of a source vertex at the same mesh
+  vertex (so the incident light stream carries over), the code and table
+  are rebuilt only when the source section has them, and an encoding
+  that still fits the old block is written over it in place. The
+  cluster's bounds grow to hold the new vertices; the block info word
+  takes the appended block's pointer, and the old block stays,
+  unreferenced.
 - **Limits.** 65,535 vertices and 65,535 indices a section (`u16`
   counts; `h1convert::structure::SECTION_MAX`); a raw block under 16 MiB
   (`geometry::MAX_BLOCK_SIZE`); a material index below the count at
@@ -88,7 +101,11 @@ source block `encode(decode(block))` is the block.
   BSP"). `unknown_0c`, the opaque vertex count, sizes lightmap bucket
   ranges ([structure-bsp.md](../formats/structure-bsp.md)): a section
   that a lightmap bucket reference reaches keeps its vertex count and
-  order, so it is refused for the grown class.
+  order, so it is refused for the grown class. A definition is reached
+  through its placements' instance references; a cluster's reference is
+  chosen by a render-key field that is not mapped to clusters, so any
+  cluster reference with an offset in a flagged bucket refuses every
+  cluster of the BSP (**Design**).
 - **Deferred.** New materials (the block at `sbsp+0xa4` grows and the
   cluster's predicted resources change), new clusters, new instanced
   definitions, the second visibility code (`0x1000` entries), in-tag
@@ -104,9 +121,10 @@ and the session marks the target collision-stale; the viewport's
 collision overlay shows the difference. Changing the collision is three
 steps of rising risk.
 
-1. **The compiler** (the proposed `collision-build` crate, beside `mopp` and
-   `pathfind`). `build(polygons: &[Polygon]) -> Result<Bsp>` from convex,
-   planar polygons with a material and flags each:
+1. **The compiler** (`crates/tools/collision-build`, built; modeling.md,
+   "The collision compiler"). `build(polygons: &[Polygon]) ->
+   Result<Compiled>` (the `Bsp` and each surface's source polygon) from
+   convex, planar polygons with a material and flags each:
    - weld vertices; build the winged-edge table (each edge names its two
      surfaces, forward and reverse edges, so `Bsp::surface_ring` closes);
      split polygons over eight vertices (**V**: retail rings have at most
@@ -115,35 +133,41 @@ steps of rising risk.
      plane with bit 15 for the flipped side;
    - build the 3D tree by recursive partition on a surface's plane
      (fewest splits, then best balance, ties by lowest plane index),
-     splitting straddling polygons; a cell with no polygon left is a
-     leaf, solid on the back of its last plane;
+     splitting straddling polygons; a side with no polygon left is
+     solid when a one-sided polygon on the node's plane faces away from
+     it and none faces it, else an open leaf;
    - give each open leaf one 2D reference per plane it borders that has
      surfaces, its flip bit saying the leaf is on the plane's back, and
      a 2D tree over those surfaces in the plane's projection
-     (`surface_query::PROJECTION`, `dominant_axis`);
+     (`collision_build::query::PROJECTION`, `dominant_axis`);
    - set leaf flag bit 0 where a reference reaches a two-sided surface.
 
-   It refuses what the packed fields cannot hold (32,767 surfaces behind
-   a 2D child, 65,534 edges or vertices, 2^23 nodes or leaves, as
-   `h1convert::scenery_collision`'s limits). Acceptance is the engine's
-   own walks as `h1convert::surface_query` models them, which move to
-   this crate: `Bsp::validate` passes; every surface's centroid walks
+   It refuses what the packed fields cannot hold
+   (`collision_build::Limits::HALO2`: 32,767 surfaces behind a 2D child,
+   65,535 edges or vertices, 2^23 nodes, 2^23 - 1 leaves, 255 references
+   a leaf). Acceptance is the engine's
+   own walks as `collision_build::query` models them (the same model as
+   `h1convert::surface_query`), in `collision_build::verify::check` and
+   the crate's tests: `Bsp::validate` passes; every surface's centroid walks
    its reference's 2D tree back to it; every reference is on its leaf's
    path on the side its flip bit says; and for a set of random segments
    the first hit of `vector` equals a brute-force ray against the
    polygons.
-2. **Adding solids** to a level. A closed mesh compiles to its own small
-   `Bsp` and unites with the level's through
-   `scenery_collision::merge`, which appends and so keeps every existing
-   plane, surface and leaf index. Each added leaf takes the cluster of
-   the leaf it stands in (`Merged::stand_ins`), in the per-leaf block at
-   `sbsp+0x2c`. Then the structure's MOPP is rebuilt
-   (`mopp::build_structure` plus retail's other keys, as the test
-   `replaced_retail_levels` does) and written over the old program when
-   it fits, else as a grown block. A level with pathfinding (`sbsp+0xc4`)
-   keeps its sectors; the new solid has none. This is the grown-blocks
-   class: all eight collision blocks and the leaf block move to the
-   ordinary metadata.
+2. **Adding solids** to a level (`collision_build::{merge, level}` and
+   `geometry_edit::level_collision`, built; modeling.md, "The collision
+   compiler"). A closed mesh compiles to its own small `Bsp` and unites
+   with the level's through `collision_build::merge::merge` (the method of
+   `h1convert::scenery_collision::merge`), which appends and so keeps
+   every existing plane, surface and leaf index. Each added leaf takes the
+   cluster of the leaf it stands in (`Merged::stand_ins`): its element of
+   the per-leaf block at `sbsp+0x2c` is a copy of the stand-in's. Then
+   the structure's MOPP is rebuilt (`mopp::build` over every structure
+   surface plus retail's other keys, as the test `replaced_retail_levels`
+   does) and written over the old program when it fits, else as a grown
+   block. A level with pathfinding (`sbsp+0xc4`) keeps its sectors; the
+   new solid has none. This is the grown-blocks class: every collision
+   block that gains elements and the per-leaf block move to the ordinary
+   metadata.
 3. **Rebuilding** a level's collision from its edited surfaces (moving or
    deleting a wall). Every table that indexes the collision must follow:
    the per-leaf block (cluster per leaf, by locating each new leaf's
@@ -246,8 +270,11 @@ only (above). Rewriting bucket streams is deferred.
   a list, except in a sky's model, which is refused (the sky draw draws
   every part as a strip, [sky.md](../halo1/sky.md)).
 - **LODs.** An edit changes one section. The others are stale, and the
-  tool offers **Use for lower LODs**: a fixed patch pointing the
-  permutation's lower LOD indices at the edited section.
+  session offers **Use for lower LODs**
+  (`GeometrySession::set_use_for_lower_lods`, one undo step): in each
+  permutation whose highest level naming the section is `k`, every
+  present level below `k` is pointed at it, as fixed patches of the
+  permutation's LOD indices (`+4`); a level that is -1 stays -1.
 - **Limits.** 65,535 vertices a section; node indices are bytes into the
   section's node map; the raw pointer's file. A section whose block is
   in `shared.map` or another cache is copied into the open map on the
@@ -266,7 +293,8 @@ only (above). Rewriting bucket streams is deferred.
   writes the blocks as grown blocks (a `coll` is one contiguous payload,
   so a block that still fits is patched where it is). A permutation with
   BSP physics slots gets each slot's box and MOPP code again
-  (`h1objects::coll::bsp_box`, `bsp_mopp`). The object's small trees
+  (`collision_build::coll::rebuild`, as `h1objects::coll::bsp_box` and
+  `bsp_mopp` write them for converted objects). The object's small trees
   make this the compiler's first user. **From render** makes a
   collision mesh from a render section's faces, welded and joined into
   convex polygons.

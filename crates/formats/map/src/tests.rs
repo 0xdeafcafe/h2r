@@ -235,13 +235,12 @@ fn raw_selectors_fourcc_and_nulls() {
     .into_iter()
     .enumerate()
     {
-        assert_eq!(
-            RawPointer::decode((i as u32) << 30 | 0x1234),
-            Some(RawPointer {
-                file,
-                offset: 0x1234
-            })
-        );
+        let p = RawPointer {
+            file,
+            offset: 0x1234,
+        };
+        assert_eq!(RawPointer::decode((i as u32) << 30 | 0x1234), Some(p));
+        assert_eq!(p.encode(), (i as u32) << 30 | 0x1234);
     }
     assert_eq!(RawPointer::decode(u32::MAX), None);
     assert_eq!(
@@ -797,4 +796,97 @@ fn raw_patches_stay_inside_a_local_block_outside_every_table() {
         "{changed:x?}"
     );
     assert_eq!(&saved[0xc10..0xc13], &[1, 2, 3]);
+}
+
+#[test]
+fn appended_raw_goes_before_the_index_and_moves_only_the_index_and_metadata() {
+    let source = fixture_at_end();
+    let mut map = parse(source.clone()).unwrap();
+    let local = |offset| RawPointer {
+        file: ResourceFile::Local,
+        offset,
+    };
+    let mut edit = map.edit();
+    assert_eq!(edit.append_raw(&[7; 5], 0x10).unwrap(), local(0x1000));
+    assert_eq!(edit.append_raw(&[8; 3], 0x200).unwrap(), local(0x1200));
+    assert_eq!(edit.appended_raw_len(), 0x203);
+    // A patch past the index moves with it; one before it does not.
+    edit.patch_metadata(META + 0x20, &[9]).unwrap();
+    edit.patch_raw(local(0xc00), 0x100, 0, &[4]).unwrap();
+    // The metadata still ends the file, so it can grow in the same edit.
+    assert_eq!(edit.append_metadata(&[1; 5], 4).unwrap(), META + 0x600);
+    let mut out = Cursor::new(Vec::new());
+    let n = edit.write_to(&mut out).unwrap();
+    let result = out.into_inner();
+    assert_eq!(n as usize, result.len());
+    let word = |b: &[u8], o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+    assert_eq!(word(&result, 0x10), 0x2000);
+    assert_eq!(word(&result, 8) as usize, result.len());
+    assert_eq!(result.len(), 0x3800);
+    assert_eq!((word(&result, 0x18), word(&result, 0x1c)), (0x1600, 0x1800));
+    // Before the index: the source, but for the header sizes, the raw
+    // patch and the checksum.
+    let header = [8..12, 0x10..0x14, 0x18..0x20, 0x2d0..0x2d4, 0xc00..0xc01];
+    for i in 0..0x1000 {
+        if !header.iter().any(|r| r.contains(&i)) {
+            assert_eq!(result[i], source[i], "offset {i:#x}");
+        }
+    }
+    assert_eq!(result[0xc00], 4);
+    // The new raw data, zero padded to a page.
+    assert_eq!(&result[0x1000..0x1005], &[7; 5]);
+    assert_eq!(&result[0x1200..0x1203], &[8; 3]);
+    let zero = |r: std::ops::Range<usize>| result[r].iter().all(|&b| b == 0);
+    assert!(zero(0x1005..0x1200) && zero(0x1203..0x2000));
+    // The index and metadata, moved down by that page.
+    for i in 0x1000..0x1800 {
+        let want = if i == 0x1220 { 9 } else { source[i] };
+        assert_eq!(result[i + 0x1000], want, "offset {i:#x}");
+    }
+    assert_eq!(&result[0x2800..0x2805], &[1; 5]);
+    let mut reread = parse(result.clone()).unwrap();
+    reread.validate_checksum().unwrap();
+    let space = reread.metadata_space().unwrap();
+    assert_eq!((space.virtual_base, space.size), (META, 0x1600));
+    assert_eq!(reread.read_tag_bytes(id(1)).unwrap()[0], 9);
+    // BSP regions sit before the index and keep their file offsets.
+    assert_eq!(
+        reread.read_tag_bytes(id(2)).unwrap(),
+        map.read_tag_bytes(id(2)).unwrap()
+    );
+    for (a, b) in reread.tags().iter().zip(map.tags()) {
+        assert_eq!(a.index_address, b.index_address);
+    }
+    // The result takes both kinds of growth again.
+    let mut edit = reread.edit();
+    assert_eq!(edit.append_metadata(&[2; 3], 4).unwrap(), META + 0x1600);
+    assert_eq!(edit.append_raw(&[3; 2], 4).unwrap(), local(0x2000));
+    let mut out = Cursor::new(Vec::new());
+    edit.write_to(&mut out).unwrap();
+    parse(out.into_inner()).unwrap().validate_checksum().unwrap();
+}
+
+#[test]
+fn appending_raw_is_refused_where_something_would_move() {
+    // The metadata does not end the file.
+    let mut map = parse(fixture()).unwrap();
+    assert!(map.raw_append_refusal().is_some());
+    assert!(map.edit().append_raw(&[1], 4).is_err());
+    let mut map = parse(fixture_at_end()).unwrap();
+    assert_eq!(map.raw_append_refusal(), None);
+    let mut edit = map.edit();
+    assert!(edit.append_raw(&[1], 3).is_err());
+    assert!(edit.append_raw(&[1], 0x2000).is_err());
+    assert!(edit.append_raw(&[], 4).is_err());
+    assert_eq!(edit.appended_raw_len(), 0);
+    // A string table past the index would have to move.
+    let mut b = fixture_at_end();
+    put(&mut b, 0x170, 0x1700);
+    let mut map = parse(b).unwrap();
+    assert!(map.edit().append_raw(&[1], 4).is_err());
+    // Physical bytes past the declared length.
+    let mut b = fixture_at_end();
+    b.extend([0; 512]);
+    let mut map = parse(b).unwrap();
+    assert!(map.edit().append_raw(&[1], 4).is_err());
 }

@@ -14,7 +14,9 @@
 //! **Where each tab runs** ([`available`]): by the lobby's [`Place`] and a
 //! few [`Facts`], a tab is on or off with a [`Reason`]. A tab whose
 //! feature is switched off is absent ([`Present`]); nothing else removes
-//! one.
+//! one. What a tab's game lacks (FIREFIGHT with no map that carries the
+//! kit) does not turn the tab off: the tab opens, and Start Game says what
+//! is missing (`crate::lobby_mode::start_refusal`).
 //!
 //! **Moving** ([`step`]): White to the previous tab that is on, Black to
 //! the next; the ends do not wrap, and the first tab skipped (or the one
@@ -190,13 +192,14 @@ pub fn seen_mode(leader: bool, own: Mode, kit_map: bool) -> Mode {
 
 // ---- which tabs there are ----
 
-/// The tabs whose feature is on. MULTIPLAYER and CUSTOM GAMES are retail's
-/// and always present.
+/// The tabs whose feature is on. MULTIPLAYER, CUSTOM GAMES and CO-OP are
+/// retail's lobby modes and always present: the co-op lobby is retail's
+/// own (Switch To: Co-Op Game), whether or not co-op over Xbox Live
+/// (`crate::coop_live`) is installed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Present {
     pub forge: bool,
     pub firefight: bool,
-    pub co_op: bool,
 }
 
 impl Present {
@@ -204,15 +207,13 @@ impl Present {
     pub const ALL: Present = Present {
         forge: true,
         firefight: true,
-        co_op: true,
     };
 
     pub const fn has(self, tab: Tab) -> bool {
         match tab {
-            Tab::Multiplayer | Tab::CustomGames => true,
+            Tab::Multiplayer | Tab::CustomGames | Tab::CoOp => true,
             Tab::Forge => self.forge,
             Tab::Firefight => self.firefight,
-            Tab::CoOp => self.co_op,
         }
     }
 
@@ -225,7 +226,6 @@ impl Present {
 static PRESENT: Mutex<Present> = Mutex::new(Present {
     forge: false,
     firefight: false,
-    co_op: false,
 });
 
 /// The tabs present in this run: set once at boot, as each feature is
@@ -257,8 +257,9 @@ pub struct Facts {
     /// The server lists a matchmaking playlist of either kind: not known
     /// to be empty ([`switch::no_playlists_seen`]).
     pub playlists: bool,
-    /// An installed map carries the Firefight kit (`lobby_start::kit_maps`).
-    pub kit_maps: bool,
+    /// Co-op over Xbox Live is installed (`coop_live::lobby`): the Xbox
+    /// Live co-op lobby needs it; Split Screen's is retail's alone.
+    pub live_co_op: bool,
     /// A member is on another console (`lobby_mode::remote_members`).
     pub remote_members: bool,
 }
@@ -279,6 +280,8 @@ pub enum Reason {
     NoForgeMap,
     MapRefused,
     NoSettings,
+    NotKitMap,
+    CoOpLiveOff,
 }
 
 /// The first reason's string id.
@@ -289,7 +292,7 @@ pub const NEXT_GLYPH_ID: u32 = IDS.id(7);
 
 impl Reason {
     /// Every reason, for the string table.
-    pub const ALL: [Reason; 12] = [
+    pub const ALL: [Reason; 14] = [
         Reason::MatchmakingNeedsLive,
         Reason::NoPlaylists,
         Reason::CoOpNotOnSystemLink,
@@ -302,6 +305,8 @@ impl Reason {
         Reason::NoForgeMap,
         Reason::MapRefused,
         Reason::NoSettings,
+        Reason::NotKitMap,
+        Reason::CoOpLiveOff,
     ];
 
     /// The status line's sentence.
@@ -311,7 +316,7 @@ impl Reason {
             Reason::NoPlaylists => "No playlists are available.",
             Reason::CoOpNotOnSystemLink => "Co-op campaign is not available on System Link.",
             Reason::CoOpRefused => "Co-op campaign is not available in this lobby.",
-            Reason::NoKitMap => "No Firefight map is installed. Make one with h2 firefight kit.",
+            Reason::NoKitMap => "No installed map supports Firefight yet.",
             Reason::ForgeRemote => crate::lobby_mode::REMOTE_REFUSAL,
             Reason::Starting => "The game is starting.",
             Reason::Searching => "Cancel the search to change mode.",
@@ -319,6 +324,8 @@ impl Reason {
             Reason::NoForgeMap => "No original map is installed for Forge.",
             Reason::MapRefused => "The game did not take the map for this mode.",
             Reason::NoSettings => "No settings store holds Firefight's options.",
+            Reason::NotKitMap => "This map does not support Firefight.",
+            Reason::CoOpLiveOff => "Co-op over Xbox Live is turned off.",
         }
     }
 
@@ -359,10 +366,14 @@ pub fn available(tab: Tab, place: Place, facts: Facts) -> Avail {
         Tab::CustomGames => On,
         Tab::Forge if facts.remote_members => Off(Reason::ForgeRemote),
         Tab::Forge => On,
-        Tab::Firefight if !facts.kit_maps => Off(Reason::NoKitMap),
+        // With no map that carries the kit, the tab still opens: Start
+        // Game is what says so (`lobby_mode::start_refusal`).
         Tab::Firefight => On,
-        Tab::CoOp if place == Place::SystemLink => Off(Reason::CoOpNotOnSystemLink),
-        Tab::CoOp => On,
+        Tab::CoOp => match place {
+            Place::SystemLink => Off(Reason::CoOpNotOnSystemLink),
+            Place::XboxLive if !facts.live_co_op => Off(Reason::CoOpLiveOff),
+            Place::SplitScreen | Place::XboxLive => On,
+        },
     }
 }
 

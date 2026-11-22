@@ -1,0 +1,18 @@
+[package]
+name = "zed-h2-rules"
+version = "0.1.0"
+edition = "2021"
+license = "WTFPL"
+publish = false
+description = "Zed extension for h2recomp's rules language"
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+zed_extension_api = "0.6.0"
+
+# Standalone: not a member of the repository's root workspace. Zed builds
+# this crate itself for WebAssembly.
+[workspace]

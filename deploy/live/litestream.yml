@@ -1,8 +1,7 @@
 # Litestream (https://litestream.io): ships live.db's WAL to R2 as it is
-# written, under litestream/ in the private bucket. Used by compose.yaml's
-# `litestream` service (COMPOSE_PROFILES=backup), and by a bare-metal or
+# written, under litestream/ in the private bucket. Used by a bare-metal or
 # launchd `litestream replicate -config deploy/live/litestream.yml`
-# (docs/live/live-hosting.md, "Free hosting"). Every ${VAR} comes from the
+# (docs/live/live-hosting.md, "Backups to R2 (Litestream)"). Every ${VAR} comes from the
 # environment (Litestream expands $VAR and ${VAR}, without defaults):
 # LITESTREAM_DB (the database file), LITESTREAM_BUCKET and the
 # H2_LIVE_S3_* settings the server uses.

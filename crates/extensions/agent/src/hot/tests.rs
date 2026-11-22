@@ -427,6 +427,9 @@ fn every_edit_write_checks_the_current_session() {
         for (m, params) in [
             (method::EDIT_SET, p.clone()),
             (method::EDIT_BATCH, json!({"writes":[p]})),
+            (method::EDIT_BATCH, json!({"raw":[{"owner":{"section":
+                {"tag":"0xe1110001","kind":"cluster","index":0}},"offset":0,"bytes":"AA=="}]})),
+            (method::EDIT_RAW_APPEND, json!({"bytes":"AA=="})),
             (method::EDIT_REVERT, Value::Null),
         ] {
             assert_eq!(
@@ -437,6 +440,125 @@ fn every_edit_write_checks_the_current_session() {
         }
         assert_eq!(guest.lock().unwrap().u32(COLORS_AT + 4).unwrap(), 7);
     }
+}
+
+/// Staged bytes belong to the connection that staged them and are named
+/// by `{stage, at, len}`; a game without raw files refuses raw writes as
+/// unavailable, and `edit.overlay` reports an empty overlay.
+#[test]
+fn stages_belong_to_their_connection_and_raw_needs_the_glue() {
+    let guest = Arc::new(Mutex::new(level()));
+    let g = guest.clone();
+    let agent = Agent::new();
+    add_edit_methods(
+        &agent,
+        Editor::new(),
+        Arc::new(move |f| f(&mut g.lock().unwrap())),
+        |_| SessionView {
+            kind: agent_proto::sim::SessionKind::Local,
+            ..Default::default()
+        },
+        |_| None,
+        false,
+    );
+    let (a, b) = (Client::new(&agent), Client::new(&agent));
+    let s = a.ok(method::EDIT_STAGE_PUT, json!({"bytes": "AQID"}));
+    assert_eq!(s["len"], 3, "{s}");
+    let s = a.ok(method::EDIT_STAGE_PUT, json!({"stage": s["stage"], "bytes": "BA=="}));
+    assert_eq!(s["len"], 4, "{s}");
+    let staged = json!({"stage": s["stage"], "at": 1, "len": 2});
+    let raw = |bytes: Value| json!({"raw": [{"owner": {"section":
+        {"tag": "0xe1110001", "kind": "cluster", "index": 0}}, "offset": 0, "bytes": bytes}]});
+    assert_eq!(
+        b.call(method::EDIT_BATCH, raw(staged.clone()))["error"]["code"],
+        code::INVALID_PARAMS,
+        "another connection's stage"
+    );
+    let past = json!({"stage": s["stage"], "at": 3, "len": 2});
+    assert_eq!(a.call(method::EDIT_BATCH, raw(past))["error"]["code"], code::INVALID_PARAMS);
+    assert_eq!(a.call(method::EDIT_BATCH, raw(staged))["error"]["code"], code::UNAVAILABLE);
+    assert_eq!(a.call(method::EDIT_BATCH, raw(json!("not base64!")))["error"]["code"], code::INVALID_PARAMS);
+    let o = a.ok(method::EDIT_OVERLAY, Value::Null);
+    assert_eq!(o["entries"], 0, "{o}");
+    assert_eq!(o["owners"], json!([]));
+}
+
+/// `moves` in `edit.batch` grows the shader's colours block into the edit
+/// arena; `edit.arena` lists it, a path read follows it, `edit.revert`
+/// moves it back. A game without the arena answers `UNAVAILABLE`.
+#[test]
+fn a_block_move_goes_through_edit_batch_and_shows_in_edit_arena() {
+    let guest = Arc::new(Mutex::new(level()));
+    let g = guest.clone();
+    let agent = Agent::new();
+    add_edit_methods(
+        &agent,
+        Editor::new().with_arena(hot_tags::arena::shared()),
+        Arc::new(move |f| f(&mut g.lock().unwrap())),
+        |_| SessionView {
+            kind: agent_proto::sim::SessionKind::Local,
+            ..Default::default()
+        },
+        |_| None,
+        false,
+    );
+    let c = Client::new(&agent);
+    let post = tags::defs::Defs::builtin()
+        .group(map::FourCC(*b"shad"))
+        .unwrap()
+        .child("postprocess")
+        .unwrap();
+    let stride = post.child("colors").unwrap().size;
+    let root = POST_AT + post.field("colors").unwrap().offset;
+    let mut block = vec![0u8; 3 * stride as usize];
+    guest
+        .lock()
+        .unwrap()
+        .read_bytes(COLORS_AT, &mut block[..2 * stride as usize], 1)
+        .unwrap();
+    let mv = |was_address: u32| {
+        json!({"moves": [{"root": {"tag": "0xe1110001", "path": "postprocess[0].colors"},
+            "stride": stride, "count": 3, "capacity": 4,
+            "bytes": agent_proto::hot::encode_base64(&block),
+            "was": {"count": 2, "address": format!("{was_address:#x}")}}]})
+    };
+    // A stale `was` is a mismatch naming the root's pair.
+    let r = c.call(method::EDIT_BATCH, mv(COLORS_AT + 0x10));
+    assert_eq!(r["error"]["code"], code::MISMATCH, "{r}");
+    assert_eq!(r["error"]["data"]["moves"][0]["holds"]["address"], COLORS_AT);
+
+    let r = c.ok(method::EDIT_BATCH, mv(COLORS_AT));
+    let base = hot_tags::arena::WINDOW.start;
+    assert_eq!(r["moves"][0]["address"], base, "{r}");
+    assert_eq!(guest.lock().unwrap().u32(root + 4).unwrap(), base);
+    let a = c.ok(method::EDIT_ARENA, Value::Null);
+    assert_eq!(a["moves"][0]["address"], base, "{a}");
+    assert_eq!(a["moves"][0]["capacity"], 4);
+    assert_eq!(a["moves"][0]["tag"], "0xe1110001");
+    let v = c.ok(method::EDIT_GET, json!({"tag": "0xe1110001", "path": "postprocess[0].colors[2]"}));
+    assert_eq!(v["addr"], json!(format!("{:#010x}", base + 2 * stride)), "{v}");
+    let r = c.ok(method::EDIT_REVERT, Value::Null);
+    assert_eq!(r["reverted"][0]["move"]["address"], base, "{r}");
+    assert_eq!(guest.lock().unwrap().u32(root + 4).unwrap(), COLORS_AT);
+    assert_eq!(c.ok(method::EDIT_ARENA, Value::Null)["used"], 0);
+
+    // Without the arena.
+    let bare = Agent::new();
+    let g = guest.clone();
+    add_edit_methods(
+        &bare,
+        Editor::new(),
+        Arc::new(move |f| f(&mut g.lock().unwrap())),
+        |_| SessionView {
+            kind: agent_proto::sim::SessionKind::Local,
+            ..Default::default()
+        },
+        |_| None,
+        false,
+    );
+    let b = Client::new(&bare);
+    assert_eq!(b.call(method::EDIT_ARENA, Value::Null)["error"]["code"], code::UNAVAILABLE);
+    assert_eq!(b.call(method::EDIT_BATCH, mv(COLORS_AT))["error"]["code"], code::UNAVAILABLE);
 }
 
 #[cfg(feature = "render-overrides")]

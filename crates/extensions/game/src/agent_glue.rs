@@ -455,9 +455,29 @@ impl AgentGlue {
         matchmaking::install(registry, &self.agent)
     }
 
-    /// The installed plan, for `features.list`.
+    /// The installed plan, for `features.list`. The feature lines are
+    /// written from the plan's features in `agent_proto::FeatureState`'s
+    /// own form, so the answer's `features` array reads them back exactly
+    /// (no client parses the text); the chains and notes follow.
     pub fn set_plan(&self, plan: &hooks::Plan, installed: &hooks::Installed) {
-        let mut lines: Vec<String> = plan.text().lines().map(str::to_owned).collect();
+        let mut lines: Vec<String> = plan
+            .features
+            .iter()
+            .map(|f| {
+                agent_proto::FeatureState {
+                    id: f.id.to_owned(),
+                    on: f.off.is_none(),
+                    reason: f.off.clone(),
+                }
+                .plan_line()
+            })
+            .collect();
+        lines.extend(
+            plan.text()
+                .lines()
+                .filter(|l| !l.starts_with("feature "))
+                .map(str::to_owned),
+        );
         lines.extend(installed.notes.iter().cloned());
         self.agent.set_plan(lines);
     }
@@ -865,6 +885,37 @@ pub fn remote_live_game(m: &dyn engine::GuestMemory) -> bool {
     local() != Some(true)
 }
 
+/// Whether edits are refused on an external Live game ([`remote_live_game`]
+/// refuses the live stream on every one). A Live custom game this console
+/// hosts takes edits as a System Link host does: other machines behind
+/// `confirm_peers`, a placement count change only with no other people.
+/// Matchmaking (life-cycle types 6 to 9, whoever hosts), a client and a
+/// session that cannot be read refuse.
+pub fn live_edit_refusal(m: &dyn engine::GuestMemory) -> Option<&'static str> {
+    use bots::lobby;
+
+    if !remote_live_game(m) {
+        return None;
+    }
+    let Ok(ty) = m.u32(lobby::SESSION_TYPE) else {
+        return Some("the Live session cannot be read");
+    };
+    if (6..=9).contains(&ty) {
+        return Some("a matchmaking game");
+    }
+    if !(1..=4).contains(&ty) {
+        return Some("the Live session cannot be identified as a custom game");
+    }
+    let host = m.u32(lobby::SESSION).ok().filter(|&s| s != 0).and_then(|s| {
+        Some(m.u32(s.checked_add(lobby::HOST_PEER)?).ok()? == m.u32(s.checked_add(lobby::PEER)?).ok()?)
+    });
+    match host {
+        Some(true) => None,
+        Some(false) => Some("a Live game another console hosts"),
+        None => Some("the Live session cannot be read"),
+    }
+}
+
 /// The session kind from the simulation mode, and the squad session
 /// (`coop_probe::read_sim`, `read_session`).
 pub fn session_view(m: &dyn engine::GuestMemory) -> agent_proto::sim::SessionView {
@@ -1101,6 +1152,47 @@ mod tests {
         assert!(remote_live_game(&g));
         g.put_u8(lobby::NETWORKING, 0);
         assert!(!remote_live_game(&g));
+    }
+
+    #[test]
+    fn live_edits_are_open_to_a_custom_game_host_only() {
+        use bots::lobby;
+        use crate::variant_ext::{SESSION_NETWORK_CLASS, SYSTEM_LINK};
+        let squad = 0x4000;
+        let target = 0x14000;
+        let scene = |ty: u32, class: u32, squad_host: bool, target_host: bool| {
+            let mut g = engine::testing::FakeGuest::new();
+            g.map(lobby::NETWORKING, 0x80)
+                .put_u8(lobby::NETWORKING, 1)
+                .put_u32(lobby::SESSION, squad)
+                .put_u32(lobby::TARGET_SESSION, target)
+                .put_u32(lobby::SESSION_TYPE, ty);
+            for (addr, host) in [(squad, squad_host), (target, target_host)] {
+                g.map(addr, 0x8000)
+                    .put_u32(addr + lobby::STATE, 5)
+                    .put_u32(addr + SESSION_NETWORK_CLASS, class)
+                    .put_u32(addr + lobby::PEER, 1)
+                    .put_u32(addr + lobby::HOST_PEER, if host { 1 } else { 0 });
+            }
+            g
+        };
+        // Live custom game: its host is admitted, a client is not.
+        assert_eq!(live_edit_refusal(&scene(3, 2, true, false)), None);
+        assert_eq!(live_edit_refusal(&scene(1, 2, true, false)), None);
+        assert!(live_edit_refusal(&scene(3, 2, false, true)).unwrap().contains("another console"));
+        // Matchmaking is refused, hosted here or not.
+        for host in [true, false] {
+            assert_eq!(live_edit_refusal(&scene(8, 2, false, host)), Some("a matchmaking game"));
+            assert_eq!(live_edit_refusal(&scene(6, 2, false, host)), Some("a matchmaking game"));
+        }
+        // System Link and a local game are not Live at all.
+        assert_eq!(live_edit_refusal(&scene(3, SYSTEM_LINK, false, false)), None);
+        let mut g = scene(3, 2, true, false);
+        g.put_u8(lobby::NETWORKING, 0);
+        assert_eq!(live_edit_refusal(&g), None);
+        // An unreadable game is refused.
+        assert!(live_edit_refusal(&engine::testing::FakeGuest::new()).is_some());
+        assert!(live_edit_refusal(&scene(5, 2, true, true)).unwrap().contains("custom game"));
     }
 
     #[test]

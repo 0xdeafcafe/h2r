@@ -12,13 +12,19 @@
 //   mock's run, with the batch's summary in the server's shape.
 // - `GET /v1/rules/builtin`: Slayer, read from the rules crate.
 // - The check also lists the script's int and bool options and its
-//   carrier, as the server's may.
+//   carrier, as the server's may, its `label` lines as `labels` (what a
+//   map needs) with their `minimal` map, and a warning for a label never
+//   used. A run whose scenario has a `map` checks it against the labels
+//   first (the page's `mapShort`) and answers `{ok: false, errors: [],
+//   map}` for a map that fails; a generated match carries the minimal map.
 // - `POST /v1/rules` (a `content.write` token), `GET /v1/rules/{hash}`,
 //   `GET /v1/rules?author=`: kept in memory.
 // - `POST /v1/rules/ide` and `GET /v1/rules/ide/legend`: the editor's
-//   completions, hovers, signatures, definitions, references, tokens,
-//   outline and format, canned from the page's own word lists
-//   (src/lib/rulesIde.ts) and a few regexes (`mockIde`).
+//   completions (the flag labels at a new `label` line), hovers,
+//   signatures, definitions, references, tokens, outline, format, quick
+//   fixes (`actions`: a word one letter off a label's name, an unused
+//   label) and rename (`mockRename`, a refusal as a 400), canned from the
+//   page's own word lists (src/lib/rulesIde.ts) and a few regexes (`mockIde`).
 // - With the tools off (`H2_MOCK_RULES=0`), every route here is the 404
 //   "no such endpoint" of a server from before them, so the page's
 //   "no script tools" state can be seen.
@@ -29,9 +35,10 @@ import { parseJws } from "../src/state/verify";
 import type { Reply } from "./admin";
 import type { World } from "./world";
 import {
-  API_ENTRIES, CAP_WORDS, CONSTANTS, CONTROL, EVENTS, KEYWORDS, SETS, TYPES, WORD_OPS, apiSignature, apiSnippet,
+  API_ENTRIES, CAP_WORDS, CONSTANTS, CONTROL, EVENTS, FLAG_LABELS, KEYWORDS, SETS, TYPES, WORD_OPS, apiSignature, apiSnippet,
   eventLabelOf, eventSnippet, type IdeOp,
 } from "../src/lib/rulesIde";
+import { MAP_BASE, MAP_TEAMS, mapShort, type LabelLine, type MapThing, type ScenarioObject } from "../src/lib/rules";
 
 const ok = (body: unknown, status = 200): Reply => ({ status, body });
 const fail = (status: number, error: string, message: string): Reply => ({ status, body: { error, message } });
@@ -109,6 +116,53 @@ export function carrierOfSource(source: string): { name: string; engine: number 
   return name && engine !== undefined ? { name, engine } : null;
 }
 
+/** A `label` line: its name, kind, `?`, requirements and map text. */
+const LABEL_LINE = /^[ \t]*label[ \t]+([A-Za-z_]\w*)[ \t]*:[ \t]*(zones|zone|objects|object|spawns)(\?)?([^="\n]*?)(?:=[ \t]*"([^"]*)")?[ \t]*(?:\/\/.*)?$/gm;
+
+/** The labels a script's text declares, as the check's `labels` lists
+ *  them (`workbench::LabelLine`), with each one's name. */
+export function labelsOf(source: string): Array<LabelLine & { name: string }> {
+  return [...source.matchAll(LABEL_LINE)].map((m) => {
+    const name = m[1]!, word = m[2]!, optional = m[3] === "?", req = m[4] ?? "", text = m[5] ?? name;
+    const single = word === "zone" || word === "object";
+    const kind: LabelLine["kind"] = word.startsWith("zone") ? "zone" : word === "spawns" ? "spawn" : "object";
+    const numbered = /\bnumbered\b/.exec(req) ? true : false;
+    const nr = /\bnumbered\s+(-?\d+)\.\.(-?\d+)/.exec(req);
+    const exactly = /\bexactly\s+(\d+)/.exec(req), least = /\bat\s+least\s+(\d+)/.exec(req), most = /\bat\s+most\s+(\d+)/.exec(req);
+    const span = /(?:^|[^\w.])(\d+)\.\.(\d+)/.exec(req.replace(/\bnumbered\s+-?\d+\.\.-?\d+/, ""));
+    const range: [number, number] | null = nr ? [Number(nr[1]), Number(nr[2])] : null;
+    const per_team = /\bper\s+team\b/.test(req);
+    const min = single ? (optional ? 0 : 1)
+      : exactly ? Number(exactly[1]) : least ? Number(least[1]) : span ? Number(span[1]) : range ? range[1] - range[0] + 1 : 0;
+    const max = single ? 1 : exactly ? Number(exactly[1]) : most ? Number(most[1]) : span ? Number(span[2]) : null;
+    const noun = kind === "spawn" ? "spawn areas" : `${kind}s`;
+    const count = single ? `${optional ? "at most" : "exactly"} 1 ${kind}` : max === null ? (min ? `at least ${min} ${noun}` : noun) : min === max ? `exactly ${min} ${noun}` : `${min} to ${max} ${noun}`;
+    const needs = `${count} labelled "${text}"${range ? `, numbered ${range[0]} to ${range[1]}` : numbered ? ", each numbered" : ""}${per_team ? ", for each team" : ""}`;
+    return { name, text, kind, min, max, single, numbered: numbered || !!range, range, per_team, needs };
+  });
+}
+
+/** The smallest map the labels accept (`labels::minimal` for teams 0 and
+ *  1), handles from `MAP_BASE`. */
+export function minimalOf(labels: LabelLine[]): MapThing[] {
+  const out: MapThing[] = [];
+  let id = MAP_BASE;
+  for (const l of labels) {
+    const cls = l.kind === "zone" ? "volume" : l.kind === "spawn" ? "spawn" : "object";
+    const numbers = l.range ? l.range[1] - l.range[0] + 1 : 0;
+    const perTeam = l.per_team ? MAP_TEAMS.length : 0;
+    const n = Math.max(l.min, numbers, perTeam);
+    for (let i = 0; i < n; i++) {
+      out.push({
+        label: l.text, object: id++, class: cls,
+        number: l.range ? l.range[0] + (i % numbers) : l.numbered ? i : null,
+        team: perTeam ? MAP_TEAMS[i % perTeam]! : null,
+      });
+    }
+  }
+  return out;
+}
+
 /** The handlers a script's text declares: `kill`, `timer(next)`. */
 export function handlersOf(source: string): string[] {
   return [...source.matchAll(/^\s*on\s+([a-z_]+)(?:\s*\(([^)]*)\))?/gm)].map((m) => (m[1] === "timer" ? `timer(${(m[2] ?? "").trim()})` : m[1]!));
@@ -129,6 +183,8 @@ export function mockCheck(source: string) {
   if (depth > 0) errors.push({ line: lines.length, col: 1, message: "a { is never closed" });
   if (errors.length) return { ok: false, hash: null, name: null, version: null, errors, report: null };
   const handlers = handlersOf(source).map((event) => ({ event, worst_ops: 24 }));
+  const labels = labelsOf(source);
+  const warnings = unusedLabels(source, labels);
   const requires = (/^\s*requires\s+(.+)$/m.exec(source)?.[1] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   const count = (scope: string) => [...source.matchAll(new RegExp(`^\\s*${scope}\\s+var\\b`, "gm"))].length;
   const per = (e: string) => (["tick", "init", "round_start", "round_end"].includes(e) || e.startsWith("timer(") ? 1 : e === "enter" || e === "leave" ? 64 : 16);
@@ -152,10 +208,22 @@ export function mockCheck(source: string) {
       ir_limit: 64 * 1024,
       capabilities: requires.map((name) => ({ name, words: WORDS[name]?.[0] ?? "", grantable: WORDS[name]?.[1] ?? false, known: name in WORDS })),
       unhostable: /\bset_team\s*\(/.test(source) ? ["set_team"] : [],
-      labels: [],
-      minimal: [],
+      labels: labels.map((l): LabelLine => ({ text: l.text, kind: l.kind, min: l.min, max: l.max, single: l.single, numbered: l.numbered, range: l.range, per_team: l.per_team, needs: l.needs })),
+      minimal: minimalOf(labels),
     },
+    ...(warnings.length ? { warnings } : {}),
   };
+}
+
+/** The warnings the mock gives: a label declared and never used. */
+function unusedLabels(source: string, labels: Array<{ name: string }>) {
+  const lines = source.split("\n");
+  return labels.flatMap((l) => {
+    const uses = [...source.matchAll(new RegExp(`\\b${l.name}\\b`, "g"))].length;
+    if (uses > 1) return [];
+    const line = lines.findIndex((t) => new RegExp(`^\\s*label\\s+${l.name}\\b`).test(t));
+    return [{ line: line + 1, col: (lines[line] ?? "").indexOf(l.name) + 1, message: `label ${l.name} is declared but never used; a map would still need one.` }];
+  });
 }
 
 interface WireTick { tick: number; events: Array<Record<string, unknown>> }
@@ -163,6 +231,16 @@ interface WireTick { tick: number; events: Array<Record<string, unknown>> }
 export function mockRun(source: string, scenario: Record<string, unknown>) {
   const check = mockCheck(source);
   if (!check.ok) return { ok: false, errors: check.errors };
+  // A map of its own is checked against the labels first; a problem runs nothing.
+  if (Array.isArray(scenario.map ?? scenario.labelled)) {
+    const things = ((scenario.map ?? scenario.labelled) as Array<Record<string, unknown>>).map((t): ScenarioObject => ({
+      id: Number(t.object), label: String(t.label), number: typeof t.number === "number" ? t.number : null, team: typeof t.team === "number" ? t.team : null,
+      ...(t.class === "object" || t.class === "flag" || t.class === "volume" || t.class === "spawn" ? { class: t.class } : {}),
+    }));
+    const name = check.name ?? "the script";
+    const map = mapShort(check.report!.labels, things).map((p) => p.replace("; it needs", `; ${name} needs`));
+    if (map.length) return { ok: false, errors: [], map };
+  }
   const timeline = (Array.isArray(scenario.timeline) ? scenario.timeline : []) as WireTick[];
   const last = typeof scenario.ticks === "number" ? scenario.ticks : timeline.reduce((m, t) => Math.max(m, t.tick), 0);
   if (last > MAX_TICKS) return null;
@@ -250,7 +328,7 @@ export function mockMatch(source: string, players: number, teams: number, seed: 
   }
   const ticks = limit === "score" ? tick : last;
   const scenario = {
-    players: seats, map: [], teams: teams >= 2 ? Array.from({ length: teams }, (_, t) => t) : [],
+    players: seats, map: mockCheck(source).report?.minimal ?? [], teams: teams >= 2 ? Array.from({ length: teams }, (_, t) => t) : [],
     variant: { team_play: teams >= 2 ? 1 : 0, score_limit: SIM_SCORE_LIMIT, time_limit: SIM_SECONDS, engine: carrierOfSource(source)?.engine ?? 2 },
     options: null, seed, round_time: last, ticks, start: true, timeline,
   };
@@ -312,7 +390,7 @@ export function mockSimulate(source: string, body: Record<string, unknown>) {
 
 /** The mock's token legend. */
 export const MOCK_LEGEND = ["keyword", "function", "variable", "parameter", "property", "type", "enumMember", "event", "string", "number", "comment", "operator", "namespace"];
-const IDE_OPS: ReadonlySet<string> = new Set(["complete", "hover", "signature", "definition", "references", "tokens", "symbols", "format"]);
+const IDE_OPS: ReadonlySet<string> = new Set(["complete", "hover", "signature", "definition", "references", "tokens", "symbols", "format", "actions", "rename"]);
 const RESERVED: ReadonlySet<string> = new Set<string>([...KEYWORDS, ...CONTROL, ...WORD_OPS, ...CONSTANTS]);
 const TYPE_NAMES: ReadonlySet<string> = new Set<string>(TYPES);
 const SET_NAMES: ReadonlySet<string> = new Set<string>([...SETS, "variant"]);
@@ -332,7 +410,7 @@ function wordAt(lines: string[], line: number, character: number): { word: strin
   return null;
 }
 
-const DECLARES = /^\s*(?:fn|option|enum|table|let|(?:global|player|team|object)\s+var)\s+([A-Za-z_]\w*)/;
+const DECLARES = /^\s*(?:fn|option|enum|table|let|const|label|(?:global|player|team|object)\s+var)\s+([A-Za-z_]\w*)/;
 
 /** Where a name is declared: by fn, option, enum, table, let or var. */
 function declarationOf(lines: string[], name: string): Range | null {
@@ -450,12 +528,93 @@ function mockFormat(lines: string[]): string {
   return out.join("\n").replace(/\n*$/, "\n");
 }
 
+/** The edit distance of two words, up to 2 (3 for anything further). */
+function near(a: string, b: string): number {
+  if (Math.abs(a.length - b.length) > 2) return 3;
+  const row = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = row[0]!;
+    row[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const was = row[j]!;
+      row[j] = Math.min(row[j]! + 1, row[j - 1]! + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = was;
+    }
+  }
+  return Math.min(3, row[b.length]!);
+}
+
+/** The mock's quick fixes on a line: a word one letter off a declared
+ *  label's name ("Change to `barrier`"), and a label never used ("Remove
+ *  the declaration"). */
+function mockActions(source: string, lines: string[], line: number) {
+  const text = lines[line] ?? "";
+  const labels = labelsOf(source);
+  const out: Array<{ title: string; kind: "quickfix"; diagnostic: Record<string, unknown>; edits: Array<{ range: Range; newText: string }> }> = [];
+  const diag = (range: Range, code: string, message: string) => ({ range, severity: 1, message, code, source: "rules" });
+  if (!/^\s*label\b/.test(text)) {
+    for (const m of text.matchAll(/[A-Za-z_]\w*/g)) {
+      const w = m[0], at = m.index ?? 0;
+      if (RESERVED.has(w) || labels.some((l) => l.name === w) || declarationOf(lines, w)) continue;
+      const close = labels.find((l) => near(w, l.name) === 1);
+      if (!close) continue;
+      const range = span(line, at, line, at + w.length);
+      out.push({ title: `Change to \`${close.name}\``, kind: "quickfix", diagnostic: diag(range, "label.unknown", `no label named ${w}. Did you mean ${close.name}?`), edits: [{ range, newText: close.name }] });
+    }
+  }
+  const decl = /^\s*label\s+([A-Za-z_]\w*)/.exec(text);
+  if (decl && [...source.matchAll(new RegExp(`\\b${decl[1]}\\b`, "g"))].length === 1) {
+    const at = text.indexOf(decl[1]!);
+    out.push({
+      title: "Remove the declaration", kind: "quickfix",
+      diagnostic: diag(span(line, at, line, at + decl[1]!.length), "label.unused", `label ${decl[1]} is declared but never used; a map would still need one.`),
+      edits: [{ range: span(line, 0, line + 1, 0), newText: "" }],
+    });
+  }
+  return out;
+}
+
+/** The mock's rename: every use of the name at the place, a label keeping
+ *  its map text. A string is the reason it is refused. */
+export function mockRename(source: string, line: number, character: number, newName: unknown): { edits: Array<{ range: Range; newText: string }> } | string {
+  const lines = source.split("\n");
+  if (typeof newName !== "string") return "op rename needs new_name";
+  if (!/^[A-Za-z_]\w*$/.test(newName)) return `${newName} is not a name`;
+  if (RESERVED.has(newName)) return `${newName} is a keyword`;
+  const w = wordAt(lines, line, character);
+  if (!w || RESERVED.has(w.word) || !declarationOf(lines, w.word)) return "no name to rename here";
+  if (declarationOf(lines, newName)) return `${newName} is declared already`;
+  const re = new RegExp(`\\b${w.word}\\b`, "g");
+  const edits = lines.flatMap((text, i) => {
+    const cut = text.indexOf("//");
+    return [...text.matchAll(re)].filter((m) => (cut < 0 || (m.index ?? 0) < cut) && !/"[^"]*$/.test(text.slice(0, m.index ?? 0)))
+      .map((m) => ({ range: span(i, m.index ?? 0, i, (m.index ?? 0) + w.word.length), newText: newName }));
+  });
+  // A label without map text keeps the old name as its text.
+  const d = declarationOf(lines, w.word)!;
+  const declLine = lines[d.start.line] ?? "";
+  if (/^\s*label\b/.test(declLine) && !/=\s*"/.test(declLine)) {
+    const end = declLine.replace(/\s*(\/\/.*)?$/, "").length;
+    edits.push({ range: span(d.start.line, end, d.start.line, end), newText: ` = "${w.word}"` });
+  }
+  return { edits: edits.sort((a, b) => a.range.start.line - b.range.start.line || a.range.start.character - b.range.start.character) };
+}
+
 /** `POST /v1/rules/ide`'s answer, canned from the word lists. */
-export function mockIde(source: string, op: IdeOp, line: number, character: number): unknown {
+export function mockIde(source: string, op: IdeOp, line: number, character: number, extra: { newName?: unknown } = {}): unknown {
   const lines = source.split("\n");
   switch (op) {
+    case "actions": return mockActions(source, lines, line);
+    case "rename": { const r = mockRename(source, line, character, extra.newName); return typeof r === "string" ? null : r; }
     case "complete": {
       const text = lines[line] ?? "";
+      if (/^\s*label\s+$/.test(text.slice(0, character))) {
+        return FLAG_LABELS.map(([t, decl]) => ({
+          label: `label ${t}: ${decl}`, kind: 15, detail: "a netgame flag's label",
+          documentation: { kind: "markdown", value: `The label every map gives its netgame flags of this type: \`${t}\`.` },
+          insertText: `${t}: ${decl}`, insertTextFormat: 1,
+        }));
+      }
       if (/variant\.\w*$/.test(text.slice(0, character))) {
         return ["team_play", "score_limit", "time_limit", "lives", "respawn_time", "friendly_fire", "rounds", "engine"]
           .map((f) => ({ label: f, kind: 10, detail: "variant field" }));
@@ -530,9 +689,13 @@ export class MockRules {
       const b = await body();
       if (typeof b?.source !== "string") return fail(400, "invalid", "body: missing field `source`");
       if (b.source.length > MAX_SOURCE) return fail(413, "too_large", `a script's source is at most ${MAX_SOURCE} bytes`);
-      if (typeof b.op !== "string" || !IDE_OPS.has(b.op)) return fail(400, "invalid", "body: op is one of complete, hover, signature, definition, references, tokens, symbols, format");
+      if (typeof b.op !== "string" || !IDE_OPS.has(b.op)) return fail(400, "invalid", "body: op is one of complete, hover, signature, definition, references, tokens, symbols, format, actions or rename");
       const line = typeof b.line === "number" ? Math.max(0, Math.floor(b.line)) : 0;
       const character = typeof b.character === "number" ? Math.max(0, Math.floor(b.character)) : 0;
+      if (b.op === "rename") {
+        const r = mockRename(b.source, line, character, b.new_name);
+        return typeof r === "string" ? fail(400, "invalid", r) : ok(r);
+      }
       return ok(mockIde(b.source, b.op as IdeOp, line, character));
     }
     if (path === "/v1/rules/check" && req.method === "POST") {

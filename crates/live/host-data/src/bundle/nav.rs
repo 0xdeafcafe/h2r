@@ -254,6 +254,7 @@ pub(super) mod tests {
                 dir: cache::dir(data),
                 build: false,
             }),
+            image: None,
             force: true,
             zstd_level: 1,
         }

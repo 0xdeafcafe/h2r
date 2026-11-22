@@ -1282,11 +1282,6 @@ impl Repo {
         }
     }
 
-    /// Whether map `id` is downloaded here.
-    pub fn is_installed(&self, id: &MapId) -> bool {
-        Self::is_here(&self.lock(), id)
-    }
-
     /// The selected entry.
     pub fn selected(&self) -> Option<ModEntry> {
         let g = self.lock();

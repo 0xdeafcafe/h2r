@@ -6,7 +6,7 @@
 //!
 //! It is a host mark ([`gfx::world_lines::HudMark`]), drawn in screen
 //! space by the window; the game's reticle is not touched and no guest
-//! hook is involved, so the HUD stays on the pipelined render thread.
+//! hook is involved.
 //!
 //! **Place.** The centre of the game's reticle, `rects::RETICLE`'s
 //! centre, `(320, 240)` of the fullscreen frame ([`RETICLE_CENTRE`]); the

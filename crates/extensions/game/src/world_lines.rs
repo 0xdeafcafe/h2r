@@ -17,8 +17,7 @@ pub trait WorldLineSource: Send + Sync {
     /// Cheap enough to poll at render entry: one atomic load.
     fn active(&self) -> bool;
 
-    /// Called only when active, on the serial render owner or the pipelined
-    /// worker with its own guest view. Read the supplied guest and shared
+    /// Called only when active, on the serial render owner. Read the supplied guest and shared
     /// host data. Write only to the sample being built, which owns its
     /// geometry and can outlive this render on the window thread.
     fn capture(&self, guest: &dyn GuestMemory) -> Option<Arc<dyn ImageMarks>>;

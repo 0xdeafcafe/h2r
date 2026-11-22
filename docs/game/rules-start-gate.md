@@ -1,7 +1,7 @@
 # Rules start gate: a map must satisfy the script's labels
 
-Status: Design, with the check (`rules::labels::check`), both census builders and the host's gate built (slice 3); the workbench, `h2 rules run` and the match generator call the check; the lobby's and Live's gates are not built.
-Code: `crates/extensions/game/src/rules/` (the host runtime), `crates/extensions/game/src/lobby_mode.rs` (the lobby's start state), `crates/live/live-server/src/admin.rs` (the hopper builder). Tests: `crates/formats/forge-doc/tests/census.rs`, `crates/extensions/game/src/rules/runtime/tests/gate.rs`; the other slices in [rules-language-types.md](rules-language-types.md#implementation-plan) name theirs.
+Status: Design, with the check (`rules::labels::check`), both census builders, the host's gate (slice 3), the lobby's gate (slice 7) and Live's hopper gate (slice 9) built; the workbench, `h2 rules run` and the match generator call the check.
+Code: `crates/extensions/game/src/rules/` (the host runtime), `crates/extensions/game/src/lobby_mode.rs` (the lobby's start state), `crates/live/live-server/src/admin.rs` (the hopper builder: `check_pairs`, `blocked_pairs`, `blocked_by_census`), `crates/live/live-proto/src/map_census.rs` (the census event), `crates/apps/cli/src/live_maps.rs` (`census`). Tests: `crates/formats/forge-doc/tests/census.rs`, `crates/extensions/game/src/rules/runtime/tests/gate.rs`, `crates/extensions/game/src/lobby_mode/tests.rs` (`mod gate`), `crates/live/live-server/tests/hopper_gate.rs`, `a_pair_is_held_to_the_maps_census` in `admin.rs`; the other slices in [rules-language-types.md](rules-language-types.md#implementation-plan) name theirs.
 Switch: none.
 
 A rules script declares the Forge labels its map must hold
@@ -65,28 +65,42 @@ fixture and asserts they are equal.
 
 | Where | Function or hook | Census | On a problem |
 |---|---|---|---|
-| The lobby, when the map, the Forge map or the variant changes | `rules::gate::refresh` (`crates/extensions/game/src/rules/gate.rs`, new), called from the `party-lobby` feature's `before` on `LOBBY_VARIANT_PANEL` (`lobby_mode.rs`). Its key is the lobby's map (`h1_options_row::LOBBY_MAP`), `lobby_start::forge_map()` and the script prefix of the variant's block: the record's own, or the store bundle's that `game_variants::inject::apply_block` writes at activation. A changed key runs the check once and keeps the verdict | `of_file` | the verdict is `Blocked(problems)` |
-| The lobby, at Start | the `after` on `LOBBY_START_STATE` in `lobby_mode.rs`: `lobby_mode::start_state` answers `REFUSED_STATE` in place of ready when `lobby_mode::start_refused` reads `gate::blocked()`, the path a Forge lobby with a remote member takes. Start Game acts only on ready, so no countdown runs | the kept verdict | Start Game does nothing |
+| The lobby, when the map, the Forge map or the variant changes (**Code**) | `rules::gate::refresh` (`crates/extensions/game/src/rules/gate.rs`), called from the `party-lobby` feature's `before` on `LOBBY_VARIANT_PANEL` (`lobby_mode.rs`) after `gate::read` reads the lobby with guest memory held. Its key (`gate::Key`) is the lobby's map (`h1_options_row::LOBBY_MAP`), `lobby_start::forge_map()` in Forge mode, and the script prefix, engine and team play of the panel's variant record, whose block is the store bundle's that `game_variants::inject::apply_block` writes at activation (`inject::bundle_block`), else the record's own. A changed key runs the check once and keeps the verdict | `of_file` through the VFS (`gate::InGame`), with the saved Forge map's document (`forge::load_saved`) in Forge mode | the verdict is `Blocked(problems)` |
+| The lobby, at Start (**Code**) | the `after` on `LOBBY_START_STATE` in `lobby_mode.rs`: `lobby_mode::start_state` answers `REFUSED_STATE` in place of ready when `lobby_mode::start_refused` reads `gate::blocked()`, the path a Forge lobby with a remote member takes. Start Game acts only on ready, so no countdown runs | the kept verdict | Start Game does nothing |
 | The host, at the game's start: the final authority | `Runtime::start` (`rules/runtime.rs`), from the `rules` feature's `on_start` observer after a successful `GAME_ACTIVATE` (`rules/feature.rs`), after `verify::load` and `verify::unhostable` and before `runtime::host_refusal` | `of_game` | `Status::Blocked`, and the game is ended (below) |
 | Live, when a hopper is edited | `admin::check_pairs`, called by `admin::put_hopper` after `admin::apply_patch` (`crates/live/live-server/src/admin.rs`) | the map's census on Live | the edit is refused |
 | The workbench | `workbench::run` (rules-language-types.md, "The workbench") | the scenario's map (`scenario::resolve_map`) | `RunError::Map` with the problems, and no run |
 
 The lobby's check is a courtesy to the player; only the host's decides.
-It runs on the machine that starts the game, and a guest runs neither
-check: a guest runs no script. Joining a lobby or a game is not gated by
+It runs on the machine that starts the game (not networked, or the
+party's leader, `gate::leads`), and a guest runs neither check: a guest
+runs no script. **Code:** what the lobby cannot decide leaves its
+verdict clear and the host decides at the start: a script that is
+neither compiled in nor in the game-variant store
+(`rules::feature::local_blob`), a blob that does not verify, a script for
+another engine, a script with no labels or tags, and a map file whose
+census cannot be read (logged as
+`rules: the lobby's map census could not be read, ...`). Without the
+`rules` feature no script runs, so the lobby checks nothing. In a team
+game the lobby checks `per team` labels for teams 0 and 1, since it does
+not know which teams its players will be on; none otherwise. Joining a lobby or a game is not gated by
 labels. The gate for a guest whose build lacks a capability is the one
 rules-engine.md's "Versioning" leaves open.
 
 ## What a blocked start shows
 
-**The lobby shows the reason** on the custom lobby's status line:
-`lobby_status::custom_game_text` answers the gate's text while
-`gate::blocked()` holds, after the mode strip's notice and before the
-Forge refusal. The text is the first problem, with ` (and 2 more)` when
-there are more, written through `ui_kit::screen::SlotTexts` as the Forge
-map's help line is. `rules.state` (the agent API) lists every problem,
-in the lobby and in a game, as `blocked`. A guest's status line shows
-retail's text.
+**The lobby shows the reason (Code)** on the custom lobby's status line:
+`lobby_status::custom_game_text` answers the gate's text
+(`lobby_mode::gate_text_id`) while `gate::blocked()` holds, after the
+mode strip's notice and before the Forge refusal. The text is the first
+problem, with ` (and 2 more)` when there are more
+(`lobby_mode::gate_text`), written through `ui_kit::screen::SlotTexts`
+as the Forge map's help line is. `rules.state` (the agent API) lists
+every problem, in the lobby (`gate::annotate`, when no script runs and
+the runtime holds no block of its own) and in a game, as `blocked`. A
+guest's status line shows retail's text. Leaving the party
+(`PARTY_LEAVE`) and loading a snapshot clear the lobby's verdict, and
+the next panel update checks again.
 
 **When the host blocks a start (Code).** The start gets past the lobby when no
 lobby ran (a level boot, the light host's `Start` in `host_lobby.rs`, a
@@ -98,8 +112,9 @@ then keeps `Status::Blocked { hash, problems }`, logs
 (`firefight::guest::end_game`, the call `end_round` uses), so the game
 ends in its first tick and the players return where a game's end returns
 them: the lobby they started from. No VM is made and no handler runs.
-`gate` keeps the problems as the lobby's verdict, so the status line
-names them until the map or the variant changes. A Live host puts no
+`gate` keeps the problems as the lobby's verdict (`rules::feature::blocked`,
+adopted once at the lobby's next refresh), so the status line names them
+until the map, the Forge map or the variant changes. A Live host puts no
 script hash on its session (`Hle::set_session_rules(None)`).
 
 **A Forge session is not blocked (Code).** In the lobby's Forge mode
@@ -112,25 +127,36 @@ script stays refused for that game.
 
 ## Hoppers, System Link, offline and Theater
 
-**Live hoppers.** A hopper entry is a map id and a variant record
-(`live_proto::hopper::Record`, `hopper::variant::VariantRecord`).
+**Live hoppers.** **Code.** A hopper entry is a map id and a variant
+record (`live_proto::hopper::Record`, `hopper::variant::VariantRecord`).
 `admin::check_pairs` takes each entry of each hopper the patch names
 whose record's block names a script, finds the blob by its prefix (a
-built-in, else a saved script, `Live::saved_rules`), and runs
+built-in, else a saved script: `Live::slot_script_ir`), and runs
 `labels::check` with the map's census and the teams the record's team
-setting gives. A problem refuses the whole edit with `invalid`, naming
-the hopper, the entry and the problem's text, so the published file
-never holds a blocked pair and matchmaking never picks one. An entry
-whose script or whose map's census Live does not have is refused the
-same way, by name. Live holds no map bytes: a census reaches it as
-`PUT /v1/maps/{map}/census` (admin, a server-signed `MapCensusSet`
-event, in both homes), which `h2 live maps census <map>` writes from the
-admin's own copy of the map, as `h2 live maps analyze` writes a
+setting gives: team play with the record's team count (0, the map's own,
+is taken as 2), none without team play. A problem refuses the whole edit
+with `invalid`, naming the playlist, the entry, the map and the
+problem's text, so the published file never holds a blocked pair and
+matchmaking never picks one. An entry whose script Live cannot find, or
+whose script declares a label or a tag and whose map has no census on
+Live, is refused the same way, by name; a script that declares neither
+needs no census. `admin::put_hopper` calls it after `check_scripts`
+(the context policy, which checks the script alone).
+
+Live holds no map bytes: a census reaches it as
+`PUT /v1/maps/{map_id}/census` (admin or operator, `lxm:
+content.moderate`; `null` clears it), a server-signed `MapCensusSet`
+event on the stream `mapcensus-<map_id>` (`live_proto::map_census`)
+that `content::CatalogState` projects, so both homes (the native
+server and the Worker, which runs the same projection and routes) apply
+it alike. The key is the level id a hopper entry names, not a package's
+`MapId`. `h2 live maps census <map>` writes it from the admin's own
+copy of the map (`Census::of_file`), as `h2 live maps analyze` writes a
 package's contents report. A new census for a map re-checks the
-published hoppers and its answer lists each entry it blocks. The host's
-check still runs on a matchmade game. The context-policy lane checks a
-hopper entry's script in the same place; `check_pairs` is the second
-check of the pair there.
+published hopper file (`admin::blocked_by_census`) and the answer lists
+each entry on that map it blocks (`blocked`); the census is kept
+either way, so an admin fixes or removes those entries. The host's
+check still runs on a matchmade game.
 
 **System Link and offline.** Both checks need only this machine: the
 script is a built-in or the store's (a System Link game takes no other),
@@ -175,8 +201,19 @@ when it is set.
   session to the lobby cleanly. If it does, the host's check belongs
   there, with the file census, and no map loads.
 - How many characters the lobby's status line shows.
+- That `LOBBY_VARIANT_PANEL`'s variant argument is a whole variant record
+  with the options record's layout (name at `+4`, engine at `+0x44`,
+  flags at `+0x48`, the block at `+0x10c`), which `gate::read` assumes.
+- That the slot path `map_select::selected_path` gives resolves through
+  `Vfs::file_source` for every lobby map, and how long reading a map
+  file's census takes on the game thread at a key change.
 - The teams a hopper entry's game has, from its record alone, for
-  `per team` in `check_pairs`.
+  `per team` in `check_pairs`: a record's team count 0 means the map's
+  own (up to 8), which the check takes as 2, so a map with a team short
+  of a member passes Live's check and is blocked at the host.
+- A census for a package's modded map: the census is keyed by the level
+  id a hopper entry names, so a package published over a retail map
+  shares that map's census.
 
 ## Related
 

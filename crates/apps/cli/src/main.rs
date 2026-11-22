@@ -27,6 +27,7 @@ mod agent_sim;
 mod rules_cmd;
 mod variants_cmd;
 mod rules_lsp;
+mod rules_editors;
 mod sim_cmd;
 mod sim_store_cmd;
 mod film_cmd;
@@ -242,10 +243,10 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           ending in a JSON report (docs/runtime/sim.md)
   sim batch <batch.toml>  many matches in parallel, A/B tuning compared;
                           sim compare <dir> prints the comparison again
-  rules check|build|run|sim|caps|builtin|lsp
+  rules check|build|run|sim|caps|builtin|lsp|editors
                           the scripted game types' compiler, verifier,
-                          scenario runner and language server
-                          (docs/game/rules-engine.md)
+                          scenario runner, language server and editor
+                          extensions (docs/game/rules-engine.md)
   variants port <input>... [--script builtin|keep|FILE] [-o DIR]
                           self-contained .h2variant files from records, saves,
                           hopper slots or old files; --all-builtins from the

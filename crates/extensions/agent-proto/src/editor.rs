@@ -1,5 +1,5 @@
-//! The paired editor's presentation methods (docs/editor/polish-plan.md,
-//! "Interfaces"). Hosts list the methods they register in `session.methods`.
+//! The paired editor's presentation methods (docs/editor/agent-api.md).
+//! Hosts list the methods they register in `session.methods`.
 
 use serde::{Deserialize, Serialize};
 

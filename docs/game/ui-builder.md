@@ -531,7 +531,10 @@ way (for a mod's page, the pregame lobby, screen 14):
   widget by the pane builder's text step when the pane is built; their
   strings come from `Rows::panel_text(i)` and are set then and again
   whenever the description is (`Rows::live_text`'s redraw). Only a
-  class with a description shows them.
+  class with a description or a panel text shows them; a class with a
+  panel text and no description (a dialog's body) builds its description
+  block from the first panel text (`ListClass::description_block`), which
+  stays empty because no row names a string for it.
 - The test `ui_kit::screens::tests::a_mods_page_is_the_lobby_layout_with_one_action`
   draws the page and holds every part where the lobby has it; the disc
   test holds the layout's constants to the lobby tag's blocks and draws

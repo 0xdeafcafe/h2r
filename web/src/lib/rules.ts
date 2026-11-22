@@ -1,8 +1,10 @@
 // The game type script workbench's pure half (docs/game/rules-engine.md,
 // "Workbench"; docs/live/live-api.md, "Rules scripts"): the server's check
 // and trace answers read defensively, the generated matches and their
-// summary, the scenario built into the run request, times as they are
-// typed and shown, the trace as lines and as a
+// summary, the scenario built into the run request, the test map (its
+// things by label, what it lacks for the script's labels and "Add what the
+// script needs"; docs/game/rules-language-types.md, "The workbench"),
+// times as they are typed and shown, the trace as lines and as a
 // timeline with the final standings, errors mapped onto the editor's text,
 // failures put in words, why a button is off, the editor's tab key, and
 // the drafts kept in localStorage. The server compiles and runs; nothing
@@ -51,8 +53,10 @@ export interface LabelLine {
   /** The requirement in Forge's words. */
   needs: string;
 }
+/** What a labelled thing on a map is (`scenario::ScenarioLabel`'s `class`). */
+export type MapClass = "object" | "flag" | "volume" | "spawn";
 /** What a map holds, as a scenario's `map` lists it. */
-export interface MapThing { label: string; object: number; number: number | null; team: number | null; class: "object" | "flag" | "volume" | "spawn" | null }
+export interface MapThing { label: string; object: number; number: number | null; team: number | null; class: MapClass | null }
 export interface CheckReport {
   worst_tick_ops: number;
   budget: number;
@@ -90,6 +94,9 @@ export interface CheckResult {
   name: string | null;
   version: number | null;
   errors: Problem[];
+  /** The compile's warnings (`label.unused`, `cap.unused`, ...); they
+   *  leave `ok` alone. */
+  warnings: Problem[];
   report: CheckReport | null;
   /** The declared options (the check sends them when it is ok and the
    *  script has some); empty otherwise. */
@@ -149,7 +156,7 @@ export function parseProblems(v: unknown): Problem[] {
   return arr(v).map(obj).map((p) => ({ line: Math.max(0, Math.floor(num(p.line))), col: Math.max(0, Math.floor(num(p.col))), message: str(p.message) || "error" }));
 }
 
-const CLASSES = ["object", "flag", "volume", "spawn"] as const;
+const CLASSES: readonly MapClass[] = ["object", "flag", "volume", "spawn"];
 const readMapThing = (v: unknown): MapThing => {
   const o = obj(v);
   const cls = CLASSES.find((c) => c === o.class) ?? null;
@@ -194,6 +201,7 @@ export function parseCheck(body: unknown): CheckResult {
     name: optStr(b.name),
     version: typeof b.version === "number" ? b.version : null,
     errors: parseProblems(b.errors),
+    warnings: parseProblems(b.warnings),
     report: parseReport(b.report),
     options: parseOptions(b.options ?? obj(b.report).options),
     carrier: parseCarrier(b.carrier ?? obj(b.report).carrier),
@@ -308,8 +316,11 @@ export const eventFields = (t: EventType): EventField[] => EVENT_TYPES.find((e) 
 /** A seated player; `unit` is the object the player drives, which an
  *  `enter` or `leave` names (a generated match seats one each). */
 export interface ScenarioPlayer { slot: number; team: number; lives: number; unit?: number }
-/** A labelled object on the fake map: what `objects labelled "x"` visits. */
-export interface ScenarioObject { id: number; label: string; number: number; team: number | null }
+/** A labelled thing on the test map (a scenario's `map`): `id` is its
+ *  handle, `number` null when it has none, `class` absent when its
+ *  label's kind in the script suggests it, and `placement` the Forge
+ *  placement a generated match read it from. */
+export interface ScenarioObject { id: number; label: string; number: number | null; team: number | null; class?: MapClass; placement?: number }
 /** One event of the tick list. `killer` null is a death by the world. */
 export interface ScenarioEvent {
   tick: number;
@@ -330,7 +341,9 @@ export interface ScenarioDraft {
    *  and time limits and the carrier's settings). `teamPlay` wins over
    *  its `team_play`. */
   variant?: Record<string, number>;
-  /** The labelled objects a generated match placed. */
+  /** The test map's labelled things. Absent, the run plays on the
+   *  script's smallest map (the check's `minimal`); empty, on a map with
+   *  nothing labelled. */
   objects?: ScenarioObject[];
   /** The last tick run. */
   ticks: number;
@@ -355,13 +368,16 @@ export function defaultScenario(): ScenarioDraft {
   };
 }
 
-/** A new event for the tick list, filled from the seated players. */
-export function newEvent(type: EventType, tick: number, players: ScenarioPlayer[]): ScenarioEvent {
+/** A new event for the tick list, filled from the seated players and,
+ *  given the map's things, its first zone and object. */
+export function newEvent(type: EventType, tick: number, players: ScenarioPlayer[], things: ScenarioObject[] = [], labels: LabelLine[] = []): ScenarioEvent {
   const a = players[0]?.slot ?? 0, b = players[1]?.slot ?? a;
+  const zone = thingChoices(things, "zone", labels)[0]?.id, thing = thingChoices(things, "object", labels)[0]?.id;
   switch (type) {
     case "kill": return { tick, type, victim: b, killer: a };
-    case "enter": case "leave": return { tick, type, zone: 0, object: 0 };
-    case "press": case "pickup": case "drop": case "bounce": case "edit": return { tick, type, player: a, object: 0 };
+    case "enter": case "leave":
+      return zone === undefined ? { tick, type, zone: 0, object: 0 } : { tick, type, zone, object: players[0] ? unitOf(players[0]) : 0 };
+    case "press": case "pickup": case "drop": case "bounce": case "edit": return { tick, type, player: a, object: thing ?? 0 };
     case "squad_dead": return { tick, type, squad: 0 };
     case "actor_kill": return { tick, type, killer: a, class: "grunt" };
     case "actor_assist": return { tick, type, killer: a, assist: b, class: "grunt" };
@@ -411,15 +427,39 @@ export const playerName = (slot: number): string => `Player ${slot}`;
 export const UNIT_BASE = 0x1000;
 export const SPAWNED_BASE = 0x4000;
 
+/** The object a player drives: its `unit`, else the slot's own object. */
+export const unitOf = (p: ScenarioPlayer): number => p.unit ?? UNIT_BASE + p.slot;
+
+/** A map thing as the page names it: by its label and its team
+ *  ("ctf_flag_return (team 1)"), else its number ("capture 0"), else the
+ *  label alone, counted when several share it ("barrier #2"). */
+export function thingName(o: ScenarioObject, objects: ScenarioObject[] = []): string {
+  if (o.team !== null) return `${o.label} (team ${o.team})`;
+  if (o.number !== null) return `${o.label} ${o.number}`;
+  const same = objects.filter((x) => x.label === o.label && x.team === null && x.number === null);
+  return same.length > 1 ? `${o.label} #${same.findIndex((x) => x.id === o.id) + 1}` : o.label;
+}
+
 /** An object as the page names one: a player by its own object, a
- *  labelled object by its label and number, a spawned objective by its
+ *  labelled thing by its label (`thingName`), a spawned objective by its
  *  order, else its number. */
 export function objectName(id: number, objects: ScenarioObject[] = []): string {
   if (id >= UNIT_BASE && id < UNIT_BASE + 16) return playerName(id - UNIT_BASE);
   const o = objects.find((x) => x.id === id);
-  if (o) return o.team === null ? `${o.label} ${o.number}` : `${o.label} (team ${o.team})`;
+  if (o) return thingName(o, objects);
   if (id >= SPAWNED_BASE && id < SPAWNED_BASE + 256) return `objective ${id - SPAWNED_BASE + 1}`;
   return `object ${id}`;
+}
+
+/** The things an event's field may name, by label: for `zone` the flags
+ *  and volumes (and things whose class the script's label suggests), for
+ *  `object` everything but starting locations. */
+export function thingChoices(objects: ScenarioObject[], want: "zone" | "object", labels: LabelLine[] = []): Array<{ id: number; name: string }> {
+  const kindOf = (label: string) => labels.find((l) => l.text === label)?.kind ?? null;
+  return objects.filter((o) => {
+    const cls = o.class ?? suggestedClass(kindOf(o.label));
+    return want === "zone" ? cls === "flag" || cls === "volume" : cls !== "spawn";
+  }).map((o) => ({ id: o.id, name: thingName(o, objects) }));
 }
 
 const capital = (s: string): string => (s ? s[0]!.toUpperCase() + s.slice(1) : s);
@@ -502,7 +542,7 @@ export function buildScenario(d: ScenarioDraft): Record<string, unknown> {
   }
   return {
     players: d.players.map(wireSeat),
-    ...(d.objects?.length ? { labelled: d.objects.map((o) => ({ label: o.label, object: o.id, number: o.number, ...(o.team === null ? {} : { team: o.team }) })) } : {}),
+    ...(d.objects ? { map: d.objects.map(wireThing) } : {}),
     variant: { ...d.variant, team_play: d.teamPlay ? 1 : 0 },
     seed: d.seed,
     round_time: d.roundTime,
@@ -537,12 +577,34 @@ const readVariant = (v: unknown): Record<string, number> | undefined => {
   const out = Object.entries(obj(v)).filter((kv): kv is [string, number] => typeof kv[1] === "number" && Number.isInteger(kv[1]));
   return out.length ? Object.fromEntries(out) : undefined;
 };
+/** One thing of a scenario's `map`, as the run reads it. */
+export function wireThing(o: ScenarioObject): Record<string, unknown> {
+  return {
+    label: o.label,
+    object: o.id,
+    ...(o.number === null ? {} : { number: o.number }),
+    ...(o.placement === undefined ? {} : { placement: o.placement }),
+    ...(o.team === null ? {} : { team: o.team }),
+    ...(o.class ? { class: o.class } : {}),
+  };
+}
+
+const optWhole = (x: unknown): number | null => (typeof x === "number" && Number.isInteger(x) ? x : null);
+
+/** A map read from the wire or a kept draft: absent when it is not a list
+ *  (the run then plays the minimal map), else every thing it can read. */
 const readObjects = (v: unknown): ScenarioObject[] | undefined => {
-  // The wire names the object `object` (`labelled`); a kept draft, `id`.
-  const out = arr(v).map(obj).map((o): Record<string, unknown> => ({ ...o, id: typeof o.object === "number" ? o.object : o.id }))
+  if (!Array.isArray(v)) return undefined;
+  // The wire names the handle `object`; a kept draft, `id`.
+  return v.map(obj).map((o): Record<string, unknown> => ({ ...o, id: typeof o.object === "number" ? o.object : o.id }))
     .filter((o) => typeof o.id === "number" && typeof o.label === "string")
-    .map((o) => ({ id: o.id as number, label: o.label as string, number: whole(o.number, 0), team: typeof o.team === "number" ? o.team : null }));
-  return out.length ? out : undefined;
+    .map((o) => {
+      const cls = CLASSES.find((c) => c === o.class), placement = optWhole(o.placement);
+      return {
+        id: o.id as number, label: o.label as string, number: optWhole(o.number), team: optWhole(o.team),
+        ...(cls ? { class: cls } : {}), ...(placement === null ? {} : { placement }),
+      };
+    });
 };
 
 /** A scenario as the server sends one (a generated match's, in
@@ -582,6 +644,134 @@ export function parseScenario(v: unknown): ScenarioDraft {
     seed: int(b.seed, d.seed),
     teamPlay: b.teamPlay === true,
   };
+}
+
+// ---------- the test map ----------
+
+/** Where the minimal map's handles start (`scenario::MAP_BASE`). */
+export const MAP_BASE = 0x100;
+/** The teams a hand-edited match's map is checked for: the fake game's
+ *  (`FakeGame`'s teams, 0 and 1), as the run sends no `teams`. */
+export const MAP_TEAMS: readonly number[] = [0, 1];
+
+/** The classes a thing may be, as the page names them. */
+export const MAP_CLASSES: ReadonlyArray<{ class: MapClass; label: string }> = [
+  { class: "object", label: "object" },
+  { class: "flag", label: "flag" },
+  { class: "volume", label: "trigger volume" },
+  { class: "spawn", label: "starting location" },
+];
+export const classLabel = (c: MapClass): string => MAP_CLASSES.find((x) => x.class === c)?.label ?? c;
+const an = (noun: string): string => `${/^[aeiou]/.test(noun) ? "an" : "a"} ${noun}`;
+
+/** The class a thing with none takes from its label's kind in the script:
+ *  a volume for a zone, a starting location for spawns, else an object
+ *  (also for a label the script does not declare). */
+export function suggestedClass(kind: LabelLine["kind"] | null): MapClass {
+  return kind === "zone" ? "volume" : kind === "spawn" ? "spawn" : "object";
+}
+
+/** Whether a class satisfies a label's kind (`labels::Class::satisfies`). */
+export function classFits(cls: MapClass, kind: LabelLine["kind"]): boolean {
+  return kind === "object" ? cls !== "spawn" : kind === "zone" ? cls === "flag" || cls === "volume" : cls === "spawn";
+}
+
+/** A label's kind in words: "one zone", "a set of objects". */
+export function kindWords(l: LabelLine): string {
+  const noun = l.kind === "spawn" ? "spawn areas" : l.single ? `one ${l.kind}` : `a set of ${l.kind}s`;
+  return l.numbered && !l.single ? `${noun}, numbered` : noun;
+}
+
+/** The check's minimal map as things of the page's map. */
+export function thingsOfMinimal(minimal: MapThing[]): ScenarioObject[] {
+  return minimal.map((m) => ({ id: m.object, label: m.label, number: m.number, team: m.team, ...(m.class ? { class: m.class } : {}) }));
+}
+
+/** The things the run plays on: the draft's map, else the check's minimal
+ *  one, whose handles the run gives it too. */
+export function mapInPlay(d: ScenarioDraft, minimal: MapThing[]): ScenarioObject[] {
+  return d.objects ?? thingsOfMinimal(minimal);
+}
+
+/** The map's things grouped by label, the script's labels first in their
+ *  table's order, then the others by name. */
+export function mapGroups(objects: ScenarioObject[], labels: LabelLine[] = []): Array<{ label: string; line: LabelLine | null; things: ScenarioObject[] }> {
+  const names = [...new Set([...labels.map((l) => l.text), ...objects.map((o) => o.label).sort()])];
+  return names.map((label) => ({ label, line: labels.find((l) => l.text === label) ?? null, things: objects.filter((o) => o.label === label) }))
+    .filter((g) => g.things.length);
+}
+
+/** What the map lacks or breaks for the script's labels, a line each, in
+ *  label order: the start gate's check (`labels::check`) over the page's
+ *  map, for `teams`. The run's own answer (`map`) is the word that counts;
+ *  this one shows before it comes back. */
+export function mapShort(labels: LabelLine[], objects: ScenarioObject[], teams: readonly number[] = MAP_TEAMS): string[] {
+  const out: string[] = [];
+  for (const l of labels) {
+    const all = objects.filter((o) => o.label === l.text);
+    const good = all.filter((o) => classFits(o.class ?? suggestedClass(l.kind), l.kind));
+    const wrong = all.find((o) => !classFits(o.class ?? suggestedClass(l.kind), l.kind));
+    const noun = l.kind === "spawn" ? "spawn area" : l.kind;
+    if (wrong) out.push(`"${l.text}" on this map is ${an(classLabel(wrong.class ?? suggestedClass(l.kind)))}; it needs ${l.kind === "spawn" ? "spawn areas" : an(l.kind)}`);
+    if (!good.length && (l.min > 0 || wrong)) {
+      if (!wrong) out.push(`the map has no ${noun} labelled "${l.text}"; it needs ${l.needs}`);
+      continue;
+    }
+    if (good.length < l.min || (l.max !== null && good.length > l.max)) out.push(`the map has ${good.length} ${noun}${good.length === 1 ? "" : "s"} labelled "${l.text}"; it needs ${l.needs}`);
+    if (l.numbered && good.some((o) => o.number === null)) out.push(`a ${noun} labelled "${l.text}" has no number; it needs every one numbered`);
+    if (l.range) {
+      const [lo, hi] = l.range;
+      const outside = [...new Set(good.map((o) => o.number).filter((n): n is number => n !== null && (n < lo || n > hi)))].sort((a, b) => a - b);
+      for (const n of outside) out.push(`a ${noun} labelled "${l.text}" has the number ${n}; it needs only ${lo} to ${hi}`);
+      for (let n = lo; n <= hi; n++) if (!good.some((o) => o.number === n)) out.push(`no ${noun} labelled "${l.text}" has the number ${n}`);
+    }
+    if (l.per_team) for (const t of teams) if (!good.some((o) => o.team === t)) out.push(`team ${t} has no ${noun} labelled "${l.text}"`);
+  }
+  return out;
+}
+
+/** A handle for a new thing: past every handle the map has, from
+ *  `MAP_BASE`. */
+export const nextHandle = (objects: ScenarioObject[]): number => objects.reduce((m, o) => Math.max(m, o.id + 1), MAP_BASE);
+
+/** "Add what the script needs": the map with the check's minimal things
+ *  merged in. Each minimal thing the map has already (same label, number
+ *  and team, of a class its label takes) is kept as it is; the rest are
+ *  added with handles of the map's own. A per-team label gets a thing
+ *  for each of `teams` the minimal map did not cover. */
+export function withNeeds(objects: ScenarioObject[], minimal: MapThing[], labels: LabelLine[], teams: readonly number[] = MAP_TEAMS): ScenarioObject[] {
+  const want = [...minimal];
+  for (const l of labels.filter((x) => x.per_team)) {
+    const mine = minimal.filter((m) => m.label === l.text);
+    const like = mine[0];
+    for (const t of teams) {
+      if (mine.some((m) => m.team === t)) continue;
+      want.push({ label: l.text, object: 0, number: like?.number ?? null, team: t, class: like?.class ?? suggestedClass(l.kind) });
+    }
+  }
+  const out = [...objects];
+  const used = new Set<number>();
+  let id = nextHandle(objects);
+  for (const m of want) {
+    const kind = labels.find((l) => l.text === m.label)?.kind ?? null;
+    const have = out.find((o) => !used.has(o.id) && o.label === m.label && o.number === m.number && o.team === m.team
+      && (kind === null || classFits(o.class ?? suggestedClass(kind), kind)));
+    if (have) { used.add(have.id); continue; }
+    const thing: ScenarioObject = { id: id++, label: m.label, number: m.number, team: m.team, ...(m.class ? { class: m.class } : {}) };
+    out.push(thing);
+    used.add(thing.id);
+  }
+  return out;
+}
+
+/** A new thing for the map under `label`: the class its kind suggests,
+ *  the next free number of a numbered label. */
+export function newThing(objects: ScenarioObject[], label: string, line: LabelLine | null): ScenarioObject {
+  const taken = objects.filter((o) => o.label === label).map((o) => o.number).filter((n): n is number => n !== null);
+  const lo = line?.range?.[0] ?? 0;
+  let number: number | null = null;
+  if (line?.numbered) { number = lo; while (taken.includes(number)) number++; }
+  return { id: nextHandle(objects), label, number, team: null, class: suggestedClass(line?.kind ?? null) };
 }
 
 // ---------- traces ----------

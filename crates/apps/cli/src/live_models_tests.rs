@@ -1989,7 +1989,7 @@ fn picture(items: &[Placed<'_>], view: usize, paint: Paint, w: usize, h: usize) 
 /// `$RUSH_KEEP/players-models` (outside the repository):
 /// `cargo test --release -p cli --bin h2 models_from_the_disc -- --ignored --nocapture`
 #[test]
-#[ignore]
+#[ignore = "needs the disc (H2_DISC); writes a report to $RUSH_KEEP"]
 fn models_from_the_disc() {
     use crate::live_art::Disc;
     let disc_path = std::env::var("H2_DISC").unwrap_or_else(|_| {
@@ -2559,7 +2559,7 @@ fn a_vertex_without_nodes_follows_its_sections_node() {
 /// `$RUSH_KEEP/viewer-models-fix/shaders.txt`.
 /// `cargo test --release -p cli --bin h2 shaders_from_the_disc -- --ignored --exact --nocapture`
 #[test]
-#[ignore]
+#[ignore = "needs the disc (H2_DISC); writes a report to $RUSH_KEEP"]
 fn shaders_from_the_disc() {
     use crate::live_art::Disc;
     let disc_path = std::env::var("H2_DISC").unwrap_or_else(|_| {

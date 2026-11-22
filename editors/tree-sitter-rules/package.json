@@ -1,0 +1,28 @@
+{
+  "name": "tree-sitter-rules",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for h2recomp's game type scripts (.rules)",
+  "license": "WTFPL",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/0xdeafcafe/h2r",
+    "directory": "editors/tree-sitter-rules"
+  },
+  "keywords": ["tree-sitter", "parser", "rules", "h2recomp"],
+  "files": ["grammar.js", "tree-sitter.json", "queries/*", "src/**"],
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.25.0"
+  },
+  "tree-sitter": [
+    {
+      "scope": "source.rules",
+      "file-types": ["rules"],
+      "highlights": "queries/highlights.scm"
+    }
+  ]
+}

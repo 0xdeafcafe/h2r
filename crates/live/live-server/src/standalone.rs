@@ -1,7 +1,7 @@
-//! `h2-live-server`: the service alone, for a container
-//! (docs/live/live-hosting.md, "Docker with a named tunnel"). The same server as
+//! `h2-live-server`: the service alone, for a machine that only serves
+//! (docs/live/live-hosting.md). The same server as
 //! `h2 live serve`, built without the rest of `h2` (the recompiler, the
-//! renderer, the disc tools), so it builds on Linux and the image stays
+//! renderer, the disc tools), so it builds on Linux and stays
 //! small. It does not run cloudflared: a tunnel beside it does
 //! (`--behind-cloudflared`), and the art is extracted beforehand with `h2`
 //! on a machine with the disc.
@@ -226,7 +226,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// What deploy/live/compose.yaml runs.
+    /// A server behind a cloudflared the operator runs: loopback, the id from
+    /// `--public-url`, `CF-Connecting-IP` trusted.
     #[test]
     fn the_compose_command_line() {
         let dir = temp_dir("compose");

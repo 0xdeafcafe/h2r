@@ -205,7 +205,7 @@ impl Sim {
         }
         let lifetime = ctx.edit_lifetime();
         let epoch = ctx.epoch;
-        let live = ctx.live_session;
+        let (live, live_edit) = (ctx.live_session, ctx.live_edit);
         let probe = Arc::clone(&self.probe);
         let params = params.clone();
         Ok(Box::new(move |m| {
@@ -214,8 +214,8 @@ impl Sim {
             if current_epoch != epoch || EditIdentity::read(m)? != identity {
                 return Err(refused("the active map or session changed before the edit"));
             }
-            if live.is_some_and(|probe| probe(m)) {
-                return Err(refused("external Live session"));
+            if let Some(why) = crate::exec::live_edit_refusal(live, live_edit, m) {
+                return Err(refused(why));
             }
             let current = read_session(&probe, m);
             if current.kind != session.kind
@@ -230,13 +230,12 @@ impl Sim {
     }
 
     fn edit(&mut self, name: &str, v: Value, ctx: &mut GameCtx<'_>, input: &Mutex<crate::Input>) -> R {
-        if let Some(probe) = ctx.live_session
-            && ctx.read_guest(probe)?
-        {
-            return Err(refused("external Live session"));
+        let (live, live_edit) = (ctx.live_session, ctx.live_edit);
+        if let Some(why) = ctx.read_guest(|m| crate::exec::live_edit_refusal(live, live_edit, m))? {
+            return Err(refused(why));
         }
         let session = self.host_write(ctx)?;
-        let check = self.edit_check(session, &v, ctx)?;
+        let check = self.edit_check(session.clone(), &v, ctx)?;
         let q = self.calls()?;
         if name == method::MAP_RELOAD {
             return self.reload_map(params(v)?, ctx, q, check, input);
@@ -270,12 +269,60 @@ impl Sim {
                 };
                 Call::ObjectRespawn { target }
             }
+            method::PLACEMENT_EDIT => {
+                let plan = calls::PlacementPlan::new(params(v)?)?;
+                if plan.changes_count() {
+                    self.refuse_count_change(&session)?;
+                }
+                Call::PlacementEdit { plan: Box::new(plan) }
+            }
             _ => unreachable!("only the registered edit methods"),
         };
         self.adopt_editor()?;
         let pending = calls::queue_edit(&q, call, check)?;
         ctx.defer(CALL_TICKS, Box::new(move |_| pending.outcome()));
         Ok(Value::Null)
+    }
+
+    /// A placement count that changes while other people are in the game: a
+    /// client checks the placement index in a network object creation against
+    /// its own count (docs/editor/scenario-editor.md section 6), so the machines
+    /// would disagree. Bots are not other people: each is a phantom peer
+    /// (docs/game/bots.md section 5), a seat on the host, which the host's
+    /// own simulation serves. The peers that are people are the session's
+    /// peers less the host and the phantoms that have joined. A matchmade or
+    /// Live game never reaches here: `edit` refuses an external Live session
+    /// first.
+    fn refuse_count_change(&self, session: &SessionView) -> Result<(), RpcError> {
+        if session.kind != SessionKind::MpHost {
+            return Ok(());
+        }
+        let peers = session
+            .peers
+            .ok_or_else(|| refused("the multiplayer peer count is unknown"))?;
+        let phantoms = self.bots.joined_phantoms();
+        let others = peers.saturating_sub(1);
+        // More phantoms than other machines: the counts were read at different
+        // moments, and a person could be hiding in the difference.
+        let people = if phantoms > others { others.max(1) } else { others - phantoms };
+        if people == 0 {
+            return Ok(());
+        }
+        let why = if phantoms > others {
+            format!(
+                "the session counts {peers} machines but {phantoms} bots have joined; a \
+                 placement count change waits for the counts to agree"
+            )
+        } else {
+            format!(
+                "{people} other {} in the game: a placement count change would disagree with \
+                 their copy of the map (bots do not count)",
+                if people == 1 { "person is" } else { "people are" }
+            )
+        };
+        let mut e = RpcError::new(REFUSED, why.clone());
+        e.data = Some(json!({ "why": why, "people": people, "peers": peers, "phantoms": phantoms }));
+        Err(e)
     }
 
     fn reload_map(
@@ -395,5 +442,86 @@ pub(super) fn replay_options(bytes: Vec<u8>) -> Call {
                 report: None,
             },
         ],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sim::bots::FakeBots;
+
+    fn sim(joined: u32) -> Sim {
+        let bots = FakeBots::default();
+        for handle in 1..=joined {
+            bots.log().phantom_players.insert(handle, handle);
+        }
+        Sim {
+            bots: Box::new(bots),
+            probe: Arc::new(Mutex::new(None)),
+            players: Default::default(),
+            next: 1,
+            calls: None,
+            map_rebind: None,
+            adopt_editor: None,
+            tags: None,
+            marks: Default::default(),
+        }
+    }
+
+    fn session(kind: SessionKind, peers: Option<u32>) -> SessionView {
+        SessionView { kind, peers, ..Default::default() }.settle()
+    }
+
+    #[test]
+    fn a_count_change_waits_for_other_people_but_not_for_bots() {
+        // (session, peers, phantoms joined, allowed)
+        let cases = [
+            (SessionKind::Local, None, 0, true),
+            (SessionKind::None, None, 0, true),
+            (SessionKind::MpHost, Some(1), 0, true),
+            (SessionKind::MpHost, Some(2), 0, false),
+            (SessionKind::MpHost, Some(3), 2, true),
+            (SessionKind::MpHost, Some(3), 1, false),
+            (SessionKind::MpHost, Some(5), 4, true),
+            (SessionKind::MpHost, Some(5), 2, false),
+        ];
+        for (kind, peers, joined, allowed) in cases {
+            let verdict = sim(joined).refuse_count_change(&session(kind, peers));
+            assert_eq!(verdict.is_ok(), allowed, "{kind:?} peers {peers:?} with {joined} bots");
+            if let Err(e) = verdict {
+                assert_eq!(e.code, REFUSED);
+                let data = e.data.unwrap();
+                assert_eq!(data["peers"], peers.unwrap());
+                assert_eq!(data["phantoms"], joined);
+                assert_eq!(data["people"], peers.unwrap() - 1 - joined);
+                assert_eq!(data["why"], e.message);
+            }
+        }
+    }
+
+    #[test]
+    fn a_count_change_refuses_counts_that_disagree_or_are_unknown() {
+        // Two bots joined to a session of two machines: read at different moments.
+        let e = sim(2).refuse_count_change(&session(SessionKind::MpHost, Some(2))).unwrap_err();
+        assert_eq!(e.code, REFUSED);
+        assert!(e.message.contains("agree"), "{}", e.message);
+        let e = sim(0).refuse_count_change(&session(SessionKind::MpHost, None)).unwrap_err();
+        assert!(e.message.contains("unknown"), "{}", e.message);
+    }
+
+    #[test]
+    fn the_session_gate_keeps_placement_edits_out_of_matchmaking_and_other_session_kinds() {
+        // Matchmaking and Live games are the external Live probe's: `edit`
+        // refuses them before any method runs, and this method is one of
+        // `EDITS`. Co-op, clients and unknown sessions are `SessionKind::writes`'.
+        assert!(method::EDITS.contains(&method::PLACEMENT_EDIT));
+        for kind in [
+            SessionKind::CoopHost,
+            SessionKind::CoopGuest,
+            SessionKind::MpClient,
+            SessionKind::Unknown,
+        ] {
+            assert!(kind.writes().is_err(), "{kind:?}");
+        }
     }
 }

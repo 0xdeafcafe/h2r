@@ -714,6 +714,7 @@ fn admin_start(map: &str) -> AdminHostStart {
         class: HostClass::Small,
         region: None,
         transport: None,
+        bots: 0,
         launch: true,
     }
 }
@@ -980,6 +981,64 @@ fn admin_start_validates_map_and_seats() {
     }
     request.map = "m".repeat(64);
     assert_eq!(request.validate(), Ok(()));
+}
+
+#[test]
+fn admin_start_bots_leave_a_seat_for_a_person() {
+    let mut request = admin_start("lockout");
+    request.max_players = 4;
+    for bots in [4, 5, 16] {
+        request.bots = bots;
+        assert_eq!(
+            request.validate().unwrap_err().message,
+            "bots must leave a seat: at most max_players - 1"
+        );
+    }
+    for bots in [0, 1, 3] {
+        request.bots = bots;
+        assert_eq!(request.validate(), Ok(()));
+    }
+    request.max_players = 1;
+    request.bots = 1;
+    assert!(request.validate().is_err());
+    // The most a 16-seat host takes: every name distinct and fit for the
+    // System Link roster (14 units, one kept for the bot mark).
+    let names = bot_names(7, 15);
+    assert_eq!(names.len(), 15);
+    assert!(names.iter().all(|n| !n.is_empty() && n.len() <= 14));
+    assert_eq!(names.iter().collect::<BTreeSet<_>>().len(), 15);
+    assert_eq!(bot_names(7, 3), names[..3]);
+    assert!(bot_names(7, 0).is_empty());
+}
+
+#[tokio::test]
+async fn admin_start_with_bots_leases_their_names() {
+    let (live, fake) = setup().await;
+    let router = crate::http::router(live.clone());
+    let token = || Some(operator(&live, crate::admin::LXM_ADMIN_WRITE));
+    let (status, reply) = post_start(
+        router.clone(),
+        token(),
+        r#"{"map":"lockout","max_players":4,"bots":3}"#,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::CREATED, "{reply}");
+    let lease: HostLease = serde_json::from_value(reply["lease"].clone()).unwrap();
+    assert_eq!(lease.bots.len(), 3);
+    assert!(lease.bots.iter().all(|name| !name.is_empty()));
+    assert_eq!(lease.bots.iter().collect::<BTreeSet<_>>().len(), 3);
+    assert!(lease.assignment_id.starts_with("custom-"));
+    assert!(lease.roster.is_empty());
+
+    // No seat left for a person: refused, and no host is launched.
+    let (status, reply) = post_start(
+        router,
+        token(),
+        r#"{"map":"lockout","max_players":4,"bots":4}"#,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{reply}");
+    assert_eq!(fake.starts.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]

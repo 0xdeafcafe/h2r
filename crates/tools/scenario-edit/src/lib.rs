@@ -45,6 +45,7 @@ pub mod geometry;
 pub mod layers;
 pub mod layout;
 pub mod native_view;
+pub mod nav_view;
 pub mod object_collision;
 pub mod package;
 pub mod recipe;
@@ -63,8 +64,8 @@ pub use layout::{BlockKind, FieldType, Role};
 pub use package::{PackageForm, SavedPackage};
 pub use save::MapSource;
 pub use scenario::{
-    BspPatch, Changes, GeometryChanges, Grown, RawPatch, Removed, Scenario, TagGrown, TagRef,
-    Value, VolumeRemoved,
+    BspPatch, Changes, GeometryChanges, GeometryGrown, Grown, RawAppend, RawPatch, Removed,
+    Scenario, TagGrown, TagRef, Value, VolumeRemoved,
 };
 pub use session::{GROWTH_REFUSAL, Reference, RotationField, Session, Transform};
 

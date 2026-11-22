@@ -95,8 +95,8 @@ Typed access comes from the signature: `Obs::arg_u32(name)`,
 [Calling code that is still recompiled](#calling-code-that-is-still-recompiled)).
 A hook marked `HookRef::context_only` acts only on the registers, stack and
 memory of the context it runs on, so a chain made only of such hooks may run
-on the pipelined render thread (`Chain::render_thread`,
-[pipelined-render.md](../graphics/pipelined-render.md)). A hook may declare
+on a second executor (`Chain::render_thread`,
+[second-executor.md](../runtime/second-executor.md)). A hook may declare
 resume sites (`resumes`, `generated_resumes`) for an implementation that
 re-enters at base-image return addresses.
 
@@ -168,10 +168,22 @@ runs alone.
 
 ### Resources
 
-`Builder::guest_alloc(len, perms)` hands out page-granular guest memory from
-one reserved range (`crates/hooking/hooks/src/arena.rs`, `ARENA_START`
-to `ARENA_END`, inside the kernel's HLE reservation), mapped at install.
-Shadow entries and `Builder::entry` pages come from the same range.
+`Builder::guest_alloc(len, perms)` hands out guest memory from one reserved
+range (`crates/hooking/hooks/src/arena.rs`, `ARENA_START` to `ARENA_END`,
+1340 KiB inside the kernel's HLE reservation), mapped at install. A request
+of a page or more gets whole pages of its own. A smaller one is packed,
+16-byte aligned, into a page shared with other features' small requests of
+the same protection, so a feature uses only the bytes it asked for.
+`Builder::entry` takes 16 bytes of a shared executable page. Return shadows
+are packed 4 bytes apart on shadow pages of their own. `Plan::mappings`
+lists each page once, and install maps it once. Presentation-only features
+take their pages from the high end, so the simulation's addresses do not
+move. When the arena is full, `guest_alloc` fails with the feature, the
+size asked for and the room left, and a plan with no room for a return
+shadow is refused with one conflict naming every point left without one
+(`Conflict::ArenaFull`). `the_biggest_plans_leave_room_in_the_guest_arena`
+(`crates/apps/boot/src/registration/tests.rs`) keeps an eighth of the
+arena free.
 `Builder::snapshot(SnapshotPolicy)` says what a feature holds outside guest
 RAM; a feature that says nothing is `Unaudited` and blocks machine snapshots
 ([snapshots.md](../runtime/snapshots.md)).
@@ -209,8 +221,8 @@ preempted must unwind to the scheduler. A body that calls guest code is an
 - The installer drives the future with `ExecCtx::call_guest`, parking it in
   the continuation (`feature::entry`). The stack is put back after every
   call, and the caller's EBX, ESI, EDI, EBP and ESP on return.
-- `Builder::entry(label, f)` places a body at a fresh address on the
-  feature's executable arena page, for a loader, a vtable slot or a callback
+- `Builder::entry(label, f)` places a body at a fresh address on a shared
+  executable arena page, for a loader, a vtable slot or a callback
   the guest is handed. `Raw::implement_async` makes one a chain's body.
 - `engine::entry::testing::run` drives a body in a test against fake
   callees on a `FakeGuest` and records the calls.

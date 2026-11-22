@@ -116,20 +116,25 @@ pub const TRAINING_ID: u32 = 0x6c0;
 pub const TRAINING_SHOWN: u32 = 0x6c4;
 
 /// The navpoint lists (`[0x005023f8] + user * 0x30`): four slots of 12
-/// bytes, `+0` an `i16` (-1 ends the list), `+2` the kind in its low four
-/// bits (15 skips the slot, 0 a scenario point), `+4` a height added to
-/// the point, `+8` the point's index (E `0x0024da7d`..`0x0024db6e`).
+/// bytes, `+0` an `i16`, `+2` the kind in its low four bits (15 skips the
+/// slot, 0 a scenario point), `+4` a height added to the point, `+8` the
+/// point's index. The draw walks all four slots: one whose `+0` or `+8`
+/// is -1, or whose kind is 15, it marks kind 15 and passes; no slot ends
+/// the list (E `0x0024daf1`..`0x0024db25`, `0x0024dc21`..`0x0024dc3e`).
 pub const NAVPOINTS: u32 = 0x0050_23f8;
 pub const NAV_USER_LEN: u32 = 0x30;
 pub const NAV_SLOTS: u32 = 4;
 pub const NAV_SLOT_LEN: u32 = 12;
 pub const NAV_SCENARIO_POINT: u16 = 0;
 pub const NAV_SKIP: u16 = 15;
-/// The scenario (`[0x004e0350]`) and its point block at `+0x1e4` (count,
-/// address), `0x38` bytes a point, the point at `+0x24` (E `0x0024da7d`;
-/// S: which scenario block this is).
+/// The scenario (`[0x004e0350]`) and the tag block a kind-0 slot indexes:
+/// `scnr +0x1e0`, its count at `+0` and its address at `+4`, `0x38` bytes
+/// a point, the point at `+0x24`. The draw reads the address at
+/// `scnr +0x1e4` and does not check the index against the count (E
+/// `0x0024db56`..`0x0024db6b`; D `formats/tags/src/defs/scnr.txt`, the
+/// block at `0x1e0` of `0x38`-byte elements).
 pub const SCENARIO: u32 = 0x004e_0350;
-pub const SCENARIO_POINTS: u32 = 0x1e4;
+pub const SCENARIO_POINTS: u32 = 0x1e0;
 pub const POINT_LEN: u32 = 0x38;
 pub const POINT_AT: u32 = 0x24;
 
@@ -437,7 +442,15 @@ fn navpoint_at() -> Option<[f32; 3]> {
 /// The string lookup's answer for the kit's ids (`0x001a0180`, through
 /// `community_variants`' override).
 pub fn text(id: u32) -> Option<String> {
-    (id == TRAINING_TEXT_ID).then(|| lock(&TRAINING_TEXT).clone())
+    (id == TRAINING_TEXT_ID).then(|| game_line_breaks(&lock(&TRAINING_TEXT)))
+}
+
+/// `text` with each line break as the game's strings write it, `\r\n`:
+/// the game's text draw passes a lone `\n` with no break and no space
+/// (the training box drew "lip,let go"; docs/live/live.md, the game's
+/// own strings, `h2 strings 01a_tutorial`). The kit's model writes `\n`.
+pub fn game_line_breaks(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\n', "\r\n")
 }
 
 /// Whether `id` is one of the kit's string ids.
@@ -984,8 +997,8 @@ fn read_point_header(mem: &dyn GuestMemory, region: u32) -> Result<Option<PointH
     }))
 }
 
-/// Puts the scenario's point block back where it still points into our
-/// memory, then copies it there with one point after it and points the
+/// Puts the scenario's point block back where the loaded scenario still
+/// points at our copy, then copies it there with one point after it and points the
 /// scenario at the copy. `None` without a scenario or room.
 pub fn install_point(
     mem: &mut dyn GuestMemory,
@@ -993,9 +1006,10 @@ pub fn install_point(
 ) -> Result<Option<PointHeader>, MemFault> {
     let (start, len) = region;
     if let Some(h) = read_point_header(&*mem, start)? {
-        let field = h.scenario + SCENARIO_POINTS;
-        let address = mem.u32(field + 4)?;
-        if address >= start && address < start + len {
+        // Only the scenario still loaded: a new map's tags may lie where
+        // the old scenario was.
+        if point_installed(&*mem, region, &h)? {
+            let field = h.scenario + SCENARIO_POINTS;
             mem.set_u32(field, h.retail[0])?;
             mem.set_u32(field + 4, h.retail[1])?;
         }
@@ -1033,9 +1047,27 @@ pub fn install_point(
     Ok(Some(h))
 }
 
+/// Whether the scenario loaded now still points at the copy
+/// [`install_point`] made, our point its last: the only state in which a
+/// kind-0 slot with our index reads our point (the draw does not check
+/// the index against the block's count).
+fn point_installed(
+    mem: &dyn GuestMemory,
+    region: (u32, u32),
+    h: &PointHeader,
+) -> Result<bool, MemFault> {
+    if mem.u32(SCENARIO)? != h.scenario || h.scenario == 0 {
+        return Ok(false);
+    }
+    let field = h.scenario + SCENARIO_POINTS;
+    Ok(mem.u32(field)? == h.index + 1 && mem.u32(field + 4)? == region.0 + POINT_HEADER_LEN)
+}
+
 /// Puts our point at `at` and keeps one slot of user `user`'s navpoint
-/// list on it (the slot already ours, else a skipped one, else the list's
-/// end), or skips our slot when `at` is `None`. Returns the slot used.
+/// list on it (the slot already ours, else the first one the game's draw
+/// passes: `+0` or `+8` -1, or kind 15), or skips our slot when `at` is
+/// `None` or our point is not installed in the loaded scenario. The
+/// game's own slots are never touched. Returns the slot used.
 pub fn write_navpoint(
     mem: &mut dyn GuestMemory,
     region: (u32, u32),
@@ -1050,50 +1082,48 @@ pub fn write_navpoint(
         return Ok(None);
     }
     let slot = |i: u32| list + user * NAV_USER_LEN + i * NAV_SLOT_LEN;
+    let unused = |mem: &dyn GuestMemory, i: u32| -> Result<bool, MemFault> {
+        Ok(mem.u16(slot(i))? as i16 == -1
+            || mem.u32(slot(i) + 8)? == u32::MAX
+            || mem.u16(slot(i) + 2)? & 0xf == NAV_SKIP)
+    };
     let ours = |mem: &dyn GuestMemory, i: u32| -> Result<bool, MemFault> {
-        Ok(mem.u16(slot(i))? as i16 != -1
+        Ok(!unused(mem, i)?
             && mem.u16(slot(i) + 2)? & 0xf == NAV_SCENARIO_POINT
             && mem.u32(slot(i) + 8)? == h.index)
     };
     let mut mine = None;
     let mut free = None;
-    let mut end = None;
     for i in 0..NAV_SLOTS {
-        if mem.u16(slot(i))? as i16 == -1 {
-            end = Some(i);
-            break;
-        }
         if ours(&*mem, i)? {
             mine = Some(i);
             break;
         }
-        if free.is_none() && mem.u16(slot(i) + 2)? & 0xf == NAV_SKIP {
+        if free.is_none() && unused(&*mem, i)? {
             free = Some(i);
         }
     }
-    let Some(at) = at else {
-        if let Some(i) = mine {
-            let kind = mem.u16(slot(i) + 2)?;
-            mem.set_u16(slot(i) + 2, (kind & !0xf) | NAV_SKIP)?;
+    let at = match at {
+        Some(at) if point_installed(&*mem, region, &h)? => at,
+        _ => {
+            if let Some(i) = mine {
+                let kind = mem.u16(slot(i) + 2)?;
+                mem.set_u16(slot(i) + 2, (kind & !0xf) | NAV_SKIP)?;
+            }
+            return Ok(None);
         }
-        return Ok(None);
     };
-    let point = h.scenario;
-    let block = mem.u32(point + SCENARIO_POINTS + 4)?;
-    let p = block + h.index * POINT_LEN + POINT_AT;
+    let p = region.0 + POINT_HEADER_LEN + h.index * POINT_LEN + POINT_AT;
     for (k, v) in at.iter().enumerate() {
         mem.set_f32(p + 4 * k as u32, *v)?;
     }
-    let Some(i) = mine.or(free).or(end) else {
+    let Some(i) = mine.or(free) else {
         return Ok(None);
     };
     mem.set_u16(slot(i), 0)?;
     mem.set_u16(slot(i) + 2, NAV_SCENARIO_POINT)?;
     mem.set_f32(slot(i) + 4, 0.0)?;
     mem.set_u32(slot(i) + 8, h.index)?;
-    if Some(i) == end && i + 1 < NAV_SLOTS {
-        mem.set_u16(slot(i + 1), u16::MAX)?;
-    }
     Ok(Some(i))
 }
 

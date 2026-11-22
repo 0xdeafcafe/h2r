@@ -11,7 +11,7 @@ const BITMAP_AT: u32 = AREA + 0x300;
 /// Where the strip's widgets start.
 const OURS: u32 = AREA + 0x1000;
 
-/// Split Screen, no kit map: MULTIPLAYER and FIREFIGHT off.
+/// Split Screen, no kit map, no Live: MULTIPLAYER off, every other tab on.
 fn split_screen(leader: bool, selected: Tab) -> Shown {
     Shown {
         place: Place::SplitScreen,
@@ -256,6 +256,46 @@ fn the_strip_takes_the_lobby_texts_animation() {
     assert_eq!(block(Piece::Cell(Tab::Forge, Look::On), no_forge), None);
 }
 
+/// A lobby as the guest leaves it: `networking`, and a squad session in
+/// the pregame stage (`+0x4980` 1, as `0x5a220` leaves every lobby) with
+/// network class `class` at `+0x18`.
+fn lobby_at(networking: bool, class: u32) -> FakeGuest {
+    use bots::phantom::session::at;
+    const SQUAD: u32 = 0x10_0000;
+    let mut g = FakeGuest::new();
+    g.map(lobby::NETWORKING, 0x1000)
+        .map(SQUAD, 0x8000)
+        .put_u8(lobby::NETWORKING, u8::from(networking))
+        .put_u32(lobby::SESSION, SQUAD)
+        .put_u32(SQUAD + at::STATE, 5)
+        .put_u32(SQUAD + at::CLASS, 1)
+        .put_u32(SQUAD + crate::variant_ext::SESSION_NETWORK_CLASS, class);
+    g
+}
+
+#[test]
+fn the_place_is_the_squad_sessions_network_class_not_its_stage() {
+    // A Live party lobby: the game's Live paths create the squad with
+    // `0x59890(2)`; our Live HLE leaves session creation to the guest.
+    // Its stage byte is 1 like any lobby's, and must not read as System
+    // Link (the dimmed CO-OP tab).
+    assert_eq!(place_now(&lobby_at(true, 2)), Some(Place::XboxLive));
+    assert_eq!(place_now(&lobby_at(true, 1)), Some(Place::SystemLink));
+    assert_eq!(place_now(&lobby_at(false, 0)), Some(Place::SplitScreen));
+    assert_eq!(place_now(&lobby_at(true, 0)), None, "an offline class while networked");
+    // And so CO-OP on a Live party is on, not refused for System Link.
+    let facts = Facts {
+        live_co_op: true,
+        ..Facts::default()
+    };
+    let at = |class| place_now(&lobby_at(true, class)).unwrap();
+    assert_eq!(crate::lobby_tabs::available(Tab::CoOp, at(2), facts), Avail::On);
+    assert_eq!(
+        crate::lobby_tabs::available(Tab::CoOp, at(1), facts),
+        Avail::Off(Reason::CoOpNotOnSystemLink)
+    );
+}
+
 #[test]
 fn the_place_and_the_retail_mode_come_from_the_session() {
     assert_eq!(place(false, None), Some(Place::SplitScreen));
@@ -306,10 +346,7 @@ fn a_member_reads_its_tab_from_the_lobby() {
         retail: RetailMode::Custom,
         kit_map: true,
         clanker: None,
-        facts: Facts {
-            kit_maps: true,
-            ..Facts::default()
-        },
+        facts: Facts::default(),
     };
     let s = shown(&reading, Present::ALL, Mode::Multiplayer);
     assert_eq!(s.selected, Tab::Firefight, "a kit map in a custom lobby");
@@ -383,8 +420,10 @@ fn ui_lobby_tabs_answers_each_tab_with_its_state_and_reason() {
     assert!(tabs[1]["reason"].is_null());
     assert_eq!(tabs[2]["state"], "on");
     assert_eq!(tabs[3]["tab"], "firefight");
-    assert_eq!(tabs[3]["reason"], Reason::NoKitMap.text());
+    assert_eq!(tabs[3]["state"], "on", "on with no kit map installed");
+    assert!(tabs[3]["reason"].is_null());
     assert_eq!(tabs[4]["tab"], "co_op");
+    assert_eq!(tabs[4]["state"], "on", "Split Screen's co-op is retail's");
     assert!(v["clanker"].is_null(), "not on MULTIPLAYER");
     assert!(json_of(&s, None)["notice"].is_null());
 }

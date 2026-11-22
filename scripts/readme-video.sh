@@ -92,7 +92,7 @@ settle_ticks="$(jq -n --argjson seconds "$settle" '($seconds * 30) | round')"
 clip_frames=$((clip_ticks * fps / 30))
 features="${H2_FEATURES:-}"
 if ((fps > 30)); then
-  features="${features:+$features,}impl.render.native=off,impl.render.pipelined_frame=off"
+  features="${features:+$features,}impl.render.native=off"
   features+=",impl.render.interpolate=on,impl.render.reproject=off,impl.render.reproject_ahead=off"
 fi
 

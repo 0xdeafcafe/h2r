@@ -38,12 +38,6 @@ pub fn current() -> Option<Layer> {
     LAYER.get()
 }
 
-/// The pipelined executor stopped inside this layer. Its remaining
-/// handlers will run on the thread that takes the suspended render stack.
-pub(crate) fn replace(layer: Option<Layer>) -> Option<Layer> {
-    LAYER.replace(layer)
-}
-
 pub struct NativeWorldLayers;
 
 impl Feature for NativeWorldLayers {

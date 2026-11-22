@@ -1,7 +1,7 @@
 # Native renderer stage 1: the static world
 
 Status: Built. The static world draws natively in the default configuration.
-Code: `crates/rewrites/native-render/src/{world,load,camera,cull,skip,gpu,program,look}.rs`, `crates/rewrites/render-bridge/src/native_world.rs`, `crates/extensions/game/src/native_world_glue.rs`. Tests: `crates/rewrites/native-render/tests/gpu.rs`, `crates/rewrites/render-bridge/tests/native_world.rs`.
+Code: `crates/rewrites/native-render/src/{world,load,camera,cull,skip,gpu,program,look}.rs`, `crates/rewrites/render-bridge/src/{native_world,native_edits}.rs`, `crates/extensions/game/src/native_world_glue.rs`. Tests: `crates/rewrites/native-render/tests/gpu.rs`, `crates/rewrites/native-render/tests/edits_gpu.rs`, `crates/rewrites/render-bridge/tests/native_world.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 Stage 1 of [native-renderer.md](native-renderer.md). The structure BSP's opaque
@@ -41,6 +41,41 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   native program (below). A material the native path does not support is
   marked *fallback* and keeps its D3D draws.
 - **Pipelines** are made once per supported template.
+
+### Live edits
+
+A paired editor's live edit changes the map file as the raw overlay
+serves it ([realtime-edits.md](../editor/realtime-edits.md), "The native
+refresh"), and the loaded world is a copy of that file. The hot-edit glue
+pushes each edited owner onto `render_bridge::native_edits`; at the frame
+boundary (`Glue::begin_frame`) the world's glue drains its share once the
+world is resident and no refresh is running, and a worker applies it
+(`native_world_glue::refresh_world`):
+
+- **A section, same counts.** Cluster or instanced definition, decoded
+  again from the file as the load decodes it
+  (`native_render::load::load_sections`, a definition once per rigid
+  placement), replaces its vertices in both vertex buffers
+  (`GpuWorld::replace_section`, `World::replace_section`). The draw
+  bounds the cull and the guest's admission read (`Ready::part_bounds`)
+  and the world's bounds are recomputed. A placement keeps its lightmap
+  bucket's coordinates and lighting vectors.
+- **A section that grew, or that the world cannot take in place** (another
+  vertex count, other triangles in a drawn part): the world reloads
+  (`native_map_work::reload_bsp`), as on a BSP switch. Until the reload
+  publishes, the key is not current and the D3D path draws the world from
+  guest memory.
+- **An image, same size and format.** Decoded again at each stage that
+  samples it (`stage_images::decode_stages`), every material program
+  texture made from it is rewritten in place, each signed variant biased
+  as at load (`GpuWorld::rewrite_image`, `ProgramSet::rewrite_image`,
+  `gpu::rewrite_texture`). Another size, level count or format is refused
+  with a log line and the texture keeps its pixels until the map reloads.
+
+The refresh covers the layer-3 world. The fog, water, layers, lights and
+decorators keep the textures they loaded, and the editor's preview
+(`GpuWorld::set_section_vertices`) moves vertices without recomputing
+bounds.
 
 ### Per frame
 
@@ -146,9 +181,8 @@ per layer draw, not one per item:
 - **before the next layer draw** (5 and up follow 3 on the scene list,
   in the same view): set the bits back, on each item that still holds
   the mask the skip left. Not after the layer itself: something after the
-  body makes the chain call it through a Rust continuation, which the
-  pipelined render thread cannot run (docs/graphics/pipelined-render.md,
-  "Render-safe hooks").
+  body makes the chain call it through a Rust continuation, which a
+  second executor cannot run.
 
 The layer draw then builds no entry for the world: no build call, no
 shader draw, no geometry submission, no push-buffer words. Objects,
@@ -362,12 +396,10 @@ there is no hand-written look in between.
   batched reservation for the view before applying masks.
   Tests: `crates/rewrites/render-bridge/tests/native_world.rs` (the plan with
   `render-timing`, deep, and the layer-draw port all on; alone, the chain
-  runs on the render thread; on by default, keeping pipelining;
+  runs on a second executor; on by default;
   `impl.render.native=off` places nothing; the skip and its restore at the
   next layer draw on synthetic memory, a rebuilt list left alone, and a
-  part left to D3D keeping its bit though its shader is drawn);
-  `crates/extensions/game/src/render_thread.rs` (the default plan's `LAYER_DRAW` is
-  render-thread safe).
+  part left to D3D keeping its bit though its shader is drawn).
 - **Boot glue** (`crates/extensions/game/src/native_world_glue.rs`). On a new (map
   name, active BSP address) a worker opens the loaded map through the VFS
   with its shared maps, picks the scenario BSP whose tag data sits at that

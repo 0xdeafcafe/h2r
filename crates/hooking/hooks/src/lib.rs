@@ -368,9 +368,9 @@ impl HookRef<'_> {
     /// `Call`/`Obs` (or `ExecCtx`), never live RAM through the runtime,
     /// never host state it shares with the game thread except to read it,
     /// and either returns synchronously or uses [`Call::answer_render_async`]
-    /// for an owned render operation. The pipelined render runs such a chain on its own thread
+    /// for an owned render operation. A second executor runs such a chain on its own thread
     /// against its view instead of falling back
-    /// (docs/graphics/pipelined-render.md).
+    /// (docs/graphics/notes/pipelined-render.md).
     pub fn context_only(self) -> Self {
         self.0.context_only = true;
         self
@@ -381,6 +381,17 @@ impl HookRef<'_> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Alloc {
     pub feature: &'static str,
+    pub addr: u32,
+    pub len: u32,
+    pub perms: Permissions,
+    pub presentation_only: bool,
+}
+
+/// Guest pages the plan maps, zeroed, at install: an allocation's own
+/// pages, or a page its allocation shares with others ([`arena::mapping`],
+/// [`Plan::mappings`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GuestMapping {
     pub addr: u32,
     pub len: u32,
     pub perms: Permissions,
@@ -446,7 +457,6 @@ impl Registry {
             arena: self.arena.clone(),
             allocs: Vec::new(),
             entries: Vec::new(),
-            entry_page: None,
             switches: &self.switches,
             sources: Vec::new(),
             locale: self.locale.clone(),
@@ -524,9 +534,6 @@ pub struct Builder<'r> {
     arena: Arena,
     allocs: Vec<Alloc>,
     entries: Vec<Entry>,
-    /// The page this feature's entries are packed in, and its next free
-    /// offset.
-    entry_page: Option<(u32, u32)>,
     switches: &'r Switches,
     sources: Vec<locale::Source>,
     locale: locale::Sources,
@@ -565,13 +572,24 @@ impl<'r> Builder<'r> {
         Raw(self)
     }
     /// Guest memory for this feature, from the one reserved range, mapped
-    /// (zeroed) at install. Page-granular.
+    /// (zeroed) at install. A request smaller than a page is packed,
+    /// [`arena::ALIGN`]-aligned, into a page shared with other features'
+    /// requests of the same `perms`: use only the `len` bytes asked for. A
+    /// page or more gets whole pages of its own ([`arena`]).
     pub fn guest_alloc(&mut self, len: u32, perms: Permissions) -> Result<u32, BuildError> {
         let addr = if self.presentation_only {
-            self.arena.alloc_high(len)
+            self.arena.alloc_high(len, perms)
         } else {
-            self.arena.alloc(len)
-        }.ok_or_else(|| BuildError(format!("guest arena full ({len:#x} bytes)")))?;
+            self.arena.alloc(len, perms)
+        }
+        .ok_or_else(|| {
+            BuildError(format!(
+                "guest arena full: {} asked for {len:#x} bytes with {:#x} of the arena's {:#x} left (hooks::arena)",
+                self.feature,
+                self.arena.free(),
+                arena::ARENA_SIZE,
+            ))
+        })?;
         self.allocs.push(Alloc {
             feature: self.feature,
             addr,
@@ -584,19 +602,15 @@ impl<'r> Builder<'r> {
 
     /// A function of ours at a fresh guest address: `f` runs (as an async
     /// entry, see [`entry`]) whenever the guest calls that address. For
-    /// loaders, vtable slots and callbacks the guest is handed. Entries are
-    /// [`ENTRY_STRIDE`] bytes apart on one executable arena page per feature.
+    /// loaders, vtable slots and callbacks the guest is handed. Each entry
+    /// takes [`ENTRY_STRIDE`] bytes of an executable arena page shared with
+    /// other entries.
     pub fn entry(
         &mut self,
         label: &'static str,
         f: impl Fn(Cx) -> EntryFuture + Send + Sync + 'static,
     ) -> Result<u32, BuildError> {
-        let (page, next) = match self.entry_page {
-            Some((page, next)) if next < 0x1000 => (page, next),
-            _ => (self.guest_alloc(0x1000, Permissions::RX)?, 0),
-        };
-        self.entry_page = Some((page, next + ENTRY_STRIDE));
-        let addr = page + next;
+        let addr = self.guest_alloc(ENTRY_STRIDE, Permissions::RX)?;
         self.entries.push(Entry {
             feature: self.feature,
             label,

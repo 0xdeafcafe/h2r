@@ -391,7 +391,7 @@ fn random_operations_give_the_same_results_with_and_without_write_behind() {
 /// `cargo test -p vfs --release bench_write_behind -- --ignored --nocapture`:
 /// calling-thread time per 256 KiB write, synchronous against queued.
 #[test]
-#[ignore]
+#[ignore = "manual benchmark: release mode"]
 fn bench_write_behind() {
     const CHUNK: usize = 256 * 1024;
     const N: usize = 256; // 64 MiB per run

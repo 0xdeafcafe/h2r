@@ -1,6 +1,6 @@
 ---
 name: h2-rules
-description: Use when writing, checking, testing or shipping a game type script in the rules language, a `.rules` file, a rules scenario, a game variant or a `.h2variant` file. Covers h2 rules check/build/run/sim/caps/builtin/lsp, h2 variants port, capabilities and requires, the tick budget, Studio's script editor and reloading a script into a running game (rules.reload), and Live's /v1/rules and /v1/variants routes.
+description: Use when writing, checking, testing or shipping a game type script in the rules language, a `.rules` file, a rules scenario, a game variant or a `.h2variant` file. Covers h2 rules check/build/run/sim/caps/builtin/lsp/editors, the VS Code and Zed extensions, h2 variants port, capabilities and requires, the tick budget, Studio's script editor and reloading a script into a running game (rules.reload), and Live's /v1/rules and /v1/variants routes.
 ---
 
 # Write, test and ship a game type script
@@ -70,7 +70,14 @@ h2 rules build my_mode.rules -o my_mode.rir         # the verified blob and its 
 status; run it when unsure whether an entry exists or a host can make it.
 `h2 rules lsp` is a language server on stdin and stdout for files ending
 `.rules` (diagnostics, completion, hover, signature help, definitions,
-references, semantic tokens, outline, formatting).
+references, highlights, semantic tokens, outline, folding, formatting,
+quick fixes, rename). A person edits scripts in VS Code or Zed through
+it: `h2 rules editors install` installs the VS Code extension and prints
+the Zed steps, and `h2 rules editors status` says what is installed and
+whether the server starts
+([docs/editor/rules-editors.md](../../../docs/editor/rules-editors.md)).
+The extensions live in `editors/`; their tests and packaging run in CI
+(`.github/workflows/editors.yml`), not in a lane.
 
 ## Read the check report
 
@@ -238,8 +245,8 @@ h2 variants port my_record.bin --script my_mode.rules -o out/
   script rides engine M`.
 - `--name NAME` and `--description TEXT` replace the record's name and the
   input file's description (one input only). `--option key=value`, once
-  per option, sets a script option by name: an int, `true` or `false`, or
-  an enum value's name. An option the script does not declare, a value
+  per option, sets a script option by name: an int (whole seconds for a
+  `time` option), `true` or `false`, or an enum value's name. An option the script does not declare, a value
   out of range, or any option with `--script keep` is refused. Options
   left out take their defaults. A script over the budget is refused.
 - `--script builtin` (the default) attaches the record's engine's
@@ -303,7 +310,10 @@ account publishes at most 200. Full reference:
 
 Studio's **Game type script** window (a tab beside the Variants tool's
 settings) edits one `.rules` file with colouring, problems, completion,
-hover and the check report. Agents drive the same state over the editor
+hover and the check report. **Open in editor** saves it and opens the file
+in VS Code or Zed when one has the rules extension (else `$VISUAL`,
+`$EDITOR`, `code`, `zed`, `open -t`); each save there comes back into
+Studio, and into the paired game while Reload on save is ticked. Agents drive the same state over the editor
 socket (`h2 studio`, [docs/editor/agent-api.md](../../../docs/editor/agent-api.md)):
 
 ```sh
@@ -342,9 +352,10 @@ Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules
 ## Pitfalls
 
 - **The verifier rejects the unbounded.** No `while`, no recursion, no
-  floats, no strings at run time, no backward jump. Functions are inlined,
-  return nothing, and see only their parameters, globals and options. A
-  `let` or parameter is not assigned again; options are read-only; a
+  floats, no strings at run time, no backward jump. Functions are inlined;
+  a block `fn` returns nothing, a value `fn f(a: T) -> R = expr` is one
+  expression, and both see only their parameters, globals, constants and
+  options. A `let` or parameter is not assigned again; options are read-only; a
   `timer` is a global only. A set (`players`, `teams`, `objectives`,
   a declared `objects` or `zones` label, `pick(set, n)`) appears only in
   `for each`, `count`, `first` and `pick`.
@@ -384,7 +395,10 @@ Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules
   Slayer-shaped; everything else is proven by scenario. Name the entries
   your script waits on in a comment at the top, as the built-ins do.
 - **`message(to, text)`.** `to` is a player, a team or `all`; `h2 rules
-  caps` lists the three forms under the one name. `ticks_held(zone,
+  caps` lists the three forms under the one name. The text may hold up
+  to four `{name}` holes (a player, team, int, time or enum in scope;
+  `{{` is a brace), passed through the VM-only `fmt_*` entries a script
+  cannot name ([language.md](references/language.md)). `ticks_held(zone,
   team)` is the VM's count, and a host refuses it until it has a zone
   test. If the design page and the code disagree, follow the code and
   say so; `h2 rules caps` is the truth.

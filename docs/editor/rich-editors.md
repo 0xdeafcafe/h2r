@@ -212,7 +212,7 @@ and stage-state animations and object-function inputs
 replaced by a flat colour. With a game connected in Edit, the same
 writes reach it through `edit.batch` and show on its next frame
 ([live-mirror.md](live-mirror.md), "How an edit applies"). This preview
-needs polish-plan's P15.
+needs the native view ([editor.md](editor.md), "Lighting").
 
 **Write.**
 
@@ -627,7 +627,7 @@ uses the built `render.dump`, `render.reload` and `render.overrides`.
 
 Sizes are modeling.md's: S under 800 lines with tests, M under 2,500, L
 more. T, P and "modeling" numbers are slices of
-[tag-editing.md](tag-editing.md), [polish-plan.md](polish-plan.md) and
+[tag-editing.md](tag-editing.md), [editor.md](editor.md) and
 [modeling.md](modeling.md). Ordered by payoff for the work; a lane takes
 the first one whose needs are met.
 
@@ -716,8 +716,7 @@ that can be read, and models that move.
   windows this design builds on.
 - [editor.md](editor.md): the document, what can be written, shared
   caches.
-- [polish-plan.md](polish-plan.md): P14 and P15, the native view the
-  previews draw in.
+- [editor.md](editor.md): the native view the previews draw in.
 - [modeling.md](modeling.md): `patch_raw`, `append_raw`, and converted
   maps.
 - [live-mirror.md](live-mirror.md): how edits reach a game.

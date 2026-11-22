@@ -135,8 +135,8 @@ Scene, viewport, inspector, Log and status bar.*
   meets the level). A button is disabled, with the reason as its
   tooltip, when the editor refuses (scenario-editor.md §6). Double-click
   an entry to frame the camera on it. The filter and the Duplicate and
-  Delete row stay pinned at the top; **Layers** (a folding header) and the
-  tree scroll together in one body (`theme::panel_body`).
+  Delete row stay pinned at the top; the tree scrolls in one body
+  (`theme::panel_body`).
 - **Panels on short windows.** A panel scrolls as a whole: its lists
   and trees draw into the one body, and two lists in a panel are two
   folding headers. Only a panel with rows pinned above its list (the
@@ -588,7 +588,12 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   the see-through ones, in the order of their parts, each
   alpha-blended or, for an `add` template ("Blends", below), added:
   Halo 1's Derelict draws an added space dome, an added galaxy whose
-  picture is black around it, and two alpha-blended planets. Behind
+  picture is black around it, and two alpha-blended planets. A
+  see-through layer with a coverage mask takes it (`Look::mask`, below):
+  Coagulation's sky is a blue dome (`coag_stars`), then clouds that are
+  a cloud tile with no alpha (`Y8`) times `coag_cloudcover_mask`, and a
+  sun volume that adds a grey tile times its mask; without the masks the
+  clouds were an opaque white dome over the blue. Behind
   the model is the sky's clear colour (`scene::sky_clear`: `sky +0xa0`
   when bit 5 of `+0x10` is set, else black), not the gradient, since
   an added layer adds onto it. With no sky model, the gradient from
@@ -596,9 +601,11 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   `tests::the_sky_turns_with_the_camera_and_never_comes_nearer`,
   `scene::tests::see_through_batches_keep_their_part_order`,
   `scene::tests::the_sky_clears_to_its_colour_only_when_flagged`,
-  `tests::the_sky_model_is_drawn_behind_the_level_wherever_the_eye_is`
-  and `tests::added_sky_layers_add_over_the_dome_and_black_adds_nothing`
-  (GPU) hold it. Solid surfaces are
+  `tests::the_sky_model_is_drawn_behind_the_level_wherever_the_eye_is`,
+  `tests::added_sky_layers_add_over_the_dome_and_black_adds_nothing`
+  and `tests::a_cloud_layer_is_covered_by_its_mask` (GPU) hold it, and
+  `tests::disc_coagulation_sky_layers_take_their_masks` (ignored; needs
+  the disc) holds Coagulation's. Solid surfaces are
   one-sided, as in the game, so the camera sees into a level through the
   backs of the cliffs and walls around it.
 - **Blends.** Templates in a `transparent` or `water` folder, plain
@@ -621,7 +628,14 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   city. The fog fades an added surface to nothing, a multiplied one to
   white. The sky pass adds an additive layer with its own pipeline
   (blend one, one), and a mesh's see-through batches keep the order of
-  their parts (`Blend::draw_order`).
+  their parts (`Blend::draw_order`). An alpha-blended or added layer
+  whose pass samples a bitmap named `mask` along with its base map
+  (`scene::mask_plan`, `scene::is_coverage_mask`; else the first such
+  bitmap of the shader at scale 1) multiplies it in, colour and alpha, at
+  that stage's scale, as the cloud passes do (`two_alpha_clouds`: mask
+  times tile in RGB and alpha); `view.stats` names it as the material's
+  `mask`. `scene::tests::a_see_through_layer_takes_its_coverage_mask`
+  holds the choice.
 - **Self-illumination.** The `opaque\illum` template's picture is its
   own light (mainmenu's lit windows): drawn as it is, unshaded
   (`scene::template_emits`, `Look::emissive`).
@@ -631,12 +645,15 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   is drawn at the placement's position, rotation and scale, instanced per
   model. Clicking a model picks it (ray against its triangles); the
   selection is tinted and keeps its marker.
-- **Layers.** Open **Show** above the viewport or **Layers** in the scene
-  outliner to toggle the structure, sky, object models, fog, markers,
-  individual placement blocks, Halo 1 reference and live objects. Each
-  row shows its colour and count. Art, Gameplay, Collision and Everything
-  choose a set of layers in one click. Collision shows the level structure
-  for context, the kill volumes and the collision layers. The viewport and `view.snapshot` share these settings.
+- **Layers.** Open **Show** above the viewport, the one place that toggles,
+  to switch the structure, sky, object models, fog, markers,
+  individual placement blocks, collision, navigation, Halo 1 reference
+  and live objects. Each row shows its colour and count. Art, Gameplay,
+  Collision, Navigation and Everything choose a set of layers in one
+  click. Collision shows the level structure for context, the kill
+  volumes and the collision layers. Navigation shows the structure, the
+  invisible walls (Collision only) and the three navigation layers. The
+  viewport and `view.snapshot` share these settings.
 - **Lighting.** The level is drawn by the native renderer
   (`scenario_edit::native_view`), one world per BSP; the toolbar's
   **Lighting** menu picks Game (base map times lightmap), Flat (no
@@ -734,6 +751,53 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   start hidden. A click on a shown surface selects it when nothing else
   is under the cursor, and the inspector shows its class, plane, raw
   flags, material and ring, read only.
+- **Navigation.** Three layers, all hidden until shown
+  (`scenario_edit::nav_view`, drawn by `studio::viewport::nav`):
+  - **AI pathfinding** draws each structure BSP's own pathfinding data
+    (`sbsp+0xc4`, [pathfinding.md](../formats/pathfinding.md)), what
+    Halo 2's AI walks on: each sector as a translucent polygon from its
+    link ring, tinted by its flags (the same flags, the same shade;
+    walls and ceilings dimmer), and each link as a line, a sector's
+    boundary brighter than a link two sectors share. Orphan links and
+    sectors whose ring does not close are left out and counted
+    (`nav.pathfinding`). The 2D BSP nodes are counted, not drawn. Read
+    with the map (`LevelPathfinding::read`). Retail multiplayer maps
+    carry none: the layer is empty and `nav.pathfinding` gives a note.
+  - **Bot nav mesh** draws the bots' own mesh
+    ([bots.md](../game/bots.md), §3.2): each polygon as translucent
+    floor, blue in the map and a dim grey-blue out of it
+    (`theme::BOT_OUT_OF_MAP`: only a glitch such as a superbounce reaches
+    it, bots.md §3.2, "In the map"), and each link as a line coloured by how it is crossed (walk,
+    drop, jump, crouch-jump, teleporter, lift, elevator;
+    `theme::bot_link_color`), with an arrowhead on a link no link leads
+    back along (drops, mostly). A traversal is drawn from its takeoff to
+    its landing; any other link from the crossing to the far polygon.
+  - **Bot superbounce spots** draws the spots the bots use
+    ([bots.md](../game/bots.md), "Superbounce routes"): bounce slots,
+    single-crease strips and crouch spots, each a post at its stand with
+    its strip or lip, coloured by what the data directory's files say:
+    proven (a verified run or a hand-measured spot), failed (verified),
+    dead (`.learned`), learned (a `learned` or `partial` line), training
+    (an `open` or `blocked` line) or likely (the scan alone). A diamond
+    round the stand marks a spot `.ghosts` keeps a run of.
+
+  The bots' data loads on its own thread the first time a bot layer is
+  shown for a map, or when `nav.bots` asks (`studio::app::bot_nav`). It
+  reads each structure BSP's `<data>/bots/<map>.<bsp>.bots` when its
+  stamp is the current nav generator's and this map file's. Otherwise it
+  builds the mesh in memory with the bots' own builder
+  (`bots::autonav::build_map`, what `h2 bots nav` runs), does not write
+  it, and says why in `nav.bots`'s notes. The spots come from
+  `<map>.spots` when current (else a scan now), the hand-measured ones,
+  and `<map>.verified`, `<map>.learned` and `<map>.ghosts` beside them.
+  `<data>` is the data root (`--data`, else the one `h2 play` uses).
+
+  A click picks a shown spot or bot link first, then the nearer bot
+  polygon or pathfinding sector, ahead of collision surfaces. The
+  inspector shows a sector's index, flags, hint and its links (with the
+  sector across each), a polygon's links and whether it is in the map, a link's kind, ends and
+  whether it is one way, or a spot's kind, source, state, launch, fall,
+  learned tries and verified trials, read only.
 - **Glyphs and labels.** Other placements without a model use a diamond
   in their block colour. Past 40 world units glyphs and their pick
   spheres grow with distance so the whole map stays readable. Gameplay
@@ -765,10 +829,25 @@ compares the window's pixels with the viewport's own, and
 (ignored; needs the disc) checks that under 2 % of either map's
 viewport is black (a quarter of Coagulation's was).
 
-Colour: base maps and lightmap pages are uploaded as sRGB textures and
-sampled in linear light, and the viewport renders into an sRGB target,
-so a picture's colours come through as stored. Lightmapped surfaces are
+Colour: the viewport's colour texture is `Rgba8UnormSrgb`, written
+through two views (`render::Shading`). The editor's own shaders (the
+sky, the scene's models, glyphs and overlays) upload base maps and
+lightmap pages as sRGB textures, shade in linear light and write the
+sRGB view, so a picture's colours come through as stored. The native
+renderer's passes (the level and the placed models) are the game's
+gamma-space combiners on the stored bytes, as the Xbox draws them and
+as the game presents them through a plain surface (`gfx::presenter`), so
+they write the plain `Rgba8Unorm` view (`UI_FORMAT`), and their clear
+colour is the background encoded (`render::encode_srgb`). Through the
+sRGB view they were encoded a second time and every colour came out
+pale. Glyph, overlay and grey-world colours are display values, as the
+Show legend draws them (`studio::theme::layer_color`): the shader
+decodes them before the sRGB view encodes them. Lightmapped surfaces are
 not lifted; only surfaces the sun lights have dark base maps brightened.
+`tests::each_shading_space_writes_its_own_view_of_the_target` holds
+the formats and
+`native_view::tests::the_viewport_keeps_the_native_worlds_colours_as_stored`
+(GPU) the native floor's bytes.
 
 `view.stats` (docs/editor/agent-api.md) reports all of the above for the
 open map: lightmap pages and each BSP's lighting, the world's triangles
