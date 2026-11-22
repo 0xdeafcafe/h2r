@@ -815,6 +815,7 @@ mod tests {
     }
 
     /// Generated code that returns to its caller, as a native fixture.
+    #[allow(unsafe_code)]
     unsafe extern "C" fn native_return(
         cpu: *mut CpuAbi,
         exec: *mut crate::ExecCtxOpaque,
@@ -833,6 +834,7 @@ mod tests {
     /// counted there too, or a slim host built from the audit leaves it to
     /// the interpreter.
     #[test]
+    #[allow(unsafe_code)]
     fn a_host_audit_counts_generated_entries_the_executor_runs() {
         const NATIVE: u32 = CODE + 0x100;
         let mut g = Guest::new();
