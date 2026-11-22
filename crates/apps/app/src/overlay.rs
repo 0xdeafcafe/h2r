@@ -85,9 +85,16 @@ impl Banner {
     }
 
     /// Show `notice` (or clear with `None`). A different notice than the
-    /// current one is shown even if the current one was dismissed.
+    /// current one is shown even if the current one was dismissed. Once the
+    /// game has stopped ([`NoticeKind::Crashed`]) only another such notice
+    /// replaces it, so a status thread (the tier build, `--follow`) can't
+    /// paint over the crash.
     pub fn set(&self, notice: Option<Notice>) {
         let mut s = self.lock();
+        let stopped = |n: &Option<Notice>| n.as_ref().is_some_and(|n| n.kind == NoticeKind::Crashed);
+        if stopped(&s.notice) && !stopped(&notice) {
+            return;
+        }
         if s.notice != notice {
             s.notice = notice;
             s.dismissed = false;
@@ -792,6 +799,9 @@ mod tests {
         assert!(b.restart_offered());
         let (_, h, _) = rasterize(&b.visible().unwrap());
         assert!(h > 4 * LINE_HEIGHT, "draws every line");
+
+        b.set(Some(Notice { kind: NoticeKind::Info, text: "Running slower".into() }));
+        assert_eq!(b.visible().unwrap().kind, NoticeKind::Crashed, "a status thread can't paint over it");
 
         let quit = stopped_notice(&GuestExit::Returned).unwrap();
         assert!(quit.text.starts_with("The game stopped."));
