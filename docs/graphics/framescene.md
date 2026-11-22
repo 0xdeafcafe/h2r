@@ -123,7 +123,8 @@ render thread never touches guest memory and takes no guest lock.
 | `scene-extract` (new) | guest memory to `FrameScene`. The only render code with guest offsets | `frame-scene`, `engine` (points), the layout crate of change 5 when it exists |
 | `native-render` | `FrameScene` to wgpu. No `d3d`, no guest reads | `frame-scene`, `gfx`, `shaders`, `tags`, `map`, `wgpu` |
 | `gfx` | gains the data types that `d3d::backend` owns today and both sides need: `ResolvedDraw` and its parts, `PixelRect`, the packet and target types (`ExternalTarget`, `ExternalDraws`, `ExternalBundles`, `TargetCopy`), and the NV2A pipeline key (`d3d::nv2a`'s `NativeDrawKey`, `NativeDrawMaterial`, `NativeDrawProgram`, `w_buffered`, `d3d_fog`) | as today |
-| `d3d` | the guest-facing device. Depends on `frame-scene` to fill the carried part. Shrinks in section 11 | `gfx`, `shaders`, `frame-scene` |
+| `frame-types` | the types `d3d` and `frame-scene` share: the carried part (`carried`), the render camera (`camera`) and the view and instance keys (`keys`). `frame-scene` re-exports them under its own paths | `serde` |
+| `d3d` | the guest-facing device. Depends on `frame-types` to fill the carried part and to classify its draws against the scene's cameras (`ReplayFrame::classify_cameras` takes `FrameScene::view_cameras`). Shrinks in section 11 | `gfx`, `shaders`, `frame-types` |
 
 Until change 5 lands, `scene-extract` keeps offsets in one private
 `layout` module, one file per guest record, moved there unchanged from
@@ -1199,7 +1200,7 @@ The owner arm records which game frames the native graph actually
 presents. The pixel and simulation comparisons in §9 use the full
 D3D reference with all native stages disabled.
 
-- **The types** (`frame_scene::carried`). `Slot` and `SlotAt` (the slot
+- **The types** (`frame_types::carried`, re-exported as `frame_scene::carried`). `Slot` and `SlotAt` (the slot
   and the guest view index); `SlotTracker` moves the slot on the frame
   step's events and, inside a game view, only forward. `GuestOp<D>`
   (`Draw`, `Bind`, `Clear`, `Copy`, `Upload`, `Sample`) over
@@ -1249,7 +1250,7 @@ D3D reference with all native stages disabled.
   `scene_readback_<kind>`. Over the census corpus these are the list
   section 8.3's table must cover. The sink sees a pixel-count request
   before the display worker decides which renderer supplies its result.
-- **Tests** (synthetic). `frame_scene::carried`:
+- **Tests** (synthetic). `frame_types::carried`:
   `a_game_view_runs_its_slots_in_order_and_the_overlay_follows`,
   `inside_a_view_the_slot_only_moves_forward_and_outside_it_does_not_move`,
   `a_summary_counts_by_slot_and_view_and_names_the_side_targets_of_game_views`;

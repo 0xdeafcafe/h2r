@@ -2,7 +2,7 @@
 //!
 //! A feature declares what it attaches to through a [`Builder`]: frame and
 //! game events (the [`frame`](Builder::frame) and [`game`](Builder::game)
-//! bridges), or raw hooks on named [`points`](engine::points). Nothing is
+//! bridges), or raw hooks on named [`points`](guest_layout::points). Nothing is
 //! installed while features build. [`Registry::build`] turns every
 //! declaration into a [`Plan`]: one ordered chain per guest address, or a
 //! list of [`Conflict`]s naming both parties. It is pure (no runtime, no
@@ -27,14 +27,14 @@ pub mod switches;
 
 use std::sync::Arc;
 
-pub use engine::points;
-use engine::points::Point;
+pub use guest_layout::points;
+use guest_layout::points::Point;
 use runtime::guest::Permissions;
 use runtime::{CpuAbi, ExecCtx, GuestFault, Runtime, TransferAbi};
 
 pub use arena::Arena;
 pub use bridge::{Frame, Game};
-pub use engine::entry::{Cx, EntryFuture, GuestCall, Ret};
+pub use guest_layout::entry::{Cx, EntryFuture, GuestCall, Ret};
 pub use entry::Entry;
 pub use install::{InstallError, Installed};
 pub use plan::{Base, Conflict, ImageAddrs, Plan, Remap};
@@ -225,7 +225,7 @@ impl Call<'_> {
 }
 
 fn arg_u32(point: &Point, cpu: &CpuAbi, mem: &runtime::Guest, name: &str) -> Option<u32> {
-    use engine::points::Loc;
+    use guest_layout::points::Loc;
     Some(match point.sig.arg(name)? {
         Loc::Eax => cpu.eax,
         Loc::Al => cpu.eax & 0xff,
@@ -317,7 +317,14 @@ pub struct Hook {
     pub context_only: bool,
     pub(crate) resume_sites: &'static [u32],
     pub(crate) generated_sites: &'static [u32],
+    /// Told the point's address when the installed chain holds other
+    /// hooks besides this implementation ([`HookRef::when_shared`]).
+    pub(crate) when_shared: Option<SharedFn>,
 }
+
+/// What an implementation runs when other hooks share its point
+/// ([`HookRef::when_shared`]).
+pub type SharedFn = Arc<dyn Fn(u32) + Send + Sync>;
 
 impl Hook {
     pub fn kind(&self) -> Kind {
@@ -373,6 +380,14 @@ impl HookRef<'_> {
     /// (docs/graphics/notes/pipelined-render.md).
     pub fn context_only(self) -> Self {
         self.0.context_only = true;
+        self
+    }
+    /// For an implementation: `f` is told the point's address when the plan
+    /// is installed with other hooks in the same chain, so a body that is
+    /// otherwise entered past the chain (a fused call) can send its calls
+    /// through it ([`install::guard_shared_bodies`]).
+    pub fn when_shared(self, f: impl Fn(u32) + Send + Sync + 'static) -> Self {
+        self.0.when_shared = Some(Arc::new(f));
         self
     }
 }
@@ -632,6 +647,7 @@ impl<'r> Builder<'r> {
             context_only: false,
             resume_sites: &[],
             generated_sites: &[],
+            when_shared: None,
         });
         HookRef(self.hooks.last_mut().expect("just pushed"))
     }
@@ -695,7 +711,7 @@ impl<'b> Raw<'b, '_> {
         label: &'static str,
         f: impl Fn(Cx) -> EntryFuture + Send + Sync + 'static,
     ) -> HookRef<'b> {
-        let f: Arc<engine::entry::EntryFn> = Arc::new(f);
+        let f: Arc<guest_layout::entry::EntryFn> = Arc::new(f);
         self.0.push(
             point,
             Run::Implement(Arc::new(move |cpu, ctx, at| {

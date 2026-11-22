@@ -12,7 +12,10 @@
 //! The guest-memory boundary ([`memory`], [`testing`]), datum arrays and
 //! handles ([`datum`], [`handle`]), the tag index ([`tags`]), typed views
 //! ([`view`], `record!`) and the one table of named guest functions and
-//! globals ([`points`]) live here too; `engine` re-exports them.
+//! globals ([`points`]) live here too, with async entries ([`entry`]),
+//! the overridable functions' adapters ([`abi`], `runtime_glue`), the
+//! locale table ([`locale`]) and the points' expected shapes
+//! ([`point_shapes`]); `engine` re-exports them.
 //!
 //! What sits on top: `sim-state` (docs/engine/sim-review.md
 //! lane 6) builds `ObjectView`/`UnitView` and `SimRead` over [`object`],
@@ -40,6 +43,18 @@ pub mod points;
 pub mod tags;
 pub mod testing;
 pub mod view;
+
+// How Rust bodies meet guest code: async entries that await guest calls,
+// the overridable functions' calling-convention adapters and their
+// registration with the runtime, the localized-string table the adapters
+// read, and what each point expects at its address. `hooks` drives and
+// installs them; `engine` re-exports them.
+pub mod abi;
+pub mod entry;
+pub mod locale;
+pub mod point_shapes;
+#[cfg(feature = "runtime-glue")]
+pub mod runtime_glue;
 
 pub use handle::DatumHandle;
 pub use memory::{FlatMemory, GuestMemory, MemFault};

@@ -55,9 +55,15 @@ crate's tests check for overlaps and bounds.
   each module and macro, so `engine::points`, `engine::GuestMemory` and
   `engine::record!` name the same items. With `runtime-glue`,
   `GuestMemory` has `take_write_watch` and the runtime's `Guest` and
-  `WritebackView` implement it (`src/memory.rs`). The engine's async
-  entries (`engine::entry`) stay in `engine`
-  ([crate-structure.md](../dev/crate-structure.md), S2).
+  `WritebackView` implement it (`src/memory.rs`).
+- **Entries and adapters.** `entry` (async entries: Rust bodies that
+  await guest calls), `abi` (the overridable functions'
+  calling-convention adapters, `OVERRIDES`), `locale` (the localized
+  string table those adapters read), `point_shapes` (what each point
+  expects at its address) and, with `runtime-glue`, `runtime_glue` (the
+  adapters' registration with the runtime) are this crate's too. `hooks`
+  drives and installs them; `engine` re-exports them under the same
+  names ([crate-structure.md](../dev/crate-structure.md), S2).
 - **Readers.** `view`'s player and object records take their
   offsets from the layouts; `live_telemetry::layout` keeps its names but
   every object, unit, biped, game and global value comes from here;
@@ -83,7 +89,7 @@ matches its row. `BUDGET` bounds the count.
 
 ## Point shapes
 
-`engine::point_shapes` says what each hook point expects at its address:
+`guest_layout::point_shapes` (`engine::point_shapes`) says what each hook point expects at its address:
 a few x86 encoding facts, never the image's bytes. By default a function
 point (any signature but `Site`) must start a function (a return or
 padding right before it); a site is not checked. `DECLARED` overrides
@@ -91,7 +97,7 @@ that per point: call sites are `call rel32` or `call r/m32`, and the few
 function points the image reaches by falling through are checked for a
 frame prologue or not at all.
 
-At install (`feature::verify`), each chain's point is checked against the
+At install (`hooks::verify`), each chain's point is checked against the
 loaded image. A point that is not what it says turns its features off
 with its name, address and the bytes found, as a missing original does.
 Runtimes with no XBE header at `0x10000` (synthetic tests) are not

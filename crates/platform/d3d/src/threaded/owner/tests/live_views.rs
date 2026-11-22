@@ -5,7 +5,7 @@ use crate::backend::{DrawJudge, TargetInfo, Viewport};
 use crate::scene_sink::{FrozenSample, ReplaySample};
 use crate::shader::{ShaderInputs, VertexProcessing};
 use crate::state::StateWords;
-use frame_scene::carried::CameraUse;
+use frame_types::carried::CameraUse;
 use gfx::vertex::{PrimitiveType, VertexLayout, fvf};
 
 fn packet() -> Arc<ResolvedDraw> {

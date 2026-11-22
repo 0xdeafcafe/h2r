@@ -5,7 +5,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use engine::points::{self, Point};
+use guest_layout::points::{self, Point};
 use hooks::{Flow, InstallError, Registry, Remap, Switches, from_fn};
 use runtime::exec::HARNESS_EXIT;
 use runtime::guest::Permissions;

@@ -497,7 +497,7 @@ fn push_entries(scene: &mut FrameScene, entries: &[(LightEntry, Vec<Row>)]) -> s
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::camera::tests::camera;
+    use crate::test_camera::camera;
     use crate::scene::ViewKind;
 
     fn key(view: u8) -> ViewKey {

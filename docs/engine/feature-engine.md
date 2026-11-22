@@ -96,7 +96,10 @@ Typed access comes from the signature: `Obs::arg_u32(name)`,
 A hook marked `HookRef::context_only` acts only on the registers, stack and
 memory of the context it runs on, so a chain made only of such hooks may run
 on a second executor (`Chain::render_thread`,
-[second-executor.md](../runtime/second-executor.md)). A hook may declare
+[second-executor.md](../runtime/second-executor.md)). An implementation
+marked `HookRef::when_shared` is told its point's address at install when
+other hooks share its chain (`hooks::install::guard_shared_bodies`); the
+object update's bodies guard themselves that way. A hook may declare
 resume sites (`resumes`, `generated_resumes`) for an implementation that
 re-enters at base-image return addresses.
 
@@ -213,13 +216,13 @@ key).
 A Rust body cannot call a guest function as a plain Rust call: one host
 thread drives every guest thread, and a guest call that blocks or is
 preempted must unwind to the scheduler. A body that calls guest code is an
-`async` block over a `Cx` (`crates/rewrites/engine/src/entry.rs`):
+`async` block over a `Cx` (`crates/hooking/guest-layout/src/entry.rs`):
 
 - `cx.call(GuestCall)` awaits a guest call and returns the callee's
   registers; `cx.read` and `cx.write` take guest memory for the closure only,
   so no guard is held across an await and the future is `Send + 'static`.
 - The installer drives the future with `ExecCtx::call_guest`, parking it in
-  the continuation (`feature::entry`). The stack is put back after every
+  the continuation (`hooks::entry`). The stack is put back after every
   call, and the caller's EBX, ESI, EDI, EBP and ESP on return.
 - `Builder::entry(label, f)` places a body at a fresh address on a shared
   executable arena page, for a loader, a vtable slot or a callback
@@ -233,7 +236,7 @@ preempted must unwind to the scheduler. A body that calls guest code is an
 **Test:** `crates/hooking/hooks/tests/install.rs`
 (`an_entry_awaits_guest_calls_and_returns_as_stdcall`,
 `an_async_implementation_is_a_chains_body`), and the core's tests in
-`crates/rewrites/engine/src/entry.rs`.
+`crates/hooking/guest-layout/src/entry.rs`.
 
 ## Bridges
 
@@ -441,10 +444,17 @@ pass, and reports the front-end's guest time as the frame stats' `render`
 phase with an exclusive split per stage
 ([gameplay-budget.md](../perf/notes/gameplay-budget.md)).
 `guest_layout::points::scene_effects::instruction_entries` lists the retail
-instruction boundaries those stages hook mid-function. Discovery for both
-image tiers (`recomp::analyze_cached`, used by `h2 build`, `h2 emit` and the
-fast tier) makes each one an entry, whatever features the builder has, so
-a module built on one machine serves the native stages on another.
+instruction boundaries those stages hook mid-function, and
+`render_aspect::instruction_entries` the aspect and HUD sites. The
+composition root registers both lists with the image builder
+(`boot::register_image_entries`, calling `recomp::register_retail_entries`)
+before anything builds, stamps, loads or analyses the image: `h2`'s
+`main`, the Apple hosts and every `boot::run*`. Discovery for both image
+tiers (`recomp::analyze_cached`, used by `h2 build`, `h2 emit`, the fast
+tier and the fallback) makes each one an entry, whatever features the
+builder has, so a module built on one machine serves the native stages on
+another. `recomp` refuses to analyse the retail image with nothing
+registered, and both tiers' stamps name the registered list.
 
 ## State
 

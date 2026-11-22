@@ -11,7 +11,7 @@ pub mod fallback;
 pub mod host_coverage;
 pub mod host_report;
 mod render_entries;
-pub use render_entries::has_retail_render_sites;
+pub use render_entries::{has_retail_render_sites, register_retail_entries, retail_entries};
 pub mod shim;
 pub mod sse;
 pub mod tier;
@@ -78,7 +78,8 @@ pub fn read_xbe(path: &Path) -> Result<Vec<u8>> {
 }
 
 /// What a module is built from: the image's hash, the generator sources'
-/// hash (build.rs), the IR passes `H2_PASSES` selects, the code generation
+/// hash (build.rs), the registered retail instruction entries
+/// ([`register_retail_entries`]), the IR passes `H2_PASSES` selects, the code generation
 /// choices (`H2_ACCESS_COUNT`), the module ABI and the compiler flags,
 /// with the optimisation tiers when they are on (`emit::compile::Tiers`).
 /// [`build`] writes it next to the dylib
@@ -155,9 +156,10 @@ fn stamp_for(
         emit::compile::Arch::Arm64 | emit::compile::Arch::X86_64 => String::new(),
     };
     format!(
-        "xbe {:016x} generator {} passes {passes} codegen {codegen} abi {} flags {flags:?}{target}\n",
+        "xbe {:016x} generator {} entries {:016x} passes {passes} codegen {codegen} abi {} flags {flags:?}{target}\n",
         fallback::fnv64(xbe_bytes),
         env!("GENERATOR_SOURCE_HASH"),
+        render_entries::entries_hash(),
         runtime::cpu::ABI_VERSION
     )
 }
@@ -809,6 +811,11 @@ mod tests {
             "other titles with the same instruction address keep the discovered owner");
 
         x.certificate.title_id = 0x4d53_0064;
+        // What the composition root registers (boot::register_image_entries).
+        register_retail_entries(
+            guest_layout::points::render_aspect::instruction_entries()
+                .chain(guest_layout::points::scene_effects::instruction_entries()),
+        );
         for (source, expected_hit) in [(None, false), (Some(cache.as_path()), true)] {
             let (analysis, hit) = analyze_cached(&x, source).unwrap();
             assert_eq!(hit, expected_hit);

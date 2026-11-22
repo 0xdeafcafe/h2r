@@ -393,7 +393,7 @@ fn sealed(sequence: u64, scene: Arc<FrameScene>) {
             if !replay.refusals.is_empty() {
                 return Err(replay.refusals.join(", "));
             }
-            replay.classify_cameras(&scene);
+            replay.classify_cameras(scene.view_cameras());
             Ok(Arc::new(Inputs {
                 scene: Arc::clone(&scene),
                 replay: Arc::new(replay),

@@ -423,7 +423,7 @@ independent of all of them once its slice 6 holds.
 `scaled/`, `threaded.rs` and `threaded/`, `scene_sink.rs` and
 `scene_sink/`, `scene_stage.rs`, `interp/` if framescene.md slice 8 has
 not already; `DrawAdmission` and every `render_bridge::native_*` hook;
-`frame_scene::carried`; in `gfx`, what only a resolved D3D draw uses
+`frame_types::carried` (the `frame-types` crate's carried part); in `gfx`, what only a resolved D3D draw uses
 (`state.rs`, `translate.rs`, `xdk.rs`, the D3D pipeline key); the
 `render-timing` and `render-census` features and `render.parity`.
 `formats/shaders` stays: the native stages translate tag shaders with it.

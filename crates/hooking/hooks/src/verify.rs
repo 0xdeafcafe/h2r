@@ -1,12 +1,12 @@
 //! Per-point verification at install: each chain's point is checked
 //! against the code at its address in the loaded image
-//! (`engine::point_shapes`). A point that is not what it says turns its
+//! (`guest_layout::point_shapes`). A point that is not what it says turns its
 //! features off with the point's name, the way a missing original does,
 //! instead of hooking the middle of another function.
 
 use std::collections::BTreeMap;
 
-use engine::point_shapes::{self, Verdict};
+use guest_layout::point_shapes::{self, Verdict};
 use runtime::Runtime;
 
 use crate::plan::Chain;

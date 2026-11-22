@@ -261,6 +261,8 @@ pub unsafe fn start_in(
 /// refuse the module anyway. So check the stamp here, and say so when the
 /// analysis has to be redone. Call after `H2_BOOT_CACHE` is set.
 fn check_bundle(layout: &Layout) -> Result<()> {
+    // The stamp names the registered entries.
+    boot::register_image_entries();
     let xbe = boot::read_xbe(&layout.disc)?;
     if !boot::dylib_current(&xbe, &layout.module) {
         anyhow::bail!(

@@ -29,33 +29,31 @@ crate_tree(
 )
 
 workspace_library(
-    name = "live-mirror",
-    crate = "live_mirror",
-    crate_root = "crates/tools/live-mirror/src/lib.rs",
-    description = "The editor's live object and player stream, sample store and interpolation",
+    name = "frame-types",
+    crate = "frame_types",
+    crate_root = "crates/platform/frame-types/src/lib.rs",
+    description = "The frame types the Direct3D device and FrameScene share: the carried part by slot, the render camera, the view and instance keys; plain data (docs/graphics/framescene.md)",
     features = [],
-    manifest = "crates/tools/live-mirror",
-    package = "live-mirror",
+    manifest = "crates/platform/frame-types",
+    package = "frame-types",
     tree = ":lib-tree",
     version = "0.1.0",
     deps = [
-        "//crates/extensions/agent-proto:agent-proto",
-        "//third-party/rust:serde_json",
+        "//third-party/rust:serde",
     ],
 )
 
 workspace_test(
     name = "unit-tests",
-    crate = "live_mirror",
-    crate_root = "crates/tools/live-mirror/src/lib.rs",
-    description = "The editor's live object and player stream, sample store and interpolation",
+    crate = "frame_types",
+    crate_root = "crates/platform/frame-types/src/lib.rs",
+    description = "The frame types the Direct3D device and FrameScene share: the carried part by slot, the render camera, the view and instance keys; plain data (docs/graphics/framescene.md)",
     features = [],
-    manifest = "crates/tools/live-mirror",
-    package = "live-mirror",
+    manifest = "crates/platform/frame-types",
+    package = "frame-types",
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
-        "//crates/extensions/agent-proto:agent-proto",
-        "//third-party/rust:serde_json",
+        "//third-party/rust:serde",
     ],
 )
