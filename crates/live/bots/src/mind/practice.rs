@@ -350,10 +350,6 @@ impl Practice {
         self.events.push(e);
     }
 
-    pub fn on(&self) -> bool {
-        self.on
-    }
-
     /// Practising in a drill: the host reads the word between tries too.
     pub fn drilling(&self) -> bool {
         self.on && self.drill.is_some()
