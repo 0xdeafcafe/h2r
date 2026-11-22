@@ -3,6 +3,7 @@
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
+mod journal;
 mod state;
 mod view;
 mod writeback;
@@ -190,6 +191,9 @@ pub struct Guest {
     /// The runtime runs a flat-RAM module: RAM is kept in a backing the
     /// window can alias ([`Guest::require_aliasable_ram`]).
     aliasable_ram: bool,
+    /// The undo journal of an alias executor (`guest/journal.rs`), while
+    /// one is on.
+    journal: Option<Box<journal::Journal>>,
 }
 
 /// Guest ABI outputs. The caller recreates zeroed allocations with
@@ -284,6 +288,7 @@ impl Guest {
             ident: fresh_layout(),
             congruence_skipped: 0,
             aliasable_ram: false,
+            journal: None,
         }
     }
     /// Identifies the mappings and their permissions: a new value, never
@@ -980,6 +985,8 @@ impl Guest {
                 pages[page].permissions &= !still;
             }
         }
+        // So do a journal's (`guest/journal.rs`).
+        self.arm_journal(first, last);
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
         self.refresh_flat(start, end);
     }
@@ -1178,6 +1185,9 @@ impl Guest {
                 permissions: flags | (entry.permissions & !still),
             };
         }
+        // A journal's armed page stays armed: its next store saves nothing
+        // twice and opens it again.
+        self.arm_journal(page, page + 1);
         self.refresh_window(va, va + PAGE_SIZE as u64);
     }
 
@@ -1773,6 +1783,8 @@ impl Guest {
                 addr as u64 + value.len() as u64,
             );
             let (start, n) = (span.start, span.len());
+            // An alias executor's journal keeps the bytes first.
+            self.journal_save(start, n);
             self.ram[span].copy_from_slice(&value[offset..offset + n]);
             // Every RAM store passes here, so this is the whole write barrier.
             if self.watch.active() {
@@ -1783,6 +1795,9 @@ impl Guest {
         }
         if let Some(w) = &mut self.hle_writes {
             w.store(addr, value);
+        }
+        if self.journal.is_some() {
+            self.journal_open(addr, value.len());
         }
         if self.trap.is_some() && !value.is_empty() {
             self.trap_note(pc, addr, value.len(), true);

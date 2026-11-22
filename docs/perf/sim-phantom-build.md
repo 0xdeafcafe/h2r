@@ -1,8 +1,8 @@
 # The phantoms' action build: what it costs and how it gets cheap
 
-Status: Design. Nothing here is built; the build it describes is (`Builder::action`).
-Code: `crates/extensions/game/src/bot_glue/retail_input.rs` (`gather`, `Builder::sample`, `Builder::action`), `crates/runtime/runtime/src/executor.rs` (`SecondExecutor`), `crates/runtime/runtime/src/guest/view.rs`. Tests: named per lane.
-Switch: proposed `impl.sim.phantom-alias` (on once its differential passes); it joins [switches.md](../runtime/switches.md) when lane P1 lands.
+Status: Option 1, the alias and its journal (lane P1), is built and on by default; its differential, diff and film runs are pending. Lanes P0 and P2 are design.
+Code: `crates/extensions/game/src/bot_glue/retail_input.rs` (`gather`, `Builder::sample_checked`, `Builder::alias`, `Builder::view`, `Builder::action`), `crates/runtime/runtime/src/executor.rs` (`SecondExecutor::alias`, `Alias`), `crates/runtime/runtime/src/guest/journal.rs`, `crates/runtime/runtime/src/guest/view.rs`. Tests: named per lane.
+Switch: `impl.sim.phantom-alias` (on; `-impl.sim.phantom-alias` builds in the view) and `H2_PHANTOM_BUILD_CHECK=1`, both in [switches.md](../runtime/switches.md).
 
 Each tick a sim host turns every phantom's pad into a retail action by
 running the title's own local action builder in a private view of guest
@@ -114,21 +114,23 @@ first.
 
 ### The design: run on live RAM, journal the writes, undo
 
-`SecondExecutor` gains a second kind of view, an **alias**: its `Guest`
-borrows the live RAM block (the same pointer, no mapping call) and keeps
-its own mappings, page table, dispatch and context as a view does. It
-never remaps and never copies.
+`SecondExecutor::alias` gives the executor a second kind of view, an
+**alias**: its `Guest` takes the live RAM block in place (the two Guests
+exchange blocks; no mapping call) and keeps its own mappings, page table,
+dispatch and context as a view does. It never remaps and never copies
+([second-executor.md](../runtime/second-executor.md#the-alias-and-its-journal)).
 
 - **Journal.** Every writable page starts with its write bit clear in the
   alias's fast page table, the way `crate::trap` arms a page
-  (`Guest::arm_all`): the first store to a page, from generated C or
+  (`guest/journal.rs`): the first store to a page, from generated C or
   from Rust, takes the checked slow path. There the journal saves the
   page's 4 KB, keyed by physical page, and sets the write bit, so later
   stores to it are inline.
-- **Undo.** `SecondExecutor::undo` copies each saved page back and
-  clears its write bit. `Builder::action` runs it after reading the
-  action and history, and on every error path (a guard that undoes on
-  drop). After it, live RAM equals its bytes at the start of the build.
+- **Undo.** The `Alias` copies each saved page back and clears its write
+  bit as it drops: in `Builder::action` after the action and history are
+  read, on the early return of a faulted or refused call, and on a
+  panic's unwinding. After it, live RAM equals its bytes at the start of
+  the build.
 - **Isolation.** The build holds the live runtime's memory guard from
   the first setup write to the end of the undo, so no other host thread
   reads the bound state. The game thread is inside the gather hook, so
@@ -138,13 +140,31 @@ never remaps and never copies.
 
 What the alias changes for the guest calls is the tick's later seats.
 A view shows every seat the RAM of the tick's first gather. An alias
-shows each seat the RAM at its own gather. Between two gathers live RAM
-gains the earlier slot's action record and stamp, the `0x14d0a0` check
-of `out`, and possibly an animation-cache fill
-([bots.md §5.5](../game/bots.md)). The builder is not known to read a
-simulation slot record (**S**); the differential below is the proof.
-The view path already builds from later RAM after a failed seat or a
-cold-animation retry (`Builder::sample` sets `tick = None`).
+runs on live RAM at each seat's own gather, so `Builder::alias` makes up
+what it can of the difference:
+
+- **An earlier seat's writes** (its setup, its scratch, its history) are
+  undone before its gather returns, so a later seat never sees them, as
+  the view's revert hides them (**Code**).
+- **The stack.** Between two gathers the game thread runs guest code
+  below the gather frame (the `0x14d0a0` check of `out`, the retail
+  loop), and a builder that reads an uninitialised local would read those
+  bytes. The tick's first seat keeps the stack pages from 64 KiB below
+  the gather's ESP to the page above it; a later seat writes back, through
+  the journal, each page live RAM has changed since, so the window holds
+  the first gather's bytes, as the view's does (**Code**; the depth is a
+  window, not a measured one, **S**).
+- **The clock.** The tick's first seat opens with `alias`, which starts
+  the executor's time-stamp counter and guest clock as `snapshot` does; a
+  later seat opens with `alias_continued`, which runs them on, as the
+  view's later seats do (**Code**).
+- **What is left**: the earlier slot's action record and stamp, whatever
+  the `0x14d0a0` check writes outside the stack, and possibly an
+  animation-cache fill ([bots.md §5.5](../game/bots.md)). The builder is
+  not known to read any of them (**S**); the differential below is the
+  proof. The view path already builds from later RAM after a failed seat
+  or a cold-animation retry (`Builder::sample` sets `tick = None`), and
+  the alias path then starts afresh the same way.
 
 The cost per tick is then the guest work, about 100 setup stores, and a
 save and a restore of each written page: 0.2 to 0.35 ms supposed, against
@@ -154,6 +174,16 @@ too.
 The alias is for the paged memory model, which a sim image is built
 with. A flat-RAM image (`H2_FLAT_RAM`) keeps the view: its stores are
 host instructions in a window and would need host page protection.
+`Builder::new` sees `Runtime::flat_ram` and builds in the view, with one
+log line. A runtime with no fast page table journals too: every store
+takes the slow path.
+
+**Check mode.** `H2_PHANTOM_BUILD_CHECK=1` gives the builder a second
+builder on the other path, with its own executor and history. Every seat
+is built by both, the other path first; the switch's path gives the
+answer, and a seat whose outcome, action bytes or history differ counts
+in `wall.phantom_build_mismatches` (the first eight are logged). Each path
+keeps its own history, so each runs as it would alone.
 
 ### The other options
 
@@ -173,9 +203,11 @@ host instructions in a window and would need host page protection.
 RAM plus its own history, and nothing a seat writes survives its undo
 (or revert). Their order is not observable, with one exception to keep
 in mind: the executor's time-stamp counter runs on across seats
-(`restore_tsc_last` at the snapshot only). No `rdtsc` is in the entries
-read (**E**, the six entries and `0x1a4900`; the callees are not
-searched).
+(`restore_tsc_last` at the snapshot only, and at `alias` only, not at
+`alias_continued`). No `rdtsc` is in the entries read (**E**, the six
+entries and `0x1a4900`; the callees are not searched). The alias path
+keeps the view's counter behaviour seat for seat, so whether a callee
+reads it does not separate the two paths.
 
 **What `H2_BOT_PIPELINE` covers.** The brain only. `bots::think` stages
 the thinks of tick N to run during the guest's tick and delivers their
@@ -191,7 +223,7 @@ The lanes. Each is code only; the coordinator builds and runs.
 | Lane | Scope | Files | Switch | Proof |
 |---|---|---|---|---|
 | **P0** split | `PhantomCosts` gains: nanoseconds in the setup writes, in each of the six calls, in `written` plus `revert`, and in the read back; the guest accesses of each call (`CallOutcome::accesses`); the pages written per seat; and the process's minor faults inside `Builder::sample` (`getrusage`). The sim report prints them under `wall` as per-tick figures | `crates/extensions/game/src/bot_glue/retail_input.rs`, `crates/live/sim-bench/src/metrics.rs`, [sim.md](../runtime/sim.md) | none | metrics unit tests on the JSON, beside `phantom_costs_are_per_tick_beside_the_brains` |
-| **P1** alias and journal | `Guest` gains a write journal on the fast page table's write bit; `SecondExecutor::alias(main)` and `undo`; `Builder::action` takes the alias path under the switch and the view path without it. A check mode, `H2_PHANTOM_BUILD_CHECK=1`, runs both for every seat and counts seats whose action or history bytes differ (`wall.phantom_build_mismatches`) | `crates/runtime/runtime/src/guest.rs`, `guest/view.rs`, `executor.rs`, `crates/extensions/game/src/bot_glue/retail_input.rs`, `crates/live/sim-bench/src/metrics.rs`, [second-executor.md](../runtime/second-executor.md), [switches.md](../runtime/switches.md) | `impl.sim.phantom-alias` | below |
+| **P1** alias and journal (built) | `Guest` has a write journal on the fast page table's write bit; `SecondExecutor::alias(main)`, `alias_continued` and `undo`; `Builder::action` takes the alias path under the switch and the view path without it. A check mode, `H2_PHANTOM_BUILD_CHECK=1`, runs both for every seat and counts seats whose outcome, action or history bytes differ (`wall.phantom_build_mismatches`) | `crates/runtime/runtime/src/guest.rs`, `guest/journal.rs`, `guest/view.rs`, `executor.rs`, `crates/extensions/game/src/bot_glue/retail_input.rs`, `crates/live/sim-bench/src/metrics.rs`, [second-executor.md](../runtime/second-executor.md), [switches.md](../runtime/switches.md) | `impl.sim.phantom-alias` | below |
 | **P2** small calls | Option 2 | `crates/extensions/game/src/bot_glue/retail_input.rs` | the same switch | the check mode of P1; a unit test of the input read against the lifted `0x124c00` on random pads and histories (`H2_XBE`) |
 
 P1's proof, in the order it is run:
@@ -248,6 +280,8 @@ P1's proof, in the order it is run:
 | 2.8 µs per first write to a host page | Run | [second-executor.md](../runtime/second-executor.md#2-guest-memory-view) |
 | What changes in live RAM between two gathers | Code | [bots.md §5.5](../game/bots.md), `crates/live/bots/src/phantom/action.rs` (`slot_action`) |
 | The pipeline covers the thinks only | Code | `crates/live/bots/src/think.rs` |
+| The alias, the journal and its undo on every exit | Code | `executor.rs` (`alias`, `Alias`), `guest/journal.rs`, `guest/view.rs` (`alias_ram`, `end_alias`) |
+| Per-seat undo, the stack window, the clock at the tick's first seat only | Code | `retail_input.rs` (`Builder::alias`), test `later_seats_of_a_tick_see_the_first_gathers_world_on_both_paths` |
 | The split of the 1.03 ms, every saving, the 0.3 ms outcome | S | lane P0, then P1's runs |
 
 No game was run for this page; it is static reading, so the agent API
@@ -260,10 +294,10 @@ was not used. P0 adds the report fields the API's sim report lacks.
 - What the live side pays in copy-on-write faults over a tick while the
   view and base are mapped.
 - That no entry under the builder reads another slot's action record or
-  stamp, the `out` buffer, or the stack below the gather frame.
+  stamp, the `out` buffer, or the stack more than 64 KiB below the
+  gather's ESP (the alias path puts back the window above that).
 - That no callee reads the time-stamp counter.
 - The cost of a snapshot on a host that copies (Linux).
-- That a sim image always has the fast page table the journal needs.
 
 ## Related
 

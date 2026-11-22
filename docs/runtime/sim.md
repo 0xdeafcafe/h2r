@@ -418,19 +418,28 @@ match begins.
 The phantoms' action build is not in `bots_ms_per_tick`
 ([sim-headless-skips.md](../perf/sim-headless-skips.md)). At the remote
 gather each phantom's pad goes through retail's local action builder in
-a private copy of guest RAM (`bot_glue::retail_input`, `Builder::sample`).
+a private world (`bot_glue::retail_input`, `Builder::sample`): by default
+on live RAM itself, every store journaled and undone before the gather
+returns (`impl.sim.phantom-alias`); with `-impl.sim.phantom-alias`, or on
+a flat-RAM image, in a copy-on-write copy of guest RAM
+([sim-phantom-build.md](../perf/sim-phantom-build.md)).
 `wall.phantom_build_ms_per_tick` is the game-thread time of those builds
-per tick: the snapshot, the reverts between seats, the view's writes and
-the six guest calls of every seat. A film that replays its builds runs
-none. `wall.phantom_snapshot_ms_per_tick` is the part spent in
+per tick: every seat's setup writes, six guest calls and read back, with
+the undo on the alias path, or the snapshot and the reverts between seats
+on the view path. A film that replays its builds runs none.
+`wall.phantom_snapshot_ms_per_tick` is the part spent in
 `SecondExecutor::snapshot`, the two copy-on-write copies of guest RAM a
-build takes at a tick's first seat. `wall.phantom_snapshots_per_tick`
+view-path build takes at a tick's first seat. `wall.phantom_snapshots_per_tick`
 counts those snapshots; it is above 1 when a failed build or a seat reset
-starts a seat from live RAM again. `wall.phantom_snapshot_copy` says how
-they copied RAM (`runtime::CopyKind`): `remap` (a copy-on-write mapping
-of the same pages, macOS), `copy` (every byte), or `mixed`. All four count
-from the tick the match begins, as the costs above do, and a report has
-none of them when the run did not measure.
+starts a seat from live RAM again, and the alias path takes none.
+`wall.phantom_snapshot_copy` says how they copied RAM (`runtime::CopyKind`):
+`remap` (a copy-on-write mapping of the same pages, macOS), `copy` (every
+byte), or `mixed`. `wall.phantom_build_mismatches` is there only in check
+mode (`H2_PHANTOM_BUILD_CHECK=1`, which builds every seat on both paths):
+the seats whose outcome, action bytes or history differed between them,
+0 when they all agree. All of these count from the tick the match begins,
+as the costs above do, and a report has none of them when the run did not
+measure.
 
 The split of that build, per tick and by the same counters
 (`bot_glue::retail_input`, `sim_bench::metrics::PHANTOM_CALLS`), is in

@@ -376,6 +376,11 @@ pub struct Wall {
     /// or `mixed`. `None` with no snapshot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phantom_snapshot_copy: Option<String>,
+    /// Check mode (`H2_PHANTOM_BUILD_CHECK=1`): the seats whose action
+    /// build on the alias path and on the view path differed in outcome,
+    /// action bytes or history. `None` when no seat was checked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phantom_build_mismatches: Option<u64>,
     /// Nanoseconds per tick in the build's setup writes (the view's
     /// globals, the pad and the seat's history).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -430,6 +435,10 @@ pub struct PhantomCosts {
     pub remapped: u64,
     /// Snapshots that copied its bytes.
     pub copied: u64,
+    /// Seats built on both paths in check mode.
+    pub checked: u64,
+    /// Of those, the seats whose outcome, action or history differed.
+    pub mismatches: u64,
     /// Nanoseconds in the setup writes.
     pub setup_ns: u64,
     /// Nanoseconds in each guest call ([`PHANTOM_CALLS`] order).
@@ -460,6 +469,8 @@ impl PhantomCosts {
             snapshot_ns: self.snapshot_ns.saturating_sub(start.snapshot_ns),
             remapped: self.remapped.saturating_sub(start.remapped),
             copied: self.copied.saturating_sub(start.copied),
+            checked: self.checked.saturating_sub(start.checked),
+            mismatches: self.mismatches.saturating_sub(start.mismatches),
             setup_ns: self.setup_ns.saturating_sub(start.setup_ns),
             call_ns: sub6(self.call_ns, start.call_ns),
             call_accesses: sub6(self.call_accesses, start.call_accesses),
@@ -771,6 +782,7 @@ impl Report {
         self.wall.phantom_snapshot_ms_per_tick = Some(costs.snapshot_ns as f64 / 1e6 / ticks);
         self.wall.phantom_snapshots_per_tick = Some((costs.remapped + costs.copied) as f64 / ticks);
         self.wall.phantom_snapshot_copy = costs.copy_kind().map(str::to_owned);
+        self.wall.phantom_build_mismatches = (costs.checked > 0).then_some(costs.mismatches);
         let per_call = |v: [u64; 6]| {
             PHANTOM_CALLS
                 .iter()
@@ -1345,6 +1357,7 @@ impl Tally {
                 phantom_snapshot_ms_per_tick: None,
                 phantom_snapshots_per_tick: None,
                 phantom_snapshot_copy: None,
+                phantom_build_mismatches: None,
                 phantom_setup_ns_per_tick: None,
                 phantom_call_ns_per_tick: None,
                 phantom_call_accesses_per_tick: None,
@@ -1642,11 +1655,38 @@ mod tests {
         assert_eq!(json["wall"]["phantom_snapshot_ms_per_tick"], 0.5);
         assert_eq!(json["wall"]["phantom_snapshots_per_tick"], 1.0);
         assert_eq!(json["wall"]["phantom_snapshot_copy"], "remap");
+        assert!(json["wall"].get("phantom_build_mismatches").is_none(), "no seat checked");
         let back: Report = serde_json::from_value(json).unwrap();
         assert_eq!(back.wall, report.wall);
     }
 
     #[test]
+    fn check_mode_reports_its_mismatches_and_only_when_it_ran() {
+        let mut report = four_ticks().report(Finish::bare(End::TickLimit));
+        let start = PhantomCosts {
+            checked: 8,
+            mismatches: 1,
+            ..PhantomCosts::default()
+        };
+        let clean = PhantomCosts {
+            checked: 24,
+            mismatches: 1,
+            ..PhantomCosts::default()
+        };
+        report.set_phantom_costs(clean.since(start));
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["wall"]["phantom_build_mismatches"], 0, "checked, none differed");
+        let dirty = PhantomCosts {
+            mismatches: 3,
+            ..clean
+        };
+        report.set_phantom_costs(dirty.since(start));
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["wall"]["phantom_build_mismatches"], 2);
+        let back: Report = serde_json::from_value(json).unwrap();
+        assert_eq!(back.wall.phantom_build_mismatches, Some(2));
+        report.set_phantom_costs(PhantomCosts::default());
+        assert_eq!(report.wall.phantom_build_mismatches, None);
     fn the_phantom_split_is_per_tick_by_call_role() {
         let mut report = four_ticks().report(Finish::bare(End::TickLimit));
         let plain = serde_json::to_value(&report).unwrap();
