@@ -1280,8 +1280,10 @@ Tooling:
   carries an optional line table for messages; the VM ignores it.
 - **Command line**: `h2 rules` is pure over its inputs and needs no
   disc (`crates/apps/cli/src/rules_cmd.rs`).
-  - `h2 rules check <file.rules>` compiles and verifies. Errors print as
-    `file:line:col: message` and the exit status is 1. The report gives
+  - `h2 rules check <file.rules>` compiles and verifies. Every error
+    `rules::diagnose` finds prints as `file:line:col: message [code]`,
+    and the exit status is 1; warnings print the same way with
+    `warning: ` before the message, after the report. The report gives
     the worst-tick estimate against the budget, the costliest handler,
     the IR bytes, the slots by scope, the blob's id, what the script can
     do in the words of `caps::CAPABILITIES`, and the entries a host
@@ -1312,8 +1314,8 @@ Tooling:
     (`crates/apps/cli/src/rules_lsp.rs`, over `lsp-server`). It keeps
     each open document whole (full sync), publishes diagnostics on open
     and change, and answers completion, hover, signature help,
-    definition, references, `semanticTokens/full`, document symbols and
-    formatting from `rules::ide`.
+    definition, references, `semanticTokens/full`, document symbols,
+    formatting, quick fix code actions and rename from `rules::ide`.
 - **Language intelligence**: `rules::ide` (`crates/formats/rules/src/ide/`)
   is pure over source text, and the language server, Live's
   `POST /v1/rules/ide`, the web editor and Studio share it. Positions are LSP's:
@@ -1323,11 +1325,17 @@ Tooling:
   line, a bad declaration to the next line that starts one, and a block
   left open ends at the next declaration. Every feature works from what
   parsed.
-  - `diagnostics`: every syntax error; when the source parses, the
-    compiler's first error, a verifier refusal, the tick budget and the
-    IR size (the last three on the first line); a warning for a `let`, a
-    set member or a `fn` never used; and a note at each call of an
-    entry no host can make yet, naming its status.
+  - `diagnostics`: every syntax error; when the source parses, every
+    error and warning of the checker (`lang/check.rs`), each with its
+    code and its fixes ([rules-language-types.md, "Diagnostics and the
+    editor"](rules-language-types.md#diagnostics-and-the-editor)); with
+    no error, a verifier refusal, the tick budget and the IR size (on
+    the first line); a warning for a `let`, a set member or a `fn` never
+    used; and a note at each call of an entry no host can make yet,
+    naming its status.
+  - `actions` gives the fixes of the diagnostics at a range, and
+    `rename` the edits that rename a name and every use of it
+    (`ide/fix.rs`).
   - `complete` reads the tokens before the place: declarations and
     their snippets at the start of a top-level line; event names, with
     their arguments as a snippet, after `on`; carriers after `carrier`;

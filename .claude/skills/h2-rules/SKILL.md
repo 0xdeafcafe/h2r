@@ -70,7 +70,7 @@ h2 rules build my_mode.rules -o my_mode.rir         # the verified blob and its 
 status; run it when unsure whether an entry exists or a host can make it.
 `h2 rules lsp` is a language server on stdin and stdout for files ending
 `.rules` (diagnostics, completion, hover, signature help, definitions,
-references, semantic tokens, outline, formatting).
+references, semantic tokens, outline, formatting, quick fixes, rename).
 
 ## Read the check report
 

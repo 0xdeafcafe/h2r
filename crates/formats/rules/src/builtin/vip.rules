@@ -52,14 +52,20 @@ on spawn(p) {
     if p.role != Role.vip { grant(p, forge.delete, budget 3, palette "wrecker") }
 }
 
+// A kill of someone on another team.
+fn enemy(killer: player, victim: player) -> bool = killer != victim and killer.team != victim.team
+
 on kill(victim, killer) {
-    if victim.role == Role.vip {
-        uncrown(victim)
-        if let k = killer and k != victim and k.team != victim.team { score(k, vip_points) }
-        succeed(victim)
-        if count(players p where p.team == victim.team and p.role == Role.vip) == 0 { crown(victim) }
-    } else if let k = killer and k != victim and k.team != victim.team {
-        score(k, 1)
+    match victim.role {
+        Role.vip {
+            uncrown(victim)
+            if let k = killer and enemy(k, victim) { score(k, vip_points) }
+            succeed(victim)
+            if count(players p where p.team == victim.team and p.role == Role.vip) == 0 { crown(victim) }
+        }
+        Role.none {
+            if let k = killer and enemy(k, victim) { score(k, 1) }
+        }
     }
 }
 

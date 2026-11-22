@@ -1897,7 +1897,7 @@ homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
 
 | endpoint | authentication | result |
 |---|---|---|
-| `POST /v1/rules/check` | none; rate-limited per client address | `{ok, hash, name, version, errors: [{line, col, message}], report}` |
+| `POST /v1/rules/check` | none; rate-limited per client address | `{ok, hash, name, version, errors: [{line, col, message}], warnings?, report}` |
 | `POST /v1/rules/run` | as check | a trace, or `{ok: false, errors}` when the script does not build |
 | `POST /v1/rules/simulate` | as check | generated matches: `{ok, teams, summary, rows, match}`, or `{ok: false, errors}` when the script does not build |
 | `POST /v1/rules/ide` | none; rate-limited per client address, in a bucket of its own | one editor operation's answer, in LSP's field names (below) |
@@ -1915,8 +1915,11 @@ homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
   and 1 more for each further 25 matches (`sim_cost`).
 - `ok` on a check means the script compiled, verified, fits the 100,000-op
   tick budget and the 256 KiB IR cap. `hash` is the IR's SHA-256, present
-  whenever it compiled. An error with line and column 0 is about the whole
-  script: a verifier refusal, the budget or the IR size.
+  whenever it compiled. `errors` lists every error the compile finds
+  (`rules::diagnose`), in source order, not only the first. An error with
+  line and column 0 is about the whole script: a verifier refusal, the
+  budget or the IR size. `warnings` (`[{line, col, message}]`, omitted
+  when there are none) are the compile's warnings; they leave `ok` alone.
 - A check that is `ok` also lists the script's `options` (`[{name,
   label, description, kind, lo, hi, default, values?}]`, omitted when it
   declares none), for the game variant form ([Game
@@ -1994,9 +1997,10 @@ homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
   or `clock`, and its `seed` a match that shows it. A batch starts no
   match past 24,000,000 ops or 400,000 ticks; `ran` is how many it
   played and `stopped` says why it played fewer.
-- An editor request is `{source, op, line, character}`: `line` (0-based)
-  and `character` (UTF-16 units) are the place, required by `complete`,
-  `hover`, `signature`, `definition` and `references`. Each op answers
+- An editor request is `{source, op, line, character, end_line?,
+  end_character?, new_name?}`: `line` (0-based) and `character` (UTF-16
+  units) are the place, required by `complete`, `hover`, `signature`,
+  `definition`, `references`, `actions` and `rename`. Each op answers
   from `rules::ide` (`ide_answer` in `rule_scripts.rs`;
   [rules-engine.md, "Tooling"](../game/rules-engine.md#security-and-usability)).
   A position is `{line, character}` and a range `{start, end}`. An
@@ -2019,8 +2023,23 @@ homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
     selectionRange, children}]`.
   - `format`: `{text}`, or `{error, line, col}` for source that does not
     parse (`error` is `line:col: message`).
-  - `diagnostics`: `[{range, severity, message, code, source}]`, `code`
-    one of `syntax`, `compile`, `verify`, `unused` and `unhostable`.
+  - `diagnostics`: `[{range, severity, message, code, source, fixes?}]`,
+    every one the source has. `code` is the checker's (`label.unknown`,
+    `null.use`, ...; [rules-language-types.md, "Diagnostics and the
+    editor"](../game/rules-language-types.md#diagnostics-and-the-editor)),
+    or `syntax`, `limit`, `verify`, `unused` and `unhostable`. `fixes`
+    (omitted when there are none) is `[{title, edits: [{range,
+    newText}]}]`, each fix's edits in source order.
+  - `actions`: the fixes of the diagnostics at a range, as LSP's quick
+    fix code actions without the document: `[{title, kind: "quickfix",
+    diagnostic, edits: [{range, newText}]}]`. The range runs from the
+    place to `end_line` and `end_character`, both or neither (the place
+    alone).
+  - `rename`: `{edits: [{range, newText}]}`, the edits that rename the
+    name at the place to `new_name` and every use of it. A label keeps
+    its map text (`label finish: zone = "goal"`). A missing `new_name`, a
+    name that is not an identifier or is a keyword, one the script
+    declares already, or no name at the place is 400.
 - A save writes a server-signed `RulesSaved` event (`{hash, name, version,
   author, source}`) on `rules-<hash>`, expecting an empty stream, so a hash
   is saved once and its first saver is its author. Only scripts whose
