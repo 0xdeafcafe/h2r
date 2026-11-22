@@ -26,11 +26,12 @@
 #
 # Host image: the containers run registry.cloudflare.com/<account>/h2-live-host
 # tagged with a hash of what the Dockerfile copies (the Dockerfile, the
-# entrypoint and deploy/host/stage). A tag the registry already holds is
-# deployed as it is, without Docker; a new one is built and pushed first,
-# which needs Docker running (colima start), and written to
-# deploy/host/image-tag. Without deploy/host/stage (CI) that committed tag
-# is deployed.
+# entrypoint and the Linux h2 that deploy/host/build.sh --h2 stages in
+# deploy/host/stage/h2; CI stages it on every run). A tag the registry
+# already holds is deployed as it is, without Docker; a new one is built and
+# pushed first, which needs Docker running (colima start locally). The image
+# holds public code only: the game module comes with the private host-data
+# bundle. Without a staged h2 the deploy stops (or use --no-hosts).
 #
 # Environment:
 #   H2_LIVE_KEY_FILE      cutover/production: read the key from this file
@@ -49,7 +50,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../../.." && pwd)
 
 usage() {
-    sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
 }
 
@@ -166,14 +167,12 @@ case "$who" in
 esac
 printf '%s\n' "$who" | grep -E "logged in|Account Name|Account ID|email" || true
 
-# The host image, by content. With the staged binaries (deploy/host/build.sh)
-# the tag is their hash: the registry's copy is deployed when it has the tag,
-# otherwise it is built and pushed (the one step that needs Docker) and the
-# tag written to deploy/host/image-tag. Without them (CI) the committed tag
-# is deployed, and it has to be in the registry already.
+# The host image, by content. The staged Linux h2 (deploy/host/build.sh --h2)
+# and the files beside it are hashed into the tag: the registry's copy is
+# deployed when it has the tag, otherwise it is built and pushed (the one
+# step that needs Docker).
 if [ "$hosts_on" = 1 ]; then
     host_dir="$repo/deploy/host"
-    tag_file="$host_dir/image-tag"
     account=${CLOUDFLARE_ACCOUNT_ID:-}
     if [ -z "$account" ]; then
         ids=$(printf '%s\n' "$who" | grep -owE '[0-9a-f]{32}' | sort -u)
@@ -189,28 +188,18 @@ images = json.load(sys.stdin)
 sys.exit(0 if any(i.get("name") == "h2-live-host" and tag in i.get("tags", []) for i in images) else 1)
 ' "$1"
     }
-    if [ -d "$host_dir/stage" ]; then
-        host_tag=$(cd "$host_dir" && shasum -a 256 Dockerfile entrypoint.sh stage/h2 \
-            stage/image/libh2game.so stage/image/libh2game.so.stamp | shasum -a 256 | cut -c1-16)
-        step "host image: h2-live-host:$host_tag, from the staged binaries"
-        if in_registry "$host_tag"; then
-            echo "in the registry; deploying it without a build"
-        else
-            docker info >/dev/null 2>&1 ||
-                die "h2-live-host:$host_tag is not in the registry and Docker is not running: start it (colima start) and run again"
-            echo "not in the registry: building and pushing it"
-            wrangler containers build --push --tag "h2-live-host:$host_tag" "$host_dir"
-        fi
-        if [ "$(cat "$tag_file" 2>/dev/null)" != "$host_tag" ]; then
-            printf '%s\n' "$host_tag" > "$tag_file"
-            echo "wrote deploy/host/image-tag; commit it so CI deploys this image"
-        fi
+    [ -x "$host_dir/stage/h2" ] ||
+        die "no staged Linux h2 (deploy/host/stage/h2): run deploy/host/build.sh --h2, or deploy with --no-hosts"
+    host_tag=$(cd "$host_dir" && shasum -a 256 Dockerfile entrypoint.sh stage/h2 |
+        shasum -a 256 | cut -c1-16)
+    step "host image: h2-live-host:$host_tag, from the staged h2"
+    if in_registry "$host_tag"; then
+        echo "in the registry; deploying it without a build"
     else
-        [ -f "$tag_file" ] || die "no staged host binaries and no deploy/host/image-tag; run deploy/host/build.sh, or --no-hosts"
-        host_tag=$(tr -d ' \n' < "$tag_file")
-        step "host image: h2-live-host:$host_tag, from deploy/host/image-tag"
-        in_registry "$host_tag" ||
-            die "h2-live-host:$host_tag is not in the registry; deploy once from a machine with the staged binaries"
+        docker info >/dev/null 2>&1 ||
+            die "h2-live-host:$host_tag is not in the registry and Docker is not running: start it (colima start) and run again"
+        echo "not in the registry: building and pushing it"
+        wrangler containers build --push --tag "h2-live-host:$host_tag" "$host_dir"
     fi
     image="registry.cloudflare.com/$account/h2-live-host:$host_tag"
     rm -f "$config"

@@ -330,6 +330,37 @@ fn a_struct_of_another_size_or_a_ragged_block_is_refused() {
 }
 
 #[test]
+fn a_data_resource_laid_out_again_starts_16_aligned_with_its_size() {
+    let (_, layout, res) = layouts().into_iter().next().unwrap();
+    let (info, bytes) = hand_block(layout.section_size as usize, &res, 1);
+    let section = decoded(&info, bytes, &layout);
+    let mut data = SectionData::from_block(section.block());
+    // The skipped entry at 0x2c becomes a present code object of 7 bytes.
+    let code: Vec<u8> = (1..=7).collect();
+    let entry = data
+        .resources
+        .iter_mut()
+        .find(|r| r.kind == ResourceKind::Data)
+        .unwrap();
+    entry.bytes = Some(code.clone());
+    assert!(!data.keeps_sizes());
+    let e = encode_section(&layout, &data).unwrap();
+    let r = e
+        .resources
+        .iter()
+        .find(|r| r.kind == ResourceKind::Data)
+        .unwrap();
+    let at = 8 + layout.section_size as usize + r.offset.unwrap() as usize;
+    assert_eq!(at % 16, 0);
+    assert_eq!(&e.block[at..at + 7], code.as_slice());
+    let back = parse_encoded(&e, &layout);
+    assert_eq!(u32_at(back.section_struct(), 0x2c), 7);
+    // Encoding what was read is the same block.
+    let again = SectionData::from_block(back.block());
+    assert_eq!(encode_section(&layout, &again).unwrap().block, e.block);
+}
+
+#[test]
 fn packers_invert_the_decoders_expansions() {
     for v in [
         [0.0f32, 0.0, 1.0],

@@ -7,7 +7,7 @@ use crate::{bundle, BotData, BundleSpec};
 
 const USAGE: &str = "usage: h2 host bundle --disc <iso|dir> --out <dir>
                       [--stripped-maps <dir>] [--sim-stores <dir>] [--data <dir> | --no-bots]
-                      [--force] [--zstd-level 1..=21]
+                      [--image <dir>] [--force] [--zstd-level 1..=21]
 
 Writes <out>/host-data.tar.zst — the files a multiplayer host reads off
 the DVD (default.xbe, mainmenu/shared/single_player_shared and every
@@ -21,6 +21,13 @@ game write: maps whose files are missing or stale are built there first,
 as `h2 bots nav all` does. --data defaults to the data root `h2 play`
 uses. --no-bots leaves the bot data out; a host then has none for a sim
 match, and a light host builds each map's mesh when it is first played.
+
+--image adds the Linux game module a dedicated host runs: libh2game.so
+and libh2game.so.stamp from <dir> (deploy/host/build.sh --module stages
+them in deploy/host/stage/image), as image/ in the archive. A host
+refuses to start from a bundle without it unless it is given its own
+module (--out or H2_IMAGE), and refuses a module whose stamp does not
+match its h2.
 
 --disc is the owner's own disc: an XISO image or a directory holding the
 disc's files. --stripped-maps replaces a map with the same-named one from that
@@ -53,6 +60,11 @@ pub fn bundle_cmd(args: Vec<String>) -> Result<()> {
         unknown = out.unknown_skipped,
     );
     println!("host-data: bot nav data for {} multiplayer maps", out.nav_maps);
+    if let Some(dir) = spec.image.as_ref().filter(|_| out.image) {
+        println!("host-data: game module from {}", dir.display());
+    } else {
+        println!("host-data: no game module (pass --image to bundle one)");
+    }
     println!(
         "host-data: {raw} bytes -> {packed} bytes (zstd {level})",
         raw = out.raw_bytes,
@@ -69,7 +81,7 @@ pub fn bundle_cmd(args: Vec<String>) -> Result<()> {
 fn parse_args(args: &[String]) -> Result<Option<BundleSpec>, String> {
     use std::path::PathBuf;
     let (mut disc, mut out, mut stripped, mut force, mut level) = (None, None, None, false, 3);
-    let (mut sim_stores, mut data, mut no_bots) = (None, None, false);
+    let (mut sim_stores, mut data, mut no_bots, mut image) = (None, None, false, None);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -87,6 +99,9 @@ fn parse_args(args: &[String]) -> Result<Option<BundleSpec>, String> {
             }
             "--data" => {
                 data = Some(PathBuf::from(it.next().ok_or("--data needs a directory")?));
+            }
+            "--image" => {
+                image = Some(PathBuf::from(it.next().ok_or("--image needs a directory")?));
             }
             "--no-bots" => no_bots = true,
             "--force" => force = true,
@@ -110,7 +125,7 @@ fn parse_args(args: &[String]) -> Result<Option<BundleSpec>, String> {
         dir: bots::cache::dir(&data.unwrap_or_else(content::store::default_data_root)),
         build: true,
     });
-    Ok(Some(BundleSpec { disc, out, stripped, sim_stores, bots, force, zstd_level: level }))
+    Ok(Some(BundleSpec { disc, out, stripped, sim_stores, bots, image, force, zstd_level: level }))
 }
 
 #[cfg(test)]
@@ -138,6 +153,14 @@ mod tests {
         let bots = spec.bots.unwrap();
         assert_eq!(bots.dir, bots::cache::dir(&content::store::default_data_root()));
         assert!(bots.build);
+        assert!(spec.image.is_none());
+    }
+
+    #[test]
+    fn image_names_the_module_directory() {
+        let spec = parse_args(&args(&["--disc", "d", "--out", "o", "--image", "stage/image"])).unwrap().unwrap();
+        assert_eq!(spec.image.as_deref(), Some(std::path::Path::new("stage/image")));
+        assert!(parse_args(&args(&["--disc", "d", "--out", "o", "--image"])).is_err());
     }
 
     #[test]

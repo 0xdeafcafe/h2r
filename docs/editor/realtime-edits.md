@@ -295,8 +295,10 @@ the next activation, and the old extents stay allocated until then.
 | `append` | solids added by `scenery_collision::merge`: every existing plane, surface and leaf keeps its index | none; or, with `activate: true`, the switch below | rays next tick; Havok bodies after an activation |
 | `rebuild` | surfaces moved or deleted: indices change | always: a BSP switch to the active BSP through `BSP_SWITCH` (`scenario_switch_structure_bsp`), which rebuilds the Havok structure, re-creates the placed objects and fires the Rust observers | after a hitch of one BSP switch; players and their state stay, as across a campaign switch |
 
-The editor sends `append` without activation while a solid is dragged and
-with it on release.
+The editor sends `append` with `activate: true` on every commit, dragging
+included, so Havok bodies always match the collision the rays see. Each
+commit costs one BSP-switch hitch; the editor commits once per drag step
+it sends, not per mouse event.
 
 What follows the commit without more work (**Code**):
 `sim_collision`'s page watches over the header, the eight blocks and the
@@ -463,7 +465,7 @@ Plain integers keep `render-bridge` free of the agent's types.
 | Add or remove a placement | `world.placement.edit` | next tick | reload for the shapes creation refuses |
 | Add a spawn point, netgame equipment | `world.placement.edit` | next spawn | |
 | Netgame flag | `world.placement.edit` | next game | |
-| Add a solid to level collision | stage, commit `append` | rays next tick; bodies after the activation on release | reload if the arena is full |
+| Add a solid to level collision | stage, commit `append` with activation | rays and bodies after one BSP switch, on every commit | reload if the arena is full |
 | Move or delete level collision | commit `rebuild` | after one BSP switch | reload on retail maps |
 | `coll` BSP | stage, commit | bullets next tick, bodies on respawn | |
 | `phmo` primitive | `writes` | on respawn | |
@@ -491,6 +493,11 @@ Plain integers keep `render-bridge` free of the agent's types.
   (`agent_glue::live_edit_refusal`) refuses matchmaking of any kind, a
   Live game another console hosts, and a Live session it cannot read. The
   live stream still refuses every Live game.
+- **Rust collision world.** The sim rewrite's collision world
+  ([sim-rewrite.md](../engine/sim-rewrite.md), phase 2) is a static,
+  content-addressed cache per BSP and per collision model. A collision
+  commit drops and rebuilds the entry for the BSP or model it changed at
+  the same tick boundary, so native and guest queries agree.
 - **Determinism.** Writes happen only before `game_tick`, never from the
   stream, a render hook or a worker. Film recording and playback exclude
   them, as they exclude object edits.

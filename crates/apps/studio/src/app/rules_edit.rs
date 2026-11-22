@@ -9,7 +9,9 @@
 //! ([`spans`], [`problems`], [`byte_at`], [`position_at`],
 //! [`reload_params`], [`rank`], [`expand_snippet`], [`completion_choices`],
 //! [`apply_text_edits`], [`rename_edit`], [`definition_at`],
-//! [`occurrences`], [`hover_blocks`]).
+//! [`occurrences`], [`hover_blocks`], and for "Open in editor"
+//! [`script_file_name`], [`external_path`], [`editor_launches`],
+//! [`launch_step`] and [`disk_change`]).
 //!
 //! Every change the editor makes to the text (a completion, a quick fix,
 //! a rename, the formatter, an open) is an [`Edit`]: the whole new text
@@ -18,6 +20,8 @@
 //! callback rather than writing `text` under it.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime};
 
 use agent_proto::rules::{ReloadMode, ReloadResult};
 use rules::ide::{self, Diagnostic, Position, Range, TextEdit, Token, TokenKind};
@@ -177,6 +181,14 @@ pub struct RulesEditor {
     /// The text area the window last drew: x, y, width and height in
     /// points (`ui::game_script`). `None` before it is drawn.
     pub drawn: Option<[f32; 4]>,
+    /// The file "Open in editor" handed to an outside editor, polled for
+    /// its changes ([`RulesEditor::poll_disk`]).
+    pub watch: Option<Watch>,
+    /// The file's text when it changed on disk while the buffer had
+    /// unsaved edits: the window asks which to keep.
+    pub conflict: Option<String>,
+    /// The outside editor's start, filled by its thread ([`launch`]).
+    pub launched: Option<Launched>,
 }
 
 impl Default for RulesEditor {
@@ -202,6 +214,9 @@ impl Default for RulesEditor {
             typing: false,
             show: false,
             drawn: None,
+            watch: None,
+            conflict: None,
+            launched: None,
         }
     }
 }
@@ -234,6 +249,10 @@ impl RulesEditor {
         self.analysed = None;
         self.renaming = None;
         self.show = true;
+        self.conflict = None;
+        if self.watch.as_ref().is_some_and(|w| self.path.as_ref() != Some(&w.path)) {
+            self.watch = None;
+        }
         self.apply(Edit::to(text, 0));
     }
 
@@ -306,6 +325,15 @@ impl RulesEditor {
         };
         std::fs::write(&path, &self.text).map_err(|e| format!("{}: {e}", path.display()))?;
         self.saved = self.text.clone();
+        // Our own write is no outside change; a save elsewhere leaves the
+        // outside editor's file behind.
+        if self.watch.as_ref().is_some_and(|w| w.path == path) {
+            if let Some(w) = &mut self.watch {
+                w.seen = modified(&path);
+            }
+        } else {
+            self.watch = None;
+        }
         if self.path.as_deref() != Some(path.as_path()) {
             self.title = path
                 .file_name()
@@ -593,6 +621,441 @@ impl RulesEditor {
     pub fn reload_line(&self) -> Option<(Tone, String)> {
         reload_line(&self.reload)
     }
+
+    /// Readies the script for an outside editor ("Open in editor"): saves
+    /// it to its own file (when it has unsaved edits), or, with none, to a
+    /// new file under `data_root` ([`external_path`]), and watches that
+    /// file for the outside editor's saves. Returns the file.
+    pub fn prepare_external(&mut self, data_root: &Path) -> Result<PathBuf, String> {
+        let path = match self.path.clone() {
+            Some(p) => {
+                if self.dirty() || !p.exists() {
+                    self.save(None)?;
+                }
+                p
+            }
+            None => {
+                let p = external_path(None, &self.title, data_root, |p| p.exists());
+                if let Some(dir) = p.parent() {
+                    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+                }
+                self.save(Some(&p))?
+            }
+        };
+        self.watch = Some(Watch::new(path.clone(), modified(&path)));
+        Ok(path)
+    }
+
+    /// Checks the watched file, at most once a [`WATCH_EVERY`]: a new
+    /// modification time reads the file and hands its text to
+    /// [`Self::disk_text`].
+    pub fn poll_disk(&mut self, now: Instant) -> DiskPoll {
+        let Some(w) = &mut self.watch else {
+            return DiskPoll::Nothing;
+        };
+        if !w.due(now) || !w.changed(modified(&w.path)) {
+            return DiskPoll::Nothing;
+        }
+        match std::fs::read_to_string(&w.path) {
+            Ok(disk) => self.disk_text(disk),
+            Err(_) => DiskPoll::Nothing,
+        }
+    }
+
+    /// The watched file's text after it changed on disk
+    /// ([`disk_change`]): the same as the buffer marks it saved; with no
+    /// unsaved edits here it replaces the buffer; otherwise it waits in
+    /// [`Self::conflict`] for the window to ask.
+    pub fn disk_text(&mut self, disk: String) -> DiskPoll {
+        match disk_change(&self.text, &self.saved, &disk) {
+            DiskChange::Same => {
+                self.saved = disk;
+                self.conflict = None;
+                DiskPoll::Nothing
+            }
+            DiskChange::Take => {
+                self.take_disk(disk);
+                DiskPoll::Took
+            }
+            DiskChange::Ask => {
+                self.conflict = Some(disk);
+                DiskPoll::Asked
+            }
+        }
+    }
+
+    /// The conflict's answer "take the file's": the buffer becomes the
+    /// file's text, saved. False with no conflict.
+    pub fn take_conflict(&mut self) -> bool {
+        match self.conflict.take() {
+            Some(disk) => {
+                self.take_disk(disk);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The conflict's answer "keep mine": the buffer stays as it is,
+    /// unsaved, and the next save writes it over the file.
+    pub fn keep_mine(&mut self) {
+        self.conflict = None;
+    }
+
+    fn take_disk(&mut self, disk: String) {
+        self.conflict = None;
+        self.set_text(disk.clone());
+        self.saved = disk;
+    }
+
+    /// The outside editor's start, once its thread has an answer: how it
+    /// was opened, or why nothing opened it.
+    pub fn take_launched(&mut self) -> Option<Result<String, String>> {
+        let done = self.launched.as_ref()?.lock().ok()?.take()?;
+        self.launched = None;
+        Some(done)
+    }
+}
+
+/// How often the watched file is checked.
+pub const WATCH_EVERY: Duration = Duration::from_secs(1);
+
+/// How long a started editor has to fail before it counts as open: a
+/// GUI editor keeps running, `code` and `open` exit at once with success.
+pub const LAUNCH_GRACE: Duration = Duration::from_secs(3);
+
+/// The file "Open in editor" handed out, and the modification time last
+/// seen on it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Watch {
+    pub path: PathBuf,
+    pub seen: Option<SystemTime>,
+    next: Option<Instant>,
+}
+
+impl Watch {
+    pub fn new(path: PathBuf, seen: Option<SystemTime>) -> Watch {
+        Watch { path, seen, next: None }
+    }
+
+    /// Whether a check is due at `now`; a due check books the next one a
+    /// [`WATCH_EVERY`] later.
+    pub fn due(&mut self, now: Instant) -> bool {
+        if self.next.is_some_and(|t| now < t) {
+            return false;
+        }
+        self.next = Some(now + WATCH_EVERY);
+        true
+    }
+
+    /// Whether the file changed: a modification time other than the last
+    /// seen. A file gone is no change (an editor's save may replace it);
+    /// its return is one.
+    pub fn changed(&mut self, mtime: Option<SystemTime>) -> bool {
+        if mtime == self.seen {
+            return false;
+        }
+        self.seen = mtime;
+        mtime.is_some()
+    }
+}
+
+/// A file's modification time, `None` when it can't be read.
+pub fn modified(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// What a change of the watched file does to the buffer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiskChange {
+    /// The file holds what the buffer holds.
+    Same,
+    /// No unsaved edits here: the file's text replaces the buffer.
+    Take,
+    /// Unsaved edits here and different text there: ask which to keep.
+    Ask,
+}
+
+/// What a watched file's new text does, given the buffer and the text as
+/// last opened or saved.
+pub fn disk_change(buffer: &str, saved: &str, disk: &str) -> DiskChange {
+    if disk == buffer {
+        DiskChange::Same
+    } else if buffer == saved {
+        DiskChange::Take
+    } else {
+        DiskChange::Ask
+    }
+}
+
+/// What one poll of the watched file did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiskPoll {
+    Nothing,
+    /// The buffer took the file's text.
+    Took,
+    /// The file and the buffer both changed: [`RulesEditor::conflict`].
+    Asked,
+}
+
+/// A script's file name from its title: the name before any
+/// " (built in)", lower case, spaces as underscores, other characters
+/// that don't belong in a file name dropped. A title that is a file name
+/// already stays as it is.
+pub fn script_file_name(title: &str) -> String {
+    let stem = title.split(" (").next().unwrap_or("").trim();
+    let suffix = format!(".{EXTENSION}");
+    if stem.len() > suffix.len() && stem.ends_with(&suffix) && !stem.contains(['/', '\\']) {
+        return stem.to_string();
+    }
+    let name: String = stem
+        .to_lowercase()
+        .chars()
+        .map(|c| if c == ' ' { '_' } else { c })
+        .filter(|c| c.is_alphanumeric() || matches!(c, '_' | '-'))
+        .collect();
+    let name = if name.is_empty() { "script".to_string() } else { name };
+    format!("{name}{suffix}")
+}
+
+/// Where "Open in editor" writes the script: its own file, or else a new
+/// one in `<data_root>/scripts` named after it ([`script_file_name`]),
+/// with `-2`, `-3`... when that name is `taken`.
+pub fn external_path(path: Option<&Path>, title: &str, data_root: &Path, taken: impl Fn(&Path) -> bool) -> PathBuf {
+    if let Some(p) = path {
+        return p.to_path_buf();
+    }
+    let dir = data_root.join("scripts");
+    let name = script_file_name(title);
+    let suffix = format!(".{EXTENSION}");
+    let stem = name.strip_suffix(&suffix).unwrap_or(&name).to_string();
+    let first = dir.join(&name);
+    if !taken(&first) {
+        return first;
+    }
+    (2..10_000)
+        .map(|n| dir.join(format!("{stem}-{n}{suffix}")))
+        .find(|p| !taken(p))
+        .unwrap_or(first)
+}
+
+/// One way to open a file in an outside editor: a program and its
+/// arguments, the file last.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Launch {
+    pub program: PathBuf,
+    pub args: Vec<String>,
+}
+
+impl Launch {
+    /// The command as a person would type it.
+    pub fn describe(&self) -> String {
+        let mut out = self.program.display().to_string();
+        for a in &self.args {
+            out.push(' ');
+            out.push_str(a);
+        }
+        out
+    }
+}
+
+/// Editors that need a terminal, which Studio has none to give.
+const TERMINAL_EDITORS: [&str; 12] = [
+    "vi", "vim", "nvim", "nano", "pico", "hx", "helix", "micro", "kak", "ed", "joe", "mg",
+];
+
+/// A program's file name names a terminal editor.
+pub fn is_terminal_editor(program: &str) -> bool {
+    let base = Path::new(program)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(program);
+    TERMINAL_EDITORS.contains(&base)
+}
+
+/// The directories searched for a program: `PATH`'s, then Homebrew's and
+/// `/usr/local/bin`, which an app started from the Finder has no `PATH`
+/// entry for.
+pub fn program_dirs(path_var: Option<&str>) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = path_var
+        .unwrap_or("")
+        .split(':')
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .collect();
+    for extra in ["/opt/homebrew/bin", "/usr/local/bin"] {
+        let extra = PathBuf::from(extra);
+        if !dirs.contains(&extra) {
+            dirs.push(extra);
+        }
+    }
+    dirs
+}
+
+/// The first of `dirs` holding the program `name`.
+pub fn find_program(name: &str, dirs: &[PathBuf], is_file: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    dirs.iter().map(|d| d.join(name)).find(|p| is_file(p))
+}
+
+/// What "Open in editor" tries, in order: the script editor app
+/// (`h2 script-edit`, with the `h2` `find` finds, else
+/// `~/.cargo/bin/h2`), then `$VISUAL` and `$EDITOR` (a terminal editor
+/// is passed over: there is no terminal to run it in), then VS Code
+/// (`code`) and Zed (`zed`) where `find` finds them, then on macOS
+/// `open -t` (the default text editor). The same command twice is tried
+/// once.
+pub fn editor_launches(
+    file: &Path,
+    env: impl Fn(&str) -> Option<String>,
+    find: impl Fn(&str) -> Option<PathBuf>,
+    home: Option<&Path>,
+    is_file: impl Fn(&Path) -> bool,
+    macos: bool,
+) -> Vec<Launch> {
+    let file_arg = file.display().to_string();
+    let mut out: Vec<Launch> = Vec::new();
+    let h2 = find("h2").or_else(|| home.map(|h| h.join(".cargo/bin/h2")).filter(|p| is_file(p)));
+    if let Some(h2) = h2 {
+        out.push(Launch {
+            program: h2,
+            args: vec!["script-edit".into(), file_arg.clone()],
+        });
+    }
+    for var in ["VISUAL", "EDITOR"] {
+        let Some(value) = env(var) else {
+            continue;
+        };
+        let mut words = value.split_whitespace();
+        let Some(program) = words.next() else {
+            continue;
+        };
+        if is_terminal_editor(program) {
+            continue;
+        }
+        let mut args: Vec<String> = words.map(str::to_string).collect();
+        args.push(file_arg.clone());
+        out.push(Launch {
+            program: PathBuf::from(program),
+            args,
+        });
+    }
+    for name in ["code", "zed"] {
+        if let Some(program) = find(name) {
+            out.push(Launch {
+                program,
+                args: vec![file_arg.clone()],
+            });
+        }
+    }
+    if macos {
+        out.push(Launch {
+            program: PathBuf::from("open"),
+            args: vec!["-t".into(), file_arg],
+        });
+    }
+    let mut unique: Vec<Launch> = Vec::with_capacity(out.len());
+    for l in out {
+        if !unique.contains(&l) {
+            unique.push(l);
+        }
+    }
+    unique
+}
+
+/// [`editor_launches`] with this process's environment.
+pub fn editor_launches_here(file: &Path) -> Vec<Launch> {
+    let dirs = program_dirs(std::env::var("PATH").ok().as_deref());
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    editor_launches(
+        file,
+        |k| std::env::var(k).ok().filter(|v| !v.trim().is_empty()),
+        |name| find_program(name, &dirs, |p| p.is_file()),
+        home.as_deref(),
+        |p| p.is_file(),
+        cfg!(target_os = "macos"),
+    )
+}
+
+/// What to do with a started editor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LaunchStep {
+    /// Still starting: look again shortly.
+    Wait,
+    /// It opened the file: it exited with success (`code`, `open`), or
+    /// it is still running after [`LAUNCH_GRACE`] (a GUI editor).
+    Done,
+    /// It failed (an `h2` without `script-edit`, say): try the next one.
+    Next,
+}
+
+/// The step for a started editor: `exited` is whether its exit was a
+/// success, `None` while it runs; `waited` is the time since it started.
+pub fn launch_step(exited: Option<bool>, waited: Duration) -> LaunchStep {
+    match exited {
+        Some(true) => LaunchStep::Done,
+        Some(false) => LaunchStep::Next,
+        None if waited >= LAUNCH_GRACE => LaunchStep::Done,
+        None => LaunchStep::Wait,
+    }
+}
+
+/// An outside editor's start: filled once with how it was opened
+/// ([`Launch::describe`]), or why nothing opened it.
+pub type Launched = Arc<Mutex<Option<Result<String, String>>>>;
+
+/// Tries each launch in turn on a thread of its own, so the window never
+/// waits ([`launch_step`]); the answer lands in the returned slot.
+pub fn launch(launches: Vec<Launch>) -> Launched {
+    let slot: Launched = Arc::new(Mutex::new(None));
+    let out = slot.clone();
+    let spawned = std::thread::Builder::new()
+        .name("rules-open-editor".into())
+        .spawn(move || run_launches(&launches, &out));
+    if let Err(e) = spawned {
+        *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(Err(format!("could not start the editor: {e}")));
+    }
+    slot
+}
+
+fn run_launches(launches: &[Launch], out: &Launched) {
+    let answer = |r: Result<String, String>| {
+        *out.lock().unwrap_or_else(|p| p.into_inner()) = Some(r);
+    };
+    for l in launches {
+        let Ok(mut child) = std::process::Command::new(&l.program)
+            .args(&l.args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        else {
+            continue;
+        };
+        let started = Instant::now();
+        loop {
+            let exited = match child.try_wait() {
+                Ok(Some(status)) => Some(status.success()),
+                Ok(None) => None,
+                Err(_) => Some(false),
+            };
+            match launch_step(exited, started.elapsed()) {
+                LaunchStep::Wait => std::thread::sleep(Duration::from_millis(100)),
+                LaunchStep::Done => {
+                    answer(Ok(l.describe()));
+                    // Reaped when the editor closes.
+                    if exited.is_none() {
+                        let _ = child.wait();
+                    }
+                    return;
+                }
+                LaunchStep::Next => break,
+            }
+        }
+    }
+    answer(Err(
+        "no editor opened the script: install h2 (for h2 script-edit), set $VISUAL or $EDITOR to a GUI editor, or install VS Code or Zed"
+            .into(),
+    ));
 }
 
 /// A completion's text without snippet placeholders (`${1:name}` becomes
