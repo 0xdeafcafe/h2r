@@ -813,20 +813,21 @@ fn a_bot_order_is_made_at_the_next_tick_boundary() {
 
 #[test]
 fn a_bot_order_changes_no_rulesext_byte() {
-    let run = |src: &str| {
+    // One script: the kill makes the order with a killer, none without.
+    // The runs share one IR, so the record's rng seed (`vm::seed`, from
+    // the IR's hash) matches; only the order differs.
+    let run = |killer: Option<u8>| {
         let store = Local::default();
-        let (s, m) = playing(&store, src);
+        let (s, m) = playing(&store, BOT_ORDERS);
         s.lock().start(&m, false);
-        s.lock().kill(&m, 0, Some(1));
+        s.lock().kill(&m, 0, killer);
         let work = s.lock().pre_tick(&m).unwrap();
         drive(&s, m, work, true);
         store.bytes().unwrap()
     };
-    // The same handler, scoring nothing instead of ordering.
-    let scores = "rules \"Bot Orders\" 1\ncarrier slayer\nrequires bots.orders\n\non kill(victim, killer) { if killer != none { score(killer, 0) } }\n";
     assert_eq!(
-        run(BOT_ORDERS),
-        run(scores),
+        run(Some(1)),
+        run(None),
         "an order changes no RULES record byte"
     );
 }
