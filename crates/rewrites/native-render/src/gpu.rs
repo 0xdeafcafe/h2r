@@ -278,6 +278,16 @@ pub struct GpuWorld {
 
 const SHADER: &str = include_str!("world.wgsl");
 
+/// What [`texture`] makes a texture for: sampling, and writes in place (a
+/// live edit's pixels, [`rewrite_texture`]). The crate's own tests also
+/// read one back, which needs `COPY_SRC`; the game never does.
+#[cfg(not(test))]
+const SAMPLED_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING.union(wgpu::TextureUsages::COPY_DST);
+#[cfg(test)]
+const SAMPLED_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
+    .union(wgpu::TextureUsages::COPY_DST)
+    .union(wgpu::TextureUsages::COPY_SRC);
+
 pub(crate) fn texture(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image, label: &str) -> wgpu::TextureView {
     if let Some(b) = &image.blocks
         && device.features().contains(wgpu::Features::TEXTURE_COMPRESSION_BC)
@@ -296,7 +306,7 @@ pub(crate) fn texture(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        usage: SAMPLED_USAGE,
         view_formats: &[],
     });
     write_rgba_levels(queue, &t, image);
@@ -339,7 +349,7 @@ fn block_texture(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image, b: &
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: b.format,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        usage: SAMPLED_USAGE,
         view_formats: &[],
     });
     write_block_levels(queue, &t, b, unit);
