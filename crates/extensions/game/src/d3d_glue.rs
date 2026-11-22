@@ -983,22 +983,6 @@ pub fn fps_from(value: Option<&str>) -> u32 {
 }
 
 #[cfg(feature = "gpu")]
-/// `backend` on a render thread, behind the interpolated replay when
-/// `interp` (from [`interpolation`]) is given.
-pub fn install_threaded<B>(
-    rt: &runtime::Runtime,
-    backend: B,
-    extra: Option<ExtraReport>,
-    interp: Option<Interpolation>,
-) -> anyhow::Result<Installed>
-where
-    B: d3d::backend::Backend + Send + 'static,
-    B::Texture: Sync,
-{
-    install_threaded_for_profile(rt, backend, extra, interp, crate::run_plan::compiled_render_hooks())
-}
-
-#[cfg(feature = "gpu")]
 pub fn install_threaded_for_profile<B>(
     rt: &runtime::Runtime,
     backend: B,
@@ -1011,23 +995,6 @@ where
     B::Texture: Sync,
 {
     install_gpu_for_profile(rt, backend, extra, interp, Some(RenderThread::default()), profile, None)
-}
-
-/// A film export presents each guest frame before the next one is encoded.
-#[cfg(feature = "gpu")]
-pub fn install_export_threaded<B>(
-    rt: &runtime::Runtime,
-    backend: B,
-    extra: Option<ExtraReport>,
-    interp: Option<Interpolation>,
-    profile: film::RenderHooks,
-) -> anyhow::Result<Installed>
-where
-    B: d3d::backend::Backend + Send + 'static,
-    B::Texture: Sync,
-{
-    let thread = RenderThread { clip_capture: false, synchronous_presents: true };
-    install_gpu_for_profile(rt, backend, extra, interp, Some(thread), profile, None)
 }
 
 /// How a game view's backend runs on its render thread.
@@ -2134,25 +2101,6 @@ pub fn map_reserved_write_combined(rt: &runtime::Runtime) -> anyhow::Result<()> 
     for (id, start, len) in rs {
         mem.map_reserved(id, WC_BASE | start, len, runtime::guest::Permissions::RW)?;
     }
-    Ok(())
-}
-
-pub fn map_write_combined(mem: &mut runtime::Guest, va: u32, len: u32) -> anyhow::Result<()> {
-    let m = mem
-        .mappings()
-        .iter()
-        .find(|m| {
-            m.virtual_start <= va && va as u64 + len as u64 <= m.virtual_start as u64 + m.len as u64
-        })
-        .map(|m| m.physical_start + (va - m.virtual_start))
-        .ok_or_else(|| anyhow::anyhow!("{va:#x}: not one mapping"))?;
-    let phys = m;
-    mem.map(
-        0xf000_0000 | (va & 0x0fff_ffff),
-        len,
-        phys,
-        runtime::guest::Permissions::RW,
-    )?;
     Ok(())
 }
 

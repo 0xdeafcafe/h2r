@@ -40,7 +40,7 @@ use agent_proto::{
 use live_proto::maps::{MapId, Sha256};
 use serde_json::{Map, Value, json};
 
-use crate::exec::{Access, Agent, DEFER_TICKS_MAX, GameCtx};
+use crate::exec::{Access, Agent, DEFER_TICKS_MAX};
 
 pub mod clip;
 pub mod private_graph;

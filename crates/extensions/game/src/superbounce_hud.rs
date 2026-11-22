@@ -16,8 +16,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use engine::memory::{GuestMemory, MemFault};
-use engine::points;
-use hooks::Flow;
 
 use hud_kit_core::huds::superbounce::{
     self as sb, ArmTrack, Change, Charge, Landed, Lost, Medal, Note, Phase, Scan, Superbounce,

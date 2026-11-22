@@ -692,23 +692,6 @@ pub fn spec_for(
     s
 }
 
-/// The code page for a sample gamertag and server, for previews.
-pub fn sample_spec() -> ScreenSpec {
-    let p = Prompt {
-        gamertag: "Chief".into(),
-        server_url: "https://live.example.net/".into(),
-        controller: 0,
-        phase: Phase::Code { error: None },
-    };
-    spec_for(Some(&p), &CodeEntry::default(), None, 0, Opener::MAIN_MENU)
-}
-
-/// The prompt's pages for the preview sheet, by name ([`SigninPage`]'s
-/// states).
-pub fn sample_states() -> Vec<(String, ScreenSpec)> {
-    crate::ui_kit::page::specs(&SigninPage)
-}
-
 /// What steps the sign-in page: the pad, the keyboard's text (`None`: backed
 /// out of), the server's answer to the call running.
 #[derive(Clone, Debug, PartialEq, Eq)]

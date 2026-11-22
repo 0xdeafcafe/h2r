@@ -231,7 +231,6 @@ pub mod superbounce_world;
 pub mod superbounce_mode;
 pub mod superbounce_verify;
 pub mod superbounce_view;
-pub mod sweep_diag;
 pub mod teabag;
 pub mod theater;
 pub mod theater_ui;
