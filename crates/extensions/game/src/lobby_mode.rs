@@ -1,11 +1,11 @@
 //! The lobby's modes on Game Setup (docs/game/forge-firefight-ui.md, "The
 //! lobbies"): Multiplayer, Forge and Firefight as modes of the retail
-//! pregame lobby, chosen on the party lobby's mode strip
+//! pregame lobby, chosen in the party lobby's GAME MODE picker
 //! (`crate::lobby_tabs`, docs/game/party-lobby.md).
 //!
-//! **No mode row.** The strip's bumpers are the one way to change mode
-//! (`crate::lobby_tabs::input`, on `PREGAME_LOBBY_INPUT`, which this
-//! feature places); Game Setup has no row that does. Retail's "Switch To"
+//! **No mode row.** X's GAME MODE picker is the one way to change mode in
+//! the lobby (`crate::lobby_tabs::input`, on `PREGAME_LOBBY_INPUT`, which
+//! this feature places); Game Setup has no row that does. Retail's "Switch To"
 //! rows (co-op 6, custom 7, matchmaking 8, and 9 in a custom list) and
 //! Clankermatch's (12) are dropped from every Game Setup list
 //! ([`SWITCH_ROWS`]).
@@ -16,7 +16,7 @@
 //! **Forge Map...** ([`FORGE_MAP_ACTION`]) after Change Map, the game type
 //! row and Clanker Options kept, Firefight Options hidden; in Firefight,
 //! Firefight Options after Change Map and the game type row hidden. In a
-//! matchmaking lobby (the MULTIPLAYER tab) action 9 stays, drawn as
+//! matchmaking lobby (MULTIPLAYER) action 9 stays, drawn as
 //! **Change Playlist...** ([`CHANGE_PLAYLIST_LABEL`]): its press opens the
 //! playlist screen with the Clanker and the human playlists on one page
 //! (`crate::clankermatch::Scope::All`).
@@ -26,11 +26,10 @@
 //! as it opens ([`crate::forge_glue`]).
 //!
 //! **The panel** ([`panel_ids`]): the lobby's variant panel update
-//! (`crate::lobby_options`) adds the mode's lines. The lobby's title is the
-//! mode strip's selected tab, which hides the retail header. The strip is
-//! drawn by this feature's own `before` on the update, inside
-//! `lobby-options`'s (`crate::lobby_tabs::strip::panel`), so it does not
-//! depend on that feature.
+//! (`crate::lobby_options`) adds the mode's lines. The lobby's header
+//! names the mode, set by this feature's own `before` on the update,
+//! inside `lobby-options`'s (`crate::lobby_tabs::header::panel`), so it
+//! does not depend on that feature.
 //!
 //! **Start Game with a remote member.** Forge across consoles needs the
 //! session log on the network (slice F5). Until then, an `after` on the
@@ -41,7 +40,7 @@
 //!
 //! **Start Game with no Firefight map.** The same `after` holds a
 //! Firefight lobby whose map does not carry the kit ([`start_refusal`]):
-//! the FIREFIGHT tab opens with no such map installed, and the status line
+//! the lobby switches to FIREFIGHT with no such map installed, and the status line
 //! and the panel ([`firefight_map_lines`]) say why it cannot start.
 //!
 //! **Start Game on a blocked pair.** The same `after` holds the start
@@ -76,9 +75,9 @@ use crate::ui_kit::picker::{self, Pick};
 use crate::ui_kit::screen::SlotTexts;
 use crate::ui_kit::view::Opener;
 
-/// The party lobby's feature: the mode strip and the modes of ours. It has
-/// no switch ([`hooks::Manifest::always_on`]): the strip is how the lobby
-/// works (docs/game/party-lobby.md).
+/// The party lobby's feature: its modes, the header that names them and
+/// X's GAME MODE picker. It has no switch ([`hooks::Manifest::always_on`]):
+/// it is how the lobby works (docs/game/party-lobby.md).
 pub const FEATURE: &str = "party-lobby";
 /// The Forge Map row's action: past Firefight Options' 13 (retail uses 0
 /// to 9; the row-chosen jump table has no bounds check, so the press never
@@ -102,7 +101,8 @@ const GATE_SLOT: u32 = PANEL_SLOTS + MAX_PANEL_LINES as u32 + 1;
 pub const FORGE_MAP_LABEL: &str = "Forge Map...";
 /// A matchmaking lobby's action 9 ([`crate::clankermatch::CHANGE_PLAYLIST`]).
 pub const CHANGE_PLAYLIST_LABEL: &str = "Change Playlist...";
-/// The rows that change the lobby's mode, which the strip does instead:
+/// The rows that change the lobby's mode, which the GAME MODE picker does
+/// instead:
 /// retail's "Switch To: Co-Op Game" (6), "Switch To: Custom Game" (7) and
 /// "Switch To: Matchmaking" (8), and Clankermatch's "Switch To:
 /// Clankermatch". Action 9 is dropped only from a custom game's list,
@@ -133,8 +133,8 @@ pub fn shown(mode: Mode, action: i16) -> bool {
     }
 }
 
-/// Whether a Game Setup row changes the lobby's mode, so the strip's tabs
-/// stand in for it: [`SWITCH_ROWS`], and action 9 in a custom game's list
+/// Whether a Game Setup row changes the lobby's mode, so the GAME MODE
+/// picker stands in for it: [`SWITCH_ROWS`], and action 9 in a custom game's list
 /// (`custom`, it has Change Map).
 pub fn switches_mode(action: i16, custom: bool) -> bool {
     SWITCH_ROWS.contains(&action) || (custom && action == crate::clankermatch::CHANGE_PLAYLIST)
@@ -142,7 +142,7 @@ pub fn switches_mode(action: i16, custom: bool) -> bool {
 
 /// The rows of a Game Setup list with `actions` in `mode`, or `None` to
 /// leave it as built (nothing to change). No row changes the mode: that is
-/// the strip's, so the Switch To rows go from every list. The mode's rows
+/// the GAME MODE picker's, so the Switch To rows go from every list. The mode's rows
 /// are a custom game's list's (it has Change Map), with a mode besides
 /// Multiplayer on `offer`.
 pub fn arrange(mode: Mode, offer: Offer, actions: &[i16]) -> Option<Vec<i16>> {
@@ -440,8 +440,8 @@ fn after_rows(h: hooks::HookRef<'_>) {
         .after_feature(ff::ROW_FEATURE);
 }
 
-/// The Forge Map row, the rows by mode, the mode strip's bumpers, the start
-/// refusal and the leave.
+/// The Forge Map row, the rows by mode, the header, X's GAME MODE picker,
+/// the start refusal and the leave.
 pub struct LobbyMode {
     pub offer: Offer,
     /// The settings store Firefight's choices live in.
@@ -576,7 +576,7 @@ impl hooks::Feature for LobbyMode {
     fn manifest(&self) -> Manifest {
         Manifest::new(
             FEATURE,
-            "The party lobby: its mode strip and the modes of ours",
+            "The party lobby: its modes, the header that names them and X's GAME MODE picker",
         )
         .doc("docs/game/party-lobby.md")
         .always_on()
@@ -595,10 +595,12 @@ impl hooks::Feature for LobbyMode {
         b.locale().source("lobby mode", |id| TEXTS.address(id));
 
         let request_at = b.guest_alloc(0x1000, Permissions::RW)?;
-        // The mode strip's text blocks (`crate::lobby_tabs::strip`).
-        let blocks = b.guest_alloc(0x1000, Permissions::RW)?;
-        crate::lobby_tabs::strip::install(blocks);
-        // The tab switch's out-parameters (`crate::lobby_tabs::switch`).
+        // The lobby's header and prompt line (`crate::lobby_tabs::header`),
+        // and the GAME MODE picker's open request (`crate::lobby_tabs::input`).
+        crate::lobby_tabs::header::install();
+        let picker_request = b.guest_alloc(0x1000, Permissions::RW)?;
+        crate::lobby_tabs::input::install(picker_request);
+        // The mode switch's out-parameters (`crate::lobby_tabs::switch`).
         let scratch = b.guest_alloc(0x1000, Permissions::RW)?;
         crate::lobby_tabs::switch::install(scratch);
         let offer = self.offer;
@@ -673,8 +675,8 @@ impl hooks::Feature for LobbyMode {
                 },
             )
             .optional();
-        // Leaving the lobby clears its mode, the strip's reason line and
-        // the playlists it found missing.
+        // Leaving the lobby clears its mode, the reason line and the
+        // playlists a switch found missing.
         b.raw()
             .before(
                 &points::PARTY_LEAVE,
@@ -698,14 +700,15 @@ impl hooks::Feature for LobbyMode {
             vfs: self.vfs.clone(),
             data: self.data.clone(),
         }));
-        // The start gate's verdict, then the mode strip's update after
+        // The start gate's verdict, then the header and prompt line after
         // retail's panel update, inside `lobby-options`'s answer when that
         // feature is on and alone when it is off (docs/game/party-lobby.md,
-        // "The strip"). The gate reads the lobby with guest memory held and
-        // checks without it, since its census reads the map file
-        // (docs/game/rules-start-gate.md, "Where it runs").
+        // "The header and the prompt"). The gate reads the lobby with guest
+        // memory held and checks without it, since its census reads the
+        // map file (docs/game/rules-start-gate.md, "Where it runs").
+        let store = self.store.clone();
         b.raw()
-            .before(&points::LOBBY_VARIANT_PANEL, "the mode strip and the start gate", |c| {
+            .before(&points::LOBBY_VARIANT_PANEL, "the lobby's header and the start gate", move |c| {
                 #[cfg(feature = "rules")]
                 {
                     let variant = c.arg_u32("variant");
@@ -716,14 +719,15 @@ impl hooks::Feature for LobbyMode {
                     });
                     crate::rules::gate::refresh(input);
                 }
-                crate::lobby_tabs::strip::panel(c)
+                crate::lobby_tabs::header::panel(c, store.clone())
             })
             .after_feature(crate::lobby_options::FEATURE);
-        // The mode strip's bumpers (docs/game/party-lobby.md, "Switching").
+        // X opens the GAME MODE picker (docs/game/party-lobby.md,
+        // "Changing mode").
         let store = self.store.clone();
         b.raw().before(
             &points::PREGAME_LOBBY_INPUT,
-            "the mode strip's bumpers",
+            "X opens the GAME MODE picker",
             move |c| crate::lobby_tabs::input::press(c, store.clone()),
         );
 

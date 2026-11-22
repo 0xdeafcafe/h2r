@@ -1,35 +1,34 @@
-//! The party lobby's mode strip (docs/game/party-lobby.md): MULTIPLAYER,
-//! CUSTOM GAMES, FORGE, FIREFIGHT and CO-OP across the pregame lobby's
-//! header band, moved along with the bumpers.
+//! The party lobby's modes (docs/game/party-lobby.md): MULTIPLAYER,
+//! CUSTOM GAMES, FORGE, FIREFIGHT and CO-OP. The lobby's header names the
+//! mode it is in, and X opens the GAME MODE picker, which switches it.
 //!
-//! **A tab is a name for lobby state the game already has.** It is two
+//! **A mode is a name for lobby state the game already has.** It is two
 //! parts ([`Tab::parts`]): the retail lobby mode (`LOBBY_MODE_SET`: 0
 //! co-op, 2 custom game, 3 matchmaking) and the lobby's mode of ours
 //! ([`crate::lobby_start::Mode`]). [`Tab::of`] is the inverse, and the
-//! selected tab is always its answer for the lobby as it stands: the strip
-//! stores no tab of its own. Whether MULTIPLAYER's playlist is a Clanker
-//! one is not a tab: it is the playlist the lobby holds, chosen on the one
-//! playlist page (`crate::clankermatch::Scope::All`).
+//! lobby's mode is always its answer for the lobby as it stands: nothing
+//! here stores a mode of its own. Whether MULTIPLAYER's playlist is a
+//! Clanker one is not a mode: it is the playlist the lobby holds, chosen on
+//! the one playlist page (`crate::clankermatch::Scope::All`).
 //!
-//! **Where each tab runs** ([`available`]): by the lobby's [`Place`] and a
-//! few [`Facts`], a tab is on or off with a [`Reason`]. A tab whose
+//! **Where each mode runs** ([`available`]): by the lobby's [`Place`] and
+//! a few [`Facts`], a mode is on or off with a [`Reason`]. A mode whose
 //! feature is switched off is absent ([`Present`]); nothing else removes
-//! one. What a tab's game lacks (FIREFIGHT with no map that carries the
-//! kit) does not turn the tab off: the tab opens, and Start Game says what
-//! is missing (`crate::lobby_mode::start_refusal`).
+//! one. What a mode's game lacks (FIREFIGHT with no map that carries the
+//! kit) does not turn the mode off: the lobby switches, and Start Game says
+//! what is missing (`crate::lobby_start`, `crate::lobby_mode::start_refusal`).
 //!
-//! **Moving** ([`step`]): White to the previous tab that is on, Black to
-//! the next; the ends do not wrap, and the first tab skipped (or the one
-//! that stops the move) gives its reason to the status line for four
-//! seconds ([`Notice`]).
+//! **Changing mode** ([`picker`]): X, for the party leader, opens the GAME
+//! MODE picker over the lobby, its values the modes present of
+//! [`picker::MODES`], focused on the lobby's. A mode that is off says why
+//! on the right and, picked, gives its reason to the status line for four
+//! seconds ([`Notice`]); any other is the switch ([`switch`]). The Xbox
+//! Live menu's Custom Games, Forge and Firefight rows ask for the same
+//! switch once their custom lobby is up ([`request`]).
 //!
-//! **The cells** ([`cells`]): one per tab present, cut for its label,
-//! 5 units apart from -244, on the header band; Black's glyph follows the
-//! last ([`next_glyph`]).
-//!
-//! The strip drawn on the lobby and read by the agent API is [`strip`],
-//! the bumpers [`input`] and the switch [`switch`]; its preview (`h2 ui
-//! preview lobby.tabs`) is [`preview`].
+//! The lobby's header and its prompt line, drawn after retail's panel
+//! update, and the lobby as `ui.lobby.tabs` reads it are [`header`]; X is
+//! [`input`].
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -40,17 +39,18 @@ use crate::lobby_start::Mode;
 use crate::ui_kit::ids::{self, Family};
 use crate::ui_kit::input::Glyph;
 
-/// The strip's texts: the labels, the two glyphs, the reasons.
+/// The modes' texts: the labels (the lobby's header), the prompt line, the
+/// reasons.
 pub const IDS: Family = ids::family("lobby tabs");
 
+pub mod header;
 pub mod input;
-pub mod preview;
-pub mod strip;
+pub mod picker;
 pub mod switch;
 
-// ---- the tabs ----
+// ---- the modes ----
 
-/// One mode of the strip, in its order.
+/// One mode of the lobby, in the order the picker lists them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Tab {
@@ -103,7 +103,8 @@ pub struct Parts {
 }
 
 impl Tab {
-    /// Every tab, in the strip's order.
+    /// Every mode, in the picker's order (CO-OP last: the picker does not
+    /// list it, [`picker::MODES`]).
     pub const ALL: [Tab; 5] = [
         Tab::Multiplayer,
         Tab::CustomGames,
@@ -112,7 +113,8 @@ impl Tab {
         Tab::CoOp,
     ];
 
-    /// Its label on the strip, in capitals as retail's headers are.
+    /// Its label in the lobby's header, in capitals as retail's headers
+    /// are.
     pub const fn label(self) -> &'static str {
         match self {
             Tab::Multiplayer => "MULTIPLAYER",
@@ -123,8 +125,8 @@ impl Tab {
         }
     }
 
-    /// Its label in title case, as a list's row reads (the lobby's mode
-    /// picker, `ui_kit::screens::MODE_PICKER`).
+    /// Its label in title case, as a list's row reads (the GAME MODE
+    /// picker, [`picker`]).
     pub const fn title_case(self) -> &'static str {
         match self {
             Tab::Multiplayer => "Multiplayer",
@@ -151,15 +153,15 @@ impl Tab {
         IDS.id(self as u32)
     }
 
-    /// The width of its cell, cut for its label in font 1
-    /// (docs/game/party-lobby.md, "The strip").
-    pub const fn width(self) -> i16 {
+    /// What the mode plays, one line: the picker's right side while the
+    /// mode has the focus and is on.
+    pub const fn line(self) -> &'static str {
         match self {
-            Tab::Multiplayer => 84,
-            Tab::CustomGames => 92,
-            Tab::Forge => 40,
-            Tab::Firefight => 70,
-            Tab::CoOp => 40,
+            Tab::Multiplayer => "Pick a playlist and search for a game, against people or Clankers.",
+            Tab::CustomGames => "Your map, your rules, your players.",
+            Tab::Forge => "Edit a map together, then play on it.",
+            Tab::Firefight => "Hold out together against waves of enemies.",
+            Tab::CoOp => "Play the campaign together.",
         }
     }
 
@@ -202,7 +204,7 @@ pub fn seen_mode(leader: bool, own: Mode, kit_map: bool) -> Mode {
 
 // ---- which tabs there are ----
 
-/// The tabs whose feature is on. MULTIPLAYER, CUSTOM GAMES and CO-OP are
+/// The modes whose feature is on. MULTIPLAYER, CUSTOM GAMES and CO-OP are
 /// retail's lobby modes and always present: the co-op lobby is retail's
 /// own (Switch To: Co-Op Game), whether or not co-op over Xbox Live
 /// (`crate::coop_live`) is installed.
@@ -227,7 +229,7 @@ impl Present {
         }
     }
 
-    /// The tabs present, in the strip's order.
+    /// The modes present, in [`Tab::ALL`]'s order.
     pub fn tabs(self) -> Vec<Tab> {
         Tab::ALL.into_iter().filter(|&t| self.has(t)).collect()
     }
@@ -238,18 +240,18 @@ static PRESENT: Mutex<Present> = Mutex::new(Present {
     firefight: false,
 });
 
-/// The tabs present in this run: set once at boot, as each feature is
+/// The modes present in this run: set once at boot, as each feature is
 /// installed.
 pub fn present() -> Present {
     *PRESENT.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Boot's record of a feature behind a tab: `f` sets its flag.
+/// Boot's record of a feature behind a mode: `f` sets its flag.
 pub fn set_present(f: impl FnOnce(&mut Present)) {
     f(&mut PRESENT.lock().unwrap_or_else(|e| e.into_inner()));
 }
 
-// ---- where each tab runs ----
+// ---- where each mode runs ----
 
 /// Where the lobby is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -274,7 +276,7 @@ pub struct Facts {
     pub remote_members: bool,
 }
 
-/// Why a tab is off, or a press does nothing; each its status line.
+/// Why a mode is off, or a switch does nothing; each its status line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Reason {
@@ -296,9 +298,10 @@ pub enum Reason {
 
 /// The first reason's string id.
 const FIRST_REASON: u32 = 8;
-/// The White and Black glyphs' string ids.
-pub const PREV_GLYPH_ID: u32 = IDS.id(6);
-pub const NEXT_GLYPH_ID: u32 = IDS.id(7);
+/// The lobby's prompt line: the X glyph and "Change Game Mode", the text
+/// of the line the lobby's tag holds for it ([`header`]).
+pub const CHANGE_MODE_ID: u32 = IDS.id(5);
+pub const CHANGE_MODE_TEXT: &str = "\u{e102} Change Game Mode";
 
 impl Reason {
     /// Every reason, for the string table.
@@ -345,7 +348,7 @@ impl Reason {
     }
 }
 
-/// Whether a tab can be selected here.
+/// Whether a mode can be switched to here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Avail {
     On,
@@ -364,7 +367,7 @@ impl Avail {
     }
 }
 
-/// Whether `tab` runs in a lobby at `place` with `facts`.
+/// Whether mode `tab` runs in a lobby at `place` with `facts`.
 pub fn available(tab: Tab, place: Place, facts: Facts) -> Avail {
     use Avail::{Off, On};
     match tab {
@@ -376,8 +379,8 @@ pub fn available(tab: Tab, place: Place, facts: Facts) -> Avail {
         Tab::CustomGames => On,
         Tab::Forge if facts.remote_members => Off(Reason::ForgeRemote),
         Tab::Forge => On,
-        // With no map that carries the kit, the tab still opens: Start
-        // Game is what says so (`lobby_mode::start_refusal`).
+        // With no map that carries the kit, the lobby still switches:
+        // Start Game is what says so (`lobby_mode::start_refusal`).
         Tab::Firefight => On,
         Tab::CoOp => match place {
             Place::SystemLink => Off(Reason::CoOpNotOnSystemLink),
@@ -387,7 +390,7 @@ pub fn available(tab: Tab, place: Place, facts: Facts) -> Avail {
     }
 }
 
-/// The strip's tabs present, each with whether it runs here.
+/// The modes present, each with whether it runs here.
 pub fn row(present: Present, place: Place, facts: Facts) -> Vec<(Tab, Avail)> {
     present
         .tabs()
@@ -396,24 +399,19 @@ pub fn row(present: Present, place: Place, facts: Facts) -> Vec<(Tab, Avail)> {
         .collect()
 }
 
-/// How a tab is drawn.
+/// A mode's state as `ui.lobby.tabs` reports it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Look {
-    /// White: the lobby's labels.
+    /// The lobby's mode: the header names it.
     Selected,
-    /// Pale blue: the lobby's values.
+    /// Another mode the lobby can switch to.
     On,
-    /// Pale blue at an unfocused retail row's 55%.
+    /// A mode that cannot run here, with its reason.
     Off,
 }
 
-impl Look {
-    /// The looks, in the order of a cell's widgets.
-    pub const ALL: [Look; 3] = [Look::Selected, Look::On, Look::Off];
-}
-
-/// How `tab` is drawn with `selected` the lobby's tab.
+/// `tab`'s state with `selected` the lobby's mode.
 pub fn look(tab: Tab, selected: Tab, avail: Avail) -> Look {
     if tab == selected {
         Look::Selected
@@ -422,106 +420,6 @@ pub fn look(tab: Tab, selected: Tab, avail: Avail) -> Look {
     } else {
         Look::Off
     }
-}
-
-// ---- moving ----
-
-/// A bumper's direction.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Dir {
-    /// White, the left bumper.
-    Prev,
-    /// Black, the right bumper.
-    Next,
-}
-
-impl Dir {
-    /// Its glyph on the strip.
-    pub const fn glyph(self) -> Glyph {
-        match self {
-            Dir::Prev => Glyph::White,
-            Dir::Next => Glyph::Black,
-        }
-    }
-}
-
-/// What a bumper does from a tab.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Step {
-    /// To the nearest tab that is on, with the first one skipped's reason.
-    Move { to: Tab, skipped: Option<Reason> },
-    /// Nowhere: the end of the strip (no reason), or only tabs that are off
-    /// that way (the nearest one's).
-    Stay(Option<Reason>),
-}
-
-/// Where `dir` goes from `from` along `row`.
-pub fn step(row: &[(Tab, Avail)], from: Tab, dir: Dir) -> Step {
-    let Some(at) = row.iter().position(|(t, _)| *t == from) else {
-        return Step::Stay(None);
-    };
-    let ahead: Box<dyn Iterator<Item = &(Tab, Avail)>> = match dir {
-        Dir::Prev => Box::new(row[..at].iter().rev()),
-        Dir::Next => Box::new(row[at + 1..].iter()),
-    };
-    let mut first_off = None;
-    for &(tab, avail) in ahead {
-        match avail {
-            Avail::On => {
-                return Step::Move {
-                    to: tab,
-                    skipped: first_off,
-                };
-            }
-            Avail::Off(r) => {
-                first_off.get_or_insert(r);
-            }
-        }
-    }
-    Step::Stay(first_off)
-}
-
-/// Whether `dir`'s glyph is bright: a tab that is on lies that way.
-pub fn glyph_on(row: &[(Tab, Avail)], from: Tab, dir: Dir) -> bool {
-    matches!(step(row, from, dir), Step::Move { .. })
-}
-
-// ---- the cells ----
-
-/// The strip's band: the top and bottom of every cell, inside the header
-/// rectangle `[204 -270 180 70]` the strip takes.
-pub const TOP: i16 = 202;
-pub const BOTTOM: i16 = 182;
-/// The header band the strip lives in.
-pub const BAND_TOP: i16 = 204;
-pub const BAND_BOTTOM: i16 = 180;
-/// The first cell's left edge, and the gap between cells.
-pub const RUN_LEFT: i16 = -244;
-pub const GAP: i16 = 5;
-/// White's glyph cell, left of the run.
-pub const PREV: [i16; 4] = [TOP, -270, BOTTOM, -248];
-/// The width of a glyph's cell.
-pub const GLYPH_WIDTH: i16 = 22;
-
-/// Each present tab's cell `[top left bottom right]`, left-aligned at
-/// [`RUN_LEFT`]: a tab absent closes the run up.
-pub fn cells(tabs: &[Tab]) -> Vec<(Tab, [i16; 4])> {
-    let mut left = RUN_LEFT;
-    tabs.iter()
-        .map(|&t| {
-            let right = left + t.width();
-            let cell = (t, [TOP, left, BOTTOM, right]);
-            left = right + GAP;
-            cell
-        })
-        .collect()
-}
-
-/// Black's glyph cell: [`GAP`] after the last of `tabs`' cells.
-pub fn next_glyph(tabs: &[Tab]) -> [i16; 4] {
-    let left = cells(tabs).last().map_or(RUN_LEFT, |(_, c)| c[3] + GAP);
-    [TOP, left, BOTTOM, left + GLYPH_WIDTH]
 }
 
 // ---- the reason line ----
@@ -565,21 +463,81 @@ pub fn clear_notice() {
     *NOTICE.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
+// ---- a switch asked for before the lobby is up ----
+
+/// How long a [`request`] waits for its lobby.
+pub const REQUEST_FOR: Duration = Duration::from_secs(60);
+
+/// A switch asked for at `at`, to `to`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Request {
+    pub to: Tab,
+    pub at: Instant,
+}
+
+impl Request {
+    /// The mode still wanted at `now`: [`REQUEST_FOR`] from `at`.
+    pub fn wanted(&self, now: Instant) -> Option<Tab> {
+        (now.saturating_duration_since(self.at) < REQUEST_FOR).then_some(self.to)
+    }
+}
+
+#[cfg(not(test))]
+static REQUEST: Mutex<Option<Request>> = Mutex::new(None);
+
+#[cfg(not(test))]
+fn with_request<T>(f: impl FnOnce(&mut Option<Request>) -> T) -> T {
+    f(&mut REQUEST.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+// Tests run side by side, each on its own thread: each has its own
+// request, so one test's lobby can't take another's.
+#[cfg(test)]
+thread_local! {
+    static REQUEST: Mutex<Option<Request>> = const { Mutex::new(None) };
+}
+
+#[cfg(test)]
+fn with_request<T>(f: impl FnOnce(&mut Option<Request>) -> T) -> T {
+    REQUEST.with(|r| f(&mut r.lock().unwrap_or_else(|e| e.into_inner())))
+}
+
+/// Asks for a switch to `to` at the custom lobby's next panel update
+/// ([`header::update`]): the Xbox Live menu's Custom Games, Forge and
+/// Firefight rows, whose press makes a custom lobby and leaves the mode to
+/// this.
+pub fn request(to: Tab) {
+    with_request(|r| {
+        *r = Some(Request {
+            to,
+            at: Instant::now(),
+        })
+    });
+}
+
+/// Drops a switch asked for and not yet run: another Live menu row.
+pub fn cancel_request() {
+    with_request(|r| *r = None);
+}
+
+/// Takes the switch asked for, while it is still wanted.
+pub fn take_request() -> Option<Tab> {
+    with_request(|r| r.take()).and_then(|r| r.wanted(Instant::now()))
+}
+
 // ---- the strings ----
 
-/// Every text of the strip, served from our string table
-/// (`crate::layout_glue`): the labels, the two glyphs and the reasons.
+/// Every text of the lobby's modes, served from our string table
+/// (`crate::layout_glue`): the labels, the prompt line and the reasons.
 pub fn strings() -> Vec<(u32, &'static str)> {
     let mut out: Vec<(u32, &'static str)> = Tab::ALL.iter().map(|t| (t.id(), t.label())).collect();
-    out.push((PREV_GLYPH_ID, PREV_TEXT));
-    out.push((NEXT_GLYPH_ID, NEXT_TEXT));
+    out.push((CHANGE_MODE_ID, CHANGE_MODE_TEXT));
     out.extend(Reason::ALL.iter().map(|r| (r.id(), r.text())));
     out
 }
 
-/// The White and Black glyphs as the font draws them ([`Glyph::char`]).
-pub const PREV_TEXT: &str = "\u{e105}";
-pub const NEXT_TEXT: &str = "\u{e104}";
+/// The prompt line's glyph: X ([`Glyph::char`]).
+pub const CHANGE_MODE_GLYPH: Glyph = Glyph::X;
 
 #[cfg(test)]
 mod tests;

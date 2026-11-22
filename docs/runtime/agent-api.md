@@ -2465,20 +2465,21 @@ or the game's UI state without UI watch. All are read-only except
   For example, `{"players":[{"slot":1,"peer":1,"name":"Clanker","bars":6,"rtt_ms":null}]}`.
 
 - **`ui.lobby.tabs`** (`h2 agent ui.lobby.tabs`, no parameters): the
-  pregame lobby's mode strip ([party-lobby.md](../game/party-lobby.md)),
-  read on a game boundary (`crates/extensions/game/src/lobby_tabs/strip.rs`).
-  The result is `{place, leader, selected, tabs, clanker, notice}`:
+  pregame lobby's modes ([party-lobby.md](../game/party-lobby.md)),
+  read on a game boundary (`crates/extensions/game/src/lobby_tabs/header.rs`).
+  The result is `{place, leader, selected, header, tabs, clanker, notice}`:
   `place` is `split_screen`, `system_link` or `xbox_live`; `leader` is
-  whether this console leads the party (a member's strip has no glyphs
-  and its bumpers do nothing); `selected` is the tab the lobby is on.
-  `tabs` lists the tabs present in strip order, each `{tab, label, state,
-  reason}` with `tab` one of `multiplayer`, `custom_games`, `forge`,
-  `firefight`, `co_op`, `state` one of `selected`, `on`, `off`, and
-  `reason` the status-line sentence of a tab that cannot run here (else
-  null). `clanker` is, on MULTIPLAYER, whether the lobby's playlist is
-  one the server marks as a Clanker playlist (null on another tab).
-  `notice` is the reason the status line shows after a bumper press, for
-  four seconds, else null. It returns `UNAVAILABLE` when the pregame
+  whether this console leads the party (a member has no prompt line and
+  its X is retail's); `selected` is the mode the lobby is in, and
+  `header` the text the lobby's update gives its header (`CUSTOM GAMES`,
+  `FORGE`, ...). `tabs` lists the modes present, each `{tab, label,
+  state, reason}` with `tab` one of `multiplayer`, `custom_games`,
+  `forge`, `firefight`, `co_op`, `state` one of `selected`, `on`, `off`,
+  and `reason` the status-line sentence of a mode that cannot run here
+  (else null). `clanker` is, in MULTIPLAYER, whether the lobby's
+  playlist is one the server marks as a Clanker playlist (null in
+  another mode). `notice` is the reason the status line shows after a
+  pick of a mode that is off, for four seconds, else null. It returns `UNAVAILABLE` when the pregame
   lobby is not the screen on top or its session cannot be read.
   For example, a Split Screen lobby's MULTIPLAYER entry is
   `{"tab":"multiplayer","label":"MULTIPLAYER","state":"off","reason":"Matchmaking needs Xbox Live."}`.
@@ -2528,10 +2529,11 @@ requires a rendering check. [Transition reader](../../crates/extensions/game/src
 `ui.press` accepts `{target, action, row?, phase?}`. Copy the token from
 the latest audit. Actions are `up`, `down`, `left`, `right`, `choose` (A),
 `back` (B), `friends` (Y), `open_live_menu` (A on the Live players
-screen in mode 3), and `tab_prev` (White) and `tab_next` (Black), the
-pregame lobby's mode strip bumpers, refused with `GONE` on any other
-screen ([party-lobby.md](../game/party-lobby.md#switching); read the
-result with `ui.lobby.tabs`). Move focus, audit again, then send `choose` with the
+screen in mode 3), and `change_mode` (X in the pregame lobby: the GAME
+MODE picker, for the party leader), refused with `GONE` on any other
+screen ([party-lobby.md](../game/party-lobby.md#changing-mode); the
+picker is then a kit dialog in `ui.audit`, and `ui.lobby.tabs` reads
+the mode a pick switches to). Move focus, audit again, then send `choose` with the
 observed row. A changed owner, row or requested phase invalidates the
 press. The XAPI tap checks the target again when the game reads the pad.
 A successful result contains `{delivered:true, target, action, row,

@@ -388,3 +388,85 @@ fn no_listed_playlist_turns_the_tab_off() {
     forget_playlists();
     assert!(!no_playlists_seen());
 }
+
+/// A mode picked in the GAME MODE picker (or asked for by a Live menu
+/// row) is the switch the tab strip made: the leader's only, from the
+/// lobby's mode, to a mode present and on here; a mode that is off is
+/// refused with its reason, and the lobby's own mode does nothing.
+#[test]
+fn a_picked_mode_switches_as_the_tab_did() {
+    use super::super::header::Shown;
+    use super::super::{Facts, Present, row};
+    let lobby = |leader: bool, selected: Tab| Shown {
+        place: Place::SplitScreen,
+        leader,
+        selected,
+        row: row(Present::ALL, Place::SplitScreen, Facts::default()),
+        clanker: None,
+    };
+    assert_eq!(
+        ask(&lobby(true, Tab::CustomGames), Tab::Forge),
+        Ask::Switch {
+            from: Tab::CustomGames,
+            to: Tab::Forge,
+            place: Place::SplitScreen
+        }
+    );
+    assert_eq!(
+        ask(&lobby(true, Tab::Forge), Tab::CoOp),
+        Ask::Switch {
+            from: Tab::Forge,
+            to: Tab::CoOp,
+            place: Place::SplitScreen
+        }
+    );
+    assert_eq!(ask(&lobby(false, Tab::CustomGames), Tab::Forge), Ask::Nothing, "a member");
+    assert_eq!(ask(&lobby(true, Tab::Forge), Tab::Forge), Ask::Nothing, "already there");
+    assert_eq!(
+        ask(&lobby(true, Tab::CustomGames), Tab::Multiplayer),
+        Ask::Refuse(Reason::MatchmakingNeedsLive)
+    );
+    let mut no_forge = lobby(true, Tab::CustomGames);
+    no_forge.row = row(
+        Present {
+            forge: false,
+            ..Present::ALL
+        },
+        Place::SplitScreen,
+        Facts::default(),
+    );
+    assert_eq!(ask(&no_forge, Tab::Forge), Ask::Nothing, "a mode not present");
+}
+
+/// `run_to` reads the lobby and runs the switch: a Split Screen custom
+/// lobby to FIREFIGHT checks the lock, holds the setting and sets the mode
+/// with no retail routine; to MULTIPLAYER it is refused before any call.
+#[test]
+fn run_to_reads_the_lobby_and_runs_the_switch() {
+    let store = Arc::new(Store::defaults(&ff::DEFS));
+    store.set(ff::ENABLED.key, Value::Bool(false)).unwrap();
+    let s = Arc::clone(&store);
+    let entry = move |cx: Cx| -> EntryFuture {
+        let s = Arc::clone(&s);
+        Box::pin(async move {
+            run_to(&cx, Tab::Firefight, Some(s)).await?;
+            Ok(Ret::new(0, 0))
+        })
+    };
+    let run = testing::run(&entry, guest(0), Regs::default(), |_, _| Regs::default());
+    run.result.unwrap();
+    assert_eq!(targets(&run.calls), [points::LOBBY_START_STATE.base]);
+    assert_eq!(lobby_start::mode(), Mode::Firefight);
+    assert_eq!(store.get(ff::ENABLED.key), Some(Value::Bool(true)));
+    // MULTIPLAYER needs Xbox Live: refused, nothing called.
+    let entry = |cx: Cx| -> EntryFuture {
+        Box::pin(async move {
+            run_to(&cx, Tab::Multiplayer, None).await?;
+            Ok(Ret::new(0, 0))
+        })
+    };
+    let run = testing::run(&entry, guest(0), Regs::default(), |_, _| Regs::default());
+    run.result.unwrap();
+    assert!(run.calls.is_empty(), "refused before any guest call");
+    lobby_start::set_mode(Mode::Multiplayer);
+}

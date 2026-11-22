@@ -89,7 +89,6 @@ def root_exports():
             "assets/ui/screens/layout.list.texts.yaml",
             "assets/ui/screens/layout.list.yaml",
             "assets/ui/screens/layout.picker.yaml",
-            "assets/ui/screens/lobby.tabs.yaml",
             "assets/ui/screens/mods.detail.yaml",
             "assets/ui/screens/mods.pack.yaml",
             "assets/ui/screens/mods.yaml",

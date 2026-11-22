@@ -1,152 +1,147 @@
-//! The strip's bumpers (docs/game/party-lobby.md, "Switching").
+//! X in the pregame lobby (docs/game/party-lobby.md, "Changing mode").
 //!
 //! A `before` on `PREGAME_LOBBY_INPUT` (the lobby's input handler: ECX the
-//! screen, the event on the stack, AL handled, `ret 4`) takes Black and
-//! White, buttons 4 and 5 of a kind 5 event (`crate::ui_kit::input`), and
-//! answers handled; every other event goes on to retail's handler. The
-//! handler runs only while the lobby is the input screen, so a dialog over
-//! it keeps its own buttons, and in a game the bumpers are the game's.
+//! screen, the event on the stack, AL handled, `ret 4`) takes X, button 2
+//! of a kind 5 event (`crate::ui_kit::input`), from the party leader: it
+//! opens the GAME MODE picker ([`super::picker`]) over the lobby, on the
+//! lobby's own window and slot, for the player who pressed it, and answers
+//! handled. Every other event, and a member's X, goes on to retail's
+//! handler. The handler runs only while the lobby is the input screen, so
+//! a dialog over it keeps its own buttons.
 //!
-//! [`decide`] is the whole choice: a member's press does nothing; a press
-//! toward the end of the strip does nothing; a press toward only tabs that
-//! are off shows the nearest one's reason; any other switches to the next
-//! tab that is on ([`super::step`]), showing the reason of the first one
-//! it skipped. The switch itself is [`super::switch::run`].
+//! [`decide`] is the whole choice.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use engine::entry::{EntryFuture, Ret};
+use engine::entry::{EntryFuture, GuestCall, Ret};
 use hooks::{Call, Flow};
 use runtime::GuestFault;
 use settings::Store;
 
-use super::strip::{self, Shown};
-use super::{Dir, Reason, Step, Tab, notice, step};
+use super::header::{self, Shown};
 use crate::list_class::BUTTON_EVENT;
+use crate::ui_kit::input::X_BUTTON;
 
-/// Black and White's button words (`+8` of a kind 5 event).
-pub const BLACK_BUTTON: u32 = 4;
-pub const WHITE_BUTTON: u32 = 5;
-
-/// The bumper an event is, if it is one.
-pub fn bumper(kind: u32, button: u32) -> Option<Dir> {
-    match (kind, button) {
-        (BUTTON_EVENT, WHITE_BUTTON) => Some(Dir::Prev),
-        (BUTTON_EVENT, BLACK_BUTTON) => Some(Dir::Next),
-        _ => None,
-    }
-}
-
-/// What a bumper press does.
+/// What an event in the lobby does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Act {
-    /// Nothing: a member's press, or the end of the strip.
-    Nothing,
-    /// Only a reason on the status line.
-    Notice(Reason),
-    /// A switch from `from` to `to`, with the first skipped tab's reason.
-    Switch {
-        from: Tab,
-        to: Tab,
-        notice: Option<Reason>,
-    },
+    /// Retail's: not X, or a member's X.
+    Pass,
+    /// The leader's X: the GAME MODE picker.
+    Open,
 }
 
-/// The press of `dir` in the lobby `shown`.
-pub fn decide(dir: Dir, shown: &Shown) -> Act {
-    if !shown.leader {
-        return Act::Nothing;
+/// The event `(kind, button)` in the lobby `shown`.
+pub fn decide(kind: u32, button: u32, shown: &Shown) -> Act {
+    if (kind, button) == (BUTTON_EVENT, X_BUTTON) && shown.leader {
+        Act::Open
+    } else {
+        Act::Pass
     }
-    match step(&shown.row, shown.selected, dir) {
-        Step::Stay(None) => Act::Nothing,
-        Step::Stay(Some(r)) => Act::Notice(r),
-        Step::Move { to, skipped } => Act::Switch {
-            from: shown.selected,
-            to,
-            notice: skipped,
-        },
-    }
+}
+
+/// The local players an event's controller can be (`+4`).
+const LOCAL_PLAYERS: u32 = 4;
+
+/// The guest page the picker's open request is written to ([`install`]).
+static REQUEST: AtomicU32 = AtomicU32::new(0);
+
+/// The party lobby feature (`crate::lobby_mode`) gives a page of its own
+/// for the open request.
+pub fn install(request: u32) {
+    REQUEST.store(request, Ordering::SeqCst);
 }
 
 static UNREAD: AtomicBool = AtomicBool::new(false);
+static NO_PICKER: AtomicBool = AtomicBool::new(false);
 
-fn handled(c: &mut Call) -> Result<Flow, GuestFault> {
-    c.cpu.eax = (c.cpu.eax & !0xff) | 1;
-    c.ret(4).map(Flow::Return)
-}
-
-/// The hook on `PREGAME_LOBBY_INPUT`: the bumpers, `store` the settings
+/// The hook on `PREGAME_LOBBY_INPUT`: X, with `store` the settings
 /// Firefight's choice is held in.
 pub fn press(c: &mut Call, store: Option<Arc<Store>>) -> Result<Flow, GuestFault> {
     let rt = Arc::clone(c.ctx.runtime());
-    let (dir, shown) = {
+    let screen = c.cpu.ecx;
+    let (shown, player, stack) = {
         let mem = rt.memory();
         let event = mem.u32(c.cpu.esp + 4).ok();
         let word = |o: u32| event.and_then(|e| mem.u32(e.checked_add(o)?).ok());
-        let Some(dir) = word(0).zip(word(8)).and_then(|(k, b)| bumper(k, b)) else {
+        let (Some(kind), Some(button)) = (word(0), word(8)) else {
             return Ok(Flow::Continue);
         };
-        let shown = strip::read(&*mem)
-            .map(|r| strip::shown(&r, super::present(), crate::lobby_start::mode()));
-        (dir, shown)
+        if (kind, button) != (BUTTON_EVENT, X_BUTTON) {
+            return Ok(Flow::Continue);
+        }
+        let Some(shown) = header::shown_now(&*mem) else {
+            if !UNREAD.swap(true, Ordering::Relaxed) {
+                eprintln!("lobby tabs: X with the lobby's session unreadable: left to retail");
+            }
+            return Ok(Flow::Continue);
+        };
+        if decide(kind, button, &shown) == Act::Pass {
+            return Ok(Flow::Continue);
+        }
+        let player = word(4).filter(|&p| p < LOCAL_PLAYERS);
+        let stack = (|| {
+            Some((
+                mem.u32(screen.checked_add(crate::ui_kit::lifecycle::SCREEN_WINDOW)?).ok()?,
+                mem.u32(screen.checked_add(crate::ui_kit::lifecycle::SCREEN_SLOT)?).ok()?,
+            ))
+        })();
+        (shown, player, stack)
     };
-    let Some(shown) = shown else {
-        if !UNREAD.swap(true, Ordering::Relaxed) {
-            eprintln!("lobby tabs: a bumper with the lobby's session unreadable: left to retail");
+    let present = super::present();
+    let pick = super::picker::pick(&shown, present).after(super::picker::after(present, store));
+    let loader = crate::ui_kit::picker::offer_list(pick).and_then(crate::list_class::loader_of);
+    let request_at = REQUEST.load(Ordering::SeqCst);
+    let (Some(player), Some((window, slot)), Some(loader)) = (player, stack, loader) else {
+        if !NO_PICKER.swap(true, Ordering::Relaxed) {
+            eprintln!(
+                "lobby tabs: the GAME MODE picker not opened (player {player:?}, stack {stack:?}, picker {})",
+                if loader.is_some() { "on" } else { "off" }
+            );
         }
         return Ok(Flow::Continue);
     };
-    let place = shown.place;
-    match decide(dir, &shown) {
-        Act::Nothing => handled(c),
-        Act::Notice(r) => {
-            notice(r);
-            handled(c)
-        }
-        Act::Switch {
-            from,
-            to,
-            notice: skipped,
-        } => {
-            if let Some(r) = skipped {
-                notice(r);
-            }
-            c.answer_async(move |cx| -> EntryFuture {
-                Box::pin(async move {
-                    super::switch::run(&cx, from, to, place, store).await?;
-                    Ok(Ret::new(1, 4))
-                })
-            })
-        }
+    if request_at == 0 {
+        return Ok(Flow::Continue);
     }
+    eprintln!("lobby tabs: opening the GAME MODE picker (player {player}) on window {window}, slot {slot}");
+    let request = crate::skulls_mp::open_request(1 << player, window, slot, loader);
+    c.answer_async(move |cx| -> EntryFuture {
+        Box::pin(async move {
+            cx.write(|m| m.write(request_at, &request))?;
+            cx.call(GuestCall::new(loader).args([request_at])).await?;
+            Ok(Ret::new(1, 4))
+        })
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lobby_tabs::{Facts, NOTICE_FOR, Notice, Place, Present, row};
+    use crate::lobby_tabs::{Facts, Place, Present, Tab, row};
     use crate::ui_kit::input::Input;
-    use std::time::{Duration, Instant};
 
-    fn lobby(leader: bool, selected: Tab) -> Shown {
+    fn lobby(leader: bool) -> Shown {
         Shown {
             place: Place::SplitScreen,
             leader,
-            selected,
+            selected: Tab::CustomGames,
             row: row(Present::ALL, Place::SplitScreen, Facts::default()),
             clanker: None,
         }
     }
 
+    /// X opens the picker for the leader only; a member's X, and every
+    /// other button, is retail's.
     #[test]
-    fn black_and_white_are_handled_and_nothing_else_is() {
-        assert_eq!(bumper(BUTTON_EVENT, WHITE_BUTTON), Some(Dir::Prev));
-        assert_eq!(bumper(BUTTON_EVENT, BLACK_BUTTON), Some(Dir::Next));
+    fn x_opens_the_picker_for_the_leader_only() {
+        let (kind, button) = Input::X.event();
+        assert_eq!(decide(kind, button, &lobby(true)), Act::Open);
+        assert_eq!(decide(kind, button, &lobby(false)), Act::Pass, "a member's X");
         for input in [
             Input::A,
             Input::B,
-            Input::X,
             Input::Y,
             Input::Start,
             Input::Back,
@@ -156,136 +151,19 @@ mod tests {
             Input::Right,
         ] {
             let (kind, button) = input.event();
-            assert_eq!(bumper(kind, button), None, "{input:?}");
+            assert_eq!(decide(kind, button, &lobby(true)), Act::Pass, "{input:?}");
         }
         // A direction event's word 8 is not a button.
-        assert_eq!(bumper(crate::list_class::LEFT_EVENT, WHITE_BUTTON), None);
-        // The kit's screens never see them as an input of theirs.
-        assert_eq!(Input::from_event(BUTTON_EVENT, BLACK_BUTTON), None);
-        assert_eq!(Input::from_event(BUTTON_EVENT, WHITE_BUTTON), None);
+        assert_eq!(decide(crate::list_class::LEFT_EVENT, X_BUTTON, &lobby(true)), Act::Pass);
     }
 
+    /// The bumpers are retail's again: no mode moves on Black or White.
     #[test]
-    fn a_member_cannot_switch() {
-        for dir in [Dir::Prev, Dir::Next] {
-            assert_eq!(decide(dir, &lobby(false, Tab::CustomGames)), Act::Nothing);
+    fn the_bumpers_are_left_to_retail() {
+        const BLACK: u32 = 4;
+        const WHITE: u32 = 5;
+        for button in [BLACK, WHITE] {
+            assert_eq!(decide(BUTTON_EVENT, button, &lobby(true)), Act::Pass, "{button}");
         }
-        assert_eq!(
-            decide(Dir::Next, &lobby(true, Tab::CustomGames)),
-            Act::Switch {
-                from: Tab::CustomGames,
-                to: Tab::Forge,
-                notice: None
-            }
-        );
-    }
-
-    #[test]
-    fn a_press_toward_a_tab_that_is_off_shows_its_reason_for_four_seconds() {
-        let act = decide(Dir::Prev, &lobby(true, Tab::CustomGames));
-        assert_eq!(act, Act::Notice(Reason::MatchmakingNeedsLive));
-        // Skipped on the way to a tab that is on: the move, and the reason.
-        let mut s = lobby(true, Tab::CustomGames);
-        s.row = row(
-            Present::ALL,
-            Place::SplitScreen,
-            Facts {
-                remote_members: true,
-                ..Facts::default()
-            },
-        );
-        assert_eq!(
-            decide(Dir::Next, &s),
-            Act::Switch {
-                from: Tab::CustomGames,
-                to: Tab::Firefight,
-                notice: Some(Reason::ForgeRemote)
-            }
-        );
-        let at = Instant::now();
-        let n = Notice {
-            reason: Reason::MatchmakingNeedsLive,
-            at,
-        };
-        assert_eq!(
-            n.shown(at + Duration::from_secs(3)),
-            Some(Reason::MatchmakingNeedsLive)
-        );
-        assert_eq!(n.shown(at + NOTICE_FOR), None, "gone after four seconds");
-        assert_eq!(NOTICE_FOR, Duration::from_secs(4));
-    }
-
-    #[test]
-    fn the_ends_of_the_strip_do_nothing() {
-        let mut s = lobby(true, Tab::CoOp);
-        s.place = Place::XboxLive;
-        s.row = row(
-            Present::ALL,
-            Place::XboxLive,
-            Facts {
-                playlists: true,
-                live_co_op: true,
-                remote_members: false,
-            },
-        );
-        assert_eq!(decide(Dir::Next, &s), Act::Nothing);
-        s.selected = Tab::Multiplayer;
-        assert_eq!(decide(Dir::Prev, &s), Act::Nothing);
-    }
-
-    /// Every tab the availability table has on is reached by the bumpers,
-    /// in each place: Xbox Live from CUSTOM GAMES to MULTIPLAYER and CO-OP,
-    /// Split Screen to CO-OP. None is silently dead: a tab passed by is
-    /// named on the status line.
-    #[test]
-    fn every_tab_that_is_on_is_reached_by_the_bumpers() {
-        let facts = Facts {
-            playlists: true,
-            live_co_op: true,
-            remote_members: false,
-        };
-        for place in [Place::SplitScreen, Place::SystemLink, Place::XboxLive] {
-            let r = row(Present::ALL, place, facts);
-            let on: Vec<Tab> = r
-                .iter()
-                .filter(|(_, a)| a.is_on())
-                .map(|(t, _)| *t)
-                .collect();
-            let mut s = Shown {
-                place,
-                leader: true,
-                selected: Tab::CustomGames,
-                row: r.clone(),
-                clanker: None,
-            };
-            let mut seen = vec![Tab::CustomGames];
-            for dir in [Dir::Prev, Dir::Next] {
-                s.selected = Tab::CustomGames;
-                while let Act::Switch { to, .. } = decide(dir, &s) {
-                    seen.push(to);
-                    s.selected = to;
-                }
-            }
-            seen.sort_by_key(|t| *t as u8);
-            assert_eq!(seen, on, "{place:?}");
-        }
-        // Split Screen with no kit map and no Live (`Facts::default`): FORGE
-        // goes to FIREFIGHT and FIREFIGHT to CO-OP, nothing passed over.
-        assert_eq!(
-            decide(Dir::Next, &lobby(true, Tab::Forge)),
-            Act::Switch {
-                from: Tab::Forge,
-                to: Tab::Firefight,
-                notice: None
-            }
-        );
-        assert_eq!(
-            decide(Dir::Next, &lobby(true, Tab::Firefight)),
-            Act::Switch {
-                from: Tab::Firefight,
-                to: Tab::CoOp,
-                notice: None
-            }
-        );
     }
 }

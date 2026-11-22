@@ -79,9 +79,7 @@ them.
 
 A `Hud` whose spec is not `transparent` is drawn over the game shell
 instead of a live picture (`preview::From::view`): widgets that sit on
-the shell's header and footer bands, such as the pregame lobby's mode
-strip (`lobby.tabs`, [party-lobby.md](party-lobby.md)). Its doc
-says `backing: shell`.
+the shell's header and footer bands. Its doc says `backing: shell`.
 
 The Forge screens are the game's: list classes of ours on the large
 dialog (the object menu, Tools, Link and the questions) and on the
@@ -454,7 +452,8 @@ The openers:
   the list hooks show them: Campaign, Xbox Live, Split Screen, System
   Link, THEATER, Settings).
 - `Opener::XBOX_LIVE_MENU`: the Xbox Live menu (screen `0xba`, pane 0)
-  on Quickmatch, with our five rows.
+  on Quickmatch, with its nine rows
+  ([live-custom-games.md](../live/live-custom-games.md) §5).
 - `Opener::LOBBY` (`lobby` in a screen doc): the pregame lobby's custom
   game pane in its sample state, with no rows.
 

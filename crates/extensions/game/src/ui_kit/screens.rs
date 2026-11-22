@@ -267,7 +267,7 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 /// The screens `h2 ui preview` knows, by name: ours, then the design
 /// system's specimens (`design.<component>`) and the layout gallery
 /// (`layout.<name>`, [`crate::ui_kit::components::specimens::PAGES`]).
-pub const NAMES: [&str; 75] = [
+pub const NAMES: [&str; 74] = [
     "forge.hud",
     "forge.palette",
     "forge.menu",
@@ -312,7 +312,6 @@ pub const NAMES: [&str; 75] = [
     FORGE_MAP_PICKER,
     MODE_PICKER,
     crate::custom_games::browser_filters::SCREEN,
-    crate::lobby_tabs::preview::NAME,
     "design.title",
     "design.body",
     "design.panel-text",
@@ -349,9 +348,8 @@ pub const NAMES: [&str; 75] = [
 /// (`crate::lobby_mode::forge_map_pick`).
 pub const FORGE_MAP_PICKER: &str = "kit.picker.forge-map";
 
-/// The value picker of the lobby's modes, over the lobby: a sample for
-/// the mode choice's concepts (docs/game/ui-builder.md "The value
-/// picker"). No row of the game opens it.
+/// The GAME MODE picker X opens in the pregame lobby, over the lobby
+/// (docs/game/party-lobby.md, "Changing mode"; `crate::lobby_tabs::picker`).
 pub const MODE_PICKER: &str = "kit.picker.mode";
 
 /// Every named state of screen `name` for the preview sheet: a list's
@@ -388,10 +386,6 @@ pub fn live(name: &str) -> Option<Box<dyn Live>> {
             crate::forge_screens::pages::live(name)
         }
         "signin-code" => Some(Box::new(Driven::new(crate::signin_screen::SigninPage))),
-        // The party lobby's mode strip (`crate::lobby_tabs::strip`).
-        crate::lobby_tabs::preview::NAME => {
-            Some(Box::new(Driven::new(crate::lobby_tabs::preview::TabsPage)))
-        }
         "account" => Some(Box::new(Driven::new(AccountPage))),
         "mods" | "mods.pack" | "mods.detail" => {
             use crate::mods_screen::spec::{Sample, preview::Preview};
@@ -447,8 +441,10 @@ pub fn picker_sample() -> crate::ui_kit::picker::Pick {
 }
 
 /// The lobby's pickers' samples: [`FORGE_MAP_PICKER`], New with two
-/// saved maps, the second held; [`MODE_PICKER`], the four modes the
-/// lobby's tabs name in title case, Custom Games held. Their choices write nothing.
+/// saved maps, the second held; [`MODE_PICKER`], the GAME MODE picker X
+/// opens (`crate::lobby_tabs::picker::pick`) for the leader of an Xbox
+/// Live custom game lobby with every mode on, Custom Games held. Their
+/// choices write nothing.
 pub fn lobby_pick_sample(name: &str) -> Option<crate::ui_kit::picker::Pick> {
     match name {
         FORGE_MAP_PICKER => Some(crate::lobby_mode::forge_map_pick(
@@ -456,22 +452,20 @@ pub fn lobby_pick_sample(name: &str) -> Option<crate::ui_kit::picker::Pick> {
             Some("Lockout Towers"),
         )),
         MODE_PICKER => {
-            use crate::lobby_tabs::Tab;
-            const MODES: [Tab; 4] = [Tab::Multiplayer, Tab::CustomGames, Tab::Forge, Tab::Firefight];
-            let values = MODES.iter().map(|t| t.title_case().to_owned()).collect();
-            Some(
-                crate::ui_kit::picker::Pick::new(
-                    "Game Mode",
-                    values,
-                    1,
-                    "Choose what this lobby plays.",
-                    Arc::new(|i: usize| match MODES.get(i) {
-                        Some(t) => format!("lobby mode: {}", t.title_case()),
-                        None => format!("mode {i} is not in the list"),
-                    }),
-                )
-                .over(crate::ui_kit::view::Opener::LOBBY),
-            )
+            use crate::lobby_tabs::{Facts, Place, Present, Tab, header::Shown, row};
+            let facts = Facts {
+                playlists: true,
+                live_co_op: true,
+                remote_members: false,
+            };
+            let shown = Shown {
+                place: Place::XboxLive,
+                leader: true,
+                selected: Tab::CustomGames,
+                row: row(Present::ALL, Place::XboxLive, facts),
+                clanker: None,
+            };
+            Some(crate::lobby_tabs::picker::pick(&shown, Present::ALL))
         }
         _ => None,
     }
@@ -681,8 +675,8 @@ mod tests {
     use super::*;
     use crate::ui_kit::spec::{Finding, check_fallback};
 
-    /// The mode picker's sample: the four modes in the lobby tabs' order
-    /// and labels, Custom Games held, over the lobby; its states draw.
+    /// The GAME MODE picker's sample is the picker X opens: the four modes
+    /// in title case, Custom Games held, over the lobby; its states draw.
     #[test]
     fn the_mode_picker_lists_the_four_modes_with_custom_games_held() {
         use crate::lobby_tabs::Tab;

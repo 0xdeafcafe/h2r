@@ -24,11 +24,9 @@ enum Action {
     /// A on the Live players screen opens the Live menu (0x25286d). In
     /// other modes the same press can join or start a game.
     OpenLiveMenu,
-    /// White in the pregame lobby: the mode strip's previous tab
+    /// X in the pregame lobby: the GAME MODE picker, for the party leader
     /// (`crate::lobby_tabs::input`).
-    TabPrev,
-    /// Black in the pregame lobby: the strip's next tab.
-    TabNext,
+    ChangeMode,
 }
 
 impl Action {
@@ -41,8 +39,7 @@ impl Action {
             Self::Choose | Self::OpenLiveMenu => "a",
             Self::Back => "b",
             Self::Friends => "y",
-            Self::TabPrev => "white",
-            Self::TabNext => "black",
+            Self::ChangeMode => "x",
         }
     }
 }
@@ -91,8 +88,7 @@ impl Press {
                 "expected the Xbox Live players screen",
             ));
         }
-        if matches!(self.action, Action::TabPrev | Action::TabNext)
-            && owner.id != crate::lobby_options::SCREEN
+        if self.action == Action::ChangeMode && owner.id != crate::lobby_options::SCREEN
         {
             return Err(RpcError::new(code::GONE, "expected the pregame lobby"));
         }
@@ -244,19 +240,23 @@ mod tests {
     }
 
     #[test]
-    fn the_tab_actions_are_the_bumpers_and_need_the_lobby() {
-        let mut p: Press = serde_json::from_value(json!({
-            "action": "tab_next", "target": "synthetic-menu"
+    fn change_mode_is_x_and_needs_the_lobby() {
+        let p: Press = serde_json::from_value(json!({
+            "action": "change_mode", "target": "synthetic-menu"
         }))
         .unwrap();
-        assert_eq!(p.action.button(), "black");
+        assert_eq!(p.action.button(), "x");
         let mut t = owner(None);
         assert_eq!(p.check(&t, None).unwrap_err().code, code::GONE);
         t.id = crate::lobby_options::SCREEN;
-        assert!(p.check(&t, None).is_ok(), "no row: the strip has no focus");
-        p.action = Action::TabPrev;
-        assert_eq!(p.action.button(), "white");
-        assert!(p.check(&t, None).is_ok());
+        assert!(p.check(&t, None).is_ok(), "no row: X is the lobby's, not a row's");
+        // The bumper actions are gone with the strip.
+        for gone in ["tab_prev", "tab_next"] {
+            assert!(
+                serde_json::from_value::<Press>(json!({"action": gone, "target": "x"})).is_err(),
+                "{gone}"
+            );
+        }
     }
 
     #[test]
