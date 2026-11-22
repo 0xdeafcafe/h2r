@@ -1351,7 +1351,7 @@ A `disabled` row is its label alone, with nothing where a value goes, and
 never pressed; its help line says why. On the level select's one-text
 skin a `pick` row's value is in its label (`row.pick-inline`, the skulls
 pages' rows). `legend::well_formed` is the legend's format: each
-prompt's glyphs four spaces apart, one space, its words in capitals,
+prompt's glyphs three spaces apart, one space, its words in capitals,
 prompts two spaces apart. The settings dialog is the `settings`
 component, built from its doc by `ui_kit::settings` ("The settings
 dialog"), its specimen `layout.dialog.settings`.

@@ -322,7 +322,7 @@ pub fn states(name: &str) -> Option<Vec<(String, ScreenSpec)>> {
                 crate::ui_kit::components::dialog_cells("123456", Some(0), Some(2)),
                 menu,
             )
-            .legend(vec![legend::digit(), legend::move_cursor(), legend::done(), legend::cancel()])
+            .legend(vec![legend::digit(), legend::move_cursor(), legend::done(), legend::back()])
             .build(),
             &[("first", 0), ("middle", 2), ("last", 5)],
         ),
@@ -402,7 +402,7 @@ pub fn states(name: &str) -> Option<Vec<(String, ScreenSpec)>> {
                 crate::ui_kit::components::dialog_cells("000000", Some(0), Some(2)),
                 menu,
             )
-            .legend(vec![legend::digit(), legend::move_cursor(), legend::done(), legend::cancel()])
+            .legend(vec![legend::digit(), legend::move_cursor(), legend::done(), legend::back()])
             .build(),
             &[("cursor-0", 0), ("cursor-5", 5)],
         ),

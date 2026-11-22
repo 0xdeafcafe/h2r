@@ -24,7 +24,7 @@ alpha:
   unfocused: 100
   frame_dim: 110
 legend:
-  glyph_gap: 2
+  glyph_gap: 3
   prompt_gap: 2
   words: upper
 components:

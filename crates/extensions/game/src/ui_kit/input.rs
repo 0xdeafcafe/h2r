@@ -204,11 +204,11 @@ impl Prompt {
     }
 }
 
-/// A prompt's glyphs four spaces apart: the fonts draw the d-pad's left
-/// and right arrows edge to edge, so side by side they read as one
-/// diamond, and the footer font's space is narrow enough that one still
-/// left them touching, and two still read as one pair in the footer.
-pub const GLYPH_GAP: &str = "    ";
+/// A prompt's glyphs three spaces apart (`assets/ui/design.yaml`,
+/// `legend.glyph_gap`): the fonts draw the d-pad's left and right arrows
+/// edge to edge, so side by side they read as one diamond, and the footer
+/// font's space is narrow enough that two still read as one pair.
+pub const GLYPH_GAP: &str = "   ";
 
 fn glyphs(gs: &[Glyph]) -> String {
     gs.iter()
@@ -360,7 +360,7 @@ mod tests {
         ];
         assert_eq!(
             legend(&p),
-            "\u{e10a}    \u{e10b} TOGGLE  \u{e100} START LEVEL  \u{e101} BACK"
+            "\u{e10a}   \u{e10b} TOGGLE  \u{e100} START LEVEL  \u{e101} BACK"
         );
         assert_eq!(
             legend_named(&p),
