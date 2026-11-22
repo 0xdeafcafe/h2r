@@ -630,12 +630,12 @@ fn base_set(
     let mut parts: Vec<layers_load::Part> = Vec::new();
     for (d, key) in base_parts(load, layer3.map(|l| &l.data)) {
         let slot = keys.slot(key)?;
-        if !programs.contains_key(&slot) {
+        if let std::collections::hash_map::Entry::Vacant(entry) = programs.entry(slot) {
             let passes = match key {
                 PassKey::Base { .. } => base.get(&key),
                 PassKey::Layer3(m) => layer3.and_then(|l| l.data.programs.get(&m)),
             };
-            programs.insert(slot, passes.ok_or("a part has no pass")?.clone());
+            entry.insert(passes.ok_or("a part has no pass")?.clone());
         }
         parts.push((
             (d.owner, d.part),

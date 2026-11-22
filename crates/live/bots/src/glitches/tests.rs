@@ -772,7 +772,7 @@ fn a_bounce_tuning_changes_the_jump_the_drift_and_the_approach() {
 
 #[test]
 fn settling_that_does_not_move_the_body_jumps_before_a_primed_body_would_sleep() {
-    use crate::glitches::{SETTLE_STILL_TICKS, SETTLE_TICKS};
+    use crate::glitches::SETTLE_STILL_TICKS;
     let s = spot();
     let mut run = BounceRun::new(s, 1, 0, 3);
     // 0.3 short of the spot, and the settling stick moves it not at all.

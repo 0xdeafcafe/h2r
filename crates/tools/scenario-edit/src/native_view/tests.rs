@@ -125,7 +125,7 @@ fn the_depth_rule_is_view_depth_over_far() {
     };
     assert!((depth_of(&cam, ahead(cam.far * 0.25)) - 0.25).abs() < 1e-4);
     assert_eq!(depth_of(&cam, ahead(cam.far * 2.0)), 1.0);
-    assert!(DEPTH_RULE.floor);
+    const { assert!(DEPTH_RULE.floor) };
     // Floored to D24's step, as the world's W-buffer depth is: at most
     // one step under the unfloored depth.
     let p = ahead(cam.far * 0.3);
