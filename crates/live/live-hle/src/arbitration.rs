@@ -154,6 +154,12 @@ enum Task {
 pub(crate) struct Arbiter {
     tasks: BTreeMap<u32, Task>,
     kept: VecDeque<Arbitration>,
+    /// Each registered round and the Live session it was posted under:
+    /// its extensions and report go there too. A matchmaking host's
+    /// lobby advertisement is deleted before the game ends, so the
+    /// session worked out again at report time is no longer the one
+    /// the round was registered in.
+    posted: VecDeque<(ArbitrationRound, String)>,
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -259,7 +265,23 @@ impl Arbiter {
                 ctx.advertising.map_or("none".into(), |id| hex(&id)),
             );
         }
-        let posted = live_session(&record.round(), &ctx);
+        let round = record.round();
+        let registered = self
+            .posted
+            .iter()
+            .rev()
+            .find(|(r, _)| *r == round)
+            .map(|(_, s)| s.clone());
+        let posted = match (op, registered) {
+            (Op::Extend | Op::Report, Some(session)) => session,
+            _ => live_session(&round, &ctx),
+        };
+        if op == Op::Register {
+            if self.posted.len() == MAX_KEPT {
+                self.posted.pop_front();
+            }
+            self.posted.push_back((round, posted.clone()));
+        }
         if posted != record.round().session_hex() && op == Op::Register {
             eprintln!(
                 "live: arbitration: round {} names the title's network key {}; registering it under Live session {posted}",

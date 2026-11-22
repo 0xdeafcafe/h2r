@@ -28,6 +28,7 @@ fn split_handlers_match_the_interpreter_and_the_whole_handlers() {
         .map(|(i, (n, body))| (*n, function(CODE_BASE + 0x1000 * i as u32, *body)))
         .collect();
     let owners = emit::plan(funcs.iter().map(|(_, f)| f.clone()).collect());
+    let imprecise = imprecise(&owners);
     let counting = emit::Codegen::accesses(true);
     let whole = common::build_split(&owners, &header, &format!("{NAME}-whole"), counting, Split::NEVER);
     let split = common::build_split(&owners, &header, &format!("{NAME}-split"), emit::Codegen::default(), Split::EVERY_BLOCK);
@@ -66,7 +67,7 @@ fn split_handlers_match_the_interpreter_and_the_whole_handlers() {
             }
             for (what, abi, ctx) in [("split", &a, &actx), ("counting", &b, &bctx)] {
                 let c = ir::interp::Cpu { tsc: ctx.tsc, ..abi.to_interp() };
-                if c != cpu {
+                if comparable(c.clone(), &want, &cpu, imprecise) != cpu {
                     why.push(format!("{what} cpu:\n  C      {c:x?}\n  interp {cpu:x?}"));
                 }
                 if ctx.mem.bytes != mem.bytes {

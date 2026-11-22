@@ -745,6 +745,10 @@ pub struct Driver {
     /// The lobby up takes the page's bots ([`admits_page`]); as [`frame`]
     /// last read it, and true before any lobby is read.
     admits: AtomicBool,
+    /// This console runs a multiplayer game as its distributed server, as
+    /// [`frame`] last read it: a Clankermatch's fill outlives the lobby's
+    /// advertisement while it does ([`Driver::tick_match`]).
+    hosts_game: AtomicBool,
 }
 
 /// Whether a lobby in retail mode `retail` takes the page's Clankers: a
@@ -792,6 +796,7 @@ impl Driver {
             party: Mutex::new(None),
             stall: Mutex::default(),
             admits: AtomicBool::new(true),
+            hosts_game: AtomicBool::new(false),
         }
     }
 
@@ -1310,6 +1315,14 @@ impl Driver {
         *self.party.lock().unwrap_or_else(|e| e.into_inner()) = humans;
     }
 
+    /// Whether this console runs a multiplayer game as its distributed
+    /// server: the game deletes a matchmaking lobby's advertisement once
+    /// its match session takes over, so a Clankermatch's fill holds while
+    /// the game runs and ends [`FILL_GONE`] after it.
+    pub fn set_hosts_game(&self, hosts: bool) {
+        self.hosts_game.store(hosts, Ordering::Relaxed);
+    }
+
     /// The lobby up, in retail mode `retail`: the page's bots stand down in
     /// a lobby that does not take them ([`admits_page`]) and come back in
     /// one that does, the last [`Want`] applied again on a change. Lines
@@ -1339,8 +1352,8 @@ impl Driver {
 
     /// Follows the Clankermatch this console hosts, at `now`: a clanker
     /// hopper's lobby starts a fill, its bots join on their schedule, and
-    /// it ends when the console hosts another kind of session or none for
-    /// [`FILL_GONE`]. Applies the last [`Want`] again when that changes
+    /// it ends when the console hosts another kind of session, or none and
+    /// no game ([`Driver::set_hosts_game`]) for [`FILL_GONE`]. Applies the last [`Want`] again when that changes
     /// what is seated. Lines for the log.
     pub fn tick_match(&self, now: std::time::Instant) -> Vec<String> {
         let Some(rosters) = &self.rosters else {
@@ -1430,6 +1443,12 @@ impl Driver {
                     *fill = None;
                     true
                 }
+                (Some(_), None) if self.hosts_game.load(Ordering::Relaxed) => {
+                    // The game deleted the lobby's advertisement when its
+                    // match session took over: the match runs on.
+                    fill.as_mut().expect("a fill").gone = None;
+                    false
+                }
                 (Some(_), None) => {
                     let f = fill.as_mut().expect("a fill");
                     let since = *f.gone.get_or_insert(now);
@@ -1488,7 +1507,9 @@ static DRIVER: Mutex<Option<std::sync::Weak<Driver>>> = Mutex::new(None);
 /// of the matchmaking lobby this console hosts
 /// (`bots::lobby::party_players`, [`Driver::set_party`]) and `lobby` the
 /// lobby's retail mode (`None` while it cannot be read: left as it was,
-/// [`Driver::set_lobby`]); each is called twice a second. `match_wait`
+/// [`Driver::set_lobby`]) and `hosts_game` whether this console runs a
+/// multiplayer game as its distributed server ([`Driver::set_hosts_game`]);
+/// each is called twice a second. `match_wait`
 /// reads why a Clankermatch lobby has not started, only once it has
 /// waited long ([`Driver::stalled`]).
 pub fn frame(
@@ -1496,6 +1517,7 @@ pub fn frame(
     host_team: impl FnOnce() -> Option<u8>,
     party: impl FnOnce() -> Option<u32>,
     lobby: impl FnOnce() -> Option<crate::lobby_tabs::RetailMode>,
+    hosts_game: impl FnOnce() -> bool,
     match_wait: impl FnOnce() -> Option<(String, String)>,
 ) {
     // Twice a second: a Clankermatch's bots join 0.5 to 3 s apart.
@@ -1510,6 +1532,7 @@ pub fn frame(
     let Some(d) = d else { return };
     d.set_host_team(host_team());
     d.set_party(party());
+    d.set_hosts_game(hosts_game());
     if let Some(retail) = lobby() {
         for line in d.set_lobby(retail) {
             eprintln!("clankers: {line}");
@@ -1560,6 +1583,18 @@ fn build_soon_on(was: bool, now: bool) {
     }
 }
 
+/// The settings whose change the driver applies at once ([`drive`]), in
+/// the lobby and in a game: every page row but Teams, which no code reads.
+pub const LIVE_KEYS: [&str; 7] = [
+    "clankers.enabled",
+    "clankers.count",
+    "clankers.difficulty",
+    "clankers.aggression",
+    "clankers.aim_style",
+    "clankers.taunts",
+    "clankers.glitches",
+];
+
 /// Starts `driver` over `store`: matches it now and on every change.
 pub fn drive(store: &Arc<Store>, driver: Driver) -> Arc<Driver> {
     let d = Arc::new_cyclic(|me| Driver {
@@ -1578,15 +1613,7 @@ pub fn drive(store: &Arc<Store>, driver: Driver) -> Arc<Driver> {
             }
         }
     };
-    for key in [
-        ENABLED.key,
-        COUNT.key,
-        DIFFICULTY.key,
-        AGGRESSION.key,
-        AIM_STYLE.key,
-        TAUNTS.key,
-        GLITCHES.key,
-    ] {
+    for key in LIVE_KEYS {
         store.on_change(key, run.clone());
     }
     for line in d.apply(Want::read(store)) {

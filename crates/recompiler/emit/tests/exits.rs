@@ -270,28 +270,28 @@ fn a_direct_call_lends_the_callers_view() {
     };
     assert_eq!(
         features(&["H2_FASTMEM=1", "H2_DIRECT_CALLS=1"]),
-        "1u | (2u | 4u | 8u | 32u) | 0u"
+        "1u | (2u | 4u | 8u | 32u) | 128u | 0u"
     );
     assert_eq!(
         features(&["H2_FASTMEM=1", "H2_DIRECT_CALLS=1", "H2_DIRECT_VIEW=0"]),
-        "1u | (2u | 0u | 8u | 32u) | 0u"
+        "1u | (2u | 0u | 8u | 32u) | 128u | 0u"
     );
     assert_eq!(
         features(&["H2_FASTMEM=0", "H2_DIRECT_CALLS=1"]),
-        "1u | (2u | 0u | 8u | 32u) | 0u"
+        "1u | (2u | 0u | 8u | 32u) | 128u | 0u"
     );
     // Without direct calls the module still has the entry table (and its
     // polls still mask IRQ_QUEUED).
-    assert_eq!(features(&["H2_FASTMEM=1", "H2_DIRECT_CALLS=0"]), "1u | 8u | 0u");
+    assert_eq!(features(&["H2_FASTMEM=1", "H2_DIRECT_CALLS=0"]), "1u | 8u | 128u | 0u");
     // The flat model lends no view and declares itself (feature 16); off
     // without the inline path.
     assert_eq!(
         features(&["H2_FASTMEM=1", "H2_DIRECT_CALLS=1", "H2_FLAT_RAM=1"]),
-        "1u | (2u | 0u | 8u | 32u) | 16u"
+        "1u | (2u | 0u | 8u | 32u) | 128u | 16u"
     );
     assert_eq!(
         features(&["H2_FASTMEM=0", "H2_DIRECT_CALLS=1", "H2_FLAT_RAM=1"]),
-        "1u | (2u | 0u | 8u | 32u) | 0u"
+        "1u | (2u | 0u | 8u | 32u) | 128u | 0u"
     );
 }
 

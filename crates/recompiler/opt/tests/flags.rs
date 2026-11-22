@@ -127,7 +127,7 @@ fn a_spec_names_its_passes_and_parses_back() {
         let p = Passes::parse(name).unwrap();
         assert_eq!(p.spec(), name, "a pass missing from Passes::spec");
     }
-    for spec in ["all", "none", "dead-flags", "-dead-flags"] {
+    for spec in ["default", "all", "none", "dead-flags", "-dead-flags"] {
         let p = Passes::parse(spec).unwrap();
         assert_eq!(Passes::parse(&p.spec()).unwrap(), p, "{spec}");
     }
@@ -151,6 +151,21 @@ fn imprecise_faults_are_named_not_part_of_all() {
     assert_eq!(Passes::parse(&p.spec()).unwrap(), p);
     assert_eq!(Passes::parse("imprecise-faults,all").unwrap(), p, "all keeps it");
     assert_eq!(Passes::parse("all,imprecise-faults,-imprecise-faults").unwrap(), Passes::ALL);
+}
+
+/// An image is built with imprecise faults unless a spec drops them:
+/// `default` is every pass with them, `all` keeps faults precise.
+#[test]
+fn the_default_has_imprecise_faults_and_all_turns_them_off() {
+    const { assert!(Passes::DEFAULT.imprecise_faults) };
+    assert_eq!(Passes::default(), Passes::DEFAULT);
+    assert_eq!(Passes::DEFAULT, imprecise());
+    assert_eq!(Passes::parse("default").unwrap(), Passes::DEFAULT);
+    assert_eq!(Passes::parse(&Passes::DEFAULT.spec()).unwrap(), Passes::DEFAULT);
+    assert_eq!(Passes::parse("default,-imprecise-faults").unwrap(), Passes::ALL, "the off switch");
+    let p = Passes::parse("default,-dead-flags").unwrap();
+    assert!(!p.dead_flags && p.lazy_flags && p.imprecise_faults);
+    assert!(Passes::parse("-default").is_err());
 }
 
 #[test]

@@ -4055,7 +4055,12 @@ For a clanker hopper (`live_hle::clankermatch`):
    ready" when none holds. A handoff (the lobby's session deleted and the game's
    advertised) keeps the bots and carries the roster (§9.5); with no
    hosted session for 30 s, or another kind of session hosted, the fill
-   ends and the phantoms leave.
+   ends and the phantoms leave. The game deletes the lobby's
+   advertisement once its match session takes over, before the
+   countdown ends, so the 30 s count only while this console does not
+   serve a multiplayer game (options mode 5, `bots::guest::game_mode`,
+   `clankers::Driver::set_hosts_game`): the bots stay for the whole
+   match and go 30 s after it.
 4. The game record says `kind: "clankermatch"` with the playlist and
    session (`telemetry::Playlist::clankers`), and the server keeps it as
    its own kind (live-matchmaking.md §6.8).

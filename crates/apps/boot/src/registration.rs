@@ -194,10 +194,11 @@ pub(crate) fn register_core_film(
         .map_err(|e| anyhow::anyhow!("ui-back: {e}"))?;
     map_select::install(features, i.live.clone(), Arc::clone(&ui_navigation))
         .context("installing the map select")?;
-    // GAME MENU's Change Map for the party leader: the map picker, then
-    // the game ends and the next one starts on the map
-    // (docs/game/settings-menu.md "Change Map from the pause menu").
-    crate::pause_change_map::install(features).context("installing the pause menu's Change Map")?;
+    // GAME MENU's Game Setup for the party leader: the map, the rules and
+    // Quick Options for a restart, Clanker Options at once
+    // (docs/game/settings-menu.md "Game Setup from the pause menu").
+    crate::pause_change_map::install(features, i.settings.clone().filter(|_| i.bots))
+        .context("installing the pause menu's Game Setup")?;
     // The Halo 1 / Halo 2 options (docs/halo1/multiplayer.md "Halo 1
     // options"): the switches follow the settings, the HUD style is picked
     // at each game start, and a custom game's Game Setup gets the Halo 1

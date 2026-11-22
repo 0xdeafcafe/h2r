@@ -49,6 +49,10 @@ pub fn parse_recovering(tokens: &[Token]) -> (Script, Vec<CompileError>) {
                 carrier: None,
                 teams: None,
                 list: None,
+                scoring: None,
+                about: None,
+                quick: None,
+                settings: None,
                 requires: Vec::new(),
                 items: Vec::new(),
             }
@@ -92,8 +96,28 @@ impl<'a> Parser<'a> {
         if self.is_word("carrier") && matches!(self.peek2().tok, Tok::Punct(".")) {
             return false;
         }
+        if self.header_word().is_some() {
+            return true;
+        }
         matches!(&self.peek().tok, Tok::Ident(s) if matches!(s.as_str(),
             "rules" | "carrier" | "teams" | "list" | "requires" | "option" | "palette" | "enum" | "table" | "fn" | "label" | "const" | "on"))
+    }
+
+    /// `settings`, `quick`, `scoring` or `about` where it starts a header
+    /// line: followed by `{`, a name, a name or a string. They are not
+    /// keywords, so a handler may still use them as names.
+    fn header_word(&self) -> Option<&'static str> {
+        let Tok::Ident(s) = &self.peek().tok else {
+            return None;
+        };
+        let next = &self.peek2().tok;
+        match s.as_str() {
+            "settings" if matches!(next, Tok::Punct("{")) => Some("settings"),
+            "quick" if matches!(next, Tok::Ident(_)) => Some("quick"),
+            "scoring" if matches!(next, Tok::Ident(_)) => Some("scoring"),
+            "about" if matches!(next, Tok::Str(_)) => Some("about"),
+            _ => None,
+        }
     }
 
     /// Recovery from a bad declaration: on to the next line that starts
@@ -368,6 +392,10 @@ impl<'a> Parser<'a> {
             carrier: None,
             teams: None,
             list: None,
+            scoring: None,
+            about: None,
+            quick: None,
+            settings: None,
             requires: Vec::new(),
             items: Vec::new(),
         };
@@ -444,6 +472,34 @@ impl<'a> Parser<'a> {
                     break;
                 }
             }
+        } else if self.eat_word("scoring") {
+            if script.scoring.is_some() {
+                return Err(CompileError::at(pos, "scoring is given twice"));
+            }
+            script.scoring = Some((self.word()?, pos));
+        } else if self.eat_word("about") {
+            if script.about.is_some() {
+                return Err(CompileError::at(pos, "about is given twice"));
+            }
+            script.about = Some((self.string()?, pos));
+        } else if self.eat_word("quick") {
+            if script.quick.is_some() {
+                return Err(CompileError::at(pos, "the quick line is given twice"));
+            }
+            let mut names = Vec::new();
+            loop {
+                let at = self.pos();
+                names.push((self.word()?, at));
+                if !self.eat_punct(",") {
+                    break;
+                }
+            }
+            script.quick = Some((names, pos));
+        } else if self.eat_word("settings") {
+            if script.settings.is_some() {
+                return Err(CompileError::at(pos, "the settings block is given twice"));
+            }
+            script.settings = Some(self.settings_block(pos)?);
         } else if self.eat_word("option") {
             script.items.push(Item::Option(self.option(pos)?));
         } else if self.eat_word("palette") {
@@ -617,6 +673,31 @@ impl<'a> Parser<'a> {
             description,
             pos,
         })
+    }
+
+    /// `settings { name = value ... }`, past `settings`: one setting a
+    /// line, or `;` between them.
+    fn settings_block(&mut self, pos: Pos) -> R<SettingsBlock> {
+        self.expect_punct("{")?;
+        let mut lines = Vec::new();
+        loop {
+            while self.eat_punct(";") {}
+            if self.eat_punct("}") {
+                break;
+            }
+            if self.at_eof() {
+                return Err(self.unexpected("`}`"));
+            }
+            let at = self.pos();
+            let name = self.word()?;
+            self.expect_punct("=")?;
+            let value = self.expr()?;
+            if !(self.eat_punct(";") || self.peek().nl || self.is_punct("}")) {
+                return Err(self.unexpected("the end of the line"));
+            }
+            lines.push(SettingLine { name, value, pos: at });
+        }
+        Ok(SettingsBlock { lines, pos })
     }
 
     fn table(&mut self, pos: Pos) -> R<Item> {
@@ -1193,6 +1274,36 @@ mod tests {
         let toks = lex("rules \"T\" 1\non tick { a = 1 b = 2 }\n").unwrap();
         let e = parse(&toks).unwrap_err();
         assert_eq!(e.line, 2);
+    }
+
+    #[test]
+    fn the_settings_header_lines_parse_and_their_words_stay_names_in_a_handler() {
+        let src = "rules \"T\" 1\ncarrier slayer\nscoring carrier\nabout \"A game.\"\nquick score_limit, lives\n\
+                   settings {\n    score_limit = 50\n    shields = none; lives = 3\n    time_limit = 300s\n}\n";
+        let s = parse(&lex(src).unwrap()).unwrap();
+        assert_eq!(s.scoring.as_ref().map(|s| s.0.as_str()), Some("carrier"));
+        assert_eq!(s.about.as_ref().map(|a| a.0.as_str()), Some("A game."));
+        let quick: Vec<&str> = s.quick.as_ref().unwrap().0.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(quick, ["score_limit", "lives"]);
+        let block = s.settings.as_ref().unwrap();
+        let names: Vec<&str> = block.lines.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["score_limit", "shields", "lives", "time_limit"]);
+        assert_eq!(block.lines[1].value.kind, ExprKind::None);
+        assert_eq!(block.lines[0].pos.line, 7);
+        // In a handler the four words are names.
+        let src = "rules \"T\" 1\ncarrier slayer\nglobal var quick: int = 0\n\
+                   on tick {\n    let about = 1\n    let settings = 2\n    quick = about + settings\n}\n";
+        let (s, errors) = recovering(src);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(s.quick.is_none() && s.about.is_none() && s.settings.is_none());
+        match &s.items[1] {
+            Item::On { body, .. } => assert_eq!(body.len(), 3),
+            other => panic!("{other:?}"),
+        }
+        let twice = "rules \"T\" 1\ncarrier slayer\nsettings { lives = 1 }\nsettings { lives = 2 }\n";
+        assert!(parse(&lex(twice).unwrap()).unwrap_err().message.contains("given twice"));
+        let two_on_a_line = "rules \"T\" 1\ncarrier slayer\nsettings {\n    lives = 1 rounds = 2\n}\n";
+        assert_eq!(parse(&lex(two_on_a_line).unwrap()).unwrap_err().line, 4);
     }
 
     fn recovering(src: &str) -> (Script, Vec<CompileError>) {

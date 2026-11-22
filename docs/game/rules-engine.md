@@ -617,10 +617,31 @@ script.
 
 ## The language
 
-A source file is a header, options, variables, functions and handlers.
-The header names the script, its version, its carrier, its teams, the
-game type list row its variants are filed under and the capabilities it
-requires: `requires player.weapons, hud.message`.
+A source file is a header, a settings block, options, variables,
+functions and handlers. The header names the script, its version, its
+carrier, its teams, the game type list row its variants are filed under,
+who scores the game, its description, its Quick Options marks and the
+capabilities it requires: `requires player.weapons, hud.message`.
+
+```text
+rules "SWAT" 1
+carrier slayer
+scoring carrier
+about "No shields, no motion sensor, battle rifles and magnums. One headshot kills. 50 points to win."
+quick score_limit, starting_weapon, secondary_weapon
+
+settings {
+    team_play = true
+    score_limit = 50
+    shields = none
+    starting_weapon = battle_rifle
+    weapons_on_map = none
+}
+```
+
+`settings`, `quick`, `scoring` and `about` are header words only at the
+start of a top-level line (`Parser::header_word` in `lang/parse.rs`), so
+a handler may still use them as names. Each is given at most once.
 
 **The list row.** `list research` files a variant naming the script
 under Research and Devolution and `list party` under Party Games, our rows
@@ -628,9 +649,64 @@ after Territories ([community-gametypes.md](community-gametypes.md#tweakers));
 with no `list` line it is under its carrier's game type. These are the
 only names (`ir::List::NAMED`); any other is refused by name ("unknown
 list slayer: a list is research, party"), and a second `list` line is
-refused too. The IR header carries it as one byte, `ir::List` (0 none, 1
-`research`, 2 `party`), which a blob with any other value fails to decode
-by ("the header's list").
+refused too. Our rows hold Slayer and Juggernaut variants, so a `list`
+line on any other carrier is the error `list.carrier`. The IR header
+carries it as one byte, `ir::List` (0 none, 1 `research`, 2 `party`),
+which a blob with any other value fails to decode by ("the header's
+list").
+
+**The settings block.** `settings { name = value ... }` names the record
+settings a new variant of the script starts with, one a line; a setting
+it leaves out has the stock value. The names are the rows of
+`rules::settings::TABLE` (`crates/formats/rules/src/settings.rs`), the one
+list of settings a script may name: each row has our snake-case name (a
+setting a script reads as `variant.<name>` keeps that name), a label, a
+kind, where it is stored (a record `SettingId`, the carrier's own score
+setting for `score_limit`, CTF's and Assault's paired settings for the
+`ctf_` names, or a field of the `hx` block for `gravity`, `damage`,
+`shield`, `health` and `unlimited_grenades`) and the carriers it applies
+to. Rows are appended, never reordered, since a blob names a setting by
+its index. The kinds:
+
+| Kind | Written as | Example |
+|---|---|---|
+| bool | `true`, `false` | `motion_sensor = false` |
+| int | a number in the row's range | `score_limit = 50`, `lives = 3` |
+| seconds | a time in whole seconds | `time_limit = 300s`, `respawn_time = 3s` |
+| choice | a value's name from the row's list, or a number in its range | `starting_weapon = shotgun`, `light_vehicle = none`, `weapons_on_map = 12` |
+| percent | a number, 10 to 400 | `gravity = 50` |
+
+`score_limit`, `time_limit` and `king_moving_hill` take `none` for 0.
+A value may be a constant (`time_limit = hold * 2`). A game-type setting
+carries its type in its name (`juggernaut_movement`,
+`oddball_ball_speed`, `ctf_flag_type`) and applies on that carrier only.
+The checker (`Cx::settings_block` in `lang/check.rs`) refuses a name not
+in the table (`setting.unknown`, with the nearest name), one that does
+not apply to the carrier (`setting.carrier`: "juggernaut_movement is a
+Juggernaut setting; this script's carrier is slayer"), one named twice
+(`setting.twice`) and a value not of the row's kind or outside its range
+(`setting.value`).
+
+**Quick Options marks.** `quick a, b, c` names what the lobby's Quick
+Options shows, in order: at most five (`ir::MAX_QUICK`, `quick.many`),
+each a record setting of the table that applies to the carrier (not an
+`hx` field) or one of the script's options (`quick.unknown`), named once
+(`quick.twice`). A marked setting need not be in the settings block.
+Options and settings share one namespace: an option named like a setting
+is `option.setting`.
+
+**Who scores.** With no `scoring` line the script is the game's one
+scorer. `scoring carrier` says the carrier's engine scores the game and
+the script holds settings only: it may have `requires`, `list`,
+`settings`, `quick` and `about`, and any declaration or handler is the
+error `scoring.handlers`. A script with no handler and no `scoring
+carrier` scores nothing, the error `scoring.none` ("this script scores
+nothing. Write `scoring carrier` to play Slayer's rules."), which the
+checker reports once the script has no other error (`Cx::scorer`).
+
+**About.** `about "..."` is the description of a variant of the script,
+at most 150 UTF-16 units (`ir::MAX_ABOUT_UNITS`, the `limit` error) and
+256 bytes, the longest string literal.
 
 **Types.** `int` (32-bit, saturating), `fixed` (16.16, for seconds and
 distances), `bool`, `player`, `team`, `object`, `zone` (an object with a
@@ -944,9 +1020,15 @@ type's handlers run first.
 ## The IR and the VM
 
 **Shape.** The blob is: a header (magic, IR version, API version,
-name, version, carrier, team requirement, list row, and the required
-capabilities by name, at most 32, "Roles, powers and capabilities"); a string table; an option table (type,
-range, default, label); a slot table (scope, type, initial value); a
+name, version, carrier, team requirement, list row, the scoring byte (0
+the script, 1 the carrier, `ir::Scoring`), the `about` text, and the
+required capabilities by name, at most 32, "Roles, powers and
+capabilities"); a string table; an option table (type, range, default,
+label); the settings (`ir::Setting`: a `u16` index into
+`settings::TABLE` and an `i32` value, in ascending index order); the
+Quick Options marks (`ir::Quick`: a kind byte, 0 a table index and 1 an
+option index, and a `u16`, at most five, in the script's order); a slot
+table (scope, type, initial value); a
 label table (each label's text, kind, member count `min` and `max`,
 flags for single, numbered, number range and per team, and the number
 range) and a tag table (each path and its group: any object, or weapon),
@@ -958,6 +1040,18 @@ arithmetic, compare, slot load and store, forward conditional jump,
 `ForEach` over a set with a body range, and `Call` of a numbered API
 entry. There is no backward jump and no indirect jump, so termination is
 a property of the format, and the verifier needs no fixpoint.
+
+**Settings and marks.** `Ir::decode` refuses settings out of order or
+named twice, more than five marks, a mark kind other than 0 or 1 and a
+scoring byte other than 0 or 1. The verifier (`verify::settings_and_marks`)
+refuses an `about` over 150 UTF-16 units, a setting index past the
+table, a setting that does not apply to the header's carrier or whose
+value is outside its row's range, a mark that names no record setting of
+the carrier or no option, a mark twice, and a `scoring carrier` blob with
+handlers, slots or options. So a blob from anywhere holds to the rules
+the compiler applied. `Ir::id` hashes the whole encoding, so the
+settings, the marks, the description and the scoring byte are part of
+the script's identity.
 
 **Ops** (IR version 1, `crates/formats/rules/src/ir.rs`): `Const`,
 `Move`, `Arith` (add, subtract, multiply, divide, remainder; saturating

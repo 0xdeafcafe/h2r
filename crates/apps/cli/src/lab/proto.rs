@@ -77,6 +77,7 @@ pub const BUILD_ENV: &[&str] = &[
     "H2_HOT",
     "H2_OPT_COLD",
     "H2_PASSES",
+    "H2_ACCESS_COUNT",
     "H2_PGO",
 ];
 

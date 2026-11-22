@@ -53,7 +53,11 @@ and needs no C compiler:
 2. **The registry** (`clif::module::registry`): `h2gen_module_abi_version`
    and `h2gen_module` with the entry and resume tables, the rows emit's C
    `registry` writes, as data with relocations to the handlers and probes,
-   and features 0 (no accounting, no direct calls; see section 5).
+   and no clock or call features (no accounting, no block clock, no direct
+   calls; see section 5), with `H2GEN_FEATURE_IMPRECISE_FAULTS` when the
+   passes ran with imprecise faults, as they do by default
+   ([block-clock-imprecise-faults.md](../runtime/block-clock-imprecise-faults.md);
+   `clif::module::features`).
 3. **The bridge** (`clif::module::bridge`): the import table
    `h2clif_imports`, hidden in the module, and the installers the hosts
    call to fill it. Every call a handler makes out of the module (the
@@ -307,10 +311,11 @@ and for SSE the `simd` crate, the Rust twin of `h2simd.h` (section 3.9).
 Cranelift emits no host FP instruction.
 
 Point 3 does **not** hold across tiers. The fast tier charges every access
-through the runtime and makes no direct calls; clang's module counts
-accesses itself and calls handlers directly, which moves the runner's safe
-points. Two machines on different tiers can therefore preempt at
-different instructions. So:
+through the runtime (the access clock) and makes no direct calls; clang's
+module runs the block clock and calls handlers directly, which moves the
+runner's safe points. Two machines on different tiers can therefore preempt
+at different instructions, and one dispatch refuses a fast-tier module
+beside a block-clock one (`RegistrationError::MixedClock`). So:
 
 - **Lockstep sessions require the same module on every peer.** The
   module's stamp (which names the tier) is part of the session handshake,

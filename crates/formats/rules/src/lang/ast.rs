@@ -12,8 +12,31 @@ pub struct Script {
     pub teams: Option<(i64, Pos)>,
     /// `list research`: the list's name.
     pub list: Option<(String, Pos)>,
+    /// `scoring carrier`: the word after `scoring`.
+    pub scoring: Option<(String, Pos)>,
+    /// `about "..."`: the description.
+    pub about: Option<(String, Pos)>,
+    /// `quick a, b, c`: the names, and the line's position.
+    pub quick: Option<(Vec<(String, Pos)>, Pos)>,
+    /// `settings { name = value ... }`.
+    pub settings: Option<SettingsBlock>,
     pub requires: Vec<(String, Pos)>,
     pub items: Vec<Item>,
+}
+
+/// The `settings` block: one `name = value` a line.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SettingsBlock {
+    pub lines: Vec<SettingLine>,
+    pub pos: Pos,
+}
+
+/// One line of the `settings` block.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SettingLine {
+    pub name: String,
+    pub value: Expr,
+    pub pos: Pos,
 }
 
 #[derive(Clone, Debug, PartialEq)]

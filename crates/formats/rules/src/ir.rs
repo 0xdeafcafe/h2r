@@ -37,6 +37,12 @@ pub const MAX_TABLE_COLS: usize = 16;
 pub const MAX_PALETTE_TAGS: usize = 64;
 /// Labels a script declares at most.
 pub const MAX_LABELS: usize = 64;
+/// Quick Options marks a script names at most: the pregame panel's rows
+/// (`lobby_options::PANEL_ROWS`).
+pub const MAX_QUICK: usize = 5;
+/// UTF-16 units of a script's `about` text at most: a variant's
+/// description (`variants::portable::MAX_DESCRIPTION_UNITS`).
+pub const MAX_ABOUT_UNITS: usize = 150;
 
 /// A register index within a handler's frame.
 pub type Reg = u8;
@@ -48,6 +54,12 @@ pub struct Ir {
     /// Names, option labels, class names and messages.
     pub strings: Vec<String>,
     pub options: Vec<OptionDef>,
+    /// The record settings the script's `settings` block names, in
+    /// ascending table index order ([`crate::settings::TABLE`]).
+    pub settings: Vec<Setting>,
+    /// The Quick Options marks, in the script's order; at most
+    /// [`MAX_QUICK`].
+    pub quick: Vec<Quick>,
     pub enums: Vec<EnumDef>,
     pub slots: Vec<Slot>,
     /// Forge labels the script declares, and what a map must hold of
@@ -74,8 +86,71 @@ pub struct Header {
     pub teams: u8,
     /// Where the game type list files a variant of the script (`list`).
     pub list: List,
+    /// Who scores the game (`scoring carrier`).
+    pub scoring: Scoring,
+    /// The description (`about "..."`), at most [`MAX_ABOUT_UNITS`]
+    /// UTF-16 units; empty when the script has none.
+    pub about: String,
     /// Capability names, the most the script can ever do.
     pub requires: Vec<String>,
+}
+
+/// Who scores the game: the script, or with `scoring carrier` the
+/// carrier's engine, the script holding settings only. See
+/// `docs/game/rules-variants.md`, "A script that keeps its carrier's
+/// rules".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Scoring {
+    /// The script is the game's one scorer.
+    #[default]
+    Script,
+    /// The carrier engine scores the game; the script has no handlers, no
+    /// variables and no options.
+    Carrier,
+}
+
+impl Scoring {
+    fn code(self) -> u8 {
+        match self {
+            Scoring::Script => 0,
+            Scoring::Carrier => 1,
+        }
+    }
+
+    fn from_code(c: u8) -> Option<Scoring> {
+        match c {
+            0 => Some(Scoring::Script),
+            1 => Some(Scoring::Carrier),
+            _ => None,
+        }
+    }
+}
+
+/// One setting of the `settings` block: a [`crate::settings::TABLE`]
+/// index and the value the record stores.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Setting {
+    pub index: u16,
+    pub value: i32,
+}
+
+/// One Quick Options mark: a record setting of the table, or one of the
+/// script's options.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Quick {
+    /// A [`crate::settings::TABLE`] index.
+    Setting(u16),
+    /// An index into [`Ir::options`].
+    Option(u16),
+}
+
+impl Quick {
+    fn code(self) -> (u8, u16) {
+        match self {
+            Quick::Setting(i) => (0, i),
+            Quick::Option(i) => (1, i),
+        }
+    }
 }
 
 /// Where the game type list files a variant of a script: under its
@@ -702,6 +777,8 @@ impl Ir {
         w.u8(h.carrier);
         w.u8(h.teams);
         w.u8(h.list.code());
+        w.u8(h.scoring.code());
+        w.str(&h.about);
         w.len(h.requires.len());
         for r in &h.requires {
             w.str(r);
@@ -716,6 +793,17 @@ impl Ir {
             w.i32(o.lo);
             w.i32(o.hi);
             w.i32(o.default);
+        }
+        w.len(self.settings.len());
+        for s in &self.settings {
+            w.u16(s.index);
+            w.i32(s.value);
+        }
+        w.len(self.quick.len());
+        for q in &self.quick {
+            let (kind, index) = q.code();
+            w.u8(kind);
+            w.u16(index);
         }
         w.len(self.enums.len());
         for e in &self.enums {
@@ -805,6 +893,12 @@ impl Ir {
             what: "the header's list",
             value: list as u32,
         })?;
+        let scoring = r.u8("the header")?;
+        let scoring = Scoring::from_code(scoring).ok_or(DecodeError::Invalid {
+            what: "the header's scoring",
+            value: scoring as u32,
+        })?;
+        let about = r.str("the header")?;
         let n = r.len("the requires list")?;
         let mut requires = Vec::with_capacity(n.min(64));
         for _ in 0..n {
@@ -818,6 +912,8 @@ impl Ir {
             carrier,
             teams,
             list,
+            scoring,
+            about,
             requires,
         };
         let strings = r.strs("the string table")?;
@@ -832,6 +928,42 @@ impl Ir {
                 lo: r.i32("the option table")?,
                 hi: r.i32("the option table")?,
                 default: r.i32("the option table")?,
+            });
+        }
+        let n = r.len("the settings")?;
+        let mut settings: Vec<Setting> = Vec::with_capacity(n.min(64));
+        for _ in 0..n {
+            let index = r.u16("the settings")?;
+            let value = r.i32("the settings")?;
+            // Ascending, so a setting is named once and the order is one.
+            if settings.last().is_some_and(|s| s.index >= index) {
+                return Err(DecodeError::Invalid {
+                    what: "the settings' order",
+                    value: index as u32,
+                });
+            }
+            settings.push(Setting { index, value });
+        }
+        let n = r.len("the quick marks")?;
+        if n > MAX_QUICK {
+            return Err(DecodeError::Invalid {
+                what: "the quick marks' count",
+                value: n as u32,
+            });
+        }
+        let mut quick = Vec::with_capacity(n);
+        for _ in 0..n {
+            let kind = r.u8("the quick marks")?;
+            let index = r.u16("the quick marks")?;
+            quick.push(match kind {
+                0 => Quick::Setting(index),
+                1 => Quick::Option(index),
+                _ => {
+                    return Err(DecodeError::Invalid {
+                        what: "a quick mark's kind",
+                        value: kind as u32,
+                    });
+                }
             });
         }
         let n = r.len("the enum table")?;
@@ -968,6 +1100,8 @@ impl Ir {
             header,
             strings,
             options,
+            settings,
+            quick,
             enums,
             slots,
             labels,
@@ -1597,6 +1731,8 @@ pub(crate) mod tests {
                 carrier: 2,
                 teams: 0,
                 list: List::Research,
+                scoring: Scoring::Script,
+                about: "A sample.".into(),
                 requires: vec!["forge.move".into()],
             },
             strings: vec!["kill_points".into(), "elite".into()],
@@ -1609,6 +1745,9 @@ pub(crate) mod tests {
                 hi: 5,
                 default: 1,
             }],
+            // score_limit 25, shields none.
+            settings: vec![Setting { index: 1, value: 25 }, Setting { index: 8, value: 1 }],
+            quick: vec![Quick::Setting(1), Quick::Option(0)],
             enums: vec![],
             slots: vec![Slot {
                 name: 0,
@@ -1717,6 +1856,80 @@ pub(crate) mod tests {
         assert_eq!(List::named("tweakers"), None);
         assert_eq!(List::named("slayer"), None);
         assert_eq!(List::GameType.name(), None);
+    }
+
+    #[test]
+    fn settings_round_trip_and_decode_refuses_disorder() {
+        let ir = sample();
+        assert_eq!(crate::settings::TABLE[1].name, "score_limit");
+        assert_eq!(crate::settings::TABLE[8].name, "shields");
+        let back = Ir::decode(&ir.encode()).unwrap();
+        assert_eq!(back.settings, ir.settings);
+        assert_eq!(back.quick, ir.quick);
+        assert_eq!((back.header.scoring, back.header.about.as_str()), (Scoring::Script, "A sample."));
+        let mut carrier = sample();
+        carrier.header.scoring = Scoring::Carrier;
+        assert_eq!(Ir::decode(&carrier.encode()).unwrap().header.scoring, Scoring::Carrier);
+
+        // Out of order, and one index twice: the encoding is not canonical.
+        let mut disorder = sample();
+        disorder.settings.reverse();
+        assert_eq!(
+            Ir::decode(&disorder.encode()),
+            Err(DecodeError::Invalid {
+                what: "the settings' order",
+                value: 1
+            })
+        );
+        let mut twice = sample();
+        twice.settings[1].index = 1;
+        assert_eq!(
+            Ir::decode(&twice.encode()),
+            Err(DecodeError::Invalid {
+                what: "the settings' order",
+                value: 1
+            })
+        );
+        // Six marks.
+        let mut many = sample();
+        many.quick = (0..6).map(Quick::Setting).collect();
+        assert_eq!(
+            Ir::decode(&many.encode()),
+            Err(DecodeError::Invalid {
+                what: "the quick marks' count",
+                value: 6
+            })
+        );
+        // The scoring byte follows the list byte; 2 is no scoring.
+        let mut bytes = sample().encode();
+        let at = 4 + 2 + 2 + 2 + "Sample".len() + 2 + 1 + 1 + 1;
+        assert_eq!(bytes[at], 0);
+        bytes[at] = 2;
+        assert_eq!(
+            Ir::decode(&bytes),
+            Err(DecodeError::Invalid {
+                what: "the header's scoring",
+                value: 2
+            })
+        );
+    }
+
+    #[test]
+    fn the_hash_covers_settings_marks_and_about() {
+        let base = sample().id();
+        let changes: [fn(&mut Ir); 6] = [
+            |ir| ir.settings[0].value = 26,
+            |ir| ir.settings.truncate(1),
+            |ir| ir.quick.reverse(),
+            |ir| ir.quick.clear(),
+            |ir| ir.header.about = "Another.".into(),
+            |ir| ir.header.scoring = Scoring::Carrier,
+        ];
+        for (i, change) in changes.iter().enumerate() {
+            let mut ir = sample();
+            change(&mut ir);
+            assert_ne!(ir.id(), base, "change {i}");
+        }
     }
 
     #[test]

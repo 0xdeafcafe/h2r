@@ -76,7 +76,10 @@ fn differential(
         .enumerate()
         .map(|(i, (n, body))| (*n, function(CODE_BASE + 0x1000 * i as u32, *body)))
         .collect();
+    // The image's passes: with imprecise faults a memory fault's flags are
+    // not compared with the interpreter's (`comparable`).
     let owners = emit::plan(funcs.iter().map(|(_, f)| f.clone()).collect());
+    let imprecise = imprecise(&owners);
     let g = common::build(&owners, &header, name);
     // The same module counting its own accesses (h2gen.h, "Access
     // accounting"): it must end the same way and charge the same total.
@@ -104,7 +107,7 @@ fn differential(
                 why.push(format!("end: C {got:x?}, interpreter {want:x?}"));
             }
             let c = ir::interp::Cpu { tsc: ctx.tsc, ..abi.to_interp() };
-            if c != cpu {
+            if comparable(c.clone(), &want, &cpu, imprecise) != cpu {
                 why.push(format!("cpu:\n  C    {c:x?}\n  interp {cpu:x?}"));
             }
             if let Some(i) = ctx.mem.bytes.iter().zip(&mem.bytes).position(|(a, b)| a != b) {

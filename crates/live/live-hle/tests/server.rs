@@ -4578,6 +4578,74 @@ fn a_round_naming_the_hosts_network_key_registers_under_its_live_session() {
     assert_eq!(kinds, ["ArbitrationRegistered"]);
 }
 
+/// The game deletes a matchmaking lobby's advertisement once its match
+/// session takes over, long before the game ends: the round's report
+/// still goes to the Live session it was registered under.
+#[test]
+fn a_rounds_report_follows_its_registration_after_the_advertisement_goes() {
+    const ROUND: u32 = DATA + 0x12000;
+    const GAME_KEY: u32 = DATA + 0x12100;
+    const PROCEDURES: u32 = DATA + 0x13000;
+    let server = Server::new();
+    let account = server.account("Arbiter");
+    let mut w = World::new(&server.embedded.url, &[&account]);
+    w.logon();
+    assert_eq!(w.call("XNetCreateKey", &[ROUND, GAME_KEY]), OK);
+    assert_eq!(w.call("XNetRegisterKey", &[ROUND, GAME_KEY]), OK);
+    attr(&w, MATCH_ATTR, 1, 101);
+    assert_eq!(
+        w.call(
+            "XOnlineMatchSessionCreate",
+            &[1, 7, 0, 0, 1, MATCH_ATTR, 0, OUT]
+        ),
+        0
+    );
+    let create = w.u32(OUT);
+    assert_eq!(w.wait(create), TASK_SUCCESS);
+    assert_eq!(
+        w.call("XOnlineMatchSessionGetInfo", &[create, MATCH_ID, MATCH_KEY]),
+        OK
+    );
+    let session_hex = w.hle.hosted_session().expect("the advertised session");
+    assert_eq!(sign::hex(&w.bytes(MATCH_ID, 8)), session_hex);
+    let (lo, hi) = (w.u32(MATCH_ID), w.u32(MATCH_ID + 4));
+    assert_eq!(w.call("XOnlineArbitrationCreateRoundID", &[ROUND + 8]), OK);
+    let round_hex = sign::hex(&w.bytes(ROUND + 8, 8));
+    assert_eq!(
+        w.call("XOnlineArbitrationRegister", &[ROUND, 300, 0xc, 0, OUT]),
+        OK
+    );
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), TASK_SUCCESS);
+    assert_eq!(w.call("XOnlineTaskClose", &[task]), OK);
+
+    assert_eq!(w.call("XOnlineMatchSessionDelete", &[lo, hi, 0, OUT]), OK);
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), TASK_SUCCESS);
+    assert_eq!(w.hle.hosted_session(), None);
+
+    w.put(PROCEDURES, &[0; 0x88]);
+    w.put(PROCEDURES, &0x8001u16.to_le_bytes());
+    assert_eq!(
+        w.call(
+            "XOnlineArbitrationReport",
+            &[ROUND, 1, PROCEDURES, 0, 3, 0, OUT]
+        ),
+        OK
+    );
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), TASK_SUCCESS);
+
+    let stream = live_proto::arbitration::stream(&session_hex, &round_hex);
+    let kinds: Vec<String> = server
+        .events()
+        .into_iter()
+        .filter(|e| e.stream == stream)
+        .map(|e| e.kind)
+        .collect();
+    assert_eq!(kinds, ["ArbitrationRegistered", "ArbitrationReported"]);
+}
+
 // Outages (docs/live/live.md "Outages"): a Worker deploy or a dropped
 // connection is ridden out; only a real outage, past the grace, loses the
 // connection.

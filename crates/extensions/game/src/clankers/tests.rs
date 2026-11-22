@@ -895,6 +895,36 @@ fn a_clankermatch_lobby_fills_phantoms_on_balanced_teams() {
     assert!(!d.on());
 }
 
+/// The game deletes a matchmaking lobby's advertisement once its match
+/// session takes over, well before the countdown ends: the bots stay for
+/// the whole game this console serves, and go `FILL_GONE` after it.
+#[test]
+fn a_clankermatchs_bots_outlive_the_advertisement_while_the_game_runs() {
+    use std::time::{Duration, Instant};
+    const SESSION: &str = "00000000000000c7";
+    let (live, ph, d) = clankermatch(SESSION, hopper(10, 4, 2));
+    let t0 = Instant::now();
+    d.tick_match(t0);
+    live.answer(0, Ok(roster(SESSION, 3, 0.5)));
+    d.tick_match(t0 + Duration::from_secs(60));
+    assert_eq!(ph.list().len(), 3);
+    // The advertisement goes; the countdown, the load and the game run on.
+    *live.clanker.lock().unwrap() = None;
+    *live.session.lock().unwrap() = None;
+    d.tick_match(t0 + Duration::from_secs(61));
+    d.set_hosts_game(true);
+    for s in [80, 120, 600] {
+        d.tick_match(t0 + Duration::from_secs(s));
+        assert_eq!(ph.list().len(), 3, "in the game at {s} s");
+    }
+    // The game is over: back in the menus, the bots go after the gap.
+    d.set_hosts_game(false);
+    d.tick_match(t0 + Duration::from_secs(601));
+    assert_eq!(ph.list().len(), 3, "not at once");
+    d.tick_match(t0 + Duration::from_secs(602) + FILL_GONE);
+    assert!(ph.list().is_empty());
+}
+
 #[test]
 fn a_clankermatch_balances_around_the_hosts_real_team() {
     use std::time::Instant;

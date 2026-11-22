@@ -18,6 +18,7 @@ pub mod lang;
 pub mod policy;
 pub mod reload;
 pub mod scenario;
+pub mod settings;
 pub mod show;
 pub mod sim;
 pub mod ty;
@@ -105,7 +106,8 @@ mod tests {
         let src = "rules \"O\" 1\ncarrier slayer\nenum Mode { calm, wild }\n\
                    option points: int 1..5 = 1\n\
                    option costs: bool = true\n\
-                   option mode: Mode = Mode.calm\n";
+                   option mode: Mode = Mode.calm\n\
+                   on tick { }\n";
         let ir = compile(src).unwrap();
         assert_eq!(ir.pack_options(&[]).unwrap(), ir.default_options());
         let given = |list: &[(&str, &str)]| -> Vec<(String, OptionValue)> {

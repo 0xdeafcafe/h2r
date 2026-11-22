@@ -255,6 +255,31 @@ mod tests {
         assert_eq!(abi::slot("h2abi_v1_cmpxchg8b"), None);
     }
 
+    fn owner(entry: u32, imprecise_faults: bool) -> Owner {
+        Owner {
+            func: ir::IrFunction {
+                entry,
+                blocks: std::collections::BTreeMap::new(),
+                interior_entries: Vec::new(),
+                errors: Vec::new(),
+            },
+            selectors: std::collections::BTreeSet::from([entry]),
+            entries: vec![(entry, emit::EntryKind::Function)],
+            resumes: Vec::new(),
+            entry_exits: 0,
+            loops: Default::default(),
+            opt: emit::opt::Report { imprecise_faults, ..Default::default() },
+        }
+    }
+
+    /// The fast tier declares no clock, but says when its faults are
+    /// imprecise, as clang's module does.
+    #[test]
+    fn the_registry_declares_imprecise_faults_only_when_planned_with_them() {
+        assert_eq!(module::features(&[owner(0x1000, false), owner(0x2000, false)]), 0);
+        assert_eq!(module::features(&[owner(0x1000, false), owner(0x2000, true)]), 128);
+    }
+
     #[test]
     fn the_registry_and_bridge_build_with_cranelift_alone() {
         let isa = isa().unwrap();
