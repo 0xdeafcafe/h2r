@@ -9,7 +9,7 @@ mod bundle;
 mod cli;
 mod tar;
 
-pub use bundle::{BundleOut, BundleSpec, build};
+pub use bundle::{BotData, BundleOut, BundleSpec, build};
 pub use cli::bundle_cmd;
 
 use std::{
@@ -37,6 +37,10 @@ const REQUIRED_FILES: [&str; 4] = [
 ];
 /// Directory in the verified bundle containing shared resource stores.
 const STORE_DIR: &str = "sim-stores";
+/// Directory in the bundle holding the bots' nav meshes (`<map>.<bsp>.bots`)
+/// and visibility grids (`<map>.<bsp>.vis`), laid out as in a data root
+/// (`bots::cache::dir`).
+const BOTS_DIR: &str = "bots";
 const CACHE_LOCK: &str = ".host-data.lock";
 const LAST_USED: &str = ".last-used";
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
@@ -140,6 +144,53 @@ pub fn bundled_store_dir(disc: &Path) -> Result<Option<PathBuf>, Error> {
     let manifest = read_embedded_manifest(disc)?;
     let expects_stores = manifest.files.iter().any(|entry| entry.path.starts_with("sim-stores/"));
     Ok(expects_stores.then(|| disc.join(STORE_DIR)))
+}
+
+/// The bot data files (`<map>.<bsp>.bots`, `.vis`) the verified bundle
+/// at `disc` carries, by file name, sorted.
+pub fn bundled_bot_files(disc: &Path) -> Result<Vec<String>, Error> {
+    let manifest = read_embedded_manifest(disc)?;
+    Ok(manifest
+        .files
+        .iter()
+        .filter_map(|entry| entry.path.strip_prefix(BOTS_DIR)?.strip_prefix('/'))
+        .map(str::to_owned)
+        .collect())
+}
+
+/// Copy the verified bundle's bot data into `data_root`'s bots directory
+/// (`bots::cache::dir`), where the game loads a map's nav mesh and
+/// visibility grid and the nav worker finds them current. Each file is
+/// written whole (a temporary file renamed over it) and writable, so the
+/// game may replace it; the bundle's own copies stay read-only. Returns
+/// how many files were placed.
+pub fn install_bot_data(disc: &Path, data_root: &Path) -> Result<usize, Error> {
+    let files = bundled_bot_files(disc)?;
+    if files.is_empty() {
+        return Ok(0);
+    }
+    let dest = bots::cache::dir(data_root);
+    fs::create_dir_all(&dest)?;
+    for name in &files {
+        let from = disc.join(BOTS_DIR).join(name);
+        if !fs::symlink_metadata(&from)?.is_file() {
+            return Err(Error::UnsafePath(from.display().to_string()));
+        }
+        let temp = dest.join(format!(".{name}.{}.tmp", unique_suffix()));
+        let result = (|| -> Result<(), Error> {
+            let mut out = new_private_file(&temp)?;
+            io::copy(&mut File::open(&from)?, &mut out)?;
+            out.sync_all()?;
+            drop(out);
+            fs::rename(&temp, dest.join(name))?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temp);
+        }
+        result?;
+    }
+    Ok(files.len())
 }
 
 /// [`provision`] with explicit [`Options`].
@@ -303,6 +354,9 @@ fn validate_payload_path(path: &str) -> Result<(), Error> {
     tar::validate_path(path).map_err(Error::UnsafePath)?;
     let allowed = path == "default.xbe"
         || matches!(path.strip_prefix(STORE_DIR), Some("/shared.h2store" | "/single_player_shared.h2store"))
+        || path.strip_prefix(BOTS_DIR).and_then(|rest| rest.strip_prefix('/')).is_some_and(|name| {
+            !name.contains('/') && !name.starts_with('.') && (name.ends_with(".bots") || name.ends_with(".vis"))
+        })
         || path.strip_prefix("maps/").is_some_and(|name| {
             name.strip_prefix("fonts/").map_or_else(
                 || name.to_ascii_lowercase().ends_with(".map") && !name.contains('/'),

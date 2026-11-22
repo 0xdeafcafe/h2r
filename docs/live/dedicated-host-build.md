@@ -374,7 +374,7 @@ game sees it as an ordinary XNet peer.
 
 The owner runs `h2 host bundle --disc <iso> --out <dir>`. It writes:
 
-- `host-data.tar.zst`: only what a host needs. The menu and multiplayer maps come from the disc or the stripped-maps directory. A supplied shared resource store replaces the corresponding resource map's payload.
+- `host-data.tar.zst`: only what a host needs. The menu and multiplayer maps come from the disc or the stripped-maps directory. A supplied shared resource store replaces the corresponding resource map's payload. Each multiplayer map's bot nav meshes and visibility grids go in `bots/`, and the host copies them into each child's data root.
 - `host-data.json`: the sha256 and the file list.
 
 The owner uploads both to a **private** bucket. A host fetches the

@@ -329,9 +329,15 @@ fn parse_run_args(args: Vec<String>) -> Result<RunArgs> {
     let mut src = Source::default();
     let mut wait = false;
     let mut to = None;
+    let mut dedicated = false;
+    let mut host_opts = Vec::new();
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
         if src.take(&a, &mut it)? {
+            continue;
+        }
+        if let Some(opt) = take_dedicated(&a, &mut it, &mut req)? {
+            host_opts.push(opt);
             continue;
         }
         let mut val = || it.next().with_context(|| format!("{a} needs a value"));
@@ -364,6 +370,7 @@ fn parse_run_args(args: Vec<String>) -> Result<RunArgs> {
             "--own-data" => req.own_data = true,
             "--note" => req.note = Some(val()?),
             "--serve" => req.serve = true,
+            "--dedicated" => dedicated = true,
             "--wait" => wait = true,
             "--to" => to = Some(PathBuf::from(val()?)),
             "--" => req.args.extend(it.by_ref()),
@@ -378,7 +385,49 @@ fn parse_run_args(args: Vec<String>) -> Result<RunArgs> {
         !(wait && req.serve),
         "--serve runs until `h2 lab stop`; --wait would wait forever (h2 lab bench does the whole loop)"
     );
+    if dedicated {
+        req.dedicated.get_or_insert_default();
+        ensure!(
+            !wait,
+            "a --dedicated host runs until `h2 lab stop`; --wait would wait forever"
+        );
+    } else if let Some(opt) = host_opts.first() {
+        bail!("{opt} sets up a --dedicated host; add --dedicated");
+    }
     Ok((req, src, wait, to))
+}
+
+/// A `--dedicated` host's own flags, into `req.dedicated`. Returns the flag
+/// when `a` is one.
+fn take_dedicated(
+    a: &str,
+    it: &mut impl Iterator<Item = String>,
+    req: &mut RunReq,
+) -> Result<Option<&'static str>> {
+    let flag = match a {
+        "--host-bots" => "--host-bots",
+        "--map" => "--map",
+        "--variant" => "--variant",
+        "--max-players" => "--max-players",
+        "--base-port" => "--base-port",
+        _ => return Ok(None),
+    };
+    let d = req.dedicated.get_or_insert_default();
+    let mut val = || it.next().with_context(|| format!("{flag} needs a value"));
+    match flag {
+        "--host-bots" => d.bots = true,
+        "--map" => d.map = Some(val()?),
+        "--variant" => d.variant = Some(val()?),
+        "--max-players" => {
+            d.max_players = Some(
+                val()?
+                    .parse()
+                    .context("--max-players needs a count from 1 to 16")?,
+            )
+        }
+        _ => d.base_port = Some(val()?.parse().context("--base-port needs a UDP port")?),
+    }
+    Ok(Some(flag))
 }
 
 /// Validates `req`, resolves and syncs its build, and starts it. Returns
@@ -618,6 +667,9 @@ fn runs_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
         }
         if let Some(e) = j["error"].as_str() {
             println!("    error: {e}");
+        }
+        if let Some(addr) = j["system_link"].as_str() {
+            println!("    System Link host at {addr}");
         }
         if let Some(reason) = j["skip_reason"].as_str() {
             println!("    {reason}");
@@ -1170,6 +1222,46 @@ mod tests {
             "bench 03a_oldmombasa H2_RENDER_SCALE=4: 30.0 fps, busy p50 9.50 p95 14.25 ms over 600 frames (4 over 33.3 ms); phase mean ms: render 5.50, cpu 3.00, d3d 1.00"
         );
         assert!(!s.contains("pace"));
+    }
+
+    fn words(s: &str) -> Vec<String> {
+        s.split_whitespace().map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn dedicated_flags_fill_the_dedicated_request() {
+        let (req, src, wait, _) = parse_run_args(words(
+            "--name Join --dedicated --host-bots --map lockout --variant slayer \
+             --max-players 4 --base-port 31000 --rev master --env H2_FEATURES=x",
+        ))
+        .unwrap();
+        assert!(!wait && src.rev.as_deref() == Some("master"));
+        let d = req.dedicated.as_ref().unwrap();
+        assert!(d.bots);
+        assert_eq!(d.map.as_deref(), Some("lockout"));
+        assert_eq!(d.variant.as_deref(), Some("slayer"));
+        assert_eq!((d.max_players, d.base_port), (Some(4), Some(31000)));
+        assert_eq!(req.env["H2_FEATURES"], "x");
+        proto::validate_run(&req).unwrap();
+
+        let (req, ..) = parse_run_args(words("--name Join --dedicated")).unwrap();
+        assert_eq!(req.dedicated, Some(proto::Dedicated::default()));
+        let (req, ..) = parse_run_args(words("--name Join --serve")).unwrap();
+        assert!(req.dedicated.is_none());
+    }
+
+    #[test]
+    fn dedicated_flags_need_dedicated_and_never_wait() {
+        let err = |s: &str| match parse_run_args(words(s)) {
+            Ok(_) => panic!("{s} parsed"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err("--name Join --map lockout").contains("add --dedicated"));
+        assert!(err("--name Join --host-bots").contains("add --dedicated"));
+        assert!(err("--name Join --dedicated --wait").contains("--wait"));
+        assert!(err("--name Join --dedicated --max-players many").contains("--max-players"));
+        assert!(err("--name Join --dedicated --base-port 70000").contains("--base-port"));
+        assert!(err("--name Join --dedicated --map").contains("needs a value"));
     }
 
     #[test]

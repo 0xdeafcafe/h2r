@@ -59,7 +59,8 @@ docker buildx build --platform linux/amd64 \
 
 Prepare the owner's private game-data bundle with `h2 host bundle`. The
 host needs the matching `default.xbe` at boot, supplied with the private
-runtime data. Before starting the container, export the lease ID, Live
+runtime data. The bundle also carries each multiplayer map's bot nav mesh
+and visibility grid, so the host builds none. Before starting the container, export the lease ID, Live
 URL, lease token, signed bundle URL and bundle SHA-256. Set
 `H2_HOST_LEASE_JSON` to the complete lease supplied by Live. Its `id`
 must match `H2_LEASE`.

@@ -2022,3 +2022,108 @@ fn a_walk_to_a_crouch_spot_ducks_under_a_low_ceiling_rather_than_stopping() {
     );
     assert!(!walk.is_empty() && walk.iter().all(|m| !m.crouch));
 }
+
+/// Zanzibar's window as the bots meet it: the crouch spot on the sill with
+/// its way out back into the room, and the pane at x 5.30, a low piece
+/// (index 3) in the walk in and the lip's piece (index 4) above it.
+fn window() -> (MapData, Crouch) {
+    let pane = |y0: f32, y1: f32, z0: f32, z1: f32, index: u8| crate::glass::Pane {
+        index,
+        verts: vec![[5.3, y0, z0], [5.3, y1, z0], [5.3, y1, z1], [5.3, y0, z1]],
+    };
+    let map = MapData {
+        walls: crate::los::Walls::new(Vec::new()).with_glass(vec![
+            pane(-26.6, -26.0, 5.7, 6.3, 4),
+            pane(-26.6, -26.0, 5.1, 5.6, 3),
+        ]),
+        ..MapData::default()
+    };
+    let p = superbounce::proven("zanzibar")
+        .into_iter()
+        .find(|p| p.note.contains("break the glass"))
+        .expect("the window row");
+    let c = Crouch {
+        stand: p.at,
+        out: p.out,
+        status: superbounce::Status::Proven,
+        start: None,
+    };
+    (map, c)
+}
+
+fn whole(indices: &[u8]) -> crate::glass::Mask {
+    let mut m = [0u32; 8];
+    for &i in indices {
+        m[usize::from(i >> 5)] |= 1 << (i & 31);
+    }
+    m
+}
+
+#[test]
+fn the_window_primes_from_the_room_floor_not_from_the_air() {
+    let (_, c) = window();
+    // The room's floor is x 5.40 on; the sill x 5.20 to 5.40; past it the
+    // ground is 3 units down.
+    let s = prime_start(&c);
+    assert!(s[0] > 5.4, "{s:?}");
+    assert!((s[1] - c.stand[1]).abs() < 1e-4, "{s:?}");
+}
+
+#[test]
+fn a_whole_pane_in_the_walk_in_is_shot_out_before_the_prime() {
+    let (map, c) = window();
+    let p = Plan {
+        steps: vec![Step::Prime(c)],
+        why: Why::Asked,
+        site: None,
+        cost: None,
+    };
+    let at = prime_start(&c);
+    let mut run = OrderRun::new(p, false, 0, 1);
+    // Only the low piece is in the way: the lip's stays.
+    assert_eq!(glass_in_the_way(&map, &c, Some(&whole(&[3, 4]))).len(), 1);
+    assert!(glass_in_the_way(&map, &c, Some(&whole(&[4]))).is_empty());
+    assert!(glass_in_the_way(&map, &c, None).is_empty());
+    run.see_glass(Some(whole(&[3, 4])));
+    let o = run.step(&map, at, 1, None);
+    assert!(o.done.is_none());
+    assert_eq!(run.status().phase, "break");
+    let aim = run.shooting().expect("shooting the low piece");
+    assert!((aim[0] - 5.3).abs() < 1e-4 && aim[2] < 5.6, "{aim:?}");
+    // Facing it, standing still, not crouched.
+    let d = [aim[0] - at[0], aim[1] - at[1]];
+    assert!((o.motion.yaw.unwrap() - d[1].atan2(d[0])).abs() < 1e-4);
+    assert_eq!(o.motion.speed, 0.0);
+    assert!(!o.motion.crouch);
+    // The piece breaks: the prime starts, crouching first.
+    run.see_glass(Some(whole(&[4])));
+    run.step(&map, at, 2, None);
+    assert!(run.shooting().is_none());
+    let o = run.step(&map, at, 3, None);
+    assert_ne!(run.status().phase, "break");
+    assert!(o.motion.crouch, "{:?}", run.status());
+    assert!(run.log().iter().any(|l| l.what == "glass_broken"));
+}
+
+#[test]
+fn glass_that_never_breaks_fails_the_route_as_glass_whole() {
+    let (map, c) = window();
+    let p = Plan {
+        steps: vec![Step::Prime(c)],
+        why: Why::Asked,
+        site: None,
+        cost: None,
+    };
+    let at = prime_start(&c);
+    let mut run = OrderRun::new(p, false, 0, 1);
+    let mut done = None;
+    for tick in 1..BREAK_TICKS + 10 {
+        run.see_glass(Some(whole(&[3, 4])));
+        let o = run.step(&map, at, tick, None);
+        if o.done.is_some() {
+            done = o.done;
+            break;
+        }
+    }
+    assert_eq!(done, Some(Err("glass_whole")));
+}

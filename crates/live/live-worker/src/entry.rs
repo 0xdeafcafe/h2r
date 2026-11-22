@@ -43,6 +43,27 @@ async fn fetch(
     env: Env,
     ctx: Context,
 ) -> Result<http::Response<axum::body::Body>> {
+    // Every response the Worker returns, the hub's included, passes here:
+    // a 4xx or 5xx is logged once with its error code and message, and the
+    // path without its query string (live_server::refusals).
+    let method = req.method().as_str().to_string();
+    let path = req.uri().path().to_string();
+    let response = route(req, env, ctx).await?;
+    let log = |status: u16, line: &str| {
+        if status >= 500 {
+            worker::console_error!("{line}");
+        } else {
+            worker::console_log!("{line}");
+        }
+    };
+    Ok(live_server::refusals::log_refusals(&method, &path, response, log).await)
+}
+
+async fn route(
+    req: HttpRequest,
+    env: Env,
+    ctx: Context,
+) -> Result<http::Response<axum::body::Body>> {
     let path = req.uri().path().to_string();
     // Game art is a redirect or a 404 from here, without waking the hub.
     let art_url = env

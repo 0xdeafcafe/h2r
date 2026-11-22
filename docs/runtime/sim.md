@@ -828,8 +828,11 @@ CLI sends the self-contained match file, including the batch's seed, bot
 seats and inline tuning, and Live starts one ad hoc host for each admitted
 run. Each host plays unpaced with the provisioned game image and data,
 streams to the private **Clanker Training** view, uploads its report and
-exits. Use retail map file stems such as `lockout`. Supply the maps' bot nav meshes with the host's data for runs that
-need them.
+exits. Use retail map file stems such as `lockout`. The host's data bundle
+carries every multiplayer map's bot nav mesh and visibility grid, and the
+host places them in the child's data root before the run, since a sim
+never builds them.
+[Game data bundle](../live/dedicated-host.md#game-data-bundle)
 
 `--live` defaults to `H2_LIVE_SERVER` or `http://127.0.0.1:8074`. Use a
 stored admin account for that Live server, optionally selected by

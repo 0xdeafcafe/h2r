@@ -242,13 +242,23 @@ impl Mind {
             self.end_order(o, Err("enemy"), p.tick);
             return None;
         }
+        o.run.see_glass(self.glass_mask);
         let out = o.run.step(m, me.position, p.tick, self.pair_word);
         if let Some(result) = out.done {
             self.end_order(o, result, p.tick);
             return None;
         }
+        // Breaking the glass before a prime: aim at the piece and shoot.
+        let shooting = o.run.shooting();
         self.order = Some(o);
-        let pad = self.route_pad.report(me.aim, p.tick, out.motion);
+        let pad = match shooting {
+            Some(point) => {
+                let eye = [me.position[0], me.position[1], me.position[2] + super::EYE];
+                self.route_pad
+                    .report_shooting(me.aim, eye, point, p.tick, out.motion)
+            }
+            None => self.route_pad.report(me.aim, p.tick, out.motion),
+        };
         self.last_pad = pad;
         Some(pad)
     }

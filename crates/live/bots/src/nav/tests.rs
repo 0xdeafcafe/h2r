@@ -549,7 +549,7 @@ fn generator_output_is_pinned() {
     let got = (crate::cache::GENERATOR, crate::autonav::fingerprint(&s));
     assert_eq!(
         got,
-        (5, 0x8603e7037fa1cfc0),
+        (6, 0x8603e7037fa1cfc0),
         "the nav output changed: bump cache::GENERATOR and record the new pair"
     );
 }
@@ -753,7 +753,8 @@ fn short_traversals_win_over_a_longer_walking_route() {
 
 #[test]
 fn high_ledge_builds_a_crouch_jump_and_waits_for_takeoff_before_crouching() {
-    let bsp = floors_bsp(&[(0.0, 0.0, 2.0, 2.0, 0.0), (2.0, 0.0, 4.0, 2.0, 0.48)]);
+    // Over the standing reach (0.6), within the crouched one (0.825).
+    let bsp = floors_bsp(&[(0.0, 0.0, 2.0, 2.0, 0.0), (2.0, 0.0, 4.0, 2.0, 0.72)]);
     let m = crate::cache::build(&bsp).unwrap();
     let edge = m
         .nav
@@ -761,7 +762,7 @@ fn high_ledge_builds_a_crouch_jump_and_waits_for_takeoff_before_crouching() {
         .iter()
         .find(|e| e.kind == Kind::CrouchJump)
         .unwrap();
-    let path = m.nav.path([1.0, 1.0, 0.0], [3.0, 1.0, 0.48]).unwrap();
+    let path = m.nav.path([1.0, 1.0, 0.0], [3.0, 1.0, 0.72]).unwrap();
     let mut f = Follower::new(path, 0);
     assert!(!f.steer([1.0, 1.0, 0.0], 1).jump);
     let start = f.steer(edge.a, 2);
@@ -951,6 +952,69 @@ fn nav_build_timing() {
             );
         }
     }
+}
+
+#[test]
+fn a_sill_within_the_measured_jump_is_jumped_onto_standing() {
+    // A sill 0.5 up and 0.3 deep beside the floor, its riser a wall: over
+    // the old standing reach (0.35), which left it a crouch jump that no
+    // route walk takes, and well under the jump's top (JUMP_APEX).
+    let bsp = floors_bsp(&[(0.0, 0.0, 2.0, 2.0, 0.0), (2.0, 0.0, 2.3, 2.0, 0.5)]);
+    let pf = generate(&bsp, 0, 0, &Options::default()).unwrap();
+    let riser = [
+        [2.0, 0.0, 0.0],
+        [2.0, 2.0, 0.0],
+        [2.0, 2.0, 0.5],
+        [2.0, 0.0, 0.5],
+    ];
+    let walls = Walls::from_polygons([riser.as_slice()]);
+    let one = Threads { count: 1, background: false };
+    let m = NavMesh::from_collision(&pf, &Build::default(), &walls, one);
+    assert_eq!(kinds(&m, 0, 1), vec![Kind::Jump]);
+    assert_eq!(kinds(&m, 1, 0), vec![Kind::Drop]);
+    let up = m.path([1.0, 1.0, 0.0], [2.15, 1.0, 0.5]).unwrap();
+    assert!(up.iter().any(|w| w.kind == Kind::Jump), "{up:?}");
+    let old = Build { max_jump_up: 0.35, ..Build::default() };
+    let before = NavMesh::from_collision(&pf, &old, &walls, one);
+    assert_eq!(kinds(&before, 0, 1), vec![Kind::CrouchJump]);
+    // The arc's top clears the lip, and never goes over the jump's own.
+    let reach = Build::default().max_jump_up;
+    for dz in [0.0, 0.2, 0.35, 0.5, reach, reach + CROUCH_GAIN] {
+        let lift = ledge_lift(dz);
+        let top = (lift + dz).powi(2) / (4.0 * lift);
+        assert!(top >= dz + LEDGE_CLEAR - 1e-4, "{dz}: {top}");
+        assert!(top <= JUMP_APEX, "{dz}: {top}");
+    }
+    // Up to the old reach the arc is the flat one, as before.
+    assert_eq!(ledge_lift(0.3), 4.0 * FLAT_JUMP_RISE);
+}
+
+#[test]
+fn a_floor_running_under_a_lip_keeps_its_links_and_a_recess_under_it_has_none() {
+    // Three floors in a row, x 0-2, 2-4 and 4-5. A low ceiling (z 0.6:
+    // the crouched body fits, the standing one does not) covers x 2.5 to
+    // 5: the middle floor's centre is under it, the end one is wholly.
+    let bsp = floors_bsp(&[
+        (0.0, 0.0, 2.0, 2.0, 0.0),
+        (2.0, 0.0, 4.0, 2.0, 0.0),
+        (4.0, 0.0, 5.0, 2.0, 0.0),
+    ]);
+    let pf = generate(&bsp, 0, 0, &Options::default()).unwrap();
+    let lip = floor_quad(2.5, 0.0, 0.6, 2.5, 2.0);
+    let walls = Walls::from_polygons([lip.verts.as_slice()]);
+    let m = NavMesh::from_collision(
+        &pf,
+        &Build::default(),
+        &walls,
+        Threads { count: 1, background: false },
+    );
+    assert!(!standing_clear(&walls, m.polys[1].center));
+    assert!(stands_on(&walls, &m.polys[1]));
+    assert!(!stands_on(&walls, &m.polys[2]));
+    assert_eq!(kinds(&m, 0, 1), vec![Kind::Walk]);
+    assert_eq!(kinds(&m, 1, 0), vec![Kind::Walk]);
+    assert!(kinds(&m, 1, 2).is_empty());
+    assert!(m.path([1.0, 1.0, 0.0], [2.3, 1.0, 0.0]).is_some());
 }
 
 #[test]

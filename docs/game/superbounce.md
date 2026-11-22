@@ -170,10 +170,25 @@ break the glass, crouch under the shard left of the gap, let go, turn
 right, jump, fall onto the crack below.
 
 - **The prime.** The player crouched at (5.22, −26.285) on the window
-  sill (z 5.10). The lip that forces the crouch is the broken glass, an
-  object, not the structure or instanced geometry, so the scan sees none
-  there. The phase went `under`, then `held`, and the word turned −3 on
+  sill (z 5.10). The lip that forces the crouch is a piece of the broken
+  glass. The phase went `under`, then `held`, and the word turned −3 on
   the jump, while still forced crouched: not on a walk out.
+- **The glass.** The pane is in the structure BSP: `--near` lists
+  two-sided vertical polygons in the plane x 5.30 filling both openings
+  of the window (y −24.5 to −25.5 and −26.1 to −27.1, z 5.10 to 6.30),
+  cut into irregular pieces. The map has the breakable-surface
+  definition `globals\glass` (`bsdt`) and its effects, and no scenery or
+  crate named for glass or a window. So the pieces are breakable surfaces
+  (flag bit 3, a breakable index each), skipped in collision once broken
+  ([collision.md](../formats/collision.md#what-the-engine-does-with-a-bsp)).
+  **[guess]** until `world.breakable` reads it in a game: the pieces' flags
+  and indices are not read offline. The scan takes every surface as solid,
+  so it sees the whole pane as a wall and no lip; the lip is a piece left
+  above the gap after the break. The bots break the pieces in their walk
+  in first and leave the one above ([bots.md](bots.md#breaking-the-glass)).
+  The way out of the `PROVEN` row is back into the room (+x), so the
+  prime starts on the room's floor; the jump went out of the window,
+  (−0.69, −0.72).
 - **The landing.** The floor below is z 2.10 meeting a 17.6° ramp
   (normal (0, 0.3033, 0.9529)) along y −26.70, rising south to z 2.40.
   That crack is one concave crease, not two joints, so it is no

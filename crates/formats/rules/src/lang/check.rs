@@ -73,9 +73,28 @@ pub struct Checked<'s> {
     /// The `const`s, by name: their type (`int` or `time`) and value.
     consts: Vec<(String, Type, i32)>,
     handler_labels: HashMap<usize, (u16, usize)>,
+    /// Each message text with holes, by its expression.
+    templates: HashMap<*const Expr, Template>,
+}
+
+/// A message's text as the IR stores it, and its holes ("Messages" in
+/// `docs/game/rules-language-types.md`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Template {
+    /// The text with each hole as its type's word (`{player} scored`), and
+    /// each literal brace doubled.
+    pub text: String,
+    /// Each hole's name and type, in order.
+    pub holes: Vec<(String, caps::Hole)>,
 }
 
 impl<'s> Checked<'s> {
+    /// The template of a message's text: `None` for a text that is not a
+    /// string written in the call.
+    pub fn template(&self, e: &Expr) -> Option<&Template> {
+        self.templates.get(&(e as *const Expr))
+    }
+
     /// The front-end type of an expression the checker read.
     pub fn ty(&self, e: &Expr) -> Option<Type> {
         self.types.get(&(e as *const Expr)).copied()
@@ -309,6 +328,7 @@ struct Cx<'s> {
     implicit: Vec<Option<Type>>,
     /// The function whose argument is being checked, for messages.
     arg_of: Option<&'s str>,
+    templates: HashMap<*const Expr, Template>,
 }
 
 fn is_none_lit(e: &Expr) -> bool {
@@ -408,6 +428,7 @@ impl<'s> Cx<'s> {
             facts: Vec::new(),
             implicit: Vec::new(),
             arg_of: None,
+            templates: HashMap::new(),
         }
     }
 
@@ -460,6 +481,7 @@ impl<'s> Cx<'s> {
             values: self.values,
             consts,
             handler_labels: self.handler_labels,
+            templates: self.templates,
         }
     }
 
@@ -3047,8 +3069,139 @@ impl<'s> Cx<'s> {
                 }
             },
         }
-        self.expect(&args[1], Type::Text, Some("message"));
+        if self.expect(&args[1], Type::Text, Some("message")).is_some() {
+            self.template(&args[1]);
+        }
         Some(None)
+    }
+
+    /// A message's text written in the call: each `{name}` hole is a name
+    /// in scope whose value a message can show, and the template the IR
+    /// stores is recorded for lowering.
+    fn template(&mut self, text: &'s Expr) {
+        let (s, spos): (&'s str, Pos) = match &text.kind {
+            ExprKind::Str(s) => (s.as_str(), text.pos),
+            ExprKind::Text(inner) => match &inner.kind {
+                ExprKind::Str(s) => (s.as_str(), inner.pos),
+                _ => return,
+            },
+            _ => return,
+        };
+        // The column of a char of the text: after the opening quote, and
+        // exact when the text has no escapes.
+        let at = |offset: usize| Pos {
+            line: spos.line,
+            col: spos.col.saturating_add(1).saturating_add(offset as u32),
+        };
+        let pieces = match caps::pieces(s) {
+            Ok(p) => p,
+            Err(caps::PieceError::Open(i)) => {
+                self.err("text.hole", at(i), "this { opens a hole with no }. Write {{ for a brace.");
+                return;
+            }
+            Err(caps::PieceError::Close(i)) => {
+                self.err("text.hole", at(i), "this } closes no hole. Write }} for a brace.");
+                return;
+            }
+        };
+        let mut out = String::new();
+        let mut holes = Vec::new();
+        let mut ok = true;
+        for p in pieces {
+            match p {
+                caps::Piece::Lit(l) => out.push_str(&caps::escape(&l)),
+                caps::Piece::Hole { inner, at: i } => match self.hole(inner.trim(), at(i)) {
+                    Some(h) => {
+                        out.push('{');
+                        out.push_str(h.word());
+                        out.push('}');
+                        holes.push((inner.trim().to_string(), h));
+                    }
+                    None => ok = false,
+                },
+            }
+        }
+        if holes.len() > caps::MAX_HOLES {
+            let m = format!(
+                "a message shows at most {} values, and this one has {}.",
+                caps::MAX_HOLES,
+                holes.len()
+            );
+            self.err("text.hole", spos, m);
+            return;
+        }
+        if out.len() > ir::MAX_TEXT_BYTES {
+            let m = format!(
+                "this message is stored as {} bytes with its holes, over {}: shorten it.",
+                out.len(),
+                ir::MAX_TEXT_BYTES
+            );
+            self.err("limit", spos, m);
+            return;
+        }
+        // A text with no holes is stored as written: its doubled braces are
+        // already a template's.
+        if ok && !holes.is_empty() {
+            self.templates.insert(text as *const Expr, Template { text: out, holes });
+        }
+    }
+
+    /// The type of the hole `{name}`, or `None` after an error.
+    fn hole(&mut self, name: &'s str, pos: Pos) -> Option<caps::Hole> {
+        let word = !name.is_empty()
+            && !name.starts_with(|c: char| c.is_ascii_digit())
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !word {
+            let m = format!("{{{name}}} is not a name. A hole holds one name, as {{p}}; write {{{{ for a brace.");
+            self.err("text.hole", pos, m);
+            return None;
+        }
+        let known = self.lookup(name).is_some()
+            || self.var(name, Scope::Global).is_some()
+            || self.options.iter().any(|o| o.name == name)
+            || self.const_ix(name).is_some()
+            || self.label_ix(name).is_some();
+        if !known {
+            let mut names: Vec<&str> = Vec::new();
+            for &id in self.scopes.iter().flatten() {
+                let n = self.binds[id].name.as_str();
+                if !names.contains(&n) {
+                    names.push(n);
+                }
+            }
+            let list = if names.is_empty() {
+                "No names are in scope.".to_string()
+            } else {
+                format!("Names in scope: {}.", names.join(", "))
+            };
+            self.err("text.hole", pos, format!("{{{name}}} in this message is not a name here. {list}"));
+            return None;
+        }
+        let t = self.name(name, pos, None, None)?;
+        match t {
+            Type::H(Handle::Player, false) => Some(caps::Hole::Player),
+            Type::H(Handle::Team, false) => Some(caps::Hole::Team),
+            Type::Int => Some(caps::Hole::Int),
+            Type::Time => Some(caps::Hole::Time),
+            Type::Enum(_) => Some(caps::Hole::Enum),
+            Type::H(h @ (Handle::Player | Handle::Team), true) => {
+                let m = format!(
+                    "{name} may be none here, and a message shows a {}. Show it inside \"if let\" or after a test that it is not none.",
+                    h.name()
+                );
+                self.err("text.hole", pos, m);
+                None
+            }
+            other => {
+                let n = self.tn(other);
+                let a = if n.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" };
+                let m = format!(
+                    "{a} {n} can't be shown in a message. A message shows a player, a team, an int, a time or an enum."
+                );
+                self.err("text.hole", pos, m);
+                None
+            }
+        }
     }
 
     /// A capability argument (`forge.place`): in `requires` and grantable.

@@ -161,6 +161,9 @@ pub mod method {
     // Optional methods: `session.methods` lists only those registered by
     // the input tap, game-thread features or host glue.
 
+    /// A structure BSP's breakable surfaces: which pieces of glass are
+    /// broken ([`crate::BreakableParams`], [`crate::Breakable`]).
+    pub const WORLD_BREAKABLE: &str = "world.breakable";
     /// Submit a website join through the same inbox as the OS and CLI.
     pub const LIVE_JOIN_OPEN: &str = "live.join.open";
     /// The latest web join and its outcome, if any.
@@ -1291,10 +1294,53 @@ pub struct Features {
     pub plan: Vec<String>,
 }
 
+/// `world.breakable`'s params: the structure BSP (default 0, the one the
+/// bots' map data is).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BreakableParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bsp: Option<u32>,
+}
+
+/// `world.breakable`'s result: the BSP's breakable-surface state
+/// (`bots::guest::breakable`, docs/game/bots.md, "Breaking the glass").
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Breakable {
+    pub bsp: u32,
+    /// The enable byte `breakable_surfaces_enable` writes.
+    pub enabled: bool,
+    /// The breakable indices whose surfaces are broken, ascending; the
+    /// other 256 minus these are whole.
+    pub broken: Vec<u8>,
+    /// The mask as the game holds it: 32 bytes, lowest index first, as
+    /// hexadecimal (a set bit is a whole surface).
+    pub mask: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn breakable_params_default_to_bsp_0_and_refuse_strays() {
+        let p: BreakableParams = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(p.bsp, None);
+        let p: BreakableParams = serde_json::from_value(json!({"bsp": 1})).unwrap();
+        assert_eq!(p.bsp, Some(1));
+        assert!(serde_json::from_value::<BreakableParams>(json!({"bps": 1})).is_err());
+        let r = Breakable {
+            bsp: 0,
+            enabled: true,
+            broken: vec![3],
+            mask: "f7".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&r).unwrap(),
+            json!({"bsp": 0, "enabled": true, "broken": [3], "mask": "f7"})
+        );
+    }
 
     #[test]
     fn agent_output_directory_uses_the_override_or_the_cache() {

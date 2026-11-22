@@ -32,6 +32,7 @@ connection to hold `session.claim`.
 | `world.count`, `world.query`, `world.object` | read | [`world`](#world-what-is-in-the-level) |
 | `world.object.set`, `world.object.delete`, `world.object.respawn` | act | [Object edits](#object-edits) |
 | `world.ai` | read | [`world.ai`](#worldai) |
+| `world.breakable` | read | [`world.breakable`](#worldbreakable-broken-glass) |
 | `net.replication` | read | [`net.replication`](#netreplication) |
 | `world.raw` | read | [`world.raw`](#worldraw-an-objects-bytes-before-and-after) |
 | `world.poke` | claim | [`world.poke`](#worldpoke-replace-bytes-in-one-object-part) |
@@ -455,6 +456,32 @@ another object answers `GONE` and never another object's data.
 h2 agent count team
 h2 agent query '{"kind":["scenery"],"tag":"<part of a tag name>","near":{"player":0,"radius":500},"fields":["pos","tag_name"]}'
 h2 agent object player.0
+```
+
+## `world.breakable`: broken glass
+
+`world.breakable` reads one structure BSP's breakable-surface state at the
+tick boundary: which pieces of breakable glass are broken. The bots'
+break step reads the same state (`bots::guest::breakable`;
+[bots.md](../game/bots.md#breaking-the-glass)).
+
+| Params | Result |
+|---|---|
+| `{bsp?}` (default 0) | `{bsp, enabled, broken, mask}` |
+
+- `enabled` is the byte `breakable_surfaces_enable` writes, the first byte
+  of the state at `[0x4ed280]`.
+- `mask` is the BSP's 32 bytes from `[0x4ed280] + 1 + 32 * bsp`, lowest
+  breakable index first, in hexadecimal. A set bit is a whole surface.
+  The game fills the mask with ones at map reset and clears a bit when its
+  surface breaks ([collision.md](../formats/collision.md#what-the-engine-does-with-a-bsp)).
+- `broken` lists the indices whose bits are clear, ascending. A surface's
+  index is its collision surface's `+5` byte, used when flag bit 3 is set.
+- `UNAVAILABLE` while the state's pointer is null (no map) or the read
+  faults. A stray parameter is `INVALID_PARAMS`.
+
+```sh
+h2 agent world.breakable '{}'
 ```
 
 ## `world.ai`

@@ -382,21 +382,53 @@ an error, as is calling a value function as a statement.
 
 ### Messages
 
+**Code**: `lang/check.rs` (`Cx::template`, `Cx::hole`), `lang/lower.rs`
+(`Cx::message`), `caps.rs` (`Hole`, `pieces`, `holes`, `fill`),
+`verify.rs` (`message_runs`), `vm.rs` (`Run::hole`), `fake.rs`
+(`FakeMessage`).
+
 `message(to, "{p} scored, {n} to go")` checks each hole against the
-names in scope. A hole shows a `player`, `team`, `int`, `time` or enum.
+names in scope. A hole holds one name: a local, a global, an option or
+a constant. It shows a `player`, `team`, `int`, `time` or enum; a
+`player?` or `team?` shows once narrowed. A message has at most four
+holes, and `{{` and `}}` write a brace. Each problem is a `text.hole`
+error at the hole:
 
 `{q} in this message is not a name here. Names in scope: p, n.`
 `an object can't be shown in a message. A message shows a player, a team, an int, a time or an enum.`
+`killer may be none here, and a message shows a player. Show it inside "if let" or after a test that it is not none.`
+`{p.team} is not a name. A hole holds one name, as {p}; write {{ for a brace.`
+`this { opens a hole with no }. Write {{ for a brace.`
+`a message shows at most 4 values, and this one has 5.`
 
-The text is stored with typed holes (`{player} scored, {int} to go`).
-The arguments reach the VM as `fmt_player`, `fmt_team`, `fmt_int`,
-`fmt_time` and `fmt_enum` calls directly before the `message` call:
-VM-only entries in `caps::ENTRIES`, which queue at most four values the
-next `message` takes. The verifier checks that each run of `fmt_*` calls
-is followed at once by a `message` whose holes match it in count, order
-and type. The entry's own arguments are those of `message(to, text)` as
-the message lane leaves it in `caps::ENTRIES`; this design adds only the
-holes.
+The text is stored with typed holes (`{player} scored, {int} to go`),
+literal braces doubled; a text with no holes is stored as written. The
+lowering evaluates the holes' names, then writes the template's string
+index, then emits one `fmt_player`, `fmt_team`, `fmt_int`, `fmt_time` or
+`fmt_enum` call per hole, in order, then the `message` call, with
+nothing between them. The `fmt_*` entries are VM-only entries in
+`caps::ENTRIES` with no result that a script cannot call by name
+(`caps::is_form`). The VM queues each value, at most four, and hands
+them to the next `message` after the entry's own arguments:
+`message(to, text)` reaches the game as `[to, text, values...]`
+(`[text, values...]` for `all`). A player, team or int reaches it as
+itself, a time as its ticks, and an enum as its variant's name
+(`Arg::Text`); the game reads which by the template's holes.
+`caps::fill` fills a template and `caps::show_time` shows a time as
+`m:ss`. The fake logs each message in `FakeGame::messages`: to whom, the
+template, the values and the line (`player 1 scored`).
+
+The verifier's message rule (`verify::message_runs`): each run of
+`fmt_*` calls directly follows the `Const` that writes the text of the
+`message` call directly after it; no jump or loop end lands inside the
+run or on the message; the run has at most four calls; and the text is a
+template whose holes match the run in count, order and type. A message
+with no run whose text a `Const` writes just before it shows a template
+with no holes. `fmt_enum` takes a register of any enum type. The
+refusals are `Fault::Unshown`, `Holes`, `Template`, `IntoHoles`,
+`NotTemplate` and `HoleTypes`. The entry's own arguments are those of
+`message(to, text)` as the message lane left it in `caps::ENTRIES`; this
+design adds only the holes.
 
 ### Capabilities
 
@@ -592,8 +624,8 @@ group.
 - A front end that writes IR directly declares its labels the same way:
   Firefight's `ZONE_LABEL` (`crates/formats/firefight/src/script.rs`) is
   kind object.
-- `caps::ENTRIES` gains the `fmt_*` entries ("Messages"), and nothing
-  else.
+- `caps::ENTRIES` holds the `fmt_*` entries, numbers 60 to 64
+  ("Messages"); the entry table changes in nothing else.
 - A changed table changes every blob's bytes and hash. The built-ins
   compile at first use (`rules::builtin`), so theirs follow the
   compiler; a variant or a saved script is made again from its source.
@@ -683,7 +715,7 @@ Every slice leaves the tree green and lands by itself. Paths are under
 | 7 (built) | The lobby gate | `crates/extensions/game/src/rules/gate.rs` (new), `rules/mod.rs`, `crates/extensions/game/src/lobby_mode.rs` (`start_refused`, the `LOBBY_VARIANT_PANEL` hook), `lobby_status.rs`, `lobby_mode/tests.rs` | over invented guest memory and a map fixture: a changed map, Forge map or variant runs the check once; a blocked pair answers `REFUSED_STATE` and the status line's text, with `(and n more)`; Forge mode is not held; a host block becomes the lobby's verdict; `rules.state` lists the problems in the lobby | Start Game does nothing on a blocked pair and the status line says why | 3 |
 | 8 | The web workbench | `web/src/lib/rules.ts`, `web/src/lib/rulesIde.ts`, `web/src/stats/rulesMonaco.ts`, `web/src/stats/RulesTest.tsx`, `web/src/stats/Rules.tsx`, `web/src/stats/RulesEditor.tsx` and their tests | pure-half tests: the scenario map round-trips, "Add what the script needs" satisfies the report's labels, events name things by label, the Insert groups; a code action applies its edits | the page shows map problems, quick fixes, rename and "What a map needs" | 4, 6 |
 | 9 (built) | The hopper gate | `crates/live/live-server/src/admin.rs` (`check_pairs`), `crates/live/live-proto/src/map_census.rs` (new), the census route in `crates/live/live-server/src/content.rs` and `http.rs`, `crates/apps/cli/src/live_maps.rs` (`census`), `docs/live/live-api.md` | an edit with a blocked pair, an unknown script or a map with no census is refused by name, and one with good pairs publishes; a new census lists the entries it blocks; the census event applies in both homes | no published hopper holds a blocked pair | 1, 3 (`Census`); the context-policy lane |
-| 10 | Message templates | `lang/check.rs`, `lang/lower.rs` (the template), `caps.rs` (the `fmt_*` entries), `verify.rs` (the run rule), `vm.rs`, `fake.rs` | each `text.hole` error; a `fmt_*` run without its `message`, or with the wrong types, is refused; the fake logs a message with its arguments | `message(to, "{p} scored")` reaches the fake with the player | 5; the message lane |
+| 10 (built) | Message templates | `lang/check.rs`, `lang/lower.rs` (the template), `caps.rs` (the `fmt_*` entries), `verify.rs` (the run rule), `vm.rs`, `fake.rs` | each `text.hole` error; a `fmt_*` run without its `message`, or with the wrong types, is refused; the fake logs a message with its arguments | `message(to, "{p} scored")` reaches the fake with the player | 5; the message lane |
 
 Slice 1 runs first; then 2, 3 and 4 side by side; then 5, 6, 7 and 9;
 then 8 and 10. Slices 4 and 6 each edit `rule_scripts.rs`, 3 and 7 the
