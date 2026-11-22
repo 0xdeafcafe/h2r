@@ -1016,6 +1016,8 @@ fn run_configured(
         } else {
             mixer.set_hrtf(features.switches().audio_hrtf());
             mixer.set_distance_reverb(features.switches().distance_reverb());
+            // Our medals' announcer lines play into it (medal_announcer.rs).
+            game::medal_announcer::connect(audio.mixer());
         }
     }
     let local_forge =
