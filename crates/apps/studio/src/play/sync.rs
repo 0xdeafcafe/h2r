@@ -11,11 +11,21 @@
 //! acknowledged write. [`diff`] lists field changes only for blocks whose
 //! layout revision still matches the loaded copy. Adding or removing an
 //! entry changes the revision even when the final count stays the same.
+//!
+//! A block whose layout revision differs goes to the game as one
+//! `world.placement.edit` instead ([`Baseline::transaction`],
+//! docs/editor/realtime-edits.md, "Placements"): the game's records, which
+//! document placement sits in each slot, and the bytes a removal left past
+//! the count are all here, so the transaction brings the game's block to the
+//! document's, and [`Baseline::placed`] advances the loaded revision on its
+//! receipt.
 
 use std::collections::BTreeMap;
 use std::ops::Range;
 
+use agent_proto::sim::{PlacementEditParams, PlacementName, PlacementRecord, PlacementRelink, Was};
 use scenario_edit::layout::{self, BLOCKS, FieldDef};
+use scenario_edit::scenario::PlacementId;
 use scenario_edit::{BlockKind, Scenario};
 
 /// The scenario's placement blocks as the game is taken to hold them.
@@ -29,7 +39,23 @@ pub struct Baseline {
 #[derive(Clone, Debug, PartialEq)]
 struct LoadedBlock {
     layout_rev: u64,
+    /// The game's records, `0..count`.
     entries: Vec<Vec<u8>>,
+    /// The document placement in each slot of `entries`.
+    ids: Vec<PlacementId>,
+    /// Slots past the count whose bytes are known: what a removal left
+    /// there. Slot `entries.len() + i` holds `tail[i]`.
+    tail: Vec<Vec<u8>>,
+}
+
+impl LoadedBlock {
+    fn slot(&self, index: usize) -> Option<&[u8]> {
+        match index.checked_sub(self.entries.len()) {
+            None => self.entries.get(index),
+            Some(past) => self.tail.get(past),
+        }
+        .map(Vec::as_slice)
+    }
 }
 
 /// Only slots whose creation fields differ from the last created object need
@@ -109,9 +135,12 @@ impl Baseline {
             blocks: BLOCKS
                 .iter()
                 .map(|b| {
+                    let entries = s.block(b.kind).source_entries().to_vec();
                     let block = LoadedBlock {
                         layout_rev: 0,
-                        entries: s.block(b.kind).source_entries().to_vec(),
+                        ids: (0..entries.len()).map(PlacementId::Source).collect(),
+                        entries,
+                        tail: Vec::new(),
                     };
                     (b.kind, block)
                 })
@@ -125,12 +154,14 @@ impl Baseline {
             .iter()
             .map(|b| {
                 let block = s.block(b.kind);
-                let entries = (0..block.len())
-                    .filter_map(|i| block.entry(i).map(<[u8]>::to_vec))
-                    .collect();
+                let (entries, ids) = (0..block.len())
+                    .filter_map(|i| Some((block.entry(i)?.to_vec(), block.placement_id(i)?)))
+                    .unzip();
                 let loaded = LoadedBlock {
                     layout_rev: block.layout_rev(),
                     entries,
+                    ids,
+                    tail: Vec::new(),
                 };
                 (b.kind, loaded)
             })
@@ -271,6 +302,217 @@ impl Baseline {
     /// Entries the baseline has in `kind`.
     pub fn len(&self, kind: BlockKind) -> usize {
         self.blocks.get(&kind).map_or(0, |b| b.entries.len())
+    }
+
+    /// The `world.placement.edit` that brings the game's block `kind` to the
+    /// document's, or `None` when its layout already matches. `objects`: the
+    /// block's records make objects, so the transaction deletes, relinks and
+    /// creates them and repoints object names; other blocks take records and
+    /// the count only.
+    pub fn transaction(&self, now: &Scenario, kind: BlockKind, objects: bool) -> Option<Transaction> {
+        let old = self.blocks.get(&kind)?;
+        let block = now.block(kind);
+        if old.layout_rev == block.layout_rev() {
+            return None;
+        }
+        let (entries, ids): (Vec<Vec<u8>>, Vec<PlacementId>) = (0..block.len())
+            .map(|i| Some((block.entry(i)?.to_vec(), block.placement_id(i)?)))
+            .collect::<Option<Vec<_>>>()?
+            .into_iter()
+            .unzip();
+        let old_slot = |id: &PlacementId| old.ids.iter().position(|o| o == id);
+        let records = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, bytes)| {
+                let was = old.slot(index);
+                (was != Some(bytes.as_slice())).then(|| Record {
+                    index,
+                    bytes: bytes.clone(),
+                    was: was.map(<[u8]>::to_vec),
+                })
+            })
+            .collect();
+        let mut t = Transaction {
+            block: kind,
+            was_count: old.entries.len(),
+            count: entries.len(),
+            records,
+            names: Vec::new(),
+            delete: Vec::new(),
+            relink: Vec::new(),
+            create: Vec::new(),
+            layout_rev: block.layout_rev(),
+            ids,
+            entries,
+        };
+        let ty = layout::block(kind).object_type.filter(|_| objects);
+        let Some(ty) = ty else {
+            return Some(t);
+        };
+        t.delete = (0..old.ids.len())
+            .filter(|&i| !t.ids.contains(&old.ids[i]))
+            .collect();
+        for (to, id) in t.ids.iter().enumerate() {
+            match old_slot(id) {
+                Some(from) if from != to => t.relink.push((from, to)),
+                Some(_) => {}
+                None => t.create.push(to),
+            }
+        }
+        // The game's names follow its placements, as the document's follow
+        // a removal: a name of a placement that moved slot or is new is
+        // repointed, and a name the document cleared is cleared when the
+        // transaction deletes the placement it may still name.
+        for name in 0..now.names.len() {
+            let Some((t_ty, placement)) = now.names.target(name) else {
+                continue;
+            };
+            if t_ty != ty {
+                continue;
+            }
+            let repoint = match usize::try_from(placement) {
+                Ok(at) => t.ids.get(at).is_some_and(|id| old_slot(id) != Some(at)),
+                Err(_) => !t.delete.is_empty(),
+            };
+            if repoint {
+                t.names.push((name, placement));
+            }
+        }
+        Some(t)
+    }
+
+    /// The game applied `t`: its block now holds the document's layout at
+    /// the time `t` was made. Object rows and creation snapshots follow the
+    /// new numbering; a placement that kept its object keeps the frame the
+    /// object has, and a created one starts at its record's frame.
+    pub fn placed(&mut self, t: &Transaction) {
+        let Some(old) = self.blocks.get_mut(&t.block) else {
+            return;
+        };
+        let mut slots: Vec<Vec<u8>> = std::mem::take(&mut old.entries);
+        slots.append(&mut old.tail);
+        for r in &t.records {
+            if r.index < slots.len() {
+                slots[r.index].clone_from(&r.bytes);
+            } else {
+                slots.resize(r.index, Vec::new());
+                slots.push(r.bytes.clone());
+            }
+        }
+        old.tail = slots.split_off(t.count.min(slots.len()));
+        old.entries = slots;
+        let previous = std::mem::replace(&mut old.ids, t.ids.clone());
+        old.layout_rev = t.layout_rev;
+
+        if layout::block(t.block).object_type.is_some() {
+            let (mut kept, mut rows): (super::objects::Rows, super::objects::Rows) =
+                std::mem::take(&mut self.object_rows)
+                    .into_iter()
+                    .partition(|(key, _)| key.block == t.block);
+            for (index, id) in t.ids.iter().enumerate() {
+                let key = super::objects::Key { block: t.block, id: *id };
+                let frame = kept.remove(&key).map_or_else(
+                    || super::objects::Frame::from_entry(t.block, &t.entries[index]),
+                    |row| row.frame,
+                );
+                rows.insert(key, super::objects::Row { index, frame });
+            }
+            self.object_rows = rows;
+        }
+
+        let slot = |from: usize| {
+            let id = previous.get(from)?;
+            t.ids.iter().position(|new| new == id)
+        };
+        let creation = std::mem::take(&mut self.creation.slots);
+        self.creation.slots = creation
+            .into_iter()
+            .filter_map(|((kind, index), bytes)| {
+                if kind != t.block {
+                    return Some(((kind, index), bytes));
+                }
+                Some(((kind, slot(index)?), bytes))
+            })
+            .collect();
+        self.creation.revision += 1;
+    }
+}
+
+/// One record of a [`Transaction`]: the slot in the new numbering, its new
+/// bytes and, when known, the bytes the game's slot holds.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Record {
+    pub index: usize,
+    pub bytes: Vec<u8>,
+    pub was: Option<Vec<u8>>,
+}
+
+/// One `world.placement.edit` (docs/runtime/agent-api.md, "Placement edits"):
+/// indices in `delete` and the `from` of `relink` are the game's numbering,
+/// the rest the document's.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Transaction {
+    pub block: BlockKind,
+    pub was_count: usize,
+    pub count: usize,
+    pub records: Vec<Record>,
+    /// `(object name index, placement)`, -1 for none.
+    pub names: Vec<(usize, i16)>,
+    pub delete: Vec<usize>,
+    /// `(from, to)`.
+    pub relink: Vec<(usize, usize)>,
+    pub create: Vec<usize>,
+    /// The document's layout the transaction brings the game to.
+    layout_rev: u64,
+    ids: Vec<PlacementId>,
+    entries: Vec<Vec<u8>>,
+}
+
+impl Transaction {
+    /// The document placement the transaction puts in slot `index`.
+    pub fn id(&self, index: usize) -> Option<PlacementId> {
+        self.ids.get(index).copied()
+    }
+
+    /// The new slot of a placement, or `None` when the transaction removes it.
+    pub fn slot_of(&self, id: PlacementId) -> Option<usize> {
+        self.ids.iter().position(|i| *i == id)
+    }
+
+    /// The method's params. An index past the wire's range saturates: the
+    /// game refuses a count that large with its reason before reading one.
+    pub fn params(&self, epoch: Option<u64>, confirm_peers: Option<u32>) -> PlacementEditParams {
+        let n16 = |n: usize| u16::try_from(n).unwrap_or(u16::MAX);
+        let n32 = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+        PlacementEditParams {
+            block: crate::api::block_name(self.block),
+            was_count: n32(self.was_count),
+            count: n32(self.count),
+            records: self
+                .records
+                .iter()
+                .map(|r| PlacementRecord {
+                    index: n16(r.index),
+                    bytes: hex(&r.bytes),
+                    was: r.was.as_deref().map(|b| Was::Bytes(hex(b))),
+                })
+                .collect(),
+            names: self
+                .names
+                .iter()
+                .map(|&(name, placement)| PlacementName { name: n16(name), placement })
+                .collect(),
+            delete: self.delete.iter().map(|&i| n16(i)).collect(),
+            relink: self
+                .relink
+                .iter()
+                .map(|&(from, to)| PlacementRelink { from: n16(from), to: n16(to) })
+                .collect(),
+            create: self.create.iter().map(|&i| n16(i)).collect(),
+            epoch,
+            confirm_peers,
+        }
     }
 }
 
@@ -486,6 +728,93 @@ mod tests {
         assert_eq!(entries[0], bytes[1..1 + stride]);
         assert_eq!(entries[1][..5], bytes[1 + stride..]);
         assert_eq!(entries[1][5..], block.entry(1).unwrap()[5..]);
+    }
+
+    #[test]
+    fn a_swap_removal_is_one_transaction_with_delete_relink_and_names() {
+        let (_t, mut s) = session("sync-tx-remove");
+        let kind = BlockKind::Weapons;
+        let mut base = Baseline::source(s.scenario().unwrap());
+        assert_eq!(base.transaction(s.scenario().unwrap(), kind, true), None);
+        let first = s.scenario().unwrap().block(kind).entry(0).unwrap().to_vec();
+        let last = s.scenario().unwrap().block(kind).entry(1).unwrap().to_vec();
+        s.remove_entry(kind, 0).unwrap();
+        let t = base.transaction(s.scenario().unwrap(), kind, true).unwrap();
+        assert_eq!((t.was_count, t.count), (2, 1));
+        assert_eq!(t.records, [Record { index: 0, bytes: last.clone(), was: Some(first.clone()) }]);
+        assert_eq!(t.delete, [0]);
+        assert_eq!(t.relink, [(1, 0)]);
+        assert!(t.create.is_empty());
+        // The fixture's names: weapon 1, scenery 0, weapon 0.
+        assert_eq!(t.names, [(0, 0), (2, -1)]);
+        let wire = serde_json::to_value(t.params(Some(1), None)).unwrap();
+        assert_eq!(wire["block"], "weapons");
+        assert_eq!(wire["relink"], serde_json::json!([{"from": 1, "to": 0}]));
+        assert_eq!(wire["records"][0]["was"], hex(&first));
+
+        base.placed(&t);
+        assert!(base.layout_matches(s.scenario().unwrap(), kind));
+        assert_eq!(diff(&base, s.scenario().unwrap()), Diff::default());
+        assert_eq!(base.len(kind), 1);
+        let rows: Vec<_> = base.object_rows().iter().filter(|(k, _)| k.block == kind).collect();
+        assert_eq!(rows.len(), 1);
+        let survivor = super::super::objects::key(s.scenario().unwrap(), kind, 0).unwrap();
+        assert_eq!((*rows[0].0, rows[0].1.index), (survivor, 0));
+
+        // Undo is the inverse call: the removed placement comes back to its
+        // slot and the survivor moves back, over the bytes the removal left.
+        assert!(s.undo());
+        let back = base.transaction(s.scenario().unwrap(), kind, true).unwrap();
+        assert_eq!((back.was_count, back.count), (1, 2));
+        assert_eq!(back.relink, [(0, 1)]);
+        assert_eq!(back.create, [0]);
+        assert!(back.delete.is_empty());
+        assert_eq!(
+            back.records,
+            [Record { index: 0, bytes: first.clone(), was: Some(last.clone()) }],
+            "slot 1 still holds the survivor's bytes past the count"
+        );
+        assert_eq!(back.names, [(0, 1), (2, 0)]);
+        base.placed(&back);
+        assert_eq!(diff(&base, s.scenario().unwrap()), Diff::default());
+    }
+
+    #[test]
+    fn an_add_creates_the_appended_slot_and_walked_blocks_take_records_only() {
+        let (_t, mut s) = session("sync-tx-add");
+        s.set_allow_growth(true);
+        let kind = BlockKind::Weapons;
+        let mut base = Baseline::source(s.scenario().unwrap());
+        let index = s.add_entry(kind, None).unwrap();
+        let t = base.transaction(s.scenario().unwrap(), kind, true).unwrap();
+        assert_eq!((t.was_count, t.count), (2, 3));
+        assert_eq!(t.create, [index]);
+        assert_eq!(t.records.len(), 1);
+        assert_eq!(t.records[0].index, index);
+        assert_eq!(t.records[0].was, None, "nothing is known past the loaded count");
+        base.placed(&t);
+        assert!(s.undo());
+        let undo = base.transaction(s.scenario().unwrap(), kind, true).unwrap();
+        assert_eq!((undo.was_count, undo.count), (3, 2));
+        assert_eq!(undo.delete, [index]);
+        assert!(undo.records.is_empty() && undo.create.is_empty());
+        base.placed(&undo);
+        assert!(s.redo());
+        let redo = base.transaction(s.scenario().unwrap(), kind, true).unwrap();
+        assert_eq!(redo.create, [index]);
+        assert!(redo.records.is_empty(), "the slot still holds the record the undo left");
+        base.placed(&redo);
+        assert_eq!(diff(&base, s.scenario().unwrap()), Diff::default());
+
+        let walked = BlockKind::NetgameFlags;
+        let mut base = Baseline::source(s.scenario().unwrap());
+        s.add_entry(walked, None).unwrap();
+        let t = base.transaction(s.scenario().unwrap(), walked, false).unwrap();
+        assert!(t.create.is_empty() && t.delete.is_empty() && t.relink.is_empty());
+        assert!(t.names.is_empty());
+        assert_eq!(t.count, t.was_count + 1);
+        base.placed(&t);
+        assert!(base.layout_matches(s.scenario().unwrap(), walked));
     }
 
     #[test]

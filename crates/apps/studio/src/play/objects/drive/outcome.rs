@@ -195,6 +195,10 @@ impl Play {
         ticket: u64,
         result: Result<Value, RpcError>,
     ) {
+        if self.objects.placements.answers(ticket) {
+            self.placement_answer(app, result);
+            return;
+        }
         let Some(scope) = self.objects.scope else { return };
         if self.object_scope(app) != Some(scope) {
             return;

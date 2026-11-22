@@ -115,6 +115,12 @@ impl Edits {
         })
     }
 
+    /// Diff the document again on the next frame: the baseline changed
+    /// without the document (a placement transaction's receipt).
+    pub(super) fn rediff(&mut self) {
+        self.last_diff = None;
+    }
+
     pub(super) fn transport_lost(&mut self) {
         self.map_requested = false;
         self.journal_requested = false;

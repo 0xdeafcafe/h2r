@@ -1,6 +1,6 @@
 # Realtime edits: geometry, placements, collision and textures in the running game
 
-Status: Design, with slice R3 (placement transactions) written: `world.placement.edit` is in `crates/extensions/agent/src/sim/calls/placement/edit.rs`, its tests beside it, and it is documented in [agent-api.md](../runtime/agent-api.md), "Placement edits". Nothing else on this page is built; what it builds on is cited as **Code**.
+Status: Design, with slices R3 (placement transactions) and R6 (the editor's placements live) written. `world.placement.edit` is in `crates/extensions/agent/src/sim/calls/placement/edit.rs`, its tests beside it, and it is documented in [agent-api.md](../runtime/agent-api.md), "Placement edits". The editor sends added, removed, undone and redone placements as that call from `crates/apps/studio/src/play/objects/drive/placements.rs`, computed by `sync::Baseline::transaction` in `crates/apps/studio/src/play/sync.rs`, tests beside each ([live-mirror.md](live-mirror.md), "Placements"). Nothing else on this page is built; what it builds on is cited as **Code**.
 Code: planned in `crates/runtime/vfs/src/map_override`, `crates/extensions/hot-tags`, `crates/extensions/agent/src/hot.rs`, `crates/rewrites/render-bridge`, `crates/rewrites/native-render` and `crates/apps/studio/src/play`; built for R3 in `crates/extensions/agent/src/sim/edits.rs`, `crates/extensions/agent/src/sim/calls/placement/edit.rs` and `crates/extensions/agent-proto/src/sim/edits.rs`. Tests: named per slice under "Build slices".
 Switch: none. With no editor paired and no edit sent, none of it runs.
 
@@ -388,9 +388,13 @@ Plain integers keep `render-bridge` free of the agent's types.
   collision are `now`; grown geometry and `rebuild` collision are
   `now` with a note in Pending ("the level rebuilds for a moment");
   everything under a "Not live" bullet stays `reload`.
-- `play/sync.rs` sends a block whose layout revision differs from the
-  loaded one as a `world.placement.edit` instead of putting its fields
-  behind reload, and advances the loaded revision on the receipt.
+- `play/sync.rs` computes a block whose layout revision differs from the
+  loaded one as a `world.placement.edit` (`Baseline::transaction`)
+  instead of putting its fields behind reload, and advances the loaded
+  revision on the receipt (`Baseline::placed`);
+  `play/objects/drive/placements.rs` sends it, one at a time, and keeps
+  the block under Reload with the game's reason when refused or when the
+  answer is lost.
 - A new `play/raw_sync.rs` diffs `GeometryChanges` and the bitmap
   document against a baseline of acknowledged raw entries, as
   `sync::Baseline` does for fields, so undo sends the old bytes.
