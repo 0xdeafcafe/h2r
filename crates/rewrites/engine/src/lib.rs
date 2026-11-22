@@ -21,6 +21,8 @@
 //!   (`0x00134fc0`, the loop of `render_screen_effects`).
 //! - [`function_eval`]: the tag function evaluator `0x0013b390` with the
 //!   CRT's `fmod` and `pow`, bit for bit.
+//! - [`map_status`]: the map cache status `0x213f10`, answered from its
+//!   last result while nothing it reads has changed.
 //! - [`points`]: the one table of named guest functions and globals.
 //! - [`point_shapes`]: what each point expects at its address, checked
 //!   against the user's image at install.
@@ -44,6 +46,7 @@ pub mod glow;
 pub mod light_constants;
 pub mod light_passes;
 pub mod locale;
+pub mod map_status;
 pub mod objectives;
 pub mod point_shapes;
 pub mod render;

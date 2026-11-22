@@ -134,17 +134,17 @@ export function mockCheck(source: string) {
   const per = (e: string) => (["tick", "init", "round_start", "round_end"].includes(e) || e.startsWith("timer(") ? 1 : e === "enter" || e === "leave" ? 64 : 16);
   const worst = handlers.reduce((n, h) => n + h.worst_ops * per(h.event), 0);
   return {
-    ok: worst <= 20_000,
+    ok: worst <= 100_000,
     hash: sha(source),
     name: head![1],
     version: Number(head![2]),
-    errors: worst <= 20_000 ? [] : [{ line: 0, col: 0, message: `the worst tick costs ${worst} ops, over the budget of 20000` }],
+    errors: worst <= 100_000 ? [] : [{ line: 0, col: 0, message: `the worst tick costs ${worst} ops, over the budget of 100000` }],
     options: optionsOf(source),
     carrier: carrierOfSource(source),
     report: {
       worst_tick_ops: worst,
-      budget: 20_000,
-      fits: worst <= 20_000,
+      budget: 100_000,
+      fits: worst <= 100_000,
       costliest: [...handlers].sort((a, b) => b.worst_ops * per(b.event) - a.worst_ops * per(a.event))[0]?.event ?? null,
       handlers,
       slots: [["global", 64], ["player", 16], ["team", 8], ["object", 8]].map(([scope, limit]) => ({ scope, used: count(scope as string), limit })),

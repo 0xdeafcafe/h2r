@@ -32,8 +32,8 @@ async fn check_reports_the_hash_the_budget_and_errors_with_places() {
     assert_eq!(v["hash"], want);
     assert_eq!(v["report"]["handlers"][0]["event"], "kill");
     assert!(v["report"]["worst_tick_ops"].as_u64().unwrap() > 0);
-    assert_eq!(v["report"]["budget"], 20_000);
-    assert_eq!(v["report"]["ir_limit"], 64 * 1024);
+    assert_eq!(v["report"]["budget"], rules::vm::TICK_BUDGET);
+    assert_eq!(v["report"]["ir_limit"], rules::ir::MAX_IR_BYTES);
     assert_eq!(v["report"]["slots"][0]["scope"], "global");
     assert_eq!(v["report"]["capabilities"], json!([]));
 

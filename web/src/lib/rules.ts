@@ -132,7 +132,7 @@ function parseReport(v: unknown): CheckReport | null {
   const r = obj(v);
   return {
     worst_tick_ops: num(r.worst_tick_ops),
-    budget: num(r.budget) || 20_000,
+    budget: num(r.budget) || 100_000,
     fits: r.fits === true,
     costliest: optStr(r.costliest),
     handlers: arr(r.handlers).map(obj).map((h) => ({ event: str(h.event), worst_ops: num(h.worst_ops) })),
@@ -169,7 +169,7 @@ export function meter(used: number, limit: number): { share: number; tone: "ok" 
   return { share: Math.min(1, Math.max(0, share)), tone: share > 1 ? "over" : share >= 0.75 ? "warn" : "ok" };
 }
 
-/** "1,234 / 20,000 ops". */
+/** "1,234 / 100,000 ops". */
 export const meterText = (used: number, limit: number, unit: string): string =>
   `${used.toLocaleString("en-US")} / ${limit.toLocaleString("en-US")} ${unit}`;
 

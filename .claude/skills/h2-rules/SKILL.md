@@ -76,7 +76,7 @@ references, semantic tokens, outline, formatting).
 
 ```text
 x.rules: "Count" version 1, carrier engine 2, 2 teams
-worst tick: 112 ops of 20000 budget (fits)
+worst tick: 112 ops of 100000 budget (fits)
 costliest handler: on kill (7 ops a run)
 IR: 214 bytes of 65536
 slots: 0 global, 1 per player, 0 per team, 0 per object
@@ -90,18 +90,18 @@ unhostable entries: none
 - **worst tick** is the static estimate: each handler's worst case times
   the events a tick can hold (16 for each per-player event, 64 for `enter`
   and `leave`, 16 for `squad_dead`, 1 otherwise), summed. The VM runs at
-  most 20,000 ops a tick across all handlers; over that is a script error
+  most 100,000 ops a tick across all handlers; over that is a script error
   at run time, which stops the VM and ends the round. Over it, `check`
   prints `OVER BUDGET`, then `file: refused: the worst tick costs N ops,
-  over the budget of 20000`, and exits 1; `build` writes nothing. The IR
+  over the budget of 100000`, and exits 1; `build` writes nothing. The IR
   cap is refused the same way. Live's check reports `ok: false`, and
   Live's save and publish refuse the script.
 - **costliest handler** is where to cut. Loops multiply: `for each
   players` inside `for each objectives` is 16 x 8 bodies. Hoist a repeated
   read into a `let`.
-- **IR** is at most 64 KiB; source is at most 256 KiB.
-- **slots** are the variable limits: 64 global, 16 per player, 8 per team,
-  8 per object. Options share 32 bits: an option takes `ceil(log2(hi - lo
+- **IR** is at most 256 KiB; source is at most 256 KiB.
+- **slots** are the variable limits: 256 global, 64 per player, 32 per team,
+  32 per object. Options share 32 bits: an option takes `ceil(log2(hi - lo
   + 1))` bits (a bool takes 1) and the compiler refuses more.
 - **can do** lists the declared capabilities in the lobby's words.
   **unhostable entries** are calls no host can make yet; a host refuses

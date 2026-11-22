@@ -17,11 +17,11 @@ use crate::ty::{MAX_LABELLED, MAX_OBJECTIVES, MAX_PLAYERS, MAX_SQUADS, MAX_TEAMS
 use crate::verify::{self, Refusal};
 
 /// Ops one tick may execute across all its handlers.
-pub const TICK_BUDGET: u32 = 20_000;
+pub const TICK_BUDGET: u32 = 100_000;
 /// `on enter` and `on leave` runs a tick; the rest carry over.
 pub const ZONE_EVENTS_PER_TICK: u8 = 64;
 /// The most bytes [`RulesExt::encode`] may write.
-pub const MAX_STATE_BYTES: usize = 16 * 1024;
+pub const MAX_STATE_BYTES: usize = 64 * 1024;
 /// Queued calls waiting for the next tick boundary.
 pub const MAX_QUEUE: usize = 128;
 /// Objects that carry object variables at once.
@@ -319,7 +319,7 @@ impl RulesExt {
                 w.extend_from_slice(&v.to_le_bytes());
             }
         };
-        w.push(self.globals.len() as u8);
+        w.extend_from_slice(&(self.globals.len() as u16).to_le_bytes());
         i32s(&mut w, &self.globals);
         let width = |rows: &[Vec<i32>]| rows.first().map_or(0, |r| r.len());
         w.push(width(&self.players) as u8);
@@ -396,7 +396,7 @@ impl RulesExt {
             }
             _ => return Err(StateError::Malformed(r.at - 1)),
         };
-        let n = r.u8()? as usize;
+        let n = r.u16()? as usize;
         let globals = r.i32s(n)?;
         let pw = r.u8()? as usize;
         let mut players = Vec::with_capacity(MAX_PLAYERS);
