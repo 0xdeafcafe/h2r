@@ -8,7 +8,7 @@ for each slice, the order of deletion and the commands that measure it.
 Slices 0 to 3 are built; their sections say how. Of slice 4 the entry
 census and the layer draws of the structure's static items and the
 objects' items (layers 1, 5, 7, 8 and 20, layer 5's with the model's
-PRT stream; the first person's 1, 7 and 8) from the plan, on by
+PRT stream; the first person's 1, 7, 8 and 20) from the plan, on by
 default, are built, and its
 section says what the replacements wait on. Of slice 5 the extraction of
 the fog, the water and the post passes and the fog's and water's
@@ -996,7 +996,7 @@ to the guest's draws (**Code**):
     section's registers only, and the program carries what the stream
     feeds (`PrtInput`).
     Before a scene view's layer draw (`layer_site` is `Site::Scene`), and
-    before the first person's layers 1, 7 and 8 (`Site::FirstPerson`;
+    before the first person's layers 1, 7, 8 and 20 (`Site::FirstPerson`;
     its layer 3 is `native_first_person`'s), the bridge extracts the
     layer's pass from guest memory and the host plans it
     (`render_bridge::native_layers::caller`). A structure item (the

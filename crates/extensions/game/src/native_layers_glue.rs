@@ -1,6 +1,6 @@
 //! The host of `frame-scene.layers` (docs/graphics/framescene.md, slice 4):
 //! the scene's world layers 1, 5, 7, 8 and 20, and the first person's
-//! layers 1, 7 and 8, drawn from the scene's plan
+//! layers 1, 7, 8 and 20, drawn from the scene's plan
 //! (`native_render::layer_pass`, `LitObjects::plan_layer_item`) over the
 //! native world's loaded BSP and the object models layer 3 draws from,
 //! not from the draws the guest resolves under the layer call.

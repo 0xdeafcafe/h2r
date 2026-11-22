@@ -278,7 +278,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
 }
 
 /// The first-person host's map state, which the first person's layers
-/// 1, 7 and 8 draw their object items from (`native_layers_glue`): set at
+/// 1, 7, 8 and 20 draw their object items from (`native_layers_glue`): set at
 /// install.
 static LAYER_SOURCE: Mutex<Option<Arc<Mutex<Option<MapState>>>>> = Mutex::new(None);
 

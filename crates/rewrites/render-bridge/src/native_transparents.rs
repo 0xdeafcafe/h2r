@@ -89,8 +89,7 @@ fn walk_stage(mem: &dyn GuestRead, esp: u32) -> Option<Stage> {
         LAYER_DRAW_CALLER => {
             use native_render::world_layers::{Site, layer_site};
             let caller = word(FIRST_PERSON_LAYER_FRAME)?;
-            let first_person_layer = layer_site(layer, caller) == Site::FirstPerson
-                || (layer == 20 && caller == 0x0004_020b);
+            let first_person_layer = layer_site(layer, caller) == Site::FirstPerson;
             let list = mem.read_u32(native_render::skip::CURRENT_LIST)?;
             (first_person_layer && list != 0
                 && mem.read_u32(list.checked_add(0x14)?)? == crate::native_first_person::FIRST_PERSON_ITEMS)
