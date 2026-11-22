@@ -638,6 +638,11 @@ impl Studio {
         ui.window(&self.keys.rules)
             .flags(dear_imgui_rs::WindowFlags::NO_FOCUS_ON_APPEARING)
             .build(|| game_script::window(ui, app, fonts, self.dialogs));
+        // Opening a script (from its toolbar or `rules.open`) picks its tab.
+        if std::mem::take(&mut app.rules.show) {
+            let name = format!("###{}", self.keys.rules.stable_id());
+            ui.set_window_focus(Some(name.as_str()));
+        }
     }
 
     fn playlist_windows(&mut self, ui: &Ui, app: &mut App, actions: &mut Vec<Action>) {

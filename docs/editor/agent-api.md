@@ -230,7 +230,9 @@ Notes on some:
   handlers, slots, IR size and capabilities), `mode`, `reload_on_save`,
   `reload` and the `starters` `rules.open {starter}` takes (a built-in's
   or example's name, any case). `rules.get {text: true}` adds the text.
-  `rules.open` is `UNSAVED` over unsaved edits without `discard`.
+  `rules.open` is `UNSAVED` over unsaved edits without `discard`, and
+  picks the window's tab. `rules.set` reaches the text widget even while
+  someone is typing in it, and leaves the keyboard where it is.
   `rules.save` with no `path` on a script that has no file is `REFUSED`.
   `rules.reload` compiles and verifies the text here, queues the blob for
   the game link and answers `{queued: hash}`; the game's answer arrives as
