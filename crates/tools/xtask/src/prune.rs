@@ -9,6 +9,10 @@
 //! with the same stem in the same `deps` directory goes, with its `.d`
 //! dep-info and `.dSYM` bundle.
 //!
+//! Dev builds carry no debug info (`[profile.dev] debug = false`), so a
+//! codegen unit's object file (`*.o`) or a `.dSYM` bundle left in `deps`
+//! is a leftover of an older build with line tables: each goes too.
+//!
 //! Libraries are never touched: an rlib is `lib<stem>-<hash>.rlib`, and
 //! kache's unit clean-up already drops the unused ones. A stale executable
 //! modified within the last hour is kept, so a build running in the same
@@ -63,8 +67,24 @@ pub fn stale<'a>(
     out
 }
 
+/// Of the entry names in one `deps` directory, the debug-info leftovers:
+/// kept object files (`*.o`) and `.dSYM` bundles. `is_old` says whether
+/// an entry is old enough to go.
+pub fn debug_leftovers<'a>(names: impl IntoIterator<Item = &'a str>, is_old: impl Fn(&str) -> bool) -> Vec<String> {
+    let mut out: Vec<String> = names
+        .into_iter()
+        .filter(|n| n.ends_with(".o") || n.ends_with(".dSYM"))
+        .filter(|n| is_old(n))
+        .map(str::to_owned)
+        .collect();
+    out.sort();
+    out
+}
+
 /// Deletes the stale test executables beside `binaries`, the current ones
-/// nextest listed. Returns how many executables went and the bytes freed.
+/// nextest listed, and the debug-info leftovers in their `deps`
+/// ([`debug_leftovers`]). Returns how many executables and leftovers went
+/// and the bytes freed.
 /// Errors are skipped: pruning never fails a test run.
 pub fn prune(binaries: &[PathBuf]) -> (usize, u64) {
     let now = SystemTime::now();
@@ -88,6 +108,13 @@ pub fn prune(binaries: &[PathBuf]) -> (usize, u64) {
             let _ = std::fs::remove_file(dir.join(format!("{name}.d")));
             bytes += remove_tree(&dir.join(format!("{name}.dSYM")));
         }
+        for name in debug_leftovers(names.iter().map(String::as_str), is_old) {
+            let freed = remove_tree(&dir.join(&name));
+            if freed > 0 {
+                count += 1;
+                bytes += freed;
+            }
+        }
     }
     (count, bytes)
 }
@@ -102,7 +129,12 @@ fn remove_tree(p: &Path) -> u64 {
         }
     }
     let n = size(p);
-    if std::fs::remove_dir_all(p).is_ok() { n } else { 0 }
+    let gone = match std::fs::symlink_metadata(p) {
+        Ok(m) if m.is_dir() => std::fs::remove_dir_all(p).is_ok(),
+        Ok(_) => std::fs::remove_file(p).is_ok(),
+        Err(_) => false,
+    };
+    if gone { n } else { 0 }
 }
 
 /// The executables nextest's `list --message-format json` names.
@@ -151,6 +183,20 @@ mod tests {
     }
 
     #[test]
+    fn old_objects_and_bundles_go_whatever_their_stem() {
+        let names = [
+            format!("game-{A}.game.abc123-cgu.0.rcgu.o"),
+            format!("tags-{B}.dSYM"),
+            format!("young-{A}.x.rcgu.o"),
+            format!("libengine-{B}.rlib"),
+            format!("engine-{A}"),
+            format!("engine-{A}.d"),
+        ];
+        let got = debug_leftovers(names.iter().map(String::as_str), |n| !n.starts_with("young"));
+        assert_eq!(got, vec![format!("game-{A}.game.abc123-cgu.0.rcgu.o"), format!("tags-{B}.dSYM")]);
+    }
+
+    #[test]
     fn hyphenated_stems_split_at_the_hash() {
         assert_eq!(stem_hash(&format!("sim-objects-{A}")), Some(("sim-objects", A)));
         assert_eq!(stem_hash("sim-objects"), None);
@@ -168,8 +214,16 @@ mod tests {
         let old = SystemTime::now() - Duration::from_secs(7200);
         std::fs::File::options().write(true).open(deps.join(format!("engine-{B}"))).unwrap().set_modified(old).unwrap();
 
+        let obj = deps.join(format!("engine-{A}.engine.0-cgu.0.rcgu.o"));
+        std::fs::write(&obj, b"zzzz").unwrap();
+        std::fs::File::options().write(true).open(&obj).unwrap().set_modified(old).unwrap();
+        let fresh = deps.join(format!("engine-{A}.engine.1-cgu.0.rcgu.o"));
+        std::fs::write(&fresh, b"w").unwrap();
+
         let (n, bytes) = prune(&[deps.join(format!("engine-{A}"))]);
-        assert_eq!((n, bytes), (1, 3));
+        assert_eq!((n, bytes), (2, 7));
+        assert!(!obj.exists());
+        assert!(fresh.exists(), "a young object stays");
         assert!(deps.join(format!("engine-{A}")).exists());
         assert!(deps.join(format!("libengine-{B}.rlib")).exists());
         assert!(!deps.join(format!("engine-{B}")).exists());
