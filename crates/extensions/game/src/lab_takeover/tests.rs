@@ -58,8 +58,15 @@ fn dialog_content_fits_at_either_focus_and_neutralizes_remote_text() {
             .submit(
                 Request {
                     requester: format!("{}|A\r\n", "W".repeat(60)),
-                    revision: format!("|B{}", "W".repeat(60)),
-                    operation: Operation::Build,
+                    name: format!("|N{}", "W".repeat(60)),
+                    source: Source::Rev {
+                        rev: format!("|B{}", "W".repeat(60)),
+                        commit: "W".repeat(40),
+                    },
+                    level: Some(format!("|L{}", "W".repeat(60))),
+                    own_data: true,
+                    operation: Operation::Sim,
+                    builds_image: true,
                     estimate_seconds,
                     ..sample_request()
                 },
@@ -78,8 +85,9 @@ fn dialog_content_fits_at_either_focus_and_neutralizes_remote_text() {
             let report = layout::check(&v, preview.source(), &Rules::for_spec(&spec));
             assert!(report.issues.is_empty(), "{:?}", report.issues);
             let body = v.widget("body").unwrap().text().unwrap();
-            assert_eq!(body.lines().count(), 3, "{body}");
-            assert!(body.contains("requests a lab build."));
+            assert!(body.lines().count() <= 6, "{body}");
+            assert!(body.contains("asks to build, then sim."));
+            assert!(body.contains("your own data"));
             assert!(!body.contains(['|', '\r']));
         }
     }
@@ -167,4 +175,57 @@ fn agent_takeover_round_trip() {
         call(takeover::STATUS, json!({"id": reply.id + 1}))["error"]["code"],
         code::GONE
     );
+}
+
+#[test]
+fn the_body_names_the_job_its_source_and_what_it_will_do() {
+    let mut request = sample_request();
+    assert_eq!(
+        body(&request),
+        "Lab driver asks to build, then run.\n\"Menu bands check\"\n\
+         lab/menu-bands at cb9b315\nlevel ascension, about 4 min\n\
+         Allow, then quit when ready."
+    );
+    request.builds_image = false;
+    request.level = None;
+    request.own_data = true;
+    request.operation = Operation::Sim;
+    request.source = Source::Rev {
+        rev: "master".into(),
+        commit: "0123456789abcdef".into(),
+    };
+    request.estimate_seconds = 0;
+    assert_eq!(
+        body(&request),
+        "Lab driver asks to run a sim.\n\"Menu bands check\"\n\
+         master at 0123456\nyour own data, duration varies\n\
+         Allow, then quit when ready."
+    );
+    request.source = Source::Current {
+        commit: Some("b8eff97".into()),
+    };
+    assert!(body(&request).contains("\ninstalled image at b8eff97\n"));
+    request.source = Source::Current { commit: None };
+    assert!(body(&request).contains("\ninstalled image\n"));
+}
+
+#[test]
+fn a_request_without_a_name_or_source_is_refused() {
+    let dialog = Dialog::default();
+    for request in [
+        Request {
+            name: " ".into(),
+            ..sample_request()
+        },
+        Request {
+            source: Source::Branch {
+                name: String::new(),
+                commit: "cb9b315".into(),
+            },
+            ..sample_request()
+        },
+    ] {
+        let err = dialog.submit(request, Instant::now()).unwrap_err();
+        assert_eq!(err.code, code::INVALID_PARAMS);
+    }
 }
