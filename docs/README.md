@@ -17,7 +17,7 @@ are under [Reviews](#reviews).
 - [FLOAT.md](lifter/FLOAT.md): what floating point the game uses (measured with `h2 fpstats`) and the correctness-first plan
 - [FLOAT-ABI.md](lifter/FLOAT-ABI.md): the x87 IR ops and `h2x87_v1_*` runtime helpers (`crates/recompiler/x87`), #MF included; read when touching x87 lowering
 - [x87-native.md](lifter/x87-native.md): the guarded native binary64 x87 path, on by default (`H2_X87_NATIVE=0` disables it): range proof, status bits, fallbacks
-- [x87-transcendentals.md](lifter/x87-transcendentals.md): the `fast-trans` 128-bit first pass for FYL2X, F2XM1 and the trig ops, and the table-driven FYL2X and F2XM1: guards and rules
+- [x87-transcendentals.md](lifter/x87-transcendentals.md): the guarded 128-bit first pass for FYL2X, F2XM1 and the trig ops, and the table-driven FYL2X and F2XM1: guards and rules
 - [sse-native.md](lifter/sse-native.md): guarded native SSE arithmetic, on by default (`H2_SSE_NATIVE=0` disables it): eligibility and range proof
 - [simd.md](lifter/simd.md): bit-exact SSE1 reference semantics (`crates/recompiler/simd`), its C twin and how it is tested
 - [oracle.md](lifter/oracle.md): independent x86 instruction oracle on Unicorn (`crates/recompiler/oracle`)
@@ -55,7 +55,7 @@ are under [Reviews](#reviews).
 - [steamos.md](runtime/steamos.md): playing on Linux and on a Steam Machine in Developer Mode through Buck (`//platform/linux:play`, `//platform/steamos:run`), the disc from `.buckconfig.local`
 - [xbox.md](runtime/xbox.md): the UWP app for an Xbox in Dev Mode, packaged, signed and deployed from a Mac (`platform/xbox`, `H2_EMIT_TARGET=windows`)
 - [title-updates.md](runtime/title-updates.md): design for title-update XBEs (1.1 and later): what assumes the 1.0 image, the address-map plan; design only, the one built part is `h2 import-mappack` copying the Map Pack's update aside
-- [second-executor.md](runtime/second-executor.md): a second guest executor, the runtime building block the pipelined-render prototype needs (`impl.render.pipelined_frame=on`)
+- [second-executor.md](runtime/second-executor.md): a second guest executor, the runtime building block the phantoms' action build runs on
 - [ios.md](runtime/ios.md): the iOS app: building, deploying and the touch controls (`platform/ios`, `input::touch`)
 - Notes: [boot-log.md](runtime/notes/boot-log.md) (the boot milestone log), [sim.md](runtime/notes/sim.md) (sim mode's speed-up estimate and per-process memory), [snapshots.md](runtime/notes/snapshots.md) (snapshot quiescence probe runs), [steamos-boot.md](runtime/notes/steamos-boot.md) (the first Steam Machine boot)
 
@@ -85,7 +85,6 @@ are under [Reviews](#reviews).
 - [render-thread.md](graphics/render-thread.md): the render thread (on by default, `H2_RENDER_THREAD=0` turns it off): what the guest can observe
 - [render-loop.md](graphics/render-loop.md): the view and pass loops of the retail renderer read, and the render-state list ported to Rust
 - [occlusion-culling.md](graphics/occlusion-culling.md): how a view's objects are chosen, the per-object skip point, and the game's W-buffer scale
-- [pipelined-render.md](graphics/pipelined-render.md): the render front-end one frame behind the simulation on its own thread: tick ordering, hash parity and snapshot coverage
 - [layer-draw.md](graphics/layer-draw.md): the layer draw and its entry loop, read and ported, with the `render-timing` breakdown
 - [hot-iteration.md](graphics/hot-iteration.md): live tag edits (`edit.*`) and hot WGSL overrides, parameters and toggles for the host renderer (`render.*`), without a rebuild or restart
 - [high-resolution.md](graphics/high-resolution.md): native and fixed output sizes, per-axis raster scaling, and widescreen projection
@@ -297,7 +296,6 @@ Reading and converting Halo 1 data:
 - [modeling.md](editor/modeling.md): mesh kernel and the design for editing geometry, collision, lightmaps and textures
 - [modeling-targets.md](editor/modeling-targets.md): design for the Halo 2 round trip of each modeling target: read path, edit model, write classes, what is recomputed, limits and risks for `sbsp` render geometry and collision, portals, lightmaps, `mode`, `coll` and `phmo`
 - [realtime-edits.md](editor/realtime-edits.md): design for sending geometry, placement add and remove, collision and texture edits to the running game without a reload: the raw overlay, the edit arena, the agent methods and the build slices
-- [polish-plan.md](editor/polish-plan.md): editor layout, scenario tag tree, live editing, tag field names and descriptions, and layers, with designs for volume and collision tools and a native renderer viewport
 - Notes: [tag-field-names.md](editor/notes/tag-field-names.md) (the sources of tag field names, their links and licences)
 
 ## Working on the repository (`dev/`)

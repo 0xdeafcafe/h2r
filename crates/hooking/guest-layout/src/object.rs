@@ -7,7 +7,7 @@
 
 use crate::field::Datum;
 use crate::mem::{Fault, Mem};
-use crate::unit::{Biped, Unit, Weapon};
+use crate::unit::Unit;
 
 crate::layout! {
     /// An object header (`0xc` bytes), the element of the objects datum
@@ -213,14 +213,6 @@ impl Object {
     /// the header's type first.
     pub const fn as_unit(self) -> Unit {
         Unit::at(self.addr)
-    }
-    /// The same body as a biped's. Not checked.
-    pub const fn as_biped(self) -> Biped {
-        Biped::at(self.addr)
-    }
-    /// The same body as a weapon's. Not checked.
-    pub const fn as_weapon(self) -> Weapon {
-        Weapon::at(self.addr)
     }
     /// Whether the body is depleted ([`DEPLETED`]).
     pub fn depleted<M: Mem + ?Sized>(&self, m: &M) -> Result<bool, Fault> {

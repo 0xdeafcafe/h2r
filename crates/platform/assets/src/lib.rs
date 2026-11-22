@@ -3,14 +3,17 @@
 //! Currently covers bitmap (`bitm`) tags: [`bitmap::texture_desc`] maps a
 //! decoded `tags::Image` onto a `gfx::TextureDesc`, [`resource`] fetches the
 //! raw pixel bytes from the map files named by the image's raw pointers, and
-//! [`bitmap::decode_image`] runs the CPU decode to RGBA8. [`png`] writes the
-//! results. No game data is embedded; see the module docs of [`bitmap`] for the
+//! [`bitmap::decode_image`] runs the CPU decode to RGBA8. [`encode`] is its
+//! inverse (pixels back to stored bytes, whole or by tile) and [`write`] plans
+//! what saving an edited image writes to a map. [`png`] writes the results. No game data is embedded; see the module docs of [`bitmap`] for the
 //! mapping rules and their evidence.
 #![forbid(unsafe_code)]
 
 pub mod bitmap;
+pub mod encode;
 pub mod png;
 pub mod resource;
+pub mod write;
 pub mod xpr;
 
 pub use bitmap::{BlockLevels, DecodedImage, Level, d3d_format, decode_image, decode_image_blocks, texture_desc};

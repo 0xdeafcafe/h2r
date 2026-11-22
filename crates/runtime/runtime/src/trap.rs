@@ -1,6 +1,6 @@
 //! Access trap: which guest pages are read and written, and by whom, for
 //! research observers (the `render-census` feature,
-//! docs/graphics/pipelined-render.md). Off unless installed; with no trap
+//! docs/graphics/notes/pipelined-render.md). Off unless installed; with no trap
 //! installed nothing changes on any path.
 //!
 //! Arming a page clears its read and/or write bit in the fast page table

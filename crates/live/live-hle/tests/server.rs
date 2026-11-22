@@ -2219,6 +2219,80 @@ fn sessions_two_guests_publish_find_parse_update_and_delete() {
     );
 }
 
+/// Clanker Doubles through the title's calls (docs/game/bots.md §8.4):
+/// the console hosts a four-seat match session of descriptor 10, which
+/// reads as a 2 v 2 clanker hopper, and the round the full lobby makes
+/// registers on the server for the host and for a party member's console,
+/// so neither console's arbitration status fails the match (result 0x11).
+#[test]
+fn a_clanker_doubles_lobby_registers_its_round_for_each_console_of_the_party() {
+    use live_proto::optimatch::attr as attr_id;
+    const HOPPER: u32 = 10;
+    const ROUND: u32 = DATA + 0x12000;
+
+    let server = Server::new();
+    let host_account = server.account("Host");
+    let guest_account = server.account("Guest");
+    let mut host = World::new(&server.embedded.url, &[&host_account]);
+    host.logon();
+    server.until(|| host.hle.clanker_hoppers().contains(HOPPER));
+
+    attr(&host, MATCH_ATTR, attr_id::HOPPER, u64::from(HOPPER));
+    attr(&host, MATCH_ATTR + 16, attr_id::OPEN, 2);
+    assert_eq!(
+        host.call(
+            "XOnlineMatchSessionCreate",
+            &[2, 2, 0, 0, 2, MATCH_ATTR, 0, OUT]
+        ),
+        OK
+    );
+    let target = host.u32(OUT);
+    assert_eq!(host.wait(target), TASK_SUCCESS);
+    assert_eq!(
+        host.call("XOnlineMatchSessionGetInfo", &[target, MATCH_ID, MATCH_KEY]),
+        OK
+    );
+    let target_id = sign::hex(&host.bytes(MATCH_ID, 8));
+    let (id, mark) = host.hle.clanker_hosted().expect("a clanker hopper hosted");
+    assert_eq!(id, target_id);
+    assert_eq!(
+        (mark.hopper_id, mark.players, mark.teams, mark.bots_for(2)),
+        (HOPPER, 4, 2, 2),
+        "2 v 2: a party of two leaves two seats"
+    );
+
+    // The round the host makes, and each console's registration of it.
+    let session: [u8; 8] = host.bytes(MATCH_ID, 8).try_into().unwrap();
+    host.put(ROUND, &session);
+    assert_eq!(host.call("XOnlineArbitrationCreateRoundID", &[ROUND + 8]), OK);
+    let round: [u8; 16] = host.bytes(ROUND, 16).try_into().unwrap();
+    assert_eq!(
+        host.call("XOnlineArbitrationRegister", &[ROUND, 300, 0xc, 0, OUT]),
+        OK
+    );
+    let task = host.u32(OUT);
+    assert_eq!(host.wait(task), TASK_SUCCESS, "the host's registration");
+
+    let mut guest = World::new(&server.embedded.url, &[&guest_account]);
+    guest.logon();
+    guest.put(ROUND, &round);
+    assert_eq!(
+        guest.call("XOnlineArbitrationRegister", &[ROUND, 300, 0xc, 0, OUT]),
+        OK
+    );
+    let task = guest.u32(OUT);
+    assert_eq!(guest.wait(task), TASK_SUCCESS, "the party member's registration");
+
+    let round_hex = sign::hex(&round[8..]);
+    let stream = live_proto::arbitration::stream(&target_id, &round_hex);
+    let registered = server
+        .events()
+        .into_iter()
+        .filter(|e| e.stream == stream && e.kind == "ArbitrationRegistered")
+        .count();
+    assert_eq!(registered, 2);
+}
+
 #[test]
 fn a_full_clankermatch_target_stays_advertised_until_the_guest_deletes_it() {
     use live_proto::{optimatch::attr as attr_id, session::Session};

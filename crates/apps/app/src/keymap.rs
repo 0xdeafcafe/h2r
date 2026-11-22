@@ -185,8 +185,11 @@ pub enum MenuKey {
 
 /// Backquote opens and closes the menu (it is bound to nothing and not in
 /// docs/input/host-keyboard.md). While open: the arrows move and change,
-/// Enter or Space selects, Escape or Backspace goes back, and every other
-/// key is swallowed.
+/// PageUp/PageDown page, Home/End jump, Enter or Space selects, Escape
+/// goes back (clearing a search first), Backspace erases a search letter
+/// or goes back, `f` stars the selected row, and any other letter, digit
+/// or `/ - . _` types a search over every section. Modifiers and function
+/// keys are not the menu's; the rest are swallowed.
 pub fn menu_key(code: KeyCode, open: bool) -> MenuKey {
     use debug_menu::{Key, Nav};
     if code == KeyCode::Backquote {
@@ -195,14 +198,93 @@ pub fn menu_key(code: KeyCode, open: bool) -> MenuKey {
     if !open {
         return MenuKey::Pass;
     }
-    MenuKey::Take(match code {
-        KeyCode::ArrowUp => Some(Key::Nav(Nav::Up)),
-        KeyCode::ArrowDown => Some(Key::Nav(Nav::Down)),
-        KeyCode::ArrowLeft => Some(Key::Nav(Nav::Left)),
-        KeyCode::ArrowRight => Some(Key::Nav(Nav::Right)),
-        KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => Some(Key::Nav(Nav::Select)),
-        KeyCode::Escape | KeyCode::Backspace => Some(Key::Nav(Nav::Back)),
-        _ => None,
+    if let Some(c) = printable(code) {
+        return MenuKey::Take(Some(Key::Char(c)));
+    }
+    use KeyCode as K;
+    match code {
+        K::ShiftLeft
+        | K::ShiftRight
+        | K::ControlLeft
+        | K::ControlRight
+        | K::AltLeft
+        | K::AltRight
+        | K::SuperLeft
+        | K::SuperRight
+        | K::F1
+        | K::F2
+        | K::F3
+        | K::F4
+        | K::F5
+        | K::F6
+        | K::F7
+        | K::F8
+        | K::F9
+        | K::F10
+        | K::F11
+        | K::F12 => MenuKey::Pass,
+        _ => MenuKey::Take(match code {
+            K::ArrowUp => Some(Key::Nav(Nav::Up)),
+            K::ArrowDown => Some(Key::Nav(Nav::Down)),
+            K::ArrowLeft => Some(Key::Nav(Nav::Left)),
+            K::ArrowRight => Some(Key::Nav(Nav::Right)),
+            K::PageUp => Some(Key::Nav(Nav::PageUp)),
+            K::PageDown => Some(Key::Nav(Nav::PageDown)),
+            K::Home => Some(Key::Nav(Nav::Home)),
+            K::End => Some(Key::Nav(Nav::End)),
+            K::Enter | K::NumpadEnter => Some(Key::Nav(Nav::Select)),
+            K::Space => Some(Key::Space),
+            K::Escape => Some(Key::Nav(Nav::Back)),
+            K::Backspace => Some(Key::Erase),
+            _ => None,
+        }),
+    }
+}
+
+/// The character a key types into the menu's search.
+fn printable(code: KeyCode) -> Option<char> {
+    use KeyCode::*;
+    Some(match code {
+        KeyA => 'a',
+        KeyB => 'b',
+        KeyC => 'c',
+        KeyD => 'd',
+        KeyE => 'e',
+        KeyF => 'f',
+        KeyG => 'g',
+        KeyH => 'h',
+        KeyI => 'i',
+        KeyJ => 'j',
+        KeyK => 'k',
+        KeyL => 'l',
+        KeyM => 'm',
+        KeyN => 'n',
+        KeyO => 'o',
+        KeyP => 'p',
+        KeyQ => 'q',
+        KeyR => 'r',
+        KeyS => 's',
+        KeyT => 't',
+        KeyU => 'u',
+        KeyV => 'v',
+        KeyW => 'w',
+        KeyX => 'x',
+        KeyY => 'y',
+        KeyZ => 'z',
+        Digit0 => '0',
+        Digit1 => '1',
+        Digit2 => '2',
+        Digit3 => '3',
+        Digit4 => '4',
+        Digit5 => '5',
+        Digit6 => '6',
+        Digit7 => '7',
+        Digit8 => '8',
+        Digit9 => '9',
+        Minus => '-',
+        Period => '.',
+        Slash => '/',
+        _ => return None,
     })
 }
 
@@ -255,6 +337,35 @@ mod tests {
     use input::host::HostButton;
 
     #[test]
+    fn an_open_menu_takes_the_keys_it_uses_and_types_the_rest_into_its_search() {
+        use debug_menu::{Key, Nav};
+        assert_eq!(
+            menu_key(KeyCode::PageDown, true),
+            MenuKey::Take(Some(Key::Nav(Nav::PageDown)))
+        );
+        assert_eq!(
+            menu_key(KeyCode::Home, true),
+            MenuKey::Take(Some(Key::Nav(Nav::Home)))
+        );
+        assert_eq!(
+            menu_key(KeyCode::Backspace, true),
+            MenuKey::Take(Some(Key::Erase))
+        );
+        assert_eq!(
+            menu_key(KeyCode::KeyG, true),
+            MenuKey::Take(Some(Key::Char('g')))
+        );
+        assert_eq!(
+            menu_key(KeyCode::Digit4, true),
+            MenuKey::Take(Some(Key::Char('4')))
+        );
+        assert_eq!(menu_key(KeyCode::ShiftLeft, true), MenuKey::Pass);
+        assert_eq!(menu_key(KeyCode::F5, true), MenuKey::Pass);
+        assert_eq!(menu_key(KeyCode::Tab, true), MenuKey::Take(None));
+        assert_eq!(menu_key(KeyCode::KeyG, false), MenuKey::Pass);
+    }
+
+    #[test]
     fn backquote_is_the_menu_and_an_open_menu_takes_every_key() {
         use debug_menu::{Key, Nav};
         assert_eq!(
@@ -276,15 +387,19 @@ mod tests {
             MenuKey::Take(Some(Key::Nav(Nav::Down)))
         );
         assert_eq!(
-            menu_key(KeyCode::Space, true),
+            menu_key(KeyCode::Enter, true),
             MenuKey::Take(Some(Key::Nav(Nav::Select)))
+        );
+        assert_eq!(
+            menu_key(KeyCode::Space, true),
+            MenuKey::Take(Some(Key::Space))
         );
         assert_eq!(
             menu_key(KeyCode::Escape, true),
             MenuKey::Take(Some(Key::Nav(Nav::Back)))
         );
         assert_eq!(
-            menu_key(KeyCode::KeyW, true),
+            menu_key(KeyCode::Tab, true),
             MenuKey::Take(None),
             "swallowed"
         );

@@ -340,7 +340,7 @@ fn render_is_bounded() {
 /// Parses and fully validates every file under `/maps/fonts` on the disc.
 /// Needs the disc: `H2_DISC=... cargo test -p font -- --ignored`.
 #[test]
-#[ignore]
+#[ignore = "needs the disc (H2_DISC)"]
 fn every_disc_font_validates() {
     let path = std::env::var_os("H2_DISC").expect("set H2_DISC to the disc image");
     let mut iso =

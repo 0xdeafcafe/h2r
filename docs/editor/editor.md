@@ -751,7 +751,9 @@ build), and keeps the last four maps' scenes so reopening one is instant.
     carry none: the layer is empty and `nav.pathfinding` gives a note.
   - **Bot nav mesh** draws the bots' own mesh
     ([bots.md](../game/bots.md), §3.2): each polygon as translucent
-    floor, and each link as a line coloured by how it is crossed (walk,
+    floor, blue in the map and a dim grey-blue out of it
+    (`theme::BOT_OUT_OF_MAP`: only a glitch such as a superbounce reaches
+    it, bots.md §3.2, "In the map"), and each link as a line coloured by how it is crossed (walk,
     drop, jump, crouch-jump, teleporter, lift, elevator;
     `theme::bot_link_color`), with an arrowhead on a link no link leads
     back along (drops, mostly). A traversal is drawn from its takeoff to
@@ -779,7 +781,7 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   A click picks a shown spot or bot link first, then the nearer bot
   polygon or pathfinding sector, ahead of collision surfaces. The
   inspector shows a sector's index, flags, hint and its links (with the
-  sector across each), a polygon's links, a link's kind, ends and
+  sector across each), a polygon's links and whether it is in the map, a link's kind, ends and
   whether it is one way, or a spot's kind, source, state, launch, fall,
   learned tries and verified trials, read only.
 - **Glyphs and labels.** Other placements without a model use a diamond

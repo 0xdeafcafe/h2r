@@ -563,3 +563,117 @@ fn fnv1a_is_the_64_bit_variant() {
     assert_eq!(fnv1a(b""), 0xcbf2_9ce4_8422_2325);
     assert_eq!(fnv1a(b"a"), 0xaf63_dc4c_8601_ec8c);
 }
+
+/// The edit arena for the fake game: a window mapped in the fake guest,
+/// and pages that map anything while `free` physical bytes allow.
+const ARENA: u32 = 0x8300_0000;
+
+struct FakePages {
+    free: u64,
+}
+
+impl arena::Pages for FakePages {
+    fn map(&mut self, _: u32, _: u32) -> Result<(), String> {
+        Ok(())
+    }
+    fn unmap(&mut self, _: u32, _: u32) {}
+    fn physical_free(&mut self) -> u64 {
+        self.free
+    }
+}
+
+fn arena_link(scene: &mut Scene, len: u32, free: u64) -> arena::Link {
+    scene.g.map(ARENA, len);
+    arena::Link {
+        arena: Arc::new(Mutex::new(arena::Arena::new(ARENA..ARENA + len))),
+        pages: Arc::new(move |f: &mut dyn FnMut(&mut dyn arena::Pages)| {
+            f(&mut FakePages { free })
+        }),
+    }
+}
+
+#[test]
+fn a_ninth_entry_on_a_block_of_eight_grows_it_into_the_arena() {
+    let recs: Vec<Vec<u8>> = (0..8).map(|i| record(i as f32)).collect();
+    let mut s = Scene::new("scenery", &recs);
+    let spare = s.object(-1);
+    let link = arena_link(&mut s, 0x1_0000, 64 << 20);
+    let q = shared();
+    lock(&q).set_arena(link.clone());
+    let stride = s.stride;
+    let root = ROOT + s.offset;
+
+    let ninth = record(9.0);
+    let add = plan(json!({
+        "block": "scenery", "was_count": 8, "count": 9,
+        "records": [{"index": 8, "bytes": hex(&ninth), "was": hex(&vec![0; stride as usize])}],
+        "create": [8],
+    }));
+    let (out, calls) = go(&mut s, &q, &add, &[spare]);
+    let out = out.unwrap();
+    assert_eq!(out["moved"], json!({"address": ARENA, "capacity": 16}), "{out}");
+    assert_eq!((out["count"].as_u64(), out["capacity"].as_u64()), (Some(9), Some(16)));
+    assert_eq!(targets(&calls), [addr::PLACEMENT_NEW, addr::OBJECT_NEW]);
+    assert_eq!(out["created"][0]["linked"], true, "{out}");
+    // The root names the arena block; the old records were copied, the new
+    // one written after them, the rest of the room zeroed.
+    assert_eq!((s.count(), s.g.u32(root + 4).unwrap()), (9, ARENA));
+    for (i, r) in recs.iter().enumerate() {
+        assert_eq!(&s.g.bytes(ARENA + i as u32 * stride, stride as usize).unwrap(), r, "record {i}");
+    }
+    assert_eq!(s.g.bytes(ARENA + 8 * stride, stride as usize).unwrap(), ninth);
+    assert_eq!(
+        s.g.bytes(ARENA + 9 * stride, 7 * stride as usize).unwrap(),
+        vec![0; 7 * stride as usize]
+    );
+    // The object was made from the entry in its new place.
+    assert_eq!(s.placement_of(spare), 8);
+    let e = *arena::lock(&link.arena).extent(ARENA).unwrap();
+    assert_eq!((e.root, e.stride, e.capacity), (root, stride, 16));
+
+    // A tenth fits the room the move made.
+    let tenth = plan(json!({"block": "scenery", "was_count": 9, "count": 10,
+        "records": [{"index": 9, "bytes": hex(&record(10.0))}]}));
+    let out = go(&mut s, &q, &tenth, &[]).0.unwrap();
+    assert_eq!(out["capacity"], 16);
+    assert!(out.get("moved").is_none(), "{out}");
+    assert_eq!(s.g.bytes(ARENA + 9 * stride, stride as usize).unwrap(), record(10.0));
+
+    // Past sixteen it moves again, and the extent it left is freed.
+    let more = plan(json!({"block": "scenery", "was_count": 10, "count": 17}));
+    let out = go(&mut s, &q, &more, &[]).0.unwrap();
+    let address = out["moved"]["address"].as_u64().unwrap() as u32;
+    assert_ne!(address, ARENA);
+    assert_eq!(out["moved"]["capacity"], 32);
+    assert_eq!(s.g.u32(root + 4).unwrap(), address);
+    assert_eq!(s.g.bytes(address + 8 * stride, stride as usize).unwrap(), ninth);
+    let held = arena::lock(&link.arena);
+    assert!(held.extent(ARENA).is_none());
+    assert_eq!(held.extents().count(), 1);
+}
+
+#[test]
+fn a_full_arena_refuses_the_growth_and_writes_nothing() {
+    let recs: Vec<Vec<u8>> = (0..8).map(|i| record(i as f32)).collect();
+    let mut s = Scene::new("scenery", &recs);
+    let spare = s.object(-1);
+    // Nothing mapped yet and no physical memory past the floor to map.
+    let link = arena_link(&mut s, 0x1_0000, arena::PHYSICAL_FLOOR);
+    let q = shared();
+    lock(&q).set_arena(link.clone());
+    let add = plan(json!({
+        "block": "scenery", "was_count": 8, "count": 9,
+        "records": [{"index": 8, "bytes": hex(&record(9.0))}], "create": [8],
+    }));
+    let (out, calls) = go(&mut s, &q, &add, &[spare]);
+    let e = out.unwrap_err();
+    assert_eq!(e.code, REFUSED);
+    let data = e.data.unwrap();
+    assert_eq!(
+        (&data["need"], &data["capacity"], &data["largest_free"]),
+        (&json!(9), &json!(8), &json!(0))
+    );
+    assert!(calls.is_empty());
+    assert_eq!((s.count(), s.g.u32(ROOT + s.offset + 4).unwrap()), (8, BLOCK));
+    assert!(arena::lock(&link.arena).is_empty());
+}

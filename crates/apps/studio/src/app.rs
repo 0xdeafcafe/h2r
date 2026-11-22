@@ -153,7 +153,7 @@ pub enum Action {
     /// Draw a converted map's Halo 1 source over it.
     SetOverlay(bool),
     SetLayers(Layers),
-    /// The viewport's Lighting mode (docs/editor/polish-plan.md, P14).
+    /// The viewport's Lighting mode (docs/editor/editor.md).
     SetLighting(scenario_edit::native_view::Lighting),
     /// Convert the Halo 1 map on show to Halo 2, in the background.
     ConvertHalo1(ConvertSandbox),
@@ -697,9 +697,10 @@ impl App {
             // The tag editor's edits are the map's: the scenario session
             // saves them and its dirty mark counts them.
             ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => false,
-            // Bitmap edits stay in the editor until the encoder writes
-            // them: the mark is theirs alone.
-            ToolKind::Textures => self.textures.is_edited(),
+            // Bitmap edits reach the map's save when it runs
+            // (`push_bitmap_changes`): unsaved until then, and while the
+            // map holds changes it has not written.
+            ToolKind::Textures => self.textures.is_unsaved(self.session.is_dirty()),
         }
     }
     /// The action waiting on the unsaved-changes prompt, if any.
@@ -868,9 +869,7 @@ impl App {
                 ToolKind::Variants => self.run(Action::SaveVariant),
                 ToolKind::Playlists => self.run(Action::SaveHopper),
                 ToolKind::Hud => self.error("save the HUD edits with Save as..."),
-                ToolKind::Textures => self.error(
-                    "texture edits are not written to the map yet: export a PNG, or discard them",
-                ),
+                ToolKind::Textures => self.run(Action::Save),
                 ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => {}
             },
             Answer::SaveAs(path) => match tool {
@@ -878,9 +877,7 @@ impl App {
                 ToolKind::Playlists => self.run(Action::SaveHopperAs(path)),
                 ToolKind::Variants => self.run(Action::SaveVariant),
                 ToolKind::Hud => self.run(Action::HudSaveAs(path)),
-                ToolKind::Textures => self.error(
-                    "texture edits are not written to the map yet: export a PNG, or discard them",
-                ),
+                ToolKind::Textures => self.run(Action::SaveMapAs(path)),
                 ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => {}
             },
         }
@@ -908,7 +905,11 @@ impl App {
             }
             ToolKind::Playlists => self.hoppers.close(),
             ToolKind::Hud => self.hud = HudTool::default(),
-            ToolKind::Textures => self.textures.discard_edits(),
+            ToolKind::Textures => {
+                self.textures.discard_edits();
+                // The map no longer holds what they would have written.
+                self.push_bitmap_changes();
+            }
             ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => {}
         }
     }
@@ -921,8 +922,12 @@ impl App {
                 if self.loaded.as_deref() == Some(name.as_str())
                     && self.opened_package.is_none() => {}
             Action::SelectMap(name) => self.select_map(&name),
-            Action::Save => self.save_map(),
+            Action::Save => {
+                self.push_bitmap_changes();
+                self.save_map();
+            }
             Action::SaveMapAs(path) => {
+                self.push_bitmap_changes();
                 if let Some(why) = self.save_refusal(&path) {
                     self.error(why);
                     return;
@@ -933,6 +938,7 @@ impl App {
                 }
             }
             Action::SavePackage(form) => {
+                self.push_bitmap_changes();
                 let r = self.session.save_package(&form);
                 if self.session_result(r).is_some() {
                     self.package_saved();

@@ -261,7 +261,7 @@ own scoring from running beside the script's, and `feature` the hooks. It follow
 (`crates/extensions/game/src/firefight/`, [firefight.md](firefight.md#the-host-runtime)).
 Boot registers the `rules` feature (`registration::register_core`), off
 unless `H2_FEATURES` names it, and its hooks are on game-thread points
-only (`render_thread::REFUSED`).
+only.
 
 **At the game's start**, an observer after a successful `GAME_ACTIVATE`
 (`0x18f000`) reads the active record's block (`G+0x13c+0x10c`) and engine

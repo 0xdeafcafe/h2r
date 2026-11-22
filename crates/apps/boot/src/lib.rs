@@ -1077,13 +1077,6 @@ fn run_configured(
         None => registration::AgentSource::None,
     };
     let watch_overrides = agent_glue::socket_from_env().is_some();
-    let pipeline = registration::pipeline_for(
-        d3d_glue::pipeline_render(d3d_calls.as_ref()),
-        lockstep_on,
-        host_light,
-    );
-    #[cfg(feature = "desktop-runtime")]
-    render_probe::set_pipeline(pipeline.clone());
     let coop_probe = coop_probe::parse(|k| std::env::var(k).ok()).map_err(anyhow::Error::msg)?;
     #[cfg(feature = "gpu")]
     let native_sources = k.vfs().map(|vfs| native_map::mount(vfs, map_rebind.clone()));
@@ -1162,7 +1155,6 @@ fn run_configured(
             agent: agent_source,
             allow_bot_add: !host_light || core.bots_on,
             xa: xa.as_ref(),
-            pipeline,
             coop_probe,
             live: _live.clone(),
             settings: host.settings.clone(),
@@ -1226,7 +1218,7 @@ fn run_configured(
                 Some((vfs.map_id(&path)?, vfs.content_base_name(name)?))
             });
         }
-        hot_glue::install(
+        let arena = hot_glue::install(
             &a.agent,
             &loaded.runtime,
             maps(),
@@ -1243,6 +1235,10 @@ fn run_configured(
         // sim.give and sim.spawn find tags as edit.* does (agent_glue.rs).
         if let Some(sim) = &a.sim {
             sim.set_tags(Box::new(hot_glue::map_tags(&loaded.runtime, maps())));
+            // world.placement.edit grows blocks into edit.batch's arena.
+            if let Some(calls) = sim.calls() {
+                agent::sim::calls::lock(&calls).set_arena(arena);
+            }
         }
         // world.* results name their tags the same way.
         a.agent.set_tag_names(Box::new(hot_glue::map_tags(&loaded.runtime, maps())));
@@ -1272,6 +1268,14 @@ fn run_configured(
     // guest calls (game_menu.rs, docs/runtime/agent-api.md).
     if let Some(a) = &agent {
         game::game_menu::install(&a.agent, a.sim.as_ref().and_then(|s| s.calls()));
+        // game.load / game.levels: any disc level queued the same way
+        // (game_load.rs).
+        game::game_load::install(
+            &a.agent,
+            a.sim.as_ref().and_then(|s| s.calls()),
+            &opts.disc,
+            &opts.data_root,
+        );
     }
     // Paired editor presentation and the debug menu's host methods.
     if let Some(a) = &agent {
@@ -1286,7 +1290,11 @@ fn run_configured(
             &a.agent,
             host.settings.clone(),
             host.perf_overlay.clone(),
+            host.cheat_line.clone(),
         );
+        if let Some(code) = &host.game_code {
+            game::game_code::install(&a.agent, Arc::clone(code));
+        }
         if let Some(lights) = &controller_lights {
             lights.install(&a.agent);
         }

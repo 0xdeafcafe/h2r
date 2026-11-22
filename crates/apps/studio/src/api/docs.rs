@@ -370,10 +370,6 @@ pub fn game_type(t: &str) -> Result<GameType, RpcError> {
 /// The Scripts tool writes nothing (docs/editor/rich-editors.md, slice H3).
 const SCRIPTS_READ_ONLY: &str = "the Scripts tool is read only: it saves nothing";
 
-/// Bitmap edits are kept in the editor until the encoder slice writes them.
-const BITMAPS_NOT_WRITTEN: &str =
-    "refused: bitmap edits are not written to the map yet: bitmap.export writes a PNG";
-
 /// Tag edits save and diff with the map: the session writes them.
 fn map_for_tags(t: ToolKind) -> ToolKind {
     match t {
@@ -396,7 +392,9 @@ fn need_open(app: &App, t: ToolKind) -> Result<(), RpcError> {
 fn save(app: &mut App, t: ToolKind) -> Reply {
     need_open(app, t)?;
     match t {
-        ToolKind::Scenario | ToolKind::Tags => {
+        // The bitmaps are the map's: its save encodes the edited images
+        // and writes them with the rest (`App::push_bitmap_changes`).
+        ToolKind::Scenario | ToolKind::Tags | ToolKind::Textures => {
             let target = app.save_target();
             let log = run(app, Action::Save, false)?;
             match target {
@@ -433,7 +431,6 @@ fn save(app: &mut App, t: ToolKind) -> Reply {
             "UI screens have nothing to save: ui.render writes a PNG",
         )),
         ToolKind::Scripts => Err(err(code::REFUSED, SCRIPTS_READ_ONLY)),
-        ToolKind::Textures => Err(err(code::REFUSED, BITMAPS_NOT_WRITTEN)),
         ToolKind::Hud => match app.hud.session.as_ref().and_then(|s| s.saved_path.clone()) {
             Some(path) => save_as(app, t, path),
             None => Err(err(
@@ -448,7 +445,7 @@ fn save_as(app: &mut App, t: ToolKind, path: PathBuf) -> Reply {
     need_open(app, t)?;
     let action = match t {
         ToolKind::Hud => return super::hud::save_as(app, path),
-        ToolKind::Scenario | ToolKind::Tags => {
+        ToolKind::Scenario | ToolKind::Tags | ToolKind::Textures => {
             outside_git(&path)?;
             if let Some(src) = app.session.source()
                 && same_file(&src.path, &path)
@@ -469,7 +466,6 @@ fn save_as(app: &mut App, t: ToolKind, path: PathBuf) -> Reply {
             ));
         }
         ToolKind::Scripts => return Err(err(code::REFUSED, SCRIPTS_READ_ONLY)),
-        ToolKind::Textures => return Err(err(code::REFUSED, BITMAPS_NOT_WRITTEN)),
     };
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir)

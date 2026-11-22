@@ -536,57 +536,165 @@ fn the_training_slot_is_ours_only_when_free() {
     assert!(text(TRAINING_TEXT_ID).is_some());
 }
 
-/// Our point follows the scenario's, the navpoint list gets one slot on
-/// it, and it is skipped when the HUD has no target; a second install
-/// leaves one copy.
+/// The slots the game's navpoint draw draws, and their points.
+type Drawn = Vec<(u32, Option<[f32; 3]>)>;
+
+/// The game's navpoint draw for `user` (E `0x0024da7d`), with its own
+/// constants rather than the kit's: all four slots of `[0x005023f8] +
+/// user * 0x30`; a slot whose `+0` or `+8` is -1, or whose kind is 15,
+/// is marked kind 15 and passed (`0x0024dc3a`); a kind-0 slot reads its
+/// point at `[[0x004e0350] + 0x1e4] + index * 0x38 + 0x24`, with no check
+/// of the index (`0x0024db56`..`0x0024db6b`), plus the slot's height. A
+/// slot of another kind is an object's (`0x000badc0`), not modelled:
+/// `None`. Returns each drawn slot and its point.
+fn game_draws(m: &mut FlatMemory, user: u32) -> Result<Drawn, MemFault> {
+    let list = m.u32(0x0050_23f8)? + user * 0x30;
+    let mut drawn = Vec::new();
+    for i in 0..4 {
+        let slot = list + i * 12;
+        let kind = m.u16(slot + 2)?;
+        if m.u16(slot)? == 0xffff || m.u32(slot + 8)? == u32::MAX || kind & 0xf == 0xf {
+            m.set_u16(slot + 2, kind | 0xf)?;
+            continue;
+        }
+        if kind & 0xf != 0 {
+            drawn.push((i, None));
+            continue;
+        }
+        let block = m.u32(m.u32(0x004e_0350)? + 0x1e4)?;
+        let p = (m.u32(slot + 8)?.wrapping_mul(0x38)).wrapping_add(block).wrapping_add(0x24);
+        let z = m.f32(p + 8)? + m.f32(slot + 4)?;
+        drawn.push((i, Some([m.f32(p)?, m.f32(p + 4)?, z])));
+    }
+    Ok(drawn)
+}
+
+/// Our point follows the scenario's (the tag block at `scnr +0x1e0`, the
+/// block next to it untouched), the game's draw reads it through one
+/// slot of the navpoint list, and the slot is skipped when the HUD has no
+/// target; a second install leaves one copy.
 #[test]
 fn the_navpoint_is_a_scenario_point_of_ours() {
     let mut m = memory();
     let (scenario, block, list) = (0x0055_a000, 0x0055_b000, 0x0055_c000);
     m.set_u32(SCENARIO, scenario).unwrap();
-    m.set_u32(scenario + SCENARIO_POINTS, 2).unwrap();
-    m.set_u32(scenario + SCENARIO_POINTS + 4, block).unwrap();
+    m.set_u32(scenario + 0x1e0, 2).unwrap();
+    m.set_u32(scenario + 0x1e4, block).unwrap();
+    // The next block (scnr +0x1e8, 0x40-byte elements) is not ours.
+    m.set_u32(scenario + 0x1e8, 7).unwrap();
+    m.set_u32(scenario + 0x1ec, 0x0055_d000).unwrap();
     m.fill(block, 2 * POINT_LEN, 0x5c).unwrap();
     let h = install_point(&mut m, POINTS).unwrap().unwrap();
     assert_eq!(h.index, 2);
-    assert_eq!(m.u32(scenario + SCENARIO_POINTS).unwrap(), 3);
-    let copy = m.u32(scenario + SCENARIO_POINTS + 4).unwrap();
+    assert_eq!(m.u32(scenario + 0x1e0).unwrap(), 3);
+    let copy = m.u32(scenario + 0x1e4).unwrap();
     assert_eq!(copy, POINTS.0 + POINT_HEADER_LEN);
     assert_eq!(m.u8(copy + 2 * POINT_LEN - 1).unwrap(), 0x5c);
     assert_eq!(m.u8(copy + 2 * POINT_LEN).unwrap(), 0);
+    assert_eq!(m.u32(scenario + 0x1e8).unwrap(), 7, "the next block's count");
+    assert_eq!(m.u32(scenario + 0x1ec).unwrap(), 0x0055_d000);
     // Again: one copy.
     assert_eq!(install_point(&mut m, POINTS).unwrap().unwrap(), h);
-    assert_eq!(m.u32(scenario + SCENARIO_POINTS).unwrap(), 3);
-    // The game's list: one navpoint of its own, then the end.
+    assert_eq!(m.u32(scenario + 0x1e0).unwrap(), 3);
+    assert_eq!(m.u32(scenario + 0x1e4).unwrap(), copy);
+    // The game's list: an empty slot, then an object navpoint of its own,
+    // then two more empty slots.
     m.set_u32(NAVPOINTS, list).unwrap();
-    m.set_u16(list, 3).unwrap();
-    m.set_u16(list + 2, 1).unwrap();
-    m.set_u16(list + NAV_SLOT_LEN, u16::MAX).unwrap();
+    for i in 0..4 {
+        m.set_u16(list + i * NAV_SLOT_LEN, u16::MAX).unwrap();
+    }
+    let theirs = list + NAV_SLOT_LEN;
+    m.set_u16(theirs, 3).unwrap();
+    m.set_u16(theirs + 2, 1).unwrap();
+    m.set_u32(theirs + 8, 0x1234_0005).unwrap();
     let slot = write_navpoint(&mut m, POINTS, 0, Some([1.0, 2.0, 3.0])).unwrap();
-    assert_eq!(slot, Some(1));
-    let s = list + NAV_SLOT_LEN;
-    assert_eq!(m.u16(s).unwrap(), 0);
-    assert_eq!(m.u16(s + 2).unwrap(), NAV_SCENARIO_POINT);
-    assert_eq!(m.u32(s + 8).unwrap(), 2);
+    assert_eq!(slot, Some(0), "the first slot the draw passes");
     assert_eq!(
-        m.u16(s + NAV_SLOT_LEN).unwrap(),
-        u16::MAX,
-        "the list ends after ours"
+        game_draws(&mut m, 0).unwrap(),
+        vec![(0, Some([1.0, 2.0, 3.0])), (1, None)],
+        "the game draws ours, and its own after it"
     );
-    assert_eq!(m.f32(copy + 2 * POINT_LEN + POINT_AT + 8).unwrap(), 3.0);
-    assert_eq!(m.u16(list + 2).unwrap(), 1, "the game's slot is kept");
+    assert_eq!(m.u16(theirs).unwrap(), 3, "the game's slot is kept");
+    assert_eq!(m.u16(theirs + 2).unwrap(), 1);
     // The same slot again, then skipped.
     assert_eq!(
-        write_navpoint(&mut m, POINTS, 0, Some([0.0; 3])).unwrap(),
-        Some(1)
+        write_navpoint(&mut m, POINTS, 0, Some([4.0, 5.0, 6.0])).unwrap(),
+        Some(0)
     );
+    assert_eq!(game_draws(&mut m, 0).unwrap()[0], (0, Some([4.0, 5.0, 6.0])));
     assert_eq!(write_navpoint(&mut m, POINTS, 0, None).unwrap(), None);
-    assert_eq!(m.u16(s + 2).unwrap() & 0xf, NAV_SKIP);
+    assert_eq!(m.u16(list + 2).unwrap() & 0xf, NAV_SKIP);
+    assert_eq!(game_draws(&mut m, 0).unwrap(), vec![(1, None)]);
     // And taken again from the skipped slot.
     assert_eq!(
         write_navpoint(&mut m, POINTS, 0, Some([0.0; 3])).unwrap(),
-        Some(1)
+        Some(0)
     );
+}
+
+/// On an empty point block (Ascension's) the game's draw still reads our
+/// point, not the block's count as an address (the crash on master
+/// 1afa616: a read of 4 bytes at 0x25, pc `0x0024db6b`).
+#[test]
+fn the_navpoint_on_an_empty_point_block_reads_our_point() {
+    let mut m = memory();
+    let (scenario, list) = (0x0055_a000, 0x0055_c000);
+    m.set_u32(SCENARIO, scenario).unwrap();
+    let h = install_point(&mut m, POINTS).unwrap().unwrap();
+    assert_eq!(h.index, 0);
+    m.set_u32(NAVPOINTS, list).unwrap();
+    for i in 0..4 {
+        m.set_u16(list + i * NAV_SLOT_LEN, u16::MAX).unwrap();
+    }
+    assert_eq!(
+        write_navpoint(&mut m, POINTS, 0, Some([7.0, 8.0, 9.0])).unwrap(),
+        Some(0)
+    );
+    assert_eq!(game_draws(&mut m, 0).unwrap(), vec![(0, Some([7.0, 8.0, 9.0]))]);
+}
+
+/// Once the loaded scenario no longer points at our copy (another map,
+/// or the block put back), our slot is skipped and nothing is written
+/// through the old scenario.
+#[test]
+fn the_navpoint_is_skipped_when_our_point_is_gone() {
+    let mut m = memory();
+    let (scenario, block, list) = (0x0055_a000, 0x0055_b000, 0x0055_c000);
+    m.set_u32(SCENARIO, scenario).unwrap();
+    m.set_u32(scenario + 0x1e0, 1).unwrap();
+    m.set_u32(scenario + 0x1e4, block).unwrap();
+    install_point(&mut m, POINTS).unwrap().unwrap();
+    m.set_u32(NAVPOINTS, list).unwrap();
+    for i in 0..4 {
+        m.set_u16(list + i * NAV_SLOT_LEN, u16::MAX).unwrap();
+    }
+    assert_eq!(write_navpoint(&mut m, POINTS, 0, Some([1.0; 3])).unwrap(), Some(0));
+    // Another map's scenario, its block where the old one was.
+    let other = 0x0055_e000;
+    m.set_u32(SCENARIO, other).unwrap();
+    m.set_u32(other + 0x1e0, 1).unwrap();
+    m.set_u32(other + 0x1e4, block).unwrap();
+    assert_eq!(write_navpoint(&mut m, POINTS, 0, Some([1.0; 3])).unwrap(), None);
+    assert!(game_draws(&mut m, 0).unwrap().is_empty(), "our slot is skipped");
+    // The old scenario's field is left alone at the next install.
+    m.set_u32(scenario + 0x1e0, 0xdead).unwrap();
+    let h = install_point(&mut m, POINTS).unwrap().unwrap();
+    assert_eq!(m.u32(scenario + 0x1e0).unwrap(), 0xdead);
+    assert_eq!((h.scenario, h.index), (other, 1));
+}
+
+/// The training text reaches the game with `\r\n` breaks, as the game's
+/// strings have them: a lone `\n` drew "lip,let go" in the superbounce
+/// tutorial.
+#[test]
+fn the_training_text_breaks_lines_as_the_game_does() {
+    let first = hud_kit_core::huds::superbounce::TUTORIAL_TEXT[0];
+    assert_eq!(
+        game_line_breaks(first),
+        "Crouch, walk in under a lip,\r\nlet go, then walk out."
+    );
+    assert_eq!(game_line_breaks("a\r\nb\nc"), "a\r\nb\r\nc");
+    assert_eq!(game_line_breaks("one line"), "one line");
 }
 
 #[test]

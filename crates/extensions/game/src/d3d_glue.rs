@@ -286,13 +286,11 @@ pub struct PrivateScenes {
 impl PrivateScenes {
     pub fn requested(switches: &hooks::Switches, profile: film::RenderHooks, locked: bool) -> Option<Self> {
         // The original census has to measure all guest-visible readbacks.
-        // A pipelined guest render can finish one frame after its sim-side seal.
         let record = profile == film::RenderHooks::Gpu
             && switches.feature(render_bridge::carried_slots::ID, false)
             && !switches.feature(render_bridge::entry_census::ID, false)
             && hooks::switches::native_render_on(switches)
-            && switches.feature(render_bridge::scene_step::ID, true)
-            && !render_bridge::pipeline_render::PipelineRender::requested(switches);
+            && switches.feature(render_bridge::scene_step::ID, true);
         use frame_scene::mailbox::Mode;
         record.then_some(Self { mode: if locked { Mode::Locked } else { Mode::Paced } })
     }
@@ -872,8 +870,7 @@ pub struct Interpolation {
 /// turn instead (E1, blended one frame behind), and
 /// `impl.render.reproject_ahead` the same with the turn carried on past N;
 /// either, when set, takes the place of the replay.
-/// They need the render thread and are off with `impl.render.pipelined_frame` (the
-/// lockstep harness cannot certify that combination). The rate follows the
+/// They need the render thread. The rate follows the
 /// Frame Rate row (`graphics.fps`, `H2_FPS`, `--fps`): 30 makes nothing.
 pub fn interpolation(
     settings: Option<&std::sync::Arc<settings::Store>>,
@@ -885,8 +882,7 @@ pub fn interpolation(
         switches.feature("impl.render.reproject", false),
         switches.feature("impl.render.reproject_ahead", false),
     )?;
-    let pipeline = render_bridge::pipeline_render::PipelineRender::requested(&switches);
-    if !interpolation_from(true, render_thread, pipeline) {
+    if !interpolation_from(true, render_thread) {
         return None;
     }
     match mode {
@@ -950,21 +946,14 @@ pub fn interp_render_thread(
 }
 
 #[cfg(feature = "gpu")]
-/// [`interpolation`]'s decision: the switch, the render thread, and
-/// `impl.render.pipelined_frame` off.
-pub fn interpolation_from(switch: bool, render_thread: bool, pipelined: bool) -> bool {
+/// [`interpolation`]'s decision: the switch and the render thread.
+pub fn interpolation_from(switch: bool, render_thread: bool) -> bool {
     if !switch {
         return false;
     }
     if !render_thread {
         eprintln!(
             "d3d: in-between frames (impl.render.interpolate, impl.render.reproject) need the render thread (H2_RENDER_THREAD=0 is set): off"
-        );
-        return false;
-    }
-    if pipelined {
-        eprintln!(
-            "d3d: in-between frames (impl.render.interpolate, impl.render.reproject) are off with impl.render.pipelined_frame"
         );
         return false;
     }
@@ -983,22 +972,6 @@ pub fn fps_from(value: Option<&str>) -> u32 {
 }
 
 #[cfg(feature = "gpu")]
-/// `backend` on a render thread, behind the interpolated replay when
-/// `interp` (from [`interpolation`]) is given.
-pub fn install_threaded<B>(
-    rt: &runtime::Runtime,
-    backend: B,
-    extra: Option<ExtraReport>,
-    interp: Option<Interpolation>,
-) -> anyhow::Result<Installed>
-where
-    B: d3d::backend::Backend + Send + 'static,
-    B::Texture: Sync,
-{
-    install_threaded_for_profile(rt, backend, extra, interp, crate::run_plan::compiled_render_hooks())
-}
-
-#[cfg(feature = "gpu")]
 pub fn install_threaded_for_profile<B>(
     rt: &runtime::Runtime,
     backend: B,
@@ -1011,23 +984,6 @@ where
     B::Texture: Sync,
 {
     install_gpu_for_profile(rt, backend, extra, interp, Some(RenderThread::default()), profile, None)
-}
-
-/// A film export presents each guest frame before the next one is encoded.
-#[cfg(feature = "gpu")]
-pub fn install_export_threaded<B>(
-    rt: &runtime::Runtime,
-    backend: B,
-    extra: Option<ExtraReport>,
-    interp: Option<Interpolation>,
-    profile: film::RenderHooks,
-) -> anyhow::Result<Installed>
-where
-    B: d3d::backend::Backend + Send + 'static,
-    B::Texture: Sync,
-{
-    let thread = RenderThread { clip_capture: false, synchronous_presents: true };
-    install_gpu_for_profile(rt, backend, extra, interp, Some(thread), profile, None)
 }
 
 /// How a game view's backend runs on its render thread.
@@ -2137,25 +2093,6 @@ pub fn map_reserved_write_combined(rt: &runtime::Runtime) -> anyhow::Result<()> 
     Ok(())
 }
 
-pub fn map_write_combined(mem: &mut runtime::Guest, va: u32, len: u32) -> anyhow::Result<()> {
-    let m = mem
-        .mappings()
-        .iter()
-        .find(|m| {
-            m.virtual_start <= va && va as u64 + len as u64 <= m.virtual_start as u64 + m.len as u64
-        })
-        .map(|m| m.physical_start + (va - m.virtual_start))
-        .ok_or_else(|| anyhow::anyhow!("{va:#x}: not one mapping"))?;
-    let phys = m;
-    mem.map(
-        0xf000_0000 | (va & 0x0fff_ffff),
-        len,
-        phys,
-        runtime::guest::Permissions::RW,
-    )?;
-    Ok(())
-}
-
 /// crates/platform/d3d's CreateDevice writes the back-buffer and depth surface
 /// headers with `Data = 0` (no guest backing; the host surface is the real
 /// one), so Halo's CPU writes into the back buffer (0x13d80, a full-screen
@@ -2211,40 +2148,8 @@ pub fn back_surfaces(mem: &mut runtime::Guest, device: u32) {
 }
 
 /// The write barrier's write-watch owner: it drains its subscription by id
-/// through whichever Guest the entry runs against, so a pipelined render
-/// thread takes it over at each snapshot (`pipeline-render`).
+/// through the Guest the entry runs against.
 pub const WATCH_OWNER: &str = "boot:d3d";
-
-/// `pipeline-render` (docs/graphics/notes/pipelined-render.md, "The prototype")
-/// with this D3D layer: the game's D3D entries (the sim's calls there join
-/// the render first), and every D3D override the render thread may run
-/// (the entries with their write barrier, CreateDevice's shadow, the port
-/// I/O stubs). Enabled by `impl.render.pipelined_frame`.
-pub fn pipeline_render(i: Option<&Installed>) -> render_bridge::pipeline_render::PipelineRender {
-    let entries: Vec<u32> = match i {
-        Some(i) => i.barrier.clone(),
-        None => Vec::new(),
-    };
-    let allow = pipeline_allow(&entries);
-    // The push buffer and the device's surface scratch: the render's
-    // between its launch and its join, as the device is.
-    render_bridge::pipeline_render::PipelineRender::new()
-        .with_d3d(entries, allow, &[WATCH_OWNER])
-        .render_owned(&[(PUSH_BASE, SCRATCH_BASE + 0x1000)])
-}
-
-/// The overrides the pipelined render thread may run besides those marked
-/// context-only (`Dispatch::mark_context_only`; other features' render-safe
-/// hooks, docs/graphics/pipelined-render.md): the D3D entries,
-/// CreateDevice's shadow, and the port I/O stubs.
-pub fn pipeline_allow(entries: &[u32]) -> impl Fn(u32, &str) -> bool + Send + Sync + 'static {
-    let allowed: std::collections::BTreeSet<u32> = entries
-        .iter()
-        .copied()
-        .chain(d3d::abi::PORT_IO.iter().map(|p| p.0))
-        .collect();
-    move |addr, _| allowed.contains(&addr) || (D3D_SHADOW..D3D_SHADOW + 0x1000).contains(&addr)
-}
 
 /// The D3D write barrier (docs/graphics/d3d.md "Integration", step 3) on the
 /// runtime's write watch: one subscriber watches all of RAM in the folded
@@ -2365,7 +2270,7 @@ mod tests {
         assert_eq!(policy("frame-scene.sink", gpu, false), Some(Mode::Paced));
         for spec in [
             "", "frame-scene.sink,frame-scene.census", "frame-scene.sink,impl.render.native=off",
-            "frame-scene.sink,frame-scene=off", "frame-scene.sink,impl.render.pipelined_frame=on",
+            "frame-scene.sink,frame-scene=off",
         ] {
             assert_eq!(policy(spec, gpu, true), None, "{spec}");
         }
@@ -2515,10 +2420,9 @@ mod tests {
     #[cfg(feature = "gpu")]
     #[test]
     fn interpolation_needs_its_switch_and_the_render_thread() {
-        assert!(!interpolation_from(false, true, false), "switched off");
-        assert!(interpolation_from(true, true, false));
-        assert!(!interpolation_from(true, false, false), "no render thread");
-        assert!(!interpolation_from(true, true, true), "pipelined render");
+        assert!(!interpolation_from(false, true), "switched off");
+        assert!(interpolation_from(true, true));
+        assert!(!interpolation_from(true, false), "no render thread");
     }
 
     #[cfg(feature = "gpu")]

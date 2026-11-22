@@ -947,6 +947,157 @@ fn a_clankermatch_of_two_v_two_is_three_phantoms() {
     );
 }
 
+/// Clanker Doubles for a party of two: the bots fill the two seats the
+/// party leaves, both on the other team. One bot per human less would
+/// leave the playlist short; one more would take the seat of the party's
+/// second console (its join refused, the match failed) or stand a third
+/// player on a team of two.
+#[test]
+fn a_clankermatch_of_two_v_two_for_a_party_of_two_is_two_phantoms() {
+    use std::time::{Duration, Instant};
+    const SESSION: &str = "00000000000000c6";
+    let (live, ph, d) = clankermatch(SESSION, hopper(10, 4, 2));
+    d.set_party(Some(2));
+    d.set_host_team(Some(0));
+    let t0 = Instant::now();
+    let log = d.tick_match(t0);
+    assert!(log.iter().any(|l| l.contains("2 bots join")), "{log:?}");
+    assert!(
+        log.iter()
+            .any(|l| l == "clankermatch: 4 seats, the party of 2 people, 2 bots"),
+        "{log:?}"
+    );
+    let asked = live.requests();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].count, 2, "the seats the party leaves");
+    assert_eq!(asked[0].playlist.as_deref(), Some("10"));
+    live.answer(0, Ok(roster(SESSION, 2, 0.5)));
+    d.tick_match(t0 + Duration::from_secs(60));
+    assert_eq!(ph.list().len(), 2);
+    // The party on red keeps together: both bots on blue, 2 v 2.
+    let teams: Vec<Option<u8>> = ph.list().iter().map(|p| p.team).collect();
+    assert_eq!(teams, vec![Some(1), Some(1)], "{teams:?}");
+}
+
+/// The party read after the fill began (or changed before any bot sat)
+/// plans the fill again, and a new roster is asked for the new count.
+#[test]
+fn a_clankermatch_follows_the_party_until_the_first_bot_sits() {
+    use std::time::Instant;
+    const SESSION: &str = "00000000000000c7";
+    let (live, ph, d) = clankermatch(SESSION, hopper(10, 4, 2));
+    let t0 = Instant::now();
+    let log = d.tick_match(t0);
+    assert!(log.iter().any(|l| l.contains("3 bots join")), "one human: {log:?}");
+    assert_eq!(live.requests()[0].count, 3);
+    d.set_party(Some(2));
+    let log = d.tick_match(t0);
+    assert!(
+        log.iter()
+            .any(|l| l == "clankermatch: 4 seats, the party of 2 people, 2 bots"),
+        "{log:?}"
+    );
+    let asked = live.requests();
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert_eq!(asked[1].count, 2);
+    // The first roster's late answer is dropped; the second seats two.
+    live.answer(0, Ok(roster(SESSION, 3, 0.5)));
+    live.answer(1, Ok(roster(SESSION, 2, 0.5)));
+    let schedule =
+        crate::clankermatch::schedule(2, u64::from_str_radix(SESSION, 16).unwrap() ^ 0xc1a4);
+    d.tick_match(t0 + *schedule.last().unwrap());
+    assert_eq!(ph.list().len(), 2);
+    // Once a bot sits, the plan is kept.
+    d.set_party(Some(1));
+    d.tick_match(t0 + *schedule.last().unwrap());
+    assert_eq!(ph.list().len(), 2);
+    assert_eq!(live.requests().len(), 2);
+}
+
+/// A Clankermatch lobby that sits with every bot due says why, once per
+/// reason (and again while it holds), and nothing once the game runs.
+#[test]
+fn a_clankermatch_that_does_not_start_says_why() {
+    use std::time::{Duration, Instant};
+    const SESSION: &str = "00000000000000c9";
+    let (live, _ph, d) = clankermatch(SESSION, hopper(10, 4, 2));
+    let t0 = Instant::now();
+    let never = || -> Option<(String, String)> { panic!("read before the wait is long") };
+    assert_eq!(d.stalled(t0, never), None, "no fill yet");
+    d.tick_match(t0);
+    live.answer(0, Ok(roster(SESSION, 3, 0.5)));
+    let schedule =
+        crate::clankermatch::schedule(3, u64::from_str_radix(SESSION, 16).unwrap() ^ 0xc1a4);
+    let due = t0 + *schedule.last().unwrap();
+    d.tick_match(due);
+    assert_eq!(d.stalled(due + Duration::from_secs(5), never), None);
+    fn held(r: &'static str) -> impl FnOnce() -> Option<(String, String)> {
+        move || Some((r.to_owned(), format!("{r} [facts]")))
+    }
+    let at = due + STALL_AFTER + Duration::from_secs(1);
+    let line = d.stalled(at, held("arbitration: still registering")).expect("a line");
+    assert_eq!(
+        line,
+        "clankermatch: clanker playlist 10's match has not started 21 s after its last bot was due: \
+         arbitration: still registering [facts]"
+    );
+    // The same reason: not again at once, again after the repeat.
+    assert_eq!(d.stalled(at + Duration::from_secs(1), held("arbitration: still registering")), None);
+    assert!(
+        d.stalled(at + STALL_REPEAT, held("arbitration: still registering"))
+            .is_some()
+    );
+    // Another reason: at once.
+    assert!(d.stalled(at + STALL_REPEAT + Duration::from_secs(1), held("peer 1 has not loaded")).is_some());
+    // The countdown or the game: nothing.
+    assert_eq!(d.stalled(at + STALL_REPEAT * 3, || None), None);
+}
+
+/// A fill still waiting for its roster says so before the lobby's reason.
+#[test]
+fn a_clankermatch_waiting_for_its_roster_says_so_when_it_stalls() {
+    use std::time::{Duration, Instant};
+    const SESSION: &str = "00000000000000ca";
+    let (_live, _ph, d) = clankermatch(SESSION, hopper(10, 4, 2));
+    let t0 = Instant::now();
+    d.tick_match(t0);
+    d.tick_match(t0 + Duration::from_secs(60));
+    let line = d
+        .stalled(t0 + Duration::from_secs(90), || {
+            Some(("1 of 4".into(), "the match session has 1 of 4 players".into()))
+        })
+        .expect("a line");
+    assert!(
+        line.contains("Live has not answered the bots' roster")
+            && line.ends_with("the match session has 1 of 4 players"),
+        "{line}"
+    );
+}
+
+/// A party as big as the playlist needs no bots, and says so.
+#[test]
+fn a_full_party_plays_a_clankermatch_without_bots() {
+    use std::time::{Duration, Instant};
+    const SESSION: &str = "00000000000000c8";
+    let (live, ph, d) = clankermatch(SESSION, hopper(10, 4, 2));
+    d.set_party(Some(4));
+    let t0 = Instant::now();
+    let log = d.tick_match(t0);
+    assert!(
+        log.iter().any(|l| l
+            == "clankermatch: the party of 4 people fills clanker playlist 10's 4 seats: no bots"),
+        "{log:?}"
+    );
+    d.tick_match(t0 + Duration::from_secs(60));
+    assert!(live.requests().is_empty());
+    assert!(ph.list().is_empty());
+    // In the game the party reads as none: no bots come then either.
+    d.set_party(None);
+    d.tick_match(t0 + Duration::from_secs(90));
+    assert!(live.requests().is_empty());
+    assert!(ph.list().is_empty());
+}
+
 #[test]
 fn a_clankermatch_refused_a_roster_seats_host_made_bots() {
     use std::time::{Duration, Instant};

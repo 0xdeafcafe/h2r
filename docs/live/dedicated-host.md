@@ -1,6 +1,6 @@
 # Running Halo 2 as a dedicated host
 
-**Partially feasible.** A Mac can run the native title without a window. The question is whether Halo 2 will keep that machine in charge when every player is remote. Its simulation chooses the host by machine identity, but its normal lobby starts through a local player. The dedicated-host spike provides `h2 serve --system-link` for the first real client join. The join and zero-local-player lifecycle still need a game run.
+**Partially feasible.** Zero-local-player matches run on Cloudflare hosts: an all-phantom sim lease boots from the private bundle, plays to `match_over` and reports ([measurements](notes/host-halving.md)). A remote human joining a dedicated host still needs a game run, on a Mac with `h2 lab run --dedicated` and on a Cloudflare host through the tunnel. Halo 2's simulation chooses the host by machine identity, but its normal lobby starts through a local player; the host lobby below supplies that start without one.
 
 Live would choose and reserve the machine. The native game would run the match. With that arrangement every player has a network path to the authority, including the player who used to host. Fairness improves by removing that player's zero-network-delay advantage. Latency improves for a given player only if the new route and server perform better.
 
@@ -376,14 +376,17 @@ key in `--data` (the operator, the default) or an admin account's key with
 
 ```sh
 h2 live hosts start --map lockout --variant 'Slayer' --max-players 8 \
-  [--class small|large] [--region lhr] [--transport udp|tunnel] [--no-launch] \
+  [--bots N] [--class small|large] [--region lhr] [--transport udp|tunnel] [--no-launch] \
   [--live URL] [--data DIR | --as GAMERTAG]
 ```
 
 Without `--no-launch` the server reserves the lease (budget,
 `LIVE_MAX_HOSTS` and cost rows all apply, exactly as for a match) and its
 configured provider starts the container; the command prints the lease
-JSON. With `--no-launch` no provider is started: the server records the
+JSON. `--bots N` (default 0, at most `--max-players` minus one, so one
+seat stays for a person) puts N Clanker names in the lease's `bots`; the
+host adds them to its lobby as phantoms ([`h2 host run`](#h2-host-run)).
+With `--no-launch` no provider is started: the server records the
 lease as `requested` and answers its host token, and the command prints
 shell lines a manual container run can `eval` — the only place the token
 is ever shown:
@@ -465,6 +468,17 @@ and `live: true`. Open returns the session ID acknowledged by Live. The
 supervisor registers that ID and the endpoint once `host.lobby.state` shows a lobby. It requests
 start when the lobby is ready and has at least the reserved player count,
 or one player for an open lobby. Lease roster authorization belongs to Live.
+
+A non-sim lease with `bots` starts the child with `--host-bots`. Once the
+host is registered, the supervisor adds each leased bot through the
+child's `sim.player.add` as a brain-driven phantom named as the lease
+names it, with the host-made xuid `live_proto::bots::local_xuid(n)` for
+seat n from 1. A refused add is a named error in the host log; the other
+bots and the lobby carry on. Phantoms are not players to the supervisor:
+it counts only lobby players whose name lacks the bot mark (U+2699), so
+phantoms alone never start a match, keep a lobby from going idle, or
+appear in the reported player counts.
+[`add_phantoms`](../../crates/apps/cli/src/host_cmd/supervisor.rs)
 
 When the supervisor receives a TCP `H2_AGENT` address, the child also
 binds that address to the same agent. Both listeners share the same

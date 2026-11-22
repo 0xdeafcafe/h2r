@@ -43,7 +43,7 @@ use crate::native_fog_glue::{device_fog_words, fog_of};
 use crate::native_world_glue::{ReadMemory, Ready, State, current_ready, palettes_hold};
 
 // The load moved to native-render, so the editor loads the same layers
-// (docs/editor/polish-plan.md, P15).
+// (docs/editor/editor.md).
 pub use native_render::layers_load::{LayerData, LayersView, load, upload_layers};
 // The plan's view of the load's shaders and the refusal names, shared with
 // the editor's game-free plan.

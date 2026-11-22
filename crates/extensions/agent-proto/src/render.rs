@@ -307,9 +307,6 @@ pub struct RenderStats {
     /// `d3d::interp::InterpStats`, every field, including the hold reasons
     /// (`unsure_*`, `mismatch_*`, `dropped`).
     pub interp: Value,
-    /// The pipelined render (`impl.render.pipelined_frame`): frame counts,
-    /// serial and fallback reasons, joins, snapshot coverage and times in ms.
-    pub pipeline: Value,
     /// The frame-stats window's per-frame means of the render counters.
     pub counters: Value,
 }

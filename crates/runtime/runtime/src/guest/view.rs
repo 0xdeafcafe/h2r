@@ -221,7 +221,7 @@ impl Guest {
     /// every byte of a listed line where `view` differs from `base` takes
     /// `view`'s value, unless this Guest changed the same aligned word
     /// since `base` too: that word keeps this Guest's value, whole (a
-    /// conflict). A pipelined render's view runs before the game thread's
+    /// conflict). A view runs before the game thread's
     /// tick in serial order, so where both wrote, the tick's write is the
     /// later one, and a word is never left part one side's and part the
     /// other's. Every other byte keeps this Guest's. Pages are

@@ -401,10 +401,10 @@ through the common adapter.
 
 ## Not verified
 
-- Seams: the drawn world is welded (`crates/tools/viewer/src/bin/bsp_cracks.rs`
-  checks shared edges), so no load-time T-junction repair is needed. Shared
+- Seams: the drawn world is welded (a removed tool, `bsp_cracks`, checked
+  shared edges), so no load-time T-junction repair is needed. Shared
   edges must also match bit for bit on instanced geometry and the campaign
-  BSPs, which `bsp_cracks` has not been run over
+  BSPs, which it was not run over
   ([high-resolution.md](high-resolution.md), "Subpixel snapping and cracks").
 - What reads the stencil marks of modes 1 and 2.
 - Reprojected frames: a replayed frame must redraw the native pass with its

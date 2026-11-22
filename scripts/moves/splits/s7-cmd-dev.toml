@@ -1,5 +1,0 @@
-from = "cli"
-to = "cmd-dev"
-direction = "down"
-description = "h2 lab, play --follow and the web build"
-modules = ["follow", "lab", "web_build"]

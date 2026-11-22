@@ -20,6 +20,21 @@
 //! links by the standing room beside the lip; a recess wholly under one
 //! takes none.
 //!
+//! A link is never made through a wall standing on the polygon side it
+//! crosses (`crossing_clear`): a body-height ray across the side's middle
+//! must be clear, as a vertical ray in the wall's own plane does not see
+//! it.
+//!
+//! Each polygon is **in the map** or **out of the map**
+//! ([`NavMesh::mark_out_of_map`]): in when the scenario's player starts
+//! (or a weapon pad) reach it over the mesh's own links, which are the
+//! walks, drops, jumps and scenario rides a player takes without a glitch.
+//! The rest (the terrain past a map's boundary walls and cliffs, reached
+//! only by a superbounce) is kept, flagged: a search that starts in the
+//! map never enters or ends there ([`NavMesh::in_map`]), and goal picking
+//! leaves it out, but a bot already out there (launched by a bounce) plans
+//! back in over it, and a bounce route walks it from its landing.
+//!
 //! [`NavMesh::path`] is A\* over the polygons, then a funnel pass over the
 //! portals, giving waypoints. A portal's end at a wall corner (a vertex on
 //! the mesh's boundary) is pulled in by [`CLEARANCE`], so paths turn a
@@ -147,6 +162,32 @@ pub(crate) fn standing_clear(walls: &Walls, floor: V3) -> bool {
         add(floor, [0.0, 0.0, 0.025]),
         add(floor, [0.0, 0.0, STANDING]),
     )
+}
+
+/// The heights over the floor a crossing is probed at (world units).
+const CROSSING_HEIGHTS: [f32; 2] = [0.25, 0.5];
+/// How far to each side of the polygon side the crossing probe reaches.
+const CROSSING_REACH: f32 = 0.15;
+
+/// Whether a body walks across the polygon side `a`-`b` at its middle: no
+/// wall stands on it. Rays across the side at [`CROSSING_HEIGHTS`] over
+/// the higher floor `z`, [`CROSSING_REACH`] to each side. A wall planted
+/// on the side (an invisible boundary wall over continuous terrain, a
+/// building's face at a floor's edge) lies in the plane a vertical
+/// [`standing_clear`] ray runs along, so only a ray across it sees it.
+pub(crate) fn crossing_clear(walls: &Walls, a: V3, b: V3, z: f32) -> bool {
+    let along = sub(b, a);
+    let across = [along[1], -along[0], 0.0];
+    let l = len(across);
+    if l < 1e-6 {
+        return true;
+    }
+    let off = scale(across, CROSSING_REACH / l);
+    let m = mid(a, b);
+    CROSSING_HEIGHTS.iter().all(|&h| {
+        let c = [m[0], m[1], z + h];
+        walls.clear(sub(c, off), add(c, off))
+    })
 }
 
 /// Whether a standing body fits anywhere on `poly`: at its centre, or at
@@ -421,6 +462,12 @@ pub struct NavMesh {
     /// [`CLEARANCE`].
     corners: FxHashSet<Key>,
     shortcuts: bool,
+    /// Per polygon, whether it is out of the map ([`NavMesh::mark_out_of_map`]);
+    /// empty when nothing is (no classification, or no seed on this mesh).
+    out_of_map: Vec<bool>,
+    /// The in-map polygons, in order, when `out_of_map` is set
+    /// (goal picking samples from it, [`NavMesh::nth_in_map`]).
+    in_map_list: Vec<u32>,
 }
 
 fn cell(v: f32) -> i32 {
@@ -678,6 +725,91 @@ impl NavMesh {
             .or_else(|| self.nearest(p, SNAP, SNAP_UP, SNAP_DOWN).map(|(i, _)| i))
     }
 
+    /// Whether polygon `i` is in the map: reached from the player starts
+    /// without a glitch ([`NavMesh::mark_out_of_map`]). Every polygon is
+    /// until a classification marks some out.
+    pub fn in_map(&self, i: u32) -> bool {
+        !self.out_of_map.get(i as usize).copied().unwrap_or(false)
+    }
+
+    /// How many polygons are out of the map.
+    pub fn out_of_map_count(&self) -> usize {
+        self.out_of_map.iter().filter(|&&o| o).count()
+    }
+
+    /// How many polygons are in the map.
+    pub fn in_map_count(&self) -> usize {
+        self.polys.len() - self.out_of_map_count()
+    }
+
+    /// The `k`-th in-map polygon (`k` taken modulo [`Self::in_map_count`]),
+    /// for picking a goal that is in the map. With nothing out of the map
+    /// this is polygon `k % polys.len()`. `None` on an empty mesh.
+    pub fn nth_in_map(&self, k: usize) -> Option<u32> {
+        if self.out_of_map.is_empty() {
+            let n = self.polys.len();
+            return (n > 0).then(|| (k % n) as u32);
+        }
+        let n = self.in_map_list.len();
+        (n > 0).then(|| self.in_map_list[k % n])
+    }
+
+    /// Mark the polygons out of the map: every polygon the `seeds` (the
+    /// scenario's player starts and weapon pads) do not reach over the
+    /// mesh's links. Those links are what a player crosses without a
+    /// glitch: walks, steps, drops, jumps, crouch jumps and the scenario's
+    /// teleporters, lifts and elevators (add them first). A superbounce is
+    /// never a link, so a floor only a bounce reaches (the terrain past a
+    /// map's boundary walls) is out. Reachability is directed: a pit one
+    /// drops into and cannot leave is in; the plateau one drops off back
+    /// into the map is out.
+    ///
+    /// A seed is on the polygon under it, or the nearest within 0.8 (as
+    /// the places' starts snap). With no seed on this mesh (a structure
+    /// BSP no start is in) nothing is marked. Returns how many are out.
+    pub fn mark_out_of_map(&mut self, seeds: &[V3]) -> usize {
+        let n = self.polys.len();
+        let mut reached = vec![false; n];
+        let mut stack: Vec<u32> = seeds
+            .iter()
+            .filter_map(|&p| {
+                self.locate(p, 1.0)
+                    .or_else(|| self.nearest(p, 0.8, 0.5, 2.0).map(|(i, _)| i))
+            })
+            .collect();
+        if stack.is_empty() {
+            self.set_out_of_map(Vec::new());
+            return 0;
+        }
+        for &s in &stack {
+            reached[s as usize] = true;
+        }
+        while let Some(i) = stack.pop() {
+            for &ei in self.out.get(i as usize).into_iter().flatten() {
+                let to = self.edges[ei as usize].to;
+                if !reached[to as usize] {
+                    reached[to as usize] = true;
+                    stack.push(to);
+                }
+            }
+        }
+        self.set_out_of_map(reached.into_iter().map(|r| !r).collect());
+        self.out_of_map_count()
+    }
+
+    /// Set the out-of-map flags (one per polygon, or empty for none).
+    pub(crate) fn set_out_of_map(&mut self, flags: Vec<bool>) {
+        if !flags.iter().any(|&o| o) {
+            self.out_of_map = Vec::new();
+            self.in_map_list = Vec::new();
+            return;
+        }
+        self.in_map_list = (0..flags.len() as u32)
+            .filter(|&i| !flags[i as usize])
+            .collect();
+        self.out_of_map = flags;
+    }
+
     /// The walkable polygons from `pathfind`'s data (one per walkable
     /// collision surface), with walk links where two share an edge, and
     /// the step, drop and jump links of `b`.
@@ -738,6 +870,7 @@ impl NavMesh {
                         if standing[usize::from(l)]
                             && standing[usize::from(r)]
                             && standing_clear(walls, mid(a, end))
+                            && crossing_clear(walls, a, end, a[2].max(end[2]))
                         {
                             for (from, to) in [(l, r), (r, l)] {
                                 shared.push(Edge {
@@ -805,13 +938,19 @@ impl NavMesh {
             if reach == b.probe && dz.abs() <= b.step {
                 // At a step seam the higher tread is part of the floor.
                 let seam = [m[0], m[1], m[2].max(z)];
-                if standing_clear(walls, seam) && standing_clear(walls, landing) {
+                if standing_clear(walls, seam)
+                    && standing_clear(walls, landing)
+                    && crossing_clear(walls, a, e, seam[2])
+                {
                     return Some(edge(to, Kind::Walk));
                 }
                 continue;
             }
             if reach == b.probe && dz < -b.step && -dz <= b.max_drop {
-                if standing_clear(walls, m) && standing_clear(walls, landing) {
+                if standing_clear(walls, m)
+                    && standing_clear(walls, landing)
+                    && crossing_clear(walls, a, e, m[2])
+                {
                     return Some(edge(to, Kind::Drop));
                 }
                 continue;
@@ -1359,11 +1498,15 @@ impl Follower {
 
 /// The cache file's first bytes and version.
 pub const MAGIC: &[u8; 4] = b"H2NV";
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
+
+/// A polygon's flag byte in the file: out of the map.
+const FLAG_OUT_OF_MAP: u8 = 1;
 
 impl NavMesh {
-    /// Our format: magic, version, then the polygons (vertex count and
-    /// vertices) and the edges, all little-endian.
+    /// Our format: magic, version, then the polygons (vertex count, the
+    /// vertices and a flag byte, bit 0 out of the map) and the edges, all
+    /// little-endian.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut o = Vec::new();
         o.extend_from_slice(MAGIC);
@@ -1371,9 +1514,10 @@ impl NavMesh {
         o.extend_from_slice(&(self.polys.len() as u32).to_le_bytes());
         let v3 =
             |o: &mut Vec<u8>, v: V3| v.iter().for_each(|f| o.extend_from_slice(&f.to_le_bytes()));
-        for p in &self.polys {
+        for (i, p) in self.polys.iter().enumerate() {
             o.extend_from_slice(&(p.verts.len() as u32).to_le_bytes());
             p.verts.iter().for_each(|v| v3(&mut o, *v));
+            o.push(if self.in_map(i as u32) { 0 } else { FLAG_OUT_OF_MAP });
         }
         o.extend_from_slice(&(self.edges.len() as u32).to_le_bytes());
         for e in &self.edges {
@@ -1393,6 +1537,7 @@ impl NavMesh {
         }
         let n = r.u32()? as usize;
         let mut polys = Vec::with_capacity(n.min(1 << 20));
+        let mut out_of_map = Vec::with_capacity(n.min(1 << 20));
         for _ in 0..n {
             let k = r.u32()? as usize;
             let mut verts = Vec::with_capacity(k.min(1 << 10));
@@ -1403,6 +1548,11 @@ impl NavMesh {
                 return None;
             }
             polys.push(Poly::new(verts));
+            let flags = r.take(1)?[0];
+            if flags & !FLAG_OUT_OF_MAP != 0 {
+                return None;
+            }
+            out_of_map.push(flags & FLAG_OUT_OF_MAP != 0);
         }
         let m = r.u32()? as usize;
         let mut edges = Vec::with_capacity(m.min(1 << 20));
@@ -1430,7 +1580,11 @@ impl NavMesh {
                 kind,
             });
         }
-        (r.at == b.len()).then(|| NavMesh::new(polys, edges))
+        (r.at == b.len()).then(|| {
+            let mut mesh = NavMesh::new(polys, edges);
+            mesh.set_out_of_map(out_of_map);
+            mesh
+        })
     }
 }
 

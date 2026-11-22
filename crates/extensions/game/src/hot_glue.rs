@@ -12,6 +12,12 @@
 //! aliases each cache slot file the guest reads raw data from to the map
 //! it holds, and every applied raw act queues its native refresh on
 //! `render_bridge::native_edits`.
+//!
+//! Grown tag blocks go to the edit arena (`hot_tags::arena`, in the HLE
+//! reservation, pages mapped through the runtime's memory as it grows).
+//! [`install`] hands back its [`hot_tags::arena::Link`] so the boot can
+//! give it to `world.placement.edit`'s queue, which grows placement blocks
+//! into the same arena.
 
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::{Arc, Mutex};
@@ -24,7 +30,8 @@ pub type MapLocator = Box<dyn Fn(&runtime::Guest) -> Option<vfs::HostFile> + Sen
 /// Adds the hot methods to `agent` and, with `watch`, loads and watches
 /// the override directory. Without (the debug menu's local agent, no
 /// `H2_AGENT`) the directory is only named: nothing loads until
-/// `render.reload` (the menu's Reload row) asks.
+/// `render.reload` (the menu's Reload row) asks. Returns the edit arena's
+/// link for `world.placement.edit` (`agent::sim::calls::Queue::set_arena`).
 pub fn install(
     agent: &agent::Agent,
     rt: &Arc<runtime::Runtime>,
@@ -32,12 +39,12 @@ pub fn install(
     vfs: Option<Arc<Mutex<vfs::Vfs>>>,
     watch: bool,
     replaying: bool,
-) {
+) -> hot_tags::arena::Link {
     #[cfg(feature = "gpu")]
     install_overrides(agent, watch);
     #[cfg(not(feature = "gpu"))]
     let _ = watch;
-    install_edits(agent, rt, maps, vfs, replaying);
+    install_edits(agent, rt, maps, vfs, replaying)
 }
 
 #[cfg(feature = "gpu")]
@@ -64,15 +71,16 @@ fn install_overrides(agent: &agent::Agent, watch: bool) {
     );
 }
 
-/// `edit.*` over the runtime's memory.
+/// `edit.*` over the runtime's memory; the edit arena's link.
 fn install_edits(
     agent: &agent::Agent,
     rt: &Arc<runtime::Runtime>,
     maps: Option<MapLocator>,
     vfs: Option<Arc<Mutex<vfs::Vfs>>>,
     replaying: bool,
-) {
-    let mut editor = hot_tags::Editor::new();
+) -> hot_tags::arena::Link {
+    let arena = hot_tags::arena::shared();
+    let mut editor = hot_tags::Editor::new().with_arena(arena.clone());
     let maps = maps.map(Arc::new);
     if let Some(locate) = maps.clone() {
         editor = editor.with_names(Box::new(move |g| names(g, &locate)));
@@ -81,6 +89,7 @@ fn install_edits(
         Box::new(RawGlue { vfs, overlay: vfs::RawOverlay::global().clone() }),
         Box::new(|r| render_bridge::native_edits::push(native_edit(r))),
     );
+    let pages_rt = Arc::clone(rt);
     let rt = Arc::clone(rt);
     agent::hot::add_edit_methods(
         agent,
@@ -92,6 +101,14 @@ fn install_edits(
         },
         replaying,
     );
+    hot_tags::arena::Link {
+        arena,
+        pages: Arc::new(move |f: &mut dyn FnMut(&mut dyn hot_tags::arena::Pages)| {
+            let mut memory = pages_rt.memory();
+            let guest: &mut runtime::Guest = &mut memory;
+            f(guest)
+        }),
+    }
 }
 
 /// Tag lookup for `sim.give` and `sim.spawn`: the loaded map's tags by

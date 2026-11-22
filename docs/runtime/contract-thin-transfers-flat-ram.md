@@ -759,9 +759,8 @@ Runtime only. Old images keep running on the paged path.
   (`crates/runtime/runtime/src/window/tests.rs`);
   `executor_view_runs_native_in_its_window`
   (`crates/recompiler/emit/tests/flat_runtime.rs`, a flat module run by a
-  second executor with no fixups); the pipelined-render hash parity
-  tests.
-- Exit: pipelined frame time not worse (M5); resident memory per
+  second executor with no fixups).
+- Exit: frame time not worse (M5); resident memory per
   dedicated host reported for Q1.
 
 ### F6. Default on macOS and Linux x86-64
@@ -779,13 +778,11 @@ Runtime only. Old images keep running on the paged path.
 
 ### F8. Delete the paged model
 
-- Remove `H2_HELD_TRY`, `H2_PAGED_TRY`, `H2Gate`, `h2_access_cold`'s gate
+- Remove `H2_HELD_TRY`, `H2Gate`, `h2_access_cold`'s gate
   half, the gate word and `GATE_*`, `H2MemoryData`, `fast_acquire` and
   `fast_release`, view lending, the `fastmem-4k`
   branch's doc, and the flags `H2_FASTMEM`, `H2_FLAT_RAM`,
-  `H2_RAM_PAGE_CACHE`, `H2_ENTRY_GATE`, `H2_DIRTY_INLINE`,
-  `H2_DIRECT_GATE`, `H2_DIRECT_COUNT`, `H2_DIRECT_VIEW`, `H2_VIEW_CHARGE`,
-  `H2_EXIT_CALL`, `H2_COLD_STATS`, `H2_DIRECT_CALLS`. Rewrite
+  `H2_DIRECT_VIEW`, `H2_EXIT_CALL`, `H2_COLD_STATS`, `H2_DIRECT_CALLS`. Rewrite
   RUNTIME-CONTRACT.md sections 1.1 and 4.
 - `crates/recompiler/clif` keeps calling the checked helpers; note it in
   [cranelift-tier.md](../lifter/cranelift-tier.md) as its next step.
@@ -861,7 +858,7 @@ Fixups per tick are `profile.memory`'s `fixups` on the agent API
 
 **M5. Frames.** `h2 lab bench --name "Transfer benchmark" --host laptop --branch <slice> --level
 03a_oldmombasa --scale 4` as in lab.md "`--serve` and `bench`", against
-the same command on master, serial and pipelined.
+the same command on master.
 
 ## 8. Order against the `sim-tier` lane
 

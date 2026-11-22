@@ -69,15 +69,15 @@ fn switching_to_firefight_holds_the_setting_and_picks_a_kit_map() {
     assert_eq!(store.get(ff::ENABLED.key), Some(Value::Bool(true)));
     // Without a store, refused by name.
     assert_eq!(set_ours(&p, None), Err(Reason::NoSettings));
-    // No kit map installed: refused by the reason that dims the tab.
+    // No kit map installed: the switch goes ahead and the lobby keeps its
+    // map; Start Game says why it cannot start.
     let bare = Catalogue::new([map(10, "Lockout", r"d:\maps\lockout")]);
+    assert_eq!(map_for(Tab::Firefight, Some(10), Some(&bare)), Ok(None));
+    assert_eq!(map_for(Tab::Firefight, None, Some(&bare)), Ok(None));
     assert_eq!(
-        map_for(Tab::Firefight, Some(10), Some(&bare)),
-        Err(Reason::NoKitMap)
-    );
-    assert!(
-        Reason::NoKitMap.text().contains("h2 firefight kit"),
-        "it says how to get one"
+        map_for(Tab::Firefight, Some(10), None),
+        Ok(None),
+        "the map list not read yet"
     );
 }
 

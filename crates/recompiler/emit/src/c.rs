@@ -234,20 +234,6 @@ pub fn dirty_at_exits(f: &IrFunction, home: u32) -> BTreeMap<u32, u32> {
     masks
 }
 
-/// Whether `insns` have a guest load or store on the inline RAM path (an
-/// atomic's go through its runtime helper instead).
-fn accesses_memory<'i>(mut insns: impl Iterator<Item = &'i IrInsn>) -> bool {
-    fn any(stmts: &[Stmt]) -> bool {
-        stmts.iter().any(|s| match s {
-            Stmt::Load { .. } | Stmt::Store { .. } => true,
-            Stmt::If { then, otherwise, .. } => any(then) || any(otherwise),
-            Stmt::Repeat { body, .. } => any(body),
-            _ => false,
-        })
-    }
-    insns.any(|i| i.atomic.is_none() && any(&i.stmts))
-}
-
 /// The C symbol of an owner's handler.
 pub fn symbol(entry: u32) -> String {
     format!("h2fn_{entry:08x}")
@@ -785,11 +771,6 @@ impl Emitter<'_> {
         }
         if self.polled {
             self.line(1, "H2_PREEMPT_LOCALS();");
-        }
-        // After every call the entry makes (acquire, the budget): a handler
-        // that loads or stores may take the RAM gate now (H2_ENTRY_GATE).
-        if accesses_memory(blocks.iter().flat_map(|b| &b.insns)) {
-            self.line(1, "H2_GATE_ENTER();");
         }
         self.line(1, "int h2fp_ __attribute__((unused));");
         self.line(1, "switch (start) {");

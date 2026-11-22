@@ -200,6 +200,8 @@ pub mod method {
     pub const BITMAP_FILL: &str = "bitmap.fill";
     pub const BITMAP_ADJUST: &str = "bitmap.adjust";
     pub const BITMAP_PIXELS: &str = "bitmap.pixels";
+    pub const BITMAP_RESHAPE: &str = "bitmap.reshape";
+    pub const BITMAP_SPANS: &str = "bitmap.spans";
 
     // The Scripts tool (docs/editor/rich-editors.md, "Scripts").
     pub const SCRIPT_LIST: &str = "script.list";

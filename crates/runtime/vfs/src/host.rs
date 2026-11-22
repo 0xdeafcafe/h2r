@@ -1595,7 +1595,7 @@ mod tests {
     /// a write with its metadata pending against a write followed by the
     /// durable record store every write used to make.
     #[test]
-    #[ignore]
+    #[ignore = "manual benchmark: release mode"]
     fn bench_write_metadata() {
         let temp = Temp::new();
         let mut backend = temp.backend();

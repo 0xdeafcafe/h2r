@@ -214,14 +214,17 @@ fn row(s: &Shared, label: &str) -> Row {
         .unwrap_or_else(|| panic!("no row {label}"))
 }
 
-/// Moves the cursor to the row labelled `label`.
+/// Moves the cursor to the row labelled `label` (dividers are skipped
+/// and the ends wrap, so it presses until it is there).
 fn to(s: &Shared, label: &str) {
     let i = rows(s).iter().position(|r| r.label == label).unwrap();
-    let at = s.lock().menu.cursor();
-    let n = if i > at { Nav::Down } else { Nav::Up };
-    for _ in 0..i.abs_diff(at) {
-        s.key(Key::Nav(n));
+    for _ in 0..rows(s).len() + 1 {
+        if s.lock().menu.cursor() == i {
+            return;
+        }
+        s.key(Key::Nav(Nav::Down));
     }
+    panic!("never reached {label}");
 }
 
 fn enter(s: &Shared, section: &str) {
@@ -666,6 +669,405 @@ fn the_layout_is_a_fixed_width_block_with_a_scrolling_window() {
         layout::wrap("a bb ccc dddd", 6),
         vec!["a bb", "ccc", "dddd"]
     );
+}
+
+fn play_rows(a: &[Answer]) -> Vec<Row> {
+    let gain = match a.first() {
+        Some(Some(Ok(v))) => v["params"][0]["value"].as_f64().unwrap_or(1.0),
+        _ => return vec![],
+    };
+    let gain_set = || Setter::new("render.param", json!({"name": "gain"}), "value");
+    vec![
+        Row::int("Range", gain as i64, 1, (1, 640), gain_set()).default_value(48),
+        Row::int("Fine", gain as i64, 1, (0, 640), gain_set()).step(3.0),
+        Row::action("Revert all", Call::bare("edit.revert"))
+            .confirm()
+            .on_ok(|v| format!("reverted {}", v["reverted"].as_array().map_or(0, Vec::len))),
+        Row::action("Reload", Call::bare("render.reload")),
+        Row::open("Pick >", "picker"),
+    ]
+}
+
+fn picker_rows(a: &[Answer]) -> Vec<Row> {
+    match a.first() {
+        Some(Some(_)) => vec![Row::action("Rifle", Call::bare("render.reload"))],
+        _ => vec![],
+    }
+}
+
+fn playground() -> (Shared, Fake) {
+    let fake = Fake::default();
+    let s = Shared::new(Menu::with_sections(vec![
+        Section {
+            id: "play".into(),
+            title: "Play".into(),
+            about: "a test page".into(),
+            calls: vec![Call::bare("render.param")],
+            rows: play_rows,
+        },
+        Section {
+            id: "picker".into(),
+            title: "Picker".into(),
+            about: String::new(),
+            calls: vec![Call::bare("render.param")],
+            rows: picker_rows,
+        },
+    ]));
+    s.connect(Box::new(fake.clone()));
+    (s, fake)
+}
+
+fn calls_of(fake: &Fake, method: &str) -> usize {
+    fake.game(|g| g.calls.iter().filter(|c| c.method == method).count())
+}
+
+#[test]
+fn numbers_step_to_their_range_and_select_resets_them() {
+    let (s, fake) = playground();
+    enter(&s, "play");
+    // 1..640 is 639 wide: a step of 10, not 1.
+    to(&s, "Range");
+    go(&s, &[Nav::Right]);
+    assert_eq!(fake.game(|g| g.gain), 11.0);
+    // An explicit step wins over the scaled one.
+    to(&s, "Fine");
+    go(&s, &[Nav::Right]);
+    assert_eq!(fake.game(|g| g.gain), 14.0);
+    // Select puts a number back to its default, and says so.
+    to(&s, "Range");
+    go(&s, &[Nav::Select]);
+    assert_eq!(fake.game(|g| g.gain), 48.0);
+    assert_eq!(s.lock().menu.toast().unwrap().text, "Range: 48");
+    // Already there: nothing is sent.
+    let before = fake.writes().len();
+    go(&s, &[Nav::Select]);
+    assert_eq!(fake.writes().len(), before);
+    assert!(s.lock().menu.toast().unwrap().text.contains("default"));
+    // A row without a default does nothing on select.
+    to(&s, "Fine");
+    go(&s, &[Nav::Select]);
+    assert_eq!(fake.writes().len(), before);
+}
+
+#[test]
+fn steps_round_to_a_nice_size() {
+    assert_eq!(model::nice_step(8.0), 10.0);
+    assert_eq!(model::nice_step(0.0625), 0.05);
+    assert_eq!(model::nice_step(0.02), 0.02);
+    assert_eq!(model::nice_step(0.0), 0.0);
+    let set = Setter::new("x", json!({}), "v");
+    let r = Row::int("i", 1, 1, (1, 512), set.clone());
+    assert_eq!(r.stepped(1), Some(json!(11)));
+    assert_eq!(r.step(8.0).stepped(1), Some(json!(9)));
+    // An unbounded range has nothing to scale to.
+    let r = Row::int("i", 0, 1, (i64::MIN, i64::MAX), set.clone());
+    assert_eq!(r.stepped(1), Some(json!(1)));
+    let r = Row::float("f", 0.0, 0.1, (f64::MIN, f64::MAX), set);
+    assert_eq!(r.stepped(1), Some(json!(0.1)));
+}
+
+#[test]
+fn a_destructive_row_needs_a_second_select_in_time() {
+    let (s, fake) = playground();
+    enter(&s, "play");
+    to(&s, "Revert all");
+    go(&s, &[Nav::Select]);
+    assert_eq!(calls_of(&fake, "edit.revert"), 0, "the first press only asks");
+    assert_eq!(
+        s.lock().menu.toast().unwrap().text,
+        "press again to Revert all"
+    );
+    go(&s, &[Nav::Select]);
+    assert_eq!(calls_of(&fake, "edit.revert"), 1);
+    assert_eq!(s.lock().menu.toast().unwrap().text, "reverted 0", "on_ok");
+    // Too late: it asks again.
+    let late = |n: u64| Duration::from_secs(1000 + n);
+    {
+        let mut g = s.lock();
+        g.menu.nav(Nav::Select, late(0));
+        g.menu.nav(Nav::Select, late(3));
+        g.pump(late(3));
+    }
+    assert_eq!(calls_of(&fake, "edit.revert"), 1);
+    s.lock().menu.nav(Nav::Select, late(4));
+    s.lock().pump(late(4));
+    assert_eq!(calls_of(&fake, "edit.revert"), 2);
+    // Something else in between cancels nothing but a different row asks
+    // for itself.
+    to(&s, "Reload");
+    go(&s, &[Nav::Select]);
+    assert_eq!(calls_of(&fake, "render.reload"), 1, "not destructive: at once");
+}
+
+#[test]
+fn a_result_shows_after_the_menu_closes_and_then_goes() {
+    let (s, _fake) = playground();
+    enter(&s, "play");
+    to(&s, "Reload");
+    go(&s, &[Nav::Select]);
+    assert_eq!(s.lock().menu.toast().unwrap().text, "Reload: done");
+    s.key(Key::Toggle);
+    let l = s.lines().expect("the toast is drawn with the menu closed");
+    assert_eq!(l.len(), 1);
+    assert_eq!((l[0].text.as_str(), l[0].tone), ("Reload: done", Tone::Done));
+    let far = s.now() + Duration::from_secs(10);
+    s.lock().pump(far);
+    assert!(s.lines().is_none(), "gone after a few seconds");
+}
+
+#[test]
+fn an_error_shows_the_same_way() {
+    let (s, _fake) = playground();
+    enter(&s, "play");
+    // A call the fake does not know.
+    s.add_section(Section {
+        id: "bad".into(),
+        title: "Bad".into(),
+        about: String::new(),
+        calls: vec![Call::bare("render.param")],
+        rows: |a| match a.first() {
+            Some(Some(_)) => vec![Row::action("Boom", Call::bare("nope.nothing"))],
+            _ => vec![],
+        },
+    });
+    enter(&s, "bad");
+    go(&s, &[Nav::Select]);
+    let t = s.lock().menu.toast().cloned().unwrap();
+    assert!(t.error && t.text.starts_with("nope.nothing:"), "{t:?}");
+    assert_eq!(s.lock().menu.status(), Some(t.text.as_str()));
+    let l = s.lines().unwrap();
+    assert!(l.iter().any(|l| l.tone == Tone::Error));
+}
+
+#[test]
+fn starred_and_recent_rows_pin_to_the_first_page() {
+    let (s, fake) = playground();
+    enter(&s, "play");
+    to(&s, "Range");
+    go(&s, &[Nav::Right]);
+    to(&s, "Reload");
+    s.key(Key::Char('f'));
+    go(&s, &[]);
+    assert!(s.lock().menu.starred()[3], "F stars the selected row");
+    // Back to the first page: Favourites, Recent, then the sections.
+    go(&s, &[Nav::Back]);
+    let labels: Vec<(String, bool)> = rows(&s)
+        .iter()
+        .map(|r| (r.label.clone(), r.heading))
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            ("Favourites".to_string(), true),
+            ("Reload".into(), false),
+            ("Recent".into(), true),
+            ("Range".into(), false),
+            ("Sections".into(), true),
+            ("Play".into(), false),
+            ("Picker".into(), false),
+        ]
+    );
+    // The cursor sits on the section just left, never on a divider.
+    assert_eq!(s.lock().menu.cursor(), 5);
+    go(&s, &[Nav::Up]);
+    assert_eq!(s.lock().menu.cursor(), 3);
+    go(&s, &[Nav::Up]);
+    assert_eq!(s.lock().menu.cursor(), 1, "the divider between is skipped");
+    // A starred action runs from there.
+    let before = calls_of(&fake, "render.reload");
+    go(&s, &[Nav::Select]);
+    assert_eq!(calls_of(&fake, "render.reload"), before + 1);
+    // Unstarring (Y) takes it off.
+    go(&s, &[Nav::Favourite]);
+    assert!(!rows(&s).iter().any(|r| r.label == "Favourites"));
+}
+
+#[test]
+fn recent_lists_actions_and_edits_newest_first_without_repeats() {
+    let (s, _) = playground();
+    enter(&s, "play");
+    for (label, nav) in [
+        ("Reload", Nav::Select),
+        ("Range", Nav::Right),
+        ("Fine", Nav::Right),
+        ("Reload", Nav::Select),
+        ("Range", Nav::Right),
+        ("Fine", Nav::Right),
+        ("Reload", Nav::Select),
+    ] {
+        to(&s, label);
+        go(&s, &[nav]);
+    }
+    go(&s, &[Nav::Back]);
+    let rows = rows(&s);
+    let at = rows.iter().position(|r| r.label == "Recent").unwrap();
+    let recent: Vec<&str> = rows[at + 1..]
+        .iter()
+        .take_while(|r| !r.heading)
+        .map(|r| r.label.as_str())
+        .collect();
+    assert_eq!(recent, ["Reload", "Fine", "Range"], "no repeats");
+}
+
+#[test]
+fn typing_searches_every_section_and_escape_clears_it_first() {
+    let (s, fake) = playground();
+    s.key(Key::Toggle);
+    go(&s, &[]);
+    // `f` before a search stars; `/` starts one so `f` can be typed.
+    s.key(Key::Char('/'));
+    s.key(Key::Char('r'));
+    s.key(Key::Char('e'));
+    s.key(Key::Char('l'));
+    go(&s, &[]);
+    go(&s, &[]);
+    assert!(s.lock().menu.typing());
+    assert_eq!(s.lock().menu.filter(), "rel");
+    let labels: Vec<String> = rows(&s).iter().map(|r| r.label.clone()).collect();
+    assert_eq!(labels, ["Play > Reload"], "pages never opened are searched");
+    let l = s.lines().unwrap();
+    assert!(l.iter().any(|l| l.text == "search: rel_"), "{l:?}");
+    // Space is a letter now, Enter selects.
+    s.key(Key::Space);
+    assert_eq!(s.lock().menu.filter(), "rel ");
+    s.key(Key::Erase);
+    go(&s, &[Nav::Select]);
+    assert_eq!(calls_of(&fake, "render.reload"), 1);
+    // Escape clears the search first, and only then goes back.
+    go(&s, &[Nav::Back]);
+    assert_eq!(s.lock().menu.filter(), "");
+    assert!(s.is_open());
+    // Backspace on an empty search goes back (closes, here).
+    s.key(Key::Erase);
+    assert!(!s.is_open());
+}
+
+#[test]
+fn a_picker_section_opens_from_a_row_and_backs_out() {
+    let (s, fake) = playground();
+    enter(&s, "play");
+    to(&s, "Pick >");
+    go(&s, &[Nav::Select]);
+    assert_eq!(s.lock().menu.path(), vec!["Play", "Picker"]);
+    assert_eq!(rows(&s)[0].label, "Rifle");
+    go(&s, &[Nav::Select]);
+    assert_eq!(calls_of(&fake, "render.reload"), 1);
+    go(&s, &[Nav::Back]);
+    assert_eq!(s.lock().menu.path(), vec!["Play"]);
+}
+
+#[test]
+fn the_cursor_wraps_pages_and_jumps() {
+    fn many(a: &[Answer]) -> Vec<Row> {
+        (0..29 + a.len())
+            .map(|i| Row::info(format!("row {i:02}"), i as i64))
+            .collect()
+    }
+    let s = Shared::new(Menu::with_sections(vec![Section {
+        id: "many".into(),
+        title: "Many".into(),
+        about: String::new(),
+        calls: vec![Call::bare("features.list")],
+        rows: many,
+    }]));
+    s.connect(Box::new(Fake::default()));
+    s.key(Key::Toggle);
+    go(&s, &[Nav::Select]);
+    let at = || s.lock().menu.cursor();
+    assert_eq!(at(), 0);
+    go(&s, &[Nav::Up]);
+    assert_eq!(at(), 29, "up from the top wraps");
+    go(&s, &[Nav::Down]);
+    assert_eq!(at(), 0, "down from the bottom wraps");
+    go(&s, &[Nav::PageDown]);
+    assert_eq!(at(), 14);
+    go(&s, &[Nav::PageDown, Nav::PageDown]);
+    assert_eq!(at(), 29, "a page stops at the end");
+    go(&s, &[Nav::PageUp]);
+    assert_eq!(at(), 15);
+    go(&s, &[Nav::Home]);
+    assert_eq!(at(), 0);
+    go(&s, &[Nav::End]);
+    assert_eq!(at(), 29);
+}
+
+#[test]
+fn the_footer_follows_the_device_and_teaches_the_call() {
+    let (s, _) = playground();
+    enter(&s, "play");
+    to(&s, "Revert all");
+    let last = |s: &Shared| s.lines().unwrap().last().unwrap().text.clone();
+    assert_eq!(last(&s), layout::fit(layout::controls(Device::Keyboard), COLS));
+    s.lock().menu.set_device(Device::Pad);
+    assert_eq!(last(&s), layout::fit(layout::controls(Device::Pad), COLS));
+    s.lock().menu.set_device(Device::Touchpad);
+    assert!(last(&s).contains("swipe"));
+    assert!(layout::controls(Device::Keyboard).contains("search"));
+    let l = s.lines().unwrap();
+    assert!(
+        l.iter().any(|l| l.text == "agent: edit.revert {}"),
+        "the selected row's call: {l:?}"
+    );
+    // A number shows the call that would step it.
+    to(&s, "Range");
+    let l = s.lines().unwrap();
+    assert!(
+        l.iter().any(|l| l.text.starts_with("agent: render.param")),
+        "{l:?}"
+    );
+}
+
+#[test]
+fn the_pinned_header_shows_above_every_page() {
+    fn status(a: &[Answer]) -> Vec<Row> {
+        match a.first() {
+            Some(Some(_)) => vec![Row::info("map", "coagulation"), Row::info("tick", 5412)],
+            _ => vec![],
+        }
+    }
+    let (s, _) = playground();
+    s.lock().menu.set_header(Section {
+        id: "status".into(),
+        title: "Status".into(),
+        about: String::new(),
+        calls: vec![Call::bare("features.list")],
+        rows: status,
+    });
+    s.key(Key::Toggle);
+    go(&s, &[]);
+    go(&s, &[]);
+    let l = s.lines().unwrap();
+    assert_eq!(l[2].text, "map coagulation  tick 5412");
+    assert_eq!(l[3].text, "-".repeat(COLS));
+    enter(&s, "play");
+    assert_eq!(s.lines().unwrap()[2].text, "map coagulation  tick 5412");
+}
+
+#[test]
+fn long_paths_keep_their_ends_and_lines_are_wider() {
+    assert_eq!(layout::COLS, 64);
+    assert_eq!(layout::VALUE_COLS, 40);
+    assert_eq!(
+        layout::fit_mid("/Users/afr/.cache/h2/very/long/path/file.wgsl", 20),
+        "/Users/af..file.wgsl"
+    );
+    assert_eq!(layout::fit_mid("short", 20), "short");
+    let fake = Fake::default();
+    let s = Shared::new(Menu::with_sections(vec![Section {
+        id: "p".into(),
+        title: "P".into(),
+        about: String::new(),
+        calls: vec![Call::bare("features.list")],
+        rows: |_| vec![Row::info("dir", "/Users/afr/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/file.wgsl")],
+    }]));
+    s.connect(Box::new(fake));
+    s.key(Key::Toggle);
+    go(&s, &[Nav::Select]);
+    let l = s.lines().unwrap();
+    let row = l.iter().find(|l| l.text.contains("dir")).unwrap();
+    assert!(row.text.ends_with("file.wgsl"), "{row:?}");
+    assert!(row.text.contains(".."));
+    assert_eq!(row.text.chars().count(), COLS);
 }
 
 #[path = "gate_tests.rs"]

@@ -195,7 +195,7 @@ fn unwatch_discards_pending_bits_and_unsubscribe_forgets() {
 
 /// `cargo test -p runtime --release --test write_watch -- --ignored --nocapture`
 #[test]
-#[ignore]
+#[ignore = "manual benchmark: release mode"]
 fn write_barrier_overhead() {
     const N: u32 = 20_000_000;
     let run = |label: &str, setup: &dyn Fn(&mut Guest)| {
@@ -233,7 +233,7 @@ fn write_barrier_overhead() {
 /// What a D3D entry pays: drain (nothing dirty, then one dirty page) and
 /// run its body muted.
 #[test]
-#[ignore]
+#[ignore = "manual benchmark: release mode"]
 fn override_entry_overhead() {
     const N: u32 = 2_000_000;
     let mut g = aliased();

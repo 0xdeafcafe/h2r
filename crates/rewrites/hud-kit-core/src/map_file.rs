@@ -11,7 +11,7 @@ use std::io::{Read, Seek};
 use assets::ResourceFiles;
 use map::{FourCC, Map, TagId, TagQuery};
 
-use crate::records::{ROOT_BITMAPS, ROOT_SIZE, ROOT_TEXTS, WidgetKind};
+use crate::records::{ROOT_SIZE, WidgetKind};
 use crate::templates::{ArrowRef, MapView, NHDT, PLAYER_HUD, RawHud, RawWidget};
 
 /// `unit +0x1a0`: a unit's HUD interfaces (count, address), 8-byte `nhdt`

@@ -4,9 +4,21 @@
 //! thread checks between scheduler slices ([`crate::GuestHost::tick`] or
 //! [`Lifecycle::should_stop`]) and returns. Every wait here wakes promptly on
 //! a stop request.
+//!
+//! A pause holds the guest unless `host.step`'s gate is open
+//! ([`agent_proto::host_pause`], docs/runtime/agent-api.md "Window pause
+//! and frame step"): the guest runs that many game ticks under the
+//! window's pause, then is held again at the next slice boundary. The
+//! pause wait tells the hub when the guest is held.
 
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+
+use agent_proto::host_pause::{self, Hub};
+
+/// How often a held guest looks at the step gate (the hub can't wake this
+/// condvar).
+const GATE_POLL: Duration = Duration::from_millis(5);
 
 /// What the guest loop should do next.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,14 +40,30 @@ struct Inner {
 }
 
 /// Cloneable, `Send + Sync`.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Lifecycle {
     inner: Arc<Inner>,
+    /// The step gate and the held report: the process's hub.
+    hub: &'static Hub,
+}
+
+impl Default for Lifecycle {
+    fn default() -> Self {
+        Self::with_hub(host_pause::hub())
+    }
 }
 
 impl Lifecycle {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Over another hub than the process's (tests).
+    pub fn with_hub(hub: &'static Hub) -> Self {
+        Lifecycle {
+            inner: Arc::default(),
+            hub,
+        }
     }
 
     fn flags(&self) -> MutexGuard<'_, Flags> {
@@ -57,17 +85,36 @@ impl Lifecycle {
         self.inner.cv.notify_all();
     }
 
+    /// Whether the guest is held: paused, and no `host.step` ticks to run.
     pub fn is_paused(&self) -> bool {
+        self.flags().paused && !self.hub.gate_open()
+    }
+
+    /// Whether a pause is asked for (the window's own state), held or
+    /// stepping.
+    pub fn pause_requested(&self) -> bool {
         self.flags().paused
     }
 
-    /// Blocks while paused. Returns whether it waited at all, and what to do.
+    /// Blocks while paused and the step gate is shut. Returns whether it
+    /// waited at all, and what to do.
     pub fn wait_while_paused(&self) -> (bool, Control) {
         let mut f = self.flags();
         let mut waited = false;
-        while f.paused && !f.stop {
+        while f.paused && !f.stop && !self.hub.gate_open() {
+            if !waited {
+                self.hub.set_held(true);
+            }
             waited = true;
-            f = self.inner.cv.wait(f).unwrap_or_else(|e| e.into_inner());
+            f = self
+                .inner
+                .cv
+                .wait_timeout(f, GATE_POLL)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+        if waited {
+            self.hub.set_held(false);
         }
         (
             waited,
@@ -150,6 +197,36 @@ mod tests {
         l.request_stop();
         assert_eq!(h.join().unwrap(), (true, Control::Stop));
     }
+    #[test]
+    fn a_step_lets_the_guest_through_the_pause_then_holds_it() {
+        let hub: &'static Hub = Box::leak(Box::new(Hub::new()));
+        std::thread::spawn(move || hub.attach(Box::new(|| {}))).join().unwrap();
+        let l = Lifecycle::with_hub(hub);
+        l.set_paused(true);
+        hub.report(true);
+        assert!(l.is_paused());
+        // The guest: a slice at a time, one game tick each.
+        let l2 = l.clone();
+        let h = std::thread::spawn(move || {
+            let mut ticks = 0u64;
+            loop {
+                let (_, c) = l2.wait_while_paused();
+                if c == Control::Stop {
+                    return ticks;
+                }
+                ticks += 1;
+                hub.ticked(Some(ticks));
+            }
+        });
+        let r = hub.step(3, Duration::from_secs(10)).unwrap();
+        assert_eq!(r.stepped, Some(3));
+        assert!(r.held);
+        assert!(l.is_paused(), "held again");
+        assert!(l.pause_requested());
+        l.request_stop();
+        assert_eq!(h.join().unwrap(), 3);
+    }
+
     #[test]
     fn a_pause_ends_a_sleep_early() {
         let l = Lifecycle::new();
