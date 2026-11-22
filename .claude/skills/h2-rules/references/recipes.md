@@ -257,8 +257,8 @@ Labelled objects come from Forge labels and the built-in per-flag-type
 table. `for each objects labelled "hill_corner" c where c.number == hill`
 visits them; `first(...)` finds one. `on enter(zone, o)` and `on leave`
 report an object in a zone (at most 64 a tick together). A scenario
-declares labelled objects in `labelled` (`{"label": "hill_corner",
-"object": 40, "number": 1}`) and a player's unit in `unit`, so an `enter`
+declares them in its `map` (`{"label": "hill_corner",
+"object": 40, "number": 1}`; none, and the script's smallest map is used) and a player's unit in `unit`, so an `enter`
 naming the unit puts the player in the zone. `ticks_held(zone, team)`
 counts the ticks a team alone holds a zone. Expect `label_number`,
 `label_of`, `zone_id`, `inside` and `ticks_held` to be refused by a
