@@ -427,6 +427,9 @@ fn every_edit_write_checks_the_current_session() {
         for (m, params) in [
             (method::EDIT_SET, p.clone()),
             (method::EDIT_BATCH, json!({"writes":[p]})),
+            (method::EDIT_BATCH, json!({"raw":[{"owner":{"section":
+                {"tag":"0xe1110001","kind":"cluster","index":0}},"offset":0,"bytes":"AA=="}]})),
+            (method::EDIT_RAW_APPEND, json!({"bytes":"AA=="})),
             (method::EDIT_REVERT, Value::Null),
         ] {
             assert_eq!(
@@ -437,6 +440,47 @@ fn every_edit_write_checks_the_current_session() {
         }
         assert_eq!(guest.lock().unwrap().u32(COLORS_AT + 4).unwrap(), 7);
     }
+}
+
+/// Staged bytes belong to the connection that staged them and are named
+/// by `{stage, at, len}`; a game without raw files refuses raw writes as
+/// unavailable, and `edit.overlay` reports an empty overlay.
+#[test]
+fn stages_belong_to_their_connection_and_raw_needs_the_glue() {
+    let guest = Arc::new(Mutex::new(level()));
+    let g = guest.clone();
+    let agent = Agent::new();
+    add_edit_methods(
+        &agent,
+        Editor::new(),
+        Arc::new(move |f| f(&mut g.lock().unwrap())),
+        |_| SessionView {
+            kind: agent_proto::sim::SessionKind::Local,
+            ..Default::default()
+        },
+        |_| None,
+        false,
+    );
+    let (a, b) = (Client::new(&agent), Client::new(&agent));
+    let s = a.ok(method::EDIT_STAGE_PUT, json!({"bytes": "AQID"}));
+    assert_eq!(s["len"], 3, "{s}");
+    let s = a.ok(method::EDIT_STAGE_PUT, json!({"stage": s["stage"], "bytes": "BA=="}));
+    assert_eq!(s["len"], 4, "{s}");
+    let staged = json!({"stage": s["stage"], "at": 1, "len": 2});
+    let raw = |bytes: Value| json!({"raw": [{"owner": {"section":
+        {"tag": "0xe1110001", "kind": "cluster", "index": 0}}, "offset": 0, "bytes": bytes}]});
+    assert_eq!(
+        b.call(method::EDIT_BATCH, raw(staged.clone()))["error"]["code"],
+        code::INVALID_PARAMS,
+        "another connection's stage"
+    );
+    let past = json!({"stage": s["stage"], "at": 3, "len": 2});
+    assert_eq!(a.call(method::EDIT_BATCH, raw(past))["error"]["code"], code::INVALID_PARAMS);
+    assert_eq!(a.call(method::EDIT_BATCH, raw(staged))["error"]["code"], code::UNAVAILABLE);
+    assert_eq!(a.call(method::EDIT_BATCH, raw(json!("not base64!")))["error"]["code"], code::INVALID_PARAMS);
+    let o = a.ok(method::EDIT_OVERLAY, Value::Null);
+    assert_eq!(o["entries"], 0, "{o}");
+    assert_eq!(o["owners"], json!([]));
 }
 
 #[cfg(feature = "render-overrides")]

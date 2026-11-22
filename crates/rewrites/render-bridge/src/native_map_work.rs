@@ -155,6 +155,16 @@ pub(crate) fn request_bsp_load() {
     BSP_LOAD_PENDING.store(true, Ordering::Release);
 }
 
+/// Reloads the active BSP's native stages from the map file, as a BSP
+/// switch does: the loaded copy stops drawing at once (its key is no
+/// longer current) and the reload publishes when ready. A live edit the
+/// native copy cannot take in place asks for it
+/// (docs/editor/realtime-edits.md, "The native refresh").
+pub fn reload_bsp() {
+    BSP_GENERATION.fetch_add(1, Ordering::Release);
+    request_bsp_load();
+}
+
 /// A cache load's identity, including reloads of the same map.
 pub fn generation() -> u64 {
     MAP.generation()

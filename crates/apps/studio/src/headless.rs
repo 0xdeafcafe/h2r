@@ -599,6 +599,7 @@ mod tests {
             (ToolKind::Playlists, ["playlists-list", "playlists-entries", "playlists-inspector"]),
             (ToolKind::UiScreens, ["screens-list", "screens-preview", "screens-inspector"]),
             (ToolKind::Hud, ["hud-list", "hud-preview", "hud-inspector"]),
+            (ToolKind::Textures, ["textures-list", "textures-canvas", "textures-inspector"]),
         ];
         // Each workspace's own IDs use the same dock geometry. Scenario,
         // Tags and Scripts are tabs of Map, so they share its centre and

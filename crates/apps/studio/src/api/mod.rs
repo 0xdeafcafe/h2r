@@ -25,6 +25,7 @@ use studio_proto::{code, method as m};
 
 use crate::App;
 
+mod bitmaps;
 mod collision;
 mod docs;
 mod game_script;
@@ -925,5 +926,6 @@ pub fn tool_name(t: crate::ToolKind) -> &'static str {
         crate::ToolKind::Tags => "tags",
         crate::ToolKind::Hud => "hud",
         crate::ToolKind::Scripts => "scripts",
+        crate::ToolKind::Textures => "textures",
     }
 }

@@ -39,6 +39,7 @@ pub(super) struct Keys {
     pub playlists: ToolWindows,
     pub screens: ToolWindows,
     pub hud: ToolWindows,
+    pub textures: ToolWindows,
 }
 
 fn key(id: &str, icon: &str, title: &str) -> WindowKey {
@@ -79,11 +80,16 @@ impl Keys {
                 ("hud-preview", "HUD"),
                 "hud-inspector",
             ),
+            textures: ToolWindows::new(
+                ("textures-list", "Bitmaps"),
+                ("textures-canvas", "Canvas"),
+                "textures-inspector",
+            ),
         }
     }
 
-    fn tools(&self) -> [&ToolWindows; 4] {
-        [&self.variants, &self.playlists, &self.screens, &self.hud]
+    fn tools(&self) -> [&ToolWindows; 5] {
+        [&self.variants, &self.playlists, &self.screens, &self.hud, &self.textures]
     }
 
     pub fn layout(&self) -> DockLayout {
