@@ -580,6 +580,77 @@ fn takeover_without_an_answer_times_out_and_can_disable_the_cooldown() {
     assert!(requests.iter().all(|r| r.timeout_seconds == 1));
 }
 
+/// The host's status once `done` holds, polled for up to `limit`.
+fn wait_status(lab: &Lab, limit: Duration, done: impl Fn(&Value) -> bool) -> Value {
+    let deadline = Instant::now() + limit;
+    loop {
+        let status = json(&ok(&lab.local(&["status"])));
+        if done(&status) {
+            return status;
+        }
+        assert!(Instant::now() < deadline, "never reached: {status}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn a_game_the_player_opens_during_a_job_can_pause_it_until_the_game_closes() {
+    let lab = Lab::named("pause");
+    let v = json(&ok(&lab.local(&[
+        "run",
+        "--name",
+        "Synthetic job",
+        "--current",
+        "--serve",
+    ])));
+    let id = v["id"].as_str().unwrap().to_owned();
+    wait_for_run_log(&lab.root, &id);
+    // The player opens a game while the job runs and chooses Stop and pause.
+    let game = FakeGame::listen(&lab, true, Decision::StopAndPause);
+    let status = wait_status(&lab, Duration::from_secs(30), |s| {
+        s["queued"] == json!([id]) && s["held_for_player"] == true
+    });
+    assert!(status["active"].is_null(), "{status}");
+    {
+        let requests = game.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].ask, takeover::Ask::Running);
+        assert_eq!(requests[0].name, "Synthetic job");
+    }
+    let meta: Value = serde_json::from_slice(
+        &fs::read(lab.root.join("runs").join(&id).join("meta.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(meta["state"], "queued");
+    assert!(
+        meta["player"][0]
+            .as_str()
+            .is_some_and(|l| l.contains("chose Stop and pause")),
+        "{meta}"
+    );
+    // Held while the game stays open.
+    std::thread::sleep(Duration::from_secs(1));
+    let status = json(&ok(&lab.local(&["status"])));
+    assert_eq!(status["queued"], json!([id]), "{status}");
+
+    // The game closes: the job runs again, and nothing more is asked.
+    game.close_window();
+    wait_status(&lab, Duration::from_secs(30), |s| {
+        s["active"]["id"] == json!(id) && s["active"]["state"] == "running"
+    });
+    ok(&lab.local(&["stop", &id]));
+    let stopped = lab.local(&["wait", &id, "--timeout", "10"]);
+    let job = json(&String::from_utf8_lossy(&stopped.stdout))["job"].clone();
+    assert_eq!(job["state"], "stopped");
+    let summary = job["summary"].as_array().unwrap();
+    let paused = |l: &Value| {
+        l.as_str()
+            .is_some_and(|l| l.contains("chose Stop and pause"))
+    };
+    assert!(summary.iter().any(paused), "{job}");
+    assert_eq!(game.requests.lock().unwrap().len(), 1);
+}
+
 #[test]
 fn a_lab_host_runs_waits_stops_fetches_and_builds_branches() {
     let lab = Lab::start();

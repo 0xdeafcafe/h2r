@@ -177,6 +177,49 @@ impl Gate {
         }
     }
 
+    /// The player's open games: the game windows on this Mac that
+    /// `owns_game` doesn't claim, as the start consent finds them.
+    pub(super) fn player_games(
+        &self,
+        owns_game: &impl Fn(Option<&Path>, Option<u32>) -> bool,
+    ) -> Result<Vec<Seen>> {
+        Ok(self
+            .windows(owns_game)?
+            .into_iter()
+            .filter_map(|game| {
+                let key = match (game.pid, &game.socket) {
+                    (Some(pid), _) => GameKey::Pid(pid),
+                    (None, Some(path)) => GameKey::Socket(path.clone()),
+                    (None, None) => return None,
+                };
+                Some(Seen {
+                    key,
+                    socket: game.socket.filter(|_| game.can_ask),
+                })
+            })
+            .collect())
+    }
+
+    /// Asks the game at `path` what the running job should do; the
+    /// request's id, or None when the game didn't take it.
+    pub(super) fn ask_running(&self, path: &Path, mut request: takeover::Request) -> Option<u64> {
+        request.ask = takeover::Ask::Running;
+        request.timeout_seconds = self.config.timeout_seconds.max(1);
+        call::<takeover::Requested>(
+            path,
+            takeover::REQUEST,
+            json!(request),
+            discover::PROBE_TIMEOUT,
+        )
+        .ok()
+        .map(|reply| reply.id)
+    }
+
+    /// How long the player has to answer, the game's dialog timeout.
+    pub(super) fn answer_timeout(&self) -> Duration {
+        Duration::from_secs(self.config.timeout_seconds.max(1).into())
+    }
+
     fn windows(
         &self,
         owns_game: &impl Fn(Option<&Path>, Option<u32>) -> bool,
@@ -254,6 +297,192 @@ impl Gate {
             }
         }
         Ok(games)
+    }
+}
+
+/// The decision on the request `id` the game at `path` holds; None when the
+/// game didn't answer.
+pub(super) fn poll(path: &Path, id: u64) -> Option<takeover::Decision> {
+    call::<takeover::Status>(
+        path,
+        takeover::STATUS,
+        json!(takeover::StatusParams { id }),
+        discover::PROBE_TIMEOUT,
+    )
+    .ok()
+    .map(|status| status.decision)
+}
+
+/// A game of the player's, known by its process when it has one.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum GameKey {
+    Pid(u32),
+    Socket(PathBuf),
+}
+
+/// One of the player's games in a look at the Mac.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Seen {
+    pub key: GameKey,
+    /// Where to ask it; None while it can't be asked (starting up, its
+    /// agent switched off, not answering).
+    pub socket: Option<PathBuf>,
+}
+
+/// What the player chose for a running job when they opened a game.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Choice {
+    /// Stop the job now, put it back at the front of the queue and hold
+    /// the queue while the game is open.
+    StopAndPause,
+    /// The job and the queue carry on alongside the game.
+    KeepRunning,
+    /// Let the job finish, then hold the rest of the queue while the game
+    /// is open. What no answer picks.
+    FinishThis,
+}
+
+/// A choice settled in one look: the player's own, or the default when they
+/// gave none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Settled {
+    pub choice: Choice,
+    pub answered: bool,
+}
+
+impl Settled {
+    /// The line the job's log and summary get.
+    pub(super) fn note(self) -> String {
+        let what = match (self.choice, self.answered) {
+            (Choice::StopAndPause, _) => {
+                "chose Stop and pause: the job goes back to the front of the queue, \
+                 held until their game closes"
+            }
+            (Choice::KeepRunning, _) => "chose Keep running: the job and the queue carry on",
+            (Choice::FinishThis, true) => {
+                "chose Finish this one: the rest of the queue waits until their game closes"
+            }
+            (Choice::FinishThis, false) => {
+                "gave no answer, so the job finishes and the rest of the queue waits until \
+                 their game closes"
+            }
+        };
+        format!("player: opened a game and {what}")
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Answer {
+    /// Seen, not asked yet: retried each look until `until`.
+    Unasked {
+        until: Instant,
+    },
+    /// The question is open in the game.
+    Asking {
+        id: u64,
+        until: Instant,
+    },
+    Chosen(Choice),
+}
+
+/// Slack past the dialog's own timeout before the host stops waiting for a
+/// game that doesn't report one.
+const ANSWER_SLACK: Duration = Duration::from_secs(10);
+
+/// The player's games and what each answered, asked once per game. Pure:
+/// the caller looks at the Mac and passes the asking and polling in.
+#[derive(Debug, Default)]
+pub(super) struct PlayerGames {
+    games: BTreeMap<GameKey, Answer>,
+}
+
+impl PlayerGames {
+    /// One look while a job runs. Forgets games that closed, asks each new
+    /// game once (`ask`: the game's socket to the request id), polls open
+    /// questions (`poll`), and returns what this look settled. A game that
+    /// can't be asked, or doesn't answer, within `timeout` gets
+    /// [`Choice::FinishThis`].
+    pub(super) fn observe(
+        &mut self,
+        seen: &[Seen],
+        now: Instant,
+        timeout: Duration,
+        ask: impl FnMut(&Path) -> Option<u64>,
+        poll: impl FnMut(&Path, u64) -> Option<takeover::Decision>,
+    ) -> Vec<Settled> {
+        self.look(seen, now, timeout, true, ask, poll)
+    }
+
+    /// One look between jobs: forgets games that closed and polls open
+    /// questions, but asks nothing new, since no job runs.
+    pub(super) fn refresh(
+        &mut self,
+        seen: &[Seen],
+        now: Instant,
+        timeout: Duration,
+        poll: impl FnMut(&Path, u64) -> Option<takeover::Decision>,
+    ) -> Vec<Settled> {
+        self.look(seen, now, timeout, false, |_| None, poll)
+    }
+
+    /// Whether the queue waits: a game of the player's is open that hasn't
+    /// answered Keep running.
+    pub(super) fn holds(&self) -> bool {
+        self.games
+            .values()
+            .any(|answer| *answer != Answer::Chosen(Choice::KeepRunning))
+    }
+
+    fn look(
+        &mut self,
+        seen: &[Seen],
+        now: Instant,
+        timeout: Duration,
+        new_games: bool,
+        mut ask: impl FnMut(&Path) -> Option<u64>,
+        mut poll: impl FnMut(&Path, u64) -> Option<takeover::Decision>,
+    ) -> Vec<Settled> {
+        self.games
+            .retain(|key, _| seen.iter().any(|game| &game.key == key));
+        let mut settled = Vec::new();
+        for game in seen {
+            let answer = match self.games.get(&game.key) {
+                Some(answer) => *answer,
+                None if new_games => Answer::Unasked {
+                    until: now + timeout,
+                },
+                None => continue,
+            };
+            let socket = game.socket.as_deref();
+            let settle =
+                |choice, answered| (Answer::Chosen(choice), Some(Settled { choice, answered }));
+            let (next, settles) = match answer {
+                Answer::Chosen(_) => continue,
+                Answer::Unasked { until } => match socket.and_then(&mut ask) {
+                    Some(id) => (
+                        Answer::Asking {
+                            id,
+                            until: now + timeout + ANSWER_SLACK,
+                        },
+                        None,
+                    ),
+                    None if now >= until => settle(Choice::FinishThis, false),
+                    None => (answer, None),
+                },
+                Answer::Asking { id, until } => match socket.and_then(|path| poll(path, id)) {
+                    Some(takeover::Decision::StopAndPause) => settle(Choice::StopAndPause, true),
+                    Some(takeover::Decision::KeepRunning) => settle(Choice::KeepRunning, true),
+                    Some(takeover::Decision::FinishThis) => settle(Choice::FinishThis, true),
+                    Some(takeover::Decision::Pending) | None if now < until => (answer, None),
+                    // Timed out, dismissed, or a game that can't show the
+                    // question.
+                    _ => settle(Choice::FinishThis, false),
+                },
+            };
+            settled.extend(settles);
+            self.games.insert(game.key.clone(), next);
+        }
+        settled
     }
 }
 
@@ -468,5 +697,210 @@ mod tests {
         for command in ["h2 lab run --current", "h2 agent a", "cargo build -p cli"] {
             assert_eq!(process_role(command, current), None, "{command}");
         }
+    }
+
+    use std::cell::Cell;
+    use takeover::Decision;
+
+    const TIMEOUT: Duration = Duration::from_secs(60);
+
+    fn game(pid: u32) -> Seen {
+        Seen {
+            key: GameKey::Pid(pid),
+            socket: Some(PathBuf::from(format!("/a/{pid}.sock"))),
+        }
+    }
+
+    /// One look that asks (request id 7) and answers every poll with
+    /// `decision`; also counts the asks and polls.
+    fn look(
+        games: &mut PlayerGames,
+        seen: &[Seen],
+        now: Instant,
+        decision: Option<Decision>,
+        asks: &Cell<u32>,
+        polls: &Cell<u32>,
+    ) -> Vec<Settled> {
+        games.observe(
+            seen,
+            now,
+            TIMEOUT,
+            |_| {
+                asks.set(asks.get() + 1);
+                Some(7)
+            },
+            |_, id| {
+                assert_eq!(id, 7);
+                polls.set(polls.get() + 1);
+                decision
+            },
+        )
+    }
+
+    #[test]
+    fn each_answer_settles_once_and_only_keep_running_frees_the_queue() {
+        for (decision, choice, holds) in [
+            (Decision::StopAndPause, Choice::StopAndPause, true),
+            (Decision::KeepRunning, Choice::KeepRunning, false),
+            (Decision::FinishThis, Choice::FinishThis, true),
+        ] {
+            let (asks, polls) = (Cell::new(0), Cell::new(0));
+            let mut games = PlayerGames::default();
+            let now = Instant::now();
+            let seen = [game(42)];
+            // The first look asks; the question is open and holds the queue.
+            assert!(look(&mut games, &seen, now, Some(decision), &asks, &polls).is_empty());
+            assert_eq!((asks.get(), polls.get()), (1, 0));
+            assert!(games.holds());
+            // The next look reads the answer.
+            assert_eq!(
+                look(&mut games, &seen, now, Some(decision), &asks, &polls),
+                [Settled {
+                    choice,
+                    answered: true
+                }]
+            );
+            assert_eq!(games.holds(), holds, "{choice:?}");
+            // Asked once per game: later looks neither ask nor poll.
+            for _ in 0..3 {
+                assert!(look(&mut games, &seen, now, Some(decision), &asks, &polls).is_empty());
+            }
+            assert_eq!((asks.get(), polls.get()), (1, 1));
+            // The game closes: forgotten, and the queue is free.
+            assert!(look(&mut games, &[], now, None, &asks, &polls).is_empty());
+            assert!(!games.holds());
+        }
+    }
+
+    #[test]
+    fn no_answer_in_time_picks_finish_this_one() {
+        let (asks, polls) = (Cell::new(0), Cell::new(0));
+        let mut games = PlayerGames::default();
+        let now = Instant::now();
+        let seen = [game(42)];
+        look(&mut games, &seen, now, None, &asks, &polls);
+        // Pending, or a game that doesn't answer the poll, waits out the
+        // dialog's timeout and the slack.
+        for decision in [Some(Decision::Pending), None] {
+            let later = now + TIMEOUT;
+            assert!(look(&mut games, &seen, later, decision, &asks, &polls).is_empty());
+        }
+        let expired = now + TIMEOUT + ANSWER_SLACK;
+        let settled = look(
+            &mut games,
+            &seen,
+            expired,
+            Some(Decision::Pending),
+            &asks,
+            &polls,
+        );
+        let unanswered = Settled {
+            choice: Choice::FinishThis,
+            answered: false,
+        };
+        assert_eq!(settled, [unanswered]);
+        assert!(games.holds());
+
+        // The game's own timeout, a dismissal it couldn't map, or a dialog
+        // it couldn't show settle at once.
+        for decision in [
+            Decision::TimedOut,
+            Decision::Declined,
+            Decision::Unavailable,
+            Decision::Allowed,
+        ] {
+            let mut games = PlayerGames::default();
+            look(&mut games, &seen, now, None, &asks, &polls);
+            assert_eq!(
+                look(&mut games, &seen, now, Some(decision), &asks, &polls),
+                [unanswered],
+                "{decision:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_game_that_cant_be_asked_yet_is_retried_until_the_timeout() {
+        let mut games = PlayerGames::default();
+        let now = Instant::now();
+        let starting = [Seen {
+            key: GameKey::Pid(42),
+            socket: None,
+        }];
+        let never = |_: &Path| -> Option<u64> { panic!("no socket to ask") };
+        let no_poll = |_: &Path, _| -> Option<Decision> { panic!("nothing asked") };
+        assert!(
+            games
+                .observe(&starting, now, TIMEOUT, never, no_poll)
+                .is_empty()
+        );
+        assert!(games.holds());
+        // Its socket appears before the timeout: asked then.
+        let asked = Cell::new(0);
+        let ask = |path: &Path| {
+            assert_eq!(path, Path::new("/a/42.sock"));
+            asked.set(asked.get() + 1);
+            Some(1)
+        };
+        games.observe(&[game(42)], now + TIMEOUT / 2, TIMEOUT, ask, no_poll);
+        assert_eq!(asked.get(), 1);
+
+        // One that never can be asked (or refuses the question) gets the
+        // default once the timeout passes.
+        let mut games = PlayerGames::default();
+        let refused = |_: &Path| None;
+        assert!(
+            games
+                .observe(&[game(42)], now, TIMEOUT, refused, no_poll)
+                .is_empty()
+        );
+        assert!(
+            games
+                .observe(&starting, now + TIMEOUT / 2, TIMEOUT, never, no_poll)
+                .is_empty()
+        );
+        assert_eq!(
+            games.observe(&starting, now + TIMEOUT, TIMEOUT, never, no_poll),
+            [Settled {
+                choice: Choice::FinishThis,
+                answered: false
+            }]
+        );
+        assert!(games.holds());
+    }
+
+    #[test]
+    fn between_jobs_a_look_asks_nothing_new_but_reads_open_questions() {
+        let (asks, polls) = (Cell::new(0), Cell::new(0));
+        let mut games = PlayerGames::default();
+        let now = Instant::now();
+        // A game opened between jobs is the start consent's to ask.
+        let no_poll = |_: &Path, _| -> Option<Decision> { panic!("nothing asked") };
+        assert!(games.refresh(&[game(1)], now, TIMEOUT, no_poll).is_empty());
+        assert!(!games.holds());
+        // A question asked during the job is still read after it ends.
+        look(&mut games, &[game(2)], now, None, &asks, &polls);
+        let settled = games.refresh(&[game(1), game(2)], now, TIMEOUT, |_, _| {
+            Some(Decision::KeepRunning)
+        });
+        assert_eq!(
+            settled,
+            [Settled {
+                choice: Choice::KeepRunning,
+                answered: true
+            }]
+        );
+        assert!(!games.holds());
+        assert_eq!(asks.get(), 1);
+    }
+
+    #[test]
+    fn the_notes_say_what_the_player_chose() {
+        let note = |choice, answered| Settled { choice, answered }.note();
+        assert!(note(Choice::StopAndPause, true).contains("chose Stop and pause"));
+        assert!(note(Choice::KeepRunning, true).contains("chose Keep running"));
+        assert!(note(Choice::FinishThis, true).contains("chose Finish this one"));
+        assert!(note(Choice::FinishThis, false).contains("gave no answer"));
+        assert!(note(Choice::KeepRunning, true).starts_with("player: opened a game and "));
     }
 }
