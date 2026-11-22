@@ -436,6 +436,15 @@ fn run_configured(
         cfg.sim_store = std::env::var_os(vfs::sim_store::STORE_ENV)
             .filter(|path| !path.is_empty())
             .map(PathBuf::from);
+        // A sim batch's warm N:: the template's slots, cloned in after the
+        // boot formats N: (docs/runtime/cache-slots.md, "Sim batches: a warm N:").
+        cfg.cache_seed = std::env::var_os(vfs::CACHE_SEED_ENV)
+            .map(|paths| {
+                std::env::split_paths(&paths)
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
     }
     // Converted Halo 1 maps follow the sandbox chosen per game (h1_variants).
     cfg.variants = h1_variants::mp_variants();
@@ -1949,6 +1958,11 @@ fn run_configured(
         let reads = k.vfs().map(|vfs| vfs.lock().unwrap_or_else(|e| e.into_inner()).guest_read_bytes())
             .unwrap_or_default();
         s.note_memory(cow, reads);
+        let path_reads = k
+            .vfs()
+            .map(|vfs| vfs.lock().unwrap_or_else(|e| e.into_inner()).guest_path_reads())
+            .unwrap_or_default();
+        s.note_lean(&loaded.runtime.memory(), path_reads, &opts.data_root);
     }
     let sim_upload_result = match &sim_mode {
         Some(_) if replaying => Ok(()),

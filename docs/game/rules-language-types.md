@@ -1,7 +1,7 @@
 # Rules language: declared labels and stronger types
 
-Status: Design, with slices 1 to 4 built: the IR's label and tag tables, their verifier rules, the VM's bound on a labelled set and `rules::labels::check` ("The IR", "The start gate"); the checker, declared labels, `T?` with narrowing, `zone` and `weapon` (`lang/check.rs`); the census builders and the host's gate ([rules-start-gate.md](rules-start-gate.md)); scenario maps, the check report's `labels` and the generator's minimal map ("The workbench"). Time, constants, `match` and fixes are not built. "The built language" below is the language before slice 2, which the gap table describes.
-Code: `crates/formats/rules/src/lang` (lexer, parser, `check.rs`, which gives every diagnostic, `lower.rs`, which lowers a checked script), `crates/formats/rules/src/ide`, `crates/formats/rules/src/ir.rs`, `crates/formats/rules/src/verify.rs`, `crates/formats/rules/src/labels.rs`. Tests: `cargo test -p rules`.
+Status: Design, with slices 1 to 9 built: the IR's label and tag tables, their verifier rules, the VM's bound on a labelled set and `rules::labels::check` ("The IR", "The start gate"); the checker, declared labels, `T?` with narrowing, `zone` and `weapon` (`lang/check.rs`); the census builders, the host's gate and the lobby's gate ([rules-start-gate.md](rules-start-gate.md)); scenario maps, the check report's `labels` and the generator's minimal map ("The workbench"); Live's hopper gate, a map census and `admin::check_pairs` ([rules-start-gate.md](rules-start-gate.md#hoppers-system-link-offline-and-theater)); the editor's Rust half: `rules::ide` on the checker's `Checked` script, every diagnostic with its fixes, code actions and rename in `ide/fix.rs`, `h2 rules lsp` and the `ide` route ("Diagnostics and the editor"); `time`, constants, `match`, the `carrier` enum and value functions ("Stronger typing"); the web workbench: the test map, its problems and "Add what the script needs", "What a map needs", quick fixes, rename and the Insert menu's label groups ("The workbench", "Diagnostics and the editor"). "The built language" below is the language before slice 2, which the gap table describes.
+Code: `crates/formats/rules/src/lang` (lexer, parser, `check.rs`, which gives every diagnostic, `lower.rs`, which lowers a checked script), `crates/formats/rules/src/ide`, `crates/formats/rules/src/ir.rs`, `crates/formats/rules/src/verify.rs`, `crates/formats/rules/src/labels.rs`; the workbench's web half in `web/src/lib/rules.ts`, `web/src/lib/rulesIde.ts`, `web/src/stats/rulesMonaco.ts` and `web/src/stats/RulesTest.tsx`. Tests: `cargo test -p rules`; `bun test test/rules.test.ts test/rulesIde.test.ts` in `web/`.
 Switch: none.
 
 A Forge label is a declared, typed name, and the checker catches the
@@ -246,25 +246,32 @@ A check that cannot fail is a warning: `p is never none here`.
 
 ### Time
 
+**Code**, `lang/check.rs` (`time_arith`, `Cx::option`), `lang/lex.rs`
+(`time_ticks`), `lang/lower.rs`.
+
 `time` counts ticks. Literals: `5s`, `300t`, `1.5s` (a whole number of
 ticks at `caps::TICKS_PER_SECOND`, or an error). `seconds(n)` turns an
 `int` into `time`; `whole_seconds(t)` and `ticks(t)` turn `time` into
-`int`. `time` adds, subtracts and compares with `time`, multiplies and
-divides by `int`, and `time / time` is `int`. A `timer` reads and writes
-as `time`. A `time` option is declared in whole seconds, holds whole
-seconds in the record's option bits exactly as an `int` option of the
-same range does, and reads as `time`. The IR stores no unit for it: the
-compiler ends a `time` option's label with ` (seconds)` ("Capture time
-(seconds)"), and every variant editor shows the label.
+`int`. `time` adds, subtracts, takes `%` and compares with `time`,
+multiplies and divides by `int`, and `time / time` is `int`. `min`,
+`max` and `clamp` take all `int`s or all `time`s and give the same.
+`ticks_held`, `round_time_left` and `now` give `time`. A `timer` reads
+and writes as `time`. A `time` option is declared in whole seconds,
+holds whole seconds in the record's option bits exactly as an `int`
+option of the same range does, and reads as `time`: lowering multiplies
+the read by 30. The IR stores no unit for it: the compiler ends a `time`
+option's label with ` (seconds)` (`check::SECONDS_SUFFIX`, "Capture time
+(seconds)"), or the option's name when it has no label, and every
+variant editor shows the label.
 
 ```text
-// built (siege.rules, oddball.rules)
+// without time
 option capture_time: int 5..60 = 20
 if ticks_held(zone, team 0) >= seconds(capture_time) { open(phase + 1) }
 player var held: int = 0
 if p.held >= seconds(1) { score(p, 1) }
 
-// this design
+// with time (siege.rules, oddball.rules)
 option capture_time: time 5s..60s = 20s
 if ticks_held(zone, team 0) >= capture_time { open(phase + 1) }
 player var held: time = 0t
@@ -300,31 +307,47 @@ that tests a registered marker writes
 
 ### Enums and match
 
+**Code**, `Cx::match_stmt` in `lang/check.rs`; `Stmt::Match` in
+`lang/lower.rs`.
+
 ```text
-// built (vip.rules)
+// without match
 if victim.role == Role.vip { ... } else if enemy { score(killer, 1) }
 
-// this design
+// with match (vip.rules)
 match victim.role {
     Role.vip { uncrown(victim) }
-    Role.none { if enemy { score(killer, 1) } }
+    Role.none { if let k = killer and enemy(k, victim) { score(k, 1) } }
 }
 ```
 
-`match` takes an enum value and one arm per variant, or an `else` arm.
-It lowers to compares and forward jumps.
+`match` takes an enum value and one arm per variant, or an `else` arm
+for the rest. An arm may name several variants, comma-separated
+(`Mode.b, Mode.c { }`); a variant in two arms is an error. It lowers to
+compares and forward jumps.
 `match on Role has no arm for Role.guard. Add "Role.guard { }" or "else { }".`
-`variant.engine` is the built-in enum `carrier`:
-`variant.engine == carrier.assault`, not `== 9`.
+`variant.engine` is the built-in enum `carrier`, whose variants are the
+names of `caps::CARRIERS` and erase to their engine indices:
+`variant.engine == carrier.assault`. `variant.engine == 9` is an error,
+`a carrier is named, not numbered: write carrier.assault`. `match` takes
+a `carrier` too.
 
 ### Constants
 
-`const last_phase = 2`, `const hold = 20s`. A constant's value is an
-expression over literals, other constants, `len(table)` and `+ - * / %`,
-folded by the checker. Constants are allowed wherever a literal is: option ranges and defaults, initial values, table cells, label
-requirements. Folding makes these compile errors:
+**Code**, `Cx::eval_const` and `Cx::fold` in `lang/check.rs`.
 
-`ladder[12]: ladder has 12 rows, 0 to 11.` (a script error at run time in the built language)
+`const last_phase = 2`, `const hold = 20s`. A constant's value is an
+expression over `int` and `time` literals, other constants,
+`len(table)`, unary `-` and `+ - * / %` with the units of "Time",
+folded by the checker in 64 bits and checked against the `int` range.
+Constants are allowed wherever a literal is: option ranges and defaults,
+initial values, table cells, label requirements. A constant that refers
+to itself, or names anything but a constant, is a `decl` error. A
+constant index into a table or a numbered label is checked against its
+rows or numbers. Folding makes these compile errors (`const.range`,
+`const.zero`):
+
+`ladder[12]: ladder has 12 rows, 0 to 11.` (a script error at run time without constants)
 `capture[2] is outside "numbered 0..1".`
 `division by zero in the constant "step".`
 
@@ -332,9 +355,12 @@ requirements. Folding makes these compile errors:
 
 `fn rival(a: player, b: player) -> bool = (variant.team_play and a.team != b.team) or (not variant.team_play and a != b)`
 
-A value function is one expression, inlined at each call. A block
-function has no value. `koth.rules` and
-`territories.rules` each repeat that predicate twice.
+A value function states its type after `->` and is one expression
+after `=`, inlined at each call; its arguments are checked as a block
+function's are. A block function has no value: using one as a value is
+an error, as is calling a value function as a statement.
+`koth.rules` and `territories.rules` each declare `rival`, and
+`vip.rules` `enemy`.
 `rival takes a player, and lead may be none here.`
 
 ### let, options, variables, tables, sets
@@ -356,21 +382,53 @@ function has no value. `koth.rules` and
 
 ### Messages
 
+**Code**: `lang/check.rs` (`Cx::template`, `Cx::hole`), `lang/lower.rs`
+(`Cx::message`), `caps.rs` (`Hole`, `pieces`, `holes`, `fill`),
+`verify.rs` (`message_runs`), `vm.rs` (`Run::hole`), `fake.rs`
+(`FakeMessage`).
+
 `message(to, "{p} scored, {n} to go")` checks each hole against the
-names in scope. A hole shows a `player`, `team`, `int`, `time` or enum.
+names in scope. A hole holds one name: a local, a global, an option or
+a constant. It shows a `player`, `team`, `int`, `time` or enum; a
+`player?` or `team?` shows once narrowed. A message has at most four
+holes, and `{{` and `}}` write a brace. Each problem is a `text.hole`
+error at the hole:
 
 `{q} in this message is not a name here. Names in scope: p, n.`
 `an object can't be shown in a message. A message shows a player, a team, an int, a time or an enum.`
+`killer may be none here, and a message shows a player. Show it inside "if let" or after a test that it is not none.`
+`{p.team} is not a name. A hole holds one name, as {p}; write {{ for a brace.`
+`this { opens a hole with no }. Write {{ for a brace.`
+`a message shows at most 4 values, and this one has 5.`
 
-The text is stored with typed holes (`{player} scored, {int} to go`).
-The arguments reach the VM as `fmt_player`, `fmt_team`, `fmt_int`,
-`fmt_time` and `fmt_enum` calls directly before the `message` call:
-VM-only entries in `caps::ENTRIES`, which queue at most four values the
-next `message` takes. The verifier checks that each run of `fmt_*` calls
-is followed at once by a `message` whose holes match it in count, order
-and type. The entry's own arguments are those of `message(to, text)` as
-the message lane leaves it in `caps::ENTRIES`; this design adds only the
-holes.
+The text is stored with typed holes (`{player} scored, {int} to go`),
+literal braces doubled; a text with no holes is stored as written. The
+lowering evaluates the holes' names, then writes the template's string
+index, then emits one `fmt_player`, `fmt_team`, `fmt_int`, `fmt_time` or
+`fmt_enum` call per hole, in order, then the `message` call, with
+nothing between them. The `fmt_*` entries are VM-only entries in
+`caps::ENTRIES` with no result that a script cannot call by name
+(`caps::is_form`). The VM queues each value, at most four, and hands
+them to the next `message` after the entry's own arguments:
+`message(to, text)` reaches the game as `[to, text, values...]`
+(`[text, values...]` for `all`). A player, team or int reaches it as
+itself, a time as its ticks, and an enum as its variant's name
+(`Arg::Text`); the game reads which by the template's holes.
+`caps::fill` fills a template and `caps::show_time` shows a time as
+`m:ss`. The fake logs each message in `FakeGame::messages`: to whom, the
+template, the values and the line (`player 1 scored`).
+
+The verifier's message rule (`verify::message_runs`): each run of
+`fmt_*` calls directly follows the `Const` that writes the text of the
+`message` call directly after it; no jump or loop end lands inside the
+run or on the message; the run has at most four calls; and the text is a
+template whose holes match the run in count, order and type. A message
+with no run whose text a `Const` writes just before it shows a template
+with no holes. `fmt_enum` takes a register of any enum type. The
+refusals are `Fault::Unshown`, `Holes`, `Template`, `IntoHoles`,
+`NotTemplate` and `HoleTypes`. The entry's own arguments are those of
+`message(to, text)` as the message lane left it in `caps::ENTRIES`; this
+design adds only the holes.
 
 ### Capabilities
 
@@ -406,10 +464,26 @@ a warning for one nothing uses:
 ## Diagnostics and the editor
 
 Every diagnostic has a stable `code`, a range, a message and, where one
-exists, fixes: text edits the editor applies. `ide::Diagnostic` gains
-`code` and `fixes`; a new `actions` operation returns the fixes at a
-range (LSP `textDocument/codeAction`), and `rename` renames a
-declaration and its uses.
+exists, fixes: text edits the editor applies. `ide::Diagnostic` carries
+the checker's `code` and its `fixes` (`ide/fix.rs`); `ide::actions`
+returns the fixes at a range (LSP `textDocument/codeAction`), and
+`ide::rename` renames a declaration and its uses. `h2 rules lsp`
+(`crates/apps/cli/src/rules_lsp.rs`) answers both, and Live's
+`POST /v1/rules/ide` has them as the `actions` and `rename` operations.
+The web workbench's editor (**Code**, `web/src/stats/rulesMonaco.ts`)
+asks `actions` over the selection for Monaco's quick fixes (Ctrl/Cmd+.,
+the first preferred) and `rename` for F2, which shows a refused name's
+reason; the edits are the route's (`applyEdits` in
+`web/src/lib/rulesIde.ts` applies them the same way). The check's
+warnings are markers beside its errors and are listed under them.
+
+The editor, the workbench's check and `h2 rules check` list every
+diagnostic `rules::diagnose` gives, errors and warnings, not only the
+first error. `rules::ide` reads the types from the checker's `Checked`
+script; `ide/model.rs` resolves names and works out no type of its own.
+A fix is offered only where its edit is plain: `Wrap in for each` only
+for a statement on one line, `Add numbered` only when the label is not
+numbered.
 
 | Code | Message | Fixes |
 |---|---|---|
@@ -433,8 +507,9 @@ declaration and its uses.
 | `cap.missing`, `cap.unused` (warning) | "Capabilities" | Add to `requires`; Remove from `requires` |
 | `event.args`, `event.label` | `on enter gives 2 arguments (zone, object); this handler names 3.` `core is an object; on enter takes a zone label.` | none |
 
-**Hover** shows a type on every name: `lead: player?`, and
-`lead: player (not none here: checked on line 41)` where it is narrowed.
+**Hover** shows a type on every name: `lead: player?`. Where the
+checker narrows it, a second line says so:
+``Here `lead: player` (not none here: checked on line 41).``
 A label's hover is its declaration, then what the script sees, what a
 map needs in Forge's words, and its uses:
 
@@ -448,10 +523,11 @@ Used 2 times.
 ```
 
 An API entry's hover gives the front-end signature
-(`inside(p: player, z: zone) -> bool`).
+(`inside(player, zone) -> bool`, from `lang::sig`).
 
-**Completion** asks the checker for the type wanted at the caret
-(`Checked::wanted_at`) and ranks by it; nothing is hidden. In
+**Completion** works out the type wanted at the caret from the call's
+front-end signature (`lang::sig`) or the user function's parameter, and
+ranks by it; nothing is hidden. In
 `inside(p, |)`: zone labels, then locals and members of type `zone`,
 then `zone?` values (their detail says "may be none"), then set labels
 with `[`, then the rest. After `for each`, `count(`, `first(` and
@@ -498,25 +574,47 @@ with the start gate's check.
   one and an Oddball match has its ball; its players walk into every thing but a starting
   location. The match's scenario carries the map, so a saved match runs
   again.
-- **The page** (`web/src/stats/RulesTest.tsx`) lists the map's things
-  under the players, grouped by label, and shows each missing
-  requirement as a problem with a button: **Add what the script needs**
-  merges the report's `minimal` list into the map. An event's zone or
-  object is picked by label and number ("capture 0"), not by id.
+- **The page.** **Code**, `web/src/stats/RulesTest.tsx` (`MapEditor`
+  in the hand editor) over `web/src/lib/rules.ts`. A hand-edited match
+  with no map of its own plays on the script's minimal map, and **Make
+  it my map** copies that map in to edit. The map's things are listed
+  under the players, grouped by label (`mapGroups`), each with its
+  number, team and class (blank: the one its label suggests,
+  `suggestedClass`); **Add thing** adds one under a label with the next
+  free number (`newThing`), and **Use the smallest map** drops the map
+  again. Each requirement the map misses is a problem: the run's `map`
+  texts once it answers, and before that the page's own reading of the
+  same check (`mapShort`, for teams 0 and 1, the fake game's). **Add
+  what the script needs** merges the report's `minimal` things into the
+  map (`withNeeds`): a minimal thing the map has already (same label,
+  number and team, of a class the label takes) is kept, the rest are
+  added with handles past the map's own, and a per-team label gets a
+  thing for each team in play. A run the map fails shows the problems
+  in the match's results and nothing ran. An event's zone or object is
+  picked by label and number ("capture 0", "base (team 1)", "barrier
+  #2"; `thingName`, `thingChoices`), with the seated players' own
+  objects for an `enter` or `leave`; with no map of its own the names
+  are the minimal map's. The draft keeps the map, an empty one too.
 - **The check report** (`workbench::CheckReport`, **Code**) has `labels`
   (`workbench::LabelLine`): each declared label's text, kind, `min`,
   `max` (absent when unbounded), `single`, `numbered`, number range,
   `per_team` and `needs`, its sentence in Forge's words
   (`labels::describe`), read from the IR's label table; and `minimal`,
   the smallest passing map as scenario things. The CLI's `h2 rules
-  check` prints the sentences under "a map needs". The page and the
-  variant page show it as "What a map needs" (slice 8).
-- **Insert.** The Declarations menu (`web/src/lib/rulesIde.ts`,
-  `DECLARATIONS`) has a Labels group: one zone, one object, a set of
-  objects, a numbered set of zones, spawn areas, and the built-in flag
-  labels from the completion route. A second group, "In the test map",
-  offers a declaration for each scenario label the script has not
-  declared, with the kind its class suggests.
+  check` prints the sentences under "a map needs". The workbench page
+  shows it as "What a map needs" beside the problems (**Code**,
+  `MapNeeds`): each label's text, its kind in words and its sentence.
+  The variant page is to show it too (**Design**).
+- **Insert.** **Code**, `web/src/lib/rulesIde.ts`. The Declarations
+  menu has a Labels group (`LABEL_ITEMS`): one zone, one object, a set
+  of objects, a numbered set of zones, spawn areas, and the built-in
+  flag labels as whole declarations, from the completion route at the
+  name of a new `label` line (`MENU_PROBES`, `flagLabelItems`) or the
+  page's copy of them (`FLAG_LABELS`). A third group, "In the test
+  map", offers a declaration for each label of the test map the script
+  has not declared (`mapLabelItems`): the kind the things' class
+  suggests, a set when there are several, `numbered` when they all have
+  numbers, and the map text when it is not a name.
 
 ## The IR
 
@@ -554,8 +652,8 @@ group.
 - A front end that writes IR directly declares its labels the same way:
   Firefight's `ZONE_LABEL` (`crates/formats/firefight/src/script.rs`) is
   kind object.
-- `caps::ENTRIES` gains the `fmt_*` entries ("Messages"), and nothing
-  else.
+- `caps::ENTRIES` holds the `fmt_*` entries, numbers 60 to 64
+  ("Messages"); the entry table changes in nothing else.
 - A changed table changes every blob's bytes and hash. The built-ins
   compile at first use (`rules::builtin`), so theirs follow the
   compiler; a variant or a saved script is made again from its source.
@@ -566,14 +664,14 @@ The 12 scripts in `crates/formats/rules/src/builtin`, the examples in
 rules-engine.md and the h2-rules skill, and the scripts in
 `crates/formats/rules/tests` are rewritten by hand in the slice that
 changes the form they use (slices 2 and 5). Their tests keep the calls
-and scores they expect, and the map texts they place. Siege, whose
-built text is quoted in the table at the top and under "Time":
+and scores they expect, and the map texts they place. Siege's labels
+and phases (`siege.rules`):
 
 ```text
 const last_phase = 2
 label barrier: objects numbered
-label attack: spawns numbered 0..2
-label defend: spawns numbered 0..2
+label attack: spawns numbered 0..last_phase
+label defend: spawns numbered 0..last_phase
 label capture: zones numbered 0..1 = "zone"
 label core: object
 label goal: zone
@@ -614,6 +712,8 @@ on enter(goal, o) {
 - New keywords: `label`, `const`, `match`, `is`. Type and kind words
   (`zone`, `time`, `weapon`, `objects`, `numbered`, `per`) are read by
   place and stay usable as names, so `let zone = ...` compiles.
+  `carrier` followed by `.` names a carrier; elsewhere it is the
+  script's `carrier` line.
 - A script declares at most 64 labels. A label's members are at most
   256. Each read of a label costs its `at most` in the worst-tick
   estimate, so a script that reads a set every tick declares one; the
@@ -638,12 +738,12 @@ Every slice leaves the tree green and lands by itself. Paths are under
 | 2 (built) | The checker and labels | `lang/check.rs`, `lang/sig.rs`, `lang/types.rs` (new); `lang/ast.rs`, `lang/parse.rs`, `lang/lex.rs`, `lang/lower.rs`, `lang/mod.rs`; `builtin/*.rules`, `builtin/mod.rs`, `crates/formats/rules/tests/*`; the scripts in `docs/game/rules-engine.md` and `.claude/skills/h2-rules/*` | one test per diagnostic code for labels, `T?` and narrowing, `zone`, `weapon`, `is` and handlers by label; `sig` erases to `caps::ENTRIES`; a script with five errors reports five; every built-in compiles, verifies, fits the budget and passes its scenario tests | the string label forms are gone from the grammar and the tree; a built-in's label table carries its declarations; `lower.rs` makes no type decision | 1 |
 | 3 (built) | The host gate | `crates/extensions/game/src/rules/runtime.rs`, `rules/guest.rs`, `rules/feature.rs`; `crates/formats/forge-doc/src/labels.rs` (`of_file`, `of_game`, which build a `rules::labels::Census`); `crates/extensions/agent-proto/src/rules.rs` (`blocked`); `crates/apps/boot/src/registration.rs` (the `film` argument) | over invented guest memory and a Forge document: a map that lacks `goal` gives `Status::Blocked`, one `Call::End` and no VM; a map that has it starts; `film` skips the check; a Forge session refuses without ending; `of_file` equals `of_game` on one fixture; `rules.state` lists the problems | `Runtime::start` runs the check and a blocked game ends in its first tick | 1 |
 | 4 (built) | Scenario maps | `scenario.rs`, `workbench.rs`, `fake.rs`, `sim.rs`; the `run`, `check` and `simulate` wire types in `crates/live/live-proto/src/rules.rs` and their use in `crates/live/live-server/src/rule_scripts.rs` | a scenario with a map runs Siege's phases on the fake; a missing label is a `map` problem and no run; the check report lists `labels` and `minimal` from a hand-built blob; a generated match passes the check | `h2 rules run`, `POST /v1/rules/run` and `/v1/rules/simulate` take a map with classes; the report has `labels` | 1; the scenario lane and the generator lane |
-| 5 | Time, constants, match, value functions | the `lang/` files, the built-ins, the tests and the doc scripts of slice 2 | one test per diagnostic code; a `time` option's bits equal an `int` option's of the same range, and its label ends ` (seconds)`; the built-ins' scenario tests | the fixtures of "Stronger typing" compile or fail with the texts on this page; the built-ins use `time`, `const` and `match` | 2 |
-| 6 | The editor's Rust half | `ide/*`, `crates/apps/cli/src/rules_lsp.rs`; the `ide` route's `actions` and `rename` in `rule_scripts.rs` | hover, completion order in `inside(p, ` and after `is`, tokens, definition, references and rename for a label; each fix applied gives a script without that error; `ide/model.rs` holds no type inference | `rules::ide` reads `Checked`; `h2 rules lsp` answers `codeAction` and `rename` | 2; beside 5 |
-| 7 | The lobby gate | `crates/extensions/game/src/rules/gate.rs` (new), `rules/mod.rs`, `crates/extensions/game/src/lobby_mode.rs` (`start_refused`, the `LOBBY_VARIANT_PANEL` hook), `lobby_status.rs`, `lobby_mode/tests.rs` | over invented guest memory and a map fixture: a changed map, Forge map or variant runs the check once; a blocked pair answers `REFUSED_STATE` and the status line's text, with `(and n more)`; Forge mode is not held; a host block becomes the lobby's verdict; `rules.state` lists the problems in the lobby | Start Game does nothing on a blocked pair and the status line says why | 3 |
-| 8 | The web workbench | `web/src/lib/rules.ts`, `web/src/lib/rulesIde.ts`, `web/src/stats/rulesMonaco.ts`, `web/src/stats/RulesTest.tsx`, `web/src/stats/Rules.tsx`, `web/src/stats/RulesEditor.tsx` and their tests | pure-half tests: the scenario map round-trips, "Add what the script needs" satisfies the report's labels, events name things by label, the Insert groups; a code action applies its edits | the page shows map problems, quick fixes, rename and "What a map needs" | 4, 6 |
-| 9 | The hopper gate | `crates/live/live-server/src/admin.rs` (`check_pairs`), `crates/live/live-proto/src/map_census.rs` (new), the census route in `crates/live/live-server/src/content.rs` and `http.rs`, `crates/apps/cli/src/live_maps.rs` (`census`), `docs/live/live-api.md` | an edit with a blocked pair, an unknown script or a map with no census is refused by name, and one with good pairs publishes; a new census lists the entries it blocks; the census event applies in both homes | no published hopper holds a blocked pair | 1, 3 (`Census`); the context-policy lane |
-| 10 | Message templates | `lang/check.rs`, `lang/lower.rs` (the template), `caps.rs` (the `fmt_*` entries), `verify.rs` (the run rule), `vm.rs`, `fake.rs` | each `text.hole` error; a `fmt_*` run without its `message`, or with the wrong types, is refused; the fake logs a message with its arguments | `message(to, "{p} scored")` reaches the fake with the player | 5; the message lane |
+| 5 (built) | Time, constants, match, value functions | the `lang/` files, the built-ins, the tests and the doc scripts of slice 2 | one test per diagnostic code; a `time` option's bits equal an `int` option's of the same range, and its label ends ` (seconds)`; the built-ins' scenario tests | the fixtures of "Stronger typing" compile or fail with the texts on this page; the built-ins use `time`, `const` and `match` | 2 |
+| 6 (built) | The editor's Rust half | `ide/*`, `crates/apps/cli/src/rules_lsp.rs`; the `ide` route's `actions` and `rename` in `rule_scripts.rs` | hover, completion order in `inside(p, ` and after `is`, tokens, definition, references and rename for a label; each fix applied gives a script without that error; `ide/model.rs` holds no type inference | `rules::ide` reads `Checked`; `h2 rules lsp` answers `codeAction` and `rename` | 2; beside 5 |
+| 7 (built) | The lobby gate | `crates/extensions/game/src/rules/gate.rs` (new), `rules/mod.rs`, `crates/extensions/game/src/lobby_mode.rs` (`start_refused`, the `LOBBY_VARIANT_PANEL` hook), `lobby_status.rs`, `lobby_mode/tests.rs` | over invented guest memory and a map fixture: a changed map, Forge map or variant runs the check once; a blocked pair answers `REFUSED_STATE` and the status line's text, with `(and n more)`; Forge mode is not held; a host block becomes the lobby's verdict; `rules.state` lists the problems in the lobby | Start Game does nothing on a blocked pair and the status line says why | 3 |
+| 8 (built) | The web workbench | `web/src/lib/rules.ts`, `web/src/lib/rulesIde.ts`, `web/src/stats/rulesMonaco.ts`, `web/src/stats/RulesTest.tsx`, `web/src/stats/Rules.tsx`, `web/src/stats/RulesEditor.tsx` and their tests | pure-half tests: the scenario map round-trips, "Add what the script needs" satisfies the report's labels, events name things by label, the Insert groups; a code action applies its edits | the page shows map problems, quick fixes, rename and "What a map needs" | 4, 6 |
+| 9 (built) | The hopper gate | `crates/live/live-server/src/admin.rs` (`check_pairs`), `crates/live/live-proto/src/map_census.rs` (new), the census route in `crates/live/live-server/src/content.rs` and `http.rs`, `crates/apps/cli/src/live_maps.rs` (`census`), `docs/live/live-api.md` | an edit with a blocked pair, an unknown script or a map with no census is refused by name, and one with good pairs publishes; a new census lists the entries it blocks; the census event applies in both homes | no published hopper holds a blocked pair | 1, 3 (`Census`); the context-policy lane |
+| 10 (built) | Message templates | `lang/check.rs`, `lang/lower.rs` (the template), `caps.rs` (the `fmt_*` entries), `verify.rs` (the run rule), `vm.rs`, `fake.rs` | each `text.hole` error; a `fmt_*` run without its `message`, or with the wrong types, is refused; the fake logs a message with its arguments | `message(to, "{p} scored")` reaches the fake with the player | 5; the message lane |
 
 Slice 1 runs first; then 2, 3 and 4 side by side; then 5, 6, 7 and 9;
 then 8 and 10. Slices 4 and 6 each edit `rule_scripts.rs`, 3 and 7 the

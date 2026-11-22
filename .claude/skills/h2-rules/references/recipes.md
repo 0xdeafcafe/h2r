@@ -40,20 +40,47 @@ carrier's stock record is free-for-all, so the betrayal branch needs
 
 Expected: player 0 ends on 0 (+1, then -1).
 
+## A message with values
+
+`message(to, text)` needs `requires hud.message`, and a host cannot make
+it yet (untraced); scenarios show it. Holes name values in scope: a
+player, a team, an int, a time or an enum. A `killer` may be `none`, so
+bind it first.
+
+```text
+option kill_points: int 1..5 = 1 "Kill points" "Points for each kill"
+
+on kill(victim, killer) {
+    if let k = killer {
+        if k != victim {
+            score(k, kill_points)
+            let side = k.team
+            message(victim, "{k} got you")
+            message(side, "{k} scored {kill_points}")
+        }
+    }
+}
+```
+
+Scenario: two players and a kill. `h2 rules run` lists two `message`
+calls, each with the template (`{player} got you`) and then the values
+(`player 1`). `{{` writes a brace; `{k.team}` is an error, as a hole
+holds one name.
+
 ## Score for time held (a per-second counter)
 
 A counter in a player variable, paid when it reaches a second. Oddball and
 King of the Hill use this; the objective reads are not hostable yet.
 
 ```text
-player var held: int = 0
+player var held: time = 0t
 
 on tick {
     for each players p where p.alive {
-        p.held = p.held + 1
-        if p.held >= seconds(1) {
+        p.held = p.held + 1t
+        if p.held >= 1s {
             score(p, 1)
-            p.held = 0
+            p.held = 0t
         }
     }
 }
@@ -65,22 +92,23 @@ for 31 ticks (`"ticks": [{}, {}, ...]`) and check the score is 1.
 ## A timer
 
 A `timer` is a global of ticks left; it counts down, fires `on timer` at 0
-and stays stopped until set again.
+and stays stopped until set again. It reads and writes as `time`, so set it
+from a `time` option or literal (`wave = 8s`), or `seconds(n)` of an `int`.
 
 ```text
-option wave_seconds: int 3..15 = 8 "Wave" "Seconds between respawn waves"
+option wave_time: time 3s..15s = 8s "Wave" "Time between respawn waves"
 global var wave: timer
 
-on round_start { wave = seconds(wave_seconds) }
+on round_start { wave = wave_time }
 
 on timer(wave) {
     for each players p where not p.alive { respawn(p) }
-    wave = seconds(wave_seconds)
+    wave = wave_time
 }
 ```
 
 Scenario: start the run, put a dead player in (`"alive": false`) and run
-`wave_seconds * 30 + 1` ticks (write the `ticks` array with a one-line
+`8 * 30 + 1` ticks at the default (write the `ticks` array with a one-line
 script, not by hand). `h2 rules run` shows a `respawn` call on the
 tick the timer fires. A round clock is the same shape:
 `on timer(clock) { end_round(team 1) }`.
@@ -94,7 +122,7 @@ This is Infection's tail:
 ```text
 on tick {
     if count(players where not infected) == 0 { end_round(team 1) }
-    else if round_time_left() == 0 { end_round(team 0) }
+    else if round_time_left() == 0t { end_round(team 0) }
 }
 ```
 
@@ -181,7 +209,24 @@ on round_start {
 }
 
 on quit(p) { if p.role == Role.vip { uncrown(p) } }
+
+// A kill of someone on another team.
+fn enemy(killer: player, victim: player) -> bool = killer != victim and killer.team != victim.team
+
+on kill(victim, killer) {
+    match victim.role {
+        Role.vip {
+            uncrown(victim)
+            if let k = killer and enemy(k, victim) { score(k, 3) }
+        }
+        Role.none { if let k = killer and enemy(k, victim) { score(k, 1) } }
+    }
+}
 ```
+
+`match` runs the arm of the role; a role with no arm and no `else { }`
+is a compile error, so adding a role to the enum shows every place to
+handle it. `enemy` is a value function, inlined at each call.
 
 A grant ends at `revoke`, at quit and at the round's end, never exceeds
 255 uses, and a ranked session refuses it. `on edit(p, o)` runs when a
@@ -191,7 +236,8 @@ granted power was used. A scenario can run only the grant bookkeeping:
 
 ## A table-driven ladder
 
-From `gun_game.rules`: a table gives per-rung data, and `min` and `len` keep
+From `gun_game.rules`: a table gives per-rung data, and `min` and a constant
+of `len` keep
 the index in range (a row out of range is a script error).
 
 ```text
@@ -202,13 +248,15 @@ table ladder: (weapon: weapon) = [
 ]
 player var level: int = 0
 
-on spawn(p) { set_loadout(p, ladder[min(p.level, len(ladder) - 1)].weapon, none) }   // player.weapons
+const top = len(ladder) - 1
+
+on spawn(p) { set_loadout(p, ladder[min(p.level, top)].weapon, none) }   // player.weapons
 
 on kill(victim, killer) {
     if killer != none and killer != victim {
         killer.level = killer.level + 1
         score(killer, 1)
-        if killer.level >= len(ladder) { end_round(killer.team) }
+        if killer.level > top { end_round(killer.team) }
     }
 }
 ```
@@ -224,28 +272,28 @@ player (`none` when dropped). `oddball.rules` scores a carrier per second
 and resets an idle ball; the structure:
 
 ```text
-object var idle: int = 0
-player var held: int = 0
+object var idle: time = 0t
+player var held: time = 0t
 
-on pickup(p, o) { if is_objective(o) { o.idle = 0 } }
+on pickup(p, o) { if is_objective(o) { o.idle = 0t } }
 
 on tick {
     for each objectives b {
         let p = b.carrier
         if p != none {
-            p.held = p.held + 1
-            if p.held >= seconds(1) {
+            p.held = p.held + 1t
+            if p.held >= 1s {
                 score(p, 1)
-                p.held = 0
+                p.held = 0t
             }
         } else {
-            b.idle = b.idle + 1
+            b.idle = b.idle + 1t
         }
     }
 }
 ```
 
-Two statements share a line only with `;`: `score(p, 1); p.held = 0`.
+Two statements share a line only with `;`: `score(p, 1); p.held = 0t`.
 Spawning and returning objectives (`spawn_objective`, `reset_objective`) and
 asking whether a player stands in a zone (`inside`) are not hostable yet;
 the CTF, Oddball, King and Territories scripts call them and say so in
@@ -296,4 +344,5 @@ machine. `random(0)` is 0 with no draw.
 `options` of 0 is every option at its `lo`, not its default; leave it out
 to take defaults. A script with an option `phase_time: int 60..600` and one
 `bool` has `ceil(log2(541)) = 10` bits plus 1: its raw bits are
-`(phase_time - 60) | (flag << 10)`.
+`(phase_time - 60) | (flag << 10)`. A `time` option of `60s..600s` takes
+the same bits, in seconds.

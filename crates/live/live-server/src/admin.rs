@@ -976,6 +976,145 @@ pub fn check_scripts(
     Ok(())
 }
 
+/// The hopper gate's check of each entry's (script, map) pair
+/// (docs/game/rules-start-gate.md): every entry of each hopper in
+/// `hoppers` whose variant runs a rules script, against the census Live
+/// holds for the entry's map and the teams the record's team setting
+/// gives (team play with the stored team count, 0 meaning the map's own
+/// taken as 2; none without team play). `only_map` limits it to the
+/// entries on one map. `ir_of` finds a script's IR by the record's hash
+/// prefix; `census_of` a map's census by the entry's map id. Returns each
+/// entry with a problem: an unknown script, a script with labels or tags
+/// on a map with no census, or the problems `rules::labels::check` finds.
+/// A script that declares no label and no tag needs no census.
+pub fn blocked_pairs(
+    file: &HopperFile,
+    hoppers: &[usize],
+    only_map: Option<u32>,
+    ir_of: impl Fn(&str) -> ApiResult<rules::ir::Ir>,
+    census_of: impl Fn(u32) -> Option<rules::labels::Census>,
+) -> ApiResult<Vec<live_proto::map_census::BlockedEntry>> {
+    use variants::ext::{Block, Mode};
+    let mut out = Vec::new();
+    for &i in hoppers {
+        let hopper = file.hopper(i).map_err(hopper_error)?;
+        for j in 0..(hopper.record_count as usize).min(MAX_RECORDS) {
+            let slot = file.slot(i, j).map_err(hopper_error)?;
+            let Ok(v) = variants::record::GameVariant::from_bytes(&slot[VARIANT_AT..RECORD]) else {
+                continue;
+            };
+            let Block::Ext(e) = v.ext_state() else {
+                continue;
+            };
+            if e.script.mode != Mode::Rules {
+                continue;
+            }
+            let map_id = file.record(i, j).map_err(hopper_error)?.id;
+            if only_map.is_some_and(|m| m != map_id) {
+                continue;
+            }
+            let prefix: String = e.script.prefix.iter().map(|b| format!("{b:02x}")).collect();
+            let problems: Vec<String> = match ir_of(&prefix) {
+                Err(err) => vec![err.message],
+                Ok(ir) if ir.labels.is_empty() && ir.tags.is_empty() => continue,
+                Ok(ir) => match census_of(map_id) {
+                    None => vec![format!(
+                        "Live has no census for map {map_id}, and the script needs labels or \
+                         tags checked; an admin sets it with `h2 live maps census`"
+                    )],
+                    Some(census) => {
+                        let teams: Vec<u8> = if v.team_play() {
+                            let n = match v.get(variants::record::TEAM_COUNT) {
+                                Some(n @ 2..=8) => n as u8,
+                                _ => 2,
+                            };
+                            (0..n).collect()
+                        } else {
+                            Vec::new()
+                        };
+                        rules::labels::check(&ir, &census, &teams)
+                            .into_iter()
+                            .map(|p| p.text)
+                            .collect()
+                    }
+                },
+            };
+            if !problems.is_empty() {
+                out.push(live_proto::map_census::BlockedEntry {
+                    hopper: i + 1,
+                    entry: j + 1,
+                    map_id,
+                    problems,
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The hopper edit's gate: no entry of a hopper the patch names may pair
+/// a script with a map it does not fit ([`blocked_pairs`]). Blocked
+/// entries refuse the edit with `invalid`, naming the playlist, the
+/// entry, the map and each problem's text.
+pub fn check_pairs(
+    file: &HopperFile,
+    patch: &HoppersPatch,
+    ir_of: impl Fn(&str) -> ApiResult<rules::ir::Ir>,
+    census_of: impl Fn(u32) -> Option<rules::labels::Census>,
+) -> ApiResult<()> {
+    let hoppers: Vec<usize> = patch
+        .hoppers
+        .iter()
+        .filter(|h| !h.clear)
+        .map(|h| h.index)
+        .collect();
+    let blocked = blocked_pairs(file, &hoppers, None, ir_of, census_of)?;
+    if blocked.is_empty() {
+        return Ok(());
+    }
+    let lines: Vec<String> = blocked
+        .iter()
+        .map(|b| {
+            format!(
+                "playlist {} entry {} (map {}): {}",
+                b.hopper,
+                b.entry,
+                b.map_id,
+                b.problems.join("; ")
+            )
+        })
+        .collect();
+    Err(invalid(format!(
+        "the script does not fit the map: {}",
+        lines.join(" | ")
+    )))
+}
+
+/// The published hopper entries on `map_id` that the census Live holds
+/// for it blocks. Empty when no hopper file is published.
+pub(crate) async fn blocked_by_census(
+    live: &Live,
+    map_id: u32,
+) -> ApiResult<Vec<live_proto::map_census::BlockedEntry>> {
+    let bytes = match live.file(live_proto::HALO_2_TITLE_ID, HALO_2_HOPPER_FILE).await {
+        Ok((_, bytes)) => bytes,
+        Err(e) if e.code == ErrorCode::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    let file = HopperFile::parse_legacy(&bytes)
+        .map_err(|e| invalid(format!("the published hopper file does not parse ({e})")))?;
+    let used: Vec<usize> = (0..HOPPERS)
+        .filter(|&i| file.is_unused(i).is_ok_and(|u| !u))
+        .collect();
+    blocked_pairs(
+        &file,
+        &used,
+        Some(map_id),
+        |p| live.slot_script_ir(p),
+        |id| live.map_census(id),
+    )
+}
+
 /// The 0x37c bytes of entry `j` of hopper `i` built from a built-in
 /// variant: map id, weight and variant, every other byte zero (as the
 /// default set writes its entries).
@@ -1094,6 +1233,12 @@ pub async fn put_hopper(
         serde_json::from_slice(&bytes).map_err(|e| invalid(format!("hopper: {e}")))?;
     apply_patch(&mut file, &patch)?;
     check_scripts(&file, &patch, |prefix, context| live.check_slot_script(prefix, context))?;
+    check_pairs(
+        &file,
+        &patch,
+        |prefix| live.slot_script_ir(prefix),
+        |id| live.map_census(id),
+    )?;
     let built = file.build_checked().map_err(|e| invalid(e.to_string()))?;
     let published = publish(&live, title, HALO_2_HOPPER_FILE, &built).await?;
     let doc = hoppers_doc(&live, &file)?;
@@ -1402,6 +1547,51 @@ mod tests {
         cleared.hoppers[0].records = None;
         cleared.hoppers[0].clear = true;
         assert!(check_scripts(&file, &cleared, |_, _| Err(invalid("no"))).is_ok());
+    }
+
+    #[test]
+    fn a_pair_is_held_to_the_maps_census() {
+        let source = |name: &str| {
+            rules::builtin::ALL
+                .iter()
+                .find(|b| b.name == name)
+                .expect("a built-in")
+                .source
+        };
+        let ir = || rules::compile(source("Territories")).unwrap();
+        let mut file = base_file();
+        script_slot(&mut file, 0, 1, [0xab; 8]);
+        let mut p = patch(0, vec![]);
+        p.hoppers[0].records = None;
+        // No census for the map: refused by map.
+        let err = check_pairs(&file, &p, |_| Ok(ir()), |_| None).unwrap_err();
+        assert!(err.message.contains("playlist 1 entry 2 (map 10)"), "{}", err.message);
+        assert!(err.message.contains("no census for map 10"), "{}", err.message);
+        // A census with none of the zone: the problem's text.
+        let err = check_pairs(&file, &p, |_| Ok(ir()), |_| Some(Default::default())).unwrap_err();
+        assert!(err.message.contains("territory"), "{}", err.message);
+        // A census that holds it: through.
+        let ok = rules::labels::minimal(&ir(), &[]);
+        assert!(check_pairs(&file, &p, |_| Ok(ir()), |_| Some(ok.clone())).is_ok());
+        // An unknown script is named.
+        let err = check_pairs(
+            &file,
+            &p,
+            |prefix| Err(invalid(format!("no saved or built-in script has hash prefix {prefix}"))),
+            |_| Some(ok.clone()),
+        )
+        .unwrap_err();
+        assert!(err.message.contains("no saved or built-in script"), "{}", err.message);
+        // A script with no label or tag needs no census.
+        let slayer = || rules::compile(source("Slayer")).unwrap();
+        assert!(check_pairs(&file, &p, |_| Ok(slayer()), |_| None).is_ok());
+        // A playlist the patch does not name is not checked.
+        let other = patch(1, vec![]);
+        assert!(check_pairs(&file, &other, |_| Ok(ir()), |_| None).is_ok());
+        // The census's own recheck sees one map's entries only.
+        let hit = blocked_pairs(&file, &[0], Some(10), |_| Ok(ir()), |_| None).unwrap();
+        assert_eq!((hit.len(), hit[0].entry), (1, 2));
+        assert!(blocked_pairs(&file, &[0], Some(99), |_| Ok(ir()), |_| None).unwrap().is_empty());
     }
 
     #[test]

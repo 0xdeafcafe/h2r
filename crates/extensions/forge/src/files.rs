@@ -121,6 +121,13 @@ pub(crate) fn load(data: &Path, name: &str, limits: &Limits) -> Result<ForgeDoc,
     ForgeDoc::from_bytes(&bytes, limits).map_err(|e| e.to_string())
 }
 
+/// The saved Forge map `name` under `data`, checked against the default
+/// limits: the document a lobby's start gate applies to the map file's
+/// census (docs/game/rules-start-gate.md, "Where it runs").
+pub fn load_saved(data: &Path, name: &str) -> Result<ForgeDoc, String> {
+    load(data, name, &Limits::default())
+}
+
 /// File stems suitable for the controller's Load picker.
 pub fn saved_names(data: &Path) -> Result<Vec<String>, String> {
     let entries = match fs::read_dir(data.join("forge")) {

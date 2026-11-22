@@ -176,6 +176,24 @@ const fn act(
     }
 }
 
+/// A message hole's value ("Messages" in
+/// `docs/game/rules-language-types.md`): a VM built-in with no result
+/// that queues its argument for the next `message`.
+const fn fmt(id: u16, name: &'static str, args: &'static [Ty]) -> Entry {
+    Entry {
+        id,
+        name,
+        args,
+        result: None,
+        cap: None,
+        kind: Kind::VmOnly,
+        order: Order::Now,
+        status: Status::VmOnly,
+        since: 1,
+        hosts: None,
+    }
+}
+
 const fn vm(id: u16, name: &'static str, args: &'static [Ty], result: Ty) -> Entry {
     Entry {
         id,
@@ -262,6 +280,11 @@ pub mod id {
     pub const FF_FINISH: u16 = 57;
     pub const MESSAGE_TEAM: u16 = 58;
     pub const MESSAGE_ALL: u16 = 59;
+    pub const FMT_PLAYER: u16 = 60;
+    pub const FMT_TEAM: u16 = 61;
+    pub const FMT_INT: u16 = 62;
+    pub const FMT_TIME: u16 = 63;
+    pub const FMT_ENUM: u16 = 64;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -379,6 +402,17 @@ pub const ENTRIES: &[Entry] = &[
     // The team and everyone forms of `message(to, text)`.
     act(id::MESSAGE_TEAM, "message_team", &[Team, Text], Some("hud.message"), Now, Untraced),
     act(id::MESSAGE_ALL, "message_all", &[Text], Some("hud.message"), Now, Untraced),
+    // The values of a message's holes, in hole order, directly before the
+    // `message` call that shows them (the message rule, `verify.rs`). The
+    // VM queues each and hands them to the message after its own
+    // arguments. `fmt_time` takes ticks. `fmt_enum` takes a register of
+    // any enum type (its `Enum(0)` stands for every enum, and the verifier
+    // checks it apart) and hands the variant's name.
+    fmt(id::FMT_PLAYER, "fmt_player", &[Player]),
+    fmt(id::FMT_TEAM, "fmt_team", &[Team]),
+    fmt(id::FMT_INT, "fmt_int", &[Int]),
+    fmt(id::FMT_TIME, "fmt_time", &[Int]),
+    fmt(id::FMT_ENUM, "fmt_enum", &[Ty::Enum(0)]),
 ];
 
 /// The word `message(to, text)` takes for everyone.
@@ -393,11 +427,179 @@ pub fn spelled(e: &Entry) -> &'static str {
     }
 }
 
-/// An entry a script names only through another's spelling (the team and
-/// everyone forms of `message`). Completion and the API listing leave it
-/// out, and calling it by its own name is an unknown function.
+/// An entry a script names only through another's spelling: the team and
+/// everyone forms of `message`, and the `fmt_*` entries of its holes.
+/// Completion leaves it out, and calling it by its own name is an unknown
+/// function.
 pub fn is_form(e: &Entry) -> bool {
-    spelled(e) != e.name
+    spelled(e) != e.name || Hole::of_entry(e.id).is_some()
+}
+
+/// Whether `entry` is one of the three forms of `message(to, text)`.
+pub fn is_message(entry: u16) -> bool {
+    matches!(entry, id::MESSAGE | id::MESSAGE_TEAM | id::MESSAGE_ALL)
+}
+
+/// The values one message shows at most.
+pub const MAX_HOLES: usize = 4;
+
+/// The type of a message hole. A message template stores each hole as its
+/// word (`{player} scored, {int} to go`); `{{` and `}}` are a brace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Hole {
+    Player,
+    Team,
+    Int,
+    /// Ticks, shown as minutes and seconds ([`show_time`]).
+    Time,
+    /// An enum variant, shown by its name.
+    Enum,
+}
+
+impl Hole {
+    pub const ALL: [Hole; 5] = [Hole::Player, Hole::Team, Hole::Int, Hole::Time, Hole::Enum];
+
+    /// The word a template stores the hole as.
+    pub fn word(self) -> &'static str {
+        match self {
+            Hole::Player => "player",
+            Hole::Team => "team",
+            Hole::Int => "int",
+            Hole::Time => "time",
+            Hole::Enum => "enum",
+        }
+    }
+
+    pub fn from_word(word: &str) -> Option<Hole> {
+        Hole::ALL.into_iter().find(|h| h.word() == word)
+    }
+
+    /// The `fmt_*` entry that queues a value for the hole.
+    pub fn entry(self) -> u16 {
+        match self {
+            Hole::Player => id::FMT_PLAYER,
+            Hole::Team => id::FMT_TEAM,
+            Hole::Int => id::FMT_INT,
+            Hole::Time => id::FMT_TIME,
+            Hole::Enum => id::FMT_ENUM,
+        }
+    }
+
+    /// The hole a `fmt_*` entry queues a value for.
+    pub fn of_entry(entry: u16) -> Option<Hole> {
+        Hole::ALL.into_iter().find(|h| h.entry() == entry)
+    }
+}
+
+/// A piece of a message's text: literal text (braces unescaped), or a hole
+/// with the text inside its braces and the char offset of its `{`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Piece<'a> {
+    Lit(String),
+    Hole { inner: &'a str, at: usize },
+}
+
+/// Why a message's text does not split into pieces: a `{` with no `}`, or
+/// a `}` that closes nothing, at a char offset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PieceError {
+    Open(usize),
+    Close(usize),
+}
+
+/// Splits a message's text at its holes: `{x}` is a hole, and `{{` and
+/// `}}` are a brace.
+pub fn pieces(text: &str) -> Result<Vec<Piece<'_>>, PieceError> {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let mut out = Vec::new();
+    let mut lit = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let (byte, c) = chars[i];
+        let next = chars.get(i + 1).map(|&(_, n)| n);
+        match c {
+            '{' | '}' if next == Some(c) => {
+                lit.push(c);
+                i += 2;
+            }
+            '{' => {
+                let Some(close) = chars[i + 1..].iter().position(|&(_, n)| n == '{' || n == '}') else {
+                    return Err(PieceError::Open(i));
+                };
+                let end = i + 1 + close;
+                if chars[end].1 != '}' {
+                    return Err(PieceError::Open(i));
+                }
+                if !lit.is_empty() {
+                    out.push(Piece::Lit(std::mem::take(&mut lit)));
+                }
+                out.push(Piece::Hole {
+                    inner: &text[byte + 1..chars[end].0],
+                    at: i,
+                });
+                i = end + 1;
+            }
+            '}' => return Err(PieceError::Close(i)),
+            c => {
+                lit.push(c);
+                i += 1;
+            }
+        }
+    }
+    if !lit.is_empty() {
+        out.push(Piece::Lit(lit));
+    }
+    Ok(out)
+}
+
+/// Literal text as a template writes it: each brace doubled.
+pub fn escape(text: &str) -> String {
+    text.replace('{', "{{").replace('}', "}}")
+}
+
+/// The holes of a stored template, in order; `None` when a brace is
+/// unpaired, a hole's word is no [`Hole`], or it has more than
+/// [`MAX_HOLES`].
+pub fn holes(template: &str) -> Option<Vec<Hole>> {
+    let mut out = Vec::new();
+    for p in pieces(template).ok()? {
+        if let Piece::Hole { inner, .. } = p {
+            out.push(Hole::from_word(inner)?);
+        }
+    }
+    (out.len() <= MAX_HOLES).then_some(out)
+}
+
+/// A template with its holes filled by `values`, in order. A hole with no
+/// value shows its word in braces; a text that is no template shows as
+/// it is.
+pub fn fill(template: &str, values: &[String]) -> String {
+    let Ok(list) = pieces(template) else {
+        return template.to_string();
+    };
+    let mut out = String::new();
+    let mut next = values.iter();
+    for p in list {
+        match p {
+            Piece::Lit(s) => out.push_str(&s),
+            Piece::Hole { inner, .. } => match next.next() {
+                Some(v) => out.push_str(v),
+                None => {
+                    out.push('{');
+                    out.push_str(inner);
+                    out.push('}');
+                }
+            },
+        }
+    }
+    out
+}
+
+/// Ticks as a message shows a time: whole seconds, rounded down, as
+/// `m:ss`; a negative time shows as `0:00`.
+pub fn show_time(ticks: i32) -> String {
+    let s = ticks.max(0) / TICKS_PER_SECOND;
+    format!("{}:{:02}", s / 60, s % 60)
 }
 
 /// The parameters an entry's signature shows, as the language spells them.
@@ -555,6 +757,50 @@ mod tests {
         assert!(entry_named("message_team").is_none());
         assert!(entry_named("message_all").is_none());
         assert!(!is_form(entry(id::SCORE, API_VERSION).unwrap()));
+    }
+
+    #[test]
+    fn hole_entries_are_vm_built_ins_reached_through_message() {
+        for h in Hole::ALL {
+            let e = entry(h.entry(), API_VERSION).unwrap();
+            assert_eq!(e.kind, Kind::VmOnly, "{}", e.name);
+            assert_eq!(e.result, None, "{}", e.name);
+            assert_eq!(e.cap, None, "{}", e.name);
+            assert!(e.status.hostable(), "{}", e.name);
+            assert!(is_form(e), "{}", e.name);
+            assert_eq!(spelled(e), e.name);
+            assert!(entry_named(e.name).is_none(), "{}", e.name);
+            assert_eq!(Hole::of_entry(e.id), Some(h));
+            assert_eq!(Hole::from_word(h.word()), Some(h));
+        }
+        assert_eq!(Hole::of_entry(id::MESSAGE), None);
+        assert!(is_message(id::MESSAGE_ALL) && !is_message(id::FMT_INT));
+    }
+
+    #[test]
+    fn templates_split_at_holes_and_doubled_braces() {
+        assert_eq!(holes("{player} scored, {int} to go"), Some(vec![Hole::Player, Hole::Int]));
+        assert_eq!(holes("no holes {{here}}"), Some(vec![]));
+        assert_eq!(holes("{object}"), None);
+        assert_eq!(holes("{int}{int}{int}{int}{int}"), None);
+        assert_eq!(holes("open {player"), None);
+        assert_eq!(pieces("a {b"), Err(PieceError::Open(2)));
+        assert_eq!(pieces("a } b"), Err(PieceError::Close(2)));
+        assert_eq!(pieces("{p {q}"), Err(PieceError::Open(0)));
+        assert_eq!(
+            pieces("é{p} x"),
+            Ok(vec![
+                Piece::Lit("é".into()),
+                Piece::Hole { inner: "p", at: 1 },
+                Piece::Lit(" x".into())
+            ])
+        );
+        assert_eq!(escape("a{b}"), "a{{b}}");
+        let filled = fill("{player} scored {{1}}, {int} to go", &["Ann".into(), "3".into()]);
+        assert_eq!(filled, "Ann scored {1}, 3 to go");
+        assert_eq!(fill("{player} and {team}", &["Ann".into()]), "Ann and {team}");
+        assert_eq!(show_time(65 * TICKS_PER_SECOND + 29), "1:05");
+        assert_eq!(show_time(-4), "0:00");
     }
 
     #[test]

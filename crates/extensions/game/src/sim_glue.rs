@@ -44,8 +44,11 @@ use sim_bridge::sim_frame::SimFrame;
 use crate::telemetry;
 use hooks::{Flow, points};
 use input::host::HostPadState;
-use sim_bench::config::{BotParams, Match};
-use sim_bench::metrics::{BotInfo, BrainTick, End, Finish, PlayerSample, Report, Tally, TickSample};
+use sim_bench::config::{BotParams, Detail, Match};
+use sim_bench::metrics::{
+    BotInfo, BrainTick, End, Finish, PlayerSample, ReadStat, Report, SetupClock, SetupStage, Tally,
+    TickSample, WallLean,
+};
 
 use crate::level_boot;
 use std::collections::BTreeMap;
@@ -142,6 +145,22 @@ struct State {
     /// (`state.load` with `"cow": true`): pages written over the base.
     cow: Option<(u64, u64)>,
     file_reads: vfs::GuestReadBytes,
+    /// Where the setup time went (`wall.setup`).
+    setup: SetupClock,
+    /// The page census (`impl.sim.page-census`).
+    pages: Pages,
+    /// The end-of-run census and lean fields ([`Sim::note_lean`]).
+    lean: WallLean,
+}
+
+/// The page census's state: the page hashes of the first counted tick.
+#[derive(Default)]
+struct Pages {
+    /// The switch is on.
+    enabled: bool,
+    /// The next tick takes the baseline.
+    wanted: bool,
+    base: Option<Vec<u64>>,
 }
 
 struct Inner {
@@ -495,6 +514,9 @@ impl Sim {
     pub fn new(path: PathBuf, matched: Match, report_path: Option<PathBuf>) -> Sim {
         let frame = SimFrame::new(matched.config.render_every)
             .on_skip(crate::d3d_diag::note_skipped_present);
+        let created = Instant::now();
+        let mut tally = Tally::new();
+        tally.set_detail(matched.config.detail());
         Sim(Arc::new(Inner {
             path,
             hosted_map: Default::default(),
@@ -505,7 +527,7 @@ impl Sim {
             state: Mutex::new(State {
                 machines: Default::default(),
                 bindings: Default::default(),
-                tally: Tally::new(),
+                tally,
                 phase: Phase::Waiting,
                 end: None,
                 first_tick: None,
@@ -519,9 +541,12 @@ impl Sim {
                 notes: Vec::new(),
                 cow: None,
                 file_reads: vfs::GuestReadBytes::default(),
+                setup: SetupClock::new(created),
+                pages: Pages::default(),
+                lean: WallLean::default(),
             }),
             stop: AtomicBool::new(false),
-            created: Instant::now(),
+            created,
         }))
     }
 
@@ -717,6 +742,50 @@ impl Sim {
         let mut s = self.0.lock();
         s.cow = written;
         s.file_reads = reads;
+    }
+
+    /// The census and lean fields read at the run's end (`wall.reads`,
+    /// `wall.heap_tags`, `wall.guest_pages_written_*`, `wall.data_dir_bytes`):
+    /// what the guest read by path, the guest's RAM, and the data directory.
+    pub fn note_lean(
+        &self,
+        guest: &runtime::Guest,
+        reads: BTreeMap<String, vfs::PathReads>,
+        data_dir: &Path,
+    ) {
+        let end = {
+            let s = self.0.lock();
+            s.pages.base.is_some().then(|| crate::sim_pages::hashes(guest))
+        };
+        let mut s = self.0.lock();
+        let written = s
+            .pages
+            .base
+            .as_deref()
+            .zip(end.as_deref())
+            .and_then(|(base, end)| crate::sim_pages::written(base, end));
+        s.lean.guest_pages_written_4k = written.map(|w| w.0);
+        s.lean.guest_pages_written_16k = written.map(|w| w.1);
+        s.lean.reads = reads
+            .into_iter()
+            .map(|(path, r)| {
+                (
+                    path,
+                    ReadStat {
+                        mapped_bytes: r.mapped_bytes,
+                        copied_bytes: r.copied_bytes,
+                        count: r.reads,
+                        refused: r.refusal.map(str::to_owned),
+                    },
+                )
+            })
+            .collect();
+        s.lean.heap_tags = mem_watch::heap::totals()
+            .0
+            .into_iter()
+            .filter(|(_, bytes)| *bytes > 0)
+            .collect();
+        s.lean.data_dir_bytes = crate::host_mem::dir_bytes(data_dir);
     }
 
     /// The report at the end of the run, written to `H2_SIM_REPORT` when
@@ -942,6 +1011,9 @@ fn build_report(inner: &Inner, s: &State) -> Report {
         );
         report.set_phantom_costs(now.phantom.since(start.phantom));
     }
+    let mut lean = s.lean.clone();
+    lean.setup = Some(s.setup.phases(s.first_tick.unwrap_or_else(Instant::now)));
+    report.set_lean(lean);
     report
 }
 
@@ -1122,6 +1194,9 @@ impl hooks::Feature for SimMetrics {
             s.dispatch_start = None;
             s.dispatch_end = None;
             s.costs_start = None;
+            s.setup.enter(SetupStage::Bind, Instant::now());
+            s.pages.base = None;
+            s.pages.wanted = false;
             eprintln!("sim: match started at tick {tick}");
         });
         let me = Arc::clone(&self.sim);
@@ -1130,11 +1205,18 @@ impl hooks::Feature for SimMetrics {
             .implementation("sim.arena-hash", false)
             .then(|| Mutex::new(Vec::new()));
         let projected = b.switches().implementation("sim.metrics-projection", true);
+        let page_census = b.switches().implementation("sim.page-census", true);
+        me.lock().pages.enabled = page_census;
+        let full_detail = me.matched.config.detail() == Detail::Full;
         b.frame().on_tick("sim: tick sample", move |o| {
             if !matches!(me.lock().phase, Phase::Playing | Phase::Binding) {
                 return;
             }
             let g = o.guest();
+            // The baseline of the page census, the tick after counting
+            // begins (the lock is not held while the pages are hashed).
+            let page_base = (page_census && me.lock().pages.wanted)
+                .then(|| crate::sim_pages::hashes(&g));
             if me.lock().phase == Phase::Binding
                 && bots::phantom::session::host_session(&*g).is_err()
             {
@@ -1177,6 +1259,10 @@ impl hooks::Feature for SimMetrics {
             let census = crate::sim_census::read(&*g);
             drop(g);
             let mut s = me.lock();
+            if let Some(hashes) = page_base {
+                s.pages.base = Some(hashes);
+                s.pages.wanted = false;
+            }
             match snap {
                 Ok(snap) => {
                     let fired = std::mem::take(&mut s.fired);
@@ -1190,7 +1276,10 @@ impl hooks::Feature for SimMetrics {
                             return;
                         }
                         s.phase = Phase::Playing;
-                        s.first_tick = Some(Instant::now());
+                        let now = Instant::now();
+                        s.first_tick = Some(now);
+                        s.setup.enter(SetupStage::Done, now);
+                        s.pages.wanted = s.pages.enabled;
                         s.tally.start(sample.tick);
                         s.dispatch_start = o.runtime.dispatch_counts();
                         s.costs_start = Some(costs_now());
@@ -1202,12 +1291,12 @@ impl hooks::Feature for SimMetrics {
                     s.tally.tick_census(tick, &census);
                     // `components = false` in the match file leaves the
                     // breakdown out (a timing arm); the digests above stay.
-                    if me.matched.config.components != Some(false) {
-                        let mut components = state_hash::components(&snap, rng);
-                        components.extend(arena_blocks.iter().enumerate().map(|(i, h)| {
-                            (format!("{}{i:02}", sim_bench::diff::ARENA_PREFIX), format!("{h:016x}"))
-                        }));
-                        s.tally.tick_components(tick, arena_base, components);
+                    // `detail = "training"` leaves it out too, with all but a
+                    // sparse few of the digests.
+                    if full_detail && me.matched.config.components != Some(false) {
+                        let components = state_hash::components(&snap, rng);
+                        s.tally
+                            .tick_components_blocks(tick, arena_base, components, &arena_blocks);
                     }
                     if arena_buffer.is_some() && arena.is_none() {
                         const NOTE: &str = "arena hash unavailable on one or more sampled ticks";
@@ -1223,6 +1312,8 @@ impl hooks::Feature for SimMetrics {
                         s.dispatch_start = s.dispatch_end;
                         s.costs_start = Some(costs_now());
                         s.set_up = false;
+                        s.pages.base = None;
+                        s.pages.wanted = s.pages.enabled;
                         eprintln!(
                             "sim: the tick jumped to {tick} (a snapshot load); counting from here"
                         );

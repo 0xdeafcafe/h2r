@@ -76,6 +76,7 @@ fn snippets_insert_their_defaults_and_words_end_at_the_cursor() {
         documentation: ide::Markup::markdown(""),
         insert_text: "score(${1:p}, ${2:n})$0".into(),
         insert_text_format: ide::SNIPPET,
+        sort_text: String::new(),
     };
     assert_eq!(plain_insert(&item), "score(p, n)");
     let text = "    sco";

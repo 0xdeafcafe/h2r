@@ -1105,7 +1105,7 @@ pub fn install(
                     let mut mem = ctx.runtime().memory();
                     let id = mem.u32(cpu.esp + 4)?;
                     let return_pc = mem.u32(cpu.esp)?;
-                    if let Some(id) = crate::lobby_status::custom_game_text(&*mem, return_pc, id) {
+                    if let Some(id) = crate::lobby_status::custom_game_text(&mut *mem, return_pc, id) {
                         mem.set_u32(cpu.esp + 4, id)?;
                     } else if pending != 0 && id == 0 {
                         PENDING_VALUE.store(0, Ordering::Relaxed);

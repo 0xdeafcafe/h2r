@@ -820,6 +820,24 @@ fn dedup(failures: Vec<String>) -> Vec<String> {
 }
 
 #[test]
+fn the_lobby_copy_boost_is_on_for_light_hosts_unless_switched_off() {
+    for (light, spec, on) in [
+        (false, "", false),
+        (true, "", true),
+        (true, "-map-copy.lobby", false),
+        (true, "map-copy.lobby=off", false),
+        (false, "map-copy.lobby", true),
+    ] {
+        let switches = super::profile_switches(hooks::Switches::parse(spec).unwrap(), light);
+        assert_eq!(
+            switches.feature(crate::map_copy::LOBBY, false),
+            on,
+            "{light} {spec}"
+        );
+    }
+}
+
+#[test]
 fn light_native_subsystems_follow_the_profile_and_explicit_overrides() {
     use engine::points::{COLLISION_LOCATION, OBJECT_FUNCTION_VALUE, SIM_ANIMATION_STREAM};
     let runtime = runtime::Runtime::new(runtime::Guest::new(), runtime::Dispatch::default());

@@ -1,6 +1,7 @@
 //! The lexer: source text to tokens with line and column.
 
 use super::{CompileError, Pos};
+use crate::caps::TICKS_PER_SECOND;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Tok {
@@ -9,6 +10,10 @@ pub enum Tok {
     Int(i64),
     /// A 16.16 fixed literal (`1.5`).
     Fixed(i32),
+    /// A time literal (`5s`, `300t`, `1.5s`): its ticks at
+    /// [`TICKS_PER_SECOND`], `None` when it is not a whole number of ticks,
+    /// and its text.
+    Time(Option<i64>, String),
     Str(String),
     Punct(&'static str),
     Eof,
@@ -22,8 +27,8 @@ pub struct Token {
     pub nl: bool,
 }
 
-pub(crate) static PUNCT: [&str; 24] = [
-    "..", "==", "!=", "<=", ">=", "{", "}", "(", ")", "[", "]", ",", ":", ";", ".", "=", "<", ">",
+pub(crate) static PUNCT: [&str; 25] = [
+    "..", "->", "==", "!=", "<=", ">=", "{", "}", "(", ")", "[", "]", ",", ":", ";", ".", "=", "<", ">",
     "+", "-", "*", "/", "%", "?",
 ];
 
@@ -103,13 +108,36 @@ fn lex_with(src: &str, mut errors: Option<&mut Vec<CompileError>>) -> Result<Vec
             };
             let fraction = bytes.get(i) == Some(&b'.')
                 && bytes.get(i + 1).is_some_and(|b| b.is_ascii_digit());
+            let mut digits = "";
             if fraction {
                 i += 1;
                 let fs = i;
                 while i < bytes.len() && bytes[i].is_ascii_digit() {
                     i += 1;
                 }
-                let digits = &src[fs..i];
+                digits = &src[fs..i];
+            }
+            // A unit right after the number, with nothing of a name after
+            // it, makes a time literal: `5s`, `300t`, `1.5s`.
+            let unit = match bytes.get(i) {
+                Some(&u @ (b's' | b't'))
+                    if !bytes.get(i + 1).is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_') =>
+                {
+                    Some(u)
+                }
+                _ => None,
+            };
+            if let Some(u) = unit {
+                i += 1;
+                let text = src[start..i].to_string();
+                match time_ticks(whole, digits, u) {
+                    Ok(ticks) => Tok::Time(ticks, text),
+                    Err(m) => {
+                        fail!(CompileError::at(pos, m));
+                        Tok::Time(Some(0), text)
+                    }
+                }
+            } else if fraction {
                 if digits.len() > 9 {
                     fail!(CompileError::at(pos, "too many fraction digits"));
                     Tok::Fixed(0)
@@ -210,6 +238,23 @@ fn lex_with(src: &str, mut errors: Option<&mut Vec<CompileError>>) -> Result<Vec
     Ok(out)
 }
 
+/// The ticks of a time literal: `whole.digits` seconds (`s`) or ticks
+/// (`t`). `Ok(None)` when it is not a whole number of ticks, which the
+/// checker reports (`unit.literal`); an error when it is too large.
+fn time_ticks(whole: i64, digits: &str, unit: u8) -> Result<Option<i64>, &'static str> {
+    if digits.len() > 9 {
+        return Err("too many fraction digits");
+    }
+    let scale = 10i128.pow(digits.len() as u32);
+    let frac: i128 = if digits.is_empty() { 0 } else { digits.parse().unwrap_or(0) };
+    let per = if unit == b's' { TICKS_PER_SECOND as i128 } else { 1 };
+    let scaled = (whole as i128 * scale + frac) * per;
+    if scaled / scale > u32::MAX as i128 {
+        return Err("time too large");
+    }
+    Ok((scaled % scale == 0).then(|| (scaled / scale) as i64))
+}
+
 fn utf8_len(first: u8) -> usize {
     match first {
         0x00..=0x7f => 1,
@@ -240,6 +285,28 @@ mod tests {
                 Tok::Eof
             ]
         );
+    }
+
+    #[test]
+    fn time_literals_count_ticks() {
+        assert_eq!(
+            toks("5s 300t 1.5s 0.01s 5..60s 3 s"),
+            vec![
+                Tok::Time(Some(150), "5s".into()),
+                Tok::Time(Some(300), "300t".into()),
+                Tok::Time(Some(45), "1.5s".into()),
+                Tok::Time(None, "0.01s".into()),
+                Tok::Int(5),
+                Tok::Punct(".."),
+                Tok::Time(Some(1800), "60s".into()),
+                Tok::Int(3),
+                Tok::Ident("s".into()),
+                Tok::Eof
+            ]
+        );
+        // A name after the number is not a unit.
+        assert_eq!(toks("5st")[0], Tok::Int(5));
+        assert_eq!(toks("a->b")[1], Tok::Punct("->"));
     }
 
     #[test]

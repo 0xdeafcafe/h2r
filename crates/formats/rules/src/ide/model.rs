@@ -1,10 +1,17 @@
 //! The analysis every feature reads: the scan, the recovered syntax tree,
-//! each declaration with its exact span and type, and each name use
-//! resolved to its declaration or to an API entry, a variant field, an
-//! event, a capability or a carrier. Scoping follows `lang::lower`: a
-//! handler sees its arguments, `let`s and set members in scope, and the
-//! script's globals, options, tables, enums and functions; a `fn` body
-//! sees its parameters and the script's names.
+//! the checker's reading of it (`lang::check::Checked`), each declaration
+//! with its exact span, and each name use resolved to its declaration or
+//! to an API entry, a variant field, an event, a capability or a carrier.
+//!
+//! Types come from the checker and from what a declaration states: an
+//! expression's type is `Checked::ty`, a handler argument's is the event's
+//! front-end signature (`lang::sig`), a declared label's is its kind.
+//! Nothing here works out a type of its own, so the editor and the
+//! compiler cannot disagree (docs/game/rules-language-types.md, "The
+//! front end"). Scoping follows the checker: a handler sees its arguments,
+//! `let`s and set members in scope, and the script's globals, options,
+//! tables, enums, functions and labels; a `fn` body sees its parameters
+//! and the script's names.
 
 use std::collections::BTreeMap;
 
@@ -13,9 +20,11 @@ use super::{Position, Range};
 use crate::caps::{self, Entry, VARIANT_FIELDS};
 use crate::ir::{Event, Scope};
 use crate::lang::ast::*;
+use crate::lang::check::{self, Checked};
 use crate::lang::lower::FIELDS;
+use crate::lang::sig;
+use crate::lang::types::{Handle, Type};
 use crate::lang::{CompileError, Pos, lex, parse};
-use crate::ty::Ty;
 
 /// Byte offsets to LSP positions and back.
 pub(crate) struct LineIndex<'s> {
@@ -117,20 +126,23 @@ pub(crate) enum DefKind {
     Param,
     /// A handler argument.
     Arg,
-    /// A `let`.
+    /// A `let` or an `if let`.
     Local,
     /// A `for each` or set member.
     Binder,
-    /// A Forge label, declared by its first use.
+    /// A declared Forge label (`label goal: zone`).
     Label,
+    /// A `const`, of the type and value the checker folds.
+    Const,
 }
 
-/// A type as far as the tooling knows it.
+/// A declaration's type, as the checker or the declaration gives it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum T {
-    Ty(Ty),
-    /// An enum, by its declaration.
-    Enum(usize),
+    /// A front-end type: a value's, or a set's (`zones`).
+    V(Type),
+    /// A global `timer`.
+    Timer,
     /// A row of a table, by the table's declaration.
     Row(usize),
     Unknown,
@@ -148,6 +160,8 @@ pub(crate) struct Def {
     pub parent: Option<usize>,
     /// A handler argument's event.
     pub event: Option<Event>,
+    /// A label's item, by index in the script.
+    pub item: Option<usize>,
 }
 
 /// A use of a name that is not a declaration of the script.
@@ -166,6 +180,11 @@ pub(crate) enum Use {
     Type,
     /// The word `variant`.
     Variant,
+    /// The word `carrier` before a dot: the built-in enum of carriers.
+    CarrierEnum,
+    /// A carrier as a value (`carrier.assault`), by index in `CARRIERS`;
+    /// `None` for a name that is not one.
+    CarrierValue(Option<usize>),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -174,6 +193,26 @@ pub(crate) struct Ref {
     pub e: usize,
     pub def: usize,
     pub decl: bool,
+    /// The checker's type of the expression at this use, where it is one.
+    pub ty: Option<Type>,
+    /// The line (from 1) of the test that narrows the name here: the
+    /// `x != none` or `x is goal` in force when the checker's type at the
+    /// use is narrower than the declaration's.
+    pub narrowed: Option<u32>,
+}
+
+/// The source read once: the recovered tree and the lexer's and parser's
+/// errors. [`analyze`] borrows it, as the checker's reading does.
+pub(crate) struct Parsed {
+    pub script: Script,
+    pub errors: Vec<CompileError>,
+}
+
+pub(crate) fn read(src: &str) -> Parsed {
+    let (tokens, mut errors) = lex::lex_tolerant(src);
+    let (script, perr) = parse::parse_recovering(&tokens);
+    errors.extend(perr);
+    Parsed { script, errors }
 }
 
 pub(crate) struct Model<'s> {
@@ -185,9 +224,14 @@ pub(crate) struct Model<'s> {
     pub code: Vec<Tk>,
     /// Each bracket's partner in `code`, or `usize::MAX`.
     pairs: Vec<usize>,
-    pub script: Script,
+    pub script: &'s Script,
     /// Lexer and parser errors, in order.
-    pub errors: Vec<CompileError>,
+    pub errors: &'s [CompileError],
+    /// The checker's reading of the recovered tree: a type per expression,
+    /// the declared labels and every diagnostic.
+    pub checked: Checked<'s>,
+    /// The checker's enum table, by `Type::Enum` index.
+    pub enum_names: Vec<String>,
     pub defs: Vec<Def>,
     pub refs: Vec<Ref>,
     pub uses: Vec<(usize, usize, Use)>,
@@ -195,7 +239,8 @@ pub(crate) struct Model<'s> {
     pub items: Vec<(usize, usize)>,
     /// Each item's own declaration (a handler has none).
     pub item_defs: Vec<Option<usize>>,
-    labels: BTreeMap<String, usize>,
+    /// Each declared label's declaration, by name.
+    pub labels: BTreeMap<String, usize>,
 }
 
 #[derive(Default)]
@@ -203,38 +248,29 @@ struct Env {
     locals: Vec<usize>,
     /// The member a `where` reads fields of without naming it.
     implicit: Vec<T>,
+    /// The names a test in force narrows, each with the test's line.
+    checks: Vec<(String, u32)>,
 }
 
-/// The type a type name spells, given the script's enums.
-pub(crate) fn builtin_type(name: &str) -> Option<Ty> {
-    Some(match name {
-        "int" => Ty::Int,
-        "fixed" => Ty::Fixed,
-        "bool" => Ty::Bool,
-        "player" => Ty::Player,
-        "team" => Ty::Team,
-        "object" | "zone" => Ty::Object,
-        "squad" => Ty::Squad,
-        "timer" => Ty::Timer,
-        "Class" | "class" => Ty::Class,
-        "tag" | "weapon" => Ty::Tag,
-        "label" | "objects" | "zones" | "spawns" => Ty::Label,
-        "text" => Ty::Text,
-        _ => return None,
-    })
+/// The type words a declaration may spell: the front-end types and
+/// `timer`.
+pub(crate) fn is_type_word(w: &str) -> bool {
+    w == "timer" || Type::named(w, false, &[]).is_some()
 }
 
-fn empty_script() -> Script {
-    Script {
-        name: String::new(),
-        version: 0,
-        pos: Pos { line: 1, col: 1 },
-        carrier: None,
-        teams: None,
-        list: None,
-        requires: Vec::new(),
-        items: Vec::new(),
+/// The checker's enum table: each enum's name in declaration order, a
+/// repeated name once, at most `ty::MAX_ENUMS`.
+fn enum_names(script: &Script) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for item in &script.items {
+        if let Item::Enum { name, .. } = item
+            && !out.contains(name)
+            && out.len() < crate::ty::MAX_ENUMS
+        {
+            out.push(name.clone());
+        }
     }
+    out
 }
 
 fn pairs_of(src: &str, code: &[Tk]) -> Vec<usize> {
@@ -265,21 +301,23 @@ fn pairs_of(src: &str, code: &[Tk]) -> Vec<usize> {
     out
 }
 
-pub(crate) fn analyze(src: &str) -> Model<'_> {
+/// Reads `src` with the checker and resolves every name. `p` is
+/// [`read`]'s result for the same source.
+pub(crate) fn analyze<'s>(src: &'s str, p: &'s Parsed) -> Model<'s> {
     let all = scan::scan(src);
     let code: Vec<Tk> = all.iter().copied().filter(|t| t.k != K::Comment).collect();
     let pairs = pairs_of(src, &code);
-    let (tokens, mut errors) = lex::lex_tolerant(src);
-    let (script, perr) = parse::parse_recovering(&tokens);
-    errors.extend(perr);
+    let script: &'s Script = &p.script;
     let mut m = Model {
         src,
         li: LineIndex::new(src),
         all,
         code,
         pairs,
-        script: empty_script(),
-        errors,
+        script,
+        errors: &p.errors,
+        checked: check::check(script),
+        enum_names: enum_names(script),
         defs: Vec::new(),
         refs: Vec::new(),
         uses: Vec::new(),
@@ -287,12 +325,11 @@ pub(crate) fn analyze(src: &str) -> Model<'_> {
         item_defs: vec![None; script.items.len()],
         labels: BTreeMap::new(),
     };
-    m.items = m.item_spans(&script);
-    m.declare(&script);
-    m.bodies(&script);
+    m.items = m.item_spans();
+    m.declare();
+    m.bodies();
     m.refs.sort_by_key(|r| (r.s, r.e));
     m.uses.sort_by_key(|u| (u.0, u.1));
-    m.script = script;
     m
 }
 
@@ -324,12 +361,12 @@ impl<'s> Model<'s> {
         self.pairs.get(i).copied().filter(|&p| p != usize::MAX)
     }
 
-    fn byte(&self, p: Pos) -> usize {
+    pub fn byte(&self, p: Pos) -> usize {
         self.li.pos_offset(p)
     }
 
     /// The span of the token at a lexer position.
-    fn tok_at(&self, p: Pos) -> (usize, usize) {
+    pub fn tok_at(&self, p: Pos) -> (usize, usize) {
         let off = self.byte(p);
         match self.code.get(self.ci(off)) {
             Some(t) if t.s == off => (t.s, t.e),
@@ -338,7 +375,7 @@ impl<'s> Model<'s> {
     }
 
     /// The first identifier `name` at or after `off`.
-    fn ident_from(&self, off: usize, name: &str) -> Option<(usize, usize)> {
+    pub fn ident_from(&self, off: usize, name: &str) -> Option<(usize, usize)> {
         self.code[self.ci(off)..]
             .iter()
             .take(256)
@@ -389,7 +426,8 @@ impl<'s> Model<'s> {
         (off, self.src.len())
     }
 
-    fn item_spans(&self, script: &Script) -> Vec<(usize, usize)> {
+    fn item_spans(&self) -> Vec<(usize, usize)> {
+        let script = self.script;
         let mut bounds: Vec<usize> = script.items.iter().map(|i| self.byte(item_pos(i))).collect();
         let mut header = vec![script.pos];
         header.extend(script.carrier.iter().map(|c| c.1));
@@ -430,22 +468,27 @@ impl<'s> Model<'s> {
             visible: None,
             parent: None,
             event: None,
+            item: None,
         });
         self.refs.push(Ref {
             s: span.0,
             e: span.1,
             def: d,
             decl: true,
+            ty: None,
+            narrowed: None,
         });
         d
     }
 
-    fn add_ref(&mut self, span: (usize, usize), def: usize) {
+    fn add_ref(&mut self, span: (usize, usize), def: usize, ty: Option<Type>) {
         self.refs.push(Ref {
             s: span.0,
             e: span.1,
             def,
             decl: false,
+            ty,
+            narrowed: None,
         });
     }
 
@@ -459,7 +502,12 @@ impl<'s> Model<'s> {
             d.name == name
                 && matches!(
                     d.kind,
-                    DefKind::Var(Scope::Global) | DefKind::Option | DefKind::Table | DefKind::Enum | DefKind::Fn
+                    DefKind::Var(Scope::Global)
+                        | DefKind::Option
+                        | DefKind::Table
+                        | DefKind::Enum
+                        | DefKind::Fn
+                        | DefKind::Const
                 )
         })
     }
@@ -481,25 +529,35 @@ impl<'s> Model<'s> {
             .map(|(i, _)| i)
     }
 
-    fn type_named(&self, name: &str) -> T {
-        match builtin_type(name) {
-            Some(t) => T::Ty(t),
-            None => self.top_kind(name, DefKind::Enum).map_or(T::Unknown, T::Enum),
+    /// The type a declaration spells.
+    fn type_named(&self, t: &TypeName) -> T {
+        if t.name == "timer" && !t.optional {
+            return T::Timer;
         }
+        Type::named(&t.name, t.optional, &self.enum_names).map_or(T::Unknown, T::V)
     }
 
     fn type_use(&mut self, t: &TypeName) {
         let span = self.tok_at(t.pos);
         let d = self.top_kind(&t.name, DefKind::Enum);
         match d {
-            Some(d) => self.add_ref(span, d),
+            Some(d) => self.add_ref(span, d, None),
             None => self.add_use(span, Use::Type),
         }
     }
 
+    /// The type of a value of an enum, by its declaration's name.
+    fn enum_type(&self, name: &str) -> T {
+        self.enum_names
+            .iter()
+            .position(|n| n == name)
+            .map_or(T::Unknown, |i| T::V(Type::Enum(i as u8)))
+    }
+
     // ---- declarations ----
 
-    fn declare(&mut self, script: &Script) {
+    fn declare(&mut self) {
+        let script: &'s Script = self.script;
         if let Some((name, p)) = &script.carrier {
             let span = self.name_after(*p, name);
             self.add_use(span, Use::Carrier);
@@ -509,19 +567,19 @@ impl<'s> Model<'s> {
             let e = self.dotted_end(s);
             self.add_use((s, e), Use::Capability);
         }
-        // Enums first, as the compiler reads them, so a type may name one
+        // Enums first, as the checker reads them, so a type may name one
         // declared further down.
         for (i, item) in script.items.iter().enumerate() {
             if let Item::Enum { name, variants, pos } = item {
                 let span = self.name_after(*pos, name);
-                let d = self.def(name, DefKind::Enum, span, T::Unknown);
-                self.defs[d].ty = T::Enum(d);
+                let ty = self.enum_type(name);
+                let d = self.def(name, DefKind::Enum, span, ty);
                 self.item_defs[i] = Some(d);
                 let mut at = span.1;
                 for v in variants {
                     let Some(vs) = self.ident_from(at, v) else { break };
                     at = vs.1;
-                    let m = self.def(v, DefKind::Member, vs, T::Enum(d));
+                    let m = self.def(v, DefKind::Member, vs, ty);
                     self.defs[m].parent = Some(d);
                 }
             }
@@ -530,7 +588,7 @@ impl<'s> Model<'s> {
             match item {
                 Item::Option(o) => {
                     let span = self.name_after(o.pos, &o.name);
-                    let ty = self.type_named(&o.ty.name);
+                    let ty = self.type_named(&o.ty);
                     self.type_use(&o.ty);
                     let d = self.def(&o.name, DefKind::Option, span, ty);
                     self.item_defs[i] = Some(d);
@@ -544,7 +602,7 @@ impl<'s> Model<'s> {
                     scope, name, ty, pos, ..
                 } => {
                     let span = self.name_after(*pos, name);
-                    let t = self.type_named(&ty.name);
+                    let t = self.type_named(ty);
                     self.type_use(ty);
                     let d = self.def(name, DefKind::Var(*scope), span, t);
                     self.item_defs[i] = Some(d);
@@ -560,7 +618,7 @@ impl<'s> Model<'s> {
                     for (cname, cty) in columns {
                         let Some(cs) = self.ident_from(at, cname) else { break };
                         at = cs.1;
-                        let t = self.type_named(&cty.name);
+                        let t = self.type_named(cty);
                         let c = self.def(cname, DefKind::Column, cs, t);
                         self.defs[c].parent = Some(d);
                         self.type_use(cty);
@@ -568,7 +626,15 @@ impl<'s> Model<'s> {
                 }
                 Item::Fn(f) => {
                     let span = self.name_after(f.pos, &f.name);
-                    let d = self.def(&f.name, DefKind::Fn, span, T::Unknown);
+                    // A value function's type is its result's.
+                    let ty = f.result.as_ref().map_or(T::Unknown, |r| self.type_named(r));
+                    let d = self.def(&f.name, DefKind::Fn, span, ty);
+                    self.item_defs[i] = Some(d);
+                }
+                Item::Const { name, pos, .. } => {
+                    let span = self.name_after(*pos, name);
+                    let ty = self.checked.constant(name).map_or(T::Unknown, |(t, _)| T::V(t));
+                    let d = self.def(name, DefKind::Const, span, ty);
                     self.item_defs[i] = Some(d);
                 }
                 Item::On { event, pos, .. } => {
@@ -579,8 +645,15 @@ impl<'s> Model<'s> {
                 }
                 Item::Label(l) => {
                     let span = self.name_after(l.pos, &l.name);
-                    let d = self.def(&l.name, DefKind::Label, span, T::Ty(Ty::Object));
-                    self.labels.insert(l.name.clone(), d);
+                    let ty = match self.checked.label(&l.name) {
+                        Some((_, x)) if x.single => x.member().map_or(T::Unknown, |h| T::V(Type::H(h, x.optional))),
+                        Some((_, x)) => T::V(Type::Set(x.set())),
+                        None => T::Unknown,
+                    };
+                    self.type_use(&l.kind);
+                    let d = self.def(&l.name, DefKind::Label, span, ty);
+                    self.defs[d].item = Some(i);
+                    self.labels.entry(l.name.clone()).or_insert(d);
                     self.item_defs[i] = Some(d);
                 }
                 Item::Enum { .. } => {}
@@ -590,7 +663,8 @@ impl<'s> Model<'s> {
 
     // ---- bodies ----
 
-    fn bodies(&mut self, script: &Script) {
+    fn bodies(&mut self) {
+        let script: &'s Script = self.script;
         for (i, item) in script.items.iter().enumerate() {
             let end = self.items[i].1;
             let mut env = Env::default();
@@ -616,42 +690,99 @@ impl<'s> Model<'s> {
                     for (pname, pty) in &f.params {
                         let Some(ps) = self.ident_from(at, pname) else { break };
                         at = ps.1;
-                        let t = self.type_named(&pty.name);
+                        let t = self.type_named(pty);
                         let d = self.def(pname, DefKind::Param, ps, t);
                         self.defs[d].visible = Some((ps.1, end));
                         self.defs[d].parent = Some(fd);
                         self.type_use(pty);
                         env.locals.push(d);
                     }
+                    if let Some(r) = &f.result {
+                        self.type_use(r);
+                    }
+                    // `fn f(..) -> T = expr`, or a block.
+                    if let Some(v) = &f.value {
+                        self.expr(v, &mut env);
+                    }
                     self.block(&f.body, &mut env, end);
                 }
-                Item::On {
-                    event, args, body, pos, ..
-                } => {
-                    let ev = Event::named(event);
-                    let mut at = self.name_after(*pos, event).1;
-                    for (k, a) in args.iter().enumerate() {
-                        let Some(span) = self.ident_from(at, a) else { break };
-                        at = span.1;
-                        if ev == Some(Event::Timer) {
-                            // `on timer(t)` names a global timer.
-                            if let Some(g) = self.scoped(Scope::Global, a) {
-                                self.add_ref(span, g);
-                            }
-                            continue;
-                        }
-                        let ty = ev
-                            .and_then(|e| e.args().get(k).copied())
-                            .map_or(T::Unknown, T::Ty);
-                        let d = self.def(a, DefKind::Arg, span, ty);
-                        self.defs[d].visible = Some((span.1, end));
-                        self.defs[d].event = ev;
-                        env.locals.push(d);
+                Item::Const { value, .. } => {
+                    self.expr(value, &mut env);
+                }
+                Item::Label(l) => {
+                    for e in requirement_exprs(&l.requirements) {
+                        self.expr(e, &mut env);
                     }
+                }
+                Item::On {
+                    event,
+                    args,
+                    label,
+                    body,
+                    pos,
+                } => {
+                    self.handler(i, event, args, label.as_ref(), *pos, end, &mut env);
                     self.block(body, &mut env, end);
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// A handler's arguments. A label in an argument's place is a use of
+    /// the label: `capture` in `on enter(capture z, o)`, and `goal` in
+    /// `on enter(goal, o)`, whose body reads `goal` as the zone entered.
+    #[allow(clippy::too_many_arguments)]
+    fn handler(
+        &mut self,
+        item: usize,
+        event: &str,
+        args: &[String],
+        label: Option<&(String, usize)>,
+        pos: Pos,
+        end: usize,
+        env: &mut Env,
+    ) {
+        let ev = Event::named(event);
+        let by_label = self.checked.handler_label(item);
+        let mut at = self.name_after(pos, event).1;
+        if let Some((lname, _)) = label
+            && let Some(span) = self.ident_from(at, lname)
+        {
+            at = span.1;
+            if let Some(&ld) = self.labels.get(lname.as_str()) {
+                self.add_ref(span, ld, None);
+            }
+        }
+        for (k, a) in args.iter().enumerate() {
+            let Some(span) = self.ident_from(at, a) else { break };
+            at = span.1;
+            if ev == Some(Event::Timer) {
+                // `on timer(t)` names a global timer.
+                if let Some(g) = self.scoped(Scope::Global, a) {
+                    self.add_ref(span, g, None);
+                }
+                continue;
+            }
+            let labelled = by_label.filter(|&(_, lk)| lk == k).map(|(ix, _)| ix);
+            if label.is_none()
+                && labelled.is_some()
+                && let Some(&ld) = self.labels.get(a.as_str())
+            {
+                self.add_ref(span, ld, None);
+                env.locals.push(ld);
+                continue;
+            }
+            let ty = match labelled.and_then(|ix| self.checked.labels.get(ix as usize)) {
+                Some(l) => l.member().map_or(T::Unknown, |h| T::V(Type::H(h, false))),
+                None => ev
+                    .and_then(|e| sig::event_args(e).get(k).copied())
+                    .map_or(T::Unknown, T::V),
+            };
+            let d = self.def(a, DefKind::Arg, span, ty);
+            self.defs[d].visible = Some((span.1, end));
+            self.defs[d].event = ev;
+            env.locals.push(d);
         }
     }
 
@@ -663,12 +794,51 @@ impl<'s> Model<'s> {
         env.locals.truncate(mark);
     }
 
+    /// A block read with the names `cond` narrows when it is `when`.
+    fn block_after_test(&mut self, cond: Option<&Expr>, when: bool, body: &[Stmt], env: &mut Env, end: usize) {
+        let mark = env.checks.len();
+        if let Some(c) = cond {
+            tested(c, when, &mut env.checks);
+        }
+        self.block(body, env, end);
+        env.checks.truncate(mark);
+    }
+
+    /// The `else` of a block that closes at `close`: `else if` and
+    /// `else if let` go on as a statement of their own, a plain `else` is
+    /// a block. `cond` is the test the `else` follows, false there.
+    fn else_branch(&mut self, cond: Option<&Expr>, els: &[Stmt], close: usize, env: &mut Env, end: usize) {
+        if els.is_empty() {
+            return;
+        }
+        let after = self.ci(close);
+        let else_if = self.is_word(after, "else") && self.is_word(after + 1, "if");
+        match els {
+            [inner @ (Stmt::If { .. } | Stmt::IfLet { .. })] if else_if => {
+                let mark = env.checks.len();
+                if let Some(c) = cond {
+                    tested(c, false, &mut env.checks);
+                }
+                self.stmt(inner, env, end);
+                env.checks.truncate(mark);
+            }
+            _ => {
+                let (_, eclose) = self.block_after(close);
+                self.block_after_test(cond, false, els, env, eclose);
+            }
+        }
+    }
+
     fn stmt(&mut self, s: &Stmt, env: &mut Env, end: usize) {
         match s {
-            Stmt::Let { name, value, pos, .. } => {
-                let ty = self.expr(value, env);
+            Stmt::Let { name, ty, value, pos } => {
+                self.expr(value, env);
+                let t = match ty {
+                    Some(t) => self.type_named(t),
+                    None => self.row_of(value, env).unwrap_or_else(|| self.value_type(value)),
+                };
                 let span = self.name_after(*pos, name);
-                let d = self.def(name, DefKind::Local, span, ty);
+                let d = self.def(name, DefKind::Local, span, t);
                 self.defs[d].visible = Some((span.1, end));
                 env.locals.push(d);
             }
@@ -684,7 +854,8 @@ impl<'s> Model<'s> {
                 els,
                 pos,
             } => {
-                let ty = self.expr(value, env);
+                self.expr(value, env);
+                let ty = self.checked.ty(value).map_or(T::Unknown, |t| T::V(t.unwrapped()));
                 let span = self.ident_from(self.byte(*pos), name).unwrap_or((0, 0));
                 let start = cond.as_ref().map_or(value.pos, |c| c.pos);
                 let (_, close) = self.block_after(self.byte(start));
@@ -695,12 +866,11 @@ impl<'s> Model<'s> {
                 if let Some(c) = cond {
                     self.expr(c, env);
                 }
-                self.block(then, env, close);
+                self.block_after_test(cond.as_ref(), true, then, env, close);
                 env.locals.truncate(mark);
-                if !els.is_empty() {
-                    let (_, eclose) = self.block_after(close);
-                    self.block(els, env, eclose);
-                }
+                // The else has no binding, and a false `cond` proves
+                // nothing alone.
+                self.else_branch(None, els, close, env, end);
             }
             Stmt::Expr(e) => {
                 self.expr(e, env);
@@ -708,19 +878,8 @@ impl<'s> Model<'s> {
             Stmt::If { cond, then, els } => {
                 self.expr(cond, env);
                 let (_, close) = self.block_after(self.byte(cond.pos));
-                self.block(then, env, close);
-                if els.is_empty() {
-                    return;
-                }
-                let after = self.ci(close);
-                let else_if = self.is_word(after, "else") && self.is_word(after + 1, "if");
-                match els.as_slice() {
-                    [inner @ Stmt::If { .. }] if else_if => self.stmt(inner, env, end),
-                    _ => {
-                        let (_, eclose) = self.block_after(close);
-                        self.block(els, env, eclose);
-                    }
-                }
+                self.block_after_test(Some(cond), true, then, env, close);
+                self.else_branch(Some(cond), els, close, env, end);
             }
             Stmt::ForEach {
                 set,
@@ -728,7 +887,7 @@ impl<'s> Model<'s> {
                 body,
                 pos,
             } => {
-                let elem = self.set(set, env);
+                let member = self.set(set, env);
                 // `for each <set> <binder>`: past `for`, `each` and the set.
                 let base = self.skip_set(self.ci(self.byte(*pos)) + 2);
                 let span = match self.code.get(base) {
@@ -737,18 +896,52 @@ impl<'s> Model<'s> {
                 };
                 let (_, close) = self.block_after(span.1);
                 let mark = env.locals.len();
-                let d = self.def(binder, DefKind::Binder, span, T::Ty(elem));
+                let ty = member.map_or(T::Unknown, T::V);
+                let d = self.def(binder, DefKind::Binder, span, ty);
                 self.defs[d].visible = Some((span.1, close));
                 env.locals.push(d);
                 if let Some(f) = &set.filter {
-                    env.implicit.push(T::Ty(elem));
+                    env.implicit.push(ty);
                     self.expr(f, env);
                     env.implicit.pop();
                 }
-                self.block(body, env, close);
+                self.block_after_test(set.filter.as_ref(), true, body, env, close);
                 env.locals.truncate(mark);
             }
+            Stmt::Match { value, arms, els, .. } => {
+                self.expr(value, env);
+                let (_, whole) = self.block_after(self.byte(value.pos));
+                let mut after = self.byte(value.pos);
+                for arm in arms {
+                    for p in &arm.patterns {
+                        self.expr(p, env);
+                    }
+                    let from = arm.patterns.last().map_or(self.byte(arm.pos), |p| self.byte(p.pos));
+                    let (_, close) = self.block_after(from);
+                    self.block(&arm.body, env, close.min(whole));
+                    after = close;
+                }
+                if let Some(body) = els {
+                    let (_, close) = self.block_after(after);
+                    self.block(body, env, close.min(whole));
+                }
+            }
         }
+    }
+
+    /// `table[i]`, a row: the table's declaration.
+    fn row_of(&self, value: &Expr, env: &Env) -> Option<T> {
+        let ExprKind::Index(base, _) = &value.kind else { return None };
+        let ExprKind::Name(n) = &base.kind else { return None };
+        if self.local(n, env).is_some() {
+            return None;
+        }
+        self.top_kind(n, DefKind::Table).map(T::Row)
+    }
+
+    /// The checker's type of an expression.
+    fn value_type(&self, e: &Expr) -> T {
+        self.checked.ty(e).map_or(T::Unknown, T::V)
     }
 
     /// The code index past a set base starting at `i`.
@@ -760,19 +953,21 @@ impl<'s> Model<'s> {
         }
     }
 
-    /// Walks a set's base; its member type.
-    fn set(&mut self, set: &SetExpr, env: &mut Env) -> Ty {
+    /// Walks a set's base; the type of its member, as the set's
+    /// declaration states it.
+    fn set(&mut self, set: &SetExpr, env: &mut Env) -> Option<Type> {
         match &set.base {
-            SetBaseExpr::Players => Ty::Player,
-            SetBaseExpr::Teams => Ty::Team,
-            SetBaseExpr::Objectives => Ty::Object,
+            SetBaseExpr::Players => Some(Type::PLAYER),
+            SetBaseExpr::Teams => Some(Type::TEAM),
+            SetBaseExpr::Objectives => Some(Type::OBJECT),
             SetBaseExpr::Label(l) => {
                 let span = self.ident_from(self.byte(set.pos), l).unwrap_or_else(|| self.tok_at(set.pos));
-                match self.local(l, env) {
-                    Some(d) => self.add_ref(span, d),
-                    None => self.label(l, span),
+                let d = self.local(l, env).or_else(|| self.labels.get(l.as_str()).copied())?;
+                self.add_ref(span, d, None);
+                match self.defs[d].ty {
+                    T::V(Type::Set(k)) => k.member().map(|h| Type::H(h, false)),
+                    _ => None,
                 }
-                Ty::Object
             }
             SetBaseExpr::Pick(inner, n) => {
                 let t = self.set(inner, env);
@@ -784,8 +979,9 @@ impl<'s> Model<'s> {
 
     /// A set argument of `count`, `first` or `pick` at `call`: its member
     /// is in scope to the call's `)`.
-    fn set_arg(&mut self, set: &SetExpr, env: &mut Env, call: Pos) -> Ty {
-        let elem = self.set(set, env);
+    fn set_arg(&mut self, set: &SetExpr, env: &mut Env, call: Pos) {
+        let member = self.set(set, env);
+        let ty = member.map_or(T::Unknown, T::V);
         let mark = env.locals.len();
         if let Some(binder) = &set.binder {
             let i = self.skip_set(self.ci(self.byte(set.pos)));
@@ -798,27 +994,16 @@ impl<'s> Model<'s> {
                 Some(c) if self.is_punct(open, "(") => self.code[c].e,
                 _ => self.src.len(),
             };
-            let d = self.def(binder, DefKind::Binder, span, T::Ty(elem));
+            let d = self.def(binder, DefKind::Binder, span, ty);
             self.defs[d].visible = Some((span.1, close));
             env.locals.push(d);
         }
         if let Some(f) = &set.filter {
-            env.implicit.push(T::Ty(elem));
+            env.implicit.push(ty);
             self.expr(f, env);
             env.implicit.pop();
         }
         env.locals.truncate(mark);
-        elem
-    }
-
-    fn label(&mut self, name: &str, span: (usize, usize)) {
-        match self.labels.get(name) {
-            Some(&d) => self.add_ref(span, d),
-            None => {
-                let d = self.def(name, DefKind::Label, span, T::Ty(Ty::Label));
-                self.labels.insert(name.to_string(), d);
-            }
-        }
     }
 
     fn local(&self, name: &str, env: &Env) -> Option<usize> {
@@ -829,100 +1014,106 @@ impl<'s> Model<'s> {
             .find(|&d| self.defs[d].name == name)
     }
 
-    fn expr(&mut self, e: &Expr, env: &mut Env) -> T {
+    /// A use of a declaration with the checker's type there, and the test
+    /// that narrows it when that type is narrower than the declared one.
+    fn use_of(&mut self, span: (usize, usize), d: usize, ty: Option<Type>, env: &Env) {
+        let narrower = match (self.defs[d].ty, ty) {
+            (T::V(declared), Some(here)) => declared != here && here.fits(declared),
+            _ => false,
+        };
+        let name = &self.defs[d].name;
+        let narrowed = if narrower {
+            env.checks.iter().rev().find(|(n, _)| n == name).map(|&(_, line)| line)
+        } else {
+            None
+        };
+        self.refs.push(Ref {
+            s: span.0,
+            e: span.1,
+            def: d,
+            decl: false,
+            ty,
+            narrowed,
+        });
+    }
+
+    fn expr(&mut self, e: &Expr, env: &mut Env) {
         match &e.kind {
-            ExprKind::Int(_) => T::Ty(Ty::Int),
-            ExprKind::Fixed(_) => T::Ty(Ty::Fixed),
-            ExprKind::Bool(_) => T::Ty(Ty::Bool),
-            ExprKind::Str(_) | ExprKind::None => T::Unknown,
-            ExprKind::Name(n) => self.name(n, e.pos, env),
-            ExprKind::Field(base, f) => self.field(base, f, e.pos, env),
+            ExprKind::Int(_)
+            | ExprKind::Fixed(_)
+            | ExprKind::Time(..)
+            | ExprKind::Bool(_)
+            | ExprKind::Str(_)
+            | ExprKind::None
+            | ExprKind::Budget(_) => {}
+            ExprKind::Name(n) => self.name(n, e, env),
+            ExprKind::Field(base, f) => self.field(base, f, e, env),
             ExprKind::Index(base, index) => {
-                let t = match &base.kind {
-                    ExprKind::Name(n) if self.local(n, env).is_none() => match self.top_kind(n, DefKind::Table) {
-                        Some(d) => {
-                            let span = self.tok_at(base.pos);
-                            self.add_ref(span, d);
-                            T::Row(d)
-                        }
-                        None => {
-                            self.expr(base, env);
-                            T::Unknown
-                        }
-                    },
-                    _ => {
-                        self.expr(base, env);
-                        T::Unknown
-                    }
+                let table = match &base.kind {
+                    ExprKind::Name(n) if self.local(n, env).is_none() => self.top_kind(n, DefKind::Table),
+                    _ => None,
                 };
+                match table {
+                    Some(d) => {
+                        let span = self.tok_at(base.pos);
+                        self.add_ref(span, d, None);
+                    }
+                    None => self.expr(base, env),
+                }
                 self.expr(index, env);
-                t
             }
             ExprKind::Call(name, args) => self.call(name, args, e.pos, env),
-            ExprKind::Unary(UnOp::Neg, inner) => self.expr(inner, env),
-            ExprKind::Unary(UnOp::Not, inner) => {
-                self.expr(inner, env);
-                T::Ty(Ty::Bool)
+            ExprKind::Unary(_, inner) | ExprKind::Team(inner) | ExprKind::Text(inner) => self.expr(inner, env),
+            ExprKind::Binary(op @ (BinOp::And | BinOp::Or), a, b) => {
+                // The right side is read with what the left proves.
+                self.expr(a, env);
+                let mark = env.checks.len();
+                tested(a, *op == BinOp::And, &mut env.checks);
+                self.expr(b, env);
+                env.checks.truncate(mark);
             }
-            ExprKind::Binary(op, a, b) => {
-                let ta = self.expr(a, env);
-                let tb = self.expr(b, env);
-                match op {
-                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
-                        if ta == T::Unknown || literal(a) { tb } else { ta }
-                    }
-                    _ => T::Ty(Ty::Bool),
-                }
-            }
-            ExprKind::Team(inner) => {
-                self.expr(inner, env);
-                T::Ty(Ty::Team)
-            }
-            ExprKind::Text(inner) => {
-                self.expr(inner, env);
-                T::Ty(Ty::Text)
+            ExprKind::Binary(_, a, b) => {
+                self.expr(a, env);
+                self.expr(b, env);
             }
             ExprKind::Is(x, l, lpos) => {
                 self.expr(x, env);
                 let span = self.tok_at(*lpos);
-                self.label(l, span);
-                T::Ty(Ty::Bool)
+                if let Some(&d) = self.labels.get(l.as_str()) {
+                    self.add_ref(span, d, None);
+                }
             }
-            ExprKind::Budget(_) => T::Ty(Ty::Int),
             ExprKind::Palette(p) => {
                 let span = self.str_from(self.tok_at(e.pos).1);
                 if let Some(d) = self.top_kind(p, DefKind::Palette) {
-                    self.add_ref(span, d);
+                    self.add_ref(span, d, None);
                 }
-                T::Unknown
             }
-            ExprKind::Set(set) => T::Ty(self.set(set, env)),
+            ExprKind::Set(set) => {
+                self.set(set, env);
+            }
         }
     }
 
-    fn name(&mut self, n: &str, pos: Pos, env: &mut Env) -> T {
-        let span = self.tok_at(pos);
+    fn name(&mut self, n: &str, e: &Expr, env: &mut Env) {
+        let span = self.tok_at(e.pos);
+        let ty = self.checked.ty(e);
         if let Some(d) = self.local(n, env) {
-            self.add_ref(span, d);
-            return self.defs[d].ty;
+            self.use_of(span, d, ty, env);
+            return;
         }
         if let Some(&t) = env.implicit.last()
-            && let Some(r) = self.field_of(t, n, span)
+            && self.field_of(t, n, span, ty)
         {
-            return r;
+            return;
         }
         if n == "variant" {
             self.add_use(span, Use::Variant);
-            return T::Unknown;
+            return;
         }
-        if let Some(d) = self.top(n) {
-            self.add_ref(span, d);
-            return match self.defs[d].kind {
-                DefKind::Var(_) | DefKind::Option => self.defs[d].ty,
-                _ => T::Unknown,
-            };
+        if let Some(d) = self.top(n).or_else(|| self.labels.get(n).copied()) {
+            self.use_of(span, d, ty, env);
         }
-        T::Unknown
     }
 
     /// The span of the field name after the `.` at `dot`.
@@ -934,99 +1125,93 @@ impl<'s> Model<'s> {
         }
     }
 
-    fn field(&mut self, base: &Expr, f: &str, dot: Pos, env: &mut Env) -> T {
-        let span = self.field_span(dot);
+    /// `base.f`, whose position is its dot.
+    fn field(&mut self, base: &Expr, f: &str, e: &Expr, env: &mut Env) {
+        let span = self.field_span(e.pos);
+        let ty = self.checked.ty(e);
         if let ExprKind::Name(b) = &base.kind
             && self.local(b, env).is_none()
         {
+            if b == "carrier" {
+                let bspan = self.tok_at(base.pos);
+                self.add_use(bspan, Use::CarrierEnum);
+                let index = caps::CARRIERS.iter().position(|(n, _)| *n == f);
+                self.add_use(span, Use::CarrierValue(index));
+                return;
+            }
             if b == "variant" {
                 let bspan = self.tok_at(base.pos);
                 self.add_use(bspan, Use::Variant);
-                return match VARIANT_FIELDS.iter().position(|(n, _)| *n == f) {
-                    Some(i) => {
-                        self.add_use(span, Use::VariantField(i));
-                        T::Ty(VARIANT_FIELDS[i].1)
-                    }
-                    None => T::Unknown,
-                };
+                if let Some(i) = VARIANT_FIELDS.iter().position(|(n, _)| *n == f) {
+                    self.add_use(span, Use::VariantField(i));
+                }
+                return;
             }
             if let Some(ed) = self.top_kind(b, DefKind::Enum) {
                 let bspan = self.tok_at(base.pos);
-                self.add_ref(bspan, ed);
+                self.add_ref(bspan, ed, None);
                 let member = self.children(ed, DefKind::Member).find(|&m| self.defs[m].name == f);
                 if let Some(m) = member {
-                    self.add_ref(span, m);
+                    self.add_ref(span, m, ty);
                 }
-                return T::Enum(ed);
+                return;
             }
         }
-        let t = self.expr(base, env);
-        self.field_of(t, f, span).unwrap_or(T::Unknown)
+        self.expr(base, env);
+        let owner = self.owner(base, env);
+        self.field_of(owner, f, span, ty);
+    }
+
+    /// The type whose field `base.f` reads: a row's table, or the
+    /// checker's type of `base`.
+    fn owner(&self, base: &Expr, env: &Env) -> T {
+        match &base.kind {
+            ExprKind::Name(n) => match self.local(n, env).map(|d| self.defs[d].ty) {
+                Some(row @ T::Row(_)) => row,
+                _ => self.value_type(base),
+            },
+            ExprKind::Index(..) => self.row_of(base, env).unwrap_or_else(|| self.value_type(base)),
+            _ => self.value_type(base),
+        }
     }
 
     /// A field of a value of type `t`: a scoped variable, a table column
-    /// or a built-in read. Records the use.
-    fn field_of(&mut self, t: T, f: &str, span: (usize, usize)) -> Option<T> {
+    /// or a built-in read. Records the use; whether there was one.
+    fn field_of(&mut self, t: T, f: &str, span: (usize, usize), ty: Option<Type>) -> bool {
         match field_target(self, t, f) {
             Some(FieldTarget::Def(d)) => {
-                self.add_ref(span, d);
-                Some(self.defs[d].ty)
+                self.add_ref(span, d, ty);
+                true
             }
             Some(FieldTarget::Builtin(i)) => {
                 self.add_use(span, Use::Field(i));
-                Some(builtin_field_type(i))
+                true
             }
-            None => None,
+            None => false,
         }
     }
 
-    fn call(&mut self, name: &str, args: &[Expr], pos: Pos, env: &mut Env) -> T {
+    fn call(&mut self, name: &str, args: &[Expr], pos: Pos, env: &mut Env) {
         let span = self.tok_at(pos);
         if let Some(l) = super::info::lang_index(name) {
             self.add_use(span, Use::Lang(l));
-            let mut elem = T::Unknown;
             for (k, a) in args.iter().enumerate() {
                 match (&a.kind, k) {
-                    (ExprKind::Set(set), 0) => elem = T::Ty(self.set_arg(set, env, pos)),
+                    (ExprKind::Set(set), 0) => self.set_arg(set, env, pos),
                     (_, 1) if matches!(name, "grant" | "revoke" | "granted") => self.cap_arg(a),
-                    _ => {
-                        self.expr(a, env);
-                    }
+                    _ => self.expr(a, env),
                 }
             }
-            return match name {
-                "count" | "len" | "seconds" => T::Ty(Ty::Int),
-                "first" => elem,
-                "granted" => T::Ty(Ty::Bool),
-                _ => T::Unknown,
-            };
+            return;
         }
         if let Some(d) = self.top_kind(name, DefKind::Fn) {
-            self.add_ref(span, d);
-            for a in args {
-                self.expr(a, env);
-            }
-            return T::Unknown;
-        }
-        if let Some(entry) = caps::entry_named(name) {
+            self.add_ref(span, d, None);
+        } else if let Some(entry) = caps::entry_named(name) {
             self.add_use(span, Use::Api(entry));
-            for (k, a) in args.iter().enumerate() {
-                match (&a.kind, entry.args.get(k)) {
-                    (ExprKind::Str(s), Some(Ty::Label)) => {
-                        let sp = self.tok_at(a.pos);
-                        self.label(s, sp);
-                    }
-                    _ => {
-                        self.expr(a, env);
-                    }
-                }
-            }
-            return entry.result.map_or(T::Unknown, T::Ty);
         }
         for a in args {
             self.expr(a, env);
         }
-        T::Unknown
     }
 
     /// A capability argument (`forge.place`).
@@ -1087,8 +1272,8 @@ impl<'s> Model<'s> {
         out
     }
 
-    /// The type of a name at `off`: a local in scope or a script-level
-    /// name.
+    /// The declared type of a name at `off`: a local in scope, or a
+    /// script-level variable, option or label.
     pub fn type_of_name(&self, name: &str, off: usize) -> T {
         if let Some(d) = self
             .visible_locals(off)
@@ -1097,8 +1282,10 @@ impl<'s> Model<'s> {
         {
             return self.defs[d].ty;
         }
-        match self.top(name) {
-            Some(d) if matches!(self.defs[d].kind, DefKind::Var(_) | DefKind::Option) => self.defs[d].ty,
+        match self.top(name).or_else(|| self.labels.get(name).copied()) {
+            Some(d) if matches!(self.defs[d].kind, DefKind::Var(_) | DefKind::Option | DefKind::Label | DefKind::Const) => {
+                self.defs[d].ty
+            }
             _ => T::Unknown,
         }
     }
@@ -1106,8 +1293,8 @@ impl<'s> Model<'s> {
     /// A type's name as the language writes it.
     pub fn type_name(&self, t: T) -> String {
         match t {
-            T::Ty(t) => t.name().to_string(),
-            T::Enum(d) => self.defs[d].name.clone(),
+            T::V(t) => t.name(&self.enum_names),
+            T::Timer => "timer".to_string(),
             T::Row(d) => format!("a row of {}", self.defs[d].name),
             T::Unknown => "?".to_string(),
         }
@@ -1116,6 +1303,50 @@ impl<'s> Model<'s> {
     /// The text of the source line holding `off`, trimmed.
     pub fn line_at(&self, off: usize) -> &'s str {
         self.li.line_text(self.li.line_of(off)).trim()
+    }
+
+    /// The label declaration `d` is, when it is one.
+    pub fn label_decl(&self, d: usize) -> Option<&'s LabelDecl> {
+        let script: &'s Script = self.script;
+        match script.items.get(self.defs[d].item?) {
+            Some(Item::Label(l)) => Some(l),
+            _ => None,
+        }
+    }
+}
+
+/// The names a test narrows when it is `when`: `x != none` and `x is
+/// goal` through `and` when true, `x == none` through `or` when false,
+/// each with the test's line.
+fn tested(e: &Expr, when: bool, out: &mut Vec<(String, u32)>) {
+    match &e.kind {
+        ExprKind::Binary(BinOp::And, a, b) if when => {
+            tested(a, true, out);
+            tested(b, true, out);
+        }
+        ExprKind::Binary(BinOp::Or, a, b) if !when => {
+            tested(a, false, out);
+            tested(b, false, out);
+        }
+        ExprKind::Unary(UnOp::Not, inner) => tested(inner, !when, out),
+        ExprKind::Binary(op @ (BinOp::Eq | BinOp::Ne), a, b) => {
+            let x = match (&a.kind, &b.kind) {
+                (_, ExprKind::None) => a,
+                (ExprKind::None, _) => b,
+                _ => return,
+            };
+            if (*op == BinOp::Ne) == when
+                && let ExprKind::Name(n) = &x.kind
+            {
+                out.push((n.clone(), x.pos.line));
+            }
+        }
+        ExprKind::Is(x, _, _) if when => {
+            if let ExprKind::Name(n) = &x.kind {
+                out.push((n.clone(), x.pos.line));
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1127,15 +1358,16 @@ pub(crate) enum FieldTarget {
 /// What `.f` of a value of type `t` reads.
 pub(crate) fn field_target(m: &Model, t: T, f: &str) -> Option<FieldTarget> {
     match t {
-        T::Ty(ty) => {
-            if let Some(scope) = scope_of(ty)
+        T::V(Type::H(h, _)) => {
+            if let Some(scope) = scope_of(h)
                 && let Some(d) = m.scoped(scope, f)
             {
                 return Some(FieldTarget::Def(d));
             }
+            let owner = h.erase();
             FIELDS
                 .iter()
-                .position(|&(o, n, _)| o == ty && n == f)
+                .position(|&(o, n, _)| o == owner && n == f)
                 .map(FieldTarget::Builtin)
         }
         T::Row(td) => m
@@ -1146,29 +1378,23 @@ pub(crate) fn field_target(m: &Model, t: T, f: &str) -> Option<FieldTarget> {
     }
 }
 
+/// A built-in field's front-end type, from its entry's signature.
 pub(crate) fn builtin_field_type(i: usize) -> T {
     let id = FIELDS[i].2 as usize;
     caps::ENTRIES
         .get(id)
-        .and_then(|e| e.result)
-        .map_or(T::Unknown, T::Ty)
+        .and_then(sig::of)
+        .and_then(|s| s.result)
+        .map_or(T::Unknown, T::V)
 }
 
-/// The variable scope a value of this type owns.
-pub(crate) fn scope_of(t: Ty) -> Option<Scope> {
-    match t {
-        Ty::Player => Some(Scope::Player),
-        Ty::Team => Some(Scope::Team),
-        Ty::Object => Some(Scope::Object),
-        _ => None,
-    }
-}
-
-fn literal(e: &Expr) -> bool {
-    match &e.kind {
-        ExprKind::Int(_) | ExprKind::None | ExprKind::Str(_) => true,
-        ExprKind::Unary(UnOp::Neg, inner) => matches!(inner.kind, ExprKind::Int(_)),
-        _ => false,
+/// The variable scope a handle owns.
+pub(crate) fn scope_of(h: Handle) -> Option<Scope> {
+    match h {
+        Handle::Player => Some(Scope::Player),
+        Handle::Team => Some(Scope::Team),
+        Handle::Object | Handle::Zone => Some(Scope::Object),
+        Handle::Tag | Handle::Weapon => None,
     }
 }
 
@@ -1183,5 +1409,22 @@ pub(crate) fn item_pos(item: &Item) -> Pos {
         | Item::On { pos, .. } => *pos,
         Item::Fn(f) => f.pos,
         Item::Label(l) => l.pos,
+        Item::Const { pos, .. } => *pos,
     }
+}
+
+/// The constant expressions of a label's requirements, in source order.
+pub(crate) fn requirement_exprs(reqs: &[(Requirement, Pos)]) -> Vec<&Expr> {
+    let mut out = Vec::new();
+    for (r, _) in reqs {
+        match r {
+            Requirement::AtLeast(e) | Requirement::AtMost(e) | Requirement::Exactly(e) => out.push(e),
+            Requirement::Between(a, b) | Requirement::Numbered(Some((a, b))) => {
+                out.push(a);
+                out.push(b);
+            }
+            Requirement::Numbered(None) | Requirement::PerTeam => {}
+        }
+    }
+    out
 }

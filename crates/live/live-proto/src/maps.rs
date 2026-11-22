@@ -11,6 +11,7 @@ pub use crate::mod_packs::*;
 
 pub use content::{Manifest, MapId, Sha256};
 
+pub use crate::map_census::{CensusSet, MAP_CENSUS_SET, census_stream};
 pub use crate::map_details::{
     ClassChange, Contents, Detailed, Details, MAP_DETAILED, MAP_PACK_SET, MAX_DETAIL_IMAGES,
     MAX_DETAILS_DESCRIPTION, MapImage, PackInfo, PackListed, PackSet, PlacementChange,
@@ -63,6 +64,7 @@ pub const KINDS: &[&str] = &[
     MAP_CREDITED,
     MAP_DETAILED,
     MAP_PACK_SET,
+    MAP_CENSUS_SET,
     MOD_PACK_PUBLISHED,
 ];
 
