@@ -1,12 +1,10 @@
-// The superbounce medals (docs/game/superbounce.md, "Medals"): the copy of
-// the chain table, a game's bounces from its events and its snapshot, and
-// their medals in the game, the service record and the medal art.
+// The superbounce medals (docs/game/superbounce.md, "Medals"): their ids
+// and names, a game's bounces from its events and its snapshot, the
+// server's bounce medals on the game and in the service record, and the
+// medal art. Live works the medals out; the site only shows them.
 import { describe, expect, test } from "bun:test";
-import type { Bounce } from "../src/state/reducer";
 import { applyEvents, applyGameSnapshot, initialState } from "../src/state/reducer";
-import {
-  BOUNCE_MEDALS, MEDALS, MEDAL_BY_ID, bounceMedals, countMedals, gameAwards, gameBounceMedals, isBounceMedal, serviceRecord,
-} from "../src/state/derive";
+import { BOUNCE_MEDALS, MEDALS, MEDAL_BY_ID, gameMedalCounts, isBounceMedal, serviceRecord } from "../src/state/derive";
 import { PACK_MEDALS, medalArt } from "../src/lib/art";
 import { medalKey } from "../src/lib/gameart";
 import { STATS_EVENT_KINDS, isStatsEvent } from "../src/stats/eventKinds";
@@ -14,29 +12,7 @@ import { ev, resetPos } from "./helpers";
 
 const A = "0009000000000001", B = "0009000000000002";
 
-describe("the bounce medal table", () => {
-  // `bounce_medals` in crates/live/live-proto/src/film/events/medals.rs.
-  test("matches the canonical table: each chain medal once, 7 and over Superbounce only", () => {
-    expect(bounceMedals(0)).toEqual([]);
-    expect(bounceMedals(1)).toEqual(["superbounce"]);
-    expect(bounceMedals(2)).toEqual(["superbounce", "double-bounce"]);
-    expect(bounceMedals(3)).toEqual(["superbounce", "triple-bounce"]);
-    expect(bounceMedals(4)).toEqual(["superbounce", "quad-bounce"]);
-    expect(bounceMedals(5)).toEqual(["superbounce", "chain-bounce"]);
-    expect(bounceMedals(6)).toEqual(["superbounce", "bouncetacular"]);
-    for (const chain of [7, 8, 20]) expect(bounceMedals(chain)).toEqual(["superbounce"]);
-    expect(bounceMedals(Number.NaN)).toEqual([]);
-  });
-
-  // `bounce_medals_with`: a Monster adds Monster Bounce after the chain's medals.
-  test("a Monster adds Monster Bounce last", () => {
-    expect(bounceMedals(2, true)).toEqual(["superbounce", "double-bounce", "monster-bounce"]);
-    expect(bounceMedals(1, true)).toEqual(["superbounce", "monster-bounce"]);
-    expect(bounceMedals(9, true)).toEqual(["superbounce", "monster-bounce"]);
-    expect(bounceMedals(0, true)).toEqual([]);
-    expect(bounceMedals(2, false)).toEqual(bounceMedals(2));
-  });
-
+describe("the bounce medal list", () => {
   test("ids, names and the medal list", () => {
     expect(BOUNCE_MEDALS).toEqual([
       "superbounce", "double-bounce", "triple-bounce", "quad-bounce", "chain-bounce", "bouncetacular", "bounced",
@@ -47,16 +23,8 @@ describe("the bounce medal table", () => {
       "Monster Bounce",
     ]);
     expect(MEDALS.filter((m) => isBounceMedal(m.id)).map((m) => m.id)).toEqual(BOUNCE_MEDALS);
-    expect(isBounceMedal("twofer")).toBe(false);
-  });
-
-  test("a chain of eight is eight Superbounces and one of each other chain medal", () => {
-    const bounces: Bounce[] = [1, 2, 3, 4, 5, 6, 7, 8].map((chain, i) => ({ position: i + 1, at: "", tick: 10 * i, player: 0, chain }));
-    bounces.push({ position: 20, at: "", tick: 500, player: 0, chain: null });
-    const m = countMedals(gameBounceMedals(bounces));
-    expect(Object.fromEntries(m)).toEqual({
-      "superbounce": 8, "double-bounce": 1, "triple-bounce": 1, "quad-bounce": 1, "chain-bounce": 1, "bouncetacular": 1, "bounced": 1,
-    });
+    expect(isBounceMedal("double-kill")).toBe(false);
+    expect(isBounceMedal("incel")).toBe(false);
   });
 });
 
@@ -108,7 +76,8 @@ describe("a game's bounces", () => {
       bounces: [{ tick: 5, player: 0, chain: 2, position: 3, at: "" }],
     });
     expect(fresh.games.h!.bounces).toEqual([{ position: 3, at: "", tick: 5, player: 0, chain: 2 }]);
-    expect(Object.fromEntries(countMedals(gameAwards(fresh.games.h!)))).toEqual({ "superbounce": 1, "double-bounce": 1 });
+    // Bounces alone award nothing here: the medals are the server's.
+    expect(fresh.games.h!.medals).toEqual({});
 
     // A snapshot's bounce row carries `monster` beside `chain`.
     resetPos();
@@ -118,24 +87,31 @@ describe("a game's bounces", () => {
       bounces: [{ tick: 5, player: 0, chain: 2, monster: true, position: 3, at: "" }],
     });
     expect(monster.games.m!.bounces).toEqual([{ position: 3, at: "", tick: 5, player: 0, chain: 2, monster: true }]);
-    expect(Object.fromEntries(countMedals(gameAwards(monster.games.m!)))).toEqual({
-      "superbounce": 1, "double-bounce": 1, "monster-bounce": 1,
-    });
   });
 
-  test("the game's medals hold every player's bounces, a bot's included", () => {
-    const g = world().games.g!;
-    const awards = gameAwards(g);
-    // A finished game with no teabag: everyone completed it clean (incel).
-    expect(Object.fromEntries(countMedals(awards, new Set([0])))).toEqual({
-      "superbounce": 2, "double-bounce": 1, "monster-bounce": 1, "incel": 1,
+  /** The server's medals for `world()`'s game, as `GET /v1/games/{id}` lists them. */
+  function withServerMedals() {
+    const s = world();
+    applyGameSnapshot(s, {
+      game_id: "g", map: "lockout", mode: "multiplayer", started_at: "2026-11-15T10:00:00.000Z", players: [],
+      medals: [
+        { player: 0, name: "a", xuid: A, medals: { "superbounce": 2, "double-bounce": 1, "monster-bounce": 1, "incel": 1 } },
+        { player: 1, name: "b", xuid: B, medals: { "bounced": 1, "incel": 1 } },
+        { player: 2, name: "Clanker 2", medals: { "superbounce": 1, "incel": 1 } },
+      ],
     });
-    expect(Object.fromEntries(countMedals(awards, new Set([1])))).toEqual({ "bounced": 1, "incel": 1 });
-    expect(Object.fromEntries(countMedals(awards, new Set([2])))).toEqual({ "superbounce": 1, "incel": 1 });
+    return s;
+  }
+
+  test("the game's medals hold every player's bounce medals, a bot's included", () => {
+    const g = withServerMedals().games.g!;
+    expect(Object.fromEntries(gameMedalCounts(g, [0]))).toEqual({ "superbounce": 2, "double-bounce": 1, "monster-bounce": 1, "incel": 1 });
+    expect(Object.fromEntries(gameMedalCounts(g, [1]))).toEqual({ "bounced": 1, "incel": 1 });
+    expect(Object.fromEntries(gameMedalCounts(g, [2]))).toEqual({ "superbounce": 1, "incel": 1 });
   });
 
   test("a career holds the player's own bounce medals", () => {
-    const s = world();
+    const s = withServerMedals();
     expect(serviceRecord(s, A).medals.get("superbounce")).toBe(2);
     expect(serviceRecord(s, A).medals.get("double-bounce")).toBe(1);
     expect(serviceRecord(s, A).medals.get("monster-bounce")).toBe(1);
@@ -158,8 +134,14 @@ describe("the bounce medals' pictures", () => {
       expect(medalArt(id, 30)).toEqual({ src: `/art/medals/${id}.webp`, srcset: `/art/medals/${id}.webp 1x, /art/medals/${id}@2x.webp 2x` });
       expect(medalKey(id)).toBeNull();
     }
-    // Every medal has pack art, the kill medals included.
-    expect(MEDALS.every((m) => PACK_MEDALS.has(m.id))).toBe(true);
-    expect(medalArt("twofer", 30)).toEqual({ src: "/art/medals/twofer.webp", srcset: "/art/medals/twofer.webp 1x, /art/medals/twofer@2x.webp 2x" });
+    // The pack draws only our modes' medals: the bounce family and Incel.
+    expect([...PACK_MEDALS].sort()).toEqual([...BOUNCE_MEDALS, "incel"].sort());
+    expect(MEDALS.filter((m) => PACK_MEDALS.has(m.id)).map((m) => m.id)).toEqual([...BOUNCE_MEDALS, "incel"]);
+    for (const gone of ["twofer", "hat-trick", "full-house", "encore", "hot-streak", "wildfire", "untouchable", "opening-act", "last-word", "payback"]) {
+      expect(PACK_MEDALS.has(gone)).toBe(false);
+      expect(medalArt(gone, 30)).toBeNull();
+    }
+    // Halo 2's own have no pack art.
+    expect(medalArt("double-kill", 30)).toBeNull();
   });
 });

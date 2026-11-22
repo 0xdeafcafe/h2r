@@ -19,7 +19,7 @@ function game(id: string, o: Partial<GameState> = {}): GameState {
     game_id: id, console: null, host: null, map: "lockout", map_id: null, mode: "multiplayer", kind: "custom", playlist: null,
     playlist_id: null, difficulty: null, online: null, skulls: [], variant: "slayer", team_play: false, score_limit: 25,
     time_limit_s: null, started_at: ago(30), ended_at: ago(20), status: "ended", end_reason: "finished", winner: null,
-    start_tick: 0, players: {}, scores: {}, teams: {}, kills: [], bounces: [], teabags: [], last_tick: 0, first_position: 0, positions: [], ...o,
+    start_tick: 0, players: {}, scores: {}, teams: {}, kills: [], bounces: [], teabags: [], medals: {}, medals_at: 0, medal_events: [], last_tick: 0, first_position: 0, positions: [], ...o,
   };
 }
 const player = (index: number, name: string, xuid: string | null = null) =>

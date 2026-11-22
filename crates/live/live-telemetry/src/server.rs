@@ -49,13 +49,14 @@ pub(crate) const FRAME_KEYFRAME_EVERY: u64 = 150;
 pub(crate) const MAX_OUTBOX: usize = 4096;
 /// Event kinds the outbox may drop when full: a later `ScoreChanged` and
 /// the `GameEnded` scoreboard carry the scores again. A dropped
-/// `Superbounce`, `Bounced` or `Teabag` is one the game record misses (a
-/// dropped teabag leaves Live an `incel` the film does not give); the film
-/// keeps it.
-const DROPPABLE: [&str; 6] = [
+/// `GameMedal`, `Superbounce`, `Bounced` or `Teabag` is one the game
+/// record misses (a dropped teabag leaves Live an `incel` the film does
+/// not give); the film keeps it.
+const DROPPABLE: [&str; 7] = [
     game::ACTOR_KILLED,
     game::PLAYER_KILLED,
     game::SCORE_CHANGED,
+    game::GAME_MEDAL,
     game::SUPERBOUNCE,
     game::BOUNCED,
     game::TEABAG,

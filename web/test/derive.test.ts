@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import type { Kill } from "../src/state/reducer";
 import { applyEvents, applyGameSnapshot, initialState } from "../src/state/reducer";
 import {
-  bestSprees, countMedals, gameHistory, gameMedals, nextRankAt, places, playedWith, rankFor, rankIndex, serviceRecord,
-  gameWeaponReport, weaponBreakdown, weaponsAgainst,
+  BOUNCE_MEDALS, MEDALS, MEDAL_BY_ID, bestSprees, gameHistory, gameMedalCounts, medalDef, medalName, nextRankAt, parseAccountMedals, places,
+  playedWith, rankFor, rankIndex, serviceRecord, topMedalCounts, gameWeaponReport, weaponBreakdown, weaponsAgainst, withCareerMedals,
 } from "../src/state/derive";
 import { damageSourceName } from "../src/lib/format";
 import { ev, resetPos } from "./helpers";
@@ -13,45 +13,54 @@ const k = (tick: number, killer: number | null, victim: number, weapon: string |
   ({ position: ++pos, at: "", tick, killer, victim, weapon, kind, pos: null });
 
 describe("medals", () => {
-  test("multi-kill chains within 4 s award each step", () => {
-    const kills = [k(0, 0, 1), k(60, 0, 2), k(150, 0, 3), k(200, 0, 4), k(300, 0, 5), k(1000, 0, 6)];
-    const m = countMedals(gameMedals(kills), new Set([0]));
-    expect(m.get("twofer")).toBe(1);
-    expect(m.get("hat-trick")).toBe(1);
-    expect(m.get("full-house")).toBe(1);
-    expect(m.get("encore")).toBe(1);
-    // A gap over 4 s starts a new chain.
-    expect(m.get("opening-act")).toBe(1);
-    expect(m.get("last-word")).toBe(1);
-  });
-
-  test("dying ends a chain and a spree", () => {
-    const kills = [k(0, 0, 1), k(30, 2, 0), k(60, 0, 3)];
-    const m = countMedals(gameMedals(kills), new Set([0]));
-    expect(m.get("twofer")).toBeUndefined();
-  });
-
-  test("sprees of 5, 10 and 15 without dying", () => {
+  test("a spree is the longest run of kills without dying", () => {
     const kills: Kill[] = [];
     for (let i = 0; i < 15; i++) kills.push(k(i * 1000, 0, 1 + (i % 3)));
-    const m = countMedals(gameMedals(kills), new Set([0]));
-    expect(m.get("hot-streak")).toBe(1);
-    expect(m.get("wildfire")).toBe(1);
-    expect(m.get("untouchable")).toBe(1);
     expect(bestSprees(kills).get(0)).toBe(15);
     // A suicide resets it.
     const broken = [...kills.slice(0, 4), k(4500, null, 0, null, "suicide"), ...kills.slice(4)];
     expect(bestSprees(broken).get(0)).toBe(10);
   });
 
-  test("payback, and betrayals, suicides and world deaths never score", () => {
-    const kills = [k(0, 1, 0), k(100, 0, 1), k(200, 0, 2, "rifle", "betrayal"), k(300, null, 0, null, "world")];
-    const awards = gameMedals(kills);
-    expect(awards.filter((a) => a.medal === "payback").map((a) => a.slot)).toEqual([0]);
-    expect(awards.find((a) => a.medal === "opening-act")!.slot).toBe(1);
-    expect(awards.find((a) => a.medal === "last-word")!.slot).toBe(0);
-    // Too slow for payback.
-    expect(gameMedals([k(0, 1, 0), k(400, 0, 1)]).some((a) => a.medal === "payback")).toBe(false);
+  test("the site lists Halo 2's own medals in the game's order, then our modes'", () => {
+    expect(MEDALS.map((m) => m.id)).toEqual([
+      "double-kill", "triple-kill", "killtacular", "kill-frenzy", "killtrocity", "killimanjaro",
+      "sniper-kill", "roadkill", "bonecracker", "stealth-kill", "vehicle-kill", "carjack", "stick-it",
+      "killing-spree", "running-riot", "rampage", "berserker", "overkill",
+      "flag-taken", "flag-save", "flag-returned", "bomb-planted", "bomb-save", "bomb-diffused",
+      ...BOUNCE_MEDALS, "incel",
+    ]);
+    expect(MEDAL_BY_ID["double-kill"].name).toBe("Double Kill");
+    expect(MEDAL_BY_ID["bomb-diffused"].name).toBe("Bomb Diffused");
+    for (const gone of ["twofer", "hat-trick", "full-house", "encore", "hot-streak", "wildfire", "untouchable", "opening-act", "last-word", "payback"]) {
+      expect(medalDef(gone)).toBeUndefined();
+    }
+  });
+
+  test("an id the site doesn't know is named by its id", () => {
+    expect(medalName("killing-spree")).toBe("Killing Spree");
+    expect(medalName("new-medal")).toBe("new-medal");
+    expect(medalDef("constructor")).toBeUndefined();
+    expect(medalName("constructor")).toBe("constructor");
+  });
+
+  test("a game's medals sum by slot, and the top ones sort most first", () => {
+    const g = { medals: { 0: { "double-kill": 2, "superbounce": 1 }, 1: { "double-kill": 1, "incel": 1 }, 2: { "new-medal": 3 } } };
+    expect(Object.fromEntries(gameMedalCounts(g, [0, 1]))).toEqual({ "double-kill": 3, "superbounce": 1, "incel": 1 });
+    expect(Object.fromEntries(gameMedalCounts(g))).toEqual({ "double-kill": 3, "superbounce": 1, "incel": 1, "new-medal": 3 });
+    expect(gameMedalCounts(g, [5]).size).toBe(0);
+    // Ties go in the site's order, unknown ids after.
+    expect(topMedalCounts(gameMedalCounts(g))).toEqual([["double-kill", 3], ["new-medal", 3], ["superbounce", 1], ["incel", 1]]);
+    expect(topMedalCounts({ "rampage": 1, "overkill": 0 }, 1)).toEqual([["rampage", 1]]);
+  });
+
+  test("an account's medals read defensively, and replace a record's", () => {
+    const m = parseAccountMedals({ xuid: "x", medals: { "double-kill": 4, "incel": 0, "bad": "x", "neg": -1 }, position: 9 });
+    expect(Object.fromEntries(m)).toEqual({ "double-kill": 4 });
+    expect(parseAccountMedals(null).size).toBe(0);
+    const rec = { games: 1, medals: new Map([["rampage", 1]]) };
+    expect(withCareerMedals(rec, null)).toBe(rec);
+    expect(withCareerMedals(rec, m).medals).toBe(m);
   });
 });
 
@@ -125,7 +134,16 @@ describe("history, places and service record", () => {
         { index: 0, name: "a", xuid: A, team: 0 }, { index: 1, name: "b", xuid: B, team: 1 },
       ] }, "2026-11-15T11:00:00.000Z"),
       ev("ScoreChanged", "game-t", { tick: 5, players: [], teams: [{ team: 0, score: 3 }, { team: 1, score: 7 }] }),
+      ev("GameMedal", "game-f", { tick: 20, player: 0, medal: "double-kill" }),
     ]);
+    // The server's count for the team game: A in slot 0, B in slot 1.
+    applyGameSnapshot(s, {
+      game_id: "t", map: "orchard", mode: "multiplayer", started_at: "2026-11-15T11:00:00.000Z", players: [],
+      medals: [
+        { player: 0, name: "a", xuid: A, medals: { "superbounce": 2, "killing-spree": 1 } },
+        { player: 1, name: "b", xuid: B, medals: { "double-kill": 5 } },
+      ],
+    });
     return s;
   }
 
@@ -145,7 +163,8 @@ describe("history, places and service record", () => {
     const rec = serviceRecord(s, A);
     expect(rec).toMatchObject({ games: 2, completed: 1, wins: 1, kills: 2, deaths: 0, kd: null, exp: 3 });
     expect(rec.weapons).toEqual([{ weapon: "rifle", kills: 2, share: 1 }]);
-    expect(rec.medals.get("twofer")).toBe(1);
+    // The server's medals, summed over A's slot in each game; none of B's.
+    expect(Object.fromEntries(rec.medals)).toEqual({ "double-kill": 1, "superbounce": 2, "killing-spree": 1 });
     expect(rankFor(0)).toBe("Newcomer");
     expect(rankFor(16)).toBe("Contender");
     expect(playedWith(s, A)).toEqual([{ xuid: B, games: 2, lastPlayed: "2026-11-15T11:00:00.000Z" }]);

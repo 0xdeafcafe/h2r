@@ -270,6 +270,35 @@ For an individual score, read row `+0x00` directly. `0x0019fc70` deliberately re
 
 Useful team masks in `E`: present teams `+0x04`, playing teams `+0x0c`, team-active mask `+0x0e`, all `u16`. These are optional; player `+0xc0` is sufficient to group the scoreboard.
 
+### Medals
+
+Every medal the game awards goes through one function, `0x001970a0`
+(`GAME_MEDAL`). It takes its arguments in registers: the medal index in
+EAX, the player's absolute slot in ECX and a count in EBX (always 1). It
+adds to the post-game statistics when they are on (`[0x510ca0]` set and
+`[0x510ca1]` clear); the call itself is made either way.
+
+The index is a row of the medal table at `0x0046e120`. Its 24 rows are
+the game's medal ids, in this order:
+
+| Index | Id | Index | Id | Index | Id |
+|---:|---|---:|---|---:|---|
+| 0 | `double-kill` | 8 | `bonecracker` | 16 | `berserker` |
+| 1 | `triple-kill` | 9 | `stealth-kill` | 17 | `overkill` |
+| 2 | `killtacular` | 10 | `vehicle-kill` | 18 | `flag-taken` |
+| 3 | `kill-frenzy` | 11 | `carjack` | 19 | `flag-save` |
+| 4 | `killtrocity` | 12 | `stick-it` | 20 | `flag-returned` |
+| 5 | `killimanjaro` | 13 | `killing-spree` | 21 | `bomb-planted` |
+| 6 | `sniper-kill` | 14 | `running-riot` | 22 | `bomb-save` |
+| 7 | `roadkill` | 15 | `rampage` | 23 | `bomb-diffused` |
+
+The callers are the kill medals from the kill routine `0x0015ce70`
+(`0x15d45f` to `0x15d524`), Carjack (`0x15e8d2`) and the flag and bomb
+medals (`0x240f59` on). Live's copy of the table is `OFFICIAL` in
+`crates/live/live-proto/src/film/events/medals.rs`; the telemetry
+observer turns each call into a `GameMedal` event
+([live-api.md](live-api.md#medals)).
+
 ## 6. Objects, positions, facing, and vehicles
 
 ### Object-header array
@@ -587,6 +616,7 @@ Consistency rules:
 - Confirm the name field against real gamertags and variant names; storage is confirmed as 32 UTF-16 code units.
 - Check vehicle-passenger transforms against gameplay. Generic parented-object composition is known, but only the cheap vehicle-parent path is recommended here.
 - Persistent winner storage and normal-end/quit reason are not recovered. `0x0015b3a0` supplies a transient prospective winner, while `0x001389c0` supplies only the end latch.
+- The medal award function `0x001970a0` is static-analysis-only: check one double kill and one Carjack arrive as `GameMedal` events with the right slot.
 - PGCR's detailed output structure was not mapped; only its construction hook is included.
 - The kill callback identifies the credited damage reporting type. Distinguishing two modded weapons sharing one reporting type would require resolving the individual cause.
 - Options types other than `1`, `2`, and `3`, the ninth stat counter, and exact original names for game-engine state values remain unresolved and are not needed for the initial scoreboard.
