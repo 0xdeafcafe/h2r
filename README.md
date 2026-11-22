@@ -123,10 +123,6 @@ On Linux, [Buck2](https://buck2.build) builds everything inside a [devenv](https
 
 Then `devenv shell` and `buck2 run //platform/linux:play`. A Steam Machine or Steam Deck in Developer Mode gets the game with `buck2 run //platform/steamos:run`. [docs/runtime/steamos.md](docs/runtime/steamos.md) has the details.
 
-## Thanks
-
-To [Assembly](https://github.com/XboxChaos/Assembly) by XboxChaos, for the tag layouts our tag field names are based on.
-
 ## The legal bit
 
 h2recomp is a free, non-commercial fan project. It is not affiliated with, endorsed by or sponsored by Microsoft, Xbox Game Studios, Bungie, 343 Industries or Halo Studios. Halo © Microsoft Corporation. All trademarks belong to their owners.
