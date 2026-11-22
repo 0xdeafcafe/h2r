@@ -132,6 +132,8 @@ pub(crate) enum DefKind {
     Binder,
     /// A declared Forge label (`label goal: zone`).
     Label,
+    /// A `const`, of the type and value the checker folds.
+    Const,
 }
 
 /// A declaration's type, as the checker or the declaration gives it.
@@ -178,6 +180,11 @@ pub(crate) enum Use {
     Type,
     /// The word `variant`.
     Variant,
+    /// The word `carrier` before a dot: the built-in enum of carriers.
+    CarrierEnum,
+    /// A carrier as a value (`carrier.assault`), by index in `CARRIERS`;
+    /// `None` for a name that is not one.
+    CarrierValue(Option<usize>),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -495,7 +502,12 @@ impl<'s> Model<'s> {
             d.name == name
                 && matches!(
                     d.kind,
-                    DefKind::Var(Scope::Global) | DefKind::Option | DefKind::Table | DefKind::Enum | DefKind::Fn
+                    DefKind::Var(Scope::Global)
+                        | DefKind::Option
+                        | DefKind::Table
+                        | DefKind::Enum
+                        | DefKind::Fn
+                        | DefKind::Const
                 )
         })
     }
@@ -614,7 +626,15 @@ impl<'s> Model<'s> {
                 }
                 Item::Fn(f) => {
                     let span = self.name_after(f.pos, &f.name);
-                    let d = self.def(&f.name, DefKind::Fn, span, T::Unknown);
+                    // A value function's type is its result's.
+                    let ty = f.result.as_ref().map_or(T::Unknown, |r| self.type_named(r));
+                    let d = self.def(&f.name, DefKind::Fn, span, ty);
+                    self.item_defs[i] = Some(d);
+                }
+                Item::Const { name, pos, .. } => {
+                    let span = self.name_after(*pos, name);
+                    let ty = self.checked.constant(name).map_or(T::Unknown, |(t, _)| T::V(t));
+                    let d = self.def(name, DefKind::Const, span, ty);
                     self.item_defs[i] = Some(d);
                 }
                 Item::On { event, pos, .. } => {
@@ -677,7 +697,22 @@ impl<'s> Model<'s> {
                         self.type_use(pty);
                         env.locals.push(d);
                     }
+                    if let Some(r) = &f.result {
+                        self.type_use(r);
+                    }
+                    // `fn f(..) -> T = expr`, or a block.
+                    if let Some(v) = &f.value {
+                        self.expr(v, &mut env);
+                    }
                     self.block(&f.body, &mut env, end);
+                }
+                Item::Const { value, .. } => {
+                    self.expr(value, &mut env);
+                }
+                Item::Label(l) => {
+                    for e in requirement_exprs(&l.requirements) {
+                        self.expr(e, &mut env);
+                    }
                 }
                 Item::On {
                     event,
@@ -873,6 +908,24 @@ impl<'s> Model<'s> {
                 self.block_after_test(set.filter.as_ref(), true, body, env, close);
                 env.locals.truncate(mark);
             }
+            Stmt::Match { value, arms, els, .. } => {
+                self.expr(value, env);
+                let (_, whole) = self.block_after(self.byte(value.pos));
+                let mut after = self.byte(value.pos);
+                for arm in arms {
+                    for p in &arm.patterns {
+                        self.expr(p, env);
+                    }
+                    let from = arm.patterns.last().map_or(self.byte(arm.pos), |p| self.byte(p.pos));
+                    let (_, close) = self.block_after(from);
+                    self.block(&arm.body, env, close.min(whole));
+                    after = close;
+                }
+                if let Some(body) = els {
+                    let (_, close) = self.block_after(after);
+                    self.block(body, env, close.min(whole));
+                }
+            }
         }
     }
 
@@ -988,6 +1041,7 @@ impl<'s> Model<'s> {
         match &e.kind {
             ExprKind::Int(_)
             | ExprKind::Fixed(_)
+            | ExprKind::Time(..)
             | ExprKind::Bool(_)
             | ExprKind::Str(_)
             | ExprKind::None
@@ -1078,6 +1132,13 @@ impl<'s> Model<'s> {
         if let ExprKind::Name(b) = &base.kind
             && self.local(b, env).is_none()
         {
+            if b == "carrier" {
+                let bspan = self.tok_at(base.pos);
+                self.add_use(bspan, Use::CarrierEnum);
+                let index = caps::CARRIERS.iter().position(|(n, _)| *n == f);
+                self.add_use(span, Use::CarrierValue(index));
+                return;
+            }
             if b == "variant" {
                 let bspan = self.tok_at(base.pos);
                 self.add_use(bspan, Use::Variant);
@@ -1222,7 +1283,7 @@ impl<'s> Model<'s> {
             return self.defs[d].ty;
         }
         match self.top(name).or_else(|| self.labels.get(name).copied()) {
-            Some(d) if matches!(self.defs[d].kind, DefKind::Var(_) | DefKind::Option | DefKind::Label) => {
+            Some(d) if matches!(self.defs[d].kind, DefKind::Var(_) | DefKind::Option | DefKind::Label | DefKind::Const) => {
                 self.defs[d].ty
             }
             _ => T::Unknown,
@@ -1348,5 +1409,22 @@ pub(crate) fn item_pos(item: &Item) -> Pos {
         | Item::On { pos, .. } => *pos,
         Item::Fn(f) => f.pos,
         Item::Label(l) => l.pos,
+        Item::Const { pos, .. } => *pos,
     }
+}
+
+/// The constant expressions of a label's requirements, in source order.
+pub(crate) fn requirement_exprs(reqs: &[(Requirement, Pos)]) -> Vec<&Expr> {
+    let mut out = Vec::new();
+    for (r, _) in reqs {
+        match r {
+            Requirement::AtLeast(e) | Requirement::AtMost(e) | Requirement::Exactly(e) => out.push(e),
+            Requirement::Between(a, b) | Requirement::Numbered(Some((a, b))) => {
+                out.push(a);
+                out.push(b);
+            }
+            Requirement::Numbered(None) | Requirement::PerTeam => {}
+        }
+    }
+    out
 }

@@ -15,6 +15,7 @@ use crate::lang::ast::Item;
 use crate::lang::lower::FIELDS;
 use crate::lang::parse::KEYWORDS;
 use crate::lang::sig;
+use crate::lang::types::Type;
 use crate::lang::{MAX_SOURCE_BYTES, Pos, Severity};
 use crate::ty::Ty;
 
@@ -60,9 +61,23 @@ pub(crate) const LANG: &[Lang] = &[
     Lang {
         name: "seconds",
         params: &["n: int"],
+        result: "time",
+        doc: "`n` seconds as a time (30 ticks a second), for an int worked out at run time; a literal is written `5s`.",
+        snippet: "seconds(${1:n})",
+    },
+    Lang {
+        name: "whole_seconds",
+        params: &["t: time"],
         result: "int",
-        doc: "`n` seconds in ticks (30 a second), for timers.",
-        snippet: "seconds(${1:1})",
+        doc: "The whole seconds in a time, rounded down: for a score or a message.",
+        snippet: "whole_seconds(${1:t})",
+    },
+    Lang {
+        name: "ticks",
+        params: &["t: time"],
+        result: "int",
+        doc: "A time's tick count (30 a second), as an int.",
+        snippet: "ticks(${1:t})",
     },
     Lang {
         name: "grant",
@@ -208,7 +223,30 @@ pub(crate) fn fn_signature(m: &Model, d: usize) -> (String, Vec<[u32; 2]>) {
         .children(d, DefKind::Param)
         .map(|p| format!("{}: {}", m.defs[p].name, m.type_name(m.defs[p].ty)))
         .collect();
-    call_label(&m.defs[d].name, &params, "")
+    // A value function (`fn f(..) -> bool = ...`) has a result.
+    let result = match m.defs[d].ty {
+        T::Unknown => String::new(),
+        t => m.type_name(t),
+    };
+    call_label(&m.defs[d].name, &params, &result)
+}
+
+/// A time literal's hover: what it is in ticks.
+pub(crate) fn time_literal_doc(text: &str) -> String {
+    let (number, unit) = text.split_at(text.len() - 1);
+    let (whole, frac) = number.split_once('.').unwrap_or((number, ""));
+    let per: u64 = if unit == "s" { caps::TICKS_PER_SECOND as u64 } else { 1 };
+    let scale = 10u64.saturating_pow(frac.len() as u32);
+    let value = whole
+        .parse::<u64>()
+        .ok()
+        .zip(if frac.is_empty() { Some(0) } else { frac.parse::<u64>().ok() })
+        .map(|(w, f)| (w.saturating_mul(scale).saturating_add(f)).saturating_mul(per));
+    match value {
+        Some(v) if v % scale == 0 => format!("A time literal: {} ticks (30 a second).", v / scale),
+        Some(_) => "A time literal that is not a whole number of ticks (30 a second).".to_string(),
+        None => "A time literal.".to_string(),
+    }
 }
 
 pub(crate) fn status_words(s: Status) -> &'static str {
@@ -267,6 +305,7 @@ pub(crate) fn type_word_doc(w: &str) -> Option<&'static str> {
         "object" => "Anything placed or made that has a handle. `object?` may be `none`.",
         "zone" => "An object with a volume: a Forge trigger volume, or a netgame flag with its capture volume. A zone is an object.",
         "squad" => "A kit squad slot, 0 to 15: `squad(n)`.",
+        "carrier" => "The built-in enum of carrier engines: `carrier.slayer`, `carrier.assault`. `variant.engine` reads as one.",
         "timer" => "A global variable that counts ticks down; 0 is stopped. Reaching 0 fires `on timer`.",
         "Class" | "class" => "A kit class name.",
         "tag" => "A tag path of any object definition, checked against the map at load.",
@@ -282,7 +321,9 @@ pub(crate) fn type_word_doc(w: &str) -> Option<&'static str> {
 pub(crate) fn keyword_doc(w: &str) -> Option<&'static str> {
     Some(match w {
         "rules" => "The header: `rules \"Name\" version`.",
-        "carrier" => "The retail engine the script rides: `carrier slayer`.",
+        "carrier" => "The retail engine the script rides: `carrier slayer`. Before a dot, the built-in enum of carriers: `variant.engine == carrier.assault`.",
+        "const" => "A named constant, folded at compile time and usable wherever a literal is: `const last_phase = 2`, `const hold = 30s`.",
+        "match" => "One arm per variant of an enum value: `match role { Role.vip { } Role.guard, Role.none { } }`, or an `else` arm. Every variant needs an arm.",
         "teams" => "In the header, the team count (1 to 8): `teams 2`. In a set, every team.",
         "list" => "The game type list row a variant of the script is filed under: `list tweakers`. With no `list` line it is under its carrier's game type.",
         "requires" => "The capabilities the script declares: `requires player.weapons, hud.message`. The lobby shows them in plain words.",
@@ -296,7 +337,7 @@ pub(crate) fn keyword_doc(w: &str) -> Option<&'static str> {
         "zone" => "An object with a volume: a Forge trigger volume, or a netgame flag. A zone is an object.",
         "weapon" => "A tag path that must be a weapon's. A weapon is a tag.",
         "table" => "Constant rows of typed columns: `table t: (k: int, v: int) = [(0, 1)]`; `t[i].v` reads a cell.",
-        "fn" => "A function: inlined at each call. It has no value and does not recurse.",
+        "fn" => "A function, inlined at each call; it does not recurse. A block function has no value; a value function gives one expression: `fn lead(t: team) -> bool = t.score > 10`.",
         "on" => "A handler: `on kill(victim, killer) { ... }`. It runs to completion.",
         "if" | "else" => "`if cond { } else if cond { } else { }`.",
         "for" | "each" => "A loop over a finite set: `for each players p where p.alive { }`.",
@@ -375,10 +416,22 @@ pub(crate) fn def_markdown(m: &Model, d: usize) -> String {
                 code_block(&format!("{t}.{name}: {ty}"))
             )
         }
+        DefKind::Fn if def.ty != T::Unknown => format!(
+            "{}\nA value function, inlined at each call.",
+            code_block(&format!("fn {}", fn_signature(m, d).0))
+        ),
         DefKind::Fn => format!(
             "{}\nA function, inlined at each call. It has no value.",
             code_block(&format!("fn {}", fn_signature(m, d).0))
         ),
+        DefKind::Const => {
+            let value = match m.checked.constant(name) {
+                Some((Type::Time, v)) => format!(" It is {v} ticks."),
+                Some((_, v)) => format!(" It is {v}."),
+                None => String::new(),
+            };
+            format!("{}\nA constant of type {ty}.{value}", decl())
+        }
         DefKind::Param => {
             let f = def.parent.map_or("?", |p| m.defs[p].name.as_str());
             format!("{}\nA parameter of fn `{f}`.", code_block(&format!("(parameter) {name}: {ty}")))
@@ -503,6 +556,19 @@ pub(crate) fn use_markdown(m: &Model, u: Use, s: usize, e: usize) -> String {
             Some(doc) => format!("{}\n{doc}", code_block(&text)),
             None => format!("Unknown type `{text}`."),
         },
+        Use::CarrierEnum => format!(
+            "{}\n{}",
+            code_block("carrier"),
+            type_word_doc("carrier").unwrap_or_default()
+        ),
+        Use::CarrierValue(Some(i)) => {
+            let (n, index) = CARRIERS[i];
+            format!(
+                "{}\nThe retail {n} engine (engine index {index}), a value of the built-in enum `carrier`.",
+                code_block(&format!("carrier.{n}"))
+            )
+        }
+        Use::CarrierValue(None) => format!("Unknown carrier `{text}`."),
         Use::Variant => {
             let fields: Vec<String> = VARIANT_FIELDS
                 .iter()
@@ -672,6 +738,7 @@ pub(crate) fn hover(m: &Model, off: usize) -> Option<Hover> {
             Some(doc) => format!("{}\n{doc}", code_block(text)),
             None => format!("{}\n{}", code_block(text), type_word_doc(text)?),
         },
+        K::Num if text.ends_with(['s', 't']) => format!("{}\n{}", code_block("time"), time_literal_doc(text)),
         K::Num if text.contains('.') => format!("{}\nA 16.16 fixed literal.", code_block("fixed")),
         K::Num => format!("{}\nAn int literal (a fixed where one is expected).", code_block("int")),
         _ => return None,
@@ -803,6 +870,7 @@ fn def_token(kind: DefKind) -> TokenKind {
         DefKind::Fn => TokenKind::Function,
         DefKind::Param | DefKind::Arg => TokenKind::Parameter,
         DefKind::Label => TokenKind::Label,
+        DefKind::Const => TokenKind::Variable,
     }
 }
 
@@ -816,6 +884,8 @@ fn use_token(u: Use) -> TokenKind {
         Use::Carrier => TokenKind::EnumMember,
         Use::Type => TokenKind::Type,
         Use::Variant => TokenKind::Keyword,
+        Use::CarrierEnum => TokenKind::Enum,
+        Use::CarrierValue(_) => TokenKind::EnumMember,
     }
 }
 
@@ -972,6 +1042,12 @@ pub(crate) fn symbols(m: &Model) -> Vec<Symbol> {
                 symbol_kind::CONSTANT,
                 Vec::new(),
             ),
+            Item::Const { name, .. } => (
+                name.clone(),
+                d.map_or_else(|| "const".to_string(), |d| format!("const: {}", m.type_name(m.defs[d].ty))),
+                symbol_kind::CONSTANT,
+                Vec::new(),
+            ),
             Item::On { event, args, .. } => {
                 if let Some((us, ue, _)) = m.uses.iter().copied().find(|u| u.0 >= s && u.0 < e && matches!(u.2, Use::Event(_))) {
                     selection = m.li.range(us, ue);
@@ -1008,8 +1084,8 @@ pub(crate) fn symbols(m: &Model) -> Vec<Symbol> {
 /// front-end types, `timer`, and the set words a parameter takes.
 pub(crate) fn type_names() -> &'static [&'static str] {
     &[
-        "int", "fixed", "bool", "player", "team", "object", "zone", "squad", "timer", "Class", "tag", "weapon", "text",
-        "objects", "zones", "spawns",
+        "int", "fixed", "time", "bool", "player", "team", "object", "zone", "squad", "timer", "Class", "tag", "weapon",
+        "text", "objects", "zones", "spawns",
     ]
 }
 

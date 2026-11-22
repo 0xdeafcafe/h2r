@@ -256,6 +256,19 @@ fn after_dot(m: &Model, dot: usize, off: usize, in_requires: bool) -> Vec<Comple
         return capabilities(&format!("{path}."), false);
     }
     if parts.len() == 1 && m.visible_locals(off).iter().all(|&d| m.defs[d].name != head) {
+        if head == "carrier" {
+            return CARRIERS
+                .iter()
+                .map(|(n, index)| {
+                    plain(
+                        n,
+                        kind::ENUM_MEMBER,
+                        "carrier",
+                        format!("The retail {n} engine (engine index {index}): `carrier.{n}`."),
+                    )
+                })
+                .collect();
+        }
         if head == "variant" {
             return VARIANT_FIELDS
                 .iter()
@@ -533,7 +546,7 @@ fn ranked(m: &Model, off: usize, want: Type) -> Vec<CompletionItem> {
         m.defs
             .iter()
             .enumerate()
-            .filter(|(_, d)| matches!(d.kind, DefKind::Var(Scope::Global) | DefKind::Option))
+            .filter(|(_, d)| matches!(d.kind, DefKind::Var(Scope::Global) | DefKind::Option | DefKind::Const))
             .map(|(i, _)| i),
     );
     for d in values {
@@ -715,6 +728,12 @@ fn top_level(m: &Model) -> Vec<CompletionItem> {
             "table",
         ),
         ("fn", "fn ${1:name}(${2:p}: ${3:player}) {\n\t$0\n}".to_string(), "fn"),
+        (
+            "fn (value)",
+            "fn ${1:name}(${2:p}: ${3:player}) -> ${4:bool} = $0".to_string(),
+            "fn",
+        ),
+        ("const", "const ${1:name} = ${2:0}".to_string(), "const"),
     ];
     let mut out: Vec<CompletionItem> = snippets
         .into_iter()
@@ -746,6 +765,14 @@ fn statements() -> Vec<CompletionItem> {
             "for each ${1|players,teams,objectives|} ${2:x} {\n\t$0\n}",
             SNIPPET,
         ),
+        item(
+            "match",
+            kind::SNIPPET,
+            "statement",
+            doc("match"),
+            "match ${1:value} {\n\t${2:Enum.variant} {\n\t\t$0\n\t}\n\telse {\n\t}\n}",
+            SNIPPET,
+        ),
     ]
 }
 
@@ -760,6 +787,7 @@ fn expression(m: &Model, off: usize) -> Vec<CompletionItem> {
         let (k, detail) = match def.kind {
             DefKind::Var(Scope::Global) => (kind::VARIABLE, format!("global var: {}", m.type_name(def.ty))),
             DefKind::Option => (kind::CONSTANT, format!("option: {}", m.type_name(def.ty))),
+            DefKind::Const => (kind::CONSTANT, format!("const: {}", m.type_name(def.ty))),
             DefKind::Table => (kind::STRUCT, "table".to_string()),
             DefKind::Enum => (kind::ENUM, "enum".to_string()),
             DefKind::Fn => {

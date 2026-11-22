@@ -634,3 +634,67 @@ fn the_model_holds_no_type_inference() {
     assert!(model.contains("fn expr(&mut self, e: &Expr, env: &mut Env) {"), "expr gives no type");
     assert!(model.contains("self.checked.ty(e)"));
 }
+
+const SLICE5: &str = "rules \"T\" 1
+carrier slayer
+const hold = 30s
+enum Role { none, vip }
+player var role: Role = Role.none
+fn leads(p: player) -> bool = p.score > 2
+on spawn(p) {
+    match p.role {
+        Role.vip { score(p, whole_seconds(hold)) }
+        else { }
+    }
+    if variant.engine == carrier.slayer and leads(p) { score(p, ticks(5s)) }
+}
+";
+
+/// Time literals, constants, `match`, value functions and the `carrier`
+/// enum: read, hovered, completed and kept whole by the formatter.
+#[test]
+fn time_const_match_and_carrier_are_read() {
+    let errors: Vec<String> = diagnostics(SLICE5)
+        .iter()
+        .filter(|d| d.severity == severity::ERROR)
+        .map(|d| format!("{}: {}", d.code, d.message))
+        .collect();
+    assert!(errors.is_empty(), "{errors:?}");
+
+    // A time literal is one token.
+    let nums: Vec<&str> = scan::scan(SLICE5)
+        .into_iter()
+        .filter(|t| t.k == K::Num)
+        .map(|t| &SLICE5[t.s..t.e])
+        .collect();
+    assert!(nums.contains(&"30s") && nums.contains(&"5s"), "{nums:?}");
+    let tokens = semantic_tokens(SLICE5);
+    assert!(tokens.iter().any(|t| t.line == 2 && t.start == 13 && t.len == 3), "{tokens:?}");
+    let formatted = format(SLICE5).unwrap();
+    assert!(formatted.contains("const hold = 30s") && formatted.contains("ticks(5s)"), "{formatted}");
+
+    let h = hover_text(SLICE5, 2, 7);
+    assert!(h.contains("A constant of type time") && h.contains("900 ticks"), "{h}");
+    let h = hover_text(SLICE5, 2, 14);
+    assert!(h.contains("900 ticks"), "{h}");
+    let h = hover_text(SLICE5, 8, 30);
+    assert!(h.contains("whole seconds"), "{h}");
+    let h = hover_text(SLICE5, 11, 35);
+    assert!(h.contains("engine index"), "{h}");
+    let h = hover_text(SLICE5, 11, 45);
+    assert!(h.contains("fn leads(p: player) -> bool"), "{h}");
+
+    // The const's use and the arm's enum go to their declarations.
+    let d = definition(SLICE5, p(8, 43));
+    assert_eq!(d[0].range.start, p(2, 6));
+    let d = definition(SLICE5, p(8, 9));
+    assert_eq!(d[0].range.start, p(3, 5));
+
+    let carriers = complete(SLICE5, p(11, 33));
+    let names = labels(&carriers);
+    assert!(names.contains(&"slayer") && names.contains(&"assault"), "{names:?}");
+    let names: Vec<String> = symbols(SLICE5).into_iter().map(|s| s.name).collect();
+    assert!(names.contains(&"hold".to_string()), "{names:?}");
+    let top = complete("rules \"T\" 1\ncarrier slayer\n\n", p(2, 0));
+    assert!(labels(&top).contains(&"const"));
+}

@@ -413,7 +413,13 @@ pub(crate) fn rename(m: &Model, off: usize, new: &str) -> Result<Vec<TextEdit>, 
     }
     let script_level = matches!(
         def.kind,
-        DefKind::Option | DefKind::Var(_) | DefKind::Table | DefKind::Enum | DefKind::Fn | DefKind::Label
+        DefKind::Option
+            | DefKind::Var(_)
+            | DefKind::Table
+            | DefKind::Enum
+            | DefKind::Fn
+            | DefKind::Label
+            | DefKind::Const
     );
     if script_level && (m.top(new).is_some() || m.labels.contains_key(new)) {
         return Err(format!("the script declares {new} already"));
@@ -568,7 +574,13 @@ fn walk_items<'a>(script: &'a Script, f: &mut dyn FnMut(&'a Expr)) {
                     walk_expr(cell, f);
                 }
             }
-            Item::Fn(fd) => walk_stmts(&fd.body, f),
+            Item::Fn(fd) => {
+                if let Some(v) = &fd.value {
+                    walk_expr(v, f);
+                }
+                walk_stmts(&fd.body, f);
+            }
+            Item::Const { value, .. } => walk_expr(value, f),
             Item::On { body, .. } => walk_stmts(body, f),
             _ => {}
         }
@@ -602,6 +614,18 @@ fn walk_stmts<'a>(body: &'a [Stmt], f: &mut dyn FnMut(&'a Expr)) {
             Stmt::ForEach { set, body, .. } => {
                 walk_set(set, f);
                 walk_stmts(body, f);
+            }
+            Stmt::Match { value, arms, els, .. } => {
+                walk_expr(value, f);
+                for arm in arms {
+                    for p in &arm.patterns {
+                        walk_expr(p, f);
+                    }
+                    walk_stmts(&arm.body, f);
+                }
+                if let Some(body) = els {
+                    walk_stmts(body, f);
+                }
             }
         }
     }
