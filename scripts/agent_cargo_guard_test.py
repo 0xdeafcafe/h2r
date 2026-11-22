@@ -37,6 +37,13 @@ class Guard(unittest.TestCase):
         self.blocked("SCCACHE_DIR=x cargo check")
         self.allowed("H2_OPT=2 H2_OBJ_CACHE=~/Library/Caches/h2recomp/obj cargo h2 build d")
 
+    def test_the_worktree_is_a_leading_cd_or_the_cwd(self):
+        self.assertEqual(guard.worktree_dir("cargo check -p a", "/w"), "/w")
+        self.assertEqual(guard.worktree_dir("cd /x/y && cargo check", "/w"), "/x/y")
+        self.assertEqual(guard.worktree_dir("cd sub; cargo check", "/w"), "/w/sub")
+        self.assertIsNotNone(guard.CARGO.search("nice -n 10 cargo check -q"))
+        self.assertIsNone(guard.CARGO.search("rg cargo-guard docs"))
+
     def test_other_commands_pass(self):
         self.allowed("cargo check -p game --tests")
         self.allowed("cargo clippy -q -p game --all-targets -- -D warnings")
