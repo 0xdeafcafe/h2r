@@ -294,6 +294,7 @@ max_wall_s = 600            # and after this long on the clock
 render_every = 0
 pace = "unpaced"
 components = true           # false: no state_components_v1 in the report (timing arms)
+detail = "full"             # "training": no components; sparse digests and a rolling digest
 bot_threads = 3             # bot think workers: a count, "auto" or "off"; unset: see below
 bot_pipeline = false        # true: thinks overlap the guest's tick (a different match)
 
@@ -519,6 +520,24 @@ into guest RAM by NtReadFile since boot. Copied bytes include partial pages.
 The per-process memory of a Waterworks 2v2 sim run is in
 [notes/sim.md](notes/sim.md).
 
+The census and lean-report fields
+(`sim_bench::metrics::WallLean`, flattened into `wall`) say where a run's
+setup time, reads, memory and disk went. Each is left out when it was not
+measured, and an earlier report without them still loads.
+
+| Field | What |
+|---|---|
+| `setup` | seconds in each stage before the first counted tick: `boot_s` (process start to the first game tick at the main menu), `menu_s` (to the lobby being able to open: networking and the lobby subsystem), `lobby_s` (opening and filling the System Link squad), `copy_wait_s` (the first wait on a peer's map status, `peer N has map status ...`, to the start request being accepted), `load_s` (the start request to the game activating) and `bind_s` (game active to every phantom having a player and a unit). The six add up to `setup_s`. A stage a run skips reads 0; `copy_wait_s` includes any wait for players that follows the first map-status wait |
+| `reads` | per guest path, `mapped_bytes`, `copied_bytes`, `count` (mapped reads, plus one per backend read on the copy path) and `refused`, the first reason a mapped read of that path was refused (`Vfs::try_map_read`: `short read`, `writable handle`, `no immutable file region`, ...). The map is kept by `vfs::reads::ReadLog`, keyed by path, at most 4096 paths |
+| `heap_tags` | live Rust heap bytes by allocation tag at the end (`mem_watch::heap::totals`); only tags with live bytes |
+| `guest_pages_written_4k`, `guest_pages_written_16k` | guest RAM pages whose bytes differ between the tick after counting begins and the end, counted per 4 KiB page and per aligned 16 KiB group of four (the pages a 16 KiB-page host would own). Both are hashes of the whole 64 MiB (`sim_pages::hashes`), taken under `impl.sim.page-census` (on; `-impl.sim.page-census` leaves the fields out, for a timing arm). A page written back to its old bytes is not counted, and a tick jump takes the baseline again |
+| `data_dir_bytes` | the bytes of the regular files under the run's data directory at the end (symbolic links not followed) |
+
+The stage boundaries are the sim's own lobby observations
+(`sim_glue::hosted`) and the game's activation; `sim_bench::metrics::SetupClock`
+only moves forward, charging the time since the last boundary to the stage
+it leaves.
+
 ### 6.1 Sim stores: the map without the map
 
 The retail map is never streamed in a sim or light host that uses
@@ -685,6 +704,9 @@ params = "tuning/aggressive.toml"
   a run per skill and overrides each bot's skill. When the runs cover
   multiple skills, `compare.json` has `by_skill` and the table repeats
   per skill.
+- **Detail.** `detail = "training"` in the batch file sets every run's
+  `detail` (the match file's own is the default; see "Finding the first
+  differing state").
 - `h2 sim batch --dry-run` prints the runs and stops.
 
 ### Arm swaps
@@ -940,9 +962,12 @@ that a digest does. Each report also carries `state_components_v1`: the
 same ticks as `state_hashes_v1`, broken into named components with their
 values as text. The first row lists every component; each later row lists
 only those that changed (a component that goes away reads `-`). It is on in
-every `h2 sim run` unless the match file sets `components = false`, and is
+every `h2 sim run` unless the match file sets `components = false` or
+`detail = "training"`, and is
 bounded at 250,000 recorded values; a longer match keeps its first ticks and
-sets `truncated_after`. A timing arm that leaves it out still has
+sets `truncated_after`. The series is built by `sim_bench::diff::Recorder`:
+component names are interned once, the arena's block digests stay `u64` until
+the report is written, and a value is stored only when it changed. A timing arm that leaves it out still has
 `state_hashes_v1`, and `h2 sim diff` against it compares those digests
 and says that one report has no component breakdown.
 
@@ -960,6 +985,21 @@ That needs the 4 MiB read and hash each tick, so it stays behind
 `H2_FEATURES=impl.sim.arena-hash` (the same switch as the aggregate `arena`
 digest, which it replaces with a single pass). `arena_base` in the series is
 the guest address of block 0.
+
+`detail = "training"` (the match key, or the batch key, which overrides the
+match file's) is for runs that only need to know whether two plays agree. It
+records no components (`components = true` with it is refused), keeps one
+`state_hashes_v1` row a game second (`TRAINING_STRIDE`, 30 ticks, and the
+first tick), and adds `state_digest_v1`: `{ stride, ticks, digest }`, a
+digest rolled over every tick's gameplay (and arena) digests in order, a
+tick seen twice counting once. `h2 sim diff` compares two training reports at
+the ticks both sampled, then their rolling digests. If a sampled row differs
+it names that tick and the last tick the reports agreed at: the state parted
+somewhere in between. If every sampled row agrees but the rolling digests do
+not, it says the state parted between sampled ticks. Both say to rerun with
+`detail = "full"` to name the component. A training report against a full one
+compares the ticks they share and says the rolling digests were not
+compared; two training reports of different lengths say so too.
 
 `diff` replays both series and prints the first tick where any component
 differs, then those components sorted by name with both values; for an arena

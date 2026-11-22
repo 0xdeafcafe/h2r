@@ -12,7 +12,7 @@
 //!
 //! Pure: nothing here reads the game.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
@@ -44,6 +44,18 @@ pub struct StateComponents {
     pub ticks: Vec<ComponentTick>,
 }
 
+/// A training-detail report's digest rolled over every tick, beside its
+/// sparse `state_hashes_v1` (`detail = "training"`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StateDigest {
+    /// `state_hashes_v1` keeps its first row and then every `stride`th tick.
+    pub stride: u32,
+    /// Ticks the digest covers.
+    pub ticks: u64,
+    /// 16 hexadecimal digits.
+    pub digest: String,
+}
+
 /// One tick's changed components, name to value. The first row of a series
 /// has them all.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,18 +64,129 @@ pub struct ComponentTick {
     pub changed: BTreeMap<String, String>,
 }
 
+/// A component's value as the recorder holds it. An arena block is a digest
+/// kept as its `u64` and printed (`{:016x}`) only when the report is built.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Held {
+    Hex(u64),
+    Text(Box<str>),
+}
+
+impl Held {
+    fn text(&self) -> String {
+        match self {
+            Held::Hex(h) => format!("{h:016x}"),
+            Held::Text(t) => t.to_string(),
+        }
+    }
+}
+
+/// A value on its way in.
+#[derive(Clone, Copy, Debug)]
+enum Value<'a> {
+    Hex(u64),
+    Text(&'a str),
+}
+
+impl Value<'_> {
+    fn same_as(self, held: &Held) -> bool {
+        match (self, held) {
+            (Value::Hex(a), Held::Hex(b)) => a == *b,
+            (Value::Text(a), Held::Text(b)) => a == &**b,
+            // A name that changes kind compares by what it prints.
+            (Value::Hex(a), Held::Text(b)) => format!("{a:016x}") == **b,
+            (Value::Text(a), Held::Hex(b)) => a == format!("{b:016x}"),
+        }
+    }
+
+    fn hold(self) -> Held {
+        match self {
+            Value::Hex(h) => Held::Hex(h),
+            Value::Text(t) => Held::Text(t.into()),
+        }
+    }
+}
+
+fn put<'a>(next: &mut Vec<Option<Value<'a>>>, id: usize, value: Value<'a>) {
+    if next.len() <= id {
+        next.resize(id + 1, None);
+    }
+    next[id] = Some(value);
+}
+
+/// One recorded change: `None` is a component going away (printed as
+/// [`ABSENT`]).
+type Change = (u32, Option<Held>);
+
 /// Builds a [`StateComponents`] tick by tick, storing deltas.
-#[derive(Clone, Debug, Default)]
+///
+/// Component names are interned once (a row holds `u32` ids, not strings),
+/// arena block digests stay `u64` until [`Recorder::finish`], and a value is
+/// stored only when it changed. [`Recorder::finish`] prints the series
+/// straight from those rows, so the text of a value is made once and there
+/// is no second copy of the series.
+#[derive(Clone, Debug)]
 pub struct Recorder {
-    current: BTreeMap<String, String>,
-    /// The previous values of what the last recorded tick changed, to
-    /// replace that tick when it is observed again.
-    undo: Vec<(String, Option<String>)>,
-    out: StateComponents,
+    ids: HashMap<Box<str>, u32>,
+    names: Vec<Box<str>>,
+    /// Ids of `arena.NN`, by block index.
+    blocks: Vec<u32>,
+    /// The latest value of each component, by id; `None`: absent. As long as
+    /// `names`.
+    current: Vec<Option<Held>>,
+    /// What the last recorded tick replaced, to restore when it is observed
+    /// again.
+    undo: Vec<(u32, Option<Held>)>,
+    rows: Vec<(u32, Vec<Change>)>,
+    arena_base: Option<u32>,
+    truncated_after: Option<u32>,
     entries: usize,
+    limit: usize,
+}
+
+impl Default for Recorder {
+    fn default() -> Self {
+        Recorder::with_limit(MAX_ENTRIES)
+    }
 }
 
 impl Recorder {
+    /// A recorder that stops after `limit` recorded values.
+    pub fn with_limit(limit: usize) -> Recorder {
+        Recorder {
+            ids: HashMap::new(),
+            names: Vec::new(),
+            blocks: Vec::new(),
+            current: Vec::new(),
+            undo: Vec::new(),
+            rows: Vec::new(),
+            arena_base: None,
+            truncated_after: None,
+            entries: 0,
+            limit,
+        }
+    }
+
+    fn intern(&mut self, name: &str) -> usize {
+        if let Some(&id) = self.ids.get(name) {
+            return id as usize;
+        }
+        let id = self.names.len();
+        self.names.push(name.into());
+        self.ids.insert(name.into(), id as u32);
+        self.current.push(None);
+        id
+    }
+
+    fn block_id(&mut self, index: usize) -> usize {
+        while self.blocks.len() <= index {
+            let name = format!("{ARENA_PREFIX}{:02}", self.blocks.len());
+            let id = self.intern(&name);
+            self.blocks.push(id as u32);
+        }
+        self.blocks[index] as usize
+    }
+
     /// Record `components` for `tick`. The same tick again replaces the
     /// last row; the caller restarts the recorder on a rewind.
     pub fn record(
@@ -72,56 +195,103 @@ impl Recorder {
         arena_base: Option<u32>,
         components: impl IntoIterator<Item = (String, String)>,
     ) {
-        if self.out.truncated_after.is_some() {
+        self.record_split(tick, arena_base, components, &[]);
+    }
+
+    /// [`Recorder::record`] with the arena's block digests as `u64`s, block
+    /// `i` being component `arena.<i:02>`: no name or value text is made for
+    /// a block until it changes.
+    pub fn record_split<N: AsRef<str>, V: AsRef<str>>(
+        &mut self,
+        tick: u32,
+        arena_base: Option<u32>,
+        text: impl IntoIterator<Item = (N, V)>,
+        arena_blocks: &[u64],
+    ) {
+        if self.truncated_after.is_some() {
             return;
         }
-        if self.out.ticks.last().is_some_and(|t| t.tick == tick) {
-            for (name, old) in self.undo.drain(..) {
-                match old {
-                    Some(v) => self.current.insert(name, v),
-                    None => self.current.remove(&name),
-                };
-            }
-            if let Some(t) = self.out.ticks.pop() {
-                self.entries -= t.changed.len();
-            }
+        let items: Vec<(N, V)> = text.into_iter().collect();
+        // The incoming tick by id; a name given twice keeps its last value,
+        // as a map would.
+        let mut next: Vec<Option<Value<'_>>> = Vec::new();
+        for (name, value) in &items {
+            let id = self.intern(name.as_ref());
+            put(&mut next, id, Value::Text(value.as_ref()));
         }
-        let next: BTreeMap<String, String> = components.into_iter().collect();
-        let mut changed = BTreeMap::new();
+        for (i, &h) in arena_blocks.iter().enumerate() {
+            let id = self.block_id(i);
+            put(&mut next, id, Value::Hex(h));
+        }
+        self.replace_last_if(tick);
+        let mut changed: Vec<Change> = Vec::new();
         let mut undo = Vec::new();
-        for (name, value) in &next {
-            if self.current.get(name) != Some(value) {
-                changed.insert(name.clone(), value.clone());
-                undo.push((name.clone(), self.current.get(name).cloned()));
+        for (id, old) in self.current.iter().enumerate() {
+            match (next.get(id).copied().flatten(), old) {
+                (Some(v), Some(o)) if v.same_as(o) => {}
+                (Some(v), _) => {
+                    changed.push((id as u32, Some(v.hold())));
+                    undo.push((id as u32, old.clone()));
+                }
+                (None, Some(_)) => {
+                    changed.push((id as u32, None));
+                    undo.push((id as u32, old.clone()));
+                }
+                (None, None) => {}
             }
         }
-        for (name, old) in &self.current {
-            if !next.contains_key(name) {
-                changed.insert(name.clone(), ABSENT.into());
-                undo.push((name.clone(), Some(old.clone())));
-            }
-        }
-        if self.entries + changed.len() > MAX_ENTRIES {
-            self.out.truncated_after = self.out.ticks.last().map(|t| t.tick);
+        if self.entries + changed.len() > self.limit {
+            self.truncated_after = self.rows.last().map(|r| r.0);
             return;
         }
-        for (name, _) in &undo {
-            match next.get(name) {
-                Some(v) => self.current.insert(name.clone(), v.clone()),
-                None => self.current.remove(name),
-            };
+        for (id, value) in &changed {
+            self.current[*id as usize] = value.clone();
         }
         self.undo = undo;
         self.entries += changed.len();
         if arena_base.is_some() {
-            self.out.arena_base = arena_base;
+            self.arena_base = arena_base;
         }
-        self.out.ticks.push(ComponentTick { tick, changed });
+        self.rows.push((tick, changed));
+    }
+
+    /// Observing the last recorded tick again takes it back first.
+    fn replace_last_if(&mut self, tick: u32) {
+        if self.rows.last().is_some_and(|r| r.0 == tick) {
+            for (id, old) in self.undo.drain(..) {
+                self.current[id as usize] = old;
+            }
+            if let Some((_, changed)) = self.rows.pop() {
+                self.entries -= changed.len();
+            }
+        }
     }
 
     /// The series, or `None` when nothing was recorded.
     pub fn finish(&self) -> Option<StateComponents> {
-        (!self.out.ticks.is_empty()).then(|| self.out.clone())
+        if self.rows.is_empty() {
+            return None;
+        }
+        Some(StateComponents {
+            arena_base: self.arena_base,
+            truncated_after: self.truncated_after,
+            ticks: self
+                .rows
+                .iter()
+                .map(|(tick, changed)| ComponentTick {
+                    tick: *tick,
+                    changed: changed
+                        .iter()
+                        .map(|(id, v)| {
+                            (
+                                self.names[*id as usize].to_string(),
+                                v.as_ref().map_or_else(|| ABSENT.to_string(), Held::text),
+                            )
+                        })
+                        .collect(),
+                })
+                .collect(),
+        })
     }
 }
 
@@ -151,6 +321,33 @@ pub struct AggregateDivergence {
     pub arena: (Option<String>, Option<String>),
 }
 
+/// The first sampled tick (one both reports have) whose digests differ. The
+/// state first differs after `after` and no later than `tick`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SparseDivergence {
+    pub tick: u32,
+    /// The last sampled tick the reports agreed at.
+    pub after: Option<u32>,
+    pub stride: u32,
+    pub gameplay: (String, String),
+    pub arena: (Option<String>, Option<String>),
+}
+
+/// What the rolling digests of two reports say when every sampled tick
+/// agrees.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DigestCheck {
+    /// Both cover the same ticks and agree.
+    Equal { ticks: u64 },
+    /// Both cover the same ticks and differ: the reports part between two
+    /// sampled ticks.
+    Differ { ticks: u64, a: String, b: String },
+    /// They cover different numbers of ticks.
+    Unequal { a: u64, b: u64 },
+    /// One report has none (it is not a training report).
+    Missing,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Verdict {
     /// Every recorded tick and component agrees.
@@ -161,6 +358,10 @@ pub enum Verdict {
     /// A report lacks the breakdown: today's aggregate comparison.
     Aggregate(AggregateDivergence),
     AggregateIdentical { ticks: usize },
+    /// A training report is in the comparison: only the ticks both reports
+    /// sampled, and the rolling digests.
+    Sparse(SparseDivergence),
+    SparseIdentical { common: usize, digest: DigestCheck },
     /// Neither the breakdown nor digests can be compared.
     Unverifiable(String),
 }
@@ -171,7 +372,58 @@ pub fn diff(a: &Report, b: &Report) -> Verdict {
     if let (Some(ca), Some(cb)) = (&a.state_components_v1, &b.state_components_v1) {
         return components(ca, cb);
     }
+    if a.state_digest_v1.is_some() || b.state_digest_v1.is_some() {
+        return sparse(a, b);
+    }
     aggregate(a, b)
+}
+
+/// A comparison with a training report in it: its digests are sparse, so
+/// only the ticks both reports recorded are compared, then the rolling
+/// digests when both have one and cover the same ticks.
+fn sparse(a: &Report, b: &Report) -> Verdict {
+    if a.state_hashes_v1.is_empty() || b.state_hashes_v1.is_empty() {
+        return Verdict::Unverifiable("a report has no state_hashes_v1".into());
+    }
+    let rb: BTreeMap<u32, _> = b.state_hashes_v1.iter().map(|h| (h.tick, h)).collect();
+    let (mut common, mut after) = (0, None);
+    for x in &a.state_hashes_v1 {
+        let Some(y) = rb.get(&x.tick) else { continue };
+        if x.gameplay != y.gameplay || x.arena != y.arena {
+            let stride = [&a.state_digest_v1, &b.state_digest_v1]
+                .into_iter()
+                .flatten()
+                .map(|d| d.stride)
+                .next()
+                .unwrap_or(0);
+            return Verdict::Sparse(SparseDivergence {
+                tick: x.tick,
+                after,
+                stride,
+                gameplay: (x.gameplay.clone(), y.gameplay.clone()),
+                arena: (x.arena.clone(), y.arena.clone()),
+            });
+        }
+        common += 1;
+        after = Some(x.tick);
+    }
+    if common == 0 {
+        return Verdict::Unverifiable(
+            "the reports have no sampled tick in common (a training report keeps its first tick and every Nth)"
+                .into(),
+        );
+    }
+    let digest = match (&a.state_digest_v1, &b.state_digest_v1) {
+        (Some(x), Some(y)) if x.ticks != y.ticks => DigestCheck::Unequal { a: x.ticks, b: y.ticks },
+        (Some(x), Some(y)) if x.digest != y.digest => DigestCheck::Differ {
+            ticks: x.ticks,
+            a: x.digest.clone(),
+            b: y.digest.clone(),
+        },
+        (Some(x), Some(_)) => DigestCheck::Equal { ticks: x.ticks },
+        _ => DigestCheck::Missing,
+    };
+    Verdict::SparseIdentical { common, digest }
 }
 
 fn components(a: &StateComponents, b: &StateComponents) -> Verdict {
@@ -286,7 +538,16 @@ pub fn arena_range(base: u32, index: u32) -> (u32, u32) {
 impl Verdict {
     /// Whether the two reports were found to differ.
     pub fn differs(&self) -> bool {
-        matches!(self, Verdict::Components(_) | Verdict::Aggregate(_))
+        matches!(
+            self,
+            Verdict::Components(_)
+                | Verdict::Aggregate(_)
+                | Verdict::Sparse(_)
+                | Verdict::SparseIdentical {
+                    digest: DigestCheck::Differ { .. },
+                    ..
+                }
+        )
     }
 
     /// The text `h2 sim diff` prints.
@@ -308,6 +569,53 @@ impl Verdict {
                     out,
                     "identical: {ticks} aggregate digests agree (no component breakdown in one report)"
                 );
+            }
+            Verdict::SparseIdentical { common, digest } => match digest {
+                DigestCheck::Equal { ticks } => {
+                    let _ = writeln!(
+                        out,
+                        "identical: {common} sampled digests and the rolling digest over {ticks} ticks agree (a training report has no component breakdown)"
+                    );
+                }
+                DigestCheck::Differ { ticks, a, b } => {
+                    let _ = writeln!(
+                        out,
+                        "differ: the {common} sampled digests agree, but the rolling digests over {ticks} ticks do not (a={a}  b={b})"
+                    );
+                    let _ = writeln!(
+                        out,
+                        "  the state parts between sampled ticks; a training report cannot say where: rerun both with detail = \"full\""
+                    );
+                }
+                DigestCheck::Unequal { a, b } => {
+                    let _ = writeln!(
+                        out,
+                        "sampled digests agree at {common} ticks; the rolling digests were not compared: a covers {a} ticks, b covers {b}"
+                    );
+                }
+                DigestCheck::Missing => {
+                    let _ = writeln!(
+                        out,
+                        "sampled digests agree at {common} ticks; the rolling digests were not compared: a report has none (it is not a training report)"
+                    );
+                }
+            },
+            Verdict::Sparse(d) => {
+                let window = match d.after {
+                    Some(t) => format!("the state first differs after tick {t}, at or before tick {}", d.tick),
+                    None => format!("the state differs at or before tick {}", d.tick),
+                };
+                let _ = writeln!(
+                    out,
+                    "first differing sampled tick: {} (a training report keeps one tick in {}: {window}; no component breakdown)",
+                    d.tick, d.stride
+                );
+                let _ = writeln!(out, "  gameplay  a={}  b={}", d.gameplay.0, d.gameplay.1);
+                if d.arena.0 != d.arena.1 {
+                    let show = |v: &Option<String>| v.clone().unwrap_or_else(|| "(none)".into());
+                    let _ = writeln!(out, "  arena     a={}  b={}", show(&d.arena.0), show(&d.arena.1));
+                }
+                let _ = writeln!(out, "  rerun both with detail = \"full\" to name the component");
             }
             Verdict::Unverifiable(why) => {
                 let _ = writeln!(out, "cannot compare: {why}");
@@ -545,5 +853,254 @@ mod tests {
     fn arena_block_ranges_end_at_the_arena() {
         assert_eq!(arena_range(0x1000, 0), (0x1000, 0x11000));
         assert_eq!(arena_range(0x1000, 63), (0x1000 + 0x3f0000, 0x1000 + 0x3fe000));
+    }
+
+    /// The recorder as it was before interned ids and `u64` values: the
+    /// reference the new one must match byte for byte.
+    #[derive(Default)]
+    struct OldRecorder {
+        current: BTreeMap<String, String>,
+        undo: Vec<(String, Option<String>)>,
+        out: StateComponents,
+        entries: usize,
+        limit: usize,
+    }
+
+    impl OldRecorder {
+        fn with_limit(limit: usize) -> Self {
+            OldRecorder { limit, ..Default::default() }
+        }
+
+        fn record(&mut self, tick: u32, arena_base: Option<u32>, components: Vec<(String, String)>) {
+            if self.out.truncated_after.is_some() {
+                return;
+            }
+            if self.out.ticks.last().is_some_and(|t| t.tick == tick) {
+                for (name, old) in self.undo.drain(..) {
+                    match old {
+                        Some(v) => self.current.insert(name, v),
+                        None => self.current.remove(&name),
+                    };
+                }
+                if let Some(t) = self.out.ticks.pop() {
+                    self.entries -= t.changed.len();
+                }
+            }
+            let next: BTreeMap<String, String> = components.into_iter().collect();
+            let mut changed = BTreeMap::new();
+            let mut undo = Vec::new();
+            for (name, value) in &next {
+                if self.current.get(name) != Some(value) {
+                    changed.insert(name.clone(), value.clone());
+                    undo.push((name.clone(), self.current.get(name).cloned()));
+                }
+            }
+            for (name, old) in &self.current {
+                if !next.contains_key(name) {
+                    changed.insert(name.clone(), ABSENT.into());
+                    undo.push((name.clone(), Some(old.clone())));
+                }
+            }
+            if self.entries + changed.len() > self.limit {
+                self.out.truncated_after = self.out.ticks.last().map(|t| t.tick);
+                return;
+            }
+            for (name, _) in &undo {
+                match next.get(name) {
+                    Some(v) => self.current.insert(name.clone(), v.clone()),
+                    None => self.current.remove(name),
+                };
+            }
+            self.undo = undo;
+            self.entries += changed.len();
+            if arena_base.is_some() {
+                self.out.arena_base = arena_base;
+            }
+            self.out.ticks.push(ComponentTick { tick, changed });
+        }
+
+        fn finish(&self) -> Option<StateComponents> {
+            (!self.out.ticks.is_empty()).then(|| self.out.clone())
+        }
+    }
+
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next(&mut self, below: u64) -> u64 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (self.0 >> 33) % below
+        }
+    }
+
+    /// One tick as both recorders take it: text components and arena blocks.
+    struct Step {
+        tick: u32,
+        base: Option<u32>,
+        text: Vec<(String, String)>,
+        blocks: Vec<u64>,
+    }
+
+    fn scenario(seed: u64) -> Vec<Step> {
+        let mut rng = Lcg(seed);
+        let mut steps = Vec::new();
+        let mut tick = 10;
+        for _ in 0..80 {
+            // One tick in five is observed twice, the second time with
+            // different content.
+            let repeats = if rng.next(5) == 0 { 2 } else { 1 };
+            for _ in 0..repeats {
+                let mut text = Vec::new();
+                for i in 0..14 {
+                    if rng.next(4) != 0 {
+                        text.push((
+                            format!("player.{:02}.{}", i % 3, ["pos", "aim", "health", "id"][i % 4]),
+                            format!("v{}", rng.next(3)),
+                        ));
+                    }
+                }
+                // A name given twice keeps the last value.
+                if rng.next(6) == 0 {
+                    text.push(("rng.seed".into(), "1".into()));
+                    text.push(("rng.seed".into(), format!("{}", rng.next(2))));
+                }
+                let blocks = match rng.next(8) {
+                    0 => Vec::new(),
+                    _ => (0..5).map(|_| rng.next(3)).collect(),
+                };
+                steps.push(Step {
+                    tick,
+                    base: (rng.next(4) == 0).then(|| 0x1000_0000 + rng.next(4) as u32),
+                    text,
+                    blocks,
+                });
+            }
+            tick += 1 + rng.next(2) as u32;
+        }
+        steps
+    }
+
+    fn json(c: &Option<StateComponents>) -> String {
+        serde_json::to_string(c).unwrap()
+    }
+
+    #[test]
+    fn the_recorder_matches_the_one_it_replaced_byte_for_byte() {
+        for seed in 1..=12 {
+            // Roomy, tight (truncated mid-series) and tiny limits.
+            for limit in [MAX_ENTRIES, 120, 37, 5, 0] {
+                let (mut old, mut new) = (OldRecorder::with_limit(limit), Recorder::with_limit(limit));
+                let mut via_text = Recorder::with_limit(limit);
+                for step in scenario(seed) {
+                    let mut all = step.text.clone();
+                    all.extend(
+                        step.blocks
+                            .iter()
+                            .enumerate()
+                            .map(|(i, h)| (format!("{ARENA_PREFIX}{i:02}"), format!("{h:016x}"))),
+                    );
+                    old.record(step.tick, step.base, all.clone());
+                    new.record_split(step.tick, step.base, step.text.clone(), &step.blocks);
+                    via_text.record(step.tick, step.base, all);
+                }
+                let want = json(&old.finish());
+                assert_eq!(json(&new.finish()), want, "seed {seed} limit {limit}");
+                assert_eq!(json(&via_text.finish()), want, "seed {seed} limit {limit} as text");
+                // The cut-off is the same one.
+                assert_eq!(
+                    new.finish().and_then(|s| s.truncated_after),
+                    old.finish().and_then(|s| s.truncated_after)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_tick_observed_again_after_the_series_is_cut_changes_nothing() {
+        let mut r = Recorder::with_limit(2);
+        r.record_split(1, None, [("a", "1"), ("b", "1")], &[]);
+        r.record_split(2, None, [("a", "2")], &[]);
+        r.record_split(2, None, [("a", "3")], &[]);
+        r.record_split(3, None, [("a", "4")], &[]);
+        let s = r.finish().unwrap();
+        assert_eq!(s.truncated_after, Some(1));
+        assert_eq!(s.ticks.len(), 1);
+    }
+
+    #[test]
+    fn arena_blocks_print_as_sixteen_hex_digits_only_when_they_change() {
+        let mut r = Recorder::default();
+        r.record_split(1, Some(0x100), [("time.tick", "1")], &[0xab, 0]);
+        r.record_split(2, None, [("time.tick", "2")], &[0xab, 7]);
+        let s = r.finish().unwrap();
+        assert_eq!(s.ticks[0].changed["arena.00"], "00000000000000ab");
+        assert_eq!(s.ticks[1].changed.len(), 2, "{:?}", s.ticks[1].changed);
+        assert_eq!(s.ticks[1].changed["arena.01"], "0000000000000007");
+        assert!(!s.ticks[1].changed.contains_key("arena.00"));
+    }
+
+    fn training(hashes: &[(u32, &str)], digest: Option<(u64, &str)>) -> Report {
+        let mut r = report(None);
+        r.state_hashes_v1 = hashes
+            .iter()
+            .map(|(tick, h)| TickHash { tick: *tick, gameplay: (*h).into(), arena: None })
+            .collect();
+        r.state_digest_v1 = digest.map(|(ticks, d)| StateDigest {
+            stride: 30,
+            ticks,
+            digest: d.into(),
+        });
+        r
+    }
+
+    #[test]
+    fn two_training_reports_compare_at_their_common_ticks_then_by_digest() {
+        let rows = [(5, "a"), (30, "b"), (60, "c")];
+        let same = training(&rows, Some((90, "dd")));
+        let v = diff(&same, &same.clone());
+        assert_eq!(
+            v,
+            Verdict::SparseIdentical { common: 3, digest: DigestCheck::Equal { ticks: 90 } }
+        );
+        assert!(!v.differs());
+        assert!(v.render().contains("rolling digest over 90 ticks agree"));
+
+        // The sampled rows agree and the rolling digests do not: the report
+        // says it cannot say where.
+        let v = diff(&same, &training(&rows, Some((90, "ee"))));
+        assert!(v.differs());
+        let text = v.render();
+        assert!(text.contains("rolling digests over 90 ticks do not"), "{text}");
+        assert!(text.contains("detail = \"full\""));
+
+        // A sampled row differs: the window between the two sampled ticks.
+        let other = training(&[(5, "a"), (30, "x"), (60, "c")], Some((90, "ee")));
+        let Verdict::Sparse(d) = diff(&same, &other) else { panic!() };
+        assert_eq!((d.tick, d.after, d.stride), (30, Some(5), 30));
+        let text = Verdict::Sparse(d).render();
+        assert!(text.contains("differs after tick 5, at or before tick 30"), "{text}");
+    }
+
+    #[test]
+    fn a_training_report_against_other_shapes_says_what_it_cannot_compare() {
+        let rows = [(5, "a"), (30, "b")];
+        let t = training(&rows, Some((60, "dd")));
+        // Against a full report with a digest every tick: common ticks only,
+        // and no rolling digest to compare.
+        let full = training(&[(5, "a"), (6, "q"), (30, "b")], None);
+        let v = diff(&t, &full);
+        assert_eq!(v, Verdict::SparseIdentical { common: 2, digest: DigestCheck::Missing });
+        assert!(v.render().contains("rolling digests were not compared"));
+        // Runs of different lengths.
+        let v = diff(&t, &training(&rows, Some((45, "dd"))));
+        assert_eq!(
+            v,
+            Verdict::SparseIdentical { common: 2, digest: DigestCheck::Unequal { a: 60, b: 45 } }
+        );
+        assert!(v.render().contains("a covers 60 ticks, b covers 45"));
+        // No tick in common, or none recorded.
+        let apart = training(&[(7, "a")], Some((60, "dd")));
+        assert!(matches!(diff(&t, &apart), Verdict::Unverifiable(m) if m.contains("no sampled tick in common")));
+        assert!(matches!(diff(&t, &training(&[], None)), Verdict::Unverifiable(_)));
     }
 }

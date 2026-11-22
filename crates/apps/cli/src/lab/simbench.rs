@@ -564,6 +564,7 @@ fn verdict_tick(v: &Verdict) -> Option<u32> {
     match v {
         Verdict::Components(d) => Some(d.tick),
         Verdict::Aggregate(d) => Some(d.tick),
+        Verdict::Sparse(d) => Some(d.tick),
         _ => None,
     }
 }

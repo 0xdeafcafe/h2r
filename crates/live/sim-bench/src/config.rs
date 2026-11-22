@@ -451,12 +451,51 @@ fn default_pace() -> String {
     "unpaced".into()
 }
 
+/// How much state a report records (the match and batch key `detail`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Detail {
+    /// Per-tick digests, and components unless `components = false`.
+    #[default]
+    Full,
+    /// No components; one digest row a game second and a rolling digest
+    /// over every tick (`h2 sim diff` compares those).
+    Training,
+}
+
+impl Detail {
+    pub fn parse(s: &str) -> Result<Detail, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "full" => Ok(Detail::Full),
+            "training" => Ok(Detail::Training),
+            other => Err(format!("detail = \"{other}\": \"full\" or \"training\"")),
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Detail::Full => "full",
+            Detail::Training => "training",
+        }
+    }
+}
+
 /// A match file's `bot_threads`: a worker count, or `"auto"` or `"off"`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum BotThreads {
     Count(u32),
     Word(String),
+}
+
+impl MatchConfig {
+    /// The `detail` key, `Full` when unset or invalid ([`resolve`] refuses
+    /// an invalid one).
+    pub fn detail(&self) -> Detail {
+        self.detail
+            .as_deref()
+            .and_then(|d| Detail::parse(d).ok())
+            .unwrap_or_default()
+    }
 }
 
 impl BotThreads {
@@ -506,6 +545,11 @@ pub struct MatchConfig {
     /// arms; the per-tick gameplay digests stay. Unset: recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub components: Option<bool>,
+    /// How much of the state a report records: `"full"` (the default: the
+    /// per-tick digests and components) or `"training"` (no components;
+    /// sparse digests and a rolling digest over every tick).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
     /// Bot think workers for this process (`H2_BOT_THREADS`'s values): a
     /// count, `"auto"` or `"off"`. Unset: `h2 sim run` picks
     /// (docs/runtime/sim.md, "Bot thinking across cores"). The
@@ -559,6 +603,9 @@ impl Match {
         let mut c = self.config.clone();
         c.game_type = self.game_type.name().into();
         c.team_play = Some(self.team_play);
+        if c.detail.is_some() {
+            c.detail = Some(self.config.detail().name().into());
+        }
         c.bots = self
             .bots
             .iter()
@@ -643,6 +690,14 @@ pub fn resolve(
             problems.push(format!("bot_threads = {n}: at most 32"));
         }
         _ => {}
+    }
+    if let Some(d) = &config.detail
+        && let Err(e) = Detail::parse(d)
+    {
+        problems.push(e);
+    }
+    if config.detail() == Detail::Training && config.components == Some(true) {
+        problems.push("components = true: a training report has no components".into());
     }
     if config.bots.is_empty() {
         problems.push("a match needs at least one bot".into());
@@ -825,6 +880,10 @@ pub struct BatchConfig {
     pub skills: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
+    /// `detail` for every run (`"full"` or `"training"`); over the match
+    /// file's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
     /// Legacy batch option. Only false is accepted.
     #[serde(default, skip_serializing)]
     pub fork: bool,
@@ -1064,6 +1123,9 @@ pub fn plan(
                         c.game_type = game_type.clone();
                         c.team_play = *team_play;
                         c.seed = seed;
+                        if config.detail.is_some() {
+                            c.detail = config.detail.clone();
+                        }
                         let team_play = team_play.unwrap_or(false);
                         c.bots = lineup(kind, false, skill, team_play);
                         if let Err(e) = resolve(c.clone(), &|_| Ok(BotParams::default())) {

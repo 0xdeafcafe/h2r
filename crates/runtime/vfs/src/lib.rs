@@ -16,6 +16,7 @@ pub use film_map::{FilmMap, FilmMapSource, ImmutableRead};
 mod map_override;
 mod packages;
 mod path;
+mod reads;
 mod rewrite;
 pub mod save_meta;
 pub mod sim_store;
@@ -35,6 +36,7 @@ pub use map_override::{
     MapGeneration, MapOverrideBackend, MapOverrideNotice, MapRebind, PreparedMapRebind, ReservedMapRebind,
 };
 pub use packages::{PackageBackend, Scope as PackageScope};
+pub use reads::PathReads;
 pub use rewrite::{Chain, MAX_REWRITE_BYTES, Rewrite, RewriteBackend};
 pub use sim_store::SimStoreBackend;
 pub use path::{Namespace, validate_fatx_name, validate_fatx_path, wildcard_matches};
@@ -180,6 +182,7 @@ pub struct Vfs {
     map_guest_reads: bool,
     read_copy_reasons: HashSet<&'static str>,
     guest_reads: GuestReadBytes,
+    read_log: reads::ReadLog,
     extra_cache_bytes: u32,
     pub namespace: Namespace,
     mounts: Vec<Mount>,
@@ -848,6 +851,11 @@ impl Vfs {
         self.guest_reads
     }
 
+    /// What the guest read, by path (`wall.reads`).
+    pub fn guest_path_reads(&self) -> BTreeMap<String, PathReads> {
+        self.read_log.snapshot()
+    }
+
     pub fn note_guest_copy(&mut self, bytes: usize) {
         self.guest_reads.copied += bytes as u64;
     }
@@ -895,10 +903,12 @@ impl Vfs {
                     sim_store::record::note(&self.mounts[mount].device, &path, at, len as u64);
                 }
                 self.guest_reads.mapped += mapped as u64;
+                self.read_log.mapped(&path, len, mapped);
                 self.note_guest_copy(len - mapped);
                 Some(len)
             }
             Err(reason) => {
+                self.read_log.refused(&path, reason);
                 if self.read_copy_reasons.insert(reason) {
                     eprintln!("guest mapped read: copying {path} at {at} ({length} bytes): {reason}");
                 }
@@ -929,6 +939,7 @@ impl Vfs {
         if sim_store::record::enabled() {
             sim_store::record::note(&self.mounts[mount].device, &path, at, len as u64);
         }
+        self.read_log.copied(&path, len);
         self.object_mut(handle)?.position = at + len as u64;
         Ok(len)
     }

@@ -8,7 +8,9 @@ use anyhow::{Result, bail};
 use engine::entry::{Cx, EntryError, GuestCall, Ret};
 use hooks::{Flow, points};
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
+use sim_bench::metrics::SetupStage;
 use std::sync::Arc;
+use std::time::Instant;
 
 /// Hold the eighth port of a block for the lifetime of this process. Retail
 /// uses base through base+6, and discovery stays on this host's own endpoint.
@@ -78,6 +80,18 @@ impl Facts {
             squad,
             squad_state: field(bots::lobby::STATE),
             network_class: field(crate::variant_ext::SESSION_NETWORK_CLASS),
+        }
+    }
+
+    /// The setup stage this sample shows the run has reached
+    /// (`wall.setup`): at the menu, then able to open a lobby.
+    fn setup_stage(&self) -> Option<SetupStage> {
+        if self.wait().is_none() {
+            Some(SetupStage::Lobby)
+        } else if self.main_menu {
+            Some(SetupStage::Menu)
+        } else {
+            None
         }
     }
 
@@ -237,6 +251,9 @@ pub(super) fn install(b: &mut hooks::Builder, sim: Arc<Inner>) -> Result<(), hoo
                 return Ok(Flow::Continue);
             }
             let facts = Facts::read(&*g);
+            if let Some(stage) = facts.setup_stage() {
+                sim.lock().setup.enter(stage, Instant::now());
+            }
             let Some(req) = sim.hosted_map.get() else {
                 state.update(step, Some("waiting for the match map".into()), facts);
                 return Ok(Flow::Continue);
@@ -283,6 +300,10 @@ pub(super) fn install(b: &mut hooks::Builder, sim: Arc<Inner>) -> Result<(), hoo
                 Box::pin(async move {
                     let result = advance(&cx, &sim, step, map, buffer, &mut lobby).await;
                     let facts = cx.read(|m| Facts::read(&ReadGm(m)));
+                    let stage = result.as_ref().ok().and_then(|(next, why)| result_stage(*next, why.as_deref()));
+                    if let Some(stage) = stage {
+                        sim.lock().setup.enter(stage, Instant::now());
+                    }
                     {
                         let mut state = stage.lock().unwrap_or_else(|e| e.into_inner());
                         state.owned_squad = lobby.owned_squad();
@@ -338,6 +359,17 @@ async fn advance(
     }
 }
 
+/// The setup stage a lobby step's result starts: the first wait on a peer's
+/// map status begins the copy wait, the start request being accepted begins
+/// the load.
+fn result_stage(next: Step, why: Option<&str>) -> Option<SetupStage> {
+    match (next, why) {
+        (Step::Loading, _) => Some(SetupStage::Load),
+        (Step::Start, Some(why)) if why.contains(" has map status ") => Some(SetupStage::CopyWait),
+        _ => None,
+    }
+}
+
 fn open_step(step: Step, progress: SimOpen) -> (Step, Option<String>) {
     match progress {
         SimOpen::Wait(why) => (step, Some(why.into())),
@@ -368,6 +400,22 @@ mod tests {
             difficulty: coop_probe::NO_DIFFICULTY,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn the_setup_stages_follow_the_lobby() {
+        let at_menu = Facts { main_menu: true, ..Default::default() };
+        assert_eq!(Facts::default().setup_stage(), None);
+        assert_eq!(at_menu.setup_stage(), Some(SetupStage::Menu));
+        let ready = Facts { main_menu: true, networking: true, lobby_on: true, ..Default::default() };
+        assert_eq!(ready.setup_stage(), Some(SetupStage::Lobby));
+        assert_eq!(result_stage(Step::SquadCreated, None), None);
+        assert_eq!(result_stage(Step::Start, Some("1 of 2 players")), None);
+        assert_eq!(
+            result_stage(Step::Start, Some("peer 1 has map status 2 (every peer needs 3 or 4)")),
+            Some(SetupStage::CopyWait)
+        );
+        assert_eq!(result_stage(Step::Loading, None), Some(SetupStage::Load));
     }
 
     #[test]
