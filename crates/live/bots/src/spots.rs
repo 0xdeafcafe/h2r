@@ -911,6 +911,8 @@ pub fn from_bytes(b: &[u8]) -> Option<(Vec<Spot>, Stamp)> {
                     }),
                     _ => return None,
                 },
+                // The cache holds the scan; measured landings are applied after.
+                landed: false,
             })
         })
         .collect::<Option<Vec<_>>>()?;
