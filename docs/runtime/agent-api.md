@@ -3732,14 +3732,18 @@ last `rules.reload` on this run: its `mode` (`in_place`, `restarted` or
 ([rules-start-gate.md](../game/rules-start-gate.md)), in the check's
 order, while the block holds: the game was ended in its first tick (or,
 in a Forge session, the script does not run), until the next game
-starts. `labelled` is the map's labelled things as the host counted
+starts. In the lobby, with no script running and no block of the
+host's, `blocked` lists the problems of the lobby's own check
+(`rules::gate`, the lobby's map file against the variant's script), and
+`refused` says Start Game is held (in Forge mode, that the script will
+not run); the lobby's check fills no `labelled`. `labelled` is the map's labelled things as the host counted
 them, for a blocked script or a running one that declares labels: each
 with its `label`, `class` (`object`, `flag`, `volume` or `spawn`),
 `number`, `team` (the placement's designator), `id` (the placement id
 `zone.id` reads) and `declared` (the script declares that label). To
-check a map against a script, start a game with it and read
-`rules.state`; there is no separate census method, since the host's
-census is the loaded game's.
+check a map against a script, choose both in the lobby as its leader,
+or start a game with them, and read `rules.state`; there is no separate
+census method, since the host's census is the loaded game's.
 
 `rules.reload` puts a new script into the running game
 ([rules-engine.md](../game/rules-engine.md#reloading-a-running-script);
