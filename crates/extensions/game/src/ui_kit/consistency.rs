@@ -114,7 +114,7 @@ fn font_role(id: &str) -> &'static [&'static str] {
     match id {
         "title" => TITLE,
         "legend" => LEGEND,
-        "description" | "body" | "status" => BODY,
+        "description" | "name" | "body" | "status" => BODY,
         _ if id.starts_with("cell.") && id.ends_with(".text") => CELL,
         _ if id.starts_with("row.") && (id.ends_with(".label") || id.ends_with(".value")) => ROW,
         _ => TEXT,
@@ -213,8 +213,42 @@ fn view_rules(design: &DesignDoc, s: &ScreenSpec, v: &View, out: &mut Vec<Findin
 
 /// The empty rule on `v` (spec `s`): a dialog's description block that
 /// sits above its first row is drawn with text, and the page's picture
-/// (Quick Options' game type picture) has its line beside it.
+/// (Quick Options' game type picture) has its line beside it; a name
+/// line (`ScreenSpec::name_line`) names the focused row.
 fn empty_rules(s: &ScreenSpec, v: &View, out: &mut Vec<Finding>) {
+    let art: Vec<String> = v
+        .widgets
+        .iter()
+        .filter(|w| w.id.starts_with("art.") && matches!(w.kind, view::Kind::Art { .. }))
+        .map(|w| w.id.clone())
+        .collect();
+    let says = |id: &str| {
+        v.widget(id)
+            .and_then(Widget::text)
+            .is_some_and(|t| !t.trim().is_empty())
+    };
+    let mut flag = |id: &str, text: String| {
+        let mut ids = vec![id.to_string()];
+        ids.extend(art.iter().cloned());
+        out.push(Finding {
+            screen: v.screen.clone(),
+            state: v.state.clone(),
+            ids,
+            rule: "empty",
+            text,
+        });
+    };
+    if let Some(n) = s.name_line
+        && !says("name")
+    {
+        flag(
+            "name",
+            format!(
+                "the name line beside the picture ({:?}) says nothing: name the focused row",
+                n.rect
+            ),
+        );
+    }
     let (Some(d), Some(_)) = (s.description, &s.dialog) else {
         return;
     };
@@ -228,33 +262,15 @@ fn empty_rules(s: &ScreenSpec, v: &View, out: &mut Vec<Finding>) {
         return;
     };
     let [_, _, bottom, _] = d.rect;
-    if bottom < first_row {
-        return;
+    if bottom >= first_row && !says("description") {
+        flag(
+            "description",
+            format!(
+                "the description area above the list ({:?}) says nothing: give the focused row a line, or drop the block so the rows sit under the title",
+                d.rect
+            ),
+        );
     }
-    let said = v
-        .widget("description")
-        .and_then(Widget::text)
-        .is_some_and(|t| !t.trim().is_empty());
-    if said {
-        return;
-    }
-    let mut ids = vec!["description".to_string()];
-    ids.extend(
-        v.widgets
-            .iter()
-            .filter(|w| w.id.starts_with("art.") && matches!(w.kind, view::Kind::Art { .. }))
-            .map(|w| w.id.clone()),
-    );
-    out.push(Finding {
-        screen: v.screen.clone(),
-        state: v.state.clone(),
-        ids,
-        rule: "empty",
-        text: format!(
-            "the description area above the list ({:?}) says nothing: give the focused row a line, or drop the block so the rows sit under the title",
-            d.rect
-        ),
-    });
 }
 
 /// Converter-named palette colours and presets: drift the design system
@@ -424,6 +440,21 @@ mod tests {
             assert_eq!(out.len(), 1, "{} [{}]", v.screen, v.state);
             assert_eq!(out[0].rule, "empty");
             assert!(out[0].ids.contains(&"art.0".to_string()), "{:?}", out[0].ids);
+        }
+        // The name line beside the picture: an empty one is found too,
+        // on every options page that has one.
+        let named = views(&["firefight", "clankers", "h1-options"]);
+        assert!(named.iter().any(|(s, _)| s.name_line.is_some()));
+        for (s, v) in named.iter().filter(|(s, _)| s.name_line.is_some()) {
+            let mut out = Vec::new();
+            empty_rules(s, v, &mut out);
+            assert!(out.is_empty(), "{} [{}]: {out:?}", v.screen, v.state);
+            let mut unnamed = v.clone();
+            unnamed.widgets.retain(|w| w.id != "name");
+            empty_rules(s, &unnamed, &mut out);
+            assert_eq!(out.len(), 1, "{} [{}]: {out:?}", v.screen, v.state);
+            assert_eq!(out[0].rule, "empty");
+            assert_eq!(out[0].ids[0], "name");
         }
         // A list's description under its rows (the Controls list's) is
         // not a header area: an empty one there is not this rule's.

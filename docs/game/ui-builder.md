@@ -580,9 +580,9 @@ value column); and the focused row's description goes in a text block
 equal to Quick Options' help line (`dialog::QUICK_HELP_TEXT`, held to the
 tag's text block 0 by the disc test), which `KitScreen::dialog` and the
 Halo 1 class use unless told otherwise. A description is one line there,
-52 units at most (retail's is 51). The variant-name line stays out; the
-game type picture is retail's content and stays out of the base, and a
-page shows the focused row's icon there ("A page's header"). The pages'
+52 units at most (retail's is 51). The variant-name line and the game
+type picture are retail's content and stay out of the base; a page shows
+the focused row's label and icon there ("A page's header"). The pages'
 titles are in capitals, as Quick Options' header is.
 
 The test `ui_kit::screens::tests::our_settings_dialogs_are_quick_options_inside`
@@ -804,20 +804,35 @@ sack, flag, bomb, four squares, banner of three stars, question mark.
 
 (Halo 1's Assets row, on the campaign's Game Options page, has
 `SPARTAN`.) Each line is 52 characters at most, inside the 494-unit
-help line on the kit's measure and in the disc's font 1. The white
-variant-name line stays empty: the title bar already names the page.
+help line on the kit's measure and in the disc's font 1.
+
+The white variant-name line beside the icon names the focused row: its
+label (on a value row the label alone, the value staying in the row), so
+the name line and the pale-blue help line beneath it together describe
+the focused row. The block is Quick Options' text block 1
+(`dialog::QUICK_NAME_TEXT`, `DialogBase::name_line`, held to the tag by
+the disc test; design token `name.settings`). A class with the base's
+picture writes it after the frame's block (`list_class` `NAME_BLOCK`) and
+makes its widget in `setup_pane_footer`; `row_text` sets it through
+`Rows::name` each time the focus moves, with the description.
+`KitScreen` names the row's own label slot, the Halo 1 class the option's
+name string. The spec carries it as `ScreenSpec::name_line`, and the view
+draws the focused row's label there as the `name` widget
+(`ScreenSpec::name_text`). The test
+`ui_kit::screens::tests::the_name_line_follows_focus_in_every_state_of_each_options_page`
+holds it to the focused row in every state of each page.
 
 **Drawn over the panel.** The draw sorts a pane's widgets by depth, then
 render depth bias, then type, text (6) before bitmap (8)
 (docs/formats/ui.md "What a screen, pane and widget are"). A text block
 at bias 0 over `fs_dialog` at bias 0 or more is drawn first, and the panel
-covers it, while the picture (bias 3) shows. On a dialog's copy the description block takes
+covers it, while the picture (bias 3) shows. On a dialog's copy the description block, and the name line with it, takes
 `dialog_tag::description_bias`: the base's own help line's bias (Quick
 Options' text block 0, `DialogBase::help_block`) and one more than every
 backing bitmap the copy keeps. stderr says `<name>: description at render
 depth bias N, over the dialog's backing` as the page opens. The
-consistency rule `empty` keeps every row's line in the spec, so the area
-never stands empty in the preview either ("Consistency").
+consistency rule `empty` keeps every row's line and label in the spec,
+so neither line stands empty in the preview either ("Consistency").
 
 **The picker's copy.** A on a row opens the value picker, whose
 description says what the option does and what each choice means in a
@@ -840,9 +855,11 @@ drawn.
 
 From a custom game lobby (on a Halo 1 map for Halo 1 Options), Game
 Setup: open Clanker Options. At its top left, left of the help line,
-the Spartan icon where Quick Options shows its game type, and "Bots
-join this game..." in the help line, beside the icon's lower half. Move down: the icon and the line
-change with each row (Count's four squares, Difficulty's skull, and so
+the Spartan icon where Quick Options shows its game type, "Clankers" in
+white in the name line beside the icon's upper half, and "Bots join this
+game..." in the help line beside its lower half, both over the panel.
+Move down: the icon, the name and the line change with each row (Count's
+four squares and "Count", Difficulty's skull and "Difficulty", and so
 on), the icon never moving from its place. A on a row: the value
 picker's right side explains the option. Halo 1 Options: Sandbox's bomb
 and HUD's helmet. Open Quick Options to compare the places.
@@ -1115,7 +1132,7 @@ named state without a disc and holds it to the design system:
 | `case` | a dialog's, a code entry's and a picker's title in capitals (`DYNAMIC` titles aside) |
 | `pitch` | a list's rows its skin's row height apart (`row_controls`, `row_default`) |
 | `fit` | a title and a legend fit their rectangles |
-| `empty` | a dialog's description area above its list (Quick Options' help line, beside the page's picture) says something in every state; a page with nothing to say there has no description block, so its rows sit under the title |
+| `empty` | a dialog's description area above its list (Quick Options' help line, beside the page's picture) says something in every state; a page with nothing to say there has no description block, so its rows sit under the title. A page with a name line (`ScreenSpec::name_line`) names the focused row there in every state |
 
 `consistency::ALLOWED` is the short list of findings that stand, each
 with its reason (the sign-in dialog's title carries the gamertag as

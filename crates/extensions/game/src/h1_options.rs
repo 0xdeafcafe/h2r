@@ -370,6 +370,11 @@ impl Rows for OptionsScreen {
     fn description(&self, row: i16) -> Option<u32> {
         option_at(MULTIPLAYER, row).map(help_id)
     }
+    /// The focused row's name in the header's name line, beside its icon.
+    fn name(&self, row: i16) -> Option<u32> {
+        DIALOG.picture()?;
+        option_at(MULTIPLAYER, row).map(name_id)
+    }
     /// The first row's icon: the focus starts there.
     fn picture_image(&self) -> Option<u16> {
         self.row_image(0)
@@ -410,6 +415,9 @@ impl crate::ui_kit::spec::Describe for OptionsScreen {
         )));
         s.style = base.style();
         s.description = base.help().map(Into::into);
+        if base.picture().is_some() {
+            s.name_line = base.name_line().map(Into::into);
+        }
         s.content.row_help = true;
         s.footer = true;
         s.prompts = vec![
@@ -563,6 +571,14 @@ mod tests {
         assert_eq!(screen.description(0), Some(help_id(&SANDBOX)));
         assert_eq!(screen.description(1), Some(help_id(&HUD)));
         assert_eq!(screen.description(2), None);
+        // Its name line beside the icon: the focused row's name.
+        assert_eq!(
+            s.name_line,
+            Some(crate::ui_kit::dialog::QUICK_NAME_TEXT.into())
+        );
+        assert_eq!(screen.name(0), Some(name_id(&SANDBOX)));
+        assert_eq!(screen.name(1), Some(name_id(&HUD)));
+        assert_eq!(screen.name(2), None);
         assert_eq!(s.help, None, "no page line in place of the rows'");
         assert!(s.art.is_empty(), "the icon is the focused row's");
         let text = strings();
