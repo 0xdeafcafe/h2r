@@ -801,7 +801,12 @@ type's handlers run first.
 name, version, carrier, team requirement, list row, and the required
 capabilities by name, at most 32, "Roles, powers and capabilities"); a string table; an option table (type,
 range, default, label); a slot table (scope, type, initial value); a
-label table and a tag-path table; constant tables; a handler table
+label table (each label's text, kind, member count `min` and `max`,
+flags for single, numbered, number range and per team, and the number
+range) and a tag table (each path and its group: any object, or weapon),
+which the start gate checks a map against
+([rules-language-types.md](rules-language-types.md#the-ir)); constant
+tables; a handler table
 (event, argument slots); and code. Code is a register bytecode with typed ops:
 arithmetic, compare, slot load and store, forward conditional jump,
 `ForEach` over a set with a body range, and `Call` of a numbered API
@@ -823,8 +828,9 @@ read through `none` gives the slot's initial value and a write through
 1.8 ms on an M-series host at 18 ns an op (the `op_cost` measurement in
 `crates/formats/rules/tests/scripts.rs`). The
 count is always enforced and nothing is marked proven: a handler's worst
-case follows from the set bounds (16 players, 8 teams, 256 labelled
-objects), but the engine decides how many kills or zone entries a tick
+case follows from the set bounds (16 players, 8 teams, and a labelled
+set's label `max`, at most 256; the VM visits no more than that on any
+map), but the engine decides how many kills or zone entries a tick
 holds. Events are not capped to make a proof, because a synchronous
 handler ("Order") moved to the next tick moves a score off the tick
 retail lands it on, and a dropped kill is a wrong score. One cap changes

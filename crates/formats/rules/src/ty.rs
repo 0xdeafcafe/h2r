@@ -9,7 +9,8 @@ pub const MAX_PLAYERS: usize = 16;
 pub const MAX_TEAMS: usize = 8;
 /// Kit squad slots (`firefight::director::SQUAD_SLOTS`).
 pub const MAX_SQUADS: usize = 16;
-/// Labelled objects a set visits at most.
+/// Members a label allows at most (`LabelDef::max`), and so the most a
+/// labelled set visits. A label whose `max` is this states no limit.
 pub const MAX_LABELLED: usize = 256;
 /// Objective records the engine holds at most (`E+0xc18`, bots.md 3.7).
 pub const MAX_OBJECTIVES: usize = 8;
