@@ -2145,7 +2145,7 @@ mod tests {
         let seven = layer_pass(7, false);
         let d = plan(Some(0), 7, &seven, &item(1), &e).unwrap();
         assert_eq!(d.iter().map(|d| (d.implementation, d.program)).collect::<Vec<_>>(), [(0, 0), (1, 1)], "the only one, then the item's");
-        assert!(d.iter().all(|d| d.state.blend.is_some() && !d.state.depth_write && d.ranges == [0..3]));
+        assert!(d.iter().all(|d| d.state.blend.is_some() && !d.state.depth_write && d.ranges == std::slice::from_ref(&(0..3))));
         assert_eq!(d[0].vertex.constants[50], [1.0; 4], "its record's rows");
         assert_eq!(plan(Some(0), 7, &seven, &item(2), &e).unwrap().len(), 1, "implementation 2 of the second pass draws nothing");
         assert!(plan(Some(0), 7, &seven, &item(3), &e).unwrap_err().contains("no native implementation 3"));
