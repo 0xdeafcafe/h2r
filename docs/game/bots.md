@@ -3938,7 +3938,8 @@ human playlists, whatever the Live menu chose last. The log says
 rows)` at each Game Setup, then `clankermatch: Switch To: Clankermatch:
 opening the clanker playlists` and `clankermatch: the playlists are the
 clanker hoppers` at the press. The party lobby's Game Setup then drops
-every Switch To row, this one with retail's (`lobby_mode::arrange`):
+every Switch To row, this one with retail's (`lobby_mode::arrange`, the
+constructor's outermost `after`, so it runs once this row is added):
 the mode strip changes mode, and its MULTIPLAYER tab is the one
 matchmaking lobby. There, action 9 reads Change Playlist... and lists
 the clanker and the human hoppers on one page (`clankermatch::Scope::All`),
@@ -4323,11 +4324,12 @@ actions in step 8 separately.
    (`clankermatch: hopper 8 not saved for Quickmatch` at the pick).
 10. With a server that has no clanker marks: OptiMatch as retail,
     Clankermatch's list empty (say how the empty list looks).
-11. In a Live custom game lobby, open Game Setup: "Switch To:
-    Clankermatch" sits right under "Switch To: Matchmaking" (the log:
-    `clankermatch: Game Setup list: Switch To: Clankermatch row added`).
-    Press it: the clanker playlists open, as from the Live menu. Back,
-    then Switch To: Matchmaking: the human playlists.
+11. In a Live lobby on MULTIPLAYER, open Game Setup: Change Playlist...
+    is its one row, with no Switch To: Clankermatch (the log:
+    `clankermatch: Game Setup list: Switch To: Clankermatch row added`,
+    then `lobby mode: Game Setup list in Multiplayer (1 rows)`). Change
+    Playlist... lists the human and the clanker playlists on one page.
+    On CUSTOM GAMES, Game Setup has no Switch To row either.
 
 ## 9. The server interface (for sbmm-ranked)
 
