@@ -300,9 +300,9 @@ pub(super) fn install(b: &mut hooks::Builder, sim: Arc<Inner>) -> Result<(), hoo
                 Box::pin(async move {
                     let result = advance(&cx, &sim, step, map, buffer, &mut lobby).await;
                     let facts = cx.read(|m| Facts::read(&ReadGm(m)));
-                    let stage = result.as_ref().ok().and_then(|(next, why)| result_stage(*next, why.as_deref()));
-                    if let Some(stage) = stage {
-                        sim.lock().setup.enter(stage, Instant::now());
+                    let reached = result.as_ref().ok().and_then(|(next, why)| result_stage(*next, why.as_deref()));
+                    if let Some(reached) = reached {
+                        sim.lock().setup.enter(reached, Instant::now());
                     }
                     {
                         let mut state = stage.lock().unwrap_or_else(|e| e.into_inner());

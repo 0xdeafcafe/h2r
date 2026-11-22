@@ -2442,7 +2442,7 @@ mod tests {
         feed(&mut t, [5000], 0);
         let r = t.report(Finish::bare(End::TickLimit));
         assert_eq!(t.detail(), Detail::Training);
-        assert_eq!(r.state_digest_v1.unwrap().ticks, 1);
+        assert_eq!(r.state_digest_v1.as_ref().unwrap().ticks, 1);
         // It survives the JSON round trip.
         let back: Report = serde_json::from_value(serde_json::to_value(&r).unwrap()).unwrap();
         assert_eq!(back.state_digest_v1.map(|d| d.ticks), Some(1));
