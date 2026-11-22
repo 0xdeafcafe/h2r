@@ -2743,8 +2743,8 @@ is `$H2_RENDER_OVERRIDES`, else `render-overrides` in the cache directory.
 | `render.toggle` | act | none, `{name, on}` | lists, sets (`on: null` resets) a toggle |
 
 All three edit writes check the session at the game boundary. Co-op, clients,
-external Live, film playback and unknown sessions refuse writes. A System Link
-host with remote peers requires `confirm_peers` equal to the current total peer
+matchmade or other-hosted Live games, film playback and unknown sessions
+refuse writes. A System Link or Live custom game host with remote peers requires `confirm_peers` equal to the current total peer
 count. A client can pass `known_epoch:null` to `edit.map` to include the loaded
 tag datums in `loaded`, then send its cached epoch to receive the table only
 after a cut. An epoch pins a write or field read to the map reported by `edit.map`.
@@ -3467,8 +3467,10 @@ exclude these object edits.
 
 These methods share the tick and session checks of `sim.state.set` and
 the peer-count confirmation of `edit.batch` (`confirm_peers` on a System
-Link host with other machines). An unknown multiplayer peer count or an
-external Live session refuses the request before queueing. Send the
+Link host with other machines). An unknown multiplayer peer count, a Live
+matchmade game or a Live game another console hosts refuses the request
+before queueing (a Live custom game this console hosts is a host like a
+System Link one). Send the
 `epoch` from `edit.map` to pin a request to that edit session. At dispatch
 and again on the game thread before the engine call, a stale `epoch`
 returns `INVALID_REQUEST` with “the map epoch changed”, as for a tag
@@ -3587,8 +3589,11 @@ that grew into the edit arena; it is absent until the arena exists.
   peers less the host and the phantoms that have joined
   (`Bots::joined_phantoms`). The refusal's `data` carries `people`, `peers`
   and `phantoms`. A transaction that leaves the count alone (a move, a
-  relink) is not refused for peers. Matchmaking and Live games are
-  refused by the external Live check before any method runs.
+  relink) is not refused for peers. A Live custom game this console hosts
+  follows the same rule. Matchmaking, a client and an unreadable Live session
+  are refused before any method runs, by the Live edit check
+  (`agent_glue::live_edit_refusal`, installed with `Agent::set_live_edit_probe`);
+  without that probe every Live game is refused.
 - **Not reverted by `edit.revert`.** Objects were made and deleted: the
   editor sends the inverse transaction.
 

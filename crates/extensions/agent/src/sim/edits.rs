@@ -205,7 +205,7 @@ impl Sim {
         }
         let lifetime = ctx.edit_lifetime();
         let epoch = ctx.epoch;
-        let live = ctx.live_session;
+        let (live, live_edit) = (ctx.live_session, ctx.live_edit);
         let probe = Arc::clone(&self.probe);
         let params = params.clone();
         Ok(Box::new(move |m| {
@@ -214,8 +214,8 @@ impl Sim {
             if current_epoch != epoch || EditIdentity::read(m)? != identity {
                 return Err(refused("the active map or session changed before the edit"));
             }
-            if live.is_some_and(|probe| probe(m)) {
-                return Err(refused("external Live session"));
+            if let Some(why) = crate::exec::live_edit_refusal(live, live_edit, m) {
+                return Err(refused(why));
             }
             let current = read_session(&probe, m);
             if current.kind != session.kind
@@ -230,10 +230,9 @@ impl Sim {
     }
 
     fn edit(&mut self, name: &str, v: Value, ctx: &mut GameCtx<'_>, input: &Mutex<crate::Input>) -> R {
-        if let Some(probe) = ctx.live_session
-            && ctx.read_guest(probe)?
-        {
-            return Err(refused("external Live session"));
+        let (live, live_edit) = (ctx.live_session, ctx.live_edit);
+        if let Some(why) = ctx.read_guest(|m| crate::exec::live_edit_refusal(live, live_edit, m))? {
+            return Err(refused(why));
         }
         let session = self.host_write(ctx)?;
         let check = self.edit_check(session.clone(), &v, ctx)?;

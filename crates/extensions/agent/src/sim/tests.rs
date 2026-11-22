@@ -1279,6 +1279,47 @@ fn placement_edits_gate_the_queue_like_the_object_edits() {
     assert!(!super::calls::lock(&q).has_pending());
 }
 
+/// The Live gate is the live-edit probe's when boot installs one: a Live
+/// custom game this console hosts passes it (the checks after it are the
+/// System Link host's), and matchmaking, a client and an unreadable session
+/// give their reasons. Without the probe, every Live game is refused.
+#[test]
+fn the_live_edit_probe_decides_which_live_games_take_edits() {
+    for name in [method::PLACEMENT_EDIT, method::OBJECT_DELETE] {
+        let params = if name == method::OBJECT_DELETE {
+            json!({"id": "bad"})
+        } else {
+            json!({"block": "scenery", "was_count": 1, "count": 1})
+        };
+        let (h, q) = with_calls();
+        let mut g = game();
+        *h.kind.lock().unwrap() = SessionKind::MpHost;
+        h.agent.set_live_session_probe(|_| true);
+        let e = h.err(&mut g, name, params.clone());
+        assert_eq!(e["message"], "external Live session", "{name}: no edit probe");
+
+        h.agent.set_live_edit_probe(|_| None);
+        let e = h.err(&mut g, name, params.clone());
+        let message = e["message"].as_str().unwrap_or_default();
+        assert!(
+            !message.contains("Live") && !message.contains("matchmaking"),
+            "{name}: a Live custom host passes the gate: {e}"
+        );
+
+        h.agent.set_live_edit_probe(|_| Some("a matchmaking game"));
+        let e = h.err(&mut g, name, params.clone());
+        assert_eq!((e["code"].as_i64(), e["message"].as_str()), (Some(REFUSED), Some("a matchmaking game")));
+        h.agent.set_live_edit_probe(|_| Some("a Live game another console hosts"));
+        let e = h.err(&mut g, name, params.clone());
+        assert_eq!(e["message"], "a Live game another console hosts");
+        // A Live client is the session kind's refusal, whatever the probe says.
+        h.agent.set_live_edit_probe(|_| None);
+        *h.kind.lock().unwrap() = SessionKind::MpClient;
+        assert_eq!(h.err(&mut g, name, params)["code"], code::INVALID_REQUEST);
+        assert!(!super::calls::lock(&q).has_pending());
+    }
+}
+
 #[test]
 fn object_edits_check_the_callers_epoch_again_before_the_engine_call() {
     for (name, mut params) in edit_requests().into_iter().take(3) {

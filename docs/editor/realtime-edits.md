@@ -414,9 +414,10 @@ Plain integers keep `render-bridge` free of the agent's types.
 ## Rules and limits
 
 - **Sessions.** Every method refuses by `SessionKind::writes`
-  (`crates/extensions/agent-proto/src/sim/mod.rs`): local games and a
-  System Link host only; never co-op, a client, Theater, an unknown
-  session or external Live. On a System Link host with other machines,
+  (`crates/extensions/agent-proto/src/sim/mod.rs`): local games and the
+  host of a System Link or Live custom game; never co-op, a client,
+  Theater, an unknown session or matchmaking. On a host with other
+  machines,
   `confirm_peers` admits render geometry, pixels and collision, which stay
   local to the host as tag pokes do. A `world.placement.edit` that changes
   a count is refused there while other people are in the game: network
@@ -424,8 +425,12 @@ Plain integers keep `render-bridge` free of the agent's types.
   its own count (scenario-editor.md section 6). Phantom bots are not other
   people (bots.md section 5: each is a peer on the host's own simulation),
   so the host counts its peers less itself and the phantoms that have
-  joined, and allows the change when none are left. Matchmaking and Live
-  games are refused for every edit by the external Live check.
+  joined, and allows the change when none are left. A Live custom game
+  this console hosts is a host like a System Link one, with the same
+  prompt and the same people rule; the Live check
+  (`agent_glue::live_edit_refusal`) refuses matchmaking of any kind, a
+  Live game another console hosts, and a Live session it cannot read. The
+  live stream still refuses every Live game.
 - **Determinism.** Writes happen only before `game_tick`, never from the
   stream, a render hook or a worker. Film recording and playback exclude
   them, as they exclude object edits.
