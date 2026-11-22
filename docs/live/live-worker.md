@@ -85,6 +85,7 @@ Worker variables (`[vars]` in wrangler.toml) and secrets. The names are
 | `H2_LIVE_ADMINS` | variable | Admin gamertags, comma-separated. |
 | `H2_LIVE_INVITE_ONLY` | variable | `1`: account creation needs an invite. |
 | `H2_LIVE_PRIVATE` | variable | `1`: reads need a token too. |
+| `H2_LIVE_BUILD` | variable | The deployed commit, set by `deploy.sh` with `--var`. `/healthz` sends it as the `x-h2-build` header; the deploy check compares it. Unset on a deploy that bypasses the script. |
 | `H2_LIVE_GAME_ART_URL` | variable | Published game art, `<public bucket URL>/art/<stamp>` (what `h2 live assets publish` prints). `/art/game/*` redirects there and `/art/emblem/*` reads its manifest and masks. With it unset, both paths return 404 and the web app uses its own art pack. |
 
 A missing id or key, or a bad value, fails the hub's start. The request then
@@ -628,7 +629,9 @@ passes this config to Wrangler and removes its temporary copy on exit.
 5. **Host image.** The tag is a hash of the Dockerfile, the entrypoint
    and the Linux `h2` that `deploy/host/build.sh --h2` stages in
    `deploy/host/stage/h2`. A tag the registry lacks is built and pushed
-   (this needs Docker; without it the script stops and says so). Without
+   with a second tag, `git-<sha>` (the deployed commit's 12-digit sha),
+   and the script prints both tags. (Building needs Docker; without it
+   the script stops and says so.) Without
    a staged `h2` the script stops and says to stage one or pass
    `--no-hosts`. Skipped when the environment's lease cap is zero.
 6. **Bucket.** It creates the environment's R2 bucket if it is missing.
@@ -642,8 +645,19 @@ passes this config to Wrangler and removes its temporary copy on exit.
 
    The key goes to `wrangler secret put` on stdin, after the deploy (the
    Worker has to exist to hold it). It is never printed.
-8. **Deploy.** `wrangler deploy --env <env>`; its failure stops the script.
-9. **Health.** `/healthz` and the discovery document's id.
+8. **Deploy.** It first records the Worker version that is live
+   (`wrangler deployments list --json`), then runs `wrangler deploy --env
+   <env>` with `--var H2_LIVE_BUILD:<commit>` (the commit's full sha, with
+   `-dirty` when the tree has changes); its failure stops the script.
+9. **Health.** `/healthz` is polled for up to 60 seconds until it answers
+   200 with an `x-h2-build` header equal to the deployed commit
+   (`entry.rs` adds the header from `H2_LIVE_BUILD`). Then the discovery
+   document's id is printed. If the check never passes, the script runs
+   `wrangler rollback <previous version> --env <env>` and exits non-zero,
+   so the job fails. A rollback restores the Worker's code and variables;
+   secrets, R2 contents and Durable Object migrations stay as the deploy
+   left them. A first deploy has no earlier version, so it cannot roll
+   back.
 
 `--dry-run` builds and bundles without signing in or uploading.
 `--skip-build` deploys what `build/` and `web/dist` already hold.
@@ -651,7 +665,12 @@ passes this config to Wrangler and removes its temporary copy on exit.
 ### Deploy from CI
 
 `.github/workflows/live-deploy.yml` runs `deploy.sh production
---yes-production` on each push to master, and on demand. Before it, the
+--yes-production` after the CI workflow completes successfully for a push
+to master in this repository, and on demand. It checks out the commit CI
+tested (`workflow_run.head_sha`), not the branch tip, so a failed CI run
+deploys nothing and a newer push cannot slip in untested. The job runs in
+the `production` environment and in the `live-deploy` concurrency group,
+so two deploys never interleave (a queued one waits). Before the script, the
 job installs Rust from `rust-toolchain.toml`, Zig and cargo-zigbuild and
 runs `deploy/host/build.sh --h2`, so the deploy builds and pushes the
 host image for that commit's `h2` when the registry lacks its tag. The

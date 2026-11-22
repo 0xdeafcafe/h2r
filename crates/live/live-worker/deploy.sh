@@ -13,7 +13,7 @@
 # In order: the toolchain (a rustup of its own, so the machine's is left
 # alone), the web build, the wasm build, the Cloudflare sign-in, the R2
 # bucket, the server key (asked for only when the Worker has none), the
-# deploy, a health check. Each step says what it does first. The key is
+# deploy, a health check that rolls the Worker back when it fails. Each step says what it does first. The key is
 # never printed, logged or put on a command line.
 #
 # Options:
@@ -24,12 +24,20 @@
 #                      config with no container applications and LIVE_MAX_HOSTS
 #                      "0" (Live refuses host launches)
 #
+# Build id: the commit being deployed (git rev-parse HEAD, with -dirty when the
+# tree has changes) is set on the Worker as H2_LIVE_BUILD, and /healthz sends
+# it as x-h2-build. After the deploy the script waits up to 60 s for /healthz to
+# answer 200 with that build; if it does not, it runs `wrangler rollback` to the
+# version that was live before and exits non-zero. The Worker's code and vars go
+# back; secrets, R2 and Durable Object migrations do not.
+#
 # Host image: the containers run registry.cloudflare.com/<account>/h2-live-host
 # tagged with a hash of what the Dockerfile copies (the Dockerfile, the
 # entrypoint and the Linux h2 that deploy/host/build.sh --h2 stages in
 # deploy/host/stage/h2; CI stages it on every run). A tag the registry
 # already holds is deployed as it is, without Docker; a new one is built and
-# pushed first, which needs Docker running (colima start locally). The image
+# pushed first, which needs Docker running (colima start locally); a build is
+# also tagged with the git sha, and both tags are printed. The image
 # holds public code only: the game module comes with the private host-data
 # bundle. Without a staged h2 the deploy stops (or use --no-hosts).
 #
@@ -50,7 +58,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../../.." && pwd)
 
 usage() {
-    sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,54p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
 }
 
@@ -146,9 +154,14 @@ fi
 [ -f "$here/build/index.js" ] || die "no build/index.js: run without --skip-build"
 [ -f "$repo/web/dist/index.html" ] || die "no web/dist: run without --skip-build"
 
-vars=""
+build_id=$(git -C "$repo" rev-parse HEAD 2>/dev/null) || build_id=unknown
+if [ -n "$(git -C "$repo" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+    build_id="$build_id-dirty"
+fi
+git_sha=$(git -C "$repo" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
+vars="--var H2_LIVE_BUILD:$build_id"
 if [ "$env_name" = staging ] && [ -n "${H2_LIVE_PUBLIC_URL:-}" ]; then
-    vars="--var H2_LIVE_PUBLIC_URL:$H2_LIVE_PUBLIC_URL"
+    vars="$vars --var H2_LIVE_PUBLIC_URL:$H2_LIVE_PUBLIC_URL"
 fi
 
 if [ "$dry_run" = 1 ]; then
@@ -192,19 +205,20 @@ sys.exit(0 if any(i.get("name") == "h2-live-host" and tag in i.get("tags", []) f
         die "no staged Linux h2 (deploy/host/stage/h2): run deploy/host/build.sh --h2, or deploy with --no-hosts"
     host_tag=$(cd "$host_dir" && shasum -a 256 Dockerfile entrypoint.sh stage/h2 |
         shasum -a 256 | cut -c1-16)
-    step "host image: h2-live-host:$host_tag, from the staged h2"
+    step "host image: h2-live-host:$host_tag (content), h2-live-host:git-$git_sha (commit), from the staged h2"
     if in_registry "$host_tag"; then
-        echo "in the registry; deploying it without a build"
+        echo "in the registry; deploying it without a build (it was tagged git-<sha> when built)"
     else
         docker info >/dev/null 2>&1 ||
             die "h2-live-host:$host_tag is not in the registry and Docker is not running: start it (colima start) and run again"
         echo "not in the registry: building and pushing it"
-        wrangler containers build --push --tag "h2-live-host:$host_tag" "$host_dir"
+        wrangler containers build --push --tag "h2-live-host:$host_tag" \
+            --tag "h2-live-host:git-$git_sha" "$host_dir"
     fi
     image="registry.cloudflare.com/$account/h2-live-host:$host_tag"
     rm -f "$config"
     config=$(python3 "$here/host_capacity.py" --deploy-file --host-image "$image")
-    echo "containers run $image"
+    echo "containers run $image (commit $git_sha)"
 fi
 
 step "R2: bucket $bucket"
@@ -276,6 +290,23 @@ else
 fi
 
 # ---- deploy ----
+# The version live now, for the rollback. Empty on a first deploy (nothing to
+# go back to).
+prev_version=$(wrangler deployments list --env "$env_name" --json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    deployments = json.load(sys.stdin)
+    latest = max(deployments, key=lambda d: d.get("created_on", ""))
+    versions = latest.get("versions") or []
+    print(max(versions, key=lambda v: v.get("percentage", 0)).get("version_id", ""))
+except Exception:
+    pass
+' || true)
+if [ -n "$prev_version" ]; then
+    echo "deploy.sh: live now: Worker version $prev_version (the rollback target)"
+else
+    echo "deploy.sh: warning: no current Worker version found; a failed health check cannot roll back"
+fi
 step "deploy: wrangler deploy --env $env_name"
 log=$(mktemp "${TMPDIR:-/tmp}/h2-live-deploy.XXXXXX")
 # shellcheck disable=SC2086
@@ -291,17 +322,50 @@ if [ -n "$key" ]; then
     key=""
 fi
 
-step "health"
+step "health: /healthz must answer with build $build_id"
 base=$url
 [ "$env_name" = production ] && base="https://$server_id"
-if [ -n "$base" ]; then
-    echo "$base/healthz: $(curl -fsS "$base/healthz" 2>&1 || true)"
-    echo "$base/.well-known/h2live.json id: $(curl -fsS "$base/.well-known/h2live.json" 2>/dev/null |
-        sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
-    if [ "$env_name" = staging ] && [ -z "${H2_LIVE_PUBLIC_URL:-}" ]; then
-        echo "discovery names https://$server_id; to name $base, deploy again with H2_LIVE_PUBLIC_URL=$base"
+
+# rollback WHY: put the previous Worker version back and fail the deploy.
+rollback() {
+    printf 'deploy.sh: %s\n' "$1" >&2
+    if [ -n "$prev_version" ]; then
+        step "rollback: wrangler rollback $prev_version --env $env_name"
+        if wrangler rollback "$prev_version" --env "$env_name" --yes \
+            --message "deploy.sh: $build_id failed its health check"; then
+            die "rolled back to $prev_version; the deploy of $build_id failed"
+        fi
+        die "the rollback to $prev_version failed too: fix $env_name by hand (wrangler rollback)"
     fi
-else
-    echo "no workers.dev address in wrangler's output; check the dashboard"
+    die "no earlier version to roll back to; fix $env_name by hand"
+}
+
+if [ -z "$base" ]; then
+    [ "$env_name" = production ] || {
+        echo "no workers.dev address in wrangler's output; check the dashboard"
+        echo "deployed $env_name"
+        exit 0
+    }
+    rollback "no address to check"
+fi
+healthy=0
+seen=""
+tries=0
+while [ "$tries" -lt 20 ]; do
+    tries=$((tries + 1))
+    headers=$(curl -fsS --max-time 10 -D - -o /dev/null "$base/healthz" 2>/dev/null) || headers=""
+    seen=$(printf '%s\n' "$headers" | tr -d '\r' | awk -F': *' 'tolower($1) == "x-h2-build" { print $2; exit }')
+    if [ -n "$headers" ] && [ "$seen" = "$build_id" ]; then
+        healthy=1
+        break
+    fi
+    sleep 3
+done
+[ "$healthy" = 1 ] || rollback "$base/healthz did not answer 200 with build $build_id within 60s (last build seen: ${seen:-none})"
+echo "$base/healthz: ok, build $seen"
+echo "$base/.well-known/h2live.json id: $(curl -fsS "$base/.well-known/h2live.json" 2>/dev/null |
+    sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
+if [ "$env_name" = staging ] && [ -z "${H2_LIVE_PUBLIC_URL:-}" ]; then
+    echo "discovery names https://$server_id; to name $base, deploy again with H2_LIVE_PUBLIC_URL=$base"
 fi
 echo "deployed $env_name"
