@@ -498,6 +498,9 @@ fn the_reticle_locks_with_the_landing() {
     let landing = |verdict, speed| {
         Some(Predicted {
             at: [0.0; 3],
+            aim: [0.0; 2],
+            drift: [0.0; 2],
+            across: 0.0,
             verdict,
             speed,
             need: 5.0,

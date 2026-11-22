@@ -101,8 +101,9 @@ $TMPDIR/app-play-target/release/h2 play /abs/path/to/disc/halo2.iso
 
 The default `--tier auto` uses a matching clang module from `--out`
 (default `$TMPDIR/h2boot`). When the module is missing or its build stamp
-differs, `crates/runtime/recomp/src/tier.rs` selects the Cranelift image
-and starts the clang build in the background. The window banner
+differs, `crates/runtime/recomp/src/tier.rs` builds it before the window
+opens. `--tier bridge` (or `H2_TIER=bridge`) instead selects the Cranelift
+image and starts the clang build in the background. The window banner
 (`play_cmd::tier_banner`) reports when the full-speed build is ready
 or has failed. Restart to use the finished clang build.
 

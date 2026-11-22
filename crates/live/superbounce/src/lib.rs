@@ -235,9 +235,15 @@ pub struct Spot {
     /// Where a player stands to use it, a unit's origin: for a bounce, the
     /// aim point, on the edge (a slot's over the middle of its two
     /// joints' overlap; a crease's at its middle; a busy point's on its
-    /// vertex), or a learned line's aim ([`learned::apply`]); for a
+    /// vertex), or, when [`Spot::landed`], a measured landing; for a
     /// crouch spot, inside the forced-crouch place.
     pub stand: Vec3,
+    /// Bounce: `stand` is a landing a run measured, where the origin came
+    /// down on a bounce: the map's verified landing ([`verified::land`])
+    /// or, with none, a learned line's aim ([`learned::apply`]). It is
+    /// the point to come down on as it is; a scan's `stand` is on the
+    /// edge, and nothing says where beside it a landing works best.
+    pub landed: bool,
     /// Bounce only: a measured drop (world units) onto the strip; 0 when
     /// none is measured, which is every scanned spot. Crouch spots: 0.
     pub fall: f32,
@@ -258,7 +264,8 @@ pub struct Spot {
     /// are the bots' list, `crates/live/bots/src/glitches/spots.rs`). A
     /// map's verified file ([`verified::apply`]) makes either kind
     /// `Proven` or `Failed`; a learned file's line ([`learned::apply`])
-    /// moves a bounce spot's aim, never its status.
+    /// and a verified landing ([`verified::land`]) move a bounce spot's
+    /// aim, never its status.
     pub status: Status,
     /// Crouch: the unit direction (X and Y) from `stand` to the standing
     /// room next to it, the way out. Bounce spots: zero.

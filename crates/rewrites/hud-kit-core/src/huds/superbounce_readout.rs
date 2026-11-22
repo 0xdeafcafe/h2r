@@ -29,7 +29,7 @@
 
 use crate::model::{Anchor, Art, Describe, Element, Font, Hud, Justify, Kind, Place, Value, Values};
 
-use super::superbounce::{DISTANCE_LONGEST, distance_text};
+use super::superbounce::{DISTANCE_LONGEST, PILL_COLUMN, PILL_FULL, distance_text};
 
 pub const NAME: &str = "superbounce-readout";
 
@@ -63,10 +63,11 @@ pub fn arrow(angle: f32) -> char {
     char::from_u32(ARROW_UP as u32 + step).unwrap_or(ARROW_UP)
 }
 
-/// The rows' left edge: 8 pixels right of the motion tracker's rim
-/// (`rects::TRACKER`, x 47 to 130), from the frame's bottom-left corner
-/// (48, 444).
-pub const LEFT: i16 = 90;
+/// The rows' left edge, from the frame's bottom-left corner (48, 444):
+/// right of the charge pill's column (`superbounce::PILL_FULL`, from the
+/// frame's left edge too: 8 pixels right of the motion tracker's rim,
+/// `rects::TRACKER`, x 47 to 130), at screen x 171.
+pub const LEFT: i16 = PILL_FULL.0 + PILL_COLUMN;
 /// The rows' tops from the frame's bottom: y 376, 397 and 418 fullscreen,
 /// a line of font 6 (21) apart, the last ending 5 above the frame's foot.
 pub const SPEED_UP: i16 = -68;
@@ -88,6 +89,9 @@ pub const INFO_LONGEST: &str = "No bounce: on seam at 88.8 m/s";
 pub const NEXT_LONGEST: &str = "1 \u{e2b1} 888 m  2 \u{e2b1} 888 m";
 /// The steer line when the coasting landing is caught.
 pub const ON_SEAM: &str = "On seam";
+/// The steer line's word after the arrow when a caught landing wants its
+/// drift.
+pub const DRIFT: &str = "Drift";
 
 /// The largest speed and distance shown.
 pub const SPEED_MAX: f32 = 99.9;
@@ -116,6 +120,9 @@ pub enum Steer {
     /// Off it: the way to push against the aim (radians clockwise from
     /// straight ahead) and how far, metres.
     Off { heading: f32, metres: f32 },
+    /// Within the catch, coming down still or against the way a bounce
+    /// on it drifts: the way to drift, against the aim.
+    Drift { heading: f32 },
 }
 
 /// A fall toward a seam.
@@ -151,6 +158,29 @@ pub struct Next {
     pub metres: f32,
 }
 
+/// Which kinds of seam the target navpoints are on: the variant's
+/// `targets` option, or the player's switch of it in the game
+/// (docs/game/superbounce.md, "Targets").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kinds {
+    Common,
+    Likely,
+    All,
+}
+
+impl Kinds {
+    pub const EVERY: [Kinds; 3] = [Kinds::Common, Kinds::Likely, Kinds::All];
+}
+
+/// The line that says which kinds the player has just switched to.
+pub fn kinds_text(k: Kinds) -> &'static str {
+    match k {
+        Kinds::Common => "Targets: common",
+        Kinds::Likely => "Targets: likely",
+        Kinds::All => "Targets: all",
+    }
+}
+
 /// How many ranked seams the line lists: as many as the readout has
 /// target navpoints ([`TARGETS`]).
 pub const NEXT: usize = 2;
@@ -165,6 +195,9 @@ pub struct View {
     /// first. With any, the line is theirs and not the miss's, the fall
     /// row is the best one's, and the target navpoints are on them.
     pub next: [Option<Next>; NEXT],
+    /// The kinds of seam the player has just switched the targets to:
+    /// while set, the line says so ([`kinds_text`]) and nothing else.
+    pub kinds: Option<Kinds>,
     /// Metres to the tagged seam.
     pub tag: Option<f32>,
     /// Metres to each reachable seam marked, nearest first.
@@ -203,6 +236,7 @@ pub fn steer_text(s: &Steer) -> String {
             let m = if metres.is_finite() { metres.clamp(0.0, STEER_MAX) } else { 0.0 };
             format!("{} {m:.2} m", arrow(*heading))
         }
+        Steer::Drift { heading } => format!("{} {DRIFT}", arrow(*heading)),
     }
 }
 
@@ -279,7 +313,12 @@ pub fn values(v: &View) -> Values {
     out.set(STEER, text(v.fall.map(|f| steer_text(&f.steer))));
     out.set(
         INFO,
-        text(next_text(&v.next).or_else(|| v.info.as_ref().map(miss_text))),
+        text(
+            v.kinds
+                .map(|k| kinds_text(k).to_owned())
+                .or_else(|| next_text(&v.next))
+                .or_else(|| v.info.as_ref().map(miss_text)),
+        ),
     );
     out.set(TAG, nav(v.tag));
     out.set(TARGET_1, nav(v.targets[0]));
@@ -329,6 +368,15 @@ pub fn views() -> Vec<(&'static str, View)> {
             ),
         ),
         ("falling-on-seam", fall(1.0, Steer::OnSeam)),
+        (
+            "falling-wants-drift",
+            fall(
+                1.0,
+                Steer::Drift {
+                    heading: 2.0 * FRAC_PI_4,
+                },
+            ),
+        ),
         ("miss-not-primed", miss(Miss::NotPrimed)),
         ("miss-missed", miss(Miss::Missed { by: 0.31 })),
         ("miss-too-slow", miss(Miss::TooSlow { had: 12.4, need: 16.5 })),
@@ -390,6 +438,15 @@ pub fn views() -> Vec<(&'static str, View)> {
             },
         ),
         (
+            "targets-switched",
+            View {
+                speed: Some(running),
+                kinds: Some(Kinds::All),
+                targets: [Some(6.0), Some(9.0)],
+                ..View::default()
+            },
+        ),
+        (
             "tagged",
             View {
                 tag: Some(34.0),
@@ -444,8 +501,9 @@ mod tests {
         assert!(Readout.multiplayer_only().is_some());
     }
 
-    /// Fullscreen only, bottom left, right of the tracker and clear of the
-    /// middle of the screen; the rows a line apart.
+    /// Fullscreen only, bottom left, right of the tracker and of the charge
+    /// pill's column, clear of the middle of the screen; the rows a line
+    /// apart, the first level with the pill's top.
     #[test]
     fn the_rows_are_bottom_left_and_fullscreen_only() {
         let h = hud();
@@ -453,15 +511,16 @@ mod tests {
             assert_eq!(e.at.anchor, Anchor::BottomLeft, "{}", e.id);
             assert_eq!((e.at.half, e.at.quarter), (None, None), "{}", e.id);
             let (x, y) = (48 + e.at.full.0, 444 + e.at.full.1);
-            assert!(x >= 138, "{}: right of the tracker's rim at 130", e.id);
+            assert!(x >= 171, "{}: right of the pill's column, x 138 to 165", e.id);
             assert!((376..444).contains(&y), "{}: under the tracker's top, in the frame", e.id);
         }
         let top = |id: &str| 444 + h.element(id).unwrap().at.full.1;
         assert_eq!((top(SPEED), top(STEER), top(INFO)), (376, 397, 418));
         // The bar is in the steer row, left of its text.
         let bar = h.element(FALL).unwrap().at.full;
-        assert_eq!((48 + bar.0, 444 + bar.1), (138, 403));
-        assert_eq!(48 + h.element(STEER).unwrap().at.full.0, 138 + 64 + 6);
+        assert_eq!((48 + bar.0, 444 + bar.1), (171, 403));
+        assert_eq!(48 + h.element(STEER).unwrap().at.full.0, 171 + 64 + 6);
+        assert_eq!(SPEED_UP, PILL_FULL.1 - super::super::superbounce::FRAME_HEIGHT);
         assert_eq!(h.arts().len(), 2, "the strip and the navpoints' arrow");
     }
 
@@ -564,6 +623,30 @@ mod tests {
         assert_eq!(shown("second-bounce-lined-up", TARGET_2), None);
     }
 
+    /// The switch's line names the kinds, takes the row from the ranked
+    /// line and the miss line while it is up, and is no longer than the
+    /// row's longest.
+    #[test]
+    fn the_switch_line_names_the_kinds() {
+        assert_eq!(
+            Kinds::EVERY.map(kinds_text),
+            ["Targets: common", "Targets: likely", "Targets: all"]
+        );
+        for k in Kinds::EVERY {
+            assert!(kinds_text(k).chars().count() <= INFO_LONGEST.chars().count());
+        }
+        let v = View {
+            info: Some(Miss::NotPrimed),
+            next: [Some(Next { heading: 0.0, metres: 4.0 }), None],
+            kinds: Some(Kinds::Common),
+            ..View::default()
+        };
+        assert_eq!(values(&v).get(INFO).unwrap().text, "Targets: common");
+        assert_eq!(shown("targets-switched", INFO).unwrap(), "Targets: all");
+        assert_eq!(shown("targets-switched", TARGET_2).unwrap(), "9");
+        assert_eq!(shown("targets", INFO), None);
+    }
+
     #[test]
     fn the_navpoints_show_with_their_distance() {
         assert_eq!(shown("targets", TARGET_1).unwrap(), "9");
@@ -601,6 +684,10 @@ mod tests {
         };
         assert_eq!(steer_text(&off).chars().count(), longest(STEER));
         assert!(ON_SEAM.chars().count() <= longest(STEER));
+        let drift = steer_text(&Steer::Drift { heading: FRAC_PI_2 });
+        assert_eq!(drift, "\u{e2b2} Drift");
+        assert!(drift.chars().count() <= longest(STEER));
+        assert_eq!(shown("falling-wants-drift", STEER).unwrap(), drift);
         for m in [
             Miss::NotPrimed,
             Miss::Missed { by: 1e9 },

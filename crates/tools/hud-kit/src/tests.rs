@@ -233,12 +233,40 @@ fn the_readout_passes_beside_the_superbounce_hud() {
         assert!(drawn("falling-off-seam", mode).is_empty(), "{mode:?}");
         assert!(drawn("tagged", mode).is_empty(), "{mode:?}");
     }
-    // Right of the tracker, under its top, left of the screen's middle
+    // Right of the tracker and the pill, under its top, left of the middle
     // third's far edge.
     for id in [readout::FALL, readout::SPEED, readout::STEER] {
         let d = shot("falling-off-seam", Mode::Full).element(id).unwrap();
         let rect = d.rect.unwrap();
-        assert!(rect.x0 >= 138.0 && rect.y0 >= 376.0 && rect.y1 <= 445.0, "{id}: {rect:?}");
+        assert!(rect.x0 >= 171.0 && rect.y0 >= 376.0 && rect.y1 <= 445.0, "{id}: {rect:?}");
+    }
+}
+
+/// The combined preview (`h2 hud preview superbounce-all`) in every screen
+/// mode: no part of the block is drawn without the rest. The readout has
+/// no half or quarter place, so the combined HUD has none either, and a
+/// split frame draws none of its widgets.
+#[test]
+fn the_combined_preview_draws_no_part_of_the_block_alone() {
+    use crate::huds::superbounce_all::All;
+    let mut src = synthetic();
+    let r = check::all(&mut src, &[&All], &Mode::ALL).unwrap();
+    let modes: Vec<_> = r.of(Check::Modes).collect();
+    assert!(modes.is_empty(), "{modes:#?}");
+    let hud = All.hud();
+    for s in r.shots.iter().filter(|s| s.mode != Mode::Full) {
+        for d in s.elements.iter().filter(|d| d.drawn) {
+            let e = hud.element(d.id).unwrap();
+            assert!(e.kind.is_channel(), "{} {:?}: {}", s.state, s.mode, d.id);
+        }
+    }
+    let full = r
+        .shots
+        .iter()
+        .find(|s| s.mode == Mode::Full && s.state == "3-primed-targets")
+        .unwrap();
+    for id in [superbounce::PILL, superbounce::CHARGE] {
+        assert!(full.element(id).unwrap().drawn, "{id}");
     }
 }
 
@@ -311,31 +339,38 @@ fn the_synthetic_sheet_draws_and_passes() {
         ]
     );
     let at = |id| s.element(id).unwrap().rect.unwrap().pixels();
-    // The pill is the grenade row's next: the panel at x 0 under the
-    // top-left anchor (48, 36), the frag pill its last 50 pixels (from
-    // 53), and one count step (53) on. The body is its first 20 pixels,
-    // the end its last 7 against the body, the panel's height.
-    let (sx, sy) = (
-        synthetic::COUNTS[0].0 - synthetic::COUNTS[1].0,
-        synthetic::COUNTS[0].1 - synthetic::COUNTS[1].1,
+    // Fullscreen the pill is at the bottom left, right of the tracker and
+    // under the arming bar, placed from the top-left anchor (48, 36): cut
+    // from the frag pill, the body its first 20 pixels, the end its last
+    // 7 against the body, the panel's height.
+    let left = 48 + i32::from(superbounce::PILL_FULL.0);
+    let top = 36 + i32::from(superbounce::PILL_FULL.1);
+    assert_eq!(
+        crate::rects::BOTTOM_LEFT[1],
+        36 + superbounce::FRAME_HEIGHT
     );
-    let left = 48 + i32::from(synthetic::PANEL_AT.0 + sx + sx);
-    let top = 36 + i32::from(synthetic::PANEL_AT.1 + sy);
     let h = i32::from(synthetic::PANEL_SIZE.1);
     let (body, end) = (i32::from(PILL_BODY), i32::from(PILL_END));
-    assert_eq!(left, 154);
+    assert_eq!((left, top), (138, 376));
     assert_eq!(at(superbounce::PILL), [left, top, left + body, top + h]);
     assert_eq!(
         at(superbounce::PILL_END),
         [left + body, top, left + body + end, top + h]
     );
-    // The icon where the next count would be, by the count's own rule
-    // (centred: half its width, rounded down, left of the point).
+    // The icon where a pill's count is in its pill, by the count's own
+    // rule (centred: half its width, rounded down, left of the point).
     let icon = s.element(superbounce::PILL_ICON).unwrap().rect.unwrap();
     let point = [
-        48.0 + f32::from(synthetic::COUNTS[0].0 + sx),
-        36.0 + f32::from(synthetic::COUNTS[0].1 + sy),
+        (left + i32::from(superbounce::ICON_AT.0)) as f32,
+        (top + i32::from(superbounce::ICON_AT.1)) as f32,
     ];
+    assert_eq!(
+        superbounce::ICON_AT,
+        (
+            synthetic::COUNTS[1].0 - synthetic::PANEL_AT.0,
+            synthetic::COUNTS[1].1 - synthetic::PANEL_AT.1
+        )
+    );
     let size = render::text_size(None, Font::Hud.engine(), superbounce::ICON_TEXT);
     assert_eq!(
         icon,
@@ -370,6 +405,21 @@ fn the_synthetic_sheet_draws_and_passes() {
     assert!(!d.drawn && d.hidden.as_deref() == Some("no half screen offset"));
     let h = half("primed-full");
     assert!(h.element(superbounce::PILL).unwrap().drawn);
+    // In split screen the pill is the grenade row's next: one count step
+    // past the frag pill, under the frame's top-left corner.
+    let (sx, sy) = (
+        synthetic::COUNTS[0].0 - synthetic::COUNTS[1].0,
+        synthetic::COUNTS[0].1 - synthetic::COUNTS[1].1,
+    );
+    let hf = Frame::for_mode(Mode::Half);
+    let split = h.element(superbounce::PILL).unwrap().rect.unwrap().pixels();
+    assert_eq!(
+        [split[0], split[1]],
+        [
+            i32::from(hf.left + synthetic::PANEL_AT.0 + sx + sx),
+            i32::from(hf.top + synthetic::PANEL_AT.1 + sy)
+        ]
+    );
     assert!(h.element(superbounce::CHARGE).unwrap().drawn);
     assert!(h.element(superbounce::NAVPOINT).unwrap().drawn);
     // In every split frame the navpoint's stack stays inside the frame
@@ -810,8 +860,8 @@ fn the_charge_meter_is_the_strips_end_under_the_pill() {
 }
 
 /// The arming bar is the scoreboard's `bomb_defusal`, uncropped (its
-/// `hud_input1` the fill), where retail draws it: centred 110 under the
-/// frame's centre; drawn in the recipe's states at their fills.
+/// `hud_input1` the fill), at the bottom left over the pill; drawn in the
+/// recipe's states at their fills.
 #[test]
 fn the_arming_bar_is_assaults_bottom_left_with_the_readout() {
     let mut src = synthetic();
@@ -832,13 +882,24 @@ fn the_arming_bar_is_assaults_bottom_left_with_the_readout() {
             .clone()
     };
     let frame = Frame::for_mode(Mode::Full);
-    let centre = frame.anchor_point(4).unwrap();
+    let corner = frame.anchor_point(1).unwrap();
     let rect = arm("held").rect.unwrap();
     assert_eq!([rect.width(), rect.height()], [140.0, 13.0]);
-    // Bottom left with the readout, above its speed row.
+    // Bottom left with the readout, above the pill and the speed row.
     let (x, y) = superbounce::ARM_FULL;
-    assert_eq!(rect.x0 + rect.width() / 2.0, centre[0] + f32::from(x));
-    assert_eq!(rect.y0 + rect.height() / 2.0, centre[1] + f32::from(y));
+    assert_eq!(rect.x0 + rect.width() / 2.0, corner[0] + f32::from(x));
+    assert_eq!(rect.y0 + rect.height() / 2.0, corner[1] + f32::from(y));
+    let pill = r
+        .shots
+        .iter()
+        .find(|s| s.state == "held")
+        .unwrap()
+        .element(superbounce::PILL)
+        .unwrap()
+        .rect
+        .unwrap();
+    assert_eq!(rect.x0, pill.x0);
+    assert!(rect.y1 <= pill.y0, "{rect:?} {pill:?}");
     assert!(arm("held").drawn && arm("near").drawn && arm("primed-ending").drawn);
     assert_eq!(arm("under").fill, Some(superbounce::FILL_UNDER));
     assert_eq!(arm("held").fill, Some(superbounce::FILL_HELD));

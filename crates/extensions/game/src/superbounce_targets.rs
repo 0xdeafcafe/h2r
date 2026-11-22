@@ -12,6 +12,9 @@
 //!   ([`choose`]).
 //! - Holding the flashlight while aiming at a target tags it; holding on
 //!   the tagged one clears it ([`Tagger`], [`aimed`]).
+//! - Two taps of the flashlight switch the classes shown, for this game:
+//!   common, likely, all and round again, from the option's value
+//!   ([`Switch`]).
 //!
 //! The marks are drawn by Halo 2's own HUD: the HUD kit's navpoints of
 //! the superbounce readout ([`crate::superbounce_readout`]). This module
@@ -311,6 +314,71 @@ impl Tagger {
     }
 }
 
+/// Two taps of the flashlight let go within this many ticks of each
+/// other are a double tap: 12 ticks is 0.4 s.
+pub const DOUBLE_TICKS: u32 = 12;
+/// Ticks the readout's line says which kinds the player switched to: two
+/// seconds.
+pub const SWITCHED_TICKS: u32 = 60;
+
+/// The player's switch of the kinds of seam shown, and the flashlight's
+/// double tap that makes it. The flashlight is the mode's one action: the
+/// game binds it on every input set and layout, a multiplayer biped's
+/// light is back as it was after two taps, a tap is the bounce view's
+/// pulse and a hold its marks and the tag, so a double tap takes nothing
+/// from play. The switch lasts the game: a new one starts from the
+/// variant's `targets` option.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Switch {
+    button: Button,
+    /// Ticks since a tap that a second can pair with.
+    since: Option<u32>,
+    pick: Option<TargetMode>,
+    shown: u32,
+}
+
+impl Switch {
+    pub const fn new() -> Switch {
+        Switch {
+            button: Button::UP,
+            since: None,
+            pick: None,
+            shown: 0,
+        }
+    }
+
+    /// One tick: `down` is the flashlight action, `from` the variant's
+    /// mode. A double tap moves the mode on ([`TargetMode::next`]), from
+    /// the player's last pick or from `from`. The mode in effect after
+    /// the tick.
+    pub fn step(&mut self, down: bool, from: TargetMode) -> TargetMode {
+        self.shown = self.shown.saturating_sub(1);
+        if let Some(n) = self.since {
+            self.since = (n < DOUBLE_TICKS).then_some(n + 1);
+        }
+        match self.button.step(down) {
+            Some(Press::Tap) => {
+                if self.since.take().is_some() {
+                    self.pick = Some(self.pick.unwrap_or(from).next());
+                    self.shown = SWITCHED_TICKS;
+                } else {
+                    self.since = Some(0);
+                }
+            }
+            // A hold is the tag's and the bounce view's.
+            Some(Press::HoldStart | Press::HoldEnd) => self.since = None,
+            None => {}
+        }
+        self.pick.unwrap_or(from)
+    }
+
+    /// The mode the player switched to, for [`SWITCHED_TICKS`] after the
+    /// double tap: the readout's line.
+    pub fn switched(&self) -> Option<TargetMode> {
+        self.pick.filter(|_| self.shown > 0)
+    }
+}
+
 // ---- the running game ----
 
 /// The chosen strip with the tag: while the mode's navpoint is on a strip
@@ -348,6 +416,8 @@ pub struct Input<'a> {
     /// The whole scan, the map's files applied
     /// (`superbounce_mode::scanned_spots`).
     pub scanned: &'a Arc<Vec<Spot>>,
+    /// The variant's `targets` option: the mode until the player
+    /// switches it ([`Switch`]).
     pub mode: TargetMode,
     pub position: Option<Vec3>,
     pub aim: Option<Vec3>,
@@ -366,11 +436,13 @@ struct Kept {
 
 struct Live {
     tagger: Tagger,
+    switch: Switch,
     kept: Option<Kept>,
 }
 
 static LIVE: Mutex<Live> = Mutex::new(Live {
     tagger: Tagger::new(),
+    switch: Switch::new(),
     kept: None,
 });
 
@@ -378,21 +450,23 @@ fn live() -> std::sync::MutexGuard<'static, Live> {
     LIVE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// The mode's tick: classes the scan (once per scan, file generation and
-/// mode) and steps the tag. The tag after the tick.
+/// The mode's tick: steps the player's switch of the kinds shown, classes
+/// the scan (once per scan, file generation and mode) and steps the tag.
+/// The tag after the tick.
 pub fn step(i: &Input<'_>) -> Option<Vec3> {
     let mut l = live();
+    let mode = l.switch.step(i.down, i.mode);
     let generation = bots::spots::generation();
     let fresh = l.kept.as_ref().is_some_and(|k| {
-        Arc::ptr_eq(&k.scanned, i.scanned) && k.generation == generation && k.mode == i.mode
+        Arc::ptr_eq(&k.scanned, i.scanned) && k.generation == generation && k.mode == mode
     });
     if !fresh {
         let lines = i.map.map(bots::spots::learned_for).unwrap_or_default();
         l.kept = Some(Kept {
             scanned: Arc::clone(i.scanned),
             generation,
-            mode: i.mode,
-            targets: Arc::new(targets(i.scanned, &lines, i.mode)),
+            mode,
+            targets: Arc::new(targets(i.scanned, &lines, mode)),
         });
     }
     let list = l
@@ -425,10 +499,22 @@ pub fn current() -> Arc<Vec<Target>> {
         .unwrap_or_default()
 }
 
-/// Forgets the tag and the list: a new game, or the mode off.
+/// The kinds of seam shown now: the variant's option, or the player's
+/// switch of it. `None` before the mode's first tick.
+pub fn mode() -> Option<TargetMode> {
+    live().kept.as_ref().map(|k| k.mode)
+}
+
+/// The mode the player has just switched to ([`Switch::switched`]).
+pub fn switched() -> Option<TargetMode> {
+    live().switch.switched()
+}
+
+/// Forgets the tag, the switch and the list: a new game, or the mode off.
 pub fn reset() {
     let mut l = live();
     l.tagger = Tagger::new();
+    l.switch = Switch::new();
     l.kept = None;
 }
 
@@ -719,6 +805,57 @@ mod tests {
         );
         assert_eq!(aimed(at, [0.0, 0.0, 0.0], &list), None);
         assert_eq!(aimed(at, [f32::NAN, 0.0, 0.0], &list), None);
+    }
+
+    /// Two taps of the flashlight within [`DOUBLE_TICKS`] move the mode
+    /// on from the variant's, round the cycle; one tap, two far apart and
+    /// a hold do not. The line is up [`SWITCHED_TICKS`].
+    #[test]
+    fn a_double_tap_switches_the_kinds_shown() {
+        let from = TargetMode::Likely;
+        let tap = |s: &mut Switch, gap: u32| {
+            for _ in 0..gap {
+                s.step(false, from);
+            }
+            s.step(true, from);
+            s.step(true, from);
+            s.step(false, from)
+        };
+        let mut s = Switch::new();
+        assert_eq!(s.step(false, from), TargetMode::Likely);
+        assert_eq!(tap(&mut s, 0), TargetMode::Likely, "one tap");
+        assert_eq!(s.switched(), None);
+        assert_eq!(tap(&mut s, 3), TargetMode::All, "the second, soon after");
+        assert_eq!(s.switched(), Some(TargetMode::All));
+        // The pair is spent: a third tap starts a new one.
+        assert_eq!(tap(&mut s, 3), TargetMode::All);
+        assert_eq!(tap(&mut s, 3), TargetMode::Common);
+        assert_eq!(tap(&mut s, 20), TargetMode::Common);
+        assert_eq!(tap(&mut s, 3), TargetMode::Likely);
+        // The pick stays whatever the variant says; the line goes.
+        assert_eq!(s.step(false, TargetMode::All), TargetMode::Likely);
+        for _ in 0..SWITCHED_TICKS {
+            s.step(false, from);
+        }
+        assert_eq!(s.switched(), None);
+        // Two taps too far apart are two single taps.
+        let mut s = Switch::new();
+        tap(&mut s, 0);
+        assert_eq!(tap(&mut s, DOUBLE_TICKS), TargetMode::Likely);
+        // A hold between two taps breaks the pair, and is no tap itself.
+        let mut s = Switch::new();
+        tap(&mut s, 0);
+        for _ in 0..TAP_TICKS {
+            s.step(true, from);
+        }
+        s.step(false, from);
+        assert_eq!(tap(&mut s, 0), TargetMode::Likely);
+        // Unswitched, the mode is the variant's.
+        assert_eq!(Switch::new().step(false, TargetMode::Common), TargetMode::Common);
+        assert_eq!(
+            [TargetMode::Common, TargetMode::Likely, TargetMode::All].map(TargetMode::next),
+            [TargetMode::Likely, TargetMode::All, TargetMode::Common]
+        );
     }
 
     #[test]

@@ -52,8 +52,13 @@ pub const PORT: u32 = 0;
 /// The strip's stand point must be within this horizontal distance (world
 /// units).
 pub const REACH_RADIUS: f32 = 3.0;
-/// Aim this far before the stand point along the drift (world units).
+/// Aim this far before the stand point along the drift (world units), on
+/// a strip with no measured landing ([`aim_at`]).
 pub const AIM_BACK: f32 = 0.1;
+/// The least speed along a strip's drift a landing wants (units/s): the
+/// slowest of the recorded bounces, which all came down moving across the
+/// seam along the drift at 0.3 to 1.3 ([`wants_drift`]).
+pub const DRIFT_MIN: f32 = 0.3;
 /// Cross the strip at this speed along the drift (units/s).
 pub const ARRIVE_SPEED: f32 = 0.8;
 /// Gravity (units/s²): the 4.15 that fits the traced jump, the speed
@@ -149,7 +154,8 @@ pub fn drift_unit(drift: [f32; 2]) -> [f32; 2] {
 pub struct Reach {
     /// Seconds to touchdown on the strip's height.
     pub time: f32,
-    /// The point to cross: the strip's point ([`stand_near`]), [`AIM_BACK`]
+    /// The point to cross ([`aim_at`]): the strip's point
+    /// ([`stand_near`]) when it is a measured landing, else [`AIM_BACK`]
     /// before it along the drift.
     pub aim: [f32; 2],
     /// The velocity to cross it at: [`ARRIVE_SPEED`] along the drift.
@@ -261,6 +267,40 @@ pub fn stand_near(spot: &Spot, xy: [f32; 2]) -> Vec3 {
     [p[0] + off[0], p[1] + off[1], p[2] + off[2]]
 }
 
+/// The point to come down on, X and Y, for `point` of `spot`'s stand line
+/// ([`stand_near`]): the one landing point the assist steers to and the
+/// readout's line-up points at (docs/game/superbounce.md, "The landing
+/// point").
+///
+/// - A measured landing (`Spot::landed`: the verified file's, or a
+///   learned line's aim) is the point as it is.
+/// - A scan's stand is on the edge: the point is [`AIM_BACK`] before it
+///   along the drift, the side the landing comes from. A V's arm has its
+///   own drift, away from the side it is approached from, so each arm's
+///   point is on its approach side.
+pub fn aim_at(spot: &Spot, point: Vec3) -> [f32; 2] {
+    if spot.landed {
+        return [point[0], point[1]];
+    }
+    let dir = drift_unit(spot.drift);
+    [point[0] - AIM_BACK * dir[0], point[1] - AIM_BACK * dir[1]]
+}
+
+/// The speed along `spot`'s drift of a body moving `v` (X and Y), units a
+/// second; 0 for a strip with no drift.
+pub fn across(spot: &Spot, v: [f32; 2]) -> f32 {
+    let dir = drift_unit(spot.drift);
+    v[0] * dir[0] + v[1] * dir[1]
+}
+
+/// Whether a landing on a strip with the drift `drift`, coming down at
+/// `across` along it, still wants a push that way: the strip has a drift
+/// and the speed along it is under [`DRIFT_MIN`] (still, or moving
+/// against it).
+pub fn wants_drift(drift: [f32; 2], across: f32) -> bool {
+    drift_unit(drift) != [0.0; 2] && (across.is_nan() || across < DRIFT_MIN)
+}
+
 /// The reach cone for a falling `body` ([`falling`]) and a bounce spot:
 /// the point of the strip to land on and how to get there, or why not.
 ///
@@ -292,7 +332,7 @@ pub fn judge(body: &Body, spot: &Spot, ground: &Ground<'_>) -> Result<(Vec3, Rea
         return Err(Refusal::Far);
     }
     let dir = drift_unit(spot.drift);
-    let aim = [point[0] - AIM_BACK * dir[0], point[1] - AIM_BACK * dir[1]];
+    let aim = aim_at(spot, point);
     let arrive = [ARRIVE_SPEED * dir[0], ARRIVE_SPEED * dir[1]];
     let miss = (aim[0] - landing[0]).hypot(aim[1] - landing[1]);
     if miss.is_nan() || miss > 0.5 * AIR_ACCEL * time * time + HOLD_SLACK {
@@ -654,6 +694,9 @@ pub fn predict_on(
     };
     Some(Predicted {
         at: [landing[0], landing[1], spot.stand[2]],
+        aim: aim_at(spot, stand_near(spot, landing)),
+        drift: drift_unit(spot.drift),
+        across: across(spot, v),
         verdict,
         speed: (vz * vz + 2.0 * GRAVITY * height).sqrt(),
         need: need_of(spot),
@@ -1796,6 +1839,68 @@ mod tests {
         let short = strip_along_x(-0.1, 0.1, 0.0, 0.0);
         assert_eq!(stand_near(&short, [0.09, 0.0]), short.stand);
         assert_eq!(stand_near(&s, [f32::NAN, 0.0]), s.stand);
+    }
+
+    /// The landing-point rule: a measured landing is aimed at as it is,
+    /// wherever the fall is along the strip; a scan's stand is led by
+    /// [`AIM_BACK`] on the side the drift comes from. The prediction
+    /// carries the same point, and the speed along the drift.
+    #[test]
+    fn the_aim_is_the_measured_landing_or_the_edge_led_on_the_approach_side() {
+        // Ascension's seam along x at y 4.000, drifting +y; the proven
+        // drop came down at (-10.457, 3.976).
+        let scan = Spot {
+            edge: [[-11.10, 4.0, -3.2], [-9.98, 4.0, -3.2]],
+            ..spot_at([-10.54, 4.0, -3.19], [0.0, 1.0])
+        };
+        let proven = Spot {
+            stand: [-10.457, 3.976, -3.19],
+            landed: true,
+            ..scan
+        };
+        let a = aim_at(&scan, scan.stand);
+        near(a[0], -10.54, 1e-5);
+        near(a[1], 4.0 - AIM_BACK, 1e-5);
+        assert_eq!(aim_at(&proven, proven.stand), [-10.457, 3.976]);
+        // The assist steers to it: 0.024 before the seam, not 0.1.
+        let body = falling([-10.457, 3.6, -0.8], [0.0; 3]);
+        let r = reach(&body, &proven).unwrap();
+        near(r.aim[0], -10.457, 1e-5);
+        near(r.aim[1], 3.976, 1e-5);
+        near(r.arrive[1], ARRIVE_SPEED, 1e-6);
+        near(reach(&body, &scan).unwrap().aim[1], 3.9, 1e-5);
+        // Along the strip the measured place across it is kept.
+        let along = aim_at(&proven, stand_near(&proven, [-10.0, 3.0]));
+        near(along[0], -10.155, 1e-4);
+        near(along[1], 3.976, 1e-5);
+        // The prediction's aim and drift are the same.
+        let p = predict(&[proven], &falling([-10.457, 3.6, -0.8], [0.0, 0.5, -1.0])).unwrap();
+        near(p.aim[1], 3.976, 1e-5);
+        assert_eq!(p.drift, [0.0, 1.0]);
+        near(p.across, 0.5, 1e-6);
+        // A V's arm drifts away from its approach side: its point is on
+        // that side of its stand.
+        let arm = spot_at([0.0, 0.3, 0.0], [0.0, 1.0]);
+        let mirror = spot_at([0.0, -0.3, 0.0], [0.0, -1.0]);
+        near(aim_at(&arm, arm.stand)[1], 0.3 - AIM_BACK, 1e-6);
+        near(aim_at(&mirror, mirror.stand)[1], -0.3 + AIM_BACK, 1e-6);
+    }
+
+    /// A landing wants a push along the drift while it comes down still
+    /// or against it, and none on a strip with no drift.
+    #[test]
+    fn a_landing_wants_the_drift_the_recorded_bounces_had() {
+        let s = spot_at([0.0; 3], [0.0, 2.0]);
+        near(across(&s, [3.0, 0.5]), 0.5, 1e-6);
+        near(across(&s, [3.0, -0.5]), -0.5, 1e-6);
+        assert!(wants_drift(s.drift, 0.0));
+        assert!(wants_drift(s.drift, -1.0));
+        assert!(wants_drift(s.drift, DRIFT_MIN - 0.01));
+        assert!(!wants_drift(s.drift, DRIFT_MIN));
+        assert!(!wants_drift(s.drift, 1.3));
+        assert!(wants_drift(s.drift, f32::NAN));
+        assert!(!wants_drift([0.0; 2], 0.0));
+        assert_eq!(across(&spot_at([0.0; 3], [0.0; 2]), [3.0, 0.5]), 0.0);
     }
 
     #[test]

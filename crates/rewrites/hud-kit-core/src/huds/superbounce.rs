@@ -1,15 +1,16 @@
 //! The superbounce HUD on the kit (docs/game/hud-kit.md, "The superbounce
 //! HUD on the kit"), made of things Halo 2 already draws:
 //!
-//! - a pill in the grenade row, the next one after the plasma and frag
-//!   pills: a short pill cut from the frag pill's own art (its body and
+//! - a pill at the bottom left, right of the motion tracker, in one
+//!   block with the arming bar over it and the readout's rows beside it:
+//!   a short pill cut from the frag pill's own art (its body and
 //!   its right end, without the frag "x" and picture), with a chevron
 //!   where a pill's count sits: lit while primed, inactive while not, dim
 //!   while the map is scanned, hidden on a map with no strips;
 //! - the charge meter under the pill, the energy sword's battery strip
 //!   cropped to the pill's width: how long the charge has left;
 //! - the arming bar, Assault's own (`ui\hud\scoreboard`'s
-//!   `bomb_defusal`, red, low in the middle): how far the player is
+//!   `bomb_defusal`, red, over the pill): how far the player is
 //!   through the recipe, with the primed ending, the run out when the
 //!   player leaves early and the blink when a charge is lost, moved on
 //!   wall time (`crate::motion`; [`ArmTrack`]);
@@ -84,28 +85,50 @@ pub const FILL_HELD: f32 = 2.0 / 3.0;
 /// in the scoreboard `nhdt` (V: `zanzibar.map`).
 pub const ARM_HUD: &str = "ui\\hud\\scoreboard";
 pub const ARM_WIDGET: &str = "bomb_defusal";
-/// Fullscreen, bottom left with the readout: right of the motion tracker,
-/// just above the readout's speed row (`superbounce_readout::SPEED_UP`),
-/// registered at its centre. The retail widget's own place is
-/// [`RETAIL_ARM_FULL`].
-pub const ARM_FULL: (i16, i16) = (-112, 121);
+/// The fullscreen HUD frame's height, 36 to 444: a point this far under
+/// the top-left anchor is on the bottom-left one.
+pub const FRAME_HEIGHT: i16 = 408;
+/// The bar's centre fullscreen, from the top-left anchor: the top of the
+/// block right of the motion tracker (x 138 to 278, y 355 to 368), over
+/// the pill and the readout's rows. The retail widget's own place is
+/// [`RETAIL_ARM_FULL`], from the centre: a centre-anchored widget stays
+/// mid-screen when the host pins the HUD's corners to a wide window's
+/// edges, and the tracker does not
+/// (docs/graphics/high-resolution.md, "HUD and UI").
+pub const ARM_FULL: (i16, i16) = (160, 325);
 /// The retail widget's fullscreen place: centre, 110 down (V).
 pub const RETAIL_ARM_FULL: (i16, i16) = (0, 110);
 /// The retail widget's split-screen place, 27 down (V): not ours.
 pub const RETAIL_ARM_SPLIT: (i16, i16) = (0, 27);
-/// Ours in split screen: 35 above the centre. Retail's 27 down puts the
-/// bar in the prompt line's box (the `retail` check), which our verbs
-/// fill while the bar is up, where retail's carrier has no prompt; under
-/// it the training box and the reticle take the rest of a 204-high frame.
-/// 35 up is clear of the prompt's first line (the frame's top plus 35, a
-/// line of font 5) and under the navpoint's arrow at its sample
-/// (docs/game/hud-kit.md, "The arming bar").
-pub const ARM_SPLIT: (i16, i16) = (0, -35);
-/// In a quarter view, [`ARM_SPLIT`]'s height 7 to the left: the quarter
-/// frame has no row free between the navpoint's arrow at its sample and
-/// the prompt's first line, and at the centre the bar's right end meets
-/// the arrow (x 198 to 203, the `overlap` check); 7 left clears it.
-pub const ARM_QUARTER: (i16, i16) = (-7, -35);
+/// Ours in half screen, from the top-left anchor: 35 above the frame's
+/// centre (the frame is 544 by 204). Retail's 27 under the centre puts
+/// the bar in the prompt line's box (the `retail` check), which our
+/// verbs fill while the bar is up, where retail's carrier has no prompt;
+/// under it the training box and the reticle take the rest of a 204-high
+/// frame. 35 up is clear of the prompt's first line (the frame's top
+/// plus 35, a line of font 5) and under the navpoint's arrow at its
+/// sample (docs/game/hud-kit.md, "The arming bar").
+pub const ARM_SPLIT: (i16, i16) = (272, 67);
+/// In a quarter view (272 by 204), [`ARM_SPLIT`]'s height, 7 left of the
+/// centre: the quarter frame has no row free between the navpoint's
+/// arrow at its sample and the prompt's first line, and at the centre
+/// the bar's right end meets the arrow (x 198 to 203, the `overlap`
+/// check); 7 left clears it.
+pub const ARM_QUARTER: (i16, i16) = (129, 67);
+/// The pill's top left fullscreen, from the top-left anchor: screen
+/// (138, 376), 8 right of the motion tracker and 8 under the arming bar,
+/// its top in line with the readout's speed row
+/// (`superbounce_readout::SPEED_UP`). In half and quarter screen the pill
+/// is the grenade row's next (`Origin::NextGrenadePill`), and the row's
+/// anchor is the top left: the one anchor the widget has.
+pub const PILL_FULL: (i16, i16) = (90, 340);
+/// The icon's point from the pill's top left: where a grenade pill's
+/// count is in its pill (V: the plasma count at (12, -1), its pill at
+/// (0, 0)).
+pub const ICON_AT: (i16, i16) = (12, -1);
+/// The readout's rows start this far right of the pill's left edge: the
+/// pill's width and a gap of 6.
+pub const PILL_COLUMN: i16 = PILL_BODY + model::PILL_END + 6;
 /// The game's word D bit that shows the retail bar: Assault arming (V:
 /// the widget's only show bit). Ours hides while it is set.
 pub const ASSAULT_ARMING_D: u16 = 0x400;
@@ -481,6 +504,15 @@ pub fn distance_text(m: f32) -> String {
     format!("{:.0}", m.clamp(0.0, 999.0))
 }
 
+/// A place of the pill's block: fullscreen `by` from the pill's top left
+/// beside the motion tracker ([`PILL_FULL`]); in half and quarter screen
+/// `split` from `origin` in the grenade row.
+const fn pill_place(by: (i16, i16), split: (i16, i16), origin: Origin) -> Place {
+    Place::new(Anchor::TopLeft, (PILL_FULL.0 + by.0, PILL_FULL.1 + by.1))
+        .split(split, split)
+        .split_from(origin)
+}
+
 /// The elements, in draw order.
 pub fn hud() -> Hud {
     Hud {
@@ -489,39 +521,30 @@ pub fn hud() -> Hud {
             Element::icon(
                 PILL,
                 Art::GrenadePill(PillPart::Body),
-                Place::in_grenade_row(Origin::NextGrenadePill),
+                pill_place((0, 0), (0, 0), Origin::NextGrenadePill),
             ),
             // The right end, against the body's right edge.
             Element::icon(
                 PILL_END,
                 Art::GrenadePill(PillPart::End),
-                Place {
-                    full: (PILL_BODY, 0),
-                    half: Some((PILL_BODY, 0)),
-                    quarter: Some((PILL_BODY, 0)),
-                    ..Place::in_grenade_row(Origin::NextGrenadePill)
-                },
+                pill_place((PILL_BODY, 0), (PILL_BODY, 0), Origin::NextGrenadePill),
             ),
             // Under the pill, as wide as it, in every mode the pill has.
             Element::meter(
                 CHARGE,
                 Art::StripMeterEnd(CHARGE_COLUMNS),
-                Place {
-                    full: (0, CHARGE_DOWN),
-                    half: Some((0, CHARGE_DOWN)),
-                    quarter: Some((0, CHARGE_DOWN)),
-                    ..Place::in_grenade_row(Origin::NextGrenadePill)
-                },
+                pill_place((0, CHARGE_DOWN), (0, CHARGE_DOWN), Origin::NextGrenadePill),
             ),
-            // Assault's arming bar, where retail draws it; it gives way to
-            // retail's own in an Assault game.
+            // Assault's arming bar, over the pill fullscreen and where
+            // split screen has room; it gives way to retail's own in an
+            // Assault game.
             Element::meter(
                 ARM,
                 Art::Widget {
                     hud: HudRef::Named(ARM_HUD),
                     name: ARM_WIDGET,
                 },
-                Place::new(Anchor::Centre, ARM_FULL)
+                Place::new(Anchor::TopLeft, ARM_FULL)
                     .split(ARM_SPLIT, ARM_QUARTER)
                     .registered([0.5, 0.5]),
             )
@@ -532,7 +555,7 @@ pub fn hud() -> Hud {
                 Font::Hud,
                 Justify::Centre,
                 ICON_TEXT,
-                Place::in_grenade_row(Origin::NextGrenadeCount),
+                pill_place(ICON_AT, (0, 0), Origin::NextGrenadeCount),
             )
             .over(PILL),
             Element::channel(
@@ -1164,6 +1187,42 @@ mod tests {
         assert!(Superbounce.multiplayer_only().is_some());
     }
 
+    /// Fullscreen the pill, its end, the strip and the icon are one block
+    /// beside the motion tracker, under the arming bar, placed from the
+    /// top-left anchor at the bottom left's points; in split screen they
+    /// are the grenade row's next pill, as its count.
+    #[test]
+    fn the_pill_is_beside_the_tracker_fullscreen_and_in_the_grenade_row_in_split_screen() {
+        let h = hud();
+        let at = |id: &str| {
+            let p = h.element(id).unwrap().at;
+            assert_eq!((p.anchor, p.origin), (Anchor::TopLeft, Origin::Anchor), "{id}");
+            assert_eq!(p.half, p.quarter, "{id}");
+            // From the bottom-left corner, as the readout's rows are.
+            ((p.full.0, p.full.1 - FRAME_HEIGHT), p.half.unwrap(), p.split_origin)
+        };
+        let pill = Some(Origin::NextGrenadePill);
+        assert_eq!(at(PILL), ((90, -68), (0, 0), pill));
+        assert_eq!(at(PILL_END), ((110, -68), (20, 0), pill));
+        assert_eq!(at(CHARGE), ((90, -47), (0, 21), pill));
+        assert_eq!(
+            at(PILL_ICON),
+            ((102, -69), (0, 0), Some(Origin::NextGrenadeCount))
+        );
+        assert!(h.uses_grenade_row());
+        let p = h.element(PILL).unwrap().at;
+        assert_eq!(p.origin_in(crate::Mode::Full), Origin::Anchor);
+        assert_eq!(p.origin_in(crate::Mode::Half), Origin::NextGrenadePill);
+        assert_eq!(p.origin_in(crate::Mode::Quarter), Origin::NextGrenadePill);
+        // The bar's bottom (its centre plus half of 13) is above the
+        // pill's top, and its left edge the pill's.
+        let arm = h.element(ARM).unwrap().at;
+        assert_eq!(arm.split_origin, None);
+        assert!(arm.full.1 + 7 < PILL_FULL.1);
+        assert_eq!(arm.full.0 - 70, PILL_FULL.0);
+        assert_eq!(PILL_COLUMN, 33);
+    }
+
     /// The arming bar: Assault's widget where retail draws it, giving way
     /// to retail's; the recipe's fills eased to, the ending primed, the
     /// run out on leaving, the blink on a loss; hidden elsewhere.
@@ -1180,11 +1239,18 @@ mod tests {
                 },
             }
         );
-        assert_eq!(e.at.anchor, Anchor::Centre);
+        // The top-left anchor: fullscreen the block's point at the
+        // bottom left; in split screen 35 above the frames' centres
+        // ((320, 120) of 48..592 by 18..222, (160, 120) of 24..296), 7
+        // left in a quarter.
+        assert_eq!(e.at.anchor, Anchor::TopLeft);
         assert_eq!(
             (e.at.full, e.at.half, e.at.quarter),
-            (ARM_FULL, Some((0, -35)), Some((-7, -35)))
+            ((160, 325), Some((272, 67)), Some((129, 67)))
         );
+        assert_eq!((48 + 160, 36 + 325), (208, 361));
+        assert_eq!((48 + 272, 18 + 67), (320, 120 - 35));
+        assert_eq!((24 + 129, 18 + 67), (160 - 7, 120 - 35));
         assert_eq!(e.at.registration, [0.5, 0.5]);
         assert_eq!(e.hide_when_d, 0x400);
         let arm = |s: &str| {

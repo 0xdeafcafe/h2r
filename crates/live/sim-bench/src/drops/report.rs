@@ -1,6 +1,6 @@
 //! The drops report (`drops.json`, `drops.md`; docs/runtime/sim.md, "Seam
 //! drops"): every run's records pooled, each target's bounce rate by
-//! height and across offset, and the three numbers the drops measure for
+//! height, across offset and carry, and the three numbers the drops measure for
 //! `superbounce`: the catch's half-width, the touchdown speed that
 //! bounces (`BOUNCE_SPEED`) and the launch per unit of speed over it
 //! (`EXCESS_GAIN`). Also the targets a run proved, for its verified file.
@@ -53,11 +53,14 @@ pub struct Speed {
     pub n: u32,
 }
 
-/// One height and across offset of a target.
+/// One height, across offset and carry of a target.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Cell {
     pub height: f32,
     pub across: f32,
+    /// The carry (units/s, X and Y; [`Record::carry`]).
+    #[serde(default, skip_serializing_if = "is_zero2")]
+    pub carry: [f32; 2],
     pub drops: u32,
     pub bounced: u32,
     pub no_bounce: u32,
@@ -178,6 +181,27 @@ pub struct Proven {
 
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+fn is_zero2(v: &[f32; 2]) -> bool {
+    v[0] == 0.0 && v[1] == 0.0
+}
+
+fn same2(a: [f32; 2], b: [f32; 2]) -> bool {
+    same(a[0], b[0]) && same(a[1], b[1])
+}
+
+fn cmp2(a: [f32; 2], b: [f32; 2]) -> std::cmp::Ordering {
+    a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1]))
+}
+
+/// A table column: an across offset and a carry.
+fn column(across: f32, carry: [f32; 2]) -> String {
+    if is_zero2(&carry) {
+        format!("{across:+.2}")
+    } else {
+        format!("{across:+.2} c {:+.2},{:+.2}", carry[0], carry[1])
+    }
 }
 
 fn bounced(r: &Record) -> bool {
@@ -392,13 +416,16 @@ pub fn summarize(runs: &[DropsRun]) -> DropsReport {
         for x in &mine {
             let i = match cells
                 .iter()
-                .position(|c| same(c.height, x.height) && same(c.across, x.across))
+                .position(|c| {
+                    same(c.height, x.height) && same(c.across, x.across) && same2(c.carry, x.carry)
+                })
             {
                 Some(i) => i,
                 None => {
                     cells.push(Cell {
                         height: x.height,
                         across: x.across,
+                        carry: x.carry,
                         ..Cell::default()
                     });
                     cells.len() - 1
@@ -416,7 +443,12 @@ pub fn summarize(runs: &[DropsRun]) -> DropsReport {
         for c in &mut cells {
             c.rate = rate(c.bounced, c.no_bounce);
         }
-        cells.sort_by(|a, b| a.height.total_cmp(&b.height).then(a.across.total_cmp(&b.across)));
+        cells.sort_by(|a, b| {
+            a.height
+                .total_cmp(&b.height)
+                .then(a.across.total_cmp(&b.across))
+                .then(cmp2(a.carry, b.carry))
+        });
         let (b, nb) = (count(Outcome::Bounced), count(Outcome::NoBounce));
         r.targets.push(TargetSummary {
             id: t.id.clone(),
@@ -484,7 +516,7 @@ fn opt(v: Option<f32>, digits: usize) -> String {
 }
 
 /// `drops.md`: the totals, the measured numbers, a line a target, and a
-/// height by across table for each target that bounced.
+/// height by across (and carry) table for each target that bounced.
 pub fn markdown(r: &DropsReport) -> String {
     let mut s = String::new();
     let _ = writeln!(s, "# Seam drops: {}\n", r.map);
@@ -604,39 +636,39 @@ pub fn markdown(r: &DropsReport) -> String {
     }
     for t in r.targets.iter().filter(|t| t.bounced > 0) {
         let mut heights: Vec<f32> = Vec::new();
-        let mut acrosses: Vec<f32> = Vec::new();
+        let mut columns: Vec<(f32, [f32; 2])> = Vec::new();
         for c in &t.cells {
             if !heights.iter().any(|h| same(*h, c.height)) {
                 heights.push(c.height);
             }
-            if !acrosses.iter().any(|a| same(*a, c.across)) {
-                acrosses.push(c.across);
+            if !columns.iter().any(|(a, k)| same(*a, c.across) && same2(*k, c.carry)) {
+                columns.push((c.across, c.carry));
             }
         }
         heights.sort_by(f32::total_cmp);
-        acrosses.sort_by(f32::total_cmp);
+        columns.sort_by(|a, b| a.0.total_cmp(&b.0).then(cmp2(a.1, b.1)));
         let _ = writeln!(
             s,
-            "\n### {} ({}, stand {:.3} {:.3} {:.3})\n\nbounced of measured, by height (rows) and across (columns); `x` prime lost, `-` none measured\n",
+            "\n### {} ({}, stand {:.3} {:.3} {:.3})\n\nbounced of measured, by height (rows) and across (columns, with the carry `c` in units/s when it has one); `x` prime lost, `-` none measured\n",
             t.id, t.shape, t.stand[0], t.stand[1], t.stand[2]
         );
         let _ = write!(s, "| height |");
-        for a in &acrosses {
-            let _ = write!(s, " {a:+.2} |");
+        for (a, k) in &columns {
+            let _ = write!(s, " {} |", column(*a, *k));
         }
         let _ = writeln!(s);
         let _ = write!(s, "|---:|");
-        for _ in &acrosses {
+        for _ in &columns {
             let _ = write!(s, "---:|");
         }
         let _ = writeln!(s);
         for h in &heights {
             let _ = write!(s, "| {h:.2} |");
-            for a in &acrosses {
+            for (a, k) in &columns {
                 let cell = t
                     .cells
                     .iter()
-                    .find(|c| same(c.height, *h) && same(c.across, *a));
+                    .find(|c| same(c.height, *h) && same(c.across, *a) && same2(c.carry, *k));
                 let txt = match cell {
                     Some(c) if c.bounced + c.no_bounce > 0 => {
                         format!("{}/{}", c.bounced, c.bounced + c.no_bounce)
