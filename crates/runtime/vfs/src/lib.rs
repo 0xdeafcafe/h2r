@@ -35,7 +35,8 @@ pub use dir_disc::{AnyDisc, DirDiscBackend, open_disc, open_disc_with_mapping};
 pub use disc::DiscBackend;
 pub use host::{HostBackend, METADATA_STALE, flush_pending_metadata};
 pub use map_override::{
-    MapGeneration, MapOverrideBackend, MapOverrideNotice, MapRebind, PreparedMapRebind, ReservedMapRebind,
+    MapGeneration, MapOverrideBackend, MapOverrideNotice, MapRebind, OverlaySummary,
+    PreparedMapRebind, RawOverlay, ReservedMapRebind,
 };
 pub use packages::{PackageBackend, Scope as PackageScope};
 pub use reads::PathReads;
@@ -210,6 +211,9 @@ pub struct Vfs {
     change_observer: Option<ChangeObserver>,
     /// [`Config::cache_seed`].
     cache_seed: Vec<PathBuf>,
+    /// The raw overlay reads serve through ([`RawOverlay::global`] unless
+    /// [`Vfs::set_raw_overlay`] gave another).
+    raw_overlay: Option<RawOverlay>,
 }
 impl Vfs {
     /// Additional logical bytes across the three host-backed cache partitions.
@@ -219,6 +223,27 @@ impl Vfs {
 
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Serves reads through `overlay` instead of the process's (tests).
+    pub fn set_raw_overlay(&mut self, overlay: RawOverlay) {
+        self.raw_overlay = Some(overlay);
+    }
+
+    fn raw_overlay(&self) -> &RawOverlay {
+        self.raw_overlay.as_ref().unwrap_or_else(|| RawOverlay::global())
+    }
+
+    /// The map `path` on `mount` is served as through the raw overlay: an
+    /// alias the hot-edit glue set for a cache slot file, while the overlay
+    /// holds that map (docs/editor/realtime-edits.md, "The edit overlay").
+    fn overlaid(&self, mount: usize, path: &str) -> Option<String> {
+        let overlay = self.raw_overlay();
+        if overlay.is_empty() {
+            return None;
+        }
+        let device = &self.mounts[mount].device;
+        overlay.aliased(&if path.is_empty() { device.clone() } else { format!("{device}\\{path}") })
     }
 
     /// Standard hard disk layout: mounts the device objects only (`\\Device\\Harddisk0\\PartitionN`)
@@ -942,6 +967,8 @@ impl Vfs {
         let result = if !file.options.access.contains(Access::READ)
             || file.options.access.0 & (Access::WRITE.0 | Access::APPEND.0) != 0 {
             Err("writable handle")
+        } else if self.overlaid(mount, &path).is_some() {
+            Err("raw overlay")
         } else if length < 16 * 4096 {
             Err("short read")
         } else if let Ok(Some(source)) = self.mounts[mount].backend.film_source(&path) {
@@ -988,7 +1015,10 @@ impl Vfs {
             return Err(Error::InvalidParameter);
         }
         let (mount, path) = (file.mount, file.path.clone());
-        let len = self.mounts[mount].backend.read_at(&path, at, buffer)?;
+        let mut len = self.mounts[mount].backend.read_at(&path, at, buffer)?;
+        if let Some(map) = self.overlaid(mount, &path) {
+            len = self.raw_overlay().apply(&map, at, buffer, len);
+        }
         if len == 0 && !buffer.is_empty() {
             return Err(Error::EndOfFile);
         }

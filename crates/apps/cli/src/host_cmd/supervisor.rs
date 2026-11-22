@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -35,7 +35,9 @@ pub(super) struct Options {
     base_port: u16,
     pack_control: Option<SocketAddr>,
     pub tunnel_listen: SocketAddr,
-    pub out: PathBuf,
+    /// The operator's own module directory (`--out`, `H2_IMAGE`); `None`
+    /// runs the module the verified bundle carries ([`image_dir`]).
+    pub out: Option<PathBuf>,
     pub data: Option<PathBuf>,
     pub film: Option<PathBuf>,
     pub archive: live_proto::hosts::HostArchive,
@@ -129,9 +131,7 @@ impl Options {
             pack_control: values.get("--pack-control").map(|s| s.parse()).transpose()
                 .context("--pack-control must be an IP address and port")?,
             tunnel_listen,
-            out: value("--out", "H2_IMAGE")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| std::env::temp_dir().join("h2boot")),
+            out: value("--out", "H2_IMAGE").map(PathBuf::from),
             data: value("--data", "H2_DATA").map(PathBuf::from),
             film: value("--film", "H2_FILM_OUT").map(PathBuf::from),
             archive: live_proto::hosts::HostArchive::parse(
@@ -242,6 +242,7 @@ fn drive(
         let detail = format!("{e:#}").replace(&opts.data_url, "<host data URL>");
         anyhow::anyhow!("provisioning verified host data: {detail}")
     })?;
+    let image = image_dir(opts.out.as_deref(), &disc, &opts.data_sha)?;
     if stopping() {
         return Ok(EndReason::Stopped);
     }
@@ -250,7 +251,7 @@ fn drive(
         let players = u8::try_from(lease.bots.len()).context("invalid leased sim bot count")?;
         let endpoint = live.endpoint(lease.transport.clone(), bind, None, None);
         live.register(&endpoint)?;
-        let game = game.insert(Game::spawn_sim(opts, live, lease, &disc)?);
+        let game = game.insert(Game::spawn_sim(opts, live, lease, &disc, &image)?);
         return sim_run::wait(game, live, players, &mut lifecycle.players_peak);
     }
 
@@ -258,7 +259,7 @@ fn drive(
         Transport::Udp => process::public_address(opts.base_port)?,
         Transport::Tunnel => None,
     };
-    let game = game.insert(Game::spawn(opts, live, lease, &disc, bind)?);
+    let game = game.insert(Game::spawn(opts, live, lease, &disc, &image, bind)?);
     let deadline = Instant::now() + BOOT_BUDGET;
     let Some(mut agent) = wait_for_menu(game, deadline)? else {
         return Ok(boot_end());
@@ -298,6 +299,62 @@ fn drive(
         live,
         lease_age(lease.created_ms),
         lifecycle,
+    )
+}
+
+/// The game module directory this host runs, checked before any child
+/// starts: the operator's `--out`/`H2_IMAGE` when given, else the verified
+/// bundle's `image/`. A bundle without a module, or a module whose stamp
+/// is not the one this h2 runs for the bundle's XBE (the check `h2 serve`
+/// makes, `boot::tier::plan_light`), stops the host with a named error;
+/// there is no other module to fall back to.
+fn image_dir(explicit: Option<&Path>, disc: &Path, data_sha: &str) -> Result<PathBuf> {
+    let (image, source) = match explicit {
+        Some(dir) => (dir.to_path_buf(), "--out/H2_IMAGE"),
+        None => {
+            let dir = host_data::bundled_image_dir(disc)
+                .context("reading the host data's game module")?
+                .with_context(|| {
+                    format!(
+                        "the host data bundle {data_sha} carries no game module (image/{}); \
+                         rebuild it with `h2 host bundle --image DIR` \
+                         (docs/live/dedicated-host-build.md#the-game-module) or set H2_IMAGE",
+                        host_data::IMAGE_FILES[0]
+                    )
+                })?;
+            (dir, "the host data bundle")
+        }
+    };
+    let xbe = boot::read_xbe(disc).context("reading the host data's default.xbe")?;
+    check_module(&xbe, &image, source)?;
+    Ok(image)
+}
+
+/// The child's own start check, made first: `h2 serve` runs clang's module
+/// unless `H2_TIER` says otherwise, and a light host also takes a slim one.
+fn check_module(xbe: &[u8], image: &Path, source: &str) -> Result<()> {
+    let choice = if std::env::var_os("H2_TIER").is_some_and(|v| !v.is_empty()) {
+        boot::tier::Choice::from_env()?
+    } else {
+        boot::tier::Choice::Clang
+    };
+    let plan = boot::tier::plan_light(xbe, image, choice);
+    if !plan.build {
+        return Ok(());
+    }
+    ensure!(
+        plan.dylib.is_file(),
+        "{source} has no game module at {}; build it with deploy/host/build.sh --module \
+         and bundle it (docs/live/dedicated-host-build.md#the-game-module)",
+        plan.dylib.display()
+    );
+    bail!(
+        "the game module from {source} ({}) was not built for this h2 and this disc: \
+         its stamp {} is not the one this h2 runs; rebuild the module with this revision \
+         (deploy/host/build.sh --module) and bundle it again \
+         (docs/live/dedicated-host-build.md#the-game-module)",
+        plan.dylib.display(),
+        boot::stamp_path(&plan.dylib).display()
     )
 }
 
@@ -497,11 +554,149 @@ mod tests {
         assert_eq!(opts.region.as_deref(), Some("lhr"));
         assert_eq!(opts.base_port, 31030);
         assert_eq!(opts.tunnel_listen.port(), 31120);
-        assert_eq!(opts.out, PathBuf::from("modules"));
+        assert_eq!(opts.out, Some(PathBuf::from("modules")));
         assert_eq!(opts.data, Some(PathBuf::from("state")));
         assert_eq!(opts.film, Some(PathBuf::from("retained.h2film")));
         assert_eq!(opts.archive, live_proto::hosts::HostArchive::Film);
         assert_eq!(opts.cache, PathBuf::from("cache"));
+    }
+
+    #[test]
+    fn without_out_or_h2_image_the_bundle_supplies_the_module() {
+        let env = |key: &str| {
+            Some(
+                match key {
+                    "H2_LEASE" => "hl-env",
+                    "H2_LIVE" => "https://live.example",
+                    "H2_TOKEN" => "token",
+                    "H2_DATA_URL" => "https://data.example/data",
+                    "H2_DATA_SHA" => "sha",
+                    _ => return None,
+                }
+                .to_owned(),
+            )
+        };
+        let opts = Options::parse_with(std::iter::empty(), env).unwrap();
+        assert_eq!(opts.out, None);
+    }
+
+    /// A built, verified bundle (the host-data crate's own builder and
+    /// provisioner), optionally carrying a module whose stamp is `stamp`.
+    fn provisioned(root: &Path, stamp: Option<&[u8]>) -> (PathBuf, String) {
+        let disc = root.join("disc");
+        std::fs::create_dir_all(disc.join("maps")).unwrap();
+        std::fs::write(disc.join("default.xbe"), b"XBEH synthetic").unwrap();
+        for (map, kind) in [("mainmenu", 2u32), ("shared", 3), ("single_player_shared", 4)] {
+            let mut bytes = vec![0u8; 0x800];
+            bytes[..4].copy_from_slice(b"daeh");
+            bytes[4..8].copy_from_slice(&8u32.to_le_bytes());
+            bytes[0x140..0x144].copy_from_slice(&kind.to_le_bytes());
+            bytes[0x198..0x198 + map.len()].copy_from_slice(map.as_bytes());
+            bytes[0x7fc..0x800].copy_from_slice(b"toof");
+            std::fs::write(disc.join(format!("maps/{map}.map")), bytes).unwrap();
+        }
+        let image = stamp.map(|stamp| {
+            let dir = root.join("image-out");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("libh2game.so"), b"synthetic module").unwrap();
+            std::fs::write(dir.join("libh2game.so.stamp"), stamp).unwrap();
+            dir
+        });
+        let out = root.join("bundle");
+        let built = host_data::build(&host_data::BundleSpec {
+            disc,
+            out: out.clone(),
+            stripped: None,
+            sim_stores: None,
+            bots: None,
+            image,
+            force: true,
+            zstd_level: 1,
+        })
+        .unwrap();
+        let sha = built.manifest.sha256;
+        let url = format!("file://{}", out.join(host_data::ARCHIVE_NAME).display());
+        let dir = host_data::provision(&url, &sha, &root.join("cache")).unwrap();
+        (dir, sha)
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("h2-host-image-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_bundle_without_a_module_is_a_named_error() {
+        let root = scratch("none");
+        let (disc, sha) = provisioned(&root, None);
+        let text = format!("{:#}", image_dir(None, &disc, &sha).unwrap_err());
+        assert!(text.contains(&format!("bundle {sha} carries no game module")), "{text}");
+        assert!(text.contains("--image"), "{text}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A module directory for this platform's module name, stamped `stamp`.
+    fn module_dir(root: &Path, name: &str, stamp: &[u8]) -> PathBuf {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(boot::DYLIB), b"synthetic module").unwrap();
+        std::fs::write(boot::stamp_path(&dir.join(boot::DYLIB)), stamp).unwrap();
+        dir
+    }
+
+    const OTHER_STAMP: &[u8] = b"xbe 0000000000000000 generator other\nhost coverage 0000000000000000\n";
+
+    #[test]
+    fn a_module_with_another_builds_stamp_is_refused() {
+        let root = scratch("stale");
+        let (disc, sha) = provisioned(&root, None);
+        let image = module_dir(&root, "stale-image", OTHER_STAMP);
+        let text = format!("{:#}", image_dir(Some(&image), &disc, &sha).unwrap_err());
+        assert!(text.contains("from --out/H2_IMAGE"), "{text}");
+        assert!(text.contains("not built for this h2 and this disc"), "{text}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_explicit_directory_without_a_module_is_refused() {
+        let root = scratch("explicit");
+        let (disc, sha) = provisioned(&root, None);
+        let empty = root.join("empty-image");
+        std::fs::create_dir_all(&empty).unwrap();
+        let text = format!("{:#}", image_dir(Some(&empty), &disc, &sha).unwrap_err());
+        assert!(text.contains("--out/H2_IMAGE has no game module"), "{text}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_module_stamped_for_this_h2_and_this_disc_is_used() {
+        let root = scratch("current");
+        let (disc, sha) = provisioned(&root, None);
+        let xbe = boot::read_xbe(&disc).unwrap();
+        let image = module_dir(&root, "current-image", boot::build_stamp(&xbe).as_bytes());
+        assert_eq!(image_dir(Some(&image), &disc, &sha).unwrap(), image);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The bundle's names are the Linux module's, so the bundled module
+    /// itself runs only on Linux.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_bundled_module_is_used_when_its_stamp_matches_and_refused_when_not() {
+        let root = scratch("bundled");
+        let xbe = b"XBEH synthetic".to_vec();
+        let (disc, sha) = provisioned(&root, Some(boot::build_stamp(&xbe).as_bytes()));
+        assert_eq!(image_dir(None, &disc, &sha).unwrap(), disc.join("image"));
+
+        let stale_root = scratch("bundled-stale");
+        let (disc, sha) = provisioned(&stale_root, Some(OTHER_STAMP));
+        let text = format!("{:#}", image_dir(None, &disc, &sha).unwrap_err());
+        assert!(text.contains("from the host data bundle"), "{text}");
+        assert!(text.contains("not built for this h2 and this disc"), "{text}");
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(stale_root);
     }
 
     #[test]

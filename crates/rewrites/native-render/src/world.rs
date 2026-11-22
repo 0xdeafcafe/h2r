@@ -329,6 +329,101 @@ impl World {
         }
         Some(run)
     }
+
+    /// Replace `owner`'s section with `section`, decoded again from the
+    /// edited map (docs/editor/realtime-edits.md, "The native refresh"):
+    /// every vertex as [`WorldBuilder::add_section`] builds it, placed as
+    /// when added, then the bounds of its draws and the world's
+    /// recomputed. A placement keeps the lightmap coordinates and
+    /// lighting vectors it has, which come from its lightmap bucket and
+    /// not its definition. Refused, changing nothing, when the vertex
+    /// count differs or a part this world draws has other triangles: the
+    /// index buffer is not rewritten, so the host reloads the world.
+    pub fn replace_section(&mut self, owner: Owner, section: &SectionInput) -> Result<SectionRun, SectionRefusal> {
+        let run = *self.section(owner).ok_or(SectionRefusal::NoSection)?;
+        let n = run.vertex_count as usize;
+        if section.positions.len() != n {
+            return Err(SectionRefusal::VertexCount);
+        }
+        let base = run.first_vertex;
+        let ranges = self
+            .draws
+            .iter()
+            .filter(|d| d.owner == owner)
+            .map(|d| (d.part, d.first_index, d.index_count))
+            .chain(self.transparents.iter().filter(|t| t.owner == owner).map(|t| (t.part, t.first_index, t.index_count)));
+        for (part, first, count) in ranges {
+            let Some(p) = section.parts.get(usize::from(part)) else {
+                return Err(SectionRefusal::Triangles);
+            };
+            let (kept, _) = part_indices(&p.triangles, n, base);
+            if self.indices.get(first as usize..(first + count) as usize) != Some(&kept[..]) {
+                return Err(SectionRefusal::Triangles);
+            }
+        }
+        let lit = section.lightmap_uvs.len() == n;
+        let keep_lighting = matches!(owner, Owner::Instance(_));
+        let programs = self.program_vertices.len() == self.vertices.len();
+        let first = base as usize;
+        for i in 0..n {
+            let (mut placed, mut program) = section_vertex(section, &run.place, lit, i);
+            if keep_lighting {
+                let old = self.vertices[first + i];
+                placed.lightmap_uv = old.lightmap_uv;
+                placed.lighting = old.lighting;
+                placed.packed = pack_frame(placed.normal, placed.binormal, placed.tangent, placed.lighting);
+                if programs {
+                    let old = self.program_vertices[first + i];
+                    program.lightmap_uv = old.lightmap_uv;
+                    program.lighting = old.lighting;
+                    program.packed = pack_frame(program.normal, program.binormal, program.tangent, program.lighting);
+                }
+            }
+            self.vertices[first + i] = placed;
+            if programs {
+                self.program_vertices[first + i] = program;
+            }
+        }
+        self.recompute_bounds(owner);
+        Ok(run)
+    }
+
+    /// Recompute the bounds of `owner`'s draws and transparent parts from
+    /// the vertices their indices name, and the world's from the draws,
+    /// as [`WorldBuilder::finish`] computes them.
+    pub fn recompute_bounds(&mut self, owner: Owner) {
+        let (vertices, indices) = (&self.vertices, &self.indices);
+        let bounds_of = |first: u32, count: u32| {
+            let mut b = Aabb::EMPTY;
+            for &v in &indices[first as usize..(first + count) as usize] {
+                b.add(vertices[v as usize].position);
+            }
+            b
+        };
+        for d in self.draws.iter_mut().filter(|d| d.owner == owner) {
+            d.bounds = bounds_of(d.first_index, d.index_count);
+        }
+        for t in self.transparents.iter_mut().filter(|t| t.owner == owner) {
+            t.bounds = bounds_of(t.first_index, t.index_count);
+        }
+        let mut all = Aabb::EMPTY;
+        for d in &self.draws {
+            all.add(d.bounds.min);
+            all.add(d.bounds.max);
+        }
+        self.bounds = (!all.is_empty()).then_some(all);
+    }
+}
+
+/// Why [`World::replace_section`] refused a section.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SectionRefusal {
+    /// The world has no section for the owner (it did not decode at load).
+    NoSection,
+    /// The vertex count changed.
+    VertexCount,
+    /// A part the world draws has other triangles, or is gone.
+    Triangles,
 }
 
 /// The three model rows `c[50..52]` (hardware numbering) the structure
@@ -354,6 +449,74 @@ pub fn model_rows(element: &[u8]) -> Option<ModelRows> {
         }
     }
     Some(rows)
+}
+
+/// A part's triangles as absolute indices from `base`, the ones with an
+/// index past the section's `n` vertices or a repeated corner left out,
+/// and how many were.
+fn part_indices(triangles: &[[u16; 3]], n: usize, base: u32) -> (Vec<u32>, u32) {
+    let mut kept = Vec::with_capacity(triangles.len() * 3);
+    let mut dropped = 0;
+    for t in triangles {
+        let bad = t.iter().any(|&i| usize::from(i) >= n) || t[0] == t[1] || t[1] == t[2] || t[0] == t[2];
+        if bad {
+            dropped += 1;
+            continue;
+        }
+        kept.extend(t.iter().map(|&i| base + u32::from(i)));
+    }
+    (kept, dropped)
+}
+
+/// Vertex `i` of `section` placed by `place` (what the lightmap pass and
+/// culling read) and as its streams hold it (what a material program
+/// reads), `lit` when the section has lightmap coordinates for every
+/// vertex. One rule for a load and a live edit's replacement
+/// ([`World::replace_section`]).
+fn section_vertex(section: &SectionInput, place: &Placement, lit: bool, i: usize) -> (WorldVertex, WorldVertex) {
+    let normal = section.normals.get(i).copied().unwrap_or([0.0, 0.0, 1.0]);
+    let turn = |v: &Vec<[f32; 3]>| v.get(i).map_or([0.0; 3], |&v| place.normal(v));
+    let own = |v: &Vec<[f32; 3]>| v.get(i).copied().unwrap_or([0.0; 3]);
+    let (binormal, tangent, lighting) = (own(&section.binormals), own(&section.tangents), own(&section.lighting));
+    let uv = section.uvs.get(i).copied().unwrap_or([0.0; 2]);
+    let lightmap_uv = if lit { section.lightmap_uvs[i] } else { [0.0; 2] };
+    let program = WorldVertex {
+        position: section.positions[i],
+        uv,
+        lightmap_uv,
+        normal,
+        binormal,
+        tangent,
+        lighting,
+        packed: pack_frame(normal, binormal, tangent, lighting),
+    };
+    let (placed_normal, placed_binormal, placed_tangent, placed_lighting) = (
+        place.normal(normal),
+        turn(&section.binormals),
+        turn(&section.tangents),
+        turn(&section.lighting),
+    );
+    let placed = WorldVertex {
+        // Unplaced geometry (a cluster) keeps its positions' bits: the D3D
+        // path feeds them to the same program, and the passes after layer
+        // 3 test depth equal against what it writes.
+        position: if *place == Placement::IDENTITY {
+            section.positions[i]
+        } else {
+            place.point(section.positions[i])
+        },
+        uv,
+        lightmap_uv,
+        normal: placed_normal,
+        binormal: placed_binormal,
+        tangent: placed_tangent,
+        // S: in the section's own space like the tangent frame, so it
+        // turns with the placement (the game's program dots the two
+        // together).
+        lighting: placed_lighting,
+        packed: pack_frame(placed_normal, placed_binormal, placed_tangent, placed_lighting),
+    };
+    (placed, program)
 }
 
 /// Collects sections, then sorts their draws into batches.
@@ -397,69 +560,22 @@ impl WorldBuilder {
             place: *place,
         });
         for i in 0..n {
-            let normal = section.normals.get(i).copied().unwrap_or([0.0, 0.0, 1.0]);
-            let turn = |v: &Vec<[f32; 3]>| v.get(i).map_or([0.0; 3], |&v| place.normal(v));
-            let own = |v: &Vec<[f32; 3]>| v.get(i).copied().unwrap_or([0.0; 3]);
-            let (binormal, tangent, lighting) = (own(&section.binormals), own(&section.tangents), own(&section.lighting));
-            self.program_vertices.push(WorldVertex {
-                position: section.positions[i],
-                uv: section.uvs.get(i).copied().unwrap_or([0.0; 2]),
-                lightmap_uv: if lit { section.lightmap_uvs[i] } else { [0.0; 2] },
-                normal,
-                binormal,
-                tangent,
-                lighting,
-                packed: pack_frame(normal, binormal, tangent, lighting),
-            });
-            let (placed_normal, placed_binormal, placed_tangent, placed_lighting) = (
-                place.normal(normal),
-                turn(&section.binormals),
-                turn(&section.tangents),
-                turn(&section.lighting),
-            );
-            self.vertices.push(WorldVertex {
-                // Unplaced geometry (a cluster) keeps its positions' bits:
-                // the D3D path feeds them to the same program, and the
-                // passes after layer 3 test depth equal against what it
-                // writes.
-                position: if *place == Placement::IDENTITY {
-                    section.positions[i]
-                } else {
-                    place.point(section.positions[i])
-                },
-                uv: section.uvs.get(i).copied().unwrap_or([0.0; 2]),
-                lightmap_uv: if lit { section.lightmap_uvs[i] } else { [0.0; 2] },
-                normal: placed_normal,
-                binormal: placed_binormal,
-                tangent: placed_tangent,
-                // S: in the section's own space like the tangent frame, so
-                // it turns with the placement (the game's program dots the
-                // two together).
-                lighting: placed_lighting,
-                packed: pack_frame(placed_normal, placed_binormal, placed_tangent, placed_lighting),
-            });
+            let (placed, program) = section_vertex(section, place, lit, i);
+            self.program_vertices.push(program);
+            self.vertices.push(placed);
         }
         for (index, part) in section.parts.iter().enumerate() {
             if part.transparent {
                 self.stats.transparent_parts += 1;
             }
             let first_index = self.indices.len() as u32;
+            let (kept, dropped) = part_indices(&part.triangles, n, base);
+            self.stats.dropped_triangles += dropped;
             let mut bounds = Aabb::EMPTY;
-            for t in &part.triangles {
-                let bad = t.iter().any(|&i| usize::from(i) >= n)
-                    || t[0] == t[1]
-                    || t[1] == t[2]
-                    || t[0] == t[2];
-                if bad {
-                    self.stats.dropped_triangles += 1;
-                    continue;
-                }
-                for &i in t {
-                    let v = base + u32::from(i);
-                    bounds.add(self.vertices[v as usize].position);
-                    self.indices.push(v);
-                }
+            for &v in &kept {
+                bounds.add(self.vertices[v as usize].position);
             }
+            self.indices.extend(kept);
             let index_count = self.indices.len() as u32 - first_index;
             if index_count == 0 {
                 continue;
@@ -693,6 +809,60 @@ mod tests {
         assert_eq!(w.vertices[..4], before[..]);
         assert!(w.set_section_vertices(Owner::Cluster(0), &moved[..3], None).is_none());
         assert!(w.set_section_vertices(Owner::Cluster(9), &moved, None).is_none());
+    }
+
+    /// A live edit's replacement leaves the world equal to one built from
+    /// the edited section: vertices, draw bounds and the world's bounds.
+    /// A placement keeps its bucket's lightmap coordinates; a changed
+    /// vertex count or triangle list is refused and changes nothing.
+    #[test]
+    fn a_replaced_section_equals_a_world_built_from_it() {
+        let place = Placement {
+            scale: 1.0,
+            basis: [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+            position: [10.0, 0.0, 0.0],
+        };
+        let build = |cluster: &SectionInput, instance: &SectionInput| {
+            let mut b = WorldBuilder::new();
+            b.add_section(Owner::Cluster(0), cluster, &Placement::IDENTITY, PAGE);
+            b.add_section(Owner::Instance(3), instance, &place, PAGE);
+            b.finish()
+        };
+        let mut edited = quad(0, false, true);
+        edited.positions[3] = [4.0, 5.0, 6.0];
+        edited.uvs[3] = [0.25, 0.75];
+        let mut w = build(&quad(0, false, true), &quad(0, false, true));
+        let want = build(&edited, &quad(0, false, true));
+        assert!(w.replace_section(Owner::Cluster(0), &edited).is_ok());
+        assert_eq!(w.vertices, want.vertices);
+        assert_eq!(w.program_vertices, want.program_vertices);
+        assert_eq!(w.draws, want.draws, "bounds recomputed");
+        assert_eq!(w.bounds, want.bounds);
+
+        // The placement's bucket coordinates stay; its definition's do not
+        // replace them.
+        let mut own = quad(0, false, true);
+        own.lightmap_uvs = vec![[0.125; 2]; 4];
+        let mut w = build(&quad(0, false, true), &own);
+        let mut def = edited.clone();
+        def.lightmap_uvs = vec![[0.9; 2]; 4];
+        let mut moved = edited.clone();
+        moved.lightmap_uvs = own.lightmap_uvs.clone();
+        let want = build(&quad(0, false, true), &moved);
+        assert!(w.replace_section(Owner::Instance(3), &def).is_ok());
+        assert_eq!(w.vertices, want.vertices);
+        assert_eq!(w.draws, want.draws);
+
+        let before = w.clone();
+        let mut fewer = quad(0, false, true);
+        fewer.positions.pop();
+        assert_eq!(w.replace_section(Owner::Cluster(0), &fewer), Err(SectionRefusal::VertexCount));
+        let mut turned = quad(0, false, true);
+        turned.parts[0].triangles = vec![[0, 2, 1], [1, 3, 2]];
+        assert_eq!(w.replace_section(Owner::Cluster(0), &turned), Err(SectionRefusal::Triangles));
+        assert_eq!(w.replace_section(Owner::Cluster(7), &edited), Err(SectionRefusal::NoSection));
+        assert_eq!(w.vertices, before.vertices);
+        assert_eq!(w.draws, before.draws);
     }
 
     /// Dropping a material's draws leaves one batch per run of what is

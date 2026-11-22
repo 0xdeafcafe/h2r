@@ -391,3 +391,163 @@ fn format_hands_the_widget_the_laid_out_text() {
     assert_eq!(ed.text, want);
     assert_eq!(ed.edit.is_some(), want != src);
 }
+
+#[test]
+fn open_in_editor_names_the_file_after_the_script() {
+    assert_eq!(script_file_name("Slayer (built in)"), "slayer.rules");
+    assert_eq!(script_file_name("King of the Hill (example)"), "king_of_the_hill.rules");
+    assert_eq!(script_file_name("mine.rules"), "mine.rules");
+    assert_eq!(script_file_name("Untitled"), "untitled.rules");
+    assert_eq!(script_file_name("a/b: c?"), "ab_c.rules");
+    assert_eq!(script_file_name(""), "script.rules");
+
+    let root = Path::new("/data");
+    let own = Path::new("/work/x.rules");
+    assert_eq!(external_path(Some(own), "Slayer (built in)", root, |_| true).as_path(), own, "its own file wins");
+    assert_eq!(
+        external_path(None, "Slayer (built in)", root, |_| false).as_path(),
+        Path::new("/data/scripts/slayer.rules")
+    );
+    let taken = [PathBuf::from("/data/scripts/slayer.rules"), PathBuf::from("/data/scripts/slayer-2.rules")];
+    assert_eq!(
+        external_path(None, "Slayer (built in)", root, |p| taken.iter().any(|t| t == p)).as_path(),
+        Path::new("/data/scripts/slayer-3.rules"),
+        "a name in use gets a number"
+    );
+}
+
+#[test]
+fn open_in_editor_tries_script_edit_then_the_users_editors() {
+    let file = Path::new("/s/x.rules");
+    let bin = |name: &str| Some(PathBuf::from(format!("/bin/{name}")));
+    let env = |k: &str| match k {
+        "VISUAL" => Some("subl -w".to_string()),
+        "EDITOR" => Some("vim".to_string()),
+        _ => None,
+    };
+    let got = editor_launches(file, env, bin, None, |_| false, true);
+    let commands: Vec<String> = got.iter().map(Launch::describe).collect();
+    assert_eq!(
+        commands,
+        [
+            "/bin/h2 script-edit /s/x.rules",
+            "subl -w /s/x.rules",
+            // vim needs a terminal: passed over.
+            "/bin/code /s/x.rules",
+            "/bin/zed /s/x.rules",
+            "open -t /s/x.rules",
+        ]
+    );
+
+    // No h2 on PATH: Cargo's; nothing else found and not macOS: only it.
+    let home = Path::new("/home/me");
+    let cargo_h2 = |p: &Path| p == Path::new("/home/me/.cargo/bin/h2");
+    let got = editor_launches(file, |_| None, |_| None, Some(home), cargo_h2, false);
+    let commands: Vec<String> = got.iter().map(Launch::describe).collect();
+    assert_eq!(commands, ["/home/me/.cargo/bin/h2 script-edit /s/x.rules"]);
+
+    // No h2 at all; $VISUAL and $EDITOR the same: tried once.
+    let env = |k: &str| matches!(k, "VISUAL" | "EDITOR").then(|| "code --wait".to_string());
+    let got = editor_launches(file, env, |_| None, Some(home), |_| false, true);
+    let commands: Vec<String> = got.iter().map(Launch::describe).collect();
+    assert_eq!(commands, ["code --wait /s/x.rules", "open -t /s/x.rules"]);
+
+    assert!(is_terminal_editor("/usr/bin/nvim") && is_terminal_editor("nano"));
+    assert!(!is_terminal_editor("code") && !is_terminal_editor("/usr/local/bin/zed"));
+    let dirs = program_dirs(Some("/a:/usr/local/bin::/b"));
+    assert_eq!(dirs, ["/a", "/usr/local/bin", "/b", "/opt/homebrew/bin"].map(PathBuf::from));
+    assert_eq!(find_program("zed", &dirs, |p| p == Path::new("/b/zed")), Some(PathBuf::from("/b/zed")));
+}
+
+#[test]
+fn a_started_editor_counts_as_open_once_it_succeeds_or_keeps_running() {
+    let early = Duration::from_millis(200);
+    assert_eq!(launch_step(None, early), LaunchStep::Wait);
+    assert_eq!(launch_step(None, LAUNCH_GRACE), LaunchStep::Done, "a GUI editor still running");
+    assert_eq!(launch_step(Some(true), early), LaunchStep::Done, "code and open exit at once");
+    assert_eq!(launch_step(Some(false), early), LaunchStep::Next, "an h2 without script-edit");
+}
+
+#[test]
+fn an_outside_save_comes_back_or_asks_when_both_changed() {
+    assert_eq!(disk_change("a", "a", "a"), DiskChange::Same);
+    assert_eq!(disk_change("b", "a", "b"), DiskChange::Same, "the file caught up with the buffer");
+    assert_eq!(disk_change("a", "a", "c"), DiskChange::Take);
+    assert_eq!(disk_change("b", "a", "c"), DiskChange::Ask);
+
+    // No unsaved edits: the buffer takes the file's text, saved.
+    let mut ed = RulesEditor::default();
+    let theirs = BLANK.replace("New game type", "Theirs");
+    assert_eq!(ed.disk_text(theirs.clone()), DiskPoll::Took);
+    assert_eq!(ed.text, theirs);
+    assert!(!ed.dirty() && ed.conflict.is_none());
+
+    // Unsaved edits here: asked, nothing lost until answered.
+    let mine = BLANK.replace("New game type", "Mine");
+    ed.text = mine.clone();
+    let newer = BLANK.replace("New game type", "Newer");
+    assert_eq!(ed.disk_text(newer.clone()), DiskPoll::Asked);
+    assert_eq!(ed.text, mine);
+    assert_eq!(ed.conflict.as_deref(), Some(newer.as_str()));
+    ed.keep_mine();
+    assert!(ed.conflict.is_none() && ed.text == mine && ed.dirty(), "kept, still unsaved");
+
+    assert_eq!(ed.disk_text(newer.clone()), DiskPoll::Asked);
+    assert!(ed.take_conflict());
+    assert_eq!(ed.text, newer);
+    assert!(!ed.dirty() && ed.conflict.is_none());
+    assert!(!ed.take_conflict(), "nothing left to take");
+
+    // The file catching up with the buffer just marks it saved.
+    ed.text = mine.clone();
+    assert_eq!(ed.disk_text(mine.clone()), DiskPoll::Nothing);
+    assert!(!ed.dirty());
+}
+
+#[test]
+fn the_watch_checks_once_a_second_and_sees_new_times() {
+    let t0 = Instant::now();
+    let then = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+    let later = then + Duration::from_secs(5);
+    let mut w = Watch::new(PathBuf::from("/x.rules"), Some(then));
+    assert!(w.due(t0));
+    assert!(!w.due(t0 + Duration::from_millis(500)));
+    assert!(w.due(t0 + WATCH_EVERY));
+    assert!(!w.changed(Some(then)));
+    assert!(w.changed(Some(later)));
+    assert!(!w.changed(Some(later)), "seen once");
+    assert!(!w.changed(None), "gone mid-save is no change");
+    assert!(w.changed(Some(later)), "back again is one");
+}
+
+#[test]
+fn open_in_editor_writes_the_script_and_watches_its_file() {
+    let root = std::env::temp_dir().join(format!("h2-editor-rules-ext-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut ed = RulesEditor::default();
+    ed.open_starter("slayer").unwrap();
+    let path = ed.prepare_external(&root).unwrap();
+    assert_eq!(path, root.join("scripts").join("slayer.rules"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), rules::builtin::SLAYER);
+    assert_eq!(ed.path.as_deref(), Some(path.as_path()));
+    assert!(!ed.dirty());
+    assert_eq!(ed.watch.as_ref().map(|w| w.path.clone()), Some(path.clone()));
+    assert_eq!(ed.poll_disk(Instant::now()), DiskPoll::Nothing, "unchanged");
+
+    // The outside editor saves: the next due poll takes it.
+    let theirs = rules::builtin::SLAYER.replace("Slayer", "Theirs");
+    std::fs::write(&path, &theirs).unwrap();
+    if let Some(w) = &mut ed.watch {
+        w.seen = Some(SystemTime::UNIX_EPOCH);
+        w.next = None;
+    }
+    assert_eq!(ed.poll_disk(Instant::now()), DiskPoll::Took);
+    assert_eq!(ed.text, theirs);
+
+    // A second open keeps the same file; opening another script stops
+    // the watch.
+    assert_eq!(ed.prepare_external(&root).unwrap(), path);
+    ed.open_starter("slayer").unwrap();
+    assert!(ed.watch.is_none());
+    std::fs::remove_dir_all(&root).unwrap();
+}

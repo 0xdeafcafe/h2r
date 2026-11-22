@@ -455,6 +455,74 @@ impl LitObjects {
         })
     }
 
+    /// Drop model `index`: its parts keep their D3D draws. A live edit
+    /// whose model no longer uploads takes it out rather than draw the
+    /// old geometry (docs/editor/realtime-edits.md, "The native refresh").
+    pub fn remove_model(&mut self, index: u32) -> bool {
+        self.models.remove(&index).is_some()
+    }
+
+    /// Each stage texture made from image `image` of `bitmap`, once, with
+    /// its stage and the channels stored biased there.
+    fn image_textures(&self, bitmap: map::TagId, image: u32) -> Vec<(wgpu::Texture, usize, [bool; 4])> {
+        let want = crate::look::Stage::Bitmap { bitmap, image };
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        let mut models: Vec<_> = self.models.iter().collect();
+        models.sort_by_key(|(k, _)| **k);
+        for (_, m) in models {
+            for program in &m.programs {
+                let p = &program.pass.program;
+                for (n, view) in &program.views {
+                    if program.pass.normalization[*n] || p.stages.get(*n) != Some(&want) {
+                        continue;
+                    }
+                    let t = view.texture().clone();
+                    if seen.insert(t.clone()) {
+                        out.push((t, *n, p.signed[*n]));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The stages whose programs sample image `image` of `bitmap`,
+    /// ascending, each once: what [`LitObjects::rewrite_image`] needs
+    /// decoded.
+    pub fn image_stages(&self, bitmap: map::TagId, image: u32) -> Vec<usize> {
+        let mut stages: Vec<usize> = self.image_textures(bitmap, image).into_iter().map(|(_, n, _)| n).collect();
+        stages.sort_unstable();
+        stages.dedup();
+        stages
+    }
+
+    /// Rewrite every stage texture made from image `image` of `bitmap` in
+    /// place with `decoded` (by stage), biased for its signed channels as
+    /// at upload. Every texture is checked before the first write; a size,
+    /// level count or format change refuses them all
+    /// (docs/editor/realtime-edits.md, "The native refresh"). Returns how
+    /// many textures were written.
+    pub fn rewrite_image(
+        &self,
+        queue: &wgpu::Queue,
+        bitmap: map::TagId,
+        image: u32,
+        decoded: &HashMap<usize, Image>,
+    ) -> Result<usize, crate::gpu::ImageRefusal> {
+        let mut writes = Vec::new();
+        for (t, n, signed) in self.image_textures(bitmap, image) {
+            let mut pixels = decoded.get(&n).ok_or(crate::gpu::ImageRefusal::NotDecoded)?.clone();
+            bias_signed(&mut pixels, signed);
+            crate::gpu::check_rewrite(&t, &pixels)?;
+            writes.push((t, pixels));
+        }
+        for (t, pixels) in &writes {
+            crate::gpu::rewrite_texture(queue, t, pixels)?;
+        }
+        Ok(writes.len())
+    }
+
     /// Whether model `index` has lit parts.
     pub fn has(&self, index: u32) -> bool {
         self.models.contains_key(&index)
