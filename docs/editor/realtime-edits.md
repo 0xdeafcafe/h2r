@@ -355,6 +355,11 @@ Wire types in `agent_proto::hot` and `agent_proto::sim::edits`, listed by
 or `{pixels: {tag, image, lod}}`; `offset` is from the start of the raw
 block or of the LOD chain. `target` is `{structure: tag}`,
 `{instance_def: {tag, index}}` or `{coll: {tag, region, permutation}}`.
+`blocks` names the eight collision blocks by the fields of
+`tags::collision::Bsp`, in block order (`nodes`, `planes`, `leaves`,
+`refs`, `nodes_2d`, `surfaces`, `edges`, `vertices`), each its elements'
+bytes as `Bsp::encode_blocks` lays them out
+(`collision_build::coll::stage_blocks`).
 `block` is a `placement::BLOCKS` name or `starting_locations`,
 `netgame_equipment`, `netgame_flags`, `starting_equipment`.
 
