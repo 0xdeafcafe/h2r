@@ -20,6 +20,13 @@
 //! text, and writes it back after a change ([`Rows::live_text`]), so the
 //! game's editor saves it with the record.
 //!
+//! **Script options.** A record that names a rules script (the block's
+//! mode 2 and hash prefix) gets one row per option of the script after the
+//! fixed rows ([`OptionRow`]; docs/game/rules-variants.md, "Editors and the
+//! IDE"). A step writes that option's field in the block's 32 option bits
+//! and keeps every other byte of the block. A record with no script, or a
+//! script this machine lacks, has the fixed rows only.
+//!
 //! **Which options.** Only those the game applies: gravity (slice 3),
 //! unlimited grenades and the team count (slice 5). The others join the
 //! page with their slices. The team count is a retail field with no
@@ -28,7 +35,7 @@
 
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use engine::entry::{EntryFuture, GuestCall, Ret};
 use engine::memory::{GuestMemory, MemFault};
@@ -176,7 +183,201 @@ const TEAM_COUNTS: [i32; 8] = variants::record::TEAM_COUNTS;
 /// gravity steps, which are [`ext::PERCENT`]'s too).
 const SCALE_IDS: u32 = TEAMS_LABELS + TEAM_COUNTS.len() as u32;
 
-const _: () = assert!(SCALE_IDS + 3 * (1 + GRAVITY_STEPS.len() as u32) <= IDS.len);
+/// The script option rows' ids: a label per row, then a description per
+/// row. Their text is the script's and changes with the record, so each id
+/// holds a placeholder of [`OPTION_ROOM`] bytes that `live_text` rewrites.
+const OPTION_IDS: u32 = SCALE_IDS + 3 * (1 + GRAVITY_STEPS.len() as u32);
+
+/// The most option rows (an option takes at least one of the record's 32
+/// option bits to be worth a row; the rest are not shown).
+pub const MAX_OPTION_ROWS: usize = 32;
+/// The room each option string has, NUL included.
+pub const OPTION_ROOM: usize = 128;
+
+const _: () = assert!(OPTION_IDS + 2 * MAX_OPTION_ROWS as u32 <= IDS.len);
+
+/// The label id of script option row `i`.
+pub fn option_label_id(i: usize) -> u32 {
+    IDS.id(OPTION_IDS + i as u32)
+}
+
+/// The description id of script option row `i`.
+pub fn option_description_id(i: usize) -> u32 {
+    IDS.id(OPTION_IDS + MAX_OPTION_ROWS as u32 + i as u32)
+}
+
+/// What an option's value is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OptionKind {
+    Bool,
+    /// The names of the values, from the option's `lo`.
+    Enum(Vec<String>),
+    Int,
+}
+
+/// One script option as the page shows it: a row of the variant editor,
+/// a field of the record's option bits (`rules::Ir::option_offsets`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OptionRow {
+    pub label: String,
+    pub description: String,
+    pub kind: OptionKind,
+    pub lo: i32,
+    pub hi: i32,
+    /// The field's first bit in the option bits, and its width.
+    pub offset: u32,
+    pub bits: u32,
+}
+
+/// An enum value's name as the row shows it: `first_to` is "First to".
+fn titled(name: &str) -> String {
+    let spaced = name.replace('_', " ");
+    let mut c = spaced.chars();
+    c.next()
+        .map(|f| f.to_uppercase().chain(c).collect())
+        .unwrap_or_default()
+}
+
+/// Cuts `text` at a character boundary and ends it with NUL, to `room`.
+fn served(text: &str, room: usize) -> Vec<u8> {
+    let mut cut = text.len().min(room - 1);
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let mut b = text.as_bytes()[..cut].to_vec();
+    b.push(0);
+    b
+}
+
+impl OptionRow {
+    fn count(&self) -> i64 {
+        (i64::from(self.hi) - i64::from(self.lo)).max(0) + 1
+    }
+
+    /// The value in option bits `bits`, as the VM reads it: `lo` plus the
+    /// field, at most `hi`; `lo` for a field that has no bits.
+    pub fn get(&self, bits: u32) -> i32 {
+        if self.bits == 0 || self.offset >= 32 {
+            return self.lo;
+        }
+        let raw = (u64::from(bits) >> self.offset) & ((1u64 << self.bits) - 1);
+        (i64::from(self.lo) + raw as i64).min(i64::from(self.hi)) as i32
+    }
+
+    /// `bits` with this field set to `value` (kept within `lo..=hi`) and
+    /// every other bit as it was.
+    pub fn set(&self, bits: u32, value: i32) -> u32 {
+        if self.bits == 0 || self.offset >= 32 {
+            return bits;
+        }
+        let v = i64::from(value).clamp(i64::from(self.lo), i64::from(self.hi));
+        let mask = ((1u64 << self.bits) - 1) << self.offset;
+        let field = (((v - i64::from(self.lo)) as u64) << self.offset) & mask;
+        ((u64::from(bits) & !mask) | field) as u32
+    }
+
+    /// The value as shown.
+    pub fn text(&self, value: i32) -> String {
+        match &self.kind {
+            OptionKind::Bool => if value != 0 { "On" } else { "Off" }.into(),
+            OptionKind::Enum(names) => usize::try_from(i64::from(value) - i64::from(self.lo))
+                .ok()
+                .and_then(|i| names.get(i))
+                .cloned()
+                .unwrap_or_else(|| value.to_string()),
+            OptionKind::Int => value.to_string(),
+        }
+    }
+
+    /// The row's label for `bits`, such as "First find: 3".
+    pub fn label_for(&self, bits: u32) -> String {
+        format!("{}: {}", self.label, self.text(self.get(bits)))
+    }
+
+    /// Every value, in order, when the row offers a picker: a bool, an
+    /// enum, or an int of at most 16 values. A wider int only steps.
+    pub fn choices(&self) -> Option<Vec<String>> {
+        match &self.kind {
+            OptionKind::Int if self.count() > 16 => None,
+            _ => Some(
+                (0..self.count())
+                    .map(|i| self.text((i64::from(self.lo) + i) as i32))
+                    .collect(),
+            ),
+        }
+    }
+
+    /// The value one step up or down from `value`: by one, or for a wide
+    /// int by a sixteenth of its range.
+    pub fn step(&self, value: i32, up: bool) -> i32 {
+        let by = if self.choices().is_some() {
+            1
+        } else {
+            (self.count() / 16).max(1)
+        };
+        let v = i64::from(value) + if up { by } else { -by };
+        v.clamp(i64::from(self.lo), i64::from(self.hi)) as i32
+    }
+}
+
+/// The option rows of a script, in declaration order (at most
+/// [`MAX_OPTION_ROWS`]).
+#[cfg(feature = "rules")]
+pub fn option_rows(ir: &::rules::Ir) -> Vec<OptionRow> {
+    let text = |i: u16| ir.strings.get(i as usize).cloned().unwrap_or_default();
+    let offsets = ir.option_offsets();
+    ir.options
+        .iter()
+        .enumerate()
+        .take(MAX_OPTION_ROWS)
+        .map(|(i, o)| {
+            let name = text(o.name);
+            let label = text(o.label);
+            OptionRow {
+                label: if label.is_empty() {
+                    titled(&name)
+                } else {
+                    label
+                },
+                description: o.description.map(text).unwrap_or_default(),
+                kind: match o.ty {
+                    ::rules::Ty::Bool => OptionKind::Bool,
+                    ::rules::Ty::Enum(_) => {
+                        OptionKind::Enum(ir.option_values(i).into_iter().map(titled).collect())
+                    }
+                    _ => OptionKind::Int,
+                },
+                lo: o.lo,
+                hi: o.hi,
+                offset: offsets[i],
+                bits: o.bits(),
+            }
+        })
+        .collect()
+}
+
+/// The options of the script whose hash starts with `prefix`, when this
+/// machine has it: a compiled-in one or the game-variant store's (the
+/// lookup `rules::header` makes). `None` for a script it lacks.
+#[cfg(feature = "rules")]
+pub fn script_options(prefix: [u8; 8]) -> Option<Vec<OptionRow>> {
+    let blob = match crate::rules::runtime::compiled_in(prefix) {
+        Some(b) => b.blob.clone(),
+        None => crate::game_variants::store()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .script(prefix)?
+            .to_vec(),
+    };
+    let (ir, _) = ::rules::verify::load(&blob).ok()?;
+    Some(option_rows(&ir))
+}
+
+/// Without the rules runtime no script is known.
+#[cfg(not(feature = "rules"))]
+pub fn script_options(_prefix: [u8; 8]) -> Option<Vec<OptionRow>> {
+    None
+}
 
 /// The step of team count `t`: its place in [`TEAM_COUNTS`], or 2 teams
 /// for a value we don't offer (1).
@@ -259,6 +460,13 @@ pub fn strings() -> Vec<(u32, String)> {
         for i in 0..GRAVITY_STEPS.len() {
             v.push((sc.label_id(i), sc.label(i)));
         }
+    }
+    // The script options' strings are rewritten at run time
+    // (`Rows::live_text`) within their room.
+    let room = " ".repeat(OPTION_ROOM - 1);
+    for i in 0..MAX_OPTION_ROWS {
+        v.push((option_label_id(i), room.clone()));
+        v.push((option_description_id(i), room.clone()));
     }
     v
 }
@@ -418,10 +626,39 @@ impl hooks::Feature for MoreRow {
 
 // ---- the page ----
 
+/// The options of the script a hash prefix names ([`script_options`]).
+pub type Resolver = Arc<dyn Fn([u8; 8]) -> Option<Vec<OptionRow>> + Send + Sync>;
+
 /// The More Options page shares its edit buffer with the open picker.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Page {
     edit: Arc<Edit>,
+    options: Arc<Options>,
+}
+
+impl Default for Page {
+    fn default() -> Self {
+        Self::with_scripts(Arc::new(script_options))
+    }
+}
+
+/// The script option rows of the record being edited.
+struct Options {
+    resolve: Resolver,
+    shown: Mutex<Shown>,
+    /// The row count the list was last built or grown to.
+    built: AtomicUsize,
+    /// The strings last written, so only a change is written again.
+    written: Mutex<Vec<(u32, String)>>,
+}
+
+#[derive(Default)]
+struct Shown {
+    /// The prefix the rows are for.
+    prefix: Option<[u8; 8]>,
+    /// Whether the resolver found that script.
+    resolved: bool,
+    rows: Vec<OptionRow>,
 }
 
 struct Edit {
@@ -450,6 +687,92 @@ impl Page {
         Self::default()
     }
 
+    /// A page that finds scripts through `resolve` (tests give it their
+    /// own).
+    pub fn with_scripts(resolve: Resolver) -> Self {
+        Self {
+            edit: Arc::default(),
+            options: Arc::new(Options {
+                resolve,
+                shown: Mutex::default(),
+                built: AtomicUsize::new(ROWS),
+                written: Mutex::default(),
+            }),
+        }
+    }
+
+    /// The script option rows shown: those of the script the block names.
+    pub fn option_rows(&self) -> Vec<OptionRow> {
+        self.options
+            .shown
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .rows
+            .clone()
+    }
+
+    /// The option of page row `row`, past the fixed rows.
+    fn option_of(&self, row: i16) -> Option<(usize, OptionRow)> {
+        let i = usize::try_from(row.checked_sub(ROWS as i16)?).ok()?;
+        let r = self.option_rows().get(i)?.clone();
+        Some((i, r))
+    }
+
+    /// Finds the rows of the script the block names, again only when its
+    /// prefix changed or the script was not found.
+    fn refresh_options(&self) {
+        let script = self.ext().script;
+        let want = (script.mode == ext::Mode::Rules).then_some(script.prefix);
+        let mut shown = self.options.shown.lock().unwrap_or_else(|e| e.into_inner());
+        if want == shown.prefix && (want.is_none() || shown.resolved) {
+            return;
+        }
+        shown.prefix = want;
+        shown.rows.clear();
+        shown.resolved = false;
+        if let Some(p) = want
+            && let Some(rows) = (self.options.resolve)(p)
+        {
+            shown.rows = rows;
+            shown.resolved = true;
+        }
+    }
+
+    /// The text of each script option row's label and description.
+    fn option_texts(&self) -> Vec<(u32, String)> {
+        let bits = self.ext().script.options;
+        let mut v = Vec::new();
+        for (i, r) in self.option_rows().iter().enumerate() {
+            v.push((option_label_id(i), r.label_for(bits)));
+            v.push((option_description_id(i), r.description.clone()));
+        }
+        v
+    }
+
+    /// Sets option row `i` to the value `pick` makes of its current one.
+    /// What to log.
+    fn choose_option(&self, i: usize, pick: impl FnOnce(&OptionRow, i32) -> i32) -> String {
+        let Some(row) = self.option_rows().get(i).cloned() else {
+            return format!("variant options: no script option row {i}");
+        };
+        let mut b = self.edit.block.lock().unwrap_or_else(|e| e.into_inner());
+        let mut e = Ext::in_effect(&b);
+        let was = row.get(e.script.options);
+        let value = pick(&row, was).clamp(row.lo, row.hi);
+        let name = row.label.to_ascii_lowercase();
+        if value == was {
+            return format!("variant options: {name} stays {}", row.text(was));
+        }
+        e.script.options = row.set(e.script.options, value);
+        *b = e.encode();
+        self.edit.dirty.store(true, Ordering::SeqCst);
+        format!(
+            "variant options: {name} {} -> {}",
+            row.text(was),
+            row.text(value)
+        )
+    }
+
     /// The options shown (the game's own for a block the game ignores).
     pub fn ext(&self) -> Ext {
         Ext::in_effect(&self.edit.block.lock().unwrap_or_else(|e| e.into_inner()))
@@ -460,11 +783,13 @@ impl Page {
         if !self.edit.dirty.load(Ordering::SeqCst) {
             *self.edit.block.lock().unwrap_or_else(|e| e.into_inner()) = block;
         }
+        self.refresh_options();
     }
 
     /// The write the record needs, once per edit.
     pub fn pending(&self) -> Option<[u8; ext::LEN]> {
-        self.edit.dirty
+        self.edit
+            .dirty
             .swap(false, Ordering::SeqCst)
             .then(|| *self.edit.block.lock().unwrap_or_else(|e| e.into_inner()))
     }
@@ -516,7 +841,8 @@ impl Page {
 
     /// The team count write the record needs, once per edit.
     pub fn pending_teams(&self) -> Option<i32> {
-        self.edit.teams_dirty
+        self.edit
+            .teams_dirty
             .swap(false, Ordering::SeqCst)
             .then(|| self.teams())
     }
@@ -554,32 +880,61 @@ impl Page {
         match row {
             GRAVITY_ROW => {
                 let i = nearest_step(self.ext().gravity);
-                Some(percent_row("Gravity", i)
-                    .press(picker())
-                    .describe(GRAVITY_DESCRIPTION)
-                    .ids(&[gravity_label_id(i), GRAVITY_DESCRIPTION_ID]))
+                Some(
+                    percent_row("Gravity", i)
+                        .press(picker())
+                        .describe(GRAVITY_DESCRIPTION)
+                        .ids(&[gravity_label_id(i), GRAVITY_DESCRIPTION_ID]),
+                )
             }
             GRENADES_ROW => {
                 let on = self.ext().unlimited_grenades;
-                Some(RowSpec::value("Unlimited Grenades", &["Off", "On"], usize::from(on))
-                    .describe(GRENADES_DESCRIPTION)
-                    .ids(&[grenades_label_id(on), GRENADES_DESCRIPTION_ID]))
+                Some(
+                    RowSpec::value("Unlimited Grenades", &["Off", "On"], usize::from(on))
+                        .describe(GRENADES_DESCRIPTION)
+                        .ids(&[grenades_label_id(on), GRENADES_DESCRIPTION_ID]),
+                )
             }
             TEAMS_ROW => {
                 let choices = TEAM_COUNTS.map(team_choice);
                 let i = teams_step(self.teams());
-                Some(RowSpec::value("Team Count", &choices.each_ref().map(String::as_str), i)
-                    .press(picker())
-                    .describe(TEAMS_DESCRIPTION)
-                    .ids(&[teams_label_id(i), TEAMS_DESCRIPTION_ID]))
+                Some(
+                    RowSpec::value("Team Count", &choices.each_ref().map(String::as_str), i)
+                        .press(picker())
+                        .describe(TEAMS_DESCRIPTION)
+                        .ids(&[teams_label_id(i), TEAMS_DESCRIPTION_ID]),
+                )
+            }
+            r if r >= ROWS as i16 => {
+                let (i, o) = self.option_of(r)?;
+                let bits = self.ext().script.options;
+                let shown = o.text(o.get(bits));
+                let choices = o.choices();
+                let values: Vec<&str> = match &choices {
+                    Some(c) => c.iter().map(String::as_str).collect(),
+                    None => vec![shown.as_str()],
+                };
+                let current = choices
+                    .as_ref()
+                    .map_or(0, |_| (i64::from(o.get(bits)) - i64::from(o.lo)) as usize);
+                let spec = RowSpec::value(&o.label, &values, current)
+                    .describe(&o.description)
+                    .ids(&[option_label_id(i), option_description_id(i)]);
+                Some(if choices.is_some() {
+                    spec.press(picker())
+                } else {
+                    spec
+                })
             }
             r => {
                 let scale = Scale::of_row(r)?;
                 let i = nearest_step(scale.get(&self.ext()));
-                Some(percent_row(scale.name(), i)
-                    .press(picker())
-                    .describe(scale.description())
-                    .ids(&[scale.label_id(i), scale.description_id()]))
+                Some(
+                    percent_row(scale.name(), i)
+                        .press(picker())
+                        .describe(scale.description())
+                        .ids(&[scale.label_id(i), scale.description_id()]),
+                )
             }
         }
     }
@@ -593,6 +948,9 @@ impl Page {
         };
         let page = self.clone();
         let set = Arc::new(move |index| match row {
+            r if r >= ROWS as i16 => page.choose_option(r as usize - ROWS, |o, _| {
+                (i64::from(o.lo) + index as i64).clamp(i64::from(o.lo), i64::from(o.hi)) as i32
+            }),
             GRAVITY_ROW => page.choose_gravity(|_| index),
             TEAMS_ROW => page.choose_teams(|_| index),
             r => page.choose_scale(Scale::of_row(r).expect("scale picker row"), |_| index),
@@ -614,7 +972,11 @@ fn percent_row(label: &str, current: usize) -> RowSpec {
 }
 
 fn next_step(i: usize, len: usize, up: bool) -> usize {
-    if up { (i + 1).min(len - 1) } else { i.saturating_sub(1) }
+    if up {
+        (i + 1).min(len - 1)
+    } else {
+        i.saturating_sub(1)
+    }
 }
 
 impl Rows for Page {
@@ -622,9 +984,22 @@ impl Rows for Page {
         TITLE_ID
     }
     fn count(&self) -> usize {
-        ROWS
+        let n = ROWS + self.option_rows().len();
+        self.options.built.store(n, Ordering::SeqCst);
+        n
+    }
+    /// The list holds room for every script option row and takes the rows
+    /// of the script the record names once the page reads it.
+    fn growing_capacity(&self) -> Option<usize> {
+        Some(ROWS + MAX_OPTION_ROWS)
+    }
+    fn shrink_growing_rows(&self) -> bool {
+        true
     }
     fn texts(&self, row: i16) -> Vec<(u32, u32)> {
+        if let Some((i, _)) = self.option_of(row) {
+            return vec![(LABEL_SLOT, option_label_id(i))];
+        }
         match row {
             GRAVITY_ROW => vec![(
                 LABEL_SLOT,
@@ -642,6 +1017,13 @@ impl Rows for Page {
         Some(self.spec())
     }
     fn press(&self, row: i16) -> Chosen {
+        if let Some((_, o)) = self.option_of(row) {
+            return if o.choices().is_some() {
+                self.open_picker(row)
+            } else {
+                Chosen::Nothing
+            };
+        }
         match row {
             GRENADES_ROW => Chosen::Stepped(self.toggle_grenades()),
             _ => self.open_picker(row),
@@ -649,6 +1031,9 @@ impl Rows for Page {
     }
     fn sideways(&self, row: i16, right: bool) -> Option<String> {
         let percent = |i| next_step(i, GRAVITY_STEPS.len(), right);
+        if let Some((i, _)) = self.option_of(row) {
+            return Some(self.choose_option(i, |o, v| o.step(v, right)));
+        }
         match row {
             GRAVITY_ROW => Some(self.choose_gravity(percent)),
             GRENADES_ROW => Some(self.toggle_grenades()),
@@ -657,6 +1042,9 @@ impl Rows for Page {
         }
     }
     fn description(&self, row: i16) -> Option<u32> {
+        if let Some((i, _)) = self.option_of(row) {
+            return Some(option_description_id(i));
+        }
         match row {
             GRAVITY_ROW => Some(GRAVITY_DESCRIPTION_ID),
             GRENADES_ROW => Some(GRENADES_DESCRIPTION_ID),
@@ -673,10 +1061,29 @@ impl Rows for Page {
         if let Some(t) = self.pending_teams() {
             writes.push((EDITED_TEAMS, t.to_le_bytes().to_vec()));
         }
-        LiveText {
-            writes,
-            redraw: false,
+        // The script options' text, rewritten where it changed; the list
+        // grows or shrinks when the script's option count is not the
+        // count it was built with.
+        let mut redraw =
+            self.options.built.load(Ordering::SeqCst) != ROWS + self.option_rows().len();
+        let mut written = self
+            .options
+            .written
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for (id, text) in self.option_texts() {
+            if written.iter().any(|(i, t)| *i == id && *t == text) {
+                continue;
+            }
+            let Some(at) = crate::layout_glue::string_address(id) else {
+                continue;
+            };
+            writes.push((at, served(&text, OPTION_ROOM)));
+            written.retain(|(i, _)| *i != id);
+            written.push((id, text));
+            redraw = true;
         }
+        LiveText { writes, redraw }
     }
     /// Reads the record's block and team count (when the page opens and
     /// at each row text).
@@ -704,6 +1111,13 @@ impl Rows for Page {
                 sc.label(nearest_step(sc.get(&e)))
             ));
         }
+        for (i, o) in self.option_rows().iter().enumerate() {
+            d.push_str(&format!(
+                ", [{}] \"{}\"",
+                ROWS + i,
+                o.label_for(e.script.options)
+            ));
+        }
         Some(d)
     }
 }
@@ -719,8 +1133,9 @@ impl Describe for Page {
         s.description = Some(crate::skulls_menu::DESCRIPTION_TEXT.into());
         s.content.row_help = true;
         s.footer = true;
-        // Six rows (gravity, grenades, teams and the three scales): the
-        // list scrolls where its room is shorter.
+        // Six fixed rows (gravity, grenades, teams and the three scales)
+        // and a row per script option: the list scrolls where its room is
+        // shorter.
         s.scrolls = true;
         s.prompts = vec![
             Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
@@ -735,7 +1150,8 @@ impl Describe for Page {
             Input::A,
             Input::B,
         ];
-        s.rows = (0..ROWS as i16).filter_map(|row| self.row_spec(row)).collect();
+        let rows = (ROWS + self.option_rows().len()) as i16;
+        s.rows = (0..rows).filter_map(|row| self.row_spec(row)).collect();
         s
     }
 }
@@ -903,11 +1319,7 @@ mod tests {
         assert!(p.sideways(GRENADES_ROW, true).unwrap().ends_with("off"));
         p.sideways(GRAVITY_ROW, true);
         assert_eq!(p.pending(), Some([0; ext::LEN]), "a retail record again");
-        assert!(
-            p.describe(2)
-                .unwrap()
-                .contains("Unlimited Grenades: Off")
-        );
+        assert!(p.describe(2).unwrap().contains("Unlimited Grenades: Off"));
     }
 
     /// The team count row edits the record's `+0xb4`, not the block, and
@@ -1000,11 +1412,7 @@ mod tests {
         );
         assert_eq!(Scale::Shield.label(4), "Shields: Normal");
         assert_eq!(Scale::Damage.label(7), "Damage: 200%");
-        assert!(
-            p.describe(ROWS)
-                .unwrap()
-                .contains("[5] \"Health: 10%\"")
-        );
+        assert!(p.describe(ROWS).unwrap().contains("[5] \"Health: 10%\""));
     }
 
     #[test]
@@ -1072,5 +1480,253 @@ mod tests {
         }
         assert!(row_on());
         assert!(list_class::loader_of(SCREEN).is_some());
+    }
+
+    // ---- script options ----
+
+    const PREFIX: [u8; 8] = [7; 8];
+
+    /// A script's four options, packed as the IR packs them: a bool (bit
+    /// 0), an enum of three values (bits 1 and 2), an int 1..5 (bits 3 to
+    /// 5) and an int 0..1000 (bits 6 to 15).
+    fn script_rows() -> Vec<OptionRow> {
+        let row = |label: &str, kind, lo, hi, offset, bits| OptionRow {
+            label: label.into(),
+            description: format!("About {label}."),
+            kind,
+            lo,
+            hi,
+            offset,
+            bits,
+        };
+        let names = ["First", "Second", "Third"].map(String::from).to_vec();
+        vec![
+            row("Low gravity", OptionKind::Bool, 0, 1, 0, 1),
+            row("Win by", OptionKind::Enum(names), 0, 2, 1, 2),
+            row("First find", OptionKind::Int, 1, 5, 3, 3),
+            row("Ball reset", OptionKind::Int, 0, 1000, 6, 10),
+        ]
+    }
+
+    /// A page whose only script is the one at [`PREFIX`].
+    fn scripted() -> Page {
+        Page::with_scripts(Arc::new(|p| (p == PREFIX).then(script_rows)))
+    }
+
+    fn naming_the_script(e: Ext, options: u32) -> [u8; ext::LEN] {
+        Ext {
+            script: ext::Script {
+                mode: ext::Mode::Rules,
+                prefix: PREFIX,
+                options,
+            },
+            ..e
+        }
+        .encode()
+    }
+
+    #[test]
+    fn option_rows_read_and_write_their_own_bits() {
+        let o = script_rows();
+        let bits = o[3].set(o[2].set(o[1].set(o[0].set(0, 1), 2), 4), 900);
+        assert_eq!(
+            o.iter().map(|r| r.get(bits)).collect::<Vec<_>>(),
+            [1, 2, 4, 900]
+        );
+        // One field changes, the others stay, and a value is kept in range.
+        let b = o[1].set(bits, 0);
+        assert_eq!(
+            o.iter().map(|r| r.get(b)).collect::<Vec<_>>(),
+            [1, 0, 4, 900]
+        );
+        assert_eq!(o[2].get(o[2].set(0, 99)), 5);
+        assert_eq!(o[2].get(0), 1, "a zero field is `lo`");
+        assert_eq!(o[0].label_for(bits), "Low gravity: On");
+        assert_eq!(o[1].label_for(bits), "Win by: Third");
+        assert_eq!(o[2].choices().unwrap(), ["1", "2", "3", "4", "5"]);
+        assert_eq!(o[3].choices(), None, "a wide int only steps");
+        assert_eq!(o[3].step(0, true), 62, "by a sixteenth of the range");
+        assert_eq!(o[2].step(5, true), 5);
+        assert_eq!(o[2].step(1, false), 1);
+        assert_eq!(titled("first_to"), "First to");
+    }
+
+    #[test]
+    fn a_row_per_option_after_the_fixed_rows() {
+        let p = scripted();
+        let o = script_rows();
+        let bits = o[2].set(0, 3);
+        assert_eq!(p.count(), ROWS, "before the record is read");
+        p.read(naming_the_script(Ext::default(), bits));
+        // The list was built for the fixed rows: it asks to grow.
+        assert!(p.live_text().redraw);
+        assert_eq!(p.count(), ROWS + 4);
+        assert!(!p.live_text().redraw, "built to the count it has");
+        assert_eq!(p.growing_capacity(), Some(ROWS + MAX_OPTION_ROWS));
+        assert!(p.shrink_growing_rows());
+        // The fixed rows are as they were.
+        assert_eq!(p.texts(GRAVITY_ROW), [(LABEL_SLOT, gravity_label_id(4))]);
+        assert_eq!(
+            p.texts(ROWS as i16 - 1),
+            [(LABEL_SLOT, Scale::Health.label_id(4))]
+        );
+        // Then one row per option, in the script's order.
+        for i in 0..4 {
+            let row = (ROWS + i) as i16;
+            assert_eq!(p.texts(row), [(LABEL_SLOT, option_label_id(i))]);
+            assert_eq!(p.description(row), Some(option_description_id(i)));
+        }
+        assert!(p.texts((ROWS + 4) as i16).is_empty());
+        assert_eq!(p.description((ROWS + 4) as i16), None);
+        let texts = p.option_texts();
+        assert_eq!(texts[0], (option_label_id(0), "Low gravity: Off".into()));
+        assert_eq!(
+            texts[1],
+            (option_description_id(0), "About Low gravity.".into())
+        );
+        assert_eq!(texts[4], (option_label_id(2), "First find: 3".into()));
+        assert_eq!(texts[6], (option_label_id(3), "Ball reset: 0".into()));
+        // The kit sees the same rows.
+        let spec = p.spec();
+        assert_eq!(spec.rows.len(), ROWS + 4);
+        assert_eq!(spec.rows[ROWS + 1].label, "Win by");
+        assert_eq!(spec.rows[ROWS + 2].shown_value().as_deref(), Some("3"));
+        assert_eq!(
+            spec.rows[ROWS + 2].ids,
+            [option_label_id(2), option_description_id(2)]
+        );
+        assert!(
+            p.describe(ROWS + 4)
+                .unwrap()
+                .contains("[8] \"First find: 3\"")
+        );
+        // A bool, an enum and a small int open a picker on the held value.
+        assert_eq!(p.press(ROWS as i16 + 2), Chosen::Open(picker::NAME));
+        let pick = picker::current().expect("option picker");
+        assert_eq!(pick.values, ["1", "2", "3", "4", "5"]);
+        assert_eq!(pick.current, 2);
+        // A wide int has no picker.
+        assert_eq!(p.press(ROWS as i16 + 3), Chosen::Nothing);
+        // Every id is ours and the strings hold room for the text.
+        let v = strings();
+        assert!(
+            v.iter()
+                .any(|(i, t)| *i == option_label_id(MAX_OPTION_ROWS - 1)
+                    && t.len() == OPTION_ROOM - 1)
+        );
+        assert!(option_description_id(MAX_OPTION_ROWS - 1) < IDS.base + IDS.len);
+        assert_eq!(served("é", 2), [0]);
+        assert_eq!(served("ab", 8), b"ab\0");
+    }
+
+    #[test]
+    fn a_step_writes_the_option_bits_and_keeps_the_extras() {
+        let p = scripted();
+        let o = script_rows();
+        let start = o[2].set(o[1].set(0, 1), 4);
+        let extras = Ext {
+            gravity: 50,
+            unlimited_grenades: true,
+            health: 200,
+            ..Default::default()
+        };
+        p.read(naming_the_script(extras, start));
+        let enum_row = ROWS as i16 + 1;
+        assert!(
+            p.sideways(enum_row, true)
+                .unwrap()
+                .contains("Second -> Third")
+        );
+        let n = Ext::in_effect(&p.pending().expect("one write"));
+        assert_eq!(n.script.options, o[2].set(o[1].set(0, 2), 4));
+        assert_eq!((n.script.mode, n.script.prefix), (ext::Mode::Rules, PREFIX));
+        assert_eq!((n.gravity, n.health), (50, 200));
+        assert!(n.unlimited_grenades);
+        assert_eq!(p.pending(), None, "once");
+        // The top stops; the page shows the new value.
+        p.read(naming_the_script(extras, o[2].set(o[1].set(0, 2), 4)));
+        assert!(p.sideways(enum_row, true).unwrap().contains("stays Third"));
+        assert_eq!(p.option_texts()[2].1, "Win by: Third");
+        // The picker writes the same field, and the write goes to the
+        // record's block.
+        assert_eq!(p.press(enum_row), Chosen::Open(picker::NAME));
+        let pick = picker::current().expect("option picker");
+        assert_eq!(pick.values, ["First", "Second", "Third"]);
+        assert_eq!(pick.current, 2);
+        assert!((pick.set)(0).contains("Third -> First"));
+        let w = p.live_text().writes;
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].0, EDITED_BLOCK);
+        let n = Ext::in_effect(&w[0].1.clone().try_into().unwrap());
+        assert_eq!(n.script.options, o[2].set(0, 4));
+        assert_eq!((n.gravity, n.health, n.unlimited_grenades), (50, 200, true));
+        // A fixed row's edit keeps the script and its options.
+        p.sideways(GRAVITY_ROW, true);
+        let n = Ext::in_effect(&p.pending().unwrap());
+        assert_eq!((n.gravity, n.script.options), (75, o[2].set(0, 4)));
+        // A wide int steps by a sixteenth and stops at its ends.
+        let wide = ROWS as i16 + 3;
+        assert!(p.sideways(wide, true).unwrap().contains("0 -> 62"));
+        assert_eq!(
+            Ext::in_effect(&p.pending().unwrap()).script.options & !0x3f,
+            62 << 6
+        );
+        for _ in 0..40 {
+            p.sideways(wide, true);
+        }
+        assert!(p.sideways(wide, true).unwrap().contains("stays 1000"));
+    }
+
+    #[test]
+    fn a_record_with_no_script_has_no_option_rows() {
+        // The resolver is never asked about a record that names no script.
+        let asked = Arc::new(AtomicBool::new(false));
+        let seen = Arc::clone(&asked);
+        let p = Page::with_scripts(Arc::new(move |_| {
+            seen.store(true, Ordering::SeqCst);
+            Some(script_rows())
+        }));
+        p.read([0; ext::LEN]);
+        assert!(p.option_rows().is_empty());
+        assert_eq!(p.count(), ROWS);
+        assert!(!p.live_text().redraw);
+        assert!(p.option_texts().is_empty());
+        assert_eq!(p.press(ROWS as i16), Chosen::Nothing);
+        assert_eq!(p.sideways(ROWS as i16, true), None);
+        assert_eq!(p.spec().rows.len(), ROWS);
+        assert!(!asked.load(Ordering::SeqCst));
+        // A block with extras but no script.
+        p.read(
+            Ext {
+                gravity: 50,
+                ..Default::default()
+            }
+            .encode(),
+        );
+        assert_eq!(p.count(), ROWS);
+        // A firefight record is not a rules script.
+        let fire = Ext {
+            script: ext::Script {
+                mode: ext::Mode::Firefight,
+                prefix: PREFIX,
+                options: 0,
+            },
+            ..Default::default()
+        };
+        p.read(fire.encode());
+        assert_eq!(p.count(), ROWS);
+        assert!(!asked.load(Ordering::SeqCst));
+        // A script this machine lacks shows the fixed rows only.
+        let other = Page::with_scripts(Arc::new(|_| None));
+        other.read(naming_the_script(Ext::default(), 0));
+        assert_eq!(other.count(), ROWS);
+        assert_eq!(other.press(ROWS as i16), Chosen::Nothing);
+        // The same page drops the rows when it opens on another record.
+        let p = scripted();
+        p.read(naming_the_script(Ext::default(), 0));
+        assert_eq!(p.count(), ROWS + 4);
+        p.read([0; ext::LEN]);
+        assert_eq!(p.count(), ROWS);
+        assert!(!p.live_text().redraw);
     }
 }

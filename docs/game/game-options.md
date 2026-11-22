@@ -533,6 +533,37 @@ Team Count and the damage, shield and health scales
 (`variant_page::GRENADES_ROW`, `TEAMS_ROW`, `Scale`). The "variant page"
 string family supplies the labels and descriptions.
 
+**A script's options.** A record whose block names a rules script (mode 2
+and the hash prefix) gets one row per option of that script after the six
+fixed rows, in the script's declaration order, at most
+`variant_page::MAX_OPTION_ROWS` (32). The page finds the script from the
+prefix as the lobby does: a compiled-in script, else the game-variant
+store's (`variant_page::script_options`). A record that names no script,
+or a script this machine lacks, has the six rows only.
+
+| Option type | Row | A or Left and Right |
+|---|---|---|
+| `bool` | "Name: On" or "Off" | the picker, or a step |
+| `enum` | "Name: Value" | the picker over the values, or a step |
+| `int` of at most 16 values | "Name: 3" | the picker, or a step of one |
+| wider `int` | "Name: 150" | no picker; a step of a sixteenth of the range |
+
+The row's label and the focused description are the script's own
+(`option` line); their text changes with the record, so each row owns two
+ids of the "variant page" family (`option_label_id`,
+`option_description_id`), each a placeholder of `OPTION_ROOM` bytes that
+`Rows::live_text` rewrites where the text changed. The list is built with
+room for 32 option rows (`Rows::growing_capacity`) and grows or shrinks
+to the record's script once the page has read the block, since the row
+count is asked before guest memory is read.
+
+A step writes only that option's field of the block's 32 option bits
+(`OptionRow::set`, the bits `Ir::pack_options` lays out) and leaves
+every other byte of the block, the script reference and the other
+options as they were; the block is written back to the record the way
+the fixed rows' edits are. An option with no bits (one value) has a row
+and nothing to change.
+
 ### The code
 
 - `variants::ext`: `Ext` (gravity, damage, shield, health and speed
@@ -807,8 +838,12 @@ The page and the game rules (`boot`):
   `the_row_and_the_page_are_on_the_plan`,
   `the_grenades_row_toggles_the_flag`,
   `the_team_count_row_edits_the_records_field`,
-  `the_scale_rows_step_their_percents`; `ui_kit::screens` checks the page
-  (`variant-more-options`);
+  `the_scale_rows_step_their_percents`,
+  `option_rows_read_and_write_their_own_bits`,
+  `a_row_per_option_after_the_fixed_rows`,
+  `a_step_writes_the_option_bits_and_keeps_the_extras`,
+  `a_record_with_no_script_has_no_option_rows`; `ui_kit::screens` checks
+  the page (`variant-more-options`);
 - `variant_ext::alone_or_hosting_applies_system_link_and_guests_dont`,
   `reads_the_active_records_block_in_multiplayer_only`,
   `grenades_are_topped_by_a_lone_machine_or_the_host_never_a_guest`,
