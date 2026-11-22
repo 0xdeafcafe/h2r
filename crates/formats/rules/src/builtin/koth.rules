@@ -4,7 +4,6 @@
 // docs/game/rules-engine.md, "Porting the seven engines".
 //
 // Entries a host cannot make yet (`verify::unhostable`):
-//   label_number     not built (Forge labels)
 //   inside           not built (zone tests on the corners' polygon)
 // Not reproduced: the KotH globals (`[0x51ecc8]`: the hill in play
 // `+0x1a4`, the occupants mask `+0x1a8`, player `+0x1b8`) are not written;
@@ -13,6 +12,8 @@
 // read.
 rules "King of the Hill" 1
 carrier king
+
+label hill_corner: zones numbered
 
 global var hill: int = 0
 global var hills: int = 0
@@ -27,7 +28,7 @@ fn start_hill(n: int) {
 
 on round_start {
     hills = 0
-    for each objects labelled "hill_corner" c { hills = max(hills, c.number + 1) }
+    for each hill_corner c { hills = max(hills, c.number + 1) }
     for each players p { p.on_hill = 0 }
     start_hill(0)
 }
@@ -37,20 +38,23 @@ on timer(moves) {
 }
 
 on tick {
-    let zone = first(objects labelled "hill_corner" c where c.number == hill)
-    let lead = first(players p where p.alive and inside(p, zone))
-    // Contested: someone of another team (or, with no teams, anyone else)
-    // is on the hill too.
-    let rivals = count(players q where q.alive and inside(q, zone) and ((variant.team_play and q.team != lead.team) or (not variant.team_play and q != lead)))
-    for each players p {
-        if zone != none and rivals == 0 and p.alive and inside(p, zone) {
-            p.on_hill = p.on_hill + 1
-            if p.on_hill >= seconds(1) {
-                score(p, 1)
+    if let zone = hill_corner[hill] {
+        let lead = first(players p where p.alive and inside(p, zone))
+        // Contested: someone of another team (or, with no teams, anyone
+        // else) is on the hill too.
+        let rivals = count(players q where q.alive and inside(q, zone) and lead != none and ((variant.team_play and q.team != lead.team) or (not variant.team_play and q != lead)))
+        for each players p {
+            if rivals == 0 and p.alive and inside(p, zone) {
+                p.on_hill = p.on_hill + 1
+                if p.on_hill >= seconds(1) {
+                    score(p, 1)
+                    p.on_hill = 0
+                }
+            } else {
                 p.on_hill = 0
             }
-        } else {
-            p.on_hill = 0
         }
+    } else {
+        for each players p { p.on_hill = 0 }
     }
 }

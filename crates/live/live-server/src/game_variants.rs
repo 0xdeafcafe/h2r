@@ -838,7 +838,7 @@ mod tests {
         assert_eq!(eligible(&plain), ["custom", "hopper", "ranked"]);
         let slayer = portable::port(&fists(), None, None, PortScript::Builtin).unwrap();
         assert_eq!(eligible(&slayer), ["custom", "hopper", "ranked"]);
-        let builder = "rules \"Builder\" 1\ncarrier slayer\nrequires forge.move\n\non kill(victim, killer) { score(killer, 1) }\n";
+        let builder = "rules \"Builder\" 1\ncarrier slayer\nrequires forge.move\n\non kill(victim, killer) { if killer != none { score(killer, 1) } }\n";
         let forge = portable::port(&fists(), None, None, PortScript::Source(builder.into())).unwrap();
         assert_eq!(eligible(&forge), ["custom", "hopper"]);
     }

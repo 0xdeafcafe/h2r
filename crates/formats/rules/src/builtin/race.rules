@@ -5,26 +5,27 @@
 //
 // Entries a host cannot make yet (`verify::unhostable`):
 //   player_of        traced (unit `+0x13c`)
-//   label_of         not built (Forge labels)
-//   label_number     not built (Forge labels)
 //   spawn_areas      untraced (the PLAYER_SPAWN_LOCATION rule)
 // `on enter` waits on the zone tests (not built).
 rules "Race" 1
 carrier slayer
 requires player.spawn
 
+label checkpoint: zones numbered
+label race_start: spawns
+
 player var next: int = 0
 global var checkpoints: int = 0
 
 on round_start {
-    checkpoints = count(objects labelled "checkpoint")
+    checkpoints = count(checkpoint)
     for each players p { p.next = 0 }
-    for each teams t { spawn_areas(t, labelled "race_start", 0) }
+    for each teams t { spawn_areas(t, race_start, 0) }
 }
 
-on enter(zone, o) {
+on enter(checkpoint z, o) {
     let p = player_of(o)
-    if p != none and checkpoints > 0 and zone.label == labelled "checkpoint" and zone.number == p.next {
+    if p != none and checkpoints > 0 and z.number == p.next {
         p.next = p.next + 1
         if p.next >= checkpoints {
             p.next = 0

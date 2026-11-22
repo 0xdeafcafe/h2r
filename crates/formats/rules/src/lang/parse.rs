@@ -12,10 +12,12 @@ use crate::ir::Scope;
 /// Nesting deeper than this is refused, so no source can exhaust the stack.
 const MAX_DEPTH: u32 = 64;
 
+/// Words that are never names. Type and kind words (`zone`, `weapon`,
+/// `objects`, `numbered`, `per`) are read by place and stay names.
 pub(crate) const KEYWORDS: &[&str] = &[
     "rules", "carrier", "teams", "list", "requires", "option", "palette", "enum", "global", "var",
     "table", "fn", "on", "if", "else", "for", "each", "where", "let", "and", "or", "not", "true",
-    "false", "none", "labelled", "text", "budget",
+    "false", "none", "label", "is", "text", "budget",
 ];
 
 pub fn parse(tokens: &[Token]) -> Result<Script, CompileError> {
@@ -83,7 +85,7 @@ impl<'a> Parser<'a> {
             return true;
         }
         matches!(&self.peek().tok, Tok::Ident(s) if matches!(s.as_str(),
-            "rules" | "carrier" | "teams" | "list" | "requires" | "option" | "palette" | "enum" | "table" | "fn" | "on"))
+            "rules" | "carrier" | "teams" | "list" | "requires" | "option" | "palette" | "enum" | "table" | "fn" | "label" | "on"))
     }
 
     /// Recovery from a bad declaration: on to the next line that starts
@@ -239,10 +241,78 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// A type word, with `?` when the value may be `none` (`player?`).
     fn ty(&mut self) -> R<TypeName> {
         let pos = self.pos();
-        Ok(TypeName {
-            name: self.word()?,
+        let name = self.word()?;
+        let optional = self.is_punct("?") && !self.peek().nl;
+        if optional {
+            self.bump();
+        }
+        Ok(TypeName { name, optional, pos })
+    }
+
+    /// An int, with an optional leading `-`.
+    fn signed_int(&mut self) -> R<i64> {
+        let neg = self.eat_punct("-");
+        let n = self.int()?;
+        Ok(if neg { -n } else { n })
+    }
+
+    /// Whether the line goes on: the next token is on it and is not `;`.
+    fn on_line(&self) -> bool {
+        !self.peek().nl && !self.is_punct(";") && !self.is_punct("}") && self.peek().tok != Tok::Eof
+    }
+
+    /// `label <name>: <kind> [requirements] [= "<map text>"]`, past `label`.
+    fn label(&mut self, pos: Pos) -> R<LabelDecl> {
+        let name = self.name()?;
+        self.expect_punct(":")?;
+        let kind = self.ty()?;
+        let mut requirements = Vec::new();
+        while self.on_line() && !self.is_punct("=") {
+            let at = self.pos();
+            let req = if self.eat_word("at") {
+                if self.eat_word("least") {
+                    Requirement::AtLeast(self.int()?)
+                } else if self.eat_word("most") {
+                    Requirement::AtMost(self.int()?)
+                } else {
+                    return Err(self.unexpected("`least` or `most`"));
+                }
+            } else if self.eat_word("exactly") {
+                Requirement::Exactly(self.int()?)
+            } else if self.eat_word("numbered") {
+                let ranged = !self.peek().nl && (matches!(self.peek().tok, Tok::Int(_)) || self.is_punct("-"));
+                if ranged {
+                    let lo = self.signed_int()?;
+                    self.expect_punct("..")?;
+                    let hi = self.signed_int()?;
+                    Requirement::Numbered(Some((lo, hi)))
+                } else {
+                    Requirement::Numbered(None)
+                }
+            } else if self.eat_word("per") {
+                self.expect_word("team")?;
+                Requirement::PerTeam
+            } else if matches!(self.peek().tok, Tok::Int(_)) {
+                let lo = self.int()?;
+                self.expect_punct("..")?;
+                let hi = self.int()?;
+                Requirement::Between(lo, hi)
+            } else {
+                return Err(self.unexpected(
+                    "a requirement (at least n, at most n, exactly n, n..m, numbered, per team) or `=`",
+                ));
+            };
+            requirements.push((req, at));
+        }
+        let text = if self.eat_punct("=") { Some(self.string()?) } else { None };
+        Ok(LabelDecl {
+            name,
+            kind,
+            requirements,
+            text,
             pos,
         })
     }
@@ -423,12 +493,26 @@ impl<'a> Parser<'a> {
                 body,
                 pos,
             }));
+        } else if self.eat_word("label") {
+            script.items.push(Item::Label(self.label(pos)?));
         } else if self.eat_word("on") {
             let event = self.word()?;
             let mut args = Vec::new();
+            let mut label = None;
             if self.eat_punct("(") {
                 while !self.is_punct(")") {
-                    args.push(self.name()?);
+                    let at = self.pos();
+                    let first = self.name()?;
+                    // `capture z`: a label, then its member's name.
+                    if matches!(&self.peek().tok, Tok::Ident(s) if !KEYWORDS.contains(&s.as_str())) {
+                        if label.is_some() {
+                            return Err(CompileError::at(at, "a handler names one label"));
+                        }
+                        label = Some((first, args.len()));
+                        args.push(self.name()?);
+                    } else {
+                        args.push(first);
+                    }
                     if !self.eat_punct(",") {
                         break;
                     }
@@ -439,6 +523,7 @@ impl<'a> Parser<'a> {
             script.items.push(Item::On {
                 event,
                 args,
+                label,
                 body,
                 pos,
             });
@@ -591,9 +676,10 @@ impl<'a> Parser<'a> {
         let pos = self.pos();
         if self.eat_word("let") {
             let name = self.name()?;
+            let ty = if self.eat_punct(":") { Some(self.ty()?) } else { None };
             self.expect_punct("=")?;
             let value = self.expr()?;
-            return Ok(Stmt::Let { name, value, pos });
+            return Ok(Stmt::Let { name, ty, value, pos });
         }
         if self.is_word("if") {
             return self.if_stmt();
@@ -630,10 +716,39 @@ impl<'a> Parser<'a> {
 
     fn if_stmt(&mut self) -> R<Stmt> {
         self.enter()?;
+        let pos = self.pos();
         self.expect_word("if")?;
+        if self.eat_word("let") {
+            // `if let x = value and cond`: the value stops before `and`.
+            let name = self.name()?;
+            self.expect_punct("=")?;
+            self.enter()?;
+            let value = self.not();
+            self.leave();
+            let value = value?;
+            let cond = if self.eat_word("and") { Some(self.expr()?) } else { None };
+            let then = self.block()?;
+            let els = self.else_part()?;
+            self.leave();
+            return Ok(Stmt::IfLet {
+                name,
+                value,
+                cond,
+                then,
+                els,
+                pos,
+            });
+        }
         let cond = self.expr()?;
         let then = self.block()?;
-        let els = if self.eat_word("else") {
+        let els = self.else_part()?;
+        self.leave();
+        Ok(Stmt::If { cond, then, els })
+    }
+
+    /// `else if ...`, `else { }` or nothing.
+    fn else_part(&mut self) -> R<Vec<Stmt>> {
+        Ok(if self.eat_word("else") {
             if self.is_word("if") {
                 vec![self.if_stmt()?]
             } else {
@@ -641,9 +756,7 @@ impl<'a> Parser<'a> {
             }
         } else {
             Vec::new()
-        };
-        self.leave();
-        Ok(Stmt::If { cond, then, els })
+        })
     }
 
     fn set_base(&mut self) -> R<SetBaseExpr> {
@@ -654,9 +767,11 @@ impl<'a> Parser<'a> {
         if self.eat_word("teams") {
             return Ok(SetBaseExpr::Teams);
         }
-        if self.eat_word("objects") {
-            self.expect_word("labelled")?;
-            return Ok(SetBaseExpr::Labelled(self.string()?));
+        if matches!(&self.peek().tok, Tok::Ident(s) if matches!(s.as_str(), "objects" | "zones" | "spawns")) {
+            return Err(CompileError::at(
+                pos,
+                "a set of placements is a declared label: declare \"label barrier: objects\" and loop \"for each barrier b\"",
+            ));
         }
         if self.eat_word("objectives") {
             return Ok(SetBaseExpr::Objectives);
@@ -672,9 +787,16 @@ impl<'a> Parser<'a> {
             self.leave();
             return Ok(SetBaseExpr::Pick(Box::new(inner), Box::new(n)));
         }
+        if let Tok::Ident(s) = &self.peek().tok
+            && !KEYWORDS.contains(&s.as_str())
+        {
+            let s = s.clone();
+            self.bump();
+            return Ok(SetBaseExpr::Label(s));
+        }
         Err(CompileError::at(
             pos,
-            "expected a set: players, teams, objectives, objects labelled \"x\" or pick(set, n)",
+            "expected a set: players, teams, objectives, a label or pick(set, n)",
         ))
     }
 
@@ -747,6 +869,16 @@ impl<'a> Parser<'a> {
 
     fn cmp(&mut self) -> R<Expr> {
         let e = self.add()?;
+        if self.is_word("is") {
+            self.bump();
+            let at = self.pos();
+            let label = self.name()?;
+            let pos = e.pos;
+            return Ok(Expr {
+                kind: ExprKind::Is(Box::new(e), label, at),
+                pos,
+            });
+        }
         let op = match &self.peek().tok {
             Tok::Punct("==") => BinOp::Eq,
             Tok::Punct("!=") => BinOp::Ne,
@@ -874,10 +1006,6 @@ impl<'a> Parser<'a> {
                             ExprKind::Text(b)
                         }));
                     }
-                    "labelled" => {
-                        self.bump();
-                        return Ok(at(ExprKind::Labelled(self.string()?)));
-                    }
                     "budget" => {
                         self.bump();
                         return Ok(at(ExprKind::Budget(self.int()?)));
@@ -886,7 +1014,7 @@ impl<'a> Parser<'a> {
                         self.bump();
                         return Ok(at(ExprKind::Palette(self.string()?)));
                     }
-                    "players" | "teams" | "objects" | "objectives" => {
+                    "players" | "teams" | "objectives" => {
                         return Err(CompileError::at(
                             pos,
                             "a set is only allowed in for each, count, first and pick",

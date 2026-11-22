@@ -277,12 +277,19 @@ fn times<T>(list: &[T], words: impl Fn(&T) -> (String, u32)) -> String {
         .join(", ")
 }
 
+/// The map's problems, a line each: what `run` prints when the scenario's
+/// map fails the script's labels, and nothing runs.
+fn map_problems(label: &str, problems: &[String]) -> String {
+    problems.iter().map(|p| format!("{label}: map: {p}\n")).collect()
+}
+
 /// Plays the match (and the batch, for more than one) `h2 rules sim`
 /// prints.
 pub fn sim_text(label: &str, src: &str, args: &SimArgs) -> Result<SimOut, String> {
     let (ir, _) = compile(label, src)?;
     let refuse = |e: rules::workbench::RunError| match e {
         rules::workbench::RunError::Scenario(m) => format!("{label}: {m}\n"),
+        rules::workbench::RunError::Map(problems) => map_problems(label, &problems),
         rules::workbench::RunError::Script(problems) => problems
             .iter()
             .map(|p| format!("{label}: {}\n", p.message))
@@ -517,6 +524,14 @@ pub fn check_text(label: &str, src: &str) -> Result<String, String> {
             }
         }
     }
+    if ir.labels.is_empty() {
+        let _ = writeln!(s, "a map needs: nothing labelled");
+    } else {
+        let _ = writeln!(s, "a map needs:");
+        for def in &ir.labels {
+            let _ = writeln!(s, "  {}", rules::labels::describe(def));
+        }
+    }
     let bad = unhostable(&ir);
     if bad.is_empty() {
         let _ = writeln!(s, "unhostable entries: none");
@@ -601,7 +616,10 @@ pub fn run_text(
     let (ir, _) = compile(label, src)?;
     let scenario: Scenario =
         serde_json::from_str(scenario_json).map_err(|e| format!("scenario: {e}\n"))?;
-    let result = scenario::run(ir, &scenario).map_err(|e| format!("{label}: refused: {e}\n"))?;
+    let result = scenario::run(ir, &scenario).map_err(|e| match e {
+        scenario::RunError::Map(problems) => map_problems(label, &problems),
+        scenario::RunError::Refused(r) => format!("{label}: refused: {r}\n"),
+    })?;
     let mut s = String::new();
     for t in &result.ticks {
         let _ = writeln!(s, "tick {}: {} calls", t.tick, t.calls.len());
@@ -783,6 +801,7 @@ on kill(victim, killer) {
         assert!(text.contains("IR: "), "{text}");
         assert!(text.contains("can do: core only"), "{text}");
         assert!(text.contains("unhostable entries: none"), "{text}");
+        assert!(text.contains("a map needs: nothing labelled"), "{text}");
     }
 
     #[test]

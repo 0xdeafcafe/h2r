@@ -157,7 +157,7 @@ fn objectives_are_visited_by_handle_and_bounded_at_eight() {
     let src = r#"
 rules "T" 1
 carrier slayer
-global var first_seen: object = none
+global var first_seen: object? = none
 global var n: int = 0
 on round_start {
     first_seen = first(objectives)
@@ -455,38 +455,38 @@ fn bounce(player: u8, spot: u32, chain: u32, monster: bool) -> Input {
 }
 
 #[test]
-fn superbounce_scores_slayers_kills_and_each_bounce_by_its_chain() {
+fn superbounce_scores_bounces_only_by_their_chain() {
     let (ir, report) = build(builtin::SUPERBOUNCE).unwrap();
     assert!(report.fits());
     assert_eq!(ir.header.name, "Superbounce");
     assert_eq!(ir.header.carrier, 2);
     assert_eq!(ir.header.list, rules::ir::List::Tweakers);
     assert_eq!(ir.header.requires, ["hud.superbounce"]);
-    // The options in the order the record packs them: kill points raw 0
-    // (bits 0 to 2), the suicide penalty (bit 3), bounce points raw 1
-    // (bits 4 to 6), the Bounced penalty (bit 7), the Monster double
-    // (bit 8).
+    // The options in the order the record packs them: the suicide penalty
+    // (bit 0), bounce points raw 1 (bits 1 to 3), the Bounced penalty
+    // (bit 4), the Monster double (bit 5).
     let names: Vec<&str> = (0..ir.options.len()).map(|i| ir.option_name(i)).collect();
-    assert_eq!(
-        names,
-        ["kill_points", "suicide_costs", "bounce_points", "bounced_costs", "monster_double"]
-    );
-    assert_eq!(ir.option_offsets(), [0, 3, 4, 7, 8]);
-    assert_eq!(ir.default_options(), (1 << 3) | (1 << 4) | (1 << 7) | (1 << 8));
+    assert_eq!(names, ["suicide_costs", "bounce_points", "bounced_costs", "monster_double"]);
+    assert_eq!(ir.option_offsets(), [0, 1, 4, 5]);
+    assert_eq!(ir.default_options(), 1 | (1 << 1) | (1 << 4) | (1 << 5));
 
-    // The defaults: a single scores 1, a double 2 (3 for the chain of
-    // two), and a kill and a suicide as Slayer's.
+    // The defaults: a kill scores nothing, a single scores 1, a double 2
+    // (3 for the chain of two), and a death with no killer or by the
+    // player's own hand costs a point.
     let mut g = FakeGame::with_players(2);
     let mut vm = Vm::new(ir.clone(), ir.default_options(), 1).unwrap();
     vm.begin_tick(1);
+    assert_eq!(vm.fire(&mut g, Input::Kill { victim: 0, killer: Some(1) }), Fired::Ran);
+    assert!(scores(&g).is_empty(), "a kill scores 0");
     assert_eq!(vm.fire(&mut g, bounce(1, 77, 1, false)), Fired::Ran);
     assert_eq!(vm.fire(&mut g, bounce(1, 78, 2, false)), Fired::Ran);
     assert_eq!(vm.player_var(1, "bounces"), Some(2));
     assert_eq!(scores(&g), vec![(1, 1), (1, 2)]);
     assert_eq!(scores(&g).iter().map(|s| s.1).sum::<i32>(), 3);
-    vm.fire(&mut g, Input::Kill { victim: 0, killer: Some(1) });
     vm.fire(&mut g, Input::Kill { victim: 1, killer: None });
-    assert_eq!(scores(&g)[2..], [(1, 1), (1, -1)]);
+    vm.fire(&mut g, Input::Kill { victim: 1, killer: Some(1) });
+    vm.fire(&mut g, Input::Kill { victim: 1, killer: Some(0) });
+    assert_eq!(scores(&g)[2..], [(1, -1), (1, -1)]);
 
     // A chain of eight scores 1 to 6 and then 6 a bounce: the multiplier
     // stops at Bouncetacular's 6.
@@ -512,24 +512,26 @@ fn superbounce_scores_slayers_kills_and_each_bounce_by_its_chain() {
     assert_eq!(scores(&g), vec![(0, -1), (1, 2), (1, 12)]);
 
     // With the suicide penalty off, the Bounced penalty takes the point:
-    // bounce points raw 0, the Bounced penalty on (bit 7).
+    // bounce points raw 0, the Bounced penalty on (bit 4).
     let mut g = FakeGame::with_players(2);
-    let mut vm = Vm::new(ir.clone(), 1 << 7, 1).unwrap();
+    let mut vm = Vm::new(ir.clone(), 1 << 4, 1).unwrap();
     vm.begin_tick(1);
     vm.fire(&mut g, Input::Bounced(0));
     vm.fire(&mut g, Input::Kill { victim: 0, killer: None });
     assert_eq!(scores(&g), vec![(0, -1)]);
     assert_eq!(vm.player_var(0, "bounces"), Some(0));
 
-    // Bounce points 2, every penalty and the double off: kill points raw
-    // 0, the suicide option off, bounce points raw 2 (bits 4 to 6).
+    // Bounce points 2, every penalty and the double off: the suicide option
+    // off, bounce points raw 2 (bits 1 to 3). Kills and falls score
+    // nothing.
     let mut g = FakeGame::with_players(2);
-    let mut vm = Vm::new(ir.clone(), 2 << 4, 1).unwrap();
+    let mut vm = Vm::new(ir.clone(), 2 << 1, 1).unwrap();
     vm.begin_tick(1);
     vm.fire(&mut g, bounce(0, 77, 1, false));
     vm.fire(&mut g, bounce(0, 77, 3, true));
     vm.fire(&mut g, Input::Bounced(0));
     vm.fire(&mut g, Input::Kill { victim: 0, killer: None });
+    vm.fire(&mut g, Input::Kill { victim: 1, killer: Some(0) });
     assert_eq!(scores(&g), vec![(0, 2), (0, 6)]);
     assert_eq!(vm.player_var(0, "bounces"), Some(2));
 
