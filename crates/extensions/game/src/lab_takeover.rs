@@ -56,13 +56,16 @@ struct Form {
     anchor: i16,
 }
 
-// Row 0's frame art tops out 30 units above the anchor (4 below the row
-// top plus 34, `ui_kit::view` item art), rows are 22 apart and the last
-// row's bottom is 10 under its anchor. The body's ink ends 19 units a line
-// below `dialog::BODY_TOP` (72), and the footer's top is -83.
+// The dialog's list is on skin 0 (`ui_kit::view` item art): row 0's frame
+// art tops out 33 units above the anchor at most (the cap is 34 high, from
+// 1 below the anchor, or 4 below on the Controls skin), rows are 22 apart
+// and the last row's cap reaches 4 below its anchor. The body's ink ends
+// 19 units a line below `dialog::BODY_TOP` (72), and the footer's top is
+// -83.
 //
-// Four body lines end at -4: at -34 the frame's top (-4) clears them, and
-// row 1's bottom (-66) stays above the footer.
+// Four body lines end at -4: at -38 the frame's top (-5) clears them, and
+// row 1's cap (-64 to -68) stays above the footer. Rows lower than the
+// main menu's logo (its bottom is -19) keep the labels' contrast.
 const START: Form = Form {
     ask: Ask::Start,
     screen: SCREEN,
@@ -71,11 +74,13 @@ const START: Form = Form {
     first_id: 2,
     answers: &[Decision::Declined, Decision::Allowed],
     dismissed: Decision::Declined,
-    anchor: -34,
+    anchor: -38,
 };
 
-// Three body lines end at 15: at -20 the frame's top (10) clears them, and
-// row 2's bottom (-74) stays above the footer.
+// Three body lines end at 15, well above the frame's top (-2). At -35 row
+// 0 sits lower than the consent question's row 0 did when its label kept
+// its contrast over the logo, and row 2's cap (-83 at the lowest) meets
+// the footer's top without reaching it.
 const RUNNING: Form = Form {
     ask: Ask::Running,
     screen: RUNNING_SCREEN,
@@ -88,7 +93,7 @@ const RUNNING: Form = Form {
         Decision::StopAndPause,
     ],
     dismissed: Decision::FinishThis,
-    anchor: -20,
+    anchor: -35,
 };
 
 fn form(ask: Ask) -> &'static Form {
