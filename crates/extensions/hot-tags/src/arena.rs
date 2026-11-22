@@ -539,9 +539,9 @@ mod tests {
     #[test]
     fn the_window_is_whole_pages_inside_the_hle_reservation() {
         assert!(WINDOW.start.is_multiple_of(PAGE) && WINDOW.end.is_multiple_of(PAGE));
-        assert!(WINDOW.start >= 0xa000_0000 && WINDOW.end <= 0xa100_0000);
+        const { assert!(WINDOW.start >= 0xa000_0000 && WINDOW.end <= 0xa100_0000) };
         // Clear of the NV2A window's pages and DirectSound's arena.
-        assert!(WINDOW.start >= 0xa040_3000 + PAGE);
-        assert!(WINDOW.end <= 0xa080_0000);
+        const { assert!(WINDOW.start >= 0xa040_3000 + PAGE) };
+        const { assert!(WINDOW.end <= 0xa080_0000) };
     }
 }
