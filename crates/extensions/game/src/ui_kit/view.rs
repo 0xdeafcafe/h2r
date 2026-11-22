@@ -119,8 +119,6 @@ impl Opener {
             "Quick Options...",
             "Halo 1 Options...",
             "Clanker Options...",
-            "Switch To: Co-Op Game",
-            "Switch To: Matchmaking",
         ],
         focus: 3,
     };
@@ -139,8 +137,6 @@ impl Opener {
             "Quick Options...",
             "Clanker Options...",
             "Firefight Options...",
-            "Switch To: Co-Op Game",
-            "Switch To: Matchmaking",
         ],
         focus: 4,
         ..Opener::GAME_SETUP
@@ -153,8 +149,7 @@ impl Opener {
             crate::lobby_mode::FORGE_MAP_LABEL,
             "Change Rules...",
             "Quick Options...",
-            "Switch To: Co-Op Game",
-            "Switch To: Matchmaking",
+            "Clanker Options...",
         ],
         focus: 1,
         ..Opener::GAME_SETUP

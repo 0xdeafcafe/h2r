@@ -831,10 +831,8 @@ pub(crate) fn register_late_for_profile(
     // OptiMatch playlists into the server's clanker hoppers and the rest.
     if i.allow_bot_add {
         crate::clankermatch::install(features, i.live.clone()).context("installing Clankermatch")?;
-        // The mode strip's CLANKERS tab: present with Clankermatch on, and
-        // on where the server lists a Clanker playlist.
-        let clankers = features.switches().feature(crate::clankermatch::FEATURE, true);
-        crate::lobby_tabs::set_present(|p| p.clankers = clankers);
+        // The mode strip reads the server's Clanker marks to say whether
+        // MULTIPLAYER's playlist is a Clanker one.
         crate::lobby_tabs::strip::set_live(i.live.clone());
     }
     // Back to the Xbox Live menu, the cursor is on the browser or co-op
