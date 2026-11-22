@@ -254,7 +254,8 @@ fn row_doc(r: &crate::ui_kit::spec::RowSpec) -> RowDoc {
             d.values = Some(values.clone());
             d.current = Some(*current);
         }
-        (RowKind::Info { value }, _) if value == crate::ui_kit::components::row::LOCKED => {
+        // `components::row::disabled`: a label alone, never pressed.
+        (RowKind::Info { value }, Press::Nothing) if value.is_empty() => {
             d.kind = "disabled".into();
         }
         (RowKind::Info { value }, _) => {

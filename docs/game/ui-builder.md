@@ -284,9 +284,9 @@ What the checks hold the screens to:
 
 - **Unfocused rows stay readable.** Unfocused rows draw at about 40% alpha (`view::UNFOCUSED_ALPHA`, observed from a game screenshot, not traced); contrast on the real bars is 2.9 to 3.1.
 - **The skulls page keeps none of the Controls art.** It copies the level select's own bracket (`ul_02`) at run time (`ListClass::frame`); the frame provenance check names a bracket borrowed from the wrong list. Its view draws the skull picture (`ScreenSpec::art`), untinted.
-- **Legends sit in the footer.** The account and co-op screens use a footer separate from their description. Co-op offers Start and Back when applicable and leaves confirm off informational rows. The campaign options footer follows the focused Start, picker, toggle or locked row.
+- **Legends sit in the footer.** The account and co-op screens use a footer separate from their description. Co-op offers Start and Back when applicable and leaves confirm off informational rows. The skulls pages' footer follows the focused row: Start Level, a row whose A opens the picker, or a locked skull (`skulls_menu::RowLegend`), the same on the campaign page and the multiplayer one.
 
-**The full-height Game Options list.** The Game Options page lays out
+**The full-height skulls list.** The campaign Skulls page lays out
 13 rows
 (`skulls_menu::VISIBLE_ROWS`), down to y -156. The level select's bracket
 (`ul_02`, `[177 -259 -79 -131]`) ends at -79, so rows 8 to 13 run past
@@ -714,9 +714,9 @@ owned disc's fonts and row art, then blends it over the published film
 picture. The pause menu's pickers keep their parent focused behind them.
 `ui.screen` and `ui.input` use that same playback model.
 
-The Video and Voice screens use `ui::Model::press`. The skulls are
-direct toggles. More Options (`variant_page`) and the Halo 1 Assets and
-HUD rows open the kit picker on A. Back dismisses a picker without
+The Video and Voice screens use `ui::Model::press`. More Options
+(`variant_page`), the skulls pages' collected skulls (On and Off) and the
+Halo 1 Assets and HUD rows open the kit picker on A. Back dismisses a picker without
 changing the held value.
 
 `h2 ui preview kit.picker` and `kit.picker.game` draw it (the kit's
@@ -805,7 +805,7 @@ sack, flag, bomb, four squares, banner of three stars, question mark.
 | Halo 1 Options | Sandbox | `BOMB` | Weapons, vehicles and health, from the next game. |
 | Halo 1 Options | HUD | `HELMET` | Shields, health, motion tracker and ammo counter. |
 
-(Halo 1's Assets row, on the campaign's Game Options page, has
+(Halo 1's Assets row, on the campaign's Skulls page, has
 `SPARTAN`.) Each line is 52 characters at most, inside the 494-unit
 help line on the kit's measure and in the disc's font 1.
 
@@ -959,9 +959,9 @@ The glue (`list_class` events, `TEXT_SET`, tints) keeps its runner tests
   `h2 ui preview --press`. `screens::live(name)` is every native screen's
   page, and `screens::states` and `sample` come from it, so the sheet
   draws exactly the states the tables start from.
-- **`ListPage`**: every list screen (Game Options, the Halo 1 options and
-  multiplayer skulls, the three co-op screens, the kit's example) is its
-  real `ListClass` stepped offline. An event goes through the class's own
+- **`ListPage`**: every list screen (the skulls pages, the Halo 1
+  options, the three co-op screens, the kit's example) is its real
+  `ListClass` stepped offline. An event goes through the class's own
   hook, then `list_class::route` (the same pure function the runtime's
   `event_with` uses: action buttons, then sideways steps), then the
   Controls handler: up and down move the focus, A presses the row
@@ -990,9 +990,10 @@ The glue (`list_class` events, `TEXT_SET`, tints) keeps its runner tests
   call ends). Typed text and server answers are events.
 
 The tables (`ui_kit/page/tests.rs`, `live_hle::signin` tests) cover every
-row of the list above, plus Game Options (Start Level's A runs the action,
-X and Start don't, left, right and A step a skull, a locked skull stays
-locked), the co-op screens (Start starts or readies, Invite a Friend opens
+row of the list above, plus the skulls pages (Start Level's A runs the
+action, X and Start don't, A opens the picker on a collected skull and
+does nothing on a locked one, left and right do nothing, each row kind's
+legend the same on both pages), the co-op screens (Start starts or readies, Invite a Friend opens
 the friends list), the account menu, and every screen taking every input
 in every state with its spec still passing the kit's checks.
 
@@ -1098,7 +1099,12 @@ change to a screen's Rust, then the tests.
 `scrolls` and `over`; `build()` derives the inputs its rows and legend
 need. `components::row` makes each kind of row (`action`, `open`,
 `value`, `pick`, `info`, `text`, `disabled`) and `components::legend` the
-common prompts. `legend::well_formed` is the legend's format: each
+common prompts and the legends by row kind (`setting_row`: `A CHANGE  B
+BACK` on a row whose A opens the picker; `disabled_row`: `B BACK` alone).
+A `disabled` row is its label alone, with nothing where a value goes, and
+never pressed; its help line says why. On the level select's one-text
+skin a `pick` row's value is in its label (`row.pick-inline`, the skulls
+pages' rows). `legend::well_formed` is the legend's format: each
 prompt's glyphs two spaces apart, one space, its words in capitals,
 prompts two spaces apart.
 
