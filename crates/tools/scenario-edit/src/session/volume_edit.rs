@@ -1,5 +1,4 @@
-//! Editing trigger volumes and kill triggers (docs/editor/polish-plan.md,
-//! slice P9): move, turn and resize a box through the gizmo, set its frame
+//! Editing trigger volumes and kill triggers (docs/editor/editor.md): move, turn and resize a box through the gizmo, set its frame
 //! exactly, add one, make a kill volume, and remove one. Each is one undo
 //! step; a gizmo gesture is one step however many frames it runs.
 //!

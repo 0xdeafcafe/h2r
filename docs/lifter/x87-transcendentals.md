@@ -179,7 +179,7 @@ exponent range. Directed guest RC retains the original unmodelled response.
 
 ## Oracle and sweeps
 
-`scripts/x87-trans-oracle.c` uses independent MPFR 4.2+ directed 1024-bit
+The fixture generator (scripts/x87-trans-oracle.c, removed; see git history) used independent MPFR 4.2+ directed 1024-bit
 bounds. Both bounds must agree on the 64-bit result and rounding flags;
 otherwise fixture generation fails. It then independently rounds that
 ext80 result to PC=53 and PC=24, including halfway cases made from exact
@@ -218,12 +218,10 @@ H2_X87_NATIVE=1 cargo test --release -p emit --test differential --features x87/
 cargo clippy -p x87 -p emit --all-targets --features x87/fast-trans -- -D warnings
 ```
 
-Regenerate fixtures, if MPFR is installed:
-
-```sh
-cc -Wall -Wextra -Werror scripts/x87-trans-oracle.c $(pkg-config --cflags --libs mpfr gmp) -o "$TMPDIR/x87-trans-oracle"
-"$TMPDIR/x87-trans-oracle" > crates/recompiler/x87/tests/data/trans_oracle.txt
-```
+`crates/recompiler/x87/tests/data/trans_oracle.txt` is the committed output.
+To regenerate it, restore the generator from git history
+(`git log --diff-filter=D -- scripts/x87-trans-oracle.c`) and build it
+against MPFR and GMP.
 
 ## Trig and atan2
 
