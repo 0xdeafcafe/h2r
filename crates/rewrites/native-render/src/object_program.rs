@@ -81,6 +81,13 @@ pub fn object_layer3(material: &tags::material::Material) -> Result<&tags::mater
 /// `MaterialProgram::inherits_cull`; the pass resolves every field it
 /// leaves at the layer-3 call, `object_state::resolve`).
 pub fn object_pass_state(imp: &ResolvedImplementation) -> Result<crate::pass_state::PassState, String> {
+    object_pass_state_with(imp, false)
+}
+
+/// [`object_pass_state`], a blend the implementation sets kept when
+/// `blends` (a world layer's pass other than layer 3's,
+/// [`object_layer_pass`]).
+fn object_pass_state_with(imp: &ResolvedImplementation, blends: bool) -> Result<crate::pass_state::PassState, String> {
     if !imp.engine_render_states.is_empty() {
         return Err("engine-driven render states".into());
     }
@@ -88,7 +95,7 @@ pub fn object_pass_state(imp: &ResolvedImplementation) -> Result<crate::pass_sta
         return Err("engine-driven stage states".into());
     }
     let mut state = crate::pass_state::pass_state_with_fog(&imp.render_states, true).map_err(|e| format!("{e:?}"))?;
-    if state.blend.is_some() {
+    if state.blend.is_some() && !blends {
         return Err("the pass blends".into());
     }
     if !sets_cull(imp) {
@@ -142,9 +149,52 @@ pub fn object_pass(
     fetch: [shaders::vsh::InputFetch; 16],
     lightmap: bool,
 ) -> Result<ObjectPass, String> {
-    let state = object_pass_state(imp)?;
+    object_pass_with(pass, imp, microcode, provided, fetch, lightmap, false)
+}
+
+/// The passes of an object material's world layer `layer` (first level
+/// of detail, in the order `0x00016610` draws them), or why none: the
+/// layers 1, 7, 8 and 20 an object item draws besides layer 3.
+pub fn object_layer_passes(material: &tags::material::Material, layer: u8) -> Result<&[tags::material::ResolvedPass], String> {
+    material
+        .layers
+        .iter()
+        .find(|l| l.lod == 0 && l.layer == usize::from(layer))
+        .map(|l| l.passes.as_slice())
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| format!("no layer {layer}"))
+}
+
+/// [`object_pass`] for one pass of a world layer other than 3: its blend
+/// kept (the pipeline's, `object_state::resolve_layer` resolving what it
+/// inherits), and no lightmap stage, since outside layer 3 the geometry
+/// draw binds no lightmap page and adds no coordinate stream
+/// (`0x0004d28b`).
+pub fn object_layer_pass(
+    pass: map::TagId,
+    imp: &ResolvedImplementation,
+    microcode: &[u8],
+    provided: u16,
+    fetch: [shaders::vsh::InputFetch; 16],
+) -> Result<ObjectPass, String> {
+    object_pass_with(pass, imp, microcode, provided, fetch, false, true)
+}
+
+fn object_pass_with(
+    pass: map::TagId,
+    imp: &ResolvedImplementation,
+    microcode: &[u8],
+    provided: u16,
+    fetch: [shaders::vsh::InputFetch; 16],
+    lightmap: bool,
+    blends: bool,
+) -> Result<ObjectPass, String> {
+    let state = object_pass_state_with(imp, blends)?;
     let (look, EngineBound { normalization, texaccum }) = object_look_stages(pass, imp)?;
     if !lightmap && look.textures.contains(&crate::look::Stage::Lightmap) {
+        if blends {
+            return Err("a stage samples the lightmap, which the draw binds only in layer 3".into());
+        }
         return Err("a stage samples the lightmap, and the object's (the globals' default) is not uniform or does not load".into());
     }
     let mut program = compile_object_stages(&look, EngineBound { normalization, texaccum }, microcode, state.alpha_test, provided, fetch)?;
@@ -801,5 +851,52 @@ pub(crate) mod tests {
         }
         let e = compile_object(&look, &reads(O::c_rel(18)), None, WORLD).unwrap_err();
         assert_eq!(e, "vertex program reads c[a0.x + 18], outside the node rows");
+    }
+
+    #[test]
+    fn a_world_layers_pass_keeps_its_blend_and_cannot_sample_the_lightmap() {
+        use gfx::state::{BlendFactor, RenderStateType as R};
+        use tags::material::{StageTexture, TextureSource};
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let state = |t: R, value: u32| tags::shader::RenderStateValue {
+            state: (0..=255u8).find(|&s| R::from_guest_index(&table, u32::from(s)) == Some(t)).expect("a slot"),
+            value,
+        };
+        let mut imp = lit();
+        imp.render_states = vec![
+            state(R::AlphaBlendEnable, 1),
+            state(R::SrcBlend, BlendFactor::One.xbox_value()),
+            state(R::DestBlend, BlendFactor::One.xbox_value()),
+        ];
+        let fetch = [shaders::vsh::InputFetch::Float; 16];
+        let pass = map::TagId(0xe000_0001);
+        assert!(object_pass(pass, &imp, &rigid_program(), WORLD, fetch, true).unwrap_err().contains("blends"), "layer 3's refuse it");
+        let p = object_layer_pass(pass, &imp, &rigid_program(), WORLD, fetch).unwrap();
+        assert!(p.program.state.as_ref().unwrap().blend.is_some(), "the pipeline's blend");
+        // Outside layer 3 the draw binds no lightmap page.
+        imp.textures[3] = Some(StageTexture { source: TextureSource::Lightmap, size: None, stage_size: None });
+        imp.pixel_shader = shaders::PixelShaderDef { texture_modes: 1 << 15, ..Default::default() }.to_bytes();
+        let e = object_layer_pass(pass, &imp, &rigid_program(), WORLD, fetch).unwrap_err();
+        assert!(e.contains("only in layer 3"), "{e}");
+    }
+
+    #[test]
+    fn a_materials_world_layer_passes_are_its_first_level_of_details() {
+        use tags::material::{ResolvedLayer, ResolvedPass};
+        let layer = |lod, layer, passes: usize| ResolvedLayer {
+            lod,
+            layer,
+            passes: (0..passes).map(|index| ResolvedPass { index, pass: map::TagId(0xe000_0001), implementations: vec![lit()] }).collect(),
+        };
+        let material = tags::material::Material {
+            shader: map::TagId(0xe000_0010),
+            template: map::TagId(0xe000_0011),
+            inputs: Default::default(),
+            layers: vec![layer(0, 3, 1), layer(0, 7, 2), layer(1, 8, 1), layer(0, 20, 0)],
+        };
+        assert_eq!(object_layer_passes(&material, 7).unwrap().len(), 2);
+        assert_eq!(object_layer_passes(&material, 8).unwrap_err(), "no layer 8", "only a lower level of detail's");
+        assert_eq!(object_layer_passes(&material, 20).unwrap_err(), "no layer 20", "no passes");
+        assert_eq!(object_layer_passes(&material, 1).unwrap_err(), "no layer 1");
     }
 }

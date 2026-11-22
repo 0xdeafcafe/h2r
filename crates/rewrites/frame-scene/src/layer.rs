@@ -10,7 +10,7 @@ use std::ops::Range;
 use serde::Serialize;
 
 use crate::object::{Defaults, ItemKey, Lighting};
-use crate::scene::InstanceKey;
+use crate::scene::{InstanceKey, PartFlags, Subparts};
 
 /// What a layer item's render record draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -41,6 +41,60 @@ pub struct LayerItem {
     /// lighting (`[0x00485a58]` is 0). The lightmap cycle's coefficients
     /// reach a layer's draws only through it ([`LayerInputs`]).
     pub lighting: Option<Lighting>,
+    /// What an object item's render record makes the geometry draw
+    /// (`0x0004d0b0`) do beyond its material, as a layer-3 part's
+    /// ([`PartFlags`]; the stencil mark only in layers 1 and 3); none for
+    /// the structure's.
+    pub flags: PartFlags,
+    /// With [`PartFlags::SUBPARTS`], the subparts the emitter draws.
+    pub subparts: Option<Subparts>,
+    /// Why an object item's draw is not one the scene can reproduce: a
+    /// named cause, the item's guest draw kept. `None` for one that is,
+    /// and for the structure's.
+    pub refusal: Option<LayerObjectRefusal>,
+}
+
+/// Why an object item of a layer draw keeps its guest draw: what the
+/// geometry draw `0x0004d0b0` does for it that the scene does not carry
+/// (**Code**, the module notes of `scene_extract::layout::object_walk`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+pub enum LayerObjectRefusal {
+    /// The record's fade byte (`+0x1a`) is not `0xff`: the prologue
+    /// (`0x0004d640`) changes a render state from it.
+    Fade,
+    /// The shader's flag bit 0 (`+0x16`): the draw walks the model's
+    /// attachments (`0x0004d486`) and may call `0x0003bea0`.
+    ShaderFlag,
+    /// The item's argument has a high byte, or its `+0x14` is set: the
+    /// pass setup (`0x0004d9c0`) takes them.
+    Argument,
+    /// Layer 5: the draw adds a stream of its own for an object's record
+    /// (`0x00024040`, `0x00024490`), which is not read.
+    Layer5Stream,
+    /// No bit 9 on a part that is not a triangle list.
+    Topology,
+    /// The visible subparts do not read.
+    Subparts,
+    /// Bit 11, and the auxiliary state toggle's inputs do not read.
+    AuxState,
+    /// The part, its model or its record does not read.
+    Unread,
+}
+
+impl LayerObjectRefusal {
+    /// The cause's name, as `render.scene` counts it.
+    pub fn name(self) -> &'static str {
+        match self {
+            LayerObjectRefusal::Fade => "object_fade",
+            LayerObjectRefusal::ShaderFlag => "object_shader_flag",
+            LayerObjectRefusal::Argument => "object_argument",
+            LayerObjectRefusal::Layer5Stream => "object_layer5_stream",
+            LayerObjectRefusal::Topology => "object_topology",
+            LayerObjectRefusal::Subparts => "object_subparts",
+            LayerObjectRefusal::AuxState => "object_aux_state",
+            LayerObjectRefusal::Unread => "object_unread",
+        }
+    }
 }
 
 /// One layer draw of a view.

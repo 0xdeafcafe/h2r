@@ -387,6 +387,24 @@ pub struct SkipItem {
     pub shader: u32,
 }
 
+/// One item of a layer draw's list as the skip sees it: a structure
+/// item, or an object's by its slot and shader datum (what the scene's
+/// [`LayerItem`] for it holds: the plan decides it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrefixItem {
+    World(SkipItem),
+    Object { slot: u32, shader: u32 },
+}
+
+impl PrefixItem {
+    pub fn slot(self) -> u32 {
+        match self {
+            PrefixItem::World(i) => i.slot,
+            PrefixItem::Object { slot, .. } => slot,
+        }
+    }
+}
+
 /// Clears `layer`'s bit on the longest run of the current list's items,
 /// from its first, that are structure geometry items `native` accepts:
 /// the native pass records before the guest's layer draw, so what it
@@ -400,6 +418,30 @@ pub fn clear_prefix(
     layer: u32,
     native: &dyn Fn(SkipItem) -> bool,
 ) -> Option<(Vec<SkipItem>, crate::skip::Cleared)> {
+    let (drawn, cleared) = clear_layer_prefix(mem, layer, &|item| match item {
+        PrefixItem::World(i) => native(i),
+        PrefixItem::Object { .. } => false,
+    })?;
+    let drawn = drawn
+        .into_iter()
+        .map(|i| match i {
+            PrefixItem::World(i) => i,
+            PrefixItem::Object { .. } => unreachable!("refused above"),
+        })
+        .collect();
+    Some((drawn, cleared))
+}
+
+/// [`clear_prefix`] over structure and object items alike: the run from
+/// the list's first item of the layer that are geometry items `native`
+/// accepts, a structure item's with its owner and part, an object's by
+/// its slot and shader. The walk stops at the first item of the layer it
+/// refuses or that is another build.
+pub fn clear_layer_prefix(
+    mem: &mut dyn crate::camera::GuestWrite,
+    layer: u32,
+    native: &dyn Fn(PrefixItem) -> bool,
+) -> Option<(Vec<PrefixItem>, crate::skip::Cleared)> {
     use crate::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, MAX_ITEMS, RENDER_RECORD_SIZE, RENDER_RECORDS};
     use crate::world::Owner;
     if layer >= 32 || mem.read_u32(CURRENT_LAYER)? != layer {
@@ -433,16 +475,18 @@ pub fn clear_prefix(
             break;
         }
         let base = RENDER_RECORDS + RENDER_RECORD_SIZE * record as u32;
-        if mem.read_u32(base + 4)? != u32::MAX {
-            break; // an object's
-        }
-        let packed = mem.read_u32(base + 0xc)?;
-        let owner = if mem.read_u32(base)? & (1 << 12) == 0 {
-            Owner::Cluster((packed >> 9) & 0x1ff)
+        let shader = mem.read_u32(item + 8)?;
+        let found = if mem.read_u32(base + 4)? != u32::MAX {
+            PrefixItem::Object { slot: i, shader }
         } else {
-            Owner::Instance((packed >> 18) & 0x7ff)
+            let packed = mem.read_u32(base + 0xc)?;
+            let owner = if mem.read_u32(base)? & (1 << 12) == 0 {
+                Owner::Cluster((packed >> 9) & 0x1ff)
+            } else {
+                Owner::Instance((packed >> 18) & 0x7ff)
+            };
+            PrefixItem::World(SkipItem { slot: i, owner, part: arg as u8, shader })
         };
-        let found = SkipItem { slot: i, owner, part: arg as u8, shader: mem.read_u32(item + 8)? };
         if !native(found) {
             break;
         }
@@ -456,6 +500,37 @@ pub fn clear_prefix(
         drawn.push(found);
     }
     Some((drawn, cleared))
+}
+
+/// The stencil a world layer's items draw under, and whether the device
+/// must already hold stencil mode 1 for the guest's draws to be skipped
+/// state-neutrally: the geometry draw's prologue (`0x0004d640`) sets a
+/// stencil mode only in layers 1 and 3, mode 0 when the stencil-off flags
+/// are set and mode 2 for a marked object's record, and its epilogue
+/// (`0x0004d720`) leaves mode 1 after either. So in layer 1 with the
+/// stencil off the items draw with the stencil disabled and the device
+/// must hold mode 1; with a marked item the device must hold mode 1 (the
+/// marked item's draw takes mode 2, `object_state::mark`). Otherwise, and
+/// in every other layer, the items draw under the device's stencil.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ItemStencil {
+    /// The stencil the unmarked items draw with.
+    pub stencil: gfx::state::StencilState,
+    /// The device must hold mode 1 (`object_state::structure_stencil(0)`).
+    pub needs_mode_1: bool,
+}
+
+/// [`ItemStencil`] for layer `layer`, the pass's `stencil_off`, the
+/// device's stencil at the layer call, and whether an item the pass
+/// takes is marked.
+pub fn item_stencil(layer: u8, stencil_off: bool, device: gfx::state::StencilState, marked: bool) -> ItemStencil {
+    if layer != 1 && layer != 3 {
+        return ItemStencil { stencil: device, needs_mode_1: false };
+    }
+    if stencil_off {
+        return ItemStencil { stencil: gfx::state::StencilState { enable: false, ..device }, needs_mode_1: true };
+    }
+    ItemStencil { stencil: device, needs_mode_1: marked }
 }
 
 /// The world's owner of a layer item, `None` for an object's.
@@ -597,7 +672,10 @@ mod tests {
     }
 
     fn item(owner: LayerOwner, implementation: usize, lighting: Option<Lighting>) -> LayerItem {
-        LayerItem { slot: 4, key: key(implementation), owner, model: u32::MAX, rows: 0..0, lighting }
+        LayerItem {
+            slot: 4, key: key(implementation), owner, model: u32::MAX, rows: 0..0, lighting,
+            flags: frame_scene::PartFlags::NONE, subparts: None, refusal: None,
+        }
     }
 
     #[test]
@@ -762,6 +840,65 @@ mod tests {
         let (drawn, cleared) = clear_prefix(&mut m, 5, &|i| i.owner != Owner::Cluster(7)).unwrap();
         assert!(drawn.is_empty() && cleared.items.is_empty());
         assert_eq!(clear_prefix(&mut m, 7, &|_| true), None, "not the current layer");
+    }
+
+    #[test]
+    fn the_skip_takes_object_items_the_plan_drew_in_the_same_run() {
+        use crate::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, RENDER_RECORD_SIZE, RENDER_RECORDS};
+        use crate::world::Owner;
+        use scene_extract::GuestRead;
+        use scene_extract::testing::Mem;
+        const LIST: u32 = 0x0060_0000;
+        const ITEMS: u32 = 0x0061_0000;
+        let mut m = Mem::default();
+        m.w(CURRENT_LAYER, 7);
+        m.w(CURRENT_LIST, LIST);
+        m.w(LIST + 4, 4);
+        m.w(LIST + 0xc, 0);
+        m.w(LIST + 0x14, ITEMS);
+        // Record 1 cluster 7, records 2 and 3 objects'.
+        for (r, model, packed) in [(1, u32::MAX, 7 << 9), (2, 0xe100_0001, 0), (3, 0xe100_0002, 0)] {
+            let base = RENDER_RECORDS + RENDER_RECORD_SIZE * r;
+            m.w(base, 0);
+            m.w(base + 4, model);
+            m.w(base + 0xc, packed);
+        }
+        for (i, record) in [(0u32, 1u32), (1, 2), (2, 1), (3, 3)] {
+            let at = ITEMS + ITEM_SIZE * i;
+            m.w(at, GEOMETRY_BUILD);
+            m.w(at + 8, 0xe000_0010 + i);
+            m.w(at + 0xc, record << 8);
+            m.w(at + 0x10, 1 << 7);
+        }
+        // The plan drew the object item at slot 1, not the one at 3.
+        let (drawn, cleared) = clear_layer_prefix(&mut m, 7, &|i| match i {
+            PrefixItem::World(_) => true,
+            PrefixItem::Object { slot, shader } => slot == 1 && shader == 0xe000_0011,
+        })
+        .unwrap();
+        assert_eq!(drawn.iter().map(|i| i.slot()).collect::<Vec<_>>(), [0, 1, 2], "the object between the structure's");
+        assert_eq!(drawn[1], PrefixItem::Object { slot: 1, shader: 0xe000_0011 });
+        assert!(matches!(drawn[2], PrefixItem::World(SkipItem { owner: Owner::Cluster(7), .. })));
+        assert_eq!(cleared.items.len(), 3);
+        assert_eq!(m.read_u32(ITEMS + 3 * ITEM_SIZE + 0x10), Some(1 << 7), "the refused object keeps its draw");
+        // The structure-only skip stops at the object.
+        for i in 0..4 {
+            m.w(ITEMS + ITEM_SIZE * i + 0x10, 1 << 7);
+        }
+        let (drawn, _) = clear_prefix(&mut m, 7, &|_| true).unwrap();
+        assert_eq!(drawn.len(), 1);
+    }
+
+    #[test]
+    fn layer_1_items_draw_unstenciled_with_the_stencil_off_and_need_mode_1_to_skip() {
+        let device = crate::object_state::structure_stencil(0);
+        let off = item_stencil(1, true, device, false);
+        assert!(!off.stencil.enable && off.needs_mode_1, "the prologue's mode 0, the epilogue's mode 1");
+        assert_eq!(item_stencil(1, false, device, false), ItemStencil { stencil: device, needs_mode_1: false });
+        assert!(item_stencil(1, false, device, true).needs_mode_1, "a marked item's epilogue leaves mode 1");
+        for layer in [5, 7, 8, 20] {
+            assert_eq!(item_stencil(layer, true, device, true), ItemStencil { stencil: device, needs_mode_1: false }, "layer {layer}");
+        }
     }
 
     #[test]

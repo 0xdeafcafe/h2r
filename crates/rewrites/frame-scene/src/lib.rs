@@ -31,7 +31,7 @@ pub use decorator::{DecoratorCounts, DecoratorDraw, DecoratorInstance};
 pub use late::{
     DeviceFog, FOG_WORDS, FogState, LateCounts, LateInput, LateLayer, LateMaterial, LatePart, PostEffect, PostParams, WaterState,
 };
-pub use layer::{LayerInputs, LayerItem, LayerOwner, LayerPass};
+pub use layer::{LayerInputs, LayerItem, LayerObjectRefusal, LayerOwner, LayerPass};
 pub use light::{Light, LightCandidate, LightConstants, LightProjection, LightStep, LightTarget, LightVariants, LightVolume, SceneLight};
 pub use light_group::{GroupSite, LightBinding, LightEntry, LightGroup, LightPose, LightStream, ObjectShadow, PROJECTION_ROWS, Topology};
 pub use node::{NODE_MATRIX_SIZE, NodeMatrix};
