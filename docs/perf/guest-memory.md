@@ -2,7 +2,7 @@
 
 Status: Built.
 Code: `crates/recompiler/emit/c/h2fastmem.h` and `h2gen.h` (the generated side), `crates/recompiler/emit/src/c.rs` (register homes), `crates/runtime/runtime/src/ffi/memory.rs`, `exec.rs`, `direct.rs`, `perf.rs` (the runtime side). Tests: `crates/recompiler/emit/tests/{direct,exits,homes,fast_copy,perf}.rs`.
-Switch: `H2_FASTMEM` (on), `H2_DIRECT_CALLS` (on), `H2_ACCESS_COUNT` (on), `H2_PERF` (off); listed in [switches.md](../runtime/switches.md).
+Switch: `H2_FASTMEM` (on), `H2_DIRECT_CALLS` (on), `H2_ACCESS_COUNT` (on, the block clock), `H2_PERF` (off); listed in [switches.md](../runtime/switches.md).
 
 Generated code reaches guest RAM, calls other generated handlers and
 leaves to the runtime through the paths below. Each exists to keep a
@@ -48,8 +48,11 @@ two accesses.
 
 ### Access accounting and the exit call
 
-With `H2_ACCESS_COUNT`, a handler counts its accesses and the runtime charges
-them to logical guest time (`H2_ACCOUNTING` in `h2gen.h`). With a view
+With accounting (`H2_ACCOUNTING` in `h2gen.h`, on unless
+`H2_ACCESS_COUNT=0`), a handler counts its work in a local and the runtime
+charges it to logical guest time: the plan's block costs under the default
+block clock, its accesses under `H2_ACCESS_COUNT=access`
+([block-clock-imprecise-faults.md](../runtime/block-clock-imprecise-faults.md)). With a view
 the handler spends the count inline in the RAM view
 (`h2_view_spend`, `h2_view_left`) instead of calling `h2abi_v1_charge`,
 `h2abi_v1_budget` and `h2abi_v1_exit`; the runtime settles the view after

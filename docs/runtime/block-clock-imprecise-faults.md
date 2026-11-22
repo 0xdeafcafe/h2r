@@ -1,8 +1,8 @@
 # Block clock and imprecise memory faults
 
-Status: Built. The block clock and imprecise memory faults are opt-in at build time; the census runs in every build.
+Status: Built. An image is built with the block clock and imprecise memory faults by default; the access clock and precise faults stay selectable for A/B runs and diagnostics. The census runs in every build.
 Code: `crates/runtime/runtime/src/fault_census.rs` (`FaultCensus`), `crates/recompiler/emit/src/clock.rs` (the costs), `crates/recompiler/emit/c/h2gen.h` ("Block clock"), `crates/recompiler/opt/src/flags.rs` (`Observers`). Tests: `crates/runtime/runtime/src/fault_census.rs` (unit), `crates/runtime/runtime/tests/generated.rs`, `crates/recompiler/emit/tests/block_clock.rs`, `crates/recompiler/opt/tests/flags.rs`.
-Switch: `H2_ACCESS_COUNT=block` (the block clock; the access clock by default) and `H2_PASSES=all,imprecise-faults` (imprecise memory faults; precise by default), listed in [switches.md](switches.md).
+Switch: `H2_ACCESS_COUNT=access` (the access clock; the block clock by default) and `H2_PASSES=all` or `default,-imprecise-faults` (precise memory faults; imprecise by default), listed in [switches.md](switches.md).
 
 Item 3 of the [architecture review](../reviews/2026-11-20-architecture.md)
 (sections 1.4 and 5) changes two rules of the recompiler contract
@@ -11,7 +11,7 @@ and a guest memory fault stops being a point where the handler leaves with
 exact state. Both change where guest threads interleave, so lockstep
 traces, films and sim-diff baselines are re-recorded once, for both. Each
 is selected at build time and declared by a module feature bit, so an
-image built before them keeps the old clock and precise faults, and a
+image built without them keeps the access clock and precise faults, and a
 runtime that does not know a bit refuses the image. The rule that must
 hold: a fault exit may leave state inexact only where nothing goes on
 from that state, and the fault census is how that is checked.
@@ -46,14 +46,14 @@ with `precise_exits_needed` true when that count is not zero.
 
 ### The block clock
 
-With the access clock (`H2_ACCESS_COUNT=1`, module feature 1) a handler
+With the access clock (`H2_ACCESS_COUNT=access`, module feature 1) a handler
 counts its loads and stores (`H2_ACC_ONE`) and the slice ends when the
 count reaches the budget. The count depends on how a backend performs
 accesses and calls, so two backends cannot share a lockstep session and a
 native port moves every later slice boundary.
 
-The block clock (`H2_ACCESS_COUNT=block`, module feature 64) counts a cost
-the plan assigns instead (`emit::clock`):
+The block clock (the default, `H2_ACCESS_COUNT` unset or `block`; module
+feature 64) counts a cost the plan assigns instead (`emit::clock`):
 
 - entering a handler with its function entry as the selector charges the
   entry block's guest instruction count (`H2_CLOCK(n)` in the selector
@@ -85,8 +85,9 @@ units.
 
 ### Imprecise memory faults
 
-With the pass spec `imprecise-faults` (`H2_PASSES=all,imprecise-faults`;
-`all` alone leaves it off), loads and stores stop observing the flags in
+With the pass spec `imprecise-faults` (in `opt::Passes::DEFAULT`, which
+`H2_PASSES` unset or `default` selects; `all` alone leaves it off), loads
+and stores stop observing the flags in
 `opt`'s dead-flag analysis (`flags::Observers::IMPRECISE_FAULTS`): a flag
 write that is rewritten before anything else observes it dies even with an
 access in between, and the formulas that fed it go with it. A faulting
@@ -97,22 +98,27 @@ Calls, returns, loop polls, `FaultIf` (divide errors), stops, intrinsics,
 
 `opt::Report::imprecise_faults` says a function was planned this way, and
 the emitter then declares `H2GEN_FEATURE_IMPRECISE_FAULTS` (128) for the
-module. The runtime accepts the bit; the census counts a continuation from
+module; the Cranelift tier's registry (`clif::registry_c`) declares it the
+same way. The runtime accepts the bit; the census counts a continuation from
 a fault while the bit is registered as `continued_imprecise` as well, and
 logs the first one: that is the case the rule forbids.
 
 It is safe while `continued_generated` stays 0 over the runs that matter,
 because then no fault's EFLAGS is ever read. A future SEH dispatch or
 fault recovery that goes on from a generated memory fault needs an image
-without the bit.
+without the bit (`H2_PASSES=all`).
 
 ## Interfaces
 
 | Module feature | Bit | Selected by | Runtime |
 |---|---|---|---|
-| `H2GEN_FEATURE_ACCOUNTING` | 1 | `H2_ACCESS_COUNT` unset or `1` | the access clock, counted by the handler |
-| `H2GEN_FEATURE_BLOCK_CLOCK` | 64 | `H2_ACCESS_COUNT=block` | needs bit 1; one clock per dispatch; `HLE_COST` per Rust handler |
-| `H2GEN_FEATURE_IMPRECISE_FAULTS` | 128 | `H2_PASSES=…,imprecise-faults` | accepted; the census counts `continued_imprecise` |
+| `H2GEN_FEATURE_ACCOUNTING` | 1 | `H2_ACCESS_COUNT` unset, `block` or `access` | alone: the access clock, counted by the handler |
+| `H2GEN_FEATURE_BLOCK_CLOCK` | 64 | `H2_ACCESS_COUNT` unset or `block` | needs bit 1; one clock per dispatch; `HLE_COST` per Rust handler |
+| `H2GEN_FEATURE_IMPRECISE_FAULTS` | 128 | `H2_PASSES` unset, `default`, or a spec naming `imprecise-faults` | accepted; the census counts `continued_imprecise` |
+
+`H2_ACCESS_COUNT=0` declares neither 1 nor 64: the runtime charges each
+accessor call, as it does for the Cranelift tier, which declares at most
+bit 128.
 
 Bits 2, 4, 8 and 32 are direct calls, the lent view, the entry table and
 host calls; 16 is flat RAM (`H2_FLAT_RAM=1`,
@@ -136,9 +142,11 @@ None of them changes the clock.
   (`RegistrationError::BlockClockWithoutAccounting`), and so is a module
   whose clock differs from a module already registered in the same
   dispatch (`RegistrationError::MixedClock`).
-- The Cranelift tier declares no features and counts nothing. To join a
-  lockstep session with the C tier it charges the same costs at the same
-  points (`emit::clock`); that is not built.
+- The Cranelift tier declares no clock and counts nothing: the runtime
+  charges its accesses, so it runs the access clock, alone in its
+  dispatch. It cannot join a lockstep session with a clang image (their
+  stamps differ, and so do their clocks). To join one it would charge the
+  same costs at the same points (`emit::clock`); that is not built.
 - Removing what only the access clock needs (`H2_ACC_ONE`, the flush before
   calls, the exit charge, the budget read on entry) waits until the access
   clock is deleted; while both are selectable they share the plumbing.
@@ -177,8 +185,8 @@ None of them changes the clock.
   with `continued_generated` 0 and `precise_exits_needed` false.
 - Guest timing under the block clock: work moves logical time at
   `ACCESSES_PER_TICK` in block units, and `HLE_COST` is a harness choice.
-- Lockstep traces, films and sim-diff baselines re-recorded under the block
-  clock and imprecise faults.
+- Lockstep traces, films, snapshots and sim-diff baselines re-recorded
+  under the block clock and imprecise faults.
 - How much generated C and run time imprecise faults save on the game's
   code.
 
