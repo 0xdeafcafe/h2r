@@ -1480,7 +1480,7 @@ no compiler: Live's [Rules scripts](../live/live-api.md#rules-scripts)
 routes call `rules::workbench` in both homes.
 
 The **Workbench** tab is one screen. The editor is on the left with the
-check beside it (Problems, Budget, Capabilities); under them the test
+check beside it (Problems, What a map needs, Budget, Capabilities); under them the test
 (generated matches and their summary) sits beside one match's results.
 Under 1100 px the parts stack in that order. The page's other tabs are **My Scripts** and **My
 Game Types**. The layout, its states and its copy are described in
@@ -1493,8 +1493,9 @@ Game Types**. The layout, its states and its copy are described in
   against 256 KiB, the declared capabilities in the lobby's words, and
   every entry the script calls that no host can make on its carrier. The
   page checks 450 ms after typing stops and has no Check button; each
-  error with a place is a marker in the editor, and its place in the
-  Problems list selects it. A
+  error and warning with a place is a marker in the editor, and its place in the
+  Problems list selects it. The check's `labels` show as **What a map
+  needs** ([rules-language-types.md, "The workbench"](rules-language-types.md#the-workbench)). A
   check the server refuses (a source over 256 KiB) is listed as a problem
   of the whole script.
 - **Editor.** The script box is Monaco (`web/src/stats/RulesEditor.tsx`),
@@ -1502,22 +1503,30 @@ Game Types**. The layout, its states and its copy are described in
   own: the core editor (`monaco-editor/esm/vs/editor/edcore.main`, no
   bundled languages) and its one editor worker. `stats/rulesMonaco.ts`
   registers the `h2rules` language: a Monarch grammar from the lexer's
-  tokens and the parser's words (comments, keywords, `on` and its event,
-  scoped `var`, `for each`, `team n`, `text n`, literals), brackets,
+  tokens and the parser's words (comments, keywords, `const` and its
+  name, `match`, `on` and its event, scoped `var`, `for each`, `team n`,
+  `text n`, `carrier.<engine>`, the type words, a label's kinds and
+  requirement words, time literals such as `30s`, `1.5s` and `300t`, and
+  the other literals), brackets,
   auto-closing pairs, indentation and folding, and a dark theme from the
   stats site's colours. Completion, hover, signature help, go to
   definition (F12), find references (Shift+F12), the outline
-  (Ctrl/Cmd+Shift+O), semantic tokens and Format Document (Shift+Alt+F)
+  (Ctrl/Cmd+Shift+O), semantic tokens, Format Document (Shift+Alt+F),
+  quick fixes (Ctrl/Cmd+., the `actions` op over the selection) and
+  rename (F2, the `rename` op; a refused name shows the server's reason)
   ask Live's `POST /v1/rules/ide` (`{source, op, line, character}`,
-  0-based line, UTF-16 character; LSP field names back) and
+  0-based line, UTF-16 character, with `end_line` and `end_character`
+  for `actions` and `new_name` for `rename`; LSP field names back) and
   `GET /v1/rules/ide/legend`; each op waits for typing to pause, a newer
   request cancels the older one, and answers are kept per model version
-  (`web/src/lib/rulesIde.ts`, the pure half). A built-in opens read-only
+  (a rename is never kept; `web/src/lib/rulesIde.ts`, the pure half). A built-in opens read-only
   until **Use as start**. The **Insert** buttons above the editor open a
-  picker each (Declarations, Events, Actions and reads by capability in
-  the lobby's words, Control) whose rows insert a snippet at the caret;
-  the events and the API come from the completion route at a blank
-  top-level line and a blank statement, over a list the page keeps.
+  picker each (Declarations, with its Labels and "In the test map"
+  groups; Events; Actions and reads by capability in
+  the lobby's words; Control) whose rows insert a snippet at the caret;
+  the events, the API and the built-in flag labels come from the
+  completion route at a blank top-level line, a blank statement and the
+  name of a new `label` line, over a list the page keeps.
 - **The map.** A scenario's `map` (`scenario::ScenarioLabel`) lists
   things: `label` (text), `object` (the handle), `number?`, `placement?`,
   `team?` and `class?`, one of `object`, `flag`, `volume` or `spawn`.
@@ -1532,6 +1541,9 @@ Game Types**. The layout, its states and its copy are described in
   `RunError::Map` with the check's text, and nothing runs. An empty `map`
   is a map with nothing on it, not an absent one. See
   [rules-start-gate.md](rules-start-gate.md#the-check) for the texts.
+  The page edits a hand match's map under its players and offers **Add
+  what the script needs** ([rules-language-types.md, "The
+  workbench"](rules-language-types.md#the-workbench)).
 - **Run.** `workbench::run` steps a scenario (seated players with their
   units, variant fields, the map, options, seed, round time,
   and a list of events by tick) over `fake::FakeGame`, through the same

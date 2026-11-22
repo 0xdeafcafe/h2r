@@ -2,7 +2,8 @@
 // "Workbench"), loaded only by RulesEditor's dynamic import so Monaco is a
 // chunk of its own: the core editor (no bundled languages, one editor
 // worker), the `h2rules` language with its Monarch grammar, the providers
-// that ask `POST /v1/rules/ide`, the stats site's theme, and one editor
+// that ask `POST /v1/rules/ide` (quick fixes from its `actions` op and
+// rename from its `rename` op among them), the stats site's theme, and one editor
 // mounted at a time. Everything it computes is in ../lib/rulesIde.ts.
 
 import * as monaco from "monaco-editor/esm/vs/editor/edcore.main";
@@ -10,8 +11,8 @@ import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import type { Problem } from "../lib/rules";
 import {
   DEFAULT_LEGEND, IdeClient, LANGUAGE_CONFIG, LANGUAGE_ID, MONARCH, completionKindName, encodeTokens, fetchLegend,
-  fromLspRange, parseCompletions, parseFormat, parseHover, parseLocations, parseSignature, parseSymbols, parseTokens,
-  problemMarker, symbolKindName, toLsp, type IdeOp, type IdeSymbol,
+  fromLspRange, parseActions, parseCompletions, parseFormat, parseHover, parseLocations, parseRename, parseSignature,
+  parseSymbols, parseTokens, problemMarker, symbolKindName, toLsp, type IdeEdit, type IdeExtra, type IdeOp, type IdeSymbol,
 } from "../lib/rulesIde";
 
 const THEME = "h2-stats";
@@ -31,8 +32,13 @@ function signalOf(token: monaco.CancellationToken): AbortSignal {
   return c.signal;
 }
 
-const ask = (op: IdeOp, model: monaco.editor.ITextModel, position: monaco.Position | null, token: monaco.CancellationToken) =>
-  ide.request(op, model.getValue(), model.getVersionId(), position ? toLsp(position.lineNumber, position.column) : { line: 0, character: 0 }, signalOf(token));
+const ask = (op: IdeOp, model: monaco.editor.ITextModel, position: monaco.IPosition | null, token: monaco.CancellationToken, extra: IdeExtra = {}) =>
+  ide.request(op, model.getValue(), model.getVersionId(), position ? toLsp(position.lineNumber, position.column) : { line: 0, character: 0 }, signalOf(token), extra);
+
+/** The route's edits as a workspace edit of one model. */
+const workspaceEdit = (model: monaco.editor.ITextModel, edits: IdeEdit[]): monaco.languages.WorkspaceEdit => ({
+  edits: edits.map((e) => ({ resource: model.uri, textEdit: { range: fromLspRange(e.range), text: e.newText }, versionId: model.getVersionId() })),
+});
 
 /** A site colour (styles/theme.css) without its `#`, or the fallback. */
 function siteColour(name: string, fallback: string): string {
@@ -195,6 +201,35 @@ function registerLanguage(legend: string[]): void {
       parseLocations(await ask("references", model, position, token)).map((r) => ({ uri: model.uri, range: fromLspRange(r) })),
   });
 
+  // Quick fixes: the `actions` op over the selection (or the caret), each
+  // with the diagnostic it fixes, the first preferred.
+  monaco.languages.registerCodeActionProvider(LANGUAGE_ID, {
+    provideCodeActions: async (model, range, _context, token) => {
+      const end = toLsp(range.endLineNumber, range.endColumn);
+      const actions = parseActions(await ask("actions", model, { lineNumber: range.startLineNumber, column: range.startColumn }, token, { end }));
+      return {
+        actions: actions.map((a, i): monaco.languages.CodeAction => ({
+          title: a.title,
+          kind: "quickfix",
+          isPreferred: i === 0,
+          diagnostics: a.range ? [{ ...fromLspRange(a.range), message: a.message, severity: monaco.MarkerSeverity.Error, code: a.code || undefined }] : undefined,
+          edit: workspaceEdit(model, a.edits),
+        })),
+        dispose: () => {},
+      };
+    },
+  }, { providedCodeActionKinds: ["quickfix"] });
+
+  // Rename (F2): the `rename` op; a name the server refuses says why.
+  monaco.languages.registerRenameProvider(LANGUAGE_ID, {
+    provideRenameEdits: async (model, position, newName, token) => {
+      const r = parseRename(await ask("rename", model, position, token, { newName }));
+      if (!r) return { edits: [], rejectReason: "The server didn't answer the rename." };
+      if ("error" in r) return { edits: [], rejectReason: r.error };
+      return workspaceEdit(model, r.edits);
+    },
+  });
+
   monaco.languages.registerDocumentSymbolProvider(LANGUAGE_ID, {
     displayName: "Game type script",
     provideDocumentSymbols: async (model, token) => parseSymbols(await ask("symbols", model, null, token)).map(symbolOf),
@@ -236,7 +271,9 @@ export function setup(): Promise<void> {
 export interface Mounted {
   setValue(v: string): void;
   setReadOnly(ro: boolean): void;
-  setProblems(ps: readonly Problem[]): void;
+  /** The check's errors and warnings as markers; a marker's quick fixes
+   *  come from the `actions` op. */
+  setProblems(ps: readonly Problem[], warnings?: readonly Problem[]): void;
   /** Selects a check error's place and scrolls it into view. */
   reveal(p: Problem): void;
   /** Inserts a snippet at the caret, its placeholders live. */
@@ -280,13 +317,13 @@ export function mount(el: HTMLElement, value: string, readOnly: boolean, onChang
       }
     },
     setReadOnly(ro) { locked = ro; editor.updateOptions({ readOnly: ro }); },
-    setProblems(ps) {
+    setProblems(ps, warnings = []) {
       const src = model.getValue();
-      const markers = ps.flatMap((p) => {
+      const marks = (list: readonly Problem[], severity: monaco.MarkerSeverity) => list.flatMap((p) => {
         const m = problemMarker(src, p);
-        return m ? [{ ...m, severity: monaco.MarkerSeverity.Error, source: "check" }] : [];
+        return m ? [{ ...m, severity, source: "check" }] : [];
       });
-      monaco.editor.setModelMarkers(model, OWNER, markers);
+      monaco.editor.setModelMarkers(model, OWNER, [...marks(ps, monaco.MarkerSeverity.Error), ...marks(warnings, monaco.MarkerSeverity.Warning)]);
     },
     reveal(p) {
       const m = problemMarker(model.getValue(), p);
