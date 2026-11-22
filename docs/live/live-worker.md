@@ -77,15 +77,7 @@ Worker variables (`[vars]` in wrangler.toml) and secrets. The names are
 `h2-live-server`'s environment names where it has them
 (`crates/live/live-worker/src/settings.rs`).
 
-| Name | Kind | Meaning |
-|---|---|---|
-| `H2_LIVE_ID` | variable | The server id: the host in every author id. It must stay what the machine's server had. |
-| `H2_LIVE_SERVER_KEY` | secret | The server's key, base64 as in `server.key`. |
-| `H2_LIVE_PUBLIC_URL` | variable | The URL clients use, shown in discovery. Default `https://<id>`. |
-| `H2_LIVE_ADMINS` | variable | Admin gamertags, comma-separated. |
-| `H2_LIVE_INVITE_ONLY` | variable | `1`: account creation needs an invite. |
-| `H2_LIVE_PRIVATE` | variable | `1`: reads need a token too. |
-| `H2_LIVE_GAME_ART_URL` | variable | Published game art, `<public bucket URL>/art/<stamp>` (what `h2 live assets publish` prints). `/art/game/*` redirects there and `/art/emblem/*` reads its manifest and masks. With it unset, both paths return 404 and the web app uses its own art pack. |
+The variables and secrets are listed under Live Worker settings in [switches.md](../runtime/switches.md#live-worker-settings).
 
 A missing id or key, or a bad value, fails the hub's start. The request then
 answers 500 with the reason; the hub never runs as some other server.

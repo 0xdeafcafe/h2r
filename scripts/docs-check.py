@@ -10,6 +10,8 @@ Checks:
   links   relative markdown links and #anchors resolve (always fails the run)
   index   every docs/**/*.md is linked from docs/README.md (always fails)
   names   H2_* variables and impl.* switches a doc names exist in the code
+  switches  every H2_* variable the code reads has a row in
+          docs/runtime/switches.md (a `H2_FOO_*` row covers the family)
   paths   backticked crates/, platform/, scripts/, deploy/ and web/ paths exist
   style   headings that record history instead of the design
   code    docs/*.md paths cited in code comments exist (always fails), and
@@ -140,6 +142,57 @@ def check_index(all_docs):
         f"{path}: not linked from {index}"
         for path in all_docs
         if path != index and path not in linked
+    ]
+
+
+# C ABI constants and macros in generated code and its tests: H2_ names that
+# are not environment variables.
+ENV_ABI = {
+    "H2_ABI_VERSION", "H2_CALL", "H2_JUMP", "H2_RETURN", "H2_FAULT", "H2_STOP",
+    "H2_ENTRY", "H2_RESUME", "H2_RETURN_TARGET", "H2_HARNESS_EXIT", "H2_PART",
+    "H2_CLOCK", "H2_LOOP_POLL", "H2_PREEMPT", "H2_ACC_SETTLE",
+    "H2_ACC_SETTLE_POLLED", "H2_LD", "H2_LDR", "H2_ST", "H2_STR", "H2_X",
+    "H2_ACCOUNTING", "H2_ACC_REFRESH", "H2_ATOMIC", "H2_DCALL", "H2_DJUMP",
+    "H2_DIRECT_VIEW", "H2_EPILOGUE", "H2_EPILOGUE_BODY", "H2_EXIT_CALL",
+    "H2_EXPORT", "H2_FIX_ABS", "H2_FLAT_NOTE", "H2_FLAT_OWNER", "H2_GATE_DROP",
+    "H2_H", "H2_HALT", "H2_ICALL", "H2_IJUMP", "H2_LOCALS_HOMED", "H2_PART_GOTO",
+    "H2_PART_LENT", "H2_PART_RELEND", "H2_PREEMPT_LOCALS", "H2_RAISE", "H2_SETF",
+    "H2_SPAN", "H2_SPAN_LD", "H2_SPAN_ST", "H2_SSE_RUN", "H2_UNDEFF",
+    "H2_WRITE_XMM", "H2_XFER",
+    # A -D macro that only keys the compiler cache (emit/src/compile/pgo.rs).
+    "H2_PGO_PROFILE",
+    # A placeholder in a usage message (`H2_NAME=VALUE`).
+    "H2_NAME",
+}
+SWITCHES_DOC = "docs/runtime/switches.md"
+
+
+def read_env_names():
+    """H2_* names the code reads or sets: quoted literals, shell `$H2_X`
+    expansions and `H2_X=` assignments, outside C sources and markdown."""
+    pattern = r"([\"'$]|[$][{])H2_[A-Z0-9_]+|H2_[A-Z0-9_]+="
+    lines = git_lines(
+        "grep", "-ohE", pattern, "--", "crates", "web", "platform", "scripts",
+        "deploy", "justfile", ".github",
+        ":!*.md", ":!*.c", ":!*.h", ":!scripts/docs-check.py",
+    )
+    names = {ENV.search(line).group(0) for line in lines}
+    return {n for n in names if n not in ENV_ABI and not n.endswith("_")}
+
+
+def check_switches():
+    """Every H2_* variable the code reads has a row in switches.md."""
+    with open(os.path.join(ROOT, SWITCHES_DOC), encoding="utf-8") as f:
+        text = f.read()
+    listed = set(ENV.findall(text))
+    # `H2_FOO_*`, `H2_FOO*` and `H2_FOO_` cover every name with that prefix.
+    prefixes = set(re.findall(r"(H2_[A-Z0-9_]*)\*", text)) | {
+        n for n in listed if n.endswith("_")
+    }
+    return [
+        f"{SWITCHES_DOC}: {name}: read in the code, not listed"
+        for name in sorted(read_env_names())
+        if name not in listed and not any(name.startswith(p) for p in prefixes)
     ]
 
 
@@ -298,6 +351,7 @@ def main(argv):
         ("code", missing, True),
         ("code-sections", sections, False),
         ("names", check_names(files), False),
+        ("switches", check_switches(), False),
         ("paths", check_paths(files), False),
         ("style", check_style(files), False),
     ]

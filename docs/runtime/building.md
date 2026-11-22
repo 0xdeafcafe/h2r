@@ -127,11 +127,7 @@ The cross builds use cargo target directories of their own, because
 `RUSTC_BOOTSTRAP` and `-Zbuild-std` would otherwise invalidate the host
 build's artifacts, and back. Each can be moved (to another volume, say):
 
-| Variable | What it holds | Default |
-| --- | --- | --- |
-| `H2_APPLE_TARGET_DIR` | the `h2host` runtime cross-built for tvOS or iOS (`platform/apple/build.sh`) | `target/<tvos\|ios>-cross` |
-| `H2_APPLE_HOST_TARGET_DIR` | the host-side `h2` and packer that `build.sh` runs for the disc subset and game module | `target/apple-host-pack` |
-| `H2_WINDOWS_TARGET_DIR` | the Windows cross build (`platform/windows/env.sh`, so `windows-dll` and `check-windows`) | `target/windows-cross` |
+The variables are listed under Cross-build target directories in [switches.md](switches.md#cross-build-target-directories).
 
 ## The `h2` command
 
