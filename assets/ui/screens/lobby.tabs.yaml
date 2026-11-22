@@ -29,7 +29,7 @@ states:
     focus: 0
   system-link.member:
     focus: 0
-  split-screen.no-kit-map:
+  xbox-live.no-live-co-op:
     focus: 0
   split-screen.without-forge:
     focus: 0
