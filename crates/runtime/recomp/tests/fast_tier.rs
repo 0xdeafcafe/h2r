@@ -105,7 +105,8 @@ fn a_fast_tier_module_builds_without_a_c_compiler_and_takes_boots_bridge() {
             let m: libloading::Symbol<*const runtime::generated::H2GenModule> = lib.get(b"h2gen_module").unwrap();
             let m = &**m;
             assert_eq!(m.abi_version, runtime::cpu::ABI_VERSION);
-            assert_eq!(m.features, 0);
+            // No clock or call features; the default plan has imprecise faults.
+            assert_eq!(m.features, 128);
             assert_eq!(m.entry_count, 1);
             let e = &*m.entries;
             assert_eq!(e.addr, entry);
