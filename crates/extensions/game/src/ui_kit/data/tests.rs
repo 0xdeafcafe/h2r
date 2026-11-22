@@ -177,3 +177,18 @@ fn the_screens_drawn_from_their_docs_are_screens_with_docs() {
         assert!(screens::live(name).is_some(), "{name}");
     }
 }
+
+/// The converter's house rules: a dialog drawn from its doc gets its title
+/// in capitals, slots untouched; a screen whose Rust holds its title keeps
+/// the doc its Rust gives.
+#[test]
+fn the_converter_puts_a_doc_drawn_dialogs_title_in_capitals() {
+    let mut d = doc("screen: t\nkind: dialog\nlayout: large\nbacking: over\nopener: main-menu\nwidgets:\n  title:\n    component: title\n    text: \"Sign in as {gamertag}\"\n").unwrap();
+    d.screen = "kit.dialog".into();
+    export::house_rules(&mut d);
+    assert_eq!(d.widgets["title"].text.as_deref(), Some("SIGN IN AS {gamertag}"));
+    d.screen = "signin-code".into();
+    d.widgets.get_mut("title").unwrap().text = Some("Sign in".into());
+    export::house_rules(&mut d);
+    assert_eq!(d.widgets["title"].text.as_deref(), Some("Sign in"));
+}

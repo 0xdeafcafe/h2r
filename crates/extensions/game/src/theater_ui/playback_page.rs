@@ -20,8 +20,9 @@ use crate::ui_kit::{
 const BAR: [i16; 4] = [-105, -272, -208, 272];
 const RAIL: [i16; 4] = [-144, -252, -154, 252];
 const PANEL: [u8; 4] = [12, 23, 39, 238];
-const BODY: [f32; 3] = [0.86, 0.91, 0.96];
-const MUTED: [f32; 3] = [0.65, 0.76, 0.87];
+// The design system's white and hint blue (assets/ui/design.yaml).
+const BODY: [f32; 3] = [1.0, 1.0, 1.0];
+const MUTED: [f32; 3] = [0.678431, 0.764706, 0.847059];
 
 /// Scrubbing uses the same rectangle as the rail, in the kit's canvas pixels.
 pub const TIMELINE: [u32; 4] = [

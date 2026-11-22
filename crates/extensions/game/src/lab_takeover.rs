@@ -29,7 +29,7 @@ use crate::{coop_probe, level_boot, ui_kit, ui_watch};
 pub const SCREEN: &str = "lab.takeover";
 const CLASS: &str = "lab-takeover-dialog";
 const IDS: ui_kit::ids::Family = ui_kit::ids::family("lab takeover");
-const TITLE: &str = "Lab request";
+const TITLE: &str = "LAB REQUEST";
 // Put the safe answer on the initial focus, including when a button is held.
 const LABELS: [&str; 2] = ["Not now", "Allow"];
 

@@ -426,7 +426,7 @@ impl FilterPage {
 
 impl Rows for FilterPage {
     fn title(&self) -> u32 {
-        self.texts.set(PAGE_TITLE, "Game Filters")
+        self.texts.set(PAGE_TITLE, "GAME FILTERS")
     }
 
     fn count(&self) -> usize {
@@ -471,7 +471,7 @@ impl Rows for FilterPage {
 impl Describe for FilterPage {
     fn spec(&self) -> ScreenSpec {
         let filters = self.browser.filters();
-        let mut s = ScreenSpec::new(SCREEN, "Game Filters");
+        let mut s = ScreenSpec::new(SCREEN, "GAME FILTERS");
         s.list = ListPlace::from(Some(dialog_tag::base_layout(BASE, self.count())));
         s.style = BASE.style();
         s.rows = FilterRow::ALL.map(|row| Self::row(row, &filters)).into();

@@ -115,11 +115,13 @@ fn font_role(id: &str) -> &'static [&'static str] {
     }
 }
 
-/// The kind a title's and a legend's place is compared within.
+/// The kind a title's and a legend's place is compared within: a list by
+/// its skin, a dialog by the retail dialog it is built on.
 fn group(s: &ScreenSpec, v: &View) -> String {
-    match Kind::of(s) {
-        Kind::List => format!("list.skin{}", v.list.map_or(-1, |l| l.skin)),
-        k => k.name().into(),
+    match (Kind::of(s), &s.dialog) {
+        (Kind::List, _) => format!("list.skin{}", v.list.map_or(-1, |l| l.skin)),
+        (k, Some(d)) => format!("{} on {:?}", k.name(), d.base),
+        (k, None) => k.name().into(),
     }
 }
 

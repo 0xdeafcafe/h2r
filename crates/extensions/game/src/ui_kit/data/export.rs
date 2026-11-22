@@ -17,6 +17,9 @@
 //!   one that moves stays Rust's.
 //! - Rows are written for the screens whose rows are fixed ([`FIXED_ROWS`],
 //!   the specimens and layouts); Rust makes the others'.
+//! - The design system's rules ([`house_rules`]) are applied to the
+//!   screens drawn from their docs (`super::FROM_DOC`), whose Rust holds no
+//!   copy to disagree with (docs/game/ui-builder.md "Consistency").
 
 use std::path::{Path, PathBuf};
 
@@ -528,7 +531,43 @@ fn screen_doc(name: &str, states: &[(String, ScreenSpec)], design: &mut Design) 
             doc.rows.insert(format!("row.{i}"), row_doc(r));
         }
     }
+    house_rules(&mut doc);
     doc
+}
+
+/// The design system's rules, on a screen drawn from its doc: a
+/// dialog's, a code entry's and a picker's title in capitals (its slots
+/// as they are). A screen whose Rust still carries its presentation is
+/// fixed in its Rust, so its doc and its Rust agree.
+pub(crate) fn house_rules(doc: &mut ScreenDoc) {
+    if !super::FROM_DOC.contains(&doc.screen.as_str()) {
+        return;
+    }
+    if matches!(doc.kind.as_str(), "dialog" | "code_entry" | "picker")
+        && let Some(w) = doc.widgets.get_mut("title")
+        && let Some(t) = &mut w.text
+    {
+        *t = upper_outside_slots(t);
+    }
+}
+
+/// `t` in capitals, its `{slot}` names as they are.
+fn upper_outside_slots(t: &str) -> String {
+    let mut out = String::with_capacity(t.len());
+    let mut in_slot = false;
+    for c in t.chars() {
+        match c {
+            '{' => in_slot = true,
+            '}' => in_slot = false,
+            _ => {}
+        }
+        if in_slot || c == '}' {
+            out.push(c);
+        } else {
+            out.extend(c.to_uppercase());
+        }
+    }
+    out
 }
 
 /// Writes `design.yaml` and `screens/<name>.yaml` for every screen into

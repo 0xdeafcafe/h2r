@@ -166,6 +166,22 @@ Pass `run` with a zero-based index into the displayed entries to run the
 action and return its index as `ran`. An out-of-range index returns
 `INVALID_PARAMS`. Actions that would discard edits return `UNSAVED`.
 
+## The design system
+
+`ui.components` returns the catalogue of `assets/ui/design.yaml`
+(`ui_kit::components::catalogue_json`): `components` (each with `name`,
+`role`, `font`, `colour`, `justify`, `variants` and its `specimen` page),
+`layouts` (each `layout.<name>` page with its `kind` and `states`),
+`palette` (`{name, rgb}`) and `fonts` (role to font index).
+
+`ui.consistency {screen?}` checks our screens, or one, in every state
+against the design system (`ui_kit::consistency::check`;
+docs/game/ui-builder.md "Consistency") and returns
+`{findings: [{screen, state, ids, rule, text}], checked}`: the findings
+`consistency::ALLOWED` doesn't excuse, and how many screen states were
+checked. A screen not in `NAMES` is `INVALID_PARAMS`. Both read the kit
+alone: no disc and no window state.
+
 ## Methods
 
 `h2 studio methods` is the full list with shapes and an example per

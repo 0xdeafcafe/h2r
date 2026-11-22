@@ -957,6 +957,128 @@ Rules the tables hold:
 prints each effect and the summary, and draws where it ends as
 `<state>-pressed`.
 
+## Screens in YAML
+
+A screen's presentation is data in `assets/ui/`; its Rust is behaviour
+(`crate::ui_kit::data`):
+
+- `assets/ui/design.yaml` is the design system: the palette (named
+  colours), fonts by role (`title`, `legend`, `body`, `cell`,
+  `row_controls`, `row_default`), spacing (row heights, the dialog body's
+  top, the code cells' gaps), alphas (an unfocused row's text, a dimmed
+  frame), the legend's format, and every component's preset (role, font,
+  colour, justification, place, variants and specimen page).
+- `assets/ui/screens/<name>.yaml` is one screen of
+  `ui_kit::screens::NAMES`: `screen`, `kind` (`list`, `dialog`,
+  `code_entry`, `picker`, `hud`), `layout` (a list's `controls`,
+  `level_select` or `moved`; a dialog's `settings` or `large`), `backing`
+  (`shell`, `over` an `opener` such as `main-menu`, `screen` over a screen
+  of ours, or `none`), `scrolls`, its named `states` (the focus and a
+  code's cursor), `widgets` keyed by view id (`component`, `text` with
+  `{slot}` templates Rust fills, `at`, `size`, a legend's `prompts` such
+  as `[[A, "SELECT"], [B, "BACK"]]`, cells' `digits` and `gap_after`, an
+  art widget's `art`), and fixed `rows` (`row.0: {text, ...}`).
+
+Both are baked into the game at compile time (`build.rs` writes
+`ui_baked.rs`, `ui_kit::data::baked`) and parsed once a process, the first
+time a doc is asked for (`data::baked_parses`). The game never reads them
+from disk. The editor shows an edited or reloaded doc over the baked one
+through the explicit `data::reload` (validated first) until
+`data::forget_reloads`.
+
+A doc that names what doesn't exist (a component, a glyph, a layout for
+its kind, an opener, a slot that isn't closed, a value row's current value
+past its values) is a `DataError` naming the file and the field
+(`assets/ui/screens/t.yaml widgets.title.component: ...`), never a quiet
+fallback; a screen without a doc is one too (`data::require`). The tests
+load every doc, so a bad one fails them by name.
+
+`data::to_yaml` writes a doc in its canonical form: keys in order,
+two-space indents, texts double-quoted, pairs and prompts in flow, no
+comments. A load and a save with no edit gives the file's bytes.
+
+**Which screens draw from their docs.** `data::FROM_DOC` lists them: the
+kit screens (`KitScreen::new(feature, name, ids)` reads the title, the
+legend, the kind, layout and opener, the description block, `scrolls`
+and the fixed rows' labels; docs/game/ui-screens.md "Adding a screen").
+Every other screen's doc is written from its Rust and held to it: the
+equivalence test (`data::tests::each_state_drawn_from_its_doc_is_the_view_rust_drew`)
+draws each state of each screen from its Rust alone and with its doc laid
+over (`data::present`), and the two views must be equal.
+
+**The converter.** `h2 ui export-yaml [--out assets/ui]`
+(`data::export::export`) builds every screen in every state, reads its
+presentation off the specs, and writes `screens/<name>.yaml` and
+`design.yaml`, starting from the `design.yaml` already there. A style
+that matches a preset is written as the preset's name; one that matches
+none gets a preset named after the screen (`description.kit.example.0`),
+and a colour on no palette entry a colour named after it
+(`theater.playback.0`): a name with a dot is what the converter found,
+not the design system's, and the consistency check reports it. A text
+that is the same in every state is written as it is; one that changes,
+or that `data::export::DYNAMIC` names (a film's title, the card's profile
+line), is a lone slot (`{title}`) Rust fills. Rows are written for the
+screens whose rows are fixed (`data::export::FIXED_ROWS`, the specimen
+and layout pages). On a screen drawn from its doc the converter applies
+the design system's rules too (`data::export::house_rules`: a dialog's
+title in capitals); the others are fixed in their Rust. Run it after a
+change to a screen's Rust, then the tests.
+
+## The design system
+
+`ui_kit::components` puts a screen together from the components:
+`Screen::list`, `level_select`, `moved`, `settings`, `large`,
+`message`, `code_entry`, `picker` and `hud`, with `row`, `legend`,
+`legend_on_panel`, `description`, `help`, `text`, `art`, `status`,
+`scrolls` and `over`; `build()` derives the inputs its rows and legend
+need. `components::row` makes each kind of row (`action`, `open`,
+`value`, `pick`, `info`, `text`, `disabled`) and `components::legend` the
+common prompts. `legend::well_formed` is the legend's format: each
+prompt's glyphs two spaces apart, one space, its words in capitals,
+prompts two spaces apart.
+
+Each component of `design.yaml` with a `specimen` has its page,
+`design.<component>` in `NAMES` (`design.title`, `design.row.action`,
+`design.legend`, `design.cells` ...): its variants as the page's named
+states, drawn and checked as any screen is. `h2 ui preview design.legend`
+draws one; `h2 ui sheet` draws them all. The editor's agent API gives the
+catalogue as `ui.components` (docs/editor/agent-api.md).
+
+## The layout gallery
+
+`layout.<name>` in `NAMES` is every layout a screen can take, with
+placeholder copy so each reads as a template: `layout.list`,
+`layout.list.description`, `layout.list.panel-edge`,
+`layout.list.level-select`, `layout.list.texts`,
+`layout.dialog.settings`, `layout.dialog.settings.header`,
+`layout.dialog.large`, `layout.dialog.message`,
+`layout.dialog.over-screen`, `layout.code-entry`, `layout.picker` and
+`layout.hud` (`ui_kit::components::specimens::PAGES`). A new screen
+starts from the one it looks like.
+
+## Consistency
+
+`ui_kit::consistency::check` draws every screen of `NAMES` in every
+named state without a disc and holds it to the design system:
+
+| Rule | What it checks |
+|---|---|
+| `palette` | a text's colour is a palette colour, or one dimmed in proportion (a lobby's unselected tab); a converter-named colour is drift |
+| `font` | a title and a legend in their role's font, a description, a dialog's body and status in the body font, code cells in the cell font, row texts in a row font (HUDs are their own) |
+| `place` | a title and a legend where most of their kind's are (a list by its skin, a dialog by its base) |
+| `legend` | the legend's format (`legend::well_formed`) |
+| `case` | a dialog's, a code entry's and a picker's title in capitals (`DYNAMIC` titles aside) |
+| `pitch` | a list's rows its skin's row height apart (`row_controls`, `row_default`) |
+| `fit` | a title and a legend fit their rectangles |
+
+`consistency::ALLOWED` is the short list of findings that stand, each
+with its reason (the sign-in dialog's title carries the gamertag as
+typed). The test `consistency::tests::every_screen_keeps_to_the_design_system`
+fails on any other finding. A finding is fixed as a converter rule for a
+screen drawn from its doc, or in the screen's Rust, then
+`h2 ui export-yaml` rewrites its doc. The editor's agent API gives the
+findings as `ui.consistency {screen?}`.
+
 ## In the editor
 
 The editor's fourth tool is **UI Screens**
