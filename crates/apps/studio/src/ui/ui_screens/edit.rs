@@ -452,7 +452,12 @@ pub fn selected(
             if ui.button(format!("{} Copy JSON", icon::COPY))
                 && let Some(json) = app.ui_screens.edit_widget_json(&w.id)
             {
-                ui.set_clipboard_text(serde_json::to_string_pretty(&json).unwrap_or_default());
+                let text = serde_json::to_string_pretty(&json).unwrap_or_default();
+                if let Ok(text) = std::ffi::CString::new(text) {
+                    // SAFETY: a frame is being built, so ImGui has a
+                    // current context; the string outlives the call.
+                    unsafe { dear_imgui_rs::sys::igSetClipboardText(text.as_ptr()) };
+                }
             }
             ui.same_line();
             if ui.button(format!("{} Revert widget", icon::UNDO)) {

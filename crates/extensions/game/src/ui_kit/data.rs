@@ -644,6 +644,9 @@ static RELOADED: LazyLock<RwLock<HashMap<String, Arc<ScreenDoc>>>> =
 /// Screen `name`'s doc: one the editor reloaded ([`reload`]), else the
 /// baked one; `None` for a screen with no doc.
 pub fn screen(name: &str) -> Option<Arc<ScreenDoc>> {
+    if let Some(d) = SCOPED.with(|s| s.borrow().as_ref().and_then(|m| m.get(name).cloned())) {
+        return Some(d);
+    }
     if let Some(d) = RELOADED
         .read()
         .unwrap_or_else(|e| e.into_inner())
@@ -674,6 +677,41 @@ pub fn reload(doc: ScreenDoc) -> Result<(), DataError> {
         .unwrap_or_else(|e| e.into_inner())
         .insert(doc.screen.clone(), Arc::new(doc));
     Ok(())
+}
+
+thread_local! {
+    /// Docs standing in for their screens on this thread while
+    /// [`with_screens`] runs (the editor's unsaved edits).
+    static SCOPED: std::cell::RefCell<Option<HashMap<String, Arc<ScreenDoc>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `f` with `docs` in place of their screens' docs on this thread
+/// only, so the views `f` makes show them and nothing else sees them.
+/// The docs as they were come back when `f` returns or panics.
+pub fn with_screens<R>(
+    docs: &std::collections::BTreeMap<String, ScreenDoc>,
+    f: impl FnOnce() -> R,
+) -> R {
+    struct Restore(Option<HashMap<String, Arc<ScreenDoc>>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let old = self.0.take();
+            SCOPED.with(|s| *s.borrow_mut() = old);
+        }
+    }
+    let mut map = SCOPED.with(|s| s.borrow().clone()).unwrap_or_default();
+    for (name, doc) in docs {
+        map.insert(name.clone(), Arc::new(doc.clone()));
+    }
+    let _restore = Restore(SCOPED.with(|s| s.borrow_mut().replace(map)));
+    f()
+}
+
+/// Screen `name`'s doc as the build baked it, ignoring reloads and
+/// [`with_screens`].
+pub fn baked(name: &str) -> Option<Arc<ScreenDoc>> {
+    BAKED.get(name).cloned()
 }
 
 /// Drops every reloaded doc: the baked ones show again.

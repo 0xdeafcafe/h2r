@@ -33,11 +33,13 @@ pub fn with_docs<R>(docs: &Docs, f: impl FnOnce() -> R) -> R {
 
 /// Screen `screen`'s doc as the build baked it.
 fn baked(screen: &str) -> Result<ScreenDoc, String> {
-    data::load(screen).map_err(|e| format!("{screen}: {e:#}"))
+    data::baked(screen)
+        .map(|d| (*d).clone())
+        .ok_or_else(|| format!("{screen}: the screen has no doc"))
 }
 
 fn parse(text: &str) -> Result<ScreenDoc, String> {
-    data::parse(text).map_err(|e| format!("{e:#}"))
+    ScreenDoc::parse("edited", text, data::design()).map_err(|e| e.to_string())
 }
 
 fn to_yaml(doc: &ScreenDoc) -> String {
@@ -158,7 +160,7 @@ pub fn apply(screen: &str, doc: &mut ScreenDoc, w: &Widget, change: &Change) -> 
                 return Err(format!("refused: {id} is art, not a text"));
             }
             let slot = match label_row(id) {
-                Some(row) => doc.rows.get_mut(row).map(|r| &mut r.text),
+                Some(row) => doc.rows.get_mut(row).map(|r| Slot::Row(&mut r.text)),
                 None => match doc.widgets.get_mut(id) {
                     Some(entry) if entry.prompts.is_some() => {
                         return Err(format!(
@@ -166,14 +168,14 @@ pub fn apply(screen: &str, doc: &mut ScreenDoc, w: &Widget, change: &Change) -> 
                              edit them there"
                         ));
                     }
-                    Some(entry) => Some(&mut entry.text),
+                    Some(entry) => Some(Slot::Widget(&mut entry.text)),
                     None => None,
                 },
             };
-            let Some(slot) = slot else {
+            let Some(mut slot) = slot else {
                 return Err(rust_owned(screen, id));
             };
-            let Some(old) = slot.as_ref() else {
+            let Some(old) = slot.get() else {
                 return Err(format!(
                     "refused: {id}'s text is Rust's (its entry in {SCREENS_DIR}/{screen}.yaml has no text)"
                 ));
@@ -190,7 +192,7 @@ pub fn apply(screen: &str, doc: &mut ScreenDoc, w: &Widget, change: &Change) -> 
                     had.iter().map(|s| format!("{{{s}}}")).collect::<Vec<_>>().join(", ")
                 ));
             }
-            *slot = Some(text.clone());
+            slot.set(text.clone());
             Ok(())
         }
         Change::Rect([top, left, bottom, right]) => {
@@ -205,6 +207,29 @@ pub fn apply(screen: &str, doc: &mut ScreenDoc, w: &Widget, change: &Change) -> 
             entry.at = Some([*left as _, *top as _]);
             entry.size = Some([(right - left) as _, (top - bottom) as _]);
             Ok(())
+        }
+    }
+}
+
+/// Where a text edit lands: a row's label (always there) or a widget's
+/// text (none when Rust makes it).
+enum Slot<'a> {
+    Row(&'a mut String),
+    Widget(&'a mut Option<String>),
+}
+
+impl Slot<'_> {
+    fn get(&self) -> Option<&String> {
+        match self {
+            Slot::Row(s) => Some(s),
+            Slot::Widget(s) => s.as_ref(),
+        }
+    }
+
+    fn set(&mut self, text: String) {
+        match self {
+            Slot::Row(s) => **s = text,
+            Slot::Widget(s) => **s = Some(text),
         }
     }
 }
