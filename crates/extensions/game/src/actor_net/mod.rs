@@ -12,6 +12,27 @@ use ::actor_net::Record;
 use engine::GuestMemory;
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 
+/// The running rules script's show cues for this tick as `Cue` records
+/// (`crate::rules::world::show`, docs/game/rules-world-api.md, "The show
+/// channel"); none without the `rules` feature.
+fn show_cues() -> Vec<Record> {
+    #[cfg(feature = "rules")]
+    {
+        crate::rules::world::show::take_records()
+    }
+    #[cfg(not(feature = "rules"))]
+    {
+        Vec::new()
+    }
+}
+
+/// Forgets the show cues waiting for the channel: a new match, a lost
+/// host tick or a snapshot restore starts it empty.
+fn clear_show_cues() {
+    #[cfg(feature = "rules")]
+    crate::rules::world::show::clear_cues();
+}
+
 /// The capture and the enqueue observer use the simulation world's mode.
 /// The game options use a different numbering for the client and server.
 fn host_tick(m: &dyn GuestMemory) -> Option<u32> {
@@ -71,7 +92,7 @@ impl Feature for Capture {
                 if state.last_tick.is_some() {
                     *state = State::default();
                     in_flight.clear();
-                    crate::rules::world::show::clear_cues();
+                    clear_show_cues();
                     reset_peers();
                 }
                 return;
@@ -100,22 +121,7 @@ impl Feature for Capture {
                     }
                     // The running rules script's show cues (`message`
                     // calls); empty when no script runs.
-                    let cues = crate::rules::world::show::take_cues()
-                        .into_iter()
-                        .filter_map(|cue| match cue.cue.encode() {
-                            Ok(bytes) => Some(Record::Cue {
-                                tick: cue.tick,
-                                sequence: cue.sequence,
-                                kind: cue.cue.kind(),
-                                bytes,
-                            }),
-                            Err(error) => {
-                                eprintln!("actor-net: show cue at tick {}: {error}", cue.tick);
-                                None
-                            }
-                        })
-                        .collect();
-                    state.host.set_cues(cues);
+                    state.host.set_cues(show_cues());
                     after_capture(&*memory, tick, &state.host)
                 }
                 Err(error) => eprintln!("actor-net: host capture at tick {tick}: {error}"),
@@ -126,7 +132,7 @@ impl Feature for Capture {
         let reset = move || {
             *state.lock().unwrap() = State::default();
             pending.clear();
-            crate::rules::world::show::clear_cues();
+            clear_show_cues();
             reset_peers();
         };
         let new_match = reset.clone();

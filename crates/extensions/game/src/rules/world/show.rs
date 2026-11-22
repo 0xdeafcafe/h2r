@@ -2,7 +2,8 @@
 //! channel"): a script's `message(to, text)` on the host, and the cues a
 //! distributed client receives.
 //!
-//! On the `Authority` (and identically on every `Replica`), [`publish`]
+//! On the authority (the machine `GAME_ENGINE_AUTHORITATIVE` answers true
+//! for; `Runtime::pre_tick` holds the messages until it has), [`publish`]
 //! turns each message the VM made since the last boundary into a line
 //! shown to this machine's local users in its audience (the HUD kit's
 //! notification insert) and a [`PendingCue`] for the actor channel, which
@@ -19,6 +20,8 @@ use ::rules::{Ir, caps};
 use engine::GuestMemory;
 use engine::entry::Cx;
 
+use crate::actor_net::client::ReceivedCue;
+
 /// A cue waiting for the actor channel: the tick it was made, its
 /// per-tick sequence and the cue itself.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,15 +29,6 @@ pub struct PendingCue {
     pub tick: u32,
     pub sequence: u8,
     pub cue: Cue,
-}
-
-/// A cue received over the actor channel, before it is checked.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ReceivedCue {
-    pub tick: u32,
-    pub sequence: u8,
-    pub kind: u8,
-    pub bytes: Vec<u8>,
 }
 
 /// A message the VM made, waiting for the tick boundary (the runtime's
@@ -97,7 +91,11 @@ fn push(tick: u32, cue: Cue) {
     }
     let sequence = c.next;
     c.next = c.next.wrapping_add(1);
-    c.cues.push(PendingCue { tick, sequence, cue });
+    c.cues.push(PendingCue {
+        tick,
+        sequence,
+        cue,
+    });
     // A machine with no consumer (a solo game, a synchronous peer) drops
     // the oldest past the bound.
     let over = c.cues.len().saturating_sub(show::MAX_PENDING);
@@ -106,10 +104,29 @@ fn push(tick: u32, cue: Cue) {
     }
 }
 
-/// The cues waiting for the channel, drained by the actor channel's
-/// capture once a tick.
+/// The cues waiting for the channel.
 pub fn take_cues() -> Vec<PendingCue> {
     std::mem::take(&mut lock(&CHANNEL).cues)
+}
+
+/// The waiting cues as the actor channel's `Cue` records, drained by its
+/// capture once a tick. A cue that does not encode is dropped and logged.
+pub fn take_records() -> Vec<::actor_net::Record> {
+    take_cues()
+        .into_iter()
+        .filter_map(|pending| match pending.cue.encode() {
+            Ok(bytes) => Some(::actor_net::Record::Cue {
+                tick: pending.tick,
+                sequence: pending.sequence,
+                kind: pending.cue.kind(),
+                bytes,
+            }),
+            Err(error) => {
+                eprintln!("rules: show cue at tick {}: {error}", pending.tick);
+                None
+            }
+        })
+        .collect()
 }
 
 /// Forgets the waiting cues: a new match or a snapshot restore starts the
@@ -200,7 +217,13 @@ fn arg_line(template: &str, values: &[Arg], name: &dyn Fn(u8) -> String) -> Stri
     let holes = caps::holes(template).unwrap_or_default();
     let shown: Vec<String> = values
         .iter()
-        .zip(holes.iter().copied().map(Some).chain(std::iter::repeat(None)))
+        .zip(
+            holes
+                .iter()
+                .copied()
+                .map(Some)
+                .chain(std::iter::repeat(None)),
+        )
         .map(|(v, h)| arg_word(v, h, name))
         .collect();
     caps::fill(template, &shown)
@@ -219,10 +242,13 @@ fn cue_of(ir: &Ir, audience: Audience, template: &str, values: &[Arg]) -> Option
     let holes = caps::holes(template)?;
     let text = index(template)?;
     let mut out = Vec::with_capacity(values.len());
-    for (value, hole) in values
-        .iter()
-        .zip(holes.iter().copied().map(Some).chain(std::iter::repeat(None)))
-    {
+    for (value, hole) in values.iter().zip(
+        holes
+            .iter()
+            .copied()
+            .map(Some)
+            .chain(std::iter::repeat(None)),
+    ) {
         out.push(match (value, hole) {
             (Arg::Player(p), _) => HoleValue::Player(*p),
             (Arg::Team(t), _) => HoleValue::Team(*t),
@@ -314,11 +340,9 @@ pub fn present(cx: &Cx, cues: &[ReceivedCue]) {
 }
 
 fn present_one(cx: &Cx, cue: &ReceivedCue) -> Result<(), String> {
-    let got = cx
+    let (strings, roster) = cx
         .read(|m| strings(m).map(|s| (s, roster(m))))
-        .map_err(|e| format!("the game could not be read: {e}"))?
         .ok_or_else(|| "the running script's blob is not on this machine".to_string())?;
-    let (strings, roster) = got;
     let Cue::Message(message) =
         Cue::decode(cue.kind, &cue.bytes, &strings).map_err(|e| e.to_string())?;
     let name = named(&roster);
@@ -381,10 +405,7 @@ mod tests {
         let all = message_call(id::MESSAGE_ALL, vec![Arg::Text("go".into())]);
         assert_eq!(outgoing(&all).map(|o| o.to), Some(To::Everyone));
         // A call through `none` shows nothing.
-        let none = message_call(
-            id::MESSAGE,
-            vec![Arg::Player(None), Arg::Text("hi".into())],
-        );
+        let none = message_call(id::MESSAGE, vec![Arg::Player(None), Arg::Text("hi".into())]);
         assert_eq!(outgoing(&none), None);
     }
 
@@ -412,9 +433,24 @@ mod tests {
     #[test]
     fn an_audience_resolves_against_the_roster() {
         let roster = vec![
-            Roster { slot: 0, team: Some(0), name: "a".into(), user: Some(0) },
-            Roster { slot: 2, team: Some(1), name: "b".into(), user: None },
-            Roster { slot: 5, team: Some(1), name: "c".into(), user: Some(2) },
+            Roster {
+                slot: 0,
+                team: Some(0),
+                name: "a".into(),
+                user: Some(0),
+            },
+            Roster {
+                slot: 2,
+                team: Some(1),
+                name: "b".into(),
+                user: None,
+            },
+            Roster {
+                slot: 5,
+                team: Some(1),
+                name: "c".into(),
+                user: Some(2),
+            },
         ];
         assert_eq!(audience_of(&roster, &To::Player(5)), show::player(5));
         assert_eq!(
@@ -428,12 +464,26 @@ mod tests {
     #[test]
     fn a_line_renders_player_names_from_the_roster() {
         let roster = vec![
-            Roster { slot: 1, team: Some(0), name: "Ann".into(), user: Some(0) },
-            Roster { slot: 2, team: Some(1), name: "Bo".into(), user: None },
+            Roster {
+                slot: 1,
+                team: Some(0),
+                name: "Ann".into(),
+                user: Some(0),
+            },
+            Roster {
+                slot: 2,
+                team: Some(1),
+                name: "Bo".into(),
+                user: None,
+            },
         ];
         let name = named(&roster);
         assert_eq!(
-            arg_line("{player} beat {player}", &[Arg::Player(Some(1)), Arg::Player(Some(2))], &name),
+            arg_line(
+                "{player} beat {player}",
+                &[Arg::Player(Some(1)), Arg::Player(Some(2))],
+                &name
+            ),
             "Ann beat Bo"
         );
         // A slot that is not seated shows as `player N`.

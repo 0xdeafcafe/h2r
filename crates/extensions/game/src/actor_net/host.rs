@@ -98,6 +98,7 @@ impl Host {
             self.set.apply(change)?;
         }
         self.lines.clear();
+        self.cues.clear();
         for line in dialogue {
             if let Some(speaker) = views.iter().find(|v| v.unit == line.unit) {
                 self.lines.push(Record::Line {

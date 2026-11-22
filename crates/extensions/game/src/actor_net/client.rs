@@ -12,8 +12,6 @@ use engine::entry::{Cx, EntryError, GuestCall, Ret};
 use engine::{DatumHandle, points};
 use hooks::{Builder, Flow};
 
-use crate::rules::world::show::ReceivedCue;
-
 mod guest;
 
 /// An actor-channel record can lead creation of its retail body by this
@@ -22,6 +20,17 @@ const WAIT_TICKS: u32 = 30;
 /// Cue ids `(tick, sequence)` kept so a cue's three copies show once: a
 /// copy comes in one of the next two packets.
 const SEEN_CUES: usize = 32;
+
+/// A show-channel cue received over the actor channel, before it is
+/// checked: the rules runtime decodes it against the running script's
+/// blob (`crate::rules::world::show::present`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReceivedCue {
+    pub tick: u32,
+    pub sequence: u8,
+    pub kind: u8,
+    pub bytes: Vec<u8>,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Puppet {
@@ -205,11 +214,15 @@ impl Client {
 
         // The show channel's cues: decoded against the running script's
         // blob and shown to this machine's local users in each audience
-        // (`crate::rules::world::show::present`).
-        if !self.pending_cues.is_empty() {
-            let cues = std::mem::take(&mut self.pending_cues);
+        // (`crate::rules::world::show::present`). Without the `rules`
+        // feature there is no script to show them by, and they are dropped.
+        let cues = std::mem::take(&mut self.pending_cues);
+        #[cfg(feature = "rules")]
+        if !cues.is_empty() {
             crate::rules::world::show::present(cx, &cues);
         }
+        #[cfg(not(feature = "rules"))]
+        drop(cues);
         Ok(())
     }
 }

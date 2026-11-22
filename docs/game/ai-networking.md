@@ -110,6 +110,7 @@ its six-byte header.
 | `Line` (4) | a line starts | entity, vocalization (u16), original tick (u32) | 11 |
 | `State` (5) | mode state changes | length (u8), whole mode blob | 2 + mode bytes |
 | `Digest` (6) | every 30 ticks | host log head (32 SHA-256 bytes), mode hash (u64), live actor count (u16) | 43 |
+| `Cue` (8) | a rules script's show cue, in three consecutive packets as `Line` is; tag 7 is the show channel's `Show` ([rules-world-api.md](rules-world-api.md#the-show-channel)) | cue tick (u32), sequence (u8), kind (u8), length (u8), at most 24 payload bytes | 8 + payload bytes |
 
 An actor row carries the full replication entity index (u32, object body
 `+0xd4`, **E**), character class and squad (u16 each), team and posture

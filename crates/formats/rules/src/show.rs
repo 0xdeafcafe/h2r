@@ -184,7 +184,9 @@ impl Message {
         let text = r.u16()?;
         let audience = r.u16()?;
         let count = usize::from(r.u8()?);
-        let template = strings.get(usize::from(text)).ok_or(CueError::BadText(text))?;
+        let template = strings
+            .get(usize::from(text))
+            .ok_or(CueError::BadText(text))?;
         let holes = caps::holes(template).ok_or(CueError::BadTemplate)?;
         if count != holes.len() {
             return Err(CueError::Holes {
@@ -195,7 +197,9 @@ impl Message {
         let mut values = Vec::with_capacity(count);
         for hole in holes {
             values.push(match hole {
-                caps::Hole::Player => HoleValue::Player(r.slot::<MAX_PLAYERS>(CueError::BadPlayer)?),
+                caps::Hole::Player => {
+                    HoleValue::Player(r.slot::<MAX_PLAYERS>(CueError::BadPlayer)?)
+                }
                 caps::Hole::Team => HoleValue::Team(r.slot::<MAX_TEAMS>(CueError::BadTeam)?),
                 caps::Hole::Int => HoleValue::Int(r.i32()?),
                 caps::Hole::Time => HoleValue::Time(r.i32()?),
@@ -267,7 +271,13 @@ pub fn line(
     let holes = caps::holes(template).unwrap_or_default();
     let shown: Vec<String> = values
         .iter()
-        .zip(holes.iter().copied().map(Some).chain(std::iter::repeat(None)))
+        .zip(
+            holes
+                .iter()
+                .copied()
+                .map(Some)
+                .chain(std::iter::repeat(None)),
+        )
         .map(|(v, h)| word(strings, v, h, player))
         .collect();
     caps::fill(template, &shown)
@@ -289,7 +299,10 @@ fn word(
         (HoleValue::Player(None), _) => "none".into(),
         (HoleValue::Team(Some(team)), _) => format!("team {team}"),
         (HoleValue::Team(None), _) => "none".into(),
-        (HoleValue::Enum(index), _) => strings.get(usize::from(*index)).cloned().unwrap_or_default(),
+        (HoleValue::Enum(index), _) => strings
+            .get(usize::from(*index))
+            .cloned()
+            .unwrap_or_default(),
     }
 }
 
@@ -312,7 +325,10 @@ mod tests {
         Message {
             audience: player(2) | player(5),
             text: 0,
-            values: vec![HoleValue::Int(3), HoleValue::Time(95 * caps::TICKS_PER_SECOND)],
+            values: vec![
+                HoleValue::Int(3),
+                HoleValue::Time(95 * caps::TICKS_PER_SECOND),
+            ],
         }
     }
 
@@ -369,7 +385,10 @@ mod tests {
         };
         let bytes = Cue::Message(message.clone()).encode().unwrap();
         assert!(bytes.len() <= MAX_CUE_BYTES, "{} bytes", bytes.len());
-        assert_eq!(Cue::decode(MESSAGE, &bytes, &strings), Ok(Cue::Message(message)));
+        assert_eq!(
+            Cue::decode(MESSAGE, &bytes, &strings),
+            Ok(Cue::Message(message))
+        );
     }
 
     #[test]
@@ -391,7 +410,10 @@ mod tests {
             assert!(
                 matches!(
                     Cue::decode(MESSAGE, &bytes[..cut], &strings),
-                    Err(CueError::Truncated | CueError::BadText(_) | CueError::BadTemplate | CueError::Holes { .. })
+                    Err(CueError::Truncated
+                        | CueError::BadText(_)
+                        | CueError::BadTemplate
+                        | CueError::Holes { .. })
                 ),
                 "cut at {cut} of {bytes:02x?}"
             );
@@ -481,6 +503,9 @@ mod tests {
             text: 3,
             values: vec![HoleValue::Enum(4)],
         };
-        assert_eq!(line(&strings, &strings[3], &message.values, &name), "attack");
+        assert_eq!(
+            line(&strings, &strings[3], &message.values, &name),
+            "attack"
+        );
     }
 }

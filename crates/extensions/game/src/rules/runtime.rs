@@ -1039,24 +1039,30 @@ impl Runtime {
         }
         // The boundary's messages: shown to this machine's local users and
         // queued for the show channel here, on the authority only; they
-        // make no engine call, so they are not in the work. Until the
-        // authority answer is in they wait, as the engine calls do.
-        if r.authority == Some(true) {
-            let (messages, rest): (Vec<Call>, Vec<Call>) = std::mem::take(&mut r.pending)
-                .into_iter()
-                .partition(|c| matches!(c, Call::Message(_)));
-            r.pending = rest;
-            let messages = messages
-                .into_iter()
-                .map(|c| match c {
-                    Call::Message(outgoing) => outgoing,
-                    _ => unreachable!(),
-                })
-                .collect();
-            super::world::show::publish(m, r.vm.ir(), tick, messages);
-        }
+        // make no engine call, so they are never in the work. Until the
+        // authority answer is in they wait, as the engine calls do; a
+        // machine that is not the authority shows none.
+        let (messages, rest): (Vec<Call>, Vec<Call>) = std::mem::take(&mut r.pending)
+            .into_iter()
+            .partition(|c| matches!(c, Call::Message(_)));
+        let held = match r.authority {
+            Some(true) => {
+                let messages = messages
+                    .into_iter()
+                    .filter_map(|c| match c {
+                        Call::Message(outgoing) => Some(outgoing),
+                        _ => None,
+                    })
+                    .collect();
+                super::world::show::publish(m, r.vm.ir(), tick, messages);
+                Vec::new()
+            }
+            None => messages,
+            Some(false) => Vec::new(),
+        };
         let ask_authority = r.authority.is_none();
-        let calls = std::mem::take(&mut r.pending);
+        let calls = rest;
+        r.pending = held;
         (ask_authority || !calls.is_empty()).then_some(Work {
             tick,
             ask_authority,

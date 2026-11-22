@@ -141,7 +141,7 @@ works") carries both, with two more record tags:
 | Record (tag) | When | Payload |
 |---|---|---|
 | `Show` (7) | the state a peer's players are the audience of changed, at most 5 times a second; whole in every `Key` | length (u8), the state filtered to that peer's players |
-| `Cue` (8) (**Code**, `crates/live/actor-net/src/wire.rs`) | a cue for that peer's players, in three consecutive packets as `Line` is (**Code**, `crates/live/actor-net/src/budget.rs`) | cue tick (u32), sequence (u8), kind (u8), at most 24 bytes |
+| `Cue` (8) (**Code**, `crates/live/actor-net/src/wire.rs`) | a cue for that peer's players, in three consecutive packets as `Line` is (**Code**, `crates/live/actor-net/src/budget.rs`) | cue tick (u32), sequence (u8), kind (u8), length (u8), at most 24 payload bytes |
 
 The `Show` record is not built (slice W2); nor is the 64-bit hash of the
 peer's filtered state the `Digest` gains, whose mismatch asks for a
