@@ -1,7 +1,7 @@
 # Rules start gate: a map must satisfy the script's labels
 
-Status: Design, with the check (`rules::labels::check`), both census builders and the host's gate built (slice 3); the workbench, `h2 rules run` and the match generator call the check; the lobby's and Live's gates are not built.
-Code: `crates/extensions/game/src/rules/` (the host runtime), `crates/extensions/game/src/lobby_mode.rs` (the lobby's start state), `crates/live/live-server/src/admin.rs` (the hopper builder). Tests: `crates/formats/forge-doc/tests/census.rs`, `crates/extensions/game/src/rules/runtime/tests/gate.rs`; the other slices in [rules-language-types.md](rules-language-types.md#implementation-plan) name theirs.
+Status: Design, with the check (`rules::labels::check`), both census builders, the host's gate (slice 3) and the lobby's gate (slice 7) built; the workbench, `h2 rules run` and the match generator call the check; Live's gate is not built.
+Code: `crates/extensions/game/src/rules/` (the host runtime), `crates/extensions/game/src/lobby_mode.rs` (the lobby's start state), `crates/live/live-server/src/admin.rs` (the hopper builder). Tests: `crates/formats/forge-doc/tests/census.rs`, `crates/extensions/game/src/rules/runtime/tests/gate.rs`, `crates/extensions/game/src/lobby_mode/tests.rs` (`mod gate`); the other slices in [rules-language-types.md](rules-language-types.md#implementation-plan) name theirs.
 Switch: none.
 
 A rules script declares the Forge labels its map must hold
@@ -65,28 +65,42 @@ fixture and asserts they are equal.
 
 | Where | Function or hook | Census | On a problem |
 |---|---|---|---|
-| The lobby, when the map, the Forge map or the variant changes | `rules::gate::refresh` (`crates/extensions/game/src/rules/gate.rs`, new), called from the `party-lobby` feature's `before` on `LOBBY_VARIANT_PANEL` (`lobby_mode.rs`). Its key is the lobby's map (`h1_options_row::LOBBY_MAP`), `lobby_start::forge_map()` and the script prefix of the variant's block: the record's own, or the store bundle's that `game_variants::inject::apply_block` writes at activation. A changed key runs the check once and keeps the verdict | `of_file` | the verdict is `Blocked(problems)` |
-| The lobby, at Start | the `after` on `LOBBY_START_STATE` in `lobby_mode.rs`: `lobby_mode::start_state` answers `REFUSED_STATE` in place of ready when `lobby_mode::start_refused` reads `gate::blocked()`, the path a Forge lobby with a remote member takes. Start Game acts only on ready, so no countdown runs | the kept verdict | Start Game does nothing |
+| The lobby, when the map, the Forge map or the variant changes (**Code**) | `rules::gate::refresh` (`crates/extensions/game/src/rules/gate.rs`), called from the `party-lobby` feature's `before` on `LOBBY_VARIANT_PANEL` (`lobby_mode.rs`) after `gate::read` reads the lobby with guest memory held. Its key (`gate::Key`) is the lobby's map (`h1_options_row::LOBBY_MAP`), `lobby_start::forge_map()` in Forge mode, and the script prefix, engine and team play of the panel's variant record, whose block is the store bundle's that `game_variants::inject::apply_block` writes at activation (`inject::bundle_block`), else the record's own. A changed key runs the check once and keeps the verdict | `of_file` through the VFS (`gate::InGame`), with the saved Forge map's document (`forge::load_saved`) in Forge mode | the verdict is `Blocked(problems)` |
+| The lobby, at Start (**Code**) | the `after` on `LOBBY_START_STATE` in `lobby_mode.rs`: `lobby_mode::start_state` answers `REFUSED_STATE` in place of ready when `lobby_mode::start_refused` reads `gate::blocked()`, the path a Forge lobby with a remote member takes. Start Game acts only on ready, so no countdown runs | the kept verdict | Start Game does nothing |
 | The host, at the game's start: the final authority | `Runtime::start` (`rules/runtime.rs`), from the `rules` feature's `on_start` observer after a successful `GAME_ACTIVATE` (`rules/feature.rs`), after `verify::load` and `verify::unhostable` and before `runtime::host_refusal` | `of_game` | `Status::Blocked`, and the game is ended (below) |
 | Live, when a hopper is edited | `admin::check_pairs`, called by `admin::put_hopper` after `admin::apply_patch` (`crates/live/live-server/src/admin.rs`) | the map's census on Live | the edit is refused |
 | The workbench | `workbench::run` (rules-language-types.md, "The workbench") | the scenario's map (`scenario::resolve_map`) | `RunError::Map` with the problems, and no run |
 
 The lobby's check is a courtesy to the player; only the host's decides.
-It runs on the machine that starts the game, and a guest runs neither
-check: a guest runs no script. Joining a lobby or a game is not gated by
+It runs on the machine that starts the game (not networked, or the
+party's leader, `gate::leads`), and a guest runs neither check: a guest
+runs no script. **Code:** what the lobby cannot decide leaves its
+verdict clear and the host decides at the start: a script that is
+neither compiled in nor in the game-variant store
+(`rules::feature::local_blob`), a blob that does not verify, a script for
+another engine, a script with no labels or tags, and a map file whose
+census cannot be read (logged as
+`rules: the lobby's map census could not be read, ...`). Without the
+`rules` feature no script runs, so the lobby checks nothing. In a team
+game the lobby checks `per team` labels for teams 0 and 1, since it does
+not know which teams its players will be on; none otherwise. Joining a lobby or a game is not gated by
 labels. The gate for a guest whose build lacks a capability is the one
 rules-engine.md's "Versioning" leaves open.
 
 ## What a blocked start shows
 
-**The lobby shows the reason** on the custom lobby's status line:
-`lobby_status::custom_game_text` answers the gate's text while
-`gate::blocked()` holds, after the mode strip's notice and before the
-Forge refusal. The text is the first problem, with ` (and 2 more)` when
-there are more, written through `ui_kit::screen::SlotTexts` as the Forge
-map's help line is. `rules.state` (the agent API) lists every problem,
-in the lobby and in a game, as `blocked`. A guest's status line shows
-retail's text.
+**The lobby shows the reason (Code)** on the custom lobby's status line:
+`lobby_status::custom_game_text` answers the gate's text
+(`lobby_mode::gate_text_id`) while `gate::blocked()` holds, after the
+mode strip's notice and before the Forge refusal. The text is the first
+problem, with ` (and 2 more)` when there are more
+(`lobby_mode::gate_text`), written through `ui_kit::screen::SlotTexts`
+as the Forge map's help line is. `rules.state` (the agent API) lists
+every problem, in the lobby (`gate::annotate`, when no script runs and
+the runtime holds no block of its own) and in a game, as `blocked`. A
+guest's status line shows retail's text. Leaving the party
+(`PARTY_LEAVE`) and loading a snapshot clear the lobby's verdict, and
+the next panel update checks again.
 
 **When the host blocks a start (Code).** The start gets past the lobby when no
 lobby ran (a level boot, the light host's `Start` in `host_lobby.rs`, a
@@ -98,8 +112,9 @@ then keeps `Status::Blocked { hash, problems }`, logs
 (`firefight::guest::end_game`, the call `end_round` uses), so the game
 ends in its first tick and the players return where a game's end returns
 them: the lobby they started from. No VM is made and no handler runs.
-`gate` keeps the problems as the lobby's verdict, so the status line
-names them until the map or the variant changes. A Live host puts no
+`gate` keeps the problems as the lobby's verdict (`rules::feature::blocked`,
+adopted once at the lobby's next refresh), so the status line names them
+until the map, the Forge map or the variant changes. A Live host puts no
 script hash on its session (`Hle::set_session_rules(None)`).
 
 **A Forge session is not blocked (Code).** In the lobby's Forge mode
@@ -175,6 +190,12 @@ when it is set.
   session to the lobby cleanly. If it does, the host's check belongs
   there, with the file census, and no map loads.
 - How many characters the lobby's status line shows.
+- That `LOBBY_VARIANT_PANEL`'s variant argument is a whole variant record
+  with the options record's layout (name at `+4`, engine at `+0x44`,
+  flags at `+0x48`, the block at `+0x10c`), which `gate::read` assumes.
+- That the slot path `map_select::selected_path` gives resolves through
+  `Vfs::file_source` for every lobby map, and how long reading a map
+  file's census takes on the game thread at a key change.
 - The teams a hopper entry's game has, from its record alone, for
   `per team` in `check_pairs`.
 

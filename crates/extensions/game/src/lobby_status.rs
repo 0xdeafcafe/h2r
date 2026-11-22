@@ -1,8 +1,9 @@
 //! The custom lobby's status line: the expired countdown while the host is
-//! bringing up its phantoms, why a Forge lobby's Start Game is refused
-//! (`crate::lobby_mode::start_refused`), and the mode strip's reason line
-//! (`crate::lobby_tabs::notice_now`): why a bumper press did not move, for
-//! four seconds.
+//! bringing up its phantoms, why Start Game is refused (the start gate's
+//! first problem, `crate::lobby_mode::gate_text_id`, or a Forge lobby with
+//! a member on another console, `crate::lobby_mode::start_refused`), and
+//! the mode strip's reason line (`crate::lobby_tabs::notice_now`): why a
+//! bumper press did not move, for four seconds.
 
 use bots::{lobby, phantom};
 use engine::GuestMemory;
@@ -27,7 +28,7 @@ fn countdown_text(seconds: i32, setting_up: bool) -> Option<u32> {
     (seconds == 0 && setting_up).then_some(SETTING_UP_BOTS)
 }
 
-pub(crate) fn custom_game_text(m: &dyn GuestMemory, return_pc: u32, id: u32) -> Option<u32> {
+pub(crate) fn custom_game_text(m: &mut dyn GuestMemory, return_pc: u32, id: u32) -> Option<u32> {
     if return_pc != CUSTOM_STATUS_RETURN {
         return None;
     }
@@ -36,6 +37,13 @@ pub(crate) fn custom_game_text(m: &dyn GuestMemory, return_pc: u32, id: u32) -> 
     if let Some(reason) = crate::lobby_tabs::notice_now() {
         return Some(reason.id());
     }
+    // The start gate holds Start Game: the map lacks what the variant's
+    // script needs (docs/game/rules-start-gate.md, "What a blocked start
+    // shows").
+    if let Some(gate) = crate::lobby_mode::gate_text_id(m) {
+        return Some(gate);
+    }
+    let m: &dyn GuestMemory = m;
     // A Forge lobby with a member on another console: its start state is
     // held off ready, and the line says why in place of retail's text.
     if crate::lobby_mode::start_refused(m) {
