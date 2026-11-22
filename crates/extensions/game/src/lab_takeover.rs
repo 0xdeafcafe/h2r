@@ -106,11 +106,7 @@ fn body(request: &Request) -> String {
     }
     facts.push(time);
     format!(
-        "{who} asks to {action}.
-"{name}"
-{}
-{}
-Allow, then quit when ready.",
+        "{who} asks to {action}.\n\"{name}\"\n{}\n{}\nAllow, then quit when ready.",
         source_line(&request.source),
         facts.join(", ")
     )
