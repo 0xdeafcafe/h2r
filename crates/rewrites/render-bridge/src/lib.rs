@@ -29,6 +29,7 @@ pub mod native_objects;
 pub mod native_particles;
 #[cfg(feature = "native-render")]
 pub mod native_effects;
+pub mod native_edits;
 #[cfg(feature = "native-render")]
 pub mod native_post;
 #[cfg(feature = "native-render")]

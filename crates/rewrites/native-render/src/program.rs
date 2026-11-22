@@ -5,7 +5,7 @@
 //! [`compile`] is pure (WGSL and uniform values); [`ProgramSet`] holds the
 //! GPU side for [`crate::gpu::GpuWorld`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gfx::compile::PendingPipeline;
@@ -1472,6 +1472,66 @@ impl ProgramSet {
         Self { materials, rigid, batch_groups, cull: InheritedCull::default() }
     }
 
+    /// The stages whose programs sample image `image` of `bitmap`,
+    /// ascending, each once.
+    pub fn image_stages(&self, bitmap: map::TagId, image: u32) -> Vec<usize> {
+        let mut stages: Vec<usize> = self
+            .image_textures(bitmap, image)
+            .into_iter()
+            .map(|(_, n, _)| n)
+            .collect();
+        stages.sort_unstable();
+        stages.dedup();
+        stages
+    }
+
+    /// Each texture made from image `image` of `bitmap` (loads share one
+    /// per signed variant), once, with a stage that samples it and the
+    /// channels stored biased there.
+    fn image_textures(&self, bitmap: map::TagId, image: u32) -> Vec<(wgpu::Texture, usize, [bool; 4])> {
+        let want = Stage::Bitmap { bitmap, image };
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        let mut materials: Vec<_> = self.materials.iter().collect();
+        materials.sort_by_key(|(m, _)| **m);
+        for (_, g) in materials {
+            for (n, stage) in g.program.stages.iter().enumerate() {
+                let Some(view) = g.stage_views[n].as_ref().filter(|_| *stage == want) else { continue };
+                let t = view.texture().clone();
+                if seen.insert(t.clone()) {
+                    out.push((t, n, g.program.signed[n]));
+                }
+            }
+        }
+        out
+    }
+
+    /// Rewrite every texture made from image `image` of `bitmap` in place
+    /// with `decoded` (by stage, [`ProgramSet::image_stages`]), biased for
+    /// its signed channels as at load (docs/editor/realtime-edits.md,
+    /// "The native refresh"). Every texture is checked before the first
+    /// write; a size, level count or format change refuses them all.
+    /// Returns how many textures were written.
+    pub fn rewrite_image(
+        &self,
+        queue: &wgpu::Queue,
+        bitmap: map::TagId,
+        image: u32,
+        decoded: &HashMap<usize, Image>,
+    ) -> Result<usize, crate::gpu::ImageRefusal> {
+        let mut writes = Vec::new();
+        for (t, n, signed) in self.image_textures(bitmap, image) {
+            let mut pixels = decoded.get(&n).ok_or(crate::gpu::ImageRefusal::NotDecoded)?.clone();
+            bias_signed(&mut pixels, signed);
+            crate::gpu::check_rewrite(&t, &pixels)?;
+            writes.push((t, pixels));
+        }
+        for (t, pixels) in &writes {
+            crate::gpu::rewrite_texture(queue, t, pixels)?;
+        }
+        Ok(writes.len())
+    }
+
     /// How many materials draw with their own programs.
     pub fn len(&self) -> usize {
         self.materials.len()
@@ -1876,6 +1936,67 @@ mod tests {
         assert_eq!(&pipeline, set.batch(3, 1, format, depth, &stencil).unwrap().0);
         assert!(set.materials[&0].pipelines.pending.is_empty());
         assert!(replacement.materials[&1].pipelines.pending.is_empty());
+    }
+
+    /// The texel at the origin of `t`'s first level (an RGBA8 texture).
+    fn first_texel(ctx: &gfx::GfxContext, t: &wgpu::Texture) -> [u8; 4] {
+        let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 256,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc = ctx.device.create_command_encoder(&Default::default());
+        enc.copy_texture_to_buffer(
+            t.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(256), rows_per_image: Some(1) },
+            },
+            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        );
+        ctx.queue.submit([enc.finish()]);
+        buffer.slice(..).map_async(wgpu::MapMode::Read, |r| r.unwrap());
+        ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let bytes = buffer.slice(..).get_mapped_range().unwrap().to_vec();
+        [bytes[0], bytes[1], bytes[2], bytes[3]]
+    }
+
+    /// A live edit's pixels land in every texture made from the image,
+    /// each signed variant biased as at load; a size change is refused
+    /// and writes nothing (docs/editor/realtime-edits.md, "The native
+    /// refresh").
+    #[test]
+    fn an_image_rewrite_reaches_every_variant_and_a_size_change_is_refused() {
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let world = World {
+            batches: vec![crate::world::Batch { material: 0, lightmap: None, first_draw: 0, draw_count: 0 }],
+            ..Default::default()
+        };
+        let bitmap = map::TagId(7);
+        let mut program = compile(&plain_look(), &plain_program()).unwrap();
+        program.dims[0] = Some(TextureDim::D2);
+        program.stages[0] = Stage::Bitmap { bitmap, image: 1 };
+        let mut signed = program.clone();
+        signed.signed[0][0] = true;
+        let set = ProgramSet::new(&ctx.device, &ctx.queue, &world,
+            [(0, program.clone()), (1, program), (2, signed)].into(),
+            &mut |_| Some(Image::solid([1, 2, 3, 4])), &mut |_| None);
+        assert_eq!(set.image_stages(bitmap, 1), vec![0]);
+        assert!(set.image_stages(bitmap, 0).is_empty());
+        let plain = set.materials[&0].stage_views[0].as_ref().unwrap().texture().clone();
+        let biased = set.materials[&2].stage_views[0].as_ref().unwrap().texture().clone();
+
+        let decoded = HashMap::from([(0, Image::solid([10, 20, 30, 40]))]);
+        assert_eq!(set.rewrite_image(&ctx.queue, bitmap, 1, &decoded), Ok(2), "shared plain texture once, signed once");
+        assert_eq!(first_texel(&ctx, &plain), [10, 20, 30, 40]);
+        assert_eq!(first_texel(&ctx, &biased), [10 ^ 0x80, 20, 30, 40]);
+
+        let bigger = HashMap::from([(0, Image::level(2, 2, vec![99; 16]).unwrap())]);
+        assert_eq!(set.rewrite_image(&ctx.queue, bitmap, 1, &bigger), Err(crate::gpu::ImageRefusal::Size));
+        assert_eq!(first_texel(&ctx, &plain), [10, 20, 30, 40], "refused: nothing written");
+        assert_eq!(set.rewrite_image(&ctx.queue, bitmap, 1, &HashMap::new()), Err(crate::gpu::ImageRefusal::NotDecoded));
+        assert_eq!(set.rewrite_image(&ctx.queue, map::TagId(8), 1, &decoded), Ok(0), "no texture of another bitmap");
     }
 
     /// The world's packets (`GpuWorld::selection_draws`) with their view

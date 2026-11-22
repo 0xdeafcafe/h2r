@@ -42,6 +42,33 @@ pub struct StageDecoder {
     linear: HashSet<(TagId, u32)>,
 }
 
+/// Image `image` of `bitmap` decoded again as each of `stages` samples it
+/// through `palettes` (a fresh decode per stage, nothing cached), by
+/// stage: a live edit's pixels for `GpuWorld::rewrite_image` and
+/// `LitObjects::rewrite_image` (docs/editor/realtime-edits.md, "The native
+/// refresh"). A stage whose decode fails is absent, which the rewrite
+/// refuses.
+pub fn decode_stages<R: std::io::Read + std::io::Seek>(
+    map: &mut Map<R>,
+    files: &mut assets::ResourceFiles,
+    palettes: &StagePalettes,
+    bitmap: TagId,
+    image: u32,
+    stages: &[usize],
+) -> HashMap<usize, Image> {
+    let mut out = HashMap::new();
+    for &stage in stages {
+        let mut decoder = StageDecoder::new(palettes.clone());
+        let mut images = StageImages::new();
+        if decoder.decode(map, files, &mut images, bitmap, image, stage, true).is_ok()
+            && let Some(decoded) = images.remove(&(bitmap, image))
+        {
+            out.insert(stage, decoded);
+        }
+    }
+    out
+}
+
 impl StageDecoder {
     /// The palettes bound at each stage when the load started.
     pub fn palettes(&self) -> &StagePalettes {
