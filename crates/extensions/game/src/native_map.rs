@@ -1,4 +1,9 @@
 //! The map and raw resource files behind the native render loaders.
+//!
+//! A live open serves every selector through the raw overlay
+//! ([`vfs::RawOverlay::global`], docs/editor/realtime-edits.md, "The edit
+//! overlay"), so a world, model or image loaded after a live raw edit
+//! decodes the edited bytes.
 
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Seek};
@@ -192,7 +197,53 @@ fn open_resolved(
             register(&mut files, file, source)?;
         }
     }
+    if live {
+        overlay(&mut files, name, vfs::RawOverlay::global());
+    }
     Ok((map, files))
+}
+
+/// The overlay name of the file a selector names: the loaded map's for
+/// [`ResourceFile::Local`], the shared maps' stems for the others (as the
+/// hot-edit glue names them, `hot_glue::RawFiles`).
+pub fn overlay_name(file: ResourceFile, map: &str) -> String {
+    match file {
+        ResourceFile::Local => map.to_ascii_lowercase(),
+        ResourceFile::MainMenu => "mainmenu".into(),
+        ResourceFile::Shared => "shared".into(),
+        ResourceFile::SinglePlayerShared => "single_player_shared".into(),
+    }
+}
+
+/// One file's view of the raw overlay, for `assets::ResourceFiles`.
+struct Overlaid {
+    overlay: vfs::RawOverlay,
+    name: String,
+}
+
+impl assets::ResourceOverlay for Overlaid {
+    fn apply(&self, offset: u64, buf: &mut [u8]) {
+        let served = buf.len();
+        self.overlay.apply(&self.name, offset, buf, served);
+    }
+    fn end(&self) -> u64 {
+        self.overlay.len(&self.name, 0)
+    }
+}
+
+/// Serves `files`' four selectors through `overlay`, read at each read.
+fn overlay(files: &mut ResourceFiles, map: &str, overlay: &vfs::RawOverlay) {
+    for file in [
+        ResourceFile::Local,
+        ResourceFile::MainMenu,
+        ResourceFile::Shared,
+        ResourceFile::SinglePlayerShared,
+    ] {
+        files.set_overlay(file, Arc::new(Overlaid {
+            overlay: overlay.clone(),
+            name: overlay_name(file, map),
+        }));
+    }
 }
 
 fn register(files: &mut ResourceFiles, file: ResourceFile, source: FileSource) -> assets::Result<()> {
@@ -239,6 +290,35 @@ mod tests {
         old.generation = Some(generation);
         let (activated, _) = open_resolved(&vfs, "level", None, Some(old), true).unwrap();
         assert_eq!(activated.header().name, "level");
+    }
+
+    /// A live open's resource files read through the overlay: a
+    /// replacement in the local map, one in a shared map, and an extent
+    /// appended past the local map's end.
+    #[test]
+    fn resource_reads_serve_the_raw_overlay() {
+        let t = Temp::new();
+        let local = t.0.join("level.map");
+        let shared = t.0.join("shared.map");
+        std::fs::write(&local, [1u8; 32]).unwrap();
+        std::fs::write(&shared, [2u8; 32]).unwrap();
+        let mut files = ResourceFiles::new();
+        let region = |path: &std::path::Path| Region { path: path.to_owned(), base: 0, length: 32 };
+        files.set(ResourceFile::Local, region(&local)).unwrap();
+        files.set(ResourceFile::Shared, region(&shared)).unwrap();
+        let o = vfs::RawOverlay::new();
+        overlay(&mut files, "Level", &o);
+        o.put("level", 4, &[9, 9]);
+        o.put("shared", 0, &[8]);
+        let at = o.append("level", 32, &[7, 7], 16);
+        assert_eq!(at, 32);
+        assert_eq!(files.read(ResourceFile::Local, 3, 4).unwrap(), [1, 9, 9, 1]);
+        assert_eq!(files.read(ResourceFile::Shared, 0, 2).unwrap(), [8, 2]);
+        assert_eq!(files.length(ResourceFile::Local), Some(34));
+        assert_eq!(files.read(ResourceFile::Local, 31, 3).unwrap(), [1, 7, 7]);
+        o.clear();
+        assert_eq!(files.read(ResourceFile::Local, 3, 4).unwrap(), [1, 1, 1, 1]);
+        assert!(files.read(ResourceFile::Local, 32, 2).is_err());
     }
 
     #[test]
