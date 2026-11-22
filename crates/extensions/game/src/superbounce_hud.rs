@@ -254,7 +254,7 @@ pub fn hidden() -> Values {
     })
 }
 
-// ---- the red reticle ----
+// ---- the lock and the reticle ----
 
 /// The HUD widget input Halo 2's unit lists as "autoaimed": the third
 /// unit input, after shield (16) and body (17), before the grenade
@@ -270,7 +270,7 @@ pub const BITMAP_INPUTS_RETURN: u32 = 0x0013_a61c;
 /// The lock holds this tick: the reticle reads autoaimed.
 static LOCKED: AtomicBool = AtomicBool::new(false);
 
-/// Whether the lock holds as of the last tick: the red reticle shows.
+/// Whether the lock holds as of the last tick.
 pub fn reticle_lock_now() -> bool {
     LOCKED.load(Ordering::Relaxed)
 }
@@ -438,10 +438,10 @@ impl hooks::Feature for SuperbounceHud {
         let hud = Arc::clone(&self.hud);
         b.frame()
             .on_tick("superbounce hud: values", move |_| lock(&hud).tick());
-        // The red reticle while the lock holds is drawn by the host, not
-        // through the game's reticle inputs: an after hook on
+        // Nothing is drawn over the reticle while the lock holds, and the
+        // game's own is not turned red: an after hook on
         // HUD_WIDGET_INPUTS would put a guest hook on the HUD.
-        // [`reticle_lock_now`] is what it reads.
+        // [`reticle_lock_now`] says whether it holds.
         Ok(())
     }
 }

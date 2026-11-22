@@ -845,6 +845,9 @@ with `INVALID_PARAMS`) answers from the state the
 | `airborne` | the local player's biped is off the ground (biped flags bit 0, as `world.object`'s `physics.airborne`); absent without a player |
 | `vz` | the local player's vertical velocity, world units a second, up positive |
 | `yaw` | the way the local player's unit aims, radians from +X toward +Y: the first-person camera's yaw |
+| `velocity` | the local player's velocity, world units a second; absent without a player |
+| `options` | the HUD's pieces this game, the Superbounce script's options as the variant set them: `targets` (`common`, `likely`, `all`) and the bools `velocity`, `alignment`, `miss_info`, `medals` ([superbounce.md](../game/superbounce.md#the-huds-options)) |
+| `targets` | the seam targets ([superbounce.md](../game/superbounce.md#targets)): `count` (the seams the `targets` option shows on this map), `tag` (the tagged seam's point; absent with none) and `marked` (the reachable seams with a navpoint, nearest first, two at most) |
 | `charge` | the charge meter: `phase` (`near`, `under`, `held`, `primed`, `lost`), `fill` (0, 1/3, 2/3, then 1 less `still_ticks` over 38 while primed, 0 while lost) and `still_ticks`; absent while hidden ([superbounce.md](../game/superbounce.md#charge)) |
 | `verb` | the prompt line's verb: `let_go_of_crouch` while `under`, `walk_out_to_stand` while `held`, `keep_moving` while primed and still for 19 ticks or more, `charge_again` for 150 ticks after a loss while no crouch step has begun |
 | `lost_reason` | why the charge went, while `lost` and while the verb is `charge_again`: `stood_still` (the word left −3 after 30 still ticks or more), `crouched` (a crouch while primed), `unknown` (the word left −3 for another reason); absent otherwise ([superbounce.md](../game/superbounce.md#charge)) |
