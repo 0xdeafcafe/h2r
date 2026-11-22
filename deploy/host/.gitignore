@@ -2,3 +2,5 @@
 # owner's disc (never commit either), and `h2 build`'s output directory.
 /stage/
 /image-out/
+# The host coverage list from `h2 sim audit-coverage` (build.sh reads it).
+/host-coverage.txt

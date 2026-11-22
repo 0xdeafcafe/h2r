@@ -13,7 +13,7 @@ root="$(cd "$here/../.." && pwd)"
 disc=
 out="$here/image-out"
 jobs=
-coverage=
+coverage=${H2_HOST_COVERAGE:-}
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --out)
@@ -35,7 +35,9 @@ while [ "$#" -gt 0 ]; do
     -h|--help)
       printf '%s\n' 'Usage: deploy/host/build.sh [disc.iso|default.xbe] [--out DIR] [--jobs N] [--coverage FILE]' \
         'Set H2_LINUX_SYSROOT to an absolute Debian bookworm amd64 sysroot path.' \
-        'Set H2_DISC if omitting the disc and H2_BIN to use a Mac h2 from this revision.'
+        'Set H2_DISC if omitting the disc and H2_BIN to use a Mac h2 from this revision.' \
+        'The module is slim when a coverage list is given: --coverage, H2_HOST_COVERAGE,' \
+        'or deploy/host/host-coverage.txt (private, ignored by Git) when it exists.'
       exit 0
       ;;
     -*) die "unknown option: $1" ;;
@@ -47,6 +49,9 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 disc=${disc:-${H2_DISC:-}}
+if [ -z "$coverage" ] && [ -s "$here/host-coverage.txt" ]; then
+  coverage="$here/host-coverage.txt"
+fi
 [ -n "$disc" ] || die "pass a disc path or set H2_DISC"
 # Resolve paths before Cargo switches to the repository.
 case "$disc" in /*) ;; *) disc="$PWD/$disc" ;; esac
@@ -116,6 +121,7 @@ if [ -n "$jobs" ]; then
   module_cmd+=(--jobs "$jobs")
 fi
 if [ -n "$coverage" ]; then
+  printf 'Slim module from %s\n' "$coverage"
   module_cmd+=(--profile host --coverage "$coverage")
 fi
 if "${module_cmd[@]}" --check; then

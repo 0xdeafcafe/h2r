@@ -23,8 +23,12 @@ and `H2_LINUX_SYSROOT` to the absolute sysroot path. Stage the host and module.
 deploy/host/build.sh "$H2_DISC"
 ```
 
-Pass `--coverage FILE` to stage a slim module built from the recorded owner
-list. [Record and check a slim host](../../docs/live/dedicated-host-build.md#slim-host)
+The script stages a slim module, native code only for the functions a
+host runs, when it has a coverage list: `--coverage FILE`,
+`H2_HOST_COVERAGE`, or `deploy/host/host-coverage.txt` when that file
+exists. Git ignores that file; keep it private with the build. With no
+list it stages the full module.
+[Record and check a slim host](../../docs/live/dedicated-host-build.md#slim-host)
 
 Pack the staged files into a local image.
 
@@ -36,11 +40,13 @@ The script builds the Linux host against bookworm's glibc 2.36 and uses a
 Mac build of `h2` from the same checkout to emit `libh2game.so` and its
 stamp. Set `H2_BIN` to reuse a Mac binary from that revision. The script
 strips the staged copies. The scratch image copies the ELF runtime
-dependencies, certificates, entrypoint shell and staged files. Supply the
+dependencies, certificates, entrypoint shell and staged files in three
+layers, least often changed first: the base files, `h2` with the
+entrypoint, then the module. A push uploads only the layers that changed. Supply the
 matching code-generation settings at runtime if you override defaults
 such as `H2_OPT`.
 
-For a private registry push, export the rootfs layer with gzip level 9.
+For a private registry push, export the layers with gzip level 9.
 Set `H2_HOST_IMAGE` to the private image reference.
 
 ```sh
