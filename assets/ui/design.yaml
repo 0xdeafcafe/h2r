@@ -258,11 +258,15 @@ components:
     font: body
     colour: white
     justify: left
+    pattern: button
+    ids: ["button.*"]
   lobby.button.off:
     role: "a pregame lobby button without the focus: the header's blue"
     font: body
     colour: hint_blue
     justify: left
+    pattern: button
+    ids: ["button.*"]
   lobby.bumper:
     role: "a bumper's glyph at an end of the lobby's mode marks, a mode to move to that way"
     font: body

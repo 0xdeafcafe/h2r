@@ -166,6 +166,8 @@ impl Design {
                 size: None,
                 variants: Vec::new(),
                 specimen: None,
+                pattern: None,
+                ids: Vec::new(),
             },
         );
         name
@@ -677,6 +679,13 @@ pub fn design_to_yaml(d: &DesignDoc) -> String {
         }
         if let Some(s) = &c.specimen {
             let _ = writeln!(out, "    specimen: {s}");
+        }
+        if let Some(p) = &c.pattern {
+            let _ = writeln!(out, "    pattern: {p}");
+        }
+        if !c.ids.is_empty() {
+            let ids: Vec<String> = c.ids.iter().map(|i| q(i)).collect();
+            let _ = writeln!(out, "    ids: [{}]", ids.join(", "));
         }
     }
     out

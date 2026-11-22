@@ -23,6 +23,7 @@
 //! - [`components`]: the design system, its specimens and the layout
 //!   gallery.
 //! - [`consistency`]: where screens drift from the design system.
+//! - [`findings`]: every check's findings for one screen state.
 
 pub mod animation;
 pub mod choice;
@@ -32,6 +33,7 @@ pub mod content;
 pub mod data;
 pub mod dialog;
 pub mod dialog_tag;
+pub mod findings;
 pub mod forge;
 pub mod ids;
 pub mod input;
