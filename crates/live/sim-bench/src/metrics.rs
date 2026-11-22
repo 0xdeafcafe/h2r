@@ -1387,12 +1387,14 @@ mod tests {
             snapshot_ns: 500_000,
             remapped: 3,
             copied: 0,
+            ..PhantomCosts::default()
         };
         let end = PhantomCosts {
             build_ns: 13_000_000,
             snapshot_ns: 2_500_000,
             remapped: 7,
             copied: 0,
+            ..PhantomCosts::default()
         };
         report.set_costs(8_000_000, None);
         report.set_phantom_costs(end.since(start));
