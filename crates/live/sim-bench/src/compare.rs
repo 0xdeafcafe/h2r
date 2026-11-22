@@ -363,7 +363,7 @@ fn bounce_rows(out: &mut String, bounce: &BTreeMap<String, BounceArm>) {
     }
     let _ = writeln!(
         out,
-        "\nbounce practice (every bot, every run)\n{:<12}{:<14}{:>7}{:>9}{:>7}{:>8}{:>8}{:>13}{:>9}  {}",
+        "\nbounce practice (every bot, every run)\n{:<12}{:<14}{:>7}{:>9}{:>7}{:>8}{:>8}{:>13}{:>9}  why not (top 3)",
         "arm",
         "map",
         "tries",
@@ -373,7 +373,6 @@ fn bounce_rows(out: &mut String, bounce: &BTreeMap<String, BounceArm>) {
         "chains",
         "launch",
         "bounced",
-        "why not (top 3)"
     );
     let line = |out: &mut String, arm: &str, map: &str, s: &crate::bounce::Stats| {
         let launch = s.launch.map_or_else(

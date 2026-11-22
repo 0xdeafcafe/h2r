@@ -1617,6 +1617,8 @@ mod tests {
             tick: 40,
             chain,
             medals,
+            spot: None,
+            strips: None,
         };
         assert_eq!(
             award_event(&award(

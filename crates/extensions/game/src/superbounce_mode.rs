@@ -1434,6 +1434,8 @@ mod tests {
             tick: 100 + seq as u32,
             chain,
             medals: chain::bounce_medals(chain).to_vec(),
+            spot: None,
+            strips: None,
         };
         collect_awards(false);
         keep_awards(&[award(1, 1)]);
