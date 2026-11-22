@@ -810,7 +810,8 @@ on kill(victim, killer) {
         let (text, ok) = run_text("x.rules", rules::builtin::SLAYER, &a.scenario, false).unwrap();
         assert!(ok, "{text}");
         assert!(a.left_out.is_empty(), "{:?}", a.left_out);
-        assert_eq!(file.variant["score_limit"], 25);
+        // Team Slayer's default limit (`sim::Setup`): this match has teams.
+        assert_eq!(file.variant["score_limit"], 50);
         assert!(file.players.iter().all(|p| p.unit.is_some()));
     }
 
@@ -826,7 +827,7 @@ on kill(victim, killer) {
         assert!(out.text.contains("\nwinners: "), "{}", out.text);
         assert!(out.text.contains("\nended: "), "{}", out.text);
         assert!(out.text.contains("\nwinning score: average "), "{}", out.text);
-        assert!(out.text.contains(" ops of 20000 budget (seed 1"), "{}", out.text);
+        assert!(out.text.contains(&format!(" ops of {} budget (seed 1", rules::vm::TICK_BUDGET)), "{}", out.text);
         assert!(out.text.contains("\nwarnings:"), "{}", out.text);
 
         let json = sim_text("x.rules", rules::builtin::SLAYER, &SimArgs { json: true, ..args }).unwrap();

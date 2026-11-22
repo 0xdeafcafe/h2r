@@ -406,7 +406,9 @@ on kill(victim, killer) {
         vm.begin_tick(2);
         kill(&mut vm, &mut g, 0, 1);
         assert_eq!(vm.global("kills"), Some(3));
-        assert_eq!(g.players[&0].score, scored + 10, "the new handler ran");
+        // Two kills scored `scored`, so one is worth `scored / 2`; the new
+        // handler gives ten times that.
+        assert_eq!(g.players[&0].score, scored + scored / 2 * 10, "the new handler ran");
     }
 
     #[test]

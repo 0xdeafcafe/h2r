@@ -373,7 +373,7 @@ async fn simulate_plays_a_generated_match_and_sums_up_a_batch() {
     assert_eq!(v["teams"], 2);
     assert_eq!(v["summary"]["asked"], 6);
     assert_eq!(v["summary"]["ran"], 6);
-    assert_eq!(v["summary"]["budget"], 20_000);
+    assert_eq!(v["summary"]["budget"], rules::vm::TICK_BUDGET);
     assert!(v["summary"]["worst_tick_ops"].as_u64().unwrap() > 0);
     let wins: u64 = v["summary"]["wins"]
         .as_array()

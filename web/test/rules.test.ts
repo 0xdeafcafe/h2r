@@ -648,7 +648,7 @@ describe("the mock's generated matches", async () => {
     expect(r.teams).toBe(2);
     expect(r.rows.map((x) => x.seed)).toEqual([3, 4, 5, 6, 7, 8, 9, 10]);
     const s = r.summary!;
-    expect([s.asked, s.ran, s.budget]).toEqual([8, 8, 20000]);
+    expect([s.asked, s.ran, s.budget]).toEqual([8, 8, 100000]);
     expect(s.wins.reduce((n, w) => n + w.matches, 0)).toBe(8);
     expect(s.ends.reduce((n, e) => n + e.matches, 0)).toBe(8);
     expect(s.max_score).toBe(Math.max(...r.rows.map((x) => x.top_score)));

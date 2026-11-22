@@ -435,7 +435,6 @@ fn validate(s: &Scenario) -> Result<(), String> {
             ));
         }
     }
-    }
     for step in &s.steps {
         if step.tick > s.ticks {
             return Err(format!(

@@ -498,7 +498,7 @@ const readVariant = (v: unknown): Record<string, number> | undefined => {
 };
 const readObjects = (v: unknown): ScenarioObject[] | undefined => {
   // The wire names the object `object` (`labelled`); a kept draft, `id`.
-  const out = arr(v).map(obj).map((o) => ({ ...o, id: typeof o.object === "number" ? o.object : o.id }))
+  const out = arr(v).map(obj).map((o): Record<string, unknown> => ({ ...o, id: typeof o.object === "number" ? o.object : o.id }))
     .filter((o) => typeof o.id === "number" && typeof o.label === "string")
     .map((o) => ({ id: o.id as number, label: o.label as string, number: whole(o.number, 0), team: typeof o.team === "number" ? o.team : null }));
   return out.length ? out : undefined;

@@ -281,9 +281,9 @@ export function mockSimulate(source: string, body: Record<string, unknown>) {
     return [...counts.values()].sort((a, b) => b[1] - a[1]);
   };
   const flags: Array<{ kind: string; text: string; seed: number; matches: number }> = [];
-  const idle = all.filter((m) => m.trace.scores.every((s) => s.score === 0));
+  const idle = all.filter((m) => (m.trace.scores ?? []).every((s) => s.score === 0));
   if (idle.length) flags.push({ kind: "nobody_scores", text: `nobody scored in ${idle.length === matches ? "every match" : `${idle.length} of ${matches} matches`}`, seed: idle[0]!.seed, matches: idle.length });
-  const below = all.filter((m) => m.trace.scores.some((s) => s.score < 0));
+  const below = all.filter((m) => (m.trace.scores ?? []).some((s) => s.score < 0));
   if (below.length) flags.push({ kind: "negative_score", text: `a player ended below zero in ${below.length === matches ? "every match" : `${below.length} of ${matches} matches`}`, seed: below[0]!.seed, matches: below.length });
   if (rows.every((r) => r.end === "time_limit")) flags.push({ kind: "clock", text: "every match ran to the time limit", seed, matches });
   const worst = rows.reduce((a, b) => (b.worst_tick_ops > a.worst_tick_ops ? b : a));
