@@ -156,6 +156,8 @@ the final result through that directory.
 | `H2_LIVE_SCREENSHOT_CLASSIFIER_URL` | optional native screenshot classifier at a literal loopback HTTP address. Unset holds captures for review when no classifier is installed ([Screenshot review](../live/live-admin.md#screenshot-review)) |
 | `H2_NO_COOP_ROW` | If present, hides the co-op row (`crates/apps/boot/src/registration.rs`). |
 | `H2_HOST_*`, `H2_LEASE`, `H2_TOKEN`, `H2_LIVE`, `H2_DATA_*` | Dedicated host settings, leased credentials and bundle selection (`crates/apps/cli/src/host_cmd`, [host build](../live/dedicated-host-build.md)). |
+| `H2_IMAGE` (`h2 host run --out`) | the game module directory a dedicated host runs. Unset: the verified host-data bundle's `image/`; the host stops with a named error when the bundle has none or its stamp does not match this `h2` ([The game module](../live/dedicated-host-build.md#the-game-module)) |
+| `H2_HOST_COVERAGE` | `deploy/host/build.sh --module`: the coverage list for a slim module ([slim host](../live/dedicated-host-build.md#slim-host)) |
 | `H2_LIVE_*` | Live account, server and storage settings (`crates/apps/cli/src/play_live.rs`, `crates/live/live-server/src/standalone.rs`, `crates/live/live-worker/src/settings.rs`). |
 | `H2_XNET_*`, `H2_COOP_*` | XNet endpoint and network diagnostics, co-op overrides and test controls (`crates/live/live-hle/src/network_config.rs`, `crates/extensions/game/src/coop_live.rs`, `crates/apps/cli/src/coop_test_cmd.rs`). |
 | `H2_DATA`, `H2_DISC`, `H2_XBE`, `H2_BENCH_*` | Data directory, local disc and executable inputs, and parameters for individual test or benchmark harnesses. |

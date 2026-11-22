@@ -20,7 +20,7 @@ static ALLOCATOR: mem_watch::TaggedAllocator = mem_watch::TaggedAllocator;
 
 const USAGE: &str = "usage: h2-editor call <call> [args] | h2-editor --serve [--socket PATH] [...]
        h2-editor [--socket PATH | --no-listen] [--disc <iso> | --map <file.map> | --folder <maps dir>] \
-[--halo1 <iso|maps dir>] [--mappack <iso|folder>] [--data <dir>] [--package <dir>[#H1|#H2]] [--halo1-map <map> [--convert h2|h1]] [--overlay on|off] [--tool scenario|tags|scripts|variants|playlists|ui-screens|hud] [--hs-doc <hs_doc.txt>] [--tags-map <map>] [--tag <group>:<path>] [--ui-screen <screen>/<state> [--ui-press up,a,...]] \
+[--halo1 <iso|maps dir>] [--mappack <iso|folder>] [--data <dir>] [--package <dir>[#H1|#H2]] [--halo1-map <map> [--convert h2|h1]] [--overlay on|off] [--tool scenario|tags|scripts|textures|variants|playlists|ui-screens|hud] [--hs-doc <hs_doc.txt>] [--tags-map <map>] [--tag <group>:<path>] [--ui-screen <screen>/<state> [--ui-press up,a,...]] \
 [--hud-map <map>|--hud-package <key>] [--hud <nhdt name>] [--hud-widget <name>] [--pick <map>] [--select <block>:<index>] [--hopper <file.dat>|default] \
 [--variant <built-in index>] [--copy-variant <name>] [--playlist <1..16>] [--preset <n>] \
 [--focus] [--camera <yaw>,<pitch>,<distance>] [--dialog unsaved|package] \
@@ -185,6 +185,7 @@ fn args() -> Result<Args> {
                     "hud" => ToolKind::Hud,
                     "tags" => ToolKind::Tags,
                     "scripts" => ToolKind::Scripts,
+                    "textures" => ToolKind::Textures,
                     t => bail!("unknown tool {t}\n{USAGE}"),
                 })
             }

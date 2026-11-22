@@ -52,6 +52,13 @@
 //!   already made, newest first. Last it writes each teleporter channel
 //!   into the loaded scenario's netgame flag (its identifier, `+0x14`),
 //!   after checking the flag is a teleporter.
+//! - **Placement edit** is `world.placement.edit`: one transaction on a
+//!   scenario placement block (`placement::edit`). It deletes the occupants
+//!   of removed entries, renumbers the occupants of moved ones, writes the
+//!   records and the count, and makes a linked object for each created
+//!   entry: the same `placement_data_new` and `object_new` as a respawn,
+//!   with the entry's index written at placement `+0x10` first
+//!   (`addr::PLACEMENT_INDEX`).
 //! - **Queue a game** is the level boot's sequence (docs/runtime/level-boot.md)
 //!   run from a tick: the host gives the steps ([`GameStep`]: the game's
 //!   option builders, our field writes, its options check and its queue,
@@ -80,6 +87,9 @@ pub mod addr {
     pub const PLACEMENT_POSITION: u32 = 0x1c;
     pub const PLACEMENT_FORWARD: u32 = 0x28;
     pub const PLACEMENT_UP: u32 = 0x34;
+    /// The scenario placement index (i16) `object_new` copies into the
+    /// object's `+0x1a` (`0x000b7c87`); `placement_data_new` leaves -1.
+    pub const PLACEMENT_INDEX: u32 = 0x10;
     pub const OBJECT_NEW: u32 = 0x000b_7b40;
     pub const OBJECT_DELETE: u32 = 0x000b_8540;
     pub const UNIT_ADD_WEAPON: u32 = 0x000c_d0c0;
@@ -145,6 +155,9 @@ pub enum GameStep {
         report: Option<&'static str>,
     },
 }
+
+/// A checked `world.placement.edit` transaction.
+pub(super) use placement::edit::Plan as PlacementPlan;
 
 /// A salted object or an entry of the loaded scenario.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -257,6 +270,8 @@ pub enum Call {
     },
     ObjectDelete { id: ObjectId },
     ObjectRespawn { target: RespawnTarget },
+    /// One transaction on a scenario placement block (`world.placement.edit`).
+    PlacementEdit { plan: Box<PlacementPlan> },
     /// One local Forge edit's engine work, rechecking its admission and
     /// every live object at the next tick before the first guest call.
     Forge {
@@ -286,6 +301,8 @@ pub struct Queue {
     pending: Vec<(u64, Call)>,
     waiting: BTreeMap<u64, QueuedCall>,
     previews: placement::Previews,
+    /// The blocks `world.placement.edit` has edited this activation.
+    blocks: BTreeMap<String, placement::edit::BlockState>,
     active_scenario: Option<(String, u32)>,
     game_ticket: Option<u64>,
     reload: Option<Reload>,
@@ -492,6 +509,8 @@ impl Queue {
     /// A campaign reactivates the same mission when restoring a checkpoint.
     /// Retain tag history while handles on that timeline are ambiguous.
     pub fn map_activated(&mut self, scenario: Option<(String, u32)>) {
+        // The loaded map's block capacities are read again at the next edit.
+        self.blocks.clear();
         let fresh = scenario.as_ref().is_some_and(|(name, mode)| {
             *mode != guest_layout::game::MODE_CAMPAIGN || self.active_scenario.as_ref()
                 .is_some_and(|(old, _)| !old.eq_ignore_ascii_case(name))
@@ -1281,6 +1300,7 @@ async fn run_call(
             lock(queue).previews.remember(&entry, object);
             Ok(Ok(json!({ "old": old, "object": object.to_string(), "linked": false })))
         }
+        Call::PlacementEdit { ref plan } => placement::edit::run(cx, scratch, queue, plan).await,
         Call::Forge { guard, ref steps } => run_forge(cx, scratch, queue, guard, steps).await,
         Call::QueueGame { ref steps } => {
             let options = scratch + SCRATCH_OPTIONS;

@@ -35,10 +35,11 @@ pub fn parse_doc(d: &str) -> Result<ToolKind, RpcError> {
         "tags" => ToolKind::Tags,
         "hud" => ToolKind::Hud,
         "scripts" => ToolKind::Scripts,
+        "bitmaps" | "textures" => ToolKind::Textures,
         other => {
             return Err(err(
                 code::INVALID_PARAMS,
-                format!("no document {other:?} (map, tags, scripts, variant, playlists, ui, hud)"),
+                format!("no document {other:?} (map, tags, scripts, bitmaps, variant, playlists, ui, hud)"),
             ));
         }
     })
@@ -53,6 +54,7 @@ pub fn doc_name(t: ToolKind) -> &'static str {
         ToolKind::Tags => "tags",
         ToolKind::Hud => "hud",
         ToolKind::Scripts => "scripts",
+        ToolKind::Textures => "bitmaps",
     }
 }
 
@@ -65,6 +67,7 @@ fn is_open(app: &App, t: ToolKind) -> bool {
         ToolKind::Tags => app.session.is_open(),
         ToolKind::Hud => app.hud.session.is_some(),
         ToolKind::Scripts => app.scripts_loaded().is_ok(),
+        ToolKind::Textures => app.session.is_open(),
     }
 }
 
@@ -83,6 +86,7 @@ fn can(app: &App, t: ToolKind) -> (bool, bool) {
         ToolKind::Playlists => (app.hoppers.can_undo(), app.hoppers.can_redo()),
         ToolKind::UiScreens | ToolKind::Scripts => (false, false),
         ToolKind::Tags => (app.tags.can_undo(), app.tags.can_redo()),
+        ToolKind::Textures => (app.textures.can_undo(), app.textures.can_redo()),
         ToolKind::Hud => app
             .hud
             .session
@@ -112,6 +116,7 @@ fn name_of(app: &App, t: ToolKind) -> Option<String> {
             None => s.name.clone(),
         }),
         ToolKind::Scripts => app.scripts_loaded().ok().map(|l| l.map.clone()),
+        ToolKind::Textures => app.loaded_map().map(str::to_owned),
     }
 }
 
@@ -365,6 +370,10 @@ pub fn game_type(t: &str) -> Result<GameType, RpcError> {
 /// The Scripts tool writes nothing (docs/editor/rich-editors.md, slice H3).
 const SCRIPTS_READ_ONLY: &str = "the Scripts tool is read only: it saves nothing";
 
+/// Bitmap edits are kept in the editor until the encoder slice writes them.
+const BITMAPS_NOT_WRITTEN: &str =
+    "refused: bitmap edits are not written to the map yet: bitmap.export writes a PNG";
+
 /// Tag edits save and diff with the map: the session writes them.
 fn map_for_tags(t: ToolKind) -> ToolKind {
     match t {
@@ -424,6 +433,7 @@ fn save(app: &mut App, t: ToolKind) -> Reply {
             "UI screens have nothing to save: ui.render writes a PNG",
         )),
         ToolKind::Scripts => Err(err(code::REFUSED, SCRIPTS_READ_ONLY)),
+        ToolKind::Textures => Err(err(code::REFUSED, BITMAPS_NOT_WRITTEN)),
         ToolKind::Hud => match app.hud.session.as_ref().and_then(|s| s.saved_path.clone()) {
             Some(path) => save_as(app, t, path),
             None => Err(err(
@@ -459,6 +469,7 @@ fn save_as(app: &mut App, t: ToolKind, path: PathBuf) -> Reply {
             ));
         }
         ToolKind::Scripts => return Err(err(code::REFUSED, SCRIPTS_READ_ONLY)),
+        ToolKind::Textures => return Err(err(code::REFUSED, BITMAPS_NOT_WRITTEN)),
     };
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir)
@@ -583,6 +594,7 @@ fn diff(app: &mut App, t: ToolKind) -> Reply {
         }
         ToolKind::UiScreens => Ok(json!({ "doc": "ui", "dirty": false })),
         ToolKind::Scripts => Ok(json!({ "doc": "scripts", "dirty": false })),
+        ToolKind::Textures => Ok(super::bitmaps::diff(app)),
         ToolKind::Hud => super::hud::diff(app),
     }
 }

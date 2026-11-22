@@ -602,6 +602,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bitmap-edit"
+version = "0.1.0"
+dependencies = [
+ "png",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6855,6 +6864,7 @@ dependencies = [
  "app-icon",
  "assets",
  "audio",
+ "bitmap-edit",
  "boot",
  "bots",
  "content",

@@ -398,7 +398,8 @@ loaded"), not done by default.
 | System Link host, with other machines in the game | yes | only after a prompt that names how many machines will not have the change; tag pokes are local to the host, so clients predict with the old values. Object edits replicate as the host's state does |
 | System Link host, peer count unknown | yes | no until the game can verify the peer count |
 | Multiplayer client | yes: what this machine holds | no: the host overwrites it |
-| A Live session (not the local embedded server of `--live-local`) | no stream while a game is in progress: it would show one player every position | no |
+| A Live custom game this console hosts | no stream while a game is in progress: it would show one player every position | as a System Link host: the same prompt when other machines are in; a placement count change only when the others are bots |
+| A Live matchmade game, or a Live game another console hosts (not the local embedded server of `--live-local`) | no stream while a game is in progress | no |
 | Session unknown | yes | no |
 
 The host confirmation in Pending applies to the current pairing, game map
@@ -408,8 +409,9 @@ require a matching checksum.
 
 The game enforces this, not only the editor: `edit.set`, `edit.batch`,
 `world.object.*` and `map.reload` refuse by `SessionKind::writes`, as
-`sim.state.set` does, and refuse on a Live session whatever its kind.
-`live.subscribe` refuses on a Live session in a game. Continuous writes require Edit. A confirmed F5 in View
+`sim.state.set` does, and refuse on a Live matchmade game or a Live game
+this console does not host (`agent_glue::live_edit_refusal`).
+`live.subscribe` refuses on every Live session in a game. Continuous writes require Edit. A confirmed F5 in View
 authorizes that playtest and leaves later edits in Pending. For a changed
 map in a networked game, every machine loads the same saved map
 ([editor-guide.md](editor-guide.md)).
@@ -564,7 +566,8 @@ M10 each start by reading the retail code for the fields they add, into
   signing in to external Live.
 - Continuous writes require Edit. F5 in View can authorize a single
   playtest. `SessionKind::writes` gates host edits. An external Live game
-  refuses streaming and writes.
+  refuses streaming; it refuses writes unless it is a custom game this
+  console hosts.
 - Recordings, play copies and saved maps are user output and stay out of
   Git checkouts.
 

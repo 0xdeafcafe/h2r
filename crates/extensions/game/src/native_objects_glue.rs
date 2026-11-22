@@ -5,7 +5,7 @@
 //! run before reserving it for every live target copy.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use engine::memory::GuestMemory;
@@ -78,7 +78,9 @@ struct Models {
     lit: Mutex<Option<LitObjects>>,
     /// Definition index to render-model datum, shared across definitions.
     index: HashMap<u16, u32>,
-    coverage: HashMap<TagId, ModelCoverage>,
+    /// Per render model, what the walk checks a part against; a live
+    /// edit's refresh replaces a model's ([`refresh_models`]).
+    coverage: RwLock<HashMap<TagId, ModelCoverage>>,
     palettes: StagePalettes,
 }
 
@@ -138,6 +140,9 @@ pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
     state: Arc<Mutex<Option<MapState>>>,
     gpu: (wgpu::Device, wgpu::Queue),
+    /// A live edit's refresh is running ([`refresh_models`]); edits wait
+    /// in the queue until it ends, so they apply in order.
+    refreshing: Arc<AtomicBool>,
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
@@ -193,9 +198,201 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     }
 }
 
+impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+    /// Starts a live edit's refresh of the resident models
+    /// (docs/editor/realtime-edits.md, "The native refresh") when edits
+    /// are queued and no refresh is running: on a worker
+    /// ([`refresh_models`]), with the stage palettes and stream formats
+    /// the device holds now, as a load reads them.
+    fn refresh_edits(&self, mem: &dyn GuestMemory, models: &Arc<Models>, generation: u64) {
+        use render_bridge::native_edits::{self, Consumer};
+        if !native_edits::pending(Consumer::Objects) || self.refreshing.load(Ordering::Acquire) {
+            return;
+        }
+        let name = self.state.lock().ok().and_then(|s| {
+            s.as_ref().filter(|s| s.generation == generation).map(|s| s.name.clone())
+        });
+        let Some(name) = name else { return };
+        let edits = native_edits::drain(Consumer::Objects);
+        if edits.is_empty() {
+            return;
+        }
+        let palettes = self.device.lock().ok().map(|d| scene_load_palettes(&d, mem)).unwrap_or_default();
+        let formats = StreamFormats::read(&Ro(mem));
+        self.refreshing.store(true, Ordering::Release);
+        let refreshing = Arc::clone(&self.refreshing);
+        let (models, gpu) = (Arc::clone(models), self.gpu.clone());
+        let launched = background::spawn("native-objects edits", move || {
+            refresh_models(&name, generation, &models, &edits, palettes, formats, gpu);
+            refreshing.store(false, Ordering::Release);
+        });
+        if let Err(e) = launched {
+            self.refreshing.store(false, Ordering::Release);
+            eprintln!("native-objects: could not start the live edit refresh ({e}); edited models keep their loaded geometry until the map reloads");
+        }
+    }
+}
+
+/// The render models and images one drain of live edits names, the
+/// models only where `resident` (the load's coverage) has them: another
+/// model draws from guest memory already. Tags match by index, as
+/// `native_map::tag_of` does.
+fn edited_models_and_images(
+    edits: &[render_bridge::native_edits::Edit], resident: &dyn Fn(u32) -> Option<TagId>,
+) -> (Vec<TagId>, Vec<(TagId, u32)>) {
+    use render_bridge::native_edits::Edit;
+    let mut modes = Vec::new();
+    let mut images = Vec::new();
+    for &edit in edits {
+        match edit {
+            Edit::Model { tag } => {
+                if let Some(mode) = resident(tag)
+                    && !modes.contains(&mode)
+                {
+                    modes.push(mode);
+                }
+            }
+            Edit::Image { bitmap, image } => images.push((TagId(bitmap), image)),
+            Edit::Section { .. } => {}
+        }
+    }
+    (modes, images)
+}
+
+/// Takes `mode` out of the draw set and the coverage: its parts keep
+/// their D3D draws, from guest memory, which the edit wrote.
+fn leave_native(models: &Models, mode: TagId) {
+    let mut lit = models.lit.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(lit) = lit.as_mut() {
+        lit.remove_model(mode.0);
+    }
+    models.coverage.write().unwrap_or_else(|e| e.into_inner()).remove(&mode);
+}
+
+/// Applies one drain of live edits to the resident `models` of map `name`
+/// (docs/editor/realtime-edits.md, "The native refresh"). Each edited
+/// render model is loaded again from the map file, which the raw overlay
+/// serves edited, as the map's load does ([`load_model`]), uploaded into
+/// a staging set, then moved into the draw set under its lock with its
+/// coverage (the load's residency kept). Each edited image is decoded
+/// again at the stages that sample it and its textures rewritten. A model
+/// that no longer loads natively leaves the native path, so its parts
+/// draw from guest memory rather than as they loaded; an image whose
+/// size, levels or format changed keeps its pixels until the map reloads.
+/// Both say so.
+fn refresh_models(
+    name: &str,
+    generation: u64,
+    models: &Models,
+    edits: &[render_bridge::native_edits::Edit],
+    palettes: StagePalettes,
+    formats: Option<StreamFormats>,
+    (device, queue): (wgpu::Device, wgpu::Queue),
+) {
+    let current = || native_map_work::generation() == generation;
+    let (modes, images) = {
+        let coverage = models.coverage.read().unwrap_or_else(|e| e.into_inner());
+        edited_models_and_images(edits, &|tag| coverage.keys().find(|k| k.0 & 0xffff == tag & 0xffff).copied())
+    };
+    if modes.is_empty() && images.is_empty() {
+        return;
+    }
+    let mut opened = match open(name, palettes, formats) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("native-objects: {name}: a live edit's map does not open ({e}); the edited models leave the native path");
+            for &mode in &modes {
+                leave_native(models, mode);
+            }
+            return;
+        }
+    };
+    for mode in modes {
+        if !current() {
+            return;
+        }
+        let staged = (|| -> Result<(LitObjects, ModelCoverage), String> {
+            let (cpu, cover, _) = load_model(&mut opened, mode).map_err(|e| e.to_string())?;
+            let mut staging = models
+                .lit
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .map(LitObjects::empty_with_layout)
+                .ok_or("the map has no draw set")?;
+            if let Some(texture) = &cpu.normalization {
+                staging.set_normalization(&device, &queue, texture);
+            }
+            if !staging.add_model(&device, &queue, mode.0, cpu.lit) {
+                return Err("GPU refused the model's programs or textures".into());
+            }
+            Ok((staging, cover))
+        })();
+        let why = match staged {
+            Ok((mut staging, mut cover)) => {
+                // The upload's writes land before the first draw of it.
+                queue.submit([]);
+                let mut lit = models.lit.lock().unwrap_or_else(|e| e.into_inner());
+                let mut coverage = models.coverage.write().unwrap_or_else(|e| e.into_inner());
+                let old = coverage.get(&mode).map(|old| (old.nodes, Arc::clone(&old.assets)));
+                match (lit.as_mut(), old) {
+                    (Some(_), Some((nodes, _))) if nodes != cover.nodes => Some("its node count changed".to_owned()),
+                    (Some(lit), Some((_, assets))) => {
+                        cover.assets = assets;
+                        if staging.move_model_into(mode.0, lit) {
+                            coverage.insert(mode, cover);
+                            None
+                        } else {
+                            Some("its upload does not fit the draw set".to_owned())
+                        }
+                    }
+                    _ => None,
+                }
+            }
+            Err(why) => Some(why),
+        };
+        if let Some(why) = why {
+            eprintln!("native-objects: {name}: model {:#010x} leaves the native path after a live edit ({why}); D3D draws it", mode.0);
+            leave_native(models, mode);
+        }
+    }
+    if images.is_empty() || !current() {
+        return;
+    }
+    // Which stages sample each image, read under the lock; the decodes
+    // run without it.
+    let stages: Vec<((TagId, u32), Vec<usize>)> = {
+        let lit = models.lit.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(lit) = lit.as_ref() else { return };
+        images.iter().map(|&(bitmap, image)| ((bitmap, image), lit.image_stages(bitmap, image))).collect()
+    };
+    let palettes = opened.decoder.palettes().clone();
+    let decoded: Vec<_> = stages
+        .into_iter()
+        .map(|((bitmap, image), at)| {
+            let pixels = native_render::stage_images::decode_stages(&mut opened.map, &mut opened.raw.0, &palettes, bitmap, image, &at);
+            ((bitmap, image), pixels)
+        })
+        .collect();
+    let lit = models.lit.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(lit) = lit.as_ref() else { return };
+    for ((bitmap, image), pixels) in &decoded {
+        if let Err(why) = lit.rewrite_image(&queue, *bitmap, *image, pixels) {
+            eprintln!(
+                "native-objects: {name}: bitmap {:#010x} image {image} keeps its pixels until the map reloads ({why:?})",
+                bitmap.0
+            );
+        }
+    }
+    drop(lit);
+    queue.submit([]);
+}
+
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     fn preload(&self, mem: &dyn GuestMemory) {
-        let _ = self.load(mem);
+        if let Some((models, generation)) = self.load(mem) {
+            self.refresh_edits(mem, &models, generation);
+        }
     }
 
     fn draw_walk(
@@ -216,6 +413,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             return Err(ObjectWalk::State);
         }
         let (models, generation) = self.load(mem).ok_or(ObjectWalk::Model)?;
+        self.refresh_edits(mem, &models, generation);
         let mut device = self.device.lock().map_err(|_| ObjectWalk::Reservation)?;
         if !device.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem))
             .map_err(|_| ObjectWalk::Reservation)?
@@ -392,6 +590,7 @@ fn plan_walk<B: d3d::backend::Backend>(
     let mut checked_transition = false;
     let mut lit = models.lit.try_lock().map_err(|_| ObjectWalk::Model)?;
     let mut lit = lit.as_mut();
+    let coverage = models.coverage.read().map_err(|_| ObjectWalk::Model)?;
     let mut draws = Vec::with_capacity(run.len());
     for (slot, &item) in (first..).zip(run) {
         let (handle, part) = match item {
@@ -401,7 +600,7 @@ fn plan_walk<B: d3d::backend::Backend>(
         };
         let instance = scene.instance(view, InstanceKey(handle)).ok_or(ObjectWalk::Inputs)?;
         let model = *models.index.get(&(instance.definition as u16)).ok_or(ObjectWalk::Model)?;
-        let cover = models.coverage.get(&TagId(model)).ok_or(ObjectWalk::Model)?;
+        let cover = coverage.get(&TagId(model)).ok_or(ObjectWalk::Model)?;
         if model != part.mode || instance.nodes.len() != cover.nodes {
             return Err(ObjectWalk::Model);
         }
@@ -554,6 +753,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
         gpu,
         device: Arc::clone(device),
         state: Arc::new(Mutex::new(None)),
+        refreshing: Arc::default(),
     }));
 }
 
@@ -680,7 +880,7 @@ fn load_objects(
     let models = Arc::new(Models {
         retire: Some(retire),
         lit: Mutex::new(lit),
-        coverage: coverage.into_iter().filter_map(|(mode, result)| Some((mode, result.ok()?))).collect(),
+        coverage: RwLock::new(coverage.into_iter().filter_map(|(mode, result)| Some((mode, result.ok()?))).collect()),
         index,
         palettes: opened.decoder.used().clone(),
     });
@@ -692,7 +892,7 @@ fn load_objects(
     // E3's sun tiles read these on the render thread; retail never does.
     native_render::sun_casters::set_models(generation, Some(Arc::new(casters.finish())));
     // The palette counts a model resident once the walk can draw it.
-    for cover in models.coverage.values() {
+    for cover in models.coverage.read().unwrap_or_else(|e| e.into_inner()).values() {
         cover.assets.finish(true);
     }
     palette.refresh();
@@ -1158,6 +1358,25 @@ impl ObjectsPass {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A live edit's drain names the native models it edited, each once
+    /// and by the load's own tag (matched by index), and every image;
+    /// a model the load left to D3D and a structure section are not the
+    /// objects' to refresh.
+    #[test]
+    fn a_drain_names_the_resident_models_once_and_every_image() {
+        use render_bridge::native_edits::{Edit, KIND_CLUSTER};
+        let resident = |tag: u32| (tag & 0xffff == 0x0042).then_some(TagId(0xe1c0_0042));
+        let (modes, images) = edited_models_and_images(&[
+            Edit::Model { tag: 0x0000_0042 },
+            Edit::Model { tag: 0xe1c0_0042 },
+            Edit::Model { tag: 0xe1c0_0099 },
+            Edit::Image { bitmap: 0xe000_0007, image: 2 },
+            Edit::Section { bsp: 1, kind: KIND_CLUSTER, index: 0, grown: false },
+        ], &resident);
+        assert_eq!(modes, vec![TagId(0xe1c0_0042)]);
+        assert_eq!(images, vec![(TagId(0xe000_0007), 2)]);
+    }
 
     /// The lit parts are W-buffered programs as the world's: they clip w
     /// to the range the device draws the layer with, not from 0, or an
