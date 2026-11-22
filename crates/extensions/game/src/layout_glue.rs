@@ -22,9 +22,11 @@
 //! same Controls row text function and serve text through the same string
 //! lookup, and a function entry takes one override.
 //!
-//! It also registers the "Video Settings" row on the top-level Settings list (after
-//! Player Profiles and Game Variants) and the Video screen that row opens
-//! (`crate::video_screen`). Its display settings reuse the Controls layout,
+//! It also registers the "Video" and "Voice" rows on the top-level Settings
+//! list (after Player Profiles and Game Variants) and the Video screen the
+//! first opens (`crate::video_screen`); the Voice screen is
+//! `crate::voice_settings`'s. The list embeds room for three item widgets,
+//! so the fourth is one of ours, linked by the "add items" hook. Its display settings reuse the Controls layout,
 //! the screen header builder and the Settings list callbacks. The Field of
 //! View row also installs the first-person camera hook (`crate::fov_row`).
 //!
@@ -98,6 +100,10 @@ const SHADOW_BASE: u32 = 0xa2f1_0000;
 /// per open screen (`speaker_row::extra_slot`).
 const EXTRA_BASE: u32 = 0xa2f2_0000;
 const EXTRA_SIZE: u32 = 0x1000;
+/// The Settings list's added item widgets past the three it embeds, one
+/// slot per open screen (`video_screen::settings_extra_items`).
+const SETTINGS_EXTRA_BASE: u32 = 0xa2f3_0000;
+const SETTINGS_EXTRA_SIZE: u32 = 0x1000;
 
 pub const ADDED: [Layout; 3] = [Layout::BumperJumper, Layout::Recon, Layout::WalkieTalkie];
 
@@ -565,6 +571,10 @@ pub fn install(
     });
     let with_fov = has(video_screen::LIST, RowKind::Setting(FOV.key));
     let with_video = has(List::Settings, RowKind::Open(video_screen::SCREEN));
+    // Any row of ours on the Settings list (Video, Voice) enables its hooks.
+    let with_settings = model
+        .as_ref()
+        .is_some_and(|m| !m.rows(List::Settings).is_empty());
     let with_campaigns = crate::campaign_menu::class().is_some();
     let with_voice = model
         .as_ref()
@@ -611,7 +621,7 @@ pub fn install(
             Err(e) => eprintln!("video screen: {e}"),
         }
     }
-    // The Voice screen opens from Player Settings and Edit Profile.
+    // The Voice screen opens from the Settings list and Player Settings.
     let mut voice_on = false;
     if with_voice {
         // Opened from the pause menus too: one line a row in a game.
@@ -642,6 +652,11 @@ pub fn install(
     let extra_items = (model.count(List::Controls, speaker_row::VANILLA_ROWS)
         - speaker_row::VANILLA_ROWS)
         .min(max_visible_extra);
+    let settings_items = if with_settings {
+        video_screen::settings_extra_items(&model)
+    } else {
+        0
+    };
     // The Live menu's (tag copies, item widgets, pane word) in our data.
     let live: (u32, u32, u32);
     let theater_items;
@@ -652,6 +667,9 @@ pub fn install(
         mem.map_zeroed(SHADOW_BASE, 0x1000, Permissions::RX)?;
         if extra_items > 0 {
             mem.map_zeroed(EXTRA_BASE, EXTRA_SIZE, Permissions::RW)?;
+        }
+        if settings_items > 0 {
+            mem.map_zeroed(SETTINGS_EXTRA_BASE, SETTINGS_EXTRA_SIZE, Permissions::RW)?;
         }
         let mut served = served_strings(with_speaker, with_lightbar);
         served.extend(model.strings().iter().map(|(i, t)| (*i, t.as_str())));
@@ -738,7 +756,7 @@ pub fn install(
         .chain(layout_hooks)
         .chain(pause_lists.clone().flat_map(NativeList::hooks))
         .chain(fov_hooks.into_iter().filter(|_| with_fov))
-        .chain(video_hooks.into_iter().filter(|_| with_video))
+        .chain(video_hooks.into_iter().filter(|_| with_settings))
         .chain(text_hooks)
         // Also for our classes' taller lists (`list_class::extra_items`).
         .chain(controls_hooks)
@@ -805,8 +823,8 @@ pub fn install(
                 };
                 let n = if with_campaigns { crate::campaign_menu::options_capacity(name, n) } else { n };
                 let n = video_screen::list_count(&model, name, n);
-                if with_video && video_screen::settings_third_item(name, n) {
-                    // Slot 19 reports a third item widget for our row.
+                if with_settings && video_screen::settings_third_item(name, n) {
+                    // Slot 19 reports a third item widget for our rows.
                     ctx.runtime().memory().set_u8(cpu.esi + video_screen::SETTINGS_THIRD_ITEM, 1)?;
                 }
                 // The main menu or the Xbox Live menu built: the player has
@@ -818,8 +836,6 @@ pub fn install(
                 let n = menu_rows.count(name, n);
                 // GAME MENU's Forge rows, while a local Forge session runs.
                 let n = crate::forge_screens::game_menu_count(name, n);
-                // Edit Profile's Voice Chat row, while its hooks are on.
-                let n = crate::profile_voice_row::list_count(&model, name, n);
                 // The variant editor's categories get the multiplayer
                 // Skulls row and the More Options row.
                 let n = crate::variant_page::variant_count(
@@ -905,7 +921,6 @@ pub fn install(
             let sh = alias(d, &mut next_shadow, &o, PANE_SET);
             let seen = AtomicBool::new(false);
             let declined = Arc::new(AtomicBool::new(false));
-            let model = Arc::clone(&model);
             d.register_override(PANE_SET, "layouts:pane", move |cpu, ctx, _| {
                 announce(&seen, "layouts: pane");
                 let rt = Arc::clone(ctx.runtime());
@@ -922,19 +937,9 @@ pub fn install(
                 if crate::variant_page::skip_pane(id, row) {
                     return mem.ret(cpu, 4);
                 }
-                // Our Video row on the Settings list has none either.
-                if with_video && video_screen::skip_settings_pane(id, row) {
+                // Our rows on the Settings list have none either.
+                if with_settings && video_screen::skip_settings_pane(id, row) {
                     return mem.ret(cpu, 4);
-                }
-                // Edit Profile: the Voice Chat row keeps the shown pane; the
-                // retail rows past it ask for their own, in a word of ours.
-                match crate::profile_voice_row::pane(&model, id, row) {
-                    Some(crate::profile_voice_row::Pane::Keep) => return mem.ret(cpu, 4),
-                    Some(crate::profile_voice_row::Pane::Show(r)) => {
-                        mem.set_u16(live.2 + 4, r as u16)?;
-                        mem.set_u32(cpu.esp + 4, live.2 + 4)?;
-                    }
-                    None => {}
                 }
                 // The game type list's Tweakers row has no pane of its own:
                 // Slayer's, with our title and description over its texts.
@@ -1138,12 +1143,14 @@ pub fn install(
             let slots = Arc::new(std::sync::Mutex::new((Vec::new(), 0u32)));
             let live_slots = Arc::new(std::sync::Mutex::new((Vec::new(), 0u32)));
             let theater_slots = Arc::new(std::sync::Mutex::new((Vec::new(), 0u32)));
+            let settings_slots = Arc::new(std::sync::Mutex::new((Vec::new(), 0u32)));
             d.register_override(speaker_row::ADD_ITEMS, "speaker:add-items", move |cpu, ctx, _| {
                 announce(&seen, "speaker row: add items");
                 let handler = cpu.ecx;
                 let slots = Arc::clone(&slots);
                 let live_slots = Arc::clone(&live_slots);
                 let theater_slots = Arc::clone(&theater_slots);
+                let settings_slots = Arc::clone(&settings_slots);
                 let rt = Arc::clone(ctx.runtime());
                 let mut mem = rt.memory();
                 let ret_pc = mem.u32(cpu.esp)?;
@@ -1161,6 +1168,21 @@ pub fn install(
                             speaker_row::extra_slot(table, next, handler, EXTRA_BASE, EXTRA_SIZE, extra_items)
                         };
                         (0..extra_items).map(|i| slot + i * speaker_row::ITEM_SIZE).collect()
+                    } else if settings_items > 0 && vtable == video_screen::SETTINGS_VTABLE {
+                        // The Settings list's rows past its three widgets.
+                        let slot = {
+                            let mut g = settings_slots.lock().unwrap_or_else(|e| e.into_inner());
+                            let (table, next) = &mut *g;
+                            speaker_row::extra_slot(
+                                table,
+                                next,
+                                handler,
+                                SETTINGS_EXTRA_BASE,
+                                SETTINGS_EXTRA_SIZE,
+                                settings_items,
+                            )
+                        };
+                        (0..settings_items).map(|i| slot + i * speaker_row::ITEM_SIZE).collect()
                     } else if menu_rows.any() && vtable == theater_menu::VTABLE {
                         let mut g = theater_slots.lock().unwrap_or_else(|e| e.into_inner());
                         let (table, next) = &mut *g;
@@ -1629,8 +1651,8 @@ pub fn install(
             });
         }
     });
-    if with_video {
-        // Its row on the Settings list, as data on the plan.
+    if with_settings {
+        // Its rows on the Settings list, as data on the plan.
         let rows = crate::retail_rows::Extension {
             id: "settings-rows",
             title: "Our rows on the Settings list",
@@ -1645,21 +1667,6 @@ pub fn install(
             .map_err(|e| anyhow::anyhow!("settings rows: {e}"))?;
     }
     theater_menu::set_rows(menu_rows);
-    if with_voice {
-        // Its Voice Chat row on Edit Profile (crate::profile_voice_row):
-        // the list grows and its panes move only with these hooks on.
-        if !model.rows(List::Profile).is_empty() {
-            match registry.add(&crate::profile_voice_row::extension(Arc::clone(&model))) {
-                Ok(on) => {
-                    crate::profile_voice_row::set_on(on);
-                    if !on {
-                        eprintln!("profile voice row: features.profile-voice-row is off");
-                    }
-                }
-                Err(e) => eprintln!("profile voice row: {e}"),
-            }
-        }
-    }
     // The Skulls page: our own list class, opened after the difficulty when
     // the pressing profile has a skull (a plan hook on the difficulty
     // press), with the level select's layout.
