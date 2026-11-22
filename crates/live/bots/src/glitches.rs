@@ -630,6 +630,14 @@ impl BounceRun {
         }
     }
 
+    /// The same, played by `tune` instead of [`crate::tuning::bounce`]: a
+    /// bounce route's own numbers, with a learned line's `drift` and
+    /// `still` (`bounce_route::flown`).
+    pub fn tuned(mut self, tune: crate::tuning::BounceTuning) -> BounceRun {
+        self.tune = tune;
+        self
+    }
+
     fn signed(&mut self) -> f32 {
         self.rng ^= self.rng >> 12;
         self.rng ^= self.rng << 25;

@@ -1278,7 +1278,16 @@ impl Board {
 // ---- the process's training run ----
 
 static TRAIN: Mutex<Option<Train>> = Mutex::new(None);
-static BOARD: Mutex<Option<Board>> = Mutex::new(None);
+static BOARD: Shared = Mutex::new(None);
+
+/// Where a training run's board is kept: the process's ([`shared`]), or a
+/// test's own (`mind::practice`, as its claims board is).
+pub type Shared = Mutex<Option<Board>>;
+
+/// The process's board, built at the first pick (`mind::practice`).
+pub fn shared() -> &'static Shared {
+    &BOARD
+}
 
 /// Sets the training run (`None`: none). The board is dropped, to be built
 /// at the first pick ([`install`]).

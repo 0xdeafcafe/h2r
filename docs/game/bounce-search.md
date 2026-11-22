@@ -1,9 +1,10 @@
 # Bounce search: the bots learn each spot's superbounce
 
-Status: Design, partly built. The file (`superbounce::learned`) and the
-search with its board (`bots::learn`) are built; the route's use of a line,
-the sim surface and the batch are not.
-Code: `crates/live/superbounce/src/learned.rs` (the file), `crates/live/bots/src/learn.rs` (the search), `crates/live/sim-bench/src/train.rs` (the batch and its report). Tests: in each of those files.
+Status: Built, not checked in a sim run. The file (`superbounce::learned`),
+the search with its board (`bots::learn`), the batch (`h2 sim train`), the
+route's use of a line (`bounce_route::flown`) and the training loop
+(`mind::practice`) are built.
+Code: `crates/live/superbounce/src/learned.rs` (the file), `crates/live/bots/src/learn.rs` (the search), `crates/live/sim-bench/src/train.rs` (the batch and its report), `crates/live/bots/src/bounce_route.rs` (`flown`), `crates/live/bots/src/spots.rs` (reading and storing the file), `crates/live/bots/src/mind/practice.rs` (the training loop). Tests: in each of those files.
 Switch: none. A sim match's `[train]` table turns training on; play reads `<map>.learned` whenever it exists.
 
 Each bounce site has a few numbers that decide whether a primed bot lands
@@ -58,8 +59,8 @@ the word set.
 ### A try and its score
 
 A training try is a drill try ([bots.md, "Practising bounces"](bots.md#practising-bounces),
-"The drill"): the bot walks to the try's start (`back` behind the launch
-point), the host writes −3 over its level pair word
+"The drill"): the bot walks to the site's approach (a drop's launch
+point, the drill's start), the host writes −3 over its level pair word
 (`bots::drill::request_arm`), and the route flies the site once with the
 try's knobs. `bots::learn::Try` is what the route's last
 `bounce_route::Leap` and the brain say of it; `learn::score` turns it into
@@ -223,10 +224,12 @@ same command again continues; nothing else is kept between batches.
   numbers; `air_stick` takes the let-go distance as an argument. The
   search's centre for a site with no line is `Flown` turned back into
   `Knobs`, so a search starts from what the route plays.
-- **Training.** `OrderRun::with_knobs(knobs)` flies one try with the
-  board's knobs over the site's. `mind::practice` gains the training loop
-  beside the drill's (`Mind::train_pad`): pick from the board, walk to
-  the try's start, ask for the word, fly, build the `Try` from
+- **Training.** A try's site is the known site with the board's knobs
+  over its own (`Site::knobs`), so the route flies it as it flies a line.
+  `mind::practice` has the training loop beside the drill's
+  (`Mind::train_pad`): pick from the board, walk to the site's approach,
+  ask for the word, fly once (a landing that did not launch ends the
+  route, `try_over`), build the `Try` from the route's first flight in
   `OrderView::flights` and the route's end (a `died` during a training try
   is a scored try, not a dropped one), hand it to the board. Each try
   still logs its `bots: bounce try:` line, with the knobs appended.
@@ -423,7 +426,10 @@ Tests that prove it, each on synthetic data:
 | `text_round_trips` and `a_bad_line_is_refused` | `superbounce::learned` | `parse(to_text(x)) == x`, byte-stable order; an unknown key, state or version is an error naming the line |
 | `merge_keeps_the_better_line_whole` | `superbounce::learned` | the order above; commutative, idempotent; a continued search beats its start |
 | `no_knobs_fly_as_the_route_does` | `bounce_route` | `flown` with `Knobs::default()` equals today's expressions field by field, and the existing drop and stand tests pass unchanged |
-| `a_knob_moves_only_its_own_number` | `bounce_route` | each knob set alone changes one field of `Flown` |
+| `a_knob_moves_only_its_own_number` | `bounce_route` | each knob set alone changes one field of `Flown` (the yaw its heading too) |
+| `learned_knobs_change_the_plan_aim_launch_back_run_and_how` | `bounce_route` | the aim, launch point and `how` change the plan; `back`, `run` and `how` change the flight on the fake body |
+| `a_training_loop_flies_the_boards_knobs_folds_its_tries_and_writes_the_file` | `bounce_route` | the board's knobs flown on the fake body, folded round by round and written between rounds |
+| `a_training_bot_flies_its_rounds_folds_its_tries_and_writes_the_file_between_rounds` | `mind::practice` | the practice's training loop: drill tries from the board, the file written after the arms round and not before |
 | `a_dead_site_is_left_out_unless_proven` | `spots` | `Known` with a learned file |
 | `learned_lines_are_harvested_as_verified_ones_are` | `bots::harvest` | only what the run changed is merged, twice adds nothing |
 | `train_plans_disjoint_shards` | `sim::train` | every site in exactly one shard; `[train]` without `superbounce` refused |
