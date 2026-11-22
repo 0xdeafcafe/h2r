@@ -183,7 +183,11 @@ fn sun_tiles(
     let models = models
         .as_deref()
         .map(|m| m as &dyn crate::sun_casters::CasterModels);
-    sun::plan(device, scene, replay, scale, models)
+    let world = crate::sun_casters::world_for(scene.id.map_epoch);
+    let world = world
+        .as_deref()
+        .map(|w| w as &dyn crate::sun_casters::WorldReceivers);
+    sun::plan(device, scene, replay, scale, models, world)
 }
 
 fn record(
