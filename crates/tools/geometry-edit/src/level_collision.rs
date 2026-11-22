@@ -272,10 +272,12 @@ impl LevelWrites {
     ) {
         if count == old.count && bytes.len() == old_bytes.len() {
             for (offset, run) in changed_runs(old_bytes, bytes) {
+                let was = old_bytes[offset..offset + run.len()].to_vec();
                 self.patches.push(RegionWrite {
                     space: old.space,
                     address: old.address + offset as u32,
                     bytes: run,
+                    was,
                 });
             }
             return;
@@ -319,10 +321,12 @@ impl LevelEdit {
             let mut bytes = new.mopp.clone();
             bytes.resize(old.count as usize, 0);
             for (offset, run) in changed_runs(&src.level.mopp, &bytes) {
+                let was = src.level.mopp[offset..offset + run.len()].to_vec();
                 out.patches.push(RegionWrite {
                     space: old.space,
                     address: old.address + offset as u32,
                     bytes: run,
+                    was,
                 });
             }
             if new.mopp.len() != old.count as usize {
@@ -330,6 +334,7 @@ impl LevelEdit {
                     space: src.space,
                     address: src.root + MOPP_FIELD as u32,
                     bytes: (new.mopp.len() as u32).to_le_bytes().to_vec(),
+                    was: old.count.to_le_bytes().to_vec(),
                 });
             }
         } else if !new.mopp.is_empty() {

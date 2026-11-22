@@ -719,7 +719,7 @@ impl hooks::Feature for SkullsMp {
                     let mem = rt.memory();
                     (
                         skulls::options_mode(&*mem, c.cpu.eax),
-                        role(crate::coop_probe::read_session(&*mem).as_ref()),
+                        role_in(&*mem),
                         skulls::profiles_or_default(&*mem).0,
                     )
                 };

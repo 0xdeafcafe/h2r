@@ -464,6 +464,7 @@ mod tests {
             map_rebind: None,
             adopt_editor: None,
             tags: None,
+            marks: Default::default(),
         }
     }
 
