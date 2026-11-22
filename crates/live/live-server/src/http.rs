@@ -562,9 +562,12 @@ pub fn router_with_site(live: Arc<Live>, site: &Site) -> Router {
     let _ = published;
     #[cfg(feature = "native")]
     let api = api.merge(crate::art::emblem_routes(site.game_art.clone()));
-    with_web(api, pages.clone(), site.web.as_deref())
-        .layer(middleware::from_fn(crate::caching::layer))
-        .layer(middleware::from_fn_with_state(pages, count_api_request))
+    let app = with_web(api, pages.clone(), site.web.as_deref())
+        .layer(middleware::from_fn(crate::caching::layer));
+    // One stderr line per refusal; the Worker logs at its fetch handler.
+    #[cfg(feature = "native")]
+    let app = app.layer(middleware::from_fn(crate::refusals::native_layer));
+    app.layer(middleware::from_fn_with_state(pages, count_api_request))
 }
 
 /// The built web app's files beside the API, `index.html` for any other
