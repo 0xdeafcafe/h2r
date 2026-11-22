@@ -29,7 +29,7 @@
 
 use crate::model::{Anchor, Art, Describe, Element, Font, Hud, Justify, Kind, Place, Value, Values};
 
-use super::superbounce::{DISTANCE_LONGEST, distance_text};
+use super::superbounce::{DISTANCE_LONGEST, PILL_COLUMN, PILL_FULL, distance_text};
 
 pub const NAME: &str = "superbounce-readout";
 
@@ -63,10 +63,11 @@ pub fn arrow(angle: f32) -> char {
     char::from_u32(ARROW_UP as u32 + step).unwrap_or(ARROW_UP)
 }
 
-/// The rows' left edge: 8 pixels right of the motion tracker's rim
-/// (`rects::TRACKER`, x 47 to 130), from the frame's bottom-left corner
-/// (48, 444).
-pub const LEFT: i16 = 90;
+/// The rows' left edge, from the frame's bottom-left corner (48, 444):
+/// right of the charge pill's column (`superbounce::PILL_FULL`, 8 pixels
+/// right of the motion tracker's rim, `rects::TRACKER`, x 47 to 130), at
+/// screen x 171.
+pub const LEFT: i16 = PILL_FULL.0 + PILL_COLUMN;
 /// The rows' tops from the frame's bottom: y 376, 397 and 418 fullscreen,
 /// a line of font 6 (21) apart, the last ending 5 above the frame's foot.
 pub const SPEED_UP: i16 = -68;
@@ -444,8 +445,9 @@ mod tests {
         assert!(Readout.multiplayer_only().is_some());
     }
 
-    /// Fullscreen only, bottom left, right of the tracker and clear of the
-    /// middle of the screen; the rows a line apart.
+    /// Fullscreen only, bottom left, right of the tracker and of the charge
+    /// pill's column, clear of the middle of the screen; the rows a line
+    /// apart, the first level with the pill's top.
     #[test]
     fn the_rows_are_bottom_left_and_fullscreen_only() {
         let h = hud();
@@ -453,15 +455,16 @@ mod tests {
             assert_eq!(e.at.anchor, Anchor::BottomLeft, "{}", e.id);
             assert_eq!((e.at.half, e.at.quarter), (None, None), "{}", e.id);
             let (x, y) = (48 + e.at.full.0, 444 + e.at.full.1);
-            assert!(x >= 138, "{}: right of the tracker's rim at 130", e.id);
+            assert!(x >= 171, "{}: right of the pill's column, x 138 to 165", e.id);
             assert!((376..444).contains(&y), "{}: under the tracker's top, in the frame", e.id);
         }
         let top = |id: &str| 444 + h.element(id).unwrap().at.full.1;
         assert_eq!((top(SPEED), top(STEER), top(INFO)), (376, 397, 418));
         // The bar is in the steer row, left of its text.
         let bar = h.element(FALL).unwrap().at.full;
-        assert_eq!((48 + bar.0, 444 + bar.1), (138, 403));
-        assert_eq!(48 + h.element(STEER).unwrap().at.full.0, 138 + 64 + 6);
+        assert_eq!((48 + bar.0, 444 + bar.1), (171, 403));
+        assert_eq!(48 + h.element(STEER).unwrap().at.full.0, 171 + 64 + 6);
+        assert_eq!(SPEED_UP, PILL_FULL.1);
         assert_eq!(h.arts().len(), 2, "the strip and the navpoints' arrow");
     }
 

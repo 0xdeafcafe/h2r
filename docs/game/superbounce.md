@@ -951,11 +951,12 @@ bounce spot is the one with the nearest edge.
 
 **The HUD.** Drawn by Halo 2's own HUD through the HUD kit
 ([hud-kit.md](hud-kit.md), "The superbounce HUD on the kit"), for the
-first local player: a short grenade-style pill after the grenade row,
-lit while primed, with the `^` icon where a third count would be; under
-it a charge meter cut from the energy sword's battery strip, filled by
-the time the charge has left; Assault's red arming bar low in the
-middle, filled by the recipe's steps, with a short ending when primed
+first local player, in one block at the bottom left beside the motion
+tracker: a short grenade-style pill, lit while primed, with the `^` icon
+where a pill's count is; under it a charge meter cut from the energy
+sword's battery strip, filled by the time the charge has left; over it
+Assault's red arming bar, filled by the recipe's steps, with a short
+ending when primed
 ("The arming bar" in hud-kit.md); "Charging..." and "Primed!" in the
 notification list, as Assault's "Bomb is arming..." and "Bomb armed!";
 the step's verb on the game's prompt line ("Hold (crouch) and walk under", "Let go

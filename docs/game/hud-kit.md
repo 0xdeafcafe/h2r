@@ -775,7 +775,8 @@ It is multiplayer only (`Describe::multiplayer_only`): a campaign
 player HUD has no grenade row, and the disc test skips campaign maps for
 it by that reason. It is shown to the first
 local player. It is made only of things Halo 2 draws already: a grenade
-pill, a navpoint and the training box. Launch and drop are not on the
+pill (its art, drawn beside the motion tracker), a navpoint and the
+training box. Launch and drop are not on the
 HUD: they are on the strips' labels in the world and in the agent API.
 
 ```sh
@@ -788,9 +789,32 @@ h2 hud preview superbounce --state all --synthetic --out DIR
 
 | Element | Kind | Place | Art |
 |---|---|---|---|
-| `sb.pill` | Icon | `Origin::NextGrenadePill`, every mode | `Art::GrenadePill(Body)`: the frag pill's first 20 pixels |
-| `sb.pill.end` | Icon | `Origin::NextGrenadePill` plus (20, 0), every mode | `Art::GrenadePill(End)`: the frag pill's last 7 pixels |
-| `sb.pill.icon` | Text, `Hud`, centred, over `sb.pill` | `Origin::NextGrenadeCount`, every mode | the text template (the frag count's shader and string); `^` in font 6 |
+| `sb.pill` | Icon | bottom left, (90, −68) fullscreen (`PILL_FULL`, screen (138, 376)), (90, −47) half and quarter (`PILL_SPLIT`) | `Art::GrenadePill(Body)`: the frag pill's first 20 pixels |
+| `sb.pill.end` | Icon | the pill's plus (20, 0), every mode | `Art::GrenadePill(End)`: the frag pill's last 7 pixels |
+| `sb.pill.icon` | Text, `Hud`, centred, over `sb.pill` | the pill's plus (12, −1) (`ICON_AT`), every mode | the text template (the frag count's shader and string); `^` in font 6 |
+
+The pill is the middle of one block at the bottom left, right of the
+motion tracker, with the arming bar over it, the charge meter under it
+and the readout's rows beside it ("The superbounce readout"):
+
+```text
+  x 47     130 138       171                 278
+   .---.       [====== sb.arm ===============]            y 355
+  /     \      (^ )      (arrow) 7.2 m/s      sbr.speed   y 376
+ | track |     [###]     [#####   ] 0.40 m    sbr.fall    y 397
+  \     /                Too slow: 12.4 of 16.5 m/s       y 418
+   '---'                                                  y 444
+```
+
+Every element of the block is placed from the bottom-left anchor, the
+tracker's own, so the host's HUD fit moves the block with the tracker
+when the corners are pinned to the window's edges
+([high-resolution.md](../graphics/high-resolution.md), "HUD and UI").
+In half and quarter screen the block is the bar over the pill and its
+meter, as far right of the anchor as fullscreen and inside the
+tracker's height (the tracker's blips are centred (31, −31) from the
+anchor there, [hud.md](../halo1/hud.md)); the readout is fullscreen
+only.
 
 The grenade row is read from the player's `nhdt`
 (`templates::GrenadeRow`): the frag pill is the first bitmap widget
@@ -805,20 +829,21 @@ D: `h2 bitmap lockout 'ui\hud\bitmaps\new_hud\backgrounds\grenade_bkd'`).
 The counts are at (12, -1) and (65, -1): the step from the plasma count
 to the frag count, 53, is the pills' step too, so a pill is 103 - 53 =
 50 wide and the frag pill is the panel's last 50 pixels (x 53 to 103).
-Per screen mode the next pill's top left is the frag pill's plus the
-step, (106, 0) from the anchor, screen x 154 fullscreen; the next count
-is the frag count plus the step, (118, -1). A row whose pill widgets are
-at two offsets, or whose sprite is not one size in every mode, is a
-named error.
+`GrenadeRow` also has where a next pill and a next count would go
+(`Origin::NextGrenadePill`, `Origin::NextGrenadeCount`: the frag pill's
+and the frag count's plus the step, (106, 0) and (118, -1) from the
+anchor); the superbounce pill takes the row's art and not its place. A
+row whose pill widgets are at two offsets, or whose sprite is not one
+size in every mode, is a named error.
 
 Each retail pill has its grenade baked in: "x" and the grenade's picture
 from about x 22, the count at x 12. A third pill cut whole from the frag
 pill would show a frag grenade. So the kit's pill is short: the frag
 pill's first 20 pixels (its left end and body, `PillPart::Body`) with
 its last 7 (the right end, `PillPart::End`) against them, 27 by 19,
-screen x 154 to 181, both cropped from the frag pill's part of the
-panel (`GrenadeRow::crop`). The icon sits where a third count would,
-pill x 12.
+screen x 138 to 165 fullscreen, both cropped from the frag pill's part
+of the panel (`GrenadeRow::crop`). The icon sits where a pill's count
+does, pill x 12.
 
 The icon is `^`, the chevron of `conduit-13` (font 6, the counts'
 font). The font's arrows (U+2191, U+25B2, U+21E7) are its missing box
@@ -891,10 +916,10 @@ pill is cropped from the frag pill (`Art::StripMeterEnd(27)`, a crop of
 | `input_1`..`input_4` | 0; the input hook answers `hud_input1` |
 | the four show and four hide words | 0; the gate hook shows it |
 | the three thresholds | 0 |
-| `anchor` | the grenade row's (top left) |
+| `anchor` | 2, bottom left |
 | `bitmap`, `shader` | the strip meter template's |
 | `sequence_full`, `_half`, `_quarter` | the template's (0) |
-| `offset_*` | `Origin::NextGrenadePill` plus (0, 21): 2 pixels under the pill, screen (154, 57) to (181, 65) fullscreen |
+| `offset_*` | the pill's plus (0, 21): 2 pixels under the pill, screen (138, 397) to (165, 405) fullscreen |
 | `registration_*` | (0, 0) |
 | `effects` | empty |
 | `special` | 0 (not 5: the shield meter's type takes the inputs over) |
@@ -947,14 +972,14 @@ Assault's pair, "Bomb is arming..." and "Bomb armed!" (V:
 `sb.arm` is Assault's bomb arming bar, reused: how far the player is
 through the recipe, then a short ending when primed. Halo 2 draws it
 low in the middle while a bomb carrier arms; ours is the same widget's
-art, fullscreen at the bottom left with the readout, right of the motion
-tracker and just above the speed row, so nothing of the superbounce HUD
-sits mid-screen.
+art at the bottom left, right of the motion tracker and over the pill
+and the readout's speed row, so nothing of the superbounce HUD sits
+mid-screen.
 
 | Field | Value |
 |---|---|
 | element | `Element::meter("sb.arm", Art::Widget { hud: HudRef::Named("ui\\hud\\scoreboard"), name: "bomb_defusal" }, ..)`, `hidden_on_d(0x400)` |
-| place | anchor centre, (−112, 121) fullscreen (`ARM_FULL`, x 138 to 278, y 355 to 368: above the speed row); the retail widget's is (0, 110) (V, `RETAIL_ARM_FULL`); (0, −35) half and (−7, −35) quarter, ours (below); registration (0.5, 0.5) |
+| place | anchor bottom left, (160, −83) fullscreen (`ARM_FULL`, x 138 to 278, y 355 to 368: 8 above the pill); the retail widget's is centre, (0, 110) (V, `RETAIL_ARM_FULL`); (133, −55) half and quarter (`ARM_SPLIT`, below); registration (0.5, 0.5) |
 | art | the scoreboard `nhdt`'s bitmap widget `bomb_defusal`: `ui\hud\bitmaps\new_hud\bomb_meter`, a capsule 140 by 13 (sequence 0) and 86 by 9 (sequence 1, split screen), its blue rising 4 to 253 left to right; the shader `ui\hud\shaders\bomb_defusal_meter` on `widget_legacy_meter`, red `6d2323` to `cf6767` where the texel's blue is below `hud_input1`, white for the outline (V) |
 | input | uncropped, so `hud_input1` is the fill itself |
 | crop, ramp | none |
@@ -963,14 +988,9 @@ sits mid-screen.
 quarter screen. There it lies in the prompt line's box (the `retail`
 check: x 250 to 390, y 141 to 154 in half screen), and unlike Assault's
 carrier our player has a verb on the prompt line the whole time the bar
-is up. Below the box the training box and the reticle take the rest of
-the 204-high frame, so ours sits 35 above the centre (`ARM_SPLIT`):
-under the prompt's first line (the frame's top plus 35) and clear of
-the navpoint's stack at its sample, right of and above the centre. A
-quarter frame has no row free between the navpoint's arrow at its sample
-and the prompt's first line, and at the centre the bar's right end meets
-the arrow (the `overlap` check, x 198 to 203), so in a quarter view the
-bar sits 7 to the left (`ARM_QUARTER`, (−7, −35)).
+is up. Ours stays with the pill: the split sprite, 86 by 9, its left
+edge the pill's and its foot 3 above the pill's top (`ARM_SPLIT`), under
+the prompt line's box and right of the tracker.
 
 The retail widget's input is `0x43`, the bomb arming amount, and it is
 shown on word D `0x400` alone (V: `zanzibar.map`; `0x40` and `0x41` are
@@ -1249,7 +1269,8 @@ tutorial's step waits.
 
 A second HUD on the kit, `superbounce-readout`
 (`crates/rewrites/hud-kit-core/src/huds/superbounce_readout.rs`): three
-rows right of the motion tracker and three navpoints, for the first
+rows right of the motion tracker and the charge pill ("The pill") and
+three navpoints, for the first
 local player while the superbounce mode is on. Nothing of it is in the
 middle of the screen. It is a HUD of its own because it is fullscreen
 only: a half or quarter frame has no three rows free under the prompt
@@ -1257,20 +1278,20 @@ line's box, and the `modes` check wants every widget of one HUD in the
 same screen modes.
 
 ```text
-  x 47     130 138
+  x 47     130 138  171
    .---.
-  /     \   (arrow) 7.2  (down) 12.4 m/s      sbr.speed   y 376
- | track |  [#####   ] (arrow) 0.40 m         sbr.fall, sbr.steer   y 397
-  \     /   Too slow: 12.4 of 16.5 m/s        sbr.info    y 418
-   '---'                                                  y 444
+  /     \   pill   (arrow) 7.2  (down) 12.4 m/s      sbr.speed   y 376
+ | track |  meter  [#####   ] (arrow) 0.40 m         sbr.fall, sbr.steer   y 397
+  \     /          Too slow: 12.4 of 16.5 m/s        sbr.info    y 418
+   '---'                                                         y 444
 ```
 
 | Element | Kind | Place, from the frame's bottom left (48, 444) | Shows |
 |---|---|---|---|
-| `sbr.speed` | text, font 6 | (90, −68) | moving: an arrow for the way of travel against the aim ([Direction arrows](#direction-arrows)) and the horizontal speed, `(arrow) 7.2 m/s`; falling, the fall speed after it, `(arrow) 2.1  (down) 12.4 m/s`. Hidden under 0.2 m/s |
-| `sbr.fall` | meter, the battery strip's last 64 columns | (90, −41) | on a fall toward a seam: the touchdown speed the fall gives over the speed the seam needs; full is fast enough |
-| `sbr.steer` | text, font 6 | (160, −47) | beside the bar: `On seam` when the coasting landing is caught, else an arrow for the way from the landing to the seam against the aim and how far, `(arrow) 0.40 m` |
-| `sbr.info` | text, font 6 | (90, −26) | why the last landing by a seam did not bounce, for four seconds: `Not primed`, `Missed seam by 0.31 m`, `Too slow: 12.4 of 16.5 m/s`, `No bounce: on seam at 17.2 m/s`. In the flight after a bounce, the seams it can reach, the best first: `1 (arrow) 12 m  2 (arrow) 30 m`, a rank, an arrow for where the seam is against the aim and its distance ([superbounce.md](superbounce.md#the-second-bounce)) |
+| `sbr.speed` | text, font 6 | (123, −68) | moving: an arrow for the way of travel against the aim ([Direction arrows](#direction-arrows)) and the horizontal speed, `(arrow) 7.2 m/s`; falling, the fall speed after it, `(arrow) 2.1  (down) 12.4 m/s`. Hidden under 0.2 m/s |
+| `sbr.fall` | meter, the battery strip's last 64 columns | (123, −41) | on a fall toward a seam: the touchdown speed the fall gives over the speed the seam needs; full is fast enough |
+| `sbr.steer` | text, font 6 | (193, −47) | beside the bar: `On seam` when the coasting landing is caught, else an arrow for the way from the landing to the seam against the aim and how far, `(arrow) 0.40 m` |
+| `sbr.info` | text, font 6 | (123, −26) | why the last landing by a seam did not bounce, for four seconds: `Not primed`, `Missed seam by 0.31 m`, `Too slow: 12.4 of 16.5 m/s`, `No bounce: on seam at 17.2 m/s`. In the flight after a bounce, the seams it can reach, the best first: `1 (arrow) 12 m  2 (arrow) 30 m`, a rank, an arrow for where the seam is against the aim and its distance ([superbounce.md](superbounce.md#the-second-bounce)) |
 | `sbr.tag` | navpoint | the tagged seam's aim point | the tagged seam ([superbounce.md](superbounce.md#targets)) |
 | `sbr.target.1`, `sbr.target.2` | navpoint | a seam's aim point | the two nearest seams the player can reach from their height |
 

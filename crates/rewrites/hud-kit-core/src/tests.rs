@@ -324,15 +324,20 @@ fn the_superbounce_hud_compiles_against_an_invented_row() {
             u16_at(b, bf::OFFSETS[0] + 2) as i16,
         )
     };
-    assert_eq!(off(superbounce::PILL), (106, 0));
-    assert_eq!(off(superbounce::PILL_END), (106 + PILL_BODY, 0));
-    assert_eq!(off(CHARGE), (106, CHARGE_DOWN));
-    // The arming bar: the scoreboard's bomb_defusal, uncropped, bottom
-    // left with the readout.
+    // One block from the bottom-left anchor: the pill, its end against
+    // it, the strip under it, the arming bar over it.
+    let (px, py) = superbounce::PILL_FULL;
+    assert_eq!(off(superbounce::PILL), (px, py));
+    assert_eq!(off(superbounce::PILL_END), (px + PILL_BODY, py));
+    assert_eq!(off(CHARGE), (px, py + CHARGE_DOWN));
+    for id in [superbounce::PILL, superbounce::PILL_END, CHARGE, superbounce::ARM] {
+        let b = &c.widget(id).unwrap().bytes;
+        assert_eq!(u16_at(b, bf::ANCHOR), Anchor::BottomLeft as u16, "{id}");
+    }
+    // The arming bar: the scoreboard's bomb_defusal, uncropped.
     assert_eq!(off(superbounce::ARM), superbounce::ARM_FULL);
     let arm = c.widget(superbounce::ARM).unwrap();
     assert_eq!(u32_at(&arm.bytes, bf::BITMAP + 4), BOMB);
-    assert_eq!(u16_at(&arm.bytes, bf::ANCHOR), Anchor::Centre as u16);
     assert_eq!((arm.crop, arm.ramp, arm.input(0.5)), (None, None, 0.5));
     let charge = c.widget(CHARGE).unwrap();
     assert_eq!(u32_at(&charge.bytes, bf::BITMAP + 4), STRIP);
