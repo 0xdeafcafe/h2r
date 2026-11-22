@@ -348,7 +348,7 @@ step through the same history.
 
 ### See invisible walls and where bots walk
 
-Click **Show** above the viewport (or open **Layers** in the Scene tab).
+Click **Show** above the viewport.
 Each row turns one layer on or off. These layers start off:
 
 - **Collision only** (under Collision): the invisible walls, in red. The

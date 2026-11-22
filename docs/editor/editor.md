@@ -135,8 +135,8 @@ Scene, viewport, inspector, Log and status bar.*
   meets the level). A button is disabled, with the reason as its
   tooltip, when the editor refuses (scenario-editor.md §6). Double-click
   an entry to frame the camera on it. The filter and the Duplicate and
-  Delete row stay pinned at the top; **Layers** (a folding header) and the
-  tree scroll together in one body (`theme::panel_body`).
+  Delete row stay pinned at the top; the tree scrolls in one body
+  (`theme::panel_body`).
 - **Panels on short windows.** A panel scrolls as a whole: its lists
   and trees draw into the one body, and two lists in a panel are two
   folding headers. Only a panel with rows pinned above its list (the
@@ -631,8 +631,8 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   is drawn at the placement's position, rotation and scale, instanced per
   model. Clicking a model picks it (ray against its triangles); the
   selection is tinted and keeps its marker.
-- **Layers.** Open **Show** above the viewport or **Layers** in the scene
-  outliner to toggle the structure, sky, object models, fog, markers,
+- **Layers.** Open **Show** above the viewport, the one place that toggles,
+  to switch the structure, sky, object models, fog, markers,
   individual placement blocks, collision, navigation, Halo 1 reference
   and live objects. Each row shows its colour and count. Art, Gameplay,
   Collision, Navigation and Everything choose a set of layers in one
