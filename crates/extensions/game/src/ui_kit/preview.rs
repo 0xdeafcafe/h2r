@@ -31,8 +31,8 @@ use tags::ui::{self as tui, MapSource, Rect, UiTag};
 use crate::ui_kit::dialog::{self, DialogGeometry, dialog_view};
 use crate::ui_kit::spec::{self, Finding, ListPlace, Room, RowSpec, ScreenSpec};
 use crate::ui_kit::view::{
-    Art, Backing, ItemArt, Justify, Kind, Layer, ListAt, Metrics, Opener, PaneArt, ROW_TEXT,
-    Synthetic, UNFOCUSED_ALPHA, View, Widget, view_of,
+    Arrows, Art, Backing, ItemArt, Justify, Kind, Layer, ListAt, Metrics, Opener, PaneArt,
+    ROW_TEXT, Synthetic, UNFOCUSED_ALPHA, View, Widget, view_of,
 };
 
 /// The Controls screen whose tag our screens are built from.
@@ -408,6 +408,7 @@ impl Disc {
                 })
                 .collect(),
             frame_art: self.pane_art(&self.controls, 0, |b| b.top_left.x < cut),
+            arrows: Arrows::of(skin_index, place.shown(), place == ListPlace::Controls),
         })
     }
 
@@ -587,6 +588,10 @@ impl Disc {
             Art::Skin { skin, index, image } => {
                 let b = self.skins.get(&skin)?.bitmaps.get(usize::from(index))?;
                 self.image(b.bitmap, image)
+            }
+            Art::Arrow { skin, image } => {
+                let bitmap = self.skins.get(&skin)?.bitmap;
+                self.image(bitmap, image)
             }
             Art::Screen {
                 screen_id,
@@ -796,6 +801,36 @@ impl Disc {
         d
     }
 
+    /// Screen tag `tag` of `mainmenu.map`, decoded, with its string table
+    /// and its tables' skins.
+    fn retail_parts(&self, tag: &str) -> Result<RetailParts> {
+        let mut m = self.map.borrow_mut();
+        let id = m.tag(map::TagQuery::NameInGroup(tag, tui::SCREEN))?.id;
+        let mut src = MapSource::new(&mut m);
+        let UiTag::Screen(screen) = src.decode_tag(id)?.tag else {
+            bail!("{tag} is not a screen");
+        };
+        let mut skins = HashMap::new();
+        for t in screen.panes.iter().flat_map(|p| p.tables.iter()) {
+            if let Some(id) = t.skin.id
+                && let Ok((tree, _)) = tui::resolve_skin(&mut src, id)
+            {
+                skins.insert(id, tree.skin);
+            }
+        }
+        drop(src);
+        let loc = tags::localization::Localization::read(&mut m)?;
+        let unic = match screen.strings.id {
+            Some(u) => Some((loc.unic(&mut m, u)?, loc)),
+            None => None,
+        };
+        Ok(RetailParts {
+            screen,
+            unic,
+            skins,
+        })
+    }
+
     /// A retail screen at rest, as its tag lays it out: pane `r.pane`'s
     /// bitmaps, text blocks and buttons, and its tables' cells, over the
     /// game shell background, with the header and footer in the `wigl`
@@ -806,59 +841,32 @@ impl Disc {
     /// Each table cell's first text block shows `r.cells[i]`; a cell with
     /// no entry is not drawn (the game hides empty player slots).
     pub fn render_retail(&self, r: &Retail<'_>) -> Result<Canvas> {
-        let (screen, unic, skins) = {
-            let mut m = self.map.borrow_mut();
-            let id = m.tag(map::TagQuery::NameInGroup(r.tag, tui::SCREEN))?.id;
-            let mut src = MapSource::new(&mut m);
-            let UiTag::Screen(screen) = src.decode_tag(id)?.tag else {
-                bail!("{} is not a screen", r.tag);
-            };
-            let mut skins = HashMap::new();
-            for t in screen.panes.iter().flat_map(|p| p.tables.iter()) {
-                if let Some(id) = t.skin.id
-                    && let Ok((tree, _)) = tui::resolve_skin(&mut src, id)
-                {
-                    skins.insert(id, tree.skin);
-                }
-            }
-            drop(src);
-            let loc = tags::localization::Localization::read(&mut m)?;
-            let unic = match screen.strings.id {
-                Some(u) => Some((loc.unic(&mut m, u)?, loc)),
-                None => None,
-            };
-            (screen, unic, skins)
-        };
-        let pane = screen
+        self.render_retail_with(r, &RetailPlaces::new())
+    }
+
+    /// [`Disc::render_retail`] with the widgets in `places` moved there
+    /// (the editor's edits of the tag, read back from its document).
+    pub fn render_retail_with(&self, r: &Retail<'_>, places: &RetailPlaces) -> Result<Canvas> {
+        let parts = self.retail_parts(r.tag)?;
+        let mut pane = parts
+            .screen
             .panes
             .get(r.pane)
-            .with_context(|| format!("{} has no pane {}", r.tag, r.pane))?;
-        let lookup = |id: u32| -> Option<String> {
-            if let Some(t) = (r.text)(id) {
-                return Some(t);
-            }
-            let (unic, loc) = unic.as_ref()?;
-            loc.text_in(
-                unic,
-                tags::localization::StringId(id),
-                tags::localization::Language::English,
-            )
-            .ok()
-            .flatten()
-        };
+            .with_context(|| format!("{} has no pane {}", r.tag, r.pane))?
+            .clone();
+        place_retail(&mut pane, places);
+        let screen = &parts.screen;
+        let skins = &parts.skins;
+        let lookup = |id: u32| parts.text(r, id);
         let g = self.geometry(ListPlace::Controls)?;
         let rgb = |v: [f32; 3]| v.map(|x| (x.clamp(0.0, 1.0) * 255.0) as u8);
         let mut c = Canvas::new(640, 480, [0, 0, 0, 255]);
         for p in &self.background.panes {
             self.draw_blocks(&mut c, p.bitmaps.iter());
         }
-        // Blocks parked off screen (9999) are the game's spares.
-        let on_screen = |rect: &Rect| rect.top.abs() < 1000 && rect.left.abs() < 1000;
         self.draw_blocks(
             &mut c,
-            pane.bitmaps
-                .iter()
-                .filter(|b| b.top_left.x.abs() < 1000 && b.top_left.y.abs() < 1000),
+            pane.bitmaps.iter().filter(|b| on_screen_point(b.top_left)),
         );
         if screen.flags & tui::Screen::NO_HEADER == 0
             && let Some(h) = lookup(screen.header.0)
@@ -902,7 +910,7 @@ impl Disc {
                 );
             }
         }
-        for t in pane.text_blocks.iter().filter(|t| on_screen(&t.rect)) {
+        for t in pane.text_blocks.iter().filter(|t| on_screen_rect(&t.rect)) {
             if let Some(text) = lookup(t.string.0).filter(|s| !s.is_empty()) {
                 c.text(
                     &self.fonts,
@@ -956,6 +964,143 @@ impl Disc {
         Ok(c)
     }
 
+    /// A retail screen's widgets as a [`View`], for the editor to select
+    /// and move (docs/game/ui-builder.md "Editing in the editor"), with
+    /// `places` applied: `title` (the header), then pane `r.pane`'s
+    /// `bitmap.N`, `button.N`, `text.N`, `list.N` and `table.N` by their
+    /// index in the tag's block, on screen only. A list's box is its
+    /// anchor and its visible rows at the Controls skin's item height, a
+    /// table's its cells at their spacing: a handle to move, not a
+    /// measured extent.
+    pub fn retail_view(&self, r: &Retail<'_>, places: &RetailPlaces) -> Result<View> {
+        let parts = self.retail_parts(r.tag)?;
+        let mut pane = parts
+            .screen
+            .panes
+            .get(r.pane)
+            .with_context(|| format!("{} has no pane {}", r.tag, r.pane))?
+            .clone();
+        place_retail(&mut pane, places);
+        let screen = &parts.screen;
+        let g = self.geometry(ListPlace::Controls)?;
+        let rgb = |v: [f32; 3]| v.map(|x| (x.clamp(0.0, 1.0) * 255.0) as u8);
+        let edges = |r: Rect| [r.top, r.left, r.bottom, r.right];
+        let flag = |flags: u32| Justify::from_flag(tui::justification(flags));
+        let text = |id: String, rect: [i16; 4], font: i16, justify, s: String, colour| Widget {
+            id,
+            rect,
+            layer: Layer::Content,
+            alpha: 255,
+            kind: Kind::Text {
+                text: s,
+                font,
+                justify,
+                colour,
+            },
+        };
+        let mut w = Vec::new();
+        for (i, b) in pane.bitmaps.iter().enumerate() {
+            if !on_screen_point(b.top_left) {
+                continue;
+            }
+            let size = self
+                .image(b.bitmap, b.image)
+                .map_or([16, 16], |img| [img.width as u16, img.height as u16]);
+            let (x, y) = (b.top_left.x, b.top_left.y);
+            w.push(Widget {
+                id: format!("bitmap.{i}"),
+                rect: [y, x, y - size[1] as i16, x + size[0] as i16],
+                layer: Layer::Frame,
+                alpha: 255,
+                kind: Kind::Art {
+                    art: Art::Screen {
+                        screen_id: screen.screen_id,
+                        pane: r.pane as u16,
+                        index: i as u16,
+                        image: b.image,
+                    },
+                    size,
+                },
+            });
+        }
+        if screen.flags & tui::Screen::NO_HEADER == 0
+            && let Some(h) = parts.text(r, screen.header.0)
+        {
+            w.push(text(
+                "title".into(),
+                edges(g.header),
+                g.header_font,
+                Justify::Left,
+                h,
+                rgb(g.header_colour),
+            ));
+        }
+        for (i, b) in pane.buttons.iter().enumerate() {
+            let s = parts.text(r, b.string.0).unwrap_or_default();
+            w.push(text(
+                format!("button.{i}"),
+                edges(b.rect),
+                b.font,
+                flag(b.flags),
+                s,
+                rgb(b.text_color),
+            ));
+        }
+        for (i, t) in pane.text_blocks.iter().enumerate() {
+            if !on_screen_rect(&t.rect) {
+                continue;
+            }
+            let s = parts.text(r, t.string.0).unwrap_or_default();
+            w.push(text(
+                format!("text.{i}"),
+                edges(t.rect),
+                t.font,
+                flag(t.flags),
+                s,
+                rgb(t.text_color),
+            ));
+        }
+        let handle = |id: String, at: tui::Point, size: [i32; 2]| Widget {
+            id,
+            rect: [
+                at.y,
+                at.x,
+                (i32::from(at.y) - size[1].max(8)) as i16,
+                (i32::from(at.x) + size[0].max(8)) as i16,
+            ],
+            layer: Layer::Under,
+            alpha: 255,
+            kind: Kind::Art {
+                art: Art::Solid { rgba: [0, 0, 0, 0] },
+                size: [size[0].max(8) as u16, size[1].max(8) as u16],
+            },
+        };
+        for (i, l) in pane.lists.iter().enumerate() {
+            let rows = i32::from(l.visible_items.max(1));
+            w.push(handle(
+                format!("list.{i}"),
+                l.anchor,
+                [i32::from(g.label.0.right - g.label.0.left), rows * g.item_height],
+            ));
+        }
+        for (i, t) in pane.tables.iter().enumerate() {
+            let size = [
+                i32::from(t.columns.max(1)) * i32::from(t.column_spacing).abs(),
+                i32::from(t.rows.max(1)) * i32::from(t.row_spacing).abs(),
+            ];
+            w.push(handle(format!("table.{i}"), t.anchor, size));
+        }
+        Ok(View {
+            screen: r.tag.to_owned(),
+            state: format!("pane-{}", r.pane),
+            backing: Backing::GameShell,
+            underlay: None,
+            widgets: w,
+            focus: None,
+            list: None,
+        })
+    }
+
     /// `s` as the builder sees it ([`view_of`]) on this disc's geometry
     /// and fonts.
     pub fn view(&self, s: &ScreenSpec, state: &str) -> Result<View> {
@@ -979,6 +1124,165 @@ pub struct Retail<'a> {
     /// The table cells' texts (player names), one per filled slot.
     pub cells: &'a [String],
     pub footer: Option<String>,
+}
+
+/// A decoded retail screen: its tag, its string table and its tables'
+/// skins ([`Disc::render_retail`], [`Disc::retail_view`]).
+struct RetailParts {
+    screen: tui::Screen,
+    unic: Option<(tags::localization::Unic, tags::localization::Localization)>,
+    skins: HashMap<TagId, tui::Skin>,
+}
+
+impl RetailParts {
+    /// String id `id`'s text: `r.text`'s answer, else the screen's own
+    /// (English).
+    fn text(&self, r: &Retail<'_>, id: u32) -> Option<String> {
+        if let Some(t) = (r.text)(id) {
+            return Some(t);
+        }
+        let (unic, loc) = self.unic.as_ref()?;
+        loc.text_in(
+            unic,
+            tags::localization::StringId(id),
+            tags::localization::Language::English,
+        )
+        .ok()
+        .flatten()
+    }
+}
+
+/// Blocks parked off screen (9999) are the game's spares.
+fn on_screen_rect(r: &Rect) -> bool {
+    r.top.abs() < 1000 && r.left.abs() < 1000
+}
+
+fn on_screen_point(p: tui::Point) -> bool {
+    p.x.abs() < 1000 && p.y.abs() < 1000
+}
+
+/// Retail widgets moved by the editor: widget id ([`Disc::retail_view`]'s)
+/// to its rect, `top, left, bottom, right` in UI units. A bitmap, list
+/// or table takes the rect's top-left as its point.
+pub type RetailPlaces = BTreeMap<String, [i16; 4]>;
+
+/// Where a retail widget's place is in its screen tag: a field path of
+/// the `wgit` definition (`crates/formats/tags/src/defs/wgit.txt`) and
+/// whether it is a rectangle or a point.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RetailField {
+    /// `i16[4]`: top, left, bottom, right.
+    Rect(String),
+    /// `i16[2]`: x, y (the top-left).
+    Point(String),
+}
+
+impl RetailField {
+    pub fn path(&self) -> &str {
+        match self {
+            RetailField::Rect(p) | RetailField::Point(p) => p,
+        }
+    }
+    /// The field's value for rect `r`, as the tag editor's JSON takes it.
+    pub fn value(&self, r: [i16; 4]) -> serde_json::Value {
+        match self {
+            RetailField::Rect(_) => serde_json::json!(r),
+            RetailField::Point(_) => serde_json::json!([r[1], r[0]]),
+        }
+    }
+}
+
+/// Widget `id` of pane `pane`'s field, or why it has none: the header
+/// is the shared `wigl` layout's, and anything else is not a block.
+pub fn retail_field(pane: usize, id: &str) -> Result<RetailField, String> {
+    let (kind, index) = id
+        .split_once('.')
+        .and_then(|(k, i)| Some((k, i.parse::<usize>().ok()?)))
+        .ok_or_else(|| match id {
+            "title" => "refused: a retail screen's title sits in the header layout of the \
+                        shared wigl tag, which every screen on that layout uses"
+                .to_owned(),
+            _ => format!("refused: {id} is not a block of the screen tag"),
+        })?;
+    let at = |block: &str, field: &str| format!("panes[{pane}].{block}[{index}].{field}");
+    match kind {
+        "text" => Ok(RetailField::Rect(at("text_blocks", "rect"))),
+        "button" => Ok(RetailField::Rect(at("buttons", "rect"))),
+        "bitmap" => Ok(RetailField::Point(at("bitmaps", "top_left"))),
+        "list" => Ok(RetailField::Point(at("lists", "anchor"))),
+        "table" => Ok(RetailField::Point(at("tables", "anchor"))),
+        _ => Err(format!("refused: {id} is not a block of the screen tag")),
+    }
+}
+
+/// `pane` with the widgets of `places` moved there.
+fn place_retail(pane: &mut tui::Pane, places: &RetailPlaces) {
+    let point = |r: &[i16; 4]| tui::Point { x: r[1], y: r[0] };
+    let rect = |r: &[i16; 4]| Rect {
+        top: r[0],
+        left: r[1],
+        bottom: r[2],
+        right: r[3],
+    };
+    for (id, r) in places {
+        let Some((kind, index)) = id
+            .split_once('.')
+            .and_then(|(k, i)| Some((k, i.parse::<usize>().ok()?)))
+        else {
+            continue;
+        };
+        match kind {
+            "text" => {
+                if let Some(t) = pane.text_blocks.get_mut(index) {
+                    t.rect = rect(r);
+                }
+            }
+            "button" => {
+                if let Some(b) = pane.buttons.get_mut(index) {
+                    b.rect = rect(r);
+                }
+            }
+            "bitmap" => {
+                if let Some(b) = pane.bitmaps.get_mut(index) {
+                    b.top_left = point(r);
+                }
+            }
+            "list" => {
+                if let Some(l) = pane.lists.get_mut(index) {
+                    l.anchor = point(r);
+                }
+            }
+            "table" => {
+                if let Some(t) = pane.tables.get_mut(index) {
+                    t.anchor = point(r);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A filmstrip: each frame at half size side by side, its label (a time)
+/// above it in [`Canvas::label`]'s font. Returns the strip and each
+/// frame's left edge and width in its pixels.
+pub fn filmstrip(frames: &[(String, Canvas)]) -> (Canvas, Vec<[u32; 2]>) {
+    const GAP: u32 = 8;
+    const LABEL: u32 = 22;
+    let (tw, th) = (320, 240);
+    let n = frames.len() as u32;
+    let mut out = Canvas::new(
+        n * (tw + GAP) + GAP,
+        th + LABEL + 2 * GAP,
+        [40, 40, 40, 255],
+    );
+    let mut at = Vec::new();
+    for (i, (label, c)) in frames.iter().enumerate() {
+        let x = GAP + i as u32 * (tw + GAP);
+        out.label(label, x + 2, GAP + 6, [230, 230, 230]);
+        out.blit(&c.half(), x, GAP + LABEL);
+        at.push([x, tw]);
+    }
+    (out, at)
 }
 
 impl Metrics for Fonts {
@@ -1294,12 +1598,217 @@ pub fn render_view_where(
     keep: &dyn Fn(&crate::ui_kit::view::Widget) -> bool,
     marks: bool,
 ) -> Canvas {
-    render_composite(v, src, keep, marks, [0, 0, 0, 255])
+    render_composite(v, src, keep, marks, [0, 0, 0, 255], None)
 }
 
 /// Draw a live kit page into a straight-alpha surface for the shell.
 pub fn render_overlay(v: &View, src: &dyn Source) -> Canvas {
-    render_composite(v, src, &|_| true, false, [0; 4])
+    render_composite(v, src, &|_| true, false, [0; 4], None)
+}
+
+/// A view drawn, with what each of its widgets really drew.
+pub struct Traced {
+    pub canvas: Canvas,
+    /// One per widget drawn (alpha above zero), in draw order. The
+    /// underlay's widgets are not here: trace the underlay for them.
+    pub footprints: Vec<Footprint>,
+}
+
+impl Traced {
+    pub fn footprint(&self, id: &str) -> Option<&Footprint> {
+        self.footprints.iter().find(|f| f.id == id)
+    }
+}
+
+/// [`render_view`] without the overflow marks, recording each widget's
+/// [`Footprint`] as it draws (docs/game/ui-builder.md "The checks").
+pub fn render_traced(v: &View, src: &dyn Source) -> Traced {
+    let mut footprints = Vec::new();
+    let canvas = render_composite(v, src, &|_| true, false, [0, 0, 0, 255], Some(&mut footprints));
+    Traced { canvas, footprints }
+}
+
+/// The canvas every view is drawn on, in pixels.
+const W: i32 = 640;
+const H: i32 = 480;
+
+/// What a widget really drew: the pixels it touched with alpha above
+/// zero, as the preview drew them. Art's footprint is its image's own
+/// pixels where the image put them, past its declared rectangle and the
+/// canvas edge included; a text's is its glyphs as the source's font drew
+/// them; a solid fill's, and the box drawn for art the source lacks, the
+/// rectangle.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+pub struct Footprint {
+    pub id: String,
+    /// The touched pixels' bounding box in UI units, `top, left, bottom,
+    /// right`; `None` when the widget drew nothing.
+    pub bbox: Option<[i16; 4]>,
+    /// Touched pixels on the canvas.
+    pub pixels: usize,
+    /// Which canvas pixels were touched, inside `window` (`x, y, width,
+    /// height` in canvas pixels).
+    #[serde(skip)]
+    window: [i32; 4],
+    #[serde(skip)]
+    bits: Vec<bool>,
+}
+
+impl Footprint {
+    /// The bounding box as a rectangle.
+    pub fn rect(&self) -> Option<Rect> {
+        self.bbox.map(|[top, left, bottom, right]| Rect {
+            top,
+            left,
+            bottom,
+            right,
+        })
+    }
+
+    /// Whether canvas pixel `(x, y)` was touched.
+    pub fn hits(&self, x: i32, y: i32) -> bool {
+        let [wx, wy, ww, wh] = self.window;
+        (wx..wx + ww).contains(&x)
+            && (wy..wy + wh).contains(&y)
+            && self.bits[((y - wy) * ww + (x - wx)) as usize]
+    }
+
+    /// The touched canvas pixels.
+    pub fn touched(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
+        let [wx, wy, ww, _] = self.window;
+        self.bits
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| **b)
+            .map(move |(i, _)| (wx + i as i32 % ww, wy + i as i32 / ww))
+    }
+
+    /// Pixels both touched.
+    pub fn overlap(&self, other: &Footprint) -> usize {
+        let [ax, ay, aw, ah] = self.window;
+        let [bx, by, bw, bh] = other.window;
+        let (x0, x1) = (ax.max(bx), (ax + aw).min(bx + bw));
+        let (y0, y1) = (ay.max(by), (ay + ah).min(by + bh));
+        (y0..y1)
+            .flat_map(|y| (x0..x1).map(move |x| (x, y)))
+            .filter(|&(x, y)| self.hits(x, y) && other.hits(x, y))
+            .count()
+    }
+
+    /// Touched pixels inside `r` (UI units).
+    pub fn pixels_in(&self, r: Rect) -> usize {
+        let (x0, x1) = (320 + i32::from(r.left), 320 + i32::from(r.right));
+        let (y0, y1) = (240 - i32::from(r.top), 240 - i32::from(r.bottom));
+        self.touched()
+            .filter(|&(x, y)| (x0..x1).contains(&x) && (y0..y1).contains(&y))
+            .count()
+    }
+
+    /// How far, in UI units, the bounding box runs past `r` on its worst
+    /// side; 0 inside it.
+    pub fn past(&self, r: Rect) -> i32 {
+        let Some(b) = self.rect() else {
+            return 0;
+        };
+        [
+            i32::from(b.top) - i32::from(r.top),
+            i32::from(r.left) - i32::from(b.left),
+            i32::from(r.bottom) - i32::from(b.bottom),
+            i32::from(b.right) - i32::from(r.right),
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or(0)
+        .max(0)
+    }
+
+    /// Nothing drawn.
+    fn none(id: &str) -> Footprint {
+        Footprint {
+            id: id.into(),
+            ..Footprint::default()
+        }
+    }
+
+    /// Canvas pixels `x0..x1` by `y0..y1` (unclipped) with `on` saying
+    /// which were touched; the box is of the touched ones, off the canvas
+    /// included.
+    fn of_pixels(id: &str, [x0, y0, x1, y1]: [i32; 4], on: &dyn Fn(i32, i32) -> bool) -> Footprint {
+        let (mut min, mut max) = ((i32::MAX, i32::MAX), (i32::MIN, i32::MIN));
+        let window = [x0.max(0), y0.max(0), (x1.min(W) - x0.max(0)).max(0), (y1.min(H) - y0.max(0)).max(0)];
+        let mut bits = vec![false; (window[2] * window[3]) as usize];
+        let mut pixels = 0;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                if !on(x, y) {
+                    continue;
+                }
+                min = (min.0.min(x), min.1.min(y));
+                max = (max.0.max(x), max.1.max(y));
+                if (0..W).contains(&x) && (0..H).contains(&y) {
+                    bits[((y - window[1]) * window[2] + (x - window[0])) as usize] = true;
+                    pixels += 1;
+                }
+            }
+        }
+        if min.0 == i32::MAX {
+            return Footprint::none(id);
+        }
+        let clamp = |v: i32| v.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+        Footprint {
+            id: id.into(),
+            bbox: Some([
+                clamp(240 - min.1),
+                clamp(min.0 - 320),
+                clamp(240 - (max.1 + 1)),
+                clamp(max.0 + 1 - 320),
+            ]),
+            pixels,
+            window,
+            bits,
+        }
+    }
+
+    /// A fill of `r`: all of it, when drawn at all.
+    fn of_rect(id: &str, r: Rect, drawn: bool) -> Footprint {
+        if !drawn || r.right <= r.left || r.top <= r.bottom {
+            return Footprint::none(id);
+        }
+        let x0 = 320 + i32::from(r.left);
+        let y0 = 240 - i32::from(r.top);
+        Footprint::of_pixels(
+            id,
+            [x0, y0, 320 + i32::from(r.right), 240 - i32::from(r.bottom)],
+            &|_, _| true,
+        )
+    }
+
+    /// `img` drawn with its top-left at UI point `(x, y)` at `alpha`, as
+    /// [`Canvas::image`] draws it.
+    fn of_image(id: &str, img: &Image, x: i32, y: i32, alpha: u8) -> Footprint {
+        let (x0, y0) = (320 + x, 240 - y);
+        let (w, h) = (img.width as i32, img.height as i32);
+        Footprint::of_pixels(id, [x0, y0, x0 + w, y0 + h], &|px, py| {
+            let i = (((py - y0) * w + (px - x0)) * 4 + 3) as usize;
+            u32::from(img.rgba[i]) * u32::from(alpha) / 255 != 0
+        })
+    }
+
+    /// What was drawn on `scratch` (clear but for it) in canvas rows
+    /// `y0..y1`; those rows are cleared after.
+    fn of_scratch(id: &str, scratch: &mut Canvas, y0: i32, y1: i32) -> Footprint {
+        let (y0, y1) = (y0.clamp(0, H), y1.clamp(0, H));
+        let width = scratch.width as i32;
+        let f = {
+            let rgba = &scratch.rgba;
+            Footprint::of_pixels(id, [0, y0, width, y1], &|x, y| {
+                rgba[((y * width + x) * 4 + 3) as usize] != 0
+            })
+        };
+        let (a, b) = ((y0 * width * 4) as usize, (y1 * width * 4) as usize);
+        scratch.rgba[a..b].iter_mut().for_each(|v| *v = 0);
+        f
+    }
 }
 
 fn render_composite(
@@ -1308,32 +1817,44 @@ fn render_composite(
     keep: &dyn Fn(&crate::ui_kit::view::Widget) -> bool,
     marks: bool,
     clear: [u8; 4],
+    mut trace: Option<&mut Vec<Footprint>>,
 ) -> Canvas {
     let mut c = if let Some(parent) = &v.underlay {
         // Widget filters apply to this screen. The parent stays painted
         // when an audit samples the pixels underneath the dialog's text.
-        render_composite(parent, src, &|_| true, false, clear)
+        render_composite(parent, src, &|_| true, false, clear, None)
     } else {
-        let mut c = Canvas::new(640, 480, clear);
+        let mut c = Canvas::new(W as u32, H as u32, clear);
         src.backing(&mut c, v.backing);
         c
     };
+    // Texts are drawn a second time on this, clear, to see their glyphs.
+    let mut scratch: Option<Canvas> = None;
     let mut order: Vec<&crate::ui_kit::view::Widget> = v.widgets.iter().collect();
     order.sort_by_key(|w| w.layer);
     for w in order.into_iter().filter(|w| w.alpha > 0 && keep(w)) {
         let r = w.rect();
-        match &w.kind {
+        let footprint = match &w.kind {
             Kind::Art { art: Art::Solid { rgba }, .. } => {
                 let [red, green, blue, alpha] = *rgba;
-                c.fill(r, [red, green, blue, (u16::from(alpha) * u16::from(w.alpha) / 255) as u8]);
+                let a = (u16::from(alpha) * u16::from(w.alpha) / 255) as u8;
+                c.fill(r, [red, green, blue, a]);
+                trace.is_some().then(|| Footprint::of_rect(&w.id, r, a > 0))
             }
             Kind::Art { art, .. } => match src.art(art) {
-                Some(img) => c.image(&img, i32::from(r.left), i32::from(r.top), w.alpha),
+                Some(img) => {
+                    let (x, y) = (i32::from(r.left), i32::from(r.top));
+                    c.image(&img, x, y, w.alpha);
+                    trace
+                        .is_some()
+                        .then(|| Footprint::of_image(&w.id, &img, x, y, w.alpha))
+                }
                 None => {
                     // Over the synthetic backing this is about the
                     // Controls row bar's mean colour in game (27, 37, 56).
                     c.fill(r, [50, 70, 110, w.alpha / 4]);
                     c.outline(r, [120, 160, 220, w.alpha]);
+                    trace.is_some().then(|| Footprint::of_rect(&w.id, r, true))
                 }
             },
             Kind::Text {
@@ -1346,7 +1867,20 @@ fn render_composite(
                 if marks && overflows(w, src) {
                     c.outline(r, [230, 40, 40, 255]);
                 }
+                trace.is_some().then(|| {
+                    let s = scratch.get_or_insert_with(|| Canvas::new(W as u32, H as u32, [0; 4]));
+                    src.text(s, *font, text, r, *justify, *colour, w.alpha);
+                    // Every row the text can reach: its lines from the
+                    // top, a line's slack either side.
+                    let lh = src.line_height(*font).max(1);
+                    let lines = text.split('\n').count() as i32;
+                    let top = 240 - i32::from(r.top) - lh;
+                    Footprint::of_scratch(&w.id, s, top, top + (lines + 2) * lh)
+                })
             }
+        };
+        if let (Some(t), Some(f)) = (trace.as_deref_mut(), footprint) {
+            t.push(f);
         }
     }
     c
@@ -1625,7 +2159,9 @@ impl From<'_> {
             View {
                 screen: s.name.clone(),
                 state: state.into(),
-                backing: Backing::None,
+                // Over a live picture, or (a specimen of widgets that sit
+                // on the shell's bands) over the game shell.
+                backing: if s.transparent { Backing::None } else { Backing::GameShell },
                 widgets: hud.widgets.clone(),
                 focus: None,
                 list: None,
@@ -1672,6 +2208,14 @@ impl From<'_> {
         let v = self.view(s, state)?;
         let c = render_view(&v, self.source());
         Ok((v, c))
+    }
+
+    /// `s` in state `state`: its view, its picture and what each widget
+    /// drew ([`render_traced`]).
+    pub fn draw_traced(&self, s: &ScreenSpec, state: &str) -> Result<(View, Traced)> {
+        let v = self.view(s, state)?;
+        let t = render_traced(&v, self.source());
+        Ok((v, t))
     }
 }
 
@@ -1801,5 +2345,210 @@ fn tiny_glyph(c: char) -> [u8; 5] {
         '/' => [1, 1, 2, 4, 4],
         '_' => [0, 0, 0, 0, 7],
         _ => [0; 5],
+    }
+}
+
+#[cfg(test)]
+mod edit_tests {
+    use super::*;
+
+    #[test]
+    fn retail_widgets_name_their_tag_fields() {
+        assert_eq!(
+            retail_field(0, "text.3"),
+            Ok(RetailField::Rect("panes[0].text_blocks[3].rect".into()))
+        );
+        assert_eq!(
+            retail_field(1, "button.0").unwrap().path(),
+            "panes[1].buttons[0].rect"
+        );
+        assert_eq!(
+            retail_field(0, "bitmap.2"),
+            Ok(RetailField::Point("panes[0].bitmaps[2].top_left".into()))
+        );
+        assert_eq!(
+            retail_field(0, "list.0").unwrap().path(),
+            "panes[0].lists[0].anchor"
+        );
+        assert_eq!(
+            retail_field(0, "table.1").unwrap().path(),
+            "panes[0].tables[1].anchor"
+        );
+        let title = retail_field(0, "title").unwrap_err();
+        assert!(title.starts_with("refused") && title.contains("wigl"), "{title}");
+        assert!(retail_field(0, "row.0.label").is_err());
+        assert!(retail_field(0, "text.x").is_err());
+        // A point takes the rect's top-left as x, y.
+        let r = [100, -50, 80, 20];
+        assert_eq!(RetailField::Point(String::new()).value(r), serde_json::json!([-50, 100]));
+        assert_eq!(RetailField::Rect(String::new()).value(r), serde_json::json!(r));
+    }
+
+    #[test]
+    fn places_move_the_blocks_they_name() {
+        let mut pane = tui::Pane {
+            flags: 0,
+            animation: tui::AnimationRef(0),
+            buttons: Vec::new(),
+            lists: vec![tui::List {
+                flags: 0,
+                skin: 2,
+                visible_items: 5,
+                anchor: tui::Point { x: -254, y: 130 },
+                animation: tui::AnimationRef(0),
+                item_value: 0,
+            }],
+            text_blocks: Vec::new(),
+            bitmaps: Vec::new(),
+            model_scenes: Vec::new(),
+            shader_bitmaps: Vec::new(),
+            tables: Vec::new(),
+        };
+        let mut places = RetailPlaces::new();
+        places.insert("list.0".into(), [140, -244, 0, 0]);
+        // Blocks the pane has not got, and ids that are not blocks, are skipped.
+        places.insert("text.4".into(), [1, 2, 3, 4]);
+        places.insert("title".into(), [1, 2, 3, 4]);
+        place_retail(&mut pane, &places);
+        assert_eq!(pane.lists[0].anchor, tui::Point { x: -244, y: 140 });
+    }
+
+    #[test]
+    fn a_filmstrip_lays_its_frames_side_by_side() {
+        let frames: Vec<(String, Canvas)> = (0..3)
+            .map(|i| (format!("t{i}.00s"), Canvas::new(640, 480, [i * 80, 0, 0, 255])))
+            .collect();
+        let (strip, at) = filmstrip(&frames);
+        assert_eq!(at, vec![[8, 320], [336, 320], [664, 320]]);
+        assert_eq!(strip.width, 3 * (320 + 8) + 8);
+        assert_eq!(strip.height, 240 + 22 + 16);
+        // The second frame's pixels are its own, at half size.
+        let px = |x: u32, y: u32| {
+            let i = ((y * strip.width + x) * 4) as usize;
+            strip.rgba[i]
+        };
+        assert_eq!(px(336 + 10, 8 + 22 + 10), 80);
+        assert_eq!(px(664 + 10, 8 + 22 + 10), 160);
+    }
+}
+
+#[cfg(test)]
+mod footprint_tests {
+    use super::*;
+
+    fn widget(id: &str, rect: [i16; 4], layer: Layer, kind: Kind) -> Widget {
+        Widget {
+            id: id.into(),
+            rect,
+            layer,
+            alpha: 255,
+            kind,
+        }
+    }
+
+    /// A fill's footprint is its rectangle, a placeholder box's too; a
+    /// text's is its glyphs, inside its ink; nothing hidden is traced.
+    #[test]
+    fn footprints_are_what_each_widget_drew() {
+        let mut hidden = widget(
+            "hidden",
+            [0, 0, -10, 10],
+            Layer::Content,
+            Kind::Text {
+                text: "x".into(),
+                font: 1,
+                justify: Justify::Left,
+                colour: [255; 3],
+            },
+        );
+        hidden.alpha = 0;
+        let v = View {
+            screen: "t".into(),
+            state: "s".into(),
+            backing: Backing::None,
+            underlay: None,
+            widgets: vec![
+                widget(
+                    "fill",
+                    [10, -20, -10, 20],
+                    Layer::Frame,
+                    Kind::Art {
+                        art: Art::Solid {
+                            rgba: [1, 2, 3, 255],
+                        },
+                        size: [40, 20],
+                    },
+                ),
+                widget(
+                    "box",
+                    [100, -300, 60, -200],
+                    Layer::Under,
+                    Kind::Art {
+                        art: Art::Skin {
+                            skin: 0,
+                            index: 0,
+                            image: 0,
+                        },
+                        size: [100, 40],
+                    },
+                ),
+                widget(
+                    "text",
+                    [50, 0, 30, 100],
+                    Layer::Content,
+                    Kind::Text {
+                        text: "ab".into(),
+                        font: 1,
+                        justify: Justify::Left,
+                        colour: [255; 3],
+                    },
+                ),
+                hidden,
+            ],
+            focus: None,
+            list: None,
+        };
+        let t = render_traced(&v, &SyntheticSource);
+        assert_eq!(t.footprints.len(), 3, "the hidden text is not drawn");
+        let fill = t.footprint("fill").unwrap();
+        assert_eq!(fill.bbox, Some([10, -20, -10, 20]));
+        assert_eq!(fill.pixels, 800);
+        assert_eq!(t.footprint("box").unwrap().bbox, Some([100, -300, 60, -200]));
+        // Two synthetic glyph blocks, 6 by 10 from one unit in and four
+        // down.
+        let text = t.footprint("text").unwrap();
+        assert_eq!(text.bbox, Some([46, 1, 36, 13]));
+        assert_eq!(text.pixels, 120);
+        assert_eq!(text.overlap(fill), 0);
+        assert_eq!(text.pixels_in(Rect { top: 50, left: 0, bottom: 30, right: 7 }), 60);
+        assert_eq!(text.past(Rect { top: 50, left: 0, bottom: 30, right: 100 }), 0);
+        assert_eq!(text.past(Rect { top: 50, left: 0, bottom: 30, right: 10 }), 3);
+    }
+
+    /// Art drawn from an image larger than its declared rectangle: the
+    /// footprint is the image's opaque pixels where it put them, off the
+    /// canvas included in the box.
+    #[test]
+    fn an_images_footprint_is_its_opaque_pixels() {
+        let mut rgba = [0u8; 4].repeat(8 * 4);
+        // Opaque in columns 2 to 5 of rows 1 and 2.
+        for row in 1..3 {
+            for col in 2..6 {
+                rgba[(row * 8 + col) * 4 + 3] = 255;
+            }
+        }
+        let img = Image {
+            width: 8,
+            height: 4,
+            rgba,
+        };
+        let f = Footprint::of_image("a", &img, 316, 0, 255);
+        // Columns 318 to 321 in UI units: two on the canvas, two past it.
+        assert_eq!(f.bbox, Some([-1, 318, -3, 322]));
+        assert_eq!(f.pixels, 4);
+        assert_eq!(f.past(Rect { top: 0, left: 316, bottom: -4, right: 320 }), 2);
+        assert!(f.hits(638, 241));
+        assert!(!f.hits(637, 241));
+        assert!(Footprint::of_image("b", &img, 0, 0, 0).bbox.is_none());
     }
 }

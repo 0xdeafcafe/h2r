@@ -294,11 +294,16 @@ pub enum Action {
     // UI Screens.
     /// Show a screen of ours in a state, or a retail screen.
     UiPick(Pick),
+    /// Show the grid of previews of a root or folder (none: the picture).
+    UiBrowse(Option<ui_screens::Browse>),
     /// A pad press on the screen shown.
     UiPress(boot::ui_kit::input::Input),
     /// Write the screen's PNG and JSON and the sheet into a folder (never
     /// a Git checkout).
     UiExport(PathBuf),
+    /// Select or edit a widget of the screen shown, revert, save
+    /// (`ui_screens::edit`).
+    UiEdit(ui_screens::edit::EditAction),
 
     // HUD.
     /// Open a map of the source in the HUD tool.
@@ -694,9 +699,12 @@ impl App {
             ToolKind::Variants => self.variants.as_ref().is_some_and(|e| e.is_dirty()),
             ToolKind::Playlists => self.hoppers.is_dirty(),
             ToolKind::Hud => self.hud.is_dirty(),
+            // Our screens' edits are files of the checkout; a retail
+            // screen's are the map's, as the tag editor's are.
+            ToolKind::UiScreens => self.ui_screens.edit.ours.dirty(),
             // The tag editor's edits are the map's: the scenario session
             // saves them and its dirty mark counts them.
-            ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => false,
+            ToolKind::Tags | ToolKind::Scripts => false,
             // Bitmap edits reach the map's save when it runs
             // (`push_bitmap_changes`): unsaved until then, and while the
             // map holds changes it has not written.
@@ -724,7 +732,7 @@ impl App {
             ToolKind::Scenario => self.session.can_undo(),
             ToolKind::Variants => self.variants.as_ref().is_some_and(|e| e.can_undo()),
             ToolKind::Playlists => self.hoppers.can_undo(),
-            ToolKind::UiScreens => false,
+            ToolKind::UiScreens => self.ui_can_undo_redo(false),
             ToolKind::Hud => self.hud.session.as_ref().is_some_and(|s| s.can_undo()),
             ToolKind::Tags => self.tags.can_undo(),
             ToolKind::Scripts => false,
@@ -739,7 +747,7 @@ impl App {
             ToolKind::Scenario => self.session.can_redo(),
             ToolKind::Variants => self.variants.as_ref().is_some_and(|e| e.can_redo()),
             ToolKind::Playlists => self.hoppers.can_redo(),
-            ToolKind::UiScreens => false,
+            ToolKind::UiScreens => self.ui_can_undo_redo(true),
             ToolKind::Hud => self.hud.session.as_ref().is_some_and(|s| s.can_redo()),
             ToolKind::Tags => self.tags.can_redo(),
             ToolKind::Scripts => false,
@@ -869,8 +877,13 @@ impl App {
                 ToolKind::Variants => self.run(Action::SaveVariant),
                 ToolKind::Playlists => self.run(Action::SaveHopper),
                 ToolKind::Hud => self.error("save the HUD edits with Save as..."),
+                ToolKind::UiScreens => {
+                    if let Err(e) = self.ui_screens.edit.ours.save() {
+                        self.error(e);
+                    }
+                }
                 ToolKind::Textures => self.run(Action::Save),
-                ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => {}
+                ToolKind::Tags | ToolKind::Scripts => {}
             },
             Answer::SaveAs(path) => match tool {
                 ToolKind::Scenario => self.run(Action::SaveMapAs(path)),
@@ -905,12 +918,16 @@ impl App {
             }
             ToolKind::Playlists => self.hoppers.close(),
             ToolKind::Hud => self.hud = HudTool::default(),
+            ToolKind::UiScreens => {
+                self.ui_screens.edit.ours.discard();
+                self.ui_screens.redraw_edits();
+            }
             ToolKind::Textures => {
                 self.textures.discard_edits();
                 // The map no longer holds what they would have written.
                 self.push_bitmap_changes();
             }
-            ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => {}
+            ToolKind::Tags | ToolKind::Scripts => {}
         }
     }
 
@@ -1131,11 +1148,16 @@ impl App {
                     self.error(format!("{e:#}"));
                 }
             }
+            Action::UiBrowse(at) => {
+                self.sync_ui_disc();
+                self.ui_screens.browse_to(at);
+            }
             Action::UiPress(input) => {
                 if let Some(line) = self.ui_screens.press(input) {
                     self.info(line);
                 }
             }
+            Action::UiEdit(a) => self.run_ui_edit(a),
             Action::UiExport(dir) => match self.ui_screens.export(&dir) {
                 Ok(files) => self.info(format!("wrote {} files to {}", files.len(), dir.display())),
                 Err(e) => self.error(format!("{e:#}")),
@@ -1284,7 +1306,8 @@ impl App {
                     self.hoppers.redo()
                 }
             }
-            ToolKind::UiScreens | ToolKind::Scripts => false,
+            ToolKind::UiScreens => self.ui_undo_redo(undo),
+            ToolKind::Scripts => false,
             ToolKind::Textures => self.textures_undo(undo),
             ToolKind::Hud => self.hud_undo_redo(undo),
             ToolKind::Tags => {
@@ -1305,7 +1328,12 @@ impl App {
         match (done, undo) {
             (false, true) => self.info("nothing to undo"),
             (false, false) => self.info("nothing to redo"),
-            (true, _) if !matches!(tool, ToolKind::Scenario | ToolKind::Tags | ToolKind::Hud) => {
+            (true, _)
+                if !matches!(
+                    tool,
+                    ToolKind::Scenario | ToolKind::Tags | ToolKind::Hud | ToolKind::UiScreens
+                ) =>
+            {
                 self.info(if undo { "undone" } else { "redone" })
             }
             _ => {}

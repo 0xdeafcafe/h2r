@@ -618,7 +618,7 @@ mod tests {
 
     /// `--settings DIR` reads DIR's settings.toml, and the store has what
     /// the settings-gated menus look for (the skulls' settings, which put
-    /// the Game Options page on the plan).
+    /// the Skulls page on the plan).
     #[test]
     fn settings_come_from_the_given_directory() {
         let dir = scratch("settings");

@@ -346,7 +346,7 @@ fn plan_view(
                 return Err("the device's draws are not W-buffered".into());
             }
             let lit = lit.as_ref().ok_or("no first-person model is uploaded")?;
-            let draw = lit.plan(model, frame, &item.key, &item.rows, &entry.states)?;
+            let draw = lit.plan_item(model, frame, item, &entry.states)?;
             if draw.texaccum {
                 return Err(
                     "it samples the texture accumulation target, which this pass does not bind"

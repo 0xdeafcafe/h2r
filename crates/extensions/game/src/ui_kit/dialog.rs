@@ -102,6 +102,26 @@ impl DialogBase {
             DialogBase::ValuePicker => Some(PICKER_HELP_TEXT),
         }
     }
+    /// Where a page on this base names its focused row, beside its picture
+    /// and above the help line: Quick Options' variant-name line
+    /// ([`QUICK_NAME_TEXT`]). Only a page with the base's picture
+    /// ([`DialogBase::picture`]) shows it.
+    pub fn name_line(self) -> Option<crate::list_class::TextBlock> {
+        match self {
+            DialogBase::QuickOptions => Some(QUICK_NAME_TEXT),
+            DialogBase::Large | DialogBase::ValuePicker => None,
+        }
+    }
+    /// Which of the base pane's text blocks [`DialogBase::help`] is, where
+    /// the copy reads its render depth bias from
+    /// ([`crate::ui_kit::dialog_tag::description_bias`]): Quick Options'
+    /// help line is its text block 0. `None` where it isn't traced.
+    pub fn help_block(self) -> Option<u32> {
+        match self {
+            DialogBase::QuickOptions => Some(0),
+            DialogBase::Large | DialogBase::ValuePicker => None,
+        }
+    }
     /// The base pane's bitmaps (by block index) that are the retail
     /// dialog's content rather than its backing, left out of ours:
     /// Quick Options' game type picture beside the variant's name.
@@ -246,6 +266,19 @@ pub const QUICK_HELP_TEXT: crate::list_class::TextBlock = crate::list_class::Tex
     ],
     font: 1,
     colour: [0.388235, 0.580392, 0.756863],
+    animation: QUICK_ANIMATION,
+};
+/// `quick_options`' variant-name line, above the help line and right of
+/// the game type picture: pane 0's text block 1 (`quick_options_variant_name`,
+/// filled by code), white, font 1, the pane's animation. A page of ours
+/// with Quick Options' picture shows its focused row's name there
+/// (docs/game/ui-builder.md "A page's header"), so the name and the help
+/// line beneath it describe the row the picture shows.
+pub const QUICK_NAME: Rect = rect(163, -224, 143, 0);
+pub const QUICK_NAME_TEXT: crate::list_class::TextBlock = crate::list_class::TextBlock {
+    rect: [QUICK_NAME.top, QUICK_NAME.left, QUICK_NAME.bottom, QUICK_NAME.right],
+    font: 1,
+    colour: [1.0, 1.0, 1.0],
     animation: QUICK_ANIMATION,
 };
 /// `quick_options`' pane, list and text animation slots (1-based, as its
@@ -642,16 +675,26 @@ fn row_widgets(s: &ScreenSpec, d: &DialogSpec, g: &DialogGeometry, m: &dyn Metri
     list.focus = s.focus;
     list.style = s.style;
     list.description = s.description;
+    list.name_line = s.name_line;
     list.help = s.help.clone();
     list.list = DialogGeometry::list_place(g.list, shown);
     let rows = Geometry {
         visible: shown,
+        arrows: g
+            .rows
+            .arrows
+            .and_then(|a| crate::ui_kit::view::Arrows::of(a.skin, shown, false)),
         ..g.rows.clone()
     };
     view_of(&list, &rows, m, "")
         .widgets
         .into_iter()
-        .filter(|w| w.id.starts_with("row.") || w.id == "description")
+        .filter(|w| {
+            w.id.starts_with("row.")
+                || w.id.starts_with("scroll.")
+                || w.id == "description"
+                || w.id == "name"
+        })
         .collect()
 }
 

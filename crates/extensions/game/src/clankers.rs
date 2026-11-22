@@ -49,11 +49,9 @@ use crate::h1_options_row::{self as h1row, CHANGE_MAP};
 use crate::list_class::{self, Rows};
 use crate::telemetry;
 use crate::ui_kit::choice::ChoiceRow;
-use crate::ui_kit::dialog::{DialogBase, icon};
+use crate::ui_kit::dialog::icon;
 use crate::ui_kit::ids::{self, Family};
-use crate::ui_kit::input::{Glyph, Prompt};
 use crate::ui_kit::screen::{KitScreen, KitTexts};
-use crate::ui_kit::view::Opener;
 
 /// The page's feature (`features.clankers`) and screen name.
 pub const FEATURE: &str = "clankers";
@@ -271,32 +269,25 @@ static ROWS: [ChoiceRow; 8] = [
     .icon(icon::LIGHTNING),
 ];
 
-/// The Game Setup row's text; the page's title stays [`TITLE`].
+/// The Game Setup row's text; the page's title stays its own
+/// (`assets/ui/screens/clankers.yaml`).
 pub const ROW_LABEL: &str = "Clanker Options...";
 /// What the Game Setup row does, in Game Setup's description while it has
 /// the focus, as retail's rows have theirs (`crate::game_setup_help`).
 pub const ROW_HELP: &str =
     "Add bots to this game: how many, how well they play, and which team they join.";
-/// The page's title, in capitals as Quick Options' header ("QUICK
-/// OPTIONS") is.
-pub const TITLE: &str = "CLANKERS";
 
 /// The Clankers page over `store`: a dialog of its rows on Quick Options
 /// (its eight rows fit the eleven its list shows).
 pub fn page(store: Arc<Store>) -> KitScreen {
-    let mut s = KitScreen::new(FEATURE, SCREEN, IDS, TITLE)
+    let mut s = KitScreen::new(FEATURE, SCREEN, IDS)
         .row_label(ROW_LABEL)
         .row_help(ROW_HELP)
-        .dialog(DialogBase::QuickOptions, Opener::GAME_SETUP_CLANKERS)
         .header(icon::SPARTAN);
     for r in &ROWS {
         s = s.row(r.row(Arc::clone(&store)));
     }
-    s.prompts(&[
-        Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
-        Prompt::new(&[Glyph::A], "Select"),
-        Prompt::new(&[Glyph::B], "Back"),
-    ])
+    s
 }
 
 // --- The driver -----------------------------------------------------------
@@ -664,6 +655,11 @@ impl PadSource for Clanker {
 
     fn reset_input(&mut self) {
         self.brain.reset_input();
+    }
+
+    fn order(&mut self, order: Option<bots::brain::Order>) -> bool {
+        self.brain.set_order(order);
+        true
     }
 
     fn phantom_latency(&self) -> bots::tuning::PhantomLatency {

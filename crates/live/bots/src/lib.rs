@@ -199,6 +199,12 @@ impl Brain {
         }
     }
 
+    /// Gives the brain an outside order (docs/game/rules-world-api.md,
+    /// "Bots"), or frees it (`None`): the mind's goal while it stands.
+    pub fn set_order(&mut self, order: Option<brain::Order>) {
+        self.mind.decisions.set_order(order);
+    }
+
     fn reset_mind(&mut self) {
         let taunt = self.mind.emote.taunt;
         let glitches = self.mind.glitches;
@@ -572,6 +578,11 @@ impl pad_source::PadSource for Brain {
 
     fn order_bounce(&mut self, to: brain::Vec3, mode: bounce_route::Mode) -> bool {
         self.mind.order_bounce(to, mode);
+        true
+    }
+
+    fn order(&mut self, order: Option<brain::Order>) -> bool {
+        self.set_order(order);
         true
     }
 

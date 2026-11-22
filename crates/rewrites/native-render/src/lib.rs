@@ -107,6 +107,9 @@ pub mod screen_look;
 #[cfg(feature = "gpu")]
 pub mod shadow_gpu;
 pub mod shadows;
+pub mod showcase;
+#[cfg(feature = "gpu")]
+pub mod showcase_gpu;
 pub mod sun_casters;
 pub mod sun_tiles;
 #[cfg(feature = "gpu")]

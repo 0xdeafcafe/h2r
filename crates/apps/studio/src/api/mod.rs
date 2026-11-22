@@ -45,6 +45,9 @@ mod sound;
 mod tag_fields;
 mod tag_io;
 mod tags;
+mod ui_kit;
+mod ui_browse;
+mod ui_edit;
 mod ui_screens;
 mod variants;
 mod view;
@@ -520,7 +523,7 @@ pub const METHODS: &[MethodDef] = &[
         m::UI_SCREENS,
         "Our UI screens and their states (and the disc's retail screens when a disc is open)",
         "{}",
-        r#"{"screens":"[{screen,states}]","retail":"[string]","pick":"{screen,state}|{retail}|null"}"#,
+        r#"{"screens":"[{screen,states}]","retail":"[string]","pick":"{screen,state}|{retail}|null","folders":"{ours,retail,browse}"}"#,
         "null",
     ),
     def(
@@ -550,6 +553,34 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"out?":"string"}"#,
         r#"{"path":"string","width":"integer","height":"integer","findings":"integer"}"#,
         r#"{"out":"$OUT/screen.png"}"#,
+    ),
+    def(
+        m::UI_CONSISTENCY,
+        "Check our screens (or one) in every state against the design system: palette, fonts by role, title and legend places, legend format, capitals, row pitch, fit",
+        r#"{"screen?":"string"}"#,
+        r#"{"findings":"[{screen,state,ids,rule,text}]","checked":"integer"}"#,
+        r#"{"screen":"$SCREEN"}"#,
+    ),
+    def(
+        m::UI_COMPONENTS,
+        "The design system's catalogue: each component with its role, font, colour, variants and specimen page; each layout page; the palette and fonts",
+        "{}",
+        r#"{"components":"[{name,role,font,colour,justify,variants,specimen}]","layouts":"[{name,kind,states}]","palette":"[{name,rgb}]","fonts":"{role:integer}"}"#,
+        "null",
+    ),
+    def(
+        m::UI_SELECT_FOLDER,
+        "Show the grid of previews of a root or folder in the UI Screens tool (folder: ours/<name> or retail/<path>, as ui.screens lists under folders)",
+        r#"{"folder?":"string","root?":"ours|retail"}"#,
+        r#"{"browse":"{root,folder,path}","tiles":"integer","states":"boolean"}"#,
+        r#"{"root":"ours"}"#,
+    ),
+    def(
+        m::UI_SHEET,
+        "Render a folder's or root's previews to one labelled contact-sheet PNG (the grid's tiles; default: the grid shown; never into a Git checkout)",
+        r#"{"folder?":"string","root?":"ours|retail","states?":"boolean","columns?":"integer","out?":"string"}"#,
+        r#"{"path":"string","width":"integer","height":"integer","tiles":"[{pick,name,x,y,w,h,findings,checked}]"}"#,
+        r#"{"root":"ours","out":"$OUT/sheet.png"}"#,
     ),
     def(
         m::VIEW_CAMERA,
@@ -763,6 +794,9 @@ impl Api {
             "collision" => collision::call(app, method, &p),
             "variant" => variants::call(app, method, &p),
             "playlist" => playlists::call(app, method, &p),
+            "ui" if matches!(method, m::UI_CONSISTENCY | m::UI_COMPONENTS) => {
+                ui_kit::call(app, method, &p)
+            }
             "ui" => ui_screens::call(app, method, &p),
             "view" => self.view(app, method, &p),
             _ => Err(err(code::METHOD_NOT_FOUND, format!("no method {method}"))),

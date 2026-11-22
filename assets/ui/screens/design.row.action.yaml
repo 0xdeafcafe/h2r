@@ -1,0 +1,28 @@
+screen: design.row.action
+kind: list
+layout: controls
+backing: shell
+states:
+  focused:
+    focus: 0
+  unfocused:
+    focus: 1
+  long:
+    focus: 2
+widgets:
+  title:
+    component: title
+    text: "Action Rows"
+  legend:
+    component: legend
+    prompts: [[A, "SELECT"], [B, "BACK"]]
+rows:
+  row.0:
+    kind: action
+    text: "Action Row"
+  row.1:
+    kind: action
+    text: "Second Action Row"
+  row.2:
+    kind: action
+    text: "A Longer Action Row Label"

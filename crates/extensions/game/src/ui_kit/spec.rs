@@ -292,6 +292,11 @@ pub struct ScreenSpec {
     pub rows: Vec<RowSpec>,
     pub focus: usize,
     pub description: Option<DescriptionBlock>,
+    /// Where the focused row's name goes beside the page's picture, above
+    /// the description (Quick Options' variant-name line,
+    /// [`crate::ui_kit::dialog::DialogBase::name_line`]); `None` for none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name_line: Option<DescriptionBlock>,
     /// The screen's own line in the description block, in place of the
     /// focused row's description: a page's help line, as Quick Options'
     /// `quick_options_help` is ([`crate::ui_kit::screen::KitScreen::header`]).
@@ -345,6 +350,7 @@ impl ScreenSpec {
             rows: Vec::new(),
             focus: 0,
             description: None,
+            name_line: None,
             help: None,
             prompts: Vec::new(),
             inputs: Vec::new(),
@@ -389,6 +395,14 @@ impl ScreenSpec {
     pub fn footer_text(&self) -> Option<String> {
         let prompts = self.focused_prompts();
         (self.footer && !prompts.is_empty()).then(|| footer_legend(prompts))
+    }
+    /// The focused row's name in the name line, as drawn: its label (a
+    /// value row's label; the value stays in the row). `None` without a
+    /// name line or a focused row with a label.
+    pub fn name_text(&self) -> Option<String> {
+        self.name_line?;
+        let label = self.rows.get(self.focus)?.label.trim();
+        (!label.is_empty()).then(|| label.to_string())
     }
     /// The focused row's description (the screen's help line when it has
     /// one) with the legend under it, as drawn.
@@ -865,7 +879,7 @@ mod tests {
         );
         assert_eq!(
             s.description_text().unwrap(),
-            "short\n\n\u{e100} Go",
+            "short\n\n\u{e100} GO",
             "focus 0"
         );
     }

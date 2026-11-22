@@ -1,0 +1,23 @@
+screen: design.row.disabled
+kind: list
+layout: controls
+backing: shell
+states:
+  focused:
+    focus: 1
+  unfocused:
+    focus: 0
+widgets:
+  title:
+    component: title
+    text: "Disabled Rows"
+  legend:
+    component: legend
+    prompts: [[B, "BACK"]]
+rows:
+  row.0:
+    kind: action
+    text: "Action Row"
+  row.1:
+    kind: disabled
+    text: "Disabled Row"

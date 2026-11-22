@@ -1,0 +1,24 @@
+screen: layout.dialog.large
+kind: dialog
+layout: large
+backing: over
+opener: main-menu
+states:
+  focus-0:
+    focus: 0
+  focus-1:
+    focus: 1
+widgets:
+  title:
+    component: title
+    text: "TITLE"
+  legend:
+    component: legend
+    prompts: [[A, "SELECT"], [B, "BACK"]]
+rows:
+  row.0:
+    kind: action
+    text: "Row 1"
+  row.1:
+    kind: action
+    text: "Row 2"

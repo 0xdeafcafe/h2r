@@ -20,7 +20,8 @@ use native_render::look;
 use native_render::object_lighting::ShaderValues;
 use native_render::object_nodes::{Compression, decompression_rows};
 use native_render::object_program_gpu::{
-    EngineStages, LitBuild, LitMaterial, LitModelInput, LitObjects, LitSection, PlannedDraw, Texaccum, lit_model, lit_subparts, uniform,
+    EngineStages, LitBuild, LitMaterial, LitModelInput, LitObjects, LitSection, PlannedDraw, Texaccum, lit_listed, lit_model, lit_subparts,
+    uniform,
 };
 use native_render::object_state::EntryStates;
 use native_render::object_streams::{self, StreamData, StreamFormats};
@@ -1245,6 +1246,14 @@ fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16,
                 .filter(|(i, p)| *i < 16 && p.is_drawn() && p.kind != load::PART_TRANSPARENT)
                 .filter_map(|(k, p)| Some((k as u8, lit_subparts(&g.indices, &g.subparts, p)?)))
                 .collect(),
+            // A record without bit 9 draws a strip part as a list.
+            listed: g
+                .parts
+                .iter()
+                .enumerate()
+                .filter(|(i, p)| *i < 16 && p.is_drawn() && p.kind != load::PART_TRANSPARENT)
+                .filter_map(|(k, p)| Some((k as u8, lit_listed(&g.indices, p)?)))
+                .collect(),
         });
     }
     // The programs each section's classification takes, read first (the
@@ -1315,8 +1324,21 @@ fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16,
 /// when it is uniform (then the coordinates the draw adds do not matter).
 fn object_lightmap(o: &mut Opened) -> Result<Image, String> {
     let lib = o.lib.as_ref().and_then(Option::as_ref).ok_or("the shader tags do not read")?;
-    let matg = o
-        .map
+    engine_lightmap(&mut o.map, lib, &mut o.raw.0, &mut o.decoder, &mut o.images, 3)
+}
+
+/// What a lightmap stage samples when the current page is -1 (an
+/// object's record, `0x0004d2c4`; every decorator draw, `0x0004e277`):
+/// the globals' rasterizer bitmap at `+0x64`
+/// (`object_program::OBJECT_LIGHTMAP`), decoded as stage `stage` samples
+/// it, taken only when uniform, since the coordinates the draw adds (an
+/// object's: the BSP's stream `0x2e`) or leaves (a decorator's: none)
+/// then do not matter.
+pub(crate) fn engine_lightmap<R: std::io::Read + std::io::Seek>(
+    map: &mut map::Map<R>, lib: &tags::material::ShaderLibrary, files: &mut assets::ResourceFiles,
+    decoder: &mut StageDecoder, images: &mut StageImages, stage: usize,
+) -> Result<Image, String> {
+    let matg = map
         .tags()
         .iter()
         .find(|t| t.group.0 == *b"matg")
@@ -1325,10 +1347,13 @@ fn object_lightmap(o: &mut Opened) -> Result<Image, String> {
     let read = |a: u32, n: usize| lib.metadata().bytes(a, n).ok().map(<[u8]>::to_vec);
     let bitmap = crate::native_lights_glue::rasterizer_bitmap(&read, matg, native_render::object_program::OBJECT_LIGHTMAP)
         .ok_or("the globals' rasterizer data names no bitmap at +0x64")?;
-    o.decoder.decode(&mut o.map, &mut o.raw.0, &mut o.images, bitmap, 0, 3, false)?;
-    let image = o.images.get(&(bitmap, 0)).cloned().ok_or("its image does not decode")?;
+    decoder.decode(map, files, images, bitmap, 0, stage, false)?;
+    let image = images.get(&(bitmap, 0)).cloned().ok_or("its image does not decode")?;
     if !uniform(&image) {
-        return Err(format!("the globals' rasterizer bitmap {bitmap:?} ({}x{}) is not uniform, so the coordinates the draw adds (the BSP's stream 0x2e) would matter", image.width, image.height));
+        return Err(format!(
+            "the globals' rasterizer bitmap {bitmap:?} ({}x{}) is not uniform, so the coordinates the draw adds or leaves would matter",
+            image.width, image.height
+        ));
     }
     Ok(image)
 }
@@ -1576,6 +1601,7 @@ mod tests {
             indices: 0..3,
             implementations,
             subparts: None,
+            listed: None,
         };
         let mut empty = part(2, 5, [Some((0, 0)), None, None, None, None]);
         empty.indices = 0..0;

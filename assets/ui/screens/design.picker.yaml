@@ -1,0 +1,61 @@
+screen: design.picker
+kind: picker
+layout: picker
+backing: over
+opener: game-setup
+scrolls: true
+states:
+  first:
+    focus: 0
+  scrolled:
+    focus: 4
+  last:
+    focus: 8
+widgets:
+  title:
+    component: title
+    text: "SETTING"
+  description:
+    component: description
+    at: [15, 74]
+    size: [235, 154]
+  legend:
+    component: legend
+    prompts: [[A, "SELECT"], [B, "CANCEL"]]
+rows:
+  row.0:
+    kind: action
+    text: "Value 1"
+    help: "What the setting does, and what its values mean."
+  row.1:
+    kind: action
+    text: "Value 2"
+    help: "What the setting does, and what its values mean."
+  row.2:
+    kind: action
+    text: "Value 3"
+    help: "What the setting does, and what its values mean."
+  row.3:
+    kind: action
+    text: "Value 4"
+    help: "What the setting does, and what its values mean."
+  row.4:
+    kind: action
+    text: "Value 5"
+    help: "What the setting does, and what its values mean."
+  row.5:
+    kind: action
+    text: "Value 6"
+    help: "What the setting does, and what its values mean."
+  row.6:
+    kind: action
+    text: "Value 7"
+    help: "What the setting does, and what its values mean."
+  row.7:
+    kind: action
+    text: "Value 8"
+    help: "What the setting does, and what its values mean."
+  row.8:
+    kind: action
+    text: "Value 9"
+    help: "What the setting does, and what its values mean."
