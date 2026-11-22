@@ -325,6 +325,29 @@ impl AgentGlue {
                 Ok(serde_json::to_value(r).expect("superbounce.medal_test serialises"))
             },
         );
+        // A structure BSP's breakable glass: which pieces are broken
+        // (bots::guest::breakable; docs/game/bots.md, "Breaking the
+        // glass"), to check the bots' break step in a game.
+        agent.add_game_method(method::WORLD_BREAKABLE, Access::Read, |params, ctx| {
+            let p: agent_proto::BreakableParams = if params.is_null() {
+                Default::default()
+            } else {
+                serde_json::from_value(params)
+                    .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?
+            };
+            let bsp = p.bsp.unwrap_or(0);
+            let read = ctx
+                .read_guest(|m| bots::guest::breakable(m, bsp))?
+                .map_err(|e| RpcError::new(code::UNAVAILABLE, format!("{e:?}")))?
+                .ok_or_else(|| RpcError::new(code::UNAVAILABLE, "no map loaded"))?;
+            Ok(serde_json::to_value(agent_proto::Breakable {
+                bsp,
+                enabled: read.enabled,
+                broken: read.broken(),
+                mask: read.mask_hex(),
+            })
+            .expect("world.breakable serialises"))
+        });
         // Trials of the spots in the game (superbounce_verify.rs,
         // docs/game/superbounce.md, "Verifying spots").
         crate::superbounce_verify::install(&agent);

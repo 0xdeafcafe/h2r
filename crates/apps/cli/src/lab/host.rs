@@ -2,6 +2,7 @@
 //! time (a build, or a run that may build first), each in `runs/<id>/` with
 //! its log and metadata; later jobs wait in a FIFO. See docs/runtime/lab.md.
 
+mod dedicated;
 mod memory;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -108,6 +109,10 @@ pub struct Meta {
     /// `theater.play {"id"}` takes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub film_id: Option<String>,
+    /// A dedicated host's XNet address and base port (`IPv4:port`), what a
+    /// joiner on another Mac needs (`h2 lab run --dedicated`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_link: Option<String>,
 }
 
 pub(super) fn is_final(state: &str) -> bool {
@@ -784,6 +789,9 @@ fn start(sh: &Arc<Shared>, job: Job, requester: &str) -> Result<Value> {
     let mut level = None;
     if let Job::Run(r) = &job {
         level = r.level.clone();
+        if let Some(d) = &r.dedicated {
+            level = d.map.clone();
+        }
         if let Some(name) = &r.replay {
             let m = read_manifest(&cfg.dir("recordings").join(name))
                 .with_context(|| format!("no recording {name} (h2 lab recordings)"))?;
@@ -1221,6 +1229,9 @@ fn run_job(
         Job::Sim(sim) => return run_sim(sh, id, sim, &image, started),
         Job::Build(_) => unreachable!("builds returned above"),
     };
+    if let Some(d) = &run.dedicated {
+        return dedicated::run(sh, id, run, d, &image, started);
+    }
     let mut log = File::create(run_dir.join("run.log"))?;
     writeln!(log, "lab job {id} · {}", run.name)?;
     let cmd = play_command(cfg, id, run, &image, commit)?;

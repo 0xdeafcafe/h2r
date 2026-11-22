@@ -3,16 +3,24 @@
 
 use anyhow::{Result, bail};
 
-use crate::{bundle, BundleSpec};
+use crate::{bundle, BotData, BundleSpec};
 
 const USAGE: &str = "usage: h2 host bundle --disc <iso|dir> --out <dir>
-                      [--stripped-maps <dir>] [--sim-stores <dir>] [--force] [--zstd-level 1..=21]
+                      [--stripped-maps <dir>] [--sim-stores <dir>] [--data <dir> | --no-bots]
+                      [--force] [--zstd-level 1..=21]
 
 Writes <out>/host-data.tar.zst — the files a multiplayer host reads off
 the DVD (default.xbe, mainmenu/shared/single_player_shared and every
-multiplayer map, and the menu fonts) — and
+multiplayer map, and the menu fonts), and every multiplayer map's bot nav
+meshes and visibility grids (bots/<map>.<bsp>.bots and .vis) — and
 <out>/host-data.json beside it, naming the archive's sha256 and every
 file in it.
+
+The bot data comes from <data>/bots, the directory `h2 bots nav` and the
+game write: maps whose files are missing or stale are built there first,
+as `h2 bots nav all` does. --data defaults to the data root `h2 play`
+uses. --no-bots leaves the bot data out; a host then has none for a sim
+match, and a light host builds each map's mesh when it is first played.
 
 --disc is the owner's own disc: an XISO image or a directory holding the
 disc's files. --stripped-maps replaces a map with the same-named one from that
@@ -44,6 +52,7 @@ pub fn bundle_cmd(args: Vec<String>) -> Result<()> {
         campaign = out.campaign_skipped,
         unknown = out.unknown_skipped,
     );
+    println!("host-data: bot nav data for {} multiplayer maps", out.nav_maps);
     println!(
         "host-data: {raw} bytes -> {packed} bytes (zstd {level})",
         raw = out.raw_bytes,
@@ -60,7 +69,7 @@ pub fn bundle_cmd(args: Vec<String>) -> Result<()> {
 fn parse_args(args: &[String]) -> Result<Option<BundleSpec>, String> {
     use std::path::PathBuf;
     let (mut disc, mut out, mut stripped, mut force, mut level) = (None, None, None, false, 3);
-    let mut sim_stores = None;
+    let (mut sim_stores, mut data, mut no_bots) = (None, None, false);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -76,6 +85,10 @@ fn parse_args(args: &[String]) -> Result<Option<BundleSpec>, String> {
             "--sim-stores" => {
                 sim_stores = Some(PathBuf::from(it.next().ok_or("--sim-stores needs a directory")?));
             }
+            "--data" => {
+                data = Some(PathBuf::from(it.next().ok_or("--data needs a directory")?));
+            }
+            "--no-bots" => no_bots = true,
             "--force" => force = true,
             "--zstd-level" => {
                 let raw = it.next().ok_or("--zstd-level needs a number")?;
@@ -90,7 +103,14 @@ fn parse_args(args: &[String]) -> Result<Option<BundleSpec>, String> {
     if !(1..=21).contains(&level) {
         return Err(format!("--zstd-level {level} is outside 1..=21"));
     }
-    Ok(Some(BundleSpec { disc, out, stripped, sim_stores, force, zstd_level: level }))
+    if no_bots && data.is_some() {
+        return Err("--data and --no-bots exclude each other".into());
+    }
+    let bots = (!no_bots).then(|| BotData {
+        dir: bots::cache::dir(&data.unwrap_or_else(content::store::default_data_root)),
+        build: true,
+    });
+    Ok(Some(BundleSpec { disc, out, stripped, sim_stores, bots, force, zstd_level: level }))
 }
 
 #[cfg(test)]
@@ -114,6 +134,20 @@ mod tests {
         assert_eq!(spec.sim_stores.as_deref(), Some(std::path::Path::new("t")));
         assert!(spec.force);
         assert_eq!(spec.zstd_level, 7);
+        // Bot data by default, from the default data root, built when stale.
+        let bots = spec.bots.unwrap();
+        assert_eq!(bots.dir, bots::cache::dir(&content::store::default_data_root()));
+        assert!(bots.build);
+    }
+
+    #[test]
+    fn bot_data_comes_from_data_or_is_left_out() {
+        let spec = parse_args(&args(&["--disc", "d", "--out", "o", "--data", "root"])).unwrap().unwrap();
+        assert_eq!(spec.bots.unwrap().dir, std::path::Path::new("root/bots"));
+        let spec = parse_args(&args(&["--disc", "d", "--out", "o", "--no-bots"])).unwrap().unwrap();
+        assert!(spec.bots.is_none());
+        assert!(parse_args(&args(&["--disc", "d", "--out", "o", "--no-bots", "--data", "r"])).is_err());
+        assert!(parse_args(&args(&["--disc", "d", "--out", "o", "--data"])).is_err());
     }
 
     #[test]

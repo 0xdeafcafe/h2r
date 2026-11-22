@@ -149,6 +149,22 @@ h2 lab stop --host "$lab_host" "$lab_id"
 h2 lab wait --host "$lab_host" "$lab_id"
 ```
 
+## Host a System Link game
+
+`--dedicated` starts a headless dedicated System Link host instead of a
+game window, for a person on another Mac on the LAN to join. `--map`
+opens its lobby. The job's `system_link` field in `h2 lab status` gives
+the address and port, and `--host-bots` lets `sim.player.add` add
+phantoms. Drive it with `h2 lab agent` and end it with `h2 lab stop`.
+The joiner runs the same commit with the same XNet base port, 3074 by
+default. See [Dedicated System Link host](../../../docs/runtime/lab.md#dedicated-system-link-host).
+
+```sh
+h2 lab run --name "Join test" --host "$lab_host" --branch my-work --dedicated --host-bots \
+  --map lockout --variant slayer --max-players 8 --build-env H2_OPT=2
+h2 lab agent --host "$lab_host" "$lab_id" host.lobby.state '{}'
+```
+
 ## Read the results
 
 ```sh

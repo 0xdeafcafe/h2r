@@ -61,6 +61,13 @@ const USAGE: &str = "usage:
                           --serve: no frame limit, driven by `agent` until `stop`;
                           --film NAME: record a film into the host's film library
                           (and runs/<id>/NAME.h2film for `fetch`)
+    run --name TEXT --dedicated [--host-bots] [--map MAP [--variant NAME] [--max-players N]]
+        [--base-port PORT] [--env KEY=VALUE]... [--branch NAME | --rev REV | --current]
+        [--no-sync] [--feature F]... [--build-env KEY=VALUE]... [--mem-limit SIZE] [--note TEXT]
+                          a dedicated System Link host: headless `h2 serve --system-link
+                          --host-light` on the host's LAN IPv4 (the job's system_link),
+                          until `stop`; --map opens its lobby; XNet base 3074 unless
+                          --base-port; driven by `agent` like --serve
     agent <id> <method> [json-params] [--timeout S]
                           one `h2 agent` call against that run's game, run on the
                           host; its output and exit code come back unchanged

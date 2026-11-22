@@ -117,7 +117,8 @@ fn the_page_bots_stand_down_outside_a_custom_lobby() {
         ..Want::OFF
     });
     assert!(ph.list().is_empty());
-    assert!(d.set_lobby(RetailMode::Matchmaking)[0].contains("matchmaking"));
+    // Co-op to matchmaking: neither seats them, so nothing changes.
+    assert!(d.set_lobby(RetailMode::Matchmaking).is_empty());
     assert!(ph.list().is_empty());
     // Back in a custom lobby the page's count is seated again.
     d.set_lobby(RetailMode::Custom);

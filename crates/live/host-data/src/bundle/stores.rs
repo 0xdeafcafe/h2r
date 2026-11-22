@@ -118,6 +118,7 @@ mod tests {
             out: dir.join("bundle"),
             stripped: None,
             sim_stores: Some(stores),
+            bots: None,
             force: false,
             zstd_level: 1,
         }

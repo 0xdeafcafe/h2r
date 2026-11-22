@@ -25,15 +25,16 @@ pub fn current() -> Option<std::sync::Arc<MapData>> {
 
 /// The file's first bytes and format version. Version 1 had no
 /// [`Stamp`]; it reads as stale ([`crate::autonav::Status::OldFormat`]).
+/// Version 4 added the breakable glass after the walls.
 pub const MAGIC: &[u8; 4] = b"H2BT";
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 /// The nav generator's version. **Bump it whenever the data a map builds
 /// changes**: `bots::nav`, `bots::los`, [`build`] or `crates/formats/pathfind`'s
 /// generator. Every file built by another version is stale and is built
 /// again (`crate::autonav`); the `generator_output_is_pinned` test in
 /// `nav/tests.rs` fails when the output changes and this does not.
-pub const GENERATOR: u32 = 5;
+pub const GENERATOR: u32 = 6;
 
 /// The header's length: magic, format version, [`Stamp`].
 pub const HEADER_LEN: usize = 20;
@@ -145,7 +146,7 @@ fn build_geometry(
         |ring| Walls::fan_polygon(ring.iter().map(|&(_, v)| bsp.vertices[v].point), &mut tris),
     )
     .map_err(|e| e.to_string())?;
-    let walls = Walls::new(tris);
+    let walls = Walls::new(tris).with_glass(crate::glass::panes(bsp));
     let nav = NavMesh::from_collision(&pf, &Build::default(), &walls, threads);
     let data = MapData {
         nav,
@@ -156,7 +157,9 @@ fn build_geometry(
 }
 
 impl MapData {
-    /// The file: magic, version, `stamp`, the mesh, the walls.
+    /// The file: magic, version, `stamp`, the mesh, the walls, the glass
+    /// (a count, then per pane its breakable index, its vertex count and
+    /// the vertices), the tactical places.
     pub fn to_bytes(&self, stamp: Stamp) -> Vec<u8> {
         let nav = self.nav.to_bytes();
         let mut o = Vec::with_capacity(nav.len() + 36 * self.walls.tris.len() + 28);
@@ -169,6 +172,16 @@ impl MapData {
         o.extend_from_slice(&(self.walls.tris.len() as u32).to_le_bytes());
         for t in &self.walls.tris {
             for v in t {
+                for f in v {
+                    o.extend_from_slice(&f.to_le_bytes());
+                }
+            }
+        }
+        o.extend_from_slice(&(self.walls.glass.len() as u32).to_le_bytes());
+        for p in &self.walls.glass {
+            o.push(p.index);
+            o.push(p.verts.len().min(255) as u8);
+            for v in p.verts.iter().take(255) {
                 for f in v {
                     o.extend_from_slice(&f.to_le_bytes());
                 }
@@ -206,11 +219,28 @@ impl MapData {
             }
             tris.push(t);
         }
+        let panes = u32_at(at)? as usize;
+        at += 4;
+        let mut glass = Vec::with_capacity(panes.min(256));
+        for _ in 0..panes {
+            let (index, n) = (*b.get(at)?, usize::from(*b.get(at + 1)?));
+            at += 2;
+            let mut verts = Vec::with_capacity(n);
+            for _ in 0..n {
+                let mut v = [0.0f32; 3];
+                for f in v.iter_mut() {
+                    *f = f32::from_bits(u32_at(at)?);
+                    at += 4;
+                }
+                verts.push(v);
+            }
+            glass.push(crate::glass::Pane { index, verts });
+        }
         Some((
             MapData {
                 nav,
-                walls: Walls::new(tris),
-                places: crate::places::Places::decode(&b[at..])?,
+                walls: Walls::new(tris).with_glass(glass),
+                places: crate::places::Places::decode(b.get(at..)?)?,
             },
             stamp,
         ))
@@ -236,7 +266,11 @@ mod tests {
         let d = MapData {
             places: Default::default(),
             nav: NavMesh::new(vec![floor, other], vec![e]),
-            walls: Walls::new(vec![[[5.0, 0.0, 0.0], [5.0, 1.0, 0.0], [5.0, 0.0, 1.0]]]),
+            walls: Walls::new(vec![[[5.0, 0.0, 0.0], [5.0, 1.0, 0.0], [5.0, 0.0, 1.0]]])
+                .with_glass(vec![crate::glass::Pane {
+                    index: 7,
+                    verts: vec![[5.0, 0.0, 0.0], [5.0, 1.0, 0.0], [5.0, 0.0, 1.0]],
+                }]),
         };
         let stamp = Stamp::now(0x0123_4567_89ab_cdef);
         let b = d.to_bytes(stamp);

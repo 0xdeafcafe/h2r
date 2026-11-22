@@ -441,7 +441,8 @@ fn the_list_takes_the_modes_rows() {
     let mut g = list(&CUSTOM);
     for mode in [Mode::Forge, Mode::Firefight, Mode::Multiplayer, Mode::Forge] {
         let actions = h1row::setup_actions(&g, LIST).unwrap();
-        let want = arrange(mode, ALL, &actions).unwrap();
+        // `None` is "nothing to change": the list is already the mode's.
+        let want = arrange(mode, ALL, &actions).unwrap_or_else(|| actions.clone());
         assert_eq!(h1row::rewrite_rows(&mut g, LIST, &want), Ok(want.len()));
         assert_eq!(h1row::setup_actions(&g, LIST).unwrap(), want, "{mode:?}");
     }

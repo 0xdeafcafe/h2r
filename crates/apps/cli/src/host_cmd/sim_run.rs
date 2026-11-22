@@ -21,6 +21,18 @@ pub(super) fn assigned(assignment_id: &str, bots: &[String]) -> bool {
             .is_some_and(|id| !id.is_empty())
 }
 
+/// The bundle's bot files (`host_data::bundled_bot_files`) must hold the
+/// leased map's nav mesh: a sim never builds one. The lease names the map
+/// by its file name, in any case (`sim_bench::config::MatchConfig::map`).
+pub(super) fn require_nav(files: &[String], map: &str) -> Result<()> {
+    let mesh = bots::cache::file_name(map, 0);
+    ensure!(
+        files.iter().any(|file| file.eq_ignore_ascii_case(&mesh)),
+        "the host data has no bot nav mesh for {map} ({mesh}); rebuild it with `h2 host bundle`"
+    );
+    Ok(())
+}
+
 pub(super) fn configure(
     cmd: &mut Command,
     lease: &HostLease,
@@ -91,6 +103,16 @@ mod tests {
         assert!(!assigned("sim-run_42", &[]));
         assert!(!assigned("sim-", &bots));
         assert!(!assigned("custom-run_42", &bots));
+    }
+
+    #[test]
+    fn a_sim_needs_the_leased_maps_nav_mesh() {
+        let files = ["lockout.0.bots".to_string(), "lockout.0.vis".to_string()];
+        assert!(require_nav(&files, "lockout").is_ok());
+        assert!(require_nav(&files, "Lockout").is_ok());
+        let error = require_nav(&files, "zanzibar").unwrap_err().to_string();
+        assert!(error.contains("zanzibar.0.bots"), "{error}");
+        assert!(require_nav(&[], "lockout").is_err());
     }
 
     #[test]
