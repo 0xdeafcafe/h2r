@@ -86,9 +86,24 @@ enum Kind {
         max_chars: u16,
         typed: Typed,
     },
+    /// A pick row whose label, value and help its binding gives
+    /// ([`Row::slot`]); not drawn while it gives none.
+    Slot {
+        fill: Get<Option<Filled>>,
+        offer: Get<Result<crate::ui_kit::picker::Pick, String>>,
+    },
 }
 
 type Typed = Arc<dyn Fn(Option<&str>) -> String + Send + Sync>;
+
+/// What a slot row shows ([`Row::slot`]): its label, the value beside
+/// it, and its help under the rows (none: the help block is empty).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Filled {
+    pub label: String,
+    pub shown: String,
+    pub help: Option<String>,
+}
 
 /// One row: a label, its kind, its description.
 pub struct Row {
@@ -168,6 +183,23 @@ impl Row {
             },
         )
     }
+    /// A pick row filled by its binding as the page shows it: `fill` is
+    /// its label, the value beside it and its help, or `None` for a slot
+    /// with nothing in it, which is not drawn (the rows after it move
+    /// up). A opens the value picker on `offer`, titled by the label and
+    /// saying the help. Left and right do nothing.
+    pub fn slot(
+        fill: impl Fn() -> Option<Filled> + Send + Sync + 'static,
+        offer: impl Fn() -> Result<crate::ui_kit::picker::Pick, String> + Send + Sync + 'static,
+    ) -> Self {
+        Self::of(
+            "",
+            Kind::Slot {
+                fill: Arc::new(fill),
+                offer: Arc::new(offer),
+            },
+        )
+    }
     pub fn describe(mut self, text: &str) -> Self {
         self.description = Some(text.into());
         self
@@ -188,6 +220,19 @@ impl Row {
     }
     fn spec(&self) -> RowSpec {
         self.spec_with_source().0
+    }
+
+    /// A slot row's fill now; `None` for any other row.
+    fn filled(&self) -> Option<Option<Filled>> {
+        match &self.kind {
+            Kind::Slot { fill, .. } => Some(fill()),
+            _ => None,
+        }
+    }
+
+    /// Whether the row is drawn: every row but a slot with nothing in it.
+    fn drawn(&self) -> bool {
+        self.filled().is_none_or(|f| f.is_some())
     }
 
     fn spec_with_source(&self) -> (RowSpec, bool) {
@@ -211,6 +256,16 @@ impl Row {
             }
             Kind::Text { get, max_chars, .. } => {
                 (RowSpec::text(&self.label, &get(), *max_chars), true)
+            }
+            Kind::Slot { fill, .. } => {
+                let f = fill().unwrap_or_default();
+                let row = RowSpec::value(&f.label, &[f.shown.as_str()], 0)
+                    .press(spec::Press::Open(crate::ui_kit::picker::NAME.into()));
+                let row = match &f.help {
+                    Some(help) => row.describe(help),
+                    None => row,
+                };
+                return (row, true);
             }
         };
         let row = match &self.description {
@@ -363,6 +418,10 @@ pub struct KitScreen {
     doc_rows: Vec<Option<(String, Option<String>)>>,
     /// A settings dialog's static header ([`Header`]).
     header: Option<Header>,
+    /// The header's name line from a binding ([`KitScreen::header_name`]).
+    header_name: Option<Get<String>>,
+    /// The slot rows' fills last drawn: a change redraws the help.
+    slots_drawn: Mutex<Vec<Option<Filled>>>,
     /// Buttons besides the rows' ([`KitScreen::extra`]).
     extras: Vec<Extra>,
     /// [`KitTexts`]' feature id, made once.
@@ -471,6 +530,10 @@ impl KitScreen {
             if s.doc_rows.len() <= n {
                 s.doc_rows.resize(n + 1, None);
             }
+            // A lone slot (`{label}`) is the row's binding's to fill.
+            if data::lone_slot(&r.text) {
+                continue;
+            }
             s.doc_rows[n] = Some((r.text.clone(), r.help.clone()));
         }
         if let Some(st) = &doc.settings {
@@ -548,6 +611,8 @@ impl KitScreen {
             dialog: None,
             doc_rows: Vec::new(),
             header: None,
+            header_name: None,
+            slots_drawn: Mutex::new(Vec::new()),
             extras: Vec::new(),
             texts_id: OnceLock::new(),
         }
@@ -614,13 +679,38 @@ impl KitScreen {
     /// A dialog's list on `base`: the screen's own layout, else the
     /// base's (a settings dialog's is Quick Options' own,
     /// [`crate::ui_kit::dialog::QUICK_LIST`]).
-    fn list_layout(&self, base: DialogBase) -> ListLayout {
+    fn list_layout(&self, base: DialogBase, rows: usize) -> ListLayout {
         self.layout
-            .unwrap_or_else(|| crate::ui_kit::dialog_tag::base_layout(base, self.rows.len()))
+            .unwrap_or_else(|| crate::ui_kit::dialog_tag::base_layout(base, rows))
     }
     /// The settings dialog's header, when it is one.
     pub fn header(&self) -> Option<&Header> {
         self.header.as_ref()
+    }
+    /// The header's name line from `name`, read each time it is drawn
+    /// (a settings doc whose `settings.name` is a lone slot, such as
+    /// Quick Options' variant name). It does not change with the focus.
+    pub fn header_name(mut self, name: impl Fn() -> String + Send + Sync + 'static) -> Self {
+        self.header_name = Some(Arc::new(name));
+        self
+    }
+    /// Header line `line`'s text now.
+    fn header_text(&self, line: &HeaderLine) -> String {
+        match (&self.header_name, line.id) {
+            (Some(name), "header.name") => name(),
+            _ => line.text.clone(),
+        }
+    }
+    /// The rows drawn, by their index among all the rows: every row but a
+    /// slot with nothing in it ([`Row::slot`]).
+    fn shown(&self) -> Vec<usize> {
+        (0..self.rows.len()).filter(|&i| self.rows[i].drawn()).collect()
+    }
+    /// The drawn row `row` (the list's index): its index among all the
+    /// rows, and the row.
+    fn at(&self, row: i16) -> Option<(usize, &Row)> {
+        let i = *self.shown().get(usize::try_from(row).ok()?)?;
+        Some((i, &self.rows[i]))
     }
     /// The extra button `input` pressed: what it logged, `None` when the
     /// screen has no such button.
@@ -911,7 +1001,8 @@ impl KitScreen {
             c = c.layout(l);
         }
         if let Some((base, _)) = self.dialog {
-            c = c.dialog(base).layout(self.list_layout(base));
+            // Laid out for every row: a slot filled later draws on it.
+            c = c.dialog(base).layout(self.list_layout(base, self.rows.len()));
         }
         if let Some(text) = self.spec().footer_text() {
             c = c.footer(self.texts.set(self.footer_slot(), &text));
@@ -925,16 +1016,15 @@ impl Rows for KitScreen {
         self.texts.set(0, &self.title)
     }
     fn count(&self) -> usize {
-        self.rows.len()
+        self.shown().len()
     }
     fn content_spec(&self) -> Option<ScreenSpec> {
         Some(self.spec())
     }
     fn texts(&self, row: i16) -> Vec<(u32, u32)> {
-        let Some(r) = usize::try_from(row).ok().and_then(|i| self.rows.get(i)) else {
+        let Some((i, r)) = self.at(row) else {
             return Vec::new();
         };
-        let i = row as usize;
         let (label, value) = r.spec().cells(self.style);
         let mut v = vec![(LABEL_SLOT, self.texts.set(Self::label_slot(i), &label))];
         if self.style.has_column() {
@@ -944,7 +1034,7 @@ impl Rows for KitScreen {
         v
     }
     fn press(&self, row: i16) -> Chosen {
-        let Some(r) = usize::try_from(row).ok().and_then(|i| self.rows.get(i)) else {
+        let Some((at, r)) = self.at(row) else {
             return Chosen::Nothing;
         };
         let pend = |p: Pending| {
@@ -994,11 +1084,32 @@ impl Rows for KitScreen {
                 }
                 Err(why) => Chosen::Stepped(why),
             },
-            Kind::Text { .. } => pend(Pending::Keyboard(row as usize)),
+            Kind::Text { .. } => pend(Pending::Keyboard(at)),
+            Kind::Slot { fill, offer } => {
+                let Some(f) = fill() else {
+                    return Chosen::Nothing;
+                };
+                match offer() {
+                    Ok(mut pick) => {
+                        // Titled by the label its binding gave, saying
+                        // its help, as a settings row's picker is.
+                        pick.title = crate::ui_kit::picker::title(&f.label);
+                        pick.description = f.help.clone().unwrap_or_default();
+                        crate::ui_kit::picker::offer_list(
+                            pick.over(self.dialog.map_or(Opener::MAIN_MENU, |(_, o)| o)),
+                        )
+                        .map_or_else(
+                            || Chosen::Stepped(format!("{}: nothing to pick from", f.label)),
+                            Chosen::Open,
+                        )
+                    }
+                    Err(why) => Chosen::Stepped(why),
+                }
+            }
         }
     }
     fn sideways(&self, row: i16, right: bool) -> Option<String> {
-        let r = usize::try_from(row).ok().and_then(|i| self.rows.get(i))?;
+        let (_, r) = self.at(row)?;
         let Kind::Value { values, get, set } = &r.kind else {
             return None;
         };
@@ -1016,7 +1127,7 @@ impl Rows for KitScreen {
         ))
     }
     fn description(&self, row: i16) -> Option<u32> {
-        let i = usize::try_from(row).ok().filter(|i| *i < self.rows.len())?;
+        let i = usize::try_from(row).ok().filter(|i| *i < self.count())?;
         let spec = ScreenSpec {
             focus: i,
             ..self.spec()
@@ -1034,7 +1145,19 @@ impl Rows for KitScreen {
             *drawn = current;
             true
         });
-        LiveText { redraw, ..Default::default() }
+        // A slot's fill changed (a value set, a refusal said): its help
+        // is drawn again with the focus where it is.
+        let fills: Vec<Option<Filled>> = self.rows.iter().filter_map(Row::filled).collect();
+        let slots = {
+            let mut drawn = Self::lock(&self.slots_drawn);
+            let changed = *drawn != fills;
+            *drawn = fills;
+            changed
+        };
+        LiveText {
+            redraw: redraw || slots,
+            ..Default::default()
+        }
     }
 
     fn write_texts(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
@@ -1049,7 +1172,7 @@ impl Rows for KitScreen {
     /// row reaches it.
     fn panel_text(&self, i: usize) -> Option<u32> {
         let line = self.header_lines().get(i)?;
-        Some(self.texts.set(self.header_slot() + i as u32, &line.text))
+        Some(self.texts.set(self.header_slot() + i as u32, &self.header_text(line)))
     }
     /// Asked as the screen opens: the opener guard starts, and the log
     /// gets the screen as [`ScreenSpec::log_line`] writes it.
@@ -1065,7 +1188,8 @@ impl Describe for KitScreen {
         s.animation = self.animation;
         s.list = ListPlace::from(self.layout);
         s.style = self.style;
-        for (i, row) in self.rows.iter().enumerate() {
+        let shown = self.shown();
+        for (i, row) in shown.iter().map(|&r| &self.rows[r]).enumerate() {
             let (row, loaded) = row.spec_with_source();
             if !loaded {
                 s.content.unavailable_values.push(format!("row.{i}.value"));
@@ -1094,7 +1218,7 @@ impl Describe for KitScreen {
                 font: l.block.font,
                 colour: l.block.colour,
                 right: false,
-                text: l.text.clone(),
+                text: self.header_text(l),
             })
             .collect();
         s.help = self.live_help.as_ref().map(|help| (help.get)());
@@ -1112,7 +1236,7 @@ impl Describe for KitScreen {
         s.scrolls = self.scrolls;
         s.footer = true;
         if let Some((base, opener)) = self.dialog {
-            let list = self.list_layout(base);
+            let list = self.list_layout(base, shown.len());
             s.list = ListPlace::from(Some(list));
             s.dialog = Some(DialogSpec {
                 base,

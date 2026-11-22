@@ -18,9 +18,8 @@
 //! load of the variant list (`community_variants::last_offered`); before
 //! one, it has none. An option's values are its range.
 //!
-//! The dialog that writes a row (`variants.quick.set`, Game Setup's
-//! "Quick Options...") builds on [`QuickRow::mark`] and
-//! [`QuickRow::values`].
+//! The dialog that writes a row (Game Setup's "Quick Options...") is
+//! [`page`]; `variants.quick.set` writes one through the same queue.
 
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
@@ -37,6 +36,8 @@ use variants::record::{GameVariant, NAME_AT, RECORD_SIZE, SettingId};
 
 use crate::ui_kit::ids::{self, Family};
 use crate::ui_kit::screen::{SLOT_LEN, SlotTexts};
+
+pub mod page;
 
 /// The switch (`H2_FEATURES=-variant-quick` keeps retail's rows for a
 /// script variant too). Part of `lobby-options`, which installs it.
@@ -274,6 +275,12 @@ impl agent::variants::Source for AgentSource {
             script_for(&record).as_deref(),
             installed(),
         ))
+    }
+    fn set(&self, m: &dyn GuestMemory, slot: u8, value: i32) -> Result<agent::variants::Ticket, RpcError> {
+        page::agent_set(m, slot, value)
+    }
+    fn outcome(&self, ticket: agent::variants::Ticket) -> Option<Result<(), RpcError>> {
+        page::agent_outcome(ticket)
     }
 }
 

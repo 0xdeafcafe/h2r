@@ -1,6 +1,7 @@
-//! `variants.quick` (docs/runtime/agent-api.md, "Game variants"): the
-//! lobby variant's Quick Options as a rules script marks them, read at a
-//! tick boundary.
+//! `variants.quick` and `variants.quick.set` (docs/runtime/agent-api.md,
+//! "Game variants"): the lobby variant's Quick Options as a rules script
+//! marks them, read at a tick boundary, and one row's value changed as
+//! the lobby's Quick Options dialog changes it.
 //!
 //! The rows live in the game (`game::variant_quick`), which this crate
 //! does not link: the game registers them as a [`Source`] ([`install`]),
@@ -14,14 +15,29 @@ use engine::GuestMemory;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{Access, Agent};
+use crate::{Access, Agent, DEFER_TICKS_MAX};
 
 pub mod method {
     /// Read: the lobby variant's script, its Quick Options rows and their
     /// values.
     pub const QUICK: &str = "variants.quick";
-    pub const ALL: &[&str] = &[QUICK];
+    /// Act: one row's value, written through the game's lobby variant
+    /// setter as the Quick Options dialog writes it.
+    pub const QUICK_SET: &str = "variants.quick.set";
+    pub const ALL: &[&str] = &[QUICK, QUICK_SET];
 }
+
+/// `variants.quick.set`'s params: the row by its slot, and the value it
+/// takes (one of the row's `values`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetParams {
+    pub slot: u8,
+    pub value: i32,
+}
+
+/// A change waiting for the game's setter ([`Source::set`]).
+pub type Ticket = u64;
 
 /// `variants.quick`'s result.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,11 +107,19 @@ pub struct Choice {
     pub text: String,
 }
 
-/// The game's Quick Options rows, as the method sees them. Each call runs
+/// The game's Quick Options rows, as the methods see them. Each call runs
 /// on the game thread at a tick boundary.
 pub trait Source: Send + Sync {
     /// The lobby variant's rows; an error when there is no lobby variant.
     fn quick(&self, m: &dyn GuestMemory) -> Result<Quick, RpcError>;
+    /// Checks a change of row `slot` to `value` on the lobby's record
+    /// (the row and value exist, the record the change makes is one the
+    /// game keeps) and queues it for the lobby variant setter: the
+    /// change's ticket, or why there is none.
+    fn set(&self, m: &dyn GuestMemory, slot: u8, value: i32) -> Result<Ticket, RpcError>;
+    /// `None` while change `ticket` waits for the setter; then whether
+    /// the setter took it.
+    fn outcome(&self, ticket: Ticket) -> Option<Result<(), RpcError>>;
 }
 
 fn no_params(name: &str, params: &Value) -> Result<(), RpcError> {
@@ -108,12 +132,41 @@ fn no_params(name: &str, params: &Value) -> Result<(), RpcError> {
     ))
 }
 
-/// Adds `variants.quick` over `source`.
+fn set_params(params: Value) -> Result<SetParams, RpcError> {
+    serde_json::from_value(params).map_err(|e| {
+        RpcError::new(
+            code::INVALID_PARAMS,
+            format!("{}: {{slot, value}}: {e}", method::QUICK_SET),
+        )
+    })
+}
+
+/// Adds `variants.quick` and `variants.quick.set` over `source`. A set
+/// answers once the game's setter has run (at its next UI update): the
+/// rows as they are then.
 pub fn install(agent: &Agent, source: Arc<dyn Source>) {
+    let s = Arc::clone(&source);
     agent.add_game_method(method::QUICK, Access::Read, move |params, ctx| {
         no_params(method::QUICK, &params)?;
-        let quick = ctx.read_guest(|m| source.quick(m))??;
+        let quick = ctx.read_guest(|m| s.quick(m))??;
         Ok(serde_json::to_value(quick).expect("variants.quick serialises"))
+    });
+    agent.add_game_method(method::QUICK_SET, Access::Act, move |params, ctx| {
+        let p = set_params(params)?;
+        let ticket = ctx.read_guest(|m| source.set(m, p.slot, p.value))??;
+        let s = Arc::clone(&source);
+        ctx.defer(
+            DEFER_TICKS_MAX,
+            Box::new(move |ctx| match s.outcome(ticket)? {
+                Ok(()) => Some(
+                    ctx.read_guest(|m| s.quick(m))
+                        .and_then(|q| q)
+                        .map(|q| serde_json::to_value(q).expect("variants.quick serialises")),
+                ),
+                Err(e) => Some(Err(e)),
+            }),
+        );
+        Ok(Value::Null)
     });
 }
 
@@ -148,14 +201,48 @@ mod tests {
         }
     }
 
-    /// A lobby with a script variant, or none.
-    struct Fake(bool);
+    /// A lobby with a script variant, or none; a set takes the value at
+    /// once unless the setter refuses it (`refuse`).
+    struct Fake {
+        lobby: bool,
+        refuse: bool,
+        value: std::sync::Mutex<i32>,
+    }
+
+    fn fake(lobby: bool) -> Fake {
+        Fake {
+            lobby,
+            refuse: false,
+            value: std::sync::Mutex::new(1),
+        }
+    }
 
     impl Source for Fake {
-        fn quick(&self, _m: &dyn GuestMemory) -> Result<Quick, RpcError> {
-            if !self.0 {
+        fn set(&self, _m: &dyn GuestMemory, slot: u8, value: i32) -> Result<Ticket, RpcError> {
+            if !self.lobby {
                 return Err(RpcError::new(code::UNAVAILABLE, "no lobby variant to read"));
             }
+            if slot != 0 || !(0..=1).contains(&value) {
+                return Err(RpcError::new(code::INVALID_PARAMS, "no such row or value"));
+            }
+            if !self.refuse {
+                *self.value.lock().unwrap() = value;
+            }
+            Ok(7)
+        }
+        fn outcome(&self, ticket: Ticket) -> Option<Result<(), RpcError>> {
+            assert_eq!(ticket, 7);
+            Some(if self.refuse {
+                Err(RpcError::new(code::UNAVAILABLE, "the game refused the variant"))
+            } else {
+                Ok(())
+            })
+        }
+        fn quick(&self, _m: &dyn GuestMemory) -> Result<Quick, RpcError> {
+            if !self.lobby {
+                return Err(RpcError::new(code::UNAVAILABLE, "no lobby variant to read"));
+            }
+            let value = *self.value.lock().unwrap();
             Ok(Quick {
                 variant: "Superbounce".into(),
                 engine: 2,
@@ -169,9 +256,9 @@ mod tests {
                     kind: Kind::Option,
                     name: "suicide_costs".into(),
                     label: "Suicide penalty".into(),
-                    value: 1,
-                    text: "On".into(),
-                    line: "Suicide penalty: On".into(),
+                    value,
+                    text: if value == 1 { "On" } else { "Off" }.into(),
+                    line: format!("Suicide penalty: {}", if value == 1 { "On" } else { "Off" }),
                     help: Some("A suicide costs a point".into()),
                     values: vec![
                         Choice {
@@ -189,17 +276,51 @@ mod tests {
     }
 
     fn call(lobby: bool, params: Value) -> Value {
+        call_on(fake(lobby), method::QUICK, params)
+    }
+
+    fn call_on(source: Fake, name: &str, params: Value) -> Value {
         let agent = Agent::new();
-        install(&agent, Arc::new(Fake(lobby)));
+        install(&agent, Arc::new(source));
         let (tx, rx) = std::sync::mpsc::sync_channel(4);
         let conn = agent.connect(tx);
         agent.submit(
             conn,
-            &json!({"jsonrpc": "2.0", "id": 1, "method": method::QUICK, "params": params})
-                .to_string(),
+            &json!({"jsonrpc": "2.0", "id": 1, "method": name, "params": params}).to_string(),
         );
-        agent.on_tick(&mut Game(FakeGuest::new()));
+        // The set answers at the boundary after the one that queued it.
+        for _ in 0..3 {
+            agent.on_tick(&mut Game(FakeGuest::new()));
+            if let Ok(line) = rx.try_recv() {
+                return serde_json::from_str(&line).unwrap();
+            }
+        }
         serde_json::from_str(&rx.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap()
+    }
+
+    /// A set queues the change, answers once the setter took it with the
+    /// rows as they are then, and checks its params; a refusal by the
+    /// game is the answer's error.
+    #[test]
+    fn quick_set_changes_one_row_and_answers_with_the_rows() {
+        let r = call_on(fake(true), method::QUICK_SET, json!({"slot": 0, "value": 0}));
+        assert!(r["error"].is_null(), "{r}");
+        assert_eq!(r["result"]["rows"][0]["value"], 0);
+        assert_eq!(r["result"]["rows"][0]["line"], "Suicide penalty: Off");
+        for bad in [json!({}), json!({"slot": 0}), json!({"slot": 0, "value": 1, "x": 1})] {
+            let r = call_on(fake(true), method::QUICK_SET, bad);
+            assert_eq!(r["error"]["code"], code::INVALID_PARAMS, "{r}");
+        }
+        let r = call_on(fake(true), method::QUICK_SET, json!({"slot": 3, "value": 0}));
+        assert_eq!(r["error"]["code"], code::INVALID_PARAMS, "{r}");
+        let r = call_on(fake(false), method::QUICK_SET, json!({"slot": 0, "value": 0}));
+        assert_eq!(r["error"]["code"], code::UNAVAILABLE, "{r}");
+        let refusing = Fake {
+            refuse: true,
+            ..fake(true)
+        };
+        let r = call_on(refusing, method::QUICK_SET, json!({"slot": 0, "value": 0}));
+        assert_eq!(r["error"]["message"], "the game refused the variant", "{r}");
     }
 
     #[test]

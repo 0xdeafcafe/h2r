@@ -103,7 +103,7 @@ connection to hold `session.claim`.
 | `firefight.state`, `firefight.kit` | read | [Firefight](#firefight) |
 | `firefight.command` | act | [Firefight](#firefight) |
 | `rules.state`, `rules.reload` | read, act | [Rules scripts](#rules-scripts) |
-| `variants.quick` | read | [Game variants](#game-variants) |
+| `variants.quick`, `variants.quick.set` | read, act | [Game variants](#game-variants) |
 | `match.status`, `match.report`, `match.stop`, `sim.guest_census` | read, read, act, read | [Sim matches](#sim-matches) |
 | `debug.views`, `debug.view` | read, act | [World debug views](#world-debug-views) |
 | `settings.list`, `settings.set`, `perf.overlay`, `cheat.list`, `cheat.set` | read or act | [Menu methods](#menu-methods-settings-perf-overlay-cheats) |
@@ -4340,14 +4340,18 @@ h2 agent rules.reload '{"ir_b64":"...","mode":"in_place"}'
 
 The lobby variant's Quick Options as its rules script marks them
 ([rules-variants.md](../game/rules-variants.md#quick-options-in-the-lobby)),
-read at a tick boundary. `crates/extensions/agent/src/variants.rs` checks
-the params, holds the wire types and calls the game's rows
+read at a tick boundary, and one row changed through the lobby variant
+setter as the Quick Options dialog changes it.
+`crates/extensions/agent/src/variants.rs` checks the params, holds the
+wire types and calls the game's rows and changes
 (`game::variant_quick::AgentSource`, over
-`crates/extensions/game/src/variant_quick.rs`).
+`crates/extensions/game/src/variant_quick.rs` and
+`variant_quick/page.rs`).
 
 | Method and access | Parameters | Result |
 |---|---|---|
 | `variants.quick` (read) | `{}` or omitted | `{variant, engine, script?: {name, hash}, shown, rows: [{slot, kind: setting \| option, name, label, value, text, line, help?, values: [{value, text}]}]}` |
+| `variants.quick.set` (act) | `{slot, value}` | `variants.quick`'s result, read after the change |
 
 The variant is the lobby's (the squad session's record, else the game's
 own copy); with neither it is `UNAVAILABLE`. `script` is the script the
@@ -4366,8 +4370,22 @@ setting, the values the editor offered at the last variant list load
 (none before one); for an option, its range. The panel's lines
 themselves are in [`ui.lobby_options`](#ui-what-the-menus-show).
 
+`variants.quick.set` sets row `slot` of the lobby variant to `value`,
+one of that row's `values`: a record setting, or the option's bits in
+the block in effect (the block's CRC made again). The record is checked
+with `record::refused`, then queued; the next UI update writes it and
+calls the lobby variant setter (`LOBBY_SET_VARIANT`), and the answer
+waits for that (`TIMEOUT` past the deferred limit). It answers with the
+rows as they are then. A variant with no script this machine has is
+`UNAVAILABLE`, as is a record the setter refuses ("the game refused the
+variant"); a slot past the script's marks, a value the row does not
+offer and a record `record::refused` refuses are `INVALID_PARAMS`, with
+the reason. It changes the lobby's variant, not a save, as the dialog
+does ([rules-variants.md](../game/rules-variants.md#quick-options-in-the-lobby)).
+
 ```sh
 h2 agent variants.quick
+h2 agent variants.quick.set '{"slot":0,"value":10}'
 ```
 
 ## Sim matches

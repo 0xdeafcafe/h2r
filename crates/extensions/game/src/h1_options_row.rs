@@ -60,7 +60,10 @@ pub const SETUP_ROWS: u32 = 0x70;
 pub const SETUP_ACTION: u32 = 2;
 /// Retail's "Change Map": only a multiplayer custom game's list has it.
 pub const CHANGE_MAP: i16 = 0;
-/// Retail's "Quick Options..." row.
+/// Retail's "Quick Options..." row. For a variant whose rules script
+/// marks Quick Options rows, its press opens ours (`crate::variant_quick::page`,
+/// docs/game/rules-variants.md "Quick Options in the lobby"); for a
+/// script with no marks it is greyed and does nothing.
 pub const QUICK_OPTIONS: i16 = 4;
 /// Retail's "Switch To:" rows (co-op 6, custom game 7, matchmaking 8; the
 /// row text table at `0x2bb74f`). Our rows go above the first of them, so
@@ -289,39 +292,58 @@ fn row_text(c: &mut Call, page: &KitScreen, seen: &AtomicBool) -> Result<Flow, G
     })
 }
 
-fn row_chosen(c: &mut Call, request_at: u32) -> Result<Flow, GuestFault> {
-    let (action, player, stack) = {
-        let mem = c.ctx.runtime().memory();
-        let row = mem.u32(c.cpu.esp + 8).ok().and_then(|p| mem.u32(p).ok());
-        let action = row.and_then(|row| row_action(&*mem, c.cpu.ecx, row));
-        let player = crate::skulls_menu::player_index(&*mem, c.cpu.esp);
-        let stack = screen_of(&*mem, c.cpu.ecx).and_then(|s| {
-            Some((
-                mem.u32(s + list_class_window()).ok()?,
-                mem.u32(s + list_class_slot()).ok()?,
-            ))
-        });
-        (action, player, stack)
-    };
-    if action != Some(OPTIONS_ACTION) {
-        return Ok(Flow::Continue);
+/// A press on a Game Setup row (`SQUAD_SETTINGS_ROW_CHOSEN`, ECX the
+/// list): the row's action, the pressing player, and the dialog screen's
+/// stack (its `+0x74` window and `+0x78` slot).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SetupPress {
+    pub action: Option<i16>,
+    pub player: Option<u32>,
+    pub stack: Option<(u32, u32)>,
+}
+
+/// The press `c` is on.
+pub fn setup_press(c: &mut Call) -> SetupPress {
+    let mem = c.ctx.runtime().memory();
+    let row = mem.u32(c.cpu.esp + 8).ok().and_then(|p| mem.u32(p).ok());
+    let action = row.and_then(|row| row_action(&*mem, c.cpu.ecx, row));
+    let player = crate::skulls_menu::player_index(&*mem, c.cpu.esp);
+    let stack = screen_of(&*mem, c.cpu.ecx).and_then(|s| {
+        Some((
+            mem.u32(s + list_class_window()).ok()?,
+            mem.u32(s + list_class_slot()).ok()?,
+        ))
+    });
+    SetupPress {
+        action,
+        player,
+        stack,
     }
-    let (Some(player), Some((window, slot)), Some(loader)) =
-        (player, stack, list_class::loader_of(h1_options::SCREEN))
-    else {
+}
+
+/// Answers press `p` by opening our screen `screen` on the dialog's own
+/// stack for the pressing player ("Which stack" above), with the request
+/// at `request_at`; `who` names it in the log. Without a player, a stack
+/// or the screen's class the press does nothing (the original would run
+/// another action's press for ours).
+pub fn open_from_setup(
+    c: &mut Call,
+    request_at: u32,
+    p: SetupPress,
+    screen: &str,
+    who: &str,
+) -> Result<Flow, GuestFault> {
+    let loader = list_class::loader_of(screen);
+    let (Some(player), Some((window, slot)), Some(loader)) = (p.player, p.stack, loader) else {
         eprintln!(
-            "h1 options: not opened (player {player:?}, stack {stack:?}, class {})",
-            if list_class::loader_of(h1_options::SCREEN).is_some() {
-                "on"
-            } else {
-                "off"
-            }
+            "{who}: {screen} not opened (player {:?}, stack {:?}, class {})",
+            p.player,
+            p.stack,
+            if loader.is_some() { "on" } else { "off" }
         );
         return c.ret(8).map(Flow::Return);
     };
-    eprintln!(
-        "h1 options: opening the Halo 1 Options screen (player {player}) on window {window}, slot {slot}"
-    );
+    eprintln!("{who}: opening {screen} (player {player}) on window {window}, slot {slot}");
     let request = crate::skulls_mp::open_request(1 << player, window, slot, loader);
     c.answer_async(move |cx| -> EntryFuture {
         Box::pin(async move {
@@ -330,6 +352,14 @@ fn row_chosen(c: &mut Call, request_at: u32) -> Result<Flow, GuestFault> {
             Ok(Ret::new(0, 8))
         })
     })
+}
+
+fn row_chosen(c: &mut Call, request_at: u32) -> Result<Flow, GuestFault> {
+    let p = setup_press(c);
+    if p.action != Some(OPTIONS_ACTION) {
+        return Ok(Flow::Continue);
+    }
+    open_from_setup(c, request_at, p, h1_options::SCREEN, "h1 options")
 }
 
 /// Why `h1-options-row` (and `clankers-row`, `clankermatch-switch`) can't

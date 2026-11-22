@@ -1259,6 +1259,12 @@ points! { ALL;
     /// Lobby: set the squad session's map (host only): stdcall `(campaign
     /// id)`, the map id in ESI, AL 1 when set.
     LOBBY_SET_MAP @ 0x0019_a6f2: [fn(map: esi, campaign: stack 0) -> al ret 4]; "docs/live/live-coop.md";
+    /// Lobby: set the squad session's game variant to the `0x130`-byte
+    /// record on the stack, AL nonzero when taken: the dedicated host's
+    /// call, the pause menu's Game Setup's and Quick Options' for a
+    /// script variant (docs/game/rules-variants.md "Quick Options in the
+    /// lobby").
+    LOBBY_SET_VARIANT @ 0x0019_a728: [fn(variant: stack 0) -> al ret 4]; "docs/game/rules-variants.md";
     /// Lobby: set the squad session's campaign difficulty (AX; `0xffff`
     /// none) and, for a difficulty, clear the variant (synchronous
     /// protocol). AL 1 when set.
