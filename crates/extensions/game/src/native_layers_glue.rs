@@ -201,7 +201,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             let device_state = |slot: u32| d.render_state(&read, slot);
             for draw in &plan.draws {
                 if taken.contains_key(&draw.slot)
-                    && !draw.passes.iter().all(|p| draw.implementation(p).is_some_and(|imp| layer_pass::skip_holds(imp, &device_state)))
+                    && !draw.passes.iter().all(|p| draw.implementation(p).is_some_and(|imp| layer_pass::skip_holds_with(imp, Some(&draw.inputs), &device_state)))
                 {
                     taken.remove(&draw.slot);
                     *outcomes.entry("state").or_default() += 1;
