@@ -25,6 +25,12 @@
 //! (docs/game/superbounce.md, "The touchdown tick"): the pairs the tick
 //! before had, all written -3, must come out of the tick still -3, or the
 //! drop is `prime_lost`, never `no_bounce`.
+//!
+//! **Falling plumb.** A straight drop (no approach) lands where it was
+//! released: every fall row writes the body's horizontal velocity to 0
+//! ([`Act::level`]), and the most one row took off is the record's
+//! `drift_fixed`. An approach drop's horizontal motion is its stick's
+//! and is left alone.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -98,14 +104,16 @@ pub const STALL_TICKS: u32 = 60;
 pub const QUEUE_SCAN: usize = 2048;
 /// The most drops a run plans.
 pub const MAX_DROPS: usize = 250_000;
-/// The control's map and drop: the Ascension slot seam, its stepped
-/// run's origin (docs/game/superbounce.md, "The pair word", "The
-/// touchdown tick"). A free fall from 3.51 reaches the stepped run's 5.4
-/// units/s touchdown under [`GRAVITY`]; 3.6 and 4.5 are just over it.
+/// The control's map and drop: the Ascension slot seam
+/// (docs/game/superbounce.md, "The pair word", "The touchdown tick"),
+/// its point on the seam's line (y 4.0, across 0) at the stepped run's
+/// X. A drop from 3.6 touched down at 5.38 units/s, under the 5.4 that
+/// bounces (`superbounce::speed::BOUNCE_SPEED`); 4.5 touched down at
+/// 5.94, and 5.5 lands near 6.6: both clearly over it.
 pub const CONTROL_MAP: &str = "ascension";
-pub const CONTROL_POINT: [f32; 3] = [-10.54, 4.04, -3.19];
+pub const CONTROL_POINT: [f32; 3] = [-10.54, 4.0, -3.19];
 pub const CONTROL_EDGE: [[f32; 3]; 2] = [[-11.10, 4.0, -3.2], [-9.98, 4.0, -3.2]];
-pub const CONTROL_HEIGHTS: [f32; 2] = [3.6, 4.5];
+pub const CONTROL_HEIGHTS: [f32; 2] = [4.5, 5.5];
 pub const CONTROL_ID: &str = "control";
 
 fn is_false(b: &bool) -> bool {
@@ -941,6 +949,9 @@ pub struct Act {
     pub word: Option<u32>,
     /// Zero the body's velocity.
     pub stop: bool,
+    /// Set the body's horizontal velocity (X and Y) to this, its vertical
+    /// kept: every row of a straight drop's fall, so it falls plumb.
+    pub level: Option<[f32; 2]>,
     /// The walk, a world direction scaled 0..1.
     pub walk: [f32; 2],
     /// Read the contacts now (the touchdown) and hand them to
@@ -1000,6 +1011,8 @@ pub struct Touchdown {
     /// The game tick the touchdown ran on.
     pub tick: u64,
     pub pos: [f32; 3],
+    /// The velocity the touchdown tick ran from: a straight drop's with
+    /// its horizontal written off ([`Act::level`]).
     pub vel: [f32; 3],
     /// The speed in, downward.
     pub speed: f32,
@@ -1068,6 +1081,10 @@ pub struct Row {
     /// The word written this row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wrote: Option<i32>,
+    /// A straight drop's fall row: the horizontal speed (units/s) the
+    /// row's [`Act::level`] took off the body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixed: Option<f32>,
 }
 
 /// One drop's record.
@@ -1102,6 +1119,13 @@ pub struct Record {
     /// Whether the touchdown tick ran with every pair at -3.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prime_held: Option<bool>,
+    /// A straight drop's largest horizontal correction: the most
+    /// horizontal speed (units/s) one fall row took off the body. Near 0
+    /// on a clean drop; a big one says something pushed the body
+    /// sideways. `None` for an approach (its push is the stick's) or a
+    /// drop that never fell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drift_fixed: Option<f32>,
     /// The fall's words, run-length (one row a tick).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub words: Vec<WordSpan>,
@@ -1200,6 +1224,9 @@ pub struct DropRun {
     after_ticks: u32,
     bounce_vz: f32,
     walk: [f32; 2],
+    /// A straight drop: the fall is held plumb ([`Act::level`]).
+    plumb: bool,
+    drift_fixed: Option<f32>,
     facing: [f32; 2],
     phase: Phase,
     first_tick: Option<u64>,
@@ -1234,6 +1261,8 @@ impl DropRun {
             after_ticks: s.after_ticks,
             bounce_vz: s.bounce_vz,
             walk: push,
+            plumb: drop.side == Side::None,
+            drift_fixed: None,
             facing,
             phase: Phase::Place(false, 0),
             first_tick: None,
@@ -1334,6 +1363,7 @@ impl DropRun {
             asleep: sense.asleep,
             pairs: sense.pairs.clone(),
             wrote: wrote.map(|w| w as i32),
+            fixed: None,
         }
     }
 
@@ -1442,7 +1472,21 @@ impl DropRun {
         }
         act.word = Some(PRIMED);
         act.walk = self.walk;
-        self.rows.push(self.row(n as i32, "fall", sense, Some(PRIMED)));
+        let mut row = self.row(n as i32, "fall", sense, Some(PRIMED));
+        // A straight drop falls plumb: whatever horizontal speed the tick
+        // before gave the body is written off before the next one, and
+        // the most of it is kept for the record. The tick runs from the
+        // written velocity, so that is the row the touchdown keeps.
+        let mut vel = vel;
+        if self.plumb {
+            let fixed = vel[0].hypot(vel[1]);
+            self.drift_fixed = Some(self.drift_fixed.map_or(fixed, |d| d.max(fixed)));
+            row.fixed = Some(fixed);
+            act.level = Some([0.0, 0.0]);
+            vel[0] = 0.0;
+            vel[1] = 0.0;
+        }
+        self.rows.push(row);
         self.prev = Some(Prev {
             n,
             tick,
@@ -1541,6 +1585,7 @@ impl DropRun {
             touchdown: self.touch.clone(),
             launch,
             prime_held: self.prime.as_ref().map(|p| p.is_ok()),
+            drift_fixed: self.drift_fixed,
             words: self.spans.clone(),
             first: self.first.clone(),
             rows: if rows { self.rows.clone() } else { Vec::new() },

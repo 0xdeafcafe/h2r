@@ -2,7 +2,7 @@
 # file. Fifteen phantom seats on Ascension, each put above a point of a
 # candidate collision edge from the map's `.spots` scan, its pair word set
 # to -3 and held there through touchdown, then dropped. Every run starts
-# with the control drop on the slot seam at (-10.54, 4.04, -3.19); if that
+# with the control drop on the slot seam at (-10.54, 4.0, -3.19); if that
 # doesn't bounce, the run stops with `control did not bounce: <outcome>`.
 # The report (results/superbounce-drops/drops.json and drops.md) gives
 # each target's bounce rate by height and across offset, its catch

@@ -1941,7 +1941,8 @@ gives up after 200 s. `bots.bounce_status` gives its step and the step's
 phase and try, the last touchdown, and a log of each step and phase
 change (the last 64). `PadSource::hold_pad` (`Phantoms::hold_pad`) holds
 a brain's pad at a given state in place of its own until let go: the
-verifier drives a bot seat with it. With the Glitches setting on, a show-off at a spot
+verifier and the sim's seam drops drive a bot seat with it. A wrapper
+source (a Clanker, the sim's `Metered` seat) forwards it to its brain. With the Glitches setting on, a show-off at a spot
 with a crouch spot known is a **Fun** route back to where the bot began;
 it ends when the bot sees an enemy.
 

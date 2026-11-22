@@ -180,13 +180,14 @@ fn the_plan_covers_each_target_and_puts_the_control_first() {
     assert_eq!(drops_per_target(&t[1], &s), 20);
     assert_eq!(drops_per_target(&t[2], &s), 10);
     assert!(drops[..2].iter().all(|d| d.control));
-    // The control drops at its point exactly, 0.04 across the seam, on
-    // the seam's floor.
+    // The control drops at its point exactly, on the seam's line and
+    // its floor.
     let c = drops[0];
-    assert_eq!([c.point[0], c.point[1]], [-10.54, 4.04]);
-    assert!((c.across - 0.04).abs() < 1e-4);
+    assert_eq!([c.point[0], c.point[1]], [-10.54, 4.0]);
+    assert!(c.across.abs() < 1e-4);
+    assert!(t[0].miss([c.start[0], c.start[1]]) < 1e-4);
     assert!((c.point[2] + 3.2).abs() < 1e-4);
-    assert!((c.start[2] - (-3.2 + 3.6)).abs() < 1e-4);
+    assert!((c.start[2] - (-3.2 + CONTROL_HEIGHTS[0])).abs() < 1e-4);
     // The ids are the plan's order; the slot's points are across +y.
     for (i, d) in drops.iter().enumerate() {
         assert_eq!(d.id as usize, i);
@@ -307,6 +308,8 @@ struct Body {
     plan: Pairs,
     launch: f32,
     refuse: bool,
+    /// A sideways force in the air (units/s²): a stick steering the fall.
+    push: [f32; 2],
 }
 
 impl Body {
@@ -321,6 +324,7 @@ impl Body {
             plan,
             launch,
             refuse: false,
+            push: [0.0; 2],
         }
     }
 
@@ -344,6 +348,10 @@ impl Body {
         if a.stop {
             self.vel = [0.0; 3];
         }
+        if let Some([x, y]) = a.level {
+            self.vel[0] = x;
+            self.vel[1] = y;
+        }
         if let Some((to, _)) = a.teleport {
             self.teleport = Some(to);
         }
@@ -365,8 +373,12 @@ impl Body {
             self.vel = [0.0; 3];
             return;
         }
+        self.vel[0] += self.push[0] / 30.0;
+        self.vel[1] += self.push[1] / 30.0;
         self.vel[2] -= GRAVITY / 30.0;
-        self.pos[2] += self.vel[2] / 30.0;
+        for (p, v) in self.pos.iter_mut().zip(self.vel) {
+            *p += v / 30.0;
+        }
         if self.plan == Pairs::NoneInAir && self.pos[2] > 0.3 {
             self.pairs.clear();
         }
@@ -404,8 +416,13 @@ fn drop_at(height: f32) -> (Drop, Target) {
 /// Runs one drop on a body to its end: the record and the acts.
 fn fly(plan: Pairs, launch: f32, height: f32) -> (Record, Vec<Act>) {
     let (d, t) = drop_at(height);
-    let mut run = DropRun::new(d, &t, &settings(), 3);
-    let mut body = Body::new([1.0, 0.0, 0.0], plan, launch);
+    let body = Body::new([1.0, 0.0, 0.0], plan, launch);
+    fly_body(d, &t, &settings(), body)
+}
+
+/// Runs drop `d` on `body` to its end.
+fn fly_body(d: Drop, t: &Target, s: &Settings, mut body: Body) -> (Record, Vec<Act>) {
+    let mut run = DropRun::new(d, t, s, 3);
     let mut acts = Vec::new();
     for tick in 100..2000u64 {
         let sense = body.sense();
@@ -457,6 +474,84 @@ fn a_held_prime_that_launches_is_a_bounce_with_its_launch_and_firsts() {
     assert!(acts[0].teleport.is_some());
     assert_eq!(r.rows[0].phase, "arm");
     assert!(r.rows.iter().any(|row| row.phase == "touchdown"));
+}
+
+#[test]
+fn a_straight_drop_falls_plumb_and_records_what_it_took_off() {
+    // A body steered sideways all the way down, as a brain's stick would.
+    let push = [3.0, -2.0];
+    let (d, t) = drop_at(3.5);
+    let mut body = Body::new([1.0, 0.0, 0.0], Pairs::Hold, 12.0);
+    body.push = push;
+    let (r, acts) = fly_body(d, &t, &settings(), body);
+    assert_eq!(r.outcome, Outcome::Bounced, "{r:#?}");
+    // Every fall row levels the body; nothing else does.
+    let falls = r.rows.iter().filter(|row| row.phase == "fall").count();
+    assert!(falls > 30, "{falls}");
+    assert_eq!(acts.iter().filter(|a| a.level.is_some()).count(), falls);
+    assert!(acts.iter().filter_map(|a| a.level).all(|l| l == [0.0, 0.0]));
+    // A tick's worth of push is all any row takes off: it never builds.
+    let tick = push[0].hypot(push[1]) / 30.0;
+    let fixed = r.drift_fixed.unwrap();
+    assert!((fixed - tick).abs() < 1e-4, "{fixed} vs {tick}");
+    assert!(r.rows.iter().filter_map(|row| row.fixed).all(|f| f <= tick + 1e-4));
+    // It lands over the point: one tick's drift a row, not the fall's
+    // quadratic 0.5 × a × t² (over 3 units here).
+    let td = r.touchdown.as_ref().unwrap();
+    assert!(td.miss < 0.2, "{td:?}");
+    let free = 0.5 * push[0].hypot(push[1]) * (falls as f32 / 30.0).powi(2);
+    assert!(free > 10.0 * td.miss, "{free} vs {}", td.miss);
+    // The touchdown tick ran from the written velocity.
+    assert_eq!([td.vel[0], td.vel[1]], [0.0, 0.0]);
+    // A still drop needs nothing taken off.
+    let (r, _) = fly(Pairs::Hold, 12.0, 3.5);
+    assert_eq!(r.drift_fixed, Some(0.0));
+}
+
+#[test]
+fn an_approach_drop_keeps_its_push_and_has_no_drift_fixed() {
+    let mut cfg = bare(vec![edge_spec()]);
+    cfg.approach = Some(Approach {
+        stick: 0.5,
+        lead: None,
+        from: vec![Side::Plus],
+    });
+    let s = cfg.settings("x").unwrap();
+    let t = Target::from_spec(0, &edge_spec()).unwrap();
+    let d = plan(&s, std::slice::from_ref(&t))[0];
+    let mut body = Body::new([1.0, 0.0, 0.0], Pairs::Hold, 12.0);
+    body.push = [0.0, -1.0];
+    let (r, acts) = fly_body(d, &t, &s, body);
+    assert!(r.touchdown.is_some(), "{r:#?}");
+    assert!(acts.iter().all(|a| a.level.is_none()));
+    assert!(acts.iter().any(|a| a.walk == [0.0, -0.5]));
+    assert_eq!(r.drift_fixed, None);
+    assert!(r.rows.iter().all(|row| row.fixed.is_none()));
+}
+
+#[test]
+fn the_control_heights_touch_down_clearly_over_the_bounce_speed() {
+    // superbounce::speed::BOUNCE_SPEED (the game crate's test ties the
+    // two): the slowest touchdown measured to bounce.
+    const BOUNCE_SPEED: f32 = 5.4;
+    let c = ControlSpec::ascension();
+    assert_eq!(c.heights, CONTROL_HEIGHTS.to_vec());
+    for h in CONTROL_HEIGHTS {
+        // A measured drop lands about 3% under the free fall (4.5 gave
+        // 5.94 of 6.11), so the free fall is 0.5 over at the least.
+        let free = (2.0 * GRAVITY * h).sqrt();
+        assert!(free * 0.97 > BOUNCE_SPEED + 0.3, "{h}: {free}");
+    }
+    // The fake body agrees: each height's touchdown is over it.
+    for h in CONTROL_HEIGHTS {
+        let (r, _) = fly(Pairs::Hold, 12.0, h);
+        let speed = r.touchdown.unwrap().speed;
+        assert!(speed > BOUNCE_SPEED + 0.5, "{h}: {speed}");
+    }
+    // The point is on the seam's line.
+    let t = Target::control(&c);
+    assert!(t.across_of([CONTROL_POINT[0], CONTROL_POINT[1]]).abs() < 1e-6);
+    assert!(t.miss([CONTROL_POINT[0], CONTROL_POINT[1]]) < 1e-6);
 }
 
 #[test]

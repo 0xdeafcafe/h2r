@@ -1218,7 +1218,19 @@ approach = { stick = 0.3, lead = 0.2, from = ["+", "-"] }  # optional
   body (`live_telemetry::havok_agents::level_pairs` and `set_level_words`)
   every tick until `after_ticks` past touchdown, so a pair rebuilt in the
   air or by a sleep is primed again before the next tick. Each tick's
-  row keeps the pairs' agents and words before the write.
+  row keeps the pairs' agents and words before the write. Through every
+  phase the seat's phantom pad is held (`Phantoms::hold_pad`, forwarded
+  by the sim's `Metered` seat), so its brain never steers; a seat whose
+  pad can't be held is a note in the report.
+- **Falling plumb.** A straight drop (no `approach`) lands under its
+  release point: every fall row writes the body's horizontal velocity to
+  0 (`Act::level`, the object's and each Havok motion's X and Y, Z kept),
+  and the touchdown's velocity is the one the touchdown tick ran from. A
+  fall row's `fixed` is the horizontal speed it took off, and the
+  record's `drift_fixed` the most any row took: near 0 on a clean drop,
+  large when something pushed the body sideways. An approach drop's
+  horizontal motion is its held stick's and is left alone (no `level`,
+  no `drift_fixed`).
 - **Outcomes.** A touchdown is the vertical speed coming back over -0.5
   after falling faster than -1. `bounced`: the best vertical speed of the
   touchdown tick and the 3 after reached `bounce_vz`; the record gives the
@@ -1233,8 +1245,10 @@ approach = { stick = 0.3, lead = 0.2, from = ["+", "-"] }  # optional
   300 ticks`) and is tried again. A failed prime is never counted as
   `no_bounce`.
 - **The control.** Every run starts with the control drop, alone: on
-  Ascension the slot seam at (-10.54, 4.04, -3.19), from 3.6 and 4.5 over
-  its floor. When none bounces, the run stops with `control did not
+  Ascension the slot seam at (-10.54, 4.0, -3.19), on the seam's line
+  (across 0), from 4.5 and 5.5 over its floor: touchdowns near 5.9 and
+  6.6 units/s, clearly over the 5.4 that bounces (a drop from 3.6
+  touches down at 5.38, under it). When none bounces, the run stops with `control did not
   bounce: <outcome>` (the outcomes and reasons seen), the report is still
   written, and `h2 sim drops` exits with that error. Another map needs
   `[drops.control] point = [x,y,z]` (with optional `heights`, `edge`,
@@ -1243,8 +1257,8 @@ approach = { stick = 0.3, lead = 0.2, from = ["+", "-"] }  # optional
   id and shape, point, height, across and along offsets, side, seat,
   attempts, release tick, outcome and reason, the touchdown (tick,
   position, velocity, speed, contacts), the launch, whether the prime
-  held, the words of the fall run-length, and the first tick of each
-  event. The control's drops and the first drop of each outcome keep
+  held, `drift_fixed`, the words of the fall run-length, and the first
+  tick of each event. The control's drops and the first drop of each outcome keep
   every row from the arm on. They are the report's `drops` block.
 - **Sharding.** Targets are split over the runs by their drop counts
   (largest first, onto the lightest run), `<map>-drops<i>`, each run's
@@ -1253,8 +1267,9 @@ approach = { stick = 0.3, lead = 0.2, from = ["+", "-"] }  # optional
   pool the runs: outcome counts and the first of each; the control's
   drops; a row a target with its rate, catch half-width (the furthest
   touchdown from the edge that bounced), slowest bounced touchdown, best
-  launch, its own launch fit and a cell a height and across offset; and
-  the three model numbers. `catch` is the catch half-width over every
+  launch, its own launch fit, its largest `drift_fixed` and a cell a
+  height and across offset; the drop with the largest `drift_fixed`
+  over every run; and the three model numbers. `catch` is the catch half-width over every
   target (`superbounce::CATCH`). `bounce_speed` is the slowest touchdown
   that bounced beside the fastest that didn't (`BOUNCE_SPEED`). `gain` is
   the launch's slope over the excess speed, fitted with each target's own
