@@ -6,24 +6,33 @@
 //! - [`GeometrySession`] opens targets as `mesh_edit::Mesh`es, applies
 //!   `MeshOp`s with snapshot undo (`editor_core::UndoStack`) and keeps the
 //!   op log; [`GeometrySession::changes`] is what a save writes.
-//! - Writes are **in place** only: moved vertices (and their normals and
-//!   frames) re-encoded over their own bytes with
+//! - **In place**: moved vertices (and their normals and frames)
+//!   re-encoded over their own bytes with
 //!   `tags::geometry_write::encode_section`, a structure part's sphere and
 //!   box, a cluster's bounds grown to hold its vertices, and a render
 //!   model's compression box grown with every section requantised into
-//!   it. An edit that changes a count is the grown class, refused and
-//!   named: an unedited target writes nothing, and an edit writes only
-//!   the bytes it changed.
+//!   it. An unedited target writes nothing, and an edit writes only the
+//!   bytes it changed.
+//! - **Grown raw**: an edit that changes a count encodes the whole section
+//!   again (parts as lists with one subpart each, a structure section's
+//!   visibility code and table rebuilt), appended to the map as a
+//!   [`RawAppend`] with the owner's block info, resource entries, counts
+//!   and bounds pointed at it. A bucket-lit structure section and a sky
+//!   model's strips are refused and named.
+//! - **Use for lower LODs** points a model permutation's lower levels of
+//!   detail at an edited section.
 
+mod grow;
 mod import;
 mod session;
 mod target;
+mod visibility;
 mod write;
 
 /// The kernel the session edits with: `MeshOp` is the API's op value.
 pub use mesh_edit;
 pub use session::{
-    Check, Drawn, Error, GeometrySession, OpenInfo, Patches, Preview, RawWrite, RegionWrite,
-    WriteClass,
+    Check, Drawn, Error, GeometrySession, OpenInfo, Patches, Preview, RAW_ALIGN, RawAppend,
+    RawWrite, RegionWrite, WriteClass,
 };
 pub use target::{Target, TargetInfo, TargetKind, list, list_model};

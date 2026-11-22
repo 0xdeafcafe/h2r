@@ -188,6 +188,16 @@ pub fn write_patched<R: Read + Seek>(
     for patch in &changes.raw_patches {
         editor.patch_raw(patch.block, patch.block_size, patch.offset, &patch.bytes)?;
     }
+    // A grown section's block goes before the tag index (the index and
+    // metadata follow it), and its owner's pointer word names it; the old
+    // block stays as dead data.
+    for a in &changes.raw_appends {
+        let word = editor.append_raw(&a.bytes, a.align)?.encode().to_le_bytes();
+        match a.pointer_space {
+            None => editor.patch_metadata(a.pointer_address, &word)?,
+            Some(space) => editor.patch_bsp(space, a.pointer_address, &word)?,
+        }
+    }
     // A block that outgrew its source goes to the end of the metadata, and
     // its root pair points there; the old elements stay as dead data.
     for g in &changes.grown {
