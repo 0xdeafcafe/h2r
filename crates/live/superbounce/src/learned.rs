@@ -799,10 +799,12 @@ pub fn apply(spots: &mut [Spot], entries: &[Entry]) {
     }
 }
 
-/// `s`'s aim moved onto `aim`: `stand` there, its height kept; the edge
-/// is left as the map's collision has it.
+/// `s`'s aim moved onto `aim`: `stand` there, its height kept, a
+/// measured landing ([`Spot::landed`]); the edge is left as the map's
+/// collision has it.
 fn retarget(s: &mut Spot, aim: [f32; 2]) {
     s.stand = [aim[0], aim[1], s.stand[2]];
+    s.landed = true;
 }
 
 /// The knobs the route plays at the site standing at `stand`: its line's,

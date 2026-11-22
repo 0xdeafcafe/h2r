@@ -22,7 +22,7 @@
 //! way: a reader ignores them. Blank lines and `#` lines are comments.
 
 use crate::geom::segment_xy;
-use crate::{Kind, Spot, Status, Vec3};
+use crate::{CATCH, Kind, Spot, Status, Vec3};
 
 /// The first line [`to_text`] writes.
 pub const HEADER: &str = "# superbounce verified v1";
@@ -203,7 +203,21 @@ pub fn apply(spots: &mut [Spot], entries: &[Entry]) {
     if entries.is_empty() {
         return;
     }
-    let before = spots.to_vec();
+    let owned = owners(spots, entries);
+    for (s, e) in spots.iter_mut().zip(owned) {
+        if let Some(e) = e {
+            s.status = e.status;
+            if e.status == Status::Proven {
+                s.score = 1.0;
+            }
+        }
+    }
+}
+
+/// The entry each spot takes, by [`apply`]'s rule: the entry about it
+/// ([`entry_for`]), unless another bounce spot it is about has the better
+/// claim.
+fn owners<'a>(spots: &[Spot], entries: &'a [Entry]) -> Vec<Option<&'a Entry>> {
     let off = |e: &Entry, s: &Spot| {
         let w = e.working();
         (
@@ -211,19 +225,59 @@ pub fn apply(spots: &mut [Spot], entries: &[Entry]) {
             (w[0] - s.stand[0]).hypot(w[1] - s.stand[1]),
         )
     };
-    for (i, s) in spots.iter_mut().enumerate() {
-        if let Some(e) = entry_for(entries, s) {
+    spots
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let e = entry_for(entries, s)?;
             let taken = s.kind == Kind::Bounce
-                && before.iter().enumerate().any(|(k, o)| {
-                    k != i && e.matches(o) && off(e, o) < off(e, &before[i])
-                });
-            if taken {
-                continue;
-            }
-            s.status = e.status;
-            if e.status == Status::Proven {
-                s.score = 1.0;
-            }
+                && spots
+                    .iter()
+                    .enumerate()
+                    .any(|(k, o)| k != i && e.matches(o) && off(e, o) < off(e, s));
+            (!taken).then_some(e)
+        })
+        .collect()
+}
+
+/// Each spot's measured landing, X and Y, in `spots`' order: for a bounce
+/// spot the entry that proves it ([`apply`]'s rule), the entry's working
+/// point ([`Entry::working`]: where the drop that bounced came down),
+/// when that point is on the spot's edge to the catch ([`CATCH`]) and
+/// within [`MATCH`] of the entry's own point, so the spot moved onto it
+/// is still the entry's. `None` for every other spot: a failed or untried
+/// one, a crouch spot, and a proven one whose entry has no such landing
+/// (an entry with no offset is where the run stood, not where it
+/// landed).
+///
+/// Ascension's entry stands at (-10.538, 3.880) and its drop landed
+/// (0.081, 0.096) on, at (-10.457, 3.976): 0.024 before the seam at y
+/// 4.000, and the landing of the slot there.
+pub fn landings(spots: &[Spot], entries: &[Entry]) -> Vec<Option<[f32; 2]>> {
+    owners(spots, entries)
+        .into_iter()
+        .zip(spots)
+        .map(|(e, s)| {
+            let e = e.filter(|e| s.kind == Kind::Bounce && e.status == Status::Proven)?;
+            let w = e.working();
+            let w = [w[0], w[1]];
+            let on_edge = segment_xy(s.edge, w) <= CATCH;
+            let near = e.offset[0].hypot(e.offset[1]) <= MATCH;
+            (w.iter().all(|v| v.is_finite()) && on_edge && near).then_some(w)
+        })
+        .collect()
+}
+
+/// Moves each spot with a measured landing ([`landings`], in `spots`'
+/// order) onto it: `stand` there, its height kept, [`Spot::landed`] set.
+/// The edge is left as the map's collision has it. A game run's landing
+/// outranks a learned line's aim, so this goes after
+/// [`crate::learned::apply`], with the landings worked out before it.
+pub fn land(spots: &mut [Spot], landings: &[Option<[f32; 2]>]) {
+    for (s, l) in spots.iter_mut().zip(landings) {
+        if let Some([x, y]) = *l {
+            s.stand = [x, y, s.stand[2]];
+            s.landed = true;
         }
     }
 }
@@ -413,6 +467,60 @@ mod tests {
             (Status::Proven, Status::Likely)
         );
         assert!(spots[1].candidate());
+    }
+
+    /// The landing-point rule: a proven seam's point is where the drop
+    /// that bounced came down, the entry's `at` plus its offset, not
+    /// where the run stood and not the scan's point on the edge.
+    #[test]
+    fn a_proven_seams_stand_is_the_landing_the_run_measured() {
+        let e = Entry {
+            kind: Kind::Bounce,
+            status: Status::Proven,
+            at: [-10.538, 3.88, -3.19],
+            offset: [0.081, 0.096],
+            ..Entry::default()
+        };
+        let line = |y: f32| [[-11.10, y, -3.2], [-9.98, y, -3.2]];
+        let slot = Spot {
+            edge: line(4.0),
+            ..spot(Kind::Bounce, [-10.54, 4.0, -3.19])
+        };
+        let crease = Spot {
+            edge: line(3.8),
+            shape: crate::Shape::Crease,
+            ..spot(Kind::Bounce, [-10.54, 3.8, -3.19])
+        };
+        let crouch = spot(Kind::Crouch, [-10.5, 3.9, -3.19]);
+        let mut spots = vec![slot, crease, crouch];
+        apply(&mut spots, &[e]);
+        let found = landings(&spots, &[e]);
+        let l = found[0].unwrap();
+        assert!((l[0] + 10.457).abs() < 1e-4 && (l[1] - 3.976).abs() < 1e-4, "{l:?}");
+        assert_eq!((found[1], found[2]), (None, None));
+        // A learned line's aim, applied between: the game run's landing
+        // outranks it.
+        spots[0].stand = [-10.45, 3.985, -3.19];
+        spots[0].landed = true;
+        land(&mut spots, &found);
+        let s = spots[0];
+        assert!((s.stand[0] + 10.457).abs() < 1e-4 && (s.stand[1] - 3.976).abs() < 1e-4);
+        assert_eq!((s.stand[2], s.landed, s.edge), (-3.19, true, line(4.0)));
+        assert_eq!((spots[1].stand, spots[1].landed), (crease.stand, false));
+        // The moved spot is still the entry's, and the landing the same.
+        assert_eq!(landings(&spots, &[e])[0], Some(l));
+        // An entry with no offset is where the run stood, 0.12 short of
+        // the seam: no landing. A failed entry has none either.
+        let stood = Entry { offset: [0.0; 2], ..e };
+        let failed = Entry { status: Status::Failed, ..e };
+        assert_eq!(landings(&[slot], &[stood]), vec![None]);
+        // A landing further along the seam than an entry reaches would
+        // leave the moved spot out of its own entry's reach: not taken.
+        let long = Entry { offset: [0.4, 0.12], ..e };
+        assert_eq!(landings(&[slot], &[long]), vec![None]);
+        assert!(entry_for(&[e], &spots[0]).is_some());
+        assert_eq!(landings(&[slot, crease], &[failed]), vec![None, None]);
+        assert_eq!(landings(&[slot, crease], &[]), vec![None, None]);
     }
 
     #[test]

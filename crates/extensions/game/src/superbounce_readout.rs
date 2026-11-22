@@ -68,20 +68,25 @@ pub fn speed(s: &State) -> Option<Speed> {
 
 /// The fall row for `s`: while airborne with a predicted landing, the
 /// touchdown speed over the seam's need, and the coasting landing against
-/// the seam: caught, or the way from it to the seam's nearest point
-/// against the aim, and how far.
+/// the seam's landing point (`Predicted::aim`): off the seam, the way
+/// from it to the point against the aim, and how far; caught and coming
+/// down still or against the seam's drift, the way to drift; else caught.
 pub fn fall(s: &State) -> Option<Fall> {
     let p = s.landing.filter(|_| s.airborne)?;
+    let yaw = s.yaw.unwrap_or(0.0);
     let ratio = if p.need > 0.0 { p.speed / p.need } else { 1.0 };
-    let steer = if p.miss() <= 0.0 {
-        Steer::OnSeam
-    } else {
-        let to = p.crease_point();
-        let (dx, dy) = (to[0] - p.at[0], to[1] - p.at[1]);
+    let steer = if p.miss() > 0.0 {
+        let (dx, dy) = (p.aim[0] - p.at[0], p.aim[1] - p.at[1]);
         Steer::Off {
-            heading: against_aim(dx, dy, s.yaw.unwrap_or(0.0)),
+            heading: against_aim(dx, dy, yaw),
             metres: dx.hypot(dy) * METRES_PER_UNIT,
         }
+    } else if p.wants_drift() {
+        Steer::Drift {
+            heading: against_aim(p.drift[0], p.drift[1], yaw),
+        }
+    } else {
+        Steer::OnSeam
     };
     Some(Fall {
         speed: ratio,
@@ -90,18 +95,23 @@ pub fn fall(s: &State) -> Option<Fall> {
 }
 
 /// The fall row for the second bounce's best seam `r`: the touchdown
-/// speed the flight gives there over its need, and the line-up: caught
-/// coasting, or the way to steer against the aim `yaw` and how far.
+/// speed the flight gives there over its need, and the line-up as
+/// [`fall`]'s: off the seam, the way to steer against the aim `yaw` and
+/// how far; caught and wanting its drift, the way to drift; else caught.
 pub fn line_up(r: &Ranked, yaw: f32) -> Fall {
     Fall {
         speed: if r.need > 0.0 { r.speed / r.need } else { 1.0 },
-        steer: if r.caught {
-            Steer::OnSeam
-        } else {
+        steer: if !r.caught {
             Steer::Off {
                 heading: against_aim(r.steer[0], r.steer[1], yaw),
                 metres: r.steer[0].hypot(r.steer[1]) * METRES_PER_UNIT,
             }
+        } else if crate::superbounce_assist::wants_drift(r.drift, r.across) {
+            Steer::Drift {
+                heading: against_aim(r.drift[0], r.drift[1], yaw),
+            }
+        } else {
+            Steer::OnSeam
         },
     }
 }

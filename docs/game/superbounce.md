@@ -723,8 +723,8 @@ A bounce spot's target is the collision edge itself, the segment
 between two vertices, and its `edge` is those two vertices to the
 float, as the map's collision stores them (a busy point's is its vertex
 twice). Floor marks, the aligner and the assist aim at that line
-(`stand`, on it, or a learned line's aim beside it), and `h2 superbounce
-scan` prints it with every digit the float has.
+(`stand`, on it, or a measured landing beside it, below), and `h2
+superbounce scan` prints it with every digit the float has.
 
 There is no band and no width. One tolerance remains, the catch: how
 far either side of the edge, horizontally, a landing's origin still
@@ -735,6 +735,44 @@ classifier and lock, the verifier and the bots' `missed`). The sim's
 `catch`); 0.1 holds the measured Ascension origin (y 4.04,
 0.04 off the seam), the bots' learned aim (y 3.985) and the second
 Zanzibar window try (4.8 cm off its crease).
+
+#### The landing point
+
+Where to come down on a seam is one point, the spot's `stand`, and
+everything that points at a seam reads it: the target navpoints and the
+tag ([Targets](#targets)), the mode's own navpoint, the readout's
+line-up, the [second bounce](#the-second-bounce)'s ranking and the
+[fall assist](#hold-x-the-fall-assist). The mode sets it where it
+applies the map's files to the scan (`superbounce_mode::with_verified`),
+by the best data the seam has:
+
+| Data | `stand` | `Spot::landed` |
+|---|---|---|
+| a proven seam's verified entry whose landing is on the edge to the catch and within 0.3 of the entry's point | the entry's point plus its `dx`, `dy`: where the drop that bounced came down (`superbounce::verified::landings`, `land`) | set |
+| else a `learned` or `partial` line with a hit and an aim | the line's aim (`superbounce::learned::apply`) | set |
+| else | the scan's point on the edge | clear |
+
+A verified entry's own point is where the run stood, not where it
+landed, so an entry with no offset on the edge gives no landing.
+Ascension's proven seam: the entry stands at (−10.538, 3.880), its drop
+landed (0.081, 0.096) on, and the seam's `stand` is (−10.457, 3.976),
+0.024 before the edge at y 4.000. A game run's landing outranks the
+sim's aim, which outranks the scan's.
+
+A measured landing is aimed at as it is. A scan's `stand` is on the
+edge, and the point to come down on is 0.1 before it along the seam's
+`drift`, the side the landing comes from (`superbounce_assist::aim_at`,
+`AIM_BACK`); a V's arm has its own drift, away from the side it is
+approached from, so each arm's point is on its approach side. Along a
+long strip the point slides to where the fall comes down and keeps its
+place across the strip (`stand_near`).
+
+Every recorded bounce came down moving across the seam along its drift,
+at 0.3 to 1.3 units/s. A landing in the catch that comes down slower
+along the drift than 0.3, still or against it, wants a push that way
+(`superbounce_assist::wants_drift`, `DRIFT_MIN`): the readout's steer
+line says `(arrow) Drift` in place of `On seam`. It is a hint, not a
+verdict: the lock and the landing's result do not read it.
 
 #### Covered seams
 
@@ -976,7 +1014,7 @@ the kit ([hud-kit.md](hud-kit.md#the-superbounce-readout);
 | Row | Shows when | Says |
 |---|---|---|
 | speed | moving | an arrow for the way of travel against the aim and the horizontal speed in metres a second, `(arrow) 7.2 m/s`; while falling, the fall speed after it |
-| fall | airborne and falling toward a strip (the state's `landing`) | a bar, the touchdown speed the fall gives over the speed the strip needs, full when fast enough; beside it `On seam` when the coasting landing is caught, else an arrow for the way to push and how far the landing is off the seam, `(arrow) 0.40 m` |
+| fall | airborne and falling toward a strip (the state's `landing`) | a bar, the touchdown speed the fall gives over the speed the strip needs, full when fast enough; beside it `On seam` when the coasting landing is caught and drifting the seam's way, `(arrow) Drift` when it is caught and is not, else an arrow for the way to push and how far the landing is from the seam's [landing point](#the-landing-point), `(arrow) 0.40 m` |
 | miss | for four seconds after a landing by a strip that did not bounce, until the next fall toward a strip | `Not primed`, `Missed seam by 0.31 m` (the origin's distance to the edge), `Too slow: 12.4 of 16.5 m/s` (the speed in and the strip's need) or `No bounce: on seam at 17.2 m/s` |
 
 Nothing of the mode's HUD is in the middle of the screen but the arming
@@ -1084,8 +1122,9 @@ which nothing draws.
 ### Targets
 
 Seams get the game's own navpoint, the arrow pointing down at the seam's
-aim point (the spot's `stand`: on the collision edge, or the learned
-line's aim) with the waypoint marker above it. A navpoint off screen is
+[landing point](#the-landing-point) (the spot's `stand`: a proven seam's
+measured landing, a learned line's aim, else the scan's point on the
+collision edge) with the waypoint marker above it. A navpoint off screen is
 kept at the edge of the waypoint area by the game, so a target is found
 from any height or facing; nothing fades with distance.
 `crates/extensions/game/src/superbounce_targets.rs` says where they go;
@@ -1174,8 +1213,9 @@ touchdown, rising or falling.
   the seam needs or faster (`√(vz² + 2 × 4.15 × height)` against
   `need_of`, the [one threshold](#speed) for a scanned strip). A seam
   over the apex, or just under it, is not;
-- the point of the seam nearest the coasting landing
-  (`superbounce_assist::stand_near`) is within what the stick can move
+- the seam's [landing point](#the-landing-point) nearest the coasting
+  landing (`superbounce_assist::stand_near`, `aim_at`) is within what
+  the stick can move
   the landing in the time left: half the
   [fall assist](#hold-x-the-fall-assist)'s air acceleration (3 units/s²,
   an estimate) times the time squared, plus its 0.4 slack;
@@ -1201,7 +1241,9 @@ each other only the better.
 - the fall row is the best seam's line-up
   (`superbounce_readout::line_up`): the bar is the touchdown speed there
   over its need, and beside it `On seam` when the flight comes down in
-  its catch coasting, else an arrow for the way to steer and how far.
+  its catch coasting, `(arrow) Drift` when it does so without the seam's
+  drift, else an arrow for the way to steer to its
+  [landing point](#the-landing-point) and how far.
 
 With no seam reached the readout is as on any other fall. The game draws
 no number on a navpoint, so the order is the row's; a navpoint's look
@@ -1297,8 +1339,10 @@ is judged, and of those that pass (`choose`):
 with its verdict, and the read the assist last engaged on
 ([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type)).
 
-**The steer.** The aim is the strip's point, 0.1 units back along the spot's
-drift, crossed at 0.8 units/s along the drift. A PD controller (`steer`,
+**The steer.** The aim is the strip's
+[landing point](#the-landing-point) (`aim_at`: a measured landing as it
+is, a scan's point 0.1 units back along the spot's drift), crossed at
+0.8 units/s along the drift. A PD controller (`steer`,
 5 rad/s, damping 0.8) tracks the line that arrives there: the position the
 player would be at, the time left before touchdown, moving at the arrival
 velocity. It asks for a horizontal acceleration in world axes;

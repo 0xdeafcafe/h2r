@@ -21,7 +21,8 @@
 use superbounce::{Spot, Vec3};
 
 use crate::superbounce_assist::{
-    AIR_ACCEL, Body, GRAVITY, Ground, HOLD_SLACK, covered, fall_time, predicted_landing, stand_near,
+    AIR_ACCEL, Body, GRAVITY, Ground, HOLD_SLACK, across, aim_at, covered, drift_unit, fall_time,
+    predicted_landing, stand_near,
 };
 use crate::superbounce_chain as chain;
 use crate::superbounce_charge::{need_of, slot_miss};
@@ -49,11 +50,16 @@ pub struct Ranked {
     pub distance: f32,
     /// Seconds to touchdown at its height.
     pub time: f32,
-    /// From the coasting landing to the point, world units: the way to
-    /// steer and how far.
+    /// From the coasting landing to the point to come down on
+    /// (`superbounce_assist::aim_at`: `at`, or a scan's stand led on its
+    /// approach side), world units: the way to steer and how far.
     pub steer: [f32; 2],
     /// The coasting landing is within the seam's catch already.
     pub caught: bool,
+    /// The seam's drift, a unit vector (zero for none), and the speed
+    /// along it the coasting landing has (units/s).
+    pub drift: [f32; 2],
+    pub across: f32,
     /// How far the stick can move the landing in the time left.
     pub reach: f32,
     /// The touchdown speed the flight gives there, and the speed the seam
@@ -103,7 +109,8 @@ pub fn judge(body: &Body, spot: &Spot, ground: &Ground<'_>) -> Option<Ranked> {
     }
     let landing = predicted_landing([x, y], [body.velocity[0], body.velocity[1]], time);
     let at = stand_near(spot, landing);
-    let steer = [at[0] - landing[0], at[1] - landing[1]];
+    let aim = aim_at(spot, at);
+    let steer = [aim[0] - landing[0], aim[1] - landing[1]];
     let miss = steer[0].hypot(steer[1]);
     let reach = 0.5 * AIR_ACCEL * time * time;
     if miss.is_nan() || miss > reach + HOLD_SLACK {
@@ -120,6 +127,8 @@ pub fn judge(body: &Body, spot: &Spot, ground: &Ground<'_>) -> Option<Ranked> {
         time,
         steer,
         caught: slot_miss(spot, landing) <= 0.0,
+        drift: drift_unit(spot.drift),
+        across: across(spot, [body.velocity[0], body.velocity[1]]),
         reach,
         speed,
         need,
@@ -259,6 +268,19 @@ mod tests {
         let off = judge(&b, &seam([time + 2.0, 0.0, 0.0]).spot, &open()).unwrap();
         assert!(!off.caught && (off.steer[0] - 2.0).abs() < 1e-3);
         assert!(off.cost > on.cost);
+        // A seam with a drift and no measured landing is steered to on
+        // its approach side, and the flight's speed along the drift is
+        // kept for the line-up; a measured landing is steered to as it is.
+        let mut led = seam([time + 2.0, 0.0, 0.0]).spot;
+        led.drift = [2.0, 0.0];
+        let l = judge(&b, &led, &open()).unwrap();
+        assert!((l.steer[0] - (2.0 - crate::superbounce_assist::AIM_BACK)).abs() < 1e-3);
+        assert_eq!(l.at, off.at);
+        assert_eq!(l.drift, [1.0, 0.0]);
+        assert!((l.across - 1.0).abs() < 1e-6);
+        led.landed = true;
+        assert!((judge(&b, &led, &open()).unwrap().steer[0] - 2.0).abs() < 1e-3);
+        assert_eq!((off.drift, off.across), ([0.0; 2], 0.0));
         assert!((off.reach - 0.5 * AIR_ACCEL * time * time).abs() < 1e-3);
         // One past the stick's reach is not.
         let far = on.reach + HOLD_SLACK + 1.0;

@@ -89,6 +89,9 @@ pub const INFO_LONGEST: &str = "No bounce: on seam at 88.8 m/s";
 pub const NEXT_LONGEST: &str = "1 \u{e2b1} 888 m  2 \u{e2b1} 888 m";
 /// The steer line when the coasting landing is caught.
 pub const ON_SEAM: &str = "On seam";
+/// The steer line's word after the arrow when a caught landing wants its
+/// drift.
+pub const DRIFT: &str = "Drift";
 
 /// The largest speed and distance shown.
 pub const SPEED_MAX: f32 = 99.9;
@@ -117,6 +120,9 @@ pub enum Steer {
     /// Off it: the way to push against the aim (radians clockwise from
     /// straight ahead) and how far, metres.
     Off { heading: f32, metres: f32 },
+    /// Within the catch, coming down still or against the way a bounce
+    /// on it drifts: the way to drift, against the aim.
+    Drift { heading: f32 },
 }
 
 /// A fall toward a seam.
@@ -230,6 +236,7 @@ pub fn steer_text(s: &Steer) -> String {
             let m = if metres.is_finite() { metres.clamp(0.0, STEER_MAX) } else { 0.0 };
             format!("{} {m:.2} m", arrow(*heading))
         }
+        Steer::Drift { heading } => format!("{} {DRIFT}", arrow(*heading)),
     }
 }
 
@@ -361,6 +368,15 @@ pub fn views() -> Vec<(&'static str, View)> {
             ),
         ),
         ("falling-on-seam", fall(1.0, Steer::OnSeam)),
+        (
+            "falling-wants-drift",
+            fall(
+                1.0,
+                Steer::Drift {
+                    heading: 2.0 * FRAC_PI_4,
+                },
+            ),
+        ),
         ("miss-not-primed", miss(Miss::NotPrimed)),
         ("miss-missed", miss(Miss::Missed { by: 0.31 })),
         ("miss-too-slow", miss(Miss::TooSlow { had: 12.4, need: 16.5 })),
@@ -668,6 +684,10 @@ mod tests {
         };
         assert_eq!(steer_text(&off).chars().count(), longest(STEER));
         assert!(ON_SEAM.chars().count() <= longest(STEER));
+        let drift = steer_text(&Steer::Drift { heading: FRAC_PI_2 });
+        assert_eq!(drift, "\u{e2b2} Drift");
+        assert!(drift.chars().count() <= longest(STEER));
+        assert_eq!(shown("falling-wants-drift", STEER).unwrap(), drift);
         for m in [
             Miss::NotPrimed,
             Miss::Missed { by: 1e9 },

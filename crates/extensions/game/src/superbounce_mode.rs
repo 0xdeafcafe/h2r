@@ -579,14 +579,23 @@ struct ScanView {
 /// and the speed model filled in: every spot, and the ones [`marked`]. A
 /// `learned` or `partial` line of the sim's training moves its spot's aim
 /// (`stand`) onto the line's (`superbounce::learned::apply`): the sim's
-/// measured answer outranks the scan's aim. The edge stays the collision
+/// measured answer outranks the scan's aim. A proven seam's `stand` is
+/// then the landing the game run measured, the verified entry's working
+/// point (`superbounce::verified::landings`, `land`): a game run's
+/// landing outranks both. Everything that points at a seam reads
+/// `stand`: the navpoints, the tag, the line-up, the second bounce and
+/// the assist. The edge stays the collision
 /// edge, and a line proves nothing. Each strip with no
 /// measured `need` or `fall` takes the one threshold every seam shares and
 /// the drop that reaches it (`superbounce::speed::apply`).
 fn with_verified(map: &str, raw: &[Spot]) -> (Arc<Vec<Spot>>, Arc<Vec<Spot>>) {
     let mut all = raw.to_vec();
-    superbounce::verified::apply(&mut all, &bots::spots::verified_for(map));
+    let verified = bots::spots::verified_for(map);
+    superbounce::verified::apply(&mut all, &verified);
+    // Worked out on the scan's stands, as the entries are matched.
+    let landings = superbounce::verified::landings(&all, &verified);
     superbounce::learned::apply(&mut all, &bots::spots::learned_for(map));
+    superbounce::verified::land(&mut all, &landings);
     superbounce::speed::apply(&mut all);
     let shown = marked(&all);
     (Arc::new(all), Arc::new(shown))
@@ -1703,6 +1712,9 @@ mod tests {
             takeoff: Some([1.0, 0.5, 4.0]),
             landing: Some(Predicted {
                 at: [1.0, 2.0, -3.0],
+                aim: [1.0, 2.0],
+                drift: [0.0; 2],
+                across: 0.0,
                 verdict: Course::Fixable,
                 speed: 5.5,
                 need: 4.0,
