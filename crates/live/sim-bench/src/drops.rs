@@ -57,10 +57,18 @@ pub const TOUCHDOWN_VZ: f32 = -1.0;
 /// It has stopped falling when its vertical speed is over this (the
 /// HUD's `LANDED_VZ`).
 pub const LANDED_VZ: f32 = -0.5;
-/// A launch (units/s up, the best of the touchdown row and the three
-/// after) at least this fast is a bounce: the scan's smallest candidate
-/// launch. An unprimed landing comes out near 0.
-pub const BOUNCE_VZ: f32 = 3.0;
+/// A launch (units/s up, the best of the touchdown row and the
+/// [`LAUNCH_TICKS`] after) at least this fast is a bounce. An unprimed
+/// landing comes out near 0, a standing jump leaves at 3.08
+/// (`bots::bounce_route::JUMP_VZ`) and the measured bounces launch at 4
+/// and over, so 3.5 is over a jump and under every bounce. The game's
+/// landing classifier and medals use this same value
+/// (`game::superbounce_charge::BOUNCE_VZ`).
+pub const BOUNCE_VZ: f32 = 3.5;
+/// The rows after touchdown whose vertical speed counts toward the
+/// launch: a launch can show a tick or two after the contact. The game's
+/// landings judge the same window (`game::superbounce_charge::LAUNCH_TICKS`).
+pub const LAUNCH_TICKS: u32 = 3;
 /// Default heights (world units, origin over the target's floor).
 pub const HEIGHTS: [f32; 6] = [0.5, 1.0, 2.0, 3.5, 5.0, 8.0];
 /// Default offsets across the edge: -0.12 to 0.12 in 0.02 steps.
@@ -1512,7 +1520,7 @@ impl DropRun {
         };
         let vz = vel[2];
         let t = self.touch_n + 1 + n;
-        if n < 3 {
+        if n < LAUNCH_TICKS {
             self.launch_vz = self.launch_vz.max(vz);
             self.low = self.low.min(pos[2]);
         }
@@ -1522,10 +1530,10 @@ impl DropRun {
         self.apex = self.apex.max(pos[2]);
         self.last = (pos[2], vz);
         self.rows.push(self.row(t as i32, "after", sense, None));
-        if n + 1 >= 3 && vz <= 0.0 {
+        if n + 1 >= LAUNCH_TICKS && vz <= 0.0 {
             self.apex_reached = true;
             self.phase = Phase::Done;
-        } else if n + 1 >= self.after_ticks.max(3) {
+        } else if n + 1 >= self.after_ticks.max(LAUNCH_TICKS) {
             self.phase = Phase::Done;
         } else {
             self.phase = Phase::After(n + 1);

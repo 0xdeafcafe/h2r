@@ -56,7 +56,8 @@ fn record(samples: &[Sample], bounce_at: u32) -> Option<Ghost> {
     let mut t = Track::default();
     let mut out = None;
     for (k, s) in samples.iter().enumerate() {
-        let bounce = (k as u32 == bounce_at).then_some(SPOT);
+        // The chain files the bounce when its launch window closes.
+        let bounce = (k as u32 == bounce_at + LAUNCH_TICKS).then_some(SPOT);
         if let Some(g) = t.step(Some(*s), bounce, Source::Bot) {
             assert!(out.is_none(), "one run per bounce");
             out = Some(g);

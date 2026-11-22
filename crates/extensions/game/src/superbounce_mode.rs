@@ -26,7 +26,8 @@
 //! (docs/game/superbounce.md, "Charge, crouch spots and landings") are on
 //! the same state: [`State::charge`] and [`State::verb`] from the
 //! [`superbounce_charge`](crate::superbounce_charge) tracker, which also
-//! files [`State::last_landing`] and picks [`State::nav_target`];
+//! files [`State::last_landing`] (and [`State::off_spot`], the bounces
+//! no marked strip accounts for) and picks [`State::nav_target`];
 //! [`State::landing`] from the assist's prediction
 //! ([`crate::superbounce_assist::predict`]). The standing-capsule test
 //! behind `under` is [`crate::superbounce_capsule`], over the collision the
@@ -48,7 +49,7 @@ use superbounce::{Kind, Spot, Vec3};
 
 pub use crate::superbounce_charge::{
     Charge, ChargePhase, Course, Landing, LandingResult, Lost, LostReason, NavKind, NavTarget,
-    Predicted, Verb,
+    OffSpot, Predicted, Verb,
 };
 use crate::superbounce_capsule::Room;
 use crate::superbounce_chain::{self as chain, Medals};
@@ -153,9 +154,14 @@ pub struct State {
     /// The landing the assist predicts, while airborne and falling toward
     /// a strip.
     pub landing: Option<Predicted>,
-    /// The last landing within 0.5 of a strip, filed at touchdown; kept
-    /// until the next one or the game's end.
+    /// The last landing within 0.5 of a strip, or primed bounce anywhere,
+    /// filed when its launch window closes; kept until the next one or the
+    /// game's end.
     pub last_landing: Option<Landing>,
+    /// The first local player's last [`OFF_SPOT_MAX`] bounces no marked
+    /// strip accounts for, oldest first, this game; each one's `edge` is
+    /// the nearest scanned bounce spot's within 0.5, marked or not.
+    pub off_spot: Vec<OffSpot>,
     /// Ticks the primed body has been still (speed under 0.03 units/s);
     /// 0 while not primed. The primed fill is 1 less this over 38.
     pub still_ticks: u32,
@@ -187,6 +193,7 @@ impl State {
         takeoff: None,
         landing: None,
         last_landing: None,
+        off_spot: Vec::new(),
         still_ticks: 0,
         standing_fits: None,
         medals: chain::View::EMPTY,
@@ -344,6 +351,17 @@ pub fn reply(s: &State) -> agent_proto::superbounce::State {
             tick: l.tick,
             at: v3(l.at),
         }),
+        off_spot: s
+            .off_spot
+            .iter()
+            .map(|o| wire::OffSpot {
+                tick: o.tick,
+                at: v3(o.at),
+                edge: o.edge.map(|e| e.map(v3)),
+                speed_in: f64::from(o.speed_in),
+                launch: f64::from(o.launch),
+            })
+            .collect(),
         standing_fits: s.standing_fits,
         medals: medals_reply(&s.medals),
     }
@@ -894,6 +912,23 @@ static TICKS: AtomicU32 = AtomicU32::new(0);
 static TRACKER: Mutex<Tracker> = Mutex::new(Tracker::new());
 /// Every player's chain and medals this game.
 static MEDALS: Mutex<Medals> = Mutex::new(Medals::empty());
+/// The first local player's off-spot bounces this game, oldest first.
+static OFF_SPOT: Mutex<Vec<OffSpot>> = Mutex::new(Vec::new());
+/// Off-spot bounces kept for `superbounce.state`; the oldest go first.
+pub const OFF_SPOT_MAX: usize = 16;
+
+/// Keeps `o` on the list, its `edge` looked up in the whole scan (`all`,
+/// marked or not) when no marked strip was near.
+fn keep_off_spot(mut o: OffSpot, all: &[Spot]) -> Vec<OffSpot> {
+    if o.edge.is_none() {
+        o.edge = crate::superbounce_charge::landing_spot(all, o.at).map(|i| all[i].edge);
+    }
+    let mut kept = lock(&OFF_SPOT);
+    kept.push(o);
+    let over = kept.len().saturating_sub(OFF_SPOT_MAX);
+    kept.drain(..over);
+    kept.clone()
+}
 /// The first local player's slot and user at the last tick, for
 /// `superbounce.medal_test`.
 static LOCAL: Mutex<Option<(u8, u8)>> = Mutex::new(None);
@@ -936,6 +971,7 @@ fn reset() {
     *lock(&STATE) = State::EMPTY;
     *lock(&TRACKER) = Tracker::new();
     *lock(&MEDALS) = Medals::empty();
+    lock(&OFF_SPOT).clear();
     *lock(&LOCAL) = None;
     crate::superbounce_assist::set_marked(None);
     crate::superbounce_view::reset();
@@ -989,6 +1025,7 @@ fn decide(o: &hooks::Obs) {
         *lock(&STATE) = State::EMPTY;
         *lock(&TRACKER) = Tracker::new();
         *lock(&MEDALS) = Medals::empty();
+        lock(&OFF_SPOT).clear();
         *lock(&LOCAL) = None;
         crate::superbounce_ghost::reset();
     }
@@ -1043,6 +1080,12 @@ fn on_tick(o: &hooks::Obs) {
         },
         &spots,
     );
+    // A bounce off every marked strip: kept for harvesting, its edge from
+    // the whole scan.
+    let off_spot = match step.off_spot {
+        Some(o) => keep_off_spot(o, &scanned_spots().1),
+        None => lock(&OFF_SPOT).clone(),
+    };
     let landing = match (live.position, live.velocity) {
         (Some(position), Some(velocity)) => crate::superbounce_assist::predict_on(
             &spots,
@@ -1137,6 +1180,7 @@ fn on_tick(o: &hooks::Obs) {
         takeoff,
         landing,
         last_landing: step.last_landing,
+        off_spot,
         still_ticks: step.still_ticks,
         standing_fits,
         medals,
@@ -1531,6 +1575,13 @@ mod tests {
                 tick: 6753,
                 at: [0.5, 0.5, -3.0],
             }),
+            off_spot: vec![OffSpot {
+                tick: 7100,
+                at: [2.0, 3.0, 4.0],
+                edge: Some([[2.0, 2.5, 4.0], [2.0, 3.5, 4.0]]),
+                speed_in: 6.0,
+                launch: 4.5,
+            }],
             standing_fits: Some(false),
             ..State::EMPTY
         };
@@ -1557,8 +1608,52 @@ mod tests {
             (l.result, l.tick, l.at),
             (wire::LandingResult::TooSlow, 6753, [0.5, 0.5, -3.0])
         );
+        let o = &r.off_spot[0];
+        assert_eq!(
+            (o.tick, o.at, o.edge, o.speed_in, o.launch),
+            (
+                7100,
+                [2.0, 3.0, 4.0],
+                Some([[2.0, 2.5, 4.0], [2.0, 3.5, 4.0]]),
+                6.0,
+                4.5
+            )
+        );
         assert_eq!(r.standing_fits, Some(false));
         assert_eq!(r.lost_reason, None);
+    }
+
+    /// An off-spot bounce by an unmarked scanned seam takes that seam's
+    /// edge; one by nothing scanned keeps none; the list keeps the last
+    /// `OFF_SPOT_MAX`.
+    #[test]
+    fn an_off_spot_bounce_takes_the_scanned_edge_and_the_list_is_capped() {
+        lock(&OFF_SPOT).clear();
+        let seam = Spot {
+            kind: Kind::Bounce,
+            edge: [[30.0, 4.0, 1.0], [30.0, 6.0, 1.0]],
+            stand: [30.0, 5.0, 1.0],
+            status: superbounce::Status::Likely,
+            ..Spot::default()
+        };
+        let off = |at: Vec3, tick: u32| OffSpot {
+            tick,
+            at,
+            edge: None,
+            speed_in: 6.0,
+            launch: 5.0,
+        };
+        let kept = keep_off_spot(off([30.05, 5.0, 1.1], 1), &[seam]);
+        assert_eq!(kept[0].edge, Some(seam.edge));
+        let kept = keep_off_spot(off([50.0, 5.0, 1.1], 2), &[seam]);
+        assert_eq!(kept[1].edge, None);
+        for t in 3..30 {
+            keep_off_spot(off([50.0, 5.0, 1.1], t), &[seam]);
+        }
+        let kept = lock(&OFF_SPOT).clone();
+        assert_eq!(kept.len(), OFF_SPOT_MAX);
+        assert_eq!(kept.last().unwrap().tick, 29);
+        lock(&OFF_SPOT).clear();
     }
 
     #[test]

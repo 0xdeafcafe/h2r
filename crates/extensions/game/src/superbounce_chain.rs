@@ -24,26 +24,28 @@ use hud_kit_core::huds::superbounce::{MEDALS, Medal};
 use superbounce::{Spot, Vec3};
 
 use crate::superbounce_charge::{
-    LandingResult, TOUCHDOWN_VZ, landing_spot, strip_landing, strips_near, touchdown,
+    LAUNCH_TICKS, LandingResult, Pending, TOUCHDOWN_VZ, judge, strips_near, touchdown,
 };
 use crate::superbounce_mode::primed;
 
 /// Player slots the game has.
 pub const SLOTS: usize = 16;
-/// From this tick after a bounce (the bounce's own is 0), a tick with the
-/// airborne bit clear ends the chain: a soft landing at the top of the
-/// flight is no touchdown. The two ticks before it are the launch's, when
-/// the bit may still be clear.
+/// From this tick after a bounce's touchdown (the touchdown's own is 0),
+/// a tick with the airborne bit clear ends the chain: a soft landing at
+/// the top of the flight is no touchdown. The two ticks before it are the
+/// launch's, when the bit may still be clear. It is the tick the launch
+/// window closes on ([`LAUNCH_TICKS`]), so the bounce is filed first.
 pub const CLEAR_FROM: u32 = 3;
 /// An origin that moves more than this (world units) in one tick was
 /// moved (a teleporter, `sim.state.set`), and the chain ends.
 pub const TELEPORT: f32 = 3.0;
 /// Awards kept for `superbounce.state`'s `recent`.
 pub const RECENT: usize = 8;
-/// A bounce whose vertical speed comes out over this (units/s) is a
-/// Monster Bounce: above the top of every measured launch (7.97 to 13.22
-/// on Ascension's strip, docs/game/superbounce.md, "Traces"), by about a
-/// fifth. Reasoned from those, not measured: no Monster has been traced.
+/// A bounce whose launch (the best vertical speed of its window,
+/// [`Pending`]) comes out over this (units/s) is a Monster Bounce: above
+/// the top of every measured launch (7.97 to 13.22 on Ascension's strip,
+/// docs/game/superbounce.md, "Traces"), by about a fifth. Reasoned from
+/// those, not measured: no Monster has been traced.
 pub const MONSTER_VZ: f32 = 16.0;
 
 /// The medals a bounce earns at chain count `chain`, lowest first: every
@@ -115,12 +117,13 @@ pub fn spot_id(spot: &Spot) -> u32 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
     /// A bounce, the chain's count with it, off the strip [`spot_id`]
-    /// names. `monster` when it came out over [`MONSTER_VZ`]; `strips` is
-    /// how many bounce strips were within `LANDING_RADIUS` of the
-    /// touchdown, kept for study of Monsters (a V of seams), not a test.
+    /// names (`None` off every strip: a seam the marks don't know).
+    /// `monster` when it came out over [`MONSTER_VZ`]; `strips` is how
+    /// many bounce strips were within `LANDING_RADIUS` of the touchdown,
+    /// kept for study of Monsters (a V of seams), not a test.
     Bounce {
         chain: u32,
-        spot: u32,
+        spot: Option<u32>,
         monster: bool,
         strips: u8,
     },
@@ -145,10 +148,11 @@ impl Event {
             Event::Bounce { chain, .. } | Event::Bounced { chain } => chain,
         }
     }
-    /// The bounce's strip ([`spot_id`]); `None` for a Bounced.
+    /// The bounce's strip ([`spot_id`]); `None` for a Bounced and a
+    /// bounce off every strip.
     pub fn spot(self) -> Option<u32> {
         match self {
-            Event::Bounce { spot, .. } => Some(spot),
+            Event::Bounce { spot, .. } => spot,
             Event::Bounced { .. } => None,
         }
     }
@@ -176,9 +180,11 @@ struct Prev {
 pub struct Chain {
     count: u32,
     live: bool,
-    /// Ticks since the last bounce (0 on its tick).
+    /// Ticks since the last bounce's touchdown (0 on its tick).
     since: u32,
     prev: Option<Prev>,
+    /// A touchdown whose launch is being read.
+    pending: Option<Pending>,
 }
 
 impl Chain {
@@ -211,15 +217,38 @@ impl Chain {
         p.airborne && p.vz <= TOUCHDOWN_VZ && (self.live || p.word.is_some_and(primed))
     }
 
+    /// Judges the pending touchdown: a primed bounce adds to the chain
+    /// (or starts one) and is returned; anything else ends it.
+    fn settle(&mut self, spots: &[Spot]) -> Option<Event> {
+        let p = self.pending.take()?;
+        let judged = judge(spots, &p).filter(|j| j.result == LandingResult::Bounce && p.primed());
+        let Some(j) = judged else {
+            self.live = false;
+            return None;
+        };
+        self.count = if self.live { self.count + 1 } else { 1 };
+        self.live = true;
+        self.since = LAUNCH_TICKS;
+        Some(Event::Bounce {
+            chain: self.count,
+            spot: j.spot.map(|i| spot_id(&spots[i])),
+            monster: p.launch > MONSTER_VZ,
+            strips: strips_near(spots, p.at).min(255) as u8,
+        })
+    }
+
     /// One tick: `t` is the player's unit, `None` when it has none (dead,
-    /// or not in the game).
+    /// or not in the game). A touchdown is judged when its launch window
+    /// closes ([`Pending`]), [`LAUNCH_TICKS`] after it; a window cut short
+    /// (the unit gone, a new one, a teleport) is judged on what was seen.
     pub fn step(&mut self, t: Option<&PlayerTick>, spots: &[Spot]) -> Option<Event> {
         let Some(t) = t else {
+            let settled = self.settle(spots);
             let fell = self.prev.is_some_and(|p| self.falling(&p));
             let chain = if self.live { self.count } else { 0 };
             self.live = false;
             self.prev = None;
-            return fell.then_some(Event::Bounced { chain });
+            return settled.or(fell.then_some(Event::Bounced { chain }));
         };
         let now = Prev {
             unit: t.unit,
@@ -232,41 +261,37 @@ impl Chain {
         if p.unit != t.unit {
             // A new unit on the same tick the old one went: a death and a
             // respawn, or a vehicle.
+            let settled = self.settle(spots);
             let fell = self.falling(&p);
             let chain = if self.live { self.count } else { 0 };
             self.live = false;
-            return fell.then_some(Event::Bounced { chain });
+            return settled.or(fell.then_some(Event::Bounced { chain }));
         }
         if distance(p.position, t.position) > TELEPORT || !t.velocity[2].is_finite() {
+            let settled = self.settle(spots);
             self.live = false;
-            return None;
+            return settled;
         }
-        if touchdown(p.airborne, p.vz, t.airborne, now.vz) {
-            let bounced = p.word.is_some_and(primed)
-                && strip_landing(spots, p.word, p.position, p.vz, now.vz)
-                    == Some(LandingResult::Bounce);
-            // A bounce is by a strip, so `landing_spot` finds it.
-            if bounced && let Some(i) = landing_spot(spots, p.position) {
-                self.count = if self.live { self.count + 1 } else { 1 };
-                self.live = true;
-                self.since = 0;
-                return Some(Event::Bounce {
-                    chain: self.count,
-                    spot: spot_id(&spots[i]),
-                    monster: now.vz > MONSTER_VZ,
-                    strips: strips_near(spots, p.position).min(255) as u8,
-                });
+        let mut event = None;
+        if let Some(pending) = self.pending.as_mut() {
+            if !pending.see(now.vz) {
+                return None;
             }
-            self.live = false;
-            return None;
-        }
-        if self.live {
-            self.since = self.since.saturating_add(1);
-            if self.since >= CLEAR_FROM && !t.airborne {
+            event = self.settle(spots);
+        } else if touchdown(p.airborne, p.vz, t.airborne, now.vz) {
+            if self.live || p.word.is_some_and(primed) {
+                self.pending = Some(Pending::new(p.word, p.position, p.vz, 0, now.vz));
+            } else {
                 self.live = false;
             }
+            return None;
+        } else if self.live {
+            self.since = self.since.saturating_add(1);
         }
-        None
+        if self.live && self.since >= CLEAR_FROM && !t.airborne {
+            self.live = false;
+        }
+        event
     }
 }
 

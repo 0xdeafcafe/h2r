@@ -154,6 +154,8 @@ fn a_launch_over_the_monster_speed_is_a_monster_bounce() {
         falling(STRIP),
         tick(STRIP, MONSTER_VZ, false),
         tick(STRIP, MONSTER_VZ - 0.2, false),
+        tick(STRIP, MONSTER_VZ - 0.4, true),
+        tick(STRIP, MONSTER_VZ - 0.6, true),
     ];
     let got = run(&mut c, &at);
     assert!(matches!(got[..], [Event::Bounce { monster: false, .. }]), "{got:?}");
@@ -230,7 +232,7 @@ fn a_landing_off_the_strip_ends_the_chain() {
     let mut ticks = bounces(2);
     // Down on the floor beside the strip: a touchdown, not a bounce.
     ticks.push(falling(BESIDE));
-    ticks.push(tick(BESIDE, 0.0, false));
+    ticks.extend((0..=LAUNCH_TICKS).map(|_| tick(BESIDE, 0.0, false)));
     ticks.extend(bounces(1));
     let counts: Vec<u32> = run(&mut c, &ticks).iter().map(|e| e.chain()).collect();
     assert_eq!(counts, [1, 2, 1]);
@@ -242,6 +244,7 @@ fn a_landing_on_the_strip_that_does_not_bounce_ends_it() {
     let mut ticks = bounces(1);
     ticks.push(falling(STRIP));
     ticks.push(tick(STRIP, 2.0, false));
+    ticks.extend((0..LAUNCH_TICKS).map(|_| tick(STRIP, 0.0, false)));
     ticks.extend(bounces(1));
     let counts: Vec<u32> = run(&mut c, &ticks).iter().map(|e| e.chain()).collect();
     assert_eq!(counts, [1, 1]);
@@ -249,23 +252,80 @@ fn a_landing_on_the_strip_that_does_not_bounce_ends_it() {
 
 #[test]
 fn the_airborne_bit_clear_from_the_third_tick_ends_it() {
-    // Clear on the launch tick and the two after: still live.
+    // Clear on the touchdown tick and the two after: the launch's, and
+    // the bounce is not judged yet.
     let mut c = Chain::default();
     let ticks = vec![
         falling(STRIP),
         tick(STRIP, 12.0, false),
         tick(STRIP, 11.8, false),
+        tick(STRIP, 11.5, false),
     ];
-    run(&mut c, &ticks);
-    assert!(c.live(), "the launch's ticks");
-    // The second tick after the bounce, clear: still the launch's.
-    run(&mut c, &[tick(STRIP, 11.5, false)]);
-    assert!(c.live(), "the second tick after");
-    // The third, clear and rising (no touchdown): the chain ends.
-    run(&mut c, &[tick(STRIP, 11.2, false)]);
+    assert!(run(&mut c, &ticks).is_empty(), "the window is open");
+    // The third tick after, airborne: the bounce is filed and live.
+    let mut flying = c.clone();
+    let got = run(&mut flying, &[tick(STRIP, 11.2, true)]);
+    assert_eq!(got.len(), 1);
+    assert!(flying.live(), "airborne on the third tick");
+    // The third, clear and rising (no touchdown): filed, and the chain
+    // ends there.
+    let got = run(&mut c, &[tick(STRIP, 11.2, false)]);
+    assert_eq!(got.iter().map(|e| e.chain()).collect::<Vec<_>>(), [1]);
     assert!(!c.live());
     let counts: Vec<u32> = run(&mut c, &bounces(1)).iter().map(|e| e.chain()).collect();
     assert_eq!(counts, [1]);
+}
+
+/// The push can show a tick or two after the contact: a touchdown that
+/// reads about 0 and launches on the next tick or the one after is a
+/// bounce, filed when the window closes.
+#[test]
+fn a_launch_a_tick_or_two_after_touchdown_is_a_bounce() {
+    for late in 1..=2usize {
+        let mut c = Chain::default();
+        let mut vz = [0.0f32; 4];
+        vz[late] = 11.0;
+        let mut ticks = vec![falling(STRIP)];
+        ticks.extend(vz.iter().map(|v| tick(STRIP, *v, true)));
+        ticks.extend((0..8).map(|i| tick(STRIP, 10.0 - i as f32, true)));
+        let events = run(&mut c, &ticks);
+        assert_eq!(events.len(), 1, "late {late}: {events:?}");
+        assert_eq!(events[0].chain(), 1);
+        assert_eq!(events[0].spot(), Some(spot_id(&spots()[0])));
+    }
+    // A launch of 4, under the old 8 a tick: still a bounce.
+    let mut c = Chain::default();
+    let mut ticks = vec![falling(STRIP)];
+    ticks.extend([0.0, 4.0, 3.9, 3.8].map(|v| tick(STRIP, v, true)));
+    assert_eq!(run(&mut c, &ticks).len(), 1);
+}
+
+/// A primed bounce off a seam no marked strip is near is a bounce all the
+/// same, with no strip to name.
+#[test]
+fn a_bounce_off_an_unmarked_seam_earns_its_medal_with_no_strip() {
+    const SEAM: Vec3 = [40.0, 0.0, 2.0];
+    let mut c = Chain::default();
+    let mut ticks = vec![falling(SEAM), tick(SEAM, 0.0, true)];
+    ticks.extend((0..10).map(|i| tick(SEAM, 9.0 - i as f32, true)));
+    let events = run(&mut c, &ticks);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert!(matches!(
+        events[0],
+        Event::Bounce {
+            chain: 1,
+            spot: None,
+            strips: 0,
+            ..
+        }
+    ));
+    assert_eq!(events[0].medals(), [Superbounce]);
+    // A landing there that does not launch is nothing, and ends no chain
+    // it was not in.
+    let mut c = Chain::default();
+    let mut ticks = vec![falling(SEAM)];
+    ticks.extend((0..6).map(|_| tick(SEAM, 0.0, false)));
+    assert!(run(&mut c, &ticks).is_empty());
 }
 
 #[test]
@@ -292,7 +352,9 @@ fn an_unprimed_landing_by_the_strip_is_no_bounce() {
     let mut c = Chain::default();
     let mut fall = falling(STRIP);
     fall.word = Some(0);
-    let events = run(&mut c, &[fall, tick(STRIP, 12.0, false)]);
+    let mut ticks = vec![fall];
+    ticks.extend([12.0, 11.8, 11.5, 11.2].map(|v| tick(STRIP, v, false)));
+    let events = run(&mut c, &ticks);
     assert!(events.is_empty());
     assert!(!c.live());
 }

@@ -785,7 +785,9 @@ pub const DROP_FALLING: f32 = 0.2;
 pub const TOUCHDOWN: f32 = 1.0;
 pub const TOUCHED: f32 = 0.5;
 /// A touchdown that comes out faster than this (world units a second up)
-/// bounced (superbounce_charge's `BOUNCE_VZ`).
+/// bounced, for the route's own log and training. The game's landing
+/// classifier and medals count a launch from 3.5 over a wider window
+/// (`superbounce_charge::BOUNCE_VZ` and `LAUNCH_TICKS`).
 pub const BOUNCE_VZ: f32 = 8.0;
 /// The route's log keeps this many entries.
 pub const LOG: usize = 64;
