@@ -213,23 +213,37 @@ pub enum Role {
     Alone,
     /// Hosting `peers` machines.
     Host { peers: u32 },
-    /// Joined someone else's; `class` 1 System Link, 2 Live.
+    /// Joined someone else's; `class` the squad session's network class
+    /// (`crate::variant_ext::SESSION_NETWORK_CLASS`): 1 System Link, 2 Live.
     Guest { class: u32 },
 }
 
 /// The role the squad session says, when there is one in a lobby or game
-/// state (`coop_probe::read_session`).
-pub fn role(session: Option<&Session>) -> Role {
+/// state (`coop_probe::read_session`), with `class` its network class at
+/// `+0x18` (not `Session::class`, the `+0x4980` stage, which is 1 in
+/// every lobby).
+pub fn role(session: Option<&Session>, class: Option<u32>) -> Role {
     match session {
         Some(s) if s.live() && s.peers > 1 => {
             if s.is_host() {
                 Role::Host { peers: s.peers }
             } else {
-                Role::Guest { class: s.class }
+                Role::Guest {
+                    class: class.unwrap_or(0),
+                }
             }
         }
         _ => Role::Alone,
     }
+}
+
+/// [`role`] of the squad session in `m` now.
+pub fn role_in<M: Gm + ?Sized>(m: &M) -> Role {
+    let session = crate::coop_probe::read_session(m);
+    let class = session
+        .as_ref()
+        .and_then(|s| m.u32(s.addr.wrapping_add(crate::variant_ext::SESSION_NETWORK_CLASS)));
+    role(session.as_ref(), class)
 }
 
 /// What a guest heard of its host's skulls.
@@ -1008,31 +1022,61 @@ mod tests {
         assert_eq!(press(&st, "Chief", 3), None);
     }
 
-    fn session(peers: u32, host: bool, class: u32) -> Session {
+    fn session(peers: u32, host: bool) -> Session {
         Session {
             state: 5,
             peers,
             local_peer: 0,
             host_peer: if host { 0 } else { 1 },
-            class,
+            // The stage `0x5a220` leaves in every lobby, Live or System Link.
+            class: 1,
             ..Session::default()
         }
     }
 
     #[test]
     fn the_role_comes_from_the_squad_session() {
-        assert_eq!(role(None), Role::Alone);
-        assert_eq!(role(Some(&session(1, true, 2))), Role::Alone, "one machine");
+        assert_eq!(role(None, None), Role::Alone);
+        assert_eq!(role(Some(&session(1, true)), Some(2)), Role::Alone, "one machine");
         assert_eq!(
-            role(Some(&Session {
-                state: 0,
-                ..session(2, false, 2)
-            })),
+            role(
+                Some(&Session {
+                    state: 0,
+                    ..session(2, false)
+                }),
+                Some(2)
+            ),
             Role::Alone,
             "no lobby or game state"
         );
-        assert_eq!(role(Some(&session(3, true, 1))), Role::Host { peers: 3 });
-        assert_eq!(role(Some(&session(2, false, 2))), Role::Guest { class: 2 });
+        assert_eq!(role(Some(&session(3, true)), Some(1)), Role::Host { peers: 3 });
+        // The guest's class is the network class, not the stage byte.
+        assert_eq!(role(Some(&session(2, false)), Some(2)), Role::Guest { class: 2 });
+        assert_eq!(role(Some(&session(2, false)), Some(1)), Role::Guest { class: 1 });
+    }
+
+    #[test]
+    fn a_live_guest_reads_the_network_class_not_the_stage() {
+        use crate::coop_probe::layout as l;
+        use engine::points::{NETWORK_READY, SQUAD_SESSION};
+        const S: u32 = 0x10_0000;
+        let mut g = engine::testing::FakeGuest::new();
+        g.map(NETWORK_READY.base, 1)
+            .map(SQUAD_SESSION.base, 4)
+            .map(S, 0x8000)
+            .put_u8(NETWORK_READY.base, 1)
+            .put_u32(SQUAD_SESSION.base, S)
+            .put_u32(S + l::STATE, 5)
+            .put_u32(S + l::PEERS, 2)
+            .put_u32(S + l::LOCAL_PEER, 1)
+            .put_u32(S + l::HOST_PEER, 0)
+            .put_u32(S + l::CLASS, 1)
+            .put_u32(S + crate::variant_ext::SESSION_NETWORK_CLASS, 2);
+        g.put_u16(S + l::DIFFICULTY, 0xffff);
+        assert_eq!(
+            role_in(&crate::layout_glue::ReadGm(&g)),
+            Role::Guest { class: 2 }
+        );
     }
 
     #[test]

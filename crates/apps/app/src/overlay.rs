@@ -5,8 +5,9 @@
 //! draws it. Text is rasterised on the CPU with the public-domain `font8x8`
 //! glyphs (ASCII; a few typographic characters are mapped to ASCII), scaled
 //! 2x, on a translucent plate, and drawn in the top-left corner of the
-//! window with alpha blending. F6 hides the current notice (a new notice
-//! shows again); F5 asks for a restart while the notice offers one.
+//! window with alpha blending. A notice's text may hold several lines
+//! (`\n`). F6 hides the current notice (a new notice shows again); F5 asks
+//! for a restart while the notice offers one.
 
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
@@ -22,6 +23,9 @@ pub enum NoticeKind {
     Ready,
     /// Something failed; the game keeps running as it is.
     Error,
+    /// The game itself stopped (the guest thread ended): what happened,
+    /// and F5 starts it again (docs/runtime/app.md "When the game stops").
+    Crashed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,9 +85,16 @@ impl Banner {
     }
 
     /// Show `notice` (or clear with `None`). A different notice than the
-    /// current one is shown even if the current one was dismissed.
+    /// current one is shown even if the current one was dismissed. Once the
+    /// game has stopped ([`NoticeKind::Crashed`]) only another such notice
+    /// replaces it, so a status thread (the tier build, `--follow`) can't
+    /// paint over the crash.
     pub fn set(&self, notice: Option<Notice>) {
         let mut s = self.lock();
+        let stopped = |n: &Option<Notice>| n.as_ref().is_some_and(|n| n.kind == NoticeKind::Crashed);
+        if stopped(&s.notice) && !stopped(&notice) {
+            return;
+        }
         if s.notice != notice {
             s.notice = notice;
             s.dismissed = false;
@@ -112,12 +123,78 @@ impl Banner {
         self.lock()
             .notice
             .as_ref()
-            .is_some_and(|n| n.kind == NoticeKind::Ready)
+            .is_some_and(|n| matches!(n.kind, NoticeKind::Ready | NoticeKind::Crashed))
     }
 
     pub fn generation(&self) -> u64 {
         self.lock().generation
     }
+}
+
+/// Lines of a crash message the stopped notice shows; the terminal has
+/// the rest.
+const STOPPED_LINES: usize = 6;
+/// Width the stopped notice wraps its message to.
+const STOPPED_WRAP: usize = 88;
+
+/// The notice the window shows when the game itself stops while the window
+/// stays open: what happened, and that F5 starts it again. `None` for an
+/// exit that isn't the game stopping on its own.
+pub fn stopped_notice(exit: &crate::GuestExit) -> Option<Notice> {
+    use crate::GuestExit;
+    let (head, message) = match exit {
+        GuestExit::Returned => ("The game stopped.", None),
+        GuestExit::Failed(m) => ("The game crashed.", Some(m.as_str())),
+        GuestExit::Panicked(m) => ("The game crashed (host panic).", Some(m.as_str())),
+        GuestExit::StillRunning | GuestExit::NotStarted => return None,
+    };
+    let mut lines = vec![head.to_owned()];
+    if let Some(m) = message {
+        let wrapped = wrap(m, STOPPED_WRAP);
+        let more = wrapped.len() > STOPPED_LINES;
+        lines.extend(wrapped.into_iter().take(STOPPED_LINES));
+        if more {
+            lines.push("... (the rest is in the terminal)".into());
+        }
+    }
+    lines.push(String::new());
+    lines.push("Press F5 to start the game again, or close the window to quit.".into());
+    Some(Notice {
+        kind: NoticeKind::Crashed,
+        text: lines.join("\n"),
+    })
+}
+
+/// `text` broken into lines of at most `width` characters, at spaces
+/// where it can be; an error chain's `: ` joins break there too.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    for para in text.lines().map(str::trim_end).filter(|l| !l.is_empty()) {
+        let mut line = String::new();
+        for word in para.split(' ') {
+            let mut word = word.to_owned();
+            while word.chars().count() > width {
+                let head: String = word.chars().take(width).collect();
+                word = word.chars().skip(width).collect();
+                if !line.is_empty() {
+                    out.push(std::mem::take(&mut line));
+                }
+                out.push(head);
+            }
+            let need = line.chars().count() + usize::from(!line.is_empty()) + word.chars().count();
+            if need > width && !line.is_empty() {
+                out.push(std::mem::take(&mut line));
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(&word);
+        }
+        if !line.is_empty() {
+            out.push(line);
+        }
+    }
+    out
 }
 
 /// Glyph scale and padding, in window pixels.
@@ -151,7 +228,7 @@ fn overlay_text(text: &str) -> String {
 
 /// The notice as straight-alpha RGBA: (width, height, pixels).
 pub fn rasterize(notice: &Notice) -> (u32, u32, Vec<u8>) {
-    rasterize_lines(notice.kind, std::iter::once(notice.text.as_str()))
+    rasterize_lines(notice.kind, notice.text.lines())
 }
 
 fn rasterize_lines<'a>(
@@ -172,7 +249,7 @@ fn rasterize_lines<'a>(
     let plate: [u8; 4] = match tone {
         NoticeKind::Info => [24, 32, 48, 210],
         NoticeKind::Ready => [16, 72, 32, 225],
-        NoticeKind::Error => [96, 20, 20, 225],
+        NoticeKind::Error | NoticeKind::Crashed => [96, 20, 20, 225],
     };
     let mut px: Vec<u8> = plate
         .iter()
@@ -701,5 +778,41 @@ mod tests {
         let s = overlay_text(&"x".repeat(500));
         assert_eq!(s.len(), MAX_CHARS);
         assert!(s.ends_with("..."));
+    }
+
+    #[test]
+    fn a_crash_says_what_happened_and_offers_f5() {
+        use crate::GuestExit;
+        let long = format!("guest fault at 0x001c83d8: {}", "read of unmapped memory ".repeat(40));
+        let n = stopped_notice(&GuestExit::Failed(long)).unwrap();
+        assert_eq!(n.kind, NoticeKind::Crashed);
+        let lines: Vec<_> = n.text.lines().collect();
+        assert_eq!(lines[0], "The game crashed.");
+        assert!(lines[1].starts_with("guest fault at 0x001c83d8:"));
+        assert!(lines.iter().all(|l| l.chars().count() <= MAX_CHARS), "{lines:?}");
+        assert!(lines.contains(&"... (the rest is in the terminal)"));
+        assert!(lines.last().unwrap().starts_with("Press F5"));
+        assert!(lines.len() <= STOPPED_LINES + 4);
+
+        let b = Banner::new();
+        b.set(Some(n));
+        assert!(b.restart_offered());
+        let (_, h, _) = rasterize(&b.visible().unwrap());
+        assert!(h > 4 * LINE_HEIGHT, "draws every line");
+
+        b.set(Some(Notice { kind: NoticeKind::Info, text: "Running slower".into() }));
+        assert_eq!(b.visible().unwrap().kind, NoticeKind::Crashed, "a status thread can't paint over it");
+
+        let quit = stopped_notice(&GuestExit::Returned).unwrap();
+        assert!(quit.text.starts_with("The game stopped."));
+        assert!(stopped_notice(&GuestExit::StillRunning).is_none());
+        assert!(stopped_notice(&GuestExit::NotStarted).is_none());
+    }
+
+    #[test]
+    fn wrapping_breaks_at_spaces_and_splits_long_words() {
+        assert_eq!(wrap("aa bb cc", 5), ["aa bb", "cc"]);
+        assert_eq!(wrap("abcdefgh", 3), ["abc", "def", "gh"]);
+        assert_eq!(wrap("one\n\ntwo", 10), ["one", "two"]);
     }
 }

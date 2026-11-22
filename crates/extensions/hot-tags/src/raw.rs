@@ -216,6 +216,8 @@ pub struct RawBatch {
     pub raw: Vec<RawWrite>,
     /// Owners to evict: `{section: ...}` only.
     pub evict: Vec<Value>,
+    /// Blocks to copy into the edit arena ([`crate::arena`]).
+    pub moves: Vec<crate::Move>,
 }
 
 /// A journalled raw act.

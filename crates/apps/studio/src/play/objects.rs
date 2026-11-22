@@ -1,7 +1,10 @@
 //! Live object changes implied by the document. The game's placement indices
-//! refer to the loaded file, including after an editor swap-removal. Only
-//! salted handles from that map's stream or an acknowledged preview can move
-//! or delete objects.
+//! refer to the loaded file and the placement transactions it acknowledged
+//! (`drive/placements.rs`), not to an editor swap-removal it has not had.
+//! Only salted handles from that map's stream or an acknowledged preview can
+//! move or delete objects. A game with `world.placement.edit` takes added
+//! and removed entries as transactions; the respawn previews and deletes
+//! here serve a game without it.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -27,6 +30,12 @@ pub(super) fn key(s: &Scenario, block: BlockKind, index: usize) -> Option<Key> {
         block,
         id: s.block(block).placement_id(index)?,
     })
+}
+
+/// The document row of a placement, wherever removals moved it.
+pub(super) fn key_index(s: &Scenario, key: Key) -> Option<usize> {
+    let block = s.block(key.block);
+    (0..block.len()).find(|&i| block.placement_id(i) == Some(key.id))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -79,6 +79,7 @@ fn saved(source: &[u8], p: &Patches) -> Vec<u8> {
             space: a.pointer_space,
             address: a.pointer_address,
             bytes: word.to_le_bytes().to_vec(),
+            was: a.old.encode().to_le_bytes().to_vec(),
         })
         .chain(a.writes.iter().cloned());
         for w in writes {
@@ -149,6 +150,31 @@ fn a_moved_vertex_saves_only_its_bytes_the_bounds_and_the_checksum() {
         v.positions[..3],
         [[0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [0.0, 4.0, 0.0]]
     );
+}
+
+/// Each patch names its section and carries the map's bytes it replaces:
+/// what a live write sends as its owner and `was`.
+#[test]
+fn each_patch_names_its_owner_and_the_bytes_it_replaces() {
+    let (source, mut s) = opened();
+    lift(&mut s, [4.0, 4.0, 0.0], 1.0);
+    let p = s.changes().unwrap();
+    assert!(!p.raw.is_empty() && !p.tags.is_empty());
+    for w in &p.raw {
+        assert_eq!(w.owner, cluster());
+        assert_eq!(w.was.len(), w.bytes.len());
+        let at = w.block.offset as usize + w.offset as usize;
+        assert_eq!(w.was, source[at..at + w.was.len()]);
+        assert_ne!(w.was, w.bytes);
+    }
+    let mut map = Map::from_reader(Cursor::new(source.clone())).unwrap();
+    for w in &p.tags {
+        assert_eq!(w.was.len(), w.bytes.len());
+        let space = w.space.or(map.metadata_space()).unwrap();
+        let at = space.translate(w.address, w.was.len() as u32).unwrap();
+        let held = map.read_file_range(at, w.was.len() as u64).unwrap();
+        assert_eq!(w.was, held);
+    }
 }
 
 #[test]

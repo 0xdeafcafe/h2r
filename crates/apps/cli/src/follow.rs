@@ -370,7 +370,7 @@ pub fn format_status(notice: Option<&Notice>) -> String {
             let kind = match n.kind {
                 NoticeKind::Info => "info",
                 NoticeKind::Ready => "ready",
-                NoticeKind::Error => "error",
+                NoticeKind::Error | NoticeKind::Crashed => "error",
             };
             format!("{kind}\t{}\n", n.text.replace(['\n', '\t'], " "))
         }

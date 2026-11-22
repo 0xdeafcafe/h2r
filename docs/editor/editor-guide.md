@@ -562,7 +562,29 @@ While the game runs, the editor stays paired with it:
   The game only reads a placement when it makes the object, so you see
   it at the next respawn (a weapon or vehicle spawn, your own respawn at
   a starting location) or after **Play** again. Things already in the
-  world stay put. Adding or removing placements needs **Play** again.
+  world stay put.
+- with **Edit** on, adding or removing a placement, and undoing or
+  redoing either, changes the running game at once: an added scenery,
+  vehicle, weapon, equipment, machine or crate appears, a removed one
+  disappears, and a new spawn point or netgame equipment entry is used
+  at the next spawn (a new netgame flag at the next game). The game
+  refuses some of these, and Pending shows its reason under **Reload
+  map**: other people in a System Link or Live game you host (bots don't
+  count), a block with no room left for the entry (the game has room for
+  as many entries as the map loaded with, plus any you removed), and a
+  matchmade Live game. A named entry, one with placement flags, a scale
+  or type-specific fields is written but appears only after a reload,
+  and sound scenery always waits for one. If the game's answer is lost,
+  the entry stays under **Reload map** and is never sent twice.
+- with **Edit** on, geometry and painted pixels go to the game too.
+  Moving vertices of a cluster, an instanced definition or a model
+  section shows in the game on the next frame; an edit that adds or
+  removes faces shows within a few frames, and the level rebuilds for a
+  moment while it does. A Textures stroke shows mip 0 while you paint and
+  the smaller mips when you let go. Undo sends the old geometry or pixels
+  back. Each edit sits in the Pending tab until the game has it. A
+  bitmap you resize or reformat, and a geometry edit the save refuses,
+  wait for **Play** again.
 
 A game you started yourself is found without any setup. `h2 play` opens
 an agent socket of its own (in the `agents` folder of the h2recomp cache;

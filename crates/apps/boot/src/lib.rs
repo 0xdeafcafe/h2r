@@ -1218,7 +1218,7 @@ fn run_configured(
                 Some((vfs.map_id(&path)?, vfs.content_base_name(name)?))
             });
         }
-        hot_glue::install(
+        let arena = hot_glue::install(
             &a.agent,
             &loaded.runtime,
             maps(),
@@ -1235,6 +1235,10 @@ fn run_configured(
         // sim.give and sim.spawn find tags as edit.* does (agent_glue.rs).
         if let Some(sim) = &a.sim {
             sim.set_tags(Box::new(hot_glue::map_tags(&loaded.runtime, maps())));
+            // world.placement.edit grows blocks into edit.batch's arena.
+            if let Some(calls) = sim.calls() {
+                agent::sim::calls::lock(&calls).set_arena(arena);
+            }
         }
         // world.* results name their tags the same way.
         a.agent.set_tag_names(Box::new(hot_glue::map_tags(&loaded.runtime, maps())));
@@ -1264,6 +1268,14 @@ fn run_configured(
     // guest calls (game_menu.rs, docs/runtime/agent-api.md).
     if let Some(a) = &agent {
         game::game_menu::install(&a.agent, a.sim.as_ref().and_then(|s| s.calls()));
+        // game.load / game.levels: any disc level queued the same way
+        // (game_load.rs).
+        game::game_load::install(
+            &a.agent,
+            a.sim.as_ref().and_then(|s| s.calls()),
+            &opts.disc,
+            &opts.data_root,
+        );
     }
     // Paired editor presentation and the debug menu's host methods.
     if let Some(a) = &agent {
@@ -1278,7 +1290,11 @@ fn run_configured(
             &a.agent,
             host.settings.clone(),
             host.perf_overlay.clone(),
+            host.cheat_line.clone(),
         );
+        if let Some(code) = &host.game_code {
+            game::game_code::install(&a.agent, Arc::clone(code));
+        }
         if let Some(lights) = &controller_lights {
             lights.install(&a.agent);
         }

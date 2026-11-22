@@ -315,7 +315,8 @@ pub fn shown(reading: &Reading, present: Present, mode: Mode) -> Shown {
 }
 
 /// The lobby's place: Split Screen when not networked, else the squad
-/// session's class (2 Xbox Live, 1 System Link).
+/// session's network class (`crate::variant_ext::SESSION_NETWORK_CLASS`,
+/// `+0x18`: 2 Xbox Live, 1 System Link).
 pub fn place(networking: bool, class: Option<u32>) -> Option<Place> {
     match (networking, class) {
         (false, _) => Some(Place::SplitScreen),
@@ -323,6 +324,19 @@ pub fn place(networking: bool, class: Option<u32>) -> Option<Place> {
         (true, Some(1)) => Some(Place::SystemLink),
         (true, _) => None,
     }
+}
+
+/// The lobby's place now ([`place`]). The class is the squad session's
+/// network class at `+0x18`, which session creation (`0x59bd0`, from
+/// `0x59890(class)`) stores and Live's paths create as 2. It is not
+/// `+0x4980`, the squad's stage (`0x5a220`), which is 1 in any pregame
+/// lobby, a Live party's too.
+pub fn place_now(m: &dyn GuestMemory) -> Option<Place> {
+    use crate::variant_ext::SESSION_NETWORK_CLASS;
+    let networking = m.u8(lobby::NETWORKING).ok()? != 0;
+    let session = m.u32(lobby::SESSION).ok().filter(|&s| s != 0);
+    let class = session.and_then(|s| m.u32(s.checked_add(SESSION_NETWORK_CLASS)?).ok());
+    place(networking, class)
 }
 
 /// The squad session's mode (`+0x49a4`), read by `0x64160` while the
@@ -398,11 +412,8 @@ pub fn set_live(hle: Option<Arc<live_hle::Hle>>) {
 
 /// Reads the lobby; `None` while its session cannot be read.
 pub fn read(m: &dyn GuestMemory) -> Option<Reading> {
-    use bots::phantom::session::at;
     let networking = m.u8(lobby::NETWORKING).ok()? != 0;
-    let session = m.u32(lobby::SESSION).ok().filter(|&s| s != 0);
-    let class = session.and_then(|s| m.u32(s.checked_add(at::CLASS)?).ok());
-    let place = place(networking, class)?;
+    let place = place_now(m)?;
     let leader = !networking || lobby::facts(m).ok()?.leader;
     let session_type = m.u32(lobby::SESSION_TYPE).ok()?;
     let campaign = crate::coop_probe::read_session(&ReadGm(m)).is_some_and(|s| s.is_campaign());

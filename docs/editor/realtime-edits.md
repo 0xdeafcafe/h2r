@@ -1,7 +1,7 @@
 # Realtime edits: geometry, placements, collision and textures in the running game
 
-Status: In progress. Slices R1 (the raw overlay in both readers, `raw` and `evict` in `edit.batch`, `edit.raw.append`, `edit.stage.put`, `edit.overlay` and their journal), R2 (the native refresh) and R3 (placement transactions, `world.placement.edit`) are built; R4 to R7 are design, and what they build on is cited as **Code**.
-Code: built in `crates/runtime/vfs/src/map_override/overlay.rs`, `crates/runtime/vfs/src/lib.rs` (`Vfs::read`), `crates/platform/assets/src/resource.rs`, `crates/extensions/game/src/native_map.rs`, `crates/extensions/hot-tags/src/raw.rs`, `crates/extensions/agent/src/hot.rs`, `crates/extensions/game/src/hot_glue.rs`, `crates/rewrites/render-bridge/src/native_edits.rs`, `crates/rewrites/native-render`, `crates/extensions/agent/src/sim/edits.rs`, `crates/extensions/agent/src/sim/calls/placement/edit.rs` and `crates/extensions/agent-proto/src/sim/edits.rs`; planned in `crates/apps/studio/src/play`. Tests: named per slice under "Build slices".
+Status: In progress. Slices R1 (the raw overlay in both readers, `raw` and `evict` in `edit.batch`, `edit.raw.append`, `edit.stage.put`, `edit.overlay` and their journal), R2 (the native refresh), R3 (placement transactions, `world.placement.edit`), R4 (the edit arena, `moves` in `edit.batch`, `edit.arena`, placement growth into the arena; its live check has not run), R5 (the editor's geometry and pixel sends, `play/raw_sync.rs`) and R6 (the editor's placement adds and removes live, `crates/apps/studio/src/play/objects/drive/placements.rs`) are built; R7 is design, and what they build on is cited as **Code**.
+Code: built in `crates/runtime/vfs/src/map_override/overlay.rs`, `crates/runtime/vfs/src/lib.rs` (`Vfs::read`), `crates/platform/assets/src/resource.rs`, `crates/extensions/game/src/native_map.rs`, `crates/extensions/hot-tags/src/raw.rs`, `crates/extensions/hot-tags/src/arena.rs`, `crates/extensions/hot-tags/src/batch.rs`, `crates/extensions/agent/src/hot.rs`, `crates/extensions/game/src/hot_glue.rs`, `crates/rewrites/render-bridge/src/native_edits.rs`, `crates/rewrites/native-render`, `crates/extensions/agent/src/sim/edits.rs`, `crates/extensions/agent/src/sim/calls/placement/edit.rs`, `crates/extensions/agent-proto/src/sim/edits.rs` `crates/apps/studio/src/play/raw_sync.rs` and `crates/apps/studio/src/play/objects/drive/placements.rs`; planned in the rest of `crates/apps/studio/src/play`. Tests: named per slice under "Build slices".
 Switch: none. With no editor paired and no edit sent, none of it runs.
 
 A paired editor's Modeling, Scenario and Textures edits reach the running
@@ -100,7 +100,7 @@ under one journal id.
 | tag patches (`patches`, `bsp_patches`) | `writes` of `edit.batch` (built) | `hot_tags::Editor::batch`: `was` check, `Guest::write_bytes`, journal |
 | `raw_patches` | `raw` | resolves the owner's raw pointer from the guest's own tag bytes; checks `was` against the overlay view; adds the overlay entry; writes the resident copy if the owner is resident; queues a native refresh |
 | `raw_new` (grown raw) | `edit.raw.append`, then `writes` and `evict` | the append reserves an extent past the file's end and is invisible until a tag points at it; the batch writes the block info and counts and evicts the owner, so the guest pages the new block in from the overlay |
-| grown tag blocks (`grown`, `tag_grown`) | `moves` | copies the new block into the **edit arena**, then writes the root's `(count, address)`; later writes inside the block are ordinary `writes` |
+| grown tag blocks (`grown`, `tag_grown`) | `moves` (built) | copies the new block into the **edit arena**, then writes the root's `(count, address)`; later writes inside the block are ordinary `writes` |
 
 **The resident copy.** A section's cache buffer is the file block with its
 struct's pointers fixed up (the resource base is the buffer plus 8 plus
@@ -125,18 +125,34 @@ resource lookup misses and reads the block from the file view
 (`hot_tags::raw::evict_section`). The texture cache's own entry for the
 old buffer is left to its eviction (**S**, R5's grown check).
 
-**The edit arena.** Guest memory for blocks that outgrow their place. It is
-a range of the HLE reservation (`kernel::memory::HLE_RESERVED`) reserved
-with `Builder::guest_alloc` when the hot-edit feature installs
-(`crates/extensions/game/src/hot_glue.rs`), managed by a first-fit extent
-allocator in `hot-tags`, and released whole at a map load. The engine
-follows any mapped pointer, so a block there reads as one in the metadata
-does (**S**, the same supposition as modeling-targets.md's "block pointer
-into ordinary metadata"). Its size is bounded by the free physical pages
-the guest's own arena leaves (`Guest::find_free_physical`), which is not
-measured; `edit.arena` reports it. An arena extent a move made belongs to
-the moved block's tag for `edit.batch`'s "inside one loaded tag" rule and
-for `hot_tags::path::locate`.
+**The edit arena.** Guest memory for blocks that outgrow their place
+(**Code**, `hot_tags::arena`). Its addresses are `hot_tags::arena::WINDOW`,
+`0xa0404000..0xa0800000` (4080 KiB) of the HLE reservation
+(`kernel::memory::HLE_RESERVED`): the gap between the NV2A register
+window's two pages (`0xa0403000` and `0xa0800000`, `d3d::regs::PAGES` at
+`d3d_glue::NV2A_BASE`), above Bink's page and below DirectSound's arena,
+which no other user maps. The window is only addresses. Pages are mapped
+zeroed through the runtime's memory as the arena's top grows, in 64 KiB
+chunks, because physical memory bounds the arena, not the window: a
+mapping that would leave less than `PHYSICAL_FLOOR` (2 MiB, provisional
+until the live measurement) of physical memory free is refused, so the
+game's own later allocations still fit. A first-fit allocator over
+coalesced free runs hands out 16-byte-aligned extents, each booked to the
+block it holds: its tag, the address of its root pair, its stride and its
+capacity. The arena is bound to one map activation: the first tick of a
+new map (the `edit.overlay` ticker) frees every extent and unmaps its
+pages, and a BSP switch keeps it. The editor (`edit.batch`, inside the
+guest lock) and `world.placement.edit` (between its memory closures,
+through `hot_tags::arena::Link`, which takes the guest lock first) share
+one arena, which `hot_glue::install` makes and the boot hands to the call
+queue (`Queue::set_arena`). The engine follows any mapped pointer, so a
+block there reads as one in the metadata does (**S**, the same
+supposition as modeling-targets.md's "block pointer into ordinary
+metadata"). How much physical memory is free on a loaded map is not
+measured; `edit.arena` reports it (`physical_free`). An arena extent
+belongs to the moved block's tag for `edit.batch`'s "inside one loaded
+tag" rule, for `edit.read` and for the journal's survival of a BSP switch;
+a path follows the repointed pair on its own (`hot_tags::path`).
 
 **The native refresh.** `render_bridge::native_edits` is a queue with one
 share per drainer: the world's glue drains at the frame boundary once its
@@ -200,12 +216,17 @@ create an object for each index in `create`.
 - **Add.** The record goes in slot `count` and the count rises. A block
   has room while its count is under its capacity: its loaded count, which
   the host records at the block's first edit of a map activation
-  (`placement::edit::BlockState`), or the capacity of the arena block it
-  moved to. With no room the host will move the block into the arena with
-  twice the capacity, bounded by the per-type limit the editor enforces
-  ([scenario-editor.md](scenario-editor.md) section 6, "Add"), and refuses
-  past it. Until the arena (slice R4) exists, no room is a refusal with
-  `data.need` and `data.capacity`.
+  (`placement::edit::BlockState`), or the capacity of the arena extent it
+  moved to. With no room the host moves the block into the arena with
+  twice the capacity (at least the new count), bounded by the per-type
+  limit the editor enforces ([scenario-editor.md](scenario-editor.md)
+  section 6, "Add"): the extent is allocated before any write, the
+  records and the dead tail are copied into it, the rest is zeroed, and
+  the root's address is written with the records and the count; an
+  extent the block left is freed. A full arena, or a game without one, is
+  a refusal with `data.need` and `data.capacity` (and `data.need_bytes`
+  and `data.largest_free` from a full arena), and the edit falls back to
+  a reload.
 - **Remove** is the save's swap-remove: the last record is written over
   the removed slot, the count drops, the removed entry's objects are
   deleted and the moved entry's objects are relinked to their new index,
@@ -335,8 +356,11 @@ that contains the level, a `raw` entry with owner `pixels`.
   world and objects.
 - During a stroke the editor sends mip 0's changed bytes at the push
   interval, and the rebuilt mips at the stroke's end. A request line is at
-  most 1 MiB (`MAX_LINE`, `crates/extensions/agent/src/server.rs`); a
-  level larger than that goes through `edit.stage.put`.
+  most 1 MiB (`MAX_LINE`, `crates/extensions/agent/src/server.rs`), so
+  the editor splits a larger plan into batches of at most 256 KiB of raw
+  bytes (`raw_sync::BATCH_RAW_BYTES`); each raw entry stands alone, so a
+  split level shows in parts over a few frames. `edit.stage.put` is not
+  used by the editor.
 - A `P8` lightmap page is the same path with palette-quantised bytes.
 
 **Shows: next frame, same size and format.** A new size, format or mip
@@ -378,10 +402,10 @@ Wire types in `agent_proto::hot` and `agent_proto::sim::edits`, listed by
 
 | Method | Access | Params | Result |
 |---|---|---|---|
-| `edit.batch` (extended) | act | adds `raw: [{owner, offset, bytes, was?}]`, `moves: [{root: {tag, path} \| {at}, stride, count, capacity?, bytes, was: {count, address}}]`, `evict: [owner]` | adds `raw: [{owner, resident, refresh}]`, `moves: [{address, capacity}]`, `evicted`; `MISMATCH` lists raw entries by `owner` and `offset` |
+| `edit.batch` (extended) | act | adds `raw: [{owner, offset, bytes, was?}]`, `moves: [{root: {tag, path} \| {at}, stride, count, capacity?, bytes, was: {count, address}}]`, `evict: [owner]` | adds `raw: [{owner, resident, refresh}]`, `moves: [{root, tag, path, count, address, capacity}]`, `evicted`; `MISMATCH` lists raw entries by `owner` and `offset`, moves by `root` |
 | `edit.raw.append` | act | `{file?, bytes, align?}` | `{id, pointer, len}`: a raw pointer for tag writes; journalled, dropped by revert |
 | `edit.stage.put` | act | `{stage?, bytes}` | `{stage, len}`: appends to a host buffer that dies with the connection or its first use |
-| `edit.arena` | read | none | `{base, len, used, largest_free, moves: [{tag, root, address, capacity}]}` |
+| `edit.arena` | read | none | `{base, len, mapped, used, largest_free, physical_free, physical_floor, moves: [{tag, name, root, address, capacity, stride, len}]}` |
 | `edit.overlay` | read | none | `{entries, bytes, appended, owners: [owner]}` |
 | `world.placement.edit` | act | `{block, was_count, count, records: [{index, bytes, was?}], names?: [{name, placement}], delete?: [index], relink?: [{from, to}], create?: [index]}` | `{at, count, capacity, moved?: {address, capacity}, deleted: [id], relinked: [id], created: [{index, object?, linked, created, why?}]}` |
 | `edit.collision.stage` | act | `{target, blocks: {name: {count, bytes}}, leaves?, mopp?, pathfinding?}` | `{stage, bytes, arena: {used, largest_free}}` |
@@ -428,14 +452,46 @@ Plain integers keep `render-bridge` free of the agent's types.
   collision are `now`; grown geometry and `rebuild` collision are
   `now` with a note in Pending ("the level rebuilds for a moment");
   everything under a "Not live" bullet stays `reload`.
-- `play/sync.rs` sends a block whose layout revision differs from the
-  loaded one as a `world.placement.edit` instead of putting its fields
-  behind reload, and advances the loaded revision on the receipt.
-- A new `play/raw_sync.rs` diffs `GeometryChanges` and the bitmap
-  document against a baseline of acknowledged raw entries, as
-  `sync::Baseline` does for fields, so undo sends the old bytes.
+- `play/sync.rs` computes a block whose layout revision differs from the
+  loaded one as a `world.placement.edit` (`Baseline::transaction`)
+  instead of putting its fields behind reload, and advances the loaded
+  revision on the receipt (`Baseline::placed`);
+  `play/objects/drive/placements.rs` sends it, one at a time, and keeps
+  the block under Reload with the game's reason when refused or when the
+  answer is lost.
+- `play/raw_sync.rs` (built) diffs the Modeling tool's patches
+  (`GeometrySession::changes`, each `RawWrite` naming its section and
+  each patch carrying the file's bytes as `was`) and the Textures tool's
+  painted layers, encoded by `assets::encode::encode_tiles` into every
+  LOD chain and mip the image stores, against `raw_sync::RawBaseline`:
+  each raw and tag byte the game acknowledged, beside the file's byte,
+  and each grown section's appended block and pointer. A byte the
+  baseline holds and the documents no longer change wants its file byte
+  back, so undo sends the old bytes. Every entry carries `was`, inline up
+  to 64 bytes and as `{hash}` beyond; the bounds go as `writes` in the
+  same batch.
+- A grown section is two requests: `edit.raw.append` with the encoded
+  block (aligned to `geometry_edit::RAW_ALIGN`), then one batch with the
+  pointer word the append returned, the record and bounds writes, and
+  `evict` naming the section. A block appended this map is reused while
+  the same block is wanted; undoing the growth writes the file's pointer
+  word back and evicts again.
+- Raw requests go when no field batch is waiting, one at a time, at the
+  push interval. During a stroke only mip 0's bytes go; the other levels
+  go at the stroke's end. A plan larger than 256 KiB of raw bytes goes as
+  several batches, the tag writes and evictions with the last.
+- A refusal or `MISMATCH` holds every geometry and pixel row in Pending
+  (a mismatch marked `conflict`, a refusal **After reload** with the
+  game's reason) until the documents change or the user sends again. A
+  geometry edit the save refuses, one whose tag the game has not loaded,
+  and a grown section a play copy holds (its pointer is not known) are
+  **After reload** rows and are not sent. Shared-cache pixels go to the
+  owner the image's pointer names, which the overlay serves.
+- A play copy's baseline (`RawBaseline::of_copy`) holds the geometry the
+  save wrote; pixel edits are not in the copy.
 - `mirror.pending` and `mirror.apply` ([agent-api.md](agent-api.md)) list
-  and send these with `doc` `geometry`, `bitmaps` and `collision`.
+  and send these with `doc` `geometry` and `bitmaps` (and `collision`
+  when R7 is built).
 
 ## What is live and what is not
 
@@ -487,7 +543,9 @@ Plain integers keep `render-bridge` free of the agent's types.
 - **Snapshots.** A non-empty overlay or a used arena extent is host state
   a machine snapshot does not hold, so both prevent snapshots, rewind and
   film keyframes until the map changes, as a bound play copy does
-  ([snapshots.md](../runtime/snapshots.md)).
+  ([snapshots.md](../runtime/snapshots.md)). A used arena extent refuses
+  through the call queue's editor refusal (`Queue::preview_refusal`), once
+  an editor has adopted the queue; the overlay's refusal is not built.
 - **Checkpoints.** A campaign revert restores objects with the placement
   indices they had. After a `world.placement.edit` that removed or moved
   an entry, a `GAME_STATE_REVERT` puts that block behind reload in the
@@ -515,8 +573,8 @@ methods in its own section of the runtime agent API page.
 | **R1** Overlay and raw writes | the raw overlay in both file readers; `raw` and `evict` in `edit.batch`; `edit.raw.append`, `edit.stage.put`, `edit.overlay`; the journal over raw entries; the `native_edits::push` call | `crates/runtime/vfs/src/map_override*`, `crates/platform/assets/src/resource.rs`, `crates/extensions/game/src/native_map.rs`, `crates/extensions/hot-tags`, `crates/extensions/agent/src/hot.rs`, `crates/extensions/agent-proto/src/hot.rs`, `crates/extensions/game/src/hot_glue.rs` | overlay reads across entry edges and past the end; a raw write changes the file view and a synthetic resident copy and nothing else; `was` mismatch writes nothing; revert restores both; a non-resident owner takes the overlay only; co-op, client and Live refuse | `edit.batch` with one `raw` vertex write on a visible cluster, then `edit.overlay` and `render.frame` with `snap` before and after; `edit.revert` restores the picture | nothing |
 | **R2** Native refresh (built) | `native_edits`; section bounds recompute; world reload request; model replace; image rewrite | `crates/rewrites/native-render`, `crates/rewrites/render-bridge/src/native_edits.rs`, `crates/extensions/game/src/native_world_glue.rs`, `crates/extensions/game/src/native_objects_glue.rs` | `GpuWorld` after a `Section` edit equals a world loaded from the edited bytes (vertices and bounds), beside `crates/rewrites/native-render/tests/gpu.rs`; a replaced model draws its new vertices (`tests/models_gpu.rs`); an image rewrite changes the sampled texel; a size change is refused | with R1: the frame columns `native_world_opaque_prereserved_draws` and `native_world_opaque_guest_indexed_draws` name which path drew the edited part, and both pictures change | nothing |
 | **R3** Placement transactions | `world.placement.edit`; linked creation; relink; name repoints; capacity from the loaded count; the count-change refusal with peers | `crates/extensions/agent/src/sim/edits.rs`, `crates/extensions/agent/src/sim/calls.rs`, `crates/extensions/agent/src/sim/calls/placement.rs`, `crates/extensions/agent-proto/src/sim/edits.rs` | fake game: add into a dead tail slot, remove with swap, and the undo of each leave the block byte-equal to the editor's save of the same edit; an occupant's index follows a relink; a refused shape writes the record and reports `created: false`; a `was` mismatch changes nothing | `world.placement.edit` adding a scenery entry after a removal, then `world.object` shows the new object with its placement; a BSP switch or `map.reload {}` keeps one object per entry | nothing |
-| **R4** Edit arena and block moves | the arena, its allocator, `moves`, `edit.arena`; arena capacity for R3's growth | `crates/extensions/hot-tags/src/arena.rs` (new) and the batch, `crates/extensions/agent/src/hot.rs`, `crates/extensions/game/src/hot_glue.rs`, the capacity call in `calls/placement.rs` | allocator: first fit, free, coalesce, full; a move then a path read resolves through the new address; revert puts the pair back and frees; an `at` write inside a moved block is admitted | `edit.arena` on a loaded multiplayer map records the free size (a note in `docs/editor/notes/`); a ninth scenery entry on a block of eight appears and survives a BSP switch | R1, R3 |
-| **R5** Editor: geometry and pixels live | `play/raw_sync.rs`; the effect chips; Pending rows; dirty spans from `GeometrySession`; the stroke push | `crates/apps/studio/src/play/raw_sync.rs` (new), `crates/apps/studio/src/play/tag_sync.rs`, `crates/apps/studio/src/play.rs`, `crates/tools/geometry-edit` | fake game: a `mesh.transform` is one batch with `raw` and bounds; undo sends the old bytes; View mode sends nothing; a mismatch leaves the batch pending; a grown edit sends append, `writes`, `evict` in that order | `mesh.transform` through the editor's API on a paired game, `render.frame` with `snap` shows the moved faces; `mirror.pending` is empty after | R1; R2 for the native picture; modeling slices 5 to 7 for pixels and grown sections |
+| **R4** Edit arena and block moves (built; live check not run) | the arena, its allocator, `moves`, `edit.arena`; arena capacity for R3's growth | `crates/extensions/hot-tags/src/arena.rs` (new) and the batch, `crates/extensions/agent/src/hot.rs`, `crates/extensions/game/src/hot_glue.rs`, the capacity call in `calls/placement.rs` | allocator: first fit, free, coalesce, full; a move then a path read resolves through the new address; revert puts the pair back and frees; an `at` write inside a moved block is admitted | `edit.arena` on a loaded multiplayer map records the free size (a note in `docs/editor/notes/`); a ninth scenery entry on a block of eight appears and survives a BSP switch | R1, R3 |
+| **R5** Editor: geometry and pixels live (built) | `play/raw_sync.rs`; the effect chips; Pending rows; dirty spans from `GeometrySession`; the stroke push | `crates/apps/studio/src/play/raw_sync.rs` (new), `crates/apps/studio/src/play/tag_sync.rs`, `crates/apps/studio/src/play.rs`, `crates/tools/geometry-edit` | fake game: a `mesh.transform` is one batch with `raw` and bounds; undo sends the old bytes; View mode sends nothing; a mismatch leaves the batch pending; a grown edit sends append, `writes`, `evict` in that order; a stroke sends its tiles (`crates/apps/studio/src/play/raw_sync/tests.rs`; each patch's owner and `was` in `crates/tools/geometry-edit/src/session_tests.rs`) | `mesh.transform` through the editor's API on a paired game, `render.frame` with `snap` shows the moved faces; `mirror.pending` is empty after | R1; R2 for the native picture; modeling slices 5 to 7 for pixels and grown sections |
 | **R6** Editor: placements live | add, remove and their undo as `world.placement.edit`; the layout-revision rule; Pending text | `crates/apps/studio/src/play/objects.rs`, `crates/apps/studio/src/play/objects`, `crates/apps/studio/src/play/sync.rs` | fake game: add, remove, undo and redo each send one transaction and leave `mirror.pending` empty; a refused shape lands under Reload with the game's reason; a lost reply does not send twice | add and delete a crate in the editor and watch `mirror.objects` follow within a second | R3 |
 | **R7** Collision live | `edit.collision.stage` and `.commit`, both modes; overlay cache drop; the editor's send | `crates/extensions/agent/src/hot/collision.rs` (new), `crates/extensions/agent-proto/src/hot.rs`, `crates/apps/studio/src/play/collision_sync.rs` (new) | fake game: a commit repoints all pairs at one boundary or none; `sim_collision` over synthetic memory answers from the new blocks after it; freed extents return to the arena; `rebuild` is refused on a map with pathfinding the stage did not replace | `debug.view collision_geometry` shows the new solid after an `append` commit; after `activate: true`, `sim.state.set` puts a player above it and `sim.expect` finds the player resting on its top | R4; modeling slices 8 and 11 |
 
@@ -544,8 +602,11 @@ which is why R4 follows R1.
   (`crates/platform/d3d/src/vertex_cache.rs`, `dirty.rs`); `Lock` is not a
   hook.
 - **Code**: `hot_tags::value::writable` refuses block, data and struct
-  kinds by path, and an `at` write must sit inside one loaded tag; nothing
-  allocates guest memory after install (`hooks::arena`).
+  kinds by path, and an `at` write must sit inside one loaded tag or one
+  arena extent; the features' guest memory is allocated at install
+  (`hooks::arena`), and the edit arena maps its own pages as it grows
+  (`hot_tags::arena`, tests in `arena.rs`, `batch/tests.rs` and
+  `placement/edit/tests.rs`).
 - **Code**: `placement::record` refuses an index past the loaded count
   because no bytes exist there; `prepare_spawn` does not write the
   placement index, which is why a respawned object is unlinked.
@@ -569,11 +630,20 @@ which is why R4 follows R1.
   address. Reading the handle check with `h2 disasm` verifies it.
 - **S**: the engine accepts a block in the arena, for scenario blocks and
   for collision. R4's live check verifies the first, R7's the second.
-- **S**: enough physical memory is free for a useful arena. `edit.arena`
-  on each map verifies it.
+- **S**: enough physical memory is free for a useful arena, and 2 MiB of
+  it left free is enough for the game's own later allocations.
+  `edit.arena` on each map (`physical_free`) verifies the first; the
+  floor is provisional until then.
 - **S**: evicting a section through the guest's unload callback and
   letting the lookup re-read it is safe mid-map. R5's grown check
   verifies it.
+- **S**: a structure BSP's tag writes (cluster bounds, records) are sent
+  as `{at}` writes at the BSP region's virtual addresses, which are the
+  guest's addresses only while that BSP is the loaded one. The editor
+  sends geometry only for targets whose tag is in `edit.map`'s `loaded`
+  list and always with `was`; whether a BSP the game has not activated is
+  absent from that list is not checked. R5's live check on a map with two
+  BSPs verifies it.
 - **S**: a BSP switch to the active BSP runs the whole switch rather than
   returning early, and Havok's structure shape reads the collision blocks
   through the pairs and not through addresses it kept. Reading

@@ -131,16 +131,25 @@ pub struct RegionWrite {
     pub space: Option<AddressSpace>,
     pub address: u32,
     pub bytes: Vec<u8>,
+    /// The bytes the map holds there, as long as `bytes`: what a live
+    /// write sends as `was`, and what undo sends back
+    /// (docs/editor/realtime-edits.md, "The editor").
+    pub was: Vec<u8>,
 }
 
 /// A fixed-size patch inside a local raw block
 /// (`map::MapEditor::patch_raw`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawWrite {
+    /// The section whose block this is: a live write's owner (a model's
+    /// requantised sections name their own section, not the edited one).
+    pub owner: Target,
     pub block: RawPointer,
     pub block_size: u32,
     pub offset: u32,
     pub bytes: Vec<u8>,
+    /// The block's bytes there in the map, as long as `bytes`.
+    pub was: Vec<u8>,
 }
 
 /// A grown section's new raw block (`map::MapEditor::append_raw`) and the
@@ -330,23 +339,19 @@ fn floats(f: &[f32]) -> Vec<u8> {
 
 /// The patches of one field: the runs where `new` differs from `old`.
 fn field_writes(at: FieldAt, old: &[f32], new: &[f32], out: &mut Vec<RegionWrite>) {
-    for (offset, bytes) in changed_runs(&floats(old), &floats(new)) {
-        out.push(RegionWrite {
-            space: at.space,
-            address: at.address + offset as u32,
-            bytes,
-        });
-    }
+    diff_writes(at, &floats(old), &floats(new), out);
 }
 
 /// The patches of a byte range at `at`: the runs where `new` differs from
 /// `old`.
 fn diff_writes(at: FieldAt, old: &[u8], new: &[u8], out: &mut Vec<RegionWrite>) {
     for (offset, bytes) in changed_runs(old, new) {
+        let was = old[offset..offset + bytes.len()].to_vec();
         out.push(RegionWrite {
             space: at.space,
             address: at.address + offset as u32,
             bytes,
+            was,
         });
     }
 }
@@ -449,13 +454,23 @@ fn bucket_lit<R: Read + Seek>(
     })
 }
 
-fn raw_writes(src: &SectionSource, runs: Vec<(usize, Vec<u8>)>, out: &mut Vec<RawWrite>) {
+/// The raw patches of `owner`'s section, each with the source bytes it
+/// replaces.
+fn raw_writes(
+    owner: Target,
+    src: &SectionSource,
+    runs: Vec<(usize, Vec<u8>)>,
+    out: &mut Vec<RawWrite>,
+) {
     for (offset, bytes) in runs {
+        let was = src.bytes[offset..offset + bytes.len()].to_vec();
         out.push(RawWrite {
+            owner,
             block: src.block,
             block_size: src.block_size,
             offset: offset as u32,
             bytes,
+            was,
         });
     }
 }
@@ -909,7 +924,7 @@ impl GeometrySession {
                         None,
                         false,
                     )?;
-                    raw_writes(section, block_runs(section, &data)?, &mut p.raw);
+                    raw_writes(o.target, section, block_runs(section, &data)?, &mut p.raw);
                 }
                 if let Some((old, at)) = bounds {
                     let mut new = *old;
@@ -1039,6 +1054,7 @@ impl GeometrySession {
                     let data = rewrite(src, &e.positions, Some(&e.corners), compression, regrown)
                         .map_err(|r| refuse(s, r))?;
                     raw_writes(
+                        target(s),
                         src,
                         block_runs(src, &data).map_err(|r| refuse(s, r))?,
                         &mut out.raw,
@@ -1048,6 +1064,7 @@ impl GeometrySession {
                     let data = rewrite(src, &src.positions, None, compression, true)
                         .map_err(|r| refuse(s, r))?;
                     raw_writes(
+                        target(s),
                         src,
                         block_runs(src, &data).map_err(|r| refuse(s, r))?,
                         &mut out.raw,
@@ -1206,7 +1223,7 @@ fn grown_writes(
     }
     if g.fits(src) {
         let runs = changed_runs(&src.bytes, &g.encoded.block);
-        raw_writes(src, runs, &mut p.raw);
+        raw_writes(target, src, runs, &mut p.raw);
         diff_writes(record.at, &record.bytes, &rec, &mut p.tags);
         return Ok(());
     }
