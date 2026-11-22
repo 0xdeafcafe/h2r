@@ -1,7 +1,7 @@
 # Rules language: declared labels and stronger types
 
-Status: Design, with slice 1 built: the IR's label and tag tables, their verifier rules, the VM's bound on a labelled set and `rules::labels::check` ("The IR", "The start gate"). The rest is not built; the code compiles the language of [rules-engine.md](rules-engine.md#the-language), called "the built language" below.
-Code: `crates/formats/rules/src/lang` (lexer, parser, `lower.rs`, which type checks and lowers in one pass), `crates/formats/rules/src/ide`, `crates/formats/rules/src/ir.rs`, `crates/formats/rules/src/verify.rs`, `crates/formats/rules/src/labels.rs`. Tests: `cargo test -p rules`.
+Status: Design, with slices 1 to 4 built: the IR's label and tag tables, their verifier rules, the VM's bound on a labelled set and `rules::labels::check` ("The IR", "The start gate"); the checker, declared labels, `T?` with narrowing, `zone` and `weapon` (`lang/check.rs`); the census builders and the host's gate ([rules-start-gate.md](rules-start-gate.md)); scenario maps, the check report's `labels` and the generator's minimal map ("The workbench"). Time, constants, `match` and fixes are not built. "The built language" below is the language before slice 2, which the gap table describes.
+Code: `crates/formats/rules/src/lang` (lexer, parser, `check.rs`, which gives every diagnostic, `lower.rs`, which lowers a checked script), `crates/formats/rules/src/ide`, `crates/formats/rules/src/ir.rs`, `crates/formats/rules/src/verify.rs`, `crates/formats/rules/src/labels.rs`. Tests: `cargo test -p rules`.
 Switch: none.
 
 A Forge label is a declared, typed name, and the checker catches the
@@ -475,27 +475,41 @@ writes `label finish: zone = "goal"`.
 The scenario declares its map's labelled things, and the page checks it
 with the start gate's check.
 
-- **Map.** A scenario's labelled things are the list the scenario lane
-  gives it (`rules::scenario`); each has `id`, `label`, `number?`,
-  `team?`, and this design adds `class`, one of `object`, `flag`,
-  `volume`, `spawn`. `workbench::run` puts the things in
-  `fake::FakeGame` (`labelled`, `numbers`, `object_teams`) and runs
-  `labels::check` first; a problem is listed with kind `map` and its
-  text, and nothing runs. `h2 rules run --scenario` reads the same list.
-- **Generated matches.** `labels::minimal(ir, teams)` gives the smallest
-  census the check accepts: one of each single label, the minimum of
-  each set, each number, one per team. The match generator (`gen.rs`,
-  `POST /v1/rules/simulate`) uses it as the map of a match it invents,
-  so a generated match is never a blocked one.
+- **Map.** **Code**, `scenario.rs`. A scenario's `map`
+  (`scenario::ScenarioLabel`) lists things, each with `object` (its
+  handle), `label`, `number?`, `placement?`, `team?` and `class?`, one of
+  `object`, `flag`, `volume`, `spawn`; with no `class`, the one its
+  label's kind in the script suggests. `scenario::census_of` turns the
+  list into a `labels::Census`; `scenario::resolve_map` runs
+  `labels::check` over it for the scenario's teams, and `FakeGame`
+  receives the things (`labelled`, `numbers`, `object_teams`) only if it
+  passes. A problem is `RunError::Map` with the check's text, and
+  nothing runs: `workbench::run` and `Runner::new`, `scenario::run`
+  (`h2 rules run --scenario`) and `POST /v1/rules/run` (`{ok: false,
+  errors: [], map: [text]}`) all give it. A scenario with no `map` takes
+  `labels::minimal(ir, teams)` as things from `scenario::MAP_BASE`.
+  `labelled` is the older name of `map` in a file and a request.
+- **Generated matches.** **Code**, `sim.rs`. `labels::minimal(ir, teams)`
+  gives the smallest census the check accepts: one of each single label,
+  the minimum of each set, each number, one per team. The match
+  generator (`sim::simulate`, `POST /v1/rules/simulate`) uses it as the
+  map of a match it invents (`sim::objects`), so a generated match is
+  never a blocked one; its players walk into every thing but a starting
+  location. The match's scenario carries the map, so a saved match runs
+  again.
 - **The page** (`web/src/stats/RulesTest.tsx`) lists the map's things
   under the players, grouped by label, and shows each missing
   requirement as a problem with a button: **Add what the script needs**
   merges the report's `minimal` list into the map. An event's zone or
   object is picked by label and number ("capture 0"), not by id.
-- **The check report** (`workbench::CheckReport`) gains `labels`: each
-  declared label's name, map text, kind, count range, numbering, `per
-  team` and its sentence in Forge's words, read from the IR's label
-  table, and `minimal`. The page and the variant page show it as "What a map needs".
+- **The check report** (`workbench::CheckReport`, **Code**) has `labels`
+  (`workbench::LabelLine`): each declared label's text, kind, `min`,
+  `max` (absent when unbounded), `single`, `numbered`, number range,
+  `per_team` and `needs`, its sentence in Forge's words
+  (`labels::describe`), read from the IR's label table; and `minimal`,
+  the smallest passing map as scenario things. The CLI's `h2 rules
+  check` prints the sentences under "a map needs". The page and the
+  variant page show it as "What a map needs" (slice 8).
 - **Insert.** The Declarations menu (`web/src/lib/rulesIde.ts`,
   `DECLARATIONS`) has a Labels group: one zone, one object, a set of
   objects, a numbered set of zones, spawn areas, and the built-in flag
@@ -531,10 +545,11 @@ group.
   `SetBase::bound` is the label's `max`, which `verify::cost` charges
   in the worst-tick estimate, and `Vm::members` takes at most `max`, so
   the bound holds on any map, checked or not.
-- Until the checker declares labels (slice 2), `lower.rs` writes every
-  string label as `LabelDef::objects`: kind object, `min` 0, `max` 256,
-  no flags, which every map satisfies. Every tag path is `TagDef::any`.
-  It refuses a label outside `label_char` and a 65th label.
+- `lower.rs` writes each label from its declaration (`check::Label`):
+  kind, `min`, `max`, the numbered and per-team flags, and its map text.
+  A tag path used as a weapon is `TagGroup::Weapon`; every other is
+  `TagDef::any`. The checker refuses a label outside `label_char` and a
+  65th label.
 - A front end that writes IR directly declares its labels the same way:
   Firefight's `ZONE_LABEL` (`crates/formats/firefight/src/script.rs`) is
   kind object.
@@ -619,9 +634,9 @@ Every slice leaves the tree green and lands by itself. Paths are under
 | # | Slice | Owns | Tests | Done when | After |
 |---|---|---|---|---|---|
 | 1 (built) | The IR's tables and the check | `ir.rs`, `verify.rs`, `vm.rs`, `ty.rs`, `labels.rs` (new: `check`, `minimal`), `crates/formats/firefight/src/script.rs`; in `lang/lower.rs` only the label and tag writers (a string label is an unbounded `objects` set) | each verifier refusal; `members` stops at `max`; `check` gives each text of the gate's "The check" from a hand-built census; `check(ir, minimal(ir))` passes for every built-in; the IR fuzz seeds are remade | every existing test passes on the changed tables | the scenario-events lane |
-| 2 | The checker and labels | `lang/check.rs`, `lang/sig.rs`, `lang/types.rs` (new); `lang/ast.rs`, `lang/parse.rs`, `lang/lex.rs`, `lang/lower.rs`, `lang/mod.rs`; `builtin/*.rules`, `builtin/mod.rs`, `crates/formats/rules/tests/*`; the scripts in `docs/game/rules-engine.md` and `.claude/skills/h2-rules/*` | one test per diagnostic code for labels, `T?` and narrowing, `zone`, `weapon`, `is` and handlers by label; `sig` erases to `caps::ENTRIES`; a script with five errors reports five; every built-in compiles, verifies, fits the budget and passes its scenario tests | the string label forms are gone from the grammar and the tree; a built-in's label table carries its declarations; `lower.rs` makes no type decision | 1 |
-| 3 | The host gate | `crates/extensions/game/src/rules/runtime.rs`, `rules/guest.rs`, `rules/feature.rs`; `crates/formats/forge-doc/src/labels.rs` (`of_file`, `of_game`, which build a `rules::labels::Census`); `crates/extensions/agent-proto/src/rules.rs` (`blocked`); `crates/apps/boot/src/registration.rs` (the `film` argument) | over invented guest memory and a Forge document: a map that lacks `goal` gives `Status::Blocked`, one `Call::End` and no VM; a map that has it starts; `film` skips the check; a Forge session refuses without ending; `of_file` equals `of_game` on one fixture; `rules.state` lists the problems | `Runtime::start` runs the check and a blocked game ends in its first tick | 1 |
-| 4 | Scenario maps | `scenario.rs`, `workbench.rs`, `fake.rs`, `gen.rs`; the `run`, `check` and `simulate` wire types in `crates/live/live-proto/src/rules.rs` and their use in `crates/live/live-server/src/rule_scripts.rs` | a scenario with a map runs Siege's phases on the fake; a missing label is a `map` problem and no run; the check report lists `labels` and `minimal` from a hand-built blob; a generated match passes the check | `h2 rules run`, `POST /v1/rules/run` and `/v1/rules/simulate` take a map with classes; the report has `labels` | 1; the scenario lane and the generator lane |
+| 2 (built) | The checker and labels | `lang/check.rs`, `lang/sig.rs`, `lang/types.rs` (new); `lang/ast.rs`, `lang/parse.rs`, `lang/lex.rs`, `lang/lower.rs`, `lang/mod.rs`; `builtin/*.rules`, `builtin/mod.rs`, `crates/formats/rules/tests/*`; the scripts in `docs/game/rules-engine.md` and `.claude/skills/h2-rules/*` | one test per diagnostic code for labels, `T?` and narrowing, `zone`, `weapon`, `is` and handlers by label; `sig` erases to `caps::ENTRIES`; a script with five errors reports five; every built-in compiles, verifies, fits the budget and passes its scenario tests | the string label forms are gone from the grammar and the tree; a built-in's label table carries its declarations; `lower.rs` makes no type decision | 1 |
+| 3 (built) | The host gate | `crates/extensions/game/src/rules/runtime.rs`, `rules/guest.rs`, `rules/feature.rs`; `crates/formats/forge-doc/src/labels.rs` (`of_file`, `of_game`, which build a `rules::labels::Census`); `crates/extensions/agent-proto/src/rules.rs` (`blocked`); `crates/apps/boot/src/registration.rs` (the `film` argument) | over invented guest memory and a Forge document: a map that lacks `goal` gives `Status::Blocked`, one `Call::End` and no VM; a map that has it starts; `film` skips the check; a Forge session refuses without ending; `of_file` equals `of_game` on one fixture; `rules.state` lists the problems | `Runtime::start` runs the check and a blocked game ends in its first tick | 1 |
+| 4 (built) | Scenario maps | `scenario.rs`, `workbench.rs`, `fake.rs`, `sim.rs`; the `run`, `check` and `simulate` wire types in `crates/live/live-proto/src/rules.rs` and their use in `crates/live/live-server/src/rule_scripts.rs` | a scenario with a map runs Siege's phases on the fake; a missing label is a `map` problem and no run; the check report lists `labels` and `minimal` from a hand-built blob; a generated match passes the check | `h2 rules run`, `POST /v1/rules/run` and `/v1/rules/simulate` take a map with classes; the report has `labels` | 1; the scenario lane and the generator lane |
 | 5 | Time, constants, match, value functions | the `lang/` files, the built-ins, the tests and the doc scripts of slice 2 | one test per diagnostic code; a `time` option's bits equal an `int` option's of the same range, and its label ends ` (seconds)`; the built-ins' scenario tests | the fixtures of "Stronger typing" compile or fail with the texts on this page; the built-ins use `time`, `const` and `match` | 2 |
 | 6 | The editor's Rust half | `ide/*`, `crates/apps/cli/src/rules_lsp.rs`; the `ide` route's `actions` and `rename` in `rule_scripts.rs` | hover, completion order in `inside(p, ` and after `is`, tokens, definition, references and rename for a label; each fix applied gives a script without that error; `ide/model.rs` holds no type inference | `rules::ide` reads `Checked`; `h2 rules lsp` answers `codeAction` and `rename` | 2; beside 5 |
 | 7 | The lobby gate | `crates/extensions/game/src/rules/gate.rs` (new), `rules/mod.rs`, `crates/extensions/game/src/lobby_mode.rs` (`start_refused`, the `LOBBY_VARIANT_PANEL` hook), `lobby_status.rs`, `lobby_mode/tests.rs` | over invented guest memory and a map fixture: a changed map, Forge map or variant runs the check once; a blocked pair answers `REFUSED_STATE` and the status line's text, with `(and n more)`; Forge mode is not held; a host block becomes the lobby's verdict; `rules.state` lists the problems in the lobby | Start Game does nothing on a blocked pair and the status line says why | 3 |
@@ -647,9 +662,9 @@ Where the slices meet the lanes in flight:
   types it gives them ("Time"). Slice 4 adds `class` to its labelled
   objects. Slice 9 puts `check_pairs` beside its hopper policy. Slice 10
   types the holes of its `message`.
-- **The match generator lane** (`gen.rs`, `/v1/rules/simulate`). Slice 4
+- **The match generator lane** (`sim.rs`, `/v1/rules/simulate`). Slice 4
   gives a generated match `labels::minimal` as its map, and is the one
-  slice here that edits `gen.rs`.
+  slice here that edits `sim.rs`.
 
 ## Not verified
 

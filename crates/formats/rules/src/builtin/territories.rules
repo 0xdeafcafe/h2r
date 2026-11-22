@@ -15,9 +15,11 @@
 rules "Territories" 1
 carrier territories
 
+label territory: zones 1..8
+
 option score_seconds: int 1..16 = 1 "Score interval" "Seconds between points for each territory held"
 
-object var owner: player = none
+object var owner: player? = none
 object var progress: int = 0
 global var placed: int = 0
 global var pay: timer
@@ -25,7 +27,7 @@ global var pay: timer
 on round_start {
     placed = 0
     let n = clamp(variant.territories_count, 1, 8)
-    for each objects labelled "territory" m {
+    for each territory m {
         if placed < n {
             register_objective(m, none)
             m.owner = none
@@ -36,14 +38,13 @@ on round_start {
     pay = seconds(score_seconds)
 }
 
+// The territories in play are the registered ones.
 on tick {
-    for each objectives m {
-        let lead = first(players p where p.alive and inside(p, m))
-        if lead == none {
-            m.progress = 0
-        } else {
+    for each territory m where is_objective(m) {
+        if let lead = first(players p where p.alive and inside(p, m)) {
             let rivals = count(players q where q.alive and inside(q, m) and ((variant.team_play and q.team != lead.team) or (not variant.team_play and q != lead)))
-            let held = m.owner != none and ((variant.team_play and m.owner.team == lead.team) or m.owner == lead)
+            let owner = m.owner
+            let held = owner != none and ((variant.team_play and owner.team == lead.team) or owner == lead)
             if rivals > 0 or held {
                 m.progress = 0
             } else {
@@ -53,12 +54,16 @@ on tick {
                     m.progress = 0
                 }
             }
+        } else {
+            m.progress = 0
         }
     }
 }
 
 on timer(pay) {
-    for each objectives m where m.owner != none { score(m.owner, 1) }
+    for each objectives m {
+        if let o = m.owner { score(o, 1) }
+    }
     pay = seconds(score_seconds)
 }
 

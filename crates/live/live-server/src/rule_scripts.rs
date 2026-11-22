@@ -192,6 +192,10 @@ struct WireReport {
     ir_limit: usize,
     capabilities: Vec<WireCap>,
     unhostable: Vec<&'static str>,
+    /// What a map needs: the labels the script declares.
+    labels: Vec<workbench::LabelLine>,
+    /// The smallest map that passes, as a scenario's `map` lists things.
+    minimal: Vec<rules::scenario::ScenarioLabel>,
 }
 
 /// `POST /v1/rules/check`'s answer.
@@ -252,6 +256,8 @@ fn check_view(c: workbench::Check) -> CheckView {
                 })
                 .collect(),
             unhostable: r.unhostable,
+            labels: r.labels,
+            minimal: r.minimal,
         }),
     }
 }
@@ -465,10 +471,11 @@ struct WireScenario {
     start: bool,
     #[serde(default)]
     timeline: Vec<WireTick>,
-    /// Labelled objects the game holds: what `objects labelled` visits,
-    /// `o.number` reads and, with a `team`, `o.team` reads.
-    #[serde(default)]
-    labelled: Vec<rules::scenario::ScenarioLabel>,
+    /// The map: what `objects labelled` visits, `o.number` reads and, with
+    /// a `team`, `o.team` reads. Absent, the script's minimal map; present,
+    /// it must pass the script's labels. `labelled` is the older name.
+    #[serde(default, alias = "labelled", skip_serializing_if = "Option::is_none")]
+    map: Option<Vec<rules::scenario::ScenarioLabel>>,
 }
 
 impl WireScenario {
@@ -496,7 +503,7 @@ impl WireScenario {
                     unit: s.unit,
                 })
                 .collect(),
-            labelled: self.labelled,
+            map: self.map,
             teams: self.teams,
             variant: self.variant,
             options: self.options,
@@ -533,7 +540,7 @@ impl WireScenario {
                     unit: p.unit,
                 })
                 .collect(),
-            labelled: s.labelled.clone(),
+            map: s.map.clone(),
             teams: s.teams.clone(),
             variant: s.variant.clone(),
             options: s.options,
@@ -1008,6 +1015,12 @@ async fn post_run(
             }),
         )),
         Err(RunError::Scenario(m)) => Err(invalid(format!("scenario: {m}"))),
+        // A map the script's labels refuse answers like a check, and
+        // nothing runs.
+        Err(RunError::Map(problems)) => Ok(crate::http::json(
+            StatusCode::OK,
+            &json!({ "ok": false, "errors": [], "map": problems }),
+        )),
     }
 }
 
@@ -1039,6 +1052,9 @@ async fn post_simulate(
         Ok(view) => Ok(crate::http::json(StatusCode::OK, &view)),
         Err(RunError::Script(errors)) => Ok(not_built(errors)),
         Err(RunError::Scenario(m)) => Err(invalid(format!("setup: {m}"))),
+        // A generated match plays on the script's minimal map, which the
+        // check accepts; a script no map can satisfy has none to play.
+        Err(RunError::Map(problems)) => Err(invalid(format!("setup: {}", problems.join("; ")))),
     }
 }
 

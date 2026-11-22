@@ -36,6 +36,9 @@ async fn check_reports_the_hash_the_budget_and_errors_with_places() {
     assert_eq!(v["report"]["ir_limit"], rules::ir::MAX_IR_BYTES);
     assert_eq!(v["report"]["slots"][0]["scope"], "global");
     assert_eq!(v["report"]["capabilities"], json!([]));
+    // Slayer needs nothing of a map.
+    assert_eq!(v["report"]["labels"], json!([]));
+    assert_eq!(v["report"]["minimal"], json!([]));
 
     let r = post(&h, "/v1/rules/check", json!({"source": BROKEN}), &[]).await;
     assert_eq!(r.status, StatusCode::OK);
@@ -92,6 +95,20 @@ async fn run_traces_a_scenario_on_the_fake_game() {
     assert_eq!(v["scores"], json!([{"slot": 0, "score": 0}, {"slot": 1, "score": 0}]));
     // The same request, the same trace.
     assert_eq!(post(&h, "/v1/rules/run", body, &[]).await.json(), v);
+
+    // A map the script has no requirement of runs, under either name, with
+    // the things' classes; one with an unknown field or class is refused.
+    for key in ["map", "labelled"] {
+        let mut with = scenario.clone();
+        with[key] = json!([{"label": "hill", "object": 40, "number": 0, "class": "volume"}]);
+        let r = post(&h, "/v1/rules/run", json!({"source": rules::builtin::SLAYER, "scenario": with}), &[]).await;
+        assert_eq!(r.status, StatusCode::OK, "{key}: {}", r.error());
+        assert_eq!(r.json()["ok"], true);
+    }
+    let mut bad = scenario.clone();
+    bad["map"] = json!([{"label": "hill", "object": 40, "class": "wall"}]);
+    let r = post(&h, "/v1/rules/run", json!({"source": rules::builtin::SLAYER, "scenario": bad}), &[]).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.error());
 
     let r = post(
         &h,

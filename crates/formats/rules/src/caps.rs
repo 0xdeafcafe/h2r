@@ -276,9 +276,12 @@ pub const ENTRIES: &[Entry] = &[
     read(id::LIVES, "lives", &[Player], Int, Named),
     read(id::ROUND_TIME_LEFT, "round_time_left", &[], Int, Named),
     read(id::IS_OBJECTIVE, "is_objective", &[Object], Bool, Named),
-    read(id::LABEL_NUMBER, "label_number", &[Object], Int, NotBuilt),
-    read(id::LABEL_OF, "label_of", &[Object], Label, NotBuilt),
-    read(id::ZONE_ID, "zone_id", &[Object], Int, NotBuilt),
+    // A labelled thing's number, label and placement id: the host's table
+    // of the map's labelled things (the netgame flags in guest memory and
+    // the session's Forge document; `game::rules::census`).
+    read(id::LABEL_NUMBER, "label_number", &[Object], Int, Named),
+    read(id::LABEL_OF, "label_of", &[Object], Label, Named),
+    read(id::ZONE_ID, "zone_id", &[Object], Int, Named),
     // Answered by the VM from the zone test (`Game::zone_holder`), which
     // no host has yet: the VM's own, over a game-side part not built.
     Entry {
@@ -322,8 +325,9 @@ pub const ENTRIES: &[Entry] = &[
     // An objective record's carrying player, `+0xc` (`engine::objectives`).
     read(id::CARRIER_OF, "carrier_of", &[Object], Player, Named),
     // An objective record's team (`+4`), or a netgame flag placement's team
-    // through its designator (`E+0x10`); neutral (8) reads as none.
-    read(id::OBJECT_TEAM, "object_team", &[Object], Team, Traced),
+    // through its designator (`E+0x10`, `engine::objectives::DESIGNATOR_TEAMS`);
+    // neutral (8) reads as none.
+    read(id::OBJECT_TEAM, "object_team", &[Object], Team, Named),
     // The player's living unit inside a zone object: a labelled volume, a
     // territory marker's capture volume, or a hill corner's hill.
     read(id::INSIDE, "inside", &[Player, Object], Bool, NotBuilt),

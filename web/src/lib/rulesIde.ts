@@ -21,7 +21,7 @@ export const LANGUAGE_ID = "h2rules";
 /** Declaration and statement words the parser reserves. */
 export const KEYWORDS = [
   "rules", "carrier", "teams", "list", "requires", "option", "palette", "enum", "global", "var", "table", "fn", "on",
-  "labelled", "text", "budget",
+  "label", "is", "text", "budget",
 ] as const;
 export const CONTROL = ["if", "else", "for", "each", "where", "let"] as const;
 export const WORD_OPS = ["and", "or", "not"] as const;
@@ -585,7 +585,7 @@ export const DECLARATIONS: readonly InsertItem[] = [
   { label: "global timer", detail: "global var name: timer", words: "counts ticks down, then runs on timer", snippet: `global var ${ph(1, "clock")}: timer` },
   { label: "player var", detail: "player var name: type = init", words: "a value each player carries (16 slots)", snippet: `player var ${ph(1, "name")}: ${ph(2, "int")} = ${ph(3, "0")}` },
   { label: "team var", detail: "team var name: type = init", words: "a value each team carries (8 slots)", snippet: `team var ${ph(1, "name")}: ${ph(2, "int")} = ${ph(3, "0")}` },
-  { label: "object var", detail: "object var name: type = init", words: "a value each labelled object carries (8 slots)", snippet: `object var ${ph(1, "name")}: ${ph(2, "int")} = ${ph(3, "0")}` },
+  { label: "object var", detail: "object var name: type = init", words: "a value each object carries (8 slots)", snippet: `object var ${ph(1, "name")}: ${ph(2, "int")} = ${ph(3, "0")}` },
   { label: "enum", detail: "enum Name { a, b }", words: "a type with named values", snippet: `enum ${ph(1, "Name")} { ${ph(2, "first")}, ${ph(3, "second")} }` },
   { label: "table", detail: "table name: (col: type) = [ (value) ]", words: "constant rows, indexed by int or by the first column", snippet: `table ${ph(1, "name")}: (${ph(2, "weapon")}: ${ph(3, "tag")}) = [\n\t(${ph(4, "\"objects/weapons/rifle/smg/smg\"")}),\n]` },
   { label: "palette", detail: "palette \"name\" = [\"tag\", ...]", words: "what a granted Forge power may place", snippet: `palette "${ph(1, "name")}" = [${ph(2, "\"objects/forge/block_wall/block_wall\"")}]` },
@@ -598,7 +598,7 @@ export const CONTROL_ITEMS: readonly InsertItem[] = [
   { label: "else if", detail: "else if cond { ... }", words: "another test after an if", snippet: `else if ${ph(1, "cond")} {\n\t$0\n}` },
   { label: "for each player", detail: "for each players p where cond { ... }", words: "every player, or those that match", snippet: `for each players ${ph(1, "p")} where ${ph(2, "p.alive")} {\n\t$0\n}` },
   { label: "for each team", detail: "for each teams t { ... }", words: "every team", snippet: `for each teams ${ph(1, "t")} {\n\t$0\n}` },
-  { label: "for each labelled object", detail: "for each objects labelled \"x\" o { ... }", words: "every object with a Forge label", snippet: `for each objects labelled "${ph(1, "label")}" ${ph(2, "o")} {\n\t$0\n}` },
+  { label: "for each label member", detail: "for each <label> o { ... }", words: "every placement of a declared Forge label", snippet: `for each ${ph(1, "label")} ${ph(2, "o")} {\n\t$0\n}` },
   { label: "for each objective", detail: "for each objectives o { ... }", words: "the game's objectives (flags, balls, bombs)", snippet: `for each objectives ${ph(1, "o")} {\n\t$0\n}` },
   { label: "let", detail: "let name = value", words: "a name for a value, not assigned again", snippet: `let ${ph(1, "name")} = ${ph(2, "value")}` },
 ];

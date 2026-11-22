@@ -152,6 +152,8 @@ export function mockCheck(source: string) {
       ir_limit: 64 * 1024,
       capabilities: requires.map((name) => ({ name, words: WORDS[name]?.[0] ?? "", grantable: WORDS[name]?.[1] ?? false, known: name in WORDS })),
       unhostable: /\bset_team\s*\(/.test(source) ? ["set_team"] : [],
+      labels: [],
+      minimal: [],
     },
   };
 }
@@ -248,7 +250,7 @@ export function mockMatch(source: string, players: number, teams: number, seed: 
   }
   const ticks = limit === "score" ? tick : last;
   const scenario = {
-    players: seats, labelled: [], teams: teams >= 2 ? Array.from({ length: teams }, (_, t) => t) : [],
+    players: seats, map: [], teams: teams >= 2 ? Array.from({ length: teams }, (_, t) => t) : [],
     variant: { team_play: teams >= 2 ? 1 : 0, score_limit: SIM_SCORE_LIMIT, time_limit: SIM_SECONDS, engine: carrierOfSource(source)?.engine ?? 2 },
     options: null, seed, round_time: last, ticks, start: true, timeline,
   };

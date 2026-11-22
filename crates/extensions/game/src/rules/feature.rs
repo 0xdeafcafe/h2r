@@ -205,9 +205,15 @@ impl hooks::Feature for Rules {
                 Some(_) => ::rules::policy::Context::Hopper { deny: &[] },
                 None => ::rules::policy::Context::Custom,
             };
+            // A Forge session's map is what is being built: the start gate
+            // refuses its script without ending the game
+            // (docs/game/rules-start-gate.md, "What a blocked start shows").
+            let lobby = crate::lobby_start::state();
+            let forge = lobby.lobby && lobby.mode == crate::lobby_start::Mode::Forge;
             let (line, hash) = {
                 let mut rt = s.lock();
                 rt.set_context(context);
+                rt.set_forge_session(forge);
                 let line = rt.start(m, part == Part::SystemLink);
                 (line, rt.hash())
             };
@@ -298,13 +304,19 @@ impl hooks::Feature for Rules {
     }
 }
 
-/// Adds the feature. Says why when it is left out.
+/// Adds the feature. Says why when it is left out. `film`: this run plays
+/// a film back (Theater), so the start gate does not run: the film's host
+/// passed it (docs/game/rules-start-gate.md, "Hoppers, System Link,
+/// offline and Theater").
 pub fn install(
     registry: &mut hooks::Registry,
     hle: Option<Arc<live_hle::Hle>>,
+    film: bool,
 ) -> anyhow::Result<bool> {
     let scripts = Arc::new(crate::game_variants::GameScripts::in_game(hle.clone()));
-    let shared = Arc::new(Shared::new(Runtime::in_game(Arc::clone(&scripts))));
+    let shared = Arc::new(Shared::new(
+        Runtime::in_game(Arc::clone(&scripts)).with_film(film),
+    ));
     shared.set_links(Links {
         hle: hle.clone(),
         scripts: Arc::clone(&scripts),
@@ -333,6 +345,14 @@ pub fn bounces(m: &dyn GuestMemory, awards: &[crate::superbounce_chain::Award]) 
     if let Some(s) = SHARED.get() {
         s.lock().bounces(m, awards);
     }
+}
+
+/// The problems the host's start gate blocked the last game on, while the
+/// block holds (until the next game starts); none without the feature.
+/// The lobby's verdict (`rules::gate`) reads it, so the status line names
+/// them after the game ends.
+pub fn blocked() -> Option<Vec<String>> {
+    SHARED.get()?.lock().blocked().map(<[String]>::to_vec)
 }
 
 /// Why `rules.state` has no runtime to answer from.

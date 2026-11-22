@@ -230,8 +230,9 @@ fn semantic_tokens_classify_names_by_what_they_are() {
     assert_eq!(at(16, 8), TokenKind::Variable);
     assert_eq!(at(17, 9), TokenKind::Operator);
     assert_eq!(at(17, 36), TokenKind::EnumMember);
-    let labelled = semantic_tokens("rules \"T\" 1\ncarrier slayer\non tick { for each objects labelled \"x\" o { } }\n");
-    assert!(labelled.iter().any(|t| t.line == 2 && t.start == 36 && t.kind == TokenKind::Label));
+    let labelled = semantic_tokens("rules \"T\" 1\ncarrier slayer\nlabel x: objects\non tick { for each x o { } }\n");
+    assert!(labelled.iter().any(|t| t.line == 2 && t.start == 6 && t.kind == TokenKind::Label));
+    assert!(labelled.iter().any(|t| t.line == 3 && t.start == 19 && t.kind == TokenKind::Label));
     assert_eq!(LEGEND[TokenKind::Capability.index() as usize], "capability");
 }
 
