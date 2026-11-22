@@ -108,6 +108,9 @@ impl Game {
         lease: &HostLease,
         disc: &Path,
     ) -> Result<Self> {
+        // A sim child builds no nav meshes (docs/runtime/sim.md): without
+        // the bundle's, its phantoms would stand still all match.
+        sim_run::require_nav(&host_data::bundled_bot_files(disc)?, &lease.map)?;
         Self::spawn_with(opts, live, lease, disc, |cmd, data, socket| {
             sim_run::configure(cmd, lease, disc, &opts.out, data, socket)?;
             cmd.env("H2_FILM_OUT", film_path(opts.film.as_deref(), socket))
@@ -156,6 +159,9 @@ impl Game {
         }
         configure_agent_tcp(&mut cmd, std::env::var_os(agent_proto::ENV).as_deref())?;
         configure(&mut cmd, data, &socket)?;
+        // The bundle's nav meshes and visibility grids go where the game
+        // loads them (docs/live/dedicated-host.md, Game data bundle).
+        host_data::install_bot_data(disc, data).context("placing the host data's bot nav data")?;
         if let Some(stores) = host_data::bundled_store_dir(disc)? {
             // The bundle carries only the physical cache header for a store-backed map.
             cmd.env(vfs::sim_store::STORE_ENV, stores);

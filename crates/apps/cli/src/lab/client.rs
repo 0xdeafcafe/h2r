@@ -1226,7 +1226,10 @@ mod tests {
 
     #[test]
     fn dedicated_flags_need_dedicated_and_never_wait() {
-        let err = |s: &str| parse_run(words(s)).unwrap_err().to_string();
+        let err = |s: &str| match parse_run(words(s)) {
+            Ok(_) => panic!("{s} parsed"),
+            Err(e) => e.to_string(),
+        };
         assert!(err("--name Join --map lockout").contains("add --dedicated"));
         assert!(err("--name Join --host-bots").contains("add --dedicated"));
         assert!(err("--name Join --dedicated --wait").contains("--wait"));

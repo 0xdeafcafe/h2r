@@ -7,6 +7,12 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+# The bots' nav meshes and visibility grids for every bundled multiplayer
+# map: built with the nav worker, checked against the map, placed in the
+# host's data root (docs/live/dedicated-host.md, Game data bundle).
+bots = { path = "../bots" }
+# The default data root whose bots directory `h2 host bundle` builds into.
+content.workspace = true
 map.workspace = true
 serde.workspace = true
 serde_json.workspace = true
