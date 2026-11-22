@@ -272,6 +272,12 @@ pub enum Action {
     OpenVariant(Origin),
     /// Start a new, unsaved variant of a game type with its defaults.
     NewVariant(GameType),
+    /// Start a new, unsaved variant of the script with this source: the
+    /// record `variants::portable::record_for` builds.
+    NewVariantFromScript(String),
+    /// Set option `.0` (its index in the IR) of the script the open
+    /// variant names to `.1`: one undo step.
+    SetScriptOption(usize, i32),
     /// Copy the open built-in under a name (built-ins are read-only).
     CopyBuiltin(String),
     SetVariantName(String),
@@ -413,6 +419,7 @@ impl Action {
             Action::SelectHalo1Map(_) => dirty_map(),
             Action::OpenVariant(o) if app.variant_origin() != Some(o) => dirty(ToolKind::Variants),
             Action::NewVariant(_)
+            | Action::NewVariantFromScript(_)
             | Action::ImportVariantFile(_)
             | Action::ImportVariantText(_)
             | Action::EditEntryVariant(..) => dirty(ToolKind::Variants),
@@ -1264,6 +1271,8 @@ impl App {
             }
             a @ (Action::OpenVariant(_)
             | Action::NewVariant(_)
+            | Action::NewVariantFromScript(_)
+            | Action::SetScriptOption(..)
             | Action::CopyBuiltin(_)
             | Action::SetVariantName(_)
             | Action::SetSetting(..)
@@ -1526,6 +1535,26 @@ impl App {
                 e.new_variant(ty);
                 Ok(Some(format!("new {} variant", ty.label())))
             }
+            Action::NewVariantFromScript(source) => match rules::compile(&source) {
+                Err(err) => Err(format!("the script does not build: {err}")),
+                Ok(ir) => e
+                    .new_from_script(&ir, &[])
+                    .map(|()| Some(format!("new variant of {:?}", ir.header.name)))
+                    .map_err(|err| err.to_string()),
+            },
+            Action::SetScriptOption(index, value) => match e.script_prefix() {
+                None => Err("the open variant names no script".into()),
+                Some(prefix) => match rules_edit::find_script(prefix, &self.rules) {
+                    None => Err(format!(
+                        "this editor does not have the script {} (open it in the script editor)",
+                        rules_edit::hex_prefix(prefix)
+                    )),
+                    Some(ir) => e
+                        .set_script_option(&ir, index, value)
+                        .map(|()| None)
+                        .map_err(|err| err.to_string()),
+                },
+            },
             Action::CopyBuiltin(name) => e
                 .copy_builtin(&name)
                 .map(|()| Some(format!("copied as {name:?}: save it to keep it")))

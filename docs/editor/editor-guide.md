@@ -824,6 +824,27 @@ From a built-in variant:
 From scratch: pick a game type in the list next to **New**, click
 **New**, give it a name, change what you want and **Save**.
 
+From a game type script: open the **New from script...** list under
+**New** and pick a built-in script, an example, or **The open script**
+(the one in the Game type script window, when it builds). You get an
+unsaved variant with the record the script describes: its game type's
+stock values, the script's `settings` written over them, its name and
+its option defaults
+(`variants::portable::record_for`, the same record the game's list and
+`h2 variants from-script` make).
+
+A variant that names a script has a **Script** section above its
+settings. It shows the script's name and description, how it scores,
+and the Quick Options rows it marks, in order, with this variant's
+values. Each option of the script is a row below, with a checkbox, a
+slider or a list for its kind and the option's help on hover; changing
+one is one undo step, and dragging a slider is one step. A flag beside a
+setting or an option means the script marks it for Quick Options. When
+Studio does not have the script (a variant made from a script of
+someone else's), the section names the script's hash and the settings
+are left as they are; open the script in the Game type script window to
+see its options.
+
 To change a saved variant later, click it under **Saved**, edit it and
 **Save** again. **Delete** removes the open saved variant.
 
@@ -975,7 +996,15 @@ type script** window is a tab beside the variant's settings
 - **Check** is the [workbench](../game/rules-engine.md#workbench)
   report: the worst tick against the op budget and each handler's cost,
   the variables used against their limits, the size, and the
-  capabilities the script asks for.
+  capabilities the script asks for. **Settings and Quick Options**
+  under it lists the record settings the script's `settings` block names
+  with their values, and the rows its `quick` line marks, in order,
+  each tagged as a setting or an option.
+- **Save as game variant** writes the script's own variant as a
+  `.h2variant` file: the record of the script, its options at their
+  defaults, and the script with its source
+  (`variants::portable::from_script`, as `h2 variants from-script`
+  does). The script has to build and fit its budget.
 
 **Reload** (or **Cmd+R** while typing) sends the script to the paired
 game ([Play from the editor](#play-from-the-editor)). The editor builds

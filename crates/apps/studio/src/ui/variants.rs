@@ -7,15 +7,22 @@ use std::path::PathBuf;
 
 use dear_imgui_rs::{TableColumnFlags, TableColumnWidth, TableFlags, TreeNodeFlags, Ui};
 use variants::ext;
-use variants::panel::{Origin, strip_icon};
+use variants::panel::{Origin, OptionKind, OptionView, ScriptView, script_view, strip_icon};
 use variants::record::{self, Kind};
 use variants::{GameType, GameVariant, SettingId, VariantEditor};
 
-use crate::app::{Action, App};
+use crate::app::{Action, App, rules_edit};
 use crate::theme::{self, Fonts, icon};
+
+/// Which script a record names, and the editor's open script it may be:
+/// what [`VariantsUi::script`] is looked up for.
+type ScriptKey = ([u8; 8], Option<String>);
 
 /// The variant tool's own UI state.
 pub struct VariantsUi {
+    /// The script the open record names, found once per record and script
+    /// editor state rather than compiled every frame.
+    script: Option<(ScriptKey, Option<rules::Ir>)>,
     /// The game type "New" makes.
     pub new_type: GameType,
     /// The name a copy of the open built-in gets.
@@ -32,12 +39,33 @@ pub struct VariantsUi {
 impl Default for VariantsUi {
     fn default() -> Self {
         Self {
+            script: None,
             new_type: GameType::Slayer,
             copy_name: String::new(),
             copy_for: None,
             import_text: String::new(),
             only_page: None,
         }
+    }
+}
+
+impl VariantsUi {
+    /// The script `prefix` names, as [`rules_edit::find_script`] finds it,
+    /// looked up again only when the prefix or the script editor's
+    /// analysed script changes.
+    fn script_for(&mut self, app: &App, prefix: [u8; 8]) -> Option<&rules::Ir> {
+        let editor_hash = app
+            .rules
+            .analysis
+            .check
+            .as_ref()
+            .and_then(|c| c.hash.clone());
+        let key = (prefix, editor_hash);
+        if self.script.as_ref().is_none_or(|(k, _)| *k != key) {
+            let found = rules_edit::find_script(prefix, &app.rules);
+            self.script = Some((key, found));
+        }
+        self.script.as_ref().and_then(|(_, ir)| ir.as_ref())
     }
 }
 
@@ -68,6 +96,24 @@ pub fn list(ui: &Ui, app: &App, st: &mut VariantsUi, fonts: &Fonts, actions: &mu
         actions.push(Action::NewVariant(st.new_type));
     }
     ui.set_item_tooltip("A new variant of this game type with its defaults");
+    ui.set_next_item_width(-1.0);
+    if let Some(_c) = ui.begin_combo("##new-script", format!("{} New from script...", icon::PLUS)) {
+        for (label, source) in rules_edit::starters() {
+            if ui.selectable(&label) {
+                actions.push(Action::NewVariantFromScript(source.to_string()));
+            }
+        }
+        if app.rules.analysis.check.as_ref().is_some_and(|c| c.ok) {
+            ui.separator();
+            if ui.selectable(format!("The open script ({})", app.rules.title)) {
+                actions.push(Action::NewVariantFromScript(app.rules.text.clone()));
+            }
+        }
+    }
+    ui.set_item_tooltip(
+        "A new variant of a game type script: its settings and option defaults, as the \
+         game's list would make it",
+    );
     ui.separator();
     let open = e.origin().cloned();
     theme::panel_body(ui, "##variant-list", || {
@@ -165,9 +211,18 @@ pub fn settings(ui: &Ui, app: &App, st: &mut VariantsUi, fonts: &Fonts, actions:
     ui.separator();
 
     let defaults = e.schema().new_variant(ty);
+    // The script the record names, when this editor has it.
+    let prefix = e.script_prefix();
+    let script = prefix.and_then(|p| st.script_for(app, p).map(|ir| script_view(ir, v)));
+    let marked: &[SettingId] = script
+        .as_ref()
+        .map_or(&[], |s| s.marked_settings.as_slice());
     let disabled = ui.begin_disabled_with_cond(read_only);
     let only = st.only_page.take();
     {
+        if let Some(prefix) = prefix {
+            script_section(ui, prefix, script.as_ref(), actions);
+        }
         for page in e.schema().pages_for(ty) {
             if let Some(only) = &only {
                 ui.set_next_item_open(page.title.contains(only.as_str()));
@@ -196,7 +251,8 @@ pub fn settings(ui: &Ui, app: &App, st: &mut VariantsUi, fonts: &Fonts, actions:
             for id in &page.settings {
                 ui.table_next_row();
                 ui.table_next_column();
-                if let Some(x) = setting_row(ui, e, *id, v, &defaults, fonts) {
+                let quick = marked.contains(id);
+                if let Some(x) = setting_row(ui, e, *id, v, &defaults, fonts, quick) {
                     actions.push(Action::SetSetting(*id, x));
                 }
             }
@@ -206,6 +262,124 @@ pub fn settings(ui: &Ui, app: &App, st: &mut VariantsUi, fonts: &Fonts, actions:
         }
     }
     disabled.end();
+}
+
+/// The Script section: the script the record names (its name and
+/// description, how it scores, the Quick Options rows it marks) and a row
+/// per option, which edits the block's option bits as one undo step
+/// ([`Action::SetScriptOption`]). `view` is `None` when this editor does
+/// not have the script.
+fn script_section(ui: &Ui, prefix: [u8; 8], view: Option<&ScriptView>, actions: &mut Vec<Action>) {
+    let title = view.map_or_else(
+        || format!("Script {}", rules_edit::hex_prefix(prefix)),
+        |s| format!("Script: {}", s.name),
+    );
+    if !ui.collapsing_header(
+        format!("{title}##variant-script"),
+        TreeNodeFlags::DEFAULT_OPEN,
+    ) {
+        return;
+    }
+    let Some(view) = view else {
+        ui.text_colored(
+            theme::WARN,
+            format!(
+                "{} This variant names a script this editor does not have. Open it in the \
+                 script editor to see its options; its settings stay as they are.",
+                icon::INFO
+            ),
+        );
+        return;
+    };
+    if !view.about.is_empty() {
+        ui.text_wrapped(&view.about);
+    }
+    if view.carrier_scoring {
+        ui.text_disabled("Scored by its game type's own rules (scoring carrier).");
+    }
+    if !view.marks.is_empty() {
+        ui.text_disabled(format!("{} Quick Options", icon::FLAG));
+        for m in &view.marks {
+            ui.bullet_text(format!(
+                "{}: {}{}",
+                m.label,
+                m.text,
+                if m.option { "  (option)" } else { "" }
+            ));
+        }
+    }
+    if view.options.is_empty() {
+        return;
+    }
+    let flags = TableFlags::ROW_BG | TableFlags::BORDERS_INNER_V;
+    let Some(_t) = ui.begin_table_with_flags("##variant-script-options", 2, flags) else {
+        return;
+    };
+    ui.table_setup_column(
+        "Option",
+        TableColumnFlags::NONE,
+        Some(TableColumnWidth::Fixed(230.0)),
+    );
+    ui.table_setup_column(
+        "Value",
+        TableColumnFlags::NONE,
+        Some(TableColumnWidth::Stretch(1.0)),
+    );
+    for o in &view.options {
+        ui.table_next_row();
+        ui.table_next_column();
+        ui.align_text_to_frame_padding();
+        ui.text(&o.label);
+        let help = if o.description.is_empty() {
+            "No help text."
+        } else {
+            o.description.as_str()
+        };
+        ui.set_item_tooltip(format!("{help}\n\nDefault: {}", o.text(o.default)));
+        if o.quick {
+            ui.same_line();
+            ui.text_disabled(icon::FLAG);
+            ui.set_item_tooltip("Marked by the script: shown in the lobby's Quick Options");
+        }
+        ui.table_next_column();
+        if let Some(value) = option_row(ui, o) {
+            actions.push(Action::SetScriptOption(o.index, value));
+        }
+    }
+}
+
+/// One option's widget; the new value when the user changed it.
+fn option_row(ui: &Ui, o: &OptionView) -> Option<i32> {
+    ui.set_next_item_width(-1.0);
+    let wid = format!("##script-option-{}", o.index);
+    match &o.kind {
+        OptionKind::Bool => {
+            let mut on = o.value != 0;
+            ui.checkbox(&wid, &mut on).then_some(i32::from(on))
+        }
+        OptionKind::Int { lo, hi } => {
+            let mut x = o.value;
+            ui.slider_i32(&wid, &mut x, *lo, *hi)
+                .then_some(x.clamp(*lo, *hi))
+        }
+        OptionKind::Enum { lo, values } => {
+            let mut out = None;
+            if let Some(_c) = ui.begin_combo(&wid, o.text(o.value)) {
+                for (i, name) in values.iter().enumerate() {
+                    let value = lo + i as i32;
+                    if ui
+                        .selectable_config(name)
+                        .selected(value == o.value)
+                        .build()
+                        && value != o.value
+                    {
+                        out = Some(value);
+                    }
+                }
+            }
+            out
+        }
+    }
 }
 
 /// Our options the record has no field for, in its extension block
@@ -365,6 +539,7 @@ fn setting_row(
     v: &GameVariant,
     defaults: &GameVariant,
     fonts: &Fonts,
+    quick: bool,
 ) -> Option<i32> {
     let value = v.get(id)?;
     let schema = e.schema();
@@ -387,6 +562,11 @@ fn setting_row(
         .map(|d| e.value_text(id, d))
         .unwrap_or_default();
     ui.set_item_tooltip(format!("{help}\n\nDefault: {default_text}"));
+    if quick {
+        ui.same_line();
+        ui.text_disabled(icon::FLAG);
+        ui.set_item_tooltip("Marked by the script: shown in the lobby's Quick Options");
+    }
     ui.table_next_column();
     ui.set_next_item_width(-1.0);
     let wid = format!("##setting-{}", id.0);

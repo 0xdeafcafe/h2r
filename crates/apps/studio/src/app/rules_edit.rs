@@ -221,11 +221,12 @@ impl Default for RulesEditor {
     }
 }
 
-/// The scripts to start from: every built-in, then the examples, as
-/// `(label, source)`.
+/// The scripts to start from: every built-in, the listed variants, then
+/// the examples, as `(label, source)`.
 pub fn starters() -> Vec<(String, &'static str)> {
     let mut out: Vec<(String, &'static str)> = rules::builtin::ALL
         .iter()
+        .chain(rules::builtin::LISTED)
         .map(|b| (format!("{} (built in)", b.name), b.source))
         .collect();
     out.extend(
@@ -234,6 +235,101 @@ pub fn starters() -> Vec<(String, &'static str)> {
             .map(|&(name, src)| (format!("{name} (example)"), src)),
     );
     out
+}
+
+/// A starter by its label or its name, any case.
+pub fn find_starter(name: &str) -> Option<(String, &'static str)> {
+    let want = name.trim().to_ascii_lowercase();
+    starters().into_iter().find(|(label, _)| {
+        let label = label.to_ascii_lowercase();
+        label == want || label.split(" (").next() == Some(want.as_str())
+    })
+}
+
+/// A script the editor can name by its hash: a starter, compiled once.
+struct Known {
+    ir: rules::Ir,
+}
+
+fn known() -> &'static [Known] {
+    static KNOWN: std::sync::OnceLock<Vec<Known>> = std::sync::OnceLock::new();
+    KNOWN.get_or_init(|| {
+        starters()
+            .into_iter()
+            .filter_map(|(_, src)| rules::compile(src).ok().map(|ir| Known { ir }))
+            .collect()
+    })
+}
+
+/// The first 8 bytes of a script's hash as lowercase hex.
+pub fn hex_prefix(prefix: [u8; 8]) -> String {
+    prefix.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The script a record's script reference names, when this editor has it:
+/// a built-in, a listed variant or an example, else the script open in the
+/// editor (as it was last analysed).
+pub fn find_script(prefix: [u8; 8], editor: &RulesEditor) -> Option<rules::Ir> {
+    if let Some(k) = known().iter().find(|k| k.ir.id().0[..8] == prefix) {
+        return Some(k.ir.clone());
+    }
+    let hash = editor.analysis.check.as_ref()?.hash.as_deref()?;
+    if !hash.starts_with(&hex_prefix(prefix)) {
+        return None;
+    }
+    rules::compile(&editor.text).ok()
+}
+
+/// What the script section of the editor lists, from the check report's
+/// `settings` and `quick`: one line each.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ScriptSection {
+    /// "Label: value", in table order.
+    pub settings: Vec<String>,
+    /// "1. Label: value (setting)" or "(option)", in the script's order.
+    pub quick: Vec<String>,
+}
+
+/// The section for a check, or `None` when the script names no setting
+/// and marks nothing.
+pub fn script_section(check: &Check) -> Option<ScriptSection> {
+    let rep = check.report.as_ref()?;
+    if rep.settings.is_empty() && rep.quick.is_empty() {
+        return None;
+    }
+    Some(ScriptSection {
+        settings: rep
+            .settings
+            .iter()
+            .map(|s| format!("{}: {}", s.label, s.text))
+            .collect(),
+        quick: rep
+            .quick
+            .iter()
+            .enumerate()
+            .map(|(i, q)| {
+                format!(
+                    "{}. {}: {} ({})",
+                    i + 1,
+                    q.label,
+                    q.value.as_deref().unwrap_or("the carrier's stock value"),
+                    q.kind
+                )
+            })
+            .collect(),
+    })
+}
+
+/// The `.h2variant` of a script's own variant, as `h2 variants
+/// from-script` writes it: the script shipped (compiled, verified, held
+/// to the budget), then [`variants::portable::from_script`] with its
+/// source attached and every option at its default. Returns the file
+/// name the variant's name gives, and the file's text.
+pub fn game_variant_file(source: &str) -> Result<(String, String), String> {
+    let (ir, _) = rules::ship(source).map_err(|e| e.to_string())?;
+    let bundle = variants::portable::from_script(&ir, Some(source), &[]).map_err(|e| e.to_string())?;
+    let text = serde_json::to_string_pretty(&bundle).map_err(|e| e.to_string())?;
+    Ok((variants::portable::file_name(&bundle.name), text + "\n"))
 }
 
 impl RulesEditor {
@@ -266,6 +362,14 @@ impl RulesEditor {
         self.menu = None;
     }
 
+    /// Writes the script's own variant ([`game_variant_file`]) to `to`, a
+    /// file path.
+    pub fn save_game_variant(&self, to: &Path) -> Result<PathBuf, String> {
+        let (_, text) = game_variant_file(&self.text)?;
+        std::fs::write(to, text).map_err(|e| format!("{}: {e}", to.display()))?;
+        Ok(to.to_path_buf())
+    }
+
     /// Replaces the whole text (`rules.set`), keeping the cursor where it
     /// can. The widget takes it only while it has the keyboard: otherwise
     /// it reads `text` when it next draws, and the keyboard stays where it
@@ -289,12 +393,7 @@ impl RulesEditor {
     /// A built-in or example by its [`starters`] label or its name, any
     /// case. Unsaved: it has no path.
     pub fn open_starter(&mut self, name: &str) -> Result<(), String> {
-        let want = name.trim().to_ascii_lowercase();
-        let found = starters().into_iter().find(|(label, _)| {
-            let label = label.to_ascii_lowercase();
-            label == want || label.split(" (").next() == Some(want.as_str())
-        });
-        let Some((label, src)) = found else {
+        let Some((label, src)) = find_starter(name) else {
             let names: Vec<String> = starters().into_iter().map(|(l, _)| l).collect();
             return Err(format!("no built-in or example script named {name} (there are: {})", names.join(", ")));
         };

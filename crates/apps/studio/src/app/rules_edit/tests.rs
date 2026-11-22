@@ -578,3 +578,84 @@ fn open_in_editor_writes_the_script_and_watches_its_file() {
     assert!(ed.watch.is_none());
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn the_script_section_lists_marks() {
+    // A script that marks settings: one line per mark, in its order, and
+    // one per setting the block names.
+    let mut ed = RulesEditor::default();
+    ed.open_starter("SWAT").unwrap();
+    let check = ed.refresh().check.clone().unwrap();
+    assert!(check.ok, "{:?}", check.errors);
+    let rep = check.report.as_ref().unwrap();
+    let section = script_section(&check).unwrap();
+    assert_eq!(section.settings.len(), rep.settings.len());
+    assert!(!section.settings.is_empty());
+    assert_eq!(section.quick.len(), rep.quick.len());
+    assert_eq!(section.quick.len(), 5, "swat's quick line has five names");
+    for (i, (line, q)) in section.quick.iter().zip(&rep.quick).enumerate() {
+        assert!(line.starts_with(&format!("{}. {}", i + 1, q.label)), "{line}");
+        assert!(line.ends_with("(setting)"), "{line}");
+    }
+    for (line, s) in section.settings.iter().zip(&rep.settings) {
+        assert_eq!(line, &format!("{}: {}", s.label, s.text));
+    }
+
+    // Options show as such, in the script's order among the settings.
+    ed.open_starter("Superbounce (built in)").unwrap();
+    let check = ed.refresh().check.clone().unwrap();
+    let section = script_section(&check).unwrap();
+    let kinds: Vec<&str> = section
+        .quick
+        .iter()
+        .map(|l| if l.ends_with("(option)") { "option" } else { "setting" })
+        .collect();
+    assert_eq!(kinds, ["setting", "setting", "setting", "option", "option"]);
+
+    // A script that names none has no section.
+    ed.apply(Edit::to(BLANK.to_string(), 0));
+    let check = ed.refresh().check.clone().unwrap();
+    assert_eq!(script_section(&check), None);
+}
+
+#[test]
+fn a_script_saves_as_its_own_game_variant() {
+    let src = rules::builtin::SWAT;
+    let (name, text) = game_variant_file(src).unwrap();
+    assert_eq!(name, "SWAT.h2variant");
+    // The file is what `from_script` makes, source attached.
+    let ir = rules::compile(src).unwrap();
+    let want = variants::portable::from_script(&ir, Some(src), &[]).unwrap();
+    let got = variants::portable::read(&text).unwrap();
+    assert_eq!(got.id(), want.id());
+    assert_eq!(got.name, "SWAT");
+
+    let ed = RulesEditor { text: src.to_string(), ..Default::default() };
+    let dir = std::env::temp_dir().join(format!("h2-script-variant-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = ed.save_game_variant(&dir.join(&name)).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    // A script that does not build writes nothing.
+    let bad = RulesEditor { text: "rules".into(), ..Default::default() };
+    assert!(bad.save_game_variant(&dir.join("x.h2variant")).is_err());
+    assert!(!dir.exists());
+}
+
+#[test]
+fn a_script_is_found_by_its_hash_prefix() {
+    let ed = RulesEditor::default();
+    let ir = rules::compile(rules::builtin::SWAT).unwrap();
+    let prefix: [u8; 8] = ir.id().0[..8].try_into().unwrap();
+    assert_eq!(find_script(prefix, &ed).unwrap().id(), ir.id());
+    assert!(find_script([9; 8], &ed).is_none());
+    assert_eq!(hex_prefix([0xab, 1, 2, 3, 4, 5, 6, 7]), "ab01020304050607");
+
+    // The script open in the editor is found too, once analysed.
+    let mut ed = RulesEditor::default();
+    ed.refresh();
+    let own = rules::compile(BLANK).unwrap();
+    let prefix: [u8; 8] = own.id().0[..8].try_into().unwrap();
+    assert_eq!(find_script(prefix, &ed).unwrap().id(), own.id());
+}

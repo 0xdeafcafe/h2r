@@ -13,6 +13,7 @@ use super::*;
 use crate::app::{Action, PlaylistEdit, Selection};
 
 mod bitmaps_tests;
+mod script_variants_tests;
 mod ui_export_tests;
 
 struct Temp(PathBuf);
