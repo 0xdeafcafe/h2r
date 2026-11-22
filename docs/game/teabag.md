@@ -82,9 +82,12 @@ crouches and bodies in flight are forgotten.
 
 ### The medal
 
-`film::events::medals::Incel` decides, and the Tracker gives `incel` at
-`GameEnded`: a `Medal` record at the end's tick for each slot, in slot
-order, and the summary's count. A player earns it once when all of these
+`film::events::medals::Incel` decides, inside the medal projection
+(`film::events::medals::Projection`) that the Tracker and Live both run.
+At `GameEnded` the Tracker writes a `Medal` record at the end's tick for
+each slot, in slot order, and counts it in the summary; Live counts it in
+the game's and the account's `medals`
+([live-api.md](../live/live-api.md#medals)). A player earns it once when all of these
 hold:
 
 1. **In from the start.** On `GameStarted`'s roster, or joined before the
@@ -98,11 +101,8 @@ hold:
 4. **No teabag.** Neither the giver nor the receiver of any `Teabag` in
    the game.
 
-The site keeps a copy of the rule (`gameIncel` in `web/src/state/derive.ts`,
-from the game's `teabags`, its players' `left` and `late`, and its end),
-in `gameAwards` beside the kill and bounce medals. It reads `late` from a
-`PlayerJoined` after a kill in the stream, and from `joined_late` in a
-snapshot.
+The site does not work the rule out. It shows the `incel` count Live
+serves in a game's and an account's `medals`.
 
 **The pictures.** A teabag under a red no sign, drawn by
 `scripts/live-medals.py` in the bounce medals' manner. The HUD message
