@@ -231,6 +231,17 @@ default `$RUSH_KEEP/xbox-signing`, else
 `~/Library/Application Support/h2recomp/xbox-signing`. Never commit it.
 osslsigncode signs with the package's block-map hash (SHA-256).
 
+**CI.** [The Xbox workflow](../../.github/workflows/xbox.yml) runs on
+`windows-latest` for pushes to `master`, pull requests and manual
+dispatches. It builds `h2uwp.exe` with the link line `build.sh` uses (static
+CRT, `/APPCONTAINER`, delay-loaded `opengl32` and `gdi32`) on a Windows
+host, where the rustup toolchain has the Windows `std` and `-Zbuild-std` is
+not needed, then runs `cargo test -p uwp-host` and the app-container import
+check (a failure of that check is reported without failing the job). It
+builds no package: `h2game.dll`, `disc/` and `bootcache/` come from the
+disc, which CI never has, and the signing certificate stays off the
+repository.
+
 ## Installing and launching
 
 Put the console in Developer Mode, open Dev Home, and turn on the Device

@@ -1,0 +1,85 @@
+name: Buck
+
+# The Buck2 build (docs/dev/buck.md) on Linux, in the devenv shell, which is
+# the toolchain the docs name (devenv.nix: Rust from rust-toolchain.toml,
+# clang, the Steam Runtime 4 sysroot). Two jobs:
+#
+#   rules   scripts/update-buck.py --check: the generated BUCK files and
+#           third-party/rust match Cargo.toml and Cargo.lock.
+#   build   the Linux and SteamOS desktop binary, //crates/apps/cli:h2, in
+#           release mode, as docs/runtime/linux.md builds it.
+#
+# Public code only. The game module (//platform/linux:module) and the
+# SteamOS package (//platform/steamos:run) read the owner's disc, so CI never
+# builds them.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: buck-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUSTC_WRAPPER: ""
+  # buck2 release 2026-11-15: bump the tag and the checksum together.
+  BUCK2_TAG: "2026-11-15"
+  BUCK2_SHA256: 51d209f834c3509bc83024bf4ede62cd907135e7b289b29ed69d763dcde67b04
+
+jobs:
+  rules:
+    name: generated rules are current
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          lfs: true # images, the app icon among them
+      - uses: cachix/install-nix-action@bb0495a1086c46893eee56f32fd192dfe4a15bb9 # v32.0.0
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            trusted-users = root runner
+      - name: Install devenv
+        run: nix profile install nixpkgs#devenv
+      - name: Install buck2
+        run: scripts/ci/install-buck2.sh
+      # Regenerates every BUCK file and the Reindeer output, lists the files
+      # that differ from the checked-in ones, puts the committed ones back
+      # and exits 1 when any is stale.
+      - name: Regenerate the rules and compare
+        run: devenv shell -- python3 scripts/update-buck.py --check
+      - name: Fail on any change to the tree
+        run: git diff --exit-code
+
+  build:
+    name: h2 with Buck2
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      # The Nix store holds clang, Rust, two Steam Runtime sysroots and the
+      # third-party crates' outputs: free the runner's unused toolchains.
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          lfs: true # images, the app icon among them
+      - uses: cachix/install-nix-action@bb0495a1086c46893eee56f32fd192dfe4a15bb9 # v32.0.0
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            trusted-users = root runner
+      - name: Install devenv
+        run: nix profile install nixpkgs#devenv
+      - name: Install buck2
+        run: scripts/ci/install-buck2.sh
+      - name: Check the toolchain
+        run: devenv shell -- buck2 audit config host_toolchain.steamos_sysroot
+      - name: Build h2
+        run: devenv shell -- buck2 build -c build_mode.mode=release //crates/apps/cli:h2 --show-output

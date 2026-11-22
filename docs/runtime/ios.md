@@ -233,6 +233,17 @@ why it stopped). The first launch of a newly signed app may need the
 developer profile trusted on the device (Settings > General > VPN & Device
 Management).
 
+## CI
+
+[The iOS workflow](../../.github/workflows/ios.yml) runs on `macos-latest`
+for pushes to `master`, pull requests and manual dispatches. It builds
+`libh2host.a` for `aarch64-apple-ios` as `platform/apple/build.sh` does
+(`-Zbuild-std` on the pinned compiler) and type-checks the Swift host
+(`platform/ios/H2iOS` and `platform/apple/GameKeyInput.swift`) against the
+iOS SDK and `h2host.h`. It does not build the app: `h2game.framework`,
+`disc/` and `bootcache/` come from the disc, which CI never has, and
+nothing is signed.
+
 ## Known gaps
 
 - The touch layout is not adjustable yet (positions, sizes, opacity).
