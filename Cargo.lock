@@ -2474,8 +2474,10 @@ name = "geometry-edit"
 version = "0.1.0"
 dependencies = [
  "editor-core",
+ "h1convert",
  "map",
  "mesh-edit",
+ "mopp",
  "scenario-edit",
  "tags",
 ]

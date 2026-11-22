@@ -1,6 +1,6 @@
 [package]
 name = "geometry-edit"
-description = "The Modeling tool's targets and save: structure clusters, instanced geometry definitions and render-model sections opened as mesh-edit meshes, with undo, the op log and in-place writes (docs/editor/modeling.md)"
+description = "The Modeling tool's targets and save: structure clusters, instanced geometry definitions and render-model sections opened as mesh-edit meshes, with undo, the op log, in-place and grown writes (docs/editor/modeling.md)"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -14,9 +14,14 @@ status = "in progress"
 map.workspace = true
 tags.workspace = true
 mesh-edit = { path = "../mesh-edit" }
+# A grown structure section's visibility code.
+mopp = { path = "../../formats/mopp" }
 # The snapshot undo stack every tool uses.
 editor-core = { path = "../editor-core" }
 
 [dev-dependencies]
 # The invented textured map (one cluster, a local raw block).
 scenario-edit = { path = "../scenario-edit" }
+# The converter's visibility check, the oracle for a grown section's code
+# and table.
+h1convert = { path = "../h1convert" }

@@ -17,9 +17,17 @@
 //! for XDVDFS, or one that cannot be opened is refused with a warning, and
 //! the disc's map is served. Explicit reloads use read-only private copies. See docs/runtime/storage.md
 //! ("Map overrides") and docs/editor/scenario-editor.md.
+//!
+//! The raw overlay ([`RawOverlay`], docs/editor/realtime-edits.md, "The
+//! edit overlay") lives here beside the map layers but is not applied by
+//! them: the guest copies a map into a cache slot before it reads raw
+//! data, and an overlay applied to that copy's source would be written
+//! into the slot file. [`crate::Vfs::read`] applies it to the slot files.
 mod generation;
+mod overlay;
 
 pub use generation::MapGeneration;
+pub use overlay::{OverlaySummary, RawOverlay};
 use std::{
     collections::HashMap,
     fs::File,
@@ -344,6 +352,9 @@ impl ReservedMapRebind {
         let old = state.bound.insert(prepared.key.clone(), Bound { file, changed: true });
         shared.update_flags(&state);
         drop(state);
+        // The overlay's offsets are the old file's: none of them holds in
+        // the reloaded copy (docs/editor/realtime-edits.md, "The edit overlay").
+        RawOverlay::global().clear();
         drop(old);
     }
 }
@@ -1562,5 +1573,38 @@ mod tests {
         assert!(host.generation.is_none());
         assert_eq!(host.path, p.canonicalize().unwrap());
         assert_eq!(b.read_at("maps\\a.map", 0, &mut [0; 4096]), Err(Error::FileCorrupt));
+    }
+
+    /// The guest reads a map's raw data from the cache slot it was copied
+    /// into: the overlay is served there, through its alias, and never on
+    /// the copy's source, so a copy made later holds none of it.
+    #[test]
+    fn the_raw_overlay_serves_an_aliased_slot_file_and_not_its_source() {
+        let overlay = RawOverlay::new();
+        let mut vfs = crate::Vfs::new();
+        vfs.set_raw_overlay(overlay.clone());
+        let slot_device = r"\Device\Harddisk0\Partition4";
+        vfs.mount(crate::CDROM_DEVICE, Disc).unwrap();
+        vfs.mount(slot_device, Disc).unwrap();
+        let slot = format!(r"{slot_device}\maps\a.map");
+        let source = format!(r"{}\maps\a.map", crate::CDROM_DEVICE);
+        overlay.alias(&slot, "a");
+        overlay.put("a", 2, b"XY");
+        let at = overlay.append("a", 6, b"tail", 4);
+        assert_eq!(at, 8);
+        let mut read = |path: &str, at: u64, len: usize| {
+            let h = vfs.open(path, Default::default()).unwrap().handle;
+            let mut buf = vec![0; len];
+            let n = vfs.read(h, crate::Offset::Absolute(at), &mut buf);
+            vfs.close(h).unwrap();
+            n.map(|n| buf[..n].to_vec())
+        };
+        assert_eq!(read(&slot, 0, 16).unwrap(), b"diXY-a\0\0tail");
+        // Past the file's own end: the appended extent alone.
+        assert_eq!(read(&slot, 8, 4).unwrap(), b"tail");
+        assert_eq!(read(&source, 0, 16).unwrap(), b"disc-a");
+        overlay.clear();
+        assert_eq!(read(&slot, 0, 16).unwrap(), b"disc-a");
+        assert_eq!(read(&slot, 8, 4), Err(Error::EndOfFile));
     }
 }

@@ -1,6 +1,7 @@
 //! The look: a dark game-tool theme (neutral greys, one blue accent,
 //! small rounding, roomy spacing) and the bundled fonts, Inter for text
-//! and a Lucide subset for icons (`assets/fonts`, OFL and ISC licensed).
+//! and a Lucide subset for icons (`assets/fonts`, OFL and ISC licensed),
+//! and Dear ImGui's own ProggyVector for code.
 use dear_imgui_rs::{
     ChildFlags, Context, FontConfig, FontId, FontSource, StbTrueTypeFontData, Style, StyleColor,
     StyleVar, Ui,
@@ -31,6 +32,9 @@ pub struct Fonts {
     pub bold: FontId,
     pub caption: FontId,
     pub title: FontId,
+    /// Dear ImGui's own monospace font (ProggyVector), for code in the
+    /// script editor's hovers and lists.
+    pub code: FontId,
 }
 
 fn source(bytes: &[u8], size: f32) -> FontSource<'static> {
@@ -56,7 +60,14 @@ pub fn load_fonts(ctx: &mut Context) -> Fonts {
     let bold = atlas.add_font(&[source(INTER_SEMIBOLD, FONT_SIZE), icons(FONT_SIZE)]);
     let caption = atlas.add_font(&[source(INTER_REGULAR, CAPTION_SIZE), icons(CAPTION_SIZE)]);
     let title = atlas.add_font(&[source(INTER_SEMIBOLD, TITLE_SIZE), icons(TITLE_SIZE)]);
-    Fonts { regular, bold, caption, title }
+    let code = atlas.add_font(&[FontSource::default_vector_with_size(FONT_SIZE)]);
+    Fonts {
+        regular,
+        bold,
+        caption,
+        title,
+        code,
+    }
 }
 
 /// RGBA from 0..255 components.

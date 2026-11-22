@@ -278,6 +278,16 @@ pub struct GpuWorld {
 
 const SHADER: &str = include_str!("world.wgsl");
 
+/// What [`texture`] makes a texture for: sampling, and writes in place (a
+/// live edit's pixels, [`rewrite_texture`]). The crate's own tests also
+/// read one back, which needs `COPY_SRC`; the game never does.
+#[cfg(not(test))]
+const SAMPLED_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING.union(wgpu::TextureUsages::COPY_DST);
+#[cfg(test)]
+const SAMPLED_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
+    .union(wgpu::TextureUsages::COPY_DST)
+    .union(wgpu::TextureUsages::COPY_SRC);
+
 pub(crate) fn texture(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image, label: &str) -> wgpu::TextureView {
     if let Some(b) = &image.blocks
         && device.features().contains(wgpu::Features::TEXTURE_COMPRESSION_BC)
@@ -296,16 +306,23 @@ pub(crate) fn texture(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        usage: SAMPLED_USAGE,
         view_formats: &[],
     });
+    write_rgba_levels(queue, &t, image);
+    t.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+/// `image`'s RGBA8 levels over `t`, largest first.
+fn write_rgba_levels(queue: &wgpu::Queue, t: &wgpu::Texture, image: &Image) {
+    let (width, height) = (t.width(), t.height());
     for (level, bytes) in std::iter::once(&image.rgba).chain(&image.mips).enumerate() {
         let level = level as u32;
-        let (w, h) = ((size.width >> level).max(1), (size.height >> level).max(1));
+        let (w, h) = ((width >> level).max(1), (height >> level).max(1));
         gfx::churn::upload_bytes(bytes.len());
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: &t,
+                texture: t,
                 mip_level: level,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
@@ -319,7 +336,6 @@ pub(crate) fn texture(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image,
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
     }
-    t.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
 /// `image` from its BC blocks (`gfx::upload_texture`'s copies: a level
@@ -333,17 +349,25 @@ fn block_texture(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image, b: &
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: b.format,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        usage: SAMPLED_USAGE,
         view_formats: &[],
     });
+    write_block_levels(queue, &t, b, unit);
+    t.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+/// `b`'s levels over `t` (a level smaller than a block at its physical,
+/// rounded-up size), `unit` bytes a block.
+fn write_block_levels(queue: &wgpu::Queue, t: &wgpu::Texture, b: &Blocks, unit: u32) {
+    let (width, height) = (t.width(), t.height());
     for (level, bytes) in b.levels.iter().enumerate() {
         let level = level as u32;
-        let (w, h) = ((image.width >> level).max(1), (image.height >> level).max(1));
+        let (w, h) = ((width >> level).max(1), (height >> level).max(1));
         let (w, h) = (w.next_multiple_of(4), h.next_multiple_of(4));
         gfx::churn::upload_bytes(bytes.len());
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: &t,
+                texture: t,
                 mip_level: level,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
@@ -357,7 +381,61 @@ fn block_texture(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image, b: &
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
     }
-    t.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+/// Why a texture's pixels cannot be rewritten in place
+/// ([`check_rewrite`]). The texture keeps its pixels; the edit shows
+/// after a map reload (docs/editor/realtime-edits.md, "Textures").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageRefusal {
+    /// Not one 2D layer (a cube, volume or layered texture).
+    NotPlain,
+    /// The image's size differs from the texture's.
+    Size,
+    /// The image's level count differs from the texture's.
+    Levels,
+    /// The texture is block-compressed and the image has no blocks of
+    /// its format.
+    Format,
+    /// The image did not decode.
+    NotDecoded,
+}
+
+/// Whether `image` can be written over `t` as [`texture`] made it: one 2D
+/// layer of the same size, level count and format. RGBA8 takes the
+/// image's RGBA levels; a BC texture its blocks of the same format.
+pub fn check_rewrite(t: &wgpu::Texture, image: &Image) -> Result<(), ImageRefusal> {
+    if t.dimension() != wgpu::TextureDimension::D2 || t.depth_or_array_layers() != 1 {
+        return Err(ImageRefusal::NotPlain);
+    }
+    if (t.width(), t.height()) != (image.width.max(1), image.height.max(1)) {
+        return Err(ImageRefusal::Size);
+    }
+    let levels = if t.format() == wgpu::TextureFormat::Rgba8Unorm {
+        1 + image.mips.len()
+    } else {
+        match &image.blocks {
+            Some(b) if b.format == t.format() => b.levels.len(),
+            _ => return Err(ImageRefusal::Format),
+        }
+    };
+    if levels as u32 != t.mip_level_count() {
+        return Err(ImageRefusal::Levels);
+    }
+    Ok(())
+}
+
+/// Writes every level of `image` over `t` in place ([`check_rewrite`]
+/// first): a live edit's same-size pixels, visible to the next pass that
+/// samples `t`.
+pub fn rewrite_texture(queue: &wgpu::Queue, t: &wgpu::Texture, image: &Image) -> Result<(), ImageRefusal> {
+    check_rewrite(t, image)?;
+    match (t.format(), &image.blocks) {
+        (wgpu::TextureFormat::Rgba8Unorm, _) => write_rgba_levels(queue, t, image),
+        (format, Some(b)) => write_block_levels(queue, t, b, block_bytes(format).ok_or(ImageRefusal::Format)? as u32),
+        (_, None) => return Err(ImageRefusal::Format),
+    }
+    Ok(())
 }
 
 impl GpuWorld {
@@ -593,6 +671,51 @@ impl GpuWorld {
         let Some(run) = self.world.set_section_vertices(owner, positions, normals) else {
             return false;
         };
+        self.write_run(queue, run);
+        true
+    }
+
+    /// Replace `owner`'s section with `section`, decoded again from the
+    /// edited map, and write its run of both vertex buffers: a live
+    /// edit's native refresh (docs/editor/realtime-edits.md, "The native
+    /// refresh"). The draw and world bounds the culling and the guest's
+    /// admission read are recomputed ([`World::replace_section`]). A
+    /// refusal changes nothing; the host reloads the world.
+    pub fn replace_section(
+        &mut self,
+        queue: &wgpu::Queue,
+        owner: Owner,
+        section: &crate::world::SectionInput,
+    ) -> Result<crate::world::SectionRun, crate::world::SectionRefusal> {
+        let run = self.world.replace_section(owner, section)?;
+        self.write_run(queue, run);
+        Ok(run)
+    }
+
+    /// The stages of the material programs that sample image `image` of
+    /// `bitmap`, ascending, each once: what [`GpuWorld::rewrite_image`]
+    /// needs decoded (a palettized image expands through its stage's
+    /// palette).
+    pub fn image_stages(&self, bitmap: map::TagId, image: u32) -> Vec<usize> {
+        self.programs.as_ref().map_or_else(Vec::new, |p| p.image_stages(bitmap, image))
+    }
+
+    /// Rewrite every texture made from image `image` of `bitmap` with
+    /// `decoded` (by stage, [`GpuWorld::image_stages`]), each signed
+    /// variant biased as at load. All or nothing: a texture whose size,
+    /// level count or format differs refuses the lot. Returns how many
+    /// textures were written.
+    pub fn rewrite_image(
+        &self,
+        queue: &wgpu::Queue,
+        bitmap: map::TagId,
+        image: u32,
+        decoded: &HashMap<usize, Image>,
+    ) -> Result<usize, ImageRefusal> {
+        self.programs.as_ref().map_or(Ok(0), |p| p.rewrite_image(queue, bitmap, image, decoded))
+    }
+
+    fn write_run(&self, queue: &wgpu::Queue, run: crate::world::SectionRun) {
         let range = run.first_vertex as usize..(run.first_vertex + run.vertex_count) as usize;
         let offset = (run.first_vertex as usize * std::mem::size_of::<WorldVertex>()) as u64;
         queue.write_buffer(&self.vertices, offset, bytemuck::cast_slice(&self.world.vertices[range.clone()]));
@@ -605,7 +728,6 @@ impl GpuWorld {
                 bytemuck::cast_slice(&self.world.program_vertices[range]),
             );
         }
-        true
     }
 
     /// Draws the world's layer-16 passes of `set`'s materials from now on.

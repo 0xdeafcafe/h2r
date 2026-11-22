@@ -73,6 +73,21 @@ fn saved(source: &[u8], p: &Patches) -> Vec<u8> {
         edit.patch_raw(w.block, w.block_size, w.offset, &w.bytes)
             .unwrap();
     }
+    for a in &p.appended {
+        let word = edit.append_raw(&a.bytes, a.align).unwrap().encode();
+        let writes = std::iter::once(RegionWrite {
+            space: a.pointer_space,
+            address: a.pointer_address,
+            bytes: word.to_le_bytes().to_vec(),
+        })
+        .chain(a.writes.iter().cloned());
+        for w in writes {
+            match w.space {
+                None => edit.patch_metadata(w.address, &w.bytes).unwrap(),
+                Some(space) => edit.patch_bsp(space, w.address, &w.bytes).unwrap(),
+            }
+        }
+    }
     let mut out = Cursor::new(Vec::new());
     edit.write_to(&mut out).unwrap();
     out.into_inner()
@@ -179,27 +194,135 @@ fn replaying_the_op_log_gives_the_current_mesh() {
     assert_eq!(replay.export(), s.mesh(cluster()).unwrap().export());
 }
 
+fn extrude() -> Vec<MeshOp> {
+    vec![
+        MeshOp::Mode {
+            mode: SelectMode::Face,
+        },
+        MeshOp::SelectAll,
+        MeshOp::ExtrudeFaces {
+            offset: [0.0, 0.0, 1.0],
+        },
+    ]
+}
+
+fn opened_on(bytes: &[u8]) -> GeometrySession {
+    let mut map = Map::from_reader(Cursor::new(bytes.to_vec())).unwrap();
+    let mut s = GeometrySession::new();
+    s.open(&mut map, &mut Local(bytes.to_vec()), cluster())
+        .unwrap();
+    s
+}
+
 #[test]
-fn a_count_change_is_refused_and_named() {
+fn a_count_change_on_a_map_that_cannot_take_raw_data_is_refused_and_named() {
+    // The textured map's raw data lies past its metadata.
     let (_, mut s) = opened();
-    s.apply(
-        cluster(),
-        &[
-            MeshOp::Mode {
-                mode: SelectMode::Face,
-            },
-            MeshOp::SelectAll,
-            MeshOp::ExtrudeFaces {
-                offset: [0.0, 0.0, 1.0],
-            },
-        ],
-        None,
-    )
-    .unwrap();
+    s.apply(cluster(), &extrude(), None).unwrap();
     assert_eq!(s.class(cluster()), Some(WriteClass::Grown));
     let e = s.changes().unwrap_err().to_string();
     assert!(e.contains(&cluster().id()) && e.contains("grown"), "{e}");
+    assert!(s.check(None)[0].refused.is_some());
     assert_eq!(s.preview_positions(cluster()), None);
+}
+
+#[test]
+fn a_grown_cluster_saves_and_reads_back_to_the_exported_mesh() {
+    let source = fixture::fixture_with_textured_bsp_last();
+    let mut s = opened_on(&source);
+    s.apply(cluster(), &extrude(), None).unwrap();
+    let check = &s.check(Some(cluster()))[0];
+    assert_eq!((check.class, check.refused.clone()), (WriteClass::Grown, None));
+    let export = s.mesh(cluster()).unwrap().export();
+    let p = s.changes().unwrap();
+    assert_eq!(p.appended.len(), 1);
+    let a = &p.appended[0];
+    assert_eq!(a.target, cluster());
+    assert_eq!(a.old.offset as usize, TEX_BLOCK_FILE);
+    let out = saved(&source, &p);
+
+    // The saved map validates, its metadata still ends the file, and a
+    // scenario block can still grow.
+    let mut map = Map::from_reader(Cursor::new(out.clone())).unwrap();
+    map.validate_checksum().unwrap();
+    assert_eq!(map.raw_append_refusal(), None);
+    let mut edit = map.edit();
+    edit.append_metadata(&[0; 0x54], 16).unwrap();
+    edit.write_to(&mut Cursor::new(Vec::new())).unwrap();
+
+    // It reads back to the export: counts, positions, triangles by part.
+    let render = StructureRender::read(&mut map, fixture::id(4)).unwrap();
+    let g = &render.clusters[0].geometry;
+    let block = g.block.block.unwrap();
+    assert_ne!(block.offset as usize, TEX_BLOCK_FILE, "the old block is unreferenced");
+    assert_eq!(block.offset, source.len() as u32 - 0x2200);
+    assert_eq!(usize::from(g.info.total_vertex_count), export.positions.len());
+    assert_eq!(usize::from(g.info.total_triangle_count), export.triangles.len());
+    let section = g.load(&mut Local(out.clone()), Some(1)).unwrap().unwrap();
+    let v = section.vertices(None).unwrap();
+    assert_eq!(v.positions, export.positions);
+    let triangles: Vec<[u32; 3]> = section
+        .parts
+        .iter()
+        .flat_map(|p| section.part_triangles(p))
+        .map(|t| t.map(u32::from))
+        .collect();
+    assert_eq!(triangles, export.triangles);
+    assert!(section.parts.iter().all(|p| p.is_triangle_list()));
+    assert_eq!(section.subparts.len(), section.parts.len());
+    // The cluster's bounds hold the extruded top.
+    assert_eq!(render.clusters[0].bounds[5], 1.0);
+    // Nothing else names the old block.
+    for c in &render.clusters {
+        assert_ne!(c.geometry.block.block.map(|b| b.offset), Some(TEX_BLOCK_FILE as u32));
+    }
+}
+
+#[test]
+fn an_unedited_grown_target_writes_nothing_and_undo_drops_the_append() {
+    let source = fixture::fixture_with_textured_bsp_last();
+    let mut s = opened_on(&source);
+    s.apply(cluster(), &extrude(), None).unwrap();
+    assert_eq!(s.changes().unwrap().appended.len(), 1);
+    assert!(s.undo());
+    assert_eq!(s.changes().unwrap(), Patches::default());
+}
+
+#[test]
+fn a_bucket_lit_cluster_keeps_its_counts() {
+    let mut source = fixture::fixture_with_textured_bsp_last();
+    // A flagged bucket and one cluster reference with an offset, in the
+    // lightmap's spare room (its palette's tail), in the moved metadata.
+    let meta = source.len() - 0x2000;
+    let file = |at: usize| meta + at;
+    let addr = |at: usize| fixture::META + at as u32;
+    let (bucket, reference, offsets) = (
+        fixture::TEX_LTMP + 0x500,
+        fixture::TEX_LTMP + 0x540,
+        fixture::TEX_LTMP + 0x550,
+    );
+    let group = fixture::TEX_LTMP + 0x110;
+    source[file(bucket)..file(bucket) + 0x38].fill(0);
+    source[file(bucket)] = 1;
+    // No raw block of its own.
+    fixture::put(&mut source, file(bucket) + 0xc, u32::MAX);
+    fixture::put(&mut source, file(group) + 0x40, 1);
+    fixture::put(&mut source, file(group) + 0x44, addr(bucket));
+    source[file(reference)..file(reference) + 0x10].fill(0);
+    fixture::put(&mut source, file(reference) + 4, 1);
+    fixture::put(&mut source, file(reference) + 8, addr(offsets));
+    fixture::put(&mut source, file(group) + 0x60, 1);
+    fixture::put(&mut source, file(group) + 0x64, addr(reference));
+    let mut s = opened_on(&source);
+    s.apply(cluster(), &extrude(), None).unwrap();
+    let why = s.check(None)[0].refused.clone().unwrap();
+    assert!(why.contains("lightmap bucket"), "{why}");
+    let e = s.changes().unwrap_err().to_string();
+    assert!(e.contains(&cluster().id()), "{e}");
+    // A moved vertex is still in place.
+    assert!(s.undo());
+    lift(&mut s, [4.0, 4.0, 0.0], 1.0);
+    assert!(s.changes().unwrap().appended.is_empty());
 }
 
 #[test]

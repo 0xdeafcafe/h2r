@@ -19,13 +19,22 @@
 //!
 //! Edits are tied to the map they were made on (the scenario's datum): a
 //! journal entry from another map is never written back.
+//!
+//! **Raw data.** Section vertices and indices and bitmap pixels are not in
+//! the tags but in the map files' raw blocks, which the guest pages in and
+//! evicts. [`raw`] writes them live: an overlay entry in the file view
+//! both the guest and the native renderer read, and the resident copy when
+//! there is one (docs/editor/realtime-edits.md).
 
 mod batch;
 pub use batch::BatchError;
 pub mod index;
 pub mod names;
 pub mod path;
+pub mod raw;
 pub mod value;
+
+pub use raw::{RawBatch, RawFiles, RawWrite, Refresh, RefreshSink, Was};
 
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -141,6 +150,12 @@ pub struct Editor {
     epoch: Option<u64>,
     names: Option<NameSource>,
     cached: Option<Names>,
+    /// The file view and overlay raw writes go to ([`Editor::with_raw`]).
+    raw: Option<Box<dyn RawFiles>>,
+    /// Where refreshes go after a raw act.
+    refresh: Option<RefreshSink>,
+    /// Raw writes, evictions and appends, by batch id.
+    raw_journal: Vec<raw::RawChange>,
 }
 
 fn fault(e: runtime::GuestFault) -> Error {
@@ -167,6 +182,7 @@ impl Editor {
         self.cached = None;
         if self.epoch.is_none_or(|e| e < map_epoch) {
             self.journal.clear();
+            self.clear_raw();
         }
         if self.journal.is_empty() {
             self.epoch = Some(epoch);
@@ -623,7 +639,7 @@ impl Editor {
                 list.extend(fields);
             }
         }
-        json!({ "changes": list })
+        json!({ "changes": list, "raw": self.raw_changes() })
     }
 
     /// `edit.revert`: puts back the original bytes of one change (`id`) or
@@ -632,6 +648,7 @@ impl Editor {
     pub fn revert(&mut self, g: &mut Guest, id: Option<u64>) -> Result<Value> {
         if let Some(id) = id
             && !self.journal.iter().any(|c| c.id == id)
+            && !self.raw_journal.iter().any(|c| c.id() == id)
         {
             return Err(Error::invalid(format!(
                 "no change {id} (edit.changes lists them)"
@@ -682,6 +699,9 @@ impl Editor {
             }
             self.journal.remove(index);
         }
+        // Tag bytes first: a grown section's block info points at its old
+        // block again before the section is evicted to page it in.
+        self.revert_raw(g, id, &mut reverted, &mut dropped)?;
         Ok(json!({ "reverted": reverted, "dropped": dropped }))
     }
 }
