@@ -258,7 +258,7 @@ fn kv(s: &str, what: &str) -> Result<(String, String)> {
 }
 
 /// Which commit a run or build uses, from --branch/--rev/--current.
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct Source {
     branch: Option<String>,
     rev: Option<String>,
