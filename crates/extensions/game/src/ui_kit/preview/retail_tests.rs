@@ -361,6 +361,55 @@ fn the_dim_layer_is_the_discs_overlay_colour() {
     assert_eq!(c.rgba[..4], super::SYNTHETIC_DIM);
 }
 
+/// The backdrop's blur softens the opener: under the mode picker, the
+/// lobby's title has less local contrast (the largest max-min of
+/// brightness over a 40 by 10 window across its row) than under the
+/// overlay colour's fill alone.
+#[test]
+fn the_backdrop_blurs_the_openers_title() {
+    let Some(d) = disc() else { return };
+    let spec = crate::ui_kit::screens::sample(crate::ui_kit::screens::MODE_PICKER).unwrap();
+    let v = d.view(&spec, "sample").unwrap();
+    let Backing::Over(o) = v.backing else {
+        panic!("the mode picker is not over an opener: {:?}", v.backing);
+    };
+    assert_eq!(o, crate::ui_kit::view::Opener::LOBBY);
+    let alone = d.opener_drawn(&o).expect("the lobby is drawn");
+    let copy = |c: &Canvas| Canvas {
+        width: c.width,
+        height: c.height,
+        rgba: c.rgba.clone(),
+    };
+    let mut dimmed = copy(&alone.1);
+    d.dim(&mut dimmed);
+    let mut blurred = copy(&alone.1);
+    d.backdrop(&mut blurred);
+    let parts = d.retail_parts(LOBBY).unwrap();
+    let r = d.shared.header_layouts[parts.screen.header_layout()].header;
+    let x0 = (320 + i32::from(r.left)) as u32;
+    let y = (240 - i32::from(r.top) + (i32::from(r.top) - i32::from(r.bottom)) / 2 - 5) as u32;
+    let width = (i32::from(r.right) - i32::from(r.left)) as u32;
+    let contrast = |c: &Canvas, x: u32| {
+        let l: Vec<u32> = colours(c, x..x + 40, y..y + 10)
+            .iter()
+            .map(|p| p.iter().map(|v| u32::from(*v)).sum())
+            .collect();
+        l.iter().max().unwrap() - l.iter().min().unwrap()
+    };
+    let x = (x0..x0 + width.saturating_sub(40))
+        .step_by(4)
+        .max_by_key(|&x| contrast(&dimmed, x))
+        .expect("the title is wider than the window");
+    assert!(contrast(&dimmed, x) > 0, "the title shows under the fill");
+    assert!(
+        contrast(&blurred, x) < contrast(&dimmed, x),
+        "at x {x}: blurred {}, the fill alone {}",
+        contrast(&blurred, x),
+        contrast(&dimmed, x)
+    );
+    write(&blurred, "opener-lobby-backdrop.png");
+}
+
 /// Game Setup's Switch To variant draws its seven rows; the plain draw
 /// is the plain sample's, and a name the screen has no sample for fails
 /// with the names it has.

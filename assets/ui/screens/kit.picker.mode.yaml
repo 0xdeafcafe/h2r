@@ -4,10 +4,10 @@ layout: picker
 backing: over
 opener: lobby
 states:
+  focus-1:
+    focus: 1
   focus-0:
     focus: 0
-  focus-2:
-    focus: 2
   focus-3:
     focus: 3
 widgets:

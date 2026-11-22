@@ -340,9 +340,13 @@ others are dimmed (the frame and row alphas). The status line (Checking...,
 the error) sits above the legend, and the legend is in layout 2's second
 rectangle. The view's backing is `Backing::Over(opener)`, the
 `DialogSpec`'s `Opener`. On the disc, the preview draws the opener as a
-retail screen, dims it (`Disc::dim`) and draws the dialog over it.
+retail screen, then the game's backdrop over it (`Source::backdrop`:
+the overlay colour's fill and the blur, below), then the dialog.
 Synthetic previews draw the opener's rows as boxes and text blocks, then
-the same dim in a fixed colour (`preview::SYNTHETIC_DIM`, the disc's).
+the same backdrop with the fill's colour fixed
+(`preview::SYNTHETIC_DIM`, the disc's). A dialog drawn over a screen of
+ours (a view's `underlay`, as `layout.dialog.over-screen` is) gets the
+same backdrop over that screen (`render_composite`).
 
 **The modal's checks.** `Rules::panel` is set for a dialog spec
 (`DialogGeometry::area`, the panel's and corners' box,
@@ -395,10 +399,19 @@ then draws the stack's own widgets. On the disc the colour is (0.85,
 0.0, 0.0784, 0.1725): 85% of (0, 20, 44). So under a window-3 dialog
 (Game Setup) or a window-1 dialog the opener is drawn in full and then
 dimmed 85%: the lobby's PREGAME LOBBY strip above the frame shows at
-15%. `Disc::dim` draws that fill at rest (fraction 1), from
-`SharedGlobals::overlay_color`. Not drawn: `0x235756` calls `0x211a0`,
-not read, probably a blur, so the picture's opener is sharper than the
-game's.
+15%.
+
+`0x235756` then blurs the screen with the Kawase blur `0x211a0`
+(`engine::glow::blur`): `3.75 * fraction` steps (`[0x0045de14]`), so at
+rest four draws with fractions 1, 1, 1 and 0.75. The first draw's scale
+is 1.0 and each next one's is 1.25 times it; a draw's spread is its
+fraction times its scale (1, 1.25, 1.5625, 1.465). Each draw makes every
+pixel the mean of four bilinear taps, tap `k` moved by the spread times
+0.5 (`[0x0045dbbc]`) in x for `k & 1` and in y for `k & 2`, else times
+-0.5 (`[0x0045dbc4]`), with the sampler clamped at the edges
+(`native_render::glow::quad`). `Disc::backdrop` draws both at rest
+(fraction 1): the fill from `SharedGlobals::overlay_color`, then
+`preview::backdrop::blur` on the 640 by 480 canvas.
 
 The openers:
 
@@ -748,10 +761,11 @@ Count, nine values, 4 held, over Game Setup).
 
 `kit.picker.mode` (`screens::MODE_PICKER`) is the picker of the lobby's
 modes, a sample that no row of the game opens: GAME MODE, with
-MULTIPLAYER, CUSTOM GAMES, FORGE and FIREFIGHT as its rows (the lobby
-tabs' labels, `lobby_tabs::Tab::label`), CUSTOM GAMES held, "Choose
-what this lobby plays." on the right, over the dimmed lobby
-(`Opener::LOBBY`). Its choice only logs. The concepts for choosing a
+Multiplayer, Custom Games, Forge and Firefight as its rows (the lobby
+tabs' labels in title case, `lobby_tabs::Tab::title_case`), Custom
+Games held and focused when it opens (its first state is `focus-1`),
+"Choose what this lobby plays." on the right, over the lobby under the
+backdrop (`Opener::LOBBY`). Its choice only logs. The concepts for choosing a
 lobby's mode pick it to show the list their button or prompt opens.
 
 **Strings are in guest memory before the screen is built.** `TEXT_SET`
@@ -1505,7 +1519,8 @@ Rules:
   lobby's title and Game Setup's are in different rectangles.
 - **A dialog is drawn over its opener** when its sample names one with
   `over`, one level deep: the opener's own `over` is not followed. The
-  opener is dimmed by the shared globals' overlay colour (`Disc::dim`).
+  opener is under the game's backdrop: the shared globals' overlay
+  colour, then the blur (`Disc::backdrop`).
 - **A variant is named.** `assets/ui/retail-samples/` holds
   `squad_settings_dialog.switch-to.yaml`, Game Setup with retail's
   Switch To rows and two of ours (Switch To: Forge, Switch To:

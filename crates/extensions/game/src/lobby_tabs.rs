@@ -123,6 +123,18 @@ impl Tab {
         }
     }
 
+    /// Its label in title case, as a list's row reads (the lobby's mode
+    /// picker, `ui_kit::screens::MODE_PICKER`).
+    pub const fn title_case(self) -> &'static str {
+        match self {
+            Tab::Multiplayer => "Multiplayer",
+            Tab::CustomGames => "Custom Games",
+            Tab::Forge => "Forge",
+            Tab::Firefight => "Firefight",
+            Tab::CoOp => "Co-Op",
+        }
+    }
+
     /// Its name in the agent API (`ui.lobby.tabs`).
     pub const fn name(self) -> &'static str {
         match self {

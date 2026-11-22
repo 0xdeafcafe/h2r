@@ -32,6 +32,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use map::TagId;
 use tags::ui::{self as tui, MapSource, Rect, UiTag};
 
+pub mod backdrop;
 mod retail_edit;
 pub mod retail_sample;
 pub mod text_layout;
@@ -266,8 +267,9 @@ pub struct Disc {
     level_pictures: OnceCell<BTreeMap<String, u32>>,
     /// Every screen of `mainmenu.map` by screen id, decoded on first use.
     screens: RefCell<Option<HashMap<i16, tui::Screen>>>,
-    /// The screens modals open over, made and drawn once.
-    openers: RefCell<HashMap<Opener, Option<Drawn>>>,
+    /// The screens modals open over, made and drawn once, or why one
+    /// could not be.
+    openers: RefCell<HashMap<Opener, std::result::Result<Drawn, String>>>,
 }
 
 /// The screen ids of `shared.map`'s screen tags, sorted: what a game's UI
@@ -723,15 +725,22 @@ impl Disc {
         Ok(spec::check(s, &room))
     }
 
-    /// The layer the game draws between a dialog and its opener: the
+    /// What the game draws between a dialog and its opener, at rest: the
     /// whole screen filled with the shared globals' overlay colour
-    /// ([`tui::SharedGlobals::overlay_color`], `wigl +0x6c`; on the disc
-    /// 85% of (0, 20, 44)). The window stack's render (`0x234f8c`) draws
-    /// it under a screen whose lower window holds one (`0x23029a`, fill
-    /// `0x147cdb`), at its alpha times the screen's transition fraction:
-    /// at rest, its own alpha. The blur it calls next (`0x235756`) is not
-    /// drawn.
-    pub fn dim(&self, c: &mut Canvas) {
+    /// (`Disc::dim`), then blurred as `0x235756` blurs it
+    /// ([`backdrop::blur`]).
+    pub fn backdrop(&self, c: &mut Canvas) {
+        self.dim(c);
+        backdrop::blur(c, backdrop::AT_REST);
+    }
+
+    /// The backdrop's fill: the whole screen in the shared globals'
+    /// overlay colour ([`tui::SharedGlobals::overlay_color`], `wigl
+    /// +0x6c`; on the disc 85% of (0, 20, 44)). The window stack's render
+    /// (`0x234f8c`) draws it under a screen whose lower window holds one
+    /// (`0x23029a`, fill `0x147cdb`), at its alpha times the screen's
+    /// transition fraction: at rest, its own alpha.
+    fn dim(&self, c: &mut Canvas) {
         let [a, r, g, b] = self.shared.overlay_color();
         let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
         c.fill(WHOLE_SCREEN, [byte(r), byte(g), byte(b), byte(a)]);
@@ -883,11 +892,11 @@ impl Disc {
     /// ([`Disc::render_retail_layer`], in its sample state: units
     /// substituted, texts wrapped) with [`Opener::rows`] on its first
     /// list; the view is kept for the over-opener notes.
-    fn opener_drawn(&self, o: &Opener) -> Option<Drawn> {
+    fn opener_drawn(&self, o: &Opener) -> Result<Drawn> {
         if let Some(d) = self.openers.borrow().get(o) {
-            return d.clone();
+            return d.clone().map_err(|e| anyhow!(e));
         }
-        let d = self.opener_view(o).ok().and_then(|v| {
+        let d = self.opener_view(o).and_then(|v| {
             let r = Retail {
                 tag: o.tag,
                 pane: o.pane,
@@ -897,14 +906,12 @@ impl Disc {
                 rows: Some((o.rows, o.focus)),
                 sample: None,
             };
-            let c = self
-                .render_retail_layer(&r, &RetailEdits::default(), false)
-                .map_err(|e| eprintln!("ui preview: opener {}: {e:#}", o.name))
-                .ok()?;
-            Some(std::sync::Arc::new((v, c)))
+            let c = self.render_retail_layer(&r, &RetailEdits::default(), false)?;
+            Ok(std::sync::Arc::new((v, c)))
         });
+        let d = d.map_err(|e| format!("the opener {}: {e:#}", o.name));
         self.openers.borrow_mut().insert(*o, d.clone());
-        d
+        d.map_err(|e| anyhow!(e))
     }
 
     /// Screen tag `tag` of `mainmenu.map`, decoded, with its string table
@@ -1074,7 +1081,7 @@ impl Disc {
             .filter(|_| over);
         let mut c = match under {
             // A dialog: the screen it opened over, in that screen's state,
-            // dimmed as the window stack dims it ([`Disc::dim`]).
+            // under the window stack's backdrop ([`Disc::backdrop`]).
             Some(tag) => {
                 let mut c = self.render_retail_layer(
                     &Retail {
@@ -1089,7 +1096,7 @@ impl Disc {
                     &RetailEdits::default(),
                     false,
                 )?;
-                self.dim(&mut c);
+                self.backdrop(&mut c);
                 c
             }
             None => {
@@ -1612,8 +1619,8 @@ const WHOLE_SCREEN: Rect = Rect {
     right: 320,
 };
 
-/// The dim layer under a dialog without a disc: the disc's overlay
-/// colour ([`Disc::dim`]), 85% of (0, 20, 44).
+/// The backdrop's fill under a dialog without a disc: the disc's overlay
+/// colour (`Disc::dim`), 85% of (0, 20, 44).
 pub const SYNTHETIC_DIM: [u8; 4] = [0, 20, 44, 217];
 
 /// Blocks parked off screen (9999) are the game's spares.
@@ -1783,6 +1790,11 @@ pub trait Source: Metrics {
         None
     }
     fn backing(&self, c: &mut Canvas, b: Backing);
+    /// What the game draws over the screen under a dialog, before the
+    /// dialog: the overlay colour's fill, then the blur
+    /// ([`Disc::backdrop`]). [`Backing::Over`] draws it over the opener,
+    /// and a view drawn over a screen of ours (its `underlay`) over that.
+    fn backdrop(&self, c: &mut Canvas);
     #[allow(clippy::too_many_arguments)]
     fn text(
         &self,
@@ -1828,7 +1840,10 @@ impl Source for Disc {
         }))
     }
     fn opener(&self, o: &Opener) -> Option<View> {
-        self.opener_drawn(o).map(|d| d.0.clone())
+        self.opener_drawn(o).ok().map(|d| d.0.clone())
+    }
+    fn backdrop(&self, c: &mut Canvas) {
+        Disc::backdrop(self, c);
     }
     fn backing(&self, c: &mut Canvas, b: Backing) {
         match b {
@@ -1839,10 +1854,10 @@ impl Source for Disc {
                 }
             }
             Backing::Over(o) => {
-                if let Some(d) = self.opener_drawn(&o) {
+                if let Ok(d) = self.opener_drawn(&o) {
                     c.blit(&d.1, 0, 0);
                 }
-                self.dim(c);
+                Source::backdrop(self, c);
             }
         }
     }
@@ -1894,6 +1909,12 @@ impl Source for SyntheticSource {
             })),
             _ => None,
         }
+    }
+    /// The disc's backdrop with the overlay colour fixed
+    /// ([`SYNTHETIC_DIM`]).
+    fn backdrop(&self, c: &mut Canvas) {
+        c.fill(WHOLE_SCREEN, SYNTHETIC_DIM);
+        backdrop::blur(c, backdrop::AT_REST);
     }
     /// The opener's rows as a list on the left, its focused row lit.
     fn opener(&self, o: &Opener) -> Option<View> {
@@ -1949,8 +1970,7 @@ impl Source for SyntheticSource {
                     }
                 }
             }
-            // The dim layer, in the disc's colour ([`Disc::dim`]).
-            c.fill(WHOLE_SCREEN, SYNTHETIC_DIM);
+            self.backdrop(c);
             return;
         }
         if b == Backing::GameShell {
@@ -2083,8 +2103,11 @@ fn render_composite(
 ) -> Canvas {
     let mut c = if let Some(parent) = &v.underlay {
         // Widget filters apply to this screen. The parent stays painted
-        // when an audit samples the pixels underneath the dialog's text.
-        render_composite(parent, src, &|_| true, false, clear)
+        // when an audit samples the pixels underneath the dialog's text,
+        // under the backdrop a dialog draws over what it opened on.
+        let mut c = render_composite(parent, src, &|_| true, false, clear);
+        src.backdrop(&mut c);
+        c
     } else {
         let mut c = Canvas::new(640, 480, clear);
         src.backing(&mut c, v.backing);

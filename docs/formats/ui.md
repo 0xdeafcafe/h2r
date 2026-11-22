@@ -101,8 +101,10 @@ Under a screen whose lower window holds a screen (a dialog over its
 opener), the window stack's render (`0x0023029a`, the stacks' render
 slot `0x00234f8c`) first fills the whole screen (`0x00147cdb`) with the
 shared globals' colour at `+0x6c`, its alpha times the screen's
-transition fraction, and calls `0x00235756`; then it draws the screen's
-widgets. No dialog tag carries that backdrop.
+transition fraction, and calls `0x00235756`, which blurs the screen
+with the Kawase blur `0x000211a0` (`3.75 * fraction` steps,
+`[0x0045de14]`); then it draws the screen's widgets. No dialog tag
+carries that backdrop.
 
 ### Coordinates
 

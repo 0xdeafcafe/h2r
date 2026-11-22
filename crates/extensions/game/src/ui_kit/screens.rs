@@ -457,7 +457,7 @@ pub fn picker_sample() -> crate::ui_kit::picker::Pick {
 
 /// The lobby's pickers' samples: [`FORGE_MAP_PICKER`], New with two
 /// saved maps, the second held; [`MODE_PICKER`], the four modes the
-/// lobby's tabs name, Custom Games held. Their choices write nothing.
+/// lobby's tabs name in title case, Custom Games held. Their choices write nothing.
 pub fn lobby_pick_sample(name: &str) -> Option<crate::ui_kit::picker::Pick> {
     match name {
         FORGE_MAP_PICKER => Some(crate::lobby_mode::forge_map_pick(
@@ -467,7 +467,7 @@ pub fn lobby_pick_sample(name: &str) -> Option<crate::ui_kit::picker::Pick> {
         MODE_PICKER => {
             use crate::lobby_tabs::Tab;
             const MODES: [Tab; 4] = [Tab::Multiplayer, Tab::CustomGames, Tab::Forge, Tab::Firefight];
-            let values = MODES.iter().map(|t| t.label().to_owned()).collect();
+            let values = MODES.iter().map(|t| t.title_case().to_owned()).collect();
             Some(
                 crate::ui_kit::picker::Pick::new(
                     "Game Mode",
@@ -475,7 +475,7 @@ pub fn lobby_pick_sample(name: &str) -> Option<crate::ui_kit::picker::Pick> {
                     1,
                     "Choose what this lobby plays.",
                     Arc::new(|i: usize| match MODES.get(i) {
-                        Some(t) => format!("lobby mode: {}", t.label()),
+                        Some(t) => format!("lobby mode: {}", t.title_case()),
                         None => format!("mode {i} is not in the list"),
                     }),
                 )
@@ -666,10 +666,19 @@ pub fn list_page(name: &str) -> Option<ListPage> {
             ));
             list(ListPage::new(p.class(), described(&p)))
         }
-        FORGE_MAP_PICKER | MODE_PICKER => {
+        FORGE_MAP_PICKER => {
             crate::ui_kit::picker::offer_list(lobby_pick_sample(name)?)?;
             let p = Arc::new(crate::ui_kit::picker::Picker::new(false));
             list(ListPage::new(p.class(), described(&p)))
+        }
+        // The held value first, so the picker opens on it; then the
+        // first and last.
+        MODE_PICKER => {
+            let pick = lobby_pick_sample(name)?;
+            let at = [pick.current, 0, pick.values.len().saturating_sub(1)];
+            crate::ui_kit::picker::offer_list(pick)?;
+            let p = Arc::new(crate::ui_kit::picker::Picker::new(false));
+            list(ListPage::new(p.class(), described(&p)).with_states(&at))
         }
         _ => None,
     }
@@ -687,19 +696,22 @@ mod tests {
         use crate::lobby_tabs::Tab;
         let p = lobby_pick_sample(MODE_PICKER).expect("the mode picker has a sample");
         assert_eq!(p.title, "GAME MODE");
+        assert_eq!(p.values, ["Multiplayer", "Custom Games", "Forge", "Firefight"]);
         assert_eq!(
             p.values,
-            [Tab::Multiplayer, Tab::CustomGames, Tab::Forge, Tab::Firefight].map(Tab::label)
+            [Tab::Multiplayer, Tab::CustomGames, Tab::Forge, Tab::Firefight].map(Tab::title_case)
         );
-        assert_eq!(p.values[p.current], Tab::CustomGames.label());
+        assert_eq!(p.values[p.current], "Custom Games");
         assert_eq!(p.opener, crate::ui_kit::view::Opener::LOBBY);
         assert_eq!(p.description, "Choose what this lobby plays.");
         assert!(NAMES.contains(&MODE_PICKER));
         let s = sample(MODE_PICKER).expect("the mode picker opens");
         assert_eq!(s.rows.len(), 4);
+        assert_eq!(s.focus, 1, "it opens on the held value");
         let states = states(MODE_PICKER).unwrap();
         let names: Vec<&str> = states.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, ["focus-0", "focus-2", "focus-3"]);
+        assert_eq!(names, ["focus-1", "focus-0", "focus-3"], "the held value first");
+        assert_eq!(states[0].1.focus, p.current);
     }
 
     /// The kit's legend is the skulls page's own, glyph for glyph, and the

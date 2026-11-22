@@ -67,7 +67,8 @@ pub enum Backing {
     /// widget outside its panel and corners, and the window stack's
     /// render fills the screen with the shared globals' overlay colour
     /// under it (docs/game/ui-builder.md "A dialog is an overlay on its
-    /// opener"). The preview draws the [`Opener`] there, then the dim.
+    /// opener"). The preview draws the [`Opener`] there, then the
+    /// backdrop (`Source::backdrop`).
     Over(Opener),
 }
 
