@@ -40,7 +40,7 @@ h2 rules build my_mode.rules -o my_mode.rir         # the verified blob and its 
    scripts (`engine <index>: <name>`: Capture the Flag, Slayer, Oddball,
    King of the Hill, Juggernaut, Territories, Assault), then the payoff
    examples (`example <key>: <name>`: infection, gun_game, vip, siege,
-   race, bounce_practice). `h2 rules builtin slayer` prints one, by name
+   race, bounce_hunt). `h2 rules builtin slayer` prints one, by name
    (any case), engine index or example key.
 2. **Write the `.rules` file**: a header (`rules "Name" 1`, `carrier
    slayer`, optional `teams n` and `requires ...`), options, variables,

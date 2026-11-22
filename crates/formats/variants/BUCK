@@ -98,3 +98,28 @@ workspace_test(
         ":variants",
     ],
 )
+
+workspace_test(
+    name = "settings_table",
+    crate = "settings_table",
+    crate_root = "crates/formats/variants/tests/settings_table.rs",
+    description = "Halo 2 game variants: the 0x130-byte record, the settings schema, saved-variant files and the editor panel (docs/editor/variants.md)",
+    features = [],
+    manifest = "crates/formats/variants",
+    package = "variants",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//crates/formats/content:content",
+        "//crates/formats/map:map",
+        "//crates/formats/rules:rules",
+        "//crates/formats/tags:tags",
+        "//crates/formats/xbe:xbe",
+        "//crates/formats/xiso:xiso",
+        "//third-party/rust:iced-x86",
+        "//third-party/rust:serde",
+        "//third-party/rust:serde_json",
+        "//third-party/rust:thiserror",
+        ":variants",
+    ],
+)

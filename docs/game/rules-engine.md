@@ -1971,10 +1971,10 @@ Slayer's callbacks are answered in place.
 The modes below that have a script are examples in
 `crates/formats/rules/src/builtin/`, listed by `builtin::examples()`
 rather than by engine: `infection.rules`, `gun_game.rules`,
-`vip.rules`, `siege.rules`, `race.rules`, `bounce_practice.rules` and
+`vip.rules`, `siege.rules`, `race.rules`, `bounce_hunt.rules` and
 `superbounce.rules`. Each compiles, verifies and fits a tick
 (`tests/engines.rs`), and each header names the entries a host cannot
-make yet. VIP, Bounce Practice and Superbounce call none. VIP waits on
+make yet. VIP, Bounce Hunt and Superbounce call none. VIP waits on
 the match edit log, and Bounce Practice on the host runtime's
 `round_start` and `set_gravity`. Superbounce runs. The examples are
 compiled into the game, so a record names one by its hash prefix with

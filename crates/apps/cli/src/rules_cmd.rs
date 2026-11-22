@@ -1068,7 +1068,7 @@ on kill(victim, killer) {
         assert!(builtin_text(Some("nothing")).is_err());
         // The examples follow the ports, marked, and print by key.
         assert!(list.contains("engine 2: Slayer"), "{list}");
-        for key in ["infection", "gun_game", "vip", "siege", "race", "bounce_practice"] {
+        for key in ["infection", "gun_game", "vip", "siege", "race", "bounce_hunt"] {
             assert!(list.contains(&format!("example {key}: ")), "{list}");
             assert_eq!(builtin_text(Some(key)).unwrap(), rules::builtin::examples().iter().find(|(k, _)| *k == key).unwrap().1);
         }

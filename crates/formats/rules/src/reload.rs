@@ -53,6 +53,11 @@ pub enum Reason {
     Labels,
     /// The palette names differ (grants index them).
     Palettes,
+    /// The script scores another way (`scoring carrier` or its handlers).
+    Scoring,
+    /// The record settings the script sets differ (`settings`), so the
+    /// variant's record would change.
+    Settings,
 }
 
 impl fmt::Display for Reason {
@@ -78,6 +83,8 @@ impl fmt::Display for Reason {
             Reason::Slot { scope, name } => write!(f, "{scope} variable {name} changed"),
             Reason::Labels => f.write_str("the Forge labels the script names changed"),
             Reason::Palettes => f.write_str("the palettes the script declares changed"),
+            Reason::Scoring => f.write_str("the script scores another way (scoring carrier)"),
+            Reason::Settings => f.write_str("the record settings the script sets changed"),
         }
     }
 }
@@ -135,6 +142,12 @@ pub fn compatible(old: &Ir, new: &Ir) -> Result<(), Vec<Reason>> {
     }
     if oh.requires != nh.requires {
         out.push(Reason::Capabilities);
+    }
+    if oh.scoring != nh.scoring {
+        out.push(Reason::Scoring);
+    }
+    if old.settings != new.settings {
+        out.push(Reason::Settings);
     }
     if old.options.len() != new.options.len() {
         out.push(Reason::OptionCount { old: old.options.len(), new: new.options.len() });
@@ -378,6 +391,20 @@ on kill(victim, killer) {
         let why = compatible(&ir(BASE), &new).unwrap_err();
         assert!(matches!(why[0], Reason::Carrier { .. }), "{why:?}");
         assert!(reasons(&why).contains("rides engine"), "{}", reasons(&why));
+    }
+
+    #[test]
+    fn changed_settings_or_scoring_are_not() {
+        let set = edited("carrier slayer\n", "carrier slayer\nsettings { score_limit = 10 }\n");
+        let more = edited("carrier slayer\n", "carrier slayer\nsettings { score_limit = 20 }\n");
+        assert_eq!(compatible(&set, &set), Ok(()));
+        let why = compatible(&set, &more).unwrap_err();
+        assert_eq!(why, [Reason::Settings]);
+        assert!(reasons(&why).contains("record settings"), "{}", reasons(&why));
+        let carried = ir("rules \"Count\" 1\ncarrier slayer\nscoring carrier\n");
+        let plain = ir("rules \"Count\" 1\ncarrier slayer\non tick { }\n");
+        let why = compatible(&plain, &carried).unwrap_err();
+        assert!(why.contains(&Reason::Scoring), "{why:?}");
     }
 
     fn kill(vm: &mut Vm, g: &mut FakeGame, killer: u8, victim: u8) {

@@ -1,5 +1,21 @@
 [
   {
+    "type": "about_declaration",
+    "named": true,
+    "fields": {
+      "text": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "string",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "arguments",
     "named": true,
     "fields": {},
@@ -2555,6 +2571,22 @@
     }
   },
   {
+    "type": "quick_declaration",
+    "named": true,
+    "fields": {
+      "mark": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "range",
     "named": true,
     "fields": {
@@ -2771,6 +2803,22 @@
     }
   },
   {
+    "type": "scoring_declaration",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "set_expression",
     "named": true,
     "fields": {
@@ -2887,6 +2935,119 @@
     }
   },
   {
+    "type": "setting",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "budget_expression",
+            "named": true
+          },
+          {
+            "type": "call_expression",
+            "named": true
+          },
+          {
+            "type": "false",
+            "named": true
+          },
+          {
+            "type": "field_expression",
+            "named": true
+          },
+          {
+            "type": "fixed",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "index_expression",
+            "named": true
+          },
+          {
+            "type": "integer",
+            "named": true
+          },
+          {
+            "type": "is_expression",
+            "named": true
+          },
+          {
+            "type": "none",
+            "named": true
+          },
+          {
+            "type": "palette_expression",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "team_expression",
+            "named": true
+          },
+          {
+            "type": "text_expression",
+            "named": true
+          },
+          {
+            "type": "time",
+            "named": true
+          },
+          {
+            "type": "true",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "settings_declaration",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "setting",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "source_file",
     "named": true,
     "root": true,
@@ -2895,6 +3056,10 @@
       "multiple": true,
       "required": false,
       "types": [
+        {
+          "type": "about_declaration",
+          "named": true
+        },
         {
           "type": "carrier_declaration",
           "named": true
@@ -2936,7 +3101,19 @@
           "named": true
         },
         {
+          "type": "quick_declaration",
+          "named": true
+        },
+        {
           "type": "requires_declaration",
+          "named": true
+        },
+        {
+          "type": "scoring_declaration",
+          "named": true
+        },
+        {
+          "type": "settings_declaration",
           "named": true
         },
         {
@@ -3623,6 +3800,10 @@
     "named": false
   },
   {
+    "type": "about",
+    "named": false
+  },
+  {
     "type": "and",
     "named": false
   },
@@ -3780,11 +3961,23 @@
     "named": false
   },
   {
+    "type": "quick",
+    "named": false
+  },
+  {
     "type": "requires",
     "named": false
   },
   {
     "type": "rules",
+    "named": false
+  },
+  {
+    "type": "scoring",
+    "named": false
+  },
+  {
+    "type": "settings",
     "named": false
   },
   {
