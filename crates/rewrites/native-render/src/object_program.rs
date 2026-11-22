@@ -870,6 +870,8 @@ pub(crate) mod tests {
             state(R::AlphaBlendEnable, 1),
             state(R::SrcBlend, BlendFactor::One.xbox_value()),
             state(R::DestBlend, BlendFactor::One.xbox_value()),
+            // Its own blend op, so layer 3's state reads its blend.
+            state(R::BlendOp, 0x8006),
         ];
         let fetch = [shaders::vsh::InputFetch::Float; 16];
         let pass = map::TagId(0xe000_0001);

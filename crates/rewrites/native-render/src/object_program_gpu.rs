@@ -153,15 +153,22 @@ pub struct PrtVertices {
     pub vertices: Arc<Vec<[u8; SLOT]>>,
 }
 
-/// The highest constant from `c[68]` `program` reads directly. Reads
-/// relative to `a0.x` (the node rows) are not bounded here.
+/// The highest constant from `c[68]` below the section's decompression
+/// (`c[170]` on, which the draw sets itself) that `program` reads
+/// directly. Reads relative to `a0.x` (the node rows) are not bounded
+/// here.
 fn prt_constant_read(program: &shaders::vsh::Program) -> Option<u8> {
+    let below = crate::program::TEXCOORD_DECOMPRESSION - 2;
     program
         .instructions
         .iter()
         .flat_map(|i| i.sources())
         .filter_map(|src| match src.reg {
-            shaders::vsh::SrcReg::Const { index, relative: false } if index >= frame_scene::PRT_FIRST_CONSTANT => Some(index),
+            shaders::vsh::SrcReg::Const { index, relative: false }
+                if index >= frame_scene::PRT_FIRST_CONSTANT && usize::from(index) < below =>
+            {
+                Some(index)
+            }
             _ => None,
         })
         .max()
@@ -1617,7 +1624,7 @@ pub fn lit_model(
                     }
                     let index_list = |s: u16| lists[&s].0.clone();
                     let compiled = compile_layer_sections(
-                        layer, None, pass.pass, imp, &secs, formats, engine, &mut *vertex, &mut *image, &mut buffers,
+                        None, pass.pass, imp, &secs, formats, engine, &mut *vertex, &mut *image, &mut buffers,
                         &mut out.input.buffers, &index_list,
                     );
                     match compiled {
@@ -1636,7 +1643,7 @@ pub fn lit_model(
                     if layer == PRT_LAYER {
                         let compiled = formats.elements(PRT_STREAM).and_then(|prt| {
                             compile_layer_sections(
-                                layer, Some(prt.as_slice()), pass.pass, imp, &secs, formats, engine, &mut *vertex, &mut *image,
+                                Some(prt.as_slice()), pass.pass, imp, &secs, formats, engine, &mut *vertex, &mut *image,
                                 &mut buffers, &mut out.input.buffers, &index_list,
                             )
                         });
@@ -1675,7 +1682,7 @@ pub fn lit_model(
     out
 }
 
-/// One implementation of world layer `layer`'s pass (`pass` its tag)
+/// One implementation of a world layer's pass (`pass` its tag)
 /// compiled for every section in `secs` through the declaration the game
 /// builds there ([`object_layer_pass`]), each section's buffer for that
 /// declaration made once over `buffers` (its indices the section's list,
@@ -1686,12 +1693,12 @@ pub fn lit_model(
 /// PRT stream after the section's, as the stream setup `0x0001c8c0` adds
 /// it: the buffer holds the section's registers only, and the program
 /// carries the PRT stream's ([`PrtInput`]), which the draw gathers from
-/// guest memory ([`LitObjects::fill_prt`]). Without it, a layer-5 vertex
-/// program that reads a constant from `c[68]` on does not compile: only
-/// the PRT stream's draw sets those (`frame_scene::PRT_FIRST_CONSTANT`).
+/// guest memory ([`LitObjects::fill_prt`]), and the highest PRT constant
+/// it reads ([`prt_constant_read`]). Without it the program reads its
+/// constants as an item without a PRT stream leaves them, as in the
+/// other layers.
 #[allow(clippy::too_many_arguments)]
 fn compile_layer_sections(
-    layer: u8,
     prt: Option<&[StreamElement]>,
     pass: map::TagId,
     imp: &tags::material::ResolvedImplementation,
@@ -1714,15 +1721,12 @@ fn compile_layer_sections(
             .collect::<Result<Vec<_>, _>>()?;
         let data: Vec<Option<StreamData<'_>>> = s.streams.iter().map(|t| t.map(|(_, d)| d)).collect();
         let (microcode, semantics) = vertex(vs, s.geometry, s.influences).map_err(|e| format!("section {}: {e}", s.index))?;
-        let last_constant = if layer == PRT_LAYER {
-            let program = shaders::vsh::Program::parse(&microcode).map_err(|e| format!("section {}: vertex program: {e:?}", s.index))?;
-            let last = prt_constant_read(&program);
-            if let (Some(c), None) = (last, prt) {
-                return Err(format!("section {}: vertex program reads c[{c}], which only the PRT stream's draw sets", s.index));
+        let last_constant = match prt {
+            Some(_) => {
+                let program = shaders::vsh::Program::parse(&microcode).map_err(|e| format!("section {}: vertex program: {e:?}", s.index))?;
+                prt_constant_read(&program)
             }
-            last
-        } else {
-            None
+            None => None,
         };
         let mut all = streams.clone();
         if let Some(p) = prt {
@@ -2411,7 +2415,11 @@ mod tests {
             prt: Some(stream.clone()),
         };
         let rows = [[1.0f32; 4]; 3];
-        let plan = |item: &LayerItem| plan_layer_part(&layers, Some(0), &pass_of, InstanceKey(1), PRT_LAYER, &rows, &pass, item, &entry());
+        // The device's blend op reads (the additive pass inherits it).
+        let mut e = entry();
+        e.0.retain(|(t, _)| *t != RenderStateType::BlendOp);
+        e.0.push((RenderStateType::BlendOp, 0x8006));
+        let plan = |item: &LayerItem| plan_layer_part(&layers, Some(0), &pass_of, InstanceKey(1), PRT_LAYER, &rows, &pass, item, &e);
         let d = plan(&item).unwrap();
         assert_eq!((d[0].program, d[0].buffer), (1, 1), "the PRT variant");
         assert_eq!(d[0].vertex.constants[68..71], [[1.0; 4], [2.0; 4], [3.0; 4]]);

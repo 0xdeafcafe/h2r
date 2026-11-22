@@ -985,9 +985,7 @@ to the guest's draws (**Code**):
     lightmap stage, since outside layer 3 the geometry draw binds no
     lightmap page or stream, `0x0004d28b`), per pass the
     implementations that compile (`LitLayerPart`, `LitLayerPass`; what
-    does not compile is `LitBuild::layer_refused`, among it a layer-5
-    program that reads a constant from `c[68]` on, which only the PRT
-    stream's draw sets); the scene's models
+    does not compile is `LitBuild::layer_refused`); the scene's models
     (`native_objects_glue`) and the first person's
     (`native_first_person_glue`) both build them, reading each world
     layer's vertex programs with layer 3's. Each layer-5 implementation
@@ -1019,7 +1017,8 @@ to the guest's draws (**Code**):
     with a PRT stream draws each pass's PRT variant with the stream's
     constants from `c[68]` on, written over the item's own as the draw
     sets them after its rows (`0x0004d269`), and is refused when its
-    program reads a constant past them; at the hook its section's
+    program reads a constant past them below the section's decompression
+    (`c[170]` on, which the draw sets itself); at the hook its section's
     vertices are read from the stream's address and gathered through the
     declaration the stream's type gives (`LitObjects::fill_prt`), which
     must feed the registers the variant was compiled for, fetched the
