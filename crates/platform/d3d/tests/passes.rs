@@ -323,6 +323,37 @@ fn header_words(m: &SparseMemory, field: u32) -> (u32, u32) {
 }
 
 #[test]
+fn a_frame_copy_in_a_fitted_ui_scope_keeps_the_whole_frame() {
+    // At a wide output a dialog blurs the menu under it by copying the
+    // 640x480 frame between targets inside the menu's widget fit. The copy
+    // must cover the frame; a widget keeps the fit.
+    let (mut d, mut m) = create_with(RecordingBackend::new(), UploadPolicy::Always, |p| {
+        (p.width, p.height) = (640, 480);
+    });
+    set_states(&mut d, &mut m);
+    quad_vb(&mut m, 0.0, 0.0, 640.0, 480.0, 0xFFFF_FFFF);
+    bind_quad(&mut d, &mut m);
+    let fit = d3d::backend::UiFit::about((2560, 1080), [320., 240.]);
+    assert!(fit.is_some());
+    d.set_ui_fit(&mut m, fit).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    assert_eq!(d.backend.draws().last().unwrap().ui_fit, fit);
+
+    let back = data_of(&m, f::BACK_BUFFER);
+    frame_texture(&mut m, back, 0x12, 640, 480);
+    d.set_texture(&mut m, 0, FRAME_TEX).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    let copy = d.backend.draws().last().unwrap().clone();
+    assert_eq!(copy.texture_info[0].map(|i| (i.width, i.height)), Some((640, 480)));
+    assert_eq!(copy.ui_fit, None);
+
+    // Unbound again: a widget keeps the fit.
+    d.set_texture(&mut m, 0, 0).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    assert_eq!(d.backend.draws().last().unwrap().ui_fit, fit);
+}
+
+#[test]
 fn back_and_display_surfaces_are_distinct_and_swap_rotates_their_data() {
     let (mut d, mut m) = create(RecordingBackend::new(), UploadPolicy::Always);
     let (back, display) = (

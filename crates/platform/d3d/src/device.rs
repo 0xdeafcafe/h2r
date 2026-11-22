@@ -5633,6 +5633,16 @@ impl<B: Backend> Device<B> {
         #[cfg(not(feature = "gpu"))]
         let retail_constants = None;
 
+        // A draw that samples a frame-sized render target into a frame-sized
+        // target copies the frame (the blur under a menu dialog ping-pongs
+        // two of them). The UI fit places widgets; it must not shrink a
+        // copy into the safe area (docs/graphics/high-resolution.md).
+        let copies_a_frame = (0..4).any(|stage| {
+            sampled[stage]
+                && (snapshots[stage].is_some() || aliases[stage].is_some())
+                && texture_info[stage]
+                    .is_some_and(|i| (i.width, i.height) == (target.width, target.height))
+        });
         let (color, depth) = self.current_targets(mem, entry)?;
         let writes_depth = writes_depth_or_stencil(&state.render, target.depth_format);
         // The presented image is kept before anything draws over it; what
@@ -5660,7 +5670,9 @@ impl<B: Backend> Device<B> {
             textures: bound.map(|t| (t != 0).then_some(t)),
             texture_info,
             retail_constants,
-            ui_fit: self.ui_fit.filter(|_| (target.width, target.height) == (640, 480)),
+            ui_fit: self.ui_fit.filter(|_| {
+                (target.width, target.height) == (640, 480) && !copies_a_frame
+            }),
             glyph_cache,
         };
         let (mut draw, snapshots) = if self.swallowing.as_ref().is_some_and(|s| s.plan.call.is_some()) {
