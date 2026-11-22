@@ -1039,7 +1039,8 @@ Players get the new playlists the next time they sign in.
 Options page before a campaign level, the Halo 1 options, multiplayer
 skulls, the co-op screens, the Xbox Live sign-in and account screens)
 the way the game draws them, without starting the game. Use it to see a
-screen in each of its states, try its buttons, and check its layout.
+screen in each of its states, try its buttons, check its layout, and
+move, resize or retype its widgets.
 
 - **Screens** (left): one filter at the top narrows both lists. **Our
   screens** lists each of our screens with its named states (a list's
@@ -1055,6 +1056,19 @@ screen in each of its states, try its buttons, and check its layout.
   in red. Hover a widget to see its name. With a disc open the pictures
   use the disc's own art and fonts; without one they are placeholders
   ("synthetic"), and the checks that need the art are skipped.
+  - **Transport** (the row above the picture): pick **Open** or
+    **Close** and press **Play** to watch the screen's transition.
+    **Loop** repeats it, the slider scrubs it by tick, **Speed** runs it
+    at 0.25 to 2 times, and **Onion** outlines the widgets a moment
+    before and after. **Rest** shows the screen settled.
+  - **Editing**: click a widget to select it. Drag it to move it, or drag
+    one of its eight handles to resize it. It snaps to other widgets'
+    edges and centres; hold Shift to place it freely. The arrow keys
+    nudge it a unit at a time (Shift: 10). Double-click a text to retype
+    it in place: Enter keeps it, Esc cancels. Esc on its own clears the
+    selection. **Undo** and **Redo** step back through your edits, and a
+    whole drag is one step. Each edit is checked at once, so a widget
+    dragged off the title-safe area turns red.
 - **Inspector** (right):
   - **Page**: what the screen shows now, and a pad: **Up**, **Down**,
     **Left**, **Right**, **A**, **B**, **X**, **Y**, **Start** and
@@ -1069,6 +1083,20 @@ screen in each of its states, try its buttons, and check its layout.
     picture. "every check passes" when there is nothing.
   - **Widget**: the hovered widget's details (its name, rectangle, text
     or art), as the exported JSON has them.
+  - **Selected**: the selected widget's rectangle as numbers you can
+    type, its text, its font, justification and colour, **Copy JSON**
+    (the widget as the agent API gives it), **Revert widget**,
+    **Revert screen** and **Save**. Our screens save into the checkout
+    the editor was started from (`assets/ui/screens/<name>.yaml`);
+    outside a checkout Save is refused. When a file changes on disk the
+    screen reloads it, unless you have unsaved edits to it, in which
+    case it says so. A retail screen's edits are changes to your
+    `mainmenu` map (open it first), saved with the map. Some widgets
+    can't be edited here and say why: a row's value comes from its
+    setting, rows sit where the list puts them, and a retail screen's
+    texts and title belong to the disc's string table and shared header.
+  - **Widgets**: every widget of the screen. Hover a row to light its
+    widget in the picture; click it to select it.
   - **Export...**: pick a folder. The editor writes the picture
     (`<screen>-<state>.png`), its widgets (`<screen>-<state>.json`) and
     `sheet.png` with every screen in every state. It refuses a folder

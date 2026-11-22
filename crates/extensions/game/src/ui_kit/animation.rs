@@ -62,6 +62,79 @@ const LEAVE_TICKS: u32 = 9;
 const ROW_TICKS: u32 = 7;
 const STAGGER_TICKS: usize = 6;
 
+/// The builder's ticks per second: representative, as its curves are
+/// (the game plays the map's native tracks at their own rate).
+pub const TICKS_PER_SECOND: u32 = 30;
+
+/// A transition the builder samples: a page opening ([`Phase::In`]) or
+/// closing ([`Phase::Out`]). Focus moves and page changes play the skin's
+/// native tracks in game and are not sampled here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Transition {
+    Open,
+    Close,
+}
+
+impl Transition {
+    pub const ALL: [Transition; 2] = [Transition::Open, Transition::Close];
+
+    /// `open`, `close`: the agent API's names.
+    pub fn name(self) -> &'static str {
+        match self {
+            Transition::Open => "open",
+            Transition::Close => "close",
+        }
+    }
+
+    /// The transition named `name` (`open`/`in`, `close`/`out`).
+    pub fn named(name: &str) -> Option<Transition> {
+        match name.to_ascii_lowercase().as_str() {
+            "open" | "in" => Some(Transition::Open),
+            "close" | "out" => Some(Transition::Close),
+            _ => None,
+        }
+    }
+
+    /// Ticks from its start until every part has settled: the pane's
+    /// track, or the last staggered row and the selection after it,
+    /// whichever is longer.
+    pub fn ticks(self) -> u32 {
+        let stagger = STAGGER_TICKS as u32 + ROW_TICKS;
+        match self {
+            Transition::Open => ENTER_TICKS.max(stagger + 1),
+            Transition::Close => LEAVE_TICKS.max(stagger),
+        }
+    }
+
+    /// Its pose `tick` ticks in (past the end it stays settled).
+    pub fn phase(self, tick: u32) -> Phase {
+        let tick = tick.min(self.ticks());
+        match self {
+            Transition::Open => Phase::In(tick),
+            Transition::Close => Phase::Out(tick),
+        }
+    }
+
+    /// `n` ticks spread evenly from its start to its end, both included
+    /// (one frame is the start).
+    pub fn frames(self, n: usize) -> Vec<u32> {
+        let end = self.ticks();
+        match n {
+            0 => Vec::new(),
+            1 => vec![0],
+            n => (0..n)
+                .map(|i| (i as u32 * end + (n as u32 - 1) / 2) / (n as u32 - 1))
+                .collect(),
+        }
+    }
+
+    /// Seconds at `tick`.
+    pub fn seconds(tick: u32) -> f32 {
+        tick as f32 / TICKS_PER_SECOND as f32
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Part {
     Pane,
@@ -329,6 +402,30 @@ mod tests {
         let rest = opacity(animated.seek(Phase::Rest));
         assert!(opening > 0 && opening < rest);
         assert_eq!(opacity(animated.seek(Phase::Out(14))), 0);
+    }
+
+    #[test]
+    fn a_transition_spans_until_every_part_settles() {
+        assert_eq!(Transition::named("in"), Some(Transition::Open));
+        assert_eq!(Transition::named("Close"), Some(Transition::Close));
+        assert_eq!(Transition::named("focus"), None);
+        for t in Transition::ALL {
+            assert_eq!(Transition::named(t.name()), Some(t));
+            let frames = t.frames(5);
+            assert_eq!(frames.len(), 5);
+            assert_eq!(frames[0], 0);
+            assert_eq!(*frames.last().unwrap(), t.ticks());
+            assert!(frames.windows(2).all(|w| w[0] < w[1]), "{frames:?}");
+            assert_eq!(t.phase(t.ticks() + 50), t.phase(t.ticks()));
+            // The last staggered row and its selection are settled at the end.
+            let end = Frame::new(TransitionStyle::Default, false, 12, t.phase(t.ticks()));
+            let settled = if t == Transition::Open { 255 } else { 0 };
+            assert_eq!(end.pose(Part::Selection(11)).alpha, settled);
+            assert_eq!(end.pose(Part::Row(0)).alpha, settled);
+        }
+        assert_eq!(Transition::Open.frames(1), vec![0]);
+        assert!(Transition::Close.frames(0).is_empty());
+        assert_eq!(Transition::seconds(TICKS_PER_SECOND), 1.0);
     }
 
     #[test]

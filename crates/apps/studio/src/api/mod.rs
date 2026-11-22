@@ -43,6 +43,7 @@ mod sound;
 mod tag_fields;
 mod tag_io;
 mod tags;
+mod ui_edit;
 mod ui_screens;
 mod variants;
 mod view;

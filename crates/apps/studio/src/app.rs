@@ -286,6 +286,9 @@ pub enum Action {
     /// Write the screen's PNG and JSON and the sheet into a folder (never
     /// a Git checkout).
     UiExport(PathBuf),
+    /// Select or edit a widget of the screen shown, revert, save
+    /// (`ui_screens::edit`).
+    UiEdit(ui_screens::edit::EditAction),
 
     // HUD.
     /// Open a map of the source in the HUD tool.
@@ -672,9 +675,12 @@ impl App {
             ToolKind::Variants => self.variants.as_ref().is_some_and(|e| e.is_dirty()),
             ToolKind::Playlists => self.hoppers.is_dirty(),
             ToolKind::Hud => self.hud.is_dirty(),
+            // Our screens' edits are files of the checkout; a retail
+            // screen's are the map's, as the tag editor's are.
+            ToolKind::UiScreens => self.ui_screens.edit.ours.dirty(),
             // The tag editor's edits are the map's: the scenario session
             // saves them and its dirty mark counts them.
-            ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => false,
+            ToolKind::Tags | ToolKind::Scripts => false,
         }
     }
     /// The action waiting on the unsaved-changes prompt, if any.
@@ -698,7 +704,7 @@ impl App {
             ToolKind::Scenario => self.session.can_undo(),
             ToolKind::Variants => self.variants.as_ref().is_some_and(|e| e.can_undo()),
             ToolKind::Playlists => self.hoppers.can_undo(),
-            ToolKind::UiScreens => false,
+            ToolKind::UiScreens => self.ui_can_undo_redo(false),
             ToolKind::Hud => self.hud.session.as_ref().is_some_and(|s| s.can_undo()),
             ToolKind::Tags => self.tags.can_undo(),
             ToolKind::Scripts => false,
@@ -712,7 +718,7 @@ impl App {
             ToolKind::Scenario => self.session.can_redo(),
             ToolKind::Variants => self.variants.as_ref().is_some_and(|e| e.can_redo()),
             ToolKind::Playlists => self.hoppers.can_redo(),
-            ToolKind::UiScreens => false,
+            ToolKind::UiScreens => self.ui_can_undo_redo(true),
             ToolKind::Hud => self.hud.session.as_ref().is_some_and(|s| s.can_redo()),
             ToolKind::Tags => self.tags.can_redo(),
             ToolKind::Scripts => false,
@@ -840,7 +846,12 @@ impl App {
                 ToolKind::Variants => self.run(Action::SaveVariant),
                 ToolKind::Playlists => self.run(Action::SaveHopper),
                 ToolKind::Hud => self.error("save the HUD edits with Save as..."),
-                ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => {}
+                ToolKind::UiScreens => {
+                    if let Err(e) = self.ui_screens.edit.ours.save() {
+                        self.error(e);
+                    }
+                }
+                ToolKind::Tags | ToolKind::Scripts => {}
             },
             Answer::SaveAs(path) => match tool {
                 ToolKind::Scenario => self.run(Action::SaveMapAs(path)),
@@ -874,7 +885,11 @@ impl App {
             }
             ToolKind::Playlists => self.hoppers.close(),
             ToolKind::Hud => self.hud = HudTool::default(),
-            ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => {}
+            ToolKind::UiScreens => {
+                self.ui_screens.edit.ours.discard();
+                self.ui_screens.redraw_edits();
+            }
+            ToolKind::Tags | ToolKind::Scripts => {}
         }
     }
 
@@ -1086,6 +1101,7 @@ impl App {
                     self.info(line);
                 }
             }
+            Action::UiEdit(a) => self.run_ui_edit(a),
             Action::UiExport(dir) => match self.ui_screens.export(&dir) {
                 Ok(files) => self.info(format!("wrote {} files to {}", files.len(), dir.display())),
                 Err(e) => self.error(format!("{e:#}")),
@@ -1234,7 +1250,8 @@ impl App {
                     self.hoppers.redo()
                 }
             }
-            ToolKind::UiScreens | ToolKind::Scripts => false,
+            ToolKind::UiScreens => self.ui_undo_redo(undo),
+            ToolKind::Scripts => false,
             ToolKind::Hud => self.hud_undo_redo(undo),
             ToolKind::Tags => {
                 self.sync_tags();
@@ -1254,7 +1271,12 @@ impl App {
         match (done, undo) {
             (false, true) => self.info("nothing to undo"),
             (false, false) => self.info("nothing to redo"),
-            (true, _) if !matches!(tool, ToolKind::Scenario | ToolKind::Tags | ToolKind::Hud) => {
+            (true, _)
+                if !matches!(
+                    tool,
+                    ToolKind::Scenario | ToolKind::Tags | ToolKind::Hud | ToolKind::UiScreens
+                ) =>
+            {
                 self.info(if undo { "undone" } else { "redone" })
             }
             _ => {}

@@ -796,6 +796,36 @@ impl Disc {
         d
     }
 
+    /// Screen tag `tag` of `mainmenu.map`, decoded, with its string table
+    /// and its tables' skins.
+    fn retail_parts(&self, tag: &str) -> Result<RetailParts> {
+        let mut m = self.map.borrow_mut();
+        let id = m.tag(map::TagQuery::NameInGroup(tag, tui::SCREEN))?.id;
+        let mut src = MapSource::new(&mut m);
+        let UiTag::Screen(screen) = src.decode_tag(id)?.tag else {
+            bail!("{tag} is not a screen");
+        };
+        let mut skins = HashMap::new();
+        for t in screen.panes.iter().flat_map(|p| p.tables.iter()) {
+            if let Some(id) = t.skin.id
+                && let Ok((tree, _)) = tui::resolve_skin(&mut src, id)
+            {
+                skins.insert(id, tree.skin);
+            }
+        }
+        drop(src);
+        let loc = tags::localization::Localization::read(&mut m)?;
+        let unic = match screen.strings.id {
+            Some(u) => Some((loc.unic(&mut m, u)?, loc)),
+            None => None,
+        };
+        Ok(RetailParts {
+            screen,
+            unic,
+            skins,
+        })
+    }
+
     /// A retail screen at rest, as its tag lays it out: pane `r.pane`'s
     /// bitmaps, text blocks and buttons, and its tables' cells, over the
     /// game shell background, with the header and footer in the `wigl`
@@ -806,59 +836,32 @@ impl Disc {
     /// Each table cell's first text block shows `r.cells[i]`; a cell with
     /// no entry is not drawn (the game hides empty player slots).
     pub fn render_retail(&self, r: &Retail<'_>) -> Result<Canvas> {
-        let (screen, unic, skins) = {
-            let mut m = self.map.borrow_mut();
-            let id = m.tag(map::TagQuery::NameInGroup(r.tag, tui::SCREEN))?.id;
-            let mut src = MapSource::new(&mut m);
-            let UiTag::Screen(screen) = src.decode_tag(id)?.tag else {
-                bail!("{} is not a screen", r.tag);
-            };
-            let mut skins = HashMap::new();
-            for t in screen.panes.iter().flat_map(|p| p.tables.iter()) {
-                if let Some(id) = t.skin.id
-                    && let Ok((tree, _)) = tui::resolve_skin(&mut src, id)
-                {
-                    skins.insert(id, tree.skin);
-                }
-            }
-            drop(src);
-            let loc = tags::localization::Localization::read(&mut m)?;
-            let unic = match screen.strings.id {
-                Some(u) => Some((loc.unic(&mut m, u)?, loc)),
-                None => None,
-            };
-            (screen, unic, skins)
-        };
-        let pane = screen
+        self.render_retail_with(r, &RetailPlaces::new())
+    }
+
+    /// [`Disc::render_retail`] with the widgets in `places` moved there
+    /// (the editor's edits of the tag, read back from its document).
+    pub fn render_retail_with(&self, r: &Retail<'_>, places: &RetailPlaces) -> Result<Canvas> {
+        let parts = self.retail_parts(r.tag)?;
+        let mut pane = parts
+            .screen
             .panes
             .get(r.pane)
-            .with_context(|| format!("{} has no pane {}", r.tag, r.pane))?;
-        let lookup = |id: u32| -> Option<String> {
-            if let Some(t) = (r.text)(id) {
-                return Some(t);
-            }
-            let (unic, loc) = unic.as_ref()?;
-            loc.text_in(
-                unic,
-                tags::localization::StringId(id),
-                tags::localization::Language::English,
-            )
-            .ok()
-            .flatten()
-        };
+            .with_context(|| format!("{} has no pane {}", r.tag, r.pane))?
+            .clone();
+        place_retail(&mut pane, places);
+        let screen = &parts.screen;
+        let skins = &parts.skins;
+        let lookup = |id: u32| parts.text(r, id);
         let g = self.geometry(ListPlace::Controls)?;
         let rgb = |v: [f32; 3]| v.map(|x| (x.clamp(0.0, 1.0) * 255.0) as u8);
         let mut c = Canvas::new(640, 480, [0, 0, 0, 255]);
         for p in &self.background.panes {
             self.draw_blocks(&mut c, p.bitmaps.iter());
         }
-        // Blocks parked off screen (9999) are the game's spares.
-        let on_screen = |rect: &Rect| rect.top.abs() < 1000 && rect.left.abs() < 1000;
         self.draw_blocks(
             &mut c,
-            pane.bitmaps
-                .iter()
-                .filter(|b| b.top_left.x.abs() < 1000 && b.top_left.y.abs() < 1000),
+            pane.bitmaps.iter().filter(|b| on_screen_point(b.top_left)),
         );
         if screen.flags & tui::Screen::NO_HEADER == 0
             && let Some(h) = lookup(screen.header.0)
@@ -902,7 +905,7 @@ impl Disc {
                 );
             }
         }
-        for t in pane.text_blocks.iter().filter(|t| on_screen(&t.rect)) {
+        for t in pane.text_blocks.iter().filter(|t| on_screen_rect(&t.rect)) {
             if let Some(text) = lookup(t.string.0).filter(|s| !s.is_empty()) {
                 c.text(
                     &self.fonts,
@@ -956,6 +959,143 @@ impl Disc {
         Ok(c)
     }
 
+    /// A retail screen's widgets as a [`View`], for the editor to select
+    /// and move (docs/game/ui-builder.md "Editing in the editor"), with
+    /// `places` applied: `title` (the header), then pane `r.pane`'s
+    /// `bitmap.N`, `button.N`, `text.N`, `list.N` and `table.N` by their
+    /// index in the tag's block, on screen only. A list's box is its
+    /// anchor and its visible rows at the Controls skin's item height, a
+    /// table's its cells at their spacing: a handle to move, not a
+    /// measured extent.
+    pub fn retail_view(&self, r: &Retail<'_>, places: &RetailPlaces) -> Result<View> {
+        let parts = self.retail_parts(r.tag)?;
+        let mut pane = parts
+            .screen
+            .panes
+            .get(r.pane)
+            .with_context(|| format!("{} has no pane {}", r.tag, r.pane))?
+            .clone();
+        place_retail(&mut pane, places);
+        let screen = &parts.screen;
+        let g = self.geometry(ListPlace::Controls)?;
+        let rgb = |v: [f32; 3]| v.map(|x| (x.clamp(0.0, 1.0) * 255.0) as u8);
+        let edges = |r: Rect| [r.top, r.left, r.bottom, r.right];
+        let flag = |flags: u32| Justify::from_flag(tui::justification(flags));
+        let text = |id: String, rect: [i16; 4], font: i16, justify, s: String, colour| Widget {
+            id,
+            rect,
+            layer: Layer::Content,
+            alpha: 255,
+            kind: Kind::Text {
+                text: s,
+                font,
+                justify,
+                colour,
+            },
+        };
+        let mut w = Vec::new();
+        for (i, b) in pane.bitmaps.iter().enumerate() {
+            if !on_screen_point(b.top_left) {
+                continue;
+            }
+            let size = self
+                .image(b.bitmap, b.image)
+                .map_or([16, 16], |img| [img.width as u16, img.height as u16]);
+            let (x, y) = (b.top_left.x, b.top_left.y);
+            w.push(Widget {
+                id: format!("bitmap.{i}"),
+                rect: [y, x, y - size[1] as i16, x + size[0] as i16],
+                layer: Layer::Frame,
+                alpha: 255,
+                kind: Kind::Art {
+                    art: Art::Screen {
+                        screen_id: screen.screen_id,
+                        pane: r.pane as u16,
+                        index: i as u16,
+                        image: b.image,
+                    },
+                    size,
+                },
+            });
+        }
+        if screen.flags & tui::Screen::NO_HEADER == 0
+            && let Some(h) = parts.text(r, screen.header.0)
+        {
+            w.push(text(
+                "title".into(),
+                edges(g.header),
+                g.header_font,
+                Justify::Left,
+                h,
+                rgb(g.header_colour),
+            ));
+        }
+        for (i, b) in pane.buttons.iter().enumerate() {
+            let s = parts.text(r, b.string.0).unwrap_or_default();
+            w.push(text(
+                format!("button.{i}"),
+                edges(b.rect),
+                b.font,
+                flag(b.flags),
+                s,
+                rgb(b.text_color),
+            ));
+        }
+        for (i, t) in pane.text_blocks.iter().enumerate() {
+            if !on_screen_rect(&t.rect) {
+                continue;
+            }
+            let s = parts.text(r, t.string.0).unwrap_or_default();
+            w.push(text(
+                format!("text.{i}"),
+                edges(t.rect),
+                t.font,
+                flag(t.flags),
+                s,
+                rgb(t.text_color),
+            ));
+        }
+        let handle = |id: String, at: tui::Point, size: [i32; 2]| Widget {
+            id,
+            rect: [
+                at.y,
+                at.x,
+                (i32::from(at.y) - size[1].max(8)) as i16,
+                (i32::from(at.x) + size[0].max(8)) as i16,
+            ],
+            layer: Layer::Under,
+            alpha: 255,
+            kind: Kind::Art {
+                art: Art::Solid { rgba: [0, 0, 0, 0] },
+                size: [size[0].max(8) as u16, size[1].max(8) as u16],
+            },
+        };
+        for (i, l) in pane.lists.iter().enumerate() {
+            let rows = i32::from(l.visible_items.max(1));
+            w.push(handle(
+                format!("list.{i}"),
+                l.anchor,
+                [i32::from(g.label.0.right - g.label.0.left), rows * g.item_height],
+            ));
+        }
+        for (i, t) in pane.tables.iter().enumerate() {
+            let size = [
+                i32::from(t.columns.max(1)) * i32::from(t.column_spacing).abs(),
+                i32::from(t.rows.max(1)) * i32::from(t.row_spacing).abs(),
+            ];
+            w.push(handle(format!("table.{i}"), t.anchor, size));
+        }
+        Ok(View {
+            screen: r.tag.to_owned(),
+            state: format!("pane-{}", r.pane),
+            backing: Backing::GameShell,
+            underlay: None,
+            widgets: w,
+            focus: None,
+            list: None,
+        })
+    }
+
     /// `s` as the builder sees it ([`view_of`]) on this disc's geometry
     /// and fonts.
     pub fn view(&self, s: &ScreenSpec, state: &str) -> Result<View> {
@@ -979,6 +1119,165 @@ pub struct Retail<'a> {
     /// The table cells' texts (player names), one per filled slot.
     pub cells: &'a [String],
     pub footer: Option<String>,
+}
+
+/// A decoded retail screen: its tag, its string table and its tables'
+/// skins ([`Disc::render_retail`], [`Disc::retail_view`]).
+struct RetailParts {
+    screen: tui::Screen,
+    unic: Option<(tags::localization::Unic, tags::localization::Localization)>,
+    skins: HashMap<TagId, tui::Skin>,
+}
+
+impl RetailParts {
+    /// String id `id`'s text: `r.text`'s answer, else the screen's own
+    /// (English).
+    fn text(&self, r: &Retail<'_>, id: u32) -> Option<String> {
+        if let Some(t) = (r.text)(id) {
+            return Some(t);
+        }
+        let (unic, loc) = self.unic.as_ref()?;
+        loc.text_in(
+            unic,
+            tags::localization::StringId(id),
+            tags::localization::Language::English,
+        )
+        .ok()
+        .flatten()
+    }
+}
+
+/// Blocks parked off screen (9999) are the game's spares.
+fn on_screen_rect(r: &Rect) -> bool {
+    r.top.abs() < 1000 && r.left.abs() < 1000
+}
+
+fn on_screen_point(p: tui::Point) -> bool {
+    p.x.abs() < 1000 && p.y.abs() < 1000
+}
+
+/// Retail widgets moved by the editor: widget id ([`Disc::retail_view`]'s)
+/// to its rect, `top, left, bottom, right` in UI units. A bitmap, list
+/// or table takes the rect's top-left as its point.
+pub type RetailPlaces = BTreeMap<String, [i16; 4]>;
+
+/// Where a retail widget's place is in its screen tag: a field path of
+/// the `wgit` definition (`crates/formats/tags/src/defs/wgit.txt`) and
+/// whether it is a rectangle or a point.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RetailField {
+    /// `i16[4]`: top, left, bottom, right.
+    Rect(String),
+    /// `i16[2]`: x, y (the top-left).
+    Point(String),
+}
+
+impl RetailField {
+    pub fn path(&self) -> &str {
+        match self {
+            RetailField::Rect(p) | RetailField::Point(p) => p,
+        }
+    }
+    /// The field's value for rect `r`, as the tag editor's JSON takes it.
+    pub fn value(&self, r: [i16; 4]) -> serde_json::Value {
+        match self {
+            RetailField::Rect(_) => serde_json::json!(r),
+            RetailField::Point(_) => serde_json::json!([r[1], r[0]]),
+        }
+    }
+}
+
+/// Widget `id` of pane `pane`'s field, or why it has none: the header
+/// is the shared `wigl` layout's, and anything else is not a block.
+pub fn retail_field(pane: usize, id: &str) -> Result<RetailField, String> {
+    let (kind, index) = id
+        .split_once('.')
+        .and_then(|(k, i)| Some((k, i.parse::<usize>().ok()?)))
+        .ok_or_else(|| match id {
+            "title" => "refused: a retail screen's title sits in the header layout of the \
+                        shared wigl tag, which every screen on that layout uses"
+                .to_owned(),
+            _ => format!("refused: {id} is not a block of the screen tag"),
+        })?;
+    let at = |block: &str, field: &str| format!("panes[{pane}].{block}[{index}].{field}");
+    match kind {
+        "text" => Ok(RetailField::Rect(at("text_blocks", "rect"))),
+        "button" => Ok(RetailField::Rect(at("buttons", "rect"))),
+        "bitmap" => Ok(RetailField::Point(at("bitmaps", "top_left"))),
+        "list" => Ok(RetailField::Point(at("lists", "anchor"))),
+        "table" => Ok(RetailField::Point(at("tables", "anchor"))),
+        _ => Err(format!("refused: {id} is not a block of the screen tag")),
+    }
+}
+
+/// `pane` with the widgets of `places` moved there.
+fn place_retail(pane: &mut tui::Pane, places: &RetailPlaces) {
+    let point = |r: &[i16; 4]| tui::Point { x: r[1], y: r[0] };
+    let rect = |r: &[i16; 4]| Rect {
+        top: r[0],
+        left: r[1],
+        bottom: r[2],
+        right: r[3],
+    };
+    for (id, r) in places {
+        let Some((kind, index)) = id
+            .split_once('.')
+            .and_then(|(k, i)| Some((k, i.parse::<usize>().ok()?)))
+        else {
+            continue;
+        };
+        match kind {
+            "text" => {
+                if let Some(t) = pane.text_blocks.get_mut(index) {
+                    t.rect = rect(r);
+                }
+            }
+            "button" => {
+                if let Some(b) = pane.buttons.get_mut(index) {
+                    b.rect = rect(r);
+                }
+            }
+            "bitmap" => {
+                if let Some(b) = pane.bitmaps.get_mut(index) {
+                    b.top_left = point(r);
+                }
+            }
+            "list" => {
+                if let Some(l) = pane.lists.get_mut(index) {
+                    l.anchor = point(r);
+                }
+            }
+            "table" => {
+                if let Some(t) = pane.tables.get_mut(index) {
+                    t.anchor = point(r);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A filmstrip: each frame at half size side by side, its label (a time)
+/// above it in [`Canvas::label`]'s font. Returns the strip and each
+/// frame's left edge and width in its pixels.
+pub fn filmstrip(frames: &[(String, Canvas)]) -> (Canvas, Vec<[u32; 2]>) {
+    const GAP: u32 = 8;
+    const LABEL: u32 = 22;
+    let (tw, th) = (320, 240);
+    let n = frames.len() as u32;
+    let mut out = Canvas::new(
+        n * (tw + GAP) + GAP,
+        th + LABEL + 2 * GAP,
+        [40, 40, 40, 255],
+    );
+    let mut at = Vec::new();
+    for (i, (label, c)) in frames.iter().enumerate() {
+        let x = GAP + i as u32 * (tw + GAP);
+        out.label(label, x + 2, GAP + 6, [230, 230, 230]);
+        out.blit(&c.half(), x, GAP + LABEL);
+        at.push([x, tw]);
+    }
+    (out, at)
 }
 
 impl Metrics for Fonts {
@@ -1803,5 +2102,89 @@ fn tiny_glyph(c: char) -> [u8; 5] {
         '/' => [1, 1, 2, 4, 4],
         '_' => [0, 0, 0, 0, 7],
         _ => [0; 5],
+    }
+}
+
+#[cfg(test)]
+mod edit_tests {
+    use super::*;
+
+    #[test]
+    fn retail_widgets_name_their_tag_fields() {
+        assert_eq!(
+            retail_field(0, "text.3"),
+            Ok(RetailField::Rect("panes[0].text_blocks[3].rect".into()))
+        );
+        assert_eq!(
+            retail_field(1, "button.0").unwrap().path(),
+            "panes[1].buttons[0].rect"
+        );
+        assert_eq!(
+            retail_field(0, "bitmap.2"),
+            Ok(RetailField::Point("panes[0].bitmaps[2].top_left".into()))
+        );
+        assert_eq!(
+            retail_field(0, "list.0").unwrap().path(),
+            "panes[0].lists[0].anchor"
+        );
+        assert_eq!(
+            retail_field(0, "table.1").unwrap().path(),
+            "panes[0].tables[1].anchor"
+        );
+        let title = retail_field(0, "title").unwrap_err();
+        assert!(title.starts_with("refused") && title.contains("wigl"), "{title}");
+        assert!(retail_field(0, "row.0.label").is_err());
+        assert!(retail_field(0, "text.x").is_err());
+        // A point takes the rect's top-left as x, y.
+        let r = [100, -50, 80, 20];
+        assert_eq!(RetailField::Point(String::new()).value(r), serde_json::json!([-50, 100]));
+        assert_eq!(RetailField::Rect(String::new()).value(r), serde_json::json!(r));
+    }
+
+    #[test]
+    fn places_move_the_blocks_they_name() {
+        let mut pane = tui::Pane {
+            flags: 0,
+            animation: tui::AnimationRef(0),
+            buttons: Vec::new(),
+            lists: vec![tui::List {
+                flags: 0,
+                skin: 2,
+                visible_items: 5,
+                anchor: tui::Point { x: -254, y: 130 },
+                animation: tui::AnimationRef(0),
+                item_value: 0,
+            }],
+            text_blocks: Vec::new(),
+            bitmaps: Vec::new(),
+            model_scenes: Vec::new(),
+            shader_bitmaps: Vec::new(),
+            tables: Vec::new(),
+        };
+        let mut places = RetailPlaces::new();
+        places.insert("list.0".into(), [140, -244, 0, 0]);
+        // Blocks the pane has not got, and ids that are not blocks, are skipped.
+        places.insert("text.4".into(), [1, 2, 3, 4]);
+        places.insert("title".into(), [1, 2, 3, 4]);
+        place_retail(&mut pane, &places);
+        assert_eq!(pane.lists[0].anchor, tui::Point { x: -244, y: 140 });
+    }
+
+    #[test]
+    fn a_filmstrip_lays_its_frames_side_by_side() {
+        let frames: Vec<(String, Canvas)> = (0..3)
+            .map(|i| (format!("t{i}.00s"), Canvas::new(640, 480, [i * 80, 0, 0, 255])))
+            .collect();
+        let (strip, at) = filmstrip(&frames);
+        assert_eq!(at, vec![[8, 320], [336, 320], [664, 320]]);
+        assert_eq!(strip.width, 3 * (320 + 8) + 8);
+        assert_eq!(strip.height, 240 + 22 + 16);
+        // The second frame's pixels are its own, at half size.
+        let px = |x: u32, y: u32| {
+            let i = ((y * strip.width + x) * 4) as usize;
+            strip.rgba[i]
+        };
+        assert_eq!(px(336 + 10, 8 + 22 + 10), 80);
+        assert_eq!(px(664 + 10, 8 + 22 + 10), 160);
     }
 }
