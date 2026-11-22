@@ -297,8 +297,8 @@ campaign and multiplayer extensions. Each list includes the Video and
 Voice pages whose classes are enabled. When neither page is enabled, the
 game handles its original Settings row directly.
 
-**Change Map** shows above End Game for the party leader of a custom
-game ("Change Map from the pause menu" below).
+**Game Setup** shows above End Game for the party leader of a custom
+game ("Game Setup from the pause menu" below).
 
 ### How Start opens it (Local, static)
 
@@ -432,21 +432,62 @@ window and slot. The game-shell window saves the parent loader and focus.
 The normal Back handler restores them, including in the pressing player's
 quarter in split screen.
 
-### Change Map from the pause menu
+### Game Setup from the pause menu
 
-The party leader of a custom game can pick the next map from GAME MENU.
-**Change Map** opens the same categories and maps as Game Setup's Change
-Map ([map-select.md](map-select.md)). A Forge or Firefight lobby opens its
-own category's maps, and a single category opens its maps directly.
-**B** goes back a step, then to GAME MENU, with nothing changed. **A** on
-a map ends the game for everyone. Back in the lobby, the lobby takes
-the map and the countdown starts with no further press. The lobby keeps
-its game variant.
+The party leader of a custom game can change the next game from GAME
+MENU. **Game Setup** opens a list of ours with the lobby's own rows:
+**Change Map...**, **Change Rules...**, **Quick Options...** and
+**Clanker Options...**, each shown when it has something to offer.
+
+- **Change Map** offers the same categories and maps as Game Setup's
+  Change Map ([map-select.md](map-select.md)). A Forge or Firefight
+  lobby opens its own category's maps, and a single category opens its
+  maps directly. The maps are a value picker; picking one closes the
+  picker and the categories.
+- **Change Rules** offers the game types and their variants the lobby's
+  Change Rules lists, including Research and Devolution, Party Games,
+  the community variants and the game-variant store's (Live, imported
+  and ported variants, rules-script variants among them). A Firefight
+  lobby has no Change Rules, as in the lobby.
+- **Quick Options** offers Score to Win, Time Limit, Lives per Round and
+  Respawn Time of the variant the next game plays: the one Change Rules
+  picked in this visit, else the lobby's.
+- **Clanker Options** offers the Clankers page's settings.
+
+Map, rules and Quick Options changes wait in the visit's draft, and the
+row shows what was picked (`Change Map  Lockout`). Nothing changes in
+the running game. **B** on Game Setup with a draft opens a dialog with
+**Restart with these settings** and **Keep playing** (focused). Restart
+ends the game for everyone. Back in the lobby, the lobby takes the map
+and the variant and the countdown starts with no further press. Keep
+playing drops the draft and closes Game Setup. B on the dialog goes back
+to Game Setup with the draft kept. B with no draft closes Game Setup.
+What the draft leaves out stays the lobby's: a map alone keeps the
+lobby's variant, rules alone keep its map.
+
+Clanker Options' changes apply at once, in the running game: the
+Clankers driver follows the settings store, as it does for the lobby's
+page (`clankers::LIVE_KEYS`, `pause_change_map::clanker_rows::applies`).
+A count change adds or takes off bots, and a difficulty or style change
+reaches the bots at their next frame. Teams has no reader, so changing
+it changes nothing yet.
+
+Quick Options never applies live (`pause_change_map::quick::applies`).
+A game plays the copy of the variant made at its start (`G+0x13c`), the
+other consoles get the record only with the game's parameters
+([game-options.md](game-options.md#how-a-variant-reaches-other-machines-confirmed)),
+and which code reads each setting from the copy during a game is not
+traced. A change written there would reach this console only, so every
+Quick Options change waits for the restart. The page is ours, not
+retail's: Quick Options' screen (222) is in `mainmenu.map` only.
 
 Code: `game::pause_change_map` (`PauseChangeMap`, `install`, from
-`boot::registration`). The `features.pause-change-map` switch turns the
-row, the picker and the start off. Each picker screen's class is its own
-feature (`pause-map-categories`, `pause-map-list`).
+`boot::registration`; `setup`, `game_types`, `quick`, `clanker_rows`).
+The `features.pause-change-map` switch turns the row, Game Setup and the
+restart off. Each screen's class is its own feature
+(`pause-game-setup`, `pause-map-categories`, `pause-game-types`,
+`pause-quick-options`, `pause-clanker-options`); a row whose screen is
+off is left out.
 
 - **Who gets the row.** Retail shows End Game (action 5) only on the
   console that leads the party (`0x592f0`) outside matchmaking (lobby
@@ -454,23 +495,46 @@ feature (`pause-map-categories`, `pause-map-list`).
   (`MP_MENU_LIST_CTOR`) adds our row (action word `0x30`) just above End
   Game when the list has End Game, the life cycle is not matchmaking's,
   this console hosts the squad session (session `+0x40` equal to
-  `+0x72d8`) or the game is offline, and the map list has a map to offer
-  (`pause_change_map::offered`, `opening`). Every other player's GAME
-  MENU is retail's. The rows' array (name `0x4593a8`) is made one row
-  larger while the feature is built (`pause_change_map::list_count`, from
-  the datum array hook in `layout_glue`), on top of the Forge rows' room.
-- **Text and press.** `MP_MENU_ROW_TEXT` draws **Change Map** from our
+  `+0x72d8`) or the game is offline, and Game Setup has a row
+  (`pause_change_map::offered`, `avail`, `setup_rows`). Every other
+  player's GAME MENU is retail's. The rows' array (name `0x4593a8`) is
+  made one row larger while the feature is built
+  (`pause_change_map::list_count`, from the datum array hook in
+  `layout_glue`), on top of the Forge rows' room.
+- **One row, not four.** GAME MENU's list is not shown to scroll past its
+  item widgets, so the four rows sit on Game Setup and GAME MENU gains one
+  row, as with Change Map alone.
+- **Text and press.** `MP_MENU_ROW_TEXT` draws **Game Setup** from our
   string slot. `MP_MENU_ROW_CHOSEN` runs End Game's press for any word it
-  does not know, so ours is always answered before the original: it
-  opens the picker on GAME MENU's own window and slot
-  (`list_class::push`) and remembers the pressing controller.
-- **The picker** is two list classes of ours (`pause-map-categories`,
-  `pause-map-list`), built on screen 200 in a game ("In a game, our
-  screens use screen 200"), with one text per row from the
-  `pause change map` string family. The retail Select Map dialog is not
-  used in a game: its list comes from the UI level array (`0x4ee4e4`),
-  which `mainmenu.map` fills. Every map of a category is a row of its
-  own. Mod pack folders are not listed in the pause picker.
+  does not know, so ours is always answered before the original. It
+  reads the built-in variants and the lobby's variant, starts a visit
+  with an empty draft, opens Game Setup on GAME MENU's own window and
+  slot (`list_class::push`) and remembers the pressing controller.
+- **The screens** are list classes of ours built on screen 200 in a game
+  ("In a game, our screens use screen 200"), with texts from the
+  `pause change map` string family. Game Setup, Quick Options and
+  Clanker Options draw one line a row (`ListClass::lines`), so a value
+  shows after its label. Game Setup takes B and Back as its action
+  (`setup::back`). The maps, variants, values and the confirm dialog are
+  the kit's value picker (`ui_kit::picker`, the large dialog in a game).
+  A pick from the categories or game types closes that list once the
+  picker has closed (`pane_ready` notes it). The retail Select Map and
+  SELECT GAME screens are not used in a game: their lists are filled
+  from `mainmenu.map`. Mod pack folders are not listed in the pause
+  picker.
+- **The variants** are the game's built-in list (`[0x51ea14]`, a count
+  and `0x1e4`-byte records with the variant at `+4`), into which
+  `community_variants` and `game_variants::inject` merge theirs at each
+  main menu load (`game_types::read`). A record is filed under our row
+  when its name or the rules script its block names says so
+  (`tweakers::record_row`), else under its game type, in the game type
+  list's order. Saved variants are listed as the store's ported copies.
+- **Quick Options' values** are the ones the variant editor offers for
+  the setting on this disc, kept from the last built-in load
+  (`community_variants::last_offered`), else the editor's steps from
+  [game-options.md](game-options.md); the held value is always listed. A
+  value the clean-up would refuse is not stored (`quick::apply`,
+  `record::refused`).
 - **Ending the game.** `firefight::guest::end_game`, the engine's
   round-over path: engine state over, the end latch through `GAME_END`
   once, the engine's changed flag. The game ends as at its time or score
@@ -478,22 +542,35 @@ feature (`pause-map-categories`, `pause-map-list`).
 - **The next game** (`pause_change_map::Pending`). A hook before
   `UI_UPDATE` reads the lobby each frame. It does nothing until the main
   menu is back with a lobby in its pregame life cycle (`[0x527334]` 1 or
-  2, or an offline lobby). Then it sets the lobby's map with
+  2, or an offline lobby). With a map, it sets the lobby's map with
   `LOBBY_SET_MAP` (map id in ESI, campaign -1), as retail's Change Map
-  does, so the change reaches the other consoles. It retries every
-  0.5 s while the call is refused. Two seconds after the map is set it
+  does, so the change reaches the other consoles. With a variant, it
+  then writes the record to a page of ours and calls the lobby variant
+  setter (`host_lobby::SET_VARIANT`, `0x19a728`, stack the record, AL
+  nonzero when taken), as the playerless host does. Each call retries
+  every 0.5 s while refused. Two seconds after the last setting is set it
   asks retail's start check (`LOBBY_START_STATE(0)`). On 9 (ready) it
   asks for the countdown for the pressing controller (`0x19a78e`, EAX
   the controller, stack 10 and 3, as the lobby's Start Game asks). On 10
   (a countdown runs) it stops. On 8 (this console does not lead the
   party) it gives up. Other states wait. After five minutes it gives up
-  and the lobby keeps the map, so the leader presses Start. Each step is
-  logged with a `pause change map:` line.
+  and the lobby keeps what was set, so the leader presses Start. Each
+  step is logged with a `pause game setup:` line.
 
 [not verified] Statically unverifiable, to check in a run:
 
-- `LOBBY_SET_MAP` and the countdown are called only in the pregame
-  lobby, where retail calls them. The map is not set during the game.
+- `LOBBY_SET_MAP`, the variant setter and the countdown are called only
+  in the pregame lobby, where retail calls them. Nothing is set during
+  the game.
+- That the lobby's own Change Rules sets its variant through `0x19a728`,
+  and that a record set there reaches the other consoles as a Change
+  Rules pick does. That it keeps the record's `hx` block
+  ([rules-variants.md](rules-variants.md#not-verified)).
+- That the built-in list at `[0x51ea14]` is still filled in a game, after
+  `mainmenu.map`'s tags are unloaded. With it empty, Game Setup has no
+  Change Rules row.
+- That a bot the Clankers driver adds during a game joins it, as a
+  remote peer joining in progress.
 - The postgame carnage report is not skipped. Whether the life cycle
   leaves the postgame (4) for the lobby (1 or 2) by itself, or only after
   a press, is not traced. The next game starts once the lobby is back.
@@ -502,13 +579,17 @@ feature (`pause-map-categories`, `pause-map-list`).
   0xc70`).
 - The round-over path reaches the other consoles through the engine's
   changed flag, as it does for Firefight.
-- Our picker screens and GAME MENU stay up while the game ends. The map
-  unload takes them down, as it takes down a retail GAME MENU left open
-  when a game ends.
+- B and Back reach Game Setup's event handler as button words 1 and 13
+  (`list_class::BUTTON_EVENT`), before the generic close.
+- Closing the categories or game types list from the picker's `after`,
+  while the picker closes on the dialogs' window.
+- Our screens and GAME MENU stay up while the game ends. The map unload
+  takes them down, as it takes down a retail GAME MENU left open when a
+  game ends.
 
-`ui.screen` and `ui.stack` show GAME MENU's rows and the picker screens
-([agent-api.md](../runtime/agent-api.md#ui-what-the-menus-show)), so
-the API needs no new method for this.
+`ui.screen` and `ui.stack` show GAME MENU's rows and the Game Setup
+screens ([agent-api.md](../runtime/agent-api.md#ui-what-the-menus-show)),
+so the API needs no new method for this.
 
 ### In a game, our screens use screen 200
 
@@ -539,10 +620,15 @@ the list per account. A host row would call that same HLE.
 
 ### Tests
 
-`game::pause_change_map::tests` covers who gets the Change Map row,
-its place above End Game, what it opens per lobby mode, the switch, the
-plan with the Forge rows and the next game's steps (map, countdown, give
-up). `game::pause_menu::tests` covers the pause row labels, the native
+`game::pause_change_map::tests` covers who gets the Game Setup row, its
+place above End Game, Game Setup's rows in order per lobby mode and
+what each offers, Change Map's opening per lobby mode, the game types
+and the built-in list read from guest memory, the draft (a map, a
+variant, both, Quick Options changes and refusals), the confirm dialog,
+Quick Options' values, which changes apply live (Clanker Options) and
+which wait for the restart (Quick Options), the switch, the plan with
+the Forge rows and the next game's steps (map, variant, both,
+countdown, give up). `game::pause_menu::tests` covers the pause row labels, the native
 multiplayer Settings action, both destination lists' new action words,
 feature switches, and live Video and Voice changes.
 `game::list_class::tests` covers the window and slot passed to a child

@@ -883,6 +883,23 @@ pub fn offered<M: Mem>(
     Some(out)
 }
 
+/// What the editor offered at the last load of the built-ins, kept for
+/// screens that offer a setting's values where the `sily` tags are not
+/// loaded (the pause menu's Quick Options, `crate::pause_change_map`).
+static LAST_OFFERED: std::sync::Mutex<Option<std::collections::HashMap<u32, Vec<i32>>>> =
+    std::sync::Mutex::new(None);
+
+/// Keeps `offer` as [`last_offered`]'s answer.
+pub fn remember_offered(offer: &std::collections::HashMap<u32, Vec<i32>>) {
+    *LAST_OFFERED.lock().unwrap_or_else(|e| e.into_inner()) = Some(offer.clone());
+}
+
+/// Every `(setting, values)` the editor offered at the last load of the
+/// built-ins; `None` before the first.
+pub fn last_offered() -> Option<std::collections::HashMap<u32, Vec<i32>>> {
+    LAST_OFFERED.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 /// The variants whose every pair is offered, by index.
 pub fn usable(offered: &std::collections::HashMap<u32, Vec<i32>>) -> Vec<usize> {
     let ok = |(s, v): (u32, i32)| offered.get(&s).is_some_and(|vs| vs.contains(&v));
@@ -1143,6 +1160,7 @@ pub fn install_with_live(
                     // The game-variant store's after ours, in its own pairs
                     // page (docs/game/community-gametypes.md, "The merged block").
                     let offer = offered(&*mem, goof, tags).unwrap_or_default();
+                    remember_offered(&offer);
                     let ours: Vec<NewEntry> = which.iter().map(|&i| NewEntry::community(i)).collect();
                     let retail = mem.u32(goof + GOOF_BUILTINS).unwrap_or(0);
                     let room = (MAX_BUILTINS.saturating_sub(retail) as usize).saturating_sub(ours.len());

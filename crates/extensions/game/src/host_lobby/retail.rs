@@ -19,10 +19,13 @@ mod checkpoint;
 const CREATE_SQUAD: u32 = 0x0005_9890;
 /// Retail lifecycle teardown, also used before a checkpoint scenario load.
 pub(crate) const LEAVE_SESSIONS: u32 = 0x0005_93e0;
-const SET_VARIANT: u32 = 0x0019_a728;
+/// The lobby variant setter (`0x19a728`): stack the `0x130`-byte record;
+/// AL nonzero when taken. The pause menu's Change Rules and Quick Options
+/// set the next game's variant with it (`crate::pause_change_map`).
+pub(crate) const SET_VARIANT: u32 = 0x0019_a728;
 /// The controller countdown (`0x19a78e`): EAX the pressing controller's
 /// port, stack 10 and 3 as the lobby's Start Game asks; AL nonzero when the
-/// countdown started. The pause menu's Change Map starts the next game
+/// countdown started. The pause menu's Game Setup starts the next game
 /// with it (`crate::pause_change_map`).
 pub(crate) const CONTROLLER_COUNTDOWN: u32 = 0x0019_a78e;
 /// The pregame stage change the countdown finisher (`0x6e410`) makes once

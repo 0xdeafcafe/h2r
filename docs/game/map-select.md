@@ -20,10 +20,10 @@ focused. From the categories, **B** or **Back** closes the picker.
 With a single category, Change Map opens the regular map list. A full
 Mods category can show an overflow notice even when no mod fits.
 
-GAME MENU's **Change Map** offers the same categories and maps to the
-party leader during a game, as list screens of ours, since the Select Map
-dialog's list is only filled in the main menu
-([settings-menu.md](settings-menu.md#change-map-from-the-pause-menu),
+GAME MENU's **Game Setup** offers the same categories and maps to the
+party leader during a game, as a list of ours and the kit's value
+picker, since the Select Map dialog's list is only filled in the main
+menu ([settings-menu.md](settings-menu.md#game-setup-from-the-pause-menu),
 `pause_change_map`).
 
 **By lobby mode** (`map_select::mode_category`, the mode is
