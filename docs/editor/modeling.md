@@ -1,25 +1,29 @@
 # Modeling: mesh, BSP and texture editing in h2-editor
 
-Status: Partly built. The mesh kernel (slice 1), the in-place
-geometry path (slices 2 and 3, for clusters, instanced definitions and
-`mode` sections), the collision compiler with `coll` BSPs as meshes
-(slice 8, the crate only) and the Textures tool (slice 5, painting and
-exporting in memory without writing the tag) are implemented; the
-Modeling window is a section of the map inspector with buttons, not yet
-the gizmo, overlays and keymap below. A `coll` BSP is not yet a
-`geometry-edit` target, so the window, `geometry.*` and the map's save do
-not reach it. Grown writes, structure collision and markers are designs.
+Status: Partly built. The mesh kernel (slice 1), the in-place geometry
+path (slices 2 and 3), grown raw writes (slice 7; `MapEditor::append_raw`
+and **Use for lower LODs**), the collision compiler with `coll` BSPs as
+meshes (slice 8, the crate only) and the Textures tool (slice 5, painting
+and exporting in memory) are implemented; the Modeling window is a
+section of the map inspector with buttons, not yet the gizmo, overlays
+and keymap below. A `coll` BSP is not yet a `geometry-edit` target.
+Structure collision and markers are designs.
 Code: `crates/tools/mesh-edit`, `crates/tools/geometry-edit`,
 `crates/tools/collision-build`,
 `crates/formats/tags/src/geometry_write.rs`,
+`crates/formats/map/src/writer.rs` (`append_raw`),
+`crates/tools/scenario-edit/src/save.rs`,
 `crates/apps/studio/src/app/modeling.rs`,
 `crates/apps/studio/src/api/geometry.rs`,
 `crates/apps/studio/src/ui/modeling.rs`.
 Tests: `crates/tools/mesh-edit/tests`,
-`crates/tools/geometry-edit/src/{session,write}_tests.rs`,
+`crates/tools/geometry-edit/src/{session,write,grow}_tests.rs`,
 `crates/tools/collision-build/src/{build,coll}_tests.rs`,
-`crates/formats/tags/src/geometry_write_tests.rs`, the `geometry_*` and
-`doc_undo_on_the_map_*` tests in `crates/apps/studio/src/api/tests.rs`.
+`crates/formats/tags/src/geometry_write_tests.rs`, the `append*raw*`
+tests in `crates/formats/map/src/tests.rs`,
+`a_geometry_raw_append_*` in `crates/tools/scenario-edit/src/tests.rs`,
+the `geometry_*` and `doc_undo_on_the_map_*` tests in
+`crates/apps/studio/src/api/tests.rs`.
 Switch: none in the environment. Two session switches in the Edit menu: **Allow growing full blocks** (the existing one) and **Allow unverified geometry writes** (off by default).
 
 The editor gains two tools. **Modeling** edits the triangles the game
@@ -48,7 +52,7 @@ evidence.
 | Engine's collision walks, modelled | `collision_build::query` (`vector`, `locate`, `surface_at`), and the same model over both games' encodings in `h1convert::surface_query` | the oracle a compiled tree is tested against (**Code**) |
 | Havok MOPP, pathfinding | `mopp::build_structure`, `mopp::build`, `pathfind::generate` | regenerate from a `Bsp` (**Code**) |
 | Clusters, portals, visibility MOPP per section | `h1convert::clusters`, `h1convert::structure::visibility_mopp`, `h1convert::flood` | written from Halo 1's data; the flood model checks portals (**Code**) |
-| In-place map patches, metadata growth | `map::MapEditor` (`patch_tag`, `patch_metadata`, `append_metadata`), [map-format.md](../formats/map-format.md) "Growing the metadata" | no raw-data patch or append (**Code**) |
+| In-place map patches, metadata growth, raw data | `map::MapEditor` (`patch_tag`, `patch_metadata`, `append_metadata`, `patch_raw`, `append_raw`), [map-format.md](../formats/map-format.md) "Growing the metadata" and "Inserting raw data" | `append_raw` places new raw data where the tag index starts; the index and metadata follow (**Code**) |
 | Whole-map builder with pinned retail tags | `map::build::TagSet` ([map-builder.md](../formats/map-builder.md)) | adds raw data and built tags; retail `sbsp` and `ltmp` do not relocate ([tag-repo.md](../formats/tag-repo.md)) (**Code**) |
 | Bitmap decode | `assets::bitmap` (`texture_desc`, `decode_bytes`, `decode_image`), `gfx::swizzle` (both directions), [bitmaps.md](../formats/bitmaps.md) | no encoder but `h1_assets::bitmaps::mask::encode_dxt5` and `tags::rgba_bitmap` (linear ARGB) (**Code**) |
 | Viewport, picking, gizmo, snapshot undo | `scenario_edit::render::Viewport`, `scenario_edit::scene`, `crates/apps/studio/src/viewport.rs`, `editor_core::UndoStack` | reused as they are (**Code**) |
@@ -393,9 +397,18 @@ There is no `geometry` document: while a target is in edit mode the
 map's undo (`doc.undo {"doc":"map"}`, Cmd+Z) is the geometry session's,
 and the edits save with the map, counted in its dirty mark. After every
 command the session's writes go to the save
-(`scenario_edit::GeometryChanges`); with **Allow unverified geometry
-writes** off, or an edit that is not in place, the save is refused with
-the reason (`geometry.check`'s `save_refusal`) and writes nothing. The
+(`scenario_edit::GeometryChanges`): tag patches, raw patches and, for a
+grown section, a `RawAppend` (the new block, and the block info word that
+takes its raw pointer), which the save inserts with
+`MapEditor::append_raw`. With **Allow unverified geometry writes** off, or
+an edit the format cannot hold (a bucket-lit structure section or a sky
+model's strips grown, a part or material the section does not have, a map
+whose metadata does not end the file), the save is refused with the reason
+(`geometry.check`'s `save_refusal`) and writes nothing.
+`geometry_edit::RawAppend` keeps a grown section's bytes, alignment,
+pointer word and dependent writes together, and `Patches::raw` the
+changed spans of an in-place edit, so the live path sends the same bytes
+([realtime-edits.md](realtime-edits.md), "Geometry"). The
 viewport redraws an open cluster, or each placement of an open
 definition, in the native world from `GeometrySession::previews`; a
 `mode` section has no live preview yet.

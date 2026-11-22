@@ -165,7 +165,19 @@ impl App {
         if g.has_changes() {
             match g.changes() {
                 Ok(p) => {
-                    for w in p.tags {
+                    // A grown section's dependent writes save as ordinary
+                    // patches; its block and pointer word as a raw append.
+                    let mut tags = p.tags;
+                    for a in p.appended {
+                        tags.extend(a.writes);
+                        c.raw_appends.push(scenario_edit::RawAppend {
+                            bytes: a.bytes,
+                            align: a.align,
+                            pointer_space: a.pointer_space,
+                            pointer_address: a.pointer_address,
+                        });
+                    }
+                    for w in tags {
                         match w.space {
                             None => c.patches.push((w.address, w.bytes)),
                             Some(space) => c.bsp_patches.push(BspPatch {
