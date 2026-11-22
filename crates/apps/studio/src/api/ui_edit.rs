@@ -54,17 +54,17 @@ const METHODS: &[MethodDef] = &[
     ),
     def(
         m::UI_MOVE,
-        "Move a widget by dx, dy UI units (Y up), one undo step: our screens set `at` in the screen's YAML, retail screens a field of the mainmenu tag",
+        "Move a widget by dx, dy UI units (Y up), one undo step (the title and legend sit where the header layout puts them and are refused): our screens set `at` in the screen's YAML, retail screens a field of the mainmenu tag",
         r#"{"id":"string","dx":"integer","dy":"integer"}"#,
         EDITED,
-        r#"{"id":"title","dx":4,"dy":-2}"#,
+        r#"{"id":"description","dx":4,"dy":-2}"#,
     ),
     def(
         m::UI_SET_RECT,
         "Give a widget a rect [top, left, bottom, right] in UI units, one undo step (our screens: `at` and `size`; retail: the block's rect, or its point for art, lists and tables)",
         r#"{"id":"string","rect":"[top,left,bottom,right]"}"#,
         EDITED,
-        r#"{"id":"title","rect":[200,-260,176,60]}"#,
+        r#"{"id":"description","rect":[-20,-240,-60,120]}"#,
     ),
     def(
         m::UI_SET_TEXT,

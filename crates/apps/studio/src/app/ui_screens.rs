@@ -205,8 +205,22 @@ impl UiScreens {
     }
 
     /// The spec shown, for a native screen.
+    /// The page's spec as its screen doc presents it: the doc in scope
+    /// ([`edit::ours::with_docs`]: the edits), else the reloaded or baked
+    /// one, laid over what the Rust builds, so an edit shows on every
+    /// screen of ours, whether its runtime reads the doc yet or not.
     pub fn spec(&self) -> Option<ScreenSpec> {
-        self.live.as_ref().map(|l| l.spec())
+        let spec = self.live.as_ref()?.spec();
+        let Some(Pick::Native { screen, .. }) = &self.pick else {
+            return Some(spec);
+        };
+        match boot::ui_kit::data::screen(screen) {
+            Some(doc) => boot::ui_kit::data::present(&spec, &doc, boot::ui_kit::data::design())
+                .map_err(|e| eprintln!("ui screens: {screen}: {e}"))
+                .ok()
+                .or(Some(spec)),
+            None => Some(spec),
+        }
     }
 
     pub fn animation(&self) -> Phase {

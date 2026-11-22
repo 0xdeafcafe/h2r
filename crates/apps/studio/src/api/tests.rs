@@ -3918,13 +3918,23 @@ fn ui_title(api: &mut Api, app: &mut App) -> Value {
         .expect("the example has a title")
 }
 
+/// Widget `id`'s rect as `ui.widgets` reports it.
+fn ui_widget_rect(api: &mut Api, app: &mut App, id: &str) -> [i64; 4] {
+    let w = call(api, app, m::UI_WIDGETS, json!({}));
+    let w = w["widgets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["id"] == id)
+        .cloned()
+        .unwrap_or_else(|| panic!("no widget {id}"));
+    serde_json::from_value(w["rect"].clone()).unwrap()
+}
+
 #[test]
 fn ui_edits_answer_with_the_widget_and_the_render_shows_them() {
     let t = Temp::new("uiedit-api");
     let (mut api, mut app, _) = ui_edit_app(&t);
-    let before = ui_title(&mut api, &mut app);
-    let [top, left, bottom, right]: [i64; 4] = serde_json::from_value(before["rect"].clone()).unwrap();
-
     let sel = call(&mut api, &mut app, m::UI_SELECT, json!({"id": "title"}));
     assert_eq!(sel["selected"], "title");
     assert_eq!(sel["widget"]["id"], "title");
@@ -3937,7 +3947,13 @@ fn ui_edits_answer_with_the_widget_and_the_render_shows_them() {
     // ui.widgets (what ui.render draws) shows the edit.
     assert_eq!(ui_title(&mut api, &mut app)["text"], "From the API");
 
-    let moved = call(&mut api, &mut app, m::UI_MOVE, json!({"id": "title", "dx": 4, "dy": -2}));
+    // The title sits where the header layout puts it; the description moves.
+    assert_eq!(
+        code_of(api.call(&mut app, m::UI_MOVE, json!({"id": "title", "dx": 4, "dy": -2}))),
+        code::REFUSED
+    );
+    let [top, left, bottom, right] = ui_widget_rect(&mut api, &mut app, "description");
+    let moved = call(&mut api, &mut app, m::UI_MOVE, json!({"id": "description", "dx": 4, "dy": -2}));
     assert_eq!(
         moved["widget"]["rect"],
         json!([top - 2, left + 4, bottom - 2, right + 4])
@@ -3952,7 +3968,7 @@ fn ui_edits_answer_with_the_widget_and_the_render_shows_them() {
         &mut api,
         &mut app,
         m::UI_SET_RECT,
-        json!({"id": "title", "rect": [236, -316, 212, 24]}),
+        json!({"id": "description", "rect": [236, -316, 212, 24]}),
     );
     assert_eq!(off["widget"]["rect"], json!([236, -316, 212, 24]));
     assert!(
@@ -3960,7 +3976,7 @@ fn ui_edits_answer_with_the_widget_and_the_render_shows_them() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|f| f["ids"].as_array().unwrap().iter().any(|i| i == "title")),
+            .any(|f| f["ids"].as_array().unwrap().iter().any(|i| i == "description")),
         "{off}"
     );
 
