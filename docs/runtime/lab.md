@@ -383,7 +383,22 @@ called "Image build". The host sends these as the `name`, `source`,
 resolved as `build.branch`.
 The dialog opens over the current screen and pauses local campaign play.
 Networked games keep running while the dialog is up. Its rows are
-**Not now** and **Close and start**.
+**Not now**, **Start alongside** and **Close and start**, with **Not now**
+focused first. A job whose numbers need a quiet machine (`h2 lab bench`, a
+sim benchmark, a profiled run) leaves out **Start alongside**: the dialog
+has the two rows **Not now** and **Close and start**, and the request
+carries `"alongside": false`.
+
+**Start alongside** (the request's `alongside` answer) starts the job at
+once and leaves the player's game open. The lab doesn't call `host.quit`.
+The job's `player` field, run log and summary say
+`player: kept their game open; the job ran alongside it`. That game counts
+as already asked, with the answer [Keep running](#when-the-player-opens-a-game), so the
+running-job question doesn't come up for it mid-job and the queue doesn't
+wait for it. Start alongside isn't a decline: it doesn't start the
+cool-down below. Lab games bind different XNet ports from the player's
+(see below), so the two can run together. A second consent for the same
+job, after an uncached build, doesn't ask about that game again.
 
 **Close and start** is the player's consent (the request's `allowed`
 answer). The lab closes the game for them: it calls the game's

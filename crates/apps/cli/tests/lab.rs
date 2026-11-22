@@ -550,6 +550,31 @@ fn takeover_allow_waits_for_the_game_window_to_close() {
 }
 
 #[test]
+fn takeover_alongside_starts_the_job_with_the_game_open_and_asks_nothing_more() {
+    let lab = Lab::named("alongside");
+    let game = FakeGame::listen(&lab, true, Decision::Alongside);
+    let id = start_fake_run(&lab);
+    let job = wait_fake_job(&lab, &id)["job"].clone();
+    assert_eq!(job["state"], "done", "{job}");
+    assert_eq!(
+        job["player"][0],
+        "player: kept their game open; the job ran alongside it",
+        "{job}"
+    );
+    // The game was never asked to close, was offered the row and was asked
+    // once: it counts as having answered Keep running.
+    assert_eq!(game.quits.load(Ordering::Acquire), 0);
+    let requests = game.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].alongside);
+    drop(requests);
+    // Not a decline: no cool-down, so the next job asks again.
+    let next = start_fake_run(&lab);
+    assert_eq!(wait_fake_job(&lab, &next)["job"]["state"], "done");
+    assert_eq!(game.requests.lock().unwrap().len(), 2);
+}
+
+#[test]
 fn takeover_allow_holds_the_job_when_the_game_cannot_be_closed() {
     let lab = Lab::named("allow-held");
     let game = FakeGame::listen(&lab, true, Decision::Allowed);

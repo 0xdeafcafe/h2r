@@ -74,6 +74,7 @@ def root_exports():
             "assets/ui/screens/kit.picker.game.yaml",
             "assets/ui/screens/kit.picker.yaml",
             "assets/ui/screens/lab.running.yaml",
+            "assets/ui/screens/lab.takeover.alongside.yaml",
             "assets/ui/screens/lab.takeover.yaml",
             "assets/ui/screens/layout.code-entry.yaml",
             "assets/ui/screens/layout.dialog.large.yaml",

@@ -36,7 +36,8 @@ pub enum Source {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Ask {
-    /// May the job start? The player answers [`Decision::Allowed`] or
+    /// May the job start? The player answers [`Decision::Allowed`],
+    /// [`Decision::Alongside`] (when the request offers it) or
     /// [`Decision::Declined`].
     #[default]
     Start,
@@ -50,6 +51,14 @@ impl Ask {
     pub fn is_start(&self) -> bool {
         *self == Ask::Start
     }
+}
+
+fn offered() -> bool {
+    true
+}
+
+fn is_offered(alongside: &bool) -> bool {
+    *alongside
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +81,11 @@ pub struct Request {
     /// Approximate runtime, or zero if the duration is unknown.
     pub estimate_seconds: u32,
     pub timeout_seconds: u32,
+    /// The dialog offers Start alongside. False for a job whose numbers
+    /// need a quiet machine (a benchmark); left out when true, so a
+    /// request that offers it reads as it always has.
+    #[serde(default = "offered", skip_serializing_if = "is_offered")]
+    pub alongside: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,6 +111,9 @@ pub struct StatusParams {
 pub enum Decision {
     Pending,
     Allowed,
+    /// [`Ask::Start`]: start the job now and leave the player's game open.
+    /// Only a request with `alongside` offers it.
+    Alongside,
     Declined,
     TimedOut,
     Unavailable,

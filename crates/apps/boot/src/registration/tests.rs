@@ -559,6 +559,7 @@ fn the_full_case_plans_every_feature_boot_adds_outside_the_registration_function
         // `AgentGlue::configure_takeover` with a window and player input.
         "lab-takeover",
         "lab-takeover-dialog",
+        "lab-takeover-alongside-dialog",
         "lab-running-dialog",
         // `host_metrics::install` with an agent.
         "host-metrics",
