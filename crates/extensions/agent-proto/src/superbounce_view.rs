@@ -41,7 +41,7 @@ pub struct Tracker {
     pub enabled: bool,
     /// The tracker's range, world units.
     pub range: f64,
-    /// In range nearest first, then the nearest rim chevrons.
+    /// The next spot, then the one after it; none without a next spot.
     pub blips: Vec<Blip>,
 }
 

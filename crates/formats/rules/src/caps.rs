@@ -57,6 +57,7 @@ pub const CAPABILITIES: &[Capability] = &[
     cap("objects.delete", "removes objects", false),
     cap("objects.move", "moves objects", false),
     cap("ai.squads", "places and commands AI", false),
+    cap("bots.orders", "gives bots orders", false),
     cap("hud.message", "shows messages", false),
     cap(
         "hud.superbounce",
@@ -285,6 +286,11 @@ pub mod id {
     pub const FMT_INT: u16 = 62;
     pub const FMT_TIME: u16 = 63;
     pub const FMT_ENUM: u16 = 64;
+    pub const BOT_GO: u16 = 65;
+    pub const BOT_HOLD: u16 = 66;
+    pub const BOT_FOLLOW: u16 = 67;
+    pub const BOT_ATTACK: u16 = 68;
+    pub const BOT_FREE: u16 = 69;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -416,6 +422,18 @@ pub const ENTRIES: &[Entry] = &[
     fmt(id::FMT_INT, "fmt_int", &[Int]),
     fmt(id::FMT_TIME, "fmt_time", &[Int]),
     fmt(id::FMT_ENUM, "fmt_enum", &[Ty::Enum(0)]),
+    // Bot orders (docs/game/rules-world-api.md, "Bots"): a hint to a
+    // phantom's brain on the host, delivered through the phantom registry
+    // (`game::rules::world::bots`). The whole path is ours — a phantom's
+    // pad is a player's input — so there is no guest point to name; named
+    // means the game-side part is built here. `bot_go`'s and `bot_hold`'s
+    // second argument is a labelled thing's handle (a zone fits an object);
+    // the `vec` form of `at` comes with the world API's objects slice.
+    act(id::BOT_GO, "bot_go", &[Player, Object], Some("bots.orders"), Queued, Named),
+    act(id::BOT_HOLD, "bot_hold", &[Player, Object], Some("bots.orders"), Queued, Named),
+    act(id::BOT_FOLLOW, "bot_follow", &[Player, Player], Some("bots.orders"), Queued, Named),
+    act(id::BOT_ATTACK, "bot_attack", &[Player, Player], Some("bots.orders"), Queued, Named),
+    act(id::BOT_FREE, "bot_free", &[Player], Some("bots.orders"), Queued, Named),
 ];
 
 /// The word `message(to, text)` takes for everyone.
@@ -823,6 +841,26 @@ mod tests {
         assert!(!entry(id::SET_TEAM, API_VERSION).unwrap().hostable_on(2));
         assert_eq!(carrier_name(7), Some("juggernaut"));
         assert_eq!(carrier_name(5), None);
+    }
+
+    #[test]
+    fn bot_orders_are_queued_hostable_and_gated() {
+        for name in ["bot_go", "bot_hold", "bot_follow", "bot_attack", "bot_free"] {
+            let e = entry_named(name).unwrap();
+            assert_eq!(e.kind, Kind::Action, "{name}");
+            assert_eq!(e.order, Order::Queued, "{name}");
+            assert_eq!(e.cap, Some("bots.orders"), "{name}");
+            assert!(e.status.hostable(), "{name}");
+        }
+        assert_eq!(entry(id::BOT_HOLD, API_VERSION).unwrap().args, &[Player, Object]);
+        assert_eq!(entry(id::BOT_FOLLOW, API_VERSION).unwrap().args, &[Player, Player]);
+        assert_eq!(entry(id::BOT_FREE, API_VERSION).unwrap().args, &[Player]);
+        let c = capability("bots.orders", API_VERSION).unwrap();
+        assert!(!c.grantable);
+        assert_eq!(
+            crate::policy::eligible(&[c.name.to_string()], API_VERSION),
+            ["custom", "hopper", "ranked"]
+        );
     }
 
     #[test]

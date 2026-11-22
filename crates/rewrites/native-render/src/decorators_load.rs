@@ -14,6 +14,7 @@ use tags::material::Material as TagMaterial;
 use tags::shader::StageStates;
 
 use crate::decorators::PROVIDED_INPUTS;
+use crate::gpu::Image;
 use crate::look::{self, PassLook, Stage};
 use crate::object_program_gpu::input_fetch;
 use crate::object_streams::{Attribute, Element, SLOT, StreamData, StreamElement, declaration, gather, registers};
@@ -66,10 +67,9 @@ pub fn decorator_look(
     // A pass that leaves the cull to the device draws as the draws before
     // it left it: the device's at the layer-3 call, read at the ask.
     let inherits_cull = !look::sets_state(&imp.render_states, gfx::state::RenderStateType::CullMode);
+    // A stage sampling the lightmap takes the globals' bitmap (the draw
+    // sets the page to -1, `0x0004e277`): [`stage_images`].
     let look = look::implementation_look(p.pass, imp).map_err(|r| format!("{r:?}"))?;
-    if look.textures.contains(&Stage::Lightmap) {
-        return Err("a stage samples a lightmap".into());
-    }
     let state = pass_state(&imp.render_states).map_err(|r| format!("render states: {r:?}"))?;
     let (microcode, semantics) =
         program(look.vertex_shader).ok_or("the vrtx has no classification-1 program")?;
@@ -168,6 +168,41 @@ pub fn compile(look: &DecoratorLook, stream: &[StreamElement]) -> Result<Decorat
         declaration,
         inherits_cull: look.inherits_cull,
     })
+}
+
+/// The images `program`'s sampled stages bind: a bitmap stage's from
+/// `bitmap` (bitmap, image), a lightmap stage's `lightmap`. The draw
+/// `0x0004e260` sets the current lightmap page to -1 (`0x0004e277`), so
+/// the stage setup binds the globals' rasterizer bitmap at `+0x64` as for
+/// an object's record, and the draw adds no lightmap coordinates: the
+/// stage takes that image only when it is uniform
+/// (`crate::object_program_gpu::uniform`), which samples the same
+/// wherever the coordinates fall. An error says why the material stays on
+/// the D3D path.
+pub fn stage_images(
+    program: &DecoratorProgram, bitmap: &dyn Fn(TagId, u32) -> Option<Image>, lightmap: Option<&Image>,
+) -> Result<[Option<Image>; 4], String> {
+    let mut images: [Option<Image>; 4] = Default::default();
+    for (n, dim) in program.dims.iter().enumerate() {
+        if dim.is_none() {
+            continue;
+        }
+        images[n] = Some(match program.stages[n] {
+            Stage::Bitmap { bitmap: id, image } => bitmap(id, image).ok_or_else(|| format!("stage {n} bitmap did not load"))?,
+            Stage::Lightmap => {
+                let image = lightmap.ok_or_else(|| format!("stage {n} samples the lightmap, which did not load"))?;
+                if !crate::object_program_gpu::uniform(image) {
+                    return Err(format!(
+                        "stage {n} samples the lightmap, whose image ({}x{}) is not uniform, so the coordinates the draw leaves would matter",
+                        image.width, image.height
+                    ));
+                }
+                image.clone()
+            }
+            _ => return Err(format!("stage {n} samples what is not a bitmap")),
+        });
+    }
+    Ok(images)
 }
 
 /// A set's vertices as one program reads them, and its indices: per
@@ -326,5 +361,24 @@ pub(crate) mod tests {
         let (v, _) = uniforms(&p, &view, [1.0, 2.0, 0.0, 1.0]);
         assert_eq!(v.constants[LOD_CONSTANT], [1.0, 2.0, 0.0, 1.0]);
         assert_eq!(v.constants[0], [0.5; 4]);
+    }
+
+    /// A lightmap stage binds the globals' bitmap when it is uniform, as
+    /// an object's does; a bitmap stage its own image.
+    #[test]
+    fn a_lightmap_stage_takes_the_uniform_globals_bitmap() {
+        let mut p = compile(&decorator(None), &stream()).unwrap();
+        let base = TagId(0xe000_0007);
+        p.stages = [Stage::Bitmap { bitmap: base, image: 0 }, Stage::Lightmap, Stage::Empty, Stage::Empty];
+        p.dims = [Some(TextureDim::D2), Some(TextureDim::D2), None, None];
+        let image = |rgba: Vec<u8>| Image { width: 2, height: 1, rgba, mips: Vec::new(), blocks: None };
+        let grey = image(vec![9, 9, 9, 255, 9, 9, 9, 255]);
+        let varied = image(vec![9, 9, 9, 255, 1, 2, 3, 255]);
+        let bitmap = |id: TagId, n: u32| (id == base && n == 0).then(|| varied.clone());
+        let got = stage_images(&p, &bitmap, Some(&grey)).unwrap();
+        assert_eq!((got[0].as_ref(), got[1].as_ref(), got[2].as_ref()), (Some(&varied), Some(&grey), None));
+        assert!(stage_images(&p, &bitmap, Some(&varied)).unwrap_err().contains("not uniform"));
+        assert!(stage_images(&p, &bitmap, None).unwrap_err().contains("did not load"));
+        assert!(stage_images(&p, &|_, _| None, Some(&grey)).unwrap_err().contains("stage 0 bitmap"));
     }
 }

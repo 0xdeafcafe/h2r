@@ -1,0 +1,19 @@
+screen: forge.menu
+kind: dialog
+layout: large
+backing: screen
+opener: forge.hud
+states:
+  open:
+    focus: 0
+  load:
+    focus: 0
+  no-saves:
+    focus: 0
+widgets:
+  title:
+    component: title
+  body:
+    component: body
+  legend:
+    component: legend

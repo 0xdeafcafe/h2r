@@ -1,6 +1,6 @@
 //! The host of `frame-scene.layers` (docs/graphics/framescene.md, slice 4):
 //! the scene's world layers 1, 5, 7, 8 and 20, and the first person's
-//! layers 1, 7 and 8, drawn from the scene's plan
+//! layers 1, 7, 8 and 20, drawn from the scene's plan
 //! (`native_render::layer_pass`, `LitObjects::plan_layer_item`) over the
 //! native world's loaded BSP and the object models layer 3 draws from,
 //! not from the draws the guest resolves under the layer call.
@@ -23,8 +23,10 @@
 //!   static (the material as resolved at the load, no animation: what the
 //!   compiled programs hold) and the layer's set draws its part with its
 //!   shader. An object item is drawn when extraction names no cause
-//!   (`frame_scene::LayerObjectRefusal`), the draw adds no PRT stream
-//!   for it (layer 5, `frame_scene::PrtStream`: `object_prt`), every
+//!   (`frame_scene::LayerObjectRefusal`), a PRT stream the draw adds for
+//!   it (layer 5, `frame_scene::PrtStream`) reads from guest memory in
+//!   the format its pass's PRT variant was compiled for
+//!   (`LitObjects::fill_prt`; else `object_prt`), every
 //!   state its passes set and restore already holds
 //!   (`layer_pass::skip_holds`: `object_state`; `state` for a structure
 //!   item), its model is resident in the
@@ -59,6 +61,7 @@ use engine::memory::GuestMemory;
 use frame_scene::{FrameScene, LayerItem, LayerOwner, LayerPass, PartFlags};
 use native_render::layer_pass::{self, PrefixItem};
 use native_render::object_program_gpu::{LitObjects, OBJECT_LAYERS, PlannedDraw};
+use native_render::object_streams::StreamFormats;
 use native_render::program::ViewInputs;
 use native_render::world::Owner;
 use render_bridge::native_layers::{Host, LayerCaller, count_for};
@@ -152,14 +155,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             *outcomes.entry("program").or_default() += taken.len() as u64;
             taken.clear();
         }
-        // Extraction's causes, and layer 5's PRT stream, before anything
-        // is asked of the device.
+        // Extraction's causes before anything is asked of the device.
         let mut objects: Vec<&LayerItem> = Vec::with_capacity(object_items.len());
         for &item in &object_items {
             if let Some(why) = item.refusal {
                 *outcomes.entry(why.name()).or_default() += 1;
-            } else if item.prt.is_some() {
-                *outcomes.entry("object_prt").or_default() += 1;
             } else if !OBJECT_LAYERS.contains(&l) {
                 *outcomes.entry("object_layer").or_default() += 1;
             } else {
@@ -201,7 +201,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             let device_state = |slot: u32| d.render_state(&read, slot);
             for draw in &plan.draws {
                 if taken.contains_key(&draw.slot)
-                    && !draw.passes.iter().all(|p| draw.implementation(p).is_some_and(|imp| layer_pass::skip_holds(imp, &device_state)))
+                    && !draw.passes.iter().all(|p| draw.implementation(p).is_some_and(|imp| layer_pass::skip_holds_with(imp, Some(&draw.inputs), &device_state)))
                 {
                     taken.remove(&draw.slot);
                     *outcomes.entry("state").or_default() += 1;
@@ -389,6 +389,12 @@ fn plan_objects<B: d3d::backend::Backend>(
     let fog_words = device_fog_words(d, mem);
     let specular = crate::native_objects_glue::device_specular(d, mem);
     let device_state = |slot: u32| d.render_state(&read, slot);
+    let mut prt_formats: Option<Option<StreamFormats>> = None;
+    let read_bytes = |at: u32, len: usize| -> Option<Vec<u8>> {
+        let mut bytes = vec![0; len];
+        mem.read(at, &mut bytes).ok()?;
+        Some(bytes)
+    };
     let ready: Vec<bool> = items.iter().map(|i| models.ready(i.model)).collect();
     let Ok(guard) = models.lit().try_lock() else { return all("object_models") };
     let Some(lit) = guard.as_ref() else { return all("object_models") };
@@ -414,6 +420,21 @@ fn plan_objects<B: d3d::backend::Backend>(
             *outcomes.entry("object_state").or_default() += 1;
             continue;
         }
+        // Layer 5's PRT stream, gathered from guest memory now
+        // (`LitObjects::fill_prt`).
+        let mut draws = draws;
+        if item.prt.is_some() {
+            let formats = prt_formats.get_or_insert_with(|| StreamFormats::read(&Words(mem)));
+            let filled = match formats {
+                Some(formats) => draws.iter_mut().try_for_each(|draw| lit.fill_prt(item.model, draw, formats, &read_bytes)),
+                None => Err("the game's stream formats do not read".to_string()),
+            };
+            if let Err(why) = filled {
+                count_refusal(&why);
+                *outcomes.entry("object_prt").or_default() += 1;
+                continue;
+            }
+        }
         let passes = draws.len();
         let mut with_fog = Vec::with_capacity(passes);
         for mut draw in draws {
@@ -431,6 +452,15 @@ fn plan_objects<B: d3d::backend::Backend>(
     }
     drop(guard);
     Some((models, out))
+}
+
+/// Guest memory, read only, as the stream formats read it.
+struct Words<'a>(&'a dyn GuestMemory);
+
+impl native_render::camera::GuestRead for Words<'_> {
+    fn read_u32(&self, addr: u32) -> Option<u32> {
+        self.0.u32(addr).ok()
+    }
 }
 
 /// Object items the plan gave back to the D3D path, the first of each

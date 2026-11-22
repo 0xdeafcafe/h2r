@@ -1,5 +1,5 @@
 //! `frame-scene.layers`: the scene's world layers 1, 5, 7, 8 and 20, and
-//! the first person's layers 1, 7 and 8, drawn from the scene's plan
+//! the first person's layers 1, 7, 8 and 20, drawn from the scene's plan
 //! instead of the guest's draws under the layer call
 //! (docs/graphics/framescene.md, slice 4). On with the native renderer;
 //! `frame-scene.layers=off` leaves every layer to the D3D path.
@@ -40,8 +40,10 @@ pub const ID: &str = "frame-scene.layers";
 pub const LAYERS: [u32; 5] = [1, 5, 7, 8, 20];
 
 /// The first person's layers taken: `0x0003fdf0`'s calls besides layer
-/// 3, which `native_first_person` owns.
-pub const FIRST_PERSON_LAYERS: [u32; 3] = [1, 7, 8];
+/// 3, which `native_first_person` owns. It calls layers 1, 3, 8, 20 and
+/// 7, then layer 2 when `0x00044370` says so (`0x000400a6..0x00040284`);
+/// it has no layer 5.
+pub const FIRST_PERSON_LAYERS: [u32; 4] = [1, 7, 8, 20];
 
 /// Which caller's layer draw is about to run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -228,7 +230,7 @@ pub struct NativeLayers;
 
 impl Feature for NativeLayers {
     fn manifest(&self) -> Manifest {
-        Manifest::new(ID, "World layers 1, 5, 7, 8 and 20 and the first person's 1, 7 and 8 drawn from the scene's plan")
+        Manifest::new(ID, "World layers 1, 5, 7, 8 and 20 and the first person's 1, 7, 8 and 20 drawn from the scene's plan")
             .doc("docs/graphics/framescene.md")
     }
 
@@ -287,6 +289,7 @@ mod tests {
         assert_eq!(caller(1, 0x0004_00ab), Some(LayerCaller::FirstPerson));
         assert_eq!(caller(8, 0x0004_01a7), Some(LayerCaller::FirstPerson));
         assert_eq!(caller(7, 0x0004_0271), Some(LayerCaller::FirstPerson));
+        assert_eq!(caller(20, 0x0004_020b), Some(LayerCaller::FirstPerson));
         assert_eq!(caller(3, 0x0004_0136), None, "native_first_person's");
         assert_eq!(caller(3, 0x0002_bed5), None, "native_objects' and the world's");
         assert_eq!(caller(1, 0x0002_bd5c), None, "an alternate view's");

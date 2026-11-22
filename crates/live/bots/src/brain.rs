@@ -100,6 +100,39 @@ pub struct Contact {
     pub crouching: bool,
 }
 
+/// An outside order (docs/game/rules-world-api.md, "Bots"): a hint a rules
+/// script gives a phantom's brain on the host. The order is the bot's goal
+/// while it stands, in place of the objective's; the brain fights from it
+/// as it would from any goal. It returns nothing to whoever gave it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Order {
+    /// `bot_go`: walk to this point.
+    Go(Vec3),
+    /// `bot_hold`: stay within the radius of this point and fight from it.
+    Hold(Vec3, f32),
+    /// `bot_follow`: stay near this player (its slot, as [`Seen::id`]).
+    Follow(u32),
+    /// `bot_attack`: kill this player (its slot, as [`Seen::id`]).
+    Attack(u32),
+}
+
+impl Order {
+    /// The goal the order asks ([`crate::objective::Goal`]), with a
+    /// followed or attacked player's position from the roster. `None`
+    /// while that player has no living unit: the order asks nothing then,
+    /// and the bot plays on.
+    pub fn goal(&self, others: &[Seen]) -> Option<crate::objective::Goal> {
+        use crate::objective::Goal;
+        let at = |id: u32| others.iter().find(|o| o.id == id).map(|o| o.position);
+        match *self {
+            Order::Go(at) => Some(Goal::Go(at)),
+            Order::Hold(at, radius) => Some(Goal::Hold(at, radius)),
+            Order::Follow(q) => at(q).map(Goal::Escort),
+            Order::Attack(q) => at(q).map(|p| Goal::Hunt(q, p)),
+        }
+    }
+}
+
 /// What the bot knows this tick.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Perception {
@@ -345,6 +378,29 @@ mod tests {
             objective: None,
         };
         assert_eq!(target(&p), Some(2));
+    }
+
+    #[test]
+    fn an_order_is_its_goal_with_the_rosters_positions() {
+        use crate::objective::Goal;
+        let others = vec![seen(7.0, 8.0, 0), seen(3.0, 4.0, 1)];
+        assert_eq!(
+            Order::Go([1.0, 2.0, 0.0]).goal(&others),
+            Some(Goal::Go([1.0, 2.0, 0.0]))
+        );
+        assert_eq!(
+            Order::Hold([3.0, 4.0, 0.0], 2.0).goal(&others),
+            Some(Goal::Hold([3.0, 4.0, 0.0], 2.0))
+        );
+        // `seen` gives id 0: followed or attacked, its position is the goal's.
+        assert_eq!(Order::Follow(0).goal(&others), Some(Goal::Escort([7.0, 8.0, 0.2])));
+        assert_eq!(
+            Order::Attack(0).goal(&others),
+            Some(Goal::Hunt(0, [7.0, 8.0, 0.2]))
+        );
+        // A followed or attacked player with no living unit: nothing asked.
+        assert_eq!(Order::Follow(9).goal(&others), None);
+        assert_eq!(Order::Attack(9).goal(&others), None);
     }
 
     #[test]

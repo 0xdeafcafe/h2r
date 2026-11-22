@@ -367,6 +367,32 @@ pub fn icon(set: IconSet, button: Button, height: u16, keys: &KeyLabels) -> Opti
     })
 }
 
+/// One bumper alone, for the pregame lobby's mode control only
+/// (docs/game/party-lobby.md): the picture `set` has for `button` where
+/// the two bumpers sit at the two ends of one control, each naming a
+/// direction. `None` for a button that is no bumper and for a set whose
+/// bumpers stay the retail glyphs ([`replaces`]). Every other prompt
+/// shows [`icon`]'s pair. No code unit carries this picture: the lobby
+/// gives it one when its mode control is built.
+pub fn strip_bumper(set: IconSet, button: Button, height: u16, keys: &KeyLabels) -> Option<Icon> {
+    if !replaces(set, button, keys) {
+        return None;
+    }
+    let h = usize::from(height.clamp(MIN_HEIGHT, MAX_HEIGHT));
+    let canvas = match (set, button) {
+        (IconSet::Xbox360 | IconSet::Steam, Button::Black) => shoulder(h, Side::Right, "RB"),
+        (IconSet::Xbox360 | IconSet::Steam, Button::White) => shoulder(h, Side::Left, "LB"),
+        (IconSet::PlayStation, Button::Black) => shoulder(h, Side::Right, "R1"),
+        (IconSet::PlayStation, Button::White) => shoulder(h, Side::Left, "L1"),
+        _ => return None,
+    };
+    Some(Icon {
+        width: canvas.width as u16,
+        height: canvas.height as u16,
+        pixels: canvas.to_white_argb4444(),
+    })
+}
+
 /// Whether the code units the sets use are unused in `font`: unmapped, a
 /// record with no bitmap, or the filler record many private-use units share.
 pub fn alias_range_free(font: &Font<'_>) -> bool {
@@ -440,8 +466,41 @@ enum Side {
     Right,
 }
 
-/// Both bumpers side by side with one lit, the way the retail glyphs show the
-/// two triggers and the two sticks. Monochrome, so it takes the text colour.
+/// How wide one bumper alone is drawn ([`strip_bumper`]).
+pub const BUMPER_WIDTH: u16 = 21;
+
+/// One bumper with its name: a solid bar whose outer shoulder is rounder
+/// than its other corners, the name cut out of it, so it reads at any text
+/// colour. Monochrome: it takes the colour of the text it sits in, as the
+/// retail trigger and stick pictures do ([`strip_bumper`]).
+fn shoulder(h: usize, side: Side, name: &str) -> Canvas {
+    let bw = f32::from(BUMPER_WIDTH);
+    let bh = 12.0f32.min(h as f32);
+    let y0 = ((h as f32 - bh) / 2.0).floor();
+    let (x1, y1) = (bw, y0 + bh);
+    let outer = match side {
+        Side::Left => round_rect(0.0, y0, x1 + 8.0, y1 + 8.0, 6.0),
+        Side::Right => round_rect(-8.0, y0, x1, y1 + 8.0, 6.0),
+    };
+    let shape = both(outer, round_rect(0.0, y0, x1, y1, 2.0));
+    let tx = (i32::from(BUMPER_WIDTH) - label::width(name)) / 2;
+    let ty = y0 as i32 + (bh as i32 - label::GLYPH_H) / 2;
+    let mut cut = Vec::new();
+    label::draw(name, tx, ty, |x, y| cut.push((x, y)));
+    let mut c = Canvas::new(usize::from(BUMPER_WIDTH), h);
+    c.fill(&shape, |px, py| {
+        if cut.contains(&(px.floor() as i32, py.floor() as i32)) {
+            white(0.0)
+        } else {
+            white(SOLID)
+        }
+    });
+    c
+}
+
+/// Both bumpers (or both triggers) side by side with one lit, the way the
+/// retail glyphs show the two triggers and the two sticks. Monochrome, so
+/// it takes the text colour.
 fn shoulder_pair(h: usize, lit: Side, labels: [&str; 2], trigger: bool) -> Canvas {
     const BW: f32 = 21.0;
     const GAP: f32 = 3.0;

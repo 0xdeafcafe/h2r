@@ -1520,9 +1520,33 @@ The UI builder's preview, checks and pages (docs/game/ui-builder.md) in
 the editor. `app/ui_screens.rs` (`UiScreens`) holds the state, with no
 UI; `ui/ui_screens.rs` draws it.
 
-- **The tree**: `boot::ui_kit::screens::NAMES`, each with its page's
-  named states (`Page::states`), then the disc's retail screens
-  (`preview::Disc::retail_screens`, every `wgit` tag of `mainmenu.map`).
+- **The tree**: two trees of folders under one filter.
+  `boot::ui_kit::screens::NAMES` with each page's named states
+  (`Page::states`) is grouped by `app::ui_screens::browse::ours`: the
+  first dotted segment of a screen's name is its folder, a bare name that
+  heads others joins them, a lone name stays at the root, and `design.*`
+  and `layout.*` are the folders "Design system" and "Layouts", listed
+  first. The disc's retail screens
+  (`preview::Disc::retail_screens`, every `wgit` tag of `mainmenu.map`)
+  nest by tag path (`browse::retail`) with the folders every tag shares
+  stripped. A filter match shows its folders open.
+- **The grid**: clicking a folder, or the root "Our screens" or
+  "Retail screens", shows everything under it as tiles
+  (`app/ui_screens/gallery.rs`, `ui/ui_screens/gallery.rs`;
+  `UiScreens::gallery.at` is the `Browse` shown), by folder under
+  subheadings, with a breadcrumb back. Each tile is the screen's name, a
+  badge for its findings (ours; retail screens are drawn, not checked)
+  and its thumbnail: ours in their first state (or every state with "All
+  states"), retail as `Disc::render_retail` draws them. Thumbnails take
+  the picture's CPU path (`render_view`, the same checks) on a fresh page
+  so the one shown is not disturbed, are shrunk to fit 320 by 240 and
+  cached per pick until the disc changes. Only tiles on screen draw, top
+  first, for about 12 ms a frame (`UiScreens::draw_thumbs`), then upload
+  as `Rgba8Unorm` textures (as the picture's), those off screen dropped
+  past 96. Clicking a tile is `Action::UiPick`, which shows the picture
+  with a breadcrumb back to its folder (`Action::UiBrowse`). The
+  agent API reaches the grid with `ui.select_folder` and its contact sheet
+  with `ui.sheet` ([agent-api.md](agent-api.md#ui-screens-folders)).
 - **The picture**: a native pick is `screens::live(name)` gone to its
   state; its spec becomes a `View` (`view_of`) drawn by
   `preview::render_view` from the editor's disc (`App::sync_ui_disc`: the
@@ -1543,6 +1567,21 @@ UI; `ui/ui_screens.rs` draws it.
 - **Export** (`Action::UiExport(dir)`): the PNG, the JSON and
   `preview::write_sheet`'s files, refused inside a Git checkout (any
   folder with `.git` at or above it).
+- **Editing** (`Action::UiEdit`, `app/ui_screens/edit.rs`): select,
+  drag, resize, nudge and retype widgets on the picture
+  (`ui/ui_screens/edit.rs`), with a **Selected** section and a widget
+  list in the inspector. Our screens' edits change their
+  `assets/ui/screens/<name>.yaml` docs (`edit::ours`, saved into the
+  checkout and reloaded when the files change on disk); a retail
+  screen's are tag writes on the open `mainmenu` map (`edit::retail`,
+  `App::tags`), saved with the map. A retail pick is drawn with its
+  edited places (`Disc::render_retail_with`) and has a view
+  (`Disc::retail_view`) for the overlays and edits. The design, the
+  refusals and the `ui.*` edit methods are in docs/game/ui-builder.md
+  "Editing in the editor".
+- **The transport** (`ui/ui_screens/transport.rs`): the kit's Open and
+  Close transitions played, looped or scrubbed, 0.25 to 2 times, with
+  an onion skin; `ui.animate` writes the same transition as a filmstrip.
 
 **Why the studio depends on `boot`.** The pure parts (view, spec,
 preview, checks) could move to a crate of their own, but the pages can't:
@@ -1554,7 +1593,12 @@ game module is built or loaded).
 `--ui-screen <screen>/<state>` (the state defaults to the first) and
 `--ui-press up,a,...` set the tool up for a headless screenshot.
 
-Tests: `app::ui_screens::tests` (the tree, drawing without a disc,
+Tests: `app::ui_screens::browse::tests` (the grouping, retail nesting,
+sections, filter, crumbs), `app::ui_screens::gallery::tests` (sections,
+the thumbnail budget and cache, the contact sheet), `api::tests`
+(`ui_screens_lists_the_folders_of_both_trees`,
+`ui_select_folder_shows_the_grid_...`, `ui_sheet_renders_...`),
+`app::ui_screens::tests` (the tree, drawing without a disc,
 presses, hover and JSON, findings with their widgets, export and its
 refusal; `with_the_disc` is ignored without `H2_DISC`), and
 `headless::tests::the_ui_screens_tool_steps_a_page_through_its_widgets`,

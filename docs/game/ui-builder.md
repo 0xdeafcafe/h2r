@@ -77,6 +77,12 @@ its preview pages are `forge.hud`, `forge.palette` and `forge.menu`
 (`crates/extensions/game/src/ui_kit/forge.rs`), until slice U7 removes
 them.
 
+A `Hud` whose spec is not `transparent` is drawn over the game shell
+instead of a live picture (`preview::From::view`): widgets that sit on
+the shell's header and footer bands, such as the pregame lobby's mode
+strip (`lobby.tabs`, [party-lobby.md](party-lobby.md)). Its doc
+says `backing: shell`.
+
 The Forge screens are the game's: list classes of ours on the large
 dialog (the object menu, Tools, Link and the questions) and on the
 in-game Controller Settings host (Properties, Tool settings, Forge
@@ -188,9 +194,24 @@ and list.
 `AnimatedView` captures the resting widget bounds and opacity once.
 `seek(Phase)` reuses those buffers and computes the same pose for the same
 tick. The builder samples a page slide and fade, staggered rows and
-selection, and a modal fade. These samples use representative timing.
-The game plays the native curves from the active map. Both paths move the
-text with the other widgets on its track.
+selection, and a modal fade. The game plays the native curves from the
+active map. Both paths move the text with the other widgets on its track.
+
+**How long.** A page of ours opens in 10 ticks (333 ms) and closes in
+6 (200 ms) at the builder's 30 ticks a second (`animation::OPEN_TICKS`,
+`CLOSE_TICKS`; `Transition::ticks`). Closing is quicker than opening: a
+page leaves as soon as it is dismissed. The game holds a screen of ours
+to the same lengths, whatever the retail tracks it borrows ask for
+(`Transition::millis`, `lifecycle::cap_transition`): a screen's
+transition is its delay (`+0x44`) and length (`+0x54`) in milliseconds
+from its start (`+0x4c`), with state bit 0 set while it comes in and
+bit 1 while it goes out (`+0x42`), and the window frees a closing
+screen once they have passed. Row text (asked at every draw) holds an
+opening or closing screen of ours to its budget, and so do a close
+through `dialog_tag::close` and a press that closes one; a transition is
+only ever shortened (`lifecycle::capped`). So the editor's animation
+player (`ui.animate`, the **Transition** selector) ends where the game
+does.
 
 Use `--animation in:6`, `--animation rest`, `--animation out:4` or
 `--animation all` to append the sampled phase to each PNG and JSON name.
@@ -224,13 +245,42 @@ state.
 | focus | the focused row's text is drawn on screen, and more opaque than the other rows' |
 | glyphs | every character exists in its font (the kit's `Finding::Glyph`) |
 | ids | every string id is in a registered family (the kit's `Finding::Id`) |
+| on drawn | a text's glyphs meet another group's drawn row or cell art, picture (`Art::Level`) or text over more than 24 pixels (`Issue::OnDrawn`); the pairs `overlap` already names are left out |
+| panel shared | a panel of the screen's own (not a modal's, and not a backdrop over more than half the title-safe area) holds the list's rows and another group's texts: at least half of each one's drawn pixels inside the panel's drawn box (`Issue::PanelShared`). A screen that draws the lobby's panel as retail's lobby does, the list and its status lines in one pane, is listed in `layout::drawn::SHARED_PANELS` with its retail precedent |
+| covers under | a modal over a kit screen (`View::underlay`) draws its text over more than 24 drawn pixels of that screen's content (the modal's panel hiding it is what a modal does): its pictures, and texts that are neither the list's (rows, cells, `description`, `name`) nor chrome (`title`, `legend`, `body`, `status`) nor the HUD's `reticle` (`Issue::CoversUnder`). A modal over a retail opener (`Backing::Over`) covers it as retail's do. A screen whose modal text may lie over it is listed in `layout::drawn::COVERS` with its retail precedent |
+| drawn outside | art drew more than `Rules::max_outside` (2) units past its declared rectangle (`Issue::DrawnOutside`): fix the rectangle |
+
+The last four read what the preview really drew. `preview::render_traced`
+draws the view and records each widget's `Footprint`: the pixels it
+touched with alpha above zero, their bounding box in UI units (past the
+canvas edge too, for art), and a mask of the touched canvas pixels. Art's
+footprint is its image's own opaque pixels where the image put them, so
+a skin, frame or picture whose image is wider than its declared rect is
+seen at its real size; a text's is its glyphs, drawn a second time on a
+clear canvas; a solid fill's, and the box the synthetic source draws for
+art it lacks, is the rectangle. `From::draw_traced` gives the view and
+the trace together.
+
+A widget's group is its id's first part, the spec's own naming:
+`button.start` is the buttons', `player.2` the roster's, `game` its own,
+and every row and cell is the list's (`layout::drawn::group`). A mode list
+that sits on a status panel beside the game's lines is what `panel
+shared` catches when no two rects meet; a picker whose text lies over the
+lobby's map picture is what `covers under` catches.
 
 The art checks need the images' pixels, so the synthetic source skips
 them, and says so (`Report::skipped`). The provenance check runs without a
 disc for the screens our art comes from (Controls 39, level select 11).
 
-The checks are `ui_kit::layout::check(view, source, rules)`, and
-`h2 ui preview` prints them per state. Page-model tests check bounds
+The checks are `ui_kit::layout::check(view, source, rules)`.
+`ui_kit::findings::of_state` gathers every check's findings for one state
+(the spec against the disc, content, layout, and the consistency rules
+that read one view), each with its check, kind, widget ids and line.
+`h2 ui preview` prints them per state, writes them into the state's JSON
+as `findings` (with `notes`, and each widget's footprint as `drawn`), and
+with `--strict` exits non-zero when any state has one, so a run shows
+the problems without opening the PNG. The editor's picture and gallery
+use the same list. Page-model tests check bounds
 after every input from every named state, including the visible window
 of a scrolling dialog. The agent's `ui.screen` applies the same
 rectangle checks to instantiated widgets. The builder also uses font
@@ -269,9 +319,9 @@ What the checks hold the screens to:
 
 - **Unfocused rows stay readable.** Unfocused rows draw at about 40% alpha (`view::UNFOCUSED_ALPHA`, observed from a game screenshot, not traced); contrast on the real bars is 2.9 to 3.1.
 - **The skulls page keeps none of the Controls art.** It copies the level select's own bracket (`ul_02`) at run time (`ListClass::frame`); the frame provenance check names a bracket borrowed from the wrong list. Its view draws the skull picture (`ScreenSpec::art`), untinted.
-- **Legends sit in the footer.** The account and co-op screens use a footer separate from their description. Co-op offers Start and Back when applicable and leaves confirm off informational rows. The campaign options footer follows the focused Start, picker, toggle or locked row.
+- **Legends sit in the footer.** The account and co-op screens use a footer separate from their description. Co-op offers Start and Back when applicable and leaves confirm off informational rows. The skulls pages' footer follows the focused row: Start Level, a row whose A opens the picker, or a locked skull (`skulls_menu::RowLegend`), the same on the campaign page and the multiplayer one.
 
-**The full-height Game Options list.** The Game Options page lays out
+**The full-height skulls list.** The campaign Skulls page lays out
 13 rows
 (`skulls_menu::VISIBLE_ROWS`), down to y -156. The level select's bracket
 (`ul_02`, `[177 -259 -79 -131]`) ends at -79, so rows 8 to 13 run past
@@ -568,9 +618,9 @@ value column); and the focused row's description goes in a text block
 equal to Quick Options' help line (`dialog::QUICK_HELP_TEXT`, held to the
 tag's text block 0 by the disc test), which `KitScreen::dialog` and the
 Halo 1 class use unless told otherwise. A description is one line there,
-52 units at most (retail's is 51). The variant-name line stays out; the
-game type picture is retail's content and stays out of the base, and a
-page shows the focused row's icon there ("A page's header"). The pages'
+52 units at most (retail's is 51). The variant-name line and the game
+type picture are retail's content and stay out of the base; a page shows
+the focused row's label and icon there ("A page's header"). The pages'
 titles are in capitals, as Quick Options' header is.
 
 The test `ui_kit::screens::tests::our_settings_dialogs_are_quick_options_inside`
@@ -634,8 +684,10 @@ Setup dialog's own window and slot, as before, not the dialogs' window):
    Quick Options says "Temporarily change settings...", the legend in the
    same footer place.
 3. The d-pad moves and changes rows; the lobby beneath doesn't move.
-4. B closes the dialog (stderr shows no close by slot), and the lobby
-   takes input again at once. Open it again: it opens the same way.
+4. B closes the dialog (stderr shows no close by slot) within a fifth
+   of a second, and the lobby takes input again at once: a press while
+   the dialog is still fading reaches Game Setup ("Behaviour"). Open it
+   again: it opens the same way.
 5. The title is ours (slot 18 sets it on the header after the pane is
    built, as on every class); note it if it reads "Quick Options".
 
@@ -697,9 +749,9 @@ owned disc's fonts and row art, then blends it over the published film
 picture. The pause menu's pickers keep their parent focused behind them.
 `ui.screen` and `ui.input` use that same playback model.
 
-The Video and Voice screens use `ui::Model::press`. The skulls are
-direct toggles. More Options (`variant_page`) and the Halo 1 Assets and
-HUD rows open the kit picker on A. Back dismisses a picker without
+The Video and Voice screens use `ui::Model::press`. More Options
+(`variant_page`), the skulls pages' collected skulls (On and Off) and the
+Halo 1 Assets and HUD rows open the kit picker on A. Back dismisses a picker without
 changing the held value.
 
 `h2 ui preview kit.picker` and `kit.picker.game` draw it (the kit's
@@ -788,10 +840,37 @@ sack, flag, bomb, four squares, banner of three stars, question mark.
 | Halo 1 Options | Sandbox | `BOMB` | Weapons, vehicles and health, from the next game. |
 | Halo 1 Options | HUD | `HELMET` | Shields, health, motion tracker and ammo counter. |
 
-(Halo 1's Assets row, on the campaign's Game Options page, has
+(Halo 1's Assets row, on the campaign's Skulls page, has
 `SPARTAN`.) Each line is 52 characters at most, inside the 494-unit
-help line on the kit's measure and in the disc's font 1. The white
-variant-name line stays empty: the title bar already names the page.
+help line on the kit's measure and in the disc's font 1.
+
+The white variant-name line beside the icon names the focused row: its
+label (on a value row the label alone, the value staying in the row), so
+the name line and the pale-blue help line beneath it together describe
+the focused row. The block is Quick Options' text block 1
+(`dialog::QUICK_NAME_TEXT`, `DialogBase::name_line`, held to the tag by
+the disc test; design token `name.settings`). A class with the base's
+picture writes it after the frame's block (`list_class` `NAME_BLOCK`) and
+makes its widget in `setup_pane_footer`; `row_text` sets it through
+`Rows::name` each time the focus moves, with the description.
+`KitScreen` names the row's own label slot, the Halo 1 class the option's
+name string. The spec carries it as `ScreenSpec::name_line`, and the view
+draws the focused row's label there as the `name` widget
+(`ScreenSpec::name_text`). The test
+`ui_kit::screens::tests::the_name_line_follows_focus_in_every_state_of_each_options_page`
+holds it to the focused row in every state of each page.
+
+**Drawn over the panel.** The draw sorts a pane's widgets by depth, then
+render depth bias, then type, text (6) before bitmap (8)
+(docs/formats/ui.md "What a screen, pane and widget are"). A text block
+at bias 0 over `fs_dialog` at bias 0 or more is drawn first, and the panel
+covers it, while the picture (bias 3) shows. On a dialog's copy the description block, and the name line with it, takes
+`dialog_tag::description_bias`: the base's own help line's bias (Quick
+Options' text block 0, `DialogBase::help_block`) and one more than every
+backing bitmap the copy keeps. stderr says `<name>: description at render
+depth bias N, over the dialog's backing` as the page opens. The
+consistency rule `empty` keeps every row's line and label in the spec,
+so neither line stands empty in the preview either ("Consistency").
 
 **The picker's copy.** A on a row opens the value picker, whose
 description says what the option does and what each choice means in a
@@ -814,9 +893,11 @@ drawn.
 
 From a custom game lobby (on a Halo 1 map for Halo 1 Options), Game
 Setup: open Clanker Options. At its top left, left of the help line,
-the Spartan icon where Quick Options shows its game type, and "Bots
-join this game..." in the help line. Move down: the icon and the line
-change with each row (Count's four squares, Difficulty's skull, and so
+the Spartan icon where Quick Options shows its game type, "Clankers" in
+white in the name line beside the icon's upper half, and "Bots join this
+game..." in the help line beside its lower half, both over the panel.
+Move down: the icon, the name and the line change with each row (Count's
+four squares and "Count", Difficulty's skull and "Difficulty", and so
 on), the icon never moving from its place. A on a row: the value
 picker's right side explains the option. Halo 1 Options: Sandbox's bomb
 and HUD's helmet. Open Quick Options to compare the places.
@@ -913,18 +994,19 @@ The glue (`list_class` events, `TEXT_SET`, tints) keeps its runner tests
   `h2 ui preview --press`. `screens::live(name)` is every native screen's
   page, and `screens::states` and `sample` come from it, so the sheet
   draws exactly the states the tables start from.
-- **`ListPage`**: every list screen (Game Options, the Halo 1 options and
-  multiplayer skulls, the three co-op screens, the kit's example) is its
-  real `ListClass` stepped offline. An event goes through the class's own
+- **`ListPage`**: every list screen (the skulls pages, the Halo 1
+  options, the three co-op screens, the kit's example) is its real
+  `ListClass` stepped offline. An event goes through the class's own
   hook, then `list_class::route` (the same pure function the runtime's
   `event_with` uses: action buttons, then sideways steps), then the
   Controls handler: up and down move the focus, A presses the row
   (`Rows::press`), B and Back close. Effects: `Focus`, `Hook`, `Action`,
   `Stepped(line)`, `Open(screen)`, `Retail(line)`, `Close`. The rows keep
   their own state (an in-memory profile store, a lobby without Live), so
-  each table case builds a fresh page. Whether the game wraps the focus
-  at either end is not traced; the page stops it there, and the fidelity
-  loop will settle it.
+  each table case builds a fresh page. The page stops the focus at
+  either end. The game stops it there too, or wraps it to the other end
+  when the list block's flag bit 0 is set (`0x24c1c5`, below); the
+  value picker's `default6` list has the flag.
 - **`StackPage`**: list screens that open one another, walked as the
   player walks them: an `Open(screen)` it has pushes that screen, B or Back
   pops it, and the summary names the screen on top (`closed` once the
@@ -944,11 +1026,28 @@ The glue (`list_class` events, `TEXT_SET`, tints) keeps its runner tests
   call ends). Typed text and server answers are events.
 
 The tables (`ui_kit/page/tests.rs`, `live_hle::signin` tests) cover every
-row of the list above, plus Game Options (Start Level's A runs the action,
-X and Start don't, left, right and A step a skull, a locked skull stays
-locked), the co-op screens (Start starts or readies, Invite a Friend opens
+row of the list above, plus the skulls pages (Start Level's A runs the
+action, X and Start don't, A opens the picker on a collected skull and
+does nothing on a locked one, left and right do nothing, each row kind's
+legend the same on both pages), the co-op screens (Start starts or readies, Invite a Friend opens
 the friends list), the account menu, and every screen taking every input
 in every state with its spec still passing the kit's checks.
+
+**Closing.** A closing screen still holds its window, and the input
+dispatcher (`0x147dbe`) gives every press to the first window holding a
+screen, so until the window freed a closing dialog of ours the lobby
+under it took no input. A press on a closing screen of ours
+(`list_class::event_with`, state bit 1) is the screen beneath's
+(`lifecycle::while_closing`): the next screen down its own window's list
+(the value picker's page), else the first screen of the first lower
+window on its slot (Game Setup under a dialog), with a controller in
+common and not closing itself. A press inside `lifecycle::CLOSE_GUARD`
+(50 ms, the opener guard's reading) of the close starting is the
+closing press seen again and is dropped; every later one goes down
+through that screen's own event slot (`lifecycle::hand_down`). The
+tests `lifecycle::tests::the_screen_beneath_is_the_next_down_the_list_then_the_next_window`
+and `list_class::tests::a_press_while_a_dialog_closes_goes_to_the_screen_beneath`
+hold it.
 
 Rules the tables hold:
 
@@ -959,6 +1058,215 @@ Rules the tables hold:
 `h2 ui preview <screen> [--state S] --press up,right,a` steps a page,
 prints each effect and the summary, and draws where it ends as
 `<state>-pressed`.
+
+### Item count
+
+A list shows one row per item widget linked to its handler, and the
+game is given exactly the rows our list lays out
+([ui.md](../formats/ui.md) "Item widgets, scrolling and spacing"):
+
+- **Linking.** "Add items" (`0x24bb60`, list slot 17) links as many of
+  the handler's embedded items as slot 19 says. The Controls list's
+  slot 19 (`0x2b198a`) says six whatever its tag lays out. Our list
+  vtable's slot 19 (`list_class::item_count`) reads the visible count
+  of the list block the screen's pane was built from (the tag the
+  screen-tag function `0x22f871` serves, `list_class::laid_out`) and
+  links that many, less the item widgets of ours a list taller than six
+  gets (`list_class::item_widgets`). Embedded items an earlier call
+  linked past that count are unlinked first.
+- **What was wrong.** The layout (`0x24bc12`, called from the pane
+  builder at `0x22f828` with its "drop the rest" argument 0) places
+  children up to the visible count and leaves the rest. Rows go to
+  every child in order (`0x24c0c4`), so on a list laid out shorter than
+  six a row landed on a child never placed: not drawn, but Down reached
+  it, A pressed it, and past it the list scrolled. Every list of ours
+  built on the in-game Controller Settings tag (screen 200 lays out
+  five) with six rows or more had one; so did the theater film page
+  (four laid out, six actions).
+- **Focus.** Down (`0x24c1c5`) moves to the next child when it has a
+  row (`0x24ac76`); at the last child it scrolls while a row follows.
+  At the end it wraps to the first row (`0x24c0c4`) when the list
+  block's flag bit 0 is set (`0x24bc12` copies it to `+0x7c`), else it
+  stops. Up is the same back. A presses the focused child's row
+  (`0x24c024`); Start does too.
+- **Model.** `list_class::game_list::GameList` is the list as the game
+  holds it: item widgets, laid-out rows, rows, focus, scroll and arrows.
+  `game_list::tests::a_list_laid_out_shorter_than_its_six_items_had_a_phantom_row`
+  shows the retail count's phantom row, and
+  `consistency::tests::every_list_links_the_rows_it_lays_out_and_the_focus_stays_on_them`
+  holds every list of `NAMES` in every state: the item widgets are the
+  rows laid out, the focus stays on placed rows, A presses only a real
+  row, and a list whose rows all fit never scrolls.
+
+A dialog with no layout of its own takes its visible count from its
+row count when the class is built. A dialog whose rows outgrow that
+count scrolls to the rest.
+
+### Scroll arrows
+
+The list draw (`0x24bda2`) shows the up arrow while the first item
+widget's row has a row before it (`0x24c63e`) and the down arrow while
+the last one's has a row after it (`0x24c676`), so a list whose rows all
+fit shows neither. It places both from the list's top-left at the
+skin's two points (`skin +0xc` and `+0x10`), at the size of the skin
+`bitm`'s images 0 and 1. The down point is fixed: the `default` family
+puts it beside the last row of the skin's own list, `(rows - 2) × 22`
+below the anchor (`default5` -66 for five rows, `default6` -88 for
+six, `default` -44 for four), and `setting_lists` puts it under the
+Controls list's six. `list_class::SKIN_ARROWS` holds those numbers from
+the disc. On a moved list of ours (`list_class::ScrollArrowLayout`,
+through `UI_QUAD_TO_SCREEN`) the down arrow moves by the rows the list
+lays out more or fewer than the skin's own (`SkinArrows::placed`), so it
+keeps its place by the last row. The up arrow stays where the skin puts
+it. A class with arrows of its own (`ListClass::scroll_arrows`, the
+skulls page) keeps those. A list left where its tag has it keeps the
+game's.
+
+The preview draws them the same way (`view::scroll_arrows`, widgets
+`scroll.up` and `scroll.down`, art `Art::Arrow`), and the `items` and
+`scroll` consistency rules hold them.
+
+## Screens in YAML
+
+A screen's presentation is data in `assets/ui/`; its Rust is behaviour
+(`crate::ui_kit::data`):
+
+- `assets/ui/design.yaml` is the design system: the palette (named
+  colours), fonts by role (`title`, `legend`, `body`, `cell`,
+  `row_controls`, `row_default`), spacing (row heights, the dialog body's
+  top, the code cells' gaps), alphas (an unfocused row's text, a dimmed
+  frame), the legend's format, and every component's preset (role, font,
+  colour, justification, place, variants and specimen page).
+- `assets/ui/screens/<name>.yaml` is one screen of
+  `ui_kit::screens::NAMES`: `screen`, `kind` (`list`, `dialog`,
+  `code_entry`, `picker`, `hud`), `layout` (a list's `controls`,
+  `level_select` or `moved`; a dialog's `settings` or `large`), `backing`
+  (`shell`, `over` an `opener` such as `main-menu`, `screen` over a screen
+  of ours, or `none`), `scrolls`, its named `states` (the focus and a
+  code's cursor), `widgets` keyed by view id (`component`, `text` with
+  `{slot}` templates Rust fills, `at`, `size`, a legend's `prompts` such
+  as `[[A, "SELECT"], [B, "BACK"]]`, cells' `digits` and `gap_after`, an
+  art widget's `art`), and fixed `rows` (`row.0: {text, ...}`).
+
+Both are baked into the game at compile time (`build.rs` writes
+`ui_baked.rs`, `ui_kit::data::baked`) and parsed once a process, the first
+time a doc is asked for (`data::baked_parses`). The game never reads them
+from disk. The editor shows an edited or reloaded doc over the baked one
+through the explicit `data::reload` (validated first) until
+`data::forget_reloads`.
+
+A doc that names what doesn't exist (a component, a glyph, a layout for
+its kind, an opener, a slot that isn't closed, a value row's current value
+past its values) is a `DataError` naming the file and the field
+(`assets/ui/screens/t.yaml widgets.title.component: ...`), never a quiet
+fallback; a screen without a doc is one too (`data::require`). The tests
+load every doc, so a bad one fails them by name.
+
+`data::to_yaml` writes a doc in its canonical form: keys in order,
+two-space indents, texts double-quoted, pairs and prompts in flow, no
+comments. A load and a save with no edit gives the file's bytes.
+
+**Which screens draw from their docs.** `data::FROM_DOC` lists them: the
+kit screens (`KitScreen::new(feature, name, ids)` reads the title, the
+legend, the kind, layout and opener, the description block, `scrolls`
+and the fixed rows' labels; docs/game/ui-screens.md "Adding a screen").
+Every other screen's doc is written from its Rust and held to it: the
+equivalence test (`data::tests::each_state_drawn_from_its_doc_is_the_view_rust_drew`)
+draws each state of each screen from its Rust alone and with its doc laid
+over (`data::present`), and the two views must be equal.
+
+**The converter.** `h2 ui export-yaml [--out assets/ui]`
+(`data::export::export`) builds every screen in every state, reads its
+presentation off the specs, and writes `screens/<name>.yaml` and
+`design.yaml`, starting from the `design.yaml` already there. A style
+that matches a preset is written as the preset's name; one that matches
+none gets a preset named after the screen (`description.kit.example.0`),
+and a colour on no palette entry a colour named after it
+(`theater.playback.0`): a name with a dot is what the converter found,
+not the design system's, and the consistency check reports it. A text
+that is the same in every state is written as it is; one that changes,
+or that `data::export::DYNAMIC` names (a film's title, the card's profile
+line), is a lone slot (`{title}`) Rust fills. Rows are written for the
+screens whose rows are fixed (`data::export::FIXED_ROWS`, the specimen
+and layout pages). On a screen drawn from its doc the converter applies
+the design system's rules too (`data::export::house_rules`: a dialog's
+title in capitals); the others are fixed in their Rust. Run it after a
+change to a screen's Rust, then the tests.
+
+## The design system
+
+`ui_kit::components` puts a screen together from the components:
+`Screen::list`, `level_select`, `moved`, `settings`, `large`,
+`message`, `code_entry`, `picker` and `hud`, with `row`, `legend`,
+`legend_on_panel`, `description`, `help`, `text`, `art`, `status`,
+`scrolls` and `over`; `build()` derives the inputs its rows and legend
+need. `components::row` makes each kind of row (`action`, `open`,
+`value`, `pick`, `info`, `text`, `disabled`) and `components::legend` the
+common prompts and the legends by row kind (`setting_row`: `A CHANGE  B
+BACK` on a row whose A opens the picker; `disabled_row`: `B BACK` alone).
+A `disabled` row is its label alone, with nothing where a value goes, and
+never pressed; its help line says why. On the level select's one-text
+skin a `pick` row's value is in its label (`row.pick-inline`, the skulls
+pages' rows). `legend::well_formed` is the legend's format: each
+prompt's glyphs two spaces apart, one space, its words in capitals,
+prompts two spaces apart.
+
+A component's `pattern` names the Halo 2 pattern its widgets keep, and its
+`ids` the widget ids it draws (`button.*`, a prefix and a star); the
+consistency drive holds those widgets to the pattern (`button`, the only
+one so far).
+
+Each component of `design.yaml` with a `specimen` has its page,
+`design.<component>` in `NAMES` (`design.title`, `design.row.action`,
+`design.legend`, `design.cells` ...): its variants as the page's named
+states, drawn and checked as any screen is. `h2 ui preview design.legend`
+draws one; `h2 ui sheet` draws them all. The editor's agent API gives the
+catalogue as `ui.components` (docs/editor/agent-api.md).
+
+## The layout gallery
+
+`layout.<name>` in `NAMES` is every layout a screen can take, with
+placeholder copy so each reads as a template: `layout.list`,
+`layout.list.description`, `layout.list.panel-edge`,
+`layout.list.level-select`, `layout.list.texts`,
+`layout.dialog.settings`, `layout.dialog.settings.header`,
+`layout.dialog.large`, `layout.dialog.message`,
+`layout.dialog.over-screen`, `layout.code-entry`, `layout.picker` and
+`layout.hud` (`ui_kit::components::specimens::PAGES`). A new screen
+starts from the one it looks like.
+
+## Consistency
+
+`ui_kit::consistency::check` draws every screen of `NAMES` in every
+named state without a disc and holds it to the design system:
+
+| Rule | What it checks |
+|---|---|
+| `palette` | a text's colour is a palette colour, or one dimmed in proportion (a lobby's unselected tab); a converter-named colour is drift |
+| `font` | a title and a legend in their role's font, a description, a dialog's body and status in the body font, code cells in the cell font, row texts in a row font (HUDs are their own) |
+| `place` | a title and a legend where most of their kind's are (a list by its skin, a dialog by its base) |
+| `legend` | the legend's format (`legend::well_formed`) |
+| `case` | a dialog's, a code entry's and a picker's title in capitals (`DYNAMIC` titles aside) |
+| `pitch` | a list's rows its skin's row height apart (`row_controls`, `row_default`) |
+| `fit` | a title and a legend fit their rectangles |
+| `items` | a list's item widgets are the rows it lays out (`list_class::item_widgets`), so no row is on a widget never placed, and no list draws more rows than it lays out ("Item count") |
+| `scroll` | a scroll arrow shows only on a list with more rows than it lays out, inside a dialog's panel or, on a screen, inside the screen and the title-safe area's height ("Scroll arrows") |
+| `empty` | a dialog's description area above its list (Quick Options' help line, beside the page's picture) says something in every state; a page with nothing to say there has no description block, so its rows sit under the title. A page with a name line (`ScreenSpec::name_line`) names the focused row there in every state |
+| `button` | a text whose component has `pattern: button` (its `ids` name the widgets: the lobby's `button.*`) is drawn on a list skin's art or a row's (`Art::Skin` or the `Under` layer under at least half its ink), as retail draws its buttons, never as bare text |
+| `handled` | every prompt the legend shows (the focused row's, else the page's) is an input the page takes (HUDs aside) |
+| `arrows` | no text draws a value between arrows (`< All >`, or an arrow alone): a value is chosen in the picker A opens |
+
+`consistency::view_findings(spec, view)` runs the rules that read one view
+(all but `place`), which `ui_kit::findings::of_state` adds to a state's
+findings.
+
+`consistency::ALLOWED` is the short list of findings that stand, each
+with its reason (the sign-in dialog's title carries the gamertag as
+typed). The test `consistency::tests::every_screen_keeps_to_the_design_system`
+fails on any other finding. A finding is fixed as a converter rule for a
+screen drawn from its doc, or in the screen's Rust, then
+`h2 ui export-yaml` rewrites its doc. The editor's agent API gives the
+findings as `ui.consistency {screen?}`.
 
 ## In the editor
 
@@ -972,6 +1280,158 @@ steps the `Page` live; and export of the PNG, the JSON and the sheet into
 a folder outside any Git checkout. The studio takes `boot` as a library
 for it: the pages step the screens' real classes, which can't leave
 `boot`.
+
+## Editing in the editor
+
+Status: Partly built. The code uses `ui_kit::data` (`ScreenDoc`, `load`,
+`parse`, `to_yaml`, `with_screens`), which arrives with the YAML screens,
+and it has not been compiled or run in the editor yet.
+Code: `crates/apps/studio/src/app/ui_screens/edit.rs` (`edit/ours.rs`,
+`edit/retail.rs`), `crates/apps/studio/src/ui/ui_screens/edit.rs`,
+`crates/apps/studio/src/ui/ui_screens/transport.rs`,
+`crates/apps/studio/src/api/ui_edit.rs`,
+`crates/extensions/game/src/ui_kit/preview.rs` (`Disc::retail_view`,
+`RetailPlaces`, `retail_field`, `filmstrip`),
+`crates/extensions/game/src/ui_kit/animation.rs` (`Transition`).
+Tests: `app::ui_screens::edit::tests`, the `ui_edit` tests in
+`crates/apps/studio/src/api/tests.rs`, `ui_kit::preview::edit_tests`.
+
+The UI Screens tool edits the picture it shows: click a widget to select
+it, drag it, resize it, or double-click a text to retype it. The agent
+API does the same with `ui.move`, `ui.set_rect` and `ui.set_text`. Every edit
+changes the data the game reads. It is never a change to the preview
+alone. Where that data lives depends on the screen.
+
+```text
+            canvas drag / handle / inline text / inspector / ui.* call
+                                   │
+                          edit::EditAction
+                                   │
+             ┌─────────────────────┴──────────────────────┐
+             ▼                                            ▼
+  ours: ScreenDoc fields                    retail: tag fields of the open
+  (assets/ui/screens/<name>.yaml)           mainmenu map (App::tags writes)
+  text, at, size by widget id               rect, top_left, anchor by widget id
+             │                                            │
+  with_screens(edited docs) ─▶ View          RetailPlaces ─▶ Disc::retail_view,
+             │                               Disc::render_retail_with
+             ▼                                            ▼
+        layout and content checks run on the edited view; ui.render shows it
+             │                                            │
+  Save: to_yaml into <checkout>/assets/      Save: the map's own save
+  ui/screens/<name>.yaml (live-reloaded)     (patches with the user's map)
+```
+
+**One edit model, two sinks.** An edit is `Rect(widget, [top, left, bottom,
+right])` or `Text(widget, string)` in UI units (`edit::Change`). A move
+is a rect: the shown rect plus the step. The tool picks the sink from the
+pick:
+
+- **Our screens** (`edit::ours`). Presentation lives in
+  `assets/ui/screens/<name>.yaml`, one `ScreenDoc` per screen
+  (`ui_kit::data`). The sink holds the edited docs, the docs as last loaded
+  or saved, and an undo stack of whole-doc snapshots. A rect sets the
+  widget's `at` (its top-left, `[left, top]`) and `size` (`[width,
+  height]`). A text sets `text`, or `rows.<row id>.text` for a row's
+  label (`row.N.label`). The view is made with the edited docs standing
+  in for the baked ones (`data::with_screens`), so the preview, the checks,
+  `ui.widgets`, `ui.render` and `ui.animate` show the edit at once.
+- **Retail screens** (`edit::retail`). A retail screen is a `wgit` tag of
+  the user's `mainmenu.map`. Its edits are tag field writes through the
+  map's tag document (`App::tags`, `tag_api::set_field`, `TagAction::Write`).
+  That is the path the Tags tool uses, with its undo and its save, which
+  patches the user's map. Nothing disc-derived goes in the repository. The
+  map open in the editor must be `mainmenu`. Otherwise the sink refuses
+  and says so. The picture is drawn from the disc, then the edited fields
+  are read back as `RetailPlaces` (widget id to rect) and applied before
+  drawing (`Disc::render_retail_with`).
+
+**What can be edited, and the refusals.** A refusal is an error that
+names the owner. It is never a silent no-op.
+
+| Widget | Ours | Retail |
+|---|---|---|
+| a widget with an entry in its YAML (`title`, `body`, `legend`, a panel text, art) | rect (`at`, `size`), text | — |
+| a text block `text.N`, a button `button.N` | — | rect (`panes[0].text_blocks[N].rect`, `buttons[N].rect`) |
+| a bitmap `bitmap.N`, a list `list.N`, a table `table.N` | — | move only (`top_left`, `anchor`): the image or skin sets the size |
+| a row label `row.N.label` | text (`rows.row.N.text`) | — |
+| any row widget, moved | refused: rows sit where the list's `layout` puts them | — |
+| a widget with no YAML entry (`row.N.value`, `description`, `status`, `cell.N.*`) | refused: Rust fills it, and the refusal names the kind of value | — |
+| a text with `{slots}` | the template is edited, and its slots must stay as they are (the refusal names a slot that went or came) | — |
+| a legend made of `prompts` | text refused: edit its prompts | — |
+| any retail text | — | refused: retail strings live in the map's localized string table (`unic`), which the editor does not write |
+| `title` of a retail screen | — | refused: the header rectangle is the shared `wigl` header layout's |
+
+**Undo.** Edits are undo steps of the editor's Undo and Redo while the UI
+Screens tool is shown (`App::undo_redo`). Ours have their own stack. A
+retail edit is a step of the map's tag document. A drag or a run of
+nudges merges into one step, and so does typing in an inspector field
+(`merge`).
+
+**Saving.** Ours write `data::to_yaml(doc)` to
+`<checkout>/assets/ui/screens/<name>.yaml` for every edited screen. The
+checkout is the one the editor was started from: the first folder at or
+above the working directory, then above the executable, that has
+`assets/ui/screens`. With none, Save is refused. The game bakes those
+files when it is built, so a saved edit is in the next build. The editor
+polls that folder (once a second) and reloads a file that changed on disk
+when its screen has no unsaved edits. A screen with unsaved edits keeps
+them, and the tool says the file changed. Retail edits save with the map
+(`doc.save`, File > Save).
+
+**Checks on the edited view.** `UiScreens::draw_native` makes the view
+inside `with_screens`, so `layout::check` and `content::check` run on the
+edited rects and texts. A drag past the title-safe area shows its finding
+on the next frame.
+
+**Canvas interaction** (`ui/ui_screens/edit.rs`). Click selects the
+topmost visible widget. A selection draws an outline and, on a resizable
+widget, eight handles. A drag moves it, and a handle resizes it. Moves snap
+to the 640 by 480 unit grid and to other widgets' edges and centres within
+4 units. Hold Shift to place freely. Arrow keys nudge by 1 unit, with
+Shift by 10. A double-click on a text opens an input over its rect: Enter
+commits and Esc cancels. The inspector's **Selected** section shows the
+id, the rect as numbers you can type, the text, the font and the
+justification. Tint, alpha and layer are shown read-only. It also has
+**Copy JSON**, **Revert widget** and **Revert screen**. The widget list
+lights a widget in the picture while you hover its row.
+
+**Animation preview** (`ui/ui_screens/transport.rs`, `animation::Transition`).
+The kit defines two transitions, **Open** (`Phase::In`) and **Close**
+(`Phase::Out`). Focus moves and page changes play the skin's native
+tracks in game, and the builder does not sample them. The transport plays,
+pauses and loops one transition, and you can scrub its timeline by tick.
+The speed runs from 0.25 to 2 times, at the builder's 30 ticks a second
+(`animation::TICKS_PER_SECOND`); at 1 times an open plays its 333 ms
+and a close its 200 ms, the lengths the game holds a screen of ours to
+("Transitions"). An optional onion skin
+outlines the widgets two ticks before and after. `ui.animate {phase,
+frames?, out?}` writes a filmstrip PNG, the frames side by side at half
+size, each labelled with its time (`preview::filmstrip`), and returns
+`{path, frames: [{t, tick, x, w}]}`.
+
+**Agent API** (`api/ui_edit.rs`, docs/editor/agent-api.md). Each method
+works on the screen `ui.pick` shows, of either kind, and runs the same
+`EditAction` as the window, so its edits are the window's undo steps and
+its save. Rects are `[top, left, bottom, right]` in UI units.
+
+| Method | Params | Result |
+|---|---|---|
+| `ui.select` | `{id?}` (none or null: nothing) | `{selected, widget}` |
+| `ui.move` | `{id, dx, dy}` | `{widget, findings, sink, dirty}` |
+| `ui.set_rect` | `{id, rect}` | `{widget, findings, sink, dirty}` |
+| `ui.set_text` | `{id, text}` | `{widget, findings, sink, dirty}` |
+| `ui.revert` | `{id?}` (none: the whole screen) | `{line, edits}` |
+| `ui.undo`, `ui.redo` | `{}` | `{done, can_undo, can_redo, edits}` |
+| `ui.edits` | `{}` | `{sink, selected, ours: [{screen, file, yaml}], ours_dirty, retail: {tag: {id: rect}}, retail_dirty, checkout, changed_on_disk}` |
+| `ui.save` | `{}` | ours `{sink, written: [path]}`; retail `{sink, save}` (`doc.save`'s answer) |
+| `ui.animate` | `{phase: open\|close, frames?: 1..32 (5), out?}` | `{path, width, height, frames: [{t, tick, x, w}]}` |
+
+A refusal answers `REFUSED` with the owner named. A widget that is not
+shown, a rect whose top is below its bottom or right left of its left,
+and a phase that is neither `open` nor `close` answer `INVALID_PARAMS`.
+`ui.animate` and the default output path follow `ui.render`: under
+`studio/ui/` in the cache directory, never inside a Git checkout.
 
 ## The fidelity loop
 
@@ -993,8 +1453,9 @@ A game run has to show:
 - draw order: our dialog on top of the screen beneath, and the footer widget keeping our legend (`0x2300cf` may refill it from the tag);
 - alpha 0 hiding a widget, and tint changes taking effect while the screen is up;
 - the backing's blend: whether `framing_center` and `dialog1`/`dialog2` draw as opaque as the preview shows;
-- the native animation timing and the panel, rows and selection in both directions on the game shell and paused game;
-- input timing: key repeat, the opener-press guard, and the keyboard's return;
+- the native animation timing and the panel, rows and selection in both directions on the game shell and paused game, and what holding a screen's delay and length to the kit's budgets does to its widgets (a quicker track, or the screen freed before its tracks end);
+- input timing: key repeat, the opener-press guard, the close guard and a closing dialog's presses reaching the screen beneath, and the keyboard's return;
+- a dialog's description drawn over its backing at `dialog_tag::description_bias`;
 - that the Controls constructor accepts a tag recipe whose list holds one item and whose pane has more text blocks than the Controls tag;
 - the "Not verified" items of the modal, picker, header and Game Setup sections above, through their game runs.
 

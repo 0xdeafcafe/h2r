@@ -1,0 +1,22 @@
+screen: lab.running
+kind: dialog
+layout: large
+backing: over
+opener: main-menu
+states:
+  focus-0:
+    focus: 0
+  focus-1:
+    focus: 1
+  focus-2:
+    focus: 2
+widgets:
+  title:
+    component: title
+    text: "LAB REQUEST"
+  body:
+    component: body
+    text: "Lab driver is running\n\"Menu bands check\"\nwhile you play. What now?"
+  legend:
+    component: legend
+    prompts: [[A, "SELECT"], [B, "BACK"]]

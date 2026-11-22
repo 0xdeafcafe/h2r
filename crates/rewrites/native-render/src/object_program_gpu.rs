@@ -27,9 +27,9 @@ use crate::object_program::{
     IMPLEMENTATIONS, ObjectInputs, ObjectPass, Row, object_layer3, object_pass, object_pixel_uniforms, object_vertex_uniforms,
 };
 use crate::object_program::{LIGHTMAP_STREAM, object_layer_pass, object_layer_passes, texaccum_dimensions};
-use crate::object_streams::{Attribute, Element, SLOT, StreamData, StreamFormats, declaration, gather, registers};
+use crate::object_streams::{Attribute, Element, SLOT, StreamData, StreamElement, StreamFormats, declaration, gather, registers};
 use crate::object_state::{self, DrawState, EntryStates};
-use crate::objects::{ItemKey, ObjectFrame};
+use crate::objects::{ItemDraw, ItemKey, ObjectFrame};
 use frame_scene::{AuxDepth, Defaults, FrameScene, Instance, LayerItem, LayerOwner, LayerPass, Lighting, PartDraw, PartFlags, Subparts};
 use crate::program::{ViewInputs, bias_signed, frame_pixel, frame_vertex, sampler_descriptor};
 
@@ -70,6 +70,10 @@ pub struct LitPart {
     /// Its subparts' index ranges in the same buffers, when the part has
     /// subparts a record can choose ([`LitSubparts`]).
     pub subparts: Option<SubpartRanges>,
+    /// A strip part's indices decoded as a list, in the same buffers:
+    /// what the emitter draws for a record without bit 9
+    /// ([`LitSection::listed`]). `None` for a list part.
+    pub listed: Option<Range<u32>>,
 }
 
 /// A lit part's subparts in its buffers: the section's index of the
@@ -110,16 +114,69 @@ impl SubpartRanges {
 
 /// The world layers besides 3 whose passes an object item draws natively
 /// from the scene (docs/graphics/framescene.md, slice 4): 1, 5, 7, 8 and
-/// 20. In layer 5 only the items whose model has no PRT block: for the
-/// rest the geometry draw adds the model's PRT stream and constants
-/// (`frame_scene::PrtStream`), which the programs do not bind
-/// ([`plan_layer_part`]), and a layer-5 program that reads those
-/// constants does not compile ([`PRT_LAYER`]).
+/// 20. In layer 5 an item whose model has a PRT block draws its pass's
+/// PRT variant ([`LitLayerPass::prt`]) with the stream and constants the
+/// geometry draw adds (`frame_scene::PrtStream`).
 pub const OBJECT_LAYERS: [u8; 5] = [1, PRT_LAYER, 7, 8, 20];
 
 /// The world layer whose geometry draw adds an object's PRT stream
 /// (`scene_extract::layout::prt`).
 pub const PRT_LAYER: u8 = 5;
+
+/// Most bytes a PRT draw's stream is read from guest memory.
+const MAX_PRT_BYTES: usize = 16 << 20;
+
+/// The PRT stream type the layer-5 variants compile for (10 bytes a
+/// vertex, `0x00024490`): a draw whose stream is of another type draws
+/// only when its format feeds the same registers the same way
+/// ([`LitObjects::fill_prt`]).
+pub const PRT_STREAM: u8 = scene_extract::layout::prt::SHORT_STREAM;
+
+/// What a layer-5 PRT variant was compiled with: the vertex program's
+/// input semantics and the section's stream formats (to build the
+/// declaration again for the stream type a draw finds), the registers the
+/// PRT stream feeds (ascending), every register supplied and their
+/// fetches, and the highest constant from `c[68]` the program reads
+/// directly.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PrtInput {
+    pub semantics: Vec<u16>,
+    pub streams: Vec<Vec<StreamElement>>,
+    pub registers: Vec<u8>,
+    pub provided: u16,
+    pub fetch: [shaders::vsh::InputFetch; 16],
+    pub last_constant: Option<u8>,
+}
+
+/// A PRT draw's stream as the hook gathered it ([`LitObjects::fill_prt`]):
+/// the registers of [`PrtInput::registers`], per vertex each in a
+/// [`SLOT`], in `formats`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PrtVertices {
+    pub formats: Vec<Attribute>,
+    pub vertices: Arc<Vec<[u8; SLOT]>>,
+}
+
+/// The highest constant from `c[68]` below the section's decompression
+/// (`c[170]` on, which the draw sets itself) that `program` reads
+/// directly. Reads relative to `a0.x` (the node rows) are not bounded
+/// here.
+fn prt_constant_read(program: &shaders::vsh::Program) -> Option<u8> {
+    let below = crate::program::TEXCOORD_DECOMPRESSION - 2;
+    program
+        .instructions
+        .iter()
+        .flat_map(|i| i.sources())
+        .filter_map(|src| match src.reg {
+            shaders::vsh::SrcReg::Const { index, relative: false }
+                if index >= frame_scene::PRT_FIRST_CONSTANT && usize::from(index) < below =>
+            {
+                Some(index)
+            }
+            _ => None,
+        })
+        .max()
+}
 
 /// One pass of a lit part's world layer: how many implementations the
 /// pass has (with one, every item draws it; otherwise the item's,
@@ -131,6 +188,10 @@ pub struct LitLayerPass {
     pub count: usize,
     pub implementations: [Option<(usize, usize)>; IMPLEMENTATIONS],
     pub empty: u8,
+    /// Layer 5: per implementation the PRT variant's program and buffer
+    /// (`compile_layer_sections` with the PRT stream), which an item
+    /// carrying a `frame_scene::PrtStream` draws.
+    pub prt: [Option<(usize, usize)>; IMPLEMENTATIONS],
 }
 
 /// A lit part's passes of one world layer other than 3
@@ -147,6 +208,8 @@ pub struct LitLayerPart {
     pub shader: ShaderValues,
     pub indices: Range<u32>,
     pub subparts: Option<SubpartRanges>,
+    /// [`LitPart::listed`].
+    pub listed: Option<Range<u32>>,
     pub passes: Vec<LitLayerPass>,
 }
 
@@ -167,22 +230,32 @@ impl LitModelInput {
     }
 
     fn valid_draw_references(&self) -> bool {
-        let valid = |mut slots: &mut dyn Iterator<Item = (usize, usize)>, indices: &Range<u32>, subparts: Option<&SubpartRanges>| {
+        let valid = |mut slots: &mut dyn Iterator<Item = (usize, usize)>,
+                     indices: &Range<u32>,
+                     subparts: Option<&SubpartRanges>,
+                     listed: Option<&Range<u32>>| {
             // `&mut dyn Iterator` is itself a sized iterator; `all` needs one.
             Iterator::all(&mut slots, |(program, buffer)| {
                 let Some(buffer) = self.buffers.get(buffer) else { return false };
                 let fits = |range: &Range<u32>| range.start <= range.end && range.end as usize <= buffer.indices.len();
                 program < self.programs.len() && fits(indices)
                     && subparts.is_none_or(|subparts| subparts.ranges.iter().all(fits))
+                    && listed.is_none_or(fits)
             })
         };
         self.parts.iter().all(|part| {
-            valid(&mut part.implementations.iter().flatten().copied(), &part.indices, part.subparts.as_ref())
+            valid(
+                &mut part.implementations.iter().flatten().copied(),
+                &part.indices,
+                part.subparts.as_ref(),
+                part.listed.as_ref(),
+            )
         }) && self.layers.iter().all(|part| {
             valid(
                 &mut part.passes.iter().flat_map(|p| p.implementations.iter().flatten().copied()),
                 &part.indices,
                 part.subparts.as_ref(),
+                part.listed.as_ref(),
             )
         })
     }
@@ -197,6 +270,9 @@ impl LitModelInput {
 
 struct LitBuffer {
     layout_id: usize,
+    /// The section's vertices the buffer holds (a PRT stream gathers as
+    /// many, [`LitObjects::fill_prt`]).
+    vertex_count: usize,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     registers: Vec<u8>,
@@ -218,8 +294,23 @@ struct LitProgram {
     accum_groups: Vec<(wgpu::TextureView, Option<wgpu::BindGroup>)>,
     /// Per attachment formats, buffer layout and state: the pipeline and
     /// the key its ordered packets describe themselves by.
-    pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, usize, DrawState), (PipelineKey, Arc<PendingPipeline>)>,
+    /// Keyed also by the PRT stream's formats (empty without one).
+    pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, usize, DrawState, Vec<Attribute>), (PipelineKey, Arc<PendingPipeline>)>,
     inherited: InheritedState,
+}
+
+/// The PRT stream's vertex layout `draw` binds with `program`: `Some(None)`
+/// for a draw without one, `None` for one not gathered yet or gathered
+/// for other registers.
+fn prt_layout(program: &LitProgram, draw: &PlannedDraw) -> Option<Option<(Vec<u8>, Vec<Attribute>)>> {
+    match &draw.prt {
+        None => Some(None),
+        Some((_, None)) => None,
+        Some((_, Some(v))) => {
+            let input = program.pass.prt.as_ref()?;
+            (input.registers.len() == v.formats.len()).then(|| Some((input.registers.clone(), v.formats.clone())))
+        }
+    }
 }
 
 /// The shader id the objects' packets carry (diagnostics only: their
@@ -298,6 +389,10 @@ pub struct PlannedDraw {
     pub state: DrawState,
     pub texaccum: bool,
     pub default_final: bool,
+    /// A layer-5 PRT variant's draw: where its stream is in guest memory
+    /// (`frame_scene::PrtStream`), and, once the hook has gathered it
+    /// ([`LitObjects::fill_prt`]), its vertices.
+    pub prt: Option<(frame_scene::PrtStream, Option<PrtVertices>)>,
 }
 
 impl LitBufferInput {
@@ -424,6 +519,7 @@ impl LitObjects {
                     contents: bytemuck::cast_slice(&b.indices),
                     usage: wgpu::BufferUsages::INDEX,
                 }),
+                vertex_count: if b.registers.is_empty() { 0 } else { b.vertices.len() / b.registers.len() },
                 registers: b.registers.clone(),
                 formats: b.formats.clone(),
             })
@@ -612,6 +708,13 @@ impl LitObjects {
         self.plan_with_scene_state(index, frame, key, rows, entry, false)
     }
 
+    /// [`Self::plan`] for a first-person item: the topology and subparts
+    /// its record draws ([`ItemDraw::flags`], [`ItemDraw::subparts`]), as
+    /// the scene's parts draw theirs ([`plan_item_part`]).
+    pub fn plan_item(&self, index: u32, frame: &ObjectFrame, item: &ItemDraw, entry: &EntryStates) -> Result<PlannedDraw, String> {
+        self.plan_inputs(index, item_inputs(frame, item)?, &item.key, &item.rows, entry, false)
+    }
+
     pub fn plan_scene(&self, index: u32, frame: &ObjectFrame, key: &ItemKey, rows: &[Row], entry: &EntryStates) -> Result<PlannedDraw, String> {
         self.plan_with_scene_state(index, frame, key, rows, entry, true)
     }
@@ -622,7 +725,13 @@ impl LitObjects {
     pub fn plan_part_of(
         &self, index: u32, scene: &FrameScene, instance: &Instance, part: &PartDraw, entry: &EntryStates,
     ) -> Result<PlannedDraw, String> {
-        let inputs = PartInputs { instance: instance.key, lighting: instance.lighting.as_ref(), defaults: instance.defaults, subparts: part.subparts };
+        let inputs = PartInputs {
+            instance: instance.key,
+            lighting: instance.lighting.as_ref(),
+            defaults: instance.defaults,
+            subparts: part.subparts,
+            strip: Some(part.flags.contains(PartFlags::STRIP)),
+        };
         self.plan_inputs(index, inputs, &part.key, scene.rows_of(part), entry, true)
     }
 
@@ -666,6 +775,44 @@ impl LitObjects {
         let rows = scene.rows.get(item.rows.start as usize..item.rows.end as usize).ok_or("the item's rows are not in the scene")?;
         let at = m.layer_index.get(&(layer, item.key.section, item.key.part)).copied();
         plan_layer_part(&m.layers, at, &|program| m.programs.get(program).map(|p| &p.pass), instance, layer, rows, pass, item, entry)
+    }
+
+    /// Gathers a layer-5 PRT draw's stream (planned with the item's
+    /// `frame_scene::PrtStream`, [`plan_layer_part`]) from guest memory at
+    /// the hook: the section's vertices from the stream's address, its
+    /// stride apart (`read` the guest's bytes), through the declaration
+    /// the stream setup builds for the stream's type (`formats`, read
+    /// from guest memory). That declaration must supply the registers the
+    /// PRT variant was compiled for, fetched the same way: a stream type
+    /// whose format differs refuses. A draw without a stream is left as it
+    /// is.
+    pub fn fill_prt(
+        &self, index: u32, draw: &mut PlannedDraw, formats: &StreamFormats, read: &dyn Fn(u32, usize) -> Option<Vec<u8>>,
+    ) -> Result<(), String> {
+        let Some((stream, gathered)) = &mut draw.prt else { return Ok(()) };
+        let model = self.models.get(&index).ok_or("its model is not uploaded")?;
+        let input = model.programs.get(draw.program).and_then(|p| p.pass.prt.as_ref()).ok_or("its program has no PRT stream")?;
+        let count = model.buffers.get(draw.buffer).ok_or("its buffer is missing")?.vertex_count;
+        let mut all = input.streams.clone();
+        all.push(formats.elements(stream.kind)?);
+        let full = declaration(&input.semantics, &all);
+        if registers(&full) != input.provided || input_fetch(&full) != input.fetch {
+            return Err(format!("PRT stream type {:#x} feeds other registers than type {PRT_STREAM:#x}'s", stream.kind));
+        }
+        let prt: Vec<Element> = full
+            .into_iter()
+            .filter(|e| e.stream == input.streams.len())
+            .map(|e| Element { stream: 0, ..e })
+            .collect();
+        if prt.iter().map(|e| e.register).ne(input.registers.iter().copied()) {
+            return Err(format!("PRT stream type {:#x} feeds other registers than type {PRT_STREAM:#x}'s", stream.kind));
+        }
+        let stride = usize::from(stream.stride);
+        let len = count.checked_mul(stride).filter(|&n| n <= MAX_PRT_BYTES).ok_or("its PRT stream is too large")?;
+        let bytes = read(stream.data, len).filter(|b| b.len() == len).ok_or("its PRT stream does not read")?;
+        let vertices = gather(&prt, &[Some(StreamData { bytes: &bytes, stride })], count)?;
+        *gathered = Some(PrtVertices { formats: prt.iter().map(|e| e.format).collect(), vertices: Arc::new(vertices) });
+        Ok(())
     }
 
     pub fn planned_pass(&self, index: u32, draw: &PlannedDraw) -> Option<&ObjectPass> {
@@ -726,17 +873,26 @@ impl LitObjects {
         let model = self.models.get_mut(&model)?;
         let buffer = model.buffers.get(draw.buffer)?;
         let program = model.programs.get_mut(draw.program)?;
-        let key = (color, depth, buffer.layout_id, draw.state);
+        let prt = prt_layout(program, draw)?;
+        let key = (color, depth, buffer.layout_id, draw.state, prt.as_ref().map(|(_, f)| f.clone()).unwrap_or_default());
         let (entry, resident) = match program.pipelines.entry(key) {
             std::collections::hash_map::Entry::Occupied(entry) => (entry.into_mut(), true),
             std::collections::hash_map::Entry::Vacant(entry) => {
+                let mut vertex_buffers = vec![gfx::vertex::OwnedVertexBufferLayout {
+                    stride: (SLOT * buffer.registers.len()) as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: attributes(&buffer.registers, &buffer.formats),
+                }];
+                if let Some((registers, formats)) = prt.filter(|(r, _)| !r.is_empty()) {
+                    vertex_buffers.push(gfx::vertex::OwnedVertexBufferLayout {
+                        stride: (SLOT * registers.len()) as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: attributes(&registers, &formats),
+                    });
+                }
                 let descriptor = PipelineKey {
                     shader: OBJECT_PROGRAM,
-                    vertex_buffers: vec![gfx::vertex::OwnedVertexBufferLayout {
-                        stride: (SLOT * buffer.registers.len()) as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: attributes(&buffer.registers, &buffer.formats),
-                    }],
+                    vertex_buffers,
                     primitive: draw.state.primitive,
                     depth_stencil: Some(draw_depth_stencil(&draw.state, depth)?),
                     color_target: wgpu::ColorTargetState {
@@ -813,7 +969,8 @@ impl LitObjects {
                 return Err("object index range unavailable");
             }
             let p = &mut m.programs[d.program];
-            let (described, pipeline) = p.pipelines.get(&(color_format, depth_format, b.layout_id, d.state))
+            let prt_formats = d.prt.as_ref().and_then(|(_, v)| v.as_ref()).map(|v| v.formats.clone()).unwrap_or_default();
+            let (described, pipeline) = p.pipelines.get(&(color_format, depth_format, b.layout_id, d.state, prt_formats))
                 .cloned().ok_or("object pipeline unavailable")?;
             let textures = match &p.textures {
                 Some(textures) => textures.clone(),
@@ -845,6 +1002,20 @@ impl LitObjects {
             // but for a marked part's mode 2 (`object_state::mark`); the
             // packet sets it.
             let state = gfx::state::RenderState { stencil: d.state.stencil, ..Default::default() };
+            // A PRT draw's stream, gathered at the hook, in this
+            // submission's uploads.
+            let mut vertex_buffers = vec![(b.vertices.clone(), 0, b.vertices.size())];
+            match &d.prt {
+                None => {}
+                Some((_, None)) => return Err("object PRT stream not gathered"),
+                Some((_, Some(v))) => {
+                    if !v.vertices.is_empty() {
+                        let bytes: &[u8] = bytemuck::cast_slice(v.vertices.as_slice());
+                        let (buffer, at) = uploads.stage(device, queue, bytes);
+                        vertex_buffers.push((buffer, at, bytes.len() as u64));
+                    }
+                }
+            }
             // One packet per range: the whole part, or each run of the
             // subparts its record chose (none when it chose none).
             for r in &d.ranges {
@@ -852,7 +1023,7 @@ impl LitObjects {
                 packets.push(RecordedDraw::prepared_indexed(
                     &described,
                     pipeline.clone(),
-                    vec![(b.vertices.clone(), 0, b.vertices.size())],
+                    vertex_buffers.clone(),
                     (b.indices.clone(), u64::from(r.start) * 4, u64::from(count) * 4),
                     count,
                     groups.clone(),
@@ -914,13 +1085,47 @@ pub fn plan_part<'a>(
     plan_indexed_part(parts, part, &|i| pass_of(i).map(|p| (p, None)), PartInputs::of(frame), key, rows, entry, false)
 }
 
+/// [`LitObjects::plan_item`] over a model's `parts` and its programs'
+/// passes (`pass_of`).
+pub fn plan_item_part<'a>(
+    parts: &[LitPart],
+    pass_of: &dyn Fn(usize) -> Option<&'a ObjectPass>,
+    frame: &ObjectFrame,
+    item: &ItemDraw,
+    entry: &EntryStates,
+) -> Result<PlannedDraw, String> {
+    let key = &item.key;
+    let part = parts.iter().position(|p| p.section == key.section && p.part == key.part);
+    let inputs = item_inputs(frame, item)?;
+    plan_indexed_part(parts, part, &|i| pass_of(i).map(|p| (p, None)), inputs, key, &item.rows, entry, false)
+}
+
+/// A first-person item's inputs: its frame's, and the topology and
+/// subparts its record draws. A record marking the stencil or toggling
+/// the auxiliary state refuses: the first-person draw keeps the device's
+/// stencil and reads no auxiliary depth.
+fn item_inputs<'a>(frame: &'a ObjectFrame, item: &ItemDraw) -> Result<PartInputs<'a>, String> {
+    if item.flags.contains(PartFlags::STENCIL_MARK) {
+        return Err("the record marks the stencil, which the first-person draw does not".into());
+    }
+    if item.flags.contains(PartFlags::AUX_DEPTH) {
+        return Err("the auxiliary state toggle, which the first-person draw does not read".into());
+    }
+    Ok(PartInputs { subparts: item.subparts, strip: Some(item.flags.contains(PartFlags::STRIP)), ..PartInputs::of(frame) })
+}
+
 /// [`LitObjects::plan_layer_item`] over a model's world-layer parts
 /// (`layers`, `at` the index of the item's in layer `layer`) and its
 /// programs' passes (`pass_of`), the item's rows `rows`: per pass of the
 /// part, the implementation it draws for the item, its blocks and its
 /// state. In layer 1 with the stencil off the draws take stencil mode 0,
-/// as the prologue sets it (`0x0004d640`); layers 7, 8 and 20 draw under
-/// the device's stencil.
+/// as the prologue sets it (`0x0004d640`); layers 5, 7, 8 and 20 draw
+/// under the device's stencil. An item with a PRT stream (layer 5) draws
+/// each pass's PRT variant ([`LitLayerPass::prt`]) with the stream's
+/// constants from `c[68]` on, written after the item's own (the draw sets
+/// them after its rows, `0x0004d269`), and refuses a program reading a
+/// constant past them; its draws still need their stream gathered
+/// ([`LitObjects::fill_prt`]).
 #[allow(clippy::too_many_arguments)]
 pub fn plan_layer_part<'a>(
     layers: &[LitLayerPart], at: Option<usize>,
@@ -930,8 +1135,8 @@ pub fn plan_layer_part<'a>(
     if let Some(why) = item.refusal {
         return Err(why.name().into());
     }
-    if item.prt.is_some() {
-        return Err("layer 5's PRT stream, which the native programs do not bind".into());
+    if item.prt.is_some() && layer != PRT_LAYER {
+        return Err(format!("a PRT stream in layer {layer}"));
     }
     if item.flags.contains(PartFlags::AUX_DEPTH) {
         return Err("the auxiliary state toggle outside layer 3".into());
@@ -945,10 +1150,8 @@ pub fn plan_layer_part<'a>(
     if p.shader_tag != key.shader {
         return Err(format!("the item names shader {:#010x}, the part's is {:#010x}", key.shader, p.shader_tag));
     }
-    let ranges = match item.subparts {
-        None => vec![p.indices.clone()],
-        Some(chosen) => p.subparts.as_ref().ok_or("the record chooses subparts and the part has none natively")?.drawn(chosen)?,
-    };
+    let strip = Some(item.flags.contains(PartFlags::STRIP));
+    let ranges = part_ranges(&p.indices, p.subparts.as_ref(), p.listed.as_ref(), strip, item.subparts)?;
     let defaults = pass.inputs.defaults.ok_or("the inputs' defaults do not read")?;
     let inputs = ObjectInputs { lighting: item.lighting.as_ref(), defaults: &defaults, shader: p.shader };
     let unstenciled;
@@ -967,14 +1170,26 @@ pub fn plan_layer_part<'a>(
         if implementation < IMPLEMENTATIONS && lp.empty >> implementation & 1 != 0 {
             continue;
         }
-        let (program, buffer) = lp
-            .implementations
+        let slots = if item.prt.is_some() { &lp.prt } else { &lp.implementations };
+        let (program, buffer) = slots
             .get(implementation)
             .copied()
             .flatten()
-            .ok_or_else(|| format!("layer {layer} pass {n} has no native implementation {implementation}"))?;
+            .ok_or_else(|| match item.prt {
+                Some(_) => format!("layer {layer} pass {n} has no native implementation {implementation} with the PRT stream"),
+                None => format!("layer {layer} pass {n} has no native implementation {implementation}"),
+            })?;
         let compiled = pass_of(program).ok_or("its program is missing")?;
-        let vertex = object_vertex_uniforms(&compiled.program.vertex, &compiled.implementation, &inputs, rows, p.decompression)?;
+        let mut vertex = object_vertex_uniforms(&compiled.program.vertex, &compiled.implementation, &inputs, rows, p.decompression)?;
+        if let Some(prt) = &item.prt {
+            let input = compiled.prt.as_ref().ok_or("its PRT variant has no PRT stream")?;
+            let first = usize::from(frame_scene::PRT_FIRST_CONSTANT);
+            if let Some(c) = input.last_constant.filter(|&c| usize::from(c) >= first + prt.constants.len()) {
+                return Err(format!("its program reads c[{c}], past the {} constants the PRT draw sets", prt.constants.len()));
+            }
+            let end = (first + prt.constants.len()).min(vertex.constants.len());
+            vertex.constants[first..end].copy_from_slice(&prt.constants[..end - first]);
+        }
         let pixel = object_pixel_uniforms(&compiled.program.pixel, &compiled.implementation, &inputs)?;
         let alpha_test = compiled.program.state.as_ref().ok_or("its pass has no state")?.alpha_test;
         let mut state = object_state::resolve_layer(&compiled.implementation.render_states, entry, alpha_test)?;
@@ -995,6 +1210,7 @@ pub fn plan_layer_part<'a>(
             state,
             texaccum: compiled.texaccum.contains(&true),
             default_final: compiled.default_final,
+            prt: item.prt.clone().map(|s| (s, None)),
         });
     }
     if out.is_empty() {
@@ -1012,11 +1228,48 @@ struct PartInputs<'a> {
     defaults: Option<Defaults>,
     /// The subparts the item's record chose; `None`, the whole part.
     subparts: Option<Subparts>,
+    /// Whether the emitter draws the part as a strip
+    /// (`frame_scene::PartFlags::STRIP`); `None`, in the part's own
+    /// topology.
+    strip: Option<bool>,
 }
 
 impl<'a> PartInputs<'a> {
     fn of(frame: &'a ObjectFrame) -> Self {
-        Self { instance: frame_scene::InstanceKey(frame.handle), lighting: frame.lighting.as_ref(), defaults: frame.defaults, subparts: None }
+        Self {
+            instance: frame_scene::InstanceKey(frame.handle),
+            lighting: frame.lighting.as_ref(),
+            defaults: frame.defaults,
+            subparts: None,
+            strip: None,
+        }
+    }
+}
+
+/// The index ranges a part draws (`whole` its own topology's, `subparts`
+/// its chosen subparts', `listed` a strip part's as a list) for a record
+/// that draws it as a strip or not (`strip`, `None` in the part's own
+/// topology) and chooses `chosen` of its subparts. The emitter `0x0004daa0`
+/// draws a part as a strip only with bit 9 and the part's triangle-list
+/// flag clear (`0x0004d5e2`), so a strip part whose record lacks bit 9
+/// draws its indices as a list. Its chosen subparts would then join into
+/// one list (`0x0004db68`), which is not built. A list part draws as a
+/// list whatever the record says.
+fn part_ranges(
+    whole: &Range<u32>, subparts: Option<&SubpartRanges>, listed: Option<&Range<u32>>, strip: Option<bool>,
+    chosen: Option<Subparts>,
+) -> Result<Vec<Range<u32>>, String> {
+    match (listed, strip) {
+        (Some(_), Some(false)) if chosen.is_some() => {
+            Err("the record draws a strip part's chosen subparts as one list".into())
+        }
+        (Some(listed), Some(false)) => Ok(vec![listed.clone()]),
+        _ => match chosen {
+            None => Ok(vec![whole.clone()]),
+            Some(chosen) => {
+                subparts.ok_or("the record chooses subparts and the part has none natively")?.drawn(chosen)
+            }
+        },
     }
 }
 
@@ -1045,10 +1298,7 @@ fn plan_indexed_part<'a>(
         .flatten()
         .ok_or_else(|| format!("the part has no implementation {}", key.implementation))?;
     let (pass, inherited) = pass_of(program).ok_or("its program is missing")?;
-    let ranges = match frame.subparts {
-        None => vec![p.indices.clone()],
-        Some(chosen) => p.subparts.as_ref().ok_or("the record chooses subparts and the part has none natively")?.drawn(chosen)?,
-    };
+    let ranges = part_ranges(&p.indices, p.subparts.as_ref(), p.listed.as_ref(), frame.strip, frame.subparts)?;
     let defaults = frame.defaults.ok_or("the inputs' defaults do not read")?;
     let inputs = ObjectInputs { lighting: frame.lighting, defaults: &defaults, shader: p.shader };
     let vertex = object_vertex_uniforms(&pass.program.vertex, &pass.implementation, &inputs, rows, p.decompression)?;
@@ -1078,6 +1328,7 @@ fn plan_indexed_part<'a>(
         state,
         texaccum: pass.texaccum.contains(&true),
         default_final: pass.default_final,
+        prt: None,
     })
 }
 
@@ -1157,6 +1408,10 @@ pub struct LitSection<'a> {
     /// By part index, the subparts of the parts a record can draw a
     /// choice of; a part not here draws whole only.
     pub subparts: HashMap<u8, LitSubparts>,
+    /// By part index, each drawn strip part's indices decoded as a list
+    /// (`tags::geometry::list_triangles`): what the emitter draws for a
+    /// record without bit 9 ([`LitPart::listed`]).
+    pub listed: HashMap<u8, Vec<[u16; 3]>>,
 }
 
 /// A part's subparts as the emitter draws a chosen one
@@ -1195,6 +1450,18 @@ pub fn lit_subparts(
         triangles.push(if list { tags::geometry::list_triangles(run) } else { tags::geometry::strip_triangles(run) });
     }
     Some(LitSubparts { first: part.first_subpart, triangles })
+}
+
+/// A strip `part`'s indices (over the section's `indices`) decoded as a
+/// list, as the emitter draws them for a record without bit 9
+/// ([`LitSection::listed`]): D3D's list of `n` indices is its `n / 3`
+/// whole triangles. `None` for a list part, or one whose range does not
+/// lie in the indices.
+pub fn lit_listed(indices: &[u16], part: &tags::geometry::Part) -> Option<Vec<[u16; 3]>> {
+    if part.is_triangle_list() {
+        return None;
+    }
+    Some(tags::geometry::list_triangles(indices.get(part.index_range())?))
 }
 
 /// A material the lit build takes: resolved, and its shader values.
@@ -1248,9 +1515,9 @@ pub fn lit_model(
     // (section, declaration) -> buffer.
     let mut buffers: HashMap<(u16, Vec<Element>), usize> = HashMap::new();
     // Per section, its lit parts' triangles in one list: (material, part,
-    // range, subpart ranges), one per part (a record draws one part), each
-    // part's subparts after it.
-    type Listed = (u16, u8, Range<u32>, Option<SubpartRanges>);
+    // range, subpart ranges, the range as a list), one per part (a record
+    // draws one part), each part's subparts and list after it.
+    type Listed = (u16, u8, Range<u32>, Option<SubpartRanges>, Option<Range<u32>>);
     let mut lists: HashMap<u16, (Vec<u32>, Vec<Listed>)> = HashMap::new();
     for s in sections {
         let mut list = Vec::new();
@@ -1274,7 +1541,12 @@ pub fn lit_model(
                     })
                     .collect(),
             });
-            ranges.push((*material, *part, whole, subparts));
+            let listed = s.listed.get(part).map(|t| {
+                let start = list.len() as u32;
+                list.extend(t.iter().flatten().map(|&i| u32::from(i)));
+                start..list.len() as u32
+            });
+            ranges.push((*material, *part, whole, subparts, listed));
         }
         lists.insert(s.index, (list, ranges));
     }
@@ -1289,19 +1561,15 @@ pub fn lit_model(
                 continue;
             }
         };
-        // The material's parts: (section, part, index range, subparts).
-        let parts: Vec<(&LitSection<'_>, u8, Range<u32>, Option<SubpartRanges>)> = sections
-            .iter()
-            .flat_map(|s| {
-                lists[&s.index].1.iter().filter(move |r| r.0 == m).map(move |r| (s, r.1, r.2.clone(), r.3.clone()))
-            })
-            .collect();
+        // The material's parts: (section, part, index range, subparts,
+        // the range as a list).
+        let parts: Vec<MaterialPart<'_, '_>> = material_parts(sections, &lists, m);
         if parts.is_empty() {
             continue;
         }
         // Compiled once per section: its parts share the programs.
         let mut secs: Vec<&LitSection<'_>> = Vec::new();
-        for (s, _, _, _) in &parts {
+        for (s, _, _, _, _) in &parts {
             if !secs.iter().any(|x| x.index == s.index) {
                 secs.push(s);
             }
@@ -1404,7 +1672,7 @@ pub fn lit_model(
             }
             by_section.push(implementations);
         }
-        for (s, part, indices, subparts) in parts {
+        for (s, part, indices, subparts, listed) in parts {
             let k = secs.iter().position(|x| x.index == s.index).expect("listed above");
             let implementations = by_section[k];
             out.input.parts.push(LitPart {
@@ -1416,6 +1684,7 @@ pub fn lit_model(
                 indices,
                 implementations,
                 subparts,
+                listed,
             });
         }
         out.taken.push(m);
@@ -1431,17 +1700,12 @@ pub fn lit_model(
     ids.sort_unstable();
     for m in ids {
         let lit = &materials[&m];
-        let parts: Vec<(&LitSection<'_>, u8, Range<u32>, Option<SubpartRanges>)> = sections
-            .iter()
-            .flat_map(|s| {
-                lists[&s.index].1.iter().filter(move |r| r.0 == m).map(move |r| (s, r.1, r.2.clone(), r.3.clone()))
-            })
-            .collect();
+        let parts = material_parts(sections, &lists, m);
         if parts.is_empty() {
             continue;
         }
         let mut secs: Vec<&LitSection<'_>> = Vec::new();
-        for (s, _, _, _) in &parts {
+        for (s, _, _, _, _) in &parts {
             if !secs.iter().any(|x| x.index == s.index) {
                 secs.push(s);
             }
@@ -1463,7 +1727,7 @@ pub fn lit_model(
                     }
                     let index_list = |s: u16| lists[&s].0.clone();
                     let compiled = compile_layer_sections(
-                        layer, pass.pass, imp, &secs, formats, engine, &mut *vertex, &mut *image, &mut buffers,
+                        None, pass.pass, imp, &secs, formats, engine, &mut *vertex, &mut *image, &mut buffers,
                         &mut out.input.buffers, &index_list,
                     );
                     match compiled {
@@ -1476,12 +1740,33 @@ pub fn lit_model(
                         }
                         Err(e) => out.layer_refused.push((m, layer, format!("pass {k} implementation {n}: {e}"))),
                     }
+                    // Layer 5's variant for an object whose model has a PRT
+                    // block: the same pass over the section's streams and
+                    // the PRT stream ([`PrtInput`]).
+                    if layer == PRT_LAYER {
+                        let compiled = formats.elements(PRT_STREAM).and_then(|prt| {
+                            compile_layer_sections(
+                                Some(prt.as_slice()), pass.pass, imp, &secs, formats, engine, &mut *vertex, &mut *image,
+                                &mut buffers, &mut out.input.buffers, &index_list,
+                            )
+                        });
+                        match compiled {
+                            Ok(got) => {
+                                for (slot, (program, buffer)) in per.iter_mut().zip(got) {
+                                    out.input.programs.push(program);
+                                    slot[k].prt[n] = Some((out.input.programs.len() - 1, buffer));
+                                }
+                                drawn = true;
+                            }
+                            Err(e) => out.layer_refused.push((m, layer, format!("pass {k} implementation {n} with the PRT stream: {e}"))),
+                        }
+                    }
                 }
             }
             if !drawn {
                 continue;
             }
-            for (s, part, indices, subparts) in &parts {
+            for (s, part, indices, subparts, listed) in &parts {
                 let k = secs.iter().position(|x| x.index == s.index).expect("listed above");
                 out.input.layers.push(LitLayerPart {
                     layer,
@@ -1492,6 +1777,7 @@ pub fn lit_model(
                     shader: lit.shader,
                     indices: indices.clone(),
                     subparts: subparts.clone(),
+                    listed: listed.clone(),
                     passes: per[k].clone(),
                 });
             }
@@ -1500,17 +1786,44 @@ pub fn lit_model(
     out
 }
 
-/// One implementation of world layer `layer`'s pass (`pass` its tag)
+/// A material's part in [`lit_model`]'s lists: its section, its index
+/// among the section's parts, its index range, its subparts' and its range
+/// as a list.
+type MaterialPart<'s, 'a> = (&'s LitSection<'a>, u8, Range<u32>, Option<SubpartRanges>, Option<Range<u32>>);
+
+/// Material `m`'s parts in `lists` (by section: the section's index list
+/// and its parts' ranges), in `sections`' order.
+fn material_parts<'s, 'a>(
+    sections: &'s [LitSection<'a>],
+    lists: &HashMap<u16, (Vec<u32>, Vec<(u16, u8, Range<u32>, Option<SubpartRanges>, Option<Range<u32>>)>)>,
+    m: u16,
+) -> Vec<MaterialPart<'s, 'a>> {
+    sections
+        .iter()
+        .flat_map(|s| {
+            lists[&s.index].1.iter().filter(move |r| r.0 == m).map(move |r| (s, r.1, r.2.clone(), r.3.clone(), r.4.clone()))
+        })
+        .collect()
+}
+
+/// One implementation of a world layer's pass (`pass` its tag)
 /// compiled for every section in `secs` through the declaration the game
 /// builds there ([`object_layer_pass`]), each section's buffer for that
 /// declaration made once over `buffers` (its indices the section's list,
 /// `index_list`), with its stages' images; the first failure, as the
-/// reason the implementation is left out. In layer 5 a vertex program
-/// that reads a constant from `c[68]` on does not compile: only the PRT
-/// stream's draw sets those (`frame_scene::PRT_FIRST_CONSTANT`).
+/// reason the implementation is left out.
+///
+/// With `prt` (layer 5, the PRT stream's format), the declaration has the
+/// PRT stream after the section's, as the stream setup `0x0001c8c0` adds
+/// it: the buffer holds the section's registers only, and the program
+/// carries the PRT stream's ([`PrtInput`]), which the draw gathers from
+/// guest memory ([`LitObjects::fill_prt`]), and the highest PRT constant
+/// it reads ([`prt_constant_read`]). Without it the program reads its
+/// constants as an item without a PRT stream leaves them, as in the
+/// other layers.
 #[allow(clippy::too_many_arguments)]
 fn compile_layer_sections(
-    layer: u8,
+    prt: Option<&[StreamElement]>,
     pass: map::TagId,
     imp: &tags::material::ResolvedImplementation,
     secs: &[&LitSection<'_>],
@@ -1532,20 +1845,31 @@ fn compile_layer_sections(
             .collect::<Result<Vec<_>, _>>()?;
         let data: Vec<Option<StreamData<'_>>> = s.streams.iter().map(|t| t.map(|(_, d)| d)).collect();
         let (microcode, semantics) = vertex(vs, s.geometry, s.influences).map_err(|e| format!("section {}: {e}", s.index))?;
-        if layer == PRT_LAYER {
-            let program = shaders::vsh::Program::parse(&microcode).map_err(|e| format!("section {}: vertex program: {e:?}", s.index))?;
-            // Reads relative to a0.x (the node rows) are not bounded here.
-            let prt = program.instructions.iter().flat_map(|i| i.sources()).find_map(|src| match src.reg {
-                shaders::vsh::SrcReg::Const { index, relative: false } if index >= frame_scene::PRT_FIRST_CONSTANT => Some(index),
-                _ => None,
-            });
-            if let Some(c) = prt {
-                return Err(format!("section {}: vertex program reads c[{c}], which only the PRT stream's draw sets", s.index));
+        let last_constant = match prt {
+            Some(_) => {
+                let program = shaders::vsh::Program::parse(&microcode).map_err(|e| format!("section {}: vertex program: {e:?}", s.index))?;
+                prt_constant_read(&program)
             }
+            None => None,
+        };
+        let mut all = streams.clone();
+        if let Some(p) = prt {
+            all.push(p.to_vec());
         }
-        let decl = declaration(&semantics, &streams);
-        let compiled = object_layer_pass(pass, imp, &microcode, registers(&decl), input_fetch(&decl))
+        let full = declaration(&semantics, &all);
+        let mut compiled = object_layer_pass(pass, imp, &microcode, registers(&full), input_fetch(&full))
             .map_err(|e| format!("section {}: {e}", s.index))?;
+        if prt.is_some() {
+            compiled.prt = Some(PrtInput {
+                semantics: semantics.clone(),
+                streams: streams.clone(),
+                registers: full.iter().filter(|e| e.stream == streams.len()).map(|e| e.register).collect(),
+                provided: registers(&full),
+                fetch: input_fetch(&full),
+                last_constant,
+            });
+        }
+        let decl: Vec<Element> = full.into_iter().filter(|e| e.stream < streams.len()).collect();
         let key = (s.index, decl);
         let buffer = match buffers.get(&key) {
             Some(&b) => b,
@@ -1637,6 +1961,7 @@ mod tests {
             vertex_count: 3,
             parts: vec![(0, 0, vec![[0, 1, 2]])],
             subparts: HashMap::new(),
+            listed: HashMap::new(),
         };
         let mut imp = lit();
         imp.render_states = vec![state(RenderStateType::AlphaBlendEnable, 0), state(RenderStateType::ZWriteEnable, 1)];
@@ -1693,6 +2018,7 @@ mod tests {
             vertex_count: 3,
             parts: vec![(0, 0, vec![[0, 1, 2]])],
             subparts: HashMap::new(),
+            listed: HashMap::new(),
         };
         let mut imp = lit();
         imp.render_states = vec![state(RenderStateType::AlphaBlendEnable, 0), state(RenderStateType::ZWriteEnable, 1)];
@@ -1776,6 +2102,7 @@ mod tests {
             parts: vec![(0, 5, vec![[2, 1, 0]]), (1, 0, vec![[0, 1, 2]]), (2, 3, vec![[0, 2, 1]]), (3, 1, vec![[1, 2, 0]])],
             // Part 2's subparts 7..10, the second empty.
             subparts: HashMap::from([(2, LitSubparts { first: 7, triangles: vec![vec![[0, 2, 1]], Vec::new(), vec![[2, 1, 0]]] })]),
+            listed: HashMap::new(),
         };
         // An opaque pass: no blending, depth written (both must be set).
         let opaque = |index: usize| {
@@ -1866,6 +2193,7 @@ mod tests {
             indices: u32::from(part) * 3..u32::from(part) * 3 + 3,
             implementations,
             subparts: None,
+            listed: None,
         }
     }
 
@@ -1954,6 +2282,29 @@ mod tests {
         assert!(refused(ItemKey { shader: 0xe000_0010, ..key(4, 0, 0) }).contains("shader"));
     }
 
+    /// A first-person item draws the topology and subparts its record
+    /// picks, as a scene part does; a marked or aux-depth record refuses.
+    #[test]
+    fn a_first_person_item_draws_the_topology_and_subparts_its_record_picks() {
+        let passes = [equal_pass(0)];
+        let pass_of = |i: usize| passes.get(i);
+        let mut strip = part(4, 0, [Some((0, 0)), None, None, None, None]);
+        strip.indices = 0..9;
+        strip.listed = Some(9..12);
+        strip.subparts = Some(SubpartRanges { first: 0, ranges: vec![12..15, 15..18] });
+        let parts = [strip];
+        let f = frame();
+        let item = |flags, subparts| ItemDraw { index: 0, object: 0, key: key(4, 0, 0), rows: vec![[1.0f32; 4]; 3], flags, subparts };
+        let plan = |item: &ItemDraw| plan_item_part(&parts, &pass_of, &f, item, &entry());
+        assert_eq!(plan(&item(PartFlags::STRIP, None)).unwrap().ranges, [0..9], "a strip");
+        assert_eq!(plan(&item(PartFlags::NONE, None)).unwrap().ranges, [9..12], "without bit 9, a list");
+        let chosen = Subparts { first: 0, count: 2, visible: 0b10 };
+        let flagged = PartFlags::STRIP | PartFlags::SUBPARTS;
+        assert_eq!(plan(&item(flagged, Some(chosen))).unwrap().ranges, [15..18], "its chosen subpart");
+        assert!(plan(&item(PartFlags::STRIP | PartFlags::STENCIL_MARK, None)).unwrap_err().contains("stencil"));
+        assert!(plan(&item(PartFlags::STRIP | PartFlags::AUX_DEPTH, None)).unwrap_err().contains("auxiliary"));
+    }
+
     #[test]
     fn a_parts_subparts_decode_alone_in_its_topology() {
         use tags::geometry::{PART_FLAG_TRIANGLE_LIST, Part, Subpart};
@@ -1977,6 +2328,39 @@ mod tests {
         assert!(lit_subparts(&indices, &subparts, &part(0, 0, 65)).is_none());
         assert!(lit_subparts(&indices, &subparts, &part(0, 2, 2)).is_none());
         assert!(lit_subparts(&indices, &[sub(7, 4)], &part(0, 0, 1)).is_none());
+    }
+
+    /// A strip part whose record lacks bit 9 draws its indices as a list
+    /// (`0x0004d5e2`): its whole triangles, a partial one dropped.
+    #[test]
+    fn a_strip_part_decodes_as_the_list_a_record_without_bit_9_draws() {
+        use tags::geometry::{PART_FLAG_TRIANGLE_LIST, Part};
+        let part = |flags, first_index, index_count| Part {
+            kind: 1, flags, material: 0, first_index, index_count, first_subpart: 0, subpart_count: 0, raw: Vec::new(),
+        };
+        let indices = [9u16, 0, 1, 2, 3, 4, 5, 3, 3];
+        assert_eq!(lit_listed(&indices, &part(0, 1, 8)), Some(vec![[0, 1, 2], [3, 4, 5]]));
+        assert_eq!(lit_listed(&indices, &part(0, 1, 7)), Some(vec![[0, 1, 2], [3, 4, 5]]), "a partial triangle draws nothing");
+        assert_eq!(lit_listed(&indices, &part(0, 3, 6)), Some(vec![[2, 3, 4]]), "a degenerate triangle dropped");
+        assert_eq!(lit_listed(&indices, &part(PART_FLAG_TRIANGLE_LIST, 0, 9)), None, "a list part");
+        assert_eq!(lit_listed(&indices, &part(0, 4, 9)), None, "outside the indices");
+    }
+
+    /// The ranges a part draws by the record's topology: a strip part
+    /// drawn as a list takes its listed range, not with chosen subparts;
+    /// a list part and a strip drawn as a strip their own.
+    #[test]
+    fn a_part_draws_the_ranges_of_the_topology_its_record_picks() {
+        let subparts = SubpartRanges { first: 2, ranges: vec![10..13, 13..19] };
+        let chosen = Subparts { first: 2, count: 2, visible: 0b10 };
+        let strip = |strip, chosen| part_ranges(&(0..9), Some(&subparts), Some(&(20..26)), strip, chosen);
+        assert_eq!(strip(Some(true), None), Ok(vec![0..9]));
+        assert_eq!(strip(Some(true), Some(chosen)), Ok(vec![13..19]));
+        assert_eq!(strip(None, None), Ok(vec![0..9]), "in its own topology");
+        assert_eq!(strip(Some(false), None), Ok(vec![20..26]), "as a list");
+        assert!(strip(Some(false), Some(chosen)).unwrap_err().contains("one list"));
+        let list = |strip| part_ranges(&(0..9), None, None, strip, None);
+        assert_eq!((list(Some(false)), list(None)), (Ok(vec![0..9]), Ok(vec![0..9])));
     }
 
     #[test]
@@ -2041,6 +2425,7 @@ mod tests {
             vertex_count: 3,
             parts: vec![(0, 0, vec![[0, 1, 2]])],
             subparts: HashMap::new(),
+            listed: HashMap::new(),
         };
         let mut opaque = lit();
         opaque.render_states = vec![state(RenderStateType::AlphaBlendEnable, 0), state(RenderStateType::ZWriteEnable, 1)];
@@ -2087,6 +2472,152 @@ mod tests {
         assert!(build.input.valid_draw_references());
     }
 
+    /// [`formats`] with a PRT stream record: semantic 2 (the normal) as
+    /// three normalised shorts, then four bytes skipped (10 a vertex).
+    fn prt_formats() -> StreamFormats {
+        let size = crate::object_streams::STREAM_FORMAT_SIZE;
+        let base = formats();
+        let mut t = vec![0u8; (usize::from(PRT_STREAM) + 1) * size];
+        t[size..size + 8].copy_from_slice(&[1, 0, 2, 3, 1, 2, 2, 0xff]);
+        let l = usize::from(LIGHTMAP_STREAM) * size;
+        t[l..l + 4].copy_from_slice(&[LIGHTMAP_STREAM, 7, 1, 0xff]);
+        let p = usize::from(PRT_STREAM) * size;
+        t[p..p + 6].copy_from_slice(&[PRT_STREAM, 2, 14, 0xfe, 4, 0xff]);
+        let f = StreamFormats::from_bytes(&t);
+        assert_eq!(f.elements(1), base.elements(1));
+        f
+    }
+
+    #[test]
+    fn layer_5_compiles_a_prt_variant_whose_stream_feeds_its_registers() {
+        use crate::object_program::tests::rigid_program;
+        use tags::material::{ResolvedLayer, ResolvedPass};
+        let mut bytes = Vec::new();
+        for k in 0..3 {
+            for v in [k as f32, 0.0, 0.0, 0.5, 0.5, 0.0, 0.0, 1.0] {
+                bytes.extend(v.to_le_bytes());
+            }
+        }
+        let section = LitSection {
+            index: 4,
+            geometry: 0,
+            influences: 0,
+            decompression: [[1.0; 4]; 3],
+            streams: vec![Some((1, StreamData { bytes: &bytes, stride: 32 }))],
+            vertex_count: 3,
+            parts: vec![(0, 0, vec![[0, 1, 2]])],
+            subparts: HashMap::new(),
+            listed: HashMap::new(),
+        };
+        let mut opaque = crate::object_program::tests::lit();
+        opaque.render_states = vec![state(RenderStateType::AlphaBlendEnable, 0), state(RenderStateType::ZWriteEnable, 1)];
+        let pass = |implementations| ResolvedPass { index: 0, pass: map::TagId(0xe000_0001), implementations };
+        let material = tags::material::Material {
+            shader: map::TagId(0xe000_0010),
+            template: map::TagId(0xe000_0011),
+            inputs: Default::default(),
+            layers: vec![
+                ResolvedLayer { lod: 0, layer: crate::look::LIGHTMAP_LAYER, passes: vec![pass(vec![opaque])] },
+                ResolvedLayer { lod: 0, layer: usize::from(PRT_LAYER), passes: vec![pass(vec![additive(0)])] },
+            ],
+        };
+        let mut materials = HashMap::new();
+        materials.insert(0, LitMaterial { material, shader: ShaderValues::default() });
+        let mut vertex = |_: map::TagId, _: u16, _: u8| Ok::<_, String>((rigid_program(), vec![0u16, 3, 2]));
+        let mut image = |_: usize, _: map::TagId, _: u32| -> Option<Image> { None };
+        let build = lit_model(&[section.clone()], &materials, &prt_formats(), &EngineStages::default(), &mut vertex, &mut image);
+        assert!(build.layer_refused.is_empty(), "{:?}", build.layer_refused);
+        let p = &build.input.layers[0];
+        assert_eq!(p.layer, PRT_LAYER);
+        assert_eq!(p.passes[0].implementations[0], Some((1, 0)), "the plain variant over layer 3's buffer");
+        assert_eq!(p.passes[0].prt[0], Some((2, 1)), "the PRT variant over the section's registers only");
+        assert_eq!(build.input.buffers[1].registers, [0, 1], "the PRT stream feeds v2");
+        let prt = build.input.programs[2].pass.prt.as_ref().expect("the PRT variant's stream");
+        assert_eq!(prt.registers, [2]);
+        assert_eq!(prt.provided & 0b111, 0b111);
+        assert_eq!(prt.last_constant, None);
+        assert!(build.input.programs[1].pass.prt.is_none());
+        assert!(build.input.valid_draw_references());
+        // Without a PRT record the plain variant still compiles; the PRT
+        // one is named.
+        let build = lit_model(&[section], &materials, &formats(), &EngineStages::default(), &mut vertex, &mut image);
+        assert_eq!(build.input.layers[0].passes[0].prt[0], None);
+        assert!(build.layer_refused.iter().any(|(_, l, why)| *l == PRT_LAYER && why.contains("PRT")), "{:?}", build.layer_refused);
+    }
+
+    #[test]
+    fn a_prt_item_draws_its_passes_prt_variant_with_its_constants() {
+        use crate::object_program::tests::rigid_program;
+        use frame_scene::{InstanceKey, LayerInputs, PrtStream};
+        let plain = object_layer_pass(map::TagId(0xe000_0001), &additive(0), &rigid_program(), crate::program::INPUT_MASK, [shaders::vsh::InputFetch::Float; 16])
+            .unwrap_or_else(|e| panic!("{e}"));
+        let mut with_prt = plain.clone();
+        with_prt.prt = Some(PrtInput {
+            semantics: vec![0, 3, 2],
+            streams: vec![],
+            registers: vec![2],
+            provided: crate::program::INPUT_MASK,
+            fetch: [shaders::vsh::InputFetch::Float; 16],
+            last_constant: Some(70),
+        });
+        let passes = [plain, with_prt];
+        let pass_of = |i: usize| passes.get(i);
+        let layers = [LitLayerPart {
+            layer: PRT_LAYER,
+            section: 4,
+            part: 0,
+            decompression: [[0.0; 4]; 3],
+            shader_tag: 0xe5da_0465,
+            shader: ShaderValues::default(),
+            indices: 0..3,
+            subparts: None,
+            listed: None,
+            passes: vec![LitLayerPass {
+                count: 1,
+                implementations: [Some((0, 0)), None, None, None, None],
+                empty: 0,
+                prt: [Some((1, 1)), None, None, None, None],
+            }],
+        }];
+        let pass = LayerPass {
+            layer: PRT_LAYER,
+            stencil_off: false,
+            texaccum: false,
+            items: 0..1,
+            remainder: 0,
+            inputs: LayerInputs { defaults: Some(Defaults::default()), ..LayerInputs::default() },
+        };
+        let constants: Vec<[f32; 4]> = (0..3).map(|n| [n as f32 + 1.0; 4]).collect();
+        let stream = PrtStream { kind: PRT_STREAM, stride: 10, data: 0x8000_1000, constants };
+        let item = LayerItem {
+            slot: 3,
+            key: key(4, 0, 0),
+            owner: LayerOwner::Object(InstanceKey(1)),
+            model: 0xe100_0001,
+            rows: 0..3,
+            lighting: Some(Lighting { words: [0u32; 30], root: Some(0) }),
+            flags: PartFlags::NONE,
+            subparts: None,
+            refusal: None,
+            prt: Some(stream.clone()),
+        };
+        let rows = [[1.0f32; 4]; 3];
+        // The device's blend op reads (the additive pass inherits it).
+        let mut e = entry();
+        e.0.retain(|(t, _)| *t != RenderStateType::BlendOp);
+        e.0.push((RenderStateType::BlendOp, 0x8006));
+        let plan = |item: &LayerItem| plan_layer_part(&layers, Some(0), &pass_of, InstanceKey(1), PRT_LAYER, &rows, &pass, item, &e);
+        let d = plan(&item).unwrap();
+        assert_eq!((d[0].program, d[0].buffer), (1, 1), "the PRT variant");
+        assert_eq!(d[0].vertex.constants[68..71], [[1.0; 4], [2.0; 4], [3.0; 4]]);
+        assert_eq!(d[0].prt, Some((stream.clone(), None)), "its stream still to gather");
+        let plain = LayerItem { prt: None, ..item.clone() };
+        assert_eq!(plan(&plain).unwrap()[0].program, 0, "without a stream, the plain variant");
+        // The program reads c[70]: two constants do not reach it.
+        let short = LayerItem { prt: Some(PrtStream { constants: vec![[0.0; 4]; 2], ..stream }), ..item };
+        assert!(plan(&short).unwrap_err().contains("c[70]"));
+    }
+
     #[test]
     fn a_world_layers_object_item_draws_each_pass_with_the_implementation_it_picks() {
         use crate::object_program::tests::rigid_program;
@@ -2106,11 +2637,12 @@ mod tests {
             shader: ShaderValues::default(),
             indices: 0..3,
             subparts: None,
+            listed: None,
             passes: vec![
                 // One implementation: every item draws it.
-                LitLayerPass { count: 1, implementations: [Some((0, 0)), None, None, None, None], empty: 0 },
+                LitLayerPass { count: 1, implementations: [Some((0, 0)), None, None, None, None], empty: 0, prt: [None; IMPLEMENTATIONS] },
                 // The item's: 0 or 1; 2 draws nothing.
-                LitLayerPass { count: 3, implementations: [Some((0, 0)), Some((1, 0)), None, None, None], empty: 0b100 },
+                LitLayerPass { count: 3, implementations: [Some((0, 0)), Some((1, 0)), None, None, None], empty: 0b100, prt: [None; IMPLEMENTATIONS] },
             ],
         };
         let layers = [part(7), part(8)];

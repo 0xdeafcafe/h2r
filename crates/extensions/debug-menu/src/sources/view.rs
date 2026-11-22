@@ -8,7 +8,7 @@
 
 use serde_json::{Value, json};
 
-use super::method::{RENDER_PARAM, RENDER_TOGGLE};
+use super::method::{HOST_SCREENSHOT, RENDER_PARAM, RENDER_TOGGLE};
 use super::{get, humanize, list, problem, str_of};
 use crate::model::{Answer, Call, Row, Section, Setter};
 
@@ -84,9 +84,26 @@ fn view_rows(a: &[Answer]) -> Vec<Row> {
         )
         .about("how long a collision trace stays on screen; 30 ticks is a second"),
     );
+    rows.push(
+        Row::action("Take screenshot", Call::bare(HOST_SCREENSHOT))
+            .on_ok(shot_toast)
+            .about("the newest frame as a PNG, in the game's screenshots directory"),
+    );
     rows.push(Row::open("Render passes", "view/render"));
     rows.push(Row::open("Graphics settings", "settings/video"));
     rows
+}
+
+/// `screenshot <file>`: the file the shot was written to.
+fn shot_toast(v: &Value) -> String {
+    match v["path"]
+        .as_str()
+        .and_then(|p| p.rsplit(['/', '\\']).next())
+        .filter(|n| !n.is_empty())
+    {
+        Some(name) => format!("saved {name}"),
+        None => "screenshot saved".into(),
+    }
 }
 
 fn render_rows(a: &[Answer]) -> Vec<Row> {
@@ -178,6 +195,7 @@ mod tests {
                 "Hitboxes",
                 "Range (world units)",
                 "Trace lifetime (ticks)",
+                "Take screenshot",
                 "Render passes",
                 "Graphics settings"
             ]
@@ -209,6 +227,20 @@ mod tests {
         let kill = row(&rows, "Kill volumes");
         assert_eq!(kill.disabled, None);
         assert_eq!(kill.about, "partly drawn");
+    }
+
+    #[test]
+    fn take_screenshot_saves_the_newest_frame() {
+        let mut g = Game::default();
+        let rows = page(&mut g, "view");
+        let r = row(&rows, "Take screenshot");
+        assert!(r.disabled.is_none());
+        let Edit::Action(call) = &r.edit else {
+            panic!("an action")
+        };
+        assert_eq!(*call, Call::bare("host.screenshot"));
+        let result = g.call(call).unwrap();
+        assert_eq!(shot_toast(&result), "saved h2-123.png");
     }
 
     #[test]

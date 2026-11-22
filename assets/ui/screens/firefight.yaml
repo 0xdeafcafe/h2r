@@ -1,0 +1,23 @@
+screen: firefight
+kind: dialog
+layout: settings
+backing: over
+opener: game-setup.firefight
+states:
+  focus-0:
+    focus: 0
+  focus-2:
+    focus: 2
+  focus-4:
+    focus: 4
+widgets:
+  title:
+    component: title
+    text: "FIREFIGHT"
+  description:
+    component: description
+    at: [-224, 143]
+    size: [494, 20]
+  legend:
+    component: legend
+    prompts: [[[Left, Right], "CHANGE"], [A, "SELECT"], [B, "BACK"]]

@@ -503,10 +503,15 @@ surface, clearing the rest to black.
 - **Display rate** (`AppConfig::fps`, `H2_FPS=30|60|120|uncapped`, `h2 play
   --fps`, the Video screen's Frame Rate row, `graphics.fps` in
   `settings::Store`; `fps.rs`): at 30, the default, the window redraws when the guest
-  presents. At 60 and 120 the window samples the mailbox on its
-  `DisplaySchedule`. Uncapped redraws every event-loop turn with vsync off.
-  Extra redraws repeat the newest picture unless the render thread supplies
-  an in-between frame. [Host replay and reprojection](../game/high-framerate.md).
+  presents. At 60 and 120 it also redraws at every publish, and its
+  `DisplaySchedule` adds a redraw only when no frame was published for
+  one interval (`DisplaySchedule::published` books the grid's next slot one
+  interval after each publish). Uncapped redraws every event-loop turn
+  with vsync off. A gap-filling redraw repeats the newest picture. The
+  render thread's in-between frames are each drawn once, at their
+  publish: a window grid of its own beside the replay's would beat
+  against it and drop one made frame and repeat another several times a
+  second. [Host replay and reprojection](../game/high-framerate.md).
 - Surface format: the first non-sRGB format (`Bgra8Unorm` on Metal). The Xbox
   pipeline is gamma-encoded throughout, so no conversion happens anywhere.
 
@@ -606,8 +611,11 @@ follower to start again; on its own, `h2 play` starts itself again in place
 (`restart_in_place`: the same executable and arguments by `exec`, with the
 pid-named agent socket freed and SIGINT/SIGTERM unblocked first).
 
-The title bar shows guest presents per second, frames shown per second
-(one decimal), and frames dropped, all over the last 5 seconds
+The title bar shows guest presents per second, in-between frames the
+render thread made per second (`made`, only while there are any:
+publishes with present flags `frame::MADE_FRAME_FLAGS`, counted in
+`FrameStats::made`), frames shown per second (one decimal), and frames
+dropped, all over the last 5 seconds
 (`pacing::WindowedRate`), refreshed once a second. Lab game windows keep their
 job title throughout the run. In both modes `log_status` also prints
 it. A one-second window read 0.0 for a game presenting 1.4 times a second.

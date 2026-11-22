@@ -357,8 +357,23 @@ that column's condition. [Shadow census](../graphics/notes/e3-lighting.md).
   27 occur) are reported by id. Which render target or global texture each
   id means is not mapped.
 - **Engine render-state and sampler-state bindings** (`+0x11e`, `+0x120`)
-  are only fully decoded for byte 1 = 1, which reads a scalar input. They
-  are returned raw.
+  are returned raw and decoded by `material::EngineState`
+  (`engine_states`). A render binding is `[target, source, -, slot]`
+  (`0x0001a170`), a sampler binding `[stage, target, source, slot]`
+  (`0x0001ab50`); the target indexes `0x467020` or `0x46703c`
+  (`shader::ANIMATED_RENDER_STATES`, `ANIMATED_STAGE_STATES`: state,
+  component, kind). Source 1 reads the scalar at `ctx + 0x5c + 4·slot`;
+  any other the colour at `ctx + 0x108 + 12·slot`, packed by `0x00131ed0`
+  into the state's low 24 bits with its alpha byte kept.
+  `EngineState::value` evaluates one from `EngineInputs` (`0x0001ae70`
+  fills the scalar slots from the scalar inputs and the colour slots from
+  the vector inputs): an integer state rounds the scalar, a float state
+  takes its bits, a colour state from a scalar puts it times 255 in the
+  top byte; a colour packs each channel times 255, rounded and wrapped
+  to a byte, red at bit 16. `native_render::engine_states::apply` maps
+  the values onto a native pass's states (each render value after the
+  static list, each stage value into its `StageStates` field); no draw
+  calls it.
 - **Engine input semantics** (which scalar or vector is time, camera, light
   colour and so on) are not named, apart from the root-fed ones.
 - **Persistent state.** The engine keeps texture slots, constant banks and the

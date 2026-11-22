@@ -4,7 +4,8 @@
 //! hash on, replaying one input recording, and publishes each frame through
 //! the shell's triple buffer. A presenter on a fake display clock takes and
 //! redraws frames at each setting's rate, exactly as the window does: on
-//! guest presents at 30, on its own schedule above. The guest's trace must
+//! every publish, and above 30 on its own schedule between publishes
+//! (`DisplaySchedule::published`). The guest's trace must
 //! be the same at every setting, while the presenter's redraw count shows
 //! the setting did take effect.
 
@@ -73,9 +74,12 @@ fn play(config: AppConfig, mut tap: Box<dyn InputTap>) -> (Trace, Shown) {
         }
         shown.released.push(wall);
         // The window can keep presenting throughout that interval.
-        let mut woken = guest_presented && schedule.redraw_on_publish();
+        let mut woken = guest_presented;
         while now < wall {
-            if schedule.due(now) || woken {
+            if woken {
+                schedule.published(now);
+            }
+            if woken || schedule.due(now) {
                 woken = false;
                 if let Some(slot) = mailbox.take() {
                     on_screen = Some(slots[slot]);

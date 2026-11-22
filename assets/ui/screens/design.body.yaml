@@ -1,0 +1,21 @@
+screen: design.body
+kind: dialog
+layout: large
+backing: over
+opener: main-menu
+states:
+  rest:
+    focus: 0
+widgets:
+  title:
+    component: title
+    text: "TITLE"
+  body:
+    component: body
+    text: "Body text wraps at the panel's width. A second sentence shows the wrap."
+  status:
+    component: status
+    text: "A status line."
+  legend:
+    component: legend
+    prompts: [[A, "DONE"], [B, "CANCEL"]]

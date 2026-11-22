@@ -112,6 +112,11 @@ pub const ACTIONS: &[u16] = &[
     id::RESPAWN,
     id::ROLE_TRAITS,
     id::RESET_OBJECTIVE,
+    id::BOT_GO,
+    id::BOT_HOLD,
+    id::BOT_FOLLOW,
+    id::BOT_ATTACK,
+    id::BOT_FREE,
     // Shown to this machine's local users and sent as show cues
     // (`super::world::show`).
     id::MESSAGE,
@@ -254,7 +259,7 @@ impl Source {
 }
 
 /// One engine call a handler made, made at the next tick boundary.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Call {
     Score { player: u8, delta: i32 },
     SetLives { player: u8, lives: i32 },
@@ -264,6 +269,13 @@ pub enum Call {
     /// `reset_objective`: the objective (a salted datum) returned
     /// (`super::objectives`).
     ResetObjective(u32),
+    /// `bot_go`, `bot_hold`, `bot_follow`, `bot_attack` and `bot_free`: an
+    /// outside order to the phantom in `player`'s seat, or `None` to free
+    /// it (`super::world::bots`).
+    BotOrder {
+        player: u8,
+        order: Option<bots::brain::Order>,
+    },
     /// `end_round`, or the round end of a script error.
     End,
     /// `message`, `message_team` or `message_all`: not an engine call but
@@ -281,6 +293,13 @@ impl Call {
             Call::Respawn(_) => "respawn",
             Call::RoleTraits { .. } => "role_traits",
             Call::ResetObjective(_) => "reset_objective",
+            Call::BotOrder { order, .. } => match order {
+                Some(bots::brain::Order::Go(_)) => "bot_go",
+                Some(bots::brain::Order::Hold(..)) => "bot_hold",
+                Some(bots::brain::Order::Follow(_)) => "bot_follow",
+                Some(bots::brain::Order::Attack(_)) => "bot_attack",
+                None => "bot_free",
+            },
             Call::End => "end_round",
             Call::Message(_) => "message",
         }
@@ -288,7 +307,7 @@ impl Call {
 }
 
 /// What the async body before a tick does.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Work {
     /// The tick about to run.
     pub tick: u32,
@@ -399,6 +418,10 @@ pub struct GuestGame<'a> {
     pub error: Option<ScriptError>,
     /// The map's labelled things; none reads as a map with none.
     pub table: Option<&'a Table>,
+    /// This run plays a film back: a bot order is not replayed (the seat's
+    /// recorded pad plays), so none is made (docs/game/rules-world-api.md,
+    /// "Films and Theater").
+    film: bool,
 }
 
 impl<'a> GuestGame<'a> {
@@ -408,12 +431,19 @@ impl<'a> GuestGame<'a> {
             calls,
             error: None,
             table: None,
+            film: false,
         }
     }
 
     /// The same game whose labelled things are `table`.
     pub fn with_table(mut self, table: &'a Table) -> Self {
         self.table = Some(table);
+        self
+    }
+
+    /// The same game for a run that plays a film back, or not.
+    pub fn with_film(mut self, film: bool) -> Self {
+        self.film = film;
         self
     }
 
@@ -545,6 +575,16 @@ impl Game for GuestGame<'_> {
             }
             // The winner is not passed: naming one is not traced.
             id::END_ROUND => Some(Call::End),
+            // A bot order is a hint to a phantom's brain on the host. It is
+            // not replayed: a film plays each seat's recorded pad instead.
+            id::BOT_GO | id::BOT_HOLD | id::BOT_FOLLOW | id::BOT_ATTACK | id::BOT_FREE => {
+                if self.film {
+                    None
+                } else {
+                    super::world::bots::plan(self.m, self.table, call)
+                        .map(|(player, order)| Call::BotOrder { player, order })
+                }
+            }
             _ => None,
         };
         if let Some(c) = made {
@@ -914,7 +954,9 @@ impl Runtime {
         };
         let mut pending = Vec::new();
         let error = {
-            let mut g = GuestGame::new(m, &mut pending).with_table(&table);
+            let mut g = GuestGame::new(m, &mut pending)
+                .with_table(&table)
+                .with_film(self.film);
             vm.fire(&mut g, Input::Init);
             g.error
         };
@@ -986,7 +1028,9 @@ impl Runtime {
             let Running {
                 vm, pending, table, ..
             } = &mut **r;
-            let mut g = GuestGame::new(m, pending).with_table(table);
+            let mut g = GuestGame::new(m, pending)
+                .with_table(table)
+                .with_film(self.film);
             vm.flush_queue(&mut g);
         }
         if let Err(why) = save(r, &mut *self.store) {
@@ -1037,7 +1081,9 @@ impl Runtime {
             let Running {
                 vm, pending, table, ..
             } = &mut **r;
-            let mut g = GuestGame::new(m, pending).with_table(table);
+            let mut g = GuestGame::new(m, pending)
+                .with_table(table)
+                .with_film(self.film);
             f(vm, &mut g);
             g.error
         };
@@ -1299,6 +1345,13 @@ pub async fn make_calls(cx: &Cx, work: &Work) -> (Option<bool>, Vec<(String, Str
             Call::Respawn(player) => crate::firefight::guest::respawn(cx, player).await,
             Call::RoleTraits { player, on } => super::roles::set(cx, player, on).await,
             Call::ResetObjective(object) => super::objectives::reset(cx, object).await,
+            Call::BotOrder { player, order } => {
+                if super::world::bots::deliver(player, order) {
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!("player {player} is no bot"))
+                }
+            }
             Call::End => crate::firefight::guest::end_game(cx).await,
             // Messages are made at the boundary by `Runtime::pre_tick`
             // (`super::world::show::publish`); one reaching this far makes

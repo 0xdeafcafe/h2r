@@ -72,8 +72,8 @@ and its spec's opener is Game Setup (`firefight/options.rs:213`).
   across the full width at the top, the bottom and for a notice
   (`ui_kit/forge.rs:52`, `:66`, `:83`, `:159`). `Art::Solid` has no
   other user (`ui_kit/view.rs:40`). Halo 2's HUD has no opaque bars.
-- Menu font and one invented colour. Every text is menu font 1 in
-  `[235, 243, 252]` (`ui_kit/forge.rs:174`, `:176`). The HUD's fonts are
+- Menu font and the menus' white. Every text is menu font 1 in the
+  design system's white (`ui_kit/forge.rs`, `text`). The HUD's fonts are
   the HUD font and the LCD count font, in the HUD colour.
 - A text reticle: the character "+" in font 1 (`ui_kit/forge.rs:65`).
 - A menu legend on a HUD. Up to six button prompts in one bar along the

@@ -1210,6 +1210,151 @@ impl EngineVertexConstant {
     }
 }
 
+/// How an engine-driven state's value is converted for its state (byte 3
+/// of its entry in [`ANIMATED_RENDER_STATES`] or [`ANIMATED_STAGE_STATES`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EngineStateKind {
+    /// 0: a colour word.
+    Colour,
+    /// 1: the float's bits.
+    Float,
+    /// 2: the float rounded to an integer (`fistp`, `0x0001a1f8`).
+    Integer,
+}
+
+/// Where an engine-driven state's value comes from in the shader draw's
+/// context (`0x0001a170`, `0x0001ab50`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EngineStateSource {
+    /// Source byte 1: the scalar at `ctx + 0x5c + 4·slot`, the shader's
+    /// evaluated parameter (`0x0001a1cd`).
+    Scalar(u8),
+    /// Any other source byte: the colour at `ctx + 0x108 + 12·slot`,
+    /// packed by `0x00131ed0` into the state's low 24 bits, its alpha byte
+    /// kept (`0x0001a89c`).
+    Colour(u8),
+}
+
+/// One engine-driven render or texture-stage state: an entry of an
+/// implementation's `+0x11e` (render) or `+0x120` (stage) range of the
+/// `spas` bindings, as `0x0001a170` and `0x0001ab50` read it. A render
+/// binding is `[target, source, -, slot]`, a stage binding `[stage,
+/// target, source, slot]`; the target indexes [`ANIMATED_RENDER_STATES`]
+/// (`0x467020`) or [`ANIMATED_STAGE_STATES`] (`0x46703c`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EngineState {
+    /// The D3D render or texture-stage state (the table entry's word).
+    pub state: u8,
+    /// The texture stage, for a stage state.
+    pub stage: Option<u8>,
+    pub kind: EngineStateKind,
+    pub source: EngineStateSource,
+}
+
+impl EngineState {
+    /// A render-state binding, or `None` when its target is past the
+    /// table (the guest would read past it).
+    pub fn render(e: ExternalBinding) -> Option<Self> {
+        let [target, source, _, slot] = e.bytes;
+        Self::of(&ANIMATED_RENDER_STATES, target, None, source, slot)
+    }
+
+    /// A texture-stage-state binding, or `None` when its target is past
+    /// the table or its stage past the four stages.
+    pub fn stage(e: ExternalBinding) -> Option<Self> {
+        let [stage, target, source, slot] = e.bytes;
+        if stage >= 4 {
+            return None;
+        }
+        Self::of(&ANIMATED_STAGE_STATES, target, Some(stage), source, slot)
+    }
+
+    fn of(table: &[(u8, u8, u8)], target: u8, stage: Option<u8>, source: u8, slot: u8) -> Option<Self> {
+        let &(state, _, kind) = table.get(usize::from(target))?;
+        let kind = match kind {
+            0 => EngineStateKind::Colour,
+            1 => EngineStateKind::Float,
+            _ => EngineStateKind::Integer,
+        };
+        let source = if source == 1 { EngineStateSource::Scalar(slot) } else { EngineStateSource::Colour(slot) };
+        Some(Self { state, stage, kind, source })
+    }
+
+    /// The state's name ([`render_state_name`], [`stage_state_name`]).
+    pub fn name(self) -> Option<&'static str> {
+        match self.stage {
+            None => render_state_name(self.state),
+            Some(_) => stage_state_name(u16::from(self.state)),
+        }
+    }
+
+    /// The state's value for a draw whose engine inputs are `inputs`,
+    /// over `current`, the value the state holds (the D3D shadow the guest
+    /// reads, `0x00407498` or `0x00404dd0`): `0x0001ae70` fills the
+    /// context's scalar slots from `inputs.scalars` and its colour slots
+    /// from `inputs.vectors`, and `0x0001a170` and `0x0001ab50` convert
+    /// them alike:
+    ///
+    /// - a scalar of kind [`EngineStateKind::Integer`] is rounded
+    ///   (`fistp`, `0x0001a1f8`), of kind [`EngineStateKind::Float`] its
+    ///   bits, of kind [`EngineStateKind::Colour`] times [`BYTE_SCALE`],
+    ///   rounded, into the top byte over `current`'s low 24 bits
+    ///   (`0x0001a801`);
+    /// - a colour is packed by `0x00131ed0`, each channel times
+    ///   [`BYTE_SCALE`], rounded and masked to a byte, red at bit 16, green
+    ///   at 8, blue at 0, into `current`'s low 24 bits, its top byte kept
+    ///   (`0x0001a89c`), whatever the kind.
+    ///
+    /// Rounding is to nearest, ties to even (the x87 default; the
+    /// products are exact at 53 bits). `None` when the slot is past the
+    /// inputs (the guest would read the next field of its context).
+    pub fn value(self, inputs: &EngineInputs, current: u32) -> Option<u32> {
+        match self.source {
+            EngineStateSource::Scalar(slot) => {
+                let x = f64::from(*inputs.scalars.get(usize::from(slot))?);
+                Some(match self.kind {
+                    EngineStateKind::Integer => fistp(x),
+                    EngineStateKind::Float => (x as f32).to_bits(),
+                    EngineStateKind::Colour => (current & 0x00ff_ffff) | (fistp(x * f64::from(BYTE_SCALE)) << 24),
+                })
+            }
+            EngineStateSource::Colour(slot) => {
+                let v = inputs.vectors.get(usize::from(slot))?;
+                Some((current & 0xff00_0000) | pack_colour(*v))
+            }
+        }
+    }
+}
+
+/// The fraction-to-byte scale at `0x0045dc38`, 255.
+pub const BYTE_SCALE: f32 = 255.0;
+
+/// `fistp m32` under round-to-nearest-even: out of range or NaN gives the
+/// integer indefinite, `0x80000000`.
+fn fistp(x: f64) -> u32 {
+    let r = x.round_ties_even();
+    if r.is_nan() || !(-2_147_483_648.0..=2_147_483_647.0).contains(&r) {
+        return 0x8000_0000;
+    }
+    r as i32 as u32
+}
+
+/// `0x00131ed0`: a colour as a D3D word's low 24 bits, each channel times
+/// [`BYTE_SCALE`], rounded and masked to a byte (no clamp: 1.5 wraps).
+fn pack_colour([r, g, b]: [f32; 3]) -> u32 {
+    let byte = |c: f32| fistp(f64::from(c) * f64::from(BYTE_SCALE)) & 0xff;
+    (byte(r) << 16) | (byte(g) << 8) | byte(b)
+}
+
+/// `imp`'s engine-driven render and texture-stage states, in the order
+/// `0x0001a170` and `0x0001ab50` apply them, or `None` when one does not
+/// decode ([`EngineState`]).
+pub fn engine_states(imp: &ResolvedImplementation) -> Option<(Vec<EngineState>, Vec<EngineState>)> {
+    let render = imp.engine_render_states.iter().map(|&e| EngineState::render(e)).collect::<Option<Vec<_>>>()?;
+    let stage = imp.engine_stage_states.iter().map(|&e| EngineState::stage(e)).collect::<Option<Vec<_>>>()?;
+    Some((render, stage))
+}
+
 /// `imp`'s engine-driven vertex constants in the order `0x00019be0`
 /// applies them.
 pub fn engine_vertex_constants(spas: &PassPostprocess, imp: &Implementation) -> Vec<EngineVertexConstant> {

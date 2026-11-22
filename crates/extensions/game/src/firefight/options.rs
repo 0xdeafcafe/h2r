@@ -41,11 +41,9 @@ use settings::{Apply, Choice, Def as Setting, Kind, Scope, Store, Tier, Value};
 use crate::h1_options_row::{self as h1row, CHANGE_MAP};
 use crate::list_class::{self, Rows};
 use crate::ui_kit::choice::ChoiceRow;
-use crate::ui_kit::dialog::{DialogBase, icon};
+use crate::ui_kit::dialog::icon;
 use crate::ui_kit::ids::{self, Family};
-use crate::ui_kit::input::{Glyph, Prompt};
 use crate::ui_kit::screen::{KitScreen, KitTexts};
-use crate::ui_kit::view::Opener;
 
 /// The page's feature (`features.firefight-options`) and screen name.
 pub const FEATURE: &str = "firefight-options";
@@ -196,31 +194,24 @@ static ROWS: [ChoiceRow; 5] = [
         .icon(icon::LIGHTNING),
 ];
 
-/// The Game Setup row's text; the page's title stays [`TITLE`].
+/// The Game Setup row's text; the page's title stays its own
+/// (`assets/ui/screens/firefight.yaml`).
 pub const ROW_LABEL: &str = "Firefight Options...";
 /// What the Game Setup row does, in Game Setup's description while it has
 /// the focus, as retail's rows have theirs (`crate::game_setup_help`).
 pub const ROW_HELP: &str =
     "Fight waves of enemies on a Firefight map: the waves, the difficulty and the lives.";
-/// The page's title, in capitals as Quick Options' header ("QUICK
-/// OPTIONS") is.
-pub const TITLE: &str = "FIREFIGHT";
 
 /// The Firefight page over `store`: a dialog of its rows on Quick Options.
 pub fn page(store: Arc<Store>) -> KitScreen {
-    let mut s = KitScreen::new(FEATURE, SCREEN, IDS, TITLE)
+    let mut s = KitScreen::new(FEATURE, SCREEN, IDS)
         .row_label(ROW_LABEL)
         .row_help(ROW_HELP)
-        .dialog(DialogBase::QuickOptions, Opener::GAME_SETUP_FIREFIGHT)
         .header(icon::SPARTAN);
     for r in &ROWS {
         s = s.row(r.row(Arc::clone(&store)));
     }
-    s.prompts(&[
-        Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
-        Prompt::new(&[Glyph::A], "Select"),
-        Prompt::new(&[Glyph::B], "Back"),
-    ])
+    s
 }
 
 // --- What the match starts from ---------------------------------------------

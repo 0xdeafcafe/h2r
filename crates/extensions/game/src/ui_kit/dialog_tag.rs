@@ -487,6 +487,64 @@ pub fn write_base_tag(
     Ok(Some((at, base_tag_size(n, texts.len() as u32))))
 }
 
+/// A text block's and a bitmap block's render depth bias (docs/formats/ui.md
+/// "Text block", "Bitmap block").
+pub const TEXT_BIAS: u32 = 0x28;
+const BITMAP_BIAS: u32 = 0x20;
+
+/// The render depth bias a description text of ours takes on a dialog
+/// built from the retail tag at `base_tag` (`base`'s): the base's own help
+/// line's ([`DialogBase::help_block`]), and above every backing bitmap the
+/// copy keeps (one more than the highest). The draw sorts a pane's widgets
+/// by depth, then by bias, then by type, text (6) before bitmap (8)
+/// (docs/formats/ui.md "What a screen, pane and widget are"), so a text
+/// block at bias 0 over a backing at bias 0 or more is drawn first and
+/// the backing covers it: a help line of ours at bias 0 can draw nothing
+/// over Quick Options' `fs_dialog`.
+pub fn description_bias(
+    m: &dyn GuestMemory,
+    base_tag: u32,
+    base: DialogBase,
+) -> Result<i16, MemFault> {
+    let (panes, pane) = (
+        m.u32(base_tag + list_class::SCREEN_PANES)?,
+        m.u32(base_tag + list_class::SCREEN_PANES + 4)?,
+    );
+    if panes == 0 {
+        return Ok(0);
+    }
+    let mut bias = 0i16;
+    if let Some(i) = base.help_block() {
+        let (n, texts) = (m.u32(pane + PANE_TEXTS)?, m.u32(pane + PANE_TEXTS + 4)?);
+        if i < n {
+            bias = m.u16(texts + i * TEXT_BLOCK_SIZE + TEXT_BIAS)? as i16;
+        }
+    }
+    let skip = base.content_bitmaps();
+    let (n, bitmaps) = (m.u32(pane + PANE_BITMAPS)?, m.u32(pane + PANE_BITMAPS + 4)?);
+    let kept = (0..n)
+        .filter(|&i| u16::try_from(i).map_or(true, |i| !skip.contains(&i)))
+        .take(BASE_BITMAPS as usize);
+    for i in kept {
+        let b = m.u16(bitmaps + i * BITMAP_BLOCK_SIZE + BITMAP_BIAS)? as i16;
+        bias = bias.max(b.saturating_add(1));
+    }
+    Ok(bias)
+}
+
+/// [`description_bias`] for a screen whose vtable is `vtable`: a dialog
+/// class's whose copy is made, else `None` (the block keeps its own).
+pub fn served_description_bias(m: &dyn GuestMemory, vtable: u32) -> Result<Option<i16>, MemFault> {
+    let Some(d) = by_vtable(vtable) else {
+        return Ok(None);
+    };
+    let base_tag = m.u32(d.page + TAG_SOURCE)?;
+    if base_tag == 0 {
+        return Ok(None);
+    }
+    description_bias(m, base_tag, d.base).map(Some)
+}
+
 /// A screen request as `0x149f49` fills it: `+0` a zero word, `+2` the
 /// player mask, `+4` the window kind, `+8` [`REQUEST_B`], `+0xc` zero,
 /// `+0x10` three words of -1 (no source, EDX 0), `+0x1c` the loader.
@@ -688,7 +746,9 @@ pub fn on_dialog_window(m: &dyn GuestMemory, screen: u32) -> Result<bool, MemFau
 
 /// Closes `screen` as B does: a screen on the dialogs' window by the close
 /// message (once: not while it is closing), any other through
-/// [`crate::ui_kit::lifecycle::close`].
+/// [`crate::ui_kit::lifecycle::close`]. The close's clock starts, and the
+/// close is held to the kit's budget
+/// ([`crate::ui_kit::lifecycle::cap_transition`]).
 pub async fn close(cx: &Cx, screen: u32) -> Result<(), EntryError> {
     let (dialog, closing) = cx.read(|m| -> Result<_, MemFault> {
         Ok((
@@ -697,9 +757,8 @@ pub async fn close(cx: &Cx, screen: u32) -> Result<(), EntryError> {
         ))
     })?;
     if !dialog {
-        return crate::ui_kit::lifecycle::close(cx, screen).await;
-    }
-    if !closing {
+        crate::ui_kit::lifecycle::close(cx, screen).await?;
+    } else if !closing {
         cx.call(
             GuestCall::new(SCREEN_MESSAGE)
                 .ecx(screen)
@@ -707,6 +766,13 @@ pub async fn close(cx: &Cx, screen: u32) -> Result<(), EntryError> {
         )
         .await?;
     }
+    let now = std::time::Instant::now();
+    cx.write(|m| {
+        if m.u8(screen + SCREEN_STATE).is_ok_and(|s| s & 2 != 0) {
+            crate::ui_kit::lifecycle::started_closing(screen, now);
+            let _ = crate::ui_kit::lifecycle::cap_transition(m, screen);
+        }
+    });
     Ok(())
 }
 
@@ -1054,6 +1120,44 @@ mod tests {
         assert_eq!(m.u8(b + 2 * BITMAP_BLOCK_SIZE - 1).unwrap(), 3);
         assert_eq!(u32_at(pane + 0x1c), 1);
         assert_eq!(m.u8(u32_at(pane + 0x20)).unwrap(), 7);
+    }
+
+    /// The description of a dialog of ours draws over the dialog's
+    /// backing: at the base's help line's bias, and above every backing
+    /// bitmap the copy keeps (Quick Options' picture is its content, left
+    /// out).
+    #[test]
+    fn a_description_draws_over_the_dialogs_backing() {
+        const TEXTS: u32 = 0x0010_0c00;
+        const BITMAPS: u32 = 0x0010_0d00;
+        let mut g = retail();
+        g.put_u32(RETAIL_PANE + PANE_TEXTS, 2)
+            .put_u32(RETAIL_PANE + PANE_TEXTS + 4, TEXTS)
+            .put_u32(RETAIL_PANE + PANE_BITMAPS, 3)
+            .put_u32(RETAIL_PANE + PANE_BITMAPS + 4, BITMAPS);
+        // A frame at bias 1, the picture (block 1) at 3, the panel at 0.
+        for (i, b) in [1u16, 3, 0].into_iter().enumerate() {
+            g.put_u16(BITMAPS + i as u32 * BITMAP_BLOCK_SIZE + BITMAP_BIAS, b);
+        }
+        g.put_u16(TEXTS + TEXT_BIAS, 4);
+        assert_eq!(
+            description_bias(&g, RETAIL, DialogBase::QuickOptions),
+            Ok(4),
+            "the help line's own"
+        );
+        g.put_u16(TEXTS + TEXT_BIAS, 0);
+        assert_eq!(
+            description_bias(&g, RETAIL, DialogBase::QuickOptions),
+            Ok(2),
+            "over the frame, the picture left out"
+        );
+        assert_eq!(
+            description_bias(&g, RETAIL, DialogBase::Large),
+            Ok(4),
+            "every bitmap kept"
+        );
+        g.put_u32(RETAIL + 0x20, 0);
+        assert_eq!(description_bias(&g, RETAIL, DialogBase::QuickOptions), Ok(0), "no pane");
     }
 
     #[test]

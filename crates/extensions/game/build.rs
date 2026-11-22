@@ -47,4 +47,42 @@ fn main() {
         &["src/campaign_cards.rs", "../../../Cargo.lock"],
     );
     println!("cargo:rustc-env=CAMPAIGN_CARDS_SOURCE_HASH={cards:016x}");
+    ui_docs();
+}
+
+/// `$OUT_DIR/ui_baked.rs`: `assets/ui/design.yaml` and every
+/// `assets/ui/screens/*.yaml`, each `include_str!`d, so the game carries
+/// our screens' presentation with no file read (ui_kit::data::baked).
+fn ui_docs() {
+    let root = Path::new("../../../assets/ui");
+    let screens = root.join("screens");
+    println!("cargo:rerun-if-changed={}", root.display());
+    println!("cargo:rerun-if-changed={}", screens.display());
+    let abs = |p: &Path| {
+        std::fs::canonicalize(p)
+            .unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+            .display()
+            .to_string()
+    };
+    let mut names: Vec<String> = std::fs::read_dir(&screens)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "yaml"))
+        .filter_map(|p| p.file_stem().and_then(|s| s.to_str()).map(String::from))
+        .collect();
+    names.sort();
+    let design = abs(&root.join("design.yaml"));
+    println!("cargo:rerun-if-changed={design}");
+    let mut out = format!("pub const DESIGN: &str = include_str!({design:?});\n");
+    out.push_str("pub const SCREENS: &[(&str, &str)] = &[\n");
+    for n in &names {
+        let p = abs(&screens.join(format!("{n}.yaml")));
+        println!("cargo:rerun-if-changed={p}");
+        out.push_str(&format!("    ({n:?}, include_str!({p:?})),\n"));
+    }
+    out.push_str("];\n");
+    let dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
+    std::fs::write(dir.join("ui_baked.rs"), out).expect("ui_baked.rs");
 }

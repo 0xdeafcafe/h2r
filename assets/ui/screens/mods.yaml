@@ -1,0 +1,48 @@
+screen: mods
+kind: list
+layout: level_select
+backing: shell
+scrolls: true
+states:
+  focus-0:
+    focus: 0
+  focus-2:
+    focus: 2
+  focus-3:
+    focus: 3
+  loading:
+    focus: 0
+  empty:
+    focus: 0
+  offline:
+    focus: 0
+  signed-out:
+    focus: 0
+  installed:
+    focus: 0
+  downloading:
+    focus: 0
+  failed:
+    focus: 0
+  long-name:
+    focus: 0
+widgets:
+  title:
+    component: title
+    text: "Mods"
+  description:
+    component: description
+    at: [39, -30]
+    size: [221, 103]
+  legend:
+    component: legend
+  art.0:
+    component: art
+    at: [-259, 177]
+    size: [128, 256]
+    art: { screen: 11, pane: 0, index: 1, image: 0 }
+  art.1:
+    component: art
+    at: [39, 177]
+    size: [220, 207]
+    art: { screen: 14, pane: 0, index: 2, image: 0 }

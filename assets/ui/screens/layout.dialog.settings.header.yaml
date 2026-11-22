@@ -1,0 +1,47 @@
+screen: layout.dialog.settings.header
+kind: dialog
+layout: settings
+backing: over
+opener: game-setup
+states:
+  focus-0:
+    focus: 0
+  focus-1:
+    focus: 1
+  focus-2:
+    focus: 2
+widgets:
+  title:
+    component: title
+    text: "TITLE"
+  description:
+    component: description
+    at: [-224, 143]
+    size: [494, 20]
+  legend:
+    component: legend
+    prompts: [[[Left, Right], "CHANGE"], [A, "SELECT"], [B, "BACK"]]
+  art.0:
+    component: art
+    at: [-267, 166]
+    size: [40, 40]
+    art: { screen: 222, pane: 0, index: 1, image: 0 }
+rows:
+  row.0:
+    kind: pick
+    text: "Row 1"
+    values: ["On", "Off"]
+    current: 0
+    help: "What row 1 sets."
+  row.1:
+    kind: pick
+    text: "Row 2"
+    values: ["On", "Off"]
+    current: 0
+    help: "What row 2 sets."
+  row.2:
+    kind: pick
+    text: "Row 3"
+    values: ["On", "Off"]
+    current: 0
+    help: "What row 3 sets."

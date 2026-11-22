@@ -368,6 +368,10 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
         drawn
     }
 
+    fn replace_widget(&self, mem: &mut dyn GuestMemory, widget: u32) -> bool {
+        self.permits_draw() && crate::skulls_model::gpu::replace_widget(&self.device, mem, widget)
+    }
+
     fn enter_ui(&self, mem: &mut dyn GuestMemory, kind: UiScope, stack: u32, eligible: bool) {
         let Ok(mut device) = self.device.lock() else {
             Ui::Order.count();

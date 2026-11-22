@@ -49,7 +49,7 @@ use tags::shader::AnimatedProperty;
 use crate::object_lighting::{LIGHTING_SCALARS, LIGHTING_VECTORS, ShaderValues, scalar_input, vector_input};
 
 /// The layers the stage plans: the scene's 1, 5, 7, 8 and 20 and the
-/// first person's 1, 7 and 8.
+/// first person's 1, 7, 8 and 20.
 pub const LAYERS: [u8; 5] = [1, 5, 7, 8, 20];
 
 /// The scalar input the shader instance gives (`shad +0x44`).
@@ -552,12 +552,45 @@ pub fn item_stencil(layer: u8, stencil_off: bool, device: gfx::state::StencilSta
 /// unchanged; drawn, it would leave every state of the lists it set and
 /// restored. Both agree exactly when every state of both lists already
 /// holds. A pass with engine-driven render states sets values decided
-/// per draw, and refuses. The first shader begin's fixed states and its
-/// cleared texture caches are redone by the first shader begin the guest
-/// keeps (the byte `0x004670bc` stays set), or by the next layer draw's.
+/// per draw, and refuses here ([`skip_holds_with`] takes the draw's
+/// inputs). The first shader begin's fixed states and its cleared texture
+/// caches are redone by the first shader begin the guest keeps (the byte
+/// `0x004670bc` stays set), or by the next layer draw's.
 pub fn skip_holds(imp: &ResolvedImplementation, read: &dyn Fn(u32) -> Option<u32>) -> bool {
-    imp.engine_render_states.is_empty()
-        && imp.render_states.iter().chain(&imp.restore_states).all(|s| read(u32::from(s.state)) == Some(s.value))
+    skip_holds_with(imp, None, read)
+}
+
+/// [`skip_holds`] for a draw whose engine inputs are `inputs`: the draw
+/// also sets each engine-driven render value (`0x0001a170`, after the
+/// static list), so each must hold too, computed over the value the
+/// device holds (`EngineState::value`; with every static state holding,
+/// that is the value the guest's draw starts from). A value whose source
+/// slot is not one of the inputs `0x0001ae70` evaluates (the
+/// implementation's input masks, `ResolvedImplementation::input_reads`)
+/// is whatever the context last held, and refuses, as does a pass whose
+/// inputs change per draw (`per_draw_inputs`: `inputs` would not be the
+/// guest's) and any engine-driven pass without `inputs`.
+pub fn skip_holds_with(imp: &ResolvedImplementation, inputs: Option<&EngineInputs>, read: &dyn Fn(u32) -> Option<u32>) -> bool {
+    if !imp.render_states.iter().chain(&imp.restore_states).all(|s| read(u32::from(s.state)) == Some(s.value)) {
+        return false;
+    }
+    if imp.engine_render_states.is_empty() {
+        return true;
+    }
+    let Some(inputs) = inputs.filter(|_| !imp.per_draw_inputs) else {
+        return false;
+    };
+    let Some((render, _)) = tags::material::engine_states(imp) else {
+        return false;
+    };
+    let evaluated = |s: &tags::material::EngineState| match s.source {
+        tags::material::EngineStateSource::Scalar(n) => n < 64 && imp.input_reads.scalars & (1u64 << n) != 0,
+        tags::material::EngineStateSource::Colour(n) => n < 64 && imp.input_reads.vectors & (1u64 << n) != 0,
+    };
+    render.iter().all(|s| {
+        let held = read(u32::from(s.state));
+        evaluated(s) && held.is_some() && held.and_then(|h| s.value(inputs, h)) == held
+    })
 }
 
 /// The world's owner of a layer item, `None` for an object's.
@@ -932,6 +965,38 @@ mod tests {
         assert!(!skip_holds(&imp, &|slot| if slot == 11 { None } else { device(slot) }), "a state that does not read");
         imp.engine_render_states = vec![tags::shader::ExternalBinding { bytes: [0; 4] }];
         assert!(!skip_holds(&imp, &device), "per-draw states");
+    }
+
+    /// With the draw's inputs, an engine-driven render value holds when
+    /// the device already holds it, computed over the device's value.
+    #[test]
+    fn a_skipped_pass_with_engine_states_holds_when_their_values_do() {
+        use tags::shader::{ExternalBinding, RenderStateValue};
+        let mut imp = implementation(0, InputReads { scalars: 1 << 3, vectors: 1 << 2, ints: 0 }, Vec::new());
+        imp.per_draw_inputs = false;
+        imp.render_states = vec![RenderStateValue { state: 11, value: 13 }];
+        // ALPHAREF (0x3d) from scalar 3; BLENDCOLOR (0x4b) from colour 2.
+        imp.engine_render_states = vec![ExternalBinding { bytes: [2, 1, 0, 3] }, ExternalBinding { bytes: [0, 0, 0, 2] }];
+        let mut inputs = EngineInputs::default();
+        inputs.scalars[3] = 100.0;
+        inputs.vectors[2] = [0.0, 1.0, 0.0];
+        let device = |slot: u32| match slot {
+            11 => Some(13),
+            0x3d => Some(100),
+            // Green, over a top byte the draw keeps.
+            0x4b => Some(0x7700_ff00),
+            _ => Some(0),
+        };
+        assert!(skip_holds_with(&imp, Some(&inputs), &device));
+        assert!(!skip_holds(&imp, &device), "no inputs");
+        let other = |slot: u32| if slot == 0x3d { Some(99) } else { device(slot) };
+        assert!(!skip_holds_with(&imp, Some(&inputs), &other), "the draw would change ALPHAREF");
+        let mut unread = imp.clone();
+        unread.input_reads.vectors = 0;
+        assert!(!skip_holds_with(&unread, Some(&inputs), &device), "a slot 0x0001ae70 does not fill");
+        let mut per_draw = imp.clone();
+        per_draw.per_draw_inputs = true;
+        assert!(!skip_holds_with(&per_draw, Some(&inputs), &device), "inputs that change per draw");
     }
 
     #[test]

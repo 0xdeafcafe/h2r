@@ -1,0 +1,56 @@
+screen: signin-code
+kind: code_entry
+layout: large
+backing: over
+opener: main-menu
+states:
+  code:
+    focus: 0
+    cursor: 0
+  code-typed:
+    focus: 0
+    cursor: 2
+  code-wrong:
+    focus: 0
+    cursor: 2
+  code-unreachable:
+    focus: 0
+    cursor: 2
+  checking:
+    focus: 0
+  gamertag:
+    focus: 0
+  gamertag-bad:
+    focus: 0
+  invite:
+    focus: 0
+  create:
+    focus: 0
+  done:
+    focus: 0
+  cancelled:
+    focus: 0
+  code-over-live-menu:
+    focus: 0
+    cursor: 0
+  code-wrong-over-live-menu:
+    focus: 0
+    cursor: 2
+widgets:
+  title:
+    component: title
+  body:
+    component: body
+  status:
+    component: status
+    text: "{status}"
+  cells:
+    component: cells
+    digits: "000000"
+    gap_after: 2
+  description:
+    component: description
+    at: [-40, 110]
+    size: [340, 240]
+  legend:
+    component: legend

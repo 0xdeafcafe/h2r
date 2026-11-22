@@ -1,0 +1,34 @@
+screen: design.focus
+kind: list
+layout: controls
+backing: shell
+states:
+  first:
+    focus: 0
+  middle:
+    focus: 2
+  last:
+    focus: 4
+widgets:
+  title:
+    component: title
+    text: "Focus"
+  legend:
+    component: legend
+    prompts: [[A, "SELECT"], [B, "BACK"]]
+rows:
+  row.0:
+    kind: action
+    text: "Row 1"
+  row.1:
+    kind: action
+    text: "Row 2"
+  row.2:
+    kind: action
+    text: "Row 3"
+  row.3:
+    kind: action
+    text: "Row 4"
+  row.4:
+    kind: action
+    text: "Row 5"
