@@ -178,9 +178,13 @@ impl Opener {
         rows: &[
             "Quickmatch",
             "OptiMatch",
-            "Custom Game",
+            "Clankermatch",
+            "Co-op Campaign",
+            "Custom Games",
+            "Forge",
+            "Firefight",
             "Custom Game Browser",
-            "Content Download",
+            "Mods",
         ],
         focus: 0,
     };

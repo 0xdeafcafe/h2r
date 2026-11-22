@@ -112,6 +112,7 @@ pub const FAMILIES: &[Family] = &[
     Family::new("firefight", TABLE + 0x1100_0000, 0x40),
     Family::new("lobby mode", TABLE + 0x1300_0000, 0x40),
     Family::new("lobby tabs", TABLE + 0x1400_0000, 0x40),
+    Family::new("live menu modes", TABLE + 0x1500_0000, 0x10),
 ];
 
 const fn same(a: &str, b: &str) -> bool {

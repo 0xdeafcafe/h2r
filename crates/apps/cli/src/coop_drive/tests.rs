@@ -145,7 +145,8 @@ impl World {
             (At::Join(MODE_INVITE), "a") => self.join(now, g),
             (At::Join(_), "b") => self.go(now, g, At::Main),
             (At::Dialog, "a") => self.go(now, g, At::Join(MODE_INVITE)),
-            (At::Live, "down") => self.games[g].row = (row + 1).min(6),
+            // Row 8, Mods, is the last.
+            (At::Live, "down") => self.games[g].row = (row + 1).min(8),
             (At::Live, "up") => self.games[g].row = row.saturating_sub(1),
             (At::Live, "b") => self.go(now, g, At::Join(MODE_LIVE)),
             (At::Live, "a") => match row {
@@ -166,7 +167,7 @@ impl World {
                     }
                 }
                 BROWSER_ROW => {
-                    // The browser's row 5: its press stores it, and the
+                    // The browser's row 7: its press stores it, and the
                     // menu's build puts the cursor back on it.
                     self.games[g].live_row = BROWSER_ROW;
                     self.emit(now + 10, g, "custom games: opening the browser");

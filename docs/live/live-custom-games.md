@@ -5,14 +5,17 @@ coverage. Section 7 lists the in-game acceptance checks.
 
 What it adds:
 
-- An Xbox Live menu row, **Custom Game Browser**, directly above Content
-  Download. It opens Halo 2's own System Link game browser in the Live mode
-  the title shipped with but never opened. The list fills with the custom
-  games the server lists for you. The menu shows all five rows without
-  scrolling (§5).
-- **Content Download** opens a short dialog saying how to install the
-  Multiplayer Map Pack ([map-pack.md](../game/map-pack.md) §4) instead of leaving
-  for the dashboard's download area, which does not exist here.
+- Xbox Live menu rows for the custom lobby's modes: **Custom Games**,
+  **Forge** and **Firefight** each open the custom game lobby in that
+  mode ([party-lobby.md](../game/party-lobby.md), "The modes").
+- An Xbox Live menu row, **Custom Game Browser**, directly above Mods. It
+  opens Halo 2's own System Link game browser in the Live mode the title
+  shipped with but never opened. The list fills with the custom games the
+  server lists for you (§5).
+- **Mods**, retail's Content Download renamed, opens the Mods screen, or
+  without the mod repository a short dialog saying how to install the
+  Multiplayer Map Pack ([map-pack.md](../game/map-pack.md) §4) instead of
+  leaving for the dashboard's download area, which does not exist here.
 - A **visibility** on every session: `public`, `friends` or `invite`. The
   host sets it with the party privacy screen the title already has.
 
@@ -284,37 +287,49 @@ Quickmatch, OptiMatch, Custom Game and Content Download. Content Download
 asks to leave for the dashboard (`0x19b5af`, error `0xa3`, then
 `0x230e98`).
 
-The list hook makes it five rows, and the row hooks show them in this
-order:
+The list hook makes it nine rows (eight without the co-op row), and the
+row hooks show them in this order (`custom_games::Menu::layout`):
 
 | Row | Shows | Text | Press | Pane |
 |---:|---|---|---|---|
-| 0–2 | Quickmatch, OptiMatch, Custom Game | retail | retail | retail 0–2 |
-| 3 | Custom Game Browser (ours) | ours | Live browser (§2) | 4 (ours) |
-| 4 | Content Download | retail id `0x10000445` | Map Pack dialog | 3 |
+| 0–1 | Quickmatch, OptiMatch | retail | retail | retail 0–1 |
+| 2 | Clankermatch | ours | OptiMatch's ([bots.md](../game/bots.md) §8.3) | 4 |
+| 3 | Co-op Campaign (with Live) | ours | co-op ([live-coop.md](live-coop.md) §10) | 6 |
+| 4 | Custom Games | ours | retail row 2's, CUSTOM GAMES asked for | 7 |
+| 5 | Forge (with `forge`) | ours | retail row 2's, FORGE asked for | 8 |
+| 6 | Firefight (with `firefight`) | ours | retail row 2's, FIREFIGHT asked for | 9 |
+| 7 | Custom Game Browser | ours | Live browser (§2) | 5 |
+| 8 | Mods | ours, or the mod repository's | Mods screen, else Map Pack dialog | 3 |
 
-Rows 3 and 4 never reach the retail row text or press. The retail press
-remembers rows 0 to 2 for the next visit (`[0x510a18]`, read by `0x231170`
-when it is under 4). Our row's press stores 3 there, so the cursor comes
-back to it (below, "Back from the browser"). Content Download stores
-nothing, as in retail.
+A row that is off leaves the list and the rows under it close up. Rows
+past 1 never reach the retail row text. Custom Games, Forge and
+Firefight rewrite the press record to retail row 2 and run retail's
+Custom Game press (a Live squad session, then the custom lobby), then
+ask for their mode (`lobby_tabs::request`), which the lobby switches to
+at its first panel update. The retail press remembers rows 0 to 2 for
+the next visit (`[0x510a18]`, read by `0x231170` when it is under 4).
+Our presses store their own rows there, so the cursor comes back to them
+(below, "Back from the browser"). Mods stores nothing, as Content
+Download does in retail.
 
 **The fifth item widget.** A list scrolls when it has more rows than child
 item widgets. `0x24c515` compares the row count with the children that
-`0x24c177` counts. So the fifth row needs a fifth child, made the way the
-Controls list's added rows are (`speaker_row`):
+`0x24c177` counts. So each row shown past the fourth needs a child of its
+own, made the way the Controls list's added rows are (`speaker_row`):
 
 - the shared "add items" method (`0x24bb60`, vtable slot 17) links the
   handler's item widgets as children;
 - the hook runs it, then, for a handler with the Live menu's vtable, builds
   one more 0x80-byte item in our memory: zeroed, the item constructor
   (`0x24abae`, the same one the handler uses), the local player
-  (`0x22ee92`). It links the item after the four (`0x22eb18`);
-- one item per open screen (8 slots), rebuilt when a handler is new, and
+  (`0x22ee92`). It links the items after the four (`0x22eb18`): three
+  (`custom_games::MAX_EXTRA_ITEMS`), so seven show and the list scrolls
+  to the other rows, with retail's own scroll arrows;
+- one set per open screen (8 slots), rebuilt when a handler is new, and
   moved back to the end when the original re-links the four.
 
 The tag's list already shows up to seven items (`+6` of the list block),
-so its visible count need not change. The tag copy raises it to five if
+so its visible count need not change. The tag copy raises it to seven if
 it were lower.
 
 **Positions.** `0x24bc12` lays the children out from the list's anchor,
@@ -334,13 +349,18 @@ rows stand closer together:
   *i*'s widgets up by *i* × (43 − pitch). The first row stays put.
 - The pitch (`custom_games::pitch`) fits the rows into the room the
   retail four rows and the gap under them take, keeping at least 5 units
-  above the hint block: 43 for four rows, 36 for five, 29 for six. The
-  skin's text is 20 units tall, so it fits in a row of 29.
+  above the hint block: 43 for four rows, 36 for five, 29 for six, 24
+  for seven. The skin's text is 20 units tall, so it fits in a row of 24.
+  The room is 145 units from the first row's origin to the last's; eight
+  rows at once would need 20 apart and nine 18, under
+  `custom_games::MIN_PITCH` (22), so seven show and the rest scroll.
 - The screen-tag hook (`0x22f871`) gives the tag copies of its panes
   (`custom_games::extend_tag`). They move nothing. They raise the list's
-  visible count to the rows, and add a pane per row of ours: a copy of the
-  Custom Game pane, its picture included, with our help text in place of
-  the one text that differs between panes.
+  visible count to seven, and add a pane per row of ours whichever rows
+  are on (ten panes, `custom_games::ALL_PANES`): a copy of the Custom
+  Game pane, its picture included, with our help text in place of the
+  one text that differs between panes. The Content Download pane, which
+  Mods shows, gets our help the same way.
 
 Not seen in game yet: whether the background bar of one row shows behind
 the next row's text at a pitch under 43. Both the text and the bar are
@@ -349,12 +369,13 @@ item. If they overlap visibly, raise `custom_games::MIN_PITCH` or the
 pitch rule towards 32 (the last row then ends level with the hint block's
 top).
 
-The copies (about 2.7 KB) live in our data page. The retail arrays are not
+The copies (at most `custom_games::TAG_SPACE`, 8 KB) live in our data page. The retail arrays are not
 written, and the copies are reused when a map load brings the tag back.
 `0x230427` (pane = base + row, no bounds check) is how the list shows a
-row's pane when its focus moves (`0x24c50a`). The pane hook hands it 4 for
-our row and 3 for Content Download, through a word of ours rather than the
-caller's. On a tag that was not extended our row keeps the shown pane.
+row's pane when its focus moves (`0x24c50a`). The pane hook hands it each
+row of ours its pane (4 to 9) and Mods 3, through a word of ours rather
+than the caller's. On a tag that was not extended a row of ours keeps the
+shown pane (Custom Games shows retail's Custom Game pane).
 
 **Back from the browser.** The game keeps no history of screens. A
 screen's back handler opens its parent by loader, with a back request
@@ -380,19 +401,19 @@ kind-7 request for `0x2310b7` (`0x19b0ad`). So boot hooks two functions:
   original.
 
 A LAN browser never raises the flag, so main menu → System Link → back is
-retail. Our row press also stores its row (4 since Clankermatch's row,
-docs/game/bots.md §8.3) in `[0x510a18]`, the row the Live menu's cursor
-starts on (the retail press stores rows 0 to 2 the same way). The menu's
-build `0x231170` restores only rows 0 to 3, so for rows 4 to 5 (Custom
-Game and the browser) `custom_games::LiveMenuCursor` does the build itself
-and puts the cursor there: back lands on Custom Game Browser.
+retail. Our row press also stores its row (7, `custom_games::BROWSER_ROW`)
+in `[0x510a18]`, the row the Live menu's cursor starts on (the retail
+press stores rows 0 to 2 the same way). The menu's build `0x231170`
+restores only rows 0 to 3, so for rows 4 to 7 (the mode rows and the
+browser) `custom_games::LiveMenuCursor` does the build itself and puts
+the cursor there: back lands on Custom Game Browser.
 
 **The Map Pack dialog.** The game shows its errors in two dialog classes
 that look an error id up in the shared UI globals (`0x23661f`: ESI = a
 0x20-byte entry, the id on the stack, `ret 4`; an unknown id gets error 1's
 entry). The entry's string ids (title `+0xc`, message `+0x10`) are
 resolved by the text fill (`0x19b72a`) through the localized-string
-lookup (`0x1a0180`), which serves our ids. Content Download calls the
+lookup (`0x1a0180`), which serves our ids. Mods calls the
 one-button class (`0x19b527(1, error, 4, mask, 0, 0)`, `ret 0x18`), the
 way `0x2308ab` shows its own errors. Its button closes the dialog when
 there is no press callback (`0x19b97a`). The error id is
@@ -424,25 +445,17 @@ label is not shortened.
 | Create rule, reader-filtered list, `?visibility=` | `crates/live/live-server/src/sessions.rs`, `Live::read_caller` | `crates/live/live-server/tests/session_visibility.rs`: anonymous/stranger/friend/host lists, update, observed vs declared, loopback |
 | HLE: advertisement and change-only update carry it; `Hle::set_session_visibility`; `Hle::set_visibility_probe` | `crates/live/live-hle/src/sessions.rs` | `crates/live/live-hle/tests/server.rs`: `browser_search_rows_follow_the_hosts_visibility_setting` (procedure 1, 50 rows, seven columns, as the browser asks; friend sees it, stranger not; live switch; FindFromID still works), `the_titles_privacy_probe_decides_a_new_advertisement` |
 | `live.visibility` setting, HLE binding | `crates/extensions/game/src/setting_defs.rs`, `live_glue::bind_visibility` | setting env and steps reach the HLE |
-| Live menu rows, fifth item widget, tag, Map Pack dialog, back from the Live browser, privacy hook and probe | `crates/extensions/game/src/custom_games.rs`, `layout_glue::install` | count grows only the Live list; row order, texts and panes; the fifth child item; the tag's fifth pane and moved blocks on a synthetic tag (and what is left alone); the dialog entry; row/mask argument reads; only a Live-mode browser is redirected, only a back request is rewritten, our press stores a row the cursor restore takes; privacy mapping and squad gates; install without a game |
+| Live menu rows, added item widgets, tag, Map Pack dialog, back from the Live browser, privacy hook and probe | `crates/extensions/game/src/custom_games.rs`, `layout_glue::install` | count grows only the Live list; row order with and without co-op, texts, help and panes; each mode row's mode; Mods as Content Download's press; seven shown and the rest scrolled; the fifth child item; the tag's panes on a synthetic tag (and what is left alone); the dialog entry; row/mask argument reads; only a Live-mode browser is redirected, only a back request is rewritten, our press stores a row the cursor restore takes; privacy mapping and squad gates; install without a game |
 | Server-side browser queries and variant choices | `crates/live/live-proto/src/session/browser.rs`, `crates/live/live-server/src/sessions.rs` | Shared route scenarios on native SQLite and the Worker's SQL adapter |
 | Filter page, pickers and saved choices | `crates/extensions/game/src/custom_games/browser_filters.rs` | Page model, picker, preferences and text fit |
 | Web Open Games and its filters | `web/src/stats/Home.tsx`, `web/src/stats/OpenGameFilters.tsx` | `web/test/sessions.test.ts`, `web/test/http.test.ts`, `web/test/stats-home-render.test.ts` |
 
-With Live on, a further row, **Co-op Campaign**, sits directly above Custom
-Game (the rows read Quickmatch, OptiMatch, Clankermatch, Co-op Campaign,
-Custom Game, Custom Game Browser, Content Download; the co-op row was
-moved up from below the browser), with its own pane (the Custom Game pane with
-its help text); the list keeps five item widgets, so Content Download
-scrolls into view ([live-coop.md](live-coop.md) section 10).
-`H2_NO_COOP_ROW=1` takes it out (five rows).
+With Live on, the **Co-op Campaign** row sits directly above Custom Games,
+with its own pane ([live-coop.md](live-coop.md) section 10).
+`H2_NO_COOP_ROW=1` takes it out (eight rows).
 
-With the co-op row the list has six rows. The add-items hook links one
-item widget of ours per row of ours (two), so all six show with no scroll
-bar, 29 units apart (above, "Positions").
-
-With the mod repository on (Live and the map gate), Content Download reads
-"Mods" or "Mods (N new)", its pane's help text is ours, and it opens the
+With the mod repository on (Live and the map gate), Mods reads "Mods" or
+"Mods (N new)", its pane's help text is the repository's, and it opens the
 Mods screen instead of the Map Pack dialog ([maps.md](../game/maps.md) §5,
 "Mod downloads (in game)").
 
@@ -452,27 +465,33 @@ Nothing here ran in the game. With two consoles (or two instances, per the
 [live.md](live.md) recipe), each signed in to the same server, make A and B
 friends. Then check:
 
-1. **The rows.** Xbox Live menu: Quickmatch, OptiMatch, Custom Game,
-   Custom Game Browser, Content Download, all five on screen with no
-   scrolling.
-   - The rows are evenly spaced, closer than retail's; the first row and
-     the hint text and Y callout under the list are where retail has
-     them, and the last row ends above the hint text. Nothing overlaps.
+1. **The rows.** Xbox Live menu: Quickmatch, OptiMatch, Clankermatch,
+   Co-op Campaign, Custom Games, Forge, Firefight, Custom Game Browser,
+   Mods. Seven show; Down past the seventh scrolls to the rest.
+   - The rows are evenly spaced, 24 apart; the first row and the hint
+     text and Y callout under the list are where retail has them, and
+     the last row shown ends above the hint text. Nothing overlaps.
+   - Retail's scroll arrows show while the list scrolls, and the down
+     arrow is not over the hint text.
+   - Custom Games, Forge and Firefight each open the custom game lobby,
+     its header CUSTOM GAMES, FORGE and FIREFIGHT; B back lands on the
+     row pressed.
    - "Custom Game Browser" fits on its row without being cut off.
    - Moving onto Custom Game Browser shows the Custom Game picture with our
      help text ("Find custom games hosted on your Live server and join
-     one."); onto Content Download, its own picture and help.
+     one."); each mode row shows its own line; Mods, Content Download's
+     picture with our help.
    - Leaving the menu and coming back (and after playing a game, which
-     reloads the main menu) still shows five rows.
-   - stderr says `custom games: xbox live menu tag has 5 panes and shows
-     5 rows`, `custom games: xbox live menu rows 36 apart (5 rows, 4
+     reloads the main menu) still shows the same rows.
+   - stderr says `custom games: xbox live menu tag has 10 panes and shows
+     7 of 9 rows`, `custom games: xbox live menu rows 24 apart (7 rows, 6
      moved)`, `speaker row: add items active` and `custom games: row text`
      the first time.
-   - If only four rows show and the list scrolls, the fifth item widget was
-     not linked (the list handler's vtable differs from `0x458b48`). If the
+   - If only four rows show and the list scrolls, the added item widgets
+     were not linked (the list handler's vtable differs from `0x458b48`). If the
      panes do not follow the rows, the list does not report focus through
      `0x230427` (likely, not traced for this list).
-2. **Content Download.** Pressing it shows a dialog titled "Multiplayer Map
+2. **Mods** (no mod repository). Pressing it shows a dialog titled "Multiplayer Map
    Pack" with three lines on `mappack.iso` and one button. The button closes
    it and the Live menu is still there. stderr: `custom games: showing the
    map pack dialog`. If the dialog is blank, the text lookup did not take
@@ -510,7 +529,7 @@ friends. Then check:
 
 ## 8. Open questions
 
-- How the fifth row and the moved hint text look on screen (§7, 1).
+- How the seven rows shown, retail's scroll arrows and the hint text look on screen (§7, 1).
 - The joiner's session class when joining from a Live-mode entry, and
   whether class-2-only paths after admission (`0x6e468`) misbehave.
 - Pushing the saved `live.visibility` into a new party's privacy, so a

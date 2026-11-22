@@ -585,9 +585,7 @@ pub fn install(
     let want_rows = theater_menu::Rows {
         theater: with_theater,
     };
-    let live_menu = || custom_games::Menu {
-        coop: custom_games::coop_row_enabled(),
-    };
+    let live_menu = custom_games::Menu::now;
     let with_skulls = model
         .as_ref()
         .is_some_and(|m| skulls_menu::enabled(m.store()));
@@ -951,9 +949,9 @@ pub fn install(
                         Box::pin(crate::tweakers::pane(cx, sh, screen, base, word))
                     });
                 }
-                // The Xbox Live menu: our row shows our pane, Content
-                // Download (moved down one) its own. The row is handed over
-                // in our word, not written back through the caller's pointer.
+                // The Xbox Live menu: each row of ours shows its pane, Mods
+                // retail's Content Download pane. The row is handed over in
+                // our word, not written back through the caller's pointer.
                 if id == custom_games::SCREEN_ID {
                     let tag = LIVE_TAG.load(Ordering::SeqCst);
                     let panes = if tag != 0 && mem.u32(tag + 0x24).ok() == Some(live.0) {
@@ -1063,7 +1061,12 @@ pub fn install(
                         match menu.extend_tag(&mut *mem, cpu.eax, live.0) {
                             Some(true) => {
                                 LIVE_TAG.store(cpu.eax, Ordering::SeqCst);
-                                eprintln!("custom games: xbox live menu tag has {} panes and shows {} rows", menu.rows(), menu.visible());
+                                eprintln!(
+                                    "custom games: xbox live menu tag has {} panes and shows {} of {} rows",
+                                    custom_games::ALL_PANES,
+                                    menu.visible(),
+                                    menu.rows()
+                                );
                             }
                             Some(false) => eprintln!("custom games: the xbox live menu tag is not the retail one; left alone"),
                             None => eprintln!("custom games: could not extend the xbox live menu tag"),
@@ -1433,7 +1436,7 @@ pub fn install(
                 announce(&seen, "custom games: row text");
                 // The Mods row drawn: its "N new" wants a fresh list (the
                 // reader asks at most every few seconds; nothing waits).
-                if row.map(|r| menu.row_kind(r)) == Some(custom_games::Row::Download)
+                if row.map(|r| menu.row_kind(r)) == Some(custom_games::Row::Mods)
                     && custom_games::mods_row_enabled()
                     && let Some(repo) = crate::mods_screen::repo()
                 {
@@ -1493,6 +1496,14 @@ pub fn install(
                 // The playlist screen OptiMatch's press opens lists the
                 // clanker hoppers only after the Clankermatch row's press.
                 crate::clankermatch::set_active(kind == custom_games::Row::Clankermatch);
+                // Custom Games, Forge and Firefight ask for their mode, which
+                // the custom lobby switches to once it is up
+                // (docs/game/party-lobby.md); any other row drops one asked
+                // for and not taken.
+                match kind.mode() {
+                    Some(mode) => crate::lobby_tabs::request(mode),
+                    None => crate::lobby_tabs::cancel_request(),
+                }
                 // Any other Live menu row ends hosting a co-op campaign
                 // (crate::coop_live); no guest memory is held here.
                 if kind != custom_games::Row::Coop {
@@ -1504,10 +1515,10 @@ pub fn install(
                 if kind == custom_games::Row::Retail {
                     return Ok(o.invoke(cpu, ctx, custom_games::ROW_CHOSEN));
                 }
-                // Clankermatch and the moved Custom Game: the retail press
-                // of their retail row (the press record rewritten, as the
-                // co-op row does below), then the cursor row left on ours
-                // (the retail press stored the retail row in it).
+                // Clankermatch and the mode rows: the retail press of their
+                // retail row (the press record rewritten, as the co-op row
+                // does below), then the cursor row left on ours (the retail
+                // press stored the retail row in it).
                 if let Some(retail) = kind.retail_press() {
                     let shown = row.unwrap_or(retail);
                     {
@@ -1521,6 +1532,12 @@ pub fn install(
                             "clankermatch: Live menu row {shown} runs OptiMatch's press (row {retail})"
                         );
                     }
+                    if let Some(mode) = kind.mode() {
+                        eprintln!(
+                            "custom games: Live menu row {shown} runs Custom Game's press (row {retail}) for {}",
+                            mode.label()
+                        );
+                    }
                     return call_then(cpu, ctx, sh, move |_, ctx| {
                         remember(ctx, shown);
                         Ok(())
@@ -1531,7 +1548,7 @@ pub fn install(
                     eprintln!("custom games: no local player for the press; nothing opened");
                     return ctx.runtime().memory().ret(cpu, 8);
                 };
-                if kind == custom_games::Row::Download {
+                if kind == custom_games::Row::Mods {
                     let mods = custom_games::mods_row_enabled()
                         .then(crate::mods_screen::repo)
                         .flatten()
@@ -1592,7 +1609,7 @@ pub fn install(
                 }
                 // The browser's row is past the rows the menu restores its
                 // cursor to; `custom_games::LiveMenuCursor` restores it.
-                remember(ctx, row.unwrap_or(custom_games::ROW));
+                remember(ctx, row.unwrap_or(custom_games::BROWSER_ROW));
                 open_screen(cpu, ctx, mask, custom_games::LIVE_BROWSER_LOADER, "custom games: opening the browser")
             });
         }
