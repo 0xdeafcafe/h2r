@@ -752,8 +752,9 @@ impl GpuWorld {
 
     /// One view's draws of `layer`'s selected parts as packets for the
     /// D3D pass already open on these attachments, the uniforms as writes
-    /// ahead of them ([`FogSet::draws`]; `fogs` the fog unit the passes
-    /// hold, the device's at the layer).
+    /// ahead of them ([`FogSet::draws_stencil`]; `fogs` the fog unit the
+    /// passes hold and `stencil` the stencil state, both the device's at
+    /// the layer).
     pub fn layer_draws(
         &mut self,
         layer: u8,
@@ -764,14 +765,17 @@ impl GpuWorld {
         selected: &[(Owner, u8)],
         view: &ViewInputs,
         fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
+        stencil: &gfx::state::StencilState,
     ) -> Result<gfx::external::ExternalDraws, &'static str> {
         let Self { layers, packet_pipelines, program_vertices, indices, .. } = self;
         let set = layers.get_mut(&layer).ok_or("layer materials unavailable")?;
-        set.pipelines(device, color_format, depth_format);
+        let pipeline_stencil =
+            crate::fog_gpu::layer_stencil(stencil, depth_format).ok_or("the layer's stencil needs a stencil attachment")?;
+        set.prepare_pipelines_stencil(device, color_format, depth_format, &pipeline_stencil, PipelineUse::Direct);
         if packet_pipelines.len() > 4096 {
             packet_pipelines.clear();
         }
-        set.draws(packet_pipelines, program_vertices, indices, color_format, depth_format, target_size, selected, view, fogs)
+        set.draws_stencil(packet_pipelines, program_vertices, indices, color_format, depth_format, target_size, selected, view, fogs, stencil)
     }
 
     /// Draws the water edge blend of `set`'s materials from now on.
@@ -1151,8 +1155,12 @@ impl GpuWorld {
         self.water.as_mut().is_some_and(|set| set.prepare_pipelines(device, color, depth, PipelineUse::Preflight))
     }
 
-    pub fn prewarm_layer(&mut self, layer: u8, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) -> bool {
-        self.layers.get_mut(&layer).is_some_and(|set| set.prepare_pipelines(device, color, depth, PipelineUse::Preflight))
+    pub fn prewarm_layer(
+        &mut self, layer: u8, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat,
+        stencil: &gfx::state::StencilState,
+    ) -> bool {
+        let Some(stencil) = crate::fog_gpu::layer_stencil(stencil, depth) else { return false };
+        self.layers.get_mut(&layer).is_some_and(|set| set.prepare_pipelines_stencil(device, color, depth, &stencil, PipelineUse::Preflight))
     }
 
     /// Resolve all geometry and program bindings the guest's selected parts need

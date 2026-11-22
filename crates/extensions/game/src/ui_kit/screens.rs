@@ -276,7 +276,7 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 }
 
 /// The screens `h2 ui preview` knows, by name.
-pub const NAMES: [&str; 43] = [
+pub const NAMES: [&str; 42] = [
     "forge.hud",
     "forge.palette",
     "forge.menu",

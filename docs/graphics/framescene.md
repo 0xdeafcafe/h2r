@@ -6,7 +6,8 @@ Change 7 of the [architecture review](../reviews/2026-11-20-architecture.md)
 page is the spec: types, threads, the order of work, the tests and gates
 for each slice, the order of deletion and the commands that measure it.
 Slices 0 to 3 are built; their sections say how. Of slice 4 the entry
-census and the structure's layer draws from the plan are built, and its
+census and the structure's layer draws from the plan, on by default and
+under the device's stencil, are built, and its
 section says what the replacements wait on. Of slice 5 the extraction of
 the fog, the water and the post passes and the fog's and water's
 recording on the render thread are built; its section says what the
@@ -950,10 +951,10 @@ to the guest's draws (**Code**):
     be planned has a named cause (`LayerRefusal::name`): an input the
     scene does not give, an animation driven by an object function or of
     a bitmap or state, a material or pass that does not resolve.
-  - **The stage** (`frame-scene.layers`, an option with the native
-    renderer on; `render_bridge::native_layers`, its host
+  - **The stage** (`frame-scene.layers`, on with the native renderer,
+    `=off` its off arm; `render_bridge::native_layers`, its host
     `boot::native_layers_glue`). At the world's load (only with the
-    option placed; `native_render::layers_load::load`, which reads the
+    stage placed; `native_render::layers_load::load`, which reads the
     map file alone, so the editor loads the same layers) each world
     material's passes of each of the five
     layers are compiled as the fog's layer 16 is (`fog_gpu::layer_passes`,
@@ -969,7 +970,13 @@ to the guest's draws (**Code**):
     `layer_pass::clear_prefix` clears the layer's bit on the run of such
     items from the list's first, since the native pass records before the
     guest's draw; one external pass (`GpuWorld::layer_draws`, in the D3D
-    pass open on the bound attachments) draws them. Everything else keeps
+    pass open on the bound attachments) draws them. They draw under the
+    stencil the device holds at the layer call (`fog_gpu::layer_stencil`):
+    no pass sets one (`pass_state` refuses it) and no object item has
+    switched it before the prefix, so the scene's layer 1, which begins
+    in mode 1 (`ALWAYS`, reference 0, `REPLACE` on pass), takes that state
+    in its pipelines and its reference in its packets, and the pass
+    reports a depth-stencil write when the state writes. Everything else keeps
     its D3D draws and so the indexed-draw admission: the objects (their
     recording over the model buffers, `object_program_gpu`, is not
     built), animated or per-draw items, and every item after the first
@@ -977,8 +984,9 @@ to the guest's draws (**Code**):
     `render.scene` as `layer_plan_<layer>_taken` and
     `layer_plan_<layer>_refused_<cause>`: the plan's causes
     (`LayerRefusal::name`, `per_draw` for a material resolved per draw),
-    `object`, `animated`, `stencil` (layers 1 and 3 begin in stencil mode
-    1), `palettes`, `device`, `program` (no material of the layer
+    `object`, `animated`, `stencil` (the device's stencil does not read,
+    or tests or writes it on a depth with no stencil aspect),
+    `palettes`, `device`, `program` (no material of the layer
     compiled), `order` (planned and static, but from the first item the
     layer's set cannot draw on) and `unread` (the layer's pass did not
     read); `layer_plan_asked`, `layer_plan_drawn` and `layer_plan_items`
@@ -1011,8 +1019,12 @@ to the guest's draws (**Code**):
     `constant_animations_take_their_values_and_other_kinds_are_named`,
     `a_scene_layer_plans_its_items_in_order_and_names_the_rest` and
     `the_skip_takes_the_accepted_structure_items_up_to_the_first_it_cannot`;
-    for the stage, `the_plans_outcomes_count_by_layer_and_cause`
+    for the stage, `the_plans_outcomes_count_by_layer_and_cause` and
+    `the_stage_is_on_with_the_native_renderer_unless_turned_off`
     (`render_bridge::native_layers`),
+    `a_layers_stencil_is_the_devices_and_needs_a_stencil_aspect_only_when_on`
+    and `layer_packets_under_the_devices_stencil_write_its_reference_where_they_draw`
+    (`native_render::fog_gpu`),
     `a_per_draw_refusal_counts_apart_from_a_missing_material`,
     `the_plan_reads_only_what_the_load_resolved` and
     `a_game_free_plan_names_what_the_load_refused`
