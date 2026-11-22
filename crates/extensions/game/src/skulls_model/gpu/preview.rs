@@ -4,8 +4,9 @@
 //! glyph (where the forehead decal lands), sheets of the model as
 //! authored under each of the 24 axis-aligned orientations (to choose
 //! `MODEL_FORWARD` and `MODEL_UP`) and, from that choice, under a range
-//! of yaw, pitch and roll (to choose the fine-tune), the fine-tune found
-//! from the mesh's mirror symmetry, and a sheet of every glyph.
+//! of yaw, pitch and roll (to choose the fine-tune), and a sheet of every
+//! glyph. `H2_SKULL_YAW`, `H2_SKULL_PITCH` and `H2_SKULL_ROLL` (degrees)
+//! override the fine-tune constants here only, not in the game.
 //! Writes only to `H2_SKULLS_PREVIEW_DIR`, which must be outside the
 //! repository (disc-derived pixels are never committed); prints the map
 //! and tag it loaded and the model's bounds.
@@ -200,14 +201,15 @@ fn sheet(
 
 /// The 24 axis-aligned orientations (`orientations.png`), to choose
 /// `MODEL_FORWARD` and `MODEL_UP`; then, from that pair, yaw by pitch
-/// (`orientations-fine.png`), roll (`orientations-roll.png`), and the
-/// fine-tune found from the mesh's mirror symmetry (`auto.png`).
+/// (`orientations-fine.png`) and roll (`orientations-roll.png`), to
+/// choose the fine-tune. `in_use` is labelled in gold.
 fn orientation_sheets(
     ctx: &gfx::GfxContext,
     showcase: &mut Showcase,
     skull: &Skull,
     tint: [f32; 3],
     picture: (u32, u32),
+    in_use: Orientation,
     dir: &Path,
 ) {
     let axes: Vec<Cell> = Orientation::all()
@@ -215,7 +217,7 @@ fn orientation_sheets(
         .enumerate()
         .map(|(i, o)| Cell {
             label: format!("{i} {}", o.label()),
-            chosen: o.forward == MODEL_FORWARD && o.up == MODEL_UP,
+            chosen: o.forward == in_use.forward && o.up == in_use.up,
             orientation: o,
         })
         .collect();
@@ -231,18 +233,19 @@ fn orientation_sheets(
         "orientations.png",
     );
 
-    let base = Orientation::axes(MODEL_FORWARD, MODEL_UP);
-    let steps: Vec<f32> = (-3..=3).map(|k| 15.0 * k as f32).collect();
-    let in_use = |yaw: f32, pitch: f32, roll: f32| {
-        yaw == MODEL_YAW_DEGREES && pitch == MODEL_PITCH_DEGREES && roll == MODEL_ROLL_DEGREES
-    };
+    let base = Orientation::axes(in_use.forward, in_use.up);
+    let steps =
+        |from: i32, to: i32| -> Vec<f32> { (from..=to).step_by(15).map(|d| d as f32).collect() };
+    let chosen =
+        |o: &Orientation| o.yaw == in_use.yaw && o.pitch == in_use.pitch && o.roll == in_use.roll;
     let mut fine = Vec::new();
-    for &pitch in &steps {
-        for &yaw in &steps {
+    for pitch in steps(-15, 60) {
+        for yaw in steps(45, 135) {
+            let orientation = Orientation { yaw, pitch, ..base };
             fine.push(Cell {
-                orientation: Orientation { yaw, pitch, ..base },
+                orientation,
                 label: format!("yaw {yaw} pitch {pitch}"),
-                chosen: in_use(yaw, pitch, 0.0),
+                chosen: chosen(&orientation),
             });
         }
     }
@@ -257,12 +260,20 @@ fn orientation_sheets(
         dir,
         "orientations-fine.png",
     );
-    let roll: Vec<Cell> = steps
-        .iter()
-        .map(|&roll| Cell {
-            orientation: Orientation { roll, ..base },
-            label: format!("roll {roll}"),
-            chosen: in_use(0.0, 0.0, roll),
+    let roll: Vec<Cell> = steps(-60, 60)
+        .into_iter()
+        .map(|roll| {
+            let orientation = Orientation {
+                yaw: 90.0,
+                pitch: 15.0,
+                roll,
+                ..base
+            };
+            Cell {
+                orientation,
+                label: format!("yaw 90 pitch 15 roll {roll}"),
+                chosen: chosen(&orientation),
+            }
         })
         .collect();
     sheet(
@@ -271,49 +282,29 @@ fn orientation_sheets(
         skull,
         tint,
         picture,
-        7,
+        9,
         &roll,
         dir,
         "orientations-roll.png",
     );
+}
 
-    // The drawn vertices, once each.
-    let mut used = vec![false; skull.rest.vertices.len()];
-    let mut points = Vec::new();
-    for &i in &skull.rest.indices {
-        if let Some(seen) = used.get_mut(i as usize).filter(|seen| !**seen) {
-            *seen = true;
-            points.push(skull.rest.vertices[i as usize].position);
+/// `name` from the environment as degrees, or `default` when unset: the
+/// preview's fine-tune overrides (H2_SKULL_YAW, H2_SKULL_PITCH,
+/// H2_SKULL_ROLL), so the angles can be tried without a code change. The
+/// game reads only the constants.
+fn angle(name: &str, default: f32) -> f32 {
+    match std::env::var(name) {
+        Ok(text) => {
+            let value: f32 = text
+                .trim()
+                .parse()
+                .unwrap_or_else(|_| panic!("{name}={text:?} is not a number of degrees"));
+            println!("{name}={value} overrides the constant's {default}");
+            value
         }
+        Err(_) => default,
     }
-    let Some(((yaw, pitch, roll), ratio)) = showcase::auto_fine(&points, &base) else {
-        println!("auto: too few points to find the mirror plane");
-        return;
-    };
-    println!(
-        "auto (mirror plane and long axis, from {}): yaw {yaw:.1} pitch {pitch:.1} roll {roll:.1} \
-         degrees; the long axis is {ratio:.2} times the one across it (near 1: the pitch is a \
-         guess). As constants: MODEL_YAW_DEGREES = {yaw:.1}, MODEL_PITCH_DEGREES = {pitch:.1}, \
-         MODEL_ROLL_DEGREES = {roll:.1}.",
-        base.label()
-    );
-    let auto = [Cell {
-        orientation: Orientation {
-            yaw,
-            pitch,
-            roll,
-            ..base
-        },
-        label: format!(
-            "auto yaw {} pitch {} roll {}",
-            yaw.round(),
-            pitch.round(),
-            roll.round()
-        ),
-        chosen: false,
-    }];
-    let big = (picture.0 * 2, picture.1 * 2);
-    sheet(ctx, showcase, skull, tint, big, 1, &auto, dir, "auto.png");
 }
 
 #[test]
@@ -334,7 +325,14 @@ fn preview() {
     let skull = load_with(&|name: &str| crate::native_map::open_from_vfs(&vfs, name));
     drop(vfs);
     let _ = std::fs::remove_dir_all(&data);
-    let skull = skull.expect("the skull model");
+    let mut skull = skull.expect("the skull model");
+    let orientation = Orientation {
+        yaw: angle("H2_SKULL_YAW", MODEL_YAW_DEGREES),
+        pitch: angle("H2_SKULL_PITCH", MODEL_PITCH_DEGREES),
+        roll: angle("H2_SKULL_ROLL", MODEL_ROLL_DEGREES),
+        ..MODEL_ORIENTATION
+    };
+    skull.mesh = skull.rest.oriented(&orientation);
     let b = skull.mesh.bounds;
     let placement = showcase::Placement::of(&b).expect("a placement");
     println!("loaded {}", skull.source);
@@ -363,16 +361,16 @@ fn preview() {
         r.min[0], r.max[0], r.min[1], r.max[1], r.min[2], r.max[2]
     );
     println!(
-        "  facing: {} yaw {} pitch {} roll {} degrees (MODEL_FORWARD, MODEL_UP, \
-         MODEL_YAW_DEGREES, MODEL_PITCH_DEGREES, MODEL_ROLL_DEGREES); turned, bounds x \
+        "  facing: {} yaw {} pitch {} roll {} degrees (MODEL_FORWARD, MODEL_UP and the \
+         MODEL_*_DEGREES constants or their H2_SKULL_* overrides); turned, bounds x \
          {:.3}..{:.3}, y {:.3}..{:.3}, z {:.3}..{:.3}. The picture shows the turned model's +x \
          to the camera, its +y on the picture's right, +z up. The glyph is centred at ({:.3}, \
          {:.3}, {:.3}), radius {:.3}. facing-yaw-*.png show it turned 0, 90, 180 and 270 \
          degrees with Iron's glyph: in facing-yaw-0.png it should sit on the forehead.",
-        MODEL_ORIENTATION.label(),
-        MODEL_YAW_DEGREES,
-        MODEL_PITCH_DEGREES,
-        MODEL_ROLL_DEGREES,
+        orientation.label(),
+        orientation.yaw,
+        orientation.pitch,
+        orientation.roll,
         b.min[0],
         b.max[0],
         b.min[1],
@@ -438,7 +436,15 @@ fn preview() {
         skull: iron,
         collected: true,
     };
-    orientation_sheets(&ctx, &mut showcase, &skull, gold.tint(), size, &dir);
+    orientation_sheets(
+        &ctx,
+        &mut showcase,
+        &skull,
+        gold.tint(),
+        size,
+        orientation,
+        &dir,
+    );
     for degrees in [0u32, 90, 180, 270] {
         let yaw = (degrees as f32).to_radians();
         let canvas = render(&ctx, &mut showcase, &gold, yaw, (size.0 * 4, size.1 * 4));

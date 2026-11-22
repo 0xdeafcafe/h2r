@@ -45,9 +45,11 @@ pub const MAPS: [&str; 14] = [
 /// framing, the sway and the glyph's place all follow from the turned
 /// model. The model is authored off-axis: of the preview's 24 axis-aligned
 /// choices (`orientations.png`), face +z with crown +x is the nearest
-/// face-on and upright; `orientations-fine.png`, `orientations-roll.png`
-/// and `auto.png` show the fine-tune from there (docs/game/skulls.md, "The
-/// model picture").
+/// face-on and upright; `orientations-fine.png` and
+/// `orientations-roll.png` show the fine-tune from there, and the
+/// preview's `H2_SKULL_YAW`, `H2_SKULL_PITCH` and `H2_SKULL_ROLL` try
+/// angles without a code change (docs/game/skulls.md, "The model
+/// picture").
 pub const MODEL_FORWARD: Axis = Axis::PosZ;
 pub const MODEL_UP: Axis = Axis::PosX;
 pub const MODEL_YAW_DEGREES: f32 = 0.0;

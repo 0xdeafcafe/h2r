@@ -393,11 +393,7 @@ from data on the user's own disc (`boot::skulls_model`, feature
   the view axis, `MODEL_PITCH_DEGREES` (positive tips the face up) and
   `MODEL_YAW_DEGREES` (positive turns it to the picture's right). The
   framing, sway and glyph placement all work on the turned model. The
-  preview's sheets show the choices, and it prints a fine-tune found
-  from the mesh (`showcase::auto_fine`): the yaw and roll that make the
-  mesh's best mirror plane (`showcase::mirror_plane`) the upright plane
-  facing the camera, and the pitch that puts the longest spread within
-  that plane, front to back, level.
+  preview's sheets show the choices.
 - **The look** (`native_render::showcase`, `showcase.wgsl`): the opaque
   parts at rest, in their own target with a transparent background,
   framed so the bounding sphere fills 92% of the height. A warm key from
@@ -479,8 +475,7 @@ material's base map (white, so the tint alone, without one), a surface
 seen from behind its normal is lit as its front, and the composite stays
 in its rectangle (`crates/rewrites/native-render/tests/showcase_gpu.rs`).
 The 24 orientations are proper rotations that put forward on +x and up
-on +z, the fine-tune angles survive a round trip, and an invented head
-turned by a known yaw, pitch and roll is found face-on again
+on +z, and the fine-tune angles survive a round trip
 (`native_render::showcase::tests`).
 
 **Preview from a disc**, without the game
@@ -494,14 +489,16 @@ box's size for a 640 by 480 target and at four times it; the model turned
 model as authored under each of the 24 axis-aligned orientations, gold
 with no glyph, each cell labelled with its forward and up and the one in
 use in gold (`orientations.png`); from `MODEL_FORWARD` and `MODEL_UP`,
-yaw by pitch, each from -45 to 45 degrees in 15 degree steps
-(`orientations-fine.png`), and roll over the same range
-(`orientations-roll.png`); the fine-tune found from the mesh, labelled
-with its angles (`auto.png`); and every glyph with its name
-(`glyphs.png`). It prints the map and tag, each part's material and base
-map, the bounds as authored and turned, the orientation in use, each
-sheet's index-to-label list and the found fine-tune as constants. The directory must be outside the repository: the
-pictures are made from disc data.
+yaw 45 to 135 degrees across by pitch -15 to 60 down, in 15 degree
+steps, roll 0 (`orientations-fine.png`); and roll -60 to 60 in 15 degree
+steps at yaw 90, pitch 15 (`orientations-roll.png`); and every glyph
+with its name (`glyphs.png`). `H2_SKULL_YAW`, `H2_SKULL_PITCH` and
+`H2_SKULL_ROLL` (degrees) override the fine-tune constants for the
+preview's pictures only, so angles can be tried without a code change;
+the game reads only the constants. It prints the map and tag, each
+part's material and base map, the bounds as authored and turned, the
+orientation in use and each sheet's index-to-label list. The directory
+must be outside the repository: the pictures are made from disc data.
 
 ## Gold and silver
 
