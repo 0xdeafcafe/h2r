@@ -184,13 +184,20 @@ impl Shared {
     /// toast for its few seconds, else `None`. Pumps the agent connection
     /// first, so answers show without input.
     pub fn lines(&self) -> Option<Vec<Line>> {
+        self.lines_with(&[])
+    }
+
+    /// [`lines`](Shared::lines), with the window's own `notices` inside
+    /// the open menu ([`layout::lines_with`]). While closed they are not
+    /// added: the window draws them itself.
+    pub fn lines_with(&self, notices: &[Line]) -> Option<Vec<Line>> {
         let mut g = self.lock();
         let now = g.epoch.elapsed();
         g.pump(now);
         let open = g.menu.is_open();
         g.drawn = Some(g.menu.generation());
         if open {
-            return Some(layout::lines(&g.menu));
+            return Some(layout::lines_with(&g.menu, notices));
         }
         let toast = layout::toast_lines(&g.menu);
         (!toast.is_empty()).then_some(toast)

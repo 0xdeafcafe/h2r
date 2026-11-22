@@ -85,6 +85,8 @@ pub const TEXT: [f32; 4] = rgb(222, 224, 228);
 pub const STATUS_BG: [f32; 4] = rgb(19, 20, 23);
 pub const RULE: [f32; 4] = rgb(48, 50, 56);
 
+/// An image drawn as it is: no tint.
+pub const IMAGE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 pub const HUD_WIDGET: [f32; 4] = [0.35, 0.8, 1.0, 0.45];
 pub const SCREEN_WIDGET: [f32; 4] = [0.35, 0.8, 1.0, 0.55];
 pub const WIDGET_FOCUS: [f32; 4] = [1.0, 1.0, 1.0, 0.95];

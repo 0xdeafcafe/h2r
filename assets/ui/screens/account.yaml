@@ -1,0 +1,22 @@
+screen: account
+kind: list
+layout: controls
+backing: shell
+states:
+  focus-0:
+    focus: 0
+  focus-1:
+    focus: 1
+  focus-2:
+    focus: 2
+widgets:
+  title:
+    component: title
+    text: "Live account"
+  description:
+    component: description
+    at: [-40, 110]
+    size: [312, 240]
+  legend:
+    component: legend
+    prompts: [[A, "SELECT"], [B, "BACK"]]

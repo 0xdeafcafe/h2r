@@ -481,6 +481,22 @@ impl Phantoms {
         lock_source(&self.source(handle)?).order_view()
     }
 
+    /// Gives the joined phantom whose player is `player` an outside order
+    /// (docs/game/rules-world-api.md, "Bots"), or frees it (`None`);
+    /// `false` when no phantom has the seat or its source takes no orders.
+    pub fn order_player(&self, player: u32, order: Option<crate::brain::Order>) -> bool {
+        let handle = self
+            .lock()
+            .list
+            .iter()
+            .find(|p| p.made && p.info.player == Some(player))
+            .map(|p| p.info.handle);
+        let Some(handle) = handle else {
+            return false;
+        };
+        self.source(handle).is_some_and(|s| lock_source(&s).order(order))
+    }
+
     /// Holds phantom `handle`'s pad at `pad` (`None` lets go); `false` for
     /// a source that cannot be held or a seat not there.
     pub fn hold_pad(&self, handle: PhantomHandle, pad: Option<input::host::HostPadState>) -> bool {
@@ -1008,6 +1024,12 @@ pub fn list() -> Vec<PhantomInfo> {
 /// `phantom_player`).
 pub fn player(handle: PhantomHandle) -> Option<u32> {
     global().player(handle)
+}
+
+/// Gives the joined phantom whose player is `player` an outside order
+/// (docs/game/rules-world-api.md, "Bots"), or frees it (`None`).
+pub fn order(player: u32, order: Option<crate::brain::Order>) -> bool {
+    global().order_player(player, order)
 }
 
 mod action;

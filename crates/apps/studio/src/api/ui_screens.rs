@@ -15,7 +15,7 @@ use crate::App;
 use crate::app::commands::{self, Kind};
 use crate::app::{Action, Pick, ToolKind, UiScreens};
 
-fn pick_json(p: Option<&Pick>) -> Value {
+pub(super) fn pick_json(p: Option<&Pick>) -> Value {
     match p {
         Some(Pick::Native { screen, state }) => json!({ "screen": screen, "state": state }),
         Some(Pick::Retail(tag)) => json!({ "retail": tag }),
@@ -36,6 +36,7 @@ fn need_pick(app: &App) -> Result<(), agent_proto::RpcError> {
 pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
     match method {
         m::UI_PALETTE => palette(app, p),
+        m::UI_SELECT_FOLDER | m::UI_SHEET => super::ui_browse::call(app, method, p),
         m::UI_SCREENS => {
             app.sync_ui_disc();
             let retail = if app.ui_screens.has_disc() {
@@ -48,6 +49,7 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 "retail": retail,
                 "pick": pick_json(app.ui_screens.pick.as_ref()),
                 "disc": app.ui_screens.has_disc(),
+                "folders": super::ui_browse::folders(app),
             }))
         }
         m::UI_PICK => {

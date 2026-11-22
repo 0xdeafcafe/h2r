@@ -209,14 +209,18 @@ pub fn item_key(mem: &dyn GuestRead, item: u32) -> Option<ItemKey> {
 
 /// One accepted item handed to the host, in the list's order: `index` its
 /// place in [`ClearedObjects`], `object` its object's frame in the frames
-/// handed with it, its key, and the node rows its record uploads at
-/// `c[50..]` ([`record_rows`]).
+/// handed with it, its key, the node rows its record uploads at `c[50..]`
+/// ([`record_rows`]), and what its record makes the geometry draw do
+/// beyond its material (`flags`, and with `PartFlags::SUBPARTS` the
+/// subparts it draws: [`crate::layout::object_walk::layer_part`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ItemDraw {
     pub index: usize,
     pub object: usize,
     pub key: ItemKey,
     pub rows: Vec<Row>,
+    pub flags: frame_scene::PartFlags,
+    pub subparts: Option<frame_scene::Subparts>,
 }
 
 /// The node rows render record `record`'s draw uploads at `c[50..]`

@@ -1,0 +1,19 @@
+screen: forge.link
+kind: dialog
+layout: large
+backing: over
+opener: main-menu
+states:
+  teleporter:
+    focus: 1
+  device:
+    focus: 1
+widgets:
+  title:
+    component: title
+    text: "LINK"
+  body:
+    component: body
+  legend:
+    component: legend
+    prompts: [[A, "SELECT"], [B, "BACK"]]

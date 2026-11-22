@@ -4,8 +4,11 @@
 //! [`Banner`] is a shared handle: any thread sets the notice, the window
 //! draws it. Text is rasterised on the CPU with the public-domain `font8x8`
 //! glyphs (ASCII; a few typographic characters are mapped to ASCII), scaled
-//! 2x, on a translucent plate, and drawn in the top-left corner of the
-//! window with alpha blending. A notice's text may hold several lines
+//! 2x, on the debug menu's dark plate with a strip in the notice's colour
+//! down its left edge, and drawn in the top-left corner of the window with
+//! alpha blending. While the debug menu is open the window shows the
+//! notice and the editor's status as lines inside the menu instead
+//! (`menu_overlay::notice_tone`). A notice's text may hold several lines
 //! (`\n`). F6 hides the current notice (a new notice shows again); F5 asks
 //! for a restart while the notice offers one.
 
@@ -205,6 +208,19 @@ const MAX_CHARS: usize = 96;
 const LINE_HEIGHT: u32 = 8 * SCALE;
 const LINE_GAP: u32 = 4;
 const MARGIN: u32 = 12;
+/// The plate: the debug menu's (`menu_overlay`), near black.
+const PLATE: [u8; 4] = [10, 12, 16, 215];
+/// The strip down the plate's left edge, in window pixels.
+const ACCENT_W: u32 = 2 * SCALE;
+
+/// A notice's strip colour: the debug menu's colours for the same tones.
+fn accent(tone: NoticeKind) -> [u8; 4] {
+    match tone {
+        NoticeKind::Info => [126, 172, 220, 255],
+        NoticeKind::Ready => [150, 226, 160, 255],
+        NoticeKind::Error | NoticeKind::Crashed => [255, 110, 100, 255],
+    }
+}
 
 /// Keep the middle dot and map common punctuation to the available ASCII glyphs.
 fn overlay_text(text: &str) -> String {
@@ -246,17 +262,19 @@ fn rasterize_lines<'a>(
     let rows = lines.len().max(1) as u32;
     let w = cols.max(1) as u32 * 8 * SCALE + 2 * PAD;
     let h = rows * LINE_HEIGHT + (rows - 1) * LINE_GAP + 2 * PAD;
-    let plate: [u8; 4] = match tone {
-        NoticeKind::Info => [24, 32, 48, 210],
-        NoticeKind::Ready => [16, 72, 32, 225],
-        NoticeKind::Error | NoticeKind::Crashed => [96, 20, 20, 225],
-    };
-    let mut px: Vec<u8> = plate
+    let mut px: Vec<u8> = PLATE
         .iter()
         .copied()
         .cycle()
         .take((w * h * 4) as usize)
         .collect();
+    let strip = accent(tone);
+    for y in 0..h {
+        for x in 0..ACCENT_W.min(w) {
+            let o = ((y * w + x) * 4) as usize;
+            px[o..o + 4].copy_from_slice(&strip);
+        }
+    }
     for (line, text) in lines.iter().enumerate() {
         let top = PAD + line as u32 * (LINE_HEIGHT + LINE_GAP);
         for (i, c) in text.chars().enumerate() {
@@ -556,7 +574,8 @@ impl OverlayRenderer {
     }
 
     /// Records a pass drawing `notice` in the top-left of `dst` (size
-    /// `dst_size`), over what is there.
+    /// `dst_size`), over what is there. Returns where it went, so the
+    /// debug menu's lone result can keep clear of it.
     pub fn draw(
         &mut self,
         device: &wgpu::Device,
@@ -566,7 +585,7 @@ impl OverlayRenderer {
         dst: &wgpu::TextureView,
         dst_format: wgpu::TextureFormat,
         dst_size: (u32, u32),
-    ) {
+    ) -> crate::scale::Viewport {
         if self.cached.as_ref() != Some(notice) {
             let (w, h, px) = rasterize(notice);
             self.sprite.upload(device, queue, (w, h), &px);
@@ -574,6 +593,13 @@ impl OverlayRenderer {
         }
         self.sprite
             .draw(device, encoder, dst, dst_format, dst_size, (MARGIN, MARGIN));
+        let (width, height) = self.sprite.size().unwrap_or((0, 0));
+        crate::scale::Viewport {
+            x: MARGIN,
+            y: MARGIN,
+            width,
+            height,
+        }
     }
 }
 
@@ -602,15 +628,13 @@ impl EditorPlateRenderer {
         dst: &wgpu::TextureView,
         dst_format: wgpu::TextureFormat,
         dst_size: (u32, u32),
-    ) {
+    ) -> Option<crate::scale::Viewport> {
         if self.cached.as_ref() != Some(plate) {
             let (w, h, px) = rasterize_lines(plate.tone, plate.lines());
             self.sprite.upload(device, queue, (w, h), &px);
             self.cached = Some(plate.clone());
         }
-        let Some((width, _)) = self.sprite.size() else {
-            return;
-        };
+        let (width, height) = self.sprite.size()?;
         let x = dst_size.0.saturating_sub(width + MARGIN).max(MARGIN);
         // Reserve the banner's row when it is visible, even in narrow windows.
         let y = if banner_visible {
@@ -620,6 +644,12 @@ impl EditorPlateRenderer {
         };
         self.sprite
             .draw(device, encoder, dst, dst_format, dst_size, (x, y));
+        Some(crate::scale::Viewport {
+            x,
+            y,
+            width,
+            height,
+        })
     }
 }
 
@@ -700,8 +730,12 @@ mod tests {
         assert_eq!(px.len(), (w * h * 4) as usize);
         let white = px.chunks(4).filter(|p| *p == [240, 240, 240, 255]).count();
         assert!(white > 100, "{white} glyph pixels");
-        // Corners are the plate.
-        assert_eq!(&px[0..4], &[16, 72, 32, 225]);
+        // The menu's dark plate, with the tone's strip down the left edge.
+        let at = |x: u32, y: u32| &px[((y * w + x) * 4) as usize..][..4];
+        assert_eq!(at(w - 1, 0), &PLATE);
+        assert_eq!(at(0, 0), &accent(NoticeKind::Ready));
+        assert_eq!(at(ACCENT_W - 1, h - 1), &accent(NoticeKind::Ready));
+        assert_eq!(at(ACCENT_W, h - 1), &PLATE);
     }
 
     #[test]
@@ -750,7 +784,7 @@ mod tests {
             text: "Update failed".into(),
         };
         let mut overlay = OverlayRenderer::new(&ctx.device);
-        overlay.draw(
+        let drawn = overlay.draw(
             &ctx.device,
             &ctx.queue,
             &mut enc,
@@ -765,9 +799,22 @@ mod tests {
         // Outside the plate the frame shows through untouched.
         assert_eq!(at(2, 2), &[0, 0, 255, 255]);
         assert_eq!(at(w - 2, h - 2), &[0, 0, 255, 255]);
-        // Inside, the red plate blended over blue (alpha 225/255).
-        let p = at(14, 14);
-        assert!(p[0] > 70 && p[0] < 100 && p[2] > 20 && p[2] < 60, "{p:?}");
+        // Inside, the dark plate blended over blue (alpha 215/255), and
+        // the red strip down its left edge.
+        let p = at(MARGIN + ACCENT_W + 2, 14);
+        assert!(p[0] < 30 && p[2] > 30 && p[2] < 80, "{p:?}");
+        let strip = at(MARGIN, 14);
+        assert!(strip[0] > 240 && strip[1] > 95 && strip[1] < 125, "{strip:?}");
+        let (pw, ph, _) = rasterize(&notice);
+        assert_eq!(
+            drawn,
+            crate::scale::Viewport {
+                x: MARGIN,
+                y: MARGIN,
+                width: pw,
+                height: ph
+            }
+        );
     }
 
     #[test]

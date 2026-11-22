@@ -278,7 +278,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
 }
 
 /// The first-person host's map state, which the first person's layers
-/// 1, 7 and 8 draw their object items from (`native_layers_glue`): set at
+/// 1, 7, 8 and 20 draw their object items from (`native_layers_glue`): set at
 /// install.
 static LAYER_SOURCE: Mutex<Option<Arc<Mutex<Option<MapState>>>>> = Mutex::new(None);
 
@@ -346,7 +346,7 @@ fn plan_view(
                 return Err("the device's draws are not W-buffered".into());
             }
             let lit = lit.as_ref().ok_or("no first-person model is uploaded")?;
-            let draw = lit.plan(model, frame, &item.key, &item.rows, &entry.states)?;
+            let draw = lit.plan_item(model, frame, item, &entry.states)?;
             if draw.texaccum {
                 return Err(
                     "it samples the texture accumulation target, which this pass does not bind"

@@ -1,0 +1,21 @@
+screen: h1-options
+kind: dialog
+layout: settings
+backing: over
+opener: game-setup
+states:
+  focus-0:
+    focus: 0
+  focus-1:
+    focus: 1
+widgets:
+  title:
+    component: title
+    text: "HALO 1 OPTIONS"
+  description:
+    component: description
+    at: [-224, 143]
+    size: [494, 20]
+  legend:
+    component: legend
+    prompts: [[[Left, Right], "CHANGE"], [A, "SELECT"], [B, "BACK"]]

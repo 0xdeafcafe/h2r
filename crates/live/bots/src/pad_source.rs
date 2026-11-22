@@ -74,6 +74,13 @@ pub trait PadSource: Send {
         false
     }
 
+    /// Gives the source an outside order (docs/game/rules-world-api.md,
+    /// "Bots"), or frees it (`None`); `false` when it takes no orders.
+    fn order(&mut self, order: Option<crate::brain::Order>) -> bool {
+        let _ = order;
+        false
+    }
+
     /// Where its bounce route stands; `None` when it takes no orders.
     fn order_view(&self) -> Option<crate::mind::OrderView> {
         None

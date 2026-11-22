@@ -1,0 +1,23 @@
+screen: variant-more-options
+kind: list
+layout: level_select
+backing: shell
+scrolls: true
+states:
+  focus-0:
+    focus: 0
+  focus-3:
+    focus: 3
+  focus-5:
+    focus: 5
+widgets:
+  title:
+    component: title
+    text: "More Options"
+  description:
+    component: description
+    at: [39, -30]
+    size: [221, 103]
+  legend:
+    component: legend
+    prompts: [[[Left, Right], "CHANGE"], [A, "SELECT"], [B, "BACK"]]

@@ -1,0 +1,33 @@
+screen: kit.choices
+kind: list
+layout: level_select
+backing: shell
+states:
+  focus-0:
+    focus: 0
+  focus-1:
+    focus: 1
+widgets:
+  title:
+    component: title
+    text: "Choices"
+  description:
+    component: description
+    at: [39, -30]
+    size: [221, 103]
+  legend:
+    component: legend
+    prompts: [[[Left, Right], "CHANGE"], [B, "BACK"]]
+rows:
+  row.0:
+    kind: value
+    text: "Count"
+    values: ["0", "1", "2", "3", "4", "5", "6", "7", "8"]
+    current: 4
+    help: "How many join the game."
+  row.1:
+    kind: value
+    text: "Difficulty"
+    values: ["Easy", "Normal", "Heroic", "Legendary"]
+    current: 1
+    help: "How well they play."

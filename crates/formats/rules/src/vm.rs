@@ -1634,6 +1634,32 @@ mod tests {
     }
 
     #[test]
+    fn a_bot_order_changes_no_rulesext_byte() {
+        // One script, its kill handler ordering the killer to follow the
+        // victim (docs/game/rules-world-api.md, "Bots"): after the order's
+        // queue entry drains at the next tick's flush, the state is
+        // byte-identical to the run whose killer was `none` and made no
+        // order. The runs share one IR, so the rng (`seed`, from the IR's
+        // hash) and the slot table match; only the order differs.
+        let src = "rules \"Orders\" 1\ncarrier slayer\nrequires bots.orders\non kill(victim, killer) { if killer != none { bot_follow(killer, victim) } }\n";
+        let run = |killer: Option<u8>| {
+            let (ir, _) = crate::build(src).unwrap();
+            let mut vm = Vm::new(ir, 0, 0).unwrap();
+            let mut g = crate::fake::FakeGame::with_players(2);
+            vm.begin_tick(1);
+            vm.fire(&mut g, Input::Kill { victim: 0, killer });
+            vm.begin_tick(2);
+            vm.flush_queue(&mut g);
+            (vm.ext().encode(), g)
+        };
+        let (with, g) = run(Some(1));
+        assert_eq!(g.calls_to("bot_follow").len(), 1, "the order was made");
+        let (without, g) = run(None);
+        assert!(g.calls_to("bot_follow").is_empty(), "no killer, no order");
+        assert_eq!(with, without);
+    }
+
+    #[test]
     fn grants_replace_and_revoke() {
         let mut e = ext();
         e.grants.clear();

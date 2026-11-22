@@ -249,7 +249,7 @@ fn every_served_id_is_in_its_registered_family() {
     }
     for id in skulls {
         assert!(
-            family("skulls").owns(id) || family("skull row labels").owns(id),
+            family("skulls").owns(id) || family("skull rows").owns(id),
             "{id:#x} of the skulls pages is outside both skulls families"
         );
     }

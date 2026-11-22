@@ -1,0 +1,31 @@
+screen: design.row.info
+kind: list
+layout: controls
+backing: shell
+states:
+  focused:
+    focus: 0
+  unfocused:
+    focus: 1
+  long:
+    focus: 2
+widgets:
+  title:
+    component: title
+    text: "Info Rows"
+  legend:
+    component: legend
+    prompts: [[B, "BACK"]]
+rows:
+  row.0:
+    kind: info
+    text: "Info Row"
+    value: "Value"
+  row.1:
+    kind: info
+    text: "Second Info Row"
+    value: "Ready"
+  row.2:
+    kind: info
+    text: "A Longer Info Row"
+    value: "A Longer Value"

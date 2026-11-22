@@ -1,0 +1,44 @@
+screen: kit.example
+kind: list
+layout: controls
+backing: shell
+states:
+  focus-0:
+    focus: 0
+  focus-2:
+    focus: 2
+  focus-3:
+    focus: 3
+widgets:
+  title:
+    component: title
+    text: "Example"
+  description:
+    component: description.kit.example.29
+    at: [-242, -24]
+    size: [362, 40]
+  legend:
+    component: legend
+    prompts: [[B, "BACK"]]
+rows:
+  row.0:
+    kind: value
+    text: "Grunts"
+    values: ["On", "Off"]
+    current: 0
+    help: "Grunts' heads pop."
+  row.1:
+    kind: info
+    text: "Status"
+    value: "Ready"
+    help: "The match is ready."
+  row.2:
+    kind: text
+    text: "Name"
+    value: "Chief"
+    help: "Choose a display name."
+    max_chars: 15
+  row.3:
+    kind: action
+    text: "Start"
+    help: "Start the level."

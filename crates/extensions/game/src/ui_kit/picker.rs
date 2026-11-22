@@ -457,7 +457,7 @@ pub(crate) fn playback_spec(title: &str, values: &[String], focus: usize, help: 
     picker_spec(GAME_NAME, DialogBase::Large, title, values, focus, help, Opener::MAIN_MENU)
 }
 
-fn picker_spec(
+pub(crate) fn picker_spec(
     name: &str,
     base: DialogBase,
     title: &str,

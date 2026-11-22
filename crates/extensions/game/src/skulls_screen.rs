@@ -1,5 +1,5 @@
-//! The Game Options page between the campaign difficulty and the level
-//! (the Skulls page; docs/game/skulls.md "Menu"), on our own list class,
+//! The Skulls page between the campaign difficulty and the level
+//! (docs/game/skulls.md "Menu"), on our own list class,
 //! and the flow that puts it there.
 //!
 //! **The flow.** Level select (or New Campaign) → difficulty → the page →
@@ -113,9 +113,10 @@ fn difficulty_name(row: i16) -> &'static str {
 pub const GUARD: Duration = crate::ui_kit::input::OPENER_GUARD;
 
 /// The page's class: the level select's layout, the picture and the
-/// description. A starts the level, opens a Halo 1 option's picker or
-/// toggles a collected skull. The destructor tells the start flow when
-/// the page closes.
+/// description. A starts the level, or opens the value picker on a Halo 1
+/// option or a collected skull; it does nothing on a locked one. No left
+/// and right steps. The destructor tells the start flow when the page
+/// closes.
 pub fn class(
     screen: Arc<SkullsScreen>,
     block: TextBlock,
@@ -143,7 +144,6 @@ pub fn class(
     .picture(picture)
     .action(act)
     .action_buttons(&[])
-    .sideways()
     .on_free(on_free)
     .footer(skulls_menu::FOOTER_ID)
 }
@@ -1302,8 +1302,9 @@ mod tests {
     }
 
     /// Start Level first, then the skulls; A on Start Level is the class's
-    /// action (on to the level), A on a skull changes it, as left and right
-    /// do. X and Start are not the page's (`action_buttons(&[])`).
+    /// action (on to the level). With no profile every skull is locked, so
+    /// A on one does nothing. X and Start are not the page's
+    /// (`action_buttons(&[])`), and the class takes no left or right.
     #[test]
     fn start_level_is_first_and_a_on_it_goes_on() {
         let r = screen();
@@ -1311,17 +1312,17 @@ mod tests {
         assert_eq!(r.press(0), crate::ui::Chosen::Act);
         assert_eq!(r.texts(0), [(crate::ui::LABEL_SLOT, skulls_menu::START_ID)]);
         for row in 1..r.count() as i16 {
-            assert!(
-                matches!(r.press(row), crate::ui::Chosen::Stepped(_)),
-                "row {row}"
-            );
+            assert_eq!(r.press(row), crate::ui::Chosen::Nothing, "row {row}");
+            assert_eq!(r.sideways(row, true), None, "row {row}");
         }
-        assert!(r.sideways(1, true).unwrap().contains("no profile"));
-        assert_eq!(
-            r.sideways(0, true),
-            None,
-            "Start Level has nothing to change"
+        let class = class(
+            Arc::clone(&r),
+            skulls_menu::DESCRIPTION_TEXT,
+            skulls_menu::LIST_LAYOUT,
+            skulls_menu::PICTURE,
+            Arc::new(PageFlow::default()),
         );
+        assert!(!class.behaviour().sideways, "no left and right steps");
     }
 
     /// A Halo 1 level's page: Start Level, its options, then the skulls,

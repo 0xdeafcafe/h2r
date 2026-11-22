@@ -11,7 +11,7 @@ use gfx::{Clear, D3DFormat};
 use super::epilogue::{Epilogue, Position, position};
 use super::holds::{DrawAt, Facts, FrameFacts, HoldLog, Offence, Why};
 use super::model::{FrameModel, Kind, Substituted, Tuning, match_draws, substitute};
-use super::pacing::{Rate, Schedule, alpha, blendable, defer};
+use super::pacing::{Headroom, Rate, Schedule, alpha, blendable, defer};
 use super::reproject::{self, Screen};
 use super::screen_space::{self, Fit, PassThrough};
 use crate::backend::{
@@ -112,6 +112,14 @@ pub struct InterpStats {
     /// In-between frames dropped (and guest frames shown as drawn) because
     /// the GPU had not finished the last made frame.
     pub dropped: u64,
+    /// The rate the last guest frame's in-between frames were made at, Hz
+    /// (0: none, the setting at 30).
+    pub rate_hz: u64,
+    /// Guest frames whose in-between frames ran at
+    /// `pacing::FALLBACK_REPLAY_HZ` instead of the setting's higher rate,
+    /// because made frames did not fit the render thread
+    /// (`pacing::Headroom`).
+    pub fallback_frames: u64,
 }
 
 impl InterpStats {
@@ -207,6 +215,13 @@ impl std::fmt::Display for InterpStats {
             self.unpaired_counting,
             self.dropped
         )?;
+        if self.rate_hz > 0 || self.fallback_frames > 0 {
+            write!(
+                f,
+                "; rate {} Hz, {} frames at the fallback rate",
+                self.rate_hz, self.fallback_frames
+            )?;
+        }
         if self.replay_frames > 0 {
             write!(
                 f,
@@ -629,6 +644,8 @@ pub struct InterpBackend<B: Backend> {
     /// add to it.
     counting: bool,
     schedule: Schedule,
+    /// Whether made frames fit above the fallback rate.
+    headroom: Headroom,
     /// The frame and alpha last shown.
     last: Option<(u64, f32)>,
     gamma: Option<Box<[u8; 768]>>,
@@ -686,6 +703,7 @@ impl<B: Backend> InterpBackend<B> {
             capture_slots: None,
             counting: false,
             schedule: Schedule::default(),
+            headroom: Headroom::default(),
             last: None,
             gamma: None,
             next_id: 1,
@@ -832,7 +850,14 @@ impl<B: Backend> InterpBackend<B> {
         &mut self.inner
     }
 
+    /// The setting's rate, held to the fallback while made frames do not
+    /// fit ([`Headroom`]).
     fn rate(&self) -> Rate {
+        self.headroom.cap(self.wanted_rate())
+    }
+
+    /// The setting's rate alone.
+    fn wanted_rate(&self) -> Rate {
         if self.failed {
             Rate::Off
         } else {
@@ -998,8 +1023,13 @@ impl<B: Backend> InterpBackend<B> {
 
     /// Records the render-thread time of a frame made from `t` under the
     /// mode (its draws, and for in-between frames their present too).
-    fn timed(&self, t: std::time::Instant) {
+    fn timed(&mut self, t: std::time::Instant) {
         let ns = t.elapsed().as_nanos() as u64;
+        // A clip capture makes its slots whatever they cost: only the live
+        // schedule is governed.
+        if self.capture_slots.is_none() {
+            self.headroom.record(ns);
+        }
         let mut st = self.stats.lock().unwrap();
         match self.mode {
             Mode::Replay => st.time_replay(ns),
@@ -1170,6 +1200,16 @@ impl<B: Backend> InterpBackend<B> {
         gamma: Option<&[u8; 768]>,
     ) -> Result<(), String> {
         let rate = self.rate();
+        {
+            let mut st = self.stats.lock().unwrap();
+            st.rate_hz = match rate {
+                Rate::Hz(h) => u64::from(h),
+                Rate::Off => 0,
+            };
+            if rate != self.wanted_rate() {
+                st.fallback_frames += 1;
+            }
+        }
         let slots = self.capture_slots.as_mut().map_or(0, |slots| slots());
         let now = (self.clock)();
         let at = self.stamp.take().unwrap_or(now);

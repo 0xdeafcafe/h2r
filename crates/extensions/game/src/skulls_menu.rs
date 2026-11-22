@@ -1,21 +1,32 @@
-//! The in-game Skulls page (docs/game/skulls.md "Menu"): after the campaign
-//! difficulty is chosen, a page of the pressing player's skulls, when that
-//! profile has collected any, before the level starts.
+//! The in-game Skulls pages (docs/game/skulls.md "Menu", "Choosing them"):
+//! after the campaign difficulty is chosen, a page of the pressing player's
+//! skulls, when that profile has collected any, before the level starts;
+//! and the multiplayer one the variant editor's Skulls row opens.
 //!
 //! **The flow** is `crate::skulls_screen`'s: a press on a difficulty opens
-//! this page. A on Start Level runs the difficulty's own press and starts
-//! the level.
+//! the campaign page. A on Start Level runs the difficulty's own press and
+//! starts the level.
 //!
 //! **The screen** is our own list class (`crate::list_class`, as the Video
-//! screen is), feature `skulls-screen`, showing a [`SkullsScreen`]: every
-//! skull, gold first, each its name and the profile's On,
-//! Off or Locked in one label; a description text widget of ours with the
-//! focused skull's effect and where it is found. Left or right on a
-//! collected skull flips it in the store at once ([`skulls::toggle`]), and
-//! the next campaign start turns on exactly the On ones ([`skulls::selection`]).
-//! A also toggles a collected skull and opens a picker on a Halo 1
-//! option. B returns to the difficulty list. The multiplayer screen
-//! uses A to toggle a skull.
+//! screen is), feature `skulls-screen`, showing a [`SkullsScreen`]: Start
+//! Level, the level's options (a Halo 1 level's), then every skull, gold
+//! first. Both pages, the campaign one and the multiplayer one, are one
+//! design (docs/game/skulls.md "The page"):
+//!
+//! - A collected skull's row is its name and its value, "Mythic: On" (the
+//!   level select's skin has one text a row, so the value is in the
+//!   label, `components::row::pick` on a one-text skin). A opens the value
+//!   picker on On and Off ([`SkullsScreen::pick`]), as retail's settings
+//!   do for their two-value settings; the store saves the choice and the
+//!   next campaign start turns on exactly the On ones
+//!   ([`skulls::selection`]). A Halo 1 option's row opens its picker the
+//!   same way. There are no left and right steps.
+//! - A locked skull's row is its name alone (`components::row::disabled`):
+//!   Locked is not a value. A on it does nothing. Its help says what it
+//!   does, then on a line of its own where to find it.
+//! - The legend follows the focused row ([`RowLegend`]): `A START  B BACK`
+//!   on Start Level, `A CHANGE  B BACK` on a row A changes, `B BACK` on a
+//!   locked skull; the same on both pages. B goes back.
 //!
 //! **The layout** is the campaign level select's
 //! (`ui\screens\game_shell\load_level\load_level`, screen 11): its list
@@ -29,7 +40,7 @@
 //! ([`SkullsScreen::multiplayer`]) on a class of its own (`skulls-mp-screen`),
 //! opened from the variant editor's Skulls row (`crate::skulls_mp_row`):
 //! only the skulls that work in multiplayer, each the profile's multiplayer
-//! On or Off, or Locked until the profile has collected it.
+//! On or Off, or locked until the profile has collected it.
 //!
 //! **The picture.** Both screens show the difficulty screen's Legendary
 //! skull ([`PICTURE`], the game's own bitmap) right of the list, tinted
@@ -50,6 +61,8 @@ use crate::layout_glue::ID_BASE;
 use crate::list_class::{ListClass, ListLayout, PictureSpec, Rows, ScrollArrows, TextBlock};
 use crate::skulls::{self, ABOUT, COUNT, SKULLS, State, TOTAL};
 use crate::ui::{Chosen, LABEL_SLOT};
+use crate::ui_kit::input::Prompt;
+use crate::ui_kit::picker::Pick;
 
 /// The difficulty list's array name (`0x45d6e0`, "difficulty list").
 pub const DIFFICULTY_LIST_NAME: u32 = 0x0045_d6e0;
@@ -60,30 +73,32 @@ pub const DIFFICULTY_ROW_CHOSEN: u32 = 0x002c_9d38;
 /// The screen's list class (`features.skulls-screen` switches it).
 pub const FEATURE: &str = "skulls-screen";
 
-/// Our strings: a label per skull, the title (also the row's label), our
-/// "Locked" and a description per skull. `layout_glue::is_ours` looks at
-/// the middle bytes only, so a base one higher in the top byte than
+/// Our strings: a name per skull, the titles, the legends, Start Level
+/// with its help, and the help lines. `layout_glue::is_ours` looks at the
+/// middle bytes only, so a base one higher in the top byte than
 /// [`ID_BASE`] is ours too and clear of every id the model and the other
 /// rows take (`ID_BASE + 0x00..0xff`).
 pub const SKULLS_ID_BASE: u32 = crate::ui_kit::ids::family("skulls").base;
+/// "Skulls": the variant editor's row (`crate::skulls_mp_row`).
 pub const TITLE_ID: u32 = SKULLS_ID_BASE + 0x10;
-pub const LOCKED_ID: u32 = SKULLS_ID_BASE + 0x11;
-/// The multiplayer screen's title.
-pub const MP_TITLE_ID: u32 = SKULLS_ID_BASE + 0x12;
-/// One description per multiplayer row (`skulls_mp::MP`).
-const MP_DESCRIPTIONS: Range<u32> = SKULLS_ID_BASE + 0x30..SKULLS_ID_BASE + 0x38;
-/// A label and a description per skull, ours included (room for 64).
+/// Both pages' help per multiplayer row (`skulls_mp::MP`): while it is
+/// collected, then while it is locked.
+const MP_DESCRIPTIONS: Range<u32> = SKULLS_ID_BASE + 0x30..SKULLS_ID_BASE + 0x34;
+const MP_LOCKED_DESCRIPTIONS: Range<u32> = SKULLS_ID_BASE + 0x34..SKULLS_ID_BASE + 0x38;
+/// A name and a help line per skull, ours included (room for 64). The
+/// name is a locked skull's row.
 const LABELS: Range<u32> = SKULLS_ID_BASE + 0x40..SKULLS_ID_BASE + 0x80;
 const DESCRIPTIONS: Range<u32> = SKULLS_ID_BASE + 0x80..SKULLS_ID_BASE + 0xc0;
 /// The HUD message when one of our skulls is picked up
 /// (`crate::skulls_custom`), by skull index.
 const FOUND: Range<u32> = SKULLS_ID_BASE + 0xc0..SKULLS_ID_BASE + 0x100;
-/// Each row's label, one per skull and state. The list skin has one
-/// text per row, so the state appears in the label ("Mythic: On").
-const ROW_LABEL_BASE: u32 = crate::ui_kit::ids::family("skull row labels").base;
+/// Each skull's row texts, three per skull: its label On ("Mythic: On"),
+/// its label Off, and its help while locked. The list skin has one text
+/// per row, so a collected skull's value is in its label.
+const ROW_BASE: u32 = crate::ui_kit::ids::family("skull rows").base;
 pub const TITLE: &str = "Skulls";
-/// The campaign page's title: the level's options and its skulls.
-pub const PAGE_TITLE: &str = "Game Options";
+/// Both pages' title, the campaign one and the multiplayer one.
+pub const PAGE_TITLE: &str = "SKULLS";
 pub const PAGE_TITLE_ID: u32 = SKULLS_ID_BASE + 0x14;
 /// The campaign page's first row, and what it says.
 pub const START: &str = "Start Level";
@@ -91,46 +106,57 @@ pub const START_ID: u32 = SKULLS_ID_BASE + 0x15;
 pub const START_DESCRIPTION: &str =
     "Start the level with the options and skulls below.";
 pub const START_DESCRIPTION_ID: u32 = SKULLS_ID_BASE + 0x16;
-pub const MP_TITLE: &str = "Multiplayer Skulls";
+/// What a locked skull's help says before where to find it.
 pub const LOCKED: &str = "Locked";
+/// A line break in a served text (the game's, as `crate::coop_live`'s).
+const BREAK: &str = "\r\n";
 
-/// The footer starts with the commands for Start Level.
+/// The legends, one per [`RowLegend`] (the footer's place, set as the
+/// focus moves: `Rows::focused_footer`).
 pub const PROMPT: &str = "\u{e100} START  \u{e101} BACK";
 pub const FOOTER_ID: u32 = SKULLS_ID_BASE + 0x13;
-const CHOICE_PROMPT: &str = "\u{e10a}  \u{e10b} CHANGE  \u{e100} SELECT  \u{e101} BACK";
-const CHOICE_FOOTER_ID: u32 = SKULLS_ID_BASE + 0x17;
-const LOCKED_PROMPT: &str = "\u{e101} BACK";
-const LOCKED_FOOTER_ID: u32 = SKULLS_ID_BASE + 0x18;
+pub const SETTING_PROMPT: &str = "\u{e100} CHANGE  \u{e101} BACK";
+pub const SETTING_FOOTER_ID: u32 = SKULLS_ID_BASE + 0x17;
+pub const LOCKED_PROMPT: &str = "\u{e101} BACK";
+pub const LOCKED_FOOTER_ID: u32 = SKULLS_ID_BASE + 0x18;
 
-#[derive(Clone, Copy)]
-enum CampaignFooter {
+/// What the legend offers on a row, by what A does there: the same on
+/// both pages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowLegend {
+    /// Start Level: A starts the level.
     Start,
-    Choice,
+    /// A collected skull or a Halo 1 option: A opens the value picker.
+    Setting,
+    /// A locked skull: A does nothing.
     Locked,
 }
 
-impl CampaignFooter {
-    fn id(self) -> u32 {
+impl RowLegend {
+    /// Its string id, the footer's text.
+    pub fn id(self) -> u32 {
         match self {
             Self::Start => FOOTER_ID,
-            Self::Choice => CHOICE_FOOTER_ID,
+            Self::Setting => SETTING_FOOTER_ID,
             Self::Locked => LOCKED_FOOTER_ID,
         }
     }
-
-    fn prompts(self) -> Vec<crate::ui_kit::input::Prompt> {
-        use crate::ui_kit::input::{Glyph, Prompt};
-
-        let mut prompts = match self {
-            Self::Start => vec![Prompt::new(&[Glyph::A], "Start")],
-            Self::Choice => vec![
-                Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
-                Prompt::new(&[Glyph::A], "Select"),
-            ],
-            Self::Locked => Vec::new(),
-        };
-        prompts.push(Prompt::new(&[Glyph::B], "Back"));
-        prompts
+    /// Its text as served.
+    pub fn text(self) -> &'static str {
+        match self {
+            Self::Start => PROMPT,
+            Self::Setting => SETTING_PROMPT,
+            Self::Locked => LOCKED_PROMPT,
+        }
+    }
+    /// Its prompts, the design system's (`components::legend`).
+    pub fn prompts(self) -> Vec<Prompt> {
+        use crate::ui_kit::components::legend;
+        match self {
+            Self::Start => vec![legend::start(), legend::back()],
+            Self::Setting => legend::setting_row(),
+            Self::Locked => legend::disabled_row(),
+        }
     }
 }
 
@@ -267,38 +293,56 @@ pub fn tint(tier: skulls::SkullTier, state: State) -> [f32; 3] {
     }
 }
 
-/// The state's index in a skull's three row labels, and its word.
-fn state_index(state: State) -> u32 {
+/// The id of skull `i`'s row label in `state`: "Mythic: On", "Mythic:
+/// Off", or a locked skull's name alone ([`label_id`]).
+pub fn row_label_id(i: usize, state: State) -> u32 {
     match state {
-        State::On => 0,
-        State::Off => 1,
-        State::Locked => 2,
+        State::On => ROW_BASE + 3 * i as u32,
+        State::Off => ROW_BASE + 3 * i as u32 + 1,
+        State::Locked => label_id(i),
     }
 }
-const STATE_WORDS: [&str; 3] = ["On", "Off", LOCKED];
 
-/// The label id of skull `i`'s row in `state`.
-pub fn row_label_id(i: usize, state: State) -> u32 {
-    ROW_LABEL_BASE + 3 * i as u32 + state_index(state)
+/// The id of skull `i`'s help while it is locked.
+pub fn locked_description_id(i: usize) -> u32 {
+    ROW_BASE + 3 * i as u32 + 2
 }
 
-static ROW_LABELS: LazyLock<Vec<(u32, String)>> = LazyLock::new(|| {
+/// The id of skull `i`'s help in `state`.
+pub fn help_id(i: usize, state: State) -> u32 {
+    match state {
+        State::Locked => locked_description_id(i),
+        State::On | State::Off => description_id(i),
+    }
+}
+
+/// Skull `i`'s help in `state`, as served.
+pub fn help(i: usize, state: State) -> String {
+    match state {
+        State::Locked => locked_description(i),
+        State::On | State::Off => description(i),
+    }
+}
+
+static ROW_TEXTS: LazyLock<Vec<(u32, String)>> = LazyLock::new(|| {
     (0..TOTAL)
         .flat_map(|i| {
-            [State::On, State::Off, State::Locked].map(|st| {
-                let word = STATE_WORDS[state_index(st) as usize];
-                (row_label_id(i, st), format!("{}: {word}", SKULLS[i].label))
-            })
+            let label = SKULLS[i].label;
+            [
+                (row_label_id(i, State::On), format!("{label}: On")),
+                (row_label_id(i, State::Off), format!("{label}: Off")),
+                (locked_description_id(i), locked_description(i)),
+            ]
         })
         .collect()
 });
 
-/// The label id of skull `i`.
+/// The label id of skull `i`: its name.
 pub fn label_id(i: usize) -> u32 {
     LABELS.start + i as u32
 }
 
-/// The description id of skull `i`.
+/// The description id of skull `i`, collected.
 pub fn description_id(i: usize) -> u32 {
     DESCRIPTIONS.start + i as u32
 }
@@ -314,27 +358,52 @@ pub fn found_text(i: usize) -> String {
     format!("Skull found: {}", SKULLS[i].label)
 }
 
-/// Skull `i`'s description: the game's full name when the row shows a
-/// short one, what it does, where it is and whether only on Legendary.
-pub fn description(i: usize) -> String {
+/// What skull `i` does: its effect, after the game's full name when the
+/// row shows a short one ("IWHBYD").
+pub fn effect(i: usize) -> String {
     let (d, a) = (&SKULLS[i], &ABOUT[i]);
-    let name = if d.label == a.name {
-        String::new()
+    if d.label == a.name {
+        a.effect.to_string()
     } else {
-        format!("{}: ", a.name)
-    };
-    let needs = if a.legendary {
-        "Legendary only"
-    } else {
-        "any difficulty"
-    };
+        format!("{}: {}", a.name, a.effect)
+    }
+}
+
+/// Where skull `index` is: its level, "on Legendary" when only a
+/// Legendary game places it, and anything else its script asks.
+fn whereabouts(index: usize) -> String {
+    let a = &ABOUT[index];
+    let legendary = if a.legendary { " on Legendary" } else { "" };
     let note = a.note.map_or(String::new(), |n| format!(" ({n})"));
+    format!("{}{legendary}{note}", a.level)
+}
+
+/// The help's second line for collected skull `index`: its tier and where
+/// it is found.
+fn found_line(index: usize) -> String {
     format!(
-        "{} skull: {name}{} Found on {}, {needs}{note}.",
-        a.tier.name(),
-        a.effect,
-        a.level
+        "{} skull, found on {}.",
+        ABOUT[index].tier.name(),
+        whereabouts(index)
     )
+}
+
+/// The help's second line for locked skull `index`: where to find it.
+fn locked_line(index: usize) -> String {
+    format!("{LOCKED}: find it on {}.", whereabouts(index))
+}
+
+/// Collected skull `i`'s help: what it does, then on a line of its own its
+/// tier and where it is found.
+pub fn description(i: usize) -> String {
+    format!("{}{BREAK}{}", effect(i), found_line(i))
+}
+
+/// Locked skull `i`'s help: what it does, then on a line of its own that
+/// it is locked and where to find it ("Locked: find it on The Arbiter on
+/// Legendary.").
+pub fn locked_description(i: usize) -> String {
+    format!("{}{BREAK}{}", effect(i), locked_line(i))
 }
 
 /// The campaign screen's rows: skull indices, gold first.
@@ -351,27 +420,55 @@ static DESCRIPTION_TEXTS: LazyLock<Vec<String>> =
 static FOUND_TEXTS: LazyLock<Vec<(usize, String)>> =
     LazyLock::new(|| (COUNT..TOTAL).map(|i| (i, found_text(i))).collect());
 
-/// The description id of multiplayer row `row`.
+/// The help id of multiplayer row `row`, collected.
 pub fn mp_description_id(row: usize) -> u32 {
     MP_DESCRIPTIONS.start + row as u32
 }
 
-/// Multiplayer row `row`'s description: what it does in a multiplayer game,
-/// that the host's choice is everyone's, and where it is collected.
-pub fn mp_description(row: usize) -> String {
-    let m = &crate::skulls_mp::MP[row];
-    let a = &ABOUT[m.index];
+/// The help id of multiplayer row `row` while it is locked.
+pub fn mp_locked_description_id(row: usize) -> u32 {
+    MP_LOCKED_DESCRIPTIONS.start + row as u32
+}
+
+/// What multiplayer row `row` does in a multiplayer game, and that the
+/// host's choice is everyone's.
+fn mp_effect(row: usize) -> String {
     format!(
-        "{} The host's choice is everyone's. Found on {}{}.",
-        m.effect,
-        a.level,
-        if a.legendary { ", Legendary only" } else { "" }
+        "{} The host's choice is everyone's.",
+        crate::skulls_mp::MP[row].effect
     )
 }
 
-static MP_DESCRIPTION_TEXTS: LazyLock<Vec<String>> = LazyLock::new(|| {
+/// Multiplayer row `row`'s help, collected: what it does, then its tier
+/// and where it is found.
+pub fn mp_description(row: usize) -> String {
+    let index = crate::skulls_mp::MP[row].index;
+    format!("{}{BREAK}{}", mp_effect(row), found_line(index))
+}
+
+/// Multiplayer row `row`'s help while locked: what it does, then that it
+/// is locked and where to find it in the campaign.
+pub fn mp_locked_description(row: usize) -> String {
+    let index = crate::skulls_mp::MP[row].index;
+    format!("{}{BREAK}{}", mp_effect(row), locked_line(index))
+}
+
+/// Multiplayer row `row`'s help in `state`.
+pub fn mp_help(row: usize, state: State) -> String {
+    match state {
+        State::Locked => mp_locked_description(row),
+        State::On | State::Off => mp_description(row),
+    }
+}
+
+static MP_DESCRIPTION_TEXTS: LazyLock<Vec<(u32, String)>> = LazyLock::new(|| {
     (0..crate::skulls_mp::MP.len())
-        .map(mp_description)
+        .flat_map(|r| {
+            [
+                (mp_description_id(r), mp_description(r)),
+                (mp_locked_description_id(r), mp_locked_description(r)),
+            ]
+        })
         .collect()
 });
 
@@ -386,24 +483,17 @@ pub fn strings() -> Vec<(u32, &'static str)> {
     v.push((PAGE_TITLE_ID, PAGE_TITLE));
     v.push((START_ID, START));
     v.push((START_DESCRIPTION_ID, START_DESCRIPTION));
-    v.push((LOCKED_ID, LOCKED));
-    v.push((MP_TITLE_ID, MP_TITLE));
-    v.push((FOOTER_ID, PROMPT));
-    v.push((CHOICE_FOOTER_ID, CHOICE_PROMPT));
-    v.push((LOCKED_FOOTER_ID, LOCKED_PROMPT));
-    v.extend(ROW_LABELS.iter().map(|(i, t)| (*i, t.as_str())));
+    for l in [RowLegend::Start, RowLegend::Setting, RowLegend::Locked] {
+        v.push((l.id(), l.text()));
+    }
+    v.extend(ROW_TEXTS.iter().map(|(i, t)| (*i, t.as_str())));
     v.extend(
         DESCRIPTION_TEXTS
             .iter()
             .enumerate()
             .map(|(i, t)| (description_id(i), t.as_str())),
     );
-    v.extend(
-        MP_DESCRIPTION_TEXTS
-            .iter()
-            .enumerate()
-            .map(|(i, t)| (mp_description_id(i), t.as_str())),
-    );
+    v.extend(MP_DESCRIPTION_TEXTS.iter().map(|(i, t)| (*i, t.as_str())));
     v.extend(FOUND_TEXTS.iter().map(|(i, t)| (found_id(*i), t.as_str())));
     v
 }
@@ -429,23 +519,82 @@ pub fn profile_of<M: Gm>(m: &M, index: u32) -> Option<String> {
     (index < skulls::LOCAL_PLAYERS).then(|| skulls::profile_or_default(m, index))
 }
 
-/// A press on skull `i` of `profile`'s screen: a collected skull flips; a
-/// locked one stays locked. Returns what to log.
-pub fn press(store: &Store, profile: &str, i: usize) -> Option<String> {
-    let (def, about) = (SKULLS.get(i)?, &ABOUT[i]);
-    Some(match skulls::state(store, profile, i)? {
-        State::Locked => format!(
-            "skulls menu: {} is locked for {profile}: not collected yet (found on {}{})",
-            def.label,
-            about.level,
-            if about.legendary {
-                ", Legendary only"
-            } else {
-                ""
+/// A skull's two values, as its picker lists them: On first.
+pub const VALUES: [&str; 2] = ["On", "Off"];
+
+/// `state`'s place in [`VALUES`]; `None` for Locked.
+fn value_index(state: State) -> Option<usize> {
+    match state {
+        State::On => Some(0),
+        State::Off => Some(1),
+        State::Locked => None,
+    }
+}
+
+fn word(on: bool) -> &'static str {
+    if on { "on" } else { "off" }
+}
+
+/// The picker for collected skull `i` of `profile`'s campaign page: On or
+/// Off, the held one focused; its choice is saved to the profile at once.
+/// `None` while the skull is locked.
+pub fn skull_pick(store: &Arc<Store>, profile: &str, i: usize) -> Option<Pick> {
+    let current = value_index(skulls::state(store, profile, i)?)?;
+    let (held, profile_held) = (Arc::clone(store), profile.to_string());
+    let (label, key) = (SKULLS[i].label, SKULLS[i].key);
+    let set = Arc::new(move |v: usize| {
+        let on = v == 0;
+        let p = profile_held.as_str();
+        match skulls::state(&held, p, i) {
+            Some(State::Locked) | None => {
+                format!("skulls menu: {label} is locked for {p}; nothing changed")
             }
-        ),
-        State::On | State::Off => skulls::toggle(store, profile, def.key).unwrap_or_else(|e| e),
-    })
+            Some(s) if (s == State::On) == on => {
+                format!("skulls: {label} stays {} for {p}", word(on))
+            }
+            Some(_) => skulls::toggle(&held, p, key).unwrap_or_else(|e| e),
+        }
+    });
+    Some(Pick::new(
+        label,
+        VALUES.iter().map(|v| v.to_string()).collect(),
+        current,
+        &description(i),
+        set,
+    ))
+}
+
+/// The picker for multiplayer row `row` of `profile`'s screen: On or Off;
+/// its choice is saved and an open lobby's advertisement follows it.
+/// `None` while the skull is locked.
+pub fn mp_pick(store: &Arc<Store>, profile: &str, row: usize) -> Option<Pick> {
+    let m = crate::skulls_mp::MP.get(row)?;
+    let current = value_index(crate::skulls_mp::state(store, profile, row)?)?;
+    let (held, profile_held) = (Arc::clone(store), profile.to_string());
+    let label = SKULLS[m.index].label;
+    let set = Arc::new(move |v: usize| {
+        let on = v == 0;
+        let p = profile_held.as_str();
+        let line = match crate::skulls_mp::state(&held, p, row) {
+            Some(State::Locked) | None => {
+                format!("skulls menu: {label} is locked for {p} in multiplayer; nothing changed")
+            }
+            Some(s) if (s == State::On) == on => {
+                format!("skulls: {label} stays {} in multiplayer for {p}", word(on))
+            }
+            Some(_) => crate::skulls_mp::press(&held, p, row).unwrap_or_default(),
+        };
+        // An open lobby's advertisement follows the change.
+        crate::skulls_mp::changed(p);
+        line
+    });
+    Some(Pick::new(
+        label,
+        VALUES.iter().map(|v| v.to_string()).collect(),
+        current,
+        &mp_description(row),
+        set,
+    ))
 }
 
 /// Which skulls the screen lists.
@@ -550,6 +699,12 @@ impl SkullsScreen {
             .and_then(|p| crate::skulls_mp::state(&self.store, &p, row))
             .unwrap_or(State::Locked)
     }
+    /// Multiplayer row `row`, when there is one.
+    fn mp_row(&self, row: i16) -> Option<usize> {
+        usize::try_from(row)
+            .ok()
+            .filter(|r| *r < crate::skulls_mp::MP.len())
+    }
     /// Campaign row `row`'s skull: gold ones first,
     /// then silver ([`skulls::by_tier`]).
     fn skull(&self, row: i16) -> Option<usize> {
@@ -564,52 +719,50 @@ impl SkullsScreen {
             .and_then(|p| skulls::state(&self.store, &p, i))
             .unwrap_or(State::Locked)
     }
-    /// Left or right changes a Halo 1 setting or flips a collected skull.
-    /// The multiplayer screen handles its toggles with A.
-    pub fn step_line(&self, row: i16, right: bool) -> Option<String> {
-        if self.mode() == Mode::Multiplayer {
-            return None;
-        }
-        let line = self.press_line(row)?;
-        Some(format!(
-            "skulls page: {} on row {row}: {line}",
-            if right { "right" } else { "left" }
-        ))
-    }
-    /// A direct change to row `row`, used by the campaign shortcuts and
-    /// the skull toggles. The Start row has no settings value.
-    pub fn press_line(&self, row: i16) -> Option<String> {
-        if self.mode() == Mode::Multiplayer {
-            let r = usize::try_from(row)
-                .ok()
-                .filter(|r| *r < crate::skulls_mp::MP.len())?;
-            let profile = self.profile()?;
-            let line = crate::skulls_mp::press(&self.store, &profile, r);
-            // An open lobby's advertisement follows the change.
-            crate::skulls_mp::changed(&profile);
-            return line;
-        }
-        if let PageRow::Option(o) = self.page_row(row)? {
-            return Some(crate::h1_options::step(&self.store, o));
-        }
-        let i = self.skull(row)?;
-        let Some(profile) = self.profile() else {
-            return Some("skulls menu: no profile for this screen; nothing changed".into());
-        };
-        press(&self.store, &profile, i)
-    }
-
-    fn campaign_footer(&self, row: i16) -> CampaignFooter {
-        match self.page_row(row) {
-            Some(PageRow::Start) => CampaignFooter::Start,
-            Some(PageRow::Skull(i)) if self.state(i) == State::Locked => CampaignFooter::Locked,
-            Some(_) => CampaignFooter::Choice,
-            None => CampaignFooter::Locked,
+    /// Row `row`'s skull and its state, on either page: `None` for Start
+    /// Level, an option or no row.
+    pub fn skull_state(&self, row: i16) -> Option<(usize, State)> {
+        match self.mode() {
+            Mode::Multiplayer => {
+                let r = self.mp_row(row)?;
+                Some((crate::skulls_mp::MP[r].index, self.mp_state(r)))
+            }
+            Mode::Campaign => {
+                let i = self.skull(row)?;
+                Some((i, self.state(i)))
+            }
         }
     }
-
-    pub(crate) fn campaign_prompts(&self, row: i16) -> Vec<crate::ui_kit::input::Prompt> {
-        self.campaign_footer(row).prompts()
+    /// The value picker A opens on row `row`: a Halo 1 option's, or a
+    /// collected skull's On and Off, on either page. `None` for Start
+    /// Level, a locked skull, no profile or no row: A does nothing there.
+    pub fn pick(&self, row: i16) -> Option<Pick> {
+        match self.mode() {
+            Mode::Multiplayer => mp_pick(&self.store, &self.profile()?, self.mp_row(row)?),
+            Mode::Campaign => match self.page_row(row)? {
+                PageRow::Start => None,
+                PageRow::Option(o) => Some(crate::h1_options::pick(&self.store, o)),
+                PageRow::Skull(i) => skull_pick(&self.store, &self.profile()?, i),
+            },
+        }
+    }
+    /// What the legend offers on row `row`.
+    pub fn row_legend(&self, row: i16) -> RowLegend {
+        if self.mode() == Mode::Campaign {
+            match self.page_row(row) {
+                Some(PageRow::Start) => return RowLegend::Start,
+                Some(PageRow::Option(_)) => return RowLegend::Setting,
+                Some(PageRow::Skull(_)) | None => {}
+            }
+        }
+        match self.skull_state(row) {
+            Some((_, State::On | State::Off)) => RowLegend::Setting,
+            Some((_, State::Locked)) | None => RowLegend::Locked,
+        }
+    }
+    /// Row `row`'s legend prompts.
+    pub fn row_prompts(&self, row: i16) -> Vec<Prompt> {
+        self.row_legend(row).prompts()
     }
 }
 
@@ -619,8 +772,7 @@ impl Rows for SkullsScreen {
     }
 
     fn focused_footer(&self, row: Option<i16>) -> Option<u32> {
-        (self.mode() == Mode::Campaign)
-            .then(|| self.campaign_footer(row.unwrap_or(0)).id())
+        Some(self.row_legend(row.unwrap_or(0)).id())
     }
 
     fn count(&self) -> usize {
@@ -629,69 +781,50 @@ impl Rows for SkullsScreen {
             Mode::Multiplayer => crate::skulls_mp::MP.len(),
         }
     }
+    /// Both pages: [`PAGE_TITLE`].
     fn title(&self) -> u32 {
-        match self.mode() {
-            Mode::Campaign => PAGE_TITLE_ID,
-            Mode::Multiplayer => MP_TITLE_ID,
-        }
+        PAGE_TITLE_ID
     }
     fn texts(&self, row: i16) -> Vec<(u32, u32)> {
-        if self.mode() == Mode::Multiplayer {
-            let Some(r) = usize::try_from(row)
-                .ok()
-                .filter(|r| *r < crate::skulls_mp::MP.len())
-            else {
-                return Vec::new();
-            };
-            return vec![(
-                LABEL_SLOT,
-                row_label_id(crate::skulls_mp::MP[r].index, self.mp_state(r)),
-            )];
-        }
-        match self.page_row(row) {
-            Some(PageRow::Start) => vec![(LABEL_SLOT, START_ID)],
-            Some(PageRow::Option(o)) => vec![(
-                LABEL_SLOT,
-                crate::h1_options::label_id(o, crate::h1_options::is_halo1(&self.store, o)),
-            )],
-            Some(PageRow::Skull(i)) => vec![(LABEL_SLOT, row_label_id(i, self.state(i)))],
-            None => Vec::new(),
-        }
-    }
-    /// In campaign, A starts the level, opens an option's picker or
-    /// toggles a skull. In multiplayer, A toggles a skull.
-    fn press(&self, row: i16) -> Chosen {
-        match self.mode() {
-            Mode::Campaign => match self.page_row(row) {
-                Some(PageRow::Start) => Chosen::Act,
+        if self.mode() == Mode::Campaign {
+            match self.page_row(row) {
+                Some(PageRow::Start) => return vec![(LABEL_SLOT, START_ID)],
                 Some(PageRow::Option(o)) => {
-                    crate::ui_kit::picker::offer(crate::h1_options::pick(&self.store, o))
-                        .map_or(Chosen::Nothing, Chosen::Open)
+                    return vec![(
+                        LABEL_SLOT,
+                        crate::h1_options::label_id(o, crate::h1_options::is_halo1(&self.store, o)),
+                    )];
                 }
-                Some(PageRow::Skull(_)) => self
-                    .press_line(row)
-                    .map_or(Chosen::Nothing, Chosen::Stepped),
-                None => Chosen::Nothing,
-            },
-            Mode::Multiplayer => self
-                .press_line(row)
-                .map_or(Chosen::Nothing, Chosen::Stepped),
+                Some(PageRow::Skull(_)) | None => {}
+            }
         }
+        self.skull_state(row)
+            .map(|(i, state)| vec![(LABEL_SLOT, row_label_id(i, state))])
+            .unwrap_or_default()
     }
-    fn sideways(&self, row: i16, right: bool) -> Option<String> {
-        self.step_line(row, right)
+    /// A on Start Level starts the level (the class's action); on a Halo 1
+    /// option or a collected skull it opens the value picker
+    /// ([`SkullsScreen::pick`]); on a locked skull it does nothing.
+    fn press(&self, row: i16) -> Chosen {
+        if self.mode() == Mode::Campaign && self.page_row(row) == Some(PageRow::Start) {
+            return Chosen::Act;
+        }
+        self.pick(row)
+            .and_then(crate::ui_kit::picker::offer)
+            .map_or(Chosen::Nothing, Chosen::Open)
     }
     fn description(&self, row: i16) -> Option<u32> {
         if self.mode() == Mode::Multiplayer {
-            return usize::try_from(row)
-                .ok()
-                .filter(|r| *r < crate::skulls_mp::MP.len())
-                .map(mp_description_id);
+            let r = self.mp_row(row)?;
+            return Some(match self.mp_state(r) {
+                State::Locked => mp_locked_description_id(r),
+                State::On | State::Off => mp_description_id(r),
+            });
         }
         match self.page_row(row)? {
             PageRow::Start => Some(START_DESCRIPTION_ID),
             PageRow::Option(o) => Some(crate::h1_options::description_id(o)),
-            PageRow::Skull(i) => Some(description_id(i)),
+            PageRow::Skull(i) => Some(help_id(i, self.state(i))),
         }
     }
     fn tint(&self, row: i16) -> Option<[f32; 3]> {
@@ -727,6 +860,9 @@ const _: () = assert!(TOTAL as u32 <= FOUND.end - FOUND.start);
 const _: () = assert!(3 * TOTAL as u32 <= 0x100);
 const _: () =
     assert!(crate::skulls_mp::MP.len() as u32 <= MP_DESCRIPTIONS.end - MP_DESCRIPTIONS.start);
+const _: () = assert!(
+    crate::skulls_mp::MP.len() as u32 <= MP_LOCKED_DESCRIPTIONS.end - MP_LOCKED_DESCRIPTIONS.start
+);
 
 #[cfg(test)]
 mod tests {
@@ -773,8 +909,8 @@ mod tests {
 
     /// Each skull row as drawn, in order (the campaign page's Start Level
     /// and option rows left out): its one label, split into the name and
-    /// the state.
-    fn drawn(s: &SkullsScreen) -> Vec<(String, String)> {
+    /// the value ("Mythic: On"); a locked skull's is its name alone.
+    fn drawn(s: &SkullsScreen) -> Vec<(String, Option<String>)> {
         (0..s.count() as i16)
             .filter(|r| {
                 s.mode() == Mode::Multiplayer || matches!(s.page_row(*r), Some(PageRow::Skull(_)))
@@ -784,10 +920,19 @@ mod tests {
                 assert_eq!(t.len(), 1, "one text: the list skin has one");
                 assert_eq!(t[0].0, LABEL_SLOT);
                 let label = text(t[0].1);
-                let (name, state) = label.rsplit_once(": ").expect("Name: State");
-                (name.to_string(), state.to_string())
+                match label.rsplit_once(": ") {
+                    Some((name, value)) => (name.to_string(), Some(value.to_string())),
+                    None => (label, None),
+                }
             })
             .collect()
+    }
+
+    /// A on row `row`, then the other value picked: what the picker's set
+    /// logs; `None` where A opens no picker.
+    fn flip(s: &SkullsScreen, row: i16) -> Option<String> {
+        let p = s.pick(row)?;
+        Some((p.set)(1 - p.current))
     }
 
     #[test]
@@ -830,15 +975,15 @@ mod tests {
         assert!(s.texts(s.count() as i16).is_empty());
         assert!(s.texts(-1).is_empty());
         assert_eq!(s.title(), PAGE_TITLE_ID);
-        assert_eq!(text(PAGE_TITLE_ID), "Game Options");
+        assert_eq!(text(PAGE_TITLE_ID), "SKULLS");
     }
 
     #[test]
     fn unlocked_comes_from_the_profiles_settings() {
         let st = store();
         let s = SkullsScreen::new(Arc::clone(&st));
-        // No profile yet: everything locked.
-        assert!(drawn(&s).iter().all(|(_, v)| v == "Locked"));
+        // No profile yet: everything locked, each its name alone.
+        assert!(drawn(&s).iter().all(|(_, v)| v.is_none()));
         skulls::record_pickup(&st, &names(&["Chief"]), 12);
         skulls::record_pickup(&st, &names(&["Chief"]), 1);
         skulls::toggle(&st, "Chief", "skulls.grunt_birthday_party").unwrap();
@@ -848,11 +993,11 @@ mod tests {
         for (r, v) in values.iter().enumerate() {
             let i = ORDER[r];
             let want = match i {
-                1 => "Off",
-                12 => "On",
-                _ => "Locked",
+                1 => Some("Off"),
+                12 => Some("On"),
+                _ => None,
             };
-            assert_eq!(*v, want, "skull {i}");
+            assert_eq!(v.as_deref(), want, "skull {i}");
         }
         // The other co-op player's screen is theirs.
         s.open("Arbiter".into());
@@ -860,40 +1005,39 @@ mod tests {
         assert_eq!(s.state(12), State::Locked);
     }
 
+    /// A on a collected skull opens the value picker on On and Off, the
+    /// held one focused, and the pick is saved at once; a locked skull, or
+    /// a page with no profile, has no picker and A does nothing.
     #[test]
-    fn locked_skulls_do_not_toggle_and_collected_ones_do() {
+    fn locked_skulls_have_no_picker_and_collected_ones_pick_on_or_off() {
         let st = store();
         let s = SkullsScreen::new(Arc::clone(&st));
-        assert_eq!(
-            s.press_line(s.row_of_skull(0).unwrap()).as_deref(),
-            Some("skulls menu: no profile for this screen; nothing changed")
-        );
+        let first = s.row_of_skull(0).unwrap();
+        assert!(s.pick(first).is_none(), "no profile: nothing to pick");
+        assert_eq!(s.press(first), Chosen::Nothing);
         s.open("Chief".into());
-        assert_eq!(
-            s.press_line(s.row_of_skull(11).unwrap()).as_deref(),
-            Some(
-                "skulls menu: Iron is locked for Chief: not collected yet (found on High Charity, Legendary only)"
-            )
-        );
-        assert_eq!(
-            s.press_line(s.row_of_skull(6).unwrap()).as_deref(),
-            Some("skulls menu: Blind is locked for Chief: not collected yet (found on Outskirts)")
-        );
+        let iron = s.row_of_skull(11).unwrap();
+        assert!(s.pick(iron).is_none(), "locked: no picker");
+        assert_eq!(s.press(iron), Chosen::Nothing);
         assert_eq!(s.state(11), State::Locked, "a locked press changes nothing");
         assert_eq!(skulls::collected(&st, "Chief"), []);
         skulls::record_pickup(&st, &names(&["Chief"]), 11);
-        assert_eq!(
-            s.press_line(s.row_of_skull(11).unwrap()).as_deref(),
-            Some("skulls: Iron off for Chief")
-        );
+        let pick = s.pick(iron).expect("collected: the picker");
+        assert_eq!(pick.title, "IRON");
+        assert_eq!(pick.values, ["On", "Off"]);
+        assert_eq!(pick.current, 0, "a pickup turns it on");
+        assert_eq!(pick.description, description(11));
+        assert_eq!(s.state(11), State::On, "opening the picker changes nothing");
+        assert_eq!((pick.set)(1), "skulls: Iron off for Chief");
         assert_eq!(s.state(11), State::Off);
-        assert_eq!(
-            s.press_line(s.row_of_skull(11).unwrap()).as_deref(),
-            Some("skulls: Iron on for Chief")
-        );
+        assert_eq!((pick.set)(1), "skulls: Iron stays off for Chief");
+        assert_eq!(s.state(11), State::Off);
+        assert_eq!((pick.set)(0), "skulls: Iron on for Chief");
         assert_eq!(s.state(11), State::On);
-        assert_eq!(s.press_line(s.count() as i16), None);
-        assert_eq!(s.press_line(-1), None);
+        assert_eq!(s.pick(iron).unwrap().current, 0, "the held one focused");
+        assert!(s.pick(0).is_none(), "Start Level has no value");
+        assert!(s.pick(s.count() as i16).is_none());
+        assert!(s.pick(-1).is_none());
     }
 
     /// What the screen leaves is what the campaign start turns on:
@@ -908,8 +1052,8 @@ mod tests {
         }
         skulls::record_pickup(&st, &names(&["Arbiter"]), 7);
         s.open("Chief".into());
-        s.press_line(s.row_of_skull(3).unwrap()); // Thunderstorm off
-        s.press_line(s.row_of_skull(9).unwrap()); // Catch: locked, nothing
+        flip(&s, s.row_of_skull(3).unwrap()); // Thunderstorm off
+        assert_eq!(flip(&s, s.row_of_skull(9).unwrap()), None, "Catch: locked");
         let mut want = [false; COUNT];
         want[0] = true;
         want[12] = true;
@@ -917,55 +1061,80 @@ mod tests {
         // Co-op: the other player turns theirs off on their own screen; the
         // start takes the union of both.
         s.open("Arbiter".into());
-        s.press_line(s.row_of_skull(7).unwrap());
+        flip(&s, s.row_of_skull(7).unwrap());
         let both = names(&["Chief", "Arbiter"]);
         assert_eq!(skulls::selection(&st, &both), Some(want));
-        s.press_line(s.row_of_skull(7).unwrap());
+        flip(&s, s.row_of_skull(7).unwrap());
         want[7] = true;
         assert_eq!(skulls::selection(&st, &both), Some(want));
         // Toggling back restores it.
         s.open("Chief".into());
-        s.press_line(s.row_of_skull(3).unwrap());
+        flip(&s, s.row_of_skull(3).unwrap());
         want[3] = true;
         assert_eq!(skulls::selection(&st, &both), Some(want));
     }
 
+    /// A skull's help says what it does, then on a line of its own where
+    /// it is: collected, its tier and where it was found; locked, "Locked:
+    /// find it on <level>", "on Legendary" when only a Legendary game
+    /// places it. The row's help follows its state.
     #[test]
-    fn each_description_says_what_it_does_where_and_if_legendary() {
-        let s = SkullsScreen::new(store());
+    fn each_help_says_what_it_does_then_where_it_is() {
+        let st = store();
+        let s = SkullsScreen::new(Arc::clone(&st));
+        s.open("Chief".into());
         for (i, a) in ABOUT.iter().enumerate() {
-            let id = s.description(s.row_of_skull(i).unwrap()).unwrap();
-            assert_eq!(id, description_id(i));
-            let shown = text(id);
-            // The buttons are the footer's, not under the description;
-            // within a widget's 256.
-            assert!(!shown.contains('\u{e100}'), "{shown}");
-            assert_eq!(text(FOOTER_ID), PROMPT);
-            assert!(shown.encode_utf16().count() <= 256, "{shown}");
-            let d = description(i);
-            assert!(d.contains(a.effect), "{d}");
-            assert!(d.contains(&format!("Found on {}", a.level)), "{d}");
-            assert_eq!(d.contains("Legendary only"), a.legendary, "{d}");
-            assert_eq!(d.contains("any difficulty"), !a.legendary, "{d}");
-            assert!(d.starts_with(&format!("{} skull: ", a.tier.name())), "{d}");
-            // A text widget holds 256 UTF-16 units, and the box is small.
-            assert!(d.encode_utf16().count() <= 140, "{d}");
+            let row = s.row_of_skull(i).unwrap();
+            assert_eq!(s.description(row), Some(locked_description_id(i)), "locked");
+            for (shown, second) in [
+                (description(i), found_line(i)),
+                (locked_description(i), locked_line(i)),
+            ] {
+                let lines: Vec<&str> = shown.split(BREAK).collect();
+                assert_eq!(lines, [effect(i).as_str(), second.as_str()], "{shown}");
+                assert!(lines[0].ends_with(a.effect), "{shown}");
+                assert!(second.contains(a.level), "{shown}");
+                assert_eq!(second.contains(" on Legendary"), a.legendary, "{shown}");
+                // The buttons are the footer's, not under the description;
+                // a text widget holds 256 UTF-16 units, and the box is small.
+                assert!(!shown.contains('\u{e100}'), "{shown}");
+                assert!(shown.encode_utf16().count() <= 160, "{shown}");
+            }
+            assert!(
+                locked_line(i).starts_with(&format!("Locked: find it on {}", a.level)),
+                "{}",
+                locked_line(i)
+            );
+            assert!(found_line(i).starts_with(&format!("{} skull, found on {}", a.tier.name(), a.level)));
+            assert_eq!(text(description_id(i)), description(i));
+            assert_eq!(text(locked_description_id(i)), locked_description(i));
+            assert_eq!(help(i, State::Locked), locked_description(i));
+            assert_eq!(help(i, State::Off), description(i));
         }
         assert_eq!(
+            locked_description(1),
+            "A headshot on a Grunt bursts into confetti and cheering.\r\n\
+             Locked: find it on The Arbiter on Legendary."
+        );
+        assert_eq!(
             description(6),
-            "Gold skull: Your HUD and first-person weapon are hidden. Found on Outskirts, any difficulty."
+            "Your HUD and first-person weapon are hidden.\r\nGold skull, found on Outskirts."
         );
         assert_eq!(
             description(5),
-            "Silver skull: I Would Have Been Your Daddy: Rare lines play far more often. \
-             Found on Outskirts, Legendary only (solo; one try in seven)."
+            "I Would Have Been Your Daddy: Rare lines play far more often.\r\n\
+             Silver skull, found on Outskirts on Legendary (solo; one try in seven)."
         );
         assert_eq!(
             description(crate::skulls_custom::FALL_DAMAGE),
-            "Gold skull: A hard landing hurts: past a jump's speed, a fall drains your shields, then \
-             your health. Found on Metropolis, any difficulty."
+            "A hard landing hurts: past a jump's speed, a fall drains your shields, then your \
+             health.\r\nGold skull, found on Metropolis."
         );
+        // Collected, the row's help is the collected one.
+        skulls::record_pickup(&st, &names(&["Chief"]), 6);
+        assert_eq!(s.description(s.row_of_skull(6).unwrap()), Some(description_id(6)));
         assert_eq!(s.description(s.count() as i16), None);
+        assert_eq!(text(FOOTER_ID), PROMPT);
     }
 
     #[test]
@@ -1023,12 +1192,13 @@ mod tests {
     #[test]
     fn strings_are_ours_distinct_and_clear_of_the_models() {
         let all = strings();
-        // Labels and descriptions for all, a found message for each of
-        // ours, the titles (Skulls, Game Options, the multiplayer one),
-        // Locked, the campaign footers and Start Level with its description.
+        // A name and a collected help for all, three row texts each (On,
+        // Off, the locked help), two helps per multiplayer row, a found
+        // message for each of ours, the row's and the pages' titles, Start
+        // Level with its description and the three legends.
         assert_eq!(
             all.len(),
-            2 * TOTAL + 9 + 3 * TOTAL + crate::skulls_mp::MP.len() + crate::skulls_custom::OURS
+            2 * TOTAL + 7 + 3 * TOTAL + 2 * crate::skulls_mp::MP.len() + crate::skulls_custom::OURS
         );
         let mut ids: Vec<u32> = all.iter().map(|(i, _)| *i).collect();
         assert!(ids.iter().all(|i| is_ours(*i)));
@@ -1052,13 +1222,15 @@ mod tests {
         assert_eq!(ids.len(), n);
         assert!(all.contains(&(label_id(12), "Mythic")));
         assert!(all.contains(&(TITLE_ID, "Skulls")));
-        assert!(all.contains(&(LOCKED_ID, "Locked")));
-        assert!(all.contains(&(MP_TITLE_ID, "Multiplayer Skulls")));
+        assert!(all.contains(&(PAGE_TITLE_ID, "SKULLS")));
+        assert!(all.contains(&(SETTING_FOOTER_ID, SETTING_PROMPT)));
+        assert!(all.contains(&(LOCKED_FOOTER_ID, LOCKED_PROMPT)));
     }
 
     /// The multiplayer instance: only the skulls that work in multiplayer,
-    /// each the profile's multiplayer On, Off or Locked, and a press flips
-    /// the multiplayer choice, never the campaign one.
+    /// each the profile's multiplayer On or Off, or its name alone while
+    /// locked; A opens the same picker as the campaign page's, and the pick
+    /// changes the multiplayer choice, never the campaign one.
     #[test]
     fn the_multiplayer_mode_lists_only_multiplayer_skulls() {
         let st = Arc::new(Store::defaults(crate::setting_defs::ALL));
@@ -1066,39 +1238,51 @@ mod tests {
         s.open("Chief".into());
         assert_eq!(s.mode(), Mode::Multiplayer);
         assert_eq!(s.count(), 3);
-        assert_eq!(s.title(), MP_TITLE_ID);
+        assert_eq!(s.title(), PAGE_TITLE_ID, "the campaign page's title");
         let shown: Vec<_> = drawn(&s).into_iter().map(|(n, _)| n).collect();
         assert_eq!(shown, ["Famine", "Blind", "Low Gravity"]);
         assert!(
-            drawn(&s).iter().all(|(_, v)| v == "Locked"),
-            "nothing collected"
+            drawn(&s).iter().all(|(_, v)| v.is_none()),
+            "nothing collected: names alone"
         );
         assert!(s.texts(3).is_empty());
+        assert_eq!(s.description(1), Some(mp_locked_description_id(1)));
+        assert_eq!(
+            text(mp_locked_description_id(1)),
+            "Every player's HUD and first-person weapon are hidden. The host's choice is \
+             everyone's.\r\nLocked: find it on Outskirts."
+        );
+        assert!(
+            text(mp_locked_description_id(0))
+                .ends_with("\r\nLocked: find it on The Oracle on Legendary.")
+        );
+        assert!(s.pick(1).is_none(), "locked: no picker");
+        assert_eq!(s.press(1), Chosen::Nothing);
+        assert_eq!(s.row_legend(1), RowLegend::Locked);
+        skulls::record_pickup(&st, &names(&["Chief"]), 6);
+        assert_eq!(s.mp_state(1), State::Off, "collected, off for multiplayer");
+        assert_eq!(s.row_legend(1), RowLegend::Setting);
         assert_eq!(s.description(1), Some(mp_description_id(1)));
         assert_eq!(
             text(mp_description_id(1)),
             "Every player's HUD and first-person weapon are hidden. The host's choice is \
-             everyone's. Found on Outskirts."
+             everyone's.\r\nGold skull, found on Outskirts."
         );
-        assert!(text(mp_description_id(0)).ends_with("Found on The Oracle, Legendary only."));
-        skulls::record_pickup(&st, &names(&["Chief"]), 6);
-        assert_eq!(s.mp_state(1), State::Off, "collected, off for multiplayer");
-        assert_eq!(
-            s.press_line(1).as_deref(),
-            Some("skulls: Blind on in multiplayer for Chief")
-        );
+        assert_eq!(text(s.texts(1)[0].1), "Blind: Off");
+        let pick = s.pick(1).expect("collected: the picker");
+        assert_eq!(pick.title, "BLIND");
+        assert_eq!(pick.values, ["On", "Off"]);
+        assert_eq!(pick.current, 1);
+        assert_eq!((pick.set)(0), "skulls: Blind on in multiplayer for Chief");
         assert_eq!(s.mp_state(1), State::On);
-        assert!(
-            s.press_line(0)
-                .unwrap()
-                .contains("Famine is locked for Chief in multiplayer")
-        );
-        assert_eq!(s.press_line(3), None);
+        assert_eq!((pick.set)(0), "skulls: Blind stays on in multiplayer for Chief");
+        assert_eq!(text(s.texts(1)[0].1), "Blind: On");
+        assert!(s.pick(0).is_none(), "Famine: locked");
+        assert!(s.pick(3).is_none());
         assert_eq!(crate::skulls_mp::chosen(&st, "Chief"), vec![6]);
         // Opening it again keeps it the multiplayer screen.
         s.open("Chief".into());
         assert_eq!(s.count(), crate::skulls_mp::MP.len());
-        assert_eq!(s.title(), MP_TITLE_ID);
         // The campaign screen still lists all of them, its own states.
         let s = SkullsScreen::new(Arc::clone(&st));
         s.open("Chief".into());
@@ -1238,17 +1422,22 @@ mod tests {
         );
     }
 
-    /// Each row's label carries its state in the one-text list skin.
+    /// A collected skull's label carries its value in the one-text list
+    /// skin; a locked skull's is its name alone (Locked is not a value).
     #[test]
-    fn row_labels_carry_the_state() {
+    fn row_labels_carry_the_value_and_a_locked_skull_its_name_alone() {
         assert_eq!(text(row_label_id(12, State::On)), "Mythic: On");
         assert_eq!(text(row_label_id(12, State::Off)), "Mythic: Off");
-        assert_eq!(text(row_label_id(12, State::Locked)), "Mythic: Locked");
+        assert_eq!(text(row_label_id(12, State::Locked)), "Mythic");
+        assert_eq!(row_label_id(12, State::Locked), label_id(12));
         for i in 0..TOTAL {
-            assert!(text(row_label_id(i, State::Locked)).len() <= 28);
+            assert!(text(row_label_id(i, State::Off)).len() <= 28);
         }
     }
 
+    /// The legend follows the focus, the same on both pages: Start Level
+    /// `A START  B BACK`, a Halo 1 option or a collected skull `A CHANGE
+    /// B BACK`, a locked skull `B BACK`; A on an option opens its picker.
     #[test]
     fn campaign_options_open_the_picker_and_footers_follow_focus() {
         use crate::h1_options::{self, ASSETS, CAMPAIGN, HUD};
@@ -1262,34 +1451,39 @@ mod tests {
         let screen = SkullsScreen::new(Arc::clone(&store));
         screen.open_with("Chief".into(), CAMPAIGN);
         let locked = screen.row_of_skull(12).unwrap();
+        skulls::record_pickup(&store, &names(&["Chief"]), 2);
+        let collected = screen.row_of_skull(2).unwrap();
         assert_eq!(text(screen.focused_footer(Some(0)).unwrap()), PROMPT);
-        assert_eq!(text(screen.focused_footer(Some(1)).unwrap()), CHOICE_PROMPT);
+        assert_eq!(text(screen.focused_footer(Some(1)).unwrap()), SETTING_PROMPT);
+        assert_eq!(text(screen.focused_footer(Some(collected)).unwrap()), SETTING_PROMPT);
         assert_eq!(text(screen.focused_footer(Some(locked)).unwrap()), LOCKED_PROMPT);
-        for row in [0, 1, locked] {
+        for row in [0, 1, collected, locked] {
             assert_eq!(
                 text(screen.focused_footer(Some(row)).unwrap()),
-                footer_legend(&screen.campaign_prompts(row))
+                footer_legend(&screen.row_prompts(row))
             );
         }
+        let mp = SkullsScreen::multiplayer(Arc::clone(&store));
+        mp.open("Chief".into());
+        assert_eq!(mp.focused_footer(Some(0)), Some(LOCKED_FOOTER_ID), "Famine: locked");
 
         let halo1 = h1_options::is_halo1(&store, &ASSETS);
         assert_eq!(screen.press(1), Chosen::Open(picker::NAME));
-        let pick = picker::current().expect("campaign asset picker");
+        let pick = screen.pick(1).expect("campaign asset picker");
         assert_eq!(pick.title, "ASSETS");
         assert_eq!(pick.values, ["Halo 1", "Halo 2"]);
         assert_eq!(pick.current, usize::from(!halo1));
         assert_eq!(h1_options::is_halo1(&store, &ASSETS), halo1);
         (pick.set)(usize::from(halo1));
         assert_eq!(h1_options::is_halo1(&store, &ASSETS), !halo1);
-        assert_eq!(screen.focused_footer(Some(1)), Some(CHOICE_FOOTER_ID));
+        assert_eq!(screen.focused_footer(Some(1)), Some(SETTING_FOOTER_ID));
     }
 
-    /// The campaign page: left and right flip a collected skull (either
-    /// way, both steps), its row then reads the new value; a locked one
-    /// stays locked. A changes a skull too; only Start Level goes on. The
-    /// multiplayer screen keeps A as its toggle and has no sideways step.
+    /// No row steps sideways on either page: A opens the picker on a
+    /// collected skull (the pick changes it, A alone doesn't), does nothing
+    /// on a locked one, and only Start Level goes on.
     #[test]
-    fn left_right_and_a_toggle_and_start_level_goes_on() {
+    fn a_opens_the_picker_and_nothing_steps_sideways() {
         let st = store();
         let s = SkullsScreen::new(Arc::clone(&st));
         s.open("Chief".into());
@@ -1297,56 +1491,26 @@ mod tests {
         let mythic = s.row_of_skull(12).unwrap();
         let label = |row: i16| text(s.texts(row)[0].1);
         assert_eq!(label(mythic), "Mythic: On");
-        assert_eq!(
-            s.sideways(mythic, true).as_deref(),
-            Some(&*format!(
-                "skulls page: right on row {mythic}: skulls: Mythic off for Chief"
-            ))
-        );
+        for row in -1..=s.count() as i16 {
+            assert_eq!(s.sideways(row, true), None, "row {row}");
+            assert_eq!(s.sideways(row, false), None, "row {row}");
+        }
+        assert_eq!(s.press(mythic), Chosen::Open(crate::ui_kit::picker::NAME));
+        assert_eq!(s.state(12), State::On, "A alone changes nothing");
+        assert_eq!(flip(&s, mythic).as_deref(), Some("skulls: Mythic off for Chief"));
         assert_eq!(s.state(12), State::Off);
         assert_eq!(label(mythic), "Mythic: Off");
-        assert!(
-            s.sideways(mythic, true)
-                .unwrap()
-                .ends_with("Mythic on for Chief")
-        );
-        assert_eq!(s.state(12), State::On, "right again: back on");
-        assert!(
-            s.sideways(mythic, false)
-                .unwrap()
-                .ends_with("Mythic off for Chief")
-        );
-        assert!(
-            s.sideways(mythic, false)
-                .unwrap()
-                .ends_with("Mythic on for Chief")
-        );
-        assert_eq!(s.state(12), State::On);
-        // Locked: says so, stays.
         let iron = s.row_of_skull(11).unwrap();
-        assert!(
-            s.sideways(iron, true)
-                .unwrap()
-                .contains("Iron is locked for Chief")
-        );
+        assert_eq!(s.press(iron), Chosen::Nothing);
         assert_eq!(s.state(11), State::Locked);
-        assert_eq!(label(iron), "Iron: Locked");
-        assert_eq!(s.sideways(s.count() as i16, true), None);
-        assert_eq!(s.sideways(-1, false), None);
-        // A on a skull changes it, as right does (a locked one says so);
-        // only Start Level, the first row, goes on to the level.
-        assert!(matches!(s.press(mythic), Chosen::Stepped(_)));
-        assert_eq!(s.state(12), State::Off, "A flipped it");
-        assert!(matches!(s.press(iron), Chosen::Stepped(_)));
-        assert_eq!(s.state(11), State::Locked);
+        assert_eq!(label(iron), "Iron");
         assert_eq!(s.press(0), Chosen::Act);
-        assert_eq!(s.sideways(0, true), None, "Start Level has no value");
         assert_eq!(s.press(s.count() as i16), Chosen::Nothing);
-        // The multiplayer screen.
         let m = SkullsScreen::multiplayer(Arc::clone(&st));
         m.open("Chief".into());
-        assert_eq!(m.sideways(0, true), None);
-        assert!(matches!(m.press(0), Chosen::Stepped(_)));
+        for row in 0..m.count() as i16 {
+            assert_eq!(m.sideways(row, true), None);
+        }
     }
 
     /// The tier table: gold is the MCC multiplier above 1.0, and the
@@ -1363,10 +1527,10 @@ mod tests {
         }
         assert_eq!(
             description(0),
-            "Silver skull: Your flashlight is swapped for active camouflage. Found on Delta Halo, Legendary only."
+            "Your flashlight is swapped for active camouflage.\r\nSilver skull, found on Delta Halo on Legendary."
         );
-        assert!(description(0).starts_with("Silver skull: "));
-        assert!(description(11).starts_with("Gold skull: "));
+        assert!(found_line(0).starts_with("Silver skull, "));
+        assert!(found_line(11).starts_with("Gold skull, "));
     }
 }
 
@@ -1478,8 +1642,12 @@ mod disc {
             [28, 20, 8, 210]
         );
         assert_eq!(font, 1);
-        for (_, text) in ROW_LABELS.iter() {
-            let width = d.fonts.width(font, text);
+        let labels = (0..TOTAL).flat_map(|i| {
+            let l = SKULLS[i].label;
+            [format!("{l}: On"), format!("{l}: Off"), l.to_string()]
+        });
+        for text in labels {
+            let width = d.fonts.width(font, &text);
             assert!(width <= label.width(), "{text:?} is {width} units wide");
         }
         let footer = d.shared.header_layouts[d.controls.header_layout()].secondary;

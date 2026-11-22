@@ -1,0 +1,18 @@
+screen: layout.hud
+kind: hud
+layout: none
+backing: none
+states:
+  rest:
+    focus: 0
+widgets:
+  hud.caption:
+    component: hud.label
+    text: "Caption"
+    at: [-264, 198]
+    size: [164, 20]
+  hud.line:
+    component: hud.text
+    text: "Line"
+    at: [-264, 176]
+    size: [164, 20]

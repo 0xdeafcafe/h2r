@@ -44,6 +44,7 @@ use native_render::decorators::{Material, Plan, clear_slots};
 use native_render::decorators_gpu::{DecoratorTarget, DrawKey, MaterialGpu, bind, encode};
 use native_render::decorators_load::{
     DECORATOR_CLASSIFICATION, DecoratorLook, SetGeometry, SetRefusal, buffers, compile, decorator_look, set_geometry_with,
+    stage_images,
 };
 use native_render::gpu::Image;
 use native_render::look::{self, Stage};
@@ -72,6 +73,10 @@ const SHAD: FourCC = FourCC(*b"shad");
 pub struct DecoratorLooks {
     looks: HashMap<(u16, u8, u8), Result<DecoratorLook, String>>,
     images: StageImages,
+    /// What a lightmap stage samples: the globals' rasterizer bitmap at
+    /// `+0x64`, uniform (`native_objects_glue::engine_lightmap`), read
+    /// when a pass samples it.
+    lightmap: Option<Image>,
     /// The device palettes the load expanded palettized stage bitmaps
     /// through (`StageDecoder::used`): a view draws only while they hold.
     palettes: StagePalettes,
@@ -123,7 +128,12 @@ pub fn load<R: Read + Seek>(
         Err(e) => {
             eprintln!("native-decorators: the shader tags do not read ({e}); the D3D path draws the decorators");
             return Arc::new(DecoratorLooks {
-                looks, images, palettes: StagePalettes::default(), prepared: Mutex::default(), gpu: Mutex::default(),
+                looks,
+                images,
+                lightmap: None,
+                palettes: StagePalettes::default(),
+                prepared: Mutex::default(),
+                gpu: Mutex::default(),
             });
         }
     };
@@ -165,6 +175,24 @@ pub fn load<R: Read + Seek>(
             }
         }
     }
+    // The lightmap stage's image, once, at the first stage that samples
+    // it; the passes sampling it stay on D3D when it does not load.
+    let samples = |l: &DecoratorLook| l.look.textures.iter().position(|s| *s == Stage::Lightmap);
+    let mut lightmap = None;
+    if let Some(stage) = looks.values().filter_map(|l| l.as_ref().ok().and_then(samples)).next() {
+        match crate::native_objects_glue::engine_lightmap(map, &lib, files, decoder, &mut images, stage) {
+            Ok(image) => lightmap = Some(image),
+            Err(e) => {
+                let why = format!("a stage samples the lightmap: {e}");
+                for look in looks.values_mut() {
+                    if look.as_ref().ok().and_then(samples).is_some() {
+                        *refused.entry(why.clone()).or_default() += 1;
+                        *look = Err(why.clone());
+                    }
+                }
+            }
+        }
+    }
     let mut why: Vec<_> = refused.into_iter().collect();
     why.sort();
     eprintln!(
@@ -173,7 +201,14 @@ pub fn load<R: Read + Seek>(
         looks.values().filter(|l| l.is_ok()).count(),
         looks.len(),
     );
-    Arc::new(DecoratorLooks { looks, images, palettes: decoder.used().clone(), prepared: Mutex::default(), gpu: Mutex::default() })
+    Arc::new(DecoratorLooks {
+        looks,
+        images,
+        lightmap,
+        palettes: decoder.used().clone(),
+        prepared: Mutex::default(),
+        gpu: Mutex::default(),
+    })
 }
 
 type MaterialResult = Result<MaterialGpu, String>;
@@ -242,16 +277,8 @@ impl MaterialJob {
         };
         let program = compile(look, &self.stream)?;
         let buffers = buffers(&program, &self.set)?;
-        let mut images: [Option<Image>; 4] = Default::default();
-        for (n, dim) in program.dims.iter().enumerate() {
-            if dim.is_none() {
-                continue;
-            }
-            let Stage::Bitmap { bitmap, image } = program.stages[n] else {
-                return Err(format!("stage {n} samples what is not a bitmap"));
-            };
-            images[n] = Some(self.looks.images.get(&(bitmap, image)).cloned().ok_or_else(|| format!("stage {n} bitmap did not load"))?);
-        }
+        let bitmap = |bitmap: TagId, image: u32| self.looks.images.get(&(bitmap, image)).cloned();
+        let images = stage_images(&program, &bitmap, self.looks.lightmap.as_ref())?;
         let gpu = MaterialGpu::new(&self.device, &self.queue, program, &buffers, &images).map_err(str::to_owned)?;
         self.queue.submit([]);
         Ok(gpu)

@@ -1,7 +1,7 @@
 # Rules world API: a synced world for scripts
 
-Status: Design. Nothing on this page is built; it extends the rules engine of [rules-engine.md](rules-engine.md) and is built after that page's host runtime runs in a game.
-Code: none yet. The plan names `crates/formats/rules/src/caps.rs` (the entries), `crates/formats/rules/src/world/` and `crates/extensions/game/src/rules/world/` (new, one module per capability group), and `crates/live/actor-net/src/wire.rs` (two records). Tests: named per slice in "Implementation plan".
+Status: Design, with the first slices landing. The bot orders (W7) are built; the rest extends the rules engine of [rules-engine.md](rules-engine.md) and is built after that page's host runtime runs in a game.
+Code: the bot orders of slice W7 (the `bot_*` entries of `crates/formats/rules/src/caps.rs`, the dispatch in `crates/extensions/game/src/rules/runtime.rs`, `crates/extensions/game/src/rules/world/bots.rs`, `crates/live/bots/src/brain.rs` and `decisions.rs`). The plan names `crates/formats/rules/src/caps.rs` (the entries), `crates/formats/rules/src/world/` and `crates/extensions/game/src/rules/world/` (one module per capability group; `bots` is built), and `crates/live/actor-net/src/wire.rs` (two records). Tests: named per slice in "Implementation plan".
 Switch: none of its own; the `rules` feature of `H2_FEATURES` ([switches.md](../runtime/switches.md)).
 
 A rules script moves objects, flies drop ships, orders AI squads and
@@ -206,7 +206,8 @@ only (ai-networking.md "Join in progress"). When that lifts, the first
 - **A client's film** holds the `Show` and `Cue` records it received.
 - **A bot order is not replayed.** Playback reads each seat's recorded
   input; the order call is made by the re-run VM and ignored by a
-  runtime in playback. This is safe because an order returns nothing.
+  runtime in playback (**Code**, `GuestGame`'s `film`). This is safe
+  because an order returns nothing.
 
 What keeps the `Authority` replayable:
 
@@ -330,21 +331,41 @@ and bounces").
 
 Capability `bots.orders` ("gives bots orders"). A bot is a phantom: a
 player seat driven by a brain on the host ([bots.md](bots.md) section
-5). To a script it is a `player`, and `p.is_bot` reads the phantom
-registry (`bots::phantom::list`).
+5). To a script it is a `player`; a `p.is_bot` read of the phantom
+registry (`bots::phantom::list`) is design, not built.
+
+**Code** (slice W7). An order is a `bots::brain::Order` — `Go`, `Hold`,
+`Follow` or `Attack` — kept on the brain's decisions
+(`crates/live/bots/src/decisions.rs`). While one stands it is the bot's
+goal in place of the objective's (`crates/live/bots/src/mind/strategy.rs`):
+`Go` and `Hold` walk the mind's own nav follower, `Follow` and `Attack`
+are its `Escort` and `Hunt` goals with the target's position from the
+roster each tick. The order survives a death; only `bot_free` clears it.
+The call is queued like every world action and joins the tick boundary
+as a `rules::runtime::Call::BotOrder`, whose async body only the machine
+`GAME_ENGINE_AUTHORITATIVE` answers true for runs. There it delivers
+through `bots::phantom::order`; an order to a seat no joined phantom
+holds is a refused call, recorded. A run playing a film back makes none
+(`GuestGame`'s `film`), as "Films and Theater" says. The game side is
+`crates/extensions/game/src/rules/world/bots.rs`: it resolves `bot_go`'s
+and `bot_hold`'s zone through the census's labelled things and the
+scenario's netgame flags: the centre is the mean of the zone's members'
+positions, the reach the farthest member's distance from it and at
+least 4 world units (`bots::objective::DEFEND_RADIUS`) while no zone's
+capture volume is read.
 
 | Script | Entry | Backed by | Status |
 |---|---|---|---|
-| `bot_go(p, at)`, `bot_hold(p, zone)` | `bot_go`, `bot_hold` | the planner and route runner that drive a seat with no brain of its own (`bots::goto::Goto`, `OrderRun`; bots.md "Driving a player"; `crates/extensions/game/src/player_goto.rs` is its glue for the local player) | not built: a brain takes no outside order |
-| `bot_follow(p, q)`, `bot_attack(p, q)` | `bot_follow`, `bot_attack` | the brain's own escort and target choice (`crates/live/bots/src/decisions.rs`), with the order as its goal | not built |
-| `bot_free(p)` | `bot_free` | clears the order | not built |
+| `bot_go(p, at)`, `bot_hold(p, zone)` | `bot_go`, `bot_hold` | the order as the goal (`Go`, `Hold`), walked by the mind's nav follower over the map's nav mesh (`crates/live/bots/src/mind.rs`) | named |
+| `bot_follow(p, q)`, `bot_attack(p, q)` | `bot_follow`, `bot_attack` | the brain's own escort and target choice (`crates/live/bots/src/decisions.rs`), with the order as its goal (`Escort`, `Hunt`) | named |
+| `bot_free(p)` | `bot_free` | clears the order | named |
 
-An order is made on the `Authority` only and returns nothing. Whether
-the bot got there is a world read (`inside(p, zone)`, `distance`), so a
-script's state never depends on a brain, which runs off the game thread
-(bots.md section 5.5). The effect is the phantom's pad, which every
-session kind already carries as a player's input. Seats are added in the
-lobby (bots.md section 7); a script adds and removes none.
+An order returns nothing. Whether the bot got there is a world read
+(`inside(p, zone)`, `distance`), so a script's state never depends on a
+brain, which runs off the game thread (bots.md section 5.5). The effect
+is the phantom's pad, which every session kind already carries as a
+player's input. Seats are added in the lobby (bots.md section 7); a
+script adds and removes none.
 
 ### Audio
 
@@ -531,7 +552,7 @@ own target on top of the three common ones, as `rules.world_ns` at the
 | W4 | Physics reads and pushes: `airborne`, `primed`, `on touchdown`, the sight table, `push`, `launch` | `vm.rs` (the sight table), `game/rules/world/physics.rs` (new), `game/superbounce_charge.rs` (the touchdown for every player), the `sb_strip` label source in `game/rules/census.rs`; `builtin/superbounce.rules`, `builtin/bounce_practice.rules` | the sketch above scores the chain's recorded scenarios as `superbounce_chain_tests.rs` does; a `sees` pair answers one tick after it is asked and never from a handler; a push over the bound is a refused call | the Superbounce game type's chain and medals come from the script; `on bounce`, `on bounced` and the Rust chain are deleted only once the script gives the chain's awards on every scenario of its tests | W2, W3; R9 | 32 traces every tick: 0.25 ms |
 | W5 | Audio: `say`, `sound`, `music`, `announce` | `game/rules/world/audio.rs` (new), the `sound` and `line` types in `lang/*`, the tag table's sound group in `ir.rs` and `verify.rs` | a sound that is not in the map blocks the start by name; a `sound_to` cue reaches only its audience; the music slot starts a late machine at the right tick | a wave's stinger and an Elite's taunt play on every machine of a Live Firefight | W1; R4, R5 | 4 sounds every tick: 0.05 ms |
 | W6 | AI orders and the hand-written director: `go_to`, `hold`, `set_skull`, `firefight.rules` | `crates/tools/firefight-kit` (an order per zone), `game/actor_net/squads.rs`, `builtin/firefight.rules` (new), `crates/formats/firefight/src/script.rs` (fills tables) | every scenario of `crates/formats/firefight/tests/script.rs` passes against the hand-written script; a squad sent to a zone gets that zone's order on the fake squad entry | Firefight runs from `firefight.rules`; the `ff_*` entries, `zone_seen`, `zone_distance`, `firefight.director` and the Rust director are deleted only once the script matches the director on every scenario | W2, W4, W5; Firefight's runs R1 to R4 | the script director with 24 actors: `rules.vm_ns` at most 0.4 ms, and the tick within 2% of the Rust director's |
-| W7 | Bot orders | `crates/live/bots/src/brain.rs`, `decisions.rs` (an outside order as the goal), `game/rules/world/bots.rs` (new) | a phantom with `bot_hold` plans to the zone on a nav fixture; playback makes no order; an order changes no `RulesExt` byte | Clankers hold the zones a Firefight script sends them to | W0 | 16 orders every tick: 0.02 ms on the game thread |
+| W7 | Bot orders (**built**) | `crates/live/bots/src/brain.rs`, `decisions.rs` (an outside order as the goal), `pad_source.rs`, `lib.rs`, `phantom.rs` (delivery), `game/rules/world/bots.rs` (new) | a phantom with `bot_hold` plans to the zone on a nav fixture (`bots::mind::tests`); playback makes no order (`rules::runtime::tests`); an order changes no `RulesExt` byte (`rules::vm::tests`, `rules::runtime::tests`) | Clankers hold the zones a Firefight script sends them to | W0 | 16 orders every tick: 0.02 ms on the game thread |
 | W8 | Vehicles and drop ships: `vehicle`, `path`, `fly`, `seat`, `place_squad_in`, `unload` | `rules/labels.rs` (`path`), `game/rules/world/vehicles.rs` (new), the kit's stage 2 and its labelled ship and paths in `crates/tools/firefight-kit` | a `path` with a gap blocks the start; a ship flies a path in the stated ticks, facing its tangent; riders are placed and unloaded on the fake | a Firefight wave arrives by drop ship on a kit map | W3, W6; R6, R7, R8 | a drop ship with 8 riders in flight: 0.2 ms |
 | W9 | Advanced data: tag reads, squad state, `on damage`, squads by name | `game/rules/world/data.rs` (new), the field resolver over `tags::schema` | a field the schema lacks is a load error naming it; a tag read is the same on two fake machines | a boss wave's bar shows the boss's shield | W2 | 64 tag reads every tick: 0.02 ms |
 | W10 | Modules: `use` | `lang/*`, `crates/formats/variants` (the bundle's files), Live's script routes, the workbench's tabs | two files compile to the blob of the same text in one; a cycle is an error naming both files | Firefight's director and its wave tables are two files | W6 | none in the game; `h2 rules check` on 256 KiB of source in under 50 ms |

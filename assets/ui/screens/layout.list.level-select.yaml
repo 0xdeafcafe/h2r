@@ -1,0 +1,45 @@
+screen: layout.list.level-select
+kind: list
+layout: level_select
+backing: shell
+states:
+  focus-0:
+    focus: 0
+  focus-1:
+    focus: 1
+  focus-2:
+    focus: 2
+widgets:
+  title:
+    component: title
+    text: "Title"
+  description:
+    component: description
+    at: [39, -30]
+    size: [221, 103]
+  legend:
+    component: legend
+    prompts: [[A, "SELECT"], [B, "BACK"]]
+  art.0:
+    component: art
+    at: [-259, 177]
+    size: [128, 256]
+    art: { screen: 11, pane: 0, index: 1, image: 0 }
+  art.1:
+    component: art
+    at: [36, 180]
+    size: [256, 256]
+    art: { screen: 12, pane: 3, index: 0, image: 3 }
+rows:
+  row.0:
+    kind: action
+    text: "Row 1"
+    help: "What row 1 does."
+  row.1:
+    kind: action
+    text: "Row 2"
+    help: "What row 2 does."
+  row.2:
+    kind: action
+    text: "Row 3"
+    help: "What row 3 does."

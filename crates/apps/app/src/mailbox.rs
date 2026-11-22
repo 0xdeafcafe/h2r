@@ -84,6 +84,15 @@ impl TripleBuffer {
         Some(self.front)
     }
 
+    /// The slot [`take`](Self::take) would show, without taking it.
+    pub fn peek(&self) -> Option<usize> {
+        if self.fresh {
+            Some(self.middle)
+        } else {
+            self.front()
+        }
+    }
+
     /// Frames published.
     pub fn published(&self) -> u64 {
         self.published

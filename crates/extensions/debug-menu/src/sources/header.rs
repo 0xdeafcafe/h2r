@@ -1,6 +1,6 @@
 //! The pinned header: one line saying where you are, over every page.
 //!
-//! `coagulation  tick 5412  30 fps  pos 36.7 -80.8 1.7  offline`
+//! `coagulation · tick 5412 · 30 fps · pos 36.7 -80.8 1.7 · offline`
 //!
 //! From `session.status` (map, tick, fps, paused), `sim.view` (the local
 //! player's position) and `sim.session` (what kind of session, and whether
@@ -75,7 +75,7 @@ fn header_rows(a: &[Answer]) -> Vec<Row> {
             parts.push("read-only".into());
         }
     }
-    vec![Row::info(parts.join("  "), Value::Null)]
+    vec![Row::info(parts.join(crate::layout::SEP), Value::Null)]
 }
 
 #[cfg(test)]
@@ -90,7 +90,7 @@ mod tests {
         assert_eq!(r.len(), 1);
         assert_eq!(
             r[0].label,
-            "coagulation  tick 5412  30 fps  pos 36.7 -80.8 1.7  offline"
+            "coagulation · tick 5412 · 30 fps · pos 36.7 -80.8 1.7 · offline"
         );
     }
 
@@ -101,7 +101,7 @@ mod tests {
             ..Game::default()
         };
         let r = rows(&mut g, &header());
-        assert!(r[0].label.ends_with("co-op host  read-only"), "{}", r[0].label);
+        assert!(r[0].label.ends_with("co-op host · read-only"), "{}", r[0].label);
     }
 
     #[test]
@@ -111,7 +111,7 @@ mod tests {
             ..Game::default()
         };
         let r = rows(&mut g, &header());
-        assert_eq!(r[0].label, "coagulation  tick 5412  30 fps  offline");
+        assert_eq!(r[0].label, "coagulation · tick 5412 · 30 fps · offline");
     }
 
     #[test]

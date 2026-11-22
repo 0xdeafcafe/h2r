@@ -1,0 +1,32 @@
+screen: design.row.pick-inline
+kind: list
+layout: level_select
+backing: shell
+states:
+  focused:
+    focus: 0
+  unfocused:
+    focus: 1
+  disabled:
+    focus: 2
+widgets:
+  title:
+    component: title
+    text: "Inline Picks"
+  legend:
+    component: legend
+    prompts: [[A, "CHANGE"], [B, "BACK"]]
+rows:
+  row.0:
+    kind: pick
+    text: "Pick Row"
+    values: ["On", "Off"]
+    current: 0
+  row.1:
+    kind: pick
+    text: "Second Pick Row"
+    values: ["On", "Off"]
+    current: 1
+  row.2:
+    kind: disabled
+    text: "Disabled Row"

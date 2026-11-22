@@ -1,5 +1,6 @@
-//! Tick-driven transition samples for the UI builder. The game uses the
-//! native pane and list tracks selected by the same page preference.
+//! Tick-driven transition samples for the UI builder. The game plays the
+//! native pane and list tracks selected by the same page preference, held
+//! to the same open and close lengths ([`OPEN_TICKS`], [`CLOSE_TICKS`]).
 
 use std::fmt;
 
@@ -57,10 +58,105 @@ pub const SAMPLES: [Phase; 5] = [
     Phase::Out(14),
 ];
 
-const ENTER_TICKS: u32 = 12;
-const LEAVE_TICKS: u32 = 9;
-const ROW_TICKS: u32 = 7;
-const STAGGER_TICKS: usize = 6;
+/// How long a page of ours takes to open and to close, in the builder's
+/// ticks: the kit's budgets. The game holds a screen of ours to the same
+/// time ([`Transition::millis`], `crate::ui_kit::lifecycle::cap_transition`),
+/// so the editor's animation player ends where the game does. Closing is
+/// quicker than opening: a page leaves as soon as it is dismissed.
+pub const OPEN_TICKS: u32 = 10;
+pub const CLOSE_TICKS: u32 = 6;
+
+// The parts of each: the pane's fade and slide, and each row's after a
+// stagger of one tick per visible slot (capped), the selection a tick
+// after its row coming in and a tick before it going out.
+const ENTER_TICKS: u32 = OPEN_TICKS;
+const ROW_ENTER_TICKS: u32 = 6;
+const STAGGER_ENTER: usize = 3;
+const LEAVE_TICKS: u32 = CLOSE_TICKS;
+const ROW_LEAVE_TICKS: u32 = 4;
+const STAGGER_LEAVE: usize = 2;
+const _: () = assert!(STAGGER_ENTER as u32 + ROW_ENTER_TICKS < OPEN_TICKS);
+const _: () = assert!(STAGGER_LEAVE as u32 + ROW_LEAVE_TICKS <= CLOSE_TICKS);
+
+/// The builder's ticks per second, which [`Transition::millis`] turns the
+/// budgets into the game's milliseconds with.
+pub const TICKS_PER_SECOND: u32 = 30;
+
+/// A transition the builder samples: a page opening ([`Phase::In`]) or
+/// closing ([`Phase::Out`]). Focus moves and page changes play the skin's
+/// native tracks in game and are not sampled here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Transition {
+    Open,
+    Close,
+}
+
+impl Transition {
+    pub const ALL: [Transition; 2] = [Transition::Open, Transition::Close];
+
+    /// `open`, `close`: the agent API's names.
+    pub fn name(self) -> &'static str {
+        match self {
+            Transition::Open => "open",
+            Transition::Close => "close",
+        }
+    }
+
+    /// The transition named `name` (`open`/`in`, `close`/`out`).
+    pub fn named(name: &str) -> Option<Transition> {
+        match name.to_ascii_lowercase().as_str() {
+            "open" | "in" => Some(Transition::Open),
+            "close" | "out" => Some(Transition::Close),
+            _ => None,
+        }
+    }
+
+    /// Ticks from its start until every part has settled: the pane's
+    /// track, or the last staggered row and the selection after it,
+    /// whichever is longer ([`OPEN_TICKS`], [`CLOSE_TICKS`]).
+    pub fn ticks(self) -> u32 {
+        match self {
+            Transition::Open => ENTER_TICKS.max(STAGGER_ENTER as u32 + ROW_ENTER_TICKS + 1),
+            Transition::Close => LEAVE_TICKS.max(STAGGER_LEAVE as u32 + ROW_LEAVE_TICKS),
+        }
+    }
+
+    /// Its length in the game, in milliseconds: the most a screen of ours
+    /// spends coming in or going out (`crate::ui_kit::lifecycle::cap_transition`
+    /// holds the screen's delay and length to it). The same time as
+    /// [`Transition::ticks`] at [`TICKS_PER_SECOND`].
+    pub fn millis(self) -> u32 {
+        self.ticks() * 1000 / TICKS_PER_SECOND
+    }
+
+    /// Its pose `tick` ticks in (past the end it stays settled).
+    pub fn phase(self, tick: u32) -> Phase {
+        let tick = tick.min(self.ticks());
+        match self {
+            Transition::Open => Phase::In(tick),
+            Transition::Close => Phase::Out(tick),
+        }
+    }
+
+    /// `n` ticks spread evenly from its start to its end, both included
+    /// (one frame is the start).
+    pub fn frames(self, n: usize) -> Vec<u32> {
+        let end = self.ticks();
+        match n {
+            0 => Vec::new(),
+            1 => vec![0],
+            n => (0..n)
+                .map(|i| (i as u32 * end + (n as u32 - 1) / 2) / (n as u32 - 1))
+                .collect(),
+        }
+    }
+
+    /// Seconds at `tick`.
+    pub fn seconds(tick: u32) -> f32 {
+        tick as f32 / TICKS_PER_SECOND as f32
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 enum Part {
@@ -120,12 +216,16 @@ impl Frame {
             Phase::In(_) | Phase::Rest => slot,
             Phase::Out(_) => self.rows.saturating_sub(1).saturating_sub(slot),
         };
-        let delay = ordinal.min(STAGGER_TICKS) as u32;
+        let stagger = match self.phase {
+            Phase::In(_) | Phase::Rest => STAGGER_ENTER,
+            Phase::Out(_) => STAGGER_LEAVE,
+        };
+        let delay = ordinal.min(stagger) as u32;
         let delay = match self.phase {
             Phase::In(_) | Phase::Rest => delay + u32::from(selected),
             Phase::Out(_) => delay.saturating_sub(u32::from(selected)),
         };
-        let row = visibility(self.phase, delay, ROW_TICKS, ROW_TICKS);
+        let row = visibility(self.phase, delay, ROW_ENTER_TICKS, ROW_LEAVE_TICKS);
         Pose {
             alpha: mix_alpha(self.pane.alpha, row),
             ..self.pane
@@ -329,6 +429,51 @@ mod tests {
         let rest = opacity(animated.seek(Phase::Rest));
         assert!(opening > 0 && opening < rest);
         assert_eq!(opacity(animated.seek(Phase::Out(14))), 0);
+    }
+
+    #[test]
+    fn a_transition_spans_until_every_part_settles() {
+        assert_eq!(Transition::named("in"), Some(Transition::Open));
+        assert_eq!(Transition::named("Close"), Some(Transition::Close));
+        assert_eq!(Transition::named("focus"), None);
+        for t in Transition::ALL {
+            assert_eq!(Transition::named(t.name()), Some(t));
+            let frames = t.frames(5);
+            assert_eq!(frames.len(), 5);
+            assert_eq!(frames[0], 0);
+            assert_eq!(*frames.last().unwrap(), t.ticks());
+            assert!(frames.windows(2).all(|w| w[0] < w[1]), "{frames:?}");
+            assert_eq!(t.phase(t.ticks() + 50), t.phase(t.ticks()));
+            // The last staggered row and its selection are settled at the end.
+            let end = Frame::new(TransitionStyle::Default, false, 12, t.phase(t.ticks()));
+            let settled = if t == Transition::Open { 255 } else { 0 };
+            assert_eq!(end.pose(Part::Selection(11)).alpha, settled);
+            assert_eq!(end.pose(Part::Row(0)).alpha, settled);
+        }
+        assert_eq!(Transition::Open.frames(1), vec![0]);
+        assert!(Transition::Close.frames(0).is_empty());
+        assert_eq!(Transition::seconds(TICKS_PER_SECOND), 1.0);
+    }
+
+    /// The budgets the game holds a screen of ours to: closing quicker
+    /// than opening, and both quick (a third of a second to open, a fifth
+    /// to close). The editor's player plays the same lengths.
+    #[test]
+    fn closing_is_quicker_than_opening_and_both_are_the_games_lengths() {
+        assert_eq!(Transition::Open.ticks(), OPEN_TICKS);
+        assert_eq!(Transition::Close.ticks(), CLOSE_TICKS);
+        assert_eq!(Transition::Open.millis(), 333);
+        assert_eq!(Transition::Close.millis(), 200);
+        assert!(Transition::Close.millis() * 3 <= Transition::Open.millis() * 2);
+        for t in Transition::ALL {
+            let seconds = Transition::seconds(t.ticks());
+            assert!((seconds * 1000.0 - t.millis() as f32).abs() < 1.0, "{t:?}");
+        }
+        // Gone at the end of the close: nothing of the page still drawn.
+        let end = Frame::new(TransitionStyle::Default, true, 11, Phase::Out(CLOSE_TICKS));
+        for part in [Part::Pane, Part::Row(0), Part::Row(10), Part::Selection(5)] {
+            assert_eq!(end.pose(part).alpha, 0, "{part:?}");
+        }
     }
 
     #[test]

@@ -30,6 +30,7 @@ connection to hold `session.claim`.
 | `live.subscribe`, `live.status`, `live.close` | read | [Live mirror](#live-mirror) |
 | `session.pause`, `resume`, `step` | claim | [Control](#control) |
 | `host.pause`, `host.step` | act, without the controller check | [Window pause and frame step](#window-pause-and-frame-step) |
+| `host.screenshot` | act, without the controller check | [Window screenshots](#window-screenshots) |
 | `world.count`, `world.query`, `world.object` | read | [`world`](#world-what-is-in-the-level) |
 | `world.object.set`, `world.object.delete`, `world.object.respawn` | act | [Object edits](#object-edits) |
 | `world.placement.edit` | act | [Placement edits](#placement-edits) |
@@ -115,7 +116,7 @@ connection to hold `session.claim`.
 
 A new method gets a row here and a section for its domain. The names
 live in `crates/extensions/agent-proto/src` (`method::ALL`, `hot::method::ALL`,
-`state::method::ALL`, `sim`, `forge`, `firefight`, `rules`, `trace`, `theater`, `goto`, `host_pause`, `game_load`) and where the host adds
+`state::method::ALL`, `sim`, `forge`, `firefight`, `rules`, `trace`, `theater`, `goto`, `host_pause`, `host_shot`, `game_load`) and where the host adds
 them (`Agent::add_method`, `Agent::add_game_method`, `Agent::add_connection_read`).
 
 ## Connecting
@@ -401,7 +402,8 @@ printf 'claim\npause\nstep 1\nobject player.0\nrelease\n' | h2 agent -
 ### Window pause and frame step
 
 `host.pause {on}` is the window's own pause, the one Cmd+P toggles, asked
-for over the API; `host.step {ticks?}` runs game ticks under it. They are
+for over the API; `host.pause {}` reads the state, changing nothing.
+`host.step {ticks?}` runs game ticks under the pause. They are
 meant for `h2 play` and other windowed games, where `session.pause` also
 stops the window's event loop. The window stays live: it keeps drawing
 its last frame, the debug menu and overlays keep working, and the audio
@@ -409,7 +411,7 @@ pauses as for Cmd+P.
 
 | Method | Params | Result |
 |---|---|---|
-| `host.pause` | `{on: bool}` | `{paused, held, tick}` once the window has applied it |
+| `host.pause` | `{on: bool}`, or `{}` to read | `{paused, held, tick}` once the window has applied it |
 | `host.step` | `{ticks?}`: 1 to 1800, default 1 | `{paused, held, tick, stepped}` once the ticks ran and the game is held again |
 
 `paused` is the window's pause (Cmd+P's, whoever set it); `held` says
@@ -453,6 +455,29 @@ world between ticks without running any.
 h2 agent host.pause '{"on":true}'
 h2 agent host.step '{"ticks":10}'
 h2 agent host.pause '{"on":false}'
+```
+
+### Window screenshots
+
+`host.screenshot {path?}` writes the window's newest published frame — the
+one it is showing, without the debug menu or the overlays — as a PNG, and
+answers `{path, width, height}` with what it wrote. With no `path` it
+names a new file in the window's screenshots directory (`h2 play`'s is
+`screenshots/` under the data root).
+
+Like `host.pause` it is answered on the connection's own thread, with the
+window shell's capture (`crates/apps/app/src/shell.rs`, over
+`agent_proto::host_shot`): the frame source's newest frame read back and
+encoded on the asking thread, so the debug menu's own call works while
+the game is paused, and a call from `h2 agent` never waits on the window's
+event loop. A headless game has no window: `UNAVAILABLE`, naming
+`render.capture` for a frame there. A window still starting, one with no
+frame yet, a write that fails, and a default-path shot where the window
+has no screenshots directory are `UNAVAILABLE` with the reason.
+
+```sh
+h2 agent host.screenshot '{}'
+h2 agent host.screenshot '{"path":"/tmp/ledge.png"}'
 ```
 
 ## `world`: what is in the level
@@ -3126,6 +3151,8 @@ or “Editor · edits blocked”. Optional `text` appears on the second line.
 The plate expires on the wall clock, including while the game is paused.
 The shell draws it after the watermark and leaves room for the banner
 (`crates/apps/cli/src/play_cmd.rs`, `crates/apps/app/src/shell.rs`).
+While the debug menu is open, the plate's lines show inside the menu
+instead ([debug-menu.md](debug-menu.md#layout)).
 
 | Method | Access | Params | Result |
 |---|---|---|---|

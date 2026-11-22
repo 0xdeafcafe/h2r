@@ -1064,6 +1064,11 @@ impl PadSource for Metered {
         self.thinking = None;
     }
 
+    fn order(&mut self, order: Option<bots::brain::Order>) -> bool {
+        self.brain.set_order(order);
+        true
+    }
+
     fn phantom_latency(&self) -> bots::tuning::PhantomLatency {
         self.brain.phantom_latency()
     }

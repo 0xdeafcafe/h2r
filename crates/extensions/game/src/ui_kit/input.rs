@@ -217,17 +217,12 @@ fn glyphs(gs: &[Glyph]) -> String {
         .join(GLYPH_GAP)
 }
 
-/// The legend as the font draws it: each prompt's glyphs, a space, its
-/// words; prompts three spaces apart (retail's own legends' spacing).
+/// The legend as the design system writes it, wherever it is drawn (the
+/// footer, a panel's edge, a HUD): [`footer_legend`]'s form, so the same
+/// prompts read the same on every screen (docs/game/ui-builder.md "The
+/// design system", `assets/ui/design.yaml` `legend`).
 pub fn legend(prompts: &[Prompt]) -> String {
-    prompts
-        .iter()
-        .map(|p| {
-            let g = glyphs(&p.glyphs);
-            format!("{g} {}", p.text)
-        })
-        .collect::<Vec<_>>()
-        .join("   ")
+    footer_legend(prompts)
 }
 
 /// The legend as the game's footers write it: glyph, space, the words in
@@ -357,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn a_legend_is_glyphs_then_words_three_spaces_apart() {
+    fn a_legend_is_glyphs_then_words_in_capitals_two_spaces_apart() {
         let p = [
             Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Toggle"),
             Prompt::new(&[Glyph::A], "Start Level"),
@@ -365,7 +360,7 @@ mod tests {
         ];
         assert_eq!(
             legend(&p),
-            "\u{e10a}  \u{e10b} Toggle   \u{e100} Start Level   \u{e101} Back"
+            "\u{e10a}  \u{e10b} TOGGLE  \u{e100} START LEVEL  \u{e101} BACK"
         );
         assert_eq!(
             legend_named(&p),

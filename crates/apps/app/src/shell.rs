@@ -19,10 +19,11 @@ use crate::fps::DisplaySchedule;
 use crate::frame::{self, Compositor, FrameSource, FrameStats};
 use crate::keymap::{self, Shortcut};
 use crate::lifecycle::Lifecycle;
-use crate::menu_overlay::MenuRenderer;
+use crate::menu_overlay::{self, MenuRenderer};
 use crate::overlay::marks::{MarkFrameStatus, MarkRenderer};
 use crate::overlay::{EditorPlateRenderer, OverlayRenderer};
 use crate::pacing::{PaceStats, Pacer, WindowedRate};
+use crate::scale::Viewport;
 use crate::surface::{SurfaceKind, WindowSurface};
 use crate::theater_overlay;
 use crate::watermark::{LiveStats, Panels, WatermarkRenderer};
@@ -81,7 +82,10 @@ const STATUS_WINDOW: Duration = Duration::from_secs(5);
 
 struct Status {
     last: Instant,
+    /// The guest's own presents.
     guest: WindowedRate,
+    /// In-between frames the render thread made (`FrameStats::made`).
+    made: WindowedRate,
     shown: WindowedRate,
     dropped: WindowedRate,
     epoch: Instant,
@@ -123,6 +127,9 @@ struct Shell {
     theater_refresh: Instant,
     theater_screenshot: Option<std::path::PathBuf>,
     theater_cursor: Option<(f64, f64)>,
+    /// What `host.screenshot`'s capture needs ([`agent_proto::host_shot`]),
+    /// once the window and its frame handoff are up.
+    shot_parts: Arc<Mutex<Option<(GfxContext, FrameSource)>>>,
     /// The window's own redraw clock above 30 fps (`AppConfig::fps`).
     display: DisplaySchedule,
 }
@@ -195,6 +202,7 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
         status: Status {
             last: now,
             guest: WindowedRate::new(STATUS_WINDOW),
+            made: WindowedRate::new(STATUS_WINDOW),
             shown: WindowedRate::new(STATUS_WINDOW),
             dropped: WindowedRate::new(STATUS_WINDOW),
             epoch: now,
@@ -209,6 +217,7 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
         theater_refresh: now,
         theater_screenshot: None,
         theater_cursor: None,
+        shot_parts: Arc::default(),
         display: DisplaySchedule::new(config_fps),
     };
     if let Some(c) = &shell.config.closer {
@@ -232,6 +241,19 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
         let _ = proxy.send_event(UserEvent::HostPause);
     }));
     let _host_pause = HostPauseAttached;
+    // host.screenshot captures the newest frame through the hub.
+    struct HostShotAttached;
+    impl Drop for HostShotAttached {
+        fn drop(&mut self) {
+            agent_proto::host_shot::hub().detach();
+        }
+    }
+    let parts = Arc::clone(&shell.shot_parts);
+    let dir = shell.config.screenshots.clone();
+    agent_proto::host_shot::hub().attach(Box::new(move |path| {
+        host_shot(&parts, &dir, path)
+    }));
+    let _host_shot = HostShotAttached;
     event_loop.run_app(&mut shell)?;
     if let Some(e) = shell.init_error.take() {
         return Err(e);
@@ -245,6 +267,42 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
         frames: shell.frames_at_exit,
         pacing: *shell.pace_stats.lock().unwrap_or_else(|e| e.into_inner()),
         restart_requested: shell.restart_requested,
+    })
+}
+
+/// `host.screenshot`'s capture ([`agent_proto::host_shot`]): the newest
+/// frame of the window's handoff as a PNG, at `path` or a new file under
+/// `dir` (`AppConfig::screenshots`). Runs on the asking thread, the menu's
+/// included, so it never waits on the event loop.
+fn host_shot(
+    parts: &Mutex<Option<(GfxContext, FrameSource)>>,
+    dir: &Option<std::path::PathBuf>,
+    path: Option<std::path::PathBuf>,
+) -> Result<agent_proto::host_shot::Shot, String> {
+    let (ctx, source) = parts
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .ok_or("the window is still starting")?;
+    let frame = source.peek().ok_or("no frame to capture yet")?;
+    let path = match path {
+        Some(p) => p,
+        None => {
+            let dir = dir
+                .as_ref()
+                .ok_or("this window has no screenshots directory; pass a path")?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|e| e.to_string())?
+                .as_nanos();
+            dir.join(format!("h2-{now}.png"))
+        }
+    };
+    let (width, height) = theater_overlay::screenshot_to(&ctx, &frame, &path)?;
+    Ok(agent_proto::host_shot::Shot {
+        path,
+        width,
+        height,
     })
 }
 
@@ -307,6 +365,9 @@ impl Shell {
         source.set_waker(move || {
             let _ = proxy.send_event(UserEvent::Frame);
         });
+        // host.screenshot's capture reads the newest frame of this handoff.
+        *self.shot_parts.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((crate::share_context(&ctx), source.clone()));
 
         let audio = if self.config.audio {
             match AudioOut::start_default() {
@@ -563,12 +624,29 @@ impl Shell {
             self.banner_drawn = banner.generation();
             banner.visible()
         });
+        // While the debug menu is open, the banner and the editor plate
+        // are lines inside it (docs/runtime/debug-menu.md "Layout"), so
+        // nothing is drawn over the menu. While it is closed they are drawn
+        // as plates, and the menu's lone result keeps clear of them.
+        let mut in_menu: Vec<debug_menu::Line> = Vec::new();
+        let mut plates: Vec<Viewport> = Vec::new();
+        if menu_open && let Some(n) = &notice {
+            in_menu.push(debug_menu::Line {
+                text: n.text.clone(),
+                tone: menu_overlay::notice_tone(n.kind),
+            });
+        }
         if let Some(editor) = &self.config.editor_link
             && let Some(renderer) = &mut g.editor
             && let Some((plate, expires)) = editor.current(now)
         {
             overlay_expires = Some(overlay_expires.map_or(expires, |marks| marks.min(expires)));
-            renderer.draw(
+            if menu_open {
+                in_menu.push(debug_menu::Line {
+                    text: plate.lines().collect::<Vec<_>>().join("\n"),
+                    tone: menu_overlay::notice_tone(plate.tone),
+                });
+            } else if let Some(at) = renderer.draw(
                 &g.ctx.device,
                 &g.ctx.queue,
                 &mut enc,
@@ -577,7 +655,9 @@ impl Shell {
                 &view,
                 g.surface.config.format,
                 g.surface.size(),
-            );
+            ) {
+                plates.push(at);
+            }
         }
         if let Some(renderer) = &mut g.theater {
             let model = forge_frame.map(|frame| theater_overlay::View {
@@ -594,12 +674,23 @@ impl Shell {
                 viewport,
             );
         }
-        // The debug menu over everything but the banner.
+        if !menu_open && let Some(notice) = &notice {
+            plates.push(g.overlay.draw(
+                &g.ctx.device,
+                &g.ctx.queue,
+                &mut enc,
+                notice,
+                &view,
+                g.surface.config.format,
+                size,
+            ));
+        }
+        // The debug menu over everything else, never under a plate.
         if let Some(lines) = self
             .config
             .debug_menu
             .as_ref()
-            .and_then(debug_menu::Shared::lines)
+            .and_then(|menu| menu.lines_with(&in_menu))
         {
             g.menu.draw(
                 &g.ctx.device,
@@ -610,17 +701,7 @@ impl Shell {
                 g.surface.config.format,
                 size,
                 viewport,
-            );
-        }
-        if let Some(notice) = notice {
-            g.overlay.draw(
-                &g.ctx.device,
-                &g.ctx.queue,
-                &mut enc,
-                &notice,
-                &view,
-                g.surface.config.format,
-                size,
+                &plates,
             );
         }
         g.ctx.queue.submit([enc.finish()]);
@@ -653,18 +734,25 @@ impl Shell {
         }
         let stats = g.source.stats();
         let now = self.status.epoch.elapsed();
-        let guest_fps = self.status.guest.record(now, stats.published);
+        // The guest's own presents; in-between frames are counted apart.
+        let guest_fps = self
+            .status
+            .guest
+            .record(now, stats.published.saturating_sub(stats.made));
+        let made_fps = self.status.made.record(now, stats.made);
         let shown_fps = self.status.shown.record(now, stats.shown);
         self.status.dropped.record(now, stats.dropped);
         self.status.last = Instant::now();
-        let mut line = format!(
-            "{} | guest {:.1} fps | shown {:.1} fps | dropped {} (last {}s)",
-            self.config.title,
-            guest_fps,
+        let mut line = format!("{} | guest {:.1} fps", self.config.title, guest_fps);
+        if made_fps > 0.0 {
+            line.push_str(&format!(" | made {made_fps:.1} fps"));
+        }
+        line.push_str(&format!(
+            " | shown {:.1} fps | dropped {} (last {}s)",
             shown_fps,
             self.status.dropped.count(),
             STATUS_WINDOW.as_secs()
-        );
+        ));
         if self.life.is_paused() {
             line.push_str(" | paused");
         }
@@ -802,9 +890,10 @@ impl ApplicationHandler<UserEvent> for Shell {
             UserEvent::Frame => {
                 if let Some(g) = &self.gpu {
                     g.source.ack_wake();
-                    if self.display.redraw_on_publish() {
-                        g.window.request_redraw();
-                    }
+                    // Every publish (a guest frame or an in-between frame)
+                    // is drawn once; the display grid only fills gaps.
+                    self.display.published(self.status.epoch.elapsed());
+                    g.window.request_redraw();
                 }
             }
             UserEvent::EditorChanged => {
@@ -1215,10 +1304,8 @@ impl ApplicationHandler<UserEvent> for Shell {
                 if let Some(v) = vsync {
                     g.surface.set_vsync(v);
                 }
-                if self.display.redraw_on_publish() {
-                    // A publish just before the switch may still be waiting for a slot.
-                    g.window.request_redraw();
-                }
+                // A publish just before the switch may still be waiting.
+                g.window.request_redraw();
             }
             eprintln!("app: frame rate {target}");
         }

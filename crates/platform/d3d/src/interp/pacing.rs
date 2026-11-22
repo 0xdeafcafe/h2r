@@ -21,10 +21,14 @@ pub const GUEST_FRAME_NS: u64 = 1_000_000_000 / 30;
 /// Frames further apart than this are not blended (below about 22 fps).
 pub const HOLD_GAP_NS: u64 = 45_000_000;
 
-/// The replay rate this slice supports (docs/game/high-framerate.md,
-/// "Phase 2"): 60 and above all replay at 60 until 120 has measured
-/// headroom.
-pub const MAX_REPLAY_HZ: u32 = 60;
+/// The highest replay rate (docs/game/high-framerate.md, "Phase 2"):
+/// 120 and uncapped replay at 120 while [`Headroom`] says the made frames
+/// fit, else at [`FALLBACK_REPLAY_HZ`].
+pub const MAX_REPLAY_HZ: u32 = 120;
+
+/// The rate a replay above 60 falls back to when its made frames do not
+/// fit ([`Headroom`]).
+pub const FALLBACK_REPLAY_HZ: u32 = 60;
 
 /// What the frame-rate setting (`graphics.fps`, `H2_FPS`) asks of the
 /// replay.
@@ -37,8 +41,9 @@ pub enum Rate {
 }
 
 impl Rate {
-    /// From the setting's value: 30 is off, 0 is uncapped; everything
-    /// above 30 replays at [`MAX_REPLAY_HZ`] at most.
+    /// From the setting's value: 30 is off, 0 is uncapped (replays at
+    /// [`MAX_REPLAY_HZ`]); everything above 30 replays at its own rate,
+    /// [`MAX_REPLAY_HZ`] at most.
     pub fn from_setting(fps: u32) -> Rate {
         match fps {
             0 => Rate::Hz(MAX_REPLAY_HZ),
@@ -53,6 +58,58 @@ impl Rate {
             Rate::Off => None,
             Rate::Hz(h) => Some(1_000_000_000 / h.max(1) as u64),
         }
+    }
+}
+
+/// Whether the render thread can afford made frames above
+/// [`FALLBACK_REPLAY_HZ`]. It keeps a running average of what one made
+/// frame costs the render thread (its draws and present). At a rate `h`,
+/// `h / 30` frames are made per guest frame (the blended present and the
+/// in-between frames); they may take at most half of a guest frame
+/// ([`GUEST_FRAME_NS`]), so the guest's own frame keeps the other half and
+/// the frame-in-flight limit does not hold the guest. Above that the
+/// replay runs at [`FALLBACK_REPLAY_HZ`] until the cost falls under three
+/// quarters of the budget again (hysteresis, so it does not flap).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Headroom {
+    /// Average made-frame cost, ns (an exponential average, weight 1/8).
+    avg_ns: Option<u64>,
+    /// Rates above the fallback do not fit.
+    capped: bool,
+}
+
+impl Headroom {
+    /// The share of a guest frame made frames may take: half.
+    pub const BUDGET_NS: u64 = GUEST_FRAME_NS / 2;
+
+    /// Records one made frame's render-thread cost.
+    pub fn record(&mut self, ns: u64) {
+        let avg = match self.avg_ns {
+            None => ns,
+            Some(a) => a - a / 8 + ns / 8,
+        };
+        self.avg_ns = Some(avg);
+        let per_guest_frame = |hz: u32| avg.saturating_mul(u64::from(hz / 30));
+        let cost = per_guest_frame(MAX_REPLAY_HZ);
+        if self.capped {
+            self.capped = cost > Self::BUDGET_NS * 3 / 4;
+        } else {
+            self.capped = cost > Self::BUDGET_NS;
+        }
+    }
+
+    /// `wanted`, or [`FALLBACK_REPLAY_HZ`] when it is above that and the
+    /// made frames do not fit.
+    pub fn cap(&self, wanted: Rate) -> Rate {
+        match wanted {
+            Rate::Hz(h) if self.capped && h > FALLBACK_REPLAY_HZ => Rate::Hz(FALLBACK_REPLAY_HZ),
+            r => r,
+        }
+    }
+
+    /// Whether rates above the fallback are held back now.
+    pub fn capped(&self) -> bool {
+        self.capped
     }
 }
 
@@ -207,12 +264,62 @@ mod tests {
     fn settings_map_to_rates() {
         assert_eq!(Rate::from_setting(30), Rate::Off);
         assert_eq!(Rate::from_setting(60), Rate::Hz(60));
-        assert_eq!(
-            Rate::from_setting(120),
-            Rate::Hz(60),
-            "120 waits on measured headroom"
-        );
-        assert_eq!(Rate::from_setting(0), Rate::Hz(60), "uncapped");
+        assert_eq!(Rate::from_setting(120), Rate::Hz(120));
+        assert_eq!(Rate::from_setting(0), Rate::Hz(120), "uncapped");
+        assert_eq!(Rate::from_setting(240), Rate::Hz(120));
+    }
+
+    #[test]
+    fn headroom_holds_120_back_while_made_frames_do_not_fit() {
+        let mut h = Headroom::default();
+        assert_eq!(h.cap(Rate::Hz(120)), Rate::Hz(120), "no cost known yet");
+        // 2 ms a made frame: four per guest frame is 8 ms, inside 16.7.
+        for _ in 0..32 {
+            h.record(2 * MS);
+        }
+        assert_eq!(h.cap(Rate::Hz(120)), Rate::Hz(120));
+        // 6 ms: 24 ms per guest frame at 120. Falls back to 60.
+        for _ in 0..32 {
+            h.record(6 * MS);
+        }
+        assert!(h.capped());
+        assert_eq!(h.cap(Rate::Hz(120)), Rate::Hz(60));
+        assert_eq!(h.cap(Rate::Hz(60)), Rate::Hz(60), "60 is never cut");
+        assert_eq!(h.cap(Rate::Off), Rate::Off);
+        // 3.5 ms: 14 ms, under the budget but over three quarters of it:
+        // stays at 60 (no flapping at the edge).
+        for _ in 0..64 {
+            h.record(3_500_000);
+        }
+        assert!(h.capped());
+        // 2 ms again: back to 120.
+        for _ in 0..64 {
+            h.record(2 * MS);
+        }
+        assert!(!h.capped());
+        assert_eq!(h.cap(Rate::Hz(120)), Rate::Hz(120));
+    }
+
+    #[test]
+    fn one_twenty_shows_four_frames_per_tick() {
+        let shown = simulate(&ticks(5), Rate::Hz(120), 5 * GUEST_FRAME_NS);
+        for f in 1..4 {
+            let per: Vec<f32> = shown
+                .iter()
+                .filter(|s| s.frame == f)
+                .map(|s| s.alpha.unwrap())
+                .collect();
+            assert_eq!(per.len(), 4, "frame {f}: {per:?}");
+            for (i, a) in per.iter().enumerate() {
+                assert!((a - i as f32 * 0.25).abs() < 1e-3, "{per:?}");
+            }
+        }
+        // Evenly spaced on the display: one 120 Hz period apart.
+        let period = Rate::Hz(120).period_ns().unwrap();
+        for w in shown.windows(2).skip(1) {
+            let gap = w[1].at - w[0].at;
+            assert!(gap.abs_diff(period) <= 1, "{gap}");
+        }
     }
 
     #[test]

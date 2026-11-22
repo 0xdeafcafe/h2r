@@ -82,6 +82,7 @@ feature aim-assist: on
 0xa0e82020 entry video-screen:row chosen
 0xa0e82030 entry video-screen:set up pane
 0xa0e82040 entry video-screen:loader slot
+0xa0e82050 entry video-screen:item count
 locale source ui-strings:our strings (served by engine-leaves)
 warning: LOCALE_FIND (0x001a02d0) is hot: hooking it leaves the direct-call fast path
 "
