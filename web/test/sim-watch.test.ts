@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { Frame } from "../src/api/types";
 import {
-  BatchClock, DEFAULT_WATCH_SPEED, MAX_LIVE_STREAMS, WATCH_SPEEDS, armsLabel, gameClock, limiter, orderTiles, scoreAt,
-  streamingTiles, tileMode, tileTick,
+  BatchClock, DEFAULT_WATCH_SPEED, DIM_ALPHA, MAX_LIVE_STREAMS, PLAYER_STRIDE, RUN_COLOURS, WATCH_SPEEDS, armsLabel, dimColour,
+  gameClock, groupByMap, limiter, mergeFrames, mergeRosters, orderTiles, overlayKey, runColour, scoreAt, streamingTiles, tileMode, tileTick,
 } from "../src/admin/batchWatch";
+import type { MapFrame } from "../src/components/MapCanvas";
 import type { SimBot, SimRun } from "../src/admin/simRuns";
 import { FrameBuffer, MAX_STREAM_PACE, TICKS_PER_SECOND, streamPace } from "../src/state/frames";
 import { ReplayTimeline } from "../src/state/replay";
@@ -183,5 +184,61 @@ describe("live and replay speed", () => {
     playback.updateRecording(new ReplayTimeline(frames, []), 2000);
     expect(playback.clock!.speed).toBe(16);
     expect(new ViewerPlayback(false).speed).toBe(1);
+  });
+});
+
+describe("one map overlay", () => {
+  const player = (index: number, x = 0) => ({ index, alive: true, x, y: 0, z: 0, yaw: 0, vehicle: null });
+  const frame = (indices: number[], seen: MapFrame["seen"] = null): MapFrame => ({
+    players: indices.map((i) => player(i, i)),
+    markers: [{ x: 1, y: 2, z: 3, alpha: 0.8, colour: "#555" }],
+    seen,
+  });
+
+  test("runs group by map, each group in tile order", () => {
+    const groups = groupByMap([
+      run("3", { map: "midship", seed: "1" }),
+      run("2", { map: "lockout", seed: "9" }),
+      run("1", { map: "lockout", seed: "10" }),
+    ]);
+    expect(groups.map((g) => [g.map, g.runs.map((r) => r.sim.run_id)])).toEqual([["lockout", ["2", "1"]], ["midship", ["3"]]]);
+    expect(groupByMap([])).toEqual([]);
+  });
+
+  test("run colours are distinct, stable by slot and wrap after the palette", () => {
+    expect(new Set(RUN_COLOURS).size).toBe(RUN_COLOURS.length);
+    expect(runColour(0)).toBe(RUN_COLOURS[0]);
+    expect(runColour(RUN_COLOURS.length)).toBe(runColour(0));
+    expect(runColour(-1)).toBe(RUN_COLOURS.at(-1));
+  });
+
+  test("a colour dims to a translucent one, and a non-hex colour is left alone", () => {
+    expect(dimColour("#ff8000")).toBe(`rgba(255, 128, 0, ${DIM_ALPHA})`);
+    expect(dimColour("#f80", 0.5)).toBe("rgba(255, 136, 0, 0.5)");
+    expect(dimColour("rgb(1, 2, 3)")).toBe("rgb(1, 2, 3)");
+  });
+
+  test("rosters merge with a unique key and the run's colour for every player", () => {
+    const roster = new Map([[0, { name: "Clanker", colour: "#c00", bot: true }], [1, { name: "Other", colour: "#00c" }]]);
+    const merged = mergeRosters([
+      { slot: 0, label: "Seed 1", colour: "#4aa3ff", dim: false, roster },
+      { slot: 1, label: "Seed 2", colour: "#ff6b4a", dim: true, roster },
+    ]);
+    expect(merged.size).toBe(4);
+    expect(merged.get(overlayKey(0, 1))).toEqual({ name: "Seed 1 · Other", colour: "#4aa3ff" });
+    expect(merged.get(overlayKey(1, 0))).toEqual({ name: "Seed 2 · Clanker", colour: dimColour("#ff6b4a"), bot: true });
+    expect(overlayKey(1, 0)).toBe(PLAYER_STRIDE);
+  });
+
+  test("frames merge: players re-keyed, marks in the run's colour, dimmed runs faded, bounds joined", () => {
+    const merged = mergeFrames([
+      { slot: 0, colour: "#4aa3ff", dim: false, frame: frame([0, 1], { minX: 0, minY: 0, maxX: 5, maxY: 5 }) },
+      { slot: 2, colour: "#5fd35f", dim: true, frame: frame([0], { minX: -3, minY: 1, maxX: 4, maxY: 9 }) },
+      { slot: 3, colour: "#ffd23f", dim: false, frame: frame([]) },
+    ]);
+    expect(merged.players.map((p) => p.index)).toEqual([0, 1, 2 * PLAYER_STRIDE]);
+    expect(merged.markers.map((m) => [m.colour, m.alpha])).toEqual([["#4aa3ff", 0.8], ["#5fd35f", 0.8 * DIM_ALPHA], ["#ffd23f", 0.8]]);
+    expect(merged.seen).toEqual({ minX: -3, minY: 0, maxX: 5, maxY: 9 });
+    expect(mergeFrames([]).seen).toBeNull();
   });
 });
