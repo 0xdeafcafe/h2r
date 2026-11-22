@@ -20,7 +20,11 @@ const CREATE_SQUAD: u32 = 0x0005_9890;
 /// Retail lifecycle teardown, also used before a checkpoint scenario load.
 pub(crate) const LEAVE_SESSIONS: u32 = 0x0005_93e0;
 const SET_VARIANT: u32 = 0x0019_a728;
-const CONTROLLER_COUNTDOWN: u32 = 0x0019_a78e;
+/// The controller countdown (`0x19a78e`): EAX the pressing controller's
+/// port, stack 10 and 3 as the lobby's Start Game asks; AL nonzero when the
+/// countdown started. The pause menu's Change Map starts the next game
+/// with it (`crate::pause_change_map`).
+pub(crate) const CONTROLLER_COUNTDOWN: u32 = 0x0019_a78e;
 /// The pregame stage change the countdown finisher (`0x6e410`) makes once
 /// every peer has loaded the map: `0x6e4d7` calls it with the session in
 /// ESI and the new stage in EDI, and it returns with a plain `ret`.

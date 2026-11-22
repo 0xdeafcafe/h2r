@@ -836,6 +836,8 @@ pub fn install(
                 let n = menu_rows.count(name, n);
                 // GAME MENU's Forge rows, while a local Forge session runs.
                 let n = crate::forge_screens::game_menu_count(name, n);
+                // GAME MENU's Change Map row, for the party leader.
+                let n = crate::pause_change_map::list_count(name, n);
                 // The variant editor's categories get the multiplayer
                 // Skulls row and the More Options row.
                 let n = crate::variant_page::variant_count(

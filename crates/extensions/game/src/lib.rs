@@ -195,6 +195,7 @@ pub mod bots_nav_auto;
 pub mod clanker_card;
 pub mod clankermatch;
 pub mod clankers;
+pub mod pause_change_map;
 pub mod pause_menu;
 pub mod player_goto;
 pub mod setting_defs;
