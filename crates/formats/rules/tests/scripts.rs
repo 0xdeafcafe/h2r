@@ -37,7 +37,7 @@ on kill(victim, killer) {
 
 on tick {
     if count(players where not infected) == 0 { end_round(team 1) }
-    else if round_time_left() == 0 { end_round(team 0) }
+    else if round_time_left() == 0t { end_round(team 0) }
 }
 "#;
 
@@ -49,14 +49,14 @@ requires ai.squads
 
 label ff_drop: objects
 
-table waves: (class: Class, per_player: int, min: int, max: int, gap: int) = [
-    ("grunt", 2, 2, 6, 3),
-    ("elite", 1, 1, 3, 5),
+table waves: (class: Class, per_player: int, min: int, max: int, gap: time) = [
+    ("grunt", 2, 2, 6, 3t),
+    ("elite", 1, 1, 3, 5t),
 ]
 table points: (class: Class, score: int) = [("grunt", 1), ("elite", 3)]
 global var wave: int = 0
 global var lives: int = 2
-global var next: timer = 2
+global var next: timer = 2t
 
 on timer(next) {
     let w = waves[wave]

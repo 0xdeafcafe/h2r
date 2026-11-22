@@ -52,6 +52,13 @@ pub enum Item {
     },
     Fn(FnDecl),
     Label(LabelDecl),
+    /// `const last_phase = 2`: a value the checker folds, usable wherever
+    /// a literal is.
+    Const {
+        name: String,
+        value: Expr,
+        pos: Pos,
+    },
     On {
         event: String,
         /// The argument names, in the event's order; trailing ones may be
@@ -79,16 +86,17 @@ pub struct LabelDecl {
     pub pos: Pos,
 }
 
-/// What a label asks of the map.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What a label asks of the map. Each count is a constant expression: a
+/// literal or a `const`.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Requirement {
-    AtLeast(i64),
-    AtMost(i64),
-    Exactly(i64),
+    AtLeast(Expr),
+    AtMost(Expr),
+    Exactly(Expr),
     /// `n..m` members.
-    Between(i64, i64),
+    Between(Expr, Expr),
     /// `numbered`, or `numbered a..b`.
-    Numbered(Option<(i64, i64)>),
+    Numbered(Option<(Expr, Expr)>),
     PerTeam,
 }
 
@@ -107,6 +115,11 @@ pub struct OptionDecl {
 pub struct FnDecl {
     pub name: String,
     pub params: Vec<(String, TypeName)>,
+    /// `-> bool`: the type of a value function.
+    pub result: Option<TypeName>,
+    /// `= <expression>`: a value function's one expression, inlined at
+    /// each call. A block function has none and a `body`.
+    pub value: Option<Expr>,
     pub body: Vec<Stmt>,
     pub pos: Pos,
 }
@@ -147,6 +160,23 @@ pub enum Stmt {
         body: Vec<Stmt>,
         pos: Pos,
     },
+    /// `match <enum value> { Role.vip { } else { } }`: one arm per
+    /// variant, or an `else` arm.
+    Match {
+        value: Expr,
+        arms: Vec<MatchArm>,
+        els: Option<Vec<Stmt>>,
+        pos: Pos,
+    },
+}
+
+/// An arm of a `match`: the variants it takes (`Role.vip`, `Role.guard`),
+/// each an enum variant expression, and its block.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MatchArm {
+    pub patterns: Vec<Expr>,
+    pub body: Vec<Stmt>,
+    pub pos: Pos,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -182,6 +212,9 @@ pub enum BinOp {
 pub enum ExprKind {
     Int(i64),
     Fixed(i32),
+    /// `5s`, `300t`, `1.5s`: the ticks, or `None` when the literal is not a
+    /// whole number of ticks; and the literal as written.
+    Time(Option<i64>, String),
     Str(String),
     Bool(bool),
     None,

@@ -91,10 +91,12 @@ impl Shared {
         self.last_reload.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// `rules.state`: the runtime's, with the last reload.
+    /// `rules.state`: the runtime's, with the last reload and the lobby's
+    /// verdict ([`super::gate::annotate`]).
     pub fn state(&self) -> wire::State {
         let mut s = self.lock().state();
         s.last_reload = self.last_reload();
+        super::gate::annotate(&mut s);
         s
     }
 }
@@ -353,6 +355,22 @@ pub fn bounces(m: &dyn GuestMemory, awards: &[crate::superbounce_chain::Award]) 
 /// them after the game ends.
 pub fn blocked() -> Option<Vec<String>> {
     SHARED.get()?.lock().blocked().map(<[String]>::to_vec)
+}
+
+/// Whether the feature is installed in this run: the lobby's start gate
+/// (`rules::gate`) checks nothing without it, since no script runs.
+pub fn installed() -> bool {
+    SHARED.get().is_some()
+}
+
+/// The blob on this machine whose hash starts with `prefix`: compiled in,
+/// else the game-variant store's. The lobby's start gate checks only these;
+/// a script Live would serve is the host's to check at the start.
+pub fn local_blob(prefix: [u8; 8]) -> Option<Vec<u8>> {
+    if let Some(b) = runtime::compiled_in(prefix) {
+        return Some(b.blob.clone());
+    }
+    SHARED.get()?.links()?.scripts.local(prefix)
 }
 
 /// Why `rules.state` has no runtime to answer from.

@@ -3,18 +3,20 @@
 //! signature help, definitions, references, semantic tokens and the
 //! outline.
 
-use super::model::{DefKind, Model, Ref, Use, builtin_type};
+use super::model::{DefKind, Model, Ref, T, Use, is_type_word};
 use super::scan::K;
 use super::{
     Diagnostic, Hover, Location, Markup, Parameter, Position, Range, Signature, SignatureHelp, Symbol, Token,
     TokenKind, severity, symbol_kind,
 };
 use crate::caps::{self, CARRIERS, Entry, Kind, Order, Status, VARIANT_FIELDS};
-use crate::ir::{Event, Scope};
-use crate::lang::Pos;
+use crate::ir::{self, Event, LabelKind, Scope};
 use crate::lang::ast::Item;
 use crate::lang::lower::FIELDS;
 use crate::lang::parse::KEYWORDS;
+use crate::lang::sig;
+use crate::lang::types::Type;
+use crate::lang::{MAX_SOURCE_BYTES, Pos, Severity};
 use crate::ty::Ty;
 
 /// A language built-in the compiler answers itself.
@@ -59,9 +61,23 @@ pub(crate) const LANG: &[Lang] = &[
     Lang {
         name: "seconds",
         params: &["n: int"],
+        result: "time",
+        doc: "`n` seconds as a time (30 ticks a second), for an int worked out at run time; a literal is written `5s`.",
+        snippet: "seconds(${1:n})",
+    },
+    Lang {
+        name: "whole_seconds",
+        params: &["t: time"],
         result: "int",
-        doc: "`n` seconds in ticks (30 a second), for timers.",
-        snippet: "seconds(${1:1})",
+        doc: "The whole seconds in a time, rounded down: for a score or a message.",
+        snippet: "whole_seconds(${1:t})",
+    },
+    Lang {
+        name: "ticks",
+        params: &["t: time"],
+        result: "int",
+        doc: "A time's tick count (30 a second), as an int.",
+        snippet: "ticks(${1:t})",
     },
     Lang {
         name: "grant",
@@ -140,13 +156,14 @@ pub(crate) fn event_info(ev: Event) -> (&'static [&'static str], &'static str) {
     }
 }
 
-/// `kill(victim: player, killer: player)` and each argument's offsets.
+/// `kill(victim: player, killer: player?)`, in the event's front-end
+/// types (`lang::sig::event_args`), and each argument's offsets.
 pub(crate) fn event_signature(ev: Event) -> (String, Vec<[u32; 2]>) {
     let (names, _) = event_info(ev);
-    let tys: Vec<&str> = if ev == Event::Timer {
-        vec!["timer"]
+    let tys: Vec<String> = if ev == Event::Timer {
+        vec!["timer".to_string()]
     } else {
-        ev.args().iter().map(|t| t.name()).collect()
+        sig::event_args(ev).iter().map(|t| t.name(&[])).collect()
     };
     let params: Vec<String> = names
         .iter()
@@ -176,8 +193,23 @@ fn call_label(name: &str, params: &[String], result: &str) -> (String, Vec<[u32;
     (label, offsets)
 }
 
+/// An entry's parameters and result in its front-end signature
+/// (`lang::sig::of`): `inside(player, zone) -> bool`. `message` keeps its
+/// three-form spelling.
+pub(crate) fn entry_parts(e: &Entry) -> (Vec<String>, String) {
+    let message = matches!(e.id, caps::id::MESSAGE | caps::id::MESSAGE_TEAM | caps::id::MESSAGE_ALL);
+    match sig::of(e) {
+        Some(s) if !message => (
+            s.args.iter().map(|t| t.name(&[])).collect(),
+            s.result.map_or_else(String::new, |t| t.name(&[])),
+        ),
+        _ => (caps::params(e), e.result.map_or("", Ty::name).to_string()),
+    }
+}
+
 pub(crate) fn entry_signature(e: &Entry) -> (String, Vec<[u32; 2]>) {
-    call_label(caps::spelled(e), &caps::params(e), e.result.map_or("", Ty::name))
+    let (params, result) = entry_parts(e);
+    call_label(caps::spelled(e), &params, &result)
 }
 
 pub(crate) fn lang_signature(l: &Lang) -> (String, Vec<[u32; 2]>) {
@@ -191,7 +223,30 @@ pub(crate) fn fn_signature(m: &Model, d: usize) -> (String, Vec<[u32; 2]>) {
         .children(d, DefKind::Param)
         .map(|p| format!("{}: {}", m.defs[p].name, m.type_name(m.defs[p].ty)))
         .collect();
-    call_label(&m.defs[d].name, &params, "")
+    // A value function (`fn f(..) -> bool = ...`) has a result.
+    let result = match m.defs[d].ty {
+        T::Unknown => String::new(),
+        t => m.type_name(t),
+    };
+    call_label(&m.defs[d].name, &params, &result)
+}
+
+/// A time literal's hover: what it is in ticks.
+pub(crate) fn time_literal_doc(text: &str) -> String {
+    let (number, unit) = text.split_at(text.len() - 1);
+    let (whole, frac) = number.split_once('.').unwrap_or((number, ""));
+    let per: u64 = if unit == "s" { caps::TICKS_PER_SECOND as u64 } else { 1 };
+    let scale = 10u64.saturating_pow(frac.len() as u32);
+    let value = whole
+        .parse::<u64>()
+        .ok()
+        .zip(if frac.is_empty() { Some(0) } else { frac.parse::<u64>().ok() })
+        .map(|(w, f)| (w.saturating_mul(scale).saturating_add(f)).saturating_mul(per));
+    match value {
+        Some(v) if v % scale == 0 => format!("A time literal: {} ticks (30 a second).", v / scale),
+        Some(_) => "A time literal that is not a whole number of ticks (30 a second).".to_string(),
+        None => "A time literal.".to_string(),
+    }
 }
 
 pub(crate) fn status_words(s: Status) -> &'static str {
@@ -237,28 +292,38 @@ pub(crate) fn entry_doc(e: &Entry) -> String {
     format!("{what}{order}\n\n{cap}\n\nStatus: {}", status_words(e.status))
 }
 
-pub(crate) fn type_doc(t: Ty) -> &'static str {
-    match t {
-        Ty::Int => "A 32-bit integer; arithmetic saturates.",
-        Ty::Fixed => "A 16.16 fixed-point number, for seconds and distances.",
-        Ty::Bool => "`true` or `false`.",
-        Ty::Player => "A player (a roster slot), or `none`.",
-        Ty::Team => "A team (0 to 7), or `none`.",
-        Ty::Object => "An object handle the game hands out, or `none`.",
-        Ty::Squad => "A kit squad slot, 0 to 15: `squad(n)`.",
-        Ty::Timer => "A global variable that counts ticks down; 0 is stopped. Reaching 0 fires `on timer`.",
-        Ty::Class => "A kit class name.",
-        Ty::Tag => "A tag path, checked against the map at load.",
-        Ty::Label => "A Forge label.",
-        Ty::Text => "A message: `text \"...\"`.",
-        Ty::Enum(_) => "A script-declared enum.",
-    }
+/// What a type word means: the front-end types of
+/// docs/game/rules-language-types.md, "Front-end types", and `timer`.
+pub(crate) fn type_word_doc(w: &str) -> Option<&'static str> {
+    Some(match w {
+        "int" => "A 32-bit integer; arithmetic saturates.",
+        "fixed" => "A 16.16 fixed-point number, for seconds and distances.",
+        "bool" => "`true` or `false`.",
+        "time" => "A duration or a tick count, in ticks (30 a second).",
+        "player" => "A player (a roster slot). `player?` may be `none`.",
+        "team" => "A team (0 to 7). `team?` may be `none`.",
+        "object" => "Anything placed or made that has a handle. `object?` may be `none`.",
+        "zone" => "An object with a volume: a Forge trigger volume, or a netgame flag with its capture volume. A zone is an object.",
+        "squad" => "A kit squad slot, 0 to 15: `squad(n)`.",
+        "carrier" => "The built-in enum of carrier engines: `carrier.slayer`, `carrier.assault`. `variant.engine` reads as one.",
+        "timer" => "A global variable that counts ticks down; 0 is stopped. Reaching 0 fires `on timer`.",
+        "Class" | "class" => "A kit class name.",
+        "tag" => "A tag path of any object definition, checked against the map at load.",
+        "weapon" => "A tag path that must be a weapon's. A weapon is a tag.",
+        "text" => "A message: `text \"...\"`.",
+        "objects" => "A set of objects: a label's kind, or a set parameter.",
+        "zones" => "A set of zones: a label's kind, or a set parameter. A set of zones is a set of objects.",
+        "spawns" => "Spawn areas: a label's kind, passed to `spawn_areas`, never visited.",
+        _ => return None,
+    })
 }
 
 pub(crate) fn keyword_doc(w: &str) -> Option<&'static str> {
     Some(match w {
         "rules" => "The header: `rules \"Name\" version`.",
-        "carrier" => "The retail engine the script rides: `carrier slayer`.",
+        "carrier" => "The retail engine the script rides: `carrier slayer`. Before a dot, the built-in enum of carriers: `variant.engine == carrier.assault`.",
+        "const" => "A named constant, folded at compile time and usable wherever a literal is: `const last_phase = 2`, `const hold = 30s`.",
+        "match" => "One arm per variant of an enum value: `match role { Role.vip { } Role.guard, Role.none { } }`, or an `else` arm. Every variant needs an arm.",
         "teams" => "In the header, the team count (1 to 8): `teams 2`. In a set, every team.",
         "list" => "The game type list row a variant of the script is filed under: `list tweakers`. With no `list` line it is under its carrier's game type.",
         "requires" => "The capabilities the script declares: `requires player.weapons, hud.message`. The lobby shows them in plain words.",
@@ -272,7 +337,7 @@ pub(crate) fn keyword_doc(w: &str) -> Option<&'static str> {
         "zone" => "An object with a volume: a Forge trigger volume, or a netgame flag. A zone is an object.",
         "weapon" => "A tag path that must be a weapon's. A weapon is a tag.",
         "table" => "Constant rows of typed columns: `table t: (k: int, v: int) = [(0, 1)]`; `t[i].v` reads a cell.",
-        "fn" => "A function: inlined at each call. It has no value and does not recurse.",
+        "fn" => "A function, inlined at each call; it does not recurse. A block function has no value; a value function gives one expression: `fn lead(t: team) -> bool = t.score > 10`.",
         "on" => "A handler: `on kill(victim, killer) { ... }`. It runs to completion.",
         "if" | "else" => "`if cond { } else if cond { } else { }`.",
         "for" | "each" => "A loop over a finite set: `for each players p where p.alive { }`.",
@@ -290,13 +355,22 @@ pub(crate) fn keyword_doc(w: &str) -> Option<&'static str> {
         "objects" | "zones" | "spawns" => "A label's kind: `label barrier: objects`. A set of placements is a declared label.",
         "objectives" => "The objective registry's objects, at most 8, by handle.",
         "variant" => "The retail variant record: `variant.<field>` reads a field.",
+        "numbered" => "A label's requirement: each member has a number (`numbered`), or one of each number in a range (`numbered 0..1`). `capture[n]` reads the member numbered `n`.",
+        "per" => "A label's requirement: `per team`, members for each team; `base[t]` reads a team's.",
+        "at" | "least" | "most" | "exactly" => "A label's count: `at least 2`, `at most 16`, `exactly 3`, or `2..4`.",
         _ => return None,
     })
 }
 
-/// A word the semantic tokens call a keyword when nothing else claims it.
+/// A word the semantic tokens call a keyword when nothing else claims it:
+/// the grammar's keywords, the set words and a label's requirement words.
 pub(crate) fn is_keyword(w: &str) -> bool {
-    KEYWORDS.contains(&w) || matches!(w, "player" | "object" | "players" | "objects" | "objectives" | "variant")
+    KEYWORDS.contains(&w)
+        || matches!(
+            w,
+            "player" | "object" | "players" | "objects" | "objectives" | "variant" | "numbered" | "per" | "at" | "least"
+                | "most" | "exactly"
+        )
 }
 
 const OPERATORS: &[&str] = &["==", "!=", "<=", ">=", "<", ">", "+", "-", "*", "/", "%", "=", ".."];
@@ -342,10 +416,22 @@ pub(crate) fn def_markdown(m: &Model, d: usize) -> String {
                 code_block(&format!("{t}.{name}: {ty}"))
             )
         }
+        DefKind::Fn if def.ty != T::Unknown => format!(
+            "{}\nA value function, inlined at each call.",
+            code_block(&format!("fn {}", fn_signature(m, d).0))
+        ),
         DefKind::Fn => format!(
             "{}\nA function, inlined at each call. It has no value.",
             code_block(&format!("fn {}", fn_signature(m, d).0))
         ),
+        DefKind::Const => {
+            let value = match m.checked.constant(name) {
+                Some((Type::Time, v)) => format!(" It is {v} ticks."),
+                Some((_, v)) => format!(" It is {v}."),
+                None => String::new(),
+            };
+            format!("{}\nA constant of type {ty}.{value}", decl())
+        }
         DefKind::Param => {
             let f = def.parent.map_or("?", |p| m.defs[p].name.as_str());
             format!("{}\nA parameter of fn `{f}`.", code_block(&format!("(parameter) {name}: {ty}")))
@@ -356,15 +442,62 @@ pub(crate) fn def_markdown(m: &Model, d: usize) -> String {
         }
         DefKind::Local => code_block(&format!("let {name}: {ty}")),
         DefKind::Binder => format!("{}\nA member of the set.", code_block(&format!("(member) {name}: {ty}"))),
-        DefKind::Label => {
-            let uses = m.refs.iter().filter(|r| r.def == d).count();
+        DefKind::Label => label_markdown(m, d),
+    }
+}
+
+/// A label's hover: its declaration, what the script sees, what a map
+/// needs in Forge's words (`labels::describe`), and its uses.
+fn label_markdown(m: &Model, d: usize) -> String {
+    let def = &m.defs[d];
+    let decl = code_block(m.line_at(def.span.0));
+    let uses = m.refs.iter().filter(|r| r.def == d && !r.decl).count();
+    let used = format!("Used {uses} {}.", if uses == 1 { "time" } else { "times" });
+    let Some((_, l)) = m.checked.label(&def.name) else {
+        return format!("{decl}\n{used}");
+    };
+    let what = if l.def.kind == LabelKind::Zone { "zone" } else { "object" };
+    let sees = match (l.def.kind, l.single) {
+        (LabelKind::Spawn, _) => "Spawn areas: pass it to `spawn_areas`; a loop cannot visit them.".to_string(),
+        (_, true) if l.optional => format!("One {what}, or `none` on a map that has none (`{what}?`)."),
+        (_, true) => format!("One {what}."),
+        (_, false) => {
+            let fields: Vec<&str> = FIELDS
+                .iter()
+                .filter(|(o, _, _)| *o == Ty::Object)
+                .map(|(_, n, _)| *n)
+                .collect();
             format!(
-                "{}\nA Forge label, used {uses} {} in this script.",
-                code_block(&format!("label {name}")),
-                if uses == 1 { "time" } else { "times" }
+                "A set of {what}s. Members have {}, and this script's object variables.",
+                fields.join(", ")
             )
         }
+    };
+    format!(
+        "{decl}\n{sees}\nA map needs: {}.\n{used}",
+        crate::labels::describe(&l.def)
+    )
+}
+
+/// The hover of a use: its declaration's, and the type the checker gives
+/// the name there when that is narrower than the declared one.
+pub(crate) fn ref_markdown(m: &Model, r: Ref) -> String {
+    let base = def_markdown(m, r.def);
+    let def = &m.defs[r.def];
+    let (T::V(declared), Some(here)) = (def.ty, r.ty) else {
+        return base;
+    };
+    if r.decl || declared == here || def.kind == DefKind::Label {
+        return base;
     }
+    let not_none = declared.is_opt() && !here.is_opt();
+    let why = match (r.narrowed, not_none) {
+        (Some(line), true) => format!(" (not none here: checked on line {line})"),
+        (Some(line), false) => format!(" (narrowed here: tested on line {line})"),
+        (None, true) => " (not none here)".to_string(),
+        (None, false) => String::new(),
+    };
+    format!("{base}\nHere `{}: {}`{why}.", def.name, here.name(&m.enum_names))
 }
 
 /// A non-declaration use's hover text; `s..e` is its span.
@@ -386,7 +519,7 @@ pub(crate) fn use_markdown(m: &Model, u: Use, s: usize, e: usize) -> String {
         Use::Field(i) => {
             let (owner, n, id) = FIELDS[i];
             let entry = &caps::ENTRIES[id as usize];
-            let result = entry.result.map_or("?", Ty::name);
+            let result = m.type_name(super::model::builtin_field_type(i));
             format!(
                 "{}\nA built-in field of every {}, read through `{}`.\n\nStatus: {}",
                 code_block(&format!("{}.{n}: {result}", owner.name())),
@@ -419,10 +552,23 @@ pub(crate) fn use_markdown(m: &Model, u: Use, s: usize, e: usize) -> String {
             ),
             None => format!("Unknown carrier `{text}`."),
         },
-        Use::Type => match builtin_type(&text) {
-            Some(t) => format!("{}\n{}", code_block(t.name()), type_doc(t)),
+        Use::Type => match type_word_doc(&text) {
+            Some(doc) => format!("{}\n{doc}", code_block(&text)),
             None => format!("Unknown type `{text}`."),
         },
+        Use::CarrierEnum => format!(
+            "{}\n{}",
+            code_block("carrier"),
+            type_word_doc("carrier").unwrap_or_default()
+        ),
+        Use::CarrierValue(Some(i)) => {
+            let (n, index) = CARRIERS[i];
+            format!(
+                "{}\nThe retail {n} engine (engine index {index}), a value of the built-in enum `carrier`.",
+                code_block(&format!("carrier.{n}"))
+            )
+        }
+        Use::CarrierValue(None) => format!("Unknown carrier `{text}`."),
         Use::Variant => {
             let fields: Vec<String> = VARIANT_FIELDS
                 .iter()
@@ -439,18 +585,19 @@ pub(crate) fn use_markdown(m: &Model, u: Use, s: usize, e: usize) -> String {
 
 // ---------- diagnostics ----------
 
-fn diag(range: Range, severity: u8, message: String, code: &'static str) -> Diagnostic {
+pub(crate) fn diag(range: Range, severity: u8, message: String, code: &'static str) -> Diagnostic {
     Diagnostic {
         range,
         severity,
         message,
         code,
         source: "rules",
+        fixes: Vec::new(),
     }
 }
 
 /// The range of the token at a lexer line and column.
-fn place(m: &Model, line: u32, col: u32) -> Range {
+pub(crate) fn place(m: &Model, line: u32, col: u32) -> Range {
     let off = m.li.pos_offset(Pos { line, col });
     match m.code.get(m.ci(off)) {
         Some(t) if t.s == off => m.li.range(t.s, t.e),
@@ -460,46 +607,90 @@ fn place(m: &Model, line: u32, col: u32) -> Range {
 
 pub(crate) fn diagnostics(m: &Model) -> Vec<Diagnostic> {
     let mut out = Vec::new();
-    for e in &m.errors {
+    // About the whole script: its first line.
+    let whole = m.li.range(0, m.li.line_end(0));
+    if m.src.len() > MAX_SOURCE_BYTES {
+        let message = format!("the source is {} bytes, over the 256 KiB cap", m.src.len());
+        out.push(diag(whole, severity::ERROR, message, "limit"));
+        return out;
+    }
+    let mut syntax: Vec<_> = m.errors.iter().collect();
+    syntax.sort_by_key(|e| (e.line, e.col));
+    for e in syntax.into_iter().take(crate::lang::MAX_ERRORS) {
         out.push(diag(place(m, e.line, e.col), severity::ERROR, e.message.clone(), "syntax"));
     }
     if m.errors.is_empty() {
-        let check = crate::workbench::check(m.src);
-        for p in &check.errors {
-            if p.line == 0 {
-                // About the whole script: its first line.
-                let range = m.li.range(0, m.li.line_end(0));
-                out.push(diag(range, severity::ERROR, p.message.clone(), "verify"));
-            } else {
-                out.push(diag(place(m, p.line, p.col), severity::ERROR, p.message.clone(), "compile"));
-            }
+        // What `crate::diagnose` gives: the checker's every finding, then
+        // lowering's limit when it has no error.
+        for d in &m.checked.diagnostics {
+            let level = match d.severity {
+                Severity::Error => severity::ERROR,
+                Severity::Warning => severity::WARNING,
+            };
+            let mut x = diag(place(m, d.pos.line, d.pos.col), level, d.message.clone(), d.code);
+            x.fixes = super::fix::fixes(m, d);
+            out.push(x);
         }
-        if let Some(report) = &check.report {
-            for &(s, e, u) in &m.uses {
-                if let Use::Api(entry) = u
-                    && report.unhostable.contains(&entry.name)
-                {
-                    let message = match entry.hosts {
-                        Some(hosts) if entry.status.hostable() => format!(
-                            "a host makes `{}` only on {}",
-                            entry.name,
-                            hosts
-                                .iter()
-                                .map(|&c| crate::caps::carrier_name(c).unwrap_or("?"))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ),
-                        _ => format!(
-                            "no host can make `{}` yet: its entry is {}",
-                            entry.name,
-                            status_short(entry.status)
-                        ),
-                    };
-                    out.push(diag(m.li.range(s, e), severity::INFORMATION, message, "unhostable"));
+        if !m.checked.has_errors() {
+            match crate::lang::lower::lower(&m.checked) {
+                Ok(blob) => {
+                    match crate::verify(&blob) {
+                        Ok(r) if !r.fits() => {
+                            let message = format!(
+                                "the worst tick costs {} ops, over the budget of {}",
+                                r.worst_tick,
+                                crate::vm::TICK_BUDGET
+                            );
+                            out.push(diag(whole, severity::ERROR, message, "verify"));
+                        }
+                        Ok(_) => {}
+                        Err(refusal) => out.push(diag(whole, severity::ERROR, format!("refused: {refusal}"), "verify")),
+                    }
+                    let bytes = blob.encode().len();
+                    if bytes > ir::MAX_IR_BYTES {
+                        let message = format!("the IR is {bytes} bytes, over the {} byte cap", ir::MAX_IR_BYTES);
+                        out.push(diag(whole, severity::ERROR, message, "verify"));
+                    }
+                    unhostable(m, &crate::workbench::unhostable_all(&blob), &mut out);
                 }
+                Err(e) => out.push(diag(place(m, e.line, e.col), severity::ERROR, e.message, "limit")),
             }
         }
     }
+    unused(m, &mut out);
+    out
+}
+
+/// A note at each call of an entry in `names`, those no host can make on
+/// the script's carrier.
+fn unhostable(m: &Model, names: &[&str], out: &mut Vec<Diagnostic>) {
+    for &(s, e, u) in &m.uses {
+        if let Use::Api(entry) = u
+            && names.contains(&entry.name)
+        {
+            let message = match entry.hosts {
+                Some(hosts) if entry.status.hostable() => format!(
+                    "a host makes `{}` only on {}",
+                    entry.name,
+                    hosts
+                        .iter()
+                        .map(|&c| crate::caps::carrier_name(c).unwrap_or("?"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                _ => format!(
+                    "no host can make `{}` yet: its entry is {}",
+                    entry.name,
+                    status_short(entry.status)
+                ),
+            };
+            out.push(diag(m.li.range(s, e), severity::INFORMATION, message, "unhostable"));
+        }
+    }
+}
+
+/// A warning at each `let`, set member and `fn` the script never uses.
+fn unused(m: &Model, out: &mut Vec<Diagnostic>) {
     let mut used = vec![0usize; m.defs.len()];
     for r in &m.refs {
         if !r.decl {
@@ -522,7 +713,6 @@ pub(crate) fn diagnostics(m: &Model) -> Vec<Diagnostic> {
             "unused",
         ));
     }
-    out
 }
 
 // ---------- hover ----------
@@ -532,7 +722,7 @@ pub(crate) fn hover(m: &Model, off: usize) -> Option<Hover> {
     let t = m.code[ti];
     if let Some(r) = m.ref_at(t.s) {
         return Some(Hover {
-            markdown: def_markdown(m, r.def),
+            markdown: ref_markdown(m, r),
             range: m.li.range(r.s, r.e),
         });
     }
@@ -546,11 +736,9 @@ pub(crate) fn hover(m: &Model, off: usize) -> Option<Hover> {
     let markdown = match t.k {
         K::Ident => match keyword_doc(text) {
             Some(doc) => format!("{}\n{doc}", code_block(text)),
-            None => {
-                let ty = builtin_type(text)?;
-                format!("{}\n{}", code_block(ty.name()), type_doc(ty))
-            }
+            None => format!("{}\n{}", code_block(text), type_word_doc(text)?),
         },
+        K::Num if text.ends_with(['s', 't']) => format!("{}\n{}", code_block("time"), time_literal_doc(text)),
         K::Num if text.contains('.') => format!("{}\nA 16.16 fixed literal.", code_block("fixed")),
         K::Num => format!("{}\nAn int literal (a fixed where one is expected).", code_block("int")),
         _ => return None,
@@ -638,7 +826,7 @@ pub(crate) fn signature_help(m: &Model, off: usize) -> Option<SignatureHelp> {
 // ---------- definitions and references ----------
 
 /// The resolved name at `off`, or the one ending there.
-fn ref_near(m: &Model, off: usize) -> Option<Ref> {
+pub(crate) fn ref_near(m: &Model, off: usize) -> Option<Ref> {
     m.ref_at(off)
         .or_else(|| off.checked_sub(1).and_then(|o| m.ref_at(o)))
 }
@@ -682,6 +870,7 @@ fn def_token(kind: DefKind) -> TokenKind {
         DefKind::Fn => TokenKind::Function,
         DefKind::Param | DefKind::Arg => TokenKind::Parameter,
         DefKind::Label => TokenKind::Label,
+        DefKind::Const => TokenKind::Variable,
     }
 }
 
@@ -695,6 +884,8 @@ fn use_token(u: Use) -> TokenKind {
         Use::Carrier => TokenKind::EnumMember,
         Use::Type => TokenKind::Type,
         Use::Variant => TokenKind::Keyword,
+        Use::CarrierEnum => TokenKind::Enum,
+        Use::CarrierValue(_) => TokenKind::EnumMember,
     }
 }
 
@@ -736,7 +927,7 @@ pub(crate) fn semantic_tokens(m: &Model) -> Vec<Token> {
                     Some(use_token(u))
                 } else if let Some(r) = m.ref_at(t.s) {
                     Some(def_token(m.defs[r.def].kind))
-                } else if prev_colon && builtin_type(text).is_some() {
+                } else if prev_colon && is_type_word(text) {
                     Some(TokenKind::Type)
                 } else if is_keyword(text) {
                     Some(TokenKind::Keyword)
@@ -851,6 +1042,12 @@ pub(crate) fn symbols(m: &Model) -> Vec<Symbol> {
                 symbol_kind::CONSTANT,
                 Vec::new(),
             ),
+            Item::Const { name, .. } => (
+                name.clone(),
+                d.map_or_else(|| "const".to_string(), |d| format!("const: {}", m.type_name(m.defs[d].ty))),
+                symbol_kind::CONSTANT,
+                Vec::new(),
+            ),
             Item::On { event, args, .. } => {
                 if let Some((us, ue, _)) = m.uses.iter().copied().find(|u| u.0 >= s && u.0 < e && matches!(u.2, Use::Event(_))) {
                     selection = m.li.range(us, ue);
@@ -883,17 +1080,19 @@ pub(crate) fn symbols(m: &Model) -> Vec<Symbol> {
     out
 }
 
-/// The types a declaration may name: the built-ins and the enums.
+/// The type words a declaration may spell (the enums aside): the
+/// front-end types, `timer`, and the set words a parameter takes.
 pub(crate) fn type_names() -> &'static [&'static str] {
     &[
-        "int", "fixed", "bool", "player", "team", "object", "squad", "timer", "Class", "tag", "label", "text",
+        "int", "fixed", "time", "bool", "player", "team", "object", "zone", "squad", "timer", "Class", "tag", "weapon",
+        "text", "objects", "zones", "spawns",
     ]
 }
 
 /// The doc of a type a name spells, built-in or enum.
 pub(crate) fn type_named_doc(m: &Model, name: &str) -> String {
-    match builtin_type(name) {
-        Some(t) => type_doc(t).to_string(),
+    match type_word_doc(name) {
+        Some(doc) => doc.to_string(),
         None => match m.top_kind(name, DefKind::Enum) {
             Some(d) => def_markdown(m, d),
             None => String::new(),

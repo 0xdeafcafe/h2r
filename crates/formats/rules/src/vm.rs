@@ -13,7 +13,9 @@ use std::collections::BTreeMap;
 use crate::caps::{self, Entry, Kind, Order, VARIANT_FIELDS};
 use crate::ir::*;
 use crate::policy;
-use crate::ty::{MAX_LABELLED, MAX_OBJECTIVES, MAX_PLAYERS, MAX_SQUADS, MAX_TEAMS, NONE, Ty, fixed};
+use crate::ty::{
+    MAX_LABELLED, MAX_OBJECTIVES, MAX_PLAYERS, MAX_SQUADS, MAX_TEAMS, NONE, Ty, fixed, object_id, object_value,
+};
 use crate::verify::{self, Refusal};
 
 /// Ops one tick may execute across all its handlers.
@@ -926,7 +928,7 @@ impl Vm {
     fn args(&self, input: &Input) -> Vec<i32> {
         let p = |s: u8| if (s as usize) < MAX_PLAYERS { s as i32 } else { NONE };
         let op = |s: Option<u8>| s.map_or(NONE, p);
-        let o = |id: u32| i32::try_from(id).unwrap_or(NONE);
+        let o = object_value;
         match input {
             Input::Init | Input::RoundStart | Input::RoundEnd => vec![],
             Input::Kill { victim, killer } => vec![p(*victim), op(*killer)],
@@ -1024,7 +1026,7 @@ fn to_arg(ir: &Ir, ty: Ty, v: i32) -> Arg {
         Ty::Bool => Arg::Bool(v != 0),
         Ty::Player => Arg::Player(opt_u8(v)),
         Ty::Team => Arg::Team(opt_u8(v)),
-        Ty::Object => Arg::Object(u32::try_from(v).ok()),
+        Ty::Object => Arg::Object(object_id(v)),
         Ty::Squad => Arg::Squad(opt_u8(v).unwrap_or(0)),
         Ty::Class => Arg::Class(string(&ir.strings, v)),
         Ty::Tag => Arg::Tag(usize::try_from(v).ok().and_then(|i| ir.tags.get(i)).map(|t| t.path.clone())),
@@ -1269,7 +1271,7 @@ impl<'a> Run<'a> {
                 let row = match s.scope {
                     Scope::Player => usize::try_from(o).ok().and_then(|i| self.ext.players.get(i)),
                     Scope::Team => usize::try_from(o).ok().and_then(|i| self.ext.teams.get(i)),
-                    Scope::Object => u32::try_from(o).ok().and_then(|i| self.ext.objects.get(&i)),
+                    Scope::Object => object_id(o).and_then(|i| self.ext.objects.get(&i)),
                     Scope::Global => None,
                 };
                 row.map_or(s.init, |r| r[at])
@@ -1294,7 +1296,7 @@ impl<'a> Run<'a> {
                 }
             }
             (Scope::Object, Some(o)) => {
-                if let Ok(id) = u32::try_from(o) {
+                if let Some(id) = object_id(o) {
                     if !self.ext.objects.contains_key(&id) {
                         if self.ext.objects.len() >= MAX_OBJECT_RECORDS {
                             return Err(ErrorKind::Objects);
@@ -1325,7 +1327,7 @@ impl<'a> Run<'a> {
                 placed.dedup_by_key(|p| p.object);
                 placed
                     .into_iter()
-                    .filter_map(|p| i32::try_from(p.object).ok())
+                    .map(|p| object_value(p.object))
                     .take(max)
                     .collect()
             }
@@ -1334,7 +1336,7 @@ impl<'a> Run<'a> {
                 list.sort_unstable();
                 list.dedup();
                 list.into_iter()
-                    .filter_map(|o| i32::try_from(o).ok())
+                    .map(object_value)
                     .take(MAX_OBJECTIVES)
                     .collect()
             }
@@ -1366,7 +1368,7 @@ impl<'a> Run<'a> {
                     // A zone named for the first time is counted from the
                     // next update; `none` and a team out of range read 0.
                     caps::id::TICKS_HELD => {
-                        let (Ok(zone), Ok(team)) = (u32::try_from(raw[0]), usize::try_from(raw[1])) else {
+                        let (Some(zone), Ok(team)) = (object_id(raw[0]), usize::try_from(raw[1])) else {
                             return Ok(Some(0));
                         };
                         if team >= MAX_TEAMS {
