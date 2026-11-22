@@ -42,6 +42,7 @@ pub(super) struct ReloadCopy {
     pub(super) resume_edits: bool,
     pub(super) check_identity: bool,
     deadline: Instant,
+    raw: raw_sync::RawBaseline,
 }
 
 impl ReloadCopy {
@@ -83,7 +84,9 @@ pub(super) struct Edits {
     pub map_requested: bool,
     pub(super) epoch: Option<u64>,
     loaded: Option<std::sync::Arc<HashSet<TagId>>>,
-    last_diff: Option<(u64, u64, u64, bool)>,
+    /// World, placement, tag and raw document revisions, and whether the
+    /// diff could send.
+    last_diff: Option<(u64, u64, u64, u64, bool)>,
     pub(super) checksum: Option<u32>,
     name: Option<String>,
     pub(super) world: Option<u64>,
@@ -93,25 +96,28 @@ pub(super) struct Edits {
     pub(super) journal_ready: bool,
     journal_requested: bool,
     reverting: bool,
-    restore_after_batch: bool,
+    pub(super) restore_after_batch: bool,
     taking: Option<u64>,
     tags: TagBaseline,
     pub(super) sent: Option<Batch>,
     next: u64,
     conflicts: Vec<Value>,
     refused: issues::Refusals,
+    /// Geometry and pixels (`raw_sync`).
+    pub(super) raw: raw_sync::RawSync,
 }
 
 impl Edits {
     pub(super) fn interrupted_write(&self) -> bool {
-        self.sent.is_some() || self.reverting || self.restore_after_batch
+        self.sent.is_some() || self.raw.busy() || self.reverting || self.restore_after_batch
     }
 
     pub(super) fn document_changed(&self, app: &App) -> bool {
-        self.last_diff.is_none_or(|(world, placements, tags, _)| {
+        self.last_diff.is_none_or(|(world, placements, tags, raw, _)| {
             world != app.session.world_rev()
                 || placements != app.session.markers_rev()
                 || tags != app.tags.rev()
+                || raw != raw_sync::doc_rev(app)
         })
     }
 
@@ -121,6 +127,7 @@ impl Edits {
         self.reverting = false;
         self.taking = None;
         self.sent = None;
+        self.raw.transport_lost();
         self.last_diff = None;
     }
 }
@@ -138,6 +145,7 @@ impl Play {
 
     pub(super) fn retry_refused_fields(&mut self) {
         self.edits.refused = issues::Refusals::default();
+        self.edits.raw.retry();
         self.edits.last_diff = None;
     }
 
@@ -150,12 +158,13 @@ impl Play {
             rev == app.session.world_rev() && Some(sum) == self.edits.checksum
         });
         let launch = self.launch_baseline.as_ref().filter(|_| copy);
-        self.edits.tags = launch.map(|(_, tags)| tags.clone()).unwrap_or_default();
+        self.edits.tags = launch.map(|(_, tags, _)| tags.clone()).unwrap_or_default();
+        self.edits.raw.reset(launch.map(|(_, _, raw)| raw.clone()).unwrap_or_default());
         self.baseline = app.loaded_map().zip(app.session.scenario()).map(|(m, s)| {
             (
                 m.into(),
                 launch
-                    .map(|(b, _)| b.clone())
+                    .map(|(b, _, _)| b.clone())
                     .unwrap_or_else(|| Baseline::source(s)),
             )
         });
@@ -197,7 +206,7 @@ impl Play {
         }
         let resume_edits = self.reload_copy.take().map(|copy| {
             app.pairing.play_copy = Some((copy.world, copy.checksum));
-            self.launch_baseline = Some((copy.placements, copy.tags));
+            self.launch_baseline = Some((copy.placements, copy.tags, copy.raw));
             self.launched_copy = self.endpoint().cloned().map(|ep| (ep, copy.world, copy.checksum));
             copy.resume_edits
         });
@@ -438,6 +447,7 @@ impl Play {
             app.session.world_rev(),
             app.session.markers_rev(),
             app.tags.rev(),
+            raw_sync::doc_rev(app),
             writable,
         );
         if self.edits.last_diff.replace(revisions) == Some(revisions) {
@@ -533,10 +543,11 @@ impl Play {
                 pending.push(c.clone());
             }
         }
+        let raw = self.raw_pending(app, &mut pending);
         self.objects.publish(&mut pending);
         *app.pairing.pending = pending;
-        if !writable || self.edits.sent.is_some() || self.edits.taking.is_some()
-            || !self.edits.conflicts.is_empty()
+        if !writable || self.edits.sent.is_some() || self.edits.raw.busy()
+            || self.edits.taking.is_some() || !self.edits.conflicts.is_empty()
         {
             return;
         }
@@ -547,6 +558,10 @@ impl Play {
             ),
         );
         if writes.is_empty() {
+            // Geometry and pixels go when no field write is waiting.
+            if let Some(plan) = raw {
+                self.send_raw(plan);
+            }
             return;
         }
         self.edits.next += 1;
@@ -702,6 +717,7 @@ impl Play {
                 }
                 self.edits.conflicts.clear();
                 self.edits.refused = issues::Refusals::default();
+                self.edits.raw.reverted();
                 self.edits.last_diff = None;
                 self.next_push = Instant::now();
                 app.pairing.journal.clear();
@@ -745,7 +761,7 @@ impl Play {
         if action == Apply::Restore && self.is_paired() {
             self.request_leave(app);
             self.edits.taking = None;
-            if self.edits.sent.is_some() {
+            if self.edits.sent.is_some() || self.edits.raw.busy() {
                 self.edits.restore_after_batch = true;
                 return Ok(());
             }
@@ -753,7 +769,11 @@ impl Play {
         if let Some(why) = self.map_refusal(app) {
             return Err(why);
         }
-        if self.edits.sent.is_some() || self.edits.reverting || self.edits.taking.is_some() {
+        if self.edits.sent.is_some()
+            || self.edits.raw.busy()
+            || self.edits.reverting
+            || self.edits.taking.is_some()
+        {
             return Err("waiting for the game to acknowledge the previous write".into());
         }
         match action {
@@ -938,6 +958,8 @@ impl Play {
         if self.paused && let Some(why) = self.controls().resume {
             return Err(why.into());
         }
+        // What the copy holds of the geometry, taken before the save.
+        let raw = raw_sync::RawBaseline::of_copy(app);
         let level = app.loaded_map().ok_or("open a map first")?;
         let scenario = app.session.scenario().ok_or("open a map first")?;
         let before_epoch = self.edits.epoch.ok_or("waiting for the loaded map epoch")?;
@@ -960,6 +982,7 @@ impl Play {
             resume_edits: self.live_edits,
             check_identity: false,
             deadline: Instant::now() + RELOAD_TIMEOUT,
+            raw,
         });
         self.play_world = app.session.world_rev();
         self.pending_spawn = self.destination(app);
