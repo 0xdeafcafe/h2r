@@ -18,9 +18,55 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Range;
 use wgpu::util::DeviceExt;
 
-pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
-/// [`COLOR_FORMAT`] without the sRGB decode: [`Viewport::ui_view`].
-pub const UI_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+pub const COLOR_FORMAT: wgpu::TextureFormat = Shading::Linear.target_format();
+/// [`COLOR_FORMAT`] without the sRGB decode: [`Viewport::ui_view`], and
+/// the view the native passes draw through ([`Shading::Gamma`]).
+pub const UI_FORMAT: wgpu::TextureFormat = Shading::Gamma.target_format();
+
+/// A linear channel value as its sRGB encoding (for colours written
+/// through the plain view, [`Shading::Gamma`]).
+pub fn encode_srgb(c: f64) -> f64 {
+    let c = c.clamp(0.0, 1.0);
+    if c <= 0.003_130_8 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+/// The colour space a pass of the viewport shades in, which decides the
+/// formats it samples and writes through. Both write the one colour
+/// texture, through its sRGB view or its plain one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shading {
+    /// The editor's own shaders (the sky, the scene's models, glyphs and
+    /// overlays): pictures uploaded sRGB and sampled as linear light,
+    /// written through the target's sRGB view, which encodes them.
+    Linear,
+    /// The native renderer's passes (the level and the placed models): the
+    /// game's combiners in gamma space on the bytes as stored (Xbox D3D
+    /// has no sRGB; `native_render` uploads `Rgba8Unorm` and `BC*Unorm`,
+    /// and the game presents through a plain surface,
+    /// `gfx::presenter`). Written through the plain view, as they are:
+    /// through the sRGB view they were encoded a second time and every
+    /// colour came out pale.
+    Gamma,
+}
+
+impl Shading {
+    /// The format of the colour target view the pass writes.
+    pub const fn target_format(self) -> wgpu::TextureFormat {
+        match self {
+            Self::Linear => wgpu::TextureFormat::Rgba8UnormSrgb,
+            Self::Gamma => wgpu::TextureFormat::Rgba8Unorm,
+        }
+    }
+
+    /// The format a picture the pass samples is uploaded as.
+    pub const fn texture_format(self) -> wgpu::TextureFormat {
+        self.target_format()
+    }
+}
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Background colour (linear).
 pub const CLEAR: [f64; 3] = [0.02, 0.025, 0.035];
@@ -196,13 +242,20 @@ struct V { @builtin(position) clip: vec4<f32>, @location(0) n: vec3<f32>, @locat
     o.c = c;
     return o;
 }
+// Glyph, overlay and grey-world colours are display (sRGB-encoded)
+// values, as the UI's legend shows them (the studio's theme); the target's
+// sRGB view encodes linear light, so they are decoded first.
+fn decoded(c: vec3<f32>) -> vec3<f32> {
+    let x = clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
+    return select(pow((x + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4)), x / 12.92, x <= vec3<f32>(0.04045));
+}
 @fragment fn fs(v: V) -> O {
     let l = normalize(vec3<f32>(0.4, 0.3, 0.85));
     let d = abs(dot(normalize(v.n), l));
-    return O(vec4<f32>(v.c * (0.3 + 0.7 * d), 1.0), depth_out(v.clip));
+    return O(vec4<f32>(decoded(v.c * (0.3 + 0.7 * d)), 1.0), depth_out(v.clip));
 }
 @fragment fn fs_overlay(v: V) -> O {
-    return O(vec4<f32>(v.c, 1.0), depth_out(v.clip));
+    return O(vec4<f32>(decoded(v.c), 1.0), depth_out(v.clip));
 }
 "#;
 
@@ -224,7 +277,7 @@ struct U {
 struct P {
     lift: f32, lit: f32, details: f32, textured: f32,
     base_scale: vec2<f32>, detail0_scale: vec2<f32>, detail1_scale: vec2<f32>,
-    emissive: f32, pad1: f32,
+    emissive: f32, masked: f32, mask_scale: vec2<f32>, pad: vec2<f32>,
 };
 @group(0) @binding(0) var<uniform> u: U;
 // The depth the native world pass writes (native_view::DEPTH_RULE): view
@@ -246,6 +299,7 @@ fn depth_out(clip: vec4<f32>) -> f32 {
 @group(1) @binding(4) var detail0: texture_2d<f32>;
 @group(1) @binding(5) var detail1: texture_2d<f32>;
 @group(1) @binding(6) var detail_samp: sampler;
+@group(1) @binding(7) var mask_map: texture_2d<f32>;
 struct V {
     @builtin(position) clip: vec4<f32>,
     @location(0) n: vec3<f32>,
@@ -324,6 +378,10 @@ fn albedo(v: V) -> vec4<f32> {
     let d1 = textureSample(detail1, detail_samp, v.uv * p.detail1_scale).rgb;
     if (p.details > 0.5) { c = vec4<f32>(times_detail(c.rgb, d0), c.a); }
     if (p.details > 1.5) { c = vec4<f32>(times_detail(c.rgb, d1), c.a); }
+    // A coverage mask multiplies colour and alpha (the cloud passes'
+    // `t1 * t2`; in linear light the product is the gamma one's).
+    let m = textureSample(mask_map, detail_samp, v.uv * p.mask_scale);
+    if (p.masked > 0.5) { c = c * m; }
     return c;
 }
 @fragment fn fs_opaque(v: V) -> O {
@@ -532,7 +590,9 @@ struct Target {
     size: [u32; 2],
     color: wgpu::Texture,
     color_view: wgpu::TextureView,
-    /// The same pixels viewed as plain `Rgba8Unorm`: [`Viewport::ui_view`].
+    /// The same pixels viewed as plain `Rgba8Unorm` ([`UI_FORMAT`]):
+    /// [`Viewport::ui_view`], and the native passes' target
+    /// ([`Shading::Gamma`]).
     ui_view: wgpu::TextureView,
     depth_view: wgpu::TextureView,
 }
@@ -560,7 +620,11 @@ struct BatchParams {
     detail_scales: [[f32; 2]; 2],
     /// 1 for a self-illuminated batch ([`crate::scene::Look::emissive`]).
     emissive: f32,
-    pad1: f32,
+    /// 1 when a coverage mask multiplies the picture
+    /// ([`crate::scene::Look::mask`]), sampled at `mask_scale`.
+    masked: f32,
+    mask_scale: [f32; 2],
+    pad: [f32; 2],
 }
 
 /// A [`Scene`] uploaded: the world and the models, each batch bound to its
@@ -605,6 +669,10 @@ impl MeshContext<'_> {
             .map_while(|d| d.and_then(|d| Some((self.views.get(d.texture)?, d.scale))))
             .collect();
         let detail = |k: usize| details.get(k).map_or(self.white, |d| d.0);
+        let mask = b
+            .mask
+            .and_then(|m| Some((self.views.get(m.texture)?, m.scale)))
+            .filter(|_| base.is_some());
         let params = BatchParams {
             lift: b
                 .texture
@@ -620,7 +688,9 @@ impl MeshContext<'_> {
             base_scale: b.scale,
             detail_scales: std::array::from_fn(|k| details.get(k).map_or([1.0; 2], |d| d.1)),
             emissive: if b.emissive { 1.0 } else { 0.0 },
-            pad1: 0.0,
+            masked: if mask.is_some() { 1.0 } else { 0.0 },
+            mask_scale: mask.map_or([1.0; 2], |m| m.1),
+            pad: [0.0; 2],
         };
         let buffer = self
             .device
@@ -667,6 +737,10 @@ impl MeshContext<'_> {
                 wgpu::BindGroupEntry {
                     binding: 6,
                     resource: wgpu::BindingResource::Sampler(self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::TextureView(mask.map_or(self.white, |m| m.0)),
                 },
             ],
         })
@@ -958,6 +1032,16 @@ impl Viewport {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let scene_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1206,7 +1290,7 @@ impl Viewport {
             mip_level_count: chain.len() as u32,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            format: Shading::Linear.texture_format(),
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         };
@@ -1778,16 +1862,19 @@ impl Viewport {
             )
             .finish()]);
             let behind = sky.is_some() || gradient;
+            // Cleared through the plain view: the background encoded.
             let mut clear = crate::native_view::Clear {
-                color: (!behind).then_some(CLEAR),
+                color: (!behind).then_some(CLEAR.map(encode_srgb)),
                 depth: true,
             };
+            // The native passes shade in gamma space: they write the
+            // target's plain view ([`Shading::Gamma`]).
             for world in self.native.iter_mut().filter(|_| native_world) {
                 world.render(
                     device,
                     queue,
-                    &target.color_view,
-                    COLOR_FORMAT,
+                    &target.ui_view,
+                    UI_FORMAT,
                     &target.depth_view,
                     DEPTH_FORMAT,
                     target.size,
@@ -1800,8 +1887,8 @@ impl Viewport {
                 objects.render(
                     device,
                     queue,
-                    &target.color_view,
-                    COLOR_FORMAT,
+                    &target.ui_view,
+                    UI_FORMAT,
                     &target.depth_view,
                     DEPTH_FORMAT,
                     target.size,

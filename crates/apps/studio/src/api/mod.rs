@@ -583,7 +583,7 @@ pub const METHODS: &[MethodDef] = &[
         m::VIEW_STATS,
         "What the viewport draws for the open map: lightmap pages and each BSP's lighting, the world's triangles by blend, every material (template, blend, picture), the sky's sun and fog",
         "{}",
-        r#"{"scene":"boolean","lightmap_pages":"integer","bsps":"[{bsp,lighting,detail}]","triangles":"{blend: integer}","solid_triangles":"integer","lightmapped_triangles":"integer","materials":"[{shader,template,blend,blend_from_passes,emissive,base,details}]","sky":"string|null","atmosphere":"{sky,sun,fog,fallback_rgb}"}"#,
+        r#"{"scene":"boolean","lightmap_pages":"integer","bsps":"[{bsp,lighting,detail}]","triangles":"{blend: integer}","solid_triangles":"integer","lightmapped_triangles":"integer","materials":"[{shader,template,blend,blend_from_passes,emissive,base,details,mask}]","sky":"string|null","atmosphere":"{sky,sun,fog,fallback_rgb}"}"#,
         "null",
     ),
     // Planned namespaces: designed seams with no provider yet.
