@@ -678,14 +678,14 @@ from what the medal chain files ([Medals](#medals)):
 |---|---|---|
 | a bounce | `bounce_points` (1) times its place in its chain, at most 6: a single 1, a double 2 (3 for the chain of two), the sixth and every bounce after it 6 | `bounce_points`, 0 to 5; 0 scores no bounce |
 | a Monster Bounce | twice the bounce's, after the cap: a Monster single 2, a Monster eighth of a chain 12 | `monster_double`, on |
-| a Bounced | −1 | `bounced_costs`, on |
+| a Bounced | −1, once: Slayer's suicide point while `suicide_costs` is on, else the Bounced penalty | `bounced_costs`, on |
 | a kill, a suicide | Slayer's: `kill_points` (1), −1 | `kill_points`, `suicide_costs` |
 
 The cap is Bouncetacular's count, so a long chain cannot run away. A
-Bounced is a death too, and `on kill` takes a point for a death with no
-killer while `suicide_costs` is on, so a Bounced costs 2 with both on
-(supposed: that the game reports a fall out of the map as a death with
-no killer; a kill feed line on a lab run would show it).
+Bounced is a death with no killer too, so while `suicide_costs` is on,
+`on kill` takes its point and `on bounced` takes none: a Bounced costs one
+point either way (supposed: that the game reports a fall out of the map as
+a death with no killer; a kill feed line on a lab run would show it).
 
 The mode is on when the variant's extension block names a rules script
 that requires `hud.superbounce` (`rules::header::script_asks_superbounce`,

@@ -44,6 +44,9 @@ on bounce(p, spot, chain, monster) {
     }
 }
 
+// A Bounced is a fall out of the map, a death with no killer, so with
+// the suicide penalty on `on kill` has already taken its point: a Bounced
+// costs one point either way, never two.
 on bounced(p) {
-    if bounced_costs { score(p, -1) }
+    if bounced_costs and not suicide_costs { score(p, -1) }
 }
