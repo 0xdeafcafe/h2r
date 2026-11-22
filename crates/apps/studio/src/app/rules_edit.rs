@@ -897,29 +897,69 @@ pub fn find_program(name: &str, dirs: &[PathBuf], is_file: impl Fn(&Path) -> boo
     dirs.iter().map(|d| d.join(name)).find(|p| is_file(p))
 }
 
-/// What "Open in editor" tries, in order: the script editor app
-/// (`h2 script-edit`, with the `h2` `find` finds, else
-/// `~/.cargo/bin/h2`), then `$VISUAL` and `$EDITOR` (a terminal editor
-/// is passed over: there is no terminal to run it in), then VS Code
-/// (`code`) and Zed (`zed`) where `find` finds them, then on macOS
-/// `open -t` (the default text editor). The same command twice is tried
-/// once.
+/// The rules extension's id in VS Code (`publisher.name` of
+/// `editors/vscode/package.json`) and in Zed (`editors/zed/extension.toml`).
+/// `h2 rules editors` reads the same places
+/// (`crates/apps/cli/src/rules_editors.rs`).
+pub const VSCODE_EXTENSION: &str = "h2recomp.h2-rules";
+pub const ZED_EXTENSION: &str = "h2-rules";
+
+/// Whether `editor` (`code` or `zed`) has the rules extension
+/// (docs/editor/rules-editors.md): VS Code keeps each extension in
+/// `~/.vscode/extensions/<id>-<version>`; Zed keeps each, a dev extension
+/// as a link to its folder, in `extensions/installed/<id>` under its data
+/// directory (`~/Library/Application Support/Zed` on macOS,
+/// `~/.local/share/zed` elsewhere).
+pub fn extension_installed(
+    editor: &str,
+    home: &Path,
+    macos: bool,
+    exists: impl Fn(&Path) -> bool,
+    list_dir: impl Fn(&Path) -> Vec<String>,
+) -> bool {
+    match editor {
+        "code" => {
+            let prefix = format!("{VSCODE_EXTENSION}-");
+            list_dir(&home.join(".vscode/extensions"))
+                .iter()
+                .any(|name| name.to_ascii_lowercase().starts_with(&prefix))
+        }
+        "zed" => {
+            let data = if macos {
+                home.join("Library/Application Support/Zed")
+            } else {
+                home.join(".local/share/zed")
+            };
+            exists(&data.join("extensions/installed").join(ZED_EXTENSION))
+        }
+        _ => false,
+    }
+}
+
+/// What "Open in editor" tries, in order: VS Code (`code`) or Zed
+/// (`zed`) where `find` finds it and it has the rules extension
+/// (`has_extension`), then `$VISUAL` and `$EDITOR` (a terminal editor is
+/// passed over: there is no terminal to run it in), then `code` and
+/// `zed` where `find` finds them, then on macOS `open -t` (the default
+/// text editor). The same command twice is tried once.
 pub fn editor_launches(
     file: &Path,
     env: impl Fn(&str) -> Option<String>,
     find: impl Fn(&str) -> Option<PathBuf>,
-    home: Option<&Path>,
-    is_file: impl Fn(&Path) -> bool,
+    has_extension: impl Fn(&str) -> bool,
     macos: bool,
 ) -> Vec<Launch> {
     let file_arg = file.display().to_string();
     let mut out: Vec<Launch> = Vec::new();
-    let h2 = find("h2").or_else(|| home.map(|h| h.join(".cargo/bin/h2")).filter(|p| is_file(p)));
-    if let Some(h2) = h2 {
-        out.push(Launch {
-            program: h2,
-            args: vec!["script-edit".into(), file_arg.clone()],
-        });
+    for name in ["code", "zed"] {
+        if has_extension(name)
+            && let Some(program) = find(name)
+        {
+            out.push(Launch {
+                program,
+                args: vec![file_arg.clone()],
+            });
+        }
     }
     for var in ["VISUAL", "EDITOR"] {
         let Some(value) = env(var) else {
@@ -965,15 +1005,30 @@ pub fn editor_launches(
 /// [`editor_launches`] with this process's environment.
 pub fn editor_launches_here(file: &Path) -> Vec<Launch> {
     let dirs = program_dirs(std::env::var("PATH").ok().as_deref());
-    let home = std::env::var_os("HOME").map(PathBuf::from);
     editor_launches(
         file,
         |k| std::env::var(k).ok().filter(|v| !v.trim().is_empty()),
         |name| find_program(name, &dirs, |p| p.is_file()),
-        home.as_deref(),
-        |p| p.is_file(),
+        extension_installed_here,
         cfg!(target_os = "macos"),
     )
+}
+
+/// [`extension_installed`] in this user's home.
+pub fn extension_installed_here(editor: &str) -> bool {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return false;
+    };
+    let list_dir = |dir: &Path| -> Vec<String> {
+        std::fs::read_dir(dir)
+            .map(|rd| {
+                rd.flatten()
+                    .filter_map(|e| e.file_name().to_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    extension_installed(editor, &home, cfg!(target_os = "macos"), |p| p.exists(), list_dir)
 }
 
 /// What to do with a started editor.
@@ -984,7 +1039,8 @@ pub enum LaunchStep {
     /// It opened the file: it exited with success (`code`, `open`), or
     /// it is still running after [`LAUNCH_GRACE`] (a GUI editor).
     Done,
-    /// It failed (an `h2` without `script-edit`, say): try the next one.
+    /// It failed (a `$VISUAL` that is not installed, say): try the next
+    /// one.
     Next,
 }
 
@@ -1053,7 +1109,7 @@ fn run_launches(launches: &[Launch], out: &Launched) {
         }
     }
     answer(Err(
-        "no editor opened the script: install h2 (for h2 script-edit), set $VISUAL or $EDITOR to a GUI editor, or install VS Code or Zed"
+        "no editor opened the script: install VS Code or Zed with the rules extension (h2 rules editors install), or set $VISUAL or $EDITOR to a GUI editor"
             .into(),
     ));
 }

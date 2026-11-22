@@ -191,9 +191,15 @@ pub struct Changes {
     /// New raw blocks (the Modeling tool's grown sections), each with the
     /// tag word that takes its raw pointer.
     pub raw_appends: Vec<RawAppend>,
+    /// The Modeling tool's grown tag blocks (a structure's level collision
+    /// with a solid added), each appended to the metadata with its pair,
+    /// in the ordinary metadata or a BSP region, pointed at the copy.
+    pub geometry_grown: Vec<GeometryGrown>,
     /// Why the Modeling tool's edits cannot be saved, when they cannot: a
     /// save is then refused whole, before anything is written.
     pub geometry_refusal: Option<String>,
+    /// The same for the Textures tool's edits.
+    pub bitmap_refusal: Option<String>,
 }
 impl Changes {
     pub fn is_empty(&self) -> bool {
@@ -204,7 +210,9 @@ impl Changes {
             && self.strings.is_empty()
             && self.raw_patches.is_empty()
             && self.raw_appends.is_empty()
+            && self.geometry_grown.is_empty()
             && self.geometry_refusal.is_none()
+            && self.bitmap_refusal.is_none()
     }
 }
 
@@ -243,7 +251,24 @@ pub struct GeometryChanges {
     pub bsp_patches: Vec<BspPatch>,
     pub raw_patches: Vec<RawPatch>,
     pub raw_appends: Vec<RawAppend>,
+    pub grown: Vec<GeometryGrown>,
     pub refusal: Option<String>,
+}
+
+/// A Modeling tool block with more elements than its source had
+/// (`geometry_edit::level_collision::GrownBlock`): appended to the
+/// ordinary metadata (`map::MapEditor::append_metadata`), then its
+/// `(count, address)` pair, which may lie in a BSP region, pointed there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeometryGrown {
+    /// Where the pair is: the ordinary metadata (`None`) or a BSP region.
+    pub pair_space: Option<map::AddressSpace>,
+    pub pair: u32,
+    pub count: u32,
+    /// Every element, in order.
+    pub bytes: Vec<u8>,
+    /// Alignment in the metadata, a power of two up to 0x1000.
+    pub align: u32,
 }
 
 /// A fixed-size replacement inside a structure BSP region.
@@ -379,6 +404,9 @@ pub struct Scenario {
     tag_strings: Vec<String>,
     /// The Modeling tool's writes. See [`Self::set_geometry_changes`].
     geometry: GeometryChanges,
+    /// The Textures tool's writes, in the same shape. See
+    /// [`Self::set_bitmap_changes`].
+    bitmap: GeometryChanges,
 }
 
 pub(crate) fn u32_at(b: &[u8], o: usize) -> u32 {
@@ -593,6 +621,7 @@ impl Scenario {
             tag_grown: Vec::new(),
             tag_strings: Vec::new(),
             geometry: GeometryChanges::default(),
+            bitmap: GeometryChanges::default(),
         })
     }
 
@@ -733,12 +762,20 @@ impl Scenario {
             strings: self.tag_strings.clone(),
             raw_patches: self.geometry.raw_patches.clone(),
             raw_appends: self.geometry.raw_appends.clone(),
+            geometry_grown: self.geometry.grown.clone(),
             geometry_refusal: self.geometry.refusal.clone(),
             ..Changes::default()
         };
         out.patches.extend(self.geometry.patches.iter().cloned());
         out.bsp_patches
             .extend(self.geometry.bsp_patches.iter().cloned());
+        // The Textures tool's writes go out the same way, after the
+        // Modeling tool's (a raw block patch never shares a block with a
+        // grown one: bitmap pixels and mesh sections are other blocks).
+        out.patches.extend(self.bitmap.patches.iter().cloned());
+        out.raw_patches.extend(self.bitmap.raw_patches.iter().cloned());
+        out.raw_appends.extend(self.bitmap.raw_appends.iter().cloned());
+        out.bitmap_refusal = self.bitmap.refusal.clone();
         for b in &self.blocks {
             let root = self.address + b.def.offset;
             if b.len() > b.capacity() {
@@ -838,12 +875,50 @@ impl Scenario {
                 "the scenario tag's bytes belong to the Scenario tool",
             ));
         }
+        for g in &changes.grown {
+            let (a, e) = (u64::from(g.pair), u64::from(g.pair) + 8);
+            if g.pair_space.is_none() && a < hi && lo < e {
+                return Err(Error::Refused(
+                    "the scenario tag's bytes belong to the Scenario tool",
+                ));
+            }
+            if g.bytes.is_empty() || g.count == 0 {
+                return Err(Error::Refused("a grown block has no elements"));
+            }
+        }
         self.geometry = changes;
         Ok(())
     }
     /// The Modeling tool's writes.
     pub fn geometry_changes(&self) -> &GeometryChanges {
         &self.geometry
+    }
+
+    /// Replace the Textures tool's writes (all of them, not a delta):
+    /// metadata patches for the images' records, raw block patches for
+    /// pixels in this map, new raw blocks for pixels that grew or came from
+    /// a shared cache (`assets::write`). Refused, like
+    /// [`Self::set_geometry_changes`], when a patch touches this scenario's
+    /// payload. The `refusal` makes the save fail before it writes.
+    pub fn set_bitmap_changes(&mut self, changes: GeometryChanges) -> Result<()> {
+        let (lo, hi) = (
+            u64::from(self.address),
+            u64::from(self.address) + u64::from(self.size),
+        );
+        if changes.patches.iter().any(|(a, b)| {
+            let (a, e) = (u64::from(*a), u64::from(*a) + b.len() as u64);
+            a < hi && lo < e
+        }) {
+            return Err(Error::Refused(
+                "the scenario tag's bytes belong to the Scenario tool",
+            ));
+        }
+        self.bitmap = changes;
+        Ok(())
+    }
+    /// The Textures tool's writes.
+    pub fn bitmap_changes(&self) -> &GeometryChanges {
+        &self.bitmap
     }
 
     /// Replace the other tags' grown blocks (all of them, not a delta).

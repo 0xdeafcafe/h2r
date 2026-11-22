@@ -497,12 +497,17 @@ page.
 Firefight is a tab of the party lobby's mode strip
 ([party-lobby.md](party-lobby.md), [forge-firefight-ui.md](forge-firefight-ui.md#the-lobbies)),
 shown while the `firefight` feature is on and a settings store holds
-the choices, and dimmed while no kit map is installed, with the reason
-"No Firefight map is installed. Make one with h2 firefight kit."
-Selecting it sets the page's Firefight choice on and puts the lobby on
-a kit map; Game Setup then lists the Firefight rows, and the variant
-panel shows the wave set, the difficulty and the starting lives in
-place of Quick Options' lines.
+the choices, whatever maps are installed. Selecting it sets the page's
+Firefight choice on and puts the lobby on a kit map; Game Setup then
+lists the Firefight rows, and the variant panel shows the wave set, the
+difficulty and the starting lives in place of Quick Options' lines.
+With no kit map installed the tab still opens and the lobby keeps its
+map: the panel says "No installed map supports Firefight yet" and "Make
+one with h2 firefight kit", and Start Game is held with "No installed
+map supports Firefight yet." on the status line
+(`lobby_mode::start_refusal`). A Firefight lobby on a map without the
+kit while one is installed is held the same way, with "This map does
+not support Firefight."
 
 | Row | A does |
 |---|---|

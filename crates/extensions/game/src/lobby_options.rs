@@ -229,7 +229,7 @@ impl LobbyOptions {
         let (map, role, own_skulls) = cx.read(|m| {
             let mem = ReadGm(m);
             let map = m.u32(LOBBY_MAP).ok();
-            let role = skulls_mp::role(crate::coop_probe::read_session(&mem).as_ref());
+            let role = skulls_mp::role_in(&mem);
             let own_skulls = mp
                 .filter(|_| !matches!(role, Role::Guest { .. }))
                 .map_or(0, |mp| {

@@ -85,7 +85,7 @@ const OK: Refusals = Refusals {
 };
 
 fn set(c: &mut Cheats, name: &str, v: Value) {
-    c.set(&json!({"name": name, "value": v}), &OK).unwrap();
+    c.set(&json!({"name": name, "value": v}), &OK, true).unwrap();
 }
 
 #[test]
@@ -160,6 +160,9 @@ fn speed_fields_follow_the_games_helper() {
     assert_eq!(speed_fields(30, 2.0), (15, 1.0 / 15.0, 2.0));
     assert_eq!(speed_fields(30, 0.25), (120, 1.0 / 120.0, 0.25));
     assert_eq!(speed_fields(30, 1.5), (20, 1.0 / 20.0, 1.5));
+    assert_eq!(speed_fields(30, 0.1), (300, 1.0 / 300.0, 0.1));
+    // 30 / 4 is not whole: the nearest rate, and the speed asked for.
+    assert_eq!(speed_fields(30, 4.0), (8, 1.0 / 8.0, 4.0));
     // The game time a real second runs: rate * speed * seconds per tick.
     for s in SPEEDS {
         let (r, secs, sp) = speed_fields(30, s);
@@ -190,7 +193,7 @@ fn game_speed_holds_and_is_put_back_once() {
     assert_eq!(g.f32(TIME + TIME_SPEED).unwrap(), 0.9);
     // Only the offered speeds.
     assert!(
-        c.set(&json!({"name": "game_speed", "value": 0.0}), &OK)
+        c.set(&json!({"name": "game_speed", "value": 0.0}), &OK, true)
             .is_err()
     );
 }
@@ -240,11 +243,11 @@ fn co_op_and_lockstep_refuse_and_switch_them_off() {
     let mut c = Cheats::default();
     let why = co_op();
     let e = c
-        .set(&json!({"name": "god", "value": true}), &why)
+        .set(&json!({"name": "god", "value": true}), &why, true)
         .unwrap_err();
     assert_eq!(e.code, code::UNAVAILABLE);
     assert!(!c.god);
-    let l = c.list(&why);
+    let l = c.list(&why, true);
     assert_eq!(l["refused"], Value::Null, "not every cheat is refused");
     assert_eq!(l["cheats"][0]["refused"], json!(policy::CO_OP));
     // On when the session turns co-op: off, the flag and speed undone.
@@ -271,7 +274,7 @@ fn co_op() -> Refusals {
 #[test]
 fn the_list_is_what_the_menu_reads() {
     let mut c = Cheats::default();
-    let l = c.list(&OK);
+    let l = c.list(&OK, true);
     let names: Vec<&str> = l["cheats"]
         .as_array()
         .unwrap()
@@ -287,35 +290,51 @@ fn the_list_is_what_the_menu_reads() {
             "game_speed",
             "fly",
             "noclip",
-            "hide_hud"
+            "hide_hud",
+            "ai_off"
         ]
     );
     assert_eq!(l["refused"], Value::Null);
+    assert_eq!(l["pending"], Value::Null);
     assert!(
         l["cheats"]
             .as_array()
             .unwrap()
             .iter()
-            .all(|c| c["refused"].is_null())
+            .all(|c| c["refused"].is_null() && c["pending"].is_null())
     );
+    let labels: Vec<&str> = l["cheats"][3]["choices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["label"].as_str().unwrap())
+        .collect();
+    assert_eq!(labels, ["0.1x", "0.25x", "0.5x", "1x", "1.5x", "2x", "4x"]);
     assert_eq!(
-        l["cheats"][3]["choices"][2],
+        l["cheats"][3]["choices"][3],
         json!({"value": 1.0, "label": "1x"})
     );
-    // A set answers with the new list; the choice's value is its own.
+    assert_eq!(l["cheats"][3]["choices"][0]["value"], json!(0.1));
+    // A set answers with the new list; the choice's value is its own, and
+    // a client may send it back as it came.
     let r = c
-        .set(&json!({"name": "game_speed", "value": 0.25}), &OK)
+        .set(&json!({"name": "game_speed", "value": 0.25}), &OK, true)
         .unwrap();
     assert_eq!(
         r["cheats"][3]["value"],
-        r["cheats"][3]["choices"][0]["value"]
+        r["cheats"][3]["choices"][1]["value"]
     );
+    let tenth = r["cheats"][3]["choices"][0]["value"].clone();
     let r = c
-        .set(&json!({"name": "noclip", "value": true}), &OK)
+        .set(&json!({"name": "game_speed", "value": tenth}), &OK, true)
+        .unwrap();
+    assert_eq!(r["cheats"][3]["value"], json!(0.1));
+    let r = c
+        .set(&json!({"name": "noclip", "value": true}), &OK, true)
         .unwrap();
     assert_eq!(r["cheats"][5]["value"], json!(true));
-    assert!(c.set(&json!({"name": "warp", "value": true}), &OK).is_err());
-    assert!(c.set(&json!({"name": "god", "value": 1}), &OK).is_err());
+    assert!(c.set(&json!({"name": "warp", "value": true}), &OK, true).is_err());
+    assert!(c.set(&json!({"name": "god", "value": 1}), &OK, true).is_err());
 }
 
 fn on_live(tags: &[&str]) -> Refusals {
@@ -331,7 +350,7 @@ fn on_live_only_the_allowed_gamertag_cheats() {
     let mut c = Cheats::default();
     // afr on Live: everything.
     for name in ["god", "noclip", "hide_hud"] {
-        c.set(&json!({"name": name, "value": true}), &on_live(&["AFR"]))
+        c.set(&json!({"name": name, "value": true}), &on_live(&["AFR"]), true)
             .unwrap();
     }
     let mut g = game();
@@ -356,12 +375,12 @@ fn on_live_only_the_allowed_gamertag_cheats() {
     assert!(!c.any());
     assert_eq!(g.u8(HUD + HUD_SHOWN).unwrap(), 1);
     let e = c
-        .set(&json!({"name": "hide_hud", "value": true}), &other)
+        .set(&json!({"name": "hide_hud", "value": true}), &other, true)
         .unwrap_err();
     assert_eq!(e.code, code::UNAVAILABLE);
-    assert_eq!(c.list(&other)["refused"], json!(other.all.clone().unwrap()));
+    assert_eq!(c.list(&other, true)["refused"], json!(other.all.clone().unwrap()));
     // Off Live: anyone.
-    c.set(&json!({"name": "god", "value": true}), &OK).unwrap();
+    c.set(&json!({"name": "god", "value": true}), &OK, true).unwrap();
 }
 
 #[test]
@@ -377,6 +396,116 @@ fn a_co_op_session_keeps_the_hud_cheat_and_drops_the_rest() {
     assert!(said[1].starts_with("cheats: noclip off for player 0"));
     assert!(c.hide_hud && !c.noclip);
     assert_eq!(g.u8(HUD + HUD_SHOWN).unwrap(), 0);
+}
+
+// ---- AI off ----
+
+const AI: u32 = 0x0069_0000;
+
+/// [`game`] with the AI globals, AI on.
+fn with_ai() -> FakeGuest {
+    let mut g = game();
+    g.map(0x004f_0000, 0x1_0000).map(AI, 0x1000);
+    g.put_u32(engine::points::AI_GLOBALS.base, AI)
+        .put_u8(AI + AI_ON, 1)
+        .put_u8(AI + 1, 1);
+    g
+}
+
+#[test]
+fn ai_off_holds_the_on_byte_and_gives_back_the_games_value() {
+    let mut g = with_ai();
+    let mut c = Cheats::default();
+    set(&mut c, "ai_off", json!(true));
+    assert!(c.any());
+    c.tick(&mut g, &OK).unwrap();
+    assert_eq!(g.u8(AI + AI_ON).unwrap(), 0);
+    assert_eq!(g.u8(AI + 1).unwrap(), 1, "initialised is the game's");
+    // A script switches AI on (or Firefight does): off again.
+    g.put_u8(AI + AI_ON, 1);
+    c.tick(&mut g, &OK).unwrap();
+    assert_eq!(g.u8(AI + AI_ON).unwrap(), 0);
+    assert!(snapshot_live(&Mutex::new(std::mem::take(&mut c))).is_some());
+    let mut c = Cheats::default();
+    set(&mut c, "ai_off", json!(true));
+    c.tick(&mut g, &OK).unwrap();
+    set(&mut c, "ai_off", json!(false));
+    c.tick(&mut g, &OK).unwrap();
+    // AI was already off (our hold) when this one began: stays off.
+    assert_eq!(g.u8(AI + AI_ON).unwrap(), 0);
+    // From a fresh game with AI on: back on after, then left alone.
+    let mut g = with_ai();
+    let mut c = Cheats::default();
+    set(&mut c, "ai_off", json!(true));
+    c.tick(&mut g, &OK).unwrap();
+    set(&mut c, "ai_off", json!(false));
+    c.tick(&mut g, &OK).unwrap();
+    assert_eq!(g.u8(AI + AI_ON).unwrap(), 1);
+    assert!(!c.busy());
+    g.put_u8(AI + AI_ON, 0);
+    c.tick(&mut g, &OK).unwrap();
+    assert_eq!(g.u8(AI + AI_ON).unwrap(), 0);
+}
+
+#[test]
+fn ai_off_waits_for_the_globals_and_a_co_op_session_refuses_it() {
+    // No AI globals yet (a map loading): nothing written, nothing held.
+    let mut g = with_ai();
+    g.put_u32(engine::points::AI_GLOBALS.base, 0);
+    let mut c = Cheats::default();
+    set(&mut c, "ai_off", json!(true));
+    c.tick(&mut g, &OK).unwrap();
+    assert_eq!(g.u8(AI + AI_ON).unwrap(), 1);
+    g.put_u32(engine::points::AI_GLOBALS.base, AI);
+    c.tick(&mut g, &OK).unwrap();
+    assert_eq!(g.u8(AI + AI_ON).unwrap(), 0);
+    // It changes the simulation: a co-op session switches it off, undone.
+    let said = c.tick(&mut g, &co_op()).unwrap();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(!c.ai_off);
+    assert_eq!(g.u8(AI + AI_ON).unwrap(), 1);
+    assert_eq!(
+        c.set(&json!({"name": "ai_off", "value": true}), &co_op(), true)
+            .unwrap_err()
+            .code,
+        code::UNAVAILABLE
+    );
+}
+
+// ---- at the main menu ----
+
+#[test]
+fn cheats_set_at_the_menu_say_they_wait_then_take_hold_in_a_game() {
+    let mut g = with_ai();
+    g.put_u32(GLOBALS + GLOBALS_MODE, 3);
+    assert!(!playing(&g));
+    let mut c = Cheats::default();
+    let l = c.list(&OK, playing(&g));
+    assert_eq!(l["pending"], json!(PENDING), "said before anything is on");
+    assert!(l["cheats"][0]["pending"].is_null(), "god is off");
+    let r = c
+        .set(&json!({"name": "god", "value": true}), &OK, playing(&g))
+        .unwrap();
+    assert_eq!(r["cheats"][0]["value"], json!(true));
+    assert_eq!(r["cheats"][0]["pending"], json!(PENDING));
+    assert!(r["cheats"][1]["pending"].is_null(), "ammo is off");
+    set(&mut c, "ai_off", json!(true));
+    c.tick(&mut g, &OK).unwrap();
+    assert_eq!(flags(&g), 0);
+    assert_eq!(g.u8(AI + AI_ON).unwrap(), 1, "the menu's AI is left alone");
+    // A game starts: the cheats hold, and nothing is pending.
+    g.put_u32(GLOBALS + GLOBALS_MODE, 1);
+    assert!(playing(&g));
+    c.tick(&mut g, &OK).unwrap();
+    assert_eq!(flags(&g), CANNOT_TAKE_DAMAGE);
+    assert_eq!(g.u8(AI + AI_ON).unwrap(), 0);
+    let l = c.list(&OK, playing(&g));
+    assert!(l["pending"].is_null() && l["cheats"][0]["pending"].is_null());
+    // A refused cheat is refused, not pending.
+    let l = c.list(&co_op(), false);
+    assert_eq!(l["cheats"][0]["refused"], json!(policy::CO_OP));
+    assert!(l["cheats"][0]["pending"].is_null());
+    assert_eq!(l["cheats"][6]["pending"], Value::Null, "hide_hud is off");
 }
 
 // ---- hide HUD ----

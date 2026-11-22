@@ -1,0 +1,23 @@
+id = "h2-rules"
+name = "H2 Rules"
+version = "0.1.0"
+schema_version = 1
+authors = ["Alexander Forbes-Reed"]
+description = "Game type scripts (.rules) for h2recomp: highlighting, outline and the `h2 rules lsp` language server."
+repository = "https://github.com/0xdeafcafe/h2r"
+
+[language_servers.h2-rules-lsp]
+name = "h2 rules lsp"
+languages = ["Rules"]
+
+[grammars.rules]
+repository = "https://github.com/0xdeafcafe/h2r"
+# REV PLACEHOLDER: the commit of this repository that holds the generated
+# grammar (editors/tree-sitter-rules/src/parser.c). Replace it with that
+# commit's full SHA after `tree-sitter generate` is committed.
+rev = "0a781f2de6954ff8e12b7d480379eb7189af4c95"
+path = "editors/tree-sitter-rules"
+# Local development: point at your checkout instead, at a committed rev
+# (Zed clones the repository, so uncommitted changes are not seen):
+# repository = "file:///absolute/path/to/h2recomp"
+# rev = "<a local commit SHA>"

@@ -135,7 +135,9 @@ pub mod layout {
     pub const PEERS: u32 = 0x54;
     pub const PLAYERS: u32 = 0x1118;
     pub const PARAMS_VERSION: u32 = 0x4978;
-    /// 1 for the session kind the lobby setters accept (`0x63f00`).
+    /// The squad's stage (set only by `0x5a220`): 1 in a pregame lobby,
+    /// the only stage the lobby setters accept (`0x63f00`). Not the
+    /// network class (`crate::variant_ext::SESSION_NETWORK_CLASS`).
     pub const CLASS: u32 = 0x4980;
     pub const PRIVACY: u32 = 0x498c;
     pub const MAX_PEERS: u32 = 0x4990;

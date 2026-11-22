@@ -449,8 +449,9 @@ tool and cached by map fingerprint. `bots::autonav::build_map` reads the
 scenario and builds one `<map>.<bsp>.bots` per BSP. `bots::cache::build`
 starts with the sectors from `pathfind::generate::generate`. The bot
 generator adds its links and collision probes to those sectors. Generator
-version 6 regenerates earlier caches; it includes tactical places, the
-measured jump's reach and the breakable glass.
+version 7 regenerates earlier caches; it includes tactical places, the
+measured jump's reach, the breakable glass, the crossing check and the
+in-map flags (below).
 
 The mesh holds:
 
@@ -459,7 +460,13 @@ The mesh holds:
   A surface takes links when a standing body fits on it somewhere
   (`nav::stands_on`): at its centre, or at a corner pulled 0.3 in. A floor
   that runs in under a low lip, as a crouch spot's does, keeps its links
-  by the standing room beside the lip; a recess wholly under one has none;
+  by the standing room beside the lip; a recess wholly under one has none.
+  No walk, step or drop link crosses a wall standing on the polygon side
+  (`nav::crossing_clear`): rays across the side's middle at 0.25 and 0.5
+  over the higher floor, 0.15 to each side, must be clear. A wall planted
+  on a side (an invisible boundary wall over continuous terrain, a
+  building's face at a floor's edge) lies in the plane of the vertical
+  headroom ray, which does not see it;
 - links:
   - **drop**: a ledge to a lower surface within the fall-damage limit;
   - **jump**: a gap or ledge reachable at the biped's jump arc, checked by
@@ -485,6 +492,32 @@ The mesh holds:
     until the platform is level with the exit before stepping off.
   - **vehicle**: the ground-vehicle planner filters the walk graph by
     chassis clearance and checks each steering span (§3.9).
+
+**In the map.** Each polygon is in the map or out of it
+(`nav::NavMesh::mark_out_of_map`, run by `autonav::build_map` after the
+scenario's rides are linked). A polygon is in when a player start or a
+weapon pad reaches it over the mesh's links: the walks, steps, drops,
+jumps, crouch jumps, teleporters, lifts and elevators a player takes
+without a glitch. A superbounce is never a mesh link, so the terrain past
+a map's boundary walls and cliffs (Coagulation's snowfields) is out.
+Reachability is directed: a plateau that drops back into the map is out,
+a pit one drops into and cannot leave is in. A BSP no start or pad is on
+gets no flags. Every polygon is in until a classification marks some
+out.
+
+Out-of-map polygons are kept, flagged, because a bot can still end up
+there: a superbounce route (§3.8, "Superbounce routes") lands it there
+and walks the mesh from its landing, and a bot a bounce launched out has
+to find its way back in. The rules:
+
+- a search that starts in the map never ends in or passes through an
+  out-of-map polygon (`nav::search`, `NavMesh::in_map`): a goal out there
+  has no path, found at once without searching the whole map;
+- a search that starts out of the map goes anywhere, so the bot plans
+  back in over the drops at the boundary;
+- goal picking leaves them out: the roam's random floors
+  (`NavMesh::nth_in_map`) and the places' lanes, traffic and vantages
+  are in-map polygons only.
 
 Paths come from A\* over the sector graph, smoothed with a funnel pass and
 followed by steering:
@@ -801,7 +834,8 @@ it can reach and has not been blacklisted wins.
 - a weapon lying in the world worth taking (1.5);
 - the map's spawn points (1.0): on a large map with no sighting for a
   while, the likeliest place to find anyone is where players come from;
-- six polygons picked at random (0.5), so it still explores;
+- six in-map polygons picked at random (0.5), so it still explores
+  (never the terrain past the map's boundary, §3.2, "In the map");
 - less 2.5 for a place within 5 it was at in the last 40 s (fading), and
   2 for one under 4 away;
 - plus a random wobble: 8 on Easy (it wanders nearly at random), 2 on
@@ -3938,7 +3972,8 @@ human playlists, whatever the Live menu chose last. The log says
 rows)` at each Game Setup, then `clankermatch: Switch To: Clankermatch:
 opening the clanker playlists` and `clankermatch: the playlists are the
 clanker hoppers` at the press. The party lobby's Game Setup then drops
-every Switch To row, this one with retail's (`lobby_mode::arrange`):
+every Switch To row, this one with retail's (`lobby_mode::arrange`, the
+constructor's outermost `after`, so it runs once this row is added):
 the mode strip changes mode, and its MULTIPLAYER tab is the one
 matchmaking lobby. There, action 9 reads Change Playlist... and lists
 the clanker and the human hoppers on one page (`clankermatch::Scope::All`),
@@ -3963,17 +3998,29 @@ For a clanker hopper (`live_hle::clankermatch`):
    (`Hle::clanker_hosted`: the advertised session's hopper is marked) and
    fills it (`clankers::Driver::tick_match`, twice a second): it asks
    Live for one roster of the whole lobby (`POST /v1/games/bots` with the
-   playlist, no skill, so the server sets skill from the human's level,
-   §8.2.3; `teams: true` in a team playlist) and seats the bots one at a
+   clanker hopper's index as the playlist (`Rosters::playlist`, which
+   falls back to `Hle::clanker_hosted` when no server match names one),
+   no skill, so the server sets skill from the party's level, §8.2.3;
+   `teams: true` in a team playlist) and seats the bots one at a
    time on `clankermatch::schedule` (each 0.5 to 3 s after the last,
-   seeded by the session id), up to the playlist's most players less one
-   human. Each bot joins the match's target session as a phantom peer
+   seeded by the session id), up to the playlist's most players less the
+   party. The party is the squad session's player count
+   (`bots::lobby::party_players`, `+0x1118`: every console of the party
+   and its guests, never a phantom), read twice a second by the frame
+   hook (`Driver::set_party`) and followed until the first bot sits; one
+   person while it cannot be read. Clanker Doubles is three bots for one
+   person and two for a party of two: a bot for every human but the host
+   would take the seat of the party's second console, whose join the full
+   session then refuses. The log says `clankermatch: 4 seats, the party
+   of 2 people, 2 bots` (or `the party of N people fills clanker playlist
+   P's N seats: no bots`). Each bot joins the match's target session as a phantom peer
    with its rostered account and skill (§5.1, "Phantoms in the pregame
    lobby"). The driver waits for the roster before seating any bot.
    If Live refuses the roster, the host supplies the identities.
    In a team playlist each phantom without a roster team goes to the team
    with the fewest players, then the lowest total skill
-   (`clankermatch::balance`), around the human: the host's first
+   (`clankermatch::balance`), around the party, all of it on the host's
+   team (a party keeps together): the host's first
    local listed player's configuration team (player `+0xd4 + 0x7c`,
    `bots::phantom::session::host_team`), read twice a second by the bots'
    frame hook (`clankers::frame`) and followed until the first bot sits,
@@ -3983,7 +4030,20 @@ For a clanker hopper (`live_hle::clankermatch`):
    started its fill).
 3. The match starts on the hopper's normal countdown once the phantoms
    bring it to the required player count (below, "Tracing the
-   matchmaking lobby"). A handoff (the lobby's session deleted and the game's
+   matchmaking lobby"). A lobby that has not started 20 s after its last
+   bot was due says why (`Driver::stalled`, reading
+   `bots::lobby::match_wait`: the host update's checks in its order),
+   once per reason and again every 30 s while it holds: `clankers:
+   clankermatch: clanker playlist P's match has not started N s after its
+   last bot was due: <reason> [players 3/4, roster 3/4 present, peers 3
+   (bots 2), maps [..], hopper statuses [..], arbitration [..], round
+   none, matchmaking result 0x3, arbitration state 0x0]`. The reasons:
+   the match session short of players, the matchmaking roster's players
+   not all in the session, a peer's hopper status not 1, a peer that has
+   not loaded the map, no arbitration round, a failed or pending
+   arbitration registration, this console not hosting the match lobby,
+   or Live not having answered the roster; "every traced check reads
+   ready" when none holds. A handoff (the lobby's session deleted and the game's
    advertised) keeps the bots and carries the roster (§9.5); with no
    hosted session for 30 s, or another kind of session hosted, the fill
    ends and the phantoms leave.
@@ -4195,6 +4255,13 @@ gamertags, emblems and ranks. The flag clears when the fill ends.
    the lobby, before the countdown. `bots: phantom ... waits: not a lobby
    it can join (...)` names why a lobby refused one, `... waits: this
    console is not the game's host yet (...)` why a running game did.
+9. `clankers: clankermatch: clanker playlist P's match has not started
+   N s after its last bot was due: ...` (item 3 above): the lobby filled
+   as far as it could and the game did not start; the reason names the
+   check that holds it. `live: matchmaking ended with result 0x..: ...`
+   says a match that failed back to the party, and `live: arbitration
+   <session>/<round>/register for <gamertag> failed: ...` a refused
+   registration.
 
 **Run:** whether the game hosts after an empty search in every playlist
 type, or needs the server's matcher to say "you host" (`MatchProposed`
@@ -4206,10 +4273,12 @@ The empty search is what is built now.
 panes, texts, cursor rows), `-p boot --lib coop_live` (the seven-row
 menu), `-p boot --lib clankermatch` (the filter, the schedule, the
 balance, Quickmatch's hopper, the Switch To: Clankermatch row's place,
-press and plan order), `-p boot --lib clankers::tests::a_clankermatch`
+press and plan order), `-p game --lib clankers::tests::a_clankermatch`
 (the fill: one roster, phantoms only, one bot at a time, no controller
 port, balanced teams around the host, the handoff, the end, a refused
-roster, the match-only flag), `-p boot --lib
+roster, the match-only flag, Clanker Doubles for a party of two, the
+party followed until the first bot sits, the stall line;
+`a_full_party_plays_a_clankermatch_without_bots`), `-p boot --lib
 bot_mark`, `-p font gear` (the glyph on a synthetic font),
 `-p bots phantom::session` (the marked name within 15 units, the host's
 team; `phantom::session::tests::lobby`: the lobby this console hosts, the
@@ -4219,12 +4288,17 @@ rejoining and waiting; `phantom::session::tests::in_game`: the start's
 wait without phantom machines and a phantom standing in the game;
 `lobby::a_clankermatch_...`: the target session),
 `-p bots --lib lobby` (the game session by life cycle, the matchmaking
-host's lobby, its player count), `-p live-hle --lib players_tests` (the
+host's lobby, its player count, the party's count; `lobby::match_wait`:
+each stall reason in the host update's order), `-p live-hle --lib players_tests` (the
 bots told to their roster's session only), `-p live-hle --lib clankermatch` (the delay and the run),
+`-p live-hle --test server a_clanker_doubles_lobby` (a Doubles match
+session read as 2 v 2 and its round registered for both consoles of a
+party),
 `-p live-proto bots hopper::clankers`, `-p live-telemetry
 games_say_their_kind a_bots_name_reads_without_its_mark`, `-p cli
 bots_drive coop_drive`, and the server's: `-p live-server --test
-clankermatch`, `-p live-worker a_clankermatch_game`.
+clankermatch` (Clanker Doubles from roster to ranked game for a party
+of one and of two), `-p live-worker a_clankermatch_game`.
 
 ### 8.5 Game run (checklist)
 
@@ -4284,11 +4358,12 @@ actions in step 8 separately.
    (`clankermatch: hopper 8 not saved for Quickmatch` at the pick).
 10. With a server that has no clanker marks: OptiMatch as retail,
     Clankermatch's list empty (say how the empty list looks).
-11. In a Live custom game lobby, open Game Setup: "Switch To:
-    Clankermatch" sits right under "Switch To: Matchmaking" (the log:
-    `clankermatch: Game Setup list: Switch To: Clankermatch row added`).
-    Press it: the clanker playlists open, as from the Live menu. Back,
-    then Switch To: Matchmaking: the human playlists.
+11. In a Live lobby on MULTIPLAYER, open Game Setup: Change Playlist...
+    is its one row, with no Switch To: Clankermatch (the log:
+    `clankermatch: Game Setup list: Switch To: Clankermatch row added`,
+    then `lobby mode: Game Setup list in Multiplayer (1 rows)`). Change
+    Playlist... lists the human and the clanker playlists on one page.
+    On CUSTOM GAMES, Game Setup has no Switch To row either.
 
 ## 9. The server interface (for sbmm-ranked)
 
@@ -4601,7 +4676,9 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
      versioned on its own (`vis::VERSION`).
    - **The file.** `<data>/bots/<map>.<bsp>.bots`: magic `H2BT`, format
      version 4, the **stamp** (the generator version
-     `cache::GENERATOR` and the source map's fingerprint), then the mesh,
+     `cache::GENERATOR` and the source map's fingerprint), then the mesh
+     (`nav::NavMesh::to_bytes`, magic `H2NV`, version 2: each polygon's
+     vertices and a flag byte, bit 0 out of the map; then the links),
      the walls, the breakable glass (`glass::Pane`: each breakable
      surface's index and outline) and the tactical places. The data comes from the disc, so it stays on this
      machine and out of git. The frame hook tracks the loaded short name
@@ -4688,7 +4765,7 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
        other BSPs first and `<map>.0.bots` (the one checked) last. A crash
        leaves the old file or the new one, never half of one.
      - **Log**: one line a map built (`bots: built the nav mesh for
-       lockout (none yet): 590 polygons, ... in 0.0 s`), one when its
+       lockout (none yet): 590 polygons (0 out of the map), ... in 0.0 s`), one when its
        grid is (`bots: built the visibility grid for lockout ...`), and one summary
        after the pass with the count and elapsed time. Shared cache
        restores are identified in the per-map log.
@@ -4704,7 +4781,12 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
      generator (two floors sharing an edge, an L-shaped corridor, a ledge
      dropped off but not climbed, a low ledge jumped onto, a 0.5 sill
      jumped onto standing, a floor running in under a lip linked and a
-     recess under it not, a narrow gap jumped and a wide one not); locating the floor under a biped; the
+     recess under it not, a narrow gap jumped and a wide one not, a wall
+     on a seam or a ledge not walked or dropped through); the in-map
+     flags on an arena with a plateau only a bounce reaches (the plateau
+     out, no path from the arena ends or passes there, a bot on it plans
+     back in by the drop, roam picks and places stay in the arena, no seed
+     marks nothing, the flags round trip in the file); locating the floor under a biped; the
      funnel turning at the inner corner; the follower walking the
      waypoints, jumping at a jump, and jumping once then re-planning when
      stuck; the file round trip, refusing damaged files and version 1;

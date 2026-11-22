@@ -360,6 +360,9 @@ Each row turns one layer on or off. These layers start off:
   between patches coloured by move: walks blue, drops orange, jumps
   yellow, crouch-jumps purple, teleporters cyan and lifts green. An
   arrowhead marks a one-way link, such as a drop you can't climb back up.
+  Patches in a dim grey-blue are out of the map: no spawn reaches them
+  without a glitch, like the snow past Coagulation's cliffs. Bots never
+  head there, but one a superbounce lands there walks back in over them.
 - **Bot superbounce spots**: the superbounce and crouch spots the bots
   know, each a post coloured by what is known about it: green proven,
   red dead, dull red failed, yellow-green learned, amber still training,
@@ -559,7 +562,29 @@ While the game runs, the editor stays paired with it:
   The game only reads a placement when it makes the object, so you see
   it at the next respawn (a weapon or vehicle spawn, your own respawn at
   a starting location) or after **Play** again. Things already in the
-  world stay put. Adding or removing placements needs **Play** again.
+  world stay put.
+- with **Edit** on, adding or removing a placement, and undoing or
+  redoing either, changes the running game at once: an added scenery,
+  vehicle, weapon, equipment, machine or crate appears, a removed one
+  disappears, and a new spawn point or netgame equipment entry is used
+  at the next spawn (a new netgame flag at the next game). The game
+  refuses some of these, and Pending shows its reason under **Reload
+  map**: other people in a System Link or Live game you host (bots don't
+  count), a block with no room left for the entry (the game has room for
+  as many entries as the map loaded with, plus any you removed), and a
+  matchmade Live game. A named entry, one with placement flags, a scale
+  or type-specific fields is written but appears only after a reload,
+  and sound scenery always waits for one. If the game's answer is lost,
+  the entry stays under **Reload map** and is never sent twice.
+- with **Edit** on, geometry and painted pixels go to the game too.
+  Moving vertices of a cluster, an instanced definition or a model
+  section shows in the game on the next frame; an edit that adds or
+  removes faces shows within a few frames, and the level rebuilds for a
+  moment while it does. A Textures stroke shows mip 0 while you paint and
+  the smaller mips when you let go. Undo sends the old geometry or pixels
+  back. Each edit sits in the Pending tab until the game has it. A
+  bitmap you resize or reformat, and a geometry edit the save refuses,
+  wait for **Play** again.
 
 A game you started yourself is found without any setup. `h2 play` opens
 an agent socket of its own (in the `agents` folder of the h2recomp cache;
@@ -918,50 +943,26 @@ type script** window is a tab beside the variant's settings
 - **Open in editor** saves the script and opens its file in another
   editor. A script with no file goes to `scripts/<name>.rules` under
   the data root, named after the script (`slayer.rules`; `slayer-2.rules`
-  when that name is in use). Studio tries, in order: the script editor
-  app (`h2 script-edit <file>`, with the `h2` on `PATH`, else
-  `~/.cargo/bin/h2`), `$VISUAL`, `$EDITOR` (skipping a terminal editor
-  such as `vim`, which has no terminal to run in), VS Code (`code`), Zed
-  (`zed`), and on macOS `open -t`. A command that fails within three
-  seconds hands over to the next. Studio then checks the file once a
-  second. Each save there comes into Studio's text, and into the paired
-  game while **Reload on save** is ticked; the status line shows how
-  the reload went. If Studio's text has unsaved changes too, a row
-  under the title asks: **Keep mine** or **Take the file's**
+  when that name is in use). Studio tries, in order: VS Code (`code`)
+  or Zed (`zed`) when it has the rules extension, then `$VISUAL`,
+  `$EDITOR` (skipping a terminal editor such as `vim`, which has no
+  terminal to run in), VS Code, Zed, and on macOS `open -t`
+  (`editor_launches`, `extension_installed`). A command that fails
+  within three seconds hands over to the next. Studio then checks the
+  file once a second. Each save there comes into Studio's text, and into
+  the paired game while **Reload on save** is ticked; the status line
+  shows how the reload went. If Studio's text has unsaved changes too, a
+  row under the title asks: **Keep mine** or **Take the file's**
   (`crates/apps/studio/src/app/rules_edit.rs`, `prepare_external` and
   `poll_disk`).
-- `h2 rules lsp` gives VS Code, Zed or any editor with a language
-  server client the same completion, hover, problems, quick fixes,
-  rename and formatting
-  ([Security and usability](../game/rules-engine.md#security-and-usability) has Helix and Neovim).
-  In VS Code, a small extension starts it:
-
-  ```ts
-  import { LanguageClient } from "vscode-languageclient/node";
-
-  export function activate() {
-    new LanguageClient(
-      "h2-rules",
-      "h2 rules",
-      { command: "h2", args: ["rules", "lsp"] },
-      { documentSelector: [{ pattern: "**/*.rules" }] },
-    ).start();
-  }
-  ```
-
-  Zed starts language servers from extensions only: an extension that
-  declares the `rules` file type and an `h2-rules` server, then in
-  `settings.json`:
-
-  ```json
-  {
-    "lsp": {
-      "h2-rules": {
-        "binary": { "path": "h2", "arguments": ["rules", "lsp"] }
-      }
-    }
-  }
-  ```
+- **VS Code and Zed** edit scripts as well as this window does:
+  highlighting, problems as you type, completion, hover, signature help,
+  go to definition, references, rename, quick fixes, formatting and the
+  outline, all from `h2 rules lsp`. `h2 rules editors install` puts the
+  extension in VS Code and prints the steps for Zed;
+  [rules-editors.md](rules-editors.md) has the rest, and
+  [Security and usability](../game/rules-engine.md#security-and-usability)
+  has Helix and Neovim.
 - **Problems** lists every error and warning, errors first; each is
   underlined in the text, and clicking one puts the cursor on it. Each
   fix the language offers is a button on its row, and **Cmd+.** lists

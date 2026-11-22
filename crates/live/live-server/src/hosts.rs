@@ -321,6 +321,11 @@ pub struct AdminHostStart {
     pub region: Option<String>,
     #[serde(default)]
     pub transport: Option<Transport>,
+    /// Phantom bots the host adds to the lobby, at most `max_players - 1`
+    /// so one seat stays for a person. The lease names them
+    /// ([`bot_names`]); the host supervisor adds each as a phantom.
+    #[serde(default)]
+    pub bots: u8,
     /// Start the configured provider (the default). `false` records the
     /// lease as `Requested` and answers its boot token instead.
     #[serde(default = "default_launch")]
@@ -347,6 +352,9 @@ impl AdminHostStart {
         if !(1..=16).contains(&self.max_players) {
             return Err(invalid("max_players must be between 1 and 16"));
         }
+        if self.bots >= self.max_players {
+            return Err(invalid("bots must leave a seat: at most max_players - 1"));
+        }
         Ok(())
     }
 
@@ -369,13 +377,28 @@ impl AdminHostStart {
             hopper: None,
             max_players: self.max_players,
             roster: Vec::new(),
-            bots: Vec::new(),
+            bots: bot_names(random_seed(), self.bots),
             transport,
             idle_timeout_s: DEFAULT_IDLE_TIMEOUT_S,
             max_match_s: DEFAULT_MAX_MATCH_S,
             created_ms: 0,
         }
     }
+}
+
+/// `count` distinct Clanker gamertags from the System Link roster draw
+/// (`live_proto::bots::names::Draw::local_roster`, the names a host makes
+/// for its own bots), for a custom host's lease.
+pub(crate) fn bot_names(seed: u64, count: u8) -> Vec<String> {
+    let mut names = live_proto::bots::names::Draw::new(seed).local_roster();
+    names.truncate(usize::from(count));
+    names
+}
+
+fn random_seed() -> u64 {
+    let mut b = [0u8; 8];
+    getrandom::fill(&mut b).expect("the OS random source failed");
+    u64::from_be_bytes(b)
 }
 
 fn unavailable(message: &'static str) -> ApiError {

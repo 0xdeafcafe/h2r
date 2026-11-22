@@ -417,6 +417,15 @@ fn nav_pick(ui: &Ui, fonts: &theme::Fonts, app: &mut App, pick: scenario_edit::n
             rows.push(("Polygon", p.poly.to_string()));
             rows.push(("Centre", v3(p.center())));
             rows.push(("Corners", p.verts.len().to_string()));
+            rows.push((
+                "In the map",
+                if p.out_of_map {
+                    "no: only a glitch reaches it"
+                } else {
+                    "yes"
+                }
+                .into(),
+            ));
             for l in b.links.iter().filter(|l| l.from == i || l.to == i) {
                 let (dir, other) = if l.from == i {
                     ("to", l.to)

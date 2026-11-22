@@ -1,6 +1,6 @@
 # Halving the dedicated host, and scaling it
 
-Status: Implementation and qualification. Projected figures (**S**) await measurements from all-phantom matches.
+Status: Implementation and qualification. All-phantom sim matches run on Cloudflare hosts at 11 ms a tick ([notes](notes/host-halving.md)); the per-match pack targets (**S**) still await a full-pack measurement.
 Code: `crates/apps/cli/src/host_cmd/pack.rs` (the pack supervisor), `crates/live/live-worker/src/hostroom.rs` and `crates/live/live-server/src/hosts/local_pack.rs` (the pool), `crates/live/live-server/src/hosts/lifecycle.rs` (leases and caps). Tests: `crates/apps/cli/src/host_cmd/pack_tests.rs`, `crates/live/live-worker/tests/hostroom.rs`, `crates/live/live-server/src/hosts/local_pack_tests.rs`.
 Controls and experimental profile settings are listed in [switches.md](../runtime/switches.md).
 
@@ -22,7 +22,7 @@ Targets, per match in a full pack:
 | Allocation to joinable, pack running | about 20 s | < 2 s | 1–2 s |
 | Cloudflare cost per match-hour, full pack | $0.027 | ≤ $0.014 | $0.018–0.020 |
 
-The all-phantom baseline and acceptance results are pending. Collect them on the quiet laptop after the host can form a squad session.
+Single-match all-phantom results on Cloudflare are in [notes/host-halving.md](notes/host-halving.md). The full-pack baseline and acceptance results are pending; collect the CPU figures on the quiet laptop.
 
 ## Where the cost is today
 

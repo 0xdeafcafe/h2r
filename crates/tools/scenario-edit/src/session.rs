@@ -920,6 +920,14 @@ impl Session {
         doc.scenario.set_geometry_changes(changes)
     }
 
+    /// Replace the Textures tool's writes (see
+    /// [`Scenario::set_bitmap_changes`]), which save with the map and
+    /// count toward [`Self::is_dirty`].
+    pub fn set_bitmap_changes(&mut self, changes: crate::GeometryChanges) -> Result<()> {
+        let doc = self.doc.as_mut().ok_or(Error::Save("no map is open"))?;
+        doc.scenario.set_bitmap_changes(changes)
+    }
+
     /// Replace the string IDs the tag editor adds (see
     /// [`Scenario::set_tag_strings`]).
     pub fn set_tag_strings(&mut self, strings: Vec<String>) -> Result<()> {

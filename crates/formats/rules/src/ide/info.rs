@@ -1,13 +1,13 @@
 //! What the language's names mean (the docs hover and completion show),
 //! and the features that read the model directly: diagnostics, hover,
-//! signature help, definitions, references, semantic tokens and the
-//! outline.
+//! signature help, definitions, references, highlights, semantic tokens
+//! and the outline.
 
 use super::model::{DefKind, Model, Ref, T, Use, is_type_word};
 use super::scan::K;
 use super::{
-    Diagnostic, Hover, Location, Markup, Parameter, Position, Range, Signature, SignatureHelp, Symbol, Token,
-    TokenKind, severity, symbol_kind,
+    Diagnostic, Highlight, Hover, Location, Markup, Parameter, Position, Range, Signature, SignatureHelp, Symbol, Token,
+    TokenKind, highlight_kind, severity, symbol_kind,
 };
 use crate::caps::{self, CARRIERS, Entry, Kind, Order, Status, VARIANT_FIELDS};
 use crate::ir::{self, Event, LabelKind, Scope};
@@ -849,6 +849,25 @@ pub(crate) fn references(m: &Model, off: usize) -> Vec<Location> {
     refs.iter()
         .map(|x| Location {
             range: m.li.range(x.s, x.e),
+        })
+        .collect()
+}
+
+pub(crate) fn highlights(m: &Model, off: usize) -> Vec<Highlight> {
+    let Some(r) = ref_near(m, off) else {
+        return Vec::new();
+    };
+    let mut refs: Vec<&Ref> = m.refs.iter().filter(|x| x.def == r.def).collect();
+    refs.sort_by_key(|x| x.s);
+    refs.dedup_by_key(|x| (x.s, x.e));
+    refs.iter()
+        .map(|x| {
+            // A name right before `=` (not `==`, one token) is assigned.
+            let write = x.decl || m.is_punct(m.ci(x.e), "=");
+            Highlight {
+                range: m.li.range(x.s, x.e),
+                kind: if write { highlight_kind::WRITE } else { highlight_kind::READ },
+            }
         })
         .collect()
 }

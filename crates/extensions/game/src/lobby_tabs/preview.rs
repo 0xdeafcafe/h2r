@@ -58,8 +58,8 @@ fn slug(place: Place) -> &'static str {
     }
 }
 
-/// The lobby at `place`, the leader's or a member's, on `tab`: every
-/// feature present, a kit map installed and the server's playlists listed.
+/// The lobby at `place`, the leader's or a member's, on `tab`, with
+/// `facts` and the tabs `present`; a FIREFIGHT lobby is on a kit map.
 fn sample(place: Place, leader: bool, tab: Tab, facts: Facts, present: Present) -> Sample {
     let p = tab.parts();
     let reading = super::strip::Reading {
@@ -97,7 +97,7 @@ impl Page for TabsPage {
     fn states(&self) -> Vec<(String, Sample)> {
         let facts = Facts {
             playlists: true,
-            kit_maps: true,
+            live_co_op: true,
             remote_members: false,
         };
         let mut out = Vec::new();
@@ -120,13 +120,13 @@ impl Page for TabsPage {
             ),
         ));
         out.push((
-            "split-screen.no-kit-map".into(),
+            "xbox-live.no-live-co-op".into(),
             sample(
-                Place::SplitScreen,
+                Place::XboxLive,
                 true,
                 Tab::CustomGames,
                 Facts {
-                    kit_maps: false,
+                    live_co_op: false,
                     ..facts
                 },
                 Present::ALL,

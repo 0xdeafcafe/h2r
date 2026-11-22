@@ -3,7 +3,8 @@
 //! (CPU rasterised into one texture when the text changes, one alpha
 //! blended quad), on a dark plate in the top left of the game image.
 //! Each line has a tone: the selected row on a lighter bar, greyed rows
-//! dim, errors red.
+//! dim, errors red, results green. The same plate shows a lone result for
+//! a few seconds after the menu closes.
 
 use debug_menu::{Line, Tone};
 
@@ -29,6 +30,7 @@ pub fn colour(t: Tone) -> [u8; 3] {
         Tone::Greyed => [118, 124, 134],
         Tone::Hint => [150, 170, 190],
         Tone::Error => [255, 110, 100],
+        Tone::Done => [150, 226, 160],
     }
 }
 
@@ -203,7 +205,7 @@ mod tests {
         assert_eq!(scale_in(&lines, area(1280, 960)), 2);
         assert_eq!(scale_in(&lines, area(2560, 1920)), 3);
         // A full menu in a small window comes down until it fits.
-        let wide = vec![l(&"x".repeat(48), Tone::Normal); 22];
+        let wide = vec![l(&"x".repeat(debug_menu::layout::COLS), Tone::Normal); 22];
         let s = scale_in(&wide, area(640, 480));
         assert_eq!(s, 1);
         let (w, h) = size(&wide, s);
@@ -237,6 +239,7 @@ mod tests {
             assert!(lit, "line {r} ({:?}) not drawn", line.tone);
         }
         assert_ne!(colour(Tone::Greyed), colour(Tone::Normal));
+        assert_ne!(colour(Tone::Done), colour(Tone::Error));
         assert_eq!(rasterize(&[], 2), (0, 0, Vec::new()));
     }
 
