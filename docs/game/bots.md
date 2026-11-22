@@ -429,20 +429,32 @@ tool and cached by map fingerprint. `bots::autonav::build_map` reads the
 scenario and builds one `<map>.<bsp>.bots` per BSP. `bots::cache::build`
 starts with the sectors from `pathfind::generate::generate`. The bot
 generator adds its links and collision probes to those sectors. Generator
-version 5 regenerates earlier caches and includes tactical places.
+version 6 regenerates earlier caches; it includes tactical places, the
+measured jump's reach and the breakable glass.
 
 The mesh holds:
 
 - walkable surfaces: collision planes with an upward-facing normal, joined
-  across shared edges, with step-up and headroom checks for the biped's size;
+  across shared edges, with step-up and headroom checks for the biped's size.
+  A surface takes links when a standing body fits on it somewhere
+  (`nav::stands_on`): at its centre, or at a corner pulled 0.3 in. A floor
+  that runs in under a low lip, as a crouch spot's does, keeps its links
+  by the standing room beside the lip; a recess wholly under one has none;
 - links:
   - **drop**: a ledge to a lower surface within the fall-damage limit;
   - **jump**: a gap or ledge reachable at the biped's jump arc, checked by
-    sweeping the arc against collision;
+    sweeping the arc against collision. A standing jump climbs ledges up
+    to 0.6 (`nav::Build::max_jump_up`). A jump leaves at 3.08 units/s and
+    falls under 4.15 units/s², so it tops out 1.14 over its takeoff
+    (`nav::JUMP_APEX`); 0.6 leaves room for the lip and the takeoff, and is
+    a **[guess]** until a game run climbs taller ledges. The swept arc tops
+    out 0.2 over the ledge (`nav::ledge_lift`). Up to 0.35 that is the
+    flat arc (rise 0.36) the generator always used;
   - **crouch-jump**: a separate takeoff and landing for ledges reachable
-    with the smaller capsule. The follower presses A, detects the rise,
-    then holds crouch two simulation ticks after takeoff until it reaches
-    the landing.
+    with the smaller capsule, up to 0.6 + 0.225. The follower presses A,
+    detects the rise, then holds crouch two simulation ticks after takeoff
+    until it reaches the landing. A route walk takes no crouch jump, so a
+    crouch spot on a ledge only a crouch jump reaches has no walk to it.
   - **teleporter**: directed links from each sender to all of its
     channel's receivers on this BSP. The bot walks into the trigger,
     keeps its approach direction briefly and resumes at the receiver.
@@ -554,11 +566,12 @@ The scan found no automatically placed machines or lift-family objects
 on the thirteen conversions. Sidewinder has blast-door collision scenery.
 Whether any converted scenery moves under a script requires a game run.
 
-The jump probe found ledges above standing-jump reach with a clear
-crouched arc on Lockout (0.40 units), H2 Beaver Creek (0.36), H1 Blood
-Gulch (0.57) and H1 Sidewinder (0.40). These are candidates for the
-existing crouch-jump follower. Check takeoff, ceiling clearance and
-landing with a player-sized biped. There is no separate ladder action.
+Ledges on Lockout (0.40 units), H2 Beaver Creek (0.36), H1 Blood Gulch
+(0.57), H1 Sidewinder (0.40) and Zanzibar (0.40, the floor of the second
+proven crouch spot) are within the standing jump's 0.6, so they are jump
+links. The crouch-jump follower takes ledges from 0.6 to 0.825. Check
+takeoff, ceiling clearance and landing with a player-sized biped. There
+is no separate ladder action.
 
 #### Belief and map knowledge
 
@@ -1874,6 +1887,55 @@ a brain's pad at a given state in place of its own until let go: the
 verifier drives a bot seat with it. With the Glitches setting on, a show-off at a spot
 with a crouch spot known is a **Fun** route back to where the bot began;
 it ends when the bot sees an enemy.
+
+#### Breaking the glass
+
+A crouch spot's walk in can go through glass: Zanzibar's window bounce
+crouches on the sill past the pane ([superbounce.md](superbounce.md#zanzibars-window-trace-lab-play)).
+That glass is the structure BSP's **breakable surfaces**: collision
+surfaces with flag bit 3 (`0x08`) and a breakable index (the surface's
+`+5` byte, `0xff` none), each piece of a pane its own surface. The game
+skips a piece in collision once its bit in the BSP's live breakable mask
+is clear (docs/formats/collision.md, "Breakable mask").
+
+- **Kept with the walls.** The nav build keeps every breakable surface,
+  its index and outline, beside the walls (`glass::panes`,
+  `los::Walls::glass`, in the `.bots` file). Their triangles stay in the
+  walls, solid, so line of sight and the jump sweeps treat glass as whole.
+- **In the way.** Before a prime, the route finds the pieces a crouched
+  walk from the prime's start to the stand passes through
+  (`bounce_route::glass_in_the_way`, `glass::in_the_way`): lines at 0.1,
+  0.25 and 0.4 over the floor, the walk's centre and 0.15 either side,
+  on 0.175 past the stand. They all run under the crouched capsule's top
+  (0.5), so the piece the crouch is forced by stays.
+- **Whole or broken.** The bot reads BSP 0's mask each tick while a route
+  is asked for or under way, with the pair word (`guest::breakable`:
+  `[0x4ed280]`, the enable byte, then 32 bytes a BSP from `+1`). A set bit
+  is a whole piece.
+- **The break step.** With a piece in the way whole, the prime waits: the
+  bot stands at the prime's start, faces the lowest whole piece, aims at
+  its centre from eye height and holds the trigger while the aim is
+  within 4° (`mind::RoutePad::report_shooting`). The route's phase reads
+  `break`, and its log `break_glass`, then `glass_broken` when every
+  piece is broken and the prime begins. After 150 ticks
+  (`bounce_route::BREAK_TICKS`), or when the mask can't be read, the
+  route fails `glass_whole`. A practising bot only shoots glass; it never
+  fights.
+- **Which spots.** The pieces come from the map's geometry, so any crouch
+  spot behind breakable glass gets the step, scanned or measured. A crouch
+  spot with no known way out primes in place and has none. With no mask
+  read (no pair reader host, `player.goto` routes) the prime runs as
+  before.
+
+`h2 agent world.breakable` reads the same mask
+([agent-api.md](../runtime/agent-api.md#worldbreakable-broken-glass)).
+Tests (`cargo test -p bots`): `glass::tests` (only flagged, indexed
+surfaces are panes; the walk in goes through the low piece and under the
+lip's; a piece is whole while its bit is set),
+`guest::tests::the_breakable_state_reads_each_bsps_mask_after_the_enable_byte`,
+`bounce_route::tests` (the window primes from the room floor; a whole
+piece is shot out before the prime; glass that never breaks fails
+`glass_whole`), `cache::tests` (the glass round trips in the file).
 
 #### Practising bounces
 
@@ -4468,8 +4530,9 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
      polygons, its links the edges walked across. Then:
      - polygon edges that do not meet another polygon look for a floor
        beyond them: a floor up to 0.12 higher is walked onto (a seam or a
-       step), up to 1.6 lower is a **drop**, up to 0.35 higher is a
-       **jump**, and a floor up to 0.8 across a gap is a **jump**;
+       step), up to 1.6 lower is a **drop**, up to 0.6 higher is a
+       **jump** (up to 0.825 a **crouch jump**), and a floor up to 0.8
+       across a gap is a **jump**;
      - a drop goes one way only; a jump links both ways only if each way
        qualifies.
 
@@ -4488,9 +4551,10 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
      (§3.1, "Visibility grid"). Built and written by the same worker,
      versioned on its own (`vis::VERSION`).
    - **The file.** `<data>/bots/<map>.<bsp>.bots`: magic `H2BT`, format
-     version 3, the **stamp** (the generator version
-     `cache::GENERATOR` and the source map's fingerprint), then the mesh
-     and the walls and tactical places. The data comes from the disc, so it stays on this
+     version 4, the **stamp** (the generator version
+     `cache::GENERATOR` and the source map's fingerprint), then the mesh,
+     the walls, the breakable glass (`glass::Pane`: each breakable
+     surface's index and outline) and the tactical places. The data comes from the disc, so it stays on this
      machine and out of git. The frame hook tracks the loaded short name
      and source checksum. For automatic multiplayer builds it queues that
      load on `bots-nav`. The worker checks the mounted source header before
@@ -4589,8 +4653,9 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
      empty data directory to time both build phases.
    - Tests (`cargo test -p bots`): synthetic collision through the real
      generator (two floors sharing an edge, an L-shaped corridor, a ledge
-     dropped off but not climbed, a low ledge jumped onto, a narrow gap
-     jumped and a wide one not); locating the floor under a biped; the
+     dropped off but not climbed, a low ledge jumped onto, a 0.5 sill
+     jumped onto standing, a floor running in under a lip linked and a
+     recess under it not, a narrow gap jumped and a wide one not); locating the floor under a biped; the
      funnel turning at the inner corner; the follower walking the
      waypoints, jumping at a jump, and jumping once then re-planning when
      stuck; the file round trip, refusing damaged files and version 1;

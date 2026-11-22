@@ -315,6 +315,9 @@ pub struct Mind {
     /// The level pair word of the bot's player, when the host reads it
     /// ([`crate::set_pair_reader`]); `None` otherwise.
     pub pair_word: Option<u32>,
+    /// The loaded BSP's breakable mask (`crate::glass`), read while the
+    /// bot primes or bounces; `None` otherwise or when it can't be read.
+    pub glass_mask: Option<crate::glass::Mask>,
     /// A bounce route asked for and not yet planned (`mind::order`).
     asked: Option<order::Asked>,
     /// The bounce route under way.
@@ -455,6 +458,7 @@ impl Mind {
             bounces: Vec::new(),
             known: Default::default(),
             pair_word: None,
+            glass_mask: None,
             asked: None,
             order: None,
             ended: None,
