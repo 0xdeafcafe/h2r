@@ -19,6 +19,13 @@
 //!   capitals.
 //! - **pitch**: a list's rows are its skin's row height apart.
 //! - **fit**: a title and a legend fit their rectangles.
+//! - **items**: a list holds as many item widgets as it lays out
+//!   ([`crate::list_class::item_widgets`]), so no row sits on one never
+//!   placed (the invisible last row the focus could reach), and no list
+//!   draws more rows than it lays out.
+//! - **scroll**: a scroll arrow shows only on a list that scrolls (more
+//!   rows than it lays out), inside the dialog's panel, or on a screen
+//!   inside the screen and the title-safe area's height.
 //! - **empty**: a dialog's description area above its list (Quick
 //!   Options' help line, beside the page's picture) says something in
 //!   every state: the focused row's line or the page's help. An area left
@@ -33,7 +40,10 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
+use crate::list_class::EMBEDDED_ITEMS;
+use crate::list_class::game_list::GameList;
 use crate::ui_kit::components::{Kind, legend};
+use crate::ui_kit::layout::SAFE;
 use crate::ui_kit::data::{self, DesignDoc};
 use crate::ui_kit::preview::{From, overflows};
 use crate::ui_kit::screens::{self, NAMES};
@@ -273,6 +283,89 @@ fn empty_rules(s: &ScreenSpec, v: &View, out: &mut Vec<Finding>) {
     }
 }
 
+/// The rows the list of spec `s` lays out, as the game is given them: its
+/// list block's visible count ([`crate::ui_kit::spec::ListPlace::shown`];
+/// a dialog of rows gets its base's list sized to its rows).
+pub fn laid_out(s: &ScreenSpec) -> usize {
+    s.list.shown()
+}
+
+/// The items and scroll rules on `v` (spec `s`).
+fn list_rules(s: &ScreenSpec, v: &View, out: &mut Vec<Finding>) {
+    if s.rows.is_empty() || v.list.is_none() {
+        return;
+    }
+    let mut flag = |ids: Vec<String>, rule: &'static str, text: String| {
+        out.push(Finding {
+            screen: v.screen.clone(),
+            state: v.state.clone(),
+            ids,
+            rule,
+            text,
+        })
+    };
+    let laid = laid_out(s);
+    let rows = s.rows.len();
+    let extra = laid.saturating_sub(EMBEDDED_ITEMS as usize);
+    let list = GameList::ours(laid, rows, extra, false);
+    if list.items != laid || list.phantoms() > 0 {
+        flag(
+            vec!["row.0.label".into()],
+            "items",
+            format!(
+                "the game links {} item widgets for {laid} rows laid out: {} rows on widgets never placed",
+                list.items,
+                list.phantoms()
+            ),
+        );
+    }
+    let drawn: Vec<String> = v
+        .widgets
+        .iter()
+        .filter(|w| w.id.starts_with("row.") && w.id.ends_with(".label"))
+        .map(|w| w.id.clone())
+        .collect();
+    if drawn.len() > laid {
+        let n = drawn.len();
+        flag(
+            drawn,
+            "items",
+            format!(
+                "{n} rows drawn on a list that lays out {laid}: the game shows {laid} and scrolls to the rest"
+            ),
+        );
+    }
+    let panel = s.dialog.as_ref().map(|d| d.base.content_area());
+    for w in v.widgets.iter().filter(|w| w.id.starts_with("scroll.")) {
+        if rows <= laid {
+            flag(
+                vec![w.id.clone()],
+                "scroll",
+                format!("{}: an arrow on a list whose {rows} rows all fit in {laid}", w.id),
+            );
+        }
+        let [top, left, bottom, right] = w.rect;
+        let inside = match panel {
+            Some(p) => top <= p.top && bottom >= p.bottom && left >= p.left && right <= p.right,
+            None => {
+                top <= SAFE.top && bottom >= SAFE.bottom && left >= -320 && right <= 320
+            }
+        };
+        if !inside {
+            flag(
+                vec![w.id.clone()],
+                "scroll",
+                format!(
+                    "{} at {:?}, outside its {}",
+                    w.id,
+                    w.rect,
+                    if panel.is_some() { "panel" } else { "screen" }
+                ),
+            );
+        }
+    }
+}
+
 /// Converter-named palette colours and presets: drift the design system
 /// carries until a screen is moved onto a token of its own.
 fn design_rules(design: &DesignDoc, out: &mut Vec<Finding>) {
@@ -354,6 +447,7 @@ pub fn check(screen: Option<&str>) -> Report {
         checked += 1;
         view_rules(design, s, v, &mut findings);
         empty_rules(s, v, &mut findings);
+        list_rules(s, v, &mut findings);
     }
     let mut placed = Vec::new();
     place_rules(&all, &mut placed);
@@ -393,6 +487,80 @@ mod tests {
         assert!(lines.is_empty(), "{} findings:\n{}", lines.len(), lines.join("\n"));
     }
 
+    /// Every list of ours, in every state, as the game is given it: the
+    /// item widgets are the rows it lays out, so no row sits on a widget
+    /// never placed; Down and Up never take the focus off a placed widget
+    /// or past the last row; A can only press a row that exists; and a
+    /// list whose rows all fit never scrolls or shows an arrow.
+    #[test]
+    fn every_list_links_the_rows_it_lays_out_and_the_focus_stays_on_them() {
+        use crate::list_class::game_list::Step;
+        let mut lists = 0;
+        for name in NAMES {
+            for (state, s) in states(name) {
+                if s.rows.is_empty() {
+                    continue;
+                }
+                lists += 1;
+                let (laid, rows) = (laid_out(&s), s.rows.len());
+                let at = format!("{name} [{state}]: {rows} rows, {laid} laid out");
+                let extra = laid.saturating_sub(EMBEDDED_ITEMS as usize);
+                for wraps in [false, true] {
+                    let mut l = GameList::ours(laid, rows, extra, wraps);
+                    assert_eq!(l.items, laid, "{at}");
+                    assert_eq!(l.phantoms(), 0, "{at}");
+                    assert_eq!(l.scrolls(), rows > laid, "{at}");
+                    let steps = std::iter::repeat_n(Step::Down, rows + 1)
+                        .chain(std::iter::repeat_n(Step::Up, rows + 1));
+                    for step in steps {
+                        l.step(step);
+                        assert!(l.placed(l.focus), "{at}: {l:?}");
+                        assert!(l.pressed().is_some_and(|r| r < rows), "{at}: {l:?}");
+                        if rows <= laid {
+                            assert_eq!((l.first, l.arrows()), (0, (false, false)), "{at}");
+                        }
+                    }
+                }
+            }
+        }
+        assert!(lists > NAMES.len() / 2, "{lists} list states");
+    }
+
+    /// An arrow on a list whose rows all fit, and one outside its dialog's
+    /// panel, are found; the views as drawn have neither.
+    #[test]
+    fn a_stray_or_misplaced_scroll_arrow_is_found() {
+        let all = views(&["kit.dialog", "kit.example"]);
+        assert!(!all.is_empty());
+        for (s, v) in &all {
+            let mut out = Vec::new();
+            list_rules(s, v, &mut out);
+            assert!(out.is_empty(), "{} [{}]: {out:?}", v.screen, v.state);
+        }
+        let (s, v) = all
+            .iter()
+            .find(|(s, _)| s.dialog.is_some() && s.rows.len() <= laid_out(s))
+            .expect("a dialog whose rows fit");
+        let mut stray = v.clone();
+        stray.widgets.push(Widget {
+            id: "scroll.down".into(),
+            rect: [400, 0, 380, 27],
+            layer: view::Layer::Content,
+            alpha: 255,
+            kind: view::Kind::Art {
+                art: view::Art::Arrow { skin: 0, image: 1 },
+                size: [27, 17],
+            },
+        });
+        let mut out = Vec::new();
+        list_rules(s, &stray, &mut out);
+        let texts: Vec<&str> = out.iter().map(|f| f.text.as_str()).collect();
+        assert_eq!(out.len(), 2, "{texts:?}");
+        assert!(out.iter().all(|f| f.rule == "scroll"));
+        assert!(texts[0].contains("all fit"), "{texts:?}");
+        assert!(texts[1].contains("outside its panel"), "{texts:?}");
+    }
+
     #[test]
     fn a_dimmed_palette_colour_is_on_the_palette_and_a_stray_one_is_not() {
         let p = [("hint_blue", [173, 195, 216]), ("white", [255, 255, 255])];
@@ -407,7 +575,8 @@ mod tests {
     fn each_allowance_names_a_screen_and_a_reason() {
         for (rule, screen, why) in ALLOWED {
             assert!(
-                ["palette", "font", "place", "legend", "case", "pitch", "fit", "empty"].contains(rule),
+                ["palette", "font", "place", "legend", "case", "pitch", "fit", "empty", "items", "scroll"]
+                    .contains(rule),
                 "{rule}"
             );
             assert!(*screen == "*" || NAMES.contains(screen) || *screen == "design", "{screen}");

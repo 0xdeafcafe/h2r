@@ -31,8 +31,8 @@ use tags::ui::{self as tui, MapSource, Rect, UiTag};
 use crate::ui_kit::dialog::{self, DialogGeometry, dialog_view};
 use crate::ui_kit::spec::{self, Finding, ListPlace, Room, RowSpec, ScreenSpec};
 use crate::ui_kit::view::{
-    Art, Backing, ItemArt, Justify, Kind, Layer, ListAt, Metrics, Opener, PaneArt, ROW_TEXT,
-    Synthetic, UNFOCUSED_ALPHA, View, Widget, view_of,
+    Arrows, Art, Backing, ItemArt, Justify, Kind, Layer, ListAt, Metrics, Opener, PaneArt,
+    ROW_TEXT, Synthetic, UNFOCUSED_ALPHA, View, Widget, view_of,
 };
 
 /// The Controls screen whose tag our screens are built from.
@@ -408,6 +408,7 @@ impl Disc {
                 })
                 .collect(),
             frame_art: self.pane_art(&self.controls, 0, |b| b.top_left.x < cut),
+            arrows: Arrows::of(skin_index, place.shown(), place == ListPlace::Controls),
         })
     }
 
@@ -587,6 +588,10 @@ impl Disc {
             Art::Skin { skin, index, image } => {
                 let b = self.skins.get(&skin)?.bitmaps.get(usize::from(index))?;
                 self.image(b.bitmap, image)
+            }
+            Art::Arrow { skin, image } => {
+                let bitmap = self.skins.get(&skin)?.bitmap;
+                self.image(bitmap, image)
             }
             Art::Screen {
                 screen_id,

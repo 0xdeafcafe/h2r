@@ -324,7 +324,7 @@ Drawn beside a 640 by 480 frame of the game, the co-op screen focused on row 4 l
 - the game fills above and below `framing_center` with dark blue (we leave it black), and the track lines scroll;
 - unfocused rows' dimming is a guess (55%);
 - the D-pad left and right glyphs are drawn from the header font as the font has them (a white diamond each);
-- the skulls page's picture and the list's scroll arrows are not drawn.
+- the skulls page's picture is not drawn, and its scroll arrows are drawn at the default skin's places ([ui-builder.md](ui-builder.md) "Scroll arrows"), not the page's own (`skulls_menu::SCROLL_ARROWS`).
 
 ## Not verified
 
@@ -335,6 +335,10 @@ Drawn beside a 640 by 480 frame of the game, the co-op screen focused on row 4 l
   widget per row, six with the co-op row, laid out in its own tag's room
   ([live-custom-games.md](../live/live-custom-games.md) §5). The checks use the 5 seen; what
   takes one away is not found.
+- In a game run: our list slot 19 (`list_class::item_count`) linking the
+  laid-out rows only, and the scroll arrows on a moved list sitting by
+  its last row ([ui-builder.md](ui-builder.md) "Item count", "Scroll
+  arrows"). Both are read from the code and held by tests, not seen.
 - Whether the footer widget keeps our legend, or the screen's tag string
   (`0x2300cf`) overwrites it after the pane is set up.
 - Whether an overlong description clips or runs past its rectangle.

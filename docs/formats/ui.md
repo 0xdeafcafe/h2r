@@ -454,7 +454,9 @@ The handler links its embedded items as children in "add items" (slot 17,
 `0x24bb60`), so a row can be added without scrolling by linking one more
 item after that runs: a zeroed 0x80 bytes, the item constructor
 `0x24abae`, the local player (`0x22ee92`), then `0x22eb18`
-(`speaker_row`, `custom_games`). `0x24bc12` then lays the children out from
+(`speaker_row`, `custom_games`). "Add items" links as many of the
+embedded items (slot 18) as slot 19 says; the Controls list's slot 19
+(`0x2b198a`) says six. `0x24bc12` then lays the children out from
 the list's anchor, up to the list block's visible count, each one item
 height lower. The height is the item's bounding box (`0x2bafa4`, top minus
 bottom) over its children, leaving out bitmaps whose definition has flag
@@ -463,6 +465,12 @@ read). An item's bitmap covers its point's `y` up to `y` plus its
 height (Y up), so the Controls skin's items are 26 units apart (its row
 bar), as the game draws them, and the default skin's 22
 (docs/game/ui-screens.md "Item spacing").
+Children past the visible count stay linked unless the layout's argument
+is set (then `0x24c102` removes them); the pane builder (`0x22f828`)
+passes 0. Rows go to every child in order (`0x24c0c4`), so a child past
+the visible count gets a row it never shows, and the focus (`0x24c1c5`,
+to the next child with a row, `0x24ac76`) and A (`0x24c024`) reach it
+([ui-builder.md](../game/ui-builder.md) "Item count").
 Anything the tag draws under a list does not move with it, so a screen
 whose hint text sits under its list needs its tag adjusted, as
 `custom_games::extend_tag` does for the Xbox Live menu.

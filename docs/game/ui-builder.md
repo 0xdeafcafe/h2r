@@ -968,9 +968,10 @@ The glue (`list_class` events, `TEXT_SET`, tints) keeps its runner tests
   (`Rows::press`), B and Back close. Effects: `Focus`, `Hook`, `Action`,
   `Stepped(line)`, `Open(screen)`, `Retail(line)`, `Close`. The rows keep
   their own state (an in-memory profile store, a lobby without Live), so
-  each table case builds a fresh page. Whether the game wraps the focus
-  at either end is not traced; the page stops it there, and the fidelity
-  loop will settle it.
+  each table case builds a fresh page. The page stops the focus at
+  either end. The game stops it there too, or wraps it to the other end
+  when the list block's flag bit 0 is set (`0x24c1c5`, below); the
+  value picker's `default6` list has the flag.
 - **`StackPage`**: list screens that open one another, walked as the
   player walks them: an `Open(screen)` it has pushes that screen, B or Back
   pops it, and the summary names the screen on top (`closed` once the
@@ -1021,6 +1022,73 @@ Rules the tables hold:
 `h2 ui preview <screen> [--state S] --press up,right,a` steps a page,
 prints each effect and the summary, and draws where it ends as
 `<state>-pressed`.
+
+### Item count
+
+A list shows one row per item widget linked to its handler, and the
+game is given exactly the rows our list lays out
+([ui.md](../formats/ui.md) "Item widgets, scrolling and spacing"):
+
+- **Linking.** "Add items" (`0x24bb60`, list slot 17) links as many of
+  the handler's embedded items as slot 19 says. The Controls list's
+  slot 19 (`0x2b198a`) says six whatever its tag lays out. Our list
+  vtable's slot 19 (`list_class::item_count`) reads the visible count
+  of the list block the screen's pane was built from (the tag the
+  screen-tag function `0x22f871` serves, `list_class::laid_out`) and
+  links that many, less the item widgets of ours a list taller than six
+  gets (`list_class::item_widgets`). Embedded items an earlier call
+  linked past that count are unlinked first.
+- **What was wrong.** The layout (`0x24bc12`, called from the pane
+  builder at `0x22f828` with its "drop the rest" argument 0) places
+  children up to the visible count and leaves the rest. Rows go to
+  every child in order (`0x24c0c4`), so on a list laid out shorter than
+  six a row landed on a child never placed: not drawn, but Down reached
+  it, A pressed it, and past it the list scrolled. Every list of ours
+  built on the in-game Controller Settings tag (screen 200 lays out
+  five) with six rows or more had one; so did the theater film page
+  (four laid out, six actions).
+- **Focus.** Down (`0x24c1c5`) moves to the next child when it has a
+  row (`0x24ac76`); at the last child it scrolls while a row follows.
+  At the end it wraps to the first row (`0x24c0c4`) when the list
+  block's flag bit 0 is set (`0x24bc12` copies it to `+0x7c`), else it
+  stops. Up is the same back. A presses the focused child's row
+  (`0x24c024`); Start does too.
+- **Model.** `list_class::game_list::GameList` is the list as the game
+  holds it: item widgets, laid-out rows, rows, focus, scroll and arrows.
+  `game_list::tests::a_list_laid_out_shorter_than_its_six_items_had_a_phantom_row`
+  shows the retail count's phantom row, and
+  `consistency::tests::every_list_links_the_rows_it_lays_out_and_the_focus_stays_on_them`
+  holds every list of `NAMES` in every state: the item widgets are the
+  rows laid out, the focus stays on placed rows, A presses only a real
+  row, and a list whose rows all fit never scrolls.
+
+A dialog with no layout of its own takes its visible count from its
+row count when the class is built. A dialog whose rows outgrow that
+count scrolls to the rest.
+
+### Scroll arrows
+
+The list draw (`0x24bda2`) shows the up arrow while the first item
+widget's row has a row before it (`0x24c63e`) and the down arrow while
+the last one's has a row after it (`0x24c676`), so a list whose rows all
+fit shows neither. It places both from the list's top-left at the
+skin's two points (`skin +0xc` and `+0x10`), at the size of the skin
+`bitm`'s images 0 and 1. The down point is fixed: the `default` family
+puts it beside the last row of the skin's own list, `(rows - 2) × 22`
+below the anchor (`default5` -66 for five rows, `default6` -88 for
+six, `default` -44 for four), and `setting_lists` puts it under the
+Controls list's six. `list_class::SKIN_ARROWS` holds those numbers from
+the disc. On a moved list of ours (`list_class::ScrollArrowLayout`,
+through `UI_QUAD_TO_SCREEN`) the down arrow moves by the rows the list
+lays out more or fewer than the skin's own (`SkinArrows::placed`), so it
+keeps its place by the last row. The up arrow stays where the skin puts
+it. A class with arrows of its own (`ListClass::scroll_arrows`, the
+skulls page) keeps those. A list left where its tag has it keeps the
+game's.
+
+The preview draws them the same way (`view::scroll_arrows`, widgets
+`scroll.up` and `scroll.down`, art `Art::Arrow`), and the `items` and
+`scroll` consistency rules hold them.
 
 ## Screens in YAML
 
@@ -1135,6 +1203,8 @@ named state without a disc and holds it to the design system:
 | `case` | a dialog's, a code entry's and a picker's title in capitals (`DYNAMIC` titles aside) |
 | `pitch` | a list's rows its skin's row height apart (`row_controls`, `row_default`) |
 | `fit` | a title and a legend fit their rectangles |
+| `items` | a list's item widgets are the rows it lays out (`list_class::item_widgets`), so no row is on a widget never placed, and no list draws more rows than it lays out ("Item count") |
+| `scroll` | a scroll arrow shows only on a list with more rows than it lays out, inside a dialog's panel or, on a screen, inside the screen and the title-safe area's height ("Scroll arrows") |
 | `empty` | a dialog's description area above its list (Quick Options' help line, beside the page's picture) says something in every state; a page with nothing to say there has no description block, so its rows sit under the title. A page with a name line (`ScreenSpec::name_line`) names the focused row there in every state |
 
 `consistency::ALLOWED` is the short list of findings that stand, each
