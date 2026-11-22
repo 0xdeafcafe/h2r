@@ -591,17 +591,25 @@ returns a `Handle`), then publishes a `Values` whenever its state changes
      scripted training slot (`[0x0051e9c0] +0x6c0`, `+0x6c4`) unless the
      game shows a scripted text of its own; the string lookup
      (`0x001a0180`, `community_variants`' override) answers the id with
-     the text (`hud_kit::write_training`, `hud_kit::text`).
-   - `Navpoint`: at install the scenario's point block
-     (`[0x004e0350] +0x1e4`) is copied into the kit's second allocation
-     with one point after it, and the scenario points at the copy
-     (`hud_kit::install_point`, kept and put back as the widget blocks
-     are). Each tick that point is set to the HUD's navpoint and one slot
-     of the first local player's navpoint list is kept on it: the slot
-     already ours, else one the game skips, else the list's end, with the
-     end moved one on (`hud_kit::write_navpoint`). Without a point the
-     slot is skipped (kind 15). The game draws its own arrow and marker
-     there; the kit's number is not drawn.
+     the text, each `\n` written `\r\n` as in the game's own strings (a
+     lone `\n` draws no break and no space; `hud_kit::write_training`,
+     `hud_kit::text`, `hud_kit::game_line_breaks`).
+   - `Navpoint`: at install the scenario's point block, the tag block
+     at `scnr +0x1e0` (count, then the address at `+0x1e4`, which is what
+     the draw reads, E `0x0024db5e`; `0x38`-byte points), is copied into
+     the kit's second allocation with one point after it, and the
+     scenario points at the copy (`hud_kit::install_point`, kept and put
+     back as the widget blocks are, and only while the loaded scenario
+     is the one it changed). Each tick that point is set to the HUD's
+     navpoint and one slot of the first local player's navpoint list is
+     kept on it: the slot already ours, else the first the game's draw
+     passes (`+0` or `+8` -1, or kind 15; the draw walks all four slots
+     and no slot ends the list, E `0x0024dc21`..`0x0024dc3e`)
+     (`hud_kit::write_navpoint`). The game's own slots are not touched.
+     Without a point, or once the loaded scenario no longer points at
+     the copy, the slot is skipped (kind 15): the draw does not check a
+     kind-0 slot's index against the block's count. The game draws its
+     own arrow and marker there; the kit's number is not drawn.
    - `Message`: `Handle::notify(user, text)` queues the line (a user
      under 4, a text `message_fault` passes; else refused and logged).
      At the top of the next tick a before-hook on `GAME_TICK` writes
@@ -1268,9 +1276,8 @@ particular:
 - That writing the prompt fields at `HUD_INTERACTION_VISIBLE`'s
   interaction call shows the verb and hides it again when the kit stops,
   and that U+E110 is redrawn as the bound crouch key.
-- The navpoint: that `[0x004e0350] +0x1e4` is the block a kind-0 slot
-  indexes, that a point appended to it harms nothing that walks the
-  block, that the list is not rebuilt over our slot each tick, and the
+- The navpoint: that a point appended to the `scnr +0x1e0` block harms
+  nothing else that walks the block, that the list is not rebuilt over our slot each tick, and the
   slot's `+0` and height.
 - That the template resolution at the match start (one map open, the
   strip's image decoded) is fast enough there.
