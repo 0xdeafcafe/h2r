@@ -318,7 +318,6 @@ Lab driver asks to build, then run.
 "Menu bands check"
 lab/menu-bands at cb9b315
 level ascension, about 4 min
-Allow, then quit when ready.
 ```
 
 The first line names the requesting lab driver and what the job does:

@@ -67,7 +67,7 @@ fn display_field(value: &str, max: usize) -> String {
 }
 
 fn source_line(source: &Source) -> String {
-    let short = |commit: &str| display_field(commit, 7);
+    let short = |commit: &str| display_field(&commit.chars().take(7).collect::<String>(), 7);
     match source {
         Source::Branch { name, commit } => {
             format!("lab/{} at {}", display_field(name, 20), short(commit))
@@ -81,7 +81,7 @@ fn source_line(source: &Source) -> String {
 }
 
 /// The dialog's text: who asks, what the job is called, what it does, which
-/// code it runs, and what to do next. Six lines at most.
+/// code it runs. Five lines at most.
 fn body(request: &Request) -> String {
     let who = display_field(&request.requester, 16);
     let name = display_field(&request.name, 36);
@@ -106,7 +106,7 @@ fn body(request: &Request) -> String {
     }
     facts.push(time);
     format!(
-        "{who} asks to {action}.\n\"{name}\"\n{}\n{}\nAllow, then quit when ready.",
+        "{who} asks to {action}.\n\"{name}\"\n{}\n{}",
         source_line(&request.source),
         facts.join(", ")
     )
