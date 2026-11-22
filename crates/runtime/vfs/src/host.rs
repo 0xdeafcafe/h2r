@@ -1133,6 +1133,41 @@ impl Backend for HostBackend {
         format::finish(&mut self.format_roots, swaps);
         Ok(())
     }
+    /// The seed's root files, cloned (`crate::clone_or_copy`), each with its
+    /// record when the seed has one. Subdirectories and names FATX cannot
+    /// hold are skipped; a name already on the volume is a collision.
+    fn seed(&mut self, seed: &Path) -> Result<usize> {
+        self.settle_all();
+        self.handles.clear();
+        let records = seed.join("metadata");
+        let mut placed = 0;
+        let result = (|| -> Result<()> {
+            for entry in fs::read_dir(seed.join("disk"))? {
+                let entry = entry?;
+                let name = entry.file_name();
+                let Some(name) = name.to_str() else { continue };
+                if !entry.file_type()?.is_file() || !visible_name(name) {
+                    continue;
+                }
+                let target = self.root.join(name);
+                if target.symlink_metadata().is_ok() {
+                    return Err(Error::ObjectNameCollision);
+                }
+                crate::clone_or_copy(&entry.path(), &target)?;
+                let record = record_path(&records, name);
+                if record.is_file() {
+                    let to = record_path(&self.metadata_root, name);
+                    durable_create_dirs(to.parent().ok_or(Error::InvalidParameter)?)?;
+                    crate::clone_or_copy(&record, &to)?;
+                }
+                placed += 1;
+            }
+            Ok(())
+        })();
+        // The volume changed behind the cached listings and usage.
+        *self.cache.borrow_mut() = Cache::default();
+        result.map(|()| placed)
+    }
     fn remove(&mut self, path: &str) -> Result<()> {
         self.handles.clear();
         if path.is_empty() {

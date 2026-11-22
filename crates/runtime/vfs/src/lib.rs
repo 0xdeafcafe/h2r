@@ -5,6 +5,7 @@
 
 mod backend;
 mod campaign_maps;
+mod clone;
 mod content_maps;
 mod dir_disc;
 mod disc;
@@ -28,6 +29,7 @@ mod write_behind;
 
 pub use backend::Backend;
 pub use campaign_maps::CampaignMapsBackend;
+pub use clone::clone_or_copy;
 pub use content_maps::{ContentMap, ContentMaps};
 pub use dir_disc::{AnyDisc, DirDiscBackend, open_disc, open_disc_with_mapping};
 pub use disc::DiscBackend;
@@ -97,7 +99,18 @@ pub struct Config {
     /// directory's `<map>.h2store` files instead of the disc. Maps with no
     /// store come from the disc as usual.
     pub sim_store: Option<PathBuf>,
+    /// Seed directories for the cache volume N: ([`Vfs::seed_device`]).
+    /// Each holds `disk/` (root files) and `metadata/` (their records, laid
+    /// out as [`HostBackend`] stores them). Straight after the boot formats
+    /// N:, their files are cloned in. Empty seeds nothing.
+    pub cache_seed: Vec<PathBuf>,
 }
+
+/// The environment variable `h2 sim batch` names its runs' N: seed
+/// directories in ([`Config::cache_seed`]), joined as `PATH` is
+/// (docs/runtime/cache-slots.md, "Sim batches: a warm N:").
+pub const CACHE_SEED_ENV: &str = "H2_SIM_CACHE_SEED";
+
 impl Config {
     pub fn new(data_root: impl Into<PathBuf>, title_id: u32) -> Self {
         Self {
@@ -112,6 +125,7 @@ impl Config {
             map_guest_reads: false,
             server_maps: None,
             sim_store: None,
+            cache_seed: Vec::new(),
         }
     }
     /// Host directory behind `T:`: `<data_root>/disk/Partition1/TDATA/<TITLE>`.
@@ -194,6 +208,8 @@ pub struct Vfs {
     next_handle: u64,
     observer: Option<OpenObserver>,
     change_observer: Option<ChangeObserver>,
+    /// [`Config::cache_seed`].
+    cache_seed: Vec<PathBuf>,
 }
 impl Vfs {
     /// Additional logical bytes across the three host-backed cache partitions.
@@ -234,6 +250,7 @@ impl Vfs {
         vfs.map_guest_reads = config.map_guest_reads;
         vfs.extra_cache_bytes = config.extra_cache_bytes;
         vfs.content_maps = config.content_maps.clone();
+        vfs.cache_seed = config.cache_seed.clone();
         for partition in 1..=5 {
             let name = format!("Partition{partition}");
             let mut backend = HostBackend::new(
@@ -375,6 +392,45 @@ impl Vfs {
             return Err(Error::SharingViolation);
         }
         self.mounts[index].backend.format()
+    }
+    /// Replaces the seed directories [`Config::cache_seed`] gave (for a VFS
+    /// built without [`Vfs::with_storage`]).
+    pub fn set_cache_seed(&mut self, seed: Vec<PathBuf>) {
+        self.cache_seed = seed;
+    }
+    /// Clones [`Config::cache_seed`]'s files and records into `device`, a
+    /// volume just formatted (XAPI's mount of N:, `VfsStorage::mount_cache`).
+    /// Returns how many files it placed; 0 with no seed. Fails, like a
+    /// format, while a file is open on the volume. On any other failure it
+    /// formats the volume again, so it is left empty as the boot's format
+    /// left it, and returns the error.
+    pub fn seed_device(&mut self, device: &str) -> Result<usize> {
+        if self.cache_seed.is_empty() {
+            return Ok(0);
+        }
+        let device = path::object_name(device)?;
+        let index = self
+            .mounts
+            .iter()
+            .position(|m| m.device.eq_ignore_ascii_case(&device))
+            .ok_or(Error::ObjectPathNotFound)?;
+        if self.objects.values().any(|f| f.mount == index)
+            || self.pending.iter().any(|(m, _)| *m == index)
+        {
+            return Err(Error::SharingViolation);
+        }
+        let backend = &mut self.mounts[index].backend;
+        let mut placed = 0;
+        for seed in &self.cache_seed {
+            match backend.seed(seed) {
+                Ok(n) => placed += n,
+                Err(e) => {
+                    let _ = backend.format();
+                    return Err(e);
+                }
+            }
+        }
+        Ok(placed)
     }
     /// The mounted device `name` resolves into, after every symbolic link (including links into
     /// a subdirectory of a volume). Identifies the volume a drive letter really names.

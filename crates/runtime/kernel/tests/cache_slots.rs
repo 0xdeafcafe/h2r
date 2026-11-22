@@ -153,6 +153,9 @@ impl<B: Backend> Backend for Audited<B> {
     fn format(&mut self) -> vfs::Result<()> {
         self.inner.format()
     }
+    fn seed(&mut self, from: &std::path::Path) -> vfs::Result<usize> {
+        self.inner.seed(from)
+    }
     fn flush(&mut self, p: &str) -> vfs::Result<()> {
         self.inner.flush(p)?;
         self.audit.lock().unwrap().io.push(Io::Flush(p.into()));
@@ -612,6 +615,18 @@ fn warm_reload(
     // Drop the file object and resident header, retaining only the on-disk cache.
     let old = handles[slot as usize];
     assert_eq!(h.success(187, &[old]), 0);
+    warm_open(h, handles, slot, name, audit);
+}
+/// Opens a slot file whose handle is closed, reloads its header through the
+/// retail read worker and checks that a request for `name` needs no copy:
+/// no payload write and no disc read.
+fn warm_open(
+    h: &mut Harness,
+    handles: &mut [u32],
+    slot: u32,
+    name: &str,
+    audit: &Arc<Mutex<Audit>>,
+) {
     let drive = if slot < 2 { 'Z' } else { 'N' };
     let handle = open(h, &format!("{drive}:\\cache{slot:03}.map"), false, true);
     handles[slot as usize] = handle;
@@ -794,6 +809,80 @@ fn failed_copies(
     eprintln!("recovery: tutorial and active Cairo payloads byte-exact against ISO");
 }
 
+/// A sim batch's warm N: (docs/runtime/cache-slots.md, "Sim batches: a warm
+/// N:"): a multiplayer map copied cold into slot 3 is kept as a seed (the
+/// slot file and its record), N: is formatted as every boot formats it and
+/// seeded straight after (`Vfs::seed_device`). The reopened slot's header
+/// passes the retail check and a request for the map needs no copy: no
+/// disc read, no payload write, and the payload still equals the ISO's.
+fn seeded_slot_three(
+    h: &mut Harness,
+    handles: &mut [u32],
+    audit: &Arc<Mutex<Audit>>,
+    payloads: &mut PayloadOracle,
+    scratch: &std::path::Path,
+) {
+    let name = "lockout";
+    let source = open(h, &format!("D:\\maps\\{name}.map"), false, false);
+    let header = read(h, source, 0, 0x800);
+    let size = u32::from_le_bytes(header[8..12].try_into().unwrap());
+    assert_eq!(
+        u16::from_le_bytes(header[0x140..0x142].try_into().unwrap()),
+        1,
+        "multiplayer map"
+    );
+    assert_eq!(run(h, SELECT, &[size], |cpu| cpu.eax = 1), 3);
+    eprintln!("{name}: copying into slot 3");
+    start(h, source, name);
+    assert!(finish(h, 10_000), "{name}: copy failed");
+    assert_eq!(h.get(COPIED), size, "exact completed payload extent");
+    payloads.assert_payload(3, name);
+
+    // The batch's template keeps the slot file and its record; N: is closed.
+    for slot in 2..6 {
+        assert_eq!(h.success(187, &[handles[slot]]), 0);
+    }
+    vfs::flush_pending_metadata();
+    let seed = scratch.join("seed");
+    std::fs::create_dir_all(seed.join("disk")).unwrap();
+    std::fs::copy(
+        scratch.join("N").join("cache003.map"),
+        seed.join("disk").join("cache003.map"),
+    )
+    .unwrap();
+    let record_dir: String = "cache003.map".bytes().map(|b| format!("{b:02x}")).collect();
+    let record = scratch.join("meta-N").join(&record_dir).join("record");
+    if record.is_file() {
+        let to = seed.join("metadata").join(&record_dir);
+        std::fs::create_dir_all(&to).unwrap();
+        std::fs::copy(&record, to.join("record")).unwrap();
+    }
+    {
+        let shared = h.kernel.vfs().unwrap();
+        let mut storage = shared.lock().unwrap();
+        storage.set_cache_seed(vec![seed]);
+        storage.format_device("\\Device\\CacheN").unwrap();
+        assert_eq!(storage.seed_device("\\Device\\CacheN"), Ok(1));
+    }
+    let names: Vec<_> = std::fs::read_dir(scratch.join("N"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        ["cache003.map"],
+        "the format emptied N:, the seed filled slot 3"
+    );
+
+    // The boot opens every N: slot again (OPEN_ALWAYS, 0x213970): 2, 4 and
+    // 5 come back empty, 3 with the seeded copy.
+    for slot in [2u32, 4, 5] {
+        handles[slot as usize] = open(h, &format!("N:\\cache{slot:03}.map"), true, true);
+        h.set(slot_record(slot), handles[slot as usize]);
+    }
+    warm_open(h, handles, 3, name, audit);
+    payloads.assert_payload(3, name);
+}
 fn start(h: &mut Harness, source: u32, name: &str) {
     // Enter at state 3: engine has selected a request and opened its source.
     // States 3..19 are untouched retail header/copy/checksum/publication/close.
@@ -1115,6 +1204,7 @@ fn campaign_cold_warm_cache_slots() {
         routed_sample(&mut h, handles[slot], selector);
     }
     failed_copies(&mut h, &mut handles, &audit, &base, &mut payloads);
+    seeded_slot_three(&mut h, &mut handles, &audit, &mut payloads, &scratch.0);
     assert_baseline(&h, &base, "shutdown");
     for handle in handles {
         assert_eq!(h.success(187, &[handle]), 0);
