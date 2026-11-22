@@ -314,7 +314,9 @@ reaction = 5
 
 `superbounce = true` (before the tables) turns the superbounce mode on
 for the match: the bots practise bounces instead of fighting
-([Bounce practice](#bounce-practice)).
+([Bounce practice](#bounce-practice)). A `[drill]` table (with
+`superbounce = true`) makes them try one site only
+([The bounce drill](#the-bounce-drill)).
 
 ### Bot parameters from a file
 
@@ -821,6 +823,45 @@ run added into `--data`'s `bots/` (`bots::harvest::harvest_run`): the
 verified entries it changed, merged as the game merges them, and every
 ghost run the shared file does not beat. A single `h2 sim run` writes to
 `--data`'s `bots/` itself.
+
+### The bounce drill
+
+A practice match with a `[drill]` tries one site, each try from a start
+near it with the word already at −3, so a run shows the final approach
+and the jump alone, apart from priming and the walk there:
+
+```toml
+superbounce = true
+[drill]
+site = [-10.62, 3.88, -3.19]   # the known site within 0.5 of this
+start = [-8.4, 2.5, -0.76]     # optional; unset: the site's approach
+```
+
+`sim::config::DrillConfig` (tested) refuses a drill without
+`superbounce = true`. `sim_glue::Sim::add_bots` hands it to the bots
+(`bots::drill::set`); each practising bot walks to the start, and
+standing there unprimed asks for its word
+([bots.md, "Practising bounces"](../game/bots.md#practising-bounces),
+"The drill"). A `before` on the game tick (`sim: drill word`) takes the
+asks (`bots::drill::take_arm_requests`) and writes −3 over each unit's
+level pair word (`live_telemetry::havok_agents::set_pair_word` on the
+pair `fixed_pair` finds), the write `havok.pair.set` makes
+([agent-api.md](agent-api.md#havokpairset)); a unit with no single
+level pair (asleep) is asked for again. The notes say `drill: the word
+was set to -3 at the start` once it has been. The tries go into the
+`bounce` block as any practice's; `primes` stays 0 (they count primes at
+a crouch spot, and a drill's start is not one). A try that fails here failed in the approach or the jump:
+`pair_lost` is the word read as something else on the ground between the
+start and the jump.
+
+[sim-examples/superbounce-ground-truth.toml](sim-examples/superbounce-ground-truth.toml)
+is one bot on Ascension drilling the measured spot from its takeoff, the
+recipe's running jump ([superbounce.md](../game/superbounce.md), "The
+forced crouch leaves state"), for 9000 ticks:
+
+```sh
+h2 sim run docs/runtime/sim-examples/superbounce-ground-truth.toml
+```
 
 ### Sweeping the bounce tuning
 

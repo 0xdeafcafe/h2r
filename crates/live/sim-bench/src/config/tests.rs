@@ -872,3 +872,41 @@ fn the_bounce_practice_examples_load() {
     assert_eq!(s.batch, dir.join("superbounce-batch.toml"));
     assert_eq!(s.axes.len(), 6);
 }
+
+#[test]
+fn a_drill_names_its_site_and_needs_the_practice() {
+    let text = r#"
+map = "ascension"
+team_play = true
+superbounce = true
+
+[drill]
+site = [-10.62, 3.88, -3.19]
+
+[[bot]]
+name = "Bouncer"
+"#;
+    let c = parse_match(text, false).unwrap();
+    let d = c.drill.unwrap();
+    assert_eq!((d.site, d.start), ([-10.62, 3.88, -3.19], None));
+    // Written back, it reads the same.
+    assert_eq!(parse_match(&toml::to_string(&c).unwrap(), false).unwrap(), c);
+    // Without the practice there is nothing to drill.
+    let off = text.replace("superbounce = true", "superbounce = false");
+    assert!(resolve(c, &no_files).is_ok());
+    let e = resolve(parse_match(&off, false).unwrap(), &no_files).unwrap_err();
+    assert!(e.contains("drill: needs superbounce = true"), "{e}");
+    // An unknown field is refused.
+    assert!(parse_match(&text.replace("[drill]", "[drill]\nseat = 0"), false).is_err());
+}
+
+/// The ground-truth drill in docs/runtime/sim-examples stays valid.
+#[test]
+fn the_ground_truth_drill_loads() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/runtime/sim-examples");
+    let m = load_match(&dir.join("superbounce-ground-truth.toml")).unwrap();
+    assert!(m.superbounce);
+    assert_eq!(m.bots.len(), 1);
+    let d = m.config.drill.unwrap();
+    assert_eq!((d.site, d.start), ([-10.62, 3.88, -3.19], None));
+}

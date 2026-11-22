@@ -28,6 +28,7 @@ fn site(stand: Vec3, status: Status) -> Site {
             spread: 0.03,
             drift: [1.0, 0.0],
             source: "scan",
+            takeoff: None,
         },
         launch: 12.3,
         fall: 0.0,
@@ -437,16 +438,171 @@ fn a_crouch_spot_that_keeps_failing_is_given_up_and_its_site_paired_again() {
 }
 
 #[test]
-fn a_site_whose_approach_walk_keeps_failing_is_given_up() {
+fn a_site_whose_approach_walk_keeps_failing_is_given_up_for_a_while() {
     let m = map();
-    let s = site([10.0, 0.0, 0.0], Status::Likely);
+    // Proven, so picked first while it is there.
+    let s = site([10.0, 0.0, 0.0], Status::Proven);
+    let other = site([-10.0, 0.0, 0.0], Status::Likely);
     let mut mind = Mind::new(Skill::Normal, 40);
     mind.known = known();
-    mind.known.sites = vec![s];
+    mind.known.sites = vec![s, other];
     let steps = ["walk_crouched", "prime", "walk", "bounce", "fly"];
+    for n in 0..SITE_STRIKES {
+        assert!(matches!(mind.pick_practice([0.0; 3], n, Some(&m)), Pick::Site(p, _) if p == s));
+        mind.practice_strike(s, &steps, 2, Some("path_lost_stuck_approach"));
+    }
+    // Given up: the other site.
+    assert!(matches!(mind.pick_practice([0.0; 3], 9, Some(&m)), Pick::Site(p, _) if p == other));
+    // Back after a while.
+    let later = GIVE_UP_TICKS + 10;
+    assert!(matches!(mind.pick_practice([0.0; 3], later, Some(&m)), Pick::Site(p, _) if p == s));
+}
+
+#[test]
+fn strikes_far_apart_never_give_anything_up() {
+    let s = site([10.0, 0.0, 0.0], Status::Likely);
+    let c = Crouch::at([9.0, 1.0, 0.0]);
+    let mut mind = Mind::new(Skill::Normal, 42);
+    mind.known = Known {
+        sites: vec![s],
+        crouches: vec![c],
+    };
+    mind.practice.route_crouch = Some(c);
+    let steps = ["walk_crouched", "prime", "walk", "bounce", "fly"];
+    for n in 0..3 * SITE_STRIKES {
+        mind.tick = Some(n * (STRIKE_TICKS + 1));
+        mind.practice_strike(s, &steps, 2, Some("path_lost_stuck_approach"));
+        mind.practice_strike(s, &steps, 1, Some("prime_failed"));
+    }
+    assert!(mind.practice.given_up.is_empty() && mind.practice.gone.is_empty());
+}
+
+#[test]
+fn a_proven_crouch_spot_is_never_given_up() {
+    let s = site([10.0, 0.0, 0.0], Status::Likely);
+    let proven = Crouch {
+        status: Status::Proven,
+        ..Crouch::at([9.0, 1.0, 0.0])
+    };
+    let mut mind = Mind::new(Skill::Normal, 43);
+    mind.practice.route_crouch = Some(proven);
+    let steps = ["walk_crouched", "prime", "walk", "bounce", "fly"];
+    for _ in 0..3 * CROUCH_STRIKES {
+        mind.practice_strike(s, &steps, 1, Some("prime_failed"));
+    }
+    assert!(mind.practice.gone.is_empty());
+    // A likely one is.
+    mind.practice.route_crouch = Some(Crouch::at([4.0, 0.0, 0.0]));
+    for _ in 0..CROUCH_STRIKES {
+        mind.practice_strike(s, &steps, 1, Some("prime_failed"));
+    }
+    assert_eq!(mind.practice.gone.len(), 1);
+}
+
+#[test]
+fn with_everything_given_up_it_all_comes_back_rather_than_nothing() {
+    let m = map();
+    let s = site([10.0, 0.0, 0.0], Status::Likely);
+    let c = Crouch::at([4.0, 0.0, 0.0]);
+    let mut mind = Mind::new(Skill::Normal, 44);
+    mind.known = Known {
+        sites: vec![s],
+        crouches: vec![c],
+    };
+    let steps = ["walk_crouched", "prime", "walk", "bounce", "fly"];
+    // Pick until a site comes back (pairings and walks take a pick or two).
+    let pick_again = |mind: &mut Mind, from: u32| {
+        (from..from + 20).find_map(|tick| match mind.pick_practice([0.0; 3], tick, Some(&m)) {
+            Pick::Site(p, k) => Some((p, k)),
+            Pick::Later => None,
+            Pick::Nothing => panic!("nothing at tick {tick}"),
+        })
+    };
+    // The only site given up.
     for n in 0..SITE_STRIKES {
         assert!(matches!(mind.pick_practice([0.0; 3], n, Some(&m)), Pick::Site(..)));
         mind.practice_strike(s, &steps, 2, Some("path_lost_stuck_approach"));
     }
-    assert_eq!(mind.pick_practice([0.0; 3], 9, Some(&m)), Pick::Nothing);
+    assert!(!mind.practice.given_up.is_empty());
+    assert_eq!(mind.pick_practice([0.0; 3], 20, Some(&m)), Pick::Later);
+    assert!(mind.practice.given_up.is_empty());
+    assert_eq!(pick_again(&mut mind, 21), Some((s, Some(c))));
+    // The only crouch spot given up: the same.
+    mind.practice.route_crouch = Some(c);
+    for _ in 0..CROUCH_STRIKES {
+        mind.practice_strike(s, &steps, 1, Some("prime_failed"));
+    }
+    assert!(!mind.practice.gone.is_empty());
+    assert_eq!(pick_again(&mut mind, 50), Some((s, Some(c))));
+    assert!(mind.practice.gone.is_empty());
+}
+
+// ---- the drill ----
+
+#[test]
+fn a_drill_walks_to_its_start_asks_for_the_word_and_tries_from_there_primed() {
+    use crate::drill::Drill;
+    use crate::glitches::prime::PRIMED_WORD;
+    let m = map();
+    let s = site([10.0, 0.0, 0.0], Status::Likely);
+    let mut mind = Mind::new(Skill::Normal, 45);
+    mind.known = Known {
+        sites: vec![s],
+        crouches: vec![Crouch::at([3.0, 0.0, 0.0])],
+    };
+    mind.set_practice(true);
+    // The start is away from the bot (it stands at the origin): a plain
+    // walk there, no prime and no word asked for.
+    mind.set_drill(Some(Drill {
+        site: [10.1, 0.0, 0.0],
+        start: Some([5.0, 0.0, 0.0]),
+    }));
+    assert!(mind.wants_pair());
+    let walking = (0..40).any(|t| {
+        mind.step(&scene(bot(1.0), t), Some(&m));
+        mind.order_view().state == "running"
+    });
+    assert!(walking);
+    assert!(mind.take_practice_events().is_empty());
+    assert_eq!(mind.order_view().steps, ["nav"]);
+    assert!(!mind.drill_wants_arm());
+    // At the start, not primed: it stands and asks for the word.
+    mind.cancel_order("test");
+    mind.set_drill(Some(Drill {
+        site: [10.1, 0.0, 0.0],
+        start: Some([0.3, 0.0, 0.0]),
+    }));
+    let mut asked = false;
+    for t in 40..50 {
+        mind.step(&scene(bot(1.0), t), Some(&m));
+        asked |= mind.drill_wants_arm();
+    }
+    assert!(asked, "asks for the word");
+    assert!(mind.take_practice_events().is_empty());
+    // The host wrote it: the try, from there, with no prime.
+    mind.pair_word = Some(PRIMED_WORD);
+    let events = practise(&mut mind, &m, 10, |e| !e.is_empty());
+    assert!(
+        matches!(events.as_slice(), [PracticeEvent::Started { site, .. }] if *site == s.bounce.stand),
+        "{events:?}"
+    );
+    let v = mind.order_view();
+    assert_eq!(v.steps, ["walk", "bounce", "fly"]);
+}
+
+#[test]
+fn a_drill_with_no_known_site_near_it_waits() {
+    use crate::drill::Drill;
+    let m = map();
+    let mut mind = Mind::new(Skill::Normal, 46);
+    mind.known = known();
+    mind.set_practice(true);
+    mind.set_drill(Some(Drill {
+        site: [-20.0, 0.0, 0.0],
+        start: None,
+    }));
+    let events = practise(&mut mind, &m, 120, |_| false);
+    assert!(events.is_empty(), "{events:?}");
+    assert_eq!(mind.practice_view().unwrap().state, "waiting");
+    assert_eq!(mind.order_view().state, "none");
 }

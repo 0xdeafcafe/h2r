@@ -29,6 +29,9 @@ pub(super) struct Asked {
     /// A practice's crouch spot for its site (`mind::practice`, paired
     /// once per site): the route primes there and nowhere else.
     pub crouch: Option<crate::spots::Crouch>,
+    /// The walk alone, no bounce (a drill's walk to its start,
+    /// `mind::practice`).
+    pub plain: bool,
 }
 
 /// A route under way.
@@ -103,6 +106,7 @@ impl Mind {
             show_off: false,
             site: None,
             crouch: None,
+            plain: false,
         });
     }
 
@@ -120,7 +124,7 @@ impl Mind {
     /// A route is asked for or under way, so the host should read the
     /// pair word ([`crate::set_pair_reader`]).
     pub fn wants_pair(&self) -> bool {
-        self.asked.is_some() || self.order.is_some()
+        self.asked.is_some() || self.order.is_some() || self.practice.drilling()
     }
 
     /// The pair word is at -3 now, as far as the route knows: the crouch
@@ -258,6 +262,13 @@ impl Mind {
             mode: a.mode,
         };
         let plan = match a.site {
+            // A drill's walk to its start: the walk alone.
+            _ if a.plain => bounce_route::Plan {
+                steps: vec![bounce_route::Step::Nav { to: a.to }],
+                why: Why::Plain,
+                site: None,
+                cost: None,
+            },
             // A practice's site: the route by it alone, priming at the
             // crouch spot paired with it, over once down from the launch.
             Some(site) if !a.show_off => {
@@ -299,7 +310,8 @@ impl Mind {
             return;
         }
         let seed = u64::from(p.tick) ^ 0xb0_0c5;
-        let mut run = OrderRun::new(plan, primed, p.tick, seed);
+        // A plain walk keeps no word: it neither primes nor needs one.
+        let mut run = OrderRun::new(plan, primed && !a.plain, p.tick, seed);
         run.show_off = a.show_off;
         self.order = Some(Ordered {
             run,

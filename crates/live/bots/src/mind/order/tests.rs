@@ -27,6 +27,7 @@ fn known() -> Known {
                 spread: 0.03,
                 drift: [1.0, 0.0],
                 source: "scan",
+                takeoff: None,
             },
             launch: 12.3,
             fall: 0.0,
@@ -97,6 +98,7 @@ fn a_show_off_route_is_given_up_at_the_sight_of_an_enemy_and_an_ordered_one_is_n
             show_off,
             site: show_off.then(|| known().sites[0]),
             crouch: None,
+            plain: false,
         });
         mind.order_pad(&perception([0.0; 3], 1), Me::default(), Some(&m), &[]);
         assert_eq!(mind.order_view().state, "running");
@@ -142,6 +144,7 @@ fn a_failed_show_off_gives_its_site_up() {
         show_off: true,
         site: Some(site),
         crouch: None,
+        plain: false,
     });
     mind.order_pad(&perception([0.0; 3], 1), Me::default(), Some(&m), &[]);
     assert!(!mind.stuck.blocked(site.bounce.stand, 2));

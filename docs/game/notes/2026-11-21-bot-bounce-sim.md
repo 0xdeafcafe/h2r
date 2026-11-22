@@ -121,3 +121,45 @@ zanzibar     727        0       0  path_lost 645, prime_failed 82
 - **no_bounce** (8, Ascension): landings at the stand, primed, that did not launch: the stand's place within the slot, the jump's drift (0.15) and the approach line are the sweep's (`superbounce-sweep.toml`) once bounces happen. Nothing here changes them.
 
 Changed after this, in the next commit: the walk's goal put on the mesh's floor up to a standing height over it, the last stretch only over the collision's floor, the walk planned again three times when lost and its reason split by check and leg, no headroom stop within 0.5 of a walk's goal, a settle that has not moved for 12 ticks jumps, a word lost while settling primes again, and crouch spots and sites that keep failing given up for the map. The next batch's numbers go below.
+
+## 2026-11-22: after the walk and prime fixes (`c3981045a`), still no bounce
+
+The same batch at `c3981045a`, run by the coordinator:
+
+```
+map        tries  bounced  primes  why not (top 3)
+ascension    117        0     110  pair_lost 50, missed 27, path_lost_jump_crouch 16
+lockout      129        0      99  no_drop 45, pair_lost 40, path_lost_stuck_crouch 18
+midship      164        0     102  pair_lost 56, path_lost_stuck_crouch 48, prime_failed 20
+zanzibar       0        0       0  (no tries at all)
+(all)        410        0     311  pair_lost 146, path_lost_stuck_crouch 67, no_drop 46
+```
+
+Read from the runs' `report.json` (`state_components_v1`: position, velocity, crouch and flags by tick, the first 12268 ticks of each run). The word isn't in the state components, and the route's touchdowns (`Touchdown::word`) aren't in the report, so nothing below reads the word itself. The scripts were one-off Python over those files and aren't kept.
+
+**Ascension's measured site, against the recipe.** At `c3981045a` the bots took the measured spot (−10.62, 3.88, −3.19) as a standing jump (`Site::measured`: fall 0). What `ascension-s1` player 2 did, ticks 3390 to 3754, against the recipe (superbounce.md, "The forced crouch leaves state"):
+
+| | Recipe | The bot |
+|---|---|---|
+| After the prime | walk to the upper level, (−8.2, 2.4, −0.72) | walks down the ramp from the corner to the stand, (−10.68, 3.86, −3.19) |
+| The jump | a running jump from (−8.4, 2.5, −0.76), heading (−0.8, 0.6) at about 1.6 units/s | a standing jump on the stand after 17 still ticks: +3.08 up, no sideways speed |
+| In the air | easing off the stick | 0.15 of stick toward +y: no sideways speed at all |
+| Touchdown | (−10.2 to −10.7, 3.93 to 4.04, −3.19) at −5.4, moving slowly toward +y (0.27 to 1.29) | where it jumped, at −2.9 (once −3.04, sinking 0.07) |
+| Landings a prime | one | three to five, then the word reads lost and it walks back up to prime again |
+
+Every one of the site's tries in the three Ascension runs ended `pair_lost` (6, 8, 7) or `path_lost_jump_crouch` (4, s1). A standing jump lands at −3 and never bounces there; the site needs the 2.43 drop. Gravity in these runs, from player 0's standing jumps (ticks 1619 to 1662): +3.08 to −2.90 in 43 ticks, 4.14 units/s², the scan's 4.15. From −0.76 a jump of +3.08 lands on −3.19 at (3.08² + 2 × 4.15 × 2.43)^½ = 5.44; a walk-off lands at 4.49.
+
+**missed** (44 over the batch, 27 on Ascension). Every site they came from was a scanned standing site (stands from z −0.8 to +1.06). Of the 279 touchdowns within 0.3 of those stands, 271 came from a standing jump with no sideways speed, at −2.90 (median; −1.20 to −3.04). They came down a median 0.087 from the stand (10% under 0.049, 10% over 0.18), and slid a median 0.014 (10% over 0.072) on the slope in the six ticks after, so the next jump, from where it came to rest, landed farther off: player 0's eight tries on (5.87, 6.36, 1.06) walked 0.014 a try down the crease. A crease's band is 0.1 (`superbounce::bounce`'s `CREASE_BAND`), so a landing more than 0.05 off is `missed`. What's wrong: the bot jumps straight up from wherever it stands, and the drift that should carry it onto the line doesn't move it. The 0.15 of stick it holds toward the drift in the air is inside the move stick's dead zone (`nav::route`'s 0.15): free fall in these runs does change sideways speed under a bigger stick (about 0.033 units/s a tick), but not under that one.
+
+**pair_lost** (146). It is the route's reprime budget running out (`bounce_route::REPRIMES`, 2): a word read as anything but −3 on the ground after the prime, the third time. Of the 393 primes in the batch that were followed by standing jumps and then a walk back to a crouch spot, the jumps before the walk back numbered 3 to 5 in 278 (1 to 2 in 26, 6 or more in 89; the measured site's 53: 3 to 5 in 51). None crouched (a crouch starts the next window), and the longest still spell before the last jump was a median 16 ticks; 24 had 38 or more, where the body sleeps. So in most, neither of the known clearers (a crouch, sleep) came before the word was lost: it went after a few landings at −3 that didn't launch. Which part of a landing rebuilds the pair isn't read here; the drill below reads it with the word, one landing a try.
+
+**Zanzibar** (0 tries). No practice event at all, and every bot stood where it spawned for the whole match (`zanzibar-s1`: positions unchanged from tick 42). A strike only follows a tried route (`Mind::practice_tally`), so none was made: the pick returned `Nothing` from the start. Every site there pairs first with the two proven crouch places (`superbounce::PROVEN`), the window sill (5.22, −26.285, 5.11) and (8.07, −3.01, 4.51); with neither paired no site has a crouch spot and nothing is picked. Not confirmed here: the runs say only that nothing was picked. The likeliest change since `91ff0ee7b` (727 tries, these two crouch places) is the last stretch's new floor check (`nav::route`'s `tail_ok`: collision floor under every 0.25), which a walk onto a sill, or off the mesh across an edge, now fails. The pick now says why in the log once a map (`bots: bounce practice: nothing to try: ...`, with each proven crouch spot's walks).
+
+Changed after this, in the next commit on `sb6-bottrain`:
+
+- The measured spot is the recipe's drop: `Bounce::takeoff` (−8.4, 2.5, −0.76), `Site::measured` falls 2.43 from it.
+- A drop that a walk-off can't make fast enough is the recipe's running jump: run-up 0.6, the ground speed that carries the flight onto the aim (about 1.3 units/s here), the jump at the launch point, and in the air steering of where the landing comes down, letting go within 0.03. Sticks are at least 0.2.
+- Strikes lapse after 2 minutes, what is given up comes back after 3, a proven crouch spot is never given up, and a pick that would find nothing for what was given up takes it all back.
+- The bounce drill (`[drill]`, sim.md, "The bounce drill") and [superbounce-ground-truth.toml](../../runtime/sim-examples/superbounce-ground-truth.toml): one bot, the measured spot, each try from the takeoff with the word set to −3. Its `why` reads the approach and the jump alone; `pair_lost` there is the word lost between the start and the jump.
+
+Not changed: the standing sites' drift (`[bounce] drift`, sweepable without a rebuild; the traced bounces came in at 0.27 to 1.29 units/s toward the drift), and the HUD's own spot data.

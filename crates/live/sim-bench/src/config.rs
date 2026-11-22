@@ -693,8 +693,25 @@ pub struct MatchConfig {
     /// More variant settings, by id (`"83" = 1`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub settings: BTreeMap<String, i32>,
+    /// The bounce drill: with `superbounce = true`, the bots try one site
+    /// only, each try from a start near it with the word already at -3
+    /// (docs/runtime/sim.md, "The bounce drill").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drill: Option<DrillConfig>,
     #[serde(default, rename = "bot")]
     pub bots: Vec<BotSpec>,
+}
+
+/// A match's `[drill]`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DrillConfig {
+    /// The site to try: the known site nearest it, within half a unit.
+    pub site: [f32; 3],
+    /// Where each try starts, primed. Unset: the site's approach (a
+    /// drop's takeoff or launch floor), so a try is the jump alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<[f32; 3]>,
 }
 
 /// A bot as a run uses it: everything resolved. Every bot plays as a
@@ -900,6 +917,18 @@ pub fn resolve(
         return Err(problems.join("\n"));
     }
     let superbounce = config.superbounce.unwrap_or(false);
+    if let Some(d) = &config.drill {
+        if !superbounce {
+            problems.push("drill: needs superbounce = true".into());
+        }
+        let finite = |p: &[f32; 3]| p.iter().all(|c| c.is_finite());
+        if !finite(&d.site) || d.start.is_some_and(|s| !finite(&s)) {
+            problems.push("drill: site and start are world coordinates".into());
+        }
+        if !problems.is_empty() {
+            return Err(problems.join("\n"));
+        }
+    }
     Ok(Match {
         config,
         game_type,

@@ -3035,7 +3035,7 @@ or `crouch`; `kind` in the request filters), `source` (`measured` or
 `scan`), `edge` (two points), `stand`, `fall`, `launch`, `drift`,
 `score`, `width` (a slot's gap between its joints, a crouch band's
 widest), `need` (a slot's touchdown speed down, which `fall` is worked
-from), `status` (`proven` for a crouch spot at a measured priming place
+from; a measured spot with a recipe takeoff falls 2.43 from it), `status` (`proven` for a crouch spot at a measured priming place
 or one the map's verified file proved, `failed` for one it failed, else
 `likely`), `out` (a crouch spot's way out from `stand`, X and Y) and
 `lip` (a crouch spot's edges overhead at `stand`, up to 8) and `shape`

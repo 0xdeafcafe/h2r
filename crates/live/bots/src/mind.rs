@@ -1789,6 +1789,7 @@ impl Mind {
                     show_off: true,
                     site: Some(site),
                     crouch: None,
+                    plain: false,
                 });
                 return None;
             }

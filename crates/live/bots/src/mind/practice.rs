@@ -12,7 +12,14 @@
 //! that crouch spot. A site with no reachable crouch spot, or whose
 //! approach a walk cannot reach, is never tried. A crouch spot or a site
 //! whose tries keep failing on the way to it (or, a crouch spot, in its
-//! prime) is given up for the map ([`CROUCH_STRIKES`], [`SITE_STRIKES`]).
+//! prime) is given up for a while ([`CROUCH_STRIKES`], [`SITE_STRIKES`],
+//! [`GIVE_UP_TICKS`]); strikes lapse ([`STRIKE_TICKS`]), a proven crouch
+//! spot is never given up, and when nothing is left to try everything
+//! given up comes back.
+//!
+//! In a drill ([`crate::drill`], a sim's `[drill]`) the bot tries one site
+//! only: it walks to the drill's start, the host sets its word to -3, and
+//! the try is the final approach and the jump.
 //!
 //! The loop sits in front of everything else in [`Mind::step`]: no
 //! target is chosen, nothing is shot, thrown or meleed, and being shot
@@ -27,7 +34,9 @@ use input::host::HostPadState;
 use super::feel::{Rng, reached};
 use super::order::Asked;
 use super::{Mind, RouteMotion, Vec3, angles, dist_xy};
-use crate::bounce_route::{Mode, Pairing, launch_floor, pair_site, path_length, prime_start};
+use crate::bounce_route::{
+    Mode, Pairing, approach, launch_floor, pair_site, path_length, prime_start,
+};
 use crate::brain::{Me, Perception, Seen};
 use crate::cache::MapData;
 use crate::glitches::prime::is_primed;
@@ -68,8 +77,23 @@ pub const OUT_OF_REACH_TICKS: u32 = 600;
 /// in the prime is given up for the map: its sites pair again without it.
 pub const CROUCH_STRIKES: u32 = 2;
 /// A site whose tries failed this many times on the walk to its approach
-/// is given up for the map.
+/// is given up.
 pub const SITE_STRIKES: u32 = 3;
+/// A strike this old (ticks) is forgotten: 2 min. Strikes count toward
+/// giving up only while they come closer together than this.
+pub const STRIKE_TICKS: u32 = 3600;
+/// A crouch spot or a site given up comes back after this long (ticks):
+/// 3 min.
+pub const GIVE_UP_TICKS: u32 = 5400;
+/// The drill: at its start within this (XY, world units; and
+/// [`crate::nav::ARRIVE_Z`] in height); the pause between tries (ticks,
+/// short: a body still for 38 ticks sleeps and loses its level pair);
+/// how long it waits at the start for the host's word (ticks) before it
+/// walks off [`DRILL_WAKE`] and back to wake the body.
+pub const DRILL_AT: f32 = 0.7;
+pub const DRILL_PAUSE: u32 = 10;
+pub const DRILL_ARM_TICKS: u32 = 20;
+pub const DRILL_WAKE: f32 = 1.0;
 
 /// One site's practice so far.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -130,6 +154,8 @@ enum Phase {
     Idle { until: u32, yaw: f32, since: u32 },
     /// On a route to this site.
     Route(Site),
+    /// A drill's walk to its start.
+    Walk,
 }
 
 /// A bot's practice.
@@ -156,11 +182,23 @@ pub struct Practice {
     out_of_reach: Vec<([u32; 3], u32)>,
     /// The crouch spot the route under way primes at.
     route_crouch: Option<Crouch>,
-    /// Failed tries by the crouch spot (its stand) and by the site, and
-    /// the crouch spots given up, for the map in [`Practice::pairs_for`].
-    crouch_strikes: HashMap<[u32; 3], u32>,
-    site_strikes: HashMap<[u32; 3], u32>,
-    gone: Vec<[u32; 3]>,
+    /// Failed tries by the crouch spot (its stand) and by the site, with
+    /// the tick of the last, and the crouch spots and sites given up,
+    /// until a tick, for the map in [`Practice::pairs_for`].
+    crouch_strikes: HashMap<[u32; 3], (u32, u32)>,
+    site_strikes: HashMap<[u32; 3], (u32, u32)>,
+    gone: Vec<([u32; 3], u32)>,
+    given_up: Vec<([u32; 3], u32)>,
+    /// The map ([`Practice::pairs_for`]) it last said it had nothing to
+    /// try on.
+    said_nothing: u64,
+    /// The drill, when the host runs one ([`Mind::set_drill`]); whether
+    /// the bot asks the host for its word now, since when, and whether it
+    /// said it found no drill site.
+    drill: Option<crate::drill::Drill>,
+    arm: bool,
+    armed_since: Option<u32>,
+    drill_said: bool,
 }
 
 /// What a pick found.
@@ -172,6 +210,43 @@ enum Pick {
     Later,
     /// No site a route reaches.
     Nothing,
+}
+
+/// Why a pick found nothing: the sites skipped, by what skipped them.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct NothingWhy {
+    sites: usize,
+    crouches: usize,
+    /// Farther than [`REACH`].
+    far: u32,
+    /// Resting after a failed try (`stuck`'s blacklist).
+    resting: u32,
+    /// No walk from the bot to its crouch spot (or approach).
+    no_walk: u32,
+    /// Given up for a while.
+    given_up: u32,
+    /// No approach a walk reaches (or no launch floor).
+    no_approach: u32,
+    /// No crouch spot within reach whose walk gets to it.
+    no_crouch: u32,
+}
+
+impl std::fmt::Display for NothingWhy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} sites, {} crouch spots; sites with no crouch spot to prime at {}, \
+             no approach {}, no walk to them {}, resting {}, given up {}, too far {}",
+            self.sites,
+            self.crouches,
+            self.no_crouch,
+            self.no_approach,
+            self.no_walk,
+            self.resting,
+            self.given_up,
+            self.far
+        )
+    }
 }
 
 fn stand_key(p: Vec3) -> [u32; 3] {
@@ -213,6 +288,12 @@ impl Practice {
             crouch_strikes: HashMap::new(),
             site_strikes: HashMap::new(),
             gone: Vec::new(),
+            given_up: Vec::new(),
+            said_nothing: 0,
+            drill: None,
+            arm: false,
+            armed_since: None,
+            drill_said: false,
         }
     }
 
@@ -225,6 +306,16 @@ impl Practice {
 
     pub fn on(&self) -> bool {
         self.on
+    }
+
+    /// Practising in a drill: the host reads the word between tries too.
+    pub fn drilling(&self) -> bool {
+        self.on && self.drill.is_some()
+    }
+
+    fn is_gone(&self, c: &Crouch) -> bool {
+        let k = stand_key(c.stand);
+        self.gone.iter().any(|(g, _)| *g == k)
     }
 
     fn record(&mut self, stand: Vec3, bounced: bool, why: Option<&'static str>) {
@@ -339,7 +430,7 @@ impl Mind {
         }
         self.practice.on = on;
         if !on {
-            if matches!(self.practice.phase, Some(Phase::Route(_))) {
+            if matches!(self.practice.phase, Some(Phase::Route(_) | Phase::Walk)) {
                 self.cancel_order("practice_off");
             }
             self.practice.phase = None;
@@ -350,6 +441,24 @@ impl Mind {
                 self.tick.unwrap_or(0),
             );
         }
+    }
+
+    /// The host's drill ([`crate::drill::current`]), or none.
+    pub fn set_drill(&mut self, d: Option<crate::drill::Drill>) {
+        if self.practice.drill != d {
+            self.practice.drill = d;
+            self.practice.armed_since = None;
+            self.practice.drill_said = false;
+        }
+        if d.is_none() {
+            self.practice.arm = false;
+        }
+    }
+
+    /// A drill's bot at its start, not primed: the host should set its
+    /// word ([`crate::drill::request_arm`]).
+    pub fn drill_wants_arm(&self) -> bool {
+        self.practice.drilling() && self.practice.arm
     }
 
     /// The practice so far, for the agent.
@@ -390,36 +499,61 @@ impl Mind {
         };
         // A site needs a crouch spot to prime at (or the bot primed).
         let primed = self.pair_word.is_some_and(is_primed);
+        let for_map = pairs_key(&self.known, m);
         if !primed && self.known.crouches.is_empty() {
+            self.say_nothing(for_map, "no crouch spot is known on the map");
             return Pick::Nothing;
         }
-        let for_map = pairs_key(&self.known, m);
         if self.practice.pairs_for != for_map {
             self.practice.pairs.clear();
             self.practice.out_of_reach.clear();
             self.practice.crouch_strikes.clear();
             self.practice.site_strikes.clear();
             self.practice.gone.clear();
+            self.practice.given_up.clear();
             self.practice.pairs_for = for_map;
         }
         self.practice
             .out_of_reach
             .retain(|&(_, until)| !reached(tick, until));
+        // What was given up comes back in time; a crouch spot back pairs
+        // again.
+        let gone = self.practice.gone.len();
+        self.practice.gone.retain(|&(_, until)| !reached(tick, until));
+        if self.practice.gone.len() != gone {
+            self.practice.pairs.clear();
+        }
+        self.practice
+            .given_up
+            .retain(|&(_, until)| !reached(tick, until));
+        let mut why = NothingWhy {
+            sites: self.known.sites.len(),
+            crouches: self.known.crouches.len(),
+            ..NothingWhy::default()
+        };
         let owner = self.practice.owner;
         let last = self.practice.last;
         let mut ranked: Vec<(f32, Site)> = Vec::new();
         for s in &self.known.sites {
             let k = stand_key(s.bounce.stand);
-            if dist_xy(s.bounce.stand, at) > REACH
-                || self.stuck.blocked(s.bounce.stand, tick)
-                || self.practice.out_of_reach.iter().any(|(o, _)| *o == k)
-                || match self.practice.pairs.get(&k) {
+            let skip = if dist_xy(s.bounce.stand, at) > REACH {
+                Some(&mut why.far)
+            } else if self.stuck.blocked(s.bounce.stand, tick) {
+                Some(&mut why.resting)
+            } else if self.practice.out_of_reach.iter().any(|(o, _)| *o == k) {
+                Some(&mut why.no_walk)
+            } else if self.practice.given_up.iter().any(|(g, _)| *g == k) {
+                Some(&mut why.given_up)
+            } else {
+                match self.practice.pairs.get(&k) {
                     // Known to have no route: never tried.
-                    Some(Err(_)) => true,
-                    Some(Ok(p)) => p.crouch.is_none() && !primed,
-                    None => false,
+                    Some(Err(_)) => Some(&mut why.no_approach),
+                    Some(Ok(p)) if p.crouch.is_none() && !primed => Some(&mut why.no_crouch),
+                    _ => None,
                 }
-            {
+            };
+            if let Some(n) = skip {
+                *n += 1;
                 continue;
             }
             let claimed = claimed_by_other(self.practice.board, owner, s.bounce.stand, tick);
@@ -439,18 +573,24 @@ impl Mind {
                         return Pick::Later;
                     }
                     paired += 1;
-                    let gone = &self.practice.gone;
-                    let usable = |c: &Crouch| !gone.contains(&stand_key(c.stand));
+                    let practice = &self.practice;
+                    let usable = |c: &Crouch| !practice.is_gone(c);
                     let p = pair_site(&s, &self.known, &walk, &ledge, &usable);
                     self.practice.pairs.insert(k, p);
                     p
                 }
             };
-            let Ok(p) = pairing else { continue };
+            let Ok(p) = pairing else {
+                why.no_approach += 1;
+                continue;
+            };
             let (to, crouch) = match (primed, p.crouch) {
                 (true, _) => (p.approach, None),
                 (false, Some(c)) => (prime_start(&c), Some(c)),
-                (false, None) => continue,
+                (false, None) => {
+                    why.no_crouch += 1;
+                    continue;
+                }
             };
             if walks >= REACH_QUERIES {
                 return Pick::Later;
@@ -459,11 +599,60 @@ impl Mind {
             if walk(at, to).is_some() {
                 return Pick::Site(s, crouch);
             }
+            why.no_walk += 1;
             self.practice
                 .out_of_reach
                 .push((k, tick.wrapping_add(OUT_OF_REACH_TICKS)));
         }
+        // Never nothing for what was given up: it all comes back.
+        if !self.practice.gone.is_empty() || !self.practice.given_up.is_empty() {
+            let p = &mut self.practice;
+            p.gone.clear();
+            p.given_up.clear();
+            p.crouch_strikes.clear();
+            p.site_strikes.clear();
+            p.pairs.clear();
+            return Pick::Later;
+        }
+        if self.practice.said_nothing != for_map {
+            // The proven crouch spots, which pair first: whether a walk
+            // reaches each one's start from here and from its stand.
+            let yes = |w: Option<f32>| if w.is_some() { "yes" } else { "no" };
+            let proven: Vec<String> = self
+                .known
+                .crouches
+                .iter()
+                .filter(|c| c.proven())
+                .take(4)
+                .map(|c| {
+                    let start = prime_start(c);
+                    format!(
+                        "proven crouch spot ({:.2}, {:.2}, {:.2}): a walk to its start {}, from its stand {}",
+                        c.stand[0],
+                        c.stand[1],
+                        c.stand[2],
+                        yes(walk(at, start)),
+                        yes(walk(c.stand, start))
+                    )
+                })
+                .collect();
+            let mut said = why.to_string();
+            for p in proven {
+                said.push_str("; ");
+                said.push_str(&p);
+            }
+            self.say_nothing(for_map, &said);
+        }
         Pick::Nothing
+    }
+
+    /// Says once a map why the practice has nothing to try (a sim's log:
+    /// a map with no tries shows why).
+    fn say_nothing(&mut self, for_map: u64, why: &str) {
+        if self.practice.said_nothing != for_map {
+            self.practice.said_nothing = for_map;
+            eprintln!("bots: bounce practice: nothing to try: {why}");
+        }
     }
 
     fn practice_idle(&mut self, me: Me, tick: u32, pause: u32) {
@@ -478,8 +667,10 @@ impl Mind {
     /// A failed try counts against what it failed at: the walk to the
     /// crouch spot or its prime against the crouch spot, the walk to the
     /// approach against the site. One that has failed often enough
-    /// ([`CROUCH_STRIKES`], [`SITE_STRIKES`]) is given up for the map. A
-    /// landing that did not bounce counts against neither.
+    /// ([`CROUCH_STRIKES`], [`SITE_STRIKES`]), each strike within
+    /// [`STRIKE_TICKS`] of the one before, is given up for
+    /// [`GIVE_UP_TICKS`]; a proven crouch spot never is. A landing that
+    /// did not bounce counts against neither.
     fn practice_strike(
         &mut self,
         site: Site,
@@ -488,19 +679,29 @@ impl Mind {
         why: Option<&'static str>,
     ) {
         let Some(why) = why else { return };
+        let tick = self.tick.unwrap_or(0);
         let walked = why.starts_with("path_lost")
             || matches!(why, "no_path" | "goal_off_mesh" | "tail_stuck");
         let at = steps.get(step).copied();
         let next = steps.get(step + 1).copied();
         let crouch_leg = (walked && next == Some("prime")) || at == Some("prime");
         let site_leg = walked && matches!(next, Some("bounce" | "drop"));
+        let strike = |strikes: &mut HashMap<[u32; 3], (u32, u32)>, k: [u32; 3]| {
+            let e = strikes.entry(k).or_insert((0, tick));
+            if tick.wrapping_sub(e.1) > STRIKE_TICKS {
+                e.0 = 0;
+            }
+            *e = (e.0 + 1, tick);
+            e.0
+        };
+        let until = tick.wrapping_add(GIVE_UP_TICKS);
         let p = &mut self.practice;
         if crouch_leg && let Some(c) = p.route_crouch {
             let k = stand_key(c.stand);
-            let n = p.crouch_strikes.entry(k).or_insert(0);
-            *n += 1;
-            if *n >= CROUCH_STRIKES && !p.gone.contains(&k) {
-                p.gone.push(k);
+            let n = strike(&mut p.crouch_strikes, k);
+            if n >= CROUCH_STRIKES && !c.proven() && !p.is_gone(&c) {
+                p.gone.push((k, until));
+                p.crouch_strikes.remove(&k);
                 // Its sites pair again, without it.
                 p.pairs
                     .retain(|_, v| !matches!(v, Ok(Pairing { crouch: Some(c), .. }) if stand_key(c.stand) == k));
@@ -508,10 +709,10 @@ impl Mind {
         }
         if site_leg {
             let k = stand_key(site.bounce.stand);
-            let n = p.site_strikes.entry(k).or_insert(0);
-            *n += 1;
-            if *n >= SITE_STRIKES {
-                p.pairs.insert(k, Err("given_up"));
+            let n = strike(&mut p.site_strikes, k);
+            if n >= SITE_STRIKES {
+                p.given_up.push((k, until));
+                p.site_strikes.remove(&k);
             }
         }
     }
@@ -571,6 +772,9 @@ impl Mind {
         if !self.practice.on {
             return None;
         }
+        if let Some(d) = self.practice.drill {
+            return Some(self.drill_pad(p, me, map, seen, d));
+        }
         let tick = p.tick;
         // A route under way, the practice's or an agent's.
         if self.asked.is_some() || self.order.is_some() {
@@ -618,6 +822,7 @@ impl Mind {
                             show_off: false,
                             site: Some(site),
                             crouch,
+                            plain: false,
                         });
                         self.practice.phase = Some(Phase::Route(site));
                         self.practice.primed_seen = false;
@@ -642,9 +847,15 @@ impl Mind {
                     }
                 }
             }
+            // A drill's walk, the drill gone: pick as usual.
+            Some(Phase::Walk) => self.practice_idle(me, tick, PAUSE_MIN),
             Some(Phase::Idle { .. }) => {}
         }
-        // Standing between tries: looking round, slowly, about one way.
+        self.practice_stand(me, tick)
+    }
+
+    /// Standing between tries: looking round, slowly, about one way.
+    fn practice_stand(&mut self, me: Me, tick: u32) -> Option<HostPadState> {
         let yaw = match self.practice.phase {
             Some(Phase::Idle { yaw, since, .. }) => {
                 yaw + 0.6 * (tick.wrapping_sub(since) as f32 / 45.0).sin()
@@ -661,6 +872,171 @@ impl Mind {
         );
         self.last_pad = pad;
         Some(pad)
+    }
+
+    /// The drill's known site: the one nearest the drill's `site` within
+    /// [`crate::drill::SAME`].
+    fn drill_site(&self, d: crate::drill::Drill) -> Option<Site> {
+        let same = crate::drill::SAME;
+        self.known
+            .sites
+            .iter()
+            .filter(|s| {
+                dist_xy(s.bounce.stand, d.site) <= same && (s.bounce.stand[2] - d.site[2]).abs() <= same
+            })
+            .min_by(|a, b| {
+                dist_xy(a.bounce.stand, d.site).total_cmp(&dist_xy(b.bounce.stand, d.site))
+            })
+            .copied()
+    }
+
+    /// The drill's pad: walk to the start, stand there while the host sets
+    /// the word (walking off and back if it doesn't come: a sleeping body
+    /// has no level pair to write), then the try from there, primed: the
+    /// route by the one site with no prime ([`crate::bounce_route::plan_site`]),
+    /// tallied as a practice try. Then back to the start.
+    fn drill_pad(
+        &mut self,
+        p: &Perception,
+        me: Me,
+        map: Option<&MapData>,
+        seen: &[Seen],
+        d: crate::drill::Drill,
+    ) -> HostPadState {
+        let tick = p.tick;
+        self.practice.arm = false;
+        if (self.asked.is_some() || self.order.is_some())
+            && let Some(pad) = self.order_pad(p, me, map, seen)
+        {
+            if let Some(Phase::Route(s)) = self.practice.phase {
+                self.practice_watch_prime(s, tick);
+            }
+            return pad;
+        }
+        match self.practice.phase {
+            Some(Phase::Route(site)) => {
+                self.practice_tally(site);
+                self.practice_idle(me, tick, DRILL_PAUSE);
+            }
+            // At the start, or not: look at once.
+            Some(Phase::Walk) => self.practice_idle(me, tick, 1),
+            None => self.practice_idle(me, tick, DRILL_PAUSE),
+            Some(Phase::Idle { until, .. }) if reached(tick, until) => {
+                if let Some(pad) = self.drill_next(p, me, map, seen, d) {
+                    return pad;
+                }
+            }
+            Some(Phase::Idle { .. }) => {}
+        }
+        self.practice_stand(me, tick).unwrap_or_default()
+    }
+
+    /// The drill's next move from standing: a walk, a wait for the word,
+    /// or the try. `None`: stand this tick.
+    fn drill_next(
+        &mut self,
+        p: &Perception,
+        me: Me,
+        map: Option<&MapData>,
+        seen: &[Seen],
+        d: crate::drill::Drill,
+    ) -> Option<HostPadState> {
+        let tick = p.tick;
+        let (Some(m), Some(site)) = (map, self.drill_site(d)) else {
+            if !self.practice.drill_said {
+                self.practice.drill_said = true;
+                eprintln!(
+                    "bots: bounce drill: no known site within {} of {:?} ({} sites known)",
+                    crate::drill::SAME,
+                    d.site,
+                    self.known.sites.len()
+                );
+            }
+            self.practice.waiting = true;
+            self.practice_idle(me, tick, NOTHING_PAUSE);
+            return None;
+        };
+        self.practice.waiting = false;
+        let ledge = |s: &Site| launch_floor(m, s);
+        let Some(start) = d.start.or_else(|| approach(&site, &ledge)) else {
+            if !self.practice.drill_said {
+                self.practice.drill_said = true;
+                eprintln!("bots: bounce drill: the site has no approach and no start was given");
+            }
+            self.practice.waiting = true;
+            self.practice_idle(me, tick, NOTHING_PAUSE);
+            return None;
+        };
+        let at = me.position;
+        let there = dist_xy(at, start) <= DRILL_AT && (at[2] - start[2]).abs() <= crate::nav::ARRIVE_Z;
+        let walk = |mind: &mut Mind, to: Vec3| {
+            mind.asked = Some(Asked {
+                to,
+                mode: Mode::Help,
+                show_off: false,
+                site: None,
+                crouch: None,
+                plain: true,
+            });
+            mind.practice.phase = Some(Phase::Walk);
+            mind.practice.armed_since = None;
+            mind.order_pad(p, me, map, seen)
+        };
+        if !there {
+            if let Some(pad) = walk(self, start) {
+                return Some(pad);
+            }
+            // No walk there from here: try again in a while.
+            self.practice_idle(me, tick, PAUSE_MAX);
+            return None;
+        }
+        if !self.pair_word.is_some_and(is_primed) {
+            let since = *self.practice.armed_since.get_or_insert(tick);
+            if tick.wrapping_sub(since) > DRILL_ARM_TICKS {
+                // No word yet: the body may sleep (no level pair to write).
+                // Walk off along the way in and come back.
+                let t = site.target();
+                let away = [start[0] - t[0], start[1] - t[1]];
+                let l = away[0].hypot(away[1]).max(1e-3);
+                let off = [
+                    start[0] + away[0] / l * DRILL_WAKE,
+                    start[1] + away[1] / l * DRILL_WAKE,
+                    start[2],
+                ];
+                if let Some(pad) = walk(self, off) {
+                    return Some(pad);
+                }
+                self.practice.armed_since = None;
+            }
+            self.practice.arm = true;
+            self.practice_idle(me, tick, 1);
+            return None;
+        }
+        // Primed at the start: the try.
+        self.practice.armed_since = None;
+        self.asked = Some(Asked {
+            to: site.bounce.stand,
+            mode: Mode::Fun,
+            show_off: false,
+            site: Some(site),
+            crouch: None,
+            plain: false,
+        });
+        self.practice.route_crouch = None;
+        self.practice.phase = Some(Phase::Route(site));
+        self.practice.primed_seen = false;
+        self.practice.event(PracticeEvent::Started {
+            site: site.bounce.stand,
+            tick,
+        });
+        if let Some(pad) = self.order_pad(p, me, map, seen) {
+            self.practice_watch_prime(site, tick);
+            return Some(pad);
+        }
+        // No route from here (the word lost before it began, or no plan).
+        self.practice_tally(site);
+        self.practice_idle(me, tick, DRILL_PAUSE);
+        None
     }
 }
 

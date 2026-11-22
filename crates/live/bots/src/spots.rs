@@ -45,6 +45,11 @@ pub const MEASURED_LAUNCH: f32 = 12.3;
 /// The touchdown speed the measured Ascension landing came in at (world
 /// units a second): docs/game/superbounce.md, "The forced crouch leaves state", the recipe, step 4.
 pub const MEASURED_NEED: f32 = 5.4;
+/// The fall onto a measured spot that has a takeoff (world units): the
+/// recipe's jump off the upper level (z -0.76) onto the patch (z -3.19),
+/// docs/game/superbounce.md, "The forced crouch leaves state". A standing
+/// jump falls 0 and lands at -3: never a bounce.
+pub const MEASURED_FALL: f32 = 2.43;
 /// The most a bounce site may need to fall onto it (world units) for a
 /// bot's standing jump to reach it.
 pub const STANDING_FALL: f32 = 0.5;
@@ -89,6 +94,7 @@ impl Site {
                 spread: SCAN_SPREAD,
                 drift: s.drift,
                 source: "scan",
+                takeoff: None,
             },
             launch: s.launch,
             fall: s.fall,
@@ -100,12 +106,13 @@ impl Site {
         })
     }
 
-    /// A measured spot as a site.
+    /// A measured spot as a site: a drop from its takeoff
+    /// ([`MEASURED_FALL`]) when it has one, else a standing jump.
     pub fn measured(b: Bounce) -> Site {
         Site {
             bounce: b,
             launch: MEASURED_LAUNCH,
-            fall: 0.0,
+            fall: if b.takeoff.is_some() { MEASURED_FALL } else { 0.0 },
             need: MEASURED_NEED,
             width: SLOT_WIDTH,
             status: Status::Proven,
@@ -132,7 +139,7 @@ impl Site {
 
     /// A standing jump from the spot's `stand` reaches it.
     pub fn standing(&self) -> bool {
-        self.fall <= STANDING_FALL && self.height.is_none()
+        self.fall <= STANDING_FALL && self.height.is_none() && self.bounce.takeoff.is_none()
     }
 
     /// Where to land: the verified point, else `stand`.
@@ -301,7 +308,7 @@ pub fn listing(map: &str) -> Vec<Listed> {
                 kind: Kind::Bounce,
                 edge: [b.stand, b.stand],
                 stand: b.stand,
-                fall: 0.0,
+                fall: Site::measured(b).fall,
                 launch: MEASURED_LAUNCH,
                 drift: b.drift,
                 score: 1.0,

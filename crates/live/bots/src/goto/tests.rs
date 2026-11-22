@@ -24,6 +24,7 @@ fn site(x: f32, y: f32) -> Site {
             spread: 0.03,
             drift: [1.0, 0.0],
             source: "scan",
+            takeoff: None,
         },
         launch: 12.3,
         ..Site::default()

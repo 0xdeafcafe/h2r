@@ -14,6 +14,7 @@ pub mod bounce_route;
 pub mod brain;
 pub mod cache;
 pub mod decisions;
+pub mod drill;
 pub mod emote;
 pub mod experience;
 pub mod glitches;
@@ -700,6 +701,7 @@ impl Brain {
         }
         // The superbounce mode's practice (mind::practice).
         self.mind.set_practice(practising());
+        self.mind.set_drill(drill::current());
         self.kills_seen = cursor;
         let p = &mut observation.perception;
         let alive = p.me.is_some();
@@ -726,6 +728,10 @@ impl Brain {
         observation.pair_word = unit
             .filter(|_| alive && self.mind.wants_pair())
             .and_then(|(_, datum)| PAIR_READER.get().and_then(|read| read(f.guest, datum)));
+        // A drill's bot at its start asks the host for the word (drill).
+        if let Some((_, datum)) = unit.filter(|_| alive && self.mind.drill_wants_arm()) {
+            drill::request_arm(datum);
+        }
         if !same_map {
             if self.map_data.is_some() {
                 // A route was planned on the old mesh.

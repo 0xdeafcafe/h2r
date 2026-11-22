@@ -173,9 +173,11 @@ pub struct BounceTuning {
     pub approach_turn_deg: f32,
     pub out_speed: f32,
     /// The drop: lined up within `line_up` (`bounce_route::LINE_UP`) or
-    /// after `line_up_ticks` (`LINE_UP_TICKS`), the stick off the floor
-    /// (`RUN_OFF_SPEED`), the air steering's stick a unit off the target
-    /// (`AIR_GAIN`), and drops before giving up (`DROP_TRIES`).
+    /// after `line_up_ticks` (`LINE_UP_TICKS`), the stick of a walk-off
+    /// (`RUN_OFF_SPEED`; a drop that needs a jump runs at
+    /// `bounce_route::takeoff_speed`), the air steering's stick a unit the
+    /// landing as it flies is off the target (`AIR_GAIN`), and drops
+    /// before giving up (`DROP_TRIES`).
     pub line_up: f32,
     pub line_up_ticks: u32,
     pub run_off_speed: f32,

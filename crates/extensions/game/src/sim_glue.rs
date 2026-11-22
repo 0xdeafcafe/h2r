@@ -560,6 +560,13 @@ impl Sim {
             crate::superbounce_mode::collect_awards(true);
             crate::sim_bots::install_pair_reader();
             self.0.lock().tally.track_bounces();
+            // The bounce drill (docs/runtime/sim.md, "The bounce drill"):
+            // one site, each try from its start with the word set to -3
+            // (the "sim: drill word" hook writes it).
+            bots::drill::set(self.0.matched.config.drill.map(|d| bots::drill::Drill {
+                site: d.site,
+                start: d.start,
+            }));
         }
         for b in &self.0.matched.bots {
             let brain = bots::Brain::new(skill(b.skill), b.seed)
@@ -1315,8 +1322,56 @@ impl hooks::Feature for SimMetrics {
                 Ok(Flow::Continue)
             })
             .last();
+        if self.sim.matched.superbounce && self.sim.matched.config.drill.is_some() {
+            // The bounce drill's word: each bot at the drill's start asks
+            // (bots::drill::request_arm), and before the next tick its
+            // unit's level pair word is set to -3, as `havok.pair.set`
+            // writes it. A unit with no single level pair (asleep, or
+            // airborne away from the level) is asked for again.
+            let me = Arc::clone(&self.sim);
+            b.raw()
+                .before(&points::GAME_TICK, "sim: drill word", move |c| {
+                    let asks = bots::drill::take_arm_requests();
+                    if asks.is_empty() {
+                        return Ok(Flow::Continue);
+                    }
+                    let rt = Arc::clone(c.ctx.runtime());
+                    let mut g = rt.memory();
+                    let mut written = 0u32;
+                    for unit in asks {
+                        if drill_arm(&mut *g, unit) {
+                            written += 1;
+                        }
+                    }
+                    drop(g);
+                    if written > 0 {
+                        let mut s = me.lock();
+                        const NOTE: &str = "drill: the word was set to -3 at the start";
+                        if !s.notes.iter().any(|n| n == NOTE) {
+                            eprintln!("sim: {NOTE}");
+                            s.notes.push(NOTE.into());
+                        }
+                    }
+                    Ok(Flow::Continue)
+                })
+                .last();
+        }
         Ok(())
     }
+}
+
+/// The word a forced crouch leaves (docs/game/superbounce.md, "The pair
+/// word"): -3.
+const PRIMED_WORD: u32 = 0xffff_fffd;
+
+/// Sets `unit`'s level pair word to -3 (`havok.pair.set`'s write). False
+/// when it has no single pair against the level, or the write faulted.
+fn drill_arm(m: &mut dyn engine::GuestMemory, unit: u32) -> bool {
+    use live_telemetry::havok_agents as hk;
+    let Ok(Some(entry)) = hk::fixed_pair(&*m, unit) else {
+        return false;
+    };
+    matches!(hk::set_pair_word(m, unit, entry, PRIMED_WORD), Ok(Some(_)))
 }
 
 /// The 32-bit seed for a match seed.
