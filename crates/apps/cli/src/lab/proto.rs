@@ -41,6 +41,10 @@ pub const RUN_ENV: &[&str] = &[
     "H2_FEATURES",
     "H2_LOCKSTEP_TICKS",
     "H2_ICONS",
+    // Sim jobs: the warm Z: template and the bots' think mode, for A/B arms.
+    "H2_SIM_CACHE_TEMPLATE",
+    "H2_BOT_THREADS",
+    "H2_BOT_PIPELINE",
 ];
 
 /// `H2_PIPELINE_CACHE` values a request may pass: `off`, or
