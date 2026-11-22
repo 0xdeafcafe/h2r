@@ -114,7 +114,7 @@ fn return_const(b: &mut FunctionBuilder<'_>, v: u32) {
 /// `const H2GenModule h2gen_module`, whose entry rows (sorted by address,
 /// then a zero row) point at each owner's handler and its shard's probe,
 /// and whose resume rows (sorted, then a zero row) name the owner. The
-/// same tables emit's C registry declares, with features 0: the fast tier
+/// same tables emit's C registry declares, with [`features`]: the fast tier
 /// counts no accesses and makes no direct calls.
 pub fn registry(isa: &OwnedTargetIsa, owners: &[Owner]) -> Result<Vec<u8>, Error> {
     let mut m = object(isa, "h2clif_registry")?;
@@ -179,7 +179,7 @@ pub fn registry(isa: &OwnedTargetIsa, owners: &[Owner]) -> Result<Vec<u8>, Error
     bytes[0..4].copy_from_slice(&ABI_VERSION.to_le_bytes());
     bytes[4..8].copy_from_slice(&(entries.len() as u32).to_le_bytes());
     bytes[8..12].copy_from_slice(&(resumes.len() as u32).to_le_bytes());
-    // features (12..16): none.
+    bytes[12..16].copy_from_slice(&features(owners).to_le_bytes());
     let mut d = DataDescription::new();
     let e = m.declare_data_in_data(entries_id, &mut d);
     d.write_data_addr(MODULE_ENTRIES as u32, e, 0);
@@ -191,6 +191,17 @@ pub fn registry(isa: &OwnedTargetIsa, owners: &[Owner]) -> Result<Vec<u8>, Error
     define_data(&mut m, module, &d)?;
     emit(m)
 }
+
+/// The module's feature word: no clock and no call features, and
+/// `H2GEN_FEATURE_IMPRECISE_FAULTS` (128) when the passes ran with imprecise
+/// faults, as emit's registry declares it
+/// (docs/runtime/block-clock-imprecise-faults.md).
+pub fn features(owners: &[Owner]) -> u32 {
+    if owners.iter().any(|o| o.opt.imprecise_faults) { IMPRECISE_FAULTS } else { 0 }
+}
+
+/// `H2GEN_FEATURE_IMPRECISE_FAULTS` in `h2gen.h`.
+const IMPRECISE_FAULTS: u32 = 128;
 
 /// The bridge object: the import table [`IMPORTS`] ([`SLOTS`] pointers,
 /// hidden in the module) and the hosts' installers, which fill it.

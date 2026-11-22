@@ -355,7 +355,9 @@ fn build() -> Option<libloading::Library> {
     let src = dir.join("src");
     let owners = emit::plan(guest_functions());
     assert!(owners.iter().any(|o| !o.loops.back_edges.is_empty()));
-    emit::write_module(&owners, &src).unwrap();
+    // The costs below are guest memory accesses: the access clock, not the
+    // image's default block clock (docs/runtime/block-clock-imprecise-faults.md).
+    emit::write_module_with(&owners, &src, emit::Codegen::accesses(true)).unwrap();
     emit::compile::install_header(&src, &header).unwrap();
     let arch = emit::compile::Arch::host();
     let b = emit::compile::build(&src, &dir, arch, emit::compile::default_jobs())

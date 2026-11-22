@@ -15,7 +15,9 @@
 //!
 //! Each pass is separable and named ([`Passes`]), so a bad one can be
 //! turned off without touching the others: `H2_PASSES=none`, or
-//! `H2_PASSES=all,-dead-flags`.
+//! `H2_PASSES=default,-dead-flags`. The default ([`Passes::DEFAULT`]) is
+//! every pass with imprecise memory faults; `H2_PASSES=all` (or
+//! `default,-imprecise-faults`) keeps faults precise.
 
 use std::collections::BTreeSet;
 
@@ -47,9 +49,10 @@ pub struct Passes {
     /// Imprecise memory faults: loads and stores are not observers for
     /// `dead-flags` ([`flags::Observers::IMPRECISE_FAULTS`]), so a flag
     /// write dies across them. A faulting access leaves with exact EIP and
-    /// registers and EFLAGS as they happen to be. Not part of `all`: it is
-    /// named (`all,imprecise-faults`), and a module built with it declares
-    /// `H2GEN_FEATURE_IMPRECISE_FAULTS` (docs/runtime/block-clock-imprecise-faults.md).
+    /// registers and EFLAGS as they happen to be. On in [`Passes::DEFAULT`]
+    /// (`H2_PASSES` unset, or `default`), not part of `all`; a module built
+    /// with it declares `H2GEN_FEATURE_IMPRECISE_FAULTS`
+    /// (docs/runtime/block-clock-imprecise-faults.md).
     pub imprecise_faults: bool,
 }
 
@@ -65,18 +68,22 @@ const NAMES: &[(&str, Setter)] = &[
 
 impl Passes {
     pub const NONE: Passes = Passes { dead_flags: false, lazy_flags: false, imprecise_faults: false };
-    /// Every pass that keeps faults precise: what `all` and the default
-    /// select. `imprecise-faults` is added by name.
+    /// Every pass that keeps faults precise: what `all` selects, and the
+    /// off switch for imprecise faults (`H2_PASSES=all`).
     pub const ALL: Passes = Passes { dead_flags: true, lazy_flags: true, imprecise_faults: false };
+    /// What an image is built with: every pass, with imprecise memory
+    /// faults. `H2_PASSES` unset and `default` select it.
+    pub const DEFAULT: Passes = Passes { imprecise_faults: true, ..Passes::ALL };
 
     /// Every pass name, for usage text.
     pub fn names() -> impl Iterator<Item = &'static str> {
         NAMES.iter().map(|(n, _)| *n)
     }
 
-    /// Parse a comma-separated spec: `all`, `none`, pass names to turn on
-    /// and `-name` to turn one off, applied left to right from nothing
-    /// (`all,-dead-flags`; `dead-flags`; `all,imprecise-faults`). `all`
+    /// Parse a comma-separated spec: `default`, `all`, `none`, pass names
+    /// to turn on and `-name` to turn one off, applied left to right from
+    /// nothing (`default,-dead-flags`; `dead-flags`; `all`;
+    /// `default,-imprecise-faults`). `default` is [`Passes::DEFAULT`]; `all`
     /// and `-all` leave `imprecise-faults` as it is.
     pub fn parse(spec: &str) -> Result<Passes, String> {
         let mut p = Passes::NONE;
@@ -91,12 +98,13 @@ impl Passes {
                     p = if on { Passes::ALL } else { Passes::NONE };
                     p.imprecise_faults = keep;
                 }
+                "default" if on => p = Passes::DEFAULT,
                 "none" if on => p = Passes::NONE,
                 _ => match NAMES.iter().find(|(n, _)| *n == name) {
                     Some((_, set)) => set(&mut p, on),
                     None => {
                         let known: Vec<_> = Passes::names().collect();
-                        return Err(format!("unknown pass {name:?} (known: all, none, {})", known.join(", ")));
+                        return Err(format!("unknown pass {name:?} (known: default, all, none, {})", known.join(", ")));
                     }
                 },
             }
@@ -104,11 +112,11 @@ impl Passes {
         Ok(p)
     }
 
-    /// `H2_PASSES`, or every pass when it is unset.
+    /// `H2_PASSES`, or [`Passes::DEFAULT`] when it is unset.
     pub fn from_env() -> Result<Passes, String> {
         match std::env::var("H2_PASSES") {
             Ok(s) => Passes::parse(&s).map_err(|e| format!("H2_PASSES={s}: {e}")),
-            Err(_) => Ok(Passes::ALL),
+            Err(_) => Ok(Passes::DEFAULT),
         }
     }
 
@@ -129,7 +137,7 @@ impl Passes {
 
 impl Default for Passes {
     fn default() -> Self {
-        Passes::ALL
+        Passes::DEFAULT
     }
 }
 

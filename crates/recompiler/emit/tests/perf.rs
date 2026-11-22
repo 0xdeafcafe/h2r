@@ -136,7 +136,8 @@ fn module(kind: &str, n: u32, instrumented: bool, fast: bool) -> (libloading::Li
             funcs.push(function(A + 0x200, |a| a.ret()));
         }
     }
-    // The benchmark builds as the image does: accounting unless H2_ACCESS_COUNT=0.
+    // The benchmark builds as the image does: the block clock unless
+    // H2_ACCESS_COUNT says otherwise.
     let codegen = if kind == "frame" || kind == "wide" || std::env::var_os("H2_ACCESS_COUNT").is_some() {
         emit::Codegen::from_env().unwrap()
     } else {
@@ -171,8 +172,9 @@ fn compile_module_defines(
 ) -> (libloading::Library, Dispatch) {
     let owners = emit::plan_with(funcs, passes);
     let accounting = codegen.accounting;
+    let clock = if codegen.block_clock { "-block" } else { "" };
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("perf-{kind}-{instrumented}-{fast}-{accounting}-{}", passes.spec()));
+        .join(format!("perf-{kind}-{instrumented}-{fast}-{accounting}{clock}-{}", passes.spec()));
     let src = dir.join("src");
     emit::write_module_with(&owners, &src, codegen).unwrap();
     if fast {
