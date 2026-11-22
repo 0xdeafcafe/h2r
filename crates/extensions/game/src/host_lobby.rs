@@ -415,8 +415,24 @@ impl Feature for Lobby {
             })
             .first()
             .after_feature(agent::sim::calls::FEATURE)
-            .after_feature(crate::skulls_custom::FEATURE);
+            .after_feature(crate::skulls_custom::FEATURE)
+            // The map select's refresh of the installed maps wraps this
+            // drive. It rebuilds the cache slots and re-enters the tick
+            // before any lobby command advances, so a command that opens a
+            // map reads current slots, and the lobby's own re-entry (the
+            // retail tick below) never sits inside a pending refresh.
+            .after_feature(crate::map_select::FEATURE);
         Ok(())
+    }
+}
+
+/// The lobby feature as the light host registers it, for a plan test that
+/// builds the host's feature set (`crates/apps/boot/src/registration/tests.rs`).
+pub fn planned_feature(live: Option<Arc<live_hle::Hle>>) -> impl Feature {
+    Lobby {
+        q: Shared::default(),
+        live,
+        machine_start: true,
     }
 }
 
