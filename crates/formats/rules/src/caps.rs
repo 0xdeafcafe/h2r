@@ -333,7 +333,10 @@ pub const ENTRIES: &[Entry] = &[
     act(id::SPAWN_AREAS, "spawn_areas", &[Team, Label, Int], Some("player.spawn"), Now, Untraced),
     // `message(to, text)`: the language picks this entry for a player,
     // `message_team` for a team and `message_all` for `all` ([`spelled`]).
-    act(id::MESSAGE, "message", &[Player, Text], Some("hud.message"), Now, Untraced),
+    // The host shows it to its local users through the notification insert
+    // (`hud_kit::NOTIFY`, E `0x24cbee`) and sends it to clients as a show
+    // cue (docs/game/rules-world-api.md, "The show channel").
+    act(id::MESSAGE, "message", &[Player, Text], Some("hud.message"), Now, Named),
     act(id::FORGE_MOVE, "forge_move", &[Object, Object], Some("forge.move"), Queued, Named),
     act(id::FORGE_DELETE, "forge_delete", &[Object], Some("forge.delete"), Queued, Named),
     act(id::FORGE_PLACE, "forge_place", &[Tag, Object], Some("forge.place"), Queued, Named),
@@ -400,8 +403,8 @@ pub const ENTRIES: &[Entry] = &[
     act(id::FF_RESPAWN, "ff_respawn", &[Player], Some("firefight.director"), Queued, Named),
     act(id::FF_FINISH, "ff_finish", &[Bool], Some("firefight.director"), Queued, Named),
     // The team and everyone forms of `message(to, text)`.
-    act(id::MESSAGE_TEAM, "message_team", &[Team, Text], Some("hud.message"), Now, Untraced),
-    act(id::MESSAGE_ALL, "message_all", &[Text], Some("hud.message"), Now, Untraced),
+    act(id::MESSAGE_TEAM, "message_team", &[Team, Text], Some("hud.message"), Now, Named),
+    act(id::MESSAGE_ALL, "message_all", &[Text], Some("hud.message"), Now, Named),
     // The values of a message's holes, in hole order, directly before the
     // `message` call that shows them (the message rule, `verify.rs`). The
     // VM queues each and hands them to the message after its own

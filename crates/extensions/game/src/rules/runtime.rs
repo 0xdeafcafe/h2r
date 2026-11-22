@@ -112,6 +112,11 @@ pub const ACTIONS: &[u16] = &[
     id::RESPAWN,
     id::ROLE_TRAITS,
     id::RESET_OBJECTIVE,
+    // Shown to this machine's local users and sent as show cues
+    // (`super::world::show`).
+    id::MESSAGE,
+    id::MESSAGE_TEAM,
+    id::MESSAGE_ALL,
 ];
 
 /// Where the `RULES` record lives: the process's `SimExt` blob in the
@@ -261,6 +266,10 @@ pub enum Call {
     ResetObjective(u32),
     /// `end_round`, or the round end of a script error.
     End,
+    /// `message`, `message_team` or `message_all`: not an engine call but
+    /// a show cue, made at the boundary by [`Runtime::pre_tick`]
+    /// (`super::world::show`).
+    Message(super::world::show::Outgoing),
 }
 
 impl Call {
@@ -273,6 +282,7 @@ impl Call {
             Call::RoleTraits { .. } => "role_traits",
             Call::ResetObjective(_) => "reset_objective",
             Call::End => "end_round",
+            Call::Message(_) => "message",
         }
     }
 }
@@ -528,6 +538,11 @@ impl Game for GuestGame<'_> {
                 Some(Arg::Object(Some(o))) => Some(Call::ResetObjective(*o)),
                 _ => None,
             },
+            // Shown and sent as a show cue at the boundary
+            // (`super::world::show::publish`), not made as an engine call.
+            id::MESSAGE | id::MESSAGE_TEAM | id::MESSAGE_ALL => {
+                super::world::show::outgoing(call).map(Call::Message)
+            }
             // The winner is not passed: naming one is not traced.
             id::END_ROUND => Some(Call::End),
             _ => None,
@@ -978,6 +993,24 @@ impl Runtime {
             self.stop(why);
             return None;
         }
+        // The boundary's messages: shown to this machine's local users and
+        // queued for the show channel here, on the authority only; they
+        // make no engine call, so they are not in the work. Until the
+        // authority answer is in they wait, as the engine calls do.
+        if r.authority == Some(true) {
+            let (messages, rest): (Vec<Call>, Vec<Call>) = std::mem::take(&mut r.pending)
+                .into_iter()
+                .partition(|c| matches!(c, Call::Message(_)));
+            r.pending = rest;
+            let messages = messages
+                .into_iter()
+                .map(|c| match c {
+                    Call::Message(outgoing) => outgoing,
+                    _ => unreachable!(),
+                })
+                .collect();
+            super::world::show::publish(m, r.vm.ir(), tick, messages);
+        }
         let ask_authority = r.authority.is_none();
         let calls = std::mem::take(&mut r.pending);
         (ask_authority || !calls.is_empty()).then_some(Work {
@@ -1267,6 +1300,10 @@ pub async fn make_calls(cx: &Cx, work: &Work) -> (Option<bool>, Vec<(String, Str
             Call::RoleTraits { player, on } => super::roles::set(cx, player, on).await,
             Call::ResetObjective(object) => super::objectives::reset(cx, object).await,
             Call::End => crate::firefight::guest::end_game(cx).await,
+            // Messages are made at the boundary by `Runtime::pre_tick`
+            // (`super::world::show::publish`); one reaching this far makes
+            // no engine call.
+            Call::Message(_) => Ok(()),
         };
         if let Err(e) = result {
             refused.push((call.name().to_string(), e.to_string()));

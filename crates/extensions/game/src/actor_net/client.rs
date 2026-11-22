@@ -1,7 +1,7 @@
 //! One distributed client's puppets, owned by its actor-channel session.
 //! See docs/game/ai-networking.md, "On a client, each tick".
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -12,11 +12,16 @@ use engine::entry::{Cx, EntryError, GuestCall, Ret};
 use engine::{DatumHandle, points};
 use hooks::{Builder, Flow};
 
+use crate::rules::world::show::ReceivedCue;
+
 mod guest;
 
 /// An actor-channel record can lead creation of its retail body by this
 /// many local simulation ticks.
 const WAIT_TICKS: u32 = 30;
+/// Cue ids `(tick, sequence)` kept so a cue's three copies show once: a
+/// copy comes in one of the next two packets.
+const SEEN_CUES: usize = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Puppet {
@@ -46,6 +51,10 @@ pub struct Client {
     presentation: BTreeMap<u32, Presentation>,
     heard_or_queued: HashSet<Line>,
     pending_lines: Vec<(Line, u32)>,
+    /// Cue ids seen, so a cue's three copies show once.
+    seen_cues: VecDeque<(u32, u8)>,
+    /// Cues received and not yet presented at a tick boundary.
+    pending_cues: Vec<ReceivedCue>,
 }
 
 fn waiting(received: u32, now: u32) -> bool {
@@ -109,6 +118,26 @@ impl Client {
                     }
                 }
                 Record::State(_) | Record::Digest { .. } => {}
+                Record::Cue {
+                    tick,
+                    sequence,
+                    kind,
+                    bytes,
+                } => {
+                    let id = (*tick, *sequence);
+                    if !self.seen_cues.contains(&id) {
+                        if self.seen_cues.len() == SEEN_CUES {
+                            self.seen_cues.pop_front();
+                        }
+                        self.seen_cues.push_back(id);
+                        self.pending_cues.push(ReceivedCue {
+                            tick: *tick,
+                            sequence: *sequence,
+                            kind: *kind,
+                            bytes: bytes.clone(),
+                        });
+                    }
+                }
             }
         }
         Ok(true)
@@ -173,6 +202,14 @@ impl Client {
                 guest::play_line(cx, body, sound).await?;
             }
         }
+
+        // The show channel's cues: decoded against the running script's
+        // blob and shown to this machine's local users in each audience
+        // (`crate::rules::world::show::present`).
+        if !self.pending_cues.is_empty() {
+            let cues = std::mem::take(&mut self.pending_cues);
+            crate::rules::world::show::present(cx, &cues);
+        }
         Ok(())
     }
 }
@@ -224,7 +261,7 @@ pub fn install(
                     let mode = current.mode_state();
                     crate::firefight::hud::received()
                         .set((!mode.is_empty()).then(|| mode.to_vec()));
-                    if current.presentation.is_empty() {
+                    if current.presentation.is_empty() && current.pending_cues.is_empty() {
                         return Ok(Flow::Continue);
                     }
                     (std::mem::take(&mut *current), tick)

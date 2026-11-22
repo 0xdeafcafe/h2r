@@ -1,7 +1,7 @@
 # Rules world API: a synced world for scripts
 
-Status: Design. Nothing on this page is built; it extends the rules engine of [rules-engine.md](rules-engine.md) and is built after that page's host runtime runs in a game.
-Code: none yet. The plan names `crates/formats/rules/src/caps.rs` (the entries), `crates/formats/rules/src/world/` and `crates/extensions/game/src/rules/world/` (new, one module per capability group), and `crates/live/actor-net/src/wire.rs` (two records). Tests: named per slice in "Implementation plan".
+Status: Design, with slice W1 (messages as cues) built. The rest extends the rules engine of [rules-engine.md](rules-engine.md) and is built after that page's host runtime runs in a game.
+Code: slice W1: `crates/formats/rules/src/show.rs` (the cue and its codec), `crates/extensions/game/src/rules/world/show.rs` (the host and client halves), `crates/live/actor-net/src/wire.rs` and `budget.rs` (the `Cue` record and its three-packet repeat), `crates/extensions/game/src/actor_net/host.rs` and `client.rs` (offered to every peer; shown once). The plan further names `crates/formats/rules/src/caps.rs` (the entries), `crates/formats/rules/src/world/` and `crates/extensions/game/src/rules/world/` (one module per capability group), and `crates/live/actor-net/src/wire.rs` (one more record). Tests: named per slice in "Implementation plan".
 Switch: none of its own; the `rules` feature of `H2_FEATURES` ([switches.md](../runtime/switches.md)).
 
 A rules script moves objects, flies drop ships, orders AI squads and
@@ -125,9 +125,10 @@ engine does not replicate, is one of two things:
   hash carry it on every machine that runs the VM. It encodes to at most
   255 bytes.
 - **Cues**: one-shot events with a tick. A message (text index, up to
-  four typed hole values, audience), a sound (tag-table index, an entity
-  or a point or an audience) and a medal line. A cue is not state: a
-  machine that joins later does not get it.
+  four typed hole values, audience; **Code**, `rules::show::Cue`), a
+  sound (tag-table index, an entity or a point or an audience) and a
+  medal line. A cue is not state: a machine that joins later does not
+  get it.
 
 An audience is a 16-bit mask of player slots. A text is an index into
 the blob's string table and a sound an index into its tag table, so a
@@ -140,13 +141,18 @@ works") carries both, with two more record tags:
 | Record (tag) | When | Payload |
 |---|---|---|
 | `Show` (7) | the state a peer's players are the audience of changed, at most 5 times a second; whole in every `Key` | length (u8), the state filtered to that peer's players |
-| `Cue` (8) | a cue for that peer's players, in three consecutive packets as `Line` is | cue tick (u32), sequence (u8), kind (u8), at most 24 bytes |
+| `Cue` (8) (**Code**, `crates/live/actor-net/src/wire.rs`) | a cue for that peer's players, in three consecutive packets as `Line` is (**Code**, `crates/live/actor-net/src/budget.rs`) | cue tick (u32), sequence (u8), kind (u8), at most 24 bytes |
 
-`Digest` gains a 64-bit hash of the peer's filtered state; a mismatch
-asks for a `Key`. The host filters per peer, so a team's waypoint is not
-sent to the other team's machines.
+The `Show` record is not built (slice W2); nor is the 64-bit hash of the
+peer's filtered state the `Digest` gains, whose mismatch asks for a
+`Key`. The host filters the state per peer, so a team's waypoint is not
+sent to the other team's machines. A cue carries its audience as a mask
+of player slots and goes to every peer; each peer shows it to its own
+players in the audience and to no one else (**Code**,
+`crates/extensions/game/src/rules/world/show.rs`).
 
-**Authenticated.** The tunnel and XNet's UDP mapping give no transport
+**Authenticated** (not built; the records ride unauthenticated until it
+is). The tunnel and XNet's UDP mapping give no transport
 security of their own (**Code**, [dedicated-host.md](../live/dedicated-host.md#routing-assignment-and-arbitration)),
 so the channel carries its own:
 
@@ -170,14 +176,17 @@ record, never that the record is right: a `Viewer` validates every field
 
 **Batched.** A peer gets at most one show packet a tick, and none when
 nothing is due. A tick's cues share one packet with any `Show` and any
-actor records due, under one header and one tag; the two repeat copies
-of a cue ride the next two packets that are sent anyway. `Show` is
-coalesced to the last state, at most 5 times a second. A `Viewer` applies records before the
+actor records due, under one header (and one tag once the channel is
+authenticated); the two repeat copies of a cue ride the next two packets
+that are sent anyway (**Code**, `crates/live/actor-net/src/budget.rs`).
+`Show` is coalesced to the last state, at most 5 times a second. A
+`Viewer` applies records before the
 game tick and draws through `rules::show::view`, a pure function of the
 state bytes, the blob's tables and the local roster slot, the same
 function the `Authority` draws its own HUD with (the pattern of
 `crates/extensions/game/src/firefight/hud.rs`). Repeated cue copies are
-dropped by (tick, sequence).
+dropped by (tick, sequence) (**Code**,
+`crates/extensions/game/src/actor_net/client.rs`).
 
 **System Link.** The actor channel rides the Live tunnel, and a System
 Link session has none (ai-networking.md "Decisions"). The show channel
@@ -388,7 +397,7 @@ error. The game reads the declarations from the blob's header before
 
 | Script | Entry | Engine | Status | Synced by |
 |---|---|---|---|---|
-| `message(to, "…{n}")` | exist | the notification queue (`0x24cbee`) and the timed centred text (`0x24cc73`), per local user (hud-kit.md "Messages") | traced | a `Cue` |
+| `message(to, "…{n}")` | exist | the notification insert (`hud_kit::NOTIFY`, E `0x24cbee`), per local user (**Code**, `crates/extensions/game/src/rules/world/show.rs`); the timed centred text (`0x24cc73`) is not used | named | a `Cue` (**Code**) |
 | `hud_text(w, "Wave {n}")`, `hud_fill(w, f)`, `hud_style(w, style)`, `hud_show(w, to, on)` | `hud_text`, `hud_fill`, `hud_style`, `hud_show` | `hud_kit::Handle::publish` (**Code**, `crates/extensions/game/src/hud_kit.rs`); the text uses the message holes ([rules-language-types.md](rules-language-types.md#messages)) | named once the kit's runtime draws | `Show` |
 | `countdown(w, t)` | `hud_countdown` | the state holds the end tick; each machine counts its own ticks | not built | `Show` |
 | `mark(wp, at, to)`, `mark(wp, at, to, "…")`, `unmark(wp, to)` | `mark`, `unmark` | the game's navpoint list (`0x24da7d`) through `Handle::navpoint`; the kit holds one slot, and more than one is **S** | named for one | `Show` |
@@ -525,7 +534,7 @@ own target on top of the three common ones, as `rules.world_ns` at the
 | # | Slice | Owns | Tests | Done when | After | Bench gate |
 |---|---|---|---|---|---|---|
 | W0 | Roles: `Authority`, `Replica`, `Viewer` | `game/rules/runtime.rs`, `game/rules/feature.rs`; the blob as a start condition in `game/rules/gate.rs` | over invented guest memory: a mode 3 peer keeps its VM and makes the host's calls; a mode 5 client makes none; a peer without the blob blocks the start by name | a script game scores the same on both machines of a synchronous session | the host runtime running in a game; R1 | a script Slayer game against the lifted one: the tick's 99th percentile within 0.1 ms |
-| W1 | Messages everywhere: cues | `rules/show.rs` (new: `Cue`, the codec), `game/rules/world/show.rs` (new), `crates/live/actor-net/src/wire.rs` and `budget.rs` (`Cue`), `game/actor_net/host.rs`, `client.rs`; `message*` to named | the codec round-trips and refuses each bad bound; a cue in three packets shows once; the budget drops the rest the same way twice; the fake logs each message with its audience | `message(all, "…")` from Siege shows on the host and on a Live guest | W0 | 8 cues every tick to 15 peers: 0.05 ms, and 600 bytes a second to each |
+| W1 | Messages everywhere: cues (**built**) | `rules/show.rs` (`Cue`, the codec), `game/rules/world/show.rs`, `crates/live/actor-net/src/wire.rs` and `budget.rs` (`Cue`), `game/actor_net/host.rs`, `client.rs`; `message*` named | the codec round-trips and refuses each bad bound; a cue in three packets shows once; the budget drops the rest the same way twice; the fake logs each message with its audience | `message(all, "…")` from Siege shows on the host and on a Live guest | W0 | 8 cues every tick to 15 peers: 0.05 ms, and 600 bytes a second to each |
 | W2 | Script HUD: show state, `hud` and `waypoint` declarations, sections | `rules/show.rs` (`State`, `view`), `lang/*` (the declarations, `section`), `ir.rs` (the header table), `ide/*` (outline, folding), `game/rules/world/hud.rs` (new, over `game/hud_kit.rs`), `wire.rs` (`Show`, the digest), the workbench's HUD strip in `web/src/stats/RulesTest.tsx` | a declared layout that overlaps is a compile error; `view` of the same bytes is the same on host and client at every tick of a fake match; a `Key` restores the state after loss | a script's wave counter and a waypoint draw on host and guest; Firefight's HUD view reads the show state | W1; the HUD kit's runtime drawing | 32 HUD writes every tick: 0.05 ms; `Show` at most 5 a second in `actors.net` |
 | W3 | Objects in motion: `vec`, position reads, `teleport`, movers, `on arrive` | `lang/types.rs`, `lang/check.rs`, `lang/lower.rs` (`vec`), `vm.rs` (movers in `RulesExt`), `game/rules/world/objects.rs` (new) | `vec` arithmetic and each type error; a mover reaches its end on the stated tick and survives a checkpoint revert; a teleport outside the world is a refused call; a film of a mover replays to the same `RulesExt` hash | Race with moving platforms and a teleporter pad plays on Live | W0; R2, R3 | 16 movers: 0.15 ms |
 | W4 | Physics reads and pushes: `airborne`, `primed`, `on touchdown`, the sight table, `push`, `launch` | `vm.rs` (the sight table), `game/rules/world/physics.rs` (new), `game/superbounce_charge.rs` (the touchdown for every player), the `sb_strip` label source in `game/rules/census.rs`; `builtin/superbounce.rules`, `builtin/bounce_practice.rules` | the sketch above scores the chain's recorded scenarios as `superbounce_chain_tests.rs` does; a `sees` pair answers one tick after it is asked and never from a handler; a push over the bound is a refused call | the Superbounce game type's chain and medals come from the script; `on bounce`, `on bounced` and the Rust chain are deleted only once the script gives the chain's awards on every scenario of its tests | W2, W3; R9 | 32 traces every tick: 0.25 ms |

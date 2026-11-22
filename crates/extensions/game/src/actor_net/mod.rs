@@ -8,6 +8,7 @@ pub mod squads;
 
 use std::sync::{Arc, Mutex};
 
+use ::actor_net::Record;
 use engine::GuestMemory;
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 
@@ -70,6 +71,7 @@ impl Feature for Capture {
                 if state.last_tick.is_some() {
                     *state = State::default();
                     in_flight.clear();
+                    crate::rules::world::show::clear_cues();
                     reset_peers();
                 }
                 return;
@@ -96,6 +98,24 @@ impl Feature for Capture {
                     if let Err(error) = state.host.set_mode(&mode) {
                         eprintln!("actor-net: mode state at tick {tick}: {error}");
                     }
+                    // The running rules script's show cues (`message`
+                    // calls); empty when no script runs.
+                    let cues = crate::rules::world::show::take_cues()
+                        .into_iter()
+                        .filter_map(|cue| match cue.cue.encode() {
+                            Ok(bytes) => Some(Record::Cue {
+                                tick: cue.tick,
+                                sequence: cue.sequence,
+                                kind: cue.cue.kind(),
+                                bytes,
+                            }),
+                            Err(error) => {
+                                eprintln!("actor-net: show cue at tick {}: {error}", cue.tick);
+                                None
+                            }
+                        })
+                        .collect();
+                    state.host.set_cues(cues);
                     after_capture(&*memory, tick, &state.host)
                 }
                 Err(error) => eprintln!("actor-net: host capture at tick {tick}: {error}"),
@@ -106,6 +126,7 @@ impl Feature for Capture {
         let reset = move || {
             *state.lock().unwrap() = State::default();
             pending.clear();
+            crate::rules::world::show::clear_cues();
             reset_peers();
         };
         let new_match = reset.clone();

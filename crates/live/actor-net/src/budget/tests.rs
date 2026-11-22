@@ -33,6 +33,15 @@ fn line(tick: u32) -> Record {
     }
 }
 
+fn cue(tick: u32, sequence: u8) -> Record {
+    Record::Cue {
+        tick,
+        sequence,
+        kind: 0,
+        bytes: vec![1, 2, 3, 4],
+    }
+}
+
 #[test]
 fn budget_never_exceeds_its_bytes() {
     let mut clients: [Budget; 16] = std::array::from_fn(|_| Budget::default());
@@ -123,6 +132,76 @@ fn line_survives_two_lost_packets_in_three() {
             .collect();
         assert_eq!(lines, vec![&event]);
     }
+}
+
+#[test]
+fn cue_survives_two_lost_packets_in_three() {
+    let mut budget = Budget::default();
+    let event = cue(27, 0);
+    let mut receipts = Vec::new();
+    let mut contenders: Vec<_> = (0..MAX_CANDIDATES as u32)
+        .map(|id| Record::Actor(ActorChange::Upsert(actor(id))))
+        .collect();
+
+    for tick in 27..=30 {
+        let offered = if tick == 27 {
+            std::slice::from_ref(&event)
+        } else {
+            &contenders[..]
+        };
+        let packet = budget.schedule(tick, offered).unwrap();
+        receipts.push(packet.map(|p| decode(&encode(&p).unwrap()).unwrap()));
+        contenders.rotate_left(1);
+    }
+    for survivor in 0..3 {
+        let cues: Vec<_> = receipts
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index == survivor || *index >= 3)
+            .filter_map(|(_, packet)| packet.as_ref())
+            .flat_map(|packet| &packet.records)
+            .filter(|record| matches!(record, Record::Cue { .. }))
+            .collect();
+        assert_eq!(cues, vec![&event]);
+    }
+}
+
+#[test]
+fn the_budget_drops_the_rest_the_same_way_twice() {
+    // A stream that overdraws the byte budget: the excess is dropped, and
+    // two runs of the same stream drop the same records.
+    let run = || {
+        let mut budget = Budget::default();
+        let mut packets = Vec::new();
+        for tick in 0..60u32 {
+            let candidates: Vec<_> = (0..12)
+                .map(|i| cue(tick, i))
+                .chain((0..4).map(|_| line(tick)))
+                .chain((0..MAX_ACTORS as u32).map(|entity| Record::Posture {
+                    entity,
+                    posture: tick as u8,
+                }))
+                .collect();
+            let packet = budget.schedule(tick, &candidates).unwrap();
+            packets.push(packet.map(|p| encode(&p).unwrap()));
+        }
+        packets
+    };
+    let first = run();
+    let second = run();
+    assert_eq!(first, second);
+    // The excess really was dropped: the admitted cues are fewer than the
+    // 720 offered.
+    let mut admitted = std::collections::BTreeSet::new();
+    for bytes in first.iter().flatten() {
+        for record in &decode(bytes).unwrap().records {
+            if let Record::Cue { tick, sequence, .. } = record {
+                admitted.insert((*tick, *sequence));
+            }
+        }
+    }
+    assert!(admitted.len() < 12 * 60, "admitted {}", admitted.len());
+    assert!(!admitted.is_empty());
 }
 
 #[test]

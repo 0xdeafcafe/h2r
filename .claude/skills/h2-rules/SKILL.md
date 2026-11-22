@@ -380,15 +380,18 @@ Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules
   next tick boundary, and a read never sees a queued call. `h2 rules caps`
   does not print the order; `crates/formats/rules/src/caps.rs` does.
 - **Known runtime gaps.** A host refuses a script, by name, if it calls an
-  entry that is not `named` or VM-only: `set_team`, `give`, `message`,
+  entry that is not `named` or VM-only: `set_team`, `give`,
   `spawn_areas`, `reset_objective`, `role_traits`, `inside`, `ticks_held`,
   `label_number`, `zone_id`, `set_loadout`, `take`, `create`,
   `register_objective`, `spawn_objective`, `player_of`.
   `check` lists these as unhostable. The host runtime also, today, delivers
   only `init`, `kill`, `timer` and `tick`; reads only scores, kills,
   deaths, `alive`, `team_of`, `lives`, `round_time_left` and
-  `is_objective`; makes only `score`, `end_round`, `set_lives` and
-  `respawn`; reads only `variant.team_play`, `score_limit`, `time_limit`
+  `is_objective`; makes only `score`, `end_round`, `set_lives`,
+  `respawn`, `role_traits` and `reset_objective`, and `message`, which it
+  shows to the host's own players and sends to clients as a show cue
+  (docs/game/rules-world-api.md, "The show channel"); reads only
+  `variant.team_play`, `score_limit`, `time_limit`
   and `lives`; and refuses Forge labels and any `grant`. Calls land at the
   next tick boundary, and a mode 2 script on a lifted carrier does not
   replace the carrier's own scoring. The one script playable today is
