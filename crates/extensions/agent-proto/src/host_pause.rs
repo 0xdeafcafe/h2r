@@ -596,7 +596,7 @@ mod tests {
         let p: StepParams = serde_json::from_value(serde_json::json!({})).unwrap();
         assert_eq!(p.ticks, 1);
         let p: PauseParams = serde_json::from_value(serde_json::json!({})).unwrap();
-        assert_eq!(p.on, None, "{} reads the state");
+        assert_eq!(p.on, None, "{{}} reads the state");
         let p: PauseParams = serde_json::from_value(serde_json::json!({"on": true})).unwrap();
         assert_eq!(p.on, Some(true));
         let v = serde_json::to_value(PauseState {
