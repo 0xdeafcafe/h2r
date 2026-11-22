@@ -42,7 +42,7 @@ impl std::str::FromStr for FourCC {
 
 /// Salted datum handle. Its low 16 bits select a tag-index slot.
 /// The complete value must match; using only the slot accepts stale handles.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
 pub struct TagId(pub u32);
 impl TagId {
     /// The null handle used by tag references.
