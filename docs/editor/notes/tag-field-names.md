@@ -1,7 +1,7 @@
 # Tag field names: sources and licences
 
-Evidence for [polish-plan.md](../polish-plan.md), "Field names and
-descriptions".
+Evidence for the tag field names and descriptions the editor shows
+([tag-editing.md](../tag-editing.md)).
 
 ## 2026-11-21: the Halo 2 fallback folder and other retail games
 
