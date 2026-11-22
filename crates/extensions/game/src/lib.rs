@@ -180,7 +180,6 @@ pub mod pad_speaker;
 pub mod precision;
 #[cfg(feature = "desktop-runtime")]
 pub mod render_probe;
-#[cfg(feature = "desktop-runtime")]
 pub mod retail_rows;
 #[cfg(feature = "gpu")]
 pub mod return_to_menu;

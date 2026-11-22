@@ -44,12 +44,21 @@ workspace_library(
         "//crates/apps/studio-proto:studio-proto",
         "//crates/extensions/agent-proto:agent-proto",
         "//crates/formats/content:content",
+        "//crates/formats/hs:hs",
         "//crates/formats/map:map",
+        "//crates/formats/rules:rules",
         "//crates/formats/tags:tags",
         "//crates/formats/variants:variants",
+        "//crates/formats/xbe:xbe",
         "//crates/hooking/guest-layout:guest-layout",
+        "//crates/live/bots:bots",
         "//crates/live/live-proto:live-proto",
+        "//crates/live/superbounce:superbounce",
         "//crates/platform/assets:assets",
+        "//crates/platform/audio:audio",
+        "//crates/platform/gfx:gfx",
+        "//crates/platform/mem-watch:mem-watch",
+        "//crates/platform/wma:wma",
         "//crates/runtime/vfs:vfs",
         "//crates/tools/bitmap-edit:bitmap-edit",
         "//crates/tools/editor-core:editor-core",
@@ -73,7 +82,15 @@ workspace_library(
         "//third-party/rust:serde_json",
         "//third-party/rust:wgpu",
         "//third-party/rust:winit",
-    ],
+    ] + select({
+        "config//os:linux": [
+            "//third-party/rust:libc",
+        ],
+        "config//os:macos": [
+            "//third-party/rust:libc",
+        ],
+        "DEFAULT": [],
+    }),
 )
 
 workspace_test(
@@ -93,12 +110,21 @@ workspace_test(
         "//crates/extensions/agent-proto:agent-proto",
         "//crates/extensions/agent:agent",
         "//crates/formats/content:content",
+        "//crates/formats/hs:hs",
         "//crates/formats/map:map",
+        "//crates/formats/rules:rules",
         "//crates/formats/tags:tags",
         "//crates/formats/variants:variants",
+        "//crates/formats/xbe:xbe",
         "//crates/hooking/guest-layout:guest-layout",
+        "//crates/live/bots:bots",
         "//crates/live/live-proto:live-proto",
+        "//crates/live/superbounce:superbounce",
         "//crates/platform/assets:assets",
+        "//crates/platform/audio:audio",
+        "//crates/platform/gfx:gfx",
+        "//crates/platform/mem-watch:mem-watch",
+        "//crates/platform/wma:wma",
         "//crates/runtime/vfs:vfs",
         "//crates/tools/bitmap-edit:bitmap-edit",
         "//crates/tools/editor-core:editor-core",
@@ -122,7 +148,15 @@ workspace_test(
         "//third-party/rust:serde_json",
         "//third-party/rust:wgpu",
         "//third-party/rust:winit",
-    ],
+    ] + select({
+        "config//os:linux": [
+            "//third-party/rust:libc",
+        ],
+        "config//os:macos": [
+            "//third-party/rust:libc",
+        ],
+        "DEFAULT": [],
+    }),
 )
 
 workspace_binary(
@@ -141,12 +175,21 @@ workspace_binary(
         "//crates/apps/studio-proto:studio-proto",
         "//crates/extensions/agent-proto:agent-proto",
         "//crates/formats/content:content",
+        "//crates/formats/hs:hs",
         "//crates/formats/map:map",
+        "//crates/formats/rules:rules",
         "//crates/formats/tags:tags",
         "//crates/formats/variants:variants",
+        "//crates/formats/xbe:xbe",
         "//crates/hooking/guest-layout:guest-layout",
+        "//crates/live/bots:bots",
         "//crates/live/live-proto:live-proto",
+        "//crates/live/superbounce:superbounce",
         "//crates/platform/assets:assets",
+        "//crates/platform/audio:audio",
+        "//crates/platform/gfx:gfx",
+        "//crates/platform/mem-watch:mem-watch",
+        "//crates/platform/wma:wma",
         "//crates/runtime/vfs:vfs",
         "//crates/tools/bitmap-edit:bitmap-edit",
         "//crates/tools/editor-core:editor-core",
@@ -171,7 +214,15 @@ workspace_binary(
         "//third-party/rust:wgpu",
         "//third-party/rust:winit",
         ":studio",
-    ],
+    ] + select({
+        "config//os:linux": [
+            "//third-party/rust:libc",
+        ],
+        "config//os:macos": [
+            "//third-party/rust:libc",
+        ],
+        "DEFAULT": [],
+    }),
 )
 
 workspace_test(
@@ -191,12 +242,21 @@ workspace_test(
         "//crates/extensions/agent-proto:agent-proto",
         "//crates/extensions/agent:agent",
         "//crates/formats/content:content",
+        "//crates/formats/hs:hs",
         "//crates/formats/map:map",
+        "//crates/formats/rules:rules",
         "//crates/formats/tags:tags",
         "//crates/formats/variants:variants",
+        "//crates/formats/xbe:xbe",
         "//crates/hooking/guest-layout:guest-layout",
+        "//crates/live/bots:bots",
         "//crates/live/live-proto:live-proto",
+        "//crates/live/superbounce:superbounce",
         "//crates/platform/assets:assets",
+        "//crates/platform/audio:audio",
+        "//crates/platform/gfx:gfx",
+        "//crates/platform/mem-watch:mem-watch",
+        "//crates/platform/wma:wma",
         "//crates/runtime/vfs:vfs",
         "//crates/tools/bitmap-edit:bitmap-edit",
         "//crates/tools/editor-core:editor-core",
@@ -221,5 +281,13 @@ workspace_test(
         "//third-party/rust:wgpu",
         "//third-party/rust:winit",
         ":studio",
-    ],
+    ] + select({
+        "config//os:linux": [
+            "//third-party/rust:libc",
+        ],
+        "config//os:macos": [
+            "//third-party/rust:libc",
+        ],
+        "DEFAULT": [],
+    }),
 )
