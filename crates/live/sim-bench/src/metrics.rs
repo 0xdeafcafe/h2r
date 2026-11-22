@@ -375,7 +375,43 @@ pub struct Wall {
     /// or `mixed`. `None` with no snapshot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phantom_snapshot_copy: Option<String>,
+    /// Nanoseconds per tick in the build's setup writes (the view's
+    /// globals, the pad and the seat's history).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phantom_setup_ns_per_tick: Option<f64>,
+    /// Nanoseconds per tick in each of the six guest calls, by role
+    /// ([`PHANTOM_CALLS`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phantom_call_ns_per_tick: Option<BTreeMap<String, f64>>,
+    /// Guest accesses per tick of each call (`CallOutcome::accesses`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phantom_call_accesses_per_tick: Option<BTreeMap<String, f64>>,
+    /// Nanoseconds per tick in `written` plus `revert` between seats.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phantom_revert_ns_per_tick: Option<f64>,
+    /// Nanoseconds per tick reading the action and history back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phantom_read_ns_per_tick: Option<f64>,
+    /// Pages a seat wrote, as a mean over the seats that were reverted
+    /// (a tick's last seat is not).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phantom_pages_written_per_seat: Option<f64>,
+    /// Minor page faults per tick in `Builder::sample`: the process's
+    /// `getrusage` `ru_minflt` delta, so other threads' faults count too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phantom_minor_faults_per_tick: Option<f64>,
 }
+
+/// The six guest calls of a build, in call order: `0x1872d0`,
+/// `0x190c34`, `0x1557c0`, `0x124c00`, `0x217c40`, `0x186ab0`.
+pub const PHANTOM_CALLS: [&str; 6] = [
+    "bind",
+    "look_rates",
+    "camera",
+    "input",
+    "remap",
+    "builder",
+];
 
 /// The phantoms' action build on the game thread, as running totals
 /// (`bot_glue::retail_input`): [`Report::set_phantom_costs`] takes the
@@ -390,6 +426,26 @@ pub struct PhantomCosts {
     pub remapped: u64,
     /// Snapshots that copied its bytes.
     pub copied: u64,
+    /// Nanoseconds in the setup writes.
+    pub setup_ns: u64,
+    /// Nanoseconds in each guest call ([`PHANTOM_CALLS`] order).
+    pub call_ns: [u64; 6],
+    /// Guest accesses of each call.
+    pub call_accesses: [u64; 6],
+    /// Nanoseconds in `written` plus `revert`.
+    pub revert_ns: u64,
+    /// Nanoseconds reading the action and history back.
+    pub read_ns: u64,
+    /// Pages written, summed over the reverted seats.
+    pub pages_written: u64,
+    /// Seats whose pages were counted.
+    pub pages_seats: u64,
+    /// Minor faults in `Builder::sample`.
+    pub minor_faults: u64,
+}
+
+fn sub6(a: [u64; 6], b: [u64; 6]) -> [u64; 6] {
+    std::array::from_fn(|i| a[i].saturating_sub(b[i]))
 }
 
 impl PhantomCosts {
@@ -400,6 +456,14 @@ impl PhantomCosts {
             snapshot_ns: self.snapshot_ns.saturating_sub(start.snapshot_ns),
             remapped: self.remapped.saturating_sub(start.remapped),
             copied: self.copied.saturating_sub(start.copied),
+            setup_ns: self.setup_ns.saturating_sub(start.setup_ns),
+            call_ns: sub6(self.call_ns, start.call_ns),
+            call_accesses: sub6(self.call_accesses, start.call_accesses),
+            revert_ns: self.revert_ns.saturating_sub(start.revert_ns),
+            read_ns: self.read_ns.saturating_sub(start.read_ns),
+            pages_written: self.pages_written.saturating_sub(start.pages_written),
+            pages_seats: self.pages_seats.saturating_sub(start.pages_seats),
+            minor_faults: self.minor_faults.saturating_sub(start.minor_faults),
         }
     }
 
@@ -699,6 +763,21 @@ impl Report {
         self.wall.phantom_snapshot_ms_per_tick = Some(costs.snapshot_ns as f64 / 1e6 / ticks);
         self.wall.phantom_snapshots_per_tick = Some((costs.remapped + costs.copied) as f64 / ticks);
         self.wall.phantom_snapshot_copy = costs.copy_kind().map(str::to_owned);
+        let per_call = |v: [u64; 6]| {
+            PHANTOM_CALLS
+                .iter()
+                .zip(v)
+                .map(|(name, n)| ((*name).to_owned(), n as f64 / ticks))
+                .collect::<BTreeMap<_, _>>()
+        };
+        self.wall.phantom_setup_ns_per_tick = Some(costs.setup_ns as f64 / ticks);
+        self.wall.phantom_call_ns_per_tick = Some(per_call(costs.call_ns));
+        self.wall.phantom_call_accesses_per_tick = Some(per_call(costs.call_accesses));
+        self.wall.phantom_revert_ns_per_tick = Some(costs.revert_ns as f64 / ticks);
+        self.wall.phantom_read_ns_per_tick = Some(costs.read_ns as f64 / ticks);
+        self.wall.phantom_pages_written_per_seat =
+            (costs.pages_seats > 0).then(|| costs.pages_written as f64 / costs.pages_seats as f64);
+        self.wall.phantom_minor_faults_per_tick = Some(costs.minor_faults as f64 / ticks);
     }
 
     pub fn player(&self, index: u8) -> Option<&PlayerReport> {
@@ -1211,6 +1290,13 @@ impl Tally {
                 phantom_snapshot_ms_per_tick: None,
                 phantom_snapshots_per_tick: None,
                 phantom_snapshot_copy: None,
+                phantom_setup_ns_per_tick: None,
+                phantom_call_ns_per_tick: None,
+                phantom_call_accesses_per_tick: None,
+                phantom_revert_ns_per_tick: None,
+                phantom_read_ns_per_tick: None,
+                phantom_pages_written_per_seat: None,
+                phantom_minor_faults_per_tick: None,
             },
             players,
             kills: self.kills.clone(),
@@ -1301,12 +1387,14 @@ mod tests {
             snapshot_ns: 500_000,
             remapped: 3,
             copied: 0,
+            ..PhantomCosts::default()
         };
         let end = PhantomCosts {
             build_ns: 13_000_000,
             snapshot_ns: 2_500_000,
             remapped: 7,
             copied: 0,
+            ..PhantomCosts::default()
         };
         report.set_costs(8_000_000, None);
         report.set_phantom_costs(end.since(start));
@@ -1318,6 +1406,70 @@ mod tests {
         assert_eq!(json["wall"]["phantom_snapshot_copy"], "remap");
         let back: Report = serde_json::from_value(json).unwrap();
         assert_eq!(back.wall, report.wall);
+    }
+
+    #[test]
+    fn the_phantom_split_is_per_tick_by_call_role() {
+        let mut report = four_ticks().report(Finish::bare(End::TickLimit));
+        let plain = serde_json::to_value(&report).unwrap();
+        for key in [
+            "phantom_setup_ns_per_tick",
+            "phantom_call_ns_per_tick",
+            "phantom_call_accesses_per_tick",
+            "phantom_revert_ns_per_tick",
+            "phantom_read_ns_per_tick",
+            "phantom_pages_written_per_seat",
+            "phantom_minor_faults_per_tick",
+        ] {
+            assert!(plain["wall"].get(key).is_none(), "{key}");
+        }
+        let start = PhantomCosts {
+            setup_ns: 100,
+            call_ns: [10; 6],
+            call_accesses: [1; 6],
+            pages_written: 5,
+            pages_seats: 1,
+            minor_faults: 2,
+            ..PhantomCosts::default()
+        };
+        let end = PhantomCosts {
+            setup_ns: 4_100,
+            call_ns: [410, 810, 1210, 1610, 2010, 2410],
+            call_accesses: [41, 81, 121, 161, 201, 241],
+            revert_ns: 2_000,
+            read_ns: 800,
+            pages_written: 35,
+            pages_seats: 7,
+            minor_faults: 22,
+            ..PhantomCosts::default()
+        };
+        report.set_phantom_costs(end.since(start));
+        let json = serde_json::to_value(&report).unwrap();
+        let wall = &json["wall"];
+        assert_eq!(wall["phantom_setup_ns_per_tick"], 1000.0);
+        assert_eq!(wall["phantom_call_ns_per_tick"]["bind"], 100.0);
+        assert_eq!(wall["phantom_call_ns_per_tick"]["look_rates"], 200.0);
+        assert_eq!(wall["phantom_call_ns_per_tick"]["camera"], 300.0);
+        assert_eq!(wall["phantom_call_ns_per_tick"]["input"], 400.0);
+        assert_eq!(wall["phantom_call_ns_per_tick"]["remap"], 500.0);
+        assert_eq!(wall["phantom_call_ns_per_tick"]["builder"], 600.0);
+        assert_eq!(wall["phantom_call_accesses_per_tick"]["bind"], 10.0);
+        assert_eq!(wall["phantom_call_accesses_per_tick"]["builder"], 60.0);
+        assert_eq!(wall["phantom_revert_ns_per_tick"], 500.0);
+        assert_eq!(wall["phantom_read_ns_per_tick"], 200.0);
+        assert_eq!(wall["phantom_pages_written_per_seat"], 5.0);
+        assert_eq!(wall["phantom_minor_faults_per_tick"], 5.0);
+        let back: Report = serde_json::from_value(json).unwrap();
+        assert_eq!(back.wall, report.wall);
+    }
+
+    #[test]
+    fn no_reverted_seat_leaves_the_page_mean_out() {
+        let mut report = four_ticks().report(Finish::bare(End::TickLimit));
+        report.set_phantom_costs(PhantomCosts::default());
+        let json = serde_json::to_value(&report).unwrap();
+        assert!(json["wall"].get("phantom_pages_written_per_seat").is_none());
+        assert_eq!(json["wall"]["phantom_setup_ns_per_tick"], 0.0);
     }
 
     #[test]
