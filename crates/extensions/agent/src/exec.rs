@@ -1600,10 +1600,7 @@ impl State {
             method::LOAD_TIMELINE => params::<LoadParams>(p)
                 .and_then(|lp| self.loads(lp))
                 .map(to_value),
-            method::FEATURES => Ok(to_value(Features {
-                at: self.at(),
-                plan: self.plan.clone(),
-            })),
+            method::FEATURES => Ok(to_value(Features::new(self.at(), self.plan.clone()))),
             method::PROFILE_CAPTURE => {
                 let cp = match params::<CaptureParams>(p) {
                     Ok(cp) => cp,

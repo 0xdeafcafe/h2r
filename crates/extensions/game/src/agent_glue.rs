@@ -455,9 +455,29 @@ impl AgentGlue {
         matchmaking::install(registry, &self.agent)
     }
 
-    /// The installed plan, for `features.list`.
+    /// The installed plan, for `features.list`. The feature lines are
+    /// written from the plan's features in `agent_proto::FeatureState`'s
+    /// own form, so the answer's `features` array reads them back exactly
+    /// (no client parses the text); the chains and notes follow.
     pub fn set_plan(&self, plan: &hooks::Plan, installed: &hooks::Installed) {
-        let mut lines: Vec<String> = plan.text().lines().map(str::to_owned).collect();
+        let mut lines: Vec<String> = plan
+            .features
+            .iter()
+            .map(|f| {
+                agent_proto::FeatureState {
+                    id: f.id.to_owned(),
+                    on: f.off.is_none(),
+                    reason: f.off.clone(),
+                }
+                .plan_line()
+            })
+            .collect();
+        lines.extend(
+            plan.text()
+                .lines()
+                .filter(|l| !l.starts_with("feature "))
+                .map(str::to_owned),
+        );
         lines.extend(installed.notes.iter().cloned());
         self.agent.set_plan(lines);
     }

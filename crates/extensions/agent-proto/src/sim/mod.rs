@@ -62,6 +62,12 @@ pub mod method {
     pub const OBJECTS: &str = "sim.objects";
     /// The last tick's simulation events ([`super::events`]).
     pub const EVENTS: &str = "sim.events";
+    /// Save a player's position and facing under a slot
+    /// ([`super::MarkParams`], [`super::Mark`]).
+    pub const PLAYER_MARK: &str = "player.mark";
+    /// Put a player back at a slot's mark through the game's own teleport
+    /// ([`super::MarkParams`]).
+    pub const PLAYER_RECALL: &str = "player.recall";
 
     /// The running game's `state_hashes_v1` rows ([`super::hashes`]). Not
     /// in [`ALL`]: boot's agent glue registers it, not `agent::sim::install`.
@@ -93,6 +99,8 @@ pub mod method {
         SPAWN,
         OBJECTS,
         EVENTS,
+        PLAYER_MARK,
+        PLAYER_RECALL,
         OBJECT_SET,
         OBJECT_DELETE,
         OBJECT_RESPAWN,
@@ -342,6 +350,102 @@ impl SetParams {
     /// `yaw`/`pitch` in degrees. `None` when neither is given.
     pub fn facing_vector(&self) -> Result<Option<[f64; 3]>, String> {
         facing_vector(self.yaw, self.pitch, self.facing)
+    }
+}
+
+/// The slot `player.mark` and `player.recall` use when none is given.
+pub const DEFAULT_MARK_SLOT: &str = "quick";
+/// The most marks kept at once.
+pub const MAX_MARKS: usize = 32;
+/// The longest slot name.
+pub const MAX_MARK_SLOT: usize = 32;
+
+/// A mark's slot: a name, or a number taken as its decimal name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MarkSlot {
+    Name(String),
+    Number(u32),
+}
+
+impl MarkSlot {
+    /// The slot's name: 1 to [`MAX_MARK_SLOT`] characters.
+    pub fn name(&self) -> Result<String, String> {
+        let n = match self {
+            MarkSlot::Name(s) => s.trim().to_owned(),
+            MarkSlot::Number(n) => n.to_string(),
+        };
+        if n.is_empty() || n.chars().count() > MAX_MARK_SLOT {
+            return Err(format!("slot: 1 to {MAX_MARK_SLOT} characters"));
+        }
+        Ok(n)
+    }
+}
+
+/// `player.mark` and `player.recall`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MarkParams {
+    /// Default [`DEFAULT_MARK_SLOT`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<MarkSlot>,
+    /// `player.<index>` or `sim.<n>`. Default: the player on local user 0
+    /// (for a recall, the mark's own player when no local player is
+    /// found).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub player: Option<String>,
+}
+
+impl MarkParams {
+    pub fn slot_name(&self) -> Result<String, String> {
+        self.slot
+            .as_ref()
+            .map_or_else(|| Ok(DEFAULT_MARK_SLOT.to_owned()), MarkSlot::name)
+    }
+}
+
+/// A saved place: `player.mark`'s answer, and what `player.recall` puts
+/// back.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Mark {
+    pub slot: String,
+    /// The player it was taken from.
+    pub player: String,
+    pub pos: [f64; 3],
+    /// The unit's aiming vector (`world.query`'s `forward`), when read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forward: Option<[f64; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub yaw: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pitch: Option<f64>,
+    /// The map it was taken on; a recall elsewhere is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map: Option<String>,
+}
+
+impl Mark {
+    /// The `sim.state.set` that puts `player` back here: the position,
+    /// and the facing as the aiming vector, else as yaw and pitch (pitch
+    /// kept within what `sim.state.set` takes).
+    pub fn recall(&self, player: String) -> SetParams {
+        let mut p = SetParams {
+            player,
+            pos: Some(self.pos),
+            ..SetParams::default()
+        };
+        let usable = |f: &[f64; 3]| {
+            f.iter().all(|v| v.is_finite()) && f.iter().map(|v| v * v).sum::<f64>() > 1e-12
+        };
+        match (self.forward, self.yaw) {
+            (Some(f), _) if usable(&f) => p.facing = Some(f),
+            (_, Some(y)) if y.is_finite() => {
+                p.yaw = Some(y);
+                p.pitch = self.pitch.filter(|v| v.is_finite()).map(|v| v.clamp(-89.0, 89.0));
+            }
+            _ => {}
+        }
+        p
     }
 }
 
@@ -656,6 +760,47 @@ pub fn until(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mark_slots_are_names_or_numbers() {
+        let p: MarkParams = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(p.slot_name().unwrap(), DEFAULT_MARK_SLOT);
+        let p: MarkParams = serde_json::from_value(json!({"slot": 2})).unwrap();
+        assert_eq!(p.slot_name().unwrap(), "2");
+        let p: MarkParams = serde_json::from_value(json!({"slot": " ledge "})).unwrap();
+        assert_eq!(p.slot_name().unwrap(), "ledge");
+        for bad in [json!(""), json!("x".repeat(MAX_MARK_SLOT + 1))] {
+            let p: MarkParams = serde_json::from_value(json!({"slot": bad})).unwrap();
+            assert!(p.slot_name().is_err());
+        }
+        assert!(serde_json::from_value::<MarkParams>(json!({"slots": 1})).is_err());
+    }
+
+    #[test]
+    fn a_recall_teleports_with_the_aim_else_yaw_and_pitch() {
+        let mut m = Mark {
+            slot: "quick".into(),
+            player: "player.0".into(),
+            pos: [1.0, 2.0, 3.0],
+            forward: Some([0.0, 1.0, 0.0]),
+            yaw: Some(90.0),
+            pitch: Some(0.0),
+            map: Some("lockout".into()),
+        };
+        let p = m.recall("player.0".into());
+        assert_eq!((p.pos, p.facing, p.yaw), (Some([1.0, 2.0, 3.0]), Some([0.0, 1.0, 0.0]), None));
+        assert!(p.facing_vector().unwrap().is_some());
+        m.forward = Some([0.0; 3]);
+        m.pitch = Some(95.0);
+        let p = m.recall("sim.1".into());
+        assert_eq!((p.facing, p.yaw, p.pitch), (None, Some(90.0), Some(89.0)));
+        assert!(p.facing_vector().is_ok());
+        m.forward = None;
+        m.yaw = None;
+        let p = m.recall("player.0".into());
+        assert_eq!(p.facing_vector().unwrap(), None);
+        assert_eq!(p.player, "player.0");
+    }
 
     #[test]
     fn session_kinds_come_from_the_sim_mode() {

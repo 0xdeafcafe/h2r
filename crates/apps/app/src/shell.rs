@@ -39,6 +39,9 @@ enum UserEvent {
     EditorChanged,
     /// A [`crate::Closer`] asked to close.
     Close,
+    /// `host.pause` asked for the window's pause
+    /// ([`agent_proto::host_pause`]).
+    HostPause,
 }
 
 struct Gpu {
@@ -217,6 +220,18 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
             }),
         );
     }
+    // host.pause reaches this window's pause (Cmd+P's) through the hub.
+    struct HostPauseAttached;
+    impl Drop for HostPauseAttached {
+        fn drop(&mut self) {
+            agent_proto::host_pause::hub().detach();
+        }
+    }
+    let proxy = shell.proxy.clone();
+    agent_proto::host_pause::hub().attach(Box::new(move || {
+        let _ = proxy.send_event(UserEvent::HostPause);
+    }));
+    let _host_pause = HostPauseAttached;
     event_loop.run_app(&mut shell)?;
     if let Some(e) = shell.init_error.take() {
         return Err(e);
@@ -699,11 +714,21 @@ impl Shell {
 
     fn apply_pause(&mut self) {
         let paused = self.user_paused || self.focus_paused;
-        if paused != self.life.is_paused() {
+        if paused != self.life.pause_requested() {
             self.life.set_paused(paused);
             if let Some(a) = &self.audio {
                 if paused { a.pause() } else { a.resume() }
             }
+        }
+        // host.pause and host.step see Cmd+P's pause, whoever set it.
+        agent_proto::host_pause::hub().report(self.user_paused);
+    }
+
+    /// `host.pause`'s request, applied as Cmd+P applies its own.
+    fn take_host_pause(&mut self) {
+        if let Some(on) = agent_proto::host_pause::hub().take_request() {
+            self.user_paused = on;
+            self.apply_pause();
         }
     }
 
@@ -794,6 +819,7 @@ impl ApplicationHandler<UserEvent> for Shell {
                 }
             }
             UserEvent::Close => self.close(event_loop, "close requested"),
+            UserEvent::HostPause => self.take_host_pause(),
             UserEvent::GuestExited => {
                 if let Some(e) = self.worker.as_mut().and_then(|w| w.try_finish()).cloned() {
                     eprintln!("app: guest thread exited: {e:?}");
