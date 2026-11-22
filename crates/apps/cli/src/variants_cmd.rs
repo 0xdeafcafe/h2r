@@ -1,9 +1,11 @@
-//! `h2 variants port`: makes self-contained `.h2variant` files (version 2,
-//! `variants::portable::port`) from the variants people already have
-//! (docs/editor/variants.md, "Portable files"). Pure over its inputs except
-//! `--all-builtins`, which reads the retail built-ins from the disc's main
-//! menu map. [`port_text`] does the work, so tests run it without a
-//! process.
+//! `h2 variants port|from-script`: makes self-contained `.h2variant` files
+//! (version 2). `port` makes them from the variants people already have
+//! (`variants::portable::port`), `from-script` from a rules script's own
+//! variant (`variants::portable::from_script`; docs/editor/variants.md,
+//! "Portable files"). Pure over their inputs except `--all-builtins`,
+//! which reads the retail built-ins from the disc's main menu map.
+//! [`port_text`] and [`from_script_bundle`] do the work, so tests run
+//! them without a process.
 
 use std::path::{Path, PathBuf};
 
@@ -15,6 +17,7 @@ use variants::record::GameVariant;
 const USAGE: &str = "usage: h2 variants port <input>... [--script builtin|keep|<file.rules|file.rir>]
                         [--name <name>] [--description <text>] [--option <key>=<value>]... [-o <dir>]
        h2 variants port --all-builtins [disc] [--script builtin|keep] [--option <key>=<value>]... [-o <dir>]
+       h2 variants from-script <file.rules> [--option <key>=<value>]... [-o <dir>]
   port writes one version-2 .h2variant per input, named by the variant's
   name, and prints each file's id (the SHA-256 of its canonical bytes) and
   path. An input is a raw 0x130-byte record, a saved-variant file (the
@@ -33,6 +36,12 @@ const USAGE: &str = "usage: h2 variants port <input>... [--script builtin|keep|<
   the built-ins are read from mainmenu.map's goof tag. [disc] is an .iso;
   without it, $H2_DISC or the .iso in disc/. Community variants are added
   by the game at boot and are not ported here.
+  from-script writes the .h2variant of the script's own variant: the stock
+  record of its carrier with the script's settings, named by the script,
+  with its about line as the description and the script and its source
+  attached. It prints the file's id and path; the same script and options
+  give the same id. --option is as for port. A script check refuses, or
+  whose record the game would not keep, writes nothing.
   -o is the output directory (default: the current one).";
 
 pub fn run(words: Vec<String>) -> Result<()> {
@@ -47,8 +56,50 @@ pub fn run(words: Vec<String>) -> Result<()> {
             Ok(())
         }
         "port" => port_cmd(&rest),
+        "from-script" => from_script_cmd(&rest),
         _ => bail!("{USAGE}"),
     }
+}
+
+/// `from-script`'s words: one script, its options, the directory.
+fn parse_from_script(words: &[String]) -> Result<Parsed> {
+    let p = parse(words)?;
+    if p.inputs.len() != 1
+        || p.all_builtins
+        || p.script.is_some()
+        || p.name.is_some()
+        || p.description.is_some()
+    {
+        bail!("{USAGE}");
+    }
+    Ok(p)
+}
+
+/// The bundle of the script in `src`: compiled, verified and held to the
+/// budget (`rules::ship`), then [`portable::from_script`] with its source
+/// attached. Errors name `label`.
+pub fn from_script_bundle(
+    label: &str,
+    src: &str,
+    options: &[(String, OptionValue)],
+) -> Result<Bundle, String> {
+    let (ir, _) = rules::ship(src).map_err(|e| format!("{label}: {e}"))?;
+    portable::from_script(&ir, Some(src), options).map_err(|e| format!("{label}: {e}"))
+}
+
+fn from_script_cmd(words: &[String]) -> Result<()> {
+    let p = parse_from_script(words)?;
+    let path = &p.inputs[0];
+    let label = path.display().to_string();
+    let src = std::fs::read_to_string(path).with_context(|| format!("reading {label}"))?;
+    let b = match from_script_bundle(&label, &src, &p.settings().options) {
+        Ok(b) => b,
+        Err(e) => bail!("{e}"),
+    };
+    let dir = p.out.clone().unwrap_or_else(|| PathBuf::from("."));
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    println!("{}", write(&dir, &b, &mut Vec::new())?);
+    Ok(())
 }
 
 /// `port`'s words.
@@ -385,5 +436,62 @@ mod tests {
         let text = std::fs::read_to_string(dir.join("Hill.h2variant")).unwrap();
         assert_eq!(portable::read(&text).unwrap().id(), b.id());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    const SWAT: &str = "rules \"SWAT\" 1
+carrier slayer
+scoring carrier
+about \"No shields. 50 points to win.\"
+settings {
+    score_limit = 50
+    shields = none
+}
+";
+
+    #[test]
+    fn parses_from_script_words() {
+        let p = parse_from_script(&words("swat.rules -o out --option a=1")).unwrap();
+        assert_eq!(p.inputs, [PathBuf::from("swat.rules")]);
+        assert_eq!(p.out, Some(PathBuf::from("out")));
+        assert_eq!(p.options, [("a".to_string(), "1".to_string())]);
+        assert!(parse_from_script(&[]).is_err());
+        assert!(parse_from_script(&words("a.rules b.rules")).is_err());
+        assert!(parse_from_script(&words("a.rules --script keep")).is_err());
+        assert!(parse_from_script(&words("a.rules --name X")).is_err());
+        assert!(parse_from_script(&words("--all-builtins")).is_err());
+    }
+
+    #[test]
+    fn from_script_writes_the_scripts_own_variant() {
+        let b = from_script_bundle("swat.rules", SWAT, &[]).unwrap();
+        assert_eq!(b.name, "SWAT");
+        assert_eq!(b.description, "No shields. 50 points to win.");
+        assert_eq!(b.game_type, "Slayer");
+        let v = b.variant().unwrap();
+        assert_eq!(v.get(variants::SettingId(2)), Some(50));
+        assert_eq!(v.get(variants::SettingId(19)), Some(1));
+        assert_eq!(b.script.as_ref().unwrap().source.as_deref(), Some(SWAT));
+        // The same script, the same file.
+        assert_eq!(from_script_bundle("swat.rules", SWAT, &[]).unwrap().id(), b.id());
+
+        let dir = std::env::temp_dir().join(format!("h2-variants-from-script-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let line = write(&dir, &b, &mut Vec::new()).unwrap();
+        assert_eq!(line, format!("{}  {}", b.id(), dir.join("SWAT.h2variant").display()));
+        let text = std::fs::read_to_string(dir.join("SWAT.h2variant")).unwrap();
+        assert_eq!(portable::read(&text).unwrap(), b);
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        // Refusals name the file: a compile error, a record the game would
+        // not keep, an option the script lacks.
+        let e = from_script_bundle("x.rules", "rules \"X\" 1\ncarrier slayer\n", &[]).unwrap_err();
+        assert!(e.starts_with("x.rules: "), "{e}");
+        let jugg = "rules \"J\" 1\ncarrier juggernaut\nscoring carrier\nsettings { team_play = true }\n";
+        assert_eq!(
+            from_script_bundle("j.rules", jugg, &[]).unwrap_err(),
+            "j.rules: the game would not keep the record: Juggernaut is never team play"
+        );
+        let e = from_script_bundle("swat.rules", SWAT, &[("nope".into(), OptionValue::Int(1))]).unwrap_err();
+        assert_eq!(e, "swat.rules: the option values: the script has no option \"nope\"");
     }
 }
