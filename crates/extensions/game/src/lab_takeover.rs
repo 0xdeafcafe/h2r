@@ -33,7 +33,7 @@ pub const SCREEN: &str = "lab.takeover";
 /// The question a game asks while a lab job runs.
 pub const RUNNING_SCREEN: &str = "lab.running";
 const IDS: ui_kit::ids::Family = ui_kit::ids::family("lab takeover");
-const TITLE: &str = "Lab request";
+const TITLE: &str = "LAB REQUEST";
 /// Ids both questions share: the title, the body and the footer.
 const TITLE_ID: u32 = 0;
 const BODY_ID: u32 = 1;
