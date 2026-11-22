@@ -9,6 +9,7 @@
 
 use crate::caps::{self, Kind, VARIANT_FIELDS};
 use crate::ir::*;
+use crate::settings;
 use crate::ty::{MAX_ENUM_VARIANTS, MAX_ENUMS, Sizes, Ty};
 
 /// Engine indices a script may ride (`caps::CARRIERS`).
@@ -60,6 +61,14 @@ pub enum Refusal {
     },
     #[error("two handlers answer {0}")]
     DuplicateHandler(String),
+    #[error("the description is {0} UTF-16 units; at most {MAX_ABOUT_UNITS}")]
+    About(usize),
+    #[error("setting {index}: {reason}")]
+    Setting { index: u16, reason: &'static str },
+    #[error("quick mark {index}: {reason}")]
+    Quick { index: usize, reason: &'static str },
+    #[error("the carrier scores this script, so it may have no {0}")]
+    ScoringCarrier(&'static str),
     #[error("handler {handler}, op {pc}: {fault}")]
     Op {
         handler: usize,
@@ -268,6 +277,7 @@ pub fn verify(ir: &Ir) -> Result<Report, Refusal> {
     if bits > OPTION_BITS {
         return Err(Refusal::OptionBits(bits));
     }
+    settings_and_marks(ir)?;
 
     let mut per_scope = [0usize; 4];
     for (i, s) in ir.slots.iter().enumerate() {
@@ -547,6 +557,69 @@ fn enum_known(t: Ty, sizes: &Sizes) -> bool {
 /// The label table: at most [`MAX_LABELS`] entries, each with text of 1 to
 /// 32 [`label_char`]s that no other entry has, and requirements a map can
 /// meet.
+/// The description, the settings, the quick marks and the scorer: what the
+/// compiler holds a `settings` block, a `quick` line and `scoring carrier`
+/// to (`docs/game/rules-variants.md`, "The IR").
+fn settings_and_marks(ir: &Ir) -> Result<(), Refusal> {
+    let h = &ir.header;
+    let units = h.about.encode_utf16().count();
+    if units > MAX_ABOUT_UNITS {
+        return Err(Refusal::About(units));
+    }
+    for (i, s) in ir.settings.iter().enumerate() {
+        let bad = |reason| Err(Refusal::Setting { index: s.index, reason });
+        if i > 0 && ir.settings[i - 1].index >= s.index {
+            return bad("is out of order or named twice");
+        }
+        let Some(row) = settings::row_at(s.index) else {
+            return bad("is not in the settings table");
+        };
+        if !row.applies(h.carrier) {
+            return bad("does not apply to the header's carrier");
+        }
+        if !row.in_range(s.value) {
+            return bad("has a value outside its range");
+        }
+    }
+    if ir.quick.len() > MAX_QUICK {
+        return Err(Refusal::Limit {
+            what: "quick marks",
+            max: MAX_QUICK,
+        });
+    }
+    for (index, q) in ir.quick.iter().enumerate() {
+        let bad = |reason| Err(Refusal::Quick { index, reason });
+        if ir.quick[..index].contains(q) {
+            return bad("is marked twice");
+        }
+        match *q {
+            Quick::Setting(s) => match settings::row_at(s) {
+                Some(row) if row.is_record() && row.applies(h.carrier) => {}
+                Some(row) if row.is_record() => return bad("names a setting of another carrier"),
+                Some(_) => return bad("names no record setting"),
+                None => return bad("names no setting"),
+            },
+            Quick::Option(o) => {
+                if o as usize >= ir.options.len() {
+                    return bad("names no option");
+                }
+            }
+        }
+    }
+    if h.scoring == Scoring::Carrier {
+        if !ir.handlers.is_empty() {
+            return Err(Refusal::ScoringCarrier("handlers"));
+        }
+        if !ir.slots.is_empty() {
+            return Err(Refusal::ScoringCarrier("variables"));
+        }
+        if !ir.options.is_empty() {
+            return Err(Refusal::ScoringCarrier("options"));
+        }
+    }
+    Ok(())
+}
+
 fn labels(list: &[LabelDef]) -> Result<(), Refusal> {
     use crate::ir::label_flags::*;
     if list.len() > MAX_LABELS {
@@ -922,6 +995,154 @@ mod tests {
         let mut ir = sample();
         ir.header.carrier = 5;
         assert_eq!(verify(&ir), Err(Refusal::Carrier(5)));
+    }
+
+    /// The table index of a setting, by name.
+    fn row(name: &str) -> u16 {
+        settings::named(name).unwrap().0
+    }
+
+    #[test]
+    fn a_setting_on_the_wrong_carrier_is_refused() {
+        // The sample rides Slayer; Juggernaut's movement is Juggernaut's.
+        let mut ir = sample();
+        ir.settings.push(Setting {
+            index: row("juggernaut_movement"),
+            value: 2,
+        });
+        ir.settings.sort_by_key(|s| s.index);
+        let index = row("juggernaut_movement");
+        let refusal = Refusal::Setting {
+            index,
+            reason: "does not apply to the header's carrier",
+        };
+        assert_eq!(load(&ir.encode()).unwrap_err(), refusal);
+        ir.header.carrier = 7;
+        assert!(load(&ir.encode()).is_ok(), "{:?}", load(&ir.encode()));
+        // A quick mark of another carrier's setting is refused too.
+        let mut ir = sample();
+        ir.quick.push(Quick::Setting(index));
+        assert_eq!(
+            load(&ir.encode()).unwrap_err(),
+            Refusal::Quick {
+                index: 2,
+                reason: "names a setting of another carrier"
+            }
+        );
+    }
+
+    #[test]
+    fn the_verifier_refuses_unknown_settings_values_and_disorder() {
+        let mut ir = sample();
+        ir.settings.push(Setting {
+            index: settings::TABLE.len() as u16,
+            value: 0,
+        });
+        assert!(matches!(
+            load(&ir.encode()).unwrap_err(),
+            Refusal::Setting {
+                reason: "is not in the settings table",
+                ..
+            }
+        ));
+        let mut ir = sample();
+        ir.settings[1].value = 3; // shields is 0 to 2.
+        assert!(matches!(
+            verify(&ir).unwrap_err(),
+            Refusal::Setting {
+                reason: "has a value outside its range",
+                ..
+            }
+        ));
+        // Disorder never decodes; in memory the verifier refuses it too.
+        let mut ir = sample();
+        ir.settings.reverse();
+        assert!(matches!(load(&ir.encode()).unwrap_err(), Refusal::Decode(_)));
+        assert!(matches!(
+            verify(&ir).unwrap_err(),
+            Refusal::Setting {
+                reason: "is out of order or named twice",
+                ..
+            }
+        ));
+        let mut ir = sample();
+        ir.header.about = "x".repeat(MAX_ABOUT_UNITS + 1);
+        assert_eq!(verify(&ir), Err(Refusal::About(MAX_ABOUT_UNITS + 1)));
+    }
+
+    #[test]
+    fn a_sixth_quick_mark_is_refused() {
+        let mut ir = sample();
+        ir.quick = ["score_limit", "time_limit", "lives", "respawn_time", "shields"]
+            .map(|n| Quick::Setting(row(n)))
+            .to_vec();
+        assert!(load(&ir.encode()).is_ok());
+        ir.quick.push(Quick::Option(0));
+        assert!(matches!(load(&ir.encode()).unwrap_err(), Refusal::Decode(_)));
+        assert_eq!(
+            verify(&ir),
+            Err(Refusal::Limit {
+                what: "quick marks",
+                max: MAX_QUICK
+            })
+        );
+    }
+
+    #[test]
+    fn a_quick_mark_names_a_setting_or_an_option() {
+        let refused = |q: Quick| {
+            let mut ir = sample();
+            ir.quick = vec![q];
+            verify(&ir).err()
+        };
+        assert_eq!(refused(Quick::Setting(row("lives"))), None);
+        assert_eq!(refused(Quick::Option(0)), None);
+        assert_eq!(
+            refused(Quick::Option(1)),
+            Some(Refusal::Quick {
+                index: 0,
+                reason: "names no option"
+            })
+        );
+        assert_eq!(
+            refused(Quick::Setting(settings::TABLE.len() as u16)),
+            Some(Refusal::Quick {
+                index: 0,
+                reason: "names no setting"
+            })
+        );
+        assert_eq!(
+            refused(Quick::Setting(row("gravity"))),
+            Some(Refusal::Quick {
+                index: 0,
+                reason: "names no record setting"
+            })
+        );
+        let mut ir = sample();
+        ir.quick = vec![Quick::Option(0), Quick::Option(0)];
+        assert_eq!(
+            verify(&ir),
+            Err(Refusal::Quick {
+                index: 1,
+                reason: "is marked twice"
+            })
+        );
+    }
+
+    #[test]
+    fn scoring_carrier_takes_no_handlers() {
+        let mut ir = sample();
+        ir.header.scoring = Scoring::Carrier;
+        assert_eq!(load(&ir.encode()).unwrap_err(), Refusal::ScoringCarrier("handlers"));
+        ir.handlers.clear();
+        assert_eq!(verify(&ir), Err(Refusal::ScoringCarrier("variables")));
+        ir.slots.clear();
+        // The sample's quick line marks its option.
+        ir.quick.retain(|q| matches!(q, Quick::Setting(_)));
+        assert_eq!(verify(&ir), Err(Refusal::ScoringCarrier("options")));
+        ir.options.clear();
+        let report = load(&ir.encode()).unwrap().1;
+        assert_eq!(report.worst_tick, 0);
     }
 
     #[test]

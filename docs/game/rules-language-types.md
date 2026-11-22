@@ -506,6 +506,25 @@ numbered.
 | `text.hole` | "Messages" | none |
 | `cap.missing`, `cap.unused` (warning) | "Capabilities" | Add to `requires`; Remove from `requires` |
 | `event.args`, `event.label` | `on enter gives 2 arguments (zone, object); this handler names 3.` `core is an object; on enter takes a zone label.` | none |
+| `setting.unknown` | `no setting named score_limt. Did you mean score_limit?` | none |
+| `setting.carrier` | `juggernaut_movement is a Juggernaut setting; this script's carrier is slayer` | none |
+| `setting.twice` | `lives is set twice; it is first set on line 5` | none |
+| `setting.value` | `time_limit is a time: write 300s for 300 seconds. time_limit takes a time in whole seconds, 0s to 32767s, or none.` | none |
+| `quick.many` | `Quick Options has five rows; this line names 6` | none |
+| `quick.unknown` | `bounce_points is no setting and no option of this script` | none |
+| `quick.twice` | `lives is marked twice` | none |
+| `option.setting` | `option lives has a setting's name; an option needs a name of its own` | none |
+| `scoring.handlers` | `on kill has no place here: with scoring carrier the carrier's engine scores the game, and the script holds requires, list, settings, quick and about only` | none |
+| `scoring.none` | ``this script scores nothing. Write `scoring carrier` to play Slayer's rules.`` | none |
+| `list.carrier` | `list party files the variant under one of our rows, which hold Slayer and Juggernaut variants; this script's carrier is king` | none |
+
+The `setting.*`, `quick.*`, `option.setting`, `scoring.*` and
+`list.carrier` codes check the settings block, the `quick` line and the
+`scoring` line against `rules::settings::TABLE`
+([rules-engine.md](rules-engine.md#the-language)). A settings value is
+not a front-end type: each row's kind (bool, int, seconds, choice,
+percent) says what it takes, and the checker folds it as it folds a
+constant.
 
 **Hover** shows a type on every name: `lead: player?`. Where the
 checker narrows it, a second line says so:

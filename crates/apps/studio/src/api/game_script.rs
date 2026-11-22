@@ -61,7 +61,7 @@ const METHODS: &[MethodDef] = &[
         "Replace the open script's text (unsaved) and check it",
         r#"{"source":"string"}"#,
         STATE,
-        r#"{"source":"rules \"Mine\" 1\ncarrier slayer\n"}"#,
+        r#"{"source":"rules \"Mine\" 1\ncarrier slayer\nscoring carrier\n"}"#,
     ),
     def(
         m::RULES_SAVE,
