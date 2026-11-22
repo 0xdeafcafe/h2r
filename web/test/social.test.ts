@@ -5,7 +5,7 @@ import {
 } from "../src/api/social";
 import { applyFriendEvent, applyTeamEvent, friendCounterpart, teamRecord } from "../src/state/social-model";
 import { eventBody, postEvent, signEvent, TYP_EVENT, WriteError } from "../src/state/sign";
-import { applyEvents, initialState } from "../src/state/reducer";
+import { applyEvents, applyGameSnapshot, initialState } from "../src/state/reducer";
 import type { LocalAccount } from "../src/state/account";
 import { b64urlDecode, canonicalJson, parseJws } from "../src/state/verify";
 import { ev, resetPos } from "./helpers";
@@ -230,24 +230,29 @@ describe("a team's combined record", () => {
     ];
   }
 
-  test("counts medals earned by the clan's slots in completed shared games", () => {
+  test("counts the server's medals for the clan's slots in completed shared games", () => {
     resetPos();
     const s = initialState();
     const match = game("medals", true, [[0, A, 0], [1, B, 0], [2, C, 1]], [], { team: 0 });
     applyEvents(s, [
       match[0]!,
-      ev("PlayerKilled", "game-medals", { tick: 1, killer: 0, victim: 2, kind: "kill" }),
-      ev("PlayerKilled", "game-medals", { tick: 15, killer: 0, victim: 2, kind: "kill" }),
-      ev("PlayerKilled", "game-medals", { tick: 30, killer: 2, victim: 0, kind: "kill" }),
+      ev("GameMedal", "game-medals", { tick: 15, player: 0, medal: "double-kill" }),
+      ev("GameMedal", "game-medals", { tick: 20, player: 2, medal: "sniper-kill" }),
     ]);
+    // Not finished yet: nothing counts.
     expect(teamRecord(s, [A, B]).medals.size).toBe(0);
     applyEvents(s, [ev("GameEnded", "game-medals", match[1]!.data)]);
+    // The server's count at the end, Incel for the members included.
+    applyGameSnapshot(s, {
+      game_id: "medals", map: "lockout", mode: "multiplayer", started_at: at(0), ended_at: at(1), players: [],
+      medals: [
+        { player: 0, name: "Alpha", xuid: A, medals: { "double-kill": 1, "incel": 1 } },
+        { player: 1, name: "Bravo", xuid: B, medals: { "incel": 1 } },
+        { player: 2, name: "Charlie", xuid: C, medals: { "sniper-kill": 1, "incel": 1 } },
+      ],
+    });
     const medals = teamRecord(s, [A, B]).medals;
-    expect(medals.size).toBe(3);
-    expect(medals.get("twofer")).toBe(1);
-    expect(medals.get("opening-act")).toBe(1);
-    // No teabag in the game: both members completed it clean.
-    expect(medals.get("incel")).toBe(2);
+    expect(Object.fromEntries(medals)).toEqual({ "double-kill": 1, "incel": 2 });
   });
 
   test("counts games two members played on one side, with their numbers and wins", () => {

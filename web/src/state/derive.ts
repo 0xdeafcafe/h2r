@@ -1,50 +1,65 @@
 // Stats the service doesn't serve yet, derived client-side from game
-// events: places, medals (multi-kills, sprees and the like), weapon
-// breakdowns, service-record totals, per-player history and "friends"
-// (people you've played with). Everything here is pure and marked as
-// derived in the UI.
+// events: places, weapon breakdowns, service-record totals, per-player
+// history and "friends" (people you've played with). Medals are the
+// server's (each game's `medals`); here they are only named and summed.
+// Everything here is pure.
 
-import type { Bounce, GameMode, GameState, Kill, LiveState, Standing } from "./reducer";
+import type { GameMode, GameState, Kill, LiveState, Standing } from "./reducer";
 import { gamesFor, isWinner, standings, teamStandings } from "./reducer";
 import { gameSeconds } from "./length";
 import { mapGroupKey } from "../lib/maps";
 import type { Xuid } from "../api/types";
 import { countSkulls, type SkullCount } from "../lib/skulls";
 
-/** Ticks per second, and the window that chains kills into a multi-kill. */
-export const TICKS = 30;
-export const MULTI_WINDOW_TICKS = 4 * TICKS;
-export const PAYBACK_WINDOW_TICKS = 10 * TICKS;
-
 // ---------- medals ----------
 
-export type MedalId =
-  | "opening-act" | "last-word" | "payback"
-  | "twofer" | "hat-trick" | "full-house" | "encore"
-  | "hot-streak" | "wildfire" | "untouchable"
-  | BounceMedalId
-  | "incel";
+/** Halo 2's own medals, the ones the game awards and the host reports
+ *  (`GameMedal`), in the game's order: the ids of
+ *  crates/live/live-proto/src/film/events/medals.rs. */
+export type OfficialMedalId =
+  | "double-kill" | "triple-kill" | "killtacular" | "kill-frenzy" | "killtrocity" | "killimanjaro"
+  | "sniper-kill" | "roadkill" | "bonecracker" | "stealth-kill" | "vehicle-kill" | "carjack" | "stick-it"
+  | "killing-spree" | "running-riot" | "rampage" | "berserker" | "overkill"
+  | "flag-taken" | "flag-save" | "flag-returned" | "bomb-planted" | "bomb-save" | "bomb-diffused";
 
-/** The superbounce medals (docs/game/superbounce.md, "Medals"), from a
- *  game's bounces and bounce deaths rather than its kills. */
+/** The superbounce medals (docs/game/superbounce.md, "Medals"), which Live
+ *  works out from a game's bounces and bounce deaths. */
 export type BounceMedalId =
   | "superbounce" | "double-bounce" | "triple-bounce" | "quad-bounce" | "chain-bounce" | "bouncetacular"
   | "bounced" | "monster-bounce";
 
+/** Every medal Live awards: Halo 2's own, then our modes' (the bounce
+ *  family and `incel`). A server may send an id not listed here (a newer
+ *  medal); it is shown by its id. */
+export type MedalId = OfficialMedalId | BounceMedalId | "incel";
+
 export interface MedalDef { id: MedalId; name: string; blurb: string; tier: 0 | 1 | 2 | 3 }
 
-/** Original medal names and descriptions. */
 export const MEDALS: MedalDef[] = [
-  { id: "opening-act", name: "Opening Act", blurb: "First knockout of the game", tier: 1 },
-  { id: "last-word", name: "Last Word", blurb: "Final knockout of the game", tier: 1 },
-  { id: "payback", name: "Payback", blurb: "Knocked out whoever just got you, within 10 s", tier: 0 },
-  { id: "twofer", name: "Twofer", blurb: "2 knockouts, each within 4 s of the last", tier: 0 },
-  { id: "hat-trick", name: "Hat Trick", blurb: "3 knockouts in a chain", tier: 1 },
-  { id: "full-house", name: "Full House", blurb: "4 knockouts in a chain", tier: 2 },
-  { id: "encore", name: "Encore", blurb: "5 or more knockouts in a chain", tier: 3 },
-  { id: "hot-streak", name: "Hot Streak", blurb: "5 knockouts without being knocked out", tier: 1 },
-  { id: "wildfire", name: "Wildfire", blurb: "10 knockouts without being knocked out", tier: 2 },
-  { id: "untouchable", name: "Untouchable", blurb: "15 knockouts without being knocked out", tier: 3 },
+  { id: "double-kill", name: "Double Kill", blurb: "Two kills in quick succession", tier: 0 },
+  { id: "triple-kill", name: "Triple Kill", blurb: "Three kills in quick succession", tier: 1 },
+  { id: "killtacular", name: "Killtacular", blurb: "Four kills in quick succession", tier: 2 },
+  { id: "kill-frenzy", name: "Kill Frenzy", blurb: "Five kills in quick succession", tier: 3 },
+  { id: "killtrocity", name: "Killtrocity", blurb: "Six kills in quick succession", tier: 3 },
+  { id: "killimanjaro", name: "Killimanjaro", blurb: "Seven or more kills in quick succession", tier: 3 },
+  { id: "sniper-kill", name: "Sniper Kill", blurb: "A kill with a sniper rifle", tier: 0 },
+  { id: "roadkill", name: "Roadkill", blurb: "A kill with a vehicle", tier: 0 },
+  { id: "bonecracker", name: "Bonecracker", blurb: "A melee kill", tier: 0 },
+  { id: "stealth-kill", name: "Stealth Kill", blurb: "A melee kill from behind", tier: 0 },
+  { id: "vehicle-kill", name: "Vehicle Kill", blurb: "Destroyed an occupied vehicle", tier: 0 },
+  { id: "carjack", name: "Carjack", blurb: "Boarded an enemy's vehicle", tier: 0 },
+  { id: "stick-it", name: "Stick It", blurb: "A kill with a stuck grenade", tier: 0 },
+  { id: "killing-spree", name: "Killing Spree", blurb: "Five kills without dying", tier: 1 },
+  { id: "running-riot", name: "Running Riot", blurb: "Ten kills without dying", tier: 2 },
+  { id: "rampage", name: "Rampage", blurb: "Fifteen kills without dying", tier: 3 },
+  { id: "berserker", name: "Berserker", blurb: "Twenty kills without dying", tier: 3 },
+  { id: "overkill", name: "Overkill", blurb: "Twenty-five kills without dying", tier: 3 },
+  { id: "flag-taken", name: "Flag Taken", blurb: "Took the enemy flag", tier: 0 },
+  { id: "flag-save", name: "Flag Save", blurb: "Killed the flag carrier", tier: 0 },
+  { id: "flag-returned", name: "Flag Returned", blurb: "Returned the flag", tier: 0 },
+  { id: "bomb-planted", name: "Bomb Planted", blurb: "Planted the bomb", tier: 0 },
+  { id: "bomb-save", name: "Bomb Save", blurb: "Killed the bomb carrier", tier: 0 },
+  { id: "bomb-diffused", name: "Bomb Diffused", blurb: "Defused the bomb", tier: 0 },
   { id: "superbounce", name: "Superbounce", blurb: "Bounced off a superbounce crease", tier: 0 },
   { id: "double-bounce", name: "Double Bounce", blurb: "2 bounces with no ground between", tier: 0 },
   { id: "triple-bounce", name: "Triple Bounce", blurb: "3 bounces with no ground between", tier: 1 },
@@ -60,106 +75,60 @@ export const BOUNCE_MEDALS: BounceMedalId[] = [
   "superbounce", "double-bounce", "triple-bounce", "quad-bounce", "chain-bounce", "bouncetacular", "bounced",
   "monster-bounce",
 ];
-export const isBounceMedal = (id: MedalId): id is BounceMedalId => (BOUNCE_MEDALS as MedalId[]).includes(id);
+export const isBounceMedal = (id: string): id is BounceMedalId => (BOUNCE_MEDALS as string[]).includes(id);
 export const MEDAL_BY_ID = Object.fromEntries(MEDALS.map((m) => [m.id, m])) as Record<MedalId, MedalDef>;
 
-export interface MedalAward { medal: MedalId; slot: number; tick: number }
+/** The site's entry for a medal id, or undefined for one it doesn't know. */
+export const medalDef = (id: string): MedalDef | undefined => (MEDAL_BY_ID as Record<string, MedalDef | undefined>)[id];
+/** A medal's name, or its id when the site doesn't know it. */
+export const medalName = (id: string): string => medalDef(id)?.name ?? id;
 
-const MULTI: MedalId[] = ["twofer", "hat-trick", "full-house", "encore"];
-const SPREES: Array<[number, MedalId]> = [[5, "hot-streak"], [10, "wildfire"], [15, "untouchable"]];
+/** Medal counts by id, as the server sends them. */
+export type MedalCounts = Record<string, number>;
+
+/** Adds `from`'s counts into `into`. */
+export function addMedals(into: Map<string, number>, from: MedalCounts | undefined) {
+  for (const [id, n] of Object.entries(from ?? {})) if (n > 0) into.set(id, (into.get(id) ?? 0) + n);
+}
+
+/** A game's medals (the server's, `GameState.medals`) for the given slots,
+ *  or everyone's. */
+export function gameMedalCounts(g: Pick<GameState, "medals">, slots?: Iterable<number>): Map<string, number> {
+  const m = new Map<string, number>();
+  const only = slots ? new Set(slots) : null;
+  for (const [slot, counts] of Object.entries(g.medals ?? {})) if (!only || only.has(+slot)) addMedals(m, counts);
+  return m;
+}
+
+/** The `n` most earned, most first (ties in the site's medal order, then by id). */
+export function topMedalCounts(m: MedalCounts | Map<string, number>, n = Infinity): Array<[string, number]> {
+  const order = (id: string) => { const i = MEDALS.findIndex((d) => d.id === id); return i < 0 ? MEDALS.length : i; };
+  return [...(m instanceof Map ? m.entries() : Object.entries(m))]
+    .filter(([, c]) => c > 0)
+    .sort((a, b) => b[1] - a[1] || order(a[0]) - order(b[0]) || a[0].localeCompare(b[0]))
+    .slice(0, n);
+}
+
+/** An account's medals from `GET /v1/accounts/{who}/medals`, read
+ *  defensively: anything that isn't a positive count is left out. */
+export function parseAccountMedals(raw: unknown): Map<string, number> {
+  const o = raw && typeof raw === "object" ? (raw as { medals?: unknown }).medals : null;
+  const m = new Map<string, number>();
+  if (o && typeof o === "object") {
+    for (const [id, n] of Object.entries(o as Record<string, unknown>)) if (typeof n === "number" && n > 0) m.set(id, n);
+  }
+  return m;
+}
+
+/** `rec` with the account's career medals (the server's, all time) in
+ *  place of the sum over its loaded games, once they are known. */
+export function withCareerMedals<T extends { medals: Map<string, number> }>(rec: T, career: Map<string, number> | null | undefined): T {
+  return career ? { ...rec, medals: career } : rec;
+}
 
 /** A kill that counts for the killer: not a suicide, betrayal or world death. */
 export function scoringKill(k: Kill): boolean {
   return k.kind === "kill" && k.killer !== null && k.killer !== k.victim;
-}
-
-/** Medals for every slot in one game, from its kills in tick order. A
- *  multi-kill chain awards each step (2, 3, 4, then 5+ once per kill). */
-export function gameMedals(kills: readonly Kill[]): MedalAward[] {
-  const sorted = [...kills].sort((a, b) => a.tick - b.tick || a.position - b.position);
-  const out: MedalAward[] = [];
-  const chain = new Map<number, { count: number; last: number }>();
-  const spree = new Map<number, number>();
-  const lastKilledBy = new Map<number, { by: number; tick: number }>();
-  const scoring = sorted.filter(scoringKill);
-  const first = scoring[0];
-  const last = scoring[scoring.length - 1];
-  for (const k of sorted) {
-    // A death (any kind) ends the victim's chain and spree.
-    spree.set(k.victim, 0);
-    chain.delete(k.victim);
-    if (!scoringKill(k)) continue;
-    const s = k.killer!;
-    if (k === first) out.push({ medal: "opening-act", slot: s, tick: k.tick });
-    const c = chain.get(s);
-    const count = c && k.tick - c.last <= MULTI_WINDOW_TICKS ? c.count + 1 : 1;
-    chain.set(s, { count, last: k.tick });
-    if (count >= 2) out.push({ medal: MULTI[Math.min(count, 5) - 2]!, slot: s, tick: k.tick });
-    const n = (spree.get(s) ?? 0) + 1;
-    spree.set(s, n);
-    for (const [at, id] of SPREES) if (n === at) out.push({ medal: id, slot: s, tick: k.tick });
-    const lk = lastKilledBy.get(s);
-    if (lk && lk.by === k.victim && k.tick - lk.tick <= PAYBACK_WINDOW_TICKS) {
-      out.push({ medal: "payback", slot: s, tick: k.tick });
-      lastKilledBy.delete(s);
-    }
-    lastKilledBy.set(k.victim, { by: s, tick: k.tick });
-    if (k === last && sorted.length > 1) out.push({ medal: "last-word", slot: s, tick: k.tick });
-  }
-  return out;
-}
-
-/** The medals a bounce earns at its place in a chain, lowest first: a copy
- *  of `bounce_medals_with` in crates/live/live-proto/src/film/events/medals.rs.
- *  Superbounce is every bounce; a chain gives each of the others once, at 2
- *  to 6 bounces, and from the seventh on only Superbounce. A Monster
- *  (`monster`) adds Monster Bounce last. */
-export function bounceMedals(chain: number, monster = false): BounceMedalId[] {
-  if (!(chain >= 1)) return [];
-  const step: Record<number, BounceMedalId> = {
-    2: "double-bounce", 3: "triple-bounce", 4: "quad-bounce", 5: "chain-bounce", 6: "bouncetacular",
-  };
-  const extra = step[chain];
-  const ids: BounceMedalId[] = extra ? ["superbounce", extra] : ["superbounce"];
-  if (monster) ids.push("monster-bounce");
-  return ids;
-}
-
-/** Bounce medals for every slot in one game, from its bounces in log order:
- *  `bounceMedals` of each bounce's chain and Monster flag, and `bounced` for
- *  each bounce death. */
-export function gameBounceMedals(bounces: readonly Bounce[]): MedalAward[] {
-  const sorted = [...bounces].sort((a, b) => a.tick - b.tick || a.position - b.position);
-  const out: MedalAward[] = [];
-  for (const b of sorted) {
-    const ids: BounceMedalId[] = b.chain === null ? ["bounced"] : bounceMedals(b.chain, b.monster === true);
-    for (const medal of ids) out.push({ medal, slot: b.player, tick: b.tick });
-  }
-  return out;
-}
-
-/** The fields `gameIncel` reads; a game without them has no `incel`. */
-type IncelFields = Partial<Pick<GameState, "players" | "teabags" | "status" | "end_reason" | "last_tick">>;
-
-/** `incel` at the game's end, a copy of `Incel` in
- *  crates/live/live-proto/src/film/events/medals.rs (docs/game/teabag.md,
- *  "The medal"): once to every player still in a game that finished, who
- *  joined before its first kill (`late`) and was on neither side of a
- *  teabag. Bots count. */
-export function gameIncel(g: IncelFields): MedalAward[] {
-  if (g.status !== "ended" || g.end_reason !== "finished" || !g.players) return [];
-  const bagged = new Set<number>();
-  for (const t of g.teabags ?? []) { bagged.add(t.player); bagged.add(t.victim); }
-  return Object.values(g.players)
-    .filter((p) => !p.left && !p.late && !bagged.has(p.index))
-    .sort((a, b) => a.index - b.index)
-    .map((p) => ({ medal: "incel" as const, slot: p.index, tick: g.last_tick ?? 0 }));
-}
-
-/** Every medal of a game: the kills', the bounces' and `incel`. `kills`
- *  narrows the kills (a career leaves out those with a bot on either side). */
-export function gameAwards(g: Pick<GameState, "kills" | "bounces"> & IncelFields, kills: readonly Kill[] = g.kills): MedalAward[] {
-  return [...gameMedals(kills), ...gameBounceMedals(g.bounces ?? []), ...gameIncel(g)];
 }
 
 /** Longest run of scoring kills without dying, per slot. */
@@ -175,12 +144,6 @@ export function bestSprees(kills: readonly Kill[]): Map<number, number> {
     best.set(k.killer!, Math.max(best.get(k.killer!) ?? 0, n));
   }
   return best;
-}
-
-export function countMedals(awards: readonly MedalAward[], slots?: Set<number>): Map<MedalId, number> {
-  const m = new Map<MedalId, number>();
-  for (const a of awards) if (!slots || slots.has(a.slot)) m.set(a.medal, (m.get(a.medal) ?? 0) + 1);
-  return m;
 }
 
 // ---------- weapons ----------
@@ -335,7 +298,9 @@ export interface ServiceRecord {
   weapons: WeaponRow[];
   /** What knocked this player out, by weapon (`kills` counts their deaths). */
   weaponsAgainst: WeaponRow[];
-  medals: Map<MedalId, number>;
+  /** The server's medals for the record's games, summed over the
+   *  account's slots in each (bots' medals are the bot's own). */
+  medals: Map<string, number>;
   /** Kills the totals were derived from (snapshots carry at most 50 per game). */
   killsSeen: number;
 }
@@ -401,8 +366,7 @@ export function serviceRecord(s: LiveState, xuid: Xuid, only?: (g: GameState) =>
     if (!rec.lastPlayed || g.started_at > rec.lastPlayed) rec.lastPlayed = g.started_at;
     weapons.push(weaponBreakdown(kills, slots));
     against.push(weaponsAgainst(kills, slots));
-    // A player's own bounces are theirs alone; no bot is on the other side.
-    for (const [m, n] of countMedals(gameAwards(g, kills), slots)) rec.medals.set(m, (rec.medals.get(m) ?? 0) + n);
+    for (const [m, n] of gameMedalCounts(g, slots)) rec.medals.set(m, (rec.medals.get(m) ?? 0) + n);
     rec.killsSeen += kills.filter((k) => k.killer !== null && slots.has(k.killer)).length;
   }
   rec.weapons = mergeWeapons(weapons);

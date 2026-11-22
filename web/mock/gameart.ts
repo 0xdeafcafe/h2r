@@ -1,9 +1,9 @@
 // A stand-in for a real server's optional game art (docs/live/live-api.md
 // "Optional game art"), so the app's game-art path can be run and tested
-// without a disc. Nothing here comes from the game: rank icons and medals
-// are the art pack's own, the palette is ours, and the emblem masks,
-// game-type icons, weapon masks and map previews are drawn below from
-// simple shapes and the mock's invented maps.
+// without a disc. Nothing here comes from the game: rank icons are the art
+// pack's own, the palette is ours, and the emblem masks, game-type icons,
+// weapon masks, medals and map previews are drawn below from simple shapes
+// and the mock's invented maps.
 //
 // Emblem layers follow the real encoding: mask a in red (and green), mask b
 // in blue, alpha a copy of mask b (so alpha is NOT coverage).
@@ -160,11 +160,29 @@ function weapon(n: number): Uint8Array {
   return render(62, 30, (x, y) => { const m = on(x, y) ? 68 / 255 : 0; return [0, 0, m, m]; });
 }
 
-/** The pack's medal for each of the game's medal names our derived medals map onto. */
-const PACK_MEDALS: Array<[alias: string, pack: string]> = [
-  ["killing_spree", "hot-streak"], ["running_riot", "wildfire"], ["rampage", "untouchable"],
-  ["double_kill", "twofer"], ["triple_kill", "hat-trick"], ["killtacular", "full-house"], ["kill_frenzy", "encore"],
+/** The game-art medal names the app maps Halo 2's medals onto (lib/gameart.ts
+ *  `medalKey`), each drawn as a plain badge. */
+const MEDALS = [
+  "double_kill", "triple_kill", "killtacular", "kill_frenzy", "killtrocity", "killimanjaro", "sniper_kill", "splatter",
+  "bone_cracker", "assassin", "stick_it", "killing_spree", "running_riot", "rampage", "berserker", "overkill",
+  "flag_carrier_kill", "bomb_carrier_kill", "flag_returned", "bomb_returned",
 ];
+
+/** A medal stand-in: a rounded diamond, its hue by index, with 1 to 4 pips. */
+function medal(n: number, size: number): Uint8Array {
+  const hue = [[0.95, 0.75, 0.25], [0.4, 0.8, 0.95], [0.95, 0.4, 0.35], [0.55, 0.9, 0.45]][n % 4]!;
+  const pips = 1 + (Math.floor(n / 4) % 4);
+  return render(size, size, (x, y) => {
+    const d = Math.abs(x) + Math.abs(y);
+    if (d > 0.92) return [0, 0, 0, 0];
+    for (let i = 0; i < pips; i++) {
+      const px = (i - (pips - 1) / 2) * 0.28;
+      if (Math.hypot(x - px, y) < 0.1) return [0.98, 0.98, 0.95, 1];
+    }
+    const shade = d > 0.78 ? 0.55 : 0.85 - 0.25 * (y + 1) / 2;
+    return [hue[0]! * shade, hue[1]! * shade, hue[2]! * shade, 1];
+  });
+}
 
 const hex = (c: readonly number[]) => "#" + c.map((v) => v.toString(16).padStart(2, "0")).join("");
 
@@ -235,7 +253,7 @@ export function mockGameArt(packDir: string): MockGameArt {
   }
   for (let n = 0; n < 11; n++) add(`gametype/${n}`, `gametype/${n}.png`, 32, 32, () => encodePng(gametype(n), 32, 32));
   for (let n = 0; n < WEAPONS.length; n++) add(`weapon/${n}`, `weapon/${n}.png`, 62, 30, () => encodePng(weapon(n), 62, 30));
-  PACK_MEDALS.forEach(([, pack], n) => add(`medal/${n}`, `medal/${n}.webp`, 128, 128, async () => new Uint8Array(await Bun.file(`${packDir}/medals/${pack}@2x.webp`).arrayBuffer())));
+  MEDALS.forEach((_, n) => add(`medal/${n}`, `medal/${n}.png`, 64, 64, () => encodePng(medal(n, 64), 64, 64)));
   const skipped: Record<string, string> = { "live/": "the mock draws no status icons" };
   MAPS.forEach((m, i) => {
     if (m.outline) add(`map/${m.name}/preview`, `map/${m.name}.png`, 320, 180, () => encodePng(mapPreview(i)!, 320, 180));
@@ -256,7 +274,7 @@ export function mockGameArt(packDir: string): MockGameArt {
     aliases: Object.fromEntries([
       ...GAMETYPES.map((name, n) => [`gametype/${name}`, `gametype/${n}`]),
       ...WEAPONS.map((name, n) => [`weapon/${name}`, `weapon/${n}`]),
-      ...PACK_MEDALS.map(([alias], n) => [`medal/${alias}`, `medal/${n}`]),
+      ...MEDALS.map((alias, n) => [`medal/${alias}`, `medal/${n}`]),
     ]),
     // Our own colours, in the reverse of the app's built-in order so a test can tell which was used.
     palette: [...EMBLEM_COLOURS].reverse().map(hex),

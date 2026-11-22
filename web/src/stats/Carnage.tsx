@@ -1,11 +1,12 @@
 // The post game carnage report under a game: places, scores, the kill
-// breakdown, medals and weapons for every player, derived from its events.
+// breakdown, medals and weapons for every player: medals are the server's
+// (the game's `medals`), the rest derived from its events.
 
 import { For, Show, createMemo, createSignal } from "solid-js";
 import { A } from "@solidjs/router";
 import type { GameState, Standing } from "../state/reducer";
 import { standings, teamStandings } from "../state/reducer";
-import { bestSprees, countMedals, gameAwards, isBounceMedal, ordinal, places, gameWeaponReport, MEDALS, type MedalId, type GameWeaponRow } from "../state/derive";
+import { bestSprees, gameMedalCounts, isBounceMedal, medalDef, medalName, ordinal, places, gameWeaponReport, topMedalCounts, MEDALS, type GameWeaponRow } from "../state/derive";
 import Emblem from "../components/Emblem";
 import { BotTag } from "../components/bits";
 import MedalIcon from "../components/MedalIcon";
@@ -20,7 +21,7 @@ interface Row {
   spree: number;
   suicides: number;
   betrayals: number;
-  medals: Array<[MedalId, number]>;
+  medals: Array<[string, number]>;
 }
 
 const spread = (n: number) => (n > 0 ? `+${n}` : String(n));
@@ -31,12 +32,11 @@ export default function Carnage(props: { game: GameState }) {
     const g = props.game;
     const pl = places(g);
     const sprees = bestSprees(g.kills);
-    const medals = gameAwards(g);
     const by = new Map<number, Row>();
     for (const s of standings(g)) {
       by.set(s.index, {
         s, place: pl.get(s.index) ?? 0, spree: sprees.get(s.index) ?? 0, suicides: 0, betrayals: 0,
-        medals: [...countMedals(medals, new Set([s.index])).entries()],
+        medals: topMedalCounts(gameMedalCounts(g, [s.index])),
       });
     }
     for (const k of g.kills) {
@@ -55,9 +55,16 @@ export default function Carnage(props: { game: GameState }) {
       return { team: t.team as number | null, score: t.score, place: players[0]?.place ?? 0, players };
     });
   });
-  const totalMedals = createMemo(() => [...countMedals(gameAwards(props.game)).entries()].sort((a, b) => b[1] - a[1]));
-  // The bounce medals only in a game that had bounces (a superbounce game).
-  const chest = createMemo(() => (props.game.bounces?.length ? MEDALS : MEDALS.filter((m) => !isBounceMedal(m.id))));
+  const totalMedals = createMemo(() => topMedalCounts(gameMedalCounts(props.game)));
+  // The bounce medals only in a game that had bounces (a superbounce game),
+  // and after the listed medals any the site doesn't know, by id.
+  const chest = createMemo(() => {
+    const bounces = props.game.bounces?.length || totalMedals().some(([id]) => isBounceMedal(id));
+    return [
+      ...MEDALS.filter((m) => bounces || !isBounceMedal(m.id)).map((m) => m.id as string),
+      ...totalMedals().map(([id]) => id).filter((id) => !medalDef(id)),
+    ];
+  });
 
   const weapons = createMemo(() => gameWeaponReport(props.game.kills));
   const ended = () => props.game.status === "ended";
@@ -80,14 +87,14 @@ export default function Carnage(props: { game: GameState }) {
 
   return (
     <section class="s-game-report" aria-label="Carnage report">
-      <Title right={<Derived note="Places, sprees, medals and weapon counts are derived in your browser from the game's events. Snapshots carry each game's last 50 knockouts." />}>
+      <Title right={<Derived note="Places, sprees and weapon counts are derived in your browser from the game's events (snapshots carry each game's last 50 knockouts); medals are the server's." />}>
         {ended() ? "Post Game Carnage Report" : "Carnage Report So Far"}
       </Title>
       <Tabs small label="Carnage report" active={tab()} onPick={setTab} tabs={[
         { id: "overview", label: "Overview" }, { id: "carnage", label: "Carnage" }, { id: "medals", label: "Medals" }, { id: "weapons", label: "Weapons" },
       ]} />
       <div class="s-carnage" role="tabpanel" aria-label={`${tab()} report`}>
-        <p class="s-report-note">{ended() ? "Final standings" : "Live standings"}<span>Medals and weapon counts cover the loaded game events.<Derived /></span></p>
+        <p class="s-report-note">{ended() ? "Final standings" : "Live standings"}<span>Weapon counts cover the loaded game events.<Derived /></span></p>
         <Show when={tab() === "overview"}>
           <div class="s-carnage-cols">
             <table class="s-stats s-overview-table" aria-label="Game standings">
@@ -116,7 +123,7 @@ export default function Carnage(props: { game: GameState }) {
             </table>
             <div class="s-carnage-extras">
               <section class="s-sec">
-                <header><span>Total Game Medals</span><Derived /></header>
+                <header><span>Total Game Medals</span></header>
                 <div class="s-game-medals">
                   <div class="s-game-medal-grid">
                     <For each={totalMedals()} fallback={<p class="s-dim" style={{ "grid-column": "1 / -1", padding: "8px 2px" }}>No medals yet.</p>}>
@@ -191,13 +198,13 @@ export default function Carnage(props: { game: GameState }) {
             </table>
           </div>
           <section class="s-sec s-game-medal-chest">
-            <header><span>Total Game Medals</span><Derived /></header>
+            <header><span>Total Game Medals</span></header>
             <div class="s-game-medal-grid s-game-medal-grid--named">
-              <For each={chest()}>{(medal) => {
-                const count = () => totalMedals().find(([id]) => id === medal.id)?.[1] ?? 0;
+              <For each={chest()}>{(id) => {
+                const count = () => totalMedals().find(([x]) => x === id)?.[1] ?? 0;
                 return <div class="s-game-medal" classList={{ empty: !count() }}>
-                  <MedalIcon id={medal.id} size={30} dim={!count()} />
-                  <span><b>{count()}</b><small>{medal.name}</small></span>
+                  <MedalIcon id={id} size={30} dim={!count()} />
+                  <span><b>{count()}</b><small>{medalName(id)}</small></span>
                 </div>;
               }}</For>
             </div>
@@ -237,6 +244,6 @@ function GameWeapons(props: { rows: GameWeaponRow[]; scale: number }) {
   );
 }
 
-function sum2(m: Array<[MedalId, number]>): number {
+function sum2(m: Array<[string, number]>): number {
   return m.reduce((n, [, x]) => n + x, 0);
 }

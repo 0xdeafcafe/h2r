@@ -175,3 +175,80 @@ describe("reducer", () => {
     expect(s.tail[s.tail.length - 1]!.position).toBe(s.position);
   });
 });
+
+describe("medals", () => {
+  const snap = (position: number | undefined, medals: Array<{ player: number; name: string; xuid?: string; medals: Record<string, number> }> | undefined) => ({
+    game_id: "g1", map: "teacup", mode: "multiplayer", started_at: "2026-11-15T20:00:00Z",
+    players: [{ index: 0, name: "Mochi", xuid: A, team: 0 }, { index: 1, name: "Guest", team: 1 }],
+    ...(position === undefined ? {} : { position }), ...(medals ? { medals } : {}),
+  });
+
+  test("a game read's medals land on the game, by slot, a reused seat's rows summed", () => {
+    const s = initialState();
+    applyGameSnapshot(s, snap(5, [
+      { player: 0, name: "Mochi", xuid: A, medals: { "double-kill": 2, "superbounce": 1 } },
+      { player: 1, name: "Guest", medals: { "incel": 1 } },
+      // The seat taken again after a leave: a new row, the same slot.
+      { player: 1, name: "Later", medals: { "incel": 1, "new-medal": 1 } },
+    ]));
+    const g = s.games.g1!;
+    expect(g.medals).toEqual({ 0: { "double-kill": 2, "superbounce": 1 }, 1: { "incel": 2, "new-medal": 1 } });
+    expect(g.medals_at).toBe(5);
+    // A game with none leaves `medals` out.
+    applyGameSnapshot(s, { ...snap(6, undefined), game_id: "g2" });
+    expect(s.games.g2!.medals).toEqual({});
+  });
+
+  test("a streamed GameMedal adds one award; a repeat at the same position doesn't", () => {
+    const s = seeded();
+    const award = ev("GameMedal", "game-g1", { tick: 40, player: 0, medal: "double-kill" });
+    applyEvent(s, award);
+    applyEvent(s, ev("GameMedal", "game-g1", { tick: 50, player: 2, medal: "killing-spree" }));
+    expect(s.games.g1!.medals).toEqual({ 0: { "double-kill": 1 }, 2: { "killing-spree": 1 } });
+    expect(s.games.g1!.medal_events.map((m) => m.position)).toEqual([award.position, award.position + 1]);
+    expect(s.games.g1!.positions).toContain(award.position);
+    expect(applyEvent(s, award)).toBe(false);
+    expect(s.games.g1!.medals[0]).toEqual({ "double-kill": 1 });
+    // Malformed awards count nothing.
+    applyEvent(s, ev("GameMedal", "game-g1", { tick: 60, player: "x", medal: "rampage" }));
+    applyEvent(s, ev("GameMedal", "game-g1", { tick: 60, player: 0 }));
+    expect(Object.keys(s.games.g1!.medals[0]!)).toEqual(["double-kill"]);
+  });
+
+  test("a read that overlaps the stream doesn't count an award twice", () => {
+    const s = initialState();
+    applyGameSnapshot(s, snap(10, [{ player: 0, name: "Mochi", xuid: A, medals: { "double-kill": 1 } }]));
+    s.position = 8; // the stream resumes before the read
+    resetPos();
+    for (let i = 0; i < 8; i++) ev("X", "x", {});
+    applyEvents(s, [
+      // Position 9 and 10: the read already counts them.
+      ev("ScoreChanged", "game-g1", { tick: 10, players: [] }),
+      ev("GameMedal", "game-g1", { tick: 20, player: 0, medal: "double-kill" }),
+      // Position 11: new.
+      ev("GameMedal", "game-g1", { tick: 30, player: 0, medal: "triple-kill" }),
+    ]);
+    expect(s.games.g1!.medals[0]).toEqual({ "double-kill": 1, "triple-kill": 1 });
+  });
+
+  test("a later read replaces the medals and adds back only awards past it", () => {
+    const s = seeded();
+    applyEvents(s, [
+      ev("GameMedal", "game-g1", { tick: 40, player: 0, medal: "double-kill" }), // 6
+      ev("GameMedal", "game-g1", { tick: 50, player: 0, medal: "double-kill" }), // 7
+    ]);
+    // Read at 6: it counts the first award, not the second.
+    applyGameSnapshot(s, snap(6, [
+      { player: 0, name: "Mochi", xuid: A, medals: { "double-kill": 1, "superbounce": 3 } },
+    ]));
+    expect(s.games.g1!.medals[0]).toEqual({ "double-kill": 2, "superbounce": 3 });
+    expect(s.games.g1!.medal_events.map((m) => m.position)).toEqual([7]);
+    // A read without a position counts up to what the state has seen (7).
+    applyGameSnapshot(s, snap(undefined, [{ player: 0, name: "Mochi", xuid: A, medals: { "double-kill": 2, "superbounce": 3 } }]));
+    expect(s.games.g1!.medals[0]).toEqual({ "double-kill": 2, "superbounce": 3 });
+    expect(s.games.g1!.medal_events).toEqual([]);
+    // An older read than the one taken is ignored.
+    applyGameSnapshot(s, snap(3, []));
+    expect(s.games.g1!.medals[0]).toEqual({ "double-kill": 2, "superbounce": 3 });
+  });
+});
