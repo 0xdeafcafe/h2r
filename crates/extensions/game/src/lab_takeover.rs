@@ -42,7 +42,13 @@ fn prompts() -> [Prompt; 2] {
 
 fn layout() -> ListLayout {
     let mut l = ui_kit::dialog_tag::base_layout(DialogBase::Large, LABELS.len());
-    l.anchor[1] = -24;
+    // Four body lines need the list lower than the other question dialogs
+    // put it: row 0's frame art tops out 4 units below the anchor's row
+    // top plus 34 (`ui_kit::view` item art), and the body's ink ends 19
+    // units a line below `dialog::BODY_TOP`. At -36 the frame's top (-6)
+    // clears the fourth line (-4), and row 1's bottom (-66) stays above
+    // the footer (-83).
+    l.anchor[1] = -36;
     l
 }
 
@@ -70,21 +76,23 @@ fn source_line(source: &Source) -> String {
     let short = |commit: &str| display_field(&commit.chars().take(7).collect::<String>(), 7);
     match source {
         Source::Branch { name, commit } => {
-            format!("lab/{} at {}", display_field(name, 16), short(commit))
+            format!("lab/{} at {}", display_field(name, 12), short(commit))
         }
         Source::Rev { rev, commit } => {
-            format!("{} at {}", display_field(rev, 16), short(commit))
+            format!("{} at {}", display_field(rev, 12), short(commit))
         }
         Source::Current { commit: Some(c) } => format!("installed image at {}", short(c)),
         Source::Current { commit: None } => "installed image".into(),
     }
 }
 
-/// The dialog's text: who asks, what the job is called, what it does, which
-/// code it runs. Five lines at most.
+/// The dialog's text, four lines: who asks and what it does, the job's
+/// name, its source, and the level, data and time. Each line stays one line
+/// at the widest letters (the fit test), since the body wraps only at spaces
+/// and four lines is all the room above the rows.
 fn body(request: &Request) -> String {
     let who = display_field(&request.requester, 12);
-    let name = display_field(&request.name, 26);
+    let name = display_field(&request.name, 22);
     let action = match (request.operation, request.builds_image) {
         (Operation::Build, _) => "build",
         (Operation::Run, false) => "run",
@@ -93,21 +101,21 @@ fn body(request: &Request) -> String {
         (Operation::Sim, true) => "build, then sim",
     };
     let time = match request.estimate_seconds {
-        0 => "duration varies".into(),
+        0 => "time varies".into(),
         n @ 1..=59 => format!("about {n} sec"),
         n @ 60..=5940 => format!("about {} min", n.div_ceil(60)),
-        _ => "over 1 h 39 min".into(),
+        _ => "over 99 min".into(),
     };
     let mut facts = Vec::new();
     if let Some(level) = request.level.as_deref().filter(|l| !l.trim().is_empty()) {
-        facts.push(format!("level {}", display_field(level, 8)));
+        facts.push(format!("level {}", display_field(level, 10)));
     }
     if request.own_data {
-        facts.push("your own data".into());
+        facts.push("own data".into());
     }
     facts.push(time);
     format!(
-        "{who} asks to {action}.\n\"{name}\"\n{}\n{}",
+        "{who}: {action}\n\"{name}\"\n{}\n{}",
         source_line(&request.source),
         facts.join(", ")
     )

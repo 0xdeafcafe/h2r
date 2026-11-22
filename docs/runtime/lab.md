@@ -314,7 +314,7 @@ Service updates use the separate maintenance path.
 The game shows a "Lab request" dialog with a short body:
 
 ```
-Lab driver asks to build, then run.
+Lab driver: build, then run
 "Menu bands check"
 lab/menu-bands at cb9b315
 level ascension, about 4 min
@@ -326,8 +326,9 @@ is the job's `--name`. The third is its source: `lab/NAME at COMMIT` for
 `--branch` (or the driving checkout's branch when none is given),
 `REV at COMMIT` for `--rev`, or `installed image at COMMIT` for
 `--current`. The fourth lists the level when the run names one,
-"your own data" when the run uses `--own-data`, and the estimated
-duration, or "duration varies". A build with no `--name` of its own is
+"own data" when the run uses `--own-data`, and the estimated
+duration, or "time varies". Long fields are cut so every line stays on one
+line. A build with no `--name` of its own is
 called "Image build". The host sends these as the `name`, `source`,
 `operation`, `level` and `own_data` fields of the game's
 [takeover request](agent-api.md), and `h2 lab` sends the branch it
