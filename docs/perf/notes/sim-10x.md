@@ -2,6 +2,49 @@
 
 Evidence for [../sim-10x.md](../sim-10x.md). Newest first.
 
+## 2026-11-22: the status poll on the quiet laptop
+
+Lab job 0054, the same setup as job 0053 below (commit `1c331062f`,
+`H2_OPT=2`, Lockout 2v2 seed 7, three interleaved runs per arm, nav
+loaded).
+
+| arm | speedup (median, min to max) | ms/tick |
+|---|---|---|
+| `impl.sim.status-poll` on | 10.43× (10.21 to 10.50) | 3.20 |
+| off | 10.30× (10.15 to 10.43) | 3.24 |
+
+State hashes are identical across all six runs. The gain is 1.3%, about
+0.04 ms a tick against the 0.10 to 0.15 ms the plan expected, and the
+ranges overlap. It is exact, so the switch defaults on.
+
+Reproduce: the job 0053 command with `--arm poll=impl.sim.status-poll
+--arm base=-impl.sim.status-poll`.
+
+## 2026-11-22: native on against off on the quiet laptop, bots playing
+
+Lab job 0053 on the laptop, commit `1c331062f`, `H2_OPT=2`, Lockout 2v2
+(`docs/runtime/sim-examples/lockout-2v2.toml`, seed 7, 9,000 ticks), three
+runs per arm, interleaved. Every run has `nav = "loaded"` and real kills
+(Red 1 7, Blue 1 4, Red 2 1, Blue 2 0 in each). Earlier laptop jobs (0050)
+had no nav mesh, so their bots stood still and their ~20× was not a bot
+match.
+
+| arm | speedup (median, min to max) | ms/tick | bots ms/tick |
+|---|---|---|---|
+| `impl.sim.native` on | 9.95× (9.92 to 10.01) | 3.35 | 0.24 |
+| off | 10.23× (10.21 to 10.27) | 3.26 | 0.24 |
+
+- State hashes are identical across all six runs and both arms.
+- The native subsystems cost 2.7% per tick as wired, so they stay off.
+- The bots take 0.24 of 3.3 ms a tick (7%); the guest's tick is the rest.
+- Setup is 9 to 12 s of a 38 to 42 s process, so a batch's process speed
+  is about 7 to 8×.
+
+Reproduce: `h2 lab sim --host laptop --branch master --wait --repeat 3
+--arm on=impl.sim.native --arm off=-impl.sim.native --build-env H2_OPT=2
+docs/runtime/sim-examples/lockout-2v2.toml`, with an `h2` that uploads the
+nav mesh (it refuses a map without one).
+
 ## 2026-11-22: lane C1's read, the title's no-sound path
 
 Commit: `4386d06aa`. Method: static reading of retail `default.xbe`

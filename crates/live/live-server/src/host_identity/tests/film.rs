@@ -72,7 +72,8 @@ fn bounce_rows() -> [(&'static str, Value); 2] {
             json!(game::Superbounce {
                 tick: 20,
                 player: 0,
-                chain: 2
+                chain: 2,
+                monster: false,
             }),
         ),
         (
@@ -164,6 +165,7 @@ fn fixture_with(
                 tick: 20,
                 player: 0,
                 chain: 2,
+                monster: false,
             }),
         );
         add(
@@ -400,7 +402,8 @@ async fn film_bounces_match_live_ones_and_import_into_a_film_only_game() {
             [game::Superbounce {
                 tick: 20,
                 player: 0,
-                chain: 2
+                chain: 2,
+                monster: false,
             }]
         );
         assert_eq!(

@@ -1,7 +1,8 @@
 // The game type script workbench's pure half (docs/game/rules-engine.md,
 // "Workbench"; docs/live/live-api.md, "Rules scripts"): the server's check
-// and trace answers read defensively, the scenario built into the run
-// request, times as they are typed and shown, the trace as lines and as a
+// and trace answers read defensively, the generated matches and their
+// summary, the scenario built into the run request, times as they are
+// typed and shown, the trace as lines and as a
 // timeline with the final standings, errors mapped onto the editor's text,
 // failures put in words, why a button is off, the editor's tab key, and
 // the drafts kept in localStorage. The server compiles and runs; nothing
@@ -235,8 +236,9 @@ export function tabKey(value: string, start: number, end: number, shift: boolean
 
 export type EventType =
   | "kill" | "death" | "spawn" | "join" | "quit" | "press" | "pickup" | "drop"
-  | "enter" | "leave" | "round_start" | "round_end";
-export type EventField = "player" | "victim" | "killer" | "object" | "zone";
+  | "enter" | "leave" | "bounce" | "edit" | "squad_dead" | "actor_kill" | "actor_assist"
+  | "round_start" | "round_end";
+export type EventField = "player" | "victim" | "killer" | "assist" | "object" | "zone" | "squad" | "class";
 
 /** The events a scenario offers, with the fields each one takes. */
 export const EVENT_TYPES: ReadonlyArray<{ type: EventType; label: string; fields: EventField[] }> = [
@@ -250,6 +252,11 @@ export const EVENT_TYPES: ReadonlyArray<{ type: EventType; label: string; fields
   { type: "drop", label: "Drop", fields: ["player", "object"] },
   { type: "enter", label: "Zone enter", fields: ["zone", "object"] },
   { type: "leave", label: "Zone leave", fields: ["zone", "object"] },
+  { type: "bounce", label: "Bounce", fields: ["player", "object"] },
+  { type: "edit", label: "Edit", fields: ["player", "object"] },
+  { type: "squad_dead", label: "Squad dead", fields: ["squad"] },
+  { type: "actor_kill", label: "AI kill", fields: ["killer", "class"] },
+  { type: "actor_assist", label: "AI assist", fields: ["killer", "assist", "class"] },
   { type: "round_start", label: "Round start", fields: [] },
   { type: "round_end", label: "Round end", fields: [] },
 ];
@@ -257,7 +264,11 @@ export const EVENT_TYPES: ReadonlyArray<{ type: EventType; label: string; fields
 export const eventLabel = (t: EventType): string => EVENT_TYPES.find((e) => e.type === t)?.label ?? t;
 export const eventFields = (t: EventType): EventField[] => EVENT_TYPES.find((e) => e.type === t)?.fields ?? [];
 
-export interface ScenarioPlayer { slot: number; team: number; lives: number }
+/** A seated player; `unit` is the object the player drives, which an
+ *  `enter` or `leave` names (a generated match seats one each). */
+export interface ScenarioPlayer { slot: number; team: number; lives: number; unit?: number }
+/** A labelled object on the fake map: what `objects labelled "x"` visits. */
+export interface ScenarioObject { id: number; label: string; number: number; team: number | null }
 /** One event of the tick list. `killer` null is a death by the world. */
 export interface ScenarioEvent {
   tick: number;
@@ -265,12 +276,21 @@ export interface ScenarioEvent {
   player?: number;
   victim?: number;
   killer?: number | null;
+  assist?: number | null;
   object?: number;
   zone?: number;
+  squad?: number;
+  class?: string;
 }
 export interface ScenarioDraft {
   players: ScenarioPlayer[];
   events: ScenarioEvent[];
+  /** The record's fields a generated match was played under (the score
+   *  and time limits and the carrier's settings). `teamPlay` wins over
+   *  its `team_play`. */
+  variant?: Record<string, number>;
+  /** The labelled objects a generated match placed. */
+  objects?: ScenarioObject[];
   /** The last tick run. */
   ticks: number;
   /** `round_time_left()` at the start, in ticks. */
@@ -300,7 +320,10 @@ export function newEvent(type: EventType, tick: number, players: ScenarioPlayer[
   switch (type) {
     case "kill": return { tick, type, victim: b, killer: a };
     case "enter": case "leave": return { tick, type, zone: 0, object: 0 };
-    case "press": case "pickup": case "drop": return { tick, type, player: a, object: 0 };
+    case "press": case "pickup": case "drop": case "bounce": case "edit": return { tick, type, player: a, object: 0 };
+    case "squad_dead": return { tick, type, squad: 0 };
+    case "actor_kill": return { tick, type, killer: a, class: "grunt" };
+    case "actor_assist": return { tick, type, killer: a, assist: b, class: "grunt" };
     case "round_start": case "round_end": return { tick, type };
     default: return { tick, type, player: a };
   }
@@ -342,9 +365,28 @@ export function moveEvent(d: ScenarioDraft, i: number, tick: number): ScenarioDr
 /** A player as the page names one. */
 export const playerName = (slot: number): string => `Player ${slot}`;
 
+/** A player's own object is this plus the slot, and the objectives a
+ *  script spawns count up from the other (rules::workbench). */
+export const UNIT_BASE = 0x1000;
+export const SPAWNED_BASE = 0x4000;
+
+/** An object as the page names one: a player by its own object, a
+ *  labelled object by its label and number, a spawned objective by its
+ *  order, else its number. */
+export function objectName(id: number, objects: ScenarioObject[] = []): string {
+  if (id >= UNIT_BASE && id < UNIT_BASE + 16) return playerName(id - UNIT_BASE);
+  const o = objects.find((x) => x.id === id);
+  if (o) return o.team === null ? `${o.label} ${o.number}` : `${o.label} (team ${o.team})`;
+  if (id >= SPAWNED_BASE && id < SPAWNED_BASE + 256) return `objective ${id - SPAWNED_BASE + 1}`;
+  return `object ${id}`;
+}
+
+const capital = (s: string): string => (s ? s[0]!.toUpperCase() + s.slice(1) : s);
+
 /** An event as a sentence: "Player 0 killed Player 1". */
-export function describeEvent(e: ScenarioEvent): string {
-  const who = playerName(e.player ?? 0), thing = `object ${e.object ?? 0}`;
+export function describeEvent(e: ScenarioEvent, objects: ScenarioObject[] = []): string {
+  const who = playerName(e.player ?? 0), thing = objectName(e.object ?? 0, objects);
+  const by = typeof e.killer === "number" ? playerName(e.killer) : "Nobody";
   switch (e.type) {
     case "kill": {
       const victim = playerName(e.victim ?? 0);
@@ -358,8 +400,13 @@ export function describeEvent(e: ScenarioEvent): string {
     case "press": return `${who} pressed ${thing}`;
     case "pickup": return `${who} picked up ${thing}`;
     case "drop": return `${who} dropped ${thing}`;
-    case "enter": return `Object ${e.object ?? 0} entered zone ${e.zone ?? 0}`;
-    case "leave": return `Object ${e.object ?? 0} left zone ${e.zone ?? 0}`;
+    case "enter": return `${capital(thing)} entered ${objects.length ? objectName(e.zone ?? 0, objects) : `zone ${e.zone ?? 0}`}`;
+    case "leave": return `${capital(thing)} left ${objects.length ? objectName(e.zone ?? 0, objects) : `zone ${e.zone ?? 0}`}`;
+    case "bounce": return `${who} bounced on ${thing}`;
+    case "edit": return `${who} edited ${thing}`;
+    case "squad_dead": return `Squad ${e.squad ?? 0} died`;
+    case "actor_kill": return `${by} killed a ${e.class || "creature"}`;
+    case "actor_assist": return `${typeof e.assist === "number" ? playerName(e.assist) : "Nobody"} helped ${by.replace(/^Nobody$/, "nobody")} kill a ${e.class || "creature"}`;
     case "round_start": return "The round started";
     case "round_end": return "The round ended";
   }
@@ -380,7 +427,7 @@ export function scenarioProblems(d: ScenarioDraft): string[] {
     if (e.tick > d.ticks) out.push(`a ${eventLabel(e.type)} at tick ${e.tick} is past the last tick (${d.ticks})`);
     if (e.tick < 0) out.push(`a ${eventLabel(e.type)} has a negative tick`);
     if (e.type === "join" && e.player !== undefined) joined.add(e.player);
-    for (const f of ["player", "victim", "killer"] as const) {
+    for (const f of ["player", "victim", "killer", "assist"] as const) {
       const s = e[f];
       if (typeof s === "number" && e.type !== "join" && !seated.has(s) && !joined.has(s)) {
         out.push(`a ${eventLabel(e.type)} at tick ${e.tick} names player ${s}, who is not seated`);
@@ -395,7 +442,8 @@ export function wireEvent(e: ScenarioEvent): Record<string, unknown> {
   const out: Record<string, unknown> = { type: e.type };
   for (const f of eventFields(e.type)) {
     const v = e[f];
-    if (f === "killer") out.killer = typeof v === "number" ? v : null;
+    if (f === "killer" || f === "assist") out[f] = typeof v === "number" ? v : null;
+    else if (f === "class") out.class = typeof v === "string" ? v : "";
     else out[f] = typeof v === "number" ? v : 0;
   }
   return out;
@@ -412,8 +460,9 @@ export function buildScenario(d: ScenarioDraft): Record<string, unknown> {
     byTick.set(e.tick, list);
   }
   return {
-    players: d.players.map((p) => ({ slot: p.slot, team: p.team, lives: p.lives })),
-    variant: { team_play: d.teamPlay ? 1 : 0 },
+    players: d.players.map(wireSeat),
+    ...(d.objects?.length ? { labelled: d.objects.map((o) => ({ label: o.label, object: o.id, number: o.number, ...(o.team === null ? {} : { team: o.team }) })) } : {}),
+    variant: { ...d.variant, team_play: d.teamPlay ? 1 : 0 },
     seed: d.seed,
     round_time: d.roundTime,
     ticks: d.ticks,
@@ -422,22 +471,70 @@ export function buildScenario(d: ScenarioDraft): Record<string, unknown> {
   };
 }
 
+const whole = (x: unknown, dflt: number): number => (typeof x === "number" && Number.isInteger(x) ? x : dflt);
+
+const wireSeat = (p: ScenarioPlayer): Record<string, unknown> => ({ slot: p.slot, team: p.team, lives: p.lives, ...(typeof p.unit === "number" ? { unit: p.unit } : {}) });
+const readSeat = (v: unknown): ScenarioPlayer => {
+  const p = obj(v);
+  return { slot: whole(p.slot, 0), team: whole(p.team, 0), lives: whole(p.lives, 0), ...(typeof p.unit === "number" && Number.isInteger(p.unit) ? { unit: p.unit } : {}) };
+};
+
+/** One event read from a draft or from the wire; null for a type the page
+ *  does not know. */
+function readEvent(v: unknown, tick: number): ScenarioEvent | null {
+  const e = obj(v);
+  if (!EVENT_TYPES.some((t) => t.type === e.type)) return null;
+  const out: ScenarioEvent = { tick, type: e.type as EventType };
+  for (const f of ["player", "victim", "object", "zone", "squad"] as const) if (typeof e[f] === "number") out[f] = e[f] as number;
+  if (e.type === "kill" || e.type === "actor_kill" || e.type === "actor_assist") out.killer = typeof e.killer === "number" ? e.killer : null;
+  if (e.type === "actor_assist") out.assist = typeof e.assist === "number" ? e.assist : null;
+  if (typeof e.class === "string") out.class = e.class;
+  return out;
+}
+
+const readVariant = (v: unknown): Record<string, number> | undefined => {
+  const out = Object.entries(obj(v)).filter((kv): kv is [string, number] => typeof kv[1] === "number" && Number.isInteger(kv[1]));
+  return out.length ? Object.fromEntries(out) : undefined;
+};
+const readObjects = (v: unknown): ScenarioObject[] | undefined => {
+  // The wire names the object `object` (`labelled`); a kept draft, `id`.
+  const out = arr(v).map(obj).map((o): Record<string, unknown> => ({ ...o, id: typeof o.object === "number" ? o.object : o.id }))
+    .filter((o) => typeof o.id === "number" && typeof o.label === "string")
+    .map((o) => ({ id: o.id as number, label: o.label as string, number: whole(o.number, 0), team: typeof o.team === "number" ? o.team : null }));
+  return out.length ? out : undefined;
+};
+
+/** A scenario as the server sends one (a generated match's, in
+ *  `POST /v1/rules/run`'s shape) as a draft the page shows and edits. */
+export function draftOfWire(v: unknown): ScenarioDraft {
+  const b = obj(v), variant = readVariant(b.variant), objects = readObjects(b.labelled);
+  const events = arr(b.timeline).map(obj).flatMap((t) => arr(t.events).map((e) => readEvent(e, whole(t.tick, 0)))).filter((e): e is ScenarioEvent => e !== null);
+  const last = events.reduce((m, e) => Math.max(m, e.tick), 0);
+  return {
+    players: arr(b.players).map(readSeat),
+    events: sortEvents(events),
+    ...(variant ? { variant } : {}),
+    ...(objects ? { objects } : {}),
+    ticks: whole(b.ticks, last),
+    roundTime: whole(b.round_time, 0),
+    seed: whole(b.seed, 0),
+    teamPlay: variant?.team_play === 1,
+  };
+}
+
 /** A scenario read back from a draft, any part it can't read replaced by
  *  the default's. */
 export function parseScenario(v: unknown): ScenarioDraft {
   const d = defaultScenario(), b = obj(v);
-  const int = (x: unknown, dflt: number) => (typeof x === "number" && Number.isInteger(x) ? x : dflt);
-  const types = new Set(EVENT_TYPES.map((e) => e.type));
+  const int = whole;
+  const variant = readVariant(b.variant), objects = readObjects(b.objects);
   return {
-    players: Array.isArray(b.players) ? b.players.map(obj).map((p) => ({ slot: int(p.slot, 0), team: int(p.team, 0), lives: int(p.lives, 0) })) : d.players,
+    players: Array.isArray(b.players) ? b.players.map(readSeat) : d.players,
     events: Array.isArray(b.events)
-      ? b.events.map(obj).filter((e) => types.has(e.type as EventType)).map((e) => {
-        const out: ScenarioEvent = { tick: int(e.tick, 0), type: e.type as EventType };
-        for (const f of ["player", "victim", "object", "zone"] as const) if (typeof e[f] === "number") out[f] = e[f] as number;
-        if (e.type === "kill") out.killer = typeof e.killer === "number" ? e.killer : null;
-        return out;
-      })
+      ? b.events.map((e) => readEvent(e, int(obj(e).tick, 0))).filter((e): e is ScenarioEvent => e !== null)
       : d.events,
+    ...(variant ? { variant } : {}),
+    ...(objects ? { objects } : {}),
     ticks: int(b.ticks, d.ticks),
     roundTime: int(b.roundTime, d.roundTime),
     seed: int(b.seed, d.seed),
@@ -467,8 +564,12 @@ export interface Trace {
   last_tick: number;
   error: string | null;
   round_ended: number | null;
+  /** The record's limit the run stopped on, at `last_tick`. */
+  limit?: "score" | "time" | null;
   cut: string | null;
   ops: number;
+  /** The most ops one tick spent. */
+  worst_tick_ops?: number;
   scores: Array<{ slot: number; score: number }>;
 }
 /** A run whose script did not build. */
@@ -496,8 +597,10 @@ export function parseTrace(body: unknown): Trace | RunFailed {
     last_tick: num(b.last_tick),
     error: optStr(b.error),
     round_ended: typeof b.round_ended === "number" ? b.round_ended : null,
+    limit: b.limit === "score" || b.limit === "time" ? b.limit : null,
     cut: optStr(b.cut),
     ops: num(b.ops),
+    worst_tick_ops: num(b.worst_tick_ops),
     scores: arr(b.scores).map(obj).map((s) => ({ slot: num(s.slot), score: num(s.score) })),
   };
 }
@@ -544,6 +647,7 @@ export function traceLines(t: Trace): string[] {
     return parts.join(" | ");
   });
   if (t.round_ended !== null) out.push(`the round ended at tick ${t.round_ended}`);
+  else if (t.limit) out.push(`the game ended at tick ${t.last_tick} on the ${t.limit} limit`);
   else out.push(`ran to tick ${t.last_tick}`);
   if (t.cut) out.push(t.cut);
   return out;
@@ -588,7 +692,7 @@ export function timeline(t: Trace, d: ScenarioDraft, teamLabel: (team: number) =
     const k = traced.get(tick);
     const row: TimelineRow = {
       tick,
-      happened: events.filter((e) => e.tick === tick).map(describeEvent),
+      happened: events.filter((e) => e.tick === tick).map((e) => describeEvent(e, d.objects)),
       ran: k?.ran ?? [],
       calls: (k?.calls ?? []).map(formatCall),
       scored: [],
@@ -630,6 +734,151 @@ export function teamStandings(rows: Standing[]): Array<{ place: number; team: nu
   for (const r of rows) sums.set(r.team, (sums.get(r.team) ?? 0) + r.score);
   const out = [...sums.entries()].map(([team, score]) => ({ team, score })).sort((a, b) => b.score - a.score || a.team - b.team);
   return out.map((s) => ({ place: 1 + out.filter((o) => o.score > s.score).length, ...s }));
+}
+
+// ---------- generated matches ----------
+
+/** What the page asks the generator for. */
+export interface SimSetup { players: number; teamPlay: boolean; seed: number }
+/** Matches a check is followed by. */
+export const SIM_MATCHES = 25;
+export const SIM_PLAYERS = { min: 2, max: 16 } as const;
+export const MAX_SEED = 999_999;
+export const defaultSetup = (): SimSetup => ({ players: 8, teamPlay: false, seed: 1 });
+
+const clamp = (n: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, n));
+
+/** A setup with every part in range, whatever was typed or kept. */
+export function parseSetup(v: unknown): SimSetup {
+  const b = obj(v), d = defaultSetup();
+  return {
+    players: clamp(whole(b.players, d.players), SIM_PLAYERS.min, SIM_PLAYERS.max),
+    teamPlay: b.teamPlay === true,
+    seed: clamp(whole(b.seed, d.seed), 0, MAX_SEED),
+  };
+}
+
+/** A new seed from the die: never the one it had. */
+export function rerolled(seed: number, random: () => number = Math.random): number {
+  const next = 1 + Math.floor(random() * MAX_SEED);
+  return next === seed ? (seed % MAX_SEED) + 1 : next;
+}
+
+/** `POST /v1/rules/simulate`'s body: `matches` seeds from `seed`. */
+export function simRequest(source: string, setup: SimSetup, matches: number, seed: number = setup.seed): Record<string, unknown> {
+  return { source, players: setup.players, teams: setup.teamPlay ? 2 : 0, seed, matches };
+}
+
+export type SimEnd = "script" | "score_limit" | "time_limit" | "error" | "cap";
+export interface SimWinner { kind: "player" | "team" | "draw" | "nobody"; index: number | null }
+export interface SimRow { seed: number; end: SimEnd; winner: SimWinner; ticks: number; top_score: number; ops: number; worst_tick_ops: number }
+export interface SimFlag { kind: string; text: string; seed: number; matches: number }
+export interface SimSummary {
+  asked: number;
+  ran: number;
+  wins: Array<{ winner: SimWinner; matches: number }>;
+  ends: Array<{ end: SimEnd; matches: number }>;
+  avg_score: number;
+  max_score: number;
+  avg_ticks: number;
+  max_ticks: number;
+  worst_tick_ops: number;
+  worst_tick_seed: number;
+  budget: number;
+  errors: Array<{ seed: number; message: string }>;
+  flags: SimFlag[];
+  stopped: string | null;
+}
+/** One generated match in full: the scenario it made and its trace. */
+export interface SimMatch { seed: number; end: SimEnd; why: string | null; winner: SimWinner; top_score: number; scenario: ScenarioDraft; trace: Trace }
+export interface SimResult { ok: true; teams: number; summary: SimSummary | null; rows: SimRow[]; match: SimMatch }
+
+const ENDS: ReadonlyArray<SimEnd> = ["script", "score_limit", "time_limit", "error", "cap"];
+const simEnd = (v: unknown): SimEnd => (ENDS.includes(v as SimEnd) ? (v as SimEnd) : "cap");
+function simWinner(v: unknown): SimWinner {
+  const w = obj(v);
+  const kind = w.kind === "player" || w.kind === "team" || w.kind === "draw" ? w.kind : "nobody";
+  return { kind, index: typeof w.index === "number" ? w.index : null };
+}
+
+/** `POST /v1/rules/simulate`'s answer. */
+export function parseSim(body: unknown): SimResult | RunFailed {
+  const b = obj(body);
+  if (b.ok !== true && Array.isArray(b.errors)) return { ok: false, errors: parseProblems(b.errors) };
+  const m = obj(b.match), sum = b.summary && typeof b.summary === "object" ? obj(b.summary) : null;
+  const trace = parseTrace(m.trace);
+  return {
+    ok: true,
+    teams: num(b.teams),
+    summary: sum && {
+      asked: num(sum.asked),
+      ran: num(sum.ran),
+      wins: arr(sum.wins).map(obj).map((w) => ({ winner: simWinner(w.winner), matches: num(w.matches) })),
+      ends: arr(sum.ends).map(obj).map((e) => ({ end: simEnd(e.end), matches: num(e.matches) })),
+      avg_score: num(sum.avg_score),
+      max_score: num(sum.max_score),
+      avg_ticks: num(sum.avg_ticks),
+      max_ticks: num(sum.max_ticks),
+      worst_tick_ops: num(sum.worst_tick_ops),
+      worst_tick_seed: num(sum.worst_tick_seed),
+      budget: num(sum.budget),
+      errors: arr(sum.errors).map(obj).map((e) => ({ seed: num(e.seed), message: str(e.message) })),
+      flags: arr(sum.flags).map(obj).map((f) => ({ kind: str(f.kind), text: str(f.text), seed: num(f.seed), matches: num(f.matches) })),
+      stopped: optStr(sum.stopped),
+    },
+    rows: arr(b.rows).map(obj).map((r) => ({
+      seed: num(r.seed), end: simEnd(r.end), winner: simWinner(r.winner), ticks: num(r.ticks), top_score: num(r.top_score), ops: num(r.ops), worst_tick_ops: num(r.worst_tick_ops),
+    })),
+    match: {
+      seed: num(m.seed),
+      end: simEnd(m.end),
+      why: optStr(m.why),
+      winner: simWinner(m.winner),
+      top_score: num(m.top_score),
+      scenario: draftOfWire(m.scenario),
+      trace: runFailed(trace) ? parseTrace({}) as Trace : trace,
+    },
+  };
+}
+
+export const simFailed = (r: SimResult | RunFailed): r is RunFailed => "errors" in r;
+
+/** A winner as the page names one: "Player 3", "Red team", "Draw". */
+export function winnerName(w: SimWinner, teamLabel: (team: number) => string = (n) => `Team ${n}`): string {
+  if (w.kind === "player") return playerName(w.index ?? 0);
+  if (w.kind === "team") return teamLabel(w.index ?? 0);
+  return w.kind === "draw" ? "Draw" : "Nobody";
+}
+
+/** How a match ended, as a label. */
+export const endLabel = (e: SimEnd): string => ({ script: "Script ended it", score_limit: "Score limit", time_limit: "Time limit", error: "Script error", cap: "Never ended" })[e];
+
+/** A count as a share of the matches played: "9 of 25". */
+export const ofMatches = (n: number, ran: number): string => `${n} of ${ran}`;
+
+/** Minutes and seconds, for a length: tick 5700 is "3:10". */
+export function shortTime(tick: number): string {
+  const s = Math.round(Math.max(0, tick) / TICKS_PER_SECOND);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+/** One thing a batch found worth a look, with the seed that shows it. */
+export interface SimWarning { text: string; seed: number | null; bad: boolean }
+
+/** A batch's warnings in the order they matter: script errors, then the
+ *  sanity flags, then a batch cut short. Each starts with a capital. */
+export function simWarnings(s: SimSummary): SimWarning[] {
+  const out: SimWarning[] = s.errors.map((e) => ({ text: capital(e.message), seed: e.seed, bad: true }));
+  for (const f of s.flags) out.push({ text: capital(f.text), seed: f.seed, bad: f.kind === "never_ends" || f.kind === "negative_score" });
+  if (s.stopped) out.push({ text: capital(s.stopped), seed: null, bad: false });
+  return out;
+}
+
+/** The seed before or after `seed` among a batch's rows; null at an end
+ *  or when the seed is not one of them. */
+export function neighbourSeed(rows: SimRow[], seed: number, step: -1 | 1): number | null {
+  const i = rows.findIndex((r) => r.seed === seed);
+  return i < 0 ? null : rows[i + step]?.seed ?? null;
 }
 
 // ---------- failures and gates ----------
@@ -733,17 +982,19 @@ export function whyOff(buttons: Array<[label: string, reason: string | null]>): 
 // ---------- drafts ----------
 
 export const DRAFT_KEY = "h2.rules.draft";
-export interface Draft { source: string; scenario: ScenarioDraft }
+/** What the page keeps: the script, the generator's setup, and the match
+ *  edited by hand with whether it is the one in use (`custom`). */
+export interface Draft { source: string; scenario: ScenarioDraft; setup: SimSetup; custom: boolean }
 
 export function loadDraft(storage: Pick<Storage, "getItem"> | null, fallback: string): Draft {
   try {
     const raw = storage?.getItem(DRAFT_KEY);
     if (raw) {
       const b = obj(JSON.parse(raw));
-      if (typeof b.source === "string") return { source: b.source, scenario: parseScenario(b.scenario) };
+      if (typeof b.source === "string") return { source: b.source, scenario: parseScenario(b.scenario), setup: parseSetup(b.setup), custom: b.custom === true };
     }
   } catch { /* unreadable: start over */ }
-  return { source: fallback, scenario: defaultScenario() };
+  return { source: fallback, scenario: defaultScenario(), setup: defaultSetup(), custom: false };
 }
 
 export function saveDraft(storage: Pick<Storage, "setItem"> | null, d: Draft): void {
@@ -796,6 +1047,12 @@ export async function checkRules(api: string, source: string, fetchFn: typeof fe
 
 export async function runRules(api: string, source: string, scenario: ScenarioDraft, fetchFn: typeof fetch = fetch, signal?: AbortSignal): Promise<Trace | RunFailed> {
   return parseTrace(await answer(await postJson(fetchFn, `${api}/rules/run`, { source, scenario: buildScenario(scenario) }, {}, signal)));
+}
+
+/** Plays `matches` generated matches from `seed` (the setup's when not
+ *  given); the answer's `match` is `seed`'s, in full. */
+export async function simulateRules(api: string, source: string, setup: SimSetup, matches: number, seed: number = setup.seed, fetchFn: typeof fetch = fetch, signal?: AbortSignal): Promise<SimResult | RunFailed> {
+  return parseSim(await answer(await postJson(fetchFn, `${api}/rules/simulate`, simRequest(source, setup, matches, seed), {}, signal)));
 }
 
 export async function fetchBuiltins(api: string, fetchFn: typeof fetch = fetch): Promise<Builtin[]> {

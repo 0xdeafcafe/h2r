@@ -33,6 +33,8 @@ pub(super) struct Keys {
     pub game: WindowKey,
     pub pending_edits: WindowKey,
     pub bytes: WindowKey,
+    /// The game type script editor, beside the Variants tool's settings.
+    pub rules: WindowKey,
     pub variants: ToolWindows,
     pub playlists: ToolWindows,
     pub screens: ToolWindows,
@@ -56,6 +58,7 @@ impl Keys {
             game: key("game", icon::ZAP, "Game"),
             pending_edits: key("pending_edits", icon::SLIDERS, "Pending"),
             bytes: key("tag-bytes", icon::INFO, "Data and bytes"),
+            rules: key("rules-script", icon::FILE, "Game type script"),
             variants: ToolWindows::new(
                 ("variants-list", "Variants"),
                 ("variants-settings", "Settings"),
@@ -108,7 +111,8 @@ impl Keys {
                     DockLayout::tabs(
                         [&self.viewport]
                             .into_iter()
-                            .chain(tools.map(|tool| &tool.center)),
+                            .chain(tools.map(|tool| &tool.center))
+                            .chain([&self.rules]),
                     ),
                 ),
             ),
@@ -135,7 +139,7 @@ impl Keys {
                 .into_iter()
                 .chain(tools.map(|t| &t.list)),
         );
-        seed(&self.viewport, tools.map(|t| &t.center));
+        seed(&self.viewport, tools.map(|t| &t.center).into_iter().chain([&self.rules]));
         seed(&self.inspector, tools.map(|t| &t.inspector));
         seed(&self.log, [&self.game, &self.pending_edits, &self.bytes]);
     }

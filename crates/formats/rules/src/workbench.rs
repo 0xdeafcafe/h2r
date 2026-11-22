@@ -6,7 +6,7 @@
 //! A run is deterministic: the same source, scenario and seed give the same
 //! trace on every machine.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::caps;
 use crate::fake::{FakeGame, FakePlayer};
@@ -22,9 +22,14 @@ pub const MAX_STEPS: usize = 4096;
 /// The most players a scenario seats.
 pub const MAX_SCENARIO_PLAYERS: usize = MAX_PLAYERS;
 /// The most VM ops a whole run spends before it stops early.
-pub const MAX_RUN_OPS: u64 = 4_000_000;
+pub const MAX_RUN_OPS: u64 = 12_000_000;
 /// The most ticks a trace records before it is cut short.
 pub const MAX_TRACED_TICKS: usize = 2_000;
+/// The unit a generated match gives a player is this plus the slot
+/// ([`unit_of`]).
+pub const UNIT_BASE: u32 = 0x1000;
+/// The first object `spawn_objective` makes in a run.
+pub const SPAWNED_BASE: u32 = 0x4000;
 
 /// An error at a line and column (both from 1), or for the whole script
 /// (line and column 0: a verifier refusal or the budget).
@@ -356,12 +361,29 @@ pub struct Trace {
     pub error: Option<String>,
     /// The tick `end_round` was called in; the run stops after it.
     pub round_ended: Option<u32>,
+    /// Who `end_round` named (`team 1`, `none`).
+    pub round_winner: Option<String>,
+    /// The carrier's limit the run stopped on, at `last_tick`.
+    pub limit: Option<Limit>,
     /// Why the run stopped before its last tick or the trace was cut, if
     /// it did.
     pub cut: Option<String>,
     pub ops: u64,
+    /// The most ops one tick spent.
+    pub worst_tick_ops: u32,
+    /// Every handler that ran at least once, sorted (`kill`,
+    /// `timer(next)`, `tick`).
+    pub handlers_ran: Vec<String>,
     /// The final scores, by slot.
     pub scores: Vec<(u8, i32)>,
+}
+
+/// A limit of the carrier's record that ends a run: `variant.score_limit`
+/// reached, or `variant.time_limit` (seconds) run out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Limit {
+    Score,
+    Time,
 }
 
 /// Why a run did not start.
@@ -399,6 +421,21 @@ fn validate(s: &Scenario) -> Result<(), String> {
     if s.labelled.len() > MAX_LABELLED {
         return Err(format!("a scenario labels at most {MAX_LABELLED} objects"));
     }
+    for l in &s.labelled {
+        if l.label.is_empty() || l.label.len() > ir::MAX_LABEL_BYTES {
+            return Err(format!(
+                "object {}'s label is 1 to {} bytes",
+                l.object,
+                ir::MAX_LABEL_BYTES
+            ));
+        }
+        if l.team.is_some_and(|t| t as usize >= MAX_TEAMS) {
+            return Err(format!(
+                "object {}'s team is out of range (0..{MAX_TEAMS})",
+                l.object
+            ));
+        }
+    }
     for step in &s.steps {
         if step.tick > s.ticks {
             return Err(format!(
@@ -416,7 +453,8 @@ fn validate(s: &Scenario) -> Result<(), String> {
             | Input::Pickup(p, _)
             | Input::Drop(p, _)
             | Input::Press(p, _)
-            | Input::Bounce(p, _)
+            | Input::Bounced(p)
+            | Input::Bounce { player: p, .. }
             | Input::Edit(p, _) => player(*p),
             Input::ActorKill { killer, .. } => killer.is_none_or(player),
             Input::ActorAssist { killer, assist, .. } => {
@@ -579,103 +617,232 @@ fn players(vm: &Vm, g: &FakeGame) -> Vec<PlayerState> {
         .collect()
 }
 
-/// Compiles `src` and runs `scenario` over a [`FakeGame`], every tick
-/// through [`scenario::step`], the step `h2 rules run` takes too.
-pub fn run(src: &str, scenario: &Scenario) -> Result<Trace, RunError> {
-    validate(scenario).map_err(RunError::Scenario)?;
-    let (ir, _) = crate::build(src).map_err(|e| {
-        RunError::Script(vec![match e {
-            crate::BuildError::Compile(c) => Problem {
-                line: c.line,
-                col: c.col,
-                message: c.message,
-            },
-            crate::BuildError::Refused(r) => Problem {
-                line: 0,
-                col: 0,
-                message: format!("refused: {r}"),
-            },
-            other => Problem {
-                line: 0,
-                col: 0,
-                message: other.to_string(),
-            },
-        }])
-    })?;
-    let hash = ir.id().to_string();
-    let options = scenario.options.unwrap_or_else(|| ir.default_options());
-    let carrier = ir.header.carrier;
-    let mut vm = Vm::new(ir, options, scenario.seed).map_err(|r| {
-        RunError::Script(vec![Problem {
-            line: 0,
-            col: 0,
-            message: format!("refused: {r}"),
-        }])
-    })?;
+/// The unit a generated match gives the player in `slot`: what its seat
+/// names, and what its `enter` and `leave` events name.
+pub fn unit_of(slot: u8) -> u32 {
+    UNIT_BASE + u32::from(slot)
+}
 
-    let mut g = FakeGame {
-        teams: if scenario.teams.is_empty() {
-            vec![0, 1]
-        } else {
-            scenario.teams.clone()
-        },
-        variant: scenario.variant.clone(),
-        carrier,
-        round_time_left: scenario.round_time.max(0),
-        ..FakeGame::default()
-    };
-    scenario::label_all(&mut g, &scenario.labelled);
-    for seat in &scenario.players {
-        g.players.insert(
-            seat.slot,
-            FakePlayer {
-                team: seat.team,
-                alive: true,
-                lives: seat.lives,
-                ..FakePlayer::default()
-            },
-        );
-        if let Some(unit) = seat.unit {
-            g.units.insert(unit, seat.slot);
+/// What the fake game does about the calls made since `from`:
+/// `spawn_objective` makes an objective (ids from [`SPAWNED_BASE`]) with
+/// its team, and `reset_objective` takes one from its carrier.
+fn world(g: &mut FakeGame, from: usize) {
+    for i in from..g.calls.len() {
+        let spawned = match (g.calls[i].0, g.calls[i].1.as_slice()) {
+            ("spawn_objective", args) => Some(match args.get(2) {
+                Some(Arg::Team(Some(t))) => Some(*t),
+                _ => None,
+            }),
+            ("reset_objective", [Arg::Object(Some(o)), ..]) => {
+                let o = *o;
+                if let Some(c) = g.objectives.get_mut(&o) {
+                    *c = None;
+                }
+                None
+            }
+            _ => None,
+        };
+        if let Some(team) = spawned {
+            let mut id = SPAWNED_BASE + g.objectives.len() as u32;
+            while g.objectives.contains_key(&id) {
+                id += 1;
+            }
+            g.objectives.insert(id, None);
+            if let Some(t) = team {
+                g.object_teams.insert(id, t);
+            }
         }
     }
+}
 
-    let mut steps: BTreeMap<u32, Vec<Input>> = BTreeMap::new();
-    for s in &scenario.steps {
-        steps.entry(s.tick).or_default().push(s.input.clone());
+fn untimed(timers: &[String], v: &[(String, String)]) -> Vec<(String, String)> {
+    v.iter()
+        .filter(|(n, _)| !timers.contains(n))
+        .cloned()
+        .collect()
+}
+
+fn refused(r: impl std::fmt::Display) -> RunError {
+    RunError::Script(vec![Problem {
+        line: 0,
+        col: 0,
+        message: format!("refused: {r}"),
+    }])
+}
+
+/// Compiles and verifies source for a run.
+pub fn build(src: &str) -> Result<Ir, RunError> {
+    match crate::build(src) {
+        Ok((ir, _)) => Ok(ir),
+        Err(crate::BuildError::Compile(c)) => Err(RunError::Script(vec![Problem {
+            line: c.line,
+            col: c.col,
+            message: c.message,
+        }])),
+        Err(crate::BuildError::Refused(r)) => Err(refused(r)),
+        Err(other) => Err(RunError::Script(vec![Problem {
+            line: 0,
+            col: 0,
+            message: other.to_string(),
+        }])),
+    }
+}
+
+type Vars = (Vec<(String, String)>, Vec<PlayerState>);
+
+/// Which ticks a [`Runner`] keeps in its trace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Keep {
+    /// Every tick in which a handler other than `on tick` ran, a call was
+    /// made, a variable or a player's row changed, a warning was raised
+    /// or the script stopped: what [`run`] keeps.
+    All,
+    /// The same, less the ticks in which only a variable changed: a long
+    /// generated match stays short.
+    Events,
+    /// None: the trace has its totals and how the run ended.
+    Totals,
+}
+
+/// A scenario's game stepped a tick at a time: what [`run`] loops over a
+/// listed scenario, and what `sim` drives while it makes one up.
+pub struct Runner {
+    vm: Vm,
+    /// The fake game, to read between ticks.
+    pub game: FakeGame,
+    trace: Trace,
+    keep: Keep,
+    /// The most ops the run spends before it stops.
+    pub max_ops: u64,
+    timers: Vec<String>,
+    last_vars: Vars,
+    ran: BTreeSet<String>,
+    team_play: bool,
+    score_limit: i32,
+    time_limit: Option<u32>,
+}
+
+impl Runner {
+    /// The game `scenario` starts from (its players, teams, variant,
+    /// options, seed, round time and objects; not its steps), on `ir`.
+    pub fn new(ir: Ir, scenario: &Scenario, keep: Keep) -> Result<Runner, RunError> {
+        validate(scenario).map_err(RunError::Scenario)?;
+        let hash = ir.id().to_string();
+        let options = scenario.options.unwrap_or_else(|| ir.default_options());
+        let carrier = ir.header.carrier;
+        let vm = Vm::new(ir, options, scenario.seed).map_err(refused)?;
+
+        let mut g = FakeGame {
+            teams: if scenario.teams.is_empty() {
+                vec![0, 1]
+            } else {
+                scenario.teams.clone()
+            },
+            variant: scenario.variant.clone(),
+            carrier,
+            round_time_left: scenario.round_time.max(0),
+            ..FakeGame::default()
+        };
+        scenario::label_all(&mut g, &scenario.labelled);
+        for seat in &scenario.players {
+            g.players.insert(
+                seat.slot,
+                FakePlayer {
+                    team: seat.team,
+                    alive: true,
+                    lives: seat.lives,
+                    ..FakePlayer::default()
+                },
+            );
+            if let Some(unit) = seat.unit {
+                g.units.insert(unit, seat.slot);
+            }
+        }
+
+        // A timer counts down every tick; its value alone is no change.
+        let timers: Vec<String> = vm
+            .ir()
+            .slots
+            .iter()
+            .filter(|s| s.ty == Ty::Timer)
+            .map(|s| slot_name(vm.ir(), s))
+            .collect();
+        let last_vars = if keep == Keep::All {
+            (untimed(&timers, &globals(&vm)), players(&vm, &g))
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        // Only the limits the scenario seats end a run; the stock
+        // record's are the script's to read.
+        let field = |name: &str| scenario.variant.get(name).copied().unwrap_or(0);
+        let time_limit = u32::try_from(field("time_limit"))
+            .ok()
+            .filter(|s| *s > 0)
+            .map(|s| s.saturating_mul(caps::TICKS_PER_SECOND as u32));
+        Ok(Runner {
+            vm,
+            game: g,
+            trace: Trace {
+                hash,
+                options,
+                ticks: Vec::new(),
+                last_tick: 0,
+                error: None,
+                round_ended: None,
+                round_winner: None,
+                limit: None,
+                cut: None,
+                ops: 0,
+                worst_tick_ops: 0,
+                handlers_ran: Vec::new(),
+                scores: Vec::new(),
+            },
+            keep,
+            max_ops: MAX_RUN_OPS,
+            timers,
+            last_vars,
+            ran: BTreeSet::new(),
+            team_play: field("team_play") != 0,
+            score_limit: field("score_limit"),
+            time_limit,
+        })
     }
 
-    let mut trace = Trace {
-        hash,
-        options,
-        ticks: Vec::new(),
-        last_tick: 0,
-        error: None,
-        round_ended: None,
-        cut: None,
-        ops: 0,
-        scores: Vec::new(),
-    };
-    // A timer counts down every tick; its value alone is no change.
-    let timers: Vec<String> = vm
-        .ir()
-        .slots
-        .iter()
-        .filter(|s| s.ty == Ty::Timer)
-        .map(|s| slot_name(vm.ir(), s))
-        .collect();
-    let untimed = |v: &[(String, String)]| -> Vec<(String, String)> {
-        v.iter()
-            .filter(|(n, _)| !timers.contains(n))
-            .cloned()
-            .collect()
-    };
-    let mut last_vars = (untimed(&globals(&vm)), players(&vm, &g));
+    pub fn vm(&self) -> &Vm {
+        &self.vm
+    }
 
-    for tick in 0..=scenario.ticks {
+    /// The carrier's own end: a seated `score_limit` reached by a player
+    /// (a team's sum with `team_play`), or a seated `time_limit` run out.
+    fn limit(&self, tick: u32) -> Option<Limit> {
+        if self.score_limit > 0 {
+            let top = if self.team_play {
+                let mut sums: BTreeMap<u8, i32> = BTreeMap::new();
+                for p in self.game.players.values() {
+                    let s = sums.entry(p.team).or_default();
+                    *s = s.saturating_add(p.score);
+                }
+                sums.values().copied().max()
+            } else {
+                self.game.players.values().map(|p| p.score).max()
+            };
+            if top.is_some_and(|s| s >= self.score_limit) {
+                return Some(Limit::Score);
+            }
+        }
+        self.time_limit.filter(|t| tick >= *t).map(|_| Limit::Time)
+    }
+
+    /// Runs one tick through [`scenario::step`], the step `h2 rules run`
+    /// takes too, then makes the objectives the script spawned. `start`
+    /// fires `init` and `round_start` on tick 0. False when the run is
+    /// over.
+    pub fn tick(&mut self, tick: u32, start: bool, inputs: &[Input]) -> bool {
+        let vm = &mut self.vm;
+        let g = &mut self.game;
         let calls_before = g.calls.len();
-        let inputs = steps.get(&tick).map_or(&[][..], Vec::as_slice);
-        let stepped = scenario::step(&mut vm, &mut g, tick, scenario.start, inputs);
+        let stepped = scenario::step(vm, g, tick, start, inputs);
+        world(g, calls_before);
         let mut ran = Vec::new();
         let (last, events) = stepped
             .fired
@@ -690,70 +857,121 @@ pub fn run(src: &str, scenario: &Scenario) -> Result<Trace, RunError> {
         }
         ran.extend(stepped.timers);
         let tick_ran = last.1 == Fired::Ran;
+        for name in &ran {
+            if !self.ran.contains(name.as_str()) {
+                self.ran.insert(name.clone());
+            }
+        }
+        if tick_ran && !self.ran.contains("tick") {
+            self.ran.insert("tick".into());
+        }
 
         let ops = vm.ext().ops;
-        trace.ops += ops as u64;
-        trace.last_tick = tick;
-        let calls: Vec<TracedCall> = g.calls[calls_before..]
+        self.trace.ops += ops as u64;
+        self.trace.worst_tick_ops = self.trace.worst_tick_ops.max(ops);
+        self.trace.last_tick = tick;
+        let made = &g.calls[calls_before..];
+        let winner = made
             .iter()
-            .map(|(entry, args)| TracedCall {
-                entry: *entry,
-                args: args.iter().map(arg_text).collect(),
-            })
-            .collect();
-        let warnings: Vec<String> = vm
-            .take_warnings()
-            .iter()
-            .map(|w| warning_text(vm.ir(), w))
-            .collect();
+            .find(|(entry, _)| *entry == "end_round")
+            .map(|(_, args)| args.first().map(arg_text));
         let error = vm
             .ext()
             .stopped
             .filter(|e| e.tick == tick)
             .map(|e| error_text(vm.ir(), &e));
-        let vars = (globals(&vm), players(&vm, &g));
-        let key = (untimed(&vars.0), vars.1.clone());
-        let changed = key != last_vars;
-        let ended = calls.iter().any(|c| c.entry == "end_round");
-        if !ran.is_empty() || !calls.is_empty() || !warnings.is_empty() || error.is_some() || changed {
-            if tick_ran {
-                ran.push("tick".into());
+        let warnings: Vec<String> = vm
+            .take_warnings()
+            .iter()
+            .map(|w| warning_text(vm.ir(), w))
+            .collect();
+        if self.keep != Keep::Totals {
+            let calls: Vec<TracedCall> = made
+                .iter()
+                .map(|(entry, args)| TracedCall {
+                    entry: *entry,
+                    args: args.iter().map(arg_text).collect(),
+                })
+                .collect();
+            let mut kept = !ran.is_empty() || !calls.is_empty() || !warnings.is_empty() || error.is_some();
+            let mut vars: Option<Vars> = None;
+            if self.keep == Keep::All {
+                let v = (globals(vm), players(vm, g));
+                let key = (untimed(&self.timers, &v.0), v.1.clone());
+                kept = kept || key != self.last_vars;
+                self.last_vars = key;
+                vars = Some(v);
             }
-            if trace.ticks.len() < MAX_TRACED_TICKS {
-                trace.ticks.push(TickTrace {
-                    tick,
-                    ran,
-                    calls,
-                    ops,
-                    warnings,
-                    globals: vars.0.clone(),
-                    players: vars.1.clone(),
-                    error: error.clone(),
-                });
-            } else if trace.cut.is_none() {
-                trace.cut = Some(format!(
-                    "the trace holds {MAX_TRACED_TICKS} ticks; later ones are not shown"
-                ));
+            if kept {
+                if tick_ran {
+                    ran.push("tick".into());
+                }
+                if self.trace.ticks.len() < MAX_TRACED_TICKS {
+                    let (globals, players) = vars.unwrap_or_else(|| (globals(vm), players(vm, g)));
+                    self.trace.ticks.push(TickTrace {
+                        tick,
+                        ran,
+                        calls,
+                        ops,
+                        warnings,
+                        globals,
+                        players,
+                        error: error.clone(),
+                    });
+                } else if self.trace.cut.is_none() {
+                    self.trace.cut = Some(format!(
+                        "the trace holds {MAX_TRACED_TICKS} ticks; later ones are not shown"
+                    ));
+                }
             }
         }
-        last_vars = key;
         if let Some(e) = error {
-            trace.error = Some(e);
-            break;
+            self.trace.error = Some(e);
+            return false;
         }
-        if ended {
-            trace.round_ended = Some(tick);
-            break;
+        if let Some(winner) = winner {
+            self.trace.round_ended = Some(tick);
+            self.trace.round_winner = winner;
+            return false;
         }
-        if trace.ops > MAX_RUN_OPS {
-            trace.cut = Some(format!(
-                "the run spent over {MAX_RUN_OPS} ops and stopped at tick {tick}"
+        if let Some(limit) = self.limit(tick) {
+            self.trace.limit = Some(limit);
+            return false;
+        }
+        if self.trace.ops > self.max_ops {
+            self.trace.cut = Some(format!(
+                "the run spent over {} ops and stopped at tick {tick}",
+                self.max_ops
             ));
+            return false;
+        }
+        true
+    }
+
+    /// The run's trace, with the final scores.
+    pub fn finish(mut self) -> Trace {
+        self.trace.scores = self.game.players.iter().map(|(&s, p)| (s, p.score)).collect();
+        self.trace.handlers_ran = self.ran.into_iter().collect();
+        self.trace
+    }
+}
+
+/// Compiles `src` and runs `scenario` over a [`FakeGame`].
+pub fn run(src: &str, scenario: &Scenario) -> Result<Trace, RunError> {
+    validate(scenario).map_err(RunError::Scenario)?;
+    let ir = build(src)?;
+    let mut runner = Runner::new(ir, scenario, Keep::All)?;
+    let mut steps: BTreeMap<u32, Vec<Input>> = BTreeMap::new();
+    for s in &scenario.steps {
+        steps.entry(s.tick).or_default().push(s.input.clone());
+    }
+    for tick in 0..=scenario.ticks {
+        let inputs = steps.get(&tick).map_or(&[][..], Vec::as_slice);
+        if !runner.tick(tick, scenario.start, inputs) {
             break;
         }
     }
-    trace.scores = g.players.iter().map(|(&s, p)| (s, p.score)).collect();
-    Ok(trace)
+    Ok(runner.finish())
 }
 
 #[cfg(test)]

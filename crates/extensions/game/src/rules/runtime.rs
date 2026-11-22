@@ -2,7 +2,8 @@
 //! game's script and state, and what each moment of the game does with it
 //! (docs/game/rules-engine.md, "The host runtime").
 //!
-//! The feature (`super::feature`) calls in at five moments:
+//! The feature (`super::feature`) and the superbounce mode call in at six
+//! moments:
 //!
 //! - [`Runtime::start`] after a successful `GAME_ACTIVATE`: read the
 //!   record's script reference, find the blob, verify it, refuse what this
@@ -16,8 +17,14 @@
 //!   also asks `GAME_ENGINE_AUTHORITATIVE`; a machine that is not the
 //!   authority drops the script and its record.
 //! - [`Runtime::kill`] at `PLAYER_KILLED`'s entry: `on kill`.
+//! - [`Runtime::bounces`] after each game tick, from the superbounce
+//!   mode's medal chain: `on bounce` and `on bounced`, each bounce and
+//!   Bounced on the tick its chain files it.
 //! - [`Runtime::post_tick`] after each game tick: timers, then `on tick`.
 //! - [`Runtime::ended`] after `GAME_END`: the record is removed.
+//!
+//! The agent API's `rules.reload` (`super::reload`) calls
+//! [`Runtime::swap`] at a tick boundary for an in-place reload.
 //!
 //! **Calls wait for the tick boundary.** `PLAYER_KILLED` is opaque, so a
 //! hook there can only observe, and the per-tick group runs after
@@ -65,7 +72,14 @@ pub const MODE_MULTIPLAYER: u32 = 2;
 
 /// The events this runtime delivers. A script answering any other is
 /// refused at load by the event's name.
-pub const DELIVERED: &[Event] = &[Event::Init, Event::Kill, Event::Timer, Event::Tick];
+pub const DELIVERED: &[Event] = &[
+    Event::Init,
+    Event::Kill,
+    Event::Timer,
+    Event::Tick,
+    Event::Bounce,
+    Event::Bounced,
+];
 /// The read entries this runtime answers.
 pub const READS: &[u16] = &[
     id::PLAYER_SCORE,
@@ -138,7 +152,8 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// One built-in script, compiled once: its engine index, blob and hash.
+/// One built-in script, compiled once: its engine index (an example's
+/// carrier), blob and hash.
 pub struct Builtin {
     pub engine: u8,
     pub blob: Vec<u8>,
@@ -166,6 +181,36 @@ pub fn builtins() -> &'static [Builtin] {
         }
         out
     })
+}
+
+/// Every example script (`rules::builtin::examples`), compiled once, each
+/// with its carrier as `engine`. A record names one by its prefix, as any
+/// script; they are not ports, so a record with no mode never runs one.
+pub fn examples() -> &'static [Builtin] {
+    static BUILT: OnceLock<Vec<Builtin>> = OnceLock::new();
+    BUILT.get_or_init(|| {
+        let mut out = Vec::new();
+        for &(name, src) in ::rules::builtin::examples() {
+            match ::rules::compile(src) {
+                Ok(ir) => out.push(Builtin {
+                    engine: ir.header.carrier,
+                    blob: ir.encode(),
+                    id: ir.id(),
+                }),
+                Err(e) => eprintln!("rules: the example {name} script does not compile: {e}"),
+            }
+        }
+        out
+    })
+}
+
+/// The compiled-in script whose hash starts with `prefix`: a port
+/// ([`builtins`]) or an example ([`examples`]).
+pub fn compiled_in(prefix: [u8; 8]) -> Option<&'static Builtin> {
+    builtins()
+        .iter()
+        .chain(examples())
+        .find(|b| b.id.0[..8] == prefix)
 }
 
 /// Where a running blob came from.
@@ -604,8 +649,7 @@ impl Runtime {
         let script = Ext::in_effect(&block).script;
         let found = match script.mode {
             Mode::Rules => {
-                let builtin = builtins().iter().find(|b| b.id.0[..8] == script.prefix);
-                match builtin {
+                match compiled_in(script.prefix) {
                     Some(b) => Ok((b.blob.clone(), Source::Builtin)),
                     None => match (self.local)(script.prefix) {
                         Some(blob) => Ok((blob, Source::Local)),
@@ -789,6 +833,52 @@ impl Runtime {
         });
     }
 
+    /// A superbounce by player `player` off the strip `spot`
+    /// (`superbounce_chain::spot_id`), the `chain`th of its chain, a
+    /// Monster with `monster`: `on bounce`, with its calls kept for the
+    /// next tick boundary.
+    pub fn bounce(&mut self, m: &dyn GuestMemory, player: u8, spot: u32, chain: u32, monster: bool) {
+        self.run(m, |vm, g| {
+            vm.fire(
+                g,
+                Input::Bounce {
+                    player,
+                    spot,
+                    chain,
+                    monster,
+                },
+            );
+        });
+    }
+
+    /// Player `player` fell out of the map during a bounce: `on bounced`,
+    /// with its calls kept for the next tick boundary.
+    pub fn bounced(&mut self, m: &dyn GuestMemory, player: u8) {
+        self.run(m, |vm, g| {
+            vm.fire(g, Input::Bounced(player));
+        });
+    }
+
+    /// One tick's medal awards (`superbounce_chain::Medals::step`), in
+    /// order: each bounce as [`Runtime::bounce`] with its chain's count
+    /// and whether it was a Monster, each Bounced as [`Runtime::bounced`].
+    /// A medal test's awards never come here (`superbounce_mode` steps
+    /// only the chain's own).
+    pub fn bounces(
+        &mut self,
+        m: &dyn GuestMemory,
+        awards: &[crate::superbounce_chain::Award],
+    ) {
+        use hud_kit_core::huds::superbounce::Medal;
+        for a in awards {
+            if let Some(spot) = a.spot {
+                self.bounce(m, a.slot, spot, a.chain, a.monster());
+            } else if a.medals.contains(&Medal::Bounced) {
+                self.bounced(m, a.slot);
+            }
+        }
+    }
+
     /// After the game tick: timers, then `on tick`.
     pub fn post_tick(&mut self, m: &dyn GuestMemory) {
         let Some(tick) = bots::guest::game_tick(m) else {
@@ -832,6 +922,27 @@ impl Runtime {
             self.store.remove();
             self.status = Status::Idle("the game ended");
         }
+    }
+
+    /// Swaps the running script's program between ticks, keeping every
+    /// slot value (`super::reload`, `Vm::swap_program`): the record is
+    /// synced first and written after. An error keeps the old program.
+    pub fn swap(&mut self, ir: Ir) -> Result<Sha256, String> {
+        let Status::Running(r) = &mut self.status else {
+            return Err("no script runs in this game".into());
+        };
+        if let Err(why) = sync(r, &*self.store) {
+            self.stop(why.clone());
+            return Err(why);
+        }
+        let hash = ir.id();
+        r.vm.swap_program(ir).map_err(|e| e.to_string())?;
+        r.hash = hash;
+        if let Err(why) = save(r, &mut *self.store) {
+            self.stop(why.clone());
+            return Err(why);
+        }
+        Ok(hash)
     }
 
     /// Why a snapshot can't be taken now: calls wait for the tick boundary
@@ -883,6 +994,7 @@ impl Runtime {
                     }),
                     pending: r.pending.len(),
                     errors,
+                    last_reload: None,
                 }
             }
         }

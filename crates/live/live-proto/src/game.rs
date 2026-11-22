@@ -372,7 +372,8 @@ pub struct ActorKilled {
 
 /// A bounce off a superbounce crease, with the count of the chain it is in
 /// (docs/game/superbounce.md, "The rule"). The medals are worked out from
-/// `chain` wherever they are shown (`film::events::medals::bounce_medals`).
+/// `chain` and `monster` wherever they are shown
+/// (`film::events::medals::bounce_medals_with`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Superbounce {
     pub tick: u64,
@@ -380,6 +381,11 @@ pub struct Superbounce {
     pub player: u32,
     /// The bounce's place in its chain: 1 for a first bounce.
     pub chain: u32,
+    /// The bounce launched well above a normal one: the `monster-bounce`
+    /// medal. Absent (false) from a host that sends none, and left out of
+    /// the JSON when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub monster: bool,
 }
 
 /// A death falling out of or through the map while trying a bounce: the
@@ -2229,6 +2235,10 @@ mod tests {
             ),
             (SUPERBOUNCE, json!({"tick": 9, "player": 1, "chain": 1})),
             (SUPERBOUNCE, json!({"tick": 9, "player": 0, "chain": 7})),
+            (
+                SUPERBOUNCE,
+                json!({"tick": 9, "player": 0, "chain": 2, "monster": true}),
+            ),
             (BOUNCED, json!({"tick": 9, "player": 1})),
             (TEABAG, json!({"tick": 9, "player": 0, "victim": 1})),
         ] {

@@ -124,7 +124,8 @@ impl FakeGame {
             .collect()
     }
 
-    /// Declares a labelled object: its label, number and placement.
+    /// Declares a labelled object: its label, number and placement. Its
+    /// team, when it has one, goes in [`FakeGame::object_teams`].
     pub fn label(&mut self, label: &str, object: u32, number: i32, placement: u32) {
         self.labelled
             .entry(label.to_string())
@@ -140,12 +141,25 @@ impl FakeGame {
         }
     }
 
+    /// A dead or departed player stands in no zone and carries nothing.
+    fn down(&mut self, p: u8) {
+        self.inside.retain(|&(q, _)| q != p);
+        for carrier in self.objectives.values_mut() {
+            if *carrier == Some(p) {
+                *carrier = None;
+            }
+        }
+    }
+
     /// What the engine does when it reports `input`, before the handler
     /// runs: a kill marks its victim dead and counts the victim's death and
     /// the killer's kill (a suicide counts no kill), a death marks the
-    /// player dead, a spawn alive, a join seats a living player on team 0,
-    /// and an `enter` or `leave` of a player's unit moves the player in or
-    /// out of the zone. [`FakeGame::after`] removes a player who quit.
+    /// player dead (either takes the player out of every zone and drops
+    /// what they carried), a spawn alive, a join seats a living player on
+    /// team 0, an `enter` or `leave` of a player's unit moves the player
+    /// in or out of the zone, and a `pickup` or `drop` of a registered
+    /// objective sets or clears its carrier. [`FakeGame::after`] removes a
+    /// player who quit.
     pub fn apply(&mut self, input: &Input) {
         match *input {
             Input::Kill { victim, killer } => {
@@ -159,10 +173,24 @@ impl FakeGame {
                 {
                     k.kills = k.kills.saturating_add(1);
                 }
+                self.down(victim);
             }
             Input::Death(p) => {
                 if let Some(v) = self.players.get_mut(&p) {
                     v.alive = false;
+                }
+                self.down(p);
+            }
+            Input::Pickup(p, o) => {
+                if let Some(carrier) = self.objectives.get_mut(&o) {
+                    *carrier = Some(p);
+                }
+            }
+            Input::Drop(p, o) => {
+                if let Some(carrier) = self.objectives.get_mut(&o)
+                    && *carrier == Some(p)
+                {
+                    *carrier = None;
                 }
             }
             Input::Spawn(p) => {
@@ -196,7 +224,7 @@ impl FakeGame {
         if let Input::Quit(p) = *input {
             self.players.remove(&p);
             self.units.retain(|_, q| *q != p);
-            self.inside.retain(|(q, _)| *q != p);
+            self.down(p);
         }
     }
 
@@ -353,6 +381,35 @@ mod tests {
         assert!(g.players[&4].alive);
         g.after(&Input::Quit(4));
         assert!(!g.players.contains_key(&4));
+    }
+
+    #[test]
+    fn an_objective_is_carried_until_dropped_or_its_carrier_dies() {
+        let mut g = FakeGame::with_players(2);
+        g.objectives.insert(9, None);
+        g.apply(&Input::Pickup(0, 9));
+        assert_eq!(g.objectives[&9], Some(0));
+        // Another player's drop is not this one's.
+        g.apply(&Input::Drop(1, 9));
+        assert_eq!(g.objectives[&9], Some(0));
+        g.apply(&Input::Drop(0, 9));
+        assert_eq!(g.objectives[&9], None);
+        g.apply(&Input::Pickup(1, 9));
+        g.apply(&Input::Kill { victim: 1, killer: Some(0) });
+        assert_eq!(g.objectives[&9], None);
+        // An object that is no objective has no carrier.
+        g.apply(&Input::Pickup(0, 77));
+        assert!(!g.objectives.contains_key(&77));
+    }
+
+    #[test]
+    fn the_dead_leave_their_zones() {
+        let mut g = FakeGame::with_players(1);
+        g.units.insert(100, 0);
+        g.apply(&Input::Enter { zone: 7, object: 100 });
+        g.apply(&Input::Kill { victim: 0, killer: None });
+        g.apply(&Input::Spawn(0));
+        assert_eq!(g.zone_holder(7), None, "a respawn is not where the death was");
     }
 
     #[test]

@@ -29,7 +29,7 @@ export type MedalId =
  *  game's bounces and bounce deaths rather than its kills. */
 export type BounceMedalId =
   | "superbounce" | "double-bounce" | "triple-bounce" | "quad-bounce" | "chain-bounce" | "bouncetacular"
-  | "bounced";
+  | "bounced" | "monster-bounce";
 
 export interface MedalDef { id: MedalId; name: string; blurb: string; tier: 0 | 1 | 2 | 3 }
 
@@ -52,11 +52,13 @@ export const MEDALS: MedalDef[] = [
   { id: "chain-bounce", name: "Chain Bounce", blurb: "5 bounces with no ground between", tier: 2 },
   { id: "bouncetacular", name: "Bouncetacular", blurb: "6 bounces with no ground between", tier: 3 },
   { id: "bounced", name: "Bounced", blurb: "Fell out of the map trying a bounce", tier: 0 },
+  { id: "monster-bounce", name: "Monster Bounce", blurb: "A bounce that launches well above a normal one", tier: 2 },
   { id: "incel", name: "Incel", blurb: "Completed a game without teabagging or getting teabagged", tier: 1 },
 ];
 /** The bounce medals, in table order. */
 export const BOUNCE_MEDALS: BounceMedalId[] = [
   "superbounce", "double-bounce", "triple-bounce", "quad-bounce", "chain-bounce", "bouncetacular", "bounced",
+  "monster-bounce",
 ];
 export const isBounceMedal = (id: MedalId): id is BounceMedalId => (BOUNCE_MEDALS as MedalId[]).includes(id);
 export const MEDAL_BY_ID = Object.fromEntries(MEDALS.map((m) => [m.id, m])) as Record<MedalId, MedalDef>;
@@ -108,25 +110,29 @@ export function gameMedals(kills: readonly Kill[]): MedalAward[] {
 }
 
 /** The medals a bounce earns at its place in a chain, lowest first: a copy
- *  of `bounce_medals` in crates/live/live-proto/src/film/events/medals.rs.
+ *  of `bounce_medals_with` in crates/live/live-proto/src/film/events/medals.rs.
  *  Superbounce is every bounce; a chain gives each of the others once, at 2
- *  to 6 bounces, and from the seventh on only Superbounce. */
-export function bounceMedals(chain: number): BounceMedalId[] {
+ *  to 6 bounces, and from the seventh on only Superbounce. A Monster
+ *  (`monster`) adds Monster Bounce last. */
+export function bounceMedals(chain: number, monster = false): BounceMedalId[] {
   if (!(chain >= 1)) return [];
   const step: Record<number, BounceMedalId> = {
     2: "double-bounce", 3: "triple-bounce", 4: "quad-bounce", 5: "chain-bounce", 6: "bouncetacular",
   };
   const extra = step[chain];
-  return extra ? ["superbounce", extra] : ["superbounce"];
+  const ids: BounceMedalId[] = extra ? ["superbounce", extra] : ["superbounce"];
+  if (monster) ids.push("monster-bounce");
+  return ids;
 }
 
 /** Bounce medals for every slot in one game, from its bounces in log order:
- *  `bounceMedals` of each bounce's chain, and `bounced` for each bounce death. */
+ *  `bounceMedals` of each bounce's chain and Monster flag, and `bounced` for
+ *  each bounce death. */
 export function gameBounceMedals(bounces: readonly Bounce[]): MedalAward[] {
   const sorted = [...bounces].sort((a, b) => a.tick - b.tick || a.position - b.position);
   const out: MedalAward[] = [];
   for (const b of sorted) {
-    const ids: BounceMedalId[] = b.chain === null ? ["bounced"] : bounceMedals(b.chain);
+    const ids: BounceMedalId[] = b.chain === null ? ["bounced"] : bounceMedals(b.chain, b.monster === true);
     for (const medal of ids) out.push({ medal, slot: b.player, tick: b.tick });
   }
   return out;

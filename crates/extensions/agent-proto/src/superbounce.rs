@@ -179,7 +179,7 @@ pub struct MedalPlayer {
     pub live: bool,
     /// Each medal id's total this game (`superbounce`, `double-bounce`,
     /// `triple-bounce`, `quad-bounce`, `chain-bounce`, `bouncetacular`,
-    /// `bounced`).
+    /// `bounced`, `monster-bounce`).
     pub counts: BTreeMap<String, u32>,
 }
 
@@ -195,6 +195,11 @@ pub struct MedalAward {
     pub chain: u32,
     /// The ids the award earned, lowest first.
     pub medals: Vec<String>,
+    /// For a bounce, how many bounce strips were within 0.5 of its
+    /// touchdown (1 by a single seam), kept for the study of Monster
+    /// Bounces; absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strips: Option<u8>,
 }
 
 // ---- superbounce.medal_test ----
@@ -205,7 +210,8 @@ pub struct MedalAward {
 /// nothing sent or recorded. An act.
 pub const MEDAL_TEST: &str = "superbounce.medal_test";
 
-/// `superbounce.medal_test`'s params: `chain` (1 and up) or `bounced`.
+/// `superbounce.medal_test`'s params: `chain` (1 and up) or `bounced`;
+/// `monster` with `chain` files a Monster Bounce.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MedalTestParams {
@@ -213,6 +219,8 @@ pub struct MedalTestParams {
     pub chain: Option<u32>,
     #[serde(default)]
     pub bounced: bool,
+    #[serde(default)]
+    pub monster: bool,
 }
 
 /// `superbounce.medal_test`'s result.
@@ -1063,6 +1071,7 @@ mod tests {
                     tick: 6800,
                     chain: 2,
                     medals: vec!["superbounce".into(), "double-bounce".into()],
+                    strips: Some(1),
                 }],
             },
         };

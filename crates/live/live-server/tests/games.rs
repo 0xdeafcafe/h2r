@@ -1248,7 +1248,10 @@ async fn the_host_reports_bounces_and_the_game_and_stats_serve_them() {
         &id,
         &[
             bounce(0, 1),
-            bounce(0, 2),
+            (
+                "Superbounce",
+                json!({"tick": 42, "player": 0, "chain": 2, "monster": true}),
+            ),
             bounce(1, 1),
             bounce(2, 1),
             ("Bounced", json!({"tick": 60, "player": 2})),
@@ -1277,6 +1280,9 @@ async fn the_host_reports_bounces_and_the_game_and_stats_serve_them() {
     assert_eq!(bounces, [(0, 1), (0, 2), (1, 1), (2, 1)]);
     assert!(g["bounces"][0]["position"].as_u64().is_some());
     assert_eq!(g["bounces"][1]["tick"], 42);
+    // A Monster's row says so; any other has no `monster` key.
+    assert_eq!(g["bounces"][1]["monster"], true);
+    assert!(g["bounces"][0].get("monster").is_none());
     let bounced: Vec<u64> = g["bounced"]
         .as_array()
         .unwrap()

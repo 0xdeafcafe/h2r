@@ -45,13 +45,15 @@ export interface Kill {
 }
 
 /** A superbounce (`chain` 1 and up) or a death trying one (`chain` null),
- *  from the `Superbounce` and `Bounced` events (docs/game/superbounce.md). */
+ *  from the `Superbounce` and `Bounced` events (docs/game/superbounce.md).
+ *  `monster` is set, true, only on a Monster bounce. */
 export interface Bounce {
   position: number;
   at: string;
   tick: number;
   player: number;
   chain: number | null;
+  monster?: true;
 }
 
 /** A teabag from the `Teabag` event, where it is in the log. */
@@ -533,6 +535,7 @@ function addBounce(g: GameState, b: BounceRecord | BouncedRecord) {
   if (b.position !== undefined && g.bounces.some((x) => x.position === b.position)) return;
   const chain = "chain" in b && typeof b.chain === "number" ? b.chain : null;
   const bounce: Bounce = { position: b.position ?? 0, at: b.at ?? "", tick: b.tick, player: b.player, chain };
+  if (chain !== null && "monster" in b && b.monster === true) bounce.monster = true;
   let i = g.bounces.length;
   while (i > 0 && g.bounces[i - 1]!.position > bounce.position && bounce.position > 0) i--;
   g.bounces.splice(i, 0, bounce);

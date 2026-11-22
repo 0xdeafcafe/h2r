@@ -58,7 +58,7 @@ Event types so far (payload fields):
 | `game-<id>` | `ActorKilled` | `tick`, `unit` (salted unit object datum), `character?` (salted character tag datum), `killer?` (credited player slot), `weapon?` (damage-source key). Published by the host. |
 | `game-<id>` | `FirefightScore` | `tick`, `player` (credited roster slot), `points`, `reason` (`kill`/`assist`), `class?` (the kit class killed; on a kill only). Published by the host ([Firefight](../game/firefight.md#scoring-and-stats)). |
 | `game-<id>` | `FirefightEnded` | `tick`, `set` (the wave set's name), `outcome` (`won`/`lost`), `rounds_cleared`, `lives_used`. Published by the host, once, before `GameEnded`. |
-| `game-<id>` | `Superbounce` | `tick`, `player` (a slot of the game), `chain` (the bounce's place in its chain, 1 and up). Published by the host, for every player it watches, bots included ([superbounce.md](../game/superbounce.md#recording)). |
+| `game-<id>` | `Superbounce` | `tick`, `player` (a slot of the game), `chain` (the bounce's place in its chain, 1 and up), `monster` (true for a bounce that launches well above a normal one, the `monster-bounce` medal; absent reads as false, and a host leaves it out when false). Published by the host, for every player it watches, bots included ([superbounce.md](../game/superbounce.md#recording)). |
 | `game-<id>` | `Bounced` | `tick`, `player`, `chain` (the count of the chain it ended, 0 if none; absent reads as 0): a death falling out of or through the map while trying a bounce, beside its `PlayerKilled`. Published by the host. |
 | `game-<id>` | `Teabag` | `tick`, `player` (the crouching player's slot), `victim` (the slot of the player whose body it was; not `player`): a teabag. Published by the host, for every player it watches, bots included ([teabag.md](../game/teabag.md#recording)). |
 | `game-<id>` | `ScoreChanged` | `tick`, `players: [{index, score, kills, deaths, assists}]`, `teams?: [{team, score}]` |
@@ -390,7 +390,7 @@ the index once and fetches the one chunk whose window holds the tick.
 | `GET /v1/presence` | who is online now: `{xuid, gamertag, state, game_id?, activity?, since, build?, capabilities?}`; a player in a game or session the reader may not see shows no `game_id` and `activity: "In a game"` ([Co-op games](#co-op-games), "Presence") |
 | `GET /v1/coop/games?player=` | finished co-op campaign games, newest first ([Co-op games](#co-op-games), below) |
 | `GET /v1/games?state=live\|ended&map=&map_id=&skulls=` | game summaries: `{game_id, map, mode, kind, variant, playlist?, playlist_id?, difficulty?, online?, team_play, started_at, ended_at?, players, teams?, map_id?, skulls?}`; `map` keeps games on that base map, modded or not, `map_id` one exact map (`none`: games with no `map_id`), `skulls` (comma-separated indices, `4,6`) games that had every one of them on; without the co-op games the reader may not see ([Co-op games](#co-op-games)) |
-| `GET /v1/games/{id}` | summary plus scoreboard, the last 50 kills, and the last 100 superbounces (`bounces`: `tick`, `player`, `chain`, `position`, `at`) and bounce deaths (`bounced`: `tick`, `player`, `chain`, `position`, `at`), and the last 100 teabags (`teabags`: `tick`, `player`, `victim`, `position`, `at`), each oldest first and empty in a game with none; `joined_late`, the slots of players in the game who joined after its first kill (left out when none; [teabag.md](../game/teabag.md#the-medal)); 404, as for no game, for a co-op game the reader may not see ([Co-op games](#co-op-games)) |
+| `GET /v1/games/{id}` | summary plus scoreboard, the last 50 kills, and the last 100 superbounces (`bounces`: `tick`, `player`, `chain`, `monster` when true, `position`, `at`) and bounce deaths (`bounced`: `tick`, `player`, `chain`, `position`, `at`), and the last 100 teabags (`teabags`: `tick`, `player`, `victim`, `position`, `at`), each oldest first and empty in a game with none; `joined_late`, the slots of players in the game who joined after its first kill (left out when none; [teabag.md](../game/teabag.md#the-medal)); 404, as for no game, for a co-op game the reader may not see ([Co-op games](#co-op-games)) |
 | `GET /v1/games/{id}/join` | `{session_id}` for the game's current reader. The value is null unless the running game's own custom lobby or linked co-op session is joinable. The game and lobby each follow their own visibility rules. Hidden games return 404 and responses are private and uncached. |
 | `GET /v1/games/{id}/chunks` | the game's [frame chunk](#frame-chunks) index: `{game_id, chunk_ticks, ended, items}`, `items` the `FrameChunk` data oldest first; empty for a game recorded before chunks |
 | `GET /v1/games/{id}/chunks/{tick}` | one chunk by its first tick, `application/x-h2-chunk`; checked against its index entry's hash. Anonymous reads are `public, max-age=31536000, immutable` (it is never rewritten) |
@@ -1837,6 +1837,7 @@ homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
 |---|---|---|
 | `POST /v1/rules/check` | none; rate-limited per client address | `{ok, hash, name, version, errors: [{line, col, message}], report}` |
 | `POST /v1/rules/run` | as check | a trace, or `{ok: false, errors}` when the script does not build |
+| `POST /v1/rules/simulate` | as check | generated matches: `{ok, teams, summary, rows, match}`, or `{ok: false, errors}` when the script does not build |
 | `POST /v1/rules/ide` | none; rate-limited per client address, in a bucket of its own | one editor operation's answer, in LSP's field names (below) |
 | `GET /v1/rules/ide/legend` | none | `{legend: [...]}`, the semantic token types by index |
 | `GET /v1/rules/builtin` | a read | `{items: [{name, engine, source, hash, example, key?}]}`: the engine ports (`rules::builtin::ALL`, `example: false`), then the example scripts (`rules::builtin::examples`, `example: true`, with their `key` and their carrier as `engine`) |
@@ -1845,9 +1846,11 @@ homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
 | `GET /v1/rules/{hash}/ir` | a read | the IR blob (`application/octet-stream`, immutable), compiled again from the saved source |
 | `GET /v1/rules?author=` | a read | `{items: [...]}`, the author's scripts newest first; `author` is a gamertag or xuid |
 
-- Bodies are JSON with `source`, at most 256 KiB (413 over it). Check and
-  run share a bucket of 20 requests per client address, refilled at 2 a
-  second (`rule_scripts::RATE`); an empty bucket is 429.
+- Bodies are JSON with `source`, at most 256 KiB (413 over it). Check,
+  run and simulate share a bucket of 20 tokens per client address,
+  refilled at 2 a second (`rule_scripts::RATE`); an empty bucket is 429.
+  A check, a run or one generated match costs 1 token; a batch costs 2,
+  and 1 more for each further 25 matches (`sim_cost`).
 - `ok` on a check means the script compiled, verified, fits the 100,000-op
   tick budget and the 256 KiB IR cap. `hash` is the IR's SHA-256, present
   whenever it compiled. An error with line and column 0 is about the whole
@@ -1863,27 +1866,59 @@ homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
   `unhostable`: the entries the script calls that no host can make yet on
   the script's carrier.
 - A run's `scenario` is `{players: [{slot, team, lives, unit?}], teams,
-  variant, labelled: [{label, object, number?, placement?}], options,
+  variant, labelled: [{label, object, number?, placement?,
+  team?}], options,
   seed, round_time, ticks, start, timeline: [{tick, events}]}`. `unit` is
   the object that is the player's unit, so `enter` and `leave` find its
-  player; `labelled` lists the objects `objects labelled` visits; a
+  player; `labelled` lists the objects `objects labelled` visits, each with
+  the `team` that `o.team` reads when it has one; a
   `variant` field left out reads the stock record of the script's
   carrier. An event is `{type, ...}` with the handler's event name:
   `kill {victim, killer}`, `spawn`, `death`, `join`, `quit {player}`,
-  `pickup`, `drop`, `press`, `bounce`, `edit {player, object}`, `enter`,
-  `leave {zone, object}`, `squad_dead {squad}`, `actor_kill {killer,
-  class}`, `actor_assist {killer, assist, class}`, `round_start`,
+  `pickup`, `drop`, `press`, `edit {player, object}`, `bounce {player,
+  object, chain, monster}` (`chain` 1 and `monster` false when absent),
+  `bounced {player}`, `enter`, `leave {zone, object}`, `squad_dead
+  {squad}`, `actor_kill {killer, class}`, `actor_assist {killer, assist,
+  class}`, `round_start`,
   `round_end`, `init`. A run steps the fake game `h2 rules run` steps
   (`rules::scenario::step`). `start` (default true) fires `init`
   and `round_start` at tick 0; `ticks` is the last tick run, at most
   36,000; a scenario lists at most 4,096 events. A bad scenario is 400.
 - The trace is `{ok, hash, options, ticks, last_tick, error, round_ended,
-  cut, ops, scores: [{slot, score}]}`. Each entry of `ticks` is a tick in
+  round_winner, limit, cut, ops, worst_tick_ops, handlers_ran, scores:
+  [{slot, score}]}`. `limit` is `"score"` or `"time"` when a `score_limit` or
+  `time_limit` the scenario's `variant` sets ended the game, and `round_winner` the
+  team `end_round` named. Each entry of `ticks` is a tick in
   which something happened: `{tick, ran, calls: [{entry, args}], ops,
   warnings, globals: [{name, value}], players: [{slot, team, alive, score,
   lives, vars}], error}`. A run stops at a script error, after the tick
-  that calls `end_round`, or past 4,000,000 ops (`cut` says so), and keeps
-  at most 2,000 ticks.
+  that calls `end_round`, at a limit, or past 12,000,000 ops (`cut` says
+  so), and keeps at most 2,000 ticks.
+- A simulate body is `{source, players, teams, seed, matches, length,
+  score_limit}`: `players` 1 to 16 (default 8), `teams` 0 to 8 (0 or 1
+  is no team play; a carrier that needs teams gets them), `seed`
+  (default 1), `matches` 1 to 100 (default 1), and optionally `length`
+  in seconds (at most 1,200; absent, 300) and `score_limit`. An unknown
+  field or a value out of range is 400. Match `i` of a batch plays seed
+  `seed + i`; the same body gives the same answer
+  (`rules::sim`; [rules-engine.md, "Workbench"](../game/rules-engine.md#workbench)).
+- A simulate answer's `match` is the first seed's match in full:
+  `{seed, end, why, winner, top_score, scenario, trace}`, with `scenario`
+  in the run's shape (posting it to `/v1/rules/run` gives the same
+  scores) and `trace` a run's trace holding the ticks in which an event
+  fired. `end` is `script`, `score_limit`, `time_limit`, `error` or
+  `cap` (the match never ended), and `winner` is `{kind, index}` with
+  `kind` `player`, `team`, `draw` or `nobody`. `teams` is the team count
+  played. With one match `summary` is null and `rows` empty. A batch's
+  `rows` are `[{seed, end, winner, ticks, top_score, ops,
+  worst_tick_ops}]` and its `summary` is `{asked, ran, wins: [{winner,
+  matches}], ends: [{end, matches}], avg_score, max_score, avg_ticks,
+  max_ticks, worst_tick_ops, worst_tick_seed, budget, errors: [{seed,
+  message}], flags: [{kind, text, seed, matches}], stopped}`. A flag's
+  `kind` is `never_ends`, `nobody_scores`, `negative_score`, `never_ran`
+  or `clock`, and its `seed` a match that shows it. A batch starts no
+  match past 24,000,000 ops or 400,000 ticks; `ran` is how many it
+  played and `stopped` says why it played fewer.
 - An editor request is `{source, op, line, character}`: `line` (0-based)
   and `character` (UTF-16 units) are the place, required by `complete`,
   `hover`, `signature`, `definition` and `references`. Each op answers

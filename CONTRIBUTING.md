@@ -19,7 +19,9 @@ something is derived from the disc, leave it out.
 
 Scripted documentation screenshots and gameplay footage are the exception.
 Render them from your own disc with a script in `scripts/` and commit the
-finished media under `docs/images/` in Git LFS. Run `git lfs install` once.
+finished media under `docs/images/`. Every image in the repository
+(`.png`, `.jpg`, `.webp`, `.gif`) goes through Git LFS by `.gitattributes`.
+Run `git lfs install` once.
 Keep raw frame sequences, one-off screenshots, debug frames and test captures
 out of Git.
 

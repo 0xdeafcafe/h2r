@@ -41,7 +41,7 @@ fn imported_tick_events_produce_the_same_stats_as_live_telemetry() {
         (
             52,
             game::SUPERBOUNCE,
-            json!({"tick":GUEST_START+52,"player":0,"chain":2}),
+            json!({"tick":GUEST_START+52,"player":0,"chain":2,"monster":true}),
         ),
         (55, game::BOUNCED, json!({"tick":GUEST_START+55,"player":1})),
         (
@@ -105,6 +105,11 @@ fn imported_tick_events_produce_the_same_stats_as_live_telemetry() {
         player: 0,
         earned_at: GUEST_START + 52,
         medal: "double-bounce".into()
+    }));
+    assert!(highlights.contains(&events::Event::Medal {
+        player: 0,
+        earned_at: GUEST_START + 52,
+        medal: "monster-bounce".into()
     }));
     assert!(highlights.contains(&events::Event::Medal {
         player: 1,

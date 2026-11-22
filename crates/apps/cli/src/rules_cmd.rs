@@ -1,4 +1,4 @@
-//! `h2 rules check|build|run|caps|builtin|lsp`: the rules language's tooling
+//! `h2 rules check|build|run|sim|caps|builtin|lsp`: the rules language's tooling
 //! (docs/game/rules-engine.md, "Security and usability"). Every command is pure over its
 //! inputs: no game, no disc. The `*_text` functions build what a command
 //! prints, so tests read it without a process.
@@ -10,12 +10,16 @@ use anyhow::{Context, Result, bail};
 use rules::caps::{self, Kind, Status};
 use rules::ir::Scope;
 use rules::scenario::{self, Scenario};
+use rules::sim;
 use rules::vm::TICK_BUDGET;
 use rules::{BuildError, Ir, Report, builtin};
 
 const USAGE: &str = "usage: h2 rules check <file.rules>
        h2 rules build <file.rules> -o <out.rir>
        h2 rules run <file.rules> --scenario <scenario.json> [--trace]
+       h2 rules sim <file.rules> [--players N] [--teams N] [--seed S]
+                    [--matches N] [--length SECONDS] [--score-limit N]
+                    [--json] [-o <scenario.json>]
        h2 rules caps
        h2 rules builtin [name]
        h2 rules lsp
@@ -29,6 +33,11 @@ const USAGE: &str = "usage: h2 rules check <file.rules>
   run steps the script over a JSON scenario on a fake game and prints the
   calls made each tick and the final scores (--trace adds each event and
   call).
+  sim plays a generated match of the script on the fake game until the
+  game ends: made-up players, the events the script handles, the same
+  match for the same seed. --matches plays that many seeds and sums them
+  up (who wins, how games end, the worst tick, warnings). -o writes the
+  match as a scenario file for run.
   caps lists the capabilities and the engine API entries with their status.
   builtin lists the built-in scripts (the engine ports) and the example
   scripts, or prints one by name, engine index or example key.
@@ -50,6 +59,7 @@ pub fn run(words: Vec<String>) -> Result<()> {
         "check" => check(&rest),
         "build" => build(&rest),
         "run" => run_scenario(&rest),
+        "sim" => simulate(&rest),
         "lsp" => crate::rules_lsp::run(),
         "caps" => {
             print!("{}", caps_text());
@@ -159,6 +169,274 @@ fn run_scenario(words: &[String]) -> Result<()> {
             std::process::exit(1);
         }
     }
+}
+
+/// What `h2 rules sim` was asked for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SimArgs {
+    pub setup: sim::Setup,
+    pub matches: u32,
+    pub json: bool,
+}
+
+impl Default for SimArgs {
+    fn default() -> SimArgs {
+        SimArgs {
+            setup: sim::Setup::default(),
+            matches: 1,
+            json: false,
+        }
+    }
+}
+
+/// The file, the arguments and where the scenario goes.
+fn parse_sim(words: &[String]) -> Result<(PathBuf, SimArgs, Option<PathBuf>)> {
+    let mut file = None;
+    let mut out = None;
+    let mut args = SimArgs::default();
+    let mut it = words.iter();
+    fn number<T: std::str::FromStr>(flag: &str, v: Option<&String>) -> Result<T> {
+        let v = v.with_context(|| format!("{flag} requires a number"))?;
+        v.parse()
+            .map_err(|_| anyhow::anyhow!("{flag} takes a number, not {v}"))
+    }
+    while let Some(w) = it.next() {
+        match w.as_str() {
+            "--players" => args.setup.players = number(w, it.next())?,
+            "--teams" => args.setup.teams = number(w, it.next())?,
+            "--seed" => args.setup.seed = number(w, it.next())?,
+            "--matches" => args.matches = number(w, it.next())?,
+            "--length" => args.setup.length = Some(number(w, it.next())?),
+            "--score-limit" => args.setup.score_limit = Some(number(w, it.next())?),
+            "--json" => args.json = true,
+            "-o" | "--out" => {
+                out = Some(PathBuf::from(it.next().context("-o requires a path")?));
+            }
+            f if !f.starts_with('-') && file.is_none() => file = Some(PathBuf::from(f)),
+            _ => bail!("{USAGE}"),
+        }
+    }
+    Ok((file.context(USAGE)?, args, out))
+}
+
+fn simulate(words: &[String]) -> Result<()> {
+    let (file, args, out) = parse_sim(words)?;
+    if out.as_ref() == Some(&file) {
+        bail!("the output {} is the source file", file.display());
+    }
+    let label = file.display().to_string();
+    match sim_text(&label, &read(&file)?, &args) {
+        Ok(done) => {
+            print!("{}", done.text);
+            if let Some(path) = out {
+                std::fs::write(&path, &done.scenario)
+                    .with_context(|| format!("writing {}", path.display()))?;
+                eprintln!("wrote the match's scenario to {}", path.display());
+                if !done.left_out.is_empty() {
+                    eprintln!("the scenario file has no place for: {}", done.left_out.join(", "));
+                }
+            }
+            if !done.ok {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        Err(text) => {
+            eprint!("{text}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// What `h2 rules sim` made.
+#[derive(Clone, Debug)]
+pub struct SimOut {
+    /// What it prints: text, or JSON with `--json`.
+    pub text: String,
+    /// The shown match as a scenario file (`rules::scenario`).
+    pub scenario: String,
+    /// What the scenario file has no place for.
+    pub left_out: Vec<String>,
+    /// No match stopped on a script error.
+    pub ok: bool,
+}
+
+/// A tick as match time: `3:12.4`.
+fn clock(tick: u32) -> String {
+    let tenths = u64::from(tick) * 10 / caps::TICKS_PER_SECOND as u64;
+    format!("{}:{:02}.{}", tenths / 600, tenths / 10 % 60, tenths % 10)
+}
+
+fn times<T>(list: &[T], words: impl Fn(&T) -> (String, u32)) -> String {
+    list.iter()
+        .map(|x| {
+            let (name, n) = words(x);
+            format!("{name} x{n}")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Plays the match (and the batch, for more than one) `h2 rules sim`
+/// prints.
+pub fn sim_text(label: &str, src: &str, args: &SimArgs) -> Result<SimOut, String> {
+    let (ir, _) = compile(label, src)?;
+    let refuse = |e: rules::workbench::RunError| match e {
+        rules::workbench::RunError::Scenario(m) => format!("{label}: {m}\n"),
+        rules::workbench::RunError::Script(problems) => problems
+            .iter()
+            .map(|p| format!("{label}: {}\n", p.message))
+            .collect(),
+    };
+    let m = sim::simulate(src, &args.setup).map_err(refuse)?;
+    let batch = if args.matches == 1 {
+        None
+    } else {
+        Some(sim::batch(src, &args.setup, args.matches).map_err(refuse)?)
+    };
+    let (file, left_out) = sim::to_file(&m.scenario);
+    let scenario = serde_json::to_string(&file).map_err(|e| format!("{label}: {e}\n"))?;
+    let ok = m.end != sim::End::Error && batch.as_ref().is_none_or(|b| b.summary.errors.is_empty());
+
+    if args.json {
+        let scores: Vec<_> = m
+            .trace
+            .scores
+            .iter()
+            .map(|(slot, score)| serde_json::json!({"slot": slot, "score": score}))
+            .collect();
+        let value = serde_json::json!({
+            "name": ir.header.name,
+            "seed": m.seed,
+            "players": args.setup.players,
+            "teams": m.teams,
+            "end": m.end,
+            "why": m.why,
+            "winner": m.winner,
+            "top_score": m.top_score,
+            "ticks": m.trace.last_tick,
+            "ops": m.trace.ops,
+            "worst_tick_ops": m.trace.worst_tick_ops,
+            "handlers_ran": m.trace.handlers_ran,
+            "scores": scores,
+            "summary": batch.as_ref().map(|b| &b.summary),
+            "rows": batch.as_ref().map(|b| &b.rows),
+            "scenario": file,
+        });
+        let mut text = serde_json::to_string_pretty(&value).map_err(|e| format!("{label}: {e}\n"))?;
+        text.push('\n');
+        return Ok(SimOut {
+            text,
+            scenario,
+            left_out,
+            ok,
+        });
+    }
+
+    let mut s = String::new();
+    let _ = writeln!(
+        s,
+        "{label}: \"{}\", {} {}, {}, seed {}",
+        ir.header.name,
+        args.setup.players,
+        if args.setup.players == 1 { "player" } else { "players" },
+        match m.teams {
+            0 => "free for all".to_string(),
+            n => format!("{n} teams"),
+        },
+        m.seed
+    );
+    let _ = writeln!(
+        s,
+        "ended at {} (tick {}): {}{}",
+        clock(m.trace.last_tick),
+        m.trace.last_tick,
+        m.end.words(),
+        m.why.as_ref().map(|w| format!(" ({w})")).unwrap_or_default()
+    );
+    let _ = writeln!(s, "winner: {} (top score {})", m.winner.words(), m.top_score);
+    let team_of: std::collections::BTreeMap<u8, u8> =
+        m.scenario.players.iter().map(|p| (p.slot, p.team)).collect();
+    for (slot, score) in &m.trace.scores {
+        let _ = writeln!(
+            s,
+            "player {slot}: team {}, score {score}",
+            team_of.get(slot).copied().unwrap_or(0)
+        );
+    }
+    let _ = writeln!(
+        s,
+        "handlers run: {}",
+        if m.trace.handlers_ran.is_empty() {
+            "none".to_string()
+        } else {
+            m.trace.handlers_ran.join(", ")
+        }
+    );
+    let _ = writeln!(
+        s,
+        "worst tick: {} ops of {} budget; {} events, {} ops in all",
+        m.trace.worst_tick_ops,
+        TICK_BUDGET,
+        m.scenario.steps.len(),
+        m.trace.ops
+    );
+
+    if let Some(b) = &batch {
+        let sum = &b.summary;
+        let _ = writeln!(
+            s,
+            "\n{} matches, seeds {} to {}",
+            sum.ran,
+            args.setup.seed,
+            args.setup.seed.wrapping_add(u64::from(sum.ran.max(1)) - 1)
+        );
+        if let Some(why) = &sum.stopped {
+            let _ = writeln!(s, "stopped early: {why}");
+        }
+        let _ = writeln!(s, "winners: {}", times(&sum.wins, |w| (w.winner.words(), w.matches)));
+        let _ = writeln!(
+            s,
+            "ended: {}",
+            times(&sum.ends, |e| (e.end.words().to_string(), e.matches))
+        );
+        let _ = writeln!(
+            s,
+            "winning score: average {:.1}, highest {}",
+            sum.avg_score, sum.max_score
+        );
+        let _ = writeln!(
+            s,
+            "length: average {}, longest {}",
+            clock(sum.avg_ticks),
+            clock(sum.max_ticks)
+        );
+        let _ = writeln!(
+            s,
+            "worst tick: {} ops of {} budget (seed {})",
+            sum.worst_tick_ops, sum.budget, sum.worst_tick_seed
+        );
+        if sum.flags.is_empty() {
+            let _ = writeln!(s, "warnings: none");
+        } else {
+            let _ = writeln!(s, "warnings:");
+            for f in &sum.flags {
+                let _ = writeln!(s, "  {} (seed {})", f.text, f.seed);
+            }
+        }
+        if !sum.errors.is_empty() {
+            let _ = writeln!(s, "errors:");
+            for e in &sum.errors {
+                let _ = writeln!(s, "  seed {}: {}", e.seed, e.message);
+            }
+        }
+    }
+    Ok(SimOut {
+        text: s,
+        scenario,
+        left_out,
+        ok,
+    })
 }
 
 /// Compiles and verifies source. Errors are `label:line:col: message`
@@ -528,6 +806,94 @@ on kill(victim, killer) {
         assert!(text.contains("player 0: team 0, score 1"), "{text}");
         assert!(text.contains("team 0: score 1"), "{text}");
         assert!(text.contains("round was still running"), "{text}");
+    }
+
+    #[test]
+    fn sim_plays_a_match_to_its_end_and_the_same_one_again() {
+        let args = SimArgs {
+            setup: sim::Setup { players: 6, teams: 2, seed: 3, ..sim::Setup::default() },
+            ..SimArgs::default()
+        };
+        let a = sim_text("x.rules", rules::builtin::SLAYER, &args).unwrap();
+        assert!(a.ok);
+        assert!(a.text.starts_with("x.rules: \"Slayer\", 6 players, 2 teams, seed 3\n"), "{}", a.text);
+        assert!(a.text.contains("\nended at "), "{}", a.text);
+        assert!(a.text.contains("\nwinner: "), "{}", a.text);
+        assert!(a.text.contains("\nplayer 5: team 1, score "), "{}", a.text);
+        assert!(a.text.contains("\nhandlers run: kill\n"), "{}", a.text);
+        assert!(!a.text.contains("matches, seeds"), "{}", a.text);
+        let b = sim_text("x.rules", rules::builtin::SLAYER, &args).unwrap();
+        assert_eq!((a.text.as_str(), a.scenario.as_str()), (b.text.as_str(), b.scenario.as_str()));
+
+        // The scenario it writes is one `run` reads.
+        let file: Scenario = serde_json::from_str(&a.scenario).unwrap();
+        assert_eq!(file.seed, 3);
+        assert_eq!(file.players.len(), 6);
+        let (text, ok) = run_text("x.rules", rules::builtin::SLAYER, &a.scenario, false).unwrap();
+        assert!(ok, "{text}");
+        assert!(a.left_out.is_empty(), "{:?}", a.left_out);
+        // Team Slayer's default limit (`sim::Setup`): this match has teams.
+        assert_eq!(file.variant["score_limit"], 50);
+        assert!(file.players.iter().all(|p| p.unit.is_some()));
+    }
+
+    #[test]
+    fn sim_sums_up_a_batch() {
+        let args = SimArgs {
+            setup: sim::Setup { seed: 10, ..sim::Setup::default() },
+            matches: 5,
+            json: false,
+        };
+        let out = sim_text("x.rules", rules::builtin::SLAYER, &args).unwrap();
+        assert!(out.text.contains("\n5 matches, seeds 10 to 14\n"), "{}", out.text);
+        assert!(out.text.contains("\nwinners: "), "{}", out.text);
+        assert!(out.text.contains("\nended: "), "{}", out.text);
+        assert!(out.text.contains("\nwinning score: average "), "{}", out.text);
+        assert!(out.text.contains(&format!(" ops of {} budget (seed 1", rules::vm::TICK_BUDGET)), "{}", out.text);
+        assert!(out.text.contains("\nwarnings:"), "{}", out.text);
+
+        let json = sim_text("x.rules", rules::builtin::SLAYER, &SimArgs { json: true, ..args }).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json.text).unwrap();
+        assert_eq!(v["name"], "Slayer");
+        assert_eq!(v["seed"], 10);
+        assert_eq!(v["summary"]["ran"], 5);
+        assert_eq!(v["rows"].as_array().unwrap().len(), 5);
+        assert_eq!(v["rows"][0]["winner"], v["winner"]);
+        assert!(v["scenario"]["ticks"].as_array().unwrap().len() > 1);
+        assert!(v["scores"].as_array().unwrap().len() == 8);
+    }
+
+    #[test]
+    fn sim_reads_its_flags_and_names_what_is_wrong() {
+        let words = |s: &str| s.split(' ').map(String::from).collect::<Vec<_>>();
+        let (file, args, out) =
+            parse_sim(&words("m.rules --players 4 --teams 2 --seed 9 --matches 25 --length 60 --score-limit 10 --json -o m.json")).unwrap();
+        assert_eq!(file, PathBuf::from("m.rules"));
+        assert_eq!(out, Some(PathBuf::from("m.json")));
+        assert_eq!(
+            args,
+            SimArgs {
+                setup: sim::Setup { players: 4, teams: 2, seed: 9, length: Some(60), score_limit: Some(10) },
+                matches: 25,
+                json: true,
+            }
+        );
+        assert_eq!(parse_sim(&words("m.rules")).unwrap().1, SimArgs::default());
+        assert!(parse_sim(&words("m.rules --players many")).is_err());
+        assert!(parse_sim(&words("m.rules --seed")).is_err());
+        assert!(parse_sim(&words("--players 4")).is_err());
+        assert!(parse_sim(&words("m.rules --fast")).is_err());
+
+        let err = sim_text("x.rules", "rules \"A\" 1\ncarrier slayer\non kill(a, b) { nope(a) }\n", &SimArgs::default())
+            .unwrap_err();
+        assert!(err.starts_with("x.rules:3:"), "{err}");
+        let many = SimArgs { setup: sim::Setup { players: 17, ..sim::Setup::default() }, ..SimArgs::default() };
+        let err = sim_text("x.rules", rules::builtin::SLAYER, &many).unwrap_err();
+        assert_eq!(err, "x.rules: a match seats 1 to 16 players\n");
+        let err = sim_text("x.rules", rules::builtin::SLAYER, &SimArgs { matches: 101, ..SimArgs::default() }).unwrap_err();
+        assert!(err.contains("1 to 100 matches"), "{err}");
+        assert_eq!(clock(5772), "3:12.4");
+        assert_eq!(clock(0), "0:00.0");
     }
 
     #[test]

@@ -81,8 +81,9 @@ the entries a host cannot make yet. `fake::FakeGame` is a table-backed
 `Game` that logs calls, for tests, `h2 rules run` and the workbench; it
 also holds an objective registry, object teams, labelled objects, units
 and `inside` answers. `begin_tick` counts the round clock down, `apply`
-and `after` keep kills, deaths, `alive`, joins, quits and zone occupants
-as the host reports them, a `variant` field it was not given reads the
+and `after` keep kills, deaths, `alive`, joins, quits, zone occupants
+and objective carriers as the host reports them (the dead leave their
+zones and drop what they carry), a `variant` field it was not given reads the
 carrier's stock record (`fake::stock_variant`), and a zone whose living
 occupants are all on one team is held by it. `scenario::step` runs one
 tick over it for both `scenario::run` and `workbench::run`.
@@ -94,8 +95,13 @@ tick over it for both `scenario::run` and `workbench::run`.
 with line and column, budget, slots, IR bytes, capabilities in plain
 words, unhostable entries). `workbench::run` steps a `Scenario` over
 `FakeGame` into a per-tick `Trace`, within 36,000 ticks, 4,096 events and
-4,000,000 ops. Live's `/v1/rules/check` and `/v1/rules/run` serve them to
-the web app ([Workbench](../../../docs/game/rules-engine.md#workbench)).
+12,000,000 ops; `workbench::Runner` is the same run one tick at a time.
+`sim::simulate` makes a match up from what a script handles and a seed,
+playing it as it goes, and `sim::batch` sums up many seeds (who wins,
+how matches end, the costliest tick, what looks wrong). Live's
+`/v1/rules/check`, `/v1/rules/run` and `/v1/rules/simulate` serve them to
+the web app, and `h2 rules sim` to the terminal
+([Workbench](../../../docs/game/rules-engine.md#workbench)).
 
 The Firefight director script is built outside this crate, by
 `firefight::script` from a wave-set definition; the `firefight.director`

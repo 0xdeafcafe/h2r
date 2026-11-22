@@ -116,10 +116,19 @@ pub enum Input {
         assist: Option<u8>,
         class: String,
     },
-    Bounce(u8, u32),
+    /// A superbounce by `player` off the strip `spot`, the `chain`th of its
+    /// chain (1 for a single bounce), and whether it was a Monster Bounce.
+    Bounce {
+        player: u8,
+        spot: u32,
+        chain: u32,
+        monster: bool,
+    },
     Edit(u8, u32),
     Join(u8),
     Quit(u8),
+    /// A fall out of the map during a bounce: the Bounced medal.
+    Bounced(u8),
 }
 
 impl Input {
@@ -139,10 +148,11 @@ impl Input {
             Input::SquadDead(_) => Event::SquadDead,
             Input::ActorKill { .. } => Event::ActorKill,
             Input::ActorAssist { .. } => Event::ActorAssist,
-            Input::Bounce(..) => Event::Bounce,
+            Input::Bounce { .. } => Event::Bounce,
             Input::Edit(..) => Event::Edit,
             Input::Join(_) => Event::Join,
             Input::Quit(_) => Event::Quit,
+            Input::Bounced(_) => Event::Bounced,
         }
     }
 }
@@ -665,6 +675,24 @@ impl Vm {
         })
     }
 
+    /// Swaps in a new program between ticks, keeping every slot value, the
+    /// generator, grants and queued calls (`crate::reload`). `ir` must
+    /// verify and keep the state shape ([`crate::reload::compatible`]);
+    /// otherwise nothing changes. A stopped script runs again.
+    pub fn swap_program(&mut self, ir: Ir) -> Result<(), crate::reload::SwapError> {
+        use crate::reload::{SwapError, carry, compatible};
+        let report = verify::verify(&ir)?;
+        compatible(&self.ir, &ir).map_err(SwapError::Incompatible)?;
+        carry(&self.ir, &ir, &mut self.ext);
+        let (pos, inits) = layout(&ir);
+        self.ext.stopped = None;
+        self.ir = ir;
+        self.pos = pos;
+        self.inits = inits;
+        self.report = report;
+        Ok(())
+    }
+
     pub fn ir(&self) -> &Ir {
         &self.ir
     }
@@ -902,12 +930,25 @@ impl Vm {
         match input {
             Input::Init | Input::RoundStart | Input::RoundEnd => vec![],
             Input::Kill { victim, killer } => vec![p(*victim), op(*killer)],
-            Input::Spawn(x) | Input::Death(x) | Input::Join(x) | Input::Quit(x) => vec![p(*x)],
-            Input::Pickup(x, ob)
-            | Input::Drop(x, ob)
-            | Input::Press(x, ob)
-            | Input::Bounce(x, ob)
-            | Input::Edit(x, ob) => vec![p(*x), o(*ob)],
+            Input::Spawn(x)
+            | Input::Death(x)
+            | Input::Join(x)
+            | Input::Quit(x)
+            | Input::Bounced(x) => vec![p(*x)],
+            Input::Pickup(x, ob) | Input::Drop(x, ob) | Input::Press(x, ob) | Input::Edit(x, ob) => {
+                vec![p(*x), o(*ob)]
+            }
+            Input::Bounce {
+                player,
+                spot,
+                chain,
+                monster,
+            } => vec![
+                p(*player),
+                o(*spot),
+                i32::try_from(*chain).unwrap_or(i32::MAX),
+                i32::from(*monster),
+            ],
             Input::Enter { zone, object } | Input::Leave { zone, object } => {
                 vec![o(*zone), o(*object)]
             }

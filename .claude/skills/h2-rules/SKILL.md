@@ -1,6 +1,6 @@
 ---
 name: h2-rules
-description: Use when writing, checking, testing or shipping a game type script in the rules language, a `.rules` file, a rules scenario, a game variant or a `.h2variant` file. Covers h2 rules check/build/run/caps/builtin/lsp, h2 variants port, capabilities and requires, the tick budget, and Live's /v1/rules and /v1/variants routes.
+description: Use when writing, checking, testing or shipping a game type script in the rules language, a `.rules` file, a rules scenario, a game variant or a `.h2variant` file. Covers h2 rules check/build/run/sim/caps/builtin/lsp, h2 variants port, capabilities and requires, the tick budget, Studio's script editor and reloading a script into a running game (rules.reload), and Live's /v1/rules and /v1/variants routes.
 ---
 
 # Write, test and ship a game type script
@@ -30,6 +30,7 @@ References beside this file:
 
 ```sh
 h2 rules check my_mode.rules                        # compile, verify, measure
+h2 rules sim my_mode.rules --matches 25             # play generated matches, summed up
 h2 rules run my_mode.rules --scenario my_mode.json  # step it on a fake game
 h2 rules run my_mode.rules --scenario my_mode.json --trace
 h2 rules build my_mode.rules -o my_mode.rir         # the verified blob and its SHA-256
@@ -45,15 +46,25 @@ h2 rules build my_mode.rules -o my_mode.rir         # the verified blob and its 
    slayer`, optional `teams n` and `requires ...`), options, variables,
    functions, handlers. A new mode carries `slayer`.
 3. **`h2 rules check`.** Fix every error and read the report.
-4. **Write a scenario** and run it. Read the final scores and the calls;
+4. **`h2 rules sim`** first: it plays whole matches made up from what
+   the script handles and says who won, how each match ended, the
+   costliest tick, and what looks wrong (the game never ends, nobody
+   scores, a score below zero, a handler that never ran), each with a
+   seed. `--players N` (1 to 16, default 8), `--teams N`, `--seed S`,
+   `--length SECONDS`, `--score-limit N`; `--matches N` (at most 100)
+   plays seeds `S` to `S + N - 1`; `--json` prints it all as JSON; `-o
+   case.json` writes the seed's match as a scenario file for `h2 rules
+   run`. A script error in any match exits 1. Run a flagged seed again
+   alone (`--seed 14 -o case.json`) to get its scenario.
+5. **Write a scenario** for an exact case and run it. Read the final scores and the calls;
    `--trace` adds each event with what the VM did and each call (arguments
    print in Rust debug form). Write one scenario per rule: a kill, a
    suicide, a betrayal, a timer firing, the round ending.
-5. **`h2 rules build`** writes the blob and prints `<sha256>  <path>
+6. **`h2 rules build`** writes the blob and prints `<sha256>  <path>
    (<n> bytes)`. The same source gives the same hash. It writes nothing for
    a script `check` refuses, over the budget included, and refuses to
    overwrite its own source file.
-6. **Ship it** as a game variant or save it on Live.
+7. **Ship it** as a game variant or save it on Live.
 
 `h2 rules caps` lists every capability and API entry with its types and
 status; run it when unsure whether an entry exists or a host can make it.
@@ -182,11 +193,14 @@ error (`scenario: unknown field ...`) and every field is optional.
   `{"quit": 2}`, `{"enter": {"zone": 3, "object": 9}}`, `{"leave": {...}}`,
   `{"press": {"player": 0, "object": 0}}`, `{"pickup": {"player": 0,
   "object": 5}}`, `{"drop": {...}}`, `{"bounce": {"player": 0, "object":
-  0}}`, `{"edit": {"player": 0, "object": 7}}`, `{"squad_dead": 2}`,
+  0, "chain": 2, "monster": false}}` (`chain` 1 and `monster` false when
+  left out), `{"bounced": 0}`, `{"edit": {"player": 0, "object": 7}}`, `{"squad_dead": 2}`,
   `{"actor_kill": {"killer": 0, "class": "elite"}}`, `{"actor_assist":
   {"killer": 0, "assist": 1, "class": "elite"}}`, `"round_end"`.
 - A kill marks the victim dead and counts its death and the killer's
-  kill; a spawn marks the player alive; a quit removes the player. A zone
+  kill; a spawn marks the player alive; a quit removes the player. The
+  dead and the departed leave every zone and drop what they carry; a
+  `pickup` or `drop` of an objective sets or clears its carrier. A zone
   that living players of one team alone are inside is held by it, which
   is what `ticks_held(zone, team)` counts.
 - Output: `tick N: K calls`, the final player rows (team, score, lives,
@@ -196,7 +210,9 @@ error (`scenario: unknown field ...`) and every field is optional.
   `end_round`.
 
 The CLI and Live's run step the same fake game (`rules::scenario::step`);
-only their JSON differs (Live's is below).
+only their JSON differs (Live's is below). `h2 rules sim` plays on it too, and the scenario
+it writes with `-o` holds the whole match: the record's fields, the
+labelled objects, each player's unit and every event.
 
 ## Ship it
 
@@ -239,6 +255,7 @@ client address, refilled at 2 a second (429 past it).
 |---|---|---|
 | `POST /v1/rules/check` `{source}` | none | `{ok, hash, name, errors: [{line, col, message}], report, options}`; line 0 col 0 is about the whole script |
 | `POST /v1/rules/run` `{source, scenario}` | none | a trace, or `{ok: false, errors}` when it does not build; a bad scenario is 400 |
+| `POST /v1/rules/simulate` `{source, players, teams, seed, matches}` | none | generated matches: `{ok, teams, summary, rows, match}`; `match` holds the first seed's `scenario` (the run's shape) and `trace`; a batch costs 2 tokens and 1 more per further 25 matches |
 | `POST /v1/rules/ide` `{source, op, line, character}` | none | one editor answer (complete, hover, signature, definition, references, tokens, symbols, format, diagnostics) |
 | `GET /v1/rules/builtin` | read | `{items: [{name, engine, source, hash, example, key?}]}`: the engine ports, then the examples (`example: true`, `engine` their carrier) |
 | `POST /v1/rules` `{source}` | token, `content.write` | saves a script whose check is `ok` (it fits the budget); 201 new, 200 saved already |
@@ -254,12 +271,14 @@ options, seed, round_time, ticks, start, timeline: [{tick, events}]}`,
 with each event `{type: "kill", victim, killer}`, `{type: "spawn",
 player}`, `enter {zone, object}`, `squad_dead {squad}`, `actor_kill
 {killer, class}`, `actor_assist {killer, assist, class}`, `bounce
-{player, object}` and so on: the handler's name plus its arguments as
+{player, object, chain, monster}`, `bounced {player}` and so on: the handler's name plus its arguments as
 fields. `ticks` is the last tick run
 (at most 36,000), `start` defaults true, at most 4,096 events. The trace
 lists only ticks in which something happened, with `ran`, `calls`,
 `globals`, `players`, and the run's `scores`; `cut` says it stopped early
-(past 4,000,000 ops).
+(past 12,000,000 ops), and `limit` that the variant's `score_limit` or
+`time_limit` ended the game (only limits the scenario's `variant` sets
+end a run). A labelled object may name its `team`, which `o.team` reads.
 
 `options` in `from-script` and `bundle` maps an option's name to a number,
 a bool or an enum value's name; an omitted one takes its default; an
@@ -269,6 +288,46 @@ of game its script may play in. A variant name is 1 to 31 characters with no
 leading or trailing space and no `|`; a description is at most 150; an
 account publishes at most 200. Full reference:
 [docs/live/live-api.md](../../../docs/live/live-api.md#rules-scripts).
+
+## Edit it in Studio, reload it into a game
+
+Studio's **Game type script** window (a tab beside the Variants tool's
+settings) edits one `.rules` file with colouring, problems, completion,
+hover and the check report. Agents drive the same state over the editor
+socket (`h2 studio`, [docs/editor/agent-api.md](../../../docs/editor/agent-api.md)):
+
+```sh
+h2 studio rules.open '{"starter":"slayer"}'      # or {"path":...} / {"source":...}
+h2 studio rules.set '{"source":"..."}'
+h2 studio rules.get                               # problems, check, reload state
+h2 studio rules.save '{"path":"/tmp/mine.rules"}' # reloads too while reload on save is on
+h2 studio rules.reload '{"mode":"auto"}'          # answers {queued}; rules.get's reload has the game's answer
+```
+
+Studio sends the verified blob to the paired game's `rules.reload`. A
+running game can also take one straight from the game's agent API:
+
+```sh
+h2 agent rules.reload '{"source":"<the script text>"}'
+h2 agent rules.state     # last_reload: mode, hash, tick, reasons
+```
+
+- **In place** when the new script keeps the old one's state shape: the
+  same carrier, teams, capabilities, options (kind, range, default),
+  enums, variables per scope (names, types, order), labels and palettes.
+  New handler code and new starting values are fine; every value and
+  score carries on.
+- **Restart** otherwise (with `mode` `auto`): the same map and variant
+  start again with the new script; `reasons` says what changed, one
+  sentence each ("the script has 1 player variables, not 0").
+- `mode: in_place` refuses rather than restart; `restart` always
+  restarts.
+- Refused: Theater, a matchmade Live game, a guest, no multiplayer game,
+  and a script this host cannot run. A Live custom game reloads in place
+  only. In place leaves the record naming the old script, so the next
+  game start runs the old one; save it as a variant to keep it.
+
+Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules-engine.md#reloading-a-running-script).
 
 ## Pitfalls
 

@@ -1,16 +1,20 @@
 // The workbench's test half (docs/game/rules-engine.md, "Workbench"): the
-// scenario editor (run length, seated players, events added in a click
-// and read as sentences, times typed as times) and the results of a run
-// (final standings, then a timeline of what happened, what the script did
-// about it and who scored). The pure half is ../lib/rules.ts.
+// strip that sets up generated matches (players, team play, the seed and
+// its die), the summary of a batch of them (who wins, how games end, the
+// worst tick, warnings with the seed that shows each), one match's
+// results (final standings, then a timeline of what happened, what the
+// script did about it and who scored), and the hand editor for a match
+// (seated players, events read as sentences, times typed as times),
+// folded away until asked for. The pure half is ../lib/rules.ts.
 
 import { For, Index, Show, createMemo, createSignal } from "solid-js";
 import { teamName } from "../lib/game";
 import {
-  EVENT_TYPES, MAX_TICKS, TICKS_PER_SECOND, defaultScenario, describeEvent, faultLabel, moveEvent, newEvent, nextEventTick,
-  nextSlot, parseTickTime, playerName, problemPlace, signed, standings, teamStandings, tickTime, timeline, traceLines,
-  withEvent,
-  type EventType, type Problem, type ScenarioDraft, type ScenarioEvent, type ScenarioPlayer, type Trace, type Trouble,
+  EVENT_TYPES, MAX_SEED, MAX_TICKS, SIM_PLAYERS, TICKS_PER_SECOND, defaultScenario, describeEvent, endLabel, faultLabel, meter,
+  moveEvent, neighbourSeed, newEvent, nextEventTick, nextSlot, ofMatches, parseTickTime, playerName, problemPlace, rerolled,
+  shortTime, signed, simWarnings, standings, teamStandings, tickTime, timeline, traceLines, winnerName, withEvent,
+  type EventType, type Problem, type ScenarioDraft, type ScenarioEvent, type ScenarioPlayer, type SimResult, type SimRow,
+  type SimSetup, type Trace, type Trouble,
 } from "../lib/rules";
 
 const int = (v: string, dflt = 0): number => {
@@ -19,6 +23,10 @@ const int = (v: string, dflt = 0): number => {
 };
 const teamLabel = (team: number): string => `${teamName(team)} team`;
 const TIME_HELP = "A time: minutes:seconds (0:02.50), seconds (2.5) or ticks (75t). A second is 30 ticks.";
+/** Timeline rows shown before "Show all". */
+const TIMELINE_ROWS = 150;
+/** Winners listed before the rest are summed. */
+const WINNERS_SHOWN = 6;
 
 /** A request that failed, with whose fault it is and a way to ask again. */
 export function TroubleNote(props: { trouble: Trouble; onRetry?: () => void }) {
@@ -89,8 +97,22 @@ function EventRow(props: {
             <PlayerPick label="Victim" value={props.e.victim} slots={props.slots} onPick={(v) => props.onChange({ victim: v ?? 0 })} />
           </>
         );
-      case "press": case "pickup": case "drop":
+      case "press": case "pickup": case "drop": case "bounce": case "edit":
         return <>{player()}{object()}</>;
+      case "squad_dead":
+        return <><span>squad</span><CountInput label="Squad" value={props.e.squad ?? 0} onCount={(n) => props.onChange({ squad: n })} /></>;
+      case "actor_kill": case "actor_assist":
+        return (
+          <>
+            <PlayerPick label="Killer" world value={props.e.killer} slots={props.slots} onPick={(v) => props.onChange({ killer: v })} />
+            <Show when={props.e.type === "actor_assist"}>
+              <span>helped by</span>
+              <PlayerPick label="Assist" world value={props.e.assist} slots={props.slots} onPick={(v) => props.onChange({ assist: v })} />
+            </Show>
+            <span>killed a</span>
+            <input class="s-rules-class" type="text" spellcheck={false} value={props.e.class ?? ""} aria-label="Class" onChange={(e) => props.onChange({ class: e.currentTarget.value.trim() })} />
+          </>
+        );
       case "enter": case "leave":
         return <>{object()}<span>zone</span><CountInput label="Zone" value={props.e.zone ?? 0} onCount={(n) => props.onChange({ zone: n })} /></>;
       case "round_start": case "round_end":
@@ -160,7 +182,7 @@ export function ScenarioEditor(props: { scenario: ScenarioDraft; set: (f: (d: Sc
           <input type="checkbox" checked={props.scenario.teamPlay} onChange={(e) => props.set((d) => ({ ...d, teamPlay: e.currentTarget.checked }))} />
           <span>Team play</span>
         </label>
-        <button class="s-btn" onClick={() => props.set(() => defaultScenario())} title="Back to two players and three events">Reset scenario</button>
+        <button class="s-btn" onClick={() => props.set(() => defaultScenario())} title="Back to two players and three events">Reset</button>
       </div>
 
       <Show when={props.problems.length}>
@@ -243,6 +265,189 @@ export function ScenarioEditor(props: { scenario: ScenarioDraft; set: (f: (d: Sc
   );
 }
 
+// ---------- generated matches ----------
+
+function Die() {
+  return (
+    <svg class="s-rules-die-face" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+      <rect x="0.5" y="0.5" width="11" height="11" rx="2" fill="none" stroke="currentColor" />
+      <circle cx="3.5" cy="3.5" r="1" /><circle cx="8.5" cy="3.5" r="1" /><circle cx="6" cy="6" r="1" /><circle cx="3.5" cy="8.5" r="1" /><circle cx="8.5" cy="8.5" r="1" />
+    </svg>
+  );
+}
+
+/** What the generated matches are played with: players, team play, the
+ *  seed and its die. Nothing else to fill in. */
+export function SimStrip(props: { setup: SimSetup; set: (f: (s: SimSetup) => SimSetup) => void }) {
+  const players = (n: number) => props.set((s) => ({ ...s, players: Math.min(SIM_PLAYERS.max, Math.max(SIM_PLAYERS.min, n)) }));
+  return (
+    <div class="s-rules-set s-rules-strip" role="group" aria-label="Generated matches">
+      <span class="s-rules-stepper">
+        <span>Players</span>
+        <button class="s-btn" aria-label="One player fewer" disabled={props.setup.players <= SIM_PLAYERS.min} onClick={() => players(props.setup.players - 1)}>-</button>
+        <input type="range" min={SIM_PLAYERS.min} max={SIM_PLAYERS.max} step={1} value={props.setup.players} aria-label="Players" onInput={(e) => players(int(e.currentTarget.value, props.setup.players))} />
+        <button class="s-btn" aria-label="One player more" disabled={props.setup.players >= SIM_PLAYERS.max} onClick={() => players(props.setup.players + 1)}>+</button>
+        <b>{props.setup.players}</b>
+      </span>
+      <label class="s-rules-check">
+        <input type="checkbox" checked={props.setup.teamPlay} onChange={(e) => props.set((s) => ({ ...s, teamPlay: e.currentTarget.checked }))} />
+        <span>Team play</span>
+      </label>
+      <label title="The same seed gives the same matches.">
+        <span>Seed</span>
+        <input class="s-rules-num s-rules-num--wide" type="number" min={0} max={MAX_SEED} step={1} value={props.setup.seed} onChange={(e) => props.set((s) => ({ ...s, seed: Math.min(MAX_SEED, Math.max(0, int(e.currentTarget.value, s.seed))) }))} />
+      </label>
+      <button class="s-btn s-rules-die" title="A new seed: other matches" onClick={() => props.set((s) => ({ ...s, seed: rerolled(s.seed) }))}><Die /> Re-roll</button>
+    </div>
+  );
+}
+
+/** A seed as a link to its match. */
+function SeedLink(props: { seed: number; shown: number | null; onSeed: (seed: number) => void }) {
+  return (
+    <button class="s-rules-seed" disabled={props.seed === props.shown} title={props.seed === props.shown ? "This match is shown" : "Show this match"} onClick={() => props.onSeed(props.seed)}>
+      seed {props.seed}
+    </button>
+  );
+}
+
+/** A batch of generated matches summed up: who wins how often, how games
+ *  end, the worst tick against the budget, and what looks wrong, each
+ *  warning with the seed that shows it. */
+export function BatchView(props: {
+  sim: SimResult | null;
+  setup: SimSetup;
+  busy: boolean;
+  /** Why no match can be generated now; null when one can. */
+  blocked: string | null;
+  /** The summary is of an older script or setup. */
+  stale: boolean;
+  trouble: Trouble | null;
+  errors: Problem[];
+  /** The seed of the match shown beside the summary. */
+  shown: number | null;
+  onSeed: (seed: number) => void;
+  onRetry: () => void;
+  onJump: (p: Problem) => void;
+}) {
+  const sum = () => props.sim?.summary ?? null;
+  const teams = () => props.sim?.teams ?? 0;
+  const name = (w: SimRow["winner"]) => winnerName(w, teamLabel);
+  const top = createMemo(() => (sum()?.wins ?? []).slice(0, WINNERS_SHOWN));
+  const rest = createMemo(() => (sum()?.wins ?? []).slice(WINNERS_SHOWN).reduce((n, w) => n + w.matches, 0));
+  const warnings = createMemo(() => { const s = sum(); return s ? simWarnings(s) : []; });
+  const tick = () => { const s = sum(); return s ? meter(s.worst_tick_ops, s.budget) : { share: 0, tone: "ok" as const }; };
+  return (
+    <div class="s-rules-batch">
+      <Show when={props.trouble}>{(t) => <TroubleNote trouble={t()} onRetry={props.onRetry} />}</Show>
+      <Show when={props.errors.length}>
+        <ul class="s-rules-errors" aria-label="Errors">
+          <For each={props.errors}>{(p) => <li><button class="s-rules-errlink" onClick={() => props.onJump(p)} disabled={p.line === 0}>{problemPlace(p)}</button><span>{p.message}</span></li>}</For>
+        </ul>
+      </Show>
+      <Show when={props.blocked}>
+        {(why) => <p class="s-rules-hold">{props.sim ? "These matches are from the last script that checked." : "No matches yet."} {why()}</p>}
+      </Show>
+      <Show when={sum()} fallback={<Show when={!props.blocked && !props.trouble}><p class="s-rules-muted s-rules-none">{props.busy ? "Playing the matches..." : "The matches show here once the script checks."}</p></Show>}>
+        {(s) => (
+          <div class="s-rules-sumbox" classList={{ "s-rules-stale": props.stale }}>
+            <p class="s-rules-sum">
+              <b>{s().ran} {s().ran === 1 ? "match" : "matches"}</b>, {props.setup.players} players, {teams() >= 2 ? `${teams()} teams` : "free for all"}.
+              <Show when={teams() >= 2 && !props.setup.teamPlay}> <span class="s-rules-muted">This script needs teams.</span></Show>
+            </p>
+            <dl class="s-rules-facts">
+              <dt>Who wins</dt>
+              <dd>
+                <ol class="s-rules-wins">
+                  <For each={top()}>
+                    {(w) => (
+                      <li>
+                        <span>{name(w.winner)}</span>
+                        <span class="s-rules-meter-bar" aria-hidden="true"><i style={{ width: `${((w.matches / Math.max(1, s().ran)) * 100).toFixed(1)}%` }} /></span>
+                        <span class="s-rules-wins-n">{ofMatches(w.matches, s().ran)}</span>
+                      </li>
+                    )}
+                  </For>
+                  <Show when={rest() > 0}><li class="s-rules-muted"><span>Others</span><span /><span class="s-rules-wins-n">{ofMatches(rest(), s().ran)}</span></li></Show>
+                </ol>
+              </dd>
+              <dt>How games end</dt>
+              <dd><For each={s().ends}>{(e, i) => <>{i() > 0 ? ", " : ""}{endLabel(e.end)} <b>{e.matches}</b></>}</For></dd>
+              <dt>Winning score</dt>
+              <dd>average <b>{s().avg_score.toFixed(1)}</b>, highest <b>{s().max_score}</b></dd>
+              <dt>Length</dt>
+              <dd>average <b>{shortTime(s().avg_ticks)}</b>, longest <b>{shortTime(s().max_ticks)}</b></dd>
+              <dt>Worst tick</dt>
+              <dd class={`s-rules-worst s-rules-meter--${tick().tone}`}>
+                <span class="s-rules-meter-bar" role="meter" aria-valuemin={0} aria-valuemax={s().budget} aria-valuenow={s().worst_tick_ops} aria-label="Worst tick"><i style={{ width: `${(tick().share * 100).toFixed(1)}%` }} /></span>
+                <span><b>{s().worst_tick_ops.toLocaleString("en-US")}</b> of {s().budget.toLocaleString("en-US")} ops, <SeedLink seed={s().worst_tick_seed} shown={props.shown} onSeed={props.onSeed} /></span>
+              </dd>
+            </dl>
+            <h4>Warnings</h4>
+            <Show when={warnings().length} fallback={<p class="s-rules-clean s-rules-none"><b>Nothing looks wrong.</b> Every match ended and somebody scored.</p>}>
+              <ul class="s-rules-flags">
+                <For each={warnings()}>
+                  {(w) => (
+                    <li classList={{ bad: w.bad }}>
+                      <span>{w.text}.</span>
+                      <Show when={w.seed !== null}><SeedLink seed={w.seed ?? 0} shown={props.shown} onSeed={props.onSeed} /></Show>
+                    </li>
+                  )}
+                </For>
+              </ul>
+            </Show>
+            <details class="s-rules-all">
+              <summary>All {props.sim?.rows.length ?? 0} matches</summary>
+              <table class="s-grid s-rules-table">
+                <thead><tr><th>Match</th><th>Winner</th><th>Ended</th><th class="num">Length</th><th class="num">Score</th></tr></thead>
+                <tbody>
+                  <For each={props.sim?.rows ?? []}>
+                    {(r) => (
+                      <tr classList={{ "s-rules-row-on": r.seed === props.shown }}>
+                        <td><SeedLink seed={r.seed} shown={props.shown} onSeed={props.onSeed} /></td>
+                        <td>{name(r.winner)}</td>
+                        <td>{endLabel(r.end)}</td>
+                        <td class="num">{shortTime(r.ticks)}</td>
+                        <td class="num">{r.top_score}</td>
+                      </tr>
+                    )}
+                  </For>
+                </tbody>
+              </table>
+            </details>
+          </div>
+        )}
+      </Show>
+    </div>
+  );
+}
+
+/** Which match the results are of, with the way to its neighbours and
+ *  into the hand editor. */
+export function MatchBar(props: {
+  /** The shown generated match's seed; null before there is one. */
+  seed: number | null;
+  rows: SimRow[];
+  /** The results are of the match edited by hand. */
+  custom: boolean;
+  onSeed: (seed: number) => void;
+  onEdit: () => void;
+  onBack: () => void;
+}) {
+  const near = (step: -1 | 1) => (props.seed === null ? null : neighbourSeed(props.rows, props.seed, step));
+  const go = (step: -1 | 1) => { const s = near(step); if (s !== null) props.onSeed(s); };
+  return (
+    <div class="s-rules-matchbar">
+      <Show when={!props.custom} fallback={<><b>Your match</b><span class="s-rules-muted">edited by hand</span><button class="s-btn s-rules-copy" onClick={() => props.onBack()}>Back to generated matches</button></>}>
+        <b>{props.seed === null ? "No match yet" : `Seed ${props.seed}`}</b>
+        <button class="s-btn" disabled={near(-1) === null} onClick={() => go(-1)}>Previous</button>
+        <button class="s-btn" disabled={near(1) === null} onClick={() => go(1)}>Next</button>
+        <button class="s-btn s-rules-copy" disabled={props.seed === null} title="Open this match in the hand editor" onClick={() => props.onEdit()}>Edit this match</button>
+      </Show>
+    </div>
+  );
+}
+
 /** A run that was made, with the scenario it ran. */
 export interface Ran { trace: Trace; scenario: ScenarioDraft; key: string }
 
@@ -256,23 +461,28 @@ export function ResultsView(props: {
   trouble: Trouble | null;
   /** The run's own build errors, when the check passed but the run didn't build. */
   errors: Problem[];
+  /** The run button's label and the line beside it. */
+  again?: string;
+  hint?: string;
   onRun: () => void;
   onJump: (p: Problem) => void;
 }) {
   const [copied, setCopied] = createSignal(false);
+  const [all, setAll] = createSignal(false);
   const copy = async () => {
     const r = props.ran;
     if (!r) return;
     try { await navigator.clipboard.writeText(traceLines(r.trace).join("\n")); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* no clipboard */ }
   };
   const rows = createMemo(() => (props.ran ? timeline(props.ran.trace, props.ran.scenario, teamLabel) : []));
+  const shownRows = () => (all() ? rows() : rows().slice(0, TIMELINE_ROWS));
   const table = createMemo(() => (props.ran ? standings(props.ran.trace, props.ran.scenario) : []));
   const teams = () => (props.ran?.scenario.teamPlay ? teamStandings(table()) : []);
   return (
     <div class="s-rules-results">
       <div class="s-rules-runbar">
-        <button class="s-btn" onClick={() => props.onRun()} disabled={!!props.blocked || props.running} title={props.blocked ?? "Run the scenario again"}>{props.running ? "Running..." : "Run again"}</button>
-        <span class="s-rules-muted">Runs by itself when the script or the scenario changes.</span>
+        <button class="s-btn" onClick={() => props.onRun()} disabled={!!props.blocked || props.running} title={props.blocked ?? props.again ?? "Run the match again"}>{props.running ? "Running..." : props.again ?? "Run again"}</button>
+        <span class="s-rules-muted">{props.hint ?? "Runs by itself when the script or the match changes."}</span>
         <Show when={props.ran}><button class="s-btn s-rules-copy" onClick={() => void copy()}>{copied() ? "Copied" : "Copy as text"}</button></Show>
       </div>
       <Show when={props.trouble}>{(t) => <TroubleNote trouble={t()} onRetry={props.onRun} />}</Show>
@@ -284,11 +494,15 @@ export function ResultsView(props: {
       <Show when={props.blocked}>
         {(why) => <p class="s-rules-hold">{props.ran ? "These results are from the last run." : "No results yet."} {why()}</p>}
       </Show>
-      <Show when={props.ran} fallback={<Show when={!props.blocked && !props.trouble}><p class="s-rules-muted s-rules-none">{props.running ? "Running the scenario..." : "The results show here once the scenario has run."}</p></Show>}>
+      <Show when={props.ran} fallback={<Show when={!props.blocked && !props.trouble}><p class="s-rules-muted s-rules-none">{props.running ? "Playing the match..." : "The results show here once a match has been played."}</p></Show>}>
         {(r) => (
           <div class="s-rules-run" classList={{ "s-rules-stale": props.stale }}>
             <p class="s-rules-sum">
-              <Show when={r().trace.round_ended !== null} fallback={<>Ran for <b>{tickTime(r().trace.last_tick)}</b> ({r().trace.last_tick.toLocaleString("en-US")} ticks) without the round ending.</>}>
+              <Show when={r().trace.round_ended !== null} fallback={
+                <Show when={r().trace.limit} fallback={<>Ran for <b>{tickTime(r().trace.last_tick)}</b> ({r().trace.last_tick.toLocaleString("en-US")} ticks) without the round ending.</>}>
+                  The game ended at <b>{tickTime(r().trace.last_tick)}</b> {r().trace.limit === "score" ? "on the score limit" : "when the time ran out"}.
+                </Show>
+              }>
                 The script ended the round at <b>{tickTime(r().trace.round_ended ?? 0)}</b> (tick {r().trace.round_ended}).
               </Show>
               {" "}<span class="s-rules-muted">{r().trace.ops.toLocaleString("en-US")} ops used.</span>
@@ -312,9 +526,9 @@ export function ResultsView(props: {
             </Show>
 
             <h4>What happened</h4>
-            <Show when={rows().length} fallback={<p class="s-rules-muted s-rules-none">Nothing happened: the scenario has no events in the run, and the script made no call and changed nothing.</p>}>
+            <Show when={rows().length} fallback={<p class="s-rules-muted s-rules-none">Nothing happened: the match has no events, and the script made no call and changed nothing.</p>}>
               <ol class="s-rules-timeline">
-                <For each={rows()}>
+                <For each={shownRows()}>
                   {(k) => (
                     <li classList={{ "s-rules-tl--bad": !!k.error }}>
                       <span class="s-rules-tl-when" title={`tick ${k.tick}`}>{tickTime(k.tick)}<small>tick {k.tick}</small></span>
@@ -337,6 +551,12 @@ export function ResultsView(props: {
                   )}
                 </For>
               </ol>
+              <Show when={rows().length > TIMELINE_ROWS}>
+                <p class="s-rules-more">
+                  <span class="s-rules-muted">{all() ? `All ${rows().length} moments are shown.` : `The first ${TIMELINE_ROWS} of ${rows().length} moments are shown.`}</span>
+                  <button class="s-btn" onClick={() => setAll((v) => !v)}>{all() ? "Show fewer" : "Show all"}</button>
+                </p>
+              </Show>
             </Show>
           </div>
         )}

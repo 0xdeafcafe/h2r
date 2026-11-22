@@ -857,6 +857,51 @@ it.
 
 ***Paste a portable variant** takes a shared variant as text.*
 
+### Game type scripts
+
+A game type script is a `.rules` file in the
+[rules language](../game/rules-engine.md#the-language): the game type's
+own rules, run by the game on top of the engine it rides. The **Game
+type script** window is a tab beside the variant's settings
+(`crates/apps/studio/src/ui/game_script.rs`, over
+`crates/apps/studio/src/app/rules_edit.rs`).
+
+- **New** starts a blank script, or one of the built-in game types or
+  examples to change. **Open**, **Save** and **Save as** read and write
+  `.rules` files. **Format** lays the script out the standard way.
+- The text is coloured as the language reads it. Hover a name for what
+  it is. **Ctrl+Space** lists what can go at the cursor; click one to
+  put it in. Inside a call, the line under the text shows the call's
+  parameters.
+- **Problems** lists every error and warning, errors first; each is
+  underlined in the text, and clicking one puts the cursor on it.
+- **Check** is the [workbench](../game/rules-engine.md#workbench)
+  report: the worst tick against the op budget and each handler's cost,
+  the variables used against their limits, the size, and the
+  capabilities the script asks for.
+
+**Reload** (or **Cmd+R** while typing) sends the script to the paired
+game ([Play from the editor](#play-from-the-editor)). The editor builds
+and checks it first, and sends nothing that does not build. **Save**
+(**Cmd+S**) reloads too while **Reload on save** is ticked, as it is
+when the editor starts. The game decides how it goes in
+([Reloading a running script](../game/rules-engine.md#reloading-a-running-script)):
+
+- **In place** when the script keeps the running one's variables,
+  options and labels (changed handlers and starting values are fine).
+  The game carries on: scores, timers and every variable keep their
+  values, and the next event runs the new code.
+- **Restart** otherwise: the game starts again on the same map and
+  variant with the new script, and the editor's row says why it could
+  not go in place.
+
+The mode list next to **Reload** picks **Auto** (the above), **In
+place** (refuse rather than restart) or **Restart** (always). The
+result shows at the bottom of the window and in the Game panel. The
+game refuses a reload in a Theater film, in a matchmade Live game, on a
+guest's machine, and outside a multiplayer game; a Live custom game
+reloads in place only.
+
 ## 6. Playlists (hoppers)
 
 Matchmaking playlists ("hoppers") live in one file,

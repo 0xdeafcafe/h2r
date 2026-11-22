@@ -355,6 +355,7 @@ pub fn compile(def: &Def) -> Result<Ir, ScriptRefusal> {
             // Slayer, the engine Firefight's one-team match rides.
             carrier: 2,
             teams: 1,
+            list: ::rules::ir::List::GameType,
             requires: vec!["ai.squads".into(), "firefight.director".into()],
         },
         strings: st.list,

@@ -23,7 +23,9 @@ use engine::GuestMemory;
 use hud_kit_core::huds::superbounce::{MEDALS, Medal};
 use superbounce::{Spot, Vec3};
 
-use crate::superbounce_charge::{LandingResult, TOUCHDOWN_VZ, strip_landing, touchdown};
+use crate::superbounce_charge::{
+    LandingResult, TOUCHDOWN_VZ, landing_spot, strip_landing, strips_near, touchdown,
+};
 use crate::superbounce_mode::primed;
 
 /// Player slots the game has.
@@ -38,6 +40,11 @@ pub const CLEAR_FROM: u32 = 3;
 pub const TELEPORT: f32 = 3.0;
 /// Awards kept for `superbounce.state`'s `recent`.
 pub const RECENT: usize = 8;
+/// A bounce whose vertical speed comes out over this (units/s) is a
+/// Monster Bounce: above the top of every measured launch (7.97 to 13.22
+/// on Ascension's strip, docs/game/superbounce.md, "Traces"), by about a
+/// fifth. Reasoned from those, not measured: no Monster has been traced.
+pub const MONSTER_VZ: f32 = 16.0;
 
 /// The medals a bounce earns at chain count `chain`, lowest first: every
 /// bounce is a Superbounce, and the second to the sixth of a chain earn
@@ -59,6 +66,16 @@ pub fn bounce_medals(chain: u32) -> &'static [Medal] {
     }
 }
 
+/// The medals of a bounce at chain count `chain`: [`bounce_medals`], and
+/// Monster Bounce last for a Monster.
+pub fn bounce_medals_with(chain: u32, monster: bool) -> Vec<Medal> {
+    let mut v = bounce_medals(chain).to_vec();
+    if monster && !v.is_empty() {
+        v.push(Medal::Monster);
+    }
+    v
+}
+
 /// The highest medal of `medals`: the one a bounce's line shows.
 pub fn highest(medals: &[Medal]) -> Option<Medal> {
     medals.iter().copied().max()
@@ -78,11 +95,35 @@ pub struct PlayerTick {
     pub word: Option<u32>,
 }
 
+/// A bounce spot's id as a rules script's `on bounce(p, spot)` hears it
+/// (docs/game/rules-engine.md, "Firefight, AI and bounces"): FNV-1a over
+/// the bits of its edge, in 31 bits so it is never `none`. The scan is a
+/// function of the map's geometry, so the id is the same in every game on
+/// the map, on every machine and in a film, whatever the verified file
+/// says.
+pub fn spot_id(spot: &Spot) -> u32 {
+    let mut h: u32 = 0x811c_9dc5;
+    for v in spot.edge.iter().flatten() {
+        for b in v.to_bits().to_le_bytes() {
+            h = (h ^ u32::from(b)).wrapping_mul(0x0100_0193);
+        }
+    }
+    h & 0x7fff_ffff
+}
+
 /// What a step gave.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
-    /// A bounce, the chain's count with it.
-    Bounce { chain: u32 },
+    /// A bounce, the chain's count with it, off the strip [`spot_id`]
+    /// names. `monster` when it came out over [`MONSTER_VZ`]; `strips` is
+    /// how many bounce strips were within `LANDING_RADIUS` of the
+    /// touchdown, kept for study of Monsters (a V of seams), not a test.
+    Bounce {
+        chain: u32,
+        spot: u32,
+        monster: bool,
+        strips: u8,
+    },
     /// The unit went (a death) on the tick after one that was airborne,
     /// falling at [`TOUCHDOWN_VZ`] or faster, and either in a chain or
     /// primed: a fall out of the map during a bounce. `chain` is the count
@@ -94,14 +135,28 @@ impl Event {
     /// The medals the event earns.
     pub fn medals(self) -> Vec<Medal> {
         match self {
-            Event::Bounce { chain } => bounce_medals(chain).to_vec(),
+            Event::Bounce { chain, monster, .. } => bounce_medals_with(chain, monster),
             Event::Bounced { .. } => vec![Medal::Bounced],
         }
     }
     /// The chain's count with the event.
     pub fn chain(self) -> u32 {
         match self {
-            Event::Bounce { chain } | Event::Bounced { chain } => chain,
+            Event::Bounce { chain, .. } | Event::Bounced { chain } => chain,
+        }
+    }
+    /// The bounce's strip ([`spot_id`]); `None` for a Bounced.
+    pub fn spot(self) -> Option<u32> {
+        match self {
+            Event::Bounce { spot, .. } => Some(spot),
+            Event::Bounced { .. } => None,
+        }
+    }
+    /// The bounce strips near its touchdown; `None` for a Bounced.
+    pub fn strips(self) -> Option<u8> {
+        match self {
+            Event::Bounce { strips, .. } => Some(strips),
+            Event::Bounced { .. } => None,
         }
     }
 }
@@ -192,11 +247,17 @@ impl Chain {
             let bounced = p.word.is_some_and(primed)
                 && strip_landing(spots, p.word, p.position, p.vz, now.vz)
                     == Some(LandingResult::Bounce);
-            if bounced {
+            // A bounce is by a strip, so `landing_spot` finds it.
+            if bounced && let Some(i) = landing_spot(spots, p.position) {
                 self.count = if self.live { self.count + 1 } else { 1 };
                 self.live = true;
                 self.since = 0;
-                return Some(Event::Bounce { chain: self.count });
+                return Some(Event::Bounce {
+                    chain: self.count,
+                    spot: spot_id(&spots[i]),
+                    monster: now.vz > MONSTER_VZ,
+                    strips: strips_near(spots, p.position).min(255) as u8,
+                });
             }
             self.live = false;
             return None;
@@ -236,6 +297,19 @@ pub struct Award {
     pub tick: u32,
     pub chain: u32,
     pub medals: Vec<Medal>,
+    /// A bounce's strip ([`spot_id`]); `None` for a Bounced and for
+    /// `superbounce.medal_test`'s awards, which no strip made.
+    pub spot: Option<u32>,
+    /// For a bounce, the bounce strips within `LANDING_RADIUS` of its
+    /// touchdown ([`Event::strips`]); `None` otherwise.
+    pub strips: Option<u8>,
+}
+
+impl Award {
+    /// Whether it was a Monster Bounce.
+    pub fn monster(&self) -> bool {
+        self.medals.contains(&Medal::Monster)
+    }
 }
 
 /// A player's medals this game.
@@ -308,7 +382,7 @@ impl Medals {
             let event = self.chains[slot].step(t.as_ref(), spots);
             let slot = slot as u8;
             if let Some(e) = event {
-                out.push(self.award(slot, tick, e.chain(), e.medals()));
+                out.push(self.award(slot, tick, e.chain(), e.medals(), e.spot(), e.strips()));
             }
             self.sync(slot);
         }
@@ -316,8 +390,8 @@ impl Medals {
     }
 
     /// Files a bounce at count `chain` for player `slot` (local user
-    /// `user`), as the chain's rule gives it, or a Bounced with
-    /// `bounced`: `superbounce.medal_test`.
+    /// `user`), as the chain's rule gives it (a Monster with `monster`),
+    /// or a Bounced with `bounced`: `superbounce.medal_test`.
     pub fn test(
         &mut self,
         slot: u8,
@@ -325,6 +399,7 @@ impl Medals {
         tick: u32,
         chain: u32,
         bounced: bool,
+        monster: bool,
     ) -> Award {
         if self.chains.len() < SLOTS {
             *self = Medals::new();
@@ -336,14 +411,22 @@ impl Medals {
             vec![Medal::Bounced]
         } else {
             self.chains[i].force(chain);
-            bounce_medals(chain).to_vec()
+            bounce_medals_with(chain, monster)
         };
-        let a = self.award(slot, tick, chain, medals);
+        let a = self.award(slot, tick, chain, medals, None, None);
         self.sync(slot);
         a
     }
 
-    fn award(&mut self, slot: u8, tick: u32, chain: u32, medals: Vec<Medal>) -> Award {
+    fn award(
+        &mut self,
+        slot: u8,
+        tick: u32,
+        chain: u32,
+        medals: Vec<Medal>,
+        spot: Option<u32>,
+        strips: Option<u8>,
+    ) -> Award {
         self.seq += 1;
         let rec = self.records.entry(slot).or_default();
         for m in &medals {
@@ -356,6 +439,8 @@ impl Medals {
             tick,
             chain,
             medals,
+            spot,
+            strips,
         };
         self.recent.push_back(a.clone());
         while self.recent.len() > RECENT {
@@ -406,16 +491,17 @@ impl Medals {
 /// Where the awards go for the film and Live: `live_telemetry::Telemetry`
 /// in the game.
 pub trait Recorder {
-    /// A bounce by the player in slot `player`, `chain` into its chain.
-    fn superbounce(&self, guest: &runtime::Guest, player: u32, chain: u32);
+    /// A bounce by the player in slot `player`, `chain` into its chain;
+    /// `monster` for a Monster Bounce.
+    fn superbounce(&self, guest: &runtime::Guest, player: u32, chain: u32, monster: bool);
     /// A Bounced of the player in slot `player`, ending a chain of
     /// `chain` (0 if none).
     fn bounced(&self, guest: &runtime::Guest, player: u32, chain: u32);
 }
 
 impl Recorder for live_telemetry::Telemetry {
-    fn superbounce(&self, guest: &runtime::Guest, player: u32, chain: u32) {
-        live_telemetry::Telemetry::superbounce(self, guest, player, chain);
+    fn superbounce(&self, guest: &runtime::Guest, player: u32, chain: u32, monster: bool) {
+        live_telemetry::Telemetry::superbounce(self, guest, player, chain, monster);
     }
     fn bounced(&self, guest: &runtime::Guest, player: u32, chain: u32) {
         live_telemetry::Telemetry::bounced(self, guest, player, chain);
@@ -435,8 +521,10 @@ pub fn records(world_mode: Option<u32>) -> bool {
 /// Records `awards` (one tick's, from [`Medals::step`]) to `to`, when
 /// this console records the game ([`records`]): a Bounced as
 /// [`Recorder::bounced`], any other award as [`Recorder::superbounce`]
-/// at its chain's count, each for its player slot. Every bounce is one
-/// call; the film and Live work its medals out from the count.
+/// at its chain's count and whether it was a Monster, each for its player
+/// slot. Every bounce is one
+/// call; the film and Live work its medals out from the count and the
+/// flag.
 /// `superbounce.medal_test`'s awards are not stepped, so not recorded.
 pub fn record(to: &dyn Recorder, guest: &runtime::Guest, awards: &[Award]) {
     if awards.is_empty() || !records(crate::coop_look::view::mode(guest)) {
@@ -447,7 +535,7 @@ pub fn record(to: &dyn Recorder, guest: &runtime::Guest, awards: &[Award]) {
         if a.medals.contains(&Medal::Bounced) {
             to.bounced(guest, player, a.chain);
         } else if !a.medals.is_empty() {
-            to.superbounce(guest, player, a.chain);
+            to.superbounce(guest, player, a.chain, a.monster());
         }
     }
 }

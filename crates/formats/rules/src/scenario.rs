@@ -74,10 +74,17 @@ pub struct ScenarioLabel {
     /// when absent.
     #[serde(default)]
     pub placement: Option<u32>,
+    /// The team it belongs to (a flag's spawn, a base), for `o.team`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<u8>,
 }
 
 fn yes() -> bool {
     true
+}
+
+fn one() -> u32 {
+    1
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,11 +128,19 @@ pub enum ScenarioEvent {
         player: u8,
         object: u32,
     },
+    /// A superbounce off strip `object`: `chain` is its place in its
+    /// chain (1, a single bounce, when absent), `monster` a Monster Bounce.
     Bounce {
         player: u8,
         #[serde(default)]
         object: u32,
+        #[serde(default = "one")]
+        chain: u32,
+        #[serde(default)]
+        monster: bool,
     },
+    /// A fall out of the map during a bounce: the Bounced medal.
+    Bounced(u8),
     Edit {
         player: u8,
         object: u32,
@@ -159,7 +174,18 @@ impl ScenarioEvent {
             ScenarioEvent::Press { player, object } => Input::Press(player, object),
             ScenarioEvent::Pickup { player, object } => Input::Pickup(player, object),
             ScenarioEvent::Drop { player, object } => Input::Drop(player, object),
-            ScenarioEvent::Bounce { player, object } => Input::Bounce(player, object),
+            ScenarioEvent::Bounce {
+                player,
+                object,
+                chain,
+                monster,
+            } => Input::Bounce {
+                player,
+                spot: object,
+                chain,
+                monster,
+            },
+            ScenarioEvent::Bounced(p) => Input::Bounced(p),
             ScenarioEvent::Edit { player, object } => Input::Edit(player, object),
             ScenarioEvent::SquadDead(s) => Input::SquadDead(s),
             ScenarioEvent::ActorKill { killer, class } => Input::ActorKill { killer, class },
@@ -181,6 +207,9 @@ impl ScenarioEvent {
 pub fn label_all(game: &mut FakeGame, labels: &[ScenarioLabel]) {
     for l in labels {
         game.label(&l.label, l.object, l.number, l.placement.unwrap_or(l.object));
+        if let Some(team) = l.team {
+            game.object_teams.insert(l.object, team);
+        }
     }
 }
 
@@ -391,11 +420,12 @@ on kill(victim, killer) {
         let s: Scenario = serde_json::from_str(
             r#"{"seed":7,"players":[{"slot":0,"unit":100},{"slot":1,"team":1}],
                 "variant":{"score_limit":10},
-                "labelled":[{"label":"hill","object":40,"number":2}],
+                "labelled":[{"label":"hill","object":40,"number":2},{"label":"base","object":41,"team":1}],
                 "ticks":[{"events":[{"kill":{"victim":1,"killer":0}},{"spawn":1},{"press":{"player":0}},
                     {"bounce":{"player":0}},{"edit":{"player":0,"object":5}},
                     {"actor_kill":{"killer":0,"class":"elite"}},
-                    {"actor_assist":{"killer":0,"assist":1,"class":"elite"}}]}]}"#,
+                    {"actor_assist":{"killer":0,"assist":1,"class":"elite"}},
+                    {"bounce":{"player":1,"object":9,"chain":3,"monster":true}},{"bounced":1}]}]}"#,
         )
         .unwrap();
         assert_eq!(s.seed, 7);
@@ -403,6 +433,8 @@ on kill(victim, killer) {
         assert_eq!(s.players[0].unit, Some(100));
         assert_eq!(s.variant["score_limit"], 10);
         assert_eq!(s.labelled[0].number, 2);
+        assert_eq!((s.labelled[0].team, s.labelled[1].team), (None, Some(1)));
+        assert_eq!(game_of(&s).object_teams.get(&41), Some(&1));
         assert_eq!(
             s.ticks[0].events[0],
             ScenarioEvent::Kill {
@@ -418,6 +450,26 @@ on kill(victim, killer) {
                 class: "elite".into()
             }
         );
+        // A bounce is a single, normal one unless it says otherwise.
+        assert_eq!(
+            s.ticks[0].events[3].input(),
+            Input::Bounce {
+                player: 0,
+                spot: 0,
+                chain: 1,
+                monster: false
+            }
+        );
+        assert_eq!(
+            s.ticks[0].events[7].input(),
+            Input::Bounce {
+                player: 1,
+                spot: 9,
+                chain: 3,
+                monster: true
+            }
+        );
+        assert_eq!(s.ticks[0].events[8].input(), Input::Bounced(1));
         assert!(serde_json::from_str::<Scenario>(r#"{"nope":1}"#).is_err());
     }
 
@@ -506,6 +558,7 @@ on kill(victim, killer) {
                 object: 50,
                 number: 0,
                 placement: None,
+                team: None,
             }],
             ..Scenario::default()
         };

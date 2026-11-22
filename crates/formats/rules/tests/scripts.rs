@@ -540,6 +540,78 @@ fn compile_errors_carry_line_and_column() {
     assert!(e.message.contains("33 bits"), "{e}");
 }
 
+// ---- Bounce events ----
+
+const BOUNCES: &str = r#"
+rules "Bounces" 1
+carrier slayer
+player var last_chain: int = 0
+player var monsters: int = 0
+player var falls: int = 0
+object var hits: int = 0
+on bounce(p, spot, chain, monster) {
+    p.last_chain = chain
+    spot.hits = spot.hits + 1
+    if monster { p.monsters = p.monsters + 1 }
+}
+on bounced(p) { p.falls = p.falls + 1 }
+"#;
+
+/// `on bounce` binds the player, the strip, the chain's count and the
+/// Monster flag in that order; `on bounced` binds the player.
+#[test]
+fn on_bounce_hears_its_chain_and_monster_and_on_bounced_its_player() {
+    let (ir, report) = build(BOUNCES).unwrap();
+    assert!(report.fits());
+    verify(&ir).unwrap();
+    let mut g = FakeGame::with_players(2);
+    let mut vm = Vm::new(ir, 0, 1).unwrap();
+    vm.begin_tick(1);
+    let bounce = |chain, monster| Input::Bounce {
+        player: 1,
+        spot: 77,
+        chain,
+        monster,
+    };
+    assert_eq!(vm.fire(&mut g, bounce(1, false)), Fired::Ran);
+    assert_eq!(vm.player_var(1, "last_chain"), Some(1));
+    assert_eq!(vm.fire(&mut g, bounce(2, true)), Fired::Ran);
+    assert_eq!(vm.player_var(1, "last_chain"), Some(2));
+    assert_eq!(vm.player_var(1, "monsters"), Some(1));
+    assert_eq!(vm.player_var(1, "falls"), Some(0));
+    assert_eq!(vm.fire(&mut g, Input::Bounced(1)), Fired::Ran);
+    assert_eq!(vm.player_var(1, "falls"), Some(1));
+    assert_eq!(vm.player_var(0, "falls"), Some(0));
+    // A script without `on bounced` does not hear one.
+    let (ir, _) = build(builtin::SLAYER).unwrap();
+    let mut vm = Vm::new(ir, 0, 1).unwrap();
+    vm.begin_tick(1);
+    assert_eq!(vm.fire(&mut g, Input::Bounced(1)), Fired::NoHandler);
+}
+
+/// Handler arity is exact for every event, `on bounce` included: a
+/// two-parameter `on bounce(p, spot)` is refused with the parameters it
+/// takes.
+#[test]
+fn a_bounce_handler_with_too_few_parameters_is_refused() {
+    let e = compile_error("rules \"X\" 1\ncarrier slayer\non bounce(p, spot) { }\n");
+    assert!(
+        e.contains("on bounce takes 4 arguments (player, object, int, bool)"),
+        "{e}"
+    );
+    let e = compile_error("rules \"X\" 1\ncarrier slayer\non bounced(p, spot) { }\n");
+    assert!(e.contains("on bounced takes 1 argument (player)"), "{e}");
+    // The verifier refuses a blob whose bounce handler lacks the count.
+    let (mut ir, _) = build(BOUNCES).unwrap();
+    let hd = ir
+        .handlers
+        .iter_mut()
+        .find(|h| h.event == rules::ir::Event::Bounce)
+        .unwrap();
+    hd.regs[2] = rules::ty::Ty::Object;
+    assert!(verify(&ir).is_err());
+}
+
 // ---- Codec and identity ----
 
 #[test]
@@ -628,6 +700,24 @@ on tick {
             vec![player(9), Arg::Int(1)],
             vec![player(5), Arg::Int(5)],
         ]
+    );
+}
+
+#[test]
+fn a_list_line_files_the_script_under_a_named_row() {
+    use rules::ir::List;
+    let plain = compile("rules \"X\" 1\ncarrier slayer\n").unwrap();
+    assert_eq!(plain.header.list, List::GameType);
+    let listed = compile("rules \"X\" 1\ncarrier slayer\nlist tweakers\n").unwrap();
+    assert_eq!(listed.header.list, List::Tweakers);
+    assert_ne!(plain.id(), listed.id());
+    assert!(
+        compile_error("rules \"X\" 1\ncarrier slayer\nlist slayer\n")
+            .contains("unknown list slayer: a list is tweakers")
+    );
+    assert!(
+        compile_error("rules \"X\" 1\ncarrier slayer\nlist tweakers\nlist tweakers\n")
+            .contains("the list is named twice")
     );
 }
 

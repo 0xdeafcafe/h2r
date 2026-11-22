@@ -269,7 +269,7 @@ index (`+0x44`):
 
 | Record | What runs |
 |---|---|
-| mode 2 | the blob whose SHA-256 starts with the record's 8-byte prefix: a built-in (`rules::builtin`, compiled once at first use), else the game-variant store's (source `local`), else Live's by the full hash a store bundle names for the prefix (below); a System Link game takes a built-in or the store's, never Live's |
+| mode 2 | the blob whose SHA-256 starts with the record's 8-byte prefix: a compiled-in script (a port or an example of `rules::builtin`, compiled once at first use, `runtime::compiled_in`), else the game-variant store's (source `local`), else Live's by the full hash a store bundle names for the prefix (below); a System Link game takes a built-in or the store's, never Live's |
 | mode 0 | the built-in of the record's engine when the engine is in `runtime::PORTED`, which is empty: nothing runs, and Slayer stays lifted until its port passes parity |
 | mode 1 | nothing: Firefight's own feature runs it |
 | any other | refused: "script mode `n` is unknown to this build" |
@@ -301,10 +301,11 @@ only on Juggernaut and `reset_objective` only on Oddball, so a script on
 another carrier is refused as "the script calls role_traits, which a host
 makes only on juggernaut, and the script rides slayer"), or when it needs what this runtime does not do
 yet (`runtime::host_refusal`): an event other than `init`, `kill`,
-`timer` and `tick`; a read other than the scores, kills, deaths,
-`alive`, `team_of`, `lives`, `round_time_left`, `is_objective` and
-`carrier_of`; an action other than `score`, `end_round`, `set_lives`,
-`respawn`, `role_traits` and `reset_objective`; a
+`timer`, `tick`, `bounce` and `bounced`; a read other than the scores,
+kills, deaths, `alive`, `team_of`, `lives`, `round_time_left`,
+`is_objective` and `carrier_of`; an action other than `score`,
+`end_round`, `set_lives`, `respawn`, `role_traits` and
+`reset_objective`; a
 variant field other than `team_play`, `score_limit`, `time_limit` and
 `lives`, whose record offsets are not traced; a `grant`; a Forge label.
 Then the VM starts with the record's option bits and seed 0 (as
@@ -331,6 +332,7 @@ Firefight sits inside.
 | Handlers | Run from | Their calls |
 |---|---|---|
 | `on kill` | an observer before `PLAYER_KILLED` (`0x15ce70`): the attacker and victim player datums at `[esp+4]` and `[esp+8]`, as live telemetry reads them | at the next tick boundary |
+| `on bounce`, `on bounced` | the superbounce mode's tick observer, after `GAME_TICK`: each bounce and Bounced its medal chain files that tick (`rules::feature::bounces`, "Firefight, AI and bounces") | at the next tick boundary |
 | `on timer`, then `on tick` | an observer after `GAME_TICK` | at the next tick boundary |
 | `on init` | the start observer | at the first tick boundary |
 
@@ -426,7 +428,11 @@ with fake engine callees: the
 built-in Slayer starting from a record and setting the record, a kill
 making a `SCORE_ADD` call at the next boundary, a suicide's negative
 score, a machine that is not the authority, a refusal for an unknown
-hash and for System Link, refusals by entry and by event, another
+hash and for System Link, refusals by entry and by event, the
+compiled-in Superbounce example found by its prefix, a bounce reaching
+`on bounce` and scoring at the next boundary, awards reaching `on bounce`
+with their chain's count and Monster flag and a Bounced reaching
+`on bounced`, another
 engine's record, a record with no mode, the record removed at the game's
 end, a reverted record resuming the VM, a stored script running with no
 Live client and on System Link, a Live variant's script fetched by its
@@ -439,6 +445,57 @@ return with each refusal named, and the objective set and its carriers
 read from the registry. Boot's registration tests check that the
 feature's four scoring `before`s are in the plan only with the feature
 on.
+
+#### Reloading a running script
+
+The agent API's `rules.reload`
+([agent-api.md](../runtime/agent-api.md#rules-scripts)), and Studio's
+script editor through it
+([editor-guide.md](../editor/editor-guide.md#game-type-scripts)), put a
+new blob into the running game. `crates/extensions/game/src/rules/reload.rs`
+decides, purely (`reload::decide`):
+
+1. **Refused** in a Theater film's playback, in a matchmade Live game
+   (`Hle::matchmade`, ranked or not), on a guest (System Link or Live:
+   only the host runs the script), outside a multiplayer game, and for a
+   blob this host cannot run (`runtime::host_refusal`).
+2. **In place** when `rules::reload::compatible(old, new)` holds: the
+   same carrier, teams, API version and capabilities; the same options
+   in the same order with the same kind, range and default; the same
+   enums and members; the same variables in each scope with the same
+   names, types and order; the same labels and palettes. Handlers,
+   initial values, option labels and descriptions may change. Otherwise
+   it gives each difference as a sentence ("the script has 1 player
+   variables, not 0").
+3. **Restart** otherwise, unless the caller asked for in place only, or
+   the game cannot restart: a Live game (it restarts from its lobby),
+   another engine than the record's, or no agent guest calls.
+
+In place, `Runtime::swap` syncs the `RULES` record, then
+`Vm::swap_program` verifies the blob, checks it again, carries the
+state over (`rules::reload::carry`: text and tag values remapped to the
+new blob's tables, by value) and clears a stopped VM; the record is
+written again, and a Live host puts the new hash on its session
+(`Hle::set_session_rules`). The active record's script prefix still
+names the old blob, so the game's next start runs the old script.
+
+A restart saves the blob in the game-variant store, writes the new
+script prefix (and the option bits, kept when the options did not
+change) into a copy of the active options block, gives a listed store
+variant the same block (`game_variants::inject::retarget`, so
+`apply_block` does not undo it at `GAME_ACTIVATE`), and queues the block
+through the agent's guest calls (`OPTIONS_QUEUE`), as `map.reload {}`
+replays it. The game starts again on the same map, players and variant,
+and the start finds the blob in the store. A System Link guest's copy of
+the options carries no ext block, so it shows the carrier's own
+settings; its runtime is dropped at the authority check either way.
+
+`rules.state`'s `last_reload` keeps the last outcome. The tests:
+`crates/formats/rules/src/reload.rs` (each shape change, and a swap
+that keeps the kills and runs the new handler),
+`crates/extensions/game/src/rules/reload/tests.rs` (refusals, the
+decision by mode, the options block a restart writes) and
+`runtime/tests.rs` (an in-place swap over the fake game).
 
 ### Live game variants in the game
 
@@ -515,8 +572,18 @@ script.
 ## The language
 
 A source file is a header, options, variables, functions and handlers.
-The header names the script, its version, its carrier, its teams and the
-capabilities it requires: `requires player.weapons, hud.message`.
+The header names the script, its version, its carrier, its teams, the
+game type list row its variants are filed under and the capabilities it
+requires: `requires player.weapons, hud.message`.
+
+**The list row.** `list tweakers` files a variant naming the script
+under Tweakers, our row after Territories
+([community-gametypes.md](community-gametypes.md#tweakers)); with no
+`list` line it is under its carrier's game type. `tweakers` is the only
+name (`ir::List::NAMED`); any other is refused by name ("unknown list
+slayer: a list is tweakers"), and a second `list` line is refused too.
+The IR header carries it as one byte, `ir::List`, which a blob with
+any other value fails to decode by ("the header's list").
 
 **Types.** `int` (32-bit, saturating), `fixed` (16.16, for seconds and
 distances), `bool`, `player`, `team`, `object`, `squad`, `timer` (a global variable that
@@ -546,9 +613,13 @@ read through its owner: `p.infected`, `t.captures`.
 `on leave(zone, o)`, `on press(p, o)`, `on timer(t)`,
 `on squad_dead(s)`, `on actor_kill(killer, class)`,
 `on actor_assist(killer, assist, class)` (after its kill),
-`on bounce(p, spot)`, `on edit(p, o)` (a granted power was used),
-`on join(p)`, `on quit(p)`, `on round_end`. A handler runs to
-completion.
+`on bounce(p, spot, chain, monster)` (`chain` the bounce's place in its
+chain, 1 for a single bounce; `monster` a Monster Bounce),
+`on bounced(p)` (a fall out of the map during a bounce),
+`on edit(p, o)` (a granted power was used),
+`on join(p)`, `on quit(p)`, `on round_end`. A handler names every
+argument of its event, in order: `on bounce(p, spot)` is refused with
+the arguments it takes. A handler runs to completion.
 
 **Loops** are `for each` over a finite set only: `players`, `teams`,
 `objectives` (the objective registry's objects, at most 8, by object
@@ -727,8 +798,8 @@ type's handlers run first.
 ## The IR and the VM
 
 **Shape.** The blob is: a header (magic, IR version, API version,
-carrier, team requirement, and the required capabilities by name, at
-most 32, "Roles, powers and capabilities"); a string table; an option table (type,
+name, version, carrier, team requirement, list row, and the required
+capabilities by name, at most 32, "Roles, powers and capabilities"); a string table; an option table (type,
 range, default, label); a slot table (scope, type, initial value); a
 label table and a tag-path table; constant tables; a handler table
 (event, argument slots); and code. Code is a register bytecode with typed ops:
@@ -775,7 +846,7 @@ land at the point in the tick where the lifted engine's did:
 |---|---|---|
 | `on kill`, and each event the carrier engine has a callback for (per port: death, spawn, pickup, drop, join, quit, round start and end) | synchronously, in place of that callback | made at once |
 | `on enter`, `on leave`, `on press`, `on timer` (slot order), then `on tick` | synchronously, in place of the carrier's per-tick update (`0x15c150`) | made at once |
-| `on squad_dead`, `on actor_kill`, `on actor_assist`, `on bounce`; `on init` | after `GAME_TICK`, from what the tick's observers gathered; `init` after `GAME_ACTIVATE` | queued |
+| `on squad_dead`, `on actor_kill`, `on actor_assist`, `on bounce`, `on bounced`; `on init` | after `GAME_TICK`, from what the tick's observers gathered; `init` after `GAME_ACTIVATE` | queued |
 
 An event the carrier has no callback for runs with the per-tick group.
 Some calls are queued from any handler and made in program order by the
@@ -853,7 +924,7 @@ Reads:
 | events of the tick | hooks on `PLAYER_KILLED` `0x15ce70`, `PLAYER_SPAWN` `0x14f2e0`; `SimRead::events` once sim-rewrite section 7 exists | named; not built |
 | squads: actors alive, `on squad_dead`, `on actor_kill`, `on actor_assist` | `actor_net::squads::count_by_squad` and the kill list Firefight's `Observed` carries (`crates/extensions/game/src/actor_net/squads.rs`, `crates/formats/firefight/src/director.rs`) | named |
 | `zone_seen(z)`, `zone_distance(z)`: Firefight's drop zones, the objects labelled `ff_drop` in kit order | the zone visibility and distance Firefight's `Observed` carries (`ZoneSeen`) | named |
-| `on bounce(p, spot)` | a detector of the traced signature: capsule below the floor, then +8 to +13 units/s upward the next tick ([superbounce.md](superbounce.md#summary), **Trace**); the launch rule itself is Open there | traced; detector not built |
+| `on bounce(p, spot, chain, monster)`, `on bounced(p)` | a detector of the traced signature: capsule below the floor, then +8 to +13 units/s upward the next tick ([superbounce.md](superbounce.md#summary), **Trace**); the launch rule itself is Open there | traced; detector not built |
 | bounce and crouch spots, as zones | the scanner's spots per map and BSP (`crates/live/superbounce`); candidates, none traced as a real bounce | named |
 
 Actions:
@@ -924,6 +995,7 @@ plain words each:
 | `objects.create`, `objects.delete`, `objects.move` | makes, removes and moves objects | no |
 | `ai.squads` | places and commands AI | no |
 | `hud.message` | shows messages | no |
+| `hud.superbounce` | shows the superbounce guide: a priming HUD, marks over the map and bounce medals | no |
 | `firefight.director` | runs Firefight rounds, waves, lives and scores | no |
 | `forge.move`, `forge.delete`, `forge.place`, `forge.scale` | lets players move, remove, place and resize objects during the match | yes |
 
@@ -1074,10 +1146,15 @@ labels take ("Forge labels").
 
 Tooling:
 
-- **Studio**: a rules editor with errors as you type, the option table
-  as a form, and a budget meter (worst-tick estimate, slots, IR bytes)
-  that names the costliest handler. The blob carries an optional line
-  table for messages; the VM ignores it.
+- **Studio**: the Game type script window
+  ([editor-guide.md](../editor/editor-guide.md#game-type-scripts);
+  `crates/apps/studio/src/app/rules_edit.rs`) colours the text by
+  `rules::ide`'s semantic tokens, lists its diagnostics as you type, and
+  offers completion, hover, signature help and format; its check report
+  is `rules::workbench::check` (worst-tick estimate against the budget,
+  the costliest handler, slots, IR bytes, capabilities). It reloads the
+  script into the paired game ("Reloading a running script"). The blob
+  carries an optional line table for messages; the VM ignores it.
 - **Command line**: `h2 rules` is pure over its inputs and needs no
   disc (`crates/apps/cli/src/rules_cmd.rs`).
   - `h2 rules check <file.rules>` compiles and verifies. Errors print as
@@ -1095,6 +1172,14 @@ Tooling:
     steps the script over a scenario on the fake game, printing the calls
     made each tick (with `--trace`, each event and call), the final
     scores and the result; a script error exits 1.
+  - `h2 rules sim <file.rules> [--players N] [--teams N] [--seed S]
+    [--matches N] [--length SECONDS] [--score-limit N] [--json]
+    [-o <scenario.json>]` plays generated matches (`rules::sim`,
+    "Workbench" below) and prints how the seed's match ended, who won
+    and the standings; with `--matches`, the batch's summary and
+    warnings too. `-o` writes the seed's match as a scenario file that
+    `h2 rules run` reads. `--json` prints the match, the summary and the rows. A script
+    error in any match exits 1.
   - `h2 rules caps` lists the capabilities and the API entries with their
     status. `h2 rules builtin [name]` lists the engine ports
     (`builtin::ALL`, as `engine <index>: <name>`), then the example
@@ -1108,7 +1193,7 @@ Tooling:
     formatting from `rules::ide`.
 - **Language intelligence**: `rules::ide` (`crates/formats/rules/src/ide/`)
   is pure over source text, and the language server, Live's
-  `POST /v1/rules/ide` and the web editor share it. Positions are LSP's:
+  `POST /v1/rules/ide`, the web editor and Studio share it. Positions are LSP's:
   a 0-based line and a UTF-16 `character`. The lexer and the parser
   recover (`lex::lex_tolerant`, `parse::parse_recovering`): a bad
   character is skipped, a bad statement is skipped to the end of its
@@ -1202,8 +1287,10 @@ Tooling:
   `placement`: what `objects labelled` visits and `o.number` reads),
   `round_time_left`, and `ticks`, each with `events` of `kill`
   (`victim`, `killer`), `spawn`, `death`, `join`, `quit`, `enter` and
-  `leave` (`zone`, `object`), `press`, `pickup`, `drop`, `bounce` and
-  `edit` (`player`, `object`), `squad_dead`, `actor_kill` (`killer`,
+  `leave` (`zone`, `object`), `press`, `pickup`, `drop` and
+  `edit` (`player`, `object`), `bounce` (`player`, `object`, `chain`,
+  1 when absent, and `monster`, false when absent), `bounced` (the
+  player), `squad_dead`, `actor_kill` (`killer`,
   `class`), `actor_assist` (`killer`, `assist`, `class`) and
   `round_end`. Tick 0 reports `init` and `round_start` first; each tick
   ends with the per-tick group; queued calls are made at the start of
@@ -1225,14 +1312,15 @@ Tooling:
 **Code.** The web app's Game Types page (`statsPath("/rules")`,
 `web/src/stats/Rules.tsx`, its test half in `web/src/stats/RulesTest.tsx`,
 its pure half in `web/src/lib/rules.ts`) is where a script is written,
-checked, tested and saved before Studio's editor exists. The browser runs
+checked, tested and saved on the web (Studio's Game type script window
+is the desktop editor, over the same `rules::ide` and workbench). The browser runs
 no compiler: Live's [Rules scripts](../live/live-api.md#rules-scripts)
 routes call `rules::workbench` in both homes.
 
 The **Workbench** tab is one screen. The editor is on the left with the
 check beside it (Problems, Budget, Capabilities); under them the test
-scenario sits beside the results of running it. Under 1100 px the parts
-stack in that order. The page's other tabs are **My Scripts** and **My
+(generated matches and their summary) sits beside one match's results.
+Under 1100 px the parts stack in that order. The page's other tabs are **My Scripts** and **My
 Game Types**. The layout, its states and its copy are described in
 [web-app.md, "Game type scripts"](../live/web-app.md#game-type-scripts).
 
@@ -1279,13 +1367,57 @@ Game Types**. The layout, its states and its copy are described in
   trace keeps the ticks in which a handler other than `on tick` ran, a
   call was made, a variable or player row changed (a timer counting
   down is no change), a warning was raised or the script stopped. The run stops at a script error, after the tick
-  that calls `end_round`, or past 4,000,000 ops, and the same input gives
-  the same trace. The page runs the scenario by itself, 350 ms after the
-  checked script's hash or the scenario changes, and shows the trace as
-  final standings and a timeline (`rules.ts`, `timeline` and
-  `standings`): each tick the scenario put an event in or the trace
-  kept, with the event as a sentence, the handlers that ran, their
-  calls, and each score, team, lives count or variable that changed.
+  that calls `end_round`, or past 12,000,000 ops, and the same input gives
+  the same trace. The page shows a trace as final standings and a
+  timeline (`rules.ts`, `timeline` and `standings`): each tick the
+  scenario put an event in or the trace kept, with the event as a
+  sentence, the handlers that ran, their calls, and each score, team,
+  lives count or variable that changed.
+- **The fake world.** `workbench::Runner` is the same run one tick at a
+  time, each through `scenario::step`. The shared game model
+  (`FakeGame::apply`) also keeps what a script reads back about
+  objectives: a `pickup` or `drop` of a registered objective sets or
+  clears its carrier, and a kill, death or quit takes the player out of
+  every zone and drops what they carried. A labelled object may name
+  its `team` (`ScenarioLabel::team`), which `o.team` reads. After each
+  tick the Runner makes the objectives the script asked for:
+  `spawn_objective` makes one numbered from `SPAWNED_BASE` (0x4000) with
+  its team, and `reset_objective` clears its carrier; `h2 rules run`
+  does not, so a scenario whose script spawns objectives plays in full
+  only through the workbench. The limits a scenario's `variant` sets
+  end the run: `score_limit` (a player's score, or a team's sum with
+  `team_play`) and `time_limit` in seconds; the trace's `limit` says
+  which. A limit the scenario leaves to the stock record ends
+  nothing. `round_winner` is the team `end_round` named, `worst_tick_ops`
+  the costliest tick and `handlers_ran` every handler that ran.
+- **Generated matches.** `sim::simulate` makes a match up from the
+  script and a setup (players 1 to 16, teams, a seed, a length in
+  seconds or the carrier's time limit, a score limit) and plays it on a
+  `Runner` as it goes, so what happens next follows what the script did.
+  It reads the IR for what the script handles and calls, and makes only
+  those events: kills at a steady rate with a few suicides, betrayals
+  and deaths to the world, respawns after five seconds unless the script
+  respawns players itself, players walking into and out of the labelled
+  objects the script names, objectives picked up and dropped, and
+  `bounce`, `edit`, `press`, `actor_kill`, `actor_assist` and
+  `squad_dead` only for a script with that handler. The seed fixes the
+  whole match. The match stops when the script ends the round, a limit
+  is reached, the script fails, or 4,096 events or 36,000 ticks pass.
+  Its output is a `workbench::Scenario` and the trace of running it;
+  `workbench::run` on that scenario gives the same scores.
+  `sim::batch` plays up to 100 seeds in a row, starting no match past
+  24,000,000 ops or 400,000 ticks, and sums them up: who won how often,
+  how the matches ended, the average and best top score, the costliest
+  tick against the budget with its seed, each script error with its
+  seed, and flags with a seed that shows each (the game never ends,
+  nobody scores, a score below zero, a handler that never ran, every
+  match running out the clock). `sim::to_file` turns a match into the
+  CLI's scenario file, whole. A generated match seats each player with
+  the unit `UNIT_BASE` (0x1000) plus the slot; a player who quits and
+  joins again has none and stays out of zones. The page plays 25 matches by itself, 350 ms
+  after the checked script's hash or the setup changes; a match opened
+  with **Edit this match** runs through `workbench::run` when it
+  changes.
 - **Editor.** `POST /v1/rules/ide` answers one editor request (complete,
   hover, signature, definition, references, tokens, symbols, format or
   diagnostics) from `rules::ide`, in LSP's field names, so the page's
@@ -1307,8 +1439,8 @@ Game Types**. The layout, its states and its copy are described in
   Types** tab lists them beside My Scripts, and a player's page lists
   their public ones; each has a page (`statsPath("/variants/:id")`) with
   its settings, its script (opened read-only here) and the file.
-- **Drafts.** The page keeps the source and the scenario in
-  `localStorage`, and starts from a blank starter, an engine port
+- **Drafts.** The page keeps the source, the generator's setup and the
+  match edited by hand in `localStorage`, and starts from a blank starter, an engine port
   (`builtin::ALL`), an example (`builtin::examples`, marked "example")
   or one of the player's saved scripts. `GET /v1/rules/builtin` lists
   the ports and then the examples.
@@ -1437,23 +1569,75 @@ players like any other to a script.
 
 **Bounces are observed, not made.** Physics stays the engine's: Havok at
 an exact 30 Hz tick ([high-framerate.md](high-framerate.md)). A script
-hears `on bounce(p, spot)`, reads the scanner's spots as zones, scores
+hears `on bounce(p, spot, chain, monster)` and `on bounced(p)`, reads the scanner's spots as zones, scores
 and times them, and sets traits. That makes Bounce Practice and a trick
 or parkour mode real scripts, and the superbounce flag (bit 2 of the
 block's flags) a script's own choice. The detector's rule is a traced
 signature, not the launch rule (Open in superbounce.md), so it can miss
 or over-report until it is checked in play.
 
+**Code**, tests only. The detector is the superbounce mode's medal chain
+(`superbounce_chain`, [superbounce.md](superbounce.md#medals)): each
+tick its observer after `GAME_TICK` steps every player's chain, and each
+bounce it files goes to the running script as `on bounce`, and each
+Bounced (a fall out of the map during a bounce) as `on bounced`
+(`rules::feature::bounces`, `Runtime::bounces`), on that tick, with
+their calls made at the next tick boundary as `on kill`'s are. A
+`superbounce.medal_test` award reaches neither. `p` is the player's
+slot; `chain` is the award's chain count, 1 for a single bounce, 2 for a
+double; `monster` is whether the award holds Monster Bounce
+([superbounce.md](superbounce.md#the-rule)); `spot` is the strip's id,
+`superbounce_chain::spot_id`: FNV-1a over the bits of the strip's edge,
+in 31 bits so it is never `none`. The scan is a function of the map's
+geometry, so a strip has one id in every game on its map, on every
+machine and in a film, and a script keeps per-strip state in object
+variables keyed by it (at most `vm::MAX_OBJECT_RECORDS`, 256, at once).
+The chain runs only while the superbounce mode is on, so a script hears
+bounces only in a game where the mode is on; and the mode is
+presentation-only (a film's hook digest leaves it out), so a script that
+scores bounces is not yet a parity game.
+
+**The Superbounce game type is a script**,
+`crates/formats/rules/src/builtin/superbounce.rules`, an example
+(`builtin::examples`): `carrier slayer`, `list tweakers`,
+`requires hud.superbounce`, Slayer's kill rule with its two options, and
+three bounce options: `bounce_points` (0 to 5, default 1), times the
+bounce's place in its chain up to 6; `bounced_costs` (default on), a
+point off for a Bounced; and `monster_double` (default on), a Monster
+Bounce's points doubled after the cap
+([superbounce.md](superbounce.md#the-superbounce-game-type) has the
+table). The built-in Superbounce variant's
+record names it (mode 2, its hash prefix and default options,
+`community_variants::superbounce_ext`); its other settings (no limits,
+overshields, a magnum) are the record's. The game reads the header
+through `rules::header`:
+
+| Header | What it turns on | Game side |
+|---|---|---|
+| `requires hud.superbounce`, a capability that gates no entry | the superbounce mode: HUD, marks, priming, medals | `header::script_asks_superbounce` over the block's script reference, in `variant_ext::Decision::superbounce`, so a guest that applies its host's block turns the mode on too, and the mode needs no running script |
+| `list tweakers` | a place under Tweakers ([community-gametypes.md](community-gametypes.md#tweakers)) | `header::lists_tweakers`; `community_variants::is_tweaker` asks it of a mode 2 block's script through `header::block_is_tweaker` |
+
+Both find the script by the record's prefix among the compiled-in
+scripts (`runtime::compiled_in`) and in the game-variant store. With the
+`rules` feature off the HUD still turns on and Slayer's lifted rules
+score the game; with it on, the script runs beside them ("The host
+runtime"), so its kill scoring adds to the lifted carrier's until
+Slayer's callbacks are answered in place.
+
 ## Payoff
 
 The modes below that have a script are examples in
 `crates/formats/rules/src/builtin/`, listed by `builtin::examples()`
 rather than by engine: `infection.rules`, `gun_game.rules`,
-`vip.rules`, `siege.rules`, `race.rules` and `bounce_practice.rules`.
-Each compiles, verifies and fits a tick (`tests/engines.rs`), and each
-header names the entries a host cannot make yet. VIP and Bounce
-Practice call none, but wait on the match edit log and the bounce
-detector. Prop Hunt has no script.
+`vip.rules`, `siege.rules`, `race.rules`, `bounce_practice.rules` and
+`superbounce.rules`. Each compiles, verifies and fits a tick
+(`tests/engines.rs`), and each header names the entries a host cannot
+make yet. VIP, Bounce Practice and Superbounce call none. VIP waits on
+the match edit log, and Bounce Practice on the host runtime's
+`round_start` and `set_gravity`. Superbounce runs. The examples are
+compiled into the game, so a record names one by its hash prefix with
+no store or fetch; a record with no mode never runs one. Prop Hunt has
+no script.
 
 - **Race.** Halo 1's race track points are dropped at conversion
   ([multiplayer.md](../halo1/multiplayer.md)); labelled checkpoints and

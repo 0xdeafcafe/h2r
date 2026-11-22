@@ -10,6 +10,8 @@ pub struct Script {
     pub pos: Pos,
     pub carrier: Option<(String, Pos)>,
     pub teams: Option<(i64, Pos)>,
+    /// `list tweakers`: the list's name.
+    pub list: Option<(String, Pos)>,
     pub requires: Vec<(String, Pos)>,
     pub items: Vec<Item>,
 }

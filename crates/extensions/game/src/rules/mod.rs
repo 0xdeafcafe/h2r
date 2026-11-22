@@ -7,11 +7,15 @@
 //! over them and one game's script and state; `scoring` keeps the carrier
 //! engine's own scoring from running beside a script's; `feature` puts
 //! the runtime on the feature plan and answers the agent API's
-//! `rules.state`.
+//! `rules.state`; `reload` answers `rules.reload`, in place or by a
+//! restart; `header` answers what a script's header asks of the game
+//! outside its rules (the superbounce mode, Tweakers).
 
 pub mod feature;
 pub mod guest;
+pub mod header;
 pub mod objectives;
+pub mod reload;
 pub mod roles;
 pub mod runtime;
 pub mod scoring;
