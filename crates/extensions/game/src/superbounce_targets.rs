@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex};
 use superbounce::learned::{Entry, State as Line};
 use superbounce::{Kind, Spot, Status, Vec3};
 
+use crate::superbounce_charge::{NavKind, NavTarget};
 use crate::superbounce_options::TargetMode;
 use crate::superbounce_view::{Button, EYE, Press};
 
@@ -312,6 +313,35 @@ impl Tagger {
 
 // ---- the running game ----
 
+/// The chosen strip with the tag: while the mode's navpoint is on a strip
+/// (`nav`, primed) and the player is not falling onto one (`falling`), a
+/// tagged seam that is one of the mode's marked `spots` is the chosen
+/// strip, so the navpoint, the take-off and the assist follow the tag.
+/// Otherwise `nav` as it is.
+pub fn chosen(
+    nav: Option<NavTarget>,
+    falling: bool,
+    tag: Option<Vec3>,
+    spots: &[Spot],
+    at: Option<Vec3>,
+) -> Option<NavTarget> {
+    let strip = nav.is_some_and(|n| n.kind == NavKind::Strip);
+    let tagged = tag.filter(|_| strip && !falling).and_then(|t| {
+        spots
+            .iter()
+            .find(|s| s.kind == Kind::Bounce && same(s.stand, t))
+    });
+    match (tagged, at) {
+        (Some(s), Some(at)) => Some(NavTarget {
+            at: s.stand,
+            kind: NavKind::Strip,
+            distance: distance(s.stand, at),
+            fall: s.fall,
+        }),
+        _ => nav,
+    }
+}
+
 /// What one tick gives [`step`].
 pub struct Input<'a> {
     pub map: Option<&'a str>,
@@ -323,8 +353,6 @@ pub struct Input<'a> {
     pub aim: Option<Vec3>,
     /// The flashlight action.
     pub down: bool,
-    /// Where the mode's own navpoint is drawn this tick.
-    pub own: Option<Vec3>,
 }
 
 /// The classed list, kept while the scan, the map's files and the mode
@@ -351,9 +379,8 @@ fn live() -> std::sync::MutexGuard<'static, Live> {
 }
 
 /// The mode's tick: classes the scan (once per scan, file generation and
-/// mode), steps the tag and chooses the marks. Without a position there
-/// are none; the tag is kept.
-pub fn step(i: &Input<'_>) -> Marks {
+/// mode) and steps the tag. The tag after the tick.
+pub fn step(i: &Input<'_>) -> Option<Vec3> {
     let mut l = live();
     let generation = bots::spots::generation();
     let fresh = l.kept.as_ref().is_some_and(|k| {
@@ -373,9 +400,15 @@ pub fn step(i: &Input<'_>) -> Marks {
         .as_ref()
         .map(|k| Arc::clone(&k.targets))
         .unwrap_or_default();
-    let tag = l.tagger.step(i.down, i.position, i.aim, &list);
-    match i.position {
-        Some(at) => choose(&list, at, tag, i.own),
+    l.tagger.step(i.down, i.position, i.aim, &list)
+}
+
+/// The tick's marks for a player at `position` with the tag `tag`, the
+/// mode's own navpoint drawn at `own` ([`choose`], over the list [`step`]
+/// classed). Without a position there are none; the tag is kept.
+pub fn marks(position: Option<Vec3>, tag: Option<Vec3>, own: Option<Vec3>) -> Marks {
+    match position {
+        Some(at) => choose(&current(), at, tag, own),
         None => Marks {
             tagged: tag,
             ..Marks::NONE
@@ -721,5 +754,43 @@ mod tests {
             t.step(true, at, ahead, &list);
         }
         assert_eq!(t.tag(), Some([20.0, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn a_tagged_marked_seam_is_the_chosen_strip_while_primed_on_the_ground() {
+        let near = seam([5.0, 0.0, 0.0]);
+        let far = seam([40.0, 0.0, 0.0]);
+        let spots = [near, far];
+        let at = Some([0.0, 0.0, 3.0]);
+        let strip = Some(NavTarget {
+            at: near.stand,
+            kind: NavKind::Strip,
+            distance: 5.0,
+            fall: near.fall,
+        });
+        let tag = Some(far.stand);
+        let got = chosen(strip, false, tag, &spots, at).unwrap();
+        assert_eq!(
+            (got.at, got.kind, got.fall),
+            (far.stand, NavKind::Strip, far.fall)
+        );
+        assert!((got.distance - (1600.0f32 + 9.0).sqrt()).abs() < 1e-3);
+        // Falling onto a strip, that strip stays the target.
+        assert_eq!(chosen(strip, true, tag, &spots, at), strip);
+        // Not primed, the navpoint is the crouch spot's.
+        let crouch = Some(NavTarget {
+            at: [1.0, 1.0, 0.0],
+            kind: NavKind::Crouch,
+            distance: 1.0,
+            fall: 0.0,
+        });
+        assert_eq!(chosen(crouch, false, tag, &spots, at), crouch);
+        assert_eq!(chosen(None, false, tag, &spots, at), None);
+        // A tag on a seam the mode does not mark, or no tag: as it was.
+        assert_eq!(
+            chosen(strip, false, Some([9.0, 9.0, 9.0]), &spots, at),
+            strip
+        );
+        assert_eq!(chosen(strip, false, None, &spots, at), strip);
     }
 }
