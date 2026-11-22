@@ -90,6 +90,27 @@ workspace_test(
 )
 
 workspace_test(
+    name = "distance",
+    crate = "distance",
+    crate_root = "crates/platform/audio/tests/distance.rs",
+    description = "DirectSound-level audio model, Xbox ADPCM decoder and software mixer for h2recomp",
+    features = [
+        "default",
+        "device",
+    ],
+    manifest = "crates/platform/audio",
+    package = "audio",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//crates/runtime/snapshot:snapshot",
+        "//third-party/rust:cpal",
+        "//third-party/rust:thiserror",
+        ":audio",
+    ],
+)
+
+workspace_test(
     name = "hrtf",
     crate = "hrtf",
     crate_root = "crates/platform/audio/tests/hrtf.rs",

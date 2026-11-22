@@ -58,7 +58,15 @@ fn load6(counters: &[AtomicU64; 6]) -> [u64; 6] {
     std::array::from_fn(|i| counters[i].load(Ordering::Relaxed))
 }
 
+/// The process's minor page faults so far; 0 where there is no `getrusage`
+/// (Windows).
+#[cfg(not(unix))]
+fn minor_faults() -> u64 {
+    0
+}
+
 /// The process's minor page faults so far (`getrusage`).
+#[cfg(unix)]
 fn minor_faults() -> u64 {
     // SAFETY: `getrusage` fills a zeroed `rusage` we own.
     let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
