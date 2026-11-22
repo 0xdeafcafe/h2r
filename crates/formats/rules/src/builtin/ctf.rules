@@ -16,7 +16,6 @@
 // traits.
 //
 // Entries a host cannot make yet (`verify::unhostable`):
-//   object_team      traced (record `+4`; a placement's designator)
 //   inside           not built (the return point and plate volumes)
 //   spawn_objective  traced (the flag spawn 0x2422d0)
 //   reset_objective  made only on oddball (CTF's flag return, which calls
