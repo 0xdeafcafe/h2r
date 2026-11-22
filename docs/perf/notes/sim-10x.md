@@ -2,6 +2,32 @@
 
 Evidence for [../sim-10x.md](../sim-10x.md). Newest first.
 
+## 2026-11-22: batch throughput at --parallel 1, 4 and 8 on the quiet laptop
+
+Lab jobs 0055 to 0057, commit `1c331062f`, `H2_OPT=2`: one batch of eight
+Lockout 2v2 matches (seeds 1 to 8, 9,000 ticks each, 2,400 game seconds in
+all) at each setting. "Batch speed" is game seconds over the job's wall
+time, setup and lab overhead included.
+
+| --parallel | per-match speed (median, min to max) | ms/tick | job wall | batch speed |
+|---|---|---|---|---|
+| 1 | 10.70× (9.91 to 11.09) | 3.12 | 321 s | 7.5× |
+| 4 | 6.55× (6.32 to 6.79) | 5.09 | 175 s | 13.7× |
+| 8 | failed | – | 198 s | – |
+
+- Four at once slow each match by 39%, so four matches buy 1.8× the
+  throughput of one.
+- At eight, every match failed before its first tick: the laptop's disk
+  filled. Each run's data directory gets its own copy of the map cache
+  partitions (`data/disk/Partition4`, `Partition5`, `cache00N.map`), which
+  the title writes while the System Link lobby waits for every peer's map
+  status to reach 3 ("vfs: write-behind write ... No space left on
+  device"). That copy is also part of each match's 9 to 12 s setup.
+
+Reproduce: a batch file with `match = "lockout-2v2.toml"`, `maps =
+["lockout"]`, `seeds = [1, ..., 8]`, then `h2 lab sim --host laptop --branch
+master --wait --parallel N --build-env H2_OPT=2 <batch>`.
+
 ## 2026-11-22: the status poll on the quiet laptop
 
 Lab job 0054, the same setup as job 0053 below (commit `1c331062f`,
