@@ -6,5 +6,7 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+# The camera, the carried part and the keys, shared with d3d (src/lib.rs).
+frame-types = { path = "../../platform/frame-types" }
 bytemuck = { version = "1", features = ["derive"] }
 serde.workspace = true

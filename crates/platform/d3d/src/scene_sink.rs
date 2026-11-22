@@ -30,7 +30,7 @@ use replay::{Origin, Recorder};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use frame_scene::{AuxTarget, Carried, CarriedSummary, GuestOp, Readback, SlotAt, TargetRef, TargetSample};
+use frame_types::{AuxTarget, Carried, CarriedSummary, GuestOp, Readback, SlotAt, TargetRef, TargetSample};
 use gfx::texture::{DecodedTexture, TextureDesc};
 use gfx::{Clear, D3DFormat};
 
@@ -385,9 +385,9 @@ impl<B: Backend> SceneSink<B> {
             }
         });
         let camera = if draw.layout.pretransformed {
-            frame_scene::carried::CameraUse::Screen
+            frame_types::carried::CameraUse::Screen
         } else {
-            frame_scene::carried::CameraUse::Unknown
+            frame_types::carried::CameraUse::Unknown
         };
         replay.push(at, ReplayOp::Draw { draw, textures: inputs, camera });
     }
@@ -879,7 +879,7 @@ impl<B: Backend> Backend for SceneSink<B> {
 mod tests {
     use std::sync::atomic::AtomicU8;
 
-    use frame_scene::{Slot, TargetRef};
+    use frame_types::{Slot, TargetRef};
     use gfx::Clear;
 
     use super::*;

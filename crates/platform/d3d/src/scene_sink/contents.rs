@@ -14,7 +14,7 @@ use crate::backend::PixelRect;
 use rects::Holes;
 use std::collections::HashMap;
 
-use frame_scene::{AuxTarget, TargetRef};
+use frame_types::{AuxTarget, TargetRef};
 use gfx::state::{CompareFunc, DepthBufferMode};
 use gfx::D3DFormat;
 

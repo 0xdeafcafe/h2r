@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use frame_scene::Readback;
+use frame_types::Readback;
 
 use super::Census;
 
@@ -287,7 +287,7 @@ mod tests {
 
     #[test]
     fn corpus_freezes_the_original_inventory_and_completed_window_at_the_same_swap() {
-        use frame_scene::Slot;
+        use frame_types::Slot;
         use super::super::{TargetUse, Uses};
 
         let w = PresentWindow::new(false).with_seal_probe(|| true);

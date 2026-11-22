@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use frame_scene::{AuxTarget, TargetRef};
+use frame_types::{AuxTarget, TargetRef};
 use gfx::{Clear, D3DFormat, surface::SurfaceId};
 
 use super::{ScaledBackend, ScaledSurface};

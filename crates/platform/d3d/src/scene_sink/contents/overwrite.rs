@@ -4,7 +4,7 @@
 
 use crate::backend::ResolvedDraw;
 use crate::shader::VertexProcessing;
-use frame_scene::AuxTarget;
+use frame_types::AuxTarget;
 use gfx::state::{CullMode, DepthBufferMode, FillMode};
 use gfx::vertex::{PrimitiveType, VertexDataType, VertexRegister};
 

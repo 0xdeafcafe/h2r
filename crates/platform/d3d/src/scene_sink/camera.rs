@@ -3,8 +3,8 @@
 
 use std::collections::HashMap;
 
-use frame_scene::carried::CameraUse;
-use frame_scene::{FrameScene, Slot, SlotAt, ViewKind};
+use frame_types::carried::CameraUse;
+use frame_types::{Camera, Slot, SlotAt, ViewKey, ViewKind};
 
 use super::replay::{ReplayFrame, ReplayOp};
 use crate::backend::{ResolvedDraw, Viewport};
@@ -20,11 +20,10 @@ struct ViewBlock {
 }
 
 impl ViewBlock {
-    fn from_view(view: &frame_scene::View) -> Option<Self> {
-        if view.key.kind != ViewKind::Game {
+    fn from_view((key, cam): (ViewKey, &Camera)) -> Option<Self> {
+        if key.kind != ViewKind::Game {
             return None;
         }
-        let cam = &view.camera;
         let [top, left, bottom, right] = cam.viewport;
         if top < 0 || left < 0 || !cam.is_usable() {
             return None;
@@ -34,7 +33,7 @@ impl ViewBlock {
             return None;
         }
         Some(Self {
-            index: view.key.view,
+            index: key.view,
             rect: [
                 left as u32,
                 top as u32,
@@ -114,14 +113,12 @@ fn classify(
 }
 
 impl ReplayFrame {
-    /// Classify once at seal, from the unscaled draw packets. Reclassifying
-    /// replaces all prior labels, including those a different view proved.
-    pub fn classify_cameras(&mut self, scene: &FrameScene) {
-        let views: Vec<_> = scene
-            .views
-            .iter()
-            .filter_map(ViewBlock::from_view)
-            .collect();
+    /// Classify once at seal, from the unscaled draw packets, against the
+    /// matching sealed scene's views (`FrameScene::view_cameras`).
+    /// Reclassifying replaces all prior labels, including those a different
+    /// view proved.
+    pub fn classify_cameras<'a>(&mut self, views: impl IntoIterator<Item = (ViewKey, &'a Camera)>) {
+        let views: Vec<_> = views.into_iter().filter_map(ViewBlock::from_view).collect();
         let mut programs = HashMap::new();
         for (at, op) in &mut self.ops {
             if let ReplayOp::Draw { draw, camera, .. } = op {

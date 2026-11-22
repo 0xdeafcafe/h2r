@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use frame_scene::TargetRef;
+use frame_types::TargetRef;
 use gfx::texture::TextureDesc;
 
 use super::{ReplayFrame, ReplayOp};
@@ -80,7 +80,7 @@ pub(super) fn final_contents(frame: &ReplayFrame) -> Vec<Option<TargetSeed>> {
 mod tests {
     use super::*;
     use crate::{Backend, RecordingBackend, SceneSink};
-    use frame_scene::{Slot, SlotAt};
+    use frame_types::{Slot, SlotAt};
     use gfx::{Clear, D3DFormat};
     use gfx::texture::TextureKind;
     use std::sync::Mutex;
