@@ -1169,6 +1169,9 @@ enum Dropping {
 enum State {
     Fresh,
     Walk(RouteWalk),
+    /// Before a prime: shooting out the glass its walk in goes through
+    /// ([`OrderRun::shooting`]), from the tick, piece by piece.
+    Break(Breaking),
     Prime(PrimeRun),
     Bounce(BounceRun),
     Drop(Dropping),
@@ -1177,6 +1180,73 @@ enum State {
         peaked: bool,
         still: u32,
     },
+}
+
+/// Breaking the glass before a crouch spot's walk in (docs/game/bots.md,
+/// "Breaking the glass"): the pieces (`crate::glass`) in its way, by
+/// breakable index and where a shot at each aims, lowest first.
+#[derive(Clone, Debug)]
+struct Breaking {
+    since: u32,
+    pieces: Vec<(u8, Vec3)>,
+    /// The piece being shot: the lowest still whole.
+    aim: Option<Vec3>,
+}
+
+/// Breaking the glass gives up after this long (ticks), the route failing
+/// with `glass_whole`: 5 s, enough to empty a clip into it.
+pub const BREAK_TICKS: u32 = 150;
+
+/// The pieces of glass the walk in of crouch spot `c` goes through
+/// (`crate::glass::in_the_way`, from its prime's start to its stand) that
+/// `mask` says are whole, lowest first. None when its way out isn't known
+/// (it primes in place) or the mask can't be read.
+pub fn glass_in_the_way(map: &MapData, c: &Crouch, mask: Option<&crate::glass::Mask>) -> Vec<(u8, Vec3)> {
+    let (Some(mask), Some(_)) = (mask, geo(c)) else {
+        return Vec::new();
+    };
+    let panes = &map.walls.glass;
+    crate::glass::in_the_way(panes, prime_start(c), c.stand)
+        .into_iter()
+        .map(|i| &panes[i])
+        .filter(|p| crate::glass::intact(mask, p.index))
+        .map(|p| (p.index, p.center()))
+        .collect()
+}
+
+fn prime_run(c: &Crouch, tick: u32) -> PrimeRun {
+    match geo(c) {
+        Some(g) => PrimeRun::at(tick, g),
+        None => PrimeRun::new(tick),
+    }
+}
+
+/// One tick of breaking the glass, standing at `at` (the prime's start):
+/// face the lowest piece still whole and shoot it. `Ok(None)` once every
+/// piece is broken; `glass_whole` after [`BREAK_TICKS`], or when the mask
+/// can no longer be read.
+fn break_glass(
+    b: &mut Breaking,
+    at: Vec3,
+    tick: u32,
+    mask: Option<&crate::glass::Mask>,
+) -> Result<Option<RouteMotion>, &'static str> {
+    let Some(mask) = mask else {
+        return Err("glass_whole");
+    };
+    let Some(&(_, aim)) = b.pieces.iter().find(|(i, _)| crate::glass::intact(mask, *i)) else {
+        b.aim = None;
+        return Ok(None);
+    };
+    if tick.wrapping_sub(b.since) > BREAK_TICKS {
+        return Err("glass_whole");
+    }
+    b.aim = Some(aim);
+    let d = [aim[0] - at[0], aim[1] - at[1]];
+    Ok(Some(RouteMotion {
+        yaw: Some(d[1].atan2(d[0])),
+        ..RouteMotion::default()
+    }))
 }
 
 /// A touchdown by the route's strip, as the bot saw it.
@@ -1381,7 +1451,7 @@ pub struct OrderStatus {
     pub what: &'static str,
     /// The step's phase: a prime's `start`, `in`, `release`, `out`; a
     /// drop's `line_up`, `run_off`, `air`; a bounce's `settle` or `air`; a
-    /// walk's `walking`; else empty.
+    /// walk's `walking`; a prime's break step's `break`; else empty.
     pub phase: &'static str,
     /// The step's try (from 1; 0 for a step that does not retry).
     pub tries: u32,
@@ -1399,8 +1469,9 @@ pub struct OrderStatus {
 pub struct Logged {
     pub tick: u32,
     pub step: &'static str,
-    /// `start`, `done`, `retry`, `reprime`, a landing's result, or why the
-    /// step failed.
+    /// `start`, `done`, `retry`, `reprime`, `break_glass` and
+    /// `glass_broken` (a prime's break step), a landing's result, or why
+    /// the step failed.
     pub what: &'static str,
     pub at: Vec3,
 }
@@ -1441,6 +1512,8 @@ pub struct OrderRun {
     /// The numbers it plays by, taken when it starts
     /// ([`crate::tuning::bounce`]).
     tune: crate::tuning::BounceTuning,
+    /// The loaded BSP's breakable mask this tick ([`OrderRun::see_glass`]).
+    glass: Option<crate::glass::Mask>,
 }
 
 fn norm(d: [f32; 2]) -> ([f32; 2], f32) {
@@ -1477,6 +1550,22 @@ impl OrderRun {
             show_off: false,
             goal: GOAL,
             tune: crate::tuning::bounce().sane(),
+            glass: None,
+        }
+    }
+
+    /// The loaded BSP's breakable mask this tick (`crate::guest::breakable`),
+    /// before [`OrderRun::step`]: which pieces of glass are whole.
+    pub fn see_glass(&mut self, mask: Option<crate::glass::Mask>) {
+        self.glass = mask;
+    }
+
+    /// While breaking the glass before a prime: the point the bot shoots
+    /// at (the pad aims there and pulls the trigger).
+    pub fn shooting(&self) -> Option<Vec3> {
+        match &self.state {
+            State::Break(b) => b.aim,
+            _ => None,
         }
     }
 
@@ -1586,6 +1675,7 @@ impl OrderRun {
         let (phase, tries) = match &self.state {
             State::Fresh => ("", 0),
             State::Walk(_) => ("walking", 0),
+            State::Break(_) => ("break", 0),
             State::Prime(p) => (p.phase(), p.tries()),
             State::Bounce(b) => (if b.airborne() { "air" } else { "settle" }, b.tries + 1),
             State::Drop(d) => (
@@ -1727,7 +1817,7 @@ impl OrderRun {
                     self.walk(map, at, tick, to, crouch, ARRIVED, speed, true)
                 }
                 Step::Nav { to } => self.walk(map, at, tick, to, false, self.goal, 1.0, false),
-                Step::Prime(c) => self.prime(c, at, tick, pair),
+                Step::Prime(c) => self.prime(map, c, at, tick, pair),
                 Step::Bounce(site) => self.bounce(site, at, tick),
                 Step::Drop { from, site } => self.drop(from, site, at, tick, vel),
                 Step::Fly { to } => self.fly(to, at, tick, vel),
@@ -1815,16 +1905,38 @@ impl OrderRun {
 
     fn prime(
         &mut self,
+        map: &MapData,
         c: Crouch,
         at: Vec3,
         tick: u32,
         pair: Option<u32>,
     ) -> Result<Option<RouteMotion>, &'static str> {
         if matches!(self.state, State::Fresh) {
-            self.state = State::Prime(match geo(&c) {
-                Some(g) => PrimeRun::at(tick, g),
-                None => PrimeRun::new(tick),
-            });
+            let pieces = glass_in_the_way(map, &c, self.glass.as_ref());
+            if pieces.is_empty() {
+                self.state = State::Prime(prime_run(&c, tick));
+            } else {
+                self.note(tick, "break_glass", at);
+                self.state = State::Break(Breaking {
+                    since: tick,
+                    pieces,
+                    aim: None,
+                });
+            }
+        }
+        let glass = self.glass;
+        let broke = match &mut self.state {
+            State::Break(b) => Some(break_glass(b, at, tick, glass.as_ref())),
+            _ => None,
+        };
+        match broke {
+            Some(Ok(None)) => {
+                self.note(tick, "glass_broken", at);
+                self.state = State::Prime(prime_run(&c, tick));
+                return Ok(Some(RouteMotion::default()));
+            }
+            Some(out) => return out,
+            None => {}
         }
         let State::Prime(run) = &mut self.state else {
             return Err("state");

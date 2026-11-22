@@ -17,6 +17,7 @@ pub mod decisions;
 pub mod drill;
 pub mod emote;
 pub mod experience;
+pub mod glass;
 pub mod glitches;
 pub mod goto;
 pub mod grenades;
@@ -132,6 +133,8 @@ struct Observation {
     /// The player's level pair word, when [`set_pair_reader`]'s reader
     /// finds it.
     pair_word: Option<u32>,
+    /// BSP 0's breakable mask (`glass`), read with the pair word.
+    glass_mask: Option<glass::Mask>,
 }
 
 /// Reads a unit's level pair word from guest memory (the unit's datum
@@ -484,6 +487,7 @@ impl Brain {
     ) -> HostPadState {
         let p = &observation.perception;
         self.mind.pair_word = observation.pair_word;
+        self.mind.glass_mask = observation.glass_mask;
         self.mind.hear_deaths(p, &observation.kills, map);
         self.mind
             .decisions
@@ -731,6 +735,12 @@ impl Brain {
         observation.pair_word = unit
             .filter(|_| alive && self.mind.wants_pair())
             .and_then(|(_, datum)| PAIR_READER.get().and_then(|read| read(f.guest, datum)));
+        // The glass a crouch spot's walk in breaks first (glass): BSP 0's,
+        // the BSP the bots' map data is.
+        observation.glass_mask = (alive && self.mind.wants_pair())
+            .then(|| guest::breakable(f.guest, 0).ok().flatten())
+            .flatten()
+            .map(|b| b.mask);
         // A drill's bot at its start asks the host for the word (drill).
         if let Some((_, datum)) = unit.filter(|_| alive && self.mind.drill_wants_arm()) {
             drill::request_arm(datum);
@@ -804,6 +814,7 @@ impl Brain {
         let mut observation = self.spare_observations.pop().unwrap_or_default();
         observation.perception = p;
         observation.pair_word = None;
+        observation.glass_mask = None;
         observation.kills.clear();
         observation.kills.extend_from_slice(kills);
         observation.sounds.clear();

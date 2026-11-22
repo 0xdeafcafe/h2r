@@ -10,7 +10,15 @@
 //!   an edge);
 //! - **drop**: the far side is lower, within [`Build::max_drop`];
 //! - **jump**: the far side is higher, within [`Build::max_jump_up`], or
-//!   across a gap of up to [`Build::max_gap`].
+//!   across a gap of up to [`Build::max_gap`]; a ledge too high for the
+//!   standing capsule's arc but within `CROUCH_GAIN` more is a
+//!   **crouch jump**.
+//!
+//! A polygon takes links when a standing body fits somewhere on it
+//! (`stands_on`): at its centre, or at a corner pulled [`CLEARANCE`]
+//! in. A floor that runs in under a low lip (a crouch spot's) keeps its
+//! links by the standing room beside the lip; a recess wholly under one
+//! takes none.
 //!
 //! [`NavMesh::path`] is A\* over the polygons, then a funnel pass over the
 //! portals, giving waypoints. A portal's end at a wall corner (a vertex on
@@ -97,7 +105,8 @@ pub struct Build {
     pub step: f32,
     /// The deepest drop taken.
     pub max_drop: f32,
-    /// The highest ledge jumped onto.
+    /// The highest ledge jumped onto standing ([`JUMP_APEX`] is the
+    /// measured jump's top; this leaves room for the lip and the takeoff).
     pub max_jump_up: f32,
     /// The widest gap jumped across.
     pub max_gap: f32,
@@ -110,7 +119,7 @@ impl Default for Build {
         Build {
             step: 0.12,
             max_drop: 1.6,
-            max_jump_up: 0.35,
+            max_jump_up: 0.6,
             max_gap: 0.8,
             probe: 0.25,
         }
@@ -140,8 +149,34 @@ pub(crate) fn standing_clear(walls: &Walls, floor: V3) -> bool {
     )
 }
 
+/// Whether a standing body fits anywhere on `poly`: at its centre, or at
+/// a corner pulled [`CLEARANCE`] toward the centre. Judged at the centre
+/// alone, a floor whose middle runs in under a low lip (the floor a crouch
+/// spot is on) loses every link, though most of it is standing room.
+pub(crate) fn stands_on(walls: &Walls, poly: &Poly) -> bool {
+    standing_clear(walls, poly.center)
+        || poly.verts.iter().any(|&v| {
+            let d = dist_xy(v, poly.center);
+            if d < 1e-4 {
+                return false;
+            }
+            let mut p = add(v, scale(sub(poly.center, v), CLEARANCE.min(d) / d));
+            p[2] = poly.z_at(p);
+            standing_clear(walls, p)
+        })
+}
+
 const JUMP_STEPS: usize = 12;
 const FLAT_JUMP_RISE: f32 = 0.36;
+/// The top of a standing jump over its takeoff (world units): a jump
+/// leaves at 3.08 units/s and falls under 4.15 units/s²
+/// (`bounce_route::JUMP_VZ`, `FALL_GRAVITY`, measured), so it rises
+/// 3.08² / (2 × 4.15) = 1.14.
+pub const JUMP_APEX: f32 = 1.14;
+/// A jump onto a ledge is swept along an arc whose top clears the ledge
+/// by this much (world units). Up to about 0.35 the flat arc
+/// ([`FLAT_JUMP_RISE`]) already does.
+const LEDGE_CLEAR: f32 = 0.2;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum JumpSweep {
@@ -157,7 +192,7 @@ struct JumpArc {
 
 impl JumpArc {
     fn new(a: V3, b: V3) -> Self {
-        Self::sample(a, b, 4.0 * FLAT_JUMP_RISE)
+        Self::sample(a, b, ledge_lift(b[2] - a[2]))
     }
 
     fn sample(a: V3, b: V3, lift: f32) -> Self {
@@ -224,6 +259,20 @@ impl JumpArc {
         }
         (self.sweep(walls, true, &mut common_clear) == JumpSweep::Clear).then_some(Kind::CrouchJump)
     }
+}
+
+/// The lift [`JumpArc::sample`] takes for a jump `dz` up: the flat arc's
+/// ([`FLAT_JUMP_RISE`]), or more, so the arc's top is [`LEDGE_CLEAR`] over
+/// the ledge. The arc `dz t + lift t (1 - t)` tops out at
+/// `(lift + dz)² / (4 lift)`; that equal to `h` gives
+/// `lift = 2h - dz + 2 sqrt(h² - h dz)`.
+fn ledge_lift(dz: f32) -> f32 {
+    let flat = 4.0 * FLAT_JUMP_RISE;
+    let top = dz + LEDGE_CLEAR;
+    if dz <= 0.0 || (flat + dz).powi(2) / (4.0 * flat) >= top {
+        return flat;
+    }
+    2.0 * top - dz + 2.0 * (top * top - top * dz).max(0.0).sqrt()
 }
 
 #[cfg(test)]
@@ -666,7 +715,7 @@ impl NavMesh {
                             }
                         }
                         let poly = Poly::new(verts);
-                        let clear = standing_clear(walls, poly.center);
+                        let clear = stands_on(walls, &poly);
                         (poly, clear)
                     })
                     .collect::<Vec<_>>()

@@ -196,7 +196,8 @@ pub struct Prime {
 /// Every measured priming place. A crouch region with a sample within
 /// [`PROVEN_NEAR`] of one is kept whatever the other rules say, ranks
 /// first, and is [`Status::Proven`]. A place no region is near (its lip
-/// is an object the scan doesn't read) becomes a proven crouch spot of
+/// is an object the scan doesn't read, or a piece of breakable glass left
+/// after a break) becomes a proven crouch spot of
 /// its own, standing at `at` (docs/game/superbounce.md, "Crouch spots:
 /// the stricter rule").
 pub static PROVEN: &[Prime] = &[
@@ -214,11 +215,17 @@ pub static PROVEN: &[Prime] = &[
         map: "zanzibar",
         // The window sill (z 5.10) of the base's rear right inner window
         // facing the beach, under the shard of broken glass left of the
-        // gap. The glass is an object, not structure: the scan sees no
-        // lip here.
+        // gap. The glass is the structure's breakable surfaces (pieces
+        // with flag 0x08 and a breakable index): whole, the scan takes it
+        // for a wall; the lip is a piece left after the break, which the
+        // scan can't know.
         at: [5.22, -26.285, 5.11],
-        // The way the jump went, both tries.
-        out: [-0.69, -0.72],
+        // The way out to standing room: back into the room (+x), the
+        // sill's inner edge at x 5.40. A crouched walk in from there
+        // passes the pane at x 5.30, which the bots break first
+        // (docs/game/bots.md, "Breaking the glass"). The jump both tries
+        // took went the other way, out of the window, (-0.69, -0.72).
+        out: [1.0, 0.0],
         note: "break the glass first; crouch under the shard on its left, \
                let go, turn right and jump: the word turns on the jump",
         source: "docs/game/notes/superbounce-spots.md, \"Zanzibar's window, \

@@ -1292,8 +1292,9 @@ fn a_slot_outranks_its_own_crease_and_the_crouch_rules_ignore_creases() {
 
 #[test]
 fn a_measured_place_with_no_region_is_a_proven_spot_where_it_was_measured() {
-    // The Zanzibar window: its lip is broken glass, an object the scan
-    // doesn't read, so the sill alone has no forced crouch.
+    // The Zanzibar window: its lip is a piece of the pane's breakable
+    // glass left after a break, which the scan can't know, so the sill
+    // alone has no forced crouch.
     let mut polys = zanzibar_crease();
     polys.push(flat([5.2, 5.4], [-27.1, -26.1], 5.1, true));
     let ctx = Context {
