@@ -635,6 +635,7 @@ mod tests {
             nav: "loaded".into(),
             dispatch_per_tick: None,
             bounce: None,
+            drops: None,
             flat: None,
             guest_census: None,
             notes: vec![],

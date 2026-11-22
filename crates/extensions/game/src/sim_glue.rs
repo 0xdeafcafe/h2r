@@ -610,6 +610,22 @@ impl Sim {
                 seed: t.seed,
             }));
         }
+        if let Some(d) = &self.0.matched.config.drops {
+            // Seam drops (docs/runtime/sim.md, "Seam drops"): every seat
+            // is placed, primed and dropped by the "sim: drops" hook, its
+            // pad held, its brain ignored.
+            let map = &self.0.matched.config.map;
+            let job = sim_bench::drops::Job::new(d, map, self.0.matched.bots.len() as u32)
+                .map_err(anyhow::Error::msg)?;
+            eprintln!(
+                "sim: drops: {} planned on {} targets, {} seats, control {}",
+                job.planned(),
+                job.targets().len(),
+                self.0.matched.bots.len(),
+                job.gate().name()
+            );
+            crate::sim_drops::set(map, job);
+        }
         for b in &self.0.matched.bots {
             let brain = bots::Brain::new(skill(b.skill), b.seed)
                 .with_name_profile(&b.name)
@@ -659,6 +675,23 @@ impl Sim {
         features
             .add(&SimMetrics { sim: Arc::clone(&self.0), film_playback })
             .map_err(|e| anyhow::anyhow!("sim metrics: {e}"))?;
+        if self.0.matched.config.drops.is_some() {
+            // The drops teleport through the agent's guest calls: its
+            // queue when the agent is on, else one of our own.
+            match crate::superbounce_verify::calls() {
+                Some(q) => crate::sim_drops::set_calls(q.clone()),
+                None => {
+                    let q = agent::sim::calls::shared();
+                    match features.add(&agent::sim::calls::CallsFeature(q.clone())) {
+                        Ok(true) => crate::sim_drops::set_calls(q),
+                        Ok(false) => eprintln!(
+                            "sim: drops: agent-calls is switched off by H2_FEATURES; no drop can be placed"
+                        ),
+                        Err(e) => bail!("sim: drops: agent-calls: {e}"),
+                    }
+                }
+            }
+        }
         eprintln!(
             "sim: {} on {}, {} bot(s), {} ({})",
             self.0.path.display(),
@@ -733,6 +766,7 @@ impl Sim {
             player.combat = bots::phantom::global().combat_stats(handle)
                 .map(|stats| json!(stats));
         }
+        report.drops = crate::sim_drops::report();
         report
     }
 
@@ -791,6 +825,12 @@ impl Sim {
     /// The report at the end of the run, written to `H2_SIM_REPORT` when
     /// set, and its summary on stderr.
     pub fn finish(&self) -> Result<Report> {
+        // The drops' proven targets into the run's verified file, before
+        // the report says where.
+        if let Some(note) = crate::sim_drops::save() {
+            eprintln!("sim: {note}");
+            self.0.lock().notes.push(note);
+        }
         let r = self.report();
         eprintln!(
             "sim: {} after {} ticks ({:.0} game s) in {:.1} s: {:.2}x real time ({:.2}x with the boot)",
@@ -821,6 +861,10 @@ impl Sim {
         // A read recording (H2_SIM_STORE_RECORD) is written with the
         // report, merged into what the file already holds.
         vfs::sim_store::record::flush();
+        // A control that did not bounce: the run's named error.
+        if let Some(e) = crate::sim_drops::error() {
+            bail!("sim: drops: {e}");
+        }
         if self.0.lock().bindings.len() != self.matched().bots.len() {
             bail!(
                 "sim: match ended before all {} seats had a player and a spawned unit",
@@ -892,6 +936,7 @@ impl Sim {
                 "stub_faults": f.stub_faults,
             },
             "end": s.end.map(End::name),
+            "drops": crate::sim_drops::status(),
         })
     }
 }
@@ -1543,6 +1588,51 @@ impl hooks::Feature for SimMetrics {
                             eprintln!("sim: {NOTE}");
                             s.notes.push(NOTE.into());
                         }
+                    }
+                    Ok(Flow::Continue)
+                })
+                .last();
+        }
+        if self.sim.matched.config.drops.is_some() {
+            // Seam drops (docs/runtime/sim.md, "Seam drops"): every bound
+            // seat's body and level pairs read, and its act (the word, the
+            // pad, a teleport) carried out, before each tick. Last: after
+            // the guest calls have made last tick's teleports.
+            let me = Arc::clone(&self.sim);
+            b.raw()
+                .before(&points::GAME_TICK, "sim: drops", move |c| {
+                    let seats: Vec<crate::sim_drops::Seat> = {
+                        let s = me.lock();
+                        if s.phase != Phase::Playing {
+                            return Ok(Flow::Continue);
+                        }
+                        s.bindings
+                            .iter()
+                            .map(|(&seat, &player)| crate::sim_drops::Seat {
+                                seat,
+                                player,
+                                handle: s
+                                    .machines
+                                    .get(&seat)
+                                    .copied()
+                                    .and_then(bots::phantom::handle_of),
+                            })
+                            .collect()
+                    };
+                    let rt = Arc::clone(c.ctx.runtime());
+                    let mut g = rt.memory();
+                    let done = crate::sim_drops::tick(&mut g, &seats);
+                    drop(g);
+                    if done {
+                        let mut s = me.lock();
+                        if let Some(e) = crate::sim_drops::error() {
+                            let note = format!("drops: {e}");
+                            if !s.notes.contains(&note) {
+                                eprintln!("sim: {note}");
+                                s.notes.push(note);
+                            }
+                        }
+                        me.end(&mut s, End::Stopped);
                     }
                     Ok(Flow::Continue)
                 })

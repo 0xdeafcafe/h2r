@@ -696,8 +696,9 @@ There is no band and no width. One tolerance remains, the catch: how
 far either side of the edge, horizontally, a landing's origin still
 counts as on it, `superbounce::CATCH`, 0.1. It is used only for the hit
 or miss verdict (`superbounce::catch_miss`: the game's landing
-classifier and lock, the verifier and the bots' `missed`). It is a TODO
-for the sim to measure; 0.1 holds the measured Ascension origin (y 4.04,
+classifier and lock, the verifier and the bots' `missed`). The sim's
+[seam drops](../runtime/sim.md#seam-drops) measure it (`drops.json`'s
+`catch`); 0.1 holds the measured Ascension origin (y 4.04,
 0.04 off the seam), the bots' learned aim (y 3.985) and the second
 Zanzibar window try (4.8 cm off its crease).
 
@@ -725,8 +726,9 @@ tick](#the-touchdown-tick-trace-stepped)); a standing jump lands at 3 and
 never did. The speed over the threshold sets how high the launch goes,
 not whether it bounces: `speed::launch` is the spot's `launch` plus 1 ×
 the excess (the gain is unmeasured). The drop that reaches the threshold
-from a standing jump is 2.43 (`speed::fall`, gravity 4.15). Both numbers
-are TODOs for the sim to measure.
+from a standing jump is 2.43 (`speed::fall`, gravity 4.15). The sim's
+[seam drops](../runtime/sim.md#seam-drops) measure both (`drops.json`'s
+`bounce_speed` and `gain`).
 
 The community guides' landing posture fits this: "land vertically, no
 buttons", "release forward in mid-air", walk forward only with no

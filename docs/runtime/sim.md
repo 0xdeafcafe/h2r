@@ -321,7 +321,9 @@ for the match: the bots practise bounces instead of fighting
 `superbounce = true`) makes them try one site only
 ([The bounce drill](#the-bounce-drill)). A `[train]` table (with
 `superbounce = true`, and no `[drill]`) makes the run one shard of a
-bounce site training batch ([Training the bounce sites](#training-the-bounce-sites)).
+bounce site training batch ([Training the bounce sites](#training-the-bounce-sites)). A
+`[drops]` table (without `superbounce`) drops every seat onto candidate
+seams ([Seam drops](#seam-drops)).
 
 ### Bot parameters from a file
 
@@ -1155,6 +1157,127 @@ budget = 120    # scored tries a site
 `superbounce-train-match.toml` are the example (eight bots, thirty minutes
 of game time a run).
 
+### Seam drops
+
+`h2 sim drops <match file>` measures superbounces without walking or nav:
+each seat is put above a point of a candidate collision edge, given the
+-3 pair word, dropped, and its outcome recorded. A match file with a
+`[drops]` table is the input; `sim::drops` (pure and tested) plans,
+shards, steps each drop and builds the report, `game::sim_drops` reads and
+writes the guest, and the CLI runs the processes.
+
+```toml
+map = "ascension"
+max_wall_s = 3600
+
+[drops]
+targets = "scan"      # the map's .spots bounce candidates, or a list
+max_targets = 60      # scan: the first 60
+heights = [0.5, 1.0, 2.0, 3.5, 5.0, 8.0]          # over the target's floor
+across = { from = -0.12, to = 0.12, step = 0.02 } # or a list
+along = 5             # points along each edge
+repeats = 1
+approach = { stick = 0.3, lead = 0.2, from = ["+", "-"] }  # optional
+```
+
+- **The table.** Every key is optional. `heights` (world units of the
+  origin over the floor) default to `[0.5, 1, 2, 3.5, 5, 8]`; `across`
+  (offset from the edge toward its drift side) to -0.12 to 0.12 in steps
+  of 0.02; `along` to 5 points an edge (a point target has one);
+  `repeats` to 1. `approach` pushes the stick at `stick` of full through
+  the fall, the drop starting `lead` units back against the push, once
+  from each side in `from`; without it the seat falls straight. `seats`
+  (1 to 15, default 15) is the seat count when the file lists no
+  `[[bot]]`, `bounce_vz` (default 3) the launch that counts as a bounce,
+  `settle_ticks`, `fall_ticks` and `after_ticks` (240, 300, 15) the
+  phases' limits, `retries` (2) how often a setup failure is tried again,
+  `out` the results directory (default `results/<file stem>` beside the
+  file). A listed target is `{ id, shape, edge = [[x,y,z],[x,y,z]] }` or
+  `{ point = [x,y,z] }`, with optional `drift` and `stand`.
+  `targets = "scan"` reads the map's `.spots` from `--data` and keeps the
+  slot, crease, vee and busy sites, ids `s000-slot` and on.
+- **The match.** A drops table fills what the file leaves out: the map
+  from `drops.map`, 15 phantom seats named `Dropper 1` and on, no time
+  limit, team play (free-for-all sims end at tick 0) and the training
+  report. It is refused with `superbounce = true`, a `[drill]` or a
+  `[train]`. The match ends (`stopped`) when every drop is done, or at
+  `max_ticks` or `max_wall_s`.
+- **Seats.** A shared queue feeds the seats: an idle seat takes the next
+  drop whose start is 1.2 units clear of every busy seat and drop
+  (`sim::drops::CLEAR`), else waits at its spawn; after 60 ticks with
+  every seat idle, one takes a drop regardless. Up to 15 seats drop at
+  once in a process, and `--parallel N` runs N processes.
+- **The prime.** Each drop runs through the phases of
+  `sim::drops::DropRun`. Place: a teleport (`Call::Teleport`, through the
+  calls queue; a run with no `--socket` registers its own) to the rest
+  point, just over the floor beside the target. Settle: the word is
+  written 0 every tick and the body stopped until it is still for 3 ticks,
+  so the teleport carries no prime and no speed. Arm: -3 on the still
+  body and, in the same tick, the lift teleport straight up to the drop
+  height. Fall and after: -3 is written over every fixed-body pair of the
+  body (`live_telemetry::havok_agents::level_pairs` and `set_level_words`)
+  every tick until `after_ticks` past touchdown, so a pair rebuilt in the
+  air or by a sleep is primed again before the next tick. Each tick's
+  row keeps the pairs' agents and words before the write.
+- **Outcomes.** A touchdown is the vertical speed coming back over -0.5
+  after falling faster than -1. `bounced`: the best vertical speed of the
+  touchdown tick and the 3 after reached `bounce_vz`; the record gives the
+  launch speed and height (apex minus the touchdown's low point, the rest
+  estimated ballistically if the apex comes after `after_ticks`).
+  Otherwise the touchdown tick's prime decides: the pairs read the tick
+  before must come out of it with the same agents, all still -3, and no
+  new pair that isn't -3. When they don't, the drop is `prime_lost`, with
+  the reason `no_pair`, `rebuilt`, `reset (word w)` or `new_pair (word w)`;
+  when they do, `no_bounce`. `setup_failed` names the step (`teleport:
+  ...`, `did not settle in 240 ticks`, `lift: never ran`, `no touchdown in
+  300 ticks`) and is tried again. A failed prime is never counted as
+  `no_bounce`.
+- **The control.** Every run starts with the control drop, alone: on
+  Ascension the slot seam at (-10.54, 4.04, -3.19), from 3.6 and 4.5 over
+  its floor. When none bounces, the run stops with `control did not
+  bounce: <outcome>` (the outcomes and reasons seen), the report is still
+  written, and `h2 sim drops` exits with that error. Another map needs
+  `[drops.control] point = [x,y,z]` (with optional `heights`, `edge`,
+  `drift`) or `no_control = true`.
+- **Records.** Each drop's record (`sim::drops::Record`) gives the target
+  id and shape, point, height, across and along offsets, side, seat,
+  attempts, release tick, outcome and reason, the touchdown (tick,
+  position, velocity, speed, contacts), the launch, whether the prime
+  held, the words of the fall run-length, and the first tick of each
+  event. The control's drops and the first drop of each outcome keep
+  every row from the arm on. They are the report's `drops` block.
+- **Sharding.** Targets are split over the runs by their drop counts
+  (largest first, onto the lightest run), `<map>-drops<i>`, each run's
+  match with its targets listed and its bots' tunings inline.
+- **Report.** `<out>/drops.json` (`h2-sim-drops-report/1`) and `drops.md`
+  pool the runs: outcome counts and the first of each; the control's
+  drops; a row a target with its rate, catch half-width (the furthest
+  touchdown from the edge that bounced), slowest bounced touchdown, best
+  launch, its own launch fit and a cell a height and across offset; and
+  the three model numbers. `catch` is the catch half-width over every
+  target (`superbounce::CATCH`). `bounce_speed` is the slowest touchdown
+  that bounced beside the fastest that didn't (`BOUNCE_SPEED`). `gain` is
+  the launch's slope over the excess speed, fitted with each target's own
+  intercept (`speed::launch`'s gain) ([superbounce.md,
+  Speed](../game/superbounce.md#speed)).
+- **The verified file.** Each run plays on its own copy of the map's
+  `.verified` (`make_bounce_data`) and writes a line for every target that
+  bounced: its stand, the best bounce's offset and height, trials and
+  hits. `--merge` merges them into `--data`'s `bots/` at the end; without
+  it, `h2 sim harvest <out>` does.
+- **Flags.** `--parallel N` (default half the cores), `--dry-run` (the
+  plan: targets, drops and runs), `--merge`, `--keep-data`, and a batch's
+  `--disc`, `--data`, `--tier` and `--pace`.
+
+```sh
+h2 sim drops docs/runtime/sim-examples/superbounce-drops.toml --parallel 4
+```
+
+`docs/runtime/sim-examples/superbounce-drops.toml` is the example: the
+first 60 targets of the Ascension scan at the default heights and offsets.
+`match.status` gives a drops run's progress (`drops`: planned, done, the
+control's state and the error; [agent-api.md](agent-api.md)).
+
 ## 8. Determinism
 
 What a sim run's result depends on, and what breaks reproducibility:
@@ -1562,4 +1685,8 @@ candidates and ranking), `cargo test -p bots tuning`,
 `superbounce_mode`, and `cargo test -p cli sim_cmd` (the run's own
 proofs). Training: `cargo test -p sim-bench train` (the `[train]` table, the
 plan and shard rule, the report from `.learned` lines) and `cargo test -p cli
-sim_cmd` (the arguments, `--reopen`).
+sim_cmd` (the arguments, `--reopen`). Seam drops: `cargo test -p sim-bench drops` (the
+table, the plan and shards, the queue, each outcome over a fake body
+including every `prime_lost` reason, the control gate, the fits and the
+verified lines), `cargo test -p live-telemetry havok_agents` (the level
+pairs) and `cargo test -p game sim_drops` (the constants it shares).
