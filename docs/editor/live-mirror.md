@@ -472,7 +472,7 @@ map in a networked game, every machine loads the same saved map
 
 ## The editor's UI
 
-- **Layers** (a panel beside the outliner): a tree of toggles, each with
+- **Layers** (in the viewport's Show popover): a list of toggles, each with
   its count from the stream. World: structure, sky, placements. Live:
   players, bipeds, vehicles, weapons and equipment, projectiles,
   machines and controls, effects, scenery and crates. Turning a live

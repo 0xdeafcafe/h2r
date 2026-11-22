@@ -517,6 +517,9 @@ impl std::fmt::Debug for NativeLayers {
 /// (the colour only when no sky is behind it); later ones load.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Clear {
+    /// In the target view's encoding: the viewport's native passes write
+    /// its plain view (`render::Shading::Gamma`), so an sRGB-encoded
+    /// colour.
     pub color: Option<[f64; 3]>,
     pub depth: bool,
 }

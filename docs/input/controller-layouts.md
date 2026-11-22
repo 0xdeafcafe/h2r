@@ -65,6 +65,12 @@ host waits to see whether the click follows. While the menu is open the game
 sees a neutral pad, whatever its layout. Buttons still held when it closes
 stay hidden until they are released.
 
+On any pad, with or without a touchpad, Back (View) and D-pad down held
+together for 500 ms open it too. The pair has no use in any layout, so the
+game keeps it until the hold completes; the D-pad down that opened the menu
+does not move the cursor (`crates/extensions/debug-menu/src/gate.rs`,
+`HOLD`).
+
 ## Why not remap on the host
 
 A host remap of the physical pad into the guest pad was the first plan. It

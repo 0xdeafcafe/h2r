@@ -32,9 +32,32 @@ pub enum Source {
     Current { commit: Option<String> },
 }
 
+/// What a request asks the player.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Ask {
+    /// May the job start? The player answers [`Decision::Allowed`] or
+    /// [`Decision::Declined`].
+    #[default]
+    Start,
+    /// The job is running and the player has opened this game: what should
+    /// it do? The player answers [`Decision::StopAndPause`],
+    /// [`Decision::KeepRunning`] or [`Decision::FinishThis`].
+    Running,
+}
+
+impl Ask {
+    pub fn is_start(&self) -> bool {
+        *self == Ask::Start
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
+    /// Left out for [`Ask::Start`], so a start request reads as it always has.
+    #[serde(default, skip_serializing_if = "Ask::is_start")]
+    pub ask: Ask,
     pub requester: String,
     /// The job's required `--name`.
     pub name: String,
@@ -77,6 +100,15 @@ pub enum Decision {
     Declined,
     TimedOut,
     Unavailable,
+    /// [`Ask::Running`]: stop the job now, put it back at the front of the
+    /// queue and hold the queue while the player's game is open.
+    StopAndPause,
+    /// [`Ask::Running`]: the job and the queue carry on alongside the game.
+    KeepRunning,
+    /// [`Ask::Running`]: let the job finish, then hold the rest of the
+    /// queue while the player's game is open. Also the answer a dismissed
+    /// dialog gives.
+    FinishThis,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

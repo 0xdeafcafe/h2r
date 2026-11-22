@@ -304,6 +304,7 @@ pub const NAMES: [&str; 42] = [
     "kit.dialog",
     "kit.dialog.large",
     crate::lab_takeover::SCREEN,
+    crate::lab_takeover::RUNNING_SCREEN,
     "clankers",
     crate::firefight::options::SCREEN,
     crate::clanker_card::SCREEN,
@@ -591,6 +592,7 @@ pub fn list_page(name: &str) -> Option<ListPage> {
         }
         crate::clanker_card::SCREEN => list(crate::clanker_card::page_sample()),
         crate::lab_takeover::SCREEN => list(crate::lab_takeover::sample_page()),
+        crate::lab_takeover::RUNNING_SCREEN => list(crate::lab_takeover::sample_running_page()),
         crate::custom_games::browser_filters::SCREEN => {
             list(crate::custom_games::browser_filters::sample_page())
         }

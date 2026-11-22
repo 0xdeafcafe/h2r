@@ -69,6 +69,8 @@ fn view_rows(a: &[Answer]) -> Vec<Row> {
             ((*RANGE.start()).into(), (*RANGE.end()).into()),
             setting("range"),
         )
+        // Explicit: the step scaled to the 1..=512 range would be ten.
+        .step(RANGE_STEP as f64)
         .default_value(RANGE_DEFAULT)
         .about("how far from you the debug views draw"),
     );
@@ -188,6 +190,25 @@ mod tests {
             row(&rows, "Graphics settings").edit,
             Edit::Open("settings/video".into())
         );
+    }
+
+    #[test]
+    fn a_view_the_game_cannot_draw_is_greyed_with_why() {
+        let a: Vec<Answer> = vec![Some(Ok(json!({"views": [
+            {"name": "hitboxes", "label": "Hitboxes", "on": false},
+            {"name": "traces", "label": "Traces", "on": false, "why": "entry unavailable"},
+            {"name": "kill_volumes", "label": "Kill volumes", "on": true, "why": "partly drawn"},
+        ], "range": 48, "trace_ticks": 30})))];
+        let rows = view_rows(&a);
+        assert_eq!(row(&rows, "Hitboxes").disabled, None);
+        assert_eq!(
+            row(&rows, "Traces").disabled.as_deref(),
+            Some("entry unavailable")
+        );
+        // One that is on stays switchable (to turn it off), with the note.
+        let kill = row(&rows, "Kill volumes");
+        assert_eq!(kill.disabled, None);
+        assert_eq!(kill.about, "partly drawn");
     }
 
     #[test]

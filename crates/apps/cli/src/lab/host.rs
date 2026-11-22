@@ -4,11 +4,12 @@
 
 mod dedicated;
 mod memory;
+mod player;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpListener};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
@@ -113,6 +114,10 @@ pub struct Meta {
     /// joiner on another Mac needs (`h2 lab run --dedicated`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_link: Option<String>,
+    /// What the player chose when they opened a game during the job
+    /// (`host/player.rs`); also the summary's last lines.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub player: Vec<String>,
 }
 
 pub(super) fn is_final(state: &str) -> bool {
@@ -124,6 +129,9 @@ struct Active {
     pgid: Option<i32>,
     memory_wake: Option<std::sync::mpsc::Sender<memory::Event>>,
     stop: bool,
+    /// The player chose Stop and pause: the stopped job goes back to the
+    /// front of the queue.
+    pause: bool,
 }
 
 #[derive(Default)]
@@ -144,6 +152,9 @@ struct Shared {
     transfers: Transfers,
     checkout: Mutex<()>,
     takeover: takeover::Gate,
+    /// The player's games and their answers while jobs run. Never locked
+    /// while taking `inner`.
+    player: Mutex<takeover::PlayerGames>,
 }
 
 /// A job ended because it was asked to stop.
@@ -192,6 +203,7 @@ pub fn serve(cfg: HostConfig) -> Result<()> {
         transfers: Transfers::default(),
         checkout: Mutex::new(()),
         takeover,
+        player: Mutex::default(),
     });
     // Install/update may hold the activity lock across starting this service.
     // Verify an interrupted host has no children still writing job logs.
@@ -637,6 +649,7 @@ fn handle(sh: &Arc<Shared>, r: Request, requester: &str) -> Result<Value> {
         Request::Status => {
             let memory = mem_watch::snapshot();
             let pressure = mem_watch::pressure();
+            let held = sh.player.lock().unwrap().holds();
             let inner = sh.inner.lock().unwrap();
             let active = inner.active.as_ref().and_then(|a| inner.jobs.get(&a.id));
             // One job at a time: `jobs_active` holds at most the active job.
@@ -659,6 +672,8 @@ fn handle(sh: &Arc<Shared>, r: Request, requester: &str) -> Result<Value> {
                 "jobs_active": jobs_active,
                 "max_jobs": cfg.max_jobs,
                 "queued": inner.queue.iter().map(|p| &p.id).collect::<Vec<_>>(),
+                // The queue waits while the player's game is open.
+                "held_for_player": held,
             }))
         }
         Request::SyncBases { branch, commit } => {
@@ -884,8 +899,9 @@ fn start(sh: &Arc<Shared>, job: Job, requester: &str) -> Result<Value> {
 
 fn drain_queue(sh: &Arc<Shared>) {
     loop {
-        let mut inner = sh.inner.lock().unwrap();
+        let inner = sh.inner.lock().unwrap();
         if inner.queue.is_empty() {
+            let mut inner = inner;
             inner.activity = None;
             return;
         }
@@ -893,15 +909,27 @@ fn drain_queue(sh: &Arc<Shared>) {
             drop(sh.cv.wait_timeout(inner, Duration::from_secs(2)).unwrap());
             continue;
         }
-        let pending = inner.queue.pop_front().unwrap();
+        drop(inner);
+        // The player's game comes first: the queue waits while one is open
+        // that didn't answer Keep running (host/player.rs).
+        if player::holds(sh) {
+            let inner = sh.inner.lock().unwrap();
+            drop(sh.cv.wait_timeout(inner, player::INTERVAL).unwrap());
+            continue;
+        }
+        let mut inner = sh.inner.lock().unwrap();
+        let Some(pending) = inner.queue.pop_front() else {
+            continue;
+        };
         inner.active = Some(Active {
             id: pending.id.clone(),
             pgid: None,
             stop: false,
+            pause: false,
             memory_wake: None,
         });
         drop(inner);
-        execute(sh, &pending.id, pending.job, pending.commit, &pending.requester);
+        execute(sh, pending);
     }
 }
 
@@ -1032,16 +1060,26 @@ enum JobOutcome {
     Skipped(&'static str),
 }
 
-fn execute(
-    sh: &Arc<Shared>,
-    id: &str,
-    job: Job,
-    commit: Option<String>,
-    requester: &str,
-) {
+/// Runs the active job `pending` and records how it ended. A job the
+/// player paused goes back to the front of the queue instead.
+fn execute(sh: &Arc<Shared>, pending: Pending) {
+    let Pending {
+        id,
+        job,
+        commit,
+        requester,
+    } = &pending;
+    let id = id.as_str();
     let t = Instant::now();
-    let (outcome, memory_error) = memory::supervise(sh, id, &job, || {
-        run_job(sh, id, &job, commit.as_deref(), requester, t)
+    let watch = player::Watch::new(takeover_request(
+        job,
+        commit.as_deref(),
+        requester,
+        false,
+        sh.cfg.takeover.timeout_seconds,
+    ));
+    let (outcome, memory_error) = memory::supervise(sh, id, job, watch, || {
+        run_job(sh, id, job, commit.as_deref(), requester, t)
     });
     let (state, error) = match &outcome {
         Ok(JobOutcome::Finished(Some(st))) if st.success() => ("done", None),
@@ -1088,6 +1126,20 @@ fn execute(
     let _ = fs::remove_dir_all(sh.cfg.dir("scratch").join(id));
     let _ = fs::remove_file(agent_socket_path(&sh.cfg, id));
     let mut inner = sh.inner.lock().unwrap();
+    let paused = state == "stopped"
+        && memory_error.is_none()
+        && inner.active.as_ref().is_some_and(|a| a.id == id && a.pause);
+    if paused {
+        if let Some(m) = inner.jobs.get_mut(id) {
+            *m = requeued(m);
+            let _ = write_meta(&sh.cfg, m);
+        }
+        inner.active = None;
+        inner.queue.push_front(pending);
+        drop(inner);
+        sh.cv.notify_all();
+        return;
+    }
     if let Some(m) = inner.jobs.get_mut(id) {
         m.state = if memory_error.is_some() { "failed" } else { state }.into();
         m.error = memory_error.or(error);
@@ -1096,6 +1148,7 @@ fn execute(
         m.exit_code = status.and_then(|s| s.code());
         m.signal = status.and_then(|s| s.signal());
         m.summary = summary;
+        m.summary.extend(m.player.iter().cloned());
         m.postmortem = postmortem;
         if write_meta(&sh.cfg, m).is_ok() {
             inner.jobs.remove(id);
@@ -1106,6 +1159,25 @@ fn execute(
     }
     drop(inner);
     sh.cv.notify_all();
+}
+
+/// Job `m` back in the queue after the player paused it: its request and
+/// notes, none of the stopped attempt's progress.
+fn requeued(m: &Meta) -> Meta {
+    Meta {
+        id: m.id.clone(),
+        name: m.name.clone(),
+        kind: m.kind.clone(),
+        state: "queued".into(),
+        request: m.request.clone(),
+        commit: m.commit.clone(),
+        build_env: m.build_env.clone(),
+        level: m.level.clone(),
+        created: m.created,
+        notes: m.notes.clone(),
+        player: m.player.clone(),
+        ..Meta::default()
+    }
 }
 
 /// A coarse estimate for the player. A run without a frame limit can
@@ -1173,6 +1245,7 @@ fn takeover_request(
         _ => (None, false),
     };
     TakeoverRequest {
+        ask: Default::default(),
         requester: requester.to_owned(),
         name,
         operation,
@@ -1541,6 +1614,16 @@ fn wait_game(
     }
 }
 
+/// Where a windowed lab game binds XNet: this Mac's LAN IPv4 (loopback
+/// without a route, as the XNet HLE picks) at [`proto::LAB_BASE_PORT`], off
+/// the ports of a game the player opens here.
+fn lab_xnet_addr() -> SocketAddrV4 {
+    SocketAddrV4::new(
+        dedicated::route_ipv4().unwrap_or(Ipv4Addr::LOCALHOST),
+        proto::LAB_BASE_PORT,
+    )
+}
+
 /// `h2 play` for `run` with `image`, its environment cleaned of the host's
 /// own `H2_*` variables so a run means the same whatever terminal the host
 /// started in. Writes the recording's manifest when it records.
@@ -1653,7 +1736,8 @@ fn play_command(
         .env("H2_LAB_JOB_NAME", &run.name)
         .env(agent_proto::ENV, &sock)
         .env(agent_proto::OUT_ENV, &run_dir)
-        .env("H2_MEM_REPORT_DIR", run_dir.join("mem"));
+        .env("H2_MEM_REPORT_DIR", run_dir.join("mem"))
+        .env("H2_XNET_ADDR", lab_xnet_addr().to_string());
     if let Some(l) = &level {
         cmd.arg("--level").arg(l);
         if let Some(d) = &difficulty {
@@ -2072,6 +2156,8 @@ fn stop(sh: &Arc<Shared>, id: &str) -> Result<Value> {
         bail!("job {id} is not running ({})", m.state);
     };
     a.stop = true;
+    // A stop from the driver ends the job even if the player paused it.
+    a.pause = false;
     if let Some(pgid) = a.pgid {
         // SAFETY: the job's own process group.
         unsafe { libc::kill(-pgid, libc::SIGTERM) };
@@ -2259,6 +2345,66 @@ mod tests {
         run.own_data = true;
         assert!(!has_data(&args(&run)));
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn windowed_runs_bind_xnet_off_the_players_ports() {
+        let root = std::env::temp_dir().join(format!("h2lab-xnet-{}", std::process::id()));
+        let cfg = config(&root);
+        let image = Image {
+            h2: "/bin/true".into(),
+            out: None,
+            env: BTreeMap::new(),
+        };
+        let run = RunReq {
+            name: "Play".into(),
+            ..RunReq::default()
+        };
+        let cmd = play_command(&cfg, "0001", &run, &image, None).unwrap();
+        let addr: SocketAddrV4 = cmd
+            .get_envs()
+            .find(|(k, _)| *k == "H2_XNET_ADDR")
+            .and_then(|(_, v)| v)
+            .and_then(|v| v.to_str())
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(addr.port(), proto::LAB_BASE_PORT);
+        assert!(!proto::takes_player_ports(addr.port()));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_paused_job_goes_back_queued_with_its_request_and_notes_only() {
+        let m = Meta {
+            id: "0007".into(),
+            name: Some("Join test".into()),
+            kind: "run".into(),
+            state: "running".into(),
+            request: json!({"name": "Join test"}),
+            commit: Some("abc".into()),
+            created: 5,
+            run_elapsed_s: Some(3.0),
+            agent_socket: Some("/lab/a/0007.sock".into()),
+            system_link: Some("10.0.0.5:3174".into()),
+            notes: vec!["System Link host at 10.0.0.5:3174".into()],
+            player: vec!["player: opened a game and chose Stop and pause".into()],
+            ..Meta::default()
+        };
+        let q = requeued(&m);
+        assert_eq!(q.state, "queued");
+        assert_eq!(
+            (q.id.as_str(), q.name.as_deref(), q.kind.as_str()),
+            ("0007", Some("Join test"), "run")
+        );
+        assert_eq!(
+            (q.request, q.commit, q.created),
+            (m.request.clone(), m.commit.clone(), 5)
+        );
+        assert_eq!((q.notes, q.player), (m.notes.clone(), m.player.clone()));
+        assert_eq!(q.run_elapsed_s, None);
+        assert_eq!(q.agent_socket, None);
+        assert_eq!(q.system_link, None);
     }
 
     #[test]

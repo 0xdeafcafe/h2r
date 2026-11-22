@@ -1,5 +1,6 @@
 //! The daemon supervises the game's PID independently of the revision under test.
 //! All reports live inside the job directory so an ordinary fetch brings them back.
+//! The same tick looks for games the player opens (`super::player`).
 
 use std::collections::VecDeque;
 use std::fs;
@@ -9,6 +10,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
+use super::player::Watch;
 use super::{Job, Meta, Shared, agent_socket_path, write_meta};
 
 const INTERVAL: Duration = Duration::from_secs(2);
@@ -47,10 +49,12 @@ impl Samples {
 
 /// Run the monitor through builds, takeover and gameplay. Waking it on spawn
 /// records a first game sample without delaying a short job by two seconds.
+/// `watch` asks the player's games what the job should do.
 pub(super) fn supervise<T>(
     sh: &Shared,
     id: &str,
     job: &Job,
+    watch: Watch,
     run: impl FnOnce() -> T,
 ) -> (T, Option<String>) {
     let limit = match job {
@@ -72,7 +76,7 @@ pub(super) fn supervise<T>(
         }
     }
     std::thread::scope(|scope| {
-        let guard = scope.spawn(move || monitor(sh, id, limit, rx));
+        let guard = scope.spawn(move || monitor(sh, id, limit, watch, rx));
         let finish = Finish(tx);
         let result = run();
         drop(finish);
@@ -80,7 +84,13 @@ pub(super) fn supervise<T>(
     })
 }
 
-fn monitor(sh: &Shared, id: &str, limit: u64, rx: Receiver<Event>) -> Option<String> {
+fn monitor(
+    sh: &Shared,
+    id: &str,
+    limit: u64,
+    mut watch: Watch,
+    rx: Receiver<Event>,
+) -> Option<String> {
     let start = Instant::now();
     let mut samples = Samples::default();
     loop {
@@ -118,6 +128,10 @@ fn monitor(sh: &Shared, id: &str, limit: u64, rx: Receiver<Event>) -> Option<Str
             return Some(reason);
         }
         drop(inner);
+        if watch.tick(sh, id) {
+            // The player paused the job; it is stopping.
+            return None;
+        }
         match rx.recv_timeout(INTERVAL) {
             Ok(Event::Step) | Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Ok(Event::Finished) | Err(mpsc::RecvTimeoutError::Disconnected) => return None,

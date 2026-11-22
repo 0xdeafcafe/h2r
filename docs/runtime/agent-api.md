@@ -321,7 +321,7 @@ object count, byte rate and capture timings.
 | `session.wait` | `{until, timeout_ticks?, timeout_ms?}` | `{at, ticks}` once every field of `until` holds |
 | `session.subscribe` | `{events: ["phase","map","bsp","pause"]}` | then `event` notifications: `phase {from,to}`, `map {from,to}`, `bsp {from,to}`, `paused`, `resumed {why: request, timeout or released}` |
 | `session.takeover_info` | none | `{window, pid}`, whether the game has a window and its process id |
-| `session.request_takeover` | `{requester, name, operation, builds_image, source, level, own_data, estimate_seconds, timeout_seconds}` | `{id}` for the consent prompt |
+| `session.request_takeover` | `{ask?, requester, name, operation, builds_image, source, level, own_data, estimate_seconds, timeout_seconds}` | `{id}` for the consent prompt, or for the running job's question with `"ask": "running"` |
 | `session.takeover_status` | `{id}` | `{decision}` for the request |
 | `features.list` | none | `{at, plan, features}`: the feature plan text the game printed at start, and each feature as `{id, on, reason?}` (`reason` when the plan turned it off), read from the plan's `feature <id>: on` and `feature <id>: off (<reason>)` lines (`agent_proto::FeatureState`) |
 
@@ -369,6 +369,14 @@ waits for the player to quit. The game leaves saving and quitting with
 the player. A request expires even if the UI is still loading. The game
 dismisses the expired dialog at the next UI update. The status method is
 read-only and answers `GONE` for an unknown or superseded id.
+
+`ask` is `"start"` when left out: the consent prompt above. With
+`"ask": "running"` the request asks about a job already running ([When the
+player opens a game](lab.md#when-the-player-opens-a-game)), in its own
+dialog (`lab.running`, class `lab-running-dialog`). Its rows are **Finish
+this one**, **Keep running** and **Stop and pause**, answering
+`finish_this`, `keep_running` and `stop_and_pause`; Back also answers
+`finish_this`, and an unanswered question `timed_out`.
 
 ### Control
 

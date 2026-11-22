@@ -351,6 +351,49 @@ without another prompt. With no window, jobs run as usual. Set the two
 durations on `h2 lab host` or `h2 lab host install` using the flags in
 [Switches](switches.md#tools).
 
+## When the player opens a game
+
+The player comes first. While a job runs or builds an uncached image, the
+host looks for the player's games every 4 seconds, the same way the
+consent check finds them. A game it finds asks the player once what the
+job should do. Code: `crates/apps/cli/src/lab/host/player.rs` (the
+host's side) and `PlayerGames` in `crates/apps/cli/src/lab/takeover.rs`
+(the decisions).
+
+The game shows a "Lab request" dialog over the current screen:
+
+```
+Lab driver is running
+"Menu bands check"
+while you play. What now?
+```
+
+| Choice | Effect |
+|---|---|
+| **Finish this one** | The job runs to its end. The rest of the queue waits while the game is open |
+| **Keep running** | No change: the job and the queue carry on alongside the game |
+| **Stop and pause** | The host stops the job as `h2 lab stop` does (SIGTERM, then SIGKILL after the grace). The job goes back to the front of the queue as `queued`, and the queue waits while the game is open |
+
+Finish this one has the initial focus. Back and an unanswered dialog both
+pick it after the consent timeout (60 seconds by default). A game that
+can't show the dialog within that time also gets Finish this one. The
+host asks each game once and keeps the answer until that game closes.
+The choice goes into the job's `player` field, its run log and the end of
+its `summary`, for example
+`player: opened a game and chose Stop and pause: ...`.
+
+A job never takes the ports of the player's game. Every lab game binds
+XNet at base 3174: a windowed run gets `H2_XNET_ADDR=<LAN IPv4>:3174`
+(`lab_xnet_addr` in `crates/apps/cli/src/lab/host.rs`), and a [dedicated
+host](#dedicated-system-link-host) defaults to it. A game the player
+opens binds 3074 to 3080, so the two never collide.
+
+While the queue waits, `h2 lab status` shows `"held_for_player": true`.
+The held jobs start when the player's game closes, and each still asks
+for [consent](#player-consent-before-a-job) as usual. The host sends the
+question as a [takeover request](agent-api.md) with `"ask": "running"`;
+the game answers `stop_and_pause`, `keep_running` or `finish_this`.
+
 ## Memory limits and reports
 
 The host samples the running game's physical footprint at launch and every
@@ -554,22 +597,26 @@ allowlist.
 | `--variant NAME` | the lobby's game variant (default Slayer); needs `--map` |
 | `--max-players N` | the lobby's limit, 1 to 16 (default 8); needs `--map` |
 | `--host-bots` | `h2 serve --host-bots`: the host accepts phantoms |
-| `--base-port PORT` | the XNet base, 1024 to 65529 (default 3074) |
+| `--base-port PORT` | the XNet base, 1024 to 65529 (default 3174). A base whose seven ports reach 3074 to 3080 is refused |
 
 XNet binds the IPv4 of the lab Mac's default route, as the XNet HLE picks
 its own, at the base port. The host uses UDP base through base+6, and the
-job refuses to start when another process holds one of them. The job's
+job refuses to start when another process holds one of them. The default
+base, 3174, keeps the job off the ports a game the player opens on the lab
+Mac binds (an unconfigured `h2 play`'s 3074 to 3080), so the two never
+collide. `LAB_BASE_PORT` and `takes_player_ports` in
+`crates/apps/cli/src/lab/proto.rs` hold the rule. The job's
 `system_link` field in `h2 lab status`, `h2 lab runs` and `meta.json`
 gives the address and port, and its notes say how to join. The job notes
 whether the lobby opened. A failed open leaves the host at the menu. Open it
 with `h2 lab agent <id> host.lobby.open '{...}'`.
 
 To join, start `h2 play` on another Mac on the same LAN from the same
-commit and choose System Link, then the host's game. A System Link
-broadcast goes to the sender's own base port, so both ends need the same
-base. 3074 is an unconfigured `h2 play`'s. With `--base-port`, start the
-joiner with `H2_XNET_ADDR=<its own LAN IPv4>:<port>`. If the default route
-is a VPN, the host binds the VPN's address and a LAN joiner can't see it.
+commit with `H2_XNET_ADDR=<its own LAN IPv4>:3174` (or the job's
+`--base-port`), and choose System Link, then the host's game. A System
+Link broadcast goes to the sender's own base, so both ends need the same
+base, and an unconfigured `h2 play` uses 3074. If the default route is a
+VPN, the host binds the VPN's address and a LAN joiner can't see it.
 The macOS firewall may ask the lab Mac's user once to let the image's
 `h2` accept incoming connections.
 
@@ -586,9 +633,12 @@ h2 lab stop --host laptop <id>
 ```
 
 The job takes the activity lock, queue place, [player
-consent](#player-consent-before-a-job) and [memory
+consent](#player-consent-before-a-job), [the player's
+choice](#when-the-player-opens-a-game) and [memory
 cap](#memory-limits-and-reports) like a run. A game window on the lab Mac
-can't join it at the same base: both would bind the same UDP ports.
+can't join it: at the job's base both would bind the same UDP ports. A
+game the player opens there with no `H2_XNET_ADDR` stays on its own ports
+and doesn't collide with the job.
 
 ## Sim benchmarks
 

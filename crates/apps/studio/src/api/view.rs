@@ -395,6 +395,7 @@ pub fn scene_stats(scene: &Scene) -> Value {
                 "emissive": m.emissive,
                 "base": m.base,
                 "details": m.details,
+                "mask": m.mask,
             })
         })
         .collect();
@@ -488,6 +489,7 @@ mod tests {
             emissive: false,
             base: Some("light_volume".into()),
             details: 0,
+            mask: Some("light_volume_mask".into()),
         });
         scene.atmosphere = Atmosphere {
             sky: Some("main_menu".into()),
@@ -515,6 +517,7 @@ mod tests {
         assert_eq!(v["lightmapped_triangles"], 1);
         assert_eq!(v["materials"][0]["blend"], "additive");
         assert_eq!(v["materials"][0]["blend_from_passes"], true);
+        assert_eq!(v["materials"][0]["mask"], "light_volume_mask");
         assert_eq!(v["atmosphere"]["fog"]["density"], 0.5);
         assert_eq!(v["atmosphere"]["sun"]["power"], 1.5);
         assert_eq!(v["atmosphere"]["sky"], "main_menu");
