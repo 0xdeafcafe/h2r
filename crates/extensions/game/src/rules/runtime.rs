@@ -117,6 +117,11 @@ pub const ACTIONS: &[u16] = &[
     id::BOT_FOLLOW,
     id::BOT_ATTACK,
     id::BOT_FREE,
+    // Shown to this machine's local users and sent as show cues
+    // (`super::world::show`).
+    id::MESSAGE,
+    id::MESSAGE_TEAM,
+    id::MESSAGE_ALL,
 ];
 
 /// Where the `RULES` record lives: the process's `SimExt` blob in the
@@ -273,6 +278,10 @@ pub enum Call {
     },
     /// `end_round`, or the round end of a script error.
     End,
+    /// `message`, `message_team` or `message_all`: not an engine call but
+    /// a show cue, made at the boundary by [`Runtime::pre_tick`]
+    /// (`super::world::show`).
+    Message(super::world::show::Outgoing),
 }
 
 impl Call {
@@ -292,6 +301,7 @@ impl Call {
                 None => "bot_free",
             },
             Call::End => "end_round",
+            Call::Message(_) => "message",
         }
     }
 }
@@ -558,6 +568,11 @@ impl Game for GuestGame<'_> {
                 Some(Arg::Object(Some(o))) => Some(Call::ResetObjective(*o)),
                 _ => None,
             },
+            // Shown and sent as a show cue at the boundary
+            // (`super::world::show::publish`), not made as an engine call.
+            id::MESSAGE | id::MESSAGE_TEAM | id::MESSAGE_ALL => {
+                super::world::show::outgoing(call).map(Call::Message)
+            }
             // The winner is not passed: naming one is not traced.
             id::END_ROUND => Some(Call::End),
             // A bot order is a hint to a phantom's brain on the host. It is
@@ -1022,8 +1037,32 @@ impl Runtime {
             self.stop(why);
             return None;
         }
+        // The boundary's messages: shown to this machine's local users and
+        // queued for the show channel here, on the authority only; they
+        // make no engine call, so they are never in the work. Until the
+        // authority answer is in they wait, as the engine calls do; a
+        // machine that is not the authority shows none.
+        let (messages, rest): (Vec<Call>, Vec<Call>) = std::mem::take(&mut r.pending)
+            .into_iter()
+            .partition(|c| matches!(c, Call::Message(_)));
+        let held = match r.authority {
+            Some(true) => {
+                let messages = messages
+                    .into_iter()
+                    .filter_map(|c| match c {
+                        Call::Message(outgoing) => Some(outgoing),
+                        _ => None,
+                    })
+                    .collect();
+                super::world::show::publish(m, r.vm.ir(), tick, messages);
+                Vec::new()
+            }
+            None => messages,
+            Some(false) => Vec::new(),
+        };
         let ask_authority = r.authority.is_none();
-        let calls = std::mem::take(&mut r.pending);
+        let calls = rest;
+        r.pending = held;
         (ask_authority || !calls.is_empty()).then_some(Work {
             tick,
             ask_authority,
@@ -1320,6 +1359,10 @@ pub async fn make_calls(cx: &Cx, work: &Work) -> (Option<bool>, Vec<(String, Str
                 }
             }
             Call::End => crate::firefight::guest::end_game(cx).await,
+            // Messages are made at the boundary by `Runtime::pre_tick`
+            // (`super::world::show::publish`); one reaching this far makes
+            // no engine call.
+            Call::Message(_) => Ok(()),
         };
         if let Err(e) = result {
             refused.push((call.name().to_string(), e.to_string()));

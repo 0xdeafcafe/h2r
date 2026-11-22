@@ -565,7 +565,9 @@ Its numbers are ported: `engine::colour_pass`
      or engine textures the draw supplies, stage and render states,
      pixel shader, constants), or why it stays on D3D (no layer, no such
      pass or implementation, animated, engine inputs beyond the
-     instance's, engine-driven states, unset or default textures, a
+     instance's, engine-driven states from a source other than the
+     instance's scalar 21 (`engine_states::apply_static`), unset or
+     default textures, a
      lightmap, states the native pass does not fit). `compile_screen`
      translates it through `program::translate_pass` over the strips'
      inputs, `v0` the position and `v1`..`v4` the four texture

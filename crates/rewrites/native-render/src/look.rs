@@ -9,9 +9,10 @@
 use std::io::{Read, Seek};
 
 use map::{Map, TagId};
-use tags::material::{Material, Origin, Register, ResolvedImplementation, TextureSource};
+use tags::material::{EngineInputs, Material, Origin, Register, ResolvedImplementation, TextureSource};
 use tags::shader::{Metadata, PSDEF_SIZE, StageStates};
 
+use crate::engine_states::{EngineStateRefusal, apply_static};
 use crate::pass_state::{PassState, StateRefusal, pass_state};
 
 /// The layer the native world draws.
@@ -119,10 +120,9 @@ pub enum Refusal {
     /// The pass's render states do not fit the native pass
     /// ([`crate::pass_state::pass_state`]).
     State(StateRefusal),
-    /// The pass reads engine-driven render states.
-    EngineRenderStates,
-    /// The pass reads engine-driven texture stage states.
-    EngineStageStates,
+    /// The pass's engine-driven render or stage states do not fit
+    /// ([`crate::engine_states::apply_static`]).
+    EngineStates(EngineStateRefusal),
     /// The pass blends with what is under it (the native world draws
     /// opaque layer-3 passes only).
     Blended,
@@ -142,8 +142,10 @@ pub struct WorldPass {
 
 /// [`layer3_look`] with the pass's own render states: depth test and
 /// write, colour writes, alpha test and cull, as the D3D path applies them
-/// on entry (`0x00018900`). A pass that reads engine-driven render or stage
-/// states, or blends, stays on the D3D path. Where the implementation does
+/// on entry (`0x00018900`), with its engine-driven render and stage states
+/// over them from the material's inputs
+/// ([`crate::engine_states::apply_static`]). A pass whose engine-driven
+/// states do not fit, or that blends, stays on the D3D path. Where the implementation does
 /// not set `CULLMODE` itself it inherits the previous draw's: the D3D
 /// path's draws of placement 282 on 03a cull `Front` (`CULL_CW`, front face
 /// `CW`) where the pass leaves it unset. Such a
@@ -154,35 +156,33 @@ pub struct WorldPass {
 pub fn layer3_pass(material: &Material) -> Result<WorldPass, Refusal> {
     let look = layer3_look(material)?;
     let imp = layer3_implementation(material).ok_or(Refusal::NoLayer3)?;
-    world_pass(look, imp)
+    world_pass(look, imp, &material.inputs)
 }
 
 /// The lighting selector for a BSP without a matching first lightmap
 /// group (record builder, `world_walk::Plan::lighting`). A layer mask
 /// covers all passes, so this material path requires a single pass.
-pub fn unlit_bsp_pass(pass: &tags::material::SelectedImplementation, normalization: Option<TagId>)
-    -> Result<WorldPass, Refusal>
-{
+/// `inputs` are those `pass` was resolved with (the instance's,
+/// `EngineInputs::for_shader`, when the resolve was given none).
+pub fn unlit_bsp_pass(
+    pass: &tags::material::SelectedImplementation, inputs: &EngineInputs, normalization: Option<TagId>,
+) -> Result<WorldPass, Refusal> {
     if pass.layer_passes != 1 { return Err(Refusal::Passes(pass.layer_passes)); }
     let imp = &pass.implementation;
     if imp.index != UNLIT_BSP_IMPLEMENTATION {
         return Err(Refusal::MissingImplementation(UNLIT_BSP_IMPLEMENTATION));
     }
     let look = look_with_engine(pass.pass, imp, normalization)?;
-    world_pass(look, imp)
+    world_pass(look, imp, inputs)
 }
 
 /// Record lighting selector when the BSP has no matching lightmap.
 pub const UNLIT_BSP_IMPLEMENTATION: usize = 3;
 
-fn world_pass(look: PassLook, imp: &ResolvedImplementation) -> Result<WorldPass, Refusal> {
-    if !imp.engine_render_states.is_empty() {
-        return Err(Refusal::EngineRenderStates);
-    }
-    if !imp.engine_stage_states.is_empty() {
-        return Err(Refusal::EngineStageStates);
-    }
-    let mut state = pass_state(&imp.render_states).map_err(Refusal::State)?;
+fn world_pass(mut look: PassLook, imp: &ResolvedImplementation, inputs: &EngineInputs) -> Result<WorldPass, Refusal> {
+    let applied = apply_static(imp, inputs).map_err(Refusal::EngineStates)?;
+    look.stage_states = applied.stage_states;
+    let mut state = pass_state(&applied.render_states).map_err(Refusal::State)?;
     if state.blend.is_some() {
         return Err(Refusal::Blended);
     }
@@ -461,15 +461,15 @@ mod tests {
             pass: TagId(13), layer_passes: 1, render_writes: Vec::new(), implementation: opaque(implementation(3, false), &[]),
         };
         let cube = TagId(17);
-        let pass = unlit_bsp_pass(&selected, Some(cube)).unwrap();
+        let pass = unlit_bsp_pass(&selected, &EngineInputs::default(), Some(cube)).unwrap();
         assert_eq!(pass.look.implementation, 3);
         assert_eq!(pass.look.vertex_shader, selected.implementation.vertex_shader.unwrap());
         assert_eq!(pass.look.textures[3], Stage::Bitmap { bitmap: cube, image: 0 });
-        assert_eq!(unlit_bsp_pass(&selected, None), Err(Refusal::EngineTexture(1)));
+        assert_eq!(unlit_bsp_pass(&selected, &EngineInputs::default(), None), Err(Refusal::EngineTexture(1)));
         selected.implementation = opaque(implementation(0, true), &[]);
-        assert_eq!(unlit_bsp_pass(&selected, Some(cube)), Err(Refusal::MissingImplementation(3)));
+        assert_eq!(unlit_bsp_pass(&selected, &EngineInputs::default(), Some(cube)), Err(Refusal::MissingImplementation(3)));
         selected.layer_passes = 2;
-        assert_eq!(unlit_bsp_pass(&selected, Some(cube)), Err(Refusal::Passes(2)));
+        assert_eq!(unlit_bsp_pass(&selected, &EngineInputs::default(), Some(cube)), Err(Refusal::Passes(2)));
     }
 
     #[test]
@@ -540,6 +540,44 @@ mod tests {
         assert_eq!((p.state.depth_compare, p.state.depth_write), (wgpu::CompareFunction::Equal, false));
     }
 
+    /// An engine-driven alpha reference from the instance's scalar 21
+    /// lands in the pass's alpha test, after the pass's own value; a
+    /// driven LOD bias in its stage's states.
+    #[test]
+    fn a_world_pass_takes_its_engine_driven_states_from_the_instance() {
+        use gfx::state::{CompareFunc, RenderStateType as R};
+        let mut imp = opaque(
+            implementation(0, true),
+            &[(R::AlphaTestEnable, 1), (R::AlphaRef, 0xff), (R::AlphaFunc, CompareFunc::Less.xbox_value())],
+        );
+        imp.input_reads.scalars = 1 << 21;
+        imp.stage_states = vec![StageStates {
+            address_u: 1,
+            address_v: 1,
+            address_w: 1,
+            mag_filter: 2,
+            min_filter: 2,
+            mip_filter: 2,
+            mip_lod_bias: 0,
+            max_mip_level: 0,
+            max_anisotropy: 1,
+            color_key_op: 0,
+            color_sign: 0,
+            alpha_kill: 0,
+            border_color: 0,
+            color_key_color: 0,
+            unread: [0; 2],
+        }];
+        // ALPHAREF (0x3d) and stage 0's MIPMAPLODBIAS from scalar 21.
+        imp.engine_render_states = vec![ExternalBinding { bytes: [2, 1, 0, 21] }];
+        imp.engine_stage_states = vec![ExternalBinding { bytes: [0, 0, 1, 21] }];
+        let mut m = material(3, vec![vec![imp]]);
+        m.inputs.scalars[21] = 64.0;
+        let p = layer3_pass(&m).unwrap();
+        assert_eq!(p.state.alpha_test, Some((wgpu::CompareFunction::Less, 64)));
+        assert_eq!(f32::from_bits(p.look.stage_states[0].mip_lod_bias), 64.0);
+    }
+
     #[test]
     fn world_passes_outside_the_native_state_stay_on_the_d3d_path() {
         use gfx::state::{BlendFactor, RenderStateType as R};
@@ -551,12 +589,15 @@ mod tests {
         );
         assert_eq!(refusal(blended), Refusal::Blended);
         assert_eq!(refusal(opaque(implementation(0, true), &[(R::FogEnable, 1)])), Refusal::State(StateRefusal::Fog));
+        // Engine-driven states from a draw's input (scalar 3) or past the
+        // tables.
         let mut engine = opaque(implementation(0, true), &[]);
-        engine.engine_render_states = vec![ExternalBinding { bytes: [0; 4] }];
-        assert_eq!(refusal(engine), Refusal::EngineRenderStates);
+        engine.input_reads.scalars = 1 << 3;
+        engine.engine_render_states = vec![ExternalBinding { bytes: [2, 1, 0, 3] }];
+        assert_eq!(refusal(engine), Refusal::EngineStates(EngineStateRefusal::PerDraw { state: 0x3d, stage: None }));
         let mut engine = opaque(implementation(0, true), &[]);
-        engine.engine_stage_states = vec![ExternalBinding { bytes: [0; 4] }];
-        assert_eq!(refusal(engine), Refusal::EngineStageStates);
+        engine.engine_stage_states = vec![ExternalBinding { bytes: [0, 10, 1, 0] }];
+        assert_eq!(refusal(engine), Refusal::EngineStates(EngineStateRefusal::Undecoded));
         // Every layer-3 refusal still applies.
         let mut texaccum = opaque(implementation(0, true), &[]);
         texaccum.textures[0] = texture(TextureSource::Engine(3));

@@ -14,6 +14,7 @@ use tags::material::Material as TagMaterial;
 use tags::shader::StageStates;
 
 use crate::decorators::PROVIDED_INPUTS;
+use crate::engine_states::apply_static;
 use crate::gpu::Image;
 use crate::look::{self, PassLook, Stage};
 use crate::object_program_gpu::input_fetch;
@@ -58,19 +59,17 @@ pub fn decorator_look(
         .ok_or_else(|| format!("the template has no layer {layer} at detail level {lod}"))?;
     let p = list.passes.get(usize::from(pass)).ok_or_else(|| format!("the layer has no pass {pass}"))?;
     let imp = p.implementations.first().ok_or("the pass has no implementation")?;
-    if !imp.engine_render_states.is_empty() {
-        return Err("engine-driven render states".into());
-    }
-    if !imp.engine_stage_states.is_empty() {
-        return Err("engine-driven texture stage states".into());
-    }
+    // Engine-driven states over the pass's own, from the instance's
+    // inputs: the stage translates the pass once for every draw.
+    let applied = apply_static(imp, &material.inputs).map_err(|r| format!("engine-driven states: {r:?}"))?;
     // A pass that leaves the cull to the device draws as the draws before
     // it left it: the device's at the layer-3 call, read at the ask.
     let inherits_cull = !look::sets_state(&imp.render_states, gfx::state::RenderStateType::CullMode);
     // A stage sampling the lightmap takes the globals' bitmap (the draw
     // sets the page to -1, `0x0004e277`): [`stage_images`].
-    let look = look::implementation_look(p.pass, imp).map_err(|r| format!("{r:?}"))?;
-    let state = pass_state(&imp.render_states).map_err(|r| format!("render states: {r:?}"))?;
+    let mut look = look::implementation_look(p.pass, imp).map_err(|r| format!("{r:?}"))?;
+    look.stage_states = applied.stage_states;
+    let state = pass_state(&applied.render_states).map_err(|r| format!("render states: {r:?}"))?;
     let (microcode, semantics) =
         program(look.vertex_shader).ok_or("the vrtx has no classification-1 program")?;
     Ok(DecoratorLook { look, state, microcode, semantics, inherits_cull })
@@ -361,6 +360,41 @@ pub(crate) mod tests {
         let (v, _) = uniforms(&p, &view, [1.0, 2.0, 0.0, 1.0]);
         assert_eq!(v.constants[LOD_CONSTANT], [1.0, 2.0, 0.0, 1.0]);
         assert_eq!(v.constants[0], [0.5; 4]);
+    }
+
+    /// An engine-driven blend-colour alpha from the instance's scalar 21
+    /// goes over the pass's own colour; one from a draw's input refuses.
+    #[test]
+    fn a_pass_takes_its_engine_driven_states_from_the_instance() {
+        use gfx::state::RenderStateType as R;
+        use tags::material::{EngineInputs, ResolvedLayer, ResolvedPass};
+        use tags::shader::{ExternalBinding, RenderStateValue};
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let slot = |t| (0..=255u8).find(|&s| R::from_guest_index(&table, u32::from(s)) == Some(t)).expect("a 5849 slot");
+        let rs = |t, value| RenderStateValue { state: slot(t), value };
+        let mut imp = crate::engine_states::tests::implementation(
+            vec![rs(R::AlphaBlendEnable, 0), rs(R::ZWriteEnable, 1), rs(R::BlendColor, 0x00ff_ffff)],
+            0,
+        );
+        imp.input_reads.scalars = 1 << 21;
+        imp.engine_render_states = vec![ExternalBinding { bytes: [0, 1, 0, 21] }];
+        let mut material = TagMaterial {
+            shader: TagId(0xe000_0100),
+            template: TagId(0xe000_0101),
+            inputs: EngineInputs::default(),
+            layers: vec![ResolvedLayer {
+                lod: 0,
+                layer: 3,
+                passes: vec![ResolvedPass { index: 0, pass: TagId(0xe000_0200), implementations: vec![imp] }],
+            }],
+        };
+        material.inputs.scalars[21] = 1.0;
+        let mut program = |_: TagId| Some((code(None), vec![0]));
+        let look = decorator_look(&material, 0, 3, 0, &mut program).unwrap();
+        assert_eq!(look.state.blend_constant, wgpu::Color::WHITE);
+        material.layers[0].passes[0].implementations[0].engine_render_states = vec![ExternalBinding { bytes: [0, 1, 0, 3] }];
+        let e = decorator_look(&material, 0, 3, 0, &mut program).unwrap_err();
+        assert!(e.contains("engine-driven states") && e.contains("PerDraw"), "{e}");
     }
 
     /// A lightmap stage binds the globals' bitmap when it is uniform, as

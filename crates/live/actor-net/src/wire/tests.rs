@@ -46,6 +46,12 @@ fn all_records() -> Packet {
             state_hash: 0x1234_5678_9abc_def0,
             actor_count: 1,
         },
+        Record::Cue {
+            tick: 0x8765_4320,
+            sequence: 3,
+            kind: 0,
+            bytes: vec![7, 1, 255, 0, 9, 2],
+        },
     ])
 }
 
@@ -72,6 +78,46 @@ fn version_one_line_has_fixed_bytes() {
     ];
     assert_eq!(encode(&packet).unwrap().as_slice(), &bytes);
     assert_eq!(decode(&bytes).unwrap(), packet);
+}
+
+#[test]
+fn version_one_cue_has_fixed_bytes() {
+    let packet = packet(vec![Record::Cue {
+        tick: 0x8765_4320,
+        sequence: 3,
+        kind: 0,
+        bytes: vec![7, 1, 255, 0, 9, 2],
+    }]);
+    let bytes = [
+        1, 0x21, 0x43, 0x65, 0x87, 1, 8, 0x20, 0x43, 0x65, 0x87, 3, 0, 6, 7, 1, 255, 0, 9, 2,
+    ];
+    assert_eq!(encode(&packet).unwrap().as_slice(), &bytes);
+    assert_eq!(decode(&bytes).unwrap(), packet);
+}
+
+#[test]
+fn a_cue_over_the_bound_is_refused_both_ways() {
+    let over = packet(vec![Record::Cue {
+        tick: 1,
+        sequence: 0,
+        kind: 0,
+        bytes: vec![0; MAX_CUE_BYTES + 1],
+    }]);
+    assert_eq!(encode(&over), Err(WireError::CueTooLarge));
+    let mut body = vec![CUE, 1, 0, 0, 0, 0, 0, (MAX_CUE_BYTES + 1) as u8];
+    body.extend([0; MAX_CUE_BYTES]);
+    let mut bytes = vec![VERSION, 0, 0, 0, 0, 1];
+    bytes.extend(&body);
+    assert_eq!(decode(&bytes), Err(WireError::CueTooLarge));
+    // Exactly at the bound round-trips.
+    let at = packet(vec![Record::Cue {
+        tick: 1,
+        sequence: 0,
+        kind: 0,
+        bytes: vec![0; MAX_CUE_BYTES],
+    }]);
+    let bytes = encode(&at).unwrap();
+    assert_eq!(decode(&bytes).unwrap(), at);
 }
 
 #[test]
