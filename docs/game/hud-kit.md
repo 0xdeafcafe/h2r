@@ -701,7 +701,9 @@ show bit of the widget the HUD editor places on the tracker's rim
 (`rects::TRACKER`) that lets it through the gate (S: that the game sets
 that bit whenever it draws the tracker; decoding 5). A HUD with no
 widget there keeps `0x1000` alone. Every report notes which bit was
-taken. The preview draws a navpoint at its own sample point; in a split
+taken. The preview draws a navpoint at a sample point, each navpoint of
+a HUD at one of its own (`preview::NAVPOINT_SAMPLES`, by its order among
+the HUD's navpoints), so two shown at once draw apart; in a split
 frame, whose stack would leave the frame's top at the sample, it moves
 the point down until the stack fits (S: that the game keeps a navpoint
 inside its waypoint area, the safe bounds less `hudg +0xec`..`+0xf8`).

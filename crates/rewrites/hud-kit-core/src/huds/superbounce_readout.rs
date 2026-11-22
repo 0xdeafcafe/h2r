@@ -10,7 +10,9 @@
 //!   beside it `On seam`, or an arrow for the way to push and how far the
 //!   landing is off the seam.
 //! - `sbr.info`: why the last landing by a seam did not bounce, for a few
-//!   seconds ([`Miss`]).
+//!   seconds ([`Miss`]); in the flight after a bounce, the seams it can
+//!   reach, the best first, each a rank, an arrow for where it is against
+//!   the aim and its distance ([`Next`]).
 //! - `sbr.tag`, `sbr.target.1` and `sbr.target.2`: the game's navpoint
 //!   over the tagged seam and over the two nearest seams the player can
 //!   reach.
@@ -81,6 +83,9 @@ pub const STEER_LEFT: i16 = LEFT + FALL_COLUMNS as i16 + 6;
 pub const SPEED_LONGEST: &str = "\u{e2b1} 88.8  \u{e2b4} 88.8 m/s";
 pub const STEER_LONGEST: &str = "\u{e2b0} 88.88 m";
 pub const INFO_LONGEST: &str = "No bounce: on seam at 88.8 m/s";
+/// The widest ranked line: [`NEXT`] seams, three digits each. Shorter
+/// than [`INFO_LONGEST`], whose row it shares.
+pub const NEXT_LONGEST: &str = "1 \u{e2b1} 888 m  2 \u{e2b1} 888 m";
 /// The steer line when the coasting landing is caught.
 pub const ON_SEAM: &str = "On seam";
 
@@ -136,12 +141,30 @@ pub enum Miss {
     NoBounce { had: f32 },
 }
 
+/// A seam the flight after a bounce can reach.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Next {
+    /// Where it is against the aim, radians clockwise from straight
+    /// ahead.
+    pub heading: f32,
+    /// Metres to it.
+    pub metres: f32,
+}
+
+/// How many ranked seams the line lists: as many as the readout has
+/// target navpoints ([`TARGETS`]).
+pub const NEXT: usize = 2;
+
 /// What the readout shows. `None` hides a piece.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct View {
     pub speed: Option<Speed>,
     pub fall: Option<Fall>,
     pub info: Option<Miss>,
+    /// In the flight after a bounce, the seams it can reach, the best
+    /// first. With any, the line is theirs and not the miss's, the fall
+    /// row is the best one's, and the target navpoints are on them.
+    pub next: [Option<Next>; NEXT],
     /// Metres to the tagged seam.
     pub tag: Option<f32>,
     /// Metres to each reachable seam marked, nearest first.
@@ -198,6 +221,19 @@ pub fn miss_text(m: &Miss) -> String {
     }
 }
 
+/// The ranked line: each seam's rank, the arrow toward it and its
+/// distance in whole metres, `1 (arrow) 12 m  2 (arrow) 30 m`; `None`
+/// with no seam.
+pub fn next_text(next: &[Option<Next>; NEXT]) -> Option<String> {
+    let parts: Vec<String> = next
+        .iter()
+        .flatten()
+        .enumerate()
+        .map(|(i, n)| format!("{} {} {} m", i + 1, arrow(n.heading), distance_text(n.metres)))
+        .collect();
+    (!parts.is_empty()).then(|| parts.join("  "))
+}
+
 /// The elements, in draw order.
 pub fn hud() -> Hud {
     let row = |up: i16| Place::new(Anchor::BottomLeft, (LEFT, up));
@@ -241,7 +277,10 @@ pub fn values(v: &View) -> Values {
     );
     out.set(SPEED, text(v.speed.as_ref().and_then(speed_text)));
     out.set(STEER, text(v.fall.map(|f| steer_text(&f.steer))));
-    out.set(INFO, text(v.info.as_ref().map(miss_text)));
+    out.set(
+        INFO,
+        text(next_text(&v.next).or_else(|| v.info.as_ref().map(miss_text))),
+    );
     out.set(TAG, nav(v.tag));
     out.set(TARGET_1, nav(v.targets[0]));
     out.set(TARGET_2, nav(v.targets[1]));
@@ -299,6 +338,54 @@ pub fn views() -> Vec<(&'static str, View)> {
             View {
                 speed: Some(running),
                 targets: [Some(9.0), Some(21.0)],
+                ..View::default()
+            },
+        ),
+        (
+            "second-bounce",
+            View {
+                speed: Some(Speed {
+                    heading: 0.0,
+                    across: 3.4,
+                    down: None,
+                }),
+                fall: Some(Fall {
+                    speed: 1.0,
+                    steer: Steer::Off {
+                        heading: -FRAC_PI_4,
+                        metres: 1.2,
+                    },
+                }),
+                next: [
+                    Some(Next {
+                        heading: -FRAC_PI_4,
+                        metres: 12.0,
+                    }),
+                    Some(Next {
+                        heading: 2.0 * FRAC_PI_4,
+                        metres: 30.0,
+                    }),
+                ],
+                targets: [Some(12.0), Some(30.0)],
+                ..View::default()
+            },
+        ),
+        (
+            "second-bounce-lined-up",
+            View {
+                speed: Some(falling),
+                fall: Some(Fall {
+                    speed: 1.0,
+                    steer: Steer::OnSeam,
+                }),
+                next: [
+                    Some(Next {
+                        heading: 0.0,
+                        metres: 4.0,
+                    }),
+                    None,
+                ],
+                targets: [Some(4.0), None],
                 ..View::default()
             },
         ),
@@ -442,6 +529,39 @@ mod tests {
             "No bounce: on seam at 17.2 m/s"
         );
         assert_eq!(shown("moving", INFO), None);
+    }
+
+    /// In the flight after a bounce the line is the ranked seams', over
+    /// a miss's, and fits the row it shares.
+    #[test]
+    fn the_ranked_line_lists_the_seams_best_first() {
+        assert_eq!(next_text(&[None, None]), None);
+        let n = |heading, metres| Some(Next { heading, metres });
+        assert_eq!(
+            next_text(&[n(FRAC_PI_2, 12.4), n(PI, 30.0)]).unwrap(),
+            "1 \u{e2b2} 12 m  2 \u{e2b4} 30 m"
+        );
+        assert_eq!(next_text(&[n(0.0, 4.0), None]).unwrap(), "1 \u{e2b0} 4 m");
+        assert_eq!(
+            next_text(&[n(0.0, 1e9), n(0.0, f32::NAN)]).unwrap().chars().count(),
+            "1 \u{e2b0} 999 m  2 \u{e2b0} 0 m".chars().count()
+        );
+        assert!(NEXT_LONGEST.chars().count() <= INFO_LONGEST.chars().count());
+        assert_eq!(NEXT, TARGETS.len());
+        let v = View {
+            info: Some(Miss::NotPrimed),
+            next: [n(0.0, 4.0), None],
+            ..View::default()
+        };
+        assert_eq!(values(&v).get(INFO).unwrap().text, "1 \u{e2b0} 4 m");
+        assert_eq!(
+            shown("second-bounce", INFO).unwrap(),
+            "1 \u{e2b7} 12 m  2 \u{e2b2} 30 m"
+        );
+        assert_eq!(shown("second-bounce", STEER).unwrap(), "\u{e2b7} 1.20 m");
+        assert_eq!(shown("second-bounce", TARGET_2).unwrap(), "30");
+        assert_eq!(shown("second-bounce-lined-up", STEER).unwrap(), ON_SEAM);
+        assert_eq!(shown("second-bounce-lined-up", TARGET_2), None);
     }
 
     #[test]

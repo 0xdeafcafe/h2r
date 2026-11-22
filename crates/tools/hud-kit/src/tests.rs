@@ -242,6 +242,36 @@ fn the_readout_passes_beside_the_superbounce_hud() {
     }
 }
 
+/// Each navpoint of a HUD has a sample of its own, so two shown at once
+/// (the readout's two targets, the ranked seams after a bounce) draw
+/// apart: neither's arrow, marker and number is over the other's.
+#[test]
+fn a_huds_navpoints_draw_at_samples_of_their_own() {
+    use crate::huds::superbounce_readout::{self as readout, Readout};
+    for (i, a) in preview::NAVPOINT_SAMPLES.iter().enumerate() {
+        for b in &preview::NAVPOINT_SAMPLES[i + 1..] {
+            assert!((a[0] - b[0]).abs() >= 0.1, "{a:?} {b:?}");
+        }
+    }
+    assert_eq!(preview::navpoint_sample(0), preview::NAVPOINT_SAMPLE);
+    assert_eq!(preview::navpoint_sample(9), preview::NAVPOINT_SAMPLES[3]);
+    let mut src = synthetic();
+    let r = check::all(&mut src, &[&Readout], &[Mode::Full]).unwrap();
+    for state in ["targets", "second-bounce"] {
+        let shot = r
+            .shots
+            .iter()
+            .find(|s| s.hud == readout::NAME && s.state == state)
+            .unwrap();
+        let rect = |id: &str| shot.element(id).unwrap().rect.unwrap();
+        let (a, b) = (rect(readout::TARGET_1), rect(readout::TARGET_2));
+        assert!(
+            a.x1 <= b.x0 || b.x1 <= a.x0 || a.y1 <= b.y0 || b.y1 <= a.y0,
+            "{state}: {a:?} {b:?}"
+        );
+    }
+}
+
 /// The synthetic sheet draws: the superbounce HUD in every state and
 /// mode, every check passing but the glyphs (no fonts), and a picture
 /// and its JSON written to a folder.
