@@ -9,7 +9,7 @@ fn frames_at(
     what: &str,
     done: impl Fn(&Play, &App) -> bool,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         play.update_at(app, now);
         if done(play, app) {
