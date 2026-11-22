@@ -12,7 +12,6 @@ alias(
 http_archive(
     name = "ab_glyph-0.2.32.crate",
     sha256 = "01c0457472c38ea5bd1c3b5ada5e368271cb550be7a4ca4a0b4634e9913f6cc2",
-    size_bytes = 20967,
     strip_prefix = "ab_glyph-0.2.32",
     urls = ["https://static.crates.io/crates/ab_glyph/0.2.32/download"],
     visibility = [],
@@ -53,7 +52,6 @@ cargo.rust_library(
 http_archive(
     name = "ab_glyph_rasterizer-0.1.10.crate",
     sha256 = "366ffbaa4442f4684d91e2cd7c5ea7c4ed8add41959a31447066e279e432b618",
-    size_bytes = 11206,
     strip_prefix = "ab_glyph_rasterizer-0.1.10",
     urls = ["https://static.crates.io/crates/ab_glyph_rasterizer/0.1.10/download"],
     visibility = [],
@@ -94,7 +92,6 @@ alias(
 http_archive(
     name = "addr2line-0.27.1.crate",
     sha256 = "e567177890eb1617b1f774005b66b26b2377afd138a2ca37aae7d8f0c81429d4",
-    size_bytes = 43584,
     strip_prefix = "addr2line-0.27.1",
     urls = ["https://static.crates.io/crates/addr2line/0.27.1/download"],
     visibility = [],
@@ -135,7 +132,6 @@ cargo.rust_library(
 http_archive(
     name = "adler2-2.0.1.crate",
     sha256 = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa",
-    size_bytes = 13366,
     strip_prefix = "adler2-2.0.1",
     urls = ["https://static.crates.io/crates/adler2/2.0.1/download"],
     visibility = [],
@@ -166,7 +162,6 @@ cargo.rust_library(
 http_archive(
     name = "aead-0.5.2.crate",
     sha256 = "d122413f284cf2d62fb1b7db97e02edb8cda96d769b16e443a4f6195e35662b0",
-    size_bytes = 15509,
     strip_prefix = "aead-0.5.2",
     urls = ["https://static.crates.io/crates/aead/0.5.2/download"],
     visibility = [],
@@ -206,7 +201,6 @@ cargo.rust_library(
 http_archive(
     name = "ahash-0.8.12.crate",
     sha256 = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75",
-    size_bytes = 43413,
     strip_prefix = "ahash-0.8.12",
     urls = ["https://static.crates.io/crates/ahash/0.8.12/download"],
     visibility = [],
@@ -251,7 +245,6 @@ cargo.rust_library(
 http_archive(
     name = "aho-corasick-1.1.5.crate",
     sha256 = "c982642fa9e8606056828ee9a8505737230110bb1099153c79efe865c59d12ba",
-    size_bytes = 184315,
     strip_prefix = "aho-corasick-1.1.5",
     urls = ["https://static.crates.io/crates/aho-corasick/1.1.5/download"],
     visibility = [],
@@ -287,7 +280,6 @@ cargo.rust_library(
 http_archive(
     name = "alloc-no-stdlib-3.0.0.crate",
     sha256 = "c2fb6cfd47bf496ff64095c20eaba0c201404ee38714d4142fcfa1dc334fcc7a",
-    size_bytes = 10450,
     strip_prefix = "alloc-no-stdlib-3.0.0",
     urls = ["https://static.crates.io/crates/alloc-no-stdlib/3.0.0/download"],
     visibility = [],
@@ -318,7 +310,6 @@ cargo.rust_library(
 http_archive(
     name = "alloc-stdlib-0.3.0.crate",
     sha256 = "0b5c1865780388bfa186411ab5f247819487fc4864c6e9c3106611fa347586e1",
-    size_bytes = 6922,
     strip_prefix = "alloc-stdlib-0.3.0",
     urls = ["https://static.crates.io/crates/alloc-stdlib/0.3.0/download"],
     visibility = [],
@@ -350,7 +341,6 @@ cargo.rust_library(
 http_archive(
     name = "allocator-api2-0.2.21.crate",
     sha256 = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923",
-    size_bytes = 63622,
     strip_prefix = "allocator-api2-0.2.21",
     urls = ["https://static.crates.io/crates/allocator-api2/0.2.21/download"],
     visibility = [],
@@ -382,7 +372,6 @@ cargo.rust_library(
 http_archive(
     name = "alsa-0.11.0.crate",
     sha256 = "812947049edcd670a82cd5c73c3661d2e58468577ba8489de58e1a73c04cbd5d",
-    size_bytes = 76094,
     strip_prefix = "alsa-0.11.0",
     urls = ["https://static.crates.io/crates/alsa/0.11.0/download"],
     visibility = [],
@@ -423,7 +412,6 @@ cargo.rust_library(
 http_archive(
     name = "alsa-sys-0.4.0.crate",
     sha256 = "ad7569085a265dd3f607ebecce7458eaab2132a84393534c95b18dcbc3f31e04",
-    size_bytes = 35672,
     strip_prefix = "alsa-sys-0.4.0",
     urls = ["https://static.crates.io/crates/alsa-sys/0.4.0/download"],
     visibility = [],
@@ -456,7 +444,6 @@ cargo.rust_library(
 http_archive(
     name = "anstream-1.0.0.crate",
     sha256 = "824a212faf96e9acacdbd09febd34438f8f711fb84e09a8916013cd7815ca28d",
-    size_bytes = 28916,
     strip_prefix = "anstream-1.0.0",
     urls = ["https://static.crates.io/crates/anstream/1.0.0/download"],
     visibility = [],
@@ -505,7 +492,6 @@ cargo.rust_library(
 http_archive(
     name = "anstyle-1.0.14.crate",
     sha256 = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000",
-    size_bytes = 17787,
     strip_prefix = "anstyle-1.0.14",
     urls = ["https://static.crates.io/crates/anstyle/1.0.14/download"],
     visibility = [],
@@ -540,7 +526,6 @@ cargo.rust_library(
 http_archive(
     name = "anstyle-parse-1.0.0.crate",
     sha256 = "52ce7f38b242319f7cabaa6813055467063ecdc9d355bbb4ce0c68908cd8130e",
-    size_bytes = 22042,
     strip_prefix = "anstyle-parse-1.0.0",
     urls = ["https://static.crates.io/crates/anstyle-parse/1.0.0/download"],
     visibility = [],
@@ -576,7 +561,6 @@ cargo.rust_library(
 http_archive(
     name = "anstyle-query-1.1.5.crate",
     sha256 = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc",
-    size_bytes = 10264,
     strip_prefix = "anstyle-query-1.1.5",
     urls = ["https://static.crates.io/crates/anstyle-query/1.1.5/download"],
     visibility = [],
@@ -612,7 +596,6 @@ cargo.rust_library(
 http_archive(
     name = "anstyle-wincon-3.0.11.crate",
     sha256 = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d",
-    size_bytes = 12638,
     strip_prefix = "anstyle-wincon-3.0.11",
     urls = ["https://static.crates.io/crates/anstyle-wincon/3.0.11/download"],
     visibility = [],
@@ -654,7 +637,6 @@ alias(
 http_archive(
     name = "anyhow-1.0.104.crate",
     sha256 = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470",
-    size_bytes = 48819,
     strip_prefix = "anyhow-1.0.104",
     urls = ["https://static.crates.io/crates/anyhow/1.0.104/download"],
     visibility = [],
@@ -737,7 +719,6 @@ buildscript_run(
 http_archive(
     name = "arbitrary-1.5.0.crate",
     sha256 = "3bc62ac97cc33321f50863d514c3bc38a453947a8f9e781137e47c7401020aed",
-    size_bytes = 38686,
     strip_prefix = "arbitrary-1.5.0",
     urls = ["https://static.crates.io/crates/arbitrary/1.5.0/download"],
     visibility = [],
@@ -768,7 +749,6 @@ cargo.rust_library(
 http_archive(
     name = "arc-swap-1.9.5.crate",
     sha256 = "84a22b5d51209f6de83d37a0b33d320acb8da88823e42a94c075140708f032a5",
-    size_bytes = 86338,
     strip_prefix = "arc-swap-1.9.5",
     urls = ["https://static.crates.io/crates/arc-swap/1.9.5/download"],
     visibility = [],
@@ -800,7 +780,6 @@ cargo.rust_library(
 http_archive(
     name = "arrayref-0.3.9.crate",
     sha256 = "76a2e8124351fda1ef8aaaa3bbd7ebbcb486bbcd4225aca0aa0d84bb2db8fecb",
-    size_bytes = 9186,
     strip_prefix = "arrayref-0.3.9",
     urls = ["https://static.crates.io/crates/arrayref/0.3.9/download"],
     visibility = [],
@@ -831,7 +810,6 @@ cargo.rust_library(
 http_archive(
     name = "arrayvec-0.7.8.crate",
     sha256 = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56",
-    size_bytes = 33260,
     strip_prefix = "arrayvec-0.7.8",
     urls = ["https://static.crates.io/crates/arrayvec/0.7.8/download"],
     visibility = [],
@@ -868,7 +846,6 @@ cargo.rust_library(
 http_archive(
     name = "as-raw-xcb-connection-1.0.1.crate",
     sha256 = "175571dd1d178ced59193a6fc02dde1b972eb0bc56c892cde9beeceac5bf0f6b",
-    size_bytes = 6460,
     strip_prefix = "as-raw-xcb-connection-1.0.1",
     urls = ["https://static.crates.io/crates/as-raw-xcb-connection/1.0.1/download"],
     visibility = [],
@@ -903,7 +880,6 @@ cargo.rust_library(
 http_archive(
     name = "ash-0.38.0+1.3.281.crate",
     sha256 = "0bb44936d800fea8f016d7f2311c6a4f97aebd5dc86f09906139ec848cf3a46f",
-    size_bytes = 457775,
     strip_prefix = "ash-0.38.0+1.3.281",
     urls = ["https://static.crates.io/crates/ash/0.38.0+1.3.281/download"],
     visibility = [],
@@ -948,7 +924,6 @@ alias(
 http_archive(
     name = "async-trait-0.1.92.crate",
     sha256 = "82f6aeea286b8eb4dd3431a1be1b59d290ace00f5bfd8e2a159bc2a05e2c1667",
-    size_bytes = 32039,
     strip_prefix = "async-trait-0.1.92",
     urls = ["https://static.crates.io/crates/async-trait/0.1.92/download"],
     visibility = [],
@@ -985,7 +960,6 @@ cargo.rust_library(
 http_archive(
     name = "atoi-2.0.0.crate",
     sha256 = "f28d99ec8bfea296261ca1af174f24225171fea9664ba9003cbebee704810528",
-    size_bytes = 7785,
     strip_prefix = "atoi-2.0.0",
     urls = ["https://static.crates.io/crates/atoi/2.0.0/download"],
     visibility = [],
@@ -1021,7 +995,6 @@ cargo.rust_library(
 http_archive(
     name = "atoi-3.1.1.crate",
     sha256 = "d12c37257553c19e9aee6cba77814fdc9e07844abfc8b3a2c377cd920ee5a993",
-    size_bytes = 20907,
     strip_prefix = "atoi-3.1.1",
     urls = ["https://static.crates.io/crates/atoi/3.1.1/download"],
     visibility = [],
@@ -1053,7 +1026,6 @@ cargo.rust_library(
 http_archive(
     name = "atomic-waker-1.1.2.crate",
     sha256 = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0",
-    size_bytes = 12422,
     strip_prefix = "atomic-waker-1.1.2",
     urls = ["https://static.crates.io/crates/atomic-waker/1.1.2/download"],
     visibility = [],
@@ -1084,7 +1056,6 @@ cargo.rust_library(
 http_archive(
     name = "autocfg-1.5.1.crate",
     sha256 = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53",
-    size_bytes = 18911,
     strip_prefix = "autocfg-1.5.1",
     urls = ["https://static.crates.io/crates/autocfg/1.5.1/download"],
     visibility = [],
@@ -1121,7 +1092,6 @@ alias(
 http_archive(
     name = "axum-0.8.9.crate",
     sha256 = "31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a89fc1867a71cd90",
-    size_bytes = 180525,
     strip_prefix = "axum-0.8.9",
     urls = ["https://static.crates.io/crates/axum/0.8.9/download"],
     visibility = [],
@@ -1195,7 +1165,6 @@ cargo.rust_library(
 http_archive(
     name = "axum-core-0.5.6.crate",
     sha256 = "08c78f31d7b1291f7ee735c1c6780ccde7785daae9a9206026862dab7d8792d1",
-    size_bytes = 26769,
     strip_prefix = "axum-core-0.5.6",
     urls = ["https://static.crates.io/crates/axum-core/0.5.6/download"],
     visibility = [],
@@ -1246,7 +1215,6 @@ alias(
 http_archive(
     name = "axum-server-0.7.3.crate",
     sha256 = "c1ab4a3ec9ea8a657c72d99a03a824af695bd0fb5ec639ccbd9cd3543b41a5f9",
-    size_bytes = 42685,
     strip_prefix = "axum-server-0.7.3",
     urls = ["https://static.crates.io/crates/axum-server/0.7.3/download"],
     visibility = [],
@@ -1308,7 +1276,6 @@ alias(
 http_archive(
     name = "backtrace-0.3.77.crate",
     sha256 = "42f4220217f3288537b83684130f42fad43320b1c3b805f1910d683d52ded24f",
-    size_bytes = 90528,
     strip_prefix = "backtrace-0.3.77",
     urls = ["https://static.crates.io/crates/backtrace/0.3.77/download"],
     visibility = [],
@@ -1390,7 +1357,6 @@ alias(
 http_archive(
     name = "base64-0.22.1.crate",
     sha256 = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6",
-    size_bytes = 81597,
     strip_prefix = "base64-0.22.1",
     urls = ["https://static.crates.io/crates/base64/0.22.1/download"],
     visibility = [],
@@ -1426,7 +1392,6 @@ cargo.rust_library(
 http_archive(
     name = "base64-0.23.1.crate",
     sha256 = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5",
-    size_bytes = 93605,
     strip_prefix = "base64-0.23.1",
     urls = ["https://static.crates.io/crates/base64/0.23.1/download"],
     visibility = [],
@@ -1463,7 +1428,6 @@ cargo.rust_library(
 http_archive(
     name = "base64-simd-0.8.0.crate",
     sha256 = "339abbe78e73178762e23bea9dfd08e697eb3f3301cd4be981c0f78ba5859195",
-    size_bytes = 12531,
     strip_prefix = "base64-simd-0.8.0",
     urls = ["https://static.crates.io/crates/base64-simd/0.8.0/download"],
     visibility = [],
@@ -1504,7 +1468,6 @@ cargo.rust_library(
 http_archive(
     name = "bit-set-0.10.0.crate",
     sha256 = "09ec2f926cc3060f09db9ebc5b52823d85268d24bb917e472c0c4bea35780a7d",
-    size_bytes = 20439,
     strip_prefix = "bit-set-0.10.0",
     urls = ["https://static.crates.io/crates/bit-set/0.10.0/download"],
     visibility = [],
@@ -1536,7 +1499,6 @@ cargo.rust_library(
 http_archive(
     name = "bit-vec-0.9.1.crate",
     sha256 = "b71798fca2c1fe1086445a7258a4bc81e6e49dcd24c8d0dd9a1e57395b603f51",
-    size_bytes = 29177,
     strip_prefix = "bit-vec-0.9.1",
     urls = ["https://static.crates.io/crates/bit-vec/0.9.1/download"],
     visibility = [],
@@ -1567,7 +1529,6 @@ cargo.rust_library(
 http_archive(
     name = "bitflags-1.3.2.crate",
     sha256 = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a",
-    size_bytes = 23021,
     strip_prefix = "bitflags-1.3.2",
     urls = ["https://static.crates.io/crates/bitflags/1.3.2/download"],
     visibility = [],
@@ -1599,7 +1560,6 @@ cargo.rust_library(
 http_archive(
     name = "bitflags-2.13.2.crate",
     sha256 = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06",
-    size_bytes = 51678,
     strip_prefix = "bitflags-2.13.2",
     urls = ["https://static.crates.io/crates/bitflags/2.13.2/download"],
     visibility = [],
@@ -1649,7 +1609,6 @@ cargo.rust_library(
 http_archive(
     name = "block-buffer-0.10.4.crate",
     sha256 = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71",
-    size_bytes = 10538,
     strip_prefix = "block-buffer-0.10.4",
     urls = ["https://static.crates.io/crates/block-buffer/0.10.4/download"],
     visibility = [],
@@ -1681,7 +1640,6 @@ cargo.rust_library(
 http_archive(
     name = "block-buffer-0.12.1.crate",
     sha256 = "d2f6c7dbe95a6ed67ad9f18e57daf93a2f034c524b99fd2b76d18fdfeb6660aa",
-    size_bytes = 15902,
     strip_prefix = "block-buffer-0.12.1",
     urls = ["https://static.crates.io/crates/block-buffer/0.12.1/download"],
     visibility = [],
@@ -1713,7 +1671,6 @@ cargo.rust_library(
 http_archive(
     name = "block2-0.5.1.crate",
     sha256 = "2c132eebf10f5cad5289222520a4a058514204aed6d791f1cf4fe8088b82d15f",
-    size_bytes = 24191,
     strip_prefix = "block2-0.5.1",
     urls = ["https://static.crates.io/crates/block2/0.5.1/download"],
     visibility = [],
@@ -1756,7 +1713,6 @@ alias(
 http_archive(
     name = "block2-0.6.2.crate",
     sha256 = "cdeb9d870516001442e364c5220d3574d2da8dc765554b4a617230d33fa58ef5",
-    size_bytes = 34505,
     strip_prefix = "block2-0.6.2",
     urls = ["https://static.crates.io/crates/block2/0.6.2/download"],
     visibility = [],
@@ -1799,7 +1755,6 @@ alias(
 http_archive(
     name = "brotli-9.1.3.crate",
     sha256 = "9071f285ed78f04f37d675abaaef5de7689e2f30a216c8dc6795465d81910a13",
-    size_bytes = 764127,
     strip_prefix = "brotli-9.1.3",
     urls = ["https://static.crates.io/crates/brotli/9.1.3/download"],
     visibility = [],
@@ -1840,7 +1795,6 @@ cargo.rust_library(
 http_archive(
     name = "brotli-decompressor-6.3.2.crate",
     sha256 = "cc031cd87c6529082b0b65c604e86af0ed7744841b17ccfe60b1e31fa606179e",
-    size_bytes = 299869,
     strip_prefix = "brotli-decompressor-6.3.2",
     urls = ["https://static.crates.io/crates/brotli-decompressor/6.3.2/download"],
     visibility = [],
@@ -1879,7 +1833,6 @@ cargo.rust_library(
 http_archive(
     name = "bumpalo-3.20.4.crate",
     sha256 = "87a0cf66fd1eb2fb7b822cb78370d82303750809bc6ba855f3f58e517d3238db",
-    size_bytes = 99233,
     strip_prefix = "bumpalo-3.20.4",
     urls = ["https://static.crates.io/crates/bumpalo/3.20.4/download"],
     visibility = [],
@@ -1921,7 +1874,6 @@ alias(
 http_archive(
     name = "bytemuck-1.25.2.crate",
     sha256 = "95832e849adfb21180ccb6826a99da14e5d266ae5c2e668e1602cf234f153797",
-    size_bytes = 54075,
     strip_prefix = "bytemuck-1.25.2",
     urls = ["https://static.crates.io/crates/bytemuck/1.25.2/download"],
     visibility = [],
@@ -1960,7 +1912,6 @@ cargo.rust_library(
 http_archive(
     name = "bytemuck_derive-1.12.1.crate",
     sha256 = "6a1f896587b6f2c069c73d2f0913e2d590c3990285cd2f0b6aa02b786b4c679c",
-    size_bytes = 26509,
     strip_prefix = "bytemuck_derive-1.12.1",
     urls = ["https://static.crates.io/crates/bytemuck_derive/1.12.1/download"],
     visibility = [],
@@ -1997,7 +1948,6 @@ cargo.rust_library(
 http_archive(
     name = "byteorder-1.5.0.crate",
     sha256 = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b",
-    size_bytes = 23288,
     strip_prefix = "byteorder-1.5.0",
     urls = ["https://static.crates.io/crates/byteorder/1.5.0/download"],
     visibility = [],
@@ -2032,7 +1982,6 @@ cargo.rust_library(
 http_archive(
     name = "byteorder-lite-0.1.0.crate",
     sha256 = "8f1fe948ff07f4bd06c30984e69f5b4899c516a3ef74f34df92a2df2ab535495",
-    size_bytes = 15909,
     strip_prefix = "byteorder-lite-0.1.0",
     urls = ["https://static.crates.io/crates/byteorder-lite/0.1.0/download"],
     visibility = [],
@@ -2073,7 +2022,6 @@ alias(
 http_archive(
     name = "bytes-1.12.1.crate",
     sha256 = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04",
-    size_bytes = 75667,
     strip_prefix = "bytes-1.12.1",
     urls = ["https://static.crates.io/crates/bytes/1.12.1/download"],
     visibility = [],
@@ -2108,7 +2056,6 @@ cargo.rust_library(
 http_archive(
     name = "bytestring-1.6.0.crate",
     sha256 = "ca79160522b4aed4a69bab673bee78d3884d44240c78c96cb04b7557d532b4dc",
-    size_bytes = 14550,
     strip_prefix = "bytestring-1.6.0",
     urls = ["https://static.crates.io/crates/bytestring/1.6.0/download"],
     visibility = [],
@@ -2140,7 +2087,6 @@ cargo.rust_library(
 http_archive(
     name = "calloop-0.13.0.crate",
     sha256 = "b99da2f8558ca23c71f4fd15dc57c906239752dd27ff3c00a1d56b685b7cbfec",
-    size_bytes = 69698,
     strip_prefix = "calloop-0.13.0",
     urls = ["https://static.crates.io/crates/calloop/0.13.0/download"],
     visibility = [],
@@ -2179,7 +2125,6 @@ cargo.rust_library(
 http_archive(
     name = "calloop-wayland-source-0.3.0.crate",
     sha256 = "95a66a987056935f7efce4ab5668920b5d0dac4a7c99991a67395f13702ddd20",
-    size_bytes = 11300,
     strip_prefix = "calloop-wayland-source-0.3.0",
     urls = ["https://static.crates.io/crates/calloop-wayland-source/0.3.0/download"],
     visibility = [],
@@ -2222,7 +2167,6 @@ alias(
 http_archive(
     name = "cc-1.11.2.crate",
     sha256 = "33ef9e3e8154a45c7a95cff4c1299702106ad94062d7bb85fdc5d3a5afd91d45",
-    size_bytes = 150699,
     strip_prefix = "cc-1.11.2",
     urls = ["https://static.crates.io/crates/cc/1.11.2/download"],
     visibility = [],
@@ -2273,7 +2217,6 @@ cargo.rust_library(
 http_archive(
     name = "cfg-if-1.0.5.crate",
     sha256 = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600",
-    size_bytes = 9578,
     strip_prefix = "cfg-if-1.0.5",
     urls = ["https://static.crates.io/crates/cfg-if/1.0.5/download"],
     visibility = [],
@@ -2304,7 +2247,6 @@ cargo.rust_library(
 http_archive(
     name = "cfg_aliases-0.2.2.crate",
     sha256 = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527",
-    size_bytes = 6527,
     strip_prefix = "cfg_aliases-0.2.2",
     urls = ["https://static.crates.io/crates/cfg_aliases/0.2.2/download"],
     visibility = [],
@@ -2335,7 +2277,6 @@ cargo.rust_library(
 http_archive(
     name = "chacha20-0.9.1.crate",
     sha256 = "c3613f74bd2eac03dad61bd53dbe620703d4371614fe0bc3b9f04dd36fe4e818",
-    size_bytes = 23424,
     strip_prefix = "chacha20-0.9.1",
     urls = ["https://static.crates.io/crates/chacha20/0.9.1/download"],
     visibility = [],
@@ -2382,7 +2323,6 @@ cargo.rust_library(
 http_archive(
     name = "chacha20-0.10.2.crate",
     sha256 = "65c35e4b699c7e15ccbe7ee35c005e4fc0a278d22238a2857e6ce2dadeda1b06",
-    size_bytes = 38197,
     strip_prefix = "chacha20-0.10.2",
     urls = ["https://static.crates.io/crates/chacha20/0.10.2/download"],
     visibility = [],
@@ -2435,7 +2375,6 @@ alias(
 http_archive(
     name = "chacha20poly1305-0.10.1.crate",
     sha256 = "10cd79432192d1c0f4e1a0fef9527696cc039165d729fb41b3f4f4f354c2dc35",
-    size_bytes = 68485,
     strip_prefix = "chacha20poly1305-0.10.1",
     urls = ["https://static.crates.io/crates/chacha20poly1305/0.10.1/download"],
     visibility = [],
@@ -2485,7 +2424,6 @@ alias(
 http_archive(
     name = "chrono-0.4.45.crate",
     sha256 = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327",
-    size_bytes = 240866,
     strip_prefix = "chrono-0.4.45",
     urls = ["https://static.crates.io/crates/chrono/0.4.45/download"],
     visibility = [],
@@ -2550,7 +2488,6 @@ cargo.rust_library(
 http_archive(
     name = "cipher-0.4.4.crate",
     sha256 = "773f3b9af64447d2ce9850330c473515014aa235e6a783b02db81ff39e4a3dad",
-    size_bytes = 19073,
     strip_prefix = "cipher-0.4.4",
     urls = ["https://static.crates.io/crates/cipher/0.4.4/download"],
     visibility = [],
@@ -2587,7 +2524,6 @@ cargo.rust_library(
 http_archive(
     name = "clap-4.6.7.crate",
     sha256 = "aa8876b300ab35ba921adea3dfd70157a46249b33f95c9084ae5709785478946",
-    size_bytes = 65831,
     strip_prefix = "clap-4.6.7",
     urls = ["https://static.crates.io/crates/clap/4.6.7/download"],
     visibility = [],
@@ -2632,7 +2568,6 @@ cargo.rust_library(
 http_archive(
     name = "clap_builder-4.6.7.crate",
     sha256 = "ec0797fb7aeb1406c84efac526901f7ec3ead2124f946b494e72879d4b54704d",
-    size_bytes = 171709,
     strip_prefix = "clap_builder-4.6.7",
     urls = ["https://static.crates.io/crates/clap_builder/4.6.7/download"],
     visibility = [],
@@ -2677,7 +2612,6 @@ cargo.rust_library(
 http_archive(
     name = "clap_derive-4.6.7.crate",
     sha256 = "f9c751b79415d4e559e3d1fcf128e09e720eb673a06d26cf6f392d37d75b66e0",
-    size_bytes = 33942,
     strip_prefix = "clap_derive-4.6.7",
     urls = ["https://static.crates.io/crates/clap_derive/4.6.7/download"],
     visibility = [],
@@ -2716,7 +2650,6 @@ cargo.rust_library(
 http_archive(
     name = "clap_lex-1.1.1.crate",
     sha256 = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486",
-    size_bytes = 13572,
     strip_prefix = "clap_lex-1.1.1",
     urls = ["https://static.crates.io/crates/clap_lex/1.1.1/download"],
     visibility = [],
@@ -2747,7 +2680,6 @@ cargo.rust_library(
 http_archive(
     name = "cmov-0.5.4.crate",
     sha256 = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a",
-    size_bytes = 27367,
     strip_prefix = "cmov-0.5.4",
     urls = ["https://static.crates.io/crates/cmov/0.5.4/download"],
     visibility = [],
@@ -2778,7 +2710,6 @@ cargo.rust_library(
 http_archive(
     name = "codespan-reporting-0.13.1.crate",
     sha256 = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681",
-    size_bytes = 57424,
     strip_prefix = "codespan-reporting-0.13.1",
     urls = ["https://static.crates.io/crates/codespan-reporting/0.13.1/download"],
     visibility = [],
@@ -2817,7 +2748,6 @@ cargo.rust_library(
 http_archive(
     name = "colorchoice-1.0.5.crate",
     sha256 = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570",
-    size_bytes = 8187,
     strip_prefix = "colorchoice-1.0.5",
     urls = ["https://static.crates.io/crates/colorchoice/1.0.5/download"],
     visibility = [],
@@ -2848,7 +2778,6 @@ cargo.rust_library(
 http_archive(
     name = "colored-3.1.1.crate",
     sha256 = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34",
-    size_bytes = 36216,
     strip_prefix = "colored-3.1.1",
     urls = ["https://static.crates.io/crates/colored/3.1.1/download"],
     visibility = [],
@@ -2884,7 +2813,6 @@ cargo.rust_library(
 http_archive(
     name = "concurrent-queue-2.5.0.crate",
     sha256 = "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973",
-    size_bytes = 22654,
     strip_prefix = "concurrent-queue-2.5.0",
     urls = ["https://static.crates.io/crates/concurrent-queue/2.5.0/download"],
     visibility = [],
@@ -2920,7 +2848,6 @@ cargo.rust_library(
 http_archive(
     name = "const-oid-0.10.3.crate",
     sha256 = "be95d4a884358a21a199689323c29e9256b4a1b315e22f183d155422041d3a9a",
-    size_bytes = 61984,
     strip_prefix = "const-oid-0.10.3",
     urls = ["https://static.crates.io/crates/const-oid/0.10.3/download"],
     visibility = [],
@@ -2951,7 +2878,6 @@ cargo.rust_library(
 http_archive(
     name = "const-str-1.1.0.crate",
     sha256 = "18f12cc9948ed9604230cdddc7c86e270f9401ccbe3c2e98a4378c5e7632212f",
-    size_bytes = 47483,
     strip_prefix = "const-str-1.1.0",
     urls = ["https://static.crates.io/crates/const-str/1.1.0/download"],
     visibility = [],
@@ -2988,7 +2914,6 @@ cargo.rust_library(
 http_archive(
     name = "const-str-proc-macro-1.1.0.crate",
     sha256 = "1c7e7913ec01ed98b697e62f8d3fd63c86dc6cccaf983c7eebc64d0e563b0ad9",
-    size_bytes = 7048,
     strip_prefix = "const-str-proc-macro-1.1.0",
     urls = ["https://static.crates.io/crates/const-str-proc-macro/1.1.0/download"],
     visibility = [],
@@ -3025,7 +2950,6 @@ cargo.rust_library(
 http_archive(
     name = "core-foundation-0.9.4.crate",
     sha256 = "91e195e091a93c46f7102ec7818a2aa394e1e1771c3ab4825963fa03e45afb8f",
-    size_bytes = 27743,
     strip_prefix = "core-foundation-0.9.4",
     urls = ["https://static.crates.io/crates/core-foundation/0.9.4/download"],
     visibility = [],
@@ -3064,7 +2988,6 @@ cargo.rust_library(
 http_archive(
     name = "core-foundation-0.10.1.crate",
     sha256 = "b2a6cd9ae233e7f62ba4e9353e81a88df7fc8a5987b8d445b4d90c879bd156f6",
-    size_bytes = 28886,
     strip_prefix = "core-foundation-0.10.1",
     urls = ["https://static.crates.io/crates/core-foundation/0.10.1/download"],
     visibility = [],
@@ -3103,7 +3026,6 @@ cargo.rust_library(
 http_archive(
     name = "core-foundation-sys-0.8.7.crate",
     sha256 = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b",
-    size_bytes = 37712,
     strip_prefix = "core-foundation-sys-0.8.7",
     urls = ["https://static.crates.io/crates/core-foundation-sys/0.8.7/download"],
     visibility = [],
@@ -3138,7 +3060,6 @@ cargo.rust_library(
 http_archive(
     name = "core-graphics-0.23.2.crate",
     sha256 = "c07782be35f9e1140080c6b96f0d44b739e2278479f64e02fdab4e32dfd8b081",
-    size_bytes = 30763,
     strip_prefix = "core-graphics-0.23.2",
     urls = ["https://static.crates.io/crates/core-graphics/0.23.2/download"],
     visibility = [],
@@ -3180,7 +3101,6 @@ cargo.rust_library(
 http_archive(
     name = "core-graphics-types-0.1.3.crate",
     sha256 = "45390e6114f68f718cc7a830514a96f903cccd70d02a8f6d9f643ac4ba45afaf",
-    size_bytes = 7063,
     strip_prefix = "core-graphics-types-0.1.3",
     urls = ["https://static.crates.io/crates/core-graphics-types/0.1.3/download"],
     visibility = [],
@@ -3217,7 +3137,6 @@ cargo.rust_library(
 http_archive(
     name = "coreaudio-rs-0.14.2.crate",
     sha256 = "7d5d7dca3ebcf65a035582c9ad4385371a9d9ee6537474d2a278f4e1e475bb58",
-    size_bytes = 44962,
     strip_prefix = "coreaudio-rs-0.14.2",
     urls = ["https://static.crates.io/crates/coreaudio-rs/0.14.2/download"],
     visibility = [],
@@ -3266,7 +3185,6 @@ alias(
 http_archive(
     name = "cpal-0.18.2.crate",
     sha256 = "6f02e8d0327b42d3e2e4ab2119af397344eb9fc54a34bf0ddeaa1277af8681f1",
-    size_bytes = 233947,
     strip_prefix = "cpal-0.18.2",
     urls = ["https://static.crates.io/crates/cpal/0.18.2/download"],
     visibility = [],
@@ -3343,7 +3261,6 @@ cargo.rust_library(
 http_archive(
     name = "cpufeatures-0.2.17.crate",
     sha256 = "59ed5838eebb26a2bb2e58f6d5b5316989ae9d08bab10e0e6d103e656d1b0280",
-    size_bytes = 13466,
     strip_prefix = "cpufeatures-0.2.17",
     urls = ["https://static.crates.io/crates/cpufeatures/0.2.17/download"],
     visibility = [],
@@ -3382,7 +3299,6 @@ cargo.rust_library(
 http_archive(
     name = "cpufeatures-0.3.1.crate",
     sha256 = "5ca28b0ae3115b884660db4118d803791fd6756b6e88f39c0f3f7859060d7566",
-    size_bytes = 14272,
     strip_prefix = "cpufeatures-0.3.1",
     urls = ["https://static.crates.io/crates/cpufeatures/0.3.1/download"],
     visibility = [],
@@ -3421,7 +3337,6 @@ cargo.rust_library(
 http_archive(
     name = "cranelift-assembler-x64-0.137.2.crate",
     sha256 = "80aafbfb0490c28f23bdb6183acfd470d48244745d6bb70e66121f7751a9a7ca",
-    size_bytes = 32876,
     strip_prefix = "cranelift-assembler-x64-0.137.2",
     urls = ["https://static.crates.io/crates/cranelift-assembler-x64/0.137.2/download"],
     visibility = [],
@@ -3493,7 +3408,6 @@ buildscript_run(
 http_archive(
     name = "cranelift-assembler-x64-meta-0.137.2.crate",
     sha256 = "d2e5ea46889c5bf3c0eb5882a8d6ed755e26f6efab8b3f0b441a7e781f56b03e",
-    size_bytes = 52460,
     strip_prefix = "cranelift-assembler-x64-meta-0.137.2",
     urls = ["https://static.crates.io/crates/cranelift-assembler-x64-meta/0.137.2/download"],
     visibility = [],
@@ -3525,7 +3439,6 @@ cargo.rust_library(
 http_archive(
     name = "cranelift-bforest-0.137.2.crate",
     sha256 = "8a65274b952dba816b143b20df6976dbbfc1f2830907f6be262cf0370c061231",
-    size_bytes = 34198,
     strip_prefix = "cranelift-bforest-0.137.2",
     urls = ["https://static.crates.io/crates/cranelift-bforest/0.137.2/download"],
     visibility = [],
@@ -3560,7 +3473,6 @@ cargo.rust_library(
 http_archive(
     name = "cranelift-bitset-0.137.2.crate",
     sha256 = "fc739cedf56f9ad87c94bc3473908d6b0149221526905a2871c33cfed7f2c8d9",
-    size_bytes = 9189,
     strip_prefix = "cranelift-bitset-0.137.2",
     urls = ["https://static.crates.io/crates/cranelift-bitset/0.137.2/download"],
     visibility = [],
@@ -3600,7 +3512,6 @@ alias(
 http_archive(
     name = "cranelift-codegen-0.137.2.crate",
     sha256 = "d91eb4435f140b0b05bb053ef6267e22a8c858beed43a560749e90991d7b7a63",
-    size_bytes = 1211413,
     strip_prefix = "cranelift-codegen-0.137.2",
     urls = ["https://static.crates.io/crates/cranelift-codegen/0.137.2/download"],
     visibility = [],
@@ -3713,7 +3624,6 @@ buildscript_run(
 http_archive(
     name = "cranelift-codegen-meta-0.137.2.crate",
     sha256 = "b9e0194c51a53670724fec307f9bbd8dc18f9b0bb3c7728efd5a45475f8641de",
-    size_bytes = 93927,
     strip_prefix = "cranelift-codegen-meta-0.137.2",
     urls = ["https://static.crates.io/crates/cranelift-codegen-meta/0.137.2/download"],
     visibility = [],
@@ -3750,7 +3660,6 @@ cargo.rust_library(
 http_archive(
     name = "cranelift-codegen-shared-0.137.2.crate",
     sha256 = "73c10abe5c89741cb15008c8a3d9fd177c7d7a1b9af22b7eff1eb3f9e9f2ed61",
-    size_bytes = 6571,
     strip_prefix = "cranelift-codegen-shared-0.137.2",
     urls = ["https://static.crates.io/crates/cranelift-codegen-shared/0.137.2/download"],
     visibility = [],
@@ -3781,7 +3690,6 @@ cargo.rust_library(
 http_archive(
     name = "cranelift-control-0.137.2.crate",
     sha256 = "d15be56b0f8c45eb15d60164f31f5ec89b277fde2a05283cc66722c2b57a7980",
-    size_bytes = 8672,
     strip_prefix = "cranelift-control-0.137.2",
     urls = ["https://static.crates.io/crates/cranelift-control/0.137.2/download"],
     visibility = [],
@@ -3814,7 +3722,6 @@ cargo.rust_library(
 http_archive(
     name = "cranelift-entity-0.137.2.crate",
     sha256 = "f1384afac57ecc364ced64eb8526da8d883233157f1b5e37353bc6d172a71427",
-    size_bytes = 31159,
     strip_prefix = "cranelift-entity-0.137.2",
     urls = ["https://static.crates.io/crates/cranelift-entity/0.137.2/download"],
     visibility = [],
@@ -3855,7 +3762,6 @@ alias(
 http_archive(
     name = "cranelift-frontend-0.137.2.crate",
     sha256 = "c491acfa0f5056cf573c36f04d495d991b644ec9df893d132ea9415fb347c44e",
-    size_bytes = 63210,
     strip_prefix = "cranelift-frontend-0.137.2",
     urls = ["https://static.crates.io/crates/cranelift-frontend/0.137.2/download"],
     visibility = [],
@@ -3897,7 +3803,6 @@ cargo.rust_library(
 http_archive(
     name = "cranelift-isle-0.137.2.crate",
     sha256 = "851ff79666f0af6288aa0d652f7315ae9b027eef00113a819d2dd12f5395a4db",
-    size_bytes = 89749,
     strip_prefix = "cranelift-isle-0.137.2",
     urls = ["https://static.crates.io/crates/cranelift-isle/0.137.2/download"],
     visibility = [],
@@ -3977,7 +3882,6 @@ alias(
 http_archive(
     name = "cranelift-module-0.137.2.crate",
     sha256 = "7c52935c9f37c92fc885006b017c98ed7fa4bc80875200a9d2f8cc9474c66e79",
-    size_bytes = 19330,
     strip_prefix = "cranelift-module-0.137.2",
     urls = ["https://static.crates.io/crates/cranelift-module/0.137.2/download"],
     visibility = [],
@@ -4024,7 +3928,6 @@ alias(
 http_archive(
     name = "cranelift-native-0.137.2.crate",
     sha256 = "a8c4069cb5d92c95655b3bc610295de7be9c989d5cf007ba2d3dcb1834b10e26",
-    size_bytes = 12607,
     strip_prefix = "cranelift-native-0.137.2",
     urls = ["https://static.crates.io/crates/cranelift-native/0.137.2/download"],
     visibility = [],
@@ -4074,7 +3977,6 @@ alias(
 http_archive(
     name = "cranelift-object-0.137.2.crate",
     sha256 = "d50578d2c7de35e9bb55c5d27ca5b724917f5d7eb02b71f1e9d98c2097b2cc7b",
-    size_bytes = 26849,
     strip_prefix = "cranelift-object-0.137.2",
     urls = ["https://static.crates.io/crates/cranelift-object/0.137.2/download"],
     visibility = [],
@@ -4119,7 +4021,6 @@ cargo.rust_library(
 http_archive(
     name = "cranelift-srcgen-0.137.2.crate",
     sha256 = "1c4cad638d567f380c02aeb025a4a930e97ca5c044299c5deb07c53679a027b1",
-    size_bytes = 6122,
     strip_prefix = "cranelift-srcgen-0.137.2",
     urls = ["https://static.crates.io/crates/cranelift-srcgen/0.137.2/download"],
     visibility = [],
@@ -4150,7 +4051,6 @@ cargo.rust_library(
 http_archive(
     name = "crc-3.4.0.crate",
     sha256 = "5eb8a2a1cd12ab0d987a5d5e825195d372001a4094a0376319d5a0ad71c1ba0d",
-    size_bytes = 13941,
     strip_prefix = "crc-3.4.0",
     urls = ["https://static.crates.io/crates/crc/3.4.0/download"],
     visibility = [],
@@ -4182,7 +4082,6 @@ cargo.rust_library(
 http_archive(
     name = "crc-catalog-2.5.0.crate",
     sha256 = "217698eaf96b4a3f0bc4f3662aaa55bdf913cd54d7204591faa790070c6d0853",
-    size_bytes = 18057,
     strip_prefix = "crc-catalog-2.5.0",
     urls = ["https://static.crates.io/crates/crc-catalog/2.5.0/download"],
     visibility = [],
@@ -4213,7 +4112,6 @@ cargo.rust_library(
 http_archive(
     name = "crc-fast-1.10.0.crate",
     sha256 = "e75b2483e97a5a7da73ac68a05b629f9c53cff58d8ed1c77866079e18b00dba5",
-    size_bytes = 1152496,
     strip_prefix = "crc-fast-1.10.0",
     urls = ["https://static.crates.io/crates/crc-fast/1.10.0/download"],
     visibility = [],
@@ -4257,7 +4155,6 @@ cargo.rust_library(
 http_archive(
     name = "crc32c-0.6.9.crate",
     sha256 = "7f132a176423ee852e8f0a35d43088d1850966b50745be818a88b76f64b1c6cb",
-    size_bytes = 19751,
     strip_prefix = "crc32c-0.6.9",
     urls = ["https://static.crates.io/crates/crc32c/0.6.9/download"],
     visibility = [],
@@ -4335,7 +4232,6 @@ alias(
 http_archive(
     name = "crc32fast-1.5.5.crate",
     sha256 = "2b929dd2a135771f40afabd1073f85eed59c800b7c61901e5c254270497dad64",
-    size_bytes = 57364,
     strip_prefix = "crc32fast-1.5.5",
     urls = ["https://static.crates.io/crates/crc32fast/1.5.5/download"],
     visibility = [],
@@ -4371,7 +4267,6 @@ cargo.rust_library(
 http_archive(
     name = "crossbeam-channel-0.5.17.crate",
     sha256 = "98b0cc327b5bc766e7fda9c9260cc0fa81b43a8e240440422dff70788e3f9ef1",
-    size_bytes = 94171,
     strip_prefix = "crossbeam-channel-0.5.17",
     urls = ["https://static.crates.io/crates/crossbeam-channel/0.5.17/download"],
     visibility = [],
@@ -4407,7 +4302,6 @@ cargo.rust_library(
 http_archive(
     name = "crossbeam-queue-0.3.14.crate",
     sha256 = "03e8bd762f7479489c70ed6c768ddca99d7296857de437a68dcb2a94365b3fae",
-    size_bytes = 18730,
     strip_prefix = "crossbeam-queue-0.3.14",
     urls = ["https://static.crates.io/crates/crossbeam-queue/0.3.14/download"],
     visibility = [],
@@ -4444,7 +4338,6 @@ cargo.rust_library(
 http_archive(
     name = "crossbeam-utils-0.8.23.crate",
     sha256 = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6",
-    size_bytes = 47174,
     strip_prefix = "crossbeam-utils-0.8.23",
     urls = ["https://static.crates.io/crates/crossbeam-utils/0.8.23/download"],
     visibility = [],
@@ -4476,7 +4369,6 @@ cargo.rust_library(
 http_archive(
     name = "crypto-common-0.1.7.crate",
     sha256 = "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a",
-    size_bytes = 9619,
     strip_prefix = "crypto-common-0.1.7",
     urls = ["https://static.crates.io/crates/crypto-common/0.1.7/download"],
     visibility = [],
@@ -4517,7 +4409,6 @@ cargo.rust_library(
 http_archive(
     name = "crypto-common-0.2.2.crate",
     sha256 = "ce6e4c961d6cd6c9a86db418387425e8bdeaf05b3c8bc1411e6dca4c252f1453",
-    size_bytes = 15449,
     strip_prefix = "crypto-common-0.2.2",
     urls = ["https://static.crates.io/crates/crypto-common/0.2.2/download"],
     visibility = [],
@@ -4549,7 +4440,6 @@ cargo.rust_library(
 http_archive(
     name = "ctutils-0.4.8.crate",
     sha256 = "261af4dc7a06ea8a527a8717d8cbba3417530d6ea14e1edb3de6b67806be474f",
-    size_bytes = 37135,
     strip_prefix = "ctutils-0.4.8",
     urls = ["https://static.crates.io/crates/ctutils/0.4.8/download"],
     visibility = [],
@@ -4581,7 +4471,6 @@ cargo.rust_library(
 http_archive(
     name = "cursor-icon-1.2.0.crate",
     sha256 = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f",
-    size_bytes = 14267,
     strip_prefix = "cursor-icon-1.2.0",
     urls = ["https://static.crates.io/crates/cursor-icon/1.2.0/download"],
     visibility = [],
@@ -4617,7 +4506,6 @@ cargo.rust_library(
 http_archive(
     name = "curve25519-dalek-4.1.3.crate",
     sha256 = "97fb8b7c4503de7d6ae7b42ab72a5a59857b4c937ec27a3d4539dba95b5ab2be",
-    size_bytes = 306017,
     strip_prefix = "curve25519-dalek-4.1.3",
     urls = ["https://static.crates.io/crates/curve25519-dalek/4.1.3/download"],
     visibility = [],
@@ -4733,7 +4621,6 @@ buildscript_run(
 http_archive(
     name = "curve25519-dalek-derive-0.1.1.crate",
     sha256 = "f46882e17999c6cc590af592290432be3bce0428cb0d5f8b6715e4dc7b383eb3",
-    size_bytes = 11723,
     strip_prefix = "curve25519-dalek-derive-0.1.1",
     urls = ["https://static.crates.io/crates/curve25519-dalek-derive/0.1.1/download"],
     visibility = [],
@@ -4770,7 +4657,6 @@ cargo.rust_library(
 http_archive(
     name = "dasp_sample-0.11.0.crate",
     sha256 = "0c87e182de0887fd5361989c677c4e8f5000cd9491d6d563161a8f3a5519fc7f",
-    size_bytes = 11617,
     strip_prefix = "dasp_sample-0.11.0",
     urls = ["https://static.crates.io/crates/dasp_sample/0.11.0/download"],
     visibility = [],
@@ -4805,7 +4691,6 @@ cargo.rust_library(
 http_archive(
     name = "data-encoding-2.11.1.crate",
     sha256 = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06",
-    size_bytes = 22651,
     strip_prefix = "data-encoding-2.11.1",
     urls = ["https://static.crates.io/crates/data-encoding/2.11.1/download"],
     visibility = [],
@@ -4841,7 +4726,6 @@ cargo.rust_library(
 http_archive(
     name = "dear-imgui-build-support-0.22.0.crate",
     sha256 = "5d2683d46e026a93eceeb815ca0f5709b21e089bd99029adc2e52eb1029c5ecb",
-    size_bytes = 85713,
     strip_prefix = "dear-imgui-build-support-0.22.0",
     urls = ["https://static.crates.io/crates/dear-imgui-build-support/0.22.0/download"],
     visibility = [],
@@ -4887,7 +4771,6 @@ alias(
 http_archive(
     name = "dear-imgui-rs-0.22.0.crate",
     sha256 = "ad13a535a4e605dbab22a3e3870bfbcf4e53d9873fdb7f7d713895da511879ad",
-    size_bytes = 513349,
     strip_prefix = "dear-imgui-rs-0.22.0",
     urls = ["https://static.crates.io/crates/dear-imgui-rs/0.22.0/download"],
     visibility = [],
@@ -4928,7 +4811,6 @@ cargo.rust_library(
 http_archive(
     name = "dear-imgui-sys-0.22.0.crate",
     sha256 = "7b82f66d6c4165fb1e40888e48765d7175ecf96b7c411d351304c8fa8ca6f365",
-    size_bytes = 1730178,
     strip_prefix = "dear-imgui-sys-0.22.0",
     urls = ["https://static.crates.io/crates/dear-imgui-sys/0.22.0/download"],
     visibility = [],
@@ -5024,7 +4906,6 @@ alias(
 http_archive(
     name = "dear-imgui-wgpu-0.22.0.crate",
     sha256 = "dd1cda5fb3f24d21cefbd0571cc8c03c7ac52ebe2696bd578967f0dc194f1432",
-    size_bytes = 160182,
     strip_prefix = "dear-imgui-wgpu-0.22.0",
     urls = ["https://static.crates.io/crates/dear-imgui-wgpu/0.22.0/download"],
     visibility = [],
@@ -5073,7 +4954,6 @@ alias(
 http_archive(
     name = "dear-imgui-winit-0.22.0.crate",
     sha256 = "9ae7e00eb8be05f5aee2fab146374cf0e8962f293cb6937e878df8971b7ae756",
-    size_bytes = 142809,
     strip_prefix = "dear-imgui-winit-0.22.0",
     urls = ["https://static.crates.io/crates/dear-imgui-winit/0.22.0/download"],
     visibility = [],
@@ -5116,7 +4996,6 @@ alias(
 http_archive(
     name = "dear-imguizmo-0.22.0.crate",
     sha256 = "a27078cf884a2eb7451126a91a202b0575d97e3de269122f2573e3371ae47544",
-    size_bytes = 36724,
     strip_prefix = "dear-imguizmo-0.22.0",
     urls = ["https://static.crates.io/crates/dear-imguizmo/0.22.0/download"],
     visibility = [],
@@ -5154,7 +5033,6 @@ cargo.rust_library(
 http_archive(
     name = "dear-imguizmo-sys-0.22.0.crate",
     sha256 = "aa647f05238bac32ac56baaa68cb58f697aeab335858413d3d0fd55cec71735b",
-    size_bytes = 7138998,
     strip_prefix = "dear-imguizmo-sys-0.22.0",
     urls = ["https://static.crates.io/crates/dear-imguizmo-sys/0.22.0/download"],
     visibility = [],
@@ -5235,7 +5113,6 @@ buildscript_run(
 http_archive(
     name = "deranged-0.5.9.crate",
     sha256 = "9e9de72ce2ad1f90dc62fa25f0f430ef85eb4b0d8fa0be4f30373bc40a21d28e",
-    size_bytes = 27842,
     strip_prefix = "deranged-0.5.9",
     urls = ["https://static.crates.io/crates/deranged/0.5.9/download"],
     visibility = [],
@@ -5273,7 +5150,6 @@ alias(
 http_archive(
     name = "dhat-0.3.3.crate",
     sha256 = "98cd11d84628e233de0ce467de10b8633f4ddaecafadefc86e13b84b8739b827",
-    size_bytes = 32008,
     strip_prefix = "dhat-0.3.3",
     urls = ["https://static.crates.io/crates/dhat/0.3.3/download"],
     visibility = [],
@@ -5314,7 +5190,6 @@ cargo.rust_library(
 http_archive(
     name = "digest-0.10.7.crate",
     sha256 = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292",
-    size_bytes = 19557,
     strip_prefix = "digest-0.10.7",
     urls = ["https://static.crates.io/crates/digest/0.10.7/download"],
     visibility = [],
@@ -5359,7 +5234,6 @@ cargo.rust_library(
 http_archive(
     name = "digest-0.11.3.crate",
     sha256 = "f1dd6dbb5841937940781866fa1281a1ff7bd3bf827091440879f9994983d5c2",
-    size_bytes = 28955,
     strip_prefix = "digest-0.11.3",
     urls = ["https://static.crates.io/crates/digest/0.11.3/download"],
     visibility = [],
@@ -5405,7 +5279,6 @@ cargo.rust_library(
 http_archive(
     name = "dispatch-0.2.0.crate",
     sha256 = "bd0c93bb4b0c6d9b77f4435b0ae98c24d17f1c45b2ff844c6151a07256ca923b",
-    size_bytes = 10229,
     strip_prefix = "dispatch-0.2.0",
     urls = ["https://static.crates.io/crates/dispatch/0.2.0/download"],
     visibility = [],
@@ -5442,7 +5315,6 @@ alias(
 http_archive(
     name = "dispatch2-0.3.1.crate",
     sha256 = "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38",
-    size_bytes = 55299,
     strip_prefix = "dispatch2-0.3.1",
     urls = ["https://static.crates.io/crates/dispatch2/0.3.1/download"],
     visibility = [],
@@ -5487,7 +5359,6 @@ cargo.rust_library(
 http_archive(
     name = "displaydoc-0.2.7.crate",
     sha256 = "c6232dd377dcc64799954cbd3a9bb882e9cdc1308ccd87b1c098f1fb2eaf82a8",
-    size_bytes = 21343,
     strip_prefix = "displaydoc-0.2.7",
     urls = ["https://static.crates.io/crates/displaydoc/0.2.7/download"],
     visibility = [],
@@ -5524,7 +5395,6 @@ cargo.rust_library(
 http_archive(
     name = "dlib-0.5.3.crate",
     sha256 = "ab8ecd87370524b461f8557c119c405552c396ed91fc0a8eec68679eab26f94a",
-    size_bytes = 7120,
     strip_prefix = "dlib-0.5.3",
     urls = ["https://static.crates.io/crates/dlib/0.5.3/download"],
     visibility = [],
@@ -5556,7 +5426,6 @@ cargo.rust_library(
 http_archive(
     name = "document-features-0.2.12.crate",
     sha256 = "d4b8a88685455ed29a21542a33abd9cb6510b6b129abadabdcef0f4c55bc8f61",
-    size_bytes = 14739,
     strip_prefix = "document-features-0.2.12",
     urls = ["https://static.crates.io/crates/document-features/0.2.12/download"],
     visibility = [],
@@ -5590,7 +5459,6 @@ cargo.rust_library(
 http_archive(
     name = "dotenvy-0.15.7.crate",
     sha256 = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b",
-    size_bytes = 20293,
     strip_prefix = "dotenvy-0.15.7",
     urls = ["https://static.crates.io/crates/dotenvy/0.15.7/download"],
     visibility = [],
@@ -5621,7 +5489,6 @@ cargo.rust_library(
 http_archive(
     name = "downcast-rs-1.2.1.crate",
     sha256 = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2",
-    size_bytes = 11821,
     strip_prefix = "downcast-rs-1.2.1",
     urls = ["https://static.crates.io/crates/downcast-rs/1.2.1/download"],
     visibility = [],
@@ -5656,7 +5523,6 @@ cargo.rust_library(
 http_archive(
     name = "dpi-0.1.2.crate",
     sha256 = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76",
-    size_bytes = 14812,
     strip_prefix = "dpi-0.1.2",
     urls = ["https://static.crates.io/crates/dpi/0.1.2/download"],
     visibility = [],
@@ -5691,7 +5557,6 @@ cargo.rust_library(
 http_archive(
     name = "ed25519-2.2.3.crate",
     sha256 = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53",
-    size_bytes = 17802,
     strip_prefix = "ed25519-2.2.3",
     urls = ["https://static.crates.io/crates/ed25519/2.2.3/download"],
     visibility = [],
@@ -5733,7 +5598,6 @@ alias(
 http_archive(
     name = "ed25519-dalek-2.2.0.crate",
     sha256 = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9",
-    size_bytes = 98034,
     strip_prefix = "ed25519-dalek-2.2.0",
     urls = ["https://static.crates.io/crates/ed25519-dalek/2.2.0/download"],
     visibility = [],
@@ -5778,7 +5642,6 @@ cargo.rust_library(
 http_archive(
     name = "either-1.19.0.crate",
     sha256 = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be",
-    size_bytes = 22501,
     strip_prefix = "either-1.19.0",
     urls = ["https://static.crates.io/crates/either/1.19.0/download"],
     visibility = [],
@@ -5816,7 +5679,6 @@ cargo.rust_library(
 http_archive(
     name = "equivalent-1.0.3.crate",
     sha256 = "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826",
-    size_bytes = 7495,
     strip_prefix = "equivalent-1.0.3",
     urls = ["https://static.crates.io/crates/equivalent/1.0.3/download"],
     visibility = [],
@@ -5847,7 +5709,6 @@ cargo.rust_library(
 http_archive(
     name = "errno-0.3.15.crate",
     sha256 = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776",
-    size_bytes = 12800,
     strip_prefix = "errno-0.3.15",
     urls = ["https://static.crates.io/crates/errno/0.3.15/download"],
     visibility = [],
@@ -5883,7 +5744,6 @@ cargo.rust_library(
 http_archive(
     name = "etcetera-0.8.0.crate",
     sha256 = "136d1b5283a1ab77bd9257427ffd09d8667ced0570b6f938942bc7568ed5b943",
-    size_bytes = 13295,
     strip_prefix = "etcetera-0.8.0",
     urls = ["https://static.crates.io/crates/etcetera/0.8.0/download"],
     visibility = [],
@@ -5919,7 +5779,6 @@ cargo.rust_library(
 http_archive(
     name = "event-listener-5.4.2.crate",
     sha256 = "5a23add41df1562121a9393cb065eab5146a1242410f23a644851e90cfd669d2",
-    size_bytes = 35131,
     strip_prefix = "event-listener-5.4.2",
     urls = ["https://static.crates.io/crates/event-listener/5.4.2/download"],
     visibility = [],
@@ -5959,7 +5818,6 @@ cargo.rust_library(
 http_archive(
     name = "fdeflate-0.3.7.crate",
     sha256 = "1e6853b52649d4ac5c0bd02320cddc5ba956bdb407c4b75a2c6b75bf51500f8c",
-    size_bytes = 27188,
     strip_prefix = "fdeflate-0.3.7",
     urls = ["https://static.crates.io/crates/fdeflate/0.3.7/download"],
     visibility = [],
@@ -5991,7 +5849,6 @@ cargo.rust_library(
 http_archive(
     name = "find-msvc-tools-0.1.15.crate",
     sha256 = "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48",
-    size_bytes = 31634,
     strip_prefix = "find-msvc-tools-0.1.15",
     urls = ["https://static.crates.io/crates/find-msvc-tools/0.1.15/download"],
     visibility = [],
@@ -6028,7 +5885,6 @@ alias(
 http_archive(
     name = "flate2-1.1.11.crate",
     sha256 = "626d4928326b646e70f65ed36fc7cf9f206bdb68a0019ee7c6b4709da4e084c4",
-    size_bytes = 89270,
     strip_prefix = "flate2-1.1.11",
     urls = ["https://static.crates.io/crates/flate2/1.1.11/download"],
     visibility = [],
@@ -6070,7 +5926,6 @@ cargo.rust_library(
 http_archive(
     name = "float-cmp-0.10.0.crate",
     sha256 = "b09cf3155332e944990140d967ff5eceb70df778b34f77d8075db46e4704e6d8",
-    size_bytes = 10702,
     strip_prefix = "float-cmp-0.10.0",
     urls = ["https://static.crates.io/crates/float-cmp/0.10.0/download"],
     visibility = [],
@@ -6107,7 +5962,6 @@ cargo.rust_library(
 http_archive(
     name = "fluent-uri-0.1.4.crate",
     sha256 = "17c704e9dbe1ddd863da1e6ff3567795087b1eb201ce80d8fa81162e1516500d",
-    size_bytes = 33596,
     strip_prefix = "fluent-uri-0.1.4",
     urls = ["https://static.crates.io/crates/fluent-uri/0.1.4/download"],
     visibility = [],
@@ -6143,7 +5997,6 @@ cargo.rust_library(
 http_archive(
     name = "flume-0.11.1.crate",
     sha256 = "da0e4dd2a88388a1f4ccc7c9ce104604dab68d9f408dc34cd45823d5a9069095",
-    size_bytes = 67947,
     strip_prefix = "flume-0.11.1",
     urls = ["https://static.crates.io/crates/flume/0.11.1/download"],
     visibility = [],
@@ -6186,7 +6039,6 @@ cargo.rust_library(
 http_archive(
     name = "fnv-1.0.7.crate",
     sha256 = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1",
-    size_bytes = 11266,
     strip_prefix = "fnv-1.0.7",
     urls = ["https://static.crates.io/crates/fnv/1.0.7/download"],
     visibility = [],
@@ -6221,7 +6073,6 @@ cargo.rust_library(
 http_archive(
     name = "foldhash-0.1.5.crate",
     sha256 = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2",
-    size_bytes = 21901,
     strip_prefix = "foldhash-0.1.5",
     urls = ["https://static.crates.io/crates/foldhash/0.1.5/download"],
     visibility = [],
@@ -6252,7 +6103,6 @@ cargo.rust_library(
 http_archive(
     name = "foldhash-0.2.0.crate",
     sha256 = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb",
-    size_bytes = 23329,
     strip_prefix = "foldhash-0.2.0",
     urls = ["https://static.crates.io/crates/foldhash/0.2.0/download"],
     visibility = [],
@@ -6289,7 +6139,6 @@ alias(
 http_archive(
     name = "font8x8-0.3.1.crate",
     sha256 = "875488b8711a968268c7cf5d139578713097ca4635a76044e8fe8eedf831d07e",
-    size_bytes = 36104,
     strip_prefix = "font8x8-0.3.1",
     urls = ["https://static.crates.io/crates/font8x8/0.3.1/download"],
     visibility = [],
@@ -6321,7 +6170,6 @@ cargo.rust_library(
 http_archive(
     name = "foreign-types-0.5.0.crate",
     sha256 = "d737d9aa519fb7b749cbc3b962edcf310a8dd1f4b67c91c4f83975dbdd17d965",
-    size_bytes = 7824,
     strip_prefix = "foreign-types-0.5.0",
     urls = ["https://static.crates.io/crates/foreign-types/0.5.0/download"],
     visibility = [],
@@ -6360,7 +6208,6 @@ cargo.rust_library(
 http_archive(
     name = "foreign-types-macros-0.2.4.crate",
     sha256 = "ea5190182e6915eb873ddbc16e23b711b6eb1f9c00a0d0a3a91b5f6228475225",
-    size_bytes = 8161,
     strip_prefix = "foreign-types-macros-0.2.4",
     urls = ["https://static.crates.io/crates/foreign-types-macros/0.2.4/download"],
     visibility = [],
@@ -6398,7 +6245,6 @@ cargo.rust_library(
 http_archive(
     name = "foreign-types-shared-0.3.1.crate",
     sha256 = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b",
-    size_bytes = 6006,
     strip_prefix = "foreign-types-shared-0.3.1",
     urls = ["https://static.crates.io/crates/foreign-types-shared/0.3.1/download"],
     visibility = [],
@@ -6429,7 +6275,6 @@ cargo.rust_library(
 http_archive(
     name = "form_urlencoded-1.2.2.crate",
     sha256 = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf",
-    size_bytes = 9347,
     strip_prefix = "form_urlencoded-1.2.2",
     urls = ["https://static.crates.io/crates/form_urlencoded/1.2.2/download"],
     visibility = [],
@@ -6466,7 +6311,6 @@ cargo.rust_library(
 http_archive(
     name = "fs-err-3.3.2.crate",
     sha256 = "b5c95b673b8f6f7235229ae11c5642d81b04c2e64c1e2fb417bc0cf73ca45f29",
-    size_bytes = 27324,
     strip_prefix = "fs-err-3.3.2",
     urls = ["https://static.crates.io/crates/fs-err/3.3.2/download"],
     visibility = [],
@@ -6542,7 +6386,6 @@ buildscript_run(
 http_archive(
     name = "futures-0.3.34.crate",
     sha256 = "9a31d2a3fbaaeb2af2368bbdd904aa8e812d3c04a1ee10d3171f52d556e5d0a3",
-    size_bytes = 61966,
     strip_prefix = "futures-0.3.34",
     urls = ["https://static.crates.io/crates/futures/0.3.34/download"],
     visibility = [],
@@ -6585,7 +6428,6 @@ cargo.rust_library(
 http_archive(
     name = "futures-channel-0.3.34.crate",
     sha256 = "b1f9e3d69d39e4862ffed03ed071a76f9a13ba1d9109d355b0f0aa6b15e393c4",
-    size_bytes = 33165,
     strip_prefix = "futures-channel-0.3.34",
     urls = ["https://static.crates.io/crates/futures-channel/0.3.34/download"],
     visibility = [],
@@ -6627,7 +6469,6 @@ cargo.rust_library(
 http_archive(
     name = "futures-core-0.3.34.crate",
     sha256 = "92d699e522242e69e3003b94ecc1f960f3a5e015aa7c5d7486e65ad01dd94f5e",
-    size_bytes = 14692,
     strip_prefix = "futures-core-0.3.34",
     urls = ["https://static.crates.io/crates/futures-core/0.3.34/download"],
     visibility = [],
@@ -6663,7 +6504,6 @@ cargo.rust_library(
 http_archive(
     name = "futures-executor-0.3.34.crate",
     sha256 = "031b47cf1a3c6cc8bc2fc76cd437f521619387907d469316e7c0bc278f1f5432",
-    size_bytes = 18560,
     strip_prefix = "futures-executor-0.3.34",
     urls = ["https://static.crates.io/crates/futures-executor/0.3.34/download"],
     visibility = [],
@@ -6703,7 +6543,6 @@ cargo.rust_library(
 http_archive(
     name = "futures-intrusive-0.5.0.crate",
     sha256 = "1d930c203dd0b6ff06e0201a4a2fe9149b43c684fd4420555b26d21b1a02956f",
-    size_bytes = 85563,
     strip_prefix = "futures-intrusive-0.5.0",
     urls = ["https://static.crates.io/crates/futures-intrusive/0.5.0/download"],
     visibility = [],
@@ -6745,7 +6584,6 @@ cargo.rust_library(
 http_archive(
     name = "futures-io-0.3.34.crate",
     sha256 = "53c0fa8157de1303bfffdaa1cc2a673bfffb60102f76b0ef4441659124373fed",
-    size_bytes = 9189,
     strip_prefix = "futures-io-0.3.34",
     urls = ["https://static.crates.io/crates/futures-io/0.3.34/download"],
     visibility = [],
@@ -6780,7 +6618,6 @@ cargo.rust_library(
 http_archive(
     name = "futures-macro-0.3.34.crate",
     sha256 = "9fb9654ba8355388abeb8dcb4fc62f511300867002afc858860463bdd9fe0c44",
-    size_bytes = 11926,
     strip_prefix = "futures-macro-0.3.34",
     urls = ["https://static.crates.io/crates/futures-macro/0.3.34/download"],
     visibility = [],
@@ -6817,7 +6654,6 @@ cargo.rust_library(
 http_archive(
     name = "futures-sink-0.3.34.crate",
     sha256 = "1944426bf7d03f1d14f708785e4b33efd750b36d48a157b836b3efc15ede8e1d",
-    size_bytes = 8107,
     strip_prefix = "futures-sink-0.3.34",
     urls = ["https://static.crates.io/crates/futures-sink/0.3.34/download"],
     visibility = [],
@@ -6853,7 +6689,6 @@ cargo.rust_library(
 http_archive(
     name = "futures-task-0.3.34.crate",
     sha256 = "cd417de3d1d015fc3bfd2b1ea46dfc7bab72ef86f1cc7cc9c78e728b34a6d1fd",
-    size_bytes = 11376,
     strip_prefix = "futures-task-0.3.34",
     urls = ["https://static.crates.io/crates/futures-task/0.3.34/download"],
     visibility = [],
@@ -6894,7 +6729,6 @@ alias(
 http_archive(
     name = "futures-util-0.3.34.crate",
     sha256 = "0d50a92467f8ba5dd6e3ee5d4bd04d73ab2e4e1c44474a0674821dfce14b79bc",
-    size_bytes = 169782,
     strip_prefix = "futures-util-0.3.34",
     urls = ["https://static.crates.io/crates/futures-util/0.3.34/download"],
     visibility = [],
@@ -6952,7 +6786,6 @@ cargo.rust_library(
 http_archive(
     name = "generic-array-0.14.7.crate",
     sha256 = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a",
-    size_bytes = 15950,
     strip_prefix = "generic-array-0.14.7",
     urls = ["https://static.crates.io/crates/generic-array/0.14.7/download"],
     visibility = [],
@@ -7028,7 +6861,6 @@ buildscript_run(
 http_archive(
     name = "gethostname-1.1.0.crate",
     sha256 = "1bd49230192a3797a9a4d6abe9b3eed6f7fa4c8a8a4947977c6f80025f92cbd8",
-    size_bytes = 9865,
     strip_prefix = "gethostname-1.1.0",
     urls = ["https://static.crates.io/crates/gethostname/1.1.0/download"],
     visibility = [],
@@ -7060,7 +6892,6 @@ cargo.rust_library(
 http_archive(
     name = "getrandom-0.2.17.crate",
     sha256 = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0",
-    size_bytes = 40780,
     strip_prefix = "getrandom-0.2.17",
     urls = ["https://static.crates.io/crates/getrandom/0.2.17/download"],
     visibility = [],
@@ -7113,7 +6944,6 @@ alias(
 http_archive(
     name = "getrandom-0.3.4.crate",
     sha256 = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd",
-    size_bytes = 50932,
     strip_prefix = "getrandom-0.3.4",
     urls = ["https://static.crates.io/crates/getrandom/0.3.4/download"],
     visibility = [],
@@ -7163,7 +6993,6 @@ cargo.rust_library(
 http_archive(
     name = "getrandom-0.4.3.crate",
     sha256 = "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099",
-    size_bytes = 52437,
     strip_prefix = "getrandom-0.4.3",
     urls = ["https://static.crates.io/crates/getrandom/0.4.3/download"],
     visibility = [],
@@ -7222,7 +7051,6 @@ alias(
 http_archive(
     name = "gilrs-0.11.2.crate",
     sha256 = "902fb00d3f6398e635be22e5c837b303c501835cca7ac11a47bba138f7aafdd8",
-    size_bytes = 145858,
     strip_prefix = "gilrs-0.11.2",
     urls = ["https://static.crates.io/crates/gilrs/0.11.2/download"],
     visibility = [],
@@ -7312,7 +7140,6 @@ buildscript_run(
 http_archive(
     name = "gilrs-core-0.6.8.crate",
     sha256 = "dc7f0ce6237abcc0523f2a5502b1e3fe5802daaae47ac14e166fe49551301ea9",
-    size_bytes = 49513,
     strip_prefix = "gilrs-core-0.6.8",
     urls = ["https://static.crates.io/crates/gilrs-core/0.6.8/download"],
     visibility = [],
@@ -7388,7 +7215,6 @@ cargo.rust_library(
 http_archive(
     name = "gimli-0.33.0.crate",
     sha256 = "0bf7f043f89559805f8c7cacc432749b2fa0d0a0a9ee46ce47164ed5ba7f126c",
-    size_bytes = 330197,
     strip_prefix = "gimli-0.33.0",
     urls = ["https://static.crates.io/crates/gimli/0.33.0/download"],
     visibility = [],
@@ -7430,7 +7256,6 @@ cargo.rust_library(
 http_archive(
     name = "gimli-0.34.0.crate",
     sha256 = "1033caf0b349c518623b5396bfb2cf0bddf44f0306d543a250e5743297aafd10",
-    size_bytes = 335386,
     strip_prefix = "gimli-0.34.0",
     urls = ["https://static.crates.io/crates/gimli/0.34.0/download"],
     visibility = [],
@@ -7466,7 +7291,6 @@ cargo.rust_library(
 http_archive(
     name = "gl_generator-0.14.0.crate",
     sha256 = "1a95dfc23a2b4a9a2f5ab41d194f8bfda3cabec42af4e39f08c339eb2a0c124d",
-    size_bytes = 22330,
     strip_prefix = "gl_generator-0.14.0",
     urls = ["https://static.crates.io/crates/gl_generator/0.14.0/download"],
     visibility = [],
@@ -7502,7 +7326,6 @@ cargo.rust_library(
 http_archive(
     name = "glob-0.3.4.crate",
     sha256 = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b",
-    size_bytes = 23511,
     strip_prefix = "glob-0.3.4",
     urls = ["https://static.crates.io/crates/glob/0.3.4/download"],
     visibility = [],
@@ -7533,7 +7356,6 @@ cargo.rust_library(
 http_archive(
     name = "glow-0.17.0.crate",
     sha256 = "29038e1c483364cc6bb3cf78feee1816002e127c331a1eec55a4d202b9e1adb5",
-    size_bytes = 165357,
     strip_prefix = "glow-0.17.0",
     urls = ["https://static.crates.io/crates/glow/0.17.0/download"],
     visibility = [],
@@ -7570,7 +7392,6 @@ alias(
 http_archive(
     name = "gltf-1.4.1.crate",
     sha256 = "e3ce1918195723ce6ac74e80542c5a96a40c2b26162c1957a5cd70799b8cacf7",
-    size_bytes = 54366,
     strip_prefix = "gltf-1.4.1",
     urls = ["https://static.crates.io/crates/gltf/1.4.1/download"],
     visibility = [],
@@ -7608,7 +7429,6 @@ cargo.rust_library(
 http_archive(
     name = "gltf-derive-1.4.1.crate",
     sha256 = "14070e711538afba5d6c807edb74bcb84e5dbb9211a3bf5dea0dfab5b24f4c51",
-    size_bytes = 6295,
     strip_prefix = "gltf-derive-1.4.1",
     urls = ["https://static.crates.io/crates/gltf-derive/1.4.1/download"],
     visibility = [],
@@ -7646,7 +7466,6 @@ cargo.rust_library(
 http_archive(
     name = "gltf-json-1.4.1.crate",
     sha256 = "e6176f9d60a7eab0a877e8e96548605dedbde9190a7ae1e80bbcc1c9af03ab14",
-    size_bytes = 32291,
     strip_prefix = "gltf-json-1.4.1",
     urls = ["https://static.crates.io/crates/gltf-json/1.4.1/download"],
     visibility = [],
@@ -7687,7 +7506,6 @@ cargo.rust_library(
 http_archive(
     name = "glutin_wgl_sys-0.6.1.crate",
     sha256 = "2c4ee00b289aba7a9e5306d57c2d05499b2e5dc427f84ac708bd2c090212cf3e",
-    size_bytes = 5567,
     strip_prefix = "glutin_wgl_sys-0.6.1",
     urls = ["https://static.crates.io/crates/glutin_wgl_sys/0.6.1/download"],
     visibility = [],
@@ -7759,7 +7577,6 @@ buildscript_run(
 http_archive(
     name = "gpu-allocator-0.28.0.crate",
     sha256 = "51255ea7cfaadb6c5f1528d43e92a82acb2b96c43365989a28b2d44ee38f8795",
-    size_bytes = 54791,
     strip_prefix = "gpu-allocator-0.28.0",
     urls = ["https://static.crates.io/crates/gpu-allocator/0.28.0/download"],
     visibility = [],
@@ -7807,7 +7624,6 @@ cargo.rust_library(
 http_archive(
     name = "h2-0.4.20.crate",
     sha256 = "7d29020232d6aa3fb1daca64c1127cf662cf97f254ae16c18c05b8ab635fc118",
-    size_bytes = 180331,
     strip_prefix = "h2-0.4.20",
     urls = ["https://static.crates.io/crates/h2/0.4.20/download"],
     visibility = [],
@@ -7851,7 +7667,6 @@ cargo.rust_library(
 http_archive(
     name = "half-2.7.1.crate",
     sha256 = "6ea2d84b969582b4b1864a92dc5d27cd2b77b622a8d79306834f1be5ba20d84b",
-    size_bytes = 61040,
     strip_prefix = "half-2.7.1",
     urls = ["https://static.crates.io/crates/half/2.7.1/download"],
     visibility = [],
@@ -7888,7 +7703,6 @@ cargo.rust_library(
 http_archive(
     name = "hashbrown-0.15.5.crate",
     sha256 = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1",
-    size_bytes = 140908,
     strip_prefix = "hashbrown-0.15.5",
     urls = ["https://static.crates.io/crates/hashbrown/0.15.5/download"],
     visibility = [],
@@ -7932,7 +7746,6 @@ cargo.rust_library(
 http_archive(
     name = "hashbrown-0.16.1.crate",
     sha256 = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100",
-    size_bytes = 147785,
     strip_prefix = "hashbrown-0.16.1",
     urls = ["https://static.crates.io/crates/hashbrown/0.16.1/download"],
     visibility = [],
@@ -8016,7 +7829,6 @@ alias(
 http_archive(
     name = "hashbrown-0.17.1.crate",
     sha256 = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a",
-    size_bytes = 155512,
     strip_prefix = "hashbrown-0.17.1",
     urls = ["https://static.crates.io/crates/hashbrown/0.17.1/download"],
     visibility = [],
@@ -8056,7 +7868,6 @@ cargo.rust_library(
 http_archive(
     name = "hashlink-0.10.0.crate",
     sha256 = "7382cf6263419f2d8df38c55d7da83da5c18aef87fc7a7fc1fb1e344edfe14c1",
-    size_bytes = 29402,
     strip_prefix = "hashlink-0.10.0",
     urls = ["https://static.crates.io/crates/hashlink/0.10.0/download"],
     visibility = [],
@@ -8088,7 +7899,6 @@ cargo.rust_library(
 http_archive(
     name = "heck-0.5.0.crate",
     sha256 = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea",
-    size_bytes = 11517,
     strip_prefix = "heck-0.5.0",
     urls = ["https://static.crates.io/crates/heck/0.5.0/download"],
     visibility = [],
@@ -8119,7 +7929,6 @@ cargo.rust_library(
 http_archive(
     name = "hex-0.4.3.crate",
     sha256 = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70",
-    size_bytes = 13299,
     strip_prefix = "hex-0.4.3",
     urls = ["https://static.crates.io/crates/hex/0.4.3/download"],
     visibility = [],
@@ -8155,7 +7964,6 @@ cargo.rust_library(
 http_archive(
     name = "hex-simd-0.8.0.crate",
     sha256 = "1f7685beb53fc20efc2605f32f5d51e9ba18b8ef237961d1760169d2290d3bee",
-    size_bytes = 7072,
     strip_prefix = "hex-simd-0.8.0",
     urls = ["https://static.crates.io/crates/hex-simd/0.8.0/download"],
     visibility = [],
@@ -8202,7 +8010,6 @@ alias(
 http_archive(
     name = "hkdf-0.12.4.crate",
     sha256 = "7b5f8eb2ad728638ea2c7d47a21db23b7b58a72ed6a38256b8a1849f15fbbdf7",
-    size_bytes = 171163,
     strip_prefix = "hkdf-0.12.4",
     urls = ["https://static.crates.io/crates/hkdf/0.12.4/download"],
     visibility = [],
@@ -8240,7 +8047,6 @@ alias(
 http_archive(
     name = "hmac-0.12.1.crate",
     sha256 = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e",
-    size_bytes = 42657,
     strip_prefix = "hmac-0.12.1",
     urls = ["https://static.crates.io/crates/hmac/0.12.1/download"],
     visibility = [],
@@ -8273,7 +8079,6 @@ cargo.rust_library(
 http_archive(
     name = "hmac-0.13.0.crate",
     sha256 = "6303bc9732ae41b04cb554b844a762b4115a61bfaa81e3e83050991eeb56863f",
-    size_bytes = 45167,
     strip_prefix = "hmac-0.13.0",
     urls = ["https://static.crates.io/crates/hmac/0.13.0/download"],
     visibility = [],
@@ -8305,7 +8110,6 @@ cargo.rust_library(
 http_archive(
     name = "home-0.5.12.crate",
     sha256 = "cc627f471c528ff0c4a49e1d5e60450c8f6461dd6d10ba9dcd3a61d3dff7728d",
-    size_bytes = 9445,
     strip_prefix = "home-0.5.12",
     urls = ["https://static.crates.io/crates/home/0.5.12/download"],
     visibility = [],
@@ -8341,7 +8145,6 @@ cargo.rust_library(
 http_archive(
     name = "http-1.5.0.crate",
     sha256 = "918d3568bebf352712bc2ef3d46a8bcf1a75b373be6539de198e9105cbbf9ce0",
-    size_bytes = 111161,
     strip_prefix = "http-1.5.0",
     urls = ["https://static.crates.io/crates/http/1.5.0/download"],
     visibility = [],
@@ -8380,7 +8183,6 @@ cargo.rust_library(
 http_archive(
     name = "http-body-1.1.0.crate",
     sha256 = "ca2a8f2913ee65f60facd6a5905613afaa448497a0230cc41ce022d93290bc2c",
-    size_bytes = 7887,
     strip_prefix = "http-body-1.1.0",
     urls = ["https://static.crates.io/crates/http-body/1.1.0/download"],
     visibility = [],
@@ -8421,7 +8223,6 @@ alias(
 http_archive(
     name = "http-body-util-0.1.5.crate",
     sha256 = "23169fe34a5fbcdd3f3862e78fb9b6fccd5f02a6dc6f732547005d45631ce71c",
-    size_bytes = 18574,
     strip_prefix = "http-body-util-0.1.5",
     urls = ["https://static.crates.io/crates/http-body-util/0.1.5/download"],
     visibility = [],
@@ -8460,7 +8261,6 @@ cargo.rust_library(
 http_archive(
     name = "http-range-header-0.4.2.crate",
     sha256 = "9171a2ea8a68358193d15dd5d70c1c10a2afc3e7e4c5bc92bc9f025cebd7359c",
-    size_bytes = 8545,
     strip_prefix = "http-range-header-0.4.2",
     urls = ["https://static.crates.io/crates/http-range-header/0.4.2/download"],
     visibility = [],
@@ -8491,7 +8291,6 @@ cargo.rust_library(
 http_archive(
     name = "httparse-1.10.1.crate",
     sha256 = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87",
-    size_bytes = 45190,
     strip_prefix = "httparse-1.10.1",
     urls = ["https://static.crates.io/crates/httparse/1.10.1/download"],
     visibility = [],
@@ -8574,7 +8373,6 @@ buildscript_run(
 http_archive(
     name = "httpdate-1.0.3.crate",
     sha256 = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9",
-    size_bytes = 10639,
     strip_prefix = "httpdate-1.0.3",
     urls = ["https://static.crates.io/crates/httpdate/1.0.3/download"],
     visibility = [],
@@ -8605,7 +8403,6 @@ cargo.rust_library(
 http_archive(
     name = "humantime-2.4.0.crate",
     sha256 = "15cdd26707701c53297e2fa6afb323d55fbc1d0810c3aec078ae3ef0424c3c15",
-    size_bytes = 23251,
     strip_prefix = "humantime-2.4.0",
     urls = ["https://static.crates.io/crates/humantime/2.4.0/download"],
     visibility = [],
@@ -8636,7 +8433,6 @@ cargo.rust_library(
 http_archive(
     name = "hybrid-array-0.4.15.crate",
     sha256 = "27f864f10dfb56725ce5ce5472bc52252c8f93a4ab86327122cebf62c5f59a17",
-    size_bytes = 36801,
     strip_prefix = "hybrid-array-0.4.15",
     urls = ["https://static.crates.io/crates/hybrid-array/0.4.15/download"],
     visibility = [],
@@ -8668,7 +8464,6 @@ cargo.rust_library(
 http_archive(
     name = "hyper-1.12.0.crate",
     sha256 = "2c3e324da4c95177d6291d4c8730197c0d1822f8a9766814a4a44fa5ab797c9c",
-    size_bytes = 172269,
     strip_prefix = "hyper-1.12.0",
     urls = ["https://static.crates.io/crates/hyper/1.12.0/download"],
     visibility = [],
@@ -8722,7 +8517,6 @@ cargo.rust_library(
 http_archive(
     name = "hyper-rustls-0.27.10.crate",
     sha256 = "dfa8e654703247911e29c23fbeaa261834bd9bb74efba2f9acddc37bfb127f53",
-    size_bytes = 23240,
     strip_prefix = "hyper-rustls-0.27.10",
     urls = ["https://static.crates.io/crates/hyper-rustls/0.27.10/download"],
     visibility = [],
@@ -8773,7 +8567,6 @@ alias(
 http_archive(
     name = "hyper-util-0.1.21.crate",
     sha256 = "ddc03d96684f9226b8a787cdb71488417b53ab5ea8fdb1dac946cb9431cc8bff",
-    size_bytes = 126820,
     strip_prefix = "hyper-util-0.1.21",
     urls = ["https://static.crates.io/crates/hyper-util/0.1.21/download"],
     visibility = [],
@@ -8834,7 +8627,6 @@ cargo.rust_library(
 http_archive(
     name = "iana-time-zone-0.1.65.crate",
     sha256 = "e31bc9ad994ba00e440a8aa5c9ef0ec67d5cb5e5cb0cc7f8b744a35b389cc470",
-    size_bytes = 34079,
     strip_prefix = "iana-time-zone-0.1.65",
     urls = ["https://static.crates.io/crates/iana-time-zone/0.1.65/download"],
     visibility = [],
@@ -8880,7 +8672,6 @@ alias(
 http_archive(
     name = "iced-x86-1.22.0.crate",
     sha256 = "c23ad4d19dca41180e835ef6fbd2c1ee655777eca086ad80dd517e0513322879",
-    size_bytes = 1246305,
     strip_prefix = "iced-x86-1.22.0",
     urls = ["https://static.crates.io/crates/iced-x86/1.22.0/download"],
     visibility = [],
@@ -8923,7 +8714,6 @@ cargo.rust_library(
 http_archive(
     name = "icu_collections-2.4.0.crate",
     sha256 = "fe090a42a0d3140fed8c63263ed1fecc02422cb2f4bfe55cd8de2de1b8e105dd",
-    size_bytes = 102334,
     strip_prefix = "icu_collections-2.4.0",
     urls = ["https://static.crates.io/crates/icu_collections/2.4.0/download"],
     visibility = [],
@@ -8962,7 +8752,6 @@ cargo.rust_library(
 http_archive(
     name = "icu_locale_core-2.4.0.crate",
     sha256 = "25d29b57c17c6528d0dc4c2141cfa2d08200465acb537a3909c8b9b8a4a984c0",
-    size_bytes = 80269,
     strip_prefix = "icu_locale_core-2.4.0",
     urls = ["https://static.crates.io/crates/icu_locale_core/2.4.0/download"],
     visibility = [],
@@ -9001,7 +8790,6 @@ cargo.rust_library(
 http_archive(
     name = "icu_normalizer-2.4.0.crate",
     sha256 = "404a3b8c486f205c87fe7f23ab6894d84a4ad76d6e4671ae1981ba7def87c599",
-    size_bytes = 536741,
     strip_prefix = "icu_normalizer-2.4.0",
     urls = ["https://static.crates.io/crates/icu_normalizer/2.4.0/download"],
     visibility = [],
@@ -9040,7 +8828,6 @@ cargo.rust_library(
 http_archive(
     name = "icu_normalizer_data-2.4.0.crate",
     sha256 = "20f0088bfb7441f7a37fa0c9e20cb1e9cba1cac6b9ce8cd2a6dc44294f8e8cbc",
-    size_bytes = 68011,
     strip_prefix = "icu_normalizer_data-2.4.0",
     urls = ["https://static.crates.io/crates/icu_normalizer_data/2.4.0/download"],
     visibility = [],
@@ -9111,7 +8898,6 @@ buildscript_run(
 http_archive(
     name = "icu_properties-2.4.0.crate",
     sha256 = "2ea83d991c56158f7cf898bf86436c1dfe7c07ee82fe88951f2695c9f37a379f",
-    size_bytes = 146217,
     strip_prefix = "icu_properties-2.4.0",
     urls = ["https://static.crates.io/crates/icu_properties/2.4.0/download"],
     visibility = [],
@@ -9152,7 +8938,6 @@ cargo.rust_library(
 http_archive(
     name = "icu_properties_data-2.4.0.crate",
     sha256 = "b98f29af82d02b163fe50161388350e743bb3107cc8e8c2f7314cb505faddfcf",
-    size_bytes = 186846,
     strip_prefix = "icu_properties_data-2.4.0",
     urls = ["https://static.crates.io/crates/icu_properties_data/2.4.0/download"],
     visibility = [],
@@ -9223,7 +9008,6 @@ buildscript_run(
 http_archive(
     name = "icu_provider-2.4.0.crate",
     sha256 = "413099315636c588ee8f011190b329b971a09a8fae9d157e01dcae8379468514",
-    size_bytes = 52461,
     strip_prefix = "icu_provider-2.4.0",
     urls = ["https://static.crates.io/crates/icu_provider/2.4.0/download"],
     visibility = [],
@@ -9264,7 +9048,6 @@ cargo.rust_library(
 http_archive(
     name = "idna-1.1.0.crate",
     sha256 = "3b0875f23caa03898994f6ddc501886a45c7d3d62d04d2d90788d47be1b1e4de",
-    size_bytes = 148747,
     strip_prefix = "idna-1.1.0",
     urls = ["https://static.crates.io/crates/idna/1.1.0/download"],
     visibility = [],
@@ -9305,7 +9088,6 @@ cargo.rust_library(
 http_archive(
     name = "idna_adapter-1.2.2.crate",
     sha256 = "cb68373c0d6620ef8105e855e7745e18b0d00d3bdb07fb532e434244cdb9a714",
-    size_bytes = 10444,
     strip_prefix = "idna_adapter-1.2.2",
     urls = ["https://static.crates.io/crates/idna_adapter/1.2.2/download"],
     visibility = [],
@@ -9347,7 +9129,6 @@ alias(
 http_archive(
     name = "image-0.25.10.crate",
     sha256 = "85ab80394333c02fe689eaf900ab500fbd0c2213da414687ebf995a65d5a6104",
-    size_bytes = 303647,
     strip_prefix = "image-0.25.10",
     urls = ["https://static.crates.io/crates/image/0.25.10/download"],
     visibility = [],
@@ -9393,7 +9174,6 @@ cargo.rust_library(
 http_archive(
     name = "image-webp-0.2.4.crate",
     sha256 = "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3",
-    size_bytes = 68478,
     strip_prefix = "image-webp-0.2.4",
     urls = ["https://static.crates.io/crates/image-webp/0.2.4/download"],
     visibility = [],
@@ -9434,7 +9214,6 @@ alias(
 http_archive(
     name = "indexmap-2.14.2.crate",
     sha256 = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855",
-    size_bytes = 103014,
     strip_prefix = "indexmap-2.14.2",
     urls = ["https://static.crates.io/crates/indexmap/2.14.2/download"],
     visibility = [],
@@ -9475,7 +9254,6 @@ cargo.rust_library(
 http_archive(
     name = "inflections-1.1.1.crate",
     sha256 = "a257582fdcde896fd96463bf2d40eefea0580021c0712a0e2b028b60b47a837a",
-    size_bytes = 6853,
     strip_prefix = "inflections-1.1.1",
     urls = ["https://static.crates.io/crates/inflections/1.1.1/download"],
     visibility = [],
@@ -9506,7 +9284,6 @@ cargo.rust_library(
 http_archive(
     name = "inotify-0.11.5.crate",
     sha256 = "4cc00ea907cab49550b7da656f80ebb97be1b997d931fbcd28d39734e17ce592",
-    size_bytes = 30349,
     strip_prefix = "inotify-0.11.5",
     urls = ["https://static.crates.io/crates/inotify/0.11.5/download"],
     visibility = [],
@@ -9542,7 +9319,6 @@ cargo.rust_library(
 http_archive(
     name = "inotify-sys-0.1.8.crate",
     sha256 = "c033f80b2c113cdf91ab7a33faa9cbc014726dcad99880c8609af2a370edf37d",
-    size_bytes = 8411,
     strip_prefix = "inotify-sys-0.1.8",
     urls = ["https://static.crates.io/crates/inotify-sys/0.1.8/download"],
     visibility = [],
@@ -9574,7 +9350,6 @@ cargo.rust_library(
 http_archive(
     name = "inout-0.1.4.crate",
     sha256 = "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01",
-    size_bytes = 11280,
     strip_prefix = "inout-0.1.4",
     urls = ["https://static.crates.io/crates/inout/0.1.4/download"],
     visibility = [],
@@ -9606,7 +9381,6 @@ cargo.rust_library(
 http_archive(
     name = "ipnet-2.12.2.crate",
     sha256 = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0",
-    size_bytes = 30804,
     strip_prefix = "ipnet-2.12.2",
     urls = ["https://static.crates.io/crates/ipnet/2.12.2/download"],
     visibility = [],
@@ -9641,7 +9415,6 @@ cargo.rust_library(
 http_archive(
     name = "is_terminal_polyfill-1.70.2.crate",
     sha256 = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695",
-    size_bytes = 7548,
     strip_prefix = "is_terminal_polyfill-1.70.2",
     urls = ["https://static.crates.io/crates/is_terminal_polyfill/1.70.2/download"],
     visibility = [],
@@ -9673,7 +9446,6 @@ cargo.rust_library(
 http_archive(
     name = "itertools-0.15.0.crate",
     sha256 = "8b4baf93f58d4425749ca49a51c50ebab072c5df6994d08fed93541c331481dc",
-    size_bytes = 164131,
     strip_prefix = "itertools-0.15.0",
     urls = ["https://static.crates.io/crates/itertools/0.15.0/download"],
     visibility = [],
@@ -9710,7 +9482,6 @@ cargo.rust_library(
 http_archive(
     name = "itoa-1.0.19.crate",
     sha256 = "3bd1574e617a9a6c1f8f8181bd7e841e1f20e4277607ef28945765188d6284d4",
-    size_bytes = 16014,
     strip_prefix = "itoa-1.0.19",
     urls = ["https://static.crates.io/crates/itoa/1.0.19/download"],
     visibility = [],
@@ -9741,7 +9512,6 @@ cargo.rust_library(
 http_archive(
     name = "jiff-0.2.46.crate",
     sha256 = "175dc66334db3b9ab9985bf8b61cfed50dc16d20964bb47f9e479adcae984a7f",
-    size_bytes = 702038,
     strip_prefix = "jiff-0.2.46",
     urls = ["https://static.crates.io/crates/jiff/0.2.46/download"],
     visibility = [],
@@ -9794,7 +9564,6 @@ cargo.rust_library(
 http_archive(
     name = "jiff-core-0.1.8.crate",
     sha256 = "e599b80292e597019b8b3e392de3f4bea2959ddfb8c7dff60e035e9e311a2c1b",
-    size_bytes = 131487,
     strip_prefix = "jiff-core-0.1.8",
     urls = ["https://static.crates.io/crates/jiff-core/0.1.8/download"],
     visibility = [],
@@ -9830,7 +9599,6 @@ cargo.rust_library(
 http_archive(
     name = "jiff-tzdb-0.1.10.crate",
     sha256 = "0980fca2cc272465bd60e82397607ba9f33add9e48defd77923301bbd03808f2",
-    size_bytes = 62813,
     strip_prefix = "jiff-tzdb-0.1.10",
     urls = ["https://static.crates.io/crates/jiff-tzdb/0.1.10/download"],
     visibility = [],
@@ -9861,7 +9629,6 @@ cargo.rust_library(
 http_archive(
     name = "jiff-tzdb-platform-0.1.3.crate",
     sha256 = "875a5a69ac2bab1a891711cf5eccbec1ce0341ea805560dcd90b7a2e925132e8",
-    size_bytes = 3179,
     strip_prefix = "jiff-tzdb-platform-0.1.3",
     urls = ["https://static.crates.io/crates/jiff-tzdb-platform/0.1.3/download"],
     visibility = [],
@@ -9893,7 +9660,6 @@ cargo.rust_library(
 http_archive(
     name = "jobserver-0.1.35.crate",
     sha256 = "1c00acbd29eabad4a2392fa0e921c874934dbbf4194312ad20f04a0ed67a3cb3",
-    size_bytes = 28890,
     strip_prefix = "jobserver-0.1.35",
     urls = ["https://static.crates.io/crates/jobserver/0.1.35/download"],
     visibility = [],
@@ -9941,7 +9707,6 @@ cargo.rust_library(
 http_archive(
     name = "khronos-egl-6.0.0.crate",
     sha256 = "6aae1df220ece3c0ada96b8153459b67eebe9ae9212258bb0134ae60416fdf76",
-    size_bytes = 29315,
     strip_prefix = "khronos-egl-6.0.0",
     urls = ["https://static.crates.io/crates/khronos-egl/6.0.0/download"],
     visibility = [],
@@ -10049,7 +9814,6 @@ buildscript_run(
 http_archive(
     name = "khronos_api-3.1.0.crate",
     sha256 = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc",
-    size_bytes = 599718,
     strip_prefix = "khronos_api-3.1.0",
     urls = ["https://static.crates.io/crates/khronos_api/3.1.0/download"],
     visibility = [],
@@ -10120,7 +9884,6 @@ buildscript_run(
 http_archive(
     name = "lazy_static-1.5.1.crate",
     sha256 = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb",
-    size_bytes = 13937,
     strip_prefix = "lazy_static-1.5.1",
     urls = ["https://static.crates.io/crates/lazy_static/1.5.1/download"],
     visibility = [],
@@ -10157,7 +9920,6 @@ alias(
 http_archive(
     name = "libc-0.2.191.crate",
     sha256 = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a",
-    size_bytes = 855401,
     strip_prefix = "libc-0.2.191",
     urls = ["https://static.crates.io/crates/libc/0.2.191/download"],
     visibility = [],
@@ -10249,7 +10011,6 @@ alias(
 http_archive(
     name = "libloading-0.8.9.crate",
     sha256 = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55",
-    size_bytes = 30222,
     strip_prefix = "libloading-0.8.9",
     urls = ["https://static.crates.io/crates/libloading/0.8.9/download"],
     visibility = [],
@@ -10303,7 +10064,6 @@ alias(
 http_archive(
     name = "libm-0.2.16.crate",
     sha256 = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981",
-    size_bytes = 164243,
     strip_prefix = "libm-0.2.16",
     urls = ["https://static.crates.io/crates/libm/0.2.16/download"],
     visibility = [],
@@ -10338,7 +10098,6 @@ cargo.rust_library(
 http_archive(
     name = "libsqlite3-sys-0.30.1.crate",
     sha256 = "2e99fb7a497b1e3339bc746195567ed8d3e24945ecd636e3619d20b9de9e9149",
-    size_bytes = 5122296,
     strip_prefix = "libsqlite3-sys-0.30.1",
     urls = ["https://static.crates.io/crates/libsqlite3-sys/0.30.1/download"],
     visibility = [],
@@ -10440,7 +10199,6 @@ buildscript_run(
 http_archive(
     name = "libudev-sys-0.1.4.crate",
     sha256 = "3c8469b4a23b962c1396b9b451dda50ef5b283e8dd309d69033475fa9b334324",
-    size_bytes = 6177,
     strip_prefix = "libudev-sys-0.1.4",
     urls = ["https://static.crates.io/crates/libudev-sys/0.1.4/download"],
     visibility = [],
@@ -10476,7 +10234,6 @@ cargo.rust_library(
 http_archive(
     name = "libwebp-sys-0.9.6.crate",
     sha256 = "54cd30df7c7165ce74a456e4ca9732c603e8dc5e60784558c1c6dc047f876733",
-    size_bytes = 5168820,
     strip_prefix = "libwebp-sys-0.9.6",
     urls = ["https://static.crates.io/crates/libwebp-sys/0.9.6/download"],
     visibility = [],
@@ -10571,7 +10328,6 @@ buildscript_run(
 http_archive(
     name = "linux-raw-sys-0.4.15.crate",
     sha256 = "d26c52dbd32dccf2d10cac7725f8eae5296885fb5703b261f7d0a0739ec807ab",
-    size_bytes = 2150898,
     strip_prefix = "linux-raw-sys-0.4.15",
     urls = ["https://static.crates.io/crates/linux-raw-sys/0.4.15/download"],
     visibility = [],
@@ -10611,7 +10367,6 @@ cargo.rust_library(
 http_archive(
     name = "linux-raw-sys-0.12.1.crate",
     sha256 = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53",
-    size_bytes = 3006116,
     strip_prefix = "linux-raw-sys-0.12.1",
     urls = ["https://static.crates.io/crates/linux-raw-sys/0.12.1/download"],
     visibility = [],
@@ -10656,7 +10411,6 @@ cargo.rust_library(
 http_archive(
     name = "litemap-0.8.3.crate",
     sha256 = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae",
-    size_bytes = 35045,
     strip_prefix = "litemap-0.8.3",
     urls = ["https://static.crates.io/crates/litemap/0.8.3/download"],
     visibility = [],
@@ -10687,7 +10441,6 @@ cargo.rust_library(
 http_archive(
     name = "litrs-1.0.1.crate",
     sha256 = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70",
-    size_bytes = 47449,
     strip_prefix = "litrs-1.0.1",
     urls = ["https://static.crates.io/crates/litrs/1.0.1/download"],
     visibility = [],
@@ -10718,7 +10471,6 @@ cargo.rust_library(
 http_archive(
     name = "lock_api-0.4.14.crate",
     sha256 = "224399e74b87b5f3557511d98dff8b14089b3dadafcab6bb93eab67d3aace965",
-    size_bytes = 29249,
     strip_prefix = "lock_api-0.4.14",
     urls = ["https://static.crates.io/crates/lock_api/0.4.14/download"],
     visibility = [],
@@ -10754,7 +10506,6 @@ cargo.rust_library(
 http_archive(
     name = "lock_api-0.5.0.crate",
     sha256 = "65d91b22da179613dcf4d6ec8349563f52a363f6849e03b00dd0a185ec4a59af",
-    size_bytes = 44935,
     strip_prefix = "lock_api-0.5.0",
     urls = ["https://static.crates.io/crates/lock_api/0.5.0/download"],
     visibility = [],
@@ -10790,7 +10541,6 @@ cargo.rust_library(
 http_archive(
     name = "log-0.4.35.crate",
     sha256 = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c",
-    size_bytes = 54093,
     strip_prefix = "log-0.4.35",
     urls = ["https://static.crates.io/crates/log/0.4.35/download"],
     visibility = [],
@@ -10831,7 +10581,6 @@ alias(
 http_archive(
     name = "lsp-server-0.7.9.crate",
     sha256 = "7d6ada348dbc2703cbe7637b2dda05cff84d3da2819c24abcb305dd613e0ba2e",
-    size_bytes = 21215,
     strip_prefix = "lsp-server-0.7.9",
     urls = ["https://static.crates.io/crates/lsp-server/0.7.9/download"],
     visibility = [],
@@ -10875,7 +10624,6 @@ alias(
 http_archive(
     name = "lsp-types-0.97.0.crate",
     sha256 = "53353550a17c04ac46c585feb189c2db82154fc84b79c7a66c96c2c644f66071",
-    size_bytes = 70764,
     strip_prefix = "lsp-types-0.97.0",
     urls = ["https://static.crates.io/crates/lsp-types/0.97.0/download"],
     visibility = [],
@@ -10914,7 +10662,6 @@ cargo.rust_library(
 http_archive(
     name = "mach2-0.6.0.crate",
     sha256 = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b",
-    size_bytes = 33580,
     strip_prefix = "mach2-0.6.0",
     urls = ["https://static.crates.io/crates/mach2/0.6.0/download"],
     visibility = [],
@@ -10946,7 +10693,6 @@ cargo.rust_library(
 http_archive(
     name = "macro_rules_attribute-0.2.3.crate",
     sha256 = "b3ae8f6d608c795738406608304d30a2dfbdc8e58e44f7ba43236da5208ded3c",
-    size_bytes = 15329,
     strip_prefix = "macro_rules_attribute-0.2.3",
     urls = ["https://static.crates.io/crates/macro_rules_attribute/0.2.3/download"],
     visibility = [],
@@ -10982,7 +10728,6 @@ cargo.rust_library(
 http_archive(
     name = "macro_rules_attribute-proc_macro-0.2.3.crate",
     sha256 = "fc04a4c58212d57930a24bf47d3fa87485264a3a054e9c10e042eb373573ad3c",
-    size_bytes = 8272,
     strip_prefix = "macro_rules_attribute-proc_macro-0.2.3",
     urls = ["https://static.crates.io/crates/macro_rules_attribute-proc_macro/0.2.3/download"],
     visibility = [],
@@ -11014,7 +10759,6 @@ cargo.rust_library(
 http_archive(
     name = "matchers-0.2.0.crate",
     sha256 = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9",
-    size_bytes = 7075,
     strip_prefix = "matchers-0.2.0",
     urls = ["https://static.crates.io/crates/matchers/0.2.0/download"],
     visibility = [],
@@ -11046,7 +10790,6 @@ cargo.rust_library(
 http_archive(
     name = "matchit-0.8.4.crate",
     sha256 = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3",
-    size_bytes = 33986,
     strip_prefix = "matchit-0.8.4",
     urls = ["https://static.crates.io/crates/matchit/0.8.4/download"],
     visibility = [],
@@ -11078,7 +10821,6 @@ cargo.rust_library(
 http_archive(
     name = "md-5-0.10.6.crate",
     sha256 = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf",
-    size_bytes = 16161,
     strip_prefix = "md-5-0.10.6",
     urls = ["https://static.crates.io/crates/md-5/0.10.6/download"],
     visibility = [],
@@ -11113,7 +10855,6 @@ cargo.rust_library(
 http_archive(
     name = "md-5-0.11.0.crate",
     sha256 = "69b6441f590336821bb897fb28fc622898ccceb1d6cea3fde5ea86b090c4de98",
-    size_bytes = 17404,
     strip_prefix = "md-5-0.11.0",
     urls = ["https://static.crates.io/crates/md-5/0.11.0/download"],
     visibility = [],
@@ -11153,7 +10894,6 @@ cargo.rust_library(
 http_archive(
     name = "memchr-2.8.3.crate",
     sha256 = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98",
-    size_bytes = 99165,
     strip_prefix = "memchr-2.8.3",
     urls = ["https://static.crates.io/crates/memchr/2.8.3/download"],
     visibility = [],
@@ -11195,7 +10935,6 @@ alias(
 http_archive(
     name = "memmap2-0.9.12.crate",
     sha256 = "6b0ca1155a9ecc25aa12e8313a119f32edf0255fea2f44839c4ac0a12b2ac157",
-    size_bytes = 39123,
     strip_prefix = "memmap2-0.9.12",
     urls = ["https://static.crates.io/crates/memmap2/0.9.12/download"],
     visibility = [],
@@ -11246,7 +10985,6 @@ alias(
 http_archive(
     name = "meshopt-0.7.0.crate",
     sha256 = "a403c16e3ca5752600e1d4c5ba3ba2a6496f407ded66e767f05279514363f461",
-    size_bytes = 217363,
     strip_prefix = "meshopt-0.7.0",
     urls = ["https://static.crates.io/crates/meshopt/0.7.0/download"],
     visibility = [],
@@ -11325,7 +11063,6 @@ buildscript_run(
 http_archive(
     name = "mime-0.3.18.crate",
     sha256 = "d5848f5a9e8117cf94f2f90faac24a87ff81600ff8628c1e3deaab572e76bfa1",
-    size_bytes = 16648,
     strip_prefix = "mime-0.3.18",
     urls = ["https://static.crates.io/crates/mime/0.3.18/download"],
     visibility = [],
@@ -11362,7 +11099,6 @@ alias(
 http_archive(
     name = "mime_guess-2.0.5.crate",
     sha256 = "f7c44f8e672c00fe5308fa235f821cb4198414e1c77935c1ab6948d3fd78550e",
-    size_bytes = 27166,
     strip_prefix = "mime_guess-2.0.5",
     urls = ["https://static.crates.io/crates/mime_guess/2.0.5/download"],
     visibility = [],
@@ -11450,7 +11186,6 @@ buildscript_run(
 http_archive(
     name = "miniz_oxide-0.8.9.crate",
     sha256 = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316",
-    size_bytes = 67132,
     strip_prefix = "miniz_oxide-0.8.9",
     urls = ["https://static.crates.io/crates/miniz_oxide/0.8.9/download"],
     visibility = [],
@@ -11491,7 +11226,6 @@ cargo.rust_library(
 http_archive(
     name = "miniz_oxide-0.9.1.crate",
     sha256 = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c",
-    size_bytes = 70519,
     strip_prefix = "miniz_oxide-0.9.1",
     urls = ["https://static.crates.io/crates/miniz_oxide/0.9.1/download"],
     visibility = [],
@@ -11532,7 +11266,6 @@ cargo.rust_library(
 http_archive(
     name = "mint-0.5.9.crate",
     sha256 = "e53debba6bda7a793e5f99b8dacf19e626084f525f7829104ba9898f367d85ff",
-    size_bytes = 8399,
     strip_prefix = "mint-0.5.9",
     urls = ["https://static.crates.io/crates/mint/0.5.9/download"],
     visibility = [],
@@ -11563,7 +11296,6 @@ cargo.rust_library(
 http_archive(
     name = "mintex-0.1.4.crate",
     sha256 = "c505b3e17ed6b70a7ed2e67fbb2c560ee327353556120d6e72f5232b6880d536",
-    size_bytes = 6899,
     strip_prefix = "mintex-0.1.4",
     urls = ["https://static.crates.io/crates/mintex/0.1.4/download"],
     visibility = [],
@@ -11594,7 +11326,6 @@ cargo.rust_library(
 http_archive(
     name = "mio-1.2.5.crate",
     sha256 = "20521a903f02b0a573cd6840e9d0a5a0cc043d361fe924092cd70f8556cc9c4a",
-    size_bytes = 112931,
     strip_prefix = "mio-1.2.5",
     urls = ["https://static.crates.io/crates/mio/1.2.5/download"],
     visibility = [],
@@ -11647,7 +11378,6 @@ cargo.rust_library(
 http_archive(
     name = "moxcms-0.8.1.crate",
     sha256 = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b",
-    size_bytes = 188252,
     strip_prefix = "moxcms-0.8.1",
     urls = ["https://static.crates.io/crates/moxcms/0.8.1/download"],
     visibility = [],
@@ -11704,7 +11434,6 @@ alias(
 http_archive(
     name = "naga-30.0.2.crate",
     sha256 = "fd0dd362bf26c0ffdd143df6da66a25d287e196eff482f117771010b207ad163",
-    size_bytes = 871207,
     strip_prefix = "naga-30.0.2",
     urls = ["https://static.crates.io/crates/naga/30.0.2/download"],
     visibility = [],
@@ -11825,7 +11554,6 @@ buildscript_run(
 http_archive(
     name = "naga-types-30.0.2.crate",
     sha256 = "14474170feb673cfb18b3565111a9869797cc1d290fb9ec969c53f5e1e231c6d",
-    size_bytes = 12025,
     strip_prefix = "naga-types-30.0.2",
     urls = ["https://static.crates.io/crates/naga-types/30.0.2/download"],
     visibility = [],
@@ -11868,7 +11596,6 @@ cargo.rust_library(
 http_archive(
     name = "nix-0.31.3.crate",
     sha256 = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d",
-    size_bytes = 347476,
     strip_prefix = "nix-0.31.3",
     urls = ["https://static.crates.io/crates/nix/0.31.3/download"],
     visibility = [],
@@ -11993,7 +11720,6 @@ buildscript_run(
 http_archive(
     name = "nom-8.0.0.crate",
     sha256 = "df9761775871bdef83bee530e60050f7e54b1105350d6884eb0fb4f46c2f9405",
-    size_bytes = 135590,
     strip_prefix = "nom-8.0.0",
     urls = ["https://static.crates.io/crates/nom/8.0.0/download"],
     visibility = [],
@@ -12030,7 +11756,6 @@ cargo.rust_library(
 http_archive(
     name = "nu-ansi-term-0.50.3.crate",
     sha256 = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5",
-    size_bytes = 29597,
     strip_prefix = "nu-ansi-term-0.50.3",
     urls = ["https://static.crates.io/crates/nu-ansi-term/0.50.3/download"],
     visibility = [],
@@ -12072,7 +11797,6 @@ cargo.rust_library(
 http_archive(
     name = "num-conv-0.2.2.crate",
     sha256 = "521739c6d2bac4aa25192232afe6841231376b2b26d4d9fae5ecf8ca5772e441",
-    size_bytes = 7441,
     strip_prefix = "num-conv-0.2.2",
     urls = ["https://static.crates.io/crates/num-conv/0.2.2/download"],
     visibility = [],
@@ -12103,7 +11827,6 @@ cargo.rust_library(
 http_archive(
     name = "num-traits-0.2.19.crate",
     sha256 = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841",
-    size_bytes = 51631,
     strip_prefix = "num-traits-0.2.19",
     urls = ["https://static.crates.io/crates/num-traits/0.2.19/download"],
     visibility = [],
@@ -12191,7 +11914,6 @@ buildscript_run(
 http_archive(
     name = "numeric_cast-0.3.0.crate",
     sha256 = "a3c00a0c9600379bd32f8972de90676a7672cba3bf4886986bc05902afc1e093",
-    size_bytes = 7278,
     strip_prefix = "numeric_cast-0.3.0",
     urls = ["https://static.crates.io/crates/numeric_cast/0.3.0/download"],
     visibility = [],
@@ -12222,7 +11944,6 @@ cargo.rust_library(
 http_archive(
     name = "objc-sys-0.3.5.crate",
     sha256 = "cdb91bdd390c7ce1a8607f35f3ca7151b65afc0ff5ff3b34fa350f7d7c7e4310",
-    size_bytes = 20560,
     strip_prefix = "objc-sys-0.3.5",
     urls = ["https://static.crates.io/crates/objc-sys/0.3.5/download"],
     visibility = [],
@@ -12305,7 +12026,6 @@ buildscript_run(
 http_archive(
     name = "objc2-0.5.3.crate",
     sha256 = "19d5490aaf8f1d7cf7688dfa9b0ce07900e168852c45cd2c03f534dfd27cfd0b",
-    size_bytes = 201184,
     strip_prefix = "objc2-0.5.3",
     urls = ["https://static.crates.io/crates/objc2/0.5.3/download"],
     visibility = [],
@@ -12352,7 +12072,6 @@ alias(
 http_archive(
     name = "objc2-0.6.5.crate",
     sha256 = "08849bbd4767dfae9457696856ae1c84fe4e0281bbe4a7abff2d0e06fb7981f8",
-    size_bytes = 276781,
     strip_prefix = "objc2-0.6.5",
     urls = ["https://static.crates.io/crates/objc2/0.6.5/download"],
     visibility = [],
@@ -12439,7 +12158,6 @@ buildscript_run(
 http_archive(
     name = "objc2-app-kit-0.2.2.crate",
     sha256 = "e4e89ad9e3d7d297152b17d39ed92cd50ca8063a89a9fa569046d41568891eff",
-    size_bytes = 337435,
     strip_prefix = "objc2-app-kit-0.2.2",
     urls = ["https://static.crates.io/crates/objc2-app-kit/0.2.2/download"],
     visibility = [],
@@ -12513,7 +12231,6 @@ alias(
 http_archive(
     name = "objc2-app-kit-0.3.2.crate",
     sha256 = "d49e936b501e5c5bf01fda3a9452ff86dc3ea98ad5f283e1455153142d97518c",
-    size_bytes = 531744,
     strip_prefix = "objc2-app-kit-0.3.2",
     urls = ["https://static.crates.io/crates/objc2-app-kit/0.3.2/download"],
     visibility = [],
@@ -12572,7 +12289,6 @@ cargo.rust_library(
 http_archive(
     name = "objc2-audio-toolbox-0.3.2.crate",
     sha256 = "6948501a91121d6399b79abaa33a8aa4ea7857fe019f341b8c23ad6e81b79b08",
-    size_bytes = 186265,
     strip_prefix = "objc2-audio-toolbox-0.3.2",
     urls = ["https://static.crates.io/crates/objc2-audio-toolbox/0.3.2/download"],
     visibility = [],
@@ -12629,7 +12345,6 @@ cargo.rust_library(
 http_archive(
     name = "objc2-core-audio-0.3.2.crate",
     sha256 = "e1eebcea8b0dbff5f7c8504f3107c68fc061a3eb44932051c8cf8a68d969c3b2",
-    size_bytes = 32748,
     strip_prefix = "objc2-core-audio-0.3.2",
     urls = ["https://static.crates.io/crates/objc2-core-audio/0.3.2/download"],
     visibility = [],
@@ -12675,7 +12390,6 @@ cargo.rust_library(
 http_archive(
     name = "objc2-core-audio-types-0.3.2.crate",
     sha256 = "5a89f2ec274a0cf4a32642b2991e8b351a404d290da87bb6a9a9d8632490bd1c",
-    size_bytes = 20525,
     strip_prefix = "objc2-core-audio-types-0.3.2",
     urls = ["https://static.crates.io/crates/objc2-core-audio-types/0.3.2/download"],
     visibility = [],
@@ -12723,7 +12437,6 @@ alias(
 http_archive(
     name = "objc2-core-foundation-0.3.2.crate",
     sha256 = "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536",
-    size_bytes = 180804,
     strip_prefix = "objc2-core-foundation-0.3.2",
     urls = ["https://static.crates.io/crates/objc2-core-foundation/0.3.2/download"],
     visibility = [],
@@ -12817,7 +12530,6 @@ cargo.rust_library(
 http_archive(
     name = "objc2-core-graphics-0.3.2.crate",
     sha256 = "e022c9d066895efa1345f8e33e584b9f958da2fd4cd116792e15e07e4720a807",
-    size_bytes = 84981,
     strip_prefix = "objc2-core-graphics-0.3.2",
     urls = ["https://static.crates.io/crates/objc2-core-graphics/0.3.2/download"],
     visibility = [],
@@ -12867,7 +12579,6 @@ alias(
 http_archive(
     name = "objc2-core-haptics-0.3.2.crate",
     sha256 = "dbf2dae8a5e651adec3af54059cbce15e3aadbf8913da9782e1e1affc29aa512",
-    size_bytes = 16376,
     strip_prefix = "objc2-core-haptics-0.3.2",
     urls = ["https://static.crates.io/crates/objc2-core-haptics/0.3.2/download"],
     visibility = [],
@@ -12913,7 +12624,6 @@ cargo.rust_library(
 http_archive(
     name = "objc2-encode-4.1.0.crate",
     sha256 = "ef25abbcd74fb2609453eb695bd2f860d389e457f67dc17cafc8b8cbc89d0c33",
-    size_bytes = 21004,
     strip_prefix = "objc2-encode-4.1.0",
     urls = ["https://static.crates.io/crates/objc2-encode/4.1.0/download"],
     visibility = [],
@@ -12948,7 +12658,6 @@ cargo.rust_library(
 http_archive(
     name = "objc2-foundation-0.2.2.crate",
     sha256 = "0ee638a5da3799329310ad4cfa62fbf045d5f56e3ef5ba4149e7452dcf89d5a8",
-    size_bytes = 249330,
     strip_prefix = "objc2-foundation-0.2.2",
     urls = ["https://static.crates.io/crates/objc2-foundation/0.2.2/download"],
     visibility = [],
@@ -13034,7 +12743,6 @@ alias(
 http_archive(
     name = "objc2-foundation-0.3.2.crate",
     sha256 = "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272",
-    size_bytes = 345384,
     strip_prefix = "objc2-foundation-0.3.2",
     urls = ["https://static.crates.io/crates/objc2-foundation/0.3.2/download"],
     visibility = [],
@@ -13257,7 +12965,6 @@ alias(
 http_archive(
     name = "objc2-game-controller-0.3.2.crate",
     sha256 = "1962c1882c5abcedb18e5f01acffeaad7b3cbd0a9d4cd8f5ca259ba8a64cb9a3",
-    size_bytes = 59966,
     strip_prefix = "objc2-game-controller-0.3.2",
     urls = ["https://static.crates.io/crates/objc2-game-controller/0.3.2/download"],
     visibility = [],
@@ -13320,7 +13027,6 @@ alias(
 http_archive(
     name = "objc2-io-kit-0.3.2.crate",
     sha256 = "33fafba39597d6dc1fb709123dfa8289d39406734be322956a69f0931c73bb15",
-    size_bytes = 262569,
     strip_prefix = "objc2-io-kit-0.3.2",
     urls = ["https://static.crates.io/crates/objc2-io-kit/0.3.2/download"],
     visibility = [],
@@ -13369,7 +13075,6 @@ alias(
 http_archive(
     name = "objc2-metal-0.3.2.crate",
     sha256 = "a0125f776a10d00af4152d74616409f0d4a2053a6f57fa5b7d6aa2854ac04794",
-    size_bytes = 226999,
     strip_prefix = "objc2-metal-0.3.2",
     urls = ["https://static.crates.io/crates/objc2-metal/0.3.2/download"],
     visibility = [],
@@ -13454,7 +13159,6 @@ alias(
 http_archive(
     name = "objc2-quartz-core-0.3.2.crate",
     sha256 = "96c1358452b371bf9f104e21ec536d37a650eb10f7ee379fff67d2e08d537f1f",
-    size_bytes = 30036,
     strip_prefix = "objc2-quartz-core-0.3.2",
     urls = ["https://static.crates.io/crates/objc2-quartz-core/0.3.2/download"],
     visibility = [],
@@ -13504,7 +13208,6 @@ cargo.rust_library(
 http_archive(
     name = "objc2-uniform-type-identifiers-0.3.2.crate",
     sha256 = "7902ac02859fc1f7045f8b598c63f1ae0cc7efeaa06a9bc9f3d9a3c955974fa4",
-    size_bytes = 16935,
     strip_prefix = "objc2-uniform-type-identifiers-0.3.2",
     urls = ["https://static.crates.io/crates/objc2-uniform-type-identifiers/0.3.2/download"],
     visibility = [],
@@ -13544,7 +13247,6 @@ cargo.rust_library(
 http_archive(
     name = "object-0.40.0.crate",
     sha256 = "dd229a0361b9d0d4396176e02d65897f487eebeab7caa6d443855ee152ca0b9c",
-    size_bytes = 452431,
     strip_prefix = "object-0.40.0",
     urls = ["https://static.crates.io/crates/object/0.40.0/download"],
     visibility = [],
@@ -13618,7 +13320,6 @@ alias(
 http_archive(
     name = "object_store-0.14.2.crate",
     sha256 = "f1796bc93603f78c5760a69f2d58badc9618d22adade0a95385bb2adbae4eb94",
-    size_bytes = 310684,
     strip_prefix = "object_store-0.14.2",
     urls = ["https://static.crates.io/crates/object_store/0.14.2/download"],
     visibility = [],
@@ -13720,7 +13421,6 @@ cargo.rust_library(
 http_archive(
     name = "once_cell-1.21.4.crate",
     sha256 = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50",
-    size_bytes = 35010,
     strip_prefix = "once_cell-1.21.4",
     urls = ["https://static.crates.io/crates/once_cell/1.21.4/download"],
     visibility = [],
@@ -13757,7 +13457,6 @@ cargo.rust_library(
 http_archive(
     name = "once_cell_polyfill-1.70.2.crate",
     sha256 = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe",
-    size_bytes = 7448,
     strip_prefix = "once_cell_polyfill-1.70.2",
     urls = ["https://static.crates.io/crates/once_cell_polyfill/1.70.2/download"],
     visibility = [],
@@ -13789,7 +13488,6 @@ cargo.rust_library(
 http_archive(
     name = "opaque-debug-0.3.1.crate",
     sha256 = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381",
-    size_bytes = 7066,
     strip_prefix = "opaque-debug-0.3.1",
     urls = ["https://static.crates.io/crates/opaque-debug/0.3.1/download"],
     visibility = [],
@@ -13820,7 +13518,6 @@ cargo.rust_library(
 http_archive(
     name = "openssl-probe-0.2.2.crate",
     sha256 = "7e036b411754132fd6b74e94b74e9a13c5cf606fa93d1885c35860d3060820b1",
-    size_bytes = 9148,
     strip_prefix = "openssl-probe-0.2.2",
     urls = ["https://static.crates.io/crates/openssl-probe/0.2.2/download"],
     visibility = [],
@@ -13851,7 +13548,6 @@ cargo.rust_library(
 http_archive(
     name = "ordered-float-5.5.1.crate",
     sha256 = "7f59006ce1e204c30956638535b74d317bca99477b9356dfaec54c37f6f600ab",
-    size_bytes = 34709,
     strip_prefix = "ordered-float-5.5.1",
     urls = ["https://static.crates.io/crates/ordered-float/5.5.1/download"],
     visibility = [],
@@ -13883,7 +13579,6 @@ cargo.rust_library(
 http_archive(
     name = "outref-0.5.2.crate",
     sha256 = "1a80800c0488c3a21695ea981a54918fbb37abf04f4d0720c453632255e2ff0e",
-    size_bytes = 5621,
     strip_prefix = "outref-0.5.2",
     urls = ["https://static.crates.io/crates/outref/0.5.2/download"],
     visibility = [],
@@ -13914,7 +13609,6 @@ cargo.rust_library(
 http_archive(
     name = "owned_ttf_parser-0.25.1.crate",
     sha256 = "36820e9051aca1014ddc75770aab4d68bc1e9e632f0f5627c4086bc216fb583b",
-    size_bytes = 8989,
     strip_prefix = "owned_ttf_parser-0.25.1",
     urls = ["https://static.crates.io/crates/owned_ttf_parser/0.25.1/download"],
     visibility = [],
@@ -13955,7 +13649,6 @@ cargo.rust_library(
 http_archive(
     name = "parking-2.2.1.crate",
     sha256 = "f38d5652c16fde515bb1ecef450ab0f6a219d619a7274976324d5e377f7dceba",
-    size_bytes = 10685,
     strip_prefix = "parking-2.2.1",
     urls = ["https://static.crates.io/crates/parking/2.2.1/download"],
     visibility = [],
@@ -13986,7 +13679,6 @@ cargo.rust_library(
 http_archive(
     name = "parking_lot-0.12.5.crate",
     sha256 = "93857453250e3077bd71ff98b6a65ea6621a19bb0f559a85248955ac12c45a1a",
-    size_bytes = 46735,
     strip_prefix = "parking_lot-0.12.5",
     urls = ["https://static.crates.io/crates/parking_lot/0.12.5/download"],
     visibility = [],
@@ -14022,7 +13714,6 @@ cargo.rust_library(
 http_archive(
     name = "parking_lot-0.13.0.crate",
     sha256 = "a9cf937ca4e1d0b7578784559063422fc39ae7c5a00f02471f2614d5486fd226",
-    size_bytes = 49448,
     strip_prefix = "parking_lot-0.13.0",
     urls = ["https://static.crates.io/crates/parking_lot/0.13.0/download"],
     visibility = [],
@@ -14058,7 +13749,6 @@ cargo.rust_library(
 http_archive(
     name = "parking_lot_core-0.9.12.crate",
     sha256 = "2621685985a2ebf1c516881c026032ac7deafcda1a2c9b7850dc81e3dfcb64c1",
-    size_bytes = 34110,
     strip_prefix = "parking_lot_core-0.9.12",
     urls = ["https://static.crates.io/crates/parking_lot_core/0.9.12/download"],
     visibility = [],
@@ -14150,7 +13840,6 @@ buildscript_run(
 http_archive(
     name = "parking_lot_core-0.10.0.crate",
     sha256 = "9cfff060068cc18aa7815010fcaf80c68c7fb9e85fc7f5c0f9bf142c21d19826",
-    size_bytes = 38357,
     strip_prefix = "parking_lot_core-0.10.0",
     urls = ["https://static.crates.io/crates/parking_lot_core/0.10.0/download"],
     visibility = [],
@@ -14205,7 +13894,6 @@ alias(
 http_archive(
     name = "paste-1.0.15.crate",
     sha256 = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a",
-    size_bytes = 18374,
     strip_prefix = "paste-1.0.15",
     urls = ["https://static.crates.io/crates/paste/1.0.15/download"],
     visibility = [],
@@ -14237,7 +13925,6 @@ cargo.rust_library(
 http_archive(
     name = "pastey-0.2.3.crate",
     sha256 = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4",
-    size_bytes = 20361,
     strip_prefix = "pastey-0.2.3",
     urls = ["https://static.crates.io/crates/pastey/0.2.3/download"],
     visibility = [],
@@ -14269,7 +13956,6 @@ cargo.rust_library(
 http_archive(
     name = "path-absolutize-4.0.1.crate",
     sha256 = "f808742975794703469f67a28dd14b1d1009a1743c18b0353b4b951dbb0068ad",
-    size_bytes = 6430,
     strip_prefix = "path-absolutize-4.0.1",
     urls = ["https://static.crates.io/crates/path-absolutize/4.0.1/download"],
     visibility = [],
@@ -14301,7 +13987,6 @@ cargo.rust_library(
 http_archive(
     name = "path-dedot-4.0.1.crate",
     sha256 = "03351d0f1c066c114015408dc6a3e101f080fc03ef9d8d799aa58ec760cac5a6",
-    size_bytes = 5994,
     strip_prefix = "path-dedot-4.0.1",
     urls = ["https://static.crates.io/crates/path-dedot/4.0.1/download"],
     visibility = [],
@@ -14338,7 +14023,6 @@ alias(
 http_archive(
     name = "percent-encoding-2.3.2.crate",
     sha256 = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220",
-    size_bytes = 11583,
     strip_prefix = "percent-encoding-2.3.2",
     urls = ["https://static.crates.io/crates/percent-encoding/2.3.2/download"],
     visibility = [],
@@ -14374,7 +14058,6 @@ cargo.rust_library(
 http_archive(
     name = "phf-0.14.0.crate",
     sha256 = "010378780309880b08997fae13be7834dba947d36393bd372f2b1556deb2a2f6",
-    size_bytes = 27393,
     strip_prefix = "phf-0.14.0",
     urls = ["https://static.crates.io/crates/phf/0.14.0/download"],
     visibility = [],
@@ -14410,7 +14093,6 @@ cargo.rust_library(
 http_archive(
     name = "phf_shared-0.14.0.crate",
     sha256 = "c6fd9027e2d9319be6349febd1db4e8d02aa544921200c9b777720ac34a3aa89",
-    size_bytes = 20291,
     strip_prefix = "phf_shared-0.14.0",
     urls = ["https://static.crates.io/crates/phf_shared/0.14.0/download"],
     visibility = [],
@@ -14443,7 +14125,6 @@ cargo.rust_library(
 http_archive(
     name = "pin-project-lite-0.2.17.crate",
     sha256 = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd",
-    size_bytes = 31034,
     strip_prefix = "pin-project-lite-0.2.17",
     urls = ["https://static.crates.io/crates/pin-project-lite/0.2.17/download"],
     visibility = [],
@@ -14474,7 +14155,6 @@ cargo.rust_library(
 http_archive(
     name = "pkg-config-0.3.34.crate",
     sha256 = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548",
-    size_bytes = 21370,
     strip_prefix = "pkg-config-0.3.34",
     urls = ["https://static.crates.io/crates/pkg-config/0.3.34/download"],
     visibility = [],
@@ -14511,7 +14191,6 @@ alias(
 http_archive(
     name = "png-0.18.1.crate",
     sha256 = "60769b8b31b2a9f263dae2776c37b1b28ae246943cf719eb6946a1db05128a61",
-    size_bytes = 125800,
     strip_prefix = "png-0.18.1",
     urls = ["https://static.crates.io/crates/png/0.18.1/download"],
     visibility = [],
@@ -14555,7 +14234,6 @@ alias(
 http_archive(
     name = "polling-3.11.0.crate",
     sha256 = "5d0e4f59085d47d8241c88ead0f274e8a0cb551f3625263c05eb8dd897c34218",
-    size_bytes = 59387,
     strip_prefix = "polling-3.11.0",
     urls = ["https://static.crates.io/crates/polling/3.11.0/download"],
     visibility = [],
@@ -14614,7 +14292,6 @@ alias(
 http_archive(
     name = "pollster-1.0.1.crate",
     sha256 = "bc6355899e1c9462875b6757c79f3caa011a1fdae12bbb1a2e72dd1f234f8336",
-    size_bytes = 10102,
     strip_prefix = "pollster-1.0.1",
     urls = ["https://static.crates.io/crates/pollster/1.0.1/download"],
     visibility = [],
@@ -14645,7 +14322,6 @@ cargo.rust_library(
 http_archive(
     name = "poly1305-0.8.0.crate",
     sha256 = "8159bd90725d2df49889a078b54f4f79e87f1f8a8444194cdca81d38f5393abf",
-    size_bytes = 32633,
     strip_prefix = "poly1305-0.8.0",
     urls = ["https://static.crates.io/crates/poly1305/0.8.0/download"],
     visibility = [],
@@ -14691,7 +14367,6 @@ cargo.rust_library(
 http_archive(
     name = "potential_utf-0.1.6.crate",
     sha256 = "d83eb9bc6d8e5cf568e7a1101d60ee05e81ed50ea106026f3d18deeb046d7661",
-    size_bytes = 10420,
     strip_prefix = "potential_utf-0.1.6",
     urls = ["https://static.crates.io/crates/potential_utf/0.1.6/download"],
     visibility = [],
@@ -14724,7 +14399,6 @@ cargo.rust_library(
 http_archive(
     name = "powerfmt-0.2.1.crate",
     sha256 = "4a6394b9e965e73d0a289ee54f589087e2c676aedf60885baf52c76b771e4958",
-    size_bytes = 16184,
     strip_prefix = "powerfmt-0.2.1",
     urls = ["https://static.crates.io/crates/powerfmt/0.2.1/download"],
     visibility = [],
@@ -14755,7 +14429,6 @@ cargo.rust_library(
 http_archive(
     name = "ppv-lite86-0.2.21.crate",
     sha256 = "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9",
-    size_bytes = 22522,
     strip_prefix = "ppv-lite86-0.2.21",
     urls = ["https://static.crates.io/crates/ppv-lite86/0.2.21/download"],
     visibility = [],
@@ -14791,7 +14464,6 @@ cargo.rust_library(
 http_archive(
     name = "presser-0.3.1.crate",
     sha256 = "e8cf8e6a8aa66ce33f63993ffc4ea4271eb5b0530a9002db8455ea6050c77bfa",
-    size_bytes = 20946,
     strip_prefix = "presser-0.3.1",
     urls = ["https://static.crates.io/crates/presser/0.3.1/download"],
     visibility = [],
@@ -14822,7 +14494,6 @@ cargo.rust_library(
 http_archive(
     name = "proc-macro2-1.0.107.crate",
     sha256 = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9",
-    size_bytes = 59588,
     strip_prefix = "proc-macro2-1.0.107",
     urls = ["https://static.crates.io/crates/proc-macro2/1.0.107/download"],
     visibility = [],
@@ -14906,7 +14577,6 @@ buildscript_run(
 http_archive(
     name = "profiling-1.0.18.crate",
     sha256 = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5",
-    size_bytes = 11931,
     strip_prefix = "profiling-1.0.18",
     urls = ["https://static.crates.io/crates/profiling/1.0.18/download"],
     visibility = [],
@@ -14937,7 +14607,6 @@ cargo.rust_library(
 http_archive(
     name = "pxfm-0.1.30.crate",
     sha256 = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea",
-    size_bytes = 879463,
     strip_prefix = "pxfm-0.1.30",
     urls = ["https://static.crates.io/crates/pxfm/0.1.30/download"],
     visibility = [],
@@ -14968,7 +14637,6 @@ cargo.rust_library(
 http_archive(
     name = "quick-error-2.0.1.crate",
     sha256 = "a993555f31e5a609f617c12db6250dedcac1b0a85076912c436e6fc9b2c8e6a3",
-    size_bytes = 14265,
     strip_prefix = "quick-error-2.0.1",
     urls = ["https://static.crates.io/crates/quick-error/2.0.1/download"],
     visibility = [],
@@ -15005,7 +14673,6 @@ alias(
 http_archive(
     name = "quick-xml-0.41.0.crate",
     sha256 = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1",
-    size_bytes = 231661,
     strip_prefix = "quick-xml-0.41.0",
     urls = ["https://static.crates.io/crates/quick-xml/0.41.0/download"],
     visibility = [],
@@ -15046,7 +14713,6 @@ cargo.rust_library(
 http_archive(
     name = "quick-xml-0.42.0.crate",
     sha256 = "41b1177fdf999d2321d3fb46ff47159d9c1fb9ad66a4879f8c50a0b504615e9b",
-    size_bytes = 233019,
     strip_prefix = "quick-xml-0.42.0",
     urls = ["https://static.crates.io/crates/quick-xml/0.42.0/download"],
     visibility = [],
@@ -15086,7 +14752,6 @@ cargo.rust_library(
 http_archive(
     name = "quote-1.0.47.crate",
     sha256 = "1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001",
-    size_bytes = 31622,
     strip_prefix = "quote-1.0.47",
     urls = ["https://static.crates.io/crates/quote/1.0.47/download"],
     visibility = [],
@@ -15122,7 +14787,6 @@ cargo.rust_library(
 http_archive(
     name = "rand-0.8.8.crate",
     sha256 = "e058c7de0b26af77780c769414d6257830bb240f3c38477dbc2c16e5f54d6d4c",
-    size_bytes = 84217,
     strip_prefix = "rand-0.8.8",
     urls = ["https://static.crates.io/crates/rand/0.8.8/download"],
     visibility = [],
@@ -15179,7 +14843,6 @@ cargo.rust_library(
 http_archive(
     name = "rand-0.9.5.crate",
     sha256 = "b9ef1d0d795eb7d84685bca4f72f3649f064e6641543d3a8c415898726a57b41",
-    size_bytes = 100216,
     strip_prefix = "rand-0.9.5",
     urls = ["https://static.crates.io/crates/rand/0.9.5/download"],
     visibility = [],
@@ -15223,7 +14886,6 @@ cargo.rust_library(
 http_archive(
     name = "rand-0.10.4.crate",
     sha256 = "8f6fa277c67e6ea590466f04c3fe82cb509f0864fe470643e5570de9514a9b11",
-    size_bytes = 107579,
     strip_prefix = "rand-0.10.4",
     urls = ["https://static.crates.io/crates/rand/0.10.4/download"],
     visibility = [],
@@ -15266,7 +14928,6 @@ cargo.rust_library(
 http_archive(
     name = "rand_chacha-0.3.1.crate",
     sha256 = "e6c10a63a0fa32252be49d21e7709d4d4baf8d231c2dbce1eaa8141b9b127d88",
-    size_bytes = 15251,
     strip_prefix = "rand_chacha-0.3.1",
     urls = ["https://static.crates.io/crates/rand_chacha/0.3.1/download"],
     visibility = [],
@@ -15302,7 +14963,6 @@ cargo.rust_library(
 http_archive(
     name = "rand_chacha-0.9.0.crate",
     sha256 = "d3022b5f1df60f26e1ffddd6c66e8aa15de382ae63b3a0c1bfc0e4d3e3f325cb",
-    size_bytes = 18258,
     strip_prefix = "rand_chacha-0.9.0",
     urls = ["https://static.crates.io/crates/rand_chacha/0.9.0/download"],
     visibility = [],
@@ -15338,7 +14998,6 @@ cargo.rust_library(
 http_archive(
     name = "rand_core-0.6.4.crate",
     sha256 = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c",
-    size_bytes = 22666,
     strip_prefix = "rand_core-0.6.4",
     urls = ["https://static.crates.io/crates/rand_core/0.6.4/download"],
     visibility = [],
@@ -15375,7 +15034,6 @@ cargo.rust_library(
 http_archive(
     name = "rand_core-0.9.5.crate",
     sha256 = "76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c",
-    size_bytes = 24129,
     strip_prefix = "rand_core-0.9.5",
     urls = ["https://static.crates.io/crates/rand_core/0.9.5/download"],
     visibility = [],
@@ -15411,7 +15069,6 @@ cargo.rust_library(
 http_archive(
     name = "rand_core-0.10.1.crate",
     sha256 = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69",
-    size_bytes = 22833,
     strip_prefix = "rand_core-0.10.1",
     urls = ["https://static.crates.io/crates/rand_core/0.10.1/download"],
     visibility = [],
@@ -15442,7 +15099,6 @@ cargo.rust_library(
 http_archive(
     name = "range-alloc-0.1.5.crate",
     sha256 = "ca45419789ae5a7899559e9512e58ca889e41f04f1f2445e9f4b290ceccd1d08",
-    size_bytes = 11163,
     strip_prefix = "range-alloc-0.1.5",
     urls = ["https://static.crates.io/crates/range-alloc/0.1.5/download"],
     visibility = [],
@@ -15473,7 +15129,6 @@ cargo.rust_library(
 http_archive(
     name = "raw-window-handle-0.6.2.crate",
     sha256 = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539",
-    size_bytes = 20234,
     strip_prefix = "raw-window-handle-0.6.2",
     urls = ["https://static.crates.io/crates/raw-window-handle/0.6.2/download"],
     visibility = [],
@@ -15508,7 +15163,6 @@ cargo.rust_library(
 http_archive(
     name = "raw-window-metal-1.1.0.crate",
     sha256 = "40d213455a5f1dc59214213c7330e074ddf8114c9a42411eb890c767357ce135",
-    size_bytes = 15277,
     strip_prefix = "raw-window-metal-1.1.0",
     urls = ["https://static.crates.io/crates/raw-window-metal/1.1.0/download"],
     visibility = [],
@@ -15550,7 +15204,6 @@ cargo.rust_library(
 http_archive(
     name = "regalloc2-0.15.3.crate",
     sha256 = "34f923657880712029496c2e68bb40bef163806b2011adde559b28bbcedc82ea",
-    size_bytes = 153283,
     strip_prefix = "regalloc2-0.15.3",
     urls = ["https://static.crates.io/crates/regalloc2/0.15.3/download"],
     visibility = [],
@@ -15594,7 +15247,6 @@ cargo.rust_library(
 http_archive(
     name = "regex-1.13.1.crate",
     sha256 = "f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a1180401450218d",
-    size_bytes = 157118,
     strip_prefix = "regex-1.13.1",
     urls = ["https://static.crates.io/crates/regex/1.13.1/download"],
     visibility = [],
@@ -15650,7 +15302,6 @@ cargo.rust_library(
 http_archive(
     name = "regex-automata-0.4.18.crate",
     sha256 = "ad8553b9b26413251cbf30e620595c7a41b3887f03da04579c0e6b0d6a06b4b2",
-    size_bytes = 628707,
     strip_prefix = "regex-automata-0.4.18",
     urls = ["https://static.crates.io/crates/regex-automata/0.4.18/download"],
     visibility = [],
@@ -15712,7 +15363,6 @@ cargo.rust_library(
 http_archive(
     name = "regex-syntax-0.8.11.crate",
     sha256 = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4",
-    size_bytes = 359055,
     strip_prefix = "regex-syntax-0.8.11",
     urls = ["https://static.crates.io/crates/regex-syntax/0.8.11/download"],
     visibility = [],
@@ -15755,7 +15405,6 @@ cargo.rust_library(
 http_archive(
     name = "renderdoc-sys-1.1.0.crate",
     sha256 = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832",
-    size_bytes = 10366,
     strip_prefix = "renderdoc-sys-1.1.0",
     urls = ["https://static.crates.io/crates/renderdoc-sys/1.1.0/download"],
     visibility = [],
@@ -15792,7 +15441,6 @@ alias(
 http_archive(
     name = "reqwest-0.13.5.crate",
     sha256 = "16a1cfa75cc186dd73d5818e510e042e40927bccc9c236b061cea97e1eb08029",
-    size_bytes = 160871,
     strip_prefix = "reqwest-0.13.5",
     urls = ["https://static.crates.io/crates/reqwest/0.13.5/download"],
     visibility = [],
@@ -15863,7 +15511,6 @@ alias(
 http_archive(
     name = "rfd-0.18.0.crate",
     sha256 = "c4b9d4857b10297ffb0f64cae711e983a7aeaee561848d56d429d3858bd8ed93",
-    size_bytes = 64282,
     strip_prefix = "rfd-0.18.0",
     urls = ["https://static.crates.io/crates/rfd/0.18.0/download"],
     visibility = [],
@@ -16018,7 +15665,6 @@ alias(
 http_archive(
     name = "ring-0.17.14.crate",
     sha256 = "a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7",
-    size_bytes = 1502610,
     strip_prefix = "ring-0.17.14",
     urls = ["https://static.crates.io/crates/ring/0.17.14/download"],
     visibility = [],
@@ -16130,7 +15776,6 @@ alias(
 http_archive(
     name = "rustc-demangle-0.1.28.crate",
     sha256 = "b74b56ffa8bb2830709a538c2cbcae9aa062db0d2a42563bfb09bdaae44020eb",
-    size_bytes = 30857,
     strip_prefix = "rustc-demangle-0.1.28",
     urls = ["https://static.crates.io/crates/rustc-demangle/0.1.28/download"],
     visibility = [],
@@ -16161,7 +15806,6 @@ cargo.rust_library(
 http_archive(
     name = "rustc-hash-1.1.0.crate",
     sha256 = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2",
-    size_bytes = 9331,
     strip_prefix = "rustc-hash-1.1.0",
     urls = ["https://static.crates.io/crates/rustc-hash/1.1.0/download"],
     visibility = [],
@@ -16202,7 +15846,6 @@ alias(
 http_archive(
     name = "rustc-hash-2.1.3.crate",
     sha256 = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d",
-    size_bytes = 14811,
     strip_prefix = "rustc-hash-2.1.3",
     urls = ["https://static.crates.io/crates/rustc-hash/2.1.3/download"],
     visibility = [],
@@ -16237,7 +15880,6 @@ cargo.rust_library(
 http_archive(
     name = "rustc_version-0.4.1.crate",
     sha256 = "cfcb3a22ef46e85b45de6ee7e79d063319ebb6594faafcf1c225ea92ab6e9b92",
-    size_bytes = 12245,
     strip_prefix = "rustc_version-0.4.1",
     urls = ["https://static.crates.io/crates/rustc_version/0.4.1/download"],
     visibility = [],
@@ -16269,7 +15911,6 @@ cargo.rust_library(
 http_archive(
     name = "rustix-0.38.44.crate",
     sha256 = "fdb5bc1ae2baa591800df16c9ca78619bf65c0488b41b96ccec5d11220d8c154",
-    size_bytes = 379347,
     strip_prefix = "rustix-0.38.44",
     urls = ["https://static.crates.io/crates/rustix/0.38.44/download"],
     visibility = [],
@@ -16392,7 +16033,6 @@ alias(
 http_archive(
     name = "rustix-1.1.6.crate",
     sha256 = "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa",
-    size_bytes = 426484,
     strip_prefix = "rustix-1.1.6",
     urls = ["https://static.crates.io/crates/rustix/1.1.6/download"],
     visibility = [],
@@ -16535,7 +16175,6 @@ alias(
 http_archive(
     name = "rustls-0.23.46.crate",
     sha256 = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf",
-    size_bytes = 386227,
     strip_prefix = "rustls-0.23.46",
     urls = ["https://static.crates.io/crates/rustls/0.23.46/download"],
     visibility = [],
@@ -16638,7 +16277,6 @@ buildscript_run(
 http_archive(
     name = "rustls-native-certs-0.8.5.crate",
     sha256 = "4a073f5dc7469f984c52ad2752b63b0807745133b6de880b7b64c1ac4c48aec4",
-    size_bytes = 21110,
     strip_prefix = "rustls-native-certs-0.8.5",
     urls = ["https://static.crates.io/crates/rustls-native-certs/0.8.5/download"],
     visibility = [],
@@ -16673,7 +16311,6 @@ cargo.rust_library(
 http_archive(
     name = "rustls-pemfile-2.2.0.crate",
     sha256 = "dce314e5fee3f39953d46bb63bb8a46d40c2f8fb7cc5a3b6cab2bde9721d6e50",
-    size_bytes = 25849,
     strip_prefix = "rustls-pemfile-2.2.0",
     urls = ["https://static.crates.io/crates/rustls-pemfile/2.2.0/download"],
     visibility = [],
@@ -16711,7 +16348,6 @@ cargo.rust_library(
 http_archive(
     name = "rustls-pki-types-1.16.0.crate",
     sha256 = "102f35f7de7b06d8c61f1cff6592f5253e0dea431c74867aad5dfd70f44663fb",
-    size_bytes = 40077,
     strip_prefix = "rustls-pki-types-1.16.0",
     urls = ["https://static.crates.io/crates/rustls-pki-types/1.16.0/download"],
     visibility = [],
@@ -16748,7 +16384,6 @@ cargo.rust_library(
 http_archive(
     name = "rustls-platform-verifier-0.7.1.crate",
     sha256 = "1167586491e2b18b8bfbb293e8180ec17c201c4f076d7cb3070ca964e7598f98",
-    size_bytes = 60698,
     strip_prefix = "rustls-platform-verifier-0.7.1",
     urls = ["https://static.crates.io/crates/rustls-platform-verifier/0.7.1/download"],
     visibility = [],
@@ -16816,7 +16451,6 @@ cargo.rust_library(
 http_archive(
     name = "rustls-webpki-0.103.17.crate",
     sha256 = "e3a0760a887c14823fca5a1c970b01d47c328c696c0c64829d1df50e8f853fd5",
-    size_bytes = 93433,
     strip_prefix = "rustls-webpki-0.103.17",
     urls = ["https://static.crates.io/crates/rustls-webpki/0.103.17/download"],
     visibility = [],
@@ -16859,7 +16493,6 @@ cargo.rust_library(
 http_archive(
     name = "rustversion-1.0.23.crate",
     sha256 = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f",
-    size_bytes = 21013,
     strip_prefix = "rustversion-1.0.23",
     urls = ["https://static.crates.io/crates/rustversion/1.0.23/download"],
     visibility = [],
@@ -16937,7 +16570,6 @@ alias(
 http_archive(
     name = "ruzstd-0.9.1.crate",
     sha256 = "69e4ce4a039f42bf25920b95667e4d789e98749ab11bbb8d2c2936f788421bb5",
-    size_bytes = 106716,
     strip_prefix = "ruzstd-0.9.1",
     urls = ["https://static.crates.io/crates/ruzstd/0.9.1/download"],
     visibility = [],
@@ -16974,7 +16606,6 @@ cargo.rust_library(
 http_archive(
     name = "ryu-1.0.23.crate",
     sha256 = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f",
-    size_bytes = 52823,
     strip_prefix = "ryu-1.0.23",
     urls = ["https://static.crates.io/crates/ryu/1.0.23/download"],
     visibility = [],
@@ -17011,7 +16642,6 @@ alias(
 http_archive(
     name = "s3s-0.17.0.crate",
     sha256 = "030a43692a1fd97bbd2c594eeaad8f5c1e452a9d29ad6a3eebce1650937c4a77",
-    size_bytes = 676224,
     strip_prefix = "s3s-0.17.0",
     urls = ["https://static.crates.io/crates/s3s/0.17.0/download"],
     visibility = [],
@@ -17101,7 +16731,6 @@ alias(
 http_archive(
     name = "s3s-fs-0.17.0.crate",
     sha256 = "42664753862217444ecae595cb6b2746faf1b8c2d3c104d696aa10592eb042d8",
-    size_bytes = 75119,
     strip_prefix = "s3s-fs-0.17.0",
     urls = ["https://static.crates.io/crates/s3s-fs/0.17.0/download"],
     visibility = [],
@@ -17197,7 +16826,6 @@ buildscript_run(
 http_archive(
     name = "s3s-multipart-0.17.0.crate",
     sha256 = "a543079d42c20c81781b7e31704ecacd64b0e3819b2384db5bf4869abf6c6f01",
-    size_bytes = 65365,
     strip_prefix = "s3s-multipart-0.17.0",
     urls = ["https://static.crates.io/crates/s3s-multipart/0.17.0/download"],
     visibility = [],
@@ -17236,7 +16864,6 @@ cargo.rust_library(
 http_archive(
     name = "s3s-rfc2047-0.17.0.crate",
     sha256 = "918b207c39474baef4774355100e712dfea46020e3289ddd5b4bc6e21927b826",
-    size_bytes = 10173,
     strip_prefix = "s3s-rfc2047-0.17.0",
     urls = ["https://static.crates.io/crates/s3s-rfc2047/0.17.0/download"],
     visibility = [],
@@ -17271,7 +16898,6 @@ cargo.rust_library(
 http_archive(
     name = "s3s-sigv2-0.17.0.crate",
     sha256 = "0979baf8cdf30e38bdfba8e58ee2776d78e55bb3bd3d1f3502f917829da79933",
-    size_bytes = 17779,
     strip_prefix = "s3s-sigv2-0.17.0",
     urls = ["https://static.crates.io/crates/s3s-sigv2/0.17.0/download"],
     visibility = [],
@@ -17310,7 +16936,6 @@ cargo.rust_library(
 http_archive(
     name = "s3s-sigv4-0.17.0.crate",
     sha256 = "330996b9a24804b3df4ad37e62e7817968857d99cf6029c21512b6b64b97f645",
-    size_bytes = 31042,
     strip_prefix = "s3s-sigv4-0.17.0",
     urls = ["https://static.crates.io/crates/s3s-sigv4/0.17.0/download"],
     visibility = [],
@@ -17355,7 +16980,6 @@ cargo.rust_library(
 http_archive(
     name = "s3s-test-0.17.0.crate",
     sha256 = "f8b9ba61de2952acfe762d56c3f4743324465be961c685eb26c3ed49ef93d13f",
-    size_bytes = 25236,
     strip_prefix = "s3s-test-0.17.0",
     urls = ["https://static.crates.io/crates/s3s-test/0.17.0/download"],
     visibility = [],
@@ -17400,7 +17024,6 @@ cargo.rust_library(
 http_archive(
     name = "same-file-1.0.6.crate",
     sha256 = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502",
-    size_bytes = 10183,
     strip_prefix = "same-file-1.0.6",
     urls = ["https://static.crates.io/crates/same-file/1.0.6/download"],
     visibility = [],
@@ -17436,7 +17059,6 @@ cargo.rust_library(
 http_archive(
     name = "scoped-tls-1.0.1.crate",
     sha256 = "e1cf6437eb19a8f4a6cc0f7dca544973b0b78843adbfeb3683d1a94a0024a294",
-    size_bytes = 8202,
     strip_prefix = "scoped-tls-1.0.1",
     urls = ["https://static.crates.io/crates/scoped-tls/1.0.1/download"],
     visibility = [],
@@ -17467,7 +17089,6 @@ cargo.rust_library(
 http_archive(
     name = "scopeguard-1.2.0.crate",
     sha256 = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49",
-    size_bytes = 11619,
     strip_prefix = "scopeguard-1.2.0",
     urls = ["https://static.crates.io/crates/scopeguard/1.2.0/download"],
     visibility = [],
@@ -17498,7 +17119,6 @@ cargo.rust_library(
 http_archive(
     name = "sctk-adwaita-0.10.1.crate",
     sha256 = "b6277f0217056f77f1d8f49f2950ac6c278c0d607c45f5ee99328d792ede24ec",
-    size_bytes = 53237,
     strip_prefix = "sctk-adwaita-0.10.1",
     urls = ["https://static.crates.io/crates/sctk-adwaita/0.10.1/download"],
     visibility = [],
@@ -17540,7 +17160,6 @@ cargo.rust_library(
 http_archive(
     name = "security-framework-3.7.0.crate",
     sha256 = "b7f4bc775c73d9a02cde8bf7b2ec4c9d12743edf609006c7facc23998404cd1d",
-    size_bytes = 89115,
     strip_prefix = "security-framework-3.7.0",
     urls = ["https://static.crates.io/crates/security-framework/3.7.0/download"],
     visibility = [],
@@ -17584,7 +17203,6 @@ cargo.rust_library(
 http_archive(
     name = "security-framework-sys-2.17.0.crate",
     sha256 = "6ce2691df843ecc5d231c0b14ece2acc3efb62c0a398c7e1d875f3983ce020e3",
-    size_bytes = 21078,
     strip_prefix = "security-framework-sys-2.17.0",
     urls = ["https://static.crates.io/crates/security-framework-sys/2.17.0/download"],
     visibility = [],
@@ -17623,7 +17241,6 @@ cargo.rust_library(
 http_archive(
     name = "semver-1.0.28.crate",
     sha256 = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd",
-    size_bytes = 33064,
     strip_prefix = "semver-1.0.28",
     urls = ["https://static.crates.io/crates/semver/1.0.28/download"],
     visibility = [],
@@ -17664,7 +17281,6 @@ alias(
 http_archive(
     name = "serde-1.0.229.crate",
     sha256 = "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba",
-    size_bytes = 83669,
     strip_prefix = "serde-1.0.229",
     urls = ["https://static.crates.io/crates/serde/1.0.229/download"],
     visibility = [],
@@ -17737,7 +17353,6 @@ buildscript_run(
 http_archive(
     name = "serde_core-1.0.229.crate",
     sha256 = "67dca2c9c51e58a4791a4b1ed58308b39c64224d349a935ab5039aa360942a48",
-    size_bytes = 63100,
     strip_prefix = "serde_core-1.0.229",
     urls = ["https://static.crates.io/crates/serde_core/1.0.229/download"],
     visibility = [],
@@ -17803,7 +17418,6 @@ buildscript_run(
 http_archive(
     name = "serde_derive-1.0.229.crate",
     sha256 = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348",
-    size_bytes = 59864,
     strip_prefix = "serde_derive-1.0.229",
     urls = ["https://static.crates.io/crates/serde_derive/1.0.229/download"],
     visibility = [],
@@ -17847,7 +17461,6 @@ alias(
 http_archive(
     name = "serde_json-1.0.154.crate",
     sha256 = "e7e9cc8b1b85264074fbcc02a88680c4096b1e47df8f739dceb03bf482f04bd6",
-    size_bytes = 158079,
     strip_prefix = "serde_json-1.0.154",
     urls = ["https://static.crates.io/crates/serde_json/1.0.154/download"],
     visibility = [],
@@ -17942,7 +17555,6 @@ buildscript_run(
 http_archive(
     name = "serde_path_to_error-0.1.20.crate",
     sha256 = "10a9ff822e371bb5403e391ecd83e182e0e77ba7f6fe0160b795797109d1b457",
-    size_bytes = 18046,
     strip_prefix = "serde_path_to_error-0.1.20",
     urls = ["https://static.crates.io/crates/serde_path_to_error/0.1.20/download"],
     visibility = [],
@@ -17977,7 +17589,6 @@ cargo.rust_library(
 http_archive(
     name = "serde_repr-0.1.21.crate",
     sha256 = "8d3b1629de253c70a0508c3899572da79ca359fdab27c7920ff00406df418906",
-    size_bytes = 12412,
     strip_prefix = "serde_repr-0.1.21",
     urls = ["https://static.crates.io/crates/serde_repr/0.1.21/download"],
     visibility = [],
@@ -18014,7 +17625,6 @@ cargo.rust_library(
 http_archive(
     name = "serde_spanned-1.1.3.crate",
     sha256 = "9c187e0a369471c550af028cba56d4f4fa2a489ad28151ae95a4d340a2a8b782",
-    size_bytes = 11176,
     strip_prefix = "serde_spanned-1.1.3",
     urls = ["https://static.crates.io/crates/serde_spanned/1.1.3/download"],
     visibility = [],
@@ -18051,7 +17661,6 @@ cargo.rust_library(
 http_archive(
     name = "serde_urlencoded-0.7.1.crate",
     sha256 = "d3491c14715ca2294c4d6a88f15e84739788c1d030eed8c110436aafdaa2f3fd",
-    size_bytes = 12822,
     strip_prefix = "serde_urlencoded-0.7.1",
     urls = ["https://static.crates.io/crates/serde_urlencoded/0.7.1/download"],
     visibility = [],
@@ -18094,7 +17703,6 @@ alias(
 http_archive(
     name = "serde_yaml_ng-0.10.0.crate",
     sha256 = "7b4db627b98b36d4203a7b458cf3573730f2bb591b28871d916dfa9efabfd41f",
-    size_bytes = 63772,
     strip_prefix = "serde_yaml_ng-0.10.0",
     urls = ["https://static.crates.io/crates/serde_yaml_ng/0.10.0/download"],
     visibility = [],
@@ -18138,7 +17746,6 @@ alias(
 http_archive(
     name = "sha1-0.10.7.crate",
     sha256 = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8",
-    size_bytes = 14582,
     strip_prefix = "sha1-0.10.7",
     urls = ["https://static.crates.io/crates/sha1/0.10.7/download"],
     visibility = [],
@@ -18178,7 +17785,6 @@ cargo.rust_library(
 http_archive(
     name = "sha1-0.11.0.crate",
     sha256 = "aacc4cc499359472b4abe1bf11d0b12e688af9a805fa5e3016f9a386dc2d0214",
-    size_bytes = 15458,
     strip_prefix = "sha1-0.11.0",
     urls = ["https://static.crates.io/crates/sha1/0.11.0/download"],
     visibility = [],
@@ -18225,7 +17831,6 @@ alias(
 http_archive(
     name = "sha2-0.10.9.crate",
     sha256 = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283",
-    size_bytes = 29271,
     strip_prefix = "sha2-0.10.9",
     urls = ["https://static.crates.io/crates/sha2/0.10.9/download"],
     visibility = [],
@@ -18274,7 +17879,6 @@ alias(
 http_archive(
     name = "sha2-0.11.1.crate",
     sha256 = "47d7069beb7d6ac7b9acd1039986e73443f24234f41074da099d6f994ac9ad19",
-    size_bytes = 32748,
     strip_prefix = "sha2-0.11.1",
     urls = ["https://static.crates.io/crates/sha2/0.11.1/download"],
     visibility = [],
@@ -18315,7 +17919,6 @@ cargo.rust_library(
 http_archive(
     name = "sha2-asm-0.6.4.crate",
     sha256 = "b845214d6175804686b2bd482bcffe96651bb2d1200742b712003504a2dac1ab",
-    size_bytes = 12581,
     strip_prefix = "sha2-asm-0.6.4",
     urls = ["https://static.crates.io/crates/sha2-asm/0.6.4/download"],
     visibility = [],
@@ -18389,7 +17992,6 @@ buildscript_run(
 http_archive(
     name = "sharded-slab-0.1.7.crate",
     sha256 = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6",
-    size_bytes = 58227,
     strip_prefix = "sharded-slab-0.1.7",
     urls = ["https://static.crates.io/crates/sharded-slab/0.1.7/download"],
     visibility = [],
@@ -18421,7 +18023,6 @@ cargo.rust_library(
 http_archive(
     name = "shlex-2.0.1.crate",
     sha256 = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba",
-    size_bytes = 19332,
     strip_prefix = "shlex-2.0.1",
     urls = ["https://static.crates.io/crates/shlex/2.0.1/download"],
     visibility = [],
@@ -18456,7 +18057,6 @@ cargo.rust_library(
 http_archive(
     name = "signal-hook-registry-1.4.8.crate",
     sha256 = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b",
-    size_bytes = 21668,
     strip_prefix = "signal-hook-registry-1.4.8",
     urls = ["https://static.crates.io/crates/signal-hook-registry/1.4.8/download"],
     visibility = [],
@@ -18491,7 +18091,6 @@ cargo.rust_library(
 http_archive(
     name = "signature-2.2.0.crate",
     sha256 = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de",
-    size_bytes = 15531,
     strip_prefix = "signature-2.2.0",
     urls = ["https://static.crates.io/crates/signature/2.2.0/download"],
     visibility = [],
@@ -18526,7 +18125,6 @@ cargo.rust_library(
 http_archive(
     name = "simd-adler32-0.3.10.crate",
     sha256 = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea",
-    size_bytes = 18760,
     strip_prefix = "simd-adler32-0.3.10",
     urls = ["https://static.crates.io/crates/simd-adler32/0.3.10/download"],
     visibility = [],
@@ -18562,7 +18160,6 @@ cargo.rust_library(
 http_archive(
     name = "simdutf8-0.1.5.crate",
     sha256 = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e",
-    size_bytes = 28488,
     strip_prefix = "simdutf8-0.1.5",
     urls = ["https://static.crates.io/crates/simdutf8/0.1.5/download"],
     visibility = [],
@@ -18594,7 +18191,6 @@ cargo.rust_library(
 http_archive(
     name = "siphasher-1.0.4.crate",
     sha256 = "33f4fe9184a62d842c9ef383018f3306d8ba224fd9d836f56d7288308847c256",
-    size_bytes = 16131,
     strip_prefix = "siphasher-1.0.4",
     urls = ["https://static.crates.io/crates/siphasher/1.0.4/download"],
     visibility = [],
@@ -18629,7 +18225,6 @@ cargo.rust_library(
 http_archive(
     name = "slab-0.4.12.crate",
     sha256 = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5",
-    size_bytes = 19080,
     strip_prefix = "slab-0.4.12",
     urls = ["https://static.crates.io/crates/slab/0.4.12/download"],
     visibility = [],
@@ -18670,7 +18265,6 @@ alias(
 http_archive(
     name = "smallvec-1.16.5.crate",
     sha256 = "149309498a5f7334b12ddae0cad8aba81ce785fe91755068867e017cf98fee46",
-    size_bytes = 34819,
     strip_prefix = "smallvec-1.16.5",
     urls = ["https://static.crates.io/crates/smallvec/1.16.5/download"],
     visibility = [],
@@ -18708,7 +18302,6 @@ cargo.rust_library(
 http_archive(
     name = "smithay-client-toolkit-0.19.2.crate",
     sha256 = "3457dea1f0eb631b4034d61d4d8c32074caa6cd1ab2d59f2327bd8461e2c0016",
-    size_bytes = 131504,
     strip_prefix = "smithay-client-toolkit-0.19.2",
     urls = ["https://static.crates.io/crates/smithay-client-toolkit/0.19.2/download"],
     visibility = [],
@@ -18762,7 +18355,6 @@ cargo.rust_library(
 http_archive(
     name = "smol_str-0.2.2.crate",
     sha256 = "dd538fb6910ac1099850255cf94a94df6551fbdd602454387d0adb2d1ca6dead",
-    size_bytes = 15840,
     strip_prefix = "smol_str-0.2.2",
     urls = ["https://static.crates.io/crates/smol_str/0.2.2/download"],
     visibility = [],
@@ -18803,7 +18395,6 @@ alias(
 http_archive(
     name = "socket2-0.6.5.crate",
     sha256 = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4",
-    size_bytes = 60031,
     strip_prefix = "socket2-0.6.5",
     urls = ["https://static.crates.io/crates/socket2/0.6.5/download"],
     visibility = [],
@@ -18852,7 +18443,6 @@ cargo.rust_library(
 http_archive(
     name = "spin-0.9.9.crate",
     sha256 = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e",
-    size_bytes = 39817,
     strip_prefix = "spin-0.9.9",
     urls = ["https://static.crates.io/crates/spin/0.9.9/download"],
     visibility = [],
@@ -18897,7 +18487,6 @@ cargo.rust_library(
 http_archive(
     name = "spin-0.10.1.crate",
     sha256 = "023a211cb3138dbc438680b32560ad89f699977624c9f8dbb95a47d5b4c07dd3",
-    size_bytes = 40591,
     strip_prefix = "spin-0.10.1",
     urls = ["https://static.crates.io/crates/spin/0.10.1/download"],
     visibility = [],
@@ -18934,7 +18523,6 @@ cargo.rust_library(
 http_archive(
     name = "spirv-0.4.0+sdk-1.4.341.0.crate",
     sha256 = "d9571ea910ebd84c86af4b3ed27f9dbdc6ad06f17c5f96146b2b671e2976744f",
-    size_bytes = 41285,
     strip_prefix = "spirv-0.4.0+sdk-1.4.341.0",
     urls = ["https://static.crates.io/crates/spirv/0.4.0+sdk-1.4.341.0/download"],
     visibility = [],
@@ -18972,7 +18560,6 @@ alias(
 http_archive(
     name = "sqlx-0.8.6.crate",
     sha256 = "1fefb893899429669dcdd979aff487bd78f4064e5e7907e4269081e0ef7d97dc",
-    size_bytes = 190134,
     strip_prefix = "sqlx-0.8.6",
     urls = ["https://static.crates.io/crates/sqlx/0.8.6/download"],
     visibility = [],
@@ -19022,7 +18609,6 @@ cargo.rust_library(
 http_archive(
     name = "sqlx-core-0.8.6.crate",
     sha256 = "ee6798b1838b6a0f69c007c133b8df5866302197e404e8b6ee8ed3e3a5e68dc6",
-    size_bytes = 118378,
     strip_prefix = "sqlx-core-0.8.6",
     urls = ["https://static.crates.io/crates/sqlx-core/0.8.6/download"],
     visibility = [],
@@ -19095,7 +18681,6 @@ cargo.rust_library(
 http_archive(
     name = "sqlx-macros-0.8.6.crate",
     sha256 = "a2d452988ccaacfbf5e0bdbc348fb91d7c8af5bee192173ac3636b5fb6e6715d",
-    size_bytes = 6348,
     strip_prefix = "sqlx-macros-0.8.6",
     urls = ["https://static.crates.io/crates/sqlx-macros/0.8.6/download"],
     visibility = [],
@@ -19143,7 +18728,6 @@ cargo.rust_library(
 http_archive(
     name = "sqlx-macros-core-0.8.6.crate",
     sha256 = "19a9c1841124ac5a61741f96e1d9e2ec77424bf323962dd894bdb93f37d5219b",
-    size_bytes = 30587,
     strip_prefix = "sqlx-macros-core-0.8.6",
     urls = ["https://static.crates.io/crates/sqlx-macros-core/0.8.6/download"],
     visibility = [],
@@ -19205,7 +18789,6 @@ cargo.rust_library(
 http_archive(
     name = "sqlx-postgres-0.8.6.crate",
     sha256 = "db58fcd5a53cf07c184b154801ff91347e4c30d17a3562a635ff028ad5deda46",
-    size_bytes = 140616,
     strip_prefix = "sqlx-postgres-0.8.6",
     urls = ["https://static.crates.io/crates/sqlx-postgres/0.8.6/download"],
     visibility = [],
@@ -19276,7 +18859,6 @@ cargo.rust_library(
 http_archive(
     name = "sqlx-sqlite-0.8.6.crate",
     sha256 = "c2d12fe70b2c1b4401038055f90f151b78208de1f9f89a7dbfd41587a10c3eea",
-    size_bytes = 82039,
     strip_prefix = "sqlx-sqlite-0.8.6",
     urls = ["https://static.crates.io/crates/sqlx-sqlite/0.8.6/download"],
     visibility = [],
@@ -19332,7 +18914,6 @@ cargo.rust_library(
 http_archive(
     name = "stable_deref_trait-1.2.1.crate",
     sha256 = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596",
-    size_bytes = 8186,
     strip_prefix = "stable_deref_trait-1.2.1",
     urls = ["https://static.crates.io/crates/stable_deref_trait/1.2.1/download"],
     visibility = [],
@@ -19367,7 +18948,6 @@ cargo.rust_library(
 http_archive(
     name = "static_assertions-1.1.0.crate",
     sha256 = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f",
-    size_bytes = 18480,
     strip_prefix = "static_assertions-1.1.0",
     urls = ["https://static.crates.io/crates/static_assertions/1.1.0/download"],
     visibility = [],
@@ -19398,7 +18978,6 @@ cargo.rust_library(
 http_archive(
     name = "std-next-0.1.9.crate",
     sha256 = "04082e93ed1a06debd9148c928234b46d2cf260bc65f44e1d1d3fa594c5beebc",
-    size_bytes = 7669,
     strip_prefix = "std-next-0.1.9",
     urls = ["https://static.crates.io/crates/std-next/0.1.9/download"],
     visibility = [],
@@ -19438,7 +19017,6 @@ cargo.rust_library(
 http_archive(
     name = "strict-num-0.1.1.crate",
     sha256 = "6637bab7722d379c8b41ba849228d680cc12d0a45ba1fa2b48f2a30577a06731",
-    size_bytes = 5104,
     strip_prefix = "strict-num-0.1.1",
     urls = ["https://static.crates.io/crates/strict-num/0.1.1/download"],
     visibility = [],
@@ -19469,7 +19047,6 @@ cargo.rust_library(
 http_archive(
     name = "stringprep-0.1.5.crate",
     sha256 = "7b4df3d392d81bd458a8a621b8bffbd2302a12ffe288a9d931670948749463b1",
-    size_bytes = 23573,
     strip_prefix = "stringprep-0.1.5",
     urls = ["https://static.crates.io/crates/stringprep/0.1.5/download"],
     visibility = [],
@@ -19505,7 +19082,6 @@ cargo.rust_library(
 http_archive(
     name = "strsim-0.11.1.crate",
     sha256 = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f",
-    size_bytes = 14266,
     strip_prefix = "strsim-0.11.1",
     urls = ["https://static.crates.io/crates/strsim/0.11.1/download"],
     visibility = [],
@@ -19542,7 +19118,6 @@ alias(
 http_archive(
     name = "subtle-2.6.1.crate",
     sha256 = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292",
-    size_bytes = 14562,
     strip_prefix = "subtle-2.6.1",
     urls = ["https://static.crates.io/crates/subtle/2.6.1/download"],
     visibility = [],
@@ -19578,7 +19153,6 @@ cargo.rust_library(
 http_archive(
     name = "syn-2.0.119.crate",
     sha256 = "872831b642d1a07999a962a351ed35b955ea2cfc8f3862091e2a240a84f17297",
-    size_bytes = 307407,
     strip_prefix = "syn-2.0.119",
     urls = ["https://static.crates.io/crates/syn/2.0.119/download"],
     visibility = [],
@@ -19625,7 +19199,6 @@ cargo.rust_library(
 http_archive(
     name = "syn-3.0.10.crate",
     sha256 = "4ae9ccbea3a7b0b09443036490c8f34a8b1b760fd345e5c0dae0aac718faea79",
-    size_bytes = 314214,
     strip_prefix = "syn-3.0.10",
     urls = ["https://static.crates.io/crates/syn/3.0.10/download"],
     visibility = [],
@@ -19674,7 +19247,6 @@ cargo.rust_library(
 http_archive(
     name = "sync_wrapper-1.0.2.crate",
     sha256 = "0bf256ce5efdfa370213c1dabab5935a12e49f2c58d15e9eac2870d3b4f27263",
-    size_bytes = 6958,
     strip_prefix = "sync_wrapper-1.0.2",
     urls = ["https://static.crates.io/crates/sync_wrapper/1.0.2/download"],
     visibility = [],
@@ -19710,7 +19282,6 @@ cargo.rust_library(
 http_archive(
     name = "synstructure-0.14.0.crate",
     sha256 = "901704edd0dfe137f1987838ee4f259e4e063c31371bdb423f7ae38ec6f77f02",
-    size_bytes = 19010,
     strip_prefix = "synstructure-0.14.0",
     urls = ["https://static.crates.io/crates/synstructure/0.14.0/download"],
     visibility = [],
@@ -19750,7 +19321,6 @@ cargo.rust_library(
 http_archive(
     name = "target-lexicon-0.13.6.crate",
     sha256 = "8c447be3a2abfa84b2d91680c56600bd6b2873866de27b36ec911be705e291da",
-    size_bytes = 27375,
     strip_prefix = "target-lexicon-0.13.6",
     urls = ["https://static.crates.io/crates/target-lexicon/0.13.6/download"],
     visibility = [],
@@ -19824,7 +19394,6 @@ buildscript_run(
 http_archive(
     name = "termcolor-1.4.1.crate",
     sha256 = "06794f8f6c5c898b3275aebefa6b8a1cb24cd2c6c79397ab15774837a0bc5755",
-    size_bytes = 18773,
     strip_prefix = "termcolor-1.4.1",
     urls = ["https://static.crates.io/crates/termcolor/1.4.1/download"],
     visibility = [],
@@ -19860,7 +19429,6 @@ cargo.rust_library(
 http_archive(
     name = "thiserror-1.0.69.crate",
     sha256 = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52",
-    size_bytes = 22198,
     strip_prefix = "thiserror-1.0.69",
     urls = ["https://static.crates.io/crates/thiserror/1.0.69/download"],
     visibility = [],
@@ -19912,7 +19480,6 @@ alias(
 http_archive(
     name = "thiserror-2.0.21.crate",
     sha256 = "09e52cb86a36cede5cb101bf8908837b3e4c6e5e59fe7fd85c23fb56200d189e",
-    size_bytes = 29021,
     strip_prefix = "thiserror-2.0.21",
     urls = ["https://static.crates.io/crates/thiserror/2.0.21/download"],
     visibility = [],
@@ -19970,7 +19537,6 @@ buildscript_run(
 http_archive(
     name = "thiserror-impl-1.0.69.crate",
     sha256 = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1",
-    size_bytes = 18365,
     strip_prefix = "thiserror-impl-1.0.69",
     urls = ["https://static.crates.io/crates/thiserror-impl/1.0.69/download"],
     visibility = [],
@@ -20007,7 +19573,6 @@ cargo.rust_library(
 http_archive(
     name = "thiserror-impl-2.0.21.crate",
     sha256 = "fe5197923287db20a58125f0bc85c062f7f2c892de97b18c356f9efb14b28524",
-    size_bytes = 21637,
     strip_prefix = "thiserror-impl-2.0.21",
     urls = ["https://static.crates.io/crates/thiserror-impl/2.0.21/download"],
     visibility = [],
@@ -20044,7 +19609,6 @@ cargo.rust_library(
 http_archive(
     name = "thousands-0.2.0.crate",
     sha256 = "3bf63baf9f5039dadc247375c29eb13706706cfde997d0330d05aa63a77d8820",
-    size_bytes = 11060,
     strip_prefix = "thousands-0.2.0",
     urls = ["https://static.crates.io/crates/thousands/0.2.0/download"],
     visibility = [],
@@ -20075,7 +19639,6 @@ cargo.rust_library(
 http_archive(
     name = "thread_local-1.1.10.crate",
     sha256 = "1ad99c4c6d32803332c548b1af0540b357b3f5fc0be8f6c6bfe8b2e6ae784070",
-    size_bytes = 16361,
     strip_prefix = "thread_local-1.1.10",
     urls = ["https://static.crates.io/crates/thread_local/1.1.10/download"],
     visibility = [],
@@ -20113,7 +19676,6 @@ alias(
 http_archive(
     name = "time-0.3.55.crate",
     sha256 = "cdb87b95ec50ddfa440816d227a17b2ccbdda963a316a727fda0fc4334f7d134",
-    size_bytes = 279955,
     strip_prefix = "time-0.3.55",
     urls = ["https://static.crates.io/crates/time/0.3.55/download"],
     visibility = [],
@@ -20160,7 +19722,6 @@ cargo.rust_library(
 http_archive(
     name = "time-core-0.1.9.crate",
     sha256 = "9e1c906769ad99c88eaa54e728060edef082f8e358ff32030cb7c7d315e81109",
-    size_bytes = 10320,
     strip_prefix = "time-core-0.1.9",
     urls = ["https://static.crates.io/crates/time-core/0.1.9/download"],
     visibility = [],
@@ -20191,7 +19752,6 @@ cargo.rust_library(
 http_archive(
     name = "time-macros-0.2.32.crate",
     sha256 = "7e689342a48d2ea927c87ea50cabf8594854bf940e9310208848d680d668ed85",
-    size_bytes = 33664,
     strip_prefix = "time-macros-0.2.32",
     urls = ["https://static.crates.io/crates/time-macros/0.2.32/download"],
     visibility = [],
@@ -20231,7 +19791,6 @@ cargo.rust_library(
 http_archive(
     name = "tiny-skia-0.11.4.crate",
     sha256 = "83d13394d44dae3207b52a326c0c85a8bf87f1541f23b0d143811088497b09ab",
-    size_bytes = 201082,
     strip_prefix = "tiny-skia-0.11.4",
     urls = ["https://static.crates.io/crates/tiny-skia/0.11.4/download"],
     visibility = [],
@@ -20274,7 +19833,6 @@ cargo.rust_library(
 http_archive(
     name = "tiny-skia-path-0.11.4.crate",
     sha256 = "9c9e7fc0c2e86a30b117d0462aa261b72b7a99b7ebd7deb3a14ceda95c5bdc93",
-    size_bytes = 47764,
     strip_prefix = "tiny-skia-path-0.11.4",
     urls = ["https://static.crates.io/crates/tiny-skia-path/0.11.4/download"],
     visibility = [],
@@ -20311,7 +19869,6 @@ cargo.rust_library(
 http_archive(
     name = "tinystr-0.8.5.crate",
     sha256 = "abc840c238154d58f9e86b2792261edfde565a17696e1cda1a449de27979801a",
-    size_bytes = 25049,
     strip_prefix = "tinystr-0.8.5",
     urls = ["https://static.crates.io/crates/tinystr/0.8.5/download"],
     visibility = [],
@@ -20347,7 +19904,6 @@ cargo.rust_library(
 http_archive(
     name = "tinyvec-1.13.3.crate",
     sha256 = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee",
-    size_bytes = 60306,
     strip_prefix = "tinyvec-1.13.3",
     urls = ["https://static.crates.io/crates/tinyvec/1.13.3/download"],
     visibility = [],
@@ -20388,7 +19944,6 @@ alias(
 http_archive(
     name = "tokio-1.54.1.crate",
     sha256 = "b52fd3255258d26fac7264ab5a76b53c13367136dc011d3d6ad4f8ed070396a3",
-    size_bytes = 983384,
     strip_prefix = "tokio-1.54.1",
     urls = ["https://static.crates.io/crates/tokio/1.54.1/download"],
     visibility = [],
@@ -20480,7 +20035,6 @@ cargo.rust_library(
 http_archive(
     name = "tokio-macros-2.7.2.crate",
     sha256 = "78773a2a397f451582ce068015985c33193cf6dea8b74d2a639fe457b2f07b0e",
-    size_bytes = 16081,
     strip_prefix = "tokio-macros-2.7.2",
     urls = ["https://static.crates.io/crates/tokio-macros/2.7.2/download"],
     visibility = [],
@@ -20517,7 +20071,6 @@ cargo.rust_library(
 http_archive(
     name = "tokio-rustls-0.26.6.crate",
     sha256 = "c9cc2678c2cdd569ef8215e2afd7954ada2ae20b4fdd2c5fe6139a3b02d105db",
-    size_bytes = 29259,
     strip_prefix = "tokio-rustls-0.26.6",
     urls = ["https://static.crates.io/crates/tokio-rustls/0.26.6/download"],
     visibility = [],
@@ -20553,7 +20106,6 @@ cargo.rust_library(
 http_archive(
     name = "tokio-stream-0.1.19.crate",
     sha256 = "a3d06f0b082ba57c26b79407372e57cf2a1e28124f78e9479fe80322cf53420b",
-    size_bytes = 48088,
     strip_prefix = "tokio-stream-0.1.19",
     urls = ["https://static.crates.io/crates/tokio-stream/0.1.19/download"],
     visibility = [],
@@ -20600,7 +20152,6 @@ alias(
 http_archive(
     name = "tokio-tungstenite-0.26.2.crate",
     sha256 = "7a9daff607c6d2bf6c16fd681ccb7eecc83e4e2cdc1ca067ffaadfca5de7f084",
-    size_bytes = 29868,
     strip_prefix = "tokio-tungstenite-0.26.2",
     urls = ["https://static.crates.io/crates/tokio-tungstenite/0.26.2/download"],
     visibility = [],
@@ -20643,7 +20194,6 @@ cargo.rust_library(
 http_archive(
     name = "tokio-tungstenite-0.29.0.crate",
     sha256 = "8f72a05e828585856dacd553fba484c242c46e391fb0e58917c942ee9202915c",
-    size_bytes = 30226,
     strip_prefix = "tokio-tungstenite-0.29.0",
     urls = ["https://static.crates.io/crates/tokio-tungstenite/0.29.0/download"],
     visibility = [],
@@ -20686,7 +20236,6 @@ cargo.rust_library(
 http_archive(
     name = "tokio-util-0.7.20.crate",
     sha256 = "e464cf451ba96ebfc6f9b6542f17ee8b8956e33f1e40d9690624e59d7a7f8a4b",
-    size_bytes = 149783,
     strip_prefix = "tokio-util-0.7.20",
     urls = ["https://static.crates.io/crates/tokio-util/0.7.20/download"],
     visibility = [],
@@ -20750,7 +20299,6 @@ alias(
 http_archive(
     name = "toml-0.9.12+spec-1.1.0.crate",
     sha256 = "cf92845e79fc2e2def6a5d828f0801e29a2f8acc037becc5ab08595c7d5e9863",
-    size_bytes = 56485,
     strip_prefix = "toml-0.9.12+spec-1.1.0",
     urls = ["https://static.crates.io/crates/toml/0.9.12+spec-1.1.0/download"],
     visibility = [],
@@ -20796,7 +20344,6 @@ cargo.rust_library(
 http_archive(
     name = "toml_datetime-0.7.5+spec-1.1.0.crate",
     sha256 = "92e1cfed4a3038bc5a127e35a2d360f145e1f4b971b551a2ba5fd7aedf7e1347",
-    size_bytes = 17975,
     strip_prefix = "toml_datetime-0.7.5+spec-1.1.0",
     urls = ["https://static.crates.io/crates/toml_datetime/0.7.5+spec-1.1.0/download"],
     visibility = [],
@@ -20833,7 +20380,6 @@ cargo.rust_library(
 http_archive(
     name = "toml_parser-1.1.5+spec-1.1.0.crate",
     sha256 = "baa693a8032d7e1cada7d0041e96126df243179ff061456783ac7f12bda4744c",
-    size_bytes = 36159,
     strip_prefix = "toml_parser-1.1.5+spec-1.1.0",
     urls = ["https://static.crates.io/crates/toml_parser/1.1.5+spec-1.1.0/download"],
     visibility = [],
@@ -20869,7 +20415,6 @@ cargo.rust_library(
 http_archive(
     name = "toml_writer-1.2.0+spec-1.1.0.crate",
     sha256 = "009dbb7700f11c55ef83aebbe4c0e9cf1f1ac0844bd8d6f00dc38f302026e13a",
-    size_bytes = 19388,
     strip_prefix = "toml_writer-1.2.0+spec-1.1.0",
     urls = ["https://static.crates.io/crates/toml_writer/1.2.0+spec-1.1.0/download"],
     visibility = [],
@@ -20910,7 +20455,6 @@ alias(
 http_archive(
     name = "tower-0.5.3.crate",
     sha256 = "ebe5ef63511595f1344e2d5cfa636d973292adc0eec1f0ad45fae9f0851ab1d4",
-    size_bytes = 110488,
     strip_prefix = "tower-0.5.3",
     urls = ["https://static.crates.io/crates/tower/0.5.3/download"],
     visibility = [],
@@ -20970,7 +20514,6 @@ alias(
 http_archive(
     name = "tower-http-0.6.11.crate",
     sha256 = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840",
-    size_bytes = 156773,
     strip_prefix = "tower-http-0.6.11",
     urls = ["https://static.crates.io/crates/tower-http/0.6.11/download"],
     visibility = [],
@@ -21036,7 +20579,6 @@ cargo.rust_library(
 http_archive(
     name = "tower-layer-0.3.3.crate",
     sha256 = "121c2a6cda46980bb0fcd1647ffaf6cd3fc79a013de288782836f6df9c48780e",
-    size_bytes = 6180,
     strip_prefix = "tower-layer-0.3.3",
     urls = ["https://static.crates.io/crates/tower-layer/0.3.3/download"],
     visibility = [],
@@ -21067,7 +20609,6 @@ cargo.rust_library(
 http_archive(
     name = "tower-service-0.3.3.crate",
     sha256 = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3",
-    size_bytes = 6950,
     strip_prefix = "tower-service-0.3.3",
     urls = ["https://static.crates.io/crates/tower-service/0.3.3/download"],
     visibility = [],
@@ -21098,7 +20639,6 @@ cargo.rust_library(
 http_archive(
     name = "tracing-0.1.44.crate",
     sha256 = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100",
-    size_bytes = 463135,
     strip_prefix = "tracing-0.1.44",
     urls = ["https://static.crates.io/crates/tracing/0.1.44/download"],
     visibility = [],
@@ -21142,7 +20682,6 @@ cargo.rust_library(
 http_archive(
     name = "tracing-attributes-0.1.31.crate",
     sha256 = "7490cfa5ec963746568740651ac6781f701c9c5ea257c58e057f3ba8cf69e8da",
-    size_bytes = 39733,
     strip_prefix = "tracing-attributes-0.1.31",
     urls = ["https://static.crates.io/crates/tracing-attributes/0.1.31/download"],
     visibility = [],
@@ -21179,7 +20718,6 @@ cargo.rust_library(
 http_archive(
     name = "tracing-core-0.1.36.crate",
     sha256 = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a",
-    size_bytes = 63967,
     strip_prefix = "tracing-core-0.1.36",
     urls = ["https://static.crates.io/crates/tracing-core/0.1.36/download"],
     visibility = [],
@@ -21216,7 +20754,6 @@ cargo.rust_library(
 http_archive(
     name = "tracing-error-0.2.1.crate",
     sha256 = "8b1581020d7a273442f5b45074a6a57d5757ad0a47dac0e9f0bd57b81936f3db",
-    size_bytes = 14135,
     strip_prefix = "tracing-error-0.2.1",
     urls = ["https://static.crates.io/crates/tracing-error/0.2.1/download"],
     visibility = [],
@@ -21255,7 +20792,6 @@ cargo.rust_library(
 http_archive(
     name = "tracing-log-0.2.0.crate",
     sha256 = "ee855f1f400bd0e5c02d150ae5de3840039a3f54b025156404e34c23c03f47c3",
-    size_bytes = 17561,
     strip_prefix = "tracing-log-0.2.0",
     urls = ["https://static.crates.io/crates/tracing-log/0.2.0/download"],
     visibility = [],
@@ -21295,7 +20831,6 @@ cargo.rust_library(
 http_archive(
     name = "tracing-subscriber-0.3.23.crate",
     sha256 = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319",
-    size_bytes = 213773,
     strip_prefix = "tracing-subscriber-0.3.23",
     urls = ["https://static.crates.io/crates/tracing-subscriber/0.3.23/download"],
     visibility = [],
@@ -21357,7 +20892,6 @@ cargo.rust_library(
 http_archive(
     name = "transform-stream-0.3.1.crate",
     sha256 = "c1a814d25437963577f6221d33a2aaa60bfb44acc3330cdc7c334644e9832022",
-    size_bytes = 7803,
     strip_prefix = "transform-stream-0.3.1",
     urls = ["https://static.crates.io/crates/transform-stream/0.3.1/download"],
     visibility = [],
@@ -21389,7 +20923,6 @@ cargo.rust_library(
 http_archive(
     name = "try-lock-0.2.5.crate",
     sha256 = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b",
-    size_bytes = 4314,
     strip_prefix = "try-lock-0.2.5",
     urls = ["https://static.crates.io/crates/try-lock/0.2.5/download"],
     visibility = [],
@@ -21420,7 +20953,6 @@ cargo.rust_library(
 http_archive(
     name = "ttf-parser-0.25.1.crate",
     sha256 = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31",
-    size_bytes = 201121,
     strip_prefix = "ttf-parser-0.25.1",
     urls = ["https://static.crates.io/crates/ttf-parser/0.25.1/download"],
     visibility = [],
@@ -21465,7 +20997,6 @@ alias(
 http_archive(
     name = "tungstenite-0.26.2.crate",
     sha256 = "4793cb5e56680ecbb1d843515b23b6de9a75eb04b66643e256a396d43be33c13",
-    size_bytes = 65315,
     strip_prefix = "tungstenite-0.26.2",
     urls = ["https://static.crates.io/crates/tungstenite/0.26.2/download"],
     visibility = [],
@@ -21523,7 +21054,6 @@ cargo.rust_library(
 http_archive(
     name = "tungstenite-0.29.0.crate",
     sha256 = "6c01152af293afb9c7c2a57e4b559c5620b421f6d133261c60dd2d0cdb38e6b8",
-    size_bytes = 72513,
     strip_prefix = "tungstenite-0.29.0",
     urls = ["https://static.crates.io/crates/tungstenite/0.29.0/download"],
     visibility = [],
@@ -21571,7 +21101,6 @@ cargo.rust_library(
 http_archive(
     name = "twox-hash-2.1.5.crate",
     sha256 = "86a801b3cea342a06d468c8710662aa29e5e05e4f5c0d62f00bbb7f2ad7941c2",
-    size_bytes = 38461,
     strip_prefix = "twox-hash-2.1.5",
     urls = ["https://static.crates.io/crates/twox-hash/2.1.5/download"],
     visibility = [],
@@ -21603,7 +21132,6 @@ cargo.rust_library(
 http_archive(
     name = "typed-arena-2.0.2.crate",
     sha256 = "6af6ae20167a9ece4bcb41af5b80f8a1f1df981f6391189ce00fd257af04126a",
-    size_bytes = 11848,
     strip_prefix = "typed-arena-2.0.2",
     urls = ["https://static.crates.io/crates/typed-arena/2.0.2/download"],
     visibility = [],
@@ -21638,7 +21166,6 @@ cargo.rust_library(
 http_archive(
     name = "typenum-1.20.1.crate",
     sha256 = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20",
-    size_bytes = 105479,
     strip_prefix = "typenum-1.20.1",
     urls = ["https://static.crates.io/crates/typenum/1.20.1/download"],
     visibility = [],
@@ -21670,7 +21197,6 @@ cargo.rust_library(
 http_archive(
     name = "unicase-2.10.0.crate",
     sha256 = "357cc3acc6a036009fd6c973ed009037c732d60d0b4f6c673e9041497482a28f",
-    size_bytes = 24312,
     strip_prefix = "unicase-2.10.0",
     urls = ["https://static.crates.io/crates/unicase/2.10.0/download"],
     visibility = [],
@@ -21701,7 +21227,6 @@ cargo.rust_library(
 http_archive(
     name = "unicode-bidi-0.3.18.crate",
     sha256 = "5c1cb5db39152898a79168971543b1cb5020dff7fe43c8dc468b0885f5e29df5",
-    size_bytes = 58300,
     strip_prefix = "unicode-bidi-0.3.18",
     urls = ["https://static.crates.io/crates/unicode-bidi/0.3.18/download"],
     visibility = [],
@@ -21737,7 +21262,6 @@ cargo.rust_library(
 http_archive(
     name = "unicode-ident-1.0.27.crate",
     sha256 = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563",
-    size_bytes = 48807,
     strip_prefix = "unicode-ident-1.0.27",
     urls = ["https://static.crates.io/crates/unicode-ident/1.0.27/download"],
     visibility = [],
@@ -21768,7 +21292,6 @@ cargo.rust_library(
 http_archive(
     name = "unicode-normalization-0.1.26.crate",
     sha256 = "75cd3fb03d5288b3ba9a1ee103ac7e9cbb59f0b03d64f8ddfcc04dd42758a85d",
-    size_bytes = 130122,
     strip_prefix = "unicode-normalization-0.1.26",
     urls = ["https://static.crates.io/crates/unicode-normalization/0.1.26/download"],
     visibility = [],
@@ -21804,7 +21327,6 @@ cargo.rust_library(
 http_archive(
     name = "unicode-properties-0.1.5.crate",
     sha256 = "993ad287eb20e8ba755312801cfe1413e0f25d604075863acaddca10b04c1833",
-    size_bytes = 40636,
     strip_prefix = "unicode-properties-0.1.5",
     urls = ["https://static.crates.io/crates/unicode-properties/0.1.5/download"],
     visibility = [],
@@ -21840,7 +21362,6 @@ cargo.rust_library(
 http_archive(
     name = "unicode-segmentation-1.13.3.crate",
     sha256 = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8",
-    size_bytes = 112325,
     strip_prefix = "unicode-segmentation-1.13.3",
     urls = ["https://static.crates.io/crates/unicode-segmentation/1.13.3/download"],
     visibility = [],
@@ -21871,7 +21392,6 @@ cargo.rust_library(
 http_archive(
     name = "unicode-width-0.2.3.crate",
     sha256 = "ca718471876992059f251e33aafc334346ada08042b7661dd1fe313a9bced557",
-    size_bytes = 209503,
     strip_prefix = "unicode-width-0.2.3",
     urls = ["https://static.crates.io/crates/unicode-width/0.2.3/download"],
     visibility = [],
@@ -21906,7 +21426,6 @@ cargo.rust_library(
 http_archive(
     name = "universal-hash-0.5.1.crate",
     sha256 = "fc1de2c688dc15305988b563c3854064043356019f97a4b46276fe734c4f07ea",
-    size_bytes = 9146,
     strip_prefix = "universal-hash-0.5.1",
     urls = ["https://static.crates.io/crates/universal-hash/0.5.1/download"],
     visibility = [],
@@ -21941,7 +21460,6 @@ cargo.rust_library(
 http_archive(
     name = "unsafe-libyaml-0.2.11.crate",
     sha256 = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861",
-    size_bytes = 62101,
     strip_prefix = "unsafe-libyaml-0.2.11",
     urls = ["https://static.crates.io/crates/unsafe-libyaml/0.2.11/download"],
     visibility = [],
@@ -21972,7 +21490,6 @@ cargo.rust_library(
 http_archive(
     name = "untrusted-0.9.0.crate",
     sha256 = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1",
-    size_bytes = 14447,
     strip_prefix = "untrusted-0.9.0",
     urls = ["https://static.crates.io/crates/untrusted/0.9.0/download"],
     visibility = [],
@@ -22009,7 +21526,6 @@ alias(
 http_archive(
     name = "ureq-2.12.1.crate",
     sha256 = "02d1a66277ed75f640d608235660df48c8e3c19f3b4edb6a263315626cc3c01d",
-    size_bytes = 115366,
     strip_prefix = "ureq-2.12.1",
     urls = ["https://static.crates.io/crates/ureq/2.12.1/download"],
     visibility = [],
@@ -22061,7 +21577,6 @@ alias(
 http_archive(
     name = "url-2.5.8.crate",
     sha256 = "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed",
-    size_bytes = 86512,
     strip_prefix = "url-2.5.8",
     urls = ["https://static.crates.io/crates/url/2.5.8/download"],
     visibility = [],
@@ -22101,7 +21616,6 @@ cargo.rust_library(
 http_archive(
     name = "urlencoding-2.1.3.crate",
     sha256 = "daf8dba3b7eb870caf1ddeed7bc9d2a049f3cfdfae7cb521b087cc33ae4c49da",
-    size_bytes = 6538,
     strip_prefix = "urlencoding-2.1.3",
     urls = ["https://static.crates.io/crates/urlencoding/2.1.3/download"],
     visibility = [],
@@ -22132,7 +21646,6 @@ cargo.rust_library(
 http_archive(
     name = "utf-8-0.7.6.crate",
     sha256 = "09cc8ee72d2a9becf2f2febe0205bbed8fc6615b7cb429ad062dc7b7ddd036a9",
-    size_bytes = 10422,
     strip_prefix = "utf-8-0.7.6",
     urls = ["https://static.crates.io/crates/utf-8/0.7.6/download"],
     visibility = [],
@@ -22163,7 +21676,6 @@ cargo.rust_library(
 http_archive(
     name = "utf8_iter-1.1.0.crate",
     sha256 = "af3bd9d3e571c26fcce9d033b87ea5ab061b8d2ffe9b7a5675d810d68f03edf0",
-    size_bytes = 14981,
     strip_prefix = "utf8_iter-1.1.0",
     urls = ["https://static.crates.io/crates/utf8_iter/1.1.0/download"],
     visibility = [],
@@ -22195,7 +21707,6 @@ cargo.rust_library(
 http_archive(
     name = "utf8parse-0.2.2.crate",
     sha256 = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821",
-    size_bytes = 13499,
     strip_prefix = "utf8parse-0.2.2",
     urls = ["https://static.crates.io/crates/utf8parse/0.2.2/download"],
     visibility = [],
@@ -22227,7 +21738,6 @@ cargo.rust_library(
 http_archive(
     name = "utf_types-1.0.0.crate",
     sha256 = "3a3b425286980a367278453f3b6d28cdcb134b574e5a35824a6ff5eebad50bb6",
-    size_bytes = 19371,
     strip_prefix = "utf_types-1.0.0",
     urls = ["https://static.crates.io/crates/utf_types/1.0.0/download"],
     visibility = [],
@@ -22258,7 +21768,6 @@ cargo.rust_library(
 http_archive(
     name = "uuid-1.29.2.crate",
     sha256 = "bed99139f7dac9b5cfe5f17be4d66dc7079a34dee1d74bcc77217119240e267c",
-    size_bytes = 69968,
     strip_prefix = "uuid-1.29.2",
     urls = ["https://static.crates.io/crates/uuid/1.29.2/download"],
     visibility = [],
@@ -22296,7 +21805,6 @@ cargo.rust_library(
 http_archive(
     name = "vcpkg-0.2.15.crate",
     sha256 = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426",
-    size_bytes = 228735,
     strip_prefix = "vcpkg-0.2.15",
     urls = ["https://static.crates.io/crates/vcpkg/0.2.15/download"],
     visibility = [],
@@ -22327,7 +21835,6 @@ cargo.rust_library(
 http_archive(
     name = "vec_map-0.8.2.crate",
     sha256 = "f1bddf1187be692e79c5ffeab891132dfb0f236ed36a43c7ed39f1165ee20191",
-    size_bytes = 14466,
     strip_prefix = "vec_map-0.8.2",
     urls = ["https://static.crates.io/crates/vec_map/0.8.2/download"],
     visibility = [],
@@ -22358,7 +21865,6 @@ cargo.rust_library(
 http_archive(
     name = "version_check-0.9.5.crate",
     sha256 = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a",
-    size_bytes = 15554,
     strip_prefix = "version_check-0.9.5",
     urls = ["https://static.crates.io/crates/version_check/0.9.5/download"],
     visibility = [],
@@ -22389,7 +21895,6 @@ cargo.rust_library(
 http_archive(
     name = "vsimd-0.8.0.crate",
     sha256 = "5c3082ca00d5a5ef149bb8b555a72ae84c9c59f7250f013ac822ac2e49b19c64",
-    size_bytes = 21377,
     strip_prefix = "vsimd-0.8.0",
     urls = ["https://static.crates.io/crates/vsimd/0.8.0/download"],
     visibility = [],
@@ -22425,7 +21930,6 @@ cargo.rust_library(
 http_archive(
     name = "walkdir-2.5.0.crate",
     sha256 = "29790946404f91d9c5d06f9874efddea1dc06c5efe94541a7d6863108e3a5e4b",
-    size_bytes = 23951,
     strip_prefix = "walkdir-2.5.0",
     urls = ["https://static.crates.io/crates/walkdir/2.5.0/download"],
     visibility = [],
@@ -22462,7 +21966,6 @@ cargo.rust_library(
 http_archive(
     name = "want-0.3.2.crate",
     sha256 = "ec4cdd0dd910afe868b7ef477227d8d538b46b3075031afee8a9f2acb0a2ed0b",
-    size_bytes = 7311,
     strip_prefix = "want-0.3.2",
     urls = ["https://static.crates.io/crates/want/0.3.2/download"],
     visibility = [],
@@ -22494,7 +21997,6 @@ cargo.rust_library(
 http_archive(
     name = "wasmtime-internal-core-50.0.2.crate",
     sha256 = "0188c3e530af2407cb868818701df371ddd7061e2d73182d6d0cdc5b7e1a7a5f",
-    size_bytes = 55192,
     strip_prefix = "wasmtime-internal-core-50.0.2",
     urls = ["https://static.crates.io/crates/wasmtime-internal-core/50.0.2/download"],
     visibility = [],
@@ -22569,7 +22071,6 @@ buildscript_run(
 http_archive(
     name = "wayland-backend-0.3.17.crate",
     sha256 = "38a91b4eaddff87b1cd1074985e3713da4af2c49742d1b356b2c01670a67a078",
-    size_bytes = 81255,
     strip_prefix = "wayland-backend-0.3.17",
     sub_targets = [
         "src/sys/client_impl/log_shim.c",
@@ -22631,7 +22132,6 @@ cxx_library(
 http_archive(
     name = "wayland-client-0.31.15.crate",
     sha256 = "e3c36a0f861ad76d0901f2800b46321410d9f73f2ea88aac0650d86c32688073",
-    size_bytes = 67091,
     strip_prefix = "wayland-client-0.31.15",
     urls = ["https://static.crates.io/crates/wayland-client/0.31.15/download"],
     visibility = [],
@@ -22708,7 +22208,6 @@ buildscript_run(
 http_archive(
     name = "wayland-csd-frame-0.3.0.crate",
     sha256 = "625c5029dbd43d25e6aa9615e88b829a5cad13b2819c4ae129fdbb7c31ab4c7e",
-    size_bytes = 5696,
     strip_prefix = "wayland-csd-frame-0.3.0",
     urls = ["https://static.crates.io/crates/wayland-csd-frame/0.3.0/download"],
     visibility = [],
@@ -22744,7 +22243,6 @@ cargo.rust_library(
 http_archive(
     name = "wayland-cursor-0.31.14.crate",
     sha256 = "4a52d18780be9b1314328a3de5f930b73d2200112e3849ca6cb11822793fb34d",
-    size_bytes = 9331,
     strip_prefix = "wayland-cursor-0.31.14",
     urls = ["https://static.crates.io/crates/wayland-cursor/0.31.14/download"],
     visibility = [],
@@ -22780,7 +22278,6 @@ cargo.rust_library(
 http_archive(
     name = "wayland-protocols-0.32.13.crate",
     sha256 = "23d0c813de3daa2ed6520af85a3bd49b0e722a3078506899aa9686fea58dc4b6",
-    size_bytes = 162090,
     strip_prefix = "wayland-protocols-0.32.13",
     urls = ["https://static.crates.io/crates/wayland-protocols/0.32.13/download"],
     visibility = [],
@@ -22823,7 +22320,6 @@ cargo.rust_library(
 http_archive(
     name = "wayland-protocols-plasma-0.3.12.crate",
     sha256 = "2b6d8cf1eb2c1c31ed1f5643c88a6e53538129d4af80030c8cabd1f9fa884d91",
-    size_bytes = 68806,
     strip_prefix = "wayland-protocols-plasma-0.3.12",
     urls = ["https://static.crates.io/crates/wayland-protocols-plasma/0.3.12/download"],
     visibility = [],
@@ -22865,7 +22361,6 @@ cargo.rust_library(
 http_archive(
     name = "wayland-protocols-wlr-0.3.12.crate",
     sha256 = "eb04e52f7836d7c7976c78ca0250d61e33873c34156a2a1fc9474828ec268234",
-    size_bytes = 28366,
     strip_prefix = "wayland-protocols-wlr-0.3.12",
     urls = ["https://static.crates.io/crates/wayland-protocols-wlr/0.3.12/download"],
     visibility = [],
@@ -22907,7 +22402,6 @@ cargo.rust_library(
 http_archive(
     name = "wayland-scanner-0.31.11.crate",
     sha256 = "338e30461b3a2b67d70eb30a6d89f8e0c93a833e07d2ae89085cd070c4a00ac0",
-    size_bytes = 37536,
     strip_prefix = "wayland-scanner-0.31.11",
     urls = ["https://static.crates.io/crates/wayland-scanner/0.31.11/download"],
     visibility = [],
@@ -22944,7 +22438,6 @@ cargo.rust_library(
 http_archive(
     name = "wayland-sys-0.31.11.crate",
     sha256 = "d8eab23fefc9e41f8e841df4a9c707e8a8c4ed26e944ef69297184de2785e3be",
-    size_bytes = 9727,
     strip_prefix = "wayland-sys-0.31.11",
     urls = ["https://static.crates.io/crates/wayland-sys/0.31.11/download"],
     visibility = [],
@@ -22992,7 +22485,6 @@ alias(
 http_archive(
     name = "webp-0.3.1.crate",
     sha256 = "c071456adef4aca59bf6a583c46b90ff5eb0b4f758fc347cea81290288f37ce1",
-    size_bytes = 1860766,
     strip_prefix = "webp-0.3.1",
     urls = ["https://static.crates.io/crates/webp/0.3.1/download"],
     visibility = [],
@@ -23024,7 +22516,6 @@ cargo.rust_library(
 http_archive(
     name = "webpki-roots-0.26.11.crate",
     sha256 = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9",
-    size_bytes = 15557,
     strip_prefix = "webpki-roots-0.26.11",
     urls = ["https://static.crates.io/crates/webpki-roots/0.26.11/download"],
     visibility = [],
@@ -23064,7 +22555,6 @@ alias(
 http_archive(
     name = "webpki-roots-1.0.12.crate",
     sha256 = "7265c9301c16a8711c992c2d8da90ee77ef54b1ed51482d6dfeb00dc756b1297",
-    size_bytes = 200391,
     strip_prefix = "webpki-roots-1.0.12",
     urls = ["https://static.crates.io/crates/webpki-roots/1.0.12/download"],
     visibility = [],
@@ -23104,7 +22594,6 @@ alias(
 http_archive(
     name = "wgpu-30.0.2.crate",
     sha256 = "146fc3d654250e6207921a66c87534c621bc886c70df83dcf466c1d66813810e",
-    size_bytes = 231316,
     strip_prefix = "wgpu-30.0.2",
     urls = ["https://static.crates.io/crates/wgpu/30.0.2/download"],
     visibility = [],
@@ -23232,7 +22721,6 @@ buildscript_run(
 http_archive(
     name = "wgpu-core-30.0.2.crate",
     sha256 = "ad661da2ee99f208c30090b585284b2ab5b8bf2358ddf2d2215592808ec62f1a",
-    size_bytes = 387526,
     strip_prefix = "wgpu-core-30.0.2",
     urls = ["https://static.crates.io/crates/wgpu-core/30.0.2/download"],
     visibility = [],
@@ -23424,7 +22912,6 @@ buildscript_run(
 http_archive(
     name = "wgpu-core-deps-apple-30.0.2.crate",
     sha256 = "7d3f2f24aee039ffe9ef527300daf6b7428c58edeefdaa1700f4fa0fd754df16",
-    size_bytes = 12403,
     strip_prefix = "wgpu-core-deps-apple-30.0.2",
     urls = ["https://static.crates.io/crates/wgpu-core-deps-apple/30.0.2/download"],
     visibility = [],
@@ -23457,7 +22944,6 @@ cargo.rust_library(
 http_archive(
     name = "wgpu-core-deps-windows-linux-android-30.0.2.crate",
     sha256 = "1331b08fa2362c5d454eccc4448e6e4f01eccfea569a00e310adbfc4415f2bdc",
-    size_bytes = 12947,
     strip_prefix = "wgpu-core-deps-windows-linux-android-30.0.2",
     urls = ["https://static.crates.io/crates/wgpu-core-deps-windows-linux-android/30.0.2/download"],
     visibility = [],
@@ -23495,7 +22981,6 @@ cargo.rust_library(
 http_archive(
     name = "wgpu-hal-30.0.2.crate",
     sha256 = "a57452fe453658e141aafdb09de1028afa498805fab518238ddf372a518813ff",
-    size_bytes = 466366,
     strip_prefix = "wgpu-hal-30.0.2",
     urls = ["https://static.crates.io/crates/wgpu-hal/30.0.2/download"],
     visibility = [],
@@ -23740,7 +23225,6 @@ buildscript_run(
 http_archive(
     name = "wgpu-naga-bridge-30.0.2.crate",
     sha256 = "44a62ead68aad7cd40ac9e2cd2b8ec64f32dfbad2765f429b9fb74b8b735869f",
-    size_bytes = 9510,
     strip_prefix = "wgpu-naga-bridge-30.0.2",
     urls = ["https://static.crates.io/crates/wgpu-naga-bridge/30.0.2/download"],
     visibility = [],
@@ -23775,7 +23259,6 @@ cargo.rust_library(
 http_archive(
     name = "wgpu-types-30.0.2.crate",
     sha256 = "a9f6ee0bd50f5ab79fb8c25e3f33afb27126f034af4ba5909c7a0967058659e6",
-    size_bytes = 144255,
     strip_prefix = "wgpu-types-30.0.2",
     urls = ["https://static.crates.io/crates/wgpu-types/30.0.2/download"],
     visibility = [],
@@ -23820,7 +23303,6 @@ cargo.rust_library(
 http_archive(
     name = "whoami-1.6.1.crate",
     sha256 = "5d4a4db5077702ca3015d3d02d74974948aba2ad9e12ab7df718ee64ccd7e97d",
-    size_bytes = 24975,
     strip_prefix = "whoami-1.6.1",
     urls = ["https://static.crates.io/crates/whoami/1.6.1/download"],
     visibility = [],
@@ -23851,7 +23333,6 @@ cargo.rust_library(
 http_archive(
     name = "winapi-util-0.1.11.crate",
     sha256 = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22",
-    size_bytes = 13368,
     strip_prefix = "winapi-util-0.1.11",
     urls = ["https://static.crates.io/crates/winapi-util/0.1.11/download"],
     visibility = [],
@@ -23889,7 +23370,6 @@ alias(
 http_archive(
     name = "windows-0.62.2.crate",
     sha256 = "527fadee13e0c05939a6a05d5bd6eec6cd2e3dbd648b9f8e447c6518133d8580",
-    size_bytes = 9360572,
     strip_prefix = "windows-0.62.2",
     urls = ["https://static.crates.io/crates/windows/0.62.2/download"],
     visibility = [],
@@ -23989,7 +23469,6 @@ cargo.rust_library(
 http_archive(
     name = "windows-collections-0.3.2.crate",
     sha256 = "23b2d95af1a8a14a3c7367e1ed4fc9c20e0a26e79551b1454d72583c97cc6610",
-    size_bytes = 13510,
     strip_prefix = "windows-collections-0.3.2",
     urls = ["https://static.crates.io/crates/windows-collections/0.3.2/download"],
     visibility = [],
@@ -24028,7 +23507,6 @@ alias(
 http_archive(
     name = "windows-core-0.62.2.crate",
     sha256 = "b8e83a14d34d0623b51dce9581199302a221863196a1dde71a7663a4c2be9deb",
-    size_bytes = 36932,
     strip_prefix = "windows-core-0.62.2",
     urls = ["https://static.crates.io/crates/windows-core/0.62.2/download"],
     visibility = [],
@@ -24070,7 +23548,6 @@ cargo.rust_library(
 http_archive(
     name = "windows-future-0.3.2.crate",
     sha256 = "e1d6f90251fe18a279739e78025bd6ddc52a7e22f921070ccdc67dde84c605cb",
-    size_bytes = 17944,
     strip_prefix = "windows-future-0.3.2",
     urls = ["https://static.crates.io/crates/windows-future/0.3.2/download"],
     visibility = [],
@@ -24107,7 +23584,6 @@ cargo.rust_library(
 http_archive(
     name = "windows-implement-0.60.2.crate",
     sha256 = "053e2e040ab57b9dc951b72c264860db7eb3b0200ba345b4e4c3b14f67855ddf",
-    size_bytes = 15325,
     strip_prefix = "windows-implement-0.60.2",
     urls = ["https://static.crates.io/crates/windows-implement/0.60.2/download"],
     visibility = [],
@@ -24144,7 +23620,6 @@ cargo.rust_library(
 http_archive(
     name = "windows-interface-0.59.3.crate",
     sha256 = "3f316c4a2570ba26bbec722032c4099d8c8bc095efccdc15688708623367e358",
-    size_bytes = 11809,
     strip_prefix = "windows-interface-0.59.3",
     urls = ["https://static.crates.io/crates/windows-interface/0.59.3/download"],
     visibility = [],
@@ -24181,7 +23656,6 @@ cargo.rust_library(
 http_archive(
     name = "windows-link-0.2.1.crate",
     sha256 = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5",
-    size_bytes = 6133,
     strip_prefix = "windows-link-0.2.1",
     urls = ["https://static.crates.io/crates/windows-link/0.2.1/download"],
     visibility = [],
@@ -24218,7 +23692,6 @@ alias(
 http_archive(
     name = "windows-numerics-0.3.1.crate",
     sha256 = "6e2e40844ac143cdb44aead537bbf727de9b044e107a0f1220392177d15b0f26",
-    size_bytes = 9772,
     strip_prefix = "windows-numerics-0.3.1",
     urls = ["https://static.crates.io/crates/windows-numerics/0.3.1/download"],
     visibility = [],
@@ -24257,7 +23730,6 @@ cargo.rust_library(
 http_archive(
     name = "windows-result-0.4.1.crate",
     sha256 = "7781fa89eaf60850ac3d2da7af8e5242a5ea78d1a11c49bf2910bb5a73853eb5",
-    size_bytes = 13381,
     strip_prefix = "windows-result-0.4.1",
     urls = ["https://static.crates.io/crates/windows-result/0.4.1/download"],
     visibility = [],
@@ -24290,7 +23762,6 @@ cargo.rust_library(
 http_archive(
     name = "windows-strings-0.5.1.crate",
     sha256 = "7837d08f69c77cf6b07689544538e017c1bfcf57e34b4c0ff58e6c2cd3b37091",
-    size_bytes = 13966,
     strip_prefix = "windows-strings-0.5.1",
     urls = ["https://static.crates.io/crates/windows-strings/0.5.1/download"],
     visibility = [],
@@ -24323,7 +23794,6 @@ cargo.rust_library(
 http_archive(
     name = "windows-sys-0.48.0.crate",
     sha256 = "677d2418bec65e3338edb076e806bc1ec15693c5d0104683f2efe857f61056a9",
-    size_bytes = 2628884,
     strip_prefix = "windows-sys-0.48.0",
     urls = ["https://static.crates.io/crates/windows-sys/0.48.0/download"],
     visibility = [],
@@ -24362,7 +23832,6 @@ cargo.rust_library(
 http_archive(
     name = "windows-sys-0.52.0.crate",
     sha256 = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d",
-    size_bytes = 2576877,
     strip_prefix = "windows-sys-0.52.0",
     urls = ["https://static.crates.io/crates/windows-sys/0.52.0/download"],
     visibility = [],
@@ -24434,7 +23903,6 @@ alias(
 http_archive(
     name = "windows-sys-0.61.2.crate",
     sha256 = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc",
-    size_bytes = 2517186,
     strip_prefix = "windows-sys-0.61.2",
     urls = ["https://static.crates.io/crates/windows-sys/0.61.2/download"],
     visibility = [],
@@ -24505,7 +23973,6 @@ cargo.rust_library(
 http_archive(
     name = "windows-targets-0.48.5.crate",
     sha256 = "9a2fa6e2155d7247be68c096456083145c183cbbbc2764150dda45a87197940c",
-    size_bytes = 6904,
     strip_prefix = "windows-targets-0.48.5",
     urls = ["https://static.crates.io/crates/windows-targets/0.48.5/download"],
     visibility = [],
@@ -24537,7 +24004,6 @@ cargo.rust_library(
 http_archive(
     name = "windows-targets-0.52.6.crate",
     sha256 = "9b724f72796e036ab90c1021d4780d4d3d648aca59e491e6b98e725b84e99973",
-    size_bytes = 6403,
     strip_prefix = "windows-targets-0.52.6",
     urls = ["https://static.crates.io/crates/windows-targets/0.52.6/download"],
     visibility = [],
@@ -24569,7 +24035,6 @@ cargo.rust_library(
 http_archive(
     name = "windows-threading-0.2.1.crate",
     sha256 = "3949bd5b99cafdf1c7ca86b43ca564028dfe27d66958f2470940f73d86d75b37",
-    size_bytes = 9686,
     strip_prefix = "windows-threading-0.2.1",
     urls = ["https://static.crates.io/crates/windows-threading/0.2.1/download"],
     visibility = [],
@@ -24607,7 +24072,6 @@ alias(
 http_archive(
     name = "winit-0.30.13.crate",
     sha256 = "a6755fa58a9f8350bd1e472d4c3fcc25f824ec358933bba33306d0b63df5978d",
-    size_bytes = 605180,
     strip_prefix = "winit-0.30.13",
     urls = ["https://static.crates.io/crates/winit/0.30.13/download"],
     visibility = [],
@@ -24821,7 +24285,6 @@ buildscript_run(
 http_archive(
     name = "winnow-0.7.15.crate",
     sha256 = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945",
-    size_bytes = 187092,
     strip_prefix = "winnow-0.7.15",
     urls = ["https://static.crates.io/crates/winnow/0.7.15/download"],
     visibility = [],
@@ -24852,7 +24315,6 @@ cargo.rust_library(
 http_archive(
     name = "winnow-1.0.5.crate",
     sha256 = "8c3b93199df0ab874cdf0c6a94f0a0dc3423fe41f1cafb62b8bd7b1deb277aef",
-    size_bytes = 188758,
     strip_prefix = "winnow-1.0.5",
     urls = ["https://static.crates.io/crates/winnow/1.0.5/download"],
     visibility = [],
@@ -24883,7 +24345,6 @@ cargo.rust_library(
 http_archive(
     name = "writeable-0.6.4.crate",
     sha256 = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc",
-    size_bytes = 31222,
     strip_prefix = "writeable-0.6.4",
     urls = ["https://static.crates.io/crates/writeable/0.6.4/download"],
     visibility = [],
@@ -24914,7 +24375,6 @@ cargo.rust_library(
 http_archive(
     name = "x11-dl-2.21.0.crate",
     sha256 = "38735924fedd5314a6e548792904ed8c6de6636285cb9fec04d5b1db85c1516f",
-    size_bytes = 66823,
     strip_prefix = "x11-dl-2.21.0",
     urls = ["https://static.crates.io/crates/x11-dl/2.21.0/download"],
     visibility = [],
@@ -24950,7 +24410,6 @@ cargo.rust_library(
 http_archive(
     name = "x11rb-0.13.2.crate",
     sha256 = "9993aa5be5a26815fe2c3eacfc1fde061fc1a1f094bf1ad2a18bf9c495dd7414",
-    size_bytes = 220549,
     strip_prefix = "x11rb-0.13.2",
     urls = ["https://static.crates.io/crates/x11rb/0.13.2/download"],
     visibility = [],
@@ -25005,7 +24464,6 @@ cargo.rust_library(
 http_archive(
     name = "x11rb-protocol-0.13.2.crate",
     sha256 = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd",
-    size_bytes = 514069,
     strip_prefix = "x11rb-protocol-0.13.2",
     urls = ["https://static.crates.io/crates/x11rb-protocol/0.13.2/download"],
     visibility = [],
@@ -25046,7 +24504,6 @@ cargo.rust_library(
 http_archive(
     name = "xcursor-0.3.11.crate",
     sha256 = "163b33ed8786455e2fa5d72f554057ce3f3182425434f756cd39c99839d88e23",
-    size_bytes = 8292,
     strip_prefix = "xcursor-0.3.11",
     urls = ["https://static.crates.io/crates/xcursor/0.3.11/download"],
     visibility = [],
@@ -25077,7 +24534,6 @@ cargo.rust_library(
 http_archive(
     name = "xkbcommon-dl-0.4.2.crate",
     sha256 = "d039de8032a9a8856a6be89cea3e5d12fdd82306ab7c94d74e6deab2460651c5",
-    size_bytes = 5879,
     strip_prefix = "xkbcommon-dl-0.4.2",
     urls = ["https://static.crates.io/crates/xkbcommon-dl/0.4.2/download"],
     visibility = [],
@@ -25116,7 +24572,6 @@ cargo.rust_library(
 http_archive(
     name = "xkeysym-0.2.1.crate",
     sha256 = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56",
-    size_bytes = 103129,
     strip_prefix = "xkeysym-0.2.1",
     urls = ["https://static.crates.io/crates/xkeysym/0.2.1/download"],
     visibility = [],
@@ -25147,7 +24602,6 @@ cargo.rust_library(
 http_archive(
     name = "xml-rs-0.8.29.crate",
     sha256 = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7",
-    size_bytes = 52816,
     strip_prefix = "xml-rs-0.8.29",
     urls = ["https://static.crates.io/crates/xml-rs/0.8.29/download"],
     visibility = [],
@@ -25178,7 +24632,6 @@ cargo.rust_library(
 http_archive(
     name = "xxhash-rust-0.8.21.crate",
     sha256 = "40de123dbb523ebcc00d61ec01840ad192578afc378d859f3429caa38308fad5",
-    size_bytes = 24141,
     strip_prefix = "xxhash-rust-0.8.21",
     urls = ["https://static.crates.io/crates/xxhash-rust/0.8.21/download"],
     visibility = [],
@@ -25214,7 +24667,6 @@ cargo.rust_library(
 http_archive(
     name = "yoke-0.8.4.crate",
     sha256 = "417ef3fcf6c300b7dbd25c85531a746931c02ad536f3cf4786ed1e88223340b3",
-    size_bytes = 33270,
     strip_prefix = "yoke-0.8.4",
     urls = ["https://static.crates.io/crates/yoke/0.8.4/download"],
     visibility = [],
@@ -25254,7 +24706,6 @@ cargo.rust_library(
 http_archive(
     name = "yoke-derive-0.8.4.crate",
     sha256 = "ec8ebde2db3681e8c9980cc27822030e68752690ddfa9473e739aeb4dbde6d71",
-    size_bytes = 15054,
     strip_prefix = "yoke-derive-0.8.4",
     urls = ["https://static.crates.io/crates/yoke-derive/0.8.4/download"],
     visibility = [],
@@ -25292,7 +24743,6 @@ cargo.rust_library(
 http_archive(
     name = "zerocopy-0.8.63.crate",
     sha256 = "e5fe1f8f1b06191a00962174c61aa5005e0bb391a6d80d07e24d115c01a92ed8",
-    size_bytes = 333272,
     strip_prefix = "zerocopy-0.8.63",
     urls = ["https://static.crates.io/crates/zerocopy/0.8.63/download"],
     visibility = [],
@@ -25329,7 +24779,6 @@ cargo.rust_library(
 http_archive(
     name = "zerocopy-derive-0.8.63.crate",
     sha256 = "863ad3ac83293fb4d740aedbfdc9240dd8d1a50c1099acd76ce80ce7c7230c7f",
-    size_bytes = 137261,
     strip_prefix = "zerocopy-derive-0.8.63",
     urls = ["https://static.crates.io/crates/zerocopy-derive/0.8.63/download"],
     visibility = [],
@@ -25366,7 +24815,6 @@ cargo.rust_library(
 http_archive(
     name = "zerofrom-0.1.8.crate",
     sha256 = "0ec05a11813ea801ff6d75110ad09cd0824ddba17dfe17128ea0d5f68e6c5272",
-    size_bytes = 6156,
     strip_prefix = "zerofrom-0.1.8",
     urls = ["https://static.crates.io/crates/zerofrom/0.1.8/download"],
     visibility = [],
@@ -25399,7 +24847,6 @@ cargo.rust_library(
 http_archive(
     name = "zerofrom-derive-0.1.8.crate",
     sha256 = "f75b4683f6c7f45248d4d64056a24298c6281e0993356d7d1b4a1a962ef10d4a",
-    size_bytes = 8834,
     strip_prefix = "zerofrom-derive-0.1.8",
     urls = ["https://static.crates.io/crates/zerofrom-derive/0.1.8/download"],
     visibility = [],
@@ -25437,7 +24884,6 @@ cargo.rust_library(
 http_archive(
     name = "zeroize-1.9.1.crate",
     sha256 = "e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879",
-    size_bytes = 25043,
     strip_prefix = "zeroize-1.9.1",
     urls = ["https://static.crates.io/crates/zeroize/1.9.1/download"],
     visibility = [],
@@ -25472,7 +24918,6 @@ cargo.rust_library(
 http_archive(
     name = "zerotrie-0.2.5.crate",
     sha256 = "4ea269c3bd32f0a32c321907a2ae912ba6f4649bb0fc764a15627e99a7095a3f",
-    size_bytes = 84204,
     strip_prefix = "zerotrie-0.2.5",
     urls = ["https://static.crates.io/crates/zerotrie/0.2.5/download"],
     visibility = [],
@@ -25512,7 +24957,6 @@ cargo.rust_library(
 http_archive(
     name = "zerovec-0.11.9.crate",
     sha256 = "f58a2799cfe9a1670c7ea8edbd52ef8edb93cb37a7f83bf31ba9e35d9dae6a40",
-    size_bytes = 132005,
     strip_prefix = "zerovec-0.11.9",
     urls = ["https://static.crates.io/crates/zerovec/0.11.9/download"],
     visibility = [],
@@ -25552,7 +24996,6 @@ cargo.rust_library(
 http_archive(
     name = "zerovec-derive-0.11.7.crate",
     sha256 = "c3743ddbf47738d929cd1ae2e199d40d0162979dfe31aef8ae646d2bf00bf97a",
-    size_bytes = 23232,
     strip_prefix = "zerovec-derive-0.11.7",
     urls = ["https://static.crates.io/crates/zerovec-derive/0.11.7/download"],
     visibility = [],
@@ -25595,7 +25038,6 @@ alias(
 http_archive(
     name = "zlib-rs-0.6.8.crate",
     sha256 = "b268e58e7c693d7c271f93ffc4ba3b380412554231c85bf61ca7af91042a4112",
-    size_bytes = 215857,
     strip_prefix = "zlib-rs-0.6.8",
     urls = ["https://static.crates.io/crates/zlib-rs/0.6.8/download"],
     visibility = [],
@@ -25632,7 +25074,6 @@ cargo.rust_library(
 http_archive(
     name = "zmij-1.0.23.crate",
     sha256 = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b",
-    size_bytes = 28612,
     strip_prefix = "zmij-1.0.23",
     urls = ["https://static.crates.io/crates/zmij/1.0.23/download"],
     visibility = [],
@@ -25709,7 +25150,6 @@ alias(
 http_archive(
     name = "zstd-0.11.2+zstd.1.5.2.crate",
     sha256 = "20cc960326ece64f010d2d2107537f26dc589a6573a316bd5b1dba685fa5fde4",
-    size_bytes = 28987,
     strip_prefix = "zstd-0.11.2+zstd.1.5.2",
     urls = ["https://static.crates.io/crates/zstd/0.11.2+zstd.1.5.2/download"],
     visibility = [],
@@ -25747,7 +25187,6 @@ cargo.rust_library(
 http_archive(
     name = "zstd-safe-5.0.2+zstd.1.5.2.crate",
     sha256 = "1d2a5585e04f9eea4b2a3d1eca508c4dee9592a89ef6f450c11719da0726f4db",
-    size_bytes = 17273,
     strip_prefix = "zstd-safe-5.0.2+zstd.1.5.2",
     urls = ["https://static.crates.io/crates/zstd-safe/5.0.2+zstd.1.5.2/download"],
     visibility = [],
@@ -25840,7 +25279,6 @@ buildscript_run(
 http_archive(
     name = "zstd-sys-2.1.3+zstd.1.5.7.crate",
     sha256 = "f729a06d0257428fd9d997ac8db7e1407bd0262ab016b085b36bc52957c0052d",
-    size_bytes = 786297,
     strip_prefix = "zstd-sys-2.1.3+zstd.1.5.7",
     urls = ["https://static.crates.io/crates/zstd-sys/2.1.3+zstd.1.5.7/download"],
     visibility = [],
@@ -25938,7 +25376,6 @@ alias(
 http_archive(
     name = "zune-core-0.5.3.crate",
     sha256 = "d56377fd46368984a170bc5aac5567e52ca5da874caa60bea39fcbca78fb658b",
-    size_bytes = 30419,
     strip_prefix = "zune-core-0.5.3",
     urls = ["https://static.crates.io/crates/zune-core/0.5.3/download"],
     visibility = [],
@@ -25976,7 +25413,6 @@ alias(
 http_archive(
     name = "zune-jpeg-0.5.15.crate",
     sha256 = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296",
-    size_bytes = 88879,
     strip_prefix = "zune-jpeg-0.5.15",
     urls = ["https://static.crates.io/crates/zune-jpeg/0.5.15/download"],
     visibility = [],
