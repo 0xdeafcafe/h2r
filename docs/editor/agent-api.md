@@ -86,6 +86,7 @@ What goes through actions, from both sides:
 | Select a trigger volume | `SelectVolume` (clears the placements; selecting a placement clears it), `FocusSelected` | a click on a box the viewport shows, the Scene tab's Volumes group, the inspector's Frame | `volume.select {index?, focus?}` |
 | Move, turn and resize a trigger volume | `SetVolumeFrame {index, frame, merge}` (one step, or one per merge run); `VolumeGesture(frame)`, `EndGesture` (a gizmo drag: one step) | the viewport gizmo (move, turn, and scale along each axis), the inspector's centre, size and facing | `volume.set` |
 | Select a level collision surface | `SelectSurface` (clears the placements and the volume), `FocusSelected` | a click on a surface a collision layer shows when nothing else is under the cursor | `collision.select {index?, focus?}`, `collision.at {..., select: true}` |
+| Select a pathfinding sector, bot polygon, bot link or spot | `SelectNav` (clears the placements, the volume and the surface), `FocusSelected` | a click on what a Navigation layer shows when no placement or volume is under the cursor | `nav.pick {kind, index, focus?}`, `nav.pick {..., select: true}` |
 | Add a trigger volume, make a kill volume, remove either | `AddVolume {frame, kill}` (with `kill`, the volume and a kill trigger naming it in one step), `RemoveVolume(kind, index)`; `Delete` on a selected volume | the Scene tab's Volumes menu, the inspector's Delete and a kill trigger's Remove, the Delete key | `volume.add`, `volume.remove` |
 | Set fly speed | `SetFlySpeed` | viewport toolbar, wheel while flying | `view.camera {fly_speed}` |
 | Show or hide viewport layers | `SetLayers`, `SetOverlay` | Show popover, Scene legend, View > Halo 1 overlay | `view.layers` |
@@ -186,6 +187,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `scenario` | `blocks`, `list {block}`, `get`, `set {block, index, field, value}`, `add {block, like, position}`, `move {block, index, position, ypr}`, `delete`, `duplicate`, `select` |
 | `volume` | `list {kind?}` (short form `volumes [kind]`), `select {index?, focus?}`, `set {index, origin?, center?, forward?, up?, size?}`, `add {kill?, center?, origin?, forward?, up?, size?}`, `remove {kind?, index}` |
 | `collision` | `surfaces {class?, bsp?, offset?, limit?}`, `at {origin, dir}` or `at {point, within?}` (with `select?`), `select {index?, focus?}`, `objects {block?, index?}` |
+| `nav` | `status`, `back`, `forward`, `go` (the inspector's history); `pathfinding {bsp?, offset?, limit?}`, `bots {wait?, polys?, links?, spots?, offset?, limit?}`, `pick {origin, dir}` or `pick {point, within?}` (with `layer?`, `shown?`, `select?`) or `pick {kind, index, focus?}` (the Navigation layers) |
 | `variant` | `list`, `get`, `set {setting, value}`, `rename`, `copy`, `export`, `import`, `delete` |
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
 | `ui` | `palette {query, run?}`, `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}` |
@@ -616,7 +618,8 @@ Notes on some:
   Counts include hidden entries. For example,
   `view.layers {"preset":"everything","set":{"fog":false},"xray":true}`
   shows every layer except fog and draws occluded overlays at quarter
-  strength. Presets are `art`, `gameplay`, `collision` and `everything`.
+  strength. Presets are `art`, `gameplay`, `collision`, `navigation` and
+  `everything`.
   Individual switches apply after the preset. An invalid name or value
   rejects the entire request. The window and `view.snapshot` share these
   settings.
@@ -629,7 +632,9 @@ Notes on some:
   `bsp_switches`. Every trigger volume is in the first; the other two
   count the distinct volumes a kill trigger or a BSP switch names. The
   Gameplay preset shows all three and the Collision preset shows
-  `kill_volumes`.
+  `kill_volumes`. The Navigation rows are `pathfinding`, `bot_nav` and
+  `bot_spots`, counting sectors, bot polygons and spots; the bot rows
+  count 0 until the bots' data has loaded (`nav.bots`).
 - **Trigger volumes.** `volume.list {}` returns `{volumes, kill_triggers,
   bsp_switches, selected, error}`. Each volume has its `index` in the
   scenario's trigger volume block, `name` (the string ID's text, or null),
@@ -687,6 +692,33 @@ Notes on some:
   collision. The four collision layers (Level collision, Collision only,
   Instance collision, Object collision) start hidden; the Collision and
   Everything presets show them.
+- **Navigation.** (`scenario_edit::nav_view`; docs/editor/editor.md,
+  "Navigation".) `nav.pathfinding` reads each structure BSP's own AI
+  pathfinding data: per BSP whether it has any (`present`), its sector,
+  link, 2D node, vertex and ref counts, `orphan_links` and the sectors
+  left out because their ring does not close (`broken`); then the
+  drawable `sectors` (`index`, `bsp`, `sector`, `flags`, `hint`, `floor`,
+  the ring's `links`, `ring`, `center`), filtered by `bsp` and paged
+  with `offset` and `limit` (200). A map with none (retail multiplayer
+  maps) answers empty with a `note` saying why. `nav.bots` reports the
+  bots' nav mesh and superbounce spots (`studio::app::bot_nav`): it
+  starts the load if nothing has, and `wait` blocks until it is done
+  (a mesh built in memory on a large map takes a while). `state` is
+  `no_map`, `idle`, `loading`, `ready` or `failed` (with `error`);
+  `origins` names each BSP's cache file, or `built`; `counts` has the
+  polygons, links, wall triangles and spots; `links_by_kind`,
+  `spots_by_kind` (bounce, strip, crouch) and `spots_by_state` (proven,
+  failed, dead, learned, training, likely) count them; `notes` says what
+  was built or scanned instead of read, and which file did not read.
+  `polys`, `links` and `spots` list them, each paged by `offset` and
+  `limit`. `nav.pick {origin, dir}` or `{point, within}` (0.3 units)
+  returns what a ray meets or a point names: a bot spot or link first,
+  else the nearer bot polygon or pathfinding sector, whatever layers are
+  shown unless `shown`; `layer` keeps one layer's. `select` selects it;
+  `{kind, index, focus}` selects one directly (`sector`, `poly`, `link`
+  or `spot`, indices as the lists give them). The three layers
+  (`pathfinding`, `bot_nav`, `bot_spots`) start hidden; the Navigation
+  and Everything presets show them.
 - **Renders.** `ui.render` draws on the CPU (no GPU needed); `view.snapshot`
   renders the open map offscreen through the viewport's own renderer
   (wgpu, no window) and answers `NO_GPU` on a machine without an adapter.
@@ -974,6 +1006,18 @@ system temp directory):
   scenery's `coll` cube on its second node and its `phmo` sphere on the
   root, and the layers count them
   (`api::tests::collision_objects_and_instances_report_the_invented_shapes`);
+- `nav.pathfinding` reads the invented BSP's two sectors and its links,
+  paged; `nav.pick` finds each sector by point and by ray, honours
+  `shown` and `layer`, and selects and frames one; the Navigation layers
+  start hidden, count the sectors, and change the snapshot's pixels
+  (`api::tests::nav_pathfinding_and_pick_read_the_invented_sectors`);
+- `nav.bots` reads an invented bot cache and its spots, verified,
+  learned and ghosts files: links by kind, the drop one way, and each
+  spot's state; `nav.pick` finds a spot and a polygon, and showing a bot
+  layer loads the data again for a reopened map
+  (`api::tests::nav_bots_reads_an_invented_cache_and_its_spot_files`);
+  with no cache it builds the mesh in memory and writes nothing
+  (`api::tests::nav_bots_builds_the_mesh_when_there_is_no_cache`);
 - `view.stats` of an invented scene reports its BSP's lighting, its
   triangles by blend, its materials and its sky's sun and fog
   (`api::view::tests`);

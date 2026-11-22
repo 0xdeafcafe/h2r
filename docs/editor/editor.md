@@ -633,10 +633,13 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   selection is tinted and keeps its marker.
 - **Layers.** Open **Show** above the viewport or **Layers** in the scene
   outliner to toggle the structure, sky, object models, fog, markers,
-  individual placement blocks, Halo 1 reference and live objects. Each
-  row shows its colour and count. Art, Gameplay, Collision and Everything
-  choose a set of layers in one click. Collision shows the level structure
-  for context, the kill volumes and the collision layers. The viewport and `view.snapshot` share these settings.
+  individual placement blocks, collision, navigation, Halo 1 reference
+  and live objects. Each row shows its colour and count. Art, Gameplay,
+  Collision, Navigation and Everything choose a set of layers in one
+  click. Collision shows the level structure for context, the kill
+  volumes and the collision layers. Navigation shows the structure, the
+  invisible walls (Collision only) and the three navigation layers. The
+  viewport and `view.snapshot` share these settings.
 - **Lighting.** The level is drawn by the native renderer
   (`scenario_edit::native_view`), one world per BSP; the toolbar's
   **Lighting** menu picks Game (base map times lightmap), Flat (no
@@ -734,6 +737,51 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   start hidden. A click on a shown surface selects it when nothing else
   is under the cursor, and the inspector shows its class, plane, raw
   flags, material and ring, read only.
+- **Navigation.** Three layers, all hidden until shown
+  (`scenario_edit::nav_view`, drawn by `studio::viewport::nav`):
+  - **AI pathfinding** draws each structure BSP's own pathfinding data
+    (`sbsp+0xc4`, [pathfinding.md](../formats/pathfinding.md)), what
+    Halo 2's AI walks on: each sector as a translucent polygon from its
+    link ring, tinted by its flags (the same flags, the same shade;
+    walls and ceilings dimmer), and each link as a line, a sector's
+    boundary brighter than a link two sectors share. Orphan links and
+    sectors whose ring does not close are left out and counted
+    (`nav.pathfinding`). The 2D BSP nodes are counted, not drawn. Read
+    with the map (`LevelPathfinding::read`). Retail multiplayer maps
+    carry none: the layer is empty and `nav.pathfinding` gives a note.
+  - **Bot nav mesh** draws the bots' own mesh
+    ([bots.md](../game/bots.md), §3.2): each polygon as translucent
+    floor, and each link as a line coloured by how it is crossed (walk,
+    drop, jump, crouch-jump, teleporter, lift, elevator;
+    `theme::bot_link_color`), with an arrowhead on a link no link leads
+    back along (drops, mostly). A traversal is drawn from its takeoff to
+    its landing; any other link from the crossing to the far polygon.
+  - **Bot superbounce spots** draws the spots the bots use
+    ([bots.md](../game/bots.md), "Superbounce routes"): bounce slots,
+    single-crease strips and crouch spots, each a post at its stand with
+    its strip or lip, coloured by what the data directory's files say:
+    proven (a verified run or a hand-measured spot), failed (verified),
+    dead (`.learned`), learned (a `learned` or `partial` line), training
+    (an `open` or `blocked` line) or likely (the scan alone). A diamond
+    round the stand marks a spot `.ghosts` keeps a run of.
+
+  The bots' data loads on its own thread the first time a bot layer is
+  shown for a map, or when `nav.bots` asks (`studio::app::bot_nav`). It
+  reads each structure BSP's `<data>/bots/<map>.<bsp>.bots` when its
+  stamp is the current nav generator's and this map file's. Otherwise it
+  builds the mesh in memory with the bots' own builder
+  (`bots::autonav::build_map`, what `h2 bots nav` runs), does not write
+  it, and says why in `nav.bots`'s notes. The spots come from
+  `<map>.spots` when current (else a scan now), the hand-measured ones,
+  and `<map>.verified`, `<map>.learned` and `<map>.ghosts` beside them.
+  `<data>` is the data root (`--data`, else the one `h2 play` uses).
+
+  A click picks a shown spot or bot link first, then the nearer bot
+  polygon or pathfinding sector, ahead of collision surfaces. The
+  inspector shows a sector's index, flags, hint and its links (with the
+  sector across each), a polygon's links, a link's kind, ends and
+  whether it is one way, or a spot's kind, source, state, launch, fall,
+  learned tries and verified trials, read only.
 - **Glyphs and labels.** Other placements without a model use a diamond
   in their block colour. Past 40 world units glyphs and their pick
   spheres grow with distance so the whole map stays readable. Gameplay
