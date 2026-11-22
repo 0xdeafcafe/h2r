@@ -714,7 +714,7 @@ impl<'s> Model<'s> {
                         if let Some(d) = self.top_kind(n, DefKind::Const) {
                             let span = self.tok_at(line.value.pos);
                             let ty = self.checked.ty(&line.value);
-                            self.use_of(span, d, ty, &mut env);
+                            self.use_of(span, d, ty, &env);
                         }
                     }
                     _ => self.expr(&line.value, &mut env),

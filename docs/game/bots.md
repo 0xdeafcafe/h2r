@@ -4058,8 +4058,10 @@ For a clanker hopper (`live_hle::clankermatch`):
    ends and the phantoms leave. The game deletes the lobby's
    advertisement once its match session takes over, before the
    countdown ends, so the 30 s count only while this console does not
-   serve a multiplayer game (options mode 5, `bots::guest::game_mode`,
-   `clankers::Driver::set_hosts_game`): the bots stay for the whole
+   serve a multiplayer game (its simulation world the distributed
+   server, world mode 4: `bots::phantom::session::serves_game`,
+   `clankers::Driver::set_hosts_game`; the game options' own mode is 2
+   for every multiplayer game): the bots stay for the whole
    match and go 30 s after it.
 4. The game record says `kind: "clankermatch"` with the playlist and
    session (`telemetry::Playlist::clankers`), and the server keeps it as

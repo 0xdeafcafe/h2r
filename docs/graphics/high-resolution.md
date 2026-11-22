@@ -69,17 +69,34 @@ for the expected count, and applies the lens to the reflection billboards.
 The exact reference draws both at the retail coordinates. The vertical field of view, depth, simulation
 camera and guest visibility records keep their retail values. Orthographic
 menu widgets use a uniform fit inside each player's viewport. A menu quad
-that reaches both edges of the viewport along the fitted axis is background
-art: a panel, a scrolling strip or a full-screen bitmap. It keeps the full
-viewport, as on a widescreen Xbox, so the menu covers the display. The
-choice is made per quad, before its Begin, at the shader quad
-(`HUD_QUAD_READY`) and screen quad (`UI_SCREEN_QUAD_READY`) sites. The next
-quad or widget (`UI_ITEM_CALL`) restores the fit. Tests:
-`menu_background_art_covers_the_display_and_widgets_keep_the_uniform_fit`
-and `background_fill_follows_the_fitted_axis_and_view_and_skips_the_hud`.
-The menu backdrop uses the scene's full viewport through its blur and dim
-passes. `crates/extensions/game/src/render_aspect.rs` restores the
-widget fit when the backdrop finishes. Corner HUD
+is background art when, along the fitted axis, it reaches both edges of the
+viewport, or it reaches one edge and its whole bitmap at its drawn scale is
+at least as long as the viewport. The second case covers the main menu's
+scrolling strips: 1024-texel bitmaps drawn as two pieces that meet where
+the texture wraps. A panel or tab at the edge has a shorter bitmap and keeps
+the fit. Background art keeps the full viewport, as on a widescreen Xbox,
+so the menu covers the display. The choice is made per quad, before its
+Begin, at the shader quad (`HUD_QUAD_READY`), screen quad
+(`UI_SCREEN_QUAD_READY`) and UI rectangle sites. The UI rectangle
+(`0x00052040`: bitmap widgets and the menus' background bitmaps and strips)
+is read at the dynamic upload helper's `EFFECT_QUAD_READY` when it returns
+to `RECT_SUBMIT_RETURN`. The next quad or widget (`UI_ITEM_CALL`) restores
+the fit. Tests:
+`menu_background_art_covers_the_display_and_widgets_keep_the_uniform_fit`,
+`a_scrolling_strips_two_pieces_fill_and_a_widget_at_the_edge_keeps_the_fit`,
+`background_fill_follows_the_fitted_axis_and_view_and_skips_the_hud` and
+`quads_are_read_at_the_shader_screen_and_rect_sites`.
+The menu backdrop (`UI_MENU_BACKDROP`) uses the scene's full viewport
+through its blur and dim passes. `crates/extensions/game/src/render_aspect.rs`
+restores the widget fit when it finishes. A dialog blurs the screen under it
+with the screen convolution blur (`SCREEN_CONVOLUTION_BLUR`, called by the
+modal blur at `0x00235756`), which copies whole 640x480 targets back and
+forth inside the widget fit. The device draws any draw that samples a
+render target the size of its own 640x480 target without the fit: a frame
+copy covers the frame (`crates/platform/d3d/src/device.rs`, test
+`a_frame_copy_in_a_fitted_ui_scope_keeps_the_whole_frame`). With the fit,
+each copy would shrink the picture into the centred box and leave stale
+target contents at the sides. Corner HUD
 groups can use the fitted rectangle or the viewport edges. If the game already
 uses the Xbox widescreen HUD layout, its artwork receives only the remaining
 aspect correction. At 16:9 the Pinned layout retains the retail widescreen fit.
@@ -525,7 +542,14 @@ stays valid:
   the retail corner-anchored HUD groups to their own viewport edges while
   keeping their physical scale. Centre and world-tracked indicators use
   their own anchor. Each draw records the fit before it moves to the GPU
-  thread. A generated game image includes the interior UI entries for
+  thread. A fit change first drains the push buffer under the old fit
+  (`Device::set_ui_fit`). When an undelivered guest callback stops that
+  drain, the change is queued at the push-buffer address that was PUT
+  when it was asked for, and the drain switches there once the callback
+  has run. Commands written before the change keep the old fit and the
+  draws after it take the new one (test
+  `a_fit_change_held_back_by_a_callback_starts_after_the_commands_before_it`).
+  A generated game image includes the interior UI entries for
   these scopes. Regenerate a pre-existing image to pick them up.
 - **Loading screens and movies.** The compositor presents the supplied frame
   at the selected display aspect. Menu and HUD fits apply inside their

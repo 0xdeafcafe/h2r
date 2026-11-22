@@ -847,6 +847,21 @@ pub fn unwait_phantoms(m: &mut dyn GuestMemory) -> R<Option<(u32, u32)>> {
     Ok(Some((wait, left)))
 }
 
+/// Whether this console serves a multiplayer game now: one loaded, its
+/// simulation world the distributed server (world mode
+/// [`WORLD_DIST_SERVER`], as [`host_session`] reads it). The game
+/// options' own mode ([`guest::game_mode`]) cannot say so: it is 2 for
+/// every multiplayer game, host or client.
+pub fn serves_game(m: &dyn GuestMemory) -> bool {
+    if guest::game_tick(m).is_none() || !multiplayer(m) {
+        return false;
+    }
+    let Ok(sim) = m.u32(SIM_GLOBALS) else {
+        return false;
+    };
+    sim != 0 && m.u32(sim + SIM_MODE).ok() == Some(WORLD_DIST_SERVER)
+}
+
 fn multiplayer(m: &dyn GuestMemory) -> bool {
     let Ok(g) = m.u32(points::GAME_GLOBALS.base) else {
         return false;
