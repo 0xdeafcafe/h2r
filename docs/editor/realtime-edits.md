@@ -1,7 +1,7 @@
 # Realtime edits: geometry, placements, collision and textures in the running game
 
-Status: Design, with slice R3 (placement transactions) written: `world.placement.edit` is in `crates/extensions/agent/src/sim/calls/placement/edit.rs`, its tests beside it, and it is documented in [agent-api.md](../runtime/agent-api.md), "Placement edits". Nothing else on this page is built; what it builds on is cited as **Code**.
-Code: planned in `crates/runtime/vfs/src/map_override`, `crates/extensions/hot-tags`, `crates/extensions/agent/src/hot.rs`, `crates/rewrites/render-bridge`, `crates/rewrites/native-render` and `crates/apps/studio/src/play`; built for R3 in `crates/extensions/agent/src/sim/edits.rs`, `crates/extensions/agent/src/sim/calls/placement/edit.rs` and `crates/extensions/agent-proto/src/sim/edits.rs`. Tests: named per slice under "Build slices".
+Status: In progress. Slices R1 (the raw overlay in both readers, `raw` and `evict` in `edit.batch`, `edit.raw.append`, `edit.stage.put`, `edit.overlay` and their journal), R2 (the native refresh) and R3 (placement transactions, `world.placement.edit`) are built; R4 to R7 are design, and what they build on is cited as **Code**.
+Code: built in `crates/runtime/vfs/src/map_override/overlay.rs`, `crates/runtime/vfs/src/lib.rs` (`Vfs::read`), `crates/platform/assets/src/resource.rs`, `crates/extensions/game/src/native_map.rs`, `crates/extensions/hot-tags/src/raw.rs`, `crates/extensions/agent/src/hot.rs`, `crates/extensions/game/src/hot_glue.rs`, `crates/rewrites/render-bridge/src/native_edits.rs`, `crates/rewrites/native-render`, `crates/extensions/agent/src/sim/edits.rs`, `crates/extensions/agent/src/sim/calls/placement/edit.rs` and `crates/extensions/agent-proto/src/sim/edits.rs`; planned in `crates/apps/studio/src/play`. Tests: named per slice under "Build slices".
 Switch: none. With no editor paired and no edit sent, none of it runs.
 
 A paired editor's Modeling, Scenario and Textures edits reach the running
@@ -54,22 +54,36 @@ Two facts decide the design (**Code**):
 
 ### The edit overlay
 
-The host keeps one **raw overlay** per map activation: a sorted set of
-`(resource file, offset, bytes)` replacements and appended extents past
-the end of the file. Both readers of the map file serve through it
-(**Design**):
+The host keeps one **raw overlay** per map: replacement runs and
+appended extents past the end of each file, by the file's lowercase name
+(the loaded map's cache header name, `mainmenu`, `shared`,
+`single_player_shared`). It is `vfs::RawOverlay::global`
+(`crates/runtime/vfs/src/map_override/overlay.rs`). Both readers of a
+map's raw data serve through it (**Code**):
 
-- the guest's reads, in `MapOverrideBackend::read_at`
-  (`crates/runtime/vfs/src/map_override.rs`), applied to the bytes it
-  returns whether or not a play copy is bound, with the file's reported
-  length extended over appended extents;
-- the native loaders' reads, where `native_map::register`
-  (`crates/extensions/game/src/native_map.rs`) hands `assets::ResourceFiles`
-  its regions.
+- the guest, which reads raw data from the **cache slot file** the map
+  was copied into (`cache%03d.map` on Z: for slots 0 and 1, on N: for 2
+  to 5; [cache-slots.md](../runtime/cache-slots.md), "The slot files"),
+  not from the map itself. `Vfs::read` (`crates/runtime/vfs/src/lib.rs`)
+  applies the overlay to an object the hot-edit glue aliased to a map
+  (`RawOverlay::alias`), past the file's end too, and `Vfs::try_map_read`
+  refuses to map an aliased file so its reads take that path. The glue
+  aliases each selector's slot file before every raw act
+  (`hot_glue::RawGlue::ready`): the current slot for the loaded map,
+  slots 0, 1 and 2 for the shared maps;
+- the native loaders, whose live opens (`native_map::open`) give each
+  selector of `assets::ResourceFiles` a `ResourceOverlay` over the same
+  overlay, read at each read and extending the file's length over its
+  appended extents.
 
-The private generation of a play copy stays immutable
-(`map_override/generation.rs`); the overlay is memory beside it and is
-dropped when the activation ends. With the overlay in place a re-paged
+The overlay is never applied to a slot copy's source: an overlay served
+on `maps\<name>.map` would be written into the slot file at the next copy
+and outlive the session, since the game reuses a slot by its path alone.
+The private generation of a play copy, a slot file and a sim batch's
+cache template all stay free of overlay bytes. The overlay is dropped at
+the first tick of a new map (the `edit.overlay` ticker in
+`crates/extensions/agent/src/hot.rs`) and when a play-copy reload binds
+(`ReservedMapRebind::commit`). With the overlay in place a re-paged
 section, a re-decoded texture and a native reload all read the edited
 bytes, so the file view, the guest cache and the host copies cannot
 disagree for longer than one refresh.
@@ -93,12 +107,23 @@ struct's pointers fixed up (the resource base is the buffer plus 8 plus
 the struct size, structure-bsp.md), so a raw-block offset maps to
 `buffer + offset` (**S**). The host does not trust that: it compares the
 resident bytes with `was` before writing and answers `MISMATCH` otherwise.
-A texture's resident pixels are found from the image record's cache
-handles (`tags` schema `BitmapImage`, the three words after the LOD sizes)
-through the guest texture cache's handle table (**S**: the handle-to-address
-read is a research point of slice R1, at the handle check of
-`texture_cache_initialize`'s consumers). An owner that is not resident
-takes only the overlay entry, which is enough: the next page-in reads it.
+The resident buffer is found through the block info's loaded flag
+(`+0x1e`) and its runtime section block (at the record plus the `i16` at
+`+0x1c`), whose pointer names the section struct 8 bytes into the buffer
+(`hot_tags::raw::resident_base`). A texture's resident pixels would be
+found from the image record's cache handles (`tags` schema `BitmapImage`,
+the three words after the LOD sizes) through the guest texture cache's
+handle table; that read is not done (**S**, the handle check of
+`texture_cache_initialize`'s consumers), so a `pixels` owner takes the
+overlay entry alone and reports `resident: false`. An owner that is not
+resident takes only the overlay entry, which is enough: the next page-in
+reads it.
+
+**Eviction** clears the section's loaded flag, sets its cache handle to
+`0xffffffff` and zeroes its runtime section block, so the guest's next
+resource lookup misses and reads the block from the file view
+(`hot_tags::raw::evict_section`). The texture cache's own entry for the
+old buffer is left to its eviction (**S**, R5's grown check).
 
 **The edit arena.** Guest memory for blocks that outgrow their place. It is
 a range of the HLE reservation (`kernel::memory::HLE_RESERVED`) reserved
@@ -115,7 +140,9 @@ for `hot_tags::path::locate`.
 
 **The native refresh.** `render_bridge::native_edits` is a queue the glue
 drains on the thread that owns the GPU objects, before the frame's native
-passes:
+passes. The hot-edit glue pushes one refresh per owner after a batch or a
+revert applies (**Code**, `hot_glue::native_edit`); the drain and the
+refreshes below are slice R2's:
 
 | Refresh | Does |
 |---|---|
