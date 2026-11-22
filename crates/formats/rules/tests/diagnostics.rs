@@ -385,7 +385,7 @@ fn unit_codes() {
     assert!(m.contains("Write 5s for seconds or 5t for ticks"), "{m}");
     error(&script("", "global var t: time = 0t\non tick { t = t * t }\n"), "unit.mix");
     let m = error(&script("", "global var n: int = 0\non tick { n = now() }\n"), "unit.mix");
-    assert!(m.contains("Write whole_seconds(now(...)) or ticks(now(...))"), "{m}");
+    assert!(m.contains("is time. Write whole_seconds("), "{m}");
 }
 
 #[test]

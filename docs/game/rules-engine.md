@@ -635,9 +635,19 @@ any other value fails to decode by ("the header's list").
 distances), `bool`, `player`, `team`, `object`, `zone` (an object with a
 volume: a Forge trigger volume, or a netgame flag with its capture
 volume), `squad`, `tag` (a tag path), `weapon` (a tag path that must be a
-weapon's), `timer` (a global variable that counts ticks down, then fires
-`on timer`), and `enum` types a script declares. A zone is an object and
-a weapon is a tag; nothing else converts. A handle that may be `none` is
+weapon's), `time` (a duration in ticks: `5s`, `300t`, `1.5s`), `timer`
+(a global variable that counts ticks down, then fires `on timer`; it
+reads and writes as `time`), `enum` types a script declares, and the
+built-in enum `carrier` (`variant.engine == carrier.assault`). A zone is
+an object and a weapon is a tag; nothing else converts. `time` adds,
+subtracts and compares with `time`, multiplies and divides by `int`,
+and `time / time` is an `int`; `seconds(n)` makes one from an `int`, and
+`whole_seconds(t)` and `ticks(t)` make an `int` of one. Mixing `time`
+and `int` is an error that gives the fix
+(`can't compare time with int in "p.held >= 1". Write 1s for a second or 30t for ticks.`).
+A `time` option is declared in whole seconds (`option capture_time: time
+5s..60s = 20s`), takes the bits of an `int` option of the same range,
+and its label ends ` (seconds)`. `variant` fields stay `int`. A handle that may be `none` is
 `T?` (`player?`, `team?`, `object?`, `zone?`, `tag?`, `weapon?`); a `T`
 never is. A `table` is constant rows of typed columns, indexed by `int`. There are no floats and no
 strings at run time: text is a string-table index with typed arguments.
@@ -650,8 +660,19 @@ parentheses (`a = b + c * 2`), `if` / `else if` / `else`, `and` binding
 tighter than `or`; both short-circuit. A statement ends at a line break,
 `;` or `}`. A `let` or a parameter is not assigned again; a `let` may
 state its type (`let heir: player? = none`), and `let x = none` with no
-type is refused. These are the things the ReachVariantTool dialect lacks
-("Prior art").
+type is refused. `match` takes an enum or `carrier` value and runs the
+arm of its variant; an arm may name several (`Role.a, Role.b { }`), and
+a variant with no arm and no `else` arm is an error. These are the
+things the ReachVariantTool dialect lacks ("Prior art").
+
+**Constants and value functions.** `const last_phase = 2` and
+`const hold = 20s` are folded by the checker from literals, other
+constants, `len(table)` and `+ - * / %`, and stand wherever a literal
+does: option ranges and defaults, initial values, table cells and label
+requirements. A constant index out of a table's rows or a label's
+`numbered` range is a compile error. A value function,
+`fn rival(a: player, b: player) -> bool = <expression>`, is one
+expression inlined at each call; a block `fn` has no value.
 
 **`T?` and narrowing.** A value that may be `none` is a `T?`: the killer
 of `on kill`, `first(...)`, `o.carrier`, `o.team`, `player_of(o)`, a
@@ -811,7 +832,7 @@ on kill(victim, killer) {
 
 on tick {
     if count(players where not infected) == 0 { end_round(team 1) }
-    else if round_time_left() == 0 { end_round(team 0) }
+    else if round_time_left() == 0t { end_round(team 0) }
 }
 ```
 
@@ -826,12 +847,12 @@ carrier slayer
 teams 1
 requires ai.squads
 
-table waves: (class: Class, per_player: int, min: int, max: int, gap: int) = [ ... ]
+table waves: (class: Class, per_player: int, min: int, max: int, gap: time) = [ ... ]
 table points: (class: Class, score: int) = [ ... ]
 label ff_drop: objects
 global var wave: int = 0
 global var lives: int = 7
-global var next: timer = 150
+global var next: timer = 5s
 
 on timer(next) {
     let w = waves[wave]
@@ -853,36 +874,38 @@ on death(p) {
 ### Phases: attack and defend
 
 ```text
+const last_phase = 2
+
 label barrier: objects numbered
-label attack: spawns numbered 0..2
-label defend: spawns numbered 0..2
+label attack: spawns numbered 0..last_phase
+label defend: spawns numbered 0..last_phase
 label capture: zones numbered 0..1 = "zone"
 label core: object
 label goal: zone
 
-option phase_time: int 60..600 = 180
-option capture_time: int 5..60 = 20
+option phase_time: time 60s..600s = 180s
+option capture_time: time 5s..60s = 20s
 
 global var phase: int = 0
 global var clock: timer
 
 fn open(n: int) {
     phase = n
-    clock = seconds(phase_time)
+    clock = phase_time
     for each barrier b where b.number < n { delete(b) }
     spawn_areas(team 0, attack, n)
     spawn_areas(team 1, defend, n)
-    if n == 2 { create("<core tag path>", core) }
+    if n == last_phase { create("<core tag path>", core) }
 }
-on pickup(p, o) { if phase == 2 and not is_objective(o) { register_objective(o, team 0) } }
+on pickup(p, o) { if phase == last_phase and not is_objective(o) { register_objective(o, team 0) } }
 on round_start { open(0) }
 on tick {
-    if phase < 2 {
-        if let zone = capture[phase] and ticks_held(zone, team 0) >= seconds(capture_time) { open(phase + 1) }
+    if phase < last_phase {
+        if let zone = capture[phase] and ticks_held(zone, team 0) >= capture_time { open(phase + 1) }
     }
 }
 on enter(goal, o) {
-    if phase == 2 and is_objective(o) { end_round(team 0) }
+    if phase == last_phase and is_objective(o) { end_round(team 0) }
 }
 on timer(clock) { end_round(team 1) }
 ```
@@ -1088,12 +1111,12 @@ VM built-ins reach no engine entry (status **VM-only**):
 
 | Built-in | What it is |
 |---|---|
-| `count(set)`, `first(set)`, `len(table)`, `clamp(v, lo, hi)` | over a finite set or a constant table; `first` follows the `for each` order and gives `none` for an empty set |
+| `count(set)`, `first(set)`, `len(table)`, `min(a, b)`, `max(a, b)`, `clamp(v, lo, hi)` | over a finite set or a constant table; `first` follows the `for each` order and gives `none` for an empty set; `min`, `max` and `clamp` take all `int`s or all `time`s |
 | `pick(set, n)` | `n` members drawn with the VM's generator |
-| `seconds(n)` | `n` times the tick rate, in ticks |
+| `seconds(n)`, `whole_seconds(t)`, `ticks(t)` | `n` times the tick rate, as `time`; `t` divided by the tick rate (rounded toward zero), and `t` itself, as `int` |
 | `ticks_held(zone, team)` | a counter the VM keeps in `RulesExt` per zone and team: each tick from the first one a script names the zone, the team the game reports holding it alone (`Game::zone_holder`) gains a tick. Counts clear at the round's end; at most 32 zones are counted, and a 33rd is a script error. `none` or a team out of range reads 0. A host refuses a script that calls it (`caps` status not built) until the host has a zone test to answer `zone_holder` |
 | `squad(n)`, `team n`, `text n` | constants: a kit squad slot, a team index, a string-table index |
-| `now()` | the tick the host began (`Vm::begin_tick`) |
+| `now()` | the tick the host began (`Vm::begin_tick`), as `time` |
 | `random(n)` | the VM generator's next draw modulo `n`; 0, with no draw, when `n` is at most 0 |
 | `grant(p, cap, budget n, palette "x")`, `revoke(p, cap)`, `granted(p, cap)` | a player's powers, records in `RulesExt` ("Roles, powers and capabilities") |
 

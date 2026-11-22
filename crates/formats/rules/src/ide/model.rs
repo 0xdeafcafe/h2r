@@ -961,7 +961,7 @@ impl<'s> Model<'s> {
             SetBaseExpr::Teams => Some(Type::TEAM),
             SetBaseExpr::Objectives => Some(Type::OBJECT),
             SetBaseExpr::Label(l) => {
-                let span = self.tok_at(set.pos);
+                let span = self.ident_from(self.byte(set.pos), l).unwrap_or_else(|| self.tok_at(set.pos));
                 let d = self.local(l, env).or_else(|| self.labels.get(l.as_str()).copied())?;
                 self.add_ref(span, d, None);
                 match self.defs[d].ty {
