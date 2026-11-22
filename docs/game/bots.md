@@ -3963,17 +3963,29 @@ For a clanker hopper (`live_hle::clankermatch`):
    (`Hle::clanker_hosted`: the advertised session's hopper is marked) and
    fills it (`clankers::Driver::tick_match`, twice a second): it asks
    Live for one roster of the whole lobby (`POST /v1/games/bots` with the
-   playlist, no skill, so the server sets skill from the human's level,
-   §8.2.3; `teams: true` in a team playlist) and seats the bots one at a
+   clanker hopper's index as the playlist (`Rosters::playlist`, which
+   falls back to `Hle::clanker_hosted` when no server match names one),
+   no skill, so the server sets skill from the party's level, §8.2.3;
+   `teams: true` in a team playlist) and seats the bots one at a
    time on `clankermatch::schedule` (each 0.5 to 3 s after the last,
-   seeded by the session id), up to the playlist's most players less one
-   human. Each bot joins the match's target session as a phantom peer
+   seeded by the session id), up to the playlist's most players less the
+   party. The party is the squad session's player count
+   (`bots::lobby::party_players`, `+0x1118`: every console of the party
+   and its guests, never a phantom), read twice a second by the frame
+   hook (`Driver::set_party`) and followed until the first bot sits; one
+   person while it cannot be read. Clanker Doubles is three bots for one
+   person and two for a party of two: a bot for every human but the host
+   would take the seat of the party's second console, whose join the full
+   session then refuses. The log says `clankermatch: 4 seats, the party
+   of 2 people, 2 bots` (or `the party of N people fills clanker playlist
+   P's N seats: no bots`). Each bot joins the match's target session as a phantom peer
    with its rostered account and skill (§5.1, "Phantoms in the pregame
    lobby"). The driver waits for the roster before seating any bot.
    If Live refuses the roster, the host supplies the identities.
    In a team playlist each phantom without a roster team goes to the team
    with the fewest players, then the lowest total skill
-   (`clankermatch::balance`), around the human: the host's first
+   (`clankermatch::balance`), around the party, all of it on the host's
+   team (a party keeps together): the host's first
    local listed player's configuration team (player `+0xd4 + 0x7c`,
    `bots::phantom::session::host_team`), read twice a second by the bots'
    frame hook (`clankers::frame`) and followed until the first bot sits,
@@ -3983,7 +3995,20 @@ For a clanker hopper (`live_hle::clankermatch`):
    started its fill).
 3. The match starts on the hopper's normal countdown once the phantoms
    bring it to the required player count (below, "Tracing the
-   matchmaking lobby"). A handoff (the lobby's session deleted and the game's
+   matchmaking lobby"). A lobby that has not started 20 s after its last
+   bot was due says why (`Driver::stalled`, reading
+   `bots::lobby::match_wait`: the host update's checks in its order),
+   once per reason and again every 30 s while it holds: `clankers:
+   clankermatch: clanker playlist P's match has not started N s after its
+   last bot was due: <reason> [players 3/4, roster 3/4 present, peers 3
+   (bots 2), maps [..], hopper statuses [..], arbitration [..], round
+   none, matchmaking result 0x3, arbitration state 0x0]`. The reasons:
+   the match session short of players, the matchmaking roster's players
+   not all in the session, a peer's hopper status not 1, a peer that has
+   not loaded the map, no arbitration round, a failed or pending
+   arbitration registration, this console not hosting the match lobby,
+   or Live not having answered the roster; "every traced check reads
+   ready" when none holds. A handoff (the lobby's session deleted and the game's
    advertised) keeps the bots and carries the roster (§9.5); with no
    hosted session for 30 s, or another kind of session hosted, the fill
    ends and the phantoms leave.
@@ -4195,6 +4220,13 @@ gamertags, emblems and ranks. The flag clears when the fill ends.
    the lobby, before the countdown. `bots: phantom ... waits: not a lobby
    it can join (...)` names why a lobby refused one, `... waits: this
    console is not the game's host yet (...)` why a running game did.
+9. `clankers: clankermatch: clanker playlist P's match has not started
+   N s after its last bot was due: ...` (item 3 above): the lobby filled
+   as far as it could and the game did not start; the reason names the
+   check that holds it. `live: matchmaking ended with result 0x..: ...`
+   says a match that failed back to the party, and `live: arbitration
+   <session>/<round>/register for <gamertag> failed: ...` a refused
+   registration.
 
 **Run:** whether the game hosts after an empty search in every playlist
 type, or needs the server's matcher to say "you host" (`MatchProposed`
@@ -4206,10 +4238,12 @@ The empty search is what is built now.
 panes, texts, cursor rows), `-p boot --lib coop_live` (the seven-row
 menu), `-p boot --lib clankermatch` (the filter, the schedule, the
 balance, Quickmatch's hopper, the Switch To: Clankermatch row's place,
-press and plan order), `-p boot --lib clankers::tests::a_clankermatch`
+press and plan order), `-p game --lib clankers::tests::a_clankermatch`
 (the fill: one roster, phantoms only, one bot at a time, no controller
 port, balanced teams around the host, the handoff, the end, a refused
-roster, the match-only flag), `-p boot --lib
+roster, the match-only flag, Clanker Doubles for a party of two, the
+party followed until the first bot sits, the stall line;
+`a_full_party_plays_a_clankermatch_without_bots`), `-p boot --lib
 bot_mark`, `-p font gear` (the glyph on a synthetic font),
 `-p bots phantom::session` (the marked name within 15 units, the host's
 team; `phantom::session::tests::lobby`: the lobby this console hosts, the
@@ -4219,12 +4253,17 @@ rejoining and waiting; `phantom::session::tests::in_game`: the start's
 wait without phantom machines and a phantom standing in the game;
 `lobby::a_clankermatch_...`: the target session),
 `-p bots --lib lobby` (the game session by life cycle, the matchmaking
-host's lobby, its player count), `-p live-hle --lib players_tests` (the
+host's lobby, its player count, the party's count; `lobby::match_wait`:
+each stall reason in the host update's order), `-p live-hle --lib players_tests` (the
 bots told to their roster's session only), `-p live-hle --lib clankermatch` (the delay and the run),
+`-p live-hle --test server a_clanker_doubles_lobby` (a Doubles match
+session read as 2 v 2 and its round registered for both consoles of a
+party),
 `-p live-proto bots hopper::clankers`, `-p live-telemetry
 games_say_their_kind a_bots_name_reads_without_its_mark`, `-p cli
 bots_drive coop_drive`, and the server's: `-p live-server --test
-clankermatch`, `-p live-worker a_clankermatch_game`.
+clankermatch` (Clanker Doubles from roster to ranked game for a party
+of one and of two), `-p live-worker a_clankermatch_game`.
 
 ### 8.5 Game run (checklist)
 
