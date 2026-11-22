@@ -448,7 +448,7 @@ LaunchAgent too. Every other `H2_*` is still dropped.
 h2 lab run --host laptop --name "Play" --current --level 03a_oldmombasa --serve --own-data
 ```
 
-The consent prompt names the data ("using your own data"), and the job lines of `h2 lab logs` and
+The consent prompt names the data ("own data"), and the job lines of `h2 lab logs` and
 `h2 lab host watch` show `data=own`; `request.own_data` is in the job's `meta.json`.
 `--film` records into that root's `films/`. Results are not repeatable, so
 use `--fresh-data` for runs compared frame for frame. An older host refuses
