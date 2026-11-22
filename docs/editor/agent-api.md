@@ -519,8 +519,15 @@ Notes on some:
   `next_spawn`, `reload` or `not_known`, `play::tag_sync::Effect`) and `text` its sentence,
   the game’s existing `journal` from `edit.changes`, and `leaving`.
   A placement block with a different layout revision from the loaded copy
-  appears as one `Reload` row. Its fields stay out of the batch until undo,
-  redo, or loading a Play copy brings the revisions into agreement.
+  goes to a game that offers `world.placement.edit` as one transaction in
+  Edit; its row is a `now` row while the transaction is out and leaves on
+  the receipt. Otherwise, or when the game refuses or its answer is lost,
+  the block appears as one `Reload` row with the reason (`refused`, and
+  `unknown` for a lost answer), and its fields stay out of the batch until
+  a transaction, undo, redo, or loading a Play copy brings the revisions
+  into agreement. An entry the game wrote without making its object is a
+  `Reload` row of its own (`path` `block[index]`). Rows of this path carry
+  `placement_edit: true`.
   `mirror.apply {what:"send"}` enters Edit. On MISMATCH, `take` and
   `overwrite` require the row’s numeric `at`. `take` reads the field at the
   current game boundary before applying the bytes to the document and baseline.

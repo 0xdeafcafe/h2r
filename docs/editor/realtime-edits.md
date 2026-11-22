@@ -1,7 +1,7 @@
 # Realtime edits: geometry, placements, collision and textures in the running game
 
-Status: In progress. Slices R1 (the raw overlay in both readers, `raw` and `evict` in `edit.batch`, `edit.raw.append`, `edit.stage.put`, `edit.overlay` and their journal), R2 (the native refresh), R3 (placement transactions, `world.placement.edit`), R4 (the edit arena, `moves` in `edit.batch`, `edit.arena`, placement growth into the arena; its live check has not run) and R5 (the editor's geometry and pixel sends, `play/raw_sync.rs`) are built; R6 and R7 are design, and what they build on is cited as **Code**.
-Code: built in `crates/runtime/vfs/src/map_override/overlay.rs`, `crates/runtime/vfs/src/lib.rs` (`Vfs::read`), `crates/platform/assets/src/resource.rs`, `crates/extensions/game/src/native_map.rs`, `crates/extensions/hot-tags/src/raw.rs`, `crates/extensions/hot-tags/src/arena.rs`, `crates/extensions/hot-tags/src/batch.rs`, `crates/extensions/agent/src/hot.rs`, `crates/extensions/game/src/hot_glue.rs`, `crates/rewrites/render-bridge/src/native_edits.rs`, `crates/rewrites/native-render`, `crates/extensions/agent/src/sim/edits.rs`, `crates/extensions/agent/src/sim/calls/placement/edit.rs`, `crates/extensions/agent-proto/src/sim/edits.rs` and `crates/apps/studio/src/play/raw_sync.rs`; planned in the rest of `crates/apps/studio/src/play`. Tests: named per slice under "Build slices".
+Status: In progress. Slices R1 (the raw overlay in both readers, `raw` and `evict` in `edit.batch`, `edit.raw.append`, `edit.stage.put`, `edit.overlay` and their journal), R2 (the native refresh), R3 (placement transactions, `world.placement.edit`), R4 (the edit arena, `moves` in `edit.batch`, `edit.arena`, placement growth into the arena; its live check has not run), R5 (the editor's geometry and pixel sends, `play/raw_sync.rs`) and R6 (the editor's placement adds and removes live, `crates/apps/studio/src/play/objects/drive/placements.rs`) are built; R7 is design, and what they build on is cited as **Code**.
+Code: built in `crates/runtime/vfs/src/map_override/overlay.rs`, `crates/runtime/vfs/src/lib.rs` (`Vfs::read`), `crates/platform/assets/src/resource.rs`, `crates/extensions/game/src/native_map.rs`, `crates/extensions/hot-tags/src/raw.rs`, `crates/extensions/hot-tags/src/arena.rs`, `crates/extensions/hot-tags/src/batch.rs`, `crates/extensions/agent/src/hot.rs`, `crates/extensions/game/src/hot_glue.rs`, `crates/rewrites/render-bridge/src/native_edits.rs`, `crates/rewrites/native-render`, `crates/extensions/agent/src/sim/edits.rs`, `crates/extensions/agent/src/sim/calls/placement/edit.rs`, `crates/extensions/agent-proto/src/sim/edits.rs` `crates/apps/studio/src/play/raw_sync.rs` and `crates/apps/studio/src/play/objects/drive/placements.rs`; planned in the rest of `crates/apps/studio/src/play`. Tests: named per slice under "Build slices".
 Switch: none. With no editor paired and no edit sent, none of it runs.
 
 A paired editor's Modeling, Scenario and Textures edits reach the running
@@ -452,9 +452,13 @@ Plain integers keep `render-bridge` free of the agent's types.
   collision are `now`; grown geometry and `rebuild` collision are
   `now` with a note in Pending ("the level rebuilds for a moment");
   everything under a "Not live" bullet stays `reload`.
-- `play/sync.rs` sends a block whose layout revision differs from the
-  loaded one as a `world.placement.edit` instead of putting its fields
-  behind reload, and advances the loaded revision on the receipt.
+- `play/sync.rs` computes a block whose layout revision differs from the
+  loaded one as a `world.placement.edit` (`Baseline::transaction`)
+  instead of putting its fields behind reload, and advances the loaded
+  revision on the receipt (`Baseline::placed`);
+  `play/objects/drive/placements.rs` sends it, one at a time, and keeps
+  the block under Reload with the game's reason when refused or when the
+  answer is lost.
 - `play/raw_sync.rs` (built) diffs the Modeling tool's patches
   (`GeometrySession::changes`, each `RawWrite` naming its section and
   each patch carrying the file's bytes as `was`) and the Textures tool's
