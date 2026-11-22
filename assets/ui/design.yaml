@@ -128,6 +128,10 @@ components:
     role: "a value in the Controls skin's value column; left and right step it"
     variants: [focused, unfocused, long]
     specimen: design.row.value-column
+  row.pick-inline:
+    role: "a value in the label (Label: Value) on a one-text skin; A opens the value picker, no left and right (the skulls pages' rows)"
+    variants: [focused, unfocused, disabled]
+    specimen: design.row.pick-inline
   row.setting:
     role: "a value alone in a settings dialog's value text; A opens the picker"
     variants: [focused, unfocused, long]
@@ -141,7 +145,7 @@ components:
     variants: [focused, unfocused, empty]
     specimen: design.row.text
   row.disabled:
-    role: "a row that can't be used now: focusable, never pressed, Locked as its value"
+    role: "a row that can't be used now: focusable, never pressed, its label alone with no value; its help line says why, its legend B alone"
     variants: [focused, unfocused]
     specimen: design.row.disabled
   picker:

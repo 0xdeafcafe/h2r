@@ -12,7 +12,7 @@ use crate::ui_kit::spec::{PaneText, ScreenSpec};
 use crate::ui_kit::view::{Justify, Kind, Layer, Opener, Widget};
 
 /// Every specimen and layout page, as `NAMES` lists them.
-pub const PAGES: [&str; 29] = [
+pub const PAGES: [&str; 30] = [
     "design.title",
     "design.body",
     "design.panel-text",
@@ -20,6 +20,7 @@ pub const PAGES: [&str; 29] = [
     "design.row.action",
     "design.row.value-inline",
     "design.row.value-column",
+    "design.row.pick-inline",
     "design.row.setting",
     "design.row.info",
     "design.row.text",
@@ -242,6 +243,19 @@ pub fn states(name: &str) -> Option<Vec<(String, ScreenSpec)>> {
                 .legend(vec![legend::change(), legend::back()])
                 .build(),
             &[("focused", 0), ("unfocused", 1), ("long", 2)],
+        ),
+        "design.row.pick-inline" => focused(
+            Screen::level_select(name, "Inline Picks")
+                .row(row::pick("Pick Row", &["On", "Off"], 0))
+                .row(row::pick("Second Pick Row", &["On", "Off"], 1))
+                .row({
+                    let mut r = row::disabled("Disabled Row");
+                    r.prompts = Some(legend::disabled_row());
+                    r
+                })
+                .legend(legend::setting_row())
+                .build(),
+            &[("focused", 0), ("unfocused", 1), ("disabled", 2)],
         ),
         "design.row.setting" => focused(
             Screen::settings(name, "SETTINGS", setup)

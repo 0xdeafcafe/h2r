@@ -165,40 +165,64 @@ lines say each hook ran the first time.
 
 ## Menu
 
-**The flow** is level select (or New Campaign) → difficulty → the Game
-Options page → the level. The page comes when the pressing player's
+**The flow** is level select (or New Campaign) → difficulty → the Skulls
+page → the level. The page comes when the pressing player's
 profile (the one signed in on that player's slot, else `default`) has
 collected at least one skull, retail's or ours, or when the level is a
 Halo 1 level (its Halo 1 options, `boot::h1_options::CAMPAIGN`); with
 neither, the difficulty starts the level as retail does. There is no
 Skulls row on the difficulty list: the list is retail's four rows.
 
-The page (`boot::skulls_screen`, feature `skulls-page` for the hook and
-`skulls-screen` for the screen's class), titled "Game Options":
+### The page
 
-- **Rows**: "Start Level" first, focused when the page opens. On Halo 1
-  levels, "Assets: Halo 1" and "HUD: Halo 1" follow it
-  ([Halo 1 options](../halo1/multiplayer.md)). The skull list
-  follows, gold first ("Gold and silver" below), then our six ("Our
-  skulls"). The skin has one text per row, so the state appears in the
-  label as "Mythic: On", "Mythic: Off" or "Mythic: Locked". The multiplayer
-  screen uses the same labels and A toggles a collected skull.
-- **Buttons**: A on Start Level starts the level on the chosen difficulty
-  with the selected options and skulls. A on Assets or HUD opens the
-  shared value picker. A on a collected skull toggles it. Left or right
-  changes a Halo 1 option or toggles a collected skull directly, and the
-  store saves the choice. A locked skull shows its collection requirement.
-  B goes back to the difficulty list. The class reserves the start action
-  for A on Start Level (`ListClass::action_buttons(&[])`).
-- **Footer**: Start Level offers A Start and B Back. Assets, HUD and the
-  collected skulls offer Left and Right Change, A Select and B Back. A
-  locked skull offers B Back. `skulls_menu::SkullsScreen::focused_footer`
-  supplies the matching legend as focus moves.
+The campaign page (`boot::skulls_screen`, feature `skulls-page` for the
+hook and `skulls-screen` for the screen's class) and the multiplayer
+screen ("Choosing them" below) are one design, on the level select's
+layout, from the design system's parts (`skulls_menu::SkullsScreen`,
+`ui_kit::components`, docs/game/ui-builder.md "The design system"):
+
+- **Title**: "SKULLS" on both, in capitals.
+- **Rows, in groups by order**: Start Level first, focused when the page
+  opens; then the level's options (on a Halo 1 level, "Assets: Halo 1"
+  and "HUD: Halo 1", [Halo 1 options](../halo1/multiplayer.md)); then
+  the skulls, gold first ("Gold and silver" below), then our six ("Our
+  skulls"). Retail's lists have no header or separator rows, so the
+  order alone groups them. The multiplayer screen has only its skulls.
+- **A collected skull** is its name and its value, "Mythic: On" or
+  "Mythic: Off" (`components::row::pick` on the level select's skin,
+  which has one text a row, so the value is in the label; the design
+  system's `row.pick-inline`).
+- **A locked skull** is its name alone, "Thunderstorm"
+  (`components::row::disabled`): Locked is not a value, so it is never
+  shown where On and Off go. Our list class has no per-row colour, so
+  the row is drawn as its neighbours are; the empty value, its help and
+  its legend say it is locked.
+- **A** on Start Level starts the level on the chosen difficulty with
+  the selected options and skulls. A on an option or a collected skull
+  opens the value picker (`ui_kit::picker`, retail's
+  `low_level_settings`, as retail's settings do for their two-value
+  settings): On and Off, the held one focused; A there saves the choice
+  to the profile at once, B leaves it (`SkullsScreen::pick`). A on a
+  locked skull does nothing. Left and right do nothing on either page
+  (the class takes no sideways steps). B goes back to the difficulty
+  list. The class reserves the start action for A on Start Level
+  (`ListClass::action_buttons(&[])`).
+- **Legend**, in the footer, following the focus
+  (`skulls_menu::RowLegend`, `SkullsScreen::focused_footer`), the same
+  on both pages: `A START  B BACK` on Start Level, `A CHANGE  B BACK` on
+  an option or a collected skull, `B BACK` on a locked skull.
+- **Help**, under the picture: what the focused row does, then on a line
+  of its own where it comes from. A collected skull: "Your HUD and
+  first-person weapon are hidden." then "Gold skull, found on
+  Outskirts.". A locked one: the same first line, then "Locked: find it
+  on The Arbiter on Legendary." ("on Legendary" when only a Legendary
+  game places it, then any note its script adds). IWHBYD's first line
+  starts with its full name. An option's help gives both choices; Start
+  Level's says what it does. The multiplayer screen adds "The host's
+  choice is everyone's." to the first line.
 - **Right column**: the skull picture, gold or silver for the focused
   skull's tier and dimmed (to 60%) while it is locked, and under it the
-  description: for a skull its tier, what it does, where it is found and
-  whether only on Legendary; for an option both choices; for Start Level
-  what it does.
+  help.
 - **Height**: the list lays out 13 rows (`skulls_menu::VISIBLE_ROWS`) from
   the level select's anchor down to the footer band, and scrolls for the
   rest. The Controls handler embeds only six item widgets, so the tag copy
@@ -254,10 +278,9 @@ How the flow is made (static reading):
   next difficulty press and only dropped once it has run.
 - Start Level (`skulls_screen::action`): A on that row is the row's
   press, which for it is the class's action (`Chosen::Act`). Our class's
-  screen vtable has its own slot 10 (`list_class::event`): kinds 2 and 4
-  (left and right) step the focused row (`0x24c447` on the list, then
-  `Rows::sideways`); everything else, X and Start included, goes to
-  `0x2300ea`.
+  screen vtable has its own slot 10 (`list_class::event`); the page's
+  class takes no sideways steps, so every event, left and right, X and
+  Start included, goes to `0x2300ea`, and nothing takes left and right.
 
 ### The press that opened it
 
@@ -333,18 +356,20 @@ The list's anchor is `-215,130` on skin 0, the skull's top-left
 
 The multiplayer screen uses the same layout, picture and description.
 Video keeps the Controls list at (-254, 130) on skin 2, with separate
-label and value columns. Game Options starts 39 units to its right. The
+label and value columns. The Skulls page starts 39 units to its right. The
 retail `ul_02` bracket extends under the left part of the list, as it
 does on level select. The list's text ends at x = -5, with the picture
 and description column starting at x = 39. The disc-backed layout test
-measures every skull name and state in the retail row font.
+measures every skull row label ("Mythic: On", "Mythic: Off", "Mythic")
+in the retail row font.
 
-- **Strings** are served by the locale hook: the title, "Locked",
-  15 + 6 names and descriptions from ids
-  `0x21fff000` up; the row labels with their state from `0x23fff000`
-  (three per skull). `is_ours` reads only the middle bytes, so both are
-  clear of the `0x20fff0xx` ids the other rows and the `ui` model take.
-  The row names are the game's (IWHBYD shortened; its description gives
+- **Strings** are served by the locale hook: the titles, the legends,
+  Start Level, the 15 + 6 names and collected helps, and the multiplayer
+  helps from ids `0x21fff000` up (family `skulls`); each skull's "On" and
+  "Off" labels and its locked help from `0x23fff000` (family `skull
+  rows`, three per skull). `is_ours` reads only the middle bytes, so both
+  are clear of the `0x20fff0xx` ids the other rows and the `ui` model
+  take. The row names are the game's (IWHBYD shortened; its help gives
   the full name).
 - `H2_FEATURES=skulls-screen=off` leaves the difficulty screen as retail
   (the page
@@ -482,17 +507,22 @@ Vehicle and Equipment Options; feature `skulls-mp-row`,
 `boot::skulls_mp_row::VariantRow`). A on it opens the multiplayer Skulls
 screen: a screen of its own (a second `SkullsScreen`,
 `SkullsScreen::multiplayer`, on its own list class `skulls-mp-screen`),
-titled "Multiplayer Skulls", one row per skull offered (Famine, Blind
-and Low Gravity), each On, Off or Locked, the description saying what it does in multiplayer, that the
-host's choice is everyone's, and where it is found. The choice is per
+laid out as the campaign page is ("The page" above): titled "SKULLS",
+one row per skull offered (Famine, Blind and Low Gravity), a collected
+one with its multiplayer value ("Famine: Off") and A opening the value
+picker, a locked one its name alone with A doing nothing, the same
+legends, and help saying what it does in multiplayer, that the host's
+choice is everyone's, and on its own line where it is found or that it
+is locked and where to find it. Three rows leave the list's lower part
+empty; the list is the level select's, as the campaign page's. The choice is per
 profile, apart from the campaign one: `skulls.mp_famine` and
 `skulls.mp_blind` under `[profiles."<name>".skulls]`.
 
-**Collecting is the rule.** A skull is Locked on the multiplayer screen
-until that profile has picked it up in the campaign, and a press on a
-locked one changes nothing. There is no setting to waive it (the
+**Collecting is the rule.** A skull is locked on the multiplayer screen
+until that profile has picked it up in the campaign, and A on a locked
+one does nothing. There is no setting to waive it (the
 `skulls.mp_require_collected` setting is gone); a value left in
-`settings.toml` for a skull the profile has not collected stays Locked and
+`settings.toml` for a skull the profile has not collected stays locked and
 is never applied or advertised. Guests apply the host's advertised set
 whatever their own profiles hold.
 
@@ -650,7 +680,7 @@ on the feature plan (`boot::skulls_custom`, feature `skulls-custom`). The
 rest is shared with retail's skulls: the same per-profile `skulls.*`
 values (`skulls.acrophobia`, `skulls.low_gravity`, `skulls.fall_damage`,
 `skulls.unlimited_ammo`, `skulls.unlimited_grenades`,
-`skulls.invincible`), Locked on the Skulls screen until collected (listed
+`skulls.invincible`), locked on the Skulls page until collected (listed
 after retail's fifteen, gold first again), turned on at a campaign start
 with the profile's others (`skulls::custom_selection`, the same
 `OPTIONS_QUEUE` hook), and carried in telemetry `NewGame.skulls` with the

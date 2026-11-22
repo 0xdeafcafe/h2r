@@ -52,6 +52,9 @@ pub fn mp_class(
     skulls_menu::level_select_list(ListClass::with_rows(MP_FEATURE, MP_SCREEN, screen), layout)
         .description(block)
         .picture(picture)
+        // The campaign page's legends: `SkullsScreen::focused_footer` sets
+        // the focused row's as the focus moves.
+        .footer(skulls_menu::SETTING_FOOTER_ID)
 }
 
 /// Whether the row's hooks are on the plan: the list is grown only then.
@@ -287,7 +290,7 @@ mod tests {
         assert_eq!(s.count(), skulls_mp::MP.len());
         s.open("Chief".into());
         assert_eq!(s.count(), skulls_mp::MP.len());
-        assert_eq!(s.title(), skulls_menu::MP_TITLE_ID);
+        assert_eq!(s.title(), skulls_menu::PAGE_TITLE_ID);
     }
 
     #[test]

@@ -2,9 +2,9 @@
 //! rows on a pre-game screen (docs/halo1/multiplayer.md "Halo 1
 //! options", docs/halo1/campaign.md §5).
 //!
-//! - **Campaign:** on the Game Options page between the difficulty and a
-//!   Halo 1 level (`crate::skulls_screen`, the skulls page), above the
-//!   skulls: [`CAMPAIGN`].
+//! - **Campaign:** on the Skulls page between the difficulty and a Halo 1
+//!   level (`crate::skulls_screen`), under Start Level and above the
+//!   skulls: [`CAMPAIGN`]. A on one opens the value picker.
 //! - **Multiplayer:** a "Halo 1 Options" row on a custom game's Game Setup
 //!   dialog, next to the map and game type, while the chosen map is a
 //!   converted Halo 1 map (`crate::h1_options_row`), opens a screen of
@@ -151,7 +151,7 @@ pub static HUD: OptionRow = OptionRow {
     icon: crate::ui_kit::dialog::icon::HELMET,
 };
 
-/// The campaign's options, above the skulls on the Game Options page.
+/// The campaign's options, above the skulls on the Skulls page.
 pub static CAMPAIGN: &[&OptionRow] = &[&ASSETS, &HUD];
 /// A multiplayer game's options, on the Halo 1 Options screen.
 pub static MULTIPLAYER: &[&OptionRow] = &[&SANDBOX, &HUD];

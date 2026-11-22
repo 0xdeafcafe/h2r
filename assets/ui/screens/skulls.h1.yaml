@@ -13,7 +13,7 @@ states:
 widgets:
   title:
     component: title
-    text: "Game Options"
+    text: "SKULLS"
   description:
     component: description
     at: [39, -30]

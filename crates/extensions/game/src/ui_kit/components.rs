@@ -61,12 +61,12 @@ pub mod row {
     pub fn text(label: &str, value: &str, max_chars: u16) -> RowSpec {
         RowSpec::text(label, value, max_chars)
     }
-    /// What a row the player can't use now says beside its label.
-    pub const LOCKED: &str = crate::skulls_menu::LOCKED;
-    /// A row the player can't use now: focusable, never pressed,
-    /// [`LOCKED`] as its value (the skulls page's locked skull).
+    /// A row the player can't use now (the skulls pages' locked skull):
+    /// focusable, never pressed, its label alone with nothing in the
+    /// value's place, so it never reads as a setting's value. Its help
+    /// line says why, and the legend offers only B (`legend::disabled_row`).
     pub fn disabled(label: &str) -> RowSpec {
-        RowSpec::info(label, LOCKED)
+        RowSpec::info(label, "")
     }
 }
 
@@ -86,6 +86,22 @@ pub mod legend {
     }
     pub fn done() -> Prompt {
         Prompt::new(&[Glyph::A], "Done")
+    }
+    /// A runs the screen's start (the skulls page's Start Level).
+    pub fn start() -> Prompt {
+        Prompt::new(&[Glyph::A], "Start")
+    }
+    /// A opens the value picker on the focused row (`row::pick`).
+    pub fn pick() -> Prompt {
+        Prompt::new(&[Glyph::A], "Change")
+    }
+    /// A row whose A opens the value picker: `A CHANGE  B BACK`.
+    pub fn setting_row() -> Vec<Prompt> {
+        vec![pick(), back()]
+    }
+    /// A row the player can't use now (`row::disabled`): `B BACK` alone.
+    pub fn disabled_row() -> Vec<Prompt> {
+        vec![back()]
     }
     /// Left and right step the focused value.
     pub fn change() -> Prompt {
@@ -237,7 +253,7 @@ impl Screen {
         s.spec.style = style;
         s
     }
-    /// The level select's list (Game Options', the skulls pages'): moved
+    /// The level select's list (the skulls pages'): moved
     /// left, values inline.
     pub fn level_select(name: &str, title: &str) -> Screen {
         Screen::moved(name, title, crate::skulls_menu::LIST_LAYOUT, ValueStyle::Inline)
