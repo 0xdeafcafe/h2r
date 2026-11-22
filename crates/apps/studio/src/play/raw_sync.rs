@@ -35,10 +35,9 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use agent_proto::hot::encode_base64;
-use bitmap_edit::{Layer, Rect, resample};
+use bitmap_edit::Layer;
 use geometry_edit::{Target, TargetKind};
-use gfx::D3DFormat;
-use map::{ResourceFile, TagId};
+use map::TagId;
 
 use super::tag_sync::{self, Effect};
 use super::*;
@@ -320,13 +319,10 @@ struct PixelCache {
     chains: HashMap<(u32, u32, u32), Result<Arc<Chain>, String>>,
 }
 
-/// One LOD chain as the file holds it, decoded.
+/// One LOD chain as the file holds it.
 struct Chain {
-    desc: gfx::TextureDesc,
     layout: gfx::texture::TextureLayout,
     file: Vec<u8>,
-    levels: Vec<assets::Level>,
-    local: bool,
 }
 
 /// The raw half of a pairing: baseline, the request in flight and why
@@ -488,64 +484,6 @@ fn geometry_want(app: &mut App, want: &mut Want, live: bool) {
     }
 }
 
-/// Where a level of an uncompressed image keeps its texels.
-enum Texels {
-    Linear { pitch: usize },
-    Swizzled(gfx::swizzle::Swizzler),
-}
-
-impl Texels {
-    /// The addressing of a level `w` by `h` of `desc`'s format.
-    fn of(desc: &gfx::TextureDesc, w: u32, h: u32) -> Result<Self, String> {
-        use gfx::format::Layout;
-        match desc.format.layout() {
-            Layout::Linear => Ok(Texels::Linear {
-                pitch: desc.pitch as usize,
-            }),
-            Layout::Swizzled => gfx::swizzle::Swizzler::new(w, h, 1)
-                .map(Texels::Swizzled)
-                .map_err(|e| e.to_string()),
-            Layout::Compressed => Err(format!("the editor has no {:?} encoder yet", desc.format)),
-        }
-    }
-
-    /// The byte offset of texel `(x, y)`.
-    fn offset(&self, x: u32, y: u32, bpt: usize) -> usize {
-        match self {
-            Texels::Linear { pitch } => y as usize * pitch + x as usize * bpt,
-            Texels::Swizzled(s) => s.index(x, y, 0) * bpt,
-        }
-    }
-}
-
-/// The pixel encoder: one level's RGBA8 as `format` stores it.
-///
-/// This is the seam for slice 6's encoder (`assets::encode`, lane M6,
-/// docs/editor/modeling.md "Texture editing"). Until it is on this
-/// branch, the uncompressed colour formats `gfx::encode::encode_color`
-/// knows (`A8R8G8B8`, `X8R8G8B8`, `R5G6B5`, `A1R5G5B5`, `A4R4G4B4`,
-/// swizzled or linear) are encoded and every other format, DXT included,
-/// is refused by name, so its painted pixels stay in Pending.
-pub(crate) fn encode_level(
-    format: D3DFormat,
-    rgba: &[u8],
-    w: u32,
-    h: u32,
-    pitch: u32,
-) -> Result<Vec<u8>, String> {
-    use gfx::format::Layout;
-    use gfx::surface::SurfaceLayout;
-    let layout = match format.layout() {
-        Layout::Compressed => {
-            return Err(format!("the editor has no {format:?} encoder yet"));
-        }
-        Layout::Linear => SurfaceLayout::Linear { pitch },
-        Layout::Swizzled => SurfaceLayout::Swizzled,
-    };
-    gfx::encode::encode_color(format, gfx::encode::HostPixelOrder::Rgba8, rgba, w, h, &layout)
-        .map_err(|e| format!("the editor cannot encode {format:?} yet: {e}"))
-}
-
 impl PixelCache {
     fn sync(&mut self, generation: u64) {
         if self.generation != Some(generation) {
@@ -571,6 +509,8 @@ impl PixelCache {
             .clone()
     }
 
+    /// LOD `lod` of an image as the file holds it: in the map itself or a
+    /// shared cache, wherever its pointer names (the overlay serves both).
     fn chain(
         &mut self,
         app: &App,
@@ -586,31 +526,14 @@ impl PixelCache {
                 let desc = assets::texture_desc(img, lod).map_err(|e| e.to_string())?;
                 let layout = desc.layout().map_err(|e| e.to_string())?;
                 let mut files = app.shown_raw_files()?;
+                let len = range.size.max(layout.total_size as u32);
                 let file = files
-                    .read(range.pointer.file, range.pointer.offset, layout.total_size as u32)
-                    .map_err(|e| e.to_string())?;
-                let levels =
-                    assets::bitmap::decode_bytes(&desc, &file).map_err(|e| e.to_string())?;
-                Ok(Arc::new(Chain {
-                    desc,
-                    layout,
-                    file,
-                    levels,
-                    local: range.pointer.file == ResourceFile::Local,
-                }))
+                    .read(range.pointer.file, range.pointer.offset, len)
+                    .map_err(|e| format!("its pixels do not read: {e}"))?;
+                Ok(Arc::new(Chain { layout, file }))
             })
             .clone()
     }
-}
-
-/// `r`, a rectangle at mip 0, at mip `m` of a level `w` by `h`: rounded
-/// out so every texel a changed pixel reaches is in it.
-fn scale_rect(r: Rect, m: u32, w: u32, h: u32) -> Rect {
-    let x0 = r.x >> m;
-    let y0 = r.y >> m;
-    let x1 = r.right().div_ceil(1 << m).min(w).max(x0 + 1);
-    let y1 = r.bottom().div_ceil(1 << m).min(h).max(y0 + 1);
-    Rect::new(x0, y0, x1 - x0, y1 - y0)
 }
 
 /// The painted layers of the open bitmaps, encoded, as wanted bytes.
@@ -653,18 +576,19 @@ fn pixel_want(app: &App, cache: &mut PixelCache, want: &mut Want) {
                     continue;
                 }
             };
-            if img.dimensions[2] > 1 {
-                refuse(want, "volume textures are not sent live".into());
-                continue;
-            }
-            if let Err(why) = image_want(app, cache, want, tag, image, &img, &layers, stroking == Some(tag)) {
+            if let Err(why) =
+                image_want(app, cache, want, tag, image, &img, &layers, stroking == Some(tag))
+            {
                 refuse(want, why);
             }
         }
     }
 }
 
-/// One image's LOD chains with its painted layers encoded in.
+/// One image's painted tiles in every LOD chain and mip it stores, as
+/// `assets::encode::encode_tiles` writes them (docs/editor/modeling.md,
+/// "Texture editing"): the bytes a save patches in place. During a stroke
+/// the levels below mip 0 wait for its end.
 #[allow(clippy::too_many_arguments)]
 fn image_want(
     app: &App,
@@ -676,88 +600,87 @@ fn image_want(
     layers: &[&Layer],
     stroking: bool,
 ) -> Result<(), String> {
-    let mut wanted = Vec::new();
+    use assets::encode::{Dirty, PixelRect, Planes};
+    let open = &app.textures.open[&tag];
+    let desc0 = assets::texture_desc(img, 0).map_err(|e| e.to_string())?;
+    let depth = if desc0.kind == gfx::texture::TextureKind::Volume {
+        desc0.depth
+    } else {
+        1
+    };
+    let mut data = Vec::new();
+    for face in 0..desc0.faces() {
+        for slice in 0..depth {
+            let layer = open
+                .bitmap
+                .layer(bitmap_edit::LayerId::new(image, face, slice))
+                .ok_or("a layer of the image did not decode")?;
+            data.push(layer.canvas.to_rgba());
+        }
+    }
+    let refs: Vec<&[u8]> = data.iter().map(Vec::as_slice).collect();
+    let planes = Planes {
+        width: desc0.width,
+        height: desc0.height,
+        depth,
+        planes: &refs,
+    };
+    let dirty: Vec<Dirty> = layers
+        .iter()
+        .map(|l| {
+            let r = l.canvas.changed_rect(&l.source);
+            Dirty {
+                face: l.id.face,
+                slice: l.id.slice,
+                rect: PixelRect::new(r.x, r.y, r.w, r.h),
+            }
+        })
+        .filter(|d| !d.rect.is_empty())
+        .collect();
+    let spans = assets::encode::encode_tiles(img, &planes, &dirty).map_err(|e| e.to_string())?;
+    // During a stroke, every level below mip 0 keeps what the game holds.
+    let mut held_back: Vec<(Owner, Range<u32>)> = Vec::new();
     for lod in 0..assets::bitmap::LOD_COUNT {
-        if img.lods[lod as usize].is_none() {
+        if !stroking || img.lods[lod as usize].is_none() {
             continue;
         }
         let chain = cache.chain(app, tag, image, img, lod)?;
-        if !chain.local {
-            return Err(
-                "its pixels are in a shared cache, which the editor never writes".into(),
-            );
-        }
         let owner = Owner::Pixels {
             tag: tag.0,
             image,
             lod,
         };
-        let bpt = chain
-            .desc
-            .format
-            .bytes_per_texel()
-            .ok_or_else(|| format!("the editor has no {:?} encoder yet", chain.desc.format))?
-            as usize;
-        for (k, level) in chain.layout.levels.iter().enumerate() {
-            let m = lod + k as u32;
-            if stroking && m > 0 {
-                // The rebuilt mips go when the stroke ends.
-                for f in 0..chain.layout.faces {
-                    let at = (f as usize * chain.layout.face_stride + level.offset) as u32;
-                    want.frozen.ranges.push((owner, at..at + level.size as u32));
-                }
+        for level in &chain.layout.levels {
+            if lod + level.level == 0 {
                 continue;
             }
-            let (w, h) = (level.width, level.height);
-            let texels = Texels::of(&chain.desc, w, h)?;
-            for layer in layers {
-                let face = layer.id.face;
-                if face >= chain.layout.faces {
-                    continue;
-                }
-                let changed = layer.canvas.changed_rect(&layer.source);
-                if changed.is_empty() {
-                    continue;
-                }
-                let (cw, ch) = (layer.canvas.width(), layer.canvas.height());
-                let canvas = layer.canvas.to_rgba();
-                let scaled = if (w, h) == (cw, ch) {
-                    canvas
-                } else {
-                    resample(&canvas, cw, ch, w, h).map_err(|e| e.to_string())?
-                };
-                let mut rgba = chain
-                    .levels
-                    .iter()
-                    .find(|l| l.face == face && l.level == k as u32)
-                    .ok_or("the level did not decode")?
-                    .rgba
-                    .clone();
-                let region = scale_rect(changed, m, w, h);
-                for y in region.y..region.bottom() {
-                    let row = (y as usize * w as usize + region.x as usize) * 4;
-                    let end = row + region.w as usize * 4;
-                    rgba[row..end].copy_from_slice(&scaled[row..end]);
-                }
-                let encoded = encode_level(chain.desc.format, &rgba, w, h, chain.desc.pitch)?;
-                let base = face as usize * chain.layout.face_stride + level.offset;
-                for y in region.y..region.bottom() {
-                    for x in region.x..region.right() {
-                        let t = texels.offset(x, y, bpt);
-                        for i in t..t + bpt {
-                            let (Some(&n), Some(&f)) = (encoded.get(i), chain.file.get(base + i))
-                            else {
-                                return Err("the encoded level is short".into());
-                            };
-                            if n != f {
-                                wanted.push(((owner, (base + i) as u32), (n, f)));
-                            }
-                        }
-                    }
-                }
+            for f in 0..chain.layout.faces {
+                let at = (f as usize * chain.layout.face_stride + level.offset) as u32;
+                held_back.push((owner, at..at + level.size as u32));
             }
         }
     }
+    let mut wanted = Vec::new();
+    for span in spans {
+        let chain = cache.chain(app, tag, image, img, span.lod)?;
+        let owner = Owner::Pixels {
+            tag: tag.0,
+            image,
+            lod: span.lod,
+        };
+        for (i, &n) in span.bytes.iter().enumerate() {
+            let at = span.offset + i;
+            let f = *chain
+                .file
+                .get(at)
+                .ok_or("the encoded pixels run past the LOD")?;
+            let at = at as u32;
+            if n != f && !held_back.iter().any(|(o, r)| *o == owner && r.contains(&at)) {
+                wanted.push(((owner, at), (n, f)));
+            }
+        }
+    }
+    want.frozen.ranges.extend(held_back);
     want.raw.extend(wanted);
     Ok(())
 }

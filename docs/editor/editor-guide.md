@@ -560,6 +560,15 @@ While the game runs, the editor stays paired with it:
   it at the next respawn (a weapon or vehicle spawn, your own respawn at
   a starting location) or after **Play** again. Things already in the
   world stay put. Adding or removing placements needs **Play** again.
+- with **Edit** on, geometry and painted pixels go to the game too.
+  Moving vertices of a cluster, an instanced definition or a model
+  section shows in the game on the next frame; an edit that adds or
+  removes faces shows within a few frames, and the level rebuilds for a
+  moment while it does. A Textures stroke shows mip 0 while you paint and
+  the smaller mips when you let go. Undo sends the old geometry or pixels
+  back. Each edit sits in the Pending tab until the game has it. A
+  bitmap you resize or reformat, and a geometry edit the save refuses,
+  wait for **Play** again.
 
 A game you started yourself is found without any setup. `h2 play` opens
 an agent socket of its own (in the `agents` folder of the h2recomp cache;
