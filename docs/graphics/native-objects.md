@@ -272,8 +272,16 @@ same `0x004ba138` array as the other geometry draws. The owner's lighting
 and the record's node rows are resolved as for native objects, without
 requiring the body and mode node counts to match. Admission is per item:
 `ItemKey` selects the exact section, geometry part, shader and
-implementation, and `LitObjects::plan` resolves every constant and every
-inherited `EntryStates` field before `Host::draw` returns. The mask walk
+implementation. Each item's record is read as the world layers read
+theirs (`object_walk::layer_part` with layer 3, `ItemDraw::flags` and
+`ItemDraw::subparts`): a fade byte, the shader's flag bit 0 or an
+argument the pass setup takes keeps the item on D3D, and so does a record
+marking the stencil or toggling the auxiliary state, which this draw does
+not reproduce. `LitObjects::plan_item` draws the topology and subparts
+the record picks as a scene part does (`part_ranges`; the first-person
+models keep each part's subparts and its strip decoded as a list), and
+resolves every constant and every inherited `EntryStates` field before
+`Host::draw` returns. The mask walk
 runs on a `MaskPreview`, leaving guest RAM untouched while each required
 copy is prepared. `prepare_external_bound` validates every model and index
 range; only then does `ItemMasks::apply` select the planned items and
