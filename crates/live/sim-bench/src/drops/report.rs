@@ -95,6 +95,10 @@ pub struct TargetSummary {
     pub best: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gain: Option<Gain>,
+    /// Its straight drops' largest horizontal correction (units/s,
+    /// [`Record::drift_fixed`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drift_fixed: Option<f32>,
     pub cells: Vec<Cell>,
 }
 
@@ -106,6 +110,16 @@ pub struct FirstSeen {
     pub shard: u32,
     /// The game tick of its release.
     pub tick: u64,
+}
+
+/// The straight drop that needed the largest horizontal correction.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DriftFixed {
+    /// Units/s taken off in one fall row.
+    pub fixed: f32,
+    pub target: String,
+    pub drop: u32,
+    pub shard: u32,
 }
 
 /// One run's control.
@@ -137,6 +151,9 @@ pub struct DropsReport {
     pub bounce_speed: Option<Speed>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gain: Option<Gain>,
+    /// The largest horizontal correction any straight drop needed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drift_fixed: Option<DriftFixed>,
     pub targets: Vec<TargetSummary>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
@@ -345,6 +362,18 @@ pub fn summarize(runs: &[DropsRun]) -> DropsReport {
             };
         }
     }
+    for (shard, rec) in &records {
+        if let Some(fixed) = rec.drift_fixed
+            && r.drift_fixed.as_ref().is_none_or(|d| fixed > d.fixed)
+        {
+            r.drift_fixed = Some(DriftFixed {
+                fixed,
+                target: rec.target.clone(),
+                drop: rec.drop,
+                shard: *shard,
+            });
+        }
+    }
     let all: Vec<Record> = records.iter().map(|(_, x)| (*x).clone()).collect();
     r.catch = catch(&all);
     let within = r.catch.as_ref().map_or(0.0, |c| c.half_width);
@@ -404,6 +433,7 @@ pub fn summarize(runs: &[DropsRun]) -> DropsReport {
             min_speed: fmin(mine.iter().filter(|x| bounced(x)).filter_map(speed_in)),
             best: fmax(mine.iter().filter(|x| bounced(x)).filter_map(launch)),
             gain: fit(&points, at),
+            drift_fixed: fmax(mine.iter().filter_map(|x| x.drift_fixed)),
             cells,
         });
         groups.push(points);
@@ -525,6 +555,18 @@ pub fn markdown(r: &DropsReport) -> String {
             let _ = writeln!(s, "- EXCESS_GAIN: too few bounces at different speeds");
         }
     }
+    match &r.drift_fixed {
+        Some(d) => {
+            let _ = writeln!(
+                s,
+                "- drift fixed: at most {:.3} units/s taken off a fall row ({} drop {}, shard {})",
+                d.fixed, d.target, d.drop, d.shard
+            );
+        }
+        None => {
+            let _ = writeln!(s, "- drift fixed: no straight drop fell");
+        }
+    }
     if !r.first.is_empty() {
         let _ = writeln!(s, "\n## First of each\n");
         for (k, f) in &r.first {
@@ -538,13 +580,13 @@ pub fn markdown(r: &DropsReport) -> String {
     let _ = writeln!(s, "\n## Targets\n");
     let _ = writeln!(
         s,
-        "| target | shape | drops | bounced | no_bounce | prime_lost | setup_failed | rate | catch | min speed | best | gain |"
+        "| target | shape | drops | bounced | no_bounce | prime_lost | setup_failed | rate | catch | min speed | best | gain | drift fixed |"
     );
-    let _ = writeln!(s, "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+    let _ = writeln!(s, "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
     for t in &r.targets {
         let _ = writeln!(
             s,
-            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
             t.id,
             t.shape,
             t.drops,
@@ -556,7 +598,8 @@ pub fn markdown(r: &DropsReport) -> String {
             opt(t.catch, 3),
             opt(t.min_speed, 2),
             opt(t.best, 2),
-            opt(t.gain.map(|g| g.slope), 2)
+            opt(t.gain.map(|g| g.slope), 2),
+            opt(t.drift_fixed, 3)
         );
     }
     for t in r.targets.iter().filter(|t| t.bounced > 0) {

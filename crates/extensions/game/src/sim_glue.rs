@@ -1114,6 +1114,12 @@ impl PadSource for Metered {
         true
     }
 
+    // The seam drops and `superbounce.verify` drive a seat by holding its
+    // pad (`sim_drops`); without this the brain's own pad goes out.
+    fn hold_pad(&mut self, pad: Option<HostPadState>) -> bool {
+        self.brain.hold_pad(pad)
+    }
+
     fn phantom_latency(&self) -> bots::tuning::PhantomLatency {
         self.brain.phantom_latency()
     }
@@ -2096,6 +2102,33 @@ mod tests {
         let c = sim_bench::config::parse_match(text, false).unwrap();
         let m = sim_bench::config::resolve(c, &|_| Err("no files".into())).unwrap();
         Sim::new(PathBuf::from("/tmp/m.toml"), m, None)
+    }
+
+    #[test]
+    fn a_sim_seat_sends_the_pad_held_over_its_brain() {
+        let s = sim_with("map = \"lockout\"\n[[bot]]\n");
+        s.0.lock().phase = Phase::Playing;
+        let mut seat = Metered {
+            seat: 0,
+            brain: bots::Brain::default(),
+            sim: Arc::clone(&s.0),
+            last_tick: None,
+            thinking: None,
+        };
+        let mut held = HostPadState::default();
+        held.left_stick = (0.25, -0.5);
+        assert!(seat.hold_pad(Some(held)));
+        let g = engine::testing::FakeGuest::new();
+        let f = Frame {
+            frame: 0,
+            tick: 1,
+            machine: [7; 6],
+            guest: &g,
+        };
+        assert_eq!(seat.pad(&f), held);
+        assert_eq!(seat.observe(&f), Sampled::Pad(held));
+        assert!(seat.hold_pad(None));
+        assert_eq!(seat.pad(&f), HostPadState::default());
     }
 
     #[test]

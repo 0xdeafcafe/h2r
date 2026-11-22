@@ -573,6 +573,11 @@ impl PadSource for Clanker {
         true
     }
 
+    // `superbounce.verify`'s trials on a Clanker seat hold its pad.
+    fn hold_pad(&mut self, pad: Option<input::host::HostPadState>) -> bool {
+        self.brain.hold_pad(pad)
+    }
+
     fn phantom_latency(&self) -> bots::tuning::PhantomLatency {
         self.brain.phantom_latency()
     }

@@ -11,9 +11,12 @@
 //! - the pair word over every level pair whose word differs
 //!   ([`live_telemetry::havok_agents::set_level_words`]): 0 while
 //!   settling, -3 on the still body and on every tick of the fall;
-//! - the body's velocity zeroed (the object's and each Havok motion's);
+//! - the body's velocity zeroed (the object's and each Havok motion's),
+//!   or only its horizontal part (a straight drop's fall rows);
 //! - the pad held for the seat's phantom (its brain is ignored: no walk,
-//!   no fight), the walk turned into the stick against its facing;
+//!   no fight), the walk turned into the stick against its facing. A
+//!   seat whose pad can't be held is a note in the report: its brain's
+//!   stick would steer the fall;
 //! - a teleport through the agent's calls queue (`object_teleport`'s
 //!   body, `agent::sim::calls`), its outcome handed back the tick it
 //!   lands;
@@ -164,6 +167,26 @@ fn stop(m: &mut dyn GuestMemory, b: &Body) {
     }
 }
 
+/// Writes the object's horizontal velocity and each of its Havok
+/// motions' to `xy`, the vertical (the third float) left as it is.
+fn level(m: &mut dyn GuestMemory, b: &Body, xy: [f32; 2]) {
+    use live_telemetry::layout::{BODY_VELOCITY, MOTION_VELOCITY, RIGID_MOTION};
+    let mut v = [0u8; 8];
+    v[..4].copy_from_slice(&xy[0].to_bits().to_le_bytes());
+    v[4..].copy_from_slice(&xy[1].to_bits().to_le_bytes());
+    let _ = m.write(b.base.wrapping_add(BODY_VELOCITY), &v);
+    let Ok(entities) = hk::object_entities(&*m, b.unit) else {
+        return;
+    };
+    for e in entities {
+        if let Ok(motion) = m.u32(e + RIGID_MOTION)
+            && motion != 0
+        {
+            let _ = m.write(motion + MOTION_VELOCITY, &v);
+        }
+    }
+}
+
 /// The unit's contacts with anything, at most 8 points.
 fn contacts(m: &dyn GuestMemory, unit: u32) -> Vec<ContactPoint> {
     let Ok(mine) = hk::object_entities(m, unit) else {
@@ -267,8 +290,18 @@ pub fn tick(g: &mut runtime::Guest, seats: &[Seat]) -> bool {
         {
             stop(m, b);
         }
-        if let Some(h) = s.handle {
-            phantoms.hold_pad(h, Some(pad(act.walk, b.and_then(|b| b.yaw))));
+        if let Some(xy) = act.level
+            && let Some(b) = b
+        {
+            level(m, b, xy);
+        }
+        if let Some(h) = s.handle
+            && !phantoms.hold_pad(h, Some(pad(act.walk, b.and_then(|b| b.yaw))))
+        {
+            st.job.note(format!(
+                "seat {}: its pad could not be held; its brain steered it",
+                s.seat
+            ));
         }
         if act.contacts
             && let Some(b) = b
@@ -350,5 +383,12 @@ mod tests {
         // Settled well before a body sleeps and its pair is rebuilt.
         assert!(d::SETTLE_STILL < crate::superbounce_charge::SLEEP_TICKS);
         assert!(d::STILL_SPEED > crate::superbounce_charge::STILL_SPEED);
+        // The control's heights land clearly over the speed that bounces
+        // (sim-bench's control test names 5.4).
+        assert_eq!(superbounce::speed::BOUNCE_SPEED, 5.4);
+        for h in d::CONTROL_HEIGHTS {
+            let free = (2.0 * d::GRAVITY * h).sqrt();
+            assert!(free * 0.97 > superbounce::speed::BOUNCE_SPEED + 0.3, "{h}: {free}");
+        }
     }
 }
