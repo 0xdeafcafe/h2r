@@ -638,8 +638,10 @@ impl Studio {
         ui.window(&self.keys.rules)
             .flags(dear_imgui_rs::WindowFlags::NO_FOCUS_ON_APPEARING)
             .build(|| game_script::window(ui, app, fonts, self.dialogs));
-        // Opening a script (from its toolbar or `rules.open`) picks its tab.
-        if std::mem::take(&mut app.rules.show) {
+        // Opening a script (from its toolbar or `rules.open`) picks its tab,
+        // asked each frame until the window's body has drawn: a request
+        // made before the dock layout exists is lost.
+        if app.rules.show {
             let name = format!("###{}", self.keys.rules.stable_id());
             ui.set_window_focus(Some(name.as_str()));
         }

@@ -117,6 +117,8 @@ fn take(data: &mut TextCallbackData<'_>, edit: &Edit) {
 
 /// The window's body.
 pub fn window(ui: &Ui, app: &mut App, fonts: &Fonts, dialogs: bool) {
+    // Drawn: its tab is the one showing.
+    app.rules.show = false;
     toolbar(ui, app, dialogs);
     title(ui, fonts, &app.rules);
     rename_row(ui, app);
