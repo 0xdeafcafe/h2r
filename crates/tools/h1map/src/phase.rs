@@ -9,7 +9,7 @@
 //! nothing else.
 
 use std::cell::RefCell;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Each phase's own time, in the order first seen: its name, its wall
 /// time, and the CPU time its thread spent in it (which a loaded machine
@@ -18,10 +18,31 @@ pub type Phases = Vec<(&'static str, Duration, Duration)>;
 
 struct Open {
     name: &'static str,
-    start: Instant,
+    start: Duration,
     cpu: Duration,
     /// The wall and CPU time of the phases timed inside this one.
     inner: (Duration, Duration),
+}
+
+/// The wall clock the phases are timed on: the process's own. The tests
+/// advance theirs by hand ([`tests`]), so a loaded machine cannot stretch
+/// what they measure.
+fn now() -> Duration {
+    #[cfg(not(test))]
+    {
+        static BASE: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        BASE.get_or_init(std::time::Instant::now).elapsed()
+    }
+    #[cfg(test)]
+    {
+        TEST_NOW.with(std::cell::Cell::get)
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The tests' wall clock, advanced by hand.
+    static TEST_NOW: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
 }
 
 /// What tells this thread's CPU time: set once by the program
@@ -84,7 +105,7 @@ pub fn start(name: &'static str) -> Phase {
         let Some(rec) = r.as_mut() else { return false };
         rec.open.push(Open {
             name,
-            start: Instant::now(),
+            start: now(),
             cpu: thread_cpu(),
             inner: (Duration::ZERO, Duration::ZERO),
         });
@@ -107,7 +128,7 @@ impl Drop for Phase {
             let mut r = r.borrow_mut();
             let Some(rec) = r.as_mut() else { return };
             let Some(o) = rec.open.pop() else { return };
-            let all = (o.start.elapsed(), thread_cpu().saturating_sub(o.cpu));
+            let all = (now().saturating_sub(o.start), thread_cpu().saturating_sub(o.cpu));
             if let Some(parent) = rec.open.last_mut() {
                 parent.inner.0 += all.0;
                 parent.inner.1 += all.1;
@@ -159,13 +180,14 @@ pub fn record<T>(f: impl FnOnce() -> T) -> (T, Record) {
 mod tests {
     use super::*;
 
+    /// Advances the test clock: what a sleep would be, without one.
     fn spin(ms: u64) {
-        std::thread::sleep(Duration::from_millis(ms));
+        TEST_NOW.with(|n| n.set(n.get() + Duration::from_millis(ms)));
     }
 
     #[test]
     fn phases_are_their_own_time_and_add_up_to_the_whole() {
-        let start = Instant::now();
+        let start = now();
         let (v, rec) = record(|| {
             spin(5);
             time("a", || {
@@ -176,17 +198,19 @@ mod tests {
             note(|| "retried".into());
             7
         });
-        let whole = start.elapsed();
+        let whole = now() - start;
         assert_eq!(v, 7);
         assert_eq!(rec.notes, ["retried"]);
         let phases = rec.phases;
         let names: Vec<_> = phases.iter().map(|p| p.0).collect();
         assert_eq!(names, ["b", "a", "other"]);
         let get = |n| phases.iter().find(|p| p.0 == n).unwrap().1;
-        assert!(get("b") >= Duration::from_millis(40));
-        assert!(get("a") >= Duration::from_millis(20) && get("a") < Duration::from_millis(30 + 20));
+        assert_eq!(get("b"), Duration::from_millis(40));
+        // "a" is the 20 it slept itself: the 30 of the "b" inside it is
+        // "b"'s, not "a"'s.
+        assert_eq!(get("a"), Duration::from_millis(20));
         let sum: Duration = phases.iter().map(|p| p.1).sum();
-        assert!(sum <= whole);
+        assert_eq!(sum, whole);
         // With no clock set, no CPU time.
         assert!(phases.iter().all(|p| p.2.is_zero()), "{phases:?}");
     }
