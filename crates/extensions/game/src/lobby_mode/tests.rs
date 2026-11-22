@@ -597,6 +597,61 @@ fn the_rows_go_after_the_other_rows_on_the_plan() {
     assert!(text.contains("PARTY_LEAVE"), "{text}");
 }
 
+/// The list's arrangement runs last of the constructor's `after` hooks
+/// (they run in reverse, so it is the outermost), after Clanker Options,
+/// Firefight Options, Halo 1 Options and Switch To: Clankermatch are
+/// added: a matchmaking lobby's Game Setup is Change Playlist... alone,
+/// with no Switch To: Clankermatch beside it.
+#[test]
+fn the_arrangement_runs_after_every_row_is_added() {
+    use crate::ui_kit::screen::KitTexts;
+    let mut r = hooks::Registry::new(hooks::Switches::defaults());
+    r.add(&h1row::SetupRow {
+        data_root: std::env::temp_dir(),
+    })
+    .unwrap();
+    let bots = Arc::new(crate::clankers::page(Arc::new(Store::defaults(
+        &crate::clankers::DEFS,
+    ))));
+    r.add(&KitTexts(Arc::clone(&bots))).unwrap();
+    r.add(&bots.class()).unwrap();
+    r.add(&crate::clankers::SetupRow { page: bots }).unwrap();
+    r.add(&crate::clankermatch::SwitchRow { hle: None }).unwrap();
+    let ff_store = Arc::new(Store::defaults(&ff::DEFS));
+    let page = Arc::new(ff::page(Arc::clone(&ff_store)));
+    r.add(&KitTexts(Arc::clone(&page))).unwrap();
+    r.add(&page.class()).unwrap();
+    r.add(&ff::SetupRow { page }).unwrap();
+    r.add(&LobbyMode {
+        offer: ALL,
+        store: Some(ff_store),
+        data: std::env::temp_dir(),
+        vfs: None,
+    })
+    .unwrap();
+    let text = r.build(&hooks::Base).unwrap().text();
+    let line = text
+        .lines()
+        .find(|l| l.contains("SQUAD_SETTINGS_LIST_CTOR"))
+        .unwrap();
+    // The plan's text lists the `after` hooks in the order they run.
+    let after = &line[line.find("after [").expect("after hooks")..];
+    let ours = after.find("party-lobby:").expect("the arrangement");
+    for theirs in [
+        "h1-options-row:",
+        "clankers-row:",
+        "clankermatch-switch:",
+        "firefight-row:",
+    ] {
+        let at = after.find(theirs).unwrap_or_else(|| panic!("{theirs} {line}"));
+        assert!(at < ours, "{theirs} runs before the arrangement: {line}");
+    }
+    // What the arrangement then makes of each list is
+    // `arrange_drops_the_switch_to_rows`'s: the matchmaking lobby's
+    // (retail's kind 6 with Switch To: Clankermatch added) keeps Change
+    // Playlist... alone.
+}
+
 /// Our actions are past retail's and every other row of ours.
 #[test]
 fn the_rows_actions_are_their_own() {

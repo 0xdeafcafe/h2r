@@ -428,7 +428,11 @@ pub fn start_state(retail: u32, refused: bool) -> u32 {
 // ---- the hooks ----
 
 /// A Game Setup hook of ours sits after every other row's on the plan, so
-/// the mode's arrangement sees the rows they add.
+/// the mode's arrangement sees the rows they add. That holds for `before`
+/// hooks; an `after` sitting inside another feature's runs *before* it
+/// (`after` hooks run in reverse, docs/engine/feature-engine.md, "Hook
+/// ordering"), so the list's arrangement is [`hooks::HookRef::first`]
+/// instead: the outermost `after`, which runs last.
 fn after_rows(h: hooks::HookRef<'_>) {
     h.after_feature(crate::clankers::ROW_FEATURE)
         .after_feature(crate::clankermatch::SWITCH_FEATURE)
@@ -607,31 +611,34 @@ impl hooks::Feature for LobbyMode {
                 .push(c.cpu.esi);
             Ok(Flow::Continue)
         }));
-        after_rows(
-            b.raw()
-                .after(&CTOR, "the rows of the lobby's mode", move |c| {
-                    let Some(list) = building.lock().unwrap_or_else(|e| e.into_inner()).pop()
-                    else {
-                        return Ok(());
-                    };
-                    let rt = Arc::clone(c.ctx.runtime());
-                    let mut mem = rt.memory();
-                    let actions = h1row::setup_actions(&*mem, list).unwrap_or_default();
-                    let mode = lobby_start::mode();
-                    let Some(rows) = arrange(mode, offer, &actions) else {
-                        return Ok(());
-                    };
-                    match h1row::rewrite_rows(&mut *mem, list, &rows) {
-                        Ok(n) => {
-                            eprintln!("lobby mode: Game Setup list in {} ({n} rows)", mode.label())
-                        }
-                        Err(why) => {
-                            eprintln!("lobby mode: Game Setup list: rows not arranged: {why}")
-                        }
+        // Outermost, so it runs after every other feature's `after` on the
+        // constructor has added its row (Clanker Options, Firefight
+        // Options, Halo 1 Options, Switch To: Clankermatch): the mode's
+        // arrangement sees the whole list and drops the Switch To rows.
+        b.raw()
+            .after(&CTOR, "the rows of the lobby's mode", move |c| {
+                let Some(list) = building.lock().unwrap_or_else(|e| e.into_inner()).pop()
+                else {
+                    return Ok(());
+                };
+                let rt = Arc::clone(c.ctx.runtime());
+                let mut mem = rt.memory();
+                let actions = h1row::setup_actions(&*mem, list).unwrap_or_default();
+                let mode = lobby_start::mode();
+                let Some(rows) = arrange(mode, offer, &actions) else {
+                    return Ok(());
+                };
+                match h1row::rewrite_rows(&mut *mem, list, &rows) {
+                    Ok(n) => {
+                        eprintln!("lobby mode: Game Setup list in {} ({n} rows)", mode.label())
                     }
-                    Ok(())
-                }),
-        );
+                    Err(why) => {
+                        eprintln!("lobby mode: Game Setup list: rows not arranged: {why}")
+                    }
+                }
+                Ok(())
+            })
+            .first();
         let seen = Arc::new(AtomicBool::new(false));
         after_rows(b.raw().before(
             &SQUAD_SETTINGS_ROW_TEXT,
