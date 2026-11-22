@@ -86,11 +86,15 @@ The LaunchAgent runs a stable copy at `<root>/bin/h2`. Every 15 seconds
 while idle, it checks `<repo>/target/release/h2` in the installed checkout.
 It validates and atomically adopts a newer compatible build when the
 executable's contents change, then exits so launchd starts the copy.
-Ordinary game build jobs use a separate target directory.
 `h2 lab host update` on the laptop and `h2 lab update --host laptop`
-on the driver run `git pull --ff-only` on the checkout's
-tracked branch and `cargo build --release -p cli --bin h2` into
-`<repo>/target`, then swap the stable copy and restart the service with
+on the driver run `git pull --ff-only` on the checkout's tracked branch.
+They then build the checkout's new `HEAD` commit the way an image job
+builds a commit: the commit is checked out in `src/current/` and
+`cargo build --release -p cli --bin h2` runs there into the lab's
+`target/`. Updates and image jobs share one source tree and one Cargo
+target, so a commit that both of them build compiles once. Uncommitted
+changes in the checkout are not part of an update. The update then
+swaps the stable copy and restarts the service with
 launchctl. Both commands require a running, idle LaunchAgent. A build or
 run in progress blocks updates, and maintenance refuses new jobs until
 it finishes. Automatic and explicit restarts finish in-flight fetches,
@@ -112,10 +116,10 @@ The host keeps its files under `--root`, by default
 | `takeover-declined-until` | the player's consent cool-down, kept across lab host restarts |
 | `recordings/<name>/` | `manifest.json` and `input.bin` |
 | `pgo/<name>` | PGO profiles uploaded with `h2 lab put --pgo` |
-| `src/current/` | the detached Git worktree shared by branch builds |
+| `src/current/` | the detached Git worktree shared by branch builds and host updates |
 | `target/` | the cargo target directory those builds share |
-| `image/` | the built `h2`, game module, generated sources and build stamp (`image.json`) |
-| `obj-cache/` | `H2_OBJ_CACHE` for every image build |
+| `variants/<key>/` | one build variant's image work directory: the built `h2`, game module, generated sources, object pins and build stamp (`image.json`) |
+| `../obj/` | `H2_OBJ_CACHE` for every image build: `obj` beside the root, which for the default root is `~/Library/Caches/h2recomp/obj`, the object cache the Mac's own `h2 build`s use ([AGENTS.md](../../AGENTS.md)) |
 | `data/` | the data root runs use unless they pass `--own-data`; `data/films/` is the film library `theater.play` reads |
 | `scratch/<id>/data` | the empty data root of a `--fresh-data` run, removed when it ends |
 
@@ -200,32 +204,76 @@ A run (and `h2 lab build`) names what to build:
 run. It can import a branch while a game job runs.
 
 For a commit, the host switches its detached `src/current/` worktree to
-the requested revision. Each build uses the same Cargo target and passes
-the same `--out <root>/image` directory to `h2 build`. Cargo and the
-image compiler run at nice level +15 with a worker budget of the
-available CPU count minus two (minimum one).
+the requested revision. Cargo and the image compiler run at nice level
++15 with a worker budget of the available CPU count minus two (minimum
+one). Code: `ensure_image` in `crates/apps/cli/src/lab/host.rs` and
+`crates/apps/cli/src/lab/build_cache.rs`.
 
-The host reuses the published image when its binary, module and matching
-`image/image.json` stamp are present. The stamp identifies the commit,
-sorted features, build variables and content hash of the selected PGO
-profile. Changing any input rebuilds in place. Switching from A to B
-and back to A rebuilds twice, reusing Cargo artifacts and compiler objects.
-The host invalidates the stamp before a replacement and publishes a new
-one after the build and cache cleanup succeed. Each run receives the
+**The Rust build.** Every build, and every host update, runs
+`cargo build --release -p cli --bin h2` in `src/current/` into the one
+`target/`. One source tree has one target, so Cargo's fingerprints stay
+valid between builds, and a commit already built (by a job or an update)
+is fresh. The `--feature` list is the only per-job input. The host's own
+`H2_*` variables are dropped and the job's build variables are not
+passed, because they pick the game image, not the Rust build. Cargo reads
+its configuration as it does in a Terminal, so a machine-wide
+`build.rustc-wrapper` such as kache in `~/.cargo/config.toml` applies to
+lab builds too. The lab never sets `RUSTC_WRAPPER` itself
+([Rust dependency builds](../lifter/BUILD-CACHE.md#rust-dependency-builds)).
+
+**The game image.** Each build variant has its own work directory,
+`variants/<key>/`. The key hashes the sorted features, the build
+variables and the content hash of the selected PGO profile: everything
+that picks an image except the commit. Every commit of a variant passes
+the same `--out` to `h2 build`, with `H2_OBJ_CACHE` set to the shared
+object cache beside the root. Emission rewrites only the C files that
+changed, clang compiles only those shards (the rest come from the work
+directory's pins or the shared cache, including objects the Mac's own
+builds made) and the analysis comes from the boot cache
+([The `h2 build` and `h2 play` path](../lifter/BUILD-CACHE.md#the-h2-build-and-h2-play-path)).
+That path has no emission receipt: lifting and emission run on every
+build, which takes seconds when nothing changed, and the work they skip
+is the file writes and clang.
+Another `H2_OPT`, feature set or profile builds in another directory.
+The work directory is also the published image: the host reuses it when
+its binary, module and matching `image.json` stamp are present. The
+stamp identifies the commit as well as the variant. Switching one variant
+from commit A to B and back to A rebuilds twice, each time reusing the
+unchanged C, Cargo artifacts and compiler objects. Alternating two
+variants on one commit builds each once. The host invalidates the stamp
+before a replacement and publishes a new one after the build and cache
+cleanup succeed. A build holds `lab-build.lock` in its work directory,
+so a second builder of the same directory is refused even though the
+activity lock already allows one build at a time. Each run receives the
 build's environment. A job's `meta.json` records its commit, image key,
 cache hit or miss, and build variables.
 
+The job's `build.log` says what each build reused: whether the work
+directory is new or which commit it last held, how many crates Cargo
+compiled and the rustc wrapper in effect (and where it is configured),
+and from `h2 build`'s phase lines whether the analysis was cached, how
+many C files were rewritten and how many shards clang reused, for example
+`lab: image reuse: analysis cached, emit rewrote 12/1043 C files, clang
+reused 1031/1043 shards (12 compiled)`.
+
 After each build attempt the host removes least recently used objects
-above the object-cache budget (8 GiB by default). It retains the shared
+above the object-cache budget (8 GiB by default). The cache is shared
+with the Mac's own builds, so the budget bounds them too, and objects
+they add during pruning are logged rather than failing the job. Each
+build's pins keep its own objects linkable. It retains the shared
 Cargo target up to its separate budget (32 GiB by default). If it
 exceeds that budget the host clears the whole target so Cargo can
 recreate a consistent set of artifacts on the next build. The published
-image remains usable. Both budgets support zero. The host and install
-flags are in [Switches](switches.md#tools).
+images remain usable. Both budgets support zero. It keeps the four image
+work directories used last (by their stamp's time, which a cache hit
+renews) and removes older ones. The host and install flags are in
+[Switches](switches.md#tools).
 
 At startup the host takes the build/run activity lock before removing
-the old commit-named worktrees and 16-hex-key image directories. Job
-results and recordings are kept.
+the old commit-named worktrees, 16-hex-key `images/` directories, the
+single `image/` directory and the private `obj-cache/`, whose objects
+become the shared cache when there is none yet. Job results and
+recordings are kept.
 
 `H2_PGO=use:NAME` names a profile uploaded with
 `h2 lab put FILE --pgo --as NAME`.
@@ -691,7 +739,7 @@ cap](#memory-limits-and-reports) like a run (the cap applies to the `h2
 sim` process; a batch's matches are its children, so with `--parallel` the
 machine memory-pressure stop is the bound that covers them). It builds or
 reuses the commit's image first. `h2 sim` never builds, so the sim runs on
-that image: `--out` is the lab's `image/` (or the `--current` image).
+that image: `--out` is its variant's `variants/<key>/` (or the `--current` image).
 `--data` is the job's own data root, `runs/<id>/sim-data/` (`simbench::stage_data`):
 every entry of the host's data root linked in except `bots/`,
 and the driver's uploaded meshes and grids as its `bots/`. It is removed

@@ -37,6 +37,8 @@ if [ "$cmd" = build ]; then
   fi
   mkdir -p "$out" && echo image > "$out/$lib"
   echo "fake build opt=$H2_OPT objcache=$H2_OBJ_CACHE"
+  echo "emit: 0.1s, 1 owners (0 cut into parts), 3 files (1 rewritten), 0.1 MB of C, 1 entries, 0 resumes"
+  echo "clang (arm64): 1 compiled, 2 reused, 0.1s keying (dependency scans, hashing, pins), 0.1s compiling, 0.0s archive, 0.1 MB of objects"
   exit 0
 fi
 if [ "$cmd" = agent ]; then
@@ -452,6 +454,22 @@ fn start_fake_run(lab: &Lab) -> String {
 
 fn wait_fake_job(lab: &Lab, id: &str) -> Value {
     json(&ok(&lab.local(&["wait", id, "--timeout", "10"])))
+}
+
+/// The host's image work directories, `variants/<key>`, sorted.
+fn variants(root: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = fs::read_dir(root.join("variants"))
+        .map(|d| d.map(|e| e.unwrap().path()).collect())
+        .unwrap_or_default();
+    dirs.sort();
+    dirs
+}
+
+/// The one image work directory of a host that built one variant.
+fn only_variant(root: &Path) -> PathBuf {
+    let dirs = variants(root);
+    assert_eq!(dirs.len(), 1, "{dirs:?}");
+    dirs[0].clone()
 }
 
 #[test]
@@ -955,6 +973,14 @@ fn a_lab_host_runs_waits_stops_fetches_and_builds_branches() {
         build_log.contains("fake build opt=2 objcache="),
         "{build_log}"
     );
+    // The build log says what each step reused.
+    for line in [
+        "is new",
+        "lab: cargo compiled 0 crates",
+        "lab: image reuse: emit rewrote 1/3 C files, clang reused 2/3 shards (1 compiled)",
+    ] {
+        assert!(build_log.contains(line), "{line}: {build_log}");
+    }
     assert!(
         fs::read_to_string(to.join(bid).join("run.log"))
             .unwrap()
@@ -965,6 +991,8 @@ fn a_lab_host_runs_waits_stops_fetches_and_builds_branches() {
     let cargo = fs::read_to_string(&lab.cargo_log).unwrap();
     assert_eq!(cargo.lines().count(), 1);
     assert!(cargo.contains("build --release -p cli --bin h2"), "{cargo}");
+    assert!(cargo.contains("src/current"), "{cargo}");
+    let opt2_variants = variants(&lab.root);
     let v = json(&ok(&lab.lan(&[
         "run",
         "--name",
@@ -1002,6 +1030,10 @@ fn a_lab_host_runs_waits_stops_fetches_and_builds_branches() {
             .unwrap()
             .contains("--features perf")
     );
+    // ... built in a work directory of its own, beside the H2_OPT=2 one.
+    let all = variants(&lab.root);
+    assert_eq!(all.len(), opt2_variants.len() + 1, "{all:?}");
+    assert!(opt2_variants.iter().all(|d| all.contains(d)));
     assert!(
         err(&lab.local(&["build", "--branch", "nope", "--no-sync"])).contains("is not a commit")
     );
@@ -1041,7 +1073,8 @@ fn a_running_job_pins_the_image_and_queued_branches_share_one_checkout() {
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(25));
     }
-    let stamp = lab.root.join("image/image.json");
+    // One build variant, so one work directory holds every commit's image.
+    let stamp = only_variant(&lab.root).join("image.json");
     let checkout = lab.root.join("src/current");
     let keep = checkout.join("untracked-sentinel");
     fs::write(&keep, b"keep").unwrap();
@@ -1113,6 +1146,8 @@ fn host_migration_removes_only_the_legacy_build_directories() {
             ],
         );
         for dir in [
+            "image/src",
+            "obj-cache/ab",
             "images/a123456789abcdef",
             "images/other",
             "src/other",
@@ -1136,6 +1171,11 @@ fn host_migration_removes_only_the_legacy_build_directories() {
     assert!(!old.exists());
     assert!(!git(&lab.repo, &["worktree", "list", "--porcelain"]).contains(old.to_str().unwrap()));
     assert!(!lab.root.join("images/a123456789abcdef").exists());
+    // The single image directory the variants replaced. The private object
+    // cache becomes the shared one beside the root, which did not exist.
+    assert!(!lab.root.join("image").exists());
+    assert!(!lab.root.join("obj-cache").exists());
+    assert!(lab.dir.join("obj/ab/sentinel").is_file());
     for dir in ["images/other", "src/other", "runs/0001", "recordings/demo"] {
         assert!(lab.root.join(dir).join("sentinel").is_file());
     }
@@ -1145,7 +1185,8 @@ fn host_migration_removes_only_the_legacy_build_directories() {
 #[test]
 fn the_build_caches_can_be_capped_independently_of_the_published_image() {
     let lab = Lab::with_host_options("caps", &["--obj-cache-limit", "0", "--target-limit", "0"]);
-    let obj = lab.root.join("obj-cache");
+    // The object cache is the shared one beside the lab root.
+    let obj = lab.dir.join("obj");
     fs::create_dir_all(&obj).unwrap();
     fs::write(obj.join("unused.o"), b"old").unwrap();
     assert_eq!(

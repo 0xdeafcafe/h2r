@@ -77,7 +77,7 @@ pub struct Meta {
     pub state: String,
     pub request: Value,
     pub commit: Option<String>,
-    /// The build key stamped in `image/image.json`.
+    /// The build key stamped in `variants/<variant>/image.json`.
     pub image: Option<String>,
     /// The image was already built.
     pub cached: Option<bool>,
@@ -1996,7 +1996,8 @@ fn plan_image(cfg: &HostConfig, spec: &BuildSpec, commit: &str) -> Result<ImageP
     features.sort();
     features.dedup();
     let key = image_key(commit, &features, &spec.env, &pgo_hash);
-    let dir = cfg.dir("image");
+    build_cache::ensure_dir(&cfg.dir("variants"))?;
+    let dir = build_cache::variant_dir(cfg, &build_cache::variant_key(&features, &spec.env, &pgo_hash));
     build_cache::ensure_dir(&dir)?;
     let image = Image {
         h2: dir.join("h2"),
@@ -2008,7 +2009,8 @@ fn plan_image(cfg: &HostConfig, spec: &BuildSpec, commit: &str) -> Result<ImageP
 }
 
 /// From the image cache when built before, else build a detached checkout
-/// with the requested features and shared object cache.
+/// with the requested features into the lab's one Cargo target, then the
+/// image in its variant's work directory with the shared object cache.
 fn ensure_image(
     sh: &Shared,
     id: &str,
@@ -2021,7 +2023,8 @@ fn ensure_image(
     let ImagePlan { image, key, dir, features, pgo_hash, cached } = plan;
     let mut w = log.try_clone()?;
     if cached {
-        writeln!(w, "lab: image {key} for {commit} is built")?;
+        writeln!(w, "lab: image {key} for {commit} is built in {}", dir.display())?;
+        build_cache::touch(&dir);
         sh.update(id, |m| {
             m.image = Some(key);
             m.cached = Some(true);
@@ -2033,34 +2036,41 @@ fn ensure_image(
         m.cached = Some(false);
     });
     let src = cfg.dir("src/current");
-    for cache in ["target", "obj-cache"] {
-        build_cache::ensure_dir(&cfg.dir(cache))?;
+    build_cache::ensure_dir(&build_cache::target_dir(cfg))?;
+    build_cache::ensure_dir(&build_cache::obj_cache_dir(cfg))?;
+    let _building = build_cache::lock_variant(&dir)?;
+    match build_cache::stamped_commit(&dir) {
+        Some(last) => writeln!(
+            w,
+            "lab: image work directory {} last built {last}; only changed C is rewritten and recompiled",
+            dir.display()
+        )?,
+        None => writeln!(w, "lab: image work directory {} is new", dir.display())?,
     }
     let stamp = dir.join("image.json");
     if stamp.try_exists()? {
         fs::remove_file(&stamp)?;
     }
+    let log_path = cfg.dir("runs").join(id).join("build.log");
     let build = (|| -> Result<()> {
         let git = build_cache::checkout_command(cfg, commit)?;
         let status = sh.step(id, git, log)?;
         ensure!(status.success(), "checking out {commit} failed (build.log)");
 
         let jobs = build_cache::workers().to_string();
-        writeln!(w, "lab: cargo build at {commit}, {jobs} workers")?;
-        let target = cfg.dir("target");
-        let mut cargo = crate::follow::niced(&cfg.cargo);
-        cargo.args(["build", "--release", "-p", "cli", "--bin", "h2"]);
-        if !features.is_empty() {
-            cargo.arg("--features").arg(features.join(","));
-        }
-        cargo
-            .current_dir(&src)
-            .env("CARGO_BUILD_JOBS", &jobs)
-            .env("CARGO_TARGET_DIR", &target)
-            .envs(&image.env);
+        writeln!(
+            w,
+            "lab: cargo build at {commit} into {}, {jobs} workers",
+            build_cache::target_dir(cfg).display()
+        )?;
+        let wrapper = build_cache::rustc_wrapper(&src, |k| std::env::var(k).ok());
+        let from = log.metadata()?.len();
+        let cargo = build_cache::cargo_command(cfg, &src, &features);
         let st = sh.step(id, cargo, log)?;
         ensure!(st.success(), "cargo build failed (build.log)");
-        fs::copy(target.join("release/h2"), dir.join("h2.tmp")).context("copying the built h2")?;
+        let cargo_out = build_cache::log_since(&log_path, from);
+        writeln!(w, "{}", build_cache::cargo_summary(&cargo_out, wrapper.as_ref()))?;
+        fs::copy(build_cache::built_h2(cfg), dir.join("h2.tmp")).context("copying the built h2")?;
         fs::rename(dir.join("h2.tmp"), &image.h2)?;
         writeln!(w, "lab: h2 build into {}", dir.display())?;
         let mut build = crate::follow::niced(&image.h2);
@@ -2070,12 +2080,15 @@ fn ensure_image(
                 build.env_remove(k);
             }
         }
-        build.envs(&image.env).env("H2_OBJ_CACHE", cfg.dir("obj-cache")).current_dir(&dir);
+        build.envs(&image.env).env("H2_OBJ_CACHE", build_cache::obj_cache_dir(cfg)).current_dir(&dir);
+        let from = log.metadata()?.len();
         let st = sh.step(id, build, log)?;
         ensure!(st.success(), "h2 build failed (build.log)");
+        writeln!(w, "{}", build_cache::image_summary(&build_cache::log_since(&log_path, from)))?;
         Ok(())
     })();
-    let prune = build_cache::prune(cfg, &mut w);
+    let prune = build_cache::prune(cfg, &mut w)
+        .and_then(|()| build_cache::prune_variants(cfg, &dir, &mut w));
     if let Err(err) = build {
         if let Err(prune) = prune {
             writeln!(w, "lab: cache cleanup failed: {prune:#}")?;

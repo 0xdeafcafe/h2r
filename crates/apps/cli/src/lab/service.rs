@@ -586,16 +586,28 @@ pub(super) fn stage_update(cfg: &HostConfig) -> Result<()> {
     let result = (|| {
         let mut git = Command::new("git");
         git.args(["pull", "--ff-only"])
-            .env("GIT_TERMINAL_PROMPT", "0");
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .current_dir(&cfg.repo);
         run_update_step(cfg, git, &mut log, "git pull")?;
 
-        let mut cargo = crate::follow::niced(&cfg.cargo);
-        cargo.env("CARGO_BUILD_JOBS", super::build_cache::workers().to_string());
-        cargo
-            .args(["build", "--release", "-p", "cli", "--bin", "h2"])
-            .env("CARGO_TARGET_DIR", cfg.repo.join("target"));
+        // The checkout's new HEAD builds in the worktree and Cargo target
+        // that image jobs use, so a commit both of them build compiles
+        // once (docs/runtime/lab.md, "Running and updating the LaunchAgent").
+        let commit = super::transfer::resolve_commit(&cfg.repo, "HEAD")?
+            .context("the checkout has no HEAD commit")?;
+        let checkout = super::build_cache::checkout_command(cfg, &commit)?;
+        run_update_step(cfg, checkout, &mut log, &format!("checkout of {commit}"))?;
+        super::build_cache::ensure_dir(&super::build_cache::target_dir(cfg))?;
+        let src = cfg.dir("src/current");
+        match super::build_cache::rustc_wrapper(&src, |k| std::env::var(k).ok()) {
+            Some((wrapper, from)) => {
+                writeln!(log, "lab host update: rustc wrapper {wrapper} (from {from})")?
+            }
+            None => writeln!(log, "lab host update: no rustc wrapper")?,
+        }
+        let cargo = super::build_cache::cargo_command(cfg, &src, &[]);
         run_update_step(cfg, cargo, &mut log, "cargo build")?;
-        install_binary(&built_binary(cfg), cfg, None)
+        install_binary(&super::build_cache::built_h2(cfg), cfg, None)
     })();
     let _ = match &result {
         Ok(()) => writeln!(log, "lab host update: installed replacement"),
@@ -610,10 +622,11 @@ fn run_update_step(
     log: &mut log::Log,
     what: &str,
 ) -> Result<()> {
-    writeln!(log, "lab host update: {what} in {}", cfg.repo.display())?;
+    let dir = cmd.get_current_dir().unwrap_or(cfg.repo.as_path()).to_owned();
+    writeln!(log, "lab host update: {what} in {}", dir.display())?;
     let (mut reader, writer) = io::pipe()?;
     let mut child = cmd
-        .current_dir(&cfg.repo)
+        .current_dir(&dir)
         .stdin(Stdio::null())
         .stdout(writer.try_clone()?)
         .stderr(writer)
