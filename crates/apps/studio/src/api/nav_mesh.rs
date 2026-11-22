@@ -1,5 +1,6 @@
 //! `nav.pathfinding`, `nav.bots` and `nav.pick`: the Navigation layers'
-//! data ([`scenario_edit::nav_view`]; docs/editor/editor.md, "Navigation").
+//! data ([`scenario_edit::nav_view`]; docs/editor/editor.md, "What the
+//! viewport shows, and what it does not yet").
 //! Read only, and independent of the layers shown: an agent can ask about
 //! a sector or a link the viewport hides. `nav.bots` starts the bots'
 //! load ([`crate::app::bot_nav`]) when nothing has asked for it yet.
