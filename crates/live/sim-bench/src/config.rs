@@ -712,7 +712,9 @@ impl BotThreads {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MatchConfig {
-    /// A multiplayer map on the disc, by file name (`lockout`).
+    /// A multiplayer map on the disc, by file name (`lockout`). A drops
+    /// file may name it in its `[drops]` table instead.
+    #[serde(default)]
     pub map: String,
     #[serde(default = "default_game_type")]
     pub game_type: String,

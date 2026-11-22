@@ -215,7 +215,7 @@ fn the_across_direction_follows_the_drift_and_an_approach_pushes_along_it() {
     });
     let s = d.settings("x").unwrap();
     assert_eq!(s.sides, vec![Side::Plus, Side::Minus]);
-    let drops = plan(&s, &[t.clone()]);
+    let drops = plan(&s, std::slice::from_ref(&t));
     assert_eq!(drops.len(), 2);
     let plus = drops.iter().find(|d| d.side == Side::Plus).unwrap();
     // Starts back against the push: +y by the lead, pushed toward -y.
@@ -395,7 +395,7 @@ fn settings() -> Settings {
 fn drop_at(height: f32) -> (Drop, Target) {
     let s = settings();
     let t = Target::from_spec(0, &edge_spec()).unwrap();
-    let mut d = plan(&s, &[t.clone()])[0];
+    let mut d = plan(&s, std::slice::from_ref(&t))[0];
     d.height = height;
     d.start[2] = height;
     (d, t)
@@ -571,7 +571,7 @@ fn the_control_gate_passes_on_one_bounce_and_names_what_failed() {
     let lost = (Outcome::PrimeLost, Some("rebuilt".to_string()));
     let flat = (Outcome::NoBounce, None);
     assert_eq!(gate(&[], true), Gate::Running);
-    assert_eq!(gate(&[lost.clone()], true), Gate::Running);
+    assert_eq!(gate(std::slice::from_ref(&lost), true), Gate::Running);
     assert_eq!(gate(&[lost.clone(), b], true), Gate::Passed);
     assert_eq!(
         gate(&[lost.clone(), flat.clone(), lost], false),
