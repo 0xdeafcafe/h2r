@@ -185,12 +185,21 @@ mod tests {
         let act = decide(Dir::Prev, &lobby(true, Tab::CustomGames));
         assert_eq!(act, Act::Notice(Reason::MatchmakingNeedsLive));
         // Skipped on the way to a tab that is on: the move, and the reason.
+        let mut s = lobby(true, Tab::CustomGames);
+        s.row = row(
+            Present::ALL,
+            Place::SplitScreen,
+            Facts {
+                remote_members: true,
+                ..Facts::default()
+            },
+        );
         assert_eq!(
-            decide(Dir::Next, &lobby(true, Tab::Forge)),
+            decide(Dir::Next, &s),
             Act::Switch {
-                from: Tab::Forge,
-                to: Tab::CoOp,
-                notice: Some(Reason::NoKitMap)
+                from: Tab::CustomGames,
+                to: Tab::Firefight,
+                notice: Some(Reason::ForgeRemote)
             }
         );
         let at = Instant::now();
@@ -215,7 +224,7 @@ mod tests {
             Place::XboxLive,
             Facts {
                 playlists: true,
-                kit_maps: true,
+                live_co_op: true,
                 remote_members: false,
             },
         );
@@ -232,7 +241,7 @@ mod tests {
     fn every_tab_that_is_on_is_reached_by_the_bumpers() {
         let facts = Facts {
             playlists: true,
-            kit_maps: true,
+            live_co_op: true,
             remote_members: false,
         };
         for place in [Place::SplitScreen, Place::SystemLink, Place::XboxLive] {
@@ -260,14 +269,22 @@ mod tests {
             seen.sort_by_key(|t| *t as u8);
             assert_eq!(seen, on, "{place:?}");
         }
-        // Split Screen with no kit map: FORGE to CO-OP passes FIREFIGHT and
-        // names it.
+        // Split Screen with no kit map and no Live (`Facts::default`): FORGE
+        // goes to FIREFIGHT and FIREFIGHT to CO-OP, nothing passed over.
         assert_eq!(
             decide(Dir::Next, &lobby(true, Tab::Forge)),
             Act::Switch {
                 from: Tab::Forge,
+                to: Tab::Firefight,
+                notice: None
+            }
+        );
+        assert_eq!(
+            decide(Dir::Next, &lobby(true, Tab::Firefight)),
+            Act::Switch {
+                from: Tab::Firefight,
                 to: Tab::CoOp,
-                notice: Some(Reason::NoKitMap)
+                notice: None
             }
         );
     }

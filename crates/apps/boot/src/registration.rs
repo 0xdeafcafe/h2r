@@ -347,7 +347,9 @@ pub(crate) fn register_core_film(
             firefight: firefight_on,
         };
         // The mode strip's FORGE and FIREFIGHT tabs, with their features
-        // (docs/game/party-lobby.md, "Where each tab runs").
+        // (docs/game/party-lobby.md, "Where each tab runs"). CO-OP is
+        // retail's co-op lobby and always on the strip; co-op over Xbox
+        // Live (`coop_live`, below) is read when the lobby is on Live.
         crate::lobby_tabs::set_present(|p| {
             p.forge = offer.forge;
             p.firefight = offer.firefight;
@@ -806,7 +808,6 @@ pub(crate) fn register_late_for_profile(
         }
         let on = crate::coop_live::install(features, i.live.clone(), arm, i.settings.clone(), i.disc)?;
         custom_games::set_coop_row(on);
-        crate::lobby_tabs::set_present(|p| p.co_op = on);
     }
     // The mod repository (docs/game/maps.md §5, "Mod downloads"): the Xbox
     // Live menu's last row opens our Mods screens in place of Content
