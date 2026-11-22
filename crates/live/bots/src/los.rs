@@ -43,13 +43,18 @@ pub struct Walls {
     /// built while a match runs goes into the shared map data without
     /// replacing it.
     vis: OnceLock<Arc<Vis>>,
+    /// The breakable surfaces among them (`crate::glass`): the pieces of
+    /// glass a crouch spot's walk in may have to break first. Their
+    /// triangles are in `tris` too, as solid as the rest.
+    pub glass: Vec<crate::glass::Pane>,
 }
 
-/// Walls are their triangles: the bucket grid is made from them, and the
-/// visibility grid only ever skips a walk whose answer it knows.
+/// Walls are their triangles and glass: the bucket grid is made from the
+/// triangles, and the visibility grid only ever skips a walk whose answer
+/// it knows.
 impl PartialEq for Walls {
     fn eq(&self, other: &Self) -> bool {
-        self.tris == other.tris
+        self.tris == other.tris && self.glass == other.glass
     }
 }
 
@@ -141,7 +146,14 @@ impl Walls {
             tris,
             grid: Grid::new(grid),
             vis: OnceLock::new(),
+            glass: Vec::new(),
         }
+    }
+
+    /// The same, with `glass`: the breakable surfaces among the triangles.
+    pub fn with_glass(mut self, glass: Vec<crate::glass::Pane>) -> Self {
+        self.glass = glass;
+        self
     }
 
     /// Attaches a visibility grid; `false` when one already is. It must

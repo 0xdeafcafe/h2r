@@ -92,6 +92,70 @@ const BIPED_CROUCH_REQUEST: u32 = 1 << 23;
 /// Object body damage flags bit 2: the body is depleted (dead).
 pub const BODY_DEPLETED: u16 = 1 << 2;
 
+// ---- breakable surfaces (crate::glass) ----
+
+/// The breakable-surface state's pointer: `[0x4ed280]`. Its first byte is
+/// the enable flag `breakable_surfaces_enable` writes; from `+1` each
+/// structure BSP has 32 bytes (256 bits, one a breakable index), set while
+/// the surface is whole: filled with ones at map reset (`0x183ec0`) and by
+/// `breakable_surfaces_reset`, a bit cleared when its surface breaks. The
+/// collision query passes `[0x4ed280] + 32 * bsp + 1` as the structure's
+/// mask (docs/engine/sim-rewrite-collision.md, 5.4; docs/formats/collision.md,
+/// "Breakable mask").
+pub const BREAKABLE_STATE: u32 = 0x004e_d280;
+/// One BSP's mask, bytes.
+pub const BREAKABLE_BSP_BYTES: u32 = 32;
+
+/// The breakable-surface state of structure BSP `bsp`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Breakable {
+    /// The enable byte (`breakable_surfaces_enable`): with it off nothing
+    /// breaks.
+    pub enabled: bool,
+    pub mask: crate::glass::Mask,
+}
+
+impl Breakable {
+    /// The breakable indices whose surfaces are broken, ascending.
+    pub fn broken(&self) -> Vec<u8> {
+        (0..=255u8)
+            .filter(|&i| !crate::glass::intact(&self.mask, i))
+            .collect()
+    }
+
+    /// The mask's 32 bytes as the game holds them, lowest index first, in
+    /// hexadecimal.
+    pub fn mask_hex(&self) -> String {
+        self.mask
+            .iter()
+            .flat_map(|w| w.to_le_bytes())
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+}
+
+/// Reads structure BSP `bsp`'s breakable-surface state; `None` while the
+/// state's pointer is null (no map).
+pub fn breakable(m: &dyn GuestMemory, bsp: u32) -> R<Option<Breakable>> {
+    let base = m.u32(BREAKABLE_STATE)?;
+    if base == 0 {
+        return Ok(None);
+    }
+    let at = base + 1 + BREAKABLE_BSP_BYTES * bsp;
+    let mut mask = [0u32; 8];
+    for (i, w) in mask.iter_mut().enumerate() {
+        let mut b = [0u8; 4];
+        for (k, byte) in b.iter_mut().enumerate() {
+            *byte = m.u8(at + 4 * i as u32 + k as u32)?;
+        }
+        *w = u32::from_le_bytes(b);
+    }
+    Ok(Some(Breakable {
+        enabled: m.u8(base)? != 0,
+        mask,
+    }))
+}
+
 /// A fast same-tick check before reusing a phantom's sampled pad.
 pub(crate) fn same_live_unit(m: &dyn GuestMemory, machine: [u8; 6], slot: u32, unit: u32) -> bool {
     let check = || -> R<bool> {
