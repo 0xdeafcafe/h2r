@@ -173,11 +173,12 @@ pub struct BounceTuning {
     pub approach_turn_deg: f32,
     pub out_speed: f32,
     /// The drop: lined up within `line_up` (`bounce_route::LINE_UP`) or
-    /// after `line_up_ticks` (`LINE_UP_TICKS`), the stick of a walk-off
-    /// (`RUN_OFF_SPEED`; a drop that needs a jump runs at
-    /// `bounce_route::takeoff_speed`), the air steering's stick a unit the
-    /// landing as it flies is off the target (`AIR_GAIN`), and drops
-    /// before giving up (`DROP_TRIES`).
+    /// after `line_up_ticks` (`LINE_UP_TICKS`), the stick of the slower
+    /// run it takes when one at full stick overshoots
+    /// (`RUN_OFF_SPEED`, `bounce_route::drop_takeoff`), the air
+    /// steering's correction over the one that just lands it (`AIR_GAIN`,
+    /// `bounce_route::air_stick`), and drops before giving up
+    /// (`DROP_TRIES`).
     pub line_up: f32,
     pub line_up_ticks: u32,
     pub run_off_speed: f32,
@@ -210,8 +211,8 @@ pub const BOUNCE_DEFAULT: BounceTuning = BounceTuning {
     out_speed: 1.0,
     line_up: 0.15,
     line_up_ticks: 45,
-    run_off_speed: 0.5,
-    air_gain: 2.5,
+    run_off_speed: 0.6,
+    air_gain: 1.2,
     drop_tries: 3,
     fly_speed: 1.0,
 };

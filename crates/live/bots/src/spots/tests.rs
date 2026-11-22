@@ -205,6 +205,25 @@ fn verified_entries_prefer_what_worked_and_drop_what_failed() {
 }
 
 #[test]
+fn a_measured_spot_keeps_its_traced_landing_when_a_drop_on_it_is_verified() {
+    // The drill's first bounce wrote the touchdown it saw, a tick before
+    // contact, as the working point: (-10.28, 3.91). The aim stays the
+    // middle of the traced bounces.
+    let measured = SPOTS[0];
+    let ver = [Entry {
+        offset: [0.34, 0.03],
+        height: Some(2.43),
+        best: 13.1,
+        ..entry(Kind::Bounce, Status::Proven, measured.stand)
+    }];
+    let k = Known::merge_verified(vec![measured], &[], &ver);
+    let s = k.sites[0];
+    assert!(s.proven());
+    assert_eq!(Some(s.target()), measured.landing);
+    assert_eq!((s.drop_height(), s.launch), (2.43, 13.1));
+}
+
+#[test]
 fn a_verified_file_is_stored_merged_read_back_and_bumps_the_generation() {
     let dir = std::env::temp_dir().join(format!("h2-verified-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

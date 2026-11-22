@@ -125,8 +125,9 @@ pub enum Step {
     Prime(Crouch),
     /// Jump onto the site from behind it, until it launches.
     Bounce(Site),
-    /// Off the launch floor at `from` (a running jump when a walk-off
-    /// would land too slow) and down onto the site, aiming at its target,
+    /// Off the launch floor at `from` (a run off the edge, or a running
+    /// jump where that can't land on the target fast enough:
+    /// [`drop_takeoff`]) and down onto the site, aiming at its target,
     /// until it launches.
     Drop { from: Vec3, site: Site },
     /// Ride the launch, steering toward `to`, until down.
@@ -736,12 +737,14 @@ pub const LINE_UP: f32 = 0.15;
 pub const RUN_OFF_TICKS: u32 = 60;
 /// Below the launch floor by this much (world units) the drop has begun.
 pub const LEFT_FLOOR: f32 = 0.15;
-/// The run off the floor (stick, 0..1): a walk, so the landing is not far
-/// past the slot.
-pub const RUN_OFF_SPEED: f32 = 0.5;
-/// In the air the stick asks for this much per world unit the landing is
-/// off the target (to 1).
-pub const AIR_GAIN: f32 = 2.5;
+/// The stick of a drop's slower run (0..1), the one it takes when a run
+/// at full stick would carry the flight past the target however hard the
+/// air stick brakes: the drill runs' walk, about 1.05 units/s
+/// ([`ground_speed`]).
+pub const RUN_OFF_SPEED: f32 = 0.6;
+/// The air stick's correction, over the one that would just land the
+/// flight on the target ([`air_stick`]; 1: just enough).
+pub const AIR_GAIN: f32 = 1.2;
 /// A drop is over this long (ticks) after leaving the floor.
 pub const DROP_AIR_TICKS: u32 = 150;
 /// A rise this far (world units) above the lowest point after falling is
@@ -772,21 +775,40 @@ pub const FALL_GRAVITY: f32 = 4.15;
 /// A jump's vertical speed on its first tick (world units a second): the
 /// same runs, every jump.
 pub const JUMP_VZ: f32 = 3.08;
-/// The ground speed at full stick (world units a second): the same runs,
-/// a bot walking on flat floor at a stick of 1 (about 2).
+/// The ground speed at full stick (world units a second): the drill runs
+/// at a stick of 1 ran at 1.96 to 2.12 (ground-truth 7,
+/// docs/game/notes/2026-11-21-bot-bounce-sim.md).
 pub const RUN_SPEED: f32 = 2.0;
 /// The smallest stick that moves the body: past the move stick's dead
 /// zone (`nav::route`'s 0.15). The runs' standing jumps held 0.15 of
 /// stick toward the drift in the air and gained no sideways speed at all.
 pub const MIN_STICK: f32 = 0.2;
-/// A running jump starts this far (world units) behind its launch point.
+/// A drop's run starts this far (world units) behind its launch point.
 pub const RUN_UP: f32 = 0.6;
-/// The jump is pressed this far (world units) short of the launch point.
+/// The jump is pressed this far (world units) short of the launch point,
+/// and further by the ground the body covers in [`INPUT_LAG`].
 pub const TAKEOFF_EARLY: f32 = 0.05;
+/// Ticks from the pad asking to the body doing it: the drill runs' jumps
+/// left the floor 4 to 6 ticks after the press, and their air steering
+/// swung the sideways speed up and down 7 ticks a side, the swing of a
+/// steering some 4 ticks late (docs/game/notes/2026-11-21-bot-bounce-sim.md).
+pub const INPUT_LAG: u32 = 5;
 /// In the air the stick lets go when the landing, as it flies, comes down
 /// this near the target (world units): the recipe's "easing off the stick
-/// in the air".
+/// in the air". Letting go is holding the sideways speed ([`air_stick`]).
 pub const AIR_DEAD: f32 = 0.03;
+/// How fast the air stick changes the sideways speed (world units a second
+/// squared): 0.035 units/s a tick in every drill run, braking and pushing,
+/// at every stick past the dead zone.
+pub const AIR_ACCEL: f32 = 1.05;
+/// The sideways speed a full air stick drives toward (world units a
+/// second). **[rough]**: under a stick of 0.8 to 1 pushing on, the drill
+/// runs' flights held 0.9 to 1.3 and never went faster, and a small stick
+/// on slowed a 0.46 one to 0.40; a faster flight slows toward it.
+pub const AIR_TOP: f32 = 1.2;
+/// A landing, as it flies, this far (world units) past the target brakes
+/// with the full stick.
+pub const AIR_PAST: f32 = 0.3;
 
 /// How long (seconds) a fall from `vz` (up positive) takes to come down
 /// `height` (world units, positive down), under [`FALL_GRAVITY`]. `None`
@@ -798,41 +820,200 @@ pub fn fall_time(height: f32, vz: f32) -> Option<f32> {
         .filter(|t| *t > 0.0)
 }
 
-/// Whether a drop from `from` onto `site` jumps: a walk off the floor
-/// lands at `sqrt(2 g h)`, slower than the site needs. The scan's falls
-/// assume a jump (`superbounce::bounce`: a standing jump lands at 3), and
-/// so does the measured recipe (a running jump, a 2.43 drop, -5.4).
-pub fn drop_jumps(from: Vec3, site: &Site) -> bool {
-    let h = (from[2] - site.target()[2]).max(0.0);
-    site.need > 0.0 && (2.0 * FALL_GRAVITY * h).sqrt() < site.need
-}
-
-/// The ground speed (world units a second) a running jump from `from`
-/// takes to come down on `to`: the gap over the flight's time.
-pub fn takeoff_speed(from: Vec3, to: Vec3) -> f32 {
-    let gap = dist_xy(from, to);
-    fall_time(from[2] - to[2], JUMP_VZ).map_or(0.0, |t| gap / t)
-}
-
-/// The stick for a ground speed (world units a second): 0 for none, else
-/// at least [`MIN_STICK`].
-fn stick_for(speed: f32) -> f32 {
-    if speed <= 0.01 {
-        0.0
-    } else {
-        (speed / RUN_SPEED).clamp(MIN_STICK, 1.0)
+/// The ground speed (world units a second) a stick runs at, from what the
+/// drill runs measured (docs/game/notes/2026-11-21-bot-bounce-sim.md):
+/// nothing inside the dead zone, about 1.05 at 0.6 to 0.85 of stick (the
+/// committed run asked for 0.6 to 0.8 and got 1.02 to 1.08; a gain of 2
+/// on the same asked more and got 0.9 to 1.75), and 2.0 at 1. Not linear:
+/// a walk, then a run. Straight lines between the points. **[needs more
+/// points]**: nothing was measured between 0.15 and 0.6 or between 0.85
+/// and 1.
+pub fn ground_speed(stick: f32) -> f32 {
+    const MAP: [(f32, f32); 4] = [(0.15, 0.0), (0.6, 1.05), (0.85, 1.1), (1.0, RUN_SPEED)];
+    let s = stick.clamp(0.0, 1.0);
+    if s <= MAP[0].0 {
+        return 0.0;
     }
+    if s >= 1.0 {
+        return RUN_SPEED;
+    }
+    for w in MAP.windows(2) {
+        let ((s0, v0), (s1, v1)) = (w[0], w[1]);
+        if s <= s1 {
+            return v0 + (v1 - v0) * (s - s0) / (s1 - s0);
+        }
+    }
+    RUN_SPEED
+}
+
+/// How far (world units) a flight goes sideways in `t` seconds from a
+/// sideways speed `u`, along its line: braking with the full air stick
+/// the whole way (to a stop, no further), and pushing on with it (toward
+/// [`AIR_TOP`], which a faster flight slows to).
+pub fn air_reach(u: f32, t: f32) -> (f32, f32) {
+    let a = AIR_ACCEL;
+    let u = u.max(0.0);
+    let t = t.max(0.0);
+    let near = if u <= a * t {
+        u * u / (2.0 * a)
+    } else {
+        u * t - 0.5 * a * t * t
+    };
+    // Toward the top at `a`, then at it.
+    let (dv, sign) = if u >= AIR_TOP {
+        (u - AIR_TOP, -1.0)
+    } else {
+        (AIR_TOP - u, 1.0)
+    };
+    let t1 = (dv / a).min(t);
+    let far = u * t1 + sign * 0.5 * a * t1 * t1 + (u + sign * a * t1) * (t - t1);
+    (near, far)
+}
+
+/// How a drop leaves its launch floor: the run's stick, and whether it
+/// jumps; and what the flight model ([`fall_time`], [`air_reach`]) makes
+/// of it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Takeoff {
+    /// A running jump; else a run off the edge.
+    pub jump: bool,
+    /// The run's stick, and the ground speed it gives ([`ground_speed`]).
+    pub stick: f32,
+    pub speed: f32,
+    /// Seconds from the floor to the target's height.
+    pub time: f32,
+    /// The speed it comes down at (world units a second, down).
+    pub speed_in: f32,
+    /// How far it goes sideways braking and pushing ([`air_reach`]), and
+    /// how far the target is from the launch point.
+    pub near: f32,
+    pub far: f32,
+    pub gap: f32,
+}
+
+impl Takeoff {
+    /// The air stick can bring the flight down on the target.
+    pub fn reaches(&self) -> bool {
+        self.gap >= self.near && self.gap <= self.far
+    }
+
+    /// It comes down at least as fast as `need` (0: anything).
+    pub fn fast_enough(&self, need: f32) -> bool {
+        need <= 0.0 || self.speed_in >= need
+    }
+
+    /// How far (world units) the target is outside what it reaches.
+    pub fn off(&self) -> f32 {
+        (self.near - self.gap).max(self.gap - self.far).max(0.0)
+    }
+}
+
+/// The flight of a drop from `from` onto `site`'s target, run at `stick`,
+/// jumping or not. `None` when it never comes down there.
+pub fn takeoff(from: Vec3, site: &Site, stick: f32, jump: bool) -> Option<Takeoff> {
+    let target = site.target();
+    let h = from[2] - target[2];
+    let vz = if jump { JUMP_VZ } else { 0.0 };
+    let time = fall_time(h, vz)?;
+    let speed = ground_speed(stick);
+    let (near, far) = air_reach(speed, time);
+    Some(Takeoff {
+        jump,
+        stick,
+        speed,
+        time,
+        speed_in: (vz * vz + 2.0 * FALL_GRAVITY * h).max(0.0).sqrt(),
+        near,
+        far,
+        gap: dist_xy(from, target),
+    })
+}
+
+/// How a drop from `from` onto `site` leaves the floor, from the flight
+/// model. A run off the edge at full stick when it comes down fast enough
+/// (`site.need`) and the air stick can land it on the target; else one
+/// at `slow` (the tuning's `run_off_speed`) that can; else a running jump
+/// at full stick, then at `slow`, that comes down fast enough and gets
+/// there. When none does: of those fast enough (else of all), the one
+/// whose target is least outside its reach.
+pub fn drop_takeoff(from: Vec3, site: &Site, slow: f32) -> Takeoff {
+    let tries = [(1.0, false), (slow, false), (1.0, true), (slow, true)];
+    let all: Vec<Takeoff> = tries
+        .iter()
+        .filter_map(|&(stick, jump)| takeoff(from, site, stick, jump))
+        .collect();
+    if let Some(t) = all.iter().find(|t| t.reaches() && t.fast_enough(site.need)) {
+        return *t;
+    }
+    let fast: Vec<&Takeoff> = all.iter().filter(|t| t.fast_enough(site.need)).collect();
+    let pool: Vec<&Takeoff> = if fast.is_empty() {
+        all.iter().collect()
+    } else {
+        fast
+    };
+    pool.into_iter()
+        .min_by(|a, b| a.off().total_cmp(&b.off()))
+        .copied()
+        // Not even a fall (the target over the floor): the running jump.
+        .unwrap_or(Takeoff {
+            jump: true,
+            stick: 1.0,
+            speed: RUN_SPEED,
+            time: 0.0,
+            speed_in: 0.0,
+            near: 0.0,
+            far: 0.0,
+            gap: dist_xy(from, site.target()),
+        })
+}
+
+/// The air stick (world axes, 0..1) for a flight at sideways speed `v`
+/// whose landing, with that speed held, misses the target by `miss`
+/// (target minus landing) with `rem` seconds left. The air stick drives
+/// the sideways speed toward the stick times [`AIR_TOP`] at
+/// [`AIR_ACCEL`], so the stick says the speed to end at: the one that,
+/// reached at that rate and then held, puts the landing on the target,
+/// the change `gain` times what is just enough. A miss under [`AIR_DEAD`]
+/// holds the speed; one the stick can't make up in the time left, or a
+/// landing [`AIR_PAST`] beyond the target along the flight, is the full
+/// stick toward the target's side.
+pub fn air_stick(v: [f32; 2], miss: [f32; 2], rem: f32, gain: f32) -> ([f32; 2], f32) {
+    let (to, off) = norm(miss);
+    let (along, speed) = norm(v);
+    let past = -(miss[0] * along[0] + miss[1] * along[1]);
+    let want = if off < AIR_DEAD {
+        v
+    } else if past > AIR_PAST && speed > 0.0 {
+        return (to, 1.0);
+    } else {
+        // The change e that lands it: |e| (rem - |e| / 2a) = off.
+        let a = AIR_ACCEL;
+        let d = rem * rem - 2.0 * off / a;
+        let e = if d >= 0.0 {
+            a * (rem - d.sqrt()) * gain
+        } else {
+            // More than it can make up: past the top, the full stick.
+            2.0 * AIR_TOP + speed
+        };
+        [v[0] + to[0] * e, v[1] + to[1] * e]
+    };
+    // The stick is the speed to end at, over the top; past the top, all
+    // of it.
+    let (dir, mag) = norm([want[0] / AIR_TOP, want[1] / AIR_TOP]);
+    let mag = mag.min(1.0);
+    (dir, if mag < MIN_STICK { 0.0 } else { mag })
 }
 
 /// A drop's phase.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Dropping {
-    /// Walking to the run-up (a jump: [`RUN_UP`] behind the launch point;
-    /// a walk-off: the launch point), from the tick.
+    /// Walking to the run-up, [`RUN_UP`] behind the launch point, from
+    /// the tick.
     Line(u32),
     /// Running at the launch point toward the target, from the tick.
     Run(u32),
-    /// The jump held, from the tick.
+    /// The jump held, then the run until the body leaves the floor, from
+    /// the tick.
     Jump(u32),
     /// Off the floor, from the tick; the highest point, and the lowest
     /// once falling.
@@ -898,8 +1079,9 @@ impl Touchdown {
 }
 
 /// The vertical speed off the floor is the best of this many ticks
-/// (ticks) from the takeoff: the press is on the ground.
-pub const TAKEOFF_TICKS: u32 = 6;
+/// (ticks) from the takeoff: the press is on the ground, and the body
+/// leaves it about [`INPUT_LAG`] later (the drill runs: 4 to 6).
+pub const TAKEOFF_TICKS: u32 = 10;
 /// The most [`Leap`]s a run keeps.
 pub const FLIGHTS: usize = 8;
 
@@ -1552,13 +1734,14 @@ impl OrderRun {
         }))
     }
 
-    /// Off the launch floor at `from` and down onto the site's target. A
-    /// drop that needs a jump ([`drop_jumps`]) is the recipe's: line up
-    /// [`RUN_UP`] behind `from`, run at the target at the speed that
-    /// carries the flight onto it ([`takeoff_speed`]), jump at `from`, and
-    /// in the air steer the landing, as it flies, onto the target, easing
-    /// off once it is on it ([`AIR_DEAD`]). Else walk off at the tuning's
-    /// `run_off_speed` and steer the same way. Then see whether it launched.
+    /// Off the launch floor at `from` and down onto the site's target, the
+    /// way [`drop_takeoff`] picks: line up [`RUN_UP`] behind `from`, run
+    /// at the target at the takeoff's stick, steered back onto the line
+    /// through `from`, and either run off the edge or, a running jump,
+    /// press jump short of `from` by [`TAKEOFF_EARLY`] and the ground the
+    /// body covers in [`INPUT_LAG`], holding the run until the body leaves
+    /// the floor. In the air steer the landing onto the target
+    /// ([`OrderRun::drop_air`]). Then see whether it launched.
     fn drop(
         &mut self,
         from: Vec3,
@@ -1575,7 +1758,7 @@ impl OrderRun {
         };
         let t = self.tune;
         let target = site.target();
-        let jumps = drop_jumps(from, &site);
+        let how = drop_takeoff(from, &site, t.run_off_speed);
         let (heading, _) = norm([target[0] - from[0], target[1] - from[1]]);
         let face = Some(heading[1].atan2(heading[0]));
         let motion = |dir: [f32; 2], speed: f32, jump: bool| RouteMotion {
@@ -1586,14 +1769,9 @@ impl OrderRun {
             crouch: false,
         };
         let v = vel.unwrap_or([0.0; 3]);
-        // The run: at the speed that carries the flight onto the target,
-        // steered back onto the line through `from`.
+        // The run: at the takeoff's stick, steered back onto the line
+        // through `from`.
         let run = |at: Vec3| {
-            if !jumps {
-                return motion(heading, t.run_off_speed, false);
-            }
-            let want = takeoff_speed(from, target);
-            let have = v[0] * heading[0] + v[1] * heading[1];
             let side = [-heading[1], heading[0]];
             let lateral = (from[0] - at[0]) * side[0] + (from[1] - at[1]) * side[1];
             let lateral = (2.0 * lateral).clamp(-0.6, 0.6);
@@ -1601,19 +1779,16 @@ impl OrderRun {
                 heading[0] + side[0] * lateral,
                 heading[1] + side[1] * lateral,
             ]);
-            motion(dir, stick_for(want + 0.5 * (want - have)), false)
+            motion(dir, how.stick.max(MIN_STICK), false)
         };
+        let on_floor = |at: Vec3| (at[2] - from[2]).abs() < LEFT_FLOOR && v[2].abs() < FALLING;
         match *d {
             Dropping::Line(since) => {
-                let back = if jumps {
-                    [
-                        from[0] - heading[0] * RUN_UP,
-                        from[1] - heading[1] * RUN_UP,
-                        from[2],
-                    ]
-                } else {
-                    from
-                };
+                let back = [
+                    from[0] - heading[0] * RUN_UP,
+                    from[1] - heading[1] * RUN_UP,
+                    from[2],
+                ];
                 let (to_back, off) = norm([back[0] - at[0], back[1] - at[1]]);
                 if off <= t.line_up || tick.wrapping_sub(since) > t.line_up_ticks {
                     *d = Dropping::Run(tick);
@@ -1627,7 +1802,7 @@ impl OrderRun {
             }
             Dropping::Run(since) => {
                 if at[2] < from[2] - LEFT_FLOOR {
-                    // Walked off (or, a jump, ran off before the launch point).
+                    // Ran off (or, a jump, ran off before its press).
                     *d = Dropping::Air {
                         since: tick,
                         top: at[2],
@@ -1636,7 +1811,9 @@ impl OrderRun {
                     return Ok(Some(self.drop_air(target, at, v)));
                 }
                 let past = (at[0] - from[0]) * heading[0] + (at[1] - from[1]) * heading[1];
-                if jumps && past >= -TAKEOFF_EARLY {
+                let have = (v[0] * heading[0] + v[1] * heading[1]).max(0.0);
+                let lead = TAKEOFF_EARLY + have * INPUT_LAG as f32 / TICKS;
+                if how.jump && past >= -lead {
                     *d = Dropping::Jump(tick);
                     let mut m = run(at);
                     m.jump = true;
@@ -1648,10 +1825,16 @@ impl OrderRun {
                 Ok(Some(run(at)))
             }
             Dropping::Jump(since) => {
-                if tick.wrapping_sub(since) < t.jump_ticks {
+                let held = tick.wrapping_sub(since);
+                if held < t.jump_ticks {
                     let mut m = run(at);
                     m.jump = true;
                     return Ok(Some(m));
+                }
+                // The body acts on the press late: keep running until it
+                // leaves the floor.
+                if on_floor(at) && held < t.jump_ticks + 3 * INPUT_LAG {
+                    return Ok(Some(run(at)));
                 }
                 *d = Dropping::Air {
                     since,
@@ -1690,19 +1873,21 @@ impl OrderRun {
         }
     }
 
-    /// The stick in the air: toward where the landing must be from where
-    /// it comes down as it flies (the remaining fall at the vertical speed
-    /// now, the sideways speed held), `air_gain` a unit off, none once
-    /// within [`AIR_DEAD`].
+    /// The stick in the air ([`air_stick`]): where the landing comes down
+    /// with the sideways speed held, from where the body will be once the
+    /// stick acts ([`INPUT_LAG`] on) and the fall left then, against the
+    /// target; the tuning's `air_gain`.
     fn drop_air(&self, target: Vec3, at: Vec3, v: Vec3) -> RouteMotion {
-        let rem = fall_time(at[2] - target[2], v[2]).unwrap_or(0.0).max(0.1);
-        let lands = [at[0] + v[0] * rem, at[1] + v[1] * rem];
-        let (dir, off) = norm([target[0] - lands[0], target[1] - lands[1]]);
-        let speed = if off < AIR_DEAD {
-            0.0
-        } else {
-            (off * self.tune.air_gain).clamp(MIN_STICK, 1.0)
-        };
+        let lag = INPUT_LAG as f32 / TICKS;
+        let rem = fall_time(at[2] - target[2], v[2]).unwrap_or(0.0);
+        let rem_after = (rem - lag).max(1.0 / TICKS);
+        let ahead = rem.min(lag);
+        let lands = [
+            at[0] + v[0] * (ahead + rem_after),
+            at[1] + v[1] * (ahead + rem_after),
+        ];
+        let miss = [target[0] - lands[0], target[1] - lands[1]];
+        let (dir, speed) = air_stick([v[0], v[1]], miss, rem_after, self.tune.air_gain);
         let (to_target, _) = norm([target[0] - at[0], target[1] - at[1]]);
         RouteMotion {
             dir,

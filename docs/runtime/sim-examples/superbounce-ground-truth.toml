@@ -3,14 +3,16 @@
 # measured spot only, the recipe's way (docs/game/superbounce.md, "The
 # forced crouch leaves state"): it walks to the takeoff on the upper level,
 # the sim sets its pair word to -3 there (as `havok.pair.set` does), and
-# the try is the running jump off the level onto the patch at -5.4. Each
-# try starts again from the takeoff, so the report's `bounce` block counts
-# the final approach and the jump alone: a try that doesn't bounce here is
-# the bot's execution, not its prime. The block's `armed` counts the tries
-# that began with the word read at -3. The log says `bots: bounce drill:
-# site ...` once the site is found, then one `bots: bounce try: ...` line a
-# try: the last jump's takeoff, ground and vertical speed, word, air stick,
-# touchdown and result (docs/game/bots.md, "Practising bounces").
+# the try is the full-stick running jump off the level onto the patch at
+# -5.4 (bounce_route::drop_takeoff). Each try starts again from the
+# takeoff, so the report's `bounce` block counts the final approach and
+# the jump alone: a try that doesn't bounce here is the bot's execution,
+# not its prime. The block's `armed` counts the tries that began with the
+# word read at -3. The log says `bots: bounce drill: site ...` once the
+# site is found, then one `bots: bounce try: ...` line a try: the last
+# jump's takeoff (where A was pressed), ground and vertical speed, word,
+# air stick, touchdown and result (docs/game/bots.md, "Practising
+# bounces").
 map = "ascension"
 game_type = "slayer"
 time_limit_s = 900    # longer than max_ticks: the tick limit ends it

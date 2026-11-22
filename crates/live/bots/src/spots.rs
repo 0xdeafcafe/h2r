@@ -128,12 +128,14 @@ impl Site {
     }
 
     /// With what a verified entry about it says: its status, and where and
-    /// from how high the drop that worked landed.
+    /// from how high the drop that worked landed. A measured spot keeps
+    /// its traced landing as the aim: the middle of every traced bounce,
+    /// where an entry's is one landing, the origin a tick before contact.
     pub fn verified(mut self, e: Option<&Entry>) -> Site {
         if let Some(e) = e {
             self.status = e.status;
             if e.status == Status::Proven {
-                self.aim = Some(e.working());
+                self.aim = self.bounce.landing.or(Some(e.working()));
                 self.height = e.height;
                 if e.best > 0.0 {
                     self.launch = e.best;

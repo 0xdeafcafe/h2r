@@ -405,11 +405,12 @@ bounce_params! {
     approach_turn_deg: f32 = 25.0, 0.0, 90.0;
     out_speed: f32 = 1.0, 0.0, 1.0;
     /// The drop: lined up within (world units) or after (ticks), the stick
-    /// off the floor, the air steering a unit off, drops before giving up.
+    /// of the slower run, the air steering's correction over just enough,
+    /// drops before giving up.
     line_up: f32 = 0.15, 0.0, 1.0;
     line_up_ticks: u32 = 45, 0, 300;
-    run_off_speed: f32 = 0.5, 0.0, 1.0;
-    air_gain: f32 = 2.5, 0.0, 20.0;
+    run_off_speed: f32 = 0.6, 0.0, 1.0;
+    air_gain: f32 = 1.2, 0.0, 20.0;
     drop_tries: u32 = 3, 1, 30;
     /// The stick toward the goal riding a launch.
     fly_speed: f32 = 1.0, 0.0, 1.0;

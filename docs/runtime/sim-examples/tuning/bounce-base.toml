@@ -9,4 +9,4 @@ still_ticks = 4
 drift = 0.15
 crouch_ticks = 12
 release_ticks = 6
-air_gain = 2.5
+air_gain = 1.2

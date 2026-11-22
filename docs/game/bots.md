@@ -1691,20 +1691,41 @@ a walk-length function over the nav mesh:
    else its **launch floor** (`bounce_route::launch_floor`: the nav
    mesh's point nearest the site's aim sideways, within 3 units
    **[guess]**, whose floor is the drop height over the strip, 0.2 under
-   to 2.5 over), then **drop**. A drop whose walk-off would land slower
-   than the site needs (`bounce_route::drop_jumps`: `sqrt(2 g h)` under
-   `need`, gravity 4.15) is the recipe's running jump: line up 0.6
-   behind the launch point (45 ticks at most), run at the aim at the
-   ground speed that carries the flight onto it
-   (`bounce_route::takeoff_speed`: the gap over the fall's time from a
-   jump of 3.08 up; about 1.2 units/s on Ascension), steered back onto
-   the line, and jump 0.05 short of the launch point, holding A 3 ticks
-   (60 ticks to get there, else `no_drop`). Otherwise walk off at half
-   stick. In the air it steers where the landing comes down as it flies
-   (the remaining fall at the vertical speed now, the sideways speed
-   held) onto the aim, 2.5 of stick a unit off (**[guess]**), letting go
-   once within 0.03. Every stick is at least 0.2: under the move dead
-   zone (0.15) the body doesn't move. It launched when it rises 0.4 over
+   to 2.5 over), then **drop**. How a drop leaves the floor comes from the flight model
+   (`bounce_route::drop_takeoff`): gravity 4.15, a jump 3.08 up, the
+   ground speed of the run's stick (`bounce_route::ground_speed`: the
+   drill runs' map, nothing in the dead zone, about 1.05 units/s at 0.6
+   to 0.85 of stick, 2.0 at 1, **[needs more points]**), and what the air
+   stick can do over the fall (`bounce_route::air_reach`: it drives the
+   sideways speed toward the stick times 1.2 at 1.05 units/s², so it can
+   brake a flight to a stop and push one to 1.2 at most). A **run-off**
+   at full stick (no jump) is taken when it comes down at least as fast
+   as the site needs (`need`: a fall from rest lands at `sqrt(2 g h)`)
+   and the air stick can land it on the aim; else a run-off at the
+   tuning's slower `run_off_speed` that can; else a **running jump** at
+   full stick, then at `run_off_speed`, that comes down fast enough and
+   gets there; failing all, of those fast enough the one whose aim is
+   least out of reach. Either way the drop lines up 0.6 behind the launch
+   point (45 ticks at most) and runs at the aim at that stick, steered
+   back onto the line through the launch point (60 ticks to leave the
+   floor, else `no_drop`). A running jump presses A 0.05 short of the
+   launch point plus the ground the body covers in the 5 ticks it takes
+   to act on the press (`bounce_route::INPUT_LAG`), holds it 3 ticks and
+   keeps running until the body leaves the floor. Ascension's measured
+   spot is a full-stick running jump: a run-off from its 2.43 lands at
+   4.49, under the 5.4 the traced bounces came in at, and the jump's
+   flight, 2 units/s off the floor, reaches 1.9 to 2.8 against the aim's
+   2.5. In the air the stick steers where the landing comes down
+   (`bounce_route::air_stick`): with the sideways speed held, from where
+   the body is once the stick acts and the fall left then, against the
+   aim, it asks for the speed that, reached at 1.05 units/s² and then
+   held, lands on the aim, 1.2 times the change that is just enough
+   (`air_gain`); within 0.03 it holds the speed, and a landing more than
+   0.3 past the aim, or a miss it can't make up in the time, gets the
+   full stick. Every stick is at least 0.2 or none: under the move dead
+   zone (0.15) the body doesn't move. A measured spot aims at its traced
+   landing even once a verified drop says where one bounce landed
+   (`Site::verified`). It launched when it rises 0.4 over
    its lowest point after the top; a landing that did not launch walks
    back to the launch point and drops again (3 drops, then `no_bounce`);
 4. fly: steer toward the goal at full stick until down
@@ -1716,9 +1737,11 @@ the tick, the origin before, the speeds in and out, how far outside the
 slot, the word) and named as the HUD's landings are: `bounce`,
 `not_primed`, `missed`, `too_slow` or `no_bounce`. Each jump or drop is a
 **flight** (`bounce_route::Flight`, `OrderRun::flights`, the last 8):
-from the tick the step goes airborne (the jump pressed, or a walk-off
-leaving the floor), where it left, the ground speed then, the best
-vertical speed in the 6 ticks after, the word on that tick, the stick
+from the tick the step goes airborne (the jump pressed, or a run-off
+leaving the floor), where it left (for a jump, where A was pressed,
+about a quarter of a unit before the body leaves the floor at full
+stick), the ground speed then, the best vertical speed in the 10 ticks
+after, the word on that tick, the stick
 asked in the air (mean, most, and the ticks let go), and the touchdown
 it ended in with its result (`no_landing` when none was seen).
 
@@ -1914,6 +1937,18 @@ miss, the speeds in and out) and its result; then the results of the
 flights before it. A try with no flight ends `no jump, ended at step N
 (name)`. (The numbers above show the shape, not a run.)
 
+**The drill's drop at Ascension.** What lands in the slot there is a
+running jump at full stick: off the upper level at about 2 units/s and
+3.08 up, 60 ticks in the air, braked by the air stick to come down
+about 0.5 units/s sideways at −5.4 near (−10.13 to −10.3, 3.85 to
+4.07). A jump at half the speed (a walk, about 1.05 units/s at 0.6 to
+0.85 of stick) comes down on the floor short of the slot at −5.26
+whatever the air stick asks, since the stick can't push a flight past
+about 1.2 units/s. A landing braked to a standstill over the crease
+fell through it once. The numbers are in
+[the bounce-practice notes](notes/2026-11-21-bot-bounce-sim.md), "The
+drill four ways"; the route's plan for it is the drop above.
+
 The bots spread over the sites by claims on a board the process shares
 (`practice::CLAIMS`): a bot renews its claim each tick of its route, and
 a claim lapses 300 ticks after it was last renewed. A route an agent
@@ -1968,10 +2003,10 @@ when it starts.
 | `start_out` | 0.35 | how far out a try starts (units) |
 | `approach_turn_deg` | 25 | the second and third tries' turn |
 | `out_speed` | 1.0 | the stick back out |
-| `line_up` | 0.15 | the drop: lined up on its run-up (or, a walk-off, its launch point) within this (units) ... |
+| `line_up` | 0.15 | the drop: lined up on its run-up within this (units) ... |
 | `line_up_ticks` | 45 | ... or after this long |
-| `run_off_speed` | 0.5 | the stick of a walk-off (a drop that needs no jump; a running jump's speed is `takeoff_speed`'s) |
-| `air_gain` | 2.5 | the drop's air steering a unit the landing, as it flies, is off |
+| `run_off_speed` | 0.6 | the stick of a drop's slower run, taken where a full-stick one overshoots (`drop_takeoff`) |
+| `air_gain` | 1.2 | the drop's air steering: the change in sideways speed it asks for over the one that just lands it (`air_stick`) |
 | `drop_tries` | 3 | drops before giving up |
 | `fly_speed` | 1.0 | the stick toward the goal riding a launch |
 

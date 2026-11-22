@@ -182,3 +182,35 @@ Changed after this, in the next commit on `sb6-bottrain`:
 - A route started primed from a word read at −3 says it was read (`OrderRun::primed_read`), and the report's `armed` counts those tries.
 - Each try logs one line, `bots: bounce try: ...`: the last jump's takeoff, ground and vertical speed, word, air stick, touchdown and result, and the results of the jumps before it (bots.md, "Practising bounces", "The try's line"). The drill says once which site it found.
 - The drop tests' body keeps its sideways speed in the air (`TEST_AIR_ACCEL`, 1 unit/s²).
+
+## 2026-11-22: the drill four ways
+
+The ground-truth drill (`h2 sim run docs/runtime/sim-examples/superbounce-ground-truth.toml`, one bot, Ascension, 9000 ticks) at `47782ee8f`, run by the coordinator four ways; the logs and reports are the coordinator's `ground-truth{4,5,6,7}`. Every try started with the word read at −3 (`armed`). The `bots: bounce try:` lines give the bot's view; the per-tick reads below are from `report.json`'s `state_components_v1` (`player.00.pos`, `player.00.velocity`), with one-off Python that isn't kept.
+
+| Run | Change | Tries | Bounced | Lift-off (trace) | Ground | Flight | Touchdown (trace) | In | Out |
+|---|---|---:|---:|---|---:|---:|---|---:|---:|
+| 4 | as committed: run stick `stick_for(want + 0.5 (want − have))`, run-up 0.6 | 10 | 0 | (−8.42, 2.62, −0.76) | 1.02 to 1.08 | 60 ticks | (−10.21, 3.85, −3.08), on the floor | 5.26 | +0.5 |
+| 5 | gain 2.0 instead of 0.5 | 10 | 0 | (−8.49, 2.68, −0.77) | 0.9 to 1.75 | 60 | (−10.21, 3.86, −3.10) | 5.26 | +0.65 |
+| 6 | run-up 1.5 | 8 | 0 | (−8.52, 2.55, −0.77) | 1.15 | 60 | (−10.22, 3.83, −3.09) | 5.26 | +0.58 |
+| 7 | run stick forced to 1 (a diagnostic hack, reverted) | 14 | 7 | (−8.59, 2.77, −0.78) | 2.04 to 2.16 | 61 | (−10.13 to −10.32, 3.85 to 4.15, −3.31), in the slot | 5.40 | +2 to +13 |
+
+Run 7: 13 practice bounces, chains {1: 5, 2: 1}, launches mean 15.4, best 20.9, one Bounced death, `why` {no_path: 1}; the first bot ghost, `ghost -10.538 3.880 -3.190 source=bot launch=11.93`. With the hack three `bounce_route` drop tests failed (tests.rs:745, :761, :796). Run 5 had one test failing too.
+
+What the traces show:
+
+- **Every try jumped, run 7 included.** Each lift-off has a vertical speed of +3.08 on its first tick (+2.80 once), the flights take 60 or 61 ticks to the touchdown (a jump of 3.08 falling 2.4 under 4.15 takes 2.05 s; a fall from rest takes 1.08 s), and the touchdowns come in at 5.26 to 5.40, a jump's (a fall from rest from −0.76 would land at 4.5 to 4.6). Run 7's try lines read `vz −0.04` because the line's takeoff is the tick A was pressed and the body left the floor 6 ticks later, outside the 6 ticks the line read; at 2 units/s it had run 0.3 on, past the edge (z −0.80 on the first tick up), and the jump went off as it left the floor. Run 4's jumps left 4 ticks after the press, 0.1 on. So the working recipe is a full-stick running jump, not a run-off.
+- **The air stick changes the sideways speed by 0.035 units/s a tick**, braking and pushing, in all four runs. Under a stick pushing on at 0.6 to 1 (run 4's mean (−0.54, +0.22) toward the aim) the speed never rose past 1.27: it swung 0.92 to 1.27, 7 ticks up and 7 down, the swing of a steering some 4 ticks late. Run 7 came off the floor at 2.1 and braked at that rate to 0.40 by 45 ticks in, and a small stick on slowed it further before it grew: the stick drives the sideways speed toward the stick times about 1.2, so it can't push a slow flight on, and a small stick brakes.
+- **Why runs 4 to 6 missed:** from 1.05 units/s the flight can't be pushed past about 1.2, so it came down 2.3 out, on the floor at (−10.21, 3.85, −3.08), 0.27 short of the aim, every try within 0.01 of the same point.
+- **Why run 7 bounced half the time:** off the floor at 2 units/s, braked, it came down about 2.2 out, in the slot (z −3.31). The bounces came down at (−10.13, 3.85 to 3.87) with +10.5 to +12.6 out, (−10.29, 3.92) +13.1 and (−10.25, 4.07) +9.6; the misses at (−10.13, 3.88) came out at +5.5 to +7 (in the slot, short of a launch), and three at (−10.31 to −10.40, 4.14 to 4.23) at +2.0. The aim had moved to (−10.28, 3.91) after the first bounce, the verified entry's one landing.
+- **The Bounced death:** the try at tick 4326 ran off the edge before its jump went off (+2.80, z −0.81 at lift-off), heading more toward +y; the air stick braked the whole flight to a standstill and it came down over (−10.19, 4.02) with no sideways speed, fell through the crease to −5.39 and died.
+- Ground speed against the stick: 1.02 to 1.08 asking 0.6 to 0.8, 0.9 to 1.75 asking more (run 5), 1.96 to 2.16 at 1. A walk, then a run: not linear.
+- Gravity, from every flight: 0.138 units/s a tick, 4.15 units/s².
+
+Changed after this, in the next commit on `sb6-bottrain`:
+
+- How a drop leaves the floor comes from the flight model, `bounce_route::drop_takeoff`: a run-off at full stick where it lands fast enough and the air stick can land it on the aim, then a slower run-off (`run_off_speed`, 0.6), then a full-stick running jump, then a slower one. Ascension's spot is the full-stick jump: its run-off lands at 4.49, under 5.4. The run's ground speed is the measured map (`ground_speed`), not a linear stick.
+- A running jump presses A ahead of the launch point by the ground the body covers in 5 ticks (`INPUT_LAG`) and keeps running until the body leaves the floor.
+- The air steering (`air_stick`) models the stick as driving the sideways speed toward 1.2 times the stick at 1.05 units/s² (`AIR_TOP`, `AIR_ACCEL`), predicts from where the body is once the stick acts, and asks for the speed that lands on the aim; a landing 0.3 past the aim gets the full stick (`AIR_PAST`). `air_gain` is its margin over just enough (1.2).
+- A measured spot keeps its traced landing as the aim when a verified drop is merged in (`Site::verified`).
+- A flight's vertical speed is read over 10 ticks from the press (`TAKEOFF_TICKS`).
+- The drop tests' body is the drill's: the measured ground-speed map, a jump 5 ticks after the press, and the air stick driving the speed toward 1.2 times the stick.

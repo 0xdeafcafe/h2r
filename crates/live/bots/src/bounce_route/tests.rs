@@ -655,32 +655,53 @@ fn ledge_map() -> MapData {
     }
 }
 
-/// The sideways acceleration a full stick gives in the air (world units
-/// a second squared): the round-3 bounce-practice runs' free falls
-/// changed sideways speed by about 0.033 units/s a tick under a stick
-/// past the dead zone (docs/game/notes/2026-11-21-bot-bounce-sim.md).
-const TEST_AIR_ACCEL: f32 = 1.0;
+/// Where a run off the ledge at full stick lands on its slot: 0.05 back
+/// from the edge, the slot 1.57 out, inside the 1.54 to 1.6 the air stick
+/// gives a 2.4 fall from 2 units/s; the site needs 4, which the run-off's
+/// 4.46 makes.
+const RUN_OFF_FROM: Vec3 = [-0.05, 0.0, 2.4];
 
-/// Plays a drop off the ledge onto a slot at x 1; the landing launches
-/// when it is within 0.1 of it, comes in faster than 4, and `bounces`.
-/// On the ground the body moves at [`RUN_SPEED`] a unit of stick, and a
-/// jump leaves at [`JUMP_VZ`]. In the air it keeps its sideways speed and
-/// the stick only nudges it ([`TEST_AIR_ACCEL`] at full stick), as the
-/// game's body does.
-fn play_drop(bounces: bool) -> (Option<Result<(), &'static str>>, OrderRun) {
-    play_drop_from([-0.4, 0.0, 2.4], bounces).0
+fn run_off_site() -> Site {
+    Site {
+        need: 4.0,
+        ..drop_site(1.52, 12.3)
+    }
 }
 
-/// [`play_drop`] from the launch point `from`, with the motions it asked.
+/// Where only a running jump lands on its slot: the site needs 4.5, over
+/// the run-off's 4.46, and the slot is 2.3 out from 0.3 back from the
+/// edge, inside the 1.9 to 2.76 a full-stick jump's flight reaches.
+const JUMP_FROM: Vec3 = [-0.3, 0.0, 2.4];
+
+fn jump_site() -> Site {
+    drop_site(2.0, 12.3)
+}
+
+/// Plays the run off the ledge onto its slot ([`RUN_OFF_FROM`],
+/// [`run_off_site`]).
+fn play_drop(bounces: bool) -> (Option<Result<(), &'static str>>, OrderRun) {
+    play_drop_from(RUN_OFF_FROM, run_off_site(), bounces).0
+}
+
+/// Plays a drop off the ledge from the launch point `from` onto `s`, with
+/// the motions it asked; the landing launches when it is within 0.1 of
+/// the slot, comes in faster than 4, and `bounces`. The body is the drill
+/// runs' (docs/game/notes/2026-11-21-bot-bounce-sim.md): on the ground it
+/// moves at [`ground_speed`] of the stick (a crawl at least, so a walk's
+/// slowing end arrives); a jump leaves at [`JUMP_VZ`] [`INPUT_LAG`] ticks
+/// after the press, if the body is still on the floor; in the air the
+/// stick drives the sideways speed toward the stick times [`AIR_TOP`] at
+/// [`AIR_ACCEL`], so letting go brakes too.
 fn play_drop_from(
     from: Vec3,
+    s: Site,
     bounces: bool,
 ) -> (
     (Option<Result<(), &'static str>>, OrderRun),
     Vec<(Vec3, RouteMotion)>,
 ) {
     let map = ledge_map();
-    let s = drop_site(1.0, 12.3);
+    let slot = s.target();
     let mut seen = Vec::new();
     let plan = Plan {
         steps: vec![
@@ -697,8 +718,10 @@ fn play_drop_from(
         site: Some(s),
         cost: None,
     };
+    let floor_at = |x: f32| if x < 0.0 { 2.4 } else { 0.0 };
     let mut run = OrderRun::new(plan, true, 0, 1);
     let (mut at, mut vz, mut side) = ([-1.0f32, 0.0, 2.4], 0.0f32, [0.0f32; 2]);
+    let mut press: Option<u32> = None;
     for tick in 0..900 {
         let o = run.step(&map, at, tick, Some(PRIMED_WORD));
         if o.done.is_some() {
@@ -706,28 +729,40 @@ fn play_drop_from(
         }
         let m = o.motion;
         seen.push((at, m));
-        let under = if at[0] < 0.0 { 2.4 } else { 0.0 };
-        if at[2] <= under && vz <= 0.0 {
-            side = [
-                m.dir[0] * RUN_SPEED * m.speed,
-                m.dir[1] * RUN_SPEED * m.speed,
-            ];
+        if at[2] <= floor_at(at[0]) && vz <= 0.0 {
+            let v = if m.speed > 0.0 {
+                ground_speed(m.speed).max(0.2)
+            } else {
+                0.0
+            };
+            side = [m.dir[0] * v, m.dir[1] * v];
         } else {
-            side[0] += m.dir[0] * m.speed * TEST_AIR_ACCEL / 30.0;
-            side[1] += m.dir[1] * m.speed * TEST_AIR_ACCEL / 30.0;
+            let want = [m.dir[0] * m.speed * AIR_TOP, m.dir[1] * m.speed * AIR_TOP];
+            let (d, gap) = norm([want[0] - side[0], want[1] - side[1]]);
+            let step = gap.min(AIR_ACCEL / 30.0);
+            side[0] += d[0] * step;
+            side[1] += d[1] * step;
         }
         at[0] += side[0] / 30.0;
         at[1] += side[1] / 30.0;
-        let floor = if at[0] < 0.0 { 2.4 } else { 0.0 };
-        if m.jump && at[2] <= floor && vz <= 0.0 {
-            vz = JUMP_VZ;
+        let floor = floor_at(at[0]);
+        let on = at[2] <= floor && vz <= 0.0;
+        if m.jump && on && press.is_none() {
+            press = Some(tick);
+        }
+        if press.is_some_and(|p| tick >= p + INPUT_LAG) {
+            if on {
+                vz = JUMP_VZ;
+            }
+            press = None;
         }
         if at[2] > floor || vz > 0.0 {
             vz -= FALL_GRAVITY / 30.0;
             at[2] += vz / 30.0;
             if at[2] <= floor {
                 at[2] = floor;
-                vz = if bounces && (at[0] - 1.0).abs() < 0.1 && vz < -4.0 {
+                let on_slot = dist_xy(at, slot) < 0.1;
+                vz = if bounces && on_slot && vz < -4.0 {
                     12.0
                 } else {
                     0.0
@@ -740,17 +775,33 @@ fn play_drop_from(
 
 #[test]
 fn a_drop_lines_up_runs_off_steers_onto_the_slot_and_rides_the_launch() {
-    let (_, run) = play_drop(true);
+    let ((_, run), seen) = play_drop_from(RUN_OFF_FROM, run_off_site(), true);
     let log: Vec<_> = run.log().iter().map(|l| (l.step, l.what)).collect();
     assert!(log.contains(&("drop", "done")), "{log:?}");
+    // A run off the edge: lined up behind the launch point, at full
+    // stick, no jump pressed.
+    assert!(!seen.iter().any(|(_, m)| m.jump), "a jump");
+    assert!(
+        seen.iter()
+            .any(|(a, _)| a[0] < RUN_OFF_FROM[0] - RUN_UP + 0.2),
+        "no run-up"
+    );
+    assert!(
+        seen.iter()
+            .any(|(a, m)| a[2] == 2.4 && a[0] > RUN_OFF_FROM[0] - 0.3 && m.speed == 1.0),
+        "not at full stick"
+    );
     let t = run.status().landing.expect("a touchdown");
     assert!(t.bounced() && t.miss < 0.1 && t.speed_in > 4.0, "{t:?}");
-    assert_eq!(t.result(0.2, 4.5), "bounce");
+    assert_eq!(t.result(0.2, 4.0), "bounce");
     assert!(
         log.iter()
             .any(|l| *l == ("fly", "bounce") || *l == ("drop", "bounce")),
         "{log:?}"
     );
+    // The flight left the floor falling, not rising.
+    let f = *run.flights().last().expect("a flight");
+    assert!(f.vz < 0.5 && f.speed > 1.5, "{f:?}");
 }
 
 #[test]
@@ -767,42 +818,60 @@ fn a_drop_that_does_not_launch_walks_back_up_for_another() {
 }
 
 #[test]
-fn a_drop_that_needs_more_than_a_walk_off_runs_up_and_jumps_at_its_launch_point() {
-    // From 2.4 a walk-off lands at sqrt(2 g 2.4) = 4.46, under the 4.5 the
-    // site needs: the drop jumps.
-    let s = drop_site(1.0, 12.3);
-    let from = [-0.4, 0.0, 2.4];
-    assert!(drop_jumps(from, &s));
-    let ((_, run), seen) = play_drop_from(from, true);
+fn a_drop_a_run_off_lands_too_slow_for_runs_up_and_jumps_before_its_launch_point() {
+    // From 2.4 a run-off lands at sqrt(2 g 2.4) = 4.46, under the 4.5 the
+    // site needs: the drop jumps, at full stick.
+    let s = jump_site();
+    let how = drop_takeoff(JUMP_FROM, &s, RUN_OFF_SPEED);
+    assert!(how.jump && how.stick == 1.0 && how.reaches(), "{how:?}");
+    let ((_, run), seen) = play_drop_from(JUMP_FROM, s, true);
     let jumps: Vec<_> = seen.iter().filter(|(_, m)| m.jump).collect();
     assert!(!jumps.is_empty(), "no jump");
-    // Pressed at the launch point, moving at the target, after a run-up
-    // from behind it.
+    // Pressed short of the launch point by the ground the body covers
+    // before it acts, at full stick, moving at the target.
     let (at, m) = jumps[0];
-    assert!((at[0] - from[0]).abs() < 0.15 && at[2] == 2.4, "{at:?}");
-    assert!(m.dir[0] > 0.9 && m.speed >= MIN_STICK, "{m:?}");
+    let lead = TAKEOFF_EARLY + RUN_SPEED * INPUT_LAG as f32 / 30.0;
+    assert!(
+        at[0] < JUMP_FROM[0] && at[0] > JUMP_FROM[0] - lead - 0.15 && at[2] == 2.4,
+        "{at:?}"
+    );
+    assert!(m.dir[0] > 0.9 && m.speed == 1.0, "{m:?}");
     // The walk ends at the launch point; the drop backs off to the run-up.
     let arrived = seen
         .iter()
-        .position(|(a, _)| (a[0] - from[0]).abs() < 0.3)
+        .position(|(a, _)| (a[0] - JUMP_FROM[0]).abs() < 0.3)
         .unwrap();
     assert!(
         seen[arrived..]
             .iter()
-            .any(|(a, _)| a[0] < from[0] - RUN_UP + 0.2),
+            .any(|(a, _)| a[0] < JUMP_FROM[0] - RUN_UP + 0.2),
         "no run-up"
     );
+    // The body left the floor rising, on the ledge, before the edge.
+    let lift = seen
+        .windows(2)
+        .find(|w| w[1].0[2] > w[0].0[2] + 0.01 && w[0].0[2] >= 2.4)
+        .map(|w| w[0].0)
+        .expect("a lift-off");
+    assert!(lift[0] < 0.0, "{lift:?}");
+    // In the air the stick brakes: a full-stick run carries 4 units in
+    // the flight's 2 s, the slot is 2.3 out.
+    let vx: Vec<f32> = seen
+        .windows(2)
+        .filter(|w| w[0].0[2] > 2.45)
+        .map(|w| (w[1].0[0] - w[0].0[0]) * 30.0)
+        .collect();
+    assert!(vx[0] > 1.8 && *vx.last().unwrap() < 1.5, "{vx:?}");
     let t = run.status().landing.expect("a touchdown");
     assert!(t.bounced() && t.miss < 0.1 && t.speed_in > 4.5, "{t:?}");
-    // The try's flight: off the launch point at the jump's speed, the
-    // word read, the stick past the dead zone, and the landing that
-    // bounced.
+    // The try's flight: from the press at the jump's speed, the word
+    // read, the stick past the dead zone, and the landing that bounced.
     let f = *run.flights().last().expect("a flight");
     assert!(
-        (f.takeoff[0] - from[0]).abs() < 0.15 && f.takeoff[2] == 2.4,
+        (f.takeoff[0] - at[0]).abs() < 0.01 && f.takeoff[2] == 2.4,
         "{f:?}"
     );
-    assert!((f.vz - JUMP_VZ).abs() < 0.3 && f.speed > 0.3, "{f:?}");
+    assert!((f.vz - JUMP_VZ).abs() < 0.3 && f.speed > 1.5, "{f:?}");
     assert_eq!(f.word, Some(PRIMED_WORD));
     assert!(f.ticks > 30 && f.stick_max >= MIN_STICK, "{f:?}");
     assert_eq!((f.landing, f.end), (Some(t), Some("bounce")));
@@ -820,29 +889,105 @@ fn every_drop_of_a_try_that_does_not_launch_is_a_flight_that_lands() {
     assert!(!flights.is_empty());
     for f in &flights {
         let t = f.landing.expect("a touchdown");
-        assert_eq!(f.end, Some(t.result(0.2, 4.5)), "{f:?}");
+        assert_eq!(f.end, Some(t.result(0.2, 4.0)), "{f:?}");
         assert!(!t.bounced(), "{t:?}");
     }
 }
 
 #[test]
-fn the_measured_ascension_spot_is_the_recipes_running_jump_from_its_takeoff() {
+fn the_takeoff_is_a_run_off_where_one_gets_there_fast_enough_else_a_jump() {
+    let from = RUN_OFF_FROM;
+    // A run off at full stick reaches the slot and lands fast enough.
+    let how = drop_takeoff(from, &run_off_site(), RUN_OFF_SPEED);
+    assert!(!how.jump && how.stick == 1.0 && how.reaches(), "{how:?}");
+    assert!((how.speed_in - (2.0 * FALL_GRAVITY * 2.4f32).sqrt()).abs() < 1e-3);
+    // Nearer than a full-stick run-off can brake to: the slower run.
+    let near = Site {
+        need: 4.0,
+        ..drop_site(1.0, 12.3)
+    };
+    let how = drop_takeoff(from, &near, RUN_OFF_SPEED);
+    assert!(
+        !how.jump && how.stick == RUN_OFF_SPEED && how.reaches(),
+        "{how:?}"
+    );
+    // The same slot needing more than a run-off lands at: a jump, and of
+    // the jumps the slower run, whose flight brakes onto it.
+    let how = drop_takeoff(from, &drop_site(1.0, 12.3), RUN_OFF_SPEED);
+    assert!(how.jump && how.reaches(), "{how:?}");
+    // Out of reach of everything: the nearest of those fast enough.
+    let far = drop_site(9.0, 12.3);
+    let how = drop_takeoff(from, &far, RUN_OFF_SPEED);
+    assert!(how.jump && !how.reaches() && how.off() > 0.0, "{how:?}");
+    assert!(how.fast_enough(far.need));
+}
+
+#[test]
+fn the_air_stick_brakes_pushes_and_holds() {
+    // Landing 1 past the target with 1 s left, moving at 2: the full stick
+    // back (past AIR_PAST).
+    let (dir, speed) = air_stick([2.0, 0.0], [-1.0, 0.0], 1.0, 1.0);
+    assert!(dir[0] < -0.99 && speed == 1.0, "{dir:?} {speed}");
+    // A little past: a speed to end at under the one now, still forward.
+    let (dir, speed) = air_stick([1.0, 0.0], [-0.1, 0.0], 1.0, 1.0);
+    assert!(
+        dir[0] > 0.99 && speed * AIR_TOP < 1.0 && speed > 0.0,
+        "{dir:?} {speed}"
+    );
+    // Short: a speed to end at over the one now.
+    let (dir, speed) = air_stick([0.5, 0.0], [0.2, 0.0], 1.0, 1.0);
+    assert!(dir[0] > 0.99 && speed * AIR_TOP > 0.5, "{dir:?} {speed}");
+    // On it: the speed held.
+    let (dir, speed) = air_stick([0.6, 0.0], [0.01, 0.0], 1.0, 1.0);
+    assert!(
+        dir[0] > 0.99 && (speed * AIR_TOP - 0.6).abs() < 1e-4,
+        "{dir:?} {speed}"
+    );
+    // Short by more than the stick can make up in the time: all of it.
+    let (_, speed) = air_stick([0.0, 0.0], [2.0, 0.0], 0.5, 1.0);
+    assert_eq!(speed, 1.0);
+}
+
+#[test]
+fn the_air_reach_brakes_to_a_stop_and_pushes_toward_the_top() {
+    // Slow enough to stop in the time: u^2 / 2a.
+    let (near, far) = air_reach(1.0, 2.0);
+    assert!((near - 1.0 / (2.0 * AIR_ACCEL)).abs() < 1e-4);
+    // Pushed from 1 to the top, then held.
+    let t1 = (AIR_TOP - 1.0) / AIR_ACCEL;
+    let want = t1 + 0.5 * AIR_ACCEL * t1 * t1 + AIR_TOP * (2.0 - t1);
+    assert!((far - want).abs() < 1e-4, "{far} {want}");
+    // Faster than the top: even pushing it slows toward it.
+    let (near, far) = air_reach(2.0, 1.0);
+    assert!(far < 2.0 && near < far && near > 0.0, "{near} {far}");
+}
+
+#[test]
+fn the_measured_ascension_spot_is_a_full_stick_running_jump_from_its_takeoff() {
     // docs/game/superbounce.md, "The forced crouch leaves state": a
     // running jump from (-8.4, 2.5, -0.76) heading (-0.8, 0.6), a 2.43
     // drop landing at -5.4. A standing jump lands at -3.
     let site = crate::spots::Site::measured(crate::glitches::SPOTS[0]);
     assert!(!site.standing());
-    let takeoff = [-8.4, 2.5, -0.76];
-    assert_eq!(launch_from(&site, &|_| None), Some(takeoff));
-    assert_eq!(approach(&site, &|_| None), Some(takeoff));
-    assert!(drop_jumps(takeoff, &site));
-    // The jump lands at the need: (3.08^2 + 2 g 2.43)^0.5 = 5.44.
-    let vz_in = (JUMP_VZ * JUMP_VZ + 2.0 * FALL_GRAVITY * 2.43).sqrt();
-    assert!((vz_in - crate::spots::MEASURED_NEED).abs() < 0.1, "{vz_in}");
-    // About 1.3 units/s over the ground; the player ran at about 1.6 and
-    // eased off in the air.
-    let v = takeoff_speed(takeoff, site.target());
-    assert!((1.1..1.6).contains(&v), "{v}");
+    let from = [-8.4, 2.5, -0.76];
+    assert_eq!(launch_from(&site, &|_| None), Some(from));
+    assert_eq!(approach(&site, &|_| None), Some(from));
+    // A run-off lands at (2 g 2.43)^0.5 = 4.49, under the 5.4 every traced
+    // bounce came in at; the jump at (3.08^2 + 2 g 2.43)^0.5 = 5.44.
+    let off = takeoff(from, &site, 1.0, false).unwrap();
+    assert!(!off.fast_enough(site.need), "{off:?}");
+    let how = drop_takeoff(from, &site, RUN_OFF_SPEED);
+    assert!(how.jump && how.stick == 1.0 && how.reaches(), "{how:?}");
+    assert!(
+        (how.speed_in - crate::spots::MEASURED_NEED).abs() < 0.1,
+        "{how:?}"
+    );
+    // The drill's working tries: 2 units/s off the floor, braked in the
+    // air to land 2.5 out (ground-truth 7).
+    assert!(
+        (how.speed - 2.0).abs() < 0.1 && how.near < how.gap - 0.3,
+        "{how:?}"
+    );
     // It aims at the middle of the bounces' landings, which the takeoff
     // heads at along the recipe's (-0.8, 0.6), within 3 degrees.
     let aim = site.target();
@@ -850,7 +995,7 @@ fn the_measured_ascension_spot_is_the_recipes_running_jump_from_its_takeoff() {
         (-10.7..-10.2).contains(&aim[0]) && (3.93..4.04).contains(&aim[1]),
         "{aim:?}"
     );
-    let (h, _) = norm([aim[0] - takeoff[0], aim[1] - takeoff[1]]);
+    let (h, _) = norm([aim[0] - from[0], aim[1] - from[1]]);
     assert!(
         h[0] * -0.8 + h[1] * 0.6 > 3.0f32.to_radians().cos(),
         "{h:?}"
@@ -871,23 +1016,22 @@ fn the_measured_ascension_spot_is_the_recipes_running_jump_from_its_takeoff() {
     .expect("a route");
     let names: Vec<_> = p.steps.iter().map(|s| s.name()).collect();
     assert_eq!(names, ["walk", "drop", "fly"]);
-    assert!(matches!(p.steps[1], Step::Drop { from, .. } if from == takeoff));
+    assert!(matches!(p.steps[1], Step::Drop { from: f, .. } if f == from));
 }
 
 #[test]
-fn the_fall_time_and_takeoff_speed_follow_the_jump() {
+fn the_fall_time_follows_the_jump_and_the_ground_speed_the_measured_map() {
     // A standing jump comes back to its floor in 2 vz / g.
     let t = fall_time(0.0, JUMP_VZ).unwrap();
     assert!((t - 2.0 * JUMP_VZ / FALL_GRAVITY).abs() < 1e-4);
     assert!(fall_time(-10.0, 1.0).is_none());
-    // No gap, no speed; twice the gap, twice the speed.
-    let a = takeoff_speed([0.0, 0.0, 2.0], [0.0, 0.0, 0.0]);
-    let b = takeoff_speed([0.0, 0.0, 2.0], [1.0, 0.0, 0.0]);
-    let c = takeoff_speed([0.0, 0.0, 2.0], [2.0, 0.0, 0.0]);
-    assert!(a == 0.0 && (c - 2.0 * b).abs() < 1e-4);
-    // A walk-off is enough when the floor is high over the strip.
-    let s = drop_site(1.0, 12.3);
-    assert!(!drop_jumps([0.0, 0.0, 4.0], &s));
+    // The drill runs' points: nothing in the dead zone, a walk at 0.6 to
+    // 0.85, a run at 1.
+    assert_eq!(ground_speed(0.1), 0.0);
+    assert!((ground_speed(0.6) - 1.05).abs() < 1e-4);
+    assert!((ground_speed(0.85) - 1.1).abs() < 1e-4);
+    assert_eq!(ground_speed(1.0), RUN_SPEED);
+    assert!(ground_speed(0.7) < ground_speed(0.8) && ground_speed(0.9) < RUN_SPEED);
 }
 
 #[test]
