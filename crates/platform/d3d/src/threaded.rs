@@ -1767,7 +1767,6 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         true
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn depth_alias_texture(
         &mut self,
         depth: u32,

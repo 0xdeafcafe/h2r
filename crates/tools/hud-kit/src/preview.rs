@@ -18,7 +18,7 @@ use serde_json::{Value as Json, json};
 
 use crate::compile::{AsHudEdit, Compiled};
 use crate::model::{Element, Hud, Kind, NAVPOINT_FONT, Style, Value, Values};
-use crate::rects::{self, MESSAGE_LINE, PROMPT_DOWN, TRAINING_PAD};
+use crate::rects::{MESSAGE_LINE, PROMPT_DOWN, TRAINING_PAD};
 use crate::source::{Colours, Source};
 
 /// The metadata address the preview gives the kit's widget block (the

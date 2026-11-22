@@ -19,10 +19,11 @@ use crate::fps::DisplaySchedule;
 use crate::frame::{self, Compositor, FrameSource, FrameStats};
 use crate::keymap::{self, Shortcut};
 use crate::lifecycle::Lifecycle;
-use crate::menu_overlay::MenuRenderer;
+use crate::menu_overlay::{self, MenuRenderer};
 use crate::overlay::marks::{MarkFrameStatus, MarkRenderer};
 use crate::overlay::{EditorPlateRenderer, OverlayRenderer};
 use crate::pacing::{PaceStats, Pacer, WindowedRate};
+use crate::scale::Viewport;
 use crate::surface::{SurfaceKind, WindowSurface};
 use crate::theater_overlay;
 use crate::watermark::{LiveStats, Panels, WatermarkRenderer};
@@ -563,12 +564,29 @@ impl Shell {
             self.banner_drawn = banner.generation();
             banner.visible()
         });
+        // While the debug menu is open, the banner and the editor plate
+        // are lines inside it (docs/runtime/debug-menu.md "Layout"), so
+        // nothing is drawn over the menu. While it is closed they are drawn
+        // as plates, and the menu's lone result keeps clear of them.
+        let mut in_menu: Vec<debug_menu::Line> = Vec::new();
+        let mut plates: Vec<Viewport> = Vec::new();
+        if menu_open && let Some(n) = &notice {
+            in_menu.push(debug_menu::Line {
+                text: n.text.clone(),
+                tone: menu_overlay::notice_tone(n.kind),
+            });
+        }
         if let Some(editor) = &self.config.editor_link
             && let Some(renderer) = &mut g.editor
             && let Some((plate, expires)) = editor.current(now)
         {
             overlay_expires = Some(overlay_expires.map_or(expires, |marks| marks.min(expires)));
-            renderer.draw(
+            if menu_open {
+                in_menu.push(debug_menu::Line {
+                    text: plate.lines().collect::<Vec<_>>().join("\n"),
+                    tone: menu_overlay::notice_tone(plate.tone),
+                });
+            } else if let Some(at) = renderer.draw(
                 &g.ctx.device,
                 &g.ctx.queue,
                 &mut enc,
@@ -577,7 +595,9 @@ impl Shell {
                 &view,
                 g.surface.config.format,
                 g.surface.size(),
-            );
+            ) {
+                plates.push(at);
+            }
         }
         if let Some(renderer) = &mut g.theater {
             let model = forge_frame.map(|frame| theater_overlay::View {
@@ -594,12 +614,23 @@ impl Shell {
                 viewport,
             );
         }
-        // The debug menu over everything but the banner.
+        if !menu_open && let Some(notice) = &notice {
+            plates.push(g.overlay.draw(
+                &g.ctx.device,
+                &g.ctx.queue,
+                &mut enc,
+                notice,
+                &view,
+                g.surface.config.format,
+                size,
+            ));
+        }
+        // The debug menu over everything else, never under a plate.
         if let Some(lines) = self
             .config
             .debug_menu
             .as_ref()
-            .and_then(debug_menu::Shared::lines)
+            .and_then(|menu| menu.lines_with(&in_menu))
         {
             g.menu.draw(
                 &g.ctx.device,
@@ -610,17 +641,7 @@ impl Shell {
                 g.surface.config.format,
                 size,
                 viewport,
-            );
-        }
-        if let Some(notice) = notice {
-            g.overlay.draw(
-                &g.ctx.device,
-                &g.ctx.queue,
-                &mut enc,
-                &notice,
-                &view,
-                g.surface.config.format,
-                size,
+                &plates,
             );
         }
         g.ctx.queue.submit([enc.finish()]);

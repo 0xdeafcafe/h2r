@@ -50,7 +50,7 @@ impl Switches {
             }
             if name.starts_with("impl.") && !table::known(name) {
                 return Err(format!(
-                    "H2_FEATURES: {name} is not a switch (crates/feature/src/switches/table.rs lists them)"
+                    "H2_FEATURES: {name} is not a switch (crates/hooking/hooks/src/switches/table.rs lists them)"
                 ));
             }
             set.insert(name.to_owned(), on);

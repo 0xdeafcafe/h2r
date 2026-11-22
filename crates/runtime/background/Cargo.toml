@@ -9,4 +9,7 @@ license.workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
 # setpriority: a thread's own nice value on Linux.
-libc = "0.2"
+libc = { workspace = true }
+
+[lints]
+workspace = true

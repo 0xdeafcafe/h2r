@@ -800,7 +800,6 @@ pub fn fresh_root() -> Block {
 /// out what `lean` says ([`crate::Lean`]; object textures are left out in
 /// `lib.rs`).
 /// `bsps[k]` is Halo 1 BSP `k`, converted.
-#[allow(clippy::too_many_arguments)]
 pub fn write(
     h1: &H1Map,
     set: &mut TagSet,
@@ -1414,7 +1413,6 @@ enum Pal {
 /// machine). `device_groups`: the level's device groups are written, so
 /// device placements may index them. `devices`: which devices are
 /// placed ([`crate::Devices`]).
-#[allow(clippy::too_many_arguments)]
 fn place_objects(
     h1: &H1Map,
     set: &mut TagSet,
@@ -2005,7 +2003,6 @@ pub fn hook_value(h: &crate::scripts::compile::Hook, t: &Targets) -> Option<u32>
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn install_scripts(
     h1: &H1Map,
     t: &crate::scripts::Tables,

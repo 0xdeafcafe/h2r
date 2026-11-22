@@ -1843,7 +1843,6 @@ impl OrderRun {
         self.fail("stalled", tick, at)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn walk(
         &mut self,
         map: &MapData,

@@ -277,7 +277,7 @@ There is no scripted screenshot path for the web app (the only one is the
 editor guide's, `scripts/editor-screenshots.sh`), so this page has no
 picture in `docs/images/`.
 
-## 4. Decided (2026-11-18)
+## 4. Decided
 
 - **Two admins** (§1.1): Halo Admin stays on the stats site for game
   configuration; the dashboard gets a Live admin for the service and its

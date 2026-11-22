@@ -340,6 +340,92 @@ fn read_part(
     Ok(Part { flags, subparts, ..part })
 }
 
+/// What an object item of a world layer draw other than 3 (`layer`, one
+/// of 1, 5, 7, 8 and 20; `item` its list entry, `record` its render
+/// record, `key` its key) makes the geometry draw `0x0004d0b0` do beyond
+/// its material, or why the scene cannot reproduce it (**Code**):
+///
+/// - Outside layer 3 the draw takes no lightmap (`0x0004d28b`: the page
+///   and its coordinate stream only for layer 3), and in layer 5 it adds
+///   the model's PRT stream for an object's record (`0x0004d220`,
+///   `0x00024040` and `0x00024490`), which [`crate::layout::prt`] reads.
+/// - The prologue `0x0004d640` changes a render state from the record's
+///   fade byte (`+0x1a`) unless it is `0xff`
+///   ([`LayerObjectRefusal::Fade`]), toggles the auxiliary state with
+///   bit 11, and marks the stencil with bit 14 only in layers 1 and 3
+///   (`0x0004d6b5`): elsewhere the bit is no flag.
+/// - With the shader's flag bit 0 (`+0x16`) the draw walks the model's
+///   attachments (`0x0004d486`) and may call `0x0003bea0`
+///   ([`LayerObjectRefusal::ShaderFlag`]); the argument's high byte goes
+///   to the pass setup (`0x0004d9c0`), and the layer-3 walk takes no item
+///   with it or with `+0x14` set ([`LayerObjectRefusal::Argument`]).
+/// - Bits 9 and 6 as in layer 3 ([`record_flags`], [`visible_subparts`]).
+pub fn layer_part(
+    mem: &dyn GuestRead, layer: u8, item: u32, record: u32, key: ItemKey,
+) -> Result<(PartFlags, Option<Subparts>), frame_scene::LayerObjectRefusal> {
+    use frame_scene::LayerObjectRefusal as R;
+    let packed = word(mem, item, 0xc).ok_or(R::Unread)?;
+    if (half(mem, record, RECORD_DRAW_FLAGS).ok_or(R::Unread)? as u8) != u8::MAX {
+        return Err(R::Fade);
+    }
+    let tag_table = word(mem, TAG_INSTANCES, 0).ok_or(R::Unread)?;
+    if word(mem, tag_table, 16 * (key.shader & 0xffff)) != Some(u32::from_be_bytes(*b"shad")) {
+        return Err(R::Unread);
+    }
+    let shader = word(mem, tag_table, 16 * (key.shader & 0xffff) + 8).ok_or(R::Unread)?;
+    if half(mem, shader, SHADER_FLAGS).ok_or(R::Unread)? & 1 != 0 {
+        return Err(R::ShaderFlag);
+    }
+    if (packed >> 24) != 0 || packed as u8 != key.part || half(mem, item, 0x14).ok_or(R::Unread)? != 0 {
+        return Err(R::Argument);
+    }
+    let flags = word(mem, record, 0).ok_or(R::Unread)?;
+    let mode = word(mem, record, objects::RECORD_MODEL).ok_or(R::Unread)?;
+    let model = word(mem, tag_table, 16 * (mode & 0xffff) + 8).ok_or(R::Unread)?;
+    if u32::from(key.section) >= word(mem, model, SECTION_COUNT).ok_or(R::Unread)? {
+        return Err(R::Unread);
+    }
+    let sections = word(mem, model, MODEL_SECTIONS).ok_or(R::Unread)?;
+    let section = sections.checked_add(SECTION_STRIDE * u32::from(key.section)).ok_or(R::Unread)?;
+    let geometry = word(mem, section, SECTION_GEOMETRY).ok_or(R::Unread)?;
+    if u32::from(key.part) >= word(mem, geometry, SECTION_PART_COUNT).ok_or(R::Unread)? {
+        return Err(R::Unread);
+    }
+    let part = word(mem, geometry, SECTION_PARTS)
+        .and_then(|p| p.checked_add(PART_SIZE * u32::from(key.part)))
+        .ok_or(R::Unread)?;
+    let triangle_list = half(mem, part, PART_FLAGS).ok_or(R::Unread)? & PART_TRIANGLE_LIST != 0;
+    let mut conditional = None;
+    if flags & RECORD_SUBPARTS != 0 {
+        let mask = word(mem, record, RECORD_SUBPART_MASK).ok_or(R::Unread)?;
+        if mask != 0 && word(mem, geometry, GEOMETRY_SUBPART_COUNT).ok_or(R::Unread)? != 0 {
+            conditional = Some(Conditional {
+                mask,
+                first: half(mem, part, PART_FIRST_SUBPART).ok_or(R::Unread)? as i16,
+                count: half(mem, part, PART_SUBPART_COUNT).ok_or(R::Unread)? as i16,
+            });
+        }
+    }
+    let named = |why: Refusal| match why {
+        Refusal::AuxState => R::AuxState,
+        Refusal::Subparts => R::Subparts,
+        Refusal::Topology => R::Topology,
+        Refusal::Other => R::Unread,
+    };
+    let mut out = record_flags(flags, triangle_list, conditional.is_some()).map_err(named)?;
+    if !matches!(layer, 1 | 3) {
+        out = PartFlags(out.0 & !PartFlags::STENCIL_MARK.0);
+    }
+    if out.contains(PartFlags::AUX_DEPTH) && crate::layout::aux_depth::read(mem).is_none() {
+        return Err(R::AuxState);
+    }
+    let subparts = match conditional {
+        Some(c) if out.contains(PartFlags::SUBPARTS) => Some(visible_subparts(mem, c.mask, c.first, c.count).map_err(named)?),
+        _ => None,
+    };
+    Ok((out, subparts))
+}
+
 /// A part whose record draws only its visible subparts: the mask's
 /// address and the part's first subpart and count.
 #[derive(Clone, Copy)]
@@ -648,6 +734,42 @@ mod tests {
         ]);
         mem.w(RENDER_RECORD_COUNT, 1);
         assert!(read(&mem, 0x2000, 0x1000, at).is_none());
+    }
+
+    /// An object item of a world layer other than 3 carries its record's
+    /// flags (the stencil mark only in layers 1 and 3), or names what the
+    /// draw does for it that the scene does not carry.
+    #[test]
+    fn a_world_layers_object_item_carries_its_records_flags_or_names_why_not() {
+        use frame_scene::LayerObjectRefusal as R;
+        let (mut mem, _) = sorted_part();
+        let (item, record, parts, shader) = (0x3000, RENDER_RECORDS + RENDER_RECORD_SIZE, 0x9000, 0xa000);
+        let key = part().key;
+        let at = |mem: &Mem, layer| layer_part(mem, layer, item, record, key);
+        for layer in [1, 5, 7, 8, 20] {
+            assert_eq!(at(&mem, layer), Ok((PartFlags::NONE, None)), "layer {layer}");
+        }
+        mem.w(record, 3 << 29 | RECORD_STENCIL_MARK);
+        assert_eq!(at(&mem, 1), Ok((PartFlags::STENCIL_MARK, None)));
+        assert_eq!(at(&mem, 8), Ok((PartFlags::NONE, None)), "no mark outside layers 1 and 3");
+        mem.w(record, 3 << 29);
+        mem.w(record + 0x18, 0x80 << 16);
+        assert_eq!(at(&mem, 7), Err(R::Fade));
+        mem.w(record + 0x18, 0xff << 16);
+        mem.w(shader + 0x14, 1 << 16);
+        assert_eq!(at(&mem, 7), Err(R::ShaderFlag));
+        mem.w(shader + 0x14, 0);
+        mem.w(item + 0xc, 1 << 24 | 1 << 8 | 2);
+        assert_eq!(at(&mem, 7), Err(R::Argument));
+        mem.w(item + 0xc, 1 << 8 | 2);
+        // A part that is not a triangle list draws as a strip only with
+        // bit 9.
+        mem.w(parts + 2 * PART_SIZE, 0);
+        assert_eq!(at(&mem, 7), Err(R::Topology));
+        mem.w(record, 3 << 29 | RECORD_STRIP);
+        assert_eq!(at(&mem, 7), Ok((PartFlags::STRIP, None)));
+        mem.w(record + objects::RECORD_MODEL, 0);
+        assert_eq!(at(&mem, 7), Err(R::Unread), "a model that does not read");
     }
 
     #[test]

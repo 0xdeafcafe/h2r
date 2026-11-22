@@ -6,8 +6,10 @@ Change 7 of the [architecture review](../reviews/2026-11-20-architecture.md)
 page is the spec: types, threads, the order of work, the tests and gates
 for each slice, the order of deletion and the commands that measure it.
 Slices 0 to 3 are built; their sections say how. Of slice 4 the entry
-census and the structure's layer draws from the plan, on by default and
-under the device's stencil, are built, and its
+census and the layer draws of the structure's static items and the
+objects' items (layers 1, 7, 8 and 20, and layer 5's whose model has
+no PRT block; the first person's 1, 7 and 8) from the plan, on by
+default, are built, and its
 section says what the replacements wait on. Of slice 5 the extraction of
 the fog, the water and the post passes and the fog's and water's
 recording on the render thread are built; its section says what the
@@ -124,7 +126,8 @@ render thread never touches guest memory and takes no guest lock.
 | `scene-extract` (new) | guest memory to `FrameScene`. The only render code with guest offsets | `frame-scene`, `engine` (points), the layout crate of change 5 when it exists |
 | `native-render` | `FrameScene` to wgpu. No `d3d`, no guest reads | `frame-scene`, `gfx`, `shaders`, `tags`, `map`, `wgpu` |
 | `gfx` | gains the data types that `d3d::backend` owns today and both sides need: `ResolvedDraw` and its parts, `PixelRect`, the packet and target types (`ExternalTarget`, `ExternalDraws`, `ExternalBundles`, `TargetCopy`), and the NV2A pipeline key (`d3d::nv2a`'s `NativeDrawKey`, `NativeDrawMaterial`, `NativeDrawProgram`, `w_buffered`, `d3d_fog`) | as today |
-| `d3d` | the guest-facing device. Depends on `frame-scene` to fill the carried part. Shrinks in section 11 | `gfx`, `shaders`, `frame-scene` |
+| `frame-types` | the types `d3d` and `frame-scene` share: the carried part (`carried`), the render camera (`camera`) and the view and instance keys (`keys`). `frame-scene` re-exports them under its own paths | `serde` |
+| `d3d` | the guest-facing device. Depends on `frame-types` to fill the carried part and to classify its draws against the scene's cameras (`ReplayFrame::classify_cameras` takes `FrameScene::view_cameras`). Shrinks in section 11 | `gfx`, `shaders`, `frame-types` |
 
 Until change 5 lands, `scene-extract` keeps offsets in one private
 `layout` module, one file per guest record, moved there unchanged from
@@ -853,7 +856,21 @@ commits. The three parts are built.
   `LayerItem`; `View::layers`): each geometry item's key, its owner (a
   cluster's section, a placement, or an object by handle), its record's
   model (the first-person mode for a first-person item), an object
-  item's palette rows and its owner's lighting;
+  item's palette rows and its owner's lighting, and what its record
+  makes the geometry draw `0x0004d0b0` do (`object_walk::layer_part`,
+  research points in its module notes): its `PartFlags` (the stencil
+  mark only in layers 1 and 3, where the prologue `0x0004d640` sets a
+  stencil mode) and chosen subparts, or a named cause the scene cannot
+  reproduce it (`LayerObjectRefusal`: a fade byte, the shader's flag
+  bit 0, an argument the pass setup takes, layer 5's PRT stream left as
+  the draws before it left it, a topology, subparts or auxiliary state
+  that do not read). In layer 5 an object item whose model has a PRT
+  block carries what the draw adds for it (`frame_scene::PrtStream`,
+  read by `scene_extract::layout::prt`, research points in its module
+  notes): the stream's type, stride and the guest address of the item's
+  section's vertices at the object's level, and the constants from
+  `c[68]` on (the object's entry's vector, a fixed vector, then its
+  coefficients);
   the pass keeps the stencil-off flags and whether the texture
   accumulation target binds. Another build callback, or a record, owner
   or rows that do not read, is the pass's remainder. The first person
@@ -913,8 +930,9 @@ to the guest's draws (**Code**):
   `boot::native_world_layers_glue`; the first person's per item at
   issue). With the entry replaced nothing is resolved. What a stage
   needs to draw a layer pass from the scene alone is extracted and
-  planned, and the structure's static items draw from the plan
-  (`frame-scene.layers`, below).
+  planned, and the structure's static items and the objects' items of
+  layers 1, 7, 8 and 20 draw from the plan (`frame-scene.layers`,
+  below).
   - **Material inputs** (`frame_scene::LayerInputs`, read at the layer
     draw's begin by `scene_extract::layout::layer_inputs`, research
     points in its module notes). The render time `0x004858a0`, which
@@ -960,36 +978,94 @@ to the guest's draws (**Code**):
     `FogProgram`), all or nothing per material and layer, and each
     material is resolved once with its instance's properties and input
     scales; `GpuWorld::set_layer` holds one `fog_gpu::FogSet` per layer.
-    Before a scene view's layer draw (`layer_site` is `Site::Scene`; the
-    first person's layers stay as they are) the bridge extracts the
-    layer's pass from guest memory and the host plans it. A planned item
-    is drawn when it is a cluster's or a placement's, its draw is static
-    (no animation, no per-draw inputs: what the compiled programs hold)
-    and the layer's set draws its part with its shader.
-    `layer_pass::clear_prefix` clears the layer's bit on the run of such
-    items from the list's first, since the native pass records before the
-    guest's draw; one external pass (`GpuWorld::layer_draws`, in the D3D
-    pass open on the bound attachments) draws them. They draw under the
-    stencil the device holds at the layer call (`fog_gpu::layer_stencil`):
-    no pass sets one (`pass_state` refuses it) and no object item has
-    switched it before the prefix, so the scene's layer 1, which begins
-    in mode 1 (`ALWAYS`, reference 0, `REPLACE` on pass), takes that state
-    in its pipelines and its reference in its packets, and the pass
-    reports a depth-stencil write when the state writes. Everything else keeps
-    its D3D draws and so the indexed-draw admission: the objects (their
-    recording over the model buffers, `object_program_gpu`, is not
-    built), animated or per-draw items, and every item after the first
-    one the stage cannot draw. Each ask's outcomes are counted in
-    `render.scene` as `layer_plan_<layer>_taken` and
-    `layer_plan_<layer>_refused_<cause>`: the plan's causes
+    The object models compile their materials' passes of layers 1, 5,
+    7, 8 and 20 at load with their layer-3 passes
+    (`object_program_gpu::lit_model`, `object_program::object_layer_pass`:
+    over the same buffers, the pass's blend kept for its pipeline, no
+    lightmap stage, since outside layer 3 the geometry draw binds no
+    lightmap page or stream, `0x0004d28b`), per pass the
+    implementations that compile (`LitLayerPart`, `LitLayerPass`; what
+    does not compile is `LitBuild::layer_refused`, among it a layer-5
+    program that reads a constant from `c[68]` on, which only the PRT
+    stream's draw sets); the scene's models
+    (`native_objects_glue`) and the first person's
+    (`native_first_person_glue`) both build them.
+    Before a scene view's layer draw (`layer_site` is `Site::Scene`), and
+    before the first person's layers 1, 7 and 8 (`Site::FirstPerson`;
+    its layer 3 is `native_first_person`'s), the bridge extracts the
+    layer's pass from guest memory and the host plans it
+    (`render_bridge::native_layers::caller`). A structure item (the
+    scene's caller only) is drawn when it is a cluster's or a
+    placement's, its draw is static (no animation, no per-draw inputs:
+    what the compiled programs hold) and the layer's set draws its part
+    with its shader. An object item is drawn when extraction names no
+    cause, the draw adds no PRT stream for it (layer 5), its model is
+    resident in the caller's set, and each of its material's passes in
+    the layer
+    plans (`LitObjects::plan_layer_item`, `plan_layer_part`: per pass
+    the implementation it draws for the item, the per-object constants
+    from the item's lighting, the pass's defaults and the item's rows,
+    its state over the device's at the call,
+    `object_state::resolve_layer`, blending kept) with its fog, sampling
+    no texture accumulation target; the device must draw W-buffered over
+    the whole target, as layer 3's objects. An item toggling the
+    auxiliary state is refused (its values are read at layer 3).
+    Skipping an item's guest draw must leave the device as drawing it
+    would, as layer 3's walk requires of the parts it skips
+    (`layer_pass::skip_holds`): each draw sets its pass's render-state
+    list without comparing (`0x0001a170`), and a pass switch and the
+    next layer's setup (`0x00016b10`) restore the cached
+    implementation's restore list, so a structure or object item is
+    taken only when every state of both lists already holds at the call
+    and its pass has no engine-driven render state. The first shader
+    begin's fixed states and cleared texture caches (`0x0001bbf0`) are
+    redone by the first one the guest keeps, or by the next layer's.
+    `layer_pass::clear_layer_prefix` clears the layer's bit on the run of
+    such items from the list's first, since the native pass records
+    before the guest's draw; one external pass draws them, run by run in
+    the list's order (`GpuWorld::layer_draws` and `LitObjects::draws`, in
+    the D3D pass open on the bound attachments). The stencil
+    (`layer_pass::item_stencil`): in layer 1 the geometry draw's prologue
+    sets mode 0 when the stencil-off flags are set and mode 2 for a
+    marked object's record, and its epilogue leaves mode 1 after either.
+    So with the stencil off the items draw with the stencil disabled and
+    the device must already hold mode 1 (else the layer stays on the D3D
+    path); a marked object item draws in mode 2
+    (`object_state::mark`) and needs the device in mode 1 (else the
+    marked items stay). Otherwise, and in layers 5, 7, 8 and 20, the items
+    draw under the stencil the device holds at the layer call
+    (`fog_gpu::layer_stencil`): no structure pass sets one (`pass_state`
+    refuses it), so the scene's layer 1, which begins in mode 1
+    (`ALWAYS`, reference 0, `REPLACE` on pass), takes that state in its
+    pipelines and its reference in its packets, and the pass reports a
+    depth-stencil write when a draw writes. Everything else keeps its D3D
+    draws and so the indexed-draw admission: layer 5's object items with
+    a PRT stream, animated or per-draw items, and every item after the
+    first one the
+    stage cannot draw. Each ask's outcomes are counted in `render.scene`
+    as `layer_plan_<layer>_taken` and
+    `layer_plan_<layer>_refused_<cause>` (the first person's as
+    `layer_plan_fp<layer>_*`): the plan's causes
     (`LayerRefusal::name`, `per_draw` for a material resolved per draw),
-    `object`, `animated`, `stencil` (the device's stencil does not read,
-    or tests or writes it on a depth with no stencil aspect),
-    `palettes`, `device`, `program` (no material of the layer
-    compiled), `order` (planned and static, but from the first item the
-    layer's set cannot draw on) and `unread` (the layer's pass did not
-    read); `layer_plan_asked`, `layer_plan_drawn` and `layer_plan_items`
-    count the layer calls asked, those drawn natively and their items.
+    extraction's object causes (`LayerObjectRefusal::name`,
+    `object_fade` and the rest), `object_prt` (layer 5's PRT stream),
+    `object_layer` (a layer outside `object_program_gpu::OBJECT_LAYERS`),
+    `object_state` and `state` (an object or a structure item whose pass
+    would change a render state the device holds: `skip_holds`),
+    `object_models` (the caller's models are not resident or their
+    palettes changed), `object_viewport`, `object_w_buffer`,
+    `object_model` (the item's model is not uploaded), `object_plan`
+    (a pass does not plan; the first of each reason is logged),
+    `object_texaccum`, `object_fog`, `object_stencil`,
+    `object_warming` (an object pipeline not built yet), `animated`,
+    `stencil` (the device's stencil does not read, tests or writes it on
+    a depth with no stencil aspect, or layer 1's stencil is off and the
+    device is not in mode 1), `warming`, `palettes`, `device`, `program`
+    (no material of the layer compiled), `first_person_structure`, `order`
+    (planned, but from the first item the sets cannot draw on) and
+    `unread` (the layer's pass did not read); `layer_plan_asked`,
+    `layer_plan_drawn` and `layer_plan_items` count the layer calls
+    asked, those drawn natively and their items.
   - **With no game** (the editor, `scenario_edit::native_view::NativeLayers`).
     The same load, with the view constants a camera gives
     (`layers_load::load_with` and `program::CAMERA_GIVEN`: a pass reading
@@ -1016,10 +1092,30 @@ to the guest's draws (**Code**):
     `a_structure_item_draws_with_no_lighting_and_an_input_nothing_gives_is_named`,
     `a_game_time_property_wraps_its_time_over_its_period_and_maps_onto_its_range`,
     `constant_animations_take_their_values_and_other_kinds_are_named`,
-    `a_scene_layer_plans_its_items_in_order_and_names_the_rest` and
-    `the_skip_takes_the_accepted_structure_items_up_to_the_first_it_cannot`;
-    for the stage, `the_plans_outcomes_count_by_layer_and_cause` and
-    `the_stage_is_on_with_the_native_renderer_unless_turned_off`
+    `a_scene_layer_plans_its_items_in_order_and_names_the_rest`,
+    `the_skip_takes_the_accepted_structure_items_up_to_the_first_it_cannot`,
+    `the_skip_takes_object_items_the_plan_drew_in_the_same_run` and
+    `layer_1_items_draw_unstenciled_with_the_stencil_off_and_need_mode_1_to_skip`;
+    for the objects,
+    `a_world_layers_object_item_carries_its_records_flags_or_names_why_not`
+    (`scene_extract::layout::object_walk`),
+    `layer_5_reads_the_objects_constants_and_its_sections_stream_at_its_level`,
+    `a_model_without_a_prt_block_adds_nothing` and
+    `a_draw_that_leaves_its_stream_or_constants_as_they_were_is_named`
+    (`scene_extract::layout::prt`),
+    `a_skipped_pass_holds_only_when_every_state_it_sets_and_restores_already_holds`
+    (`native_render::layer_pass`),
+    `a_world_layers_draw_keeps_its_blend_and_inherits_what_it_leaves`
+    (`native_render::object_state`),
+    `a_world_layers_pass_keeps_its_blend_and_cannot_sample_the_lightmap`
+    and `a_materials_world_layer_passes_are_its_first_level_of_details`
+    (`native_render::object_program`),
+    `a_materials_world_layer_passes_compile_over_its_layer_3_buffers` and
+    `a_world_layers_object_item_draws_each_pass_with_the_implementation_it_picks`
+    (`native_render::object_program_gpu`);
+    for the stage, `the_plans_outcomes_count_by_layer_and_cause`,
+    `the_stage_takes_the_scenes_layers_and_the_first_persons_besides_layer_3`
+    and `the_stage_is_on_with_the_native_renderer_unless_turned_off`
     (`render_bridge::native_layers`),
     `a_layers_stencil_is_the_devices_and_needs_a_stencil_aspect_only_when_on`
     and `layer_packets_under_the_devices_stencil_write_its_reference_where_they_draw`
@@ -1211,7 +1307,7 @@ The owner arm records which game frames the native graph actually
 presents. The pixel and simulation comparisons in §9 use the full
 D3D reference with all native stages disabled.
 
-- **The types** (`frame_scene::carried`). `Slot` and `SlotAt` (the slot
+- **The types** (`frame_types::carried`, re-exported as `frame_scene::carried`). `Slot` and `SlotAt` (the slot
   and the guest view index); `SlotTracker` moves the slot on the frame
   step's events and, inside a game view, only forward. `GuestOp<D>`
   (`Draw`, `Bind`, `Clear`, `Copy`, `Upload`, `Sample`) over
@@ -1261,7 +1357,7 @@ D3D reference with all native stages disabled.
   `scene_readback_<kind>`. Over the census corpus these are the list
   section 8.3's table must cover. The sink sees a pixel-count request
   before the display worker decides which renderer supplies its result.
-- **Tests** (synthetic). `frame_scene::carried`:
+- **Tests** (synthetic). `frame_types::carried`:
   `a_game_view_runs_its_slots_in_order_and_the_overlay_follows`,
   `inside_a_view_the_slot_only_moves_forward_and_outside_it_does_not_move`,
   `a_summary_counts_by_slot_and_view_and_names_the_side_targets_of_game_views`;

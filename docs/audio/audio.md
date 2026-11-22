@@ -1,7 +1,7 @@
 # Audio
 
 Status: Built. Code: `crates/platform/audio/src` (`mixer.rs`, `dsound.rs`, `output.rs`). Tests: `crates/platform/audio/tests`.
-Switch: none.
+Switch: none for the mixer; `medal-announcer` for [our medals' announcer lines](#our-medals-announcer-lines).
 
 `crates/platform/audio` replaces the Xbox SDK's DirectSound at the API level. The
 MCPX APU behind it is not emulated: there are no voice slots, no DSP
@@ -316,6 +316,83 @@ change playback rate by design).
 
 `docs/audio/dsound.md`, "Voice effects", has the descriptor layouts and which
 parts are assumptions.
+
+## The announcer queue
+
+Read for this page (E, `h2 disasm 0x19e770 70`, `0x23ef80 40`,
+`0x23f000 70`, `0x23f0a0 60`). Names: `points::ANNOUNCER_QUEUE_UPDATE`
+and `points::announcer_queue` (`crates/hooking/guest-layout/src/points.rs`).
+
+Halo 2 speaks one announcer line at a time, each after the last has
+finished. A game event's sound ("Double kill", [hud-kit.md](../game/hud-kit.md#game-events-and-medals-0x0019de80))
+goes from `0x0019e770` to `0x0023ef80` with a delay in ticks (the
+response's `+0x3c` seconds). `0x0023ef80` checks a table of the last four
+events first (`0x0023f180`, not read in detail), then queues the sound
+tag through `0x0023f140`.
+
+- **The queue.** Five 12-byte lines from `0x00502350`: the sound tag
+  (`+0`), the sound playing (`+4`), a playing byte (`+8`) and an i16 delay
+  in ticks (`+0xa`). The count, the head included, is the i32 at
+  `0x005023ec`. `0x0023f140` drops a line when five are queued.
+  `0x0023f0a0` empties it (a count of 1, a head with no sound).
+- **The update** (`0x0023f000`, no arguments, `ret`). While the head's
+  delay is 0 or more it counts down; at -1 it plays the head's sound
+  (`0x00189710`) and sets the playing byte. With the delay below zero and
+  the playing byte clear, the head is dropped and the next line becomes
+  the head. Its caller is not traced here (S: once a tick).
+- **The end.** `0x0023f120`, given a sound that ended, clears the playing
+  byte when that sound is the head's.
+
+So the queue is idle when it is empty, or holds only a head whose delay
+has run out and whose sound has ended. Whether the game lowers other
+sounds under an announcer line is not read.
+
+## Our medals' announcer lines
+
+Code: `crates/extensions/game/src/medal_announcer.rs`. Tests:
+`medal_announcer_tests.rs`. Switch: the `medal-announcer` feature (on;
+`H2_FEATURES=-medal-announcer` keeps the medals silent).
+
+Our medals (the superbounce ones, [superbounce.md](../game/superbounce.md#medals))
+have announcer lines of their own, AI-generated placeholders:
+`art/announcer/<medal id>.wav`, 16-bit PCM, matched offline to the retail announcer's loudness
+(`art/announcer/README.md`). When the HUD shows one of our medal lines
+(`superbounce_hud`, [hud-kit.md](../game/hud-kit.md#the-medals)), its
+clip is queued; one line per HUD line, so a chain of three bounces says
+Superbounce, Double bounce and Triple bounce in that order, and a Monster
+says Monster bounce. Bounced has no clip and is silent.
+
+- **Taking turns with the game.** Our clips have no sound tag, so they
+  cannot be lines in the game's queue. A clip of ours starts only when the
+  game's queue is idle (`game_idle`, read each tick). While it plays, a
+  `before` hook on `ANNOUNCER_QUEUE_UPDATE` skips the update, so a retail
+  line queued meanwhile waits, its delay held, and plays once ours ends.
+  Retail lines already waiting go before our next one. A line that holds
+  the game's queue for 150 ticks (`MAX_HOLD_TICKS`, five seconds, over
+  twice the longest clip) lets it go, so a stalled mixer cannot silence
+  the game's announcer.
+- **Our queue.** One line at a time, in the HUD's order. At most four wait
+  behind the one playing (five in all, the game's length); past that the
+  oldest waiting line is dropped, so the newest medal is spoken. A new
+  game drops the waiting lines. In split screen each local player's line
+  is queued, as the game queues a multi-kill for each local player who
+  earned it.
+- **Playback.** A clip plays as a 2D buffer in DirectSound's mixer, on no
+  mix bins (both speakers), under the mixer's master volume. Halo 2 has
+  no announcer or dialogue volume setting; the gain the game's sound
+  classes give its own dialogue is not applied, and our lines neither
+  duck nor are ducked. Boot connects the mixer only with real audio
+  output; headless clock-only runs drop the lines.
+- **Embedded.** The clips are compiled in with `include_bytes!`, so the
+  installed `h2` needs no repository next to it. They are in Git LFS: a
+  checkout without them (the lab's `GIT_LFS_SKIP_SMUDGE`) still builds,
+  and each clip that is an LFS pointer is named once at run time
+  (`announcer: art/announcer/<id>.wav: a Git LFS pointer ...`) and stays
+  silent. `git lfs pull` and a rebuild bring them in.
+
+The Incel medal has a clip too (`incel.wav`), not compiled in: no line in
+the game shows that medal ([teabag.md](../game/teabag.md)), so nothing
+speaks it.
 
 ## Unsupported: the MCPX DSP
 

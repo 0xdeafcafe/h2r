@@ -576,7 +576,6 @@ impl FogSet {
     /// pipelines ([`crate::gpu::GpuWorld::fog_draws`]); the pipelines
     /// are made ([`FogSet::pipelines`]). Refused when a pass, group or
     /// fog state is missing, as `draw` records nothing then.
-    #[allow(clippy::too_many_arguments)]
     // wgpu compares and hashes pipelines by their stable handle identity.
     #[allow(clippy::mutable_key_type)]
     pub(crate) fn draws(

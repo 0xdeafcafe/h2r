@@ -23,7 +23,7 @@ wgpu = "30"
 gfx = { path = "../../platform/gfx", default-features = false, features = ["gpu"] }
 winit = "0.30"
 pollster = "1"
-png = "0.18"
+png = { workspace = true }
 anyhow.workspace = true
 # The Dock icon for the unbundled editor (art/app-icon).
 app-icon = { path = "../app-icon" }
@@ -76,7 +76,7 @@ serde_json.workspace = true
 
 # Play and pair (src/play.rs): the agent API's wire types and client.
 agent-proto = { path = "../../extensions/agent-proto" }
-live-mirror = { path = "../../tools/live-mirror" }
+live-mirror = { path = "../live-mirror" }
 guest-layout = { path = "../../hooking/guest-layout" }
 ab_glyph = "0.2"
 # The agent API (src/api): method names, short forms and the client.
@@ -84,7 +84,7 @@ studio-proto = { path = "../studio-proto" }
 
 [target.'cfg(unix)'.dependencies]
 # Check the lifetime of a discovered game after a deliberate Unpair.
-libc = "0.2"
+libc = { workspace = true }
 
 [dev-dependencies]
 # The HUD tool's tests draw the invented HUD map.
@@ -93,3 +93,6 @@ hud-edit = { path = "../../tools/hud-edit", features = ["fixture"] }
 agent = { path = "../../extensions/agent" }
 # Invented script tables and an invented executable for the Scripts tool.
 hs = { workspace = true, features = ["fixture"] }
+
+[lints]
+workspace = true

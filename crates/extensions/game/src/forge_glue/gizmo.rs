@@ -119,7 +119,7 @@ impl Axes {
             let edge: [f32; 3] = std::array::from_fn(|i| centre[i] + extent.radius * camera.up[i]);
             let e = transform_px(camera, edge)?;
             let r = (e[0] - c[0]).hypot(e[1] - c[1]);
-            (r.is_finite() && r >= 1.0 && r <= MAX_RING)
+            (r.is_finite() && (1.0..=MAX_RING).contains(&r))
                 .then(|| ([c[0].round() as i32, c[1].round() as i32], r.round() as i32))
         });
         Some(Self { origin, ends, ring })

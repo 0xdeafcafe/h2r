@@ -11,7 +11,7 @@ use commands::{Commands, SceneDevice};
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 
-use frame_scene::{AuxTarget, TargetRef};
+use frame_types::{AuxTarget, TargetRef};
 use gfx::raster::RenderScale;
 use gfx::surface::SurfaceId;
 use gfx::texture::DecodedTexture;

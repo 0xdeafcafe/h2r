@@ -76,7 +76,7 @@ fn text_round_trips() {
     odd.knobs.aim = Some([-10.54321, 4.0999]);
     odd.score = 1.2137;
     let c = odd.canonical();
-    assert_eq!(parse(&to_text(&[c.clone()])).unwrap(), vec![c.clone()]);
+    assert_eq!(parse(&to_text(std::slice::from_ref(&c))).unwrap(), vec![c.clone()]);
     assert_eq!(c.knobs.aim, Some([-10.543, 4.100]));
     // No negative zero in the bytes.
     let mut z = learned_line();
@@ -269,7 +269,7 @@ fn merge_keeps_the_better_line_whole() {
     assert_eq!(
         m,
         merge(
-            &merge(&[far.clone()], &[a.clone()]),
+            &merge(&[far.clone()], std::slice::from_ref(&a)),
             &[open.clone(), better.clone()]
         )
     );

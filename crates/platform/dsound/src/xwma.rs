@@ -380,7 +380,6 @@ fn get_pcm(hle: &WmaHle, ctx: &mut ExecCtx, a: &[u32]) -> Result<u32, GuestFault
 /// Begin packet: call the input callback until the session has a whole
 /// packet or the callback runs dry, then begin and return to `ret_pc`.
 /// `cpu.esp` is the caller's, with this entry's frame already popped.
-#[allow(clippy::too_many_arguments)]
 fn pull(
     hle: Arc<WmaHle>,
     handle: u32,

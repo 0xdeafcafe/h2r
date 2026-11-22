@@ -8,7 +8,7 @@ mod live_views;
 
 use super::*;
 use crate::backend::{GuestLayoutKind, ResolvedDraw};
-use frame_scene::{AuxTarget, Slot, SlotAt};
+use frame_types::{AuxTarget, Slot, SlotAt};
 use gfx::D3DFormat;
 use gfx::texture::DecodedTexture;
 use std::sync::atomic::AtomicUsize;

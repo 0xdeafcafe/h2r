@@ -394,8 +394,11 @@ How it works (crates/apps/cli `follow.rs`):
   `info|ready|error<TAB>text`, replaced atomically). The child reads it
   twice a second into an `app::Banner`, which the shell draws in the
   top-left corner of the window over the game frame. It is the 8x8
-  public-domain font at 2x on a translucent plate, a second render pass
-  with alpha blending (`app::overlay`). The messages:
+  public-domain font at 2x on the debug menu's dark plate, with a strip in
+  the notice's colour down its left edge, a second render pass with alpha
+  blending (`app::overlay`). While the debug menu is open the notice is a
+  line inside the menu instead ([debug-menu.md](debug-menu.md#layout)).
+  The messages:
   "Building <hash>...";
   "Update ready: <subject, or N commits> - press F5 to restart" (with
   "(building <hash>...)" or "(<hash> failed to build)" when a newer commit

@@ -2475,9 +2475,7 @@ keeps a private cache policy. Invalid specs return 400. Missing art,
 layers, or revisions return 404, and these replies are uncached. The same
 access rules apply as for `/art/game/*`.
 
-## Clarifications (2026-11-15)
-
-Settled after the first client was built against this page.
+## Clarifications
 
 1. **Positions.** The log starts at position 1. `?from=N` is exclusive:
    the stream and `/v1/events` return events with `position > N`, so
@@ -2533,10 +2531,9 @@ Settled after the first client was built against this page.
 14. **`console`** is a free display string (the console's name); clients
     may show it or not.
 
-## As built (2026-11-15)
+## Game and account details
 
-Decisions made while building the games slice; they override the tables
-above where they differ.
+These override the tables above where they differ.
 
 - **`POST /v1/games`** returns `{game_id, position, identifiers}`. Live assigns the game its id (32 hex) and 16 seat and machine slots in `identifiers.seats` and `identifiers.machines`. Retries of the same game receive the same slots. A new game receives new identifiers for the same players. Live writes `GameStarted` itself, signed by the server key, with an extra
   `host` field naming the token's author. Later game events are written by

@@ -432,6 +432,10 @@ pub(crate) fn register_core_film(
     crate::hud_kit::install(features).context("installing the HUD kit")?;
     crate::superbounce_hud::install(features, i.settings.clone())
         .context("installing the superbounce HUD")?;
+    // The announcer speaks the HUD's medal lines (medal_announcer.rs,
+    // docs/audio/audio.md, "Our medals' announcer lines"); boot gives it
+    // the mixer once the audio is up.
+    crate::medal_announcer::install(features).context("installing the medal announcer")?;
     // Hold X while falling to steer onto a bounce strip, opt in by the
     // superbounce.fall_assist setting
     // (docs/game/superbounce.md, "Hold X: the fall assist"). Its input tap

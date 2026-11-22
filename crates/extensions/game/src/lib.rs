@@ -113,6 +113,7 @@ pub mod map_copy;
 pub mod map_override;
 pub mod map_select;
 pub mod map_slots;
+pub mod medal_announcer;
 pub mod mod_slots;
 pub mod mods_screen;
 pub mod movies_glue;
@@ -182,7 +183,6 @@ pub mod pad_speaker;
 pub mod precision;
 #[cfg(feature = "desktop-runtime")]
 pub mod render_probe;
-#[cfg(feature = "desktop-runtime")]
 pub mod retail_rows;
 #[cfg(feature = "gpu")]
 pub mod return_to_menu;

@@ -28,7 +28,7 @@ pub fn section() -> Section {
     Section {
         id: "player".into(),
         title: "Player".into(),
-        about: "god mode, ammo, fly, noclip, give a weapon, teleport, hide the HUD".into(),
+        about: "god mode, ammo, fly, noclip, weapons, teleport, hide the HUD".into(),
         calls: vec![
             Call::bare(CHEAT_LIST),
             Call::bare(SIM_SESSION),

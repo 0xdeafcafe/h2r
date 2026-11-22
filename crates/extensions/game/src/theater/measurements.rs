@@ -216,7 +216,7 @@ mod tests {
         const TEST_ADDRESS: u32 = 0x10000;
         let mut guest = Guest::new();
         guest
-            .map_zeroed(TEST_ADDRESS, 2 * PAGE_SIZE as u32, Permissions::RW)
+            .map_zeroed(TEST_ADDRESS, 2 * PAGE_SIZE, Permissions::RW)
             .unwrap();
         let mut run = Run {
             boot: Instant::now(),
@@ -237,7 +237,7 @@ mod tests {
         assert!(!run.pages_due(157));
         run.sample_pages(&mut guest, 158).unwrap();
         guest
-            .set_u32(TEST_ADDRESS + PAGE_SIZE as u32, 3)
+            .set_u32(TEST_ADDRESS + PAGE_SIZE, 3)
             .unwrap();
         for i in 2..=6 {
             run.sample_pages(&mut guest, 8 + i * 150).unwrap();

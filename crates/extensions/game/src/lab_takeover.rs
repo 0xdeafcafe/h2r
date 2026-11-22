@@ -33,7 +33,7 @@ pub const SCREEN: &str = "lab.takeover";
 /// The question a game asks while a lab job runs.
 pub const RUNNING_SCREEN: &str = "lab.running";
 const IDS: ui_kit::ids::Family = ui_kit::ids::family("lab takeover");
-const TITLE: &str = "LAB REQUEST";
+const TITLE: &str = "Lab request";
 /// Ids both questions share: the title, the body and the footer.
 const TITLE_ID: u32 = 0;
 const BODY_ID: u32 = 1;
@@ -56,17 +56,21 @@ struct Form {
     anchor: i16,
 }
 
-// The dialog's list is on skin 0 (`ui_kit::view` item art): row 0's frame
-// art tops out 33 units above the anchor at most (the cap is 34 high, from
-// 1 below the anchor, or 4 below on the Controls skin), rows are 22 apart
-// and the last row's cap reaches 4 below its anchor. The body's ink ends
-// 19 units a line below `dialog::BODY_TOP` (72), and the footer's top is
-// -83.
+// The dialog's list is on skin 0 (`ui_kit::view::Geometry::fallback`):
+// a row's cap (item art 1, the focus frame) is 34 high from 1 below the
+// row's anchor, so it spans anchor + 33 down to anchor - 1, and rows are
+// 22 apart. The body's ink ends 19 units a line below `dialog::BODY_TOP`
+// (72), and the footer's top is -83. The layout check holds the body off
+// every row's art, and every label to a contrast of 2.5 against what is
+// drawn under it, the main menu included.
 //
-// Four body lines end at -4: at -44 the frame's top (-11) clears them, and
-// row 1's cap (-70 to -74) stays above the footer. Row 1 sits below the
-// opener's brighter rows there, so its unfocused label keeps the 2.5
-// contrast floor (at -38 it measured 2.44).
+// Both questions have a three-line body, ending at 72 - 3 * 19 = 15. A
+// fourth line would end at -4 and need row 0's cap top at -4 or lower, an
+// anchor of -37 or lower; on the disc these labels lose their contrast
+// from about -36 down (over the menu under the panel), so four lines fit
+// no anchor. At -34 the cap's top (-1) is 16 under the body, the labels
+// keep their contrast (measured at this anchor), and row 1's cap ends at
+// -57, well above the footer.
 const START: Form = Form {
     ask: Ask::Start,
     screen: SCREEN,
@@ -75,13 +79,11 @@ const START: Form = Form {
     first_id: 2,
     answers: &[Decision::Declined, Decision::Allowed],
     dismissed: Decision::Declined,
-    anchor: -44,
+    anchor: -34,
 };
 
-// Three body lines end at 15, well above the frame's top (-2). At -35 row
-// 0 sits lower than the consent question's row 0 did when its label kept
-// its contrast over the logo, and row 2's cap (-83 at the lowest) meets
-// the footer's top without reaching it.
+// At -35 row 0's cap tops out at -2, 17 under the body, the labels keep
+// their contrast, and row 2's cap ends at -80, above the footer's -83.
 const RUNNING: Form = Form {
     ask: Ask::Running,
     screen: RUNNING_SCREEN,
@@ -151,11 +153,11 @@ fn source_line(source: &Source) -> String {
     }
 }
 
-/// The dialog's text. To start a job, four lines: who asks and what it
-/// does, the job's name, its source, and the level, data and time. While a
-/// job runs, three: who runs it, its name and the question. Each line stays
-/// one line at the widest letters (the fit test), since the body wraps only
-/// at spaces and that is all the room above the rows.
+/// The dialog's text, three lines (all the room above the rows, see
+/// [`START`]). To start a job: who asks, what it does and how long it
+/// takes; the job's name; its source, then the level and data. While a
+/// job runs: who runs it, its name and the question. Each line stays one
+/// line (the fit test), since the body wraps only at spaces.
 fn body(request: &Request) -> String {
     let who = display_field(&request.requester, 12);
     let name = display_field(&request.name, 22);
@@ -169,25 +171,20 @@ fn body(request: &Request) -> String {
         (Operation::Sim, false) => "run a sim",
         (Operation::Sim, true) => "build, then sim",
     };
-    let time = match request.estimate_seconds {
+    let time: String = match request.estimate_seconds {
         0 => "time varies".into(),
         n @ 1..=59 => format!("about {n} sec"),
         n @ 60..=5940 => format!("about {} min", n.div_ceil(60)),
         _ => "over 99 min".into(),
     };
-    let mut facts = Vec::new();
+    let mut facts = vec![source_line(&request.source)];
     if let Some(level) = request.level.as_deref().filter(|l| !l.trim().is_empty()) {
         facts.push(format!("level {}", display_field(level, 10)));
     }
     if request.own_data {
         facts.push("own data".into());
     }
-    facts.push(time);
-    format!(
-        "{who}: {action}\n\"{name}\"\n{}\n{}",
-        source_line(&request.source),
-        facts.join(", ")
-    )
+    format!("{who}: {action} ({time})\n\"{name}\"\n{}", facts.join(", "))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

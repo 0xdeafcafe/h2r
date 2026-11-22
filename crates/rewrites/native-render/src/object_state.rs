@@ -103,6 +103,20 @@ pub struct DrawState {
     pub color_writes: wgpu::ColorWrites,
     pub w_clamp: bool,
     pub alpha_test: Option<(wgpu::CompareFunction, u8)>,
+    /// Its blend, only for a world layer's draw ([`resolve_layer`]):
+    /// layer 3's object draws refuse blending.
+    pub blend: Option<wgpu::BlendState>,
+    /// The blend constant the packet sets, as `gfx::translate::blend_constant`
+    /// derives it (each channel's `f64` bits); zero without a blend.
+    pub blend_constant: [u64; 4],
+}
+
+impl DrawState {
+    /// [`Self::blend_constant`] as the packet sets it.
+    pub fn blend_color(&self) -> wgpu::Color {
+        let [r, g, b, a] = self.blend_constant.map(f64::from_bits);
+        wgpu::Color { r, g, b, a }
+    }
 }
 
 /// The reference stencil mode 2 writes: a part whose record marks its
@@ -135,18 +149,27 @@ pub fn mark(state: &mut DrawState) {
 /// or why it is refused. `compiled`: the alpha test its program was
 /// compiled with.
 pub fn resolve(own: &[RenderStateValue], entry: &EntryStates, compiled: Option<(wgpu::CompareFunction, u8)>) -> Result<DrawState, String> {
-    resolve_states(own, entry, compiled, false)
+    resolve_states(own, entry, compiled, false, false)
 }
 
 /// The third-person scene path supplies the fog uniforms and handles a
 /// zero-reference stencil test. First-person callers use `resolve`.
 pub fn resolve_scene(own: &[RenderStateValue], entry: &EntryStates, compiled: Option<(wgpu::CompareFunction, u8)>) -> Result<DrawState, String> {
-    resolve_states(own, entry, compiled, true)
+    resolve_states(own, entry, compiled, true, false)
+}
+
+/// [`resolve_scene`] for an object's draw in a world layer other than 3
+/// (1, 5, 7, 8 and 20; `entry` the device at that layer call): its passes
+/// blend, so a blend its implementation sets, or the device's it
+/// inherits, is the draw's ([`DrawState::blend`]), every field the blend
+/// reads known.
+pub fn resolve_layer(own: &[RenderStateValue], entry: &EntryStates, compiled: Option<(wgpu::CompareFunction, u8)>) -> Result<DrawState, String> {
+    resolve_states(own, entry, compiled, true, true)
 }
 
 fn resolve_states(
     own: &[RenderStateValue], entry: &EntryStates, compiled: Option<(wgpu::CompareFunction, u8)>,
-    scene: bool,
+    scene: bool, blends: bool,
 ) -> Result<DrawState, String> {
     let table = RenderStateTable::for_build(HALO2_BUILD);
     let mut rs = RenderState::default();
@@ -179,7 +202,13 @@ fn resolve_states(
         need(t)?;
     }
     if rs.blend_enable {
-        return Err("it blends (ALPHABLENDENABLE)".into());
+        if !blends {
+            return Err("it blends (ALPHABLENDENABLE)".into());
+        }
+        need(R::SrcBlend)?;
+        need(R::DestBlend)?;
+        need(R::BlendOp)?;
+        need(R::BlendColor)?;
     }
     if rs.fog_enable && !scene {
         return Err("fog is on (FOGENABLE)".into());
@@ -238,6 +267,13 @@ fn resolve_states(
         color_writes: gfx::translate::color_writes(rs.color_write),
         w_clamp: rs.depth_clamp,
         alpha_test,
+        blend: gfx::translate::blend_state(&rs),
+        blend_constant: if rs.blend_enable {
+            let c = gfx::translate::blend_constant(&rs);
+            [c.r, c.g, c.b, c.a].map(f64::to_bits)
+        } else {
+            [0; 4]
+        },
     })
 }
 
@@ -319,6 +355,33 @@ mod tests {
             (p.cull_mode, p.front_face)
         };
         assert_ne!(culls(&ccw), culls(&entry()), "the winding is inherited, not the default");
+    }
+
+    #[test]
+    fn a_world_layers_draw_keeps_its_blend_and_inherits_what_it_leaves() {
+        use gfx::state::BlendFactor;
+        let alpha = own(&[
+            (R::AlphaBlendEnable, 1),
+            (R::SrcBlend, BlendFactor::SrcAlpha.xbox_value()),
+            (R::DestBlend, BlendFactor::InvSrcAlpha.xbox_value()),
+        ]);
+        assert!(resolve_scene(&alpha, &entry(), None).unwrap_err().contains("blends"), "layer 3's refuse it");
+        let s = resolve_layer(&alpha, &entry(), None).unwrap();
+        let blend = s.blend.expect("its blend");
+        assert_eq!((blend.color.src_factor, blend.color.dst_factor), (wgpu::BlendFactor::SrcAlpha, wgpu::BlendFactor::OneMinusSrcAlpha));
+        assert_eq!(blend.color.operation, wgpu::BlendOperation::Add, "the device's op");
+        assert_eq!(s.blend_color(), wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }, "the device's colour");
+        // Blending inherited from the device, with the device's factors.
+        let inherited = resolve_layer(&[], &EntryStates(entry().0.into_iter().map(|(t, v)| (t, if t == R::AlphaBlendEnable { 1 } else { v })).collect()), None).unwrap();
+        let blend = inherited.blend.expect("the device's blend");
+        assert_eq!((blend.color.src_factor, blend.color.dst_factor), (wgpu::BlendFactor::One, wgpu::BlendFactor::Zero));
+        // A factor that does not read refuses it.
+        let mut unread = entry();
+        unread.0.retain(|(t, _)| *t != R::BlendOp);
+        assert!(resolve_layer(&own(&[(R::AlphaBlendEnable, 1)]), &unread, None).unwrap_err().contains("BlendOp"));
+        // No blend: none, and no constant.
+        let opaque = resolve_layer(&[], &entry(), None).unwrap();
+        assert_eq!((opaque.blend, opaque.blend_constant), (None, [0; 4]));
     }
 
     #[test]

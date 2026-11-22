@@ -98,7 +98,7 @@ fn game_rows(a: &[Answer]) -> Vec<Row> {
         .on_ok(|_| "loaded quick snapshot".into())
         .about("goes back to the quick save; press again to confirm");
     load = match (&have_quick, &off) {
-        (Err(e), _) => load.disabled(e.clone()),
+        (Err(e), _) => load.disabled(String::clone(e)),
         (_, Some(w)) => load.disabled(w.clone()),
         (Ok(false), _) => load.disabled("no quick save yet"),
         _ => load,

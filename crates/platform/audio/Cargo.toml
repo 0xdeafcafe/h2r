@@ -24,3 +24,6 @@ required-features = ["device"]
 [[example]]
 name = "latency"
 required-features = ["device"]
+
+[lints]
+workspace = true

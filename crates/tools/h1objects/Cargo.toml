@@ -3,6 +3,7 @@ name = "h1objects"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+description = "Halo 1 sandbox objects converted to Halo 2 tags"
 # The test files build as one binary, tests/it.rs (docs/dev/build-speed.md).
 autotests = false
 
@@ -38,3 +39,6 @@ font = { path = "../../formats/font" }
 [[test]]
 name = "it"
 path = "tests/it.rs"
+
+[lints]
+workspace = true

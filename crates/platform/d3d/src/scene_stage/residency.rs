@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::sync::Mutex;
 
-use frame_scene::InstanceKey;
+use frame_types::InstanceKey;
 
 use crate::backend::DrawOutcome;
 

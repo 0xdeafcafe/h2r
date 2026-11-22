@@ -11,3 +11,6 @@ forge-doc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 settings = { path = "../../formats/settings" }
+
+[lints]
+workspace = true

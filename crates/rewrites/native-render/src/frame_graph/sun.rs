@@ -8,6 +8,11 @@
 //! such stage also draws the frame's tiles into the atlas. Every other
 //! shadow keeps its ops and retail's mask, and its cause is named
 //! ([`SunSkip`]). Retail never plans any of this.
+//!
+//! Receivers are the objects and structure parts the shadow's layer 11
+//! draws on. An object's mesh is uploaded for the frame; a structure
+//! part's is uploaded once per device and kept while its world is loaded
+//! ([`WorldMeshes`]).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -21,7 +26,9 @@ use frame_scene::{D24_SCALE, FrameScene, TargetRef};
 use gfx::D3DFormat;
 use gfx::external::ExternalEncoded;
 
-use crate::sun_casters::{self, CasterModels, CasterRefusal, ReceiverMesh};
+use crate::sun_casters::{
+    self, CasterMesh, CasterModels, CasterRefusal, ReceiverKey, ReceiverMesh, WorldReceivers,
+};
 use crate::sun_tiles::{ATLAS_EDGE, SunCaster, SunPlan, SunWork};
 use crate::sun_tiles_gpu::{SunFrame, SunMesh, SunReceiver, SunShadows};
 
@@ -120,6 +127,43 @@ fn shadows_for(device: &wgpu::Device) -> Arc<Mutex<SunShadows>> {
     let made = Arc::new(Mutex::new(SunShadows::new(device, ATLAS_EDGE)));
     all.push((device.clone(), Arc::clone(&made)));
     made
+}
+
+/// One device's uploads of structure receivers, by the address of the
+/// world's mesh, which the entry holds so the address is not reused.
+#[derive(Default)]
+struct WorldMeshes(HashMap<usize, (Arc<CasterMesh>, SunMesh)>);
+
+/// Each device's [`WorldMeshes`], kept across frames.
+static WORLD_MESHES: Mutex<Vec<(wgpu::Device, WorldMeshes)>> = Mutex::new(Vec::new());
+
+/// A structure part's `mesh` on `device`, uploaded at its first frame.
+fn world_mesh(device: &wgpu::Device, mesh: &Arc<CasterMesh>) -> Result<SunMesh, SunSkip> {
+    let mut all = WORLD_MESHES.lock().unwrap_or_else(|e| e.into_inner());
+    let at = match all.iter().position(|(d, _)| d == device) {
+        Some(at) => at,
+        None => {
+            all.push((device.clone(), WorldMeshes::default()));
+            all.len() - 1
+        }
+    };
+    let cache = &mut all[at].1.0;
+    let key = Arc::as_ptr(mesh) as usize;
+    if let Some((_, uploaded)) = cache.get(&key) {
+        return Ok(uploaded.clone());
+    }
+    let uploaded = SunMesh::new(device, &mesh.positions, &mesh.normals, &mesh.indices)
+        .map_err(|_| SunSkip::Caster(CasterRefusal::Empty))?;
+    cache.insert(key, (Arc::clone(mesh), uploaded.clone()));
+    Ok(uploaded)
+}
+
+/// Drops the uploads whose world is gone: only the cache holds the mesh.
+fn forget_unloaded_world_meshes() {
+    let mut all = WORLD_MESHES.lock().unwrap_or_else(|e| e.into_inner());
+    for (_, cache) in all.iter_mut() {
+        cache.0.retain(|_, (mesh, _)| Arc::strong_count(mesh) > 1);
+    }
 }
 
 /// One marked object shadow: the ops between its mark and the next.
@@ -252,19 +296,22 @@ fn clip_rows(m: &frame_scene::Mat4) -> [[f32; 4]; 4] {
 }
 
 /// Plans the sun for one E3 draw of `frame` from `scene` at `scale` on
-/// `device`, with `models` the scene's map's caster models. `None` when
-/// the frame marks no object shadow.
+/// `device`, with `models` the scene's map's caster models and `world`
+/// its BSP's structure parts. `None` when the frame marks no object
+/// shadow.
 pub(crate) fn plan(
     device: &wgpu::Device,
     scene: &FrameScene,
     frame: &ReplayFrame,
     scale: u32,
     models: Option<&dyn CasterModels>,
+    world: Option<&dyn WorldReceivers>,
 ) -> Option<SunReplay> {
     let marks = marked(frame);
     if marks.is_empty() {
         return None;
     }
+    forget_unloaded_world_meshes();
     let mut kept = Vec::new();
     let Some(models) = models else {
         kept.extend(marks.iter().map(|m| (m.shadow, SunSkip::NoModels)));
@@ -319,8 +366,8 @@ pub(crate) fn plan(
                     .iter()
                     .find(|a| a.shadow == m.shadow)
                     .ok_or(SunSkip::Caster(CasterRefusal::NoInstance))?;
-                let on =
-                    sun_casters::receivers(scene, m.shadow, models).map_err(SunSkip::Caster)?;
+                let on = sun_casters::receivers(scene, m.shadow, models, world)
+                    .map_err(SunSkip::Caster)?;
                 check_ops(frame, &bound, &m.ops)?;
                 Ok((admitted.caster, on, admitted.mesh.clone()))
             })();
@@ -367,7 +414,6 @@ pub(crate) fn plan(
 }
 
 /// The sun stage that stands in for marked shadow `m`'s ops.
-#[allow(clippy::too_many_arguments)]
 fn sun_stage(
     device: &wgpu::Device,
     scene: &FrameScene,
@@ -399,8 +445,13 @@ fn sun_stage(
         SunMesh::new(device, &mesh.positions, &mesh.normals, &mesh.indices).map_err(|_| empty)?;
     let mut receivers = Vec::with_capacity(on.len());
     for r in on {
-        let g = SunMesh::new(device, &r.mesh.positions, &r.mesh.normals, &r.mesh.indices)
-            .map_err(|_| empty)?;
+        let g = match r.key {
+            ReceiverKey::World(..) => world_mesh(device, &r.mesh)?,
+            ReceiverKey::Object(_) => {
+                SunMesh::new(device, &r.mesh.positions, &r.mesh.normals, &r.mesh.indices)
+                    .map_err(|_| empty)?
+            }
+        };
         receivers.push((g, r.centre, r.radius));
     }
     state

@@ -12,3 +12,6 @@ map.workspace = true
 scenario-edit = { path = "../scenario-edit" }
 tags.workspace = true
 thiserror.workspace = true
+
+[lints]
+workspace = true

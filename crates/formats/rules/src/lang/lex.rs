@@ -214,7 +214,7 @@ fn lex_with(src: &str, mut errors: Option<&mut Vec<CompileError>>) -> Result<Vec
             match PUNCT.iter().find(|p| rest.starts_with(**p)) {
                 Some(p) => {
                     i += p.len();
-                    Tok::Punct(*p)
+                    Tok::Punct(p)
                 }
                 None => {
                     let ch = rest.chars().next().unwrap_or('?');

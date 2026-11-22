@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use frame_scene::{Carried, GuestOp, Slot, TargetRef, TargetSample};
+use frame_types::{Carried, GuestOp, Slot, TargetRef, TargetSample};
 
 /// A possibly transient use in the sink's recorded frames, numbered from one.
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
@@ -134,7 +134,7 @@ pub fn census() -> Option<Census> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use frame_scene::{AuxTarget, Readback, SlotAt};
+    use frame_types::{AuxTarget, Readback, SlotAt};
 
     #[test]
     fn transient_targets_and_reads_survive_their_frame_and_aux_ids_can_be_reused() {

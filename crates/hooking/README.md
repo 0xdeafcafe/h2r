@@ -4,5 +4,5 @@ How our code meets guest code: the feature registry with its named points and or
 
 | Crate | What it is |
 |---|---|
-| [`guest-layout`](guest-layout/) | Typed guest layouts, the guest-memory boundary and the named points. |
+| [`guest-layout`](guest-layout/) | Typed guest layouts, the guest-memory boundary, the named points, async entries and the override adapters. |
 | [`hooks`](hooks/) | The feature registry: named points, hook chains, conflicts at plan time, switches. |

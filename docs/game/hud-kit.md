@@ -987,14 +987,20 @@ no other line (a bounce's landing has none of its own); a Bounced shows
 its own line. Each award is sent once, by its number
 (`superbounce_chain::Award::seq`; `superbounce_hud::Sent`).
 
+**The sound.** As a retail medal's line comes with its announcer sound
+("Game events and medals"), each medal line sent is handed to
+`medal_announcer::announce`, which queues the medal's clip behind the
+game's own announcer: every medal but Bounced has one
+([audio.md](../audio/audio.md#our-medals-announcer-lines)).
+
 | Medal | Earned | Line | Glyph |
 |---|---|---|---|
-| Superbounce | the chain's 1st bounce | `Superbounce!` | U+E2A0, a slate-blue disc, one chevron rising off a strip |
+| Superbounce | every bounce; its line on 1 and 7 and up | `Superbounce!` | U+E2A0, a slate-blue disc, one chevron rising off a strip |
 | Double Bounce | the chain's 2nd bounce | `Double bounce!` | U+E2A1, a gold disc, two chevrons |
 | Triple Bounce | the 3rd | `Triple bounce!` | U+E2A2, a steel disc, three chevrons |
 | Quad Bounce | the 4th | `Quad bounce!` | U+E2A3, a bronze disc, two pairs of chevrons |
 | Chain Bounce | the 5th | `Chain bounce!` | U+E2A4, a lavender disc, a chevron over two pairs |
-| Bouncetacular | the 6th and every bounce after it | `Bouncetacular!` | U+E2A5, a pale gold disc in a spiked rim, three pairs |
+| Bouncetacular | the 6th | `Bouncetacular!` | U+E2A5, a pale gold disc in a spiked rim, three pairs |
 | Bounced | a fall out of the map during a bounce | `Bounced!` | U+E2A6, a maroon disc, a chevron falling through a broken strip |
 | Monster Bounce | a bounce that launches well above a normal one, beside its other medals; its line wins | `Monster bounce!` | U+E2A8, a hot orange disc in a spiked crimson rim, one tall chevron out past the top over a V of seams |
 

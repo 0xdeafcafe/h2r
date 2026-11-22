@@ -1,0 +1,13 @@
+[package]
+name = "frame-types"
+description = "The frame types the Direct3D device and FrameScene share: the carried part by slot, the render camera, the view and instance keys; plain data (docs/graphics/framescene.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[package.metadata.h2]
+doc = ["graphics/framescene.md"]
+
+[dependencies]
+# The camera and the keys serialize into `render.scene` (camera.rs, keys.rs).
+serde.workspace = true

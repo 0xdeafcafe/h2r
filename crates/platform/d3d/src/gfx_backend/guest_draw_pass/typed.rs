@@ -2,7 +2,7 @@
 //! render thread. Each recording resolves its own target views and upload
 //! arena; the immutable mesh and material allocations are shared.
 
-use frame_scene::TargetRef;
+use frame_types::TargetRef;
 
 use super::GfxBackend;
 use crate::backend::{Backend, ExternalCopies, SceneStage, TargetCopy};
@@ -59,7 +59,7 @@ mod tests {
     use crate::backend::{ExternalAttachments, ExternalEncoded};
     use crate::scene_sink::{ReplayFrame, ReplayOp};
     use crate::{ExternalPass, ExternalPassRequest, ExternalPlan, ExternalSurfaces, GfxBackend};
-    use frame_scene::{AuxTarget, Slot, SlotAt};
+    use frame_types::{AuxTarget, Slot, SlotAt};
     use gfx::{Clear, D3DFormat, GfxContext};
     use std::sync::{Arc, Mutex};
 

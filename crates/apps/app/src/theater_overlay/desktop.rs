@@ -70,7 +70,6 @@ impl Renderer {
             .then(|| (x / (width - 1.0)).min(1.0) as f32)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
         ctx: &gfx::GfxContext,

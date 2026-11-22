@@ -425,11 +425,9 @@ fn row(
                 }
             }
         }
-        VertexKind::LightmapTexcoord => {
-            if d & dirty::LIGHTMAP != 0 {
-                row[0..2].copy_from_slice(&snorm16(c.lightmap[0]).to_le_bytes());
-                row[2..4].copy_from_slice(&snorm16(c.lightmap[1]).to_le_bytes());
-            }
+        VertexKind::LightmapTexcoord if d & dirty::LIGHTMAP != 0 => {
+            row[0..2].copy_from_slice(&snorm16(c.lightmap[0]).to_le_bytes());
+            row[2..4].copy_from_slice(&snorm16(c.lightmap[1]).to_le_bytes());
         }
         // Streams the writer does not interpret keep the template's bytes.
         _ => {}

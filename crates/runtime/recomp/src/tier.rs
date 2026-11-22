@@ -80,7 +80,8 @@ pub fn clang_dylib(out: &Path) -> PathBuf {
 
 /// The fast tier's stamp: the image, everything that turns it into the
 /// module (the generator's sources plus crates/recompiler/clif and Cargo.lock, for the
-/// Cranelift version), the IR passes, Cranelift's optimisation level and
+/// Cranelift version), the registered retail instruction entries
+/// ([`crate::register_retail_entries`]), the IR passes, Cranelift's optimisation level and
 /// the module ABI. It never equals a clang stamp (it starts `tier fast`),
 /// so neither tier's module passes for the other.
 pub fn fast_stamp(xbe_bytes: &[u8]) -> String {
@@ -93,9 +94,10 @@ pub fn fast_stamp(xbe_bytes: &[u8]) -> String {
 
 fn fast_stamp_with(xbe_bytes: &[u8], passes: &str, opt: &str) -> String {
     format!(
-        "tier fast xbe {:016x} generator {} passes {passes} cranelift opt {opt} abi {}\n",
+        "tier fast xbe {:016x} generator {} entries {:016x} passes {passes} cranelift opt {opt} abi {}\n",
         crate::fallback::fnv64(xbe_bytes),
         env!("FAST_TIER_SOURCE_HASH"),
+        crate::render_entries::entries_hash(),
         runtime::cpu::ABI_VERSION
     )
 }

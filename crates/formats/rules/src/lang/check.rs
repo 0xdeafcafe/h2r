@@ -2354,17 +2354,16 @@ impl<'s> Cx<'s> {
                     return Some(t);
                 }
             }
-            Some(None) => {
-                // The member's type is unknown: the name may be its field.
+            // The member's type is unknown: the name may be its field.
+            Some(None)
                 if self.var(n, Scope::Global).is_none()
                     && !self.options.iter().any(|o| o.name == n)
                     && self.const_ix(n).is_none()
-                    && self.label_ix(n).is_none()
-                {
-                    return None;
-                }
+                    && self.label_ix(n).is_none() =>
+            {
+                return None;
             }
-            None => {}
+            Some(None) | None => {}
         }
         if let Some(t) = self.var(n, Scope::Global).map(|v| v.ty) {
             return Some(t);

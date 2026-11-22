@@ -266,7 +266,7 @@ impl FrameScene {
 mod tests {
     use super::*;
     use crate::builder::{BuildError, SceneBuilder};
-    use crate::camera::tests::camera;
+    use crate::test_camera::camera;
     use crate::light::{LightStep, LightTarget, SceneLight};
     use crate::scene::{InstanceKey, SceneId, Stamp, ViewKey, ViewKind};
 

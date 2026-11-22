@@ -10,7 +10,7 @@ use std::ops::Range;
 use serde::Serialize;
 
 use crate::object::{Defaults, ItemKey, Lighting};
-use crate::scene::InstanceKey;
+use crate::scene::{InstanceKey, PartFlags, Subparts};
 
 /// What a layer item's render record draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -41,6 +41,92 @@ pub struct LayerItem {
     /// lighting (`[0x00485a58]` is 0). The lightmap cycle's coefficients
     /// reach a layer's draws only through it ([`LayerInputs`]).
     pub lighting: Option<Lighting>,
+    /// What an object item's render record makes the geometry draw
+    /// (`0x0004d0b0`) do beyond its material, as a layer-3 part's
+    /// ([`PartFlags`]; the stencil mark only in layers 1 and 3); none for
+    /// the structure's.
+    pub flags: PartFlags,
+    /// With [`PartFlags::SUBPARTS`], the subparts the emitter draws.
+    pub subparts: Option<Subparts>,
+    /// Why an object item's draw is not one the scene can reproduce: a
+    /// named cause, the item's guest draw kept. `None` for one that is,
+    /// and for the structure's.
+    pub refusal: Option<LayerObjectRefusal>,
+    /// Layer 5: the stream and constants the geometry draw adds for an
+    /// object item whose model has a PRT block; `None` elsewhere, and
+    /// where the draw adds none.
+    pub prt: Option<PrtStream>,
+}
+
+/// What the geometry draw `0x0004d0b0` adds for an object item of layer
+/// 5 whose model has a PRT block (`0x0004d220`: `0x00024040` sets the
+/// constants, `0x00024490` points the model's PRT stream at the item's
+/// section), as `scene_extract::layout::prt` reads it.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PrtStream {
+    /// The stream header's type: its record in the stream format table
+    /// (`0x0043f408`), which names the registers the stream feeds.
+    pub kind: u8,
+    /// Bytes per vertex (the header's `+1`).
+    pub stride: u8,
+    /// Where the item's section's vertices begin in the stream at the
+    /// object's detail level: a guest address (the contiguous mapping of
+    /// the vertex buffer's data, plus the offset `0x00024490` writes).
+    pub data: u32,
+    /// The vertex constants from [`PRT_FIRST_CONSTANT`] on: the object's
+    /// entry's vector, the fixed vector of `c[69]`, then the object's
+    /// coefficients.
+    pub constants: Vec<[f32; 4]>,
+}
+
+/// The first vertex constant layer 5's draw sets for an object's PRT
+/// stream (`c[68]`, hardware numbering).
+pub const PRT_FIRST_CONSTANT: u8 = 68;
+
+/// Why an object item of a layer draw keeps its guest draw: what the
+/// geometry draw `0x0004d0b0` does for it that the scene does not carry
+/// (**Code**, the module notes of `scene_extract::layout::object_walk`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+pub enum LayerObjectRefusal {
+    /// The record's fade byte (`+0x1a`) is not `0xff`: the prologue
+    /// (`0x0004d640`) changes a render state from it.
+    Fade,
+    /// The shader's flag bit 0 (`+0x16`): the draw walks the model's
+    /// attachments (`0x0004d486`) and may call `0x0003bea0`.
+    ShaderFlag,
+    /// The item's argument has a high byte, or its `+0x14` is set: the
+    /// pass setup (`0x0004d9c0`) takes them.
+    Argument,
+    /// Layer 5: the stream and constants the draw adds for an object's
+    /// record whose model has a PRT block (`0x00024040`, `0x00024490`)
+    /// do not read, or the draw leaves one of them as the draws before it
+    /// left it (no entry for the object, no coefficients, or geometry not
+    /// resident).
+    Layer5Stream,
+    /// No bit 9 on a part that is not a triangle list.
+    Topology,
+    /// The visible subparts do not read.
+    Subparts,
+    /// Bit 11, and the auxiliary state toggle's inputs do not read.
+    AuxState,
+    /// The part, its model or its record does not read.
+    Unread,
+}
+
+impl LayerObjectRefusal {
+    /// The cause's name, as `render.scene` counts it.
+    pub fn name(self) -> &'static str {
+        match self {
+            LayerObjectRefusal::Fade => "object_fade",
+            LayerObjectRefusal::ShaderFlag => "object_shader_flag",
+            LayerObjectRefusal::Argument => "object_argument",
+            LayerObjectRefusal::Layer5Stream => "object_layer5_stream",
+            LayerObjectRefusal::Topology => "object_topology",
+            LayerObjectRefusal::Subparts => "object_subparts",
+            LayerObjectRefusal::AuxState => "object_aux_state",
+            LayerObjectRefusal::Unread => "object_unread",
+        }
+    }
 }
 
 /// One layer draw of a view.

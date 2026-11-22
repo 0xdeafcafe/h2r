@@ -373,6 +373,8 @@ impl Hud {
         LOCKED.store(reticle_locked(&s), Ordering::Relaxed);
         for (user, text) in self.sent.notes(Some(&s), mode::lost(&s)) {
             self.handle.notify(user, &text);
+            // A medal line is spoken too (medal_announcer.rs).
+            crate::medal_announcer::announce(&text);
         }
         self.lost = mode::lost(&s).or(self.lost);
         let now = tutorial_seconds(self.ticks);

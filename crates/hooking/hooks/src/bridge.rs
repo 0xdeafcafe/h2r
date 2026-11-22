@@ -5,7 +5,7 @@
 //! Every event is a read-only observer after the guest function returned,
 //! so any number of features share one without an order between them.
 
-use engine::points;
+use guest_layout::points;
 
 use crate::{Builder, HookRef, Obs, Run};
 

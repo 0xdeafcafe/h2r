@@ -57,6 +57,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/platform/gfx:gfx",
         "//third-party/rust:bytemuck",
         "//third-party/rust:naga",
         "//third-party/rust:pollster",
@@ -79,6 +80,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/platform/gfx:gfx",
         "//third-party/rust:bytemuck",
         "//third-party/rust:naga",
         "//third-party/rust:pollster",
@@ -102,6 +104,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/platform/gfx:gfx",
         "//third-party/rust:bytemuck",
         "//third-party/rust:naga",
         "//third-party/rust:pollster",
@@ -125,6 +128,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/platform/gfx:gfx",
         "//third-party/rust:bytemuck",
         "//third-party/rust:naga",
         "//third-party/rust:pollster",
@@ -148,6 +152,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/platform/gfx:gfx",
         "//third-party/rust:bytemuck",
         "//third-party/rust:naga",
         "//third-party/rust:pollster",
@@ -171,6 +176,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/platform/gfx:gfx",
         "//third-party/rust:bytemuck",
         "//third-party/rust:naga",
         "//third-party/rust:pollster",
@@ -194,6 +200,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/platform/gfx:gfx",
         "//third-party/rust:bytemuck",
         "//third-party/rust:naga",
         "//third-party/rust:pollster",
@@ -217,6 +224,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/platform/gfx:gfx",
         "//third-party/rust:bytemuck",
         "//third-party/rust:naga",
         "//third-party/rust:pollster",

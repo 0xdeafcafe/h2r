@@ -19,6 +19,9 @@ pollster = "1"
 # The tests' wgpu instance, with the backends per host (gfx::GpuHost).
 gfx = { path = "../../platform/gfx", default-features = false, features = ["gpu"] }
 # Corpus manifest check (tests/corpus.rs); `h2 extract-shaders` writes the corpus.
-sha2 = "0.10"
+sha2 = { workspace = true }
 # The glyph option is left out of persisted keys when unset (tests/psh.rs).
 serde_json.workspace = true
+
+[lints]
+workspace = true

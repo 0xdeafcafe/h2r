@@ -365,7 +365,7 @@ pub(crate) fn summary_words(scene: &FrameScene, v: &View, word: &mut dyn FnMut(u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::camera::tests::camera;
+    use crate::test_camera::camera;
     use crate::scene::{SceneId, Stamp, ViewKind};
     use crate::summary_hash;
 

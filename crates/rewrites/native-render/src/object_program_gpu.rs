@@ -26,11 +26,11 @@ use crate::object_lighting::ShaderValues;
 use crate::object_program::{
     IMPLEMENTATIONS, ObjectInputs, ObjectPass, Row, object_layer3, object_pass, object_pixel_uniforms, object_vertex_uniforms,
 };
-use crate::object_program::{LIGHTMAP_STREAM, texaccum_dimensions};
+use crate::object_program::{LIGHTMAP_STREAM, object_layer_pass, object_layer_passes, texaccum_dimensions};
 use crate::object_streams::{Attribute, Element, SLOT, StreamData, StreamFormats, declaration, gather, registers};
 use crate::object_state::{self, DrawState, EntryStates};
 use crate::objects::{ItemKey, ObjectFrame};
-use frame_scene::{AuxDepth, Defaults, FrameScene, Instance, Lighting, PartDraw, Subparts};
+use frame_scene::{AuxDepth, Defaults, FrameScene, Instance, LayerItem, LayerOwner, LayerPass, Lighting, PartDraw, PartFlags, Subparts};
 use crate::program::{ViewInputs, bias_signed, frame_pixel, frame_vertex, sampler_descriptor};
 
 /// One section's vertices through one declaration: per vertex, per
@@ -108,28 +108,82 @@ impl SubpartRanges {
     }
 }
 
+/// The world layers besides 3 whose passes an object item draws natively
+/// from the scene (docs/graphics/framescene.md, slice 4): 1, 5, 7, 8 and
+/// 20. In layer 5 only the items whose model has no PRT block: for the
+/// rest the geometry draw adds the model's PRT stream and constants
+/// (`frame_scene::PrtStream`), which the programs do not bind
+/// ([`plan_layer_part`]), and a layer-5 program that reads those
+/// constants does not compile ([`PRT_LAYER`]).
+pub const OBJECT_LAYERS: [u8; 5] = [1, PRT_LAYER, 7, 8, 20];
+
+/// The world layer whose geometry draw adds an object's PRT stream
+/// (`scene_extract::layout::prt`).
+pub const PRT_LAYER: u8 = 5;
+
+/// One pass of a lit part's world layer: how many implementations the
+/// pass has (with one, every item draws it; otherwise the item's,
+/// `crate::layer_pass::passes_of`), per implementation the program and
+/// buffer it draws with, and those that draw nothing, having no vertex
+/// program (`0x00016610`; bit `n`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LitLayerPass {
+    pub count: usize,
+    pub implementations: [Option<(usize, usize)>; IMPLEMENTATIONS],
+    pub empty: u8,
+}
+
+/// A lit part's passes of one world layer other than 3
+/// ([`OBJECT_LAYERS`]): what [`LitPart`] holds for layer 3, per pass in
+/// the order the layer draws them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LitLayerPart {
+    pub layer: u8,
+    pub section: u16,
+    pub part: u8,
+    pub decompression: [Row; 3],
+    /// Its material's shader tag datum.
+    pub shader_tag: u32,
+    pub shader: ShaderValues,
+    pub indices: Range<u32>,
+    pub subparts: Option<SubpartRanges>,
+    pub passes: Vec<LitLayerPass>,
+}
+
 /// A model's lit parts, ready to upload: programs and buffers indexed by
-/// [`LitPart::implementations`].
+/// [`LitPart::implementations`] and [`LitLayerPass::implementations`].
 #[derive(Default)]
 pub struct LitModelInput {
     pub programs: Vec<LitProgramInput>,
     pub buffers: Vec<LitBufferInput>,
     pub parts: Vec<LitPart>,
+    /// The parts' passes of the world layers [`OBJECT_LAYERS`].
+    pub layers: Vec<LitLayerPart>,
 }
 
 impl LitModelInput {
     pub fn is_empty(&self) -> bool {
-        self.parts.is_empty()
+        self.parts.is_empty() && self.layers.is_empty()
     }
 
     fn valid_draw_references(&self) -> bool {
-        self.parts.iter().all(|part| {
-            part.implementations.iter().flatten().all(|&(program, buffer)| {
+        let valid = |mut slots: &mut dyn Iterator<Item = (usize, usize)>, indices: &Range<u32>, subparts: Option<&SubpartRanges>| {
+            // `&mut dyn Iterator` is itself a sized iterator; `all` needs one.
+            Iterator::all(&mut slots, |(program, buffer)| {
                 let Some(buffer) = self.buffers.get(buffer) else { return false };
                 let fits = |range: &Range<u32>| range.start <= range.end && range.end as usize <= buffer.indices.len();
-                program < self.programs.len() && fits(&part.indices)
-                    && part.subparts.as_ref().is_none_or(|subparts| subparts.ranges.iter().all(fits))
+                program < self.programs.len() && fits(indices)
+                    && subparts.is_none_or(|subparts| subparts.ranges.iter().all(fits))
             })
+        };
+        self.parts.iter().all(|part| {
+            valid(&mut part.implementations.iter().flatten().copied(), &part.indices, part.subparts.as_ref())
+        }) && self.layers.iter().all(|part| {
+            valid(
+                &mut part.passes.iter().flat_map(|p| p.implementations.iter().flatten().copied()),
+                &part.indices,
+                part.subparts.as_ref(),
+            )
         })
     }
 
@@ -202,6 +256,9 @@ struct LitModel {
     buffers: Vec<LitBuffer>,
     parts: Vec<LitPart>,
     part_index: HashMap<(u16, u8), usize>,
+    layers: Vec<LitLayerPart>,
+    /// (layer, section, part) to its index in `layers`.
+    layer_index: HashMap<(u8, u16, u8), usize>,
 }
 
 /// Every model's lit parts on the GPU.
@@ -375,7 +432,11 @@ impl LitObjects {
             return false;
         };
         let part_index = index_parts(&input.parts);
-        self.models.insert(index, LitModel { programs, buffers, parts: input.parts, part_index });
+        let mut layer_index = HashMap::with_capacity(input.layers.len());
+        for (i, p) in input.layers.iter().enumerate() {
+            layer_index.entry((p.layer, p.section, p.part)).or_insert(i);
+        }
+        self.models.insert(index, LitModel { programs, buffers, parts: input.parts, part_index, layers: input.layers, layer_index });
         true
     }
 
@@ -466,6 +527,8 @@ impl LitObjects {
     /// its stage and the channels stored biased there.
     fn image_textures(&self, bitmap: map::TagId, image: u32) -> Vec<(wgpu::Texture, usize, [bool; 4])> {
         let want = crate::look::Stage::Bitmap { bitmap, image };
+        // `wgpu::Texture` hashes and compares by its id, not its interior state.
+        #[allow(clippy::mutable_key_type)]
         let mut seen = std::collections::HashSet::new();
         let mut out = Vec::new();
         let mut models: Vec<_> = self.models.iter().collect();
@@ -578,6 +641,33 @@ impl LitObjects {
         plan_indexed_part(&m.parts, part, &|program| m.programs.get(program).map(|p| (&p.pass, Some(&p.inherited))), inputs, key, rows, entry, scene)
     }
 
+    /// The draws of an object item of world layer `layer` (one of
+    /// [`OBJECT_LAYERS`]; `pass` its layer draw in `scene`, `item` the
+    /// item) in model `index`: per pass its material draws in the layer,
+    /// in order, the implementation the pass draws for the item (its only
+    /// one, or the item's), every per-object constant put in from the
+    /// item's lighting, the draw's defaults and the item's rows, and its
+    /// state resolved over the device at the layer call (`entry`,
+    /// [`object_state::resolve_layer`]); a marked item's in stencil mode 2
+    /// unless the layer draws with the stencil off. A pass drawing nothing
+    /// for the item is left out. An error says why the item keeps its D3D
+    /// draw: extraction's cause ([`LayerItem::refusal`]), the auxiliary
+    /// state toggle (its values are read at the view's layer 3, not here),
+    /// a part or implementation that is not native, or an input or state
+    /// that does not resolve.
+    pub fn plan_layer_item(
+        &self, index: u32, layer: u8, scene: &FrameScene, pass: &LayerPass, item: &LayerItem, entry: &EntryStates,
+    ) -> Result<Vec<PlannedDraw>, String> {
+        let LayerOwner::Object(instance) = item.owner else { return Err("not an object's item".into()) };
+        if let Some(why) = item.refusal {
+            return Err(why.name().into());
+        }
+        let m = self.models.get(&index).ok_or("its model is not uploaded")?;
+        let rows = scene.rows.get(item.rows.start as usize..item.rows.end as usize).ok_or("the item's rows are not in the scene")?;
+        let at = m.layer_index.get(&(layer, item.key.section, item.key.part)).copied();
+        plan_layer_part(&m.layers, at, &|program| m.programs.get(program).map(|p| &p.pass), instance, layer, rows, pass, item, entry)
+    }
+
     pub fn planned_pass(&self, index: u32, draw: &PlannedDraw) -> Option<&ObjectPass> {
         Some(&self.models.get(&index)?.programs.get(draw.program)?.pass)
     }
@@ -650,7 +740,7 @@ impl LitObjects {
                     primitive: draw.state.primitive,
                     depth_stencil: Some(draw_depth_stencil(&draw.state, depth)?),
                     color_target: wgpu::ColorTargetState {
-                        format: color, blend: None, write_mask: draw.state.color_writes,
+                        format: color, blend: draw.state.blend, write_mask: draw.state.color_writes,
                     },
                     samples: 1,
                 };
@@ -673,7 +763,6 @@ impl LitObjects {
     /// target takes `texaccum`, its stages' coordinates in that level's
     /// guest texels. Refuses the whole run (the caller keeps every
     /// original) when any draw cannot be issued exactly.
-    #[allow(clippy::too_many_arguments)]
     pub fn draws(
         &mut self,
         device: &wgpu::Device,
@@ -770,7 +859,7 @@ impl LitObjects {
                     &state,
                     target_size,
                     scissor,
-                ));
+                ).with_blend_constant(d.state.blend_color()));
             }
         }
         // `ranges` counts the planned draws (`d3d::ExternalPlan::ranges`),
@@ -823,6 +912,95 @@ pub fn plan_part<'a>(
 ) -> Result<PlannedDraw, String> {
     let part = parts.iter().position(|p| p.section == key.section && p.part == key.part);
     plan_indexed_part(parts, part, &|i| pass_of(i).map(|p| (p, None)), PartInputs::of(frame), key, rows, entry, false)
+}
+
+/// [`LitObjects::plan_layer_item`] over a model's world-layer parts
+/// (`layers`, `at` the index of the item's in layer `layer`) and its
+/// programs' passes (`pass_of`), the item's rows `rows`: per pass of the
+/// part, the implementation it draws for the item, its blocks and its
+/// state. In layer 1 with the stencil off the draws take stencil mode 0,
+/// as the prologue sets it (`0x0004d640`); layers 7, 8 and 20 draw under
+/// the device's stencil.
+#[allow(clippy::too_many_arguments)]
+pub fn plan_layer_part<'a>(
+    layers: &[LitLayerPart], at: Option<usize>,
+    pass_of: &dyn Fn(usize) -> Option<&'a ObjectPass>,
+    instance: frame_scene::InstanceKey, layer: u8, rows: &[Row], pass: &LayerPass, item: &LayerItem, entry: &EntryStates,
+) -> Result<Vec<PlannedDraw>, String> {
+    if let Some(why) = item.refusal {
+        return Err(why.name().into());
+    }
+    if item.prt.is_some() {
+        return Err("layer 5's PRT stream, which the native programs do not bind".into());
+    }
+    if item.flags.contains(PartFlags::AUX_DEPTH) {
+        return Err("the auxiliary state toggle outside layer 3".into());
+    }
+    let key = &item.key;
+    let at = at.ok_or_else(|| format!("section {} part {} draws nothing native in layer {layer}", key.section, key.part))?;
+    let p = layers.get(at).ok_or("its layer part is missing")?;
+    if p.layer != layer || p.section != key.section || p.part != key.part {
+        return Err(format!("section {} part {} draws nothing native in layer {layer}", key.section, key.part));
+    }
+    if p.shader_tag != key.shader {
+        return Err(format!("the item names shader {:#010x}, the part's is {:#010x}", key.shader, p.shader_tag));
+    }
+    let ranges = match item.subparts {
+        None => vec![p.indices.clone()],
+        Some(chosen) => p.subparts.as_ref().ok_or("the record chooses subparts and the part has none natively")?.drawn(chosen)?,
+    };
+    let defaults = pass.inputs.defaults.ok_or("the inputs' defaults do not read")?;
+    let inputs = ObjectInputs { lighting: item.lighting.as_ref(), defaults: &defaults, shader: p.shader };
+    let unstenciled;
+    let entry = if layer == 1 && pass.stencil_off {
+        let mut e = entry.clone();
+        e.0.retain(|(r, _)| *r != gfx::state::RenderStateType::StencilEnable);
+        e.0.push((gfx::state::RenderStateType::StencilEnable, 0));
+        unstenciled = e;
+        &unstenciled
+    } else {
+        entry
+    };
+    let mut out = Vec::with_capacity(p.passes.len());
+    for (n, lp) in p.passes.iter().enumerate() {
+        let implementation = if lp.count == 1 { 0 } else { key.implementation };
+        if implementation < IMPLEMENTATIONS && lp.empty >> implementation & 1 != 0 {
+            continue;
+        }
+        let (program, buffer) = lp
+            .implementations
+            .get(implementation)
+            .copied()
+            .flatten()
+            .ok_or_else(|| format!("layer {layer} pass {n} has no native implementation {implementation}"))?;
+        let compiled = pass_of(program).ok_or("its program is missing")?;
+        let vertex = object_vertex_uniforms(&compiled.program.vertex, &compiled.implementation, &inputs, rows, p.decompression)?;
+        let pixel = object_pixel_uniforms(&compiled.program.pixel, &compiled.implementation, &inputs)?;
+        let alpha_test = compiled.program.state.as_ref().ok_or("its pass has no state")?.alpha_test;
+        let mut state = object_state::resolve_layer(&compiled.implementation.render_states, entry, alpha_test)?;
+        if item.flags.contains(PartFlags::STENCIL_MARK) && !pass.stencil_off {
+            object_state::mark(&mut state);
+        }
+        out.push(PlannedDraw {
+            instance,
+            part: at,
+            implementation,
+            program,
+            buffer,
+            indices: p.indices.clone(),
+            ranges: ranges.clone(),
+            aux_depth: None,
+            vertex,
+            pixel,
+            state,
+            texaccum: compiled.texaccum.contains(&true),
+            default_final: compiled.default_final,
+        });
+    }
+    if out.is_empty() {
+        return Err(format!("its passes of layer {layer} draw nothing"));
+    }
+    Ok(out)
 }
 
 /// What a part's per-object constants are made from: its object's
@@ -1034,6 +1212,9 @@ pub struct LitBuild {
     pub taken: Vec<u16>,
     pub refused: Vec<(u16, String)>,
     pub implementations: u8,
+    /// The world layers' implementations ([`OBJECT_LAYERS`]) that did not
+    /// compile: material, layer and why. Their items keep their D3D draws.
+    pub layer_refused: Vec<(u16, u8, String)>,
 }
 
 /// What a `vrtx` gives a section: its program for the section's
@@ -1243,7 +1424,168 @@ pub fn lit_model(
     if out.taken.is_empty() {
         out.implementations = 0;
     }
+    // The world layers besides 3: each pass's implementations compiled
+    // per section as layer 3's are, over the same buffers, without the
+    // lightmap's stream (the draw adds it only in layer 3).
+    let mut ids: Vec<u16> = materials.keys().copied().collect();
+    ids.sort_unstable();
+    for m in ids {
+        let lit = &materials[&m];
+        let parts: Vec<(&LitSection<'_>, u8, Range<u32>, Option<SubpartRanges>)> = sections
+            .iter()
+            .flat_map(|s| {
+                lists[&s.index].1.iter().filter(move |r| r.0 == m).map(move |r| (s, r.1, r.2.clone(), r.3.clone()))
+            })
+            .collect();
+        if parts.is_empty() {
+            continue;
+        }
+        let mut secs: Vec<&LitSection<'_>> = Vec::new();
+        for (s, _, _, _) in &parts {
+            if !secs.iter().any(|x| x.index == s.index) {
+                secs.push(s);
+            }
+        }
+        for layer in OBJECT_LAYERS {
+            let Ok(passes) = object_layer_passes(&lit.material, layer) else { continue };
+            let mut per: Vec<Vec<LitLayerPass>> = secs.iter().map(|_| vec![LitLayerPass::default(); passes.len()]).collect();
+            let mut drawn = false;
+            for (k, pass) in passes.iter().enumerate() {
+                for slot in per.iter_mut() {
+                    slot[k].count = pass.implementations.len();
+                }
+                for (n, imp) in pass.implementations.iter().enumerate().take(IMPLEMENTATIONS) {
+                    if imp.vertex_shader.is_none() {
+                        for slot in per.iter_mut() {
+                            slot[k].empty |= 1 << n;
+                        }
+                        continue;
+                    }
+                    let index_list = |s: u16| lists[&s].0.clone();
+                    let compiled = compile_layer_sections(
+                        layer, pass.pass, imp, &secs, formats, engine, &mut *vertex, &mut *image, &mut buffers,
+                        &mut out.input.buffers, &index_list,
+                    );
+                    match compiled {
+                        Ok(got) => {
+                            for (slot, (program, buffer)) in per.iter_mut().zip(got) {
+                                out.input.programs.push(program);
+                                slot[k].implementations[n] = Some((out.input.programs.len() - 1, buffer));
+                            }
+                            drawn = true;
+                        }
+                        Err(e) => out.layer_refused.push((m, layer, format!("pass {k} implementation {n}: {e}"))),
+                    }
+                }
+            }
+            if !drawn {
+                continue;
+            }
+            for (s, part, indices, subparts) in &parts {
+                let k = secs.iter().position(|x| x.index == s.index).expect("listed above");
+                out.input.layers.push(LitLayerPart {
+                    layer,
+                    section: s.index,
+                    part: *part,
+                    decompression: s.decompression,
+                    shader_tag: lit.material.shader.0,
+                    shader: lit.shader,
+                    indices: indices.clone(),
+                    subparts: subparts.clone(),
+                    passes: per[k].clone(),
+                });
+            }
+        }
+    }
     out
+}
+
+/// One implementation of world layer `layer`'s pass (`pass` its tag)
+/// compiled for every section in `secs` through the declaration the game
+/// builds there ([`object_layer_pass`]), each section's buffer for that
+/// declaration made once over `buffers` (its indices the section's list,
+/// `index_list`), with its stages' images; the first failure, as the
+/// reason the implementation is left out. In layer 5 a vertex program
+/// that reads a constant from `c[68]` on does not compile: only the PRT
+/// stream's draw sets those (`frame_scene::PRT_FIRST_CONSTANT`).
+#[allow(clippy::too_many_arguments)]
+fn compile_layer_sections(
+    layer: u8,
+    pass: map::TagId,
+    imp: &tags::material::ResolvedImplementation,
+    secs: &[&LitSection<'_>],
+    formats: &StreamFormats,
+    engine: &EngineStages,
+    vertex: &mut VertexSource<'_>,
+    image: &mut StageSource<'_>,
+    buffers: &mut HashMap<(u16, Vec<Element>), usize>,
+    out: &mut Vec<LitBufferInput>,
+    index_list: &dyn Fn(u16) -> Vec<u32>,
+) -> Result<Vec<(LitProgramInput, usize)>, String> {
+    let vs = imp.vertex_shader.ok_or("no vertex program")?;
+    let mut got = Vec::with_capacity(secs.len());
+    for s in secs {
+        let streams = s
+            .streams
+            .iter()
+            .map(|t| t.map_or(Ok(Vec::new()), |(kind, _)| formats.elements(kind)))
+            .collect::<Result<Vec<_>, _>>()?;
+        let data: Vec<Option<StreamData<'_>>> = s.streams.iter().map(|t| t.map(|(_, d)| d)).collect();
+        let (microcode, semantics) = vertex(vs, s.geometry, s.influences).map_err(|e| format!("section {}: {e}", s.index))?;
+        if layer == PRT_LAYER {
+            let program = shaders::vsh::Program::parse(&microcode).map_err(|e| format!("section {}: vertex program: {e:?}", s.index))?;
+            // Reads relative to a0.x (the node rows) are not bounded here.
+            let prt = program.instructions.iter().flat_map(|i| i.sources()).find_map(|src| match src.reg {
+                shaders::vsh::SrcReg::Const { index, relative: false } if index >= frame_scene::PRT_FIRST_CONSTANT => Some(index),
+                _ => None,
+            });
+            if let Some(c) = prt {
+                return Err(format!("section {}: vertex program reads c[{c}], which only the PRT stream's draw sets", s.index));
+            }
+        }
+        let decl = declaration(&semantics, &streams);
+        let compiled = object_layer_pass(pass, imp, &microcode, registers(&decl), input_fetch(&decl))
+            .map_err(|e| format!("section {}: {e}", s.index))?;
+        let key = (s.index, decl);
+        let buffer = match buffers.get(&key) {
+            Some(&b) => b,
+            None => {
+                let vertices = gather(&key.1, &data, s.vertex_count).map_err(|e| format!("section {}: {e}", s.index))?;
+                out.push(LitBufferInput {
+                    registers: key.1.iter().map(|e| e.register).collect(),
+                    formats: key.1.iter().map(|e| e.format).collect(),
+                    vertices,
+                    indices: index_list(s.index),
+                });
+                buffers.insert(key, out.len() - 1);
+                out.len() - 1
+            }
+        };
+        let mut images: [Option<Image>; 4] = Default::default();
+        for (k, d) in compiled.program.dims.iter().enumerate() {
+            if d.is_none() {
+                continue;
+            }
+            if compiled.normalization[k] {
+                if !engine.normalization {
+                    return Err(format!("stage {k} samples the normalization cube, which does not load"));
+                }
+                continue;
+            }
+            if compiled.texaccum[k] {
+                if !engine.texaccum {
+                    return Err(format!("stage {k} samples the texture accumulation target, which the host does not bind"));
+                }
+                continue;
+            }
+            let Stage::Bitmap { bitmap, image: i } = compiled.program.stages[k] else {
+                return Err(format!("stage {k} samples no bitmap"));
+            };
+            images[k] = Some(image(k, bitmap, i).ok_or_else(|| format!("stage {k}'s bitmap does not decode"))?);
+        }
+        got.push((LitProgramInput { pass: compiled, images }, buffer));
+    }
+    Ok(got)
 }
 
 #[cfg(test)]
@@ -1462,7 +1804,7 @@ mod tests {
             Ok::<_, String>((rigid_program(), vec![0u16, 3, 2]))
         };
         let mut image = |_: usize, _: map::TagId, _: u32| -> Option<Image> { None };
-        let LitBuild { input, taken, refused, implementations } = lit_model(&[section], &materials, &formats(), &EngineStages::default(), &mut vertex, &mut image);
+        let LitBuild { input, taken, refused, implementations, .. } = lit_model(&[section], &materials, &formats(), &EngineStages::default(), &mut vertex, &mut image);
         assert_eq!(taken, vec![0, 3], "refused: {refused:?}");
         assert_eq!(refused.len(), 1, "{refused:?}");
         assert_eq!(refused[0].0, 1);
@@ -1665,6 +2007,179 @@ mod tests {
         assert_eq!(pixel.depth, before_p.depth, "the W-buffer's scale is the view's");
     }
 
+    /// An additive implementation `index` of the lit fixture (One, One,
+    /// no depth writes), as a world layer's pass compiles it.
+    fn additive(index: usize) -> tags::material::ResolvedImplementation {
+        use crate::object_program::tests::lit;
+        let mut imp = lit();
+        imp.index = index;
+        imp.render_states = vec![
+            state(RenderStateType::AlphaBlendEnable, 1),
+            state(RenderStateType::SrcBlend, gfx::state::BlendFactor::One.xbox_value()),
+            state(RenderStateType::DestBlend, gfx::state::BlendFactor::One.xbox_value()),
+            state(RenderStateType::ZWriteEnable, 0),
+        ];
+        imp
+    }
+
+    #[test]
+    fn a_materials_world_layer_passes_compile_over_its_layer_3_buffers() {
+        use crate::object_program::tests::{lit, rigid_program};
+        use tags::material::{ResolvedLayer, ResolvedPass, StageTexture, TextureSource};
+        let mut bytes = Vec::new();
+        for k in 0..3 {
+            for v in [k as f32, 0.0, 0.0, 0.5, 0.5, 0.0, 0.0, 1.0] {
+                bytes.extend(v.to_le_bytes());
+            }
+        }
+        let section = LitSection {
+            index: 4,
+            geometry: 0,
+            influences: 0,
+            decompression: [[1.0; 4]; 3],
+            streams: vec![Some((1, StreamData { bytes: &bytes, stride: 32 }))],
+            vertex_count: 3,
+            parts: vec![(0, 0, vec![[0, 1, 2]])],
+            subparts: HashMap::new(),
+        };
+        let mut opaque = lit();
+        opaque.render_states = vec![state(RenderStateType::AlphaBlendEnable, 0), state(RenderStateType::ZWriteEnable, 1)];
+        // Implementation 1 of layer 7's first pass has no vertex program:
+        // it draws nothing.
+        let mut nothing = additive(1);
+        nothing.vertex_shader = None;
+        // Layer 8's samples the lightmap, which the draw binds only in
+        // layer 3.
+        let mut lightmapped = additive(0);
+        lightmapped.textures[3] = Some(StageTexture { source: TextureSource::Lightmap, size: None, stage_size: None });
+        lightmapped.pixel_shader = shaders::PixelShaderDef { texture_modes: 1 << 15, ..Default::default() }.to_bytes();
+        let pass = |index: usize, implementations| ResolvedPass { index, pass: map::TagId(0xe000_0001), implementations };
+        let material = tags::material::Material {
+            shader: map::TagId(0xe000_0010),
+            template: map::TagId(0xe000_0011),
+            inputs: Default::default(),
+            layers: vec![
+                ResolvedLayer { lod: 0, layer: crate::look::LIGHTMAP_LAYER, passes: vec![pass(0, vec![opaque])] },
+                ResolvedLayer { lod: 0, layer: 7, passes: vec![pass(0, vec![additive(0), nothing]), pass(1, vec![additive(0)])] },
+                ResolvedLayer { lod: 0, layer: 8, passes: vec![pass(0, vec![lightmapped])] },
+            ],
+        };
+        let mut materials = HashMap::new();
+        materials.insert(0, LitMaterial { material, shader: ShaderValues::default() });
+        let mut vertex = |_: map::TagId, _: u16, _: u8| Ok::<_, String>((rigid_program(), vec![0u16, 3, 2]));
+        let mut image = |_: usize, _: map::TagId, _: u32| -> Option<Image> { None };
+        let build = lit_model(&[section], &materials, &formats(), &EngineStages::default(), &mut vertex, &mut image);
+        assert_eq!(build.taken, vec![0], "{:?}", build.refused);
+        assert_eq!(build.input.layers.len(), 1, "layer 7's part; layer 8's does not compile");
+        let p = &build.input.layers[0];
+        assert_eq!((p.layer, p.section, p.part, p.indices.clone(), p.shader_tag), (7, 4, 0, 0..3, 0xe000_0010));
+        assert_eq!(p.passes.len(), 2, "each pass of the layer, in order");
+        assert_eq!((p.passes[0].count, p.passes[0].empty), (2, 0b10));
+        assert_eq!(p.passes[0].implementations[..2], [Some((1, 0)), None], "after layer 3's program, over its buffer");
+        assert_eq!((p.passes[1].count, p.passes[1].implementations[0]), (1, Some((2, 0))));
+        assert_eq!(build.input.buffers.len(), 1, "the same declaration: one buffer");
+        assert!(build.input.programs[1].pass.program.state.as_ref().unwrap().blend.is_some(), "its blend kept");
+        assert!(build.input.programs[0].pass.program.state.as_ref().unwrap().blend.is_none());
+        assert_eq!(build.layer_refused.len(), 1, "{:?}", build.layer_refused);
+        let (m, layer, why) = &build.layer_refused[0];
+        assert_eq!((*m, *layer), (0, 8));
+        assert!(why.contains("only in layer 3"), "{why}");
+        assert!(build.input.valid_draw_references());
+    }
+
+    #[test]
+    fn a_world_layers_object_item_draws_each_pass_with_the_implementation_it_picks() {
+        use crate::object_program::tests::rigid_program;
+        use frame_scene::{InstanceKey, LayerInputs, LayerObjectRefusal};
+        let compile = |index| {
+            object_layer_pass(map::TagId(0xe000_0001), &additive(index), &rigid_program(), crate::program::INPUT_MASK, [shaders::vsh::InputFetch::Float; 16])
+                .unwrap_or_else(|e| panic!("{e}"))
+        };
+        let passes = [compile(0), compile(1)];
+        let pass_of = |i: usize| passes.get(i);
+        let part = |layer: u8| LitLayerPart {
+            layer,
+            section: 4,
+            part: 0,
+            decompression: [[0.0; 4]; 3],
+            shader_tag: 0xe5da_0465,
+            shader: ShaderValues::default(),
+            indices: 0..3,
+            subparts: None,
+            passes: vec![
+                // One implementation: every item draws it.
+                LitLayerPass { count: 1, implementations: [Some((0, 0)), None, None, None, None], empty: 0 },
+                // The item's: 0 or 1; 2 draws nothing.
+                LitLayerPass { count: 3, implementations: [Some((0, 0)), Some((1, 0)), None, None, None], empty: 0b100 },
+            ],
+        };
+        let layers = [part(7), part(8)];
+        let layer_pass = |layer: u8, stencil_off: bool| LayerPass {
+            layer,
+            stencil_off,
+            texaccum: false,
+            items: 0..1,
+            remainder: 0,
+            inputs: LayerInputs { defaults: Some(Defaults::default()), ..LayerInputs::default() },
+        };
+        let item = |implementation: usize| LayerItem {
+            slot: 3,
+            key: key(4, 0, implementation),
+            owner: LayerOwner::Object(InstanceKey(1)),
+            model: 0xe100_0001,
+            rows: 0..3,
+            lighting: Some(Lighting { words: [0u32; 30], root: Some(0) }),
+            flags: PartFlags::NONE,
+            subparts: None,
+            refusal: None,
+            prt: None,
+        };
+        let rows = [[1.0f32; 4]; 3];
+        // The device's blend op reads (the passes inherit it).
+        let mut e = entry();
+        e.0.retain(|(t, _)| *t != RenderStateType::BlendOp);
+        e.0.push((RenderStateType::BlendOp, 0x8006));
+        let plan = |at: Option<usize>, layer: u8, pass: &LayerPass, item: &LayerItem, e: &EntryStates| {
+            plan_layer_part(&layers, at, &pass_of, InstanceKey(1), layer, &rows, pass, item, e)
+        };
+        let seven = layer_pass(7, false);
+        let d = plan(Some(0), 7, &seven, &item(1), &e).unwrap();
+        assert_eq!(d.iter().map(|d| (d.implementation, d.program)).collect::<Vec<_>>(), [(0, 0), (1, 1)], "the only one, then the item's");
+        assert!(d.iter().all(|d| d.state.blend.is_some() && !d.state.depth_write && d.ranges == std::slice::from_ref(&(0..3))));
+        assert_eq!(d[0].vertex.constants[50], [1.0; 4], "its record's rows");
+        assert_eq!(plan(Some(0), 7, &seven, &item(2), &e).unwrap().len(), 1, "implementation 2 of the second pass draws nothing");
+        assert!(plan(Some(0), 7, &seven, &item(3), &e).unwrap_err().contains("no native implementation 3"));
+        assert!(plan(None, 7, &seven, &item(0), &e).unwrap_err().contains("draws nothing native in layer 7"));
+        assert!(plan(Some(1), 7, &seven, &item(0), &e).unwrap_err().contains("draws nothing native"), "layer 8's part");
+        let other = LayerItem { key: ItemKey { shader: 0xe000_0010, ..key(4, 0, 0) }, ..item(0) };
+        assert!(plan(Some(0), 7, &seven, &other, &e).unwrap_err().contains("shader"));
+        let refused = LayerItem { refusal: Some(LayerObjectRefusal::Fade), ..item(0) };
+        assert_eq!(plan(Some(0), 7, &seven, &refused, &e).unwrap_err(), "object_fade", "extraction's cause");
+        let prt = frame_scene::PrtStream { kind: 0x39, stride: 10, data: 0x8000_0000, constants: vec![[0.0; 4]; 2] };
+        let streamed = LayerItem { prt: Some(prt), ..item(0) };
+        assert!(plan(Some(0), 7, &seven, &streamed, &e).unwrap_err().contains("PRT stream"));
+        let aux = LayerItem { flags: PartFlags::AUX_DEPTH, ..item(0) };
+        assert!(plan(Some(0), 7, &seven, &aux, &e).unwrap_err().contains("auxiliary"));
+        let no_defaults = LayerPass { inputs: LayerInputs::default(), ..layer_pass(7, false) };
+        assert!(plan(Some(0), 7, &no_defaults, &item(0), &e).unwrap_err().contains("defaults"));
+        // A marked item draws in mode 2 unless the stencil is off.
+        let marked = LayerItem { flags: PartFlags::STENCIL_MARK, ..item(0) };
+        let d = plan(Some(0), 7, &seven, &marked, &e).unwrap();
+        assert!(d.iter().all(|d| d.state.stencil.reference == object_state::STENCIL_MARK_REFERENCE));
+        let d = plan(Some(0), 7, &layer_pass(7, true), &marked, &e).unwrap();
+        assert!(d.iter().all(|d| !d.state.stencil.enable));
+        // With the stencil on at the call and its fields unread, layer 7
+        // inherits it and is refused; layer 1 with the stencil off draws
+        // in mode 0, as the prologue sets it.
+        let mut stenciled = e.clone();
+        stenciled.0.retain(|(t, _)| *t != RenderStateType::StencilEnable);
+        stenciled.0.push((RenderStateType::StencilEnable, 1));
+        assert!(plan(Some(0), 7, &seven, &item(0), &stenciled).is_err());
+        let layer_1 = [part(1)];
+        let d = plan_layer_part(&layer_1, Some(0), &pass_of, InstanceKey(1), 1, &rows, &layer_pass(1, true), &item(0), &stenciled).unwrap();
+        assert!(d.iter().all(|d| !d.state.stencil.enable));
+    }
+
     #[test]
     fn chosen_subparts_draw_their_ranges_joined_where_adjacent() {
         let sub = SubpartRanges { first: 4, ranges: vec![10..13, 13..19, 19..19, 19..22, 22..28] };
@@ -1713,6 +2228,7 @@ mod tests {
             parts: vec![part(0, 0, [Some((0, 0)), None, None, None, None])],
             programs: vec![LitProgramInput { pass: equal_pass(0), images: Default::default() }],
             buffers: vec![LitBufferInput { indices: vec![0, 1, 2], ..Default::default() }],
+            layers: Vec::new(),
         };
         assert!(input.valid_draw_references());
         input.parts[0].implementations[0] = Some((0, 1));
@@ -1720,7 +2236,7 @@ mod tests {
         input.parts[0].implementations[0] = Some((1, 0));
         assert!(!input.valid_draw_references());
         input.parts[0].implementations[0] = Some((0, 0));
-        input.parts[0].subparts = Some(SubpartRanges { first: 0, ranges: vec![1..4] });
+        input.parts[0].subparts = Some(SubpartRanges { first: 0, ranges: std::iter::once(1..4).collect() });
         assert!(!input.valid_draw_references());
         input.parts[0].subparts = None;
         input.parts[0].indices = 2..4;
@@ -1742,6 +2258,7 @@ mod tests {
             programs: vec![LitProgramInput { pass, images: Default::default() }],
             buffers: vec![buffer],
             parts: vec![part(0, 0, [Some((0, 0)), None, None, None, None])],
+            layers: Vec::new(),
         });
         let invalid = LitModelInput {
             parts: vec![part(0, 0, [Some((0, 0)), None, None, None, None])],

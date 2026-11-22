@@ -117,7 +117,7 @@ pub fn layer(mem: &dyn GuestRead, layer: u8, lighting: bool, builder: &mut Scene
                 continue;
             }
         }
-        match layer_item(mem, item, slot, lighting) {
+        match layer_item(mem, layer, item, slot, lighting) {
             Some((entry, rows)) => {
                 builder.push_layer_item(entry, &rows)?;
                 out.items += 1;
@@ -130,11 +130,18 @@ pub fn layer(mem: &dyn GuestRead, layer: u8, lighting: bool, builder: &mut Scene
 }
 
 /// One geometry item of a layer list; `None` for another build callback
-/// or what does not read.
-fn layer_item(mem: &dyn GuestRead, item: u32, slot: u32, lighting: bool) -> Option<(LayerItem, Vec<Row>)> {
+/// or what does not read. An object item carries what its record makes
+/// the draw do, or the named cause the scene cannot reproduce it
+/// ([`crate::layout::object_walk::layer_part`]; layer 3's parts are the
+/// object walk's).
+fn layer_item(mem: &dyn GuestRead, layer: u8, item: u32, slot: u32, lighting: bool) -> Option<(LayerItem, Vec<Row>)> {
     let key = item_key(mem, item)?;
     let at = RENDER_RECORDS + RENDER_RECORD_SIZE * u32::from(key.record);
     let model = mem.read_u32(at + RECORD_MODEL)?;
+    let mut flags = PartFlags::NONE;
+    let mut subparts = None;
+    let mut refusal = None;
+    let mut prt = None;
     let (owner, rows, lit) = match record_owner(mem, key.record)? {
         RecordOwner::World => {
             let packed = mem.read_u32(at + RECORD_KEY)?;
@@ -148,11 +155,23 @@ fn layer_item(mem: &dyn GuestRead, item: u32, slot: u32, lighting: bool) -> Opti
         RecordOwner::Object(handle) => {
             let rows = record_rows(mem, key.record).ok()?;
             let lit = if lighting { read_object(mem, handle)?.lighting } else { None };
+            let part = crate::layout::object_walk::layer_part(mem, layer, item, at, key);
+            // Layer 5 adds the model's PRT stream (`layout::prt`); the
+            // part's checks first, since the draw takes it only for a
+            // shader without flag bit 0.
+            let part = part.and_then(|p| match layer {
+                5 => crate::layout::prt::read(mem, at).map(|s| (p, s)),
+                _ => Ok((p, None)),
+            });
+            match part {
+                Ok(((f, s), p)) => (flags, subparts, prt) = (f, s, p),
+                Err(why) => refusal = Some(why),
+            }
             (LayerOwner::Object(InstanceKey(handle)), rows, lit)
         }
         RecordOwner::Unresolved => return None,
     };
-    Some((LayerItem { slot, key, owner, model, rows: 0..0, lighting: lit }, rows))
+    Some((LayerItem { slot, key, owner, model, rows: 0..0, lighting: lit, flags, subparts, refusal, prt }, rows))
 }
 
 /// What [`objects`] put in the view.

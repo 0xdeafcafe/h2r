@@ -4,7 +4,7 @@ The feature registry. A feature declares the named points it attaches to; the re
 
 ## Where it sits
 
-`hooking`. Uses `runtime`, `engine`, `timeline` and `render-bridge`. Used by `boot`, `agent`, `game`, `h1-runtime`, `lockstep`, `live-telemetry`, `render-bridge` and `sim-bridge`.
+`hooking`. Uses `runtime`, `guest-layout` and `timeline`; its tests use `render-bridge`. Used by `boot`, `agent`, `game`, `h1-runtime`, `lockstep`, `live-telemetry`, `render-bridge` and `sim-bridge`.
 
 ## Layout
 

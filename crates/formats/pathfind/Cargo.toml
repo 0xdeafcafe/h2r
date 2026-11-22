@@ -12,3 +12,6 @@ tags.workspace = true
 [dev-dependencies]
 xiso.workspace = true
 anyhow.workspace = true
+
+[lints]
+workspace = true

@@ -221,7 +221,7 @@ pub fn build() -> Result<Vec<u8>> {
     )?;
     // The strip: 92 by 8, its blue rising from 0 at column 13 to 1 at the
     // right, as docs/halo1/health.md has the retail one.
-    let strip = bitmap(&mut set, STRIP_BITMAP, (128, 8), (92, 8), |x, _| {
+    bitmap(&mut set, STRIP_BITMAP, (128, 8), (92, 8), |x, _| {
         let blue = (x.saturating_sub(13) * 255 / 78).min(255) as u8;
         [80, 190, blue, 255]
     })?;

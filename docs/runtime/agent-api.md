@@ -795,7 +795,7 @@ with `INVALID_PARAMS`) answers from the state the
 | `landing` | while airborne and falling toward a strip, the landing the assist predicts: `at` (at the strip's floor height), `verdict` (`on_slot`, `fixable`, `miss`), `speed` (the touchdown speed, units/s), the strip's `need`, `miss` (world units outside the slot, 0 inside) and `locked` (in the slot at `need` or faster: the [lock-on](../game/superbounce.md#lock-on) is red) |
 | `last_landing` | the last touchdown within 0.5 of a strip: `result` (`bounce`, `not_primed`, `missed`, `too_slow`, `no_bounce`), the game `tick` and the origin `at` on the tick before ([superbounce.md](../game/superbounce.md#landings)) |
 | `standing_fits` | whether the standing capsule fits at the player's origin, as `world.object`'s `physics.standing_fits`; absent before the scan is ready |
-| `medals` | every player's medals this game, bots included ([superbounce.md](../game/superbounce.md#medals)): `players`, a row for each slot that has a chain or a medal (`player` the slot, `chain` its last chain's count, `live` whether its next bounce adds to it, `bounces` its bounces, `counts` each medal id's total), and `recent`, the last 8 awards, oldest first (`player`, `tick`, `chain`, `medals`: the ids, lowest first; and for a bounce `strips`, how many bounce strips were within 0.5 of its touchdown). The ids are `superbounce`, `double-bounce`, `triple-bounce`, `quad-bounce`, `chain-bounce`, `bouncetacular`, `bounced` and `monster-bounce` |
+| `medals` | every player's medals this game, bots included ([superbounce.md](../game/superbounce.md#medals)): `players`, a row for each slot that has a chain or a medal (`player` the slot, `chain` its last chain's count, `live` whether its next bounce adds to it, `counts` each medal id's total), and `recent`, the last 8 awards, oldest first (`player`, `tick`, `chain`, `medals`: the ids, lowest first; and for a bounce `strips`, how many bounce strips were within 0.5 of its touchdown). The ids are `superbounce`, `double-bounce`, `triple-bounce`, `quad-bounce`, `chain-bounce`, `bouncetacular`, `bounced` and `monster-bounce` |
 
 ```sh
 printf '%s\n' 'superbounce.state' | h2 agent -
@@ -1292,10 +1292,14 @@ lights"): `e3.tiles` counts the caster draws into them, `e3.marks` the
 receivers compared with the Sharp edge, `lights_shadowed` the tiles (one
 per shadowed light of the guest's) and `tiles_refused` the shadow maps
 left at the guest's size. The display on the guest's live attachments
-draws no tiles. The other stages and counters are zero: the lights lit
-are still the guest's, and no game frame hands the renderer sun casters
-yet (`e3.sun_tiles`, `e3.sun`, `sun_tiles`, `sun_tiles_redrawn`, `atlas_halved`). The guest's light selections are in
-`render.scene.views`.
+draws no tiles. `lights_lit` and `lights_over_cap` are the renderer's
+own choice of lights from the scene's candidates (e3-lighting.md,
+"Lights: which, and how many"): the lights it chose, and the candidates
+its cap of 16 left out. The lights drawn are still the guest's, so
+`e3.lights` has no draws. The sun's stages and counters are zero: no
+game frame hands the renderer sun casters yet (`e3.sun_tiles`,
+`e3.sun`, `sun_tiles`, `sun_tiles_redrawn`, `atlas_halved`). The
+guest's light selections are in `render.scene.views`.
 Retail graph draws omit `e3`.
 
 `interp` exists when in-between frames run: in `h2 play`, or in an `h2
@@ -1593,8 +1597,10 @@ h2 agent render.parity '{"arm": true}'
   2) and `fog` and `water` (slice 5); unless `frame-scene.layers=off`
   is in `H2_FEATURES`, `layer_plan_asked`, `layer_plan_drawn`,
   `layer_plan_items` and the plan's outcomes by layer,
-  `layer_plan_<layer>_taken` and `layer_plan_<layer>_refused_<cause>`
-  (`render_bridge::native_layers`; framescene.md, slice 4); a later slice adds
+  `layer_plan_<layer>_taken` and `layer_plan_<layer>_refused_<cause>`,
+  the first person's as `layer_plan_fp<layer>_*`, object items' causes
+  named `object_*` (`render_bridge::native_layers`; framescene.md,
+  slice 4); a later slice adds
   `scene_held_draws`). With the [scene sink](../graphics/framescene.md#slice-6-the-renderer-owns-game-view-frames)
   enabled, the device files
   each guest D3D op by the frame's slot (`opaque`, `after_opaque`,
@@ -3120,6 +3126,8 @@ or “Editor · edits blocked”. Optional `text` appears on the second line.
 The plate expires on the wall clock, including while the game is paused.
 The shell draws it after the watermark and leaves room for the banner
 (`crates/apps/cli/src/play_cmd.rs`, `crates/apps/app/src/shell.rs`).
+While the debug menu is open, the plate's lines show inside the menu
+instead ([debug-menu.md](debug-menu.md#layout)).
 
 | Method | Access | Params | Result |
 |---|---|---|---|

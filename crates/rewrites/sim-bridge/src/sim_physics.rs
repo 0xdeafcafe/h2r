@@ -51,3 +51,16 @@ impl Feature for NativePhysics {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::PORTS;
+
+    #[test]
+    fn every_simulation_port_is_listed() {
+        for port in PORTS {
+            let key = format!("impl.{}", port.switch);
+            assert!(hooks::switches::table::get(&key).is_some(), "{key} is not in the switch table");
+        }
+    }
+}

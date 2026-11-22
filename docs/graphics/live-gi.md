@@ -100,7 +100,7 @@ Why relit transport fits this game:
   from the last result (**P**, Sprentall on The Division), in real time
   on that generation's consoles (**P\***, the session's listing).
 
-### wgpu's ray queries on Metal, as built
+### wgpu's ray queries on Metal
 
 Read in the registry sources of `wgpu` 30.0.2 (**Code**):
 

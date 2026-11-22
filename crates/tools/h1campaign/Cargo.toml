@@ -3,6 +3,7 @@ name = "h1campaign"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+description = "Halo 1 campaign levels converted to Halo 2 v8 maps (docs/halo1/campaign.md)"
 
 [dependencies]
 # The campaign manifest a converted level is listed in.
@@ -49,3 +50,6 @@ path = "tests/scripts/disc.rs"
 [[test]]
 name = "scripts_survey"
 path = "tests/scripts/survey.rs"
+
+[lints]
+workspace = true

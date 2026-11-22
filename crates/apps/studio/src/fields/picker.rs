@@ -316,7 +316,6 @@ fn pick(open: &Open, bytes: Vec<u8>, actions: &mut Vec<Action>) {
 }
 
 /// An enum's dialog; true when it is done.
-#[allow(clippy::too_many_arguments)]
 fn choice(
     ui: &Ui,
     open: &mut Open,
@@ -394,7 +393,6 @@ fn choice(
 }
 
 /// A tag reference's dialog; true when it is done.
-#[allow(clippy::too_many_arguments)]
 fn reference(
     ui: &Ui,
     doc: &TagDoc,

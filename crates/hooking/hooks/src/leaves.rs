@@ -1,5 +1,5 @@
 //! `engine-leaves`: the Rust implementations of 22 guest functions
-//! (`engine::abi::OVERRIDES`: datum arrays, tag lookup, locale lookup)
+//! (`guest_layout::abi::OVERRIDES`: datum arrays, tag lookup, locale lookup)
 //! placed through the plan as implementations. Each is switched by
 //! `impl.engine.<group>.<name>`, falling back to `impl.engine.<group>` and
 //! `impl.engine`; groups are `locale`, `tags` and `datums`, all on by
@@ -10,7 +10,7 @@
 
 use std::sync::OnceLock;
 
-use engine::points::{self, Point, Sig};
+use guest_layout::points::{self, Point, Sig};
 
 use crate::{BuildError, Builder, Feature, Manifest};
 
@@ -33,7 +33,7 @@ pub fn group(name: &str) -> &'static str {
 fn leaf_points() -> &'static [&'static Point] {
     static POINTS: OnceLock<Vec<&'static Point>> = OnceLock::new();
     POINTS.get_or_init(|| {
-        engine::abi::OVERRIDES
+        guest_layout::abi::OVERRIDES
             .iter()
             .map(|o| {
                 points::by_base(o.addr).unwrap_or_else(|| {
@@ -55,7 +55,7 @@ impl Feature for EngineLeaves {
             .doc("docs/engine/README.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        for (o, point) in engine::abi::OVERRIDES.iter().zip(leaf_points()) {
+        for (o, point) in guest_layout::abi::OVERRIDES.iter().zip(leaf_points()) {
             let g = group(o.name);
             let key = format!("engine.{g}.{}", o.name);
             if !b.switches().implementation(&key, true) {
@@ -71,7 +71,7 @@ impl Feature for EngineLeaves {
                             cpu.eax = a;
                             return guest.ret(cpu, 0);
                         }
-                        engine::runtime_glue::invoke(o, cpu, &mut guest)
+                        guest_layout::runtime_glue::invoke(o, cpu, &mut guest)
                     })
                     .context_only();
                 continue;
@@ -79,7 +79,7 @@ impl Feature for EngineLeaves {
             b.raw()
                 .implement(point, o.name, move |cpu, ctx, _| {
                     let mut guest = ctx.memory();
-                    engine::runtime_glue::invoke(o, cpu, &mut guest)
+                    guest_layout::runtime_glue::invoke(o, cpu, &mut guest)
                 })
                 .context_only();
         }

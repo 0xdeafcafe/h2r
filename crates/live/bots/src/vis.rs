@@ -617,7 +617,6 @@ pub fn read_part(path: &Path, stamp: Stamp, fresh: &Vis) -> Option<(Vis, usize)>
 /// Builds `dir/<map>.<bsp>.vis` for the `.bots` build with `stamp`,
 /// carrying on from its progress file and saving to it, then writes the
 /// grid and removes the progress file. `Ok(None)`: stopped, progress saved.
-#[allow(clippy::too_many_arguments)]
 pub fn build_file(
     dir: &Path,
     map: &str,
@@ -867,7 +866,6 @@ impl<'a> Proof<'a> {
 
     /// Whether every segment from `a` to `b` is certainly blocked, within
     /// `budget` pieces. Each recursion level reuses its hit list.
-    #[allow(clippy::too_many_arguments)]
     fn prove(
         &self,
         a: Box3,

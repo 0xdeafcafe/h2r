@@ -83,21 +83,21 @@ pub fn last_step(log: &str) -> Option<&str> {
     log.lines().rev().map(str::trim).find(|l| !l.is_empty())
 }
 
-/// The banner's text for a build `elapsed` in: one read for a player.
+/// The banner's text for a build `elapsed` in: one read for a player,
+/// short enough for one line of the debug menu, which shows the banner
+/// inside its panel while it is open (`debug_menu::layout::lines_with`).
 pub fn banner_text(state: BuildState, elapsed: Duration) -> Option<String> {
     Some(match state {
         BuildState::None => return None,
         BuildState::Building => {
             let left = TYPICAL_BUILD.saturating_sub(elapsed).as_secs().div_ceil(60).max(1);
-            format!(
-                "Running slower while the full-speed version builds (about {left} min). Restart when this says ready."
-            )
+            format!("Running slower: full-speed version in about {left} min.")
         }
         BuildState::Ready => {
-            "Full-speed version ready. Restart the game (debug menu: Game > Game code) to use it.".into()
+            "Full-speed ready. Restart from debug menu > Game > Game code.".into()
         }
         BuildState::Failed => {
-            "The full-speed build failed (clang-build.log); this game keeps running slower.".into()
+            "Full-speed build failed (clang-build.log); running slower.".into()
         }
     })
 }
@@ -213,13 +213,16 @@ mod tests {
     #[test]
     fn the_banner_reads_in_one_go_and_counts_down() {
         let t = banner_text(BuildState::Building, Duration::from_secs(5 * 60)).unwrap();
-        assert!(t.starts_with("Running slower while the full-speed version builds (about 10 min)"), "{t}");
+        assert_eq!(t, "Running slower: full-speed version in about 10 min.");
         let late = banner_text(BuildState::Building, Duration::from_secs(60 * 60)).unwrap();
         assert!(late.contains("about 1 min"), "{late}");
         assert!(banner_text(BuildState::None, Duration::ZERO).is_none());
         for s in [BuildState::Building, BuildState::Ready, BuildState::Failed] {
             let t = banner_text(s, Duration::ZERO).unwrap();
-            assert!(t.len() <= 96, "fits the banner: {t}");
+            assert!(
+                t.chars().count() <= debug_menu::layout::COLS,
+                "fits one line of the debug menu: {t}"
+            );
         }
     }
 

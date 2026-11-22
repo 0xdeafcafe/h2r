@@ -194,10 +194,15 @@ scripts/docs-check.py --strict docs/x  # soft findings fail too
 | `code` | a `docs/...md` path in a code comment that does not exist | yes |
 | `code-sections` | a section a code comment cites that is no longer a heading | with `--strict` |
 | `names` | an `H2_*` variable or `impl.*` switch that no code reads | with `--strict` |
+| `switches` | an `H2_*` variable the code reads that `docs/runtime/switches.md` does not list (a `H2_FOO_*` row covers the family) | with `--strict` |
 | `paths` | a backticked `crates/...` path that does not exist | with `--strict` |
 | `style` | a heading that records history (a date, "as built", "superseded") | with `--strict` |
 
 `names`, `paths` and `style` skip `notes/` and `docs/reviews/`, which
-describe the tree as it was. A design for unbuilt work names crates and
-switches that do not exist yet, so those findings are cleared or explained,
-not forced to zero.
+describe the tree as it was. `names` and `paths` also skip a page whose
+status line says Design or plan: it names crates and switches that do not
+exist yet. In a Partly built page, mark a path the page proposes with `(new)`
+(or `(planned)`) right after it, and `paths` skips it.
+
+Code may cite a heading, a numbered section (`§ 5.2`) or a bold lead-in
+(`**Sky.**`, `- **Sky.**`) of a page; `code-sections` accepts all three.
