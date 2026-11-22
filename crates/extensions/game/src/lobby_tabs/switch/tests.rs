@@ -449,7 +449,7 @@ fn run_to_reads_the_lobby_and_runs_the_switch() {
     let entry = move |cx: Cx| -> EntryFuture {
         let s = Arc::clone(&s);
         Box::pin(async move {
-            run_to(&cx, Tab::Firefight, Some(s)).await?;
+            run_to(&cx, Tab::Firefight, crate::lobby_tabs::Present::ALL, Some(s)).await?;
             Ok(Ret::new(0, 0))
         })
     };
@@ -461,7 +461,7 @@ fn run_to_reads_the_lobby_and_runs_the_switch() {
     // MULTIPLAYER needs Xbox Live: refused, nothing called.
     let entry = |cx: Cx| -> EntryFuture {
         Box::pin(async move {
-            run_to(&cx, Tab::Multiplayer, None).await?;
+            run_to(&cx, Tab::Multiplayer, crate::lobby_tabs::Present::ALL, None).await?;
             Ok(Ret::new(0, 0))
         })
     };

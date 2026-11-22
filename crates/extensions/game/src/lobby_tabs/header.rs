@@ -358,7 +358,7 @@ pub async fn update(cx: &Cx, screen: u32, store: Option<Arc<Store>>) -> Result<(
         && reading.retail == RetailMode::Custom
         && let Some(to) = super::take_request()
     {
-        super::switch::run_to(cx, to, store).await?;
+        super::switch::run_to(cx, to, super::present(), store).await?;
         // The next update draws the mode the switch left.
         return Ok(());
     }

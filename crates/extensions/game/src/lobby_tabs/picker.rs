@@ -92,7 +92,7 @@ pub fn after(present: Present, store: Option<Arc<Store>>) -> Action {
             let Some(to) = at.and_then(|i| picked(present, i)) else {
                 return Ok(());
             };
-            super::switch::run_to(&cx, to, store).await
+            super::switch::run_to(&cx, to, present, store).await
         })
     })
 }

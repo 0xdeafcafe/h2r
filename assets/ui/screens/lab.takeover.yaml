@@ -24,4 +24,4 @@ rows:
     text: "Not now"
   row.1:
     kind: action
-    text: "Allow"
+    text: "Close and start"

@@ -323,10 +323,20 @@ pub fn ask(shown: &super::header::Shown, to: Tab) -> Ask {
     }
 }
 
-/// The switch to `to` from the lobby as it stands now ([`ask`], then
-/// [`run`]): a refusal goes to the status line.
-pub async fn run_to(cx: &Cx, to: Tab, store: Option<Arc<Store>>) -> Result<(), EntryError> {
-    let Some(shown) = cx.read(super::header::shown_now) else {
+/// The switch to `to` from the lobby as it stands now, with `present` the
+/// modes present ([`ask`], then [`run`]): a refusal goes to the status
+/// line.
+pub async fn run_to(
+    cx: &Cx,
+    to: Tab,
+    present: super::Present,
+    store: Option<Arc<Store>>,
+) -> Result<(), EntryError> {
+    let read = |m: &dyn engine::memory::GuestMemory| {
+        super::header::read(m)
+            .map(|r| super::header::shown(&r, present, crate::lobby_start::mode()))
+    };
+    let Some(shown) = cx.read(read) else {
         eprintln!("lobby tabs: a switch to {} with the lobby unreadable", to.label());
         return Ok(());
     };
