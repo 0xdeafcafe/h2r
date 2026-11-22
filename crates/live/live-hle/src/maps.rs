@@ -479,12 +479,12 @@ impl MapGate {
         let m: &Manifest = &answer.map.manifest;
         let id = MapId::of(m);
         let dir = self.package_dir(&id);
-        let io = |e: std::io::Error| Refusal::Download(format!("{}: {e}", dir.display()));
-        std::fs::create_dir_all(&dir).map_err(io)?;
+        std::fs::create_dir_all(&dir).map_err(|e| Refusal::Download(format!("{}: {e}", dir.display())))?;
         // Return the dir as the Library will have it (canonical): a first
         // install and a later look-up then name the same path, even when
         // the maps dir was made after this gate (or under a symlink).
         let dir = dir.canonicalize().unwrap_or(dir);
+        let io = |e: std::io::Error| Refusal::Download(format!("{}: {e}", dir.display()));
         for (file, sha) in m
             .patches
             .iter()
