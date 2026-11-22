@@ -123,7 +123,7 @@ impl AnimationRead {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bot_glue::retail_input::{ACTION_SIZE, gather};
+    use crate::bot_glue::retail_input::{ACTION_SIZE, Path, gather};
     use bots::phantom::SeatInput;
     use engine::{
         entry::{self, Regs, Ret},
@@ -256,6 +256,7 @@ mod tests {
                         &builder,
                         &main,
                         WORK,
+                        Path::Alias,
                         CpuAbi::default(),
                         seat,
                         &cx,

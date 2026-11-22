@@ -1,10 +1,18 @@
 //! A phantom is local user zero in a private copy of the host world.
 //! Only its pad history, player-control history and returned record survive.
+//!
+//! The private copy is one of two paths (docs/perf/sim-phantom-build.md),
+//! picked by `impl.sim.phantom-alias` ([`path_for`]): on by default, the
+//! build runs on live RAM through [`SecondExecutor::alias`] and its write
+//! journal puts every byte back after each seat; off, and on a flat-RAM
+//! image, it runs in a copy-on-write snapshot taken at the tick's first
+//! seat. `H2_PHANTOM_BUILD_CHECK=1` runs both for every seat and counts the
+//! seats whose outcome, action or history differ.
 use anyhow::Result;
 use bots::phantom::{SeatInput, session::at::ACTION_SIZE};
 use runtime::{
-    CopyKind, CpuAbi, Runtime,
-    executor::{ExecutorError, SecondExecutor},
+    CopyKind, CpuAbi, Guest, Runtime,
+    executor::{Alias, ExecutorError, SecondExecutor},
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
@@ -24,6 +32,10 @@ static SNAPSHOT_NS: AtomicU64 = AtomicU64::new(0);
 /// Snapshots that remapped guest RAM, and that copied it.
 static SNAPSHOTS_REMAPPED: AtomicU64 = AtomicU64::new(0);
 static SNAPSHOTS_COPIED: AtomicU64 = AtomicU64::new(0);
+/// Check mode (`H2_PHANTOM_BUILD_CHECK=1`): seats built on both paths, and
+/// those whose outcome, action or history differed.
+static CHECKED: AtomicU64 = AtomicU64::new(0);
+static MISMATCHES: AtomicU64 = AtomicU64::new(0);
 
 fn elapsed_ns(since: Instant) -> u64 {
     u64::try_from(since.elapsed().as_nanos()).unwrap_or(u64::MAX)
@@ -37,6 +49,8 @@ pub(crate) fn build_costs() -> sim_bench::metrics::PhantomCosts {
         snapshot_ns: SNAPSHOT_NS.load(Ordering::Relaxed),
         remapped: SNAPSHOTS_REMAPPED.load(Ordering::Relaxed),
         copied: SNAPSHOTS_COPIED.load(Ordering::Relaxed),
+        checked: CHECKED.load(Ordering::Relaxed),
+        mismatches: MISMATCHES.load(Ordering::Relaxed),
     }
 }
 
@@ -47,6 +61,54 @@ fn note_snapshot(since: Instant, kind: CopyKind) {
         CopyKind::Copied => &SNAPSHOTS_COPIED,
     }
     .fetch_add(1, Ordering::Relaxed);
+}
+
+/// How a seat's build reaches guest RAM.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Path {
+    /// On live RAM ([`SecondExecutor::alias`]), every store journaled and
+    /// undone before the seat's gather returns.
+    Alias,
+    /// In a copy-on-write snapshot of the tick's first gather
+    /// ([`SecondExecutor::snapshot`]), reverted between seats.
+    View,
+}
+
+/// The path `impl.sim.phantom-alias` picks: the alias unless it is off.
+pub(super) fn path_for(switches: &hooks::Switches) -> Path {
+    if switches.implementation("sim.phantom-alias", true) {
+        Path::Alias
+    } else {
+        Path::View
+    }
+}
+
+/// `H2_PHANTOM_BUILD_CHECK=1`: build every seat on both paths and compare.
+fn check_mode() -> bool {
+    std::env::var("H2_PHANTOM_BUILD_CHECK").is_ok_and(|v| v == "1")
+}
+
+/// How far below the gather's ESP the alias path puts the stack back to
+/// the tick's first gather for a later seat (below). The builder's frames
+/// sit under the gather frame; 64 KiB is the window, not a measured depth.
+const STACK_WINDOW: u32 = 0x10000;
+const STACK_PAGE: u32 = 0x1000;
+
+/// The game thread's stack pages around the gather's ESP, as the tick's
+/// first gather left them: the view path shows a later seat these bytes,
+/// so the alias path writes them back (journaled) where live RAM has
+/// moved on. Unmapped pages are left out.
+fn stack_window(m: &Guest, esp: u32) -> Vec<(u32, Box<[u8; STACK_PAGE as usize]>)> {
+    let lo = u64::from(esp.saturating_sub(STACK_WINDOW) & !(STACK_PAGE - 1));
+    let above = u64::from(esp) | u64::from(STACK_PAGE - 1);
+    let hi = (above + 1 + u64::from(STACK_PAGE)).min(1 << 32);
+    (lo..hi)
+        .step_by(STACK_PAGE as usize)
+        .filter_map(|va| {
+            let va = va as u32;
+            m.read::<{ STACK_PAGE as usize }>(va).ok().map(|b| (va, Box::new(b)))
+        })
+        .collect()
 }
 
 pub(super) const WORK_BYTES: u32 = 0x1000;
@@ -79,6 +141,7 @@ impl BuildFailure {
     }
 }
 
+#[derive(PartialEq, Eq)]
 struct History {
     raw: [u8; 0x48],
     control: [u8; 0x94],
@@ -93,6 +156,12 @@ pub(super) struct Builder {
     history: BTreeMap<u16, History>,
     reported: BTreeSet<BuildFailure>,
     cold: animation::ColdRead,
+    path: Path,
+    /// Alias path: the stack window of the tick's first gather.
+    stack: Vec<(u32, Box<[u8; STACK_PAGE as usize]>)>,
+    /// Check mode: the same seats built on the other path, with their own
+    /// executor and history.
+    other: Option<Box<Builder>>,
 }
 
 /// Only the live animation cache may submit or wait for a resource read.
@@ -101,6 +170,7 @@ pub(super) async fn gather(
     input: &Mutex<Option<Builder>>,
     main: &Runtime,
     workspace: u32,
+    path: Path,
     cpu: CpuAbi,
     seat: SeatInput,
     cx: &engine::entry::Cx,
@@ -136,12 +206,12 @@ pub(super) async fn gather(
         }
 
         let mut guard = input.lock().unwrap_or_else(|e| e.into_inner());
-        let builder = guard.get_or_insert_with(|| Builder::new(main, workspace));
+        let builder = guard.get_or_insert_with(|| Builder::new(main, workspace, path));
         if refresh {
-            builder.tick = None;
+            builder.restart();
         }
         let started = Instant::now();
-        let outcome = builder.sample(main, cpu, seat);
+        let outcome = builder.sample_checked(main, cpu, seat);
         BUILD_NS.fetch_add(elapsed_ns(started), Ordering::Relaxed);
         if let Some(film) = film {
             let (kind, outputs) = match &outcome {
@@ -194,7 +264,38 @@ fn report_cold(input: &Mutex<Option<Builder>>, read: AnimationRead, seat: SeatIn
 }
 
 impl Builder {
-    fn new(main: &Runtime, workspace: u32) -> Self {
+    /// A builder on `path`, or on the view where the alias cannot run (a
+    /// flat-RAM image, said once). In check mode it carries a second
+    /// builder on the other path.
+    fn new(main: &Runtime, workspace: u32, path: Path) -> Self {
+        let usable = |path| {
+            if path == Path::Alias && main.flat_ram() {
+                static SAID: std::sync::Once = std::sync::Once::new();
+                SAID.call_once(|| {
+                    eprintln!(
+                        "phantoms: a flat-RAM image builds actions in a copy-on-write view; impl.sim.phantom-alias needs the paged memory model"
+                    );
+                });
+                Path::View
+            } else {
+                path
+            }
+        };
+        let path = usable(path);
+        let mut builder = Self::on(main, workspace, path);
+        if check_mode() {
+            let other = usable(match path {
+                Path::Alias => Path::View,
+                Path::View => Path::Alias,
+            });
+            if other != path {
+                builder.other = Some(Box::new(Self::on(main, workspace, other)));
+            }
+        }
+        builder
+    }
+
+    fn on(main: &Runtime, workspace: u32, path: Path) -> Self {
         let exec = SecondExecutor::new(main, |_, _| false);
         exec.runtime().edit_dispatch(|d| {
             d.prefer_generated();
@@ -228,7 +329,57 @@ impl Builder {
             history: Default::default(),
             reported: BTreeSet::new(),
             cold,
+            path,
+            stack: Vec::new(),
+            other: None,
         }
+    }
+
+    /// The next seat starts from live RAM, on both paths in check mode.
+    fn restart(&mut self) {
+        self.tick = None;
+        if let Some(other) = &mut self.other {
+            other.tick = None;
+        }
+    }
+
+    /// [`sample`](Self::sample), and in check mode the other path's sample
+    /// of the same seat first: a seat whose outcome, action bytes or
+    /// history differ is counted in `wall.phantom_build_mismatches`. The
+    /// switch's path gives the answer; each path keeps its own history, so
+    /// each runs as it would alone.
+    fn sample_checked(
+        &mut self,
+        main: &Runtime,
+        cpu: CpuAbi,
+        seat: SeatInput,
+    ) -> Result<Option<[u8; ACTION_SIZE]>, AnimationRead> {
+        let Some(mut other) = self.other.take() else {
+            return self.sample(main, cpu, seat);
+        };
+        let theirs = other.sample(main, cpu, seat);
+        let ours = self.sample(main, cpu, seat);
+        let idx = seat.player.index();
+        let same = match (&ours, &theirs) {
+            (Ok(a), Ok(b)) => a == b,
+            (Err(a), Err(b)) => a.for_film() == b.for_film(),
+            _ => false,
+        } && self.history.get(&idx) == other.history.get(&idx);
+        CHECKED.fetch_add(1, Ordering::Relaxed);
+        if !same {
+            let n = MISMATCHES.fetch_add(1, Ordering::Relaxed) + 1;
+            if n <= 8 {
+                eprintln!(
+                    "phantoms: the {:?} and {:?} builds differ for player {} at tick {} (mismatch {n})",
+                    self.path,
+                    other.path,
+                    seat.player.index(),
+                    seat.tick
+                );
+            }
+        }
+        self.other = Some(other);
+        ours
     }
 
     /// An isolated failure is a missing controller sample at the gather hook.
@@ -266,22 +417,63 @@ impl Builder {
         }
     }
 
+    /// View path: a snapshot at the tick's first seat; later seats revert
+    /// what the earlier ones wrote, so each sees the same world, even when
+    /// the search wrote scratch globals.
+    fn view(&mut self, main: &Runtime, first: bool) {
+        if first {
+            let started = Instant::now();
+            let kind = self.exec.snapshot(main);
+            note_snapshot(started, kind);
+        } else {
+            for page in self.exec.written() {
+                self.exec.revert(page.physical, runtime::guest::PAGE_SIZE);
+            }
+        }
+    }
+
+    /// Alias path: live RAM, held from here through the undo. Every seat's
+    /// writes are undone before its gather returns, so a later seat never
+    /// sees an earlier one's. The tick's first seat starts the executor's
+    /// clock and time-stamp counter as a snapshot does and keeps the stack
+    /// window; a later seat runs them on, as the view's later seats do, and
+    /// gets the first gather's stack bytes back where they moved.
+    fn alias<'m>(&mut self, main: &'m Runtime, first: bool, esp: u32) -> Result<Alias<'m>> {
+        let alias = if first {
+            self.exec.alias(main)?
+        } else {
+            self.exec.alias_continued(main)?
+        };
+        let mut m = self.exec.runtime().memory();
+        if first {
+            self.stack = stack_window(&m, esp);
+        } else {
+            for (va, bytes) in &self.stack {
+                if m.read::<{ STACK_PAGE as usize }>(*va).is_ok_and(|now| now != **bytes) {
+                    m.write(*va, **bytes)?;
+                }
+            }
+        }
+        drop(m);
+        Ok(alias)
+    }
+
     fn action(&mut self, main: &Runtime, cpu: CpuAbi, s: SeatInput) -> Result<[u8; ACTION_SIZE]> {
         let idx = s.player.index();
         if s.reset {
             self.history.remove(&idx);
         }
-        if self.tick != Some(s.tick) || s.reset {
-            let started = Instant::now();
-            let kind = self.exec.snapshot(main);
-            note_snapshot(started, kind);
-            self.tick = Some(s.tick);
-        } else {
-            // Each seat sees the same world, even when the search wrote scratch globals.
-            for page in self.exec.written() {
-                self.exec.revert(page.physical, runtime::guest::PAGE_SIZE);
+        let first = self.tick != Some(s.tick) || s.reset;
+        // Alias path: undone as this drops, after the read back below, on
+        // a faulted or refused call's early return, and on a panic.
+        let _alias = match self.path {
+            Path::Alias => Some(self.alias(main, first, cpu.esp)?),
+            Path::View => {
+                self.view(main, first);
+                None
             }
-        }
+        };
+        self.tick = Some(s.tick);
         let work = self.workspace;
         let ctrl;
         {
@@ -396,6 +588,12 @@ mod tests {
 
     #[test]
     fn private_prefetch_skips_io_and_a_refused_wait_discards_only_the_sample() {
+        for path in [Path::Alias, Path::View] {
+            private_prefetch_on(path);
+        }
+    }
+
+    fn private_prefetch_on(path: Path) {
         const WORK: u32 = 0x560000;
         const PLAYER: u32 = 0x550800;
         let mut g = Guest::new();
@@ -426,7 +624,7 @@ mod tests {
         })
         .unwrap();
         let main = Runtime::new(g, d);
-        let mut builder = Builder::new(&main, WORK);
+        let mut builder = Builder::new(&main, WORK, path);
         let cpu = CpuAbi {
             esp: WORK + 0xfff0,
             ..Default::default()
@@ -456,7 +654,8 @@ mod tests {
             };
             assert_eq!(
                 builder.sample(&main, cpu, sample).unwrap(),
-                expected.map(|n| [n; ACTION_SIZE])
+                expected.map(|n| [n; ACTION_SIZE]),
+                "{path:?}, tick {tick}"
             );
             assert_eq!(main.memory().u8(RAW).unwrap(), 0);
             assert_eq!(
@@ -477,6 +676,12 @@ mod tests {
     // retail code itself comes from the coordinator's compiled game image.
     #[test]
     fn retail_input_binds_the_requested_seat_and_keeps_its_history_private() {
+        for path in [Path::Alias, Path::View] {
+            binds_the_requested_seat_on(path);
+        }
+    }
+
+    fn binds_the_requested_seat_on(path: Path) {
         const USERS: u32 = 0x550000;
         const CONTROLS: u32 = USERS + 0x100;
         const PLAYER: u32 = USERS + 0x400;
@@ -554,7 +759,7 @@ mod tests {
             .unwrap();
         }
         let main = Runtime::new(g, d);
-        let mut builder = Builder::new(&main, WORK);
+        let mut builder = Builder::new(&main, WORK, path);
         for (tick, reset, count) in [(1, true, 1), (2, false, 2), (9, true, 1)] {
             let seat = SeatInput {
                 player,
@@ -594,6 +799,150 @@ mod tests {
     }
 }
 
+/// The paths and the switch.
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+    use engine::DatumHandle;
+    use runtime::{Dispatch, guest::Permissions};
+    use std::sync::Arc;
+
+    const USERS: u32 = 0x550000;
+    const CONTROLS: u32 = USERS + 0x100;
+    const WORK: u32 = 0x560000;
+    const ESP: u32 = WORK + 0xfff0;
+    /// An uninitialised local of the builder, below the gather frame: the
+    /// live game's own calls between two gathers leave other bytes there.
+    const LOCAL: u32 = ESP - 0x200;
+    /// A scratch global the builder writes, as the searches do.
+    const SCRATCH: u32 = 0x4e0000;
+
+    /// The tables the setup writes, stand-ins that return at once for the
+    /// first five entries, and a builder that reports SCRATCH and LOCAL in
+    /// its action, then bumps SCRATCH.
+    fn runtime() -> Arc<Runtime> {
+        let mut g = Guest::new();
+        g.map_zeroed(0x120000, 0x100000, Permissions::RX).unwrap();
+        g.map_zeroed(0x460000, 0x110000, Permissions::RW).unwrap();
+        g.set_u32(0x4e8c20, USERS).unwrap();
+        g.set_u32(0x4ed284, CONTROLS).unwrap();
+        g.set_u32(LOCAL, 0x1111).unwrap();
+        let mut d = Dispatch::default();
+        for address in [0x1872d0, 0x190c34, 0x1557c0, 0x124c00, 0x217c40] {
+            d.register_generated_rust(address, |cpu, ctx, _| ctx.memory().ret(cpu, 0))
+                .unwrap();
+        }
+        d.register_generated_rust(0x186ab0, |cpu, ctx, _| {
+            let mut m = ctx.memory();
+            let out = m.u32(cpu.esp + 16)?;
+            let (scratch, local) = (m.u32(SCRATCH)?, m.u32(LOCAL)?);
+            m.set_u32(SCRATCH, scratch + 1)?;
+            let mut action = [0; ACTION_SIZE];
+            action[..4].copy_from_slice(&scratch.to_le_bytes());
+            action[4..8].copy_from_slice(&local.to_le_bytes());
+            m.write(out, action)?;
+            m.ret(cpu, 0)
+        })
+        .unwrap();
+        Runtime::new(g, d)
+    }
+
+    fn seat(index: u16, tick: u32) -> SeatInput {
+        SeatInput {
+            player: DatumHandle::new(5, u32::from(index)),
+            player_addr: USERS + 0x400 + 0x100 * u32::from(index - 20),
+            unit: DatumHandle::new(9, u32::from(50 + index)),
+            tick,
+            dt: 1. / 30.,
+            pad: Default::default(),
+            reset: false,
+        }
+    }
+
+    fn reported(action: [u8; ACTION_SIZE]) -> (u32, u32) {
+        let word = |i: usize| u32::from_le_bytes(action[i..i + 4].try_into().unwrap());
+        (word(0), word(4))
+    }
+
+    fn cpu() -> CpuAbi {
+        CpuAbi {
+            esp: ESP,
+            ..Default::default()
+        }
+    }
+
+    /// The view shows every seat of a tick the RAM of the tick's first
+    /// gather. The alias undoes each seat before the next, and puts the
+    /// first gather's stack window back, so a later seat sees neither an
+    /// earlier seat's writes nor the stack bytes the live game left between
+    /// the gathers.
+    #[test]
+    fn later_seats_of_a_tick_see_the_first_gathers_world_on_both_paths() {
+        for path in [Path::Alias, Path::View] {
+            let main = runtime();
+            let mut builder = Builder::new(&main, WORK, path);
+            let first = builder.action(&main, cpu(), seat(21, 1)).unwrap();
+            assert_eq!(reported(first), (0, 0x1111), "{path:?}");
+            // Between the gathers the live game's own calls run below the
+            // gather frame.
+            main.memory().set_u32(LOCAL, 0x2222).unwrap();
+            let second = builder.action(&main, cpu(), seat(22, 1)).unwrap();
+            assert_eq!(
+                reported(second),
+                (0, 0x1111),
+                "{path:?}: no earlier seat's write, the first gather's stack"
+            );
+            // The next tick's first seat sees live RAM as it is.
+            let next = builder.action(&main, cpu(), seat(21, 2)).unwrap();
+            assert_eq!(reported(next), (0, 0x2222), "{path:?}");
+            let m = main.memory();
+            assert_eq!(
+                (m.u32(SCRATCH), m.u32(LOCAL)),
+                (Ok(0), Ok(0x2222)),
+                "{path:?}: live RAM kept"
+            );
+        }
+    }
+
+    #[test]
+    fn the_switch_picks_the_alias_by_default_and_the_view_when_off() {
+        let parse = |spec: &str| path_for(&hooks::Switches::parse(spec).unwrap());
+        assert_eq!(parse(""), Path::Alias);
+        assert_eq!(parse("-impl.sim.phantom-alias"), Path::View);
+        assert_eq!(parse("impl.sim.phantom-alias=off"), Path::View);
+        assert_eq!(parse("-impl.sim"), Path::View, "through its parent");
+        // The default builds on live RAM and never snapshots; off, it does.
+        for (spec, snapshots) in [("", false), ("-impl.sim.phantom-alias", true)] {
+            let main = runtime();
+            let mut builder = Builder::new(&main, WORK, parse(spec));
+            assert_eq!(builder.path, parse(spec));
+            builder.action(&main, cpu(), seat(21, 1)).unwrap();
+            assert_eq!(builder.exec.base().is_some(), snapshots, "{spec:?}");
+            assert!(!builder.exec.aliased(), "{spec:?}: the alias closed");
+        }
+    }
+
+    /// Check mode compares the two paths seat by seat and counts nothing
+    /// when they agree; the switch's path gives the answer.
+    #[test]
+    fn check_mode_builds_both_paths_and_they_agree() {
+        let main = runtime();
+        let mut builder = Builder::new(&main, WORK, Path::Alias);
+        builder.other = Some(Box::new(Builder::on(&main, WORK, Path::View)));
+        let checked = CHECKED.load(Ordering::Relaxed);
+        let mismatches = MISMATCHES.load(Ordering::Relaxed);
+        for (index, tick) in [(21, 1), (22, 1), (21, 2), (22, 2)] {
+            let action = builder.sample_checked(&main, cpu(), seat(index, tick)).unwrap();
+            assert_eq!(action.map(reported), Some((0, 0x1111)));
+        }
+        // Other tests may count at the same time: at least these four.
+        assert!(CHECKED.load(Ordering::Relaxed) >= checked + 4);
+        assert_eq!(MISMATCHES.load(Ordering::Relaxed), mismatches);
+        assert!(builder.other.as_ref().unwrap().exec.base().is_some(), "the view arm ran");
+        assert_eq!(main.memory().u32(SCRATCH), Ok(0));
+    }
+}
+
 /// Image-backed counterpart to the synthetic dispatch and transport tests.
 /// A local multiplayer checkpoint supplies real player, BSP and weapon tags.
 #[cfg(test)]
@@ -619,127 +968,135 @@ fn retail_pad_sequence_matches_local_angles_target_and_fire() -> Result<()> {
     let main = &loaded.runtime;
     // SAFETY: H2_RETAIL_MODULE is the coordinator's generated module for this XBE.
     let _module = unsafe { crate::load_module(&module, main, &xbe)? };
-    snapshot::guest::load_guest(&saved, &mut main.memory(), None)?;
-    const WORK: u32 = 0xa3fe0000;
-    let (player, player_addr, unit) = {
-        let mut m = main.memory();
-        m.map_zeroed(WORK, 0x10000, Permissions::RW)?;
-        let user = m.u32(0x4e8c20)?;
-        let player = DatumHandle(m.u32(user + 12)?);
-        anyhow::ensure!(!player.is_none(), "fixture needs local user zero");
-        let array = m.u32(0x4e8c24)?;
-        let addr = m.u32(array + 0x44)? + 0x21c * u32::from(player.index());
-        let unit = DatumHandle(m.u32(addr + 0x2c)?);
-        anyhow::ensure!(
-            m.u32(addr + 0x24)? == 0 && !unit.is_none(),
-            "fixture needs a spawned player on controller zero"
-        );
-        m.write(RAW, [0; 0x48])?;
-        m.write(0x51ea88, [0; 0x50])?;
-        m.set_u8(0x51ebcc, 0)?;
-        let controls = m.u32(0x4ed284)?;
-        m.set_u32(controls + 0x14, u32::MAX)?;
-        m.write(0x54e9f4, [0, 0, 0, 0, 0, 0, bots::guest::BOT_SENSITIVITY])?;
-        (player, addr, unit)
-    };
-    let cpu = CpuAbi {
-        esp: WORK + 0xfff0,
-        fs_base: kernel.kpcr(),
-        ..CpuAbi::xbox_thread()
-    };
-    let mut local = SecondExecutor::new(main, |_, _| false);
-    local.runtime().edit_dispatch(|d| {
-        d.prefer_generated();
-        d.register_override(
-            xapi::register::addr::XINPUT_GET_STATE,
-            "fixture controller",
-            |cpu, ctx, _| {
-                let mut m = ctx.memory();
-                let report = m.read::<{ input::State::SIZE }>(WORK)?;
-                let dest = m.u32(cpu.esp + 8)?;
-                m.write(dest, report)?;
-                cpu.eax = 0;
-                m.ret(cpu, 8)
-            },
-        );
-    });
-    local.snapshot(main);
-    // The reference retains the game's actual local tables. The other side
-    // must bind this same world actor starting from a remote player record.
-    {
-        let mut m = main.memory();
-        m.set_u32(player_addr + 0x24, u32::MAX)?;
-        m.set_u16(player_addr + 0x28, u16::MAX)?;
-        let slot = bots::guest::slot(0);
-        m.set_u32(slot, 0)?;
-        m.set_u32(slot + bots::guest::SLOT_LOCAL_USER, u32::MAX)?;
-        let users = m.u32(0x4e8c20)?;
-        m.set_u32(users + 12, u32::MAX)?;
-        m.set_u32(users + 0x1c, u32::MAX)?;
-    }
-    let mut remote = Builder::new(main, WORK);
-    let dt = 1.0f32 / 30.0;
-    let mut acquired = false;
-    let mut fired = false;
-    let mut angles = Vec::new();
-    for tick in 0..30 {
-        let mut pad = input::State {
-            packet_number: tick,
-            ..Default::default()
+    // Both paths, each from the checkpoint as saved.
+    for path in [Path::Alias, Path::View] {
+        snapshot::guest::load_guest(&saved, &mut main.memory(), None)?;
+        const WORK: u32 = 0xa3fe0000;
+        let (player, player_addr, unit) = {
+            let mut m = main.memory();
+            // Mapped by the first path's pass when the checkpoint's layout
+            // load leaves it.
+            match m.map_zeroed(WORK, 0x10000, Permissions::RW) {
+                Ok(()) | Err(runtime::guest::MapError::Overlap) => {}
+                Err(e) => return Err(e.into()),
+            }
+            let user = m.u32(0x4e8c20)?;
+            let player = DatumHandle(m.u32(user + 12)?);
+            anyhow::ensure!(!player.is_none(), "fixture needs local user zero");
+            let array = m.u32(0x4e8c24)?;
+            let addr = m.u32(array + 0x44)? + 0x21c * u32::from(player.index());
+            let unit = DatumHandle(m.u32(addr + 0x2c)?);
+            anyhow::ensure!(
+                m.u32(addr + 0x24)? == 0 && !unit.is_none(),
+                "fixture needs a spawned player on controller zero"
+            );
+            m.write(RAW, [0; 0x48])?;
+            m.write(0x51ea88, [0; 0x50])?;
+            m.set_u8(0x51ebcc, 0)?;
+            let controls = m.u32(0x4ed284)?;
+            m.set_u32(controls + 0x14, u32::MAX)?;
+            m.write(0x54e9f4, [0, 0, 0, 0, 0, 0, bots::guest::BOT_SENSITIVITY])?;
+            (player, addr, unit)
         };
-        pad.gamepad.thumb_rx = if tick < 10 {
-            0
-        } else if tick < 22 {
-            19000
-        } else {
-            -22000
+        let cpu = CpuAbi {
+            esp: WORK + 0xfff0,
+            fs_base: kernel.kpcr(),
+            ..CpuAbi::xbox_thread()
         };
-        pad.gamepad.thumb_ry = if tick < 10 { 0 } else { 11000 };
-        pad.gamepad.analog[input::AnalogButton::RightTrigger as usize] =
-            if tick % 6 < 3 { 255 } else { 0 };
-        local.runtime().memory().write(WORK, pad.to_bytes())?;
-        let mut call = |pc, eax, ecx, args: &[u32]| -> Result<()> {
-            local.call(&mut CpuAbi { eax, ecx, ..cpu }, pc, args)?;
-            Ok(())
-        };
-        if tick == 0 {
-            call(0x1872d0, 0, unit.raw(), &[])?;
-            call(0x190c34, 0, 0, &[])?;
+        let mut local = SecondExecutor::new(main, |_, _| false);
+        local.runtime().edit_dispatch(|d| {
+            d.prefer_generated();
+            d.register_override(
+                xapi::register::addr::XINPUT_GET_STATE,
+                "fixture controller",
+                |cpu, ctx, _| {
+                    let mut m = ctx.memory();
+                    let report = m.read::<{ input::State::SIZE }>(WORK)?;
+                    let dest = m.u32(cpu.esp + 8)?;
+                    m.write(dest, report)?;
+                    cpu.eax = 0;
+                    m.ret(cpu, 8)
+                },
+            );
+        });
+        local.snapshot(main);
+        // The reference retains the game's actual local tables. The other side
+        // must bind this same world actor starting from a remote player record.
+        {
+            let mut m = main.memory();
+            m.set_u32(player_addr + 0x24, u32::MAX)?;
+            m.set_u16(player_addr + 0x28, u16::MAX)?;
+            let slot = bots::guest::slot(0);
+            m.set_u32(slot, 0)?;
+            m.set_u32(slot + bots::guest::SLOT_LOCAL_USER, u32::MAX)?;
+            let users = m.u32(0x4e8c20)?;
+            m.set_u32(users + 12, u32::MAX)?;
+            m.set_u32(users + 0x1c, u32::MAX)?;
         }
-        call(0x124c00, 0, 0, &[if tick % 3 == 1 { 34 } else { 33 }])?;
-        call(0x217c40, 0, 0, &[])?;
-        call(
-            0x186ab0,
-            0,
-            0,
-            &[player.raw(), dt.to_bits(), dt.to_bits(), WORK + 0x40],
-        )?;
-        let expected = local.runtime().memory().read::<ACTION_SIZE>(WORK + 0x40)?;
-        let action = remote.action(
-            main,
-            cpu,
-            SeatInput {
-                player,
-                player_addr,
-                unit,
-                tick,
-                dt,
-                pad,
-                reset: tick == 0,
-            },
-        )?;
-        assert_eq!(action, expected, "retail action at sample {tick}");
-        let word = |off: usize| u32::from_le_bytes(action[off..off + 4].try_into().unwrap());
-        acquired |= word(0x34) != u32::MAX
-            && word(0x3c) != u32::MAX
-            && (f32::from_bits(word(0x50)) > 0. || f32::from_bits(word(0x54)) > 0.);
-        fired |= action[0] & 0x40 != 0;
-        angles.push(action[4..12].to_vec());
+        let mut remote = Builder::new(main, WORK, path);
+        let dt = 1.0f32 / 30.0;
+        let mut acquired = false;
+        let mut fired = false;
+        let mut angles = Vec::new();
+        for tick in 0..30 {
+            let mut pad = input::State {
+                packet_number: tick,
+                ..Default::default()
+            };
+            pad.gamepad.thumb_rx = if tick < 10 {
+                0
+            } else if tick < 22 {
+                19000
+            } else {
+                -22000
+            };
+            pad.gamepad.thumb_ry = if tick < 10 { 0 } else { 11000 };
+            pad.gamepad.analog[input::AnalogButton::RightTrigger as usize] =
+                if tick % 6 < 3 { 255 } else { 0 };
+            local.runtime().memory().write(WORK, pad.to_bytes())?;
+            let mut call = |pc, eax, ecx, args: &[u32]| -> Result<()> {
+                local.call(&mut CpuAbi { eax, ecx, ..cpu }, pc, args)?;
+                Ok(())
+            };
+            if tick == 0 {
+                call(0x1872d0, 0, unit.raw(), &[])?;
+                call(0x190c34, 0, 0, &[])?;
+            }
+            call(0x124c00, 0, 0, &[if tick % 3 == 1 { 34 } else { 33 }])?;
+            call(0x217c40, 0, 0, &[])?;
+            call(
+                0x186ab0,
+                0,
+                0,
+                &[player.raw(), dt.to_bits(), dt.to_bits(), WORK + 0x40],
+            )?;
+            let expected = local.runtime().memory().read::<ACTION_SIZE>(WORK + 0x40)?;
+            let action = remote.action(
+                main,
+                cpu,
+                SeatInput {
+                    player,
+                    player_addr,
+                    unit,
+                    tick,
+                    dt,
+                    pad,
+                    reset: tick == 0,
+                },
+            )?;
+            assert_eq!(action, expected, "{path:?}: retail action at sample {tick}");
+            let word = |off: usize| u32::from_le_bytes(action[off..off + 4].try_into().unwrap());
+            acquired |= word(0x34) != u32::MAX
+                && word(0x3c) != u32::MAX
+                && (f32::from_bits(word(0x50)) > 0. || f32::from_bits(word(0x54)) > 0.);
+            fired |= action[0] & 0x40 != 0;
+            angles.push(action[4..12].to_vec());
+        }
+        assert!(fired && angles.windows(2).any(|p| p[0] != p[1]));
+        assert!(
+            acquired,
+            "fixture needs a visible opposing player within weapon assist range"
+        );
     }
-    assert!(fired && angles.windows(2).any(|p| p[0] != p[1]));
-    assert!(
-        acquired,
-        "fixture needs a visible opposing player within weapon assist range"
-    );
     Ok(())
 }
