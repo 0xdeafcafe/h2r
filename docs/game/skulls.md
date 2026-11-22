@@ -378,11 +378,20 @@ from data on the user's own disc (`boot::skulls_model`, feature
   `skulls_model::gpu::MAPS` (Cairo Station first) and takes the first that
   has the tag as a `weap`. Its render model is read as the native objects
   read one (`native_render::model_load::load_object_model`: the `hlmt`'s
-  default variant, highest detail level), with its first material's base
-  map. Nothing is copied into the repository. The log says which map and
+  default variant, highest detail level), with every opaque material's
+  base map. Each part draws with its own material's map; a part whose
+  material has none draws in the bone colour alone. Nothing is copied into the repository. The log says which map and
   tag it used, or why none loaded; until then, or after a failure, the
   page keeps the game's picture. To check the tag on a disc:
   `h2 tags 01b_spacestation | grep ball` lists it under `weap`.
+- **The orientation.** The model is authored as a dropped pickup, not
+  facing +x. Before framing, the picture turns it
+  (`ShowcaseMesh::oriented`, `showcase::Orientation`) so
+  `skulls_model::gpu::MODEL_FORWARD` (the face) points at the camera and
+  `MODEL_UP` (the crown) points up, then tips the face up by
+  `MODEL_PITCH_DEGREES`. The framing, sway and glyph placement all work
+  on the turned model. The preview's orientation sheet shows the 24
+  axis-aligned choices.
 - **The look** (`native_render::showcase`, `showcase.wgsl`): the opaque
   parts at rest, in their own target with a transparent background,
   framed so the bounding sphere fills 92% of the height. A warm key from
@@ -457,8 +466,12 @@ each skull's own (`skulls_model::tests`,
 the placement, sway and uniform (`native_render::showcase::tests`); and
 on a headless GPU, an invented sphere: the glyph darkens the forehead and
 no pixel outside it, another glyph marks it differently, a silhouette is
-dark with no glyph, the tint colours the bone and the composite stays in
-its rectangle (`crates/rewrites/native-render/tests/showcase_gpu.rs`).
+dark with no glyph, the tint colours the bone, each part takes its own
+material's base map (white, so the tint alone, without one) and the
+composite stays in its rectangle
+(`crates/rewrites/native-render/tests/showcase_gpu.rs`). The 24
+orientations are proper rotations that put forward on +x and up on +z
+(`native_render::showcase::tests`).
 
 **Preview from a disc**, without the game
 (`crates/extensions/game/src/skulls_model/gpu/preview.rs`, ignored by
@@ -467,9 +480,13 @@ default): `H2_DISC=<iso> H2_SKULLS_PREVIEW_DIR=<dir> cargo test -p boot
 as the game does and writes PNGs to that directory only: a locked Iron, a
 collected Iron (gold) and a collected Envy (silver), each at the picture
 box's size for a 640 by 480 target and at four times it; the model turned
-0, 90, 180 and 270 degrees with Iron's glyph (`facing-yaw-*.png`); and
-every glyph with its name (`glyphs.png`). It prints the map and tag, the
-mesh and its bounds. The directory must be outside the repository: the
+0, 90, 180 and 270 degrees with Iron's glyph (`facing-yaw-*.png`); the
+model as authored under each of the 24 axis-aligned orientations, gold
+with no glyph, each cell labelled with its forward and up and the one in
+use in gold (`orientations.png`); and every glyph with its name
+(`glyphs.png`). It prints the map and tag, each part's material and base
+map, the bounds as authored and turned, the orientation in use and the
+sheet's index-to-label list. The directory must be outside the repository: the
 pictures are made from disc data.
 
 ## Gold and silver

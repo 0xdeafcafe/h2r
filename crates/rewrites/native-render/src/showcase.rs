@@ -7,7 +7,8 @@
 //! The camera stands in front of the face (+x) looking back along -x, so
 //! the model's +y is the picture's right. The model turns about z through
 //! its bounds' centre; the decal is placed in model space, so it turns with
-//! it.
+//! it. A model authored another way round is first turned into this space
+//! by an [`Orientation`].
 
 use crate::camera::{Mat4, RenderCamera, transform};
 use crate::world::Aabb;
@@ -141,6 +142,130 @@ impl Placement {
             (p[1] - self.decal_centre[1]) / d + 0.5,
             0.5 - (p[2] - self.decal_centre[2]) / d,
         ]
+    }
+}
+
+/// A model axis: one of ±x, ±y, ±z.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Axis {
+    PosX,
+    NegX,
+    PosY,
+    NegY,
+    PosZ,
+    NegZ,
+}
+
+impl Axis {
+    pub const ALL: [Axis; 6] = [
+        Axis::PosX,
+        Axis::NegX,
+        Axis::PosY,
+        Axis::NegY,
+        Axis::PosZ,
+        Axis::NegZ,
+    ];
+
+    pub fn vector(self) -> [f32; 3] {
+        match self {
+            Axis::PosX => [1.0, 0.0, 0.0],
+            Axis::NegX => [-1.0, 0.0, 0.0],
+            Axis::PosY => [0.0, 1.0, 0.0],
+            Axis::NegY => [0.0, -1.0, 0.0],
+            Axis::PosZ => [0.0, 0.0, 1.0],
+            Axis::NegZ => [0.0, 0.0, -1.0],
+        }
+    }
+
+    /// `x`, `-x`, ... (the preview's label font has no `+`).
+    pub fn label(self) -> &'static str {
+        match self {
+            Axis::PosX => "x",
+            Axis::NegX => "-x",
+            Axis::PosY => "y",
+            Axis::NegY => "-y",
+            Axis::PosZ => "z",
+            Axis::NegZ => "-z",
+        }
+    }
+}
+
+/// Which way a model's face and crown point in its own space. The picture
+/// turns the model so `forward` becomes +x (towards the camera) and `up`
+/// becomes +z, then tips it by `pitch` degrees (positive tips the face
+/// up), before it frames it and places the decal. A model authored lying
+/// down (a dropped pickup) needs one other than [`Orientation::IDENTITY`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Orientation {
+    pub forward: Axis,
+    pub up: Axis,
+    pub pitch: f32,
+}
+
+impl Orientation {
+    pub const IDENTITY: Self = Self {
+        forward: Axis::PosX,
+        up: Axis::PosZ,
+        pitch: 0.0,
+    };
+
+    /// The 24 axis-aligned orientations (each forward with its four ups),
+    /// no pitch.
+    pub fn all() -> Vec<Self> {
+        let mut out = Vec::new();
+        for forward in Axis::ALL {
+            for up in Axis::ALL {
+                let (f, u) = (forward.vector(), up.vector());
+                let dot = f[0] * u[0] + f[1] * u[1] + f[2] * u[2];
+                if dot == 0.0 {
+                    out.push(Self {
+                        forward,
+                        up,
+                        pitch: 0.0,
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// `fwd -y up z`.
+    pub fn label(&self) -> String {
+        format!("fwd {} up {}", self.forward.label(), self.up.label())
+    }
+
+    /// Rows of the rotation: model space to the picture's (x forward, y
+    /// left, z up), the pitch applied after.
+    pub fn matrix(&self) -> [[f32; 3]; 3] {
+        let f = self.forward.vector();
+        let u = self.up.vector();
+        // left = up × forward (z × x = y).
+        let l = [
+            u[1] * f[2] - u[2] * f[1],
+            u[2] * f[0] - u[0] * f[2],
+            u[0] * f[1] - u[1] * f[0],
+        ];
+        let (s, c) = self.pitch.to_radians().sin_cos();
+        // Pitch about y: the face (x) towards up (z) for a positive angle.
+        [
+            [
+                c * f[0] - s * u[0],
+                c * f[1] - s * u[1],
+                c * f[2] - s * u[2],
+            ],
+            l,
+            [
+                s * f[0] + c * u[0],
+                s * f[1] + c * u[1],
+                s * f[2] + c * u[2],
+            ],
+        ]
+    }
+
+    /// `v` (a point or a normal) in the picture's space.
+    pub fn apply(&self, v: [f32; 3]) -> [f32; 3] {
+        let m = self.matrix();
+        m.map(|row| row[0] * v[0] + row[1] * v[1] + row[2] * v[2])
     }
 }
 
@@ -317,5 +442,70 @@ mod tests {
             "a silhouette never draws the glyph"
         );
         assert_eq!(std::mem::size_of::<Uniform>(), 2 * 64 + 4 * 16);
+    }
+
+    fn close(a: [f32; 3], b: [f32; 3]) -> bool {
+        (0..3).all(|i| (a[i] - b[i]).abs() < 1e-5)
+    }
+
+    #[test]
+    fn there_are_24_orientations_each_a_proper_rotation() {
+        let all = Orientation::all();
+        assert_eq!(all.len(), 24);
+        let mut labels: Vec<String> = all.iter().map(Orientation::label).collect();
+        labels.sort();
+        labels.dedup();
+        assert_eq!(labels.len(), 24, "every orientation has its own label");
+        for o in &all {
+            let m = o.matrix();
+            for i in 0..3 {
+                for j in 0..3 {
+                    let dot: f32 = (0..3).map(|k| m[i][k] * m[j][k]).sum();
+                    let want = if i == j { 1.0 } else { 0.0 };
+                    assert!((dot - want).abs() < 1e-5, "{}: rows orthonormal", o.label());
+                }
+            }
+            let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+                - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+                + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+            assert!((det - 1.0).abs() < 1e-5, "{}: no mirror", o.label());
+            assert!(
+                close(o.apply(o.forward.vector()), [1.0, 0.0, 0.0]),
+                "{}: face to +x",
+                o.label()
+            );
+            assert!(
+                close(o.apply(o.up.vector()), [0.0, 0.0, 1.0]),
+                "{}: crown to +z",
+                o.label()
+            );
+            assert!(
+                o.label()
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || " -./_".contains(c)),
+                "{}: the label font draws it",
+                o.label()
+            );
+        }
+    }
+
+    #[test]
+    fn the_identity_leaves_the_model_alone_and_pitch_tips_the_face_up() {
+        let p = [0.3, -0.2, 0.7];
+        assert!(close(Orientation::IDENTITY.apply(p), p));
+        let tipped = Orientation {
+            pitch: 90.0,
+            ..Orientation::IDENTITY
+        };
+        assert!(close(tipped.apply([1.0, 0.0, 0.0]), [0.0, 0.0, 1.0]));
+        assert!(close(tipped.apply([0.0, 1.0, 0.0]), [0.0, 1.0, 0.0]));
+        let lying = Orientation {
+            forward: Axis::NegY,
+            up: Axis::PosX,
+            pitch: 0.0,
+        };
+        assert!(close(lying.apply([0.0, -1.0, 0.0]), [1.0, 0.0, 0.0]));
+        assert!(close(lying.apply([1.0, 0.0, 0.0]), [0.0, 0.0, 1.0]));
+        assert_eq!(lying.label(), "fwd -y up x");
     }
 }

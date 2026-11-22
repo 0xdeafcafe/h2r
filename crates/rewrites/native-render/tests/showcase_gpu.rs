@@ -1,12 +1,14 @@
 //! The menu picture's renderer on a headless device (skips without an
 //! adapter), on an invented sphere: the glyph decal darkens the forehead
 //! and nothing else, a different glyph changes it, a silhouette is dark
-//! with no glyph, the tint colours the bone, and the composite lands in its
-//! rectangle only. No disc data.
+//! with no glyph, the tint colours the bone, each part takes its own
+//! material's base map (white, so the tint alone, without one), and the
+//! composite lands in its rectangle only. No disc data.
 
+use native_render::gpu::Image;
 use native_render::model::ModelVertex;
 use native_render::showcase::{Look, SILHOUETTE_FILL, SILHOUETTE_RIM};
-use native_render::showcase_gpu::{Showcase, ShowcaseMesh};
+use native_render::showcase_gpu::{Showcase, ShowcaseMesh, ShowcasePart};
 use native_render::world::Aabb;
 
 /// 64 texels a row is 256 bytes: a readback needs no row padding.
@@ -45,9 +47,24 @@ fn sphere() -> ShowcaseMesh {
             indices.extend([a, a + row, a + 1, a + 1, a + row, a + row + 1]);
         }
     }
+    // Two parts: the upper half (material 0) and the lower (material 1).
+    let half = rings / 2 * segments * 6;
+    let parts = vec![
+        ShowcasePart {
+            material: 0,
+            first_index: 0,
+            index_count: half,
+        },
+        ShowcasePart {
+            material: 1,
+            first_index: half,
+            index_count: indices.len() as u32 - half,
+        },
+    ];
     ShowcaseMesh {
         vertices,
         indices,
+        parts,
         bounds,
     }
 }
@@ -126,7 +143,7 @@ impl Rig {
             return None;
         };
         let mut showcase = Showcase::new(&ctx.device, &ctx.queue);
-        showcase.set_mesh(&ctx.device, &ctx.queue, &sphere(), None);
+        showcase.set_mesh(&ctx.device, &ctx.queue, &sphere(), &[]);
         Some(Self { ctx, showcase })
     }
 
@@ -419,4 +436,50 @@ fn the_composite_lands_in_its_rectangle_only() {
         }
     }
     assert!(changed > 50, "the picture was drawn: {changed}");
+}
+
+#[test]
+fn each_part_draws_its_own_base_map_and_one_without_takes_the_tint() {
+    let Some(mut rig) = Rig::new() else { return };
+    let white = Look {
+        tint: [1.0, 1.0, 1.0],
+        glyph: false,
+        ..look()
+    };
+    let plain = rig.draw(&white, &glyph(false));
+    let red = Image {
+        width: 1,
+        height: 1,
+        rgba: vec![255, 0, 0, 255],
+        mips: Vec::new(),
+        blocks: None,
+    };
+    let ctx = &rig.ctx;
+    rig.showcase
+        .set_mesh(&ctx.device, &ctx.queue, &sphere(), &[(1, red)]);
+    let mixed = rig.draw(&white, &glyph(false));
+    let p = rig.showcase.placement().unwrap();
+    let at = |z: f32| {
+        let [x, y] = p
+            .project([(1.0 - z * z).sqrt(), 0.0, z], 0.0, SIZE, SIZE)
+            .unwrap();
+        (y as u32 * SIZE + x as u32) as usize
+    };
+    let (upper, lower) = (at(0.4), at(-0.4));
+    assert_eq!(
+        mixed[upper], plain[upper],
+        "the part with no base map draws as white bone under the tint"
+    );
+    let [r, g, b, a] = plain[upper];
+    assert!(
+        a == 255 && r.max(g).max(b) - r.min(g).min(b) < 48 && r > 40,
+        "white bone under the (slightly coloured) lights: {:?}",
+        plain[upper]
+    );
+    let [r, g, b, a] = mixed[lower];
+    assert!(
+        a == 255 && r > 40 && u16::from(r) > 3 * u16::from(g.max(b)),
+        "the lower part takes material 1's red map: {:?}",
+        mixed[lower]
+    );
 }

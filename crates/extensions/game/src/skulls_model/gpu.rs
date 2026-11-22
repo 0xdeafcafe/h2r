@@ -11,6 +11,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use engine::memory::GuestMemory;
 use native_render::gpu::Image;
 use native_render::showcase;
+use native_render::showcase::{Axis, Orientation};
 use native_render::showcase_gpu::{Showcase, ShowcaseMesh};
 
 use super::Look;
@@ -36,10 +37,34 @@ pub const MAPS: [&str; 14] = [
     "01a_tutorial",
 ];
 
+/// Which way the skull model faces in its own space: the picture turns
+/// it so [`MODEL_FORWARD`] (the face) looks at the camera and
+/// [`MODEL_UP`] (the crown) points up, then tips the face up by
+/// [`MODEL_PITCH_DEGREES`]. The framing, the sway and the glyph's place
+/// all follow from the turned model. The preview's `orientations.png`
+/// shows the model under each of the 24 axis-aligned choices, labelled
+/// (docs/game/skulls.md, "The model picture").
+pub const MODEL_FORWARD: Axis = Axis::PosX;
+pub const MODEL_UP: Axis = Axis::PosZ;
+pub const MODEL_PITCH_DEGREES: f32 = 0.0;
+
+/// [`MODEL_FORWARD`], [`MODEL_UP`] and [`MODEL_PITCH_DEGREES`] together.
+pub const MODEL_ORIENTATION: Orientation = Orientation {
+    forward: MODEL_FORWARD,
+    up: MODEL_UP,
+    pitch: MODEL_PITCH_DEGREES,
+};
+
 /// The skull as read from the disc.
 pub struct Skull {
+    /// The model as authored (its own axes), for the preview's
+    /// orientation sheet.
+    pub rest: ShowcaseMesh,
+    /// The model turned by [`MODEL_ORIENTATION`]: what the picture draws.
     pub mesh: ShowcaseMesh,
-    pub base: Option<Image>,
+    /// Each opaque material's base map, by model-local material; a
+    /// material missing here draws in the bone tint alone.
+    pub bases: Vec<(u16, Image)>,
     /// Map and tag, for the log.
     pub source: String,
 }
@@ -90,13 +115,14 @@ pub fn skull() -> Option<Arc<Skull>> {
 /// preview, a disc's (`native_map::open_from_vfs`).
 pub type Open<'a> = dyn Fn(
         &str,
-    ) -> Result<(crate::native_map::NativeMap, assets::ResourceFiles), native_render::load::Error>
+    )
+        -> Result<(crate::native_map::NativeMap, assets::ResourceFiles), native_render::load::Error>
     + 'a;
 
 #[cfg(test)]
 mod preview;
 
-/// Reads the skull weapon's render model and its first base map from the
+/// Reads the skull weapon's render model and its base maps from the
 /// first of [`MAPS`] that has it, in the mounted game.
 fn load() -> Result<Skull, String> {
     load_with(&crate::native_map::open)
@@ -127,16 +153,23 @@ pub fn load_with(open: &Open<'_>) -> Result<Skull, String> {
         let mut raw = crate::native_world_glue::Raw(files);
         let loaded = native_render::model_load::load_object_model(&mut map, &ctx, &mut raw, id)
             .map_err(|e| format!("{name} {tag}: {e}"))?;
-        let mesh = ShowcaseMesh::from_model(&loaded.model)
+        let rest = ShowcaseMesh::from_model(&loaded.model)
             .ok_or_else(|| format!("{name} {tag}: nothing opaque to show"))?;
-        let base = loaded.model.materials().into_iter().find_map(|m| {
-            let shader = *loaded.shaders.get(usize::from(m))?;
-            let bitmap = native_render::load::base_map(&mut map, shader)?;
-            native_render::load::decode_first(&mut map, &mut raw.0, bitmap)
-        });
+        let bases = loaded
+            .model
+            .materials()
+            .into_iter()
+            .filter_map(|m| {
+                let shader = *loaded.shaders.get(usize::from(m))?;
+                let bitmap = native_render::load::base_map(&mut map, shader)?;
+                let image = native_render::load::decode_first(&mut map, &mut raw.0, bitmap)?;
+                Some((m, image))
+            })
+            .collect();
         return Ok(Skull {
-            mesh,
-            base,
+            mesh: rest.oriented(&MODEL_ORIENTATION),
+            rest,
+            bases,
             source: format!("{tag} in {name}"),
         });
     }
@@ -193,12 +226,7 @@ impl d3d::ExternalPass for Pass {
         let (_, showcase) = r.showcase.as_mut().expect("made above");
         let key = Arc::as_ptr(&self.skull) as usize;
         if r.mesh != Some(key) {
-            showcase.set_mesh(
-                t.device,
-                t.queue,
-                &self.skull.mesh,
-                self.skull.base.as_ref(),
-            );
+            showcase.set_mesh(t.device, t.queue, &self.skull.mesh, &self.skull.bases);
             r.mesh = Some(key);
         }
         let glyph = self.look.glyph().map(|_| self.look.skull);

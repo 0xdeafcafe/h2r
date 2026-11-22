@@ -9,7 +9,7 @@ use wgpu::util::DeviceExt;
 
 use crate::gpu::Image;
 use crate::model::{Model, ModelVertex};
-use crate::showcase::{Look, Placement, Uniform};
+use crate::showcase::{Look, Orientation, Placement, Uniform};
 use crate::world::Aabb;
 
 const SHADER: &str = include_str!("showcase.wgsl");
@@ -19,23 +19,41 @@ const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// The picture's own colour format (premultiplied).
 pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
+/// One run of a [`ShowcaseMesh`]'s indices drawn with one material's base
+/// map.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShowcasePart {
+    /// The model-local material.
+    pub material: u16,
+    pub first_index: u32,
+    pub index_count: u32,
+}
+
 /// A model's opaque parts at rest: its vertices as stored (rest space),
-/// the opaque draws' indices, and its bounds.
+/// the opaque draws' indices, each draw's material run, and its bounds.
 #[derive(Clone, Debug)]
 pub struct ShowcaseMesh {
     pub vertices: Vec<ModelVertex>,
     pub indices: Vec<u32>,
+    pub parts: Vec<ShowcasePart>,
     pub bounds: Aabb,
 }
 
 impl ShowcaseMesh {
-    /// `model`'s opaque draws, every material together (the picture draws
-    /// one base map). `None` with nothing opaque or no bounds.
+    /// `model`'s opaque draws, a part per draw. `None` with nothing opaque
+    /// or no bounds.
     pub fn from_model(model: &Model) -> Option<Self> {
         let mut indices = Vec::new();
+        let mut parts = Vec::new();
         for d in &model.draws {
             let range = d.first_index as usize..(d.first_index + d.index_count) as usize;
+            let first_index = indices.len() as u32;
             indices.extend_from_slice(model.indices.get(range)?);
+            parts.push(ShowcasePart {
+                material: d.material,
+                first_index,
+                index_count: d.index_count,
+            });
         }
         let mut bounds = Aabb::EMPTY;
         for &i in &indices {
@@ -44,15 +62,51 @@ impl ShowcaseMesh {
         (!indices.is_empty() && !bounds.is_empty()).then(|| Self {
             vertices: model.vertices.clone(),
             indices,
+            parts,
             bounds,
         })
     }
+
+    /// The mesh turned by `orientation` into the picture's space (x
+    /// forward, y left, z up): positions and normals rotated, bounds
+    /// recomputed from the drawn vertices, so the framing, the decal and
+    /// the sway all follow.
+    pub fn oriented(&self, orientation: &Orientation) -> Self {
+        let vertices: Vec<ModelVertex> = self
+            .vertices
+            .iter()
+            .map(|v| ModelVertex {
+                position: orientation.apply(v.position),
+                normal: orientation.apply(v.normal),
+                ..*v
+            })
+            .collect();
+        let mut bounds = Aabb::EMPTY;
+        for &i in &self.indices {
+            if let Some(v) = vertices.get(i as usize) {
+                bounds.add(v.position);
+            }
+        }
+        Self {
+            vertices,
+            indices: self.indices.clone(),
+            parts: self.parts.clone(),
+            bounds,
+        }
+    }
+}
+
+struct Part {
+    first_index: u32,
+    index_count: u32,
+    /// Its material's base map, or white (the bone tint alone).
+    base: wgpu::TextureView,
 }
 
 struct Mesh {
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
-    count: u32,
+    parts: Vec<Part>,
     placement: Placement,
 }
 
@@ -67,7 +121,8 @@ pub struct Showcase {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
-    base: wgpu::TextureView,
+    /// White: a part with no base map of its own shows the tint alone.
+    white: wgpu::TextureView,
     glyph: wgpu::TextureView,
     mesh: Option<Mesh>,
     target: Option<Target>,
@@ -226,7 +281,7 @@ impl Showcase {
             pipeline,
             layout,
             sampler,
-            base: texture(device, queue, "showcase base", (1, 1), FORMAT, &[255; 4]),
+            white: texture(device, queue, "showcase white", (1, 1), FORMAT, &[255; 4]),
             glyph: texture(
                 device,
                 queue,
@@ -243,13 +298,16 @@ impl Showcase {
         }
     }
 
-    /// Uploads the model to show and its base map (`None`: white).
+    /// Uploads the model to show and its materials' base maps: each part
+    /// draws with the image `bases` gives for its material, and a part
+    /// whose material has none (or a malformed one) draws white, so it
+    /// takes the look's tint alone.
     pub fn set_mesh(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         mesh: &ShowcaseMesh,
-        base: Option<&Image>,
+        bases: &[(u16, Image)],
     ) {
         let Some(placement) = Placement::of(&mesh.bounds) else {
             self.mesh = None;
@@ -262,6 +320,37 @@ impl Showcase {
                 usage,
             })
         };
+        let mut uploaded: Vec<(u16, wgpu::TextureView)> = Vec::new();
+        for (material, image) in bases {
+            let ok = image.width > 0
+                && image.height > 0
+                && image.rgba.len() == (4 * image.width * image.height) as usize;
+            if ok && !uploaded.iter().any(|(m, _)| m == material) {
+                let view = texture(
+                    device,
+                    queue,
+                    "showcase base",
+                    (image.width, image.height),
+                    FORMAT,
+                    &image.rgba,
+                );
+                uploaded.push((*material, view));
+            }
+        }
+        let count = mesh.indices.len() as u32;
+        let parts = mesh
+            .parts
+            .iter()
+            .filter(|p| p.index_count > 0 && p.first_index.saturating_add(p.index_count) <= count)
+            .map(|p| Part {
+                first_index: p.first_index,
+                index_count: p.index_count,
+                base: uploaded
+                    .iter()
+                    .find(|(m, _)| *m == p.material)
+                    .map_or_else(|| self.white.clone(), |(_, v)| v.clone()),
+            })
+            .collect();
         self.mesh = Some(Mesh {
             vertices: init(
                 "showcase vertices",
@@ -273,22 +362,9 @@ impl Showcase {
                 bytemuck::cast_slice(&mesh.indices),
                 wgpu::BufferUsages::INDEX,
             ),
-            count: mesh.indices.len() as u32,
+            parts,
             placement,
         });
-        self.base = match base.filter(|i| {
-            i.width > 0 && i.height > 0 && i.rgba.len() == (4 * i.width * i.height) as usize
-        }) {
-            Some(image) => texture(
-                device,
-                queue,
-                "showcase base",
-                (image.width, image.height),
-                FORMAT,
-                &image.rgba,
-            ),
-            None => texture(device, queue, "showcase base", (1, 1), FORMAT, &[255; 4]),
-        };
     }
 
     /// The uploaded model's placement.
@@ -394,31 +470,39 @@ impl Showcase {
             contents: bytemuck::bytes_of(&uniform),
             usage: wgpu::BufferUsages::UNIFORM,
         });
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("showcase"),
-            layout: &self.layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&self.base),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&self.glyph),
-                },
-            ],
-        });
+        let mesh = self.mesh.as_ref().expect("placement implies a mesh");
+        let groups: Vec<(u32, u32, wgpu::BindGroup)> = mesh
+            .parts
+            .iter()
+            .map(|part| {
+                let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("showcase"),
+                    layout: &self.layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(&part.base),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::Sampler(&self.sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: wgpu::BindingResource::TextureView(&self.glyph),
+                        },
+                    ],
+                });
+                (part.first_index, part.index_count, group)
+            })
+            .collect();
+        let (vertices, indices) = (mesh.vertices.clone(), mesh.indices.clone());
         let target = self.target(device, width, height);
         let (view, depth) = (target.view.clone(), target.depth.clone());
-        let mesh = self.mesh.as_ref().expect("placement implies a mesh");
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("showcase"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -443,10 +527,12 @@ impl Showcase {
             multiview_mask: None,
         });
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &group, &[]);
-        pass.set_vertex_buffer(0, mesh.vertices.slice(..));
-        pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
-        pass.draw_indexed(0..mesh.count, 0, 0..1);
+        pass.set_vertex_buffer(0, vertices.slice(..));
+        pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
+        for (first, count, group) in &groups {
+            pass.set_bind_group(0, group, &[]);
+            pass.draw_indexed(*first..first + count, 0, 0..1);
+        }
         true
     }
 

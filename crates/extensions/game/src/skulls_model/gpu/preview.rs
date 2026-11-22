@@ -1,7 +1,9 @@
 //! A preview of the model picture from your disc, for a look before
 //! landing, without the game: the skull in three states at the picture's
 //! in-game size and at four times it, the model from four sides with a
-//! glyph (where the forehead decal lands), and a sheet of every glyph.
+//! glyph (where the forehead decal lands), a sheet of the model as
+//! authored under each of the 24 axis-aligned orientations (to choose
+//! `MODEL_FORWARD` and `MODEL_UP`), and a sheet of every glyph.
 //! Writes only to `H2_SKULLS_PREVIEW_DIR`, which must be outside the
 //! repository (disc-derived pixels are never committed); prints the map
 //! and tag it loaded and the model's bounds.
@@ -33,12 +35,35 @@ fn over_background(rgba: &[u8], width: u32, height: u32) -> Canvas {
     c
 }
 
+/// `text` with only what [`Canvas::label`]'s font draws (letters, digits,
+/// space and `-./_`): an apostrophe or anything else is dropped.
+fn label_text(text: &str) -> String {
+    text.chars()
+        .filter(|c| c.is_ascii_alphanumeric() || " -./_".contains(*c))
+        .collect()
+}
+
+/// `text` split at spaces into lines of at most `width` characters.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match lines.last_mut() {
+            Some(line) if line.len() + 1 + word.len() <= width => {
+                line.push(' ');
+                line.push_str(word);
+            }
+            _ => lines.push(word.to_owned()),
+        }
+    }
+    lines
+}
+
 fn render(
     ctx: &gfx::GfxContext,
     showcase: &mut Showcase,
     look: &Look,
     yaw: f32,
-    (width, height): (u32, u32),
+    size: (u32, u32),
 ) -> Canvas {
     match look.glyph() {
         Some(strokes) => {
@@ -53,8 +78,17 @@ fn render(
         silhouette: look.silhouette(),
         glyph: look.glyph().is_some(),
     };
+    draw(ctx, showcase, &shown, size)
+}
+
+fn draw(
+    ctx: &gfx::GfxContext,
+    showcase: &mut Showcase,
+    shown: &showcase::Look,
+    (width, height): (u32, u32),
+) -> Canvas {
     let mut enc = ctx.device.create_command_encoder(&Default::default());
-    assert!(showcase.draw(&ctx.device, &mut enc, width, height, &shown));
+    assert!(showcase.draw(&ctx.device, &mut enc, width, height, shown));
     ctx.queue.submit([enc.finish()]);
     let texture = showcase.picture().expect("drawn");
     let rgba =
@@ -87,14 +121,81 @@ fn glyph_sheet(dir: &Path) {
                 sheet.rgba[o + k] = (bg + (255 - bg) * u32::from(*cov) / 255) as u8;
             }
         }
-        sheet.label(
-            &format!("{i} {}", about.name),
-            cx + 4,
-            cy + 8 + GLYPH + 10,
-            [200, 210, 230],
-        );
+        // The label font is 8 pixels a character: two lines at most.
+        let text = label_text(&format!("{i} {}", about.name));
+        for (n, line) in wrap(&text, (CELL.0 / 8 - 1) as usize)
+            .iter()
+            .take(2)
+            .enumerate()
+        {
+            sheet.label(
+                line,
+                cx + 4,
+                cy + 8 + GLYPH + 6 + 12 * n as u32,
+                [200, 210, 230],
+            );
+        }
     }
     write(&sheet, dir, "glyphs.png");
+}
+
+/// The model as authored, turned by each of the 24 axis-aligned
+/// orientations, gold with no glyph, unturned by the sway: one cell each,
+/// labelled with its forward and up. The one whose face looks out of the
+/// picture, crown up, gives `MODEL_FORWARD` and `MODEL_UP`.
+fn orientation_sheet(
+    ctx: &gfx::GfxContext,
+    showcase: &mut Showcase,
+    skull: &Skull,
+    tint: [f32; 3],
+    picture: (u32, u32),
+    dir: &Path,
+) {
+    const COLUMNS: u32 = 6;
+    const BAND: u32 = 22;
+    let all = Orientation::all();
+    let rows = (all.len() as u32).div_ceil(COLUMNS);
+    let cell = (picture.0, picture.1 + BAND);
+    let mut sheet = Canvas::new(COLUMNS * cell.0, rows * cell.1, BACKGROUND);
+    showcase.set_glyph(&ctx.device, &ctx.queue, 0, &[]);
+    let shown = showcase::Look {
+        yaw: 0.0,
+        tint,
+        silhouette: false,
+        glyph: false,
+    };
+    println!("orientations.png, left to right, top to bottom:");
+    for (i, o) in all.iter().enumerate() {
+        let (cx, cy) = ((i as u32 % COLUMNS) * cell.0, (i as u32 / COLUMNS) * cell.1);
+        showcase.set_mesh(
+            &ctx.device,
+            &ctx.queue,
+            &skull.rest.oriented(o),
+            &skull.bases,
+        );
+        let canvas = draw(ctx, showcase, &shown, picture);
+        sheet.blit(&canvas, cx, cy);
+        let chosen = o.forward == MODEL_FORWARD && o.up == MODEL_UP;
+        let label = format!("{i} {}", o.label());
+        let colour = if chosen {
+            [250, 210, 110]
+        } else {
+            [200, 210, 230]
+        };
+        sheet.label(&label, cx + 4, cy + picture.1 + 6, colour);
+        println!(
+            "  {i:2}: {}{}",
+            o.label(),
+            if chosen {
+                "  (MODEL_FORWARD, MODEL_UP now)"
+            } else {
+                ""
+            }
+        );
+    }
+    write(&sheet, dir, "orientations.png");
+    // Back to the picture's own orientation.
+    showcase.set_mesh(&ctx.device, &ctx.queue, &skull.mesh, &skull.bases);
 }
 
 #[test]
@@ -120,23 +221,43 @@ fn preview() {
     let placement = showcase::Placement::of(&b).expect("a placement");
     println!("loaded {}", skull.source);
     println!(
-        "  {} vertices, {} triangles, base map {}",
+        "  {} vertices, {} triangles",
         skull.mesh.vertices.len(),
         skull.mesh.indices.len() / 3,
-        skull
-            .base
-            .as_ref()
-            .map_or("none".to_owned(), |i| format!("{}x{}", i.width, i.height)),
+    );
+    for part in &skull.mesh.parts {
+        let base = skull
+            .bases
+            .iter()
+            .find(|(m, _)| *m == part.material)
+            .map_or("none, drawn in the bone tint".to_owned(), |(_, i)| {
+                format!("{}x{}", i.width, i.height)
+            });
+        println!(
+            "  part: material {}, {} triangles, base map {base}",
+            part.material,
+            part.index_count / 3
+        );
+    }
+    let r = skull.rest.bounds;
+    println!(
+        "  bounds as authored x {:.3}..{:.3}, y {:.3}..{:.3}, z {:.3}..{:.3}",
+        r.min[0], r.max[0], r.min[1], r.max[1], r.min[2], r.max[2]
     );
     println!(
-        "  bounds x {:.3}..{:.3}, y {:.3}..{:.3}, z {:.3}..{:.3}",
-        b.min[0], b.max[0], b.min[1], b.max[1], b.min[2], b.max[2]
-    );
-    println!(
-        "  facing: the picture assumes the face looks along +x (camera at +x, the model's +y \
-         on the picture's right, +z up). The glyph is centred at ({:.3}, {:.3}, {:.3}), \
-         radius {:.3}. facing-yaw-*.png show the model turned 0, 90, 180 and 270 degrees \
-         with Iron's glyph: in facing-yaw-0.png it should sit on the forehead.",
+        "  facing: {} pitch {} degrees (MODEL_FORWARD, MODEL_UP, MODEL_PITCH_DEGREES); turned, \
+         bounds x {:.3}..{:.3}, y {:.3}..{:.3}, z {:.3}..{:.3}. The picture shows the turned \
+         model's +x to the camera, its +y on the picture's right, +z up. The glyph is centred \
+         at ({:.3}, {:.3}, {:.3}), radius {:.3}. facing-yaw-*.png show it turned 0, 90, 180 \
+         and 270 degrees with Iron's glyph: in facing-yaw-0.png it should sit on the forehead.",
+        MODEL_ORIENTATION.label(),
+        MODEL_PITCH_DEGREES,
+        b.min[0],
+        b.max[0],
+        b.min[1],
+        b.max[1],
+        b.min[2],
+        b.max[2],
         placement.decal_centre[0],
         placement.decal_centre[1],
         placement.decal_centre[2],
@@ -148,7 +269,7 @@ fn preview() {
         return;
     };
     let mut showcase = Showcase::new(&ctx.device, &ctx.queue);
-    showcase.set_mesh(&ctx.device, &ctx.queue, &skull.mesh, skull.base.as_ref());
+    showcase.set_mesh(&ctx.device, &ctx.queue, &skull.mesh, &skull.bases);
     let iron = ABOUT.iter().position(|a| a.name == "Iron").expect("Iron");
     let silver = ABOUT
         .iter()
@@ -196,6 +317,7 @@ fn preview() {
         skull: iron,
         collected: true,
     };
+    orientation_sheet(&ctx, &mut showcase, &skull, gold.tint(), size, &dir);
     for degrees in [0u32, 90, 180, 270] {
         let yaw = (degrees as f32).to_radians();
         let canvas = render(&ctx, &mut showcase, &gold, yaw, (size.0 * 4, size.1 * 4));
