@@ -494,6 +494,7 @@ h2 lab sim --host laptop --branch perf-work --wait --repeat 3 \
 | `--env KEY=VALUE` | run environment from the same allowlist as `lab run`, set before the arm's `H2_FEATURES` |
 | `--branch`, `--rev`, `--current`, `--no-sync`, `--feature`, `--build-env` | the build, as for [a run](#builds-go-by-branch). `H2_OPT` must be the build's, and is, because the run uses the image it was built with |
 | `--name TEXT`, `--note TEXT`, `--mem-limit SIZE` | label (default `sim <file stem>`), note and footprint cap, as for a run |
+| `--data DIR` | the driving Mac's data root, whose `bots/` is uploaded (default: `h2`'s data root, `H2_DATA`) |
 | `--wait [--to DIR]` | wait, fetch the run, print the summary |
 
 The client sends the file and every file it names (a batch's match file
@@ -504,15 +505,28 @@ references keep resolving. A batch's `out` must be a relative path without
 before it runs. A missing tuning file, a bad `--repeat` or an unknown
 variable is refused on the driving Mac before anything syncs.
 
+The bots' data goes with the files. For every map the file names (a
+match's `map`, a batch's `maps`, else its match's `map`) the client
+uploads `bots/<map>.<bsp>.bots` and `.vis` from the data root, up to 64
+files and 60 MiB (`bots::cache::file_name`, `bots::vis::file_name`,
+`simbench::bot_data`). A map whose `<map>.0.bots` is missing is refused
+on the driving Mac, naming `h2 bots nav <map>`: a sim never builds a mesh,
+and bots without one stand still, so the benchmark would measure an empty
+match. The host keeps the uploaded keys to `bots/<plain name>.bots|.vis`
+(`proto::check_sim_data_key`).
+
 The job takes the host's activity lock, queue place, [player
 consent](#player-consent-before-a-job) and [memory
 cap](#memory-limits-and-reports) like a run (the cap applies to the `h2
 sim` process; a batch's matches are its children, so with `--parallel` the
 machine memory-pressure stop is the bound that covers them). It builds or
 reuses the commit's image first. `h2 sim` never builds, so the sim runs on
-that image: `--out` is the lab's `image/` (or the `--current` image), the
-data root is the host's, and its `bots/` must hold each map's nav mesh
-(`h2 bots nav <map>`, once on the host).
+that image: `--out` is the lab's `image/` (or the `--current` image).
+`--data` is the job's own data root, `runs/<id>/sim-data/` (`simbench::stage_data`):
+every entry of the host's data root linked in except `bots/`,
+and the driver's uploaded meshes and grids as its `bots/`. It is removed
+when the job ends. A request without bot data (an older client) runs on
+the host's own data root, whose `bots/` must then hold each map's nav mesh.
 
 ### Run order and files
 
@@ -532,7 +546,11 @@ The per-run data directories (`<out>/runs/<id>/data`, about 1.3 GB each)
 are removed when the step ends, including after a crash or `h2 lab stop`;
 reports and logs stay. A step that exits non-zero, leaves no report or
 leaves an unreadable one is a failed run: the job finishes `failed` after
-the remaining steps, with the failures in its notes and the summary.
+the remaining steps, with the failures in its notes and the summary. A step
+whose report has `nav` other than `loaded`, or whose log has the line "nav
+mesh none yet", is failed too, with the reason "nav mesh missing"
+(`simbench::nav_problem`): its bots stood still and its speed is not a bot
+match's.
 
 ### The summary
 
