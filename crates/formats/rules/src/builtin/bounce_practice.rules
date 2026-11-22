@@ -1,34 +1,23 @@
-// Bounce Practice: a point for each superbounce, three for the first
-// bounce anyone lands on a spot, and low gravity if the variant asks.
-// Bounces are observed, never made.
-// docs/game/rules-engine.md, "Firefight, AI and bounces" and "Payoff".
-//
-// Entries a host cannot make yet (`verify::unhostable`): none. `on bounce`
-// waits on the bounce detector (roadmap phase 8).
+// Bounce Practice: the community's practice variant, settings only. The
+// game scores it as Slayer does; `bounce_hunt.rules` is the bounce-scoring
+// example, and Superbounce is the list's bounce-scoring game.
+// docs/game/community-gametypes.md.
 rules "Bounce Practice" 1
 carrier slayer
-requires game.traits
+list research
+scoring carrier
+about "Practice super bounces and crouch jumps with a magnum: no score, no time limit, tough players, quick respawns and nothing to pick up."
+quick respawn_time, starting_weapon, shields, damage_resistance, time_limit
 
-option low_gravity: bool = false "Low gravity" "Half gravity, for practising the approach"
-option first_points: int 1..5 = 3 "First find" "Points for the first bounce on a spot"
-
-object var found: bool = false
-player var bounces: int = 0
-
-on init {
-    if low_gravity { set_gravity(0.5) }
-}
-
-on round_start {
-    for each players p { p.bounces = 0 }
-}
-
-on bounce(p, spot, chain, monster) {
-    p.bounces = p.bounces + 1
-    if not spot.found {
-        spot.found = true
-        score(p, first_points)
-    } else {
-        score(p, 1)
-    }
+settings {
+    score_limit = none
+    time_limit = none
+    respawn_time = 3s
+    suicide_penalty = 0s
+    shields = overshields
+    damage_resistance = true
+    starting_weapon = magnum
+    secondary_weapon = none
+    weapons_on_map = none
+    grenades_on_map = false
 }
