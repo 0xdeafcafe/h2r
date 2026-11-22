@@ -1291,7 +1291,7 @@ impl Touchdown {
             "bounce"
         } else if self.word.is_some_and(|w| !is_primed(w)) {
             "not_primed"
-        } else if self.miss > superbounce::CATCH {
+        } else if self.miss > superbounce::catch() {
             "missed"
         } else if need > 0.0 && self.speed_in < need {
             "too_slow"

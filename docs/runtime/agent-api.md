@@ -44,6 +44,7 @@ connection to hold `session.claim`.
 | `havok.pair.set` | claim | [`havok.pair.set`](#havokpairset) |
 | `superbounce.state` | read | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `superbounce.set` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
+| `superbounce.reload`, `superbounce.tune` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `superbounce.medal_test` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `superbounce.assist` | read | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `superbounce.assist_test` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
@@ -1053,6 +1054,48 @@ an index the map has no run at, or (to play one) without the
 h2 agent superbounce.ghosts
 h2 agent superbounce.ghost_show '{"spot":0}'
 h2 agent superbounce.ghost_show '{"stop":true}'
+```
+
+`superbounce.reload {map?}` (access: act) re-reads a map's `<map>.spots`,
+`.learned`, `.verified` and `.ghosts` from the bots directory, for the
+loaded map without `map`, and republishes them the way a map load does,
+with no restart: the bots' spot table and its generation (the brains read
+their spots again), and the mode's own copy of the loaded map's spots,
+which its marks, HUD, assist and tracker read. The `.spots` file is taken
+when it is the current scanner's (its map fingerprint is not checked); a
+missing, damaged or other-version one leaves the scan as it was, and
+`spots_file` says so. The mode keeps its own scan of the loaded BSP, so a
+changed `.spots` reaches the bots and a changed `.verified` or `.learned`
+reaches everything. The call runs on the game thread at a tick boundary.
+The answer is `map`, `dir`, `spots_file` (`read`, `absent` or
+`unread: <why>`), `before` and `after` (the scan as the bots keep it with
+the files applied: `total`, `crouch`, `slot`, `crease`, `vee`, `busy`,
+`likely`, `proven`, `failed` and `marked`), `verified_entries`,
+`learned_entries`, `ghosts_before`, `ghosts_after` and `mode_updated`.
+Refused with no map and no `map`, or with no bots directory. Game side:
+`crates/extensions/game/src/superbounce_reload.rs`,
+`bots::spots::reload_in`.
+
+`superbounce.tune {bounce_speed?, catch?, launch_gain?}` (access: act)
+sets live overrides of the model's constants: the touchdown speed every
+seam needs (`superbounce::speed::BOUNCE_SPEED`, above 0), the catch
+(`superbounce::CATCH`, world units, 0 up to but not including 1) and the
+launch gained per unit/s over the threshold (`speed::EXCESS_GAIN`, 0 or
+more). A key left out stays as it is and `null` clears its override. Every
+key is checked before any is applied, and an unknown key is refused. The
+model reads each constant through one accessor
+(`superbounce::speed::bounce_speed`, `excess_gain` and
+`superbounce::catch`, over `superbounce::tune`), so an override reaches
+the scan's `need`, the launch, the landing verdict, the assist and the
+bots at once. Overrides live in memory only and are gone with the
+process. The answer is `bounce_speed`, `catch` and `launch_gain`, each
+`{value, source}` with `source` `default` or `override`.
+
+```sh
+h2 agent superbounce.reload
+h2 agent superbounce.reload '{"map":"zanzibar"}'
+h2 agent superbounce.tune '{"bounce_speed":5.0,"catch":0.15}'
+h2 agent superbounce.tune '{"bounce_speed":null,"catch":null,"launch_gain":null}'
 ```
 
 ## `profile`: where a frame goes

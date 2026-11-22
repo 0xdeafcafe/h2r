@@ -378,3 +378,41 @@ fn a_candidate_crease_trains_but_does_not_play_until_proved() {
     assert!(!slot.candidate && slot.plays());
     assert_eq!(slot.need, 4.3);
 }
+
+// ---- reloading (superbounce.reload) ----
+
+#[test]
+fn a_reload_republishes_what_the_files_now_say() {
+    let dir = std::env::temp_dir().join(format!("h2-reload-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let map = "reload_test_map";
+    publish(map, vec![crouch_spot([1.0, 1.0, 1.0])]);
+    assert_eq!(scanned(map).len(), 1);
+    // No files: the kept scan stays, and the verified entries are none.
+    let r = reload_in(&dir, map);
+    assert_eq!((r.spots_file.as_str(), r.verified, r.learned), ("absent", 0, 0));
+    assert_eq!(scanned(map).len(), 1);
+    // A changed spots file replaces the scan, any case of the name.
+    let two = vec![crouch_spot([1.0, 1.0, 1.0]), bounce_spot([4.0, 5.0, 6.0], 10.0, 0.5)];
+    write(&dir, map, stamp(7), &two).unwrap();
+    let before = generation();
+    let r = reload_in(&dir, "RELOAD_TEST_MAP");
+    assert_eq!(r.spots_file, "read");
+    assert!(generation() > before);
+    assert_eq!(scanned(map).len(), 2);
+    // A verified file written by hand is picked up.
+    std::fs::write(
+        dir.join(verified_file_name(map)),
+        verified::to_text(&[entry(Kind::Crouch, Status::Failed, [1.0, 1.0, 1.0])]),
+    )
+    .unwrap();
+    assert_eq!(reload_in(&dir, map).verified, 1);
+    assert_eq!(verified_for(map).len(), 1);
+    // Another scanner's file is not taken.
+    let mut old = to_bytes(&two[..1], stamp(7));
+    old[8..12].copy_from_slice(&0u32.to_le_bytes());
+    std::fs::write(dir.join(file_name(map)), old).unwrap();
+    assert!(reload_in(&dir, map).spots_file.starts_with("unread"));
+    assert_eq!(scanned(map).len(), 2);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
