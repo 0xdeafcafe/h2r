@@ -2066,6 +2066,7 @@ mod tests {
             parts: vec![(0, 5, vec![[2, 1, 0]]), (1, 0, vec![[0, 1, 2]]), (2, 3, vec![[0, 2, 1]]), (3, 1, vec![[1, 2, 0]])],
             // Part 2's subparts 7..10, the second empty.
             subparts: HashMap::from([(2, LitSubparts { first: 7, triangles: vec![vec![[0, 2, 1]], Vec::new(), vec![[2, 1, 0]]] })]),
+            listed: HashMap::new(),
         };
         // An opaque pass: no blending, depth written (both must be set).
         let opaque = |index: usize| {
