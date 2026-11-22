@@ -8,7 +8,8 @@
 // (Bouncetacular), and twice that for a Monster Bounce; a Bounced (a fall
 // out of the map during a bounce) costs a point, and so does a death by
 // the player's own hand. The medals, chains and the Monster test are the
-// host's.
+// host's, and so are the HUD's pieces, which the last five options turn
+// off.
 // docs/game/superbounce.md, "The superbounce game type", and
 // docs/game/rules-engine.md, "Firefight, AI and bounces".
 //
@@ -22,6 +23,17 @@ option suicide_costs: bool = true "Suicide penalty" "A death with no killer, or 
 option bounce_points: int 0..5 = 1 "Bounce points" "Points for each superbounce, times its place in the chain"
 option bounced_costs: bool = true "Bounced penalty" "A fall out of the map during a bounce costs a point"
 option monster_double: bool = true "Monster double" "A Monster Bounce scores double"
+
+// The HUD's pieces: the host reads these from the variant record by name
+// (`superbounce_options`), the script does not. Each is on unless a
+// variant turns it off. docs/game/superbounce.md, "The HUD's options".
+enum Targets { common, likely, all }
+
+option targets: Targets = Targets.likely "Seam targets" "Which seams get a navpoint: the proven ones, those likely to work, or every one the scan found"
+option velocity: bool = true "Velocity" "Speed and direction on the HUD while moving"
+option alignment: bool = true "Fall alignment" "On a fall, the speed against what the seam needs and which way to steer"
+option miss_info: bool = true "Miss info" "Why a landing did not bounce, on the HUD for a few seconds"
+option medals: bool = true "Medals" "Bounce medals in the list, and their announcer"
 
 player var bounces: int = 0
 

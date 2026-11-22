@@ -1010,6 +1010,23 @@ impl Ir {
         bits as u32
     }
 
+    /// The value of the option named `name` in the record's option bits
+    /// `bits`, as the VM reads it (`lo` plus its raw field, at most `hi`);
+    /// `None` when the script declares no such option. A bool is 0 or 1,
+    /// an enum the index of its value ([`Ir::option_values`]). For a host
+    /// that reads a script's options without running it.
+    pub fn option_value(&self, bits: u32, name: &str) -> Option<i32> {
+        let index = (0..self.options.len()).find(|&i| self.option_name(i) == name)?;
+        let o = &self.options[index];
+        let off = self.option_offsets()[index];
+        let width = o.bits();
+        if width == 0 || off >= 64 {
+            return Some(o.lo);
+        }
+        let raw = (u64::from(bits) >> off) & ((1u64 << width) - 1);
+        Some((i64::from(o.lo) + raw as i64).min(i64::from(o.hi)) as i32)
+    }
+
     /// An option's name, from the string table.
     pub fn option_name(&self, index: usize) -> &str {
         self.options
