@@ -2,7 +2,8 @@
 //! tuning files ([`config`]), pacing and speed-up ([`clock`]), the metrics
 //! tally and the match report ([`metrics`]), the superbounce practice's
 //! tally ([`bounce`]), the A/B comparison of a batch ([`compare`]) and
-//! the bounce tuning sweep ([`sweep`]).
+//! the bounce tuning sweep ([`sweep`]) and the bounce site training's
+//! plan and report ([`train`]).
 //!
 //! Nothing here touches the game: the boot glue (`boot::sim_glue`) reads
 //! the game and feeds this crate plain values, and `h2 sim` (the CLI) runs
@@ -16,6 +17,7 @@ pub mod config;
 pub mod diff;
 pub mod metrics;
 pub mod sweep;
+pub mod train;
 
 /// The environment variable that turns sim mode on: the match file's path.
 pub const ENV: &str = "H2_SIM";

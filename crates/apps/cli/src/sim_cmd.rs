@@ -38,6 +38,9 @@ const USAGE: &str = "usage:
   h2 sim compare <results dir>
   h2 sim sweep <sweep.toml> [--dry-run] [batch flags: --parallel N --disc ISO --out DIR ...]
   h2 sim harvest <results dir> [--data DIR] [--dry-run]
+  h2 sim train <train.toml> [--map NAME]... [--budget N] [--status | --dry-run]
+                          [--reopen] [--no-merge] [--keep-data] [--parallel N]
+                          [--disc ISO] [--out DIR] [--data DIR] [--tier ...] [--pace PACE]
   h2 sim diff <report a.json> <report b.json>
   h2 sim audit-merge OUTPUT INPUT [INPUT ...]
   h2 sim audit-coverage OUTPUT AUDIT [AUDIT ...]
@@ -73,7 +76,15 @@ verified and ghosts files, kept in <out>/runs/<id>/harvest/{start,end}
 (docs/runtime/sim.md, \"Sweeping the bounce tuning\"). Flags after the file
 go to each `h2 sim batch`.
 `harvest` merges what each run of a results directory proved and the ghost
-runs it kept into --data's bots/ (--dry-run: what it would add).";
+runs it kept into --data's bots/ (--dry-run: what it would add).
+`train` plays the train file's match as `shards` runs a map, each searching the
+bounce knobs of its shard's sites on its own copy of the map's .learned, then
+merges the runs' files into --data's bots/ (--no-merge: left in the runs'
+harvest/end for `harvest`) and writes <out>/train.json and train.md
+(docs/runtime/sim.md, \"Training the bounce sites\"). --budget and --map go over
+the file's values; --status prints the table from the running runs' files;
+--dry-run lists the runs and each shard's sites; --reopen first turns the
+dead and blocked sites back to open.";
 
 pub fn run(args: Vec<String>) -> Result<()> {
     let mut it = args.into_iter();
@@ -84,6 +95,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         Some("batch") => batch(it.collect()),
         Some("sweep") => sweep(it.collect()),
         Some("harvest") => harvest(it.collect()),
+        Some("train") => train(it.collect()),
         Some("compare") => {
             let dir = it.next().context(USAGE)?;
             let c = compare_dir(Path::new(&dir))?;
@@ -534,6 +546,13 @@ impl RunDir {
     }
 }
 
+/// The files a bounce run keeps of its own: verified, ghosts and (a
+/// training run's) learned. A run writes its `.learned` on its own copy
+/// whatever `bots::harvest::run_owned` says.
+fn bounce_owned(name: &str) -> bool {
+    bots::harvest::run_owned(name) || name.ends_with(".learned")
+}
+
 /// A superbounce run's data: like [`make_data`]'s, but its `bots/` is a
 /// directory of its own, each shared file linked but the maps' verified
 /// and ghosts files, which are copied in and to `harvest/start`. The run
@@ -565,7 +584,7 @@ fn make_bounce_data(run: &RunDir, shared: &Path) -> Result<()> {
         let entry = entry?;
         let name = entry.file_name();
         let target = own.join(&name);
-        let owned = name.to_str().is_some_and(bots::harvest::run_owned);
+        let owned = name.to_str().is_some_and(bounce_owned);
         if owned && entry.file_type()?.is_file() {
             std::fs::copy(entry.path(), &target)
                 .with_context(|| format!("copying {}", entry.path().display()))?;
@@ -592,7 +611,7 @@ fn keep_bounce_files(run: &RunDir) -> Result<usize> {
     for entry in entries {
         let entry = entry?;
         let name = entry.file_name();
-        if name.to_str().is_some_and(bots::harvest::run_owned) && entry.file_type()?.is_file() {
+        if name.to_str().is_some_and(bounce_owned) && entry.file_type()?.is_file() {
             std::fs::copy(entry.path(), end.join(&name))?;
             kept += 1;
         }
@@ -809,20 +828,9 @@ fn batch(args: Vec<String>) -> Result<()> {
         return finish_batch(&b, failed, started);
     }
     let upload = common.upload_account()?.is_some();
-    // Checked before the children start: a missing image fails once.
-    let disc = common.disc()?;
-    let xbe = boot::read_xbe(&disc)?;
-    let choice = match &common.tier {
-        Some(t) => boot::tier::Choice::parse(t)?,
-        None => boot::tier::Choice::Clang,
-    };
-    let plan = plan_sim_module(&xbe, &common.out(), choice)?;
-    if plan.build {
-        bail!("h2 sim batch: the image isn't built; `h2 build` first (sim never builds)");
-    }
+    let plan = check_image(&mut common, "batch")?;
     anyhow::ensure!(!audit || plan.tier != boot::tier::Tier::Host,
         "sim batch audit requires a full generated module");
-    let shared = common.data();
     std::fs::create_dir_all(&b.out)?;
     let batch_id = upload.then(live_proto::sign::random_id);
     let locks = b.out.join(".live-locks");
@@ -832,58 +840,8 @@ fn batch(args: Vec<String>) -> Result<()> {
     }
     let batch = batch_id.as_deref().map(|id| (id, locks.as_path()));
     prepare_output(&b, &file, &arms, batch_id.as_deref())?;
-    common.disc = Some(disc);
-    let next = AtomicUsize::new(0);
-    let lines = Mutex::new(Vec::new());
-    let failed = AtomicUsize::new(0);
     let t = Instant::now();
-    std::thread::scope(|s| {
-        for _ in 0..parallel.min(b.runs.len().max(1)) {
-            s.spawn(|| {
-                loop {
-                    let n = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(r) = b.runs.get(n) else { break };
-                    let rd = RunDir::new(&b.out, &r.id);
-                    let bounce = r.config.superbounce == Some(true);
-                    let data = if bounce {
-                        make_bounce_data(&rd, &shared)
-                    } else {
-                        make_data(&rd, &shared)
-                    };
-                    let result = data
-                        .and_then(|()| stage_map_pack(&rd, &shared, &r.map))
-                        .and_then(|()| {
-                            let status = spawn(&common, &rd, batch, audit)?.wait()?;
-                            if !status.success() {
-                                bail!("sim child exited {status}. See {}", rd.log().display());
-                            }
-                            Ok(())
-                        });
-                    let how = match result {
-                        Ok(()) => "boot".into(),
-                        Err(e) => {
-                            failed.fetch_add(1, Ordering::Relaxed);
-                            format!("failed: {e:#}")
-                        }
-                    };
-                    if bounce && let Err(e) = keep_bounce_files(&rd) {
-                        eprintln!("{}: keeping the bounce files: {e:#}", r.id);
-                    }
-                    if !keep {
-                        let _ = std::fs::remove_dir_all(rd.data());
-                    }
-                    let got = if rd.report().exists() {
-                        "report"
-                    } else {
-                        "NO REPORT"
-                    };
-                    let line = format!("{:<28} {got}  {how}", r.id);
-                    println!("[{}/{}] {line}", n + 1, b.runs.len());
-                    lines.lock().unwrap_or_else(|e| e.into_inner()).push(line);
-                }
-            });
-        }
-    });
+    let failed = play_runs(&common, &b, batch, audit, keep, parallel);
     if audit {
         let mut merged = boot::host_audit::Report::default();
         let mut missing = Vec::new();
@@ -915,7 +873,89 @@ fn batch(args: Vec<String>) -> Result<()> {
         )?;
         println!("audit: {} runs, {} missing reports", merged.runs, missing.len());
     }
-    finish_batch(&b, failed.load(Ordering::Relaxed), t)
+    finish_batch(&b, failed, t)
+}
+
+/// Checks the image is built, before any child starts (a missing image
+/// fails once), and fixes the disc in `common` for the children.
+fn check_image(common: &mut Common, what: &str) -> Result<boot::tier::Plan> {
+    let disc = common.disc()?;
+    let xbe = boot::read_xbe(&disc)?;
+    let choice = match &common.tier {
+        Some(t) => boot::tier::Choice::parse(t)?,
+        None => boot::tier::Choice::Clang,
+    };
+    let plan = plan_sim_module(&xbe, &common.out(), choice)?;
+    if plan.build {
+        bail!("h2 sim {what}: the image isn't built; `h2 build` first (sim never builds)");
+    }
+    common.disc = Some(disc);
+    Ok(plan)
+}
+
+/// Plays a batch's runs, `parallel` at a time, each on its own data
+/// directory (a bounce run on its own proofs, kept in `harvest/end`).
+/// How many failed.
+fn play_runs(
+    common: &Common,
+    b: &sim_bench::config::Batch,
+    batch: Option<(&str, &Path)>,
+    audit: bool,
+    keep: bool,
+    parallel: usize,
+) -> usize {
+    let shared = common.data();
+    let next = AtomicUsize::new(0);
+    let lines = Mutex::new(Vec::new());
+    let failed = AtomicUsize::new(0);
+    std::thread::scope(|s| {
+        for _ in 0..parallel.min(b.runs.len().max(1)) {
+            s.spawn(|| {
+                loop {
+                    let n = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(r) = b.runs.get(n) else { break };
+                    let rd = RunDir::new(&b.out, &r.id);
+                    let bounce = r.config.superbounce == Some(true);
+                    let data = if bounce {
+                        make_bounce_data(&rd, &shared)
+                    } else {
+                        make_data(&rd, &shared)
+                    };
+                    let result = data
+                        .and_then(|()| stage_map_pack(&rd, &shared, &r.map))
+                        .and_then(|()| {
+                            let status = spawn(common, &rd, batch, audit)?.wait()?;
+                            if !status.success() {
+                                bail!("sim child exited {status}. See {}", rd.log().display());
+                            }
+                            Ok(())
+                        });
+                    let how = match result {
+                        Ok(()) => "boot".into(),
+                        Err(e) => {
+                            failed.fetch_add(1, Ordering::Relaxed);
+                            format!("failed: {e:#}")
+                        }
+                    };
+                    if bounce && let Err(e) = keep_bounce_files(&rd) {
+                        eprintln!("{}: keeping the bounce files: {e:#}", r.id);
+                    }
+                    if !keep {
+                        let _ = std::fs::remove_dir_all(rd.data());
+                    }
+                    let got = if rd.report().exists() {
+                        "report"
+                    } else {
+                        "NO REPORT"
+                    };
+                    let line = format!("{:<28} {got}  {how}", r.id);
+                    println!("[{}/{}] {line}", n + 1, b.runs.len());
+                    lines.lock().unwrap_or_else(|e| e.into_inner()).push(line);
+                }
+            });
+        }
+    });
+    failed.load(Ordering::Relaxed)
 }
 
 /// `h2 sim sweep`: the sweep file's batch once per candidate, then the
@@ -1045,6 +1085,262 @@ fn sweep(args: Vec<String>) -> Result<()> {
     Ok(())
 }
 
+/// What `h2 sim train` was asked.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct TrainArgs {
+    file: Option<PathBuf>,
+    common: Common,
+    over: sim_bench::train::Overrides,
+    status: bool,
+    dry: bool,
+    reopen: bool,
+    no_merge: bool,
+    keep: bool,
+    parallel: Option<usize>,
+}
+
+fn parse_train_args(args: Vec<String>) -> Result<TrainArgs> {
+    let mut t = TrainArgs::default();
+    let mut it = args.into_iter();
+    while let Some(a) = it.next() {
+        let mut val = || it.next().with_context(|| format!("{a} needs a value"));
+        if t.common.take(&a, &mut val)? {
+            continue;
+        }
+        match a.as_str() {
+            "--map" => t.over.maps.push(val()?),
+            "--budget" => t.over.budget = Some(val()?.parse::<u32>().context("--budget: a count")?),
+            "--status" => t.status = true,
+            "--dry-run" => t.dry = true,
+            "--reopen" => t.reopen = true,
+            "--no-merge" => t.no_merge = true,
+            "--keep-data" => t.keep = true,
+            "--parallel" | "--max-parallel" => {
+                t.parallel = Some(val()?.parse::<std::num::NonZeroUsize>()?.get())
+            }
+            "-h" | "--help" => bail!("{USAGE}"),
+            _ if t.file.is_none() && !a.starts_with('-') => t.file = Some(PathBuf::from(a)),
+            _ => bail!("unexpected {a}\n\n{USAGE}"),
+        }
+    }
+    anyhow::ensure!(t.file.is_some(), "{USAGE}");
+    anyhow::ensure!(
+        !(t.status && (t.dry || t.reopen || t.no_merge)),
+        "--status only reads: it takes no --dry-run, --reopen or --no-merge"
+    );
+    Ok(t)
+}
+
+/// The text of `dir`'s `<map>.learned`, if there is one (the file's name
+/// is the map's, any case).
+fn learned_in(dir: &Path, map: &str) -> Option<(PathBuf, String)> {
+    let safe = sim_bench::config::safe(map);
+    for e in std::fs::read_dir(dir).ok()?.filter_map(|e| e.ok()) {
+        let path = e.path();
+        let name = path.file_name()?.to_str()?;
+        let Some(stem) = name.strip_suffix(".learned") else {
+            continue;
+        };
+        if stem.eq_ignore_ascii_case(map) || stem.eq_ignore_ascii_case(&safe) {
+            return Some((path.clone(), std::fs::read_to_string(&path).ok()?));
+        }
+    }
+    None
+}
+
+/// A run's site lines as they stand: its own data while it plays, what it
+/// kept when it ended, what it began with, or the shared file before it
+/// began. Only the sites of the run's shard.
+fn run_rows(
+    rd: &RunDir,
+    run: &sim_bench::train::TrainRun,
+    shards: u32,
+    shared: &Path,
+) -> Vec<sim_bench::train::SiteRow> {
+    let dirs = [
+        rd.data().join("bots"),
+        rd.harvest_end(),
+        rd.harvest_start(),
+        shared.join("bots"),
+    ];
+    let Some((path, text)) = dirs.iter().find_map(|d| learned_in(d, &run.map)) else {
+        return Vec::new();
+    };
+    match sim_bench::train::parse_rows(&text) {
+        Ok(rows) => sim_bench::train::shard_rows(&rows, run.shard, shards, &|stand| {
+            bots::learn::spot_id(&run.map, stand)
+        }),
+        Err(e) => {
+            eprintln!("{}: {e}", path.display());
+            Vec::new()
+        }
+    }
+}
+
+/// The batch's report from the runs' files.
+fn train_report(plan: &sim_bench::train::Plan, shared: &Path) -> sim_bench::train::TrainReport {
+    let maps = plan
+        .maps()
+        .into_iter()
+        .map(|map| {
+            let rows: Vec<_> = plan
+                .runs
+                .iter()
+                .filter(|r| r.map == map)
+                .flat_map(|r| {
+                    run_rows(&RunDir::new(&plan.batch.out, &r.id), r, plan.shards, shared)
+                })
+                .collect();
+            (map, rows)
+        })
+        .collect();
+    sim_bench::train::report(maps)
+}
+
+/// The bounce sites a map's scan found, as a dry run lists them.
+fn scanned_sites(shared: &Path, map: &str) -> Option<Vec<[f32; 3]>> {
+    let bytes = std::fs::read(bots::cache::dir(shared).join(bots::spots::file_name(map))).ok()?;
+    let (spots, _) = bots::spots::from_bytes(&bytes)?;
+    Some(
+        spots
+            .iter()
+            .filter(|s| bots::spots::Site::from_spot(s).is_some())
+            .map(|s| s.stand)
+            .collect(),
+    )
+}
+
+/// `--reopen`: the dead and blocked lines of each map's shared
+/// `.learned` back to open. How many lines.
+fn reopen_learned(shared: &Path, maps: &[String]) -> Result<usize> {
+    let mut total = 0;
+    for map in maps {
+        let Some((path, text)) = learned_in(&bots::cache::dir(shared), map) else {
+            continue;
+        };
+        let (text, n) = sim_bench::train::reopen(&text);
+        if n > 0 {
+            let tmp = path.with_extension("learned.tmp");
+            std::fs::write(&tmp, text)?;
+            std::fs::rename(&tmp, &path)?;
+            total += n;
+        }
+    }
+    Ok(total)
+}
+
+/// `h2 sim train`: the train file's runs, then the report
+/// (docs/runtime/sim.md, "Training the bounce sites").
+fn train(args: Vec<String>) -> Result<()> {
+    let mut t = parse_train_args(args)?;
+    let file = std::path::absolute(t.file.take().context(USAGE)?)?;
+    let plan = sim_bench::train::load(&file, &t.over)
+        .map_err(|e| anyhow::anyhow!("{}:\n{e}", file.display()))?;
+    let shared = t.common.data();
+    let out = &plan.batch.out;
+    if t.status {
+        print!(
+            "{}",
+            sim_bench::train::markdown(&train_report(&plan, &shared))
+        );
+        return Ok(());
+    }
+    let parallel = t
+        .parallel
+        .or(plan.batch.config.parallel)
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(2, |n| (n.get() / 2).max(1)))
+        .max(1);
+    println!(
+        "{} runs ({} shards a map), budget {} tries a site, seed {}, {} at a time, into {}",
+        plan.runs.len(),
+        plan.shards,
+        plan.budget,
+        plan.seed,
+        parallel,
+        out.display(),
+    );
+    for r in &plan.runs {
+        println!("  {:<28} {} shard {}/{}", r.id, r.map, r.shard, plan.shards);
+    }
+    if t.dry {
+        for map in plan.maps() {
+            match scanned_sites(&shared, &map) {
+                None => println!(
+                    "\n{map}: no spots file in {} yet",
+                    bots::cache::dir(&shared).display()
+                ),
+                Some(sites) => {
+                    println!("\n{map}: {} bounce sites", sites.len());
+                    for shard in 0..plan.shards {
+                        let mine: Vec<_> = sites
+                            .iter()
+                            .filter(|s| {
+                                sim_bench::train::owns(
+                                    bots::learn::spot_id(&map, **s),
+                                    shard,
+                                    plan.shards,
+                                )
+                            })
+                            .collect();
+                        println!("  shard {shard}: {} sites", mine.len());
+                        for s in mine {
+                            println!("    ({:.3}, {:.3}, {:.3})", s[0], s[1], s[2]);
+                        }
+                    }
+                }
+            }
+        }
+        return Ok(());
+    }
+    // Checked before anything is written: a missing image fails once.
+    check_image(&mut t.common, "train")?;
+    if t.reopen {
+        let n = reopen_learned(&shared, &plan.maps())?;
+        println!(
+            "reopened {n} dead and blocked sites in {}",
+            bots::cache::dir(&shared).display()
+        );
+    }
+    prepare_output(&plan.batch, &file, &[], None)?;
+    let started = Instant::now();
+    let failed = play_runs(&t.common, &plan.batch, None, false, t.keep, parallel);
+    let report = train_report(&plan, &shared);
+    std::fs::write(
+        out.join("train.json"),
+        serde_json::to_string_pretty(&report)?,
+    )?;
+    let md = sim_bench::train::markdown(&report);
+    std::fs::write(out.join("train.md"), &md)?;
+    println!(
+        "\n{} runs in {:.0} s\n",
+        plan.runs.len(),
+        started.elapsed().as_secs_f64()
+    );
+    print!("{md}");
+    let kept: Vec<PathBuf> = plan
+        .runs
+        .iter()
+        .map(|r| RunDir::new(out, &r.id).dir)
+        .filter(|d| d.join("harvest").join("end").is_dir())
+        .collect();
+    if t.no_merge {
+        println!(
+            "\nnot merged (--no-merge): `h2 sim harvest {}`",
+            out.display()
+        );
+    } else if kept.is_empty() {
+        println!("\nno run kept its files: nothing to merge");
+    } else {
+        println!();
+        harvest_into(&kept, &bots::cache::dir(&shared), true)?;
+    }
+    println!("\n{}", out.join("train.json").display());
+    if failed > 0 {
+        bail!("{failed} sim runs failed; see the run logs");
+    }
+    Ok(())
+}
+
 /// `h2 sim harvest`: every run's `harvest/` of a results directory
 /// merged into the shared bots directory.
 fn harvest(args: Vec<String>) -> Result<()> {
@@ -1069,10 +1365,17 @@ fn harvest(args: Vec<String>) -> Result<()> {
         "{}: no run kept bounce files (runs/*/harvest/end)",
         dir.display()
     );
+    harvest_into(&runs, &into, !dry)?;
+    Ok(())
+}
+
+/// Merges each run's `harvest/` into `into`, printing a line a map and a
+/// total (`write` false: what it would add).
+fn harvest_into(runs: &[PathBuf], into: &Path, write: bool) -> Result<()> {
     let mut total = (0, 0, 0);
-    for run in &runs {
+    for run in runs {
         let rd = RunDir { dir: run.clone() };
-        let got = bots::harvest::harvest_run(&rd.harvest_start(), &rd.harvest_end(), &into, !dry)
+        let got = bots::harvest::harvest_run(&rd.harvest_start(), &rd.harvest_end(), into, write)
             .map_err(anyhow::Error::msg)?;
         for h in got {
             println!(
@@ -1090,7 +1393,7 @@ fn harvest(args: Vec<String>) -> Result<()> {
     }
     println!(
         "{} {} verified ({} proven) and {} ghost runs into {}",
-        if dry { "would merge" } else { "merged" },
+        if write { "merged" } else { "would merge" },
         total.0,
         total.1,
         total.2,
@@ -1422,5 +1725,93 @@ mod tests {
         assert!(!rd.harvest_end().exists());
         assert_eq!(std::fs::read_to_string(&copied).unwrap(), "shared proofs");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn args(a: &[&str]) -> Result<TrainArgs> {
+        parse_train_args(a.iter().map(|s| s.to_string()).collect())
+    }
+
+    #[test]
+    fn train_arguments_parse() {
+        let t = args(&[
+            "t.toml",
+            "--map",
+            "ascension",
+            "--map",
+            "lockout",
+            "--budget",
+            "200",
+            "--reopen",
+            "--no-merge",
+            "--parallel",
+            "3",
+            "--disc",
+            "/d.iso",
+            "--data",
+            "/shared",
+            "--keep-data",
+        ])
+        .unwrap();
+        assert_eq!(t.file, Some(PathBuf::from("t.toml")));
+        assert_eq!(t.over.maps, ["ascension", "lockout"]);
+        assert_eq!(t.over.budget, Some(200));
+        assert!(t.reopen && t.no_merge && t.keep && !t.status && !t.dry);
+        assert_eq!(t.parallel, Some(3));
+        assert_eq!(t.common.disc, Some(PathBuf::from("/d.iso")));
+        assert_eq!(t.common.data, Some(PathBuf::from("/shared")));
+        let t = args(&["--status", "t.toml"]).unwrap();
+        assert!(t.status && t.over.maps.is_empty() && t.over.budget.is_none());
+        assert!(args(&["t.toml", "--dry-run"]).unwrap().dry);
+    }
+
+    #[test]
+    fn train_arguments_are_checked() {
+        assert!(args(&[]).is_err(), "a train file is needed");
+        assert!(args(&["t.toml", "--budget"]).is_err());
+        assert!(args(&["t.toml", "--budget", "many"]).is_err());
+        assert!(args(&["t.toml", "--parallel", "0"]).is_err());
+        assert!(args(&["t.toml", "--bogus"]).is_err());
+        assert!(args(&["t.toml", "other.toml"]).is_err());
+        let e = args(&["t.toml", "--status", "--reopen"])
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("--status only reads"), "{e}");
+    }
+
+    #[test]
+    fn a_bounce_run_owns_its_learned_file() {
+        assert!(bounce_owned("ascension.learned"));
+        assert!(bounce_owned("ascension.verified") && bounce_owned("ascension.ghosts"));
+        assert!(!bounce_owned("ascension.0.bots") && !bounce_owned("ascension.spots"));
+    }
+
+    #[test]
+    fn a_learned_file_is_found_by_its_map() {
+        let dir = scratch("learned-in");
+        std::fs::write(dir.join("Ascension.learned"), "# x\n").unwrap();
+        std::fs::write(dir.join("lockout.verified"), "# y\n").unwrap();
+        assert_eq!(learned_in(&dir, "ascension").unwrap().1, "# x\n");
+        assert!(learned_in(&dir, "lockout").is_none());
+        assert!(learned_in(&dir.join("none"), "ascension").is_none());
+    }
+
+    #[test]
+    fn reopen_rewrites_the_shared_file_once() {
+        let shared = scratch("reopen");
+        let bots_dir = shared.join("bots");
+        std::fs::create_dir_all(&bots_dir).unwrap();
+        let text = "# superbounce learned v1\nbounce dead 1.000 2.000 3.000 tries=9 hits=0 why=budget stage=compass\nbounce learned 4.000 5.000 6.000 tries=9 hits=7\n";
+        std::fs::write(bots_dir.join("m.learned"), text).unwrap();
+        assert_eq!(reopen_learned(&shared, &["m".into()]).unwrap(), 1);
+        let after = std::fs::read_to_string(bots_dir.join("m.learned")).unwrap();
+        assert!(
+            after.contains("bounce open 1.000 2.000 3.000 tries=9 hits=0 stage=arms"),
+            "{after}"
+        );
+        assert!(after.contains("bounce learned 4.000 5.000 6.000 tries=9 hits=7"));
+        assert_eq!(
+            reopen_learned(&shared, &["m".into(), "other".into()]).unwrap(),
+            0
+        );
     }
 }
