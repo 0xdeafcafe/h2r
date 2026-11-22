@@ -1,0 +1,527 @@
+//! The show channel's messages (docs/game/rules-world-api.md, "The show
+//! channel"): a script's `message(to, text)` on the host, and the cues a
+//! distributed client receives.
+//!
+//! On the authority (the machine `GAME_ENGINE_AUTHORITATIVE` answers true
+//! for; `Runtime::pre_tick` holds the messages until it has), [`publish`]
+//! turns each message the VM made since the last boundary into a line
+//! shown to this machine's local users in its audience (the HUD kit's
+//! notification insert) and a [`PendingCue`] for the actor channel, which
+//! the capture (`crate::actor_net`) drains once a tick. On a `Viewer`,
+//! [`present`] decodes each received cue against the running script's
+//! blob, checks every field, and shows the line to the local users in its
+//! audience.
+
+use std::sync::{Mutex, MutexGuard};
+
+use ::rules::show::{self, Audience, Cue, HoleValue, Message, To};
+use ::rules::vm::Arg;
+use ::rules::{Ir, caps};
+use engine::GuestMemory;
+use engine::entry::Cx;
+
+use crate::actor_net::client::ReceivedCue;
+
+/// A cue waiting for the actor channel: the tick it was made, its
+/// per-tick sequence and the cue itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingCue {
+    pub tick: u32,
+    pub sequence: u8,
+    pub cue: Cue,
+}
+
+/// A message the VM made, waiting for the tick boundary (the runtime's
+/// `Call::Message`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Outgoing {
+    pub to: To,
+    pub template: String,
+    pub values: Vec<Arg>,
+}
+
+/// The message of a `message*` call, for the boundary: its audience,
+/// template and hole values. A call through `none` shows nothing.
+pub fn outgoing(call: &::rules::vm::Call) -> Option<Outgoing> {
+    let own = call.entry.args.len();
+    let to = match call.entry.id {
+        caps::id::MESSAGE => match call.args.first() {
+            Some(Arg::Player(Some(p))) => To::Player(*p),
+            _ => return None,
+        },
+        caps::id::MESSAGE_TEAM => match call.args.first() {
+            Some(Arg::Team(Some(t))) => To::Team(*t),
+            _ => return None,
+        },
+        caps::id::MESSAGE_ALL => To::Everyone,
+        _ => return None,
+    };
+    let Some(Arg::Text(template)) = call.args.get(own - 1) else {
+        return None;
+    };
+    Some(Outgoing {
+        to,
+        template: template.clone(),
+        values: call.args[own..].to_vec(),
+    })
+}
+
+struct Channel {
+    cues: Vec<PendingCue>,
+    tick: Option<u32>,
+    next: u8,
+}
+
+static CHANNEL: Mutex<Channel> = Mutex::new(Channel {
+    cues: Vec::new(),
+    tick: None,
+    next: 0,
+});
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Queues the cue for the channel with its tick's next sequence number.
+fn push(tick: u32, cue: Cue) {
+    let mut c = lock(&CHANNEL);
+    if c.tick != Some(tick) {
+        c.tick = Some(tick);
+        c.next = 0;
+    }
+    let sequence = c.next;
+    c.next = c.next.wrapping_add(1);
+    c.cues.push(PendingCue {
+        tick,
+        sequence,
+        cue,
+    });
+    // A machine with no consumer (a solo game, a synchronous peer) drops
+    // the oldest past the bound.
+    let over = c.cues.len().saturating_sub(show::MAX_PENDING);
+    if over > 0 {
+        c.cues.drain(..over);
+    }
+}
+
+/// The cues waiting for the channel.
+pub fn take_cues() -> Vec<PendingCue> {
+    std::mem::take(&mut lock(&CHANNEL).cues)
+}
+
+/// The waiting cues as the actor channel's `Cue` records, drained by its
+/// capture once a tick. A cue that does not encode is dropped and logged.
+pub fn take_records() -> Vec<::actor_net::Record> {
+    take_cues()
+        .into_iter()
+        .filter_map(|pending| match pending.cue.encode() {
+            Ok(bytes) => Some(::actor_net::Record::Cue {
+                tick: pending.tick,
+                sequence: pending.sequence,
+                kind: pending.cue.kind(),
+                bytes,
+            }),
+            Err(error) => {
+                eprintln!("rules: show cue at tick {}: {error}", pending.tick);
+                None
+            }
+        })
+        .collect()
+}
+
+/// Forgets the waiting cues: a new match or a snapshot restore starts the
+/// channel empty.
+pub fn clear_cues() {
+    *lock(&CHANNEL) = Channel {
+        cues: Vec::new(),
+        tick: None,
+        next: 0,
+    };
+}
+
+/// One listed player: its roster slot and team, its name and, when it is
+/// this machine's, its local user.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Roster {
+    slot: u8,
+    team: Option<u8>,
+    name: String,
+    user: Option<u32>,
+}
+
+/// The listed players: slot, team, name and local user reads.
+fn roster(m: &dyn GuestMemory) -> Vec<Roster> {
+    use engine::view::players;
+    let Ok(Some(array)) = players::array(m) else {
+        return Vec::new();
+    };
+    let Ok(live) = array.live(m, 16) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (handle, p) in live {
+        if !p.listed(m).unwrap_or(false) {
+            continue;
+        }
+        out.push(Roster {
+            slot: handle.index() as u8,
+            team: p.team(m).ok().filter(|t| *t >= 0).map(|t| t as u8),
+            name: p.name(m).unwrap_or_default(),
+            user: p.local_user(m).ok().filter(|u| *u >= 0).map(|u| u as u32),
+        });
+    }
+    out
+}
+
+/// The audience of `to` over the roster: the player's bit, the bits of the
+/// team's seated players, or every slot.
+fn audience_of(roster: &[Roster], to: &To) -> Audience {
+    match to {
+        To::Player(slot) => show::player(*slot),
+        To::Team(team) => roster
+            .iter()
+            .filter(|p| p.team == Some(*team))
+            .fold(0, |mask, p| mask | show::player(p.slot)),
+        To::Everyone => show::EVERYONE,
+    }
+}
+
+/// The name a player hole shows: the roster slot's name, or `player N`
+/// when the slot is not seated.
+fn named(roster: &[Roster]) -> impl Fn(u8) -> String + '_ {
+    move |slot| {
+        roster
+            .iter()
+            .find(|p| p.slot == slot)
+            .map_or_else(|| format!("player {slot}"), |p| p.name.clone())
+    }
+}
+
+/// A hole value's word in a shown line, as the fake renders it
+/// (`rules::fake`): a player by name, a team as `team N`, a time as
+/// `m:ss`, an enum by its name.
+fn arg_word(value: &Arg, hole: Option<caps::Hole>, name: &dyn Fn(u8) -> String) -> String {
+    match (value, hole) {
+        (Arg::Int(n), Some(caps::Hole::Time)) => caps::show_time(*n),
+        (Arg::Int(n), _) => n.to_string(),
+        (Arg::Player(Some(p)), _) => name(*p),
+        (Arg::Team(Some(t)), _) => format!("team {t}"),
+        (Arg::Player(None) | Arg::Team(None), _) => "none".into(),
+        (Arg::Text(s), _) => s.clone(),
+        (other, _) => format!("{other:?}"),
+    }
+}
+
+/// A message's line: its template filled with its values' words.
+fn arg_line(template: &str, values: &[Arg], name: &dyn Fn(u8) -> String) -> String {
+    let holes = caps::holes(template).unwrap_or_default();
+    let shown: Vec<String> = values
+        .iter()
+        .zip(
+            holes
+                .iter()
+                .copied()
+                .map(Some)
+                .chain(std::iter::repeat(None)),
+        )
+        .map(|(v, h)| arg_word(v, h, name))
+        .collect();
+    caps::fill(template, &shown)
+}
+
+/// The channel cue of a message: the template and each enum value as an
+/// index of the blob's string table, so a record names only what the
+/// verified blob holds.
+fn cue_of(ir: &Ir, audience: Audience, template: &str, values: &[Arg]) -> Option<Cue> {
+    let index = |s: &str| {
+        ir.strings
+            .iter()
+            .position(|t| t == s)
+            .and_then(|i| u16::try_from(i).ok())
+    };
+    let holes = caps::holes(template)?;
+    let text = index(template)?;
+    let mut out = Vec::with_capacity(values.len());
+    for (value, hole) in values.iter().zip(
+        holes
+            .iter()
+            .copied()
+            .map(Some)
+            .chain(std::iter::repeat(None)),
+    ) {
+        out.push(match (value, hole) {
+            (Arg::Player(p), _) => HoleValue::Player(*p),
+            (Arg::Team(t), _) => HoleValue::Team(*t),
+            (Arg::Int(n), Some(caps::Hole::Time)) => HoleValue::Time(*n),
+            (Arg::Int(n), _) => HoleValue::Int(*n),
+            (Arg::Text(name), _) => HoleValue::Enum(index(name)?),
+            _ => return None,
+        });
+    }
+    Some(Cue::Message(Message {
+        audience,
+        text,
+        values: out,
+    }))
+}
+
+/// The messages the VM made since the last boundary, at `tick`: each
+/// shown to this machine's local users in its audience and queued for the
+/// channel. A message with an empty audience (a team with no players) is
+/// nothing.
+pub fn publish(m: &dyn GuestMemory, ir: &Ir, tick: u32, messages: Vec<Outgoing>) {
+    if messages.is_empty() {
+        return;
+    }
+    let roster = roster(m);
+    for Outgoing {
+        to,
+        template,
+        values,
+    } in messages
+    {
+        let audience = audience_of(&roster, &to);
+        if audience == 0 {
+            continue;
+        }
+        let name = named(&roster);
+        let line = arg_line(&template, &values, &name);
+        for p in &roster {
+            if let Some(user) = p.user
+                && audience & show::player(p.slot) != 0
+            {
+                crate::hud_kit::notify(user, &line);
+            }
+        }
+        if let Some(cue) = cue_of(ir, audience, &template, &values) {
+            push(tick, cue);
+        }
+    }
+}
+
+/// The running script's string table, from the variant record's blob:
+/// compiled in or in the game-variant store (a `Viewer` has the blob from
+/// the lobby fetch). Cached by the record's hash prefix.
+fn strings(m: &dyn GuestMemory) -> Option<Vec<String>> {
+    let block = super::super::guest::block(m).ok().flatten()?;
+    let script = variants::ext::Ext::in_effect(&block).script;
+    if script.mode != variants::ext::Mode::Rules {
+        return None;
+    }
+    static CACHE: Mutex<Option<([u8; 8], Vec<String>)>> = Mutex::new(None);
+    {
+        let cache = lock(&CACHE);
+        if let Some((prefix, strings)) = &*cache
+            && *prefix == script.prefix
+        {
+            return Some(strings.clone());
+        }
+    }
+    let blob = super::super::feature::local_blob(script.prefix)?;
+    let (ir, _) = ::rules::verify::load(&blob).ok()?;
+    let strings = ir.strings.clone();
+    *lock(&CACHE) = Some((script.prefix, strings.clone()));
+    Some(strings)
+}
+
+/// The cues a client received this tick: each decoded against the running
+/// script's blob, checked, and shown to the local users in its audience.
+/// A cue that fails any check is dropped whole and logged
+/// (docs/game/rules-world-limits.md, "The show channel on a client").
+pub fn present(cx: &Cx, cues: &[ReceivedCue]) {
+    for cue in cues {
+        if let Err(why) = present_one(cx, cue) {
+            eprintln!(
+                "rules: show cue at tick {} sequence {} dropped: {why}",
+                cue.tick, cue.sequence
+            );
+        }
+    }
+}
+
+fn present_one(cx: &Cx, cue: &ReceivedCue) -> Result<(), String> {
+    let (strings, roster) = cx
+        .read(|m| strings(m).map(|s| (s, roster(m))))
+        .ok_or_else(|| "the running script's blob is not on this machine".to_string())?;
+    let Cue::Message(message) =
+        Cue::decode(cue.kind, &cue.bytes, &strings).map_err(|e| e.to_string())?;
+    let name = named(&roster);
+    let template = &strings[usize::from(message.text)];
+    let line = show::line(&strings, template, &message.values, &name);
+    for p in &roster {
+        if let Some(user) = p.user
+            && message.audience & show::player(p.slot) != 0
+        {
+            crate::hud_kit::notify(user, &line);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::rules::caps::id;
+
+    fn ir() -> Ir {
+        ::rules::compile(
+            "rules \"M\" 1\ncarrier slayer\nrequires hud.message\n\
+             global var n: int = 0\n\
+             on tick { message(all, \"Wave {n}\") }\n",
+        )
+        .unwrap()
+    }
+
+    fn message_call(entry: u16, args: Vec<Arg>) -> ::rules::vm::Call {
+        ::rules::vm::Call {
+            entry: caps::entry(entry, caps::API_VERSION).unwrap(),
+            args,
+        }
+    }
+
+    #[test]
+    fn an_outgoing_message_keeps_its_audience_template_and_values() {
+        let call = message_call(
+            id::MESSAGE,
+            vec![
+                Arg::Player(Some(3)),
+                Arg::Text("Wave {int}".into()),
+                Arg::Int(4),
+            ],
+        );
+        assert_eq!(
+            outgoing(&call),
+            Some(Outgoing {
+                to: To::Player(3),
+                template: "Wave {int}".into(),
+                values: vec![Arg::Int(4)],
+            })
+        );
+        let team = message_call(
+            id::MESSAGE_TEAM,
+            vec![Arg::Team(Some(1)), Arg::Text("push".into())],
+        );
+        assert_eq!(outgoing(&team).map(|o| o.to), Some(To::Team(1)));
+        let all = message_call(id::MESSAGE_ALL, vec![Arg::Text("go".into())]);
+        assert_eq!(outgoing(&all).map(|o| o.to), Some(To::Everyone));
+        // A call through `none` shows nothing.
+        let none = message_call(id::MESSAGE, vec![Arg::Player(None), Arg::Text("hi".into())]);
+        assert_eq!(outgoing(&none), None);
+    }
+
+    #[test]
+    fn a_cue_names_only_what_the_blob_holds() {
+        let ir = ir();
+        let template = ir
+            .strings
+            .iter()
+            .find(|s| s.contains("{int}"))
+            .expect("the blob stores the message template")
+            .clone();
+        let cue = cue_of(&ir, show::EVERYONE, &template, &[Arg::Int(2)]).unwrap();
+        let Cue::Message(message) = cue.clone();
+        assert_eq!(message.audience, show::EVERYONE);
+        assert_eq!(message.values, vec![HoleValue::Int(2)]);
+        assert_eq!(ir.strings[usize::from(message.text)], template);
+        // The wire form decodes to the same cue against the same table.
+        let bytes = cue.encode().unwrap();
+        assert_eq!(Cue::decode(cue.kind(), &bytes, &ir.strings).unwrap(), cue);
+        // A template the blob does not hold makes no cue.
+        assert!(cue_of(&ir, show::EVERYONE, "not in the table", &[]).is_none());
+    }
+
+    #[test]
+    fn an_audience_resolves_against_the_roster() {
+        let roster = vec![
+            Roster {
+                slot: 0,
+                team: Some(0),
+                name: "a".into(),
+                user: Some(0),
+            },
+            Roster {
+                slot: 2,
+                team: Some(1),
+                name: "b".into(),
+                user: None,
+            },
+            Roster {
+                slot: 5,
+                team: Some(1),
+                name: "c".into(),
+                user: Some(2),
+            },
+        ];
+        assert_eq!(audience_of(&roster, &To::Player(5)), show::player(5));
+        assert_eq!(
+            audience_of(&roster, &To::Team(1)),
+            show::player(2) | show::player(5)
+        );
+        assert_eq!(audience_of(&roster, &To::Team(4)), 0);
+        assert_eq!(audience_of(&roster, &To::Everyone), show::EVERYONE);
+    }
+
+    #[test]
+    fn a_line_renders_player_names_from_the_roster() {
+        let roster = vec![
+            Roster {
+                slot: 1,
+                team: Some(0),
+                name: "Ann".into(),
+                user: Some(0),
+            },
+            Roster {
+                slot: 2,
+                team: Some(1),
+                name: "Bo".into(),
+                user: None,
+            },
+        ];
+        let name = named(&roster);
+        assert_eq!(
+            arg_line(
+                "{player} beat {player}",
+                &[Arg::Player(Some(1)), Arg::Player(Some(2))],
+                &name
+            ),
+            "Ann beat Bo"
+        );
+        // A slot that is not seated shows as `player N`.
+        assert_eq!(
+            arg_line("{player} left", &[Arg::Player(Some(9))], &name),
+            "player 9 left"
+        );
+        assert_eq!(
+            arg_line(
+                "{team} in {time}",
+                &[Arg::Team(Some(1)), Arg::Int(65 * caps::TICKS_PER_SECOND)],
+                &name
+            ),
+            "team 1 in 1:05"
+        );
+    }
+
+    #[test]
+    fn the_channel_bounds_pending_cues() {
+        clear_cues();
+        for tick in 0..show::MAX_PENDING as u32 + 20 {
+            push(
+                tick,
+                Cue::Message(Message {
+                    audience: show::EVERYONE,
+                    text: 0,
+                    values: vec![],
+                }),
+            );
+        }
+        let cues = take_cues();
+        assert_eq!(cues.len(), show::MAX_PENDING);
+        // The oldest were dropped; the newest kept, with per-tick
+        // sequences from 0.
+        assert_eq!(cues[0].tick, 20);
+        let last = cues.last().unwrap();
+        assert_eq!(last.tick, show::MAX_PENDING as u32 + 19);
+        assert_eq!(last.sequence, 0);
+        assert!(take_cues().is_empty());
+    }
+}

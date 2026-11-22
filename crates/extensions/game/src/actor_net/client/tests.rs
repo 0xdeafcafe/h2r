@@ -425,6 +425,46 @@ fn a_rejected_packet_does_not_queue_its_line_or_change_posture() {
 }
 
 #[test]
+fn a_cue_split_across_three_packets_shows_once() {
+    let mut client = Client::default();
+    let record = Record::Cue {
+        tick: 40,
+        sequence: 2,
+        kind: 0,
+        bytes: vec![1, 2, 3],
+    };
+    // The same cue in three consecutive packets: one presentation.
+    for packet_tick in 40..=42 {
+        assert!(
+            client
+                .apply(&packet(packet_tick, vec![record.clone()]), packet_tick)
+                .unwrap()
+        );
+    }
+    assert_eq!(
+        client.pending_cues,
+        vec![ReceivedCue {
+            tick: 40,
+            sequence: 2,
+            kind: 0,
+            bytes: vec![1, 2, 3],
+        }]
+    );
+    // A different sequence of the same tick is a new cue; a repeated or
+    // older packet is not applied.
+    let next = Record::Cue {
+        tick: 40,
+        sequence: 3,
+        kind: 0,
+        bytes: vec![1, 2, 3],
+    };
+    assert!(client.apply(&packet(43, vec![next]), 43).unwrap());
+    assert_eq!(client.pending_cues.len(), 2);
+    assert!(!client.apply(&packet(42, vec![record]), 44).unwrap());
+    assert_eq!(client.pending_cues.len(), 2);
+}
+
+#[test]
 fn the_mode_state_is_the_hosts_last_and_a_key_replaces_it() {
     let mut client = Client::default();
     assert!(client.mode_state().is_empty());

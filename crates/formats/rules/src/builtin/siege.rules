@@ -18,7 +18,7 @@
 rules "Siege" 1
 carrier slayer
 teams 2
-requires objects.create, objects.delete, player.spawn, player.weapons
+requires objects.create, objects.delete, player.spawn, player.weapons, hud.message
 
 // The core's phase; the phases before it each have a zone.
 const last_phase = 2
@@ -50,7 +50,11 @@ fn open(n: int) {
     for each barrier b where b.number < n { delete(b) }
     spawn_areas(team 0, attack, n)
     spawn_areas(team 1, defend, n)
-    if n == last_phase { create("objects/weapons/multiplayer/assault_bomb/assault_bomb", core) }
+    if n > 0 { message(all, "The attackers move up") }
+    if n == last_phase {
+        create("objects/weapons/multiplayer/assault_bomb/assault_bomb", core)
+        message(all, "The core is live")
+    }
 }
 
 on round_start {

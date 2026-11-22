@@ -16,6 +16,9 @@ pub struct Host {
     set: ActorSet,
     changes: Vec<Record>,
     lines: Vec<Record>,
+    /// The show channel's cues for this tick
+    /// (`crate::rules::world::show::take_cues`).
+    cues: Vec<Record>,
     controls: Vec<(u32, [f32; 3], Control)>,
 }
 
@@ -95,6 +98,7 @@ impl Host {
             self.set.apply(change)?;
         }
         self.lines.clear();
+        self.cues.clear();
         for line in dialogue {
             if let Some(speaker) = views.iter().find(|v| v.unit == line.unit) {
                 self.lines.push(Record::Line {
@@ -123,6 +127,15 @@ impl Host {
         Ok(())
     }
 
+    /// The show channel's cues for this tick (the running rules script's
+    /// `message` calls, `crate::rules::world::show`): offered to every
+    /// peer after the tick's lines. A cue carries its audience as a mask
+    /// of player slots; the peer shows it to its own players in the
+    /// audience and to no one else. Call after [`Host::capture`].
+    pub(super) fn set_cues(&mut self, cues: Vec<Record>) {
+        self.cues = cues;
+    }
+
     /// Schedule once per connected client after capture, including quiet ticks
     /// (a line may still owe copies). The link holds a resync request until the
     /// returned packet actually contains the key.
@@ -142,6 +155,7 @@ impl Host {
             offers.extend_from_slice(&self.changes);
         }
         offers.extend_from_slice(&self.lines);
+        offers.extend_from_slice(&self.cues);
         if let Some(origin) = position.filter(|p| p.iter().all(|v| v.is_finite())) {
             let mut ranked: Vec<_> = self
                 .controls

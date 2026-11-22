@@ -13,7 +13,8 @@ pub const TICKS_PER_SECOND: u32 = 30;
 pub const BYTES_PER_SECOND: usize = 1_000;
 /// Room for a key, state, digest and several updates per actor in one host tick.
 pub const MAX_CANDIDATES: usize = 256;
-const LINE_COPIES: usize = 3;
+/// Copies a line or a cue is repeated in: this packet and the next two.
+const REPEAT_COPIES: usize = 3;
 const CONTROL_PERIOD: u32 = 3;
 const MAX_KEY_PACKET: usize = HEADER_LEN + MAX_KEY_RECORD_BYTES;
 
@@ -37,11 +38,12 @@ impl fmt::Display for BudgetError {
 impl std::error::Error for BudgetError {}
 
 /// The first slot is this packet. The other slots hold the next two
-/// packets' promised line copies. Each nonempty slot pays its header once.
+/// packets' promised line and cue copies. Each nonempty slot pays its
+/// header once.
 #[derive(Clone, Copy, Default)]
 struct Reservation {
-    bytes: [usize; LINE_COPIES],
-    records: [usize; LINE_COPIES],
+    bytes: [usize; REPEAT_COPIES],
+    records: [usize; REPEAT_COPIES],
 }
 
 impl Reservation {
@@ -75,7 +77,7 @@ impl Reservation {
 
 #[derive(Debug)]
 struct Repeat {
-    line: Record,
+    record: Record,
     len: usize,
     copies_left: usize,
 }
@@ -97,6 +99,7 @@ enum Priority {
     Key,
     Actor,
     Line,
+    Cue,
     Posture,
     State,
     Digest,
@@ -108,11 +111,17 @@ fn priority(record: &Record) -> Priority {
         Record::Key { .. } => Priority::Key,
         Record::Actor(_) => Priority::Actor,
         Record::Line { .. } => Priority::Line,
+        Record::Cue { .. } => Priority::Cue,
         Record::Posture { .. } => Priority::Posture,
         Record::State(_) => Priority::State,
         Record::Digest { .. } => Priority::Digest,
         Record::Control { .. } => Priority::Control,
     }
+}
+
+/// Whether the record repeats in three consecutive packets, as a `Line` is.
+fn repeats(record: &Record) -> bool {
+    matches!(priority(record), Priority::Line | Priority::Cue)
 }
 
 impl Budget {
@@ -153,8 +162,9 @@ impl Budget {
 
     /// Call once per host tick for this client, including ticks with no new
     /// candidates. Consume the returned packet exactly once. Offer new lines
-    /// only once: admission reserves all three consecutive packet copies.
-    /// After a skipped tick, outstanding copies resume in the next packet.
+    /// and cues only once: admission reserves all three consecutive packet
+    /// copies. After a skipped tick, outstanding copies resume in the next
+    /// packet.
     ///
     /// Equal priorities retain input order. Offer controls nearest first,
     /// and omit them entirely when retail supplies the walk cycle. Reoffer
@@ -224,21 +234,28 @@ impl Budget {
             Priority::Key,
             Priority::Actor,
             Priority::Line,
+            Priority::Cue,
             Priority::Posture,
             Priority::State,
             Priority::Digest,
             Priority::Control,
         ] {
-            if rank == Priority::Line {
+            if matches!(rank, Priority::Line | Priority::Cue) {
+                let mut owed = Vec::new();
                 for mut repeat in std::mem::take(&mut self.repeats) {
+                    if priority(&repeat.record) != rank {
+                        owed.push(repeat);
+                        continue;
+                    }
                     repeat.copies_left -= 1;
                     if repeat.copies_left == 0 {
-                        records.push(repeat.line);
+                        records.push(repeat.record);
                     } else {
-                        records.push(repeat.line.clone());
-                        self.repeats.push(repeat);
+                        records.push(repeat.record.clone());
+                        owed.push(repeat);
                     }
                 }
+                self.repeats = owed;
             }
             if waiting_for_key {
                 continue;
@@ -252,11 +269,7 @@ impl Budget {
                 {
                     continue;
                 }
-                let copies = if rank == Priority::Line {
-                    LINE_COPIES
-                } else {
-                    1
-                };
+                let copies = if repeats(record) { REPEAT_COPIES } else { 1 };
                 let limit = if rank == Priority::Key {
                     available
                 } else {
@@ -272,11 +285,11 @@ impl Budget {
                     self.ticks_to_key = Some(crate::KEY_PERIOD_TICKS);
                     delta_bytes = available;
                 }
-                if rank == Priority::Line {
+                if repeats(record) {
                     self.repeats.push(Repeat {
-                        line: record.clone(),
+                        record: record.clone(),
                         len,
-                        copies_left: LINE_COPIES - 1,
+                        copies_left: REPEAT_COPIES - 1,
                     });
                 }
                 if let Record::Control { entity, .. } = record {

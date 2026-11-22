@@ -515,7 +515,9 @@ the `Hud` for the checks and the preview, whose states give it a text
 of at most 63 UTF-16 units and one line is sent whole; a longer one, or
 one with a line break, is refused by the `prompt` check and by
 `Handle::notify` (`hud_kit_core::model::message_fault`; E `0x0024cbee`
-copies 63).
+copies 63). A sender with no HUD of its own, such as a rules script's `message`
+([rules-world-api.md](rules-world-api.md#the-show-channel)), queues the
+same line through `hud_kit::notify(user, text)`.
 
 ### The runtime (`crates/extensions/game/src/hud_kit.rs`)
 

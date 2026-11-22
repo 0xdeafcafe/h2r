@@ -11,6 +11,9 @@ pub const MAX_PACKET_BYTES: usize = 1_000;
 pub const MAX_RECORDS: usize = 64;
 pub const MAX_ACTORS: usize = 32;
 pub const MAX_STATE_BYTES: usize = 63;
+/// The most bytes a `Cue` record's payload holds
+/// (docs/game/rules-world-api.md, "The show channel").
+pub const MAX_CUE_BYTES: usize = 24;
 
 const KEY: u8 = 0;
 const ACTOR: u8 = 1;
@@ -19,6 +22,9 @@ const CONTROL: u8 = 3;
 const LINE: u8 = 4;
 const STATE: u8 = 5;
 const DIGEST: u8 = 6;
+// Tag 7 is the show channel's `Show` record of slice W2
+// (docs/game/rules-world-api.md, "The show channel").
+const CUE: u8 = 8;
 const ACTOR_LEN: usize = 10;
 const KEY_PREFIX_AND_LENGTHS: usize = 3;
 pub(crate) const MAX_KEY_RECORD_BYTES: usize =
@@ -122,6 +128,16 @@ pub enum Record {
         state_hash: u64,
         actor_count: u16,
     },
+    /// A show-channel cue (docs/game/rules-world-api.md, "The show
+    /// channel"): the tick it happened, its per-tick sequence and its
+    /// kind, then its payload. Repeated in three consecutive packets; the
+    /// copies share `(tick, sequence)`.
+    Cue {
+        tick: u32,
+        sequence: u8,
+        kind: u8,
+        bytes: Vec<u8>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -139,6 +155,7 @@ pub enum WireError {
     InvalidEntity,
     DuplicateEntity,
     InvalidControl,
+    CueTooLarge,
     InvalidActorChange(u8),
     UnknownRecord(u8),
     UnsupportedVersion(u8),
@@ -215,6 +232,12 @@ pub(crate) fn record_len(record: &Record) -> Result<usize, WireError> {
             }
             43
         }
+        Record::Cue { bytes, .. } => {
+            if bytes.len() > MAX_CUE_BYTES {
+                return Err(WireError::CueTooLarge);
+            }
+            8 + bytes.len()
+        }
     })
 }
 
@@ -280,6 +303,17 @@ fn put_record(out: &mut Vec<u8>, record: &Record) {
             out.extend_from_slice(log_head);
             out.extend(state_hash.to_le_bytes());
             out.extend(actor_count.to_le_bytes());
+        }
+        Record::Cue {
+            tick,
+            sequence,
+            kind,
+            bytes,
+        } => {
+            out.push(CUE);
+            out.extend(tick.to_le_bytes());
+            out.extend([*sequence, *kind, bytes.len() as u8]);
+            out.extend_from_slice(bytes);
         }
     }
 }
@@ -382,6 +416,23 @@ impl Reader<'_> {
                 state_hash: u64::from_le_bytes(self.bytes()?),
                 actor_count: u16::from_le_bytes(self.bytes()?),
             },
+            CUE => {
+                let tick = u32::from_le_bytes(self.bytes()?);
+                let sequence = self.byte()?;
+                let kind = self.byte()?;
+                let len = usize::from(self.byte()?);
+                if len > MAX_CUE_BYTES {
+                    return Err(WireError::CueTooLarge);
+                }
+                let (bytes, rest) = self.0.split_at_checked(len).ok_or(WireError::Truncated)?;
+                self.0 = rest;
+                Record::Cue {
+                    tick,
+                    sequence,
+                    kind,
+                    bytes: bytes.to_vec(),
+                }
+            }
             tag => return Err(WireError::UnknownRecord(tag)),
         })
     }
