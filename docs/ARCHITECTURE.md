@@ -86,6 +86,7 @@ the workspace checks are in
 | `mopp` | formats | Havok MOPP code for Halo 2 structure BSPs: the engine's interpreter semantics as a query model, and an offline compiler over collision surfaces | [mopp.md](formats/mopp.md) | done |
 | `movies` | formats | Manifest, hashing and naming for optional Bink-to-MP4 conversion with the user's ffmpeg ([movies.md](audio/movies.md)) † | [movies.md](audio/movies.md) | done |
 | `pathfind` | formats | Halo 2 AI pathfinding data: decode retail sbsp pathfinding, generate it from a structure BSP's collision geometry, compare, and emit map::build blocks | [pathfinding.md](formats/pathfinding.md) | in progress |
+| `rules` | formats | Scripted game types: the rules language, verified IR, capabilities and VM |  |  |
 | `settings` | formats | Our host settings as a schema: definitions, one store, atomic handles, one writer for settings.toml | [feature-engine.md](engine/feature-engine.md) | done |
 | `shaders` | formats | Xbox (NV2A) vertex microcode and register-combiner translation to WGSL | [shaders.md](graphics/shaders.md) | done |
 | `tag-names` | formats | *(no description)* † |  |  |
@@ -119,6 +120,7 @@ the workspace checks are in
 | `bink-hle` | platform | High-level replacement for the statically linked Bink player ([bink-hle.md](audio/bink-hle.md)) † | [bink-hle.md](audio/bink-hle.md) | Plays installed movies with audio through the game mixer or skips them at the movie wrapper. A windowed menu boot using the default movie directory can prepare the attract clip from disc with local ffmpeg. Film sessions use installed assets. |
 | `d3d` | platform | Guest-facing Direct3D 8 (Xbox, XDK 5849 LTCG) replacement for Halo 2, on top of gfx | [d3d.md](graphics/d3d.md) | in progress: the menu and the first level render |
 | `dsound` | platform | Guest-facing DirectSound replacement for h2recomp: guest memory in, crates/platform/audio out | [dsound.md](audio/dsound.md) | done |
+| `frame-types` | platform | The frame types the Direct3D device and FrameScene share: the carried part by slot, the render camera, the view and instance keys; plain data (docs/graphics/framescene.md) | [framescene.md](graphics/framescene.md) |  |
 | `gfx` | platform | Direct3D 8 (Xbox flavour) replacement on wgpu: texture decoding, state model, presenter | [graphics.md](graphics/graphics.md) | done, foundation only |
 | `hot-render` | platform | Hot iteration on the host renderer: WGSL overrides of translated programs from a watched directory, tunable parameters and toggles (docs/graphics/hot-iteration.md) | [hot-iteration.md](graphics/hot-iteration.md) |  |
 | `input` | platform | Xbox gamepad model (XINPUT_GAMEPAD), 4-port device model and host backends for h2recomp | [input.md](input/input.md) | done, foundation only |
@@ -130,6 +132,7 @@ the workspace checks are in
 | `hooks` | hooking | The feature registry: named points, ordered hook chains, conflicts at plan time, switches, a guest arena, and the frame and game bridges (docs/engine/feature-engine.md) | [feature-engine.md](engine/feature-engine.md) | in progress |
 | `engine` | rewrites | Hand-written Rust replacements for Halo 2 engine functions, over guest memory | [engine/README.md](engine/README.md) | in progress; the game installs the leaves through the `engine-leaves` feature (locale group on by default) |
 | `frame-scene` | rewrites | FrameScene: the owned, typed snapshot of one rendered frame that the native renderer reads; no guest addresses, no GPU (docs/graphics/framescene.md) | [framescene.md](graphics/framescene.md) |  |
+| `hud-kit-core` | rewrites | The HUD kit's shared core: the element model, the templates and their resolution from a map, the compiler to nhdt widget records and the HUDs of ours, for the offline preview and the game's runtime alike (docs/game/hud-kit.md) | [hud-kit.md](game/hud-kit.md) | in progress |
 | `native-render` | rewrites | Native GPU renderer: the static world (structure BSP) loaded once from the map's tags, culled and drawn with indirect draws (docs/graphics/native-renderer.md) | [native-renderer.md](graphics/native-renderer.md) |  |
 | `render-bridge` | rewrites | The guest side of the native renderer until FrameScene replaces it: the stage hooks, admissions and the frame step's scene (docs/graphics/framescene.md) | [native-renderer.md](graphics/native-renderer.md), [framescene.md](graphics/framescene.md) | in progress |
 | `scene-extract` | rewrites | Guest memory to FrameScene: the only render code with guest offsets (docs/graphics/framescene.md) | [framescene.md](graphics/framescene.md) |  |
@@ -161,10 +164,12 @@ the workspace checks are in
 | `h1-runtime` | extensions | Hooks that only converted Halo 1 maps need: projectile velocity curves and the scope zoom (docs/halo1/README.md); the rest of Halo 1 in the game is game's h1_* modules | [README.md](halo1/README.md) | in progress |
 | `hot-tags` | extensions | Live edits of the running game's tags in guest memory, by field path from the tag definitions, with a journal to list and revert them (docs/graphics/hot-iteration.md) | [hot-iteration.md](graphics/hot-iteration.md) |  |
 | `lockstep` | extensions | Determinism harness: per-tick guest-RAM hashes, run traces and their comparison (docs/game/high-framerate.md) | [high-framerate.md](game/high-framerate.md) | done |
+| `bitmap-edit` | tools | The Textures tool's canvas of h2-editor: tiled RGBA8 layers with shared-tile undo snapshots, brush, fill and adjust tools, resampling, PNG in and out and dirty-rectangle tracking (docs/editor/modeling.md) | [modeling.md](editor/modeling.md) | in progress |
 | `collision-build` | tools | Compiles convex polygons to a Halo 2 collision BSP (planes, 3D and 2D trees, leaves, surfaces, winged edges, vertices), opens coll BSPs as editable meshes, rebuilds their BSP physics slots, and makes collision from render faces (docs/editor/modeling.md) | [modeling.md](editor/modeling.md), [modeling-targets.md](editor/modeling-targets.md) | in progress |
 | `editor-core` | tools | UI-free parts of h2-editor shared by its tools: map sources, the snapshot undo stack, status messages, where game variants come from | [editor.md](editor/editor.md) | in progress |
 | `firefight-kit` | tools | Offline stage-one Firefight map kit |  |  |
 | `forge-build` | tools | Deterministic local Forge map materialisation over the user's Halo 2 maps |  |  |
+| `geometry-edit` | tools | The Modeling tool's targets and save: structure clusters, instanced geometry definitions and render-model sections opened as mesh-edit meshes, with undo, the op log, in-place and grown writes (docs/editor/modeling.md) | [modeling.md](editor/modeling.md), [modeling-targets.md](editor/modeling-targets.md) | in progress |
 | `h1-assets` | tools | Halo 1 assets as Halo 2 tags: bitmaps, models, sounds, skies and text, read from Xbox cache files (docs/halo1/README.md) | [README.md](halo1/README.md) |  |
 | `h1campaign` | tools | *(no description)* † |  |  |
 | `h1convert` | tools | Halo 1 multiplayer maps converted to Halo 2 tags: collision, shaders, objects ([multiplayer.md](halo1/multiplayer.md)) † | [multiplayer.md](halo1/multiplayer.md) | in progress: all 13 disc maps convert |
@@ -173,7 +178,6 @@ the workspace checks are in
 | `hopper-edit` | tools | The playlist (multiplayer_hopper.dat) editor's UI-free logic: the working copy, validation, presets, the variant picker's sources, undo and file handling | [editor.md](editor/editor.md) | in progress |
 | `hud-edit` | tools | The HUD editor's UI-free logic: a map's nhdt HUDs and their widgets, the engine's placement, a preview canvas, layout checks, edits with undo and the patched-map save (docs/editor/hud-editor.md) | [hud-editor.md](editor/hud-editor.md) |  |
 | `hud-kit` | tools | HUD elements of ours drawn by Halo 2's own HUD: the element model, the compiler to nhdt widget records, the offline preview over the retail player HUD and its checks (docs/game/hud-kit.md) | [hud-kit.md](game/hud-kit.md) | in progress |
-| `live-mirror` | tools | The editor's live object and player stream, sample store and interpolation |  |  |
 | `mesh-edit` | tools | The modeling kernel of h2-editor: a radial-edge mesh in index arenas, selection, MeshOp operations as values, import and stable export (docs/editor/modeling.md) | [modeling.md](editor/modeling.md) | in progress |
 | `perf` | tools | Performance tooling: guest-aware sampling profiler, timeline capture, benchmark harness | [profiling.md](perf/profiling.md) | done |
 | `scenario-edit` | tools | Sapien-style scenario placement editor: typed scnr placement blocks, undoable edits written as patched .map files, a UI-free session and an offscreen wgpu viewport | [scenario-editor.md](editor/scenario-editor.md) | in progress |
@@ -183,6 +187,7 @@ the workspace checks are in
 | `boot` | apps | The composition root: a built module run on the runtime with the kernel HLE, the hooks and every feature attached | [BOOT.md](runtime/BOOT.md) | done |
 | `cli` (bin `h2`) | apps | `h2` binary: `build`, `run`, `play`, `info`, `ls`, `extract`, `analyze`, `symbols`, `lift`, `emit`, the tag decoders and more (`cargo h2` lists them) † |  | done |
 | `h2host` (staticlib `h2host`) | apps | The tvOS and iOS apps' Rust half: a static library the UIKit hosts (platform/tvos, platform/ios) call to boot the game into their CAMetalLayer | [tvos.md](runtime/tvos.md), [ios.md](runtime/ios.md) | in progress |
+| `live-mirror` | apps | The editor's live object and player stream, sample store and interpolation |  |  |
 | `studio` (bin `h2-editor`) | apps | h2-editor: the editor suite on Dear ImGui (docking) + wgpu + winit: scenario placements, game variants, playlists | [editor.md](editor/editor.md) | in progress |
 | `studio-proto` | apps | The studio agent API's names, short forms and client: JSON-RPC 2.0 over a local Unix socket, as the game's agent API (docs/editor/agent-api.md) | [agent-api.md](editor/agent-api.md) |  |
 | `uwp-host` (bin `h2uwp`) | apps | The Xbox (UWP, Dev Mode) app: a CoreApplication view that runs the game into a composition swap chain, and the Mac-side packaging helpers (AppxManifest, package identity, the app-container API check) | [xbox.md](runtime/xbox.md) | in progress: boots on a Series X (DX12, audio); out of memory in App mode |

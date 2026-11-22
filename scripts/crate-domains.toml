@@ -32,12 +32,16 @@ crates = [
     "background", "kernel", "lifted", "recomp", "runtime", "runtime-test-probe",
     "snapshot", "timeline", "vfs",
 ]
+# Guest-free: no workspace dependencies, no guest memory. `background`
+# names and lowers worker threads; `timeline` records trace events. Any
+# guest-free crate may use them.
+guest_free = ["background", "timeline"]
 
 [platform]
 about = "Platform HLE: the Xbox's devices and libraries on the host (Direct3D 8, DirectSound, XAPI, pads, Bink, voice) and the host graphics and audio under them"
 uses = ["formats", "runtime"]
 crates = [
-    "assets", "audio", "bink-hle", "d3d", "dsound", "gfx", "hot-render",
+    "assets", "audio", "bink-hle", "d3d", "dsound", "frame-types", "gfx", "hot-render",
     "input", "mem-watch", "voice", "wma", "xapi",
 ]
 
@@ -55,8 +59,10 @@ crates = [
     "sim-state",
 ]
 # Guest-free: these take typed values and may use only `formats`,
-# `platform` and each other. No guest memory, no hook, no lifted code.
-guest_free = ["frame-scene", "hud-kit-core", "native-render", "scene-extract", "sim-anim", "sim-collision", "sim-core", "sim-ext"]
+# `platform` and each other (in any domain). No guest memory, no hook, no
+# lifted code. `scene-extract` is not: it is the one render crate that
+# reads guest offsets, through `engine`, to fill a FrameScene.
+guest_free = ["frame-scene", "hud-kit-core", "native-render", "sim-anim", "sim-collision", "sim-core", "sim-ext"]
 
 [live]
 about = "Live, co-op transport, bots, films, cloud saves, the dedicated host's data, the service itself (another session owns this domain)"
@@ -93,7 +99,7 @@ uses = ["formats", "recompiler", "runtime", "platform", "hooking", "rewrites", "
 crates = [
     "app", "app-icon", "boot", "cli", "cmd", "cmd-dev",
     "cmd-drive", "cmd-h1", "cmd-host", "cmd-live", "cmd-play", "cmd-recomp",
-    "cmd-tags", "h2host", "studio", "studio-proto", "uwp-host",
+    "cmd-tags", "h2host", "live-mirror", "studio", "studio-proto", "uwp-host",
 ]
 live_owned = ["cmd-drive", "cmd-live"]
 
@@ -102,28 +108,9 @@ live_owned = ["cmd-drive", "cmd-live"]
 # not listed, and on an entry whose dependency is gone.
 
 [[exception]]
-from = "hooks"
-to = "engine"
-until = "engine::entry, abi, runtime_glue and point_shapes leave engine for hooking (S2 moved the points and views)"
-
-
-
-[[exception]]
 from = "native-render"
-to = "analyze"
-until = "the `lifted` crate lands; the differential tests take it as a dev-dependency"
-
-[[exception]]
-from = "native-render"
-to = "ir"
-until = "the `lifted` crate lands"
-
-[[exception]]
-from = "native-render"
-to = "lift"
-until = "the `lifted` crate lands"
-
-
+to = "scene-extract"
+until = "the guest readers native-render re-exports (src/camera.rs, the `layout` modules in src/lib.rs, decorators_load.rs, object_streams.rs) are reached from render-bridge or scene-extract instead (docs/graphics/framescene.md, slices 3 to 6)"
 
 [[exception]]
 from = "sim-core"

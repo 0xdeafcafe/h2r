@@ -4,7 +4,7 @@ Guest memory to `FrameScene`: the only render code that knows guest offsets. It 
 
 ## Where it sits
 
-`rewrites` domain. Depends on `frame-scene`. Used by `native-render` and `render-bridge`.
+`rewrites` domain, not guest-free: it reads guest offsets. Depends on `frame-scene` and `engine`. Used by `native-render` and `render-bridge`.
 
 ## Layout
 
