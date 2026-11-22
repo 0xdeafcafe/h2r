@@ -19,11 +19,11 @@ use serde::Serialize;
 use crate::caps::{self, id};
 use crate::fake::FakeGame;
 use crate::ir::{Event, Ir, Op};
-use crate::scenario as file;
+use crate::scenario::{self as file, ScenarioLabel};
 use crate::vm::{self, Input};
 use crate::workbench::{
-    self, Keep, Limit, MAX_OBJECTS, MAX_STEPS, MAX_TICKS, Object, RunError, Runner, Scenario, Seat,
-    Step, Trace, handler_name, unit_of,
+    self, Keep, Limit, MAX_STEPS, MAX_TICKS, RunError, Runner, Scenario, Seat, Step, Trace,
+    handler_name, unit_of,
 };
 
 /// The most matches a batch plays.
@@ -45,6 +45,8 @@ const RESPAWN_SECONDS: u32 = 5;
 /// The first declared object, the first bounce spot and the first edited
 /// object.
 const OBJECT_BASE: u32 = 0x100;
+/// The most labelled objects a match places.
+const MAX_OBJECTS: usize = 64;
 const SPOT_BASE: u32 = 0x200;
 const EDIT_BASE: u32 = 0x300;
 /// Labels with one object a team; any other label gets three, numbered.
@@ -319,7 +321,7 @@ fn variant(ir: &Ir, setup: &Setup, teams: u8) -> BTreeMap<String, i32> {
 /// The labelled objects the script names: one a team for a label that
 /// reads as a team's (`ctf_flag_spawn`), three numbered 0 to 2 for any
 /// other (`hill_corner`, `checkpoint`).
-fn objects(ir: &Ir, teams: u8) -> Vec<Object> {
+fn objects(ir: &Ir, teams: u8) -> Vec<ScenarioLabel> {
     let mut out = Vec::new();
     for label in &ir.labels {
         if label.is_empty() {
@@ -331,10 +333,11 @@ fn objects(ir: &Ir, teams: u8) -> Vec<Object> {
             if out.len() >= MAX_OBJECTS {
                 return out;
             }
-            out.push(Object {
-                id: OBJECT_BASE + out.len() as u32,
+            out.push(ScenarioLabel {
                 label: label.clone(),
+                object: OBJECT_BASE + out.len() as u32,
                 number: i32::from(n),
+                placement: None,
                 team: per_team.then_some(n),
             });
         }
@@ -356,11 +359,14 @@ struct Bot {
     at: Option<usize>,
     /// The last object visited, by index.
     last: Option<usize>,
+    /// Has a unit to walk with: a player who quit and joined again has
+    /// none (`FakeGame::after`).
+    walks: bool,
 }
 
 struct Director {
     wants: Wants,
-    objects: Vec<Object>,
+    objects: Vec<ScenarioLabel>,
     bots: Vec<Bot>,
     rng: u64,
     carrier: u8,
@@ -376,7 +382,7 @@ impl Director {
         let wants = Wants::of(ir);
         let field = |name: &str| scenario.variant.get(name).copied().unwrap_or(0);
         let mut d = Director {
-            objects: scenario.objects.clone(),
+            objects: scenario.labelled.clone(),
             bots: Vec::new(),
             // Apart from the VM's own stream, which the match seed also
             // starts.
@@ -406,6 +412,7 @@ impl Director {
                 respawn_at: None,
                 at: None,
                 last: None,
+                walks: true,
             });
         }
         // One player in four matches leaves, when the script answers it.
@@ -528,6 +535,7 @@ impl Director {
             out.push(Input::Quit(b.slot));
             b.here = false;
             b.alive = false;
+            b.walks = false;
             b.at = None;
             b.respawn_at = None;
             if self.wants.on(Event::Join) {
@@ -548,7 +556,7 @@ impl Director {
         // hurries and then stays.
         if self.wants.zones && !self.objects.is_empty() {
             for i in 0..self.bots.len() {
-                if !self.bots[i].here || !self.bots[i].alive {
+                if !self.bots[i].here || !self.bots[i].alive || !self.bots[i].walks {
                     continue;
                 }
                 let slot = self.bots[i].slot;
@@ -558,7 +566,7 @@ impl Director {
                     Some(z) => {
                         if self.once_in(5 * u64::from(TPS)) {
                             out.push(Input::Leave {
-                                zone: self.objects[z].id,
+                                zone: self.objects[z].object,
                                 object: unit_of(slot),
                             });
                             self.bots[i].at = None;
@@ -569,7 +577,7 @@ impl Director {
                         if self.once_in(u64::from(wait)) {
                             let z = self.next_zone(i, carrying, team_of(slot));
                             out.push(Input::Enter {
-                                zone: self.objects[z].id,
+                                zone: self.objects[z].object,
                                 object: unit_of(slot),
                             });
                             self.bots[i].at = Some(z);
@@ -670,7 +678,7 @@ impl Director {
                         && self.wants.on(Event::Leave)
                     {
                         out.push(Input::Leave {
-                            zone: self.objects[z].id,
+                            zone: self.objects[z].object,
                             object: unit_of(victim),
                         });
                     }
@@ -708,7 +716,7 @@ impl Director {
             && let Some(i) = self.any(&living)
         {
             let pick = self.below(self.objects.len() as u64) as usize;
-            let object = self.objects.get(pick).map_or(0, |o| o.id);
+            let object = self.objects.get(pick).map_or(0, |o| o.object);
             out.push(Input::Press(self.bots[i].slot, object));
         }
         if self.wants.on(Event::ActorKill) && self.once_in(3 * u64::from(TPS)) {
@@ -757,9 +765,10 @@ fn opening(ir: &Ir, setup: &Setup) -> (Scenario, u8) {
                 slot,
                 team: if teams >= 2 { slot % teams } else { 0 },
                 lives: 0,
+                unit: Some(unit_of(slot)),
             })
             .collect(),
-        objects: objects(ir, teams),
+        labelled: objects(ir, teams),
         teams: if teams >= 2 { (0..teams).collect() } else { Vec::new() },
         variant,
         options: None,
@@ -1122,15 +1131,12 @@ pub fn batch(src: &str, setup: &Setup, matches: u32) -> Result<Batch, RunError> 
 /// ([`crate::scenario`]), and what the format has no place for.
 pub fn to_file(s: &Scenario) -> (file::Scenario, Vec<String>) {
     let mut left: BTreeSet<String> = BTreeSet::new();
-    if !s.variant.is_empty() {
-        left.insert("the record's fields (variant)".into());
-    }
-    if !s.objects.is_empty() {
-        left.insert("the labelled objects".into());
+    if !s.start {
+        left.insert("a start without init and round_start".into());
     }
     let mut ticks = vec![file::ScenarioTick::default(); s.ticks as usize + 1];
     for step in &s.steps {
-        let event = match step.input {
+        let event = match step.input.clone() {
             Input::Kill { victim, killer } => file::ScenarioEvent::Kill { victim, killer },
             Input::Spawn(p) => file::ScenarioEvent::Spawn(p),
             Input::Death(p) => file::ScenarioEvent::Death(p),
@@ -1145,10 +1151,18 @@ pub fn to_file(s: &Scenario) -> (file::Scenario, Vec<String>) {
             Input::RoundEnd => file::ScenarioEvent::RoundEnd,
             // Tick 0 of a file reports these by itself.
             Input::Init | Input::RoundStart => continue,
-            Input::Bounce(..) | Input::Edit(..) | Input::ActorKill { .. } | Input::ActorAssist { .. } => {
-                left.insert(format!("{} events", step.input.event().name()));
-                continue;
-            }
+            Input::Bounce(player, object) => file::ScenarioEvent::Bounce { player, object },
+            Input::Edit(player, object) => file::ScenarioEvent::Edit { player, object },
+            Input::ActorKill { killer, class } => file::ScenarioEvent::ActorKill { killer, class },
+            Input::ActorAssist {
+                killer,
+                assist,
+                class,
+            } => file::ScenarioEvent::ActorAssist {
+                killer,
+                assist,
+                class,
+            },
         };
         if let Some(t) = ticks.get_mut(step.tick as usize) {
             t.events.push(event);
@@ -1166,12 +1180,14 @@ pub fn to_file(s: &Scenario) -> (file::Scenario, Vec<String>) {
                 alive: true,
                 score: 0,
                 lives: p.lives,
+                unit: p.unit,
             })
             .collect(),
         teams: (!s.teams.is_empty()).then(|| s.teams.clone()),
+        variant: s.variant.clone(),
+        labelled: s.labelled.clone(),
         round_time_left: s.round_time,
         ticks,
-        ..file::Scenario::default()
     };
     (scenario, left.into_iter().collect())
 }
@@ -1184,14 +1200,14 @@ mod tests {
     fn a_label_gets_objects_by_its_name() {
         let ir = crate::compile(crate::builtin::CTF).unwrap();
         let o = objects(&ir, 2);
-        let spawns: Vec<&Object> = o.iter().filter(|o| o.label == "ctf_flag_spawn").collect();
+        let spawns: Vec<&ScenarioLabel> = o.iter().filter(|o| o.label == "ctf_flag_spawn").collect();
         assert_eq!(spawns.len(), 2);
         assert_eq!(spawns[1].team, Some(1));
         let ir = crate::compile(crate::builtin::KING).unwrap();
         let o = objects(&ir, 0);
         assert_eq!(o.len(), 3);
         assert_eq!((o[2].number, o[2].team), (2, None));
-        assert!(o.iter().all(|x| x.id >= OBJECT_BASE));
+        assert!(o.iter().all(|x| x.object >= OBJECT_BASE));
     }
 
     #[test]

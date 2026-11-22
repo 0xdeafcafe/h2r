@@ -237,10 +237,17 @@ file, so it carries no signature.
   give the same id. `portable::port_input` takes a raw record, a
   saved-variant file (record and signature), a hopper record slot
   (`0x37c` bytes, the record at `+0x24c`) or a `.h2variant` of either
-  version. `h2 variants port <input>... [--script builtin|keep|FILE]
-  [-o DIR]` (`crates/apps/cli/src/variants_cmd.rs`) writes one file per
-  input, named by the variant (`portable::file_name`), and prints each
-  id; `--all-builtins [disc]` ports every retail built-in, read from the
+  version. `portable::port_with_options` also packs option values by
+  name against the attached script (`rules::Ir::pack_options`), and
+  `Bundle::check` refuses a script over the tick budget or the IR cap
+  (`rules::fits`). `h2 variants port <input>... [--script
+  builtin|keep|FILE] [--name NAME] [--description TEXT] [--option
+  KEY=VALUE]... [-o DIR]` (`crates/apps/cli/src/variants_cmd.rs`) writes
+  one file per input, named by the variant (`portable::file_name`), and
+  prints each id. `--name` and `--description` take one input; each
+  `--option` is an int, `true` or `false`, or an enum value's name, and
+  an option the script does not declare, a value out of range or an
+  option with `keep` is refused. `--all-builtins [disc]` ports every retail built-in, read from the
   disc's `goof` tag (`Schema::build`), and refuses without a disc. The
   community variants are built by the game at boot and are not ported by
   the tool.

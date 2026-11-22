@@ -10,9 +10,9 @@ use std::process::Command;
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 
-use super::proto::{self, BuildSpec, RunReq};
+use super::proto::{self, BuildSpec, RunReq, SimReq};
 use super::transfer::Artifacts;
-use super::{USAGE, default_socket, discovery, forensics, lan, transfer, watch};
+use super::{USAGE, default_socket, discovery, forensics, lan, simbench, transfer, watch};
 
 enum Remote {
     Local(PathBuf),
@@ -146,6 +146,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
         "run" => run_cmd(&r, args),
         "agent" => agent_cmd(&r, args),
         "bench" => bench_cmd(&r, args),
+        "sim" => sim_cmd(&r, args),
         "build" => build_cmd(&r, args),
         "wait" => {
             let (id, timeout) = id_and_timeout(&args)?;
@@ -387,6 +388,53 @@ fn launch(r: &Remote, mut req: RunReq, src: &Source) -> Result<(Conn, Value)> {
     body["cmd"] = "run".into();
     let v = c.call(body)?;
     Ok((c, v))
+}
+
+/// `h2 lab sim`: uploads a match or batch file (with the tuning files it
+/// names) as a sim benchmark job. With `--wait`, fetches the run and prints
+/// its summary (`simbench`).
+fn sim_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
+    let mut src = Source::default();
+    let mut rest = Vec::new();
+    let mut it = args.into_iter();
+    while let Some(a) = it.next() {
+        if !src.take(&a, &mut it)? {
+            rest.push(a);
+        }
+    }
+    let simbench::Parsed { mut req, path, wait, to } = simbench::parse_args(rest)?;
+    let loaded = simbench::load_files(&path)?;
+    req.file = loaded.file;
+    req.batch = loaded.batch;
+    req.files = loaded.files;
+    // Refuse what the host would before syncing anything.
+    proto::validate_sim(&SimReq {
+        build: BuildSpec {
+            rev: Some("x".into()),
+            ..req.build.clone()
+        },
+        ..req.clone()
+    })?;
+    req.build.rev = src.resolve(r)?;
+    proto::validate_sim(&req)?;
+    let mut c = r.connect()?;
+    let mut body = serde_json::to_value(&req)?;
+    body["cmd"] = "sim".into();
+    let v = c.call(body)?;
+    let id = v["id"].as_str().context("no id in the answer")?.to_string();
+    if !wait {
+        return print(&v);
+    }
+    eprintln!("lab: sim job {id} started");
+    let v = c.call(json!({"cmd": "wait", "id": id}))?;
+    let dest = fetch(r, &id, to)?;
+    print(&v)?;
+    match std::fs::read_to_string(dest.join(simbench::SUMMARY_TEXT)) {
+        Ok(text) => print!("{text}"),
+        Err(e) => eprintln!("lab: no {} in {}: {e}", simbench::SUMMARY_TEXT, dest.display()),
+    }
+    println!("{}", dest.display());
+    finished_ok(&v)
 }
 
 fn build_cmd(r: &Remote, args: Vec<String>) -> Result<()> {

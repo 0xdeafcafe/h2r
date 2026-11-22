@@ -1350,6 +1350,9 @@ impl<'s> Cx<'s> {
             self.inline(f, decl, args, pos)?;
             return Ok(None);
         }
+        if name == "message" {
+            return self.message(f, args, pos, need_value);
+        }
         let Some(entry) = caps::entry_named(name) else {
             return err(pos, format!("unknown function {name}"));
         };
@@ -1386,6 +1389,50 @@ impl<'s> Cx<'s> {
                 Ok(None)
             }
         }
+    }
+
+    /// `message(to, text)`: `to` is a player, a team or `all` (everyone),
+    /// and picks the entry (`caps::spelled`).
+    fn message(&mut self, f: &mut Fun, args: &'s [Expr], pos: Pos, need_value: bool) -> R<Option<(Reg, Ty)>> {
+        if need_value {
+            return err(pos, "message has no value");
+        }
+        if args.len() != 2 {
+            return err(pos, "message takes 2 arguments: message(to, text)");
+        }
+        let cap = "hud.message";
+        if !self.requires.iter().any(|r| r == cap) {
+            return err(pos, format!("message needs capability {cap}: add it to requires"));
+        }
+        let to = &args[0];
+        let mut regs = Vec::with_capacity(2);
+        let entry = match &to.kind {
+            ExprKind::Name(n) if n == caps::EVERYONE => caps::id::MESSAGE_ALL,
+            ExprKind::None => {
+                return err(to.pos, "message is to a player, a team or all, not none");
+            }
+            _ => {
+                let (r, ty) = self.expr(f, to, None)?;
+                regs.push(r);
+                match ty {
+                    Ty::Player => caps::id::MESSAGE,
+                    Ty::Team => caps::id::MESSAGE_TEAM,
+                    other => {
+                        return err(
+                            to.pos,
+                            format!("message is to a player, a team or all, not {}", self.ty_name(other)),
+                        );
+                    }
+                }
+            }
+        };
+        regs.push(self.expect(f, &args[1], Ty::Text)?);
+        f.emit(Op::Call {
+            entry,
+            args: regs,
+            dst: None,
+        });
+        Ok(None)
     }
 
     /// A capability argument (`forge.place`): its index in `requires`.

@@ -68,7 +68,7 @@ fn unhostable_entries(ir: &Ir) -> BTreeSet<&'static str> {
             _ => None,
         })
         .filter(|e| !e.status.hostable())
-        .map(|e| e.name)
+        .map(caps::spelled)
         .collect()
 }
 

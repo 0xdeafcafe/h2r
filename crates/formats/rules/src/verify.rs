@@ -619,7 +619,7 @@ impl Cx<'_> {
                 let e = caps::entry(entry, self.ir.header.api_version).ok_or(Fault::Entry(entry))?;
                 if args.len() != e.args.len() {
                     return Err(Fault::Arity {
-                        entry: e.name,
+                        entry: caps::spelled(e),
                         want: e.args.len(),
                         got: args.len(),
                     });
@@ -640,7 +640,7 @@ impl Cx<'_> {
                 };
                 if !fits {
                     return Err(Fault::Result {
-                        entry: e.name,
+                        entry: caps::spelled(e),
                         want: e.result,
                         got,
                     });
@@ -648,7 +648,7 @@ impl Cx<'_> {
                 if let Some(cap) = e.cap
                     && !self.ir.header.requires.iter().any(|r| r == cap)
                 {
-                    return Err(Fault::Undeclared { entry: e.name, cap });
+                    return Err(Fault::Undeclared { entry: caps::spelled(e), cap });
                 }
             }
             Op::Grant {

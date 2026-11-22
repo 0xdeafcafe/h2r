@@ -83,9 +83,9 @@ const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 
 /** The built-ins `GET /v1/rules/builtin` lists (mock/variants.ts reads
  *  them too). */
-export function builtinScripts(): Array<{ name: string; engine: number; source: string; hash: string }> {
+export function builtinScripts(): Array<{ name: string; engine: number; source: string; hash: string; example: boolean }> {
   const source = slayer();
-  return [{ name: "Slayer", engine: 2, source, hash: sha(source) }];
+  return [{ name: "Slayer", engine: 2, source, hash: sha(source), example: false }];
 }
 
 const CARRIER_ENGINES: Record<string, number> = { ctf: 1, slayer: 2, oddball: 3, king: 4, juggernaut: 7, territories: 8, assault: 9 };
@@ -248,7 +248,7 @@ export function mockMatch(source: string, players: number, teams: number, seed: 
   }
   const ticks = limit === "score" ? tick : last;
   const scenario = {
-    players: seats, objects: [], teams: teams >= 2 ? Array.from({ length: teams }, (_, t) => t) : [],
+    players: seats, labelled: [], teams: teams >= 2 ? Array.from({ length: teams }, (_, t) => t) : [],
     variant: { team_play: teams >= 2 ? 1 : 0, score_limit: SIM_SCORE_LIMIT, time_limit: SIM_SECONDS, engine: carrierOfSource(source)?.engine ?? 2 },
     options: null, seed, round_time: last, ticks, start: true, timeline,
   };

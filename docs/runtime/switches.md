@@ -104,6 +104,7 @@ the final result through that directory.
 | `h2 lab run --mem-limit SIZE` | Cap on the game child's footprint, 12 GiB by default. [Memory limits and reports](lab.md#memory-limits-and-reports) |
 | `h2 lab host [install] --obj-cache-limit SIZE` | Size budget for the lab's shared object cache after each build attempt, 8 GiB by default. The host prunes the least recently used entries first. Zero retains no entries. |
 | `h2 lab host [install] --target-limit SIZE` | Size budget for the shared Cargo target directory, 32 GiB by default. The host clears an oversized target after the build. Zero retains no Cargo outputs. |
+| `h2 lab sim --arm NAME=VALUE`, `--repeat N`, `--parallel N` | one arm of a sim benchmark and the `H2_FEATURES` its runs get, runs per arm, matches at once in a batch (default 1) ([Sim benchmarks](lab.md#sim-benchmarks)) |
 | `H2_LAB_HOST`, `H2_LAB_SOCKET` | default driving target and local lab socket ([lab.md](lab.md)) |
 | `h2 lab host [install] --max-jobs 1` | active job cap; only 1 is accepted, since the host runs one job at a time ([lab.md](lab.md#host-files-and-flags)) |
 | `h2 lab host watch [--root DIR]`, `h2 lab logs <id\|current> [--follow]` | watch job and service logs on the host or through the paired lab connection ([Watching jobs](lab.md#watching-jobs)) |
@@ -135,6 +136,7 @@ the final result through that directory.
 | `H2_THEATER_MEASURE=1` | enables [Theater measurements](agent-api.md#theater-transport) on the recorder or player, including guest write-watch counts during recording |
 | `H2_TELEMETRY=0`, `H2_TELEMETRY_FILE` | Disable telemetry or write a local capture (`crates/live/live-telemetry/src/config.rs`). |
 | `H2_BACKGROUND_THREADS` | how many threads one background job (including nav, visibility and native pipeline builds) splits across; unset, `0` or not a number: a quarter of the cores, at least one; at most the cores ([background-work.md](background-work.md)) |
+| `H2_BOTS_MAP_INLINE` | `1`: a map's bot data (nav mesh, walls, visibility grid) is read on the game thread before the frame's pads instead of on a worker, so the tick the bots first have it does not depend on the host's load. `h2 sim` sets it (`crates/extensions/game/src/bot_glue.rs`, `MAP_INLINE_ENV`) |
 | `H2_BOTS_NAV_AUTO` | `0`, `off`, `false` or `no`: the game builds no bot nav meshes or visibility grids by itself; unset or anything else: on (`crates/live/bots/src/autonav.rs`, `ENV`) |
 | `H2_WATERMARK`, `H2_DEBUG_MENU`, `H2_SNAPSHOT_PROBE`, `H2_UI_WATCH`, `H2_UI_PREVIEW_DIR`, `H2_UI_SHEET_DIR`, `H2_SKULLS_REVEAL` | snapshot, UI and play-test aids |
 | `LIVE_MAX_HOSTS` | concurrent dedicated leases, default 4. Zero disables admission. Accepted caps are 0–4, 16, 64, 256 and 1,024. The Worker derives per-class container limits at deploy time ([capacity steps](../live/host-halving.md#caps)) |

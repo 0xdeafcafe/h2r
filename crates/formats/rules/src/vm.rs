@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 
 use crate::caps::{self, Entry, Kind, Order, VARIANT_FIELDS};
 use crate::ir::*;
+use crate::policy;
 use crate::ty::{MAX_LABELLED, MAX_OBJECTIVES, MAX_PLAYERS, MAX_SQUADS, MAX_TEAMS, NONE, Ty, fixed};
 use crate::verify::{self, Refusal};
 
@@ -25,6 +26,8 @@ pub const MAX_STATE_BYTES: usize = 16 * 1024;
 pub const MAX_QUEUE: usize = 128;
 /// Objects that carry object variables at once.
 pub const MAX_OBJECT_RECORDS: usize = MAX_LABELLED;
+/// Zones `ticks_held` counts for at once.
+pub const MAX_HELD_ZONES: usize = 32;
 
 /// A value handed to the game, resolved from the blob's tables.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -74,6 +77,12 @@ pub trait Game {
     }
     /// A retail record field by its [`VARIANT_FIELDS`] name.
     fn variant(&self, field: &str) -> i32;
+    /// The zone test behind `ticks_held`: the one team whose living players
+    /// alone are inside the zone object this tick; `None` when it is empty
+    /// or contested. A game with no zone test answers `None`.
+    fn zone_holder(&self, _zone: u32) -> Option<u8> {
+        None
+    }
     /// A read entry. The VM maps a value outside the result type to its
     /// zero value.
     fn read(&mut self, call: &Call) -> i32;
@@ -171,6 +180,8 @@ pub enum ErrorKind {
     Queue,
     /// `squad(n)` outside the kit's slots.
     Squad,
+    /// More than [`MAX_HELD_ZONES`] zones named to `ticks_held`.
+    Zones,
 }
 
 impl ErrorKind {
@@ -185,6 +196,7 @@ impl ErrorKind {
             2 => ErrorKind::Objects,
             3 => ErrorKind::Queue,
             4 => ErrorKind::Squad,
+            5 => ErrorKind::Zones,
             _ => return None,
         })
     }
@@ -234,6 +246,11 @@ pub struct RulesExt {
     /// Sorted by player, then capability.
     pub grants: Vec<Grant>,
     pub queue: Vec<Queued>,
+    /// `ticks_held`'s counters: per zone object a script has named, the
+    /// ticks each team held it alone, by team index. Counting starts the
+    /// tick after a script first names the zone and ends at the round's
+    /// end.
+    pub held: BTreeMap<u32, [u32; MAX_TEAMS]>,
 }
 
 /// State bytes that do not decode, or do not fit the blob.
@@ -248,7 +265,8 @@ pub enum StateError {
 }
 
 const STATE_MAGIC: [u8; 4] = *b"H2RX";
-const STATE_VERSION: u8 = 1;
+/// 2 added the `ticks_held` counters.
+const STATE_VERSION: u8 = 2;
 
 impl RulesExt {
     /// Whether `player` holds `cap` (an index into `requires`) with uses
@@ -337,6 +355,13 @@ impl RulesExt {
             w.extend_from_slice(&q.entry.to_le_bytes());
             w.push(q.args.len() as u8);
             i32s(&mut w, &q.args);
+        }
+        w.push(self.held.len() as u8);
+        for (zone, counts) in &self.held {
+            w.extend_from_slice(&zone.to_le_bytes());
+            for c in counts {
+                w.extend_from_slice(&c.to_le_bytes());
+            }
         }
         w
     }
@@ -431,6 +456,22 @@ impl RulesExt {
                 args: r.i32s(argc)?,
             });
         }
+        let n = r.u8()? as usize;
+        let mut held = BTreeMap::new();
+        let mut last: Option<u32> = None;
+        for _ in 0..n {
+            let at = r.at;
+            let zone = r.u32()?;
+            if last.is_some_and(|l| l >= zone) || n > MAX_HELD_ZONES {
+                return Err(StateError::Malformed(at));
+            }
+            last = Some(zone);
+            let mut counts = [0u32; MAX_TEAMS];
+            for c in &mut counts {
+                *c = r.u32()?;
+            }
+            held.insert(zone, counts);
+        }
         if r.at != bytes.len() {
             return Err(StateError::Malformed(r.at));
         }
@@ -446,6 +487,7 @@ impl RulesExt {
             objects,
             grants,
             queue,
+            held,
         })
     }
 }
@@ -530,6 +572,8 @@ pub struct Proposal<'a> {
 pub enum ProposalRefusal {
     #[error("edits are never counted in a ranked game")]
     Ranked,
+    #[error("Theater replays a film and takes no edits")]
+    Theater,
     #[error("the script is stopped")]
     Stopped,
     #[error("the script does not declare {0}")]
@@ -577,6 +621,7 @@ impl Vm {
             objects: BTreeMap::new(),
             grants: Vec::new(),
             queue: Vec::new(),
+            held: BTreeMap::new(),
         };
         Ok(Vm {
             ir,
@@ -601,6 +646,7 @@ impl Vm {
             && ext.objects.values().all(|r| r.len() == inits[3].len())
             && ext.objects.len() <= MAX_OBJECT_RECORDS
             && ext.queue.len() <= MAX_QUEUE
+            && ext.held.len() <= MAX_HELD_ZONES
             && ext.grants.iter().all(|g| {
                 (g.cap as usize) < ir.header.requires.len()
                     && g.palette.is_none_or(|p| (p as usize) < ir.palettes.len())
@@ -665,11 +711,19 @@ impl Vm {
         fired
     }
 
-    /// The per-tick group: timers count down and fire in slot order, then
-    /// `on tick` runs.
+    /// The per-tick group: each zone `ticks_held` counts adds a tick to the
+    /// team holding it alone, timers count down and fire in slot order,
+    /// then `on tick` runs.
     pub fn update(&mut self, game: &mut dyn Game) -> Fired {
         if self.ext.stopped.is_some() {
             return Fired::Stopped;
+        }
+        for (&zone, counts) in self.ext.held.iter_mut() {
+            if let Some(t) = game.zone_holder(zone)
+                && let Some(c) = counts.get_mut(t as usize)
+            {
+                *c = c.saturating_add(1);
+            }
         }
         let mut fired = Vec::new();
         for (slot, s) in self.ir.slots.iter().enumerate() {
@@ -715,11 +769,14 @@ impl Vm {
         }
     }
 
-    /// Checks a granted power's proposal before the host stamps it. The
-    /// host also runs Forge's own validation.
-    pub fn check_proposal(&self, ranked: bool, p: &Proposal<'_>) -> Result<(), ProposalRefusal> {
-        if ranked {
-            return Err(ProposalRefusal::Ranked);
+    /// Checks a granted power's proposal before the host stamps it: never
+    /// in a ranked game or in Theater ([`policy::edits_allowed`]). The host
+    /// also runs Forge's own validation.
+    pub fn check_proposal(&self, context: policy::Context<'_>, p: &Proposal<'_>) -> Result<(), ProposalRefusal> {
+        match context {
+            policy::Context::Ranked => return Err(ProposalRefusal::Ranked),
+            policy::Context::Theater => return Err(ProposalRefusal::Theater),
+            policy::Context::Custom | policy::Context::Hopper { .. } => {}
         }
         if self.ext.stopped.is_some() {
             return Err(ProposalRefusal::Stopped);
@@ -814,13 +871,28 @@ impl Vm {
             .position(|h| h.event == event && h.timer == timer)
     }
 
-    /// Grants end at the player's quit and at the round's end.
+    /// Grants end at the player's quit and at the round's end; the
+    /// `ticks_held` counters end at the round's end.
     fn after(&mut self, input: &Input) {
         match *input {
             Input::Quit(p) => self.ext.grants.retain(|g| g.player != p),
-            Input::RoundEnd => self.ext.grants.clear(),
+            Input::RoundEnd => {
+                self.ext.grants.clear();
+                self.ext.held.clear();
+            }
             _ => {}
         }
+    }
+
+    /// The ticks `team` has held `zone` alone, as `ticks_held` reads it,
+    /// for tests and the agent API.
+    pub fn ticks_held(&self, zone: u32, team: u8) -> u32 {
+        self.ext
+            .held
+            .get(&zone)
+            .and_then(|c| c.get(team as usize))
+            .copied()
+            .unwrap_or(0)
     }
 
     fn args(&self, input: &Input) -> Vec<i32> {
@@ -1240,6 +1312,24 @@ impl<'a> Run<'a> {
                             0
                         }
                     }
+                    // A zone named for the first time is counted from the
+                    // next update; `none` and a team out of range read 0.
+                    caps::id::TICKS_HELD => {
+                        let (Ok(zone), Ok(team)) = (u32::try_from(raw[0]), usize::try_from(raw[1])) else {
+                            return Ok(Some(0));
+                        };
+                        if team >= MAX_TEAMS {
+                            return Ok(Some(0));
+                        }
+                        if !self.ext.held.contains_key(&zone) {
+                            if self.ext.held.len() >= MAX_HELD_ZONES {
+                                return Err(ErrorKind::Zones);
+                            }
+                            self.ext.held.insert(zone, [0; MAX_TEAMS]);
+                        }
+                        let n = self.ext.held.get(&zone).map_or(0, |c| c[team]);
+                        i32::try_from(n).unwrap_or(i32::MAX)
+                    }
                     _ => 0,
                 };
                 Ok(Some(v))
@@ -1347,7 +1437,23 @@ mod tests {
                 entry: caps::id::HUNT,
                 args: vec![4],
             }],
+            held: [(5u32, [0, 30, 0, 0, 0, 0, 0, 0]), (12, [7; MAX_TEAMS])].into_iter().collect(),
         }
+    }
+
+    #[test]
+    fn state_refuses_unsorted_zones() {
+        let mut e = ext();
+        e.held.clear();
+        let bytes = e.encode();
+        // Two zones, 12 before 5: rewrite the tail by hand.
+        let mut bad = bytes[..bytes.len() - 1].to_vec();
+        bad.push(2);
+        for zone in [12u32, 5] {
+            bad.extend_from_slice(&zone.to_le_bytes());
+            bad.extend_from_slice(&[0; 4 * MAX_TEAMS]);
+        }
+        assert!(RulesExt::decode(&bad).is_err());
     }
 
     #[test]
@@ -1401,6 +1507,7 @@ mod tests {
                 };
                 MAX_QUEUE
             ],
+            held: (0..MAX_HELD_ZONES as u32).map(|z| (z, [u32::MAX; MAX_TEAMS])).collect(),
         };
         let bytes = e.encode();
         assert!(bytes.len() <= MAX_STATE_BYTES, "{} bytes", bytes.len());

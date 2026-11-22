@@ -5,7 +5,7 @@ use super::info::{self, LANG};
 use super::model::{self, DefKind, FieldTarget, Model, T};
 use super::scan::{self, K};
 use super::{CompletionItem, Markup, PLAIN_TEXT, SNIPPET, kind};
-use crate::caps::{CAPABILITIES, CARRIERS, ENTRIES, VARIANT_FIELDS};
+use crate::caps::{self, CAPABILITIES, CARRIERS, ENTRIES, VARIANT_FIELDS};
 use crate::ir::{Event, Scope};
 use crate::lang::lower::FIELDS;
 
@@ -547,8 +547,13 @@ fn expression(m: &Model, off: usize) -> Vec<CompletionItem> {
         };
         out.push(plain(&def.name, k, detail, info::def_markdown(m, d)));
     }
-    for e in ENTRIES {
-        let params: Vec<String> = e.args.iter().map(|t| t.name().to_string()).collect();
+    // The team and everyone forms of `message` are reached through it.
+    for e in ENTRIES.iter().filter(|e| !caps::is_form(e)) {
+        let params: Vec<String> = if e.id == caps::id::MESSAGE {
+            vec!["to".into(), "text".into()]
+        } else {
+            e.args.iter().map(|t| t.name().to_string()).collect()
+        };
         out.push(item(
             e.name,
             kind::FUNCTION,

@@ -128,10 +128,23 @@ async fn builtins_are_listed_with_their_source() {
     assert_eq!(r.status, StatusCode::OK, "{}", r.error());
     let v = r.json();
     let items = v["items"].as_array().expect("items");
-    assert_eq!(items.len(), rules::builtin::ALL.len());
+    let examples = rules::builtin::examples();
+    assert_eq!(items.len(), rules::builtin::ALL.len() + examples.len());
     let slayer = items.iter().find(|i| i["name"] == "Slayer").expect("Slayer is listed");
     assert_eq!(slayer["engine"], 2);
     assert_eq!(slayer["source"], rules::builtin::SLAYER);
+    assert_eq!(slayer["example"], false);
+    // The ports first, then each example by key, with its carrier.
+    let first_example = items.iter().position(|i| i["example"] == true).unwrap();
+    assert_eq!(first_example, rules::builtin::ALL.len());
+    for (key, source) in examples {
+        let item = items.iter().find(|i| i["key"] == *key).expect("each example is listed");
+        assert_eq!(item["source"], *source);
+        let ir = rules::compile(source).unwrap();
+        assert_eq!(item["engine"], ir.header.carrier);
+        assert_eq!(item["name"], ir.header.name.as_str());
+        assert_eq!(item["hash"], ir.id().to_string());
+    }
 }
 
 const IDE_SRC: &str = "rules \"T\" 1\ncarrier slayer\noption points: int 1..5 = 1\non kill(victim, killer) {\n    score(killer, points)\n    \n}\n";
@@ -383,6 +396,7 @@ async fn simulate_plays_a_generated_match_and_sums_up_a_batch() {
     assert_eq!(m["end"], v["rows"][0]["end"]);
     assert_eq!(m["winner"], v["rows"][0]["winner"]);
     assert_eq!(m["scenario"]["players"].as_array().unwrap().len(), 8);
+    assert_eq!(m["scenario"]["players"][3]["unit"], 4096 + 3);
     assert_eq!(m["scenario"]["variant"]["team_play"], 1);
     assert_eq!(m["scenario"]["ticks"], m["trace"]["last_tick"]);
     let first = &m["scenario"]["timeline"][0]["events"][0];

@@ -116,6 +116,8 @@ export class MockVariants {
       created: s.created,
       bundle_url: `/v1/variants/${s.id}/h2variant`,
       settings,
+      // The mock runs no policy: every kind of game.
+      eligible: ["custom", "hopper", "ranked"],
     };
   }
 

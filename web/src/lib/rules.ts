@@ -264,7 +264,9 @@ export const EVENT_TYPES: ReadonlyArray<{ type: EventType; label: string; fields
 export const eventLabel = (t: EventType): string => EVENT_TYPES.find((e) => e.type === t)?.label ?? t;
 export const eventFields = (t: EventType): EventField[] => EVENT_TYPES.find((e) => e.type === t)?.fields ?? [];
 
-export interface ScenarioPlayer { slot: number; team: number; lives: number }
+/** A seated player; `unit` is the object the player drives, which an
+ *  `enter` or `leave` names (a generated match seats one each). */
+export interface ScenarioPlayer { slot: number; team: number; lives: number; unit?: number }
 /** A labelled object on the fake map: what `objects labelled "x"` visits. */
 export interface ScenarioObject { id: number; label: string; number: number; team: number | null }
 /** One event of the tick list. `killer` null is a death by the world. */
@@ -458,8 +460,8 @@ export function buildScenario(d: ScenarioDraft): Record<string, unknown> {
     byTick.set(e.tick, list);
   }
   return {
-    players: d.players.map((p) => ({ slot: p.slot, team: p.team, lives: p.lives })),
-    ...(d.objects?.length ? { objects: d.objects.map((o) => ({ id: o.id, label: o.label, number: o.number, team: o.team })) } : {}),
+    players: d.players.map(wireSeat),
+    ...(d.objects?.length ? { labelled: d.objects.map((o) => ({ label: o.label, object: o.id, number: o.number, ...(o.team === null ? {} : { team: o.team }) })) } : {}),
     variant: { ...d.variant, team_play: d.teamPlay ? 1 : 0 },
     seed: d.seed,
     round_time: d.roundTime,
@@ -470,6 +472,12 @@ export function buildScenario(d: ScenarioDraft): Record<string, unknown> {
 }
 
 const whole = (x: unknown, dflt: number): number => (typeof x === "number" && Number.isInteger(x) ? x : dflt);
+
+const wireSeat = (p: ScenarioPlayer): Record<string, unknown> => ({ slot: p.slot, team: p.team, lives: p.lives, ...(typeof p.unit === "number" ? { unit: p.unit } : {}) });
+const readSeat = (v: unknown): ScenarioPlayer => {
+  const p = obj(v);
+  return { slot: whole(p.slot, 0), team: whole(p.team, 0), lives: whole(p.lives, 0), ...(typeof p.unit === "number" && Number.isInteger(p.unit) ? { unit: p.unit } : {}) };
+};
 
 /** One event read from a draft or from the wire; null for a type the page
  *  does not know. */
@@ -489,7 +497,9 @@ const readVariant = (v: unknown): Record<string, number> | undefined => {
   return out.length ? Object.fromEntries(out) : undefined;
 };
 const readObjects = (v: unknown): ScenarioObject[] | undefined => {
-  const out = arr(v).map(obj).filter((o) => typeof o.id === "number" && typeof o.label === "string")
+  // The wire names the object `object` (`labelled`); a kept draft, `id`.
+  const out = arr(v).map(obj).map((o) => ({ ...o, id: typeof o.object === "number" ? o.object : o.id }))
+    .filter((o) => typeof o.id === "number" && typeof o.label === "string")
     .map((o) => ({ id: o.id as number, label: o.label as string, number: whole(o.number, 0), team: typeof o.team === "number" ? o.team : null }));
   return out.length ? out : undefined;
 };
@@ -497,11 +507,11 @@ const readObjects = (v: unknown): ScenarioObject[] | undefined => {
 /** A scenario as the server sends one (a generated match's, in
  *  `POST /v1/rules/run`'s shape) as a draft the page shows and edits. */
 export function draftOfWire(v: unknown): ScenarioDraft {
-  const b = obj(v), variant = readVariant(b.variant), objects = readObjects(b.objects);
+  const b = obj(v), variant = readVariant(b.variant), objects = readObjects(b.labelled);
   const events = arr(b.timeline).map(obj).flatMap((t) => arr(t.events).map((e) => readEvent(e, whole(t.tick, 0)))).filter((e): e is ScenarioEvent => e !== null);
   const last = events.reduce((m, e) => Math.max(m, e.tick), 0);
   return {
-    players: arr(b.players).map(obj).map((p) => ({ slot: whole(p.slot, 0), team: whole(p.team, 0), lives: whole(p.lives, 0) })),
+    players: arr(b.players).map(readSeat),
     events: sortEvents(events),
     ...(variant ? { variant } : {}),
     ...(objects ? { objects } : {}),
@@ -519,7 +529,7 @@ export function parseScenario(v: unknown): ScenarioDraft {
   const int = whole;
   const variant = readVariant(b.variant), objects = readObjects(b.objects);
   return {
-    players: Array.isArray(b.players) ? b.players.map(obj).map((p) => ({ slot: int(p.slot, 0), team: int(p.team, 0), lives: int(p.lives, 0) })) : d.players,
+    players: Array.isArray(b.players) ? b.players.map(readSeat) : d.players,
     events: Array.isArray(b.events)
       ? b.events.map((e) => readEvent(e, int(obj(e).tick, 0))).filter((e): e is ScenarioEvent => e !== null)
       : d.events,
@@ -993,12 +1003,14 @@ export function saveDraft(storage: Pick<Storage, "setItem"> | null, d: Draft): v
 
 // ---------- the API ----------
 
-export interface Builtin { name: string; engine: number; source: string; hash: string | null }
+/** A script `GET /v1/rules/builtin` lists: an engine port, or an example
+ *  (`example`, with its `key`) that rides `engine` as its carrier. */
+export interface Builtin { name: string; engine: number; source: string; hash: string | null; example: boolean; key: string | null }
 export interface ScriptSummary { hash: string; name: string; version: number; author: string; gamertag: string; saved_at: string }
 export interface Script extends ScriptSummary { source: string }
 
 export function parseBuiltins(body: unknown): Builtin[] {
-  return arr(obj(body).items).map(obj).filter((b) => typeof b.source === "string").map((b) => ({ name: str(b.name) || "Built-in", engine: num(b.engine), source: str(b.source), hash: optStr(b.hash) }));
+  return arr(obj(body).items).map(obj).filter((b) => typeof b.source === "string").map((b) => ({ name: str(b.name) || "Built-in", engine: num(b.engine), source: str(b.source), hash: optStr(b.hash), example: b.example === true, key: optStr(b.key) }));
 }
 
 const summaryOf = (s: Record<string, unknown>): ScriptSummary => ({

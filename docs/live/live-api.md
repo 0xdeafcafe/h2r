@@ -1144,6 +1144,12 @@ game, 72 lowercase hex digits, and the variant's key, 16; omitted when the
 host sends none; docs/game/game-options.md section 3) and `rules` (the
 SHA-256 of the rules IR blob the host's next game runs, 64 lowercase hex
 digits; omitted when none; docs/game/rules-engine.md "Carrying a script").
+A session whose flags are `ranked` and whose `rules` is set names a saved
+or built-in script that the ranked policy takes
+(docs/game/rules-engine.md "Roles, powers and capabilities"): an unknown
+hash is 400, and a script declaring a capability ranked refuses (any
+`forge.*`) is 403, naming it. A `SessionUpdated` that sets `rules` is
+checked the same way.
 The ID's datatype bits must agree. Limits are 16 total slots,
 64 attributes, 400 UTF-16 units per string, 800 bytes per blob, 256 bytes per
 metadata string and 32 open advertisements per host. Unknown input fields are
@@ -1834,7 +1840,7 @@ homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
 | `POST /v1/rules/simulate` | as check | generated matches: `{ok, teams, summary, rows, match}`, or `{ok: false, errors}` when the script does not build |
 | `POST /v1/rules/ide` | none; rate-limited per client address, in a bucket of its own | one editor operation's answer, in LSP's field names (below) |
 | `GET /v1/rules/ide/legend` | none | `{legend: [...]}`, the semantic token types by index |
-| `GET /v1/rules/builtin` | a read | `{items: [{name, engine, source, hash}]}` from `rules::builtin::ALL` |
+| `GET /v1/rules/builtin` | a read | `{items: [{name, engine, source, hash, example, key?}]}`: the engine ports (`rules::builtin::ALL`, `example: false`), then the example scripts (`rules::builtin::examples`, `example: true`, with their `key` and their carrier as `engine`) |
 | `POST /v1/rules` | an account's token, `lxm: content.write` | 201 `{ok, saved: true, script}`; 200 `{saved: false, script}` when the hash is saved already |
 | `GET /v1/rules/{hash}` | a read | `{hash, name, version, author, gamertag, saved_at, position, source}` |
 | `GET /v1/rules/{hash}/ir` | a read | the IR blob (`application/octet-stream`, immutable), compiled again from the saved source |
@@ -1858,22 +1864,27 @@ homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
   player, team, object), `ir_bytes` and `ir_limit`, `capabilities: [{name,
   words, grantable, known}]` with the lobby's plain words, and
   `unhostable`: the entries the script calls that no host can make yet.
-- A run's `scenario` is `{players: [{slot, team, lives}], objects: [{id,
-  label, number, team}], teams, variant, options, seed, round_time,
-  ticks, start, timeline: [{tick, events}]}`. `objects` (at most 64) are
-  the labelled objects the script can find; a player's own object is
-  4096 plus the slot.
-  An event is `{type, ...}` with the handler's event name: `kill {victim,
-  killer}`, `spawn`, `death`, `join`, `quit {player}`, `pickup`, `drop`,
-  `press`, `bounce`, `edit {player, object}`, `enter`, `leave {zone,
-  object}`, `squad_dead {squad}`, `actor_kill {killer, class}`, `actor_assist
-  {killer, assist, class}`, `round_start`, `round_end`, `init`. `start` (default true) fires `init`
+- A run's `scenario` is `{players: [{slot, team, lives, unit?}], teams,
+  variant, labelled: [{label, object, number?, placement?,
+  team?}], options,
+  seed, round_time, ticks, start, timeline: [{tick, events}]}`. `unit` is
+  the object that is the player's unit, so `enter` and `leave` find its
+  player; `labelled` lists the objects `objects labelled` visits, each with
+  the `team` that `o.team` reads when it has one; a
+  `variant` field left out reads the stock record of the script's
+  carrier. An event is `{type, ...}` with the handler's event name:
+  `kill {victim, killer}`, `spawn`, `death`, `join`, `quit {player}`,
+  `pickup`, `drop`, `press`, `bounce`, `edit {player, object}`, `enter`,
+  `leave {zone, object}`, `squad_dead {squad}`, `actor_kill {killer,
+  class}`, `actor_assist {killer, assist, class}`, `round_start`,
+  `round_end`, `init`. A run steps the fake game `h2 rules run` steps
+  (`rules::scenario::step`). `start` (default true) fires `init`
   and `round_start` at tick 0; `ticks` is the last tick run, at most
   36,000; a scenario lists at most 4,096 events. A bad scenario is 400.
 - The trace is `{ok, hash, options, ticks, last_tick, error, round_ended,
   round_winner, limit, cut, ops, worst_tick_ops, handlers_ran, scores:
-  [{slot, score}]}`. `limit` is `"score"` or `"time"` when the variant's
-  `score_limit` or `time_limit` ended the game, and `round_winner` the
+  [{slot, score}]}`. `limit` is `"score"` or `"time"` when a `score_limit` or
+  `time_limit` the scenario's `variant` sets ended the game, and `round_winner` the
   team `end_round` named. Each entry of `ticks` is a tick in
   which something happened: `{tick, ran, calls: [{entry, args}], ops,
   warnings, globals: [{name, value}], players: [{slot, team, alive, score,
@@ -1934,8 +1945,9 @@ homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
     one of `syntax`, `compile`, `verify`, `unused` and `unhostable`.
 - A save writes a server-signed `RulesSaved` event (`{hash, name, version,
   author, source}`) on `rules-<hash>`, expecting an empty stream, so a hash
-  is saved once and its first saver is its author. Only scripts that
-  verify are saved; an account saves at most 200. Nobody posts the event
+  is saved once and its first saver is its author. Only scripts whose
+  check is `ok` are saved, so one over the tick budget or the IR cap is
+  400; an account saves at most 200. Nobody posts the event
   by hand.
 
 ## Game variants
@@ -1960,12 +1972,18 @@ routes (`crates/live/live-server/src/game_variants.rs`, wire types in
 
 - `Variant` is `{id, name, description, author: {xuid, gamertag}, engine,
   game_type, record_hex, script_hash, script_name, visibility, created,
-  bundle_url, settings: [{label, value}]}`. `engine` is the record's
+  bundle_url, settings: [{label, value}], eligible}`. `engine` is the record's
   retail engine index and `game_type` our label of it; `script_hash` and
   `script_name` are null for an unscripted variant; `created` is RFC 3339;
   `bundle_url` is the file's path; `settings` is the record's settings in
   words (each setting of its game type we have a name for, then the
-  extension options in one row).
+  extension options in one row). `eligible` lists the kinds of game the
+  variant may play in, by the script policy
+  ([rules-engine.md, "Roles, powers and capabilities"](../game/rules-engine.md#roles-powers-and-capabilities)):
+  `custom`, `hopper` and `ranked`, in that order, those its script's
+  capabilities allow (a script with a `forge.*` capability is not
+  `ranked`), every one for an unscripted variant. Publishing is open
+  whatever it says.
 - `POST /v1/variants` takes `{bundle, visibility}`: the file as an object
   or a string of it, version 1 or 2, and `public` or `unlisted` (default
   public). It also takes `{name, description, record_hex, script_hash?,
@@ -1978,8 +1996,8 @@ routes (`crates/live/live-server/src/game_variants.rs`, wire types in
   the record decodes and the game would keep it, the name and description
   keep the name rules (1 to 31 characters, at most 150 for a
   description), and a named script hashes to its hash, starts with the
-  prefix, verifies and rides the record's engine. A refusal is 400 with
-  the reason. The file's id is the SHA-256 of its canonical bytes, author
+  prefix, verifies, fits the tick budget and the IR cap (`rules::fits`)
+  and rides the record's engine. A refusal is 400 with the reason. The file's id is the SHA-256 of its canonical bytes, author
   included, so the same file published again answers 200 with the same
   variant, and the file from `/bundle` (which has no author) gets another
   id once published.

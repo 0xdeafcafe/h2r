@@ -852,7 +852,7 @@ export default function RulesPage() {
           <ul class="s-rules-picks">
             <li><button onClick={() => replace(STARTER)}><b>Blank game type</b><small>a kill-scoring starter</small></button></li>
             <For each={builtins() ?? []}>
-              {(b) => <li><button onClick={() => replace(b.source, { name: b.name, kind: "built-in" })}><b>{b.name}</b><small>built-in · engine {b.engine} · opens read-only</small></button></li>}
+              {(b) => <li><button onClick={() => replace(b.source, { name: b.name, kind: "built-in" })}><b>{b.name}</b><small>{b.example ? "example" : "built-in"} · engine {b.engine} · opens read-only</small></button></li>}
             </For>
             <Show when={identity.me()}>
               <For each={mine() ?? []}>

@@ -10,7 +10,8 @@ use rules::builtin;
 use rules::ir::Event;
 use rules::sim::{self, End, Setup, Winner};
 use rules::vm::Input;
-use rules::workbench::{self, Limit, Object, Scenario, Seat, Step};
+use rules::scenario::ScenarioLabel;
+use rules::workbench::{self, Limit, Scenario, Seat, Step};
 
 const ALL: [(&str, &str); 12] = [
     ("slayer", builtin::SLAYER),
@@ -253,20 +254,44 @@ fn the_scenario_file_holds_the_match() {
     assert_eq!(file.ticks.len() as u32, m.scenario.ticks + 1);
     let events: usize = file.ticks.iter().map(|t| t.events.len()).sum();
     assert_eq!(events, m.scenario.steps.len());
-    assert_eq!(left, ["the record's fields (variant)"]);
+    assert!(left.is_empty(), "{left:?}");
+    // The record's fields, the units and the round clock come along.
+    assert_eq!(file.variant, m.scenario.variant);
+    assert_eq!(file.players[1].unit, Some(workbench::unit_of(1)));
+    assert_eq!(file.round_time_left, m.scenario.round_time);
     let text = serde_json::to_string(&file).unwrap();
     let back: rules::scenario::Scenario = serde_json::from_str(&text).unwrap();
     assert_eq!(back, file);
+    // The file's own runner plays it to the same scores: Slayer makes no
+    // objective, so the two runners differ in nothing but where they stop.
+    let ran = rules::scenario::run(rules::build(builtin::SLAYER).unwrap().0, &file).unwrap();
+    let scores: Vec<(u8, i32)> = ran.game.players.iter().map(|(&s, p)| (s, p.score)).collect();
+    assert_eq!(scores, m.trace.scores);
 
+    // Labelled objects with their teams, and the events past the engine's.
+    let m = sim::simulate(builtin::CTF, &setup(4, 2, 2)).unwrap();
+    let (file, left) = sim::to_file(&m.scenario);
+    assert!(left.is_empty(), "{left:?}");
+    assert_eq!(file.labelled, m.scenario.labelled);
+    assert!(file.labelled.iter().any(|l| l.team == Some(1)));
     let m = sim::simulate(builtin::BOUNCE_PRACTICE, &setup(4, 0, 2)).unwrap();
-    let (_, left) = sim::to_file(&m.scenario);
-    assert!(left.contains(&"bounce events".to_string()));
+    let (file, left) = sim::to_file(&m.scenario);
+    assert!(left.is_empty(), "{left:?}");
+    let bounces = file
+        .ticks
+        .iter()
+        .flat_map(|t| &t.events)
+        .filter(|e| matches!(e, rules::scenario::ScenarioEvent::Bounce { .. }))
+        .count();
+    assert!(bounces > 0);
 }
 
 // ---------- the fake game's world ----------
 
 fn seats(n: u8) -> Vec<Seat> {
-    (0..n).map(|slot| Seat { slot, team: slot % 2, lives: 0 }).collect()
+    (0..n)
+        .map(|slot| Seat { slot, team: slot % 2, lives: 0, unit: Some(workbench::unit_of(slot)) })
+        .collect()
 }
 
 #[test]
@@ -316,7 +341,7 @@ fn a_player_entering_a_labelled_object_is_inside_it() {
     };
     let s = Scenario {
         players: seats(2),
-        objects: vec![Object { id: 7, label: "pad".into(), number: 0, team: None }],
+        labelled: vec![ScenarioLabel { label: "pad".into(), object: 7, number: 0, placement: None, team: None }],
         ticks: 10,
         start: true,
         // Player 0 stands on it for ticks 1 to 3; player 1 dies on it.
@@ -337,7 +362,7 @@ fn a_spawned_objective_is_carried_by_who_picks_it_up() {
     let ball = workbench::SPAWNED_BASE;
     let s = Scenario {
         players: seats(2),
-        objects: vec![Object { id: 40, label: "oddball_spawn".into(), number: 0, team: None }],
+        labelled: vec![ScenarioLabel { label: "oddball_spawn".into(), object: 40, number: 0, placement: None, team: None }],
         variant: BTreeMap::from([("oddball_ball_count".to_string(), 1)]),
         ticks: 100,
         start: true,

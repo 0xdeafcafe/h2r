@@ -537,7 +537,10 @@ Live frames (up to 15 Hz per game) go into
 read directly. Each buffer keeps a smoothed wall-clock-to-tick mapping and
 renders about 5 ticks behind the newest frame, interpolating positions and
 yaw (short way round) between the two frames around the render tick and
-snapping on respawns. All canvases share one `requestAnimationFrame` loop
+snapping on respawns. The mapping runs at the stream's measured pace
+(`streamPace`): 1 for a real-time game, and the sim's own rate (rounded to a
+half, up to 32×) for an unpaced sim streaming faster than real time, with
+the delay scaled by the same pace. All canvases share one `requestAnimationFrame` loop
 (`map/scheduler.ts`), skip drawing when off screen, and the draw code
 (`map/render.ts`) uses the uploaded map outline when there is one, or an
 auto-fitted grid from the bounds seen so far. A map without an outline

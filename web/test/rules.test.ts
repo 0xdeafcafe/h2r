@@ -11,7 +11,7 @@ import { describe, expect, test } from "bun:test";
 import {
   CONTENT_WRITE, DRAFT_KEY, INDENT, MAX_SEED, SIM_MATCHES, SPAWNED_BASE, TOOLS_MISSING, UNIT_BASE, buildScenario, checkRules,
   defaultScenario, defaultSetup, describeEvent, draftOfWire, endLabel, explainFailure, faultLabel, formatCall, gutter, lineAt,
-  loadDraft, meter, moveEvent, neighbourSeed, newEvent, nextEventTick, nextSlot, objectName, ofMatches, offsetOf, parseCheck,
+  loadDraft, meter, moveEvent, neighbourSeed, newEvent, nextEventTick, nextSlot, objectName, ofMatches, offsetOf, parseBuiltins, parseCheck,
   parseSetup, parseSim, parseTickTime, parseTrace, problemCount, problemPlace, rerolled, runBlocked, runFailed, runRules,
   saveBlocked, saveDraft, saveRules, scenarioProblems, shortTime, signed, simFailed, simRequest, simWarnings, simulateRules,
   sortEvents, standings, tabKey, teamStandings, tickTime, timeline, toolsAfter, traceLines, variantBlocked, whyOff, winnerName,
@@ -437,6 +437,9 @@ describe("the mock's workbench", async () => {
     expect(t.ticks[0]!.calls[0]).toEqual({ entry: "score", args: ["player 0", "1"] });
     const b = await m.handle(new Request("http://m/v1/rules/builtin"), new URL("http://m/v1/rules/builtin"));
     expect((b!.body as { items: Array<{ name: string }> }).items[0]!.name).toBe("Slayer");
+    const listed = parseBuiltins(b!.body);
+    expect(listed[0]).toMatchObject({ name: "Slayer", example: false, key: null });
+    expect(parseBuiltins({ items: [{ name: "Infection", key: "infection", engine: 2, source: "rules", example: true }] })[0]).toMatchObject({ example: true, key: "infection" });
     expect(await m.handle(new Request("http://m/v1/other"), new URL("http://m/v1/other"))).toBeNull();
   });
 
@@ -454,8 +457,8 @@ describe("the mock's workbench", async () => {
 
 describe("generated matches", () => {
   const wire = {
-    players: [{ slot: 0, team: 0, lives: 0 }, { slot: 1, team: 1, lives: 0 }],
-    objects: [{ id: 256, label: "hill_corner", number: 0, team: null }, { id: 257, label: "ctf_flag_return", number: 1, team: 1 }],
+    players: [{ slot: 0, team: 0, lives: 0, unit: 4096 }, { slot: 1, team: 1, lives: 0, unit: 4097 }],
+    labelled: [{ label: "hill_corner", object: 256, number: 0, placement: null }, { label: "ctf_flag_return", object: 257, number: 1, placement: null, team: 1 }],
     teams: [0, 1],
     variant: { team_play: 1, score_limit: 50, time_limit: 300 },
     options: null, seed: 9, round_time: 9000, ticks: 400, start: true,
@@ -510,7 +513,7 @@ describe("generated matches", () => {
     expect(d.ticks).toBe(400);
     expect(d.roundTime).toBe(9000);
     expect(d.variant).toEqual(wire.variant);
-    expect(d.objects).toEqual(wire.objects);
+    expect(d.objects).toEqual([{ id: 256, label: "hill_corner", number: 0, team: null }, { id: 257, label: "ctf_flag_return", number: 1, team: 1 }]);
     // An event type the page does not know is left out; the rest keep their order.
     expect(d.events).toEqual([
       { tick: 12, type: "enter", zone: 256, object: 4097 },
@@ -520,7 +523,10 @@ describe("generated matches", () => {
     ]);
     const built = buildScenario(d);
     expect(built.variant).toEqual(wire.variant);
-    expect(built.objects).toEqual(wire.objects);
+    expect(built.players).toEqual(wire.players);
+    expect(built.labelled).toEqual([{ label: "hill_corner", object: 256, number: 0 }, { label: "ctf_flag_return", object: 257, number: 1, team: 1 }]);
+    // A hand-seated player has no unit, and none is sent.
+    expect(buildScenario(defaultScenario()).players).toEqual([{ slot: 0, team: 0, lives: 0 }, { slot: 1, team: 1, lives: 0 }]);
     expect(built.timeline).toEqual([
       { tick: 12, events: wire.timeline[0]!.events },
       { tick: 40, events: [{ type: "kill", victim: 1, killer: 0 }, { type: "actor_kill", killer: null, class: "grunt" }] },

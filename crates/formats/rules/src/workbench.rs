@@ -11,8 +11,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::caps;
 use crate::fake::{FakeGame, FakePlayer};
 use crate::ir::{self, Event, Handler, Ir, Op, Scope};
-use crate::ty::{MAX_PLAYERS, MAX_SQUADS, MAX_TEAMS, NONE, Ty};
-use crate::vm::{self, Arg, ErrorKind, Fired, Input, Placed, ScriptError, Vm, Warning};
+use crate::scenario::{self, ScenarioLabel};
+use crate::ty::{MAX_LABELLED, MAX_PLAYERS, MAX_SQUADS, MAX_TEAMS, NONE, Ty};
+use crate::vm::{self, Arg, ErrorKind, Fired, Input, ScriptError, Vm, Warning};
 
 /// The most ticks a scenario runs: 20 minutes at 30 ticks a second.
 pub const MAX_TICKS: u32 = 36_000;
@@ -24,9 +25,8 @@ pub const MAX_SCENARIO_PLAYERS: usize = MAX_PLAYERS;
 pub const MAX_RUN_OPS: u64 = 12_000_000;
 /// The most ticks a trace records before it is cut short.
 pub const MAX_TRACED_TICKS: usize = 2_000;
-/// The most labelled objects a scenario places.
-pub const MAX_OBJECTS: usize = 64;
-/// A player's own object is this plus the slot ([`unit_of`]).
+/// The unit a generated match gives a player is this plus the slot
+/// ([`unit_of`]).
 pub const UNIT_BASE: u32 = 0x1000;
 /// The first object `spawn_objective` makes in a run.
 pub const SPAWNED_BASE: u32 = 0x4000;
@@ -123,9 +123,9 @@ pub fn unhostable_all(ir: &Ir) -> Vec<&'static str> {
             if let Op::Call { entry, .. } = *op
                 && let Some(e) = caps::entry(entry, ir.header.api_version)
                 && !e.status.hostable()
-                && !out.contains(&e.name)
+                && !out.contains(&caps::spelled(e))
             {
-                out.push(e.name);
+                out.push(caps::spelled(e));
             }
         }
     }
@@ -278,6 +278,8 @@ pub struct Seat {
     pub slot: u8,
     pub team: u8,
     pub lives: i32,
+    /// The player's unit object, for `player_of` and the zone test.
+    pub unit: Option<u32>,
 }
 
 /// One event at one tick.
@@ -287,26 +289,17 @@ pub struct Step {
     pub input: Input,
 }
 
-/// A labelled object a scenario places: what `objects labelled "x"`
-/// visits, with its label number and its team.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Object {
-    pub id: u32,
-    pub label: String,
-    pub number: i32,
-    pub team: Option<u8>,
-}
-
 /// What a run starts from and what happens in it.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Scenario {
     pub players: Vec<Seat>,
-    /// The labelled objects on the map.
-    pub objects: Vec<Object>,
     /// The teams in play; empty means 0 and 1.
     pub teams: Vec<u8>,
-    /// Retail record fields (`team_play`, `score_limit`, ...).
+    /// Retail record fields (`team_play`, `score_limit`, ...); the rest
+    /// read the stock record of the script's carrier.
     pub variant: BTreeMap<String, i32>,
+    /// Labelled objects the map holds.
+    pub labelled: Vec<ScenarioLabel>,
     /// The packed option bits; None for every option's default.
     pub options: Option<u32>,
     pub seed: u64,
@@ -424,20 +417,24 @@ fn validate(s: &Scenario) -> Result<(), String> {
             return Err(format!("team {t} is out of range (0..{MAX_TEAMS})"));
         }
     }
-    if s.objects.len() > MAX_OBJECTS {
-        return Err(format!("a scenario places at most {MAX_OBJECTS} labelled objects"));
+    if s.labelled.len() > MAX_LABELLED {
+        return Err(format!("a scenario labels at most {MAX_LABELLED} objects"));
     }
-    for o in &s.objects {
-        if o.label.is_empty() || o.label.len() > ir::MAX_LABEL_BYTES {
+    for l in &s.labelled {
+        if l.label.is_empty() || l.label.len() > ir::MAX_LABEL_BYTES {
             return Err(format!(
                 "object {}'s label is 1 to {} bytes",
-                o.id,
+                l.object,
                 ir::MAX_LABEL_BYTES
             ));
         }
-        if o.team.is_some_and(|t| t as usize >= MAX_TEAMS) {
-            return Err(format!("object {}'s team is out of range (0..{MAX_TEAMS})", o.id));
+        if l.team.is_some_and(|t| t as usize >= MAX_TEAMS) {
+            return Err(format!(
+                "object {}'s team is out of range (0..{MAX_TEAMS})",
+                l.object
+            ));
         }
+    }
     }
     for step in &s.steps {
         if step.tick > s.ticks {
@@ -459,6 +456,9 @@ fn validate(s: &Scenario) -> Result<(), String> {
             | Input::Bounce(p, _)
             | Input::Edit(p, _) => player(*p),
             Input::ActorKill { killer, .. } => killer.is_none_or(player),
+            Input::ActorAssist { killer, assist, .. } => {
+                killer.is_none_or(player) && assist.is_none_or(player)
+            }
             Input::SquadDead(s) => (*s as usize) < MAX_SQUADS,
             _ => true,
         };
@@ -542,6 +542,10 @@ fn kind_words(kind: ErrorKind) -> String {
         ),
         ErrorKind::Queue => format!("more than {} calls are queued", vm::MAX_QUEUE),
         ErrorKind::Squad => "a squad number is outside the kit's slots".into(),
+        ErrorKind::Zones => format!(
+            "more than {} zones are named to ticks_held",
+            vm::MAX_HELD_ZONES
+        ),
     }
 }
 
@@ -612,101 +616,10 @@ fn players(vm: &Vm, g: &FakeGame) -> Vec<PlayerState> {
         .collect()
 }
 
-/// Global timers that reach 0 in this tick's update and have a handler.
-fn due_timers(vm: &Vm) -> Vec<String> {
-    let ir = vm.ir();
-    ir.slots
-        .iter()
-        .enumerate()
-        .filter(|(_, s)| s.ty == Ty::Timer && s.scope == Scope::Global)
-        .filter(|(i, s)| {
-            vm.global(&slot_name(ir, s)) == Some(1)
-                && ir
-                    .handlers
-                    .iter()
-                    .any(|h| h.event == Event::Timer && h.timer == Some(*i as u16))
-        })
-        .map(|(_, s)| format!("timer({})", slot_name(ir, s)))
-        .collect()
-}
-
-/// A player's own object: what `player_of` reads and what a zone event
-/// names when a player enters or leaves.
+/// The unit a generated match gives the player in `slot`: what its seat
+/// names, and what its `enter` and `leave` events name.
 pub fn unit_of(slot: u8) -> u32 {
     UNIT_BASE + u32::from(slot)
-}
-
-/// A dead or departed player stands nowhere and carries nothing.
-fn down(g: &mut FakeGame, p: u8) {
-    g.inside.retain(|&(q, _)| q != p);
-    for c in g.objectives.values_mut() {
-        if *c == Some(p) {
-            *c = None;
-        }
-    }
-}
-
-/// What the fake game does when the host reports an event, before the
-/// handler runs. A quit removes the player after it.
-fn apply(g: &mut FakeGame, input: &Input) {
-    match *input {
-        Input::Kill { victim, killer } => {
-            if let Some(v) = g.players.get_mut(&victim) {
-                v.alive = false;
-                v.deaths = v.deaths.saturating_add(1);
-            }
-            if let Some(k) = killer
-                && k != victim
-                && let Some(k) = g.players.get_mut(&k)
-            {
-                k.kills = k.kills.saturating_add(1);
-            }
-            down(g, victim);
-        }
-        Input::Death(p) => {
-            if let Some(v) = g.players.get_mut(&p) {
-                v.alive = false;
-            }
-            down(g, p);
-        }
-        Input::Spawn(p) => {
-            if let Some(v) = g.players.get_mut(&p) {
-                v.alive = true;
-            }
-        }
-        Input::Join(p) => {
-            g.players.entry(p).or_insert(FakePlayer {
-                alive: true,
-                ..FakePlayer::default()
-            });
-            g.units.insert(unit_of(p), p);
-        }
-        // A player's own object entering a zone puts the player inside it.
-        Input::Enter { zone, object } => {
-            if let Some(&p) = g.units.get(&object) {
-                g.inside.insert((p, zone));
-            }
-        }
-        Input::Leave { zone, object } => {
-            if let Some(&p) = g.units.get(&object) {
-                g.inside.remove(&(p, zone));
-            }
-        }
-        // An objective picked up has its carrier.
-        Input::Pickup(p, o) => {
-            if let Some(c) = g.objectives.get_mut(&o) {
-                *c = Some(p);
-            }
-        }
-        Input::Drop(p, o) => {
-            if let Some(c) = g.objectives.get_mut(&o)
-                && *c == Some(p)
-            {
-                *c = None;
-            }
-        }
-        _ => {}
-    }
 }
 
 /// What the fake game does about the calls made since `from`:
@@ -766,6 +679,11 @@ pub fn build(src: &str) -> Result<Ir, RunError> {
             message: c.message,
         }])),
         Err(crate::BuildError::Refused(r)) => Err(refused(r)),
+        Err(other) => Err(RunError::Script(vec![Problem {
+            line: 0,
+            col: 0,
+            message: other.to_string(),
+        }])),
     }
 }
 
@@ -810,7 +728,7 @@ impl Runner {
         validate(scenario).map_err(RunError::Scenario)?;
         let hash = ir.id().to_string();
         let options = scenario.options.unwrap_or_else(|| ir.default_options());
-        let labels = ir.labels.clone();
+        let carrier = ir.header.carrier;
         let vm = Vm::new(ir, options, scenario.seed).map_err(refused)?;
 
         let mut g = FakeGame {
@@ -820,9 +738,11 @@ impl Runner {
                 scenario.teams.clone()
             },
             variant: scenario.variant.clone(),
+            carrier,
             round_time_left: scenario.round_time.max(0),
             ..FakeGame::default()
         };
+        scenario::label_all(&mut g, &scenario.labelled);
         for seat in &scenario.players {
             g.players.insert(
                 seat.slot,
@@ -833,19 +753,8 @@ impl Runner {
                     ..FakePlayer::default()
                 },
             );
-            g.units.insert(unit_of(seat.slot), seat.slot);
-        }
-        for o in &scenario.objects {
-            g.labelled.entry(o.label.clone()).or_default().push(Placed {
-                placement: o.id,
-                object: o.id,
-            });
-            g.numbers.insert(o.id, o.number);
-            if let Some(t) = o.team {
-                g.object_teams.insert(o.id, t);
-            }
-            if let Some(i) = labels.iter().position(|l| *l == o.label) {
-                g.labels.insert(o.id, i as i32);
+            if let Some(unit) = seat.unit {
+                g.units.insert(unit, seat.slot);
             }
         }
 
@@ -862,6 +771,8 @@ impl Runner {
         } else {
             (Vec::new(), Vec::new())
         };
+        // Only the limits the scenario seats end a run; the stock
+        // record's are the script's to read.
         let field = |name: &str| scenario.variant.get(name).copied().unwrap_or(0);
         let time_limit = u32::try_from(field("time_limit"))
             .ok()
@@ -921,49 +832,30 @@ impl Runner {
         self.time_limit.filter(|t| tick >= *t).map(|_| Limit::Time)
     }
 
-    /// Runs one tick: the queue is flushed, `init` and `round_start` fire
-    /// when `start`, `inputs` fire in order, then timers and `on tick`
-    /// run. False when the run is over.
+    /// Runs one tick through [`scenario::step`], the step `h2 rules run`
+    /// takes too, then makes the objectives the script spawned. `start`
+    /// fires `init` and `round_start` on tick 0. False when the run is
+    /// over.
     pub fn tick(&mut self, tick: u32, start: bool, inputs: &[Input]) -> bool {
         let vm = &mut self.vm;
         let g = &mut self.game;
-        vm.begin_tick(tick);
-        if tick > 0 {
-            g.round_time_left = (g.round_time_left - 1).max(0);
-        }
         let calls_before = g.calls.len();
-        vm.flush_queue(g);
+        let stepped = scenario::step(vm, g, tick, start, inputs);
         world(g, calls_before);
         let mut ran = Vec::new();
-        let note = |fired: Fired, name: &str, ran: &mut Vec<String>| match fired {
-            Fired::Ran => ran.push(name.to_string()),
-            Fired::Carried => ran.push(format!("{name} (carried: 64 zone events used)")),
-            Fired::NoHandler | Fired::Stopped => {}
-        };
-        if start {
-            let f = vm.fire(g, Input::Init);
-            note(f, "init", &mut ran);
-            let f = vm.fire(g, Input::RoundStart);
-            note(f, "round_start", &mut ran);
-        }
-        for input in inputs {
-            apply(g, input);
-            let name = input.event().name();
-            let f = vm.fire(g, input.clone());
-            note(f, name, &mut ran);
-            if let Input::Quit(p) = *input {
-                g.players.remove(&p);
-                g.units.remove(&unit_of(p));
-                down(g, p);
+        let (last, events) = stepped
+            .fired
+            .split_last()
+            .expect("a step reports its per-tick group");
+        for &(name, fired) in events {
+            match fired {
+                Fired::Ran => ran.push(name.to_string()),
+                Fired::Carried => ran.push(format!("{name} (carried: 64 zone events used)")),
+                Fired::NoHandler | Fired::Stopped => {}
             }
         }
-        let due = due_timers(vm);
-        let before_update = vm.ext().stopped.is_none();
-        let f = vm.update(g);
-        if before_update {
-            ran.extend(due);
-        }
-        let tick_ran = f == Fired::Ran;
+        ran.extend(stepped.timers);
+        let tick_ran = last.1 == Fired::Ran;
         for name in &ran {
             if !self.ran.contains(name.as_str()) {
                 self.ran.insert(name.clone());
@@ -1074,7 +966,7 @@ pub fn run(src: &str, scenario: &Scenario) -> Result<Trace, RunError> {
     }
     for tick in 0..=scenario.ticks {
         let inputs = steps.get(&tick).map_or(&[][..], Vec::as_slice);
-        if !runner.tick(tick, tick == 0 && scenario.start, inputs) {
+        if !runner.tick(tick, scenario.start, inputs) {
             break;
         }
     }
@@ -1126,8 +1018,8 @@ mod tests {
     fn slayer_scenario() -> Scenario {
         Scenario {
             players: vec![
-                Seat { slot: 0, team: 0, lives: 0 },
-                Seat { slot: 1, team: 1, lives: 0 },
+                Seat { slot: 0, team: 0, lives: 0, unit: None },
+                Seat { slot: 1, team: 1, lives: 0, unit: None },
             ],
             seed: 7,
             round_time: 100,
@@ -1178,7 +1070,7 @@ mod tests {
         s.steps.push(Step { tick: 31, input: Input::Spawn(0) });
         assert!(matches!(run(crate::builtin::SLAYER, &s), Err(RunError::Scenario(_))));
         let mut s = slayer_scenario();
-        s.players.push(Seat { slot: 16, team: 0, lives: 0 });
+        s.players.push(Seat { slot: 16, team: 0, lives: 0, unit: None });
         assert!(matches!(run(crate::builtin::SLAYER, &s), Err(RunError::Scenario(_))));
         assert!(matches!(run("nope", &slayer_scenario()), Err(RunError::Script(_))));
     }
