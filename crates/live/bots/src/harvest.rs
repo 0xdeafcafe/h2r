@@ -7,12 +7,15 @@
 //! directory (`h2 sim harvest`).
 //!
 //! The files are the game's: `<map>.verified` (`superbounce::verified`,
-//! written by `spots::store_verified`) and `<map>.ghosts`
-//! (`superbounce::ghost`, written by the game's `superbounce_ghost`).
+//! written by `spots::store_verified`), `<map>.ghosts`
+//! (`superbounce::ghost`, written by the game's `superbounce_ghost`) and
+//! `<map>.learned` (`superbounce::learned`, written by a training run's
+//! `spots::store_learned`; docs/game/bounce-search.md).
 
 use std::path::Path;
 
 use superbounce::ghost::{self, Ghost};
+use superbounce::learned;
 use superbounce::verified::{self, Entry};
 
 /// `<map>.ghosts`, beside the spots and verified files (the game's
@@ -21,9 +24,17 @@ pub fn ghosts_file_name(map: &str) -> String {
     crate::cache::file_name(map, 0).replace(".0.bots", ".ghosts")
 }
 
-/// The files a run writes and keeps of its own: verified and ghosts.
+/// `<map>.learned`, beside the spots and verified files.
+pub fn learned_file_name(map: &str) -> String {
+    crate::cache::file_name(map, 0).replace(".0.bots", ".learned")
+}
+
+/// The files a run writes and keeps of its own: verified, ghosts and
+/// learned.
 pub fn run_owned(file_name: &str) -> bool {
-    file_name.ends_with(".verified") || file_name.ends_with(".ghosts")
+    file_name.ends_with(".verified")
+        || file_name.ends_with(".ghosts")
+        || file_name.ends_with(".learned")
 }
 
 /// The entries of `end` that are not in `start`: what a run found. An
@@ -43,6 +54,9 @@ pub struct Harvested {
     pub proven: usize,
     /// Ghost runs kept (new spots, or better than the run kept before).
     pub ghosts: usize,
+    /// Learned lines kept (new sites, or better than the shared line,
+    /// `learned::merge`).
+    pub learned: usize,
 }
 
 fn read_text(path: &Path) -> Result<Option<String>, String> {
@@ -67,12 +81,35 @@ fn read_ghosts(path: &Path) -> Result<Vec<Ghost>, String> {
     }
 }
 
+fn read_learned(path: &Path) -> Result<Vec<learned::Entry>, String> {
+    match read_text(path)? {
+        Some(t) => learned::parse(&t).map_err(|e| format!("{}: {e}", path.display())),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// The learned lines of `end` that are not in `start`: the sites a run
+/// flew. A line the run did not touch reads back the same.
+pub fn learned_found(start: &[learned::Entry], end: &[learned::Entry]) -> Vec<learned::Entry> {
+    end.iter().filter(|e| !start.contains(e)).cloned().collect()
+}
+
+/// Which of a run's files a name is.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Owned {
+    Verified,
+    Ghosts,
+    Learned,
+}
+
 /// Merges one run's files into `into` (the shared bots directory): for
 /// each `<map>.verified` in `end`, the entries it added over `start`'s
 /// copy; for each `<map>.ghosts` in `end`, every run the shared file does
-/// not beat (`ghost::offer`). With `write` false nothing is written: what
-/// it would add. A damaged file is an error naming it, and nothing of that
-/// file is written.
+/// not beat (`ghost::offer`); for each `<map>.learned` in `end`, the lines
+/// it changed over `start`'s copy, each kept where it beats the shared
+/// line about its site (`learned::merge`). With `write` false nothing is
+/// written: what it would add. A damaged file is an error naming it, and
+/// nothing of that file is written.
 pub fn harvest_run(
     start: &Path,
     end: &Path,
@@ -91,12 +128,15 @@ pub fn harvest_run(
     names.sort();
     let mut out: Vec<Harvested> = Vec::new();
     for name in names {
-        let (map, is_verified) =
-            match (name.strip_suffix(".verified"), name.strip_suffix(".ghosts")) {
-                (Some(m), _) => (m.to_string(), true),
-                (_, Some(m)) => (m.to_string(), false),
-                _ => continue,
-            };
+        let (map, kind) = if let Some(m) = name.strip_suffix(".verified") {
+            (m.to_string(), Owned::Verified)
+        } else if let Some(m) = name.strip_suffix(".ghosts") {
+            (m.to_string(), Owned::Ghosts)
+        } else if let Some(m) = name.strip_suffix(".learned") {
+            (m.to_string(), Owned::Learned)
+        } else {
+            continue;
+        };
         let i = match out.iter().position(|h| h.map == map) {
             Some(i) => i,
             None => {
@@ -108,7 +148,24 @@ pub fn harvest_run(
             }
         };
         let target = into.join(&name);
-        if is_verified {
+        if kind == Owned::Learned {
+            let shared = read_learned(&target)?;
+            let new = learned_found(
+                &read_learned(&start.join(&name))?,
+                &read_learned(&end.join(&name))?,
+            );
+            let merged = learned::merge(&shared, &new);
+            let kept = merged.iter().filter(|e| !shared.contains(e)).count();
+            if kept == 0 {
+                continue;
+            }
+            out[i].learned += kept;
+            if write {
+                std::fs::create_dir_all(into).map_err(|e| format!("{}: {e}", into.display()))?;
+                crate::autonav::write_atomic(&target, learned::to_text(&merged).as_bytes())
+                    .map_err(|e| format!("{}: {e}", target.display()))?;
+            }
+        } else if kind == Owned::Verified {
             let shared = read_verified(&target)?;
             // What the run found, less what the shared file already holds
             // (a run harvested twice adds nothing the second time).
@@ -152,7 +209,7 @@ pub fn harvest_run(
             }
         }
     }
-    out.retain(|h| h.verified > 0 || h.ghosts > 0);
+    out.retain(|h| h.verified > 0 || h.ghosts > 0 || h.learned > 0);
     Ok(out)
 }
 
@@ -201,7 +258,8 @@ mod tests {
                 map: "zanzibar".into(),
                 verified: 1,
                 proven: 1,
-                ghosts: 0
+                ghosts: 0,
+                learned: 0
             }]
         );
         assert_eq!(
@@ -221,6 +279,69 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    fn line(at: [f32; 3], state: learned::State, tries: u32, hits: u32) -> learned::Entry {
+        learned::Entry {
+            state,
+            at,
+            tries,
+            hits,
+            ..learned::Entry::default()
+        }
+    }
+
+    #[test]
+    fn learned_lines_are_harvested_as_verified_ones_are() {
+        use learned::State;
+        let root = dir("learned");
+        let (start, end, into) = (root.join("start"), root.join("end"), root.join("bots"));
+        for d in [&start, &end, &into] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let file = "ascension.learned";
+        // The run began with two sites; it flew one further and a new one,
+        // and left the third as it found it.
+        let a0 = line([1.0, 0.0, 0.0], State::Open, 12, 0);
+        let a1 = line([1.0, 0.0, 0.0], State::Open, 30, 2);
+        let b0 = line([2.0, 0.0, 0.0], State::Open, 6, 0);
+        let c1 = line([3.0, 0.0, 0.0], State::Open, 12, 0);
+        // Meanwhile another run learned site b, and flew site c further.
+        let b_theirs = line([2.0, 0.0, 0.0], State::Learned, 40, 9);
+        let c_theirs = line([3.0, 0.0, 0.0], State::Open, 50, 0);
+        std::fs::write(
+            start.join(file),
+            learned::to_text(&[a0.clone(), b0.clone()]),
+        )
+        .unwrap();
+        std::fs::write(
+            end.join(file),
+            learned::to_text(&[a1.clone(), b0.clone(), c1.clone()]),
+        )
+        .unwrap();
+        std::fs::write(
+            into.join(file),
+            learned::to_text(&[a0.clone(), b_theirs.clone(), c_theirs.clone()]),
+        )
+        .unwrap();
+        let dry = harvest_run(&start, &end, &into, false).unwrap();
+        assert_eq!(dry.len(), 1);
+        assert_eq!((dry[0].map.as_str(), dry[0].learned), ("ascension", 1));
+        assert_eq!(
+            read_learned(&into.join(file)).unwrap(),
+            vec![a0, b_theirs.clone(), c_theirs.clone()],
+            "a dry run writes nothing"
+        );
+        harvest_run(&start, &end, &into, true).unwrap();
+        // Site a: the run's, further on. Site b: untouched by the run, the
+        // shared learned line stays. Site c: the shared line has more tries.
+        assert_eq!(
+            read_learned(&into.join(file)).unwrap(),
+            vec![a1, b_theirs, c_theirs]
+        );
+        // Twice adds nothing.
+        assert!(harvest_run(&start, &end, &into, false).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn a_run_with_nothing_kept_harvests_nothing() {
         let root = dir("empty");
@@ -235,6 +356,8 @@ mod tests {
             .is_empty()
         );
         assert!(run_owned("lockout.ghosts") && run_owned("lockout.verified"));
+        assert!(run_owned("lockout.learned"));
+        assert_eq!(learned_file_name("lockout"), "lockout.learned");
         assert!(!run_owned("lockout.0.bots") && !run_owned("lockout.spots"));
         assert_eq!(ghosts_file_name("lockout"), "lockout.ghosts");
         let _ = std::fs::remove_dir_all(&root);

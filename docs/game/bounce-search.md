@@ -1,6 +1,8 @@
 # Bounce search: the bots learn each spot's superbounce
 
-Status: Design. Nothing here is built.
+Status: Design, partly built. The file (`superbounce::learned`) and the
+search with its board (`bots::learn`) are built; the route's use of a line,
+the sim surface and the batch are not.
 Code: `crates/live/superbounce/src/learned.rs` (the file), `crates/live/bots/src/learn.rs` (the search), `crates/live/sim-bench/src/train.rs` (the batch and its report). Tests: in each of those files.
 Switch: none. A sim match's `[train]` table turns training on; play reads `<map>.learned` whenever it exists.
 
@@ -34,7 +36,7 @@ to the aim, "side" its left.
 | Key | Unit | Range searched | Default (the route's own) | Used by |
 |---|---|---|---|---|
 | `how` | `runoff`, `jump`, `stand` | every one the site allows | `bounce_route::drop_takeoff`'s choice; `stand` for `Site::standing` | all |
-| `fx` `fy` `fz` | point | ±0.5 to the side of the default | the launch point: `bounce_route::launch_from` (a drop), `Bounce::from` (a stand) | all |
+| `fx` `fy` `fz` | point | ±0.5 to the side of the default | the launch point: `bounce_route::launch_from` | drop |
 | `ax` `ay` | point | ±0.4 along, ±0.3 to the side of the default | `Site::target` | all |
 | `yaw` | degrees | ±20 | 0: the run heads along the launch-to-aim line | drop |
 | `back` | units | 0.2 to 3.0 | `bounce_route::RUN_UP` (0.6): how far behind the launch point the run starts | drop |
@@ -61,7 +63,9 @@ point), the host writes −3 over its level pair word
 (`bots::drill::request_arm`), and the route flies the site once with the
 try's knobs. `bots::learn::Try` is what the route's last
 `bounce_route::Leap` and the brain say of it; `learn::score` turns it into
-one number (Design):
+one number (Design). The miss and its vector are measured from the site's
+own target (`Site::target` without the line), not from the try's aim, so
+moving the aim moves the miss (`learn::Try::from_leap`):
 
 | Outcome | Score |
 |---|---|
@@ -105,20 +109,27 @@ the centre. Stages, in order:
 2. **`shift`**, up to 3 rounds, only while the centre has no bounce. Three
    tries at the centre give a mean miss vector (aim minus touchdown, along
    and side); three more fly with the aim moved 0.7 of it (held to the
-   aim's range). The move is kept when the mean score rises, else the stage
-   ends. This is the gradient step: a run that lands 0.15 short aims 0.1 on.
+   aim's range). The move is kept when their mean beats the centre's
+   pooled `score`, else the stage ends. This is the gradient step: a run
+   that lands 0.15 short aims 0.1 on. In `shift` the line's `axis` counts
+   the shift rounds flown.
 3. **`compass`**. One round an axis: 2 tries at the centre, 2 a step under
    and 2 a step over. The centre moves to a side whose mean beats the
-   centre's `score` by 0.05. The first pass takes the four axes that move
-   the landing most (aim along, `run`, `back`, aim side); later passes add
-   the launch point's side, `yaw`, `gain`, `letgo` and `early` (a stand:
-   aim along, aim side, `drift`, `still`). A pass with no move halves every
-   step (`shrink`); the stage ends at `shrink` 3. First steps: 0.1 units,
-   0.2 of stick, 0.6 of `back`, 5°, 0.4 of `gain`, 0.02 of `letgo`, 4
-   ticks.
+   centre's `score` by 0.05. Passes at `shrink` 0 take the four axes that
+   move the landing most (aim along, `run`, `back`, aim side); from
+   `shrink` 1 they add the launch point's side, `yaw`, `gain`, `letgo` and,
+   a running jump, `early` (a stand, every pass: aim along, aim side,
+   `drift`, `still`). Reading the pass from `shrink` keeps it on the line.
+   A pass with no move halves every step (`shrink`); the stage ends at
+   `shrink` 3. A site that has bounced does not end: it keeps polishing at
+   `shrink` 2 until it is `learned` or the budget is spent. First steps:
+   0.1 units (`early` too), 0.2 of stick (`run`, `drift`), 0.6 of `back`,
+   5°, 0.4 of `gain`, 0.02 of `letgo`, 4 ticks. A side the range clips
+   onto the centre is not flown.
 4. **`scatter`**, one round, once, only when the site has never bounced:
    16 tries, each knob drawn evenly over its range and `how` over what the
-   site allows. The best becomes the centre when it beats it, and
+   site allows. The best single try becomes the centre when its score
+   beats the centre's, and
    `compass` runs again from `shrink` 1.
 
 After every round the stop rules are read, the first that holds:
@@ -128,7 +139,7 @@ After every round the stop rules are read, the first that holds:
 | `learned` | the centre has `n` ≥ 10 and `ok` / `n` ≥ 0.6 |
 | `dead` | `compass` has ended after the scatter and no try ever bounced (`why=no_bounce`), or the budget is spent and none did (`why=budget`) |
 | `partial` | the budget is spent and some try bounced |
-| `blocked` | three rounds running were all void (`why=` the commonest reason: `no_launch_floor`, `no_path`, `not_armed`, ...) |
+| `blocked` | three rounds running were all void (`why=` the commonest reason: `no_launch_floor`, `no_path`, `not_armed`, ...; the first by name among equals). The count of void rounds is kept in memory, not on the line |
 | `open` | none of the above: the next round |
 
 A `learned`, `dead` or `blocked` site is closed: a batch flies it no more.
@@ -140,8 +151,9 @@ followed by `--reopen` tries it again.
 
 The search draws random numbers only in `scatter`. A draw is a pure
 function, `learn::draw(spot, seed, try_index, axis)`: splitmix64 over the
-spot id, the batch seed, the try's index and the axis, mapped to the
-axis's range. The spot id is FNV-1a 64 of `"<map> <x> <y> <z>"`, the
+spot id, the batch seed, the try's index and the axis (`Axis::index`, or
+`learn::HOW_AXIS` for `how`), a number in `[0, 1)` that the scatter maps
+to the axis's range. The spot id is FNV-1a 64 of `"<map> <x> <y> <z>"`, the
 site's `stand` as the scan gave it, printed `%.3f` as the file prints it.
 The try index is the site's `tries` at the round's start plus the slot.
 Nothing depends on which bot flies the round or when. The file is written
@@ -162,8 +174,9 @@ is). Its bots share one board, `learn::Board` (process-wide, as
   `shard`. Runs of one batch never fly the same site, so their files merge
   without conflict and the result does not depend on `--parallel`.
 - **Pick.** A free bot takes the open, unclaimed site of its shard with
-  the fewest rounds flown, the nearest first among equals, and holds it
-  for one round. Fewest rounds first means every site gets its `arms`
+  the fewest rounds flown this run, then the fewest `tries` (so a resumed
+  batch still starts with the sites least flown), then the nearest, then
+  the lowest spot id, and holds it for one round (`Board::pick`). Fewest rounds first means every site gets its `arms`
   round before any site is polished: a batch cut short still has a line
   for every site.
 - **Round's end.** `Search::fold`, the stop rules, then
@@ -257,8 +270,11 @@ state  = "open" | "learned" | "partial" | "dead" | "blocked"
 - `to_text` writes the keys in the order above and the lines sorted by
   `x`, `y`, `z`, so equal entries give equal bytes.
 - **Refused**, the file read as empty with one log line naming the line:
-  another version, an unknown key, an unknown state or `how`, a value out
-  of its range. A mistyped knob is never skipped quietly. The version
+  another version, an unknown key, an unknown state, stage or `how`, a
+  value out of its range, a knob the line's `how` does not use, a key
+  given twice, a point given in part (`fx` without `fy`), `hits` over
+  `tries` or `ok` over `n`, a `why` on a line that is not `dead` or
+  `blocked`. A mistyped knob is never skipped quietly. The version
   number rises whenever the format or what the route makes of a knob
   changes; a refused file is trained again from nothing. There is no
   migrator.
@@ -267,7 +283,9 @@ state  = "open" | "learned" | "partial" | "dead" | "blocked"
 `bots::harvest::harvest_run`, which treats `.learned` as it treats
 `.verified`: the lines a run changed between `harvest/start` and
 `harvest/end`). Two lines about one site are never mixed: the better one
-is kept whole. Better is, in order: `learned` over not; some `hits` over
+is kept whole; two lines are about one site when their printed `x y z`
+are the same (an exact key, so the merge stays order-independent). Better
+is, in order: `learned` over not; some `hits` over
 none; between two `learned`, the higher `ok / n`; more `tries`; the higher
 `score`; the line that sorts first as text. The order is total, so merging
 is the same in any order and merging twice adds nothing, and a search
