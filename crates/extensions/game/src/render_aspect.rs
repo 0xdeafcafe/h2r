@@ -9,6 +9,8 @@ use points::render_aspect::{
     ANCHOR, ANCHOR_READY, DOC, FLARE_QUERY, FLARE_QUERY_END, FLARE_REFLECTION,
     FLARE_REFLECTION_END, GROUPS, MENU_BACKDROP, MENU_FILL, MENU_FILL_END,
 };
+use points::scene_effects::HUD_QUAD_READY;
+use points::ui_render::{ITEM_CALL, SCREEN_QUAD_READY};
 
 type Size = Arc<dyn Fn() -> (u32, u32) + Send + Sync>;
 type Position = Arc<dyn Fn() -> u32 + Send + Sync>;
@@ -254,6 +256,63 @@ pub fn hud_bottom_left_fit() -> [f32; 4] {
     *HUD_BOTTOM_LEFT.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Marks the group of one menu quad that spans the view along the fitted
+/// axis. Such a quad is background art (a panel, a scrolling strip, a
+/// full-screen bitmap): it keeps the full view, as on a widescreen Xbox,
+/// so the menu covers the display while its widgets keep the uniform fit.
+const FILL: u32 = HUD_QUAD_READY.base;
+
+/// Guest pixels a background quad's edge may stop short of the view's edge
+/// (pixel-centred corners sit half a pixel in).
+const FILL_EDGE: f32 = 1.0;
+
+/// A quad's four window-pixel corners.
+type Corners = [[f32; 2]; 4];
+
+/// Whether `corners` reach both edges of `rect` along every axis `fit`
+/// shrinks.
+fn spans_fitted_axes(rect: PixelRect, fit: UiFit, corners: &Corners) -> bool {
+    let [sx, sy, _, _] = fit.transform;
+    let spans = |axis: usize, start: u32, length: u32| {
+        let (lo, hi) = corners.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), c| {
+            (lo.min(c[axis]), hi.max(c[axis]))
+        });
+        lo <= start as f32 + FILL_EDGE && hi >= (start + length) as f32 - FILL_EDGE
+    };
+    (sx < 1.0 || sy < 1.0)
+        && (sx >= 1.0 || spans(0, rect.x, rect.width))
+        && (sy >= 1.0 || spans(1, rect.y, rect.height))
+}
+
+fn read_corners(mem: &impl GuestMemory, first: u32, stride: u32) -> Option<Corners> {
+    let mut out = [[0.0; 2]; 4];
+    for (i, corner) in out.iter_mut().enumerate() {
+        let at = first.checked_add(stride.checked_mul(i as u32)?)?;
+        let x = mem.f32(at).ok()?;
+        let y = mem.f32(at.checked_add(4)?).ok()?;
+        if !(x.is_finite() && y.is_finite()) {
+            return None;
+        }
+        *corner = [x, y];
+    }
+    Some(out)
+}
+
+/// The shader quad's positions at `HUD_QUAD_READY` (`0x0022a7f6`): four
+/// `0x1c`-byte vertices, `x, y` first, `0x70` bytes below EBP
+/// (`render_bridge::native_hud`).
+fn shader_quad_corners(mem: &impl GuestMemory, ebp: u32) -> Option<Corners> {
+    read_corners(mem, ebp.checked_sub(0x70)?, 0x1c)
+}
+
+/// The screen quad's corners at `UI_SCREEN_QUAD_READY` (`0x000363c4`):
+/// the pointer above the return address at ESP + 0x14, four `0x14`-byte
+/// vertices, `x, y` first.
+fn screen_quad_corners(mem: &impl GuestMemory, esp: u32) -> Option<Corners> {
+    let corners = mem.u32(esp.checked_add(0x18)?).ok()?;
+    read_corners(mem, corners, 0x14)
+}
+
 #[derive(Default)]
 struct Layout {
     active: Option<Canvas>,
@@ -277,6 +336,34 @@ impl Layout {
         };
         self.groups.truncate(index);
         true
+    }
+
+    /// A menu quad is about to draw. Returns the fit to set when it differs
+    /// from the previous quad's: the full view for a quad that spans the
+    /// fitted axis, else the enclosing fit.
+    fn place_quad(&mut self, corners: Option<Corners>) -> Option<Option<UiFit>> {
+        let canvas = self.active.filter(|canvas| !canvas.hud)?;
+        let was_filled = self.groups.last().is_some_and(|&(id, _)| id == FILL);
+        if was_filled {
+            self.groups.pop();
+        }
+        let fill = match (self.current(), corners) {
+            (Some(fit), Some(corners)) => spans_fitted_axes(canvas.rect, fit, &corners),
+            _ => false,
+        };
+        if fill {
+            self.groups.push((FILL, None));
+        }
+        (was_filled != fill).then(|| self.current())
+    }
+
+    /// Another widget starts: a background quad's full view ends.
+    fn end_fill(&mut self) -> Option<Option<UiFit>> {
+        if !self.groups.last().is_some_and(|&(id, _)| id == FILL) {
+            return None;
+        }
+        self.groups.pop();
+        Some(self.current())
     }
 
     fn current(&self) -> Option<UiFit> {
@@ -475,6 +562,41 @@ impl Feature for RenderAspect {
                 let mut l = on_backdrop.lock().unwrap_or_else(|e| e.into_inner());
                 if l.end_group(MENU_BACKDROP.base) {
                     sink.set_fit(&mut *o.guest(), l.current());
+                }
+            })
+            .context_only()
+            .optional();
+
+        // Menu background art keeps the full view. The fit is chosen per
+        // quad, before its Begin, on the guest and the native path alike,
+        // and holds until the next quad or widget.
+        for (point, shader) in [(&HUD_QUAD_READY, true), (&SCREEN_QUAD_READY, false)] {
+            let (on_quad, sink) = (layout.clone(), self.sink.clone());
+            b.raw()
+                .observe_before(point, "stretch menu background art to the full view", move |o| {
+                    let mut l = on_quad.lock().unwrap_or_else(|e| e.into_inner());
+                    if !l.active.is_some_and(|canvas| !canvas.hud) {
+                        return;
+                    }
+                    let mut mem = o.guest();
+                    let corners = if shader {
+                        shader_quad_corners(&*mem, o.cpu.ebp)
+                    } else {
+                        screen_quad_corners(&*mem, o.cpu.esp)
+                    };
+                    if let Some(fit) = l.place_quad(corners) {
+                        sink.set_fit(&mut mem, fit);
+                    }
+                })
+                .context_only()
+                .optional();
+        }
+        let (on_item, sink) = (layout.clone(), self.sink.clone());
+        b.raw()
+            .observe_before(&ITEM_CALL, "restore the widget fit after background art", move |o| {
+                let mut l = on_item.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(fit) = l.end_fill() {
+                    sink.set_fit(&mut *o.guest(), fit);
                 }
             })
             .context_only()
@@ -681,6 +803,107 @@ mod tests {
             close(bounds[0] + origin[0], output.0 as f32);
             close(bounds[1] + origin[1], output.1 as f32);
         }
+    }
+
+    fn quad(left: f32, top: f32, right: f32, bottom: f32) -> Option<Corners> {
+        Some([[left, top], [right, top], [right, bottom], [left, bottom]])
+    }
+
+    fn menu(output: (u32, u32), rect: PixelRect) -> Layout {
+        Layout {
+            active: Some(Canvas {
+                output,
+                rect,
+                hud: false,
+                pinned: true,
+                projection_factor: projection_factor(&FakeGuest::new(), output),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn menu_background_art_covers_the_display_and_widgets_keep_the_uniform_fit() {
+        // A 5K Studio Display renders 16:9 at the 4K budget or full size.
+        for output in [(3840, 2160), (5120, 2880), (3440, 1440)] {
+            let mut layout = menu(output, FULL);
+            let widget = layout.current();
+            assert!(widget.is_some());
+            // A full-width panel or scrolling strip, wider than the view
+            // as a scrolling strip is, reaches both display edges.
+            for strip in [quad(0.0, 300.0, 640.0, 330.0), quad(-160.5, 12.0, 800.0, 20.0)] {
+                assert_eq!(layout.place_quad(strip), Some(None));
+                let fit = layout.current();
+                close(physical(fit, output, [strip.unwrap()[0][0].max(0.0), 0.0])[0], 0.0);
+                close(physical(fit, output, [640.0, 0.0])[0], output.0 as f32);
+                // The next background quad keeps the full view.
+                assert_eq!(layout.place_quad(quad(0.5, 0.0, 639.5, 480.0)), None);
+                // A list row or a glyph goes back to the 4:3 box.
+                assert_eq!(layout.place_quad(quad(80.0, 120.0, 560.0, 150.0)), Some(widget));
+                assert_eq!(layout.place_quad(quad(90.0, 120.0, 99.0, 140.0)), None);
+                // An unreadable quad keeps the widget fit.
+                layout.place_quad(strip);
+                assert_eq!(layout.place_quad(None), Some(widget));
+            }
+            // The next widget ends a background's full view.
+            layout.place_quad(quad(0.0, 0.0, 640.0, 480.0));
+            assert_eq!(layout.end_fill(), Some(widget));
+            assert_eq!(layout.end_fill(), None);
+            let [left, right] = [0.0, 640.0].map(|x| physical(widget, output, [x, 0.0])[0]);
+            let unit = output.1 as f32 / 480.0;
+            close(left, (output.0 as f32 - 640.0 * unit) * 0.5);
+            close(right - left, 640.0 * unit);
+        }
+    }
+
+    #[test]
+    fn background_fill_follows_the_fitted_axis_and_view_and_skips_the_hud() {
+        // Taller than 4:3 the fit shrinks y: a full-height quad fills.
+        let mut tall = menu((1200, 1600), FULL);
+        assert_eq!(tall.place_quad(quad(100.0, 0.0, 200.0, 480.0)), Some(None));
+        assert_eq!(tall.end_fill(), Some(tall.current()));
+        assert_eq!(tall.place_quad(quad(0.0, 100.0, 640.0, 200.0)), None);
+
+        // A split-screen menu fills its own view, not the frame.
+        let lower = PixelRect { x: 0, y: 240, width: 640, height: 240 };
+        let mut split = menu((1920, 1080), lower);
+        assert_eq!(split.place_quad(quad(0.0, 240.0, 640.0, 480.0)), Some(None));
+        let mut split = menu((1920, 1080), PixelRect { x: 320, y: 0, width: 320, height: 480 });
+        assert_eq!(split.place_quad(quad(0.0, 0.0, 320.0, 480.0)), None);
+        assert_eq!(split.place_quad(quad(320.0, 0.0, 640.0, 480.0)), Some(None));
+
+        // The HUD keeps its anchored groups; 4:3 has no fit to leave.
+        let mut hud = menu((1920, 1080), FULL);
+        hud.active = hud.active.map(|c| Canvas { hud: true, ..c });
+        assert_eq!(hud.place_quad(quad(0.0, 0.0, 640.0, 480.0)), None);
+        let mut square = Layout::default();
+        assert_eq!(square.place_quad(quad(0.0, 0.0, 640.0, 480.0)), None);
+
+        // Inside the backdrop compositor the view is already full.
+        let mut backdrop = menu((1920, 1080), FULL);
+        backdrop.begin_menu_composite();
+        assert_eq!(backdrop.place_quad(quad(0.0, 0.0, 640.0, 480.0)), None);
+        assert_eq!(backdrop.current(), None);
+    }
+
+    #[test]
+    fn quad_corners_are_read_at_the_shader_and_screen_quad_sites() {
+        let mut mem = FakeGuest::new();
+        let ebp = 0x2000;
+        for (i, [x, y]) in quad(-2.0, 10.0, 642.0, 40.0).unwrap().into_iter().enumerate() {
+            let at = ebp - 0x70 + 0x1c * i as u32;
+            mem.put_f32(at, x).put_f32(at + 4, y).put_f32(at + 8, 0.5);
+        }
+        assert_eq!(shader_quad_corners(&mem, ebp), quad(-2.0, 10.0, 642.0, 40.0));
+        let (esp, corners) = (0x3000, 0x4000);
+        mem.put_u32(esp + 0x18, corners);
+        for (i, [x, y]) in quad(0.0, 0.0, 640.0, 480.0).unwrap().into_iter().enumerate() {
+            let at = corners + 0x14 * i as u32;
+            mem.put_f32(at, x).put_f32(at + 4, y);
+        }
+        assert_eq!(screen_quad_corners(&mem, esp), quad(0.0, 0.0, 640.0, 480.0));
+        mem.put_f32(corners + 0x14, f32::NAN);
+        assert_eq!(screen_quad_corners(&mem, esp), None);
     }
 
     #[test]

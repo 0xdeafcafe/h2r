@@ -94,6 +94,8 @@ impl hooks::Feature for Bots {
         let phantoms = self.phantoms.clone();
         let workspace = b.guest_alloc(retail_input::WORK_BYTES, runtime::guest::Permissions::RW)?;
         let input = Arc::new(std::sync::Mutex::new(None));
+        // impl.sim.phantom-alias (docs/perf/sim-phantom-build.md).
+        let path = retail_input::path_for(b.switches());
         let film = self.film.clone();
         b.raw().before(
             &points::SIMULATION_SLOT_ACTION,
@@ -116,6 +118,7 @@ impl hooks::Feature for Bots {
                                     &input,
                                     &rt,
                                     workspace,
+                                    path,
                                     cpu,
                                     sample,
                                     &cx,

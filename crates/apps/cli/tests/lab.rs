@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use agent_proto::takeover::{self, Decision, Operation};
+use agent_proto::takeover::{self, Decision, Operation, Source};
 use serde_json::{Value, json};
 
 /// A fake `h2`: `build` makes an image directory; `play` logs its
@@ -489,7 +489,9 @@ fn takeover_allow_waits_for_the_game_window_to_close() {
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].requester, "Local lab");
     assert_eq!(requests[0].operation, Operation::Run);
-    assert_eq!(requests[0].revision, "installed image");
+    assert_eq!(requests[0].name, "Synthetic job");
+    assert!(matches!(requests[0].source, Source::Current { .. }));
+    assert!(!requests[0].own_data);
     assert_eq!(requests[0].timeout_seconds, 60);
     assert!(requests[0].estimate_seconds > 0);
     drop(requests);
@@ -532,7 +534,15 @@ fn takeover_declines_a_build_and_suppresses_prompts_until_a_headless_run() {
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].requester, "Lab 127.0.0.1");
         assert_eq!(requests[0].operation, Operation::Build);
-        assert_eq!(requests[0].revision, &commit[..12]);
+        assert_eq!(requests[0].name, "Image build");
+        assert!(requests[0].builds_image);
+        assert_eq!(
+            requests[0].source,
+            Source::Rev {
+                rev: commit.clone(),
+                commit: commit[..12].to_owned()
+            }
+        );
         assert!(requests[0].estimate_seconds > 0);
     }
     assert_eq!(fs::read(&lab.cargo_log).unwrap(), cargo_before);
