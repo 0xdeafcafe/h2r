@@ -614,7 +614,7 @@ passes this config to Wrangler and removes its temporary copy on exit.
    `~/.cargo` are not touched. The first run installs it.
 2. **Web.** `bun install --frozen-lockfile` and `bun run build` into
    `web/dist`, the Worker's static assets.
-3. **Wasm.** `worker-build --release` into `crates/live/live-worker/build`.
+3. **Wasm.** `worker-build --release` into `crates/live/live-worker/build` (build output).
 4. **Sign-in.** `wrangler whoami`; if you are not signed in, it stops and
    says to run `bunx wrangler@4 login`.
 5. **Host image.** The tag is a hash of the Dockerfile, the entrypoint

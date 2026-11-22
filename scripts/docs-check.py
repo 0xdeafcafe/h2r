@@ -17,6 +17,9 @@ Checks:
   code    docs/*.md paths cited in code comments exist (always fails), and
           the section they cite (`§ 5.2` or "Title") is still a heading
 
+names and paths also skip pages whose status line says Design or plan: they
+name things that do not exist yet.
+
 names, paths and style skip dated records (docs/**/notes/, docs/reviews/)
 and docs/meta/, which describe the tree as it was or quote what is wrong. They are findings to clear or to justify,
 because a design page for unbuilt work names things that do not exist yet;
@@ -63,6 +66,19 @@ def is_record(path):
         or path.startswith("docs/reviews/")
         or path.startswith("docs/meta/")
     )
+
+
+DESIGN_STATUS = re.compile(r"^Status:\s*(?:Design|plan)\b", re.I | re.M)
+_design = {}
+
+
+def is_design(path):
+    """A page whose status line says Design (or plan) names things that do
+    not exist yet; names and paths on it are not checked."""
+    if path not in _design:
+        with open(os.path.join(ROOT, path), encoding="utf-8") as f:
+            _design[path] = bool(DESIGN_STATUS.search(f.read(2000)))
+    return _design[path]
 
 
 def slug(heading):
@@ -216,7 +232,7 @@ def check_names(files):
     envs, switches = code_names()
     bad = []
     for path in files:
-        if is_record(path):
+        if is_record(path) or is_design(path):
             continue
         for number, line in prose_lines(path):
             for name in set(ENV.findall(line)):
@@ -248,14 +264,19 @@ def ignored(path):
     )
 
 
+NOT_YET = re.compile(r"\s*\((?:new|planned|proposed|build output)\)")
+
+
 def check_paths(files):
     bad = []
     for path in files:
-        if is_record(path):
+        if is_record(path) or is_design(path):
             continue
         for number, line in prose_lines(path):
             for m in CODE_PATH.finditer(line):
                 cited = m.group(1).rstrip(".,;")
+                if NOT_YET.match(line, m.end()):
+                    continue  # marked as a file the page proposes or a build output
                 if any(ch in cited for ch in "*<>") or "..." in cited:
                     continue
                 full = os.path.join(ROOT, cited)
