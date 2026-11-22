@@ -3821,7 +3821,7 @@ fn ui_sheet_renders_a_folders_previews_into_one_png() {
 
     // Refusals: nothing to draw, no folder, a Git checkout.
     let t2 = Temp::new("ui-sheet-fresh");
-    let mut fresh = app(&t2);
+    let mut fresh = self::app(&t2);
     assert_eq!(code_of(api.call(&mut fresh, m::UI_SHEET, json!({}))), code::INVALID_PARAMS);
     assert_eq!(
         code_of(api.call(&mut app, m::UI_SHEET, json!({"folder": "ours/no-such-folder"}))),
