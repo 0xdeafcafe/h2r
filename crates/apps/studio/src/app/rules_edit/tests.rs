@@ -417,7 +417,7 @@ fn open_in_editor_names_the_file_after_the_script() {
 }
 
 #[test]
-fn open_in_editor_tries_script_edit_then_the_users_editors() {
+fn open_in_editor_tries_an_editor_with_the_extension_then_the_users_editors() {
     let file = Path::new("/s/x.rules");
     let bin = |name: &str| Some(PathBuf::from(format!("/bin/{name}")));
     let env = |k: &str| match k {
@@ -425,32 +425,59 @@ fn open_in_editor_tries_script_edit_then_the_users_editors() {
         "EDITOR" => Some("vim".to_string()),
         _ => None,
     };
-    let got = editor_launches(file, env, bin, None, |_| false, true);
-    let commands: Vec<String> = got.iter().map(Launch::describe).collect();
+    let describe = |got: Vec<Launch>| -> Vec<String> { got.iter().map(Launch::describe).collect() };
+
+    // Zed has the extension: it comes first, and once.
+    let got = editor_launches(file, env, bin, |e| e == "zed", true);
     assert_eq!(
-        commands,
+        describe(got),
         [
-            "/bin/h2 script-edit /s/x.rules",
+            "/bin/zed /s/x.rules",
             "subl -w /s/x.rules",
             // vim needs a terminal: passed over.
             "/bin/code /s/x.rules",
-            "/bin/zed /s/x.rules",
             "open -t /s/x.rules",
         ]
     );
 
-    // No h2 on PATH: Cargo's; nothing else found and not macOS: only it.
-    let home = Path::new("/home/me");
-    let cargo_h2 = |p: &Path| p == Path::new("/home/me/.cargo/bin/h2");
-    let got = editor_launches(file, |_| None, |_| None, Some(home), cargo_h2, false);
-    let commands: Vec<String> = got.iter().map(Launch::describe).collect();
-    assert_eq!(commands, ["/home/me/.cargo/bin/h2 script-edit /s/x.rules"]);
+    // Neither has it: $VISUAL first, then VS Code and Zed as they are.
+    let got = editor_launches(file, env, bin, |_| false, true);
+    assert_eq!(
+        describe(got),
+        ["subl -w /s/x.rules", "/bin/code /s/x.rules", "/bin/zed /s/x.rules", "open -t /s/x.rules"]
+    );
 
-    // No h2 at all; $VISUAL and $EDITOR the same: tried once.
+    // An extension in an editor that is not found counts for nothing;
+    // nothing found and not macOS: nothing to try.
+    let got = editor_launches(file, |_| None, |_| None, |_| true, false);
+    assert!(got.is_empty());
+
+    // $VISUAL and $EDITOR the same, and VS Code with the extension: tried
+    // once each.
     let env = |k: &str| matches!(k, "VISUAL" | "EDITOR").then(|| "code --wait".to_string());
-    let got = editor_launches(file, env, |_| None, Some(home), |_| false, true);
-    let commands: Vec<String> = got.iter().map(Launch::describe).collect();
-    assert_eq!(commands, ["code --wait /s/x.rules", "open -t /s/x.rules"]);
+    let got = editor_launches(file, env, bin, |e| e == "code", true);
+    assert_eq!(
+        describe(got),
+        ["/bin/code /s/x.rules", "code --wait /s/x.rules", "/bin/zed /s/x.rules", "open -t /s/x.rules"]
+    );
+
+    // Where each editor keeps the extension.
+    let home = Path::new("/home/me");
+    let vscode = |dir: &Path| -> Vec<String> {
+        if dir == Path::new("/home/me/.vscode/extensions") {
+            vec!["rust-lang.rust-analyzer-0.3.1".into(), "h2recomp.h2-rules-0.1.0".into()]
+        } else {
+            Vec::new()
+        }
+    };
+    assert!(extension_installed("code", home, true, |_| false, vscode));
+    assert!(!extension_installed("code", home, true, |_| false, |_| Vec::new()));
+    let zed_mac = |p: &Path| p == Path::new("/home/me/Library/Application Support/Zed/extensions/installed/h2-rules");
+    assert!(extension_installed("zed", home, true, zed_mac, |_| Vec::new()));
+    assert!(!extension_installed("zed", home, false, zed_mac, |_| Vec::new()));
+    let zed_linux = |p: &Path| p == Path::new("/home/me/.local/share/zed/extensions/installed/h2-rules");
+    assert!(extension_installed("zed", home, false, zed_linux, |_| Vec::new()));
+    assert!(!extension_installed("subl", home, true, |_| true, vscode));
 
     assert!(is_terminal_editor("/usr/bin/nvim") && is_terminal_editor("nano"));
     assert!(!is_terminal_editor("code") && !is_terminal_editor("/usr/local/bin/zed"));
@@ -465,7 +492,7 @@ fn a_started_editor_counts_as_open_once_it_succeeds_or_keeps_running() {
     assert_eq!(launch_step(None, early), LaunchStep::Wait);
     assert_eq!(launch_step(None, LAUNCH_GRACE), LaunchStep::Done, "a GUI editor still running");
     assert_eq!(launch_step(Some(true), early), LaunchStep::Done, "code and open exit at once");
-    assert_eq!(launch_step(Some(false), early), LaunchStep::Next, "an h2 without script-edit");
+    assert_eq!(launch_step(Some(false), early), LaunchStep::Next, "an editor that failed to start");
 }
 
 #[test]

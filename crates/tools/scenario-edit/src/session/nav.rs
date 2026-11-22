@@ -1,5 +1,6 @@
 //! The navigation the session shows with the map ([`crate::nav_view`];
-//! docs/editor/editor.md, "Navigation"): the structure BSPs' pathfinding
+//! docs/editor/editor.md, "What the viewport shows, and what it does not
+//! yet"): the structure BSPs' pathfinding
 //! data, read when the map opens, the bots' mesh and spots the editor
 //! hands over, a pick and a selection. Read only.
 use super::*;
@@ -241,6 +242,7 @@ mod tests {
                 poly: 0,
                 normal: nav_view::ring_normal(&verts),
                 verts,
+                out_of_map: false,
             }
         };
         let mut nav = BotNav {

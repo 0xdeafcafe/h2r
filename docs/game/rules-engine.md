@@ -261,7 +261,7 @@ own scoring from running beside the script's, and `feature` the hooks. It follow
 (`crates/extensions/game/src/firefight/`, [firefight.md](firefight.md#the-host-runtime)).
 Boot registers the `rules` feature (`registration::register_core`), off
 unless `H2_FEATURES` names it, and its hooks are on game-thread points
-only (`render_thread::REFUSED`).
+only.
 
 **At the game's start**, an observer after a successful `GAME_ACTIVATE`
 (`0x18f000`) reads the active record's block (`G+0x13c+0x10c`) and engine
@@ -1344,10 +1344,22 @@ Tooling:
     one by name, engine index or key.
   - `h2 rules lsp` is a language server on stdin and stdout
     (`crates/apps/cli/src/rules_lsp.rs`, over `lsp-server`). It keeps
-    each open document whole (full sync), publishes diagnostics on open
-    and change, and answers completion, hover, signature help,
-    definition, references, `semanticTokens/full`, document symbols,
-    formatting, quick fix code actions and rename from `rules::ide`.
+    each open document and applies incremental changes in UTF-16
+    positions (`ide::offset`), publishes diagnostics on open and change
+    (each with its code and a `codeDescription` link to
+    [rules-language-types.md, "Diagnostics and the
+    editor"](rules-language-types.md#diagnostics-and-the-editor)), and
+    answers completion, hover, signature help, definition, references,
+    document highlights, `semanticTokens/full`, document symbols,
+    folding ranges, formatting and range formatting, quick fix code
+    actions, `prepareRename` and rename from `rules::ide`. A typed space
+    asks for completions only after `is`, `on`, `carrier`, `requires`,
+    `each`, `palette`, `list`, a `:` or a `,` (`SPACE_TRIGGER_WORDS`).
+  - `h2 rules editors [status|install [vscode|zed] [--build]]` installs
+    the VS Code extension and prints the Zed steps, or says what is
+    installed and whether `h2 rules lsp` starts
+    (`crates/apps/cli/src/rules_editors.rs`;
+    [rules-editors.md](../editor/rules-editors.md)).
 - **Language intelligence**: `rules::ide` (`crates/formats/rules/src/ide/`)
   is pure over source text, and the language server, Live's
   `POST /v1/rules/ide`, the web editor and Studio share it. Positions are LSP's:
@@ -1391,7 +1403,13 @@ Tooling:
   - `definition` and `references` for locals, arguments, parameters,
     variables, options, enums and their variants, tables and columns,
     functions, palettes and labels (a label's first use is its
-    definition).
+    definition). `highlights` gives the same uses in source order, the
+    declaration and each assignment marked as a write.
+  - `prepare_rename` names what a rename at a place would rename, or
+    refuses (no name there, or a palette, named by its string).
+  - `folding_ranges`: each bracketed span over more than one line (the
+    closer stays in sight), each run of two or more whole-line comments,
+    and each `// region` ... `// endregion` pair (`ide/fold.rs`).
   - `semantic_tokens` classifies every comment, literal, keyword, name
     and operator by the legend `ide::LEGEND`: keyword, event, function,
     api, variable, parameter, enum, enumMember, type, number, string,
@@ -1406,14 +1424,14 @@ Tooling:
     are. It moves line breaks only where the grammar ignores them and
     refuses its own output if a script that compiled would compile to
     another blob. Every built-in formats to itself on a second pass and
-    to the same blob.
-- **Editors**: point a generic LSP client at `h2 rules lsp` for files
-  ending `.rules`.
-  - VS Code: an extension that starts the server, or a generic LSP
-    client extension, with the command `h2`, the arguments
-    `["rules", "lsp"]` and the document selector `{"pattern":
-    "**/*.rules"}`. The custom token types (`api`, `label`,
-    `capability`) take colours from `semanticTokenColorCustomizations`.
+    to the same blob. `format_range` formats the whole script, diffs
+    it by line and keeps the changed runs that meet the range.
+- **Editors**: VS Code and Zed have extensions in `editors/` that start
+  `h2 rules lsp` and highlight without it (a TextMate grammar for VS
+  Code, the `tree-sitter-rules` grammar for Zed);
+  [rules-editors.md](../editor/rules-editors.md) covers installing them,
+  what they do and their CI. Any other editor points a generic LSP client
+  at `h2 rules lsp` for files ending `.rules`:
   - Helix, in `languages.toml`:
 
     ```toml

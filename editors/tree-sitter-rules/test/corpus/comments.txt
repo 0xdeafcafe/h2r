@@ -1,0 +1,50 @@
+================================================================================
+Comments
+================================================================================
+
+// leading comment
+rules "T" 1 // trailing
+on tick {
+    // inside
+    score(p, 1) // after
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (comment)
+  (header
+    (string
+      (string_content))
+    (integer))
+  (comment)
+  (handler_declaration
+    (identifier)
+    (block
+      (comment)
+      (expression_statement
+        (call_expression
+          (identifier)
+          (arguments
+            (identifier)
+            (integer))))
+      (comment))))
+
+================================================================================
+A URL in a string is not a comment
+================================================================================
+
+on tick {
+    a = "http://example.com"
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (handler_declaration
+    (identifier)
+    (block
+      (assignment_statement
+        (identifier)
+        (string
+          (string_content))))))

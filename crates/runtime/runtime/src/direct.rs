@@ -108,24 +108,17 @@ pub(crate) struct DirectState {
     budget: u64,
     depth: u32,
     cap: u32,
-    /// A hold on the C RAM gate lent with `view`, or handed back to a
-    /// direct caller (h2gen.h `H2_DIRECT_GATE`); 0 outside generated code.
-    gate: u32,
-    _pad: u32,
     frames: [Frame; MAX_DEPTH as usize],
     /// The inline RAM view a direct caller lends its callee (module feature
     /// [`FEATURE_DIRECT_VIEW`](crate::generated::FEATURE_DIRECT_VIEW)):
     /// set just before the call, taken and cleared by the callee's entry.
     view: *mut crate::ffi::FastAccess,
-    /// The uncharged access count lent with `view`, or handed back to a
-    /// direct caller (h2gen.h `H2_DIRECT_COUNT`); 0 outside generated code.
-    acc: u64,
 }
 
 #[cfg(target_pointer_width = "64")]
 const _: () = {
     assert!(size_of::<Frame>() == 16);
-    assert!(size_of::<DirectState>() == 56 + 16 * 64 + 16);
+    assert!(size_of::<DirectState>() == 48 + 16 * 64 + 8);
 };
 
 /// The rows of the module registered with an entry table
@@ -350,9 +343,7 @@ impl Direct {
         s.budget = 0;
         s.depth = 0;
         s.cap = DEFAULT_DEPTH;
-        s.gate = 0;
         s.view = std::ptr::null_mut();
-        s.acc = 0;
     }
 
     pub(crate) fn as_ptr(&self) -> DirectPtr {
@@ -462,8 +453,6 @@ fn host_call<const DIAG: bool>(cpu: &mut CpuAbi, ctx: &mut ExecCtx, target: u32)
     s.budget = remaining;
     // Nothing lent back to the caller.
     s.view = std::ptr::null_mut();
-    s.gate = 0;
-    s.acc = 0;
     if caught {
         // The frames stay live in C and are replayed if a later transfer
         // is handed up; what this transfer recorded is popped by the
@@ -503,8 +492,6 @@ impl ExecCtx {
     pub(crate) fn direct_clear_view(&mut self) {
         let s = self.direct.state();
         s.view = std::ptr::null_mut();
-        s.gate = 0;
-        s.acc = 0;
     }
     /// The runner is about to invoke a handler with `remaining` transfers
     /// left. The entry table is checked again first if the guest's lifted
@@ -545,24 +532,11 @@ impl ExecCtx {
     }
     /// The host-call thunk was entered: what the generated caller lent with
     /// the call belongs to a generated callee, so settle it here. The view
-    /// is the context's own; its count and a lent count are spent as the
-    /// caller's exit would have spent them before the runner ran this
-    /// transfer, and a lent hold on the RAM gate is released.
+    /// is the context's own; its count is spent as the caller's exit would
+    /// have spent it before the runner ran this transfer.
     fn direct_take_lent(&mut self) {
-        let s = self.direct.state();
-        let view = std::mem::replace(&mut s.view, std::ptr::null_mut());
-        let gate = std::mem::take(&mut s.gate);
-        let acc = std::mem::take(&mut s.acc);
-        if gate != 0 {
-            // SAFETY: the view the caller lent with the hold, which it gave
-            // up (h2gen.h H2_LEND_); it takes back only what `gate` holds,
-            // and that is 0 when the thunk returns.
-            unsafe { crate::ffi::release_lent_gate(view) };
-        }
+        self.direct.state().view = std::ptr::null_mut();
         crate::ffi::sync_accesses(self);
-        if acc != 0 {
-            self.spend_accesses(acc);
-        }
     }
     /// The shadow stack with the live direct frames on top.
     pub(crate) fn backtrace_with_direct(&self, pc: u32) -> Vec<crate::GuestFrame> {

@@ -19,8 +19,8 @@ Every table below was derived from two sources only:
   that reads or writes the field. Names are ours, not recovered symbols.
 - **V — disc check:** a structural property checked on every campaign,
   multiplayer and main-menu map of the owner's disc by
-  `cargo run -p viewer --release --bin bsp -- --all` (and, for model
-  sections, `viewer --all all`).
+  a disc sweep in the standalone viewer that has been removed
+  (`git log -- crates/tools/viewer`); nothing repeats it.
 
 No outside XML layout or tag-definition file was opened or copied for
 these tables, and none is a build input. Field names are descriptive labels
@@ -353,26 +353,7 @@ group and no bitmap yet ([bitmaps.md](../halo1/bitmaps.md)).
 
 ## Use
 
-```sh
-cargo run -p viewer --release --bin bsp -- --all
-cargo run -p viewer --release --bin bsp -- <map>
-cargo run -p viewer --release --bin bsp -- <map> --render "$OUT" --bsp 0 [--force]
-```
-
-The disc comes from `--disc`, `H2_DISC` or `disc/halo2.iso`, as for the
-viewer. `--all` and single-map runs exit 1 if any check fails. Zero-tolerance
-checks are: decode failures, tiling, non-local blocks, positions outside
-cluster bounds, non-unit packed vectors, lightmap coordinates outside [0, 1],
-non-rigid placements, bucket flag bit 1 against the `2f` stream, and instance
-references without exactly one offset. Thresholds, in `viewer/src/bin/bsp.rs`,
-cover the counters that are nonzero on the disc: zero packed vectors (≤ 0.2%),
-winding disagreement (≤ 0.1%) and checksum-mismatched groups (≤ 2).
-
-`--render` writes a top-down normal-coloured image and a perspective
-Lambert-shaded image of one BSP's clusters and instanced geometry (software
-rasterized, back faces culled). It uses the viewer's safe output rules: no
-writing through symlinks, and no replacing a file without `--force`. Write
-the images outside the repository: they are derived from game data.
+The disc checks that the evidence labels cite (decode failures, tiling, non-local blocks, positions outside cluster bounds, non-unit packed vectors, lightmap coordinates outside [0, 1], non-rigid placements, bucket flag bit 1 against the `2f` stream, instance references without exactly one offset) were run by a standalone viewer that has been removed (`git log -- crates/tools/viewer`). The decoder is a library:
 
 ```rust
 use tags::structure::StructureRender;

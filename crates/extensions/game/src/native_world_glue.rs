@@ -46,7 +46,7 @@ use native_render::load::{self, LoadedWorld};
 pub use native_render::load::{decode_first, decode_image, decode_lightmap};
 pub use native_render::world::keep_draws;
 // The stage decoder moved to native-render, so the editor decodes stage
-// images the same way (docs/editor/polish-plan.md, P15).
+// images the same way (docs/editor/editor.md).
 pub use native_render::stage_images::{StageDecoder, StageImages, StagePalettes};
 #[cfg(test)]
 use native_render::stage_images::StageRefusal;

@@ -1,5 +1,5 @@
 //! The base look (base map times lightmap) as a translated pass, for a
-//! host with no game (the editor; docs/editor/polish-plan.md, P15): the
+//! host with no game (the editor; docs/editor/editor.md): the
 //! same vertex and pixel translation every material pass takes
 //! (`program::compile_pass`, `fog_gpu::FogSet`), so its depth is the one
 //! the world layers drawn over it compute for the same vertex.

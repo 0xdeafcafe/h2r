@@ -926,6 +926,62 @@ fn disc_ascension_frames_its_structure_not_its_cloud_deck() {
     );
 }
 
+/// Coagulation's sky (`scenarios\skies\multi\halo\coagulation`): six
+/// regions, every layer see-through. Its blue is the `coag_stars` dome
+/// (`sky_one_alpha_env`, DXT1, opaque); its clouds (`two_alpha_clouds`)
+/// are a `Y8` tile with no alpha times `coag_cloudcover_mask`, and its
+/// sun volume (`one_add_illum_detail`) a grey beams tile times
+/// `ascension_sun_volume_mask`. Without their masks the clouds were an
+/// opaque white dome over the blue and the volume added grey over it.
+/// The sky builds, and both layers draw with their masks.
+#[test]
+#[ignore = "needs the owner's disc image"]
+fn disc_coagulation_sky_layers_take_their_masks() {
+    let maps = MapSource::disc_maps(&disc_iso()).unwrap();
+    let (_, source) = maps.iter().find(|(n, _)| n == "coagulation").unwrap();
+    let mut s = crate::Session::new();
+    s.open_named(source.clone(), "coagulation").unwrap();
+    let scene = s.scene().expect("a scene");
+    let sky = scene.sky.as_ref().expect("coagulation's sky builds");
+    assert_eq!(sky.name, "coagulation");
+    let material = |stem: &str| {
+        scene
+            .materials
+            .iter()
+            .find(|m| m.shader.ends_with(stem))
+            .unwrap_or_else(|| panic!("{stem}: {:?}", scene.materials))
+    };
+    let clouds = material("coag_cloudcover");
+    assert_eq!(clouds.blend, crate::scene::Blend::Alpha, "{clouds:?}");
+    assert!(
+        clouds
+            .base
+            .as_deref()
+            .is_some_and(|b| b.ends_with("coag_cloudtile")),
+        "{clouds:?}"
+    );
+    assert!(
+        clouds
+            .mask
+            .as_deref()
+            .is_some_and(|m| m.ends_with("coag_cloudcover_mask")),
+        "{clouds:?}"
+    );
+    let volume = material("coag_sun_volume");
+    assert_eq!(volume.blend, crate::scene::Blend::Additive, "{volume:?}");
+    assert!(
+        volume
+            .mask
+            .as_deref()
+            .is_some_and(|m| m.ends_with("ascension_sun_volume_mask")),
+        "{volume:?}"
+    );
+    let stars = material("coag_stars");
+    assert!(stars.mask.is_none(), "{stars:?}");
+    let masked = sky.mesh.batches.iter().filter(|b| b.mask.is_some()).count();
+    assert_eq!(masked, 2, "the clouds and the sun volume");
+}
+
 /// Framing drops the few placements far outside a level.
 #[test]
 fn trimmed_bounds_drop_outliers() {
@@ -2434,6 +2490,125 @@ fn added_sky_layers_add_over_the_dome_and_black_adds_nothing() {
     assert!(px[0] > 180 && px[2] < 60, "the planet: {px:?}");
 }
 
+/// Coagulation's cloud layer (`two_alpha_clouds`) is a cloud tile with no
+/// alpha of its own (`Y8`) times a cover mask: drawn by the tile alone it
+/// was an opaque white dome over the blue sky. A see-through layer with
+/// a coverage mask ([`crate::scene::Look::mask`]) takes the mask in colour
+/// and alpha, at the mask's own scale: where the mask is clear the blue
+/// dome behind shows, where it is solid the cloud covers it. The sky box's
+/// coordinates (`u` 0.25) sit on the mask's left (clear) texel; at scale 3
+/// (`u` 0.75) on its right (solid white) one.
+#[test]
+fn a_cloud_layer_is_covered_by_its_mask() {
+    use crate::scene::{Blend, Image, Layer, Look, Scene, SceneSky};
+    let instance = gfx::instance();
+    let Ok(adapter) =
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+    else {
+        eprintln!("no wgpu adapter; skipping");
+        return;
+    };
+    let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+    let size = [64u32, 64];
+    let cam = Camera {
+        distance: 40.0,
+        ..Camera::default()
+    };
+    let blue = Image {
+        width: 1,
+        height: 1,
+        rgba: vec![10, 10, 200, 255],
+    };
+    // The cloud tile: white, opaque everywhere (as `Y8` decodes).
+    let tile = Image {
+        width: 1,
+        height: 1,
+        rgba: vec![255, 255, 255, 255],
+    };
+    // The mask: clear on the left, solid white on the right.
+    let mask = Image {
+        width: 2,
+        height: 1,
+        rgba: [[255u8, 255, 255, 0], [255, 255, 255, 255]].concat(),
+    };
+    let mut vp = crate::render::Viewport::new(&device);
+    let mut draw = |cover: Option<Layer>| {
+        let mut mesh = crate::scene::Mesh::default();
+        push_sky_box(
+            &mut mesh,
+            50.0,
+            [0.25, 0.5],
+            &Look::plain(Some(0)),
+            Blend::Opaque,
+        );
+        let clouds = Look {
+            mask: cover,
+            ..Look::plain(Some(1))
+        };
+        push_sky_box(&mut mesh, 40.0, [0.25, 0.5], &clouds, Blend::Alpha);
+        let scene = Scene {
+            textures: vec![blue.clone(), tile.clone(), mask.clone()],
+            lifts: vec![1.0; 3],
+            sky: Some(SceneSky {
+                name: "test_sky".into(),
+                mesh,
+                clear: [0.0; 3],
+            }),
+            ..Scene::default()
+        };
+        vp.set_scene(&device, &queue, &scene);
+        vp.render(&device, &queue, &cam, size);
+        center_pixel(&device, &queue, &vp, size)
+    };
+    let layer = |s: f32| {
+        Some(Layer {
+            texture: 2,
+            scale: [s, s],
+        })
+    };
+    let bare = draw(None);
+    assert!(
+        bare[0] > 230 && bare[2] > 230,
+        "the tile alone covers the sky: {bare:?}"
+    );
+    let clear = draw(layer(1.0));
+    assert!(
+        clear[2] > 180 && clear[0] < 60,
+        "the mask's clear texel shows the dome: {clear:?}"
+    );
+    let solid = draw(layer(3.0));
+    assert!(
+        solid[0] > 230 && solid[2] > 230,
+        "the mask's solid texel: {solid:?}"
+    );
+}
+
+/// The viewport's two shading spaces write one colour texture through
+/// two views that differ only in the sRGB encode: the editor's own
+/// shaders sample sRGB pictures and write linear light through the sRGB
+/// view; the native renderer's passes (the game's gamma-space combiners
+/// on `Rgba8Unorm` and `BC*Unorm` pictures) write the plain view, as the
+/// game writes its plain surface. `encode_srgb` (the native clear
+/// colour) inverts `scene::srgb_to_linear`.
+#[test]
+fn each_shading_space_writes_its_own_view_of_the_target() {
+    use crate::render::{COLOR_FORMAT, Shading, UI_FORMAT, encode_srgb};
+    use wgpu::TextureFormat as F;
+    assert_eq!(Shading::Linear.target_format(), F::Rgba8UnormSrgb);
+    assert_eq!(Shading::Linear.texture_format(), F::Rgba8UnormSrgb);
+    assert_eq!(Shading::Gamma.target_format(), F::Rgba8Unorm);
+    assert!(!Shading::Gamma.texture_format().is_srgb());
+    assert_eq!(COLOR_FORMAT, Shading::Linear.target_format());
+    assert_eq!(UI_FORMAT, Shading::Gamma.target_format());
+    assert_eq!(COLOR_FORMAT.remove_srgb_suffix(), UI_FORMAT);
+    for b in [0u8, 5, 10, 63, 128, 188, 255] {
+        let back = encode_srgb(f64::from(crate::scene::srgb_to_linear(b))) * 255.0;
+        assert!((back - f64::from(b)).abs() < 0.5, "{b} came back as {back}");
+    }
+    assert_eq!(encode_srgb(-1.0), 0.0);
+    assert_eq!(encode_srgb(2.0), 1.0);
+}
+
 /// A map's shared caches come from beside it, or from `shared` when the
 /// source names one (a Map Pack map leans on the Halo 2 disc's).
 #[test]
@@ -2710,4 +2885,128 @@ fn geometry_raw_patches_save_with_the_map_and_a_refusal_refuses_the_save() {
     let e = save::write_patched(&mut open(src.clone()), &s, &mut out).unwrap_err();
     assert!(e.to_string().contains("a grown write"), "{e}");
     assert!(out.into_inner().is_empty());
+}
+
+#[test]
+fn a_geometry_grown_block_goes_to_the_metadata_end_and_its_pair_names_it() {
+    use crate::scenario::{GeometryChanges, GeometryGrown};
+    let src = metadata_last(fixture_with_collision());
+    let mut s = read(src.clone());
+    // The structure's per-leaf pair (`sbsp+0x2c`), pointed at two new
+    // elements.
+    let pair = META + (SBSP + 0x2c) as u32;
+    let bytes: Vec<u8> = (0u8..16).collect();
+    let grown = GeometryGrown {
+        pair_space: None,
+        pair,
+        count: 2,
+        bytes: bytes.clone(),
+        align: 16,
+    };
+    s.set_geometry_changes(GeometryChanges {
+        grown: vec![grown.clone()],
+        ..GeometryChanges::default()
+    })
+    .unwrap();
+    assert!(!s.changes().is_empty());
+    let out = write(&src, &s);
+    let mut m = open(out.clone());
+    m.validate_checksum().unwrap();
+    let root = m.read_tag_bytes(id(4)).unwrap();
+    let word = |at: usize| u32::from_le_bytes(root[at..at + 4].try_into().unwrap());
+    // The copy starts where the source's metadata ended.
+    assert_eq!((word(0x2c), word(0x30)), (2, META + 0x2000));
+    let at = m.file_offset(META + 0x2000, 16).unwrap();
+    assert_eq!(m.read_file_range(at, 16).unwrap(), bytes);
+    // A pair in the scenario's payload is the Scenario tool's; an empty
+    // block is refused.
+    let over = GeometryGrown {
+        pair: META + SCNR as u32,
+        ..grown.clone()
+    };
+    let refuse = |g: GeometryGrown| {
+        s.clone()
+            .set_geometry_changes(GeometryChanges {
+                grown: vec![g],
+                ..GeometryChanges::default()
+            })
+            .is_err()
+    };
+    assert!(refuse(over));
+    assert!(refuse(GeometryGrown {
+        count: 0,
+        bytes: Vec::new(),
+        ..grown
+    }));
+}
+
+#[test]
+fn bitmap_changes_save_beside_the_modeling_tools_and_a_refusal_refuses_the_save() {
+    use crate::scenario::{GeometryChanges, RawAppend, RawPatch};
+    let src = fixture_with_textured_bsp();
+    let mut s = read(src.clone());
+    let block = map::RawPointer {
+        file: map::ResourceFile::Local,
+        offset: TEX_BLOCK_FILE as u32,
+    };
+    let before = s.changes();
+    // Pixels patched in place: the same bytes as a geometry raw patch.
+    s.set_bitmap_changes(GeometryChanges {
+        raw_patches: vec![RawPatch {
+            block,
+            block_size: 0x40,
+            offset: 0x10,
+            bytes: vec![0x11, 0x22, 0x33],
+        }],
+        ..GeometryChanges::default()
+    })
+    .unwrap();
+    assert_ne!(s.changes(), before);
+    // A modeling write elsewhere in the same block does not clash.
+    s.set_geometry_changes(GeometryChanges {
+        raw_patches: vec![RawPatch {
+            block,
+            block_size: 0x40,
+            offset: 0x30,
+            bytes: vec![0xab],
+        }],
+        ..GeometryChanges::default()
+    })
+    .unwrap();
+    let out = write(&src, &s);
+    let ranges: Vec<_> = diff(&src, &out)
+        .into_iter()
+        .filter(|&(a, _)| !(0x2d0..0x2d4).contains(&a))
+        .collect();
+    let at = TEX_BLOCK_FILE;
+    assert_eq!(ranges, [(at + 0x10, at + 0x13), (at + 0x30, at + 0x31)]);
+    // A patch over the scenario's payload is the Scenario tool's.
+    assert!(
+        s.set_bitmap_changes(GeometryChanges {
+            patches: vec![(META + SCNR as u32, vec![1])],
+            ..GeometryChanges::default()
+        })
+        .is_err()
+    );
+    // Undoing the edit (an empty set) is the source again, byte for byte.
+    s.set_geometry_changes(GeometryChanges::default()).unwrap();
+    s.set_bitmap_changes(GeometryChanges::default()).unwrap();
+    assert_eq!(s.changes(), before);
+    assert_eq!(write(&src, &s), src);
+    // A refusal names the Textures tool and stops the save before it writes.
+    s.set_bitmap_changes(GeometryChanges {
+        raw_appends: vec![RawAppend {
+            bytes: vec![0; 16],
+            align: 0x200,
+            pointer_space: None,
+            pointer_address: 0,
+        }],
+        refusal: Some("image 0: not written".into()),
+        ..GeometryChanges::default()
+    })
+    .unwrap();
+    let mut sink = Cursor::new(Vec::new());
+    let e = save::write_patched(&mut open(src.clone()), &s, &mut sink).unwrap_err();
+    assert!(e.to_string().contains("bitmap: image 0: not written"), "{e}");
+    assert!(sink.into_inner().is_empty());
 }

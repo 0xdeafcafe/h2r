@@ -698,3 +698,97 @@ fn time_const_match_and_carrier_are_read() {
     let top = complete("rules \"T\" 1\ncarrier slayer\n\n", p(2, 0));
     assert!(labels(&top).contains(&"const"));
 }
+
+#[test]
+fn highlights_mark_the_declaration_and_assignments_as_writes() {
+    let marks = |pos: Position| -> Vec<(u32, u32, u8)> {
+        highlights(LABELS, pos)
+            .iter()
+            .map(|h| (h.range.start.line, h.range.start.character, h.kind))
+            .collect()
+    };
+    let (r, w) = (highlight_kind::READ, highlight_kind::WRITE);
+    assert_eq!(
+        marks(p(5, 4)),
+        vec![(3, 11, w), (5, 4, w), (5, 8, r), (8, 36, w), (8, 40, r)]
+    );
+    // A label's uses are reads, in source order.
+    assert_eq!(marks(p(8, 13)), vec![(2, 6, w), (4, 9, r), (8, 12, r)]);
+    assert!(highlights(LABELS, p(0, 1)).is_empty());
+}
+
+#[test]
+fn prepare_rename_names_what_a_rename_would_rename() {
+    let r = prepare_rename(LABELS, p(8, 13)).unwrap();
+    assert_eq!(r.placeholder, "goal");
+    assert_eq!((r.range.start, r.range.end), (p(8, 12), p(8, 16)));
+    let r = prepare_rename(LABELS, p(5, 5)).unwrap();
+    assert_eq!(r.placeholder, "n");
+    assert!(prepare_rename(LABELS, p(0, 1)).is_err(), "nothing to rename");
+    let pal = format!("{HEAD}palette \"guns\" = [\"objects/weapons/rifle/battle_rifle/battle_rifle\"]\n");
+    let line = pal.lines().position(|l| l.starts_with("palette")).unwrap() as u32;
+    if let Ok(r) = prepare_rename(&pal, p(line, 10)) {
+        panic!("a palette is renamed by its string: {r:?}");
+    }
+}
+
+#[test]
+fn folding_ranges_cover_blocks_comment_runs_and_regions() {
+    let src = "// A script.
+// Two lines.
+rules \"T\" 1
+carrier slayer
+// region scoring
+table t: (a: int, b: int) = [
+    (1, 2),
+]
+// endregion
+on kill(v, k) {
+    if k != none {
+        score(k, 1)
+    }
+}
+";
+    let folds: Vec<(u32, u32, Option<&str>)> = folding_ranges(src)
+        .iter()
+        .map(|f| (f.start_line, f.end_line, f.kind))
+        .collect();
+    assert_eq!(
+        folds,
+        vec![
+            (0, 1, Some(fold_kind::COMMENT)),
+            (4, 8, Some(fold_kind::REGION)),
+            (5, 6, None),
+            (9, 12, None),
+            (10, 11, None),
+        ]
+    );
+    // A block left open folds nothing; a one-line comment is no run.
+    assert!(folding_ranges("rules \"T\" 1\n// one\non tick {\n    let a = 1\n").is_empty());
+}
+
+#[test]
+fn format_range_edits_only_the_lines_it_touches() {
+    let src = "rules \"T\" 1\ncarrier slayer\noption  x :int 1..5=1\non kill(v, k) {\n    score(k,  x)\n}\n";
+    let edits = format_range(src, Range { start: p(4, 0), end: p(4, 3) }).unwrap();
+    assert_eq!(edits.len(), 1, "{edits:?}");
+    assert_eq!((edits[0].range.start, edits[0].range.end), (p(4, 0), p(5, 0)));
+    assert_eq!(edits[0].new_text, "    score(k, x)\n");
+    let edits = format_range(src, Range { start: p(2, 0), end: p(2, 0) }).unwrap();
+    assert_eq!(apply(src, &edits), src.replace("option  x :int 1..5=1", "option x: int 1..5 = 1"));
+    // Both, applied, are the whole format.
+    let all = format_range(src, Range { start: p(0, 0), end: p(5, 1) }).unwrap();
+    assert_eq!(apply(src, &all), format(src).unwrap());
+    // A clean line in range, or a source that does not parse.
+    assert!(format_range(src, Range { start: p(0, 0), end: p(1, 0) }).unwrap().is_empty());
+    assert!(format_range("rules \"T\" 1\non tick {\n", Range::default()).is_err());
+}
+
+#[test]
+fn offsets_count_utf16_units_for_incremental_changes() {
+    let src = "a\u{1F600}b\nc";
+    assert_eq!(offset(src, p(0, 3)), 5);
+    assert_eq!(offset(src, p(1, 0)), 7);
+    assert_eq!(offset(src, p(0, 99)), 6);
+    assert_eq!(offset(src, p(9, 0)), src.len());
+}

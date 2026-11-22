@@ -168,6 +168,9 @@ pub fn write_patched<R: Read + Seek>(
     if let Some(reason) = &changes.geometry_refusal {
         return Err(Error::Declined(format!("geometry: {reason}")));
     }
+    if let Some(reason) = &changes.bitmap_refusal {
+        return Err(Error::Declined(format!("bitmap: {reason}")));
+    }
     let first = map.strings().len();
     let mut editor = map.edit();
     // New string IDs first: the patches already hold their values.
@@ -211,6 +214,18 @@ pub fn write_patched<R: Read + Seek>(
         let mut pair = g.count.to_le_bytes().to_vec();
         pair.extend_from_slice(&at.to_le_bytes());
         editor.patch_metadata(g.root, &pair)?;
+    }
+    // The Modeling tool's grown blocks (a level's collision with a solid
+    // added): the copy in the ordinary metadata, the pair wherever its tag
+    // is, a structure BSP's region included.
+    for g in &changes.geometry_grown {
+        let at = editor.append_metadata(&g.bytes, g.align)?;
+        let mut pair = g.count.to_le_bytes().to_vec();
+        pair.extend_from_slice(&at.to_le_bytes());
+        match g.pair_space {
+            None => editor.patch_metadata(g.pair, &pair)?,
+            Some(space) => editor.patch_bsp(space, g.pair, &pair)?,
+        }
     }
     Ok(editor.write_to(out)?)
 }

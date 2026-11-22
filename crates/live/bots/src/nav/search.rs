@@ -59,6 +59,13 @@ impl Search {
         if start as usize >= n || goal as usize >= n {
             return false;
         }
+        // From in the map, a corridor never ends or passes out of it
+        // (docs/game/bots.md section 3.2, "In the map"). From out of it
+        // (after a bounce) anything goes, so the bot plans back in.
+        let confined = mesh.in_map(start);
+        if confined && !mesh.in_map(goal) {
+            return false;
+        }
         let goal_at = mesh.polys[goal as usize].center;
         // A straight-line lower bound stops being admissible when a link
         // can cross that distance more quickly than walking.
@@ -93,7 +100,7 @@ impl Search {
             let here = mesh.polys[i as usize].center;
             for &ei in mesh.out.get(i as usize).into_iter().flatten() {
                 let e = &mesh.edges[ei as usize];
-                if skip(ei, e) {
+                if skip(ei, e) || (confined && !mesh.in_map(e.to)) {
                     continue;
                 }
                 let there = mesh.polys[e.to as usize].center;

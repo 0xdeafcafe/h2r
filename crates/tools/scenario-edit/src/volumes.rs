@@ -1,6 +1,6 @@
 //! The scenario's trigger volumes, and the kill triggers and BSP switches
 //! that name them by index: read from the `scnr` root, drawn as oriented
-//! boxes and picked by ray (docs/editor/polish-plan.md, slice P8), and
+//! boxes and picked by ray (docs/editor/editor.md), and
 //! kept as raw blocks the editor edits ([`VolumeBlock`], slice P9;
 //! `Session`'s volume edits in `session/volume_edit.rs`).
 //!
@@ -257,8 +257,7 @@ impl Frame {
 /// One volume block's elements as raw bytes, the way [`crate::Scenario`]
 /// keeps a placement block. The editor keeps its own list of these three
 /// blocks rather than adding them to `map::scenario_layout`'s `BLOCKS`,
-/// which Forge documents share (docs/editor/polish-plan.md, "Editing
-/// volumes and barriers").
+/// which Forge documents share (docs/editor/editor.md).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VolumeBlock {
     /// Virtual address of element 0 in the source (0 when it was empty).

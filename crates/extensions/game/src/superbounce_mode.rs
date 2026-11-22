@@ -698,15 +698,6 @@ pub fn set_override(on: Option<bool>) -> &'static str {
     name
 }
 
-/// The override now: what [`set_override`] was last given.
-pub fn override_now() -> Option<bool> {
-    match OVERRIDE.load(Ordering::Relaxed) {
-        FORCE_ON => Some(true),
-        FORCE_OFF => Some(false),
-        _ => None,
-    }
-}
-
 /// Whether the mode is on in the game running now.
 fn on_now(m: &dyn GuestMemory) -> bool {
     match OVERRIDE.load(Ordering::Relaxed) {

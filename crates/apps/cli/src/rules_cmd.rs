@@ -1,4 +1,4 @@
-//! `h2 rules check|build|run|sim|caps|builtin|lsp`: the rules language's tooling
+//! `h2 rules check|build|run|sim|caps|builtin|lsp|editors`: the rules language's tooling
 //! (docs/game/rules-engine.md, "Security and usability"). Every command is pure over its
 //! inputs: no game, no disc. The `*_text` functions build what a command
 //! prints, so tests read it without a process.
@@ -23,6 +23,7 @@ const USAGE: &str = "usage: h2 rules check <file.rules>
        h2 rules caps
        h2 rules builtin [name]
        h2 rules lsp
+       h2 rules editors [status|install [vscode|zed] [--build]]
   check compiles and verifies; errors print as file:line:col: message and
   the exit status is 1. The report gives the worst-tick estimate against
   the budget, the IR size, the slots, what the script can do, and any
@@ -43,7 +44,10 @@ const USAGE: &str = "usage: h2 rules check <file.rules>
   scripts, or prints one by name, engine index or example key.
   lsp serves the Language Server Protocol on stdin and stdout, for an
   editor: diagnostics, completion, hover, signatures, definitions,
-  references, semantic tokens, the outline and formatting.";
+  references, highlights, rename, quick fixes, semantic tokens, folding,
+  the outline and formatting.
+  editors installs the VS Code extension and prints the Zed steps
+  (install), or says what is installed and whether lsp starts (status).";
 
 pub fn run(words: Vec<String>) -> Result<()> {
     let mut it = words.into_iter();
@@ -61,6 +65,7 @@ pub fn run(words: Vec<String>) -> Result<()> {
         "run" => run_scenario(&rest),
         "sim" => simulate(&rest),
         "lsp" => crate::rules_lsp::run(),
+        "editors" => crate::rules_editors::run(&rest),
         "caps" => {
             print!("{}", caps_text());
             Ok(())

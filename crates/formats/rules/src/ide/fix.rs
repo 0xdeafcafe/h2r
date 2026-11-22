@@ -6,7 +6,7 @@
 use super::info::{self, ref_near};
 use super::model::{DefKind, Model, item_pos};
 use super::scan::K;
-use super::{CodeAction, Fix, Range, TextEdit};
+use super::{CodeAction, Fix, PrepareRename, Range, TextEdit};
 use crate::caps;
 use crate::ir::Event;
 use crate::lang::ast::*;
@@ -394,6 +394,18 @@ fn remove_requires(m: &Model, at: usize, out: &mut Vec<Fix>) {
 // ---------- rename ----------
 
 /// The edits that rename the name at `off`; see `ide::rename`.
+pub(crate) fn prepare_rename(m: &Model, off: usize) -> Result<PrepareRename, String> {
+    let r = ref_near(m, off).ok_or_else(|| "there is no name to rename here".to_string())?;
+    let def = &m.defs[r.def];
+    if def.kind == DefKind::Palette {
+        return Err("a palette is named by its string; edit the string".to_string());
+    }
+    Ok(PrepareRename {
+        range: m.li.range(r.s, r.e),
+        placeholder: def.name.clone(),
+    })
+}
+
 pub(crate) fn rename(m: &Model, off: usize, new: &str) -> Result<Vec<TextEdit>, String> {
     let r = ref_near(m, off).ok_or_else(|| "there is no name to rename here".to_string())?;
     let def = &m.defs[r.def];

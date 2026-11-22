@@ -5,6 +5,7 @@
 //! * [`launch`]: the `h2 play` command, the `h2` binary, socket discovery.
 //! * [`link`]: the agent socket, on its own thread.
 //! * [`sync`] and [`tag_sync`]: conditional placement and tag writes for `edit.batch`.
+//! * [`raw_sync`]: geometry and painted pixels as `edit.batch` raw entries.
 //!
 //! [`Play`] holds a pairing's state and turns the link's answers into the
 //! editor's: the live players and objects for the viewport, the game
@@ -21,6 +22,7 @@ pub mod pair;
 pub mod objects;
 pub mod playtest;
 pub(crate) mod presence;
+pub(crate) mod raw_sync;
 pub(crate) mod select;
 pub mod stream;
 pub mod sync;
@@ -236,7 +238,7 @@ pub struct Play {
     presence: presence::Presence,
     objects: objects::State,
     reload_copy: Option<edits::ReloadCopy>,
-    launch_baseline: Option<(Baseline, tag_sync::TagBaseline)>,
+    launch_baseline: Option<(Baseline, tag_sync::TagBaseline, raw_sync::RawBaseline)>,
     /// Blocks with entries added or removed since the baseline.
     pub reload: Vec<BlockKind>,
     /// We hold `session.claim`.
@@ -728,10 +730,11 @@ impl Play {
                 );
                 self.edits.own_start = true;
                 self.live_edits = true;
+                let raw = raw_sync::RawBaseline::of_copy(app);
                 self.launch_baseline = app
                     .session
                     .scenario()
-                    .map(|s| (Baseline::of(s), tag_sync::TagBaseline::of(&app.tags)));
+                    .map(|s| (Baseline::of(s), tag_sync::TagBaseline::of(&app.tags), raw));
                 self.pending_spawn = spawn;
                 self.waiting = Waiting::Launch;
                 app.info(format!("Play: {line} (log: {})", log.display()));
@@ -1204,6 +1207,7 @@ impl Play {
             (Purpose::Revert { leave, epoch }, result) => self.reverted(app, leave, epoch, result),
             (Purpose::Take { id, at }, result) => self.take_answer(app, id, at, result),
             (Purpose::Object(ticket), result) => self.object_answer(app, ticket, result),
+            (Purpose::Edit(id), result) if self.edits.raw.owns(id) => self.raw_answer(app, result),
             (Purpose::Edit(id), result) => self.batch_answer(app, id, result),
             (Purpose::Reload(id), result) => self.reload_answer(app, id, result),
             (Purpose::Focus, Ok(_)) => {}

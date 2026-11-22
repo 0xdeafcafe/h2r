@@ -392,11 +392,6 @@ fn refused(m: Missing) {
     }
 }
 
-/// The calls refused for each reason so far, in [`Missing::ALL`]'s order.
-pub fn effect_refusals() -> [u64; Missing::ALL.len()] {
-    std::array::from_fn(|i| EFFECT_REFUSED[i].load(Ordering::Relaxed))
-}
-
 /// A call as the native pass draws it: per pass its key, destination,
 /// strips (`depth` the positions' z and w, `[0x0045dd40]`) and
 /// convolutions; the call's values (what its passes' engine constants

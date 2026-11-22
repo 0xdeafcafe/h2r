@@ -40,11 +40,18 @@
 //! blocks for `edit.collision.stage` (docs/editor/realtime-edits.md,
 //! "Collision"). [`from_render`] makes collision polygons from a render
 //! section's triangles.
+//!
+//! [`merge`] appends a compiled solid to a level's BSP keeping every
+//! existing index, and [`level`] adds a solid to a structure's level
+//! collision with its per-leaf block and MOPP (docs/editor/modeling.md,
+//! slice 11).
 
 pub mod coll;
 mod edges;
 pub mod from_render;
 mod geom;
+pub mod level;
+pub mod merge;
 mod prep;
 pub mod query;
 mod tree;
@@ -295,3 +302,6 @@ mod build_tests;
 #[cfg(test)]
 #[path = "coll_tests.rs"]
 mod coll_tests;
+#[cfg(test)]
+#[path = "merge_tests.rs"]
+mod merge_tests;

@@ -303,6 +303,9 @@ pub struct Queue {
     previews: placement::Previews,
     /// The blocks `world.placement.edit` has edited this activation.
     blocks: BTreeMap<String, placement::edit::BlockState>,
+    /// The edit arena `world.placement.edit` grows blocks into, shared with
+    /// `edit.batch`'s moves (`hot_glue::install`).
+    arena: Option<hot_tags::arena::Link>,
     active_scenario: Option<(String, u32)>,
     game_ticket: Option<u64>,
     reload: Option<Reload>,
@@ -528,9 +531,26 @@ impl Queue {
     }
 
     pub fn preview_refusal(&self) -> Option<String> {
-        (!self.previews.is_empty()).then(|| {
-            "snapshots cannot reproduce an unlinked editor preview; change maps first".into()
-        })
+        if !self.previews.is_empty() {
+            return Some(
+                "snapshots cannot reproduce an unlinked editor preview; change maps first".into(),
+            );
+        }
+        // The arena's allocations are host state a snapshot does not hold.
+        self.arena
+            .as_ref()
+            .is_some_and(|l| !hot_tags::arena::lock(&l.arena).is_empty())
+            .then(|| "snapshots cannot hold blocks moved into the edit arena; change maps first".into())
+    }
+
+    /// The edit arena placement blocks grow into
+    /// (docs/editor/realtime-edits.md, "Four write primitives").
+    pub fn set_arena(&mut self, arena: hot_tags::arena::Link) {
+        self.arena = Some(arena);
+    }
+
+    pub(crate) fn arena(&self) -> Option<hot_tags::arena::Link> {
+        self.arena.clone()
     }
 
     fn preview_deleted(&mut self, id: ObjectId) {

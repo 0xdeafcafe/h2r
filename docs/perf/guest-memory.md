@@ -1,8 +1,8 @@
 # Runtime performance: guest memory access and the runner
 
-Status: Built. Four switches (`H2_ENTRY_GATE`, `H2_DIRTY_INLINE`, `H2_DIRECT_GATE`, `H2_DIRECT_COUNT`) are built and off by default; see "Rules and limits".
+Status: Built.
 Code: `crates/recompiler/emit/c/h2fastmem.h` and `h2gen.h` (the generated side), `crates/recompiler/emit/src/c.rs` (register homes), `crates/runtime/runtime/src/ffi/memory.rs`, `exec.rs`, `direct.rs`, `perf.rs` (the runtime side). Tests: `crates/recompiler/emit/tests/{direct,exits,homes,fast_copy,perf}.rs`.
-Switch: `H2_FASTMEM` (on), `H2_DIRECT_CALLS` (on), `H2_VIEW_CHARGE` (on), `H2_ACCESS_COUNT` (on), `H2_PERF` (off); listed in [switches.md](../runtime/switches.md).
+Switch: `H2_FASTMEM` (on), `H2_DIRECT_CALLS` (on), `H2_ACCESS_COUNT` (on), `H2_PERF` (off); listed in [switches.md](../runtime/switches.md).
 
 Generated code reaches guest RAM, calls other generated handlers and
 leaves to the runtime through the paths below. Each exists to keep a
@@ -49,8 +49,8 @@ two accesses.
 ### Access accounting and the exit call
 
 With `H2_ACCESS_COUNT`, a handler counts its accesses and the runtime charges
-them to logical guest time (`H2_ACCOUNTING` in `h2gen.h`). With
-`H2_VIEW_CHARGE` the handler spends the count inline in the RAM view
+them to logical guest time (`H2_ACCOUNTING` in `h2gen.h`). With a view
+the handler spends the count inline in the RAM view
 (`h2_view_spend`, `h2_view_left`) instead of calling `h2abi_v1_charge`,
 `h2abi_v1_budget` and `h2abi_v1_exit`; the runtime settles the view after
 every native handler (`call_native`) and before every helper, so the slice
@@ -166,12 +166,11 @@ D3d, Gfx and Fallback times overlap and are not summed.
 
 ## Rules and limits
 
-- Off-by-default switches, built and tested, each awaiting an in-game
-  profile: `H2_ENTRY_GATE` (takes the gate as a handler starts),
-  `H2_DIRTY_INLINE` (tests the dirty bit at the store site),
-  `H2_DIRECT_GATE` and `H2_DIRECT_COUNT` (lend the gate or the count across
-  direct calls), `H2_RAM_PAGE_CACHE` and `H2_FLAT_RAM`. They are listed in
-  [switches.md](../runtime/switches.md), "Waiting for a measurement".
+- `H2_FLAT_RAM` is off by default and listed in
+  [switches.md](../runtime/switches.md), "Waiting for a measurement". The
+  gate-at-entry, inline dirty test, lent gate, lent count, RAM page cache and
+  per-call charge variants were removed; their results are in
+  [notes/not-adopted.md](notes/not-adopted.md).
 - `H2_FASTMEM=0`, `H2_DIRECT_CALLS=0` and `H2_ACCESS_COUNT=0` build the
   reference paths for bisecting a divergence.
 - A direct callee that is entered through the runner always acquires its own
@@ -183,8 +182,7 @@ D3d, Gfx and Fallback times overlap and are not summed.
 
 - **Test.** `held_gate_matches_the_helper_path_at_every_stop_and_fault`
   (`crates/recompiler/emit/tests/perf.rs`) runs a synthetic handler against the helper
-  path at seven slice lengths with and without accounting, for each switch
-  set. `inline_accesses_match_the_helper_path_at_every_width_and_edge` and
+  path at seven slice lengths with and without accounting. `inline_accesses_match_the_helper_path_at_every_width_and_edge` and
   `a_new_hold_marks_the_page_the_last_hold_dirtied` cover the inline path.
 - **Test.** `crates/recompiler/emit/tests/direct.rs` builds one module with direct calls
   off and on and requires identical transfer, CPU, memory, events,
@@ -210,7 +208,7 @@ D3d, Gfx and Fallback times overlap and are not summed.
 
 - The whole-frame effect of each path in a level on a quiet machine: the
   notes record synthetic and contended-machine results only.
-- The four off-by-default switches in the game.
+- `H2_FLAT_RAM` in the game.
 
 ## Related
 

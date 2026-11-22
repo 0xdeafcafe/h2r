@@ -1,6 +1,6 @@
-//! The viewport's Show popover and the Scene tab's layer legend.
+//! The viewport's Show popover: the one place that toggles what the viewport draws.
 
-use dear_imgui_rs::{StyleColor, TreeNodeFlags, Ui};
+use dear_imgui_rs::{StyleColor, Ui};
 use scenario_edit::layers::{LayerId, Preset};
 
 use crate::app::{Action, App};
@@ -17,14 +17,6 @@ pub(super) fn show_button(ui: &Ui, app: &App, actions: &mut Vec<Action>) -> bool
         controls(ui, app, actions);
     }
     hovered
-}
-
-/// The Layers header and, open, its controls at their own height, drawn
-/// into the panel's body.
-pub(super) fn section(ui: &Ui, app: &App, actions: &mut Vec<Action>) {
-    if ui.collapsing_header("Layers", TreeNodeFlags::NONE) {
-        controls(ui, app, actions);
-    }
 }
 
 fn controls(ui: &Ui, app: &App, actions: &mut Vec<Action>) {

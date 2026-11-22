@@ -293,7 +293,7 @@ mod tests {
     /// `$RUSH_KEEP/viewer-models-fix/weapons.txt`, outside the repository:
     /// `cargo test --release -p cli --bin h2 weapons_from_the_disc -- --ignored --nocapture`
     #[test]
-    #[ignore]
+    #[ignore = "needs the disc (H2_DISC); writes a report to $RUSH_KEEP"]
     fn weapons_from_the_disc() {
         use crate::live_art::Disc;
         use map::CacheType;

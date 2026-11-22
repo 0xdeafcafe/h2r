@@ -404,7 +404,7 @@ fn u32_at(b: &[u8], o: usize) -> u32 {
 /// Survey: prints, per candidate offset, how the Halo 1 `effe` fields
 /// hold up over every map.
 #[test]
-#[ignore]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn halo1_effect_layout_survey() {
     let effe = Group::new(b"effe");
     let mut stats: BTreeMap<String, usize> = BTreeMap::new();
@@ -519,7 +519,7 @@ fn halo1_effect_layout_survey() {
 /// map: lengths, every reference by offset, and per word how often it is
 /// nonzero with its range as a float.
 #[test]
-#[ignore]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn halo1_group_word_survey() {
     let g = std::env::var("H1_GROUP").unwrap_or_else(|_| "ligh".into());
     let group = Group::new(g.as_bytes().try_into().unwrap());
@@ -574,7 +574,7 @@ fn halo1_group_word_survey() {
 /// Survey: every reference of every Halo 1 `udlg` by offset, with the
 /// last component of the names it holds there.
 #[test]
-#[ignore]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn halo1_dialogue_survey() {
     let udlg = Group::new(b"udlg");
     let mut slots: BTreeMap<usize, BTreeMap<String, usize>> = BTreeMap::new();
@@ -606,7 +606,7 @@ fn halo1_dialogue_survey() {
 /// Survey: the Halo 2 base's `udlg` elements: each element's string and
 /// the group of the tag its datum names, and the root's words.
 #[test]
-#[ignore]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn halo2_dialogue_survey() {
     let mut m = h2_map(&std::env::var("H2_BASE").unwrap_or_else(|_| "05a_deltaapproach".into()));
     let base = Base::read(&mut m).unwrap();
@@ -1021,7 +1021,7 @@ fn automatic_damage_dialogue_has_retail_trigger_evidence() {
 /// offset), and every reference in the tag's bytes by offset with its
 /// group, for the layout of the material effects.
 #[test]
-#[ignore]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn halo1_foot_survey() {
     let foot = Group::new(b"foot");
     let want = std::env::var("H1_LEVELS").unwrap_or_else(|_| "a10".into());
@@ -1071,7 +1071,7 @@ fn halo1_foot_survey() {
 /// Survey: the Halo 2 base's `foot` tags: per effect kind (index), its
 /// sounds and effects elements with the names and material strings.
 #[test]
-#[ignore]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn halo2_foot_survey() {
     let mut m = h2_map(&std::env::var("H2_BASE").unwrap_or_else(|_| "05a_deltaapproach".into()));
     let base = Base::read(&mut m).unwrap();

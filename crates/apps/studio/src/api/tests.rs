@@ -228,7 +228,9 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
         | m::BITMAP_PAINT
         | m::BITMAP_FILL
         | m::BITMAP_ADJUST
-        | m::BITMAP_PIXELS => {
+        | m::BITMAP_PIXELS
+        | m::BITMAP_RESHAPE
+        | m::BITMAP_SPANS => {
             // The invented textured map: its floor bitmap is 4 by 4,
             // one `A8R8G8B8` colour.
             let map = t.path("textured.map");
@@ -3924,15 +3926,19 @@ fn invented_bot_files(data: &Path, map_bytes: &[u8]) {
         b: [x + 5.0, y + 10.0, 0.0],
         kind,
     };
+    let mut nav = NavMesh::new(
+        vec![quad(0.0, 0.0), quad(5.0, 0.0), quad(10.0, -1.0)],
+        vec![
+            edge(0, 1, Kind::Walk),
+            edge(1, 0, Kind::Walk),
+            edge(1, 2, Kind::Drop),
+        ],
+    );
+    // The one start is on the low floor: the two floors that drop into it
+    // are out of the map.
+    assert_eq!(nav.mark_out_of_map(&[[x + 12.5, y + 5.0, -1.0]]), 2);
     let data_file = bots::cache::MapData {
-        nav: NavMesh::new(
-            vec![quad(0.0, 0.0), quad(5.0, 0.0), quad(10.0, -1.0)],
-            vec![
-                edge(0, 1, Kind::Walk),
-                edge(1, 0, Kind::Walk),
-                edge(1, 2, Kind::Drop),
-            ],
-        ),
+        nav,
         walls: bots::los::Walls::new(vec![[[x, y, 0.0], [x, y + 1.0, 0.0], [x, y, 1.0]]]),
         places: Default::default(),
     };
@@ -4024,7 +4030,7 @@ fn nav_bots_reads_an_invented_cache_and_its_spot_files() {
         &mut api,
         &mut app,
         m::NAV_BOTS,
-        json!({"wait": true, "links": true, "spots": true}),
+        json!({"wait": true, "polys": true, "links": true, "spots": true}),
     );
     assert_eq!(r["state"], "ready", "{r}");
     assert_eq!(r["error"], Value::Null);
@@ -4038,8 +4044,11 @@ fn nav_bots_reads_an_invented_cache_and_its_spot_files() {
     );
     assert_eq!(
         r["counts"],
-        json!({"polys": 3, "links": 3, "walls": 1, "spots": 3})
+        json!({"polys": 3, "out_of_map": 2, "links": 3, "walls": 1, "spots": 3})
     );
+    let polys = r["polys"].as_array().unwrap();
+    let out: Vec<_> = polys.iter().map(|p| p["out_of_map"].clone()).collect();
+    assert_eq!(out, [json!(true), json!(true), json!(false)]);
     assert_eq!(r["links_by_kind"]["walk"], 2);
     assert_eq!(r["links_by_kind"]["drop"], 1);
     assert_eq!(r["links_by_kind"]["jump"], 0);
@@ -4084,6 +4093,7 @@ fn nav_bots_reads_an_invented_cache_and_its_spot_files() {
     );
     assert_eq!(poly["hit"]["kind"], "poly");
     assert_eq!(poly["hit"]["index"], 2);
+    assert_eq!(poly["hit"]["out_of_map"], false);
     for (name, count) in [("bot_nav", 3), ("bot_spots", 3)] {
         assert_eq!(
             layer_row(&mut api, &mut app, name)["count"],

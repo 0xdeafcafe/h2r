@@ -74,9 +74,7 @@ pub fn write_skulls(on: &BTreeSet<Skull>, m: &mut dyn GuestMemory) -> anyhow::Re
     let mp = crate::skulls_mp::shared().ok_or_else(|| {
         anyhow::anyhow!("the multiplayer skulls are not installed (no settings store)")
     })?;
-    let role = crate::skulls_mp::role(
-        crate::coop_probe::read_session(&crate::layout_glue::ReadGm(&*m)).as_ref(),
-    );
+    let role = crate::skulls_mp::role_in(&crate::layout_glue::ReadGm(&*m));
     mp.set_firefight(&role, on);
     anyhow::ensure!(
         mp.write_firefight_array(&mut WriteGm(m)),

@@ -29,6 +29,7 @@ connection to hold `session.claim`.
 | `session.request_takeover` | act | [Lab consent](#lab-consent) |
 | `live.subscribe`, `live.status`, `live.close` | read | [Live mirror](#live-mirror) |
 | `session.pause`, `resume`, `step` | claim | [Control](#control) |
+| `host.pause`, `host.step` | act, without the controller check | [Window pause and frame step](#window-pause-and-frame-step) |
 | `world.count`, `world.query`, `world.object` | read | [`world`](#world-what-is-in-the-level) |
 | `world.object.set`, `world.object.delete`, `world.object.respawn` | act | [Object edits](#object-edits) |
 | `world.placement.edit` | act | [Placement edits](#placement-edits) |
@@ -66,8 +67,11 @@ connection to hold `session.claim`.
 | `render.reload`, `render.dump`, `render.param`, `render.toggle` | act | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
 | `edit.map`, `edit.tags`, `edit.get`, `edit.changes` | read | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
 | `edit.set`, `edit.batch`, `edit.revert` | act | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
+| `edit.arena` | read | [Block moves](#block-moves) |
 | `load.timeline` | read | [Load timeline](#load-timeline) |
 | `game.menu` | act | [Returning to the main menu](#returning-to-the-main-menu) |
+| `game.load`, `game.levels` | act, read | [Loading a level](#loading-a-level) |
+| `game.code`, `game.code.restart` | read, act | [Game code](#game-code-full-speed-or-the-slower-start) |
 | `features.list` | read | [`session`](#session-what-is-running-and-its-clock) |
 | `live.join.open`, `live.join.status` | act, read | [Live session links](#live-session-links) |
 | `live.matchmaking.trace` | read | [Matchmaking transitions](#matchmaking-transitions) |
@@ -89,6 +93,7 @@ connection to hold `session.claim`.
 | `bots.bounce_status`, `superbounce.spots` | read | [Bounce routes](#bounce-routes) |
 | `player.goto`, `player.goto_cancel` | act | [`player.goto`](#playergoto-drive-the-player-somewhere) |
 | `player.goto_status` | read | [`player.goto`](#playergoto-drive-the-player-somewhere) |
+| `player.mark`, `player.recall` | act | [Saved places](#saved-places-playermark-and-playerrecall) |
 | `sim.*` | read or act | [`sim`](#sim-simulated-players-and-direct-state) |
 | `forge.status`, `forge.doc`, `forge.log`, `forge.propose`, `forge.input`, `forge.look`, `forge.look.set`, `forge.status.monitors` | read or act | [Local Forge session](#local-forge-session) |
 | `forge.capacity`, `forge.probe` | read, act | [Forge probes](#forge-probes) |
@@ -110,8 +115,8 @@ connection to hold `session.claim`.
 
 A new method gets a row here and a section for its domain. The names
 live in `crates/extensions/agent-proto/src` (`method::ALL`, `hot::method::ALL`,
-`state::method::ALL`, `sim`, `forge`, `firefight`, `rules`, `trace`, `theater`, `goto`) and where the host adds
-them (`Agent::add_method`, `Agent::add_game_method`).
+`state::method::ALL`, `sim`, `forge`, `firefight`, `rules`, `trace`, `theater`, `goto`, `host_pause`, `game_load`) and where the host adds
+them (`Agent::add_method`, `Agent::add_game_method`, `Agent::add_connection_read`).
 
 ## Connecting
 
@@ -318,7 +323,7 @@ object count, byte rate and capture timings.
 | `session.takeover_info` | none | `{window, pid}`, whether the game has a window and its process id |
 | `session.request_takeover` | `{ask?, requester, name, operation, builds_image, source, level, own_data, estimate_seconds, timeout_seconds}` | `{id}` for the consent prompt, or for the running job's question with `"ask": "running"` |
 | `session.takeover_status` | `{id}` | `{decision}` for the request |
-| `features.list` | none | `{at, plan}`: the feature plan text the game printed at start |
+| `features.list` | none | `{at, plan, features}`: the feature plan text the game printed at start, and each feature as `{id, on, reason?}` (`reason` when the plan turned it off), read from the plan's `feature <id>: on` and `feature <id>: off (<reason>)` lines (`agent_proto::FeatureState`) |
 
 `until` takes `tick`, `ticks` (more ticks than when the wait began),
 `activation` (exact match), `map_ticks`, `present`, `phase`, `map` and `paused`; all given must hold,
@@ -385,11 +390,69 @@ for while loading takes hold at the next tick; its limit runs meanwhile.
 again; a resume, a new pause or a release first answers it with
 `INTERRUPTED`. With the tick observer off, pause and step answer
 `UNAVAILABLE`. In `h2 play` a pause also stops the window's event loop, so
-it is meant for `h2 serve`. Input calls need no claim while nobody holds
+it is meant for `h2 serve`; a windowed game pauses with
+[`host.pause`](#window-pause-and-frame-step). Input calls need no claim while nobody holds
 control.
 
 ```sh
 printf 'claim\npause\nstep 1\nobject player.0\nrelease\n' | h2 agent -
+```
+
+### Window pause and frame step
+
+`host.pause {on}` is the window's own pause, the one Cmd+P toggles, asked
+for over the API; `host.step {ticks?}` runs game ticks under it. They are
+meant for `h2 play` and other windowed games, where `session.pause` also
+stops the window's event loop. The window stays live: it keeps drawing
+its last frame, the debug menu and overlays keep working, and the audio
+pauses as for Cmd+P.
+
+| Method | Params | Result |
+|---|---|---|
+| `host.pause` | `{on: bool}` | `{paused, held, tick}` once the window has applied it |
+| `host.step` | `{ticks?}`: 1 to 1800, default 1 | `{paused, held, tick, stepped}` once the ticks ran and the game is held again |
+
+`paused` is the window's pause (Cmd+P's, whoever set it); `held` says
+the game thread has stopped at its pause wait; `tick` is the game's tick
+at the last game tick. A pause waits up to 2 s for the window and up to
+2 s more for the hold, so `held` can be false during a long load. Cmd+P
+and `host.pause` change the same pause, so either undoes the other.
+`stepped` counts the game ticks the step ran. A frame that runs several
+ticks before the game stops again (catch-up after a slow frame) gives a
+`stepped` above `ticks`.
+
+Refusals: no window (a headless game) is `UNAVAILABLE`, naming
+`session.pause`; `host.step` while not paused is `INVALID_REQUEST`, with
+a step already running `BUSY`, and `ticks` out of range `INVALID_PARAMS`.
+A resume (Cmd+P or `host.pause {"on": false}`) or a closed window during
+a step answers it with `INTERRUPTED`. Ticks that do not run within 0.2 s
+each plus 5 s (at most 2 minutes) answer `TIMEOUT` with `data.stepped`;
+the step then ends. Focus pause (`pause_on_focus_loss`) is not the
+window's pause: a game paused only by losing focus refuses a step.
+
+Both are answered on the connection's own thread
+(`Agent::add_connection_read`), since a held game thread answers
+nothing, so they skip the controller check that **act** methods have.
+The in-process debug menu sends from the window's own thread, which
+cannot wait for itself: there `host.pause` answers at once with the pause
+asked for and `held` false, and `host.step` answers at once without
+`stepped` while the step runs on (a second step is `BUSY` until it ends). The
+window shell (`crates/apps/app/src/shell.rs`) applies each request as
+Cmd+P does. The game thread's pause wait (`crates/apps/app/src/lifecycle.rs`)
+lets the game run while a step has ticks left and reports when it is held.
+An agent ticker counts the game ticks (`crates/extensions/agent/src/sim/pause.rs`).
+They meet in `agent_proto::host_pause`. The game stops at the next
+slice boundary after the step's last tick.
+
+Every other method is answered on the game thread, so while the game is
+held it waits. A request sent while held is answered at the next tick a
+step runs; `session.pause` and `session.step` are the way to read the
+world between ticks without running any.
+
+```sh
+h2 agent host.pause '{"on":true}'
+h2 agent host.step '{"ticks":10}'
+h2 agent host.pause '{"on":false}'
 ```
 
 ## `world`: what is in the level
@@ -1199,10 +1262,7 @@ No params. `interp` is `d3d::interp::InterpStats` with every field
 `mismatch_*`, `dropped`, and per draw `held_draws_*`: draws a made frame
 drew at their own matrices, `held_draws_palette` when their node
 registers are not their pair's), read from its `Debug` text so fields added there
-appear with no change here; `pipeline` is the pipelined render's totals
-(`pipelined`, `completed`, `serial` reasons, `fallbacks` by call, joins,
-snapshot coverage, and times in ms including `overlap_ms` for the worker's
-execution before the game-thread join); `counters` is the frame-stats
+appear with no change here; `counters` is the frame-stats
 window's line. Each is `null` where that piece is not running.
 
 `display_frame` gives the identity, lighting and backend counter deltas
@@ -1247,8 +1307,7 @@ the in-game render ([high-framerate.md](../game/high-framerate.md),
 each with its guest draw and pass number (as `render.frame` numbers
 them), vertex program, transform and where it lands
 ([high-framerate.md](../game/high-framerate.md), "Held frames, draw by
-draw"). Without `H2_BOOT_GFX`, with `H2_RENDER_THREAD=0` or under
-`impl.render.pipelined_frame`, `interp` is `null`. `H2_BOOT_GFX_BETWEEN=N`
+draw"). Without `H2_BOOT_GFX` or with `H2_RENDER_THREAD=0`, `interp` is `null`. `H2_BOOT_GFX_BETWEEN=N`
 writes the first N in-between frames as PNGs, with the guest frame before
 and after each ([switches.md](switches.md)).
 
@@ -1833,6 +1892,38 @@ h2 agent wait '{"phase":"gameplay","map_ticks":30}' && h2 agent loads 1
 - Seeks and cache hits are not counted (the kernel's file I/O counts bytes
   and the host time of each file call: `read_bytes` and `file_io_us`).
 
+## Game code: full speed or the slower start
+
+`game.code` (read, no params) says which game code this start of `h2 play`
+runs ([cranelift-tier.md](../lifter/cranelift-tier.md)): clang's
+full-speed module, or the Cranelift fast tier while clang builds the
+full-speed one in the background. Host method,
+`crates/extensions/game/src/game_code.rs`; `h2 play` supplies it, other
+hosts don't have it.
+
+```json
+{"tier": "fast", "full_speed": false,
+ "module": "/…/h2boot/…/fast/libh2game.dylib",
+ "stamp": "<the module stamp's first line>",
+ "background": {"state": "building", "log": "/…/clang-build.log",
+                "elapsed_s": 230, "typical_s": 900,
+                "step": "emit: 2.6s, 18662 owners"},
+ "restart": {"ok": false, "why": "the full-speed version is still building"}}
+```
+
+`background.state` is `building`, `ready`, `failed` (from the log: its
+`clang (…): N compiled` summary line, or an `Error:` line), or `none` when
+this start began no background build (it already runs clang's module, or
+`--tier` forced one). `elapsed_s` is the log's age; `typical_s` is the
+estimate the banner counts down from; `step` is the log's last line.
+
+`game.code.restart` (act, no params) starts `h2 play` again in this
+process: the same executable and arguments by `exec`, with the
+pid-named agent socket freed first, so the new start finds clang's module
+current and runs it. Unsaved progress is lost. It is refused
+(`UNAVAILABLE`, with `restart.why`'s text) unless this start runs the fast
+tier, the background build is ready and clang's module exists.
+
 ## Returning to the main menu
 
 `game.menu` (act, no params) leaves the running campaign or multiplayer
@@ -1854,6 +1945,51 @@ true, "calls": 2}`, where `from` is the game's options mode (1 campaign,
 h2 agent wait '{"phase":"gameplay","map_ticks":1800}' 120000
 h2 agent game.menu
 h2 agent wait '{"map":"mainmenu"}' 120000 && h2 agent loads 1
+```
+
+## Loading a level
+
+`game.load {scenario, difficulty?, variant?}` (act) queues any campaign
+mission or multiplayer map on the disc as the next game, from the main
+menu or a running game. `scenario` is a map file's stem
+(`03a_oldmombasa`, `lockout`) or a scenario path, any case, or a level of
+a campaign installed under the data root (`a30`), resolved as
+`h2 play --level` resolves it (`level_boot::resolve_in`). `difficulty`
+(campaign only) is `easy`, `normal` (default), `heroic` or `legendary`.
+`variant` (multiplayer only) is a game type, `slayer` (default),
+`oddball`, `juggernaut`, `king`, `ctf`, `assault` or `territories`: a
+local game on that game type's default variant, built by
+`VARIANT_DEFAULTS` as the level boot builds Slayer's
+([community-gametypes.md](../game/community-gametypes.md)). The options
+are the level boot's ([level-boot.md](level-boot.md)), made by the
+agent's guest calls at the next tick (`Call::QueueGame`), as
+`maps.test.load` queues a test map. Host method,
+`crates/extensions/game/src/game_load.rs`; it needs the `agent-calls`
+feature.
+
+The answer comes after the next tick: `{name, scenario, kind, difficulty?,
+variant?, check, queued}`, `kind` being `campaign` or `multiplayer`,
+`check` the game's options check and `queued` whether the options went to
+the next transition. Wait for the level with `session.wait` on its `map`
+and `phase: "gameplay"`.
+
+Refusals: an unknown level is `INVALID_PARAMS` listing the disc's
+levels; so are a `difficulty` for a multiplayer map, a `variant` for a
+campaign mission and an unknown difficulty or game type. A co-op or
+networked session (simulation modes 2 to 5) is `UNAVAILABLE`: every
+machine plays its game, so leave it first with `game.menu`. Without the
+`agent-calls` feature, `UNAVAILABLE`.
+
+`game.levels` (read, no params) lists what `scenario` takes:
+`{campaign: [{name, scenario}], multiplayer: [{name, scenario}],
+difficulties, variants}`, the disc's maps sorted by name (read once and
+kept). Installed campaigns' levels are not listed but load by name.
+
+```sh
+h2 agent game.levels
+h2 agent game.load '{"scenario":"03a_oldmombasa","difficulty":"heroic"}'
+h2 agent wait '{"map":"03a_oldmombasa","phase":"gameplay","map_ticks":30}' 120000
+h2 agent game.load '{"scenario":"lockout","variant":"ctf"}'
 ```
 
 ## Live session links
@@ -2775,7 +2911,8 @@ Live.” This applies even after switching maps.
 
 Each batch write takes either `{tag,group?,path,value,was?}` with typed values,
 or `{at,value,was?}` with hex bytes. An address is a u32 or a `0x` string.
-The entire address range must fit one loaded tag. Overlapping writes are
+The entire address range must fit one loaded tag, or one block moved into
+the edit arena ([Block moves](#block-moves)). Overlapping writes are
 refused. If the game already holds the requested value the write succeeds.
 If it holds neither value, error 8 (`MISMATCH`) returns `data.fields` with
 `at`, `tag`, `path`, `was`, `holds` and `holds_bytes`. The entire batch and
@@ -2865,19 +3002,80 @@ h2 agent edit.overlay
 h2 agent edit.revert '{"id":N}'
 ```
 
+### Block moves
+
+A tag block is a `(count, address)` pair and a run of elements with
+nothing reserved after it. A block that must hold more elements than the
+map gave it moves into the **edit arena**: guest memory the host maps in
+the HLE reservation as the arena grows. The design is
+[realtime-edits.md](../editor/realtime-edits.md), "Four write primitives". The
+allocator is `crates/extensions/hot-tags/src/arena.rs`, the batch half
+`crates/extensions/hot-tags/src/batch.rs`, the methods
+`crates/extensions/agent/src/hot.rs` and the pages
+`crates/extensions/game/src/hot_glue.rs`.
+
+| Method | Access | Params | Result |
+|---|---|---|---|
+| `edit.batch` | act | adds `moves: [{root, stride, count, capacity?, bytes, was}]`; `writes` may be left out when it is given | adds `moves: [{root, tag, path, count, address, capacity}]` |
+| `edit.arena` | read | none | `{base, len, mapped, used, largest_free, physical_free, physical_floor, moves: [{tag, name, root, address, capacity, stride, len}]}` |
+
+`root` names the pair: `{tag, group?, path}` with a path that ends at a
+block field (`postprocess[0].colors`) or at an 8-byte raw field
+(`+0x20:u32[2]`), or `{at}`, the pair's address, inside a loaded tag or
+inside a block an earlier move put in the arena. `stride` is the bytes of
+one element and must equal a defined block's element size. `bytes` holds
+the `count` new elements (base64 or `{stage, at?, len?}`), `capacity`
+(default `count`) the elements of room. `was` is `{count, address}`, the
+pair before the move; `address` is a number or a `0x` string.
+
+The batch checks each move with its fields and raw entries: a root that
+holds another pair than `was` answers error 8 (`MISMATCH`) with
+`data.moves: [{root, tag, path, was, holds}]`. A write over a move's root
+in the same batch is refused. Then it allocates every move's extent
+before the first write. An arena without room answers `REFUSED` (11) with
+`data.why`, `data.root`, `data.need` (bytes) and `data.largest_free`, and
+nothing is written: the edit falls back to a reload. At the boundary the
+block's bytes go into the extent, the room past `count` is zeroed, and
+the root takes the new count and address, after the batch's field writes
+and before its raw entries. Paths and addresses resolve against the
+blocks as they are before the batch, so an edit inside a moved block goes
+in its `bytes` or in a later batch.
+
+A moved block belongs to its tag: an `{at}` write and `edit.read` inside
+it are admitted as inside the tag, and a path through the pair reads and
+writes it. `edit.changes` lists moves under `moves`. `edit.revert` puts
+the old pair back and frees the extent, after reverting the batch's field
+writes; a root pointed elsewhere since is left alone and its extent kept.
+A field write inside a block that has moved back appears in `dropped`.
+
+`edit.arena` reports the window (`base`, `len`, 4080 KiB), the bytes
+mapped and held by extents, the largest extent a move could have now, the
+free physical memory, and the floor the arena leaves free for the game
+(`physical_floor`, 2 MiB). `world.placement.edit` grows placement blocks
+into the same arena ([Placement edits](#placement-edits)), and its extents
+are listed too, booked to the scenario. The arena lives for one map: the
+first tick of a new map frees every extent and unmaps its pages; a BSP
+switch keeps it. While it holds an extent, machine snapshots, rewind and
+film keyframes are refused, as for an unlinked placement preview.
+
+```sh
+h2 agent edit.arena
+h2 agent edit.batch '{"epoch":E,"moves":[{"root":{"tag":"<shad>","path":"postprocess[0].colors"},"stride":S,"count":3,"capacity":8,"bytes":"<base64>","was":{"count":2,"address":"0x..."}}]}'
+```
+
 ## Menu methods: settings, perf overlay, cheats
 
 The in-game debug menu is a client of this API ([debug-menu.md](debug-menu.md));
 the methods it added beside the agent's own are in
-`crates/extensions/debug-menu/src/sources.rs` (`method`).
+`crates/extensions/debug-menu/src/sources/mod.rs` (`method`).
 
 | Method | Access | Params | Does |
 |---|---|---|---|
 | `settings.list` | read | `{prefix?}` | settings (`settings.toml`) and how each applies (`crates/extensions/agent/src/menu.rs`) |
 | `settings.set` | act | `{key, value}` | saves the value and applies it as the setting applies; `UNAVAILABLE` when something else set it for this run |
 | `perf.overlay` | act | `{}` reads, `{on}` sets | the perf overlay (the watermark) |
-| `cheat.list` | read | `{}` | the cheats, their values, and why any is refused (`crates/extensions/game/src/cheats.rs`) |
-| `cheat.set` | act | `{name, value}` | sets one, for example `{"name":"hide_hud","value":true}` |
+| `cheat.list` | read | `{}` | `{refused, pending, cheats}`: each cheat's `name`, `label`, `about`, `kind` (`bool`, or `choice` with `choices`), `value`, `refused` (why the session refuses it) and `pending` (why it does nothing yet: on while no campaign or multiplayer game runs; it takes hold when one starts); the top-level `pending` says the same with no game running (`crates/extensions/game/src/cheats.rs`) |
+| `cheat.set` | act | `{name, value}` | sets one, for example `{"name":"hide_hud","value":true}` or `{"name":"game_speed","value":0.1}`; answers with `cheat.list`'s answer. Cheats: `god`, `infinite_ammo`, `bottomless_clip`, `game_speed` (0.1, 0.25, 0.5, 1, 1.5, 2, 4), `fly`, `noclip`, `hide_hud`, `ai_off` ([debug-menu.md](debug-menu.md#cheats)) |
 
 ### World debug views
 
@@ -2963,7 +3161,7 @@ stream epoch change clears the entire set
 Each genuine guest image captured while a mark lease is active carries
 the bounds sampled from the guest state that renders it, along with
 each view's camera and aspect factor.
-This applies to serial rendering, pipelined workers and repeated
+This applies to serial rendering and repeated
 scanout of the same image. The window projects marks over the finished
 frame. Hidden edges show at full strength, with the same styling as
 visible edges. The candidate style uses dashes. `xray` has no effect
@@ -3066,7 +3264,7 @@ An inactive producer costs an atomic poll. When all producers are
 inactive, there is no capture, guest read for the overlay, or sample
 allocation. The inline collection holds two additional samples
 before growing. Active sources read only the supplied guest view
-and shared host data, and capture can run on the pipelined worker
+and shared host data
 (`crates/extensions/game/src/world_lines.rs`,
 `crates/rewrites/render-bridge/src/scene_step.rs`).
 
@@ -3255,6 +3453,39 @@ h2 agent player.goto '{"to":[-10.6,9.0,2.4],"within":0.2}'
 h2 agent player.goto_status '{"wait_ticks":280}'
 h2 agent player.goto '{"to":{"spot":0,"kind":"crouch"},"then":"crouch_recipe"}'
 h2 agent player.goto_cancel
+```
+
+### Saved places: `player.mark` and `player.recall`
+
+`player.mark {slot?, player?}` keeps a player's position and aim under a
+slot; `player.recall {slot?, player?}` puts a player back there through
+[`sim.state.set`'s teleport](#the-games-own-functions-teleport-give-spawn).
+Game methods in `crates/extensions/agent/src/sim/mod.rs`, wire types
+`agent_proto::sim::{MarkParams, Mark}`.
+
+- `slot`: a name of 1 to 32 characters, or a number taken as its decimal
+  name; default `quick`. At most 32 slots; marking an existing slot
+  replaces it.
+- `player`: `player.<index>` or `sim.<n>`; default the player on local
+  user 0 (for a recall with none found, the mark's own player).
+
+`player.mark` answers at once: `{slot, player, pos, forward?, yaw?,
+pitch?, map, slots}`, read at the tick boundary as `world.query` reads
+the player (`forward` is the unit's aiming vector), `slots` every slot
+kept. `player.recall` answers after the next tick with `sim.state.set`'s
+teleport result (`{player, wrote, teleport, session}`) plus `slot` and
+`mark`; the facing is the mark's aiming vector, else its yaw and pitch.
+
+Refusals: a player with no position (between lives) or no local player
+is `GONE`, as is an empty slot on recall; a bad slot name, a 33rd slot or
+a `player` that is not a player is `INVALID_PARAMS`. A mark made on
+another map is `INVALID_REQUEST` on recall. A recall is a host write: a
+co-op or client session refuses it as `sim.state.set` does, and it needs
+the `agent-calls` feature. Marks live as long as the process.
+
+```sh
+h2 agent player.mark '{"slot":"ledge"}'
+h2 agent player.recall '{"slot":"ledge"}'
 ```
 
 ## `sim`: simulated players and direct state
@@ -3631,10 +3862,10 @@ session, epoch, identity and `confirm_peers` checks of
 | `relink` | `[{from, to}]`: give the live objects of old entry `from` the placement index `to` |
 | `create` | `[index]` in the new numbering: make an object for the entry; object blocks only |
 
-The result is `{at, count, capacity, deleted, relinked, created}`, where
-`deleted` and `relinked` are object ids and `created` is
-`[{index, object?, linked, created, why?}]`. `moved` is reserved for a block
-that grew into the edit arena; it is absent until the arena exists.
+The result is `{at, count, capacity, moved?, deleted, relinked, created}`,
+where `deleted` and `relinked` are object ids and `created` is
+`[{index, object?, linked, created, why?}]`. `moved` is `{address,
+capacity}` when the block grew into the edit arena.
 
 - **Order.** The host checks everything first: the block's root count
   equals `was_count`, each record's `was` equals the slot's bytes, each name
@@ -3646,11 +3877,18 @@ that grew into the edit arena; it is absent until the arena exists.
   repoints and the count, and creates the objects of `create`. A respawn
   preview of a deleted entry is deleted with it, and one of a relinked entry
   follows it.
-- **Room.** A block holds as many records as the map loaded it with. The
-  host records that count at the block's first edit of a map activation.
-  A removed entry's slot stays in the block, so an add after a remove reuses
-  it. A `count` past the room answers `REFUSED` with `data.need` and
-  `data.capacity`; the edit arena that would move the block is not built.
+- **Room.** A block holds as many records as the map loaded it with, or
+  the capacity of the edit arena extent it moved to
+  ([Block moves](#block-moves)). The host records the loaded count at the
+  block's first edit of a map activation. A removed entry's slot stays in
+  the block, so an add after a remove reuses it. A `count` past the room
+  moves the block into the arena with twice the room (at least `count`,
+  at most the per-type limit): the extent is allocated before anything is
+  written, the records and the dead tail are copied into it, and the root
+  is repointed with the records and the count. An extent the block left
+  is freed. A full arena, or a game without one, answers `REFUSED` with
+  `data.need` (entries) and `data.capacity`, and from a full arena also
+  `data.need_bytes` and `data.largest_free`; nothing is written.
   `count` past the block's per-type limit (`map::scenario_layout`)
   answers `REFUSED` with `data.limit`.
 - **Linked creation.** An object is made by the placement-data and

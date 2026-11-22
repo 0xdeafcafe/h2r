@@ -143,7 +143,7 @@ fn only_the_message_fonts_want_them() {
 /// The disc's two message fonts take the medals beside their own.
 /// Needs the disc: `H2_DISC=... cargo test -p font -- --ignored`.
 #[test]
-#[ignore]
+#[ignore = "needs the disc (H2_DISC)"]
 fn the_disc_message_fonts_take_the_medals() {
     let path = std::env::var_os("H2_DISC").expect("set H2_DISC to the disc image");
     let mut iso =

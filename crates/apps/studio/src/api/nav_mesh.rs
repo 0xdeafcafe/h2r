@@ -1,5 +1,6 @@
 //! `nav.pathfinding`, `nav.bots` and `nav.pick`: the Navigation layers'
-//! data ([`scenario_edit::nav_view`]; docs/editor/editor.md, "Navigation").
+//! data ([`scenario_edit::nav_view`]; docs/editor/editor.md, "What the
+//! viewport shows, and what it does not yet").
 //! Read only, and independent of the layers shown: an agent can ask about
 //! a sector or a link the viewport hides. `nav.bots` starts the bots'
 //! load ([`crate::app::bot_nav`]) when nothing has asked for it yet.
@@ -137,7 +138,10 @@ fn counts<T: Copy>(all: &[T], name: fn(T) -> &'static str, n: impl Fn(T) -> usiz
 
 fn poly_row(i: usize, b: &BotNav) -> Value {
     let p = &b.polys[i];
-    json!({"index": i, "bsp": p.bsp, "poly": p.poly, "center": p.center(), "verts": p.verts})
+    json!({
+        "index": i, "bsp": p.bsp, "poly": p.poly, "center": p.center(), "verts": p.verts,
+        "out_of_map": p.out_of_map,
+    })
 }
 
 fn link_row(i: usize, b: &BotNav) -> Value {
@@ -186,7 +190,7 @@ fn bots(app: &mut App, p: &P) -> Reply {
         "state": state.name(),
         "map": Value::Null,
         "origins": [],
-        "counts": {"polys": 0, "links": 0, "walls": 0, "spots": 0},
+        "counts": {"polys": 0, "out_of_map": 0, "links": 0, "walls": 0, "spots": 0},
         "links_by_kind": counts(&BotLinkKind::ALL, BotLinkKind::name, |_| 0),
         "spots_by_kind": counts(&SpotKind::ALL, SpotKind::name, |_| 0),
         "spots_by_state": counts(&SpotState::ALL, SpotState::name, |_| 0),
@@ -204,7 +208,7 @@ fn bots(app: &mut App, p: &P) -> Reply {
     out["map"] = json!(b.map);
     out["origins"] = json!(b.origins);
     out["counts"] = json!({
-        "polys": b.polys.len(), "links": b.links.len(),
+        "polys": b.polys.len(), "out_of_map": b.out_of_map_count(), "links": b.links.len(),
         "walls": b.walls, "spots": b.spots.len(),
     });
     out["links_by_kind"] = counts(&BotLinkKind::ALL, BotLinkKind::name, |k| b.link_count(k));

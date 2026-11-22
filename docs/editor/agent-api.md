@@ -89,7 +89,7 @@ What goes through actions, from both sides:
 | Select a pathfinding sector, bot polygon, bot link or spot | `SelectNav` (clears the placements, the volume and the surface), `FocusSelected` | a click on what a Navigation layer shows when no placement or volume is under the cursor | `nav.pick {kind, index, focus?}`, `nav.pick {..., select: true}` |
 | Add a trigger volume, make a kill volume, remove either | `AddVolume {frame, kill}` (with `kill`, the volume and a kill trigger naming it in one step), `RemoveVolume(kind, index)`; `Delete` on a selected volume | the Scene tab's Volumes menu, the inspector's Delete and a kill trigger's Remove, the Delete key | `volume.add`, `volume.remove` |
 | Set fly speed | `SetFlySpeed` | viewport toolbar, wheel while flying | `view.camera {fly_speed}` |
-| Show or hide viewport layers | `SetLayers`, `SetOverlay` | Show popover, Scene legend, View > Halo 1 overlay | `view.layers` |
+| Show or hide viewport layers | `SetLayers`, `SetOverlay` | Show popover, View > Halo 1 overlay | `view.layers` |
 | Choose what the level is drawn with | `SetLighting` | the toolbar's Lighting menu | `view.lighting` |
 | Navigate tag fields | `Navigate` | inspector links and breadcrumbs | `nav.go`, `nav.back`, `nav.forward` |
 | Undo, redo | `Undo`, `Redo` (the tool shown), `UndoIn(tool)`, `RedoIn(tool)` | Edit menu, keys | `doc.undo`, `doc.redo` |
@@ -519,8 +519,15 @@ Notes on some:
   `next_spawn`, `reload` or `not_known`, `play::tag_sync::Effect`) and `text` its sentence,
   the game’s existing `journal` from `edit.changes`, and `leaving`.
   A placement block with a different layout revision from the loaded copy
-  appears as one `Reload` row. Its fields stay out of the batch until undo,
-  redo, or loading a Play copy brings the revisions into agreement.
+  goes to a game that offers `world.placement.edit` as one transaction in
+  Edit; its row is a `now` row while the transaction is out and leaves on
+  the receipt. Otherwise, or when the game refuses or its answer is lost,
+  the block appears as one `Reload` row with the reason (`refused`, and
+  `unknown` for a lost answer), and its fields stay out of the batch until
+  a transaction, undo, redo, or loading a Play copy brings the revisions
+  into agreement. An entry the game wrote without making its object is a
+  `Reload` row of its own (`path` `block[index]`). Rows of this path carry
+  `placement_edit: true`.
   `mirror.apply {what:"send"}` enters Edit. On MISMATCH, `take` and
   `overwrite` require the row’s numeric `at`. `take` reads the field at the
   current game boundary before applying the bytes to the document and baseline.
@@ -708,12 +715,14 @@ Notes on some:
   (a mesh built in memory on a large map takes a while). `state` is
   `no_map`, `idle`, `loading`, `ready` or `failed` (with `error`);
   `origins` names each BSP's cache file, or `built`; `counts` has the
-  polygons, links, wall triangles and spots; `links_by_kind`,
+  polygons, those out of the map (`out_of_map`), links, wall triangles
+  and spots; `links_by_kind`,
   `spots_by_kind` (bounce, strip, crouch) and `spots_by_state` (proven,
   failed, dead, learned, training, likely) count them; `notes` says what
   was built or scanned instead of read, and which file did not read.
   `polys`, `links` and `spots` list them, each paged by `offset` and
-  `limit`. `nav.pick {origin, dir}` or `{point, within}` (0.3 units)
+  `limit`; a polygon row's `out_of_map` is true for one only a glitch
+  reaches ([bots.md](../game/bots.md) §3.2, "In the map"). `nav.pick {origin, dir}` or `{point, within}` (0.3 units)
   returns what a ray meets or a point names: a bot spot or link first,
   else the nearer bot polygon or pathfinding sector, whatever layers are
   shown unless `shown`; `layer` keeps one layer's. `select` selects it;
@@ -730,7 +739,8 @@ Notes on some:
   `lightmap of another BSP`, `lightmap does not decode`), the world's
   `triangles` by blend with `solid_triangles` and `lightmapped_triangles`,
   every material (`shader`, `template`, `blend`, `blend_from_passes`,
-  `emissive`, `base`, `details`), the `sky` drawn and the `atmosphere`
+  `emissive`, `base`, `details`, and `mask`: the coverage mask a
+  see-through layer multiplies in, or null), the `sky` drawn and the `atmosphere`
   read from it (`sun` direction, colour and power; `fog` colour, density,
   start and opaque distance; `fallback_rgb`). `{"scene": false}` while
   the viewport shows the grey world (no art built). `native` is the
@@ -846,7 +856,7 @@ the window and the API stay one path.
   `save_refusal`, why a save would be refused (Allow unverified geometry
   writes off, `allow_unverified`, or an edit that changes a count);
   docs/editor/modeling.md, "Interfaces".
-- **Textures (studio-modeling slice 5).** `api/bitmaps.rs`:
+- **Textures (studio-modeling slices 5 and 6).** `api/bitmaps.rs`:
   `bitmap.list {name?}` gives the map's bitmap tags and their images;
   `bitmap.read` one bitmap's images (size, format, mips, write class);
   `bitmap.pixels {bitmap, image?, rect}` the RGBA of a rectangle (at most
@@ -855,10 +865,25 @@ the window and the API stay one path.
   rectangle) are `Action::Bitmap`, one undo step each; `bitmap.export
   {bitmap, image?, mip?, out}` writes a PNG and is refused inside a Git
   checkout. A bitmap is named by hex tag id, path, `\key` path tail or a
-  unique substring. Edits are kept in the editor only: the write class is
-  `memory`, or `none` for P8, P8Bump, V8U8 and G8B8, and `doc.save` with
-  `"doc": "bitmaps"` (alias `textures`) is `REFUSED`. `doc.undo`, `doc.redo`
-  and `doc.diff` work on that doc. docs/editor/modeling.md, "Interfaces".
+  unique substring. `bitmap.reshape {bitmap, image?, width?, height?,
+  format?}` asks for a new size and/or format (`dxt1`, `argb8888`, ...)
+  for an image, refused at once when a save would refuse it;
+  `bitmap.spans {bitmap, image?, face?, slice?, rect?}` gives the stored
+  bytes the edits change (per LOD: offset, length, hex) without writing
+  anything: the spans a save patches in place and a live push sends. Edits
+  stay in the editor until a save. `doc.save_as` (and `doc.save`, for a map
+  with a save target) with `"doc": "bitmaps"` (alias `textures`) is the
+  map's save: it encodes every edited image and writes it with the rest,
+  by the write class `bitmap.read` names for the image: `in_place`
+  (bytes patched in the map's own raw blocks), `appended` (a LOD in a
+  shared cache is copied into the map as a new raw block, or the image has
+  a reshape), or `none` for P8, P8Bump, V8U8 and G8B8, which are read only.
+  A save the map cannot take (a new raw block where the metadata does not
+  end the file) is `REFUSED` with the reason. `doc.diff` lists the edited
+  layers by tile and the pending reshapes; `doc.list` says the doc is
+  `dirty` until its edits have been saved. `doc.undo`, `doc.redo` work on
+  that doc (a reshape is not an undo step; `doc.close` with `discard`
+  drops it). docs/editor/modeling.md, "Texture editing" and "Interfaces".
 - **Player models (planned, not started).** See "Planned: player
   models and customisation" below.
 - **Customisation (later).** Same section.

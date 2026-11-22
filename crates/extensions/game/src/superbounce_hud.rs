@@ -16,8 +16,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use engine::memory::{GuestMemory, MemFault};
-use engine::points;
-use hooks::Flow;
 
 use hud_kit_core::huds::superbounce::{
     self as sb, ArmTrack, Change, Charge, Landed, Lost, Medal, Note, Phase, Scan, Superbounce,
@@ -436,8 +434,8 @@ impl hooks::Feature for SuperbounceHud {
             .on_tick("superbounce hud: values", move |_| lock(&hud).tick());
         // The red reticle while the lock holds is drawn by the host, not
         // through the game's reticle inputs: an after hook on
-        // HUD_WIDGET_INPUTS would take the HUD off the pipelined render
-        // thread (render_thread.rs). [`reticle_lock_now`] is what it reads.
+        // HUD_WIDGET_INPUTS would put a guest hook on the HUD.
+        // [`reticle_lock_now`] is what it reads.
         Ok(())
     }
 }

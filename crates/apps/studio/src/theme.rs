@@ -188,6 +188,10 @@ pub fn sector_color(flags: u16, floor: bool) -> [f32; 3] {
     }
 }
 
+/// A bot nav polygon out of the map (only a glitch reaches it): a dim
+/// grey-blue beside the layer's blue.
+pub const BOT_OUT_OF_MAP: [f32; 3] = [0.3, 0.32, 0.42];
+
 /// A bot link's colour by how it is crossed.
 pub fn bot_link_color(kind: scenario_edit::nav_view::BotLinkKind) -> [f32; 3] {
     use scenario_edit::nav_view::BotLinkKind;

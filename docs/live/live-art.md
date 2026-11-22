@@ -1152,7 +1152,7 @@ Art from an older extractor (the manifest's `extractor` below the running
 `h2`'s) is stale: before version 2 its bipeds had no clips, so the viewer's
 players couldn't animate. `h2 live serve` prints a warning naming the
 command to extract again, `h2 live assets check [--out DIR]` exits 1 for
-missing or stale art (deploy/live/setup.sh extracts again then), `h2 play
+missing or stale art (a script can extract again then), `h2 play
 --live-local` extracts again by itself (the extractor version is part of the
 cache key), and the viewer says so when the models it is given can't
 animate. The server sends the art with `Cache-Control: no-cache` and the

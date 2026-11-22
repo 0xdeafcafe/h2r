@@ -863,10 +863,6 @@ Only a game run shows these.
   pending options (`0x4ed3a8`): a full scan.
 - Host migration: a new host holds only the wire fields, so it would need
   the block from the session as a guest does.
-- `coop_probe::Session::class` reads `S+0x4980`, the byte the lobby
-  setters compare with 1 (`0x63f00`), and `skulls_mp::Role` calls it 1
-  System Link, 2 Live. The network class `0x59840` checks is `S+0x18`;
-  `variant_ext` reads that one. What the `+0x4980` byte is was not traced.
 - The names design (section 4), all of it.
 
 ## Related

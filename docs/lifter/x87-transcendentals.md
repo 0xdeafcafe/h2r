@@ -1,13 +1,12 @@
 # Guarded transcendentals
 
-Status: Built. The guarded first pass is on by default.
-Code: `crates/recompiler/x87/src/trans_fast.rs`, `crates/recompiler/x87/src/trans.rs`. Tests: `crates/recompiler/x87/src` (`fast-trans`), `crates/recompiler/x87/tests`.
-Switch: the `x87/fast-trans` Cargo feature (default on); no environment variable.
+Status: Built. The guarded first pass always runs.
+Code: `crates/recompiler/x87/src/trans_fast.rs`, `crates/recompiler/x87/src/trans.rs`. Tests: `crates/recompiler/x87/src`, `crates/recompiler/x87/tests`.
+Switch: none; no Cargo feature and no environment variable.
 
-`x87/fast-trans` adds a 128-bit integer first pass for **FYL2X, F2XM1,
-FSIN, FCOS, FSINCOS, FPTAN and FPATAN**. It is a default feature of the
-`x87` crate (build with `--no-default-features --features abi` to drop
-it) and independent of `H2_X87_NATIVE`.
+The `x87` crate runs a 128-bit integer first pass for **FYL2X, F2XM1,
+FSIN, FCOS, FSINCOS, FPTAN and FPATAN**. It is independent of
+`H2_X87_NATIVE`.
 FYL2XP1 uses the original helper. An accepted result has
 exactly the same ext80 bytes and flags as the 512-bit helper; ambiguous
 rounding and operands outside the guards use that helper.
@@ -179,7 +178,7 @@ exponent range. Directed guest RC retains the original unmodelled response.
 
 ## Oracle and sweeps
 
-`scripts/x87-trans-oracle.c` uses independent MPFR 4.2+ directed 1024-bit
+The fixture generator (scripts/x87-trans-oracle.c, removed; see git history) used independent MPFR 4.2+ directed 1024-bit
 bounds. Both bounds must agree on the 64-bit result and rounding flags;
 otherwise fixture generation fails. It then independently rounds that
 ext80 result to PC=53 and PC=24, including halfway cases made from exact
@@ -212,18 +211,15 @@ and no frame-480 comparison is part of this validation.
 
 ```sh
 cargo test --release -p x87
-cargo test --release -p x87 --features fast-trans
-cargo test --release -p emit --test differential --features x87/fast-trans
-H2_X87_NATIVE=1 cargo test --release -p emit --test differential --features x87/fast-trans
-cargo clippy -p x87 -p emit --all-targets --features x87/fast-trans -- -D warnings
+cargo test --release -p emit --test differential
+H2_X87_NATIVE=1 cargo test --release -p emit --test differential
+cargo clippy -p x87 -p emit --all-targets -- -D warnings
 ```
 
-Regenerate fixtures, if MPFR is installed:
-
-```sh
-cc -Wall -Wextra -Werror scripts/x87-trans-oracle.c $(pkg-config --cflags --libs mpfr gmp) -o "$TMPDIR/x87-trans-oracle"
-"$TMPDIR/x87-trans-oracle" > crates/recompiler/x87/tests/data/trans_oracle.txt
-```
+`crates/recompiler/x87/tests/data/trans_oracle.txt` is the committed output.
+To regenerate it, restore the generator from git history
+(`git log --diff-filter=D -- scripts/x87-trans-oracle.c`) and build it
+against MPFR and GMP.
 
 ## Trig and atan2
 

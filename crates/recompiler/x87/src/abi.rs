@@ -690,7 +690,7 @@ pub fn arith(s: &mut X87Abi, op: u32, dst_i: u32, kind: u32, src: u64) -> u32 {
 /// # Panics
 /// On an unknown `op`.
 pub fn unary(s: &mut X87Abi, op: u32) -> u32 {
-    unary_impl::<{ cfg!(feature = "fast-trans") }>(s, op)
+    unary_impl::<true>(s, op)
 }
 
 #[cfg(test)]

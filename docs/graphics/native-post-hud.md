@@ -90,8 +90,7 @@ frame.
 The colour pass (`COLOUR_PASS`, `0x000214f0`) and each screen effect
 (`SCREEN_EFFECT`, `0x0002d140`) run their guest bodies. The entry
 hook records the caller, stack frame and plan. The return
-continuation closes the plan before the guest caller resumes. Under
-`impl.render.pipelined_frame`, these hooks require the game thread.
+continuation closes the plan before the guest caller resumes.
 
 ### What the native post draws
 
@@ -709,7 +708,6 @@ Its numbers are ported: `engine::colour_pass`
 - Each post call commits one complete replacement or draws all its originals. A plan with an unsupported input or an unavailable live target uses D3D for that call.
 - Under render scaling, a replacement that uses a reference-only intermediate together with a live display target falls back.
 - `0x0002df00` and `0x0002dd30` (same shape as the screen-effect passes) and layer 17 (S: bloom) are not drawn natively. The end of the frame (`0x00013b90`, `0x00013cd0`, the present `0x00013f10`) is D3D.
-- Under `impl.render.pipelined_frame` the post hooks require the game thread.
 
 ## Not verified
 

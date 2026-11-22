@@ -1,0 +1,171 @@
+name: Editors
+
+# The rules language's editor support (docs/editor/rules-editors.md): the
+# tree-sitter grammar, the VS Code extension, the Zed extension and the
+# language server they start. A push to master also attaches the .vsix and
+# the Zed extension to the rolling `editors-latest` release, which
+# `h2 rules editors install` downloads when no local build exists
+# (crates/apps/cli/src/rules_editors.rs, EDITORS_RELEASE).
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "editors/**"
+      - "crates/formats/rules/src/ide/**"
+      - "crates/apps/cli/src/rules_lsp.rs"
+      - "crates/apps/cli/src/rules_editors.rs"
+      - ".github/workflows/editors.yml"
+  pull_request:
+    paths:
+      - "editors/**"
+      - "crates/formats/rules/src/ide/**"
+      - "crates/apps/cli/src/rules_lsp.rs"
+      - "crates/apps/cli/src/rules_editors.rs"
+      - ".github/workflows/editors.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: editors-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_BUILD_JOBS: 4
+  RUSTC_WRAPPER: ""
+
+jobs:
+  # The committed src/parser.c must be what grammar.js generates, and the
+  # corpus must parse as written.
+  tree-sitter-rules:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: editors/tree-sitter-rules
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install the tree-sitter CLI
+        run: npm install -g tree-sitter-cli@0.25
+      - name: Generate the parser
+        run: tree-sitter generate
+      - name: The committed parser is the generated one
+        run: |
+          git add -N src
+          git diff --exit-code -- src || {
+            echo "::error::src/ differs from what tree-sitter generate makes; run it in editors/tree-sitter-rules and commit src/"
+            exit 1
+          }
+      - name: Corpus tests
+        run: tree-sitter test
+
+  vscode:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: editors/vscode
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      # The TextMate grammar's scopes on a sample, the config files' JSON,
+      # and the server path search.
+      - run: npm test
+      - name: Package
+        run: |
+          npm run package
+          version=$(node -p "require('./package.json').version")
+          test -f "h2-rules-$version.vsix"
+          cp "h2-rules-$version.vsix" h2-rules.vsix
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vscode-extension
+          path: |
+            editors/vscode/h2-rules-*.vsix
+            editors/vscode/h2-rules.vsix
+          if-no-files-found: error
+
+  zed:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: editors/zed
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: "1.98.1"
+          targets: wasm32-wasip2
+      - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
+        with:
+          workspaces: editors/zed
+      # Zed builds a dev extension itself; this checks that it builds and
+      # ships the folder with the module beside it.
+      - name: Build the extension
+        run: cargo build --release --target wasm32-wasip2
+      - name: Pack the extension folder
+        run: |
+          mkdir -p "$RUNNER_TEMP/h2-rules-zed"
+          cp -R extension.toml languages Cargo.toml src README.md "$RUNNER_TEMP/h2-rules-zed/"
+          cp target/wasm32-wasip2/release/*.wasm "$RUNNER_TEMP/h2-rules-zed/extension.wasm"
+          (cd "$RUNNER_TEMP" && zip -r h2-rules-zed.zip h2-rules-zed)
+          mv "$RUNNER_TEMP/h2-rules-zed.zip" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zed-extension
+          path: editors/zed/h2-rules-zed.zip
+          if-no-files-found: error
+
+  # The language server and the ide module it answers from.
+  lsp:
+    runs-on: macos-latest
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: "1.98.1"
+      - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
+      - name: rules::ide
+        run: cargo test --locked -p rules --lib ide
+      - name: h2 rules lsp and h2 rules editors
+        run: cargo test --locked -p cli --no-default-features --features host --bin h2 rules_
+
+  # Master only: the rolling release `h2 rules editors install` downloads
+  # from. The tag moves to this commit; the assets are replaced.
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: [tree-sitter-rules, vscode, zed, lsp]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create or move the editors-latest release
+        run: |
+          if gh release view editors-latest >/dev/null 2>&1; then
+            gh api -X PATCH "repos/$GH_REPO/git/refs/tags/editors-latest" -f sha="$GITHUB_SHA" -F force=true
+          else
+            gh release create editors-latest --target "$GITHUB_SHA" --prerelease \
+              --title "Editor extensions (latest)" \
+              --notes "The rules language's VS Code and Zed extensions, rebuilt on each push to master that touches them. Install with h2 rules editors install (docs/editor/rules-editors.md)."
+          fi
+      - name: Upload the assets
+        run: gh release upload editors-latest dist/* --clobber

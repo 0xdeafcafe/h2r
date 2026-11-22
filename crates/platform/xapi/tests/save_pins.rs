@@ -63,7 +63,7 @@ fn pushes_and_ret(mem: &Guest, start: u32) -> (Vec<u32>, u16) {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs the retail XBE (H2_XBE)"]
 fn save_entry_points_have_the_pinned_cleanup() {
     let image = image();
     let mem = &image.runtime.memory();
@@ -89,7 +89,7 @@ fn save_entry_points_have_the_pinned_cleanup() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs the retail XBE (H2_XBE)"]
 fn search_block_matches_the_original_allocation() {
     let image = image();
     let mem = &image.runtime.memory();
@@ -110,7 +110,7 @@ fn search_block_matches_the_original_allocation() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "needs the retail XBE (H2_XBE)"]
 fn create_writes_the_documented_metadata_and_hash() {
     let image = image();
     let mem = &image.runtime.memory();

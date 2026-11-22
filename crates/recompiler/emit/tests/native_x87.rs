@@ -11,12 +11,9 @@ use x87::{
 const WRAPPER: &str = r#"
 #undef H2_X87_NATIVE
 #define H2_X87_NATIVE 1
-#undef H2_X87_TOP
-#define H2_X87_TOP 1
 #include "h2gen.h"
 H2_EXPORT uint32_t n_arith(X87Abi *s, uint32_t op, uint32_t dst, uint32_t kind, uint64_t src) {
-    /* All eight real TOPs occur in the sweep. Check the constant-slot
-     * path at TOP=7 and the dynamic fallback at every other TOP. */
+    /* All eight real TOPs occur in the sweep; the helpers read the live TOP. */
     return H2X87_AT(7u, arith, s, op, dst, kind, src);
 }
 H2_EXPORT uint32_t n_unary(X87Abi *s, uint32_t op) { return h2x87n_unary(s, op); }
