@@ -169,6 +169,22 @@ fn the_design_tokens_are_the_geometry_the_kit_draws() {
     assert_eq!(d.alpha["frame_dim"], FRAME_DIM);
 }
 
+/// The settings dialogs' name line token is Quick Options' name block the
+/// kit draws: its font, its white, its place.
+#[test]
+fn the_settings_name_line_token_is_quick_options_name_block() {
+    use crate::ui_kit::dialog::QUICK_NAME_TEXT;
+    let d = design();
+    assert_eq!(
+        d.text_style("name.settings").unwrap(),
+        (QUICK_NAME_TEXT.font, QUICK_NAME_TEXT.colour)
+    );
+    let c = d.component("name.settings").unwrap();
+    let [top, left, bottom, right] = QUICK_NAME_TEXT.rect;
+    assert_eq!(c.at, Some([left, top]));
+    assert_eq!(c.size, Some([(right - left) as u16, (top - bottom) as u16]));
+}
+
 #[test]
 fn the_screens_drawn_from_their_docs_are_screens_with_docs() {
     for name in FROM_DOC {

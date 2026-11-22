@@ -895,6 +895,16 @@ impl Rows for KitScreen {
         let text = spec.description_text()?;
         Some(self.texts.set(self.description_slot(i), &text))
     }
+    /// The focused row's label in the header's name line, beside its icon:
+    /// the label slot the row's own text uses (on Quick Options' skin the
+    /// label alone, the value in its own column).
+    fn name(&self, row: i16) -> Option<u32> {
+        self.header_picture()?;
+        let i = usize::try_from(row).ok()?;
+        let r = self.rows.get(i)?;
+        let (label, _) = r.spec().cells(self.style);
+        Some(self.texts.set(Self::label_slot(i), &label))
+    }
     fn live_text(&self) -> LiveText {
         let redraw = self.live_help.as_ref().is_some_and(|help| {
             let current = (help.get)();
@@ -953,8 +963,9 @@ impl Describe for KitScreen {
             }
         }
         s.content.row_help = self.description.is_some() && self.live_help.is_none();
-        if self.header_picture().is_some() {
+        if let Some((base, _)) = self.dialog.filter(|_| self.header_picture().is_some()) {
             s.content.required_icons.push("art.0".into());
+            s.name_line = base.name_line().map(spec::DescriptionBlock::from);
         }
         s.help = self.live_help.as_ref().map(|help| (help.get)());
         s.prompts = self.prompts.clone();
@@ -1159,6 +1170,34 @@ mod tests {
         assert_eq!(t(d), "Grunts' heads pop.", "the legend is the footer's");
         assert_eq!(s.spec().footer_text().unwrap(), "\u{e101} BACK");
         assert!(s.slots() <= IDS.len);
+    }
+
+    /// The header's name line: the focused row's label, through the slot
+    /// the row's own label uses, on a page with Quick Options' header and
+    /// nowhere else.
+    #[test]
+    fn the_name_line_is_the_focused_rows_label() {
+        let (plain, _) = example();
+        assert_eq!(Rows::name(&plain, 0), None, "no header, no name line");
+        assert_eq!(plain.spec().name_line, None);
+        let s = example().0.dialog(DialogBase::QuickOptions, Opener::MAIN_MENU).header(0);
+        assert_eq!(
+            s.spec().name_line,
+            DialogBase::QuickOptions.name_line().map(spec::DescriptionBlock::from)
+        );
+        let t = |id: u32| {
+            let slots = s.texts.slots.lock().unwrap();
+            let b = &slots[(id - IDS.base) as usize].0;
+            String::from_utf8_lossy(&b[..b.len() - 1]).into_owned()
+        };
+        for row in 0..s.count() {
+            let id = Rows::name(&s, row as i16).expect("a name");
+            assert_eq!(id, s.texts(row as i16)[0].1, "the row's own label slot");
+            let (label, _) = s.rows[row].spec().cells(s.style);
+            assert_eq!(t(id), label, "row {row}");
+        }
+        assert_eq!(Rows::name(&s, s.count() as i16), None);
+        assert_eq!(Rows::name(&s, -1), None);
     }
 
     #[test]

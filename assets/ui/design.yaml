@@ -74,12 +74,19 @@ components:
     at: [39, -30]
     size: [221, 103]
   description.settings:
-    role: "a settings dialog's help line, above its list (Quick Options')"
+    role: "a settings dialog's help line beside its picture, above its list (Quick Options'): the focused row's one line, never empty, drawn over the panel"
     font: body
     colour: pale_blue
     justify: left
     at: [-224, 143]
     size: [494, 20]
+  name.settings:
+    role: "a settings dialog's name line beside its picture, over its help line (Quick Options' variant-name line): the focused row's label, drawn over the panel"
+    font: body
+    colour: white
+    justify: left
+    at: [-224, 163]
+    size: [224, 20]
   description.picker:
     role: "the value picker's description, right of its list"
     font: body
