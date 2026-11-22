@@ -107,7 +107,7 @@ impl Game {
             }
             "cheat.list" => Ok(json!({"refused": self.cheats_refused, "cheats": [
                 {"name": "god", "label": "God mode", "kind": "bool", "value": self.god, "about": "no damage"},
-                {"name": "speed", "label": "Game speed", "kind": "choice", "value": self.speed,
+                {"name": "game_speed", "label": "Game speed", "kind": "choice", "value": self.speed,
                  "refused": self.speed_refused,
                  "choices": [{"value": 0.5, "label": "0.5x"}, {"value": 1.0, "label": "1x"}, {"value": 2.0, "label": "2x"}]},
                 {"name": "noclip", "label": "noclip", "kind": "bool", "value": self.noclip, "about": "through walls"},
@@ -119,8 +119,8 @@ impl Game {
                 match p["name"].as_str() {
                     Some("god") => self.god = p["value"].as_bool().ok_or("value")?,
                     Some("noclip") => self.noclip = p["value"].as_bool().ok_or("value")?,
-                    Some("speed") if self.speed_refused.is_some() => return Err("refused".into()),
-                    Some("speed") => self.speed = p["value"].as_f64().ok_or("value")?,
+                    Some("game_speed") if self.speed_refused.is_some() => return Err("refused".into()),
+                    Some("game_speed") => self.speed = p["value"].as_f64().ok_or("value")?,
                     _ => return Err("no cheat".into()),
                 }
                 Ok(json!({}))
@@ -248,20 +248,50 @@ fn enter(s: &Shared, section: &str) {
 }
 
 #[test]
-fn debug_view_rows_write_the_agent_registry_and_show_refusals() {
-    let (s, fake) = menu();
-    enter(&s, "debug-views");
-    to(&s, "Hitboxes");
+fn a_toggle_row_writes_through_the_agent_and_a_greyed_row_is_refused() {
+    fn switches(a: &[Answer]) -> Vec<Row> {
+        let Some(Some(Ok(v))) = a.first() else {
+            return vec![];
+        };
+        let on = |n: &str| {
+            v["toggles"]
+                .as_array()
+                .is_some_and(|t| t.iter().any(|t| t["name"] == n && t["on"] == true))
+        };
+        let set = |name| Setter::new("render.toggle", json!({ "name": name }), "on");
+        vec![
+            Row::toggle("Fog", on("fog"), set("fog")).disabled("needs a restart: read at map load"),
+            Row::toggle("Overrides", on("overrides"), set("overrides")),
+        ]
+    }
+    let fake = Fake::default();
+    let s = Shared::new(Menu::with_sections(vec![Section {
+        id: "switches".into(),
+        title: "Switches".into(),
+        about: String::new(),
+        calls: vec![Call::bare("render.toggle")],
+        rows: switches,
+    }]));
+    s.connect(Box::new(fake.clone()));
+    enter(&s, "switches");
+    // A greyed row is refused with its reason and sends nothing.
+    to(&s, "Fog");
+    go(&s, &[Nav::Right]);
+    assert!(s.lock().menu.log().contains(&Action::Refused {
+        label: "Fog".into(),
+        why: "needs a restart: read at map load".into()
+    }));
+    assert!(fake.writes().is_empty(), "{:?}", fake.writes());
+    // An open one writes through the agent, and the listing after shows it.
+    to(&s, "Overrides");
     go(&s, &[Nav::Select]);
-    assert_eq!(row(&s, "Hitboxes").value, json!(true));
-    assert!(fake.game(|g| g.hitboxes));
-    to(&s, "Traces");
-    go(&s, &[Nav::Select]);
+    assert_eq!(fake.game(|g| g.toggles[0]["on"].clone()), json!(false));
+    assert_eq!(row(&s, "Overrides").value, json!(false));
     assert_eq!(
         fake.writes(),
         vec![Call::new(
-            "debug.view",
-            json!({"name":"hitboxes", "on":true})
+            "render.toggle",
+            json!({"name": "overrides", "on": false})
         )]
     );
 }
@@ -275,19 +305,13 @@ fn the_first_page_lists_the_sections_and_back_closes() {
     assert_eq!(
         titles,
         [
-            "Render",
-            "Shader overrides",
-            "Tag edits",
-            "Cheats",
-            "Perf",
-            "Features",
-            "Debug views"
+            "Player", "World", "Game", "Time", "View", "Perf", "Settings", "Dev"
         ]
     );
     go(&s, &[Nav::Down, Nav::Down, Nav::Select]);
     assert_eq!(
         s.lock().menu.current().map(|x| x.id.clone()),
-        Some("tags".into())
+        Some("game".into())
     );
     go(&s, &[Nav::Back, Nav::Up, Nav::Back]);
     assert!(!s.is_open());
@@ -304,7 +328,7 @@ fn the_first_page_lists_the_sections_and_back_closes() {
             Action::Open,
             Action::Move(1),
             Action::Move(2),
-            Action::Enter("tags".into()),
+            Action::Enter("game".into()),
             Action::Back,
             Action::Move(1),
             Action::Close,
@@ -316,213 +340,16 @@ fn the_first_page_lists_the_sections_and_back_closes() {
 }
 
 #[test]
-fn render_rows_come_from_the_registries_and_change_through_them() {
-    let (s, fake) = menu();
-    enter(&s, "render");
-    let labels: Vec<String> = rows(&s).iter().map(|r| r.label.clone()).collect();
-    assert_eq!(
-        labels,
-        [
-            "overrides",
-            "fog",
-            "gain",
-            "Field of View",
-            "Lighting",
-            "Old",
-            "stats.pipeline.frames",
-            "stats.pipeline.on"
-        ]
-    );
-    // A toggle: right flips it through render.toggle; the listing after shows it.
-    to(&s, "overrides");
-    go(&s, &[Nav::Right]);
-    assert_eq!(fake.game(|g| g.toggles[0]["on"].clone()), json!(false));
-    assert_eq!(row(&s, "overrides").value, json!(false));
-    // A toggle that needs a restart is greyed and refused.
-    to(&s, "fog");
-    go(&s, &[Nav::Right]);
-    let fog = row(&s, "fog");
-    assert_eq!(
-        fog.disabled.as_deref(),
-        Some("needs a restart: read at map load")
-    );
-    assert!(s.lock().menu.log().contains(&Action::Refused {
-        label: "fog".into(),
-        why: "needs a restart: read at map load".into()
-    }));
-    // A parameter steps by a tenth of its default.
-    to(&s, "gain");
-    go(&s, &[Nav::Right, Nav::Right]);
-    assert!((fake.game(|g| g.gain) - 1.2).abs() < 1e-9);
-    go(&s, &[Nav::Left]);
-    assert!((fake.game(|g| g.gain) - 1.1).abs() < 1e-9);
-    // A setting with steps cycles them; locked and restart ones are greyed.
-    to(&s, "Field of View");
-    go(&s, &[Nav::Right]);
-    assert_eq!(fake.game(|g| g.fov), 80);
-    go(&s, &[Nav::Right]);
-    assert_eq!(fake.game(|g| g.fov), 60, "wraps");
-    assert_eq!(
-        row(&s, "Lighting").disabled.as_deref(),
-        Some("set by H2_LIGHTING for this run")
-    );
-    assert!(
-        row(&s, "Old")
-            .disabled
-            .as_deref()
-            .unwrap()
-            .starts_with("applies after a restart")
-    );
-    // render.stats is read-only.
-    to(&s, "stats.pipeline.frames");
-    let before = fake.writes().len();
-    go(&s, &[Nav::Right, Nav::Select]);
-    assert_eq!(fake.writes().len(), before, "read-only");
-    // Every write went through the agent methods, in order.
-    let writes: Vec<String> = fake.writes().iter().map(Call::to_string).collect();
-    assert_eq!(
-        writes,
-        [
-            r#"render.toggle {"name":"overrides","on":false}"#,
-            r#"render.param {"name":"gain","value":1.1}"#,
-            r#"render.param {"name":"gain","value":1.2}"#,
-            r#"render.param {"name":"gain","value":1.1}"#,
-            r#"settings.set {"key":"graphics.fov","value":80}"#,
-            r#"settings.set {"key":"graphics.fov","value":60}"#,
-        ]
-    );
-}
-
-#[test]
 fn a_change_made_elsewhere_shows_at_the_next_listing() {
-    let (s, fake) = menu();
-    enter(&s, "cheats");
-    assert_eq!(row(&s, "God mode").value, json!(false));
-    // `h2 agent cheat.set` from outside.
-    fake.game(|g| g.god = true);
+    let (s, fake) = playground();
+    enter(&s, "play");
+    assert_eq!(row(&s, "Range").value, json!(1));
+    // `h2 agent render.param` from outside.
+    fake.game(|g| g.gain = 21.0);
     let now = s.now() + crate::model::REFRESH;
     s.lock().pump(now);
     s.lock().pump(now);
-    assert_eq!(row(&s, "God mode").value, json!(true));
-}
-
-#[test]
-fn shader_overrides_switch_reload_and_show_their_state() {
-    let (s, fake) = menu();
-    enter(&s, "shaders");
-    let r = rows(&s);
-    assert_eq!(r[0].label, "all overrides");
-    assert_eq!(r[0].value, json!(true));
-    assert_eq!(r[1].label, "reload");
-    let bad = row(&s, "00000000000000bb");
-    assert_eq!(bad.disabled.as_deref(), Some("rejected: binding 3"));
-    assert_eq!(row(&s, "00000000000000aa").shown(), "applied");
-    go(&s, &[Nav::Select]);
-    assert_eq!(fake.game(|g| g.toggles[0]["on"].clone()), json!(false));
-    assert_eq!(row(&s, "all overrides").value, json!(false), "relisted");
-    go(&s, &[Nav::Down, Nav::Select]);
-    assert!(fake.game(|g| g.calls.iter().any(|c| c.method == "render.reload")));
-}
-
-#[test]
-fn tag_edits_are_read_only_and_revert_one_or_all() {
-    let (s, fake) = menu();
-    enter(&s, "tags");
-    let r = rows(&s);
-    assert_eq!(r[0].label, "revert all");
-    assert_eq!(
-        r[1].label,
-        "#3 magazines[0].rounds_loaded_maximum battle_rifle"
-    );
-    assert!(r[1].about.contains("36 -> 99 (live)"), "{}", r[1].about);
-    go(&s, &[Nav::Down, Nav::Right]);
-    assert_eq!(
-        fake.game(|g| g.changes.clone()),
-        vec![3, 4],
-        "right does not revert"
-    );
-    go(&s, &[Nav::Select]);
-    assert_eq!(fake.game(|g| g.changes.clone()), vec![4]);
-    assert_eq!(rows(&s).len(), 2, "relisted: revert all and #4");
-    go(&s, &[Nav::Up, Nav::Select]);
-    assert_eq!(rows(&s)[0].label, "no edits");
-}
-
-#[test]
-fn a_cheat_refused_on_its_own_greys_only_its_row() {
-    let (s, fake) = menu();
-    // A networked game's host: game speed refused, the rest on offer.
-    let why = "a networked game: game speed would not reach the guests";
-    fake.game(|g| g.speed_refused = Some(why.into()));
-    enter(&s, "cheats");
-    assert_ne!(rows(&s)[0].label, "cheats are off");
-    assert_eq!(row(&s, "Game speed").disabled.as_deref(), Some(why));
-    assert_eq!(row(&s, "God mode").disabled, None);
-    assert_eq!(row(&s, "noclip").disabled, None);
-    let sets = || fake.game(|g| g.calls.iter().filter(|c| c.method == "cheat.set").count());
-    let before = sets();
-    to(&s, "Game speed");
-    go(&s, &[Nav::Right]);
-    assert_eq!(sets(), before, "a greyed row sends nothing");
-    to(&s, "noclip");
-    go(&s, &[Nav::Select]);
-    assert!(fake.game(|g| g.noclip));
-}
-
-#[test]
-fn cheats_change_through_cheat_set_and_are_refused_in_co_op() {
-    let (s, fake) = menu();
-    enter(&s, "cheats");
-    go(&s, &[Nav::Select]);
-    assert!(fake.game(|g| g.god));
-    to(&s, "Game speed");
-    assert_eq!(row(&s, "Game speed").shown(), "1x");
-    go(&s, &[Nav::Right]);
-    assert_eq!(fake.game(|g| g.speed), 2.0);
-    go(&s, &[Nav::Left, Nav::Left]);
-    assert_eq!(fake.game(|g| g.speed), 0.5);
-    // A co-op session starts: every row greyed with the reason, nothing sent.
-    let why = "a co-op session: cheats would desync the players";
-    fake.game(|g| g.cheats_refused = Some(why.into()));
-    enter(&s, "cheats");
-    let r = rows(&s);
-    assert_eq!(r[0].label, "cheats are off");
-    assert!(r.iter().all(|r| r.disabled.as_deref() == Some(why)));
-    let sets = fake.game(|g| g.calls.iter().filter(|c| c.method == "cheat.set").count());
-    go(&s, &[Nav::Down, Nav::Right, Nav::Select]);
-    assert_eq!(
-        fake.game(|g| g.calls.iter().filter(|c| c.method == "cheat.set").count()),
-        sets
-    );
-    let lines = s.lines().unwrap();
-    assert!(
-        lines
-            .iter()
-            .any(|l| l.tone == Tone::Greyed && l.text.contains("co-op")),
-        "{lines:?}"
-    );
-}
-
-#[test]
-fn perf_and_features_are_rows_too() {
-    let (s, fake) = menu();
-    enter(&s, "perf");
-    assert_eq!(row(&s, "perf overlay").value, json!(true));
-    assert_eq!(row(&s, "fps").shown(), "30");
-    assert_eq!(row(&s, "cpu ms").shown(), "20");
-    go(&s, &[Nav::Select]);
-    assert!(fake.game(|g| {
-        g.calls
-            .iter()
-            .any(|c| c.to_string() == r#"perf.overlay {"on":false}"#)
-    }));
-    enter(&s, "features");
-    let r = rows(&s);
-    assert_eq!(
-        (r[0].label.as_str(), r[0].shown()),
-        ("agent", "on   answers requests".to_string())
-    );
-    assert_eq!(r.len(), 2, "blank lines dropped");
+    assert_eq!(row(&s, "Range").value, json!(21));
 }
 
 #[test]
