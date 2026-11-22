@@ -4,7 +4,7 @@ The native GPU renderer: the static world and the objects, lights, shadows and e
 
 ## Where it sits
 
-`rewrites` domain, guest-free. Depends on `frame-scene`, `scene-extract` and, with `gpu`, `map`, `tags`, `shaders`, `gfx`, `d3d` and `wgpu`. Used by `render-bridge`, `game` and `boot`.
+`rewrites` domain, guest-free, with one excused dependency on `scene-extract` for the guest readers it re-exports (`scripts/crate-domains.toml`). Depends on `frame-scene`, `scene-extract` and, with `gpu`, `map`, `tags`, `shaders`, `gfx`, `d3d` and `wgpu`. Used by `render-bridge`, `game` and `boot`.
 
 ## Layout
 
@@ -17,7 +17,7 @@ The native GPU renderer: the static world and the objects, lights, shadows and e
 ## Features
 
 - `gpu` (default): the map loader and the wgpu passes. Without it only the pure parts (world, camera, cull, skip) build.
-- `differential`: differential tests of the object lighting against the lifted original.
+- `differential`: turns on the differential tests of the object lighting and model rows against the lifted original; the lifter (`analyze`, `ir`, `lift`, `xbe`) is a dev-dependency.
 
 ## Tests
 

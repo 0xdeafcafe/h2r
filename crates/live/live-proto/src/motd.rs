@@ -22,7 +22,7 @@ pub const MAX_MESSAGES: usize = 32;
 /// Longest string, in UTF-16 code units (one 512-byte slot minus the NUL).
 pub const MAX_UNITS: usize = 255;
 /// The largest file the game takes: the MOTD channel's title-storage
-/// download buffer is 0x8000 bytes (docs/live/live-motd.md §2.2). A larger file
+/// download buffer is 0x8000 bytes (docs/live/live-motd.md §2.1). A larger file
 /// fails that download and the game silently shows no message of the day.
 pub const MAX_FILE: usize = 0x8000;
 /// The MOTD file class's version in the header; the game wants exactly 1.

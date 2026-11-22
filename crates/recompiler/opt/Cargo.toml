@@ -10,3 +10,6 @@ ir.workspace = true
 [dev-dependencies]
 lift.workspace = true
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info", "code_asm"] }
+
+[lints]
+workspace = true

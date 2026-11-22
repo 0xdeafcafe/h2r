@@ -1,7 +1,7 @@
 //! `Registry::build` is pure: order, conflicts, missing points and
 //! switches, with no runtime and no guest.
 
-use engine::points::{self, Point, Sig};
+use guest_layout::points::{self, Point, Sig};
 use hooks::{Base, BuildError, Conflict, Flow, Kind, Registry, Remap, Switches, from_fn};
 
 fn noop_before(b: &mut hooks::Builder, p: &'static Point) {
@@ -54,7 +54,7 @@ fn a_string_hook_and_the_rust_lookup_share_the_locale_point() {
             .iter()
             .any(|w| w.contains("LOCALE_FIND") && w.contains("hot"))
     );
-    assert_eq!(plan.chains.len(), engine::abi::OVERRIDES.len());
+    assert_eq!(plan.chains.len(), guest_layout::abi::OVERRIDES.len());
 }
 
 fn leaves(switches: &str) -> Vec<&'static str> {
@@ -69,22 +69,22 @@ fn leaves(switches: &str) -> Vec<&'static str> {
 
 #[test]
 fn every_leaf_is_on_by_default() {
-    assert_eq!(leaves("").len(), engine::abi::OVERRIDES.len());
+    assert_eq!(leaves("").len(), guest_layout::abi::OVERRIDES.len());
     assert_eq!(
         leaves("impl.engine.tags=off,impl.engine.datums=off"),
         ["locale_string_id_find", "locale_string_id_exists"]
     );
     assert_eq!(
         leaves("impl.engine.locale=off").len(),
-        engine::abi::OVERRIDES.len() - 2
+        guest_layout::abi::OVERRIDES.len() - 2
     );
     assert!(leaves("impl.engine=off").is_empty());
-    assert_eq!(leaves("impl.engine=on").len(), engine::abi::OVERRIDES.len());
+    assert_eq!(leaves("impl.engine=on").len(), guest_layout::abi::OVERRIDES.len());
     let one = leaves("impl.engine=off,impl.engine.tags.tag_get_checked=on");
     assert_eq!(one, ["tag_get_checked"]);
     assert_eq!(
         leaves("impl.engine.tags=off,impl.engine.locale=off").len(),
-        engine::abi::OVERRIDES.len() - 4,
+        guest_layout::abi::OVERRIDES.len() - 4,
         "only the datums"
     );
 }

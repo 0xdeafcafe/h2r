@@ -474,7 +474,6 @@ impl Sprite {
 
     /// Records a pass drawing the image with its top-left at `at`, within
     /// `dst_size`, over what is there.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw(
         &mut self,
         device: &wgpu::Device,
@@ -558,7 +557,6 @@ impl OverlayRenderer {
 
     /// Records a pass drawing `notice` in the top-left of `dst` (size
     /// `dst_size`), over what is there.
-    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
         device: &wgpu::Device,
@@ -594,7 +592,6 @@ impl EditorPlateRenderer {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw(
         &mut self,
         device: &wgpu::Device,

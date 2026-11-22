@@ -880,7 +880,6 @@ impl<B: Backend> Backend for DiagBackend<B> {
     fn defers_depth_aliases(&self) -> bool {
         self.inner.defers_depth_aliases()
     }
-    #[allow(clippy::too_many_arguments)]
     fn depth_alias_texture(
         &mut self,
         depth: Self::Surface,

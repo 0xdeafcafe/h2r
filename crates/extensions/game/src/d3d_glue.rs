@@ -23,8 +23,6 @@ pub struct Installed {
     pub implemented: usize,
     pub stopping: usize,
     pub native: usize,
-    /// The entries the write barrier wraps, in shadow-slot order.
-    barrier: Vec<u32>,
     /// The vblank callback on the 60 Hz logical clock, for
     /// `Kernel::add_periodic` (taken once).
     pub vblank: Option<kernel::periodic::Handler>,
@@ -1724,7 +1722,6 @@ impl d3d::backend::Backend for Headless {
     fn judge(&self) -> Option<Box<dyn d3d::backend::DrawJudge>> {
         self.0.judge()
     }
-    #[allow(clippy::too_many_arguments)]
     fn depth_alias_texture(
         &mut self,
         depth: u32,
@@ -1948,7 +1945,6 @@ fn install_device<B: d3d::backend::Backend + Send + 'static>(
         implemented: r.implemented.len(),
         stopping: r.stopping.len(),
         native: r.native.len(),
-        barrier: entries,
     })
 }
 

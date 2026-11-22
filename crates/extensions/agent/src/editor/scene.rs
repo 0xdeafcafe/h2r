@@ -318,7 +318,7 @@ impl EditorLink {
                 state.scene.next_generation = state.scene.next_generation.wrapping_add(1).max(1);
                 state.scene.next_generation
             };
-            state.scene.marks = (held > 0).then(|| Marks {
+            state.scene.marks = (held > 0).then_some(Marks {
                 objects,
                 fixed,
                 generation,

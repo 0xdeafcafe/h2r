@@ -121,7 +121,6 @@ pub fn load<R: std::io::Read + std::io::Seek>(
 /// (`program::ungiven_view_read`), so no pass draws with a register the
 /// view leaves at zero. The game gives every constant (`None`); the
 /// editor gives `program::CAMERA_GIVEN`.
-#[allow(clippy::too_many_arguments)]
 pub fn load_with<R: std::io::Read + std::io::Seek>(
     map: &mut Map<R>,
     files: &mut assets::ResourceFiles,
@@ -259,7 +258,6 @@ pub fn load_with<R: std::io::Read + std::io::Seek>(
 /// classification for its placements where it compiles) and their stage
 /// images decoded, or why it stays on the D3D path. With `given`, a vertex
 /// program reading a view constant outside it refuses the material.
-#[allow(clippy::too_many_arguments)]
 fn compile<R: std::io::Read + std::io::Seek>(
     map: &mut Map<R>,
     files: &mut assets::ResourceFiles,
@@ -375,6 +373,9 @@ pub fn plan_without_game(
             model: u32::MAX,
             rows: 0..0,
             lighting: None,
+            flags: frame_scene::PartFlags::NONE,
+            subparts: None,
+            refusal: None,
         };
         let fogged = data
             .words
@@ -431,7 +432,6 @@ pub struct Layer3 {
 /// only), is linear (addressed in texels on the D3D path) or palettized
 /// (no stage palettes) is refused, named. A part draws when it supplies
 /// what the pass reads (`program::part_fit`) and its page decoded.
-#[allow(clippy::too_many_arguments)]
 pub fn load_layer3<R: std::io::Read + std::io::Seek>(
     map: &mut Map<R>,
     files: &mut assets::ResourceFiles,
@@ -515,7 +515,6 @@ pub fn load_layer3<R: std::io::Read + std::io::Seek>(
 
 /// One material's layer-3 pass compiled for [`load_layer3`], its stage
 /// images decoded, or why it is not drawn.
-#[allow(clippy::too_many_arguments)]
 fn compile_layer3<R: std::io::Read + std::io::Seek>(
     map: &mut Map<R>,
     files: &mut assets::ResourceFiles,
@@ -668,7 +667,6 @@ pub struct StaticSet {
 /// selects the parts the set binds (a part whose images did not upload is
 /// left out: `FogSet::draw` stops at a part it cannot draw). `None` when
 /// none binds.
-#[allow(clippy::too_many_arguments)]
 pub fn upload_static(
     view: &LayersView,
     layer: u8,

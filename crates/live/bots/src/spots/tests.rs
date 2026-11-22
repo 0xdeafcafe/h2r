@@ -335,7 +335,7 @@ fn learned_lines_are_written_in_place_of_their_sites_and_read_back() {
         hits: 2,
         ..a.clone()
     };
-    write_learned(&dir, map, &[a2.clone()]).unwrap();
+    write_learned(&dir, map, std::slice::from_ref(&a2)).unwrap();
     let back = read_learned(&dir, map).unwrap();
     assert_eq!(back, vec![a2, b]);
     std::fs::remove_dir_all(&dir).unwrap();

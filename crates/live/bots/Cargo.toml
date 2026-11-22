@@ -6,7 +6,7 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
-rustc-hash = "2"
+rustc-hash = { workspace = true }
 serde.workspace = true
 live-proto.workspace = true
 input = { path = "../../platform/input", default-features = false }
@@ -33,3 +33,6 @@ timeline = { path = "../../runtime/timeline" }
 h1map = { path = "../../tools/h1map" }
 serde_json.workspace = true
 xiso = { path = "../../formats/xiso" }
+
+[lints]
+workspace = true

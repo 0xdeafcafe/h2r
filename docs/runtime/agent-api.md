@@ -1597,8 +1597,10 @@ h2 agent render.parity '{"arm": true}'
   2) and `fog` and `water` (slice 5); unless `frame-scene.layers=off`
   is in `H2_FEATURES`, `layer_plan_asked`, `layer_plan_drawn`,
   `layer_plan_items` and the plan's outcomes by layer,
-  `layer_plan_<layer>_taken` and `layer_plan_<layer>_refused_<cause>`
-  (`render_bridge::native_layers`; framescene.md, slice 4); a later slice adds
+  `layer_plan_<layer>_taken` and `layer_plan_<layer>_refused_<cause>`,
+  the first person's as `layer_plan_fp<layer>_*`, object items' causes
+  named `object_*` (`render_bridge::native_layers`; framescene.md,
+  slice 4); a later slice adds
   `scene_held_draws`). With the [scene sink](../graphics/framescene.md#slice-6-the-renderer-owns-game-view-frames)
   enabled, the device files
   each guest D3D op by the frame's slot (`opaque`, `after_opaque`,

@@ -66,7 +66,7 @@ pub fn current_source<M: Gm>(m: &M) -> Option<String> {
 }
 
 /// The mounted object name used by the active scenario or main menu.
-/// Retail opens T: and W: paths verbatim (docs/game/map-pack.md, "Loading").
+/// Retail opens T: and W: paths verbatim (docs/game/map-pack.md, "What installing does").
 /// Let the VFS follow the guest's drive links, which can point into a subdirectory.
 pub fn active_file<M: Gm>(m: &M) -> Option<String> {
     let slot = m.u32(CURRENT)?;

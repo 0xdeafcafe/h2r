@@ -238,7 +238,7 @@ fn a_plan_makes_a_bounded_number_of_path_queries_however_many_spots_there_are() 
                 n.get()
             );
             assert!(n.get() > 0);
-            assert!(p.steps.len() >= 1);
+            assert!(!p.steps.is_empty());
         }
     }
 }

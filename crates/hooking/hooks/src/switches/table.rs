@@ -14,7 +14,7 @@
 //! - a parent of a row (`impl.sim`, `impl.render`): `implementation()`
 //!   falls back through it;
 //! - an engine leaf, `impl.engine.<group>.<function>`, one per adapter in
-//!   `engine::abi::OVERRIDES` (`crate::leaves`), so the table carries the
+//!   `guest_layout::abi::OVERRIDES` (`crate::leaves`), so the table carries the
 //!   groups only.
 
 /// What a switch is when nothing sets it.
@@ -153,7 +153,7 @@ pub fn known(name: &str) -> bool {
     if let Some(rest) = name.strip_prefix("impl.engine.")
         && let Some((group, function)) = rest.split_once('.')
     {
-        return engine::abi::OVERRIDES
+        return guest_layout::abi::OVERRIDES
             .iter()
             .any(|o| o.name == function && crate::leaves::group(o.name) == group);
     }

@@ -899,7 +899,6 @@ mod tests {
         Box::new(move || t.load(Ordering::SeqCst))
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn ev(
         key: &KeyPair,
         author: &str,

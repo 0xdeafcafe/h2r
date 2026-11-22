@@ -499,7 +499,7 @@ pub fn fixture_with_instance_collision() -> Vec<u8> {
     // The fields go in the definition, the blocks' data after it.
     let encoded = collision_unit_quad().encode_blocks(addr(data_at) - 0x40);
     assert!(data_at + encoded.len() - 0x40 <= INSTANCE_AT);
-    assert!(INSTANCE_AT + Inst::SIZE <= SBSP_SIZE);
+    const { assert!(INSTANCE_AT + Inst::SIZE <= SBSP_SIZE) };
     let fields = root + INSTANCE_DEF_AT + Def::COLLISION;
     b[fields..fields + 0x40].copy_from_slice(&encoded[..0x40]);
     let data = root + data_at;
@@ -985,8 +985,8 @@ pub fn fixture_with_layered_bsp() -> Vec<u8> {
     // The metadata region reaches the end of the file.
     put(&mut b, 0x18, LAYERED_META_SIZE as u32);
     put(&mut b, 0x1c, LAYERED_META_SIZE as u32);
-    assert!(META_FILE + LAYERED_META_SIZE <= FILE);
-    assert!(META_FILE + LAYERED_STEM >= TEX_PAGE_FILE + TEX_LOD_SIZE);
+    const { assert!(META_FILE + LAYERED_META_SIZE <= FILE) };
+    const { assert!(META_FILE + LAYERED_STEM >= TEX_PAGE_FILE + TEX_LOD_SIZE) };
     let mut names = NAMES.to_vec();
     names.extend(
         b"levels\\test\\floor\0levels\\test\\floor_lightmap\0levels\\test\\shaders\\floor\0levels\\test\\bitmaps\\floor\0levels\\test\\bitmaps\\floor_lightmap\0objects\\test\\spare_kit\0levels\\test\\shaders\\layered\0levels\\test\\shaders\\layered_pass\0levels\\test\\shaders\\layered_world\0",

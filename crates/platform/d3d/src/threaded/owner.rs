@@ -14,7 +14,7 @@ mod stage;
 #[cfg(test)]
 mod tests;
 
-use frame_scene::TargetRef;
+use frame_types::TargetRef;
 use gfx::Clear;
 use gfx::texture::TextureDesc;
 

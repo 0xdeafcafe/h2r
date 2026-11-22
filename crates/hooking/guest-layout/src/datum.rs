@@ -186,7 +186,6 @@ impl DatumArray {
     /// forced NUL at `+0x1f`), sets flag bits 0 and 1, `valid = 0`, and stores
     /// capacity, element size, alignment, signature, bitmap and allocator.
     /// The element storage and bitmap are not touched.
-    #[allow(clippy::too_many_arguments)]
     pub fn initialize(
         &self,
         m: &mut dyn GuestMemory,

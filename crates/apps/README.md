@@ -9,6 +9,7 @@ What links a binary: the composition root, the desktop shell, the `h2` command l
 | [`boot`](boot/) | The composition root: runs a built module with the kernel, the hooks and every feature attached. |
 | [`cli`](cli/) | The `h2` binary and all its commands. |
 | [`h2host`](h2host/) | The Rust half of the tvOS and iOS apps. |
+| [`live-mirror`](live-mirror/) | The editor's live object and player stream from a paired game: sample store and interpolation. |
 | [`studio`](studio/) | The `h2-editor` binary: the editor suite on Dear ImGui and wgpu. |
 | [`studio-proto`](studio-proto/) | The studio agent API's names, short forms and client. |
 | [`uwp-host`](uwp-host/) | The Xbox (UWP, Dev Mode) app and the Mac-side packaging helpers. |

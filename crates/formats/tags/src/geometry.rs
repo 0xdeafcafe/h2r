@@ -989,7 +989,6 @@ impl Section {
         }
         let bounds = || compression.ok_or(Error::Invalid("compressed stream without bounds"));
         for vb in &self.vertex_buffers {
-            #[allow(clippy::chunks_exact_to_as_chunks)] // stride is a runtime value
             let rows = self.data(vb).chunks_exact(usize::from(vb.stride));
             match vb.kind {
                 VertexKind::Position => {

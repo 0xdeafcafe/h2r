@@ -1015,7 +1015,6 @@ pub trait Source: Metrics {
         None
     }
     fn backing(&self, c: &mut Canvas, b: Backing);
-    #[allow(clippy::too_many_arguments)]
     fn text(
         &self,
         c: &mut Canvas,
@@ -1485,7 +1484,6 @@ impl Canvas {
         self.text_alpha(fonts, index, text, r, just, rgb, 255);
     }
     /// [`Canvas::text`] at `alpha`.
-    #[allow(clippy::too_many_arguments)]
     pub fn text_alpha(
         &mut self,
         fonts: &Fonts,

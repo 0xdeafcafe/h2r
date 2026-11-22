@@ -266,7 +266,6 @@ pub fn compile(
 /// value other than `none`: a call with a direct argument that will not is
 /// compiled as its type's zero, like a missing builtin under
 /// [`Missing::Stub`].
-#[allow(clippy::too_many_arguments)]
 pub fn compile_with(
     t: &Tables,
     h1: &Catalog,
@@ -293,7 +292,6 @@ pub fn compile_with(
 
 /// Compile with the converted scenario's platoon controls and their
 /// indexed orders and squads.
-#[allow(clippy::too_many_arguments)]
 pub fn compile_with_ai(
     t: &Tables,
     h1: &Catalog,
@@ -309,7 +307,6 @@ pub fn compile_with_ai(
 }
 
 /// Compiles a level's scripts together with its scenario AI conversations.
-#[allow(clippy::too_many_arguments)]
 pub fn compile_with_conversations(
     t: &Tables,
     h1: &Catalog,
@@ -336,7 +333,6 @@ pub fn compile_with_conversations(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Compile with both the scenario AI controls and its conversation speaker scopes.
 pub fn compile_scenario(
     t: &Tables,

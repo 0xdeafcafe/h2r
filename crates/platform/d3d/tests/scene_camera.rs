@@ -132,7 +132,7 @@ fn only_the_programs_actual_matrix_in_its_own_view_can_follow_the_camera() {
         .unwrap();
     *zero = f32::from_bits(zero.to_bits() ^ (1 << 31)); // Numerically equal, different upload.
     push(&mut replay, Slot::Opaque, 1, other);
-    replay.classify_cameras(&views);
+    replay.classify_cameras(views.view_cameras());
     assert_eq!(
         labels(&replay),
         [
@@ -149,7 +149,7 @@ fn only_the_programs_actual_matrix_in_its_own_view_can_follow_the_camera() {
     assert_eq!(replay.camera_counts(1), [0, 1, 2]);
 
     // A re-entered view index cannot identify which camera to substitute.
-    replay.classify_cameras(&scene(&[(1, cam), (1, Camera { fov: 0.7, ..cam })]));
+    replay.classify_cameras(scene(&[(1, cam), (1, Camera { fov: 0.7, ..cam })]).view_cameras());
     assert!(labels(&replay).iter().all(|c| *c == CameraUse::Unknown));
 }
 
@@ -178,7 +178,7 @@ fn screen_draws_and_unknown_programs_keep_distinct_labels() {
     };
     push(&mut frame, Slot::Opaque, 1, screen);
 
-    frame.classify_cameras(&scene(&[(1, camera(0))]));
+    frame.classify_cameras(scene(&[(1, camera(0))]).view_cameras());
     assert_eq!(
         labels(&frame),
         [

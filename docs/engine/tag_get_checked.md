@@ -1,13 +1,13 @@
 # `tag_get_checked` (0x122c10) and `tag_group_find` (0x122d00)
 
 Status: Built. Code: `crates/hooking/guest-layout/src/tags.rs`, adapters in
-`crates/rewrites/engine/src/abi.rs`. Tests: `crates/rewrites/engine/tests/differential.rs`,
+`crates/hooking/guest-layout/src/abi.rs`. Tests: `crates/rewrites/engine/tests/differential.rs`,
 `crates/rewrites/engine/tests/views.rs`. Switch: `impl.engine.tags` (on by default;
 [switches.md](../runtime/switches.md)).
 
 Recovered from `h2 disasm` of the retail XBE
 (`03215919…935d`). Names are assigned. Rust: `crates/hooking/guest-layout/src/tags.rs`,
-adapters in `crates/rewrites/engine/src/abi.rs`.
+adapters in `crates/hooking/guest-layout/src/abi.rs`.
 
 ## Globals
 

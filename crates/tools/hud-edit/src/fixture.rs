@@ -73,7 +73,6 @@ fn panel() -> (Bitmap, Vec<u8>) {
 
 /// A bitmap widget: name, anchor, fullscreen offset (the split-screen
 /// ones half of it), sequence, input 0, registration.
-#[allow(clippy::too_many_arguments)]
 fn bitmap_widget(
     name: &str,
     anchor: u16,

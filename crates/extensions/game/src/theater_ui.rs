@@ -861,7 +861,7 @@ impl Theater {
                             &archive,
                             sync_account.as_ref(),
                             &location.dir,
-                            &game,
+                            game,
                             entry.archive_clip.as_ref().and(entry.clip.as_ref()),
                             entry.film.live_start_tick,
                         )
@@ -897,7 +897,7 @@ impl Theater {
                             Ok(None)
                         }
                         pages::Action::Save => {
-                            archive.set_saved(&game, !entry.film.saved).map(|()| None)
+                            archive.set_saved(game, !entry.film.saved).map(|()| None)
                         }
                         pages::Action::Delete => {
                             if let Some((id, _)) = &entry.archive_clip {

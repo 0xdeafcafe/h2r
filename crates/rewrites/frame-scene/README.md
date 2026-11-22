@@ -4,13 +4,13 @@
 
 ## Where it sits
 
-`rewrites` domain, guest-free. No workspace dependencies. Used by `scene-extract`, `native-render`, `render-bridge`, `game` and `boot`.
+`rewrites` domain, guest-free. Depends on `frame-types` (platform) for the camera, the carried part and the view and instance keys, which it re-exports. Used by `scene-extract`, `native-render`, `render-bridge`, `game` and `boot`.
 
 ## Layout
 
 - `src/builder.rs`: `SceneBuilder`, run on the sim thread after the frame's ticks.
 - `src/scene.rs`: the sealed `FrameScene` published as an `Arc`.
-- `src/camera.rs`, `src/light.rs`, `src/light_group.rs`, `src/object.rs`, `src/node.rs`, `src/layer.rs`, `src/decorator.rs`, `src/late.rs`: the scene's parts.
+- `src/light.rs`, `src/light_group.rs`, `src/object.rs`, `src/node.rs`, `src/layer.rs`, `src/decorator.rs`, `src/late.rs`: the scene's parts.
 - `src/summary.rs`: the scene summary hash, so two runs can tell whether they extracted the same frame.
 
 ## Tests

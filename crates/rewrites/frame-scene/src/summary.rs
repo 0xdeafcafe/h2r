@@ -180,6 +180,18 @@ pub fn summary_hash(scene: &FrameScene) -> u64 {
                     h.floats(r);
                 }
                 lighting(&mut h, i.lighting.as_ref());
+                h.word(u32::from(i.flags.0));
+                match i.subparts {
+                    Some(s) => {
+                        h.word(1);
+                        h.word(u32::from(s.first));
+                        h.word(u32::from(s.count));
+                        h.word(s.visible as u32);
+                        h.word((s.visible >> 32) as u32);
+                    }
+                    None => h.word(0),
+                }
+                h.word(i.refusal.map_or(0, |r| 1 + r as u32));
             }
         }
         crate::decorator::summary_words(scene, v, &mut |w| h.word(w));
@@ -391,7 +403,7 @@ mod tests {
 
     use super::*;
     use crate::builder::{InstanceInput, SceneBuilder};
-    use crate::camera::tests::camera;
+    use crate::test_camera::camera;
     use crate::node::NodeMatrix;
     use crate::object::ItemKey;
     use crate::scene::{InstanceKey, SceneId, Stamp, ViewKey, ViewKind};

@@ -79,11 +79,10 @@ fn main() {
     println!("cargo:rustc-env=ANALYSIS_SOURCE_HASH={analysis:016x}");
     let unread = hash(&["../../recompiler/analyze/src"], &["rs"], &["src/fallback.rs"]);
     println!("cargo:rustc-env=UNREAD_SOURCE_HASH={unread:016x}");
-    // The hook catalog changes lifted owner boundaries on both tiers.
-    // Include the gate and inherited HUD return sites as well as the list.
-    let entry_sources = ["src/render_entries.rs", "../../hooking/guest-layout/src/points.rs",
-        "../../hooking/guest-layout/src/points/render_aspect.rs",
-        "../../hooking/guest-layout/src/points/scene_effects.rs"];
+    // The retail entry gate changes lifted owner boundaries on both tiers.
+    // The registered entries themselves are in the stamps at run time
+    // (render_entries::entries_hash).
+    let entry_sources = ["src/render_entries.rs"];
     let generator = hash(
         &["../../formats/xbe/src", "../../recompiler/analyze/src", "../../recompiler/ir/src", "../../recompiler/lift/src", "../../recompiler/opt/src", "../../recompiler/emit/src", "../../recompiler/emit/c", "../../recompiler/x87/src", "../../runtime/runtime/include", "c"],
         &["rs", "c", "h"],

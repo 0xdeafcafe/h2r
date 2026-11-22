@@ -18,6 +18,7 @@ can be reused by a port. See
 | [bink-hle](bink-hle/) | Overrides for the statically linked Bink 1.x player |
 | [d3d](d3d/) | Guest-facing Direct3D 8 (XDK 5849) on top of `gfx` |
 | [dsound](dsound/) | Guest-facing DirectSound on top of `audio` |
+| [frame-types](frame-types/) | The carried part, render camera and view keys `d3d` and `frame-scene` share |
 | [gfx](gfx/) | Xbox-flavoured Direct3D 8 data model and renderer on wgpu |
 | [hot-render](hot-render/) | WGSL overrides, tunables and toggles for live renderer iteration |
 | [input](input/) | Xbox gamepad model, 4-port device model and host backends |

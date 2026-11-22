@@ -828,7 +828,6 @@ impl DirectSound {
         Ok(S_OK)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn set_listener_orientation(&mut self, ds: u32, v: [u32; 6], _apply: u32) -> R {
         self.check_root(ds)?;
         let [fx, fy, fz, tx, ty, tz] = v.map(f);
@@ -1615,7 +1614,6 @@ impl DirectSound {
 
     /// `Lock(dwOffset, dwBytes, ppv1, pcb1, ppv2, pcb2, dwFlags)`. Returns
     /// pointers into the buffer's guest memory, as the hardware does.
-    #[allow(clippy::too_many_arguments)]
     pub fn lock(
         &mut self,
         h: &mut dyn Host,

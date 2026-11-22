@@ -99,7 +99,9 @@ register and clobber set. With the `runtime-glue` feature,
 `engine::runtime_glue::register_all(&mut dispatch)` registers them all
 through `Dispatch::register_override`; each handler takes one
 `ctx.memory()` guard for the whole call and returns `TransferAbi::ret`.
-Nothing calls `register_all`. The game installs the same adapters
-through the `feature` crate's `engine-leaves` feature
+Both modules live in `crates/hooking/guest-layout/src` (`abi.rs`,
+`runtime_glue.rs`), with `entry.rs`, `locale.rs` and `point_shapes.rs`;
+`engine` re-exports them. Nothing calls `register_all`. The game
+installs the same adapters through the `engine-leaves` feature
 (`crates/hooking/hooks/src/leaves.rs`): only the locale group is on by default
 ([feature-engine.md](feature-engine.md)).

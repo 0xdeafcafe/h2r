@@ -7,8 +7,6 @@
 //!     cargo test -p h1sounds --release --test fields_disc -- --ignored --nocapture
 //! ```
 
-#![allow(clippy::chunks_exact_to_as_chunks)]
-
 use std::collections::BTreeMap;
 use std::io::{BufReader, Cursor};
 

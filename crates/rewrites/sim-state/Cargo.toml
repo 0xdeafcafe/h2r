@@ -13,3 +13,6 @@ sim-objects.workspace = true
 
 [dev-dependencies]
 sim-objects = { workspace = true, features = ["synth"] }
+
+[lints]
+workspace = true

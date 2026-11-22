@@ -17,3 +17,6 @@ thiserror.workspace = true
 xiso.workspace = true
 map.workspace = true
 tags.workspace = true
+
+[lints]
+workspace = true

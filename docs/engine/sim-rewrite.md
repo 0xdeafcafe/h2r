@@ -664,7 +664,7 @@ pub fn sim_hash(&self) -> u64;                // hash_sim(HALO2) ⊕ ext, when e
   - `sim-state` gives a dedicated host the scoreboard and events without
     memory scraping.
 
-## 8. Decisions (the user, 2026-11-20)
+## 8. Decisions
 
 1. **Physics stays bit-exact with retail.** The Havok phase (phase 5 since
    the 2026-11-20 reorder) replaces Havok with a structural port held to
@@ -683,7 +683,7 @@ pub fn sim_hash(&self) -> u64;                // hash_sim(HALO2) ⊕ ext, when e
    `impl.sim.native_*` switches are deleted when their subsystem's switch
    replaces them. Their bodies stay only as test oracles.
 
-### After the Fable reviews (the user, 2026-11-20)
+### Review outcomes
 
 5. **Both routes run.** The sim-tier experiment from
    [2026-11-20-sim.md](../reviews/2026-11-20-sim.md) (the tick closure recompiled under a
