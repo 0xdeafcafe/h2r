@@ -997,6 +997,14 @@ Set in wrangler.toml, per environment (`[env.<env>.observability]`):
   - Today's traffic (a few players, viewers polling) is far below that,
     so production starts at 1. Lower it when the dashboard's monthly count
     passes about half the quota.
+- **Refusals:** every 4xx and 5xx the Worker returns is logged once, at
+  its fetch handler (`crates/live/live-worker/src/entry.rs`), as
+  `refused <METHOD> <path> <status> code=<error> message="<message>"`: the
+  path keeps its ids and drops the query string, and the code and message
+  come from the `ApiError` body (cut at 300 characters). 5xx go to
+  `console.error`. Headers, tokens, query strings and request bodies are
+  never logged. `h2 live serve` writes the same line to stderr
+  (`live_server::refusals`).
 - **Traces** show each request's path through the Worker, the Durable
   Object call (hub or relay) and R2.
 - **Live:** `bunx wrangler@4 tail --env production` (add

@@ -47,6 +47,7 @@ mod films;
 pub mod games;
 pub mod guard;
 pub mod hold;
+pub mod refusals;
 // Dedicated host lifecycle and billing.
 pub mod host_costs;
 pub mod hosts;
