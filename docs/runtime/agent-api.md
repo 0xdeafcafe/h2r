@@ -2966,6 +2966,22 @@ counts frames where the seated custom lobby's peer and player records matched
 the previous sample. Subtract two readings in the same session to get a
 window's mean cost (`Δtotal_ns / Δframes`) and cache hit fraction.
 
+The write counters show how often the roster work changes the session's
+membership, which makes the game rebuild what depends on it.
+`write_frames` counts frames that wrote the membership and moved its
+counters: a join, a removal, or a repair. One frame's repairs share one
+bump. `props_writes` counts phantom peer properties rewritten to follow
+this console's. `identity_writes` counts phantom names or looks written
+back into the session's player records. `team_moves` counts team
+rebalance moves. `props_diff_chunks` is a mask of the 8-byte chunks of
+the `0xc8`-byte peer properties that differed on any rewrite: bit `i`
+covers properties bytes `8i` to `8i + 7`, so bit 12 is the map status at
+`+0x60`. In a settled lobby `Δwrite_frames` stays near zero. If it grows
+with `Δframes`, the game is undoing a phantom write every frame. The log
+then says `bots: phantoms: the session's membership was rewritten on 30
+frames in a row (...)` once per run of such frames
+(`crates/live/bots/src/phantom.rs`, `churn_line`).
+
 `profile` contains the card's `summary`, its `archetype`, `favorite_weapon`, the name's
 `try_hard` score and the `weights` active for that difficulty and style.
 The full vector contains `radar_use`, `noob_combo`, `dual_wield`,

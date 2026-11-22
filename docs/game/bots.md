@@ -2789,6 +2789,16 @@ ran. They now join the lobby as a real peer does.
   leave the membership revision alone. A pending join and a matchmaking
   party follow their respective join checks. The host looks up player
   datums only during a hosted game.
+- **One bump per frame.** A frame's repairs of seated phantoms (their
+  properties following the host's, a name or look the host rebuilt, a
+  team move) move the membership counters once, after all of them, not
+  once per phantom, so the game rebuilds what depends on the membership
+  once (`Phantoms::tick`, `Repairs`). `bots.stats` counts the frames that
+  wrote and each kind of repair ([agent-api.md](../runtime/agent-api.md#bot-combat)).
+  Thirty writing frames in a row mean the game undoes a repair every
+  frame; the log says so once per run (`bots: phantoms: the session's
+  membership was rewritten on 30 frames in a row (...)`), with the
+  property chunks that differed.
 - **Teams.** A phantom with no team asked for (the Clankers page's
   bots; a Clankermatch's come balanced) goes, in a team game, to the team
   with the fewest session players of red, blue and any other a player is
