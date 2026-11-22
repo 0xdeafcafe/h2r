@@ -1,6 +1,6 @@
 # Guest reads the editor would serve
 
-Evidence for [polish-plan.md](../../editor/polish-plan.md) (P15, "The game's material passes") and [native-world.md](../native-world.md). Nothing here states what the code does today. Entries are newest first.
+Evidence for [editor.md](../../editor/editor.md) (the viewport's native view) and [native-world.md](../native-world.md). Nothing here states what the code does today. Entries are newest first.
 
 ## 2026-11-21: which guest reads are tag data and which are run state
 

@@ -271,7 +271,12 @@ fn the_forge_map_picker_offers_new_and_the_saved_maps() {
 
 #[test]
 fn forge_with_a_remote_member_is_refused() {
-    assert!(refused(Mode::Forge, Some(1)));
+    let kit = KitMaps {
+        lobby: true,
+        installed: true,
+    };
+    let refused = |mode, remote| refusal(mode, remote, kit).is_some();
+    assert_eq!(refusal(Mode::Forge, Some(1), kit), Some(Reason::ForgeRemote));
     assert!(refused(Mode::Forge, None), "a session that cannot be read");
     assert!(
         !refused(Mode::Forge, Some(0)),
@@ -327,6 +332,52 @@ fn a_remote_member_is_a_peer_of_a_person_on_another_console() {
     let mut none = session(1, true);
     none.put_u32(bots::lobby::SESSION, 0);
     assert_eq!(remote_members(&none), None);
+}
+
+/// FIREFIGHT opens with no kit map installed; Start Game is what refuses,
+/// and the status line and the panel say why in one line each.
+#[test]
+fn firefight_without_a_kit_map_refuses_the_start_and_says_why() {
+    let none = KitMaps::default();
+    let elsewhere = KitMaps {
+        lobby: false,
+        installed: true,
+    };
+    let here = KitMaps {
+        lobby: true,
+        installed: true,
+    };
+    assert_eq!(refusal(Mode::Firefight, Some(0), none), Some(Reason::NoKitMap));
+    assert_eq!(
+        refusal(Mode::Firefight, Some(0), elsewhere),
+        Some(Reason::NotKitMap)
+    );
+    assert_eq!(refusal(Mode::Firefight, Some(0), here), None);
+    assert_eq!(refusal(Mode::Firefight, Some(2), here), None, "Firefight runs across consoles");
+    for mode in [Mode::Multiplayer, Mode::Forge] {
+        assert_eq!(refusal(mode, Some(0), none), None, "{mode:?} needs no kit");
+    }
+    assert_eq!(Reason::NoKitMap.text(), "No installed map supports Firefight yet.");
+    assert_eq!(Reason::NotKitMap.text(), "This map does not support Firefight.");
+    // The panel: one reason line and what to do, in place of the options.
+    assert_eq!(
+        firefight_map_lines(none).unwrap(),
+        ["No installed map supports Firefight yet", "Make one with h2 firefight kit"]
+    );
+    assert_eq!(
+        firefight_map_lines(elsewhere).unwrap()[0],
+        "This map does not support Firefight"
+    );
+    assert_eq!(firefight_map_lines(here), None);
+    for kit in [none, elsewhere] {
+        let lines = firefight_map_lines(kit).unwrap();
+        assert!(lines.len() <= MAX_PANEL_LINES);
+        for l in lines {
+            assert!(!l.contains("  ") && !l.ends_with('.') && !l.ends_with(' '), "{l:?}");
+        }
+    }
+    // The lobby's start state is held off ready while refused.
+    assert_eq!(start_state(READY_STATE, true), REFUSED_STATE);
 }
 
 #[test]
@@ -544,6 +595,61 @@ fn the_rows_go_after_the_other_rows_on_the_plan() {
     }
     assert!(text.contains("LOBBY_START_STATE"), "{text}");
     assert!(text.contains("PARTY_LEAVE"), "{text}");
+}
+
+/// The list's arrangement runs last of the constructor's `after` hooks
+/// (they run in reverse, so it is the outermost), after Clanker Options,
+/// Firefight Options, Halo 1 Options and Switch To: Clankermatch are
+/// added: a matchmaking lobby's Game Setup is Change Playlist... alone,
+/// with no Switch To: Clankermatch beside it.
+#[test]
+fn the_arrangement_runs_after_every_row_is_added() {
+    use crate::ui_kit::screen::KitTexts;
+    let mut r = hooks::Registry::new(hooks::Switches::defaults());
+    r.add(&h1row::SetupRow {
+        data_root: std::env::temp_dir(),
+    })
+    .unwrap();
+    let bots = Arc::new(crate::clankers::page(Arc::new(Store::defaults(
+        &crate::clankers::DEFS,
+    ))));
+    r.add(&KitTexts(Arc::clone(&bots))).unwrap();
+    r.add(&bots.class()).unwrap();
+    r.add(&crate::clankers::SetupRow { page: bots }).unwrap();
+    r.add(&crate::clankermatch::SwitchRow { hle: None }).unwrap();
+    let ff_store = Arc::new(Store::defaults(&ff::DEFS));
+    let page = Arc::new(ff::page(Arc::clone(&ff_store)));
+    r.add(&KitTexts(Arc::clone(&page))).unwrap();
+    r.add(&page.class()).unwrap();
+    r.add(&ff::SetupRow { page }).unwrap();
+    r.add(&LobbyMode {
+        offer: ALL,
+        store: Some(ff_store),
+        data: std::env::temp_dir(),
+        vfs: None,
+    })
+    .unwrap();
+    let text = r.build(&hooks::Base).unwrap().text();
+    let line = text
+        .lines()
+        .find(|l| l.contains("SQUAD_SETTINGS_LIST_CTOR"))
+        .unwrap();
+    // The plan's text lists the `after` hooks in the order they run.
+    let after = &line[line.find("after [").expect("after hooks")..];
+    let ours = after.find("party-lobby:").expect("the arrangement");
+    for theirs in [
+        "h1-options-row:",
+        "clankers-row:",
+        "clankermatch-switch:",
+        "firefight-row:",
+    ] {
+        let at = after.find(theirs).unwrap_or_else(|| panic!("{theirs} {line}"));
+        assert!(at < ours, "{theirs} runs before the arrangement: {line}");
+    }
+    // What the arrangement then makes of each list is
+    // `arrange_drops_the_switch_to_rows`'s: the matchmaking lobby's
+    // (retail's kind 6 with Switch To: Clankermatch added) keeps Change
+    // Playlist... alone.
 }
 
 /// Our actions are past retail's and every other row of ours.

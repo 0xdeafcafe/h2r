@@ -250,11 +250,6 @@ pub struct DiagBackend<B: Backend> {
     in_frame: u64,
     capture: Option<Capture>,
     next_texture: u64,
-    /// `H2_SWEEP_DIAG` (see [`crate::sweep_diag`]).
-    sweep: Option<crate::sweep_diag::SweepDiag>,
-    /// With `H2_SWEEP_DIAG`, until its frame is logged: where each host
-    /// texture came from, by ID.
-    origins: BTreeMap<u64, String>,
 }
 
 /// A host texture with the ID the capture names it by.
@@ -353,7 +348,6 @@ impl<B: Backend> DiagBackend<B> {
                 keep_tex: draw_set("H2_BOOT_CAPTURE_TEX"),
             })
         });
-        let sweep = crate::sweep_diag::SweepDiag::from_env();
         (
             DiagBackend {
                 inner,
@@ -366,8 +360,6 @@ impl<B: Backend> DiagBackend<B> {
                 in_frame: 1,
                 capture,
                 next_texture: 0,
-                sweep,
-                origins: BTreeMap::new(),
             },
             stats,
         )
@@ -389,39 +381,6 @@ impl<B: Backend> DiagBackend<B> {
     fn capturing(&mut self) -> Option<&mut Capture> {
         let f = self.in_frame;
         self.capture.as_mut().filter(|c| c.frame == f)
-    }
-
-    /// `H2_SWEEP_DIAG`: reads `color` back and logs it, in the frame being
-    /// logged.
-    fn sweep_samples(&mut self, color: B::Surface, width: u32, height: u32, what: &str)
-    where
-        B: Backend,
-    {
-        if !self
-            .sweep
-            .as_ref()
-            .is_some_and(|s| s.dumping(self.in_frame))
-        {
-            return;
-        }
-        let layout = GuestLayoutKind::Linear { pitch: width * 4 };
-        let r = self
-            .inner
-            .read_surface(color, D3DFormat::LinA8R8G8B8, width, height, layout);
-        if let Some(s) = &mut self.sweep {
-            match r {
-                Ok(bytes) => s.samples(what, &bytes, width, height),
-                Err(e) => s.line(&format!("  {what}: read back failed: {e}")),
-            }
-        }
-    }
-
-    /// `H2_SWEEP_DIAG`: notes where host texture `id` came from.
-    fn origin(&mut self, id: u64, what: impl FnOnce() -> String) {
-        if self.sweep.as_ref().is_some_and(|s| s.active()) {
-            self.origins
-                .insert(id, format!("{} (frame {})", what(), self.in_frame));
-        }
     }
 
     fn logging(&self) -> bool {
@@ -604,21 +563,11 @@ impl<B: Backend> DiagBackend<B> {
     fn observe_upload(
         &mut self, texture: &DecodedTexture, r: Result<B::Texture, String>,
     ) -> Result<Tracked<B::Texture, B::Surface>, String> {
-        if let Some(s) = &mut self.sweep {
-            s.upload(texture);
-        }
         if let Err(e) = &r {
             self.line(format!("upload_texture failed: {e}"));
         }
         let id = self.next_texture;
         self.next_texture += 1;
-        self.origin(id, || {
-            let d = &texture.desc;
-            format!(
-                "upload of {:?} {}x{} (guest bytes or a decoded readback)",
-                d.format, d.width, d.height
-            )
-        });
         if let Some(c) = &self.capture {
             let levels: Vec<String> = texture
                 .levels
@@ -658,7 +607,7 @@ impl<B: Backend> DiagBackend<B> {
     }
 
     fn inspects_draw(&mut self) -> bool {
-        self.capturing().is_some() || self.logging() || self.sweep.is_some() || self.probe.armed()
+        self.capturing().is_some() || self.logging() || self.probe.armed()
     }
 
     fn diagnosed_draw(
@@ -698,18 +647,6 @@ impl<B: Backend> DiagBackend<B> {
                 &format!("draw {k} color={color:?} depth={depth:?} textures={ids:?}\n{d:#?}"),
             );
         }
-        let sweep_logging = self
-            .sweep
-            .as_ref()
-            .is_some_and(|s| s.dumping(self.in_frame));
-        if sweep_logging && self.sweep.as_ref().is_some_and(|s| s.logged_draws() == 0) {
-            self.sweep_samples(
-                color,
-                draw.target.width,
-                draw.target.height,
-                "target before the frame's first draw",
-            );
-        }
         let probing = self.probe.armed();
         if probing {
             self.probe_enter(color, depth, Some((draw.target.width, draw.target.height)));
@@ -727,29 +664,6 @@ impl<B: Backend> DiagBackend<B> {
                 info.layout = Some(layout::describe(draw, textures, extents, None));
             }
             self.probe.draw(info);
-        }
-        if let Some(s) = &mut self.sweep {
-            if s.dumping(self.in_frame) {
-                s.draw(draw, &format!("{color:?}"), &outcome_name(&r));
-                let src: Vec<String> = ids
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, id)| {
-                        id.map(|id| {
-                            let o = self
-                                .origins
-                                .get(&id)
-                                .map_or("made before the log", String::as_str);
-                            format!("t{i}=tex {id}: {o}")
-                        })
-                    })
-                    .collect();
-                s.line(&format!("  src [{}]", src.join("; ")));
-            }
-            s.saw_draw(self.in_frame, draw);
-        }
-        if sweep_logging {
-            self.sweep_samples(color, draw.target.width, draw.target.height, "target after");
         }
         if let Some((k, path)) = snap {
             let t = &draw.target;
@@ -919,9 +833,6 @@ impl<B: Backend> Backend for DiagBackend<B> {
                     &format!("snapshot_surface {surface:?} opaque={opaque} -> tex {id}"),
                 );
             }
-            self.origin(id, || {
-                format!("copy of surface {surface:?} opaque={opaque}")
-            });
             Tracked { id, inner, source: TextureSource::Surface("snapshot of", surface) }
         }))
     }
@@ -988,9 +899,6 @@ impl<B: Backend> Backend for DiagBackend<B> {
         Ok(r.map(|inner| {
             let id = self.next_texture;
             self.next_texture += 1;
-            self.origin(id, || {
-                format!("depth bits of surface {depth:?} ({format:?} {width}x{height}) at +{offset:#x} generation {generation}")
-            });
             Tracked { id, inner, source: TextureSource::Surface("depth bits of", depth) }
         }))
     }
@@ -1008,9 +916,6 @@ impl<B: Backend> Backend for DiagBackend<B> {
                     &format!("surface_texture {surface:?} -> tex {id}"),
                 );
             }
-            self.origin(id, || {
-                format!("render-to-texture surface {surface:?} in place")
-            });
             Tracked { id, inner, source: TextureSource::Surface("render-to-texture", surface) }
         }))
     }
@@ -1099,7 +1004,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
         textures: [Option<&Self::Texture>; 4],
     ) -> bool {
         let draw = &candidate.fallback;
-        if self.capturing().is_some() || self.logging() || self.sweep.is_some() || self.probe.armed() {
+        if self.capturing().is_some() || self.logging() || self.probe.armed() {
             return false;
         }
         let stats = Arc::clone(&self.stats);
@@ -1193,7 +1098,6 @@ impl<B: Backend> Backend for DiagBackend<B> {
         Ok(r.map(|inner| {
             let id = self.next_texture;
             self.next_texture += 1;
-            self.origin(id, || format!("depth level surface {surface:?}"));
             Tracked { id, inner, source: TextureSource::Surface("depth level", surface) }
         }))
     }
@@ -1230,11 +1134,6 @@ impl<B: Backend> Backend for DiagBackend<B> {
         clear: Clear,
     ) -> Result<(), String> {
         self.line(format!("clear {color:?} depth={depth:?} {clear:?}"));
-        if let Some(s) = &mut self.sweep
-            && s.dumping(self.in_frame)
-        {
-            s.line(&format!("clear {color:?} depth={depth:?} {clear:?}"));
-        }
         if let Some(c) = self.capturing() {
             c.append(
                 "frame.txt",
@@ -1266,7 +1165,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
         draw: ResolvedDraw,
         textures: [Option<&Self::Texture>; 4],
     ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
-        // Capturing, logging and the sweep diagnostic read the draw after
+        // Capturing and logging read the draw after
         // the inner backend has drawn it.
         if self.inspects_draw() {
             let r = self.draw(color, depth, &draw, textures);
@@ -1330,15 +1229,6 @@ impl<B: Backend> Backend for DiagBackend<B> {
         gamma: Option<&[u8; 768]>,
     ) -> Result<(), String> {
         self.line(format!("present {surface:?} flags={flags:#x}"));
-        if let Some(s) = &mut self.sweep {
-            if s.dumping(self.in_frame) {
-                s.line(&format!("present {surface:?} flags={flags:#x}"));
-            }
-            s.presented(self.in_frame);
-            if !s.active() {
-                self.origins = BTreeMap::new();
-            }
-        }
         if let Some(c) = self.capturing() {
             c.append(
                 "frame.txt",
@@ -1463,11 +1353,6 @@ impl<B: Backend> Backend for DiagBackend<B> {
         self.line(format!("copy_surface {src:?} -> {dst:?}"));
         self.probe
             .op("copy", &format!("{src:?}"), format!("to {dst:?}"));
-        if let Some(s) = &mut self.sweep
-            && s.dumping(self.in_frame)
-        {
-            s.line(&format!("copy_surface {src:?} -> {dst:?}"));
-        }
         if let Some(c) = self.capturing() {
             c.append("frame.txt", &format!("copy_surface {src:?} -> {dst:?}"));
         }

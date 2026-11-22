@@ -296,6 +296,25 @@ pub fn lobby_players(m: &dyn GuestMemory, f: &Facts) -> R<Option<u32>> {
     Ok(Some(m.u32(s + PLAYER_COUNT)?))
 }
 
+/// The people in the party of a matchmaking lobby this console hosts
+/// ([`matchmaking_host`]): the squad session's player count (`+0x1118`,
+/// what `0x66050` holds against the hopper's party bounds). Every console
+/// of the party and each of its guests has a player there, and no phantom
+/// does: a Clankermatch's phantoms join the target session only
+/// (docs/game/bots.md §8.4, "Phantoms only"). `None` out of such a lobby,
+/// or with the squad session out of its lobby states.
+pub fn party_players(m: &dyn GuestMemory, f: &Facts) -> R<Option<u32>> {
+    if !matchmaking_host(f) || !f.state.is_some_and(lobby_state) {
+        return Ok(None);
+    }
+    let s = m.u32(SESSION)?;
+    if s == 0 {
+        return Ok(None);
+    }
+    let n = m.u32(s + PLAYER_COUNT)?;
+    Ok((1..=16).contains(&n).then_some(n))
+}
+
 /// The log line for [`lobby_players`]: what `h2 bots test` reads as the
 /// lobby's own count (the Live server's count of a session is what the
 /// host told it, not the game's).
@@ -385,6 +404,8 @@ pub fn blocked_by(state: u32, f: &Facts) -> String {
         n => format!("the matchmaking check (state {n})"),
     }
 }
+
+pub mod match_wait;
 
 #[cfg(test)]
 mod tests;

@@ -1,6 +1,6 @@
 # Running Halo 2 as a dedicated host
 
-**Partially feasible.** A Mac can run the native title without a window. The question is whether Halo 2 will keep that machine in charge when every player is remote. Its simulation chooses the host by machine identity, but its normal lobby starts through a local player. The dedicated-host spike provides `h2 serve --system-link` for the first real client join. The join and zero-local-player lifecycle still need a game run.
+**Partially feasible.** Zero-local-player matches run on Cloudflare hosts: an all-phantom sim lease boots from the private bundle, plays to `match_over` and reports ([measurements](notes/host-halving.md)). A remote human joining a dedicated host still needs a game run, on a Mac with `h2 lab run --dedicated` and on a Cloudflare host through the tunnel. Halo 2's simulation chooses the host by machine identity, but its normal lobby starts through a local player; the host lobby below supplies that start without one.
 
 Live would choose and reserve the machine. The native game would run the match. With that arrangement every player has a network path to the authority, including the player who used to host. Fairness improves by removing that player's zero-network-delay advantage. Latency improves for a given player only if the new route and server perform better.
 
@@ -160,26 +160,31 @@ the defaults give these estimates in USD.
 
 Both cloud providers use the same Linux/amd64 image. It runs as a non-root
 user in a scratch rootfs with bookworm's ELF runtime libraries and CA
-certificates. Ship the image only
-through a private registry because it contains a module compiled from the
-owner's disc.
+certificates. The image holds public code only: the headless `h2` and its
+entrypoint. The game module compiled from the owner's disc comes with the
+private [game data bundle](#game-data-bundle) at start, so CI builds and
+pushes the image on every push to master
+([Deploy from CI](live-worker.md#deploy-from-ci)).
 
-On macOS, `deploy/host/build.sh` cross-builds the headless `h2` with
-cargo-zigbuild targeting `x86_64-unknown-linux-gnu.2.36` and builds the
-module with `h2 build --arch x86_64-linux --tier clang`. Pass
-`--coverage FILE` to stage the [slim host profile](dedicated-host-build.md#slim-host).
-Clang and lld
-use the Debian bookworm amd64 sysroot at `H2_LINUX_SYSROOT`. Docker copies
-`h2`, `libh2game.so` and its stamp from `deploy/host/stage/`. The matching
-`default.xbe` and maps come from private runtime provisioning. [Build and run instructions](../../deploy/host/README.md) · [Linux module build](../runtime/linux.md)
+`deploy/host/build.sh --h2` builds the headless `h2` with cargo-zigbuild
+targeting `x86_64-unknown-linux-gnu.2.36`, on macOS or Linux, and stages
+it in `deploy/host/stage/h2`; Docker copies it from there. On macOS,
+`deploy/host/build.sh --module` builds the module with `h2 build --arch
+x86_64-linux --tier clang` into `deploy/host/stage/image/` for the
+bundle. Pass `--coverage FILE` to build the
+[slim host profile](dedicated-host-build.md#slim-host). Clang and lld use
+the Debian bookworm amd64 sysroot at `H2_LINUX_SYSROOT`. The module and
+`h2` must come from the same generator revision
+([The game module](dedicated-host-build.md#the-game-module)).
+[Build and run instructions](../../deploy/host/README.md) · [Linux module build](../runtime/linux.md)
 
 With `H2_PACK=1` the entrypoint runs `h2 host pack`, which starts empty
 and takes matches over a private control port. This is how Cloudflare
 runs it. [Packed hosts](#packed-hosts) Otherwise it passes `H2_LEASE`,
 `H2_LIVE`, `H2_TOKEN`, `H2_DATA_URL`, `H2_DATA_SHA` and optional
 `H2_REGION` to `h2 host run` for a single lease, as in a local Docker
-smoke test. The host verifies the bundle hash and caches the data in
-`/var/cache/h2`. The image exposes UDP 31000–31069 for ten slots of game
+smoke test. The host verifies the bundle hash, caches the data in
+`/var/cache/h2` and runs the bundle's module from there. The image exposes UDP 31000–31069 for ten slots of game
 ports, TCP 31099 for pack control and TCP 31100–31109 for the slots'
 datagram tunnels.
 
@@ -371,14 +376,17 @@ key in `--data` (the operator, the default) or an admin account's key with
 
 ```sh
 h2 live hosts start --map lockout --variant 'Slayer' --max-players 8 \
-  [--class small|large] [--region lhr] [--transport udp|tunnel] [--no-launch] \
+  [--bots N] [--class small|large] [--region lhr] [--transport udp|tunnel] [--no-launch] \
   [--live URL] [--data DIR | --as GAMERTAG]
 ```
 
 Without `--no-launch` the server reserves the lease (budget,
 `LIVE_MAX_HOSTS` and cost rows all apply, exactly as for a match) and its
 configured provider starts the container; the command prints the lease
-JSON. With `--no-launch` no provider is started: the server records the
+JSON. `--bots N` (default 0, at most `--max-players` minus one, so one
+seat stays for a person) puts N Clanker names in the lease's `bots`; the
+host adds them to its lobby as phantoms ([`h2 host run`](#h2-host-run)).
+With `--no-launch` no provider is started: the server records the
 lease as `requested` and answers its host token, and the command prints
 shell lines a manual container run can `eval` — the only place the token
 is ever shown:
@@ -432,7 +440,7 @@ game-data bundle. Every required flag can also come from the environment.
 | `--region` | `H2_REGION` | Optional provider region label |
 | `--base-port` | `H2_BASE_PORT` | XNet base port, default 31000 |
 | `--tunnel-listen` | `H2_TUNNEL_LISTEN` | Internal tunnel listener, default `127.0.0.1:31100` |
-| `--out` | `H2_IMAGE` | Prebuilt game module directory, default `$TMPDIR/h2boot` |
+| `--out` | `H2_IMAGE` | Prebuilt game module directory, default the verified bundle's `image/` |
 | `--data` | `H2_DATA` | Writable game data directory, default private per-run scratch space |
 |  | `H2_AGENT` | Optional TCP endpoint for the child's agent, as `tcp://HOST:PORT` |
 
@@ -440,8 +448,13 @@ On Unix, the supervisor checks that the JSON lease ID matches `--lease`
 or `H2_LEASE` before provisioning. It provisions the verified bundle under
 `H2_HOST_CACHE` (default `host-data` in the user cache) and starts a child
 `h2 serve --system-link --host-light`. The bundle's disc directory must
-contain `default.xbe` and the maps. The module must match the XBE and its
-build settings, including `H2_OPT`. Before it starts either child, the
+contain `default.xbe` and the maps. The child runs the bundle's module,
+`<cache>/<sha256>/image`, unless `--out` or `H2_IMAGE` names another
+directory. Before either child starts, the supervisor checks the module's
+stamp against the XBE and this `h2`'s build settings, including
+`H2_OPT`, and stops with a named error if the bundle carries no module or
+the stamp does not match.
+[The game module](dedicated-host-build.md#the-game-module) Before it starts either child, the
 supervisor copies the bundle's `bots/` files into the child's data
 directory (`<data>/bots`), where the game loads a map's nav mesh and grid
 and the nav worker finds them current. A sim lease whose map has no nav
@@ -455,6 +468,17 @@ and `live: true`. Open returns the session ID acknowledged by Live. The
 supervisor registers that ID and the endpoint once `host.lobby.state` shows a lobby. It requests
 start when the lobby is ready and has at least the reserved player count,
 or one player for an open lobby. Lease roster authorization belongs to Live.
+
+A non-sim lease with `bots` starts the child with `--host-bots`. Once the
+host is registered, the supervisor adds each leased bot through the
+child's `sim.player.add` as a brain-driven phantom named as the lease
+names it, with the host-made xuid `live_proto::bots::local_xuid(n)` for
+seat n from 1. A refused add is a named error in the host log; the other
+bots and the lobby carry on. Phantoms are not players to the supervisor:
+it counts only lobby players whose name lacks the bot mark (U+2699), so
+phantoms alone never start a match, keep a lobby from going idle, or
+appear in the reported player counts.
+[`add_phantoms`](../../crates/apps/cli/src/host_cmd/supervisor.rs)
 
 When the supervisor receives a TCP `H2_AGENT` address, the child also
 binds that address to the same agent. Both listeners share the same
@@ -488,8 +512,8 @@ and reaps its game child. Cloud providers leave this variable unset.
 
 Bot-only leases with a `sim-<run_id>` assignment use the existing
 unpaced simulator in a dedicated child process. The supervisor registers
-the lease and starts the child with the verified disc and prebuilt clang
-module. The child fetches its match from `GET /v1/hosts/{lease}/sim` and uses
+the lease and starts the child with the verified disc and the same
+checked module. The child fetches its match from `GET /v1/hosts/{lease}/sim` and uses
 the lease bearer to upload the recording and report through Live's
 private sim routes. The supervisor observes gameplay through `match.status`.
 A successful child exit reports `MatchOver` to the host API. A failed child
@@ -587,6 +611,7 @@ h2 host bundle --disc "$H2_DISC" --out "$bundle_dir"
 | Disc files | Why the host needs them |
 |---|---|
 | `default.xbe` | Boot reads the original executable and uses its full hash to identify the prebuilt module. |
+| `image/libh2game.so`, `image/libh2game.so.stamp` | With `--image DIR`: the Linux game module the host runs and its build stamp, compiled from the disc. The container image does not carry it. |
 | `maps/mainmenu.map` | The light host still boots the retail menu and loads the multiplayer lobby. |
 | `maps/shared.map`, `maps/single_player_shared.map` | The map loader can resolve references into these shared caches. |
 | Multiplayer `maps/*.map` | The host loads these maps for matches. The bundle selects them by their cache headers. |
@@ -605,6 +630,12 @@ bundled map's header and refuses a map without a current mesh and grid.
 `--data DIR` names the data root (default: the one `h2 play` uses).
 `--no-bots` leaves the bot data out.
 [Bundle nav data](../../crates/live/host-data/src/bundle/nav.rs) · [Bot data files](../game/bots.md)
+
+`--image DIR` adds `libh2game.so` and `libh2game.so.stamp` from `DIR`
+(`deploy/host/build.sh --module` stages them in `deploy/host/stage/image`).
+A deployed host needs it: without `--out` or `H2_IMAGE`, `h2 host run`
+refuses a bundle with no module.
+[Bundle module](../../crates/live/host-data/src/bundle/image.rs) · [The game module](dedicated-host-build.md#the-game-module)
 
 To use server copies, make them with `h2 server-map strip ORIGINAL.map
 OUTPUT.map`, keeping the original filenames, and add `--stripped-maps DIR`.

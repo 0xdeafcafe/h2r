@@ -20,8 +20,7 @@
 //!   ([`Host::ask`]): the layer then builds no entry for them.
 //!
 //! Context-only, like the fog's: it reads and writes the memory its
-//! context sees, so the pipelined render runs it on its own thread
-//! (docs/graphics/pipelined-render.md, "Render-safe hooks").
+//! context sees.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};

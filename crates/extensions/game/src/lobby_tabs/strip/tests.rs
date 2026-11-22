@@ -11,7 +11,7 @@ const BITMAP_AT: u32 = AREA + 0x300;
 /// Where the strip's widgets start.
 const OURS: u32 = AREA + 0x1000;
 
-/// Split Screen, no kit map: MULTIPLAYER and FIREFIGHT off.
+/// Split Screen, no kit map, no Live: MULTIPLAYER off, every other tab on.
 fn split_screen(leader: bool, selected: Tab) -> Shown {
     Shown {
         place: Place::SplitScreen,
@@ -306,10 +306,7 @@ fn a_member_reads_its_tab_from_the_lobby() {
         retail: RetailMode::Custom,
         kit_map: true,
         clanker: None,
-        facts: Facts {
-            kit_maps: true,
-            ..Facts::default()
-        },
+        facts: Facts::default(),
     };
     let s = shown(&reading, Present::ALL, Mode::Multiplayer);
     assert_eq!(s.selected, Tab::Firefight, "a kit map in a custom lobby");
@@ -383,8 +380,10 @@ fn ui_lobby_tabs_answers_each_tab_with_its_state_and_reason() {
     assert!(tabs[1]["reason"].is_null());
     assert_eq!(tabs[2]["state"], "on");
     assert_eq!(tabs[3]["tab"], "firefight");
-    assert_eq!(tabs[3]["reason"], Reason::NoKitMap.text());
+    assert_eq!(tabs[3]["state"], "on", "on with no kit map installed");
+    assert!(tabs[3]["reason"].is_null());
     assert_eq!(tabs[4]["tab"], "co_op");
+    assert_eq!(tabs[4]["state"], "on", "Split Screen's co-op is retail's");
     assert!(v["clanker"].is_null(), "not on MULTIPLAYER");
     assert!(json_of(&s, None)["notice"].is_null());
 }

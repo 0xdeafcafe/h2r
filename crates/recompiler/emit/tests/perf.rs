@@ -428,8 +428,8 @@ fn runner_transfer_benchmark() {
 /// data, pop, ret), eight a loop trip, entered either by the runner (an
 /// indirect call, `runner`) or directly by the caller's handler (a static
 /// call, `direct`). Every callee starts with its stack store, so each
-/// entry pays whatever it takes to start a gate hold (`H2_ENTRY_GATE`), and
-/// a counting module settles its count at every exit (`H2_VIEW_CHARGE`).
+/// entry pays whatever it takes to start a gate hold, and a counting
+/// module spends its count in the view at every exit.
 ///
 /// `cargo test -p emit --release --test perf entry_access_benchmark -- --ignored --nocapture`
 #[test]
@@ -1053,38 +1053,15 @@ fn held_gate_matches_the_helper_path_at_every_stop_and_fault() {
         mem.set_u32(STACK, runtime::exec::HARNESS_EXIT).unwrap();
         mem
     };
-    // The switches that change how a direct call settles the gate and the
-    // count: none, the lent gate, the lent count, and both.
-    // Then the handler's own entry and exit: the gate taken at entry, the
-    // count spent in the view, both, and everything at once.
-    const GATE: &str = "#define H2_DIRECT_GATE 1\n";
-    const COUNT: &str = "#define H2_DIRECT_COUNT 1\n";
-    const ENTRY: &str = "#define H2_ENTRY_GATE 1\n";
-    const CHARGE: &str = "#define H2_VIEW_CHARGE 1\n";
-    let switches = [
-        ("", String::new()),
-        ("-lent", GATE.into()),
-        ("-count", COUNT.into()),
-        ("-both", format!("{GATE}{COUNT}")),
-        ("-entry", ENTRY.into()),
-        ("-charge", CHARGE.into()),
-        ("-entry-charge", format!("{ENTRY}{CHARGE}")),
-        ("-all", format!("{GATE}{COUNT}{ENTRY}{CHARGE}")),
-    ];
-    for (accounting, (tag, defines)) in [false, true].into_iter().flat_map(|a| switches.clone().map(|s| (a, s))) {
-        let gate = tag;
-        // A counting handler with H2_VIEW_CHARGE spends its whole count in
-        // the view, so the runtime settles all of it from there.
-        let view_charge = accounting && defines.contains(CHARGE);
-        let defines = format!("#undef H2_VIEW_CHARGE\n{defines}");
+    for accounting in [false, true] {
         let (_lib, dispatch) = compile_module_defines(
-            &format!("held-gate{tag}"),
+            "held-gate",
             held_gate_functions(),
             false,
             true,
             emit::opt::Passes::ALL,
             emit::Codegen::accesses(accounting),
-            &defines,
+            "",
         );
         let rt = Runtime::new(memory(), dispatch);
         for fault in [false, true] {
@@ -1115,17 +1092,17 @@ fn held_gate_matches_the_helper_path_at_every_stop_and_fault() {
                         ctx.arm_preemption(slice);
                         t = next;
                     };
-                    let key = format!("accounting {accounting} gate {gate} fault {fault} fast {fast} slice {slice}");
+                    let key = format!("accounting {accounting} fault {fault} fast {fast} slice {slice}");
                     assert_eq!(end.kind, if fault { abi::FAULT } else { abi::STOP }, "{key}: {:?}", ctx.events());
                     let spent = stops.iter().map(|s| s.1).sum::<u64>() + ctx.take_slice_spent();
                     let p = ctx.take_profile().unwrap();
                     assert_eq!(p.memory_accessors, spent, "{key}");
                     // Only the page-crossing read and the faulting store miss
-                    // (a counting module does not report its inline accesses,
-                    // unless it spends its count in the view).
+                    // (a counting module spends its count in the view, so it
+                    // reports all of its accesses).
                     let inline = match (fast, accounting) {
                         (true, false) => spent - 1 - u64::from(fault),
-                        (true, true) if view_charge => spent,
+                        (true, true) => spent,
                         _ => 0,
                     };
                     assert_eq!(p.fast_memory_accesses, inline, "{key}");
@@ -1161,7 +1138,7 @@ fn held_gate_matches_the_helper_path_at_every_stop_and_fault() {
                 }
                 stops
             };
-            assert!(run(false) == run(true), "accounting {accounting} gate {gate} slice {slice}: stops differ");
+            assert!(run(false) == run(true), "accounting {accounting} slice {slice}: stops differ");
         }
     }
 }
@@ -1230,13 +1207,12 @@ fn flat_owner_coverage() {
 /// prints the table.
 #[test]
 fn cold_accesses_by_cause() {
-    // Isolate entry-gate and direct-gate savings from the flat emitter's
-    // span preflight, which can acquire the gate before the first access.
+    // Isolate the paged path from the flat emitter's span preflight, which
+    // can acquire the gate before the first access.
     const PAGED: &str = "#undef H2_FLAT_RAM\n#define H2_FLAT_RAM 0\n#undef H2_FLAT_SPAN\n#define H2_FLAT_SPAN 0\n";
     const FLAT: &str = "#undef H2_FLAT_RAM\n#define H2_FLAT_RAM 0\n#undef H2_FLAT_SPAN\n#define H2_FLAT_SPAN 1\n";
-    const OFF: &str = "#undef H2_ENTRY_GATE\n#define H2_ENTRY_GATE 0\n#undef H2_VIEW_CHARGE\n#define H2_VIEW_CHARGE 0\n";
     for accounting in [false, true] {
-        let c = cold_counts(accounting, &format!("cold-stats-{accounting}"), &format!("{PAGED}{OFF}"));
+        let c = cold_counts(accounting, &format!("cold-stats-{accounting}"), PAGED);
         let table: Vec<_> = COLD_CAUSES.iter().zip(c).map(|(k, n)| format!("{k} {n}")).collect();
         println!("accounting {accounting}: {}", table.join(", "));
         // main, from the runner; all 40 calls are direct, each leaf from
@@ -1247,37 +1223,12 @@ fn cold_accesses_by_cause() {
         assert!(c[6] >= 1, "the cross-page read: {table:?}");
         // The leaf opens with a read and write of [esp+4]. Flat code
         // keeps the gate for that span only when the backend is enabled.
-        // Otherwise the flat-capable image follows the paged entry policy.
-        let flat = cold_counts(accounting, &format!("cold-stats-flat-{accounting}"), &format!("{FLAT}{OFF}"));
+        // Otherwise the flat-capable image follows the paged policy.
+        let flat = cold_counts(accounting, &format!("cold-stats-flat-{accounting}"), FLAT);
         let flat_runtime = cfg!(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))
             && std::env::var("H2_FLAT_RAM").as_deref() == Ok("1");
         let expected = if flat_runtime { [1, 0, 40] } else { [1, 40, 40] };
         assert_eq!(flat[..3], expected, "{flat:?}");
-        // H2_DIRECT_GATE lends the hold across the calls: the leaves and
-        // main after them start inline, but for the calls a tick ended the
-        // hold before (one in 32 trips, calls and loop headers alike).
-        let g = cold_counts(accounting, &format!("cold-stats-gate-{accounting}"), &format!("{PAGED}{OFF}#define H2_DIRECT_GATE 1\n"));
-        let gt: Vec<_> = COLD_CAUSES.iter().zip(g).map(|(k, n)| format!("{k} {n}")).collect();
-        println!("accounting {accounting} H2_DIRECT_GATE: {}", gt.join(", "));
-        assert_eq!(g[0], c[0], "{gt:?}");
-        assert!(g[1] + g[2] <= 2, "{gt:?}");
-        assert!(g.iter().sum::<u64>() + 60 <= c.iter().sum::<u64>(), "{gt:?} against {table:?}");
-        // H2_ENTRY_GATE: every handler takes the gate as it starts, whether
-        // the runner or a direct caller invoked it, and main takes it again
-        // as each call returns inline. No access is cold for those causes;
-        // the cross-page read still is.
-        for (extra, name) in [("", "H2_ENTRY_GATE"), ("#define H2_VIEW_CHARGE 1\n", "H2_ENTRY_GATE+H2_VIEW_CHARGE")] {
-            let e = cold_counts(
-                accounting,
-                &format!("cold-stats-entry-{}-{accounting}", extra.len()),
-                &format!("{PAGED}#undef H2_ENTRY_GATE\n#define H2_ENTRY_GATE 1\n#undef H2_VIEW_CHARGE\n{extra}"),
-            );
-            let et: Vec<_> = COLD_CAUSES.iter().zip(e).map(|(k, n)| format!("{k} {n}")).collect();
-            println!("accounting {accounting} {name}: {}", et.join(", "));
-            assert_eq!(e[..3], [0, 0, 0], "{et:?}");
-            assert!(e[6] >= 1, "the cross-page read: {et:?}");
-            assert!(e.iter().sum::<u64>() + 80 <= c.iter().sum::<u64>(), "{et:?} against {table:?}");
-        }
     }
 }
 
@@ -1757,10 +1708,9 @@ fn a_new_hold_marks_the_page_the_last_hold_dirtied() {
 /// matches), through an alias, and into different words of the dirty
 /// bitmap, mark exactly the physical pages they reach, run after run: each
 /// drain clears the bits, and the next run must set them again rather than
-/// find them marked. With and without `H2_DIRTY_INLINE` (the store site
-/// tests the bit itself) and access accounting.
+/// find them marked. With and without access accounting.
 #[test]
-fn stores_mark_exactly_their_pages_with_and_without_dirty_inline() {
+fn stores_mark_exactly_their_pages() {
     use runtime::watch::{CONTIGUOUS_BASE, DirtyRange};
     const V: u32 = 0x120000;
     // V, V+1, V+2 and the alias V+3 (of V's page); V+4 is only read.
@@ -1781,205 +1731,39 @@ fn stores_mark_exactly_their_pages_with_and_without_dirty_inline() {
     });
     let want: Vec<DirtyRange> =
         [0x10000, 0x40000, 0x100_0000].map(|p| DirtyRange { addr: CONTIGUOUS_BASE | p, len: 0x1000 }).to_vec();
-    for (tag, defines) in [("", "#undef H2_DIRTY_INLINE\n#define H2_DIRTY_INLINE 0\n"), ("-inline", "#undef H2_DIRTY_INLINE\n#define H2_DIRTY_INLINE 1\n")] {
-        for accounting in [false, true] {
-            let (_lib, dispatch) = compile_module_defines(
-                &format!("dirty-pages{tag}"),
-                vec![f.clone()],
-                false,
-                true,
-                emit::opt::Passes::ALL,
-                emit::Codegen::accesses(accounting),
-                defines,
-            );
-            let mut mem = Guest::new();
-            mem.map(A, 4096, 0x2000, Permissions::RX).unwrap();
-            mem.map(STACK & !0xfff, 4096, 0x3000, Permissions::RW).unwrap();
-            for (i, p) in PHYS.into_iter().enumerate() {
-                mem.map(V + i as u32 * 0x1000, 4096, p, Permissions::RW).unwrap();
-            }
-            mem.set_u32(STACK, runtime::exec::HARNESS_EXIT).unwrap();
-            let watch = mem.subscribe_writes("dirty-pages");
-            for p in [0x10000, 0x14000, 0x40000, 0x100_0000] {
-                mem.watch_writes(watch, CONTIGUOUS_BASE + p, 4096).unwrap();
-            }
-            let rt = Runtime::new(mem, dispatch);
-            let mut ctx = ExecCtx::new(rt.clone(), 1);
-            for run in 0..3 {
-                // More trips than a hold lasts (H2_GATE_TRIPS): several holds.
-                let mut cpu = CpuAbi { esp: STACK, edi: V, ecx: 100, ..CpuAbi::default() };
-                let t = Runner::default().run(&mut cpu, &mut ctx, A);
-                assert_eq!((t.kind, cpu.eip), (runtime::abi::STOP, runtime::exec::HARNESS_EXIT), "{:?}", ctx.events());
-                let got = rt.memory().take_dirty(watch).unwrap();
-                assert_eq!(got, want, "dirty inline {tag:?}, accounting {accounting}, run {run}");
-            }
-            assert_eq!(rt.memory().u32(V + 0x10).unwrap(), 0x5eed_0001);
-        }
-    }
-}
-
-/// What a store to a page other than the hold's last-marked one costs,
-/// with a write watch active (`watching`): the loop stores to two pages in
-/// turn, both already marked after the first trip, as hot pages stay
-/// between drains. `H2_DIRTY_INLINE=1` tests the bit at the site; without
-/// it the site calls `h2_mark_dirty`, which finds the bit set and returns.
-/// `nowatch` is the same loop with no watch, for reference.
-///
-/// `cargo test -p emit --release --test perf dirty_store_benchmark -- --ignored --nocapture`
-#[test]
-#[ignore = "benchmark; run release with --nocapture"]
-fn dirty_store_benchmark() {
-    use runtime::watch::CONTIGUOUS_BASE;
-    const V: u32 = 0x120000;
-    let n: u32 = std::env::var("H2_PERF_ITERS").ok().and_then(|v| v.parse().ok()).unwrap_or(5_000_000);
-    let trials: usize = std::env::var("H2_PERF_TRIALS").ok().and_then(|v| v.parse().ok()).unwrap_or(9);
-    let f = function(A, |a| {
-        let mut top = a.create_label();
-        a.mov(ecx, n)?;
-        a.set_label(&mut top)?;
-        a.mov(dword_ptr(edi), ecx)?;
-        a.mov(dword_ptr(edi + 0x1000), ecx)?;
-        a.dec(ecx)?;
-        a.jnz(top)?;
-        a.ret()
-    });
-    let (_lib, dispatch) = compile_module_with(
-        "dirty-store",
-        vec![f],
-        false,
-        true,
-        emit::opt::Passes::from_env().unwrap(),
-        emit::Codegen::from_env().unwrap(),
-    );
-    let mut mem = Guest::new();
-    mem.map(A, 4096, 0x2000, Permissions::RX).unwrap();
-    mem.map(STACK & !0xfff, 4096, 0x3000, Permissions::RW).unwrap();
-    mem.map(V, 0x2000, 0x10000, Permissions::RW).unwrap();
-    mem.set_u32(STACK, runtime::exec::HARNESS_EXIT).unwrap();
-    let rt = Runtime::new(mem, dispatch);
-    // No watch first: a subscription, once made, stays for the rest.
-    for watched in [false, true] {
-        let watch = watched.then(|| {
-            let mut m = rt.memory();
-            let w = m.subscribe_writes("dirty-store");
-            m.watch_writes(w, CONTIGUOUS_BASE + 0x10000, 0x2000).unwrap();
-            w
-        });
-        let mut ctx = ExecCtx::new(rt.clone(), 1);
-        let mut times = Vec::new();
-        for _ in 0..trials {
-            let mut cpu = CpuAbi { esp: STACK, edi: V, ..CpuAbi::default() };
-            let start = Instant::now();
-            let t = Runner::default().run(&mut cpu, &mut ctx, A);
-            times.push(start.elapsed().as_secs_f64() * 1e9 / n as f64);
-            assert_eq!((t.kind, cpu.eip), (runtime::abi::STOP, runtime::exec::HARNESS_EXIT), "{:?}", ctx.events());
-        }
-        if let Some(w) = watch {
-            let mut m = rt.memory();
-            assert!(!m.take_dirty(w).unwrap().is_empty());
-        }
-        times.sort_by(f64::total_cmp);
-        println!(
-            "dirty store, {}: n={n}, trials={trials}, min={:.3} median={:.3} max={:.3} ns/iteration (two stores)",
-            if watched { "watch" } else { "nowatch" },
-            times[0],
-            times[trials / 2],
-            times[trials - 1]
+    for accounting in [false, true] {
+        let (_lib, dispatch) = compile_module_defines(
+            "dirty-pages",
+            vec![f.clone()],
+            false,
+            true,
+            emit::opt::Passes::ALL,
+            emit::Codegen::accesses(accounting),
+            "",
         );
-    }
-}
-
-/// What `H2_DIRTY_INLINE=1` costs in code: every 16th owner of the lifted
-/// image, emitted and compiled at -O2 with the inline RAM path, with and
-/// without the switch, and the `__text` bytes of both (only objects under
-/// Cargo's scratch directory; nothing is linked).
-/// `cargo test -p emit --release --test perf image_dirty_inline_code_size -- --ignored --nocapture`
-#[test]
-#[ignore = "reads the retail XBE (H2_XBE)"]
-fn image_dirty_inline_code_size() {
-    image_switch_code_size("H2_DIRTY_INLINE", emit::Codegen::default());
-}
-
-/// As [`image_dirty_inline_code_size`], for `H2_DIRECT_GATE=1` in a module
-/// that counts its accesses (as the game's build does).
-/// `cargo test -p emit --release --test perf image_direct_gate_code_size -- --ignored --nocapture`
-#[test]
-#[ignore = "reads the retail XBE (H2_XBE)"]
-fn image_direct_gate_code_size() {
-    image_switch_code_size("H2_DIRECT_GATE", emit::Codegen::accesses(true));
-}
-
-/// As [`image_direct_gate_code_size`], for `H2_DIRECT_COUNT=1`.
-/// `cargo test -p emit --release --test perf image_direct_count_code_size -- --ignored --nocapture`
-#[test]
-#[ignore = "reads the retail XBE (H2_XBE)"]
-fn image_direct_count_code_size() {
-    image_switch_code_size("H2_DIRECT_COUNT", emit::Codegen::accesses(true));
-}
-
-/// `switch`: the names to set, joined by `+`.
-fn image_switch_code_size(switch: &str, codegen: emit::Codegen) {
-    let name = format!("{switch} code size");
-    let Some(path) = common::xbe_path() else {
-        common::skip(&name, "no XBE (set H2_XBE)");
-        return;
-    };
-    let Some(header) = common::abi_header() else {
-        common::skip(&name, "no h2abi.h");
-        return;
-    };
-    let data = std::fs::read(path).unwrap();
-    let x = xbe::Xbe::parse(&data).unwrap();
-    let analysis = analyze::analyze(&x).unwrap();
-    let owners = emit::plan_image(&analysis, &x, emit::opt::Passes::ALL).unwrap();
-    let sample: Vec<_> = owners.into_iter().step_by(16).collect();
-    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{switch}-size"));
-    let src = dir.join("src");
-    let _ = std::fs::remove_dir_all(&dir);
-    emit::write_module_with(&sample, &src, codegen).unwrap();
-    emit::compile::install_header(&src, &header).unwrap();
-    let cc = emit::compile::compiler().unwrap();
-    let mut sources: Vec<_> = std::fs::read_dir(&src)
-        .unwrap()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "c"))
-        .collect();
-    sources.sort();
-    // The __text section's size of a Mach-O object, from `size -m`.
-    let text = |obj: &std::path::Path| -> u64 {
-        let out = std::process::Command::new("size").arg("-m").arg(obj).output().unwrap();
-        let s = String::from_utf8_lossy(&out.stdout);
-        s.lines()
-            .find_map(|l| l.trim().strip_prefix("Section (__TEXT, __text): "))
-            .map_or(0, |n| n.trim().parse().unwrap())
-    };
-    let mut sizes = [0u64; 2];
-    for (i, inline) in [false, true].into_iter().enumerate() {
-        let objs = dir.join(format!("obj-{inline}"));
-        std::fs::create_dir_all(&objs).unwrap();
-        for s in &sources {
-            let obj = objs.join(s.file_stem().unwrap()).with_extension("o");
-            let mut c = std::process::Command::new(&cc);
-            c.args(emit::compile::CFLAGS);
-            c.args(["-O2", "-DH2_FASTMEM=1", "-DH2_X87_NATIVE=1", "-DH2_SSE_NATIVE=1", "-DH2_DIRECT_CALLS=1"]);
-            if inline {
-                c.args(switch.split('+').map(|s| format!("-D{s}=1")));
-            }
-            let status = c.arg("-c").arg("-I").arg(&src).arg(s).arg("-o").arg(&obj).status().unwrap();
-            assert!(status.success(), "{}", s.display());
-            sizes[i] += text(&obj);
+        let mut mem = Guest::new();
+        mem.map(A, 4096, 0x2000, Permissions::RX).unwrap();
+        mem.map(STACK & !0xfff, 4096, 0x3000, Permissions::RW).unwrap();
+        for (i, p) in PHYS.into_iter().enumerate() {
+            mem.map(V + i as u32 * 0x1000, 4096, p, Permissions::RW).unwrap();
         }
+        mem.set_u32(STACK, runtime::exec::HARNESS_EXIT).unwrap();
+        let watch = mem.subscribe_writes("dirty-pages");
+        for p in [0x10000, 0x14000, 0x40000, 0x100_0000] {
+            mem.watch_writes(watch, CONTIGUOUS_BASE + p, 4096).unwrap();
+        }
+        let rt = Runtime::new(mem, dispatch);
+        let mut ctx = ExecCtx::new(rt.clone(), 1);
+        for run in 0..3 {
+            // More trips than a hold lasts (H2_GATE_TRIPS): several holds.
+            let mut cpu = CpuAbi { esp: STACK, edi: V, ecx: 100, ..CpuAbi::default() };
+            let t = Runner::default().run(&mut cpu, &mut ctx, A);
+            assert_eq!((t.kind, cpu.eip), (runtime::abi::STOP, runtime::exec::HARNESS_EXIT), "{:?}", ctx.events());
+            let got = rt.memory().take_dirty(watch).unwrap();
+            assert_eq!(got, want, "accounting {accounting}, run {run}");
+        }
+        assert_eq!(rt.memory().u32(V + 0x10).unwrap(), 0x5eed_0001);
     }
-    println!(
-        "{} of the image's owners in {} files: __text {} bytes, {} with {switch} ({:+.2}%)",
-        sample.len(),
-        sources.len(),
-        sizes[0],
-        sizes[1],
-        100.0 * (sizes[1] as f64 - sizes[0] as f64) / sizes[0] as f64
-    );
-    assert!(sizes[0] > 0);
 }
 
 /// Two adjacent stores can share a span even if a later instruction uses

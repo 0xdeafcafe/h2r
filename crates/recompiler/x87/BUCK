@@ -36,7 +36,6 @@ workspace_library(
     features = [
         "abi",
         "default",
-        "fast-trans",
     ],
     manifest = "crates/recompiler/x87",
     package = "x87",
@@ -53,7 +52,6 @@ workspace_test(
     features = [
         "abi",
         "default",
-        "fast-trans",
     ],
     manifest = "crates/recompiler/x87",
     package = "x87",
@@ -70,7 +68,6 @@ workspace_test(
     features = [
         "abi",
         "default",
-        "fast-trans",
     ],
     manifest = "crates/recompiler/x87",
     package = "x87",
@@ -89,7 +86,6 @@ workspace_test(
     features = [
         "abi",
         "default",
-        "fast-trans",
     ],
     manifest = "crates/recompiler/x87",
     package = "x87",
@@ -108,7 +104,6 @@ workspace_test(
     features = [
         "abi",
         "default",
-        "fast-trans",
     ],
     manifest = "crates/recompiler/x87",
     package = "x87",

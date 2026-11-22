@@ -2603,6 +2603,67 @@ fn an_exact_pose_sets_the_eye_basis_roll_and_clip_planes() {
 }
 
 #[test]
+fn a_geometry_raw_append_saves_before_the_index_and_repoints_the_cluster() {
+    use crate::package::geometry_hash;
+    use crate::scenario::{GeometryChanges, RawAppend};
+    let src = fixture_with_textured_bsp_last();
+    let mut s = read(src.clone());
+    // The floor's block again, one byte of its last stream changed.
+    let len = {
+        let info = (src.len() - 0x2000) + TEX_SBSP + 0x180 + 0x28;
+        u32::from_le_bytes(src[info + 4..info + 8].try_into().unwrap()) as usize
+    };
+    let mut block = src[TEX_BLOCK_FILE..TEX_BLOCK_FILE + len].to_vec();
+    block[len - 5] ^= 0x10;
+    let pointer_address = META + (TEX_SBSP + 0x180 + 0x28) as u32;
+    s.set_geometry_changes(GeometryChanges {
+        raw_appends: vec![RawAppend {
+            bytes: block.clone(),
+            align: 0x200,
+            pointer_space: None,
+            pointer_address,
+        }],
+        ..GeometryChanges::default()
+    })
+    .unwrap();
+    assert!(!s.changes().is_empty());
+    let out = write(&src, &s);
+    // The index and metadata moved down a page; the block sits where the
+    // index was, and the cluster names it.
+    assert_eq!(out.len(), src.len() + 0x1000);
+    let index = src.len() - 0x2200;
+    assert_eq!(&out[index..index + len], block.as_slice());
+    let mut m = open(out.clone());
+    m.validate_checksum().unwrap();
+    let render = tags::structure::StructureRender::read(&mut m, id(4)).unwrap();
+    let p = render.clusters[0].geometry.block.block.unwrap();
+    assert_eq!(p.offset as usize, index);
+    // The geometry hash (docs/game/maps.md §1) covers a BSP's cluster
+    // blocks only through a scenario entry with a file offset; this
+    // fixture's BSP is ordinary metadata (offset 0), so its hash is the
+    // same before and after. Retail BSPs have regions, and there the new
+    // block's bytes are hashed.
+    let before = geometry_hash(&mut open(src.clone())).unwrap();
+    assert_eq!(geometry_hash(&mut m).unwrap(), before);
+    // A refusal still stops the save; the map that cannot take raw data
+    // refuses the append by name.
+    let mut t = read(fixture_with_textured_bsp());
+    t.set_geometry_changes(GeometryChanges {
+        raw_appends: vec![RawAppend {
+            bytes: block,
+            align: 0x200,
+            pointer_space: None,
+            pointer_address,
+        }],
+        ..GeometryChanges::default()
+    })
+    .unwrap();
+    let mut sink = Cursor::new(Vec::new());
+    let e = save::write_patched(&mut open(fixture_with_textured_bsp()), &t, &mut sink).unwrap_err();
+    assert!(e.to_string().contains("metadata"), "{e}");
+}
+
+#[test]
 fn geometry_raw_patches_save_with_the_map_and_a_refusal_refuses_the_save() {
     use crate::scenario::{GeometryChanges, RawPatch};
     let src = fixture_with_textured_bsp();
@@ -2649,4 +2710,57 @@ fn geometry_raw_patches_save_with_the_map_and_a_refusal_refuses_the_save() {
     let e = save::write_patched(&mut open(src.clone()), &s, &mut out).unwrap_err();
     assert!(e.to_string().contains("a grown write"), "{e}");
     assert!(out.into_inner().is_empty());
+}
+
+#[test]
+fn a_geometry_grown_block_goes_to_the_metadata_end_and_its_pair_names_it() {
+    use crate::scenario::{GeometryChanges, GeometryGrown};
+    let src = metadata_last(fixture_with_collision());
+    let mut s = read(src.clone());
+    // The structure's per-leaf pair (`sbsp+0x2c`), pointed at two new
+    // elements.
+    let pair = META + (SBSP + 0x2c) as u32;
+    let bytes: Vec<u8> = (0u8..16).collect();
+    let grown = GeometryGrown {
+        pair_space: None,
+        pair,
+        count: 2,
+        bytes: bytes.clone(),
+        align: 16,
+    };
+    s.set_geometry_changes(GeometryChanges {
+        grown: vec![grown.clone()],
+        ..GeometryChanges::default()
+    })
+    .unwrap();
+    assert!(!s.changes().is_empty());
+    let out = write(&src, &s);
+    let mut m = open(out.clone());
+    m.validate_checksum().unwrap();
+    let root = m.read_tag_bytes(id(4)).unwrap();
+    let word = |at: usize| u32::from_le_bytes(root[at..at + 4].try_into().unwrap());
+    // The copy starts where the source's metadata ended.
+    assert_eq!((word(0x2c), word(0x30)), (2, META + 0x2000));
+    let at = m.file_offset(META + 0x2000, 16).unwrap();
+    assert_eq!(m.read_file_range(at, 16).unwrap(), bytes);
+    // A pair in the scenario's payload is the Scenario tool's; an empty
+    // block is refused.
+    let over = GeometryGrown {
+        pair: META + SCNR as u32,
+        ..grown.clone()
+    };
+    let refuse = |g: GeometryGrown| {
+        s.clone()
+            .set_geometry_changes(GeometryChanges {
+                grown: vec![g],
+                ..GeometryChanges::default()
+            })
+            .is_err()
+    };
+    assert!(refuse(over));
+    assert!(refuse(GeometryGrown {
+        count: 0,
+        bytes: Vec::new(),
+        ..grown
+    }));
 }

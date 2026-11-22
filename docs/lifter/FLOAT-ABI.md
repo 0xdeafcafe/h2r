@@ -559,7 +559,7 @@ destination, so the ABI's reversed forms (`subr`, `divr`) call the internal
   significand at RN. The series stop below 2^-520 relative, and the sign of
   the omitted tail feeds the rounding, so PE and C1 are right whenever the
   rounding is.
-  The default `x87/fast-trans` feature first attempts guarded 128-bit
+  The x87 crate first attempts guarded 128-bit
   evaluation for FYL2X and F2XM1. Its domains, per-function error
   bounds and value/PE/C1 acceptance test are documented in
   [x87-transcendentals.md](x87-transcendentals.md). Other functions and
@@ -653,5 +653,5 @@ All the tests below pass.
     stopping on a tiny exact remainder and normalising a pseudo-denormal.
 - **Library unit tests** in `crates/recompiler/x87/src`: the constant-table generator and
   the 180,000-case precision run are ignored, as are the table printers and
-  timing experiments of `fast-trans`, whose tests
+  timing experiments of the guarded fast path, whose tests
   ([x87-transcendentals.md](x87-transcendentals.md)) make up most of them.

@@ -27,8 +27,8 @@ packaging and controls. See [xbox.md](xbox.md).
 ## Windows CI
 
 [The Windows workflow](../../.github/workflows/windows.yml) runs on
-`windows-latest` for pushes to `windows-desktop` and manual dispatches.
-It checks the workspace with test targets, runs synthetic CPU and module
+`windows-latest` for pushes to `master`, pull requests and manual
+dispatches, on the Rust toolchain `rust-toolchain.toml` pins. It checks the workspace with test targets, runs synthetic CPU and module
 tests, and starts the linked desktop executable. The separate wgpu backend
 PR owns device and surface setup, render passes, shaders, GPU readback and
 Metal integration. The desktop host uses wgpu’s default backend selection. Disc boot, hardware swap-chain presentation,

@@ -7,8 +7,7 @@
 //! calls recorded since ([`Op`]) and, when the hook is done, publishes a
 //! snapshot of the users. The render hook works on its own copy of that
 //! snapshot ([`View`]) and posts what it did to an inbox, so it touches no
-//! state the game thread writes and runs on the pipelined render thread
-//! (`context_only`). Between two game-thread hooks a view draws exactly as
+//! state the game thread writes (`context_only`). Between two game-thread hooks a view draws exactly as
 //! the one state did, since the copy takes the same steps the replay then
 //! takes on the owner.
 mod prediction;

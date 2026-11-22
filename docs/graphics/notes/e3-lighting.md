@@ -3,7 +3,8 @@
 Evidence for [e3-lighting.md](../e3-lighting.md). Entries are dated, newest
 first. Nothing here states what the code does today; the design page does.
 The page's text was recorded at docs revision `af931e2fe`; the shadow
-prototype is `crates/tools/viewer/src/bin/shadowlab` (last changed at `25c47e967`).
+prototype was `crates/tools/viewer/src/bin/shadowlab` (last at `25c47e967`; the
+crate was later removed, `git log -- crates/tools/viewer`).
 Both read the owner's disc at run time and write nothing from it into Git.
 
 ## 2026-11-20: object shadows, template coverage and attached lights
@@ -309,9 +310,9 @@ shadow-map frames differ between the views (first: ...)`.
 ## 2026-11-16: shadow prototype (volumes against shadow maps)
 
 
-`crates/tools/viewer/src/bin/shadowlab` renders one scene with each shadow
-technique, offscreen with wgpu, and times them. It reads the owner's disc at
-run time and writes only into a directory outside the repository; it refuses
+`shadowlab` (removed; run from `25c47e967`) rendered one scene with each shadow
+technique, offscreen with wgpu, and times them. It read the owner's disc at
+run time and wrote only into a directory outside the repository; it refuses
 an output path inside it. Nothing it writes from the disc is committed. The
 numbers below are filled in by hand from a run.
 
@@ -359,7 +360,7 @@ cargo run -p viewer --release --bin shadowlab -- --out "$OUT" --synthetic
 
 ### What the invented scenes show
 
-These come from the tests (`cargo test -p viewer --bin shadowlab`), which use
+These come from the tool's tests (`cargo test -p viewer --bin shadowlab` at `25c47e967`), which used
 invented geometry only.
 
 - A closed cube's volume has a four-edge silhouette under a vertical sun and

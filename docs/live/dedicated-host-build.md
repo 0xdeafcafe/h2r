@@ -116,12 +116,16 @@ through the script. Set `H2_LINUX_SYSROOT` to the bookworm amd64 sysroot
 and `H2_BIN` to a Mac `h2` from this checkout if it is already installed.
 
 ```sh
-H2_OPT=2 deploy/host/build.sh "$H2_DISC" --coverage "$H2_HOST_COVERAGE"
+deploy/host/build.sh --module "$H2_DISC" --coverage "$H2_HOST_COVERAGE"
 ```
 
 Without `--coverage`, the script reads `H2_HOST_COVERAGE`, then
 `deploy/host/host-coverage.txt` (ignored by Git), and stages the full
-module only when neither is set.
+module only when neither is set. `--module` stages only the module, in
+`deploy/host/stage/image/`; `--h2` stages only the Linux `h2`, in
+`deploy/host/stage/h2`, from public code and with no disc; with neither
+the script stages both. The module goes into the private host-data
+bundle ([The game module](#the-game-module)); the image holds `h2` alone.
 
 The Linux Rust binary uses the `host` Cargo feature without defaults.
 It leaves out the Cranelift compiler and module build commands, native
@@ -133,11 +137,63 @@ UI support remain in the host. The stage strips both ELF files, and the
 scratch image copies the ELF loader and runtime libraries, certificate
 bundle and small entrypoint shell from bookworm.
 
-[Build and package the image](../../deploy/host/README.md). Pass the
-matching `H2_OPT` and other codegen settings to both the local run and the
-container. `h2 serve --system-link --host-light` and `h2 sim run` accept
-the staged slim module by its stamp with no separate coverage file.
-Use a distinct output directory for the full module.
+[Build and package the image](../../deploy/host/README.md). Build the
+module with the code-generation settings the container runs with: it
+sets no `H2_OPT`, so leave `H2_OPT` unset for a deployed module, or pass
+the same value to the container. `h2 serve --system-link --host-light`
+and `h2 sim run` accept the staged slim module by its stamp with no
+separate coverage file. Use a distinct output directory for the full
+module.
+
+### The game module
+
+The module (`libh2game.so` and `libh2game.so.stamp`) is compiled from
+the owner's disc, so it never goes into the container image, CI or the
+repository. It travels in the private host-data bundle as `image/`,
+listed in `host-data.json` with its size and SHA-256 like every other
+file (`crates/live/host-data/src/bundle/image.rs`). The image holds only
+public code: CI builds the Linux `h2` and pushes the image on every push
+to master ([Deploy from CI](live-worker.md#deploy-from-ci)).
+
+`h2 host run` installs the verified bundle under `H2_HOST_CACHE`, then
+runs `<cache>/<bundle sha>/image` unless `--out` or `H2_IMAGE` names
+another module directory (`image_dir`,
+`crates/apps/cli/src/host_cmd/supervisor.rs`). Before it starts a child
+it makes the check `h2 serve` makes (`boot::tier::plan_light`): the
+module's stamp must be the one this `h2` computes for the bundle's
+`default.xbe`, its generator sources, IR passes, code generation, ABI
+and compiler flags, with a slim module's coverage fingerprint after it.
+It stops with a named error, and the lease ends `crashed`, when:
+
+- the bundle carries no module and no `--out`/`H2_IMAGE` is set
+  (`the host data bundle <sha> carries no game module`), or
+- the module's stamp is not the one this `h2` runs
+  (`the game module from the host data bundle (...) was not built for
+  this h2 and this disc`).
+
+There is no other module to fall back to.
+
+The stamp ties the module to the revision of the generator that built
+it. A push that changes the generator's sources (`GENERATOR_SOURCE_HASH`
+in `crates/runtime/recomp/build.rs`: the XBE parser, analysis, IR, lift,
+the passes, emit and its C, x87, the runtime ABI header and the boot
+bridge), `runtime::cpu::ABI_VERSION` or the Linux compiler flags gives
+CI's `h2` a stamp the bundled module no longer matches, and every host
+refuses to start until the owner refreshes the module:
+
+```sh
+git checkout <the revision CI deployed>
+deploy/host/build.sh --module "$H2_DISC" --coverage "$H2_HOST_COVERAGE"
+h2 host bundle --disc "$H2_DISC" --image deploy/host/stage/image \
+  --sim-stores "$stores" --out "$bundle" --force
+```
+
+Then upload `host-data.tar.zst` and `host-data.json` to the private
+bucket and point Live at the new URL and SHA-256
+([Upload to private R2](dedicated-host.md#upload-to-private-r2)). Hosts provision the new bundle under its own digest beside
+the old one; a packed host's matches already running keep theirs. A
+change that leaves the generator alone (the Worker, the web, Live, the
+supervisor) keeps the stamp, and the bundled module keeps working.
 
 ### Package recorded shared resources
 
@@ -160,7 +216,8 @@ H2_OPT=2 H2_SIM_STORE_RECORD="$reads" h2 sim batch "$corpus" \
   --disc "$H2_DISC" --out "$full_image" --tier clang \
   --data "$H2_DATA" --parallel 1 --pace unpaced
 h2 sim store build all --disc "$H2_DISC" --out "$stores" --reads "$reads"
-h2 host bundle --disc "$H2_DISC" --sim-stores "$stores" --out "$bundle"
+h2 host bundle --disc "$H2_DISC" --sim-stores "$stores" \
+  --image deploy/host/stage/image --out "$bundle"
 wc -c "$bundle/host-data.tar.zst" deploy/host/stage/image/libh2game.so
 ```
 
@@ -186,9 +243,10 @@ Check every child log for unrecorded reads and slim fallback messages.
   owners)` for the estimate. Shard reuse, code layout and linker padding
   affect the final result. Use `wc -c` on both staged ELFs and
   `llvm-size -A` on the modules to measure disk and native text.
-- The scratch root filesystem is the sum of the two stripped ELFs,
-  loader and libraries, certificates, shell and small configuration
-  files. A cold registry pull transfers the compressed rootfs layer size
+- The scratch root filesystem is the stripped `h2`, loader and
+  libraries, certificates, shell and small configuration files. The
+  module counts toward the bundle's download and its cache entry on the
+  host's disk instead. A cold registry pull transfers the compressed rootfs layer size
   plus the manifest and config blobs. Read the layer descriptor sizes
   from the Linux/amd64 image manifest. Compare like-for-like stored or
   compressed bytes with the previous image.
@@ -374,7 +432,7 @@ game sees it as an ordinary XNet peer.
 
 The owner runs `h2 host bundle --disc <iso> --out <dir>`. It writes:
 
-- `host-data.tar.zst`: only what a host needs. The menu and multiplayer maps come from the disc or the stripped-maps directory. A supplied shared resource store replaces the corresponding resource map's payload. Each multiplayer map's bot nav meshes and visibility grids go in `bots/`, and the host copies them into each child's data root.
+- `host-data.tar.zst`: only what a host needs. The menu and multiplayer maps come from the disc or the stripped-maps directory. A supplied shared resource store replaces the corresponding resource map's payload. Each multiplayer map's bot nav meshes and visibility grids go in `bots/`, and the host copies them into each child's data root. With `--image DIR`, the Linux game module and its stamp go in `image/`, and the host runs them ([The game module](#the-game-module)).
 - `host-data.json`: the sha256 and the file list.
 
 The owner uploads both to a **private** bucket. A host fetches the
@@ -428,7 +486,7 @@ agent-proto entries, `dh-lobby`):
 - The target triple is `x86_64-unknown-linux-gnu`.
 - The game module is an ELF shared object loaded the way the macOS dylib is.
 - The `h2` binary builds with `--no-default-features --features host` on Linux. It leaves out window, Metal, AVFoundation, input devices and app icons.
-- The container image is `deploy/host/Dockerfile` for `linux/amd64`: a scratch rootfs with bookworm libraries, `h2` and the module, and no game data.
+- The container image is `deploy/host/Dockerfile` for `linux/amd64`: a scratch rootfs with bookworm libraries and `h2`, and no module or game data. The module comes with the bundle (contract 7).
 
 ## Lanes and who owns which files
 

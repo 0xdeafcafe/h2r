@@ -1077,13 +1077,6 @@ fn run_configured(
         None => registration::AgentSource::None,
     };
     let watch_overrides = agent_glue::socket_from_env().is_some();
-    let pipeline = registration::pipeline_for(
-        d3d_glue::pipeline_render(d3d_calls.as_ref()),
-        lockstep_on,
-        host_light,
-    );
-    #[cfg(feature = "desktop-runtime")]
-    render_probe::set_pipeline(pipeline.clone());
     let coop_probe = coop_probe::parse(|k| std::env::var(k).ok()).map_err(anyhow::Error::msg)?;
     #[cfg(feature = "gpu")]
     let native_sources = k.vfs().map(|vfs| native_map::mount(vfs, map_rebind.clone()));
@@ -1162,7 +1155,6 @@ fn run_configured(
             agent: agent_source,
             allow_bot_add: !host_light || core.bots_on,
             xa: xa.as_ref(),
-            pipeline,
             coop_probe,
             live: _live.clone(),
             settings: host.settings.clone(),
@@ -1216,6 +1208,7 @@ fn run_configured(
             && _live.as_ref().is_some_and(|h| h.config().server_url.is_some())
         {
             a.agent.set_live_session_probe(agent_glue::remote_live_game);
+            a.agent.set_live_edit_probe(agent_glue::live_edit_refusal);
         }
         #[cfg(feature = "desktop-runtime")]
         if let Some(vfs) = k.vfs() {
@@ -1229,6 +1222,7 @@ fn run_configured(
             &a.agent,
             &loaded.runtime,
             maps(),
+            k.vfs(),
             watch_overrides,
             replaying,
         );

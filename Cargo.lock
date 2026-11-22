@@ -603,6 +603,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bitmap-edit"
+version = "0.1.0"
+dependencies = [
+ "png",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1006,6 +1015,7 @@ dependencies = [
  "forge",
  "forge-build",
  "forge-doc",
+ "gfx",
  "gltf",
  "h1-assets",
  "h1campaign",
@@ -1060,7 +1070,6 @@ dependencies = [
  "ureq",
  "variants",
  "vfs",
- "viewer",
  "voice",
  "windows-sys 0.61.2",
  "wma",
@@ -1124,6 +1133,16 @@ dependencies = [
  "serde",
  "termcolor",
  "unicode-width",
+]
+
+[[package]]
+name = "collision-build"
+version = "0.1.0"
+dependencies = [
+ "mesh-edit",
+ "mopp",
+ "tags",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -2455,9 +2474,12 @@ dependencies = [
 name = "geometry-edit"
 version = "0.1.0"
 dependencies = [
+ "collision-build",
  "editor-core",
+ "h1convert",
  "map",
  "mesh-edit",
+ "mopp",
  "scenario-edit",
  "tags",
 ]
@@ -6846,6 +6868,7 @@ dependencies = [
  "app-icon",
  "assets",
  "audio",
+ "bitmap-edit",
  "boot",
  "bots",
  "content",
@@ -7698,26 +7721,6 @@ dependencies = [
  "memmap2",
  "rustix 1.1.6",
  "thiserror 2.0.21",
- "xiso",
-]
-
-[[package]]
-name = "viewer"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "assets",
- "bytemuck",
- "content",
- "gfx",
- "h1-assets",
- "map",
- "pollster",
- "scenario-edit",
- "shaders",
- "tags",
- "wgpu",
- "winit",
  "xiso",
 ]
 

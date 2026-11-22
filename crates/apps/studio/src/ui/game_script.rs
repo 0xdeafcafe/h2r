@@ -3,7 +3,8 @@
 //! semantic tokens, with completion as you type, hover, signature help,
 //! underlined problems and their quick fixes, rename, go to definition,
 //! the uses of the name at the cursor, the check report, and the reload
-//! into the paired game.
+//! into the paired game. "Open in editor" hands the script's file to an
+//! outside editor and [`poll`] brings its saves back.
 //!
 //! The state and every pure helper live in `app::rules_edit`; this file
 //! only draws. The text widget draws its glyphs and its frame transparent
@@ -19,6 +20,7 @@
 //! [`frame`] paints `theme::SCRIPT_FRAME` itself.
 
 use std::path::PathBuf;
+use std::time::Instant;
 
 use dear_imgui_rs::{
     Condition, FocusedFlags, InputTextCallback, InputTextCallbackHandler, InputTextMultilineFlags,
@@ -28,11 +30,15 @@ use dear_imgui_rs::{
 use agent_proto::rules::ReloadMode;
 
 use crate::app::App;
-use crate::app::rules_edit::{self, Edit, Mark, MenuKind, RulesEditor, Span};
+use crate::app::rules_edit::{self, DiskPoll, Edit, HoverBlock, Mark, MenuKind, RulesEditor, Span};
 use crate::theme::{self, Fonts, icon};
 
 /// The most rows the list at the caret shows before it scrolls.
 const MENU_ROWS: usize = 10;
+
+/// A hover's and a list's documentation wrap at about this many
+/// characters.
+const POPUP_COLUMNS: f32 = 60.0;
 
 /// The text widget's callback: hands it the editor's pending edit or
 /// cursor move, takes the list's selected row on Enter or Tab, keeps the
@@ -121,11 +127,12 @@ pub fn window(ui: &Ui, app: &mut App, fonts: &Fonts, dialogs: bool) {
     app.rules.show = false;
     toolbar(ui, app, dialogs);
     title(ui, fonts, &app.rules);
+    conflict_row(ui, app);
     rename_row(ui, app);
     ui.separator();
     let mut notes = Vec::new();
     theme::panel_body(ui, "##rules-body", || {
-        notes.extend(editor(ui, &mut app.rules));
+        notes.extend(editor(ui, &mut app.rules, fonts));
         below(ui, app);
     });
     for note in notes {
@@ -161,6 +168,15 @@ fn toolbar(ui: &Ui, app: &mut App, dialogs: bool) {
     ui.same_line();
     if ui.button("Save as") {
         save(app, dialogs, true);
+    }
+    ui.same_line();
+    if ui.button("Open in editor") {
+        open_in_editor(app);
+    }
+    if ui.is_item_hovered() {
+        ui.tooltip_text(
+            "Save the script to a file and open it in your editor:\nh2 script-edit, $VISUAL, $EDITOR, VS Code, Zed or the default text editor.\nEach save there comes back here, and into the paired game\nwhile Reload on save is ticked.",
+        );
     }
     ui.same_line();
     if ui.button("Format")
@@ -216,6 +232,66 @@ fn toolbar(ui: &Ui, app: &mut App, dialogs: bool) {
         if ui.is_key_pressed(Key::R) {
             reload(app);
         }
+    }
+}
+
+/// The question when the file changed on disk while the buffer has
+/// unsaved edits: keep mine, or take the file's.
+fn conflict_row(ui: &Ui, app: &mut App) {
+    if app.rules.conflict.is_none() {
+        return;
+    }
+    ui.text_colored(theme::WARN, "The file changed on disk, and this script has unsaved changes.");
+    ui.same_line();
+    if ui.button("Keep mine##rules-keep") {
+        app.rules.keep_mine();
+    }
+    ui.same_line();
+    if ui.button("Take the file's##rules-take") && app.rules.take_conflict() {
+        took_from_disk(app);
+    }
+}
+
+/// Saves the script to a file (its own, or a new one under the data
+/// root) and opens it in an outside editor; [`poll`] watches the file.
+fn open_in_editor(app: &mut App) {
+    let root = app.data_root();
+    match app.rules.prepare_external(&root) {
+        Ok(path) => {
+            app.rules.launched = Some(rules_edit::launch(rules_edit::editor_launches_here(&path)));
+            app.info(format!("Opening {} in your editor", path.display()));
+        }
+        Err(why) => app.error(format!("Not opened in an editor: {why}")),
+    }
+}
+
+/// Once a frame, drawn or not: the outside editor's start, and the
+/// watched file's changes (docs/editor/editor-guide.md, "Game type
+/// scripts").
+pub fn poll(app: &mut App) {
+    if let Some(done) = app.rules.take_launched() {
+        match done {
+            Ok(how) => app.info(format!("Opened the script with {how}")),
+            Err(why) => app.error(why),
+        }
+    }
+    match app.rules.poll_disk(Instant::now()) {
+        DiskPoll::Nothing => {}
+        DiskPoll::Took => took_from_disk(app),
+        DiskPoll::Asked => app.info(
+            "The script's file changed on disk and here: pick which to keep in the Game type script window.",
+        ),
+    }
+}
+
+/// The buffer took the file's text: say so, and reload it into the
+/// paired game while reload on save is on.
+fn took_from_disk(app: &mut App) {
+    let name = app.rules.title.clone();
+    app.info(format!("{name}: took the changes saved on disk"));
+    let paired = app.pairing.link.as_ref().is_some_and(|l| l.paired);
+    if paired && app.rules.reload_on_save {
+        reload(app);
     }
 }
 
@@ -317,12 +393,7 @@ fn save_dialog(dialogs: bool, r: &RulesEditor) -> Option<PathBuf> {
     if !dialogs {
         return None;
     }
-    let stem = r.title.split(" (").next().unwrap_or("script");
-    let name = if stem.ends_with(".rules") {
-        stem.to_string()
-    } else {
-        format!("{}.{}", stem.to_ascii_lowercase().replace(' ', "_"), rules_edit::EXTENSION)
-    };
+    let name = rules_edit::script_file_name(&r.title);
     rfd::FileDialog::new()
         .set_title("Save the game type script")
         .add_filter("Game type script", &[rules_edit::EXTENSION])
@@ -334,7 +405,7 @@ fn save_dialog(dialogs: bool, r: &RulesEditor) -> Option<PathBuf> {
 /// The text widget, what is drawn under it, its shortcuts, its hover and
 /// the list at the caret. Returns notes for the status line (no quick
 /// fix here, no declaration found).
-fn editor(ui: &Ui, r: &mut RulesEditor) -> Vec<String> {
+fn editor(ui: &Ui, r: &mut RulesEditor, fonts: &Fonts) -> Vec<String> {
     let mut notes = Vec::new();
     let lh = ui.text_line_height();
     let pad = ui.clone_style().frame_padding();
@@ -492,10 +563,10 @@ fn editor(ui: &Ui, r: &mut RulesEditor) -> Vec<String> {
         // The list scrolls to its selection when it opens or the selection
         // moves; the wheel scrolls it otherwise.
         let follow = hold.is_some() || !menu_was_open;
-        menu(ui, r, origin, lh, follow);
+        menu(ui, r, fonts, origin, lh, follow);
     } else if hovered && !ui.is_mouse_down(MouseButton::Left) {
         let byte = byte_under(ui, &r.text, origin, lh, ui.io().mouse_pos());
-        hover(ui, r, byte);
+        hover(ui, r, fonts, byte);
     }
     notes
 }
@@ -627,7 +698,7 @@ fn caret_point(ui: &Ui, r: &RulesEditor, origin: [f32; 2], lh: f32) -> [f32; 2] 
 /// The list at the caret: a window of its own that never takes the
 /// keyboard from the text, kept in front. Up and Down move it, Enter or
 /// Tab takes the row (`Caret`), a click takes one, Escape closes it.
-fn menu(ui: &Ui, r: &mut RulesEditor, origin: [f32; 2], lh: f32, follow: bool) {
+fn menu(ui: &Ui, r: &mut RulesEditor, fonts: &Fonts, origin: [f32; 2], lh: f32, follow: bool) {
     let Some(m) = &r.menu else {
         return;
     };
@@ -689,8 +760,7 @@ fn menu(ui: &Ui, r: &mut RulesEditor, origin: [f32; 2], lh: f32, follow: bool) {
             });
             if let Some(first) = doc.iter().find(|b| !b.code).or(doc.first()) {
                 ui.separator();
-                let _wrap = ui.push_text_wrap_pos(ui.cursor_pos()[0] + width);
-                ui.text_wrapped(&first.text);
+                doc_blocks(ui, fonts, std::slice::from_ref(first), width.max(popup_width(ui)));
             }
         });
     if let Some(i) = chosen {
@@ -700,7 +770,7 @@ fn menu(ui: &Ui, r: &mut RulesEditor, origin: [f32; 2], lh: f32, follow: bool) {
 
 /// The hover at a byte: the problems there, then what the language says
 /// the token is.
-fn hover(ui: &Ui, r: &mut RulesEditor, byte: usize) {
+fn hover(ui: &Ui, r: &mut RulesEditor, fonts: &Fonts, byte: usize) {
     let problems: Vec<(String, [f32; 4], bool)> = r
         .diagnostics_at(byte)
         .into_iter()
@@ -714,24 +784,45 @@ fn hover(ui: &Ui, r: &mut RulesEditor, byte: usize) {
         return;
     }
     ui.tooltip(|| {
-        let _wrap = ui.push_text_wrap_pos(ui.calc_text_size("M")[0] * 40.0);
-        for (text, colour, _) in &problems {
-            ui.text_colored(*colour, text);
-        }
-        if problems.iter().any(|p| p.2) {
-            ui.text_disabled("Cmd+. for quick fixes");
+        let width = popup_width(ui);
+        {
+            let _wrap = ui.push_text_wrap_pos(ui.cursor_pos()[0] + width);
+            for (text, colour, _) in &problems {
+                ui.text_colored(*colour, text);
+            }
+            if problems.iter().any(|p| p.2) {
+                ui.text_disabled("Cmd+. for quick fixes");
+            }
         }
         if !problems.is_empty() && !blocks.is_empty() {
             ui.separator();
         }
-        for b in &blocks {
-            if b.code {
-                ui.text_colored(theme::token_colour(::rules::ide::TokenKind::Function), &b.text);
-            } else {
-                ui.text_wrapped(&b.text);
-            }
-        }
+        doc_blocks(ui, fonts, &blocks, width);
     });
+}
+
+/// The width a popup's text wraps at: [`POPUP_COLUMNS`] characters of
+/// the current font, an average letter's width each.
+fn popup_width(ui: &Ui) -> f32 {
+    const LETTERS: &str = "abcdefghijklmnopqrstuvwxyz";
+    ui.calc_text_size(LETTERS)[0] / LETTERS.len() as f32 * POPUP_COLUMNS
+}
+
+/// A hover's blocks, each wrapped at `width` from where it starts: code
+/// in the monospace font and a function's colour, prose in the UI font.
+/// The wrap is pushed here rather than through `Ui::text_wrapped`, which
+/// wraps at the window's edge: in a tooltip that sizes itself to its
+/// contents that edge is the text's own width, a word per line.
+fn doc_blocks(ui: &Ui, fonts: &Fonts, blocks: &[HoverBlock], width: f32) {
+    for b in blocks {
+        let _wrap = ui.push_text_wrap_pos(ui.cursor_pos()[0] + width);
+        if b.code {
+            let _font = ui.push_font(fonts.code);
+            ui.text_colored(theme::token_colour(::rules::ide::TokenKind::Function), &b.text);
+        } else {
+            ui.text(&b.text);
+        }
+    }
 }
 
 /// Under the text: the signature, the problems, the check report and the

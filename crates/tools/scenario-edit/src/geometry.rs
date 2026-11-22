@@ -210,8 +210,7 @@ impl Default for WorldPart {
 pub const PART_TRANSPARENT: u16 = 4;
 
 /// The scenario's (structure BSP, lightmap) pairs: BSP ID at `+0x14`,
-/// lightmap ID at `+0x1c` of each `scnr+0x210` element (as
-/// `viewer::level::scenario_bsps`).
+/// lightmap ID at `+0x1c` of each `scnr+0x210` element.
 pub fn scenario_bsp_lightmaps<R: Read + Seek>(
     map: &mut Map<R>,
 ) -> crate::Result<Vec<(TagId, Option<TagId>)>> {

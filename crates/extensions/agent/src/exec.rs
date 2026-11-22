@@ -78,6 +78,27 @@ type ConnectionRead = Arc<dyn Fn(Value) -> Result<Value, RpcError> + Send + Sync
 /// it waits for a tick while the game ticks.
 pub type GameMethod = Box<dyn FnMut(Value, &mut GameCtx<'_>) -> Result<Value, RpcError> + Send>;
 
+/// Tells which external Live sessions refuse edits: `Some(why)` to refuse.
+/// A Live custom game this console hosts admits them, as a System Link
+/// host does; matchmaking, a client and an unreadable session do not.
+pub type LiveEditProbe = fn(&dyn engine::GuestMemory) -> Option<&'static str>;
+
+/// Why edits are refused on an external Live session, if they are. With a
+/// [`LiveEditProbe`] it decides for a Live game; without one, any session
+/// the `live_session` probe calls external Live is refused.
+pub(crate) fn live_edit_refusal(
+    live_session: Option<fn(&dyn engine::GuestMemory) -> bool>,
+    live_edit: Option<LiveEditProbe>,
+    m: &dyn engine::GuestMemory,
+) -> Option<&'static str> {
+    match live_edit {
+        Some(probe) => probe(m),
+        None => live_session
+            .is_some_and(|probe| probe(m))
+            .then_some("external Live session"),
+    }
+}
+
 /// What a [`GameMethod`] gets besides its params.
 pub struct GameCtx<'a> {
     /// The connection owning this request and any input it queues.
@@ -87,6 +108,8 @@ pub struct GameCtx<'a> {
     /// A queued edit reads the current epoch without taking the executor lock.
     map_lifetime: &'a mut Option<Arc<AtomicU64>>,
     pub(crate) live_session: Option<fn(&dyn engine::GuestMemory) -> bool>,
+    /// Which Live sessions still refuse edits ([`live_edit_refusal`]).
+    pub(crate) live_edit: Option<LiveEditProbe>,
     /// The game at this boundary ([`Reader::with_guest`] for guest memory).
     pub reader: &'a mut dyn Reader,
     /// The stamp of this boundary.
@@ -254,6 +277,7 @@ struct State {
     activation: u64,
     map_lifetime: Option<Arc<AtomicU64>>,
     live_session: Option<fn(&dyn engine::GuestMemory) -> bool>,
+    live_edit: Option<LiveEditProbe>,
     lobby_tape: Option<Arc<dyn LobbyTape>>,
     lobby_boundary: u64,
     pending: VecDeque<Queued>,
@@ -1218,6 +1242,7 @@ impl State {
                 map_epoch: self.map_epoch,
                 map_lifetime: &mut self.map_lifetime,
                 live_session: self.live_session,
+                live_edit: self.live_edit,
                 reader: &mut *reader,
                 at: at.clone(),
                 host: &mut self.host,
@@ -1257,6 +1282,7 @@ impl State {
                     map_epoch: self.map_epoch,
                     map_lifetime: &mut self.map_lifetime,
                     live_session: self.live_session,
+                    live_edit: self.live_edit,
                     reader: &mut *reader,
                     at: at.clone(),
                     host: &mut self.host,
@@ -1413,6 +1439,7 @@ impl State {
                 map_epoch: self.map_epoch,
                 map_lifetime: &mut self.map_lifetime,
                 live_session: self.live_session,
+                live_edit: self.live_edit,
                 reader,
                 at,
                 host: &mut self.host,

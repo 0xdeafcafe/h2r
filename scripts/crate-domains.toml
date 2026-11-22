@@ -7,8 +7,7 @@
 #
 # `crates` places every crate, including ones that have not landed yet.
 # Once a crate sits in a domain directory the directory is the truth, and
-# this list is checked against it. `scripts/moves/w1-domains.py` reads the
-# lists to move the flat `crates/<crate>` tree.
+# this list is checked against it.
 
 [formats]
 about = "Disc, tag and file formats, ours and the game's: plain data, no guest, no host"
@@ -84,7 +83,7 @@ crates = [
     "editor-core", "firefight-kit", "forge-build", "geometry-edit", "h1-assets", "h1campaign",
     "h1convert", "h1map", "h1objects", "hopper-edit", "hud-edit", "hud-kit", "live-art", "mesh-edit",
     "perf",
-    "scenario-edit", "viewer", "xtask",
+    "scenario-edit", "xtask",
 ]
 live_owned = ["live-art"]
 

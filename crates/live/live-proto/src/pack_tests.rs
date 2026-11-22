@@ -1112,7 +1112,7 @@ fn a_steady_mover_costs_almost_nothing() {
 /// `cargo test -p live-proto --release pack::tests::measure -- --ignored
 /// --nocapture` for the numbers in docs/live/live-telemetry.md.
 #[test]
-#[ignore]
+#[ignore = "manual benchmark: release mode"]
 fn measure_cpu_per_frame() {
     use std::time::Instant;
     for (name, frames) in [

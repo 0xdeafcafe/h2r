@@ -188,6 +188,16 @@ pub fn write_patched<R: Read + Seek>(
     for patch in &changes.raw_patches {
         editor.patch_raw(patch.block, patch.block_size, patch.offset, &patch.bytes)?;
     }
+    // A grown section's block goes before the tag index (the index and
+    // metadata follow it), and its owner's pointer word names it; the old
+    // block stays as dead data.
+    for a in &changes.raw_appends {
+        let word = editor.append_raw(&a.bytes, a.align)?.encode().to_le_bytes();
+        match a.pointer_space {
+            None => editor.patch_metadata(a.pointer_address, &word)?,
+            Some(space) => editor.patch_bsp(space, a.pointer_address, &word)?,
+        }
+    }
     // A block that outgrew its source goes to the end of the metadata, and
     // its root pair points there; the old elements stay as dead data.
     for g in &changes.grown {
@@ -201,6 +211,18 @@ pub fn write_patched<R: Read + Seek>(
         let mut pair = g.count.to_le_bytes().to_vec();
         pair.extend_from_slice(&at.to_le_bytes());
         editor.patch_metadata(g.root, &pair)?;
+    }
+    // The Modeling tool's grown blocks (a level's collision with a solid
+    // added): the copy in the ordinary metadata, the pair wherever its tag
+    // is, a structure BSP's region included.
+    for g in &changes.geometry_grown {
+        let at = editor.append_metadata(&g.bytes, g.align)?;
+        let mut pair = g.count.to_le_bytes().to_vec();
+        pair.extend_from_slice(&at.to_le_bytes());
+        match g.pair_space {
+            None => editor.patch_metadata(g.pair, &pair)?,
+            Some(space) => editor.patch_bsp(space, g.pair, &pair)?,
+        }
     }
     Ok(editor.write_to(out)?)
 }

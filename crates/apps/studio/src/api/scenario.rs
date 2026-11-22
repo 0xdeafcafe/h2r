@@ -308,7 +308,7 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
 }
 
 /// `volume.*`: the trigger volumes, read and selected (read only until
-/// they are edited as placements are; docs/editor/polish-plan.md P9).
+/// they are edited as placements are; docs/editor/editor.md).
 /// One `volume.list` row.
 fn volume_row(v: &scenario_edit::volumes::Volumes, i: usize) -> Value {
     use scenario_edit::volumes::{Holder, VolumeKind};

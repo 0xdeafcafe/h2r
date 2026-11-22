@@ -7,6 +7,11 @@
 //! boundary (or between slices), so a tag write lands between two ticks,
 //! never inside one. The render methods only talk to the hub; the renderer
 //! picks changes up at its next frame.
+//!
+//! Raw edits (`raw` and `evict` in `edit.batch`, `edit.raw.append`,
+//! `edit.stage.put`, `edit.overlay`; docs/editor/realtime-edits.md) go
+//! through the editor's `hot_tags::RawFiles`, which the game's glue
+//! installs; bytes are base64 or `{stage, at, len}` naming staged bytes.
 
 #[cfg(feature = "render-overrides")]
 use std::path::PathBuf;
@@ -22,7 +27,7 @@ use runtime::Guest;
 use serde_json::Value;
 use serde_json::json;
 
-use crate::{Access, Agent};
+use crate::{Access, Agent, ConnId};
 
 fn invalid(m: impl Into<String>) -> RpcError {
     RpcError::new(code::INVALID_PARAMS, m)
@@ -82,6 +87,139 @@ fn to_json<T: serde::Serialize>(v: T) -> Result<Value, RpcError> {
     serde_json::to_value(v).map_err(|e| RpcError::new(code::UNAVAILABLE, e.to_string()))
 }
 
+/// Most bytes staged at once, over every connection.
+const STAGE_MAX: usize = 256 << 20;
+
+/// Bytes `edit.stage.put` holds for a later request: each stage belongs to
+/// the connection that made it and is dropped when a request that names
+/// it applies, or when the map changes.
+#[derive(Default)]
+struct Stages {
+    next: u64,
+    bufs: std::collections::BTreeMap<u64, (ConnId, Vec<u8>)>,
+}
+
+impl Stages {
+    fn total(&self) -> usize {
+        self.bufs.values().map(|(_, b)| b.len()).sum()
+    }
+
+    fn put(&mut self, conn: ConnId, stage: Option<u64>, bytes: Vec<u8>) -> Result<Value, RpcError> {
+        if self.total() + bytes.len() > STAGE_MAX {
+            return Err(RpcError::new(
+                code::INVALID_REQUEST,
+                format!("staged bytes would pass {STAGE_MAX}: use a stage first"),
+            ));
+        }
+        let id = match stage {
+            Some(id) => {
+                let (owner, buf) = self.bufs.get_mut(&id).ok_or_else(|| {
+                    invalid(format!("stage {id}: no such stage (a request that names it uses it up)"))
+                })?;
+                if *owner != conn {
+                    return Err(invalid(format!("stage {id} belongs to another connection")));
+                }
+                buf.extend_from_slice(&bytes);
+                id
+            }
+            None => {
+                self.next += 1;
+                self.bufs.insert(self.next, (conn, bytes));
+                self.next
+            }
+        };
+        Ok(json!({"stage": id, "len": self.bufs[&id].1.len()}))
+    }
+}
+
+/// Raw bytes of a request: base64, or `{stage, at, len}` (the stage's id
+/// goes in `used`).
+fn raw_bytes(v: &Value, conn: ConnId, stages: &Stages, used: &mut Vec<u64>) -> Result<Vec<u8>, RpcError> {
+    match v {
+        Value::String(s) => agent_proto::hot::decode_base64(s).map_err(invalid),
+        Value::Object(o) => {
+            let num = |k: &str| {
+                o.get(k)
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| invalid(format!("bytes: {k} must be a whole number")))
+            };
+            let id = num("stage")?;
+            let (owner, buf) = stages
+                .bufs
+                .get(&id)
+                .ok_or_else(|| invalid(format!("stage {id}: no such stage")))?;
+            if *owner != conn {
+                return Err(invalid(format!("stage {id} belongs to another connection")));
+            }
+            let at = o.get("at").and_then(Value::as_u64).unwrap_or(0) as usize;
+            let len = match o.get("len") {
+                None | Some(Value::Null) => buf.len().saturating_sub(at),
+                Some(_) => num("len")? as usize,
+            };
+            let bytes = buf.get(at..at.saturating_add(len)).ok_or_else(|| {
+                invalid(format!("stage {id}: {at}+{len} is past its {} bytes", buf.len()))
+            })?;
+            used.push(id);
+            Ok(bytes.to_vec())
+        }
+        _ => Err(invalid("bytes: base64, or {stage, at, len}")),
+    }
+}
+
+/// `was` of a raw write: base64 bytes, or `{hash}` (FNV-1a 64, a number or
+/// a hex string).
+fn raw_was(v: &Value) -> Result<hot_tags::Was, RpcError> {
+    let bad = || invalid("was: base64 bytes or {hash}");
+    match v {
+        Value::String(s) => agent_proto::hot::decode_base64(s)
+            .map(hot_tags::Was::Bytes)
+            .map_err(invalid),
+        Value::Object(o) => match o.get("hash") {
+            Some(Value::Number(n)) => n.as_u64().map(hot_tags::Was::Hash).ok_or_else(bad),
+            Some(Value::String(h)) => u64::from_str_radix(h.trim_start_matches("0x"), 16)
+                .map(hot_tags::Was::Hash)
+                .map_err(|_| bad()),
+            _ => Err(bad()),
+        },
+        _ => Err(bad()),
+    }
+}
+
+/// `raw` and `evict` of an `edit.batch`.
+fn raw_batch(
+    p: &Value,
+    conn: ConnId,
+    stages: &Stages,
+    used: &mut Vec<u64>,
+) -> Result<hot_tags::RawBatch, RpcError> {
+    let mut batch = hot_tags::RawBatch::default();
+    match p.get("raw") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(list)) => {
+            for w in list {
+                let offset = w["offset"]
+                    .as_u64()
+                    .and_then(|n| u32::try_from(n).ok())
+                    .ok_or_else(|| invalid("raw: offset must be a 32-bit unsigned integer"))?;
+                let owner = w.get("owner").cloned().ok_or_else(|| invalid("raw: owner"))?;
+                let bytes = raw_bytes(w.get("bytes").unwrap_or(&Value::Null), conn, stages, used)?;
+                let was = match w.get("was") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(raw_was(v)?),
+                };
+                batch.raw.push(hot_tags::RawWrite { owner, offset, bytes, was });
+            }
+        }
+        Some(_) => return Err(invalid("raw must be an array")),
+    }
+    match p.get("evict") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(list)) => batch.evict = list.clone(),
+        Some(_) => return Err(invalid("evict must be an array")),
+    }
+    Ok(batch)
+}
+
 /// Runs a function on the game's memory, locked for the call
 /// (`|f| f(&mut runtime.memory())` in the game).
 pub type WithGuest = Arc<dyn Fn(&mut dyn FnMut(&mut Guest)) + Send + Sync>;
@@ -139,8 +277,8 @@ pub fn add_edit_methods(
         let mut s = session(g).settle();
         let why = if replaying {
             Some("Theater playback")
-        } else if ctx.live_session.is_some_and(|probe| probe(g)) {
-            Some("external Live session")
+        } else if let Some(why) = crate::exec::live_edit_refusal(ctx.live_session, ctx.live_edit, g) {
+            Some(why)
         } else if s.kind == agent_proto::sim::SessionKind::MpHost && s.peers.is_none() {
             Some("multiplayer host peer count is unknown")
         } else {
@@ -178,25 +316,102 @@ pub fn add_edit_methods(
             Ok(reply)
         })
     });
-    let (ed, g, probe) = (lock(&editor), guest.clone(), session.clone());
+    let stages = Arc::new(Mutex::new(Stages::default()));
+    let (ed, g, probe, st) = (lock(&editor), guest.clone(), session.clone(), Arc::clone(&stages));
     agent.add_game_method(method::EDIT_BATCH, Access::Act, move |p, ctx| {
+        let mut ed = ed.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stages = st.lock().unwrap_or_else(|e| e.into_inner());
+        let mut used = Vec::new();
+        let raw = raw_batch(&p, ctx.conn, &stages, &mut used)?;
+        let empty = Vec::new();
+        let writes = match p.get("writes") {
+            None | Some(Value::Null) if !raw.raw.is_empty() || !raw.evict.is_empty() => &empty,
+            _ => p["writes"]
+                .as_array()
+                .ok_or_else(|| invalid("writes must be an array"))?,
+        };
+        let reply = with(&g, |g| {
+            ed.at_epoch(g, ctx.epoch, ctx.map_epoch).map_err(edit_error)?;
+            permit(probe(g, ctx), &p, ctx.epoch)?;
+            ed.batch_with(g, writes, &raw, opt_str(object(&p)?, "label")?)
+                .map_err(|e| match e {
+                    hot_tags::BatchError::Field(e) => edit_error(e),
+                    hot_tags::BatchError::Mismatch { fields, raw } => RpcError {
+                        code: code::MISMATCH,
+                        message: "the game changed these fields or raw bytes".into(),
+                        data: Some(json!({"fields":fields,"raw":raw})),
+                    },
+                })
+        })?;
+        for id in used {
+            stages.bufs.remove(&id);
+        }
+        Ok(reply)
+    });
+    let (ed, g, probe, st) = (lock(&editor), guest.clone(), session.clone(), Arc::clone(&stages));
+    agent.add_game_method(method::EDIT_RAW_APPEND, Access::Act, move |p, ctx| {
+        let o = object(&p)?;
+        let file = hot_tags::raw::parse_file(opt_str(o, "file")?.unwrap_or("local"))
+            .map_err(edit_error)?;
+        let align = match o.get("align") {
+            None | Some(Value::Null) => 16,
+            Some(v) => v
+                .as_u64()
+                .filter(|a| a.is_power_of_two() && *a <= 1 << 20)
+                .ok_or_else(|| invalid("align: a power of two up to 1 MiB"))?,
+        };
+        let mut ed = ed.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stages = st.lock().unwrap_or_else(|e| e.into_inner());
+        let mut used = Vec::new();
+        let bytes = raw_bytes(o.get("bytes").unwrap_or(&Value::Null), ctx.conn, &stages, &mut used)?;
+        let reply = with(&g, |g| {
+            ed.at_epoch(g, ctx.epoch, ctx.map_epoch).map_err(edit_error)?;
+            permit(probe(g, ctx), &p, ctx.epoch)?;
+            ed.raw_append(g, file, &bytes, align).map_err(edit_error)
+        })?;
+        for id in used {
+            stages.bufs.remove(&id);
+        }
+        Ok(reply)
+    });
+    let st = Arc::clone(&stages);
+    agent.add_game_method(method::EDIT_STAGE_PUT, Access::Act, move |p, ctx| {
+        let o = object(&p)?;
+        let stage = match o.get("stage") {
+            None | Some(Value::Null) => None,
+            Some(v) => Some(v.as_u64().ok_or_else(|| invalid("stage: a stage id"))?),
+        };
+        let bytes = match o.get("bytes") {
+            Some(Value::String(s)) => agent_proto::hot::decode_base64(s).map_err(invalid)?,
+            _ => return Err(invalid("bytes: base64")),
+        };
+        st.lock().unwrap_or_else(|e| e.into_inner()).put(ctx.conn, stage, bytes)
+    });
+    let (ed, g) = (lock(&editor), guest.clone());
+    agent.add_game_method(method::EDIT_OVERLAY, Access::Read, move |_, ctx| {
         let mut ed = ed.lock().unwrap_or_else(|e| e.into_inner());
         with(&g, |g| {
             ed.at_epoch(g, ctx.epoch, ctx.map_epoch).map_err(edit_error)?;
-            permit(probe(g, ctx), &p, ctx.epoch)?;
-            let writes = p["writes"]
-                .as_array()
-                .ok_or_else(|| invalid("writes must be an array"))?;
-            ed.batch(g, writes, opt_str(object(&p)?, "label")?)
-                .map_err(|e| match e {
-                    hot_tags::BatchError::Field(e) => edit_error(e),
-                    hot_tags::BatchError::Mismatch(fields) => RpcError {
-                        code: code::MISMATCH,
-                        message: "the game changed these fields".into(),
-                        data: Some(json!({"fields":fields})),
-                    },
-                })
+            Ok(ed.overlay())
         })
+    });
+    // A new map drops the overlay, the raw journal and the stages at its
+    // first tick rather than at the next edit call: the old offsets mean
+    // nothing in it.
+    let (ed, g, st) = (lock(&editor), guest.clone(), Arc::clone(&stages));
+    let mut seen = None;
+    agent.add_ticker("edit.overlay", move |ctx| {
+        if seen == Some(ctx.map_epoch) {
+            return;
+        }
+        if seen.is_some() {
+            st.lock().unwrap_or_else(|e| e.into_inner()).bufs.clear();
+        }
+        seen = Some(ctx.map_epoch);
+        let mut ed = ed.lock().unwrap_or_else(|e| e.into_inner());
+        with(&g, |g| {
+            let _ = ed.at_epoch(g, ctx.epoch, ctx.map_epoch);
+        });
     });
     let (ed, g) = (lock(&editor), Arc::clone(&guest));
     agent.add_game_method(method::EDIT_READ, Access::Read, move |p, ctx| {

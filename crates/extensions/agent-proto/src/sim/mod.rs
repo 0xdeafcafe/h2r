@@ -82,9 +82,12 @@ pub mod method {
     pub const OBJECT_DELETE: &str = "world.object.delete";
     pub const OBJECT_RESPAWN: &str = "world.object.respawn";
     pub const MAP_RELOAD: &str = "map.reload";
+    /// One transaction on a scenario placement block ([`super::PlacementEditParams`]).
+    pub const PLACEMENT_EDIT: &str = "world.placement.edit";
 
     /// The edit methods above.
-    pub const EDITS: &[&str] = &[OBJECT_SET, OBJECT_DELETE, OBJECT_RESPAWN, MAP_RELOAD];
+    pub const EDITS: &[&str] =
+        &[OBJECT_SET, OBJECT_DELETE, OBJECT_RESPAWN, MAP_RELOAD, PLACEMENT_EDIT];
 
     pub const ALL: &[&str] = &[
         PLAYER_ADD,
@@ -105,6 +108,7 @@ pub mod method {
         OBJECT_DELETE,
         OBJECT_RESPAWN,
         MAP_RELOAD,
+        PLACEMENT_EDIT,
     ];
 }
 

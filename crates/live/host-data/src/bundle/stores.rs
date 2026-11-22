@@ -119,6 +119,7 @@ mod tests {
             stripped: None,
             sim_stores: Some(stores),
             bots: None,
+            image: None,
             force: false,
             zstd_level: 1,
         }

@@ -1,5 +1,5 @@
 //! The structure BSPs' collision as the viewport shows it
-//! (docs/editor/polish-plan.md, slice P10): every surface of each scenario
+//! (docs/editor/editor.md): every surface of each scenario
 //! BSP's collision BSP as a polygon, and which of them no drawn surface
 //! covers, the invisible walls.
 //!

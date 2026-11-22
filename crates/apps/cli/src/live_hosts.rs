@@ -17,7 +17,7 @@ use crate::live_cmd::{self, Args, Client};
 use crate::live_recovery::Signer;
 
 const USAGE: &str = "usage: h2 live hosts start --map MAP [--variant VARIANT]
-       [--max-players N] [--class small|large] [--region REGION]
+       [--max-players N] [--bots N] [--class small|large] [--region REGION]
        [--transport udp|tunnel] [--no-launch] [--live URL]
        [--data DIR | --as GAMERTAG]";
 
@@ -26,6 +26,7 @@ pub(crate) struct HostStart {
     map: String,
     variant: Option<String>,
     max_players: u8,
+    bots: u8,
     class: HostClass,
     region: Option<String>,
     transport: Option<Transport>,
@@ -50,6 +51,15 @@ impl HostStart {
             (1..=16).contains(&max_players),
             "--max-players must be between 1 and 16"
         );
+        let bots: u8 = args
+            .take("--bots")?
+            .map_or(Ok(0), |n| n.parse())
+            .context("--bots must be a whole number")?;
+        ensure!(
+            bots < max_players,
+            "--bots must leave a seat for a person: at most --max-players minus one ({})",
+            max_players - 1
+        );
         let class = match args.take("--class")?.as_deref() {
             None => HostClass::Small,
             Some("small") => HostClass::Small,
@@ -68,6 +78,7 @@ impl HostStart {
             map,
             variant,
             max_players,
+            bots,
             class,
             region,
             transport,
@@ -80,6 +91,7 @@ impl HostStart {
             "map": self.map,
             "variant": self.variant,
             "max_players": self.max_players,
+            "bots": self.bots,
             "class": self.class,
             "region": self.region,
             "transport": self.transport,
@@ -216,6 +228,7 @@ mod tests {
         let start = parsed(&["--map", "lockout"]).unwrap();
         assert_eq!(start.map, "lockout");
         assert_eq!(start.max_players, 8);
+        assert_eq!(start.bots, 0);
         assert_eq!(start.class, HostClass::Small);
         assert!(start.variant.is_none());
         assert!(start.region.is_none());
@@ -224,7 +237,7 @@ mod tests {
         assert_eq!(
             start.body(),
             json!({
-                "map": "lockout", "variant": null, "max_players": 8,
+                "map": "lockout", "variant": null, "max_players": 8, "bots": 0,
                 "class": "small", "region": null, "transport": null, "launch": true,
             })
         );
@@ -235,6 +248,8 @@ mod tests {
             "Slayer's Rift",
             "--max-players",
             "16",
+            "--bots",
+            "15",
             "--class",
             "large",
             "--region",
@@ -248,7 +263,7 @@ mod tests {
         assert_eq!(
             full.body(),
             json!({
-                "map": "gemini", "variant": "Slayer's Rift", "max_players": 16,
+                "map": "gemini", "variant": "Slayer's Rift", "max_players": 16, "bots": 15,
                 "class": "large", "region": "lhr", "transport": "tunnel", "launch": false,
             })
         );
@@ -266,6 +281,10 @@ mod tests {
             vec!["--map", "lockout", "--max-players", "0"],
             vec!["--map", "lockout", "--max-players", "17"],
             vec!["--map", "lockout", "--max-players", "eight"],
+            vec!["--map", "lockout", "--bots", "8"],
+            vec!["--map", "lockout", "--max-players", "4", "--bots", "4"],
+            vec!["--map", "lockout", "--bots", "-1"],
+            vec!["--map", "lockout", "--bots", "three"],
             vec!["--map", "lockout", "--class", "huge"],
             vec!["--map", "lockout", "--transport", "tcp"],
         ] {

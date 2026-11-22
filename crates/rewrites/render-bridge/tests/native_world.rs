@@ -3,8 +3,8 @@
 //! synthetic guest memory (the BSP items the host draws lose layer 3's bit
 //! for the layer and get it back at the next layer draw; nothing changes
 //! without a host, in another layer, or for a part the host leaves to the
-//! D3D path, even one of a shader it draws), and its chain on the
-//! pipelined render thread.
+//! D3D path, even one of a shader it draws), and its chain on a
+//! second executor.
 
 use std::sync::{Arc, Mutex};
 
@@ -31,9 +31,8 @@ fn the_plan_orders_it_inside_render_timing() {
     assert!(!text.contains("native_world_restore"), "nothing after the body: {text}");
 }
 
-/// Alone at the layer draw (on by default), the chain runs on the
-/// pipelined render thread: one context-only observer before, nothing
-/// after.
+/// Alone at the layer draw (on by default), the chain runs on a second
+/// executor: one context-only observer before, nothing after.
 #[test]
 fn its_layer_draw_chain_runs_on_the_render_thread() {
     let mut r = Registry::new(Switches::parse("").unwrap());
@@ -69,29 +68,24 @@ fn its_snapshot_policy_is_stateless_off_and_a_section_on() {
     }
 }
 
-/// The plan text with the native world and a pipeline that is on.
-fn plan_with_pipeline(switches: &str) -> String {
-    use render_bridge::pipeline_render::{Addrs, PipelineRender};
-    let pipeline = PipelineRender::with(true, Addrs::HALO2).print(false);
+/// The plan text with the native world alone.
+fn plan_text(switches: &str) -> String {
     let mut r = Registry::new(Switches::parse(switches).unwrap());
-    r.add(&pipeline).unwrap();
     r.add(&NativeWorld).unwrap();
     r.build(&Base).unwrap().text()
 }
 
 #[test]
-fn it_is_on_by_default_and_keeps_pipelining() {
+fn it_is_on_by_default() {
     assert!(native_world::on(&Switches::parse("").unwrap()));
-    let text = plan_with_pipeline("");
+    let text = plan_text("");
     assert!(text.contains("native_world_skip"), "{text}");
-    assert!(text.contains("pipelined frame"), "{text}");
 }
 
 #[test]
-fn the_master_switch_off_places_nothing_and_keeps_pipelining() {
-    let text = plan_with_pipeline("impl.render.native=off");
+fn the_master_switch_off_places_nothing() {
+    let text = plan_text("impl.render.native=off");
     assert!(!text.contains("native_world"), "{text}");
-    assert!(text.contains("pipelined frame"), "{text}");
 }
 
 const LIST: u32 = 0x004c_1a48;

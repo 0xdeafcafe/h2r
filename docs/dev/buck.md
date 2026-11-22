@@ -121,6 +121,23 @@ and links it also needs `rustc_link_lib` and `rustc_link_search` under
 the script probes the host (pkg-config, test links) and declare its result
 instead, as `alsa-sys` and `libudev-sys` do.
 
+## CI
+
+[The Buck workflow](../../.github/workflows/buck.yml) runs on
+`ubuntu-latest` for pushes to `master`, pull requests and manual
+dispatches, inside the devenv shell, with buck2 from the release pinned in
+the workflow (`BUCK2_TAG`, `BUCK2_SHA256`, installed by
+`scripts/ci/install-buck2.sh`; bump both together). Two jobs:
+
+- `rules` runs `python3 scripts/update-buck.py --check` and `git diff
+  --exit-code`, so a Cargo change without its regenerated `BUCK` files and
+  `third-party/rust/` fails.
+- `build` runs `buck2 build -c build_mode.mode=release //crates/apps/cli:h2`,
+  the Linux and SteamOS desktop binary ([linux.md](../runtime/linux.md)).
+
+The game module (`//platform/linux:module`) and the SteamOS package
+(`//platform/steamos:run`) read the disc, so CI never builds them.
+
 ## Differences from Cargo
 
 - Tests run from the repository root, not the crate directory. A test that opens a path relative to the working directory fails; one that joins `CARGO_MANIFEST_DIR` works.

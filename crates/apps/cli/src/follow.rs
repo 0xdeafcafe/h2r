@@ -2473,7 +2473,7 @@ mod tests {
     /// restart. Runs cargo, so it is ignored by default:
     /// `cargo test -p cli --bin h2 -- --ignored real_builder`.
     #[test]
-    #[ignore]
+    #[ignore = "runs cargo on a scratch repo"]
     fn real_builder_watcher_and_child_on_a_scratch_repo() {
         let root = scratch("it");
         let (repo, cache) = (root.join("repo"), root.join("cache"));

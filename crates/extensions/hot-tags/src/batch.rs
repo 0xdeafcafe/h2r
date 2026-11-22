@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 #[derive(Debug)]
 pub enum BatchError {
     Field(Error),
-    Mismatch(Vec<Value>),
+    /// The fields and raw entries whose game bytes are not the `was` the
+    /// request gave: nothing was written.
+    Mismatch { fields: Vec<Value>, raw: Vec<Value> },
 }
 
 impl From<Error> for BatchError {
@@ -20,6 +22,21 @@ impl Editor {
         &mut self,
         g: &mut Guest,
         writes: &[Value],
+        label: Option<&str>,
+    ) -> std::result::Result<Value, BatchError> {
+        self.batch_with(g, writes, &RawBatch::default(), label)
+    }
+
+    /// [`Self::batch`] with raw writes and evictions
+    /// (docs/editor/realtime-edits.md, "Four write primitives"): every
+    /// field and raw `was` is checked before the first write; tag bytes are
+    /// written first, then the raw entries, then the evictions, all under
+    /// one journal id.
+    pub fn batch_with(
+        &mut self,
+        g: &mut Guest,
+        writes: &[Value],
+        raw: &RawBatch,
         label: Option<&str>,
     ) -> std::result::Result<Value, BatchError> {
         let idx = self.index(g)?;
@@ -138,16 +155,23 @@ impl Editor {
                 batch: true,
             });
         }
-        if !fields.is_empty() {
-            return Err(BatchError::Mismatch(fields));
+        let mut raw_mismatches = Vec::new();
+        let (planned, evict) = self.plan_raw(g, &idx, raw, &mut raw_mismatches)?;
+        if !fields.is_empty() || !raw_mismatches.is_empty() {
+            return Err(BatchError::Mismatch { fields, raw: raw_mismatches });
         }
         self.next_id += 1;
         for c in &changes {
             g.write_bytes(c.addr, &c.new_bytes, 1).map_err(fault)?;
         }
-        let reply = json!({"id":self.next_id,"applied":changes.len(),"changes":changes});
+        let mut reply = json!({"id":self.next_id,"applied":changes.len(),"changes":changes});
         self.journal
             .extend(changes.into_iter().filter(|c| c.old_bytes != c.new_bytes));
+        if !planned.is_empty() || !evict.is_empty() {
+            let (raw, evicted) = self.apply_raw(g, idx.scenario, self.next_id, planned, evict)?;
+            reply["raw"] = json!(raw);
+            reply["evicted"] = json!(evicted);
+        }
         Ok(reply)
     }
 }

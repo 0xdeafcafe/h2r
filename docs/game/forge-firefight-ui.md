@@ -251,8 +251,10 @@ seats its Clankers in all three tabs
   Firefight ([map-select.md](map-select.md), `map_select::mode_category`).
   B from those maps returns to Game Setup. A switch to the tab puts the
   lobby's map inside the category ([party-lobby.md](party-lobby.md),
-  "Switching"), and FIREFIGHT is off with no kit map installed, so the
-  category is never empty when it opens.
+  "Switching"). With no kit map installed FIREFIGHT still opens: the
+  Firefight category is empty, so Change Map opens the retail map list,
+  and the panel and Start Game say no installed map supports Firefight
+  yet ([party-lobby.md](party-lobby.md), "Where each tab runs").
 - **The game type row** in Forge picks the engine the session runs, and
   so which goals the object menu offers
   ([forge-editing.md](forge-editing.md), "The object menu"). It is

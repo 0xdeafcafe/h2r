@@ -421,9 +421,5 @@ lifted game is needed to show:
    mixer). They stay together only while logical time keeps to the wall;
    a run that falls behind drops frames to keep the picture on time while
    the sound lags.
-4. `impl.render.pipelined_frame=on`: the Bink overrides are not on the render
-   thread's allow list, and the stop path is reachable from the render
-   (`0x2c8a0`); [pipelined-render.md](../graphics/pipelined-render.md) says
-   to turn pipelining off while a movie plays. Pipelining is off by default.
-5. Credits (`0x2ab8c0`) show `0x1564e0`'s remaining time on screen; in
+4. Credits (`0x2ab8c0`) show `0x1564e0`'s remaining time on screen; in
    playback mode it works from the HBINK.

@@ -297,9 +297,43 @@ impl GpuModels {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        mut model: Model,
+        model: Model,
         base_map: &mut dyn FnMut(u16) -> Option<Image>,
     ) -> u32 {
+        let uploaded = self.upload(device, queue, model, base_map);
+        self.models.push(uploaded);
+        self.models.len() as u32 - 1
+    }
+
+    /// Uploads `model` in place of model `index`, which keeps its index: a
+    /// live edit's model decoded again from the edited map
+    /// (docs/editor/realtime-edits.md, "The native refresh"). The next
+    /// [`GpuModels::prepare`] draws it; one prepared before draws the old
+    /// model's tables against the new buffers, so prepare again. False,
+    /// changing nothing, when there is no model `index`.
+    pub fn replace_model(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        index: u32,
+        model: Model,
+        base_map: &mut dyn FnMut(u16) -> Option<Image>,
+    ) -> bool {
+        if index as usize >= self.models.len() {
+            return false;
+        }
+        let uploaded = self.upload(device, queue, model, base_map);
+        self.models[index as usize] = uploaded;
+        true
+    }
+
+    fn upload(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        mut model: Model,
+        base_map: &mut dyn FnMut(u16) -> Option<Image>,
+    ) -> GpuModel {
         let init = |label, contents: &[u8], usage| {
             gfx::churn::create_buffer_init(device, &wgpu::util::BufferInitDescriptor {
                 label: Some(label),
@@ -335,14 +369,13 @@ impl GpuModels {
             let view = base_map(m).map_or_else(|| self.white.clone(), |i| texture(device, queue, &i));
             materials.insert(m, self.material_group(device, &view));
         }
-        self.models.push(GpuModel {
+        GpuModel {
             model,
             vertices,
             indices,
             group,
             materials,
-        });
-        self.models.len() as u32 - 1
+        }
     }
 
     fn material_group(&self, device: &wgpu::Device, view: &wgpu::TextureView) -> wgpu::BindGroup {

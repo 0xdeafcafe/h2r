@@ -48,6 +48,7 @@ pub(crate) mod menu {
     pub const ROW: i16 = SYSTEM_LINK_ROW + 1;
     /// The most rows the menu has: what the retail pane's item widgets
     /// and the one added widget hold, so it never scrolls.
+    #[cfg(test)]
     pub const MAX_ROWS: u32 = 6;
 
     /// The menu's room (docs/game/forge-firefight-ui.md "The main menu",
@@ -115,13 +116,6 @@ pub(crate) mod menu {
     /// Records the rows the hooks installed.
     pub fn set_rows(rows: Rows) {
         THEATER.store(rows.theater, Ordering::Relaxed);
-    }
-
-    /// The rows installed.
-    pub fn rows() -> Rows {
-        Rows {
-            theater: THEATER.load(Ordering::Relaxed),
-        }
     }
 
     #[cfg(test)]
@@ -759,7 +753,7 @@ impl Theater {
         state.changed();
     }
 
-    fn archive_action(&self, action: pages::Action, mut entry: Entry) {
+    fn archive_action(&self, action: pages::Action, entry: Entry) {
         let Some(location) = self
             .0
             .location

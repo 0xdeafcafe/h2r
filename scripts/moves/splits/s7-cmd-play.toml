@@ -1,5 +1,0 @@
-from = "cli"
-to = "cmd-play"
-direction = "down"
-description = "h2 play, settings and movies"
-modules = ["movies_cmd", "play_cmd", "settings_cmd"]

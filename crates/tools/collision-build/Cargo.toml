@@ -1,0 +1,21 @@
+[package]
+name = "collision-build"
+description = "Compiles convex polygons to a Halo 2 collision BSP (planes, 3D and 2D trees, leaves, surfaces, winged edges, vertices), opens coll BSPs as editable meshes, rebuilds their BSP physics slots, makes collision from render faces, and adds solids to a structure's level collision with its per-leaf block and MOPP (docs/editor/modeling.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.h2]
+doc = ["editor/modeling.md", "editor/modeling-targets.md"]
+status = "in progress"
+
+[dependencies]
+# The eight blocks the compiler fills (`tags::collision::Bsp`) and the
+# `coll` model it rewrites.
+tags.workspace = true
+# BSP physics slots carry a MOPP code object over the BSP's surfaces.
+mopp = { path = "../../formats/mopp" }
+# A `coll` BSP opens as a kernel mesh and compiles back from one.
+mesh-edit = { path = "../mesh-edit" }
+thiserror.workspace = true

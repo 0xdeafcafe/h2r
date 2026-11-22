@@ -1,9 +1,10 @@
 //! Lighting inspection and bounded, no-clobber lightmap page export.
 mod census;
+mod solver;
 mod split;
 
 use crate::safe_out::OutDir;
-use viewer::split::Raw;
+use solver::Raw;
 use anyhow::{Context, Result, bail};
 use assets::ResourceFiles;
 use map::{FourCC, Map, TagId};

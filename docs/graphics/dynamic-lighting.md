@@ -1,8 +1,8 @@
 # Dynamic lighting: a live sun over the baked lightmaps
 
-Status: The static BSP census and the offline split viewer are implemented. Retail page review is the gate for renderer work. The runtime mode is a design.
-Code: `crates/apps/cli/src/lighting/census.rs` and `crates/tools/viewer/src/split/`. The viewer entry point is `crates/apps/cli/src/lighting/split.rs`. Tests: the census module, `crates/formats/tags/src/lighting_tests.rs` and the viewer's invented forward bakes in `solve/tests.rs` and `lamp.rs`.
-Switch: [offline viewer options](../runtime/switches.md#tools). The runtime design adds `dynamic` to the Lighting row (`H2_LIGHTING`).
+Status: The static BSP census and the offline split tool are implemented. Retail page review is the gate for renderer work. The runtime mode is a design.
+Code: `crates/apps/cli/src/lighting/census.rs` and `crates/apps/cli/src/lighting/solver/`. The entry point is `crates/apps/cli/src/lighting/split.rs`. Tests: the census module, `crates/formats/tags/src/lighting_tests.rs` and the solver's invented forward bakes in `solver/solve/tests.rs` and `solver/lamp.rs`.
+Switch: [offline lighting options](../runtime/switches.md#tools). The runtime design adds `dynamic` to the Lighting row (`H2_LIGHTING`).
 
 An opt-in mode that takes the sun out of Halo 2's baked lightmaps and
 lights it live, with shadow maps, so that the level and everything in it
@@ -56,7 +56,7 @@ where that design's checkpoint stops it or its fit refuses a level.
   frame's own GPU time at that scale is not measured; slice 0 measures it.
 - **The runtime slices sit on the FrameScene renderer**
   ([framescene.md](framescene.md)), not on the tenant path. The offline
-  viewer runs directly on the owner's map and resources.
+  split tool runs directly on the owner's map and resources.
 
 ## What the disc holds
 
@@ -91,7 +91,7 @@ where that design's checkpoint stops it or its fit refuses a level.
   c20 H2V tool). Which level each retail map shipped with is not known.
 - **The sun's size.** A sky light's cutoff angle is 2 to 20 degrees
   (**V**). That it is the sun's disc, which would set the width of a
-  baked penumbra, is **S**. The viewer reports the authored cutoff and assumes a 0.27-degree angular radius for tracing.
+  baked penumbra, is **S**. The split tool reports the authored cutoff and assumes a 0.27-degree angular radius for tracing.
 - **The sky light flags.** Four values occur (**V**); none is named.
 - **Lightmap resolution per BSP.** `h2 lighting --all` measures linear
   texel density over opaque geometry and reports full-resolution page
@@ -179,7 +179,7 @@ retail, reconstructed lamp on and reconstructed lamp off together. The
 comparison is in atlas space. Cache loading and drawing the pages in the
 game belong to slice 2.
 
-The viewer reads display group zero after matching its structure checksum
+The split tool reads display group zero after matching its structure checksum
 to the BSP, expands each bound P8 image through its bound palette
 and evaluates each stored mip independently.
 
@@ -203,7 +203,7 @@ and evaluates each stored mip independently.
    edge and the traced one differ in blur, and step 4 leaves a ridge.
    There `I` is filled from both sides, since indirect light is smooth
    across a sun shadow's edge.
-6. **Per-vertex data.** The viewer joins `2e`/`2f` colour runs to posed
+6. **Per-vertex data.** The split tool joins `2e`/`2f` colour runs to posed
    vertices using the instance or scenery bucket reference and section
    offset. Scenery also needs a matching placement identifier and model
    checksum. The same fit gives each vertex its direct and residual colour.
@@ -225,10 +225,10 @@ units, so no colour-space conversion enters.
 
 #### Reading the comparison
 
-`crates/tools/viewer/src/split/solve.rs` samples a 4 × 4 footprint at each
+`crates/apps/cli/src/lighting/solver/solve.rs` samples a 4 × 4 footprint at each
 texel against two CPU triangle BVHs. One contains clusters and instances,
 the other the scenario scenery. Each receives the same subpixel rays. The
-viewer computes an independent median RGB slope from base-mip shadow-edge
+solver computes an independent median RGB slope from base-mip shadow-edge
 pairs for each occluder set and reports the median error in those pairs.
 The comparison pages use the scenery-inclusive fit. A missing pair
 withholds the inferred colours.
@@ -236,7 +236,7 @@ withholds the inferred colours.
 A numeric source ID selects a sky light in the BSP's referenced skies.
 A placed sphere can also be isolated by its zero-based scenario placement
 index. Its fitted direct term includes the receiver cosine and linear
-attenuation to its authored radius. Rays end at the lamp. The viewer
+attenuation to its authored radius. Rays end at the lamp. The split tool
 rejects dynamic-only lights, projected or custom shapes, and textured gels.
 The lamp-off image removes the fitted direct contribution. Source bounce,
 other lights and baked emission stay in the residual. Changing the lamp's
@@ -412,7 +412,7 @@ them on the tenant path would be written twice.
 | | Slice | Proof |
 |---|---|---|
 | 0 | **Measure.** GPU time per pass group in `render.stats` (timestamp queries in `gfx`), then the retail frame at 4x on the target machine through `h2 lab` ([lab.md](../runtime/lab.md)). A census in `h2 lighting --all`: page sizes and texels per world unit per BSP, clusters with a sky, sky lights per BSP with their flags, and the share of lit vertices whose incident vector lies within 15 degrees of a sky light. shadowlab with the sun read from `sky`, the level casting and three cascades, timed at 4x on the same machine | numbers in a note under `notes/`; the incident-vector share says whether the sun dominates where the model assumes it does |
-| 1 | **The split, offline.** A viewer tool beside shadowlab: steps 1 to 6 of "The split", pages and a report written outside the repository | tests on invented levels built by the forward model (a known `I`, `D` and `V` recovered; closure to one step); the owner looks at before and after pages for three outdoor levels. **Go or stop for everything below** |
+| 1 | **The split, offline.** The split tool, `h2 lighting split`: steps 1 to 6 of "The split", pages and a report written outside the repository | tests on invented levels built by the forward model (a known `I`, `D` and `V` recovered; closure to one step); the owner looks at before and after pages for three outdoor levels. **Go or stop for everything below** |
 | 2 | **Bake and load.** `h2 lighting bake`, the cache, the loader, the translator option, and the closure draw (`I + B`) | `render.compare` of retail against closure at the same tick, inside the parity bar |
 | 3 | **The sun on the world.** Cascades from the static world, `I + D · S` in layer 3, the setting's value | GPU tests on an invented wall and occluder; captures differ from retail only near baked sun-shadow edges; the cost from `render.stats` against slice 0's estimate |
 | 4 | **Objects cast.** Casters in the scene, skinned depth draws with blended rows | `sim.hashes` equal; a capture with an object's shadow on sunlit ground; the `alpha = 1` frame equal to the 30 fps frame |

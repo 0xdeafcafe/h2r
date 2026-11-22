@@ -407,13 +407,6 @@ impl Cheats {
         Ok(self.list(refused, playing))
     }
 
-    /// Switches everything off (a session that refuses them).
-    pub fn all_off(&mut self) {
-        for i in ALL {
-            self.off(i.name);
-        }
-    }
-
     /// After a game tick: applies what is on to the local players, and
     /// undoes what was switched off. Nothing is read when nothing is on
     /// and nothing needs undoing.

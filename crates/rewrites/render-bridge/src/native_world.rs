@@ -26,10 +26,8 @@
 //!
 //! Nothing runs after the body, so the chain needs no Rust continuation,
 //! and the observer is context-only: it reads and writes the memory its
-//! context sees (on the pipelined render thread, the render's view), and
-//! the host's pass request goes to the D3D device in render order, as the
-//! render's own D3D calls do. So the pipelined render runs it on its own
-//! thread (docs/graphics/notes/pipelined-render.md, "The prototype").
+//! context sees, and the host's pass request goes to the D3D device in
+//! render order, as the render's own D3D calls do.
 //!
 //! It sits inside `render-timing`'s observers at the point
 //! (`after_feature`), so its layer stage holds it.
