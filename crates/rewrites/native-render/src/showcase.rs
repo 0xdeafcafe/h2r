@@ -19,17 +19,17 @@ pub const FOV_DEGREES: f32 = 30.0;
 pub const FILL: f32 = 0.92;
 /// The forehead decal's centre, as a fraction of the bounds' height from
 /// the bottom.
-pub const DECAL_HEIGHT: f32 = 0.70;
+pub const DECAL_HEIGHT: f32 = 0.69;
 /// The decal's radius as a fraction of the smaller of the bounds' width
 /// (y) and height (z).
-pub const DECAL_SIZE: f32 = 0.19;
+pub const DECAL_SIZE: f32 = 0.17;
 /// A surface takes the decal only where its model-space normal's forward
 /// part is at least this: the forehead, not the crown or the temples.
 pub const DECAL_FACING: f32 = 0.35;
 /// The sway: the most the model turns either way, in degrees, and the
 /// seconds a full sway takes. It sways rather than spinning so the glyph
 /// stays in sight.
-pub const SWAY_DEGREES: f32 = 32.0;
+pub const SWAY_DEGREES: f32 = 20.0;
 pub const SWAY_SECONDS: f64 = 9.0;
 
 /// A picture is drawn at twice its rectangle's texels each way, and
@@ -90,7 +90,9 @@ impl Fit {
 pub struct Placement {
     /// The bounds' centre: the turn's pivot and the camera's target.
     pub centre: [f32; 3],
-    /// The bounding sphere's radius (half the bounds' diagonal).
+    /// The radius of the sphere about `centre` that the framing fits:
+    /// half the bounds' diagonal ([`Placement::of`]) or the farthest
+    /// point's distance ([`Placement::fitted`]).
     pub radius: f32,
     /// The decal's centre in model space: on the front (`x` the bounds'
     /// front), the bounds' middle across (`y`), [`DECAL_HEIGHT`] up (`z`).
@@ -126,6 +128,27 @@ impl Placement {
             decal_radius,
             decal_front: centre[0],
         })
+    }
+
+    /// [`Placement::of`] with the sphere drawn tight round `points` (the
+    /// model's drawn vertices): the farthest one's distance from the
+    /// centre, so the model fills the picture at any turn about its
+    /// centre. A box's corners are farther out than a rounded model
+    /// reaches, and framing those leaves it small.
+    pub fn fitted(bounds: &Aabb, points: impl IntoIterator<Item = [f32; 3]>) -> Option<Self> {
+        let mut placement = Self::of(bounds)?;
+        let farthest = points
+            .into_iter()
+            .map(|p| {
+                let d = [0, 1, 2].map(|k| p[k] - placement.centre[k]);
+                dot3(d, d).sqrt()
+            })
+            .filter(|d| d.is_finite())
+            .fold(0.0, f32::max);
+        if farthest > 0.0 {
+            placement.radius = farthest.min(placement.radius);
+        }
+        Some(placement)
     }
 
     /// The picture's camera for a `width` by `height` target: in front of
@@ -523,6 +546,27 @@ mod tests {
         assert!(Fit::of([0.0, 0.0, 0.4, 10.0]).is_none());
         assert!(Fit::of([f32::NAN, 0.0, 10.0, 10.0]).is_none());
         assert!(Fit::of([0.0, 0.0, f32::INFINITY, 10.0]).is_none());
+    }
+
+    #[test]
+    fn a_fitted_placement_frames_the_points_not_the_boxs_corners() {
+        let boxed = Placement::of(&bounds()).unwrap();
+        assert!((boxed.radius - 3f32.sqrt()).abs() < 1e-6);
+        // A unit sphere's poles: the sphere, not its box's diagonal.
+        let poles = [[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]];
+        let tight = Placement::fitted(&bounds(), poles).unwrap();
+        assert!((tight.radius - 1.0).abs() < 1e-6);
+        assert_eq!(tight.centre, boxed.centre);
+        assert_eq!(tight.decal_centre, boxed.decal_centre);
+        // The farthest point is inside the picture and nearer its edge
+        // than the box's framing put it.
+        let top = |p: &Placement| p.project([0.0, 0.0, 1.0], 0.0, 128, 128).unwrap()[1];
+        assert!(top(&tight) > 0.0 && top(&tight) < top(&boxed) - 10.0);
+        // No points, or points outside the box: the box's own sphere.
+        let none: [[f32; 3]; 0] = [];
+        assert_eq!(Placement::fitted(&bounds(), none), Some(boxed));
+        assert_eq!(Placement::fitted(&bounds(), [[9.0, 0.0, 0.0]]), Some(boxed));
+        assert!(Placement::fitted(&Aabb::EMPTY, poles).is_none());
     }
 
     #[test]

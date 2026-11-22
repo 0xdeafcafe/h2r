@@ -412,7 +412,12 @@ impl Showcase {
         mesh: &ShowcaseMesh,
         bases: &[(u16, Image)],
     ) {
-        let Some(placement) = Placement::of(&mesh.bounds) else {
+        let drawn = mesh
+            .indices
+            .iter()
+            .filter_map(|i| mesh.vertices.get(*i as usize))
+            .map(|v| v.position);
+        let Some(placement) = Placement::fitted(&mesh.bounds, drawn) else {
             self.mesh = None;
             return;
         };

@@ -38,23 +38,28 @@ pub const MAPS: [&str; 14] = [
 ];
 
 /// Which way the skull model faces in its own space: the picture turns
-/// it so [`MODEL_FORWARD`] (the face) looks at the camera and
-/// [`MODEL_UP`] (the crown) points up, then fine-tunes it by
-/// [`MODEL_ROLL_DEGREES`], [`MODEL_PITCH_DEGREES`] and
+/// it so [`MODEL_FORWARD`] looks at the camera and [`MODEL_UP`] points
+/// up, then by [`MODEL_ROLL_DEGREES`], [`MODEL_PITCH_DEGREES`] and
 /// [`MODEL_YAW_DEGREES`] (`showcase::Orientation` has their signs). The
 /// framing, the sway and the glyph's place all follow from the turned
-/// model. The model is authored off-axis: of the preview's 24 axis-aligned
-/// choices (`orientations.png`), face +z with crown +x is the nearest
-/// face-on and upright; `orientations-fine.png` and
-/// `orientations-roll.png` show the fine-tune from there, and the
-/// preview's `H2_SKULL_YAW`, `H2_SKULL_PITCH` and `H2_SKULL_ROLL` try
-/// angles without a code change (docs/game/skulls.md, "The model
-/// picture").
-pub const MODEL_FORWARD: Axis = Axis::PosZ;
-pub const MODEL_UP: Axis = Axis::PosX;
-pub const MODEL_YAW_DEGREES: f32 = 0.0;
-pub const MODEL_PITCH_DEGREES: f32 = 0.0;
-pub const MODEL_ROLL_DEGREES: f32 = 0.0;
+/// model.
+///
+/// The model is authored well off every axis (it is a carried ball), so
+/// the angles are large. They come from its geometry: its mirror plane
+/// (the plane a reflection in which lands the surface back on itself)
+/// gives the side-to-side axis, which is the picture's; the turn within
+/// that plane is the one that puts the teeth (the second part) at the
+/// bottom front and looks at the face from slightly above the level of
+/// the teeth's row, so the forehead is in full view for the glyph. Turned
+/// so, the eye sockets sit either side of the middle at one height, the
+/// teeth under them and the dome over them. The preview checks the
+/// mirror plane and the teeth on the disc's model and shows candidates
+/// side by side (docs/game/skulls.md, "The model picture").
+pub const MODEL_FORWARD: Axis = Axis::PosY;
+pub const MODEL_UP: Axis = Axis::NegZ;
+pub const MODEL_YAW_DEGREES: f32 = 37.0;
+pub const MODEL_PITCH_DEGREES: f32 = 41.2;
+pub const MODEL_ROLL_DEGREES: f32 = 8.6;
 
 /// The model's axes and fine-tune together.
 pub const MODEL_ORIENTATION: Orientation = Orientation {

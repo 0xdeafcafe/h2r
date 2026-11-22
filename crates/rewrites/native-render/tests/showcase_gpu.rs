@@ -343,7 +343,7 @@ fn the_glyphs_edge_is_sharp_at_the_pictures_size() {
         .expect("the groove's edge");
     let expected = cx - DISC * reach;
     assert!(
-        (first as f32 - expected).abs() < 5.0,
+        (first as f32 - expected).abs() < 0.05 * reach,
         "the edge is at {first}, the disc's is near {expected}"
     );
     // Two pixels on, the pixel is wholly inside the stroke, on the wall
@@ -369,7 +369,7 @@ fn the_models_outline_is_anti_aliased() {
     let partial = lit.iter().filter(|p| p[3] > 0 && p[3] < 255).count();
     let solid = lit.iter().filter(|p| p[3] == 255).count();
     assert!(solid > 500, "the sphere is drawn: {solid}");
-    // The outline is about 2 pi r pixels long (r about 17): most of them
+    // The outline is about 2 pi r pixels long (r about 30): most of them
     // are partly covered. Premultiplied: a partly covered pixel is no
     // brighter than its coverage.
     assert!(partial > 40, "only {partial} partly covered pixels");
@@ -421,13 +421,16 @@ fn a_locked_skull_is_a_dark_shape_with_no_glyph() {
             assert_eq!(*d, [0; 4], "the background stays clear");
         }
     }
-    // The framing fits the bounds' sphere (radius sqrt 3 for the unit
-    // sphere's box), so the sphere itself is a disc of the radius its top
-    // projects to: about 17 pixels, not a quarter of the picture.
+    // The framing fits the sphere itself, not its box's corners, so it
+    // is a disc of the radius its top projects to: most of the picture.
     let p = rig.showcase.placement().unwrap();
     let centre = p.project([0.0; 3], 0.0, SIZE, SIZE).unwrap();
     let top = p.project([0.0, 0.0, 1.0], 0.0, SIZE, SIZE).unwrap();
     let radius = centre[1] - top[1];
+    assert!(
+        radius > 0.4 * SIZE as f32,
+        "the sphere fills the picture: {radius}"
+    );
     let disc = std::f32::consts::PI * radius * radius;
     assert!(
         (0.85 * disc..1.25 * disc).contains(&(drawn as f32)),

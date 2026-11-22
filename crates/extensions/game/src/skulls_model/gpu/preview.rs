@@ -304,10 +304,84 @@ fn sheet(
     showcase.set_mesh(&ctx.device, &ctx.queue, &skull.mesh, &skull.bases);
 }
 
+/// How a turned skull sits in the picture's space (x to the camera, y
+/// across, z up), measured on its drawn vertices against its bounds.
+#[derive(Clone, Copy, Debug)]
+struct Facing {
+    /// The mean distance from each vertex, mirrored left to right through
+    /// the bounds' middle, to the nearest vertex, over the bounds' width:
+    /// small only when the skull's own mirror plane is the picture's.
+    mirror: f32,
+    /// The teeth (the second part): their middle across, from the bounds'
+    /// middle, over the width; their front, from the middle, over the
+    /// depth (0.5 is the bounds' front); their middle's height, from the
+    /// middle, over the height (-0.5 is the bottom).
+    teeth_across: f32,
+    teeth_front: f32,
+    teeth_height: f32,
+}
+
+impl Facing {
+    /// `None` for a mesh with no second part.
+    fn of(mesh: &ShowcaseMesh) -> Option<Self> {
+        let position = |i: &u32| mesh.vertices[*i as usize].position;
+        let mut drawn: Vec<u32> = mesh.indices.clone();
+        drawn.sort_unstable();
+        drawn.dedup();
+        let points: Vec<[f32; 3]> = drawn.iter().map(position).collect();
+        let b = mesh.bounds;
+        let centre = [0, 1, 2].map(|k| 0.5 * (b.min[k] + b.max[k]));
+        let size = [0, 1, 2].map(|k| (b.max[k] - b.min[k]).max(f32::EPSILON));
+        let nearest = |p: [f32; 3]| {
+            points
+                .iter()
+                .map(|q| {
+                    let d = [0, 1, 2].map(|k| p[k] - q[k]);
+                    (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+                })
+                .fold(f32::INFINITY, f32::min)
+        };
+        let mirror = points
+            .iter()
+            .map(|p| nearest([p[0], 2.0 * centre[1] - p[1], p[2]]))
+            .sum::<f32>()
+            / points.len() as f32
+            / size[1];
+        let part = mesh.parts.get(1)?;
+        let range = part.first_index as usize..(part.first_index + part.index_count) as usize;
+        let mut teeth: Vec<u32> = mesh.indices.get(range)?.to_vec();
+        teeth.sort_unstable();
+        teeth.dedup();
+        let teeth: Vec<[f32; 3]> = teeth.iter().map(position).collect();
+        let mean = |k: usize| teeth.iter().map(|p| p[k]).sum::<f32>() / teeth.len() as f32;
+        let front = teeth.iter().map(|p| p[0]).fold(f32::NEG_INFINITY, f32::max);
+        Some(Self {
+            mirror,
+            teeth_across: (mean(1) - centre[1]) / size[1],
+            teeth_front: (front - centre[0]) / size[0],
+            teeth_height: (mean(2) - centre[2]) / size[2],
+        })
+    }
+
+    /// Upright and face-on: the mirror plane is the picture's middle, the
+    /// teeth are in the middle across, at the front and near the bottom.
+    /// None of the 24 axis-aligned orientations is.
+    fn upright(&self) -> bool {
+        self.mirror < 0.04
+            && self.teeth_across.abs() < 0.03
+            && self.teeth_front > 0.3
+            && self.teeth_height < -0.35
+    }
+}
+
 /// Orientations worth a look side by side, as `(yaw, pitch, roll)`
 /// degrees from `MODEL_FORWARD` and `MODEL_UP`: `candidates.png` shows
-/// each with Iron's glyph, the one in use first.
-const CANDIDATES: &[(f32, f32, f32)] = &[];
+/// each with Iron's glyph, the one in use first. One that is not
+/// [`Facing::upright`] is left off the sheet and said.
+///
+/// These look at the face from 4 degrees higher and 4 and 8 degrees
+/// lower than the one in use, about the model's side-to-side axis.
+const CANDIDATES: &[(f32, f32, f32)] = &[(35.1, 38.0, 11.7), (39.3, 44.3, 5.3), (42.0, 47.4, 1.5)];
 
 /// [`CANDIDATES`], then `H2_SKULL_CANDIDATES`'s (`yaw/pitch/roll`
 /// triples, comma separated).
@@ -434,16 +508,25 @@ fn orientation_sheets(
         ),
         chosen: true,
     }];
-    cells.extend(candidates().into_iter().map(|(yaw, pitch, roll)| Cell {
-        orientation: Orientation {
+    for (yaw, pitch, roll) in candidates() {
+        let orientation = Orientation {
             yaw,
             pitch,
             roll,
             ..in_use
-        },
-        label: format!("{yaw:.1}/{pitch:.1}/{roll:.1}"),
-        chosen: false,
-    }));
+        };
+        let facing = Facing::of(&skull.rest.oriented(&orientation));
+        println!("candidate {yaw}/{pitch}/{roll}: {facing:?}");
+        if facing.is_some_and(|f| f.upright()) {
+            cells.push(Cell {
+                orientation,
+                label: format!("{yaw:.1}/{pitch:.1}/{roll:.1}"),
+                chosen: false,
+            });
+        } else {
+            println!("  not upright and face-on: left off candidates.png");
+        }
+    }
     let with_glyph = shown(ctx, showcase, marked, 0.0);
     sheet(
         ctx,
@@ -503,6 +586,18 @@ fn preview() {
         ..MODEL_ORIENTATION
     };
     skull.mesh = skull.rest.oriented(&orientation);
+    let facing = Facing::of(&skull.mesh).expect("the skull has its teeth as a second part");
+    println!("the orientation in use: {facing:?}");
+    let axis_aligned_upright = Orientation::all()
+        .iter()
+        .filter(|o| Facing::of(&skull.rest.oriented(o)).is_some_and(|f| f.upright()))
+        .count();
+    println!("  {axis_aligned_upright} of the 24 axis-aligned orientations pass the same check");
+    // The constants must pass; an override is a try and may not.
+    assert!(
+        facing.upright() || orientation != MODEL_ORIENTATION,
+        "the orientation in use is not upright and face-on: {facing:?}"
+    );
     let b = skull.mesh.bounds;
     let placement = showcase::Placement::of(&b).expect("a placement");
     println!("loaded {}", skull.source);
