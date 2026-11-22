@@ -273,11 +273,14 @@ fn a_full_arena_refuses_and_writes_nothing() {
         .alloc(&mut g, arena::Claim { tag: SCNR, root: META, stride: 1, capacity: len - 0x100 })
         .unwrap();
     let write = [json!({"at": META + 0x10, "value": "aa"})];
-    let grown = grow_colors(&g, 1, Some(64));
+    // One element more than the free 0x100 bytes hold (the element is 4 bytes,
+    // so 64 would fit exactly).
+    let capacity = 0x100 / color().0 + 1;
+    let grown = grow_colors(&g, 1, Some(capacity));
     let e = ed.batch_with(&mut g, &write, &grown, None).unwrap_err();
     let BatchError::Full { root, need, largest_free, .. } = e else { panic!("not full: {e:?}") };
     assert_eq!(root, colors_root());
-    assert_eq!(need, (64 * color().0).next_multiple_of(arena::ALIGN));
+    assert_eq!(need, (capacity * color().0).next_multiple_of(arena::ALIGN));
     assert_eq!(largest_free, 0x100);
     assert_eq!(g.u8(META + 0x10).unwrap(), 0, "the field write did not land");
     assert_eq!(pair_at(&g, colors_root()), (2, COLORS_AT));
