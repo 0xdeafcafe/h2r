@@ -8,7 +8,7 @@ The Rust half of the tvOS and iOS apps: a static library that the UIKit hosts ca
 
 ## Layout
 
-- `src/lib.rs`: the C entry points the host calls (`h2host_start`, `h2host_redraw`, `h2host_resize`, `h2host_status` and the text-input calls).
+- `src/host.rs`: the shell and the C entry points the host calls (Apple and Windows only: `app::embedded` is built for those) (`h2host_start`, `h2host_redraw`, `h2host_resize`, `h2host_status` and the text-input calls). `src/lib.rs` declares the modules.
 - `src/layout.rs`, `src/overlay.rs`, `src/touch.rs`: on-screen controls and touch input.
 - `src/text.rs`: the system keyboard bridge.
 - `src/maps.rs`: the map picker data.

@@ -3,9 +3,14 @@
 //! once per game, what the job should do: Stop and pause, Keep running or
 //! Finish this one ([`takeover::PlayerGames`] holds the answers). The queue
 //! waits while a game that didn't answer Keep running is open.
+//!
+//! The queue also waits for a game the player allowed a job over but the
+//! lab couldn't close ([`takeover::Outcome::Held`]); [`tell`] says so on
+//! the Mac.
 
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use agent_proto::takeover::Request as TakeoverRequest;
@@ -162,4 +167,80 @@ fn pause_job(sh: &Shared, id: &str) -> bool {
         unsafe { libc::kill(-pgid, libc::SIGKILL) };
     }
     true
+}
+
+/// Tells the player on this Mac, as a notification, that the job `name`
+/// they allowed is waiting because the lab couldn't close their game, and
+/// what to do. `reason` is the gate's, for the host's log. Best effort: a
+/// notification that can't be shown leaves the job's note and log.
+pub(super) fn tell(name: &str, reason: &str) {
+    let (title, body) = notice(name);
+    let script = format!(
+        "display notification {} with title {}",
+        apple_string(&body),
+        apple_string(&title)
+    );
+    match Command::new("/usr/bin/osascript").args(["-e", &script]).output() {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => eprintln!(
+            "lab: telling the player ({reason}): osascript exited with {}",
+            out.status
+        ),
+        Err(e) => eprintln!("lab: telling the player ({reason}): {e}"),
+    }
+}
+
+/// The notification's title and body for the waiting job `name`.
+fn notice(name: &str) -> (String, String) {
+    let name: String = name.chars().filter(|c| !c.is_control()).take(40).collect();
+    (
+        "Lab job waiting: your game is still open".to_owned(),
+        format!(
+            "The lab couldn't close your game for \"{name}\". Quit it from its menu or close \
+             its window; the job starts once it has closed."
+        ),
+    )
+}
+
+/// `text` as an AppleScript string literal.
+fn apple_string(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for c in text.chars() {
+        match c {
+            '"' | '\\' => {
+                out.push('\\');
+                out.push(c);
+            }
+            c if c.is_control() => out.push(' '),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_notice_says_what_happened_and_what_to_do() {
+        let (title, body) = notice("Menu bands check");
+        assert!(title.contains("still open"), "{title}");
+        assert!(
+            body.contains("couldn't close your game for \"Menu bands check\""),
+            "{body}"
+        );
+        assert!(body.contains("Quit it from its menu or close its window"), "{body}");
+        assert!(body.ends_with("the job starts once it has closed."), "{body}");
+        let (_, body) = notice("a\nb\u{7}c");
+        assert!(body.contains("\"abc\""), "{body}");
+    }
+
+    #[test]
+    fn apple_strings_escape_quotes_and_backslashes() {
+        assert_eq!(apple_string(r#"say "hi" \ bye"#), r#""say \"hi\" \\ bye""#);
+        assert_eq!(apple_string("a\nb"), "\"a b\"");
+    }
 }

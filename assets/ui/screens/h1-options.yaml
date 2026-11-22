@@ -8,14 +8,29 @@ states:
     focus: 0
   focus-1:
     focus: 1
+settings:
+  host: menu
+  icon: helmet
+  name: "This Halo 1 map"
+  caller:
+    label: "Halo 1 Options..."
+    help: "Play this Halo 1 map with Halo 1's weapons and HUD, or Halo 2's."
 widgets:
   title:
     component: title
     text: "HALO 1 OPTIONS"
-  description:
-    component: description
-    at: [-224, 143]
-    size: [494, 20]
-  legend:
-    component: legend
-    prompts: [[[Left, Right], "CHANGE"], [A, "SELECT"], [B, "BACK"]]
+rows:
+  row.0:
+    kind: value
+    text: "Sandbox"
+    values: ["Halo 1", "Halo 2"]
+    help: "Weapons, vehicles and health, from the next game."
+    setting: multiplayer.halo1_sandbox
+    explain: "Which weapons, vehicles and health this map plays with. Halo 1 keeps its own, health packs included. Halo 2 swaps in Halo 2's nearest weapons and vehicles, and its health. From the next game."
+  row.1:
+    kind: value
+    text: "HUD"
+    values: ["Halo 1", "Halo 2"]
+    help: "Shields, health, motion tracker and ammo counter."
+    setting: halo1.hud
+    explain: "Which HUD you play with. Halo 1 shows its own shield and health meters, motion tracker and ammo counter. Halo 2 shows Halo 2's. Changes from the next game."

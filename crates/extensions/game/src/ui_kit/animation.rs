@@ -75,7 +75,7 @@ const STAGGER_ENTER: usize = 3;
 const LEAVE_TICKS: u32 = CLOSE_TICKS;
 const ROW_LEAVE_TICKS: u32 = 4;
 const STAGGER_LEAVE: usize = 2;
-const _: () = assert!(STAGGER_ENTER as u32 + ROW_ENTER_TICKS + 1 <= OPEN_TICKS);
+const _: () = assert!(STAGGER_ENTER as u32 + ROW_ENTER_TICKS < OPEN_TICKS);
 const _: () = assert!(STAGGER_LEAVE as u32 + ROW_LEAVE_TICKS <= CLOSE_TICKS);
 
 /// The builder's ticks per second, which [`Transition::millis`] turns the

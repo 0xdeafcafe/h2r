@@ -11,4 +11,7 @@ gfx = { path = "../gfx", default-features = false }
 tags.workspace = true
 map.workspace = true
 thiserror.workspace = true
-png = "0.18"
+png = { workspace = true }
+
+[lints]
+workspace = true

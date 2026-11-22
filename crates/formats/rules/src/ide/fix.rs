@@ -278,9 +278,7 @@ fn null_fixes(m: &Model, pos: Pos, out: &mut Vec<Fix>) {
 fn guard_condition(m: &Model, at: usize, x: &str) -> Option<Fix> {
     let line = m.li.line_of(at);
     let (a, b) = (m.ci(m.li.line_start(line)), m.ci(m.li.line_end(line)));
-    let iff = (a..b)
-        .filter(|&j| m.code[j].s < at && m.is_word(j, "if") && !m.is_word(j + 1, "let"))
-        .last()?;
+    let iff = (a..b).rfind(|&j| m.code[j].s < at && m.is_word(j, "if") && !m.is_word(j + 1, "let"))?;
     let open = (a..b).find(|&j| m.code[j].s > at && m.is_punct(j, "{"))?;
     if open <= iff + 1 {
         return None;

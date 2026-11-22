@@ -20,6 +20,7 @@ use tags::shader::{PSDEF_SIZE, StageStates};
 use shaders::psh::{PixelUniforms, TextureDim};
 use shaders::vsh::VertexUniforms;
 
+use crate::engine_states::{EngineStateRefusal, apply_static};
 use crate::lights::LightConstants;
 use crate::pass_state::{PassState, StateRefusal, pass_state};
 use crate::program::{PassParts, translate_pass};
@@ -218,8 +219,9 @@ pub enum LightRefusal {
     Lightmap,
     /// Its render states do not fit the native pass.
     State(StateRefusal),
-    /// It reads engine-driven render or stage states.
-    EngineStates,
+    /// Its engine-driven render or stage states do not fit
+    /// ([`crate::engine_states::apply_static`]).
+    EngineStates(EngineStateRefusal),
 }
 
 /// Implementation `implementation` of `material`'s pass in `layer` (12 or
@@ -253,9 +255,9 @@ pub fn light_look(material: &Material, layer: usize, implementation: usize) -> R
     if unsupplied != InputReads::default() {
         return Err(LightRefusal::Reads(unsupplied));
     }
-    if !imp.engine_render_states.is_empty() || !imp.engine_stage_states.is_empty() {
-        return Err(LightRefusal::EngineStates);
-    }
+    // Engine-driven states over the pass's own, from the instance's
+    // inputs in `material`'s.
+    let applied = apply_static(imp, &material.inputs).map_err(LightRefusal::EngineStates)?;
     let mut textures = [LightStage::Empty; 4];
     for (stage, t) in textures.iter_mut().zip(&imp.textures) {
         *stage = match t.map(|t| t.source) {
@@ -270,14 +272,14 @@ pub fn light_look(material: &Material, layer: usize, implementation: usize) -> R
             Some(TextureSource::Lightmap) => return Err(LightRefusal::Lightmap),
         };
     }
-    let state = pass_state(&imp.render_states).map_err(LightRefusal::State)?;
+    let state = pass_state(&applied.render_states).map_err(LightRefusal::State)?;
     Ok(LightLook {
         layer,
         pass: pass.pass,
         implementation,
         vertex_shader,
         textures,
-        stage_states: imp.stage_states.clone(),
+        stage_states: applied.stage_states,
         pixel_shader: imp.pixel_shader,
         vertex_constants: imp.vertex_constants.clone(),
         vertex_defaults: imp.vertex_defaults.clone(),
@@ -607,6 +609,22 @@ mod tests {
         imp.input_reads = InputReads { scalars: 1 << 16 | 1 << 23, vectors: 1 << 6 | 1 << 35, ints: 1 << 6 | 1 << 5 };
         let e = light_look(&material(DIFFUSE_LAYER, vec![imp]), DIFFUSE_LAYER, 1).unwrap_err();
         assert_eq!(e, LightRefusal::Reads(InputReads { scalars: 1 << 23, vectors: 1 << 35, ints: 1 << 6 }));
+    }
+
+    /// A driven state from the instance's scalar 21 fits; one from the
+    /// light's colour (vector 5) changes per light and keeps the D3D pass.
+    #[test]
+    fn engine_driven_states_from_the_light_keep_the_d3d_pass() {
+        use tags::shader::ExternalBinding;
+        let mut imp = implementation(1, TextureSource::Engine(9));
+        imp.input_reads = InputReads { scalars: 1 << 21, vectors: 1 << 5, ints: 0 };
+        // LINEWIDTH from scalar 21: inert for triangles.
+        imp.engine_render_states = vec![ExternalBinding { bytes: [5, 1, 0, 21] }];
+        assert!(light_look(&material(DIFFUSE_LAYER, vec![imp.clone()]), DIFFUSE_LAYER, 1).is_ok());
+        // FOGCOLOR from the light's colour.
+        imp.engine_render_states = vec![ExternalBinding { bytes: [6, 0, 0, 5] }];
+        let e = light_look(&material(DIFFUSE_LAYER, vec![imp]), DIFFUSE_LAYER, 1).unwrap_err();
+        assert_eq!(e, LightRefusal::EngineStates(EngineStateRefusal::PerDraw { state: 0x8a, stage: None }));
     }
 
     /// `dp4 oPos, v0, c[0..3]; mov oT0, v1; mov oT1, v5; mov oT3, v1`.

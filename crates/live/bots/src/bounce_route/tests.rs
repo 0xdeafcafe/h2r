@@ -238,7 +238,7 @@ fn a_plan_makes_a_bounded_number_of_path_queries_however_many_spots_there_are() 
                 n.get()
             );
             assert!(n.get() > 0);
-            assert!(p.steps.len() >= 1);
+            assert!(!p.steps.is_empty());
         }
     }
 }
@@ -448,7 +448,6 @@ fn drop_site(x: f32, launch: f32) -> Site {
     Site {
         fall: 2.4,
         need: 4.5,
-        width: 0.2,
         ..site(x, 0.0, launch)
     }
 }
@@ -793,7 +792,7 @@ fn a_drop_lines_up_runs_off_steers_onto_the_slot_and_rides_the_launch() {
     );
     let t = run.status().landing.expect("a touchdown");
     assert!(t.bounced() && t.miss < 0.1 && t.speed_in > 4.0, "{t:?}");
-    assert_eq!(t.result(0.2, 4.0), "bounce");
+    assert_eq!(t.result(4.0), "bounce");
     assert!(
         log.iter()
             .any(|l| *l == ("fly", "bounce") || *l == ("drop", "bounce")),
@@ -889,7 +888,7 @@ fn every_drop_of_a_try_that_does_not_launch_is_a_flight_that_lands() {
     assert!(!flights.is_empty());
     for f in &flights {
         let t = f.landing.expect("a touchdown");
-        assert_eq!(f.end, Some(t.result(0.2, 4.0)), "{f:?}");
+        assert_eq!(f.end, Some(t.result(4.0)), "{f:?}");
         assert!(!t.bounced(), "{t:?}");
     }
 }
@@ -1044,15 +1043,15 @@ fn a_touchdown_is_named_by_its_first_failed_test() {
         miss: 0.05,
         word: Some(PRIMED_WORD),
     };
-    assert_eq!(t.result(0.2, 4.0), "no_bounce");
-    assert_eq!(Touchdown { vz_out: 12.0, ..t }.result(0.2, 4.0), "bounce");
+    assert_eq!(t.result(4.0), "no_bounce");
+    assert_eq!(Touchdown { vz_out: 12.0, ..t }.result(4.0), "bounce");
     assert_eq!(
-        Touchdown { word: Some(0), ..t }.result(0.2, 4.0),
+        Touchdown { word: Some(0), ..t }.result(4.0),
         "not_primed"
     );
-    assert_eq!(Touchdown { miss: 0.2, ..t }.result(0.2, 4.0), "missed");
+    assert_eq!(Touchdown { miss: 0.2, ..t }.result(4.0), "missed");
     assert_eq!(
-        Touchdown { speed_in: 3.0, ..t }.result(0.2, 4.0),
+        Touchdown { speed_in: 3.0, ..t }.result(4.0),
         "too_slow"
     );
 }

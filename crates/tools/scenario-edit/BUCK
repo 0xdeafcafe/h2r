@@ -41,9 +41,11 @@ workspace_library(
     deps = [
         "//crates/formats/content:content",
         "//crates/formats/map:map",
+        "//crates/formats/shaders:shaders",
         "//crates/formats/tags:tags",
         "//crates/formats/xiso:xiso",
         "//crates/platform/assets:assets",
+        "//crates/platform/gfx:gfx",
         "//crates/rewrites/native-render:native-render",
         "//crates/tools/h1-assets:h1-assets",
         "//third-party/rust:bytemuck",
@@ -68,9 +70,11 @@ workspace_test(
     deps = [
         "//crates/formats/content:content",
         "//crates/formats/map:map",
+        "//crates/formats/shaders:shaders",
         "//crates/formats/tags:tags",
         "//crates/formats/xiso:xiso",
         "//crates/platform/assets:assets",
+        "//crates/platform/gfx:gfx",
         "//crates/rewrites/native-render:native-render",
         "//crates/tools/h1-assets:h1-assets",
         "//third-party/rust:bytemuck",

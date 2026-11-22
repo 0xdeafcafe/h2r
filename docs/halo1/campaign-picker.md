@@ -308,7 +308,7 @@ linked child count, so the fourth action remains reachable.
 | Select Level | Open `0x2b130a` with this game's level array. The level-select constructor and per-difficulty unlock rules still apply. |
 | Co-op | The retail action at `0x2b16a1` opens player selection. Lobby Continue at `0x199a92` uses this game's last or first level. The session map setter at `0x19a6f2` receives that level's campaign. |
 
-### The picker's detail pane (`campaign_info`, 2026-11-18)
+### The picker's detail pane (`campaign_info`)
 
 The picker is laid out as the level select is (its list, bracket, picture
 box and description text: `skulls_menu::LIST_LAYOUT`, `FRAME`,

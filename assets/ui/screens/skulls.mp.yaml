@@ -13,11 +13,14 @@ states:
 widgets:
   title:
     component: title
-    text: "Multiplayer Skulls"
+    text: "SKULLS"
   description:
     component: description
     at: [39, -30]
     size: [221, 103]
+  legend:
+    component: legend
+    prompts: [[A, "CHANGE"], [B, "BACK"]]
   art.0:
     component: art
     at: [-259, 177]

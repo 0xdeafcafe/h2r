@@ -304,15 +304,7 @@ impl Handle {
     /// [`USERS`], an empty text, or one [`message_fault`] refuses (over 63
     /// units, more than one line).
     pub fn notify(&self, user: u32, text: &str) -> bool {
-        if let Err(why) = note_fits(user, text) {
-            eprintln!("hud kit: notification {text:?} for user {user} not sent: {why}");
-            return false;
-        }
-        lock(&NOTES).push(Note {
-            user,
-            text: text.to_owned(),
-        });
-        true
+        notify(user, text)
     }
     /// The world point the HUD's navpoint is over, if it shows.
     pub fn navpoint(&self, at: Option<[f32; 3]>) {
@@ -335,6 +327,20 @@ pub fn note_fits(user: u32, text: &str) -> Result<(), String> {
         Some(why) => Err(why),
         None => Ok(()),
     }
+}
+
+/// A notification for a local user from a sender with no HUD of its own,
+/// queued as [`Handle::notify`] queues one.
+pub fn notify(user: u32, text: &str) -> bool {
+    if let Err(why) = note_fits(user, text) {
+        eprintln!("hud kit: notification {text:?} for user {user} not sent: {why}");
+        return false;
+    }
+    lock(&NOTES).push(Note {
+        user,
+        text: text.to_owned(),
+    });
+    true
 }
 
 /// The queued notifications, oldest first, at most [`NOTES_PER_TICK`]

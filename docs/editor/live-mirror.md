@@ -7,7 +7,7 @@ edits, live placement adds and removes (`world.placement.edit`) and
 reload from a play copy are built. The richer live view, timeline
 and substantial structural edits are designs. Real-game parity and cost
 checks are pending.
-Code: `crates/extensions/agent-proto/src/live` (wire format), `crates/extensions/agent/src/live` (capture and stream), `crates/extensions/game/src/scene_glue.rs` (the camera source), `crates/tools/live-mirror` (editor store), `crates/apps/studio/src/play` and `crates/tools/scenario-edit` (pairing and viewport).
+Code: `crates/extensions/agent-proto/src/live` (wire format), `crates/extensions/agent/src/live` (capture and stream), `crates/extensions/game/src/scene_glue.rs` (the camera source), `crates/apps/live-mirror` (editor store), `crates/apps/studio/src/play` and `crates/tools/scenario-edit` (pairing and viewport).
 Switch: none. With no subscriber the tick observer skips capture and no stream worker runs.
 
 A paired editor shows the game as it runs: players, bipeds, vehicles,

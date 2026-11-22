@@ -535,11 +535,8 @@ fn credits(
         let Some(killer) = kill.killer.filter(|_| scored(&kill.class)) else {
             continue;
         };
-        if scores
-            .front()
-            .is_some_and(|s| s.2 == ScoreReason::Kill && s.0 == killer)
-        {
-            credit(scores.pop_front().expect("fronted"), Some(kill.class.clone()));
+        if let Some(s) = scores.pop_front_if(|s| s.2 == ScoreReason::Kill && s.0 == killer) {
+            credit(s, Some(kill.class.clone()));
         }
         if let Some(assist) = kill.assist.filter(|&assist| assist != killer)
             && scores

@@ -406,3 +406,25 @@ fn each_base_resolves_in_shared() {
         );
     }
 }
+
+/// Every Forge options row has its help, player copy that fits the
+/// settings dialog's help block in two lines.
+#[test]
+fn every_forge_option_has_its_help() {
+    use crate::ui_kit::dialog::SETTINGS_HELP_TEXT;
+    use crate::ui_kit::spec::{fallback, wrap};
+    let [top, left, bottom, right] = SETTINGS_HELP_TEXT.rect;
+    let (width, height) = (i32::from(right - left), i32::from(top - bottom));
+    let page = sheet::options();
+    assert_eq!(page.rows.len(), sheet::OPTIONS.len());
+    for r in &page.rows {
+        let help = r.description.as_deref().unwrap_or_default();
+        assert!(!help.trim().is_empty(), "{}: no help", r.label);
+        let lines = wrap(help, width, &fallback::width).len() as i32;
+        assert!(lines <= 2 && lines * fallback::LINE <= height, "{}: {lines} lines", r.label);
+        let lower = help.to_lowercase();
+        for bad in ["docs/", "todo", "placeholder", "tbd"] {
+            assert!(!lower.contains(bad), "{}: {help}", r.label);
+        }
+    }
+}

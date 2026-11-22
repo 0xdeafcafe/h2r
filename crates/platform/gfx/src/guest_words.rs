@@ -461,7 +461,6 @@ impl GuestWords {
     /// Records the encoding of colour texture `src` (a `Bgra8Unorm` or
     /// `Rgba8Unorm` texture of `size` with `TEXTURE_BINDING`) into `mirror`
     /// as `format` words at `layout`.
-    #[allow(clippy::too_many_arguments)]
     pub fn store_color(
         &self,
         ctx: &GfxContext,
@@ -476,7 +475,6 @@ impl GuestWords {
     }
 
     /// Encode one sample for each guest pixel of the supplied logical region.
-    #[allow(clippy::too_many_arguments)]
     pub fn store_color_scaled(
         &self,
         ctx: &GfxContext,
@@ -550,7 +548,6 @@ impl GuestWords {
     }
 
     /// Encode one sample for each guest pixel of the supplied logical region.
-    #[allow(clippy::too_many_arguments)]
     pub fn store_depth_scaled(
         &self,
         ctx: &GfxContext,
@@ -612,7 +609,6 @@ impl GuestWords {
     /// Records the decoding of `format` words at `layout` in `mirror` into
     /// every texel of colour texture `dst` (`RENDER_ATTACHMENT`, single
     /// sample, of `size`).
-    #[allow(clippy::too_many_arguments)]
     pub fn load_color(
         &mut self,
         ctx: &GfxContext,
@@ -883,7 +879,6 @@ impl GuestWords {
     /// logical channels XORed with `flip` (red in the low byte; `0x80` per
     /// `COLORSIGN` channel). The new `Rgba8Unorm` texture is valid once
     /// `encoder` is submitted.
-    #[allow(clippy::too_many_arguments)]
     pub fn depth_alias(
         &self,
         ctx: &GfxContext,
@@ -898,7 +893,6 @@ impl GuestWords {
     }
 
     /// Decode from an integer-sized backing, as used by the E3 shadow view.
-    #[allow(clippy::too_many_arguments)]
     pub fn depth_alias_scaled(&self, ctx: &GfxContext, encoder: &mut wgpu::CommandEncoder,
         depth: &wgpu::Texture, format: D3DFormat, size: (u32, u32), layout: WordLayout,
         flip: u32, scale: u32) -> Result<wgpu::Texture, WordsError> {
@@ -909,7 +903,6 @@ impl GuestWords {
 
     /// Decode guest word addresses while retaining the source texels within
     /// each word's scaled pixel block (including offset and swizzled aliases).
-    #[allow(clippy::too_many_arguments)]
     pub fn depth_alias_at_extent(
         &self,
         ctx: &GfxContext,

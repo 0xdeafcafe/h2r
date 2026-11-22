@@ -312,6 +312,12 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
                 call(api, app, m::UI_UNDO, json!({}));
             }
         }
+        // A retail screen's tag edits: with no disc in a test there is no
+        // retail screen, so their examples meet our example screen and
+        // are refused with the owner.
+        m::UI_HIDE | m::UI_DUPLICATE | m::UI_SET_STRING => {
+            call(api, app, m::UI_PICK, json!({"screen": UI_EDIT_SCREEN}));
+        }
         // The window's pairing, as its first frame publishes it.
         n if n.starts_with("pair.") => {
             crate::play::Play::new().update(app);
@@ -814,6 +820,10 @@ fn every_method_in_methods_has_a_test() {
                         | m::MIRROR_PLAYER
                         | m::MIRROR_CONTROL
                 ) && e.code == code::REFUSED => {}
+            // Retail tag edits need the disc's screens: ours are refused.
+            (None, Err(e))
+                if matches!(d.name, m::UI_HIDE | m::UI_DUPLICATE | m::UI_SET_STRING)
+                    && e.code == code::REFUSED => {}
             (None, Err(e)) => panic!("{} {params}: {e}", d.name),
             (None, Ok(v)) => assert!(!v.is_null() || matches!(d.name, m::METHODS | m::MIRROR_PICK), "{}", d.name),
         }
@@ -3874,6 +3884,12 @@ fn ui_sheet_renders_a_folders_previews_into_one_png() {
         assert!(tile["y"].as_u64().unwrap() + tile["h"].as_u64().unwrap() <= h);
         assert_eq!(tile["checked"], true);
         assert!(tile["findings"].is_u64() && tile.get("error").is_none());
+        // One line per finding, the count's own.
+        assert_eq!(
+            tile["found"].as_array().unwrap().len() as u64,
+            tile["findings"].as_u64().unwrap(),
+            "{tile}"
+        );
     }
     // Two columns: the second tile sits to the right of the first.
     if tiles.len() > 1 {
@@ -4149,7 +4165,7 @@ fn ui_edits_need_a_screen_and_retail_needs_the_disc() {
     // A retail screen without the disc draws nothing, so has no widget to
     // edit; nor a filmstrip.
     app.dispatch(Action::SetTool(crate::app::ToolKind::UiScreens));
-    app.dispatch(Action::UiPick(crate::app::Pick::Retail(r"ui\screens\x".into())));
+    app.dispatch(Action::UiPick(crate::app::Pick::retail(r"ui\screens\x")));
     assert_eq!(
         code_of(api.call(&mut app, m::UI_MOVE, json!({"id": "text.0", "dx": 1, "dy": 0}))),
         code::INVALID_PARAMS
@@ -4160,6 +4176,84 @@ fn ui_edits_need_a_screen_and_retail_needs_the_disc() {
     );
     let undo = call(&mut api, &mut app, m::UI_UNDO, json!({}));
     assert_eq!(undo["done"], false);
+}
+
+#[test]
+fn ui_retail_tag_edits_refuse_our_screens_and_need_the_disc() {
+    let t = Temp::new("uiedit-retail-tag");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let hide = json!({"id": "text.0"});
+    let copy = json!({"id": "text.0", "rect": [95, -260, 75, 70]});
+    let string = json!({"id": "text.0", "string": "lobby_mode", "shows": "CUSTOM GAMES"});
+    // No screen shown.
+    for (method, params) in [
+        (m::UI_HIDE, &hide),
+        (m::UI_DUPLICATE, &copy),
+        (m::UI_SET_STRING, &string),
+    ] {
+        assert_eq!(
+            code_of(api.call(&mut app, method, params.clone())),
+            code::NO_DOCUMENT,
+            "{method}"
+        );
+    }
+    // A screen of ours: refused, naming it, and nothing is edited.
+    ui_edit_checkout(&mut app, &t);
+    call(&mut api, &mut app, m::UI_PICK, json!({"screen": UI_EDIT_SCREEN}));
+    for (method, params) in [
+        (m::UI_HIDE, json!({"id": "title"})),
+        (m::UI_DUPLICATE, json!({"id": "title"})),
+        (m::UI_SET_STRING, json!({"id": "title", "string": "lobby_mode"})),
+    ] {
+        let e = api.call(&mut app, method, params).unwrap_err();
+        assert_eq!(e.code, code::REFUSED, "{method}: {e}");
+        assert!(e.message.contains(UI_EDIT_SCREEN), "{method}: {e}");
+    }
+    let edits = call(&mut api, &mut app, m::UI_EDITS, json!({}));
+    assert_eq!(edits["ours_dirty"], false);
+    assert_eq!(edits["retail_blocks"], json!({}));
+    assert_eq!(edits["stand_ins"], json!({}));
+    // Params are checked before the edit.
+    assert_eq!(
+        code_of(api.call(&mut app, m::UI_HIDE, json!({}))),
+        code::INVALID_PARAMS
+    );
+    assert_eq!(
+        code_of(api.call(&mut app, m::UI_DUPLICATE, json!({"id": "title", "rect": [1, 2]}))),
+        code::INVALID_PARAMS
+    );
+    assert_eq!(
+        code_of(api.call(&mut app, m::UI_SET_STRING, json!({"id": "title"}))),
+        code::INVALID_PARAMS
+    );
+    // A retail screen without the disc has no widget to hide or copy, and
+    // a string ID needs the menu map open.
+    app.dispatch(Action::UiPick(crate::app::Pick::retail(r"ui\screens\x")));
+    assert_eq!(
+        code_of(api.call(&mut app, m::UI_HIDE, hide.clone())),
+        code::INVALID_PARAMS
+    );
+    assert_eq!(
+        code_of(api.call(&mut app, m::UI_DUPLICATE, copy.clone())),
+        code::INVALID_PARAMS
+    );
+    let e = api.call(&mut app, m::UI_SET_STRING, string.clone()).unwrap_err();
+    assert_eq!(e.code, code::REFUSED, "{e}");
+    assert!(e.message.contains("mainmenu"), "{e}");
+    // A name that is not a string ID's is the caller's mistake.
+    assert_eq!(
+        code_of(api.call(
+            &mut app,
+            m::UI_SET_STRING,
+            json!({"id": "text.0", "string": "Lobby Mode"})
+        )),
+        code::INVALID_PARAMS
+    );
+    let edits = call(&mut api, &mut app, m::UI_EDITS, json!({}));
+    assert_eq!(edits["sink"], "retail");
+    assert_eq!(edits["stand_ins"], json!({}));
+    assert_eq!(edits["retail_dirty"], false);
 }
 
 /// The layers' rows in `view.layers`, by name.
@@ -4581,5 +4675,42 @@ fn nav_bots_builds_the_mesh_when_there_is_no_cache() {
     assert!(
         !t.path("data").join("bots").join("fixture.0.bots").exists(),
         "the build is not written"
+    );
+}
+
+#[test]
+fn ui_pick_names_a_retail_screens_sample_variant() {
+    let t = Temp::new("ui-pick-sample");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let setup = r"ui\screens\game_shell\pregame_lobby\squad_settings_dialog";
+    let r = call(
+        &mut api,
+        &mut app,
+        m::UI_PICK,
+        json!({"retail": setup, "sample": "switch-to"}),
+    );
+    assert_eq!(r["pick"], json!({"retail": setup, "sample": "switch-to"}));
+    assert_eq!(
+        app.ui_screens.pick,
+        Some(crate::app::Pick::Retail {
+            tag: setup.into(),
+            sample: Some("switch-to".into()),
+        })
+    );
+    // Without a name: the plain sample.
+    let r = call(&mut api, &mut app, m::UI_PICK, json!({"retail": setup}));
+    assert_eq!(r["pick"], json!({"retail": setup}));
+    // A name the screen has no sample for is refused with its names.
+    let e = api
+        .call(&mut app, m::UI_PICK, json!({"retail": setup, "sample": "no-such"}))
+        .unwrap_err();
+    assert_eq!(e.code, code::INVALID_PARAMS, "{e}");
+    assert!(e.message.contains("switch-to"), "{e}");
+    assert_eq!(app.ui_screens.pick, Some(crate::app::Pick::retail(setup)), "nothing changed");
+    // A sample is a retail screen's: not one of ours.
+    assert_eq!(
+        code_of(api.call(&mut app, m::UI_PICK, json!({"screen": "kit.example", "sample": "switch-to"}))),
+        code::INVALID_PARAMS
     );
 }

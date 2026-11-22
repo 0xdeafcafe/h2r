@@ -1551,7 +1551,8 @@ UI; `ui/ui_screens.rs` draws it.
   state; its spec becomes a `View` (`view_of`) drawn by
   `preview::render_view` from the editor's disc (`App::sync_ui_disc`: the
   open source when it is a disc image) or the synthetic source. A retail
-  pick is `Disc::render_retail` (pane 0, the tag's own texts), not
+  pick is `Disc::render_retail` (pane 0, in the screen's sample state:
+  docs/game/ui-builder.md "Retail screens in a believable state"), not
   checked. The canvas goes to a `Rgba8Unorm` texture registered with the
   renderer (not sRGB, as the viewport's), re-uploaded when the shot's
   `rev` changes.
@@ -1575,8 +1576,11 @@ UI; `ui/ui_screens.rs` draws it.
   checkout and reloaded when the files change on disk); a retail
   screen's are tag writes on the open `mainmenu` map (`edit::retail`,
   `App::tags`), saved with the map. A retail pick is drawn with its
-  edited places (`Disc::render_retail_with`) and has a view
-  (`Disc::retail_view`) for the overlays and edits. The design, the
+  edits (`Disc::render_retail_edited`: the places moved, and the pane's
+  text, button and bitmap blocks as the map's tag document has them)
+  and has a view (`Disc::retail_view_edited`) for the overlays and
+  edits. The Selected section's Hide and Duplicate buttons and
+  `ui.set_string` are tag edits past a rect (`edit::retail_tag`). The design, the
   refusals and the `ui.*` edit methods are in docs/game/ui-builder.md
   "Editing in the editor".
 - **The transport** (`ui/ui_screens/transport.rs`): the kit's Open and

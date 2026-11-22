@@ -56,13 +56,17 @@ pub struct FakeGame {
     pub script_error: Option<ScriptError>,
 }
 
-/// A message the script showed: to whom, its stored template, the values
-/// of its holes, and the line a player reads (a player as `player 2`, a
-/// team as `team 1`, a time as `m:ss`).
+/// A message the script showed: to whom, its audience as a mask of player
+/// slots (`docs/game/rules-world-api.md`, "The show channel"), its stored
+/// template, the values of its holes, and the line a player reads (a
+/// player as `player 2`, a team as `team 1`, a time as `m:ss`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FakeMessage {
     /// A player or a team; `None` for everyone.
     pub to: Option<Arg>,
+    /// The audience as a mask of player slots: the player's bit, the bits
+    /// of the team's seated players, or every slot for everyone.
+    pub audience: crate::show::Audience,
     pub template: String,
     pub values: Vec<Arg>,
     pub line: String,
@@ -71,7 +75,7 @@ pub struct FakeMessage {
 impl FakeMessage {
     /// The message of a `message` call: `[to, text, values...]`, or
     /// `[text, values...]` for everyone.
-    fn of(call: &Call) -> Option<FakeMessage> {
+    fn of(g: &FakeGame, call: &Call) -> Option<FakeMessage> {
         let own = call.entry.args.len();
         let to = (own == 2).then(|| call.args.first().cloned()).flatten();
         let Some(Arg::Text(template)) = call.args.get(own - 1) else {
@@ -84,8 +88,20 @@ impl FakeMessage {
             .zip(holes.iter().copied().map(Some).chain(std::iter::repeat(None)))
             .map(|(v, h)| show(v, h))
             .collect();
+        let audience = match &to {
+            Some(Arg::Player(Some(p))) => crate::show::player(*p),
+            Some(Arg::Team(Some(t))) => g
+                .players
+                .iter()
+                .filter(|(_, q)| q.team == *t)
+                .fold(0, |mask, (&slot, _)| mask | crate::show::player(slot)),
+            Some(Arg::Player(None) | Arg::Team(None)) => 0,
+            None => crate::show::EVERYONE,
+            _ => return None,
+        };
         Some(FakeMessage {
             to,
+            audience,
             template: template.clone(),
             line: crate::caps::fill(template, &shown),
             values,
@@ -386,7 +402,8 @@ impl Game for FakeGame {
     fn act(&mut self, call: &Call) {
         self.calls.push((call.entry.name, call.args.clone()));
         if crate::caps::is_message(call.entry.id) {
-            self.messages.extend(FakeMessage::of(call));
+            let message = FakeMessage::of(self, call);
+            self.messages.extend(message);
             return;
         }
         if call.entry.id == id::REGISTER_OBJECTIVE
@@ -495,6 +512,7 @@ mod tests {
             g.messages,
             [FakeMessage {
                 to: Some(Arg::Player(Some(0))),
+                audience: crate::show::player(0),
                 template: "{player} scored, {time} left".into(),
                 values: vec![Arg::Player(Some(1)), Arg::Int(95 * crate::caps::TICKS_PER_SECOND)],
                 line: "player 1 scored, 1:35 left".into(),
@@ -509,6 +527,47 @@ mod tests {
         g.act(&all);
         assert_eq!(g.messages[1].to, None);
         assert_eq!(g.messages[1].line, "{phase} attack");
+    }
+
+    #[test]
+    fn the_fake_logs_each_message_with_its_audience() {
+        let mut g = FakeGame::with_players(4);
+        g.players.get_mut(&1).unwrap().team = 1;
+        g.players.get_mut(&3).unwrap().team = 1;
+        let call = |entry: u16, args: Vec<Arg>| Call {
+            entry: crate::caps::entry(entry, crate::caps::API_VERSION).unwrap(),
+            args,
+        };
+        // A player: their bit.
+        g.act(&call(
+            id::MESSAGE,
+            vec![Arg::Player(Some(2)), Arg::Text("hi".into())],
+        ));
+        assert_eq!(g.messages[0].audience, crate::show::player(2));
+        // A team: the bits of its seated players.
+        g.act(&call(
+            id::MESSAGE_TEAM,
+            vec![Arg::Team(Some(1)), Arg::Text("push".into())],
+        ));
+        assert_eq!(
+            g.messages[1].audience,
+            crate::show::player(1) | crate::show::player(3)
+        );
+        // A team with no players: no audience.
+        g.act(&call(
+            id::MESSAGE_TEAM,
+            vec![Arg::Team(Some(5)), Arg::Text("push".into())],
+        ));
+        assert_eq!(g.messages[2].audience, 0);
+        // Everyone: every slot.
+        g.act(&call(id::MESSAGE_ALL, vec![Arg::Text("go".into())]));
+        assert_eq!(g.messages[3].audience, crate::show::EVERYONE);
+        // No player: no audience.
+        g.act(&call(
+            id::MESSAGE,
+            vec![Arg::Player(None), Arg::Text("hi".into())],
+        ));
+        assert_eq!(g.messages[4].audience, 0);
     }
 
     #[test]

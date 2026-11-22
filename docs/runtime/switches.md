@@ -40,20 +40,25 @@ An `impl.` name is an implementation switch
 | `variants.port.script`, `H2_VARIANTS_PORT_SCRIPT` | How saved variants are ported into the game-variant store at boot: `keep` (default; their engine's own rules) or `builtin` (the engine's built-in rules script named and carried). ([Live game variants in the game](../game/rules-engine.md#live-game-variants-in-the-game)) |
 | `game-variants` | On by default; `-game-variants` turns it off. Writes a game-variant store variant's options and script reference on the game at its start ([Live game variants in the game](../game/rules-engine.md#live-game-variants-in-the-game)). |
 | `H2_LIVE_SERVER` | Service selected by `h2 play --live`. Use a URL or `off` ([app.md](app.md)). |
-| `forge` | On by default; `-forge` turns it off. The [local Forge session](../game/forge-design.md#the-ui) on offline multiplayer maps: D-pad Up or Tab toggles the monitor. The party lobby's mode strip has a FORGE tab while it is on ([the lobbies](../game/forge-firefight-ui.md#the-lobbies)); `-forge` removes the tab. Light hosts, film replays and lockstep runs never have it. |
+| `forge` | On by default; `-forge` turns it off. The [local Forge session](../game/forge-design.md#the-ui) on offline multiplayer maps: D-pad Up or Tab toggles the monitor. The party lobby has a FORGE mode, and the Xbox Live menu a Forge row, while it is on ([the lobbies](../game/forge-firefight-ui.md#the-lobbies)); `-forge` removes both. Light hosts, film replays and lockstep runs never have it. |
 | `forge-screens`; `forge-objects`, `forge-properties`, `forge-tools`, `forge-settings`, `forge-link`, `forge-question`, `forge-options`, `forge-controls` | on with `forge`. The Forge screens in the game and GAME MENU's Forge rows; each screen's class is its own feature. With `-forge-screens` the session refuses every screen by name ([forge-firefight-ui.md](../game/forge-firefight-ui.md#the-screens)) |
 | `tweakers` | on by default. Adds the Tweakers row under Territories in the game type list and lists Superbounce there instead of under Slayer ([community-gametypes.md](../game/community-gametypes.md#tweakers)). `H2_FEATURES=-tweakers` leaves the retail list, with Superbounce under Slayer |
 | `teabag` | on by default. Watches every game for teabags and records them to the film and Live, where they take the Incel medal ([teabag.md](../game/teabag.md)). `H2_FEATURES=-teabag` records none, so Live and the film give Incel to everyone who completes a game |
+| `superbounce-steps` | on by default. The row of step panels low in the middle of the superbounce HUD: the charge, the live vertical speed against the speed the strip needs, the landing ([superbounce.md](../game/superbounce.md#the-superbounce-game-type)). `H2_FEATURES=-superbounce-steps` leaves it out |
+| `superbounce-ghost` | off by default. Shows a [ghost run](../game/superbounce.md#ghost-runs) on request: the chosen strip's recorded run as one faint outline figure, with its prompt on the HUD's prompt line. Runs are recorded either way. `H2_FEATURES=superbounce-ghost` turns it on |
+| `medal-announcer` | on by default. The announcer speaks our medals' HUD lines (Superbounce to Monster Bounce), queued behind the game's own announcer ([audio.md](../audio/audio.md#our-medals-announcer-lines)). `H2_FEATURES=-medal-announcer` keeps the medals silent |
+| `pause-change-map`; `pause-map-categories`, `pause-map-list` | on by default. GAME MENU's Change Map row for the party leader of a custom game: the map picker, then the game ends and the next one starts on that map ([settings-menu.md](../game/settings-menu.md#change-map-from-the-pause-menu)). `H2_FEATURES=-pause-change-map` leaves GAME MENU retail's; each picker screen's class is its own feature |
 | `ui-back` | on by default. B or Back returns to Game Setup from its nested selectors. `H2_FEATURES=-ui-back` restores the retail selector Back behavior ([Back navigation](../game/ui-screens.md#back-navigation)) |
 | `return-to-menu` | on in ordinary windowed runs. Shows the host loading picture on the return from a game ([level-boot.md](level-boot.md#returning-to-the-main-menu)) |
 | `impl.render.native=off` | turns off the native GPU renderer, every stage together ([native-renderer.md](../graphics/native-renderer.md)) |
 | `impl.render.interpolate`, `impl.render.reproject` | Host frames above 30 fps; both generate up to 60 frames per second ([high-framerate.md](../game/high-framerate.md)). Interpolate, on by default, replays geometry with blended transforms; `-impl.render.interpolate` turns it off. Reproject, off by default, warps the world image for camera rotation and takes its place when set. At 30 fps neither acts. |
 | `audio.hrtf`, `audio.distance_reverb` | on by default: headphone binaural filtering; extra distance reverb. `audio.hrtf=off` and `audio.distance_reverb=off` turn them off ([audio.md](../audio/audio.md#headphones-3d)). |
 | `actor-net` | on; `-actor-net` stops capturing replicated AI actors and accepted dialogue after each distributed host tick ([AI over the network](../game/ai-networking.md#on-the-host-each-tick)) |
-| `firefight`, `firefight-row`, `firefight-options` | on; `-firefight` turns off the [Firefight](../game/firefight.md#the-host-runtime) director and host log (in each multiplayer game whose map carries the kit; any other map gets the refusal and its reason in `firefight.state`). `-firefight-row` removes the Game Setup row, `-firefight-options` the [Firefight Options...](../game/firefight.md#game-setup) page. With `firefight` on, the party lobby's mode strip has a FIREFIGHT tab ([the lobby](../game/firefight.md#the-lobby)). |
+| `firefight`, `firefight-row`, `firefight-options` | on; `-firefight` turns off the [Firefight](../game/firefight.md#the-host-runtime) director and host log (in each multiplayer game whose map carries the kit; any other map gets the refusal and its reason in `firefight.state`). `-firefight-row` removes the Game Setup row, `-firefight-options` the [Firefight Options...](../game/firefight.md#game-setup) page. With `firefight` on, the party lobby has a FIREFIGHT mode and the Xbox Live menu a Firefight row ([the lobby](../game/firefight.md#the-lobby)). |
 | `rules` | off; `rules` turns on the [rules script host runtime](../game/rules-engine.md#the-host-runtime): at each multiplayer game's start it runs the script the record names (a built-in by hash prefix; any other is refused by name until the Live fetch exists) on the machine `GAME_ENGINE_AUTHORITATIVE` answers true for, keeps its state as the `RULES` record of `SimExt`, puts its hash on a Live host's session and advertises `rules/1`. A refused script is logged and the game plays its own engine's rules; `rules.state` says which. The `rules` cargo feature of `game` and `boot` (on by default, and in the cli's `host`) compiles it in |
 | `impl.engine.datums`, `impl.engine.tags`, `impl.engine.locale` | on; `=off` turns off the Rust datum, tag and locale leaves, each group or one function (`impl.engine.tags.tag_get_checked=off`) |
-| `lobby-options=off` | keeps the retail Quick Options lines in the custom game lobby ([ui-builder.md](../game/ui-builder.md#the-pregame-lobbys-quick-options)); the party lobby's mode strip has its own hook on that update and is drawn either way ([party-lobby.md](../game/party-lobby.md#the-strip)) |
+| `skulls-model` | on by default, with the native renderer. The Skulls pages' picture is the focused skull's 3D model from the disc, with its glyph, or a silhouette while locked. `H2_FEATURES=-skulls-model` keeps the game's tinted skull bitmap ([skulls.md](../game/skulls.md#the-model-picture)) |
+| `lobby-options=off` | keeps the retail Quick Options lines in the custom game lobby ([ui-builder.md](../game/ui-builder.md#the-pregame-lobbys-quick-options)); the party lobby's header has its own hook on that update and names the mode either way ([party-lobby.md](../game/party-lobby.md#the-header-and-the-prompt)) |
 
 ## Build and code generation
 
@@ -81,6 +86,9 @@ the final result through that directory.
 
 | Switch | What |
 |---|---|
+| `H2_SKULL_YAW`, `H2_SKULL_PITCH`, `H2_SKULL_ROLL` | Degrees that override the skull model's fine-tune constants (`MODEL_YAW_DEGREES`, `MODEL_PITCH_DEGREES`, `MODEL_ROLL_DEGREES`) in the `skulls_model::gpu::preview` test only, so angles can be tried without a code change. The game reads only the constants. [The model picture](../game/skulls.md#the-model-picture) |
+| `H2_SKULL_CANDIDATES` | `yaw/pitch/roll` triples in degrees, comma separated, added to the candidate orientations the `skulls_model::gpu::preview` test draws side by side in `candidates.png`. One that is not upright and face-on by the preview's measure is left off. [The model picture](../game/skulls.md#the-model-picture) |
+| `H2_SKULLS_PREVIEW_DIR` | Output directory for the ignored `skulls_model::gpu::preview` test, which loads the skull model from `H2_DISC` and writes the Skulls page's model pictures, the glyph sheet, and the model's geometry and base maps there. Keep it outside the repository: the pictures come from disc data. [The model picture](../game/skulls.md#the-model-picture) |
 | `H2_FIELD_NAMES` | Assembly's plugin folder (or its `Halo2Xbox` child) for the ignored `every_plugin_merges_against_our_definitions` developer test. The test reads `Halo2Xbox`, its `Halo2` fallback, and the other retail folders as hints. With the variable unset, the test returns immediately. [Field-name comparison](../editor/notes/tag-field-names.md) |
 | `h2 lighting split <map> [--bsp N] [--light ID] [--disc ISO] --out DIR` | Offline [lightmap comparison](../graphics/dynamic-lighting.md#the-split-offline). BSP and sky light default to 0. IDs are zero-based. A number selects a light in scenario sky order among skies used by the BSP; `placed:N` selects scenario lamp placement N. The disc follows the usual map lookup. Use a new or empty directory outside Git and open its `index.html`. |
 | `h2 play --join URL`, `live-join-link` | open a [Live session link](../live/live-custom-games.md#join-in-halo-2) on the selected service during Live player runs. Film recording and playback disable joins. `H2_FEATURES=-live-join-link` disables game-side handling. |
@@ -105,8 +113,10 @@ the final result through that directory.
 | `H2_MEM_REPORT_DIR` | Directory for watchdog JSON reports and rotating memory flight recorders. Defaults to `logs/mem/` under the selected h2 data directory. |
 | `h2 lab run --own-data` | Play on the host Mac's own data root, settings and Live accounts, as `h2 play` there would, and keep its `H2_DATA`, `H2_LIVE_*` and `H2_CLOUD_SAVES`. Refused with `--fresh-data`. [Playing on your own data](lab.md#playing-on-your-own-data) |
 | `h2 lab run --mem-limit SIZE` | Cap on the game child's footprint, 12 GiB by default. [Memory limits and reports](lab.md#memory-limits-and-reports) |
-| `h2 lab host [install] --obj-cache-limit SIZE` | Size budget for the lab's shared object cache after each build attempt, 8 GiB by default. The host prunes the least recently used entries first. Zero retains no entries. |
-| `h2 lab host [install] --target-limit SIZE` | Size budget for the shared Cargo target directory, 32 GiB by default. The host clears an oversized target after the build. Zero retains no Cargo outputs. |
+| `h2 lab host [install] --obj-cache-limit SIZE` | Size budget for the object cache image builds use (`obj` beside the lab root, by default `~/Library/Caches/h2recomp/obj`, shared with the Mac's own builds) after each build attempt, 8 GiB by default. The host prunes the least recently used entries first. Zero retains no entries. |
+| `h2 lab host [install] --target-limit SIZE` | Size budget for the Cargo target directory image builds and host updates share, 32 GiB by default. The host clears an oversized target after the build. Zero retains no Cargo outputs. |
+| `h2 lab host [install] --disk-floor SIZE` | Free space the lab root's volume keeps, 20 GiB by default. A build under it prunes old runs, unused image work directories, the object cache to half its budget and the Cargo target, then fails if still under ([The free-disk floor](lab.md#the-free-disk-floor-and-h2-lab-clean)). Zero turns it off. |
+| `h2 lab clean [--all]` | The same prune on request, or with `--all` everything but a running job's files and the host's binary; prints bytes freed per category and the disk before and after |
 | `h2 lab run --dedicated [--host-bots] [--map MAP] [--variant NAME] [--max-players N] [--base-port PORT]` | a headless dedicated System Link host on the lab Mac's LAN IPv4, XNet base 3174 by default (a base reaching the player's 3074 to 3080 is refused), with its lobby opened when `--map` is given ([Dedicated System Link host](lab.md#dedicated-system-link-host)) |
 | `h2 lab sim --arm NAME=VALUE`, `--repeat N`, `--parallel N` | one arm of a sim benchmark and the `H2_FEATURES` its runs get, runs per arm, matches at once in a batch (default 1) ([Sim benchmarks](lab.md#sim-benchmarks)) |
 | `H2_LAB_HOST`, `H2_LAB_SOCKET` | default driving target and local lab socket ([lab.md](lab.md)) |
@@ -114,7 +124,7 @@ the final result through that directory.
 | `h2 lab host watch [--root DIR]`, `h2 lab logs <id\|current> [--follow]` | watch job and service logs on the host or through the paired lab connection ([Watching jobs](lab.md#watching-jobs)) |
 | `h2 lab host [install] --takeover-timeout SECONDS` | player consent answer timeout, 1 to 3600 seconds, default 60; also how long the player has to answer a running job's question ([Player consent](lab.md#player-consent-before-a-job), [When the player opens a game](lab.md#when-the-player-opens-a-game)) |
 | `h2 lab host [install] --takeover-cooldown SECONDS` | delay after a decline before asking again, default 1800 seconds, 0 lets every job ask ([Player consent](lab.md#player-consent-before-a-job)) |
-| `lab-takeover`, `lab-takeover-dialog`, `lab-running-dialog` | the windowed game's consent driver and its two dialogs. Turning off either of the first two makes consent unavailable while the game window is open; turning off `lab-running-dialog` leaves a running job's question unanswered, so the job finishes and the queue waits ([Player consent](lab.md#player-consent-before-a-job), [When the player opens a game](lab.md#when-the-player-opens-a-game)) |
+| `lab-takeover`, `lab-takeover-dialog`, `lab-takeover-alongside-dialog`, `lab-running-dialog` | the windowed game's consent driver and its three dialogs. Turning off the first, second or third makes consent unavailable while the game window is open; turning off `lab-running-dialog` leaves a running job's question unanswered, so the job finishes and the queue waits ([Player consent](lab.md#player-consent-before-a-job), [When the player opens a game](lab.md#when-the-player-opens-a-game)) |
 | `agent-audio` | with the agent and DirectSound active, records [`audio.loops`](agent-api.md#audioloops) history; switching it off leaves the current-state read available |
 | `h2 live mods import --pack`, `--author`, `--source-url`, `--year`, `--version`, `--description`, `--cheating-pack`, `--not-for-online` | pack identity, credit and release metadata ([Importing a mod](../game/maps.md#importing-a-mod)) |
 | `h2 live mods capture --disc`, `--out`, `--server`, `--as` | owner’s base disc, compiled image directory, Live endpoint and uploader account ([Mods](../live/live-art.md#mods)) |
@@ -129,7 +139,7 @@ the final result through that directory.
 | `H2_BOOT_GFX_BETWEEN=N` | with in-between frames on in a headless `H2_BOOT_GFX` run (`crates/extensions/game/src/d3d_glue.rs`, `BetweenShots`): write the first N in-between frames as `frame-NNNNN-between-KK.png`, and the guest frames shown meanwhile as `frame-NNNNN.png`; ignored without in-between frames ([high-framerate.md](../game/high-framerate.md)) |
 | `H2_BOOT_GFX_SIZE=WxH` | exact PNG size for [headless display clips](agent-api.md#rendercapture_clip), from a centered aspect-ratio crop of the GPU view. Unset uses the view's size. Both dimensions must fit the view at `H2_RENDER_SCALE` and the GPU's texture limit (`crates/extensions/game/src/d3d_glue/clip_png.rs`). |
 | `H2_GFX_MERGE_CHECK`, `H2_D3D_WRITEBACK_TRACE`, `H2_RENDER_THREAD_STATS`, `H2_RENDER_THREAD=0`, `frame-scene.census` | render diagnostics; `H2_RENDER_THREAD=0` is the synchronous reference; `frame-scene.census` is the entry census `render.scene` reports ([framescene.md](../graphics/framescene.md), slice 4) and places `render.residual`'s producer observers ([retire-d3d.md](../graphics/retire-d3d.md), slice R0) |
-| `frame-scene.layers` | on with the native renderer; the scene's layers 1, 5, 7, 8 and 20 draw their clusters' and placements' static items from the scene's plan under the device's stencil, the rest on the D3D path; `=off` leaves every item to the D3D path; outcomes in `render.scene` as `layer_plan_*` ([framescene.md](../graphics/framescene.md), slice 4) |
+| `frame-scene.layers` | on with the native renderer; the scene's layers 1, 5, 7, 8 and 20 draw their clusters' and placements' static items, and layers 1, 7, 8 and 20 (the first person's 1, 7, 8 and 20) their objects' items, from the scene's plan, the rest on the D3D path; `=off` leaves every item to the D3D path; outcomes in `render.scene` as `layer_plan_*` ([framescene.md](../graphics/framescene.md), slice 4) |
 | `frame-scene.sink` | off. Records carried guest work by view and slot. With `frame-scene.census`, the original renderer presents every frame and the sink records target and readback history. With the native frame step enabled and guest rendering on the game thread, a GPU display supplies sealed scenes for private draws. The headless lighting A/B uses its own pair of views. A display with a render thread and interpolation off can present eligible frames directly at 1x or through its single copy at a uniform integer render scale; other resolutions keep the original renderer. [FrameScene slice 6](../graphics/framescene.md#slice-6-the-renderer-owns-game-view-frames) |
 | `H2_PIPELINE_CACHE`, `H2_GFX_COMPILE_THREADS`, `H2_VERTEX_CACHE_MB`, `H2_SMOOTH_TEXT`, `H2_RENDER_OVERRIDES` | D3D pipeline cache and sibling native descriptor archive, D3D compile workers, vertex cache budget, glyph smoothing, hot render overrides |
 | `WGPU_BACKEND` | the wgpu backends a window, headless GPU context, tool or GPU test may use, a comma list (`vulkan`, `metal`, `dx12`, `gl`); unset, by `gfx::GpuHost::backends`: Vulkan on Linux and other Unix, every backend on Apple and Windows. The UWP app (`GpuHost::WindowsApp`) ignores it and uses DX12 alone (`gfx::instance_for`, [linux.md](linux.md#desktop-build)) |
@@ -161,6 +171,192 @@ the final result through that directory.
 | `H2_LIVE_*` | Live account, server and storage settings (`crates/apps/cli/src/play_live.rs`, `crates/live/live-server/src/standalone.rs`, `crates/live/live-worker/src/settings.rs`). |
 | `H2_XNET_*`, `H2_COOP_*` | XNet endpoint and network diagnostics, co-op overrides and test controls (`crates/live/live-hle/src/network_config.rs`, `crates/extensions/game/src/coop_live.rs`, `crates/apps/cli/src/coop_test_cmd.rs`). |
 | `H2_DATA`, `H2_DISC`, `H2_XBE`, `H2_BENCH_*` | Data directory, local disc and executable inputs, and parameters for individual test or benchmark harnesses. |
+
+## Boot runner
+
+The environment the boot runner reads ([BOOT.md](BOOT.md)).
+
+| Switch | What |
+|---|---|
+| `H2_FASTMEM=0` | **On by default.** Generated code does inline RAM checks/copies; unsupported accesses use Rust. `0` compiles without them; set it for both `h2 build` and `h2 run`/`play`, since changing compiler flags invalidates the dylib stamp. This is the gated inline path, not fault-driven fastmem. |
+| `H2_X87_NATIVE=0` | **On by default.** Generated code runs range-guarded x87 arithmetic in native binary64 (see [x87-native.md](../lifter/x87-native.md)). `0` keeps every operation on the `h2x87_v1_*` helpers. A compiler flag: part of the dylib stamp and object cache keys, so set it for both build and run. |
+| `H2_SSE_NATIVE=0` | **On by default.** Generated code runs guarded SSE add, subtract, multiply, divide and square root in native SIMD ([sse-native.md](../lifter/sse-native.md)). `0` uses the integer `h2s_*` helpers for every operation. A compiler flag, like `H2_X87_NATIVE`: set it for both build and run. |
+| `H2_ACCESS_COUNT=0` | **On by default.** Generated handlers count their own guest memory accesses and charge them in bulk (see crates/recompiler/emit/RUNTIME-CONTRACT.md). `0` lets the runtime charge each accessor call; `block` selects the block clock, which counts planned block costs instead of accesses ([block-clock-imprecise-faults.md](block-clock-imprecise-faults.md)). It changes the C: part of the dylib stamp and the emit cache key, as `H2_PASSES` is. |
+| `H2_BOOT_VERBOSE=1` | log boot notes, fallback analysis and cache diagnostics |
+| `H2_BOOT_GFX=<dir>` | run D3D on a headless `GfxBackend` with the nv2a shaders and write presented frames to `<dir>/frame-NNNNN.png` |
+| `H2_BOOT_UPLOAD_ALWAYS` | Any value, even `0`, counts as set. D3D re-reads every resource on every use, instead of trusting the write barrier (`UploadPolicy::Tracked`) |
+| `H2_BOOT_GFX_EVERY=N` | with `H2_BOOT_GFX`, keep the first frame and every Nth (default 30); `never` renders on the GPU but writes no PNGs |
+| `H2_BOOT_STOP_AT_PRESENT=N` | end the run once N frames are presented |
+| `H2_BOOT_FPS_FROM=N` | measure the report's fps window from present N (default: the last 100) |
+| `H2_BOOT_REALTIME=1` | pace the scheduler to wall-clock time (`Pacer::real_time`); off by default, so runs go as fast as the host allows |
+| `H2_BOOT_CACHE=<dir>` or `off` | the boot cache (default `$TMPDIR/h2boot-cache`), shared by every `--out`: the fallback's unread jump-table targets, and the image's analysis (`analysis-<hash>-<size>-<analyzer>.h2a`), keyed on the XBE hash and size and on `ANALYSIS_SOURCE_HASH` (xbe and analyze sources, the `Cargo.lock` entries they reach, rustc version). `h2 build` writes the analysis and the fallback reads it at run time; `H2_TRACE` skips it. `off` caches nothing |
+| `H2_BOOT_INPUT=BUTTONS@WHEN,...` | scripted pad timeline through the keyboard pad and XInputGetState. BUTTONS: `A B X Y BLACK WHITE LT RT UP DOWN LEFT RIGHT START BACK LS RS LUP LDOWN LLEFT LRIGHT` or a key name, joined with `\|`. WHEN: `T`, `T+D` or `T-U`, a slice or (`f` prefix) a present count; held 4 presents or 100 slices by default. Each press is printed. |
+| `H2_BOOT_INPUT_FILE=<file>` | the same entries, one per line, `#` comments; merged with `H2_BOOT_INPUT` |
+| `H2_BOOT_CAPTURE=<dir>`, `H2_BOOT_CAPTURE_FRAME=N` | record frame N for offline replay (see `crates/extensions/game/src/d3d_diag.rs`): every texture upload, surface, guest write, and the frame's `ResolvedDraw`s with their streams |
+| `H2_BOOT_CAPTURE_SNAP=K[-L],...` | with a capture, read the colour target back after those draws of frame N (`snap-K.bin`, guest BGRA bytes) |
+| `H2_BOOT_CAPTURE_SKIP=K[-L],...` | with a capture, drop those draws of frame N |
+| `H2_BOOT_CAPTURE_LITE=1` | with a capture, record only the frame's draws, surfaces and snapshots (no uploads or guest writes); for snapshots |
+| `H2_BOOT_CAPTURE_TEX=K[-L],...` | with a lite capture, still keep these texture uploads' bytes (`tex-K-L.bin`; ids from `textures.txt` and `frame.txt`, stable across `--fresh-data` runs) |
+| `H2_BOOT_DRAWLOG=<file>` | log every backend call of the frames in `H2_BOOT_DRAWLOG_FRAMES` (present counts, default `240`; frame N matches `frame-N.png`) |
+| `H2_BOOT_DRAWLOG_VERTS=1` | with `H2_BOOT_DRAWLOG`, add the vertex layout and the first 8 vertices of each stream |
+
+## Profiling
+
+`perf::Session::from_env` reads these ([profiling.md](../perf/profiling.md)).
+
+| Switch | What |
+|---|---|
+| `H2_PROFILE=<dir>` | sample the calling thread, write the profile there |
+| `H2_PROFILE_HZ` | rate (default 1000) |
+| `H2_PROFILE_TOP` | rows per table (default 25) |
+| `H2_PROFILE_CPU=1` | on-CPU samples only |
+| `H2_TIMELINE=<file.json>` | record a timeline and write it there |
+| `H2_TIMELINE_CATS` | categories, e.g. `all`, `default`, `frame,d3d,gfx`, `all,-hle` |
+
+## Live Worker settings
+
+Worker variables (`[vars]` in wrangler.toml) and secrets. The names are `h2-live-server`'s environment names where it has them (`crates/live/live-worker/src/settings.rs`; [live-worker.md](../live/live-worker.md#settings)).
+
+| Switch | What |
+|---|---|
+| `H2_LIVE_ID` | Worker variable. The server id: the host in every author id. It must stay what the machine's server had. |
+| `H2_LIVE_SERVER_KEY` | Worker secret. The server's key, base64 as in `server.key`. |
+| `H2_LIVE_PUBLIC_URL` | Worker variable. The URL clients use, shown in discovery. Default `https://<id>`. |
+| `H2_LIVE_ADMINS` | Worker variable. Admin gamertags, comma-separated. |
+| `H2_LIVE_INVITE_ONLY` | Worker variable. `1`: account creation needs an invite. |
+| `H2_LIVE_PRIVATE` | Worker variable. `1`: reads need a token too. |
+| `H2_LIVE_BUILD` | Worker variable. The deployed commit, set by `deploy.sh` with `--var`. `/healthz` sends it as the `x-h2-build` header and the deploy check compares it. Unset on a deploy that bypasses the script. |
+| `H2_LIVE_FORCE_CONTAINERS` | `deploy.sh`. `1`: roll the host container apps out even when the host image tag is unchanged (needed for a new `LIVE_MAX_HOSTS` or class change). |
+| `H2_LIVE_GAME_ART_URL` | Worker variable. Published game art, `<public bucket URL>/art/<stamp>` (what `h2 live assets publish` prints). `/art/game/*` redirects there and `/art/emblem/*` reads its manifest and masks. With it unset, both paths return 404 and the web app uses its own art pack. |
+
+## Cross-build target directories
+
+The cross builds use Cargo target directories of their own, because `RUSTC_BOOTSTRAP` and `-Zbuild-std` would otherwise invalidate the host build's artifacts ([building.md](building.md)).
+
+| Switch | What |
+|---|---|
+| `H2_APPLE_TARGET_DIR` | the `h2host` runtime cross-built for tvOS or iOS (`platform/apple/build.sh`). Default `target/<tvos\|ios>-cross`. |
+| `H2_APPLE_HOST_TARGET_DIR` | the host-side `h2` and packer that `build.sh` runs for the disc subset and game module. Default `target/apple-host-pack`. |
+| `H2_WINDOWS_TARGET_DIR` | the Windows cross build (`platform/windows/env.sh`, so `windows-dll` and `check-windows`). Default `target/windows-cross`. |
+
+## DualSense speaker and mute
+
+Set, each locks its row in the Settings menu ([playstation-audio.md](../audio/playstation-audio.md)).
+
+| Switch | What |
+|---|---|
+| `H2_PAD_SPEAKER` | `0` off, `1` on with defaults, otherwise a TOML file of the keys below (on unless it says `enabled = false`). Set, it locks the in-game row (below). Default: unset: the in-game row decides, on until turned off. |
+| `H2_PAD_SPEAKER_DEVICE` | Output device name (substring, case-insensitive); `auto` tries DualSense, then a DS4, then a Steam Controller's trackpad haptics when one is connected; `haptics` (or `steam`) asks for those alone ([steam-controller.md](../input/steam-controller.md)). Default: `auto`. |
+| `H2_PAD_SPEAKER_EXCLUSIVE` | `1` plays routed sounds only on the controller, `0` on both. Default: `1`. |
+| `H2_PAD_MUTE` | `1` the mute button toggles mute and its LED, `0` leaves the button alone. Set, it locks the Voice screen's Mute Button row (`[pad] mute_button`; a row press reaches the HID thread at once through `PadHid::mute_switch`: on sets the LED for the current state, off unmutes and puts the LED out). Default: `1` (acts once a DualSense is found). |
+
+## Build metadata and platform scripts
+
+Set by the platform scripts, the justfile and CI; the game reads none of them.
+
+| Switch | What |
+|---|---|
+| `H2_BUILD_SHA`, `H2_BUILD_BRANCH`, `H2_BUILD_UNIX` | Build identity shown in the watermark and the lab host's report. `H2_BUILD_SHA` and `H2_BUILD_BRANCH` override what `crates/apps/app/build.rs` reads from git; `H2_BUILD_UNIX` is the build time it records. |
+| `H2_ISO` | `just iso=PATH` default: the disc image, else `H2_DISC`, else `disc/halo2.iso` (`justfile`). |
+| `H2_BIN` | An existing `h2` binary for `deploy/host/build.sh` and `scripts/h1-parity.sh`, instead of building one. |
+| `H2_OPT_VALUE` | The `H2_OPT` a Buck module rule exports to the build (`platform/linux/BUCK`). |
+| `H2_MAKEMSIX`, `H2_XBSYMDB` | Paths to the `makemsix` tool (`scripts/doctor.sh`) and the XbSymbolDatabase checkout (`crates/recompiler/symbols/src/lib.rs`, default `.tools/XbSymbolDatabase`). |
+| `H2_APPLE_TARGET_DIR`, `H2_APPLE_HOST_TARGET_DIR`, `H2_WINDOWS_TARGET_DIR` | Cargo target directories for the tvOS and iOS cross build, its host-side packer, and the Windows cross build ([building.md](building.md)). |
+| `H2_XBOX` | The console's address for the `just` Xbox recipes. |
+| `H2_XBOX_OUT`, `H2_XBOX_TARGET_DIR`, `H2_XBOX_HOST_TARGET_DIR`, `H2_XBOX_KEYS`, `H2_XBOX_BUILD_DRY_RUN`, `H2_XBOX_API_CHECK` | `platform/xbox/build.sh`: package output directory, the two Cargo target directories, the signing key directory, a dry run that prints the plan, and `warn` to package despite imports missing on the console. |
+| `H2_XBOX_CER`, `H2_XBOX_PACKAGE_NAME`, `H2_XBOX_USER` | `platform/xbox/deploy.sh` and `xbox.sh`: the certificate to install, the package name (default `h2recomp.Halo2`) and the Device Portal user. |
+| `H2_XBOX_AGENT_CMD`, `H2_XBOX_SYMBOLIZE_CMD`, `H2_XBOX_SYMBOLS`, `H2_XBOX_PROFILE_DIR` | `xbox.sh profile`: the agent and symbolizer commands, the symbol directory and where profiles are written. |
+| `H2_WORKER_HOME` | The Worker toolchain's home for `crates/live/live-worker/deploy.sh` and the deploy workflow (default `~/.cache/h2-live-worker`). |
+| `H2_CLOUDFLARED` | The `cloudflared` binary the tunnel helper starts (`crates/apps/cli/src/tunnel.rs`); default `cloudflared` on `PATH`. |
+
+## Dedicated host, theater and sim plumbing
+
+Variables one `h2` process sets for a child it starts. They are listed so a
+person reading a process environment can tell what set them.
+
+| Switch | What |
+|---|---|
+| `H2_PACK`, `H2_REGION` | `deploy/host/entrypoint.sh`: `1` starts the pack supervisor instead of a single host; the region passed to it as `--region`. |
+| `H2_PACK_CONTROL`, `H2_BASE_PORT`, `H2_PACK_DATA`, `H2_PACK_AGENT_PORT`, `H2_TUNNEL_LISTEN` | Environment form of the `h2 host pack` flags `--control-listen`, `--base-port`, `--data`, `--agent-port` and `--tunnel-listen`; a flag wins (`crates/apps/cli/src/host_cmd/pack.rs`). |
+| `H2_PUBLIC_ADDR` | The public IPv4 address or `ADDR:PORT` the host advertises for XNet (`crates/apps/cli/src/host_cmd/process.rs`). |
+| `H2_TUNNEL_URL` | The public tunnel URL the supervisor passes to a packed child. The theater child drops both tunnel variables. |
+| `H2_FILM_GAME_ID`, `H2_FILM_PENDING_RECEIPT` | A dedicated host child's game id and the path of its pending film receipt (`crates/apps/cli/src/host_cmd/process.rs`). |
+| `H2_THEATER_WORK`, `H2_THEATER_VIEW`, `H2_THEATER_RANGE`, `H2_THEATER_FILM_ID` | The watching Theater process starts a clip or replay child with a private work directory, a JSON initial view, a `start:end` tick range and the film id (`crates/apps/cli/src/theater_cmd.rs`). |
+| `H2_SIM_BATCH_ID`, `H2_SIM_BATCH_LOCKS` | `h2 sim batch` tells each child its batch id and the lock files its slots hold (`crates/apps/cli/src/sim_cmd.rs`). |
+| `H2_SIM_REPORT` | Path the sim's report is written to when a run finishes (`crates/live/sim-bench/src/lib.rs`). |
+| `H2_SIM_STORE`, `H2_SIM_STORE_RECORD` | A directory of verified map bytes served instead of the disc, and a file that records the bytes a run's guest read to build one (`crates/runtime/vfs/src/sim_store.rs`, `h2 sim store`). |
+| `H2_SERVER_MAP_DIR` | Where a light host reads server-side map overrides (`crates/apps/boot/src/lib.rs`). |
+| `H2_SNAPSHOTS` | Snapshot store root; default `snapshots` in the cache directory (`crates/runtime/snapshot/src/store.rs`). |
+
+## Game overrides and diagnostics
+
+| Switch | What |
+|---|---|
+| `H2_HALO1_SANDBOX`, `H2_HALO1_ASSETS`, `H2_HALO1_HUD` | The Halo 1 options' environment names; each takes `halo1` or `halo2` ([campaign.md](../halo1/campaign.md)). |
+| `H2_HEALTH_MODEL` | `halo1` or `halo2`: debug override of the health model chosen per map (`crates/extensions/game/src/health.rs`). |
+| `H2_BOT_AIM_MODEL` | `code` or `net`: the aim model for bots whose tuning names none; anything else keeps `code` (`crates/live/bots/src/tuning.rs`). |
+| `H2_PHANTOM_LOBBY` | `0`: phantom bots join only a running game and leave when it ends, not the lobby ([bots.md](../game/bots.md)). |
+| `H2_RENDER_CENSUS_EVERY`, `H2_RENDER_CENSUS_TOP` | Render census report interval in frames (default 300) and rows per list (default 20) (`crates/rewrites/render-bridge/src/render_census.rs`). |
+| `H2_EDITOR_PROBE` | With the editor's headless screenshot runner, print the windows and widgets a script can aim at (`crates/apps/studio/src/headless.rs`). |
+| `H2_BOOT_DYLIB`, `H2_RETAIL_MODULE` | The generated game module for the ignored `boot` and bot-input tests. |
+
+## Test, bench and disc-backed check inputs
+
+Read only by ignored tests, examples and benches. Most need the disc (`H2_DISC`).
+
+| Switch | What |
+|---|---|
+| `H2_BENCH_FRAMES` | frames per run (the default differs per bench). Read by: `cargo bench -p d3d` (`pushbuf`, `streams`, `vertex_fetch`) and the d3d benchmark tests (`--ignored`). |
+| `H2_BENCH_DRAWS` | draws per frame (defaults 1200, 1000 and 1000 in the benches). Read by: the `pushbuf`, `streams` and `vertex_fetch` benches and some d3d benchmark tests. |
+| `H2_BENCH_GUEST_ONLY` | set: run only the guest-memory dirty-tracking benchmark, then exit. Read by: `pushbuf`. |
+| `H2_BENCH_MODES` | `cpu` or `gpu`: time one fetch mode only, e.g. to profile it. Read by: `vertex_fetch`. |
+| `H2_BENCH_FILLS`, `H2_BENCH_SMALL`, `H2_BENCH_ROUNDS` | fills per visit (4), small draws per visit (0), rounds, the median reported (3). Read by: the ignored `render_churn` test in `crates/platform/d3d/tests/render_churn.rs`, its game-frame section. |
+| `H2_DIFF_SEEDS` | comma-separated seeds; the layer test defaults to `1,7,99`, `differential` to its first default seed. Read by: `crates/rewrites/engine/tests/{differential,layer_differential}.rs` (`--features differential`, need `H2_XBE`). |
+| `H2_DIFF_SCALE` | a multiplier on the cases per seed (default 1). Read by: `crates/rewrites/engine/tests/differential.rs`. |
+| `H2_EMIT_FULL` | `1`: build the whole image through generated C instead of only the functions the entry run lifted (minutes, cached afterwards). Read by: `crates/recompiler/emit/tests/entry.rs` (needs `H2_XBE`). |
+| `H2_BENCH_IMMEDIATE`, `H2_BENCH_DYNAMIC`, `H2_BENCH_ONLY`, `H2_BENCH_OUTPUT`, `H2_BENCH_PASSES`, `H2_BENCH_TRACE` | Further knobs of the d3d benches and ignored tests: draws drawn immediate-mode, dynamic vertex buffers, a name filter, an output file, pass count and a per-frame trace (`crates/platform/d3d/benches`, `crates/platform/d3d/tests`). |
+| `H2_PERF_ITERS`, `H2_PERF_TRIALS`, `H2_PERF_KIND`, `H2_PERF_MAPS`, `H2_EXECUTOR_ROUNDS` | Emit tests: iterations, trials, kind filter and mapping count of `perf.rs`; rounds of the second-executor test. |
+| `H2_CLIF_JOBS`, `H2_ORACLE_FIXTURES`, `H2_ORACLE_PASSES`, `H2_X87_WIDE_CASES` | Compile threads for the Cranelift image test; fixture list (`xtask` sets it) and pass spec for the lift oracle; case count for the wide x87 test (default 200,000 per width). |
+| `H2_SCHEMA_MAPS`, `H2_SCHEMA_OUT`, `H2_SCHEMA_PROBE`, `H2_SCHEMA_WHY`, `H2_SCHEMA_ODD`, `H2_SHUFFLE_LAYOUT`, `H2_TRANSPLANT`, `H2_TRANSPLANT_FROM` | `crates/formats/tags/tests/tag_schema.rs`: maps to infer from, schema output file, root-word probe (`hlmt:0x58`), diagnostics, child layout, and the tag to transplant and its source. |
+| `H2_DEFS_GROUPS`, `H2_DEFS_MAPS`, `H2_DEFS_SKELETON`, `H2_DEFS_ANNOTATE`, `H2_DEFS_EXTRA`, `H2_DEFS_DUMP`, `H2_DEFS_DUMP_NODES` | `crates/formats/tags/tests/tag_defs.rs`: tag groups and maps to check, skeleton and annotated modes, extra definition files, and dumps. |
+| `H2_BUILD_MAPS`, `H2_GROW_TAGS`, `H2_REPO_MAPS`, `H2_REPO_DIR`, `H2_REPO_COUNT_RAW`, `H2_PROBE`, `H2_PROBE_MAP` | Tag-repository and map-build tests: maps to use, extra tags to add (default 500), where to keep the repository, sizing without writing, and BSP root probes. |
+| `H2_HS_MAP`, `H2_HS_TICKS` | The disc script-VM test (`crates/formats/hs/tests/vm_disc.rs`): limit the map and set ticks per phase (default 3000). |
+| `H2_SAVED_VARIANT` | A game-written saved variant payload to check (`crates/formats/variants/tests/disc.rs`). |
+| `H2_MAP`, `H2_MAPS`, `H2_BASE`, `H2_STEMS`, `H2_LEVELS` | Map stems for the Halo 1 converter and asset tests (defaults such as `lockout`, `beavercreek`, `05a_deltaapproach`). |
+| `H2_SHADER_CORPUS`, `H2_FONT_HD_PNG` | The extracted shader directory for the pipeline-cost test, and the output directory for the glyph test's 4x images (`crates/platform/d3d/tests`). |
+| `H2_TITLE_CHECK`, `H2_PREVIEW_CHECK`, `H2_GEOMETRY_CHECK`, `H2_GEOMETRY_BEFORE`, `H2_LOOKS_MAPS`, `H2_CATALOG_CHECK` | Output directories and map list for the Live art disc checks (`crates/apps/cli/src/live_*.rs`). |
+| `H2_ARCHIVE_DUMP`, `H2_V8_DUMP` | A recorded archive or v8 packed-record file for the Live protocol tests and `web/bench`. |
+| `H2_UPDATE_GOLDEN` | `1` rewrites the committed golden files of the Live protocol tests. |
+| `H2_S3_TEST_ENDPOINT`, `H2_S3_TEST_ACCESS_KEY`, `H2_S3_TEST_SECRET_KEY`, `H2_S3_TEST_BUCKET`, `H2_S3_TEST_REGION` | An S3-compatible bucket for `crates/live/live-server/tests/s3_server.rs`; the test skips without the first four. Region defaults to `auto`. |
+| `H2_LEAK`, `H2_TEST_FLAT_FAULT_CHILD` | Sentinels that the lab and flat-RAM tests set to check that the environment does or does not reach a child. |
+
+## Web mock server
+
+`web/mock/server.ts` serves a fake Live service for the web app.
+
+| Switch | What |
+|---|---|
+| `H2_MOCK_SESSIONS`, `H2_MOCK_HISTORY_MIN`, `H2_MOCK_QUIET` | Open sessions kept (default 5), minutes of history (default 20), and `1` for no new games. |
+| `H2_MOCK_STATIC`, `H2_MOCK_TAMPER` | A built app directory to serve (SPA fallback); corrupt every nth event's data to show bad signatures. |
+| `H2_MOCK_GAME_ART`, `H2_MOCK_GAME_ART_DIR`, `H2_MOCK_MAP_GEOMETRY`, `H2_MOCK_MODELS`, `H2_MOCK_FURNITURE`, `H2_MOCK_INDOOR` | Game-art manifest (fake, or a real extraction), map geometry (`0` off), stand-in models (`1` or `static`), map furniture (`0` off) and indoor arenas. |
+| `H2_MOCK_ACTION`, `H2_MOCK_ACTORS`, `H2_MOCK_ADMIN`, `H2_MOCK_CUSTOM_MAPS`, `H2_MOCK_HOPPER`, `H2_MOCK_RULES`, `H2_MOCK_STATS_ARCHIVE` | Stances, actions and damage (`0` off); AI and vehicles in every game; every signed-up account an admin; custom-map games (`0` none); the playlist stand-in; the rules tools (`0` off); the stats archive (`0` off). |
+
+## Family members
+
+The family rows in the tables here cover these names.
+
+| Family | Members |
+|---|---|
+| `H2_COOP_*` | `H2_COOP_MAX_PLAYERS`, `H2_COOP_JOIN_IN_PROGRESS`, `H2_COOP_LOOK_PREDICTION` (the co-op settings' env names); `H2_COOP_JIP_LIFT` and `H2_COOP_JIP_LOG` (`0` keeps retail's join-in-progress check, or drops the stage lines); `H2_COOP_JOIN_SCREEN` (`0` leaves joining to the Co-op Campaign row); `H2_COOP_LIST_UI` (`1` opens the list screen from the lobby); `H2_COOP_LATENCY` (`0` drops the latency line); `H2_COOP_AUTO_INVITE`, `H2_COOP_AUTO_ACCEPT`, `H2_COOP_AUTO_ACCEPT_DELAY` (test automation that invites or accepts the named gamertags, the accept held back by the delay in seconds; `H2_COOP_AUTO` is their common prefix); `H2_COOP_PROBE`, `H2_COOP_PROBE_MAP`, `H2_COOP_PROBE_DIFFICULTY` (the retail campaign over System Link probe); `H2_COOP_LOOK_CAPTURE`, `H2_COOP_LOOK_INPUT` (recordings the co-op look tests read) ([live-coop.md](../live/live-coop.md)). |
+| `H2_LIVE_*` | Player side: `H2_LIVE_SERVER` (service URL), `H2_LIVE_TOKEN` (admin token for `h2 sim` cloud runs), `H2_LIVE_DIR` (the player's Live data directory), `H2_LIVE_VISIBILITY` (the setting's env name), `H2_LIVE_NAT` and `H2_LIVE_PING_MATCHMAKING` (`1` turns on ping-based matchmaking with the given NAT type), `H2_LIVE_UPLOAD_KBPS` (upload bandwidth hint for it). Server side: `H2_LIVE_DATA` (data directory), `H2_LIVE_DB` (Postgres URL, else SQLite in the data directory), `H2_LIVE_WEB` (the built web app), `H2_LIVE_BLOBS`, `H2_LIVE_PUBLIC_BLOBS`, `H2_LIVE_PUBLIC_BLOBS_URL` (blob stores), `H2_LIVE_S3_ENDPOINT`, `H2_LIVE_S3_ACCESS_KEY_ID`, `H2_LIVE_S3_SECRET_ACCESS_KEY`, `H2_LIVE_S3_REGION` and the `H2_LIVE_S3_PUBLIC_*` twins read first by the public store, `H2_LIVE_ID`, `H2_LIVE_SERVER_KEY`, `H2_LIVE_PUBLIC_URL`, `H2_LIVE_ADMINS`, `H2_LIVE_INVITE_ONLY`, `H2_LIVE_PRIVATE`, `H2_LIVE_GAME_ART_URL`, `H2_LIVE_SCREENSHOT_CLASSIFIER_URL`; tests: `H2_LIVE_TEST_DB`. The Worker's variables are under [Live Worker settings](#live-worker-settings). |
+| `H2_HOST_*` | Set by the supervisor on a host child: `H2_HOST_LEASE_JSON`, `H2_HOST_TOKEN`, `H2_HOST_LIVE_URL`, `H2_HOST_ARCHIVE`, `H2_HOST_LOBBY`, `H2_HOST_LOBBY_MACHINE_START`, `H2_HOST_PARENT_PIPE`, `H2_HOST_AGENT_TCP` (the second agent listener's TCP address), `H2_HOST_CACHE` and `H2_HOST_CACHE_MAX_BYTES` (the data cache and its cap in bytes), `H2_HOST_TICK_PHASE_NS`. Build and diagnostics: `H2_HOST_AUDIT` (the light-host audit report path), `H2_HOST_MODULE` (the light host's module list; needs the clang tier and the light host profile), `H2_HOST_COVERAGE`, `H2_HOST_PERF`. |
+| `H2_DATA_*` | `H2_DATA_URL` and `H2_DATA_SHA`: the host-data bundle's signed URL and its SHA-256 (`h2 host`). |
+| `H2_XNET_*` | `H2_XNET_ADDR` (the XNet bind address, `ADDR:PORT`), `H2_XNET_LOOPBACK_PEERS` (comma list of same-machine `IPv4:port` peers), `H2_XNET_LOWDELAY` (`1`: low-delay UDP sockets). |
+| `H2_LOCKSTEP*` | `H2_LOCKSTEP=FILE` hashes guest RAM at the end of every tick into FILE; `H2_LOCKSTEP_TICKS=0` keeps only the present records (`h2 lockstep A B` compares two traces). |
+| `H2_BOOT_*` | The headless boot names: `H2_BOOT_GFX`, `_GFX_EVERY`, `_GFX_BETWEEN`, `_GFX_SIZE`, `_GFX_SHADOWS` (also write the first N frames that sample shadows), `_GFX_LIGHTING_AB` (draw a retail and an E3 view of one run), `H2_BOOT_CAPTURE`, `_CAPTURE_FRAME`, `_CAPTURE_SNAP`, `_CAPTURE_SKIP`, `_CAPTURE_LITE`, `_CAPTURE_TEX`, `H2_BOOT_DRAWLOG`, `_DRAWLOG_FRAMES`, `_DRAWLOG_VERTS`, `H2_BOOT_INPUT`, `_INPUT_FILE` ([BOOT.md](BOOT.md)). |
+| `H2_PROFILE*`, `H2_TIMELINE*`, `H2_FRAME_STATS*`, `H2_SAMPLE_*` | `H2_PROFILE` (output directory), `_HZ`, `_TOP`, `_CPU`; `H2_TIMELINE` (output file), `_CATS`; `H2_FRAME_STATS`, `_CSV`, `_FROM`; `H2_SAMPLE_DIR`, `H2_SAMPLE_SECONDS` ([profiling.md](../perf/profiling.md)). |
+| `H2_PAD_*`, `H2_STEAM_*`, `H2_TOUCH_*`, `H2_VOICE_*` | Setting env names defined in `crates/extensions/game/src/setting_defs.rs`; `H2_PAD_SPEAKER*` and `H2_PAD_MUTE` are in [playstation-audio.md](../audio/playstation-audio.md), `H2_PAD_CHECKPOINT` is a test input. |
+| `H2_OBJ_CACHE*` | `H2_OBJ_CACHE` (the shared clang object directory) and `H2_OBJ_CACHE_MAX` (its size cap). |
 
 ## Waiting for a measurement
 

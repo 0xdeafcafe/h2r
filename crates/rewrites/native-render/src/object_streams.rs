@@ -38,9 +38,10 @@ use crate::camera::GuestRead;
 pub const STREAM_FORMATS: u32 = 0x0043_f408;
 /// Bytes per record.
 pub const STREAM_FORMAT_SIZE: usize = 0x15;
-/// The records read (types `0..=0x30`; `0x30` is the one `0x0001c9e0`
-/// adds for the extra stream it is handed).
-pub const STREAM_TYPES: usize = 0x31;
+/// The records read (types `0..=0x39`; `0x30` is the one `0x0001c9e0`
+/// adds for the extra stream it is handed, `0x39` layer 5's PRT stream
+/// `0x0001c96f` binds, `scene_extract::layout::prt`).
+pub const STREAM_TYPES: usize = 0x3a;
 /// Pairs at most per record.
 const PAIRS: usize = 10;
 /// The semantic that skips bytes.

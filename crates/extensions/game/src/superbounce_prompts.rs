@@ -189,11 +189,11 @@ fn raised(p: Vec3) -> Vec3 {
     [p[0], p[1], p[2] + LABEL_RAISE]
 }
 
-/// The prompts for one frame. `superbounce_world::frame` asks for them
-/// only in the air: on the ground its floor marks say where to jump from
-/// and land (docs/game/superbounce.md, "Floor marks"), and the ground
-/// prompts here are the rule table's (`prompt_for`), not drawn by the
-/// mode. `target` is the assist's pick (the strip a
+/// The prompts for one frame. The mode draws none of them
+/// (docs/game/superbounce.md, "In the air"): in the air the screen is the
+/// step chain's and the tracker's, and on the ground the floor mark says
+/// where to land. This is the rule table (`prompt_for`) and its labels,
+/// kept with their tests. `target` is the assist's pick (the strip a
 /// falling player can be steered onto, and where the player would land
 /// otherwise); `engaged` is whether the assist is steering, and `assist`
 /// whether the player has it on. Airborne there is at most the one for the

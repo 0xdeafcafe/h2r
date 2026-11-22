@@ -119,27 +119,30 @@ fn ascension_patch(strip: f32) -> Vec<Poly> {
     ]
 }
 
+/// The horizontal distance from `p` to the line through `edge`.
+fn off_line([a, b]: [Vec3; 2], p: Vec3) -> f32 {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    ((p[0] - a[0]) * dy - (p[1] - a[1]) * dx).abs() / dx.hypot(dy)
+}
+
 #[test]
-fn the_ascension_crease_and_seam_are_the_measured_bounce_spot() {
+fn the_ascension_slot_targets_its_flat_seam_not_the_strip_midline() {
+    // The slot's two joints: the crease at y 3.800 and the seam at y 4.000.
     let spots = scan(&ascension_patch(0.2));
     let b = bounces(&spots);
     assert_eq!(b.len(), 1, "{spots:?}");
     let s = b[0];
-    // crates/live/bots/src/glitches/spots.rs: the measured spot.
-    assert!(dist(s.stand, [-10.62, 3.88, -3.19]) < 0.1, "{:?}", s.stand);
-    // One-point calibration: this crease is the 17.85.
-    assert!((s.launch - 17.85).abs() < 0.2, "launch {}", s.launch);
-    // From the crease toward the seam: +y, the way every traced bounce
-    // came in.
+    // The target is the seam's collision edge itself: its two end
+    // vertices, exactly as the floor pieces store them.
+    let seam = 3.8f32 + 0.2;
     assert!(
-        s.drift[0].abs() < 1e-3 && (s.drift[1] - 1.0).abs() < 1e-3,
+        s.edge.contains(&[-11.10, seam, -3.2]) && s.edge.contains(&[-9.98, seam, -3.2]),
         "{:?}",
-        s.drift
+        s.edge
     );
-    // The midline of the strip, at floor height, over its length.
     for p in s.edge {
         assert!(
-            (p[1] - 3.9).abs() < 1e-3 && (p[2] + 3.2).abs() < 1e-3,
+            (p[1] - 4.0).abs() <= 0.01 && (p[2] + 3.2).abs() < 1e-3,
             "{:?}",
             s.edge
         );
@@ -149,24 +152,104 @@ fn the_ascension_crease_and_seam_are_the_measured_bounce_spot() {
         "{:?}",
         s.edge
     );
-    // Half the landings sink onto both edges and 4 cm more at about 4.3
-    // units/s: about a unit of extra fall over a standing jump.
-    assert!(s.fall > 0.5 && s.fall < 1.5, "fall {}", s.fall);
-    assert!(s.score > 0.9 && s.score <= 1.0 + 1e-5, "{}", s.score);
-    // The slot's real width, and the touchdown speed `fall` is worked
-    // from: 60 × (0.031 + 0.04) ≈ 4.28, and (4.28² − 3²) / (2 × 4.15).
-    assert!((s.width - 0.2).abs() < 1e-3, "width {}", s.width);
-    assert!((s.need - 4.28).abs() < 0.02, "need {}", s.need);
+    // The aim point is on it, at its middle: not 2 cm toward the crease,
+    // not at the strip's midline 3.9.
     assert!(
-        (s.fall - (s.need * s.need - 9.0) / 8.3).abs() < 1e-3,
-        "fall {} need {}",
-        s.fall,
-        s.need
+        dist(s.stand, [-10.54, 4.0, -3.19]) < 0.01,
+        "{:?}",
+        s.stand
     );
+    // No band: the one catch either side of the edge is the verdict's.
+    // The measured bounce's origin (y 4.04) and the bots' learned aim
+    // (y 3.985) are caught; the crease (y 3.8) is not.
+    let caught = |y: f32| catch_miss(s.edge, [-10.54, y]) == 0.0;
+    assert!(caught(4.04) && caught(3.985) && caught(4.09));
+    assert!(!caught(3.8) && !caught(4.12));
+    // One-point calibration: this crease is the 17.85.
+    assert!((s.launch - 17.85).abs() < 0.2, "launch {}", s.launch);
+    // From the crease toward the seam: +y, the way every traced bounce
+    // came in.
+    assert!(
+        s.drift[0].abs() < 1e-3 && (s.drift[1] - 1.0).abs() < 1e-3,
+        "{:?}",
+        s.drift
+    );
+    assert!(s.score > 0.9 && s.score <= 1.0 + 1e-5, "{}", s.score);
+    // Nothing measured its speed or its drop: it carries neither.
+    assert_eq!((s.need, s.fall), (0.0, 0.0));
     assert_eq!(
         (s.status, s.out, s.lip.len()),
         (Status::Likely, [0.0, 0.0], 0)
     );
+    assert!(!s.candidate());
+    // The crease the community guide names ("the line where the ramp
+    // meets the ground") stays a target too: its own candidate, on
+    // y 3.800, for the sim to settle against the seam.
+    let c = creases(&spots);
+    assert_eq!(c.len(), 1, "{spots:?}");
+    assert!(c[0].candidate() && c[0].edge.iter().all(|p| (p[1] - 3.8).abs() < 1e-3));
+}
+
+/// `polys` turned by `deg` about the z axis through the origin, then moved
+/// by `d`.
+fn turn(polys: Vec<Poly>, deg: f32, d: Vec3) -> Vec<Poly> {
+    let (sn, cs) = deg.to_radians().sin_cos();
+    let r = |v: Vec3| [v[0] * cs - v[1] * sn, v[0] * sn + v[1] * cs, v[2]];
+    polys
+        .into_iter()
+        .map(|mut p| {
+            p.verts.iter_mut().for_each(|v| {
+                let w = r(*v);
+                *v = [w[0] + d[0], w[1] + d[1], w[2] + d[2]];
+            });
+            p.normal = r(p.normal);
+            p
+        })
+        .collect()
+}
+
+#[test]
+fn a_slot_with_a_flat_seam_targets_the_seam_s_joint_line_at_any_heading() {
+    // A 0.15 strip between a crease and a flat seam, off the axes: the
+    // crease along y 0 and the seam along y 0.15 before the turn.
+    let base = vec![
+        flat([0.0, 2.0], [0.0, 0.15], 0.0, true),
+        flat([0.0, 2.0], [0.15, 1.0], 0.0, true),
+        quad(
+            [
+                [0.0, -1.0, RAMP_SLOPE],
+                [2.0, -1.0, RAMP_SLOPE],
+                [2.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+            ],
+            RAMP,
+        ),
+    ];
+    let (deg, d) = (37.0, [5.0, -3.0, 1.5]);
+    let polys = turn(base, deg, d);
+    let spots = scan(&polys);
+    let b = bounces(&spots);
+    assert_eq!(b.len(), 1, "{spots:?}");
+    let s = b[0];
+    let (sn, cs) = deg.to_radians().sin_cos();
+    let at = |x: f32, y: f32| [x * cs - y * sn + d[0], x * sn + y * cs + d[1], d[2]];
+    let seam = [at(0.0, 0.15), at(2.0, 0.15)];
+    let crease = [at(0.0, 0.0), at(2.0, 0.0)];
+    for p in s.edge.iter().chain([&s.stand]) {
+        assert!(off_line(seam, *p) <= 0.01, "{:?} off {:?}", s.edge, seam);
+        assert!(off_line(crease, *p) > 0.14, "{:?}", s.edge);
+    }
+    assert!((s.edge[0][2] - 1.5).abs() < 1e-3 && (s.stand[2] - 1.51).abs() < 1e-3);
+    // The edge's ends are the turned floor's own seam vertices, to the
+    // float.
+    let verts: Vec<Vec3> = polys[0]
+        .verts
+        .iter()
+        .chain(&polys[1].verts)
+        .copied()
+        .collect();
+    assert!(s.edge.iter().all(|p| verts.contains(p)), "{:?}", s.edge);
+    assert_eq!((s.need, s.fall), (0.0, 0.0));
 }
 
 #[test]
@@ -244,9 +327,11 @@ fn a_seam_on_a_ramp_beside_its_foot_is_a_bounce_spot() {
     assert_eq!(b.len(), 1, "{spots:?}");
     assert!((b[0].launch - 17.85).abs() < 0.2, "launch {}", b[0].launch);
     assert!((b[0].drift[1] - 1.0).abs() < 1e-3, "{:?}", b[0].drift);
-    // The midline is on the ramp, halfway up the strip.
-    assert!((b[0].edge[0][1] - 0.075).abs() < 1e-3, "{:?}", b[0].edge);
-    assert!((b[0].edge[0][2] - z(0.075)).abs() < 1e-3, "{:?}", b[0].edge);
+    // The target is the seam, up the ramp at y 0.15, at its height.
+    for p in b[0].edge {
+        assert!((p[1] - 0.15).abs() < 1e-3, "{:?}", b[0].edge);
+        assert!((p[2] - z(0.15)).abs() < 1e-3, "{:?}", b[0].edge);
+    }
 }
 
 #[test]
@@ -285,7 +370,7 @@ fn a_convex_edge_beside_a_seam_is_no_bounce() {
 fn ascension_corner() -> Vec<Poly> {
     let (x0, x1) = (-12.0, -10.0);
     let ramp_z = -1.0 - 3.4 * RAMP_SLOPE;
-    let lip = [0.0, 0.7071, -0.7071];
+    let lip = [0.0, std::f32::consts::FRAC_1_SQRT_2, -std::f32::consts::FRAC_1_SQRT_2];
     vec![
         flat([x0, x1], [-0.5, 0.4], -1.0, true),
         quad(
@@ -622,7 +707,6 @@ fn a_ceiling_at_crouch_height_is_a_crouch_spot() {
     // No bounce strip near: 0.4 + 0.2 (wide) + 0.1 (long).
     assert!((s.score - 0.7).abs() < 1e-4, "{}", s.score);
     assert!(bounces(&spots).is_empty());
-    assert!(s.width >= 0.15, "{}", s.width);
 }
 
 #[test]
@@ -902,7 +986,7 @@ fn low_ceiling(x: f32, y: f32, z: f32) -> Vec<Poly> {
     ]
 }
 
-fn region_near<'a>(regions: &'a [CrouchRegion], x: f32) -> &'a CrouchRegion {
+fn region_near(regions: &[CrouchRegion], x: f32) -> &CrouchRegion {
     regions
         .iter()
         .find(|r| r.spot.is_some() && r.min[0] <= x && r.max[0] >= x)
@@ -1214,17 +1298,26 @@ fn the_zanzibar_crease_is_a_single_crease_candidate() {
         "{:?}",
         s.drift
     );
-    // The sphere touching both floors: 0.175 × tan(8.8°) ≈ 0.027 out.
+    // The aim is on the crease itself, at its middle: not beside it.
     assert!(
-        (s.stand[1] - (-26.7 + 0.027)).abs() < 0.003,
+        dist(s.stand, [3.9, -26.7, 2.11]) < 1e-3,
         "{:?}",
         s.stand
     );
-    assert!((s.stand[2] - 2.11).abs() < 1e-3, "{:?}", s.stand);
     // 111.3 × (1 − 0.9529): the small pop of the first try.
     assert!((s.launch - 5.24).abs() < 0.1, "launch {}", s.launch);
-    assert_eq!((s.fall, s.status), (0.0, Status::Likely));
-    assert!(s.width > 0.0 && s.need > 0.0, "{s:?}");
+    // A candidate for the sim, with no speed and no drop.
+    assert_eq!((s.fall, s.need, s.status), (0.0, 0.0, Status::Likely));
+    assert!(s.candidate());
+    // The edge is the crease's own two vertices, to the float, and the
+    // catch holds the second try's landing, y −26.748, which fell
+    // through the floor at the joint.
+    assert!(
+        s.edge.contains(&[1.8, -26.7, 2.1]) && s.edge.contains(&[6.0, -26.7, 2.1]),
+        "{:?}",
+        s.edge
+    );
+    assert_eq!(catch_miss(s.edge, [4.876, -26.748]), 0.0);
     assert!(s.score >= 0.3 && s.score <= 0.6 + 1e-5, "{}", s.score);
 }
 
@@ -1336,4 +1429,197 @@ fn a_measured_place_with_no_region_is_a_proven_spot_where_it_was_measured() {
     assert!(rule(r, "proven").note.contains("break the glass"), "{r:?}");
     // Without the context, nothing.
     assert!(crouches(&scan(&polys)).is_empty());
+}
+
+// ---- candidates, ranking and speed ----
+
+/// A flat floor at z 0 meeting a ramp of `deg` that rises toward −y, along
+/// y `y0` from x `x` for `length`: one single crease.
+fn crease_at(x: f32, y0: f32, length: f32, deg: f32) -> Vec<Poly> {
+    let (sn, cs) = deg.to_radians().sin_cos();
+    let rise = deg.to_radians().tan();
+    vec![
+        flat([x, x + length], [y0, y0 + 1.0], 0.0, true),
+        quad(
+            [
+                [x, y0 - 1.0, rise],
+                [x + length, y0 - 1.0, rise],
+                [x + length, y0, 0.0],
+                [x, y0, 0.0],
+            ],
+            [0.0, sn, cs],
+        ),
+    ]
+}
+
+#[test]
+fn single_creases_are_candidates_and_a_proof_makes_them_play() {
+    let spots = scan(&ascension_patch(0.2));
+    let slot = bounces(&spots)[0];
+    let crease = creases(&spots)[0];
+    assert!(crease.candidate() && !slot.candidate());
+    // A crouch spot is never one, and a proved crease is no longer one.
+    assert!(
+        !Spot {
+            kind: Kind::Crouch,
+            ..*crease
+        }
+        .candidate()
+    );
+    assert!(
+        !Spot {
+            status: Status::Proven,
+            ..*crease
+        }
+        .candidate()
+    );
+    // A failed one stays a candidate (play leaves it out as failed too).
+    assert!(
+        Spot {
+            status: Status::Failed,
+            ..*crease
+        }
+        .candidate()
+    );
+}
+
+#[test]
+fn the_zanzibar_window_crease_survives_ranking_among_200_better_creases() {
+    // 200 creases scoring over the window's 0.53 (30° ramps a unit long:
+    // 0.3 + 0.2 + 0.1 × 0.83 ≈ 0.58), in rows well apart.
+    let mut polys = Vec::new();
+    for i in 0..200 {
+        let (col, row) = ((i % 20) as f32, (i / 20) as f32);
+        polys.extend(crease_at(col * 4.0, 100.0 + row * 4.0, 1.0, 30.0));
+    }
+    polys.extend(zanzibar_crease());
+    let spots = scan(&polys);
+    let c = creases(&spots);
+    assert_eq!(c.len(), 201, "{}", c.len());
+    let window = c
+        .iter()
+        .position(|s| (s.edge[0][1] + 26.7).abs() < 1e-3)
+        .expect("the window crease is kept");
+    // Ranked by score: below all 200, and kept all the same.
+    assert_eq!(window, 200);
+    assert!(c[..200].iter().all(|s| s.score > c[200].score));
+    assert!((c[window].score - 0.53).abs() < 0.01, "{}", c[window].score);
+    // Best first across the whole list.
+    let b: Vec<f32> = spots
+        .iter()
+        .filter(|s| s.kind == Kind::Bounce)
+        .map(|s| s.score)
+        .collect();
+    assert!(b.windows(2).all(|w| w[0] >= w[1]));
+}
+
+#[test]
+fn no_scanned_spot_reports_a_speed_or_a_drop() {
+    // A slot, a V-groove, a seam up a ramp, single creases and a crouch
+    // spot: nothing here was measured.
+    let mut polys = ascension_patch(0.2);
+    polys.extend(zanzibar_crease());
+    polys.extend(shift(crease_at(0.0, 0.0, 2.0, 40.0), [50.0, 50.0, 0.0]));
+    polys.extend(shift(room(0.6), [-50.0, -50.0, 0.0]));
+    let spots = scan(&polys);
+    assert!(spots.iter().any(|s| s.kind == Kind::Bounce && s.shape == Shape::Slot));
+    assert!(creases(&spots).len() >= 3, "{spots:?}");
+    for s in &spots {
+        assert_eq!((s.need, s.fall), (0.0, 0.0), "{s:?}");
+    }
+}
+
+// ---- covered seams and Vs ----
+
+#[test]
+fn a_seam_under_a_three_unit_ceiling_is_no_spot_and_one_under_open_sky_is() {
+    // Open sky: the slot and its crease.
+    let open = scan(&ascension_patch(0.2));
+    assert_eq!(bounces(&open).len(), 1);
+    assert_eq!(creases(&open).len(), 1);
+    // A ceiling 3 over the floor, over the whole patch: neither the slot
+    // nor the crease can launch anyone.
+    let mut roofed = ascension_patch(0.2);
+    roofed.push(flat([-11.3, -9.8], [3.0, 5.2], -0.2, false));
+    let spots = scan(&roofed);
+    assert!(
+        spots.iter().all(|s| s.kind != Kind::Bounce),
+        "{spots:?}"
+    );
+    let e = explain_bounces(&roofed, [-10.54, 3.8, -3.2], 0.3);
+    assert!(
+        e.creases.iter().any(|c| c
+            .rejected
+            .as_deref()
+            .is_some_and(|w| w.starts_with("covered: structure 3.00"))),
+        "{e:?}"
+    );
+    // The same ceiling higher than a typical launch climbs: kept.
+    let mut high = ascension_patch(0.2);
+    high.push(flat([-11.3, -9.8], [3.0, 5.2], -3.2 + 6.0, false));
+    assert_eq!(bounces(&scan(&high)).len(), 1);
+    // An upper floor over one end only: most of the line is open, kept.
+    let mut end = ascension_patch(0.2);
+    end.push(flat([-11.3, -10.9], [3.0, 5.2], -0.2, true));
+    assert_eq!(bounces(&scan(&end)).len(), 1);
+}
+
+/// Two 20° ramps meeting at the bottom along y 0, x 0..3 at z 0: a V.
+fn vee() -> Vec<Poly> {
+    let (sn, cs) = 20f32.to_radians().sin_cos();
+    let rise = 20f32.to_radians().tan();
+    vec![
+        // Rising toward −y from y 0.
+        quad(
+            [
+                [0.0, -1.0, rise],
+                [3.0, -1.0, rise],
+                [3.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+            ],
+            [0.0, sn, cs],
+        ),
+        // Rising toward +y from y 0.
+        quad(
+            [
+                [0.0, 0.0, 0.0],
+                [3.0, 0.0, 0.0],
+                [3.0, 1.0, rise],
+                [0.0, 1.0, rise],
+            ],
+            [0.0, -sn, cs],
+        ),
+    ]
+}
+
+#[test]
+fn a_v_targets_its_bottom_line_and_ranks_over_every_single_crease() {
+    let mut polys = vee();
+    polys.extend(zanzibar_crease());
+    polys.extend(shift(crease_at(0.0, 0.0, 2.0, 40.0), [50.0, 50.0, 0.0]));
+    let spots = scan(&polys);
+    let b: Vec<&Spot> = spots.iter().filter(|s| s.kind == Kind::Bounce).collect();
+    assert_eq!(b.len(), 3, "{b:?}");
+    let v = b[0];
+    assert_eq!(v.shape, Shape::Vee, "{b:?}");
+    // The groove's bottom line is the target, the aim on it.
+    for p in v.edge {
+        assert!(p[1].abs() < 1e-3 && p[2].abs() < 1e-3, "{:?}", v.edge);
+    }
+    assert!((dist(v.edge[0], v.edge[1]) - 3.0).abs() < 1e-3);
+    assert!(dist(v.stand, [1.5, 0.0, 0.01]) < 1e-3, "{:?}", v.stand);
+    // 111.3 × (1 − cos 40°) ≈ 26.
+    assert!((v.launch - 26.0).abs() < 0.5, "{}", v.launch);
+    // A candidate, ranked first; the flat-meets-ramp creases are plain
+    // creases under it.
+    assert!(v.candidate() && v.score > 0.9, "{}", v.score);
+    assert!(b[1..].iter().all(|s| s.shape == Shape::Crease && s.score <= 0.6 + 1e-5));
+    assert_eq!((v.need, v.fall), (0.0, 0.0));
+    // A flat floor at a ramp's foot is no V, and neither is a ramp
+    // steepening (both rising the same way).
+    let kink = vec![
+        crease_at(0.0, 0.0, 2.0, 10.0)[1].clone(),
+        shift(crease_at(0.0, 0.0, 2.0, 35.0), [0.0, -1.0, 10f32.to_radians().tan()])[1].clone(),
+    ];
+    assert!(scan(&kink).iter().all(|s| s.shape != Shape::Vee), "{:?}", scan(&kink));
 }

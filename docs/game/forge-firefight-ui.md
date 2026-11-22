@@ -1,10 +1,10 @@
 # Forge and Firefight UI: every screen and HUD piece as Halo 2 draws it
 
 Status: Partly built. Slices U1 (the main menu), U2 (the lobby modes) and U4 (the Forge screens in the game and the bindings table) are built; the rest is design, and the audit describes the compositor code that U3 and U7 replace.
-Code: `crates/extensions/game/src/forge_screens.rs` and `forge_screens/` (the Forge screens and GAME MENU rows), `forge_controls/bindings.rs` (the bindings table), `crates/extensions/game/src/ui_kit/forge.rs` and `ui_kit/forge/` (the compositor's Forge strip and dialogs), `lobby_mode.rs` (Game Setup's Mode and Forge Map rows, the header, the start refusal), `lobby_start.rs` (the mode), `firefight/{hud,options}.rs`, `map_select.rs` (the Firefight category), `forge_glue/gizmo.rs`, `theater_ui.rs` (`menu`, the main menu's rows), `crates/apps/cli/src/play_cmd/forge.rs` (the compositor painter). Tests: named per slice below.
+Code: `crates/extensions/game/src/forge_screens.rs` and `forge_screens/` (the Forge screens and GAME MENU rows), `forge_controls/bindings.rs` (the bindings table), `crates/extensions/game/src/ui_kit/forge.rs` and `ui_kit/forge/` (the compositor's Forge strip and dialogs), `lobby_mode.rs` (Game Setup's Forge Map row, the start refusal), `lobby_start.rs` (the mode), `firefight/{hud,options}.rs`, `map_select.rs` (the Firefight category), `forge_glue/gizmo.rs`, `theater_ui.rs` (`menu`, the main menu's rows), `crates/apps/cli/src/play_cmd/forge.rs` (the compositor painter). Tests: named per slice below.
 Switch: none of its own. `forge` and `firefight`, listed in [switches.md](../runtime/switches.md).
 
-Forge and Firefight are tabs of the party lobby
+Forge and Firefight are modes of the party lobby
 ([party-lobby.md](party-lobby.md)), with a HUD each and, for Forge,
 screens and markers over the world. Theater is the one row added to the
 main menu. This page audits what
@@ -47,8 +47,8 @@ Paths without a crate are under `crates/extensions/game/src/`.
 | Piece | Drawn by | Code |
 |---|---|---|
 | Main menu row Theater | the retail main menu list, grown from 5 rows to 6 with one added item widget | `theater_ui.rs` (`menu::Rows::count`), `layout_glue.rs` |
-| Forge and Firefight lobbies | the retail pregame lobby and its Game Setup, in the mode the lobby's strip selects | `lobby_mode.rs`, `lobby_start.rs` (`Mode`), [party-lobby.md](party-lobby.md) |
-| Firefight Options | a kit dialog on Quick Options over Game Setup, drawn by the game | `firefight/options.rs:209` |
+| Forge and Firefight lobbies | the retail pregame lobby and its Game Setup, in the mode the lobby is in | `lobby_mode.rs`, `lobby_start.rs` (`Mode`), [party-lobby.md](party-lobby.md) |
+| Firefight Options | the shared settings dialog on Quick Options over Game Setup, drawn by the game | `firefight/options.rs`, `assets/ui/screens/firefight.yaml` |
 | Forge HUD strip | the play window's compositor: the preview renderer paints a `ScreenSpec::hud` page into a 640 by 480 RGBA image with the disc's fonts, blended over the frame | `ui_kit/forge.rs:45`, `crates/apps/cli/src/play_cmd/forge.rs:126` |
 | Forge dialogs (palette, properties, link, menu, load) | the same compositor path; the spec is a kit dialog spec, but no game widget exists | `ui_kit/forge/dialogs.rs:232`, `forge_glue.rs:55` |
 | Gizmo | pixels the compositor writes into that image | `forge_glue/gizmo.rs:75` |
@@ -57,11 +57,14 @@ Paths without a crate are under `crates/extensions/game/src/`.
 
 ### Why each reads as fake
 
-**Firefight Options.** The nearest to retail: Quick Options' panel, skin,
-help line and picture, held to the tag by
+**Firefight Options.** The nearest to retail: the shared settings dialog
+([ui-builder.md](ui-builder.md) "The settings dialog") on Quick Options'
+panel, skin and picture, the skull icon and the window's lines at the
+top, the focused row's help under the rows, held to the tag by
 `our_settings_dialogs_are_quick_options_inside`. Two gaps: its legend
-advertises D-pad left and right as "Change" (`firefight/options.rs:219`),
-and its spec's opener is Game Setup (`firefight/options.rs:213`).
+advertises D-pad left and right as "Change" (`settings::legend`, as every
+page with value rows does), and its opener is Game Setup
+(`opener: game-setup.firefight` in its doc).
 
 **The Forge HUD strip.**
 
@@ -126,11 +129,11 @@ Each piece copies one retail screen or HUD element, by tag.
 | Piece | Copies | Built through |
 |---|---|---|
 | Main menu | `main_menu` (screen 6): six rows, no scroll | the retail list with one added row, Theater ("The main menu") |
-| Forge and Firefight lobbies | `pregame_lobby` (screen 14) itself, with `squad_settings_dialog` (screen 23) as its Game Setup | the retail screens on the FORGE and FIREFIGHT tabs of the lobby's strip ("The lobbies") |
-| Firefight Options, Forge map | `quick_options` (screen 222) and `low_level_settings` (screen 223) | `DialogBase::QuickOptions`, the value picker; built |
+| Forge and Firefight lobbies | `pregame_lobby` (screen 14) itself, with `squad_settings_dialog` (screen 23) as its Game Setup | the retail screens in the lobby's FORGE and FIREFIGHT modes ("The lobbies") |
+| Firefight Options, Forge map | `quick_options` (screen 222) and `low_level_settings` (screen 223) | the shared settings dialog (`DialogBase::QuickOptions`), the value picker; built |
 | Forge menu | the multiplayer pause screen, GAME MENU ([settings-menu.md](settings-menu.md), "Pause menu") | five rows added to the retail list, as `pause_menu.rs` adds Video and Voice |
 | Object menu, Tools, pickers in a game | `low_level_settings`' list on `error_dialog_large` (screen 240) | `kit.picker.game` (`picker::offer_list`) |
-| Properties, Tool settings, Forge options, Controls, Coordinates | the in-game Controller Settings list (screen 200) | a kit `List` screen on that host, value rows opening `kit.picker.game` |
+| Properties, Tool settings, Forge options, Controls, Coordinates | the in-game Controller Settings list (screen 200) | a Forge `List` screen on that host (`forge_screens::screen::ForgeScreen`), value rows opening `kit.picker.game`; the shared settings dialog has no in-game host, so these keep their own class (`settings::NOT_SHARED`). They have no icon: `mp_games2` is in `mainmenu.map` only, and one arrives with map injection |
 | Link, delete, overwrite, leave | `error_dialog_ok_cancel`: body text and two rows | `DialogBase::Large` with a body |
 | Save as, a typed coordinate | the game's keyboard | `Effect::Keyboard` |
 | Contextual prompt | the pickup prompt line, top left | HUD kit `Prompt` |
@@ -178,12 +181,13 @@ table's fits follow from the text box alone.
 ```
 
 - **Theater** is the one row of ours. Forge and Firefight are not on
-  the main menu: each is a tab of the lobby that Split Screen, System
-  Link and an Xbox Live custom game open ("The lobbies"). This is how
+  the main menu: each is a mode of the lobby that Split Screen, System
+  Link and an Xbox Live custom game open, and the Xbox Live menu has a
+  row for each ("The lobbies"). This is how
   Halo 3 and Reach have it: Forge is a lobby with a Network choice
   (**C**, [notes/forge-prior-art.md](notes/forge-prior-art.md)).
-  Theater has no party to keep, so it is a row here and not a tab
-  ([party-lobby.md](party-lobby.md), "The tabs").
+  Theater has no party to keep, so it is a row here and not a mode
+  ([party-lobby.md](party-lobby.md), "The modes").
 - Six rows is what the retail pane's item widgets plus the one added
   widget hold (`layout_glue.rs:1151`), so nothing scrolls.
   `theater_ui::menu` keeps its text and press hooks (`ROW_TEXT`,
@@ -198,24 +202,26 @@ table's fits follow from the text box alone.
 
 ## The lobbies
 
-Forge and Firefight are tabs of the party lobby's mode strip
+Forge and Firefight are modes of the party lobby
 ([party-lobby.md](party-lobby.md)): the retail pregame lobby
 (`pregame_lobby`, screen 14) in its custom game mode, with a mode of
 ours on top (`lobby_start::Mode`). The roster, the map picture, Start
-Game, Game Setup and the variant panel are the game's. The strip, who
-may switch, where each tab runs and what a switch does to the party are
-that page's; this section is what the two tabs make of the lobby. Game
-Setup has no row that changes the mode.
+Game, Game Setup and the variant panel are the game's. The GAME MODE
+picker, who may switch, where each mode runs and what a switch does to
+the party are that page's; this section is what the two modes make of
+the lobby. Game Setup has no row that changes the mode.
 
-| Tab | `lobby_start::Mode` | Shown when | The session |
+| Mode | `lobby_start::Mode` | Shown when | The session |
 |---|---|---|---|
 | CUSTOM GAMES | Multiplayer | always | retail's |
 | FORGE | Forge | the `forge` feature is on | a Forge session: D-pad Up enters the monitor ([forge-editing.md](forge-editing.md), "Controls") |
 | FIREFIGHT | Firefight | the `firefight` feature is on and a settings store holds its choices | Firefight on a kit map ([firefight.md](firefight.md)) |
 
-- The tabs are in every lobby that has Change Map: Split Screen, a
-  System Link game being hosted, and an Xbox Live custom game. Only the
-  party leader switches, so the mode is the leader's, as the map is.
+- The modes are in every lobby that has Change Map: Split Screen, a
+  System Link game being hosted, and an Xbox Live custom game, which
+  the Xbox Live menu's Custom Games, Forge and Firefight rows open in
+  their mode. Only the party leader switches, so the mode is the
+  leader's, as the map is.
 - The mode is held per lobby. Leaving the party (`PARTY_LEAVE`) clears
   it, and so does building the main menu's or the Xbox Live menu's
   list. Snapshots keep it (the `party-lobby` feature's section, which has
@@ -227,51 +233,52 @@ Setup has no row that changes the mode.
   agent can drive one: until a lobby's list is built the state has no
   lobby, and `lobby_start::forge_session` is true.
 
-**Game Setup's rows by tab**, set after the list is built and the
+**Game Setup's rows by mode**, set after the list is built and the
 other row features have added theirs (`lobby_mode::arrange`, written
 back by `h1_options_row::rewrite_rows`):
 
-| Tab | Rows |
+| Mode | Rows |
 |---|---|
 | CUSTOM GAMES | retail's, with ours as they are |
 | FORGE | Change Map..., Forge Map... (action 15), then the rest with Clanker Options...; Firefight Options... is hidden |
 | FIREFIGHT | Change Map..., Firefight Options..., then the rest with Clanker Options...; the game type row is hidden |
 
-Every tab's list loses the Switch To rows: the strip changes the mode
+Every mode's list loses the Switch To rows: the GAME MODE picker changes the mode
 ([party-lobby.md](party-lobby.md#the-lobby-by-tab)). Clanker Options...
-seats its Clankers in all three tabs
+seats its Clankers in all three modes
 ([party-lobby.md](party-lobby.md#clankers-by-tab)).
 
 - **Forge Map...** opens the value picker (`kit.picker.forge-map`) over
   Game Setup with New and the saved maps (`forge::saved_names`); its
   help line names the chosen map. The pick is the draft the session
   opens with (`lobby_start::forge_map`).
-- **Change Map...** opens the map select on the tab's category: the
+- **Change Map...** opens the map select on the mode's category: the
   original maps for Forge, a **Firefight** category of kit maps for
   Firefight ([map-select.md](map-select.md), `map_select::mode_category`).
-  B from those maps returns to Game Setup. A switch to the tab puts the
+  B from those maps returns to Game Setup. A switch to the mode puts the
   lobby's map inside the category ([party-lobby.md](party-lobby.md),
   "Switching"). With no kit map installed FIREFIGHT still opens: the
   Firefight category is empty, so Change Map opens the retail map list,
   and the panel and Start Game say no installed map supports Firefight
-  yet ([party-lobby.md](party-lobby.md), "Where each tab runs").
+  yet ([party-lobby.md](party-lobby.md), "Where each mode runs").
 - **The game type row** in Forge picks the engine the session runs, and
   so which goals the object menu offers
   ([forge-editing.md](forge-editing.md), "The object menu"). It is
   Halo 3's Change game type (**C**). It opens on Slayer.
-- **The variant panel** shows the tab's choices first in the lobby's
+- **The variant panel** shows the mode's choices first in the lobby's
   own five option lines through `lobby_options.rs`: "New Forge map" or
   "Forge map" and the name for Forge; the wave count, difficulty and
   starting lives for Firefight (`lobby_mode::panel_lines`).
-- **The title** is the selected tab on the strip, which takes the
-  header's band; the lobby's header widget is hidden under it.
+- **The title** is the lobby's header, which names the mode: FORGE or
+  FIREFIGHT ([party-lobby.md](party-lobby.md), "The header and the
+  prompt").
 - **Start Game** is retail's. Forge takes the chosen draft through
   `forge_glue::request_draft` when the game starts; Firefight holds the
-  `firefight` setting on for the game, which selecting the tab sets.
+  `firefight` setting on for the game, which switching to the mode sets.
 - **With players on other machines.** Firefight in a hosted lobby is the
   custom game it is with the setting on ([firefight.md](firefight.md),
   "Live"). Forge with a remote member needs the session log on the
-  network (slice F5); without it the FORGE tab is off while a remote
+  network (slice F5); without it FORGE is off while a remote
   member is present, and a Forge lobby a remote member then joins has
   Start Game refused with "Forge with players on other consoles is not
   available." The refusal holds the lobby's start state below ready
@@ -392,8 +399,10 @@ camera and tool take no input (`forge_screens::ui_up`, published to
   cannot rebuild yet. Leave Game is retail's, behind the unsaved
   question. These are the rows Halo 3's Start has (**C**); everything
   else is one screen down so that GAME MENU never scrolls.
-- **Forge options.** Tool settings... and Controls
-  (`sheet::OPTIONS`), each opening above it so B comes back; Monitor
+- **Forge options.** Tool settings... ("Rotation snap and the other
+  tool settings.") and Controls ("Every Forge control, with its
+  button."), `sheet::OPTIONS`, each with its help and each opening
+  above it so B comes back; Monitor
   look... joins when it is built, and the rows later slices bring:
   Placed objects, Map limits (P4), Generate nav (F9), Players (F5), Map
   settings and Publish (F14).
@@ -454,7 +463,7 @@ their first user. The editing slices P1 to P6 are in
 
 | # | Slice | Size | Needs | Proofs |
 |---|---|---|---|---|
-| **U2** (built) | Lobby modes: `lobby_start::Mode` (picked on the party lobby's mode strip, [party-lobby.md](party-lobby.md)), Game Setup rows by mode, Forge Map picker, the Firefight map category, variant panel lines, the monitor only in Forge mode, the remote-member refusal; delete the kit lobbies | M | nothing | `Page` tables for Game Setup in each mode (`mode_lists_only_enabled_features`, `forge_mode_lists_change_map_and_forge_map`, `leaving_the_lobby_clears_the_mode`, `forge_with_a_remote_member_is_refused`, `the_monitor_needs_forge_mode`); `h2 ui preview kit.picker.forge-map`; `lobby_options` tests for the panel lines; content checks (no colon values, no repeated spaces) |
+| **U2** (built) | Lobby modes: `lobby_start::Mode` (picked in the party lobby's GAME MODE picker, [party-lobby.md](party-lobby.md)), Game Setup rows by mode, Forge Map picker, the Firefight map category, variant panel lines, the monitor only in Forge mode, the remote-member refusal; delete the kit lobbies | M | nothing | `Page` tables for Game Setup in each mode (`mode_lists_only_enabled_features`, `forge_mode_lists_change_map_and_forge_map`, `leaving_the_lobby_clears_the_mode`, `forge_with_a_remote_member_is_refused`, `the_monitor_needs_forge_mode`); `h2 ui preview kit.picker.forge-map`; `lobby_options` tests for the panel lines; content checks (no colon values, no repeated spaces) |
 | **U1** (built) | Main menu: six rows. Remove the FORGE and FIREFIGHT entries, place Theater after System Link, re-pitch if needed | S | U2, landed together | table tests `the_main_menu_has_six_rows_with_theater`, `five_rows_without_theater`, `pitch_keeps_six_rows_above_the_footer`; the `main-menu` opener's preview with six rows; the layout checks |
 | **U4** | Forge screens in the game: the bindings table and Halo 3 pad gate, object menu, Properties from a table, Tools picker, Tool settings (Rotation snap), Link, questions, GAME MENU rows, Forge options, Controls; input handover | L | nothing | `h2 ui preview forge.objects`, `forge.properties`, `forge.tools`, `forge.settings`, `forge.link`, `forge.question`, `forge.options`, `forge.controls --state all --animation all`; `Page` tables carried over from `ui_kit/forge/tests.rs` plus `x_opens_objects_or_properties_by_aim`, `no_is_focused_on_every_question`, `every_action_has_one_binding`, `the_controls_page_lists_the_bindings_table`, `game_menu_adds_five_rows`; a gate table test that RB and LB rise and fall, RT held manipulates, hold Y deletes and B cancels; `list_class` runner test that a picker opens with its pick in a game; layout and content checks in every state; a disc test that each base resolves in `shared` |
 | **K1** | HUD kit: monitor mode (retail widgets gated off per user but the motion tracker, grenade origins without the row) | S | the HUD kit on `master` | `hud_kit_tests`: a retail widget of a monitor user is not drawn, the motion tracker is, and another user's widgets are; `h2 hud preview forge --state all --mode all --synthetic` |
@@ -466,7 +475,7 @@ their first user. The editing slices P1 to P6 are in
 | **U6** | Forge markers as navpoints; the gizmo as three segments in the Axes setting's basis; remove the marker and gizmo painters | S | K3, K4, U3 | table test: held, aimed, linking and two monitors give the expected points and segments; `h2 hud preview forge --state holding` |
 | **U7** | Remove the compositor path: `ScreenSpec::hud`, `Art::Solid`, the Forge painter in `play_cmd/forge.rs`, `forge.hud` and its sheet entries; update [ui-builder.md](ui-builder.md) "Screen kinds" | S | U3, U4, U6 | `cargo check -p cli --no-default-features --features host`; the sheet has no `forge.hud`; `docs-check` |
 
-The mode strip that replaces U2's Mode row is slices T1 to T6 of
+The GAME MODE picker that replaces U2's Mode row is slices T1 to T7 of
 [party-lobby.md](party-lobby.md). U2 and U4 need neither kit change and can start at once. U1 lands with
 U2, so that Forge and Firefight are never without a way in. U3 and U5
 wait for the HUD kit to land from `sb4-integ`; K1, K2 and K4 can be
@@ -486,7 +495,7 @@ written against that branch.
   `+0x4dc`, **E** in the HUD kit's page).
 - **Agent API**: no new method. `ui.screen` and `ui.press` see the
   Forge screens once they are game screens, which the compositor pages
-  never were; the lobby's strip is `ui.lobby.tabs`
+  never were; the lobby's mode is `ui.lobby.tabs`
   ([party-lobby.md](party-lobby.md), "Interfaces"); `hud.kit` (the HUD
   kit's build plan) reads the HUDs; `forge.status` and `firefight.state`
   are unchanged.
@@ -506,9 +515,9 @@ written against that branch.
 - The main menu has six rows at most and never scrolls. GAME MENU never
   scrolls: a Forge row beyond its five goes on Forge options.
 - A row, group or tool that is not built, or whose feature is off, is
-  absent, never greyed. A lobby tab that cannot run in this lobby is
-  the one thing dimmed, with its reason
-  ([party-lobby.md](party-lobby.md), "Where each tab runs").
+  absent, never greyed. A lobby mode that cannot run in this lobby is
+  the one thing listed with its reason, in the GAME MODE picker
+  ([party-lobby.md](party-lobby.md), "Where each mode runs").
 - A screen or element with no retail counterpart is not built: it is
   changed until it has one, or dropped. The axis gizmo is the owner's
   exception (decision 2).
@@ -530,7 +539,7 @@ The owner's choices, which the sections above follow.
 3. **The motion tracker stays visible in monitor mode.** K1 gates every
    other retail widget off for a monitor user.
 4. **Forge and Firefight are lobby modes**, as Halo 3 and Reach have
-   Forge, picked on the strip of tabs across the party lobby's top
+   Forge, picked in the party lobby's GAME MODE picker
    ([party-lobby.md](party-lobby.md)). The main menu has six rows, with
    Theater as the one of ours.
 5. **Halo 2's look, the later games' behaviour.** Screens and HUD are
@@ -572,8 +581,8 @@ The owner's choices, which the sections above follow.
   co-op lobby's hook on the same routine.
 - Whether six main menu rows need the re-pitch, and the case the
   Theater label takes beside the retail rows.
-- What a client's lobby shows for a host on the FORGE or FIREFIGHT
-  tab ([party-lobby.md](party-lobby.md), "Other machines").
+- What a client's lobby shows for a host in the FORGE or FIREFIGHT
+  mode ([party-lobby.md](party-lobby.md), "Other machines").
 - That a kit screen on the dialogs' window opens over a running
   multiplayer game without pausing it, takes the pad from the player and
   gives it back on close.
@@ -594,7 +603,7 @@ The owner's choices, which the sections above follow.
 
 ## Related
 
-- [party-lobby.md](party-lobby.md): the lobby's mode strip.
+- [party-lobby.md](party-lobby.md): the lobby's modes and the GAME MODE picker.
 - [ui-builder.md](ui-builder.md), [ui-screens.md](ui-screens.md): the UI kit.
 - [forge-editing.md](forge-editing.md): what the Forge screens do.
 - [forge-design.md](forge-design.md) "The UI", [forge.md](forge.md): Forge.

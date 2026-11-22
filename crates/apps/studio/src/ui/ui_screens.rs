@@ -162,7 +162,7 @@ fn walk(ui: &Ui, folder: &Folder, root: Root, cx: &mut Cx<'_>, row: fn(&Ui, &Ite
         };
         let holds_pick = match &cx.pick {
             Some(Pick::Native { screen, .. }) => root == Root::Ours && sub.contains(screen),
-            Some(Pick::Retail(tag)) => root == Root::Retail && sub.contains(tag),
+            Some(Pick::Retail { tag, .. }) => root == Root::Retail && sub.contains(tag),
             None => false,
         };
         let node = ui
@@ -220,8 +220,9 @@ fn ours_row(ui: &Ui, item: &Item, cx: &mut Cx<'_>) {
 /// A retail screen: a row named by its tag's last part, the tag in the
 /// tooltip.
 fn retail_row(ui: &Ui, item: &Item, cx: &mut Cx<'_>) {
-    let this = Pick::Retail(item.name.clone());
-    let on = cx.pick.as_ref() == Some(&this);
+    let this = Pick::retail(item.name.clone());
+    // On whichever sample state of the screen is shown.
+    let on = matches!(&cx.pick, Some(Pick::Retail { tag, .. }) if *tag == item.name);
     if ui
         .selectable_config(format!("{}##ui-retail-{}", item.label, item.name))
         .selected(on)

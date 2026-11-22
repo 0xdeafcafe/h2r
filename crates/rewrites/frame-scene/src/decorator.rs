@@ -197,7 +197,7 @@ impl FrameScene {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::camera::tests::camera;
+    use crate::test_camera::camera;
     use crate::scene::{SceneId, Stamp, ViewKey, ViewKind};
     use crate::summary_hash;
 

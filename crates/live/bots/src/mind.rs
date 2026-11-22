@@ -601,7 +601,6 @@ impl Mind {
         pad
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn step_inner(
         &mut self,
         p: &Perception,
@@ -1777,7 +1776,8 @@ impl Mind {
                 .sites
                 .iter()
                 .filter(|s| {
-                    dist_xy(s.bounce.stand, at) < BOUNCE_REACH
+                    s.plays()
+                        && dist_xy(s.bounce.stand, at) < BOUNCE_REACH
                         && !self.stuck.blocked(s.bounce.stand, tick)
                 })
                 .min_by(|a, b| {
@@ -1815,7 +1815,6 @@ impl Mind {
     /// then the run at it ([`crate::glitches::BounceRun`]). The walk this
     /// tick, and the stunt to keep (`None` when it is over or there is no
     /// way there).
-    #[allow(clippy::too_many_arguments)]
     fn bounce(
         &mut self,
         spot: crate::glitches::Bounce,

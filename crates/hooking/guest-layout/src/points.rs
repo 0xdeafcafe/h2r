@@ -143,6 +143,24 @@ pub mod kill_credit {
     pub const RETURN_TO_DAMAGE_REPORT: u32 = 0x000d_9acf;
 }
 
+/// The game's announcer queue (docs/audio/audio.md, "The announcer
+/// queue"): up to five 12-byte lines from `QUEUE`,
+/// each a sound tag (`+0`), the playing sound (`+4`), a playing byte
+/// (`+8`) and an i16 delay in ticks (`+0xa`); the head is the line playing
+/// or next. `0x0023_ef80` queues a game event's sound through
+/// `0x0023_f140`, which drops a line when five wait.
+pub mod announcer_queue {
+    /// The head line; the others follow it, 12 bytes apart.
+    pub const QUEUE: u32 = 0x0050_2350;
+    /// The head's playing byte: set when its sound starts, cleared by the
+    /// sound's end callback (`0x0023_f120`).
+    pub const HEAD_PLAYING: u32 = 0x0050_2358;
+    /// The head's delay, i16 ticks: counted down to -1, which plays it.
+    pub const HEAD_DELAY: u32 = 0x0050_235a;
+    /// The lines queued, the head included (i32).
+    pub const COUNT: u32 = 0x0050_23ec;
+}
+
 /// Return addresses for the retail lobby leave and party leader queries.
 pub mod party_leave {
     pub const LOBBY_BACK_COUNT: u32 = 0x0025_11c5;
@@ -1049,15 +1067,6 @@ points! { ALL;
     /// and, with `builtins`, the built-in ones. The variant list's fill
     /// (`0x2ca0d9`, the list handler in EBX) calls it from `0x2ca10e`.
     VARIANTS_ENUMERATE @ 0x0021_5900: [fn(player: stack 0, category: stack 1, count: stack 2, handles: stack 3, builtins: stack 4) ret 20]; "docs/game/community-gametypes.md";
-    /// The Edit Profile list's row text (screen 38, `edit_profile_menu`):
-    /// switches on the item's row index, 0 to 5 (Controls, Appearance,
-    /// Voice Output, Voice Masking, Online Status, Subtitles); any other
-    /// row gets the null id.
-    EDIT_PROFILE_ROW_TEXT @ 0x002b_7990: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/game/settings-menu.md";
-    /// The Edit Profile list's row chosen: rows 0 to 5 by index (the
-    /// handle checked through `0x16bae0` first); any other row does
-    /// nothing.
-    EDIT_PROFILE_ROW_CHOSEN @ 0x002b_79f9: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/game/settings-menu.md";
     /// The Game Setup dialog's list handler constructor (screen 23,
     /// `squad_settings_dialog`): ESI the handler, one stack argument. Fills
     /// the "squad setting list" rows (action word at datum `+2`) for the
@@ -1494,6 +1503,11 @@ points! { ALL;
     /// The sound frame service, once a frame after the render: among
     /// other things, one listener per mapped local user (`0x125c93`).
     SOUND_UPDATE @ 0x0012_5b40: [fn() ret 0]; "docs/engine/engine-map.md";
+    /// The announcer queue's update: counts the head line's delay down,
+    /// plays it when the delay runs out, and takes the next line once the
+    /// one playing has finished (`announcer_queue`). Skipping it holds
+    /// every queued line where it is.
+    ANNOUNCER_QUEUE_UPDATE @ 0x0023_f000: [fn() ret 0]; "docs/audio/audio.md";
     /// The sound listeners' update (stdcall, one argument, `ret 4`): for
     /// each local user mapped (`[0x4e8c20] + 0xc`) it sets the user's
     /// listener from its camera and marks it active (the byte at

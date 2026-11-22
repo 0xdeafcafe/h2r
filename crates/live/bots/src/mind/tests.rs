@@ -97,6 +97,67 @@ fn walking_replaces_a_route_for_a_changed_goal_off_phase() {
     assert_eq!(mind.follower.as_ref().and_then(Follower::goal), Some(west));
 }
 
+#[test]
+fn an_outside_hold_order_is_the_goal_and_plans_to_the_zone() {
+    use crate::brain::Order;
+    let map = MapData {
+        nav: floor(),
+        ..Default::default()
+    };
+    let zone = [15.0, 5.0, 0.0];
+    let mut mind = Mind::new(Skill::Normal, 1);
+    mind.decisions.set_order(Some(Order::Hold(zone, 1.0)));
+    let p = Perception {
+        observations: Default::default(),
+        me: me([2.0, 5.0, 0.0], X),
+        others: vec![],
+        teams: false,
+        tick: 1,
+        pickups: vec![],
+        objective: None,
+    };
+    let pad = mind.step(&p, Some(&map));
+    assert_eq!(mind.doing, Doing::Play(Goal::Hold(zone, 1.0)));
+    assert_eq!(
+        mind.follower.as_ref().and_then(Follower::goal),
+        Some(zone),
+        "the order plans to the zone"
+    );
+    assert!(
+        pad.left_stick.0.hypot(pad.left_stick.1) > 0.1,
+        "walking to the zone: {pad:?}"
+    );
+}
+
+#[test]
+fn freeing_the_order_plays_the_map_again() {
+    use crate::brain::Order;
+    let map = MapData {
+        nav: floor(),
+        ..Default::default()
+    };
+    let zone = [15.0, 5.0, 0.0];
+    let mut mind = Mind::new(Skill::Normal, 1);
+    let p = Perception {
+        observations: Default::default(),
+        me: me([2.0, 5.0, 0.0], X),
+        others: vec![],
+        teams: false,
+        tick: 1,
+        pickups: vec![],
+        objective: None,
+    };
+    mind.decisions.set_order(Some(Order::Hold(zone, 1.0)));
+    mind.step(&p, Some(&map));
+    assert_eq!(mind.decisions.order(), Some(Order::Hold(zone, 1.0)));
+    // `bot_free`: the order no longer asks anything.
+    mind.decisions.set_order(None);
+    let p = Perception { tick: 2, ..p };
+    mind.step(&p, Some(&map));
+    assert_ne!(mind.doing, Doing::Play(Goal::Hold(zone, 1.0)));
+    assert!(mind.decisions.order().is_none());
+}
+
 /// A wall across X = 5 from Y -20 to 20, Z 0 to 3.
 fn wall() -> Walls {
     let q = [
@@ -995,7 +1056,6 @@ fn carrying(carrier: Option<u32>, at: Vec3) -> Objective {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn play(
     m: &mut Mind,
     at: Vec3,

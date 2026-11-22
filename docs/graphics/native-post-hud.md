@@ -216,6 +216,7 @@ paths. The fade and solid rectangle helpers own their separate scopes.
 | Menu backdrop wash, tint, and composite | The wash uses the live tint and sample spread at `0x00254b95`. The tint at `0x00254e28` reads the active title's immediate operands. The composite at `0x00255083` reads the selected center and half extent. | Each fan's geometry builder through End. Material and target changes keep their original order. |
 | Model widgets | At the sorted call, Rust checks the selector and definition. For an active view it verifies the selected object and light handles, camera scale, animated offsets, field of view and viewport against the camera arguments. It walks the live mesh section, material group and visibility mask at `0x0004d621`. | The entire virtual draw for an inactive widget or an empty name list. An accepted material group skips the indexed geometry builder at `0x0004daa0` and resumes at `0x0004d626`. |
 | Debug/widget outlines | Five signed-short points and the converted colour at `0x0001ed98`, with the caller and the open line-strip Begin verified. | The packed colour and vertex loop. The guest End closes the empty stream and restores line state. |
+| Host-drawn widgets | At the sorted call, the host is asked whether it draws the validated widget itself (`native_hud::Host::replace_widget`). The Skulls page's model picture is the one such widget: the noted picture widget, its block and its alpha at `+0x64` ([skulls.md](../game/skulls.md#the-model-picture)). | The entire virtual draw, resuming at `0x00235448` as an idle model widget does. The host's pass is queued at that point in the walk (`Device::external_pass_now`). |
 
 Active model widgets still use the guest's scenario-object updates, view
 and layer construction, and the material and transform uploads. When
@@ -564,7 +565,9 @@ Its numbers are ported: `engine::colour_pass`
      or engine textures the draw supplies, stage and render states,
      pixel shader, constants), or why it stays on D3D (no layer, no such
      pass or implementation, animated, engine inputs beyond the
-     instance's, engine-driven states, unset or default textures, a
+     instance's, engine-driven states from a source other than the
+     instance's scalar 21 (`engine_states::apply_static`), unset or
+     default textures, a
      lightmap, states the native pass does not fit). `compile_screen`
      translates it through `program::translate_pass` over the strips'
      inputs, `v0` the position and `v1`..`v4` the four texture

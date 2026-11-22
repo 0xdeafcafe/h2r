@@ -9,11 +9,12 @@
 //! Shadow maps, the carried part and texture uploads join in the slices
 //! that type or carry them (3 and 6).
 
-use std::fmt;
 use std::ops::Range;
 use std::time::Instant;
 
 use serde::Serialize;
+
+pub use frame_types::keys::{InstanceKey, ViewKey, ViewKind};
 
 use crate::camera::Camera;
 use crate::decorator::{DecoratorDraw, DecoratorInstance};
@@ -91,38 +92,6 @@ impl std::ops::BitOrAssign for Cut {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-pub enum ViewKind {
-    Game,
-    Cinematic,
-    Alternate,
-    /// The first-person draw `0x0003fdf0` of a game view: its own
-    /// projection and lists.
-    FirstPerson,
-}
-
-/// A view's identity across scenes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-pub struct ViewKey {
-    pub kind: ViewKind,
-    pub player: u8,
-    /// The guest's view index.
-    pub view: u8,
-}
-
-impl fmt::Display for ViewKey {
-    /// `game:0:0` (kind:player:view), as `render.scene` names it.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let kind = match self.kind {
-            ViewKind::Game => "game",
-            ViewKind::Cinematic => "cinematic",
-            ViewKind::Alternate => "alternate",
-            ViewKind::FirstPerson => "first_person",
-        };
-        write!(f, "{kind}:{}:{}", self.player, self.view)
-    }
-}
-
 /// A view's world state the typed world stages read, by value.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize)]
 pub struct WorldState {
@@ -183,11 +152,6 @@ pub struct View {
     /// The view's post passes.
     pub post: Option<PostParams>,
 }
-
-/// An object's identity across scenes: its datum handle with its salt.
-/// Opaque to the renderer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-pub struct InstanceKey(pub u32);
 
 /// One object drawn in a view.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -393,6 +357,12 @@ impl FrameScene {
 
     pub fn view(&self, key: ViewKey) -> Option<&View> {
         self.views.iter().find(|v| v.key == key)
+    }
+
+    /// Each view's key and camera, in the scene's order: what the device
+    /// classifies its carried draws against (`d3d::scene_sink::ReplayFrame::classify_cameras`).
+    pub fn view_cameras(&self) -> impl Iterator<Item = (ViewKey, &Camera)> {
+        self.views.iter().map(|v| (v.key, &v.camera))
     }
 
     pub fn clusters_of(&self, view: &View) -> &[u16] {

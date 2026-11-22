@@ -12,3 +12,6 @@ doc = ["halo1/text.md", "halo1/script-builtins.md", "dev/crate-structure.md"]
 [dependencies]
 # `FourCC` for the HUD text tag's group.
 map.workspace = true
+
+[lints]
+workspace = true

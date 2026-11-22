@@ -82,6 +82,7 @@ fn render_aspect_sites_are_dispatch_blocks_in_the_build_tiers_analysis() {
     let data = std::fs::read(std::env::var_os("H2_XBE").expect("set H2_XBE")).unwrap();
     let xbe = xbe::Xbe::parse(&data).unwrap();
     assert!(recomp::has_retail_render_sites(&xbe));
+    boot::register_image_entries();
     let (analysis, _) = recomp::analyze_cached(&xbe, recomp::analysis_cache(&data).as_deref()).unwrap();
     let builder = analyze::cfg::CfgBuilder::new(&analysis, &xbe);
     for pc in points::render_aspect::instruction_entries().chain(points::scene_effects::instruction_entries()) {

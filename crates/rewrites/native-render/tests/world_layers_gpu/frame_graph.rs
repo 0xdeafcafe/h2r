@@ -393,10 +393,18 @@ fn object_shadow_marks_leave_the_retail_draw_and_its_passes_unchanged() {
 /// A scene of its own map epoch: one object at x = 10 in front of the
 /// camera, casting one object shadow whose layer 11 draws on itself.
 fn sun_scene(epoch: u64, definition: u32) -> Arc<FrameScene> {
+    sun_scene_on(
+        epoch,
+        definition,
+        frame_scene::LayerOwner::Object(frame_scene::InstanceKey(1)),
+    )
+}
+
+/// [`sun_scene`], its shadow's layer 11 drawn on part 0 of `on`.
+fn sun_scene_on(epoch: u64, definition: u32, on: frame_scene::LayerOwner) -> Arc<FrameScene> {
     use frame_scene::{
-        GroupSite, InstanceInput, InstanceKey, LayerOwner, LightBinding, LightEntry, LightGroup,
-        LightPose, LightStream, NodeMatrix, PROJECTION_ROWS, RenderCamera, Topology, ViewKey,
-        ViewKind,
+        GroupSite, InstanceInput, InstanceKey, LightBinding, LightEntry, LightGroup, LightPose,
+        LightStream, NodeMatrix, PROJECTION_ROWS, RenderCamera, Topology, ViewKey, ViewKind,
     };
     let mut builder = SceneBuilder::new(FreeList::new());
     builder.begin(SceneId {
@@ -441,7 +449,7 @@ fn sun_scene(epoch: u64, definition: u32) -> Arc<FrameScene> {
     let receiver = LightEntry {
         slot: 0,
         record: 0,
-        owner: LayerOwner::Object(InstanceKey(1)),
+        owner: on,
         model: 0,
         stream: LightStream {
             section: 0,
@@ -557,6 +565,149 @@ fn e3_skips_an_admitted_shadows_mask_and_retail_replays_it_unchanged() {
     let kept = draw_private(&mut backend, &scene, &marked, 1, Lighting::E3).unwrap();
     assert_eq!(rgba(&kept, 19, 5), [255, 0, 255, 255]);
     assert_eq!(kept.report.e3.unwrap().sun_tiles, 0);
+}
+
+/// Under E3 a shadow whose layer 11 falls on a structure cluster draws
+/// its sun tile on the loaded world's part in place of the mask. With no
+/// world offered for the map, or once the guest has left the world's BSP,
+/// the same shadow keeps the mask.
+#[test]
+fn e3_draws_a_shadow_on_the_structure_and_keeps_the_mask_without_its_world() {
+    use native_render::sun_casters::{SunWorld, set_models, set_world};
+    use native_render::world::{Owner, PartInput, Placement, SectionInput, WorldBuilder};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(ctx) = test_gpu() else {
+        return;
+    };
+    const EPOCH: u64 = 0x5e3_0002;
+    let mut backend = GfxBackend::new(ctx);
+    let scene = sun_scene_on(EPOCH, 0xe500_0001, frame_scene::LayerOwner::Cluster(0));
+    set_models(EPOCH, Some(Arc::new(SunModels(sun_model()))));
+    // Cluster 0's part 0: the ground under the caster.
+    let mut built = WorldBuilder::new();
+    let ground = SectionInput {
+        positions: vec![
+            [9.0, -1.0, 0.0],
+            [11.0, -1.0, 0.0],
+            [11.0, 1.0, 0.0],
+            [9.0, 1.0, 0.0],
+        ],
+        uvs: vec![[0.0; 2]; 4],
+        normals: vec![[0.0, 0.0, 1.0]; 4],
+        parts: vec![PartInput {
+            material: 0,
+            transparent: false,
+            triangles: vec![[0, 1, 2], [0, 2, 3]],
+        }],
+        ..Default::default()
+    };
+    built.add_section(Owner::Cluster(0), &ground, &Placement::IDENTITY, None);
+    let current = Arc::new(AtomicBool::new(true));
+    let held = Arc::clone(&current);
+    let world = SunWorld::new(&built.finish()).with_current(move || held.load(Ordering::Relaxed));
+    // The mask's draw, magenta at (19, 5), inside shadow 0's marks.
+    let mut frame = replay();
+    op(&mut frame, Slot::Opaque, bind());
+    op(&mut frame, Slot::Opaque, clear());
+    op(&mut frame, Slot::Opaque, guest_triangle(0.0, [0.0, 0.0, 1.0, 1.0], None));
+    op(&mut frame, Slot::Opaque, ReplayOp::ObjectShadow(Some(0)));
+    op(&mut frame, Slot::Opaque, guest_triangle(16.0, [1.0, 0.0, 1.0, 1.0], None));
+    op(&mut frame, Slot::Opaque, ReplayOp::ObjectShadow(None));
+
+    let unloaded = draw_private(&mut backend, &scene, &frame, 1, Lighting::E3).unwrap();
+    assert_eq!(rgba(&unloaded, 19, 5), [255, 0, 255, 255], "no world: the mask");
+    assert_eq!(unloaded.report.e3.unwrap().sun_tiles, 0);
+
+    set_world(EPOCH, Some(Arc::new(world)));
+    let e3 = draw_private(&mut backend, &scene, &frame, 1, Lighting::E3).unwrap();
+    let report = e3.report.e3.unwrap();
+    assert_eq!(report.sun_tiles, 1);
+    assert!(report.sun.draws >= 1, "the cluster's ground receives the tile");
+    assert_eq!(rgba(&e3, 19, 5), [0, 0, 0, 255], "the mask is not drawn");
+    assert_eq!(rgba(&e3, 3, 5), [0, 0, 255, 255], "work outside the marks is");
+
+    current.store(false, Ordering::Relaxed);
+    let left = draw_private(&mut backend, &scene, &frame, 1, Lighting::E3).unwrap();
+    assert_eq!(rgba(&left, 19, 5), [255, 0, 255, 255], "another BSP: the mask");
+    assert_eq!(left.report.e3.unwrap().sun_tiles, 0);
+    set_world(EPOCH, None);
+    set_models(EPOCH, None);
+}
+
+/// A view with twenty eligible candidate lights: an E3 draw reports the
+/// renderer's choice, sixteen lit and four over the cap, every run; retail
+/// reports none, and the pixels are the same in both modes (the chosen
+/// lights draw no pass of their own yet).
+#[test]
+fn e3_reports_its_choice_of_sixteen_lights_from_twenty() {
+    use frame_scene::{Light, LightCandidate, RenderCamera, ViewKey, ViewKind};
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(ctx) = test_gpu() else {
+        return;
+    };
+    let mut backend = GfxBackend::new(ctx);
+    let mut builder = SceneBuilder::new(FreeList::new());
+    builder.begin(SceneId {
+        map_epoch: 3,
+        tick: 17,
+        frame: 12,
+    });
+    let camera = RenderCamera {
+        position: [0.0, 0.0, 0.0],
+        forward: [1.0, 0.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+        fov: std::f32::consts::FRAC_PI_2,
+        projection_xy: None,
+        viewport: [0, 0, SIZE as i16, SIZE as i16],
+        near: 0.1,
+        far: 100.0,
+    };
+    let key = ViewKey {
+        kind: ViewKind::Game,
+        player: 0,
+        view: 0,
+    };
+    builder.open_view(key, camera).unwrap();
+    let lights = (0..20u32)
+        .map(|k| Light {
+            handle: 0xe100_0000 | k,
+            candidate: Some(LightCandidate {
+                position: [5.0, 0.0, 0.0],
+                forward: [1.0, 0.0, 0.0],
+                up: [0.0, 0.0, 1.0],
+                colour_a: [1.0; 3],
+                colour_b: [1.0; 3],
+                intensity: 1.0,
+                bounds: ([5.0, 0.0, 0.0], 2.0),
+                owner: None,
+                definition_kind: 0,
+                volume: None,
+                view_eligible: Some(true),
+                priority: Some(1.0 + k as f32),
+                weight: 1.0,
+                gel_bitmap: None,
+                gel_shader: None,
+                constants: None,
+            }),
+            ..Default::default()
+        })
+        .collect();
+    builder.add_light_candidates(lights).unwrap();
+    let scene = builder.seal(Stamp::default()).unwrap();
+    let mut frame = replay();
+    op(&mut frame, Slot::Opaque, bind());
+    op(&mut frame, Slot::Opaque, clear());
+
+    let retail = draw_private(&mut backend, &scene, &frame, 1, Lighting::Retail).unwrap();
+    assert!(retail.report.e3.is_none());
+    for _ in 0..2 {
+        let e3 = draw_private(&mut backend, &scene, &frame, 1, Lighting::E3).unwrap();
+        let report = e3.report.e3.unwrap();
+        assert_eq!((report.lights_lit, report.lights_over_cap), (16, 4));
+        assert_eq!(report.lights.draws, 0);
+        assert_eq!(e3.rgba, retail.rgba);
+    }
 }
 
 #[test]

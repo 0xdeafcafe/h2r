@@ -2,6 +2,9 @@ use std::time::Duration;
 
 use super::*;
 
+/// How many rim blips the nearest-few rule is asked for here.
+const NEAREST: usize = 6;
+
 fn close(a: f32, b: f32) {
     assert!((a - b).abs() < 1e-4, "{a} != {b}");
 }
@@ -291,7 +294,7 @@ fn blips_turn_with_the_ticks_yaw_and_far_spots_sit_on_the_rim() {
     };
     // Facing +X: a spot 5 ahead is straight up the tracker at half range.
     let spots = [vs([5.0, 0.0, 0.0], true)];
-    let b = blips([0.0; 3], 0.0, 10.0, &spots, Rim::Nearest(RIM_MAX));
+    let b = blips([0.0; 3], 0.0, 10.0, &spots, Rim::Nearest(NEAREST));
     close(b[0].at[0], 0.0);
     close(b[0].at[1], 0.5);
     assert!(!b[0].rim);
@@ -301,7 +304,7 @@ fn blips_turn_with_the_ticks_yaw_and_far_spots_sit_on_the_rim() {
         std::f32::consts::FRAC_PI_2,
         10.0,
         &spots,
-        Rim::Nearest(RIM_MAX),
+        Rim::Nearest(NEAREST),
     );
     close(b[0].at[0], 0.5);
     close(b[0].at[1], 0.0);
@@ -310,14 +313,14 @@ fn blips_turn_with_the_ticks_yaw_and_far_spots_sit_on_the_rim() {
     close(p[0], -4.0);
     close(p[1], 0.0);
 
-    // Out of range: on the rim, a unit vector, the nearest RIM_MAX only,
+    // Out of range: on the rim, a unit vector, the nearest few only,
     // after the ones in range.
     let mut many = vec![vs([3.0, 0.0, 0.0], true)];
     for i in 0..10 {
         many.push(vs([0.0, -(20.0 + i as f32), 0.0], i % 2 == 0));
     }
-    let b = blips([0.0; 3], 0.0, 10.0, &many, Rim::Nearest(RIM_MAX));
-    assert_eq!(b.len(), 1 + RIM_MAX);
+    let b = blips([0.0; 3], 0.0, 10.0, &many, Rim::Nearest(NEAREST));
+    assert_eq!(b.len(), 1 + NEAREST);
     assert!(!b[0].rim && b[1..].iter().all(|b| b.rim));
     let rim = b[1];
     assert_eq!(rim.spot, 1, "the nearest out of range first");
@@ -471,28 +474,41 @@ fn blips_fade_as_the_map_grows_and_the_map_has_a_rim_and_a_range() {
     let spots = [spot(Kind::Bounce, [3.0, 0.0, 0.0], true)];
     let mut t = Ticker::new();
     let t0 = Instant::now();
-    let f = t.step(&input(t0, false, &spots), &WallAtFive, &Geometry::default());
+    // The navpoint is on the strip: it is the next spot.
+    fn next(mut i: Input<'_>) -> Input<'_> {
+        i.nav = Some([3.0, 0.0, 0.0]);
+        i
+    }
+    let f = t.step(
+        &next(input(t0, false, &spots)),
+        &WallAtFive,
+        &Geometry::default(),
+    );
     let view = |f: Frame| View {
         frame: Arc::new(f),
         colour: [1.0; 3],
         tracker: TrackerPlace::from_corner(FRAME_BOTTOM_LEFT),
         fit: [1.0, 1.0, 0.0, 0.0],
     };
-    // Idle: just the blip, a filled diamond at 3/10 of the way up.
+    // Idle: just the next spot's blip, a dot with a ring round it, at
+    // 3/10 of the way up.
     let shapes = view(f).hud(t0);
-    assert_eq!(shapes.len(), 1);
+    assert_eq!(shapes.len(), 2);
     let Shape::Fill { points, .. } = &shapes[0] else {
         panic!("{shapes:?}")
     };
-    close(points[0][1], 401.5 - 0.3 * BLIP_RADIUS - BLIP_SIZE);
+    assert_eq!(points.len(), DOT_SIDES);
+    close(points[0][1], 401.5 - 0.3 * BLIP_RADIUS);
+    close(points[0][0], 48.0 + TRACKER_CENTRE[0] + NEXT_DOT);
+    assert!(matches!(&shapes[1], Shape::Path { closed: true, points, .. } if points.len() == 12));
     // With the tracker off in the variant, nothing.
-    let mut off = input(t0, false, &spots);
+    let mut off = next(input(t0, false, &spots));
     off.sensor.enabled = false;
     let f = t.step(&off, &WallAtFive, &Geometry::default());
     assert!(view(f.clone()).hud(t0).is_empty());
     assert!(!f.drawable(t0));
     // Held and grown: no tracker blip, the map's rim and its range.
-    let mut held = input(t0, false, &spots);
+    let mut held = next(input(t0, false, &spots));
     held.test_hold = true;
     let f = t.step(&held, &WallAtFive, &Geometry::default());
     let grown = view(f).hud(t0 + Duration::from_secs(1));
@@ -523,17 +539,121 @@ fn the_reply_counts_what_shows() {
     );
     let mut i = input(now, false, &spots);
     i.test_hold = true;
+    // Not primed: the navpoint is on the crouch spot.
+    i.nav = Some([8.0, 0.0, 0.0]);
     let f = t.step(&i, &WallAtFive, &Geometry::default());
     let r = reply(Some(&f), true, now + Duration::from_secs(1));
     assert_eq!(r.mode, "hold");
     assert_eq!((r.spots, r.marks, r.hidden, r.tested), (2, 2, 1, 2));
     assert!(r.test_hold);
     close(r.grow as f32, 1.0);
+    // The next spot, then the landing it pairs with.
     assert_eq!(r.tracker.blips.len(), 2);
-    assert_eq!(r.tracker.blips[0].kind, "bounce");
+    assert_eq!(r.tracker.blips[0].kind, "crouch");
+    assert!(r.tracker.blips[0].nav && !r.tracker.blips[1].nav);
+    assert_eq!(r.tracker.blips[1].kind, "bounce");
     assert_eq!(r.tracker.blips[0].level, "same");
     assert!(r.map.is_some());
     // Off: nothing.
     let r = reply(Some(&f), false, now);
     assert!(!r.active && r.mode == "none" && r.spots == 0 && r.map.is_none());
+}
+
+#[test]
+fn the_tracker_marks_the_next_spot_and_the_one_after_and_no_more() {
+    let vs = |kind, stand: Vec3, pair, nav| ViewSpot {
+        stand,
+        kind,
+        proven: true,
+        level: Level::Same,
+        distance: stand[0].hypot(stand[1]),
+        hidden: None,
+        pair,
+        nav,
+    };
+    // Not primed: the navpoint is on a crouch spot that pairs with the
+    // landing at index 0. Three more spots are in range.
+    let spots = [
+        vs(Kind::Bounce, [0.0, -4.0, 0.0], None, false),
+        vs(Kind::Bounce, [2.0, 0.0, 0.0], None, false),
+        vs(Kind::Crouch, [5.0, 0.0, 0.0], Some(0), true),
+        vs(Kind::Crouch, [1.0, 1.0, 0.0], Some(1), false),
+        vs(Kind::Bounce, [3.0, 3.0, 0.0], None, false),
+    ];
+    let b = tracker_blips([0.0; 3], 0.0, 10.0, &spots);
+    assert_eq!(b.len(), TRACKER_MARKS);
+    assert_eq!((b[0].spot, b[0].nav, b[0].kind), (2, true, Kind::Crouch));
+    assert_eq!((b[1].spot, b[1].nav, b[1].kind), (0, false, Kind::Bounce));
+    assert!(!b[0].rim && !b[1].rim);
+    // Half the range away, and four tenths.
+    close(b[0].at[0].hypot(b[0].at[1]), 0.5);
+    close(b[1].at[0].hypot(b[1].at[1]), 0.4);
+    // Out of range each sits on the rim, toward its spot.
+    let far = tracker_blips([0.0; 3], 0.0, 3.0, &spots);
+    assert!(far[0].rim && far[1].rim);
+    close(far[0].at[0].hypot(far[0].at[1]), 1.0);
+    close(far[0].at[0], 2.0 * b[0].at[0]);
+    close(far[0].at[1], 2.0 * b[0].at[1]);
+    // Primed: the navpoint is on a strip, which pairs with nothing: one
+    // blip.
+    let mut primed = spots;
+    primed[2].nav = false;
+    primed[4].nav = true;
+    let b = tracker_blips([0.0; 3], 0.0, 10.0, &primed);
+    assert_eq!(b.len(), 1);
+    assert_eq!((b[0].spot, b[0].nav), (4, true));
+    // No next spot, or no range: nothing.
+    primed[4].nav = false;
+    assert!(tracker_blips([0.0; 3], 0.0, 10.0, &primed).is_empty());
+    assert!(tracker_blips([0.0; 3], 0.0, 0.0, &spots).is_empty());
+}
+
+#[test]
+fn the_next_spots_dot_has_a_ring_and_the_one_after_is_smaller_and_fainter() {
+    let blip = |nav| Blip {
+        spot: 0,
+        at: [0.0, 0.0],
+        kind: Kind::Bounce,
+        proven: false,
+        level: Level::Above,
+        rim: false,
+        nav,
+    };
+    let mut next = Vec::new();
+    tracker_shapes(&blip(true), [100.0, 200.0], [0.2, 0.4, 0.8], 1.0, &mut next);
+    assert_eq!(next.len(), 2);
+    let Shape::Fill {
+        points,
+        alpha,
+        color,
+    } = &next[0]
+    else {
+        panic!("{next:?}")
+    };
+    assert_eq!(
+        (points.len(), *alpha, *color),
+        (DOT_SIDES, 1.0, [0.2, 0.4, 0.8])
+    );
+    close(points[0][0], 100.0 + NEXT_DOT);
+    assert!(matches!(&next[1], Shape::Path { closed: true, .. }));
+    // The one after: one smaller dot, no ring; a likely spot and one on
+    // another floor look the same as any.
+    let mut after = Vec::new();
+    tracker_shapes(
+        &blip(false),
+        [100.0, 200.0],
+        [0.2, 0.4, 0.8],
+        1.0,
+        &mut after,
+    );
+    assert_eq!(after.len(), 1);
+    let Shape::Fill { points, alpha, .. } = &after[0] else {
+        panic!("{after:?}")
+    };
+    close(points[0][0], 100.0 + AFTER_DOT);
+    assert_eq!(*alpha, AFTER_ALPHA);
+    // Faded out with the map grown over it: nothing.
+    let mut gone = Vec::new();
+    tracker_shapes(&blip(true), [100.0, 200.0], [1.0; 3], 0.0, &mut gone);
+    assert!(gone.is_empty());
 }

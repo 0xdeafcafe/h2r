@@ -13,10 +13,13 @@
 //! overwrites the packet) never runs the assist. The [`SuperbounceAssist`]
 //! feature has no guest hooks: nothing about it enters a film's hook digest.
 //!
-//! The rules are pure functions over a [`Body`] and the scan's spots:
-//! [`fall_time`], [`predicted_landing`], [`reach`] (the gate), [`pick`],
-//! [`steer`] (the PD controller), [`world_to_stick`] and [`apply`] (the
-//! stick and the button).
+//! The rules are pure functions over a [`Body`], the scan's spots and a
+//! [`Ground`] (the map's collision, the HUD's mark and the last read's
+//! strip): [`fall_time`], [`predicted_landing`], [`judge`] (the gate, with
+//! the point of the strip to land on, [`stand_near`]), [`choose`] (which
+//! strip, and why), [`steer`] (the PD controller), [`world_to_stick`] and
+//! [`apply`] (the stick and the button). `superbounce.assist` shows every
+//! strip judged and the reason ([`Report`]).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -53,9 +56,9 @@ pub const REACH_RADIUS: f32 = 3.0;
 pub const AIM_BACK: f32 = 0.1;
 /// Cross the strip at this speed along the drift (units/s).
 pub const ARRIVE_SPEED: f32 = 0.8;
-/// Gravity (units/s²): the 4.15 that fits the traced jump
-/// (docs/game/superbounce.md, "Spots in the geometry").
-pub const GRAVITY: f32 = 4.15;
+/// Gravity (units/s²): the 4.15 that fits the traced jump, the speed
+/// model's (`superbounce::speed::GRAVITY`).
+pub const GRAVITY: f32 = superbounce::speed::GRAVITY;
 /// What a full stick pushes a biped sideways in the air (units/s²). An
 /// estimate: the stick is this scaled, and the lab is where it is measured.
 pub const AIR_ACCEL: f32 = 3.0;
@@ -70,6 +73,24 @@ pub const FALLING_VZ: f32 = 0.5;
 pub const MIN_DROP: f32 = 0.02;
 /// Falls longer than this (seconds) are not steered.
 pub const MAX_TIME: f32 = 3.0;
+/// The point landed on stays this far inside a strip's ends (world units):
+/// the capsule's radius.
+pub const END_MARGIN: f32 = 0.175;
+/// A floor this far above a strip's point (world units), between it and the
+/// player, covers it: a step or a kerb does not, a slab or a ledge does.
+pub const COVER: f32 = 0.3;
+/// How far over the player's feet a covering floor may be (world units):
+/// the ledge just left is still over a strip tucked under it.
+pub const COVER_TOP: f32 = 0.5;
+/// The sight line to a strip runs from this far over the player's origin to
+/// this far over the strip's point (world units).
+pub const SIGHT_FROM: f32 = 0.3;
+pub const SIGHT_TO: f32 = 0.25;
+/// Strips whose edge is within this distance sideways are judged and
+/// reported (world units).
+pub const CONSIDER: f32 = 6.0;
+/// `superbounce.assist` lists at most this many of them.
+pub const REPORTED: usize = 12;
 /// The PD controller's gains: 5 rad/s, damping 0.8. Higher ones overshoot
 /// into the gate's slack when the stick is stronger than [`AIR_ACCEL`].
 pub const KP: f32 = 25.0;
@@ -128,8 +149,8 @@ pub fn drift_unit(drift: [f32; 2]) -> [f32; 2] {
 pub struct Reach {
     /// Seconds to touchdown on the strip's height.
     pub time: f32,
-    /// The point to cross: the stand point, [`AIM_BACK`] before it along
-    /// the drift.
+    /// The point to cross: the strip's point ([`stand_near`]), [`AIM_BACK`]
+    /// before it along the drift.
     pub aim: [f32; 2],
     /// The velocity to cross it at: [`ARRIVE_SPEED`] along the drift.
     pub arrive: [f32; 2],
@@ -139,57 +160,389 @@ pub struct Reach {
     pub miss: f32,
 }
 
-/// The reach cone: whether `body` can be steered onto `spot`'s strip before
-/// it lands.
+/// What the choice knows besides the spots: the map's collision, the strip
+/// the HUD marks and the strip the last read steered onto.
+#[derive(Clone, Copy)]
+pub struct Ground<'a> {
+    /// The highest floor under a point (X and Y) at or below a height
+    /// (`superbounce_capsule::Room::floor_at`).
+    pub floor: &'a dyn Fn([f32; 2], f32) -> Option<f32>,
+    /// Whether nothing solid stands between two points
+    /// (`superbounce::view::LineOfSight`).
+    pub clear: &'a dyn Fn(Vec3, Vec3) -> bool,
+    /// The stand point of the strip the HUD marks: the navpoint's, the
+    /// world marker's and the lock-on's ([`set_marked`]).
+    pub marked: Option<Vec3>,
+    /// The stand point of the strip the last read steered onto.
+    pub kept: Option<Vec3>,
+}
+
+fn no_floor(_: [f32; 2], _: f32) -> Option<f32> {
+    None
+}
+
+fn all_clear(_: Vec3, _: Vec3) -> bool {
+    true
+}
+
+impl Ground<'static> {
+    /// No collision, no mark and nothing kept: the spots alone.
+    pub fn open() -> Ground<'static> {
+        Ground {
+            floor: &no_floor,
+            clear: &all_clear,
+            marked: None,
+            kept: None,
+        }
+    }
+}
+
+/// Why a strip is not steered onto.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Refusal {
+    /// It is not below the player ([`MIN_DROP`]).
+    Above,
+    /// The fall to its height takes longer than [`MAX_TIME`].
+    Long,
+    /// Its nearest point is further sideways than [`REACH_RADIUS`].
+    Far,
+    /// The stick cannot bring the coasting landing onto it in the time
+    /// left.
+    OutOfReach,
+    /// A floor is between the player and it ([`COVER`]): it is under a
+    /// slab, a bridge or the ledge the player left.
+    Covered,
+    /// Something solid stands between the player and it.
+    Walled,
+}
+
+impl Refusal {
+    /// As `superbounce.assist` names it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Refusal::Above => "above",
+            Refusal::Long => "long",
+            Refusal::Far => "far",
+            Refusal::OutOfReach => "out_of_reach",
+            Refusal::Covered => "covered",
+            Refusal::Walled => "walled",
+        }
+    }
+}
+
+/// Whether the assist works on `body` at all: in the air and falling
+/// ([`FALLING_VZ`]).
+pub fn falling(body: &Body) -> bool {
+    body.airborne && body.velocity[2] <= FALLING_VZ
+}
+
+/// The point of a strip's stand line nearest `xy`: the stand point moved
+/// along the strip's edge, kept [`END_MARGIN`] inside its ends. A strip
+/// bounces along its whole length, so this is where on it to land; the
+/// stand point itself for a strip too short to have a choice.
+pub fn stand_near(spot: &Spot, xy: [f32; 2]) -> Vec3 {
+    let [a, b] = spot.edge;
+    let e = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let len = e[0].hypot(e[1]);
+    if !len.is_finite() || len <= 2.0 * END_MARGIN || !xy.iter().all(|v| v.is_finite()) {
+        return spot.stand;
+    }
+    let along = |p: [f32; 2]| ((p[0] - a[0]) * e[0] + (p[1] - a[1]) * e[1]) / (len * len);
+    let at = |t: f32| [a[0] + t * e[0], a[1] + t * e[1], a[2] + t * e[2]];
+    // The stand point's place across the strip, kept.
+    let on = at(along([spot.stand[0], spot.stand[1]]).clamp(0.0, 1.0));
+    let off = [
+        spot.stand[0] - on[0],
+        spot.stand[1] - on[1],
+        spot.stand[2] - on[2],
+    ];
+    let margin = END_MARGIN / len;
+    let p = at(along([xy[0] - off[0], xy[1] - off[1]]).clamp(margin, 1.0 - margin));
+    [p[0] + off[0], p[1] + off[1], p[2] + off[2]]
+}
+
+/// The reach cone for a falling `body` ([`falling`]) and a bounce spot:
+/// the point of the strip to land on and how to get there, or why not.
 ///
-/// - the spot is a bounce spot, the player is airborne and falling
-///   ([`FALLING_VZ`]);
-/// - the stand point is below the player and within [`REACH_RADIUS`]
-///   sideways;
+/// - the strip is below the player, and the fall to it takes at most
+///   [`MAX_TIME`];
+/// - the strip's point nearest the coasting landing ([`stand_near`]) is
+///   within [`REACH_RADIUS`] sideways;
 /// - the coasting landing is within what the stick can move in the time left
 ///   (half [`AIR_ACCEL`] times the fall time squared, plus
-///   [`HOLD_SLACK`]), which makes the cone wider the longer the fall.
-pub fn reach(body: &Body, spot: &Spot) -> Option<Reach> {
-    if spot.kind != Kind::Bounce || !body.airborne || body.velocity[2] > FALLING_VZ {
-        return None;
-    }
+///   [`HOLD_SLACK`]), which makes the cone wider the longer the fall;
+/// - no floor is between the player and that point ([`covered`]), and
+///   nothing solid stands between them.
+pub fn judge(body: &Body, spot: &Spot, ground: &Ground<'_>) -> Result<(Vec3, Reach), Refusal> {
     let drop = body.position[2] - spot.stand[2];
     if drop < MIN_DROP {
-        return None;
+        return Err(Refusal::Above);
     }
-    let side = (spot.stand[0] - body.position[0]).hypot(spot.stand[1] - body.position[1]);
-    if side > REACH_RADIUS {
-        return None;
-    }
-    let time = fall_time(drop, body.velocity[2]).filter(|&t| t <= MAX_TIME)?;
-    let dir = drift_unit(spot.drift);
-    let aim = [
-        spot.stand[0] - AIM_BACK * dir[0],
-        spot.stand[1] - AIM_BACK * dir[1],
-    ];
-    let arrive = [ARRIVE_SPEED * dir[0], ARRIVE_SPEED * dir[1]];
+    let Some(time) = fall_time(drop, body.velocity[2]).filter(|&t| t <= MAX_TIME) else {
+        return Err(Refusal::Long);
+    };
     let landing = predicted_landing(
         [body.position[0], body.position[1]],
         [body.velocity[0], body.velocity[1]],
         time,
     );
+    let point = stand_near(spot, landing);
+    let side = (point[0] - body.position[0]).hypot(point[1] - body.position[1]);
+    if side.is_nan() || side > REACH_RADIUS {
+        return Err(Refusal::Far);
+    }
+    let dir = drift_unit(spot.drift);
+    let aim = [point[0] - AIM_BACK * dir[0], point[1] - AIM_BACK * dir[1]];
+    let arrive = [ARRIVE_SPEED * dir[0], ARRIVE_SPEED * dir[1]];
     let miss = (aim[0] - landing[0]).hypot(aim[1] - landing[1]);
-    (miss <= 0.5 * AIR_ACCEL * time * time + HOLD_SLACK).then_some(Reach {
-        time,
-        aim,
-        arrive,
-        landing,
-        miss,
-    })
+    if miss.is_nan() || miss > 0.5 * AIR_ACCEL * time * time + HOLD_SLACK {
+        return Err(Refusal::OutOfReach);
+    }
+    if covered(body.position[2], point, ground) {
+        return Err(Refusal::Covered);
+    }
+    let lift = |p: Vec3, by: f32| [p[0], p[1], p[2] + by];
+    if !(ground.clear)(lift(body.position, SIGHT_FROM), lift(point, SIGHT_TO)) {
+        return Err(Refusal::Walled);
+    }
+    Ok((
+        point,
+        Reach {
+            time,
+            aim,
+            arrive,
+            landing,
+            miss,
+        },
+    ))
 }
 
-/// The strip to steer onto: of the reachable bounce spots, the one the
-/// coasting landing misses by least.
+/// Whether a floor is between a player whose feet are at height `feet` and
+/// `point` on a strip: the highest floor under the point, up to
+/// [`COVER_TOP`] over the feet, is more than [`COVER`] above it.
+pub fn covered(feet: f32, point: Vec3, ground: &Ground<'_>) -> bool {
+    (ground.floor)([point[0], point[1]], feet + COVER_TOP).is_some_and(|z| z > point[2] + COVER)
+}
+
+/// [`judge`] with the spots alone ([`Ground::open`]): whether `body` can be
+/// steered onto `spot`'s strip before it lands. `None` for a crouch spot or
+/// a body that is not falling.
+pub fn reach(body: &Body, spot: &Spot) -> Option<Reach> {
+    if spot.kind != Kind::Bounce || !falling(body) {
+        return None;
+    }
+    judge(body, spot, &Ground::open()).ok().map(|(_, r)| r)
+}
+
+/// What the choice says of one strip.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Verdict {
+    /// The strip steered onto.
+    Chosen,
+    /// In reach, and another was chosen.
+    Passed,
+    Refused(Refusal),
+}
+
+impl Verdict {
+    /// As `superbounce.assist` names it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Verdict::Chosen => "chosen",
+            Verdict::Passed => "passed",
+            Verdict::Refused(r) => r.name(),
+        }
+    }
+
+    /// Chosen first, then the others in reach, then the refused.
+    fn rank(self) -> u8 {
+        match self {
+            Verdict::Chosen => 0,
+            Verdict::Passed => 1,
+            Verdict::Refused(_) => 2,
+        }
+    }
+}
+
+/// One strip the choice looked at.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Candidate {
+    /// Its place in the spots.
+    pub index: usize,
+    /// The strip's stand point.
+    pub stand: Vec3,
+    /// From the player to the strip's edge, sideways.
+    pub distance: f32,
+    /// The touchdown speed the fall to it gives, and the speed it needs
+    /// (units/s, positive).
+    pub speed: f32,
+    pub need: f32,
+    /// In reach: the point of the strip to land on, the seconds to it and
+    /// how far the coasting landing misses the aim.
+    pub point: Option<Vec3>,
+    pub time: Option<f32>,
+    pub miss: Option<f32>,
+    pub verdict: Verdict,
+}
+
+/// Why the choice came out as it did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Reason {
+    /// The strip steered onto at the last read is still in reach: the
+    /// target does not change in a fall.
+    Kept,
+    /// The strip the HUD marks is in reach.
+    Marked,
+    /// Neither: the strip the fall is fast enough for that the coasting
+    /// landing misses by least, else the slow one it misses by least.
+    Nearest,
+    /// The player is on the ground or rising.
+    NotFalling,
+    /// No strip within [`CONSIDER`].
+    NoStrip,
+    /// Every strip near was refused.
+    Refused,
+    /// The player's body could not be read.
+    NoBody,
+}
+
+impl Reason {
+    /// As `superbounce.assist` names it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Reason::Kept => "kept",
+            Reason::Marked => "marked",
+            Reason::Nearest => "nearest",
+            Reason::NotFalling => "not_falling",
+            Reason::NoStrip => "no_strip",
+            Reason::Refused => "refused",
+            Reason::NoBody => "no_body",
+        }
+    }
+}
+
+/// The assist's choice for one read: every strip near, judged, and the one
+/// to steer onto.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Choice {
+    /// Each bounce strip whose edge is within [`CONSIDER`] sideways, in
+    /// the spots' order.
+    pub candidates: Vec<Candidate>,
+    /// The chosen one's place in `candidates`.
+    pub chosen: Option<usize>,
+    pub plan: Option<Plan>,
+    pub reason: Reason,
+}
+
+/// Chooses the strip to steer a falling `body` onto.
+///
+/// Every bounce strip near is judged ([`judge`]). Of the ones in reach:
+///
+/// 1. the strip the last read steered onto (`ground.kept`), so the target
+///    never changes in the middle of a fall;
+/// 2. else the strip the HUD marks (`ground.marked`), so the pull is toward
+///    the mark the player sees;
+/// 3. else the strip the coasting landing misses by least, one the fall is
+///    fast enough for before one it is too slow for.
+pub fn choose(spots: &[Spot], body: &Body, ground: &Ground<'_>) -> Choice {
+    let none = |reason, candidates| Choice {
+        candidates,
+        chosen: None,
+        plan: None,
+        reason,
+    };
+    if !falling(body) {
+        return none(Reason::NotFalling, Vec::new());
+    }
+    let at = [body.position[0], body.position[1]];
+    let vz = body.velocity[2];
+    let mut candidates: Vec<Candidate> = Vec::new();
+    // Each strip in reach: its place in `candidates` and its reach.
+    let mut passed: Vec<(usize, Reach)> = Vec::new();
+    for (index, spot) in spots.iter().enumerate() {
+        if spot.kind != Kind::Bounce {
+            continue;
+        }
+        let distance = crate::superbounce_charge::edge_distance_xy(spot, at);
+        if distance > CONSIDER {
+            continue;
+        }
+        let height = (body.position[2] - spot.stand[2]).max(0.0);
+        let mut c = Candidate {
+            index,
+            stand: spot.stand,
+            distance,
+            speed: (vz * vz + 2.0 * GRAVITY * height).sqrt(),
+            need: crate::superbounce_charge::need_of(spot),
+            point: None,
+            time: None,
+            miss: None,
+            verdict: Verdict::Passed,
+        };
+        match judge(body, spot, ground) {
+            Ok((point, reach)) => {
+                c.point = Some(point);
+                c.time = Some(reach.time);
+                c.miss = Some(reach.miss);
+                passed.push((candidates.len(), reach));
+            }
+            Err(why) => c.verdict = Verdict::Refused(why),
+        }
+        candidates.push(c);
+    }
+    if candidates.is_empty() {
+        return none(Reason::NoStrip, candidates);
+    }
+    let picked: Option<((usize, Reach), Reason)> = {
+        let find = |stand: Option<Vec3>| {
+            let stand = stand?;
+            passed
+                .iter()
+                .copied()
+                .find(|(i, _)| candidates[*i].stand == stand)
+        };
+        let slow = |i: usize| candidates[i].speed < candidates[i].need;
+        if let Some(p) = find(ground.kept) {
+            Some((p, Reason::Kept))
+        } else if let Some(p) = find(ground.marked) {
+            Some((p, Reason::Marked))
+        } else {
+            passed
+                .iter()
+                .copied()
+                .min_by(|a, b| {
+                    slow(a.0)
+                        .cmp(&slow(b.0))
+                        .then(a.1.miss.total_cmp(&b.1.miss))
+                })
+                .map(|p| (p, Reason::Nearest))
+        }
+    };
+    let Some(((i, reach), reason)) = picked else {
+        return none(Reason::Refused, candidates);
+    };
+    candidates[i].verdict = Verdict::Chosen;
+    let plan = Plan {
+        target: candidates[i].stand,
+        point: candidates[i].point.unwrap_or(candidates[i].stand),
+        stick: world_to_stick(steer(body, &reach), body.yaw),
+        reach,
+    };
+    Choice {
+        candidates,
+        chosen: Some(i),
+        plan: Some(plan),
+        reason,
+    }
+}
+
+/// The strip to steer onto with the spots alone ([`Ground::open`]): of the
+/// reachable bounce spots, the one the coasting landing misses by least
+/// ([`choose`]'s third rule).
 pub fn pick<'a>(spots: &'a [Spot], body: &Body) -> Option<(&'a Spot, Reach)> {
-    spots
-        .iter()
-        .filter_map(|s| reach(body, s).map(|r| (s, r)))
-        .min_by(|a, b| a.1.miss.total_cmp(&b.1.miss))
+    let c = choose(spots, body, &Ground::open());
+    let spot = &spots[c.candidates[c.chosen?].index];
+    Some((spot, c.plan?.reach))
 }
 
 /// The horizontal acceleration to ask for (units/s², world axes): a PD
@@ -240,32 +593,35 @@ pub fn stick_raw(stick: [f32; 2]) -> (i16, i16) {
 /// What the assist does this read.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Plan {
-    /// The strip's stand point.
+    /// The strip's stand point: what names the strip.
     pub target: Vec3,
+    /// The point of the strip being landed on ([`stand_near`]).
+    pub point: Vec3,
     pub reach: Reach,
     /// The left stick to send.
     pub stick: [f32; 2],
 }
 
-/// The plan for `body` over `spots`, if a strip is in reach.
+/// The plan for `body` over `spots` alone ([`Ground::open`]), if a strip is
+/// in reach.
 pub fn plan(spots: &[Spot], body: &Body) -> Option<Plan> {
-    let (spot, reach) = pick(spots, body)?;
-    Some(Plan {
-        target: spot.stand,
-        stick: world_to_stick(steer(body, &reach), body.yaw),
-        reach,
-    })
+    choose(spots, body, &Ground::open()).plan
 }
 
 /// The landing a falling `body` is headed for, for the HUD and the world
-/// ring (docs/game/superbounce.md, "Landings"): of the bounce strips below
-/// it whose stand point the coasting landing ([`predicted_landing`] at
-/// [`fall_time`]) is within [`REACH_RADIUS`] of, the one it lands nearest
-/// the slot of. `on_slot` when it lands inside the slot, `fixable` when it
-/// does not and [`reach`] says the assist can still bring it in, else
-/// `miss`. `None` on the ground, rising, or with no such strip.
-pub fn predict(spots: &[Spot], body: &Body) -> Option<superbounce_mode::Predicted> {
-    use crate::superbounce_charge::{edge_distance_xy, need_of, slot_miss, width_of};
+/// marker (docs/game/superbounce.md, "Landings"): of the bounce strips
+/// below it with no floor between ([`covered`]) and a point
+/// ([`stand_near`]) within [`REACH_RADIUS`] of the coasting landing
+/// ([`predicted_landing`] at [`fall_time`]), the one it lands nearest the
+/// slot of. `on_slot` when it lands inside the slot, `fixable` when it does
+/// not and [`judge`] says the assist can still bring it in, else `miss`.
+/// `None` on the ground, rising, or with no such strip.
+pub fn predict_on(
+    spots: &[Spot],
+    body: &Body,
+    ground: &Ground<'_>,
+) -> Option<superbounce_mode::Predicted> {
+    use crate::superbounce_charge::{edge_distance_xy, need_of, slot_miss};
     use superbounce_mode::{Course, Predicted};
     let vz = body.velocity[2];
     if !body.airborne || !vz.is_finite() || vz >= 0.0 {
@@ -283,13 +639,15 @@ pub fn predict(spots: &[Spot], body: &Body) -> Option<superbounce_mode::Predicte
             }
             let time = fall_time(height, vz).filter(|&t| t <= MAX_TIME)?;
             let landing = predicted_landing(p, v, time);
-            let side = (s.stand[0] - landing[0]).hypot(s.stand[1] - landing[1]);
-            (side <= REACH_RADIUS).then(|| (s, landing, height, edge_distance_xy(s, landing)))
+            let point = stand_near(s, landing);
+            let side = (point[0] - landing[0]).hypot(point[1] - landing[1]);
+            (side <= REACH_RADIUS && !covered(body.position[2], point, ground))
+                .then(|| (s, landing, height, edge_distance_xy(s, landing)))
         })
         .min_by(|a, b| a.3.total_cmp(&b.3))?;
     let verdict = if slot_miss(spot, landing) <= 0.0 {
         Course::OnSlot
-    } else if reach(body, spot).is_some() {
+    } else if judge(body, spot, ground).is_ok() {
         Course::Fixable
     } else {
         Course::Miss
@@ -301,9 +659,13 @@ pub fn predict(spots: &[Spot], body: &Body) -> Option<superbounce_mode::Predicte
         need: need_of(spot),
         edge: spot.edge,
         stand: spot.stand,
-        width: width_of(spot),
         fall: spot.fall,
     })
+}
+
+/// [`predict_on`] with the spots alone ([`Ground::open`]).
+pub fn predict(spots: &[Spot], body: &Body) -> Option<superbounce_mode::Predicted> {
+    predict_on(spots, body, &Ground::open())
 }
 
 /// Whether the button is being swallowed: from the first read the assist
@@ -334,11 +696,13 @@ pub fn apply(latch: &mut Latch, pad: &mut Gamepad, held: bool, plan: Option<&Pla
 // ---- what the agent sees ----
 
 /// The assist's last read, for `superbounce.assist`.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Report {
     pub engaged: bool,
     /// The strip's stand point.
     pub target: Option<Vec3>,
+    /// The point of the strip being landed on.
+    pub point: Option<Vec3>,
     /// The point being aimed at.
     pub aim: Option<[f32; 2]>,
     /// Where the player lands if the stick is let go.
@@ -347,26 +711,62 @@ pub struct Report {
     pub time: Option<f32>,
     /// The left stick sent, `[x (right), y (forward)]`.
     pub stick: Option<[f32; 2]>,
+    /// Why the choice came out as it did; `None` while the button is up.
+    pub reason: Option<Reason>,
+    /// The player's origin and velocity at the read.
+    pub from: Option<Vec3>,
+    pub velocity: Option<Vec3>,
+    /// The strips judged: the chosen one, the others in reach, then the
+    /// refused, nearest first, at most [`REPORTED`].
+    pub candidates: Vec<Candidate>,
 }
 
 impl Report {
     const EMPTY: Report = Report {
         engaged: false,
         target: None,
+        point: None,
         aim: None,
         landing: None,
         time: None,
         stick: None,
+        reason: None,
+        from: None,
+        velocity: None,
+        candidates: Vec::new(),
     };
 
     fn of(p: &Plan) -> Report {
         Report {
             engaged: true,
             target: Some(p.target),
+            point: Some(p.point),
             aim: Some(p.reach.aim),
             landing: Some(p.reach.landing),
             time: Some(p.reach.time),
             stick: Some(p.stick),
+            ..Report::EMPTY
+        }
+    }
+
+    /// A held read: the body, the choice made over it, and whether the
+    /// stick was the assist's.
+    pub fn of_choice(body: &Body, choice: &Choice, engaged: bool) -> Report {
+        let mut candidates = choice.candidates.clone();
+        candidates.sort_by(|a, b| {
+            a.verdict
+                .rank()
+                .cmp(&b.verdict.rank())
+                .then(a.distance.total_cmp(&b.distance))
+        });
+        candidates.truncate(REPORTED);
+        let plan = choice.plan.filter(|_| engaged);
+        Report {
+            reason: Some(choice.reason),
+            from: Some(body.position),
+            velocity: Some(body.velocity),
+            candidates,
+            ..plan.as_ref().map_or(Report::EMPTY, Report::of)
         }
     }
 }
@@ -442,6 +842,11 @@ static TAPPED: AtomicBool = AtomicBool::new(false);
 static ENGAGED: AtomicBool = AtomicBool::new(false);
 static TEST_HOLD: AtomicBool = AtomicBool::new(false);
 static REPORT: Mutex<Report> = Mutex::new(Report::EMPTY);
+/// The read the assist last engaged on: the choice at the press, kept
+/// after the button is let go.
+static CHOSE: Mutex<Option<Report>> = Mutex::new(None);
+/// The stand point of the strip the HUD marks ([`set_marked`]).
+static MARKED: Mutex<Option<Vec3>> = Mutex::new(None);
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -450,6 +855,34 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 fn publish(r: Report) {
     ENGAGED.store(r.engaged, Ordering::Relaxed);
     *lock(&REPORT) = r;
+}
+
+/// Tells the assist which strip the HUD marks, by its stand point: the
+/// navpoint's while primed (`superbounce_mode`, each tick). The choice
+/// prefers it ([`choose`]).
+pub fn set_marked(stand: Option<Vec3>) {
+    *lock(&MARKED) = stand;
+}
+
+/// The strip the HUD marks, as [`set_marked`] left it.
+pub fn marked() -> Option<Vec3> {
+    *lock(&MARKED)
+}
+
+/// The choice for `body` on the loaded map: the scan's spots and collision
+/// (`superbounce_mode`), the HUD's mark, and `kept` from the last read.
+pub(crate) fn choose_now(body: &Body, kept: Option<Vec3>) -> Choice {
+    use superbounce::view::LineOfSight;
+    let room = superbounce_mode::current_room();
+    let floor = |xy: [f32; 2], top: f32| room.floor_at(xy, top);
+    let clear = |a: Vec3, b: Vec3| room.is_empty() || room.view().clear(a, b);
+    let ground = Ground {
+        floor: &floor,
+        clear: &clear,
+        marked: marked(),
+        kept,
+    };
+    choose(&superbounce_mode::current_spots(), body, &ground)
 }
 
 /// Whether the player has turned the assist on: the
@@ -517,7 +950,12 @@ pub fn assisting() -> bool {
 
 /// The assist's last read.
 pub fn report() -> Report {
-    *lock(&REPORT)
+    lock(&REPORT).clone()
+}
+
+/// The read the assist last engaged on.
+pub fn chose() -> Option<Report> {
+    lock(&CHOSE).clone()
 }
 
 /// `superbounce.assist_test`: acts as if the button is held (`true`) or
@@ -540,19 +978,61 @@ pub fn no_params(params: &serde_json::Value) -> Result<(), &'static str> {
 /// `superbounce.assist` as the agent answers it.
 pub fn assist_reply() -> agent_proto::superbounce::Assist {
     let r = report();
-    let wide = |v: Vec3| v.map(f64::from);
+    let active = superbounce_mode::active();
+    let enabled = opted_in();
     let wide2 = |v: [f32; 2]| v.map(f64::from);
+    let reason = match r.reason {
+        Some(reason) => reason.name(),
+        None if !active => "inactive",
+        None if !enabled => "off",
+        None => "not_held",
+    };
     agent_proto::superbounce::Assist {
-        active: superbounce_mode::active(),
-        enabled: opted_in(),
+        active,
+        enabled,
         test_hold: TEST_HOLD.load(Ordering::Relaxed),
         engaged: r.engaged,
+        reason: reason.into(),
         target: r.target.map(wide),
+        point: r.point.map(wide),
         aim: r.aim.map(wide2),
         landing: r.landing.map(wide2),
         fall_time: r.time.map(f64::from),
         stick: r.stick.map(wide2),
+        from: r.from.map(wide),
+        velocity: r.velocity.map(wide),
+        candidates: r.candidates.iter().map(candidate_reply).collect(),
+        chose: chose().as_ref().and_then(choice_reply),
     }
+}
+
+fn wide(v: Vec3) -> [f64; 3] {
+    v.map(f64::from)
+}
+
+fn candidate_reply(c: &Candidate) -> agent_proto::superbounce::AssistCandidate {
+    agent_proto::superbounce::AssistCandidate {
+        stand: wide(c.stand),
+        verdict: c.verdict.name().into(),
+        distance: f64::from(c.distance),
+        speed: f64::from(c.speed),
+        need: f64::from(c.need),
+        point: c.point.map(wide),
+        fall_time: c.time.map(f64::from),
+        miss: c.miss.map(f64::from),
+    }
+}
+
+/// An engaged read as `superbounce.assist`'s `chose`.
+fn choice_reply(r: &Report) -> Option<agent_proto::superbounce::AssistChoice> {
+    Some(agent_proto::superbounce::AssistChoice {
+        target: wide(r.target?),
+        point: wide(r.point?),
+        reason: r.reason?.name().into(),
+        from: wide(r.from?),
+        velocity: wide(r.velocity?),
+        candidates: r.candidates.iter().map(candidate_reply).collect(),
+    })
 }
 
 // ---- reading the game ----
@@ -614,8 +1094,10 @@ pub struct AssistTap {
     /// Controller port each open handle was opened on.
     ports: HashMap<u32, u32>,
     latch: Latch,
-    /// The report holds an engaged read.
+    /// The report holds a held read.
     live: bool,
+    /// The stand point of the strip the last read steered onto.
+    kept: Option<Vec3>,
 }
 
 impl AssistTap {
@@ -625,6 +1107,7 @@ impl AssistTap {
             ports: HashMap::new(),
             latch: Latch::default(),
             live: false,
+            kept: None,
         }
     }
 
@@ -634,6 +1117,7 @@ impl AssistTap {
             publish(Report::EMPTY);
         }
         self.latch = Latch::default();
+        self.kept = None;
     }
 
     fn assist(
@@ -692,19 +1176,36 @@ impl AssistTap {
             self.release();
             return;
         }
-        let plan = if held {
+        if !held {
+            // The latch's last read: the press is over.
+            self.kept = None;
+        }
+        let read = held.then(|| {
             memory
                 .and_then(|m| read_body(&Mem(m), PORT))
-                .and_then(|b| plan(&superbounce_mode::current_spots(), &b))
-        } else {
-            None
-        };
+                .map(|b| (b, choose_now(&b, self.kept)))
+        });
+        let plan = read.as_ref().and_then(|r| r.as_ref()?.1.plan);
         let engaged = apply(&mut self.latch, &mut pad, held, plan.as_ref());
         packet[4..].copy_from_slice(&pad.to_bytes());
-        match plan.filter(|_| engaged) {
-            Some(p) => {
+        // The strip stays the target while it is in reach; a new strip is
+        // chosen only once it is not.
+        let first = engaged && self.kept.is_none();
+        self.kept = plan.filter(|_| engaged).map(|p| p.target);
+        match read {
+            Some(found) => {
                 self.live = true;
-                publish(Report::of(&p));
+                let report = match &found {
+                    Some((body, choice)) => Report::of_choice(body, choice, engaged),
+                    None => Report {
+                        reason: Some(Reason::NoBody),
+                        ..Report::EMPTY
+                    },
+                };
+                if first {
+                    *lock(&CHOSE) = Some(report.clone());
+                }
+                publish(report);
             }
             None if self.live => {
                 self.live = false;
@@ -1259,5 +1760,306 @@ mod tests {
         assert_eq!(crouch_held(), Some(true));
         publish_crouch(None);
         assert_eq!(crouch_held(), None);
+    }
+
+    // ---- the choice ----
+
+    /// A strip along X from `x0` to `x1` at `y` and height `z`, crease
+    /// side toward -Y: stand on its middle, drift +Y.
+    fn strip_along_x(x0: f32, x1: f32, y: f32, z: f32) -> Spot {
+        Spot {
+            edge: [[x0, y, z], [x1, y, z]],
+            ..spot_at([(x0 + x1) / 2.0, y - 0.02, z + 0.01], [0.0, 1.0])
+        }
+    }
+
+    fn verdict_of(c: &Choice, stand: Vec3) -> Verdict {
+        c.candidates
+            .iter()
+            .find(|k| k.stand == stand)
+            .expect("the strip was judged")
+            .verdict
+    }
+
+    #[test]
+    fn the_point_to_land_on_moves_along_a_long_strip_and_stays_inside_its_ends() {
+        let s = strip_along_x(-2.0, 2.0, 0.0, 0.0);
+        let p = stand_near(&s, [1.2, 0.5]);
+        near(p[0], 1.2, 1e-5);
+        near(p[1], -0.02, 1e-5);
+        near(p[2], 0.01, 1e-5);
+        // Past an end: a capsule's radius inside it.
+        near(stand_near(&s, [5.0, 0.0])[0], 2.0 - END_MARGIN, 1e-5);
+        near(stand_near(&s, [-9.0, 3.0])[0], -2.0 + END_MARGIN, 1e-5);
+        // A strip too short to have a choice, and a point that is no
+        // number: the stand point.
+        let short = strip_along_x(-0.1, 0.1, 0.0, 0.0);
+        assert_eq!(stand_near(&short, [0.09, 0.0]), short.stand);
+        assert_eq!(stand_near(&s, [f32::NAN, 0.0]), s.stand);
+    }
+
+    #[test]
+    fn a_fall_onto_one_end_of_a_long_strip_is_not_pulled_to_its_middle() {
+        let s = strip_along_x(-2.0, 2.0, 0.0, 0.0);
+        // Facing +X, so the stick's forward is along the strip.
+        let p = plan(&[s], &falling([1.5, 0.3, 2.0], [0.0; 3])).unwrap();
+        assert_eq!(p.target, s.stand);
+        near(p.point[0], 1.5, 1e-5);
+        near(p.reach.aim[0], 1.5, 1e-5);
+        near(p.reach.aim[1], -0.02 - AIM_BACK, 1e-5);
+        // Nothing along the strip: only across it, onto it (-Y is right).
+        near(p.stick[1], 0.0, 1e-4);
+        assert!(p.stick[0] > 0.5, "{:?}", p.stick);
+    }
+
+    #[test]
+    fn a_strip_under_a_floor_is_refused_and_the_one_on_it_is_chosen() {
+        // The player falls over a floor at height 0. One strip is on it, a
+        // unit to the side; another is right below the player and 1.5
+        // under the floor.
+        let on = spot_at([1.0, 0.0, 0.0], [1.0, 0.0]);
+        let under = spot_at([0.1, 0.0, -1.5], [1.0, 0.0]);
+        let spots = [on, under];
+        let body = falling([0.1, 0.0, 2.0], [0.0; 3]);
+        // With the spots alone the one right below wins.
+        assert_eq!(pick(&spots, &body).unwrap().0.stand, under.stand);
+        let floor = |_: [f32; 2], top: f32| (top >= 0.0).then_some(0.0);
+        let ground = Ground {
+            floor: &floor,
+            ..Ground::open()
+        };
+        let c = choose(&spots, &body, &ground);
+        assert_eq!(c.plan.unwrap().target, on.stand);
+        assert_eq!(c.reason, Reason::Nearest);
+        assert_eq!(verdict_of(&c, on.stand), Verdict::Chosen);
+        assert_eq!(
+            verdict_of(&c, under.stand),
+            Verdict::Refused(Refusal::Covered)
+        );
+        // The strip's own floor, a step or a kerb by it do not cover it.
+        assert!(!covered(2.0, on.stand, &ground));
+        let kerb = |_: [f32; 2], _: f32| Some(COVER - 0.05);
+        assert!(!covered(
+            2.0,
+            on.stand,
+            &Ground {
+                floor: &kerb,
+                ..Ground::open()
+            }
+        ));
+        // The ledge the player has just left, a little over the feet, does.
+        let ledge = |_: [f32; 2], top: f32| (top >= 2.2).then_some(2.2);
+        assert!(covered(
+            2.0,
+            on.stand,
+            &Ground {
+                floor: &ledge,
+                ..Ground::open()
+            }
+        ));
+    }
+
+    #[test]
+    fn a_strip_behind_a_wall_is_refused() {
+        let spot = spot_at([1.0, 0.0, 0.0], [1.0, 0.0]);
+        let body = falling([0.0, 0.0, 2.0], [0.0; 3]);
+        // A wall at x 0.5.
+        let wall = |a: Vec3, b: Vec3| (a[0] < 0.5) == (b[0] < 0.5);
+        let ground = Ground {
+            clear: &wall,
+            ..Ground::open()
+        };
+        let c = choose(&[spot], &body, &ground);
+        assert_eq!(c.plan, None);
+        assert_eq!(c.reason, Reason::Refused);
+        assert_eq!(
+            verdict_of(&c, spot.stand),
+            Verdict::Refused(Refusal::Walled)
+        );
+        // From the strip's side of it, it is in reach.
+        let c = choose(&[spot], &falling([0.8, 0.0, 2.0], [0.0; 3]), &ground);
+        assert_eq!(c.reason, Reason::Nearest);
+    }
+
+    #[test]
+    fn the_marked_strip_is_chosen_over_a_nearer_one() {
+        let nearer = spot_at([0.3, 0.0, 0.0], [1.0, 0.0]);
+        let marked = spot_at([-0.8, 0.0, 0.0], [1.0, 0.0]);
+        let spots = [nearer, marked];
+        let body = falling([0.0, 0.0, 2.0], [0.0; 3]);
+        let c = choose(&spots, &body, &Ground::open());
+        assert_eq!(
+            (c.plan.unwrap().target, c.reason),
+            (nearer.stand, Reason::Nearest)
+        );
+        let ground = Ground {
+            marked: Some(marked.stand),
+            ..Ground::open()
+        };
+        let c = choose(&spots, &body, &ground);
+        assert_eq!(
+            (c.plan.unwrap().target, c.reason),
+            (marked.stand, Reason::Marked)
+        );
+        assert_eq!(verdict_of(&c, nearer.stand), Verdict::Passed);
+        assert_eq!(c.candidates[c.chosen.unwrap()].stand, marked.stand);
+        // A mark that is out of reach is not steered onto.
+        let far = Ground {
+            marked: Some([40.0, 0.0, 0.0]),
+            ..Ground::open()
+        };
+        let c = choose(&spots, &body, &far);
+        assert_eq!(
+            (c.plan.unwrap().target, c.reason),
+            (nearer.stand, Reason::Nearest)
+        );
+    }
+
+    #[test]
+    fn the_strip_steered_onto_is_kept_while_it_is_in_reach() {
+        let a = spot_at([0.3, 0.0, 0.0], [1.0, 0.0]);
+        let b = spot_at([-0.8, 0.0, 0.0], [1.0, 0.0]);
+        let spots = [a, b];
+        // The last read steered onto b; this one a is nearer and marked.
+        let ground = Ground {
+            marked: Some(a.stand),
+            kept: Some(b.stand),
+            ..Ground::open()
+        };
+        let c = choose(&spots, &falling([0.0, 0.0, 2.0], [0.0; 3]), &ground);
+        assert_eq!((c.plan.unwrap().target, c.reason), (b.stand, Reason::Kept));
+        // Once b is out of reach (too little fall left) the mark is taken.
+        let c = choose(&spots, &falling([0.25, 0.0, 0.1], [0.0; 3]), &ground);
+        assert_eq!(
+            (c.plan.unwrap().target, c.reason),
+            (a.stand, Reason::Marked)
+        );
+        assert_eq!(
+            verdict_of(&c, b.stand),
+            Verdict::Refused(Refusal::OutOfReach)
+        );
+    }
+
+    #[test]
+    fn a_strip_the_fall_is_fast_enough_for_is_chosen_before_a_slow_one() {
+        // A short hop over one strip, with a long fall to another beside
+        // it: the hop is too slow to bounce, the fall is not.
+        let slow = spot_at([0.1, 0.0, 0.0], [1.0, 0.0]);
+        let fast = spot_at([0.5, 0.0, -2.0], [1.0, 0.0]);
+        let spots = [slow, fast];
+        let c = choose(&spots, &falling([0.0, 0.0, 0.3], [0.0; 3]), &Ground::open());
+        assert_eq!(c.plan.unwrap().target, fast.stand);
+        let judged = |stand: Vec3| *c.candidates.iter().find(|k| k.stand == stand).unwrap();
+        assert!(judged(slow.stand).speed < judged(slow.stand).need);
+        assert!(judged(fast.stand).speed >= judged(fast.stand).need);
+        assert!(judged(slow.stand).miss.unwrap() < judged(fast.stand).miss.unwrap());
+    }
+
+    #[test]
+    fn the_choice_says_why_there_is_none() {
+        let spot = spot_at([4.0, 0.0, 0.0], [1.0, 0.0]);
+        let body = falling([0.0, 0.0, 2.0], [0.0; 3]);
+        // On the ground or rising.
+        let ground = Body {
+            airborne: false,
+            ..body
+        };
+        let c = choose(&[spot], &ground, &Ground::open());
+        assert_eq!((c.reason, c.candidates.len()), (Reason::NotFalling, 0));
+        // 4 units away: judged, and refused as too far.
+        let c = choose(&[spot], &body, &Ground::open());
+        assert_eq!((c.reason, c.plan), (Reason::Refused, None));
+        assert_eq!(verdict_of(&c, spot.stand), Verdict::Refused(Refusal::Far));
+        near(c.candidates[0].distance, 4.0, 1e-5);
+        // Past what is looked at, crouch spots, and no spots at all.
+        let away = spot_at([CONSIDER + 1.0, 0.0, 0.0], [1.0, 0.0]);
+        let crouch = Spot {
+            kind: Kind::Crouch,
+            ..spot_at([0.0, 0.0, 0.0], [0.0, 0.0])
+        };
+        let c = choose(&[away, crouch], &body, &Ground::open());
+        assert_eq!((c.reason, c.candidates.len()), (Reason::NoStrip, 0));
+        assert_eq!(choose(&[], &body, &Ground::open()).reason, Reason::NoStrip);
+        // Each refusal has its name on the wire.
+        let names: Vec<_> = [
+            Refusal::Above,
+            Refusal::Long,
+            Refusal::Far,
+            Refusal::OutOfReach,
+            Refusal::Covered,
+            Refusal::Walled,
+        ]
+        .map(|r| Verdict::Refused(r).name())
+        .to_vec();
+        assert_eq!(
+            names,
+            ["above", "long", "far", "out_of_reach", "covered", "walled"]
+        );
+    }
+
+    #[test]
+    fn the_report_lists_the_chosen_strip_first_then_the_rest_nearest_first() {
+        let chosen = spot_at([0.6, 0.0, 0.0], [1.0, 0.0]);
+        let passed = spot_at([-0.9, 0.0, 0.0], [1.0, 0.0]);
+        let far = spot_at([0.0, 4.0, 0.0], [1.0, 0.0]);
+        let above = spot_at([0.1, 0.0, 5.0], [1.0, 0.0]);
+        let body = falling([0.0, 0.0, 2.0], [0.0; 3]);
+        let spots = [above, far, passed, chosen];
+        let c = choose(&spots, &body, &Ground::open());
+        let r = Report::of_choice(&body, &c, true);
+        let order: Vec<_> = r.candidates.iter().map(|k| k.verdict.name()).collect();
+        assert_eq!(order, ["chosen", "passed", "above", "far"]);
+        assert!(r.engaged);
+        assert_eq!(r.target, Some(chosen.stand));
+        assert_eq!(r.point, Some(chosen.stand));
+        assert_eq!(r.reason, Some(Reason::Nearest));
+        assert_eq!(
+            (r.from, r.velocity),
+            (Some(body.position), Some(body.velocity))
+        );
+        // The reply names them the same way.
+        let wire = choice_reply(&r).unwrap();
+        assert_eq!(wire.reason, "nearest");
+        assert_eq!(wire.candidates[0].verdict, "chosen");
+        assert_eq!(wire.candidates[2].verdict, "above");
+        assert!(wire.candidates[2].point.is_none());
+        // Held with nothing to steer onto: the candidates and the reason,
+        // and no target.
+        let none = choose(&[far], &body, &Ground::open());
+        let r = Report::of_choice(&body, &none, false);
+        assert!(!r.engaged && r.target.is_none() && r.stick.is_none());
+        assert_eq!(r.reason, Some(Reason::Refused));
+        assert_eq!(r.candidates.len(), 1);
+        assert!(choice_reply(&r).is_none());
+        // At most REPORTED of them.
+        let many: Vec<Spot> = (0..REPORTED + 8)
+            .map(|i| spot_at([0.1 * i as f32, 0.0, 0.0], [1.0, 0.0]))
+            .collect();
+        let r = Report::of_choice(&body, &choose(&many, &body, &Ground::open()), true);
+        assert_eq!(r.candidates.len(), REPORTED);
+        assert_eq!(r.candidates[0].verdict, Verdict::Chosen);
+    }
+
+    #[test]
+    fn the_predicted_landing_skips_a_strip_under_a_floor() {
+        let on = spot_at([0.4, 0.0, 0.0], [0.0, 0.0]);
+        let under = spot_at([0.0, 0.0, -1.5], [0.0, 0.0]);
+        let spots = [on, under];
+        let body = falling([0.0, 0.0, 2.0], [0.0, 0.0, -1.0]);
+        assert_eq!(predict(&spots, &body).unwrap().stand, under.stand);
+        let floor = |_: [f32; 2], top: f32| (top >= 0.0).then_some(0.0);
+        let ground = Ground {
+            floor: &floor,
+            ..Ground::open()
+        };
+        assert_eq!(predict_on(&spots, &body, &ground).unwrap().stand, on.stand);
+    }
+
+    #[test]
+    fn the_mark_is_what_the_mode_last_set() {
+        set_marked(Some([1.0, 2.0, 3.0]));
+        assert_eq!(marked(), Some([1.0, 2.0, 3.0]));
+        set_marked(None);
+        assert_eq!(marked(), None);
     }
 }

@@ -7,7 +7,6 @@
 
 use crate::list_class::TextBlock;
 use crate::ui_kit::components::{Screen, legend, row};
-use crate::ui_kit::dialog::{icon, quick_icon};
 use crate::ui_kit::spec::{PaneText, ScreenSpec};
 use crate::ui_kit::view::{Justify, Kind, Layer, Opener, Widget};
 
@@ -20,6 +19,7 @@ pub const PAGES: [&str; 29] = [
     "design.row.action",
     "design.row.value-inline",
     "design.row.value-column",
+    "design.row.pick-inline",
     "design.row.setting",
     "design.row.info",
     "design.row.text",
@@ -35,7 +35,6 @@ pub const PAGES: [&str; 29] = [
     "layout.list.level-select",
     "layout.list.texts",
     "layout.dialog.settings",
-    "layout.dialog.settings.header",
     "layout.dialog.large",
     "layout.dialog.message",
     "layout.dialog.over-screen",
@@ -149,10 +148,21 @@ fn rows3(s: Screen, help: bool) -> Screen {
     })
 }
 
-fn picks3(s: Screen) -> Screen {
-    (1..=3).fold(s, |s, n| {
-        s.row(row::pick(&format!("Row {n}"), &["On", "Off"], 0).describe(&format!("What row {n} sets.")))
-    })
+/// Settings dialog `name` as its doc declares it: the shared settings
+/// dialog (`crate::ui_kit::settings`) over the doc's specimen rows, the
+/// page every settings screen of ours is. Its texts take `kit.dialog`'s
+/// family: a specimen is drawn, never registered.
+fn settings_page(name: &'static str) -> ScreenSpec {
+    use crate::ui_kit::spec::Describe;
+    crate::ui_kit::settings::screen(
+        "settings-specimen",
+        name,
+        crate::ui_kit::ids::family("kit.dialog"),
+        None,
+        crate::ui_kit::settings::Bindings::new(),
+    )
+    .unwrap_or_else(|e| panic!("{e}"))
+    .spec()
 }
 
 fn level_select_art(s: Screen) -> Screen {
@@ -243,16 +253,21 @@ pub fn states(name: &str) -> Option<Vec<(String, ScreenSpec)>> {
                 .build(),
             &[("focused", 0), ("unfocused", 1), ("long", 2)],
         ),
-        "design.row.setting" => focused(
-            Screen::settings(name, "SETTINGS", setup)
-                .row(row::pick("Setting Row", &["On", "Off"], 0).describe("What the setting does."))
-                .row(
-                    row::pick("Second Setting Row", &["Easy", "Normal", "Heroic", "Legendary"], 1)
-                        .describe("What the second setting does."),
-                )
-                .row(row::pick("A Longer Setting Row", &["Off", "On"], 0).describe("What the longer one does."))
-                .legend(vec![legend::change(), legend::select(), legend::back()])
+        "design.row.pick-inline" => focused(
+            Screen::level_select(name, "Inline Picks")
+                .row(row::pick("Pick Row", &["On", "Off"], 0))
+                .row(row::pick("Second Pick Row", &["On", "Off"], 1))
+                .row({
+                    let mut r = row::disabled("Disabled Row");
+                    r.prompts = Some(legend::disabled_row());
+                    r
+                })
+                .legend(legend::setting_row())
                 .build(),
+            &[("focused", 0), ("unfocused", 1), ("disabled", 2)],
+        ),
+        "design.row.setting" => focused(
+            settings_page("design.row.setting"),
             &[("focused", 0), ("unfocused", 1), ("long", 2)],
         ),
         "design.row.info" => focused(
@@ -307,7 +322,7 @@ pub fn states(name: &str) -> Option<Vec<(String, ScreenSpec)>> {
                 crate::ui_kit::components::dialog_cells("123456", Some(0), Some(2)),
                 menu,
             )
-            .legend(vec![legend::digit(), legend::move_cursor(), legend::done(), legend::cancel()])
+            .legend(vec![legend::digit(), legend::move_cursor(), legend::done(), legend::back()])
             .build(),
             &[("first", 0), ("middle", 2), ("last", 5)],
         ),
@@ -359,19 +374,7 @@ pub fn states(name: &str) -> Option<Vec<(String, ScreenSpec)>> {
             .legend(vec![legend::select(), legend::back()])
             .build(),
         ),
-        "layout.dialog.settings" => each_row(
-            picks3(Screen::settings(name, "TITLE", setup))
-                .legend(vec![legend::change(), legend::select(), legend::back()])
-                .build(),
-        ),
-        "layout.dialog.settings.header" => each_row({
-            let mut s = picks3(Screen::settings(name, "TITLE", setup))
-                .art(quick_icon(icon::SPARTAN))
-                .legend(vec![legend::change(), legend::select(), legend::back()])
-                .build();
-            s.content.required_icons.push("art.0".into());
-            s
-        }),
+        "layout.dialog.settings" => each_row(settings_page("layout.dialog.settings")),
         "layout.dialog.large" => each_row(
             Screen::large(name, "TITLE", menu)
                 .row(row::action("Row 1"))
@@ -399,7 +402,7 @@ pub fn states(name: &str) -> Option<Vec<(String, ScreenSpec)>> {
                 crate::ui_kit::components::dialog_cells("000000", Some(0), Some(2)),
                 menu,
             )
-            .legend(vec![legend::digit(), legend::move_cursor(), legend::done(), legend::cancel()])
+            .legend(vec![legend::digit(), legend::move_cursor(), legend::done(), legend::back()])
             .build(),
             &[("cursor-0", 0), ("cursor-5", 5)],
         ),

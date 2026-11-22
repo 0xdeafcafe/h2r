@@ -5,8 +5,12 @@ use std::path::{Path, PathBuf};
 
 use perf::bench::{BenchCtx, Prepared, Scenario};
 use perf::hotloop::{self, HotLoop};
+// The profiling tests that use these run on macOS only.
+#[cfg(target_os = "macos")]
 use perf::profile::{self, Render};
+#[cfg(target_os = "macos")]
 use perf::sample::{Sampler, ThreadTarget};
+#[cfg(target_os = "macos")]
 use perf::symbolize::{Category, Frame, Symbolizer};
 
 fn work() -> PathBuf {

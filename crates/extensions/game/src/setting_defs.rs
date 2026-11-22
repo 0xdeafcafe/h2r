@@ -780,14 +780,14 @@ const HALO_CHOICES: &[Choice] = &[
 ];
 
 /// Which assets a Halo 1 campaign level is played with (the level variant,
-/// docs/halo1/campaign.md §5). On the campaign's Game Options page
+/// docs/halo1/campaign.md §5). On the campaign's Skulls page
 /// (crate::h1_options).
 pub static HALO1_ASSETS: Def = Def {
     key: "campaign.halo1_assets",
     label: "Assets",
     help: "Which characters, weapons and vehicles a Halo 1 campaign level plays \
-           with: Halo 1's own, converted, or Halo 2's. Chosen on the Game Options \
-           page before the level; applies at the level's load \
+           with: Halo 1's own, converted, or Halo 2's. Chosen on the Skulls page \
+           before the level; applies at the level's load \
            (docs/halo1/campaign.md).",
     kind: Kind::Choice(HALO_CHOICES),
     default: Value::Int(HALO1),

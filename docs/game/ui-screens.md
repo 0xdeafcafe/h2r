@@ -117,49 +117,64 @@ A screen is data a check can read. `ui_kit::spec::ScreenSpec` says what a screen
    profile; `.description_animation(track)` gives the block a widget
    animation of its own. It redraws when the text changes even if focus
    stays on the same row.
-   `kind: dialog`, `layout: settings`, `backing: over` and an `opener`
-   (`KitScreen::dialog(DialogBase::QuickOptions, opener)`) make the screen a dialog of its
-   rows over whatever opened it, Quick Options inside and out: its panel and
-   header, its own list (`setting_lists`, eleven rows from (-254, 87)), each
-   row's name left and its value alone in the value column
-   (`ValueStyle::Setting`: `Count  4`, no arrows), and the focused row's
-   description in its one-line help line (`dialog::QUICK_HELP_TEXT`, 52
-   units at most) unless the doc places its description elsewhere. A
-   settings page that should look like the game's own (Clankers, Halo 1
-   Options) is this and nothing more, plus
-   `.header(icon)` for Quick Options' game type picture, which shows the
-   focused row's `Row::icon` ([ui-builder.md](ui-builder.md) "A page's
-   header"). `Row::explain` is what the value picker says about a value
-   row, when it should say more than the one-line description. Or
-   `layout: large` (`DialogBase::Large`), the one the game maps have; see
-   [ui-builder.md](ui-builder.md) "The Dialog kind". The legend's prompts go in the footer
-   (below). `scrolls: true` says more rows than the list shows is meant.
-   **Choice rows.** A row of many choices over a setting is a
-   `ui_kit::choice::ChoiceRow`, the sibling of the Halo 1 options'
-   two-choice `OptionRow`. It names a settings `Def`, a label and a
-   description; its choices come from the setting (a `Kind::Choice`'s
-   labels, a `Kind::Int`'s steps or else every number of its range, Off and
-   On for a `Kind::Bool`). `ChoiceRow::row(store)` gives the value row:
-   left and right step and wrap, A opens the value picker, and each change
-   is saved in the store at once, so its change callbacks see it.
-   `.explain(text)` gives the value picker its fuller text and
-   `.icon(icon)` the row's header icon. A bots page's Count and
-   Difficulty are two of them:
+   `kind: dialog`, `layout: large`, `backing: over` and an `opener`
+   (`DialogBase::Large`, the one the game maps have) make the screen a
+   dialog of its rows over whatever opened it; see
+   [ui-builder.md](ui-builder.md) "The Dialog kind". The legend's
+   prompts go in the footer (below). `scrolls: true` says more rows than
+   the list shows is meant.
+
+   **A settings page** is `layout: settings` and a `settings:` block: a
+   YAML file and a one-line `page` ([ui-builder.md](ui-builder.md) "The
+   settings dialog"). The doc gives the header (icon, name, and what the
+   window is for, or the Game Setup row that opens it), each row's label,
+   help and picker text, and the setting or binding behind it; the kit
+   lays it out as Quick Options, derives the legend, and shows the
+   focused row's help under the rows:
+
+   ```yaml
+   # assets/ui/screens/bots.yaml
+   screen: bots
+   kind: dialog
+   layout: settings
+   backing: over
+   opener: game-setup.clankers
+   settings:
+     host: menu
+     icon: spartan
+     name: "Bots in this game"
+     about: "Add bots to this game."
+   widgets:
+     title:
+       component: title
+       text: "BOTS"
+   rows:
+     row.0:
+       kind: value
+       text: "Count"
+       help: "How many bots join."
+       setting: bots.count
+       explain: "How many bots join this game, from 1 to 15."
+   ```
 
    ```rust
-   static COUNT: ChoiceRow = ChoiceRow::new(&BOTS_COUNT, "Count", "How many bots join.")
-       .explain("How many bots join this game, from 1 to 15.")
-       .icon(icon::SQUARES);
-   static LEVEL: ChoiceRow = ChoiceRow::new(&BOTS_LEVEL, "Difficulty", "How well they play.")
-       .icon(icon::SKULL);
-   // assets/ui/screens/bots.yaml: kind dialog, layout settings,
-   // backing over, opener game-setup.clankers, title "CLANKERS",
-   // legend [[[Left, Right], "CHANGE"], [B, "BACK"]].
-   let page = KitScreen::new("bots", "bots", ids::family("bots"))
-       .header(icon::SPARTAN)
-       .row(COUNT.row(Arc::clone(&store)))
-       .row(LEVEL.row(store));
+   pub fn page(store: Arc<Store>) -> KitScreen {
+       settings::screen("bots", "bots", ids::family("bots"), Some(store), Bindings::new())
+           .unwrap_or_else(|e| panic!("{e}"))
+   }
    ```
+
+   A row whose behaviour is the feature's (`bind: bots.reset`) takes one
+   closure registered by name (`Bindings::new().action("bots.reset",
+   || Then::Stay(...))`).
+
+   **Choice rows.** A `setting:` row's choices come from the setting's
+   `Def` through `ui_kit::choice` (a `Kind::Choice`'s labels, a
+   `Kind::Int`'s steps or else every number of its range, Off and On for
+   a `Kind::Bool`); `values:` in the doc names them. Left and right step
+   and wrap, A opens the value picker, and each change is saved in the
+   store at once, so its change callbacks see it. Outside a settings
+   doc, `ChoiceRow::row(store)` gives the same value row in Rust.
 
    The kit's own example is `kit.choices` (`h2 ui preview kit.choices`,
    over example settings no profile holds); its table test is
@@ -210,6 +225,10 @@ Before a game run (all of these are tests):
       rectangle at the font's line height (`Finding::Description`).
 - [ ] **Footer**: the legend fits the header layout's second rectangle in
       the header font (`Finding::Footer`).
+- [ ] **Settings**: a page of settings is a `settings:` doc, or is in
+      `ui_kit::settings::NOT_SHARED` with why; its header is the same at
+      every focus and its help under the rows is the focused row's
+      (`settings::tests`, the consistency rule `settings`).
 - [ ] **Glyphs**: every character is drawn by the font. The icon range's
       filler record counts as missing (`Finding::Glyph`).
 - [ ] **Presses**: an action row does something, a value row has at least two
@@ -324,7 +343,7 @@ Drawn beside a 640 by 480 frame of the game, the co-op screen focused on row 4 l
 - the game fills above and below `framing_center` with dark blue (we leave it black), and the track lines scroll;
 - unfocused rows' dimming is a guess (55%);
 - the D-pad left and right glyphs are drawn from the header font as the font has them (a white diamond each);
-- the skulls page's picture and the list's scroll arrows are not drawn.
+- the skulls page's picture is not drawn, and its scroll arrows are drawn at the default skin's places ([ui-builder.md](ui-builder.md) "Scroll arrows"), not the page's own (`skulls_menu::SCROLL_ARROWS`).
 
 ## Not verified
 
@@ -335,6 +354,10 @@ Drawn beside a 640 by 480 frame of the game, the co-op screen focused on row 4 l
   widget per row, six with the co-op row, laid out in its own tag's room
   ([live-custom-games.md](../live/live-custom-games.md) §5). The checks use the 5 seen; what
   takes one away is not found.
+- In a game run: our list slot 19 (`list_class::item_count`) linking the
+  laid-out rows only, and the scroll arrows on a moved list sitting by
+  its last row ([ui-builder.md](ui-builder.md) "Item count", "Scroll
+  arrows"). Both are read from the code and held by tests, not seen.
 - Whether the footer widget keeps our legend, or the screen's tag string
   (`0x2300cf`) overwrites it after the pane is set up.
 - Whether an overlong description clips or runs past its rectangle.

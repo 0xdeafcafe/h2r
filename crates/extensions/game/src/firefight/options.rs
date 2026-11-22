@@ -9,9 +9,11 @@
 //! wave set, how hard, how many lives to start with, and whether each
 //! round switches on a skull.
 //!
-//! **The page** is a kit screen ([`page`]) of five choice rows on the
+//! **The page** is the shared settings dialog ([`page`],
+//! `crate::ui_kit::settings`), declared by
+//! `assets/ui/screens/firefight.yaml`: five rows over [`DEFS`] on the
 //! lobby's own settings dialog, Quick Options, as the Clankers page is
-//! (`crate::clankers`): a choice opens the value picker on A, and left and
+//! (`crate::clankers`). A row opens the value picker on A, and left and
 //! right step through the choices as a shortcut. No row is a "< All >"
 //! arrow row.
 //!
@@ -40,10 +42,9 @@ use settings::{Apply, Choice, Def as Setting, Kind, Scope, Store, Tier, Value};
 
 use crate::h1_options_row::{self as h1row, CHANGE_MAP};
 use crate::list_class::{self, Rows};
-use crate::ui_kit::choice::ChoiceRow;
-use crate::ui_kit::dialog::icon;
 use crate::ui_kit::ids::{self, Family};
 use crate::ui_kit::screen::{KitScreen, KitTexts};
+use crate::ui_kit::settings::Bindings;
 
 /// The page's feature (`features.firefight-options`) and screen name.
 pub const FEATURE: &str = "firefight-options";
@@ -149,69 +150,14 @@ pub static SKULLS: Setting = setting(
 /// Every Firefight setting, in the page's order.
 pub static DEFS: [&Setting; 5] = [&ENABLED, &WAVE_SET, &DIFFICULTY, &LIVES, &SKULLS];
 
-static ROWS: [ChoiceRow; 5] = [
-    ChoiceRow::new(
-        &ENABLED,
-        "Firefight",
-        "Fight waves of enemies on a Firefight map.",
-    )
-    .explain(
-        "On starts Firefight when the map carries its kit: waves of enemies, \
-             shared lives and a score. Off plays the game's own rules.",
-    )
-    .icon(icon::SPARTAN),
-    ChoiceRow::new(&WAVE_SET, "Wave set", "Which set of waves you fight.")
-        .explain(
-            "Holdout is steady, with lives to spare. Attrition sends more enemies \
-             and gives fewer lives. Last Stand sends the most and gives the fewest.",
-        )
-        .icon(icon::BANNER),
-    ChoiceRow::new(
-        &DIFFICULTY,
-        "Difficulty",
-        "How much a kill scores, by difficulty.",
-    )
-    .explain(
-        "Harder difficulties score more for each kill: Easy 75%, Normal 100%, \
-         Heroic 125% and Legendary 150%.",
-    )
-    .icon(icon::SKULL),
-    ChoiceRow::new(
-        &LIVES,
-        "Starting lives",
-        "How many lives the team starts with.",
-    )
-    .explain(
-        "The shared pool of lives. Each death takes one, and each round adds a \
-         few more. Default uses the wave set's own pool.",
-    )
-    .icon(icon::HELMET),
-    ChoiceRow::new(&SKULLS, "Skulls", "Whether each round switches on a skull.")
-        .explain(
-            "Each round switches on another skull, which makes the fight harder \
-             and scores a little more. Off keeps every round plain.",
-        )
-        .icon(icon::LIGHTNING),
-];
-
-/// The Game Setup row's text; the page's title stays its own
-/// (`assets/ui/screens/firefight.yaml`).
-pub const ROW_LABEL: &str = "Firefight Options...";
-/// What the Game Setup row does, in Game Setup's description while it has
-/// the focus, as retail's rows have theirs (`crate::game_setup_help`).
-pub const ROW_HELP: &str =
-    "Fight waves of enemies on a Firefight map: the waves, the difficulty and the lives.";
-
-/// The Firefight page over `store`: a dialog of its rows on Quick Options.
+/// The Firefight page over `store`: the shared settings dialog
+/// (`crate::ui_kit::settings`) its doc declares,
+/// `assets/ui/screens/firefight.yaml`: its header, its five rows over
+/// [`DEFS`], their help and picker copy, and the Game Setup row's text
+/// and help (`settings.caller`).
 pub fn page(store: Arc<Store>) -> KitScreen {
-    let mut s = KitScreen::new(FEATURE, SCREEN, IDS)
-        .row_label(ROW_LABEL)
-        .row_help(ROW_HELP)
-        .header(icon::SPARTAN);
-    for r in &ROWS {
-        s = s.row(r.row(Arc::clone(&store)));
-    }
-    s
+    crate::ui_kit::settings::screen(FEATURE, SCREEN, IDS, Some(store), Bindings::new())
+        .unwrap_or_else(|e| panic!("{e}"))
 }
 
 // --- What the match starts from ---------------------------------------------

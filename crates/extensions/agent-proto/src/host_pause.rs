@@ -41,11 +41,14 @@ pub const SHELL_WAIT: Duration = Duration::from_secs(2);
 /// How long `host.pause {on: true}` then waits for the guest to stop.
 pub const HOLD_WAIT: Duration = Duration::from_secs(2);
 
-/// `host.pause`'s params.
+/// `host.pause`'s params: `{}` reads the state, `{"on": bool}` changes it
+/// (as `perf.overlay` reads and sets).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PauseParams {
-    pub on: bool,
+    /// The pause to hold; absent, the state is read without changing it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<bool>,
 }
 
 /// `host.step`'s params.
@@ -259,6 +262,16 @@ impl Hub {
     }
 
     // ---- the methods ----
+
+    /// The state now, without asking for anything; refused with no window,
+    /// so a read never reports a pause nothing holds.
+    pub fn read(&self) -> Result<PauseState, RpcError> {
+        let s = self.lock();
+        if s.shell.is_none() {
+            return Err(unavailable(NO_WINDOW));
+        }
+        Ok(Self::view(&s, None))
+    }
 
     /// The state now, without asking for anything.
     pub fn state(&self) -> PauseState {
@@ -582,7 +595,10 @@ mod tests {
     fn the_wire_shapes() {
         let p: StepParams = serde_json::from_value(serde_json::json!({})).unwrap();
         assert_eq!(p.ticks, 1);
-        assert!(serde_json::from_value::<PauseParams>(serde_json::json!({})).is_err());
+        let p: PauseParams = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(p.on, None, "{{}} reads the state");
+        let p: PauseParams = serde_json::from_value(serde_json::json!({"on": true})).unwrap();
+        assert_eq!(p.on, Some(true));
         let v = serde_json::to_value(PauseState {
             paused: true,
             held: true,

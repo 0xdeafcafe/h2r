@@ -8,10 +8,9 @@
 //!
 //! The lobby's mode (`crate::lobby_mode`) puts its lines first (the Forge
 //! map; Firefight's wave set, difficulty and starting lives). The party
-//! lobby's mode strip (`crate::lobby_tabs::strip::panel`) has its own hook
-//! on the same point, inside this one, so it is drawn with this feature
-//! off too. The strip's own text widgets are left out of the count of the
-//! screen's texts here.
+//! lobby's header (`crate::lobby_tabs::header::panel`) has its own hook on
+//! the same point, inside this one, so the header names the mode with
+//! this feature off too.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -166,11 +165,7 @@ fn widgets(m: &dyn GuestMemory, screen: u32) -> Option<[u32; PANEL_ROWS]> {
         if child == 0 {
             break;
         }
-        let ours = || {
-            m.u16(child.wrapping_add(WIDGET_INDEX))
-                .is_ok_and(crate::lobby_tabs::strip::is_ours)
-        };
-        if m.u32(child.checked_add(WIDGET_KIND)?).ok()? == TEXT_KIND && !ours() {
+        if m.u32(child.checked_add(WIDGET_KIND)?).ok()? == TEXT_KIND {
             if let Some(slot) = text.checked_sub(FIRST_OPTION_TEXT) {
                 if m.u32(child).ok()? != TEXT_VTABLE
                     || m.u16(child.checked_add(WIDGET_INDEX)?).ok()? as usize

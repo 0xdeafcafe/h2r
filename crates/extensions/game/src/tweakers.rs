@@ -550,7 +550,7 @@ impl hooks::Feature for Tweakers {
                 let rt = Arc::clone(c.ctx.runtime());
                 let mut mem = rt.memory();
                 let id = mem.u16(screen + 0x70).map_or(-1, |v| v as i16);
-                let create = mem.u8(screen + CREATE_FLAG).map_or(true, |v| v != 0);
+                let create = mem.u8(screen + CREATE_FLAG) != Ok(0);
                 if screen == 0 || !wants_row(id, create) {
                     return Ok(());
                 }

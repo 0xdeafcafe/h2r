@@ -983,7 +983,6 @@ fn axes(pts: &[V2]) -> (V2, V2) {
     (axis, [-axis[1], axis[0]])
 }
 
-#[allow(clippy::too_many_arguments)]
 fn spot(
     scene: &Scene,
     samples: &[Sample],
@@ -1074,7 +1073,6 @@ fn spot(
         edge,
         stand: origin,
         score,
-        width,
         out: way_out(stand),
         lip: Lip::new(&scene.lip(origin)),
         ..Spot::default()

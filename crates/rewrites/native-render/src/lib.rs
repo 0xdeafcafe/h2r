@@ -41,6 +41,8 @@ pub mod decorators_gpu;
 pub mod base_look;
 #[cfg(feature = "gpu")]
 pub mod decorators_load;
+#[cfg(feature = "gpu")]
+pub mod engine_states;
 pub mod effect_geometry;
 pub mod effect_immediate;
 pub mod fog;
@@ -65,6 +67,7 @@ pub mod stage_images;
 #[cfg(feature = "gpu")]
 pub mod ui_gpu;
 pub mod instances;
+pub mod light_choice;
 #[cfg(feature = "gpu")]
 pub mod light_gpu;
 pub mod light_list;
@@ -106,6 +109,9 @@ pub mod screen_look;
 #[cfg(feature = "gpu")]
 pub mod shadow_gpu;
 pub mod shadows;
+pub mod showcase;
+#[cfg(feature = "gpu")]
+pub mod showcase_gpu;
 pub mod sun_casters;
 pub mod sun_tiles;
 #[cfg(feature = "gpu")]

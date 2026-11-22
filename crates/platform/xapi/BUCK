@@ -41,6 +41,7 @@ workspace_library(
     version = "0.1.0",
     deps = [
         "//crates/platform/input:input",
+        "//crates/platform/mem-watch:mem-watch",
         "//crates/runtime/runtime:runtime",
         "//crates/runtime/snapshot:snapshot",
         "//crates/runtime/vfs:vfs",
@@ -60,6 +61,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/platform/input:input",
+        "//crates/platform/mem-watch:mem-watch",
         "//crates/recompiler/analyze:analyze",
         "//crates/recompiler/emit:emit",
         "//crates/recompiler/ir:ir",
@@ -86,6 +88,35 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/platform/input:input",
+        "//crates/platform/mem-watch:mem-watch",
+        "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/emit:emit",
+        "//crates/recompiler/ir:ir",
+        "//crates/recompiler/lift:lift",
+        "//crates/runtime/kernel:kernel",
+        "//crates/runtime/runtime:runtime",
+        "//crates/runtime/snapshot:snapshot",
+        "//crates/runtime/vfs:vfs",
+        "//third-party/rust:iced-x86",
+        "//third-party/rust:libloading",
+        ":xapi",
+    ],
+)
+
+workspace_test(
+    name = "cache_seed",
+    crate = "cache_seed",
+    crate_root = "crates/platform/xapi/tests/cache_seed.rs",
+    description = "Guest XAPI service replacements for Halo 2",
+    features = [],
+    manifest = "crates/platform/xapi",
+    package = "xapi",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//crates/formats/xbe:xbe",
+        "//crates/platform/input:input",
+        "//crates/platform/mem-watch:mem-watch",
         "//crates/recompiler/analyze:analyze",
         "//crates/recompiler/emit:emit",
         "//crates/recompiler/ir:ir",
@@ -113,6 +144,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/platform/input:input",
+        "//crates/platform/mem-watch:mem-watch",
         "//crates/recompiler/analyze:analyze",
         "//crates/recompiler/emit:emit",
         "//crates/recompiler/ir:ir",
@@ -140,6 +172,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/platform/input:input",
+        "//crates/platform/mem-watch:mem-watch",
         "//crates/recompiler/analyze:analyze",
         "//crates/recompiler/emit:emit",
         "//crates/recompiler/ir:ir",
@@ -167,6 +200,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/platform/input:input",
+        "//crates/platform/mem-watch:mem-watch",
         "//crates/recompiler/analyze:analyze",
         "//crates/recompiler/emit:emit",
         "//crates/recompiler/ir:ir",
@@ -194,6 +228,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/platform/input:input",
+        "//crates/platform/mem-watch:mem-watch",
         "//crates/recompiler/analyze:analyze",
         "//crates/recompiler/emit:emit",
         "//crates/recompiler/ir:ir",
@@ -221,6 +256,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/platform/input:input",
+        "//crates/platform/mem-watch:mem-watch",
         "//crates/recompiler/analyze:analyze",
         "//crates/recompiler/emit:emit",
         "//crates/recompiler/ir:ir",
@@ -248,6 +284,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/platform/input:input",
+        "//crates/platform/mem-watch:mem-watch",
         "//crates/recompiler/analyze:analyze",
         "//crates/recompiler/emit:emit",
         "//crates/recompiler/ir:ir",
@@ -275,6 +312,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/platform/input:input",
+        "//crates/platform/mem-watch:mem-watch",
         "//crates/recompiler/analyze:analyze",
         "//crates/recompiler/emit:emit",
         "//crates/recompiler/ir:ir",
@@ -302,6 +340,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/platform/input:input",
+        "//crates/platform/mem-watch:mem-watch",
         "//crates/recompiler/analyze:analyze",
         "//crates/recompiler/emit:emit",
         "//crates/recompiler/ir:ir",
@@ -329,6 +368,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/platform/input:input",
+        "//crates/platform/mem-watch:mem-watch",
         "//crates/recompiler/analyze:analyze",
         "//crates/recompiler/emit:emit",
         "//crates/recompiler/ir:ir",
@@ -356,6 +396,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/platform/input:input",
+        "//crates/platform/mem-watch:mem-watch",
         "//crates/recompiler/analyze:analyze",
         "//crates/recompiler/emit:emit",
         "//crates/recompiler/ir:ir",
@@ -383,6 +424,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/platform/input:input",
+        "//crates/platform/mem-watch:mem-watch",
         "//crates/recompiler/analyze:analyze",
         "//crates/recompiler/emit:emit",
         "//crates/recompiler/ir:ir",
@@ -410,6 +452,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/platform/input:input",
+        "//crates/platform/mem-watch:mem-watch",
         "//crates/recompiler/analyze:analyze",
         "//crates/recompiler/emit:emit",
         "//crates/recompiler/ir:ir",
@@ -437,6 +480,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/platform/input:input",
+        "//crates/platform/mem-watch:mem-watch",
         "//crates/recompiler/analyze:analyze",
         "//crates/recompiler/emit:emit",
         "//crates/recompiler/ir:ir",

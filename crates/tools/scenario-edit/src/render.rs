@@ -1382,10 +1382,12 @@ impl Viewport {
         positions: &[[f32; 3]],
         normals: Option<&[[f32; 3]]>,
     ) -> bool {
-        self.native
-            .iter_mut()
-            .filter(|w| w.bsp() == bsp)
-            .fold(false, |done, w| w.set_section_vertices(queue, owner, positions, normals) || done)
+        // Every matching world takes the vertices: no short-circuit.
+        let mut done = false;
+        for w in self.native.iter_mut().filter(|w| w.bsp() == bsp) {
+            done |= w.set_section_vertices(queue, owner, positions, normals);
+        }
+        done
     }
 
     /// Whether the level draws through the native renderer.
@@ -2098,7 +2100,7 @@ mod depth_tests {
     /// depth rule floors to (`native_view::DEPTH_RULE`).
     #[test]
     fn the_overlay_shaders_floor_depth_as_the_world_does() {
-        assert!(crate::native_view::DEPTH_RULE.floor);
+        const { assert!(crate::native_view::DEPTH_RULE.floor) };
         let d24 = format!("const D24: f32 = {:.1};", crate::native_view::DEPTH_RULE.full_scale);
         for shader in [super::SHADER, super::SCENE_SHADER] {
             assert!(shader.contains(&d24), "{d24}");

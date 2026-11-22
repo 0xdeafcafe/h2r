@@ -22,10 +22,10 @@ use studio_proto::code;
 /// script line); longer closes the connection.
 const MAX_LINE: u64 = 16 << 20;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 static PENDING_REQUESTS: mem_watch::Counter =
     mem_watch::Counter::new("studio.agent.pending_requests");
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 static REPLY_BYTES: mem_watch::Counter = mem_watch::Counter::new("studio.agent.reply_buffer_bytes");
 
 /// One request waiting for the app, and where its answer goes.

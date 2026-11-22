@@ -335,7 +335,7 @@ fn labels_go_through_the_edit_log_and_undo() {
     let undo = inverse(&label, &Before::capture(&doc)).unwrap();
     assert_eq!(undo.edit, Edit::Undo);
 
-    let entries = stamp_all(&doc, &[label.clone()]);
+    let entries = stamp_all(&doc, std::slice::from_ref(&label));
     let folded = fold(&doc, &entries).unwrap();
     assert_eq!(folded.format, FORMAT_LABELS);
     assert_eq!(folded.ops, vec![label.clone()]);

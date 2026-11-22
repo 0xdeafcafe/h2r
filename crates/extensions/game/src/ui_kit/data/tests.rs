@@ -169,20 +169,100 @@ fn the_design_tokens_are_the_geometry_the_kit_draws() {
     assert_eq!(d.alpha["frame_dim"], FRAME_DIM);
 }
 
-/// The settings dialogs' name line token is Quick Options' name block the
-/// kit draws: its font, its white, its place.
+/// The settings component's tokens are the blocks the kit draws: the
+/// name on Quick Options' name block, the about from its help line down
+/// two lines, the help under the rows; and the row caps.
 #[test]
-fn the_settings_name_line_token_is_quick_options_name_block() {
-    use crate::ui_kit::dialog::QUICK_NAME_TEXT;
+fn the_settings_tokens_are_the_blocks_the_kit_draws() {
+    use crate::ui_kit::dialog::{QUICK_NAME_TEXT, SETTINGS_ABOUT_TEXT, SETTINGS_HELP_TEXT};
     let d = design();
-    assert_eq!(
-        d.text_style("name.settings").unwrap(),
-        (QUICK_NAME_TEXT.font, QUICK_NAME_TEXT.colour)
+    for (name, block) in [
+        ("settings.name", QUICK_NAME_TEXT),
+        ("settings.about", SETTINGS_ABOUT_TEXT),
+        ("settings.help", SETTINGS_HELP_TEXT),
+    ] {
+        assert_eq!(d.text_style(name).unwrap(), (block.font, block.colour), "{name}");
+        let c = d.component(name).unwrap();
+        let [top, left, bottom, right] = block.rect;
+        assert_eq!(c.at, Some([left, top]), "{name}");
+        assert_eq!(c.size, Some([(right - left) as u16, (top - bottom) as u16]), "{name}");
+        let b = crate::ui_kit::settings::block(name, block.animation).unwrap();
+        assert_eq!(b, block, "{name}");
+    }
+    assert_eq!(d.spacing("settings_rows").unwrap(), 8);
+    assert_eq!(d.spacing("settings_game_rows").unwrap(), 3);
+}
+
+/// A settings doc round-trips byte for byte, and each rule of its
+/// schema is a named error at its field.
+#[test]
+fn a_settings_doc_round_trips_and_its_rules_name_their_field() {
+    let head = "screen: t\nkind: dialog\nlayout: settings\nbacking: over\nopener: game-setup\n";
+    let good = format!(
+        "{head}settings:\n  host: menu\n  icon: crown\n  name: \"Name\"\n  about: \"What it is for.\"\n  actions:\n    - {{ button: X, words: \"CLEAR\", bind: t.clear }}\nwidgets:\n  title:\n    component: title\n    text: \"T\"\nrows:\n  row.0:\n    kind: value\n    text: \"One\"\n    values: [\"A\", \"B\"]\n    help: \"What one does.\"\n    setting: t.one\n    explain: \"More about one.\"\n  row.1:\n    kind: pick\n    text: \"Two\"\n    help: \"What two does.\"\n    bind: t.two\n"
     );
-    let c = d.component("name.settings").unwrap();
-    let [top, left, bottom, right] = QUICK_NAME_TEXT.rect;
-    assert_eq!(c.at, Some([left, top]));
-    assert_eq!(c.size, Some([(right - left) as u16, (top - bottom) as u16]));
+    let d = doc(&good).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(to_yaml(&d), good);
+    let st = d.settings.as_ref().unwrap();
+    assert_eq!(st.about(), "What it is for.");
+    let caller = format!(
+        "{head}settings:\n  host: menu\n  icon: crown\n  name: \"Name\"\n  caller:\n    label: \"Open...\"\n    help: \"What the window is for.\"\nwidgets:\n  title:\n    component: title\n    text: \"T\"\n"
+    );
+    let d = doc(&caller).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(to_yaml(&d), caller);
+    assert_eq!(d.settings.as_ref().unwrap().about(), "What the window is for.", "the caller's help");
+    let block = "settings:\n  host: menu\n  icon: crown\n  name: \"Name\"\n  about: \"A.\"\n";
+    let title = "widgets:\n  title:\n    component: title\n    text: \"T\"\n";
+    let row = |extra: &str| format!("{head}{block}{title}rows:\n  row.0:\n{extra}");
+    for (yaml, at) in [
+        (format!("{head}{title}"), "settings".to_string()),
+        (
+            "screen: t\nkind: dialog\nlayout: large\nbacking: over\nopener: main-menu\nsettings:\n  host: menu\n  about: \"A.\"\n".to_string(),
+            "settings".into(),
+        ),
+        (format!("{head}{block}{title}  description:\n    component: description\n"), "widgets.description".into()),
+        (format!("{head}{block}{title}  legend:\n    component: legend\n"), "widgets.legend".into()),
+        (format!("{head}settings:\n  host: attic\n  about: \"A.\"\n{title}"), "settings.host".into()),
+        (format!("{head}settings:\n  host: menu\n  icon: moon\n  name: \"N\"\n  about: \"A.\"\n{title}"), "settings.icon".into()),
+        (format!("{head}settings:\n  host: menu\n  name: \"N\"\n  about: \"A.\"\n{title}"), "settings.icon".into()),
+        (format!("{head}settings:\n  host: menu\n  icon: crown\n  about: \"A.\"\n{title}"), "settings.name".into()),
+        (format!("{head}settings:\n  host: game\n  icon: crown\n  about: \"A.\"\n{title}"), "settings.icon".into()),
+        (format!("{head}settings:\n  host: game\n  name: \"N\"\n  about: \"A.\"\n{title}"), "settings.name".into()),
+        (format!("{head}settings:\n  host: menu\n  icon: crown\n  name: \"N\"\n  about: \" \"\n{title}"), "settings.about".into()),
+        (format!("{head}settings:\n  host: menu\n  icon: crown\n  name: \"N\"\n{title}"), "settings.about".into()),
+        (
+            format!("{head}settings:\n  host: menu\n  icon: crown\n  name: \"N\"\n  about: \"A.\"\n  caller:\n    label: \"L\"\n    help: \"H.\"\n{title}"),
+            "settings.about".into(),
+        ),
+        (
+            format!("{head}settings:\n  host: menu\n  icon: crown\n  name: \"N\"\n  about: \"A.\"\n  actions:\n    - {{ button: A, words: \"GO\", bind: t.go }}\n{title}"),
+            "settings.actions.0.button".into(),
+        ),
+        (
+            format!("{head}settings:\n  host: menu\n  icon: crown\n  name: \"N\"\n  about: \"A.\"\n  actions:\n    - {{ button: X, words: \"Go\", bind: t.go }}\n{title}"),
+            "settings.actions.0.words".into(),
+        ),
+        (row("    kind: value\n    text: \"X\"\n    setting: t.x\n"), "rows.row.0.help".into()),
+        (row("    kind: value\n    text: \"X\"\n    help: \"H.\"\n"), "rows.row.0.setting".into()),
+        (row("    kind: value\n    text: \"X\"\n    help: \"H.\"\n    setting: t.x\n    bind: t.y\n"), "rows.row.0.setting".into()),
+        (row("    kind: value\n    text: \"X\"\n    current: 0\n    help: \"H.\"\n    setting: t.x\n"), "rows.row.0.current".into()),
+        (row("    kind: pick\n    text: \"X\"\n    help: \"H.\"\n"), "rows.row.0.bind".into()),
+        (row("    kind: action\n    text: \"X\"\n    help: \"H.\"\n"), "rows.row.0.bind".into()),
+        (row("    kind: open\n    text: \"X\"\n    help: \"H.\"\n"), "rows.row.0.open".into()),
+        (row("    kind: info\n    text: \"X\"\n    value: \"V\"\n    help: \"H.\"\n"), "rows.row.0.kind".into()),
+        (row("    kind: pick\n    text: \"X\"\n    help: \"H.\"\n    setting: t.x\n    bind: t.y\n"), "rows.row.0.setting".into()),
+    ] {
+        let e = doc(&yaml).err().unwrap_or_else(|| panic!("no error for:\n{yaml}"));
+        assert_eq!(e.at, at, "{e}\n{yaml}");
+    }
+    // Nine rows: more than the menu host lays out.
+    let nine: String = (0..9)
+        .map(|i| format!("  row.{i}:\n    kind: value\n    text: \"R\"\n    help: \"H.\"\n    setting: t.r\n"))
+        .collect();
+    assert_eq!(doc(&format!("{head}{block}{title}rows:\n{nine}")).unwrap_err().at, "rows");
+    // A row of another screen may not name a setting, binding or explain.
+    let list = "screen: t\nkind: list\nlayout: controls\nbacking: shell\nrows:\n  row.0:\n    kind: action\n    text: \"X\"\n    bind: t.x\n";
+    assert!(doc(list).is_err());
 }
 
 #[test]

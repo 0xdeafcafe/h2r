@@ -389,9 +389,9 @@ fn the_medal_is_the_last_local_awards_highest() {
             1,
             Some(0),
             10,
-            vec![Medal::DoubleBounce],
+            vec![Medal::Superbounce, Medal::DoubleBounce],
         ),
-        award(2, None, 12, vec![Medal::TripleBounce]),
+        award(2, None, 12, vec![Medal::Superbounce, Medal::TripleBounce]),
     ];
     assert_eq!(view(&s, None).medal, Some((Medal::DoubleBounce, 10)));
     let v = view(&s, None);
@@ -451,7 +451,7 @@ fn each_notification_is_sent_once() {
         2,
         Some(1),
         30,
-        vec![Medal::DoubleBounce],
+        vec![Medal::Superbounce, Medal::DoubleBounce],
     ));
     s.medals
         .recent
@@ -503,7 +503,6 @@ fn the_reticle_locks_with_the_landing() {
             need: 5.0,
             edge: [[0.0, -1.0, 0.0], [0.0, 1.0, 0.0]],
             stand: [0.0; 3],
-            width: 0.2,
             fall: 1.0,
         })
     };
@@ -609,4 +608,31 @@ fn the_tutorial_counts_game_ticks_not_presents_or_wall_time() {
     let after = tick - shown;
     assert!((limit..=limit + 1).contains(&after), "after {after} ticks");
     assert_eq!(t.step(), Some(4));
+}
+
+#[test]
+fn in_the_air_the_hud_keeps_the_pill_and_the_lines_and_drops_the_rest() {
+    let full = View {
+        primed: true,
+        charge: Some(sb::Charge {
+            phase: Phase::Primed,
+            fill: 1.0,
+        }),
+        arm: arm_for(Some(Phase::Held)),
+        verb: Some(Verb::KeepMoving),
+        nav: Some((Target::Strip, 3.0)),
+        note: Some((Note::Primed, 7)),
+        medal: None,
+        tutorial: Some(2),
+        ..View::idle()
+    };
+    assert!(full.arm.is_some());
+    let v = in_air(full.clone());
+    assert_eq!(
+        (v.charge, v.arm, v.verb, v.nav, v.tutorial),
+        (None, None, None, None, None)
+    );
+    assert!(v.primed);
+    assert_eq!(v.note, full.note);
+    assert_eq!(v.scan, full.scan);
 }

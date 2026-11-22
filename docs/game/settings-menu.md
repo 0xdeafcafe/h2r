@@ -1,7 +1,7 @@
 # Expanded settings menu
 
 Status: Built. Video, Voice, Player Settings and the extra Controls rows use native game screens driven by `settings::Def`s.
-Code: `crates/extensions/game/src/video_screen.rs`, `crates/extensions/game/src/pause_menu.rs`, `crates/extensions/game/src/voice_settings.rs`, `crates/extensions/game/src/profile_voice_row.rs`, `crates/extensions/game/src/fov_row.rs`, `crates/extensions/game/src/setting_defs.rs`, `crates/formats/settings`, `crates/apps/cli/src/settings_cmd.rs`. Tests: in those files.
+Code: `crates/extensions/game/src/video_screen.rs`, `crates/extensions/game/src/pause_menu.rs`, `crates/extensions/game/src/voice_settings.rs`, `crates/extensions/game/src/fov_row.rs`, `crates/extensions/game/src/setting_defs.rs`, `crates/formats/settings`, `crates/apps/cli/src/settings_cmd.rs`. Tests: in those files.
 Switch: see [switches.md](../runtime/switches.md).
 
 The screens are the game's own list class with our rows, so they look native and
@@ -10,9 +10,10 @@ holds: a setting is one `settings::Def`, and nothing on a screen writes guest
 simulation memory except through a hook that says so (the clamp global in
 "Field of view").
 
-- **Video Settings** on the main menu's Settings list opens the field of view,
+- **Video** on the main menu's Settings list opens the field of view,
   frame rate, resolution, lighting, HUD position and LOD distance options.
-  See "Video screen" and "Field of view".
+  See "Video screen" and "Field of view". **Voice**, the next row, opens
+  the voice chat options ("Voice screen").
 - The Controls screen has rows for the controller speaker, the Steam
   Controller (speaker, trackpad aim, left trackpad) and, on iOS, the touch
   controls and Aim Assist ([playstation-audio.md](../audio/playstation-audio.md)
@@ -21,10 +22,8 @@ simulation memory except through a hook that says so (the clamp global in
   ([superbounce.md](superbounce.md#hold-x-the-fall-assist)). On macOS,
   **Lightbar** sits next to **Controller Speaker**.
 - **Player Settings** in the campaign and multiplayer pause menus opens the
-  native settings list, which includes **Video Settings** and **Voice**
+  native settings list, which includes **Video** and **Voice**
   ("Pause menu").
-- A player profile's Edit Profile screen has a **Voice Chat** row right
-  after Voice Masking that opens the same Voice screen ("Edit Profile").
 - The button layouts are rows on the Button Layout screen
   ([controller-layouts.md](../input/controller-layouts.md)).
 - Every setting is a `settings::Def` in `boot::setting_defs`, and
@@ -169,8 +168,8 @@ at launch. Values are whole GiB, with `0` disabling the cache.
 
 ## Video screen
 
-The top-level Settings list (Player Profiles, Game Variants) has a third
-row, **Video Settings**. Selecting it opens the display options below.
+The top-level Settings list reads Player Profiles, Game Variants, **Video**
+and **Voice**. Selecting Video opens the display options below.
 
 | Row | Values | Saved as | Applies | Locked by |
 |---|---|---|---|---|
@@ -217,7 +216,7 @@ works there as a variable).
 
 Code: the rows are `Def`s in `crates/extensions/game/src/setting_defs.rs` with a `menu` naming
 the screen; `game::video_screen::model` builds the screen as
-`ui::Screen::new("video").rows_from_settings(..)`, the Video Settings row as
+`ui::Screen::new("video").rows_from_settings(..)`, the Video and Voice rows as
 `ui::extend(List::Settings, 2)` and the speaker row as
 `ui::extend(List::Controls, 6)` ([Settings as a schema](#settings-as-a-schema));
 the hooks registered by `layout_glue::install` ask that model for counts,
@@ -240,9 +239,9 @@ patched for it.
 |---|---|---|
 | `0x2b1cca` | the top-level Settings list's handler constructor (screen 19, `ui\screens\game_shell\settings_screen\settings`, loader `0x230691`; vtable `0x45b060`, at `screen + 0x614`) | clears byte `+0x220`, makes the datum array "settings list" (`0x45b128`) with 2 rows, and leaves room for 3 item widgets of 0x80 at `+0x88`. The list hook makes it 3 rows and sets `+0x220` |
 | `0x2b1d60` | its slot 19, the item widget count | `2 + (byte [this+0x220] != 0)`: 3 once the hook has set the byte |
-| `0x2b1d6e` | its row text (thiscall, item at `[esp+4]`, `ret 8`; one text, index 0) | row 0 `0x17000196` Player Profiles, row 1 `0x10000197` Game Variants; row 2 shows "Video Settings" |
+| `0x2b1d6e` | its row text (thiscall, item at `[esp+4]`, `ret 8`; one text, index 0) | row 0 `0x17000196` Player Profiles, row 1 `0x10000197` Game Variants; row 2 shows "Video", row 3 "Voice" |
 | `0x2b1da9` | its row chosen (thiscall, `ret 8`) | row 0 opens `0x2b19dc` (Player Profiles), row 1 `0x2b1b01` (Game Variants), through `0x149f1e`; any other row does nothing. Row 2 is ours: `0x149f1e(1 << player, 0x2b7714)` |
-| `0x230427` | the pane for a row (thiscall, the row, `ret 4`; no bounds check) | the tag has one pane per retail row; for row 2 the hook returns at once, so the shown pane stays (as for the Skulls row) |
+| `0x230427` | the pane for a row (thiscall, the row, `ret 4`; no bounds check) | the tag has one pane per retail row; for rows 2 and up the hook returns at once, so the shown pane stays (as for the Skulls row) |
 | `0x2b79f9` | the per-profile Settings list's row chosen (thiscall, `ret 8`) | row 0 calls `0x149f1e(1 << player, 0x2b7714)`: this is how Controls opens |
 | `0x149f1e` | open a screen: build a 0x20-byte request (`0x149f49`) and call its loader with it (stdcall, `ret 8`) | request `+0` 0, `+2` the player mask, `+4` 5, `+8` 4, `+0xc` 0, `+0x10..+0x1b` -1, `+0x1c` the loader. Controls' own dialogs (`0x2c8719`) build the same request. Our Video row calls it with our class's loader, an entry at a feature-arena address |
 | `0x2b7714` | Controls loader (stdcall, the request, `ret 4`) | allocates 0x9b4 bytes (`0x1a47fd`), constructs, sets `+0x6c = 1`, pushes the screen (`0x147f6d`). Our loader does the same steps and, between construct and push, adopts the screen: vtables, the press record's function, the rows trimmed to the model's |
@@ -260,30 +259,35 @@ Controls edit buffer on close: only the profile screen's back handler
 (`0x2b7abe` → `0x148bff`) and the generic `0x230b32` commit and clear it,
 and no profile is being edited from the Settings list.
 
-**Settings root as the entry.** Video Settings is a row of the top-level Settings
+**Settings root as the entry.** Video and Voice are rows of the top-level Settings
 list, next to Player Profiles and Game Variants, because none of its
 settings belongs to a profile. It is added the way the Controls rows are: a
-`ui::extend(List::Settings, 2)` row in the model, the list hook growing
-the count (plus the one handler byte that gives the list a third item
-widget), and wrappers on the list's own row text and row chosen that
-answer for row 2 and leave rows 0 and 1 to the originals. No tag is
-changed: the list already shows up to six items, and the missing pane is
-skipped.
+`ui::extend(List::Settings, 2)` with the Video row then the Voice row in
+the model, the list hook growing the count to four (plus the one handler
+byte that gives the list a third item widget; the handler embeds room for
+three, so the fourth is an item widget of ours, linked after them by the
+"add items" hook, `video_screen::settings_extra_items`), and wrappers on
+the list's own row text and row chosen that answer for rows 2 and 3 and
+leave rows 0 and 1 to the originals. No tag is changed: the list already
+shows up to six items, and the missing pane is skipped.
+
+The Voice settings are the install's (`Scope::Host`), not a profile's, so
+Voice is here and not on Edit Profile ("Edit Profile").
 
 ## Pause menu
 
 Open **Player Settings** from the campaign or multiplayer pause menu. It
 opens the game's Controller Settings or Player Settings list for the
-pressing player. Both native lists include **Video Settings** and **Voice**
+pressing player. Both native lists include **Video** and **Voice**
 after the game's settings. Those rows open the same pages as the main
-menu and Edit Profile.
+menu.
 
 | Menu | Rows, top to bottom |
 |---|---|
 | Campaign (GAME PAUSED) | Continue, Revert to Last Checkpoint, Restart Level, Player Settings, Save and Quit |
-| Multiplayer (GAME MENU) | Leave Game, Player Settings, Handicap, then Change Teams, Party Privacy and End Game when the game shows them |
+| Multiplayer (GAME MENU) | Leave Game, Player Settings, Handicap, then Change Teams, Party Privacy, **Change Map** and End Game when the game shows them |
 
-B or Back from Video Settings or Voice returns to its row in the native
+B or Back from Video or Voice returns to its row in the native
 list. Another B returns to the pause menu. Campaign stays paused through
 both steps. Multiplayer continues to run.
 
@@ -292,6 +296,9 @@ Code: `game::pause_menu` and `layout_glue::install`. The
 campaign and multiplayer extensions. Each list includes the Video and
 Voice pages whose classes are enabled. When neither page is enabled, the
 game handles its original Settings row directly.
+
+**Change Map** shows above End Game for the party leader of a custom
+game ("Change Map from the pause menu" below).
 
 ### How Start opens it (Local, static)
 
@@ -415,15 +422,93 @@ The player list (196) uses constructor `0x2b4f5c`, row text `0x2b508c`
 and row chosen `0x2b50d9`. The constructor has four possible native
 actions and may omit some of them. `layout_glue::install` extends the
 datum capacity of each native list and appends one datum per enabled page
-after its normal rows. The action words are 9 for **Video Settings**
+after its normal rows. The action words are 9 for **Video**
 and 10 for **Voice**. They are independent of the number of visible
 widgets, so the existing list scrolls to show them. Native rows keep
 their original labels and actions.
 
-`list_class::push` opens Video Settings and Voice on the native list's
+`list_class::push` opens Video and Voice on the native list's
 window and slot. The game-shell window saves the parent loader and focus.
 The normal Back handler restores them, including in the pressing player's
 quarter in split screen.
+
+### Change Map from the pause menu
+
+The party leader of a custom game can pick the next map from GAME MENU.
+**Change Map** opens the same categories and maps as Game Setup's Change
+Map ([map-select.md](map-select.md)). A Forge or Firefight lobby opens its
+own category's maps, and a single category opens its maps directly.
+**B** goes back a step, then to GAME MENU, with nothing changed. **A** on
+a map ends the game for everyone. Back in the lobby, the lobby takes
+the map and the countdown starts with no further press. The lobby keeps
+its game variant.
+
+Code: `game::pause_change_map` (`PauseChangeMap`, `install`, from
+`boot::registration`). The `features.pause-change-map` switch turns the
+row, the picker and the start off. Each picker screen's class is its own
+feature (`pause-map-categories`, `pause-map-list`).
+
+- **Who gets the row.** Retail shows End Game (action 5) only on the
+  console that leads the party (`0x592f0`) outside matchmaking (lobby
+  mode `0x19989d` not 6). An `after` hook on the list's constructor
+  (`MP_MENU_LIST_CTOR`) adds our row (action word `0x30`) just above End
+  Game when the list has End Game, the life cycle is not matchmaking's,
+  this console hosts the squad session (session `+0x40` equal to
+  `+0x72d8`) or the game is offline, and the map list has a map to offer
+  (`pause_change_map::offered`, `opening`). Every other player's GAME
+  MENU is retail's. The rows' array (name `0x4593a8`) is made one row
+  larger while the feature is built (`pause_change_map::list_count`, from
+  the datum array hook in `layout_glue`), on top of the Forge rows' room.
+- **Text and press.** `MP_MENU_ROW_TEXT` draws **Change Map** from our
+  string slot. `MP_MENU_ROW_CHOSEN` runs End Game's press for any word it
+  does not know, so ours is always answered before the original: it
+  opens the picker on GAME MENU's own window and slot
+  (`list_class::push`) and remembers the pressing controller.
+- **The picker** is two list classes of ours (`pause-map-categories`,
+  `pause-map-list`), built on screen 200 in a game ("In a game, our
+  screens use screen 200"), with one text per row from the
+  `pause change map` string family. The retail Select Map dialog is not
+  used in a game: its list comes from the UI level array (`0x4ee4e4`),
+  which `mainmenu.map` fills. Every map of a category is a row of its
+  own. Mod pack folders are not listed in the pause picker.
+- **Ending the game.** `firefight::guest::end_game`, the engine's
+  round-over path: engine state over, the end latch through `GAME_END`
+  once, the engine's changed flag. The game ends as at its time or score
+  limit, with the postgame carnage report.
+- **The next game** (`pause_change_map::Pending`). A hook before
+  `UI_UPDATE` reads the lobby each frame. It does nothing until the main
+  menu is back with a lobby in its pregame life cycle (`[0x527334]` 1 or
+  2, or an offline lobby). Then it sets the lobby's map with
+  `LOBBY_SET_MAP` (map id in ESI, campaign -1), as retail's Change Map
+  does, so the change reaches the other consoles. It retries every
+  0.5 s while the call is refused. Two seconds after the map is set it
+  asks retail's start check (`LOBBY_START_STATE(0)`). On 9 (ready) it
+  asks for the countdown for the pressing controller (`0x19a78e`, EAX
+  the controller, stack 10 and 3, as the lobby's Start Game asks). On 10
+  (a countdown runs) it stops. On 8 (this console does not lead the
+  party) it gives up. Other states wait. After five minutes it gives up
+  and the lobby keeps the map, so the leader presses Start. Each step is
+  logged with a `pause change map:` line.
+
+[not verified] Statically unverifiable, to check in a run:
+
+- `LOBBY_SET_MAP` and the countdown are called only in the pregame
+  lobby, where retail calls them. The map is not set during the game.
+- The postgame carnage report is not skipped. Whether the life cycle
+  leaves the postgame (4) for the lobby (1 or 2) by itself, or only after
+  a press, is not traced. The next game starts once the lobby is back.
+- The pause menu's player index is the controller port that
+  `0x19a78e` takes in EAX (both index the records at `0x54e8e0 + port *
+  0xc70`).
+- The round-over path reaches the other consoles through the engine's
+  changed flag, as it does for Firefight.
+- Our picker screens and GAME MENU stay up while the game ends. The map
+  unload takes them down, as it takes down a retail GAME MENU left open
+  when a game ends.
+
+`ui.screen` and `ui.stack` show GAME MENU's rows and the picker screens
+([agent-api.md](../runtime/agent-api.md#ui-what-the-menus-show)), so
+the API needs no new method for this.
 
 ### In a game, our screens use screen 200
 
@@ -454,7 +539,10 @@ the list per account. A host row would call that same HLE.
 
 ### Tests
 
-`game::pause_menu::tests` covers the pause row labels, the native
+`game::pause_change_map::tests` covers who gets the Change Map row,
+its place above End Game, what it opens per lobby mode, the switch, the
+plan with the Forge rows and the next game's steps (map, countdown, give
+up). `game::pause_menu::tests` covers the pause row labels, the native
 multiplayer Settings action, both destination lists' new action words,
 feature switches, and live Video and Voice changes.
 `game::list_class::tests` covers the window and slot passed to a child
@@ -472,9 +560,9 @@ screen after each step.
 
 1. Start in campaign or multiplayer, select **Player Settings** and press
    A. Check for screen 200 in campaign or screen 196 or 200 in multiplayer.
-2. Scroll to **Video Settings** and press A. Check for `class: "video"` on
+2. Scroll to **Video** and press A. Check for `class: "video"` on
    the same window and slot and the display options. Press B and check
-   that the native list returns at **Video Settings**.
+   that the native list returns at **Video**.
 3. Select **Voice** and press A. Check for `class: "voice"` on the same
    window and slot and **Mute Button** below **Voice Volume**. Press Back
    and check that the native list returns at **Voice**.
@@ -489,8 +577,8 @@ screen after each step.
 
 ## Voice screen
 
-Open **Voice** from **Player Settings** or **Voice Chat** from
-Edit Profile. The rows are host settings (`Scope::Host`) and apply at
+Open **Voice** from the main menu's Settings list (after **Video**) or
+from **Player Settings** in a game. The rows are host settings (`Scope::Host`) and apply at
 once. The voice chat reads its settings through
 `voice_settings::VoiceHandles`. The DualSense HID thread follows **Mute
 Button** through `PadHid::mute_switch`.
@@ -529,93 +617,10 @@ family, `ui model more` (`0x27fff000`, 256 ids, `ui_kit::ids`), through
 
 ## Edit Profile
 
-Settings, Player Profiles, a profile: the Edit Profile screen has a
-**Voice Chat** row right after Voice Masking. A on it opens the Voice
-screen above, and B comes back to Edit Profile. It sits with the
-profile's own voice rows: Voice Output says where voice plays and Voice
-Masking how it sounds, so the screen that sets up the chat itself (the
-microphone, the output device, push to talk, mutes and volumes) reads
-as the next row. "Voice Settings" would blur with those two. The Voice
-settings are the install's (`Scope::Host`), not the profile's: every
-profile's row opens the same screen with the same values.
-
-| Before | After |
-|---|---|
-| Controls | Controls |
-| Appearance | Appearance |
-| Voice Output | Voice Output |
-| Voice Masking | Voice Masking |
-| Online Status | **Voice Chat** |
-| Subtitles | Online Status |
-| | Subtitles |
-
-Code: `boot::profile_voice_row` (the row as `ui` model data,
-`ui::extend(List::Profile, 6).at(4)`, answered by a
-`retail_rows::Extension`, the feature `features.profile-voice-row`,
-registered with the Voice screen's class), and two lines in
-`layout_glue::install`: the datum array count and the pane. The trace is a static reading of the retail XBE with `h2 disasm`,
-`h2 ui` and `h2 strings`.
-
-### The list (Local, static)
-
-| Address | What it is |
-|---|---|
-| `0x237758` | screen constructor: `0x230451(38, ...)`, vtable `0x459c10`, then the list handler at `screen + 0x614` |
-| `0x2b7900` | list handler constructor (ESI the handler, `ret 4`), vtable `0x45bea0`: the rows' datum array named at `0x45bfd8`, made with 6 rows of 4 bytes (`0x1a480d`), then a datum for every row the array holds (`0x16b840` in a loop to the array's maximum, `+0x20`) |
-| `0x2b7990` | row text (`EDIT_PROFILE_ROW_TEXT`): the item's row index (word at `+0x70`), 0 Controls, 1 Appearance, 2 Voice Output, 3 Voice Masking, 4 Online Status, 5 Subtitles; any other index gets the null id |
-| `0x2b79f9` | row chosen (`EDIT_PROFILE_ROW_CHOSEN`, thiscall, the player chain and a pointer to the row's handle, `ret 8`): checks the handle (`0x16bae0`), then switches on its index, 0 to 5; any other index does nothing |
-| `0x230427` | the pane for a row: one pane per retail row (Controls, Appearance, Voice Output, Voice Masking, Online Status, Subtitles), each with its own help text and picture |
-
-So the list tells its rows apart by index, not by a value word.
-
-### How the row is added
-
-- **Count.** `layout_glue`'s datum array hook (`0x1a480d`) makes the
-  array named at `0x45bfd8` seven rows (`profile_voice_row::list_count`),
-  only while the feature's hooks are built, and the constructor's own
-  loop makes the seventh datum.
-- **Order.** Index 4 is ours (`Model::retail_index`). Online Status and
-  Subtitles show at 5 and 6, past what the original knows, so their text
-  and press go to the original with the retail row's handle
-  (`retail_rows::moved`), as the campaign pause menu's Save and Quit
-  does ("Pause menu", "How our rows are added").
-- **Text and press.** `before` hooks on the plan at `EDIT_PROFILE_ROW_TEXT`
-  and `EDIT_PROFILE_ROW_CHOSEN` draw our label (one of the model's string
-  ids) and open the Voice screen (`list_class::open`); rows 0 to 3 go
-  straight to the original.
-- **Pane.** Our row keeps the pane shown (`profile_voice_row::pane`), as
-  the Settings list's Video Settings row does; Online Status and Subtitles ask for
-  their own pane (4 and 5) through a word of ours.
-- **Scrolling.** The first pane's list has six item widgets and the
-  others five, so retail already scrolls; with seven rows every pane
-  scrolls.
-
-### Tests
-
-`boot::profile_voice_row::tests`: the row order with Voice Chat after
-Voice Masking and the Voice screen it opens; the moved retail rows map
-back to their own index and nothing past the rows is ours; only Edit
-Profile's array grows, and only with the feature; the pane is kept for
-our row and the moved rows ask for their own; without the Voice screen
-there is no row and the list stays retail; a moved row takes the retail
-row's full handle (its low word the index the original reads); the two
-hooks are on the plan before the original.
-
-### Its game run
-
-From the main menu: Settings, Player Profiles, a profile.
-
-1. The list reads Controls, Appearance, Voice Output, Voice Masking,
-   Voice Chat, Online Status, Subtitles, and scrolls to the last.
-2. Focus each row: the description and picture change for every retail
-   row as before; on Voice Chat the one shown stays.
-3. A on Voice Chat: stderr `profile-voice-row: row text` (once, when the
-   list is drawn), then the Voice screen opens; B returns to Edit
-   Profile.
-4. A on Online Status and on Subtitles opens their own retail dialogs,
-   not Voice Masking's or nothing.
-5. `features.profile-voice-row = false`: the list is retail again (six
-   rows).
+Edit Profile is retail. Nothing of ours adds a row to it or changes its
+panes: the Voice settings are the install's (`Scope::Host`), not a
+profile's, so Voice is a row of the main menu's Settings list, not of a
+profile ("Video screen", "Voice screen").
 
 ## Field of view
 
@@ -752,7 +757,7 @@ and which it wants on ([skulls.md](skulls.md)).
   and their layouts. Nothing here reads or writes the retail values.
 - Which row-level behaviours only a game run shows: the Video rows apply as
   the tables say (frame rate, resolution, lighting and LOD distance without a flash or a
-  black frame); the Video Settings and Voice screens return to the native settings
+  black frame); the Video and Voice screens return to the native settings
   list with B; in split screen each page opens in the pressing player's
   quarter.
 - Field of view: the first-person weapon model, the HUD scope overlays and

@@ -20,7 +20,8 @@ use native_render::look;
 use native_render::object_lighting::ShaderValues;
 use native_render::object_nodes::{Compression, decompression_rows};
 use native_render::object_program_gpu::{
-    EngineStages, LitBuild, LitMaterial, LitModelInput, LitObjects, LitSection, PlannedDraw, Texaccum, lit_model, lit_subparts, uniform,
+    EngineStages, LitBuild, LitMaterial, LitModelInput, LitObjects, LitSection, PlannedDraw, Texaccum, lit_listed, lit_model, lit_subparts,
+    uniform,
 };
 use native_render::object_state::EntryStates;
 use native_render::object_streams::{self, StreamData, StreamFormats};
@@ -375,17 +376,19 @@ fn refresh_models(
             ((bitmap, image), pixels)
         })
         .collect();
-    let lit = models.lit.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(lit) = lit.as_ref() else { return };
-    for ((bitmap, image), pixels) in &decoded {
-        if let Err(why) = lit.rewrite_image(&queue, *bitmap, *image, pixels) {
-            eprintln!(
-                "native-objects: {name}: bitmap {:#010x} image {image} keeps its pixels until the map reloads ({why:?})",
-                bitmap.0
-            );
+    // The lock is released before the submit.
+    {
+        let lit = models.lit.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(lit) = lit.as_ref() else { return };
+        for ((bitmap, image), pixels) in &decoded {
+            if let Err(why) = lit.rewrite_image(&queue, *bitmap, *image, pixels) {
+                eprintln!(
+                    "native-objects: {name}: bitmap {:#010x} image {image} keeps its pixels until the map reloads ({why:?})",
+                    bitmap.0
+                );
+            }
         }
     }
-    drop(lit);
     queue.submit([]);
 }
 
@@ -529,7 +532,6 @@ fn set_fog(draw: &mut PlannedDraw, words: [u32; 7], specular: Option<u32>) -> Op
 /// the guest's handler, and each part's draw from the frame step's view
 /// (`scene`, `view`): its object's frame and its rows as extraction read
 /// them. `first` is the run's first slot.
-#[allow(clippy::too_many_arguments)]
 fn plan_walk<B: d3d::backend::Backend>(
     models: &Models, device: &d3d::Device<B>, mem: &dyn GuestMemory,
     scene: &FrameScene, view: &View, first: usize, run: &[Entry],
@@ -746,16 +748,101 @@ impl native_render::camera::GuestRead for Ro<'_> {
 pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
     let switches = hooks::Switches::from_env().unwrap_or_default();
     palette::clear();
+    *LAYER_SOURCE.lock().unwrap_or_else(|e| e.into_inner()) = None;
     if !render_bridge::native_objects::on(&switches) {
         return;
     }
     let Some(gpu) = device.lock().ok().and_then(|d| d.backend.upload_device()) else { return };
+    let state = Arc::new(Mutex::new(None));
+    *LAYER_SOURCE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&state));
     render_bridge::native_objects::set_host(Arc::new(Glue {
         gpu,
         device: Arc::clone(device),
-        state: Arc::new(Mutex::new(None)),
+        state,
         refreshing: Arc::default(),
     }));
+}
+
+/// The objects host's map state, which the world layers' object items
+/// draw from (`native_layers_glue`): set at install.
+static LAYER_SOURCE: Mutex<Option<Arc<Mutex<Option<MapState>>>>> = Mutex::new(None);
+
+impl crate::native_layers_glue::LayerModels for Models {
+    fn lit(&self) -> &Mutex<Option<LitObjects>> {
+        &self.lit
+    }
+
+    fn ready(&self, model: u32) -> bool {
+        self.coverage.read().is_ok_and(|c| c.get(&TagId(model)).is_some_and(|cover| cover.assets.uploaded()))
+    }
+}
+
+/// The current map's resident models for the object items of a scene
+/// world layer (docs/graphics/framescene.md, slice 4): the ones layer 3
+/// draws from, once the load has published them (the objects host's own
+/// walk starts the load; this never does), and only while the stage
+/// palettes they were expanded through hold.
+pub(crate) fn layer_models<B: d3d::backend::Backend>(
+    device: &d3d::Device<B>, mem: &dyn GuestMemory,
+) -> Option<Arc<dyn crate::native_layers_glue::LayerModels>> {
+    let source = LAYER_SOURCE.lock().ok()?.clone()?;
+    let generation = native_map_work::generation();
+    let mut field = [0; 32];
+    let name = crate::health::read_map_name(mem, &mut field).ok()?;
+    let models = {
+        let state = source.lock().ok()?;
+        let s = state.as_ref().filter(|s| s.generation == generation && s.name == name)?;
+        s.resident(timeline::frames())?
+    };
+    if !model_palettes_hold(&models, device, mem) {
+        return None;
+    }
+    Some(models)
+}
+
+/// The render states an object's draw inherits at a layer call
+/// ([`EntryStates`]), and whether the device's draws are W-buffered.
+pub(crate) fn entry_states<B: d3d::backend::Backend>(device: &d3d::Device<B>, mem: &dyn GuestMemory) -> (EntryStates, bool) {
+    let entry = LayerEntry::read(device, mem);
+    (entry.states, entry.w_buffered)
+}
+
+/// The device's specular bit, which a draw on the implicit final combiner
+/// takes ([`object_fog`]).
+pub(crate) fn device_specular<B: d3d::backend::Backend>(device: &d3d::Device<B>, mem: &dyn GuestMemory) -> Option<u32> {
+    let read = crate::native_world_glue::ReadMemory(mem);
+    STATE_TABLE.canonical_to_guest(SPECULAR_ENABLE).and_then(|g| device.render_state(&read, g))
+}
+
+/// Puts the fog of `draw`'s pass in, as layer 3's walk does: the
+/// implementation's own fog states over the device's (`fog_words`), and
+/// the specular bit for the implicit final combiner.
+pub(crate) fn layer_draw_fog(
+    lit: &LitObjects, model: u32, draw: &mut PlannedDraw, fog_words: &[Option<u32>; 7], specular: Option<u32>,
+) -> Option<()> {
+    let pass = lit.planned_pass(model, draw)?;
+    let fog = native_render::fog_gpu::FogWords::from_states(&pass.implementation.render_states).resolve(fog_words)?;
+    set_fog(draw, fog, specular)
+}
+
+/// Whether the device holds stencil mode 1 (`0x00467010` says 1 and the
+/// device's stencil is `object_state::structure_stencil(0)`): what the
+/// geometry draw's epilogue leaves in layers 1 and 3.
+pub(crate) fn in_stencil_mode_1<B: d3d::backend::Backend>(device: &d3d::Device<B>, mem: &dyn GuestMemory) -> bool {
+    let read = crate::native_world_glue::ReadMemory(mem);
+    mem.u16(SCENE_STENCIL_MODE) == Ok(1) && device.stencil_state(&read) == Some(scene_stencil())
+}
+
+/// Whether `draws` write depth or stencil (`d3d::ExternalWrites`).
+pub(crate) fn draws_write_depth_stencil<'a>(draws: impl IntoIterator<Item = &'a PlannedDraw>) -> bool {
+    draws.into_iter().any(|d| {
+        use gfx::state::StencilOp;
+        let stencil = d.state.stencil;
+        d.state.depth_write
+            || (stencil.enable
+                && stencil.write_mask != 0
+                && [stencil.fail, stencil.depth_fail, stencil.pass].iter().any(|&op| op != StencilOp::Keep))
+    })
 }
 
 /// Visit every object definition in the mounted tag index, including
@@ -1110,6 +1197,13 @@ fn lit_material(o: &mut Opened, shader: TagId) -> Result<LitMaterial, String> {
 /// scalar 21, `+0x48`).
 const SHADER_VALUES: u32 = 0x44;
 
+/// Whether `layer` is a world layer besides 3 whose passes the lit build
+/// compiles (`object_program_gpu::OBJECT_LAYERS`): their vertex programs
+/// are read with layer 3's.
+pub fn drawn_layer(layer: usize) -> bool {
+    native_render::object_program_gpu::OBJECT_LAYERS.iter().any(|&l| usize::from(l) == layer)
+}
+
 /// The lit parts of `loaded`'s drawn sections for `materials`
 /// ([`lit_model`]): its vertex programs per section classification read
 /// from the shader tags, its stage bitmaps through the stage decoder.
@@ -1152,6 +1246,14 @@ fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16,
                 .filter(|(i, p)| *i < 16 && p.is_drawn() && p.kind != load::PART_TRANSPARENT)
                 .filter_map(|(k, p)| Some((k as u8, lit_subparts(&g.indices, &g.subparts, p)?)))
                 .collect(),
+            // A record without bit 9 draws a strip part as a list.
+            listed: g
+                .parts
+                .iter()
+                .enumerate()
+                .filter(|(i, p)| *i < 16 && p.is_drawn() && p.kind != load::PART_TRANSPARENT)
+                .filter_map(|(k, p)| Some((k as u8, lit_listed(&g.indices, p)?)))
+                .collect(),
         });
     }
     // The programs each section's classification takes, read first (the
@@ -1162,7 +1264,7 @@ fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16,
             .material
             .layers
             .iter()
-            .filter(|l| l.lod == 0 && l.layer == look::LIGHTMAP_LAYER)
+            .filter(|l| l.lod == 0 && (l.layer == look::LIGHTMAP_LAYER || drawn_layer(l.layer)))
             .flat_map(|l| &l.passes)
             .flat_map(|p| &p.implementations)
             .filter_map(|i| i.vertex_shader);
@@ -1222,8 +1324,21 @@ fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16,
 /// when it is uniform (then the coordinates the draw adds do not matter).
 fn object_lightmap(o: &mut Opened) -> Result<Image, String> {
     let lib = o.lib.as_ref().and_then(Option::as_ref).ok_or("the shader tags do not read")?;
-    let matg = o
-        .map
+    engine_lightmap(&mut o.map, lib, &mut o.raw.0, &mut o.decoder, &mut o.images, 3)
+}
+
+/// What a lightmap stage samples when the current page is -1 (an
+/// object's record, `0x0004d2c4`; every decorator draw, `0x0004e277`):
+/// the globals' rasterizer bitmap at `+0x64`
+/// (`object_program::OBJECT_LIGHTMAP`), decoded as stage `stage` samples
+/// it, taken only when uniform, since the coordinates the draw adds (an
+/// object's: the BSP's stream `0x2e`) or leaves (a decorator's: none)
+/// then do not matter.
+pub(crate) fn engine_lightmap<R: std::io::Read + std::io::Seek>(
+    map: &mut map::Map<R>, lib: &tags::material::ShaderLibrary, files: &mut assets::ResourceFiles,
+    decoder: &mut StageDecoder, images: &mut StageImages, stage: usize,
+) -> Result<Image, String> {
+    let matg = map
         .tags()
         .iter()
         .find(|t| t.group.0 == *b"matg")
@@ -1232,10 +1347,13 @@ fn object_lightmap(o: &mut Opened) -> Result<Image, String> {
     let read = |a: u32, n: usize| lib.metadata().bytes(a, n).ok().map(<[u8]>::to_vec);
     let bitmap = crate::native_lights_glue::rasterizer_bitmap(&read, matg, native_render::object_program::OBJECT_LIGHTMAP)
         .ok_or("the globals' rasterizer data names no bitmap at +0x64")?;
-    o.decoder.decode(&mut o.map, &mut o.raw.0, &mut o.images, bitmap, 0, 3, false)?;
-    let image = o.images.get(&(bitmap, 0)).cloned().ok_or("its image does not decode")?;
+    decoder.decode(map, files, images, bitmap, 0, stage, false)?;
+    let image = images.get(&(bitmap, 0)).cloned().ok_or("its image does not decode")?;
     if !uniform(&image) {
-        return Err(format!("the globals' rasterizer bitmap {bitmap:?} ({}x{}) is not uniform, so the coordinates the draw adds (the BSP's stream 0x2e) would matter", image.width, image.height));
+        return Err(format!(
+            "the globals' rasterizer bitmap {bitmap:?} ({}x{}) is not uniform, so the coordinates the draw adds or leaves would matter",
+            image.width, image.height
+        ));
     }
     Ok(image)
 }
@@ -1293,12 +1411,7 @@ impl d3d::ExternalPass for ObjectsPass {
     fn writes(&self) -> d3d::ExternalWrites {
         d3d::ExternalWrites {
             color: self.draws.iter().any(|(_, d)| !d.state.color_writes.is_empty()),
-            depth_stencil: self.draws.iter().any(|(_, d)| {
-                use gfx::state::StencilOp;
-                let stencil = d.state.stencil;
-                d.state.depth_write || (stencil.enable && stencil.write_mask != 0
-                    && [stencil.fail, stencil.depth_fail, stencil.pass].iter().any(|&op| op != StencilOp::Keep))
-            }),
+            depth_stencil: draws_write_depth_stencil(self.draws.iter().map(|(_, d)| d)),
         }
     }
 
@@ -1488,6 +1601,7 @@ mod tests {
             indices: 0..3,
             implementations,
             subparts: None,
+            listed: None,
         };
         let mut empty = part(2, 5, [Some((0, 0)), None, None, None, None]);
         empty.indices = 0..0;

@@ -90,4 +90,7 @@ pub fn register(api: &mut Api) {
     // uik-edit: the UI Screens tool's canvas edits, undo, save and filmstrip
     // (app::ui_screens::edit).
     api.register(Box::new(super::ui_edit::UiEdit));
+    // A retail screen's tag edits past a rect: a block hidden or copied,
+    // a string ID set (app::ui_screens::edit::retail_tag).
+    api.register(Box::new(super::ui_retail::UiRetail));
 }

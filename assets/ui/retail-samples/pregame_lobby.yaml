@@ -1,0 +1,102 @@
+# The pregame lobby as the leader of a four-player party sees it
+# (docs/game/ui-builder.md "Retail screens in a believable state").
+# Every name, number and option here is made up; a `string:` names one of
+# the screen's own strings, read from the disc when the picture is drawn.
+screen: ui\screens\game_shell\pregame_lobby\pregame_lobby
+
+tokens:
+  e416: Kestrel            # the party leader
+  e425: "4"                # players in the party
+  e40a: Team Skirmish      # the game variant
+  e408: Glasshouse         # the map
+  e41f: SYSTEM LINK        # the network the party is on
+  e426: Low Orbit          # the campaign level (pane 1)
+  e427: Hold the relay station until the dropships return.
+  e43a: Weekend Doubles    # the matchmaking playlist (pane 2)
+  e43b: Two teams of two on the small maps.
+
+# The leader's legend.
+footer: { string: button_key_squad_leader_teams_disabled }
+
+# Each player: the name, the bars in the team's colour, the rank and the
+# emblem (an image of each emblem bitmap; the foreground's two colours,
+# then the background's two).
+cells:
+  - text: Kestrel
+    blocks:
+      ui\screens\game_shell\pregame_lobby\item_background: { tint: [176, 44, 40] }
+      ui\list_skins\profile_picker2\item_background: { tint: [176, 44, 40] }
+      ui\global_bitmaps\rank_icons_sm: { image: 14 }
+    emblem:
+      foreground: 12
+      background: 5
+      colours: [[236, 236, 236], [28, 28, 28], [176, 44, 40], [240, 190, 40]]
+  - text: Marlow
+    blocks:
+      ui\screens\game_shell\pregame_lobby\item_background: { tint: [176, 44, 40] }
+      ui\list_skins\profile_picker2\item_background: { tint: [176, 44, 40] }
+      ui\global_bitmaps\rank_icons_sm: { image: 9 }
+    emblem:
+      foreground: 20
+      background: 1
+      colours: [[240, 190, 40], [28, 28, 28], [176, 44, 40], [110, 110, 110]]
+  - text: Quillon
+    blocks:
+      ui\screens\game_shell\pregame_lobby\item_background: { tint: [44, 84, 176] }
+      ui\list_skins\profile_picker2\item_background: { tint: [44, 84, 176] }
+      ui\global_bitmaps\rank_icons_sm: { image: 21 }
+    emblem:
+      foreground: 5
+      background: 12
+      colours: [[236, 236, 236], [110, 180, 230], [44, 84, 176], [28, 28, 28]]
+  - text: Ibis
+    blocks:
+      ui\screens\game_shell\pregame_lobby\item_background: { tint: [44, 84, 176] }
+      ui\list_skins\profile_picker2\item_background: { tint: [44, 84, 176] }
+      ui\global_bitmaps\rank_icons_sm: { image: 4 }
+    emblem:
+      foreground: 1
+      background: 20
+      colours: [[246, 150, 170], [28, 28, 28], [44, 84, 176], [126, 150, 60]]
+
+panes:
+  # A custom game.
+  0:
+    blocks:
+      # The leader has the two buttons; everyone else has this line in
+      # their place.
+      party_leader: { hide: true }
+      # The status line: the tag's own string is for a party with no
+      # session.
+      game_cant_start_no_session: { string: game_start_when_you_get_off_your_ass }
+      # Shown once a game has been played.
+      view_postgame: { hide: true }
+      # The variant's quick options, one per line.
+      text.4: { text: "Score to Win: 50" }
+      text.5: { text: "Time Limit: 12 Minutes" }
+      text.6: { text: "Team Play: On" }
+      # One per player slot, lit while that player talks.
+      ui\screens\game_shell\pregame_lobby\speaker: { hide: true }
+      # The tag's picture is the one for a map with none; the game puts
+      # the chosen map's here. The map's name above is made up, so the
+      # picture is another map's.
+      ui\screens\game_shell\pregame_lobby\unknown_map: { level: lockout }
+  # Co-op.
+  1:
+    blocks:
+      party_leader: { hide: true }
+      game_cant_start_no_session: { string: game_start_when_you_get_off_your_ass }
+      view_postgame: { hide: true }
+      ui\screens\game_shell\pregame_lobby\speaker: { hide: true }
+      # One bar per player slot, under the table's cells. An empty slot
+      # shows none, as in the custom game's pane, where the tag parks
+      # them off screen.
+      ui\screens\game_shell\pregame_lobby\item_background: { hide: true }
+  # Matchmaking.
+  2:
+    blocks:
+      party_leader: { hide: true }
+      game_cant_start_no_session: { string: game_start_when_you_get_off_your_ass }
+      view_postgame: { hide: true }
+      ui\screens\game_shell\pregame_lobby\speaker: { hide: true }
+      ui\screens\game_shell\pregame_lobby\item_background: { hide: true }

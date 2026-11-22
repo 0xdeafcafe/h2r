@@ -8,7 +8,7 @@
   settings) and use them in game;
 - edit the matchmaking playlists file (`multiplayer_hopper.dat`) for a
   Live server;
-- look at h2recomp's own game screens (the Game Options page, the co-op
+- look at h2recomp's own game screens (the Skulls page, the co-op
   screens, the Xbox Live sign-in) in every state, press buttons on them,
   and see what the layout checks find.
 

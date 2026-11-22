@@ -1267,6 +1267,12 @@ cargo.rust_library(
     ],
 )
 
+alias(
+    name = "backtrace",
+    actual = ":backtrace-0.3",
+    visibility = ["PUBLIC"],
+)
+
 http_archive(
     name = "backtrace-0.3.77.crate",
     sha256 = "42f4220217f3288537b83684130f42fad43320b1c3b805f1910d683d52ded24f",
@@ -4259,6 +4265,41 @@ cargo.rust_library(
 )
 
 http_archive(
+    name = "crossbeam-channel-0.5.17.crate",
+    sha256 = "98b0cc327b5bc766e7fda9c9260cc0fa81b43a8e240440422dff70788e3f9ef1",
+    strip_prefix = "crossbeam-channel-0.5.17",
+    urls = ["https://static.crates.io/crates/crossbeam-channel/0.5.17/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "crossbeam-channel-0.5",
+    srcs = [":crossbeam-channel-0.5.17.crate"],
+    crate = "crossbeam_channel",
+    crate_root = "crossbeam-channel-0.5.17.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_CRATE_NAME": "crossbeam_channel",
+        "CARGO_MANIFEST_DIR": "crossbeam-channel-0.5.17.crate",
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "Multi-producer multi-consumer channels for message passing",
+        "CARGO_PKG_NAME": "crossbeam-channel",
+        "CARGO_PKG_REPOSITORY": "https://github.com/crossbeam-rs/crossbeam",
+        "CARGO_PKG_VERSION": "0.5.17",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "5",
+        "CARGO_PKG_VERSION_PATCH": "17",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "default",
+        "std",
+    ],
+    visibility = [],
+    deps = [":crossbeam-utils-0.8"],
+)
+
+http_archive(
     name = "crossbeam-queue-0.3.14.crate",
     sha256 = "03e8bd762f7479489c70ed6c768ddca99d7296857de437a68dcb2a94365b3fae",
     strip_prefix = "crossbeam-queue-0.3.14",
@@ -5916,6 +5957,41 @@ cargo.rust_library(
     ],
     visibility = [],
     deps = [":num-traits-0.2"],
+)
+
+http_archive(
+    name = "fluent-uri-0.1.4.crate",
+    sha256 = "17c704e9dbe1ddd863da1e6ff3567795087b1eb201ce80d8fa81162e1516500d",
+    strip_prefix = "fluent-uri-0.1.4",
+    urls = ["https://static.crates.io/crates/fluent-uri/0.1.4/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "fluent-uri-0.1",
+    srcs = [":fluent-uri-0.1.4.crate"],
+    crate = "fluent_uri",
+    crate_root = "fluent-uri-0.1.4.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_CRATE_NAME": "fluent_uri",
+        "CARGO_MANIFEST_DIR": "fluent-uri-0.1.4.crate",
+        "CARGO_PKG_AUTHORS": "Scallop Ye <yescallop@gmail.com>",
+        "CARGO_PKG_DESCRIPTION": "A generic URI parser that strictly adheres to IETF RFC 3986.",
+        "CARGO_PKG_NAME": "fluent-uri",
+        "CARGO_PKG_REPOSITORY": "https://github.com/yescallop/fluent-uri-rs",
+        "CARGO_PKG_VERSION": "0.1.4",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "4",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "default",
+        "std",
+    ],
+    visibility = [],
+    deps = [":bitflags-1"],
 )
 
 http_archive(
@@ -9129,6 +9205,12 @@ cargo.rust_library(
     ],
 )
 
+alias(
+    name = "indexmap",
+    actual = ":indexmap-2",
+    visibility = ["PUBLIC"],
+)
+
 http_archive(
     name = "indexmap-2.14.2.crate",
     sha256 = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855",
@@ -9973,6 +10055,12 @@ cargo.rust_library(
     visibility = [],
 )
 
+alias(
+    name = "libm",
+    actual = ":libm-0.2",
+    visibility = ["PUBLIC"],
+)
+
 http_archive(
     name = "libm-0.2.16.crate",
     sha256 = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981",
@@ -10482,6 +10570,93 @@ cargo.rust_library(
         "std",
     ],
     visibility = [],
+)
+
+alias(
+    name = "lsp-server",
+    actual = ":lsp-server-0.7",
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "lsp-server-0.7.9.crate",
+    sha256 = "7d6ada348dbc2703cbe7637b2dda05cff84d3da2819c24abcb305dd613e0ba2e",
+    strip_prefix = "lsp-server-0.7.9",
+    urls = ["https://static.crates.io/crates/lsp-server/0.7.9/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "lsp-server-0.7",
+    srcs = [":lsp-server-0.7.9.crate"],
+    crate = "lsp_server",
+    crate_root = "lsp-server-0.7.9.crate/src/lib.rs",
+    edition = "2024",
+    env = {
+        "CARGO_CRATE_NAME": "lsp_server",
+        "CARGO_MANIFEST_DIR": "lsp-server-0.7.9.crate",
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "Generic LSP server scaffold.",
+        "CARGO_PKG_NAME": "lsp-server",
+        "CARGO_PKG_REPOSITORY": "https://github.com/rust-lang/rust-analyzer/tree/master/lib/lsp-server",
+        "CARGO_PKG_VERSION": "0.7.9",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "7",
+        "CARGO_PKG_VERSION_PATCH": "9",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [
+        ":crossbeam-channel-0.5",
+        ":log-0.4",
+        ":serde-1",
+        ":serde_derive-1",
+        ":serde_json-1",
+    ],
+)
+
+alias(
+    name = "lsp-types",
+    actual = ":lsp-types-0.97",
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "lsp-types-0.97.0.crate",
+    sha256 = "53353550a17c04ac46c585feb189c2db82154fc84b79c7a66c96c2c644f66071",
+    strip_prefix = "lsp-types-0.97.0",
+    urls = ["https://static.crates.io/crates/lsp-types/0.97.0/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "lsp-types-0.97",
+    srcs = [":lsp-types-0.97.0.crate"],
+    crate = "lsp_types",
+    crate_root = "lsp-types-0.97.0.crate/src/lib.rs",
+    edition = "2018",
+    env = {
+        "CARGO_CRATE_NAME": "lsp_types",
+        "CARGO_MANIFEST_DIR": "lsp-types-0.97.0.crate",
+        "CARGO_PKG_AUTHORS": "Markus Westerlind <marwes91@gmail.com>:Bruno Medeiros <bruno.do.medeiros@gmail.com>",
+        "CARGO_PKG_DESCRIPTION": "Types for interaction with a language server, using VSCode's Language Server Protocol",
+        "CARGO_PKG_NAME": "lsp-types",
+        "CARGO_PKG_REPOSITORY": "https://github.com/gluon-lang/lsp-types",
+        "CARGO_PKG_VERSION": "0.97.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "97",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = ["default"],
+    visibility = [],
+    deps = [
+        ":bitflags-1",
+        ":fluent-uri-0.1",
+        ":serde-1",
+        ":serde_json-1",
+        ":serde_repr-0.1",
+    ],
 )
 
 http_archive(
@@ -12891,6 +13066,12 @@ cargo.rust_library(
     ],
 )
 
+alias(
+    name = "objc2-metal",
+    actual = ":objc2-metal-0.3",
+    visibility = ["PUBLIC"],
+)
+
 http_archive(
     name = "objc2-metal-0.3.2.crate",
     sha256 = "a0125f776a10d00af4152d74616409f0d4a2053a6f57fa5b7d6aa2854ac04794",
@@ -14481,6 +14662,12 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PRE": "",
     },
     visibility = [],
+)
+
+alias(
+    name = "quick-xml",
+    actual = ":quick-xml-0.41",
+    visibility = ["PUBLIC"],
 )
 
 http_archive(
@@ -17400,6 +17587,42 @@ cargo.rust_library(
 )
 
 http_archive(
+    name = "serde_repr-0.1.21.crate",
+    sha256 = "8d3b1629de253c70a0508c3899572da79ca359fdab27c7920ff00406df418906",
+    strip_prefix = "serde_repr-0.1.21",
+    urls = ["https://static.crates.io/crates/serde_repr/0.1.21/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "serde_repr-0.1",
+    srcs = [":serde_repr-0.1.21.crate"],
+    crate = "serde_repr",
+    crate_root = "serde_repr-0.1.21.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_CRATE_NAME": "serde_repr",
+        "CARGO_MANIFEST_DIR": "serde_repr-0.1.21.crate",
+        "CARGO_PKG_AUTHORS": "David Tolnay <dtolnay@gmail.com>",
+        "CARGO_PKG_DESCRIPTION": "Derive Serialize and Deserialize that delegates to the underlying repr of a C-like enum.",
+        "CARGO_PKG_NAME": "serde_repr",
+        "CARGO_PKG_REPOSITORY": "https://github.com/dtolnay/serde-repr",
+        "CARGO_PKG_VERSION": "0.1.21",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "21",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    proc_macro = True,
+    visibility = [],
+    deps = [
+        ":proc-macro2-1",
+        ":quote-1",
+        ":syn-3",
+    ],
+)
+
+http_archive(
     name = "serde_spanned-1.1.3.crate",
     sha256 = "9c187e0a369471c550af028cba56d4f4fa2a489ad28151ae95a4d340a2a8b782",
     strip_prefix = "serde_spanned-1.1.3",
@@ -17468,6 +17691,49 @@ cargo.rust_library(
         ":itoa-1",
         ":ryu-1",
         ":serde-1",
+    ],
+)
+
+alias(
+    name = "serde_yaml_ng",
+    actual = ":serde_yaml_ng-0.10",
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "serde_yaml_ng-0.10.0.crate",
+    sha256 = "7b4db627b98b36d4203a7b458cf3573730f2bb591b28871d916dfa9efabfd41f",
+    strip_prefix = "serde_yaml_ng-0.10.0",
+    urls = ["https://static.crates.io/crates/serde_yaml_ng/0.10.0/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "serde_yaml_ng-0.10",
+    srcs = [":serde_yaml_ng-0.10.0.crate"],
+    crate = "serde_yaml_ng",
+    crate_root = "serde_yaml_ng-0.10.0.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_CRATE_NAME": "serde_yaml_ng",
+        "CARGO_MANIFEST_DIR": "serde_yaml_ng-0.10.0.crate",
+        "CARGO_PKG_AUTHORS": "Antoine Catton <devel@antoine.catton.fr>",
+        "CARGO_PKG_DESCRIPTION": "YAML data format for Serde",
+        "CARGO_PKG_NAME": "serde_yaml_ng",
+        "CARGO_PKG_REPOSITORY": "https://github.com/acatton/serde-yaml-ng",
+        "CARGO_PKG_VERSION": "0.10.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "10",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+    deps = [
+        ":indexmap-2",
+        ":itoa-1",
+        ":ryu-1",
+        ":serde-1",
+        ":unsafe-libyaml-0.2",
     ],
 )
 
@@ -17988,6 +18254,12 @@ cargo.rust_library(
         "std",
     ],
     visibility = [],
+)
+
+alias(
+    name = "smallvec",
+    actual = ":smallvec-1",
+    visibility = ["PUBLIC"],
 )
 
 http_archive(
@@ -21186,6 +21458,36 @@ cargo.rust_library(
 )
 
 http_archive(
+    name = "unsafe-libyaml-0.2.11.crate",
+    sha256 = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861",
+    strip_prefix = "unsafe-libyaml-0.2.11",
+    urls = ["https://static.crates.io/crates/unsafe-libyaml/0.2.11/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "unsafe-libyaml-0.2",
+    srcs = [":unsafe-libyaml-0.2.11.crate"],
+    crate = "unsafe_libyaml",
+    crate_root = "unsafe-libyaml-0.2.11.crate/src/lib.rs",
+    edition = "2021",
+    env = {
+        "CARGO_CRATE_NAME": "unsafe_libyaml",
+        "CARGO_MANIFEST_DIR": "unsafe-libyaml-0.2.11.crate",
+        "CARGO_PKG_AUTHORS": "David Tolnay <dtolnay@gmail.com>",
+        "CARGO_PKG_DESCRIPTION": "libyaml transpiled to rust by c2rust",
+        "CARGO_PKG_NAME": "unsafe-libyaml",
+        "CARGO_PKG_REPOSITORY": "https://github.com/dtolnay/unsafe-libyaml",
+        "CARGO_PKG_VERSION": "0.2.11",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "2",
+        "CARGO_PKG_VERSION_PATCH": "11",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    visibility = [],
+)
+
+http_archive(
     name = "untrusted-0.9.0.crate",
     sha256 = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1",
     strip_prefix = "untrusted-0.9.0",
@@ -23653,6 +23955,7 @@ cargo.rust_library(
         "Win32_System_LibraryLoader",
         "Win32_System_Memory",
         "Win32_System_Pipes",
+        "Win32_System_ProcessStatus",
         "Win32_System_SystemInformation",
         "Win32_System_SystemServices",
         "Win32_System_Threading",

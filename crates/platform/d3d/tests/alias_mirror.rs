@@ -692,7 +692,6 @@ enum Path {
 /// sampling the last, `Swap`. Frame 1 also stores into the pool from the
 /// guest. Returns the back buffer after each frame and the time spent in
 /// the `SetRenderTarget` calls that bind the depth level.
-#[allow(clippy::too_many_arguments)]
 fn shadow_frames<B: Backend>(
     backend: B,
     path: Path,

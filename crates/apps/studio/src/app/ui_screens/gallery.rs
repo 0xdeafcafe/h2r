@@ -9,7 +9,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail};
-use boot::ui_kit::layout::{self, Rules};
 use boot::ui_kit::preview::{self, Canvas, Disc, Retail};
 use boot::ui_kit::screens;
 
@@ -46,6 +45,8 @@ pub struct Thumb {
     /// At most [`THUMB`]; none when the screen did not draw.
     pub canvas: Option<Canvas>,
     pub findings: usize,
+    /// Each finding's line (`layout: ...`, `consistency: ...`).
+    pub found: Vec<String>,
     /// Whether the layout checks ran (ours do, retail screens do not).
     pub checked: bool,
     pub error: Option<String>,
@@ -183,7 +184,7 @@ impl UiScreens {
                         tiles: items
                             .into_iter()
                             .map(|i| Tile {
-                                pick: Pick::Retail(i.name.clone()),
+                                pick: Pick::retail(i.name.clone()),
                                 label: i.label.clone(),
                                 name: i.name.clone(),
                             })
@@ -213,10 +214,11 @@ impl UiScreens {
             self.gallery.drawn += 1;
             let id = self.gallery.drawn;
             let thumb = match render_thumb(self.disc(), pick) {
-                Ok((canvas, findings, checked)) => Thumb {
+                Ok((canvas, found, checked)) => Thumb {
                     id,
                     canvas: Some(canvas),
-                    findings,
+                    findings: found.len(),
+                    found,
                     checked,
                     error: None,
                 },
@@ -224,6 +226,7 @@ impl UiScreens {
                     id,
                     canvas: None,
                     findings: 0,
+                    found: Vec::new(),
                     checked: false,
                     error: Some(format!("{e:#}")),
                 },
@@ -260,6 +263,7 @@ impl UiScreens {
                     pick: t.pick.clone(),
                     rect,
                     findings: th.map_or(0, |t| t.findings),
+                    found: th.map_or_else(Vec::new, |t| t.found.clone()),
                     checked: th.is_some_and(|t| t.checked),
                     error: th.and_then(|t| t.error.clone()),
                 }
@@ -276,16 +280,18 @@ pub struct SheetTile {
     /// x, y, width, height of the picture, in sheet pixels.
     pub rect: [u32; 4],
     pub findings: usize,
+    /// Each finding's line.
+    pub found: Vec<String>,
     pub checked: bool,
     /// Why it did not draw (its cell is a dark red box).
     pub error: Option<String>,
 }
 
 /// Screen `pick` drawn as the picture draws it (no animation, no presses),
-/// shrunk to fit [`THUMB`], with its finding count and whether the checks
+/// shrunk to fit [`THUMB`], with its findings and whether the checks
 /// ran. This repeats [`UiScreens::draw_native`]'s drawing and checks so a
 /// thumbnail never disturbs the page shown.
-fn render_thumb(disc: Option<&Disc>, pick: &Pick) -> Result<(Canvas, usize, bool)> {
+fn render_thumb(disc: Option<&Disc>, pick: &Pick) -> Result<(Canvas, Vec<String>, bool)> {
     match pick {
         Pick::Native { screen, state } => {
             let mut live =
@@ -300,18 +306,14 @@ fn render_thumb(disc: Option<&Disc>, pick: &Pick) -> Result<(Canvas, usize, bool
             };
             let src = from.source();
             let view = from.view(&spec, state)?;
-            let rules = Rules::for_spec(&spec);
-            let mut findings = 0;
-            if let Some(d) = disc {
-                findings += d.check(&spec)?.len();
-            }
-            findings += boot::ui_kit::content::check_with_source(&spec, &view, src)
-                .into_iter()
-                .count();
-            findings += layout::check(&view, src, &rules).issues.iter().count();
-            Ok((shrink(preview::render_view(&view, src)), findings, true))
+            let found = boot::ui_kit::findings::of_state(&from, &spec, &view)?
+                .findings
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            Ok((shrink(preview::render_view(&view, src)), found, true))
         }
-        Pick::Retail(tag) => {
+        Pick::Retail { tag, sample } => {
             let d = disc.context("retail screens need the disc")?;
             let canvas = d.render_retail(&Retail {
                 tag,
@@ -319,8 +321,10 @@ fn render_thumb(disc: Option<&Disc>, pick: &Pick) -> Result<(Canvas, usize, bool
                 text: &|_| None,
                 cells: &[],
                 footer: None,
+                rows: None,
+                sample: sample.as_deref(),
             })?;
-            Ok((shrink(canvas), 0, false))
+            Ok((shrink(canvas), Vec::new(), false))
         }
     }
 }
@@ -424,7 +428,7 @@ mod tests {
     fn head(t: &Tile) -> String {
         match &t.pick {
             Pick::Native { screen, .. } => screen.split('.').next().unwrap().to_owned(),
-            Pick::Retail(_) => String::new(),
+            Pick::Retail { .. } => String::new(),
         }
     }
 
@@ -518,7 +522,7 @@ mod tests {
     #[test]
     fn a_failed_screen_is_remembered_and_a_new_disc_forgets() {
         let mut s = UiScreens::default();
-        let bad = [native("nope", "x"), Pick::Retail("a\\b".into())];
+        let bad = [native("nope", "x"), Pick::retail("a\\b")];
         assert_eq!(s.draw_thumbs(&bad, Duration::from_secs(60)), 2);
         assert!(s.gallery.thumb(&bad[0]).unwrap().error.is_some());
         assert!(s.gallery.thumb(&bad[1]).unwrap().canvas.is_none());

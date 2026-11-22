@@ -7,3 +7,6 @@ license.workspace = true
 
 [package.metadata.h2]
 doc = ["game/ai-networking.md"]
+
+[lints]
+workspace = true

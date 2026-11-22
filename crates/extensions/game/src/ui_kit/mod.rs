@@ -19,6 +19,7 @@
 //! - [`spec`]: a screen as data ([`spec::Describe`]) and the static checks.
 //! - [`screen`]: a declared screen ([`screen::KitScreen`]) on the list
 //!   class.
+//! - [`settings`]: the shared settings dialog, built from its doc.
 //! - [`screens`]: our existing screens described, with samples.
 //! - [`preview`]: a screen drawn offline from the disc's tags and fonts.
 //! - [`picker`]: the value picker, retail's `low_level_settings`.
@@ -27,6 +28,7 @@
 //! - [`components`]: the design system, its specimens and the layout
 //!   gallery.
 //! - [`consistency`]: where screens drift from the design system.
+//! - [`findings`]: every check's findings for one screen state.
 
 pub mod animation;
 pub mod choice;
@@ -36,6 +38,7 @@ pub mod content;
 pub mod data;
 pub mod dialog;
 pub mod dialog_tag;
+pub mod findings;
 pub mod forge;
 pub mod ids;
 pub mod inject;
@@ -49,6 +52,7 @@ pub mod preview;
 pub mod retail_edits;
 pub mod screen;
 pub mod screens;
+pub mod settings;
 pub mod spec;
 pub(crate) mod text;
 pub(crate) mod text_fit;

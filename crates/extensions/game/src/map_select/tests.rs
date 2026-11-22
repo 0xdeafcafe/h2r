@@ -416,6 +416,7 @@ fn the_boot_s_features_plan_together_with_the_campaigns() {
     .unwrap();
     r.add(&crate::h1_options_row::SetupRow {
         data_root: std::env::temp_dir(),
+        page: crate::h1_options_row::test_page(),
     })
     .unwrap();
     let text = match r.build(&hooks::Base) {

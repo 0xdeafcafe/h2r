@@ -17,7 +17,7 @@
 //! slot happen with the lock held, which also makes several sinks on one
 //! channel safe.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use gfx::GfxContext;
@@ -47,8 +47,13 @@ pub enum FrameError {
 /// Counters for both sides of the handoff.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameStats {
-    /// Frames the guest presented.
+    /// Frames published: the guest's presents and, above 30 fps, the
+    /// in-between frames the render thread makes ([`FrameStats::made`]).
     pub published: u64,
+    /// Of those, frames the host made between the guest's presents
+    /// (`d3d::interp`, present flags [`MADE_FRAME_FLAGS`]). `published -
+    /// made` is the guest's own present count.
+    pub made: u64,
     /// Frames the window picked up.
     pub shown: u64,
     /// Frames replaced before the window picked them up (the guest
@@ -82,6 +87,11 @@ impl Transition {
 }
 
 const LOADING_SIZE: (u32, u32) = (640, 480);
+
+/// The present flags of a frame the host made between the guest's presents
+/// (`d3d::Backend::present_replay` presents with 0; a guest `Swap` never
+/// does, `D3DDevice_Swap` turns 0 into 5).
+pub const MADE_FRAME_FLAGS: u32 = 0;
 
 /// The return-to-menu picture: opaque black, as the console shows between a
 /// game and the menu. No host text: it reads as part of the game.
@@ -137,6 +147,8 @@ struct Shared {
     loading: Mutex<LoadingState>,
     wake_pending: AtomicBool,
     waker: Mutex<Option<Waker>>,
+    /// Frames published from [`MADE_FRAME_FLAGS`] presents.
+    made: AtomicU64,
 }
 
 impl Shared {
@@ -159,6 +171,7 @@ impl Shared {
         let s = self.lock();
         FrameStats {
             published: s.tb.published(),
+            made: self.made.load(Ordering::Relaxed),
             shown: s.tb.taken(),
             dropped: s.tb.dropped(),
         }
@@ -188,6 +201,7 @@ pub fn channel(ctx: &GfxContext) -> (FrameSink, FrameSource) {
         loading: Mutex::default(),
         wake_pending: AtomicBool::new(false),
         waker: Mutex::new(None),
+        made: AtomicU64::new(0),
     });
     (
         FrameSink::new(Arc::clone(&shared), crate::share_context(ctx)),
@@ -426,7 +440,7 @@ impl FrameSink {
     ) -> impl FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>) + Send + 'static
     {
         let mut frames = 0u64;
-        move |ctx, store, id, _flags, gamma| {
+        move |ctx, store, id, flags, gamma| {
             let rect = crop();
             let frame = frames;
             frames = frames.wrapping_add(1);
@@ -440,6 +454,9 @@ impl FrameSink {
                 "GfxBackend is not on the shell's device"
             );
             let result = self.submit_surface_region(store, id, gamma, rect, logical_size);
+            if result.is_ok() && flags == MADE_FRAME_FLAGS {
+                self.shared.made.fetch_add(1, Ordering::Relaxed);
+            }
             submitted(&self, result.as_ref().copied());
             if let Err(e) = result {
                 self.hook_errors += 1;
@@ -463,7 +480,6 @@ impl FrameSink {
         Ok((slot.size, rgba))
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn submit_encoded(
         &mut self,
         size: (u32, u32),
@@ -640,7 +656,9 @@ fn make_slot(ctx: &GfxContext, size: (u32, u32)) -> Slot {
     }
 }
 
-/// The window side of the handoff.
+/// The window side of the handoff. Cloning shares it (a screenshot
+/// capture holds its own).
+#[derive(Clone)]
 pub struct FrameSource {
     shared: Arc<Shared>,
 }
@@ -687,6 +705,40 @@ impl FrameSource {
             size: slot.size,
             seq: slot.seq,
             new,
+            loading: false,
+            marks: slot.marks.clone(),
+        })
+    }
+
+    /// What [`latest`](Self::latest) would return, without taking: a
+    /// screenshot of the shown frame leaves the handoff's bookkeeping to
+    /// the draw.
+    pub fn peek(&self) -> Option<ShownFrame> {
+        {
+            let loading = self.shared.loading();
+            if loading.mode != Transition::Hidden
+                && let Some(slot) = &loading.picture
+            {
+                return Some(ShownFrame {
+                    view: slot.view.clone(),
+                    texture: slot.texture.clone(),
+                    size: slot.size,
+                    seq: 0,
+                    new: false,
+                    loading: true,
+                    marks: FrameMarks::Raw,
+                });
+            }
+        }
+        let st = self.shared.lock();
+        let front = st.tb.peek()?;
+        let slot = st.slots[front].as_ref()?;
+        Some(ShownFrame {
+            view: slot.view.clone(),
+            texture: slot.texture.clone(),
+            size: slot.size,
+            seq: slot.seq,
+            new: false,
             loading: false,
             marks: slot.marks.clone(),
         })
@@ -834,7 +886,6 @@ impl Compositor {
 
     /// Records a pass that clears `dst` to `clear` and, if `src` is given,
     /// draws it into `viewport`.
-    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
         device: &wgpu::Device,

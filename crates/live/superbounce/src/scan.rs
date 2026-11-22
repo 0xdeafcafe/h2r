@@ -13,7 +13,8 @@ pub(crate) const WALKABLE: f32 = 0.7;
 /// A unit's origin standing on flat floor sits this far above it (−3.19
 /// on the −3.2 floor at the Ascension patch).
 pub(crate) const ORIGIN_LIFT: f32 = 0.01;
-/// Spots of each kind at most, best first.
+/// Crouch spots at most, best first (the crouch rules keep far fewer);
+/// bounce spots have their own bound, `bounce::MAX_BOUNCES`.
 const MAX_SPOTS: usize = 512;
 
 pub(crate) struct Face<'a> {

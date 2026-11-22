@@ -793,7 +793,7 @@ impl App {
             }),
             ToolKind::UiScreens => self.ui_screens.pick.as_ref().map(|p| match p {
                 Pick::Native { screen, state } => format!("{screen} / {state}"),
-                Pick::Retail(tag) => tag.clone(),
+                Pick::Retail { tag, .. } => tag.clone(),
             }),
             ToolKind::Hud => self.hud.session.as_ref().map(|s| {
                 let hud = s.hud().map(|h| h.name.clone()).unwrap_or_default();
@@ -1146,6 +1146,11 @@ impl App {
                 self.sync_ui_disc();
                 if let Err(e) = self.ui_screens.select(pick) {
                     self.error(format!("{e:#}"));
+                }
+                // A retail screen shows the open menu map's edits of its
+                // tag, saved ones too.
+                if let Some(Pick::Retail { tag, .. }) = self.ui_screens.pick.clone() {
+                    self.ui_retail_picked(&tag);
                 }
             }
             Action::UiBrowse(at) => {

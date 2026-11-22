@@ -76,8 +76,6 @@ pub const BOUNCE_LABELS: usize = 3;
 /// it is gone.
 pub const FADE_NEAR: f32 = 25.0;
 pub const FADE_FAR: f32 = 45.0;
-/// A slot's width when the scan gives none.
-pub const RIBBON_WIDTH: f32 = 0.2;
 
 // ---- pure rules ----
 
@@ -365,7 +363,6 @@ pub fn medals_reply(m: &chain::View) -> agent_proto::superbounce::Medals {
                 player: *slot,
                 chain: r.chain,
                 live: r.live,
-                bounces: r.bounces,
                 counts: r
                     .counts
                     .iter()
@@ -435,7 +432,8 @@ struct Scans {
     /// (`superbounce::verified`), failed ones too: what the verifier
     /// indexes.
     scanned: Arc<Vec<Spot>>,
-    /// The same without the failed spots: what is drawn and steered onto.
+    /// The ones of them that are marked ([`marked`]): what is drawn and
+    /// steered onto.
     spots: Arc<Vec<Spot>>,
     /// The bots' spots generation the verified file was applied at.
     verified_at: u64,
@@ -497,17 +495,78 @@ struct ScanView {
     status: ScanState,
 }
 
-/// `raw` with the map's verified file applied: every spot, and the ones not
-/// failed.
+/// `raw` with the map's verified file and then its learned file applied,
+/// and the speed model filled in: every spot, and the ones [`marked`]. A
+/// `learned` or `partial` line of the sim's training moves its spot's aim
+/// (`stand`) onto the line's (`superbounce::learned::apply`): the sim's
+/// measured answer outranks the scan's aim. The edge stays the collision
+/// edge, and a line proves nothing. Each strip with no
+/// measured `need` or `fall` takes the one threshold every seam shares and
+/// the drop that reaches it (`superbounce::speed::apply`).
 fn with_verified(map: &str, raw: &[Spot]) -> (Arc<Vec<Spot>>, Arc<Vec<Spot>>) {
     let mut all = raw.to_vec();
     superbounce::verified::apply(&mut all, &bots::spots::verified_for(map));
-    let shown: Vec<Spot> = all
-        .iter()
-        .filter(|s| s.status != superbounce::Status::Failed)
-        .copied()
-        .collect();
+    superbounce::learned::apply(&mut all, &bots::spots::learned_for(map));
+    superbounce::speed::apply(&mut all);
+    let shown = marked(&all);
     (Arc::new(all), Arc::new(shown))
+}
+
+/// Whether a game run has shown `spot` works: its `verified` flag, from
+/// the map's verified file or a measured place.
+pub fn verified(spot: &Spot) -> bool {
+    spot.status == superbounce::Status::Proven
+}
+
+/// The spots that are marked, pointed at and steered onto, of `all` (the
+/// scan with the verified file applied): never a failed one.
+///
+/// - Crouch spots: every one not failed.
+/// - Strips, once a game run has proved any strip of the map
+///   ([`verified`]): only the proved ones.
+/// - Strips before that: the scan's two-joint slots. A single crease, V
+///   or busy point is a candidate (`Spot::candidate`) for the sim's
+///   training only, so it is left out until a game run proves it.
+pub fn marked(all: &[Spot]) -> Vec<Spot> {
+    let proved = all.iter().any(|s| s.kind == Kind::Bounce && verified(s));
+    all.iter()
+        .filter(|s| s.status != superbounce::Status::Failed)
+        .filter(|s| match s.kind {
+            Kind::Crouch => true,
+            Kind::Bounce if proved => verified(s),
+            Kind::Bounce => !s.candidate(),
+        })
+        .copied()
+        .collect()
+}
+
+/// The loaded map's name, once the mode has asked for its scan.
+pub(crate) fn current_map() -> Option<String> {
+    lock(scans()).current.as_ref().map(|k| k.map.clone())
+}
+
+/// Applies the bots' files to the mode's scan of `map` now, when `map`
+/// is the current one and its scan is ready (`superbounce.reload`;
+/// otherwise the tick does it on the generation change). Whether it did.
+pub(crate) fn refresh(map: &str) -> bool {
+    let mut s = lock(scans());
+    let Some(key) = s.current.clone().filter(|k| k.map.eq_ignore_ascii_case(map)) else {
+        return false;
+    };
+    let Some((raw, _)) = s.cache.get(&key).cloned() else {
+        return false;
+    };
+    let (all, shown) = with_verified(&key.map, &raw);
+    s.scanned = all;
+    s.spots = shown;
+    s.verified_at = bots::spots::generation();
+    true
+}
+
+/// `map`'s scan as the bots keep it with its verified and learned files
+/// applied, and the ones the mode marks.
+pub(crate) fn applied(map: &str) -> (Arc<Vec<Spot>>, Arc<Vec<Spot>>) {
+    with_verified(map, &bots::spots::scanned(map))
 }
 
 fn request_scan(key: ScanKey) -> ScanView {
@@ -609,8 +668,9 @@ fn finish_scan(key: ScanKey, found: Result<Scanned, String>) {
     }
 }
 
-/// The spots of the current scan, for the world lines: the map's verified
-/// file applied, the failed spots left out.
+/// The spots of the current scan that are marked ([`marked`]): the map's
+/// verified file applied, the failed spots and the unproved creases left
+/// out.
 pub fn current_spots() -> Arc<Vec<Spot>> {
     Arc::clone(&lock(scans()).spots)
 }
@@ -858,6 +918,7 @@ fn reset() {
     *lock(&TRACKER) = Tracker::new();
     *lock(&MEDALS) = Medals::empty();
     *lock(&LOCAL) = None;
+    crate::superbounce_assist::set_marked(None);
     crate::superbounce_view::reset();
     crate::superbounce_ghost::reset();
 }
@@ -961,13 +1022,18 @@ fn on_tick(o: &hooks::Obs) {
         &spots,
     );
     let landing = match (live.position, live.velocity) {
-        (Some(position), Some(velocity)) => crate::superbounce_assist::predict(
+        (Some(position), Some(velocity)) => crate::superbounce_assist::predict_on(
             &spots,
             &crate::superbounce_assist::Body {
                 position,
                 velocity,
                 yaw: live.yaw.unwrap_or(0.0),
                 airborne: live.airborne,
+            },
+            // A strip under a floor is not one the fall lands on.
+            &crate::superbounce_assist::Ground {
+                floor: &|xy: [f32; 2], top: f32| room.floor_at(xy, top),
+                ..crate::superbounce_assist::Ground::open()
             },
         ),
         _ => None,
@@ -981,6 +1047,13 @@ fn on_tick(o: &hooks::Obs) {
         }
         _ => step.nav_target,
     };
+    // The assist steers onto the strip that is marked
+    // (superbounce_assist::choose).
+    crate::superbounce_assist::set_marked(
+        nav_target
+            .filter(|n| n.kind == NavKind::Strip)
+            .map(|n| n.at),
+    );
     let takeoff = match (nav_target, live.position) {
         (Some(n), Some(p)) if n.kind == NavKind::Strip && !live.airborne => spots
             .iter()
@@ -1009,7 +1082,11 @@ fn on_tick(o: &hooks::Obs) {
     {
         let guest = o.guest();
         let m: &dyn GuestMemory = &*guest;
-        crate::superbounce_ghost::tick(m, tick, &players, &awards, map.as_deref(), &spots);
+        // Only the strip the player is going for may show its run.
+        let chosen = nav_target
+            .filter(|n| n.kind == NavKind::Strip)
+            .map(|n| n.at);
+        crate::superbounce_ghost::tick(m, tick, &players, &awards, map.as_deref(), &spots, chosen);
         // A rules script hears each bounce on the tick it is filed.
         crate::rules::feature::bounces(m, &awards);
     }
@@ -1113,6 +1190,7 @@ mod gpu {
         host.add_world_line_source(Arc::new(Lines));
         host.add_world_line_source(Arc::new(crate::superbounce_view::Source));
         host.add_world_line_source(Arc::new(crate::superbounce_reticle::Source));
+        host.add_world_line_source(Arc::new(crate::superbounce_steps::Source));
         crate::superbounce_ghost::register(host);
     }
 
@@ -1204,6 +1282,46 @@ mod tests {
         };
         assert!(s.primed());
         assert!(!State::EMPTY.primed());
+    }
+
+    fn spot(kind: Kind, x: f32, shape: superbounce::Shape, status: superbounce::Status) -> Spot {
+        Spot {
+            kind,
+            stand: [x, 0.0, 0.0],
+            edge: [[x, -0.5, 0.0], [x, 0.5, 0.0]],
+            shape,
+            status,
+            ..Spot::default()
+        }
+    }
+
+    #[test]
+    fn creases_are_hidden_until_a_run_proves_a_strip_and_then_only_proved_strips_are_marked() {
+        use superbounce::{Shape, Status};
+        let xs = |spots: &[Spot]| -> Vec<f32> { spots.iter().map(|s| s.stand[0]).collect() };
+        // No strip proved: the slots, never a crease; crouch spots stay;
+        // failed ones go.
+        let scan = [
+            spot(Kind::Bounce, 1.0, Shape::Slot, Status::Likely),
+            spot(Kind::Bounce, 2.0, Shape::Crease, Status::Likely),
+            spot(Kind::Bounce, 3.0, Shape::Slot, Status::Failed),
+            spot(Kind::Crouch, 4.0, Shape::Slot, Status::Likely),
+            spot(Kind::Crouch, 5.0, Shape::Slot, Status::Proven),
+            spot(Kind::Crouch, 6.0, Shape::Slot, Status::Failed),
+        ];
+        assert_eq!(xs(&marked(&scan)), [1.0, 4.0, 5.0]);
+        assert!(!verified(&scan[0]) && verified(&scan[4]));
+        // The crease is the sim's candidate, not play's.
+        assert!(scan[1].candidate() && !scan[0].candidate());
+        // A proved crouch spot proves no strip: the slots still show.
+        // Once a run proves a strip, only proved strips are marked, a
+        // crease among them; an unproved slot is not.
+        let mut run = scan;
+        run[1].status = Status::Proven;
+        assert_eq!(xs(&marked(&run)), [2.0, 4.0, 5.0]);
+        run[0].status = Status::Proven;
+        assert_eq!(xs(&marked(&run)), [1.0, 2.0, 4.0, 5.0]);
+        assert!(marked(&[]).is_empty());
     }
 
     fn near(distance: f32) -> Near {
@@ -1327,7 +1445,6 @@ mod tests {
                 need: 4.0,
                 edge: [[0.0, 2.0, -3.0], [2.0, 2.0, -3.0]],
                 stand: [1.0, 2.0, -3.0],
-                width: 0.2,
                 fall: 1.0,
             }),
             last_landing: Some(Landing {

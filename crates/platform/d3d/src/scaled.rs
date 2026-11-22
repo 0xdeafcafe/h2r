@@ -2165,7 +2165,6 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         self.single() || self.reference.defers_depth_aliases()
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn depth_alias_texture(
         &mut self,
         depth: Self::Surface,

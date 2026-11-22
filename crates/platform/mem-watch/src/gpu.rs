@@ -76,6 +76,8 @@ mod devices {
             .iter()
             .filter_map(Weak::upgrade)
             .collect();
+        // wgpu's `Instance` orders by identity, not by its interior state.
+        #[allow(clippy::mutable_key_type)]
         let mut instances = BTreeSet::new();
         #[cfg(target_os = "macos")]
         let mut metal_registry_ids = BTreeSet::new();

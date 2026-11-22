@@ -10,7 +10,9 @@ SSE paths, fallbacks). `boot` re-exports it, so `boot::build`,
 
 Domain `runtime`; it depends on `analyze`, `lift`, `ir`, `emit`, `x87`,
 `lifted`, `runtime`, `xbe` and `xiso`, and on `clif` behind a feature.
-`boot` and `game` use it.
+`boot` and `game` use it. The retail image's hooked render sites come
+from the composition root (`register_retail_entries`, called by
+`boot::register_image_entries`), not from a hooking crate.
 
 ## Layout
 

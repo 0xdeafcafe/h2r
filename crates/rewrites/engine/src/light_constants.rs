@@ -468,7 +468,6 @@ struct Frame {
 /// `0x000497a0`, with the arguments `0x0004a1e0` gives it: the frame block
 /// at [`global::FRAME`], `p` the light's frame block, `d` the definition,
 /// the two colours, the scale.
-#[allow(clippy::too_many_arguments)]
 fn light_frame(
     m: &dyn GuestMemory,
     f: &mut Sse,

@@ -1,4 +1,4 @@
-// The dense dashboard's chart colours (docs/live/web-boundary.md §3.3).
+// The dense dashboard's chart colours (docs/live/web-boundary.md, "Palette").
 // Charts sit in a recessed well (`WELL`); every categorical slot below was
 // run through the dataviz validator against it in dark mode:
 //   validate_palette.js "#55a82a,#8a7cf0,#c98500,#2b97c9,#e0607a" --mode dark --surface "#08180a"

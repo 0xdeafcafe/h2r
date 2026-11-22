@@ -494,14 +494,15 @@ page.
 
 ### The lobby
 
-Firefight is a tab of the party lobby's mode strip
+Firefight is a mode of the party lobby
 ([party-lobby.md](party-lobby.md), [forge-firefight-ui.md](forge-firefight-ui.md#the-lobbies)),
-shown while the `firefight` feature is on and a settings store holds
-the choices, whatever maps are installed. Selecting it sets the page's
+in the GAME MODE picker and on the Xbox Live menu's Firefight row while
+the `firefight` feature is on and a settings store holds the choices,
+whatever maps are installed. Switching to it sets the page's
 Firefight choice on and puts the lobby on a kit map; Game Setup then
 lists the Firefight rows, and the variant panel shows the wave set, the
 difficulty and the starting lives in place of Quick Options' lines.
-With no kit map installed the tab still opens and the lobby keeps its
+With no kit map installed the mode still opens and the lobby keeps its
 map: the panel says "No installed map supports Firefight yet" and "Make
 one with h2 firefight kit", and Start Game is held with "No installed
 map supports Firefight yet." on the status line
@@ -680,7 +681,7 @@ are slices of [ai-networking.md](ai-networking.md); P numbers its probes.
 | **FF9** | Live: the variant bytes, `NewSession.firefight`, 1-to-4-player hopper entries, the lobby's local kit check | M | FF1 | `crates/formats/variants/src/ext.rs`, `crates/live/live-proto/`, `crates/live/live-server/`, `crates/live/live-worker/`, `crates/tools/hopper-edit/` | `the_mode_bytes_round_trip_and_leave_the_crc_valid`, `a_joiner_without_the_kit_map_is_refused_before_load`, `first_playlist_accepts_one_to_four_players`, `an_oversize_def_is_refused`, the parity suite | both homes offer 1 to 4 players and refuse unsupported sizes and missing local kits. A retail variant is unchanged |
 | **FF10** | Dedicated host: the Firefight host class and admission, the kit in the host's map set, the strip keeping AI data | S | FF3, FF4, P5 | `crates/apps/h2host/`, `crates/live/host-data/`, [dedicated-host.md](../live/dedicated-host.md) | `a_firefight_match_takes_a_whole_slot_class`, `strip_keeps_squads_and_sectors` | admission tests; the coordinator's host run in notes |
 | **FF11** | `h2 sim run` Firefight matches: Clankers as the players, a report with rounds, score and tick times. `host.metrics` reports `game_cpu_ms_per_tick_p99` over the last 30 steady gameplay seconds from per-tick game-thread CPU deltas | M | FF4 | `crates/live/sim-bench/`, `crates/extensions/game/src/host_metrics.rs`, [sim.md](../runtime/sim.md), [agent-api.md](../runtime/agent-api.md#hostmetrics) | `a_firefight_match_toml_parses`, `the_report_has_rounds_and_score`, `game_cpu_p99_uses_individual_tick_deltas` | a match file runs headless (coordinator) and feeds P5. The p99 comes from individual gameplay samples and resets between matches |
-| **FF12** | The kit, stage 2: transplanted classes, their cost, the cut order | L | FF3, P2 | `crates/tools/firefight-kit/src/transplant.rs` | `a_class_over_the_headroom_is_refused_with_its_cost`, `a_transplanted_closure_resolves`, `two_machines_build_equal_ids` | on invented maps; the retail census goes in notes |
+| **FF12** | The kit, stage 2: transplanted classes, their cost, the cut order | L | FF3, P2 | `crates/tools/firefight-kit/src/transplant.rs` (new) | `a_class_over_the_headroom_is_refused_with_its_cost`, `a_transplanted_closure_resolves`, `two_machines_build_equal_ids` | on invented maps; the retail census goes in notes |
 | **FF13** | The 16-player playlist at the live-actor cap measured by the CPU probe | S | FF9, FF10, FF11, P5 passes at 16 seats | `crates/tools/hopper-edit/`, `crates/live/live-server/`, `crates/live/live-worker/` | `sixteen_player_playlist_requires_the_measured_host_class`, `sixteen_player_definition_honours_the_measured_actor_cap`, the parity suite | publish in both Live homes only with a P5 result at or below 28 ms p99 game-thread CPU at the chosen live-actor cap on the intended host class. Admission uses that class and cap |
 
 FF1 and FF3 start at once, beside AN0, AN1, AN2 and AN6. FF2 follows

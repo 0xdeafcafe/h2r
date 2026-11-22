@@ -356,7 +356,6 @@ pub(super) fn scalar_transform(m:&dyn GuestMemory, s:&mut Sse, value:u32, transf
 }
 
 /// One call of 0x1b2c0. Lanes not named by the mode keep their bits.
-#[allow(clippy::too_many_arguments)]
 fn evaluate(m:&dyn GuestMemory, cache:u32, out:&mut [u32;4], mode:u8, stage:u32, source:u32,
     transform:u8, fcw:u16, s:&mut Sse) -> Result<(),Error> {
     match mode {

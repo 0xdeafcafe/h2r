@@ -74,8 +74,9 @@ pub struct RowSpec {
     /// The string ids the row shows (empty for texts served by slot).
     pub ids: Vec<u32>,
     /// Art drawn while the row has the focus, beside the screen's own
-    /// ([`ScreenSpec::shown_art`]): a row's icon in Quick Options' game
-    /// type picture (`crate::ui_kit::dialog::quick_icon`).
+    /// ([`ScreenSpec::shown_art`]): a film's level picture in the Theater
+    /// library. A settings dialog's art is the screen's own, never a
+    /// row's: its top is the same in every state.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub art: Option<crate::ui_kit::view::PaneArt>,
 }
@@ -292,14 +293,10 @@ pub struct ScreenSpec {
     pub rows: Vec<RowSpec>,
     pub focus: usize,
     pub description: Option<DescriptionBlock>,
-    /// Where the focused row's name goes beside the page's picture, above
-    /// the description (Quick Options' variant-name line,
-    /// [`crate::ui_kit::dialog::DialogBase::name_line`]); `None` for none.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name_line: Option<DescriptionBlock>,
     /// The screen's own line in the description block, in place of the
-    /// focused row's description: a page's help line, as Quick Options'
-    /// `quick_options_help` is ([`crate::ui_kit::screen::KitScreen::header`]).
+    /// focused row's description: a page-wide line that can change while
+    /// the same row stays focused
+    /// ([`crate::ui_kit::screen::KitScreen::live_help`]).
     pub help: Option<String>,
     /// The legend under the description (or alone when there is none).
     pub prompts: Vec<Prompt>,
@@ -350,7 +347,6 @@ impl ScreenSpec {
             rows: Vec::new(),
             focus: 0,
             description: None,
-            name_line: None,
             help: None,
             prompts: Vec::new(),
             inputs: Vec::new(),
@@ -395,14 +391,6 @@ impl ScreenSpec {
     pub fn footer_text(&self) -> Option<String> {
         let prompts = self.focused_prompts();
         (self.footer && !prompts.is_empty()).then(|| footer_legend(prompts))
-    }
-    /// The focused row's name in the name line, as drawn: its label (a
-    /// value row's label; the value stays in the row). `None` without a
-    /// name line or a focused row with a label.
-    pub fn name_text(&self) -> Option<String> {
-        self.name_line?;
-        let label = self.rows.get(self.focus)?.label.trim();
-        (!label.is_empty()).then(|| label.to_string())
     }
     /// The focused row's description (the screen's help line when it has
     /// one) with the legend under it, as drawn.

@@ -52,6 +52,19 @@ dimensions and frame rate, including 3840×2160 at 120 fps. Keep the
 masters outside Git and commit only the final documentation media
 under `docs/images/**` in Git LFS.
 
+## Docs
+
+A change that alters behaviour, an interface, a switch, an environment
+variable or a path that a doc names updates that doc in the same branch. The
+rules are the section "Keep the docs current" in [AGENTS.md](AGENTS.md) and
+[docs/meta/docs-style.md](docs/meta/docs-style.md). Every `H2_*` variable the
+code reads is listed in [docs/runtime/switches.md](docs/runtime/switches.md).
+Run `python3 scripts/docs-check.py` before you push; it needs only git and
+python3. To see or drive the running game or the editor, use the agent API
+(`h2 agent`, [docs/runtime/agent-api.md](docs/runtime/agent-api.md);
+[docs/editor/agent-api.md](docs/editor/agent-api.md)) rather than screen
+scraping or one-off debug hooks.
+
 ## Checks
 
 Run `scripts/check.sh` before you push. It runs `cargo fmt --check`, `cargo

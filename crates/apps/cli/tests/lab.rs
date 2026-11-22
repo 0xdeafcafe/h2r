@@ -10,11 +10,12 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use agent_proto::host_quit;
 use agent_proto::takeover::{self, Decision, Operation, Source};
 use serde_json::{Value, json};
 
@@ -37,6 +38,8 @@ if [ "$cmd" = build ]; then
   fi
   mkdir -p "$out" && echo image > "$out/$lib"
   echo "fake build opt=$H2_OPT objcache=$H2_OBJ_CACHE"
+  echo "emit: 0.1s, 1 owners (0 cut into parts), 3 files (1 rewritten), 0.1 MB of C, 1 entries, 0 resumes"
+  echo "clang (arm64): 1 compiled, 2 reused, 0.1s keying (dependency scans, hashing, pins), 0.1s compiling, 0.0s archive, 0.1 MB of objects"
   exit 0
 fi
 if [ "$cmd" = agent ]; then
@@ -358,6 +361,11 @@ struct FakeGame {
     window: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
     requests: Arc<Mutex<Vec<takeover::Request>>>,
+    /// `host.quit` calls taken.
+    quits: Arc<AtomicUsize>,
+    /// `host.quit` answers `closing`; off, it refuses as a game without
+    /// a window shell does.
+    quit_ok: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
 }
 
@@ -373,8 +381,11 @@ impl FakeGame {
         let window = Arc::new(AtomicBool::new(window));
         let shutdown = Arc::new(AtomicBool::new(false));
         let requests = Arc::new(Mutex::new(Vec::new()));
+        let quits = Arc::new(AtomicUsize::new(0));
+        let quit_ok = Arc::new(AtomicBool::new(true));
         let worker = {
             let (window, shutdown, requests) = (window.clone(), shutdown.clone(), requests.clone());
+            let (quits, quit_ok) = (quits.clone(), quit_ok.clone());
             std::thread::spawn(move || {
                 for stream in listener.incoming() {
                     if shutdown.load(Ordering::Acquire) {
@@ -405,6 +416,24 @@ impl FakeGame {
                             assert_eq!(params.id, 1);
                             json!(takeover::Status { decision })
                         }
+                        // The window stays open until the test closes it,
+                        // as a game still stopping its guest does.
+                        host_quit::method::QUIT => {
+                            quits.fetch_add(1, Ordering::AcqRel);
+                            if !quit_ok.load(Ordering::Acquire) {
+                                let _ = writeln!(
+                                    stream,
+                                    "{}",
+                                    json!({
+                                        "jsonrpc": "2.0",
+                                        "id": request.id,
+                                        "error": {"code": 4, "message": "no window here"},
+                                    })
+                                );
+                                continue;
+                            }
+                            json!(host_quit::QuitReply { closing: true })
+                        }
                         method => panic!("unexpected game API method {method}"),
                     };
                     let _ = writeln!(
@@ -420,6 +449,8 @@ impl FakeGame {
             window,
             shutdown,
             requests,
+            quits,
+            quit_ok,
             worker: Some(worker),
         }
     }
@@ -452,6 +483,22 @@ fn start_fake_run(lab: &Lab) -> String {
 
 fn wait_fake_job(lab: &Lab, id: &str) -> Value {
     json(&ok(&lab.local(&["wait", id, "--timeout", "10"])))
+}
+
+/// The host's image work directories, `variants/<key>`, sorted.
+fn variants(root: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = fs::read_dir(root.join("variants"))
+        .map(|d| d.map(|e| e.unwrap().path()).collect())
+        .unwrap_or_default();
+    dirs.sort();
+    dirs
+}
+
+/// The one image work directory of a host that built one variant.
+fn only_variant(root: &Path) -> PathBuf {
+    let dirs = variants(root);
+    assert_eq!(dirs.len(), 1, "{dirs:?}");
+    dirs[0].clone()
 }
 
 #[test]
@@ -496,8 +543,67 @@ fn takeover_allow_waits_for_the_game_window_to_close() {
     assert!(requests[0].estimate_seconds > 0);
     drop(requests);
 
+    // Allow asked the game to close.
+    assert_eq!(game.quits.load(Ordering::Acquire), 1);
     game.close_window();
     assert_eq!(wait_fake_job(&lab, &id)["job"]["state"], "done");
+}
+
+#[test]
+fn takeover_alongside_starts_the_job_with_the_game_open_and_asks_nothing_more() {
+    let lab = Lab::named("alongside");
+    let game = FakeGame::listen(&lab, true, Decision::Alongside);
+    let id = start_fake_run(&lab);
+    let job = wait_fake_job(&lab, &id)["job"].clone();
+    assert_eq!(job["state"], "done", "{job}");
+    assert_eq!(
+        job["player"][0],
+        "player: kept their game open; the job ran alongside it",
+        "{job}"
+    );
+    // The game was never asked to close, was offered the row and was asked
+    // once: it counts as having answered Keep running.
+    assert_eq!(game.quits.load(Ordering::Acquire), 0);
+    let requests = game.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].alongside);
+    drop(requests);
+    // Not a decline: no cool-down, so the next job asks again.
+    let next = start_fake_run(&lab);
+    assert_eq!(wait_fake_job(&lab, &next)["job"]["state"], "done");
+    assert_eq!(game.requests.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn takeover_allow_holds_the_job_when_the_game_cannot_be_closed() {
+    let lab = Lab::named("allow-held");
+    let game = FakeGame::listen(&lab, true, Decision::Allowed);
+    game.quit_ok.store(false, Ordering::Release);
+    let id = start_fake_run(&lab);
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let state = loop {
+        let state = json(&ok(&lab.local(&["status"])));
+        if state["held_for_player"] == true && state["queued"] == json!([id]) {
+            break state;
+        }
+        assert!(Instant::now() < deadline, "not held: {state}");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(state["active"].is_null(), "{state}");
+    assert_eq!(game.quits.load(Ordering::Acquire), 1);
+    // Not skipped: still waiting, and its note says why.
+    let waiting = lab.local(&["wait", &id, "--timeout", "0"]);
+    assert_eq!(waiting.status.code(), Some(3));
+    let job = &json(&String::from_utf8_lossy(&waiting.stdout))["job"];
+    assert_eq!(job["state"], "queued", "{job}");
+    let note = job["player"][0].as_str().unwrap();
+    assert!(note.starts_with("player: allowed the job, but the lab could not close"), "{note}");
+    assert!(note.contains("close its window"), "{note}");
+
+    // The player closes it: the job starts with no second prompt.
+    game.close_window();
+    assert_eq!(wait_fake_job(&lab, &id)["job"]["state"], "done");
+    assert_eq!(game.requests.lock().unwrap().len(), 1);
 }
 
 #[test]
@@ -955,6 +1061,14 @@ fn a_lab_host_runs_waits_stops_fetches_and_builds_branches() {
         build_log.contains("fake build opt=2 objcache="),
         "{build_log}"
     );
+    // The build log says what each step reused.
+    for line in [
+        "is new",
+        "lab: cargo compiled 0 crates",
+        "lab: image reuse: emit rewrote 1/3 C files, clang reused 2/3 shards (1 compiled)",
+    ] {
+        assert!(build_log.contains(line), "{line}: {build_log}");
+    }
     assert!(
         fs::read_to_string(to.join(bid).join("run.log"))
             .unwrap()
@@ -965,6 +1079,8 @@ fn a_lab_host_runs_waits_stops_fetches_and_builds_branches() {
     let cargo = fs::read_to_string(&lab.cargo_log).unwrap();
     assert_eq!(cargo.lines().count(), 1);
     assert!(cargo.contains("build --release -p cli --bin h2"), "{cargo}");
+    assert!(cargo.contains("src/current"), "{cargo}");
+    let opt2_variants = variants(&lab.root);
     let v = json(&ok(&lab.lan(&[
         "run",
         "--name",
@@ -1002,6 +1118,10 @@ fn a_lab_host_runs_waits_stops_fetches_and_builds_branches() {
             .unwrap()
             .contains("--features perf")
     );
+    // ... built in a work directory of its own, beside the H2_OPT=2 one.
+    let all = variants(&lab.root);
+    assert_eq!(all.len(), opt2_variants.len() + 1, "{all:?}");
+    assert!(opt2_variants.iter().all(|d| all.contains(d)));
     assert!(
         err(&lab.local(&["build", "--branch", "nope", "--no-sync"])).contains("is not a commit")
     );
@@ -1041,7 +1161,8 @@ fn a_running_job_pins_the_image_and_queued_branches_share_one_checkout() {
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(25));
     }
-    let stamp = lab.root.join("image/image.json");
+    // One build variant, so one work directory holds every commit's image.
+    let stamp = only_variant(&lab.root).join("image.json");
     let checkout = lab.root.join("src/current");
     let keep = checkout.join("untracked-sentinel");
     fs::write(&keep, b"keep").unwrap();
@@ -1113,6 +1234,8 @@ fn host_migration_removes_only_the_legacy_build_directories() {
             ],
         );
         for dir in [
+            "image/src",
+            "obj-cache/ab",
             "images/a123456789abcdef",
             "images/other",
             "src/other",
@@ -1136,6 +1259,11 @@ fn host_migration_removes_only_the_legacy_build_directories() {
     assert!(!old.exists());
     assert!(!git(&lab.repo, &["worktree", "list", "--porcelain"]).contains(old.to_str().unwrap()));
     assert!(!lab.root.join("images/a123456789abcdef").exists());
+    // The single image directory the variants replaced. The private object
+    // cache becomes the shared one beside the root, which did not exist.
+    assert!(!lab.root.join("image").exists());
+    assert!(!lab.root.join("obj-cache").exists());
+    assert!(lab.dir.join("obj/ab/sentinel").is_file());
     for dir in ["images/other", "src/other", "runs/0001", "recordings/demo"] {
         assert!(lab.root.join(dir).join("sentinel").is_file());
     }
@@ -1145,7 +1273,8 @@ fn host_migration_removes_only_the_legacy_build_directories() {
 #[test]
 fn the_build_caches_can_be_capped_independently_of_the_published_image() {
     let lab = Lab::with_host_options("caps", &["--obj-cache-limit", "0", "--target-limit", "0"]);
-    let obj = lab.root.join("obj-cache");
+    // The object cache is the shared one beside the lab root.
+    let obj = lab.dir.join("obj");
     fs::create_dir_all(&obj).unwrap();
     fs::write(obj.join("unused.o"), b"old").unwrap();
     assert_eq!(

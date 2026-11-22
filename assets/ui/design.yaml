@@ -18,11 +18,13 @@ spacing:
   cell_top: 6
   cell_gap: 4
   cell_half_gap: 12
+  settings_rows: 8
+  settings_game_rows: 3
 alpha:
   unfocused: 100
   frame_dim: 110
 legend:
-  glyph_gap: 2
+  glyph_gap: 3
   prompt_gap: 2
   words: upper
 components:
@@ -73,20 +75,45 @@ components:
     justify: left
     at: [39, -30]
     size: [221, 103]
-  description.settings:
-    role: "a settings dialog's help line beside its picture, above its list (Quick Options'): the focused row's one line, never empty, drawn over the panel"
-    font: body
-    colour: pale_blue
-    justify: left
-    at: [-224, 143]
-    size: [494, 20]
-  name.settings:
-    role: "a settings dialog's name line beside its picture, over its help line (Quick Options' variant-name line): the focused row's label, drawn over the panel"
+  settings:
+    role: "the shared settings dialog: a static header (icon, name, what the window is for), the rows, the focused row's help under them, the legend"
+    variants: [focus-0, focus-1, focus-2]
+    specimen: layout.dialog.settings
+  settings.name:
+    role: "the header's white line beside the icon: what the window changes, the same in every state"
     font: body
     colour: white
     justify: left
     at: [-224, 163]
     size: [224, 20]
+  settings.about:
+    role: "the header's line under the name: what the window is for, one line, the same in every state"
+    font: body
+    colour: pale_blue
+    justify: left
+    at: [-224, 143]
+    size: [494, 20]
+  settings.help:
+    role: "the focused row's help, under the rows and over the legend, two lines at most"
+    font: body
+    colour: pale_blue
+    justify: left
+    at: [-244, -133]
+    size: [490, 40]
+  settings.game.about:
+    role: "settings.about on the in-game host, under the large dialog's title"
+    font: body
+    colour: pale_blue
+    justify: left
+    at: [-243, 72]
+    size: [498, 20]
+  settings.game.help:
+    role: "settings.help on the in-game host"
+    font: body
+    colour: pale_blue
+    justify: left
+    at: [-243, -40]
+    size: [498, 40]
   description.picker:
     role: "the value picker's description, right of its list"
     font: body
@@ -128,6 +155,10 @@ components:
     role: "a value in the Controls skin's value column; left and right step it"
     variants: [focused, unfocused, long]
     specimen: design.row.value-column
+  row.pick-inline:
+    role: "a value in the label (Label: Value) on a one-text skin; A opens the value picker, no left and right (the skulls pages' rows)"
+    variants: [focused, unfocused, disabled]
+    specimen: design.row.pick-inline
   row.setting:
     role: "a value alone in a settings dialog's value text; A opens the picker"
     variants: [focused, unfocused, long]
@@ -141,7 +172,7 @@ components:
     variants: [focused, unfocused, empty]
     specimen: design.row.text
   row.disabled:
-    role: "a row that can't be used now: focusable, never pressed, Locked as its value"
+    role: "a row that can't be used now: focusable, never pressed, its label alone with no value; its help line says why, its legend B alone"
     variants: [focused, unfocused]
     specimen: design.row.disabled
   picker:
@@ -208,3 +239,72 @@ components:
     font: body
     colour: hint_blue
     justify: right
+  tab.selected:
+    role: "the lobby strip's selected mode: white, as a focused row's text"
+    font: body
+    colour: white
+    justify: centre
+  tab.on:
+    role: "a mode of the lobby strip the bumpers can move to: the header's blue"
+    font: body
+    colour: hint_blue
+    justify: centre
+  tab.off:
+    role: "a mode of the lobby strip that can't run in this lobby: the lobby's value blue"
+    font: body
+    colour: pale_blue
+    justify: centre
+  tab.header:
+    role: "the lobby strip's selected mode as the lobby's header, in the header's font and place"
+    font: title
+    colour: hint_blue
+    justify: left
+  tab.prompt:
+    role: "a bumper and the mode it moves to, at the band's right end: glyph, space, WORDS"
+    font: body
+    colour: hint_blue
+    justify: right
+  tab.prompt.off:
+    role: "a bumper and the mode that way that can't run in this lobby"
+    font: body
+    colour: pale_blue
+    justify: right
+  tab.glyph:
+    role: "a bumper's glyph beside the lobby strip, a mode to move to that way"
+    font: body
+    colour: white
+    justify: centre
+  tab.glyph.off:
+    role: "a bumper's glyph with no mode to move to that way"
+    font: body
+    colour: pale_blue
+    justify: centre
+  tab.count:
+    role: "the lobby's player count beside the strip, as the lobby's tag places it"
+    font: body
+    colour: pale_blue
+    justify: right
+  lobby.button:
+    role: "a pregame lobby button with the focus: its words in white on name_field"
+    font: body
+    colour: white
+    justify: left
+    pattern: button
+    ids: ["button.*"]
+  lobby.button.off:
+    role: "a pregame lobby button without the focus: the header's blue"
+    font: body
+    colour: hint_blue
+    justify: left
+    pattern: button
+    ids: ["button.*"]
+  lobby.bumper:
+    role: "a bumper's glyph at an end of the lobby's mode marks, a mode to move to that way"
+    font: body
+    colour: white
+    justify: left
+  lobby.bumper.off:
+    role: "a bumper's glyph with no mode to move to that way"
+    font: body
+    colour: pale_blue
+    justify: left

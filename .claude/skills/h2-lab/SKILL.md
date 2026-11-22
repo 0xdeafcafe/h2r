@@ -66,8 +66,9 @@ you can stop your own job and fetch its results.
 - `--current` uses the host's existing `h2` and image. Use it for a
   quick check of that image. Build options require a branch or revision.
 
-These source flags are mutually exclusive. The host reuses one checkout and one image directory. An image is cached
-when its commit, features and build variables match.
+These source flags are mutually exclusive. The host reuses one checkout, one Cargo target and one image
+directory per build variant (features and build variables), keeping the four used last. An image is cached
+when its commit, features and build variables match, so an A/B of two variants on one commit builds each once.
 
 Set `lab_map` to the level identifier for the task and choose a local
 destination for artifacts. `--level` selects the level. `--frames`

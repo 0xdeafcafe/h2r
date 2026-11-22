@@ -4,7 +4,7 @@
 
 use super::{ALPHA, DEPTH, RGB, STENCIL};
 use crate::scene_sink::ReplayFrame;
-use frame_scene::TargetRef;
+use frame_types::TargetRef;
 
 #[cfg(feature = "gpu")]
 use crate::gfx_backend::FrozenTarget;
@@ -157,7 +157,7 @@ mod tests {
     use super::*;
     use crate::backend::{ChannelMask, PixelRect, RectClear};
     use crate::scene_sink::ReplayOp;
-    use frame_scene::{AuxTarget, Slot, SlotAt};
+    use frame_types::{AuxTarget, Slot, SlotAt};
     use gfx::{Clear, D3DFormat};
 
     #[test]

@@ -499,7 +499,7 @@ pub fn run(ir: Ir, scenario: &Scenario) -> Result<RunResult, RunError> {
                 ended_at = Some(tick);
             }
             log.calls.push(CallLog {
-                entry: *entry,
+                entry,
                 args: args.clone(),
             });
         }

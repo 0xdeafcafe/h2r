@@ -103,6 +103,9 @@ pub enum ListEffect {
 pub struct ListPage {
     pub class: ListClass,
     spec: Box<dyn Fn() -> ScreenSpec>,
+    /// The rows focused in its named states, first the default; none
+    /// takes the first, middle and last.
+    states: Option<Vec<usize>>,
 }
 
 /// A list page's state: the focused row.
@@ -114,7 +117,21 @@ impl ListPage {
         ListPage {
             class,
             spec: Box::new(spec),
+            states: None,
         }
+    }
+
+    /// Its named states focus `rows`, in that order (the first is the
+    /// default), duplicates dropped.
+    pub fn with_states(mut self, rows: &[usize]) -> Self {
+        let mut v: Vec<usize> = Vec::new();
+        for &r in rows {
+            if !v.contains(&r) {
+                v.push(r);
+            }
+        }
+        self.states = Some(v);
+        self
     }
 
     fn count(&self) -> usize {
@@ -178,10 +195,14 @@ impl Page for ListPage {
         }
     }
 
-    /// The first, middle and last row focused.
+    /// The rows [`ListPage::with_states`] named, else the first, middle
+    /// and last row focused.
     fn states(&self) -> Vec<(String, Focus)> {
         let n = (self.spec)().rows.len();
-        let mut at = vec![0, n / 2, n.saturating_sub(1)];
+        let mut at = match &self.states {
+            Some(v) => v.clone(),
+            None => vec![0, n / 2, n.saturating_sub(1)],
+        };
         at.dedup();
         at.into_iter()
             .map(|f| (format!("focus-{f}"), Focus(f)))

@@ -110,6 +110,14 @@ pub struct ComponentDoc {
     pub variants: Vec<String>,
     /// Its specimen page (`design.<name>`), when it has one.
     pub specimen: Option<String>,
+    /// The Halo 2 pattern its widgets keep, which the consistency drive
+    /// holds them to (`button`: drawn on a list skin's art or as a row,
+    /// never bare text; docs/game/ui-builder.md "Consistency").
+    pub pattern: Option<String>,
+    /// The widget ids it draws (`button.*`: a prefix and a star), for the
+    /// pattern rules.
+    #[serde(default)]
+    pub ids: Vec<String>,
 }
 
 impl ComponentDoc {
@@ -159,6 +167,14 @@ impl DesignDoc {
                 && !matches!(j.as_str(), "left" | "right" | "centre")
             {
                 return err(at("justify"), format!("{j:?} is not left, right or centre"));
+            }
+            if let Some(p) = &c.pattern
+                && p != "button"
+            {
+                return err(at("pattern"), format!("{p:?} is not button"));
+            }
+            if c.pattern.is_some() && c.ids.is_empty() {
+                return err(at("ids"), "a pattern names the widget ids it holds".into());
             }
         }
         Ok(())
@@ -237,6 +253,11 @@ pub struct ScreenDoc {
     /// Named states: where the focus (and a code's cursor) is.
     #[serde(default)]
     pub states: IndexMap<String, StateDoc>,
+    /// A settings dialog's host, header and caller (`layout: settings`
+    /// only, docs/game/ui-builder.md "The settings dialog"): the shared
+    /// component lays out its title, header, rows, help and legend, so the
+    /// doc gives none of their places.
+    pub settings: Option<SettingsDoc>,
     /// Keyed by the view's widget id, in draw order.
     #[serde(default)]
     pub widgets: IndexMap<String, WidgetDoc>,
@@ -244,6 +265,68 @@ pub struct ScreenDoc {
     #[serde(default)]
     pub rows: IndexMap<String, RowDoc>,
 }
+
+/// A settings dialog's own: which host it sits on, its static header
+/// (icon, name, what the window is for), the row elsewhere that opens it
+/// and its extra buttons.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SettingsDoc {
+    /// `menu` (Quick Options' tag, the main menu's) or `game` (the large
+    /// dialog, in the game maps too).
+    pub host: String,
+    /// The header's icon of `mp_games2` by name
+    /// ([`crate::ui_kit::dialog::icon::NAMES`]); the menu host only.
+    pub icon: Option<String>,
+    /// The header's white line: what the window changes. The menu host
+    /// only.
+    pub name: Option<String>,
+    /// The header's line about the window: what it is for. A dialog
+    /// opened from a row elsewhere has none of its own: its about line is
+    /// that row's help ([`CallerDoc::help`]), so the two always agree.
+    pub about: Option<String>,
+    /// The row on another screen that opens this one.
+    pub caller: Option<CallerDoc>,
+    /// Buttons besides the rows' (`X CLEAR FILTERS`).
+    #[serde(default)]
+    pub actions: Vec<ActionDoc>,
+}
+
+impl SettingsDoc {
+    /// The header's line about the window: its own, else the caller's
+    /// help.
+    pub fn about(&self) -> &str {
+        match (&self.about, &self.caller) {
+            (Some(a), _) => a,
+            (None, Some(c)) => &c.help,
+            (None, None) => "",
+        }
+    }
+}
+
+/// The row on another screen that opens a settings dialog: its label and
+/// its help there (Game Setup's description).
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CallerDoc {
+    pub label: String,
+    pub help: String,
+}
+
+/// An extra button of a settings dialog: its glyph, its legend words and
+/// the binding it runs.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActionDoc {
+    pub button: String,
+    pub words: String,
+    pub bind: String,
+}
+
+/// The hosts a settings dialog may sit on.
+pub const SETTINGS_HOSTS: [&str; 2] = ["menu", "game"];
+/// The buttons a settings dialog's extra action may take, by glyph name.
+pub const SETTINGS_BUTTONS: [&str; 4] = ["X", "Y", "Start", "Back"];
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -322,8 +405,17 @@ pub struct RowDoc {
     /// A value row's choices, and the one shown.
     pub values: Option<Vec<String>>,
     pub current: Option<usize>,
-    /// Its description.
+    /// Its description: on a settings dialog, its help under the rows
+    /// while it has the focus.
     pub help: Option<String>,
+    /// A settings dialog's `value` row over a setting of the store, by key.
+    pub setting: Option<String>,
+    /// A settings dialog's row whose behaviour a feature registers by
+    /// name (`crate::ui_kit::settings::Bindings`).
+    pub bind: Option<String>,
+    /// What the value picker A opens says about the row; its help when
+    /// unset.
+    pub explain: Option<String>,
     /// The screen an `open` row opens.
     pub open: Option<String>,
     /// A text row's limit.
@@ -352,6 +444,7 @@ pub fn opener_named(name: &str) -> Option<crate::ui_kit::view::Opener> {
         "game-setup.clankers" => Opener::GAME_SETUP_CLANKERS,
         "game-setup.firefight" => Opener::GAME_SETUP_FIREFIGHT,
         "game-setup.forge" => Opener::GAME_SETUP_FORGE,
+        "lobby" => Opener::LOBBY,
         "xbox-live-menu" => Opener::XBOX_LIVE_MENU,
         _ => return None,
     })
@@ -475,17 +568,21 @@ impl ScreenDoc {
             if !ROW_KINDS.contains(&r.kind.as_str()) {
                 return err(at("kind"), format!("{:?} is not one of {ROW_KINDS:?}", r.kind));
             }
-            if matches!(r.kind.as_str(), "value" | "pick") {
+            if matches!(r.kind.as_str(), "value" | "pick") && self.settings.is_none() {
                 let values = r.values.as_deref().unwrap_or(&[]);
                 if values.is_empty() || r.current.is_none_or(|c| c >= values.len()) {
                     return err(at("values"), "a value row has values and a current one among them".into());
                 }
+            }
+            if self.settings.is_none() && (r.setting.is_some() || r.bind.is_some() || r.explain.is_some()) {
+                return err(format!("rows.{id}"), "setting, bind and explain are a settings dialog's".into());
             }
             if r.kind == "open" && r.open.is_none() {
                 return err(at("open"), "an open row names the screen it opens".into());
             }
             slots_of(&r.text).map_err(|what| DataError::new(&file, &at("text"), what))?;
         }
+        self.validate_settings(design)?;
         let rows = self.rows.len();
         for (name, s) in &self.states {
             if name.is_empty() || name.chars().any(char::is_control) {
@@ -493,6 +590,164 @@ impl ScreenDoc {
             }
             if rows > 0 && s.focus >= rows {
                 return err(format!("states.{name}.focus"), format!("focus {} past {rows} rows", s.focus));
+            }
+        }
+        Ok(())
+    }
+
+    /// A settings dialog's own rules (docs/game/ui-builder.md "The
+    /// settings dialog"): the block on `layout: settings` and nowhere
+    /// else, a host and a header for it, no place for what the component
+    /// places, and each row attached and with its help.
+    fn validate_settings(&self, design: &DesignDoc) -> Result<(), DataError> {
+        let file = self.file();
+        let err = |at: String, what: String| Err(DataError::new(&file, &at, what));
+        let on_settings =
+            (self.kind.as_str(), self.layout.as_deref()) == ("dialog", Some("settings"));
+        let Some(st) = &self.settings else {
+            if on_settings {
+                return err(
+                    "settings".into(),
+                    "a settings dialog has a settings: block (its host, header and caller)".into(),
+                );
+            }
+            return Ok(());
+        };
+        if !on_settings {
+            return err("settings".into(), "only a dialog on layout: settings has a settings: block".into());
+        }
+        for id in self.widgets.keys() {
+            if id == "description" || id == "legend" || id.starts_with("header.") || id.starts_with("art.") {
+                return err(
+                    format!("widgets.{id}"),
+                    "the settings component places it (design.yaml components.settings.*); a settings dialog's doc gives no such widget".into(),
+                );
+            }
+        }
+        if !SETTINGS_HOSTS.contains(&st.host.as_str()) {
+            return err("settings.host".into(), format!("{:?} is not one of {SETTINGS_HOSTS:?}", st.host));
+        }
+        let menu = st.host == "menu";
+        match (&st.icon, menu) {
+            (Some(i), true) if crate::ui_kit::dialog::icon::named(i).is_none() => {
+                return err(
+                    "settings.icon".into(),
+                    format!("no icon {i:?}: one of {:?}", crate::ui_kit::dialog::icon::NAMES),
+                );
+            }
+            (None, true) => {
+                return err("settings.icon".into(), "the menu host's header has an icon".into());
+            }
+            (Some(_), false) => {
+                return err(
+                    "settings.icon".into(),
+                    "the game host has no icon (mp_games2 is in mainmenu.map only)".into(),
+                );
+            }
+            _ => {}
+        }
+        match (&st.name, menu) {
+            (Some(n), true) if n.trim().is_empty() => {
+                return err("settings.name".into(), "the header's name says what the window changes".into());
+            }
+            (None, true) => {
+                return err("settings.name".into(), "the menu host's header has a name".into());
+            }
+            (Some(_), false) => {
+                return err("settings.name".into(), "the game host has no name line; its title names it".into());
+            }
+            _ => {}
+        }
+        match (&st.about, &st.caller) {
+            (Some(_), Some(_)) => {
+                return err(
+                    "settings.about".into(),
+                    "a dialog opened from a row elsewhere says what it is for in that row's help (settings.caller.help); it has no about of its own".into(),
+                );
+            }
+            (None, None) => {
+                return err("settings.about".into(), "the header says what the window is for".into());
+            }
+            (Some(a), None) if a.trim().is_empty() => {
+                return err("settings.about".into(), "the header says what the window is for".into());
+            }
+            _ => {}
+        }
+        if let Some(c) = &st.caller {
+            if c.label.trim().is_empty() {
+                return err("settings.caller.label".into(), "the opening row has a label".into());
+            }
+            if c.help.trim().is_empty() {
+                return err("settings.caller.help".into(), "the opening row has a help".into());
+            }
+        }
+        for (i, a) in st.actions.iter().enumerate() {
+            let at = |f: &str| format!("settings.actions.{i}.{f}");
+            if !SETTINGS_BUTTONS.contains(&a.button.as_str()) {
+                return err(
+                    at("button"),
+                    format!("{:?}: an extra button is one of {SETTINGS_BUTTONS:?} (A and B are the rows' and back)", a.button),
+                );
+            }
+            if a.words.trim().is_empty()
+                || (design.legend.words == "upper" && a.words.chars().any(char::is_lowercase))
+            {
+                return err(at("words"), format!("{:?}: a legend's words, in capitals", a.words));
+            }
+            if a.bind.trim().is_empty() {
+                return err(at("bind"), "an action runs a binding".into());
+            }
+        }
+        let cap_name = if menu { "settings_rows" } else { "settings_game_rows" };
+        let cap = usize::try_from(design.spacing(cap_name)?).unwrap_or(0);
+        if self.rows.len() > cap {
+            return err(
+                "rows".into(),
+                format!("{} rows; the {} host lays out {cap} (spacing.{cap_name})", self.rows.len(), st.host),
+            );
+        }
+        for (id, r) in &self.rows {
+            let at = |field: &str| format!("rows.{id}.{field}");
+            if r.help.as_deref().is_none_or(|h| h.trim().is_empty()) {
+                return err(at("help"), "a settings row has its help, shown under the rows while it has the focus".into());
+            }
+            match r.kind.as_str() {
+                "value" => match (&r.setting, &r.bind) {
+                    (Some(_), Some(_)) => {
+                        return err(at("setting"), "a value row is over a setting or a binding, not both".into());
+                    }
+                    (None, None) => {
+                        // A specimen's row: its values and the one shown.
+                        let values = r.values.as_deref().unwrap_or(&[]);
+                        if values.is_empty() || r.current.is_none_or(|c| c >= values.len()) {
+                            return err(
+                                at("setting"),
+                                "a value row names its setting or binding (a specimen's gives values and current)".into(),
+                            );
+                        }
+                    }
+                    _ => {
+                        if r.current.is_some() {
+                            return err(at("current"), "a bound row's value is its setting's; current is a specimen's".into());
+                        }
+                    }
+                },
+                "pick" | "action" => {
+                    if r.bind.is_none() {
+                        return err(at("bind"), format!("a {} row names its binding", r.kind));
+                    }
+                }
+                "open" => {
+                    if r.open.is_none() {
+                        return err(at("open"), "an open row names the screen it opens".into());
+                    }
+                }
+                k => {
+                    return err(at("kind"), format!("{k:?}: a settings row is value, pick, open or action"));
+                }
+            }
+            if r.kind != "value" && r.setting.is_some() {
+                return err(at("setting"), "only a value row is over a setting".into());
             }
         }
         Ok(())
@@ -587,7 +842,7 @@ pub fn fill(t: &str, slots: &[(&str, &str)]) -> Result<String, String> {
 /// Every other screen's doc is written from its Rust by the converter
 /// ([`export`]) and held to it by the equivalence test, until its Rust
 /// reads the doc too.
-pub const FROM_DOC: [&str; 7] = [
+pub const FROM_DOC: [&str; 11] = [
     "kit.example",
     "kit.choices",
     "kit.dialog",
@@ -595,6 +850,10 @@ pub const FROM_DOC: [&str; 7] = [
     crate::clankers::SCREEN,
     crate::firefight::options::SCREEN,
     crate::clanker_card::SCREEN,
+    crate::h1_options::SCREEN,
+    crate::custom_games::browser_filters::SCREEN,
+    "layout.dialog.settings",
+    "design.row.setting",
 ];
 
 // ---- where they are, and the loaded set ----

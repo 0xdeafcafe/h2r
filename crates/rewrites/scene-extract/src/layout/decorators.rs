@@ -553,6 +553,59 @@ fn resident(mem: &dyn GuestRead, info: u32) -> Result<bool, Refusal> {
     Ok(byte(mem, info, RESIDENT)? != 0)
 }
 
+/// The geometry cache `[0x004e649c]`: `+0x38` the frame's stamp, `[+0x64]
+/// +0x44` its entries (`0x18` bytes, the stamp at `+0x14`).
+pub const GEOMETRY_CACHE: u32 = 0x004e_649c;
+pub const CACHE_STAMP: u32 = 0x38;
+pub const CACHE_DATA: u32 = 0x64;
+pub const CACHE_ENTRIES: u32 = 0x44;
+pub const CACHE_ENTRY_SIZE: u32 = 0x18;
+pub const CACHE_ENTRY_STAMP: u32 = 0x14;
+/// A geometry block info's cache entry (u16).
+pub const INFO_ENTRY: u32 = 0x20;
+
+/// The write `0x0012de70` makes for a resident geometry block `info`
+/// (its first test, `0x0012de7f`..`0x0012de98`): the cache's stamp into
+/// the block's entry, so the cache keeps it. `None` when not resident.
+pub fn cache_stamp(mem: &dyn GuestRead, info: u32) -> Result<Option<(u32, u32)>, Refusal> {
+    if !resident(mem, info)? {
+        return Ok(None);
+    }
+    let entry = u32::from(half(mem, info, INFO_ENTRY)?);
+    let cache = word(mem, GEOMETRY_CACHE, 0)?;
+    let stamp = word(mem, cache, CACHE_STAMP)?;
+    let entries = word(mem, word(mem, cache, CACHE_DATA)?, CACHE_ENTRIES)?;
+    Ok(Some((entries.wrapping_add(entry.wrapping_mul(CACHE_ENTRY_SIZE)).wrapping_add(CACHE_ENTRY_STAMP), stamp)))
+}
+
+/// The placement, set datum, set definition and geometry record the
+/// build reads for an item of argument `argument`.
+fn placement_blocks(mem: &dyn GuestRead, argument: u32) -> Result<(u32, u32, u32, u32), Refusal> {
+    let block = word(mem, word(mem, ACTIVE_BSP, 0)?, BSP_DECORATORS)?;
+    let placement = element(word(mem, block, BLOCK_PLACEMENTS)?, ((argument >> 8) & 0x3f_ffff) as i32, PLACEMENT_SIZE);
+    let palette = byte(mem, placement, 0)? as i8;
+    let palette_entry = element(word(mem, word(mem, SCENARIO, 0)?, SCENARIO_PALETTE)?, i32::from(palette), 8);
+    let set = word(mem, palette_entry, 4)?;
+    let def = definition(mem, set).ok_or(Refusal::Unread)?;
+    let geometry_index = half(mem, placement, PLACEMENT_GEOMETRY)? as i16;
+    let geometry = element(word(mem, block, BLOCK_GEOMETRY)?, i32::from(geometry_index), GEOMETRY_SIZE);
+    Ok((placement, set, def, geometry))
+}
+
+/// The cache stamps the build `0x0004de20` of list item `item` makes when
+/// it runs (its two `0x0012de70` calls, on the placement's geometry
+/// record and the set's geometry): what a skipped item's native draw
+/// writes in its place, so the cache ages its geometry as the guest's
+/// draw would. An error when either is not resident (the build would ask
+/// the cache to load it).
+pub fn build_stamps(mem: &dyn GuestRead, item: u32) -> Result<[(u32, u32); 2], Refusal> {
+    let argument = word(mem, item, 0xc)?;
+    let (_, _, def, geometry) = placement_blocks(mem, argument)?;
+    let record = cache_stamp(mem, geometry)?.ok_or(Refusal::NotResident)?;
+    let set = cache_stamp(mem, def.wrapping_add(SET_GEOMETRY))?.ok_or(Refusal::NotResident)?;
+    Ok([record, set])
+}
+
 /// The draw of list item `item` (build [`DECORATOR_BUILD`]) at `slot`,
 /// layer `layer`, with its instances: what `0x0004e260` would set and
 /// draw. `Ok(None)` for layer 1, where the build takes nothing, and where
@@ -567,14 +620,7 @@ pub fn read(
     let argument = word(mem, item, 0xc)?;
     let flags = word(mem, item, 0x14)?;
     let (pass, variant) = (flags as u8, (flags >> 8) as u8);
-    let block = word(mem, word(mem, ACTIVE_BSP, 0)?, BSP_DECORATORS)?;
-    let placement = element(word(mem, block, BLOCK_PLACEMENTS)?, ((argument >> 8) & 0x3f_ffff) as i32, PLACEMENT_SIZE);
-    let palette = byte(mem, placement, 0)? as i8;
-    let palette_entry = element(word(mem, word(mem, SCENARIO, 0)?, SCENARIO_PALETTE)?, i32::from(palette), 8);
-    let set = word(mem, palette_entry, 4)?;
-    let def = definition(mem, set).ok_or(Refusal::Unread)?;
-    let geometry_index = half(mem, placement, PLACEMENT_GEOMETRY)? as i16;
-    let geometry = element(word(mem, block, BLOCK_GEOMETRY)?, i32::from(geometry_index), GEOMETRY_SIZE);
+    let (placement, set, def, geometry) = placement_blocks(mem, argument)?;
     if !resident(mem, geometry)? || !resident(mem, def.wrapping_add(SET_GEOMETRY))? {
         return Err(Refusal::NotResident);
     }

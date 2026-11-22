@@ -202,7 +202,7 @@ fn passes_of(material: &Material, layer: usize, supplied: bool) -> Result<Vec<Fo
         let [imp] = pass.implementations.as_slice() else {
             return Err(FogRefusal::Implementations { pass: n, count: pass.implementations.len() });
         };
-        let look = if supplied {
+        let mut look = if supplied {
             // `implementation_look` with the engine stages kept when a
             // per-view supply resolves them.
             let mut textures = [Stage::Empty; 4];
@@ -249,12 +249,13 @@ fn passes_of(material: &Material, layer: usize, supplied: bool) -> Result<Vec<Fo
         if let Some(r) = imp.vertex_constants.iter().find(|r| r.origin == tags::material::Origin::Engine) {
             return Err(FogRefusal::Look { pass: n, refusal: Refusal::EngineVertexConstant(r.index) });
         }
-        if !imp.engine_render_states.is_empty() {
-            return Err(FogRefusal::Look { pass: n, refusal: Refusal::EngineRenderStates });
-        }
-        if !imp.engine_stage_states.is_empty() {
-            return Err(FogRefusal::Look { pass: n, refusal: Refusal::EngineStageStates });
-        }
+        // Engine-driven states over the pass's own, from the instance's
+        // inputs (a driven fog colour with the fog on refuses: the fog
+        // words are the pass's own, [`FogWords`]).
+        let applied = crate::engine_states::apply_static(imp, &material.inputs)
+            .map_err(|r| FogRefusal::Look { pass: n, refusal: Refusal::EngineStates(r) })?;
+        look.stage_states = applied.stage_states;
+        let states = applied.render_states;
         match fog_parity(&look) {
             Ok(()) => {}
             Err(FogParity::NoFinalCombiner) => return Err(FogRefusal::NoFinalCombiner { pass: n }),
@@ -265,11 +266,11 @@ fn passes_of(material: &Material, layer: usize, supplied: bool) -> Result<Vec<Fo
         // ([`FogWords`]). The rest of the pipeline state must be the
         // implementation's own (a pass that leaves blend or depth to the
         // previous draw stays on the D3D path, as the transparents').
-        let state = state_without_fog(&imp.render_states).map_err(|refusal| FogRefusal::State { pass: n, refusal })?;
-        if !sets_cull(&imp.render_states) {
+        let state = state_without_fog(&states).map_err(|refusal| FogRefusal::State { pass: n, refusal })?;
+        if !sets_cull(&states) {
             return Err(FogRefusal::InheritsCull { pass: n });
         }
-        out.push(FogPass { look, state, fog: FogWords::from_states(&imp.render_states) });
+        out.push(FogPass { look, state, fog: FogWords::from_states(&states) });
     }
     Ok(out)
 }
@@ -576,7 +577,6 @@ impl FogSet {
     /// pipelines ([`crate::gpu::GpuWorld::fog_draws`]); the pipelines
     /// are made ([`FogSet::pipelines`]). Refused when a pass, group or
     /// fog state is missing, as `draw` records nothing then.
-    #[allow(clippy::too_many_arguments)]
     // wgpu compares and hashes pipelines by their stable handle identity.
     #[allow(clippy::mutable_key_type)]
     pub(crate) fn draws(

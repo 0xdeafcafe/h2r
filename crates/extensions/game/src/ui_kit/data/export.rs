@@ -20,6 +20,9 @@
 //! - The design system's rules ([`house_rules`]) are applied to the
 //!   screens drawn from their docs (`super::FROM_DOC`), whose Rust holds no
 //!   copy to disagree with (docs/game/ui-builder.md "Consistency").
+//! - A settings dialog's doc (one with a `settings:` block) is the source
+//!   its screen is built from (`crate::ui_kit::settings`): it is written
+//!   back as it was loaded, never rebuilt from its specs.
 
 use std::path::{Path, PathBuf};
 
@@ -36,7 +39,7 @@ use crate::ui_kit::view::{Art, Justify, Opener};
 
 /// Texts that are a player's or a map's even where the samples show one
 /// value: `(screen, widget)`.
-pub const DYNAMIC: [(&str, &str); 8] = [
+pub const DYNAMIC: [(&str, &str); 9] = [
     ("mods.detail", "title"),
     ("mods.pack", "title"),
     ("theater.film", "title"),
@@ -44,14 +47,14 @@ pub const DYNAMIC: [(&str, &str); 8] = [
     ("kit.picker", "title"),
     ("kit.picker.game", "title"),
     ("kit.picker.forge-map", "title"),
+    ("kit.picker.mode", "title"),
     // The card's profile line: the bot's, live.
     (crate::clanker_card::SCREEN, "description"),
 ];
 
 /// Our screens whose rows are fixed: their labels go in the doc.
-pub const FIXED_ROWS: [&str; 6] = [
+pub const FIXED_ROWS: [&str; 5] = [
     "kit.example",
-    "kit.dialog",
     "kit.dialog.large",
     "kit.choices",
     "lab.takeover",
@@ -166,6 +169,8 @@ impl Design {
                 size: None,
                 variants: Vec::new(),
                 specimen: None,
+                pattern: None,
+                ids: Vec::new(),
             },
         );
         name
@@ -186,6 +191,7 @@ fn opener_name(o: &Opener) -> Option<&'static str> {
         "game-setup.clankers",
         "game-setup.firefight",
         "game-setup.forge",
+        "lobby",
         "xbox-live-menu",
     ]
     .into_iter()
@@ -254,7 +260,8 @@ fn row_doc(r: &crate::ui_kit::spec::RowSpec) -> RowDoc {
             d.values = Some(values.clone());
             d.current = Some(*current);
         }
-        (RowKind::Info { value }, _) if value == crate::ui_kit::components::row::LOCKED => {
+        // `components::row::disabled`: a label alone, never pressed.
+        (RowKind::Info { value }, Press::Nothing) if value.is_empty() => {
             d.kind = "disabled".into();
         }
         (RowKind::Info { value }, _) => {
@@ -275,7 +282,7 @@ fn screen_doc(name: &str, states: &[(String, ScreenSpec)], design: &mut Design) 
     let first = &states[0].1;
     let all = || states.iter().map(|(_, s)| s);
     let (kind, layout) = kind_and_layout(first);
-    let (backing, opener) = if first.hud.is_some() || first.transparent && first.dialog.is_none() {
+    let (backing, opener) = if first.transparent && (first.hud.is_some() || first.dialog.is_none()) {
         (Some("none".to_string()), None)
     } else if let Some(u) = &first.underlay {
         if crate::ui_kit::screens::NAMES.contains(&u.name.as_str()) {
@@ -299,6 +306,7 @@ fn screen_doc(name: &str, states: &[(String, ScreenSpec)], design: &mut Design) 
         opener,
         scrolls: first.scrolls,
         states: IndexMap::new(),
+        settings: None,
         widgets: IndexMap::new(),
         rows: IndexMap::new(),
     };
@@ -370,7 +378,7 @@ fn screen_doc(name: &str, states: &[(String, ScreenSpec)], design: &mut Design) 
         let mut w = WidgetDoc::default();
         if fixed.is_some() {
             let component = design.component(
-                &["description", "description.pane", "description.settings", "description.picker", "legend.panel"],
+                &["description", "description.pane", "description.picker", "legend.panel"],
                 "description",
                 name,
                 d.font,
@@ -590,10 +598,16 @@ pub fn export(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut written = Vec::new();
     let mut docs = Vec::new();
     for name in crate::ui_kit::screens::NAMES {
-        let states = crate::ui_kit::screens::raw_states(name)
-            .with_context(|| format!("no states for {name}"))?;
-        anyhow::ensure!(!states.is_empty(), "{name} has no states");
-        let doc = screen_doc(name, &states, &mut design);
+        let doc = match super::baked(name).filter(|d| d.settings.is_some()) {
+            // A settings dialog is built from its doc: the doc stays.
+            Some(d) => (*d).clone(),
+            None => {
+                let states = crate::ui_kit::screens::raw_states(name)
+                    .with_context(|| format!("no states for {name}"))?;
+                anyhow::ensure!(!states.is_empty(), "{name} has no states");
+                screen_doc(name, &states, &mut design)
+            }
+        };
         let path = screens.join(format!("{name}.yaml"));
         std::fs::write(&path, super::to_yaml(&doc)).with_context(|| path.display().to_string())?;
         written.push(path);
@@ -677,6 +691,13 @@ pub fn design_to_yaml(d: &DesignDoc) -> String {
         }
         if let Some(s) = &c.specimen {
             let _ = writeln!(out, "    specimen: {s}");
+        }
+        if let Some(p) = &c.pattern {
+            let _ = writeln!(out, "    pattern: {p}");
+        }
+        if !c.ids.is_empty() {
+            let ids: Vec<String> = c.ids.iter().map(|i| q(i)).collect();
+            let _ = writeln!(out, "    ids: [{}]", ids.join(", "));
         }
     }
     out

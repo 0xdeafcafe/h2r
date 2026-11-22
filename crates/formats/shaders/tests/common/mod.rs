@@ -81,7 +81,6 @@ impl Gpu {
     /// `uniform` at (group 0, `uniform_binding`), read-only storage `input`
     /// at (1, 8) and read-write storage of `output_floats` at (1, 9).
     // Mirrors the dispatch's bindings one to one; a struct would only rename them.
-    #[allow(clippy::too_many_arguments)]
     pub fn run(
         &self,
         source: &str,
@@ -145,7 +144,6 @@ impl Gpu {
     }
 
     /// [`Gpu::run`] with textures bound in group 1 as well.
-    #[allow(clippy::too_many_arguments)]
     pub fn run_with_textures(
         &self,
         source: &str,

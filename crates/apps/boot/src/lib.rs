@@ -71,6 +71,16 @@ pub fn perf_env_note(
     }
 }
 
+/// Register the retail image's hooked render sites with the image builder
+/// (`recomp::register_retail_entries`), so discovery makes them
+/// instruction entries in both tiers. Every binary that builds, stamps,
+/// loads or analyses the image calls it first (`h2`'s `main`, the Apple
+/// hosts); [`run`] and its variants call it too. Idempotent.
+pub fn register_image_entries() {
+    use engine::points::{render_aspect, scene_effects};
+    recomp::register_retail_entries(render_aspect::instruction_entries().chain(scene_effects::instruction_entries()));
+}
+
 /// Map the image, attach the kernel, register the generated module and run
 /// the entry thread.
 pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> {
@@ -183,6 +193,7 @@ fn run_configured(
     sim: Option<(sim_glue::Sim, Option<telemetry::TelemetryConfig>)>,
     replay: Option<(theater::Replay, Option<f32>, std::time::Instant)>,
 ) -> Result<RunReport> {
+    register_image_entries();
     let boot_started = std::time::Instant::now();
     let (replay, legacy_lod, child_started) = match replay {
         Some((replay, lod, start)) => (Some(replay), lod, Some(start)),
@@ -1026,6 +1037,8 @@ fn run_configured(
         } else {
             mixer.set_hrtf(features.switches().audio_hrtf());
             mixer.set_distance_reverb(features.switches().distance_reverb());
+            // Our medals' announcer lines play into it (medal_announcer.rs).
+            game::medal_announcer::connect(audio.mixer());
         }
     }
     let local_forge =

@@ -148,7 +148,7 @@ pub const MESSAGE_LONGEST: &str = MESSAGE_LOST_STOOD_STILL;
 /// (`game::superbounce_chain::bounce_medals`); this is how each shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Medal {
-    /// The first bounce of a chain.
+    /// Every bounce.
     Superbounce,
     /// The second bounce of a chain.
     DoubleBounce,
@@ -163,7 +163,7 @@ pub enum Medal {
     /// A fall out of the map during a bounce.
     Bounced,
     /// A bounce that launches well above a normal one, given with the
-    /// bounce's chain medal. Last, so it is the line a
+    /// bounce's Superbounce and chain medal. Last, so it is the line a
     /// Monster shows.
     Monster,
 }

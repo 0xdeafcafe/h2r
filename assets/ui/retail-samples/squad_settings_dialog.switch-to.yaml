@@ -1,0 +1,34 @@
+# Game Setup as concept 3 of the lobby's mode choice has it: retail's
+# Switch To rows with two of ours, Switch To: Forge and Switch To:
+# Firefight, between Quick Options and Co-Op (docs/game/ui-builder.md
+# "Retail screens in a believable state"). Drawn when a caller names
+# the variant (`ui.pick {retail, sample: "switch-to"}`); the plain
+# sample is `squad_settings_dialog.yaml`.
+screen: ui\screens\game_shell\pregame_lobby\squad_settings_dialog
+variant: switch-to
+
+# The lobby is still drawn under the dialog.
+over: ui\screens\game_shell\pregame_lobby\pregame_lobby
+
+tokens:
+  e41f: SYSTEM LINK        # the network the party is on
+  e408: Glasshouse         # the map
+
+footer: { string: key_offline }
+
+panes:
+  0:
+    blocks:
+      # The panel's picture, as in the plain sample.
+      ui\screens\game_shell\xbox_live\xbox_live_main_menu\xbox_live: { level: lockout }
+    lists:
+      0:
+        focus: 0
+        rows:
+          - { string: change_map }
+          - { string: change_variant }
+          - { string: quick_options }
+          - { text: "Switch To: Forge" }
+          - { text: "Switch To: Firefight" }
+          - { string: switch_to_coop }
+          - { string: switch_to_playlist }

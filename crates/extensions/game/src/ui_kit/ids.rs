@@ -72,7 +72,7 @@ pub const FAMILIES: &[Family] = &[
     Family::new("kit.picker", 0x20ff_c100, 0x40),
     Family::new("kit.picker.game", 0x20ff_c140, 0x40),
     Family::new("join link", 0x20ff_c180, 4),
-    Family::new("lab takeover", 0x20ff_c184, 8),
+    Family::new("lab takeover", 0x20ff_c184, 11),
     Family::new("browser filters", 0x20ff_c1c0, 0x40),
     Family::new("forge objects", 0x20ff_c200, 0x40),
     Family::new("forge properties", 0x20ff_c240, 0x40),
@@ -84,6 +84,8 @@ pub const FAMILIES: &[Family] = &[
     Family::new("forge settings", 0x20ff_c310, 0x20),
     Family::new("forge options", 0x20ff_c330, 0x20),
     Family::new("hud kit", 0x20ff_c350, 0x10),
+    Family::new("h1-options", 0x20ff_c360, 0x20),
+    Family::new("browser chrome", 0x20ff_c380, 0x10),
     Family::new("co-op texts", 0x20ff_d000, 128),
     Family::new("mod texts", 0x20ff_d100, 0x100),
     Family::new("theater", 0x20ff_d200, 0x100),
@@ -95,7 +97,7 @@ pub const FAMILIES: &[Family] = &[
     Family::new("ui model", TABLE + 0x40, 0xbf),
     Family::new("skulls", TABLE + 0x0100_0000, 0x100),
     Family::new("campaign picker", TABLE + 0x0200_0000, 65),
-    Family::new("skull row labels", TABLE + 0x0300_0000, 0x100),
+    Family::new("skull rows", TABLE + 0x0300_0000, 0x100),
     Family::new("h1 options", TABLE + 0x0400_0000, 0x40),
     Family::new("signin", TABLE + 0x0500_0000, 0x100),
     Family::new("clankers", TABLE + 0x0600_0000, 0x40),
@@ -112,6 +114,8 @@ pub const FAMILIES: &[Family] = &[
     Family::new("firefight", TABLE + 0x1100_0000, 0x40),
     Family::new("lobby mode", TABLE + 0x1300_0000, 0x40),
     Family::new("lobby tabs", TABLE + 0x1400_0000, 0x40),
+    Family::new("pause change map", TABLE + 0x1500_0000, 0x40),
+    Family::new("live menu modes", TABLE + 0x1600_0000, 0x10),
 ];
 
 const fn same(a: &str, b: &str) -> bool {

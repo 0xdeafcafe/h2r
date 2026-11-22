@@ -16,7 +16,7 @@
 
 use superbounce::{Kind, Spot, Vec3};
 
-use crate::superbounce_mode::{RIBBON_WIDTH, primed};
+use crate::superbounce_mode::primed;
 
 /// A crouched player within this distance (world units) of a crouch
 /// spot's stand point is `near` it.
@@ -49,9 +49,6 @@ pub const BOUNCE_VZ: f32 = 8.0;
 pub const TOUCHDOWN_VZ: f32 = -1.0;
 /// It has stopped falling when its vertical speed is over this.
 pub const LANDED_VZ: f32 = -0.5;
-/// The vertical speed a standing jump lands at (units/s): a strip with no
-/// fall needs this much.
-pub const STANDING_JUMP_SPEED: f32 = 3.0;
 /// Gravity (units/s²), as the assist has it.
 pub const GRAVITY: f32 = crate::superbounce_assist::GRAVITY;
 
@@ -176,18 +173,18 @@ pub struct Predicted {
     pub speed: f32,
     /// The touchdown speed the strip needs ([`need_of`]).
     pub need: f32,
-    /// The strip: its edge (the crease line), stand point, slot width
-    /// ([`width_of`]) and fall.
+    /// The strip: its edge (the collision edge, the target), stand point
+    /// and fall.
     pub edge: [Vec3; 2],
     pub stand: Vec3,
-    pub width: f32,
     pub fall: f32,
 }
 
 impl Predicted {
-    /// How far the landing is outside the slot, horizontally: 0 inside it.
+    /// How far the landing is outside the edge's catch, horizontally
+    /// (`superbounce::catch_miss`): 0 when caught.
     pub fn miss(&self) -> f32 {
-        (segment_distance_xy(self.edge, [self.at[0], self.at[1]]) - self.width / 2.0).max(0.0)
+        superbounce::catch_miss(self.edge, [self.at[0], self.at[1]])
     }
 
     /// The lock (docs/game/superbounce.md, "Lock-on"): the landing is in
@@ -236,27 +233,21 @@ pub struct Landing {
 
 // ---- the strip's slot ----
 
-/// A strip's slot width (world units): the gap between its joints, the
-/// scanner's `width`; a spot from before the scanner had it (0) reads as
-/// the floor ribbon's [`RIBBON_WIDTH`].
-pub fn width_of(spot: &Spot) -> f32 {
-    if spot.width > 0.0 { spot.width } else { RIBBON_WIDTH }
-}
-
-/// The touchdown speed a strip needs (units/s): what a fall of its `fall`
-/// gives on top of a standing jump's landing, `√(3² + 2 × 4.15 × fall)`.
-/// The scanner's `need` when the spot has one; a spot from before the
-/// scanner had it (0) works it from `fall`.
+/// The touchdown speed a strip needs (units/s): its measured `need`;
+/// else, with a measured drop (`fall`) and no need, what that fall gives
+/// on top of a standing jump's landing (`superbounce::speed::touchdown`);
+/// else the one threshold every seam shares,
+/// `superbounce::speed::BOUNCE_SPEED`. The game's spots carry the model's
+/// `need` already (`superbounce::speed::apply`), so the speed model is
+/// tuned in that one place.
 pub fn need_of(spot: &Spot) -> f32 {
     if spot.need > 0.0 {
         return spot.need;
     }
-    let fall = if spot.fall.is_finite() {
-        spot.fall.max(0.0)
-    } else {
-        0.0
-    };
-    (STANDING_JUMP_SPEED * STANDING_JUMP_SPEED + 2.0 * GRAVITY * fall).sqrt()
+    if spot.fall.is_finite() && spot.fall > 0.0 {
+        return superbounce::speed::touchdown(spot.fall);
+    }
+    superbounce::speed::bounce_speed()
 }
 
 /// Where along `edge` (0 to 1) the point nearest `xy` is, horizontally.
@@ -282,9 +273,10 @@ pub fn edge_distance_xy(spot: &Spot, xy: [f32; 2]) -> f32 {
     segment_distance_xy(spot.edge, xy)
 }
 
-/// How far `xy` is outside a strip's slot, horizontally: 0 inside it.
+/// How far `xy` is outside a strip's catch, horizontally: 0 within
+/// `superbounce::CATCH` of its edge, the hit side of the verdict.
 pub fn slot_miss(spot: &Spot, xy: [f32; 2]) -> f32 {
-    (edge_distance_xy(spot, xy) - width_of(spot) / 2.0).max(0.0)
+    superbounce::catch_miss(spot.edge, xy)
 }
 
 fn distance(a: Vec3, b: Vec3) -> f32 {
@@ -991,7 +983,6 @@ mod tests {
             need: 5.0,
             edge: [[0.0, -1.0, 0.0], [0.0, 1.0, 0.0]],
             stand: [0.0; 3],
-            width: 0.2,
             fall: 1.0,
         }
     }
@@ -1036,11 +1027,15 @@ mod tests {
             classify(&strip, Some(MINUS_3), on, need + 0.1, -0.04),
             NoBounce
         );
-        // Inside the slot is within half its width of the edge.
+        // Caught is within the one catch of the edge.
         assert_eq!(slot_miss(&strip, [10.09, 0.5]), 0.0);
         assert!((slot_miss(&strip, [10.3, 0.5]) - 0.2).abs() < 1e-5);
-        // A strip with no fall needs a standing jump's landing speed.
-        assert_eq!(need_of(&spot(Kind::Bounce, on, 0.0)), STANDING_JUMP_SPEED);
+        // A strip with no measured need or drop needs the one threshold
+        // every seam shares.
+        let bare = spot(Kind::Bounce, on, 0.0);
+        assert_eq!(need_of(&bare), superbounce::speed::BOUNCE_SPEED);
+        assert_eq!(classify(&bare, Some(MINUS_3), on, 5.0, -0.04), TooSlow);
+        assert_eq!(classify(&bare, Some(MINUS_3), on, 5.5, -0.04), NoBounce);
     }
 
     #[test]

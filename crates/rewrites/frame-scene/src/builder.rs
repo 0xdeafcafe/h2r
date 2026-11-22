@@ -278,7 +278,6 @@ impl SceneBuilder {
 
     /// [`Self::push_part`] with how the part draws beyond its material:
     /// its flags and, with [`PartFlags::SUBPARTS`], the subparts it draws.
-    #[allow(clippy::too_many_arguments)]
     pub fn push_part_flagged(
         &mut self, instance: u32, slot: u32, key: ItemKey, layer: u8, flags: PartFlags, subparts: Option<Subparts>,
         rows: &[Row],
@@ -498,7 +497,7 @@ fn push_entries(scene: &mut FrameScene, entries: &[(LightEntry, Vec<Row>)]) -> s
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::camera::tests::camera;
+    use crate::test_camera::camera;
     use crate::scene::ViewKind;
 
     fn key(view: u8) -> ViewKey {
@@ -661,7 +660,10 @@ mod tests {
             remainder: 0,
             inputs: Default::default(),
         };
-        let entry = |slot, owner| LayerItem { slot, key: item(1), owner, model: u32::MAX, rows: 0..0, lighting: None };
+        let entry = |slot, owner| LayerItem {
+            slot, key: item(1), owner, model: u32::MAX, rows: 0..0, lighting: None,
+            flags: crate::PartFlags::NONE, subparts: None, refusal: None, prt: None,
+        };
         let mut b = SceneBuilder::default();
         b.begin(SceneId::default());
         b.open_view(key(0), camera()).unwrap();

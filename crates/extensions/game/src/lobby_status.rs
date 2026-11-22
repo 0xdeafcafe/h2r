@@ -3,8 +3,8 @@
 //! first problem, `crate::lobby_mode::gate_text_id`, or the lobby's own
 //! refusal, `crate::lobby_mode::start_refusal`: a Forge lobby with a member
 //! on another console, a Firefight lobby on a map without the kit), and
-//! the mode strip's reason line (`crate::lobby_tabs::notice_now`): why a
-//! bumper press did not move, for four seconds.
+//! the lobby modes' reason line (`crate::lobby_tabs::notice_now`): why a
+//! mode picked in the GAME MODE picker did not switch, for four seconds.
 
 use bots::{lobby, phantom};
 use engine::GuestMemory;
@@ -29,8 +29,8 @@ pub(crate) fn custom_game_text(m: &mut dyn GuestMemory, return_pc: u32, id: u32)
     if return_pc != CUSTOM_STATUS_RETURN {
         return None;
     }
-    // A bumper press toward a tab that is off, or a switch refused: its
-    // reason, over every other text, while it shows.
+    // A mode picked that is off, or a switch refused: its reason, over
+    // every other text, while it shows.
     if let Some(reason) = crate::lobby_tabs::notice_now() {
         return Some(reason.id());
     }
@@ -43,7 +43,7 @@ pub(crate) fn custom_game_text(m: &mut dyn GuestMemory, return_pc: u32, id: u32)
     let m: &dyn GuestMemory = m;
     // A Forge lobby with a member on another console, or a Firefight lobby
     // on a map without the kit: its start state is held off ready, and the
-    // line says why in place of retail's text (the mode strip's reasons,
+    // line says why in place of retail's text (the lobby modes' reasons,
     // `crate::lobby_tabs::strings`).
     if let Some(reason) = crate::lobby_mode::start_refusal(m) {
         return Some(reason.id());

@@ -1612,7 +1612,7 @@ pub fn problems(text: &str, diagnostics: &[Diagnostic]) -> Vec<Problem> {
             )
         })
         .collect();
-    out.sort_by(|a, b| (a.0, a.1.line, a.1.col).cmp(&(b.0, b.1.line, b.1.col)));
+    out.sort_by_key(|a| (a.0, a.1.line, a.1.col));
     out.into_iter().map(|(_, p)| p).collect()
 }
 

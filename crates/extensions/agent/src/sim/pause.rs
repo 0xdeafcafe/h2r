@@ -20,10 +20,13 @@ fn params<T: serde::de::DeserializeOwned>(v: Value) -> Result<T, RpcError> {
     serde_json::from_value(v).map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))
 }
 
-/// `host.pause {on}` over `hub`.
+/// `host.pause {}` reads, `host.pause {on}` sets, over `hub`.
 pub fn pause(hub: &Hub, v: Value, shell_wait: Duration, hold_wait: Duration) -> Result<Value, RpcError> {
     let p: PauseParams = params(v)?;
-    let s = hub.pause(p.on, shell_wait, hold_wait)?;
+    let s = match p.on {
+        Some(on) => hub.pause(on, shell_wait, hold_wait)?,
+        None => hub.read()?,
+    };
     Ok(serde_json::to_value(s).expect("serialises"))
 }
 

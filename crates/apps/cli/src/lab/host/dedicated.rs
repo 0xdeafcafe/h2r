@@ -101,7 +101,6 @@ fn join_note(xnet: SocketAddrV4) -> String {
 /// lab's image and with its own data root, the host's own `H2_*` variables
 /// cleaned out as for a game run. `xnet` is the LAN address and base port
 /// the host binds; `sock` the agent socket `h2 lab agent` calls.
-#[allow(clippy::too_many_arguments)]
 fn serve_command(
     cfg: &HostConfig,
     id: &str,
@@ -285,6 +284,7 @@ mod tests {
             cargo: "cargo".into(),
             obj_cache_limit: 0,
             target_limit: 0,
+            disk_floor: 0,
             max_jobs: 1,
             lan: None,
             managed: false,

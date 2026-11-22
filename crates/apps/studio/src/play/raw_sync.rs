@@ -180,6 +180,7 @@ impl RawBaseline {
     }
 
     /// Whether the game is taken to hold anything beyond its file.
+    #[allow(dead_code)] // R5 (raw sync) is in progress; its caller lands next.
     pub fn is_empty(&self) -> bool {
         self.raw.is_empty() && self.tags.is_empty() && self.grown.is_empty()
     }

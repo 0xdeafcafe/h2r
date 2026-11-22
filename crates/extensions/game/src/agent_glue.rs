@@ -285,6 +285,38 @@ impl AgentGlue {
                     .expect("superbounce.set serialises"))
             },
         );
+        // Re-reads a map's spot files into the running game, and sets
+        // live overrides of the speed model (superbounce_reload.rs).
+        agent.add_game_method(
+            agent_proto::superbounce::method::RELOAD,
+            Access::Act,
+            |params, _ctx| {
+                let p: agent_proto::superbounce::ReloadParams = if params.is_null() {
+                    Default::default()
+                } else {
+                    serde_json::from_value(params)
+                        .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?
+                };
+                let r = crate::superbounce_reload::reload(&p)
+                    .map_err(|why| RpcError::new(code::INVALID_PARAMS, why))?;
+                Ok(serde_json::to_value(r).expect("superbounce.reload serialises"))
+            },
+        );
+        agent.add_game_method(
+            agent_proto::superbounce::method::TUNE,
+            Access::Act,
+            |params, _ctx| {
+                let p: agent_proto::superbounce::TuneParams = if params.is_null() {
+                    Default::default()
+                } else {
+                    serde_json::from_value(params)
+                        .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?
+                };
+                let r = crate::superbounce_reload::tune(&p)
+                    .map_err(|why| RpcError::new(code::INVALID_PARAMS, why))?;
+                Ok(serde_json::to_value(r).expect("superbounce.tune serialises"))
+            },
+        );
         // The superbounce fall assist (superbounce_assist.rs,
         // docs/game/superbounce.md, "Hold X: the fall assist").
         agent.add_game_method(
@@ -814,7 +846,7 @@ pub fn add_host_methods(agent: &agent::Agent) {
                 "ui.lobby.tabs takes no parameters",
             ));
         }
-        ctx.read_guest(crate::lobby_tabs::strip::inspect)?
+        ctx.read_guest(crate::lobby_tabs::header::inspect)?
             .map_err(|why| RpcError::new(code::UNAVAILABLE, why))
     });
     agent.add_game_method(method::UI_LOBBY_PLAYERS, Access::Read, |params, ctx| {

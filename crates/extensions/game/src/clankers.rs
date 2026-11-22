@@ -6,16 +6,14 @@
 //! other ([`DEFS`], in [`crate::setting_defs::ALL`]), so they persist and
 //! `h2 settings` lists them.
 //!
-//! **The page** is a kit screen ([`page`]) of eight choice rows
-//! ([`crate::ui_kit::choice::ChoiceRow`]) on the lobby's own settings
-//! dialog, Quick Options (`DialogBase::QuickOptions`), as the Halo 1
-//! Options page is: Quick Options' panel, header and list (its
-//! `setting_lists` skin, label left and the value alone in the value
-//! column), Quick Options' header (the focused row's icon in its game
-//! type picture and the row's one line in its help line; the value picker
-//! A opens says what the row does and what each choice means), and the
-//! legend in its footer (docs/game/ui-builder.md "The Dialog kind", "A
-//! page's header").
+//! **The page** is the shared settings dialog ([`page`],
+//! `crate::ui_kit::settings`), declared by `assets/ui/screens/clankers.yaml`:
+//! eight rows over [`DEFS`] on the lobby's own settings dialog, Quick
+//! Options, as the Halo 1 Options page is. Its header (icon, name and
+//! what the window is for) is the same whatever has the focus; the
+//! focused row's help is under the rows, and the value picker A opens
+//! says what the row does and what each choice means
+//! (docs/game/ui-builder.md "The settings dialog").
 //!
 //! **The row.** A custom game's Game Setup dialog gets a "Clanker Options..." row,
 //! the way it gets the Halo 1 Options row (`crate::h1_options_row`, whose
@@ -48,10 +46,9 @@ use bots::phantom::{Identity, PhantomHandle, Phantoms};
 use crate::h1_options_row::{self as h1row, CHANGE_MAP};
 use crate::list_class::{self, Rows};
 use crate::telemetry;
-use crate::ui_kit::choice::ChoiceRow;
-use crate::ui_kit::dialog::icon;
 use crate::ui_kit::ids::{self, Family};
 use crate::ui_kit::screen::{KitScreen, KitTexts};
+use crate::ui_kit::settings::Bindings;
 
 /// The page's feature (`features.clankers`) and screen name.
 pub const FEATURE: &str = "clankers";
@@ -194,100 +191,14 @@ pub static DEFS: [&Def; 8] = [
     &GLITCHES,
 ];
 
-static ROWS: [ChoiceRow; 8] = [
-    ChoiceRow::new(
-        &ENABLED,
-        "Clankers",
-        "Bots join this game and show in the lobby.",
-    )
-    .explain(
-        "Clankers are bots that play this game with you. On adds them to \
-         the lobby like any other player. Off plays without them.",
-    )
-    .icon(icon::SPARTAN),
-    ChoiceRow::new(&COUNT, "Count", "How many bots join, up to 15.")
-        .explain(
-            "How many Clankers join this game, from 1 to 15. Each one \
-             takes a place in the lobby, so leave room for your friends.",
-        )
-        .icon(icon::SQUARES),
-    ChoiceRow::new(
-        &DIFFICULTY,
-        "Difficulty",
-        "How well they play. Mixed varies it around Normal.",
-    )
-    .explain(
-        "How well the Clankers aim, move and pick their fights. Easy is \
-         forgiving and Legendary plays like a veteran. Mixed gives you a \
-         spread of Easy, Normal and Heroic bots.",
-    )
-    .icon(icon::SKULL),
-    ChoiceRow::new(&TEAM, "Teams", "Which team they join in a team game.")
-        .explain(
-            "Where the Clankers go in a team game. Auto-balance spreads \
-             them so the teams stay even. Red or Blue puts every bot on \
-             that team. Free for all games ignore this.",
-        )
-        .icon(icon::FLAG),
-    ChoiceRow::new(
-        &AGGRESSION,
-        "Aggression",
-        "How eagerly they push into a fight.",
-    )
-    .explain(
-        "How hard the Clankers push. Calm bots hold back and wait for a \
-         good shot. Wild bots rush in and chase every kill. Normal sits \
-         in between.",
-    )
-    .icon(icon::BOMB),
-    ChoiceRow::new(
-        &AIM_STYLE,
-        "Aim style",
-        "Steady tracks smoothly; Twitchy flicks.",
-    )
-    .explain(
-        "How the Clankers move their aim. Steady bots track you smoothly \
-         and stay on target. Twitchy bots snap onto you in quick flicks.",
-    )
-    .icon(icon::HELMET),
-    ChoiceRow::new(&TAUNTS, "Taunts", "Whether they taunt after a kill.")
-        .explain(
-            "On lets the Clankers show off over you after a kill, as \
-             players do. Off keeps them on the move.",
-        )
-        .icon(icon::CROWN),
-    ChoiceRow::new(
-        &GLITCHES,
-        "Glitches",
-        "Whether they BXR, sword fly and super bounce.",
-    )
-    .explain(
-        "Halo 2's famous tricks: button combos like BXR, double shots, \
-         sword flying and super bounces. Off plays it straight. Some \
-         shows off now and then. Lots uses them whenever it can.",
-    )
-    .icon(icon::LIGHTNING),
-];
-
-/// The Game Setup row's text; the page's title stays its own
-/// (`assets/ui/screens/clankers.yaml`).
-pub const ROW_LABEL: &str = "Clanker Options...";
-/// What the Game Setup row does, in Game Setup's description while it has
-/// the focus, as retail's rows have theirs (`crate::game_setup_help`).
-pub const ROW_HELP: &str =
-    "Add bots to this game: how many, how well they play, and which team they join.";
-
-/// The Clankers page over `store`: a dialog of its rows on Quick Options
-/// (its eight rows fit the eleven its list shows).
+/// The Clankers page over `store`: the shared settings dialog
+/// (`crate::ui_kit::settings`) its doc declares,
+/// `assets/ui/screens/clankers.yaml`: its header, its eight rows over
+/// [`DEFS`], their help and picker copy, and the Game Setup row's text
+/// and help (`settings.caller`).
 pub fn page(store: Arc<Store>) -> KitScreen {
-    let mut s = KitScreen::new(FEATURE, SCREEN, IDS)
-        .row_label(ROW_LABEL)
-        .row_help(ROW_HELP)
-        .header(icon::SPARTAN);
-    for r in &ROWS {
-        s = s.row(r.row(Arc::clone(&store)));
-    }
-    s
+    crate::ui_kit::settings::screen(FEATURE, SCREEN, IDS, Some(store), Bindings::new())
+        .unwrap_or_else(|e| panic!("{e}"))
 }
 
 // --- The driver -----------------------------------------------------------
@@ -655,6 +566,11 @@ impl PadSource for Clanker {
 
     fn reset_input(&mut self) {
         self.brain.reset_input();
+    }
+
+    fn order(&mut self, order: Option<bots::brain::Order>) -> bool {
+        self.brain.set_order(order);
+        true
     }
 
     fn phantom_latency(&self) -> bots::tuning::PhantomLatency {

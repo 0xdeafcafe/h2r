@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, bail};
 use boot::ui_kit::animation::{AnimatedView, Phase};
 use boot::ui_kit::input::Input;
-use boot::ui_kit::layout::{self, Rules};
+use boot::ui_kit::layout::Rules;
 use boot::ui_kit::page::Live;
 use boot::ui_kit::preview::{self, Canvas, Disc};
 use boot::ui_kit::screens;
@@ -29,11 +29,23 @@ pub mod edit;
 pub enum Pick {
     /// One of our screens ([`screens::NAMES`]) in a named state.
     Native { screen: String, state: String },
-    /// A retail screen of `mainmenu.map`, by tag name, as the disc has it.
-    Retail(String),
+    /// A retail screen of `mainmenu.map`, by tag name, as the disc has it,
+    /// in its plain sample state or the sample variant `sample` names
+    /// (`boot::ui_kit::preview::retail_sample::for_screen_variant`).
+    Retail { tag: String, sample: Option<String> },
 }
 
-/// One finding of the layout checks, with the widgets it names.
+impl Pick {
+    /// Retail screen `tag` in its plain sample state.
+    pub fn retail(tag: impl Into<String>) -> Pick {
+        Pick::Retail {
+            tag: tag.into(),
+            sample: None,
+        }
+    }
+}
+
+/// One finding of the kit's checks, with the widgets it names.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Finding {
     pub text: String,
@@ -45,7 +57,7 @@ pub struct Shot {
     pub canvas: Canvas,
     /// The view (none for a retail screen: only its picture is drawn).
     pub view: Option<View>,
-    /// The checks' findings, the kit's then the layout's.
+    /// The checks' findings (`boot::ui_kit::findings::of_state`).
     pub findings: Vec<Finding>,
     /// A retail screen's widgets (with the map's moves), for the editing;
     /// none for ours (`view` has them) or without the disc.
@@ -178,7 +190,7 @@ impl UiScreens {
                 }
                 self.live = Some(live);
             }
-            Pick::Retail(_) => self.live = None,
+            Pick::Retail { .. } => self.live = None,
         }
         self.pick = Some(pick);
         self.gallery.at = None;
@@ -248,7 +260,7 @@ impl UiScreens {
             self.rev += 1;
             let shot = match pick {
                 Pick::Native { state, .. } => self.draw_native(&state),
-                Pick::Retail(tag) => self.draw_retail(&tag),
+                Pick::Retail { tag, sample } => self.draw_retail(&tag, sample.as_deref()),
             };
             match shot {
                 Ok(s) => self.shot = Some(s),
@@ -287,24 +299,17 @@ impl UiScreens {
         let src = from.source();
         let view = from.view(&spec, state)?;
         let rules = Rules::for_spec(&spec);
-        let mut findings = Vec::new();
-        if let Some(d) = disc {
-            for f in d.check(&spec)? {
-                findings.push(Finding {
-                    text: format!("kit: {f}"),
-                    ids: Vec::new(),
-                });
-            }
-        }
-        let report = layout::check(&view, src, &rules);
-        findings.extend(boot::ui_kit::content::check_with_source(&spec, &view, src).into_iter().map(|f| Finding {
-            text: format!("content: {f}"),
-            ids: vec![f.id],
-        }));
-        findings.extend(report.issues.iter().map(|i| Finding {
-            text: i.to_string(),
-            ids: i.ids().into_iter().map(String::from).collect(),
-        }));
+        // Every check's findings, as `h2 ui preview` prints them
+        // (`boot::ui_kit::findings`).
+        let report = boot::ui_kit::findings::of_state(&from, &spec, &view)?;
+        let findings: Vec<Finding> = report
+            .findings
+            .iter()
+            .map(|f| Finding {
+                text: f.to_string(),
+                ids: f.ids.clone(),
+            })
+            .collect();
         let view = if phase == Phase::Rest {
             view
         } else {
@@ -324,15 +329,16 @@ impl UiScreens {
         })
     }
 
-    /// A retail screen as the disc has it, with the widgets the map's tag
-    /// document moved ([`edit::retail`]) where they are now.
-    fn draw_retail(&mut self, tag: &str) -> Result<Shot> {
+    /// A retail screen as the disc has it, with the edits of the map's
+    /// tag document ([`edit::retail`], [`edit::retail_tag`]): widgets
+    /// moved, blocks hidden or copied, string IDs set.
+    fn draw_retail(&mut self, tag: &str, sample: Option<&str>) -> Result<Shot> {
         let rev = self.rev;
-        let places = self.edit.places.get(tag).cloned().unwrap_or_default();
+        let edits = self.edit.retail_edits(tag);
         let d = self.disc().context("retail screens need the disc")?;
-        let r = edit::retail_pick(tag);
-        let canvas = d.render_retail_with(&r, &places)?;
-        let retail_view = Some(d.retail_view(&r, &places)?);
+        let r = edit::retail_pick(tag, sample);
+        let canvas = d.render_retail_edited(&r, &edits)?;
+        let retail_view = Some(d.retail_view_edited(&r, &edits)?);
         Ok(Shot {
             canvas,
             view: None,
@@ -393,7 +399,7 @@ impl UiScreens {
                     format!("{stem}-{}", self.animation)
                 }
             }
-            Pick::Retail(tag) => tag.replace(['\\', '/'], "_"),
+            Pick::Retail { tag, .. } => tag.replace(['\\', '/'], "_"),
         };
         let phase = self.animation;
         let mut written = Vec::new();
@@ -527,7 +533,7 @@ mod tests {
         let shot = s.shot().unwrap();
         assert_eq!(shot.findings, vec![]);
         assert!(shot.view.as_ref().unwrap().widget("cell.0.art").is_some());
-        let issue = layout::Issue::Fit { id: "row.0".into() };
+        let issue = boot::ui_kit::layout::Issue::Fit { id: "row.0".into() };
         assert_eq!(issue.ids(), ["row.0"]);
     }
 
@@ -578,7 +584,7 @@ mod tests {
             .find(|n| n.ends_with("main_menu"))
             .cloned()
             .unwrap_or_else(|| retail[0].clone());
-        s.select(Pick::Retail(main)).unwrap();
+        s.select(Pick::retail(main)).unwrap();
         assert!(s.shot().unwrap().view.is_none());
         assert!(s.press(Input::A).is_none(), "nothing to step");
     }

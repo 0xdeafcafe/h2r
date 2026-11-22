@@ -445,8 +445,8 @@ mod tests {
 }
 
 /// The runtime's memories as [`GuestMemory`] (feature `runtime-glue`).
-/// The impls sit with the trait: the trait and the types are both
-/// foreign to `engine`, whose `runtime_glue` used them first.
+/// The impls sit with the trait, beside [`crate::runtime_glue`], which
+/// registers the adapters against the same memories.
 #[cfg(feature = "runtime-glue")]
 mod runtime_memory {
     use super::{GuestMemory, MemFault};
@@ -454,7 +454,7 @@ mod runtime_memory {
 
     /// The runtime's guest is a [`GuestMemory`], so code written against the
     /// one trait reads it directly. A fault's reason is dropped ([`MemFault`]
-    /// has none); `engine::runtime_glue::invoke` keeps it where it matters.
+    /// has none); `crate::runtime_glue::invoke` keeps it where it matters.
     impl GuestMemory for Guest {
         fn take_write_watch(&mut self, id: runtime::WatchId) -> Result<Vec<runtime::DirtyRange>, runtime::WatchError> {
             self.take_dirty(id)

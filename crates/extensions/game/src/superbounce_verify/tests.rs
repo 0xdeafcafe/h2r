@@ -33,7 +33,6 @@ fn strip(stand: Vec3, score: f32) -> Spot {
         drift: [0.0, 1.0],
         fall: 1.0,
         launch: 11.0,
-        width: 0.2,
         need: 4.0,
         score,
         ..Spot::default()
@@ -173,7 +172,7 @@ fn explicit_points_make_their_own_spots_and_are_not_saved() {
     assert!(!p.config.save);
     let s = p.targets[0].spot;
     assert_eq!(s.kind, Kind::Bounce);
-    assert!(close(s.width, plan::POINT_WIDTH) && close(s.need, plan::POINT_NEED));
+    assert!(close(s.need, plan::POINT_NEED));
     // The midline runs across the default drift (+Y), through stand.
     assert!(
         close(s.edge[0][1], 2.0) && close((s.edge[1][0] - s.edge[0][0]).abs(), plan::POINT_EDGE)

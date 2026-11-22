@@ -78,6 +78,11 @@ pub fn extract(mem: &dyn GuestRead, layer: u8, builder: &mut SceneBuilder) -> Re
 /// `layer`, the list does not read, or a slot is not a model decorator
 /// item with the bit set; then nothing is written, so the caller writes
 /// through a preview (`skip::MaskPreview`) and applies it only on `Some`.
+/// Each skipped item's build stamps (`layout::decorators::build_stamps`)
+/// are written with its mask, so the geometry cache keeps the geometry
+/// the native stage draws as the guest's build would; an item whose
+/// stamps do not read, or whose geometry is no longer resident, refuses
+/// the whole skip.
 pub fn clear_slots(mem: &mut dyn GuestWrite, layer: u32, slots: &[u32]) -> Option<Cleared> {
     if layer >= 32 || mem.read_u32(CURRENT_LAYER)? != layer {
         return None;
@@ -99,10 +104,17 @@ pub fn clear_slots(mem: &mut dyn GuestWrite, layer: u32, slots: &[u32]) -> Optio
         }
         masks.push((item, mask));
     }
+    let mut stamps = Vec::with_capacity(2 * masks.len());
+    for &(item, _) in &masks {
+        stamps.extend(crate::layout::decorators::build_stamps(&*mem, item).ok()?);
+    }
     let mut out = Cleared { layer, items: Vec::with_capacity(masks.len()) };
     for (item, mask) in masks {
         mem.write_u32(item + 0x10, mask & !bit)?;
         out.items.push(item);
+    }
+    for (at, stamp) in stamps {
+        mem.write_u32(at, stamp)?;
     }
     Some(out)
 }
@@ -275,11 +287,30 @@ mod tests {
         assert_eq!(extract(&m, 3, &mut b).unwrap(), None, "no list, nothing written");
     }
 
+    const CACHE: u32 = 0x0065_0000;
+    const CACHE_DATA_AT: u32 = 0x0065_1000;
+    const CACHE_TABLE: u32 = 0x0066_0000;
+
+    /// The geometry cache: the frame's stamp 77; the placement's geometry
+    /// record in entry 3, the set's geometry in entry 5, both stamped 1.
+    fn cache(m: &mut Mem) {
+        m.w(GEOMETRY_CACHE, CACHE);
+        m.w(CACHE + CACHE_STAMP, 77);
+        m.w(CACHE + CACHE_DATA, CACHE_DATA_AT);
+        m.w(CACHE_DATA_AT + CACHE_ENTRIES, CACHE_TABLE);
+        m.w(GEOMETRY + INFO_ENTRY, 3);
+        m.w(SET + SET_GEOMETRY + INFO_ENTRY, 5);
+        for entry in [3, 5] {
+            m.w(CACHE_TABLE + CACHE_ENTRY_SIZE * entry + CACHE_ENTRY_STAMP, 1);
+        }
+    }
+
     #[test]
     fn the_skip_clears_the_planned_slots_or_nothing() {
         let mut m = Mem::default();
         camera_record(&mut m, RENDER_CAMERA);
         world(&mut m);
+        cache(&mut m);
         m.w(CURRENT_LAYER, 3);
         let mask = |m: &Mem, slot: u32| m.read_u32(ITEMS + ITEM_SIZE * slot + 0x10).unwrap();
         // Slot 0 is another build, slot 2 lacks the bit: nothing written.
@@ -292,5 +323,28 @@ mod tests {
         assert_eq!(got, Cleared { layer: 3, items: vec![ITEMS + ITEM_SIZE] });
         assert_eq!(mask(&m, 1), 0);
         assert_eq!(clear_slots(&mut m, 3, &[1]), None, "already cleared");
+    }
+
+    /// A skipped item's build stamps the cache entries of its placement's
+    /// geometry record and its set's geometry, as `0x0012de70` does for
+    /// resident blocks; geometry no longer resident refuses the skip.
+    #[test]
+    fn the_skip_stamps_the_geometry_the_build_would_have_asked_for() {
+        let mut m = Mem::default();
+        camera_record(&mut m, RENDER_CAMERA);
+        world(&mut m);
+        cache(&mut m);
+        m.w(CURRENT_LAYER, 3);
+        let stamp = |m: &Mem, entry: u32| m.read_u32(CACHE_TABLE + CACHE_ENTRY_SIZE * entry + CACHE_ENTRY_STAMP).unwrap();
+        assert_eq!(
+            build_stamps(&m, ITEMS + ITEM_SIZE),
+            Ok([(CACHE_TABLE + 3 * CACHE_ENTRY_SIZE + CACHE_ENTRY_STAMP, 77), (CACHE_TABLE + 5 * CACHE_ENTRY_SIZE + CACHE_ENTRY_STAMP, 77)])
+        );
+        m.w(SET + SET_GEOMETRY + 0x1c, 0);
+        assert_eq!(clear_slots(&mut m, 3, &[1]), None, "the set's geometry is not resident");
+        assert_eq!((stamp(&m, 3), stamp(&m, 5)), (1, 1));
+        m.w(SET + SET_GEOMETRY + 0x1c, 1 << 16);
+        assert!(clear_slots(&mut m, 3, &[1]).is_some());
+        assert_eq!((stamp(&m, 3), stamp(&m, 5)), (77, 77));
     }
 }

@@ -3,6 +3,7 @@ name = "clif"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+description = "The Cranelift fast tier: planned IR straight to host objects (docs/lifter/cranelift-tier.md)"
 
 # The Cranelift fast tier (docs/lifter/cranelift-tier.md). Every cranelift
 # crate stays pinned to the one version below.
@@ -21,3 +22,6 @@ analyze.workspace = true
 xbe.workspace = true
 timeline = { path = "../../runtime/timeline" }
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info", "code_asm"] }
+
+[lints]
+workspace = true

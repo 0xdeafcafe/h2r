@@ -14,6 +14,8 @@ use tags::material::Material as TagMaterial;
 use tags::shader::StageStates;
 
 use crate::decorators::PROVIDED_INPUTS;
+use crate::engine_states::apply_static;
+use crate::gpu::Image;
 use crate::look::{self, PassLook, Stage};
 use crate::object_program_gpu::input_fetch;
 use crate::object_streams::{Attribute, Element, SLOT, StreamData, StreamElement, declaration, gather, registers};
@@ -37,6 +39,10 @@ pub struct DecoratorLook {
     /// its input semantics (register `v<i>` reads `semantics[i]`).
     pub microcode: Vec<u8>,
     pub semantics: Vec<u16>,
+    /// The pass sets no `CULLMODE`: it draws with the cull and winding
+    /// the device holds at the layer-3 call
+    /// (`decorators_gpu::DrawKey::cull`).
+    pub inherits_cull: bool,
 }
 
 /// The pass of `material` at detail level `lod`, layer `layer`, pass
@@ -53,25 +59,20 @@ pub fn decorator_look(
         .ok_or_else(|| format!("the template has no layer {layer} at detail level {lod}"))?;
     let p = list.passes.get(usize::from(pass)).ok_or_else(|| format!("the layer has no pass {pass}"))?;
     let imp = p.implementations.first().ok_or("the pass has no implementation")?;
-    if !imp.engine_render_states.is_empty() {
-        return Err("engine-driven render states".into());
-    }
-    if !imp.engine_stage_states.is_empty() {
-        return Err("engine-driven texture stage states".into());
-    }
+    // Engine-driven states over the pass's own, from the instance's
+    // inputs: the stage translates the pass once for every draw.
+    let applied = apply_static(imp, &material.inputs).map_err(|r| format!("engine-driven states: {r:?}"))?;
     // A pass that leaves the cull to the device draws as the draws before
-    // it left it: not known here.
-    if !look::sets_state(&imp.render_states, gfx::state::RenderStateType::CullMode) {
-        return Err("the pass inherits the device's cull".into());
-    }
-    let look = look::implementation_look(p.pass, imp).map_err(|r| format!("{r:?}"))?;
-    if look.textures.contains(&Stage::Lightmap) {
-        return Err("a stage samples a lightmap".into());
-    }
-    let state = pass_state(&imp.render_states).map_err(|r| format!("render states: {r:?}"))?;
+    // it left it: the device's at the layer-3 call, read at the ask.
+    let inherits_cull = !look::sets_state(&imp.render_states, gfx::state::RenderStateType::CullMode);
+    // A stage sampling the lightmap takes the globals' bitmap (the draw
+    // sets the page to -1, `0x0004e277`): [`stage_images`].
+    let mut look = look::implementation_look(p.pass, imp).map_err(|r| format!("{r:?}"))?;
+    look.stage_states = applied.stage_states;
+    let state = pass_state(&applied.render_states).map_err(|r| format!("render states: {r:?}"))?;
     let (microcode, semantics) =
         program(look.vertex_shader).ok_or("the vrtx has no classification-1 program")?;
-    Ok(DecoratorLook { look, state, microcode, semantics })
+    Ok(DecoratorLook { look, state, microcode, semantics, inherits_cull })
 }
 
 /// A decorator pass translated for one set's stream.
@@ -92,6 +93,8 @@ pub struct DecoratorProgram {
     pub state: PassState,
     /// The registers the set's stream supplies, in vertex-buffer order.
     pub declaration: Vec<Element>,
+    /// [`DecoratorLook::inherits_cull`].
+    pub inherits_cull: bool,
 }
 
 /// The pixel shader as the draw has it: `TwoSidedLighting` on
@@ -162,7 +165,43 @@ pub fn compile(look: &DecoratorLook, stream: &[StreamElement]) -> Result<Decorat
         pixel: t.pixel,
         state: look.state,
         declaration,
+        inherits_cull: look.inherits_cull,
     })
+}
+
+/// The images `program`'s sampled stages bind: a bitmap stage's from
+/// `bitmap` (bitmap, image), a lightmap stage's `lightmap`. The draw
+/// `0x0004e260` sets the current lightmap page to -1 (`0x0004e277`), so
+/// the stage setup binds the globals' rasterizer bitmap at `+0x64` as for
+/// an object's record, and the draw adds no lightmap coordinates: the
+/// stage takes that image only when it is uniform
+/// (`crate::object_program_gpu::uniform`), which samples the same
+/// wherever the coordinates fall. An error says why the material stays on
+/// the D3D path.
+pub fn stage_images(
+    program: &DecoratorProgram, bitmap: &dyn Fn(TagId, u32) -> Option<Image>, lightmap: Option<&Image>,
+) -> Result<[Option<Image>; 4], String> {
+    let mut images: [Option<Image>; 4] = Default::default();
+    for (n, dim) in program.dims.iter().enumerate() {
+        if dim.is_none() {
+            continue;
+        }
+        images[n] = Some(match program.stages[n] {
+            Stage::Bitmap { bitmap: id, image } => bitmap(id, image).ok_or_else(|| format!("stage {n} bitmap did not load"))?,
+            Stage::Lightmap => {
+                let image = lightmap.ok_or_else(|| format!("stage {n} samples the lightmap, which did not load"))?;
+                if !crate::object_program_gpu::uniform(image) {
+                    return Err(format!(
+                        "stage {n} samples the lightmap, whose image ({}x{}) is not uniform, so the coordinates the draw leaves would matter",
+                        image.width, image.height
+                    ));
+                }
+                image.clone()
+            }
+            _ => return Err(format!("stage {n} samples what is not a bitmap")),
+        });
+    }
+    Ok(images)
 }
 
 /// A set's vertices as one program reads them, and its indices: per
@@ -263,7 +302,7 @@ pub(crate) mod tests {
 
     /// Semantic 0 (a three-float position) in `v0`.
     pub(crate) fn decorator(extra: Option<O>) -> DecoratorLook {
-        DecoratorLook { look: look(), state: state(), microcode: code(extra), semantics: vec![0] }
+        DecoratorLook { look: look(), state: state(), microcode: code(extra), semantics: vec![0], inherits_cull: false }
     }
 
     pub(crate) fn stream() -> Vec<StreamElement> {
@@ -321,5 +360,59 @@ pub(crate) mod tests {
         let (v, _) = uniforms(&p, &view, [1.0, 2.0, 0.0, 1.0]);
         assert_eq!(v.constants[LOD_CONSTANT], [1.0, 2.0, 0.0, 1.0]);
         assert_eq!(v.constants[0], [0.5; 4]);
+    }
+
+    /// An engine-driven blend-colour alpha from the instance's scalar 21
+    /// goes over the pass's own colour; one from a draw's input refuses.
+    #[test]
+    fn a_pass_takes_its_engine_driven_states_from_the_instance() {
+        use gfx::state::RenderStateType as R;
+        use tags::material::{EngineInputs, ResolvedLayer, ResolvedPass};
+        use tags::shader::{ExternalBinding, RenderStateValue};
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let slot = |t| (0..=255u8).find(|&s| R::from_guest_index(&table, u32::from(s)) == Some(t)).expect("a 5849 slot");
+        let rs = |t, value| RenderStateValue { state: slot(t), value };
+        let mut imp = crate::engine_states::tests::implementation(
+            vec![rs(R::AlphaBlendEnable, 0), rs(R::ZWriteEnable, 1), rs(R::BlendColor, 0x00ff_ffff)],
+            0,
+        );
+        imp.input_reads.scalars = 1 << 21;
+        imp.engine_render_states = vec![ExternalBinding { bytes: [0, 1, 0, 21] }];
+        let mut material = TagMaterial {
+            shader: TagId(0xe000_0100),
+            template: TagId(0xe000_0101),
+            inputs: EngineInputs::default(),
+            layers: vec![ResolvedLayer {
+                lod: 0,
+                layer: 3,
+                passes: vec![ResolvedPass { index: 0, pass: TagId(0xe000_0200), implementations: vec![imp] }],
+            }],
+        };
+        material.inputs.scalars[21] = 1.0;
+        let mut program = |_: TagId| Some((code(None), vec![0]));
+        let look = decorator_look(&material, 0, 3, 0, &mut program).unwrap();
+        assert_eq!(look.state.blend_constant, wgpu::Color::WHITE);
+        material.layers[0].passes[0].implementations[0].engine_render_states = vec![ExternalBinding { bytes: [0, 1, 0, 3] }];
+        let e = decorator_look(&material, 0, 3, 0, &mut program).unwrap_err();
+        assert!(e.contains("engine-driven states") && e.contains("PerDraw"), "{e}");
+    }
+
+    /// A lightmap stage binds the globals' bitmap when it is uniform, as
+    /// an object's does; a bitmap stage its own image.
+    #[test]
+    fn a_lightmap_stage_takes_the_uniform_globals_bitmap() {
+        let mut p = compile(&decorator(None), &stream()).unwrap();
+        let base = TagId(0xe000_0007);
+        p.stages = [Stage::Bitmap { bitmap: base, image: 0 }, Stage::Lightmap, Stage::Empty, Stage::Empty];
+        p.dims = [Some(TextureDim::D2), Some(TextureDim::D2), None, None];
+        let image = |rgba: Vec<u8>| Image { width: 2, height: 1, rgba, mips: Vec::new(), blocks: None };
+        let grey = image(vec![9, 9, 9, 255, 9, 9, 9, 255]);
+        let varied = image(vec![9, 9, 9, 255, 1, 2, 3, 255]);
+        let bitmap = |id: TagId, n: u32| (id == base && n == 0).then(|| varied.clone());
+        let got = stage_images(&p, &bitmap, Some(&grey)).unwrap();
+        assert_eq!((got[0].as_ref(), got[1].as_ref(), got[2].as_ref()), (Some(&varied), Some(&grey), None));
+        assert!(stage_images(&p, &bitmap, Some(&varied)).unwrap_err().contains("not uniform"));
+        assert!(stage_images(&p, &bitmap, None).unwrap_err().contains("did not load"));
+        assert!(stage_images(&p, &|_, _| None, Some(&grey)).unwrap_err().contains("stage 0 bitmap"));
     }
 }

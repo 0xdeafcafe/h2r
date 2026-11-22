@@ -1,7 +1,10 @@
-//! The lab's questions to the player. Only a player choosing Allow can
-//! grant consent to start a job. While a job runs, a game the player opens
-//! asks what the job should do (`Ask::Running`, docs/runtime/lab.md "When
-//! the player opens a game").
+//! The lab's questions to the player. Only a player choosing Close and
+//! start (`Decision::Allowed`) or Start alongside (`Decision::Alongside`,
+//! offered unless the job needs a quiet machine) can grant consent to start
+//! a job; the lab then closes this game with `host.quit` for the first and
+//! leaves it open for the second. While a job runs, a game the
+//! player opens asks what the job should do (`Ask::Running`,
+//! docs/runtime/lab.md "When the player opens a game").
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -30,6 +33,8 @@ use crate::ui_kit::view::Opener;
 use crate::{coop_probe, level_boot, ui_kit, ui_watch};
 
 pub const SCREEN: &str = "lab.takeover";
+/// The start question with a Start alongside row.
+pub const ALONGSIDE_SCREEN: &str = "lab.takeover.alongside";
 /// The question a game asks while a lab job runs.
 pub const RUNNING_SCREEN: &str = "lab.running";
 const IDS: ui_kit::ids::Family = ui_kit::ids::family("lab takeover");
@@ -39,11 +44,10 @@ const TITLE_ID: u32 = 0;
 const BODY_ID: u32 = 1;
 const FOOTER_ID: u32 = 4;
 
-/// One of the two questions: its screen and class, its rows and what each
+/// One of the three dialogs: its screen and class, its rows and what each
 /// answers. The safe answer is row 0, the initial focus, including when a
 /// button is held.
 struct Form {
-    ask: Ask,
     screen: &'static str,
     class: &'static str,
     labels: &'static [&'static str],
@@ -56,34 +60,46 @@ struct Form {
     anchor: i16,
 }
 
-// The dialog's list is on skin 0 (`ui_kit::view` item art): row 0's frame
-// art tops out 33 units above the anchor at most (the cap is 34 high, from
-// 1 below the anchor, or 4 below on the Controls skin), rows are 22 apart
-// and the last row's cap reaches 4 below its anchor. The body's ink ends
-// 19 units a line below `dialog::BODY_TOP` (72), and the footer's top is
-// -83.
+// The dialog's list is on skin 0 (`ui_kit::view::Geometry::fallback`):
+// a row's cap (item art 1, the focus frame) is 34 high from 1 below the
+// row's anchor, so it spans anchor + 33 down to anchor - 1, and rows are
+// 22 apart. The body's ink ends 19 units a line below `dialog::BODY_TOP`
+// (72), and the footer's top is -83. The layout check holds the body off
+// every row's art, and every label to a contrast of 2.5 against what is
+// drawn under it, the main menu included.
 //
-// Four body lines end at -4: at -44 the frame's top (-11) clears them, and
-// row 1's cap (-70 to -74) stays above the footer. Row 1 sits below the
-// opener's brighter rows there, so its unfocused label keeps the 2.5
-// contrast floor (at -38 it measured 2.44).
+// Both questions have a three-line body, ending at 72 - 3 * 19 = 15. A
+// fourth line would end at -4 and need row 0's cap top at -4 or lower, an
+// anchor of -37 or lower; on the disc these labels lose their contrast
+// from about -36 down (over the menu under the panel), so four lines fit
+// no anchor. At -34 the cap's top (-1) is 16 under the body, the labels
+// keep their contrast (measured at this anchor), and row 1's cap ends at
+// -57, well above the footer.
 const START: Form = Form {
-    ask: Ask::Start,
     screen: SCREEN,
     class: "lab-takeover-dialog",
-    labels: &["Not now", "Allow"],
+    labels: &["Not now", "Close and start"],
     first_id: 2,
     answers: &[Decision::Declined, Decision::Allowed],
     dismissed: Decision::Declined,
-    anchor: -44,
+    anchor: -34,
 };
 
-// Three body lines end at 15, well above the frame's top (-2). At -35 row
-// 0 sits lower than the consent question's row 0 did when its label kept
-// its contrast over the logo, and row 2's cap (-83 at the lowest) meets
-// the footer's top without reaching it.
+// The start question with Start alongside has three rows under the same
+// three-line body, so it takes the running question's anchor, -35.
+const ALONGSIDE: Form = Form {
+    screen: ALONGSIDE_SCREEN,
+    class: "lab-takeover-alongside-dialog",
+    labels: &["Not now", "Start alongside", "Close and start"],
+    first_id: 8,
+    answers: &[Decision::Declined, Decision::Alongside, Decision::Allowed],
+    dismissed: Decision::Declined,
+    anchor: -35,
+};
+
+// At -35 row 0's cap tops out at -2, 17 under the body, the labels keep
+// their contrast, and row 2's cap ends at -80, above the footer's -83.
 const RUNNING: Form = Form {
-    ask: Ask::Running,
     screen: RUNNING_SCREEN,
     class: "lab-running-dialog",
     labels: &["Finish this one", "Keep running", "Stop and pause"],
@@ -97,10 +113,13 @@ const RUNNING: Form = Form {
     anchor: -35,
 };
 
-fn form(ask: Ask) -> &'static Form {
-    match ask {
-        Ask::Start => &START,
-        Ask::Running => &RUNNING,
+/// The dialog that asks `request`: the start question has the Start
+/// alongside row only when the request offers it.
+fn form(request: &Request) -> &'static Form {
+    match (request.ask, request.alongside) {
+        (Ask::Start, false) => &START,
+        (Ask::Start, true) => &ALONGSIDE,
+        (Ask::Running, _) => &RUNNING,
     }
 }
 
@@ -151,11 +170,11 @@ fn source_line(source: &Source) -> String {
     }
 }
 
-/// The dialog's text. To start a job, four lines: who asks and what it
-/// does, the job's name, its source, and the level, data and time. While a
-/// job runs, three: who runs it, its name and the question. Each line stays
-/// one line at the widest letters (the fit test), since the body wraps only
-/// at spaces and that is all the room above the rows.
+/// The dialog's text, three lines (all the room above the rows, see
+/// [`START`]). To start a job: who asks, what it does and how long it
+/// takes; the job's name; its source, then the level and data. While a
+/// job runs: who runs it, its name and the question. Each line stays one
+/// line (the fit test), since the body wraps only at spaces.
 fn body(request: &Request) -> String {
     let who = display_field(&request.requester, 12);
     let name = display_field(&request.name, 22);
@@ -169,25 +188,20 @@ fn body(request: &Request) -> String {
         (Operation::Sim, false) => "run a sim",
         (Operation::Sim, true) => "build, then sim",
     };
-    let time = match request.estimate_seconds {
+    let time: String = match request.estimate_seconds {
         0 => "time varies".into(),
         n @ 1..=59 => format!("about {n} sec"),
         n @ 60..=5940 => format!("about {} min", n.div_ceil(60)),
         _ => "over 99 min".into(),
     };
-    let mut facts = Vec::new();
+    let mut facts = vec![source_line(&request.source)];
     if let Some(level) = request.level.as_deref().filter(|l| !l.trim().is_empty()) {
         facts.push(format!("level {}", display_field(level, 10)));
     }
     if request.own_data {
         facts.push("own data".into());
     }
-    facts.push(time);
-    format!(
-        "{who}: {action}\n\"{name}\"\n{}\n{}",
-        source_line(&request.source),
-        facts.join(", ")
-    )
+    format!("{who}: {action} ({time})\n\"{name}\"\n{}", facts.join(", "))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -201,7 +215,7 @@ enum Screen {
 
 struct PromptState {
     id: u64,
-    ask: Ask,
+    form: &'static Form,
     until: Instant,
     body: String,
     screen: Screen,
@@ -230,7 +244,7 @@ impl Default for Dialog {
     fn default() -> Self {
         let texts = SlotTexts::new(IDS);
         texts.set(TITLE_ID, TITLE);
-        for form in [&START, &RUNNING] {
+        for form in [&START, &ALONGSIDE, &RUNNING] {
             for (row, label) in form.labels.iter().enumerate() {
                 texts.set(form.first_id + row as u32, label);
             }
@@ -274,7 +288,7 @@ impl Dialog {
         let id = prompt.as_ref().map_or(1, |p| p.id + 1);
         *prompt = Some(PromptState {
             id,
-            ask: request.ask,
+            form: form(&request),
             until: now + Duration::from_secs(request.timeout_seconds.into()),
             body: body(&request),
             screen: Screen::Queued,
@@ -301,7 +315,7 @@ impl Dialog {
         )?;
         p.expire(Instant::now());
         if p.decision == Decision::Pending {
-            p.decision = form(p.ask).dismissed;
+            p.decision = p.form.dismissed;
         }
         p.screen = Screen::Gone;
         p.pause.take()
@@ -392,7 +406,7 @@ impl Dialog {
         };
         if let Some(p) = self.prompt().as_mut() {
             p.expire(Instant::now());
-            if p.ask == form.ask
+            if p.form.screen == form.screen
                 && p.decision == Decision::Pending
                 && matches!(p.screen, Screen::Open(_))
             {
@@ -531,7 +545,7 @@ impl Feature for Driver {
             .texts
             .base
             .store(b.guest_alloc(0x1000, Permissions::RW)?, Ordering::SeqCst);
-        for form in [&START, &RUNNING] {
+        for form in [&START, &ALONGSIDE, &RUNNING] {
             let dialog = Arc::clone(&self.0);
             b.locale()
                 .source(form.screen, move |id| dialog.texts.address(id));
@@ -578,7 +592,7 @@ impl Feature for Driver {
                             }
                             dialog.texts.set(BODY_ID, &p.body.replace('\n', "\r\n"));
                             p.screen = Screen::Opening;
-                            UiStep::Open(form(p.ask).screen)
+                            UiStep::Open(p.form.screen)
                         }
                         Screen::Open(at) if p.decision == Decision::TimedOut => {
                             p.screen = Screen::Closing(at);
@@ -646,6 +660,7 @@ pub fn install(registry: &mut hooks::Registry, agent: &agent::Agent) -> anyhow::
     if registry.add(&dialog.class(&START))? && registry.add(&Driver(Arc::clone(&dialog)))? {
         // With its class switched off, the running question can't open and
         // answers Unavailable; the lab then lets the job finish.
+        registry.add(&dialog.class(&ALONGSIDE))?;
         registry.add(&dialog.class(&RUNNING))?;
         add_consent(agent, &dialog);
     }
@@ -654,6 +669,17 @@ pub fn install(registry: &mut hooks::Registry, agent: &agent::Agent) -> anyhow::
 
 pub(crate) fn sample_page() -> ListPage {
     sample(sample_request(), &START)
+}
+
+/// The start question with Start alongside, for the screen audit.
+pub(crate) fn sample_alongside_page() -> ListPage {
+    sample(
+        Request {
+            alongside: true,
+            ..sample_request()
+        },
+        &ALONGSIDE,
+    )
 }
 
 /// The question a game asks while a lab job runs, for the screen audit.
@@ -690,6 +716,7 @@ fn sample_request() -> Request {
         own_data: false,
         estimate_seconds: 240,
         timeout_seconds: 60,
+        alongside: false,
     }
 }
 

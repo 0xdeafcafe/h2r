@@ -108,6 +108,21 @@ pub fn view(s: &State, tutorial: Option<u8>) -> View {
     }
 }
 
+/// `v` as it is shown in the air: the pill, the notification and the medal
+/// stay; the charge strip, the arming bar, the prompt line, the navpoint
+/// and the tutorial step go. In the air the screen is the step chain's
+/// and the tracker's (docs/game/superbounce.md, "In the air").
+pub fn in_air(v: View) -> View {
+    View {
+        charge: None,
+        arm: None,
+        verb: None,
+        nav: None,
+        tutorial: None,
+        ..v
+    }
+}
+
 /// The last medal award of a local player in `s`: its highest medal and
 /// its tick.
 pub fn medal(s: &State) -> Option<(Medal, u32)> {
@@ -373,6 +388,8 @@ impl Hud {
         LOCKED.store(reticle_locked(&s), Ordering::Relaxed);
         for (user, text) in self.sent.notes(Some(&s), mode::lost(&s)) {
             self.handle.notify(user, &text);
+            // A medal line is spoken too (medal_announcer.rs).
+            crate::medal_announcer::announce(&text);
         }
         self.lost = mode::lost(&s).or(self.lost);
         let now = tutorial_seconds(self.ticks);
@@ -391,6 +408,7 @@ impl Hud {
             arm: self.arm.update(base.charge.map(|c| c.phase)),
             ..base
         };
+        let v = if s.airborne { in_air(v) } else { v };
         self.handle.publish(sb::values(&v));
         self.handle.navpoint(
             s.nav_target
@@ -455,6 +473,11 @@ pub fn install(
     let show = superbounce_tutorial_shows(seen, env.as_deref());
     let handle = hud_kit::register(Arc::new(Superbounce));
     handle.publish(hidden());
+    // The step chain beside it is the window's (superbounce_steps.rs), with
+    // its own switch.
+    crate::superbounce_steps::install(registry)?;
+    // Ghost runs are shown only when asked for (superbounce_ghost.rs).
+    crate::superbounce_ghost::install_feature(registry)?;
     let hud = Hud {
         handle,
         tutorial: Tutorial::new(show),

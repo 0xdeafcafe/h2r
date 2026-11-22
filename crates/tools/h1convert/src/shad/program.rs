@@ -151,7 +151,6 @@ pub(super) fn pass(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn pass_with_inputs(
     vertex_shader: TagId,
     pixel: &PixelShaderDef,

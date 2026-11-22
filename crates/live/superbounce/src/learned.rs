@@ -22,8 +22,9 @@
 
 use std::cmp::Ordering;
 
-use crate::Vec3;
+use crate::geom::segment_xy;
 use crate::verified::{MATCH, MATCH_Z};
+use crate::{Kind, Spot, Vec3};
 
 /// The file format's version; [`parse`] refuses any other. It rises
 /// whenever the format or what the route makes of a knob changes.
@@ -704,6 +705,60 @@ pub fn entry_for(entries: &[Entry], stand: Vec3) -> Option<&Entry> {
         let d = |e: &Entry| (e.at[0] - stand[0]).hypot(e.at[1] - stand[1]);
         d(a).total_cmp(&d(b)).then_with(|| order(a, b))
     })
+}
+
+/// The map's learned lines applied to scanned `spots`: the sim's measured
+/// aim outranks the scan's. A bounce spot whose line is `learned` or
+/// `partial` with a hit (some try bounced) and has an aim (`ax ay`) has
+/// its aim moved onto it: `stand` to the aim (its height kept). `edge`
+/// stays the collision edge it is: the aim is where on and across it to
+/// land, the edge what the catch is measured from. Its status is left alone: a line never proves a site
+/// (the training writes the word; only a primed game run proves,
+/// [`crate::verified`]). Other lines and crouch spots are left as they
+/// are.
+///
+/// A line belongs to one spot: of the bounce spots it is about
+/// ([`Entry::is_of`]), the one whose target line passes nearest its aim
+/// (with no aim, the one standing nearest it). Ascension's slot (target
+/// y 4.000) and its crease candidate (y 3.800) are both within reach of
+/// the line at y 3.88; its aim, y 3.985, is on the slot's seam, so the
+/// slot takes it and the crease stays where it is.
+pub fn apply(spots: &mut [Spot], entries: &[Entry]) {
+    if entries.is_empty() {
+        return;
+    }
+    let before: Vec<Spot> = spots.to_vec();
+    let owner = |e: &Entry, s: &Spot| match e.knobs.aim {
+        Some(aim) => segment_xy(s.edge, aim),
+        None => (e.at[0] - s.stand[0]).hypot(e.at[1] - s.stand[1]),
+    };
+    for (i, s) in spots.iter_mut().enumerate() {
+        if s.kind != Kind::Bounce {
+            continue;
+        }
+        let Some(e) = entry_for(entries, s.stand) else {
+            continue;
+        };
+        if !matches!(e.state, State::Learned | State::Partial) || e.hits == 0 {
+            continue;
+        }
+        let mine = owner(e, &before[i]);
+        let taken = before.iter().enumerate().any(|(k, o)| {
+            k != i && o.kind == Kind::Bounce && e.is_of(o.stand) && owner(e, o) < mine
+        });
+        if taken {
+            continue;
+        }
+        if let Some(aim) = e.knobs.aim {
+            retarget(s, aim);
+        }
+    }
+}
+
+/// `s`'s aim moved onto `aim`: `stand` there, its height kept; the edge
+/// is left as the map's collision has it.
+fn retarget(s: &mut Spot, aim: [f32; 2]) {
+    s.stand = [aim[0], aim[1], s.stand[2]];
 }
 
 /// The knobs the route plays at the site standing at `stand`: its line's,

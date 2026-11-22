@@ -434,7 +434,6 @@ impl RecordedDraw {
     /// Build an ordered packet from an already validated indexed pipeline and
     /// its pinned bindings. The caller checks the target, buffer ranges and
     /// pipeline compatibility before handing this packet to the backend.
-    #[allow(clippy::too_many_arguments)]
     pub fn prepared_indexed(
         key: &PipelineKey,
         pipeline: Arc<PendingPipeline>,

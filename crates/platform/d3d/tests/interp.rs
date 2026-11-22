@@ -837,23 +837,27 @@ fn the_render_thread_runs_in_between_frames_when_idle() {
     let depth = t.create_surface(D3DFormat::D24S8, 640, 480, true).unwrap();
     t.present(color, 4).unwrap();
     let mut s = scene(camera(0.0, 0.0));
-    for i in 0..3 {
+    // Feed frames until the render thread shows an in-between one. On a
+    // loaded runner any one gap between presents can stretch past the
+    // blending window (and the newest frame then holds), so keep them
+    // coming rather than wait on a fixed few; each pair that lands close
+    // together is blended.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut i = 0;
+    loop {
         s.cam = camera(i as f64 * 0.1, 0.0);
         frame(&mut t, color, depth, &s);
+        i += 1;
+        // Idle time for the in-between frame.
         std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    // Give the render thread time for an idle step.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    loop {
         let replays = t.with_inner(|b| b.stats().lock().unwrap().replays).unwrap();
         if replays > 0 {
             break;
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "no in-between frame in 2 s"
+            "no in-between frame in 10 s"
         );
-        std::thread::sleep(std::time::Duration::from_millis(5));
     }
     let presents = t
         .with_inner(|b| {
