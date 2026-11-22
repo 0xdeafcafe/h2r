@@ -910,3 +910,20 @@ fn the_ground_truth_drill_loads() {
     let d = m.config.drill.unwrap();
     assert_eq!((d.site, d.start), ([-10.62, 3.88, -3.19], None));
 }
+
+#[test]
+fn think_and_component_keys() {
+    let ok = |extra: &str| {
+        let text = format!("map = \"lockout\"\n{extra}\n[[bot]]\n");
+        resolve(parse_match(&text, false).unwrap(), &no_files)
+    };
+    let m = ok("bot_threads = 3\nbot_pipeline = true\ncomponents = false").unwrap();
+    assert_eq!(m.config.bot_threads, Some(BotThreads::Count(3)));
+    assert_eq!(m.config.bot_pipeline, Some(true));
+    assert_eq!(m.config.components, Some(false));
+    let m = ok("bot_threads = \"Auto\"").unwrap();
+    assert_eq!(m.config.bot_threads.unwrap().env_value(), "auto");
+    assert_eq!(ok("").unwrap().config.bot_threads, None);
+    assert!(ok("bot_threads = \"many\"").unwrap_err().contains("bot_threads"));
+    assert!(ok("bot_threads = 99").unwrap_err().contains("at most 32"));
+}

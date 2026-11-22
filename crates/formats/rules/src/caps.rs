@@ -20,6 +20,21 @@ pub struct Capability {
     pub since: u16,
 }
 
+impl Entry {
+    /// Whether a host can make the call in a script that rides `carrier`.
+    /// A host refuses a script that calls an entry it cannot, naming the
+    /// entry; nothing runs with a call stubbed out.
+    pub fn hostable_on(&self, carrier: u8) -> bool {
+        self.status.hostable() && self.hosts.is_none_or(|h| h.contains(&carrier))
+    }
+}
+
+/// The name a script's header gives the carrier `engine` (`carrier slayer`),
+/// or `None` for an index no script rides.
+pub fn carrier_name(engine: u8) -> Option<&'static str> {
+    CARRIERS.iter().find(|&&(_, e)| e == engine).map(|&(n, _)| n)
+}
+
 const fn cap(name: &'static str, words: &'static str, grantable: bool) -> Capability {
     Capability {
         name,
@@ -43,6 +58,11 @@ pub const CAPABILITIES: &[Capability] = &[
     cap("objects.move", "moves objects", false),
     cap("ai.squads", "places and commands AI", false),
     cap("hud.message", "shows messages", false),
+    cap(
+        "hud.superbounce",
+        "shows the superbounce guide: a priming HUD, marks over the map and bounce medals",
+        false,
+    ),
     cap("firefight.director", "runs Firefight rounds, waves, lives and scores", false),
     cap("forge.move", "lets players move objects during the match", true),
     cap("forge.delete", "lets players remove objects during the match", true),
@@ -113,6 +133,10 @@ pub struct Entry {
     pub status: Status,
     /// The API version that added it.
     pub since: u16,
+    /// The carriers (retail engine indices, [`CARRIERS`]) a host makes the
+    /// call on; `None` for every carrier. The engine routine behind such an
+    /// entry is one engine's own (`role_traits` sets Juggernaut's role mask).
+    pub hosts: Option<&'static [u8]>,
 }
 
 const fn read(id: u16, name: &'static str, args: &'static [Ty], result: Ty, status: Status) -> Entry {
@@ -126,6 +150,7 @@ const fn read(id: u16, name: &'static str, args: &'static [Ty], result: Ty, stat
         order: Order::Now,
         status,
         since: 1,
+        hosts: None,
     }
 }
 
@@ -147,6 +172,7 @@ const fn act(
         order,
         status,
         since: 1,
+        hosts: None,
     }
 }
 
@@ -161,10 +187,16 @@ const fn vm(id: u16, name: &'static str, args: &'static [Ty], result: Ty) -> Ent
         order: Order::Now,
         status: Status::VmOnly,
         since: 1,
+        hosts: None,
     }
 }
 
 use self::Order::{Now, Queued};
+
+/// The carriers of the entries one engine's routine makes.
+const ON_JUGGERNAUT: &[u8] = &[7];
+const ON_ODDBALL: &[u8] = &[3];
+
 use self::Status::{Named, NotBuilt, Traced, Untraced};
 use crate::ty::Ty::{Bool, Class, Fixed, Int, Label, Object, Player, Squad, Tag, Team, Text};
 
@@ -228,6 +260,8 @@ pub mod id {
     pub const FF_SCORE: u16 = 55;
     pub const FF_RESPAWN: u16 = 56;
     pub const FF_FINISH: u16 = 57;
+    pub const MESSAGE_TEAM: u16 = 58;
+    pub const MESSAGE_ALL: u16 = 59;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -245,7 +279,12 @@ pub const ENTRIES: &[Entry] = &[
     read(id::LABEL_NUMBER, "label_number", &[Object], Int, NotBuilt),
     read(id::LABEL_OF, "label_of", &[Object], Label, NotBuilt),
     read(id::ZONE_ID, "zone_id", &[Object], Int, NotBuilt),
-    read(id::TICKS_HELD, "ticks_held", &[Object, Team], Int, NotBuilt),
+    // Answered by the VM from the zone test (`Game::zone_holder`), which
+    // no host has yet: the VM's own, over a game-side part not built.
+    Entry {
+        status: NotBuilt,
+        ..vm(id::TICKS_HELD, "ticks_held", &[Object, Team], Int)
+    },
     read(id::SQUAD_ALIVE, "squad_alive", &[Squad], Int, Named),
     // Actions.
     act(id::SCORE, "score", &[Player, Int], None, Now, Named),
@@ -266,7 +305,9 @@ pub const ENTRIES: &[Entry] = &[
     act(id::HUNT, "hunt", &[Squad], Some("ai.squads"), Queued, Named),
     act(id::ERASE_SQUAD, "erase_squad", &[Squad], Some("ai.squads"), Queued, Named),
     act(id::SPAWN_AREAS, "spawn_areas", &[Team, Label, Int], Some("player.spawn"), Now, Untraced),
-    act(id::MESSAGE, "message", &[Text], Some("hud.message"), Now, Untraced),
+    // `message(to, text)`: the language picks this entry for a player,
+    // `message_team` for a team and `message_all` for `all` ([`spelled`]).
+    act(id::MESSAGE, "message", &[Player, Text], Some("hud.message"), Now, Untraced),
     act(id::FORGE_MOVE, "forge_move", &[Object, Object], Some("forge.move"), Queued, Named),
     act(id::FORGE_DELETE, "forge_delete", &[Object], Some("forge.delete"), Queued, Named),
     act(id::FORGE_PLACE, "forge_place", &[Tag, Object], Some("forge.place"), Queued, Named),
@@ -291,14 +332,27 @@ pub const ENTRIES: &[Entry] = &[
     // Create an objective at a placement and register it with a team, as
     // the CTF/Assault flag spawn `0x2422d0` and Oddball's `0x2bc1f0` do.
     act(id::SPAWN_OBJECTIVE, "spawn_objective", &[Tag, Object, Team], None, Queued, Traced),
-    // Return an objective to where it spawned; the lifted engines' return
-    // path is not traced.
-    act(id::RESET_OBJECTIVE, "reset_objective", &[Object], None, Queued, Untraced),
-    // Apply (or clear) the carrier engine's role traits from the variant's
-    // type area: ball or flag carrier, the Juggernaut (with its bit of the
-    // role mask `[0x510c9c]+0`). The trait query `0x24dda0` has no direct
-    // call site.
-    act(id::ROLE_TRAITS, "role_traits", &[Player, Bool], None, Now, Untraced),
+    // Return an objective to where it spawned. A host makes it on Oddball,
+    // through the engine's own ball return `ODDBALL_BALL_RETURN` `0x2bc340`
+    // (the ball's spawn flag, then the shared objective return `0x15e360`);
+    // the other engines' return paths are not named
+    // (docs/engine/notes/2026-11-22-script-scoring-and-roles.md).
+    Entry {
+        hosts: Some(ON_ODDBALL),
+        ..act(id::RESET_OBJECTIVE, "reset_objective", &[Object], None, Queued, Named)
+    },
+    // Give (or take) the carrier engine's role and its traits from the
+    // variant's type area. A host makes it on Juggernaut, through the
+    // engine's own role setter `JUGGERNAUT_ROLE_SET` `0x192970` (the
+    // player's bit of the role mask `[0x510c9c]+0`), whose trait query
+    // `0x1926c0` then answers the Juggernaut traits. Oddball and CTF give
+    // their carrier traits to whoever holds the objective (`0x2bcc90`), so
+    // a script there has no role to give; Slayer, King and Territories have
+    // no role traits (docs/engine/notes/2026-11-22-script-scoring-and-roles.md).
+    Entry {
+        hosts: Some(ON_JUGGERNAUT),
+        ..act(id::ROLE_TRAITS, "role_traits", &[Player, Bool], None, Now, Named)
+    },
     // The tick the host began (`Vm::begin_tick`).
     vm(id::NOW, "now", &[], Int),
     // The VM generator's next draw modulo `n`; 0, with no draw, for n <= 0.
@@ -318,16 +372,49 @@ pub const ENTRIES: &[Entry] = &[
     act(id::FF_SCORE, "ff_score", &[Player, Int, Bool], Some("firefight.director"), Queued, Named),
     act(id::FF_RESPAWN, "ff_respawn", &[Player], Some("firefight.director"), Queued, Named),
     act(id::FF_FINISH, "ff_finish", &[Bool], Some("firefight.director"), Queued, Named),
+    // The team and everyone forms of `message(to, text)`.
+    act(id::MESSAGE_TEAM, "message_team", &[Team, Text], Some("hud.message"), Now, Untraced),
+    act(id::MESSAGE_ALL, "message_all", &[Text], Some("hud.message"), Now, Untraced),
 ];
+
+/// The word `message(to, text)` takes for everyone.
+pub const EVERYONE: &str = "all";
+
+/// The name the language spells an entry with: `message` for each of the
+/// three forms of `message(to, text)`, its own name for the rest.
+pub fn spelled(e: &Entry) -> &'static str {
+    match e.id {
+        id::MESSAGE_TEAM | id::MESSAGE_ALL => "message",
+        _ => e.name,
+    }
+}
+
+/// An entry a script names only through another's spelling (the team and
+/// everyone forms of `message`). Completion and the API listing leave it
+/// out, and calling it by its own name is an unknown function.
+pub fn is_form(e: &Entry) -> bool {
+    spelled(e) != e.name
+}
+
+/// The parameters an entry's signature shows, as the language spells them.
+pub fn params(e: &Entry) -> Vec<String> {
+    match e.id {
+        id::MESSAGE | id::MESSAGE_TEAM | id::MESSAGE_ALL => {
+            vec![format!("to: player | team | {EVERYONE}"), "text: text".into()]
+        }
+        _ => e.args.iter().map(|t| t.name().to_string()).collect(),
+    }
+}
 
 /// The entry numbered `id` in `api`.
 pub fn entry(id: u16, api: u16) -> Option<&'static Entry> {
     ENTRIES.get(id as usize).filter(|e| e.since <= api)
 }
 
-/// The entry the language calls `name`.
+/// The entry the language calls `name`. For `message` it is the player
+/// form; the compiler picks the form by the first argument.
 pub fn entry_named(name: &str) -> Option<&'static Entry> {
-    ENTRIES.iter().find(|e| e.name == name)
+    ENTRIES.iter().find(|e| e.name == name && !is_form(e))
 }
 
 /// Retail record fields a script reads as `variant.<name>`, with the type
@@ -409,7 +496,14 @@ mod tests {
             if let Some(cap) = a.cap {
                 assert!(capability(cap, API_VERSION).is_some(), "{cap}");
             }
-            assert_eq!(a.kind == Kind::VmOnly, a.status == Status::VmOnly);
+            // A VM built-in is the VM's own, unless its game-side part is
+            // not built (`ticks_held` over the zone test).
+            if a.status == Status::VmOnly {
+                assert_eq!(a.kind, Kind::VmOnly, "{}", a.name);
+            }
+            if a.kind == Kind::VmOnly {
+                assert!(matches!(a.status, Status::VmOnly | Status::NotBuilt), "{}", a.name);
+            }
             assert!(a.kind != Kind::Read || a.cap.is_none());
         }
         for (i, a) in CAPABILITIES.iter().enumerate() {
@@ -420,6 +514,20 @@ mod tests {
         }
     }
 
+    /// `hud.superbounce` gates no entry: a host turns its superbounce mode
+    /// on for a script that declares it, and every kind of game takes it.
+    #[test]
+    fn hud_superbounce_is_a_declared_host_feature() {
+        let c = capability("hud.superbounce", API_VERSION).unwrap();
+        assert!(!c.grantable);
+        assert!(ENTRIES.iter().all(|e| e.cap != Some(c.name)));
+        let req = vec![c.name.to_string()];
+        assert_eq!(
+            crate::policy::eligible(&req, API_VERSION),
+            ["custom", "hopper", "ranked"]
+        );
+    }
+
     #[test]
     fn unknown_names_and_versions_are_absent() {
         assert!(capability("net.socket", API_VERSION).is_none());
@@ -428,5 +536,48 @@ mod tests {
         assert!(entry(id::SCORE, 0).is_none());
         assert!(!entry(id::SET_TEAM, 1).unwrap().status.hostable());
         assert!(entry(id::SCORE, 1).unwrap().status.hostable());
+    }
+
+    #[test]
+    fn message_has_three_forms_under_one_name() {
+        for f in [id::MESSAGE, id::MESSAGE_TEAM, id::MESSAGE_ALL] {
+            let e = entry(f, API_VERSION).unwrap();
+            assert_eq!(spelled(e), "message");
+            assert_eq!(e.cap, Some("hud.message"));
+            assert_eq!(params(e), ["to: player | team | all", "text: text"]);
+        }
+        assert_eq!(entry_named("message").unwrap().id, id::MESSAGE);
+        assert_eq!(entry_named("message").unwrap().args, &[Player, Text]);
+        assert!(entry_named("message_team").is_none());
+        assert!(entry_named("message_all").is_none());
+        assert!(!is_form(entry(id::SCORE, API_VERSION).unwrap()));
+    }
+
+    #[test]
+    fn an_engine_routines_entry_is_hostable_on_its_carrier_only() {
+        let roles = entry(id::ROLE_TRAITS, API_VERSION).unwrap();
+        assert!(roles.status.hostable());
+        assert!(roles.hostable_on(7));
+        for other in [1, 2, 3, 4, 8, 9] {
+            assert!(!roles.hostable_on(other), "{other}");
+        }
+        let reset = entry(id::RESET_OBJECTIVE, API_VERSION).unwrap();
+        assert!(reset.hostable_on(3));
+        assert!(!reset.hostable_on(1) && !reset.hostable_on(2));
+        // An entry with no carriers named is hostable on every one.
+        let score = entry(id::SCORE, API_VERSION).unwrap();
+        assert!(CARRIERS.iter().all(|&(_, e)| score.hostable_on(e)));
+        assert!(!entry(id::SET_TEAM, API_VERSION).unwrap().hostable_on(2));
+        assert_eq!(carrier_name(7), Some("juggernaut"));
+        assert_eq!(carrier_name(5), None);
+    }
+
+    #[test]
+    fn ticks_held_is_the_vms_over_a_zone_test_not_built() {
+        let e = entry(id::TICKS_HELD, API_VERSION).unwrap();
+        assert_eq!(e.kind, Kind::VmOnly);
+        assert_eq!(e.status, Status::NotBuilt);
+        assert!(!e.status.hostable());
+        assert_eq!(e.args, &[Object, Team]);
     }
 }

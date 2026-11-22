@@ -1398,7 +1398,7 @@ names the gametype by `V+0x44` and the weapons by tag name.
 |---|---|---|---|---|
 | game-engine globals | `[0x4e9ae8]` | pointer | confirmed | live-gamestate.md; `0x1574c0` zeroes `0x327` dwords of it |
 | engine index | `E+0xc14` | `i32` | confirmed | `0x1574c0` copies `[G+0x180]` (`V+0x44`) there, and writes 0 when the engine has no object or the globals tag lacks its multiplayer block (`0x157578`) |
-| engines | `0x55e4d0[index]` | pointer to an object whose `+0` is a vtable | confirmed | filled by `0x378500`: 1 CTF and 9 Assault share one (`[0x470a5c]`, vtable `0x459d18`); 2 Slayer `0x45c6d8`; 3 Oddball `0x45c7a8`; 4 KotH `0x45c878`; 7 Juggernaut `0x453d38`; 8 Territories `0x45c948` |
+| engines | `0x55e4d0[index]` | pointer to a static object whose only dword is its vtable | confirmed | filled by `0x378500`: 1 CTF and 9 Assault share one (`[0x470a5c]` = `0x47f788`, vtable `0x459d18`); 2 Slayer `0x47fc80`, `0x45c6d8`; 3 Oddball `0x47fc84`, `0x45c7a8`; 4 KotH `0x47fc88`, `0x45c878`; 7 Juggernaut `0x47d8f0`, `0x453d38`; 8 Territories `0x47fc8c`, `0x45c948`. 51 thiscall slots each; the slot map is in [notes/2026-11-21-engine-vtables.md](../engine/notes/2026-11-21-engine-vtables.md) |
 | objective object count | `E+0xc18` | `i32`, at most 8 | confirmed | `0x15e050` (register) bumps it after `cmp eax,8; jae`; `0x15e130` (unregister) moves the last record down and drops it |
 | objective records | `E+0xc1c`, `0x10` each | | confirmed | `0x15e050`: `shl eax,4; lea edi,[eax+ebx+0C1Ch]` |
 | record: the object | `+0` | `u32` datum | confirmed | `0x15e050` stores its first argument; every lookup (`0x15e180`, `0x15e2b4`, `0x15e327`) compares it |
@@ -1842,8 +1842,9 @@ it ends when the bot sees an enemy.
 
 #### Practising bounces
 
-While the superbounce mode is on (the Superbounce variant, the variant's
-superbounce flag, `H2_SUPERBOUNCE=1` or `superbounce.set`; the game calls
+While the superbounce mode is on (the Superbounce variant, a variant whose
+script requires `hud.superbounce`, the variant's superbounce flag,
+`H2_SUPERBOUNCE=1` or `superbounce.set`; the game calls
 `bots::set_practice` from `superbounce_mode`, and each brain follows it
 at its next sample) a bot fights no one: it picks no target, shoots,
 throws and melees nothing, and being shot changes nothing. Its whole pad
@@ -3368,6 +3369,11 @@ from the environment for the process's phantoms:
 
 `auto` takes one worker fewer than the cores, at most 8. The game thread
 also runs queued thinks while it waits for them.
+
+Serial is the default of a process that sets nothing. `h2 sim run` sets
+the variables itself, batched on `min(phantoms, cores - 1)` workers, from
+the match file or that default; see
+[sim.md](../runtime/sim.md#bot-thinking-across-cores).
 
 A batched sample has three phases (`PadSource::observe`, `think`,
 `conclude`; a plain `pad` runs all three in a row):

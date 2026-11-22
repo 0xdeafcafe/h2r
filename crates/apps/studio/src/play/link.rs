@@ -49,6 +49,8 @@ pub enum Purpose {
     Teleport(u64),
     Spawn(Instant),
     Control(&'static str),
+    /// The script editor's `rules.reload`.
+    Rules,
     /// A call the user asked for by hand.
     Other,
 }

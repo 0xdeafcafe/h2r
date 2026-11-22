@@ -13,6 +13,9 @@ content.workspace = true
 # Game-type scripts: the workbench's check and run, and saving
 # (docs/game/rules-engine.md, "Workbench"). Pure Rust, no I/O.
 rules.workspace = true
+# Published game variants: the `.h2variant` file, its checks and the record
+# (docs/live/live-api.md "Game variants"). Pure Rust, no I/O on the routes.
+variants = { path = "../../formats/variants" }
 anyhow.workspace = true
 serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true, features = ["raw_value"] }

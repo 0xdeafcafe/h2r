@@ -355,13 +355,16 @@ pub fn compile(def: &Def) -> Result<Ir, ScriptRefusal> {
             // Slayer, the engine Firefight's one-team match rides.
             carrier: 2,
             teams: 1,
+            list: ::rules::ir::List::GameType,
             requires: vec!["ai.squads".into(), "firefight.director".into()],
         },
         strings: st.list,
         options,
         enums: Vec::new(),
         slots,
-        labels: vec![ZONE_LABEL.into()],
+        // The kit's drop zones: a set of objects, at most 256, that the
+        // host reports from the kit rather than a Forge map.
+        labels: vec![::rules::ir::LabelDef::objects(ZONE_LABEL)],
         tags: Vec::new(),
         palettes: Vec::new(),
         tables,
@@ -1800,6 +1803,17 @@ mod tests {
             ids.insert(ir.id());
         }
         assert_eq!(ids.len(), 3);
+    }
+
+    #[test]
+    fn the_drop_zones_are_a_set_of_objects_a_map_need_not_hold() {
+        let ir = compile(&builtin::definitions()[0]).unwrap();
+        let zones = &ir.labels[ZONES as usize];
+        assert_eq!(*zones, ::rules::ir::LabelDef::objects(ZONE_LABEL));
+        assert_eq!(zones.kind, ::rules::ir::LabelKind::Object);
+        assert_eq!(zones.max as usize, ::rules::ty::MAX_LABELLED);
+        let empty = ::rules::labels::Census::default();
+        assert_eq!(::rules::labels::check(&ir, &empty, &[0]), vec![]);
     }
 
     #[test]

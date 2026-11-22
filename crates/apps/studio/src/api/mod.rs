@@ -27,6 +27,7 @@ use crate::App;
 
 mod collision;
 mod docs;
+mod game_script;
 mod geometry;
 mod hud;
 mod mirror;

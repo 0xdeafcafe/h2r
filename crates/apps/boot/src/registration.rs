@@ -59,6 +59,10 @@ pub(crate) fn register_viewer_skips(
         features
             .add(&sim_bridge::sim_submix::SimSubmix)
             .map_err(anyhow::Error::msg)?;
+        // Off unless `impl.sim.status-poll` is set (docs/runtime/cache-slots.md).
+        features
+            .add(&sim_bridge::sim_status_poll::StatusPoll)
+            .map_err(anyhow::Error::msg)?;
     }
     Ok(())
 }
@@ -263,6 +267,24 @@ pub(crate) fn register_core_film(
     features
         .add(&variant_ext::Transport { hle: i.live.clone() })
         .map_err(|e| anyhow::anyhow!("variant options transport: {e}"))?;
+    // The game-variant store: its variants in the variant list, their
+    // options and script on the game at its start, the saved variants
+    // ported at boot (docs/game/rules-engine.md, "Live game variants in the
+    // game").
+    let port = i.settings.as_ref().map_or(crate::game_variants::port::PortScript::Keep, |s| {
+        crate::game_variants::port::script_setting(
+            s.handle::<i64>(crate::setting_defs::VARIANTS_PORT_SCRIPT.key).get(),
+        )
+    });
+    crate::game_variants::install(
+        features,
+        crate::game_variants::Boot {
+            data_root: i.data_root.to_path_buf(),
+            live: i.live.clone(),
+            port,
+        },
+    )
+    .context("installing the game-variant store")?;
     if let Some(hle) = i.live.clone() {
         features
             .add(&crate::live_hopper::MapPackRotation(hle))

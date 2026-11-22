@@ -194,6 +194,52 @@ pub fn link_colour(tone: LinkTone) -> [f32; 4] {
     }
 }
 
+/// The script editor's text widget draws its glyphs in this (none), and
+/// the colouring draws them over it (`ui::rules`).
+pub const HIDDEN_TEXT: [f32; 4] = rgba(0, 0, 0, 0.0);
+
+/// A semantic token's colour in the script editor.
+pub fn token_colour(kind: rules::ide::TokenKind) -> [f32; 4] {
+    use rules::ide::TokenKind as K;
+    match kind {
+        K::Keyword => rgb(198, 120, 221),
+        K::Event => rgb(229, 192, 123),
+        K::Function => rgb(97, 175, 239),
+        K::Api => rgb(86, 182, 194),
+        K::Variable | K::Parameter => TEXT,
+        K::Enum | K::Type => rgb(224, 160, 110),
+        K::EnumMember | K::Number => rgb(209, 154, 102),
+        K::String => rgb(152, 195, 121),
+        K::Comment => DIM,
+        K::Operator => rgb(171, 178, 191),
+        K::Label => rgb(240, 130, 140),
+        K::Capability => rgb(130, 200, 180),
+        // A kind the language adds later reads as plain text.
+        #[allow(unreachable_patterns)]
+        _ => TEXT,
+    }
+}
+
+/// A diagnostic's underline and row colour.
+pub fn severity_colour(severity: &str) -> [f32; 4] {
+    match severity {
+        "error" => ERROR,
+        "warning" => WARN,
+        _ => DIM,
+    }
+}
+
+/// The script reload row's colour (`app::rules_edit::Tone`).
+pub fn reload_colour(tone: crate::app::rules_edit::Tone) -> [f32; 4] {
+    use crate::app::rules_edit::Tone;
+    match tone {
+        Tone::Busy => DIM,
+        Tone::Good => OK,
+        Tone::Notice => link_colour(LinkTone::View),
+        Tone::Bad => ERROR,
+    }
+}
+
 const PILL_PADDING: [f32; 2] = [17.0, 5.0];
 
 pub fn pill_width(ui: &Ui, icon: &str, text: &str) -> f32 {

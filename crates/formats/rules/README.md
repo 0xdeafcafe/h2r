@@ -20,10 +20,14 @@ as the `SimExt` blob's `RULES` record.
   Functions are inlined and recursion is refused. Strings, labels and
   tags are interned in first-use order, so the same source always gives
   the same bytes. Errors carry `line:col`. `build` compiles and verifies
-  in one call.
+  in one call; `ship` also refuses a blob over the tick budget or the IR
+  cap (`fits`), as `h2 rules build`, Live's save and publish routes and a
+  variant file made from source do. `message(to, text)` lowers to one of
+  three entries by `to`'s type (a player, a team, or `all`); `caps::spelled`
+  gives all three the one name.
 - `Ir::encode` and `Ir::decode` are the canonical codec: decode accepts
   only the bytes encode writes, and refuses trailing bytes and blobs over
-  64 KiB. `Ir::id` is the SHA-256 of the encoding.
+  256 KiB. `Ir::id` is the SHA-256 of the encoding.
 - `verify` checks every op, including dead branches: register and slot
   types, forward jumps inside their loop body, set and table indices,
   labels, tags, strings, option bits (at most 32), slot budgets, and API
@@ -35,21 +39,36 @@ as the `SimExt` blob's `RULES` record.
   `Named` or `VmOnly`; a host refuses the script by that name.
 - `Vm` runs handlers: `fire` for an event, `update` for timers (in slot
   order) and then `on tick`, and `flush_queue` for queued calls at the
-  next tick boundary. A tick runs at most 20,000 ops and 64 zone events.
+  next tick boundary. A tick runs at most 100,000 ops and 64 zone events.
   An overflow is a script error: the VM stops at that op, clears its
   queue and calls `Game::script_error`. Division by zero gives 0 and a
   `Warning`. Players are visited by slot, teams by index and labelled
   objects by placement id. `pick` draws from SplitMix64, seeded with the
   match seed XOR the first 8 bytes of the blob's hash.
-- `RulesExt` is all VM state: generator, slots, object variables, grants
-  and the queue. `RulesExt::encode` writes it canonically in at most
-  16 KiB, and `Vm::resume` continues from it.
+- `RulesExt` is all VM state: generator, slots, object variables, grants,
+  the queue and the `ticks_held` counts (per zone and team, at most 32
+  zones, cleared at the round's end; `update` adds a tick for the team
+  `Game::zone_holder` names). `RulesExt::encode` writes it canonically in at most
+  64 KiB, and `Vm::resume` continues from it.
 - Grants are `(player, capability, uses, palette)` records, sorted by
   player and then capability. They end at `revoke`, at the player's quit
   and at the round's end. `Vm::check_proposal` is the host's check
-  before it stamps a Forge proposal: not ranked, a grant with uses left,
+  before it stamps a Forge proposal: a custom or hopper game
+  (`policy::Context`), a grant with uses left,
   a tag in the palette (or a match-made target when there is no
   palette), and never a protected target. `Vm::spend` takes one use.
+
+## Policy
+
+`policy` says which kinds of game take a script by its header's
+`requires`: `check(context, requires, api)` lists each refused capability
+with its reason, `eligible` names the kinds of `PLAYED` (custom, hopper,
+ranked) that take it, and `edits_allowed` is true in custom and hopper
+games only. Custom and Theater refuse nothing the build knows, a hopper
+refuses its deny list (`forge.*` denies the family), ranked refuses every
+grantable capability, and an unknown name is refused everywhere. Live's
+hopper and session routes, its publish routes and the host runtime all
+ask it.
 
 ## Built-ins
 
@@ -59,8 +78,15 @@ Territories, and one `ctf.rules` body serving CTF and Assault, each under
 its own header. `builtin::examples()` lists the payoff modes (Infection,
 Gun Game, VIP, Siege, Race, Bounce Practice). Each script's header names
 the entries a host cannot make yet. `fake::FakeGame` is a table-backed
-`Game` that logs calls, for tests and `h2 rules run`; it also holds an
-objective registry, object teams, label numbers and `inside` answers.
+`Game` that logs calls, for tests, `h2 rules run` and the workbench; it
+also holds an objective registry, object teams, labelled objects, units
+and `inside` answers. `begin_tick` counts the round clock down, `apply`
+and `after` keep kills, deaths, `alive`, joins, quits, zone occupants
+and objective carriers as the host reports them (the dead leave their
+zones and drop what they carry), a `variant` field it was not given reads the
+carrier's stock record (`fake::stock_variant`), and a zone whose living
+occupants are all on one team is held by it. `scenario::step` runs one
+tick over it for both `scenario::run` and `workbench::run`.
 `builtin::ALL` lists each port with its name and engine index.
 
 ## Workbench
@@ -69,8 +95,13 @@ objective registry, object teams, label numbers and `inside` answers.
 with line and column, budget, slots, IR bytes, capabilities in plain
 words, unhostable entries). `workbench::run` steps a `Scenario` over
 `FakeGame` into a per-tick `Trace`, within 36,000 ticks, 4,096 events and
-4,000,000 ops. Live's `/v1/rules/check` and `/v1/rules/run` serve them to
-the web app ([Workbench](../../../docs/game/rules-engine.md#workbench)).
+12,000,000 ops; `workbench::Runner` is the same run one tick at a time.
+`sim::simulate` makes a match up from what a script handles and a seed,
+playing it as it goes, and `sim::batch` sums up many seeds (who wins,
+how matches end, the costliest tick, what looks wrong). Live's
+`/v1/rules/check`, `/v1/rules/run` and `/v1/rules/simulate` serve them to
+the web app, and `h2 rules sim` to the terminal
+([Workbench](../../../docs/game/rules-engine.md#workbench)).
 
 The Firefight director script is built outside this crate, by
 `firefight::script` from a wave-set definition; the `firefight.director`

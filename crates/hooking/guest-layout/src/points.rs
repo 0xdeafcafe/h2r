@@ -615,6 +615,69 @@ points! { ALL;
     /// free-for-all too). The low byte of the fourth argument is the
     /// credited damage reporting type and modifier.
     PLAYER_KILLED @ 0x0015_ce70: [opaque]; "docs/live/live-gamestate.md";
+    /// The game engine's per-tick update, from `GAME_TICK` at `0x13803c`.
+    /// With an engine object it runs each player's engine work with the
+    /// engine's per-player slot `+0x3c`, then its per-tick slot `+0x48`,
+    /// then the engine's shared steps (`0x15c000` and on). No engine
+    /// object, nothing.
+    ENGINE_UPDATE @ 0x0015_c150: [fn() ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// Slayer's kill callback, vtable `0x45c6d8` slot `+0x78`, which
+    /// `PLAYER_KILLED` calls last (`0x15d6a4`): thiscall with the engine
+    /// object, then that routine's attacker, victim and flag, and a kill
+    /// kind it works out. It is all of Slayer's kill scoring, through
+    /// `SCORE_ADD`: +1 to the attacker, or -1 when the flag is set (a
+    /// suicide only with type-area flag bit 1); -1 to the victim with bit
+    /// 2; a bonus to the attacker with bit 0. Nothing in a distributed
+    /// client (`[0x4e6948]+0xc` 4).
+    SLAYER_KILL @ 0x002b_c000: [fn(engine: ecx, attacker: stack 0, victim: stack 1, flag: stack 2, kind: stack 3) ret 16], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// Juggernaut's kill callback, slot `+0x78` of vtable `0x453d38`, as
+    /// [`SLAYER_KILL`]: moves the Juggernaut role and scores through
+    /// `SCORE_ADD` (`0x19238c`, `0x1923db`).
+    JUGGERNAUT_KILL @ 0x0019_22a0: [fn(engine: ecx, attacker: stack 0, victim: stack 1, flag: stack 2, kind: stack 3) ret 16], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// Oddball's per-tick slot `+0x48`: each ball's carrier scores through
+    /// `0x2bc990` and `0x2bce70`, which calls `SCORE_ADD`.
+    ODDBALL_TICK @ 0x002b_cbb0: [fn(engine: ecx) ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// King of the Hill's per-tick slot `+0x48`; its hill scoring
+    /// `0x2beee0` (from `0x2bd729`) calls `SCORE_ADD`.
+    KOTH_TICK @ 0x002b_d680: [fn(engine: ecx) ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// Territories' per-tick slot `+0x48`; it ends in a tail jump to its
+    /// scoring `0x2c0a90`, which calls `SCORE_ADD`.
+    TERRITORIES_TICK @ 0x002c_0230: [fn(engine: ecx) ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// Juggernaut's per-tick slot `+0x48`.
+    JUGGERNAUT_TICK @ 0x0019_2530: [fn(engine: ecx) ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// The per-tick slot `+0x48` that CTF and Assault share (vtable
+    /// `0x459d18`). Their capture scoring `0x242e00` runs from the
+    /// per-player slot `+0x3c` and from `0x242741`, not from here.
+    CTF_TICK @ 0x0024_0d70: [fn(engine: ecx) ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// The base trait query: Slayer's slot `+0x8c`, and where every other
+    /// engine's `+0x8c` ends for the traits it does not answer itself
+    /// (Juggernaut `0x19273c`, CTF and Assault `0x242084`, Oddball
+    /// `0x2bcd03`, KotH `0x2bda4e`, Territories' `0x2c02e0` is a jump).
+    /// True when the variant gives `player` the trait: 1 active camo
+    /// (record flag bit 2), 2 extra damage (bit 12), 3 damage resistance
+    /// (bit 13). The slot is called at `0x15b28e`, `0x2404ad`, `0x2bc967`.
+    ENGINE_TRAIT_QUERY @ 0x0024_dda0: [fn(engine: ecx, player: stack 0, trait: stack 1) -> al ret 8], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// Juggernaut's role setter: sets (ECX's low byte nonzero) or clears
+    /// the player's bit of the role mask `[JUGGERNAUT_GLOBALS]+0` (`u16`;
+    /// EAX the salted player datum, its index the bit). Setting posts the
+    /// engine event that announces the Juggernaut (`0xa7c50`, `0x19eb30`),
+    /// except in a distributed client; either way it marks the
+    /// engine-globals entity (`E+0x24`, bit `0x20`) and rebuilds the teams'
+    /// mask at `+2` (`0x192b20`). Juggernaut's trait query `0x1926c0`
+    /// answers the role's traits from the mask. [`JUGGERNAUT_KILL`] and the
+    /// role pick `0x192a30` call it.
+    JUGGERNAUT_ROLE_SET @ 0x0019_2970: [fn(player: eax, on: ecx) ret 0], Optional; "docs/engine/notes/2026-11-22-script-scoring-and-roles.md";
+    /// Oddball's ball return: ball `n` (EAX; its objective record's team,
+    /// `+4`) back to its spawn flag (`[ODDBALL_GLOBALS]+0xc+4n`, a netgame
+    /// flag's position) through [`OBJECTIVE_RETURN`]. Its idle timer
+    /// (`0x2bc990`) calls it; the caller checks the ball has a spawn.
+    ODDBALL_BALL_RETURN @ 0x002b_c340: [fn(ball: eax) ret 0], Optional; "docs/engine/notes/2026-11-22-script-scoring-and-roles.md";
+    /// The objective return the engines share (Oddball `0x2bc361`, CTF
+    /// `0x242b41`, `0x242c7e`): drops the objective object (ESI) from the
+    /// unit carrying it, moves it to the position (a pointer to three
+    /// floats) with the default orientation, and clears its `+0x14c` and
+    /// `+0x150`. No engine, nothing.
+    OBJECTIVE_RETURN @ 0x0015_e360: [fn(object: esi, position: stack 0) ret 4], Optional; "docs/engine/notes/2026-11-22-script-scoring-and-roles.md";
     /// One weapon barrel fires: stdcall `(weapon object datum, barrel
     /// index)`. One call is one shot (likely).
     WEAPON_FIRE @ 0x0010_4150: [fn(weapon: stack 0, barrel: stack 1) ret 8], Optional; "docs/live/live-gamestate.md";
@@ -1456,6 +1519,12 @@ points! { ALL;
     /// (once a frame, at `0x1639bd`), the main loop `0x12b450` and the
     /// flush loop `0x213fa0` (back to back, nothing drawn).
     CACHE_COPY_STEP @ 0x0021_41f0: [fn() -> al ret 0]; "docs/runtime/cache-slots.md";
+    /// A map's cache status by path (EAX, a C string): 3 resident in a
+    /// slot, 4 a copy request done, 2 queued, 1 the other queue, 0 none.
+    /// Reads only the slot paths, the copy requests, the two queued paths
+    /// and the CRT locale; writes only its own stack. The frame poll
+    /// `0x163680` asks it three to five times a frame.
+    MAP_STATUS @ 0x0021_3f10: [fn(path: eax) -> eax ret 0], Optional; "docs/runtime/cache-slots.md";
     // Slice 11 of docs/engine/sim-rewrite-objects.md: the small type updates.
     /// Item update: slot `+40` of `item` (weapons, equipment and garbage inherit it).
     ITEM_UPDATE @ 0x0010_b4d0: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
@@ -1659,6 +1728,19 @@ mod tests {
         assert_eq!(WEAPON_FIRE.class, Class::Optional);
         assert!(LOCALE_FIND.hot && !GAME_TICK.hot);
         assert!(PLAYER_KILLED.sig.is_opaque());
+        // The engine vtable slots are thiscall: the engine object in ECX.
+        assert_eq!(SLAYER_KILL.sig.arg("engine"), Some(Loc::Ecx));
+        assert_eq!(SLAYER_KILL.sig.arg("victim"), Some(Loc::Stack(1)));
+        assert!(matches!(SLAYER_KILL.sig, Sig::Fn { ret: None, pop: 16, .. }));
+        assert!(matches!(ENGINE_TRAIT_QUERY.sig, Sig::Fn { ret: Some(Loc::Al), pop: 8, .. }));
+        // The routines a script's calls reach: register arguments, no pop.
+        assert_eq!(JUGGERNAUT_ROLE_SET.sig.arg("player"), Some(Loc::Eax));
+        assert_eq!(JUGGERNAUT_ROLE_SET.sig.arg("on"), Some(Loc::Ecx));
+        assert!(matches!(JUGGERNAUT_ROLE_SET.sig, Sig::Fn { ret: None, pop: 0, .. }));
+        assert_eq!(ODDBALL_BALL_RETURN.sig.arg("ball"), Some(Loc::Eax));
+        assert!(matches!(ODDBALL_BALL_RETURN.sig, Sig::Fn { ret: None, pop: 0, .. }));
+        assert_eq!(OBJECTIVE_RETURN.sig.arg("object"), Some(Loc::Esi));
+        assert!(matches!(OBJECTIVE_RETURN.sig, Sig::Fn { ret: None, pop: 4, .. }));
         assert_eq!(by_base(0x0013_7fe0).map(|p| p.name), Some("GAME_TICK"));
     }
 }

@@ -802,8 +802,10 @@ mod tests {
         app.dispatch(Action::OpenSource(map));
         // The ids of `theme::panel_body` and `theme::bounded_list` callers
         // (and the empty card).
-        const ALLOWED: [&str; 9] = [
+        const ALLOWED: [&str; 10] = [
             "##outliner-body",
+            // The script editor's text scrolls on its own, as an editor does.
+            "##rules-body",
             "##h1-outliner-body",
             "##log-lines",
             "##map-grid",

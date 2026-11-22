@@ -2,7 +2,8 @@
 //! game's script and state, and what each moment of the game does with it
 //! (docs/game/rules-engine.md, "The host runtime").
 //!
-//! The feature (`super::feature`) calls in at five moments:
+//! The feature (`super::feature`) and the superbounce mode call in at six
+//! moments:
 //!
 //! - [`Runtime::start`] after a successful `GAME_ACTIVATE`: read the
 //!   record's script reference, find the blob, verify it, refuse what this
@@ -16,18 +17,24 @@
 //!   also asks `GAME_ENGINE_AUTHORITATIVE`; a machine that is not the
 //!   authority drops the script and its record.
 //! - [`Runtime::kill`] at `PLAYER_KILLED`'s entry: `on kill`.
+//! - [`Runtime::bounces`] after each game tick, from the superbounce
+//!   mode's medal chain: `on bounce` and `on bounced`, each bounce and
+//!   Bounced on the tick its chain files it.
 //! - [`Runtime::post_tick`] after each game tick: timers, then `on tick`.
 //! - [`Runtime::ended`] after `GAME_END`: the record is removed.
 //!
+//! The agent API's `rules.reload` (`super::reload`) calls
+//! [`Runtime::swap`] at a tick boundary for an in-place reload.
+//!
 //! **Calls wait for the tick boundary.** `PLAYER_KILLED` is opaque, so a
-//! hook there can only observe; the carrier's kill callback (Slayer's
-//! vtable slot `+0x78`) has no named point; and the per-tick group runs
-//! after `GAME_TICK`, not in place of the engine update `0x15c150`. So
-//! every call a handler makes is kept and made by the `before` on the next
+//! hook there can only observe, and the per-tick group runs after
+//! `GAME_TICK`, not in place of the engine update `0x15c150`. So every
+//! call a handler makes is kept and made by the `before` on the next
 //! `GAME_TICK`, through the mechanism Firefight's tick hook uses, ahead of
 //! the VM's queued calls. A score therefore lands at the next tick
 //! boundary rather than inside the kill, and a read in the same handler
-//! does not see it.
+//! does not see it. The carrier's own scoring does not run beside it
+//! (`super::scoring`).
 //!
 //! **State.** The VM's state is the `RULES` record of the `SimExt` blob
 //! ([`Store`]), written after every run that changed it. Before each run
@@ -41,6 +48,7 @@ use std::sync::OnceLock;
 use ::rules::caps::{self, Kind, Status as EntryStatus, id};
 use ::rules::ir::{Event, Ir, Op};
 use ::rules::vm::{Arg, Call as VmCall, Game, Input, Placed, RulesExt, ScriptError, TICK_BUDGET, Vm};
+use ::rules::policy::{self, Context};
 use ::rules::{Sha256, verify};
 use agent_proto::rules as wire;
 use engine::GuestMemory;
@@ -64,7 +72,14 @@ pub const MODE_MULTIPLAYER: u32 = 2;
 
 /// The events this runtime delivers. A script answering any other is
 /// refused at load by the event's name.
-pub const DELIVERED: &[Event] = &[Event::Init, Event::Kill, Event::Timer, Event::Tick];
+pub const DELIVERED: &[Event] = &[
+    Event::Init,
+    Event::Kill,
+    Event::Timer,
+    Event::Tick,
+    Event::Bounce,
+    Event::Bounced,
+];
 /// The read entries this runtime answers.
 pub const READS: &[u16] = &[
     id::PLAYER_SCORE,
@@ -76,9 +91,17 @@ pub const READS: &[u16] = &[
     id::LIVES,
     id::ROUND_TIME_LEFT,
     id::IS_OBJECTIVE,
+    id::CARRIER_OF,
 ];
 /// The action entries this runtime makes.
-pub const ACTIONS: &[u16] = &[id::SCORE, id::END_ROUND, id::SET_LIVES, id::RESPAWN];
+pub const ACTIONS: &[u16] = &[
+    id::SCORE,
+    id::END_ROUND,
+    id::SET_LIVES,
+    id::RESPAWN,
+    id::ROLE_TRAITS,
+    id::RESET_OBJECTIVE,
+];
 
 /// Where the `RULES` record lives: the process's `SimExt` blob in the
 /// game ([`SimExtStore`]), a local container in tests.
@@ -107,15 +130,20 @@ impl Store for SimExtStore {
     }
 }
 
-/// Fetches a blob that is not built in, by the hash prefix the record
-/// carries. In the game it is [`no_fetch`] until the Live blob store and
-/// its fetch exist.
+/// Fetches a blob that is neither built in nor on this machine, by the
+/// hash prefix the record carries. In the game it is
+/// [`crate::game_variants::GameScripts::fetched`]: the outcome of the Live
+/// fetch the start hook made with no guest memory held, so it never waits.
 pub type Fetch = dyn Fn([u8; 8]) -> Result<Vec<u8>, String> + Send + Sync;
 
-/// The fetch the game has now: none, refused by name.
+/// The blob on this machine (the game-variant store) whose SHA-256 starts
+/// with the prefix, if any.
+pub type LocalScripts = dyn Fn([u8; 8]) -> Option<Vec<u8>> + Send + Sync;
+
+/// No fetch: refused by name.
 pub fn no_fetch(prefix: [u8; 8]) -> Result<Vec<u8>, String> {
     Err(format!(
-        "no built-in script has hash prefix {}, and fetching a blob from Live is not built",
+        "no built-in or stored script has hash prefix {}, and this runtime has no Live client to fetch it",
         hex(&prefix)
     ))
 }
@@ -124,7 +152,8 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// One built-in script, compiled once: its engine index, blob and hash.
+/// One built-in script, compiled once: its engine index (an example's
+/// carrier), blob and hash.
 pub struct Builtin {
     pub engine: u8,
     pub blob: Vec<u8>,
@@ -154,10 +183,42 @@ pub fn builtins() -> &'static [Builtin] {
     })
 }
 
+/// Every example script (`rules::builtin::examples`), compiled once, each
+/// with its carrier as `engine`. A record names one by its prefix, as any
+/// script; they are not ports, so a record with no mode never runs one.
+pub fn examples() -> &'static [Builtin] {
+    static BUILT: OnceLock<Vec<Builtin>> = OnceLock::new();
+    BUILT.get_or_init(|| {
+        let mut out = Vec::new();
+        for &(name, src) in ::rules::builtin::examples() {
+            match ::rules::compile(src) {
+                Ok(ir) => out.push(Builtin {
+                    engine: ir.header.carrier,
+                    blob: ir.encode(),
+                    id: ir.id(),
+                }),
+                Err(e) => eprintln!("rules: the example {name} script does not compile: {e}"),
+            }
+        }
+        out
+    })
+}
+
+/// The compiled-in script whose hash starts with `prefix`: a port
+/// ([`builtins`]) or an example ([`examples`]).
+pub fn compiled_in(prefix: [u8; 8]) -> Option<&'static Builtin> {
+    builtins()
+        .iter()
+        .chain(examples())
+        .find(|b| b.id.0[..8] == prefix)
+}
+
 /// Where a running blob came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
     Builtin,
+    /// The game-variant store on this machine.
+    Local,
     Live,
 }
 
@@ -165,6 +226,7 @@ impl Source {
     pub fn name(self) -> &'static str {
         match self {
             Source::Builtin => "builtin",
+            Source::Local => "local",
             Source::Live => "live",
         }
     }
@@ -176,6 +238,11 @@ pub enum Call {
     Score { player: u8, delta: i32 },
     SetLives { player: u8, lives: i32 },
     Respawn(u8),
+    /// `role_traits`: the carrier's role given or taken (`super::roles`).
+    RoleTraits { player: u8, on: bool },
+    /// `reset_objective`: the objective (a salted datum) returned
+    /// (`super::objectives`).
+    ResetObjective(u32),
     /// `end_round`, or the round end of a script error.
     End,
 }
@@ -187,6 +254,8 @@ impl Call {
             Call::Score { .. } => "score",
             Call::SetLives { .. } => "set_lives",
             Call::Respawn(_) => "respawn",
+            Call::RoleTraits { .. } => "role_traits",
+            Call::ResetObjective(_) => "reset_objective",
             Call::End => "end_round",
         }
     }
@@ -216,9 +285,20 @@ pub fn host_refusal(ir: &Ir) -> Option<String> {
             EntryStatus::NotBuilt => "not built",
             EntryStatus::Named | EntryStatus::VmOnly => "not hostable",
         };
+        // A call one engine's routine makes, in a script on another carrier.
+        if let Some(hosts) = e.hosts.filter(|_| e.status.hostable()) {
+            let name = |c: u8| caps::carrier_name(c).map_or_else(|| format!("engine {c}"), str::to_string);
+            let on: Vec<String> = hosts.iter().map(|&c| name(c)).collect();
+            return Some(format!(
+                "the script calls {}, which a host makes only on {}, and the script rides {}",
+                caps::spelled(e),
+                on.join(", "),
+                name(ir.header.carrier)
+            ));
+        }
         return Some(format!(
             "the script calls {}, whose engine entry is {status}",
-            e.name
+            caps::spelled(e)
         ));
     }
     if !ir.labels.is_empty() {
@@ -327,6 +407,10 @@ impl Game for GuestGame<'_> {
         Vec::new()
     }
 
+    fn objectives(&self) -> Vec<u32> {
+        super::objectives::objects(self.m).unwrap_or_default()
+    }
+
     fn variant(&self, field: &str) -> i32 {
         guest::variant(self.m, field).unwrap_or(0)
     }
@@ -356,6 +440,13 @@ impl Game for GuestGame<'_> {
                 Some(Arg::Object(Some(o))) => guest::is_objective(m, *o).unwrap_or(false) as i32,
                 _ => 0,
             },
+            id::CARRIER_OF => match call.args.first() {
+                Some(Arg::Object(Some(o))) => super::objectives::carrier(m, *o)
+                    .ok()
+                    .flatten()
+                    .map_or(::rules::ty::NONE, i32::from),
+                _ => ::rules::ty::NONE,
+            },
             _ => 0,
         }
     }
@@ -371,6 +462,14 @@ impl Game for GuestGame<'_> {
             id::SCORE => p.zip(int(1)).map(|(player, delta)| Call::Score { player, delta }),
             id::SET_LIVES => p.zip(int(1)).map(|(player, lives)| Call::SetLives { player, lives }),
             id::RESPAWN => p.map(Call::Respawn),
+            id::ROLE_TRAITS => match call.args.get(1) {
+                Some(Arg::Bool(on)) => p.map(|player| Call::RoleTraits { player, on: *on }),
+                _ => None,
+            },
+            id::RESET_OBJECTIVE => match call.args.first() {
+                Some(Arg::Object(Some(o))) => Some(Call::ResetObjective(*o)),
+                _ => None,
+            },
             // The winner is not passed: naming one is not traced.
             id::END_ROUND => Some(Call::End),
             _ => None,
@@ -425,7 +524,11 @@ pub struct Runtime {
     pub status: Status,
     errors: VecDeque<wire::Refusal>,
     store: Box<dyn Store>,
+    local: Box<LocalScripts>,
     fetch: Box<Fetch>,
+    /// The kind of game the next start plays, for the script policy
+    /// (`rules::policy`): custom until the feature says otherwise.
+    context: Context<'static>,
 }
 
 fn describe(e: &ScriptError) -> String {
@@ -467,13 +570,36 @@ impl Runtime {
             status: Status::Idle("no game has started"),
             errors: VecDeque::new(),
             store,
+            local: Box::new(|_: [u8; 8]| None),
             fetch,
+            context: Context::Custom,
         }
     }
 
-    /// The runtime the game uses: the process's `SimExt` blob, no fetch.
-    pub fn in_game() -> Self {
-        Self::new(Box::new(SimExtStore), Box::new(no_fetch))
+    /// The kind of game the next [`Runtime::start`] plays. The feature sets
+    /// a hopper for a matchmade game and custom otherwise; a ranked
+    /// session's script is held to the ranked policy by Live, which knows
+    /// the session's flags.
+    pub fn set_context(&mut self, context: Context<'static>) {
+        self.context = context;
+    }
+
+    pub fn context(&self) -> Context<'static> {
+        self.context
+    }
+
+    /// The same runtime with `local` for the blobs on this machine.
+    pub fn with_local(mut self, local: Box<LocalScripts>) -> Self {
+        self.local = local;
+        self
+    }
+
+    /// The runtime the game uses: the process's `SimExt` blob, and the
+    /// game-variant store and Live through `scripts`.
+    pub fn in_game(scripts: std::sync::Arc<crate::game_variants::GameScripts>) -> Self {
+        let (l, f) = (std::sync::Arc::clone(&scripts), scripts);
+        Self::new(Box::new(SimExtStore), Box::new(move |p: [u8; 8]| f.fetched(p)))
+            .with_local(Box::new(move |p: [u8; 8]| l.local(p)))
     }
 
     fn error(&mut self, tick: u32, call: &str, error: impl std::fmt::Display) {
@@ -523,14 +649,16 @@ impl Runtime {
         let script = Ext::in_effect(&block).script;
         let found = match script.mode {
             Mode::Rules => {
-                let builtin = builtins().iter().find(|b| b.id.0[..8] == script.prefix);
-                match builtin {
+                match compiled_in(script.prefix) {
                     Some(b) => Ok((b.blob.clone(), Source::Builtin)),
-                    None if system_link => Err(format!(
-                        "a System Link game runs only the built-in scripts, and none has hash prefix {}",
-                        hex(&script.prefix)
-                    )),
-                    None => (self.fetch)(script.prefix).map(|blob| (blob, Source::Live)),
+                    None => match (self.local)(script.prefix) {
+                        Some(blob) => Ok((blob, Source::Local)),
+                        None if system_link => Err(format!(
+                            "a System Link game runs only the scripts on this machine (built in or in its game-variant store), and none has hash prefix {}",
+                            hex(&script.prefix)
+                        )),
+                        None => (self.fetch)(script.prefix).map(|blob| (blob, Source::Live)),
+                    },
                 }
             }
             Mode::None => {
@@ -574,6 +702,13 @@ impl Runtime {
                     ir.header.carrier
                 ),
             );
+        }
+        // The policy first: a refusal by kind of game names the capability.
+        if let Some(d) = policy::check(self.context, &ir.header.requires, ir.header.api_version)
+            .into_iter()
+            .next()
+        {
+            return self.refuse(full, d.to_string());
         }
         if let Some(why) = host_refusal(&ir) {
             return self.refuse(full, why);
@@ -698,6 +833,52 @@ impl Runtime {
         });
     }
 
+    /// A superbounce by player `player` off the strip `spot`
+    /// (`superbounce_chain::spot_id`), the `chain`th of its chain, a
+    /// Monster with `monster`: `on bounce`, with its calls kept for the
+    /// next tick boundary.
+    pub fn bounce(&mut self, m: &dyn GuestMemory, player: u8, spot: u32, chain: u32, monster: bool) {
+        self.run(m, |vm, g| {
+            vm.fire(
+                g,
+                Input::Bounce {
+                    player,
+                    spot,
+                    chain,
+                    monster,
+                },
+            );
+        });
+    }
+
+    /// Player `player` fell out of the map during a bounce: `on bounced`,
+    /// with its calls kept for the next tick boundary.
+    pub fn bounced(&mut self, m: &dyn GuestMemory, player: u8) {
+        self.run(m, |vm, g| {
+            vm.fire(g, Input::Bounced(player));
+        });
+    }
+
+    /// One tick's medal awards (`superbounce_chain::Medals::step`), in
+    /// order: each bounce as [`Runtime::bounce`] with its chain's count
+    /// and whether it was a Monster, each Bounced as [`Runtime::bounced`].
+    /// A medal test's awards never come here (`superbounce_mode` steps
+    /// only the chain's own).
+    pub fn bounces(
+        &mut self,
+        m: &dyn GuestMemory,
+        awards: &[crate::superbounce_chain::Award],
+    ) {
+        use hud_kit_core::huds::superbounce::Medal;
+        for a in awards {
+            if let Some(spot) = a.spot {
+                self.bounce(m, a.slot, spot, a.chain, a.monster());
+            } else if a.medals.contains(&Medal::Bounced) {
+                self.bounced(m, a.slot);
+            }
+        }
+    }
+
     /// After the game tick: timers, then `on tick`.
     pub fn post_tick(&mut self, m: &dyn GuestMemory) {
         let Some(tick) = bots::guest::game_tick(m) else {
@@ -741,6 +922,27 @@ impl Runtime {
             self.store.remove();
             self.status = Status::Idle("the game ended");
         }
+    }
+
+    /// Swaps the running script's program between ticks, keeping every
+    /// slot value (`super::reload`, `Vm::swap_program`): the record is
+    /// synced first and written after. An error keeps the old program.
+    pub fn swap(&mut self, ir: Ir) -> Result<Sha256, String> {
+        let Status::Running(r) = &mut self.status else {
+            return Err("no script runs in this game".into());
+        };
+        if let Err(why) = sync(r, &*self.store) {
+            self.stop(why.clone());
+            return Err(why);
+        }
+        let hash = ir.id();
+        r.vm.swap_program(ir).map_err(|e| e.to_string())?;
+        r.hash = hash;
+        if let Err(why) = save(r, &mut *self.store) {
+            self.stop(why.clone());
+            return Err(why);
+        }
+        Ok(hash)
     }
 
     /// Why a snapshot can't be taken now: calls wait for the tick boundary
@@ -792,6 +994,7 @@ impl Runtime {
                     }),
                     pending: r.pending.len(),
                     errors,
+                    last_reload: None,
                 }
             }
         }
@@ -820,6 +1023,8 @@ pub async fn make_calls(cx: &Cx, work: &Work) -> (Option<bool>, Vec<(String, Str
             Call::Score { player, delta } => guest::score(cx, player, delta).await,
             Call::SetLives { player, lives } => guest::set_lives(cx, player, lives).await,
             Call::Respawn(player) => crate::firefight::guest::respawn(cx, player).await,
+            Call::RoleTraits { player, on } => super::roles::set(cx, player, on).await,
+            Call::ResetObjective(object) => super::objectives::reset(cx, object).await,
             Call::End => crate::firefight::guest::end_game(cx).await,
         };
         if let Err(e) = result {

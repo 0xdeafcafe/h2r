@@ -651,6 +651,24 @@ fn default_pace() -> String {
     "unpaced".into()
 }
 
+/// A match file's `bot_threads`: a worker count, or `"auto"` or `"off"`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum BotThreads {
+    Count(u32),
+    Word(String),
+}
+
+impl BotThreads {
+    /// The value for `H2_BOT_THREADS`.
+    pub fn env_value(&self) -> String {
+        match self {
+            BotThreads::Count(n) => n.to_string(),
+            BotThreads::Word(w) => w.trim().to_ascii_lowercase(),
+        }
+    }
+}
+
 /// A match file (docs/runtime/sim.md, "Match file").
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -691,6 +709,21 @@ pub struct MatchConfig {
     /// writes plain values first.)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superbounce: Option<bool>,
+    /// `false` leaves `state_components_v1` out of the report, for timing
+    /// arms; the per-tick gameplay digests stay. Unset: recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub components: Option<bool>,
+    /// Bot think workers for this process (`H2_BOT_THREADS`'s values): a
+    /// count, `"auto"` or `"off"`. Unset: `h2 sim run` picks
+    /// (docs/runtime/sim.md, "Bot thinking across cores"). The
+    /// environment variable wins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot_threads: Option<BotThreads>,
+    /// Overlap the thinks with the guest's tick (`H2_BOT_PIPELINE`): a
+    /// different, repeatable match. Unset: off. The environment variable
+    /// wins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot_pipeline: Option<bool>,
     /// More variant settings, by id (`"83" = 1`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub settings: BTreeMap<String, i32>,
@@ -830,6 +863,17 @@ pub fn resolve(
         problems.push(format!("pace: {e}"));
         Pace::Unpaced
     });
+    match &config.bot_threads {
+        Some(BotThreads::Word(w))
+            if !matches!(w.trim().to_ascii_lowercase().as_str(), "auto" | "off") =>
+        {
+            problems.push(format!("bot_threads = \"{w}\": a count, \"auto\" or \"off\""));
+        }
+        Some(BotThreads::Count(n)) if *n > 32 => {
+            problems.push(format!("bot_threads = {n}: at most 32"));
+        }
+        _ => {}
+    }
     if config.bots.is_empty() {
         problems.push("a match needs at least one bot".into());
     }

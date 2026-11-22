@@ -13,6 +13,9 @@ use variants::ext::{LEN, Script};
 use super::*;
 use crate::rules::feature::Shared;
 
+/// The carrier's own scoring, `role_traits` and the objectives on the host.
+mod hosted;
+
 const GAME_GLOBALS: u32 = 0x1000_0000;
 const GAME_TIME: u32 = 0x1000_2000;
 const ENGINE: u32 = 0x1000_4000;
@@ -214,6 +217,110 @@ fn a_suicide_costs_a_point_with_the_option_on() {
     );
 }
 
+/// One tick's medal award for player `slot`: a bounce off `spot` at
+/// chain count `chain`, or a Bounced with none.
+fn award(slot: u8, spot: Option<u32>, chain: u32) -> crate::superbounce_chain::Award {
+    use hud_kit_core::huds::superbounce::Medal;
+    crate::superbounce_chain::Award {
+        seq: 1,
+        slot,
+        user: None,
+        tick: TICK,
+        chain,
+        medals: match spot {
+            Some(_) => crate::superbounce_chain::bounce_medals(chain).to_vec(),
+            None => vec![Medal::Bounced],
+        },
+        spot,
+        strips: spot.map(|_| 1),
+    }
+}
+
+#[test]
+fn a_bounce_reaches_on_bounce_and_scores_at_the_next_tick_boundary() {
+    let ir = ::rules::compile(::rules::builtin::SUPERBOUNCE).unwrap();
+    assert_eq!(host_refusal(&ir), None, "the host delivers on bounce");
+    let id = ir.id();
+    let store = Local::default();
+    // An example is compiled in: found by its prefix, never fetched.
+    let s = shared(&store, Box::new(no_fetch));
+    // Bounce points 2 (raw 2 at bit 4); kill points 1, suicides free.
+    let (m, datums) = guest(block(prefix(&id), 2 << 4), SLAYER);
+    s.lock().start(&m, false);
+    let state = s.lock().state();
+    assert!(state.running, "{state:?}");
+    assert_eq!(state.source.as_deref(), Some("builtin"));
+    assert_eq!(s.lock().hash(), Some(id.to_string()));
+    // A Bounced is no bounce; the bounce off strip 77 is. The Bounced
+    // reaches `on bounced`, which costs nothing with its option off.
+    s.lock().bounces(&m, &[award(0, None, 0), award(1, Some(77), 1)]);
+    {
+        let rt = s.lock();
+        let r = rt.running().unwrap();
+        assert_eq!(r.vm.player_var(0, "bounces"), Some(0));
+        assert_eq!(r.vm.player_var(1, "bounces"), Some(1));
+        assert_eq!(
+            r.pending(),
+            [Call::Score {
+                player: 1,
+                delta: 2
+            }]
+        );
+    }
+    let work = s.lock().pre_tick(&m).unwrap();
+    let calls = drive(&s, m, work, true);
+    assert_eq!(
+        calls[1],
+        GuestCall::new(points::SCORE_ADD.base)
+            .eax(2)
+            .args([datums[1]])
+    );
+    // The record carries the count.
+    let record = RulesExt::decode(&store.bytes().unwrap()).unwrap();
+    assert_eq!(&record, s.lock().running().unwrap().vm.ext());
+}
+
+/// A host award reaches `on bounce` with its chain's count and whether it
+/// was a Monster, and a Bounced reaches `on bounced`: with Superbounce's
+/// default options but the suicide penalty off (bit 3, so the Bounced
+/// penalty is the one that takes the point), a double scores 2, a Monster
+/// single 2, a Bounced -1.
+#[test]
+fn a_bounce_carries_its_chain_and_a_bounced_reaches_on_bounced() {
+    use hud_kit_core::huds::superbounce::Medal;
+    let ir = ::rules::compile(::rules::builtin::SUPERBOUNCE).unwrap();
+    let id = ir.id();
+    let store = Local::default();
+    let s = shared(&store, Box::new(no_fetch));
+    let (m, _) = guest(block(prefix(&id), ir.default_options() & !(1 << 3)), SLAYER);
+    s.lock().start(&m, false);
+    assert!(s.lock().state().running);
+    let mut monster = award(0, Some(80), 1);
+    monster.medals.push(Medal::Monster);
+    s.lock().bounces(
+        &m,
+        &[
+            award(1, Some(77), 1),
+            award(1, Some(78), 2),
+            monster,
+            award(0, None, 3),
+        ],
+    );
+    let rt = s.lock();
+    let r = rt.running().unwrap();
+    assert_eq!(r.vm.player_var(1, "bounces"), Some(2));
+    assert_eq!(r.vm.player_var(0, "bounces"), Some(1));
+    assert_eq!(
+        r.pending(),
+        [
+            Call::Score { player: 1, delta: 1 },
+            Call::Score { player: 1, delta: 2 },
+            Call::Score { player: 0, delta: 2 },
+            Call::Score { player: 0, delta: -1 },
+        ]
+    );
+}
+
 #[test]
 fn a_machine_that_is_not_the_authority_drops_the_script_and_its_record() {
     let store = Local::default();
@@ -250,13 +357,13 @@ fn an_unknown_hash_is_refused_by_name_and_the_game_plays_its_own_rules() {
     assert!(!state.running);
     let why = state.refused.unwrap();
     assert!(why.contains("0909090909090909"), "{why}");
-    assert!(why.contains("fetching a blob from Live is not built"), "{why}");
+    assert!(why.contains("no Live client to fetch it"), "{why}");
     assert_eq!(state.hash.as_deref(), Some("0909090909090909"));
     assert_eq!(store.bytes(), None);
     assert_eq!(s.lock().pre_tick(&m), None);
     assert_eq!(s.lock().hash(), None);
 
-    // System Link runs only the built-ins.
+    // System Link runs only the scripts on this machine.
     s.lock().start(&m, true);
     let why = s.lock().state().refused.unwrap();
     assert!(why.contains("System Link"), "{why}");
@@ -292,6 +399,31 @@ fn a_script_the_host_cannot_run_is_refused_by_the_entry_or_event_it_names() {
 }
 
 #[test]
+fn a_ranked_game_refuses_a_script_that_grants_edits_by_the_capability() {
+    let src = "rules \"Builder\" 1\ncarrier slayer\nrequires forge.move\n\non kill(victim, killer) { score(killer, 1) }\n";
+    let ir = ::rules::compile(src).unwrap();
+    let blob = ir.encode();
+    let id = ir.id();
+    let store = Local::default();
+    let s = shared(&store, Box::new(move |_: [u8; 8]| Ok::<_, String>(blob.clone())));
+    let (m, _) = guest(block(prefix(&id), 0), SLAYER);
+    s.lock().set_context(Context::Ranked);
+    s.lock().start(&m, false);
+    let why = s.lock().state().refused.unwrap();
+    assert!(
+        why.starts_with("capability forge.move is not allowed in a ranked game"),
+        "{why}"
+    );
+    assert_eq!(store.bytes(), None);
+
+    // A custom game takes the header; what stops it there is the host.
+    s.lock().set_context(Context::Custom);
+    s.lock().start(&m, false);
+    let why = s.lock().state().refused.unwrap_or_default();
+    assert!(!why.contains("not allowed in a"), "{why}");
+}
+
+#[test]
 fn a_script_on_another_engine_is_refused() {
     let store = Local::default();
     let s = shared(&store, Box::new(no_fetch));
@@ -311,6 +443,17 @@ fn a_record_with_no_mode_runs_nothing_while_no_engine_is_ported() {
     assert!(!state.running);
     assert_eq!(state.refused.as_deref(), Some("the record names no script"));
     assert_eq!(store.bytes(), None);
+}
+
+#[test]
+fn examples_are_found_by_prefix_and_never_by_engine() {
+    for e in examples() {
+        assert!(std::ptr::eq(compiled_in(prefix(&e.id)).unwrap(), e));
+        assert!(builtins().iter().all(|b| b.id != e.id));
+    }
+    assert_eq!(examples().len(), ::rules::builtin::examples().len());
+    assert!(std::ptr::eq(compiled_in(prefix(&slayer().id)).unwrap(), slayer()));
+    assert!(compiled_in([9; 8]).is_none());
 }
 
 #[test]
@@ -396,4 +539,214 @@ fn the_game_reads_the_roster_the_statborg_and_the_record() {
         args: vec![Arg::Team(Some(0))],
     });
     assert_eq!(calls, [Call::End], "a call through none does nothing");
+}
+
+// ---- scripts from the game-variant store and Live ----
+
+use crate::game_variants::GameScripts;
+use crate::game_variants::store::{Origin, Store as VariantStore};
+use live_hle::game_variants::LiveVariant;
+
+const POINTS: &str = "rules \"Double Points\" 1\ncarrier slayer\n\non kill(victim, killer) { score(killer, 2) }\n";
+
+type Answer = Box<dyn Fn(&str, std::time::Duration) -> Result<Vec<u8>, String> + Send + Sync>;
+
+fn answer(
+    f: impl Fn(&str, std::time::Duration) -> Result<Vec<u8>, String> + Send + Sync + 'static,
+) -> Answer {
+    Box::new(f)
+}
+
+/// A Slayer variant carrying `blob`, as a format 2 bundle.
+fn stored_bundle(blob: Vec<u8>) -> variants::portable::Bundle {
+    let mut v = variants::GameVariant::blank(variants::GameType::Slayer);
+    v.set_name("Double Points").unwrap();
+    variants::portable::port(&v, None, None, variants::portable::PortScript::Ir(blob)).unwrap()
+}
+
+/// A Live variant whose record names `id` and whose IR is not here.
+fn pending(id: &Sha256) -> LiveVariant {
+    let mut v = variants::GameVariant::blank(variants::GameType::Slayer);
+    v.set_name("Double Points").unwrap();
+    let mut e = v.ext();
+    e.script = Script {
+        mode: Mode::Rules,
+        prefix: prefix(id),
+        options: 0,
+    };
+    v.set_ext(&e).unwrap();
+    LiveVariant {
+        id: "v1".into(),
+        name: "Double Points".into(),
+        description: String::new(),
+        author: live_hle::game_variants::Author {
+            xuid: "9000000000000001".into(),
+            gamertag: "Alex".into(),
+        },
+        engine: 2,
+        game_type: "slayer".into(),
+        record_hex: v.bytes().iter().map(|b| format!("{b:02x}")).collect(),
+        script_hash: Some(id.to_string()),
+        script_name: Some("Double Points".into()),
+        visibility: "public".into(),
+        created: String::new(),
+    }
+}
+
+fn scripts_over(vs: VariantStore, fetch: Answer) -> Arc<GameScripts> {
+    Arc::new(GameScripts::new(Arc::new(Mutex::new(vs)), None, fetch))
+}
+
+/// The runtime as the game composes it (`Runtime::in_game`), over `scripts`.
+fn composed(store: &Local, scripts: &Arc<GameScripts>) -> Arc<Shared> {
+    let (l, f) = (Arc::clone(scripts), Arc::clone(scripts));
+    Arc::new(Shared::new(
+        Runtime::new(Box::new(store.clone()), Box::new(move |p: [u8; 8]| f.fetched(p)))
+            .with_local(Box::new(move |p: [u8; 8]| l.local(p))),
+    ))
+}
+
+#[test]
+fn a_stored_script_runs_with_no_live_client_and_on_system_link() {
+    let ir = ::rules::compile(POINTS).unwrap();
+    let (blob, id) = (ir.encode(), ir.id());
+    let mut vs = VariantStore::in_memory();
+    assert_eq!(vs.add(Origin::Imported, stored_bundle(blob.clone())), Ok(true));
+    let scripts = scripts_over(vs, answer(|_, _| panic!("a stored script is never fetched")));
+    for system_link in [false, true] {
+        let store = Local::default();
+        let s = composed(&store, &scripts);
+        let (m, _) = guest(block(prefix(&id), 0), SLAYER);
+        assert_eq!(crate::rules::feature::to_fetch(&m, &scripts), None);
+        let line = s.lock().start(&m, system_link);
+        assert!(line.contains("Double Points"), "{line}");
+        let state = s.lock().state();
+        assert!(state.running, "{state:?}");
+        assert_eq!(state.source.as_deref(), Some("local"));
+        assert_eq!(state.hash, Some(id.to_string()));
+    }
+}
+
+#[test]
+fn a_live_variants_script_is_fetched_by_its_full_hash_verified_and_run() {
+    let ir = ::rules::compile(POINTS).unwrap();
+    let (blob, id) = (ir.encode(), ir.id());
+    let mut vs = VariantStore::in_memory();
+    vs.add_pending(pending(&id)).unwrap();
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&asked);
+    let served = blob.clone();
+    let scripts = scripts_over(
+        vs,
+        answer(move |h, _| {
+            seen.lock().unwrap().push(h.to_owned());
+            Ok(served.clone())
+        }),
+    );
+    let store = Local::default();
+    let s = composed(&store, &scripts);
+    let (m, _) = guest(block(prefix(&id), 0), SLAYER);
+    // The start hook fetches first, with no guest memory held.
+    assert_eq!(crate::rules::feature::to_fetch(&m, &scripts), Some(prefix(&id)));
+    scripts.prefetch(prefix(&id), crate::game_variants::START_WAIT);
+    assert_eq!(*asked.lock().unwrap(), [id.to_string()]);
+    assert_eq!(crate::rules::feature::to_fetch(&m, &scripts), None);
+    s.lock().start(&m, false);
+    let state = s.lock().state();
+    assert!(state.running, "{state:?}");
+    assert_eq!(state.hash, Some(id.to_string()));
+    // Kept: the next start needs no fetch.
+    assert_eq!(scripts.local(prefix(&id)), Some(blob));
+}
+
+#[test]
+fn each_fetch_failure_is_refused_by_name() {
+    let id = ::rules::compile(POINTS).unwrap().id();
+    // A blob that hashes to what its bundle names and does not verify.
+    let junk = vec![0xee; 40];
+    let junk_id = Sha256::of(&junk);
+    let cases: Vec<(Sha256, Answer, &str)> = vec![
+        (
+            id,
+            answer(|_, _| Err("the Live server did not answer within 1500 ms".into())),
+            "did not answer within 1500 ms",
+        ),
+        (
+            id,
+            answer(|_, _| Err("the Live server has no such script".into())),
+            "has no such script",
+        ),
+        (id, answer(|_, _| Ok(vec![1, 2, 3])), "hashes to"),
+        (
+            junk_id,
+            answer(move |_, _| Ok(junk.clone())),
+            "the blob does not verify",
+        ),
+    ];
+    for (named, answer, want) in cases {
+        let mut vs = VariantStore::in_memory();
+        vs.add_pending(pending(&named)).unwrap();
+        let scripts = scripts_over(vs, answer);
+        let store = Local::default();
+        let s = composed(&store, &scripts);
+        let (m, _) = guest(block(prefix(&named), 0), SLAYER);
+        scripts.prefetch(prefix(&named), crate::game_variants::START_WAIT);
+        s.lock().start(&m, false);
+        let state = s.lock().state();
+        assert!(!state.running);
+        let why = state.refused.unwrap();
+        assert!(why.contains(want), "{want}: {why}");
+        assert_eq!(store.bytes(), None);
+    }
+    // A prefix no bundle names a full hash for.
+    let scripts = scripts_over(
+        VariantStore::in_memory(),
+        answer(|_, _| panic!("nothing to fetch by")),
+    );
+    let s = composed(&Local::default(), &scripts);
+    let (m, _) = guest(block([7; 8], 0), SLAYER);
+    scripts.prefetch([7; 8], crate::game_variants::START_WAIT);
+    s.lock().start(&m, false);
+    let why = s.lock().state().refused.unwrap();
+    assert!(why.contains("full hash is not known"), "{why}");
+}
+
+#[test]
+fn an_in_place_swap_keeps_the_state_and_the_next_kill_runs_the_new_handler() {
+    let store = Local::default();
+    let s = shared(&store, Box::new(no_fetch));
+    let (m, _) = guest(block(prefix(&slayer().id), 2), SLAYER);
+    s.lock().start(&m, false);
+    let before = s.lock().running().unwrap().vm.ext().clone();
+    let src = ::rules::builtin::SLAYER.replacen(
+        "score(killer, kill_points)",
+        "score(killer, kill_points * 10)",
+        1,
+    );
+    let ir = ::rules::compile(&src).unwrap();
+    let id = ir.id();
+    assert_eq!(s.lock().swap(ir), Ok(id));
+    let state = s.lock().state();
+    assert!(state.running, "{state:?}");
+    assert_eq!(state.hash, Some(id.to_string()));
+    assert_eq!(state.options, Some(2), "the record's option bits are kept");
+    assert_eq!(*s.lock().running().unwrap().vm.ext(), before);
+    assert_eq!(
+        RulesExt::decode(&store.bytes().unwrap()).unwrap(),
+        before,
+        "the record is written as it was"
+    );
+    s.lock().kill(&m, 0, Some(1));
+    assert_eq!(
+        s.lock().running().unwrap().pending(),
+        [Call::Score {
+            player: 1,
+            delta: 30
+        }]
+    );
+    // Another state shape keeps the old program.
+    let shaped = format!("{src}\nglobal var kills: int = 0\n");
+    let why = s.lock().swap(::rules::compile(&shaped).unwrap()).unwrap_err();
+    assert!(why.contains("global variables"), "{why}");
+    assert_eq!(s.lock().state().hash, Some(id.to_string()));
 }

@@ -13,13 +13,13 @@ pub const MAGIC: [u8; 4] = *b"H2RL";
 /// The IR version this build reads. It changes when ops change.
 pub const IR_VERSION: u16 = 1;
 /// The most bytes a blob may have.
-pub const MAX_IR_BYTES: usize = 64 * 1024;
+pub const MAX_IR_BYTES: usize = 256 * 1024;
 /// Capabilities a header may declare.
 pub const MAX_REQUIRES: usize = 32;
 /// Registers one handler may use.
 pub const MAX_REGS: usize = 256;
 /// Ops in one handler.
-pub const MAX_OPS: usize = 8192;
+pub const MAX_OPS: usize = 32_768;
 /// Option bits a variant record carries for a script.
 pub const OPTION_BITS: u32 = 32;
 /// Bytes of a label, and of a message.
@@ -27,14 +27,16 @@ pub const MAX_LABEL_BYTES: usize = 32;
 pub const MAX_TEXT_BYTES: usize = 128;
 pub const MAX_TAG_BYTES: usize = 256;
 /// Per-scope slot budgets.
-pub const MAX_GLOBAL_SLOTS: usize = 64;
-pub const MAX_PLAYER_SLOTS: usize = 16;
-pub const MAX_TEAM_SLOTS: usize = 8;
-pub const MAX_OBJECT_SLOTS: usize = 8;
+pub const MAX_GLOBAL_SLOTS: usize = 256;
+pub const MAX_PLAYER_SLOTS: usize = 64;
+pub const MAX_TEAM_SLOTS: usize = 32;
+pub const MAX_OBJECT_SLOTS: usize = 32;
 /// Rows and columns of a constant table.
 pub const MAX_TABLE_ROWS: usize = 256;
 pub const MAX_TABLE_COLS: usize = 16;
 pub const MAX_PALETTE_TAGS: usize = 64;
+/// Labels a script declares at most.
+pub const MAX_LABELS: usize = 64;
 
 /// A register index within a handler's frame.
 pub type Reg = u8;
@@ -48,10 +50,12 @@ pub struct Ir {
     pub options: Vec<OptionDef>,
     pub enums: Vec<EnumDef>,
     pub slots: Vec<Slot>,
-    /// Forge labels the script names.
-    pub labels: Vec<String>,
-    /// Tag paths the script names, checked against the map at load.
-    pub tags: Vec<String>,
+    /// Forge labels the script declares, and what a map must hold of
+    /// each.
+    pub labels: Vec<LabelDef>,
+    /// Tag paths the script names, each with the group a map's tag at that
+    /// path must be.
+    pub tags: Vec<TagDef>,
     pub palettes: Vec<Palette>,
     pub tables: Vec<Table>,
     pub handlers: Vec<Handler>,
@@ -68,8 +72,55 @@ pub struct Header {
     pub carrier: u8,
     /// Teams the script needs; 0 is any.
     pub teams: u8,
+    /// Where the game type list files a variant of the script (`list`).
+    pub list: List,
     /// Capability names, the most the script can ever do.
     pub requires: Vec<String>,
+}
+
+/// Where the game type list files a variant of a script: under its
+/// carrier's game type (no `list` line), or under a row the header names
+/// (`list tweakers`). See `docs/game/rules-engine.md`, "The language".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum List {
+    #[default]
+    GameType,
+    /// The Tweakers row, after Territories.
+    Tweakers,
+}
+
+impl List {
+    /// The names a `list` line takes.
+    pub const NAMED: &'static [List] = &[List::Tweakers];
+
+    fn code(self) -> u8 {
+        match self {
+            List::GameType => 0,
+            List::Tweakers => 1,
+        }
+    }
+
+    fn from_code(c: u8) -> Option<List> {
+        Some(match c {
+            0 => List::GameType,
+            1 => List::Tweakers,
+            _ => return None,
+        })
+    }
+
+    /// The name a `list` line gives; `None` for [`List::GameType`], which
+    /// has no line.
+    pub fn name(self) -> Option<&'static str> {
+        match self {
+            List::GameType => None,
+            List::Tweakers => Some("tweakers"),
+        }
+    }
+
+    /// The list a `list` line names.
+    pub fn named(name: &str) -> Option<List> {
+        List::NAMED.iter().copied().find(|l| l.name() == Some(name))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,6 +194,163 @@ pub struct Slot {
     pub init: i32,
 }
 
+/// The characters a label's text may hold: those of
+/// `forge_doc::label_char` (lowercase ASCII letters, digits, `_`, `-` and
+/// `.`), so a script's label compares byte-exact with a map's.
+pub fn label_char(c: char) -> bool {
+    c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '-' | '.')
+}
+
+/// What a label's members are, by the placement classes that satisfy it
+/// (`labels::Class`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LabelKind {
+    /// Any placement but a starting location.
+    Object,
+    /// A placement with a volume: a Forge trigger volume or a netgame flag.
+    Zone,
+    /// Starting locations: a set passed to `spawn_areas`, never visited.
+    Spawn,
+}
+
+impl LabelKind {
+    pub fn code(self) -> u8 {
+        match self {
+            LabelKind::Object => 1,
+            LabelKind::Zone => 2,
+            LabelKind::Spawn => 3,
+        }
+    }
+
+    pub fn from_code(c: u8) -> Option<LabelKind> {
+        Some(match c {
+            1 => LabelKind::Object,
+            2 => LabelKind::Zone,
+            3 => LabelKind::Spawn,
+            _ => return None,
+        })
+    }
+}
+
+/// [`LabelDef::flags`] bits.
+pub mod label_flags {
+    /// One value, not a set (`label goal: zone`, `label bonus: object?`):
+    /// `max` is 1, and `min` 0 for an optional one.
+    pub const SINGLE: u8 = 1;
+    /// Every member has a number.
+    pub const NUMBERED: u8 = 2;
+    /// Every member's number is in `lo..=hi` and each number there has a
+    /// member. Needs [`NUMBERED`].
+    pub const RANGE: u8 = 4;
+    /// Each team in play has a member whose team it is.
+    pub const PER_TEAM: u8 = 8;
+    pub const ALL: u8 = SINGLE | NUMBERED | RANGE | PER_TEAM;
+}
+
+/// One label-table entry: the map text and what a map must hold of it.
+/// The start gate (`labels::check`) reads it; the verifier and the VM bound
+/// a set over it by `max` whatever the map holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LabelDef {
+    /// The map's label text.
+    pub text: String,
+    pub kind: LabelKind,
+    /// Members the map must have at least.
+    pub min: u16,
+    /// Members the map may have at most, and the most a set visits; at
+    /// most [`crate::ty::MAX_LABELLED`]. [`crate::ty::MAX_LABELLED`] states
+    /// no limit: a map with more is not blocked, and a set visits the first
+    /// 256.
+    pub max: u16,
+    /// [`label_flags`] bits.
+    pub flags: u8,
+    /// The number range, inclusive, with [`label_flags::RANGE`]; both 0
+    /// without it.
+    pub lo: i32,
+    pub hi: i32,
+}
+
+impl LabelDef {
+    /// A set of objects that requires nothing of the map: what a label
+    /// with no requirements is.
+    pub fn objects(text: impl Into<String>) -> LabelDef {
+        LabelDef {
+            text: text.into(),
+            kind: LabelKind::Object,
+            min: 0,
+            max: crate::ty::MAX_LABELLED as u16,
+            flags: 0,
+            lo: 0,
+            hi: 0,
+        }
+    }
+
+    pub fn single(&self) -> bool {
+        self.flags & label_flags::SINGLE != 0
+    }
+
+    pub fn numbered(&self) -> bool {
+        self.flags & label_flags::NUMBERED != 0
+    }
+
+    pub fn per_team(&self) -> bool {
+        self.flags & label_flags::PER_TEAM != 0
+    }
+
+    /// The number range, with [`label_flags::RANGE`].
+    pub fn range(&self) -> Option<std::ops::RangeInclusive<i32>> {
+        (self.flags & label_flags::RANGE != 0).then_some(self.lo..=self.hi)
+    }
+
+    /// Whether `max` limits the map; [`crate::ty::MAX_LABELLED`] does not.
+    pub fn bounded(&self) -> bool {
+        (self.max as usize) < crate::ty::MAX_LABELLED
+    }
+}
+
+/// The group a tag path must be on the map.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub enum TagGroup {
+    /// Any object definition.
+    #[default]
+    Any,
+    Weapon,
+}
+
+impl TagGroup {
+    pub fn code(self) -> u8 {
+        match self {
+            TagGroup::Any => 0,
+            TagGroup::Weapon => 1,
+        }
+    }
+
+    pub fn from_code(c: u8) -> Option<TagGroup> {
+        Some(match c {
+            0 => TagGroup::Any,
+            1 => TagGroup::Weapon,
+            _ => return None,
+        })
+    }
+}
+
+/// One tag-table entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TagDef {
+    pub path: String,
+    pub group: TagGroup,
+}
+
+impl TagDef {
+    /// A path of any object definition.
+    pub fn any(path: impl Into<String>) -> TagDef {
+        TagDef {
+            path: path.into(),
+            group: TagGroup::Any,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Palette {
     pub name: u16,
@@ -206,10 +414,13 @@ pub enum Event {
     /// A second player who damaged a killed actor in its last five
     /// seconds (`firefight::director::Kill::assist`).
     ActorAssist,
+    /// A fall out of the map during a bounce: the superbounce medal chain's
+    /// Bounced (`superbounce_chain::Event::Bounced`).
+    Bounced,
 }
 
 impl Event {
-    pub const ALL: [Event; 20] = [
+    pub const ALL: [Event; 21] = [
         Event::Init,
         Event::RoundStart,
         Event::Tick,
@@ -230,6 +441,7 @@ impl Event {
         Event::Quit,
         Event::RoundEnd,
         Event::ActorAssist,
+        Event::Bounced,
     ];
 
     pub fn code(self) -> u8 {
@@ -263,6 +475,7 @@ impl Event {
             Event::Quit => "quit",
             Event::RoundEnd => "round_end",
             Event::ActorAssist => "actor_assist",
+            Event::Bounced => "bounced",
         }
     }
 
@@ -275,10 +488,13 @@ impl Event {
     pub fn args(self) -> &'static [Ty] {
         match self {
             Event::Kill => &[Ty::Player, Ty::Player],
-            Event::Spawn | Event::Death | Event::Join | Event::Quit => &[Ty::Player],
-            Event::Pickup | Event::Drop | Event::Press | Event::Edit | Event::Bounce => {
-                &[Ty::Player, Ty::Object]
+            Event::Spawn | Event::Death | Event::Join | Event::Quit | Event::Bounced => {
+                &[Ty::Player]
             }
+            Event::Pickup | Event::Drop | Event::Press | Event::Edit => &[Ty::Player, Ty::Object],
+            // The chain's count (1 for a single bounce, 2 for a double) and
+            // whether it was a Monster Bounce.
+            Event::Bounce => &[Ty::Player, Ty::Object, Ty::Int, Ty::Bool],
             Event::Enter | Event::Leave => &[Ty::Object, Ty::Object],
             Event::SquadDead => &[Ty::Squad],
             Event::ActorKill => &[Ty::Player, Ty::Class],
@@ -300,6 +516,7 @@ impl Event {
             | Event::Drop
             | Event::Press
             | Event::Bounce
+            | Event::Bounced
             | Event::Edit
             | Event::Join
             | Event::Quit
@@ -366,7 +583,8 @@ pub enum SetBase {
     Players,
     /// Teams in play, by index.
     Teams,
-    /// Objects with the label-table entry's label, by placement id.
+    /// Objects with the label-table entry's label, by placement id, at
+    /// most the entry's `max`.
     Labelled(u16),
     /// The objective registry's objects (`E+0xc1c`, at most 8), by object
     /// handle.
@@ -382,12 +600,16 @@ impl SetBase {
         }
     }
 
-    /// The most members the set can have.
-    pub fn bound(self) -> u64 {
+    /// The most members the set can have, given the blob's label table: a
+    /// labelled set's is its label's `max`.
+    pub fn bound(self, labels: &[LabelDef]) -> u64 {
         match self {
             SetBase::Players => crate::ty::MAX_PLAYERS as u64,
             SetBase::Teams => crate::ty::MAX_TEAMS as u64,
-            SetBase::Labelled(_) => crate::ty::MAX_LABELLED as u64,
+            SetBase::Labelled(l) => labels
+                .get(l as usize)
+                .map_or(crate::ty::MAX_LABELLED, |d| (d.max as usize).min(crate::ty::MAX_LABELLED))
+                as u64,
             SetBase::Objectives => crate::ty::MAX_OBJECTIVES as u64,
         }
     }
@@ -471,6 +693,7 @@ impl Ir {
         w.u16(h.version);
         w.u8(h.carrier);
         w.u8(h.teams);
+        w.u8(h.list.code());
         w.len(h.requires.len());
         for r in &h.requires {
             w.str(r);
@@ -501,8 +724,21 @@ impl Ir {
             w.u8(s.ty.code());
             w.i32(s.init);
         }
-        w.strs(&self.labels);
-        w.strs(&self.tags);
+        w.len(self.labels.len());
+        for l in &self.labels {
+            w.str(&l.text);
+            w.u8(l.kind.code());
+            w.u16(l.min);
+            w.u16(l.max);
+            w.u8(l.flags);
+            w.i32(l.lo);
+            w.i32(l.hi);
+        }
+        w.len(self.tags.len());
+        for t in &self.tags {
+            w.str(&t.path);
+            w.u8(t.group.code());
+        }
         w.len(self.palettes.len());
         for p in &self.palettes {
             w.u16(p.name);
@@ -556,6 +792,11 @@ impl Ir {
         let version = r.u16("the header")?;
         let carrier = r.u8("the header")?;
         let teams = r.u8("the header")?;
+        let list = r.u8("the header")?;
+        let list = List::from_code(list).ok_or(DecodeError::Invalid {
+            what: "the header's list",
+            value: list as u32,
+        })?;
         let n = r.len("the requires list")?;
         let mut requires = Vec::with_capacity(n.min(64));
         for _ in 0..n {
@@ -568,6 +809,7 @@ impl Ir {
             version,
             carrier,
             teams,
+            list,
             requires,
         };
         let strings = r.strs("the string table")?;
@@ -611,8 +853,36 @@ impl Ir {
                 init: r.i32("the slot table")?,
             });
         }
-        let labels = r.strs("the label table")?;
-        let tags = r.strs("the tag table")?;
+        let n = r.len("the label table")?;
+        let mut labels = Vec::with_capacity(n.min(MAX_LABELS));
+        for _ in 0..n {
+            let text = r.str("the label table")?;
+            let kind = r.u8("the label table")?;
+            let kind = LabelKind::from_code(kind).ok_or(DecodeError::Invalid {
+                what: "a label kind",
+                value: kind as u32,
+            })?;
+            labels.push(LabelDef {
+                text,
+                kind,
+                min: r.u16("the label table")?,
+                max: r.u16("the label table")?,
+                flags: r.u8("the label table")?,
+                lo: r.i32("the label table")?,
+                hi: r.i32("the label table")?,
+            });
+        }
+        let n = r.len("the tag table")?;
+        let mut tags = Vec::with_capacity(n.min(1024));
+        for _ in 0..n {
+            let path = r.str("the tag table")?;
+            let group = r.u8("the tag table")?;
+            let group = TagGroup::from_code(group).ok_or(DecodeError::Invalid {
+                what: "a tag group",
+                value: group as u32,
+            })?;
+            tags.push(TagDef { path, group });
+        }
         let n = r.len("the palette table")?;
         let mut palettes = Vec::with_capacity(n.min(64));
         for _ in 0..n {
@@ -739,6 +1009,113 @@ impl Ir {
         }
         bits as u32
     }
+
+    /// An option's name, from the string table.
+    pub fn option_name(&self, index: usize) -> &str {
+        self.options
+            .get(index)
+            .and_then(|o| self.strings.get(o.name as usize))
+            .map_or("", String::as_str)
+    }
+
+    /// An enum option's value names, by value from `lo`; empty for an int
+    /// or a bool.
+    pub fn option_values(&self, index: usize) -> Vec<&str> {
+        match self.options.get(index).map(|o| o.ty) {
+            Some(Ty::Enum(e)) => self
+                .enums
+                .get(e as usize)
+                .map(|d| {
+                    d.variants
+                        .iter()
+                        .map(|&s| self.strings.get(s as usize).map_or("", String::as_str))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Packs option values given by name into the record's 32 option bits,
+    /// in declaration order ("Carrying a script"). An option left out takes
+    /// its default. Live's variant routes and `h2 variants port --option`
+    /// both pack through here.
+    pub fn pack_options(&self, given: &[(String, OptionValue)]) -> Result<u32, OptionError> {
+        for (i, (name, _)) in given.iter().enumerate() {
+            if !(0..self.options.len()).any(|o| self.option_name(o) == name) {
+                return Err(OptionError::Unknown(name.clone()));
+            }
+            if given[..i].iter().any(|(n, _)| n == name) {
+                return Err(OptionError::Twice(name.clone()));
+            }
+        }
+        let mut bits = 0u64;
+        for (index, (o, off)) in self.options.iter().zip(self.option_offsets()).enumerate() {
+            let name = self.option_name(index);
+            let range = || OptionError::Range {
+                name: name.to_string(),
+                lo: o.lo,
+                hi: o.hi,
+            };
+            let value = match given.iter().find(|(n, _)| n == name).map(|(_, v)| v) {
+                None => o.default,
+                Some(OptionValue::Bool(b)) => i32::from(*b),
+                Some(OptionValue::Int(n)) => i32::try_from(*n).map_err(|_| range())?,
+                Some(OptionValue::Name(s)) => self
+                    .option_values(index)
+                    .iter()
+                    .position(|v| *v == s.as_str())
+                    .map(|p| o.lo + p as i32)
+                    .ok_or_else(|| OptionError::NoValue {
+                        name: name.to_string(),
+                        value: s.clone(),
+                    })?,
+            };
+            if !(o.lo..=o.hi).contains(&value) {
+                return Err(range());
+            }
+            if off < 64 {
+                bits |= ((i64::from(value) - i64::from(o.lo)) as u64) << off;
+            }
+        }
+        Ok(bits as u32)
+    }
+}
+
+/// An option value given by name ([`Ir::pack_options`]): a number, a bool
+/// or an enum value's name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OptionValue {
+    Int(i64),
+    Bool(bool),
+    Name(String),
+}
+
+impl OptionValue {
+    /// Reads command-line text: `true` or `false`, an integer, or else an
+    /// enum value's name.
+    pub fn parse(text: &str) -> OptionValue {
+        match text {
+            "true" => OptionValue::Bool(true),
+            "false" => OptionValue::Bool(false),
+            t => t
+                .parse::<i64>()
+                .map_or_else(|_| OptionValue::Name(t.to_string()), OptionValue::Int),
+        }
+    }
+}
+
+/// Why option values do not pack.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum OptionError {
+    #[error("the script has no option {0:?}")]
+    Unknown(String),
+    #[error("option {0:?} is given twice")]
+    Twice(String),
+    #[error("option {name:?} takes {lo}..={hi}")]
+    Range { name: String, lo: i32, hi: i32 },
+    #[error("option {name:?} has no value {value:?}")]
+    NoValue { name: String, value: String },
 }
 
 struct Writer(Vec<u8>);
@@ -1194,6 +1571,7 @@ pub(crate) mod tests {
                 version: 1,
                 carrier: 2,
                 teams: 0,
+                list: List::Tweakers,
                 requires: vec!["forge.move".into()],
             },
             strings: vec!["kill_points".into(), "elite".into()],
@@ -1213,8 +1591,22 @@ pub(crate) mod tests {
                 ty: Ty::Bool,
                 init: 0,
             }],
-            labels: vec!["ff_drop".into()],
-            tags: vec!["objects/weapons/x".into()],
+            labels: vec![
+                LabelDef::objects("ff_drop"),
+                LabelDef {
+                    text: "zone".into(),
+                    kind: LabelKind::Zone,
+                    min: 2,
+                    max: 4,
+                    flags: label_flags::NUMBERED | label_flags::RANGE,
+                    lo: 0,
+                    hi: 1,
+                },
+            ],
+            tags: vec![TagDef {
+                path: "objects/weapons/x".into(),
+                group: TagGroup::Weapon,
+            }],
             palettes: vec![Palette {
                 name: 1,
                 tags: vec![0],
@@ -1273,6 +1665,34 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_list_round_trips_and_an_unknown_one_is_refused() {
+        let mut ir = sample();
+        for list in [List::GameType, List::Tweakers] {
+            ir.header.list = list;
+            let bytes = ir.encode();
+            assert_eq!(Ir::decode(&bytes).unwrap().header.list, list);
+        }
+        let mut other = sample();
+        other.header.list = List::GameType;
+        assert_ne!(sample().id(), other.id(), "the list is part of the hash");
+        // The list byte follows the name, version, carrier and teams.
+        let mut bytes = sample().encode();
+        let at = 4 + 2 + 2 + 2 + "Sample".len() + 2 + 1 + 1;
+        assert_eq!(bytes[at], 1);
+        bytes[at] = 7;
+        assert_eq!(
+            Ir::decode(&bytes),
+            Err(DecodeError::Invalid {
+                what: "the header's list",
+                value: 7
+            })
+        );
+        assert_eq!(List::named("tweakers"), Some(List::Tweakers));
+        assert_eq!(List::named("slayer"), None);
+        assert_eq!(List::GameType.name(), None);
+    }
+
+    #[test]
     fn id_is_stable_and_changes_with_content() {
         let a = sample();
         assert_eq!(a.id(), sample().id());
@@ -1313,6 +1733,67 @@ pub(crate) mod tests {
                 let _ = crate::verify::verify(&ir);
             }
         }
+    }
+
+    #[test]
+    fn the_label_and_tag_tables_round_trip_and_refuse_unknown_codes() {
+        let ir = sample();
+        let back = Ir::decode(&ir.encode()).unwrap();
+        assert_eq!(back.labels, ir.labels);
+        assert_eq!(back.tags, ir.tags);
+        assert_eq!(back.labels[1].range(), Some(0..=1));
+        assert!(back.labels[1].numbered() && !back.labels[1].single());
+        assert_eq!(back.labels[0].range(), None);
+        assert!(!back.labels[0].bounded() && back.labels[1].bounded());
+
+        // Each requirement is part of the hash.
+        let mut other = sample();
+        other.labels[1].min = 3;
+        assert_ne!(other.id(), ir.id());
+        let mut other = sample();
+        other.tags[0].group = TagGroup::Any;
+        assert_ne!(other.id(), ir.id());
+
+        fn find(bytes: &[u8], text: &str) -> usize {
+            let mut want = (text.len() as u16).to_le_bytes().to_vec();
+            want.extend_from_slice(text.as_bytes());
+            bytes
+                .windows(want.len())
+                .position(|w| w == want.as_slice())
+                .map(|at| at + want.len())
+                .unwrap()
+        }
+        // The kind byte follows a label's text, the group a tag's path.
+        let mut bytes = ir.encode();
+        let at = find(&bytes, "zone");
+        assert_eq!(bytes[at], LabelKind::Zone.code());
+        bytes[at] = 9;
+        assert_eq!(
+            Ir::decode(&bytes),
+            Err(DecodeError::Invalid {
+                what: "a label kind",
+                value: 9
+            })
+        );
+        let mut bytes = ir.encode();
+        let at = find(&bytes, "objects/weapons/x");
+        assert_eq!(bytes[at], TagGroup::Weapon.code());
+        bytes[at] = 7;
+        assert_eq!(
+            Ir::decode(&bytes),
+            Err(DecodeError::Invalid {
+                what: "a tag group",
+                value: 7
+            })
+        );
+    }
+
+    #[test]
+    fn a_labelled_set_is_bounded_by_its_label() {
+        let ir = sample();
+        assert_eq!(SetBase::Labelled(0).bound(&ir.labels), crate::ty::MAX_LABELLED as u64);
+        assert_eq!(SetBase::Labelled(1).bound(&ir.labels), 4);
+        assert_eq!(SetBase::Players.bound(&ir.labels), crate::ty::MAX_PLAYERS as u64);
     }
 
     #[test]

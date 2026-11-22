@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Draw the four superbounce medal glyphs (docs/game/hud-kit.md, "The medals").
+"""Draw the superbounce medal glyphs (docs/game/hud-kit.md, "The medals").
 
-Writes the art as data, `crates/formats/font/src/medals/art.rs`: four
+Writes the art as data, `crates/formats/font/src/medals/art.rs`:
 24 x 24 ARGB 4444 pictures that `font::medals` adds to the HUD message fonts.
 The pictures are drawn here from discs, polygons and gradients in the manner
 of Halo 2's multi-kill medals (a shaded disc lit from the upper left, the tier
@@ -11,10 +11,22 @@ nothing is copied from a disc font or anyone's artwork. New art is a new
 
     python3 scripts/superbounce-medals.py            # write art.rs
     python3 scripts/superbounce-medals.py --preview DIR [--h2 BIN] [--disc ISO]
+    python3 scripts/superbounce-medals.py --rs FILE --art DIR [--only id,id]
 
 `--preview` also writes a sheet (each glyph at its size and 8 times, and a
 mock notification line beside a retail one, drawn by `h2 font`) to DIR. It
 needs Pillow; writing art.rs needs nothing outside the standard library.
+
+`--art` writes each medal's files to DIR as `scripts/live-medals.py` does
+(Pillow again): game/<id>.png (24 by 24, ARGB 4444), big/<id>.png (8 times),
+site/<id>.webp and @2x (64 and 128), hires/<id>-512.png and -256.png (the
+drawing sampled again at 512, and halved: web/art-source/medals/), and
+sheet.png, every bounce medal side by side. `--only` keeps a few ids.
+
+The Monster Bounce has several drawings (`MONSTER_VARIANTS`); STYLE names
+the one in use and `--monster NAME` draws another. `--variants DIR` writes
+sheet-v2.png, all of them beside the other medals (`--before PNG` adds the
+medal as it was).
 """
 
 import argparse
@@ -36,6 +48,7 @@ MEDALS = [
     (0xE2A4, "CHAIN_BOUNCE", "Chain bounce!"),
     (0xE2A5, "BOUNCETACULAR", "Bouncetacular!"),
     (0xE2A6, "BOUNCED", "Bounced!"),
+    (0xE2A8, "MONSTER_BOUNCE", "Monster bounce!"),
 ]
 
 # Each medal: the disc from its top to its bottom (the retail discs are
@@ -43,6 +56,8 @@ MEDALS = [
 # strip's colour, the chevrons as rows top first (a count of chevrons in
 # each row: the tier, as a multi-kill disc counts its stars), and for the
 # top tier a spiked rim. `BOUNCED` is a fall through a broken strip.
+# `MONSTER_BOUNCE` is a monster: `monster` names its drawing, one of
+# `MONSTER_VARIANTS` below.
 STYLE = {
     # Slate blue, one pale chevron.
     "SUPERBOUNCE": dict(
@@ -80,6 +95,13 @@ STYLE = {
         top=(0.50, 0.12, 0.12), bottom=(0.86, 0.36, 0.28),
         face=((1.0, 0.94, 0.45), (0.98, 0.58, 0.08)), edge=(0.30, 0.10, 0.0),
         strip=(0.24, 0.04, 0.04), rows=[], fall=True),
+    # Hot orange, crimson horns and rim, pale marks (the Superbounce's
+    # chevron and its colours); the dark of a mouth or a seam for a strip.
+    "MONSTER_BOUNCE": dict(
+        top=(1.0, 0.34, 0.10), bottom=(1.0, 0.80, 0.26),
+        face=((0.92, 1.0, 1.0), (0.40, 0.84, 0.98)), edge=(0.04, 0.18, 0.36),
+        strip=(0.40, 0.05, 0.02), rows=[], monster="horned",
+        rim=((1.0, 0.46, 0.20), (0.52, 0.05, 0.04))),
 }
 
 
@@ -142,9 +164,21 @@ def chevrons(rows, disc_r):
     return out
 
 
+def mark_face(p, x, y, d, tip, h, th):
+    """A chevron's colour at (x, y), `d` inside it: its face from top to
+    bottom, and its dark edge."""
+    lo, hi = min(tip, tip + h) - th / 2, max(tip, tip + h) + th / 2
+    face = mix(p["face"][0], p["face"][1], clamp((y - lo) / (hi - lo)))
+    if d > -min(0.75, th * 0.3):
+        face = mix(face, p["edge"], 0.8)
+    return face
+
+
 def sample(name, x, y):
     """Straight RGBA (0..1) of the picture at (x, y), in pixels."""
     p = STYLE[name]
+    if "monster" in p:
+        return monster_sample(p, x, y)
     cx = cy = SIZE / 2
     dx, dy = x - cx, y - cy
     r = math.hypot(dx, dy)
@@ -198,12 +232,198 @@ def sample(name, x, y):
     for (mx, tip, hw, h, th) in marks:
         d = chevron_dist(x, y, mx, tip, hw, h, th)
         if d < 0:
-            lo, hi = min(tip, tip + h) - th / 2, max(tip, tip + h) + th / 2
-            face = mix(p["face"][0], p["face"][1], clamp((y - lo) / (hi - lo)))
-            if d > -min(0.75, th * 0.3):
-                face = mix(face, p["edge"], 0.8)
-            col = face
+            col = mark_face(p, x, y, d, tip, h, th)
     return (*col, 1.0)
+
+
+# ---------------------------------------------------------------------------
+# The Monster Bounce: a disc as the others', and shapes over and behind it.
+# ---------------------------------------------------------------------------
+
+def s_circle(cx, cy, r):
+    return lambda x, y: math.hypot(x - cx, y - cy) - r
+
+
+def s_seg(ax, ay, bx, by, th):
+    dx, dy = bx - ax, by - ay
+    ll = dx * dx + dy * dy
+
+    def f(x, y):
+        px, py = x - ax, y - ay
+        t = clamp((px * dx + py * dy) / ll)
+        return math.hypot(px - dx * t, py - dy * t) - th / 2
+    return f
+
+
+def s_poly(pts):
+    """Signed distance to a polygon, any winding."""
+    n = len(pts)
+
+    def f(x, y):
+        d = 1e18
+        s = 1.0
+        j = n - 1
+        for i in range(n):
+            xi, yi = pts[i]
+            xj, yj = pts[j]
+            ex, ey = xj - xi, yj - yi
+            wx, wy = x - xi, y - yi
+            t = clamp((wx * ex + wy * ey) / (ex * ex + ey * ey))
+            bx, by = wx - ex * t, wy - ey * t
+            d = min(d, bx * bx + by * by)
+            c1, c2, c3 = y >= yi, y < yj, ex * wy > ey * wx
+            if (c1 and c2 and c3) or (not c1 and not c2 and not c3):
+                s = -s
+            j = i
+        return s * math.sqrt(d)
+    return f
+
+
+def s_union(*fs):
+    return lambda x, y: min(f(x, y) for f in fs)
+
+
+def s_inter(*fs):
+    return lambda x, y: max(f(x, y) for f in fs)
+
+
+def s_chevron(cx, tip, half_w, height, thick):
+    return lambda x, y: chevron_dist(x, y, cx, tip, half_w, height, thick)
+
+
+def s_mirror(f):
+    """A shape and its mirror image across the medal's middle."""
+    return s_union(f, lambda x, y: f(SIZE - x, y))
+
+
+def s_bounds(shape):
+    """(top, bottom) of a shape, to a quarter pixel: its face runs between."""
+    ys = [iy / 4 for iy in range(-8, SIZE * 4 + 9)
+          if any(shape(ix / 4, iy / 4) < 0 for ix in range(-8, SIZE * 4 + 9))]
+    return (ys[0], ys[-1] + 0.25) if ys else (0.0, float(SIZE))
+
+
+def m_mark(shape, ew=0.6, shadow=True):
+    """A pale mark: its shape, its dark edge's width, whether it casts a
+    shadow."""
+    lo, hi = s_bounds(shape)
+    return dict(shape=shape, ew=ew, shadow=shadow, lo=lo, hi=hi)
+
+
+def horn(cy):
+    """A horn up from the disc's upper left, curving in to its point."""
+    return s_poly([(3.6, cy - 2.2), (0.7, cy - 6.4), (2.4, cy - 12.0), (4.0, cy - 8.2), (7.4, cy - 6.8)])
+
+
+def monster_launch():
+    """The Superbounce's chevron out past the top of a rimmed disc, off two
+    seams that fan out in a V from one point."""
+    return dict(cy=12.0, r=9.6, spikes=12,
+                flats=[s_chevron(12, 20.3, 3.3, -6.6, 1.4)],
+                marks=[m_mark(s_chevron(12, 2.7, 6.2, 8.6, 3.2), 0.75)])
+
+
+def monster_maw():
+    """A horned face roaring: small eyes, a round mouth with teeth along
+    its floor, and the chevron bursting up out of it."""
+    cy = 12.7
+    eye = s_poly([(3.7, 6.9), (8.5, 8.3), (8.2, 10.0), (4.7, 9.9)])
+    teeth = s_mirror(s_union(
+        s_poly([(6.5, 17.6), (8.9, 20.2), (9.3, 16.4)]),
+        s_poly([(9.6, 20.7), (11.9, 21.3), (11.1, 17.8)])))
+    return dict(cy=cy, r=9.3, spikes=0, back=[s_mirror(horn(cy))],
+                flats=[s_circle(12, 15.5, 5.9)],
+                marks=[m_mark(s_mirror(eye), 0.4, False), m_mark(teeth, 0.35, False),
+                       m_mark(s_chevron(12, 7.4, 4.2, 6.0, 2.7), 0.7)])
+
+
+def monster_horned():
+    """A horned face: the seams' V for a brow, two lit eyes under it, a
+    mouth of fangs, and the chevron up between the horns, past the disc."""
+    cy = 12.7
+    eye = s_poly([(5.0, 9.7), (10.7, 12.3), (10.1, 14.0), (5.9, 13.1)])
+    mouth = s_inter(s_circle(12, 12.6, 7.6), lambda x, y: 15.9 - y)
+    fangs = s_union(
+        s_poly([(6.3, 15.8), (9.7, 15.8), (8.0, 19.6)]),
+        s_poly([(14.3, 15.8), (17.7, 15.8), (16.0, 19.6)]),
+        s_poly([(10.2, 15.8), (11.9, 15.8), (11.05, 17.6)]),
+        s_poly([(12.1, 15.8), (13.8, 15.8), (12.95, 17.6)]))
+    return dict(cy=cy, r=9.3, spikes=0, back=[s_mirror(horn(cy))],
+                flats=[mouth, s_chevron(12, 12.3, 6.8, -4.6, 1.5)],
+                marks=[m_mark(s_mirror(eye), 0.4, False), m_mark(fangs, 0.35, False),
+                       m_mark(s_chevron(12, 2.3, 4.0, 4.6, 2.7), 0.7)])
+
+
+def monster_grin():
+    """A horned face built from the bounce marks: slanted eyes, and a wide
+    mouth whose teeth are a row of chevrons."""
+    cy = 12.7
+    eye = s_poly([(4.6, 7.4), (10.7, 10.4), (10.1, 12.3), (5.6, 11.4)])
+    mouth = s_inter(s_circle(12, 12.0, 8.0), lambda x, y: 14.2 - y)
+    teeth = s_union(*[s_chevron(cx, 15.4, 1.9, 2.6, 1.5) for cx in (7.2, 12.0, 16.8)])
+    return dict(cy=cy, r=9.3, spikes=0, back=[s_mirror(horn(cy))],
+                flats=[mouth],
+                marks=[m_mark(s_mirror(eye), 0.45, False), m_mark(teeth, 0.4, False)])
+
+
+# The Monster Bounce's drawings by name; STYLE's `monster` picks one.
+MONSTER_VARIANTS = dict(horned=monster_horned, maw=monster_maw, grin=monster_grin, launch=monster_launch)
+_MONSTER = {}
+
+
+def monster_sample(p, x, y):
+    """Straight RGBA (0..1) of the Monster Bounce at (x, y): the disc and
+    its light as `sample` draws them, horns and a spiked rim behind it,
+    flat dark shapes on it (a mouth, seams), the marks' shadows, then the
+    marks, which may stand past the disc."""
+    v = _MONSTER.get(p["monster"])
+    if v is None:
+        v = _MONSTER[p["monster"]] = MONSTER_VARIANTS[p["monster"]]()
+    cx, cy, disc_r = SIZE / 2, v["cy"], v["r"]
+    dx, dy = x - cx, y - cy
+    r = math.hypot(dx, dy)
+    col = None
+    if r > disc_r - 0.5:
+        light = clamp(0.5 - (dx + dy) / (2 * SIZE) * 1.4)
+        behind = mix(p["rim"][1], p["rim"][0], light)
+        dark = mix(p["rim"][1], (0, 0, 0), 0.7)
+        if v["spikes"]:
+            k = v["spikes"]
+            a = (math.atan2(dy, dx) + math.pi / 2) % (2 * math.pi / k) / (2 * math.pi / k)
+            if r <= 12.0 - abs(a - 0.5) * 2 * 3.2:
+                col = behind
+        for shape in v.get("back", ()):
+            d = shape(x, y)
+            if d < 0:
+                col = mix(behind, dark, 0.6) if d > -0.45 else behind
+        # A dark seam where what is behind meets the disc.
+        if col and r < disc_r + 0.6:
+            col = mix(col, dark, 0.55)
+    if r <= disc_r:
+        t = clamp((y - (cy - disc_r)) / (2 * disc_r))
+        col = mix(p["top"], p["bottom"], t ** 1.3)
+        lit = -(dx + dy) / (math.sqrt(2) * max(r, 1e-6))
+        if disc_r - r < 1.3:
+            if lit > 0:
+                col = mix(col, (1.0, 1.0, 1.0), clamp(lit) * 0.85)
+            else:
+                col = mix(col, mix(p["top"], (0, 0, 0), 0.35), clamp(-lit) * 0.6)
+        for shape in v["flats"]:
+            if shape(x, y) < 0:
+                # Lit along its lower edge, as the strip is.
+                col = mix(p["strip"], p["bottom"], 0.7) if shape(x, y + 0.6) >= 0 else p["strip"]
+    if col:
+        shade = mix(p["top"] if r <= disc_r else p["rim"][1], (0, 0, 0), 0.4)
+        for k in v["marks"]:
+            if k["shadow"] and k["shape"](x - 0.6, y - 0.8) < 0:
+                col = mix(col, shade, 0.25)
+    for k in v["marks"]:
+        d = k["shape"](x, y)
+        if d < 0:
+            col = mix(p["face"][0], p["face"][1], clamp((y - k["lo"]) / (k["hi"] - k["lo"])))
+            if d > -k["ew"]:
+                col = mix(col, p["edge"], 0.8)
+    return (*col, 1.0) if col else (0.0, 0.0, 0.0, 0.0)
 
 
 def draw(name):
@@ -286,6 +506,142 @@ def to_image(pic):
     return im
 
 
+def medal_id(name):
+    return name.lower().replace("_", "-")
+
+
+HIRES = 512
+HIRES_SS = 3
+
+
+def draw_hires(name, HIRES=HIRES):
+    """The same drawing sampled at 512 by 512, 3 by 3 samples a pixel, 8
+    bits a channel: straight RGBA bytes, as `scripts/live-medals.py --hires`
+    draws it. Not the 24-pixel picture enlarged."""
+    k = SIZE / HIRES
+    n2 = HIRES_SS * HIRES_SS
+    out = bytearray()
+    for py in range(HIRES):
+        for px in range(HIRES):
+            ar = ag = ab = aa = 0.0
+            for sy in range(HIRES_SS):
+                yy = (py + (sy + 0.5) / HIRES_SS) * k
+                for sx in range(HIRES_SS):
+                    r, g, b, a = sample(name, (px + (sx + 0.5) / HIRES_SS) * k, yy)
+                    if a:
+                        ar += r
+                        ag += g
+                        ab += b
+                        aa += 1.0
+            if aa:
+                out += bytes((int(round(clamp(ar / aa) * 255)), int(round(clamp(ag / aa) * 255)),
+                              int(round(clamp(ab / aa) * 255)), int(round(aa / n2 * 255))))
+            else:
+                out += bytes(4)
+    return bytes(out)
+
+
+def variants(out_dir, pics, old):
+    """sheet-v2.png: the bounce medals, the Monster Bounce before (the
+    picture `old`, if given) and each of `MONSTER_VARIANTS`: at their size,
+    8 times, and drawn again at 256."""
+    from PIL import Image, ImageDraw
+    p = STYLE["MONSTER_BOUNCE"]
+    chosen = p["monster"]
+    cells = [(line, to_image(pic), None) for (_, name, line), pic in zip(MEDALS, pics) if name != "MONSTER_BOUNCE"]
+    if old:
+        cells.append(("before", Image.open(old).convert("RGBA"), None))
+    for v in MONSTER_VARIANTS:
+        if v == "launch" and old:
+            continue
+        p["monster"] = v
+        im = to_image([argb4444(q) for q in draw("MONSTER_BOUNCE")])
+        hi = Image.frombytes("RGBA", (256, 256), draw_hires("MONSTER_BOUNCE", 256))
+        cells.append((v + (" (default)" if v == chosen else ""), im, hi))
+    p["monster"] = chosen
+    bg, ink = (28, 30, 38, 255), (235, 235, 240, 255)
+    z, pad = 8, 16
+    cell = SIZE * z + pad
+    big = [c for c in cells if c[2]]
+    w = max(pad + len(cells) * cell, pad + len(big) * (256 + pad))
+    h = pad * 6 + 28 + SIZE + SIZE * z + 256
+    out = Image.new("RGBA", (w, h), bg)
+    dr = ImageDraw.Draw(out)
+    for i, (label, im, _) in enumerate(cells):
+        x = pad + i * cell
+        dr.text((x, pad), label, fill=ink)
+        out.alpha_composite(im, (x, pad * 2 + 14))
+        out.alpha_composite(im.resize((SIZE * z, SIZE * z), Image.NEAREST), (x, pad * 3 + 14 + SIZE))
+    y = pad * 4 + 14 + SIZE + SIZE * z
+    for i, (label, _, hi) in enumerate(big):
+        x = pad + i * (256 + pad)
+        dr.text((x, y), label, fill=ink)
+        out.alpha_composite(hi, (x, y + 14 + pad))
+    path = os.path.join(out_dir, "sheet-v2.png")
+    out.save(path)
+    return path
+
+
+def site_images(im):
+    """The art pack's two pictures, as web/public/art/ART.md's Batch 07
+    makes them: the glyph 5 times (120) centred on 128, and that
+    box-filtered to 60 on 64."""
+    from PIL import Image
+    up = im.resize((SIZE * 5, SIZE * 5), Image.NEAREST)
+    two = Image.new("RGBA", (128, 128), (0, 0, 0, 0))
+    two.alpha_composite(up, (4, 4))
+    one = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    one.alpha_composite(up.resize((60, 60), Image.BOX), (2, 2))
+    return one, two
+
+
+def art(out_dir, pics, only):
+    """The medals' files, laid out as `scripts/live-medals.py --out` lays
+    out Live's, and sheet.png: every bounce medal at its size, 8 times and
+    at the site's sizes, and those of `only` at 256 from the hi-res."""
+    from PIL import Image, ImageDraw
+    for sub in ("game", "big", "site", "hires"):
+        os.makedirs(os.path.join(out_dir, sub), exist_ok=True)
+    imgs = {name: to_image(pic) for (_, name, _), pic in zip(MEDALS, pics)}
+    names = [n for (_, n, _) in MEDALS if not only or medal_id(n) in only]
+    halves = {}
+    for name in names:
+        mid, im = medal_id(name), imgs[name]
+        im.save(os.path.join(out_dir, "game", f"{mid}.png"))
+        im.resize((SIZE * 8, SIZE * 8), Image.NEAREST).save(os.path.join(out_dir, "big", f"{mid}.png"))
+        one, two = site_images(im)
+        one.save(os.path.join(out_dir, "site", f"{mid}.webp"), lossless=True)
+        two.save(os.path.join(out_dir, "site", f"{mid}@2x.webp"), lossless=True)
+        big = Image.frombytes("RGBA", (HIRES, HIRES), draw_hires(name))
+        half = big.convert("RGBa").resize((256, 256), Image.BOX).convert("RGBA")
+        big.save(os.path.join(out_dir, "hires", f"{mid}-512.png"), optimize=True)
+        half.save(os.path.join(out_dir, "hires", f"{mid}-256.png"), optimize=True)
+        halves[name] = half
+    bg, ink = (28, 30, 38, 255), (235, 235, 240, 255)
+    z, pad = 8, 16
+    cell = SIZE * z + pad
+    w = pad + len(MEDALS) * cell
+    h = pad * 6 + 14 + SIZE + SIZE * z + 64 + 128 + (256 + pad if halves else 0)
+    out = Image.new("RGBA", (max(w, pad + len(halves) * (256 + pad)), h), bg)
+    dr = ImageDraw.Draw(out)
+    for i, (_, name, line) in enumerate(MEDALS):
+        x, y, im = pad + i * cell, pad, imgs[name]
+        dr.text((x, y), line, fill=ink)
+        y += 14 + pad
+        out.alpha_composite(im, (x, y))
+        y += SIZE + pad
+        out.alpha_composite(im.resize((SIZE * z, SIZE * z), Image.NEAREST), (x, y))
+        y += SIZE * z + pad
+        one, two = site_images(im)
+        out.alpha_composite(one, (x, y))
+        out.alpha_composite(two, (x, y + 64 + pad))
+    for i, name in enumerate(halves):
+        out.alpha_composite(halves[name], (pad + i * (256 + pad), h - 256 - pad))
+    path = os.path.join(out_dir, "sheet.png")
+    out.save(path)
+    return path
+
+
 def h2_line(h2, disc, font, text, out):
     cmd = [h2, "font", disc, font, text, "--glyph-colors", "--color", "FFFFFF",
            "--out", out, "--force"]
@@ -330,6 +686,7 @@ def preview(out_dir, pics, h2, disc):
                     "CHAIN_BOUNCE": (0xE041, "Killtacular!"),
                     "BOUNCETACULAR": (0xE042, "Killtrocity!"),
                     "BOUNCED": (0xE043, "Killimanjaro!"),
+                    "MONSTER_BOUNCE": (0xE042, "Killtrocity!"),
                 }[name]
                 retail = chr(glyph) + " " + words_r
                 b = os.path.join(tmp, "retail.png")
@@ -363,13 +720,25 @@ def main():
     ap.add_argument("--preview")
     ap.add_argument("--h2")
     ap.add_argument("--disc", default=os.environ.get("H2_DISC"))
+    ap.add_argument("--art", help="a directory for the game, big, site and hires files and sheet.png")
+    ap.add_argument("--only", help="with --art: the ids to write, comma separated")
+    ap.add_argument("--monster", choices=list(MONSTER_VARIANTS), help="the Monster Bounce's drawing, if not STYLE's")
+    ap.add_argument("--variants", help="a directory for sheet-v2.png: every drawing of the Monster Bounce")
+    ap.add_argument("--before", help="with --variants: a 24 by 24 picture of the medal as it was")
     a = ap.parse_args()
+    if a.monster:
+        STYLE["MONSTER_BOUNCE"]["monster"] = a.monster
     pics = [[argb4444(p) for p in draw(name)] for (_, name, _) in MEDALS]
     os.makedirs(os.path.dirname(a.rs), exist_ok=True)
     write_rs(a.rs, pics)
     print(a.rs)
     if a.preview:
         print(preview(a.preview, pics, a.h2, a.disc))
+    if a.variants:
+        os.makedirs(a.variants, exist_ok=True)
+        print(variants(a.variants, pics, a.before))
+    if a.art:
+        print(art(a.art, pics, a.only.split(",") if a.only else None))
 
 
 if __name__ == "__main__":

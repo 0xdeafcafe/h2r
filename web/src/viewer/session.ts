@@ -52,13 +52,13 @@ export interface ReplaySession {
   camera: Accessor<CameraRequest | null>;
 }
 
-export const SPEEDS = [0.25, 0.5, 1, 2, 4, 8];
+export const SPEEDS = [0.25, 0.5, 1, 2, 4, 8, 16];
 
 export function createReplaySession(
   game: Accessor<GameState>,
   roster: Accessor<Map<number, RosterEntry>>,
   startTime: Accessor<string | string[] | undefined>,
-  options: { range?: TickRange; sync?: boolean; hostFilm?: () => HostFilm | undefined } = {},
+  options: { range?: TickRange; sync?: boolean; hostFilm?: () => HostFilm | undefined; speed?: number } = {},
 ): ReplaySession {
   const [timeline, setTimeline] = createSignal<ReplayTimeline | null>(null);
   const [savedRange, setSavedRange] = createSignal<TickRange | undefined>(options.range);
@@ -77,7 +77,7 @@ export function createReplaySession(
   const gameId = createMemo(() => game().game_id);
   const archiveRevision = createMemo(() => game().archiveRevision);
   const isLive = createMemo(() => game().status === "live");
-  let playback = new ViewerPlayback(false, options.range);
+  let playback = new ViewerPlayback(false, options.range, options.speed);
   let liveEdge = (_now: number) => 0;
   let liveFrame: ReturnType<typeof liveFrameSource> | null = null;
   let sought = 0;
@@ -115,7 +115,7 @@ export function createReplaySession(
   createEffect(on([gameId, () => live.server().api, () => identity.me()?.xuid], ([id]) => {
     const ac = new AbortController();
     const openedLive = isLive();
-    playback = new ViewerPlayback(openedLive, options.range);
+    playback = new ViewerPlayback(openedLive, options.range, options.speed);
     activeMovie = null;
     trailsFrom = -Infinity;
     setSavedRange(options.range);

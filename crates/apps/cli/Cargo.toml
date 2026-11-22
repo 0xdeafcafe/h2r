@@ -69,6 +69,8 @@ agent = { path = "../../extensions/agent", default-features = false }
 studio-proto = { path = "../studio-proto", optional = true }
 # `h2 rules`: the scripted game types' tooling (docs/game/rules-engine.md).
 rules.workspace = true
+# `h2 variants port`: self-contained .h2variant files (variants_cmd.rs).
+variants = { path = "../../formats/variants" }
 # `h2 rules lsp`: the stdio language server over `rules::ide`.
 lsp-server.workspace = true
 lsp-types.workspace = true

@@ -7,13 +7,21 @@
 //   off the text, and a hash of the source (the server's is of the IR).
 // - `POST /v1/rules/run`: each listed event "runs" when the script has an
 //   `on <event>` handler, and a kill calls score() as Slayer does.
+// - `POST /v1/rules/simulate`: made-up matches of random kills to ten
+//   points or two minutes, from a seeded stream, each run through the
+//   mock's run, with the batch's summary in the server's shape.
 // - `GET /v1/rules/builtin`: Slayer, read from the rules crate.
+// - The check also lists the script's int and bool options and its
+//   carrier, as the server's may.
 // - `POST /v1/rules` (a `content.write` token), `GET /v1/rules/{hash}`,
 //   `GET /v1/rules?author=`: kept in memory.
 // - `POST /v1/rules/ide` and `GET /v1/rules/ide/legend`: the editor's
 //   completions, hovers, signatures, definitions, references, tokens,
 //   outline and format, canned from the page's own word lists
 //   (src/lib/rulesIde.ts) and a few regexes (`mockIde`).
+// - With the tools off (`H2_MOCK_RULES=0`), every route here is the 404
+//   "no such endpoint" of a server from before them, so the page's
+//   "no script tools" state can be seen.
 
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -73,6 +81,34 @@ function slayer(): string {
 
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 
+/** The built-ins `GET /v1/rules/builtin` lists (mock/variants.ts reads
+ *  them too). */
+export function builtinScripts(): Array<{ name: string; engine: number; source: string; hash: string; example: boolean }> {
+  const source = slayer();
+  return [{ name: "Slayer", engine: 2, source, hash: sha(source), example: false }];
+}
+
+const CARRIER_ENGINES: Record<string, number> = { ctf: 1, slayer: 2, oddball: 3, king: 4, juggernaut: 7, territories: 8, assault: 9 };
+
+/** The `option` lines of a script's text, as the check lists them (ints
+ *  and bools; the mock reads no enums). */
+export function optionsOf(source: string) {
+  const out: Array<{ name: string; label: string; description: string | null; kind: "int" | "bool"; lo: number; hi: number; default: number | boolean }> = [];
+  for (const m of source.matchAll(/^\s*option\s+([A-Za-z_]\w*)\s*:\s*(?:int\s+(-?\d+)\.\.(-?\d+)|(bool))\s*=\s*(\S+)\s+"([^"]*)"(?:\s+"([^"]*)")?/gm)) {
+    const name = m[1]!, label = m[6] || name, description = m[7] ?? null;
+    if (m[4]) out.push({ name, label, description, kind: "bool", lo: 0, hi: 1, default: m[5] === "true" });
+    else out.push({ name, label, description, kind: "int", lo: Number(m[2]), hi: Number(m[3]), default: Number(m[5]) });
+  }
+  return out;
+}
+
+/** The carrier a script's text names: its keyword and engine index. */
+export function carrierOfSource(source: string): { name: string; engine: number } | null {
+  const name = /^\s*carrier\s+([a-z_]+)/m.exec(source)?.[1];
+  const engine = name ? CARRIER_ENGINES[name] : undefined;
+  return name && engine !== undefined ? { name, engine } : null;
+}
+
 /** The handlers a script's text declares: `kill`, `timer(next)`. */
 export function handlersOf(source: string): string[] {
   return [...source.matchAll(/^\s*on\s+([a-z_]+)(?:\s*\(([^)]*)\))?/gm)].map((m) => (m[1] === "timer" ? `timer(${(m[2] ?? "").trim()})` : m[1]!));
@@ -98,15 +134,17 @@ export function mockCheck(source: string) {
   const per = (e: string) => (["tick", "init", "round_start", "round_end"].includes(e) || e.startsWith("timer(") ? 1 : e === "enter" || e === "leave" ? 64 : 16);
   const worst = handlers.reduce((n, h) => n + h.worst_ops * per(h.event), 0);
   return {
-    ok: worst <= 20_000,
+    ok: worst <= 100_000,
     hash: sha(source),
     name: head![1],
     version: Number(head![2]),
-    errors: worst <= 20_000 ? [] : [{ line: 0, col: 0, message: `the worst tick costs ${worst} ops, over the budget of 20000` }],
+    errors: worst <= 100_000 ? [] : [{ line: 0, col: 0, message: `the worst tick costs ${worst} ops, over the budget of 100000` }],
+    options: optionsOf(source),
+    carrier: carrierOfSource(source),
     report: {
       worst_tick_ops: worst,
-      budget: 20_000,
-      fits: worst <= 20_000,
+      budget: 100_000,
+      fits: worst <= 100_000,
       costliest: [...handlers].sort((a, b) => b.worst_ops * per(b.event) - a.worst_ops * per(a.event))[0]?.event ?? null,
       handlers,
       slots: [["global", 64], ["player", 16], ["team", 8], ["object", 8]].map(([scope, limit]) => ({ scope, used: count(scope as string), limit })),
@@ -155,6 +193,116 @@ export function mockRun(source: string, scenario: Record<string, unknown>) {
     ok: true, hash: check.hash, options: 0, ticks, last_tick: last, error: null, round_ended: null, cut: null,
     ops: ticks.reduce((n, t) => n + t.ops, 0),
     scores: [...scores.entries()].map(([slot, score]) => ({ slot, score })),
+  };
+}
+
+// ---------- generated matches ----------
+
+/** The mock's record: a short match, so the page has a few dozen moments. */
+const SIM_SCORE_LIMIT = 10;
+const SIM_SECONDS = 120;
+const SIM_MAX_MATCHES = 100;
+
+/** A seeded stream in [0, 1) (mulberry32): the same seed, the same match. */
+function seeded(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+type MockWinner = { kind: "player" | "team"; index: number } | { kind: "draw" | "nobody" };
+
+/** One made-up match: kills at random until a player (a team, with teams)
+ *  has ten points or two minutes pass, run through `mockRun`. A script
+ *  with no `on kill` gets none, as the server's generator reports only
+ *  what a script handles. */
+export function mockMatch(source: string, players: number, teams: number, seed: number) {
+  const rand = seeded(Math.imul(seed, 2654435761) + players * 31 + teams);
+  const seats = Array.from({ length: players }, (_, slot) => ({ slot, team: teams >= 2 ? slot % teams : 0, lives: 0 }));
+  const kills = handlersOf(source).includes("kill") && players >= 2;
+  const last = SIM_SECONDS * 30;
+  const score = new Map(seats.map((s) => [s.slot, 0]));
+  const top = (): number => {
+    if (teams < 2) return Math.max(0, ...score.values());
+    const sums = new Map<number, number>();
+    for (const s of seats) sums.set(s.team, (sums.get(s.team) ?? 0) + (score.get(s.slot) ?? 0));
+    return Math.max(0, ...sums.values());
+  };
+  const timeline: WireTick[] = [];
+  let tick = 0, limit: "score" | "time" = "time";
+  while (kills) {
+    tick += 20 + Math.floor(rand() * 120);
+    if (tick >= last) break;
+    const killer = Math.floor(rand() * players);
+    let victim = Math.floor(rand() * (players - 1));
+    if (victim >= killer) victim++;
+    const suicide = rand() < 0.04;
+    timeline.push({ tick, events: [{ type: "kill", victim: suicide ? killer : victim, killer }] });
+    score.set(killer, (score.get(killer) ?? 0) + (suicide ? -1 : 1));
+    if (top() >= SIM_SCORE_LIMIT) { limit = "score"; break; }
+  }
+  const ticks = limit === "score" ? tick : last;
+  const scenario = {
+    players: seats, labelled: [], teams: teams >= 2 ? Array.from({ length: teams }, (_, t) => t) : [],
+    variant: { team_play: teams >= 2 ? 1 : 0, score_limit: SIM_SCORE_LIMIT, time_limit: SIM_SECONDS, engine: carrierOfSource(source)?.engine ?? 2 },
+    options: null, seed, round_time: last, ticks, start: true, timeline,
+  };
+  const trace = { ...mockRun(source, scenario)!, limit, round_winner: null, worst_tick_ops: kills ? 12 : 0, handlers_ran: kills ? ["kill"] : [] };
+  const table = teams >= 2
+    ? [...seats.reduce((m, s) => m.set(s.team, (m.get(s.team) ?? 0) + (score.get(s.slot) ?? 0)), new Map<number, number>()).entries()]
+    : [...score.entries()];
+  const best = Math.max(...table.map((r) => r[1]));
+  const leaders = table.filter((r) => r[1] === best);
+  const winner: MockWinner = leaders.length !== 1 ? { kind: "draw" } : { kind: teams >= 2 ? "team" : "player", index: leaders[0]![0] };
+  return { seed, end: limit === "score" ? "score_limit" : "time_limit", why: null, winner, top_score: best, scenario, trace };
+}
+
+/** `POST /v1/rules/simulate`: the batch's summary and rows, and the first
+ *  seed's match in full. Null for a setup out of range. */
+export function mockSimulate(source: string, body: Record<string, unknown>) {
+  const check = mockCheck(source);
+  if (!check.ok) return { ok: false, errors: check.errors };
+  const int = (v: unknown, dflt: number) => (v === undefined ? dflt : typeof v === "number" && Number.isInteger(v) ? v : NaN);
+  const players = int(body.players, 8), asked = int(body.teams, 0), seed = int(body.seed, 1), matches = int(body.matches, 1);
+  if (!(players >= 1 && players <= 16) || !(asked >= 0 && asked <= 8) || !(seed >= 0) || !(matches >= 1 && matches <= SIM_MAX_MATCHES)) return null;
+  const teams = asked >= 2 ? asked : 0;
+  const first = mockMatch(source, players, teams, seed);
+  if (matches === 1) return { ok: true, teams, summary: null, rows: [], match: first };
+  const all = Array.from({ length: matches }, (_, i) => (i === 0 ? first : mockMatch(source, players, teams, seed + i)));
+  const rows = all.map((m) => ({ seed: m.seed, end: m.end, winner: m.winner, ticks: m.scenario.ticks, top_score: m.top_score, ops: m.trace.ops, worst_tick_ops: m.trace.worst_tick_ops }));
+  const tally = <T,>(items: T[]): Array<[T, number]> => {
+    const counts = new Map<string, [T, number]>();
+    for (const x of items) { const k = JSON.stringify(x), had = counts.get(k); counts.set(k, [x, (had?.[1] ?? 0) + 1]); }
+    return [...counts.values()].sort((a, b) => b[1] - a[1]);
+  };
+  const flags: Array<{ kind: string; text: string; seed: number; matches: number }> = [];
+  const idle = all.filter((m) => (m.trace.scores ?? []).every((s) => s.score === 0));
+  if (idle.length) flags.push({ kind: "nobody_scores", text: `nobody scored in ${idle.length === matches ? "every match" : `${idle.length} of ${matches} matches`}`, seed: idle[0]!.seed, matches: idle.length });
+  const below = all.filter((m) => (m.trace.scores ?? []).some((s) => s.score < 0));
+  if (below.length) flags.push({ kind: "negative_score", text: `a player ended below zero in ${below.length === matches ? "every match" : `${below.length} of ${matches} matches`}`, seed: below[0]!.seed, matches: below.length });
+  if (rows.every((r) => r.end === "time_limit")) flags.push({ kind: "clock", text: "every match ran to the time limit", seed, matches });
+  const worst = rows.reduce((a, b) => (b.worst_tick_ops > a.worst_tick_ops ? b : a));
+  return {
+    ok: true,
+    teams,
+    summary: {
+      asked: matches, ran: matches,
+      wins: tally(rows.map((r) => r.winner)).map(([winner, n]) => ({ winner, matches: n })),
+      ends: tally(rows.map((r) => r.end)).map(([end, n]) => ({ end, matches: n })),
+      avg_score: rows.reduce((n, r) => n + r.top_score, 0) / matches,
+      max_score: Math.max(...rows.map((r) => r.top_score)),
+      avg_ticks: Math.floor(rows.reduce((n, r) => n + r.ticks, 0) / matches),
+      max_ticks: Math.max(...rows.map((r) => r.ticks)),
+      worst_tick_ops: worst.worst_tick_ops, worst_tick_seed: worst.seed, budget: 100_000,
+      errors: [], flags, stopped: null,
+    },
+    rows,
+    match: first,
   };
 }
 
@@ -365,11 +513,13 @@ const summary = (s: Saved) => ({ hash: s.hash, name: s.name, version: s.version,
 export class MockRules {
   readonly saved = new Map<string, Saved>();
 
-  constructor(private world: World) {}
+  /** `tools` false: a server from before the rules routes. */
+  constructor(private world: World, private tools = true) {}
 
   async handle(req: Request, u: URL): Promise<Reply | null> {
     const path = u.pathname;
     if (!path.startsWith("/v1/rules")) return null;
+    if (!this.tools) return fail(404, "not_found", "no such endpoint");
     const body = async (): Promise<Record<string, unknown> | null> => {
       try { const b = await req.json(); return b && typeof b === "object" ? b as Record<string, unknown> : null; } catch { return null; }
     };
@@ -395,10 +545,14 @@ export class MockRules {
       const t = mockRun(b.source, (b.scenario ?? {}) as Record<string, unknown>);
       return t ? ok(t) : fail(400, "invalid", `scenario: a scenario runs at most ${MAX_TICKS} ticks`);
     }
-    if (path === "/v1/rules/builtin" && req.method === "GET") {
-      const source = slayer();
-      return ok({ items: [{ name: "Slayer", engine: 2, source, hash: sha(source) }] });
+    if (path === "/v1/rules/simulate" && req.method === "POST") {
+      const b = await body();
+      if (typeof b?.source !== "string") return fail(400, "invalid", "body: missing field `source`");
+      if (b.source.length > MAX_SOURCE) return fail(413, "too_large", `a script's source is at most ${MAX_SOURCE} bytes`);
+      const r = mockSimulate(b.source, b);
+      return r ? ok(r) : fail(400, "invalid", "setup: a match seats 1 to 16 players in at most 8 teams, and a batch plays 1 to 100 matches");
     }
+    if (path === "/v1/rules/builtin" && req.method === "GET") return ok({ items: builtinScripts() });
     if (path === "/v1/rules" && req.method === "GET") {
       const author = u.searchParams.get("author")?.trim();
       if (!author) return fail(400, "invalid", "?author= (a gamertag or xuid) is required");

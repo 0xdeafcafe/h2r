@@ -63,6 +63,31 @@ if [ "$cmd" = agent ]; then
   esac
   exit 0
 fi
+if [ "$cmd" = sim ]; then
+  # `sim run|batch ENTRY --disc D --out O --data X [--report R | --parallel N]`:
+  # copies the report the test staged for H2_FEATURES under <root>/sim-fixtures.
+  # The step directory is <root>/runs/<id>/sim/<step>.
+  mode=$1; entry=$2; shift 2
+  report=; parallel=; data=
+  while [ $# -gt 0 ]; do
+    case "$1" in --report) report=$2; shift;; --parallel) parallel=$2; shift;; --data) data=$2; shift;; --disc|--out) shift;; esac
+    shift
+  done
+  root=$(cd "$PWD/../../../.." && pwd)
+  fix="$root/sim-fixtures/${H2_FEATURES:-none}.json"
+  echo "fake sim $mode entry=$entry features=$H2_FEATURES opt=$H2_OPT parallel=$parallel leaked=$H2_LEAK"
+  echo "fake sim data=$data bots=$(ls "$data/bots" 2>/dev/null | tr '\n' ' ')"
+  [ "$H2_FEATURES" = navlog ] && echo "bots: lockout: nav mesh none yet (bots walk straight until built with h2 bots nav lockout)"
+  [ -f "$fix" ] || { echo "no fixture $fix" >&2; exit 4; }
+  if [ "$mode" = batch ]; then
+    out=$(sed -n 's/^out = "\(.*\)"$/\1/p' "$entry")
+    d="$(dirname "$entry")/$out/runs/m1"
+    mkdir -p "$d/data" && echo x > "$d/data/blob" && cp "$fix" "$d/report.json"
+  else
+    cp "$fix" "$report"
+  fi
+  exit 0
+fi
 echo "fake play $*"
 echo "lab job id=$H2_LAB_JOB_ID name=$H2_LAB_JOB_NAME"
 trap 'echo "got TERM"; exit 143' TERM
@@ -291,6 +316,7 @@ cp '{}' "$CARGO_TARGET_DIR/release/h2"
             .args(&args[1..])
             .current_dir(&self.dev);
         c.env("HOME", self.dir.join("driver-home"))
+            .env("H2_DATA", self.dir.join("driver-data"))
             .env_remove("H2_LAB_HOST")
             .env_remove("XDG_CONFIG_HOME")
             .env_remove("RUSH_KEEP");
@@ -1509,4 +1535,325 @@ fn watchdog_exit_fetches_the_game_report_with_the_failed_run() {
     assert_eq!(job["request"]["mem_limit"], 13_u64 << 30);
     let path = dest.join(job["id"].as_str().unwrap()).join("mem/game.json");
     assert_eq!(json(&fs::read_to_string(path).unwrap())["trigger"], "hard");
+}
+
+/// A report the fake `h2 sim` hands out for runs with this `H2_FEATURES`
+/// (`none` when the variable is unset).
+fn sim_fixture(root: &Path, features: &str, speedup: f64, ms: f64, hashes: &[(u32, &str)]) {
+    use sim_bench::metrics::{End, Finish, Tally, TickHash};
+    let mut r = Tally::new().report(Finish::bare(End::TickLimit));
+    r.wall.speedup = speedup;
+    r.wall.ms_per_tick = ms;
+    r.state_hashes_v1 = hashes
+        .iter()
+        .map(|(tick, h)| TickHash {
+            tick: *tick,
+            gameplay: (*h).to_string(),
+            arena: None,
+        })
+        .collect();
+    let dir = root.join("sim-fixtures");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join(format!("{features}.json")),
+        serde_json::to_vec(&r).unwrap(),
+    )
+    .unwrap();
+}
+
+/// `m/lockout.toml` with a tuning file, and `m/batch.toml` over them, in the
+/// driver's checkout.
+fn write_sim_files(lab: &Lab) {
+    let m = lab.dev.join("m");
+    fs::create_dir_all(m.join("tuning")).unwrap();
+    fs::write(m.join("tuning/base.toml"), "skill = \"legendary\"\n").unwrap();
+    // The driver's nav mesh for the map (`h2 bots nav lockout`).
+    let bots = lab.dir.join("driver-data/bots");
+    fs::create_dir_all(&bots).unwrap();
+    fs::write(bots.join("lockout.0.bots"), b"mesh").unwrap();
+    fs::write(bots.join("lockout.0.vis"), b"grid").unwrap();
+    fs::write(
+        m.join("lockout.toml"),
+        "map = \"lockout\"\n[[bot]]\nparams = \"tuning/base.toml\"\n",
+    )
+    .unwrap();
+    fs::write(
+        m.join("batch.toml"),
+        "out = \"results\"\nmatch = \"lockout.toml\"\n[a]\nparams = \"tuning/base.toml\"\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn lab_sim_runs_arms_interleaved_and_summarizes_speed_and_hashes() {
+    let h = [(1, "aa"), (2, "bb")];
+    let lab = Lab::with_setup("simab", &[], |root, _| {
+        sim_fixture(root, "impl.sim.native", 4.0, 8.0, &h);
+        sim_fixture(root, "-impl.sim.native", 3.0, 10.0, &h);
+        sim_fixture(root, "none", 2.0, 20.0, &h);
+    });
+    write_sim_files(&lab);
+    let to = lab.dir.join("fetched");
+    let out = ok(&lab.local(&[
+        "sim",
+        "m/lockout.toml",
+        "--name",
+        "Sim A/B",
+        "--branch",
+        "master",
+        "--build-env",
+        "H2_OPT=2",
+        "--repeat",
+        "2",
+        "--arm",
+        "on=impl.sim.native",
+        "--arm",
+        "off=-impl.sim.native",
+        "--wait",
+        "--to",
+        to.to_str().unwrap(),
+    ]));
+    let v = json(&out);
+    let id = v["job"]["id"].as_str().unwrap().to_string();
+    assert_eq!(v["job"]["kind"], "sim");
+    assert_eq!(v["job"]["state"], "done", "{out}");
+    assert_eq!(v["job"]["name"], "Sim A/B");
+    assert!(v["job"]["request"]["files"].is_array(), "file text stays out of the metadata");
+    assert!(
+        out.contains("sim benchmark Sim A/B: 2 arm(s) x 2 repeat(s), 4 runs, 0 failed"),
+        "{out}"
+    );
+    assert!(
+        out.contains("state hashes: identical across all runs and arms (3 report pair(s) compared)"),
+        "{out}"
+    );
+    assert!(out.contains("off vs on: median ms/tick +25.0%, median speedup -25.0%"), "{out}");
+
+    let run = to.join(&id);
+    // A B, then B A: drift lands on both arms.
+    let log = fs::read_to_string(run.join("run.log")).unwrap();
+    let order: Vec<&str> = log
+        .lines()
+        .filter_map(|l| l.strip_prefix("lab: sim run "))
+        .filter(|l| l.contains('/') && !l.contains(" in "))
+        .collect();
+    assert_eq!(order, ["1/4: on-r1", "2/4: off-r1", "3/4: off-r2", "4/4: on-r2"], "{log}");
+    for step in ["on-r1", "off-r1", "off-r2", "on-r2"] {
+        let dir = run.join("sim").join(step);
+        assert!(dir.join("report.json").is_file(), "{step}");
+        assert!(dir.join("in/lockout.toml").is_file(), "{step}");
+        assert!(dir.join("in/tuning/base.toml").is_file(), "{step}");
+    }
+    let on = fs::read_to_string(run.join("sim/on-r1/sim.log")).unwrap();
+    assert!(on.contains("fake sim run entry="), "{on}");
+    assert!(on.contains("features=impl.sim.native opt=2 parallel= leaked=\n"), "{on}");
+    let off = fs::read_to_string(run.join("sim/off-r2/sim.log")).unwrap();
+    assert!(off.contains("features=-impl.sim.native"), "{off}");
+    let summary = json(&fs::read_to_string(run.join("sim-summary.json")).unwrap());
+    assert_eq!(summary["arms"][0]["speedup"]["median"], 4.0);
+    assert_eq!(summary["arms"][1]["ms_per_tick"]["max"], 10.0);
+    assert_eq!(summary["hashes"]["identical"], true);
+    // What `--wait` prints is the summary file.
+    assert!(out.contains(&fs::read_to_string(run.join("sim-summary.txt")).unwrap()), "{out}");
+    // `lab runs` carries the same summary.
+    let runs = ok(&lab.local(&["runs", "--limit", "1"]));
+    assert!(runs.contains("sim benchmark Sim A/B"), "{runs}");
+
+    // The image the build made is the one the sim ran on.
+    let meta = json(&fs::read_to_string(run.join("meta.json")).unwrap());
+    assert_eq!(meta["build_env"]["H2_OPT"], "2");
+}
+
+#[test]
+fn lab_sim_batches_are_sequential_and_their_data_directories_are_removed() {
+    let lab = Lab::with_setup("simbatch", &[], |root, _| {
+        sim_fixture(root, "none", 2.0, 20.0, &[(1, "aa")]);
+    });
+    write_sim_files(&lab);
+    let to = lab.dir.join("fetched");
+    let out = ok(&lab.local(&[
+        "sim",
+        "m/batch.toml",
+        "--current",
+        "--wait",
+        "--to",
+        to.to_str().unwrap(),
+    ]));
+    let v = json(&out);
+    assert_eq!(v["job"]["state"], "done", "{out}");
+    let step = to.join(v["job"]["id"].as_str().unwrap()).join("sim/default-r1");
+    let log = fs::read_to_string(step.join("sim.log")).unwrap();
+    assert!(log.contains("fake sim batch entry="), "{log}");
+    assert!(log.contains("parallel=1 "), "one at a time unless asked: {log}");
+    let results = step.join("in/results/runs/m1");
+    assert!(results.join("report.json").is_file());
+    assert!(!results.join("data").exists(), "the data directory outlived its run");
+    assert!(step.join("in/tuning/base.toml").is_file(), "tuning files upload too");
+
+    let out = ok(&lab.local(&[
+        "sim",
+        "m/batch.toml",
+        "--current",
+        "--parallel",
+        "2",
+        "--wait",
+        "--to",
+        to.to_str().unwrap(),
+    ]));
+    let id = json(&out)["job"]["id"].as_str().unwrap().to_string();
+    let log = fs::read_to_string(to.join(id).join("sim/default-r1/sim.log")).unwrap();
+    assert!(log.contains("parallel=2 "), "{log}");
+}
+
+#[test]
+fn lab_sim_names_the_first_differing_tick_and_fails_a_job_whose_run_failed() {
+    let lab = Lab::with_setup("simdiff", &[], |root, _| {
+        sim_fixture(root, "impl.sim.native", 4.0, 8.0, &[(1, "aa"), (2, "bb")]);
+        sim_fixture(root, "-impl.sim.native", 3.0, 10.0, &[(1, "aa"), (2, "XX")]);
+    });
+    write_sim_files(&lab);
+    let to = lab.dir.join("fetched");
+    let out = ok(&lab.local(&[
+        "sim",
+        "m/lockout.toml",
+        "--current",
+        "--arm",
+        "on=impl.sim.native",
+        "--arm",
+        "off=-impl.sim.native",
+        "--wait",
+        "--to",
+        to.to_str().unwrap(),
+    ]));
+    assert!(
+        out.contains("state hashes: DIFFER, first at tick 2 (off-r1 against on-r1, report.json)"),
+        "{out}"
+    );
+    assert_eq!(json(&out)["job"]["state"], "done", "a difference is a result, not a failure");
+
+    let o = lab.local(&[
+        "sim",
+        "m/lockout.toml",
+        "--current",
+        "--arm",
+        "on=impl.sim.native",
+        "--arm",
+        "bad=no-such-fixture",
+        "--wait",
+        "--to",
+        to.to_str().unwrap(),
+    ]);
+    assert_eq!(o.status.code(), Some(1));
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert_eq!(json(&out)["job"]["state"], "failed", "{out}");
+    assert!(out.contains("2 runs, 1 failed"), "{out}");
+    assert!(!json(&out)["job"]["notes"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn lab_sim_refuses_bad_requests_before_the_host_sees_them() {
+    let lab = Lab::named("sr");
+    write_sim_files(&lab);
+    let refused = |args: &[&str], what: &str| {
+        let mut a = vec!["sim", "m/lockout.toml", "--current"];
+        a.extend_from_slice(args);
+        let e = err(&lab.local(&a));
+        assert!(e.contains(what), "{args:?}: {e}");
+    };
+    refused(&["--repeat", "0"], "--repeat");
+    refused(&["--parallel", "2"], "batch");
+    refused(&["--arm", "a=x", "--arm", "a=y"], "named twice");
+    refused(&["--env", "H2_SIM=/x"], "not a run variable");
+    refused(&["--build-env", "H2_OPT=2"], "branch or commit");
+    let m = lab.dev.join("m");
+    fs::write(
+        m.join("escape.toml"),
+        "out = \"../../x\"\nmatch = \"lockout.toml\"\n[a]\n",
+    )
+    .unwrap();
+    let e = err(&lab.local(&["sim", "m/escape.toml", "--current"]));
+    assert!(e.contains("no `..`"), "{e}");
+    fs::write(m.join("gone.toml"), "[[bot]]\nparams = \"nope.toml\"\n").unwrap();
+    let e = err(&lab.local(&["sim", "m/gone.toml", "--current"]));
+    assert!(e.contains("nope.toml"), "{e}");
+    // Nothing reached the host: no job exists.
+    let runs = json(&ok(&lab.local(&["runs", "--json"])));
+    assert!(runs["runs"].as_array().unwrap().is_empty(), "{runs}");
+}
+
+#[test]
+fn lab_sim_uploads_the_drivers_nav_meshes_and_runs_on_them() {
+    let lab = Lab::with_setup("simnav", &[], |root, _| {
+        sim_fixture(root, "none", 2.0, 20.0, &[(1, "aa")]);
+    });
+    write_sim_files(&lab);
+    let to = lab.dir.join("fetched");
+    let out = ok(&lab.local(&[
+        "sim",
+        "m/lockout.toml",
+        "--current",
+        "--wait",
+        "--to",
+        to.to_str().unwrap(),
+    ]));
+    let v = json(&out);
+    let id = v["job"]["id"].as_str().unwrap();
+    let step = to.join(id).join("sim/default-r1");
+    let log = fs::read_to_string(step.join("sim.log")).unwrap();
+    let line = log.lines().find(|l| l.starts_with("fake sim data=")).unwrap();
+    // The job's own data root holds the driver's mesh and grid; it is
+    // gone with the job.
+    assert!(
+        line.contains(&format!("/runs/{id}/sim-data bots=lockout.0.bots lockout.0.vis ")),
+        "{line}"
+    );
+    assert!(!to.join(id).join("sim-data").exists());
+}
+
+#[test]
+fn lab_sim_refuses_a_map_the_driver_has_no_nav_mesh_for() {
+    let lab = Lab::named("sn");
+    write_sim_files(&lab);
+    fs::remove_file(lab.dir.join("driver-data/bots/lockout.0.bots")).unwrap();
+    let e = err(&lab.local(&["sim", "m/lockout.toml", "--current"]));
+    assert!(e.contains("h2 bots nav lockout"), "{e}");
+    // A batch names its maps.
+    fs::write(
+        lab.dev.join("m/maps.toml"),
+        "out = \"r\"\nmatch = \"lockout.toml\"\nmaps = [\"ascension\"]\n[a]\n",
+    )
+    .unwrap();
+    let e = err(&lab.local(&["sim", "m/maps.toml", "--current"]));
+    assert!(e.contains("h2 bots nav ascension"), "{e}");
+    // Nothing reached the host: no job exists.
+    let runs = json(&ok(&lab.local(&["runs", "--json"])));
+    assert!(runs["runs"].as_array().unwrap().is_empty(), "{runs}");
+}
+
+#[test]
+fn lab_sim_fails_a_run_whose_bots_had_no_nav_mesh() {
+    let lab = Lab::with_setup("simnonav", &[], |root, _| {
+        use sim_bench::metrics::{End, Finish, Tally};
+        let mut r = Tally::new().report(Finish::bare(End::TickLimit));
+        r.nav = "missing".into();
+        let dir = root.join("sim-fixtures");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("none.json"), serde_json::to_vec(&r).unwrap()).unwrap();
+        r.nav = "loaded".into();
+        fs::write(dir.join("navlog.json"), serde_json::to_vec(&r).unwrap()).unwrap();
+    });
+    write_sim_files(&lab);
+    // The report says the mesh was missing.
+    let o = lab.local(&["sim", "m/lockout.toml", "--current", "--wait"]);
+    assert_eq!(o.status.code(), Some(1));
+    let out = String::from_utf8_lossy(&o.stdout).into_owned();
+    assert_eq!(json(&out)["job"]["state"], "failed", "{out}");
+    assert!(out.contains("1 runs, 1 failed"), "{out}");
+    assert!(out.contains("nav mesh missing"), "{out}");
+    // Or the log says so, with a report that claims to have loaded it.
+    let o = lab.local(&["sim", "m/lockout.toml", "--current", "--wait", "--arm", "x=navlog"]);
+    assert_eq!(o.status.code(), Some(1));
+    let out = String::from_utf8_lossy(&o.stdout).into_owned();
+    assert_eq!(json(&out)["job"]["state"], "failed", "{out}");
+    assert!(out.contains("nav mesh none yet"), "{out}");
 }

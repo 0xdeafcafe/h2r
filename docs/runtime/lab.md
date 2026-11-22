@@ -107,7 +107,7 @@ The host keeps its files under `--root`, by default
 | `bin/h2` | stable LaunchAgent executable |
 | `logs/` | LaunchAgent stdout and stderr, host updates, and pairing offers, successful pairings and revocations. Each log has a current file and one rotated copy of up to 8 MiB each. |
 | `auth/` | TLS identity and pairing state |
-| `runs/<id>/` | one job: `meta.json`, `build.log`, `run.log`, `frames.csv`, `profile/`, `traces/`, `flights/`, `inputs/`, `mem/` |
+| `runs/<id>/` | one job: `meta.json`, `build.log`, `run.log`, `frames.csv`, `profile/`, `traces/`, `flights/`, `inputs/`, `mem/`; a sim job has `sim/` and `sim-summary.*` instead of the frame files |
 | `a/<id>.sock` | the run's game's agent API socket, removed when the run ends |
 | `takeover-declined-until` | the player's consent cool-down, kept across lab host restarts |
 | `recordings/<name>/` | `manifest.json` and `input.bin` |
@@ -470,6 +470,122 @@ To measure the cost of retaining higher detail, keep the resolution fixed
 in two unrecorded offline runs and compare
 `--env H2_LOD_DISTANCE=retail` with `--env H2_LOD_DISTANCE=1`.
 
+## Sim benchmarks
+
+`h2 lab sim` runs [`h2 sim`](sim.md) on the lab host and keeps its
+reports, so a headless bot match's speed is measured on the quiet second
+Mac rather than on the driving Mac. It does not start a game or a window.
+Code: `crates/apps/cli/src/lab/simbench.rs` (arguments, files, run order,
+summary), `run_sim` and `sim_command` in `crates/apps/cli/src/lab/host.rs`,
+and the `Sim` request in `crates/apps/cli/src/lab/proto.rs`.
+
+```sh
+h2 lab sim --host laptop --branch perf-work --wait --repeat 3 \
+    --arm on=impl.sim.native --arm off=-impl.sim.native \
+    --build-env H2_OPT=2 docs/runtime/sim-examples/lockout-2v2.toml
+```
+
+| Flag | Becomes |
+|---|---|
+| `<file>` | a match file (`h2 sim run`) or a batch file (`h2 sim batch`; a file with a `match` key is a batch) |
+| `--repeat N` | runs of each arm, 1 to 100 (default 1) |
+| `--arm NAME=VALUE` | one arm: its runs get `H2_FEATURES=VALUE` (`--arm base=` leaves the variable as it is). Up to 8 arms; with none, one arm named `default`. `NAME` is a plain path component |
+| `--parallel N` | matches at once in a batch (default 1, since these are benchmarks; refused for a match file) |
+| `--env KEY=VALUE` | run environment from the same allowlist as `lab run`, set before the arm's `H2_FEATURES` |
+| `--branch`, `--rev`, `--current`, `--no-sync`, `--feature`, `--build-env` | the build, as for [a run](#builds-go-by-branch). `H2_OPT` must be the build's, and is, because the run uses the image it was built with |
+| `--name TEXT`, `--note TEXT`, `--mem-limit SIZE` | label (default `sim <file stem>`), note and footprint cap, as for a run |
+| `--data DIR` | the driving Mac's data root, whose `bots/` is uploaded (default: `h2`'s data root, `H2_DATA`) |
+| `--wait [--to DIR]` | wait, fetch the run, print the summary |
+
+The client sends the file and every file it names (a batch's match file
+and arm tunings, each bot's `params`) in the request, at most 64 files and
+2 MiB, under their paths relative to their common directory so the
+references keep resolving. A batch's `out` must be a relative path without
+`..`: its results land in the job's directory. The host checks the same
+before it runs. A missing tuning file, a bad `--repeat` or an unknown
+variable is refused on the driving Mac before anything syncs.
+
+The bots' data goes with the files. For every map the file names (a
+match's `map`, a batch's `maps`, else its match's `map`) the client
+uploads `bots/<map>.<bsp>.bots` and `.vis` from the data root, up to 64
+files and 60 MiB (`bots::cache::file_name`, `bots::vis::file_name`,
+`simbench::bot_data`). A map whose `<map>.0.bots` is missing is refused
+on the driving Mac, naming `h2 bots nav <map>`: a sim never builds a mesh,
+and bots without one stand still, so the benchmark would measure an empty
+match. The host keeps the uploaded keys to `bots/<plain name>.bots|.vis`
+(`proto::check_sim_data_key`).
+
+The job takes the host's activity lock, queue place, [player
+consent](#player-consent-before-a-job) and [memory
+cap](#memory-limits-and-reports) like a run (the cap applies to the `h2
+sim` process; a batch's matches are its children, so with `--parallel` the
+machine memory-pressure stop is the bound that covers them). It builds or
+reuses the commit's image first. `h2 sim` never builds, so the sim runs on
+that image: `--out` is the lab's `image/` (or the `--current` image).
+`--data` is the job's own data root, `runs/<id>/sim-data/` (`simbench::stage_data`):
+every entry of the host's data root linked in except `bots/`,
+and the driver's uploaded meshes and grids as its `bots/`. It is removed
+when the job ends. A request without bot data (an older client) runs on
+the host's own data root, whose `bots/` must then hold each map's nav mesh.
+
+### Run order and files
+
+Each arm runs `--repeat` times, one `h2 sim` at a time. A repeat runs every
+arm once, and the arm order reverses on odd repeats (`on off | off on |
+on off`), so drift in the machine lands on every arm and a linear drift
+within a repeat cancels (`simbench::schedule`). Each run is a step in
+`runs/<id>/sim/<arm>-r<N>/`:
+
+| Path | What |
+|---|---|
+| `in/` | the uploaded files, in their layout (a batch's `out` is under it) |
+| `report.json` | a match's report; a batch's are `in/<out>/runs/<id>/report.json` |
+| `sim.log` | the sim's stdout and stderr |
+
+The per-run data directories (`<out>/runs/<id>/data`: N:'s map copies of
+their own, Z:'s cloned from the image's
+[template](cache-slots.md#sim-batches-a-warm-z), which stays) are removed
+when the step ends, including after a crash or `h2 lab stop`;
+reports and logs stay. A step that exits non-zero, leaves no report or
+leaves an unreadable one is a failed run: the job finishes `failed` after
+the remaining steps, with the failures in its notes and the summary. A step
+whose report has `nav` other than `loaded`, or whose log has the line "nav
+mesh none yet", is failed too, with the reason "nav mesh missing"
+(`simbench::nav_problem`): its bots stood still and its speed is not a bot
+match's.
+
+### The summary
+
+When the steps end (or the job is stopped), the host writes
+`runs/<id>/sim-summary.txt` and `sim-summary.json`, appends the text to
+`run.log`, and keeps its lines as the job's `summary` (`h2 lab runs`,
+`h2 lab wait`). `--wait` prints it:
+
+```
+sim benchmark sim lockout-2v2: 2 arm(s) x 3 repeat(s), 6 runs, 0 failed
+arm                n   speedup      min      max    ms/tick       min       max
+on                 3     4.100    4.000    4.200      8.000     7.500     8.100
+off                3     3.100    3.000    3.200     10.000     9.500    10.200
+off vs on: median ms/tick +25.0%, median speedup -24.4%
+state hashes: identical across all runs and arms (5 report pair(s) compared)
+```
+
+Per arm, median, minimum and maximum of the reports' `wall.speedup` and
+`wall.ms_per_tick`, one value per report (a batch contributes one per
+match). The state-hash line compares every report with the first finished
+run's, by the same path within the step, with `sim_bench::diff` (the
+component series when both reports have it, else the `state_hashes_v1`
+digests, as in `h2 sim diff`). It says `identical` only when every run of
+every arm finished and agrees. Otherwise it names the earliest differing
+tick and the two runs (`DIFFER, first at tick N (off-r2 against on-r1,
+report.json)`), or says `unverifiable` when a report has no digests or a
+match is missing from a run. A difference is a result, not a failure: the
+job is `done`. For the component-level difference, fetch the run and use
+`h2 sim diff` on the two `report.json` files.
+
+Numbers from the lab host are the ones to quote. A run on the driving Mac,
+with its builds and editors, is only a smoke check.
+
 ## Theater runs
 
 `--film NAME` makes a run record a film. `NAME` is a file stem of 1 to 64
@@ -583,7 +699,9 @@ replay starts from a fresh boot of the level.
 
 The test suite exercises the Unix socket and paired TLS on loopback,
 job lifecycle, the image cache, Git bundle sync, artifact transfers, and
-`lab agent` and `bench` against a fake game. Unit tests cover pairing
+`lab agent`, `bench` and `sim` against a fake game and a fake `h2 sim`
+that hands out staged reports. No test runs the real `h2 sim` through the
+lab. Unit tests cover pairing
 expiry, single use, rejected keys and replays, and LaunchAgent generation
 and lifecycle commands through a fake controller. Synthetic log feed tests
 cover job transitions, overlapping jobs, log growth and rotation, and
@@ -595,6 +713,7 @@ agent API under the service.
 
 ## Related
 
+- [sim.md](sim.md): `h2 sim`, the match and batch files, the report
 - [agent-api.md](agent-api.md): the running game's own API (`h2 serve`,
   `h2 agent`)
 - [level-boot.md](level-boot.md): `--level`, `H2_PERF_FROM=level`

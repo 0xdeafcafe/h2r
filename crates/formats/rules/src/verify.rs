@@ -41,6 +41,8 @@ pub enum Refusal {
         index: usize,
         max: usize,
     },
+    #[error("label {index}: {reason}")]
+    Label { index: usize, reason: &'static str },
     #[error("{what} index {index} is out of range")]
     Index { what: &'static str, index: u32 },
     #[error("option {0} has an invalid type, range or default")]
@@ -99,6 +101,8 @@ pub enum Fault {
     BodyOut(u16),
     #[error("label {0} does not exist")]
     Label(u16),
+    #[error("label {0} names starting locations, which a loop cannot visit")]
+    SpawnSet(u16),
     #[error("API entry {0} does not exist in this API version")]
     Entry(u16),
     #[error("{entry} takes {want} arguments, given {got}")]
@@ -192,8 +196,9 @@ pub fn verify(ir: &Ir) -> Result<Report, Refusal> {
         }
     }
     text_table(&ir.strings, "the string table", MAX_TEXT_BYTES)?;
-    text_table(&ir.labels, "the label table", MAX_LABEL_BYTES)?;
-    text_table(&ir.tags, "the tag table", MAX_TAG_BYTES)?;
+    labels(&ir.labels)?;
+    let paths: Vec<String> = ir.tags.iter().map(|t| t.path.clone()).collect();
+    text_table(&paths, "the tag table", MAX_TAG_BYTES)?;
     let sizes = ir.sizes();
     let string = |index: u16| -> Result<(), Refusal> {
         if (index as usize) < ir.strings.len() {
@@ -387,7 +392,7 @@ pub fn verify(ir: &Ir) -> Result<Report, Refusal> {
                 fault,
             })?;
         }
-        handler_ops.push(cost(&hd.code, 0, hd.code.len()));
+        handler_ops.push(cost(&ir.labels, &hd.code, 0, hd.code.len()));
     }
 
     let mut worst_tick = 0u64;
@@ -425,6 +430,58 @@ fn enum_known(t: Ty, sizes: &Sizes) -> bool {
     }
 }
 
+/// The label table: at most [`MAX_LABELS`] entries, each with text of 1 to
+/// 32 [`label_char`]s that no other entry has, and requirements a map can
+/// meet.
+fn labels(list: &[LabelDef]) -> Result<(), Refusal> {
+    use crate::ir::label_flags::*;
+    if list.len() > MAX_LABELS {
+        return Err(Refusal::Limit {
+            what: "labels",
+            max: MAX_LABELS,
+        });
+    }
+    let texts: Vec<String> = list.iter().map(|l| l.text.clone()).collect();
+    text_table(&texts, "the label table", MAX_LABEL_BYTES)?;
+    for (index, l) in list.iter().enumerate() {
+        let bad = |reason| Err(Refusal::Label { index, reason });
+        if !l.text.chars().all(label_char) {
+            return bad("its text holds a character a Forge label cannot");
+        }
+        if list[..index].iter().any(|o| o.text == l.text) {
+            return bad("another label has its text");
+        }
+        if l.flags & !ALL != 0 {
+            return bad("it has an unknown flag");
+        }
+        if l.min > l.max || l.max as usize > crate::ty::MAX_LABELLED {
+            return bad("its member count is not min <= max <= 256");
+        }
+        if l.single() && (l.max != 1 || l.flags != SINGLE) {
+            return bad("a single label has at most 1 member and no other requirement");
+        }
+        if l.kind == LabelKind::Spawn && (l.single() || l.per_team()) {
+            return bad("starting locations are a set with no per team");
+        }
+        match l.range() {
+            Some(_) if !l.numbered() => return bad("a number range needs numbered"),
+            Some(_) if l.lo > l.hi => return bad("its number range is not ordered"),
+            Some(_) => {
+                let span = l.hi as i64 - l.lo as i64 + 1;
+                if span > crate::ty::MAX_LABELLED as i64 {
+                    return bad("its number range holds more than 256 numbers");
+                }
+                if span > l.max as i64 {
+                    return bad("its number range needs more members than its max");
+                }
+            }
+            None if l.lo != 0 || l.hi != 0 => return bad("it has a number range without the flag"),
+            None => {}
+        }
+    }
+    Ok(())
+}
+
 fn text_table(list: &[String], table: &'static str, max: usize) -> Result<(), Refusal> {
     if list.len() > u16::MAX as usize / 2 {
         return Err(Refusal::Limit {
@@ -441,16 +498,17 @@ fn text_table(list: &[String], table: &'static str, max: usize) -> Result<(), Re
 }
 
 /// The worst-case op count of `code[start..end]`: every op once, and a
-/// `ForEach` body once per member of its set's bound.
-pub fn cost(code: &[Op], start: usize, end: usize) -> u64 {
+/// `ForEach` body once per member of its set's bound, a labelled set's
+/// being its label's `max`.
+pub fn cost(labels: &[LabelDef], code: &[Op], start: usize, end: usize) -> u64 {
     let mut total = 0u64;
     let mut pc = start;
     while pc < end && pc < code.len() {
         total = total.saturating_add(1);
         if let Op::ForEach { set, body, .. } = code[pc] {
             let body_end = (pc + 1 + body as usize).min(end);
-            let inner = cost(code, pc + 1, body_end);
-            total = total.saturating_add(set.base.bound().saturating_mul(inner));
+            let inner = cost(labels, code, pc + 1, body_end);
+            total = total.saturating_add(set.base.bound(labels).saturating_mul(inner));
             pc = body_end;
         } else {
             pc += 1;
@@ -596,10 +654,11 @@ impl Cx<'_> {
                 self.jump(pc, to, region)?;
             }
             Op::ForEach { set, dst, body } => {
-                if let SetBase::Labelled(l) = set.base
-                    && l as usize >= self.ir.labels.len()
-                {
-                    return Err(Fault::Label(l));
+                if let SetBase::Labelled(l) = set.base {
+                    let def = self.ir.labels.get(l as usize).ok_or(Fault::Label(l))?;
+                    if def.kind == LabelKind::Spawn {
+                        return Err(Fault::SpawnSet(l));
+                    }
                 }
                 if let Some(n) = set.pick {
                     self.want(n, Ty::Int)?;
@@ -619,7 +678,7 @@ impl Cx<'_> {
                 let e = caps::entry(entry, self.ir.header.api_version).ok_or(Fault::Entry(entry))?;
                 if args.len() != e.args.len() {
                     return Err(Fault::Arity {
-                        entry: e.name,
+                        entry: caps::spelled(e),
                         want: e.args.len(),
                         got: args.len(),
                     });
@@ -640,7 +699,7 @@ impl Cx<'_> {
                 };
                 if !fits {
                     return Err(Fault::Result {
-                        entry: e.name,
+                        entry: caps::spelled(e),
                         want: e.result,
                         got,
                     });
@@ -648,7 +707,7 @@ impl Cx<'_> {
                 if let Some(cap) = e.cap
                     && !self.ir.header.requires.iter().any(|r| r == cap)
                 {
-                    return Err(Fault::Undeclared { entry: e.name, cap });
+                    return Err(Fault::Undeclared { entry: caps::spelled(e), cap });
                 }
             }
             Op::Grant {
@@ -688,15 +747,15 @@ impl Cx<'_> {
     }
 }
 
-/// The first entry a blob calls that a host cannot make
-/// ([`caps::Status::hostable`]). A host refuses such a script by that
-/// entry's name.
+/// The first entry a blob calls that a host cannot make on the blob's
+/// carrier ([`caps::Entry::hostable_on`]). A host refuses such a script by
+/// that entry's name.
 pub fn unhostable(ir: &Ir) -> Option<&'static caps::Entry> {
     for hd in &ir.handlers {
         for op in &hd.code {
             if let Op::Call { entry, .. } = *op
                 && let Some(e) = caps::entry(entry, ir.header.api_version)
-                && !e.status.hostable()
+                && !e.hostable_on(ir.header.carrier)
             {
                 return Some(e);
             }
@@ -970,7 +1029,7 @@ mod tests {
         assert_eq!(verify(&ir), Err(Refusal::Slot(0)));
 
         let mut ir = sample();
-        ir.labels[0] = "x".repeat(33);
+        ir.labels[0].text = "x".repeat(33);
         assert_eq!(
             verify(&ir),
             Err(Refusal::Text {
@@ -979,6 +1038,143 @@ mod tests {
                 max: MAX_LABEL_BYTES
             })
         );
+    }
+
+    #[test]
+    fn label_table_refusals() {
+        use crate::ir::label_flags::*;
+        fn refuse(f: impl Fn(&mut LabelDef)) -> Refusal {
+            let mut ir = sample();
+            f(&mut ir.labels[1]);
+            verify(&ir).unwrap_err()
+        }
+        let label = |reason| Refusal::Label { index: 1, reason };
+        assert_eq!(
+            refuse(|l| l.text = "Zone".into()),
+            label("its text holds a character a Forge label cannot")
+        );
+        assert_eq!(refuse(|l| l.text = "ff_drop".into()), label("another label has its text"));
+        assert_eq!(refuse(|l| l.flags |= 0x10), label("it has an unknown flag"));
+        assert_eq!(refuse(|l| l.min = 5), label("its member count is not min <= max <= 256"));
+        assert_eq!(refuse(|l| l.max = 257), label("its member count is not min <= max <= 256"));
+        assert_eq!(
+            refuse(|l| {
+                l.flags = SINGLE;
+                l.lo = 0;
+                l.hi = 0;
+                l.min = 1;
+            }),
+            label("a single label has at most 1 member and no other requirement")
+        );
+        assert_eq!(
+            refuse(|l| {
+                l.flags = SINGLE | NUMBERED;
+                l.lo = 0;
+                l.hi = 0;
+                l.min = 1;
+                l.max = 1;
+            }),
+            label("a single label has at most 1 member and no other requirement")
+        );
+        assert_eq!(
+            refuse(|l| {
+                l.kind = LabelKind::Spawn;
+                l.flags |= PER_TEAM;
+            }),
+            label("starting locations are a set with no per team")
+        );
+        assert_eq!(refuse(|l| l.flags = RANGE), label("a number range needs numbered"));
+        assert_eq!(
+            refuse(|l| {
+                l.lo = 2;
+                l.hi = 1;
+            }),
+            label("its number range is not ordered")
+        );
+        assert_eq!(
+            refuse(|l| {
+                l.max = 256;
+                l.lo = 0;
+                l.hi = 256;
+            }),
+            label("its number range holds more than 256 numbers")
+        );
+        assert_eq!(
+            refuse(|l| l.hi = 4),
+            label("its number range needs more members than its max")
+        );
+        assert_eq!(
+            refuse(|l| l.flags = NUMBERED),
+            label("it has a number range without the flag")
+        );
+
+        let mut ir = sample();
+        ir.labels = (0..=MAX_LABELS).map(|i| LabelDef::objects(format!("l{i}"))).collect();
+        assert_eq!(
+            verify(&ir),
+            Err(Refusal::Limit {
+                what: "labels",
+                max: MAX_LABELS
+            })
+        );
+
+        // A single optional label, a numbered set and spawns all pass.
+        let mut ir = sample();
+        ir.labels.push(LabelDef {
+            text: "bonus".into(),
+            kind: LabelKind::Object,
+            min: 0,
+            max: 1,
+            flags: SINGLE,
+            lo: 0,
+            hi: 0,
+        });
+        ir.labels.push(LabelDef {
+            kind: LabelKind::Spawn,
+            flags: NUMBERED,
+            ..LabelDef::objects("attack")
+        });
+        verify(&ir).unwrap();
+    }
+
+    #[test]
+    fn a_loop_cannot_visit_starting_locations() {
+        let mut ir = sample();
+        ir.labels[0].kind = LabelKind::Spawn;
+        assert_eq!(
+            verify(&ir),
+            Err(Refusal::Op {
+                handler: 0,
+                pc: 4,
+                fault: Fault::SpawnSet(0)
+            })
+        );
+    }
+
+    #[test]
+    fn a_labelled_loop_costs_its_label_max() {
+        let mut ir = sample();
+        ir.handlers[0].code = vec![
+            Op::ForEach {
+                set: Set {
+                    base: SetBase::Labelled(1),
+                    pick: None,
+                },
+                dst: 4,
+                body: 1,
+            },
+            Op::Const { dst: 2, value: 0 },
+        ];
+        // The loop op and 4 bodies of one op: label 1's max is 4.
+        assert_eq!(verify(&ir).unwrap().handler_ops, vec![1 + 4]);
+        ir.labels[1].max = 2;
+        ir.labels[1].min = 2;
+        assert_eq!(verify(&ir).unwrap().handler_ops, vec![1 + 2]);
+        // An unbounded label costs 256.
+        if let Op::ForEach { set, .. } = &mut ir.handlers[0].code[0] {
+            set.base = SetBase::Labelled(0);
+        }
+        assert_eq!(verify(&ir).unwrap().handler_ops, vec![1 + 256]);
     }
 
     #[test]
@@ -1013,5 +1209,18 @@ mod tests {
         };
         verify(&ir).unwrap();
         assert_eq!(unhostable(&ir).map(|e| e.name), Some("set_team"));
+    }
+
+    #[test]
+    fn an_entry_one_engine_makes_is_unhostable_on_another_carrier() {
+        let src = |carrier: &str| {
+            format!(
+                "rules \"Crown\" 1\ncarrier {carrier}\n\non kill(victim, killer) {{ role_traits(victim, false) }}\n"
+            )
+        };
+        let on_juggernaut = crate::compile(&src("juggernaut")).unwrap();
+        assert_eq!(unhostable(&on_juggernaut), None);
+        let on_slayer = crate::compile(&src("slayer")).unwrap();
+        assert_eq!(unhostable(&on_slayer).map(|e| e.name), Some("role_traits"));
     }
 }

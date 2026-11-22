@@ -3,6 +3,7 @@
 
 use rules::fake::{FakeGame, FakePlayer};
 use rules::verify::{Fault, unhostable};
+use rules::policy::Context;
 use rules::vm::{Arg, ErrorKind, Proposal, ProposalRefusal, TICK_BUDGET};
 use rules::{Fired, Input, Ir, Refusal, RulesExt, Vm, build, builtin, compile, verify};
 
@@ -394,26 +395,28 @@ fn grants_follow_the_declaration_palette_and_budget() {
         match_made: false,
         protected: false,
     };
-    assert_eq!(vm.check_proposal(false, &wall), Ok(()));
-    assert_eq!(vm.check_proposal(true, &wall), Err(ProposalRefusal::Ranked));
+    assert_eq!(vm.check_proposal(Context::Custom, &wall), Ok(()));
+    assert_eq!(vm.check_proposal(Context::Ranked, &wall), Err(ProposalRefusal::Ranked));
+    assert_eq!(vm.check_proposal(Context::Theater, &wall), Err(ProposalRefusal::Theater));
+    assert_eq!(vm.check_proposal(Context::Hopper { deny: &[] }, &wall), Ok(()));
     let tank = Proposal {
         tag: "objects/vehicles/tank",
         ..wall
     };
     assert_eq!(
-        vm.check_proposal(false, &tank),
+        vm.check_proposal(Context::Custom, &tank),
         Err(ProposalRefusal::OutsidePalette("objects/vehicles/tank".into()))
     );
     assert_eq!(
-        vm.check_proposal(false, &Proposal { protected: true, ..wall }),
+        vm.check_proposal(Context::Custom, &Proposal { protected: true, ..wall }),
         Err(ProposalRefusal::Protected)
     );
     assert_eq!(
-        vm.check_proposal(false, &Proposal { cap: "forge.scale", ..wall }),
+        vm.check_proposal(Context::Custom, &Proposal { cap: "forge.scale", ..wall }),
         Err(ProposalRefusal::Undeclared("forge.scale".into()))
     );
     assert_eq!(
-        vm.check_proposal(false, &Proposal { player: 2, ..wall }),
+        vm.check_proposal(Context::Custom, &Proposal { player: 2, ..wall }),
         Err(ProposalRefusal::NoGrant("forge.place".into()))
     );
 
@@ -423,14 +426,14 @@ fn grants_follow_the_declaration_palette_and_budget() {
         tag: "objects/scenery/rock",
         ..wall
     };
-    assert_eq!(vm.check_proposal(false, &mv), Err(ProposalRefusal::NotMatchMade));
-    assert_eq!(vm.check_proposal(false, &Proposal { match_made: true, ..mv }), Ok(()));
+    assert_eq!(vm.check_proposal(Context::Custom, &mv), Err(ProposalRefusal::NotMatchMade));
+    assert_eq!(vm.check_proposal(Context::Custom, &Proposal { match_made: true, ..mv }), Ok(()));
 
     // Each accepted edit costs a use; one past the budget is refused.
     assert_eq!(vm.spend(0, "forge.place"), Ok(1));
     assert_eq!(vm.spend(0, "forge.place"), Ok(0));
     assert_eq!(
-        vm.check_proposal(false, &wall),
+        vm.check_proposal(Context::Custom, &wall),
         Err(ProposalRefusal::NoUses("forge.place".into()))
     );
     assert_eq!(vm.spend(0, "forge.place"), Err(ProposalRefusal::NoUses("forge.place".into())));
@@ -442,7 +445,7 @@ fn grants_follow_the_declaration_palette_and_budget() {
     vm.fire(&mut g, Input::Join(2));
     vm.fire(&mut g, Input::Press(2, 7));
     assert_eq!(
-        vm.check_proposal(false, &Proposal { player: 2, match_made: true, ..mv }),
+        vm.check_proposal(Context::Custom, &Proposal { player: 2, match_made: true, ..mv }),
         Err(ProposalRefusal::NoGrant("forge.move".into()))
     );
 
@@ -537,6 +540,78 @@ fn compile_errors_carry_line_and_column() {
     assert!(e.message.contains("33 bits"), "{e}");
 }
 
+// ---- Bounce events ----
+
+const BOUNCES: &str = r#"
+rules "Bounces" 1
+carrier slayer
+player var last_chain: int = 0
+player var monsters: int = 0
+player var falls: int = 0
+object var hits: int = 0
+on bounce(p, spot, chain, monster) {
+    p.last_chain = chain
+    spot.hits = spot.hits + 1
+    if monster { p.monsters = p.monsters + 1 }
+}
+on bounced(p) { p.falls = p.falls + 1 }
+"#;
+
+/// `on bounce` binds the player, the strip, the chain's count and the
+/// Monster flag in that order; `on bounced` binds the player.
+#[test]
+fn on_bounce_hears_its_chain_and_monster_and_on_bounced_its_player() {
+    let (ir, report) = build(BOUNCES).unwrap();
+    assert!(report.fits());
+    verify(&ir).unwrap();
+    let mut g = FakeGame::with_players(2);
+    let mut vm = Vm::new(ir, 0, 1).unwrap();
+    vm.begin_tick(1);
+    let bounce = |chain, monster| Input::Bounce {
+        player: 1,
+        spot: 77,
+        chain,
+        monster,
+    };
+    assert_eq!(vm.fire(&mut g, bounce(1, false)), Fired::Ran);
+    assert_eq!(vm.player_var(1, "last_chain"), Some(1));
+    assert_eq!(vm.fire(&mut g, bounce(2, true)), Fired::Ran);
+    assert_eq!(vm.player_var(1, "last_chain"), Some(2));
+    assert_eq!(vm.player_var(1, "monsters"), Some(1));
+    assert_eq!(vm.player_var(1, "falls"), Some(0));
+    assert_eq!(vm.fire(&mut g, Input::Bounced(1)), Fired::Ran);
+    assert_eq!(vm.player_var(1, "falls"), Some(1));
+    assert_eq!(vm.player_var(0, "falls"), Some(0));
+    // A script without `on bounced` does not hear one.
+    let (ir, _) = build(builtin::SLAYER).unwrap();
+    let mut vm = Vm::new(ir, 0, 1).unwrap();
+    vm.begin_tick(1);
+    assert_eq!(vm.fire(&mut g, Input::Bounced(1)), Fired::NoHandler);
+}
+
+/// Handler arity is exact for every event, `on bounce` included: a
+/// two-parameter `on bounce(p, spot)` is refused with the parameters it
+/// takes.
+#[test]
+fn a_bounce_handler_with_too_few_parameters_is_refused() {
+    let e = compile_error("rules \"X\" 1\ncarrier slayer\non bounce(p, spot) { }\n");
+    assert!(
+        e.contains("on bounce takes 4 arguments (player, object, int, bool)"),
+        "{e}"
+    );
+    let e = compile_error("rules \"X\" 1\ncarrier slayer\non bounced(p, spot) { }\n");
+    assert!(e.contains("on bounced takes 1 argument (player)"), "{e}");
+    // The verifier refuses a blob whose bounce handler lacks the count.
+    let (mut ir, _) = build(BOUNCES).unwrap();
+    let hd = ir
+        .handlers
+        .iter_mut()
+        .find(|h| h.event == rules::ir::Event::Bounce)
+        .unwrap();
+    hd.regs[2] = rules::ty::Ty::Object;
+    assert!(verify(&ir).is_err());
+}
+
 // ---- Codec and identity ----
 
 #[test]
@@ -626,4 +701,37 @@ on tick {
             vec![player(5), Arg::Int(5)],
         ]
     );
+}
+
+#[test]
+fn a_list_line_files_the_script_under_a_named_row() {
+    use rules::ir::List;
+    let plain = compile("rules \"X\" 1\ncarrier slayer\n").unwrap();
+    assert_eq!(plain.header.list, List::GameType);
+    let listed = compile("rules \"X\" 1\ncarrier slayer\nlist tweakers\n").unwrap();
+    assert_eq!(listed.header.list, List::Tweakers);
+    assert_ne!(plain.id(), listed.id());
+    assert!(
+        compile_error("rules \"X\" 1\ncarrier slayer\nlist slayer\n")
+            .contains("unknown list slayer: a list is tweakers")
+    );
+    assert!(
+        compile_error("rules \"X\" 1\ncarrier slayer\nlist tweakers\nlist tweakers\n")
+            .contains("the list is named twice")
+    );
+}
+
+/// What one op costs, for choosing [`TICK_BUDGET`]: run with
+/// `cargo test --release -p rules --test scripts op_cost -- --ignored --nocapture`.
+#[test]
+#[ignore = "a measurement, not a check"]
+fn op_cost() {
+    let mut best = f64::MAX;
+    for _ in 0..20 {
+        let start = std::time::Instant::now();
+        let (vm, _) = spin();
+        let ns = start.elapsed().as_nanos() as f64 / f64::from(vm.ext().ops);
+        best = best.min(ns);
+    }
+    println!("{best:.2} ns per op; a full {TICK_BUDGET}-op tick is {:.3} ms", best * f64::from(TICK_BUDGET) / 1e6);
 }

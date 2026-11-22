@@ -18,6 +18,13 @@
 //! - `GAME_TICK`, an observer after: timers and `on tick`
 //!   ([`Runtime::post_tick`]).
 //! - `GAME_END`, an observer after: the record is removed.
+//! - `SLAYER_KILL`, `JUGGERNAUT_KILL`, `JUGGERNAUT_TICK` and `SCORE_ADD`,
+//!   `before`s in the default class: while a script runs on the authority,
+//!   the carrier's own scoring and role-making return at once
+//!   ([`super::scoring`]).
+//!
+//! The superbounce mode's tick observer feeds it each bounce its medal
+//! chain files ([`bounces`]).
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -41,6 +48,16 @@ pub struct Shared {
     runtime: Mutex<Runtime>,
     /// Set while the async body runs the tick it answered for.
     pub reentry: AtomicBool,
+    /// The last `rules.reload`, for `rules.state`.
+    last_reload: Mutex<Option<wire::LastReload>>,
+    /// What a reload reaches beyond the runtime, set at install.
+    links: OnceLock<Links>,
+}
+
+/// The Live client and the game-variant store, for `rules.reload`.
+pub struct Links {
+    pub hle: Option<Arc<live_hle::Hle>>,
+    pub scripts: Arc<crate::game_variants::GameScripts>,
 }
 
 impl Shared {
@@ -48,20 +65,61 @@ impl Shared {
         Self {
             runtime: Mutex::new(runtime),
             reentry: AtomicBool::new(false),
+            last_reload: Mutex::new(None),
+            links: OnceLock::new(),
         }
     }
 
     pub fn lock(&self) -> MutexGuard<'_, Runtime> {
         self.runtime.lock().unwrap_or_else(|e| e.into_inner())
     }
+
+    /// Sets the links once; later calls keep the first.
+    pub fn set_links(&self, links: Links) {
+        let _ = self.links.set(links);
+    }
+
+    pub fn links(&self) -> Option<&Links> {
+        self.links.get()
+    }
+
+    pub fn set_last_reload(&self, r: wire::LastReload) {
+        *self.last_reload.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+    }
+
+    pub fn last_reload(&self) -> Option<wire::LastReload> {
+        self.last_reload.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// `rules.state`: the runtime's, with the last reload.
+    pub fn state(&self) -> wire::State {
+        let mut s = self.lock().state();
+        s.last_reload = self.last_reload();
+        s
+    }
 }
 
 static SHARED: OnceLock<Arc<Shared>> = OnceLock::new();
 
-/// The feature. `hle`: the Live client, for the session's `rules` field.
+/// The feature. `hle`: the Live client, for the session's `rules` field;
+/// `scripts`: the game-variant store and the Live fetch behind the runtime.
 pub struct Rules {
     pub shared: Arc<Shared>,
     pub hle: Option<Arc<live_hle::Hle>>,
+    pub scripts: Arc<crate::game_variants::GameScripts>,
+}
+
+/// The record's script prefix when its blob is neither built in nor on
+/// this machine: the one a host's start must fetch first.
+pub fn to_fetch(m: &dyn GuestMemory, scripts: &crate::game_variants::GameScripts) -> Option<[u8; 8]> {
+    let block = super::guest::block(m).ok().flatten()?;
+    let script = variants::ext::Ext::in_effect(&block).script;
+    if script.mode != variants::ext::Mode::Rules {
+        return None;
+    }
+    let p = script.prefix;
+    let built = runtime::compiled_in(p).is_some();
+    (!built && scripts.local(p).is_none()).then_some(p)
 }
 
 fn manifest() -> hooks::Manifest {
@@ -110,7 +168,28 @@ impl hooks::Feature for Rules {
         use std::sync::atomic::Ordering;
         let s = Arc::clone(&self.shared);
         let hle = self.hle.clone();
+        let scripts = Arc::clone(&self.scripts);
         b.game().on_start("start the game's rules script", move |o| {
+            // A host (or a game alone) whose record names a script that is
+            // not on this machine fetches it from Live first, with no guest
+            // memory held and a bounded wait; the start below then finds it
+            // in the store or refuses with the fetch's reason.
+            let fetch = {
+                let mem = o.guest();
+                let m: &dyn GuestMemory = &*mem;
+                let read = ReadGm(m);
+                let session = crate::coop_probe::read_session(&read);
+                let class = session
+                    .as_ref()
+                    .and_then(|s| read.u32(s.addr.wrapping_add(variant_ext::SESSION_NETWORK_CLASS)));
+                let part = variant_ext::part(session.as_ref().zip(class));
+                matches!(part, Part::Alone | Part::LiveHost)
+                    .then(|| to_fetch(m, &scripts))
+                    .flatten()
+            };
+            if let Some(p) = fetch {
+                scripts.prefetch(p, crate::game_variants::START_WAIT);
+            }
             let mem = o.guest();
             let m: &dyn GuestMemory = &*mem;
             let read = ReadGm(m);
@@ -119,8 +198,16 @@ impl hooks::Feature for Rules {
                 .as_ref()
                 .and_then(|s| read.u32(s.addr.wrapping_add(variant_ext::SESSION_NETWORK_CLASS)));
             let part = variant_ext::part(session.as_ref().zip(class));
+            // A matchmade game is a hopper's (with no deny list: a hopper
+            // keeps none); Live holds a ranked session's script to the
+            // ranked policy when the session names it.
+            let context = match hle.as_ref().and_then(|h| h.matchmade()) {
+                Some(_) => ::rules::policy::Context::Hopper { deny: &[] },
+                None => ::rules::policy::Context::Custom,
+            };
             let (line, hash) = {
                 let mut rt = s.lock();
+                rt.set_context(context);
                 let line = rt.start(m, part == Part::SystemLink);
                 (line, rt.hash())
             };
@@ -198,6 +285,7 @@ impl hooks::Feature for Rules {
             let m: &dyn GuestMemory = &*mem;
             s.lock().post_tick(m);
         });
+        super::scoring::register(b, &self.shared);
         let s = Arc::clone(&self.shared);
         b.game().on_end("end the rules script", move |_| {
             s.lock().ended();
@@ -215,11 +303,17 @@ pub fn install(
     registry: &mut hooks::Registry,
     hle: Option<Arc<live_hle::Hle>>,
 ) -> anyhow::Result<bool> {
-    let shared = Arc::new(Shared::new(Runtime::in_game()));
+    let scripts = Arc::new(crate::game_variants::GameScripts::in_game(hle.clone()));
+    let shared = Arc::new(Shared::new(Runtime::in_game(Arc::clone(&scripts))));
+    shared.set_links(Links {
+        hle: hle.clone(),
+        scripts: Arc::clone(&scripts),
+    });
     let added = registry
         .add(&Rules {
             shared: Arc::clone(&shared),
             hle,
+            scripts,
         })
         .map_err(|e| anyhow::anyhow!("{FEATURE}: {e}"))?;
     if !added {
@@ -229,28 +323,71 @@ pub fn install(
     Ok(true)
 }
 
+/// One tick's superbounce awards (`superbounce_chain::Medals::step`), as
+/// the running script's `on bounce` and `on bounced`
+/// ([`Runtime::bounces`]). Nothing without the feature.
+pub fn bounces(m: &dyn GuestMemory, awards: &[crate::superbounce_chain::Award]) {
+    if awards.is_empty() {
+        return;
+    }
+    if let Some(s) = SHARED.get() {
+        s.lock().bounces(m, awards);
+    }
+}
+
 /// Why `rules.state` has no runtime to answer from.
 pub const OFF: &str = "the rules feature is off (H2_FEATURES=rules turns it on)";
 
 /// The agent API's view of the runtime ([`agent::rules::Source`]). Without
 /// the feature it answers that it is off.
-pub struct AgentSource(pub Option<Arc<Shared>>);
+pub struct AgentSource {
+    pub shared: Option<Arc<Shared>>,
+    /// This run plays a film back (Theater): no reload.
+    pub playback: bool,
+}
 
 impl AgentSource {
     /// The run's runtime, once installed.
     pub fn installed() -> Self {
-        Self(SHARED.get().cloned())
+        Self {
+            shared: SHARED.get().cloned(),
+            playback: false,
+        }
+    }
+
+    /// The same source for a run that plays a film back, or not.
+    pub fn playback(mut self, playback: bool) -> Self {
+        self.playback = playback;
+        self
     }
 }
 
 impl agent::rules::Source for AgentSource {
     fn state(&self) -> wire::State {
-        match &self.0 {
-            Some(s) => s.lock().state(),
+        match &self.shared {
+            Some(s) => s.state(),
             None => wire::State {
                 refused: Some(OFF.into()),
                 ..Default::default()
             },
+        }
+    }
+
+    fn reload(
+        &self,
+        m: &mut dyn GuestMemory,
+        params: wire::ReloadParams,
+        restart: Option<&'static str>,
+    ) -> Result<agent::rules::Reload, agent_proto::RpcError> {
+        let Some(s) = &self.shared else {
+            return Err(agent_proto::RpcError::new(agent_proto::code::UNAVAILABLE, OFF));
+        };
+        super::reload::reload(s, m, params, restart, self.playback)
+    }
+
+    fn restart_outcome(&self, outcome: Result<&wire::ReloadResult, &str>) {
+        if let Some(s) = &self.shared {
+            super::reload::restart_outcome(s, outcome);
         }
     }
 }

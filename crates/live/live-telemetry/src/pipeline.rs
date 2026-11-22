@@ -100,6 +100,7 @@ pub(crate) enum Work {
         tick: u64,
         player: u32,
         chain: u32,
+        monster: bool,
     },
     Bounced {
         tick: u64,
@@ -520,7 +521,8 @@ pub(crate) fn apply(session: &mut Session, work: Work) -> Option<Box<Snapshot>> 
             tick,
             player,
             chain,
-        } => session.superbounce(tick, player, chain),
+            monster,
+        } => session.superbounce(tick, player, chain, monster),
         Work::Bounced {
             tick,
             player,

@@ -12,19 +12,22 @@ use std::collections::BTreeMap;
 
 use crate::caps::{self, Entry, Kind, Order, VARIANT_FIELDS};
 use crate::ir::*;
+use crate::policy;
 use crate::ty::{MAX_LABELLED, MAX_OBJECTIVES, MAX_PLAYERS, MAX_SQUADS, MAX_TEAMS, NONE, Ty, fixed};
 use crate::verify::{self, Refusal};
 
 /// Ops one tick may execute across all its handlers.
-pub const TICK_BUDGET: u32 = 20_000;
+pub const TICK_BUDGET: u32 = 100_000;
 /// `on enter` and `on leave` runs a tick; the rest carry over.
 pub const ZONE_EVENTS_PER_TICK: u8 = 64;
 /// The most bytes [`RulesExt::encode`] may write.
-pub const MAX_STATE_BYTES: usize = 16 * 1024;
+pub const MAX_STATE_BYTES: usize = 64 * 1024;
 /// Queued calls waiting for the next tick boundary.
 pub const MAX_QUEUE: usize = 128;
 /// Objects that carry object variables at once.
 pub const MAX_OBJECT_RECORDS: usize = MAX_LABELLED;
+/// Zones `ticks_held` counts for at once.
+pub const MAX_HELD_ZONES: usize = 32;
 
 /// A value handed to the game, resolved from the blob's tables.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -74,6 +77,12 @@ pub trait Game {
     }
     /// A retail record field by its [`VARIANT_FIELDS`] name.
     fn variant(&self, field: &str) -> i32;
+    /// The zone test behind `ticks_held`: the one team whose living players
+    /// alone are inside the zone object this tick; `None` when it is empty
+    /// or contested. A game with no zone test answers `None`.
+    fn zone_holder(&self, _zone: u32) -> Option<u8> {
+        None
+    }
     /// A read entry. The VM maps a value outside the result type to its
     /// zero value.
     fn read(&mut self, call: &Call) -> i32;
@@ -107,10 +116,19 @@ pub enum Input {
         assist: Option<u8>,
         class: String,
     },
-    Bounce(u8, u32),
+    /// A superbounce by `player` off the strip `spot`, the `chain`th of its
+    /// chain (1 for a single bounce), and whether it was a Monster Bounce.
+    Bounce {
+        player: u8,
+        spot: u32,
+        chain: u32,
+        monster: bool,
+    },
     Edit(u8, u32),
     Join(u8),
     Quit(u8),
+    /// A fall out of the map during a bounce: the Bounced medal.
+    Bounced(u8),
 }
 
 impl Input {
@@ -130,10 +148,11 @@ impl Input {
             Input::SquadDead(_) => Event::SquadDead,
             Input::ActorKill { .. } => Event::ActorKill,
             Input::ActorAssist { .. } => Event::ActorAssist,
-            Input::Bounce(..) => Event::Bounce,
+            Input::Bounce { .. } => Event::Bounce,
             Input::Edit(..) => Event::Edit,
             Input::Join(_) => Event::Join,
             Input::Quit(_) => Event::Quit,
+            Input::Bounced(_) => Event::Bounced,
         }
     }
 }
@@ -171,6 +190,8 @@ pub enum ErrorKind {
     Queue,
     /// `squad(n)` outside the kit's slots.
     Squad,
+    /// More than [`MAX_HELD_ZONES`] zones named to `ticks_held`.
+    Zones,
 }
 
 impl ErrorKind {
@@ -185,6 +206,7 @@ impl ErrorKind {
             2 => ErrorKind::Objects,
             3 => ErrorKind::Queue,
             4 => ErrorKind::Squad,
+            5 => ErrorKind::Zones,
             _ => return None,
         })
     }
@@ -234,6 +256,11 @@ pub struct RulesExt {
     /// Sorted by player, then capability.
     pub grants: Vec<Grant>,
     pub queue: Vec<Queued>,
+    /// `ticks_held`'s counters: per zone object a script has named, the
+    /// ticks each team held it alone, by team index. Counting starts the
+    /// tick after a script first names the zone and ends at the round's
+    /// end.
+    pub held: BTreeMap<u32, [u32; MAX_TEAMS]>,
 }
 
 /// State bytes that do not decode, or do not fit the blob.
@@ -248,7 +275,8 @@ pub enum StateError {
 }
 
 const STATE_MAGIC: [u8; 4] = *b"H2RX";
-const STATE_VERSION: u8 = 1;
+/// 2 added the `ticks_held` counters.
+const STATE_VERSION: u8 = 2;
 
 impl RulesExt {
     /// Whether `player` holds `cap` (an index into `requires`) with uses
@@ -301,7 +329,7 @@ impl RulesExt {
                 w.extend_from_slice(&v.to_le_bytes());
             }
         };
-        w.push(self.globals.len() as u8);
+        w.extend_from_slice(&(self.globals.len() as u16).to_le_bytes());
         i32s(&mut w, &self.globals);
         let width = |rows: &[Vec<i32>]| rows.first().map_or(0, |r| r.len());
         w.push(width(&self.players) as u8);
@@ -338,6 +366,13 @@ impl RulesExt {
             w.push(q.args.len() as u8);
             i32s(&mut w, &q.args);
         }
+        w.push(self.held.len() as u8);
+        for (zone, counts) in &self.held {
+            w.extend_from_slice(&zone.to_le_bytes());
+            for c in counts {
+                w.extend_from_slice(&c.to_le_bytes());
+            }
+        }
         w
     }
 
@@ -371,7 +406,7 @@ impl RulesExt {
             }
             _ => return Err(StateError::Malformed(r.at - 1)),
         };
-        let n = r.u8()? as usize;
+        let n = r.u16()? as usize;
         let globals = r.i32s(n)?;
         let pw = r.u8()? as usize;
         let mut players = Vec::with_capacity(MAX_PLAYERS);
@@ -431,6 +466,22 @@ impl RulesExt {
                 args: r.i32s(argc)?,
             });
         }
+        let n = r.u8()? as usize;
+        let mut held = BTreeMap::new();
+        let mut last: Option<u32> = None;
+        for _ in 0..n {
+            let at = r.at;
+            let zone = r.u32()?;
+            if last.is_some_and(|l| l >= zone) || n > MAX_HELD_ZONES {
+                return Err(StateError::Malformed(at));
+            }
+            last = Some(zone);
+            let mut counts = [0u32; MAX_TEAMS];
+            for c in &mut counts {
+                *c = r.u32()?;
+            }
+            held.insert(zone, counts);
+        }
         if r.at != bytes.len() {
             return Err(StateError::Malformed(r.at));
         }
@@ -446,6 +497,7 @@ impl RulesExt {
             objects,
             grants,
             queue,
+            held,
         })
     }
 }
@@ -530,6 +582,8 @@ pub struct Proposal<'a> {
 pub enum ProposalRefusal {
     #[error("edits are never counted in a ranked game")]
     Ranked,
+    #[error("Theater replays a film and takes no edits")]
+    Theater,
     #[error("the script is stopped")]
     Stopped,
     #[error("the script does not declare {0}")]
@@ -577,6 +631,7 @@ impl Vm {
             objects: BTreeMap::new(),
             grants: Vec::new(),
             queue: Vec::new(),
+            held: BTreeMap::new(),
         };
         Ok(Vm {
             ir,
@@ -601,6 +656,7 @@ impl Vm {
             && ext.objects.values().all(|r| r.len() == inits[3].len())
             && ext.objects.len() <= MAX_OBJECT_RECORDS
             && ext.queue.len() <= MAX_QUEUE
+            && ext.held.len() <= MAX_HELD_ZONES
             && ext.grants.iter().all(|g| {
                 (g.cap as usize) < ir.header.requires.len()
                     && g.palette.is_none_or(|p| (p as usize) < ir.palettes.len())
@@ -617,6 +673,24 @@ impl Vm {
             warnings: Vec::new(),
             report,
         })
+    }
+
+    /// Swaps in a new program between ticks, keeping every slot value, the
+    /// generator, grants and queued calls (`crate::reload`). `ir` must
+    /// verify and keep the state shape ([`crate::reload::compatible`]);
+    /// otherwise nothing changes. A stopped script runs again.
+    pub fn swap_program(&mut self, ir: Ir) -> Result<(), crate::reload::SwapError> {
+        use crate::reload::{SwapError, carry, compatible};
+        let report = verify::verify(&ir)?;
+        compatible(&self.ir, &ir).map_err(SwapError::Incompatible)?;
+        carry(&self.ir, &ir, &mut self.ext);
+        let (pos, inits) = layout(&ir);
+        self.ext.stopped = None;
+        self.ir = ir;
+        self.pos = pos;
+        self.inits = inits;
+        self.report = report;
+        Ok(())
     }
 
     pub fn ir(&self) -> &Ir {
@@ -665,11 +739,19 @@ impl Vm {
         fired
     }
 
-    /// The per-tick group: timers count down and fire in slot order, then
-    /// `on tick` runs.
+    /// The per-tick group: each zone `ticks_held` counts adds a tick to the
+    /// team holding it alone, timers count down and fire in slot order,
+    /// then `on tick` runs.
     pub fn update(&mut self, game: &mut dyn Game) -> Fired {
         if self.ext.stopped.is_some() {
             return Fired::Stopped;
+        }
+        for (&zone, counts) in self.ext.held.iter_mut() {
+            if let Some(t) = game.zone_holder(zone)
+                && let Some(c) = counts.get_mut(t as usize)
+            {
+                *c = c.saturating_add(1);
+            }
         }
         let mut fired = Vec::new();
         for (slot, s) in self.ir.slots.iter().enumerate() {
@@ -715,11 +797,14 @@ impl Vm {
         }
     }
 
-    /// Checks a granted power's proposal before the host stamps it. The
-    /// host also runs Forge's own validation.
-    pub fn check_proposal(&self, ranked: bool, p: &Proposal<'_>) -> Result<(), ProposalRefusal> {
-        if ranked {
-            return Err(ProposalRefusal::Ranked);
+    /// Checks a granted power's proposal before the host stamps it: never
+    /// in a ranked game or in Theater ([`policy::edits_allowed`]). The host
+    /// also runs Forge's own validation.
+    pub fn check_proposal(&self, context: policy::Context<'_>, p: &Proposal<'_>) -> Result<(), ProposalRefusal> {
+        match context {
+            policy::Context::Ranked => return Err(ProposalRefusal::Ranked),
+            policy::Context::Theater => return Err(ProposalRefusal::Theater),
+            policy::Context::Custom | policy::Context::Hopper { .. } => {}
         }
         if self.ext.stopped.is_some() {
             return Err(ProposalRefusal::Stopped);
@@ -741,7 +826,7 @@ impl Vm {
                 let inside = self.ir.palettes.get(palette as usize).is_some_and(|pal| {
                     pal.tags
                         .iter()
-                        .any(|&t| self.ir.tags.get(t as usize).is_some_and(|tag| tag == p.tag))
+                        .any(|&t| self.ir.tags.get(t as usize).is_some_and(|tag| tag.path == p.tag))
                 });
                 if !inside {
                     return Err(ProposalRefusal::OutsidePalette(p.tag.to_string()));
@@ -814,13 +899,28 @@ impl Vm {
             .position(|h| h.event == event && h.timer == timer)
     }
 
-    /// Grants end at the player's quit and at the round's end.
+    /// Grants end at the player's quit and at the round's end; the
+    /// `ticks_held` counters end at the round's end.
     fn after(&mut self, input: &Input) {
         match *input {
             Input::Quit(p) => self.ext.grants.retain(|g| g.player != p),
-            Input::RoundEnd => self.ext.grants.clear(),
+            Input::RoundEnd => {
+                self.ext.grants.clear();
+                self.ext.held.clear();
+            }
             _ => {}
         }
+    }
+
+    /// The ticks `team` has held `zone` alone, as `ticks_held` reads it,
+    /// for tests and the agent API.
+    pub fn ticks_held(&self, zone: u32, team: u8) -> u32 {
+        self.ext
+            .held
+            .get(&zone)
+            .and_then(|c| c.get(team as usize))
+            .copied()
+            .unwrap_or(0)
     }
 
     fn args(&self, input: &Input) -> Vec<i32> {
@@ -830,12 +930,25 @@ impl Vm {
         match input {
             Input::Init | Input::RoundStart | Input::RoundEnd => vec![],
             Input::Kill { victim, killer } => vec![p(*victim), op(*killer)],
-            Input::Spawn(x) | Input::Death(x) | Input::Join(x) | Input::Quit(x) => vec![p(*x)],
-            Input::Pickup(x, ob)
-            | Input::Drop(x, ob)
-            | Input::Press(x, ob)
-            | Input::Bounce(x, ob)
-            | Input::Edit(x, ob) => vec![p(*x), o(*ob)],
+            Input::Spawn(x)
+            | Input::Death(x)
+            | Input::Join(x)
+            | Input::Quit(x)
+            | Input::Bounced(x) => vec![p(*x)],
+            Input::Pickup(x, ob) | Input::Drop(x, ob) | Input::Press(x, ob) | Input::Edit(x, ob) => {
+                vec![p(*x), o(*ob)]
+            }
+            Input::Bounce {
+                player,
+                spot,
+                chain,
+                monster,
+            } => vec![
+                p(*player),
+                o(*spot),
+                i32::try_from(*chain).unwrap_or(i32::MAX),
+                i32::from(*monster),
+            ],
             Input::Enter { zone, object } | Input::Leave { zone, object } => {
                 vec![o(*zone), o(*object)]
             }
@@ -914,8 +1027,14 @@ fn to_arg(ir: &Ir, ty: Ty, v: i32) -> Arg {
         Ty::Object => Arg::Object(u32::try_from(v).ok()),
         Ty::Squad => Arg::Squad(opt_u8(v).unwrap_or(0)),
         Ty::Class => Arg::Class(string(&ir.strings, v)),
-        Ty::Tag => Arg::Tag(string(&ir.tags, v)),
-        Ty::Label => Arg::Label(string(&ir.labels, v).unwrap_or_default()),
+        Ty::Tag => Arg::Tag(usize::try_from(v).ok().and_then(|i| ir.tags.get(i)).map(|t| t.path.clone())),
+        Ty::Label => Arg::Label(
+            usize::try_from(v)
+                .ok()
+                .and_then(|i| ir.labels.get(i))
+                .map(|l| l.text.clone())
+                .unwrap_or_default(),
+        ),
         Ty::Text => Arg::Text(string(&ir.strings, v).unwrap_or_default()),
         Ty::Enum(_) => Arg::Enum(opt_u8(v).unwrap_or(0)),
     }
@@ -1197,13 +1316,17 @@ impl<'a> Run<'a> {
             SetBase::Players => sorted_small(game.players(), MAX_PLAYERS),
             SetBase::Teams => sorted_small(game.teams(), MAX_TEAMS),
             SetBase::Labelled(l) => {
-                let mut placed = game.labelled(&self.ir.labels[l as usize]);
+                // The label's max bounds the set on any map, checked or not:
+                // the verifier's estimate counts no more.
+                let def = &self.ir.labels[l as usize];
+                let max = (def.max as usize).min(MAX_LABELLED);
+                let mut placed = game.labelled(&def.text);
                 placed.sort();
                 placed.dedup_by_key(|p| p.object);
                 placed
                     .into_iter()
                     .filter_map(|p| i32::try_from(p.object).ok())
-                    .take(MAX_LABELLED)
+                    .take(max)
                     .collect()
             }
             SetBase::Objectives => {
@@ -1239,6 +1362,24 @@ impl<'a> Run<'a> {
                         } else {
                             0
                         }
+                    }
+                    // A zone named for the first time is counted from the
+                    // next update; `none` and a team out of range read 0.
+                    caps::id::TICKS_HELD => {
+                        let (Ok(zone), Ok(team)) = (u32::try_from(raw[0]), usize::try_from(raw[1])) else {
+                            return Ok(Some(0));
+                        };
+                        if team >= MAX_TEAMS {
+                            return Ok(Some(0));
+                        }
+                        if !self.ext.held.contains_key(&zone) {
+                            if self.ext.held.len() >= MAX_HELD_ZONES {
+                                return Err(ErrorKind::Zones);
+                            }
+                            self.ext.held.insert(zone, [0; MAX_TEAMS]);
+                        }
+                        let n = self.ext.held.get(&zone).map_or(0, |c| c[team]);
+                        i32::try_from(n).unwrap_or(i32::MAX)
                     }
                     _ => 0,
                 };
@@ -1306,6 +1447,32 @@ mod tests {
     }
 
     #[test]
+    fn a_labelled_set_visits_at_most_its_label_max() {
+        let src = "rules \"Bound\" 1\ncarrier slayer\nglobal var n: int = 0\n\
+                   on tick { for each objects labelled \"crate\" o { n = n + 1 } }\n";
+        let run = |max: Option<u16>, placed: u32| {
+            let (mut ir, _) = crate::build(src).unwrap();
+            assert_eq!(ir.labels[0].max as usize, MAX_LABELLED);
+            if let Some(max) = max {
+                ir.labels[0].max = max;
+            }
+            let mut vm = Vm::new(ir, 0, 0).unwrap();
+            let mut g = crate::fake::FakeGame::with_players(0);
+            for i in 0..placed {
+                g.label("crate", 1000 + i, 0, i);
+            }
+            vm.begin_tick(1);
+            vm.update(&mut g);
+            vm.global("n")
+        };
+        // The map holds 10; the label allows 3, so the loop visits 3.
+        assert_eq!(run(Some(3), 10), Some(3));
+        assert_eq!(run(Some(3), 2), Some(2));
+        // With no stated limit the set visits the first 256.
+        assert_eq!(run(None, 300), Some(MAX_LABELLED as i32));
+    }
+
+    #[test]
     fn below_stays_in_range() {
         let mut s = 7u64;
         for n in 1..50u64 {
@@ -1347,7 +1514,23 @@ mod tests {
                 entry: caps::id::HUNT,
                 args: vec![4],
             }],
+            held: [(5u32, [0, 30, 0, 0, 0, 0, 0, 0]), (12, [7; MAX_TEAMS])].into_iter().collect(),
         }
+    }
+
+    #[test]
+    fn state_refuses_unsorted_zones() {
+        let mut e = ext();
+        e.held.clear();
+        let bytes = e.encode();
+        // Two zones, 12 before 5: rewrite the tail by hand.
+        let mut bad = bytes[..bytes.len() - 1].to_vec();
+        bad.push(2);
+        for zone in [12u32, 5] {
+            bad.extend_from_slice(&zone.to_le_bytes());
+            bad.extend_from_slice(&[0; 4 * MAX_TEAMS]);
+        }
+        assert!(RulesExt::decode(&bad).is_err());
     }
 
     #[test]
@@ -1401,6 +1584,7 @@ mod tests {
                 };
                 MAX_QUEUE
             ],
+            held: (0..MAX_HELD_ZONES as u32).map(|z| (z, [u32::MAX; MAX_TEAMS])).collect(),
         };
         let bytes = e.encode();
         assert!(bytes.len() <= MAX_STATE_BYTES, "{} bytes", bytes.len());

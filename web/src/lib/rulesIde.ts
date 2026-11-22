@@ -20,7 +20,7 @@ export const LANGUAGE_ID = "h2rules";
 
 /** Declaration and statement words the parser reserves. */
 export const KEYWORDS = [
-  "rules", "carrier", "teams", "requires", "option", "palette", "enum", "global", "var", "table", "fn", "on",
+  "rules", "carrier", "teams", "list", "requires", "option", "palette", "enum", "global", "var", "table", "fn", "on",
   "labelled", "text", "budget",
 ] as const;
 export const CONTROL = ["if", "else", "for", "each", "where", "let"] as const;
@@ -53,6 +53,7 @@ export const CAP_WORDS: Readonly<Record<string, string>> = {
   "objects.move": "moves objects",
   "ai.squads": "places and commands AI",
   "hud.message": "shows messages",
+  "hud.superbounce": "shows the superbounce guide: a priming HUD, marks over the map and bounce medals",
   "forge.move": "lets players move objects during the match",
   "forge.delete": "lets players remove objects during the match",
   "forge.place": "lets players place objects during the match",
@@ -96,7 +97,6 @@ export const API_ENTRIES: readonly ApiEntry[] = [
   read("label_number", ["o"], "int"),
   read("label_of", ["o"], "label"),
   read("zone_id", ["o"], "int"),
-  read("ticks_held", ["zone", "t"], "int"),
   read("squad_alive", ["s"], "int"),
   act("score", ["p", "n"]),
   act("end_round", ["winner"]),
@@ -117,12 +117,13 @@ export const API_ENTRIES: readonly ApiEntry[] = [
   act("place_squad", ["s", "class", "n", "label"], "ai.squads"),
   act("hunt", ["s"], "ai.squads"),
   act("erase_squad", ["s"], "ai.squads"),
-  act("message", ["text"], "hud.message"),
+  act("message", ["to", "text"], "hud.message"),
   act("forge_move", ["o", "at"], "forge.move"),
   act("forge_delete", ["o"], "forge.delete"),
   act("forge_place", ["tag", "at"], "forge.place"),
   act("forge_scale", ["o", "s"], "forge.scale"),
   vm("count", ["set"], "int", "count(${1:players} ${2:p} where ${3:p.alive})"),
+  vm("ticks_held", ["zone", "t"], "int"),
   vm("first", ["set"], null, "first(${1:players} ${2:p} where ${3:p.alive})"),
   vm("pick", ["set", "n"], null, "pick(${1:players}, ${2:1})"),
   vm("len", ["table"], "int"),
@@ -154,7 +155,8 @@ export const EVENTS: readonly EventDef[] = [
   { name: "timer", params: ["t"], words: "a timer variable reaches zero" },
   { name: "squad_dead", params: ["s"], words: "an AI squad's last actor dies" },
   { name: "actor_kill", params: ["killer", "class"], words: "a player kills an AI actor" },
-  { name: "bounce", params: ["p", "spot"], words: "a player superbounces" },
+  { name: "bounce", params: ["p", "spot", "chain", "monster"], words: "a player superbounces; chain is its place in the chain, monster a Monster Bounce" },
+  { name: "bounced", params: ["p"], words: "a player falls out of the map during a bounce" },
   { name: "edit", params: ["p", "o"], words: "a player used a granted power" },
   { name: "join", params: ["p"], words: "a player joins" },
   { name: "quit", params: ["p"], words: "a player leaves the game" },
@@ -576,6 +578,7 @@ export function eventSnippet(e: EventDef): string {
 export const DECLARATIONS: readonly InsertItem[] = [
   { label: "requires", detail: "requires cap, cap", words: "the capabilities the script asks for", snippet: `requires ${ph(1, "player.weapons")}` },
   { label: "teams", detail: "teams n", words: "how many teams the game type has", snippet: `teams ${ph(1, "2")}` },
+  { label: "list", detail: "list tweakers", words: "the game type list row its variants are filed under", snippet: "list tweakers" },
   { label: "option", detail: "option name: int lo..hi = default \"Label\" \"Description\"", words: "a row the variant editor shows", snippet: `option ${ph(1, "name")}: ${ph(2, "int")} ${ph(3, "1..5")} = ${ph(4, "1")} "${ph(5, "Label")}" "${ph(6, "Description")}"` },
   { label: "option (on or off)", detail: "option name: bool = true \"Label\" \"Description\"", words: "a switch the variant editor shows", snippet: `option ${ph(1, "name")}: bool = ${ph(2, "true")} "${ph(3, "Label")}" "${ph(4, "Description")}"` },
   { label: "global var", detail: "global var name: type = init", words: "one value for the whole game (64 slots)", snippet: `global var ${ph(1, "name")}: ${ph(2, "int")} = ${ph(3, "0")}` },

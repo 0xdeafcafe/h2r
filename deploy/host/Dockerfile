@@ -32,8 +32,14 @@ RUN set -eux; \
     while IFS= read -r path; do cp -L --parents "$path" /rootfs; done < /elf-paths; \
     cp -L --parents /lib/x86_64-linux-gnu/libnss_files.so.2 /lib/x86_64-linux-gnu/libnss_dns.so.2 /rootfs
 
+# Three layers, least to most often changed, so a push uploads only what
+# changed: the base files, the h2 binary, then the game module.
+RUN mkdir /opt-h2 && mv /rootfs/opt/h2 /opt-h2/
+
 FROM scratch
 COPY --from=rootfs /rootfs/ /
+COPY --from=rootfs /opt-h2/h2/h2 /opt-h2/h2/entrypoint.sh /opt/h2/
+COPY --from=rootfs /opt-h2/h2/image/ /opt/h2/image/
 EXPOSE 31000-31069/udp
 EXPOSE 31099-31109/tcp
 USER 1000:1000

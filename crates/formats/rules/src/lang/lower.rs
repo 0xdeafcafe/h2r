@@ -231,6 +231,14 @@ impl<'s> Cx<'s> {
                 n as u8
             }
         };
+        let list = match &script.list {
+            None => List::GameType,
+            Some((name, lpos)) => List::named(name).ok_or_else(|| {
+                let names: Vec<&str> = List::NAMED.iter().filter_map(|l| l.name()).collect();
+                let names = names.join(", ");
+                CompileError::at(*lpos, format!("unknown list {name}: a list is {names}"))
+            })?,
+        };
         for (name, rpos) in &script.requires {
             if caps::capability(name, caps::API_VERSION).is_none() {
                 return err(*rpos, format!("unknown capability {name}"));
@@ -310,14 +318,18 @@ impl<'s> Cx<'s> {
                 version,
                 carrier,
                 teams,
+                list,
                 requires: self.requires.clone(),
             },
             strings: std::mem::take(&mut self.strings),
             options: self.options.drain(..).map(|(_, o)| o).collect(),
             enums: enum_defs,
             slots: std::mem::take(&mut self.slots),
-            labels: std::mem::take(&mut self.labels),
-            tags: std::mem::take(&mut self.tags),
+            // Until labels are declared, a string label is a set of objects
+            // that requires nothing of the map, and a tag path is of any
+            // object definition.
+            labels: self.labels.drain(..).map(LabelDef::objects).collect(),
+            tags: self.tags.drain(..).map(TagDef::any).collect(),
             palettes: self.palettes.drain(..).map(|(_, p)| p).collect(),
             tables: std::mem::take(&mut self.table_defs),
             handlers: std::mem::take(&mut self.handlers),
@@ -354,6 +366,12 @@ impl<'s> Cx<'s> {
     fn label(&mut self, s: &str, pos: Pos) -> R<u16> {
         if s.is_empty() || s.len() > MAX_LABEL_BYTES {
             return err(pos, "a label is 1 to 32 bytes");
+        }
+        if !s.chars().all(label_char) {
+            return err(pos, "a label is lowercase letters, digits, _, - and .");
+        }
+        if !self.label_ix.contains_key(s) && self.labels.len() >= MAX_LABELS {
+            return err(pos, "a script names at most 64 labels");
         }
         Self::intern(&mut self.labels, &mut self.label_ix, s, pos)
     }
@@ -680,7 +698,12 @@ impl<'s> Cx<'s> {
         } else {
             let tys = ev.args();
             if args.len() != tys.len() {
-                return err(pos, format!("on {event} takes {} arguments", tys.len()));
+                let names: Vec<&str> = tys.iter().map(|t| t.name()).collect();
+                let s = if tys.len() == 1 { "" } else { "s" };
+                return err(
+                    pos,
+                    format!("on {event} takes {} argument{s} ({})", tys.len(), names.join(", ")),
+                );
             }
             for (name, &ty) in args.iter().zip(tys) {
                 let r = f.alloc(ty, pos)?;
@@ -1350,6 +1373,9 @@ impl<'s> Cx<'s> {
             self.inline(f, decl, args, pos)?;
             return Ok(None);
         }
+        if name == "message" {
+            return self.message(f, args, pos, need_value);
+        }
         let Some(entry) = caps::entry_named(name) else {
             return err(pos, format!("unknown function {name}"));
         };
@@ -1386,6 +1412,50 @@ impl<'s> Cx<'s> {
                 Ok(None)
             }
         }
+    }
+
+    /// `message(to, text)`: `to` is a player, a team or `all` (everyone),
+    /// and picks the entry (`caps::spelled`).
+    fn message(&mut self, f: &mut Fun, args: &'s [Expr], pos: Pos, need_value: bool) -> R<Option<(Reg, Ty)>> {
+        if need_value {
+            return err(pos, "message has no value");
+        }
+        if args.len() != 2 {
+            return err(pos, "message takes 2 arguments: message(to, text)");
+        }
+        let cap = "hud.message";
+        if !self.requires.iter().any(|r| r == cap) {
+            return err(pos, format!("message needs capability {cap}: add it to requires"));
+        }
+        let to = &args[0];
+        let mut regs = Vec::with_capacity(2);
+        let entry = match &to.kind {
+            ExprKind::Name(n) if n == caps::EVERYONE => caps::id::MESSAGE_ALL,
+            ExprKind::None => {
+                return err(to.pos, "message is to a player, a team or all, not none");
+            }
+            _ => {
+                let (r, ty) = self.expr(f, to, None)?;
+                regs.push(r);
+                match ty {
+                    Ty::Player => caps::id::MESSAGE,
+                    Ty::Team => caps::id::MESSAGE_TEAM,
+                    other => {
+                        return err(
+                            to.pos,
+                            format!("message is to a player, a team or all, not {}", self.ty_name(other)),
+                        );
+                    }
+                }
+            }
+        };
+        regs.push(self.expect(f, &args[1], Ty::Text)?);
+        f.emit(Op::Call {
+            entry,
+            args: regs,
+            dst: None,
+        });
+        Ok(None)
     }
 
     /// A capability argument (`forge.place`): its index in `requires`.

@@ -1,7 +1,5 @@
 import { A, useSearchParams } from "@solidjs/router";
 import { For, Show, batch, createEffect, createMemo, createResource, createSignal, on, onCleanup, onMount } from "solid-js";
-import { wsUrl } from "../api/server";
-import type { PlayerKilled } from "../api/types";
 import { GameView } from "../stats/Game";
 import { Panel } from "../stats/Layout";
 import { usDateTime } from "../stats/fmt";
@@ -9,11 +7,12 @@ import { identity } from "../state/identity";
 import { mapTitle } from "../state/gameart";
 import { frameHub, live } from "../state/live";
 import { applyGameSnapshot, initialState } from "../state/reducer";
-import { StreamClient } from "../state/stream";
 import {
   TRAINING_BATCH_COMMAND, comparisonRows, determinismLabel, resultLabel, runsByBatch, scoreLabel, speedLabel, trainingHref, tuningLabel,
   type SimCombat, type SimDetail, type SimFilter, type SimPlayer, type SimRun,
 } from "./simRuns";
+import { BatchWatch, OneMapWatch, streamSimRun } from "./SimWatch";
+import { DEFAULT_WATCH_SPEED } from "./batchWatch";
 
 const REFRESH_MS = 5000;
 
@@ -54,6 +53,8 @@ function RunList(props: { batch: () => string | undefined }) {
   const [filters, setFilters] = createSignal<SimFilter>({});
   const [cursors, setCursors] = createSignal<string[]>([]);
   const [selection, setSelection] = createSignal<SimRun[]>([]);
+  /** The run whose table row the pointer is over, highlighted in the viewer. */
+  const [hoverRun, setHoverRun] = createSignal<string | null>(null);
   const activeBatch = () => filters().batch ?? props.batch() ?? "";
   const [runs, { refetch }] = createResource(
     (): SimFilter => ({ ...filters(), batch: activeBatch(), before: cursors().at(-1), include_options: 1 }),
@@ -121,8 +122,15 @@ function RunList(props: { batch: () => string | undefined }) {
         <Show when={runs.latest?.data} fallback={<Show when={runs.loading}><p>Loading sim runs…</p></Show>}>
           {(page) => (
             <>
+              <Show when={page().items.length > 0}>
+                <Show when={activeBatch()} keyed fallback={
+                  <OneMapWatch runs={page().items} position={page().position} highlight={hoverRun} onEnded={() => void refetch()} />
+                }>
+                  {(id) => <BatchWatch batch={id} runs={page().items} position={page().position} highlight={hoverRun} onEnded={() => void refetch()} />}
+                </Show>
+              </Show>
               <Show when={hasRuns()} fallback={<TrainingEmpty />}>
-                <TrainingRuns runs={page().items} selected={selection().map((run) => run.game_id)} onSelect={pick} />
+                <TrainingRuns runs={page().items} selected={selection().map((run) => run.game_id)} onSelect={pick} onHover={setHoverRun} />
               </Show>
               <Show when={selection().length > 0}>
                 <button class="s-btn" onClick={() => setSelection([])}>Clear comparison</button>
@@ -163,7 +171,7 @@ function RunStatus(props: { run: SimRun }) {
   );
 }
 
-export function TrainingRuns(props: { runs: SimRun[]; selected: string[]; onSelect: (run: SimRun) => void }) {
+export function TrainingRuns(props: { runs: SimRun[]; selected: string[]; onSelect: (run: SimRun) => void; onHover?: (id: string | null) => void }) {
   return (
     <Show when={props.runs.length} fallback={<p>No sim runs match these filters.</p>}>
       <div class="adm-sim-tables">
@@ -174,7 +182,7 @@ export function TrainingRuns(props: { runs: SimRun[]; selected: string[]; onSele
               <table class="s-stats">
                 <thead><tr><th scope="col">Match</th><th scope="col">Bots</th><th scope="col">Result</th><th scope="col">Ticks</th><th scope="col">Speed</th><th scope="col">Compare</th></tr></thead>
                 <tbody><For each={group.runs}>{(run) => (
-                  <tr>
+                  <tr onPointerEnter={() => props.onHover?.(run.game_id)} onPointerLeave={() => props.onHover?.(null)}>
                     <td>
                       <A href={trainingHref(run.game_id, group.id ?? undefined)}>{mapTitle(run.map)} · {run.sim.gametype}</A>
                       <small>{usDateTime(run.started_at)}</small>
@@ -259,28 +267,7 @@ function RunDetail(props: { id: string }) {
     },
     (id) => {
       if (!id) return;
-      const api = live.api();
-      const stream = new StreamClient({
-        url: (from) => wsUrl(api.streamUrl(from, true, id)),
-        auth: api.readToken,
-        connect: (url) => {
-          const socket = new WebSocket(url);
-          socket.binaryType = "arraybuffer";
-          return socket as unknown as import("../state/stream").SocketLike;
-        },
-      }, {
-        onEvent: (event) => {
-          if (event.type === "GameEnded") void refetch();
-          if (event.type === "PlayerKilled") {
-            const kill = event.data as PlayerKilled;
-            frameHub.get(id).addDeath(kill.victim, kill.tick, performance.now(), kill.pos);
-          }
-        },
-        onFrame: (frame) => { if (frame.game_id === id) frameHub.push(frame, performance.now()); },
-        onCaughtUp: () => {},
-      });
-      stream.start(detail()?.game.position ?? null);
-      onCleanup(() => stream.stop());
+      onCleanup(streamSimRun(id, detail()?.game.position ?? null, () => void refetch()));
     },
   ));
   onCleanup(() => frameHub.drop(props.id));
@@ -295,7 +282,7 @@ function RunDetail(props: { id: string }) {
             <RunReport detail={found()} />
             <Show when={!(found().run.status === "running" && found().run.sim.deferred)}
               fallback={<p class="adm-note">The replay will be available after this match finishes.</p>}>
-              <Show when={game()}>{(g) => <div class="s-game"><GameView game={g()} embedded focus={() => Object.values(g().players).find(p => p.bot)?.index ?? null} /></div>}</Show>
+              <Show when={game()}>{(g) => <div class="s-game"><GameView game={g()} embedded speed={DEFAULT_WATCH_SPEED} focus={() => Object.values(g().players).find(p => p.bot)?.index ?? null} /></div>}</Show>
             </Show>
             <BotStats detail={found()} />
           </>

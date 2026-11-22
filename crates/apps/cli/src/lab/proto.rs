@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 
 /// Protocol version, in `status`.
@@ -41,6 +41,10 @@ pub const RUN_ENV: &[&str] = &[
     "H2_FEATURES",
     "H2_LOCKSTEP_TICKS",
     "H2_ICONS",
+    // Sim jobs: the warm Z: template and the bots' think mode, for A/B arms.
+    "H2_SIM_CACHE_TEMPLATE",
+    "H2_BOT_THREADS",
+    "H2_BOT_PIPELINE",
 ];
 
 /// `H2_PIPELINE_CACHE` values a request may pass: `off`, or
@@ -143,6 +147,67 @@ pub struct RunReq {
     pub serve: bool,
 }
 
+/// One arm of a sim benchmark: a name (a path component, it names the
+/// arm's step directories) and the `H2_FEATURES` value its runs get. No
+/// `features` leaves the variable as the request's `env` has it.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct SimArm {
+    pub name: String,
+    pub features: Option<String>,
+}
+
+/// A sim benchmark job (`h2 lab sim`, docs/runtime/lab.md, "Sim
+/// benchmarks"): `h2 sim run` or `h2 sim batch` of one uploaded file, once
+/// per arm and repeat.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct SimReq {
+    /// Human-readable job label. Never used as a path.
+    pub name: String,
+    /// The entry file's key in `files`: a match file, or a batch file when
+    /// `batch`.
+    pub file: String,
+    pub batch: bool,
+    /// The entry file and the tuning files it names, by path relative to
+    /// their common directory.
+    pub files: BTreeMap<String, String>,
+    /// The bots' data for the maps the match or batch names, as hex under
+    /// `bots/<file>` (`.bots` and `.vis`, from the driving Mac's data root).
+    /// The host puts them in the job's data root. Empty (an older client)
+    /// runs on the host's own data.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub data: BTreeMap<String, String>,
+    pub arms: Vec<SimArm>,
+    /// Runs of each arm, interleaved (`simbench::schedule`).
+    pub repeat: u32,
+    /// Matches at once in a batch. Absent: one at a time, since these are
+    /// benchmarks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parallel: Option<usize>,
+    /// Run environment from [`RUN_ENV`], set on every run before the arm's
+    /// `H2_FEATURES`.
+    pub env: BTreeMap<String, String>,
+    pub build: BuildSpec,
+    /// Footprint cap on the sim process, in bytes. Absent selects the host
+    /// default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mem_limit: Option<u64>,
+    pub note: Option<String>,
+}
+
+/// Most arms a sim benchmark compares.
+pub const SIM_ARMS_MAX: usize = 8;
+/// Most repeats of each arm.
+pub const SIM_REPEAT_MAX: u32 = 100;
+/// Most files, and most bytes of them, one sim request carries.
+pub const SIM_FILES_MAX: usize = 64;
+pub const SIM_BYTES_MAX: usize = 2 << 20;
+/// Most files, and most bytes (before hex) of bot data one sim request
+/// carries. Hex-encoded with the files it stays under `REQUEST_MAX`.
+pub const SIM_DATA_FILES_MAX: usize = 64;
+pub const SIM_DATA_MAX: usize = 60 << 20;
+
 /// A recording's manifest (`recordings/<name>/manifest.json`). A recording
 /// is a directory so a machine snapshot can join the input later
 /// (`snapshot`, empty until agent API phase 5 exists).
@@ -214,6 +279,8 @@ pub enum Request {
         bytes: u64,
     },
     Run(RunReq),
+    /// A sim benchmark (`h2 sim` per arm and repeat, on the lab's image).
+    Sim(SimReq),
     Build(BuildSpec),
     Wait {
         id: String,
@@ -289,6 +356,9 @@ pub fn parse(line: &str) -> Result<Request> {
     if let Request::Run(run) = &mut r {
         run.name = job_name(&run.name)?.into();
     }
+    if let Request::Sim(sim) = &mut r {
+        sim.name = job_name(&sim.name)?.into();
+    }
     validate(&r)?;
     Ok(r)
 }
@@ -311,6 +381,7 @@ pub fn validate(r: &Request) -> Result<()> {
             Ok(())
         }
         Request::Run(run) => validate_run(run),
+        Request::Sim(sim) => validate_sim(sim),
         Request::Build(b) => validate_build(b),
         Request::Wait { id, timeout } => {
             check_name("id", id)?;
@@ -498,6 +569,99 @@ pub fn validate_run(r: &RunReq) -> Result<()> {
         ensure!(n.len() <= 1024, "note over 1024 bytes");
     }
     validate_build(&r.build)
+}
+
+/// One uploaded sim file's key: a relative `/` path of plain components,
+/// so it stays inside the step's input directory.
+pub fn check_sim_path(key: &str) -> Result<()> {
+    ensure!(
+        key.len() <= 200 && !key.is_empty(),
+        "sim file {key:?} must be a relative path of at most 200 bytes"
+    );
+    for part in key.split('/') {
+        check_name("sim file path component", part)?;
+    }
+    Ok(())
+}
+
+/// One uploaded bot data file's key: `bots/<name>.bots` or `.vis`, `name`
+/// a plain component (`bots::cache::file_name` makes them).
+pub fn check_sim_data_key(key: &str) -> Result<()> {
+    let name = key
+        .strip_prefix("bots/")
+        .with_context(|| format!("sim data {key:?} must be bots/<file>"))?;
+    ensure!(
+        name.ends_with(".bots") || name.ends_with(".vis"),
+        "sim data {key:?} must be a .bots or .vis file"
+    );
+    check_name("sim data file name", name)
+}
+
+pub fn validate_sim(s: &SimReq) -> Result<()> {
+    job_name(&s.name)?;
+    check_sim_path(&s.file)?;
+    ensure!(
+        s.files.contains_key(&s.file),
+        "sim file {:?} is not among the uploaded files",
+        s.file
+    );
+    ensure!(
+        s.files.len() <= SIM_FILES_MAX,
+        "more than {SIM_FILES_MAX} sim files"
+    );
+    for key in s.files.keys() {
+        check_sim_path(key)?;
+    }
+    ensure!(
+        s.files.values().map(String::len).sum::<usize>() <= SIM_BYTES_MAX,
+        "sim files over {} MiB",
+        SIM_BYTES_MAX >> 20
+    );
+    ensure!(
+        s.data.len() <= SIM_DATA_FILES_MAX,
+        "more than {SIM_DATA_FILES_MAX} sim data files"
+    );
+    for (key, hex) in &s.data {
+        check_sim_data_key(key)?;
+        ensure!(hex.len() % 2 == 0, "sim data {key:?} is not hex");
+    }
+    ensure!(
+        s.data.values().map(|h| h.len() / 2).sum::<usize>() <= SIM_DATA_MAX,
+        "sim data over {} MiB",
+        SIM_DATA_MAX >> 20
+    );
+    ensure!(
+        (1..=SIM_ARMS_MAX).contains(&s.arms.len()),
+        "a sim benchmark has 1 to {SIM_ARMS_MAX} arms"
+    );
+    let mut seen = std::collections::BTreeSet::new();
+    for arm in &s.arms {
+        check_name("arm", &arm.name)?;
+        ensure!(seen.insert(arm.name.as_str()), "arm {:?} is named twice", arm.name);
+        if let Some(f) = &arm.features {
+            check_value("H2_FEATURES", f)?;
+        }
+    }
+    ensure!(
+        (1..=SIM_REPEAT_MAX).contains(&s.repeat),
+        "--repeat is 1 to {SIM_REPEAT_MAX}"
+    );
+    if let Some(p) = s.parallel {
+        ensure!(s.batch, "--parallel applies to a batch file");
+        ensure!((1..=64).contains(&p), "--parallel is 1 to 64");
+    }
+    for (k, v) in &s.env {
+        ensure!(
+            RUN_ENV.contains(&k.as_str()),
+            "{k} is not a run variable the lab passes (allowed: {})",
+            RUN_ENV.join(" ")
+        );
+        check_value(k, v)?;
+    }
+    if let Some(n) = &s.note {
+        ensure!(n.len() <= 1024, "note over 1024 bytes");
+    }
+    validate_build(&s.build)
 }
 
 pub fn validate_build(b: &BuildSpec) -> Result<()> {
@@ -950,5 +1114,115 @@ mod tests {
         })
         .unwrap();
         assert_eq!(v["film"], "f");
+    }
+
+
+    fn sim_value() -> serde_json::Value {
+        serde_json::json!({
+            "cmd": "sim", "name": " Lockout A/B ", "file": "m.toml",
+            "files": {"m.toml": "map = 1"},
+            "arms": [
+                {"name": "on", "features": "impl.sim.native"},
+                {"name": "off", "features": "-impl.sim.native"},
+            ],
+            "repeat": 3,
+        })
+    }
+
+    /// The request with `edit` applied, as the host would parse it.
+    fn sim_with(edit: impl FnOnce(&mut serde_json::Value)) -> Result<Request> {
+        let mut v = sim_value();
+        edit(&mut v);
+        parse(&v.to_string())
+    }
+
+    fn sim_error(edit: impl FnOnce(&mut serde_json::Value)) -> String {
+        sim_with(edit).unwrap_err().to_string()
+    }
+
+    #[test]
+    fn a_sim_request_parses_and_trims_its_name() {
+        let Request::Sim(s) = sim_with(|_| {}).unwrap() else { panic!() };
+        assert_eq!(s.name, "Lockout A/B");
+        assert_eq!(s.arms[1].features.as_deref(), Some("-impl.sim.native"));
+        assert_eq!(s.repeat, 3);
+        assert!(!s.batch && s.parallel.is_none());
+        // Unset options are not sent, so the wire form stays small.
+        let v = serde_json::to_value(&s).unwrap();
+        assert!(v.get("parallel").is_none() && v.get("mem_limit").is_none());
+    }
+
+    #[test]
+    fn a_sim_request_is_checked_before_a_job_exists() {
+        use serde_json::json;
+        assert!(sim_error(|v| v["repeat"] = json!(0)).contains("--repeat"));
+        assert!(sim_error(|v| v["repeat"] = json!(101)).contains("--repeat"));
+        assert!(sim_error(|v| v["parallel"] = json!(2)).contains("batch"));
+        assert!(sim_error(|v| {
+            v["batch"] = json!(true);
+            v["parallel"] = json!(0);
+        })
+        .contains("--parallel"));
+        assert!(sim_error(|v| v["env"] = json!({"H2_SIM": "/etc/x"})).contains("not a run variable"));
+        assert!(sim_error(|v| v["build"] = json!({"features": ["x"]})).contains("unknown feature"));
+        // Files are plain relative paths that exist in the upload.
+        assert!(sim_error(|v| v["file"] = json!("../m.toml")).contains("must be 1-64"));
+        assert!(sim_error(|v| v["file"] = json!("n.toml")).contains("not among"));
+        assert!(
+            sim_error(|v| v["files"] = json!({"m.toml": "x", "/etc/passwd": "y"}))
+                .contains("must be 1-64")
+        );
+        assert!(
+            sim_error(|v| v["files"] = json!({"m.toml": "x", "a/../b": "y"}))
+                .contains("must be 1-64")
+        );
+        assert!(sim_error(|v| v["arms"][1]["name"] = json!("on")).contains("named twice"));
+        assert!(sim_error(|v| v["arms"] = json!([])).contains("1 to 8 arms"));
+        assert!(
+            sim_error(|v| v["files"]["m.toml"] = json!("x".repeat(SIM_BYTES_MAX + 1)))
+                .contains("MiB")
+        );
+        // The build's variables still need a rev, as for a run.
+        assert!(
+            sim_error(|v| v["build"] = json!({"env": {"H2_OPT": "2"}}))
+                .contains("need a branch or commit")
+        );
+        sim_with(|v| {
+            v["build"] = json!({"rev": "main", "env": {"H2_OPT": "2"}});
+            v["env"] = json!({"H2_FEATURES": "x"});
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn a_sim_requests_bot_data_is_plain_bots_files_under_a_cap() {
+        use serde_json::json;
+        let Request::Sim(s) = sim_with(|v| {
+            v["data"] = json!({"bots/lockout.0.bots": "00ff", "bots/lockout.0.vis": "ab"});
+        })
+        .unwrap() else {
+            panic!()
+        };
+        assert_eq!(s.data.len(), 2);
+        for bad in [
+            "lockout.0.bots",
+            "bots/../x.bots",
+            "bots/a/b.bots",
+            "bots/lockout.0.exe",
+            "/bots/x.bots",
+            "bots/.hidden.bots",
+        ] {
+            let e = sim_error(|v| v["data"] = json!({ bad: "00" }));
+            assert!(e.contains("sim data"), "{bad}: {e}");
+        }
+        assert!(sim_error(|v| v["data"] = json!({"bots/a.0.bots": "abc"})).contains("not hex"));
+        let many: serde_json::Map<String, serde_json::Value> = (0..=SIM_DATA_FILES_MAX)
+            .map(|i| (format!("bots/m{i}.0.bots"), json!("00")))
+            .collect();
+        assert!(sim_error(|v| v["data"] = many.into()).contains("sim data files"));
+        let Request::Sim(mut s) = sim_with(|_| {}).unwrap() else { panic!() };
+        s.data.insert("bots/a.0.bots".into(), "00".repeat(SIM_DATA_MAX + 1));
+        let e = validate_sim(&s).unwrap_err().to_string();
+        assert!(e.contains("sim data over 60 MiB"), "{e}");
     }
 }

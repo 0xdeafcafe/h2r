@@ -22,8 +22,10 @@
 //! transport delay (`phantom::action`).
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
+use std::time::Instant;
 
 use engine::memory::GuestMemory;
 use input::host::HostPadState;
@@ -66,6 +68,34 @@ pub const PIPELINE_ENV: &str = "H2_BOT_PIPELINE";
 
 /// The most workers asked for by number.
 pub const MAX_THREADS: usize = 32;
+
+/// Nanoseconds the game thread has spent sampling phantom pads, in any
+/// [`Mode`], since the process began: the read, think and conclude phases
+/// that run on it, and the wait for workers. A think that runs on a worker
+/// is not in it. `h2 sim` reports the delta over a match as
+/// `wall.bots_ms_per_tick`.
+static GAME_THREAD_NS: AtomicU64 = AtomicU64::new(0);
+
+/// [`GAME_THREAD_NS`]'s value now.
+pub fn game_thread_ns() -> u64 {
+    GAME_THREAD_NS.load(Ordering::Relaxed)
+}
+
+/// Adds the time from its creation to its drop to [`GAME_THREAD_NS`].
+pub(crate) struct GameThreadTimer(Instant);
+
+impl GameThreadTimer {
+    pub(crate) fn start() -> Self {
+        Self(Instant::now())
+    }
+}
+
+impl Drop for GameThreadTimer {
+    fn drop(&mut self) {
+        let ns = u64::try_from(self.0.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        GAME_THREAD_NS.fetch_add(ns, Ordering::Relaxed);
+    }
+}
 
 fn auto_threads() -> usize {
     std::thread::available_parallelism()
@@ -468,6 +498,7 @@ impl Thinker {
         guest: &dyn GuestMemory,
         seats: &[Seat<'_>],
     ) -> Vec<Report> {
+        let _timer = GameThreadTimer::start();
         match self.mode {
             Mode::Serial => {
                 self.settle();

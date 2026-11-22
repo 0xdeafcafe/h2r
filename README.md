@@ -4,11 +4,11 @@
 
 # h2recomp
 
-h2recomp recompiles the original Xbox version of Halo 2 to native code.
-The recompiler lifts the retail executable from your disc into an
-intermediate representation. Cranelift compiles the fast-start image, and
-clang builds the optimised image from generated C11. A Rust runtime supplies
-the Xbox kernel, graphics and audio services. [Architecture](docs/ARCHITECTURE.md)
+Halo 2. The original Xbox one, from 2004. Recompiled into a native Mac app, no emulator in sight.
+
+The XBE gets lifted to C, all 18,700-odd functions of it, and clang compiles the lot into a native library. A Rust runtime stands in for the Xbox underneath: kernel, Direct3D and DirectSound all swapped out, with a native GPU renderer drawing the frame on Metal.
+
+Then I kept going. Xbox Live is back, there are bots, there's Forge and Firefight, and Halo 1 runs in the Halo 2 engine.
 
 <p align="center">
   <img src="docs/images/readme/oldmombasa-4x.jpg" alt="Old Mombasa at 4x render scale" width="32%">
@@ -16,34 +16,46 @@ the Xbox kernel, graphics and audio services. [Architecture](docs/ARCHITECTURE.m
   <img src="docs/images/readme/ascension-4x.jpg" alt="Ascension at 4x render scale" width="32%">
 </p>
 
-You'll need your own legally obtained copy of the game. The documentation images are rendered from my disc by scripts and kept in Git LFS. [How the README media is made](CONTRIBUTING.md#readme-media).
+## Why it's sick
 
-h2recomp was created under Microsoft's "[Game Content Usage Rules](https://www.xbox.com/en-US/developers/rules)" using assets from Halo 2 and Halo: Combat Evolved, and it is not endorsed by or affiliated with Microsoft. Halo © Microsoft Corporation. This is a free, non-commercial fan project.
+- **60 and 120 fps** over a game that ticks at 30, any resolution or aspect, ultrawide included, and a render scale up to 6x. [High frame rate](docs/game/high-framerate.md) · [resolution](docs/graphics/high-resolution.md)
+- **A native GPU renderer.** Scene lists built in Rust, geometry kept on the GPU between frames, and the game's own draw handlers skipped. On by default. [Renderer](docs/graphics/native-renderer.md)
+- **Xbox Live is back.** Microsoft shut it off in 2010, so I wrote a new one. Gamertags, friends, Teams, invites, OptiMatch, Ranked, the custom games browser with filters, and cloud saves. Self-hosted, running at [live.forbes.red](https://live.forbes.red). [Live](docs/live/live.md)
+- **One lobby for everything.** Multiplayer, Custom Games, Forge, Firefight and Co-op are tabs in one party lobby. Pick a game with Clankers or without from the same Multiplayer page, set the Clankers up in Custom Games, Forge and Firefight, and tune the match in the Tweakers menu. [Party lobby](docs/game/party-lobby.md)
+- **Co-op campaign over Live.** Retail only ever did split screen on one console. [Co-op](docs/live/live-coop.md)
+- **Dedicated hosts.** Live matches run on small hosts that start for a match and stop after. The host image carries native code only for what a match actually runs, so it stays tiny. [Dedicated hosts](docs/live/dedicated-host.md)
+- **A dashboard and h2 Uplink.** The Live dashboard looks like the original Xbox one. [Uplink](https://live.forbes.red/games/halo2) is the stats site, with proper mid-2000s Bungie.net vibes: service records, carnage reports, the Medal Chest, leaderboards, and a 3D game viewer that watches matches live or replays them after. Medals come from the server's own record of each match, under their official names. [Web app](docs/live/web-app.md) · [3D viewer](docs/live/web-viewer.md)
+- **Theater.** Films recorded by dedicated hosts or with `h2 play --film`, played back through the game's own renderer with director cameras and seeking. [Theater](docs/game/theater.md)
+- **Clankers.** Bots that join as phantom players, so every controller port stays free for an actual person. A Clanker's gamertag picks its emblem, colours and personality, they hold still through the round intro like a person would, and Clankermatch is a whole matchmaking playlist of them. [Bots](docs/game/bots.md)
+- **Forge and Firefight.** Edit a multiplayer map in game as the monitor, save it as a map package and share it over Live. Firefight throws waves of the campaign's AI at you on multiplayer maps. [Forge](docs/game/forge-editing.md) · [Firefight](docs/game/firefight.md)
+- **Superbounce.** The engine's famous bug, measured, scored with a medal and a HUD line, and with ghost runs to chase. [Superbounce](docs/game/superbounce.md)
+- **Game types as scripts.** A small rules language for new game types, checked against a tick budget before it ships. [Rules engine](docs/game/rules-engine.md)
+- **Mods and map packs.** Maps as packages with their own slots, a Mods screen in the game, and joining a Live lobby fetches whatever layers you're missing. The Multiplayer Map Pack installs too. [Maps](docs/game/maps.md) · [Map Pack](docs/game/map-pack.md)
+- **13 community game variants** built in, Zombies and SWAT included, plus [Skulls](docs/game/skulls.md) per profile and a few of our own. [Variants](docs/game/community-gametypes.md)
+- **Halo 1 in the Halo 2 engine.** All 13 Halo 1 multiplayer maps, and the campaign levels converted with Halo 1's health model. The campaign converts and boots, nobody's played one through yet. [Campaign](docs/halo1/campaign.md) · [multiplayer](docs/halo1/multiplayer.md)
+- **An editor suite.** `h2-editor` is a Sapien-style scenario editor: move things around a map in 3D, edit any field of any tag, build game variants and the 16 matchmaking playlists. It reads Halo 1 maps too. Pair it with the running game and your placement edits go straight across. [Editor guide](docs/editor/editor-guide.md) · [paired editing](docs/editor/live-mirror.md)
+- **An agent API.** `h2 serve` runs the game with a JSON-RPC socket, and `h2 agent` asks it what's in the level and where the frame time went, presses buttons, waits for things to happen, and saves and restores state. No squinting at screenshots. [Agent API](docs/runtime/agent-api.md)
+- **iPhone, iPad, Apple TV and Linux.** Touch controls on iOS, and a Steam Deck build. The Apple TV one is still slow. [iOS](docs/runtime/ios.md) · [tvOS](docs/runtime/tvos.md) · [SteamOS](docs/runtime/steamos.md)
 
-## Play it
+Everything, with what's only partly done and the measured speed numbers, is in [docs/features.md](docs/features.md).
 
-**1. Get your ISO.** Use an XISO or a full Redump image of your Halo 2
-disc. Save it as `disc/halo2.iso` inside the checkout once you've cloned
-it below. The checkout ignores `disc/`.
+## Run it
 
-**2. Install the CLI on Mac.** Install Rust through rustup and have clang
-on your PATH. The checkout's `rust-toolchain.toml` selects the Rust toolchain.
+You need:
+
+- A Halo 2 disc image of your own. XISO or a full Redump image both work.
+- A Mac with Apple silicon.
+- Rust via rustup (`rust-toolchain.toml` pins the version) and clang on your `PATH`.
+
+Put the image in `disc/`, which is git-ignored. `cp -c` clones it without using any extra space. Got the Multiplayer Map Pack or Halo 1 discs too? Drop them in beside it as `mappack.iso` and `halo1.iso` and they're imported on the first run.
 
 ```sh
-git clone https://github.com/0xdeafcafe/h2r
-cd h2r
+git clone https://github.com/0xdeafcafe/h2r && cd h2r
+mkdir -p disc && cp -c ~/Downloads/your.iso disc/halo2.iso
 cargo install --locked --path crates/apps/cli
 ```
 
-```sh
-mkdir -p disc
-cp -c ~/Downloads/your.iso disc/halo2.iso
-```
-
-For the Multiplayer Map Pack and Halo 1, place your disc images beside
-it as `mappack.iso` and `halo1.iso`. The player imports them on launch.
-
-**3. Play.**
+Then play:
 
 ```sh
 h2 play disc/halo2.iso
@@ -51,87 +63,46 @@ h2 play disc/halo2.iso --live
 h2 play disc/halo2.iso --level ascension
 ```
 
-The first launch uses Cranelift to build a fast-start image, then clang
-builds the full-speed image in the background. The window tells you when
-the clang build is ready. Restart to use it. Later launches reuse a
-matching cached image in `$TMPDIR/h2boot`.
-[Fast-start design](docs/lifter/cranelift-tier.md) · [player options](docs/runtime/app.md)
+The first run starts on a quick Cranelift build of the game while clang builds the full-speed one in the background; the window tells you when it's ready, and every run after that reuses it from `$TMPDIR/h2boot`. WASD and the mouse to move and look, Enter is A, Escape is Start, Cmd+F for fullscreen. `--follow` keeps you on the latest master, building each new commit in the background. Every flag is in [docs/runtime/app.md](docs/runtime/app.md). [Fast start](docs/lifter/cranelift-tier.md)
 
-WASD and the mouse move and look. Enter is A, Escape is Start and Cmd+F
-toggles fullscreen. `h2 play --follow` builds new commits in the background
-and offers a restart when one is ready.
+Want **Join in Halo 2** links on the Live site to open the game? `just mac-install iso=disc/halo2.iso` installs `~/Applications/Halo 2.app` and remembers where your disc is.
 
-On macOS, run `just mac-install iso=disc/halo2.iso` after installing the CLI
-to open **Join in Halo 2** links from the Live website. It installs
-`~/Applications/Halo 2.app` and remembers where your disc is. Run the
-recipe again after updating the CLI or moving the disc.
-
-## What you can play and use
-
-On Mac, you can play the Halo 2 campaign, local multiplayer and online
-matches. The iPhone and iPad app has touch controls. The Apple TV app
-plays its bundled levels at reduced performance.
-[Platform guide](docs/runtime/building.md)
-
-- **Any resolution or aspect.** Native follows the window or display in physical pixels and keeps its aspect within a 4K pixel budget. Set a fixed width and height in Video settings. The native GPU renderer supports ultrawide views, and the game redraws during live window resize. [Resolution and aspect](docs/graphics/high-resolution.md) · [renderer](docs/graphics/native-renderer.md)
-- **Higher frame rates.** The game simulates at 30 Hz. The player offers 60 and 120 fps presentation, with in-between frame work in progress. [High frame rate](docs/game/high-framerate.md) · [measured performance](docs/features.md#speed)
-- **Classic maps and modes.** Import the Multiplayer Map Pack from your disc. Convert all 13 Halo 1 multiplayer maps and the Halo 1 campaign from your Halo 1 disc. Campaign conversion and boot work, with full playthroughs still unverified. Custom games include community variants such as Zombies and SWAT. [Map Pack](docs/game/map-pack.md) · [Halo 1 campaign](docs/halo1/campaign.md) · [Halo 1 multiplayer](docs/halo1/multiplayer.md) · [variants](docs/game/community-gametypes.md)
-- **Clankers and Firefight.** Clankers join hosted matches as network peers. Firefight and networking for campaign-style AI are in progress. [Clankers](docs/game/bots.md)
-- **Theater.** Record films on a dedicated host or with `h2 play --film`. The in-game library opens host films with the game's renderer, director cameras and playback controls. Seeking uses compatible keyframes when available, and replay tools report timing, tape size and determinism checks. Real-host verification is still pending. [Theater](docs/game/theater.md) · [film format](docs/game/film-format.md)
-- **Forge.** `h2 forge check` validates a Forge document against your disc, and `h2 forge build` turns it into a local map package. The in-game monitor and editing tools are planned. [Forge design](docs/game/forge-design.md)
-- **Skulls and settings.** Campaign skulls are saved per profile, and the game has settings screens for video, controls, field of view and voice. [Skulls](docs/game/skulls.md) · [settings](docs/game/settings-menu.md)
-
-## Live, and the stats site
-
-Xbox Live for the original Xbox shut down in 2010, so I wrote a new one. It runs at **[live.forbes.red](https://live.forbes.red)**, and `h2 play --live` signs you in to it.
-
-Live has gamertags, friends, teams, invites, matchmaking with served
-playlists, online campaign co-op and cloud saves. The **Custom Game Browser**
-lists joinable games. Press Y to filter by map category, variant, open
-seats, Clankers or co-op difficulty. Dedicated hosting is in progress.
-[Browser and filters](docs/live/live-custom-games.md) · [co-op](docs/live/live-coop.md)
-
-There's a web app beside it: a dashboard in the style of the original Xbox one, and a stats site in the style of Bungie.net's Halo 2 and 3 stats pages. It shows who's online, games as they happen on a live top-down map with the scoreboard and kill feed, replays of finished games and the ranks.
-
-You can run your own too: `h2 live serve` on a Mac, Docker behind a Cloudflare Tunnel, or Cloudflare Workers. [Live](docs/live/live.md) · [hosting](docs/live/live-hosting.md) · [Workers](docs/live/live-worker.md) · [web app](web/README.md)
-
-## The editor and the agent API
-
-`h2-editor` is a native map and variant editor in the spirit of Sapien.
-Open a map from your disc, edit placements in 3D, inspect and edit tags
-and HUDs, and make variants and playlists. A paired game can show live
-world state and accept supported edits during offline play. The editor
-also reads Halo 1 maps. [Editor guide](docs/editor/editor-guide.md) ·
-[paired editing](docs/editor/live-mirror.md)
+The editor:
 
 ```sh
 cargo run --release -p studio -- --disc disc/halo2.iso
 ```
 
-The agent API is how a script, a test or a coding agent reads and drives the running game without squinting at screenshots. `h2 serve` runs the game with a JSON-RPC socket, and `h2 agent` asks it what's in the level, where the frame time goes and what the menus show, presses buttons, waits for things to happen, and saves and restores state. [Agent API](docs/runtime/agent-api.md) · [the editor's](docs/editor/agent-api.md)
+Poke the running game from a script:
 
 ```sh
 h2 agent status
 h2 agent query '{"kind":["actor"],"near":{"player":0,"radius":30},"fields":["pos","team"]}'
 ```
 
-`h2 lab` uses the agent API over SSH to build a branch and run it on a
-second Mac, replay inputs, and collect frame timings, profiles and logs.
-[Lab guide](docs/runtime/lab.md)
+`h2 lab` does the same on a second Mac: build a branch there, replay inputs, and bring back frame timings, profiles and logs. [Lab](docs/runtime/lab.md)
 
-## Rendering
+Want your own Live? `h2 live serve` on a Mac, Docker behind a Cloudflare Tunnel, or Cloudflare Workers. [Hosting](docs/live/live-hosting.md) · [Workers](docs/live/live-worker.md) · [web app](web/README.md)
 
-The native renderer builds scene lists in Rust and draws them with wgpu.
-The Direct3D path handles draws the native renderer does not cover.
-[Native renderer](docs/graphics/native-renderer.md)
+## How it works
+
+The XBE is analysed, every function is lifted from x86 to an IR and emitted as C11, and clang builds that into a library. Nobody edits the generated code by hand, it's always regenerated. The Rust runtime underneath replaces the Xbox kernel, XAPI, Direct3D 8 and DirectSound on a deterministic logical clock, and renders through wgpu on Metal. The native renderer skips the game's own draw handlers and falls back to the D3D path for anything it can't take yet. Bit by bit, the hot parts of the game get rewritten in Rust, overriding the lifted function at the same address.
 
 <p align="center">
   <img src="docs/images/readme/render-pipeline.svg" alt="Render pipeline before and after: guest front-end, D3D translate, two copies; then native scene lists and one native render" width="100%">
 </p>
 
-## Building from source
+The deep dives:
 
-The root `justfile` builds every target from your disc (`brew install just`):
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md): the whole design, end to end
+- [LIFTER.md](docs/lifter/LIFTER.md): x86 to IR to C11
+- [native-renderer.md](docs/graphics/native-renderer.md): the GPU renderer
+- [live.md](docs/live/live.md): the Xbox Live replacement
+- [docs/README.md](docs/README.md): every doc, grouped by area
+
+## Building everything
+
+The root `justfile` builds every target (`brew install just`):
 
 ```sh
 just doctor          # what each target needs and what's missing
@@ -141,7 +112,7 @@ just ios maps=all    # the iPhone/iPad app with every map and the map pack
 just check           # fmt, clippy and tests, as before a push
 ```
 
-`cargo h2 <command>` runs the CLI straight from the checkout. Every recipe, the full command list and Ghidra are in [docs/runtime/building.md](docs/runtime/building.md), and [CONTRIBUTING.md](CONTRIBUTING.md) has the rules (the main one: no game data, ever).
+`cargo h2 <command>` runs the CLI straight from the checkout. Every recipe is in [docs/runtime/building.md](docs/runtime/building.md), and [CONTRIBUTING.md](CONTRIBUTING.md) has the rules. The main one: no game data, ever.
 
 On Linux, [Buck2](https://buck2.build) builds everything inside a [devenv](https://devenv.sh) shell. Tell it where your disc is in `.buckconfig.local` (an ISO or a `.7z` holding one):
 
@@ -152,21 +123,16 @@ On Linux, [Buck2](https://buck2.build) builds everything inside a [devenv](https
 
 Then `devenv shell` and `buck2 run //platform/linux:play`. A Steam Machine or Steam Deck in Developer Mode gets the game with `buck2 run //platform/steamos:run`. [docs/runtime/steamos.md](docs/runtime/steamos.md) has the details.
 
-## Docs
-
-[docs/README.md](docs/README.md) is the index, every doc grouped by area. Good places to start:
-
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md): the design, end to end
-- [features.md](docs/features.md): every feature with its state, the speed numbers and the roadmap
-- [LIFTER.md](docs/lifter/LIFTER.md): x86 analysis, lifting and code generation
-- [native-renderer.md](docs/graphics/native-renderer.md): the GPU renderer
-- [live.md](docs/live/live.md): the Xbox Live replacement
-- [editor-guide.md](docs/editor/editor-guide.md) and [agent-api.md](docs/runtime/agent-api.md): the tools
-
 ## Thanks
 
-Thanks to [Assembly](https://github.com/XboxChaos/Assembly) by XboxChaos for the tag layouts our tag field names are based on.
+To [Assembly](https://github.com/XboxChaos/Assembly) by XboxChaos, for the tag layouts our tag field names are based on.
 
-## License
+## The legal bit
 
-The code here is under the [WTFPL](LICENSE). It covers this repository's own code, never Halo 2: the disc, its maps and everything derived from them stay yours to supply.
+h2recomp is a free, non-commercial fan project. It is not affiliated with, endorsed by or sponsored by Microsoft, Xbox Game Studios, Bungie, 343 Industries or Halo Studios. Halo © Microsoft Corporation. All trademarks belong to their owners.
+
+h2recomp was created under Microsoft's "[Game Content Usage Rules](https://www.xbox.com/en-US/developers/rules)" using assets from Halo 2 and Halo: Combat Evolved, and it is not endorsed by or affiliated with Microsoft.
+
+No game data is in this repository: no executables, maps, textures, sounds or other copyrighted content from Halo 2 or Halo: Combat Evolved. To play, you need your own legally obtained copy of the game, and h2recomp builds everything from that disc image on your machine. The only screenshots here are the docs' own, rendered from my disc by scripts and stored in Git LFS. [How the README media is made](CONTRIBUTING.md#readme-media)
+
+The code here is under the [WTFPL](LICENSE). It covers this repository's own code, never Halo 2: the disc, its maps and everything derived from them stay yours to supply. Fonts bundled with the editor keep their own licences, alongside them in [crates/apps/studio/assets/fonts](crates/apps/studio/assets/fonts).

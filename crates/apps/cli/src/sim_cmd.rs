@@ -22,6 +22,7 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
+mod cache_template;
 mod cloud;
 
 const USAGE: &str = "usage:
@@ -255,6 +256,45 @@ impl Common {
 const LIVE_SIM_SLOTS: usize = 2;
 const BATCH_ID_ENV: &str = "H2_SIM_BATCH_ID";
 const BATCH_LOCKS_ENV: &str = "H2_SIM_BATCH_LOCKS";
+/// Set by `h2 sim batch` on each local child: the children are already
+/// side by side, so they keep the serial brain unless the match or the
+/// environment says otherwise.
+const BATCH_CHILD_ENV: &str = "H2_SIM_BATCH_CHILD";
+
+/// What `h2 sim run` sets for the bot think mode (`bots::think::Mode`),
+/// as the values of `H2_BOT_THREADS` and `H2_BOT_PIPELINE`; `None` leaves
+/// the variable alone. Per variable, in order: the environment as it is
+/// (`env_*`, `Some` when set at all), the match's `bot_threads` and
+/// `bot_pipeline`, then the default. The default is batched on
+/// `min(phantoms, cores - 1)` workers for a single run and serial for a
+/// batch child; batched pads equal serial pads (docs/game/bots.md §5.5).
+fn think_env(
+    config: &sim_bench::config::MatchConfig,
+    env_threads: Option<&str>,
+    env_pipeline: Option<&str>,
+    batch_child: bool,
+    phantoms: usize,
+    cores: usize,
+) -> (Option<String>, Option<String>) {
+    let threads = if env_threads.is_some() {
+        None
+    } else if let Some(t) = &config.bot_threads {
+        Some(t.env_value())
+    } else if batch_child {
+        None
+    } else {
+        let n = phantoms.min(cores.saturating_sub(1));
+        (n > 0).then(|| n.to_string())
+    };
+    let pipeline = if env_pipeline.is_some() {
+        None
+    } else {
+        config
+            .bot_pipeline
+            .map(|on| if on { "1" } else { "0" }.to_string())
+    };
+    (threads, pipeline)
+}
 
 /// Run in the child so the OS releases the slot even if the sim crashes.
 fn live_slot(dir: &Path) -> Result<Option<File>> {
@@ -384,6 +424,23 @@ fn run_one(args: Vec<String>) -> Result<()> {
     // SAFETY: set before the run starts any thread; boot reads them once.
     unsafe {
         std::env::set_var("H2_BOTS_NAV_AUTO", "0");
+        // Bot map data read on the game thread (game::bot_glue::MAP_INLINE_ENV).
+        std::env::set_var("H2_BOTS_MAP_INLINE", "1");
+        // Bot think mode (bots::think): explicit variables win.
+        let (threads, pipeline) = think_env(
+            &m.config,
+            std::env::var(bots::think::THREADS_ENV).ok().as_deref(),
+            std::env::var(bots::think::PIPELINE_ENV).ok().as_deref(),
+            std::env::var_os(BATCH_CHILD_ENV).is_some(),
+            m.bots.len(),
+            std::thread::available_parallelism().map_or(1, |n| n.get()),
+        );
+        if let Some(v) = threads {
+            std::env::set_var(bots::think::THREADS_ENV, v);
+        }
+        if let Some(v) = pipeline {
+            std::env::set_var(bots::think::PIPELINE_ENV, v);
+        }
         std::env::remove_var("H2_LEVEL");
         if let Some(s) = &socket {
             std::env::set_var(agent_proto::ENV, s);
@@ -391,6 +448,11 @@ fn run_one(args: Vec<String>) -> Result<()> {
             std::env::remove_var(agent_proto::ENV);
         }
     }
+    eprintln!(
+        "h2 sim: bot thinking: H2_BOT_THREADS={} H2_BOT_PIPELINE={}",
+        std::env::var(bots::think::THREADS_ENV).unwrap_or_else(|_| "(serial)".into()),
+        std::env::var(bots::think::PIPELINE_ENV).unwrap_or_else(|_| "(off)".into())
+    );
     eprintln!(
         "h2 sim: {} on {} ({} bots, {}), report {}",
         file.display(),
@@ -678,7 +740,8 @@ fn spawn(
     child
         .args(child_args(common, run))
         .env_remove(BATCH_ID_ENV)
-        .env_remove(BATCH_LOCKS_ENV);
+        .env_remove(BATCH_LOCKS_ENV)
+        .env(BATCH_CHILD_ENV, "1");
     child.env_remove(boot::host_audit::ENV);
     if audit {
         child.env(boot::host_audit::ENV, run.audit());
@@ -840,8 +903,17 @@ fn batch(args: Vec<String>) -> Result<()> {
     }
     let batch = batch_id.as_deref().map(|id| (id, locks.as_path()));
     prepare_output(&b, &file, &arms, batch_id.as_deref())?;
+    let disc = common.disc()?;
     let t = Instant::now();
-    let failed = play_runs(&common, &b, batch, audit, keep, parallel);
+    let failed = play_runs(
+        &common,
+        &b,
+        (&plan.dylib, &disc),
+        batch,
+        audit,
+        keep,
+        parallel,
+    );
     if audit {
         let mut merged = boot::host_audit::Report::default();
         let mut missing = Vec::new();
@@ -894,17 +966,23 @@ fn check_image(common: &mut Common, what: &str) -> Result<boot::tier::Plan> {
 }
 
 /// Plays a batch's runs, `parallel` at a time, each on its own data
-/// directory (a bounce run on its own proofs, kept in `harvest/end`).
+/// directory (a bounce run on its own proofs, kept in `harvest/end`), Z:'s
+/// map cache cloned from the template of the image `(dylib, disc)`.
 /// How many failed.
 fn play_runs(
     common: &Common,
     b: &sim_bench::config::Batch,
+    (dylib, disc): (&Path, &Path),
     batch: Option<(&str, &Path)>,
     audit: bool,
     keep: bool,
     parallel: usize,
 ) -> usize {
     let shared = common.data();
+    // Z:'s map cache from the image's template (docs/runtime/cache-slots.md,
+    // "Sim batches: a warm Z:").
+    let template = cache_template::Template::for_batch(&common.out(), dylib, disc);
+    let gate = cache_template::Gate::default();
     let next = AtomicUsize::new(0);
     let lines = Mutex::new(Vec::new());
     let failed = AtomicUsize::new(0);
@@ -921,10 +999,22 @@ fn play_runs(
                     } else {
                         make_data(&rd, &shared)
                     };
+                    let mut cache = String::new();
                     let result = data
                         .and_then(|()| stage_map_pack(&rd, &shared, &r.map))
                         .and_then(|()| {
+                            let start = cache_template::start(template.as_ref(), &gate, &rd.data());
+                            cache = start.label();
                             let status = spawn(common, &rd, batch, audit)?.wait()?;
+                            if let (cache_template::Start::Producer(_), Some(t)) =
+                                (&start, &template)
+                                && status.success()
+                            {
+                                save_template(t, &rd.data());
+                            }
+                            // Dropping the start lets runs waiting for the
+                            // template go.
+                            drop(start);
                             if !status.success() {
                                 bail!("sim child exited {status}. See {}", rd.log().display());
                             }
@@ -948,7 +1038,7 @@ fn play_runs(
                     } else {
                         "NO REPORT"
                     };
-                    let line = format!("{:<28} {got}  {how}", r.id);
+                    let line = format!("{:<28} {got}  {how}{cache}", r.id);
                     println!("[{}/{}] {line}", n + 1, b.runs.len());
                     lines.lock().unwrap_or_else(|e| e.into_inner()).push(line);
                 }
@@ -1293,7 +1383,8 @@ fn train(args: Vec<String>) -> Result<()> {
         return Ok(());
     }
     // Checked before anything is written: a missing image fails once.
-    check_image(&mut t.common, "train")?;
+    let image = check_image(&mut t.common, "train")?;
+    let disc = t.common.disc()?;
     if t.reopen {
         let n = reopen_learned(&shared, &plan.maps())?;
         println!(
@@ -1303,7 +1394,15 @@ fn train(args: Vec<String>) -> Result<()> {
     }
     prepare_output(&plan.batch, &file, &[], None)?;
     let started = Instant::now();
-    let failed = play_runs(&t.common, &plan.batch, None, false, t.keep, parallel);
+    let failed = play_runs(
+        &t.common,
+        &plan.batch,
+        (&image.dylib, &disc),
+        None,
+        false,
+        t.keep,
+        parallel,
+    );
     let report = train_report(&plan, &shared);
     std::fs::write(
         out.join("train.json"),
@@ -1426,6 +1525,23 @@ fn harvest_runs(dir: &Path) -> Result<Vec<PathBuf>> {
     }
     out.sort();
     Ok(out)
+}
+
+/// Saves a finished cold run's Z: slots as the batch's template.
+fn save_template(t: &cache_template::Template, data: &Path) {
+    use cache_template::Saved;
+    match t.save(data) {
+        Ok(Saved::Saved { slots, cloned }) => println!(
+            "map cache: saved {slots} Z: slots as template {} ({})",
+            t.key(),
+            if cloned { "cloned" } else { "copied, no clone" }
+        ),
+        Ok(Saved::Exists) => {}
+        Ok(Saved::NoSlots) => {
+            println!("map cache: the run left no finished Z: slot; every run copies Z:'s maps")
+        }
+        Err(e) => println!("map cache: template {} not saved: {e}", t.key()),
+    }
 }
 
 fn prepare_output(
@@ -1598,9 +1714,42 @@ mod tests {
             kills: vec![],
             nav: "loaded".into(),
             dispatch_per_tick: None,
+            flat: None,
+            guest_census: None,
             notes: vec![],
             bounce: None,
         }
+    }
+
+    #[test]
+    fn think_mode_precedence() {
+        use sim_bench::config::{BotThreads, MatchConfig};
+        let cfg = |threads: Option<BotThreads>, pipeline: Option<bool>| MatchConfig {
+            bot_threads: threads,
+            bot_pipeline: pipeline,
+            ..Default::default()
+        };
+        let none = cfg(None, None);
+        let s = |v: &str| Some(v.to_string());
+        // A single run: batched on min(phantoms, cores - 1).
+        assert_eq!(think_env(&none, None, None, false, 4, 8), (s("4"), None));
+        assert_eq!(think_env(&none, None, None, false, 4, 3), (s("2"), None));
+        assert_eq!(think_env(&none, None, None, false, 15, 64), (s("15"), None));
+        // One core: nothing to batch on.
+        assert_eq!(think_env(&none, None, None, false, 4, 1), (None, None));
+        // A batch child stays serial.
+        assert_eq!(think_env(&none, None, None, true, 4, 8), (None, None));
+        // The match's keys beat the default, in a batch child too.
+        let keyed = cfg(Some(BotThreads::Count(2)), Some(true));
+        assert_eq!(think_env(&keyed, None, None, false, 4, 8), (s("2"), s("1")));
+        assert_eq!(think_env(&keyed, None, None, true, 4, 8), (s("2"), s("1")));
+        let off = cfg(Some(BotThreads::Word("off".into())), Some(false));
+        assert_eq!(think_env(&off, None, None, false, 4, 8), (s("off"), s("0")));
+        // The environment beats the match and the default, each variable alone.
+        assert_eq!(think_env(&keyed, Some("0"), None, false, 4, 8), (None, s("1")));
+        assert_eq!(think_env(&keyed, None, Some("0"), false, 4, 8), (s("2"), None));
+        assert_eq!(think_env(&none, Some("0"), None, false, 4, 8), (None, None));
+        assert_eq!(think_env(&keyed, Some(""), Some(""), false, 4, 8), (None, None));
     }
 
     #[test]

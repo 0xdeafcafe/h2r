@@ -24,7 +24,12 @@ use std::time::Instant;
 use crate::superbounce_view::{Shape, ring};
 use crate::superbounce_world::RED;
 
+#[cfg(feature = "gpu")]
 pub use crate::render_aspect::RETICLE_CENTRE;
+/// The fullscreen frame's centre, as `render_aspect` names it; builds
+/// without the GPU renderer have no `render_aspect`.
+#[cfg(not(feature = "gpu"))]
+pub const RETICLE_CENTRE: [f32; 2] = [320.0, 240.0];
 
 /// Seconds the mark takes to fade fully in or out.
 pub const FADE: f32 = 0.1;

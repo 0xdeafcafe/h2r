@@ -254,9 +254,18 @@ New playlists, removals and built-in variants:
   fields is refused with the validator's reasons.
 - Only the hoppers named are checked: unused slots elsewhere never block a
   publish.
+- Each entry of a named playlist whose variant runs a rules script (mode
+  2) names, by its hash prefix, one saved or built-in script, and the
+  playlist's kind takes that script's capabilities (the script policy,
+  [rules-engine.md, "Roles, powers and capabilities"](../game/rules-engine.md#roles-powers-and-capabilities)):
+  ranked types (2, 4 and 5) refuse every `forge.*` capability, and the
+  unranked ones keep no deny list, so they refuse none. A refusal names
+  the playlist, the entry and the capability; a prefix no script has is
+  refused too.
 
-This is `apply_patch` in `crates/live/live-server/src/admin.rs`; the Worker
-serves the same router, so both homes check the same way.
+This is `apply_patch` and `check_scripts` in
+`crates/live/live-server/src/admin.rs`; the Worker serves the same
+router, so both homes check the same way.
 
 ### Importing the base image
 
@@ -307,7 +316,9 @@ to `/dash/server`. The Halo Admin sections are:
   the command shown on the empty page. With runs on the server, the map,
   tuning and batch filters use values from the uploaded runs across all
   pages. Open a run for its results, speed, bot stats and live or replay
-  viewer, or select two runs to compare them. See
+  viewer, or select two runs to compare them. Filtered to one batch, the
+  tab shows a grid of map tiles above the results, one per run, playing
+  finished runs fast-forwarded in sync and running ones live. See
   [Watching in Uplink](../runtime/sim.md#watching-in-uplink).
 
 The playlist editor (`web/src/admin/HopperBuilder.tsx`) groups maps by

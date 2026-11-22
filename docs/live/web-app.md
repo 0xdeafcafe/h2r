@@ -54,6 +54,7 @@ waypoints, kills, scores, endings and new games.
 - `H2_MOCK_ACTION=0`: leave out the stances, speeds, actions and hits that every game's frames otherwise carry (`mock/action.ts`: players jump, crouch, throw grenades, swing, reload, and hit who they fire at), like a sender from before they existed.
 - `H2_MOCK_FURNITURE=0`: leave out each arena's furniture (`mock/fixtures.ts`): a lift platform that rides up and down and a walking thing with no node in the glb (both in the frames' `machines`), two pairs of teleporters with their links and a gravity lift (in the glb's extras).
 - `H2_MOCK_ADMIN=1`: make every account signed up in the browser an admin, so the dashboard's server screen shows "your server" and its invites, accounts and import screens, and the stats site shows the Halo admin area (`mock/admin.ts`).
+- `H2_MOCK_RULES=0`: answer every `/v1/rules` route with the 404 of a server from before the script tools, so the Game Types page shows its "no script tools" state (`mock/rules.ts`).
 - `H2_MOCK_HOPPER=1`: serve a stand-in playlist file (invented playlists, plain numbers) so the Halo admin's playlist builder has something to edit; without it that tab says nothing has been imported yet.
 - `H2_MOCK_CUSTOM_MAPS=0`, `H2_MOCK_STATS_ARCHIVE=0`, `H2_GAME_ART_URL`: described under "Custom maps" and "Server stats" below and "Game art" in [web-viewer.md](web-viewer.md).
 
@@ -240,6 +241,99 @@ admins open **Screenshot review** from Live Admin, show an image on demand
 and approve or remove it. Installation runs in the game. The mock serves
 invented pack metadata and member artwork.
 [Admin screenshot review](live-admin.md#screenshot-review)
+
+### Game variants
+
+A player's page lists the game variants they've published, the public
+ones, under **Game Types** (name, game type, "scripted: <script>" when
+it has one, date). Each links to its page (`statsPath("/variants/:id")`,
+`web/src/stats/Variant.tsx`): name, description, author, game type, the
+server's settings summary, the script with a link that opens it
+read-only in the workbench (`statsPath("/rules")?script=<hash>`), the
+`.h2variant` download and, for its author, Delete. The workbench's
+**Make a game variant** and **My Game Types** tab are in
+[rules-engine.md, "Workbench"](../game/rules-engine.md#workbench); the
+routes are [live-api.md, "Game variants"](live-api.md#game-variants),
+the pure half `web/src/lib/variants.ts`. The mock (`mock/variants.ts`)
+serves every route in memory and seeds two variants for Sneaky Pete.
+
+### Game type scripts
+
+The Game Types page (`statsPath("/rules")`, `web/src/stats/Rules.tsx`
+and `RulesTest.tsx`, the pure half `web/src/lib/rules.ts`) is the
+workbench for the rules engine's scripts; what the server does for it is
+in [rules-engine.md, "Workbench"](../game/rules-engine.md#workbench).
+The page has one row of tabs, **Workbench**, **My Scripts** and **My
+Game Types**, and no side menu. While it is shown the stats column is
+1240 px wide rather than 902 (`styles/rules.css`), and under 1100 px
+every part stacks.
+
+The Workbench tab, top to bottom:
+
+- **The bar.** Start from (a blank starter, a built-in or a saved
+  script), Save (a sign-in link when signed out), Make a game variant,
+  and the check's state: "Verifies", the script's name, its short hash
+  and "saved" when the server has it, or the number of problems. A
+  button that is off says why in its tooltip and in the line under the
+  bar ("Save and Make a game variant are off. Fix the 2 problems in the
+  script first."); the reasons are `saveBlocked`, `variantBlocked` and
+  `whyOff` in `rules.ts`.
+- **The script.** The Insert menus, the Monaco editor
+  (`stats/RulesEditor.tsx`) and its shortcut line. A read-only script
+  has a bar with **Use as start** above them.
+- **The check**, beside the script. **Problems** lists each error with
+  its place; choosing one selects it in the editor. **Budget** has the
+  meters and each handler's worst case, and **Capabilities** the
+  lobby's words. The page checks as you type.
+- **Test.** No form: the server makes the matches up
+  (`POST /v1/rules/simulate`). One strip sets them up (`SimStrip`): the
+  players, 2 to 16, as a slider with a stepper; team play; and the seed
+  with a die that rolls a new one (`rerolled`). The page plays 25
+  matches by itself after each check and each change to the strip.
+  Under the strip is the summary (`BatchView`): who wins, as bars with
+  "9 of 25"; how the games end and how long they run; the best and
+  average top score; the costliest tick against the budget, as a meter;
+  and the warnings (`simWarnings`), script errors first, each with a
+  link to a seed that shows it. **All matches** unfolds one row a
+  match. Choosing a seed anywhere shows that match beside the summary.
+- **Edit this match**, folded at the foot of Test. Opening it puts the
+  shown match in the hand editor (`ScenarioEditor`) and uses it instead
+  of the generated ones: how long to run, the round clock, the seed and
+  team play; the seated players (slot, team by colour name, lives); and
+  the events in time order. "Player 0 kills Player 1, Add kill" adds a
+  kill in one click and a menu adds any other event; a new event lands
+  a second after the last and lengthens the run when it is past its
+  end. Each event is a row that reads as a sentence, and its time is
+  typed as `0:02.50`, as seconds (`2.5`) or as ticks (`75t`)
+  (`parseTickTime`). Every field is black on white, as the site's other
+  fields are. Folding it goes back to the generated matches.
+- **Match**, beside Test: one match in full. Its bar (`MatchBar`) names
+  the seed, steps to the match before or after it in the batch, and has
+  **Edit this match**; for an edited match it has **Back to generated
+  matches**. Under it are how the match ended (the script, the score
+  limit, the time limit), the final standings (team totals with team
+  play), and a timeline: for each moment its time, what happened
+  ("Player 0 killed Player 1", "Player 3 entered hill_corner 0"), the
+  handlers that ran and their calls, who scored and their new score,
+  and any team, lives or variable change. A long timeline shows its
+  first 150 moments and **Show all**. An event no handler answered says
+  so. While the script has problems the last results stay, dimmed, with
+  the reason. **Copy as text** copies the trace, a line a tick.
+
+A request that fails is put in words with whose fault it is
+(`explainFailure`): the server's ("The Live server had a problem (HTTP
+503). Your script isn't the cause; try again."), the connection's, the
+account's, or the script's (the server's own message). A rate-limited
+check asks again after three seconds. A server whose rules routes
+answer 404 gets one notice, "This Live server doesn't have the script
+tools yet", with **Ask the server again**; the draft is still kept in
+the browser, the editor completes plain words, and Save, Make a game
+variant and the test are off.
+
+Signed out, everything but Save, Publish and the two list tabs works.
+`?script=<hash>` opens a saved or built-in script read-only. The mock
+(`mock/rules.ts`) answers every route from a few text checks, and makes
+its matches from seeded random kills to ten points or two minutes.
 
 ### Server stats
 
@@ -443,7 +537,10 @@ Live frames (up to 15 Hz per game) go into
 read directly. Each buffer keeps a smoothed wall-clock-to-tick mapping and
 renders about 5 ticks behind the newest frame, interpolating positions and
 yaw (short way round) between the two frames around the render tick and
-snapping on respawns. All canvases share one `requestAnimationFrame` loop
+snapping on respawns. The mapping runs at the stream's measured pace
+(`streamPace`): 1 for a real-time game, and the sim's own rate (rounded to a
+half, up to 32×) for an unpaced sim streaming faster than real time, with
+the delay scaled by the same pace. All canvases share one `requestAnimationFrame` loop
 (`map/scheduler.ts`), skip drawing when off screen, and the draw code
 (`map/render.ts`) uses the uploaded map outline when there is one, or an
 auto-fitted grid from the bounds seen so far. A map without an outline

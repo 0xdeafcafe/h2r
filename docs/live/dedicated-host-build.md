@@ -89,8 +89,10 @@ peer join, match start, postgame and lobby close. The existing
 Check `audit-missing.json` and the equipment gap report before exporting.
 `audit-coverage` verifies that inputs share a full clang image and registry,
 have completed ticks and have no reported missing runs, hooks or unmapped
-selectors. It writes two eight-digit guest addresses per line, the owner
-and the entry or continuation that ran. It sorts and deduplicates the
+selectors. The audit counts guest code a second executor runs on a
+copy of guest RAM (the phantom bots' input, aim assist and vehicle entry
+searches) as well as the main runtime's. It writes two eight-digit guest
+addresses per line, the owner and the entry or continuation that ran. It sorts and deduplicates the
 pairs. Keep this small list with the matching XBE revision and corpus
 description. The audit JSON and all disc-derived build artifacts stay
 private.
@@ -116,6 +118,10 @@ and `H2_BIN` to a Mac `h2` from this checkout if it is already installed.
 ```sh
 H2_OPT=2 deploy/host/build.sh "$H2_DISC" --coverage "$H2_HOST_COVERAGE"
 ```
+
+Without `--coverage`, the script reads `H2_HOST_COVERAGE`, then
+`deploy/host/host-coverage.txt` (ignored by Git), and stages the full
+module only when neither is set.
 
 The Linux Rust binary uses the `host` Cargo feature without defaults.
 It leaves out the Cranelift compiler and module build commands, native

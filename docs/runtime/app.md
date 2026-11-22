@@ -213,7 +213,10 @@ after the first the process exits regardless. (A job started with a shell's `&` 
 Where the input pump runs: after every slice, not once per guest frame. Mouse
 motion is held until the game's `XInputGetState` has read it and is scaled by
 the read interval, so mouse look does not depend on the slice rate or the
-game's frame rate (docs/input/input.md, "Keyboard and mouse").
+game's frame rate (docs/input/input.md, "Keyboard and mouse"). A manager
+with no backend, no gate and no pad (a sim's playerless host) has nothing to
+pull: its sync only counts in the host report (`InputManager::is_idle`), and
+`xapi::service_input` locks XAPI a second time only when a signal is owed.
 
 ### Frame stats: `--frame-stats`
 

@@ -835,14 +835,39 @@ export function sampleObjects(frames: readonly Frame[], tick: number): FrameObje
 
 export interface DeathMarker { index: number; x: number; y: number; z: number; tick: number; bornAt: number }
 
+/** How long a window of arrivals `streamPace` measures over, and the
+ *  shortest span it trusts. */
+const PACE_WINDOW_MS = 3000;
+const PACE_MIN_SPAN_MS = 500;
+/** The fastest pace the live clock follows (an unpaced sim runs 3-16×). */
+export const MAX_STREAM_PACE = 32;
+
+/** The pace a live stream plays at: game time per real time, measured
+ *  over its recent arrivals (`{tick, at}` with `at` in ms, oldest first).
+ *  A real-time game, and any stream measured under 1.25×, is 1; a faster
+ *  one (an unpaced sim) rounds to the nearest half, up to `MAX_STREAM_PACE`. */
+export function streamPace(arrivals: readonly { tick: number; at: number }[]): number {
+  const first = arrivals[0], last = arrivals.at(-1);
+  if (!first || !last || last.at - first.at < PACE_MIN_SPAN_MS) return 1;
+  const measured = (last.tick - first.tick) * MS_PER_TICK / (last.at - first.at);
+  return measured < 1.25 ? 1 : Math.min(MAX_STREAM_PACE, Math.round(measured * 2) / 2);
+}
+
 /** A live game's recent frames plus a clock mapping wall time to ticks.
  *  Rendering runs `delayTicks` behind the newest frame so there is always a
- *  frame on both sides to interpolate between. */
+ *  frame on both sides to interpolate between. The clock runs at the
+ *  stream's own pace (`streamPace`), so a sim streaming faster than real
+ *  time plays smoothly at its live edge rather than at 1× with jumps. */
 export class FrameBuffer {
   frames: Frame[] = [];
   markers: DeathMarker[] = [];
-  /** Wall time (ms) at which tick 0 would have arrived; smoothed. */
+  /** Stream time (ms) at which tick 0 would have arrived; smoothed. */
   private offset: number | null = null;
+  /** Stream time runs `pace` times wall time from its anchor. */
+  pace = 1;
+  private streamAnchor = 0;
+  private wallAnchor = 0;
+  private arrivals: { tick: number; at: number }[] = [];
   readonly bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity, minZ: Infinity, maxZ: -Infinity };
 
   /** Every machine heard of, as last sent. */
@@ -883,6 +908,8 @@ export class FrameBuffer {
         this.machines.clear();
         this.travel = new MachinePositionHistory();
         this.offset = null;
+        this.arrivals = [];
+        this.setPace(1, now);
       } else return;
     }
     this.travel.push(frame);
@@ -901,16 +928,32 @@ export class FrameBuffer {
       if (y < b.minY) b.minY = y; if (y > b.maxY) b.maxY = y;
       if (z < b.minZ) b.minZ = z; if (z > b.maxZ) b.maxZ = z;
     }
-    const o = now - frame.tick * MS_PER_TICK;
+    this.arrivals.push({ tick: frame.tick, at: now });
+    while (this.arrivals.length > 2 && now - this.arrivals[0]!.at > PACE_WINDOW_MS) this.arrivals.shift();
+    this.setPace(streamPace(this.arrivals), now);
+    const o = this.streamTime(now) - frame.tick * MS_PER_TICK;
     if (this.offset === null || Math.abs(o - this.offset) > 1000) this.offset = o;
     // Late frames pull the clock back quickly; early ones nudge it slowly.
     else this.offset = o > this.offset ? this.offset * 0.9 + o * 0.1 : this.offset * 0.7 + o * 0.3;
   }
 
-  /** The (fractional) tick to render at wall time `now`. */
+  private streamTime(now: number): number {
+    return this.streamAnchor + (now - this.wallAnchor) * this.pace;
+  }
+
+  /** Changes the clock's rate without moving the stream time it reads now. */
+  private setPace(pace: number, now: number): void {
+    if (pace === this.pace) return;
+    this.streamAnchor = this.streamTime(now);
+    this.wallAnchor = now;
+    this.pace = pace;
+  }
+
+  /** The (fractional) tick to render at wall time `now`. A faster stream
+   *  sends more ticks per frame, so the delay scales with its pace. */
   renderTick(now: number): number {
     if (this.offset === null) return this.lastTick;
-    const est = (now - this.offset) / MS_PER_TICK - this.delayTicks;
+    const est = (this.streamTime(now) - this.offset) / MS_PER_TICK - this.delayTicks * this.pace;
     return Math.min(est, this.lastTick);
   }
 

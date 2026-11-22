@@ -101,7 +101,9 @@ U+E000 to U+E008 are small symbols every font maps: three faces, a box, a
 fourth face, a camera, two people (U+E006), a download arrow (U+E007) and the
 padlock (U+E008). Only one retail string uses U+E006 (a guest gamertag
 format). Two people means "made by players", so the community variants use
-it. No glyph is added or changed. If a purpose-made picture is wanted later,
+it. The game-variant store's variants (rules-engine.md, "Live game
+variants in the game") carry the download arrow, U+E007, which no retail
+name uses: made elsewhere and brought in. No glyph is added or changed. If a purpose-made picture is wanted later,
 the `button-icons` branch shows how to add one at an unused code point
 (nothing uses U+E200 and up) without shipping art.
 
@@ -131,7 +133,7 @@ Settings not listed stay at the game type's default.
 | Bounce Practice | Slayer | no score or time limit; 3 s respawn; no suicide penalty; overshields; damage resistance; a magnum and no secondary weapon; nothing on the map; no grenades |
 | Glitch Hunt | Slayer | no score or time limit; 3 s respawn; no suicide penalty; overshields; damage resistance; energy sword and rocket launcher; no friendly fire |
 | Bumper Cars | Slayer | no starting weapon (one of our added choices) and no secondary; no grenades at start or on the map; nothing on the map; no pickups; Warthog and Ghost, no other vehicles or turrets; 25 points |
-| Superbounce | Slayer | Bounce Practice's rules, plus the superbounce HUD and spot lines ([superbounce.md](superbounce.md#the-superbounce-game-type)); listed under [Tweakers](#tweakers), not Slayer; its built-in record carries the extension block's superbounce flag, and the mode also matches the variant's name |
+| Superbounce | Slayer | Bounce Practice's rules, plus the superbounce HUD and spot lines ([superbounce.md](superbounce.md#the-superbounce-game-type)); listed under [Tweakers](#tweakers), not Slayer; its built-in record names the Superbounce rules script, whose header lists it under Tweakers and turns the mode on, and the mode also matches the variant's name |
 
 Why these, and the sources:
 
@@ -198,6 +200,33 @@ Team Ball, Low Ball, Fiesta, 2 on 1, 3 on 1, Ninjanaut, Phantom Fodder,
 Dreadnaut, the CTF, Assault and Territories set
 (<https://www.halopedia.org/Custom_game>).
 
+## The merged block
+
+The wrapper on `0x149f88` builds one block for every built-in of ours:
+the retail entries, then the community variants, then the game-variant
+store's (`community_variants::extend_with`, with two groups), at most 101
+in all, the content list's limit. A store variant past it is left out
+with a line. Each group writes its pairs into its own page: the
+community variants' at `0xa0fd0000`, the store's at `0xa0fd8000`
+(`game_variants::PAIRS_BASE`, 16 KiB); the merged block stays at
+`0xa0fd2000`.
+
+A store variant's entry (`game_variants::inject::entries`) is its list
+type, its record's value of every setting of its type that the `sily`
+pages offer, and a description number. A value the editor does not
+offer leaves the variant out, by name. Its ids are a private range of
+their own, `0x00ffe200..=0x00ffe2ff` (`ui_kit::ids` family "game
+variants"): names at `+i`, descriptions at `+0x80 + i`, a shared line at
+`+0xff`. Description numbers 94 to 99 name the first six variants'
+descriptions and 100 the shared line ("A game variant from this
+machine's game-variant store."), since the game takes 0 to 100 and the
+community variants hold 80 to 93. The string and description wrappers
+answer these ids and numbers beside the community ones.
+
+The settings reach the game through the pairs; the record's `hx` block
+(extras and the script reference) is written at the game's start, as
+rules-engine.md "Live game variants in the game" says.
+
 ## What the code does
 
 All three hooks are wrappers at function entries
@@ -221,7 +250,8 @@ All three hooks are wrappers at function entries
    first at `0x20ffe000`, showed these names. The ids reach the wrapper as
    written (the `goof` entry's name, the description id we return), so
    nothing needs the looser match. `crates/extensions/game/src/string_ids.rs` checks
-   every family of our ids against every other's claim.
+   every family of our ids against every other's claim. The store's
+variants answer from their own range ("The merged block").
 3. **Description numbers.** The variant list turns the entry's description
    number into the string id of its decimal text with `0x19fd00`, from
    `0x2ca1fd`, and the list's `unic` holds the text under those ids
@@ -256,12 +286,20 @@ types above it.
 
 Code: `crates/extensions/game/src/tweakers.rs` (feature `tweakers`, on by
 default, [switches](../runtime/switches.md)). A variant is a tweaker when
-its extension block has a tweak flag (the superbounce flag) or its name is
-a Tweakers built-in's (`community_variants::is_tweaker`). Every tweaker is
-a Slayer variant underneath (`Category::Tweakers`, checked by a test), so
-the Tweakers list is Slayer's variant list filtered: its defaults, copies
-and saves are Slayer's. Saving or editing a tweaker keeps the flag, so the
-copy stays under Tweakers.
+its block names a rules script (mode 2) whose header says
+`list tweakers` ([rules-engine.md](rules-engine.md#the-language)), or
+when its name is a Tweakers built-in's, for a built-in record before its
+block is written (`community_variants::is_tweaker`). The script is found
+by the record's prefix among the scripts compiled into the game (the
+ports and the examples) and in the game-variant store
+(`rules::header::block_is_tweaker`); one this machine lacks lists under
+its carrier's game type. The superbounce flag files nothing. Every
+tweaker is a Slayer variant underneath (`Category::Tweakers`, checked by
+a test), so the Tweakers list is Slayer's variant list filtered: its
+defaults, copies and saves are Slayer's. A Tweakers built-in's record
+carries its tweak's block (`Tweak::ext`; Superbounce's names the
+Superbounce script), and saving or editing a tweaker keeps the block, so
+the copy stays under Tweakers.
 
 Hooks, all on retail's own screens (static reading of the XBE, 2026-11-21):
 
@@ -283,7 +321,7 @@ Variant filter finds it by name ([live-custom-games.md](../live/live-custom-game
 Tests (`cargo test -p game --lib tweakers`) run on synthetic memory: the
 row is last, after Territories, added once, on both screens and not in the
 create mode; Superbounce is under Tweakers and no longer under Slayer;
-every tweaker is a Slayer variant; a renamed copy with the flag stays
+every tweaker is a Slayer variant; a renamed copy with the block stays
 under Tweakers, a block with only other changes or a bad check does not;
 the built-in records are patched once; a whole fill through the hook for
 Slayer's list and the Tweakers list, and another category's left alone;
@@ -294,7 +332,7 @@ Not verified in a game run:
 - the row and its label on both screens, and its pane with our texts;
 - the variant lists: Slayer's without Superbounce, Tweakers' with it and no
   Create New, and our title and description;
-- a game started from Tweakers having the mode on through the flag (the
+- a game started from Tweakers having the mode on through its script (the
   ext block surviving from the built-in record into the active variant);
 - Edit on Superbounce saving a copy that lists under Tweakers;
 - Back from a game or a nested screen reopening the Tweakers list;

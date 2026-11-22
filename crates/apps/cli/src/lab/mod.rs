@@ -13,6 +13,7 @@ pub mod host;
 mod lan;
 pub mod proto;
 mod service;
+mod simbench;
 mod takeover;
 mod transfer;
 mod watch;
@@ -70,6 +71,15 @@ const USAGE: &str = "usage:
                           a --serve run: wait for gameplay, capture N ticks (600),
                           render.stats and profile.counters, stop, fetch, and print
                           one summary line (fps, busy p50/p95, phase means)
+    sim <match.toml|batch.toml> [--repeat N] [--arm NAME=H2_FEATURES]... [--parallel N]
+        [--env KEY=VALUE]... [--name TEXT] [--branch NAME | --rev REV | --current] [--no-sync]
+        [--feature F]... [--build-env KEY=VALUE]... [--mem-limit SIZE] [--note TEXT]
+        [--data DIR] [--wait [--to DIR]]
+                          benchmark `h2 sim run|batch` on the host's image: the file and
+                          the tuning files it names are uploaded, every arm runs N times
+                          (interleaved, one at a time), reports and logs stay in runs/<id>;
+                          --wait fetches them and prints per-arm median/min/max speed-up and
+                          ms per tick, and whether every run's state hashes agree
     build [--branch NAME | --rev REV] [--feature F]... [--build-env KEY=VALUE]... [--wait]
     wait <id> [--timeout SECONDS]
     stop <id>             SIGTERM, then SIGKILL after 5 s

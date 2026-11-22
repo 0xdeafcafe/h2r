@@ -55,6 +55,7 @@ pub(super) fn supervise<T>(
 ) -> (T, Option<String>) {
     let limit = match job {
         Job::Run(run) => run.mem_limit.unwrap_or(DEFAULT_LIMIT),
+        Job::Sim(sim) => sim.mem_limit.unwrap_or(DEFAULT_LIMIT),
         Job::Build(_) => DEFAULT_LIMIT,
     };
     let (tx, rx) = mpsc::channel();

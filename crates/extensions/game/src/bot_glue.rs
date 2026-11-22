@@ -165,7 +165,7 @@ impl hooks::Feature for Bots {
             Arc::clone(&self.frame),
             Arc::clone(&self.map),
         );
-        let reader = map_reader(self.dir.clone());
+        let reader = MapLoader::new(self.dir.clone());
         let diagnostics = Arc::clone(&self.diagnostics);
         let film = self.film.clone();
         b.raw().before(
@@ -202,7 +202,7 @@ impl hooks::Feature for Bots {
                     return Ok(Flow::Continue);
                 }
                 let mut mem = rt.memory();
-                load_map_data(&map, reader.as_ref(), &mem);
+                load_map_data(&map, &reader, &mem);
                 let result = phantoms.tick(&mut *mem, f);
                 let lobby = bots::lobby::membership(&*mem).ok().map(|facts| {
                     let n = bots::lobby::lobby_players(&*mem, &facts).ok().flatten();
@@ -337,9 +337,31 @@ struct NavMap {
 /// When the loaded map changes, queue the cached data read and, for a
 /// multiplayer map, the background build. Bots steer toward known goals
 /// until the mesh arrives ([`bots::autonav::offer`]).
+/// Where a map's bot data is read: on a worker (play), or on the game
+/// thread before the frame's pads (`H2_BOTS_MAP_INLINE=1`, which sim sets),
+/// so the tick the bots first see the mesh does not depend on the host's
+/// load.
+enum MapLoader {
+    Worker(Option<std::sync::mpsc::Sender<MapRead>>),
+    Inline(std::path::PathBuf),
+}
+
+impl MapLoader {
+    fn new(dir: std::path::PathBuf) -> Self {
+        if std::env::var(MAP_INLINE_ENV).is_ok_and(|v| v == "1") {
+            MapLoader::Inline(dir)
+        } else {
+            MapLoader::Worker(map_reader(dir))
+        }
+    }
+}
+
+/// Read map bot data on the game thread (`1`).
+pub const MAP_INLINE_ENV: &str = "H2_BOTS_MAP_INLINE";
+
 fn load_map_data(
     seen: &Mutex<NavMap>,
-    reader: Option<&std::sync::mpsc::Sender<MapRead>>,
+    reader: &MapLoader,
     mem: &runtime::Guest,
 ) {
     use bots::autonav::{self, MapUse};
@@ -375,8 +397,13 @@ fn load_map_data(
             return;
         }
     }
-    if let Some(reader) = reader {
-        let _ = reader.send(MapRead { name, usage, generation, retired, auto: auto.is_some(), editor });
+    let read = MapRead { name, usage, generation, retired, auto: auto.is_some(), editor };
+    match reader {
+        MapLoader::Worker(Some(tx)) => {
+            let _ = tx.send(read);
+        }
+        MapLoader::Worker(None) => {}
+        MapLoader::Inline(dir) => read.load(dir),
     }
 }
 
@@ -488,6 +515,7 @@ pub fn install_for_maps(
 
 pub(crate) mod audio;
 mod retail_input;
+pub(crate) use retail_input::build_costs as phantom_build_costs;
 
 mod film_state;
 mod party_leave;
