@@ -493,6 +493,24 @@ What is left to the machine: a pool of build slots (section 2) is not
 part of xtask, which builds in the checkout it runs in, into that
 checkout's target directory.
 
+### 6. Agents and the caches
+
+Coding agents can't skip the caches. `.claude/settings.json` runs
+`scripts/agent-cargo-guard.py` before every shell command an agent
+runs in any worktree, and it refuses:
+
+- `cargo test` and `cargo nextest`: tests go through `cargo xtask test`
+  (with `-p` for named packages, or none for what the branch changed), so
+  they use the affected set and the shared ledger above;
+- `cargo install`: it builds in a throwaway target. `cargo h2 <command>`
+  builds `h2` incrementally in the worktree's own target instead;
+- setting `RUSTC_WRAPPER`, `CARGO_BUILD_RUSTC_WRAPPER`, `SCCACHE_DIR` or
+  `CARGO_TARGET_DIR` on a command: kache is the machine-wide wrapper
+  (`~/.cargo/config.toml`) and each worktree keeps its own target.
+
+`cargo check`, `cargo clippy` and `cargo h2` pass. People at a shell are
+not affected. Tests: `python3 scripts/agent_cargo_guard_test.py`.
+
 ## Measurement plan
 
 Run on a quiet machine, in one checkout moved between the two commits

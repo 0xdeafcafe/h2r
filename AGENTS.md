@@ -45,6 +45,10 @@ Use the agent API whenever it can do the job, before anything else.
   worktree for a whole session, rather than deleting it between runs. Check
   before testing (`cargo check -p <crate> --tests`), and test only the crates
   a change touches (`cargo test -p a -p b`), not the workspace.
+- **Forced for agents:** `scripts/agent-cargo-guard.py` (a hook in
+  `.claude/settings.json`) refuses `cargo test`, `cargo install` and cache
+  overrides; test with `cargo xtask test -p <crate>`
+  ([docs/dev/build-speed.md](docs/dev/build-speed.md), "6. Agents and the caches").
 - **Headless host:** `cargo check -p cli --no-default-features --features host`
   covers the Linux host's feature set without a cross build.
 - **Parallel work:** hand the code to several subagents at once, then build
