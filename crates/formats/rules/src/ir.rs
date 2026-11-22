@@ -1442,7 +1442,9 @@ pub(crate) mod tests {
             let bytes = ir.encode();
             assert_eq!(Ir::decode(&bytes).unwrap().header.list, list);
         }
-        assert_ne!(sample().id(), ir.id(), "the list is part of the hash");
+        let mut other = sample();
+        other.header.list = List::GameType;
+        assert_ne!(sample().id(), other.id(), "the list is part of the hash");
         // The list byte follows the name, version, carrier and teams.
         let mut bytes = sample().encode();
         let at = 4 + 2 + 2 + 2 + "Sample".len() + 2 + 1 + 1;
