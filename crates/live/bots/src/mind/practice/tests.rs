@@ -686,3 +686,102 @@ fn a_drill_with_no_known_site_near_it_waits() {
     assert_eq!(mind.practice_view().unwrap().state, "waiting");
     assert_eq!(mind.order_view().state, "none");
 }
+
+// ---- the training run (docs/game/bounce-search.md) ----
+
+#[test]
+fn a_learned_site_weighs_more() {
+    let at = [0.0; 3];
+    let likely = site([10.0, 0.0, 0.0], Status::Likely);
+    let learned = Site {
+        line: Some(superbounce::learned::State::Learned),
+        ..likely
+    };
+    let open = Site {
+        line: Some(superbounce::learned::State::Open),
+        ..likely
+    };
+    assert_eq!(
+        weight(&learned, at, false, None),
+        weight(&likely, at, false, None) + W_LEARNED
+    );
+    assert_eq!(
+        weight(&open, at, false, None),
+        weight(&likely, at, false, None)
+    );
+}
+
+#[test]
+fn a_training_bot_flies_its_rounds_folds_its_tries_and_writes_the_file_between_rounds() {
+    use crate::glitches::prime::PRIMED_WORD;
+    use superbounce::learned::Stage;
+    static BOARD: learn::Shared = Mutex::new(None);
+    let m = map();
+    let s = site([10.0, 0.0, 0.0], Status::Likely);
+    let name = "train_practice_test";
+    // The board is built once the map's scan is in.
+    crate::spots::publish(name, Vec::new());
+    let dir = std::env::temp_dir().join(format!("h2-train-practice-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let file = dir.join(crate::spots::learned_file_name(name));
+    let mut mind = Mind::new(Skill::Normal, 48);
+    mind.known = Known {
+        sites: vec![s],
+        crouches: vec![Crouch::at([3.0, 0.0, 0.0])],
+    };
+    mind.practice.learn_board = &BOARD;
+    mind.practice.learned_dir = Some(dir.clone());
+    mind.set_practice(true);
+    mind.set_train(
+        Some(Train {
+            shard: 0,
+            shards: 1,
+            budget: 30,
+            seed: 1,
+        }),
+        name,
+    );
+    assert!(mind.wants_pair());
+    // The bot stands at the site's approach, the word already written.
+    let me = Me {
+        position: s.bounce.from(),
+        ..bot(1.0)
+    };
+    mind.pair_word = Some(PRIMED_WORD);
+    let (mut tries, mut first_write, mut viewed) = (0u32, None, false);
+    for t in 0..3000 {
+        mind.step(&scene(me, t), Some(&m));
+        if let Some(v) = mind.practice_view().and_then(|v| v.train) {
+            assert_eq!(v.site, s.bounce.stand);
+            viewed = true;
+        }
+        if mind.order_view().state == "running" {
+            // A primed try by the one site, with no prime of its own.
+            assert!(mind.order_view().steps.contains(&"bounce"));
+            // Ended at once: no touchdown, a scored try.
+            mind.cancel_order("timeout");
+            tries += 1;
+        }
+        if first_write.is_none() && file.exists() {
+            first_write = Some(tries);
+        }
+        if tries >= 8 {
+            break;
+        }
+    }
+    assert!(viewed, "practice.train never shown");
+    assert_eq!(tries, 8);
+    // A stand's arms round is 3 tries: the file is written after it, not
+    // before.
+    assert_eq!(first_write, Some(3));
+    let lines = crate::spots::read_learned(&dir, name).unwrap();
+    assert_eq!(lines.len(), 1);
+    let l = &lines[0];
+    assert_eq!(l.at, s.bounce.stand);
+    assert!(l.tries >= 3 && l.hits == 0, "{l:?}");
+    assert_ne!(l.stage, Stage::Arms, "{l:?}");
+    // Training off lets the site go.
+    mind.set_train(None, name);
+    assert!(mind.practice.training.held.is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}

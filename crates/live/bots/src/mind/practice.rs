@@ -21,6 +21,16 @@
 //! only: it walks to the drill's start, the host sets its word to -3, and
 //! the try is the final approach and the jump.
 //!
+//! In a training run ([`crate::learn`], a sim's `[train]`;
+//! docs/game/bounce-search.md) the bot flies the sites of the run's board
+//! instead: it takes a site for a round ([`crate::learn::Board::pick`]),
+//! flies each of the round's tries as a drill try with the search's knobs
+//! (walk to the site's approach, the host sets the word, one flight), hands
+//! each outcome to the board ([`crate::learn::Try`]) and, at the round's
+//! end, writes the board's lines to the map's learned file
+//! ([`crate::spots::store_learned`]). Outside training the learned knobs
+//! ride on the sites ([`Site::knobs`]) and a `learned` site weighs more.
+//!
 //! The loop sits in front of everything else in [`Mind::step`]: no
 //! target is chosen, nothing is shot, thrown or meleed, and being shot
 //! changes nothing. A route an agent asks for (`bots.bounce_to`) runs as
@@ -40,7 +50,9 @@ use crate::bounce_route::{
 use crate::brain::{Me, Perception, Seen};
 use crate::cache::MapData;
 use crate::glitches::prime::is_primed;
+use crate::learn::{self, SiteIn, Train, Try};
 use crate::spots::{Crouch, Known, Site};
+use superbounce::learned::{How, Knobs, State as LineState};
 
 /// Sites this far away (XY) or nearer are practised at.
 pub const REACH: f32 = 120.0;
@@ -61,6 +73,8 @@ pub const W_CLAIMED: f32 = -3.0;
 pub const W_LAST: f32 = -1.5;
 pub const W_DISTANCE: f32 = -1.0 / 60.0;
 pub const W_JITTER: f32 = 0.8;
+/// A site the map's learned file calls `learned` weighs this much more.
+pub const W_LEARNED: f32 = 1.0;
 /// Sites a pick pairs with a crouch spot at most (each up to two walks a
 /// crouch spot, of [`crate::bounce_route::PAIR_CROUCHES`]); the rest wait for the
 /// next pick, [`PAIRING_PAUSE`] later.
@@ -94,6 +108,11 @@ pub const DRILL_AT: f32 = 0.7;
 pub const DRILL_PAUSE: u32 = 10;
 pub const DRILL_ARM_TICKS: u32 = 20;
 pub const DRILL_WAKE: f32 = 1.0;
+/// A training try whose walk to its start was begun this many times, or
+/// that woke the body for the word this many times, without getting there
+/// armed is void (`no_path`, `not_armed`).
+pub const TRAIN_WALKS: u32 = 3;
+pub const TRAIN_WAKES: u32 = 3;
 
 /// One site's practice so far.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -116,6 +135,43 @@ pub struct PracticeView {
     pub attempts: u32,
     pub bounces: u32,
     pub spots: Vec<SpotTally>,
+    /// In a training run, the round the bot flies.
+    pub train: Option<TrainView>,
+}
+
+/// A training bot's round, for the agent (`bots.bounce_status`'s
+/// `practice.train`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TrainView {
+    /// The site's stand, as its learned line keys it.
+    pub site: Vec3,
+    /// The search's stage (`arms`, `shift`, `compass`, `scatter`) and, in
+    /// `compass`, the round's axis.
+    pub stage: &'static str,
+    pub axis: Option<&'static str>,
+    /// The try's slot in the round.
+    pub slot: usize,
+    /// The site's scored tries so far.
+    pub tries: u32,
+}
+
+/// A training run's bot ([`Mind::set_train`]).
+#[derive(Clone, Debug, Default)]
+struct Training {
+    /// The run, and the map its board is for (lower case: the spot ids').
+    run: Option<Train>,
+    map: String,
+    /// The board's site it holds for the round, the round's tries so far,
+    /// and the try under way: its slot and knobs, its walks to the start
+    /// and its wake-ups for the word.
+    held: Option<usize>,
+    done: Vec<Try>,
+    slot: usize,
+    knobs: Knobs,
+    walks: u32,
+    wakes: u32,
+    /// It said it has nothing to fly.
+    said: bool,
 }
 
 /// What the practice did, as it happened, for a host that tallies it (the
@@ -201,6 +257,12 @@ pub struct Practice {
     drill_said: bool,
     /// Whether it said which site the drill found.
     drill_found: bool,
+    /// The training run, when the host runs one; where its board is kept
+    /// ([`learn::shared`], or a test's own) and, for a test, the directory
+    /// its learned file is written to instead of the verified one.
+    training: Training,
+    learn_board: &'static learn::Shared,
+    learned_dir: Option<std::path::PathBuf>,
 }
 
 /// What a pick found.
@@ -340,6 +402,9 @@ impl Practice {
             armed_since: None,
             drill_said: false,
             drill_found: false,
+            training: Training::default(),
+            learn_board: learn::shared(),
+            learned_dir: None,
         }
     }
 
@@ -354,9 +419,27 @@ impl Practice {
         self.on
     }
 
-    /// Practising in a drill: the host reads the word between tries too.
+    /// Practising in a drill or a training run: the host reads the word
+    /// between tries too, and writes it at a try's start.
     pub fn drilling(&self) -> bool {
-        self.on && self.drill.is_some()
+        self.on && (self.drill.is_some() || self.training.run.is_some())
+    }
+
+    /// The round a training bot flies, read off the board.
+    fn train_view(&self) -> Option<TrainView> {
+        let i = self.training.held?;
+        let slot = self.training.slot;
+        on_board(self.learn_board, |b| {
+            let s = &b.sites().get(i)?.search;
+            Some(TrainView {
+                site: s.setup().at,
+                stage: s.entry().stage.name(),
+                axis: s.axis().map(learn::Axis::name),
+                slot,
+                tries: s.entry().tries,
+            })
+        })
+        .flatten()
     }
 
     fn is_gone(&self, c: &Crouch) -> bool {
@@ -402,7 +485,112 @@ impl Practice {
             attempts: self.tally.iter().map(|t| t.attempts).sum(),
             bounces: self.tally.iter().map(|t| t.bounces).sum(),
             spots: self.tally.clone(),
+            train: self.train_view(),
         }
+    }
+}
+
+/// Runs `f` on the training board kept in `board`, when it is built.
+fn on_board<R>(board: &learn::Shared, f: impl FnOnce(&mut learn::Board) -> R) -> Option<R> {
+    board
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_mut()
+        .map(f)
+}
+
+/// A route's error that says nothing about the knobs: a training try that
+/// ends so is void (docs/game/bounce-search.md, "A try and its score").
+/// Everything else (`no_bounce`, `no_drop`, `timeout`, `try_over`) is a
+/// scored try, and `died` a scored one with a death.
+fn void_error(e: &str) -> bool {
+    e.starts_with("path_lost")
+        || matches!(
+            e,
+            "map_changed"
+                | "practice_off"
+                | "pair_lost"
+                | "not_primed"
+                | "no_route"
+                | "no_map"
+                | "no_path"
+                | "goal_off_mesh"
+                | "tail_stuck"
+                | "stalled"
+                | "state"
+                | "enemy"
+        )
+}
+
+/// The knobs a training try flies, as the log line appends them: the set
+/// ones, by the learned file's keys.
+pub fn knobs_text(k: &Knobs) -> String {
+    let mut out: Vec<String> = Vec::new();
+    if let Some(h) = k.how {
+        out.push(format!("how={}", h.name()));
+    }
+    if let Some(f) = k.from {
+        out.push(format!("fx={:.3} fy={:.3} fz={:.3}", f[0], f[1], f[2]));
+    }
+    if let Some(a) = k.aim {
+        out.push(format!("ax={:.3} ay={:.3}", a[0], a[1]));
+    }
+    let mut num = |key: &str, v: Option<f32>, places: usize| {
+        if let Some(v) = v {
+            out.push(format!("{key}={v:.places$}"));
+        }
+    };
+    num("yaw", k.yaw, 1);
+    num("back", k.back, 2);
+    num("run", k.run, 2);
+    num("early", k.early, 3);
+    num("gain", k.gain, 2);
+    num("letgo", k.letgo, 3);
+    num("drift", k.drift, 2);
+    if let Some(v) = k.still {
+        out.push(format!("still={v}"));
+    }
+    if out.is_empty() {
+        "the route's own".to_string()
+    } else {
+        out.join(" ")
+    }
+}
+
+/// A known site as a training board takes it (docs/game/bounce-search.md,
+/// "The search"): the `how`s it allows, the route's own first (a standing
+/// site: a stand; a drop: the flight model's choice, then the other), and
+/// the route's own knobs from [`crate::bounce_route::flown`] with no line,
+/// the search's centre for a site never flown.
+pub fn site_in(
+    s: &Site,
+    ledge: crate::bounce_route::Ledge,
+    tune: &crate::tuning::BounceTuning,
+) -> SiteIn {
+    let own = Site {
+        knobs: Knobs::default(),
+        ..*s
+    };
+    let (hows, base) = if own.standing() {
+        let f = crate::bounce_route::flown(&own, own.bounce.from(), tune);
+        (vec![How::Stand], f.knobs(None))
+    } else {
+        match crate::bounce_route::launch_from(&own, ledge) {
+            Some(from) => {
+                let f = crate::bounce_route::flown(&own, from, tune);
+                let other = if f.jump() { How::Runoff } else { How::Jump };
+                (vec![f.how, other], f.knobs(Some(from)))
+            }
+            // No launch floor: its tries are void (`no_launch_floor`).
+            None => (vec![How::Runoff, How::Jump], Knobs::default()),
+        }
+    };
+    SiteIn {
+        at: s.bounce.stand,
+        hows,
+        base,
+        run_off: tune.run_off_speed,
+        need: s.need,
     }
 }
 
@@ -464,6 +652,9 @@ pub fn weight(s: &Site, at: Vec3, claimed: bool, last: Option<Vec3>) -> f32 {
     if last.is_some_and(|l| dist_xy(l, s.bounce.stand) < 0.05) {
         w += W_LAST;
     }
+    if s.line == Some(LineState::Learned) {
+        w += W_LEARNED;
+    }
     w
 }
 
@@ -479,6 +670,7 @@ impl Mind {
             if matches!(self.practice.phase, Some(Phase::Route(_) | Phase::Walk)) {
                 self.cancel_order("practice_off");
             }
+            self.train_let_go();
             self.practice.phase = None;
             claim(
                 self.practice.board,
@@ -500,6 +692,36 @@ impl Mind {
         if d.is_none() {
             self.practice.arm = false;
         }
+    }
+
+    /// The host's training run ([`crate::learn::current`]) on `map` (its
+    /// short name), or none. A change lets go of the site it held.
+    pub fn set_train(&mut self, t: Option<Train>, map: &str) {
+        let map = map.to_ascii_lowercase();
+        let tr = &self.practice.training;
+        if tr.run == t && tr.map == map {
+            return;
+        }
+        self.train_let_go();
+        self.practice.training = Training {
+            run: t,
+            map,
+            ..Training::default()
+        };
+        if t.is_none() {
+            self.practice.arm = false;
+        }
+    }
+
+    /// Lets go of the training site held, its round to be flown again
+    /// from the same state.
+    fn train_let_go(&mut self) {
+        let tr = &mut self.practice.training;
+        if tr.held.take().is_some() {
+            let owner = self.practice.owner;
+            on_board(self.practice.learn_board, |b| b.release(owner));
+        }
+        tr.done.clear();
     }
 
     /// A drill's bot at its start, not primed: the host should set its
@@ -831,6 +1053,9 @@ impl Mind {
         if !self.practice.on {
             return None;
         }
+        if self.practice.training.run.is_some() {
+            return Some(self.train_pad(p, me, map, seen));
+        }
         if let Some(d) = self.practice.drill {
             return Some(self.drill_pad(p, me, map, seen, d));
         }
@@ -1117,6 +1342,332 @@ impl Mind {
         self.practice_tally(site);
         self.practice_idle(me, tick, DRILL_PAUSE);
         None
+    }
+}
+
+// ---- the training run (docs/game/bounce-search.md) ----
+
+impl Mind {
+    /// The training run's pad: the drill's loop over the board's sites. A
+    /// route under way is the try's; a landing that did not launch ends it
+    /// (one flight a try). Between tries: the next slot of the round held,
+    /// or a new pick.
+    fn train_pad(
+        &mut self,
+        p: &Perception,
+        me: Me,
+        map: Option<&MapData>,
+        seen: &[Seen],
+    ) -> HostPadState {
+        let tick = p.tick;
+        self.practice.arm = false;
+        if (self.asked.is_some() || self.order.is_some())
+            && let Some(pad) = self.order_pad(p, me, map, seen)
+        {
+            let Some(Phase::Route(s)) = self.practice.phase else {
+                return pad;
+            };
+            self.practice_watch_prime(s, tick);
+            let over = self
+                .order_view()
+                .flights
+                .first()
+                .is_some_and(|f| f.end.is_some() && !f.landing.is_some_and(|t| t.bounced()));
+            if !over {
+                return pad;
+            }
+            self.cancel_order("try_over");
+        }
+        match self.practice.phase {
+            Some(Phase::Route(site)) => {
+                self.train_tally(site);
+                self.practice_idle(me, tick, DRILL_PAUSE);
+            }
+            Some(Phase::Walk) => self.practice_idle(me, tick, 1),
+            None => self.practice_idle(me, tick, DRILL_PAUSE),
+            Some(Phase::Idle { until, .. }) if reached(tick, until) => {
+                if let Some(pad) = self.train_next(p, me, map, seen) {
+                    return pad;
+                }
+            }
+            Some(Phase::Idle { .. }) => {}
+        }
+        self.practice_stand(me, tick).unwrap_or_default()
+    }
+
+    /// The site the bot flies: the one it holds, else the board's pick
+    /// (built from the known sites at the first pick, once the map's scan
+    /// is in).
+    fn train_pick(&mut self, at: Vec3, m: &MapData) -> Option<usize> {
+        let owner = self.practice.owner;
+        let tr = &self.practice.training;
+        let run = tr.run?;
+        let mut g = self
+            .practice
+            .learn_board
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if g.is_none() {
+            if self.known.sites.is_empty() || !crate::spots::has_scan(&tr.map) {
+                return None;
+            }
+            let tune = crate::tuning::bounce().sane();
+            let ledge = |s: &Site| launch_floor(m, s);
+            let sites = self
+                .known
+                .sites
+                .iter()
+                .map(|s| site_in(s, &ledge, &tune))
+                .collect();
+            let lines = crate::spots::learned_for(&tr.map);
+            *g = Some(learn::Board::new(&tr.map, run, sites, &lines));
+        }
+        g.as_mut()?.pick(owner, at)
+    }
+
+    /// The training's next move from standing: a walk to the try's start,
+    /// a wait for the word, or the try. `None`: stand this tick.
+    fn train_next(
+        &mut self,
+        p: &Perception,
+        me: Me,
+        map: Option<&MapData>,
+        seen: &[Seen],
+    ) -> Option<HostPadState> {
+        let tick = p.tick;
+        let Some(m) = map else {
+            self.practice_idle(me, tick, NOTHING_PAUSE);
+            return None;
+        };
+        let Some(i) = self.train_pick(me.position, m) else {
+            if !self.practice.training.said {
+                self.practice.training.said = true;
+                eprintln!(
+                    "bots: train: nothing to fly ({} sites known; the board is built once the map's scan is in)",
+                    self.known.sites.len()
+                );
+            }
+            self.practice.waiting = true;
+            self.practice_idle(me, tick, NOTHING_PAUSE);
+            return None;
+        };
+        self.practice.waiting = false;
+        self.practice.training.held = Some(i);
+        let next = on_board(self.practice.learn_board, |b| {
+            let s = &b.sites().get(i)?.search;
+            Some((s.setup().at, s.next_slot(&self.practice.training.done)))
+        })
+        .flatten();
+        let Some((at, next)) = next else {
+            self.train_let_go();
+            self.practice_idle(me, tick, PAUSE_MIN);
+            return None;
+        };
+        let Some((slot, knobs)) = next else {
+            // The round's tries are all in.
+            self.train_fold(i);
+            self.practice_idle(me, tick, 1);
+            return None;
+        };
+        let Some(own) = self
+            .known
+            .sites
+            .iter()
+            .find(|s| s.bounce.stand == at)
+            .copied()
+        else {
+            self.train_try(Try::void("no_site"));
+            self.practice_idle(me, tick, 1);
+            return None;
+        };
+        // The try flies the board's knobs over the site's.
+        let site = Site {
+            knobs: knobs.or(own.knobs),
+            ..own
+        };
+        let tr = &mut self.practice.training;
+        tr.slot = slot;
+        tr.knobs = site.knobs;
+        let ledge = |s: &Site| launch_floor(m, s);
+        let Some(start) = approach(&site, &ledge) else {
+            self.train_try(Try::void("no_launch_floor"));
+            self.practice_idle(me, tick, 1);
+            return None;
+        };
+        let at = me.position;
+        let there =
+            dist_xy(at, start) <= DRILL_AT && (at[2] - start[2]).abs() <= crate::nav::ARRIVE_Z;
+        let walk = |mind: &mut Mind, to: Vec3| {
+            mind.asked = Some(Asked {
+                to,
+                mode: Mode::Help,
+                show_off: false,
+                site: None,
+                crouch: None,
+                plain: true,
+            });
+            mind.practice.phase = Some(Phase::Walk);
+            mind.practice.armed_since = None;
+            mind.order_pad(p, me, map, seen)
+        };
+        if !there {
+            self.practice.training.walks += 1;
+            if self.practice.training.walks <= TRAIN_WALKS
+                && let Some(pad) = walk(self, start)
+            {
+                return Some(pad);
+            }
+            self.train_try(Try::void("no_path"));
+            self.practice_idle(me, tick, 1);
+            return None;
+        }
+        // There: the walks count again from nothing (a wake-up walks off).
+        self.practice.training.walks = 0;
+        if !self.pair_word.is_some_and(is_primed) {
+            let since = *self.practice.armed_since.get_or_insert(tick);
+            if tick.wrapping_sub(since) > DRILL_ARM_TICKS {
+                // No word yet: walk off and back to wake the body, as the
+                // drill does.
+                self.practice.training.wakes += 1;
+                if self.practice.training.wakes > TRAIN_WAKES {
+                    self.practice.armed_since = None;
+                    self.train_try(Try::void("not_armed"));
+                    self.practice_idle(me, tick, 1);
+                    return None;
+                }
+                let t = site.target();
+                let away = [start[0] - t[0], start[1] - t[1]];
+                let l = away[0].hypot(away[1]).max(1e-3);
+                let off = [
+                    start[0] + away[0] / l * DRILL_WAKE,
+                    start[1] + away[1] / l * DRILL_WAKE,
+                    start[2],
+                ];
+                if let Some(pad) = walk(self, off) {
+                    return Some(pad);
+                }
+                self.practice.armed_since = None;
+            }
+            self.practice.arm = true;
+            self.practice_idle(me, tick, 1);
+            return None;
+        }
+        // Armed at the start: the try.
+        self.practice.armed_since = None;
+        self.practice.training.walks = 0;
+        self.practice.training.wakes = 0;
+        self.asked = Some(Asked {
+            to: site.bounce.stand,
+            mode: Mode::Fun,
+            show_off: false,
+            site: Some(site),
+            crouch: None,
+            plain: false,
+        });
+        self.practice.route_crouch = None;
+        self.practice.phase = Some(Phase::Route(site));
+        self.practice.primed_seen = false;
+        self.practice.event(PracticeEvent::Started {
+            site: site.bounce.stand,
+            tick,
+        });
+        if let Some(pad) = self.order_pad(p, me, map, seen) {
+            self.practice_watch_prime(site, tick);
+            return Some(pad);
+        }
+        // No route from here: tallied (void) next.
+        self.train_tally(site);
+        self.practice_idle(me, tick, DRILL_PAUSE);
+        None
+    }
+
+    /// A training try's route is over: its one flight as the board takes
+    /// it ([`Try::from_leap`], the miss from the site's own target), or
+    /// void for an end that says nothing about the knobs; logged, tallied,
+    /// and handed to the board.
+    fn train_tally(&mut self, site: Site) {
+        let view = self.order_view();
+        let target = site.own_target();
+        let first = view.flights.first();
+        let t = match view.error {
+            Some("died") => Try::from_leap(first, target, true),
+            Some(e) if void_error(e) => Try::void(e),
+            _ => Try::from_leap(first, target, false),
+        };
+        let bounced = t.bounced();
+        let why = if bounced {
+            None
+        } else {
+            Some(
+                t.void
+                    .or_else(|| first.and_then(|f| f.end))
+                    .or(view.error)
+                    .unwrap_or("no_landing"),
+            )
+        };
+        eprintln!(
+            "{}; knobs {}",
+            try_line(true, self.practice.owner, site, why, &view).replacen(
+                " drill site ",
+                " train site ",
+                1
+            ),
+            knobs_text(&site.knobs)
+        );
+        if t.scored() {
+            self.practice.record(site.bounce.stand, bounced, why);
+        }
+        let tick = self.tick.unwrap_or(0);
+        self.practice.event(PracticeEvent::Tried {
+            site: site.bounce.stand,
+            tick,
+            bounced,
+            why,
+        });
+        self.practice.last = Some(site.bounce.stand);
+        self.train_try(t);
+    }
+
+    /// One try of the round held is in: the round ends when the search
+    /// has no slot left for it.
+    fn train_try(&mut self, t: Try) {
+        let Some(i) = self.practice.training.held else {
+            return;
+        };
+        let tr = &mut self.practice.training;
+        tr.walks = 0;
+        tr.wakes = 0;
+        tr.done.push(t);
+        let done = &self.practice.training.done;
+        let over =
+            on_board(self.practice.learn_board, |b| b.next(i, done).is_none()).unwrap_or(true);
+        if over {
+            self.train_fold(i);
+        }
+    }
+
+    /// The round's end: the search folds it, the log gets its line, and
+    /// the board's lines go to the map's learned file.
+    fn train_fold(&mut self, i: usize) {
+        let done = std::mem::take(&mut self.practice.training.done);
+        self.practice.training.held = None;
+        let folded = on_board(self.practice.learn_board, |b| {
+            let f = b.fold(i, &done)?;
+            Some((b.describe(i, &f), b.entries()))
+        })
+        .flatten();
+        let Some((line, entries)) = folded else {
+            return;
+        };
+        eprintln!("bots: train: {line}");
+        let map = self.practice.training.map.clone();
+        let stored = match &self.practice.learned_dir {
+            Some(dir) => crate::spots::write_learned(dir, &map, &entries).map(|(p, _)| Some(p)),
+            None => crate::spots::store_learned(&map, &entries),
+        };
+        if let Err(e) = stored {
+            eprintln!("bots: train: {map}'s learned file not written: {e}");
+        }
     }
 }
 

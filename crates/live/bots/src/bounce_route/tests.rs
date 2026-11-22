@@ -926,25 +926,25 @@ fn the_takeoff_is_a_run_off_where_one_gets_there_fast_enough_else_a_jump() {
 fn the_air_stick_brakes_pushes_and_holds() {
     // Landing 1 past the target with 1 s left, moving at 2: the full stick
     // back (past AIR_PAST).
-    let (dir, speed) = air_stick([2.0, 0.0], [-1.0, 0.0], 1.0, 1.0);
+    let (dir, speed) = air_stick([2.0, 0.0], [-1.0, 0.0], 1.0, 1.0, AIR_DEAD);
     assert!(dir[0] < -0.99 && speed == 1.0, "{dir:?} {speed}");
     // A little past: a speed to end at under the one now, still forward.
-    let (dir, speed) = air_stick([1.0, 0.0], [-0.1, 0.0], 1.0, 1.0);
+    let (dir, speed) = air_stick([1.0, 0.0], [-0.1, 0.0], 1.0, 1.0, AIR_DEAD);
     assert!(
         dir[0] > 0.99 && speed * AIR_TOP < 1.0 && speed > 0.0,
         "{dir:?} {speed}"
     );
     // Short: a speed to end at over the one now.
-    let (dir, speed) = air_stick([0.5, 0.0], [0.2, 0.0], 1.0, 1.0);
+    let (dir, speed) = air_stick([0.5, 0.0], [0.2, 0.0], 1.0, 1.0, AIR_DEAD);
     assert!(dir[0] > 0.99 && speed * AIR_TOP > 0.5, "{dir:?} {speed}");
     // On it: the speed held.
-    let (dir, speed) = air_stick([0.6, 0.0], [0.01, 0.0], 1.0, 1.0);
+    let (dir, speed) = air_stick([0.6, 0.0], [0.01, 0.0], 1.0, 1.0, AIR_DEAD);
     assert!(
         dir[0] > 0.99 && (speed * AIR_TOP - 0.6).abs() < 1e-4,
         "{dir:?} {speed}"
     );
     // Short by more than the stick can make up in the time: all of it.
-    let (_, speed) = air_stick([0.0, 0.0], [2.0, 0.0], 0.5, 1.0);
+    let (_, speed) = air_stick([0.0, 0.0], [2.0, 0.0], 0.5, 1.0, AIR_DEAD);
     assert_eq!(speed, 1.0);
 }
 
@@ -1523,4 +1523,326 @@ fn a_goal_under_the_ramp_beside_it_is_walked_to_on_the_ramp() {
         }
     }
     panic!("never arrived: {at:?}");
+}
+
+// ---- learned knobs (docs/game/bounce-search.md) ----
+
+/// The fields of two [`Flown`]s that differ, by name.
+fn flown_diff(a: &Flown, b: &Flown) -> Vec<&'static str> {
+    let mut d = Vec::new();
+    let mut ne = |name, same: bool| {
+        if !same {
+            d.push(name);
+        }
+    };
+    ne("how", a.how == b.how);
+    ne("target", a.target == b.target);
+    ne("yaw", a.yaw == b.yaw);
+    ne("heading", a.heading == b.heading);
+    ne("back", a.back == b.back);
+    ne("stick", a.stick == b.stick);
+    ne("early", a.early == b.early);
+    ne("gain", a.gain == b.gain);
+    ne("letgo", a.letgo == b.letgo);
+    ne("drift", a.drift == b.drift);
+    ne("still", a.still == b.still);
+    d
+}
+
+#[test]
+fn no_knobs_fly_as_the_route_does() {
+    let tune = crate::tuning::BOUNCE_DEFAULT;
+    for (from, s) in [(RUN_OFF_FROM, run_off_site()), (JUMP_FROM, jump_site())] {
+        assert!(s.knobs.is_default());
+        let f = flown(&s, from, &tune);
+        // Today's expressions, field by field.
+        let model = drop_takeoff(from, &s, tune.run_off_speed);
+        let target = s.target();
+        assert_eq!(f.jump(), model.jump);
+        assert_eq!(f.how, if model.jump { How::Jump } else { How::Runoff });
+        assert_eq!(f.stick, model.stick);
+        assert_eq!(f.target, target);
+        assert_eq!(f.target, s.own_target());
+        assert_eq!(
+            f.heading,
+            norm([target[0] - from[0], target[1] - from[1]]).0
+        );
+        assert_eq!(f.yaw, 0.0);
+        assert_eq!(f.back, RUN_UP);
+        assert_eq!(f.early, TAKEOFF_EARLY);
+        assert_eq!(f.gain, tune.air_gain);
+        assert_eq!(f.letgo, AIR_DEAD);
+        assert_eq!(f.drift, tune.drift);
+        assert_eq!(f.still, tune.still_ticks);
+        assert_eq!(f.run_up(from), [from[0] - RUN_UP, from[1], from[2]]);
+    }
+    // A standing site: a standing jump at its own target.
+    let s = site(10.0, 0.0, 12.3);
+    let f = flown(&s, s.bounce.from(), &tune);
+    assert_eq!((f.how, f.target), (How::Stand, s.bounce.stand));
+    assert_eq!((f.drift, f.still), (tune.drift, tune.still_ticks));
+    // The launch point and the plan are the route's own.
+    assert_eq!(
+        launch_from(&run_off_site(), &|_| Some(RUN_OFF_FROM)),
+        Some(RUN_OFF_FROM)
+    );
+}
+
+#[test]
+fn a_knob_moves_only_its_own_number() {
+    let tune = crate::tuning::BOUNCE_DEFAULT;
+    let s = run_off_site();
+    let base = flown(&s, RUN_OFF_FROM, &tune);
+    let one = |k: Knobs| {
+        let with = Site { knobs: k, ..s };
+        flown_diff(&base, &flown(&with, RUN_OFF_FROM, &tune))
+    };
+    let k = Knobs::default;
+    assert_eq!(
+        one(Knobs {
+            yaw: Some(10.0),
+            ..k()
+        }),
+        ["yaw", "heading"]
+    );
+    assert_eq!(
+        one(Knobs {
+            back: Some(1.5),
+            ..k()
+        }),
+        ["back"]
+    );
+    assert_eq!(
+        one(Knobs {
+            run: Some(0.4),
+            ..k()
+        }),
+        ["stick"]
+    );
+    assert_eq!(
+        one(Knobs {
+            early: Some(0.2),
+            ..k()
+        }),
+        ["early"]
+    );
+    assert_eq!(
+        one(Knobs {
+            gain: Some(2.0),
+            ..k()
+        }),
+        ["gain"]
+    );
+    assert_eq!(
+        one(Knobs {
+            letgo: Some(0.1),
+            ..k()
+        }),
+        ["letgo"]
+    );
+    assert_eq!(
+        one(Knobs {
+            drift: Some(0.9),
+            ..k()
+        }),
+        ["drift"]
+    );
+    assert_eq!(
+        one(Knobs {
+            still: Some(20),
+            ..k()
+        }),
+        ["still"]
+    );
+    // The aim along the run's own line: the target moves, the heading and
+    // the takeoff do not.
+    assert_eq!(
+        one(Knobs {
+            aim: Some([1.53, 0.0]),
+            ..k()
+        }),
+        ["target"]
+    );
+    // A running jump where the route runs off.
+    let d = one(Knobs {
+        how: Some(How::Jump),
+        ..k()
+    });
+    assert_eq!(d.first(), Some(&"how"));
+    assert!(d.iter().all(|n| *n == "how" || *n == "stick"), "{d:?}");
+}
+
+#[test]
+fn learned_knobs_change_the_plan_aim_launch_back_run_and_how() {
+    let s = run_off_site();
+    // The aim: the target moves, the site's own target does not.
+    let aimed = Site {
+        knobs: Knobs {
+            aim: Some([1.6, 0.1]),
+            ..Knobs::default()
+        },
+        ..s
+    };
+    assert_eq!(aimed.target(), [1.6, 0.1, 0.0]);
+    assert_eq!(aimed.own_target(), s.target());
+    // The launch point: ahead of the spot's takeoff and the launch floor,
+    // and the plan drops from it.
+    let from = [-0.2, 0.3, 2.4];
+    let launched = Site {
+        knobs: Knobs {
+            from: Some(from),
+            ..Knobs::default()
+        },
+        ..s
+    };
+    assert_eq!(launch_from(&launched, &|_| Some(RUN_OFF_FROM)), Some(from));
+    let walk = |a: Vec3, b: Vec3| Some(dist3(a, b));
+    let plan = plan_site(
+        [-3.0, 0.0, 2.4],
+        true,
+        launched,
+        &known(vec![launched]),
+        &walk,
+        &|_| Some(RUN_OFF_FROM),
+    )
+    .expect("a plan");
+    assert!(
+        plan.steps
+            .iter()
+            .any(|st| matches!(st, Step::Drop { from: f, site } if *f == from && site.knobs == launched.knobs)),
+        "{:?}",
+        plan.steps
+    );
+    // `how`: a stand makes the drop site a standing jump, planned as one.
+    let stand = Site {
+        knobs: Knobs {
+            how: Some(How::Stand),
+            ..Knobs::default()
+        },
+        ..s
+    };
+    assert!(!s.standing() && stand.standing());
+    let plan = plan_site(
+        [-3.0, 0.0, 0.0],
+        true,
+        stand,
+        &known(vec![stand]),
+        &walk,
+        &|_| Some(RUN_OFF_FROM),
+    )
+    .expect("a plan");
+    assert!(
+        plan.steps.iter().any(|st| matches!(st, Step::Bounce(_))),
+        "{:?}",
+        plan.steps
+    );
+    // `back`: after the walk to the launch point, the run-up starts 1.2
+    // behind it.
+    let backed = Site {
+        knobs: Knobs {
+            back: Some(1.2),
+            ..Knobs::default()
+        },
+        ..s
+    };
+    let (_, seen) = play_drop_from(RUN_OFF_FROM, backed, true);
+    let arrived = seen
+        .iter()
+        .position(|(a, _)| (a[0] - RUN_OFF_FROM[0]).abs() < 0.3)
+        .expect("at the launch point");
+    assert!(
+        seen[arrived..]
+            .iter()
+            .any(|(a, _)| a[0] < RUN_OFF_FROM[0] - 1.2 + 0.2),
+        "no long run-up"
+    );
+    // `run`: the run at its stick, not the takeoff's full one: it leaves
+    // the floor at the walk's speed.
+    let slow = Site {
+        knobs: Knobs {
+            run: Some(0.6),
+            ..Knobs::default()
+        },
+        ..s
+    };
+    let ((_, run), _) = play_drop_from(RUN_OFF_FROM, slow, true);
+    let f = *run.flights().first().expect("a flight");
+    assert!(f.speed < 1.5, "{f:?}");
+    let ((_, run), _) = play_drop_from(RUN_OFF_FROM, s, true);
+    let f = *run.flights().first().expect("a flight");
+    assert!(f.speed > 1.5, "{f:?}");
+    // `how`: a running jump where the route runs off presses jump.
+    let jumped = Site {
+        knobs: Knobs {
+            how: Some(How::Jump),
+            ..Knobs::default()
+        },
+        ..s
+    };
+    let (_, seen) = play_drop_from(RUN_OFF_FROM, jumped, true);
+    assert!(seen.iter().any(|(_, m)| m.jump), "no jump");
+}
+
+#[test]
+fn a_training_loop_flies_the_boards_knobs_folds_its_tries_and_writes_the_file() {
+    use crate::learn::{Board, SiteIn, Train, Try};
+    let tune = crate::tuning::BOUNCE_DEFAULT;
+    let s = run_off_site();
+    let own = flown(&s, RUN_OFF_FROM, &tune);
+    let other = if own.jump() { How::Runoff } else { How::Jump };
+    let map = "train_fake_body";
+    let site_in = SiteIn {
+        at: s.bounce.stand,
+        hows: vec![own.how, other],
+        base: own.knobs(Some(RUN_OFF_FROM)),
+        run_off: tune.run_off_speed,
+        need: s.need,
+    };
+    let train = Train {
+        shard: 0,
+        shards: 1,
+        budget: 60,
+        seed: 1,
+    };
+    let mut board = Board::new(map, train, vec![site_in], &[]);
+    let dir = std::env::temp_dir().join(format!("h2-train-fake-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut rounds = 0;
+    while rounds < 4 {
+        let Some(i) = board.pick(1, RUN_OFF_FROM) else {
+            break;
+        };
+        let before = board.sites()[i].search.entry().tries;
+        let mut done: Vec<Try> = Vec::new();
+        while let Some(k) = board.next(i, &done) {
+            // The try flies the board's knobs over the site's.
+            let site = Site {
+                knobs: k.or(s.knobs),
+                ..s
+            };
+            let from = launch_from(&site, &|_| Some(RUN_OFF_FROM)).unwrap();
+            let ((_, run), _) = play_drop_from(from, site, true);
+            done.push(Try::from_leap(
+                run.flights().first(),
+                site.own_target(),
+                false,
+            ));
+            assert!(done.len() < 64, "a round that never ends");
+        }
+        assert!(!done.is_empty());
+        board.fold(i, &done).expect("a fold");
+        rounds += 1;
+        // Between rounds the board's lines go to the file.
+        let (_, all) = crate::spots::write_learned(&dir, map, &board.entries()).unwrap();
+        let back = crate::spots::read_learned(&dir, map).unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].tries, all[0].tries);
+        let scored = done.iter().filter(|t| t.scored()).count() as u32;
+        assert_eq!(back[0].tries, before + scored, "{:?}", back[0]);
+    }
+    assert!(rounds >= 1);
+    let line = &crate::spots::read_learned(&dir, map).unwrap()[0];
+    // The route's own run-off bounces on this body: the arms round saw it.
+    assert!(line.hits > 0, "{line:?}");
+    let _ = std::fs::remove_dir_all(&dir);
 }

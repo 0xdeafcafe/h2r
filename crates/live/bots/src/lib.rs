@@ -703,6 +703,8 @@ impl Brain {
         // The superbounce mode's practice (mind::practice).
         self.mind.set_practice(practising());
         self.mind.set_drill(drill::current());
+        // A sim's training run (docs/game/bounce-search.md).
+        self.mind.set_train(learn::current(), &self.map);
         self.kills_seen = cursor;
         let p = &mut observation.perception;
         let alive = p.me.is_some();

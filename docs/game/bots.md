@@ -1664,6 +1664,29 @@ point (`Site::aim`) and drop height (`Site::height`). The game sets the
 file's directory when it starts (`spots::set_verified_dir`, from
 `bots_nav_auto`).
 
+**Learned knobs.** The map's learned file (`<data>/bots/<map>.learned`,
+written by a sim's training run, [bounce-search.md](bounce-search.md)) is
+read from the same directory (`spots::learned_for`, cached;
+`spots::store_learned` replaces a site's line after a training round and
+bumps `spots::generation`). `Known::for_map` gives each site its line's
+knobs (`Site::knobs`, by `Site::learned`: the knobs of an `open`,
+`partial` or `learned` line, `superbounce::learned::knobs_for`) and the
+line's state (`Site::line`). A site whose line is `dead` is left out, as a
+failed one is, unless it is proven (measured, or proven by a verified
+entry); a `blocked` line changes nothing. A knob no line sets is the
+route's own: `bounce_route::flown(site, from, tune)` makes each of a
+site's numbers (`Flown`: the `how`, the target, the heading off the
+launch-to-target line by `yaw`, the run-up `back`, the run's stick, the
+jump's `early`, the air stick's `gain` and let-go distance, a standing
+jump's `drift` and `still`) from the knob, else the expression below, and
+the drop, its air steering and the standing bounce read `Flown` alone for
+them. A line's `fx fy fz` is the launch point ahead of the takeoff and the
+launch floor (`bounce_route::launch_from`), its `ax ay` the target ahead
+of the verified aim and the stand (`Site::target`; `Site::own_target` is
+the target without the line), and its `how` says whether the site is a
+standing jump or a drop (`Site::standing`). A site with no line plays
+exactly as it would without the file.
+
 `bounce_route::plan` plans a route from the bot to a point, purely, from
 a walk-length function over the nav mesh:
 
@@ -1705,8 +1728,10 @@ a walk-length function over the nav mesh:
    tuning's slower `run_off_speed` that can; else a **running jump** at
    full stick, then at `run_off_speed`, that comes down fast enough and
    gets there; failing all, of those fast enough the one whose aim is
-   least out of reach. Either way the drop lines up 0.6 behind the launch
-   point (45 ticks at most) and runs at the aim at that stick, steered
+   least out of reach (a learned `how` picks the run-off or the jump, and
+   `run` the stick). Either way the drop lines up 0.6 behind the launch
+   point (a learned `back`; 45 ticks at most) and runs at the aim (turned
+   by a learned `yaw`) at that stick, steered
    back onto the line through the launch point (60 ticks to leave the
    floor, else `no_drop`). A running jump presses A 0.05 short of the
    launch point plus the ground the body covers in the 5 ticks it takes
@@ -1720,7 +1745,8 @@ a walk-length function over the nav mesh:
    the body is once the stick acts and the fall left then, against the
    aim, it asks for the speed that, reached at 1.05 units/s² and then
    held, lands on the aim, 1.2 times the change that is just enough
-   (`air_gain`); within 0.03 it holds the speed, and a landing more than
+   (`air_gain`, or a learned `gain`); within 0.03 (`AIR_DEAD`, or a
+   learned `letgo`) it holds the speed, and a landing more than
    0.3 past the aim, or a miss it can't make up in the time, gets the
    full stick. Every stick is at least 0.2 or none: under the move dead
    zone (0.15) the body doesn't move. A measured spot aims at its traced
@@ -1853,8 +1879,9 @@ is a practice loop (`mind::practice`, ahead of everything else in
 1. stand a moment, looking round (20 to 60 ticks at first, then 45 to
    150 between tries, drawn each time);
 2. pick a site within 120 units that a route reaches: weighed by
-   distance (−1 a 60 units), a proven site +2, one another bot practises
-   at −3, the one just tried −1.5, plus a random 0 to 0.8, the best
+   distance (−1 a 60 units), a proven site +2, a site the learned file
+   calls `learned` +1, one another bot practises at −3, the one just
+   tried −1.5, plus a random 0 to 0.8, the best
    weighed first. A failed try blacklists the site for a while
    (`Stuck::blacklist`), so the next try is somewhere else, and counts
    against what it failed at (below). With no
@@ -1921,6 +1948,31 @@ says so (`OrderRun::primed_read`: `primed_read`, and a practice event
 site it found (`bots: bounce drill: site ... (a drop), aim ..., start
 ..., N sites known`), after any `no known site` said while the map's
 spots were still coming in.
+
+**Training.** A sim match's `[train]` ([bounce-search.md](bounce-search.md),
+"Scheduling a batch") makes the practice fly the run's board instead
+(`Mind::set_train`, from `learn::current`; `learn::shared` keeps the
+board, built at the first pick from the known sites once the map's scan
+is in, `practice::site_in`: each site's allowed `how`s and the route's own
+knobs from `flown`, and its line of the learned file). A free bot takes
+the board's pick (`learn::Board::pick`) and flies the round's slots one
+after another, each as a drill try: the try's site is the known site
+with the search's knobs over its own, the bot walks to its approach (a
+drop's launch point), asks for the word as the drill does (the same
+`drill_wants_arm` and `drill::request_arm`), and runs the route by the
+site from there. One flight is a try: a landing that did not launch ends
+the route (`try_over`). The try is the route's first flight
+(`learn::Try::from_leap`, the miss from `Site::own_target`); a `died` is a
+scored try with a death; an end that says nothing about the knobs is
+void (`map_changed`, `practice_off`, `pair_lost`, `no_route`, a walk that
+failed, and the training's own `no_site`, `no_launch_floor`, `no_path`
+after 3 walks to the start, `not_armed` after 3 wake-ups). When the
+search has no slot left the round folds (`Board::fold`), the log says
+`bots: train: site (...) round N ...`, and the board's lines go to the
+map's learned file (`spots::store_learned`). Each try logs its line with
+`train` in place of `drill` and the knobs it flew appended (`; knobs
+how=runoff ax=... back=...`, `practice::knobs_text`). `bots.bounce_status`
+gives the round (`practice.train`).
 
 **The try's line.** Every tallied try, drilled or practised, logs one
 line (`mind::practice::try_line`):

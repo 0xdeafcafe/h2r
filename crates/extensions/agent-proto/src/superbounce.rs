@@ -445,6 +445,10 @@ pub struct SpotRecord {
     /// candidate for the verifier). Crouch: `slot`.
     #[serde(default = "slot")]
     pub shape: String,
+    /// Bounce: the spot's line of the map's learned file, when it has one
+    /// (docs/game/bounce-search.md).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub learned: Option<crate::bot_bounce::SpotLearned>,
 }
 
 fn slot() -> String {

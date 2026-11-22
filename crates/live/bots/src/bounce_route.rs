@@ -28,6 +28,8 @@ use crate::glitches::prime::{Geo, PrimeRun, Primed, is_primed};
 use crate::mind::RouteMotion;
 use crate::nav::RouteWalk;
 use crate::spots::{Crouch, Known, Site, dist_xy};
+use crate::tuning::BounceTuning;
+use superbounce::learned::{How, Knobs};
 
 // ---- the map's walks and launch floors ----
 
@@ -52,11 +54,12 @@ pub fn launch_floor(m: &MapData, s: &Site) -> Option<Vec3> {
         .map(|(_, p)| p)
 }
 
-/// Where a drop onto `s` is taken from: the spot's own takeoff (a
-/// measured recipe's, [`crate::glitches::Bounce::takeoff`]), else what
+/// Where a drop onto `s` is taken from: the learned launch point
+/// (`fx fy fz`, docs/game/bounce-search.md), else the spot's own takeoff
+/// (a measured recipe's, [`crate::glitches::Bounce::takeoff`]), else what
 /// `ledge` finds ([`launch_floor`] in play).
 pub fn launch_from(s: &Site, ledge: Ledge) -> Option<Vec3> {
-    s.bounce.takeoff.or_else(|| ledge(s))
+    s.knobs.from.or(s.bounce.takeoff).or_else(|| ledge(s))
 }
 
 /// The length of the walk along the nav mesh from `from` to `to`: the
@@ -973,15 +976,16 @@ pub fn drop_takeoff(from: Vec3, site: &Site, slow: f32) -> Takeoff {
 /// the sideways speed toward the stick times [`AIR_TOP`] at
 /// [`AIR_ACCEL`], so the stick says the speed to end at: the one that,
 /// reached at that rate and then held, puts the landing on the target,
-/// the change `gain` times what is just enough. A miss under [`AIR_DEAD`]
-/// holds the speed; one the stick can't make up in the time left, or a
-/// landing [`AIR_PAST`] beyond the target along the flight, is the full
-/// stick toward the target's side.
-pub fn air_stick(v: [f32; 2], miss: [f32; 2], rem: f32, gain: f32) -> ([f32; 2], f32) {
+/// the change `gain` times what is just enough. A miss under `letgo`
+/// ([`AIR_DEAD`] unless a learned line says, [`Flown::letgo`]) holds the
+/// speed; one the stick can't make up in the time left, or a landing
+/// [`AIR_PAST`] beyond the target along the flight, is the full stick
+/// toward the target's side.
+pub fn air_stick(v: [f32; 2], miss: [f32; 2], rem: f32, gain: f32, letgo: f32) -> ([f32; 2], f32) {
     let (to, off) = norm(miss);
     let (along, speed) = norm(v);
     let past = -(miss[0] * along[0] + miss[1] * along[1]);
-    let want = if off < AIR_DEAD {
+    let want = if off < letgo {
         v
     } else if past > AIR_PAST && speed > 0.0 {
         return (to, 1.0);
@@ -1002,6 +1006,143 @@ pub fn air_stick(v: [f32; 2], miss: [f32; 2], rem: f32, gain: f32) -> ([f32; 2],
     let (dir, mag) = norm([want[0] / AIR_TOP, want[1] / AIR_TOP]);
     let mag = mag.min(1.0);
     (dir, if mag < MIN_STICK { 0.0 } else { mag })
+}
+
+// ---- the knobs a site is flown with ----
+
+/// The numbers a route flies a site by (docs/game/bounce-search.md, "How
+/// the route uses a line"): each is the site's learned knob
+/// ([`Site::knobs`]) when its line sets one, else the route's own. Made by
+/// [`flown`], the one place a knob meets the route; [`OrderRun`]'s drop,
+/// its air steering and its standing bounce read these and nothing else
+/// for them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Flown {
+    /// A run off the edge, a running jump, or a standing jump.
+    pub how: How,
+    /// Where it lands: [`Site::target`] (the learned aim first).
+    pub target: Vec3,
+    /// Degrees the run turns off the launch-to-target line, and the run's
+    /// heading (unit, X and Y) it makes.
+    pub yaw: f32,
+    pub heading: [f32; 2],
+    /// How far behind the launch point the run starts ([`RUN_UP`]).
+    pub back: f32,
+    /// The run's stick ([`drop_takeoff`]'s).
+    pub stick: f32,
+    /// The jump is pressed this far short of the launch point
+    /// ([`TAKEOFF_EARLY`]).
+    pub early: f32,
+    /// The air stick's correction (the tuning's `air_gain`) and where it
+    /// lets go ([`AIR_DEAD`]).
+    pub gain: f32,
+    pub letgo: f32,
+    /// A standing jump's air stick toward the drift (the tuning's
+    /// `drift`) and its stand before the jump (`still_ticks`).
+    pub drift: f32,
+    pub still: u32,
+}
+
+impl Flown {
+    /// A running jump.
+    pub fn jump(&self) -> bool {
+        self.how == How::Jump
+    }
+
+    /// Where a drop from `from` lines up: [`Flown::back`] behind it,
+    /// against the heading.
+    pub fn run_up(&self, from: Vec3) -> Vec3 {
+        [
+            from[0] - self.heading[0] * self.back,
+            from[1] - self.heading[1] * self.back,
+            from[2],
+        ]
+    }
+
+    /// The same numbers as knobs, every one its `how` uses set (and the
+    /// launch point `from`, a drop's): the search's centre for a site with
+    /// no line (`learn::Setup::base`).
+    pub fn knobs(&self, from: Option<Vec3>) -> Knobs {
+        Knobs {
+            how: Some(self.how),
+            from,
+            aim: Some([self.target[0], self.target[1]]),
+            yaw: Some(self.yaw),
+            back: Some(self.back),
+            run: Some(self.stick),
+            early: Some(self.early),
+            gain: Some(self.gain),
+            letgo: Some(self.letgo),
+            drift: Some(self.drift),
+            still: Some(self.still),
+        }
+        .for_how()
+    }
+}
+
+/// The best takeoff from `from` onto `site` that jumps (or not) as `jump`
+/// says, as [`drop_takeoff`] picks among its own: one that reaches and
+/// comes down fast enough, at full stick then at `slow`; else the one
+/// least outside its reach.
+fn takeoff_as(from: Vec3, site: &Site, slow: f32, jump: bool) -> Option<Takeoff> {
+    let all: Vec<Takeoff> = [1.0, slow]
+        .iter()
+        .filter_map(|&stick| takeoff(from, site, stick, jump))
+        .collect();
+    all.iter()
+        .find(|t| t.reaches() && t.fast_enough(site.need))
+        .or_else(|| all.iter().min_by(|a, b| a.off().total_cmp(&b.off())))
+        .copied()
+}
+
+/// How `site` is flown from the launch point `from` (a standing site: its
+/// approach; only the heading reads it) with the route's tuning `tune`:
+/// each knob the site's line sets, else the route's own value
+/// (docs/game/bounce-search.md, "The knobs"). With no knob set it is
+/// exactly what the route plays without a learned file. A drop's `how`
+/// with no `run` set takes the stick [`drop_takeoff`] would for that
+/// `how`.
+pub fn flown(site: &Site, from: Vec3, tune: &BounceTuning) -> Flown {
+    let k = site.knobs;
+    let target = site.target();
+    let (line, _) = norm([target[0] - from[0], target[1] - from[1]]);
+    let yaw = k.yaw.unwrap_or(0.0);
+    let heading = if yaw == 0.0 {
+        line
+    } else {
+        let (s, c) = yaw.to_radians().sin_cos();
+        [line[0] * c - line[1] * s, line[0] * s + line[1] * c]
+    };
+    let (how, stick) = if site.standing() {
+        (How::Stand, k.run.unwrap_or(1.0))
+    } else {
+        let model = drop_takeoff(from, site, tune.run_off_speed);
+        let jump = match k.how {
+            Some(h) => h == How::Jump,
+            None => model.jump,
+        };
+        let stick = k.run.unwrap_or_else(|| {
+            if jump == model.jump {
+                model.stick
+            } else {
+                takeoff_as(from, site, tune.run_off_speed, jump).map_or(1.0, |t| t.stick)
+            }
+        });
+        (if jump { How::Jump } else { How::Runoff }, stick)
+    };
+    Flown {
+        how,
+        target,
+        yaw,
+        heading,
+        back: k.back.unwrap_or(RUN_UP),
+        stick,
+        early: k.early.unwrap_or(TAKEOFF_EARLY),
+        gain: k.gain.unwrap_or(tune.air_gain),
+        letgo: k.letgo.unwrap_or(AIR_DEAD),
+        drift: k.drift.unwrap_or(tune.drift),
+        still: k.still.unwrap_or(tune.still_ticks),
+    }
 }
 
 /// A drop's phase.
@@ -1701,9 +1842,16 @@ impl OrderRun {
     ) -> Result<Option<RouteMotion>, &'static str> {
         if matches!(self.state, State::Fresh) {
             let seed = self.seed ^ u64::from(tick);
+            let f = flown(&site, site.bounce.from(), &self.tune);
             let mut b = site.bounce;
-            b.stand = site.target();
-            self.state = State::Bounce(BounceRun::new(b, self.tune.bounce_tries, tick, seed));
+            b.stand = f.target;
+            let tune = BounceTuning {
+                drift: f.drift,
+                still_ticks: f.still,
+                ..self.tune
+            };
+            self.state =
+                State::Bounce(BounceRun::new(b, self.tune.bounce_tries, tick, seed).tuned(tune));
         }
         let State::Bounce(run) = &mut self.state else {
             return Err("state");
@@ -1734,13 +1882,15 @@ impl OrderRun {
         }))
     }
 
-    /// Off the launch floor at `from` and down onto the site's target, the
-    /// way [`drop_takeoff`] picks: line up [`RUN_UP`] behind `from`, run
-    /// at the target at the takeoff's stick, steered back onto the line
-    /// through `from`, and either run off the edge or, a running jump,
-    /// press jump short of `from` by [`TAKEOFF_EARLY`] and the ground the
-    /// body covers in [`INPUT_LAG`], holding the run until the body leaves
-    /// the floor. In the air steer the landing onto the target
+    /// Off the launch floor at `from` and down onto the site's target, as
+    /// [`flown`] says (the site's learned knobs, else the route's own: the
+    /// way [`drop_takeoff`] picks): line up [`Flown::back`] ([`RUN_UP`])
+    /// behind `from`, run along the heading at the takeoff's stick,
+    /// steered back onto the line through `from`, and either run off the
+    /// edge or, a running jump, press jump short of `from` by
+    /// [`Flown::early`] ([`TAKEOFF_EARLY`]) and the ground the body covers
+    /// in [`INPUT_LAG`], holding the run until the body leaves the floor.
+    /// In the air steer the landing onto the target
     /// ([`OrderRun::drop_air`]). Then see whether it launched.
     fn drop(
         &mut self,
@@ -1757,9 +1907,8 @@ impl OrderRun {
             return Err("state");
         };
         let t = self.tune;
-        let target = site.target();
-        let how = drop_takeoff(from, &site, t.run_off_speed);
-        let (heading, _) = norm([target[0] - from[0], target[1] - from[1]]);
+        let f = flown(&site, from, &t);
+        let heading = f.heading;
         let face = Some(heading[1].atan2(heading[0]));
         let motion = |dir: [f32; 2], speed: f32, jump: bool| RouteMotion {
             dir,
@@ -1779,16 +1928,12 @@ impl OrderRun {
                 heading[0] + side[0] * lateral,
                 heading[1] + side[1] * lateral,
             ]);
-            motion(dir, how.stick.max(MIN_STICK), false)
+            motion(dir, f.stick.max(MIN_STICK), false)
         };
         let on_floor = |at: Vec3| (at[2] - from[2]).abs() < LEFT_FLOOR && v[2].abs() < FALLING;
         match *d {
             Dropping::Line(since) => {
-                let back = [
-                    from[0] - heading[0] * RUN_UP,
-                    from[1] - heading[1] * RUN_UP,
-                    from[2],
-                ];
+                let back = f.run_up(from);
                 let (to_back, off) = norm([back[0] - at[0], back[1] - at[1]]);
                 if off <= t.line_up || tick.wrapping_sub(since) > t.line_up_ticks {
                     *d = Dropping::Run(tick);
@@ -1808,12 +1953,12 @@ impl OrderRun {
                         top: at[2],
                         low: None,
                     };
-                    return Ok(Some(self.drop_air(target, at, v)));
+                    return Ok(Some(self.drop_air(&f, at, v)));
                 }
                 let past = (at[0] - from[0]) * heading[0] + (at[1] - from[1]) * heading[1];
                 let have = (v[0] * heading[0] + v[1] * heading[1]).max(0.0);
-                let lead = TAKEOFF_EARLY + have * INPUT_LAG as f32 / TICKS;
-                if how.jump && past >= -lead {
+                let lead = f.early + have * INPUT_LAG as f32 / TICKS;
+                if f.jump() && past >= -lead {
                     *d = Dropping::Jump(tick);
                     let mut m = run(at);
                     m.jump = true;
@@ -1841,7 +1986,7 @@ impl OrderRun {
                     top: at[2],
                     low: None,
                 };
-                Ok(Some(self.drop_air(target, at, v)))
+                Ok(Some(self.drop_air(&f, at, v)))
             }
             Dropping::Air { since, top, low } => {
                 let top = top.max(at[2]);
@@ -1868,7 +2013,7 @@ impl OrderRun {
                         Err("no_bounce")
                     };
                 }
-                Ok(Some(self.drop_air(target, at, v)))
+                Ok(Some(self.drop_air(&f, at, v)))
             }
         }
     }
@@ -1876,8 +2021,10 @@ impl OrderRun {
     /// The stick in the air ([`air_stick`]): where the landing comes down
     /// with the sideways speed held, from where the body will be once the
     /// stick acts ([`INPUT_LAG`] on) and the fall left then, against the
-    /// target; the tuning's `air_gain`.
-    fn drop_air(&self, target: Vec3, at: Vec3, v: Vec3) -> RouteMotion {
+    /// target; [`Flown::gain`] (the tuning's `air_gain`) and
+    /// [`Flown::letgo`].
+    fn drop_air(&self, f: &Flown, at: Vec3, v: Vec3) -> RouteMotion {
+        let target = f.target;
         let lag = INPUT_LAG as f32 / TICKS;
         let rem = fall_time(at[2] - target[2], v[2]).unwrap_or(0.0);
         let rem_after = (rem - lag).max(1.0 / TICKS);
@@ -1887,7 +2034,7 @@ impl OrderRun {
             at[1] + v[1] * (ahead + rem_after),
         ];
         let miss = [target[0] - lands[0], target[1] - lands[1]];
-        let (dir, speed) = air_stick([v[0], v[1]], miss, rem_after, self.tune.air_gain);
+        let (dir, speed) = air_stick([v[0], v[1]], miss, rem_after, f.gain, f.letgo);
         let (to_target, _) = norm([target[0] - at[0], target[1] - at[1]]);
         RouteMotion {
             dir,
