@@ -3,7 +3,7 @@ use super::OutDir;
 use anyhow::{Context, Result, bail, ensure};
 use std::fs;
 use std::path::{Path, PathBuf};
-use viewer::split::{self, LightId};
+use super::solver::{self as split, LightId};
 
 const USAGE: &str = "usage: h2 lighting split <map> [--bsp N] [--light ID] [--disc ISO] --out DIR
 BSP and light default to 0. A number selects a sky light in BSP sky order.

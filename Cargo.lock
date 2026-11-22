@@ -1014,6 +1014,7 @@ dependencies = [
  "forge",
  "forge-build",
  "forge-doc",
+ "gfx",
  "gltf",
  "h1-assets",
  "h1campaign",
@@ -1068,7 +1069,6 @@ dependencies = [
  "ureq",
  "variants",
  "vfs",
- "viewer",
  "voice",
  "windows-sys 0.61.2",
  "wma",
@@ -7719,26 +7719,6 @@ dependencies = [
  "memmap2",
  "rustix 1.1.6",
  "thiserror 2.0.21",
- "xiso",
-]
-
-[[package]]
-name = "viewer"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "assets",
- "bytemuck",
- "content",
- "gfx",
- "h1-assets",
- "map",
- "pollster",
- "scenario-edit",
- "shaders",
- "tags",
- "wgpu",
- "winit",
  "xiso",
 ]
 

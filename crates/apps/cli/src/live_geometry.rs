@@ -1689,7 +1689,7 @@ impl RawSource for Raw<'_> {
 pub(crate) type MapReader = Map<BufReader<File>>;
 
 /// The scenario's BSP tags: block at +0x210, stride 0x44, BSP tag ID at
-/// +0x14 (as `viewer/src/bin/bsp.rs` reads it).
+/// +0x14.
 pub(crate) fn scenario_bsps(map: &mut MapReader) -> Result<Vec<TagId>> {
     let scenario = map.scenario().context("no scenario")?.clone();
     let location = scenario.location.context("scenario has no payload")?;

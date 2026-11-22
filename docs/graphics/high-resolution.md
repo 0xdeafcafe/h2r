@@ -340,9 +340,8 @@ Three details:
 Reported on Burial Mounds at about 4K: a thin see-through line along a seam
 in the terrain, over the clear colour, not seen at 640x480.
 
-**The geometry is closed.** `viewer`'s `bsp_cracks` (reads your disc,
-prints counts only) welds a BSP's drawn cluster triangles by their exact
-position bits and classifies every edge one triangle uses. Burial Mounds
+**The geometry is closed.** `bsp_cracks`, a tool since removed from `viewer`, welded a BSP's drawn cluster triangles by their exact
+position bits and classified every edge one triangle uses. Burial Mounds
 (9,666 triangles, 27 clusters): no T-junction and no near-coincident
 unwelded edge at a 0.001 or 0.05 world-unit tolerance; 58 open edges, all
 the level's border. 1,964 shared edges lie between triangles drawn by

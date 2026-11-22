@@ -433,14 +433,9 @@ model cross-checks. The root
 there. `ModeGeometryHeader` is a second view of the same `0x84` bytes, used
 only by the geometry decoder.
 
-To display a model, run `cargo run -p viewer -- <map> <tag>`. To decode every
-`mode` tag on the disc, run `cargo run -p viewer -- --all all`. The `--all`
-run exits nonzero if any of these happen:
-
-- a map fails to open, or a tag fails to decode;
-- any zero-tolerance check fails (triangle counts, tiling, weights, material
-  references);
-- any thresholded counter exceeds its limit in `viewer/src/validate.rs`.
+Studio's model viewer displays a model. The `D` evidence
+below came from a sweep of every `mode` tag on the disc by a standalone viewer
+that has been removed (`git log -- crates/tools/viewer`); nothing repeats it.
 
 ### Evidence and names
 
@@ -449,7 +444,7 @@ Evidence labels in this section:
 - **E**: the engine's own code reads the field. Addresses are in the retail XBE
   and can be checked with `cargo h2 disasm`.
 - **D**: disc evidence, checked on all 4,222 `mode` tags in all 30 maps by
-  `viewer --all`.
+  the removed viewer's `--all` sweep.
 
 Names follow two rules:
 
