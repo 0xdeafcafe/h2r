@@ -453,7 +453,9 @@ mod tests {
         let seats = Phantoms::default();
         assert_eq!(stats(json!(null), &seats).unwrap(), json!({
             "bots": [], "maintenance": {
-                "frames": 0, "unchanged_lobby_frames": 0, "total_ns": 0, "max_ns": 0
+                "frames": 0, "unchanged_lobby_frames": 0, "total_ns": 0, "max_ns": 0,
+                "write_frames": 0, "props_writes": 0, "identity_writes": 0, "team_moves": 0,
+                "props_diff_chunks": 0
             }
         }));
         seats.add(

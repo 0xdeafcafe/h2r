@@ -995,11 +995,14 @@ mod lobby {
             c[CONFIG_TEAM] = 0;
             add_player(&mut g, S, p, player_id(i as u64 + 1, mac), &c).unwrap();
         }
+        let update = g.u32(S + UPDATE).unwrap();
         let moved = rebalance(&mut g, S, &[1, 2, 3]).unwrap();
         assert_eq!(moved, vec![(1, 0, 1), (2, 0, 1)], "2 against 2");
+        assert_eq!(g.u32(S + UPDATE).unwrap(), update + 1, "one bump for both moves");
         assert_eq!(team_of(&g, 1), (1, 1), "requested and effective");
         assert_eq!(team_of(&g, 3), (0, 0));
         assert!(rebalance(&mut g, S, &[1, 2, 3]).unwrap().is_empty(), "even");
+        assert_eq!(g.u32(S + UPDATE).unwrap(), update + 1, "no move, no bump");
         // The host goes blue: 1 red against 3 blue, so one comes back.
         g.put_u8(S + PLAYERS + P_EFFECTIVE + CONFIG_TEAM as u32, 1);
         assert_eq!(rebalance(&mut g, S, &[1, 2, 3]).unwrap(), vec![(1, 1, 0)]);
@@ -1194,6 +1197,77 @@ mod lobby {
         ph.tick(&mut g, 15).unwrap();
         assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 4);
         assert_eq!(ph.maintenance().frames, 16);
+    }
+
+    #[test]
+    fn a_frame_of_repairs_moves_the_membership_counters_once() {
+        let ph = Phantoms::default();
+        for n in 1..=4 {
+            ph.add(who(n, &format!("Seat {n}")), None, idle()).unwrap();
+        }
+        let mut g = lobby();
+        ph.tick(&mut g, 0).unwrap();
+        ph.tick(&mut g, 1).unwrap();
+        let before = ph.maintenance();
+        let (update, changes) = (g.u32(S + UPDATE).unwrap(), g.u32(S + CHANGES).unwrap());
+
+        // The host's map status moves (every phantom's properties follow it)
+        // and the host rebuilt one phantom's effective name.
+        g.put_u32(S + PEERS + PEER_MAP_STATUS, 2);
+        g.put_u16(S + PLAYERS + PLAYER_SIZE + P_EFFECTIVE, 0);
+        ph.tick(&mut g, 2).unwrap();
+        for p in 1..=4 {
+            assert_eq!(g.u32(S + PEERS + p * PEER_SIZE + PEER_MAP_STATUS).unwrap(), 2);
+        }
+        assert_eq!(g.u16(S + PLAYERS + PLAYER_SIZE + P_EFFECTIVE).unwrap(), MARK as u16);
+        assert_eq!(g.u32(S + UPDATE).unwrap(), update.wrapping_add(1), "one bump for five repairs");
+        assert_eq!(g.u32(S + CHANGES).unwrap(), changes.wrapping_add(1));
+        let after = ph.maintenance();
+        assert_eq!(after.props_writes - before.props_writes, 4);
+        assert_eq!(after.identity_writes - before.identity_writes, 1);
+        assert_eq!(after.write_frames - before.write_frames, 1);
+        // The map status is properties +0x60: chunk 12.
+        assert_ne!(after.props_diff_chunks & 1 << 12, 0, "{:#x}", after.props_diff_chunks);
+
+        // Repaired: the next frames write nothing.
+        for frame in 3..6 {
+            assert!(ph.tick(&mut g, frame).unwrap().is_empty());
+        }
+        assert_eq!(g.u32(S + UPDATE).unwrap(), update.wrapping_add(1));
+        assert_eq!(ph.maintenance().write_frames, after.write_frames);
+    }
+
+    #[test]
+    fn a_repair_the_game_undoes_every_frame_is_said_once_per_run() {
+        use crate::phantom::CHURN_FRAMES;
+        let ph = Phantoms::default();
+        ph.add(who(1, "Seat 1"), None, idle()).unwrap();
+        let mut g = lobby();
+        ph.tick(&mut g, 0).unwrap();
+        ph.tick(&mut g, 1).unwrap();
+        let profile = S + PLAYERS + PLAYER_SIZE + P_EFFECTIVE;
+        let churn = |log: &[String]| log.iter().filter(|l| l.contains("rewritten on")).count();
+        let mut said = 0;
+        let mut frame = 2;
+        for _ in 0..2 * CHURN_FRAMES {
+            g.put_u16(profile, 0);
+            said += churn(&ph.tick(&mut g, frame).unwrap());
+            frame += 1;
+        }
+        assert_eq!(said, 1);
+        let writes = ph.maintenance().write_frames;
+        assert!(writes >= u64::from(2 * CHURN_FRAMES), "{writes}");
+
+        // A quiet frame ends the run; the next run is said again.
+        assert_eq!(churn(&ph.tick(&mut g, frame).unwrap()), 0);
+        frame += 1;
+        said = 0;
+        for _ in 0..CHURN_FRAMES {
+            g.put_u16(profile, 0);
+            said += churn(&ph.tick(&mut g, frame).unwrap());
+            frame += 1;
+        }
+        assert_eq!(said, 1);
     }
 
     #[test]
