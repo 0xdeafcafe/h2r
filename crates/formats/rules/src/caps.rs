@@ -18,6 +18,25 @@ pub struct Capability {
     pub grantable: bool,
     /// The API version that added it.
     pub since: u16,
+    /// The carriers (retail engine indices, [`CARRIERS`]) a host makes the
+    /// call on; `None` for every carrier. The engine routine behind such an
+    /// entry is one engine's own (`role_traits` sets Juggernaut's role mask).
+    pub hosts: Option<&'static [u8]>,
+}
+
+impl Entry {
+    /// Whether a host can make the call in a script that rides `carrier`.
+    /// A host refuses a script that calls an entry it cannot, naming the
+    /// entry; nothing runs with a call stubbed out.
+    pub fn hostable_on(&self, carrier: u8) -> bool {
+        self.status.hostable() && self.hosts.is_none_or(|h| h.contains(&carrier))
+    }
+}
+
+/// The name a script's header gives the carrier `engine` (`carrier slayer`),
+/// or `None` for an index no script rides.
+pub fn carrier_name(engine: u8) -> Option<&'static str> {
+    CARRIERS.iter().find(|&&(_, e)| e == engine).map(|&(n, _)| n)
 }
 
 const fn cap(name: &'static str, words: &'static str, grantable: bool) -> Capability {
@@ -126,6 +145,7 @@ const fn read(id: u16, name: &'static str, args: &'static [Ty], result: Ty, stat
         order: Order::Now,
         status,
         since: 1,
+        hosts: None,
     }
 }
 
@@ -147,6 +167,7 @@ const fn act(
         order,
         status,
         since: 1,
+        hosts: None,
     }
 }
 
@@ -161,10 +182,16 @@ const fn vm(id: u16, name: &'static str, args: &'static [Ty], result: Ty) -> Ent
         order: Order::Now,
         status: Status::VmOnly,
         since: 1,
+        hosts: None,
     }
 }
 
 use self::Order::{Now, Queued};
+
+/// The carriers of the entries one engine's routine makes.
+const ON_JUGGERNAUT: &[u8] = &[7];
+const ON_ODDBALL: &[u8] = &[3];
+
 use self::Status::{Named, NotBuilt, Traced, Untraced};
 use crate::ty::Ty::{Bool, Class, Fixed, Int, Label, Object, Player, Squad, Tag, Team, Text};
 
@@ -300,15 +327,27 @@ pub const ENTRIES: &[Entry] = &[
     // Create an objective at a placement and register it with a team, as
     // the CTF/Assault flag spawn `0x2422d0` and Oddball's `0x2bc1f0` do.
     act(id::SPAWN_OBJECTIVE, "spawn_objective", &[Tag, Object, Team], None, Queued, Traced),
-    // Return an objective to where it spawned; the lifted engines' return
-    // path is not traced.
-    act(id::RESET_OBJECTIVE, "reset_objective", &[Object], None, Queued, Untraced),
-    // Apply (or clear) the carrier engine's role traits from the variant's
-    // type area: ball or flag carrier, the Juggernaut (with its bit of the
-    // role mask `[0x510c9c]+0`). Each engine answers traits through its
-    // vtable slot `+0x8c` (docs/engine/notes/2026-11-21-engine-vtables.md);
-    // which traits each role gets is not read.
-    act(id::ROLE_TRAITS, "role_traits", &[Player, Bool], None, Now, Untraced),
+    // Return an objective to where it spawned. A host makes it on Oddball,
+    // through the engine's own ball return `ODDBALL_BALL_RETURN` `0x2bc340`
+    // (the ball's spawn flag, then the shared objective return `0x15e360`);
+    // the other engines' return paths are not named
+    // (docs/engine/notes/2026-11-22-script-scoring-and-roles.md).
+    Entry {
+        hosts: Some(ON_ODDBALL),
+        ..act(id::RESET_OBJECTIVE, "reset_objective", &[Object], None, Queued, Named)
+    },
+    // Give (or take) the carrier engine's role and its traits from the
+    // variant's type area. A host makes it on Juggernaut, through the
+    // engine's own role setter `JUGGERNAUT_ROLE_SET` `0x192970` (the
+    // player's bit of the role mask `[0x510c9c]+0`), whose trait query
+    // `0x1926c0` then answers the Juggernaut traits. Oddball and CTF give
+    // their carrier traits to whoever holds the objective (`0x2bcc90`), so
+    // a script there has no role to give; Slayer, King and Territories have
+    // no role traits (docs/engine/notes/2026-11-22-script-scoring-and-roles.md).
+    Entry {
+        hosts: Some(ON_JUGGERNAUT),
+        ..act(id::ROLE_TRAITS, "role_traits", &[Player, Bool], None, Now, Named)
+    },
     // The tick the host began (`Vm::begin_tick`).
     vm(id::NOW, "now", &[], Int),
     // The VM generator's next draw modulo `n`; 0, with no draw, for n <= 0.
@@ -493,6 +532,25 @@ mod tests {
         assert!(entry_named("message_team").is_none());
         assert!(entry_named("message_all").is_none());
         assert!(!is_form(entry(id::SCORE, API_VERSION).unwrap()));
+    }
+
+    #[test]
+    fn an_engine_routines_entry_is_hostable_on_its_carrier_only() {
+        let roles = entry(id::ROLE_TRAITS, API_VERSION).unwrap();
+        assert!(roles.status.hostable());
+        assert!(roles.hostable_on(7));
+        for other in [1, 2, 3, 4, 8, 9] {
+            assert!(!roles.hostable_on(other), "{other}");
+        }
+        let reset = entry(id::RESET_OBJECTIVE, API_VERSION).unwrap();
+        assert!(reset.hostable_on(3));
+        assert!(!reset.hostable_on(1) && !reset.hostable_on(2));
+        // An entry with no carriers named is hostable on every one.
+        let score = entry(id::SCORE, API_VERSION).unwrap();
+        assert!(CARRIERS.iter().all(|&(_, e)| score.hostable_on(e)));
+        assert!(!entry(id::SET_TEAM, API_VERSION).unwrap().hostable_on(2));
+        assert_eq!(carrier_name(7), Some("juggernaut"));
+        assert_eq!(carrier_name(5), None);
     }
 
     #[test]

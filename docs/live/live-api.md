@@ -1860,7 +1860,8 @@ homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
   `handlers: [{event, worst_ops}]`, `slots: [{scope, used, limit}]` (global,
   player, team, object), `ir_bytes` and `ir_limit`, `capabilities: [{name,
   words, grantable, known}]` with the lobby's plain words, and
-  `unhostable`: the entries the script calls that no host can make yet.
+  `unhostable`: the entries the script calls that no host can make yet on
+  the script's carrier.
 - A run's `scenario` is `{players: [{slot, team, lives, unit?}], teams,
   variant, labelled: [{label, object, number?, placement?}], options,
   seed, round_time, ticks, start, timeline: [{tick, events}]}`. `unit` is

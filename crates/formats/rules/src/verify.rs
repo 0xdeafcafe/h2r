@@ -688,15 +688,15 @@ impl Cx<'_> {
     }
 }
 
-/// The first entry a blob calls that a host cannot make
-/// ([`caps::Status::hostable`]). A host refuses such a script by that
-/// entry's name.
+/// The first entry a blob calls that a host cannot make on the blob's
+/// carrier ([`caps::Entry::hostable_on`]). A host refuses such a script by
+/// that entry's name.
 pub fn unhostable(ir: &Ir) -> Option<&'static caps::Entry> {
     for hd in &ir.handlers {
         for op in &hd.code {
             if let Op::Call { entry, .. } = *op
                 && let Some(e) = caps::entry(entry, ir.header.api_version)
-                && !e.status.hostable()
+                && !e.hostable_on(ir.header.carrier)
             {
                 return Some(e);
             }
@@ -1013,5 +1013,18 @@ mod tests {
         };
         verify(&ir).unwrap();
         assert_eq!(unhostable(&ir).map(|e| e.name), Some("set_team"));
+    }
+
+    #[test]
+    fn an_entry_one_engine_makes_is_unhostable_on_another_carrier() {
+        let src = |carrier: &str| {
+            format!(
+                "rules \"Crown\" 1\ncarrier {carrier}\n\non kill(victim, killer) {{ role_traits(victim, false) }}\n"
+            )
+        };
+        let on_juggernaut = crate::compile(&src("juggernaut")).unwrap();
+        assert_eq!(unhostable(&on_juggernaut), None);
+        let on_slayer = crate::compile(&src("slayer")).unwrap();
+        assert_eq!(unhostable(&on_slayer).map(|e| e.name), Some("role_traits"));
     }
 }

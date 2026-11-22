@@ -4,8 +4,8 @@
 //
 // Entries a host cannot make yet (`verify::unhostable`):
 //   spawn_objective  traced (Oddball's ball spawn 0x2bc1f0)
-//   reset_objective  untraced
-//   role_traits      untraced
+//   role_traits      made only on juggernaut (the engine gives the carrier
+//                    traits to whoever holds the ball, 0x2bcc90)
 // Not reproduced: the Oddball globals `[0x51ecc4]` (each ball's spawn index)
 // are not written; retail takes the ball tag from the globals tag's
 // multiplayer block, this script names the path; the reset delay is a

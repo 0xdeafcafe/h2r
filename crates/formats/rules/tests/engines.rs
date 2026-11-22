@@ -67,7 +67,7 @@ fn unhostable_entries(ir: &Ir) -> BTreeSet<&'static str> {
             Op::Call { entry, .. } => caps::entry(entry, ir.header.api_version),
             _ => None,
         })
-        .filter(|e| !e.status.hostable())
+        .filter(|e| !e.hostable_on(ir.header.carrier))
         .map(caps::spelled)
         .collect()
 }

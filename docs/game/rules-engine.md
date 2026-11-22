@@ -207,10 +207,11 @@ A new index is not possible without rewriting four retail paths:
   entity (types 0 to 5, **E**, [notes/ai-networking.md](notes/ai-networking.md))
   for whatever its HUD draws from it.
 
-On the host, in a script game, the `rules` feature answers each of the
-carrier engine's rule-making callbacks itself: a `before` hook on the
-callback's entry runs the script's handler for that event in place of
-the lifted body ("The host runtime"). No guest memory is patched.
+On the host, in a script game, the `rules` feature answers the carrier
+engine's scoring and role-making routines in place, so the script is the
+game's one scorer ("One scorer", under "The host runtime"); the script's
+handlers run beside the engine's other work and make their calls at the
+next tick boundary. No guest memory is patched.
 
 The engine table `0x55e4d0[index]` holds one static object per engine,
 and the object's `+0` is its vtable: CTF and Assault `0x459d18`, Slayer
@@ -254,8 +255,9 @@ game"); it never fetches one.
 
 **Code**, tests only (`crates/extensions/game/src/rules/`): `runtime`
 holds one game's script and implements `rules::vm::Game` over guest
-memory, `guest` the reads and engine calls behind the API entries, and
-`feature` the hooks. It follows Firefight's runtime
+memory, `guest` the reads and engine calls behind the API entries (with
+`roles` and `objectives`), `scoring` the answers that keep the carrier's
+own scoring from running beside the script's, and `feature` the hooks. It follows Firefight's runtime
 (`crates/extensions/game/src/firefight/`, [firefight.md](firefight.md#the-host-runtime)).
 Boot registers the `rules` feature (`registration::register_core`), off
 unless `H2_FEATURES` names it, and its hooks are on game-thread points
@@ -293,12 +295,16 @@ dropped at the authority check.
 
 The blob is loaded (`verify::load`) and refused, by name, when its hash
 does not start with the record's prefix, when it rides another engine
-than the record's, when it calls an entry no host can make
-(`verify::unhostable`), or when it needs what this runtime does not do
+than the record's, when it calls an entry no host can make on its carrier
+(`verify::unhostable`, `caps::Entry::hostable_on`: `role_traits` is made
+only on Juggernaut and `reset_objective` only on Oddball, so a script on
+another carrier is refused as "the script calls role_traits, which a host
+makes only on juggernaut, and the script rides slayer"), or when it needs what this runtime does not do
 yet (`runtime::host_refusal`): an event other than `init`, `kill`,
 `timer` and `tick`; a read other than the scores, kills, deaths,
-`alive`, `team_of`, `lives`, `round_time_left` and `is_objective`; an
-action other than `score`, `end_round`, `set_lives` and `respawn`; a
+`alive`, `team_of`, `lives`, `round_time_left`, `is_objective` and
+`carrier_of`; an action other than `score`, `end_round`, `set_lives`,
+`respawn`, `role_traits` and `reset_objective`; a
 variant field other than `team_play`, `score_limit`, `time_limit` and
 `lives`, whose record offsets are not traced; a `grant`; a Forge label.
 Then the VM starts with the record's option bits and seed 0 (as
@@ -330,15 +336,11 @@ Firefight sits inside.
 
 This differs from "Order" in one way, for every handler: a call is made
 at the next tick boundary, not inside the event. `PLAYER_KILLED` is
-opaque, so a hook there can only observe; the carrier's kill callback
-(`SLAYER_KILL` and the engines' other named slots, "Which engine index a
-script rides") has no hook in the feature yet; and the per-tick group
-runs after `GAME_TICK`, not in place of `ENGINE_UPDATE`. So a score
-lands one boundary after the kill, a read in the same handler does not
-see it, and the lifted carrier's own kill scoring still runs beside a
-script's. A mode 2 script on a lifted carrier is therefore not a parity
-game; answering the carrier's callbacks in place ("Which engine index a
-script rides") is what makes one.
+opaque, so a hook there can only observe, and the per-tick group runs
+after `GAME_TICK`, not in place of `ENGINE_UPDATE`. So a score lands one
+boundary after the kill and a read in the same handler does not see it.
+A mode 2 script on a lifted carrier is therefore not a parity game:
+running the handlers inside the carrier's callbacks is what makes one.
 
 The calls: `score(p, n)` is `SCORE_ADD` (`0x15b7c0`) with `n` in EAX,
 clamped to ±30,000, and the salted player datum; `set_lives(p, n)`
@@ -348,6 +350,58 @@ Firefight's bodies (`firefight::guest::respawn`, `end_game`), and the
 winner is not passed, since naming one is not traced. A script error
 ends the round the same way. A call the engine refuses is kept, with its
 tick and entry name, in `rules.state`'s `errors`.
+
+`role_traits(p, on)` (`rules/roles.rs`) is Juggernaut's own role setter,
+`JUGGERNAUT_ROLE_SET` (`0x192970`), with the salted player datum in EAX
+and `on` in ECX: it sets or clears the player's bit of the role mask
+`[0x510c9c]+0`, announces a new Juggernaut, marks the engine globals for
+replication and rebuilds the teams' mask, and Juggernaut's trait query
+(`0x1926c0`) answers the role's traits from the mask. A player already
+in the asked state is left alone, so the announcement is not made twice.
+Oddball and CTF give their carrier traits to whoever holds the
+objective, and Slayer, King and Territories have no role traits, so a
+host makes the call on no other carrier. A game whose Juggernaut globals
+are not set up, or a slot with no player, is a refused call.
+
+The objective set (`for each objectives`) and `o.carrier` (`carrier_of`)
+read the registry `E+0xc18`/`E+0xc1c` (`rules/objectives.rs`): each
+record's object, and the roster slot of the player carrying it.
+`reset_objective(o)` is Oddball's own ball return,
+`ODDBALL_BALL_RETURN` (`0x2bc340`), with the record's ball number in
+EAX: it drops the ball from its carrier and moves it to its spawn flag
+through the objective return the engines share (`OBJECTIVE_RETURN`,
+`0x15e360`). The ball keeps its datum, so the script's object variables
+stay with it. An object that is not registered, a ball number outside
+the variant's ball count (`G+0x230`) or a ball with no spawn flag is a
+refused call. The evidence is in
+[notes/2026-11-22-script-scoring-and-roles.md](../engine/notes/2026-11-22-script-scoring-and-roles.md).
+
+#### One scorer
+
+While a script runs on this machine and `GAME_ENGINE_AUTHORITATIVE` has
+answered true for it (`scoring::script_scores`), the feature answers the
+carrier's own scoring and role-making in place (`rules/scoring.rs`), with
+`before` hooks in the default class; no other feature hooks these
+points:
+
+| Point | Answer | What the engine no longer does |
+|---|---|---|
+| `SLAYER_KILL` `0x2bc000` | returns, popping 16 bytes | Slayer's kill, suicide, death and bonus points, which is all it does |
+| `JUGGERNAUT_KILL` `0x1922a0` | returns, popping 16 bytes | the Juggernaut's +1 a kill and its event `0x27`; the -1 for a kill between two others with type-area flag bit 3; the role passing to the Juggernaut's killer, with a kill record (type 8, subtype 2) and event `0x26`; a new Juggernaut drawn after a suicide |
+| `JUGGERNAUT_TICK` `0x192530` | returns | taking the role from a Juggernaut whose player record `+2` bits mark it gone or out of lives, and drawing a new one when none is left |
+| `SCORE_ADD` `0x15b7c0`, returning to one of its ten call sites (`scoring::CARRIER_SCORE_SITES`) | AL 0, popping 4 bytes | Oddball's, King's, Territories' and CTF's points; their per-tick and per-player slots still run the ball, the hill, the territories and the flags |
+
+The script gives and moves the Juggernaut role with `role_traits` and
+scores with `score`, whose calls come from no carrier site. What the
+script API does not cover yet: the host delivers no `on quit` or `on
+round_start`, so a script takes the role from a player who leaves, or
+deals it at a round's start, only from `on tick`; the kill record and
+events `0x26` and `0x27` have no script call (the role setter posts its
+own new-Juggernaut event). `PLAYER_KILLED`'s kill feed, medals and
+statistics, the objective engines' kill callbacks (they post events
+only), and their objects and traits run as in a lifted game. Before the
+first tick boundary asks for the authority, on a guest, for a refused or
+idle script and after the game's end, every routine is the engine's.
 
 **Authority.** The first tick boundary's body also calls
 `GAME_ENGINE_AUTHORITATIVE` (`0x15b2f0`). A machine it answers false for
@@ -366,8 +420,9 @@ it (`Vm::resume`), and a record that is gone (a full restore) stops the
 script with a refusal. A snapshot is refused while calls wait for the
 next tick boundary.
 
-The tests (`crates/extensions/game/src/rules/runtime/tests.rs`) drive the
-runtime over invented guest memory with fake engine callees: the
+The tests (`crates/extensions/game/src/rules/runtime/tests.rs` and
+`runtime/tests/hosted.rs`) drive the runtime over invented guest memory
+with fake engine callees: the
 built-in Slayer starting from a record and setting the record, a kill
 making a `SCORE_ADD` call at the next boundary, a suicide's negative
 score, a machine that is not the authority, a refusal for an unknown
@@ -375,7 +430,15 @@ hash and for System Link, refusals by entry and by event, another
 engine's record, a record with no mode, the record removed at the game's
 end, a reverted record resuming the VM, a stored script running with no
 Live client and on System Link, a Live variant's script fetched by its
-full hash and run, and each fetch failure refused by name.
+full hash and run, each fetch failure refused by name, the carrier's
+scoring answered only once a running script's authority is known (and
+never on a guest or for a refused script), `role_traits` making the
+role setter's call (none for a player already in that state, and a
+refusal by carrier on Slayer), `reset_objective` making Oddball's ball
+return with each refusal named, and the objective set and its carriers
+read from the registry. Boot's registration tests check that the
+feature's four scoring `before`s are in the plan only with the feature
+on.
 
 ### Live game variants in the game
 
@@ -807,10 +870,10 @@ Actions:
 | `set_team(p, t)` | no entry known; the field is player `+0xc0` | untraced | `player.team` |
 | `set_loadout` | starting-weapon routine `0x19eda0` | traced | `player.weapons` |
 | `create(tag, at)`, `delete(o)` | `OBJECT_DELETE` `0xb8540`; creation as Forge's ([forge.md](forge.md)) | named; traced | `objects.create`, `objects.delete` |
-| `register_objective(o, team)`, unregister, picked up, dropped | `0x15e050`, `0x15e130`, `0x15e250`, `0x15e460` | traced | core |
-| `spawn_objective(tag, at, team)`: create an objective at a placement and register it | as the CTF and Assault flag spawn `0x2422d0` and Oddball's `0x2bc1f0` do | traced | core |
-| `reset_objective(o)`: return an objective to where it spawned | the lifted engines' return path is not traced | untraced | core |
-| `role_traits(p, on)`: the carrier engine's role traits from the variant's type area (ball or flag carrier, the Juggernaut and its bit of the role mask `[0x510c9c]+0`) | each engine's trait query, vtable `+0x8c` (Juggernaut `0x1926c0`; the shared `ENGINE_TRAIT_QUERY` `0x24dda0`); which traits each role answers is not read | traced | core |
+| `register_objective(o, team)`, unregister, picked up, dropped | `0x15e050` (object, team; no check for a duplicate), `0x15e130`, `0x15e250`, `0x15e460`; every object a host script can name is already registered, since Forge labels are not built | traced | core |
+| `spawn_objective(tag, at, team)`: create an objective at a placement and register it | as Oddball's `0x2bc1f0` does: placement `0xb7930`, `0xb7b40`, `0x15e050`, `0xa7870`. Not built: the host resolves no tag path to a tag datum (the loaded map's names are only in its file), and has no `at` but a registered objective | traced | core |
+| `reset_objective(o)`: return an objective to where it spawned | Oddball: `ODDBALL_BALL_RETURN` `0x2bc340`, the ball's spawn flag through `OBJECTIVE_RETURN` `0x15e360`. CTF's flag return reaches `0x15e360` at `0x242b41` from a routine whose start is not read | named on Oddball | core |
+| `role_traits(p, on)`: the carrier engine's role and its traits from the variant's type area | Juggernaut: `JUGGERNAUT_ROLE_SET` `0x192970` (the player's bit of the role mask `[0x510c9c]+0`), whose trait query `0x1926c0` answers from the mask. Oddball's and CTF's carrier traits follow the held object (`0x2bcc90`); Slayer, King and Territories have none | named on Juggernaut | core |
 | barriers and other map changes | create and delete at labels, as above; a barrier is a labelled placement (forge-features.md "Invisible barriers") | not built | `objects.create`, `objects.delete` |
 | `place_squad(s, class, n, label)` from the palette with its team, `hunt(s)`, erase | `AI_SQUAD_PLACE` `0x201520`, `AI_SET_TEAM` `0x275b60`, `AI_SET_ORDERS` `0x275cb0`, `AI_ERASE` `0x2736c0`, through `actor_net::squads::SquadEntry` (firefight.md "Guest boundary") | named; game runs R1, R2 pending | `ai.squads` |
 | `spawn_areas(team, label, n)`: which starting locations are live | answer a hook on `PLAYER_SPAWN_LOCATION` `0x14ef00` (picks from `scnr+0x100`) with labelled locations only; how the routine weighs locations is not traced | named point; untraced rule | `player.spawn` |
@@ -1178,9 +1241,10 @@ Game Types**. The layout, its states and its copy are described in
   the budget), the worst-tick estimate against the 100,000-op budget, each
   handler's worst case, slots per scope against their limits, IR bytes
   against 256 KiB, the declared capabilities in the lobby's words, and
-  every unhostable entry the script calls. The page checks 450 ms after
-  typing stops and has no Check button; each error with a place is a
-  marker in the editor, and its place in the Problems list selects it. A
+  every entry the script calls that no host can make on its carrier. The
+  page checks 450 ms after typing stops and has no Check button; each
+  error with a place is a marker in the editor, and its place in the
+  Problems list selects it. A
   check the server refuses (a source over 256 KiB) is listed as a problem
   of the whole script.
 - **Editor.** The script box is Monaco (`web/src/stats/RulesEditor.tsx`),
@@ -1277,16 +1341,16 @@ scores; Juggernaut: the killer takes the role; King: time on the hill
 scores, a contest stops it; CTF: a capture scores and the flag returns,
 by reset time and by touch; Assault: a bomb armed on the enemy plate
 scores; Territories: a territory held pays each interval). They run in
-tests only: no port has a parity run, and only Slayer's entries are all
-hostable.
+tests only: no port has a parity run, and only Slayer's and
+Juggernaut's entries are all hostable on their carriers.
 
 | Script | Waits on | Not reproduced |
 |---|---|---|
 | Slayer | nothing | |
-| Oddball | `spawn_objective`, `reset_objective`, `role_traits` | the Oddball globals; the reset delay is a script option |
+| Oddball | `spawn_objective`; `role_traits`, made only on Juggernaut | the Oddball globals; the reset delay is a script option |
 | King of the Hill | `label_number`, `inside` | the KotH globals; how the next hill is chosen (the script takes the next number); the type area's other King settings |
-| Juggernaut | `role_traits` | who takes the role after a suicide or a quit (the script draws one); whether the kill that takes the role scores |
-| CTF and Assault | `object_team`, `inside`, `spawn_objective`, `reset_objective`, `role_traits` | sudden death; the CTF and Assault globals; a team's second plate; detonation after arming |
+| Juggernaut | no entry; the host delivers neither `round_start` nor `quit` | who takes the role after a suicide or a quit (the script draws one); whether the kill that takes the role scores |
+| CTF and Assault | `object_team`, `inside`, `spawn_objective`; `reset_objective`, made only on Oddball; `role_traits`, made only on Juggernaut | sudden death; the CTF and Assault globals; a team's second plate; detonation after arming |
 | Territories | `register_objective`, `inside` | the Territories globals; the marker's index as its registration team; a capture's decay; the score interval is a script option |
 
 **Parity method.** The lifted engine is the oracle. A headless match is
@@ -1510,9 +1574,12 @@ the ReachVariantTool importer follows phase 10.
   unknown; it decides the display half of every port and of every new
   mode.
 - **Answering a carrier engine's callbacks.** The slots that make rules
-  are on record ("Which engine index a script rides"); whether each can
-  be answered at its entry with an async body, and whether doing so
-  leaves the replicated globals entity consistent, is not. Of the
+  are on record ("Which engine index a script rides"), and the kill
+  callbacks, Juggernaut's tick and the carriers' `SCORE_ADD` calls are
+  answered in place in a script game ("One scorer"); no run has shown
+  that doing so leaves the replicated globals entity and each client's
+  HUD consistent, nor whether a handler can run inside a callback with an
+  async body. Of the
   Slayer kill callback's arguments, the flag's meaning (when
   `PLAYER_KILLED` sets it) and the kind's are not read, nor the
   CTF and Assault capture path's slot at `0x242741`.

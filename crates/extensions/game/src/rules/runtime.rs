@@ -20,14 +20,14 @@
 //! - [`Runtime::ended`] after `GAME_END`: the record is removed.
 //!
 //! **Calls wait for the tick boundary.** `PLAYER_KILLED` is opaque, so a
-//! hook there can only observe; the carrier's kill callback (Slayer's
-//! vtable slot `+0x78`) has no named point; and the per-tick group runs
-//! after `GAME_TICK`, not in place of the engine update `0x15c150`. So
-//! every call a handler makes is kept and made by the `before` on the next
+//! hook there can only observe, and the per-tick group runs after
+//! `GAME_TICK`, not in place of the engine update `0x15c150`. So every
+//! call a handler makes is kept and made by the `before` on the next
 //! `GAME_TICK`, through the mechanism Firefight's tick hook uses, ahead of
 //! the VM's queued calls. A score therefore lands at the next tick
 //! boundary rather than inside the kill, and a read in the same handler
-//! does not see it.
+//! does not see it. The carrier's own scoring does not run beside it
+//! (`super::scoring`).
 //!
 //! **State.** The VM's state is the `RULES` record of the `SimExt` blob
 //! ([`Store`]), written after every run that changed it. Before each run
@@ -77,9 +77,17 @@ pub const READS: &[u16] = &[
     id::LIVES,
     id::ROUND_TIME_LEFT,
     id::IS_OBJECTIVE,
+    id::CARRIER_OF,
 ];
 /// The action entries this runtime makes.
-pub const ACTIONS: &[u16] = &[id::SCORE, id::END_ROUND, id::SET_LIVES, id::RESPAWN];
+pub const ACTIONS: &[u16] = &[
+    id::SCORE,
+    id::END_ROUND,
+    id::SET_LIVES,
+    id::RESPAWN,
+    id::ROLE_TRAITS,
+    id::RESET_OBJECTIVE,
+];
 
 /// Where the `RULES` record lives: the process's `SimExt` blob in the
 /// game ([`SimExtStore`]), a local container in tests.
@@ -185,6 +193,11 @@ pub enum Call {
     Score { player: u8, delta: i32 },
     SetLives { player: u8, lives: i32 },
     Respawn(u8),
+    /// `role_traits`: the carrier's role given or taken (`super::roles`).
+    RoleTraits { player: u8, on: bool },
+    /// `reset_objective`: the objective (a salted datum) returned
+    /// (`super::objectives`).
+    ResetObjective(u32),
     /// `end_round`, or the round end of a script error.
     End,
 }
@@ -196,6 +209,8 @@ impl Call {
             Call::Score { .. } => "score",
             Call::SetLives { .. } => "set_lives",
             Call::Respawn(_) => "respawn",
+            Call::RoleTraits { .. } => "role_traits",
+            Call::ResetObjective(_) => "reset_objective",
             Call::End => "end_round",
         }
     }
@@ -225,6 +240,17 @@ pub fn host_refusal(ir: &Ir) -> Option<String> {
             EntryStatus::NotBuilt => "not built",
             EntryStatus::Named | EntryStatus::VmOnly => "not hostable",
         };
+        // A call one engine's routine makes, in a script on another carrier.
+        if let Some(hosts) = e.hosts.filter(|_| e.status.hostable()) {
+            let name = |c: u8| caps::carrier_name(c).map_or_else(|| format!("engine {c}"), str::to_string);
+            let on: Vec<String> = hosts.iter().map(|&c| name(c)).collect();
+            return Some(format!(
+                "the script calls {}, which a host makes only on {}, and the script rides {}",
+                caps::spelled(e),
+                on.join(", "),
+                name(ir.header.carrier)
+            ));
+        }
         return Some(format!(
             "the script calls {}, whose engine entry is {status}",
             caps::spelled(e)
@@ -336,6 +362,10 @@ impl Game for GuestGame<'_> {
         Vec::new()
     }
 
+    fn objectives(&self) -> Vec<u32> {
+        super::objectives::objects(self.m).unwrap_or_default()
+    }
+
     fn variant(&self, field: &str) -> i32 {
         guest::variant(self.m, field).unwrap_or(0)
     }
@@ -365,6 +395,13 @@ impl Game for GuestGame<'_> {
                 Some(Arg::Object(Some(o))) => guest::is_objective(m, *o).unwrap_or(false) as i32,
                 _ => 0,
             },
+            id::CARRIER_OF => match call.args.first() {
+                Some(Arg::Object(Some(o))) => super::objectives::carrier(m, *o)
+                    .ok()
+                    .flatten()
+                    .map_or(::rules::ty::NONE, i32::from),
+                _ => ::rules::ty::NONE,
+            },
             _ => 0,
         }
     }
@@ -380,6 +417,14 @@ impl Game for GuestGame<'_> {
             id::SCORE => p.zip(int(1)).map(|(player, delta)| Call::Score { player, delta }),
             id::SET_LIVES => p.zip(int(1)).map(|(player, lives)| Call::SetLives { player, lives }),
             id::RESPAWN => p.map(Call::Respawn),
+            id::ROLE_TRAITS => match call.args.get(1) {
+                Some(Arg::Bool(on)) => p.map(|player| Call::RoleTraits { player, on: *on }),
+                _ => None,
+            },
+            id::RESET_OBJECTIVE => match call.args.first() {
+                Some(Arg::Object(Some(o))) => Some(Call::ResetObjective(*o)),
+                _ => None,
+            },
             // The winner is not passed: naming one is not traced.
             id::END_ROUND => Some(Call::End),
             _ => None,
@@ -866,6 +911,8 @@ pub async fn make_calls(cx: &Cx, work: &Work) -> (Option<bool>, Vec<(String, Str
             Call::Score { player, delta } => guest::score(cx, player, delta).await,
             Call::SetLives { player, lives } => guest::set_lives(cx, player, lives).await,
             Call::Respawn(player) => crate::firefight::guest::respawn(cx, player).await,
+            Call::RoleTraits { player, on } => super::roles::set(cx, player, on).await,
+            Call::ResetObjective(object) => super::objectives::reset(cx, object).await,
             Call::End => crate::firefight::guest::end_game(cx).await,
         };
         if let Err(e) = result {

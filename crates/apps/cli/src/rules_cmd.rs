@@ -245,7 +245,7 @@ pub fn check_text(label: &str, src: &str) -> Result<String, String> {
     } else {
         let _ = writeln!(s, "unhostable entries (a host refuses this script):");
         for e in bad {
-            let _ = writeln!(s, "  {} ({})", caps::spelled(e), status_words(e.status));
+            let _ = writeln!(s, "  {} ({})", caps::spelled(e), unhostable_words(e));
         }
     }
     // Over the budget or the IR cap: the report, then the refusal.
@@ -264,7 +264,7 @@ fn unhostable(ir: &Ir) -> Vec<&'static caps::Entry> {
         for op in &hd.code {
             if let rules::ir::Op::Call { entry, .. } = op
                 && let Some(e) = caps::entry(*entry, ir.header.api_version)
-                && !e.status.hostable()
+                && !e.hostable_on(ir.header.carrier)
                 && !out.iter().any(|o| o.id == e.id)
             {
                 out.push(e);
@@ -273,6 +273,24 @@ fn unhostable(ir: &Ir) -> Vec<&'static caps::Entry> {
     }
     out.sort_by_key(|e| e.id);
     out
+}
+
+/// Why a host cannot make `e`: its status, or the carriers it is made on
+/// when the status is one a host makes.
+fn unhostable_words(e: &caps::Entry) -> String {
+    match e.hosts {
+        Some(hosts) if e.status.hostable() => format!("made only on {}", carrier_names(hosts)),
+        _ => status_words(e.status).to_string(),
+    }
+}
+
+/// The carriers' names, comma separated.
+fn carrier_names(hosts: &[u8]) -> String {
+    hosts
+        .iter()
+        .map(|&h| caps::carrier_name(h).map_or_else(|| format!("engine {h}"), str::to_string))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn status_words(s: Status) -> &'static str {
@@ -396,7 +414,11 @@ pub fn caps_text() -> String {
             caps::spelled(e),
             e.cap.unwrap_or("core"),
             status_words(e.status),
-            if e.status.hostable() { "" } else { ", not hostable" }
+            match e.hosts {
+                _ if !e.status.hostable() => ", not hostable".to_string(),
+                Some(hosts) => format!(", hosted on {} only", carrier_names(hosts)),
+                None => String::new(),
+            }
         );
     }
     s
