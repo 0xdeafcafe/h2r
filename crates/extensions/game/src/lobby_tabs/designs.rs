@@ -53,8 +53,9 @@ pub const BOTTOM: i16 = 180;
 /// The lobby's header rectangle's top and bottom (`strip::HEADER`).
 pub const HEADER_TOP: i16 = 204;
 pub const HEADER_BOTTOM: i16 = 180;
-/// The player count's rectangle in the lobby's tag (`strip::COUNT`).
-pub const COUNT: [i16; 4] = [199, 85, 179, 280];
+/// The player count's rectangle in the lobby's tag (`strip::COUNT`),
+/// its right edge held to the title-safe area's (the tag's runs to 280).
+pub const COUNT: [i16; 4] = [199, 85, 179, 272];
 /// The count's text in a specimen: the tag's own form (`player_count2`).
 pub const COUNT_TEXT: &str = "4 player(s) in party";
 
@@ -78,7 +79,7 @@ impl Lobby {
             place: Place::XboxLive,
             facts: Facts {
                 playlists: true,
-                kit_maps: true,
+                live_co_op: true,
                 remote_members: false,
             },
             leader: true,
@@ -345,7 +346,7 @@ pub mod c {
     /// count narrowed to leave them room.
     pub const PREV: [i16; 4] = [199, 90, 179, 114];
     pub const NEXT: [i16; 4] = [199, 118, 179, 142];
-    pub const COUNT: [i16; 4] = [199, 150, 179, 280];
+    pub const COUNT: [i16; 4] = [199, 142, 179, 272];
 
     /// A tab's label in the lobby's text case.
     pub const fn label(tab: Tab) -> &'static str {
@@ -434,7 +435,7 @@ fn longest(name: &str) -> Tab {
 /// The lobbies a design is drawn for, by state name: each tab selected in
 /// turn in a Live lobby where all are on; the widest; a Split Screen
 /// lobby, where MULTIPLAYER is off; a System Link member's, with no
-/// bumpers; and a run with only retail's two tabs present.
+/// bumpers; and a run with only retail's three modes present.
 pub fn lobbies(name: &str) -> Vec<(&'static str, Lobby)> {
     let split = Lobby {
         place: Place::SplitScreen,
@@ -457,7 +458,7 @@ pub fn lobbies(name: &str) -> Vec<(&'static str, Lobby)> {
             },
         ),
         (
-            "two-tabs",
+            "retail-tabs",
             Lobby {
                 present: Present::default(),
                 ..Lobby::live(Tab::CustomGames)
@@ -495,17 +496,16 @@ mod tests {
     /// leader's console and a member's, on each tab present.
     fn every_lobby() -> Vec<Lobby> {
         let mut out = Vec::new();
-        for bits in 0..8u8 {
+        for bits in 0..4u8 {
             let present = Present {
                 forge: bits & 1 != 0,
                 firefight: bits & 2 != 0,
-                co_op: bits & 4 != 0,
             };
             for place in [Place::SplitScreen, Place::SystemLink, Place::XboxLive] {
                 for facts_bits in 0..8u8 {
                     let facts = Facts {
                         playlists: facts_bits & 1 != 0,
-                        kit_maps: facts_bits & 2 != 0,
+                        live_co_op: facts_bits & 2 != 0,
                         remote_members: facts_bits & 4 != 0,
                     };
                     for leader in [true, false] {
@@ -749,7 +749,7 @@ mod tests {
                     "longest",
                     "unavailable",
                     "member",
-                    "two-tabs"
+                    "retail-tabs"
                 ]
             );
             for (tab, (state, spec)) in Tab::ALL.iter().zip(&states) {

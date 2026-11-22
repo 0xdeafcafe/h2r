@@ -362,9 +362,33 @@ The reason line's timer is not saved.
   the lobby's text case with the bumpers beside the player count. Each
   page's states are every tab selected in turn, the widest (`longest`),
   a Split Screen lobby (`unavailable`), a member's console (`member`)
-  and a run with only retail's two tabs (`two-tabs`). The band has 338
-  units for a line of text (x -270 to +68); `lobby_tabs::designs::tests`
-  hold every design to it for every set of tabs.
+  and a run with only retail's three modes (`retail-tabs`). The band has
+  338 units for a line of text (x -270 to +68);
+  `lobby_tabs::designs::tests` hold every design to it for every set of
+  tabs.
+- **Concepts of the whole lobby**: `h2 ui preview design.lobby.d --state
+  all` (and `.e`, `.f`) draws the pregame lobby with a mode control, as a
+  kit list screen over the game shell (`lobby_tabs::concepts`): the
+  header, `name_field` and `lobby_display` from the lobby's tag at their
+  own points, the map's picture, Start Game and Game Setup, the game's
+  lines, the player count, the party and the footer legend.
+  - `design.lobby.d`: the header names the mode (FORGE LOBBY) and a
+    third button, MODE: FORGE, sits beside the lobby's two; A on it
+    opens the kit's value picker on the modes, whose help line says why
+    a mode can't run here. States: each mode, `mode-focused`, `picker`,
+    `picker-unavailable`.
+  - `design.lobby.e`: the header is the mode, with a mark for each mode
+    beside it on the band (the current one white, one that can't run
+    faint) and the bumpers at the marks' ends. States: each mode, and
+    `member` (no bumpers, no buttons).
+  - `design.lobby.f`: the modes are a list on the lobby's panel, on the
+    `default` list skin, the lobby's mode lit. States: each mode with the
+    list focused, and `buttons` with Start Game focused.
+
+  The second button's rectangle, the look of a focused button and the
+  player rows' cell art are not read from the lobby's tag: the pages
+  place the first two and leave the third out
+  (`lobby_tabs::concepts`, module comment).
 
 ## Slices
 

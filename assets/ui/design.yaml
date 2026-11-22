@@ -253,3 +253,23 @@ components:
     font: body
     colour: pale_blue
     justify: right
+  lobby.button:
+    role: "a pregame lobby button with the focus: its words in white on name_field"
+    font: body
+    colour: white
+    justify: left
+  lobby.button.off:
+    role: "a pregame lobby button without the focus: the header's blue"
+    font: body
+    colour: hint_blue
+    justify: left
+  lobby.bumper:
+    role: "a bumper's glyph at an end of the lobby's mode marks, a mode to move to that way"
+    font: body
+    colour: white
+    justify: left
+  lobby.bumper.off:
+    role: "a bumper's glyph with no mode to move to that way"
+    font: body
+    colour: pale_blue
+    justify: left

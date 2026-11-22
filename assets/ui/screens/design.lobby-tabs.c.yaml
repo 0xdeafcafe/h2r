@@ -19,7 +19,7 @@ states:
     focus: 0
   member:
     focus: 0
-  two-tabs:
+  retail-tabs:
     focus: 0
 widgets:
   tab.multiplayer:
@@ -53,5 +53,5 @@ widgets:
   count:
     component: tab.count
     text: "4 player(s) in party"
-    at: [150, 199]
+    at: [142, 199]
     size: [130, 20]
