@@ -458,12 +458,12 @@ after 5; 9 after 8. Slice 1's `list.carrier` check accepts `slayer` and
 
 ## Open decisions
 
-1. **Bounce Practice.** The list's Bounce Practice is plain Slayer with
-   no score. `bounce_practice.rules` is a different game under the same
-   name: a point a bounce, three for a first find, a low-gravity option.
-   Either the list's entry becomes that script, or the script is renamed
-   and the entry stays settings only (the plan above). The superbounce
-   work decides it; slice 4 ports the entry as settings only until then.
+1. **Bounce Practice.** Decided: the list's Bounce Practice stays the
+   community's settings-only variant (Slayer, no score), ported as
+   settings only in slice 4. `bounce_practice.rules`, a different game
+   (a point a bounce, three for a first find, a low-gravity option), is
+   renamed Bounce Hunt (`bounce_hunt.rules`) and stays an example; the
+   Superbounce game type is the list's bounce-scoring game.
 2. **Which settings each classic marks.** Slice 4 chooses, at most five
    each.
 
