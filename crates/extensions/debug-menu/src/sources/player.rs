@@ -1,23 +1,27 @@
-//! Player: the cheats that act on the local player, a weapon to give and a
-//! player to teleport to.
+//! Player: the cheats that act on the local player, a weapon to give, a
+//! player to teleport to, and a spot to mark and recall.
 //!
 //! Give weapon lists the loaded map's `weap` tags (`edit.tags`) and gives
 //! the pick to the local player (`sim.give`, which replaces the weapons it
 //! holds). Teleport lists the other players (`sim.view`) and moves the
 //! local player beside the pick (`sim.state.set`). Both are host writes,
 //! refused in a co-op session; their rows carry the session's reason.
+//! Mark position keeps the local player's position and facing in a slot
+//! (`player.mark`, default slot `quick`); Recall position teleports back
+//! to it (`player.recall`, a host write like Teleport).
 
 use serde_json::{Value, json};
 
 use super::cheats;
 use super::method::{
-    CHEAT_LIST, EDIT_TAGS, SIM_GIVE, SIM_SESSION, SIM_STATE_SET, SIM_VIEW, STATUS,
+    CHEAT_LIST, EDIT_TAGS, PLAYER_MARK, PLAYER_RECALL, SIM_GIVE, SIM_SESSION, SIM_STATE_SET,
+    SIM_VIEW, STATUS,
 };
 use super::{
     PlayerInfo, at_menu, get, local_player, nothing, players, problem, tag_entries, tag_toast,
     writes_blocked,
 };
-use crate::model::{Answer, Call, Row, Section};
+use crate::model::{Answer, Call, Row, Section, text};
 
 /// The cheats on this page: these, then Give weapon and Teleport, then
 /// Hide HUD.
@@ -74,12 +78,14 @@ fn player_rows(a: &[Answer]) -> Vec<Row> {
     let mut out = cheats::rows(&v, &BEFORE, menu.as_deref());
     let mut give = Row::open("Give weapon", "player/give");
     let mut tele = Row::open("Teleport", "player/teleport");
-    if let Some(why) = blocked {
+    if let Some(why) = &blocked {
         give = give.disabled(why.clone());
-        tele = tele.disabled(why);
+        tele = tele.disabled(why.clone());
     }
     out.push(give);
     out.push(tele);
+    out.push(mark_row(menu.as_deref()));
+    out.push(recall_row(blocked.as_deref()));
     out.extend(
         cheats::rows(&v, &AFTER, menu.as_deref())
             .into_iter()
@@ -99,6 +105,30 @@ fn player_rows(a: &[Answer]) -> Vec<Row> {
 fn me(a: &[Answer], view: usize) -> Result<PlayerInfo, String> {
     let v = get(a, view)?;
     local_player(&v).ok_or_else(|| "no local player in the game".to_owned())
+}
+
+/// Mark position: keep the local player's spot and facing in the default
+/// slot. Greyed where there is no game (a mark needs a player).
+fn mark_row(at_menu: Option<&str>) -> Row {
+    let row = Row::action("Mark position", Call::bare(PLAYER_MARK))
+        .on_ok(|v| format!("marked {}", text(&v["slot"])))
+        .about("saves where you stand and the way you face as slot \"quick\"");
+    match at_menu {
+        Some(why) => row.disabled(why),
+        None => row,
+    }
+}
+
+/// Recall position: teleport back to the marked spot. A host write, so a
+/// co-op session refuses it as Teleport's.
+fn recall_row(blocked: Option<&str>) -> Row {
+    let row = Row::action("Recall position", Call::bare(PLAYER_RECALL))
+        .on_ok(|v| format!("back at {}", text(&v["slot"])))
+        .about("teleports back to the marked spot; an empty slot is an error");
+    match blocked {
+        Some(why) => row.disabled(why),
+        None => row,
+    }
 }
 
 fn give_rows(a: &[Answer]) -> Vec<Row> {
@@ -202,6 +232,8 @@ mod tests {
                 "Noclip",
                 "Give weapon",
                 "Teleport",
+                "Mark position",
+                "Recall position",
                 "Hide HUD"
             ]
         );
@@ -211,6 +243,44 @@ mod tests {
             row(&rows, "Give weapon").edit,
             Edit::Open("player/give".into())
         );
+    }
+
+    #[test]
+    fn mark_keeps_the_spot_and_recall_is_a_host_write() {
+        fn call_of(r: &Row) -> Call {
+            match &r.edit {
+                Edit::Action(c) => c.clone(),
+                other => panic!("not an action: {other:?}"),
+            }
+        }
+        let mut g = Game::default();
+        let rows = page(&mut g, "player");
+        let mark = row(&rows, "Mark position");
+        assert_eq!(
+            call_of(&mark),
+            Call::new("player.mark", json!({})),
+            "the default slot and player"
+        );
+        let result = g.call(&call_of(&mark)).unwrap();
+        let toast = mark.on_ok.map(|f| (f.0)(&result));
+        assert_eq!(toast.as_deref(), Some("marked quick"));
+        let recall = row(&rows, "Recall position");
+        assert_eq!(call_of(&recall).method, "player.recall");
+        let result = g.call(&call_of(&recall)).unwrap();
+        let toast = recall.on_ok.map(|f| (f.0)(&result));
+        assert_eq!(toast.as_deref(), Some("back at quick"));
+        // At the main menu there is no player to mark or put back.
+        let mut g = Game {
+            mode: "main_menu",
+            ..Game::default()
+        };
+        let rows = page(&mut g, "player");
+        for l in ["Mark position", "Recall position"] {
+            assert!(
+                row(&rows, l).disabled.as_deref().unwrap().contains("main menu"),
+                "{l}"
+            );
+        }
     }
 
     #[test]
@@ -233,13 +303,26 @@ mod tests {
         };
         let rows = page(&mut g, "player");
         assert_eq!(rows[0].label, "Cheats are off");
-        assert!(rows.iter().all(|r| r.disabled.is_some()));
+        assert!(
+            rows
+                .iter()
+                .all(|r| r.disabled.is_some() || r.label == "Mark position"),
+            "mark only reads and keeps the spot, so co-op allows it: {rows:?}"
+        );
         assert!(
             row(&rows, "Give weapon")
                 .disabled
                 .as_deref()
                 .unwrap()
                 .contains("co-op")
+        );
+        assert!(
+            row(&rows, "Recall position")
+                .disabled
+                .as_deref()
+                .unwrap()
+                .contains("co-op"),
+            "recall's teleport is a host write"
         );
     }
 

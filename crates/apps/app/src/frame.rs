@@ -656,7 +656,9 @@ fn make_slot(ctx: &GfxContext, size: (u32, u32)) -> Slot {
     }
 }
 
-/// The window side of the handoff.
+/// The window side of the handoff. Cloning shares it (a screenshot
+/// capture holds its own).
+#[derive(Clone)]
 pub struct FrameSource {
     shared: Arc<Shared>,
 }
@@ -703,6 +705,40 @@ impl FrameSource {
             size: slot.size,
             seq: slot.seq,
             new,
+            loading: false,
+            marks: slot.marks.clone(),
+        })
+    }
+
+    /// What [`latest`](Self::latest) would return, without taking: a
+    /// screenshot of the shown frame leaves the handoff's bookkeeping to
+    /// the draw.
+    pub fn peek(&self) -> Option<ShownFrame> {
+        {
+            let loading = self.shared.loading();
+            if loading.mode != Transition::Hidden
+                && let Some(slot) = &loading.picture
+            {
+                return Some(ShownFrame {
+                    view: slot.view.clone(),
+                    texture: slot.texture.clone(),
+                    size: slot.size,
+                    seq: 0,
+                    new: false,
+                    loading: true,
+                    marks: FrameMarks::Raw,
+                });
+            }
+        }
+        let st = self.shared.lock();
+        let front = st.tb.peek()?;
+        let slot = st.slots[front].as_ref()?;
+        Some(ShownFrame {
+            view: slot.view.clone(),
+            texture: slot.texture.clone(),
+            size: slot.size,
+            seq: slot.seq,
+            new: false,
             loading: false,
             marks: slot.marks.clone(),
         })

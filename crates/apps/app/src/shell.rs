@@ -127,6 +127,9 @@ struct Shell {
     theater_refresh: Instant,
     theater_screenshot: Option<std::path::PathBuf>,
     theater_cursor: Option<(f64, f64)>,
+    /// What `host.screenshot`'s capture needs ([`agent_proto::host_shot`]),
+    /// once the window and its frame handoff are up.
+    shot_parts: Arc<Mutex<Option<(GfxContext, FrameSource)>>>,
     /// The window's own redraw clock above 30 fps (`AppConfig::fps`).
     display: DisplaySchedule,
 }
@@ -214,6 +217,7 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
         theater_refresh: now,
         theater_screenshot: None,
         theater_cursor: None,
+        shot_parts: Arc::default(),
         display: DisplaySchedule::new(config_fps),
     };
     if let Some(c) = &shell.config.closer {
@@ -237,6 +241,19 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
         let _ = proxy.send_event(UserEvent::HostPause);
     }));
     let _host_pause = HostPauseAttached;
+    // host.screenshot captures the newest frame through the hub.
+    struct HostShotAttached;
+    impl Drop for HostShotAttached {
+        fn drop(&mut self) {
+            agent_proto::host_shot::hub().detach();
+        }
+    }
+    let parts = Arc::clone(&shell.shot_parts);
+    let dir = shell.config.screenshots.clone();
+    agent_proto::host_shot::hub().attach(Box::new(move |path| {
+        host_shot(&parts, &dir, path)
+    }));
+    let _host_shot = HostShotAttached;
     event_loop.run_app(&mut shell)?;
     if let Some(e) = shell.init_error.take() {
         return Err(e);
@@ -250,6 +267,42 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
         frames: shell.frames_at_exit,
         pacing: *shell.pace_stats.lock().unwrap_or_else(|e| e.into_inner()),
         restart_requested: shell.restart_requested,
+    })
+}
+
+/// `host.screenshot`'s capture ([`agent_proto::host_shot`]): the newest
+/// frame of the window's handoff as a PNG, at `path` or a new file under
+/// `dir` (`AppConfig::screenshots`). Runs on the asking thread, the menu's
+/// included, so it never waits on the event loop.
+fn host_shot(
+    parts: &Mutex<Option<(GfxContext, FrameSource)>>,
+    dir: &Option<std::path::PathBuf>,
+    path: Option<std::path::PathBuf>,
+) -> Result<agent_proto::host_shot::Shot, String> {
+    let (ctx, source) = parts
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .ok_or("the window is still starting")?;
+    let frame = source.peek().ok_or("no frame to capture yet")?;
+    let path = match path {
+        Some(p) => p,
+        None => {
+            let dir = dir
+                .as_ref()
+                .ok_or("this window has no screenshots directory; pass a path")?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|e| e.to_string())?
+                .as_nanos();
+            dir.join(format!("h2-{now}.png"))
+        }
+    };
+    let (width, height) = theater_overlay::screenshot_to(&ctx, &frame, &path)?;
+    Ok(agent_proto::host_shot::Shot {
+        path,
+        width,
+        height,
     })
 }
 
@@ -312,6 +365,9 @@ impl Shell {
         source.set_waker(move || {
             let _ = proxy.send_event(UserEvent::Frame);
         });
+        // host.screenshot's capture reads the newest frame of this handoff.
+        *self.shot_parts.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((crate::share_context(&ctx), source.clone()));
 
         let audio = if self.config.audio {
             match AudioOut::start_default() {
