@@ -64,9 +64,15 @@ impl GfxContext {
         Ok(Self { instance, adapter, device, queue, caps: Capabilities::from_features(features) })
     }
 
-    /// Headless context (no surface), blocking.
+    /// Headless context (no surface), blocking. Every headless context in a
+    /// process shares one wgpu instance: `wgpu::Device` equality compares
+    /// the id within the instance's registry, so devices from separate
+    /// instances can compare equal (both `(0, 1)`), and the per-device
+    /// caches keyed by `Device` (`native_render::frame_graph::sun`) would
+    /// hand one test's layouts to another's device.
     pub fn headless() -> Result<Self, GfxError> {
-        pollster::block_on(Self::new(instance(), None))
+        static SHARED: std::sync::OnceLock<wgpu::Instance> = std::sync::OnceLock::new();
+        pollster::block_on(Self::new(SHARED.get_or_init(instance).clone(), None))
     }
 }
 
