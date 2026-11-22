@@ -77,6 +77,12 @@ its preview pages are `forge.hud`, `forge.palette` and `forge.menu`
 (`crates/extensions/game/src/ui_kit/forge.rs`), until slice U7 removes
 them.
 
+A `Hud` whose spec is not `transparent` is drawn over the game shell
+instead of a live picture (`preview::From::view`): widgets that sit on
+the shell's header and footer bands, such as the pregame lobby's mode
+strip (`lobby.tabs`, [party-lobby.md](party-lobby.md)). Its doc
+says `backing: shell`.
+
 The Forge screens are the game's: list classes of ours on the large
 dialog (the object menu, Tools, Link and the questions) and on the
 in-game Controller Settings host (Properties, Tool settings, Forge
@@ -239,13 +245,42 @@ state.
 | focus | the focused row's text is drawn on screen, and more opaque than the other rows' |
 | glyphs | every character exists in its font (the kit's `Finding::Glyph`) |
 | ids | every string id is in a registered family (the kit's `Finding::Id`) |
+| on drawn | a text's glyphs meet another group's drawn row or cell art, picture (`Art::Level`) or text over more than 24 pixels (`Issue::OnDrawn`); the pairs `overlap` already names are left out |
+| panel shared | a panel of the screen's own (not a modal's, and not a backdrop over more than half the title-safe area) holds the list's rows and another group's texts: at least half of each one's drawn pixels inside the panel's drawn box (`Issue::PanelShared`). A screen that draws the lobby's panel as retail's lobby does, the list and its status lines in one pane, is listed in `layout::drawn::SHARED_PANELS` with its retail precedent |
+| covers under | a modal over a kit screen (`View::underlay`) draws its text over more than 24 drawn pixels of that screen's content (the modal's panel hiding it is what a modal does): its pictures, and texts that are neither the list's (rows, cells, `description`, `name`) nor chrome (`title`, `legend`, `body`, `status`) nor the HUD's `reticle` (`Issue::CoversUnder`). A modal over a retail opener (`Backing::Over`) covers it as retail's do. A screen whose modal text may lie over it is listed in `layout::drawn::COVERS` with its retail precedent |
+| drawn outside | art drew more than `Rules::max_outside` (2) units past its declared rectangle (`Issue::DrawnOutside`): fix the rectangle |
+
+The last four read what the preview really drew. `preview::render_traced`
+draws the view and records each widget's `Footprint`: the pixels it
+touched with alpha above zero, their bounding box in UI units (past the
+canvas edge too, for art), and a mask of the touched canvas pixels. Art's
+footprint is its image's own opaque pixels where the image put them, so
+a skin, frame or picture whose image is wider than its declared rect is
+seen at its real size; a text's is its glyphs, drawn a second time on a
+clear canvas; a solid fill's, and the box the synthetic source draws for
+art it lacks, is the rectangle. `From::draw_traced` gives the view and
+the trace together.
+
+A widget's group is its id's first part, the spec's own naming:
+`button.start` is the buttons', `player.2` the roster's, `game` its own,
+and every row and cell is the list's (`layout::drawn::group`). A mode list
+that sits on a status panel beside the game's lines is what `panel
+shared` catches when no two rects meet; a picker whose text lies over the
+lobby's map picture is what `covers under` catches.
 
 The art checks need the images' pixels, so the synthetic source skips
 them, and says so (`Report::skipped`). The provenance check runs without a
 disc for the screens our art comes from (Controls 39, level select 11).
 
-The checks are `ui_kit::layout::check(view, source, rules)`, and
-`h2 ui preview` prints them per state. Page-model tests check bounds
+The checks are `ui_kit::layout::check(view, source, rules)`.
+`ui_kit::findings::of_state` gathers every check's findings for one state
+(the spec against the disc, content, layout, and the consistency rules
+that read one view), each with its check, kind, widget ids and line.
+`h2 ui preview` prints them per state, writes them into the state's JSON
+as `findings` (with `notes`, and each widget's footprint as `drawn`), and
+with `--strict` exits non-zero when any state has one, so a run shows
+the problems without opening the PNG. The editor's picture and gallery
+use the same list. Page-model tests check bounds
 after every input from every named state, including the visible window
 of a scrolling dialog. The agent's `ui.screen` applies the same
 rectangle checks to instantiated widgets. The builder also uses font
@@ -1176,6 +1211,11 @@ pages' rows). `legend::well_formed` is the legend's format: each
 prompt's glyphs two spaces apart, one space, its words in capitals,
 prompts two spaces apart.
 
+A component's `pattern` names the Halo 2 pattern its widgets keep, and its
+`ids` the widget ids it draws (`button.*`, a prefix and a star); the
+consistency drive holds those widgets to the pattern (`button`, the only
+one so far).
+
 Each component of `design.yaml` with a `specimen` has its page,
 `design.<component>` in `NAMES` (`design.title`, `design.row.action`,
 `design.legend`, `design.cells` ...): its variants as the page's named
@@ -1212,6 +1252,13 @@ named state without a disc and holds it to the design system:
 | `items` | a list's item widgets are the rows it lays out (`list_class::item_widgets`), so no row is on a widget never placed, and no list draws more rows than it lays out ("Item count") |
 | `scroll` | a scroll arrow shows only on a list with more rows than it lays out, inside a dialog's panel or, on a screen, inside the screen and the title-safe area's height ("Scroll arrows") |
 | `empty` | a dialog's description area above its list (Quick Options' help line, beside the page's picture) says something in every state; a page with nothing to say there has no description block, so its rows sit under the title. A page with a name line (`ScreenSpec::name_line`) names the focused row there in every state |
+| `button` | a text whose component has `pattern: button` (its `ids` name the widgets: the lobby's `button.*`) is drawn on a list skin's art or a row's (`Art::Skin` or the `Under` layer under at least half its ink), as retail draws its buttons, never as bare text |
+| `handled` | every prompt the legend shows (the focused row's, else the page's) is an input the page takes (HUDs aside) |
+| `arrows` | no text draws a value between arrows (`< All >`, or an arrow alone): a value is chosen in the picker A opens |
+
+`consistency::view_findings(spec, view)` runs the rules that read one view
+(all but `place`), which `ui_kit::findings::of_state` adds to a state's
+findings.
 
 `consistency::ALLOWED` is the short list of findings that stand, each
 with its reason (the sign-in dialog's title carries the gamertag as

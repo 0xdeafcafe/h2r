@@ -166,6 +166,8 @@ impl Design {
                 size: None,
                 variants: Vec::new(),
                 specimen: None,
+                pattern: None,
+                ids: Vec::new(),
             },
         );
         name
@@ -276,7 +278,7 @@ fn screen_doc(name: &str, states: &[(String, ScreenSpec)], design: &mut Design) 
     let first = &states[0].1;
     let all = || states.iter().map(|(_, s)| s);
     let (kind, layout) = kind_and_layout(first);
-    let (backing, opener) = if first.hud.is_some() || first.transparent && first.dialog.is_none() {
+    let (backing, opener) = if first.transparent && (first.hud.is_some() || first.dialog.is_none()) {
         (Some("none".to_string()), None)
     } else if let Some(u) = &first.underlay {
         if crate::ui_kit::screens::NAMES.contains(&u.name.as_str()) {
@@ -678,6 +680,13 @@ pub fn design_to_yaml(d: &DesignDoc) -> String {
         }
         if let Some(s) = &c.specimen {
             let _ = writeln!(out, "    specimen: {s}");
+        }
+        if let Some(p) = &c.pattern {
+            let _ = writeln!(out, "    pattern: {p}");
+        }
+        if !c.ids.is_empty() {
+            let ids: Vec<String> = c.ids.iter().map(|i| q(i)).collect();
+            let _ = writeln!(out, "    ids: [{}]", ids.join(", "));
         }
     }
     out

@@ -33,6 +33,15 @@
 //!   nothing to say there has no description block, and its rows sit
 //!   under the title.
 //!
+//! The pattern rules, from Halo 2's own screens:
+//!
+//! - **button**: a widget whose component has `pattern: button` in
+//!   `design.yaml` (the lobby's START GAME, GAME SETUP) is drawn on a list
+//!   skin's art or a row's, as retail draws its buttons, never as bare text.
+//! - **handled**: every prompt the legend shows is an input the page takes.
+//! - **arrows**: a value is chosen in the picker A opens, never stepped
+//!   between `<` and `>` drawn round it.
+//!
 //! [`ALLOWED`] is the short list of findings that stand, each with its
 //! reason.
 
@@ -45,6 +54,7 @@ use crate::list_class::game_list::GameList;
 use crate::ui_kit::components::{Kind, legend};
 use crate::ui_kit::layout::SAFE;
 use crate::ui_kit::data::{self, DesignDoc};
+use crate::ui_kit::input::{Glyph, Input, Prompt};
 use crate::ui_kit::preview::{From, overflows};
 use crate::ui_kit::screens::{self, NAMES};
 use crate::ui_kit::spec::ScreenSpec;
@@ -362,6 +372,124 @@ fn list_rules(s: &ScreenSpec, v: &View, out: &mut Vec<Finding>) {
                     if panel.is_some() { "panel" } else { "screen" }
                 ),
             );
+/// The inputs a glyph can stand for.
+const INPUTS: [Input; 10] = [
+    Input::Up,
+    Input::Down,
+    Input::Left,
+    Input::Right,
+    Input::A,
+    Input::B,
+    Input::X,
+    Input::Y,
+    Input::Start,
+    Input::Back,
+];
+
+/// The prompts the legend shows: the focused row's on a list that has
+/// them, else the page's.
+fn shown_prompts(s: &ScreenSpec) -> &[Prompt] {
+    let rows = s.dialog.as_ref().map_or(&s.rows, |d| &d.rows);
+    if s.dialog.is_none()
+        && s.footer
+        && let Some(p) = rows.get(s.focus).and_then(|r| r.prompts.as_deref())
+    {
+        return p;
+    }
+    &s.prompts
+}
+
+/// Whether design pattern `pattern` (`button.*`, `game`) names widget
+/// `id`: equal, or a prefix before a `*`.
+fn id_matches(pattern: &str, id: &str) -> bool {
+    match pattern.strip_suffix('*') {
+        Some(prefix) => id.starts_with(prefix),
+        None => id == pattern,
+    }
+}
+
+/// Text drawn with value arrows round it (`< All >`), or an arrow alone.
+fn arrows(text: &str) -> bool {
+    text.lines().any(|l| {
+        let l = l.trim();
+        matches!(l, "<" | ">" | "\u{25c0}" | "\u{25b6}")
+            || l.split_once('<').is_some_and(|(_, tail)| tail.contains('>'))
+            || l.split_once('\u{25c0}').is_some_and(|(_, tail)| tail.contains('\u{25b6}'))
+    })
+}
+
+/// The pattern rules on `v` (spec `s`): buttons on button art, the
+/// legend's prompts handled, values in pickers.
+fn pattern_rules(design: &DesignDoc, s: &ScreenSpec, v: &View, out: &mut Vec<Finding>) {
+    let find = |ids: Vec<String>, rule: &'static str, text: String| Finding {
+        screen: v.screen.clone(),
+        state: v.state.clone(),
+        ids,
+        rule,
+        text,
+    };
+    let buttons: Vec<(&String, &data::ComponentDoc)> = design
+        .components
+        .iter()
+        .filter(|(_, c)| c.pattern.as_deref() == Some("button"))
+        .collect();
+    for (w, text, ..) in texts(v) {
+        if w.alpha == 0 || text.trim().is_empty() {
+            continue;
+        }
+        if arrows(text) {
+            out.push(find(
+                vec![w.id.clone()],
+                "arrows",
+                format!("{text:?}: a value is chosen in the picker A opens, never stepped between arrows"),
+            ));
+        }
+        let Some((name, c)) = buttons
+            .iter()
+            .find(|(_, c)| c.ids.iter().any(|p| id_matches(p, &w.id)))
+        else {
+            continue;
+        };
+        let ink = crate::ui_kit::layout::ink(w, &Synthetic).unwrap_or(w.rect());
+        let on_art = v.widgets.iter().any(|a| {
+            a.alpha > 0
+                && match &a.kind {
+                    view::Kind::Art { art, .. } => {
+                        matches!(art, view::Art::Skin { .. }) || a.layer == view::Layer::Under
+                    }
+                    view::Kind::Text { .. } => false,
+                }
+                && crate::ui_kit::layout::area(crate::ui_kit::layout::intersect(ink, a.rect())) * 2
+                    >= crate::ui_kit::layout::area(ink)
+        });
+        if !on_art {
+            out.push(find(
+                vec![w.id.clone()],
+                "button",
+                format!(
+                    "{text:?} is a {name} ({}): draw it on a list skin's button art or as a row, not as bare text",
+                    c.role
+                ),
+            ));
+        }
+    }
+    if Kind::of(s) != Kind::Hud {
+        let mut seen: Vec<Glyph> = Vec::new();
+        for g in shown_prompts(s).iter().flat_map(|p| &p.glyphs) {
+            if seen.contains(g) {
+                continue;
+            }
+            seen.push(*g);
+            let taken = INPUTS
+                .into_iter()
+                .any(|i| Glyph::of(i) == *g && s.inputs.contains(&i));
+            if !taken {
+                out.push(find(
+                    vec!["legend".into()],
+                    "handled",
+                    format!("the legend shows {}, and the page takes no such input", g.name()),
+                ));
+            }
         }
     }
 }
@@ -448,6 +576,7 @@ pub fn check(screen: Option<&str>) -> Report {
         view_rules(design, s, v, &mut findings);
         empty_rules(s, v, &mut findings);
         list_rules(s, v, &mut findings);
+        pattern_rules(design, s, v, &mut findings);
     }
     let mut placed = Vec::new();
     place_rules(&all, &mut placed);
@@ -457,6 +586,19 @@ pub fn check(screen: Option<&str>) -> Report {
     }
     findings.retain(|f| !allowed(f));
     Report { findings, checked }
+}
+
+/// The rules that read one view alone (all but **place**) on spec `s`
+/// drawn as `v`, without what [`ALLOWED`] excuses: what a preview prints
+/// for one state.
+pub fn view_findings(s: &ScreenSpec, v: &View) -> Vec<Finding> {
+    let design = data::design();
+    let mut out = Vec::new();
+    view_rules(design, s, v, &mut out);
+    empty_rules(s, v, &mut out);
+    pattern_rules(design, s, v, &mut out);
+    out.retain(|f| !allowed(f));
+    out
 }
 
 /// The report as the agent API gives it (`ui.consistency`).
@@ -577,6 +719,11 @@ mod tests {
             assert!(
                 ["palette", "font", "place", "legend", "case", "pitch", "fit", "empty", "items", "scroll"]
                     .contains(rule),
+                [
+                    "palette", "font", "place", "legend", "case", "pitch", "fit", "empty", "button",
+                    "handled", "arrows",
+                ]
+                .contains(rule),
                 "{rule}"
             );
             assert!(*screen == "*" || NAMES.contains(screen) || *screen == "design", "{screen}");

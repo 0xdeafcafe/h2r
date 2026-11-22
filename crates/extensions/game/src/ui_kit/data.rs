@@ -110,6 +110,14 @@ pub struct ComponentDoc {
     pub variants: Vec<String>,
     /// Its specimen page (`design.<name>`), when it has one.
     pub specimen: Option<String>,
+    /// The Halo 2 pattern its widgets keep, which the consistency drive
+    /// holds them to (`button`: drawn on a list skin's art or as a row,
+    /// never bare text; docs/game/ui-builder.md "Consistency").
+    pub pattern: Option<String>,
+    /// The widget ids it draws (`button.*`: a prefix and a star), for the
+    /// pattern rules.
+    #[serde(default)]
+    pub ids: Vec<String>,
 }
 
 impl ComponentDoc {
@@ -159,6 +167,14 @@ impl DesignDoc {
                 && !matches!(j.as_str(), "left" | "right" | "centre")
             {
                 return err(at("justify"), format!("{j:?} is not left, right or centre"));
+            }
+            if let Some(p) = &c.pattern
+                && p != "button"
+            {
+                return err(at("pattern"), format!("{p:?} is not button"));
+            }
+            if c.pattern.is_some() && c.ids.is_empty() {
+                return err(at("ids"), "a pattern names the widget ids it holds".into());
             }
         }
         Ok(())
