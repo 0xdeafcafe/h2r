@@ -135,6 +135,9 @@ pub struct Host {
     pub embedded_live: bool,
     /// The perf overlay's on/off switch, for `perf.overlay`.
     pub perf_overlay: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// The watermark's active-cheats line, which the debug menu glue keeps
+    /// filled from `cheat.list` (docs/runtime/debug-menu.md).
+    pub cheat_line: Option<Arc<std::sync::Mutex<Vec<String>>>>,
     /// Shared with the registered debug-view world-line producer on a windowed run.
     pub debug_views: Option<Arc<agent::debug_views::DebugViews>>,
     /// The window consumer for the paired-editor plate and focus requests.

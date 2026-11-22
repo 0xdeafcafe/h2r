@@ -380,6 +380,7 @@ fn hosted(
         theater: None,
         theater_playback: None,
         perf_overlay: None,
+        cheat_line: None,
         editor_link: None,
         debug_views: None,
         world_line_sources: Vec::new(),
@@ -818,6 +819,7 @@ pub(crate) fn run_with_theater(
         .then(debug_menu::Shared::default);
     config.debug_menu = debug_menu.clone();
     let perf_overlay = config.watermark.as_ref().map(app::Watermark::switch);
+    let cheat_line = config.watermark.as_ref().map(app::Watermark::cheats_handle);
     let editor_link = EditorLink::default();
     config.editor_link = Some(Arc::new(EditorPlateSource(editor_link.clone())));
     if boot::forge_glue::requested().map_err(anyhow::Error::msg)? {
@@ -863,6 +865,7 @@ pub(crate) fn run_with_theater(
         host.discoverable_agent = true;
         host.embedded_live = live.local;
         host.perf_overlay = perf_overlay;
+        host.cheat_line = cheat_line;
         host.editor_link = Some(editor_link);
         boot::debug_views::register(&mut host);
         boot::superbounce_mode::register(&mut host);

@@ -836,7 +836,8 @@ impl Menu {
                 if !out.is_empty() {
                     out.push(Self::divider("Sections"));
                 }
-                out.extend(self.sections.iter().map(|s| Item {
+                // Sub-pages (ids with a `/`) open from their parent's rows.
+                out.extend(self.sections.iter().filter(|s| !s.id.contains('/')).map(|s| Item {
                     row: Row::open(s.title.clone(), &s.id).about(s.about.clone()),
                     section: None,
                     key: s.title.clone(),

@@ -1284,6 +1284,7 @@ fn run_configured(
             &a.agent,
             host.settings.clone(),
             host.perf_overlay.clone(),
+            host.cheat_line.clone(),
         );
         if let Some(lights) = &controller_lights {
             lights.install(&a.agent);
