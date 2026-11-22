@@ -16,16 +16,17 @@
 //!   (`bots_nav_auto`).
 //! - **The pace** is the match's ([`sim_bench::clock::Pace`]); unpaced by default.
 //! - **The metrics** come from read-only observers ([`SimMetrics`]): each
-//!   tick's player snapshot, the shots, the damage reports, the kills and
-//!   the end latch, into a [`sim_bench::metrics::Tally`].
+//!   tick's player snapshot and guest census ([`crate::sim_census`]), the
+//!   shots, the damage reports, the kills and the end latch, into a
+//!   [`sim_bench::metrics::Tally`].
 //! - **The RNG seed** is written once, before the match's
 //!   first tick ([`SimMetrics`]'s one writing hook).
 //! - **The end**: the game's end latch, the match's tick limit, its wall
 //!   limit or `match.stop` stop the boot loop ([`Sim::keep_running`]), and
 //!   [`Sim::finish`] writes the report to `H2_SIM_REPORT`.
 //!
-//! The agent gets `match.status`, `match.report` and `match.stop`
-//! ([`Sim::add_methods`]).
+//! The agent gets `match.status`, `match.report`, `match.stop` and
+//! `sim.guest_census` ([`Sim::add_methods`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -127,9 +128,9 @@ struct State {
     last_tick: Option<Instant>,
     dispatch_start: Option<runtime::DispatchCounts>,
     dispatch_end: Option<runtime::DispatchCounts>,
-    /// Bot game-thread nanoseconds and flat window fixups when counting
-    /// began, for `wall.bots_ms_per_tick` and `flat.fixups_per_tick`.
-    costs_start: Option<(u64, Option<u64>)>,
+    /// The running cost totals when counting began, for
+    /// `wall.bots_ms_per_tick`, `wall.phantom_*` and `flat.fixups_per_tick`.
+    costs_start: Option<Costs>,
     /// The initial RNG seed has been written for this match.
     set_up: bool,
     /// The game options' spawn words have been written for this game.
@@ -633,8 +634,8 @@ impl Sim {
         Ok(r)
     }
 
-    /// `match.status`, `match.report` and `match.stop` (docs/runtime/agent-api.md,
-    /// "Sim matches").
+    /// `match.status`, `match.report`, `match.stop` and `sim.guest_census`
+    /// (docs/runtime/agent-api.md, "Sim matches").
     pub fn add_methods(&self, agent: &agent::Agent) {
         let me = self.clone();
         agent.add_method(method::MATCH_STATUS, Access::Read, move |_| Ok(me.status()));
@@ -651,6 +652,16 @@ impl Sim {
             inner.end(&mut s, End::Stopped);
             Ok(json!({ "stopping": true, "end": s.end.map(End::name), "already_over": already.is_some() }))
         });
+        let me = self.clone();
+        agent.add_game_method(
+            crate::sim_census::METHOD,
+            Access::Read,
+            move |params, ctx| {
+                let now = ctx.read_guest(|m| crate::sim_census::read(m)).ok();
+                let so_far = me.0.lock().tally.census();
+                crate::sim_census::answer(&params, now, so_far)
+            },
+        );
     }
 
     /// What `match.status` answers.
@@ -796,21 +807,35 @@ fn build_report(inner: &Inner, s: &State) -> Report {
                 .collect(),
         );
     }
-    if let Some((bots, fixups)) = s.costs_start {
-        let (bots_now, fixups_now) = costs_now();
+    if let Some(start) = s.costs_start {
+        let now = costs_now();
         report.set_costs(
-            bots_now.saturating_sub(bots),
-            fixups.zip(fixups_now).map(|(a, b)| b.saturating_sub(a)),
+            now.bots.saturating_sub(start.bots),
+            start.fixups.zip(now.fixups).map(|(a, b)| b.saturating_sub(a)),
         );
+        report.set_phantom_costs(now.phantom.since(start.phantom));
     }
     report
 }
 
-/// The process's bot game-thread nanoseconds ([`bots::think::game_thread_ns`])
-/// and flat window fixups (`None` with no window), for the report's costs.
-fn costs_now() -> (u64, Option<u64>) {
+/// The process's running cost totals, for the report's costs.
+#[derive(Clone, Copy)]
+struct Costs {
+    /// Bot game-thread nanoseconds ([`bots::think::game_thread_ns`]).
+    bots: u64,
+    /// Flat window fixups (`None` with no window).
+    fixups: Option<u64>,
+    /// The phantoms' action build ([`crate::bot_glue::phantom_build_costs`]).
+    phantom: sim_bench::metrics::PhantomCosts,
+}
+
+fn costs_now() -> Costs {
     let w = runtime::window_process_stats();
-    (bots::think::game_thread_ns(), (w.windows > 0).then_some(w.fixups))
+    Costs {
+        bots: bots::think::game_thread_ns(),
+        fixups: (w.windows > 0).then_some(w.fixups),
+        phantom: crate::bot_glue::phantom_build_costs(),
+    }
 }
 
 /// A bot's brain, counting per game tick what only it knows: stuck, its
@@ -1012,6 +1037,8 @@ impl hooks::Feature for SimMetrics {
                 Some((base, hash)) => (Some(base), Some(hash)),
                 None => (None, None),
             };
+            // A handful of reads (docs/runtime/sim.md §6, `guest_census`).
+            let census = crate::sim_census::read(&*g);
             drop(g);
             let mut s = me.lock();
             match snap {
@@ -1036,6 +1063,7 @@ impl hooks::Feature for SimMetrics {
                     let tick = sample.tick;
                     s.tally
                         .tick_hashed(sample, state_hash::gameplay(&snap, rng), arena);
+                    s.tally.tick_census(tick, &census);
                     // `components = false` in the match file leaves the
                     // breakdown out (a timing arm); the digests above stay.
                     if me.matched.config.components != Some(false) {

@@ -1050,6 +1050,7 @@ mod tests {
             nav: "loaded".into(),
             dispatch_per_tick: None,
             flat: None,
+            guest_census: None,
             notes: vec![],
         }
     }

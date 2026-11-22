@@ -309,6 +309,10 @@ pub mod method {
     pub const MATCH_REPORT: &str = "match.report";
     /// Sim mode: end the match at the next slice boundary, as `stopped`.
     pub const MATCH_STOP: &str = "match.stop";
+    /// Sim mode: the guest census (local users, the local visibility set,
+    /// the effect, particle, decal and light arrays' live counts) read now,
+    /// and the report's `guest_census` block so far (docs/runtime/sim.md §6).
+    pub const SIM_GUEST_CENSUS: &str = "sim.guest_census";
 }
 
 /// Error codes. The negative ones are JSON-RPC's own.

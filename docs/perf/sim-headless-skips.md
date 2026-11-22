@@ -1,7 +1,7 @@
 # Headless sim: work nobody consumes, and what may be skipped
 
-Status: Design. Nothing here is built; every ms figure is supposed until lane H0 measures it.
-Code: none of its own. Each lane below names its files. Tests: named per lane.
+Status: Design. Lane H0's measurements are built (the sim report's `wall.phantom_*` fields and `guest_census` block, [sim.md §6](../runtime/sim.md#6-metrics)); nothing else is. Every ms figure is supposed until a run of H0 measures it.
+Code: H0's, `crates/extensions/game/src/sim_census.rs` and `bot_glue/retail_input.rs`; each other lane below names its files. Tests: named per lane.
 Switch: proposed `impl.sim.skip.phantom-snapshot` (off until measured); it joins [switches.md](../runtime/switches.md) when its lane lands.
 
 A headless bot match ([sim.md](../runtime/sim.md)) has no screen, no
@@ -188,7 +188,7 @@ arm of `h2 sim diff` prints nothing.
 
 | Lane | Scope | Files | Switch | Proof |
 |---|---|---|---|---|
-| **H0** census | The sim report gains `wall.phantom_build_ms_per_tick` and `wall.phantom_snapshot_ms_per_tick` (game-thread time in `retail_input::gather` and in `SecondExecutor::snapshot`), the snapshot's `CopyKind`, and a `guest_census` block read once a tick by the sim's tick observer: the local-user count, whether the local visibility set `[0x4e6948] + 0x1178` is empty, and the live counts of the effect, particle-system, particle, decal and light arrays (their globals are the lane's first read, with `h2 disasm`) as mean and peak. The same block is an agent method, `sim.guest_census` | `crates/extensions/game/src/bot_glue/retail_input.rs`, `crates/extensions/game/src/sim_glue.rs`, `crates/live/sim-bench/src/metrics.rs`, [sim.md](../runtime/sim.md), [agent-api.md](../runtime/agent-api.md) | none | metrics unit tests on the JSON; a fake-guest test of the census reads |
+| **H0** census | The sim report gains `wall.phantom_build_ms_per_tick` and `wall.phantom_snapshot_ms_per_tick` (game-thread time in `retail_input::gather` and in `SecondExecutor::snapshot`), the snapshot's `CopyKind`, and a `guest_census` block read once a tick by the sim's tick observer: the local-user count, whether the local visibility set `[0x4e6948] + 0x1178` is empty, and the live counts of the effect, particle-system, particle, decal and light arrays (their globals, read with `h2 disasm`, are in sim.md §6) as mean and peak. The same block is an agent method, `sim.guest_census` | `crates/extensions/game/src/bot_glue/retail_input.rs`, `crates/extensions/game/src/sim_glue.rs`, `crates/live/sim-bench/src/metrics.rs`, [sim.md](../runtime/sim.md), [agent-api.md](../runtime/agent-api.md) | none | metrics unit tests on the JSON; a fake-guest test of the census reads |
 | **H1** phantom view kept across ticks | Needs a spec first. `SecondExecutor` keeps its view and its base as private copies and, at each tick's first gather, copies in only the pages the live side stored to since the last one (a write-watch subscription on the live `Guest`), then reverts the view's own written pages as it does between seats. No remap per tick and no fault on the live side | `crates/runtime/runtime/src/executor.rs`, `guest/view.rs`, `cow.rs`, `crates/extensions/game/src/bot_glue/retail_input.rs`, [second-executor.md](../runtime/second-executor.md) | `impl.sim.skip.phantom-snapshot` | a runtime test: after N rounds of random live and view stores the kept view equals a fresh `cow_snapshot` byte for byte; `h2 sim diff` on against off, arena hashes on; two films of one seed, on and off, with equal `BTAP` and digest series |
 
 **Order.** H0 first: it is two timers and a handful of reads, and every

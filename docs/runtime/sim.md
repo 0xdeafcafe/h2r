@@ -9,7 +9,7 @@ Switch: `H2_SIM`, `sim.render_every` and the `impl.sim.*` switches, listed in
 Code: `crates/live/sim-bench` (the match, batch and tuning files, pacing, the
 tally and report, the comparison), `crates/live/bots/src/tuning.rs`,
 `crates/rewrites/sim-bridge/src/sim_frame.rs`, `crates/extensions/game/src/sim_glue.rs` and its
-System Link lobby, `crates/apps/cli/src/sim_cmd.rs`, and the examples in
+System Link lobby, `crates/extensions/game/src/sim_census.rs`, `crates/apps/cli/src/sim_cmd.rs`, and the examples in
 [sim-examples/](sim-examples/).
 
 The goal: train and test the bots offline. Run the retail game's own
@@ -381,8 +381,16 @@ ticks; and the final score. The report is one JSON file per match:
   "ticks": 9000, "game_seconds": 300.0,
   "wall": { "setup_s": 21.8, "match_s": 41.2, "process_s": 63.0, "speedup": 7.28,
             "process_speedup": 4.76, "ms_per_tick": 4.58, "bots_ms_per_tick": 0.45,
+            "phantom_build_ms_per_tick": 0.9, "phantom_snapshot_ms_per_tick": 0.5,
+            "phantom_snapshots_per_tick": 1.0, "phantom_snapshot_copy": "remap",
             "peak_rss_mib": 981, "footprint_mib": 143,
             "guest_written_pages": 2100, "guest_pages": 16384 },
+  "guest_census": { "ticks": 9000,
+                    "local_users": { "samples": 9000, "mean": 0.0, "peak": 0 },
+                    "local_visibility": { "samples": 9000, "empty_ticks": 9000 },
+                    "arrays": { "effect": { "samples": 9000, "mean": 6.1, "peak": 31 },
+                                "particle_system": { "...": "..." }, "particles": { "...": "..." },
+                                "decals": { "...": "..." }, "lights": { "...": "..." } } },
   "players": [
     { "index": 0, "name": "A1", "bot": true, "seat": 0, "arm": "base", "team": 0,
       "score": 12, "kills": 12, "deaths": 9, "assists": 2, "suicides": 0, "betrayals": 0,
@@ -405,6 +413,45 @@ game-thread saving. `flat.fixups_per_tick` is the flat RAM window's
 fixups over the match, per tick (`runtime::window_process_stats`); the
 report has no `flat` without a window. Both count from the tick the
 match begins.
+
+The phantoms' action build is not in `bots_ms_per_tick`
+([sim-headless-skips.md](../perf/sim-headless-skips.md)). At the remote
+gather each phantom's pad goes through retail's local action builder in
+a private copy of guest RAM (`bot_glue::retail_input`, `Builder::sample`).
+`wall.phantom_build_ms_per_tick` is the game-thread time of those builds
+per tick: the snapshot, the reverts between seats, the view's writes and
+the six guest calls of every seat. A film that replays its builds runs
+none. `wall.phantom_snapshot_ms_per_tick` is the part spent in
+`SecondExecutor::snapshot`, the two copy-on-write copies of guest RAM a
+build takes at a tick's first seat. `wall.phantom_snapshots_per_tick`
+counts those snapshots; it is above 1 when a failed build or a seat reset
+starts a seat from live RAM again. `wall.phantom_snapshot_copy` says how
+they copied RAM (`runtime::CopyKind`): `remap` (a copy-on-write mapping
+of the same pages, macOS), `copy` (every byte), or `mixed`. All four count
+from the tick the match begins, as the costs above do, and a report has
+none of them when the run did not measure.
+
+The `guest_census` block (`crates/extensions/game/src/sim_census.rs`)
+counts the presentation-side state a headless match still holds. The
+tick observer reads it once a tick, from the tick the match begins:
+
+| Field | What | Read from |
+|---|---|---|
+| `ticks` | ticks sampled | |
+| `local_users` | the local-user count | `i16` at `[0x4e8c20] + 8` (`guest_layout::PlayerGlobals`) |
+| `local_visibility` | ticks the local players' visibility set was empty | the `0x40` bytes at `[0x4e6948] + 0x1178` (cleared at `0x137d5c`, built by the visibility pass at `0x138c5f`) |
+| `arrays.effect` | live effects | data array `[0x4ea93c]` (initialised at `0x175b93`) |
+| `arrays.particle_system` | live particle systems | `[0x510c74]` (`0x173e29`) |
+| `arrays.particles` | live particles | `[0x51ec84]` (`0x173e62`) |
+| `arrays.decals` | live decals | `[0x4ea950]` (`0x17d263`) |
+| `arrays.lights` | live lights | `[0x4e030c]` (`0xbfffb`) |
+
+A count carries `samples` (the ticks it was read on), `mean` and `peak`;
+an array counts from its header's live count (`+0x3c`), and only when
+the header has the data-array signature and the name the title gives it,
+so a wrong pointer is left out, never counted. An array never read is
+absent. The reads are three pointers, five headers and 64 bytes a tick.
+A report has no `guest_census` before its first counted tick.
 
 With `H2_DISPATCH_STATS=1`, the report includes `dispatch_per_tick`
 for the observed match interval. It records the CALLs, JUMPs, RESUMEs,
@@ -815,8 +862,10 @@ Host methods while `H2_SIM` is on (`boot::sim_glue::Sim::add_methods`,
 | `match.status` | read | the match file, phase (`waiting`, `binding`, `playing`, `over`), lobby setup step and session state, ticks, game seconds, wall seconds and speed-up so far, the end reason once over |
 | `match.report` | read | the report as it would be written now (players, kills so far) |
 | `match.stop` | act | end the match at the next slice boundary, with `"end": "stopped"` |
+| `sim.guest_census` | read | the guest census read now (`now`) and the report's `guest_census` block so far (`match`), §6 |
 
-`h2 agent match.status`, `h2 agent match.report`, `h2 agent match.stop`.
+`h2 agent match.status`, `h2 agent match.report`, `h2 agent match.stop`,
+`h2 agent sim.guest_census`.
 Stepping is the existing `session.pause` and `session.step N`.
 
 ## 10. Expected speed-up
@@ -1131,12 +1180,16 @@ headers and blocks while those dependencies are being traced.
   the requested variant.
 - Phantom team assignments holding through respawns.
 - The end latch at the time or score limit ending a run.
+- The `guest_census` reads and the `wall.phantom_*` timers in a run: the
+  array pointers and names come from the retail XBE, and the reads are
+  tested over a fake guest only.
 
 ## Tests
 
 `cargo test -p sim-bench` (config, metrics, compare, clock, the examples
 here), `cargo test -p bots tuning` and `cargo test -p bots
 a_tuned_brain` (the overrides), `cargo test -p sim-bridge sim_frame` (the skip's decision
-and stubs over a fake guest), `cargo test -p boot sim_glue` (snapshots to
-samples, limits and phantom tuning), and `cargo test -p cli
+and stubs over a fake guest), `cargo test -p game sim_glue` (snapshots to
+samples, limits and phantom tuning), `cargo test -p game sim_census` (the
+census reads over a fake guest and `sim.guest_census`'s answer), and `cargo test -p cli
 sim_cmd` (child arguments, per-run data, the results directory).
