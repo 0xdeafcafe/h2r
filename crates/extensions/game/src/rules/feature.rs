@@ -159,8 +159,16 @@ impl hooks::Feature for Rules {
                 .as_ref()
                 .and_then(|s| read.u32(s.addr.wrapping_add(variant_ext::SESSION_NETWORK_CLASS)));
             let part = variant_ext::part(session.as_ref().zip(class));
+            // A matchmade game is a hopper's (with no deny list: a hopper
+            // keeps none); Live holds a ranked session's script to the
+            // ranked policy when the session names it.
+            let context = match hle.as_ref().and_then(|h| h.matchmade()) {
+                Some(_) => ::rules::policy::Context::Hopper { deny: &[] },
+                None => ::rules::policy::Context::Custom,
+            };
             let (line, hash) = {
                 let mut rt = s.lock();
+                rt.set_context(context);
                 let line = rt.start(m, part == Part::SystemLink);
                 (line, rt.hash())
             };

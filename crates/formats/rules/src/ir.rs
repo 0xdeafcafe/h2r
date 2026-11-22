@@ -739,6 +739,113 @@ impl Ir {
         }
         bits as u32
     }
+
+    /// An option's name, from the string table.
+    pub fn option_name(&self, index: usize) -> &str {
+        self.options
+            .get(index)
+            .and_then(|o| self.strings.get(o.name as usize))
+            .map_or("", String::as_str)
+    }
+
+    /// An enum option's value names, by value from `lo`; empty for an int
+    /// or a bool.
+    pub fn option_values(&self, index: usize) -> Vec<&str> {
+        match self.options.get(index).map(|o| o.ty) {
+            Some(Ty::Enum(e)) => self
+                .enums
+                .get(e as usize)
+                .map(|d| {
+                    d.variants
+                        .iter()
+                        .map(|&s| self.strings.get(s as usize).map_or("", String::as_str))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Packs option values given by name into the record's 32 option bits,
+    /// in declaration order ("Carrying a script"). An option left out takes
+    /// its default. Live's variant routes and `h2 variants port --option`
+    /// both pack through here.
+    pub fn pack_options(&self, given: &[(String, OptionValue)]) -> Result<u32, OptionError> {
+        for (i, (name, _)) in given.iter().enumerate() {
+            if !(0..self.options.len()).any(|o| self.option_name(o) == name) {
+                return Err(OptionError::Unknown(name.clone()));
+            }
+            if given[..i].iter().any(|(n, _)| n == name) {
+                return Err(OptionError::Twice(name.clone()));
+            }
+        }
+        let mut bits = 0u64;
+        for (index, (o, off)) in self.options.iter().zip(self.option_offsets()).enumerate() {
+            let name = self.option_name(index);
+            let range = || OptionError::Range {
+                name: name.to_string(),
+                lo: o.lo,
+                hi: o.hi,
+            };
+            let value = match given.iter().find(|(n, _)| n == name).map(|(_, v)| v) {
+                None => o.default,
+                Some(OptionValue::Bool(b)) => i32::from(*b),
+                Some(OptionValue::Int(n)) => i32::try_from(*n).map_err(|_| range())?,
+                Some(OptionValue::Name(s)) => self
+                    .option_values(index)
+                    .iter()
+                    .position(|v| *v == s.as_str())
+                    .map(|p| o.lo + p as i32)
+                    .ok_or_else(|| OptionError::NoValue {
+                        name: name.to_string(),
+                        value: s.clone(),
+                    })?,
+            };
+            if !(o.lo..=o.hi).contains(&value) {
+                return Err(range());
+            }
+            if off < 64 {
+                bits |= ((i64::from(value) - i64::from(o.lo)) as u64) << off;
+            }
+        }
+        Ok(bits as u32)
+    }
+}
+
+/// An option value given by name ([`Ir::pack_options`]): a number, a bool
+/// or an enum value's name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OptionValue {
+    Int(i64),
+    Bool(bool),
+    Name(String),
+}
+
+impl OptionValue {
+    /// Reads command-line text: `true` or `false`, an integer, or else an
+    /// enum value's name.
+    pub fn parse(text: &str) -> OptionValue {
+        match text {
+            "true" => OptionValue::Bool(true),
+            "false" => OptionValue::Bool(false),
+            t => t
+                .parse::<i64>()
+                .map_or_else(|_| OptionValue::Name(t.to_string()), OptionValue::Int),
+        }
+    }
+}
+
+/// Why option values do not pack.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum OptionError {
+    #[error("the script has no option {0:?}")]
+    Unknown(String),
+    #[error("option {0:?} is given twice")]
+    Twice(String),
+    #[error("option {name:?} takes {lo}..={hi}")]
+    Range { name: String, lo: i32, hi: i32 },
+    #[error("option {name:?} has no value {value:?}")]
+    NoValue { name: String, value: String },
 }
 
 struct Writer(Vec<u8>);

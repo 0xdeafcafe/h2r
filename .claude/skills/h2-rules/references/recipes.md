@@ -28,9 +28,9 @@ on kill(victim, killer) {
 }
 ```
 
-Scenario: two players, a kill, a suicide, then a betrayal. In the CLI
-scenario `variant.team_play` is 0, so the betrayal branch needs Live's run
-with `"variant": {"team_play": 1}`.
+Scenario: two players, a kill, a suicide, then a betrayal. A Slayer
+carrier's stock record is free-for-all, so the betrayal branch needs
+`"variant": {"team_play": 1}`.
 
 ```json
 {"players": [{"slot": 0, "team": 0}, {"slot": 1, "team": 0}],
@@ -87,8 +87,9 @@ tick the timer fires. A round clock is the same shape:
 
 ## Rounds and the end
 
-`end_round(winner)` takes a team, or `none` for a draw. Live's run counts
-`round_time_left()` down one a tick; the CLI keeps it fixed. This is Infection's tail:
+`end_round(winner)` takes a team, or `none` for a draw. A scenario counts
+`round_time_left()` down one a tick from the `round_time_left` it gives.
+This is Infection's tail:
 
 ```text
 on tick {
@@ -255,9 +256,13 @@ their headers. In a scenario, seat the objective with `pickup` events.
 Labelled objects come from Forge labels and the built-in per-flag-type
 table. `for each objects labelled "hill_corner" c where c.number == hill`
 visits them; `first(...)` finds one. `on enter(zone, o)` and `on leave`
-report an object in a zone (at most 64 a tick together). Labels are not in
-the CLI scenario: use Live's run for `variant` fields, and expect
-`label_number`, `label_of`, `zone_id` and `inside` to be refused by a host.
+report an object in a zone (at most 64 a tick together). A scenario
+declares labelled objects in `labelled` (`{"label": "hill_corner",
+"object": 40, "number": 1}`) and a player's unit in `unit`, so an `enter`
+naming the unit puts the player in the zone. `ticks_held(zone, team)`
+counts the ticks a team alone holds a zone. Expect `label_number`,
+`label_of`, `zone_id`, `inside` and `ticks_held` to be refused by a
+host.
 
 ## Randomness
 

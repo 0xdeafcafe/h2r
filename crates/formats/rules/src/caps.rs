@@ -228,6 +228,8 @@ pub mod id {
     pub const FF_SCORE: u16 = 55;
     pub const FF_RESPAWN: u16 = 56;
     pub const FF_FINISH: u16 = 57;
+    pub const MESSAGE_TEAM: u16 = 58;
+    pub const MESSAGE_ALL: u16 = 59;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -245,7 +247,12 @@ pub const ENTRIES: &[Entry] = &[
     read(id::LABEL_NUMBER, "label_number", &[Object], Int, NotBuilt),
     read(id::LABEL_OF, "label_of", &[Object], Label, NotBuilt),
     read(id::ZONE_ID, "zone_id", &[Object], Int, NotBuilt),
-    read(id::TICKS_HELD, "ticks_held", &[Object, Team], Int, NotBuilt),
+    // Answered by the VM from the zone test (`Game::zone_holder`), which
+    // no host has yet: the VM's own, over a game-side part not built.
+    Entry {
+        status: NotBuilt,
+        ..vm(id::TICKS_HELD, "ticks_held", &[Object, Team], Int)
+    },
     read(id::SQUAD_ALIVE, "squad_alive", &[Squad], Int, Named),
     // Actions.
     act(id::SCORE, "score", &[Player, Int], None, Now, Named),
@@ -266,7 +273,9 @@ pub const ENTRIES: &[Entry] = &[
     act(id::HUNT, "hunt", &[Squad], Some("ai.squads"), Queued, Named),
     act(id::ERASE_SQUAD, "erase_squad", &[Squad], Some("ai.squads"), Queued, Named),
     act(id::SPAWN_AREAS, "spawn_areas", &[Team, Label, Int], Some("player.spawn"), Now, Untraced),
-    act(id::MESSAGE, "message", &[Text], Some("hud.message"), Now, Untraced),
+    // `message(to, text)`: the language picks this entry for a player,
+    // `message_team` for a team and `message_all` for `all` ([`spelled`]).
+    act(id::MESSAGE, "message", &[Player, Text], Some("hud.message"), Now, Untraced),
     act(id::FORGE_MOVE, "forge_move", &[Object, Object], Some("forge.move"), Queued, Named),
     act(id::FORGE_DELETE, "forge_delete", &[Object], Some("forge.delete"), Queued, Named),
     act(id::FORGE_PLACE, "forge_place", &[Tag, Object], Some("forge.place"), Queued, Named),
@@ -319,16 +328,49 @@ pub const ENTRIES: &[Entry] = &[
     act(id::FF_SCORE, "ff_score", &[Player, Int, Bool], Some("firefight.director"), Queued, Named),
     act(id::FF_RESPAWN, "ff_respawn", &[Player], Some("firefight.director"), Queued, Named),
     act(id::FF_FINISH, "ff_finish", &[Bool], Some("firefight.director"), Queued, Named),
+    // The team and everyone forms of `message(to, text)`.
+    act(id::MESSAGE_TEAM, "message_team", &[Team, Text], Some("hud.message"), Now, Untraced),
+    act(id::MESSAGE_ALL, "message_all", &[Text], Some("hud.message"), Now, Untraced),
 ];
+
+/// The word `message(to, text)` takes for everyone.
+pub const EVERYONE: &str = "all";
+
+/// The name the language spells an entry with: `message` for each of the
+/// three forms of `message(to, text)`, its own name for the rest.
+pub fn spelled(e: &Entry) -> &'static str {
+    match e.id {
+        id::MESSAGE_TEAM | id::MESSAGE_ALL => "message",
+        _ => e.name,
+    }
+}
+
+/// An entry a script names only through another's spelling (the team and
+/// everyone forms of `message`). Completion and the API listing leave it
+/// out, and calling it by its own name is an unknown function.
+pub fn is_form(e: &Entry) -> bool {
+    spelled(e) != e.name
+}
+
+/// The parameters an entry's signature shows, as the language spells them.
+pub fn params(e: &Entry) -> Vec<String> {
+    match e.id {
+        id::MESSAGE | id::MESSAGE_TEAM | id::MESSAGE_ALL => {
+            vec![format!("to: player | team | {EVERYONE}"), "text: text".into()]
+        }
+        _ => e.args.iter().map(|t| t.name().to_string()).collect(),
+    }
+}
 
 /// The entry numbered `id` in `api`.
 pub fn entry(id: u16, api: u16) -> Option<&'static Entry> {
     ENTRIES.get(id as usize).filter(|e| e.since <= api)
 }
 
-/// The entry the language calls `name`.
+/// The entry the language calls `name`. For `message` it is the player
+/// form; the compiler picks the form by the first argument.
 pub fn entry_named(name: &str) -> Option<&'static Entry> {
-    ENTRIES.iter().find(|e| e.name == name)
+    ENTRIES.iter().find(|e| e.name == name && !is_form(e))
 }
 
 /// Retail record fields a script reads as `variant.<name>`, with the type
@@ -410,7 +452,14 @@ mod tests {
             if let Some(cap) = a.cap {
                 assert!(capability(cap, API_VERSION).is_some(), "{cap}");
             }
-            assert_eq!(a.kind == Kind::VmOnly, a.status == Status::VmOnly);
+            // A VM built-in is the VM's own, unless its game-side part is
+            // not built (`ticks_held` over the zone test).
+            if a.status == Status::VmOnly {
+                assert_eq!(a.kind, Kind::VmOnly, "{}", a.name);
+            }
+            if a.kind == Kind::VmOnly {
+                assert!(matches!(a.status, Status::VmOnly | Status::NotBuilt), "{}", a.name);
+            }
             assert!(a.kind != Kind::Read || a.cap.is_none());
         }
         for (i, a) in CAPABILITIES.iter().enumerate() {
@@ -429,5 +478,29 @@ mod tests {
         assert!(entry(id::SCORE, 0).is_none());
         assert!(!entry(id::SET_TEAM, 1).unwrap().status.hostable());
         assert!(entry(id::SCORE, 1).unwrap().status.hostable());
+    }
+
+    #[test]
+    fn message_has_three_forms_under_one_name() {
+        for f in [id::MESSAGE, id::MESSAGE_TEAM, id::MESSAGE_ALL] {
+            let e = entry(f, API_VERSION).unwrap();
+            assert_eq!(spelled(e), "message");
+            assert_eq!(e.cap, Some("hud.message"));
+            assert_eq!(params(e), ["to: player | team | all", "text: text"]);
+        }
+        assert_eq!(entry_named("message").unwrap().id, id::MESSAGE);
+        assert_eq!(entry_named("message").unwrap().args, &[Player, Text]);
+        assert!(entry_named("message_team").is_none());
+        assert!(entry_named("message_all").is_none());
+        assert!(!is_form(entry(id::SCORE, API_VERSION).unwrap()));
+    }
+
+    #[test]
+    fn ticks_held_is_the_vms_over_a_zone_test_not_built() {
+        let e = entry(id::TICKS_HELD, API_VERSION).unwrap();
+        assert_eq!(e.kind, Kind::VmOnly);
+        assert_eq!(e.status, Status::NotBuilt);
+        assert!(!e.status.hostable());
+        assert_eq!(e.args, &[Object, Team]);
     }
 }

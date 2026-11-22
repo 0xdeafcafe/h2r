@@ -164,11 +164,17 @@ a host refuse the script) or `vm`.
 | `object_team(o)` | object -> team | traced |
 | `player_of(o)` | object -> player | traced |
 | `label_number(o)`, `label_of(o)`, `zone_id(o)` | object -> int, label, int | not built |
-| `ticks_held(o, t)` | object, team -> int | not built |
+| `ticks_held(o, t)` | object, team -> int | vm, not built on a host (below) |
 | `inside(p, o)` | player, object -> bool | not built |
 
 The field forms (`p.score`, `o.number`, `o.label`, `o.id`, `o.carrier`,
 `o.team`, `s.alive`) call these.
+
+`ticks_held(zone, team)` is counted by the VM: from the first tick the
+script names the zone, each tick the team holds it alone adds one. The
+counts clear at the round's end; at most 32 zones are counted. `none` or
+a team out of range reads 0. A host refuses a script that calls it until
+the host has a zone test; a scenario's fake game answers it.
 
 ## Entries: actions
 
@@ -190,7 +196,7 @@ The field forms (`p.score`, `o.number`, `o.label`, `o.id`, `o.carrier`,
 | `create` | tag, object | `objects.create` | queued | traced |
 | `delete` | object | `objects.delete` | queued | named |
 | `spawn_areas` | team, label, int | `player.spawn` | now | untraced |
-| `message` | text | `hud.message` | now | untraced |
+| `message` | player, team or `all`; text | `hud.message` | now | untraced |
 | `place_squad` | squad, Class, int, label | `ai.squads` | queued | named |
 | `place_squad_at` | squad, Class, int, int, int | `ai.squads` | queued | named |
 | `hunt`, `erase_squad` | squad | `ai.squads` | queued | named |
@@ -214,7 +220,8 @@ the type may be `none` (`set_loadout(p, "tag", none)`).
 The VM stops, the round ends with "script error", the same op every run:
 the tick's 20,000 ops ran out (`Budget`), a table row out of range
 (`TableRow`), more than 256 objects with object variables (`Objects`), more
-than 128 queued calls (`Queue`), `squad(n)` outside 0 to 15 (`Squad`).
+than 128 queued calls (`Queue`), `squad(n)` outside 0 to 15 (`Squad`),
+more than 32 zones asked about by `ticks_held` (`Zones`).
 `h2 rules run` prints `script error <kind> at tick T, handler H, op P` and
 exits 1.
 

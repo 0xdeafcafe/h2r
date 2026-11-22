@@ -218,7 +218,7 @@ regular phantom uplink and remote gather.
 | `map` | the lobby's map row, resolved against the disc |
 | `game_type` | the lobby's variant built from the type's built-in list index (`VARIANT_DEFAULTS`, `0x19d220`) |
 | `time_limit_s`, `score_limit`, `team_play`, more `settings` | edits of the variant record with `variants::GameVariant::set` (setting 10 the time limit, the type's score setting, 91 team play, any other id) |
-| `seed` | written to the engine's shared random seed `[0x004e7408]+0` at the first tick, and folded into each brain's seed |
+| `seed` | written to the engine's shared random seed `[0x004e7408]+0` at the first tick, to the game options' two spawn words (`[[0x004e6948]+0x10]`, `+0x14`; `sim_glue::spawn_words`) ahead of the game's first spawn, and folded into each brain's seed |
 
 ### The playerless start
 
@@ -641,8 +641,33 @@ Use the same disc, image and nav meshes you use for local runs.
 Sign into that server as an admin in h2 Uplink. Open **Halo Admin →
 Clanker Training** and select a running match to watch it. The viewer follows
 the live edge on the simulation's clock and shows its usual **Live** control
-for returning to it after a seek. The training page shows measured simulation
-speed. Use `--pace realtime` for normal game speed.
+for returning to it after a seek. The live clock runs at the stream's
+measured pace (`streamPace` in `web/src/state/frames.ts`): a sim streaming
+at 3× plays smoothly at 3× near its live edge. A finished run's replay opens
+at 8× and its speed menu goes from 0.25× to 16×. The training page shows
+measured simulation speed. Use `--pace realtime` for normal game speed.
+
+Pick a batch (the **Batch** filter, or a batch heading in the list) to
+watch the whole batch at once. Above the results table, a grid has one map
+tile per run (`web/src/admin/SimWatch.tsx`). The tiles are ordered by map,
+then seed, then tuning arms, so the arms played on one map and seed sit
+side by side. Each tile shows the map, seed, arms by team, game clock and
+score, and opens the run's page when clicked.
+
+- **Finished runs** replay on one shared clock, in sync from each run's
+  first frame. **Speed** picks 1×, 4×, 8× or 16× (8× to start). **Pause**,
+  **Play** and **Restart** apply to all tiles. A run that ends early holds
+  its last frame, and the clock stops when the longest run ends. Each tile
+  downloads its full recording once it nears the screen, at most three at
+  a time, and plays it in the browser, so speed needs no server support.
+- **Running runs** stream live at the sim's own pace. Up to six on-screen
+  tiles stream at once. The others show the latest score from the list,
+  which refreshes every five seconds.
+- **Deferred runs** say *Replay after match* until their recording is
+  uploaded.
+
+The maps are the stats site's small map renderers on the shared animation
+frame loop. A tile off screen draws nothing.
 
 Each batch streams at most two matches at once. Other running matches appear
 in the list with replay available after the match. They buffer packed
@@ -728,9 +753,10 @@ What a sim run's result depends on, and what breaks reproducibility:
 | Audio | logical pacing into a `NullSink` |
 | Input | Each phantom observes guest state on the game thread during the simulation tick’s input gather |
 | Bot thinking threads (`H2_BOT_THREADS`, `H2_BOT_PIPELINE`) | the guest is read on the game thread only and the thinks are independent, so pads do not depend on the thread count. Batched equals serial. Pipelining is reproducible with pads delivered a tick later, crediting that tick toward any configured wire delay ([bots.md §5.5](../game/bots.md)) |
+| Spawn locations | `0x14ef00` mixes the player index and spawn count with two game-options words that the session fills anew for each game, not the shared seed. Sim writes them from the match seed ahead of the first spawn (`crates/extensions/game/src/sim_glue.rs`); without that, two runs start their players in different places |
 | The bots' randomness | SplitMix64 of the match seed and logical seat drives individual choices (`sim::config::bot_seed`). The gamertag fixes the profile |
 | `HashMap` iteration in the bots (`mind.rs` tracks, `los`, `nav`) | lookups and `retain` only, as read (**S**: worth a check in review) |
-| The nav mesh | built in the background on a thread at the wall clock's mercy (`bots_nav_auto`): **off in sim mode** (`H2_BOTS_NAV_AUTO=0`). A map with no current mesh is reported (`"nav": "missing"`); build them first with `h2 bots nav <map>` |
+| The nav mesh | built in the background on a thread at the wall clock's mercy (`bots_nav_auto`): **off in sim mode** (`H2_BOTS_NAV_AUTO=0`). A map with no current mesh is reported (`"nav": "missing"`); build them first with `h2 bots nav <map>`. A built mesh is read on the game thread in sim mode (`H2_BOTS_MAP_INLINE=1`): read on a worker, the bots of a loaded host acted without it for their first ticks, and two runs split soon after the opening hold |
 | Wall-clock limits (`max_wall_s`) | can end a match at a different tick on a slower host: the report says `"end": "wall_limit"`. Use `max_ticks` for reproducible ends |
 | Our own observers | read-only; the agent's tick observer adds dispatch transfers, the same in every run that has it |
 
@@ -1030,6 +1056,9 @@ headers and blocks while those dependencies are being traced.
 
 - `h2 sim` never builds: it stops with `h2 build` when the image is not
   current for this `h2` (`crates/apps/cli/src/sim_cmd.rs`), as `h2 serve` does.
+- `h2 lab sim` runs a match or batch on the lab host's image and keeps the
+  reports, with per-arm medians and a state-hash comparison, for timings
+  taken on the other Mac ([Sim benchmarks](lab.md#sim-benchmarks)).
 - Sim mode never builds nav meshes: run `h2 bots nav <map>`
   (`crates/apps/cli/src/bots_nav.rs`) once per map first.
 - Each batch run has its own data directory (`<out>/runs/<id>/data`, its
@@ -1041,10 +1070,10 @@ headers and blocks while those dependencies are being traced.
 
 ## Not verified
 
-- Same-build determinism: two runs of one match with the same seed give
-  equal `state_hashes_v1` series ([Post-tick state hashes](#post-tick-state-hashes),
-  `h2 sim diff`). The [simulation budget](../perf/sim-budget.md) names
-  same-build repeatability as open.
+- Same-build determinism beyond the example batch: repeated runs of its
+  15 matches (Lockout, Midship, Ascension; four phantoms; 9000 ticks) give
+  identical components at every tick ([notes/sim.md](notes/sim.md)).
+  Other maps, rosters and game types are unchecked.
 - Whether skipping the render changes anything the tick reads beyond the
   seed: compare a skipped run with the same match at `render_every = 1`.
   `render_every` is the fallback if it does.

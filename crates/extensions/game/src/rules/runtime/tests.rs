@@ -350,6 +350,31 @@ fn a_script_the_host_cannot_run_is_refused_by_the_entry_or_event_it_names() {
 }
 
 #[test]
+fn a_ranked_game_refuses_a_script_that_grants_edits_by_the_capability() {
+    let src = "rules \"Builder\" 1\ncarrier slayer\nrequires forge.move\n\non kill(victim, killer) { score(killer, 1) }\n";
+    let ir = ::rules::compile(src).unwrap();
+    let blob = ir.encode();
+    let id = ir.id();
+    let store = Local::default();
+    let s = shared(&store, Box::new(move |_: [u8; 8]| Ok::<_, String>(blob.clone())));
+    let (m, _) = guest(block(prefix(&id), 0), SLAYER);
+    s.lock().set_context(Context::Ranked);
+    s.lock().start(&m, false);
+    let why = s.lock().state().refused.unwrap();
+    assert!(
+        why.starts_with("capability forge.move is not allowed in a ranked game"),
+        "{why}"
+    );
+    assert_eq!(store.bytes(), None);
+
+    // A custom game takes the header; what stops it there is the host.
+    s.lock().set_context(Context::Custom);
+    s.lock().start(&m, false);
+    let why = s.lock().state().refused.unwrap_or_default();
+    assert!(!why.contains("not allowed in a"), "{why}");
+}
+
+#[test]
 fn a_script_on_another_engine_is_refused() {
     let store = Local::default();
     let s = shared(&store, Box::new(no_fetch));

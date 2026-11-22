@@ -22,13 +22,16 @@ const USAGE: &str = "usage: h2 rules check <file.rules>
   check compiles and verifies; errors print as file:line:col: message and
   the exit status is 1. The report gives the worst-tick estimate against
   the budget, the IR size, the slots, what the script can do, and any
-  entries a host cannot make.
-  build writes the verified IR blob and prints its SHA-256.
+  entries a host cannot make; a script over the budget or the IR cap
+  prints the report with a refusal and exits 1 too.
+  build writes the verified IR blob and prints its SHA-256. It writes
+  nothing for a script check refuses.
   run steps the script over a JSON scenario on a fake game and prints the
   calls made each tick and the final scores (--trace adds each event and
   call).
   caps lists the capabilities and the engine API entries with their status.
-  builtin lists the built-in scripts, or prints one by name or engine index.
+  builtin lists the built-in scripts (the engine ports) and the example
+  scripts, or prints one by name, engine index or example key.
   lsp serves the Language Server Protocol on stdin and stdout, for an
   editor: diagnostics, completion, hover, signatures, definitions,
   references, semantic tokens, the outline and formatting.";
@@ -164,6 +167,7 @@ fn compile(label: &str, src: &str) -> Result<(Ir, Report), String> {
     rules::build(src).map_err(|e| match e {
         BuildError::Compile(c) => format!("{label}:{}:{}: {}\n", c.line, c.col, c.message),
         BuildError::Refused(r) => format!("{label}: refused: {r}\n"),
+        other => format!("{label}: refused: {other}\n"),
     })
 }
 
@@ -241,8 +245,13 @@ pub fn check_text(label: &str, src: &str) -> Result<String, String> {
     } else {
         let _ = writeln!(s, "unhostable entries (a host refuses this script):");
         for e in bad {
-            let _ = writeln!(s, "  {} ({})", e.name, status_words(e.status));
+            let _ = writeln!(s, "  {} ({})", caps::spelled(e), status_words(e.status));
         }
+    }
+    // Over the budget or the IR cap: the report, then the refusal.
+    if let Err(e) = rules::fits(&ir, &report) {
+        let _ = writeln!(s, "{label}: refused: {e}");
+        return Err(s);
     }
     Ok(s)
 }
@@ -278,7 +287,8 @@ fn status_words(s: Status) -> &'static str {
 
 /// The blob and its SHA-256 for source that builds.
 pub fn build_blob(label: &str, src: &str) -> Result<(Vec<u8>, String), String> {
-    let (ir, _) = compile(label, src)?;
+    let (ir, report) = compile(label, src)?;
+    rules::fits(&ir, &report).map_err(|e| format!("{label}: refused: {e}\n"))?;
     let bytes = ir.encode();
     let hash = rules::Sha256::of(&bytes).to_string();
     Ok((bytes, hash))
@@ -383,7 +393,7 @@ pub fn caps_text() -> String {
             s,
             "  {:>2} {}({args}){result}  [{kind}, {}, {}{}]",
             e.id,
-            e.name,
+            caps::spelled(e),
             e.cap.unwrap_or("core"),
             status_words(e.status),
             if e.status.hostable() { "" } else { ", not hostable" }
@@ -392,7 +402,8 @@ pub fn caps_text() -> String {
     s
 }
 
-/// The built-in scripts: a list, or one source by name or engine index.
+/// The built-in scripts: the engine ports by engine index, then the
+/// example scripts by key; or one source by name, engine index or key.
 pub fn builtin_text(which: Option<&str>) -> Result<String, String> {
     let mut found = Vec::new();
     for index in 0..=u8::MAX {
@@ -402,19 +413,30 @@ pub fn builtin_text(which: Option<&str>) -> Result<String, String> {
         let name = rules::compile(src)
             .map(|ir| ir.header.name)
             .map_err(|e| format!("built-in {index}: {e}\n"))?;
-        found.push((index, name, src));
+        found.push((index.to_string(), name, src, false));
+    }
+    for &(key, src) in builtin::examples() {
+        let name = rules::compile(src)
+            .map(|ir| ir.header.name)
+            .map_err(|e| format!("example {key}: {e}\n"))?;
+        found.push((key.to_string(), name, src, true));
     }
     let mut s = String::new();
     match which {
         None => {
-            for (index, name, _) in &found {
-                let _ = writeln!(s, "engine {index}: {name}");
+            for (key, name, _, example) in &found {
+                if *example {
+                    let _ = writeln!(s, "example {key}: {name}");
+                } else {
+                    let _ = writeln!(s, "engine {key}: {name}");
+                }
             }
         }
         Some(w) => {
-            let Some((_, _, src)) = found.iter().find(|(i, n, _)| {
-                n.eq_ignore_ascii_case(w) || i.to_string() == w
-            }) else {
+            let Some((_, _, src, _)) = found
+                .iter()
+                .find(|(k, n, _, _)| n.eq_ignore_ascii_case(w) || k == w)
+            else {
                 return Err(format!("no built-in script {w:?}; `h2 rules builtin` lists them\n"));
             };
             s.push_str(src);
@@ -501,5 +523,27 @@ on kill(victim, killer) {
         assert!(list.contains("Slayer"), "{list}");
         assert!(builtin_text(Some("slayer")).unwrap().starts_with("rules \"Slayer\""));
         assert!(builtin_text(Some("nothing")).is_err());
+        // The examples follow the ports, marked, and print by key.
+        assert!(list.contains("engine 2: Slayer"), "{list}");
+        for key in ["infection", "gun_game", "vip", "siege", "race", "bounce_practice"] {
+            assert!(list.contains(&format!("example {key}: ")), "{list}");
+            assert_eq!(builtin_text(Some(key)).unwrap(), rules::builtin::examples().iter().find(|(k, _)| *k == key).unwrap().1);
+        }
+        assert!(list.find("engine ").unwrap() < list.find("example ").unwrap());
+        // The three message forms list under one name.
+        assert!(c.contains("message(team, text)"), "{c}");
+    }
+
+    /// 16 players times 16 times 16, once per kill: over the budget.
+    const HEAVY: &str = "rules \"Heavy\" 1\ncarrier slayer\nglobal var n: int = 0\n\
+                         on kill(v, k) { for each players a { for each players b { for each players c { n = n + 1 } } } }\n";
+
+    #[test]
+    fn check_and_build_refuse_a_script_over_the_budget() {
+        let err = check_text("x.rules", HEAVY).unwrap_err();
+        assert!(err.contains("OVER BUDGET"), "{err}");
+        assert!(err.contains("x.rules: refused: the worst tick costs"), "{err}");
+        let err = build_blob("x.rules", HEAVY).unwrap_err();
+        assert!(err.starts_with("x.rules: refused: the worst tick costs"), "{err}");
     }
 }

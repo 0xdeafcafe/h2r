@@ -98,6 +98,12 @@ pub struct Variant {
     /// The record's settings, in words.
     #[serde(default)]
     pub settings: Vec<Setting>,
+    /// The kinds of game the variant may play in, by the script policy
+    /// (docs/game/rules-engine.md, "Roles, powers and capabilities"):
+    /// `custom`, `hopper` and `ranked`, in that order, those its script's
+    /// capabilities allow. Every kind with no script.
+    #[serde(default)]
+    pub eligible: Vec<String>,
 }
 
 /// `GET /v1/variants?author=`: newest first.

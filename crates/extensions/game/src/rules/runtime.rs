@@ -45,6 +45,7 @@ use std::sync::OnceLock;
 use ::rules::caps::{self, Kind, Status as EntryStatus, id};
 use ::rules::ir::{Event, Ir, Op};
 use ::rules::vm::{Arg, Call as VmCall, Game, Input, Placed, RulesExt, ScriptError, TICK_BUDGET, Vm};
+use ::rules::policy::{self, Context};
 use ::rules::{Sha256, verify};
 use agent_proto::rules as wire;
 use engine::GuestMemory;
@@ -236,7 +237,7 @@ pub fn host_refusal(ir: &Ir) -> Option<String> {
         };
         return Some(format!(
             "the script calls {}, whose engine entry is {status}",
-            e.name
+            caps::spelled(e)
         ));
     }
     if !ir.labels.is_empty() {
@@ -445,6 +446,9 @@ pub struct Runtime {
     store: Box<dyn Store>,
     local: Box<LocalScripts>,
     fetch: Box<Fetch>,
+    /// The kind of game the next start plays, for the script policy
+    /// (`rules::policy`): custom until the feature says otherwise.
+    context: Context<'static>,
 }
 
 fn describe(e: &ScriptError) -> String {
@@ -488,7 +492,20 @@ impl Runtime {
             store,
             local: Box::new(|_: [u8; 8]| None),
             fetch,
+            context: Context::Custom,
         }
+    }
+
+    /// The kind of game the next [`Runtime::start`] plays. The feature sets
+    /// a hopper for a matchmade game and custom otherwise; a ranked
+    /// session's script is held to the ranked policy by Live, which knows
+    /// the session's flags.
+    pub fn set_context(&mut self, context: Context<'static>) {
+        self.context = context;
+    }
+
+    pub fn context(&self) -> Context<'static> {
+        self.context
     }
 
     /// The same runtime with `local` for the blobs on this machine.
@@ -606,6 +623,13 @@ impl Runtime {
                     ir.header.carrier
                 ),
             );
+        }
+        // The policy first: a refusal by kind of game names the capability.
+        if let Some(d) = policy::check(self.context, &ir.header.requires, ir.header.api_version)
+            .into_iter()
+            .next()
+        {
+            return self.refuse(full, d.to_string());
         }
         if let Some(why) = host_refusal(&ir) {
             return self.refuse(full, why);

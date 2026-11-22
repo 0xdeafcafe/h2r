@@ -9,7 +9,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   CONTENT_WRITE, DRAFT_KEY, INDENT, TOOLS_MISSING, buildScenario, checkRules, defaultScenario, describeEvent, explainFailure,
-  faultLabel, formatCall, gutter, lineAt, loadDraft, meter, moveEvent, newEvent, nextEventTick, nextSlot, offsetOf, parseCheck,
+  faultLabel, formatCall, gutter, lineAt, loadDraft, meter, moveEvent, newEvent, nextEventTick, nextSlot, offsetOf, parseBuiltins, parseCheck,
   parseTickTime, parseTrace, problemCount, problemPlace, runBlocked, runFailed, runRules, saveBlocked, saveDraft, saveRules,
   scenarioProblems, signed, sortEvents, standings, tabKey, teamStandings, tickTime, timeline, toolsAfter, traceLines,
   variantBlocked, whyOff, wireEvent, withEvent, type CheckResult, type Gate, type ScenarioDraft, type Trace,
@@ -425,6 +425,9 @@ describe("the mock's workbench", async () => {
     expect(t.ticks[0]!.calls[0]).toEqual({ entry: "score", args: ["player 0", "1"] });
     const b = await m.handle(new Request("http://m/v1/rules/builtin"), new URL("http://m/v1/rules/builtin"));
     expect((b!.body as { items: Array<{ name: string }> }).items[0]!.name).toBe("Slayer");
+    const listed = parseBuiltins(b!.body);
+    expect(listed[0]).toMatchObject({ name: "Slayer", example: false, key: null });
+    expect(parseBuiltins({ items: [{ name: "Infection", key: "infection", engine: 2, source: "rules", example: true }] })[0]).toMatchObject({ example: true, key: "infection" });
     expect(await m.handle(new Request("http://m/v1/other"), new URL("http://m/v1/other"))).toBeNull();
   });
 

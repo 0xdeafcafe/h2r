@@ -14,6 +14,7 @@ pub mod fake;
 pub mod ide;
 pub mod ir;
 pub mod lang;
+pub mod policy;
 pub mod scenario;
 pub mod ty;
 pub mod verify;
@@ -34,11 +35,100 @@ pub enum BuildError {
     Compile(#[from] CompileError),
     #[error(transparent)]
     Refused(#[from] Refusal),
+    /// The worst-tick estimate is over the VM's per-tick budget.
+    #[error("the worst tick costs {worst} ops, over the budget of {budget}")]
+    OverBudget { worst: u64, budget: u32 },
+    /// The encoded blob is over the IR cap.
+    #[error("the IR is {bytes} bytes, over the {max} byte cap")]
+    TooLarge { bytes: usize, max: usize },
 }
 
-/// Compiles and verifies source: what `h2 rules build` and Studio run.
+/// Compiles and verifies source. The blob may still be over the budget;
+/// [`ship`] refuses that.
 pub fn build(src: &str) -> Result<(Ir, Report), BuildError> {
     let ir = compile(src)?;
     let report = verify(&ir)?;
     Ok((ir, report))
+}
+
+/// What a blob must hold to before it is written out or published: the
+/// worst-tick estimate fits the budget and the encoding fits the IR cap.
+pub fn fits(ir: &Ir, report: &Report) -> Result<(), BuildError> {
+    if !report.fits() {
+        return Err(BuildError::OverBudget {
+            worst: report.worst_tick,
+            budget: vm::TICK_BUDGET,
+        });
+    }
+    let bytes = ir.encode().len();
+    if bytes > ir::MAX_IR_BYTES {
+        return Err(BuildError::TooLarge {
+            bytes,
+            max: ir::MAX_IR_BYTES,
+        });
+    }
+    Ok(())
+}
+
+/// Compiles, verifies and refuses a blob that does not [`fits`]: what
+/// `h2 rules build`, Live's save and publish routes and a variant file
+/// made from source run.
+pub fn ship(src: &str) -> Result<(Ir, Report), BuildError> {
+    let (ir, report) = build(src)?;
+    fits(&ir, &report)?;
+    Ok((ir, report))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ship_refuses_a_script_over_the_budget() {
+        // 16 players times 16 players times the body, once per kill of 16.
+        let src = "rules \"Heavy\" 1\ncarrier slayer\nglobal var n: int = 0\n\
+                   on kill(v, k) { for each players a { for each players b { for each players c { n = n + 1 } } } }\n";
+        let (ir, report) = build(src).unwrap();
+        assert!(!report.fits(), "worst tick {}", report.worst_tick);
+        assert!(matches!(ship(src), Err(BuildError::OverBudget { .. })));
+        assert!(fits(&ir, &report).is_err());
+        assert!(ship(builtin::SLAYER).is_ok());
+    }
+
+    #[test]
+    fn options_pack_by_name_in_declaration_order() {
+        use ir::{OptionError, OptionValue};
+        let src = "rules \"O\" 1\ncarrier slayer\nenum Mode { calm, wild }\n\
+                   option points: int 1..5 = 1\n\
+                   option costs: bool = true\n\
+                   option mode: Mode = Mode.calm\n";
+        let ir = compile(src).unwrap();
+        assert_eq!(ir.pack_options(&[]).unwrap(), ir.default_options());
+        let given = |list: &[(&str, &str)]| -> Vec<(String, OptionValue)> {
+            list.iter()
+                .map(|(k, v)| (k.to_string(), OptionValue::parse(v)))
+                .collect()
+        };
+        // points takes 3 bits (value - 1), costs 1 (false is 0), mode 1.
+        let bits = ir
+            .pack_options(&given(&[("points", "4"), ("costs", "false"), ("mode", "wild")]))
+            .unwrap();
+        assert_eq!(bits, 3 | (1 << 4));
+        assert_eq!(
+            ir.pack_options(&given(&[("nope", "1")])),
+            Err(OptionError::Unknown("nope".into()))
+        );
+        assert_eq!(
+            ir.pack_options(&given(&[("points", "9")])),
+            Err(OptionError::Range { name: "points".into(), lo: 1, hi: 5 })
+        );
+        assert!(matches!(
+            ir.pack_options(&given(&[("mode", "loud")])),
+            Err(OptionError::NoValue { .. })
+        ));
+        assert!(matches!(
+            ir.pack_options(&given(&[("costs", "true"), ("costs", "false")])),
+            Err(OptionError::Twice(_))
+        ));
+    }
 }

@@ -934,6 +934,48 @@ pub fn apply_patch(file: &mut HopperFile, patch: &HoppersPatch) -> ApiResult<()>
     Ok(())
 }
 
+/// Every entry of each playlist a patch names whose variant runs a rules
+/// script, against the script policy of the playlist's kind
+/// (`rules::policy`): a ranked type (2, 4 and 5) takes the ranked
+/// policy, an unranked one a hopper's, with no deny list (a hopper keeps
+/// none). `check` answers for one script by its record's hash prefix
+/// (16 hex digits); [`Live::check_slot_script`] is the routes'.
+pub fn check_scripts(
+    file: &HopperFile,
+    patch: &HoppersPatch,
+    check: impl Fn(&str, rules::policy::Context<'static>) -> ApiResult<()>,
+) -> ApiResult<()> {
+    use variants::ext::{Block, Mode};
+    for h in patch.hoppers.iter().filter(|h| !h.clear) {
+        let hopper = file.hopper(h.index).map_err(hopper_error)?;
+        let ranked = live_proto::hopper::HopperType::from_raw(hopper.hopper_type)
+            .is_some_and(|t| t.ranked());
+        let context = if ranked {
+            rules::policy::Context::Ranked
+        } else {
+            rules::policy::Context::Hopper { deny: &[] }
+        };
+        for j in 0..(hopper.record_count as usize).min(MAX_RECORDS) {
+            let slot = file.slot(h.index, j).map_err(hopper_error)?;
+            let Ok(v) = variants::record::GameVariant::from_bytes(&slot[VARIANT_AT..RECORD]) else {
+                continue;
+            };
+            let Block::Ext(e) = v.ext_state() else {
+                continue;
+            };
+            if e.script.mode != Mode::Rules {
+                continue;
+            }
+            let prefix: String = e.script.prefix.iter().map(|b| format!("{b:02x}")).collect();
+            check(&prefix, context).map_err(|err| ApiError {
+                code: err.code,
+                message: format!("playlist {} entry {}: {}", h.index + 1, j + 1, err.message),
+            })?;
+        }
+    }
+    Ok(())
+}
+
 /// The 0x37c bytes of entry `j` of hopper `i` built from a built-in
 /// variant: map id, weight and variant, every other byte zero (as the
 /// default set writes its entries).
@@ -1051,6 +1093,7 @@ pub async fn put_hopper(
     let patch: HoppersPatch =
         serde_json::from_slice(&bytes).map_err(|e| invalid(format!("hopper: {e}")))?;
     apply_patch(&mut file, &patch)?;
+    check_scripts(&file, &patch, |prefix, context| live.check_slot_script(prefix, context))?;
     let built = file.build_checked().map_err(|e| invalid(e.to_string()))?;
     let published = publish(&live, title, HALO_2_HOPPER_FILE, &built).await?;
     let doc = hoppers_doc(&live, &file)?;
@@ -1299,6 +1342,66 @@ mod tests {
             from_hopper: None,
             variant: None,
         }
+    }
+
+    /// Writes entry `j` of hopper `i` with a Slayer variant that names the
+    /// rules script whose hash starts with `prefix`.
+    fn script_slot(file: &mut HopperFile, i: usize, j: usize, prefix: [u8; 8]) {
+        use live_proto::hopper::variant::GameType;
+        let stock = VariantRecord::stock(GameType::Slayer, "");
+        let mut v = variants::record::GameVariant::from_bytes(stock.bytes()).unwrap();
+        let mut e = v.ext();
+        e.script = variants::ext::Script {
+            mode: variants::ext::Mode::Rules,
+            prefix,
+            options: 0,
+        };
+        v.set_ext(&e).unwrap();
+        let mut slot = file.slot(i, j).unwrap().to_vec();
+        set_slot_entry(
+            &mut slot,
+            &Entry {
+                map_id: 10,
+                weight: 1,
+                map_name: String::new(),
+                variant: VariantRecord::from_bytes(v.bytes()).unwrap(),
+            },
+        )
+        .unwrap();
+        file.set_slot(i, j, &slot).unwrap();
+    }
+
+    #[test]
+    fn a_playlists_script_entries_are_held_to_its_kinds_policy() {
+        use std::cell::RefCell;
+        let mut file = base_file();
+        script_slot(&mut file, 0, 1, [0xab; 8]);
+        let mut p = patch(0, vec![]);
+        p.hoppers[0].records = None;
+        let seen = RefCell::new(Vec::new());
+        let record = |prefix: &str, c: rules::policy::Context<'static>| {
+            seen.borrow_mut().push((prefix.to_string(), c.name()));
+            Ok(())
+        };
+        // Type 4 is ranked; entry 0 names no script and is not asked about.
+        check_scripts(&file, &p, record).unwrap();
+        assert_eq!(*seen.borrow(), [("ab".repeat(8), "ranked")]);
+        // An unranked type is a hopper's.
+        let mut h = file.hopper(0).unwrap();
+        h.hopper_type = 3;
+        file.set_hopper(0, &h).unwrap();
+        seen.borrow_mut().clear();
+        check_scripts(&file, &p, record).unwrap();
+        assert_eq!(*seen.borrow(), [("ab".repeat(8), "hopper")]);
+        // A refusal names the entry.
+        let err = check_scripts(&file, &p, |_, _| Err(invalid("capability forge.move is not allowed")))
+            .unwrap_err();
+        assert_eq!(err.message, "playlist 1 entry 2: capability forge.move is not allowed");
+        // A playlist the patch clears has nothing to check.
+        let mut cleared = patch(0, vec![]);
+        cleared.hoppers[0].records = None;
+        cleared.hoppers[0].clear = true;
+        assert!(check_scripts(&file, &cleared, |_, _| Err(invalid("no"))).is_ok());
     }
 
     #[test]

@@ -3,6 +3,7 @@
 
 use rules::fake::{FakeGame, FakePlayer};
 use rules::verify::{Fault, unhostable};
+use rules::policy::Context;
 use rules::vm::{Arg, ErrorKind, Proposal, ProposalRefusal, TICK_BUDGET};
 use rules::{Fired, Input, Ir, Refusal, RulesExt, Vm, build, builtin, compile, verify};
 
@@ -394,26 +395,28 @@ fn grants_follow_the_declaration_palette_and_budget() {
         match_made: false,
         protected: false,
     };
-    assert_eq!(vm.check_proposal(false, &wall), Ok(()));
-    assert_eq!(vm.check_proposal(true, &wall), Err(ProposalRefusal::Ranked));
+    assert_eq!(vm.check_proposal(Context::Custom, &wall), Ok(()));
+    assert_eq!(vm.check_proposal(Context::Ranked, &wall), Err(ProposalRefusal::Ranked));
+    assert_eq!(vm.check_proposal(Context::Theater, &wall), Err(ProposalRefusal::Theater));
+    assert_eq!(vm.check_proposal(Context::Hopper { deny: &[] }, &wall), Ok(()));
     let tank = Proposal {
         tag: "objects/vehicles/tank",
         ..wall
     };
     assert_eq!(
-        vm.check_proposal(false, &tank),
+        vm.check_proposal(Context::Custom, &tank),
         Err(ProposalRefusal::OutsidePalette("objects/vehicles/tank".into()))
     );
     assert_eq!(
-        vm.check_proposal(false, &Proposal { protected: true, ..wall }),
+        vm.check_proposal(Context::Custom, &Proposal { protected: true, ..wall }),
         Err(ProposalRefusal::Protected)
     );
     assert_eq!(
-        vm.check_proposal(false, &Proposal { cap: "forge.scale", ..wall }),
+        vm.check_proposal(Context::Custom, &Proposal { cap: "forge.scale", ..wall }),
         Err(ProposalRefusal::Undeclared("forge.scale".into()))
     );
     assert_eq!(
-        vm.check_proposal(false, &Proposal { player: 2, ..wall }),
+        vm.check_proposal(Context::Custom, &Proposal { player: 2, ..wall }),
         Err(ProposalRefusal::NoGrant("forge.place".into()))
     );
 
@@ -423,14 +426,14 @@ fn grants_follow_the_declaration_palette_and_budget() {
         tag: "objects/scenery/rock",
         ..wall
     };
-    assert_eq!(vm.check_proposal(false, &mv), Err(ProposalRefusal::NotMatchMade));
-    assert_eq!(vm.check_proposal(false, &Proposal { match_made: true, ..mv }), Ok(()));
+    assert_eq!(vm.check_proposal(Context::Custom, &mv), Err(ProposalRefusal::NotMatchMade));
+    assert_eq!(vm.check_proposal(Context::Custom, &Proposal { match_made: true, ..mv }), Ok(()));
 
     // Each accepted edit costs a use; one past the budget is refused.
     assert_eq!(vm.spend(0, "forge.place"), Ok(1));
     assert_eq!(vm.spend(0, "forge.place"), Ok(0));
     assert_eq!(
-        vm.check_proposal(false, &wall),
+        vm.check_proposal(Context::Custom, &wall),
         Err(ProposalRefusal::NoUses("forge.place".into()))
     );
     assert_eq!(vm.spend(0, "forge.place"), Err(ProposalRefusal::NoUses("forge.place".into())));
@@ -442,7 +445,7 @@ fn grants_follow_the_declaration_palette_and_budget() {
     vm.fire(&mut g, Input::Join(2));
     vm.fire(&mut g, Input::Press(2, 7));
     assert_eq!(
-        vm.check_proposal(false, &Proposal { player: 2, match_made: true, ..mv }),
+        vm.check_proposal(Context::Custom, &Proposal { player: 2, match_made: true, ..mv }),
         Err(ProposalRefusal::NoGrant("forge.move".into()))
     );
 

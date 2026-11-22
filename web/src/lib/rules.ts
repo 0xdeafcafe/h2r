@@ -752,12 +752,14 @@ export function saveDraft(storage: Pick<Storage, "setItem"> | null, d: Draft): v
 
 // ---------- the API ----------
 
-export interface Builtin { name: string; engine: number; source: string; hash: string | null }
+/** A script `GET /v1/rules/builtin` lists: an engine port, or an example
+ *  (`example`, with its `key`) that rides `engine` as its carrier. */
+export interface Builtin { name: string; engine: number; source: string; hash: string | null; example: boolean; key: string | null }
 export interface ScriptSummary { hash: string; name: string; version: number; author: string; gamertag: string; saved_at: string }
 export interface Script extends ScriptSummary { source: string }
 
 export function parseBuiltins(body: unknown): Builtin[] {
-  return arr(obj(body).items).map(obj).filter((b) => typeof b.source === "string").map((b) => ({ name: str(b.name) || "Built-in", engine: num(b.engine), source: str(b.source), hash: optStr(b.hash) }));
+  return arr(obj(body).items).map(obj).filter((b) => typeof b.source === "string").map((b) => ({ name: str(b.name) || "Built-in", engine: num(b.engine), source: str(b.source), hash: optStr(b.hash), example: b.example === true, key: optStr(b.key) }));
 }
 
 const summaryOf = (s: Record<string, unknown>): ScriptSummary => ({
