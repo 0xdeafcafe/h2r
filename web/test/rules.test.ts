@@ -11,7 +11,7 @@ import { describe, expect, test } from "bun:test";
 import {
   CONTENT_WRITE, DRAFT_KEY, INDENT, MAX_SEED, SIM_MATCHES, SPAWNED_BASE, TOOLS_MISSING, UNIT_BASE, buildScenario, checkRules,
   defaultScenario, defaultSetup, describeEvent, draftOfWire, endLabel, explainFailure, faultLabel, formatCall, gutter, lineAt,
-  loadDraft, meter, moveEvent, neighbourSeed, newEvent, nextEventTick, nextSlot, objectName, ofMatches, offsetOf, parseBuiltins, parseCheck,
+  loadDraft, meter, moveEvent, neighbourSeed, newEvent, nextEventTick, nextSlot, objectName, ofMatches, offsetOf, parseBuiltins, parseCheck, quickRows, fetchScriptView,
   parseSetup, parseSim, parseTickTime, parseTrace, problemCount, problemPlace, rerolled, runBlocked, runFailed, runRules,
   saveBlocked, saveDraft, saveRules, scenarioProblems, shortTime, signed, simFailed, simRequest, simWarnings, simulateRules,
   sortEvents, standings, tabKey, teamStandings, tickTime, timeline, toolsAfter, traceLines, variantBlocked, whyOff, winnerName,
@@ -49,6 +49,23 @@ describe("reading a check", () => {
     expect(c.report!.handlers).toEqual([{ event: "kill", worst_ops: 6 }]);
     expect(c.report!.capabilities[0]!.words).toBe("moves players between teams");
     expect(c.report!.unhostable).toEqual(["set_team"]);
+  });
+
+  test("scoring, about, settings and quick marks", () => {
+    const c = parseCheck({
+      ok: true, errors: [], scoring: "carrier", about: "One on one.",
+      settings: [{ name: "score_limit", label: "Score to Win", value: "15" }, { name: "starting_weapon", label: "Starting Weapon", value: "Magnum" }, { label: "no name" }],
+      quick: [{ kind: "setting", name: "score_limit", label: "Score to Win" }, { kind: "option", name: "kill_points", label: "Kill points" }, { kind: "other", name: "x" }],
+    });
+    expect(c.scoring).toBe("carrier");
+    expect(c.about).toBe("One on one.");
+    expect(c.settings.map((s) => s.value)).toEqual(["15", "Magnum"]);
+    expect(c.quick.map((q) => q.name)).toEqual(["score_limit", "kill_points"]);
+    expect(quickRows(c)).toEqual([{ label: "Score to Win", value: "15" }, { label: "Kill points", value: null }]);
+    // An older server sends none of it.
+    const old = parseCheck({ ok: true, errors: [] });
+    expect(old).toMatchObject({ scoring: null, about: "", settings: [], quick: [] });
+    expect(parseCheck({ ok: true, scoring: "bogus" }).scoring).toBeNull();
   });
 
   test("missing and malformed fields read as nothing", () => {
@@ -349,8 +366,33 @@ describe("failures in words", () => {
   });
 });
 
+describe("a variant page's script view", () => {
+  const HASH = "ab".repeat(32);
+  const reply = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  const checked = { ok: true, errors: [], scoring: "carrier", quick: [{ kind: "setting", name: "score_limit", label: "Score to Win" }] };
+
+  test("a built-in is read from the built-in list and checked", async () => {
+    const urls: string[] = [];
+    const f = (async (url: string) => {
+      urls.push(url);
+      if (url.endsWith(`/rules/${HASH}`)) return reply({ error: "not_found", message: "no such script" }, 404);
+      if (url.endsWith("/rules/builtin")) return reply({ items: [{ name: "Duel", engine: 2, source: SRC, hash: HASH, example: false }] });
+      return reply(checked);
+    }) as unknown as typeof fetch;
+    const v = await fetchScriptView("/v1", HASH, f);
+    expect(v?.scoring).toBe("carrier");
+    expect(v?.quick.map((q) => q.name)).toEqual(["score_limit"]);
+    expect(urls.at(-1)).toBe("/v1/rules/check");
+  });
+
+  test("a hash the server has no script for is null", async () => {
+    const f = (async (url: string) => (url.endsWith("/rules/builtin") ? reply({ items: [] }) : reply({ error: "not_found", message: "x" }, 404))) as unknown as typeof fetch;
+    expect(await fetchScriptView("/v1", HASH, f)).toBeNull();
+  });
+});
+
 describe("why a button is off", () => {
-  const ok: CheckResult = { ok: true, hash: "ab".repeat(32), name: "Test", version: 1, errors: [], warnings: [], report: null, options: [], carrier: null };
+  const ok: CheckResult = { ok: true, hash: "ab".repeat(32), name: "Test", version: 1, errors: [], warnings: [], report: null, options: [], carrier: null, scoring: null, about: "", settings: [], quick: [] };
   const bad: CheckResult = { ...ok, ok: false, hash: null, errors: [{ line: 1, col: 1, message: "x" }, { line: 2, col: 1, message: "y" }] };
   const gate = (over: Partial<Gate> = {}): Gate => ({ tools: "ok", check: ok, locked: false, ...over });
 

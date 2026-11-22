@@ -16,6 +16,9 @@ mod film_cache;
 #[cfg(test)]
 #[path = "../../live-server/tests/support/film_library.rs"]
 mod film_library_parity;
+#[cfg(test)]
+#[path = "../../live-server/tests/support/variant_scripts.rs"]
+mod variant_scripts_parity;
 pub mod settings;
 pub mod site;
 pub mod sqlstore;

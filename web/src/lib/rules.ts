@@ -103,6 +103,52 @@ export interface CheckResult {
   options: ScriptOption[];
   /** The carrier, when the server's check names it. */
   carrier: Carrier | null;
+  /** Who scores the game: the script, or with `scoring carrier` the
+   *  carrier's engine. Null when the server's check does not say. */
+  scoring: Scoring | null;
+  /** The script's `about` text; empty when it has none. */
+  about: string;
+  /** The script's `settings` block in words. */
+  settings: ScriptSetting[];
+  /** The Quick Options marks, in the script's order. */
+  quick: QuickMark[];
+}
+
+export type Scoring = "script" | "carrier";
+/** One row of a script's `settings` block: its name, our label for it and
+ *  the value as text ("15", "Magnum", "On", "5 minutes"). */
+export interface ScriptSetting { name: string; label: string; value: string }
+/** A Quick Options mark: a record setting or one of the script's options. */
+export interface QuickMark { kind: "setting" | "option"; name: string; label: string }
+
+/** The settings block of a check, read defensively. */
+export function parseSettings(v: unknown): ScriptSetting[] {
+  const out: ScriptSetting[] = [];
+  for (const s of arr(v).map(obj)) {
+    const name = str(s.name);
+    if (name) out.push({ name, label: str(s.label) || name, value: str(s.value) });
+  }
+  return out;
+}
+
+/** The Quick Options marks of a check, read defensively. */
+export function parseQuick(v: unknown): QuickMark[] {
+  const out: QuickMark[] = [];
+  for (const q of arr(v).map(obj)) {
+    const name = str(q.name);
+    if (name && (q.kind === "setting" || q.kind === "option")) out.push({ kind: q.kind, name, label: str(q.label) || name });
+  }
+  return out;
+}
+
+/** The quick marks with the value each shows: a setting's text from the
+ *  block, or the option's own name's label alone (an option's value is
+ *  picked when the variant is made). */
+export function quickRows(c: Pick<CheckResult, "settings" | "quick">): Array<{ label: string; value: string | null }> {
+  return c.quick.map((q) => ({
+    label: q.label,
+    value: q.kind === "setting" ? c.settings.find((s) => s.name === q.name)?.value ?? null : null,
+  }));
 }
 
 /** The carriers, by their `carrier` keyword, with the retail engine index
@@ -205,6 +251,10 @@ export function parseCheck(body: unknown): CheckResult {
     report: parseReport(b.report),
     options: parseOptions(b.options ?? obj(b.report).options),
     carrier: parseCarrier(b.carrier ?? obj(b.report).carrier),
+    scoring: b.scoring === "script" || b.scoring === "carrier" ? b.scoring : null,
+    about: str(b.about),
+    settings: parseSettings(b.settings),
+    quick: parseQuick(b.quick),
   };
 }
 
@@ -1298,6 +1348,20 @@ export async function fetchScripts(api: string, author: string, fetchFn: typeof 
 
 export async function fetchScript(api: string, hash: string, fetchFn: typeof fetch = fetch): Promise<Script | null> {
   return parseScript(await answer(await fetchFn(`${api}/rules/${encodeURIComponent(hash)}`, { headers: { accept: "application/json" } })));
+}
+
+/** The script view (the check's answer) of the script with this hash: a
+ *  saved one, else a built-in; null when the server has neither. A
+ *  variant's page reads who scores and the Quick Options marks from it. */
+export async function fetchScriptView(api: string, hash: string, fetchFn: typeof fetch = fetch): Promise<CheckResult | null> {
+  let source: string | null = null;
+  try {
+    source = (await fetchScript(api, hash, fetchFn))?.source ?? null;
+  } catch (e) {
+    if (!(e instanceof ApiError && e.status === 404)) throw e;
+  }
+  if (source === null) source = (await fetchBuiltins(api, fetchFn)).find((b) => b.hash === hash)?.source ?? null;
+  return source === null ? null : checkRules(api, source, fetchFn);
 }
 
 /** Saves a script that verifies; whether this saved it (false: the hash

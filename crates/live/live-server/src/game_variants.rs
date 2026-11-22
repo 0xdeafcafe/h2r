@@ -227,13 +227,79 @@ pub fn option_views(ir: &rules::Ir) -> Vec<OptionView> {
         .collect()
 }
 
-/// Packs option values by name into the record's 32 option bits, in
-/// declaration order (docs/game/rules-engine.md, "Carrying a script").
-/// A value is a number, a bool or an enum value's name; an option left out
-/// takes its default.
-pub fn pack_options(ir: &rules::Ir, given: &Map<String, Value>) -> ApiResult<u32> {
+/// A script's `settings` block row, in words: the table's name and label
+/// and the value's text (`rules::settings::value_label`).
+#[derive(Debug, Serialize)]
+pub struct ScriptSetting {
+    pub name: String,
+    pub label: String,
+    pub value: String,
+}
+
+/// One Quick Options mark: a record setting of the table (`setting`) or
+/// one of the script's options (`option`).
+#[derive(Debug, Serialize)]
+pub struct QuickView {
+    pub kind: &'static str,
+    pub name: String,
+    pub label: String,
+}
+
+/// The settings block, in the blob's (table) order. A row this build's
+/// table lacks is left out.
+pub fn script_settings(ir: &rules::Ir) -> Vec<ScriptSetting> {
+    ir.settings
+        .iter()
+        .filter_map(|s| {
+            let row = rules::settings::row_at(s.index)?;
+            Some(ScriptSetting {
+                name: row.name.to_string(),
+                label: row.label.to_string(),
+                value: rules::settings::value_label(s.index, s.value),
+            })
+        })
+        .collect()
+}
+
+/// The Quick Options marks, in the script's order.
+pub fn quick_views(ir: &rules::Ir) -> Vec<QuickView> {
+    ir.quick
+        .iter()
+        .filter_map(|q| match *q {
+            rules::ir::Quick::Setting(i) => {
+                let row = rules::settings::row_at(i)?;
+                Some(QuickView {
+                    kind: "setting",
+                    name: row.name.to_string(),
+                    label: row.label.to_string(),
+                })
+            }
+            rules::ir::Quick::Option(i) => {
+                let o = ir.options.get(usize::from(i))?;
+                Some(QuickView {
+                    kind: "option",
+                    name: string(ir, o.name),
+                    label: string(ir, o.label),
+                })
+            }
+        })
+        .collect()
+}
+
+/// Who scores the game, as the view names it: `script` or `carrier`.
+pub fn scoring_word(ir: &rules::Ir) -> &'static str {
+    match ir.header.scoring {
+        rules::ir::Scoring::Script => "script",
+        rules::ir::Scoring::Carrier => "carrier",
+    }
+}
+
+/// Option values from a request's JSON, by name. A value is a number, a
+/// bool or an enum value's name; anything else is out of every option's
+/// range and refused when packed.
+pub fn option_values(given: &Map<String, Value>) -> Vec<(String, rules::ir::OptionValue)> {
     use rules::ir::OptionValue;
-    let given: Vec<(String, OptionValue)> = given
+    given
         .iter()
         .map(|(k, v)| {
             let value = match v {
@@ -246,8 +312,15 @@ pub fn pack_options(ir: &rules::Ir, given: &Map<String, Value>) -> ApiResult<u32
             };
             (k.clone(), value)
         })
-        .collect();
-    ir.pack_options(&given).map_err(|e| invalid(e.to_string()))
+        .collect()
+}
+
+/// Packs option values by name into the record's 32 option bits, in
+/// declaration order (docs/game/rules-engine.md, "Carrying a script").
+/// An option left out takes its default.
+pub fn pack_options(ir: &rules::Ir, given: &Map<String, Value>) -> ApiResult<u32> {
+    ir.pack_options(&option_values(given))
+        .map_err(|e| invalid(e.to_string()))
 }
 
 fn view(live: &Live, k: &Kept) -> Variant {
@@ -467,9 +540,11 @@ impl Live {
         Bundle::new(&v, name, description, attach).map_err(refused)
     }
 
-    /// A bundle for a script: the stock record of its carrier engine (the
-    /// game's defaults writer, `hopper::variant::VariantRecord::stock`)
-    /// with the script reference and the given option values.
+    /// A bundle for a script: the script's own variant
+    /// (`portable::record_for`: the carrier's stock record, the script's
+    /// `settings` written, its name and the script reference with the
+    /// given option values). The description is the request's, or the
+    /// script's `about` when the request gives none.
     pub fn bundle_for_script(
         &self,
         mut attach: Attach,
@@ -479,13 +554,14 @@ impl Live {
     ) -> ApiResult<Bundle> {
         let (ir, _) = rules::verify::load(&attach.ir)
             .map_err(|e| invalid(format!("the script does not load: {e}")))?;
-        let carrier = live_proto::hopper::variant::GameType::from_engine(u32::from(
-            ir.header.carrier,
-        ))
-        .ok_or_else(|| invalid(format!("engine {} has no stock record", ir.header.carrier)))?;
-        let stock = live_proto::hopper::variant::VariantRecord::stock(carrier, "");
-        let v = GameVariant::from_bytes(stock.bytes()).map_err(|e| invalid(e.to_string()))?;
+        // The route's own option refusals come first, in its words.
         attach.options = Some(pack_options(&ir, options)?);
+        let v = portable::record_for(&ir, &option_values(options)).map_err(refused)?;
+        let description = if description.trim().is_empty() {
+            ir.header.about.as_str()
+        } else {
+            description
+        };
         Bundle::new(&v, name, description, Some(attach)).map_err(refused)
     }
 
@@ -874,5 +950,34 @@ mod tests {
         ] {
             assert_eq!(pack_options(&ir, &map(bad.clone())).unwrap_err().message, want, "{bad}");
         }
+    }
+
+    /// The server's port of the game's defaults writer and the editor's
+    /// agree on every type: the same 0x130 bytes. Slice 2 left the stock
+    /// record named by our type label with description number 0xff.
+    #[test]
+    fn stock_agrees_with_the_hopper_stock_record() {
+        use live_proto::hopper::variant::{GameType as HopperType, VariantRecord};
+        for t in HopperType::ALL {
+            let ours = GameType::from_engine(t.engine() as i32);
+            let label = ours.label();
+            let hopper = VariantRecord::stock(t, &label);
+            let editor = GameVariant::stock(ours).expect("the editor offers this type");
+            assert_eq!(editor.bytes()[..], hopper.bytes()[..], "{label}");
+        }
+    }
+
+    #[test]
+    fn the_script_view_words_settings_and_quick() {
+        let duel = rules::compile(rules::builtin::DUEL).unwrap();
+        assert_eq!(scoring_word(&duel), "carrier");
+        let settings = script_settings(&duel);
+        assert_eq!(settings.iter().find(|s| s.name == "score_limit").unwrap().value, "15");
+        let quick = quick_views(&duel);
+        assert_eq!(quick.len(), duel.quick.len());
+        assert_eq!((quick[0].kind, quick[0].name.as_str()), ("setting", "score_limit"));
+        let slayer = rules::compile(rules::builtin::SLAYER).unwrap();
+        assert_eq!(scoring_word(&slayer), "script");
+        assert!(script_settings(&slayer).is_empty());
     }
 }
