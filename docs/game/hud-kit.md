@@ -390,10 +390,15 @@ pub struct Place {
     pub quarter: Option<(i16, i16)>,
     pub registration: [f32; 2],
     pub origin: Origin,
+    /// What the half and quarter offsets are from, when not `origin`.
+    pub split_origin: Option<Origin>,
 }
 
 /// What the offsets are from: the anchor's corner, or where the player's
 /// grenade row puts a next pill or a next count (`templates::GrenadeRow`).
+/// A place can be from its anchor fullscreen and from the row in split
+/// screen (`Place::split_from`); a widget has one anchor, so the place's
+/// is then the row's (`records::placed`).
 pub enum Origin { Anchor, NextGrenadePill, NextGrenadeCount }
 
 pub enum Font { Hud, Lcd }            // a text widget's font index 0 and 1
@@ -789,13 +794,13 @@ h2 hud preview superbounce --state all --synthetic --out DIR
 
 | Element | Kind | Place | Art |
 |---|---|---|---|
-| `sb.pill` | Icon | bottom left, (90, −68) fullscreen (`PILL_FULL`, screen (138, 376)), (90, −47) half and quarter (`PILL_SPLIT`) | `Art::GrenadePill(Body)`: the frag pill's first 20 pixels |
+| `sb.pill` | Icon | fullscreen (90, 340) from the top-left anchor (`PILL_FULL`): screen (138, 376), beside the motion tracker; half and quarter `Origin::NextGrenadePill` | `Art::GrenadePill(Body)`: the frag pill's first 20 pixels |
 | `sb.pill.end` | Icon | the pill's plus (20, 0), every mode | `Art::GrenadePill(End)`: the frag pill's last 7 pixels |
-| `sb.pill.icon` | Text, `Hud`, centred, over `sb.pill` | the pill's plus (12, −1) (`ICON_AT`), every mode | the text template (the frag count's shader and string); `^` in font 6 |
+| `sb.pill.icon` | Text, `Hud`, centred, over `sb.pill` | fullscreen the pill's plus (12, −1) (`ICON_AT`); half and quarter `Origin::NextGrenadeCount` | the text template (the frag count's shader and string); `^` in font 6 |
 
-The pill is the middle of one block at the bottom left, right of the
-motion tracker, with the arming bar over it, the charge meter under it
-and the readout's rows beside it ("The superbounce readout"):
+Fullscreen the pill is the middle of one block at the bottom left, right
+of the motion tracker, with the arming bar over it, the charge meter
+under it and the readout's rows beside it ("The superbounce readout"):
 
 ```text
   x 47     130 138       171                 278
@@ -806,15 +811,22 @@ and the readout's rows beside it ("The superbounce readout"):
    '---'                                                  y 444
 ```
 
-Every element of the block is placed from the bottom-left anchor, the
-tracker's own, so the host's HUD fit moves the block with the tracker
-when the corners are pinned to the window's edges
-([high-resolution.md](../graphics/high-resolution.md), "HUD and UI").
-In half and quarter screen the block is the bar over the pill and its
-meter, as far right of the anchor as fullscreen and inside the
-tracker's height (the tracker's blips are centred (31, −31) from the
-anchor there, [hud.md](../halo1/hud.md)); the readout is fullscreen
-only.
+The block's place is the bottom left's, written from the top-left
+anchor (the fullscreen frame is 408 high, `FRAME_HEIGHT`): the host's
+HUD fit moves the left corners' groups to a wide window's left edge
+together, so the block stays beside the tracker
+([high-resolution.md](../graphics/high-resolution.md), "HUD and UI"),
+where a centre-anchored widget would stay mid-screen.
+
+**Split screen.** A half or quarter frame has no room beside the
+tracker: under the prompt line's box the `retail` check leaves 17 rows.
+There the pill is where it fits, the grenade row's next pill, with the
+meter under it and the icon where a third count would be
+(`Place::split_from`, `Origin::NextGrenadePill` and
+`Origin::NextGrenadeCount`), and the arming bar is above the frame's
+centre ("The arming bar"). A widget has one anchor for its three
+offsets, and the row's is the top left, which is why the fullscreen
+place is written from it. The readout is fullscreen only.
 
 The grenade row is read from the player's `nhdt`
 (`templates::GrenadeRow`): the frag pill is the first bitmap widget
@@ -829,21 +841,21 @@ D: `h2 bitmap lockout 'ui\hud\bitmaps\new_hud\backgrounds\grenade_bkd'`).
 The counts are at (12, -1) and (65, -1): the step from the plasma count
 to the frag count, 53, is the pills' step too, so a pill is 103 - 53 =
 50 wide and the frag pill is the panel's last 50 pixels (x 53 to 103).
-`GrenadeRow` also has where a next pill and a next count would go
-(`Origin::NextGrenadePill`, `Origin::NextGrenadeCount`: the frag pill's
-and the frag count's plus the step, (106, 0) and (118, -1) from the
-anchor); the superbounce pill takes the row's art and not its place. A
-row whose pill widgets are at two offsets, or whose sprite is not one
-size in every mode, is a named error.
+Per screen mode the next pill's top left is the frag pill's plus the
+step, (106, 0) from the anchor, and the next count is the frag count
+plus the step, (118, -1) (`Origin::NextGrenadePill`,
+`Origin::NextGrenadeCount`): the superbounce pill's place in split
+screen. A row whose pill widgets are at two offsets, or whose sprite is
+not one size in every mode, is a named error.
 
 Each retail pill has its grenade baked in: "x" and the grenade's picture
 from about x 22, the count at x 12. A third pill cut whole from the frag
 pill would show a frag grenade. So the kit's pill is short: the frag
 pill's first 20 pixels (its left end and body, `PillPart::Body`) with
 its last 7 (the right end, `PillPart::End`) against them, 27 by 19,
-screen x 138 to 165 fullscreen, both cropped from the frag pill's part
-of the panel (`GrenadeRow::crop`). The icon sits where a pill's count
-does, pill x 12.
+screen x 138 to 165 fullscreen (x 154 to 181 in the grenade row), both
+cropped from the frag pill's part of the panel (`GrenadeRow::crop`). The
+icon sits where a pill's count does, pill x 12.
 
 The icon is `^`, the chevron of `conduit-13` (font 6, the counts'
 font). The font's arrows (U+2191, U+25B2, U+21E7) are its missing box
@@ -916,10 +928,10 @@ pill is cropped from the frag pill (`Art::StripMeterEnd(27)`, a crop of
 | `input_1`..`input_4` | 0; the input hook answers `hud_input1` |
 | the four show and four hide words | 0; the gate hook shows it |
 | the three thresholds | 0 |
-| `anchor` | 2, bottom left |
+| `anchor` | the grenade row's (top left) |
 | `bitmap`, `shader` | the strip meter template's |
 | `sequence_full`, `_half`, `_quarter` | the template's (0) |
-| `offset_*` | the pill's plus (0, 21): 2 pixels under the pill, screen (138, 397) to (165, 405) fullscreen |
+| `offset_*` | the pill's plus (0, 21) in every mode: 2 pixels under the pill, screen (138, 397) to (165, 405) fullscreen |
 | `registration_*` | (0, 0) |
 | `effects` | empty |
 | `special` | 0 (not 5: the shield meter's type takes the inputs over) |
@@ -979,7 +991,7 @@ mid-screen.
 | Field | Value |
 |---|---|
 | element | `Element::meter("sb.arm", Art::Widget { hud: HudRef::Named("ui\\hud\\scoreboard"), name: "bomb_defusal" }, ..)`, `hidden_on_d(0x400)` |
-| place | anchor bottom left, (160, −83) fullscreen (`ARM_FULL`, x 138 to 278, y 355 to 368: 8 above the pill); the retail widget's is centre, (0, 110) (V, `RETAIL_ARM_FULL`); (133, −55) half and quarter (`ARM_SPLIT`, below); registration (0.5, 0.5) |
+| place | anchor top left, (160, 325) fullscreen (`ARM_FULL`, x 138 to 278, y 355 to 368: 8 above the pill); the retail widget's is centre, (0, 110) (V, `RETAIL_ARM_FULL`); (272, 67) half and (129, 67) quarter (`ARM_SPLIT`, `ARM_QUARTER`, below); registration (0.5, 0.5) |
 | art | the scoreboard `nhdt`'s bitmap widget `bomb_defusal`: `ui\hud\bitmaps\new_hud\bomb_meter`, a capsule 140 by 13 (sequence 0) and 86 by 9 (sequence 1, split screen), its blue rising 4 to 253 left to right; the shader `ui\hud\shaders\bomb_defusal_meter` on `widget_legacy_meter`, red `6d2323` to `cf6767` where the texel's blue is below `hud_input1`, white for the outline (V) |
 | input | uncropped, so `hud_input1` is the fill itself |
 | crop, ramp | none |
@@ -988,9 +1000,15 @@ mid-screen.
 quarter screen. There it lies in the prompt line's box (the `retail`
 check: x 250 to 390, y 141 to 154 in half screen), and unlike Assault's
 carrier our player has a verb on the prompt line the whole time the bar
-is up. Ours stays with the pill: the split sprite, 86 by 9, its left
-edge the pill's and its foot 3 above the pill's top (`ARM_SPLIT`), under
-the prompt line's box and right of the tracker.
+is up. Below the box the training box and the reticle take the rest of
+the 204-high frame, so ours sits 35 above the centre (`ARM_SPLIT`, (272,
+67) from the top left of a frame 544 wide): under the prompt's first
+line (the frame's top plus 35) and clear of the navpoint's stack at its
+sample, right of and above the centre. A quarter frame has no row free
+between the navpoint's arrow at its sample and the prompt's first line,
+and at the centre the bar's right end meets the arrow (the `overlap`
+check, x 198 to 203), so in a quarter view the bar sits 7 to the left
+(`ARM_QUARTER`, (129, 67) of a frame 272 wide).
 
 The retail widget's input is `0x43`, the bomb arming amount, and it is
 shown on word D `0x400` alone (V: `zanzibar.map`; `0x40` and `0x41` are
@@ -1308,8 +1326,8 @@ The preview's states are `idle`, `moving`, `falling-off-seam`,
 `second-bounce-lined-up`, `targets-switched` and `tagged`.
 
 `h2 hud preview superbounce-all` draws both HUDs in one frame, for the
-preview only (`huds::superbounce_all`, `huds::previews`): fifteen
-moments of a run, each a state of the superbounce HUD beside one of the
+preview only and fullscreen only, as the readout is
+(`huds::superbounce_all`, `huds::previews`): fifteen moments of a run, each a state of the superbounce HUD beside one of the
 readout's (`MOMENTS`), the last three the second bounce's ranked seams,
 its line-up and the line after a switch of the kinds of seam shown.
 

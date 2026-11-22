@@ -242,6 +242,34 @@ fn the_readout_passes_beside_the_superbounce_hud() {
     }
 }
 
+/// The combined preview (`h2 hud preview superbounce-all`) in every screen
+/// mode: no part of the block is drawn without the rest. The readout has
+/// no half or quarter place, so the combined HUD has none either, and a
+/// split frame draws none of its widgets.
+#[test]
+fn the_combined_preview_draws_no_part_of_the_block_alone() {
+    use crate::huds::superbounce_all::All;
+    let mut src = synthetic();
+    let r = check::all(&mut src, &[&All], &Mode::ALL).unwrap();
+    let modes: Vec<_> = r.of(Check::Modes).collect();
+    assert!(modes.is_empty(), "{modes:#?}");
+    let hud = All.hud();
+    for s in r.shots.iter().filter(|s| s.mode != Mode::Full) {
+        for d in s.elements.iter().filter(|d| d.drawn) {
+            let e = hud.element(d.id).unwrap();
+            assert!(e.kind.is_channel(), "{} {:?}: {}", s.state, s.mode, d.id);
+        }
+    }
+    let full = r
+        .shots
+        .iter()
+        .find(|s| s.mode == Mode::Full && s.state == "3-primed-targets")
+        .unwrap();
+    for id in [superbounce::PILL, superbounce::CHARGE] {
+        assert!(full.element(id).unwrap().drawn, "{id}");
+    }
+}
+
 /// Each navpoint of a HUD has a sample of its own, so two shown at once
 /// (the readout's two targets, the ranked seams after a bounce) draw
 /// apart: neither's arrow, marker and number is over the other's.
@@ -311,12 +339,16 @@ fn the_synthetic_sheet_draws_and_passes() {
         ]
     );
     let at = |id| s.element(id).unwrap().rect.unwrap().pixels();
-    // The pill is at the bottom left, right of the tracker and under the
-    // arming bar: cut from the frag pill, the body its first 20 pixels,
-    // the end its last 7 against the body, the panel's height.
-    let [ax, ay] = crate::rects::BOTTOM_LEFT.map(i32::from);
-    let left = ax + i32::from(superbounce::PILL_FULL.0);
-    let top = ay + i32::from(superbounce::PILL_FULL.1);
+    // Fullscreen the pill is at the bottom left, right of the tracker and
+    // under the arming bar, placed from the top-left anchor (48, 36): cut
+    // from the frag pill, the body its first 20 pixels, the end its last
+    // 7 against the body, the panel's height.
+    let left = 48 + i32::from(superbounce::PILL_FULL.0);
+    let top = 36 + i32::from(superbounce::PILL_FULL.1);
+    assert_eq!(
+        crate::rects::BOTTOM_LEFT[1],
+        36 + superbounce::FRAME_HEIGHT
+    );
     let h = i32::from(synthetic::PANEL_SIZE.1);
     let (body, end) = (i32::from(PILL_BODY), i32::from(PILL_END));
     assert_eq!((left, top), (138, 376));
@@ -373,6 +405,21 @@ fn the_synthetic_sheet_draws_and_passes() {
     assert!(!d.drawn && d.hidden.as_deref() == Some("no half screen offset"));
     let h = half("primed-full");
     assert!(h.element(superbounce::PILL).unwrap().drawn);
+    // In split screen the pill is the grenade row's next: one count step
+    // past the frag pill, under the frame's top-left corner.
+    let (sx, sy) = (
+        synthetic::COUNTS[0].0 - synthetic::COUNTS[1].0,
+        synthetic::COUNTS[0].1 - synthetic::COUNTS[1].1,
+    );
+    let hf = Frame::for_mode(Mode::Half);
+    let split = h.element(superbounce::PILL).unwrap().rect.unwrap().pixels();
+    assert_eq!(
+        [split[0], split[1]],
+        [
+            i32::from(hf.left + synthetic::PANEL_AT.0 + sx + sx),
+            i32::from(hf.top + synthetic::PANEL_AT.1 + sy)
+        ]
+    );
     assert!(h.element(superbounce::CHARGE).unwrap().drawn);
     assert!(h.element(superbounce::NAVPOINT).unwrap().drawn);
     // In every split frame the navpoint's stack stays inside the frame
@@ -835,7 +882,7 @@ fn the_arming_bar_is_assaults_bottom_left_with_the_readout() {
             .clone()
     };
     let frame = Frame::for_mode(Mode::Full);
-    let corner = frame.anchor_point(2).unwrap();
+    let corner = frame.anchor_point(1).unwrap();
     let rect = arm("held").rect.unwrap();
     assert_eq!([rect.width(), rect.height()], [140.0, 13.0]);
     // Bottom left with the readout, above the pill and the speed row.

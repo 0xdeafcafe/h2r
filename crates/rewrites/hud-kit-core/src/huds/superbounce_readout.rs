@@ -64,9 +64,9 @@ pub fn arrow(angle: f32) -> char {
 }
 
 /// The rows' left edge, from the frame's bottom-left corner (48, 444):
-/// right of the charge pill's column (`superbounce::PILL_FULL`, 8 pixels
-/// right of the motion tracker's rim, `rects::TRACKER`, x 47 to 130), at
-/// screen x 171.
+/// right of the charge pill's column (`superbounce::PILL_FULL`, from the
+/// frame's left edge too: 8 pixels right of the motion tracker's rim,
+/// `rects::TRACKER`, x 47 to 130), at screen x 171.
 pub const LEFT: i16 = PILL_FULL.0 + PILL_COLUMN;
 /// The rows' tops from the frame's bottom: y 376, 397 and 418 fullscreen,
 /// a line of font 6 (21) apart, the last ending 5 above the frame's foot.
@@ -520,7 +520,7 @@ mod tests {
         let bar = h.element(FALL).unwrap().at.full;
         assert_eq!((48 + bar.0, 444 + bar.1), (171, 403));
         assert_eq!(48 + h.element(STEER).unwrap().at.full.0, 171 + 64 + 6);
-        assert_eq!(SPEED_UP, PILL_FULL.1);
+        assert_eq!(SPEED_UP, PILL_FULL.1 - super::super::superbounce::FRAME_HEIGHT);
         assert_eq!(h.arts().len(), 2, "the strip and the navpoints' arrow");
     }
 
