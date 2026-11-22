@@ -216,6 +216,8 @@ const WEAPONS: Array<[RegExp, string]> = [
   [/sniper/, "sniper_rifle"],
   [/rocket/, "rocket_launcher"],
   [/\bsmg\b|sub ?machine/, "smg"],
+  // Last, so a named weapon's own icon wins over a "sword melee" style name.
+  [/\bmelee\b|beat ?down|\bpunch\b|bare ?hands?/, "melee"],
 ];
 
 /** The weapon key a reported weapon name points at, by word, if any. */
