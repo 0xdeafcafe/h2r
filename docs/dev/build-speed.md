@@ -70,15 +70,16 @@ a second checkout can be served the first one's build.
 
 ### Dev profile (`Cargo.toml`)
 
-- `[profile.dev.package."*"] debug = false`. Dependencies had line
-  tables; now they carry no debug info. About 670 crates' rlibs shrink
-  and every link reads less. A panic inside a dependency still prints its
-  file and line (that comes from the panic location, not debug info); a
-  backtrace still names the dependency's functions but not their lines.
-  Workspace crates keep `line-tables-only`.
-- Cargo selects the platform default for split debug info. macOS keeps
-  debug info in object files (unpacked). Windows MSVC writes a PDB
-  (packed), the format supported by its linker.
+- `[profile.dev] debug = false`: no crate carries debug info in a dev
+  build, workspace crates included. Every rlib is smaller and every link
+  reads less. A panic still prints its file and line (that comes from the
+  panic location, not debug info); a backtrace names functions but not
+  their lines.
+- With line tables, macOS keeps debug info unpacked: each codegen unit's
+  object file stays in `deps` beside the rlib, and test executables got
+  `.dSYM` bundles. In the `main` target that was 6.9 GB of objects (4,208
+  of them `game`'s) and 5.4 GB of bundles, none of it shared through
+  kache. With no debug info there are neither.
 - `opt-level = 3` for `miniz_oxide`, `zlib-rs`, `flate2`, `fdeflate`,
   `png`, `zune-jpeg`, `ruzstd`, `crc32fast`, `adler2`, `simd-adler32`
   and `sha2`: small codec and checksum crates that tests push whole
@@ -362,7 +363,9 @@ change links a new one beside the old. After its nextest run,
 `cargo xtask test` deletes them (`crates/tools/xtask/src/prune.rs`):
 nextest's list names the current executables, and every other
 `<stem>-<hash>` executable of the same stem in the same `deps`, with its
-`.d` and `.dSYM`, goes when it is over an hour old. Libraries are never
+`.d` and `.dSYM`, goes when it is over an hour old. Dev builds carry no
+debug info, so every object file (`*.o`) and `.dSYM` bundle in those
+`deps` over an hour old is a leftover and goes too. Libraries are never
 touched; kache's unit clean-up drops unused ones after a day
 (`auto_clean_unused_units_days` in `~/.config/kache/config.toml`). The
 run's summary prints a `prune` line when anything went.
@@ -595,9 +598,9 @@ These are estimates from the counts above.
 - **`PATH`.** When two shells differ, this removed a full `boot` and
   `cli` recompile per switch, the most expensive thing in the
   workspace. When they do not differ, nothing.
-- **Dependencies without debug info.** Smaller `deps` (line tables are
-  typically a tenth to a fifth of an unoptimised rlib) and shorter
-  links. Modest.
+- **No debug info.** Smaller `deps` (line tables are typically a tenth
+  to a fifth of an unoptimised rlib), shorter links, and no kept object
+  files or `.dSYM` bundles: about 12 GB less per target directory.
 - **One command for a full sweep.** Removes the duplicate compiles of
   `boot`, `hooks`, `input`, `agent`, `dsound` and `bink-hle`, and of
   the 79 third-party crates with several feature sets. Likely the

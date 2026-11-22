@@ -99,12 +99,11 @@ field_reassign_with_default = "allow"
 # Debug builds keep file/line backtraces but drop full debug info, which is
 # most of a debug target (test binaries shrink several times over). For
 # variables in a debugger, build with CARGO_PROFILE_DEV_DEBUG=2.
+# No debug info in dev builds, workspace crates included: macOS keeps it in
+# each codegen unit's object file and in a dSYM per test executable, about
+# 12 GB per target directory. A panic still names its file and line; a
+# backtrace names functions, not lines (docs/dev/build-speed.md).
 [profile.dev]
-debug = "line-tables-only"
-# Dependencies carry no debug info at all: smaller rlibs and less for every
-# test binary's link to read. A panic still names its file and line, and a
-# backtrace still names their functions (docs/dev/build-speed.md).
-[profile.dev.package."*"]
 debug = false
 
 # The fixture tests decode ~5M rows; keep them quick in debug builds.
