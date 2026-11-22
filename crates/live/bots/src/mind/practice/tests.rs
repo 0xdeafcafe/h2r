@@ -178,8 +178,11 @@ fn bots_spread_over_the_sites_by_their_claims() {
     let tick = 9_000;
     claim(&BOARD, 0x5_9102, Some(a.bounce.stand), tick);
     assert!(claimed_by_other(&BOARD, 0x5_9101, a.bounce.stand, tick));
+    let m = map();
     for _ in 0..8 {
-        let pick = mind.pick_practice([0.0; 3], tick).unwrap();
+        let Pick::Site(pick, _) = mind.pick_practice([0.0; 3], tick, Some(&m)) else {
+            panic!("a pick");
+        };
         assert_eq!(pick.bounce.stand, b.bounce.stand);
     }
     // The claim lapses once it is not renewed.
@@ -270,4 +273,123 @@ fn the_practice_reports_each_route_it_starts_and_how_each_try_ended() {
         p.events[0],
         PracticeEvent::Started { tick: 5, .. }
     ));
+}
+
+// ---- sites a route reaches, and sites it does not ----
+
+/// A floor from x -40 to `edge` (y -40 to 40, z 0), and an island floor
+/// from x 50 to 60 no link reaches.
+fn edge_map(edge: f32) -> MapData {
+    let floor = Poly::new(vec![
+        [-40.0, -40.0, 0.0],
+        [edge, -40.0, 0.0],
+        [edge, 40.0, 0.0],
+        [-40.0, 40.0, 0.0],
+    ]);
+    let island = Poly::new(vec![
+        [50.0, -5.0, 0.0],
+        [60.0, -5.0, 0.0],
+        [60.0, 5.0, 0.0],
+        [50.0, 5.0, 0.0],
+    ]);
+    MapData {
+        nav: NavMesh::new(vec![floor, island], vec![]),
+        ..MapData::default()
+    }
+}
+
+/// Steps a practising mind standing at the origin until `until` says
+/// stop or `ticks` pass, returning every practice event.
+fn practise(
+    mind: &mut Mind,
+    m: &MapData,
+    ticks: u32,
+    until: impl Fn(&[PracticeEvent]) -> bool,
+) -> Vec<PracticeEvent> {
+    let mut events = Vec::new();
+    for t in 0..ticks {
+        mind.step(&scene(bot(1.0), t), Some(m));
+        events.extend(mind.take_practice_events());
+        if until(&events) {
+            break;
+        }
+    }
+    events
+}
+
+#[test]
+fn a_site_whose_approach_is_just_off_the_mesh_is_picked_and_routed() {
+    // The floor ends at x 10; the site stands at 10.2 coming in toward
+    // -x, so its approach (0.8 behind it) is 1.0 off the mesh.
+    let m = edge_map(10.0);
+    let mut s = site([10.2, 0.0, 0.0], Status::Likely);
+    s.bounce.drift = [-1.0, 0.0];
+    assert!(s.bounce.from()[0] > 10.5);
+    let mut mind = Mind::new(Skill::Normal, 36);
+    mind.known = Known {
+        sites: vec![s],
+        crouches: vec![Crouch::at([3.0, 0.0, 0.0])],
+    };
+    assert!(matches!(
+        mind.pick_practice([0.0; 3], 0, Some(&m)),
+        Pick::Site(p, Some(c)) if p == s && c.stand == [3.0, 0.0, 0.0]
+    ));
+    mind.set_practice(true);
+    let started = |e: &[PracticeEvent]| e.iter().any(|e| matches!(e, PracticeEvent::Started { .. }));
+    let events = practise(&mut mind, &m, 200, started);
+    assert!(
+        matches!(events.as_slice(), [PracticeEvent::Started { site, .. }] if *site == s.bounce.stand),
+        "started, and not failed: {events:?}"
+    );
+    let v = mind.order_view();
+    assert_eq!(v.state, "running");
+    assert_eq!(v.steps, ["walk_crouched", "prime", "walk", "bounce", "fly"]);
+}
+
+#[test]
+fn a_site_far_off_the_mesh_is_skipped_not_tried() {
+    // The approach is 2.4 off the floor's edge: the mesh snaps to it, but
+    // no walk gets there.
+    let m = edge_map(10.0);
+    let mut s = site([11.6, 0.0, 0.0], Status::Likely);
+    s.bounce.drift = [-1.0, 0.0];
+    let mut mind = Mind::new(Skill::Normal, 37);
+    mind.known = Known {
+        sites: vec![s],
+        crouches: vec![Crouch::at([3.0, 0.0, 0.0])],
+    };
+    mind.set_practice(true);
+    let events = practise(&mut mind, &m, 600, |_| false);
+    assert!(events.is_empty(), "never started, never tallied: {events:?}");
+    let v = mind.practice_view().unwrap();
+    assert_eq!((v.state, v.attempts), ("waiting", 0));
+    // Found out once, and kept.
+    assert!(matches!(
+        mind.practice.pairs.get(&stand_key(s.bounce.stand)),
+        Some(Ok(Pairing { crouch: None, .. }))
+    ));
+}
+
+#[test]
+fn a_site_with_no_reachable_crouch_spot_is_not_picked() {
+    let m = edge_map(40.0);
+    // Proven, so weighed first, but the only crouch spot within
+    // PAIR_REACH of it is on the island no walk reaches.
+    let lonely = site([30.0, 0.0, 0.0], Status::Proven);
+    let paired = site([-10.0, 0.0, 0.0], Status::Likely);
+    let mut mind = Mind::new(Skill::Normal, 38);
+    mind.known = Known {
+        sites: vec![lonely, paired],
+        crouches: vec![Crouch::at([52.0, 0.0, 0.0]), Crouch::at([-38.0, 0.0, 0.0])],
+    };
+    for tick in 0..8 {
+        let Pick::Site(pick, crouch) = mind.pick_practice([0.0; 3], tick, Some(&m)) else {
+            panic!("a pick");
+        };
+        assert_eq!(pick, paired, "the proven site has nowhere to prime");
+        assert_eq!(crouch.map(|c| c.stand), Some([-38.0, 0.0, 0.0]));
+    }
+    // With only the lonely site there is nothing to practise.
+    mind.known.sites = vec![lonely];
+    assert_eq!(mind.pick_practice([0.0; 3], 9, Some(&m)), Pick::Nothing);
 }

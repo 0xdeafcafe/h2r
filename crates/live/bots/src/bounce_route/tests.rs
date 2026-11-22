@@ -651,3 +651,135 @@ fn a_named_site_is_planned_by_itself_with_no_reach_limit() {
     assert_eq!(approach(&s, &|_| Some(floor)), Some(floor));
     assert_eq!(approach(&s, &|_| None), None);
 }
+
+// ---- spots off the nav mesh, and pairing a site with a crouch spot ----
+
+/// A floor from x -10 to `edge`, y -5 to 5, at z 0: past `edge` is off
+/// the mesh (a seam, an edge the scan stands on).
+fn edge_map(edge: f32) -> MapData {
+    let floor = Poly::new(vec![[-10.0, -5.0, 0.0], [edge, -5.0, 0.0], [edge, 5.0, 0.0], [-10.0, 5.0, 0.0]]);
+    MapData {
+        nav: NavMesh::new(vec![floor], vec![]),
+        ..MapData::default()
+    }
+}
+
+/// Plays a one-step plan from `at` until it is over (or `ticks`).
+fn play_steps(map: &MapData, steps: Vec<Step>, mut at: Vec3, ticks: u32) -> (Option<Result<(), &'static str>>, Vec3) {
+    let plan = Plan {
+        steps,
+        why: Why::Asked,
+        site: None,
+        cost: None,
+    };
+    let mut run = OrderRun::new(plan, false, 0, 1);
+    for tick in 0..ticks {
+        let o = run.step(map, at, tick, None);
+        if o.done.is_some() {
+            return (o.done, at);
+        }
+        let step = 5.0 * o.motion.speed / 30.0;
+        at[0] += o.motion.dir[0] * step;
+        at[1] += o.motion.dir[1] * step;
+    }
+    (None, at)
+}
+
+#[test]
+fn a_spot_just_off_the_mesh_is_walked_to_by_a_last_straight_stretch() {
+    let map = edge_map(5.0);
+    // 0.6 past the floor's edge, a little under it (a crease): the path's
+    // end is pulled inside the edge, so it ends about 0.9 short.
+    let goal = [5.6, 0.0, -0.1];
+    assert!(path_length(&map, [0.0; 3], goal).is_some());
+    for steps in [
+        vec![Step::Walk { to: goal, crouch: false }],
+        vec![Step::Nav { to: goal }],
+    ] {
+        let (done, at) = play_steps(&map, steps, [0.0, 0.0, 0.0], 600);
+        assert_eq!(done, Some(Ok(())), "ended at {at:?}");
+        assert!(dist_xy(at, goal) <= GOAL, "{at:?}");
+    }
+    // The walk to a bounce's approach off the mesh: walked, then the
+    // bounce step steers onto the stand itself.
+    let s = site(6.4, 0.0, 12.3);
+    let approach = s.bounce.from();
+    assert!(approach[0] > 5.0, "off the mesh: {approach:?}");
+    let (done, at) = play_steps(&map, vec![Step::Walk { to: approach, crouch: false }], [0.0; 3], 600);
+    assert_eq!(done, Some(Ok(())));
+    assert!(dist_xy(at, approach) <= ARRIVED + 0.01, "{at:?}");
+}
+
+#[test]
+fn a_spot_far_off_the_mesh_has_no_walk_and_is_not_planned() {
+    let map = edge_map(5.0);
+    // 2.5 past the edge: the mesh snaps to it, but no last stretch reaches.
+    let goal = [7.5, 0.0, 0.0];
+    assert!(map.nav.path([0.0; 3], goal).is_some(), "the mesh snaps within SNAP");
+    assert_eq!(path_length(&map, [0.0; 3], goal), None);
+    let (done, _) = play_steps(&map, vec![Step::Walk { to: goal, crouch: false }], [0.0; 3], 60);
+    assert_eq!(done, Some(Err("goal_off_mesh")));
+    // A site that far off pairs with no crouch spot, and plans no route.
+    let s = site(8.3, 0.0, 12.3);
+    let k = known(vec![s]);
+    let walk = |a: Vec3, b: Vec3| path_length(&map, a, b);
+    let p = pair_site(&s, &k, &walk, &|_| None).unwrap();
+    assert_eq!((p.crouch, p.walk), (None, None));
+    assert!(plan_site([0.0; 3], false, s, &k, &walk, &|_| None).is_none());
+}
+
+#[test]
+fn a_last_stretch_into_a_wall_ends_a_walk_where_it_got_and_fails_a_nav() {
+    let map = edge_map(5.0);
+    let goal = [5.6, 0.0, 0.0];
+    // A body that stops moving short of the goal past the edge.
+    let play_blocked = |steps: Vec<Step>| {
+        let plan = Plan {
+            steps,
+            why: Why::Asked,
+            site: None,
+            cost: None,
+        };
+        let mut run = OrderRun::new(plan, false, 0, 1);
+        let mut at = [0.0f32, 0.0, 0.0];
+        for tick in 0..900 {
+            let o = run.step(&map, at, tick, None);
+            if o.done.is_some() {
+                return o.done;
+            }
+            let step = 5.0 * o.motion.speed / 30.0;
+            at[0] = (at[0] + o.motion.dir[0] * step).min(4.9);
+            at[1] += o.motion.dir[1] * step;
+        }
+        None
+    };
+    assert_eq!(play_blocked(vec![Step::Walk { to: goal, crouch: false }]), Some(Ok(())));
+    assert_eq!(play_blocked(vec![Step::Nav { to: goal }]), Some(Err("tail_stuck")));
+}
+
+#[test]
+fn a_site_pairs_with_the_crouch_spot_a_walk_reaches_its_approach_from() {
+    let s = site(10.0, 0.0, 12.3);
+    let near = Crouch::at([9.0, 1.0, 0.0]);
+    let reachable = Crouch::at([4.0, 0.0, 0.0]);
+    let far = Crouch::at([200.0, 0.0, 0.0]);
+    let k = Known {
+        sites: vec![s],
+        crouches: vec![near, far, reachable],
+    };
+    // Nothing walks from the nearest crouch spot.
+    let walk = |a: Vec3, b: Vec3| (dist_xy(a, near.stand) > 0.01).then(|| dist3(a, b));
+    let p = pair_site(&s, &k, &walk, &|_| None).unwrap();
+    assert_eq!(p.approach, s.bounce.from());
+    assert_eq!(p.crouch, Some(reachable));
+    assert!((p.walk.unwrap() - dist3(reachable.stand, s.bounce.from())).abs() < 1e-4);
+    // Out of PAIR_REACH: not paired however it walks.
+    let lone = Known {
+        sites: vec![s],
+        crouches: vec![far],
+    };
+    assert_eq!(pair_site(&s, &lone, &flat_walk, &|_| None).unwrap().crouch, None);
+    // A drop with no launch floor, or a launch that goes nowhere: no route.
+    assert_eq!(pair_site(&drop_site(10.0, 12.3), &k, &flat_walk, &|_| None), Err("no_approach"));
+    assert_eq!(pair_site(&site(10.0, 0.0, 0.0), &k, &flat_walk, &|_| None), Err("no_approach"));
+}

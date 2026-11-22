@@ -1704,6 +1704,25 @@ cheaper on a tie) and then goes on to the goal. With no bounce that
 qualifies it is the plain walk. A bounce needs a crouch spot to prime at,
 unless the bot's pair word reads -3 already.
 
+**Walks to spots off the mesh.** A scanned stand sits on a seam or an
+edge, so the point a walk goes to (a prime's start, a bounce's
+approach, a drop's launch floor) may be just off the nav mesh, or a
+little under the floor beside it. A walk (`nav::RouteWalk`) has arrived
+within its tolerance sideways and 0.6 units up or down
+(`nav::route::ARRIVE_Z`). A goal off the mesh within 1.5 units
+(`nav::TAIL_REACH`) of the corridor's end, 0.5 units over it to 0.8
+under it, with nothing solid between them at knee height, is walked to
+by a **last stretch**: the corridor to its end, then straight at the
+goal, slowing as it nears it. A last stretch that gets no 0.05 units
+nearer in 45 ticks ends a walk to a prime's start or a bounce's
+approach where the body got to (the prime and the bounce steer the rest
+themselves), and fails a walk to a goal (`tail_stuck`). A goal farther
+off is `goal_off_mesh`. The planner measures walks the way a walk is
+taken (`bounce_route::path_length`, `nav::walk_length`): no teleporter
+or crouch-jump link, and a goal off the mesh only within a last
+stretch's reach, so a plan holds no walk that fails `no_path` or
+`goal_off_mesh` when it is walked.
+
 A map can have hundreds of spots, so a plan is bounded: spots farther
 than the limit in a straight line (the walk it must beat in Help, 60
 units in Fun) are dropped before any path query; of the rest the 4 crouch
@@ -1760,17 +1779,36 @@ is a practice loop (`mind::practice`, ahead of everything else in
 
 1. stand a moment, looking round (20 to 60 ticks at first, then 45 to
    150 between tries, drawn each time);
-2. pick a site within 120 units: weighed by distance (−1 a 60 units), a
-   proven site +2, one another bot practises at −3, the one just tried
-   −1.5, plus a random 0 to 0.8. A failed try blacklists the site for a
-   while (`Stuck::blacklist`), so the next try is somewhere else. With no
-   crouch spot to prime at (and the word not −3) or no site, it waits
-   300 ticks and looks again (`waiting`);
-3. run the bounce route to the site (a **Fun** route by that one site:
-   the walking prime, then the jump or the drop, the touchdown
-   classified), and tally it: a try, a bounce when the route ended done
-   by the site, else why (the route's error, or the landing's result for
-   one that landed without launching).
+2. pick a site within 120 units that a route reaches: weighed by
+   distance (−1 a 60 units), a proven site +2, one another bot practises
+   at −3, the one just tried −1.5, plus a random 0 to 0.8, the best
+   weighed first. A failed try blacklists the site for a while
+   (`Stuck::blacklist`), so the next try is somewhere else. With no
+   crouch spot to prime at (and the word not −3) or no site a route
+   reaches, it waits 300 ticks and looks again (`waiting`);
+3. run the bounce route to the site (`bounce_route::plan_site`: that one
+   site, priming at its paired crouch spot, then the jump or the drop,
+   the touchdown classified, over once down from the launch), and tally
+   it: a try, a bounce when the route ended done by the site, else why
+   (the route's error, or the landing's result for one that landed
+   without launching).
+
+**Which sites a route reaches.** The first time a pick looks at a site
+it pairs the site with a crouch spot (`bounce_route::pair_site`), and
+the bot keeps the pairing while the map and its spots stay the same:
+the site's approach (behind it, or its launch floor), and of the 6
+crouch spots nearest that approach within 60 units, proven first, the
+one whose start a walk reaches and from which a walk reaches the
+approach, proven first and then the shortest walk. A site with no approach (a drop with no launch floor, no
+launch) or no crouch spot a walk reaches it from is never tried (a
+primed bot needs no crouch spot). A paired site is picked when the walk
+from the bot to its crouch spot's start (primed: to its approach)
+exists; one with none is passed over for 600 ticks. A pick makes at
+most 4 pairings and 4 of those walks, and with more to look at picks
+again 2 ticks later. A practice try is therefore never spent finding
+out that a site is out of reach: `no_route` is a site whose route
+failed to plan from where the bot stood, which a pairing rules out but
+for a bot that moved between the pick and the plan.
 
 The bots spread over the sites by claims on a board the process shares
 (`practice::CLAIMS`): a bot renews its claim each tick of its route, and

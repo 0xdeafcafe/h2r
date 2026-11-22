@@ -75,3 +75,27 @@ The winner per map against c000:
 | ascension | | | | |
 | lockout | | | | |
 | midship | | | | |
+
+## 2026-11-22: before the reachability fix (no bot reaches its spots)
+
+Measured at `ed34fe894` (`sb6-bottrain`), **before** the practice paired sites with reachable crouch spots and walks gained the last stretch to a goal off the mesh. The batch is `superbounce-batch.toml` (four bots a run, four maps by three seeds, 18000 ticks each, the built-in bounce tuning), reproduced with the batch command above. No bot bounced:
+
+```
+map        tries  bounced  primes  why not (top 3)
+ascension    467        0      68  goal_off_mesh 158, no_route 118, path_lost 93
+lockout     1204        0       0  goal_off_mesh 787, no_route 254, no_path 133
+midship      679        0      96  no_route 465, path_lost 96, missed 28
+zanzibar    1391        0       0  no_route 994, goal_off_mesh 397
+(all)       3741        0     164  no_route 1831, goal_off_mesh 1356, path_lost 191
+```
+
+The one practice on Ascension (`superbounce-practice.toml`) gave 143 tries: goal_off_mesh 52, no_route 34, prime_failed 28, not_primed 15, path_lost 13. Lockout and Zanzibar primed nothing.
+
+What the code did then, at `ed34fe894`:
+
+- `goal_off_mesh` (`nav/route.rs:82`): the walk's corridor ends at the mesh point nearest an off-mesh goal, pulled 0.3 inside the edge (`nav.rs:600`), and the walk failed when that end was more than its tolerance (0.3, 3D) from the goal. A scanned stand, its approach and a crouch spot's start sit on seams and edges, so they failed. The planner's walk measure (`bounce_route.rs:58`, `nav.path`) snapped silently within 3 units, so it planned walks that then failed.
+- `no_route` (`mind/order.rs:273`): the practice planned with `plan_with` in Fun mode (`order.rs:263`), which drops a site more than 60 units from the bot (`bounce_route.rs:451`) and a route with more than 60 units of walking (`bounce_route.rs:493`), while the practice picked sites within 120 (`practice.rs:27`, `practice.rs:317`). The crouch spot was one of the 4 nearest the bot (`bounce_route.rs:318`), not one near the site, and nothing checked reachability before a try was spent (`practice.rs:447`).
+- `no_path` (`nav/route.rs:34`): the walk excludes teleporter and crouch-jump links, but the planner's measure took them (`bounce_route.rs:58`).
+- `path_lost` (`nav/route.rs:91`): the follower gave up, by its stuck check (`nav.rs:1261`: 30 ticks without getting nearer, a jump, 30 more) or its fall check (`nav.rs:1232`). Read from the code, not traced: the arrival test was 3D (`nav/route.rs:73`), so a body at the corridor's end near a goal at a seam's height, under the floor beside it, could stand short of the tolerance and stall there.
+
+The fix's numbers go below once the coordinator's batch runs.

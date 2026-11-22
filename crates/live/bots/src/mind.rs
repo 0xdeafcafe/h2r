@@ -1788,6 +1788,7 @@ impl Mind {
                     mode: crate::bounce_route::Mode::Fun,
                     show_off: true,
                     site: Some(site),
+                    crouch: None,
                 });
                 return None;
             }

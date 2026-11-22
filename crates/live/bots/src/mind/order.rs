@@ -24,8 +24,11 @@ pub(super) struct Asked {
     pub to: Vec3,
     pub mode: Mode,
     pub show_off: bool,
-    /// A show-off's one site: the plan looks at no other.
+    /// A show-off's or a practice's one site: the plan looks at no other.
     pub site: Option<crate::spots::Site>,
+    /// A practice's crouch spot for its site (`mind::practice`, paired
+    /// once per site): the route primes there and nowhere else.
+    pub crouch: Option<crate::spots::Crouch>,
 }
 
 /// A route under way.
@@ -99,6 +102,7 @@ impl Mind {
             mode,
             show_off: false,
             site: None,
+            crouch: None,
         });
     }
 
@@ -254,6 +258,27 @@ impl Mind {
             mode: a.mode,
         };
         let plan = match a.site {
+            // A practice's site: the route by it alone, priming at the
+            // crouch spot paired with it, over once down from the launch.
+            Some(site) if !a.show_off => {
+                let crouches = match a.crouch {
+                    Some(c) => vec![c],
+                    None => self.known.crouches.clone(),
+                };
+                let one = crate::spots::Known {
+                    sites: vec![site],
+                    crouches,
+                };
+                match bounce_route::plan_site(me.position, primed, site, &one, &walk, &ledge) {
+                    Some(plan) => plan,
+                    None => {
+                        self.stuck.blacklist(site.bounce.stand, p.tick);
+                        self.ended =
+                            Some(Ended::empty(a.to, a.mode, Why::Asked, Err("no_route")));
+                        return;
+                    }
+                }
+            }
             // A show-off looks at its one site.
             Some(site) => {
                 let one = crate::spots::Known {

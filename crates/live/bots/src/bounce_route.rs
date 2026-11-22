@@ -53,17 +53,12 @@ pub fn launch_floor(m: &MapData, s: &Site) -> Option<Vec3> {
 }
 
 /// The length of the walk along the nav mesh from `from` to `to`: the
-/// [`Walk`] a plan is made with.
+/// [`Walk`] a plan is made with. It is the walk a route's step would take
+/// ([`crate::nav::walk_length`]): no teleporter or crouch-jump link, and a
+/// goal off the mesh only within a last stretch's reach of it. `None` for
+/// a walk that would fail (`no_path`, `goal_off_mesh`).
 pub fn path_length(m: &MapData, from: Vec3, to: Vec3) -> Option<f32> {
-    let path = m.nav.path(from, to)?;
-    let mut at = from;
-    let mut total = 0.0;
-    for w in path {
-        total += ((w.at[0] - at[0]).powi(2) + (w.at[1] - at[1]).powi(2) + (w.at[2] - at[2]).powi(2))
-            .sqrt();
-        at = w.at;
-    }
-    Some(total)
+    crate::nav::walk_length(m, from, to, false, ARRIVED)
 }
 
 /// Gravity (world units a second squared): the jump model's estimate
@@ -561,6 +556,75 @@ pub fn plan_site(
     Some(plan)
 }
 
+// ---- a site paired with a crouch spot ----
+
+/// The crouch spots a pairing tries walking from: the nearest a site's
+/// approach (straight line), proven first.
+pub const PAIR_CROUCHES: usize = 6;
+/// A crouch spot farther (straight line) than this from a site's approach
+/// is not paired with it.
+pub const PAIR_REACH: f32 = FUN_REACH;
+
+/// What a route by one site needs, found once a site (the practice keeps
+/// it, `mind::practice`): where the bounce is taken from, and the crouch
+/// spot to prime at, from which a walk reaches it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pairing {
+    /// Where the bounce is taken from ([`approach`]).
+    pub approach: Vec3,
+    /// The crouch spot: proven first, then the least walking from it to
+    /// the approach. `None` when no crouch spot within [`PAIR_REACH`] has
+    /// a walk there (only a primed bot can use the site).
+    pub crouch: Option<Crouch>,
+    /// That walk (world units).
+    pub walk: Option<f32>,
+}
+
+/// Pairs `site` with the crouch spot to prime at for it: of the
+/// [`PAIR_CROUCHES`] within [`PAIR_REACH`] of its approach, proven first
+/// and nearest first, the ones whose start a walk reaches and from which a
+/// walk reaches the approach, proven first, then the shortest walk. At
+/// most two walks a crouch spot looked at.
+/// `Err("no_approach")` for a drop with no launch floor, or a launch that
+/// never gets the bot up.
+pub fn pair_site(site: &Site, known: &Known, walk: Walk, ledge: Ledge) -> Result<Pairing, &'static str> {
+    let to = approach(site, ledge).ok_or("no_approach")?;
+    let ask = Ask {
+        from: to,
+        to: site.target(),
+        primed: true,
+        mode: Mode::Fun,
+    };
+    flight(site, flight_z(&ask, site)).ok_or("no_approach")?;
+    let mut near: Vec<Crouch> = known
+        .crouches
+        .iter()
+        .copied()
+        .filter(|c| dist_xy(c.stand, to) <= PAIR_REACH)
+        .collect();
+    near.sort_by(|a, b| {
+        (!a.proven())
+            .cmp(&!b.proven())
+            .then(dist_xy(a.stand, to).total_cmp(&dist_xy(b.stand, to)))
+    });
+    // Its start must be walkable to (a scanned start can be off the
+    // mesh), and the walk from it, as a route's candidate measures it,
+    // must reach the approach.
+    let best = near
+        .into_iter()
+        .take(PAIR_CROUCHES)
+        .filter_map(|c| {
+            walk(c.stand, prime_start(&c))?;
+            Some((c, walk(c.stand, to)?))
+        })
+        .min_by(|(a, wa), (b, wb)| (!a.proven()).cmp(&!b.proven()).then(wa.total_cmp(wb)));
+    Ok(Pairing {
+        approach: to,
+        crouch: best.map(|(c, _)| c),
+        walk: best.map(|(_, w)| w),
+    })
+}
+
 // ---- playing a plan ----
 
 /// A route gives up after this long (ticks): 200 s.
@@ -976,8 +1040,10 @@ impl OrderRun {
             );
             let speed = if approach { self.tune.approach_speed } else { 1.0 };
             let out = match step {
-                Step::Walk { to, crouch } => self.walk(map, at, tick, to, crouch, ARRIVED, speed),
-                Step::Nav { to } => self.walk(map, at, tick, to, false, self.goal, 1.0),
+                Step::Walk { to, crouch } => {
+                    self.walk(map, at, tick, to, crouch, ARRIVED, speed, true)
+                }
+                Step::Nav { to } => self.walk(map, at, tick, to, false, self.goal, 1.0, false),
                 Step::Prime(c) => self.prime(c, at, tick, pair),
                 Step::Bounce(site) => self.bounce(site, at, tick),
                 Step::Drop { from, site } => self.drop(from, site, at, tick),
@@ -1003,6 +1069,7 @@ impl OrderRun {
         self.fail("stalled", tick, at)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn walk(
         &mut self,
         map: &MapData,
@@ -1012,9 +1079,13 @@ impl OrderRun {
         crouch: bool,
         tolerance: f32,
         speed: f32,
+        near: bool,
     ) -> Result<Option<RouteMotion>, &'static str> {
         if matches!(self.state, State::Fresh) {
-            self.state = State::Walk(RouteWalk::new(map, at, to, crouch, tick)?);
+            let w = RouteWalk::new(map, at, to, crouch, tick)?;
+            // A walk to a prime's start or a bounce's approach: the next
+            // step steers the rest of the way itself.
+            self.state = State::Walk(if near { w.ending_near() } else { w });
         }
         let State::Walk(w) = &mut self.state else {
             return Err("state");

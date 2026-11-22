@@ -5,12 +5,19 @@
 //! (`mind::order`: the walking prime, then the drop or the jump), tally
 //! how it went, stand a moment, pick the next.
 //!
+//! A site is picked only when a route by it exists: each site is paired
+//! once a map with the crouch spot to prime at for it
+//! ([`crate::bounce_route::pair_site`]: a walk from the crouch spot reaches
+//! the bounce's approach), and a pick checks the one walk from the bot to
+//! that crouch spot. A site with no reachable crouch spot, or whose
+//! approach a walk cannot reach, is never tried.
+//!
 //! The loop sits in front of everything else in [`Mind::step`]: no
 //! target is chosen, nothing is shot, thrown or meleed, and being shot
 //! changes nothing. A route an agent asks for (`bots.bounce_to`) runs as
 //! usual and is not tallied.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 
 use input::host::HostPadState;
@@ -18,10 +25,11 @@ use input::host::HostPadState;
 use super::feel::{Rng, reached};
 use super::order::Asked;
 use super::{Mind, RouteMotion, Vec3, angles, dist_xy};
-use crate::bounce_route::Mode;
+use crate::bounce_route::{Mode, Pairing, launch_floor, pair_site, path_length, prime_start};
 use crate::brain::{Me, Perception, Seen};
 use crate::cache::MapData;
-use crate::spots::Site;
+use crate::glitches::prime::is_primed;
+use crate::spots::{Crouch, Known, Site};
 
 /// Sites this far away (XY) or nearer are practised at.
 pub const REACH: f32 = 120.0;
@@ -42,6 +50,18 @@ pub const W_CLAIMED: f32 = -3.0;
 pub const W_LAST: f32 = -1.5;
 pub const W_DISTANCE: f32 = -1.0 / 60.0;
 pub const W_JITTER: f32 = 0.8;
+/// Sites a pick pairs with a crouch spot at most (each up to two walks a
+/// crouch spot, of [`crate::bounce_route::PAIR_CROUCHES`]); the rest wait for the
+/// next pick, [`PAIRING_PAUSE`] later.
+pub const PAIRS_PER_PICK: usize = 4;
+/// Walks from the bot to a paired site's crouch spot a pick tries at most.
+pub const REACH_QUERIES: usize = 4;
+/// With pairings or walks still to try, the wait before the next pick,
+/// ticks.
+pub const PAIRING_PAUSE: u32 = 2;
+/// A site the bot has no walk to from where it stood is passed over for
+/// this long (ticks), not tried.
+pub const OUT_OF_REACH_TICKS: u32 = 600;
 
 /// One site's practice so far.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -120,6 +140,42 @@ pub struct Practice {
     events: Vec<PracticeEvent>,
     /// The route under way has reported its prime.
     primed_seen: bool,
+    /// Each site's pairing with a crouch spot, by its stand, made once for
+    /// the map and spots in [`Practice::pairs_for`].
+    pairs: HashMap<[u32; 3], Result<Pairing, &'static str>>,
+    pairs_for: u64,
+    /// Sites with no walk from where the bot last looked, until the tick.
+    out_of_reach: Vec<([u32; 3], u32)>,
+}
+
+/// What a pick found.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Pick {
+    /// The site, and the crouch spot paired with it (`None`: primed).
+    Site(Site, Option<Crouch>),
+    /// Pairings or walks still to try: look again shortly.
+    Later,
+    /// No site a route reaches.
+    Nothing,
+}
+
+fn stand_key(p: Vec3) -> [u32; 3] {
+    p.map(f32::to_bits)
+}
+
+/// What a map's pairings were made for: the map and its spots.
+fn pairs_key(known: &Known, map: &MapData) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (map as *const MapData as usize).hash(&mut h);
+    for s in &known.sites {
+        stand_key(s.bounce.stand).hash(&mut h);
+    }
+    known.crouches.len().hash(&mut h);
+    for c in &known.crouches {
+        stand_key(c.stand).hash(&mut h);
+    }
+    h.finish()
 }
 
 impl Practice {
@@ -135,6 +191,9 @@ impl Practice {
             board: &CLAIMS,
             events: Vec::new(),
             primed_seen: false,
+            pairs: HashMap::new(),
+            pairs_for: 0,
+            out_of_reach: Vec::new(),
         }
     }
 
@@ -300,30 +359,87 @@ impl Mind {
         }
     }
 
-    /// The site to practise at next, from `at`.
-    fn pick_practice(&mut self, at: Vec3, tick: u32) -> Option<Site> {
+    /// The site to practise at next, from `at`: the best weighed of the
+    /// sites a route reaches. A site is paired with its crouch spot the
+    /// first time it is looked at ([`pair_site`], kept for the map); a
+    /// paired site is picked when a walk from `at` reaches its crouch spot
+    /// (or, primed, its approach). A pick makes at most [`PAIRS_PER_PICK`]
+    /// pairings and [`REACH_QUERIES`] walks.
+    fn pick_practice(&mut self, at: Vec3, tick: u32, map: Option<&MapData>) -> Pick {
+        let Some(m) = map else {
+            return Pick::Nothing;
+        };
+        // A site needs a crouch spot to prime at (or the bot primed).
+        let primed = self.pair_word.is_some_and(is_primed);
+        if !primed && self.known.crouches.is_empty() {
+            return Pick::Nothing;
+        }
+        let for_map = pairs_key(&self.known, m);
+        if self.practice.pairs_for != for_map {
+            self.practice.pairs.clear();
+            self.practice.out_of_reach.clear();
+            self.practice.pairs_for = for_map;
+        }
+        self.practice
+            .out_of_reach
+            .retain(|&(_, until)| !reached(tick, until));
         let owner = self.practice.owner;
         let last = self.practice.last;
-        let mut best: Option<(f32, Site)> = None;
-        // A site needs a crouch spot to prime at (or the bot primed).
-        let can_prime = !self.known.crouches.is_empty()
-            || self
-                .pair_word
-                .is_some_and(crate::glitches::prime::is_primed);
-        if !can_prime {
-            return None;
-        }
+        let mut ranked: Vec<(f32, Site)> = Vec::new();
         for s in &self.known.sites {
-            if dist_xy(s.bounce.stand, at) > REACH || self.stuck.blocked(s.bounce.stand, tick) {
+            let k = stand_key(s.bounce.stand);
+            if dist_xy(s.bounce.stand, at) > REACH
+                || self.stuck.blocked(s.bounce.stand, tick)
+                || self.practice.out_of_reach.iter().any(|(o, _)| *o == k)
+                || match self.practice.pairs.get(&k) {
+                    // Known to have no route: never tried.
+                    Some(Err(_)) => true,
+                    Some(Ok(p)) => p.crouch.is_none() && !primed,
+                    None => false,
+                }
+            {
                 continue;
             }
             let claimed = claimed_by_other(self.practice.board, owner, s.bounce.stand, tick);
             let w = weight(s, at, claimed, last) + W_JITTER * self.practice.rng.unit();
-            if best.is_none_or(|(b, _)| w > b) {
-                best = Some((w, *s));
-            }
+            ranked.push((w, *s));
         }
-        best.map(|(_, s)| s)
+        ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let walk = |a: Vec3, b: Vec3| path_length(m, a, b);
+        let ledge = |s: &Site| launch_floor(m, s);
+        let (mut paired, mut walks) = (0, 0);
+        for (_, s) in ranked {
+            let k = stand_key(s.bounce.stand);
+            let pairing = match self.practice.pairs.get(&k) {
+                Some(p) => *p,
+                None => {
+                    if paired >= PAIRS_PER_PICK {
+                        return Pick::Later;
+                    }
+                    paired += 1;
+                    let p = pair_site(&s, &self.known, &walk, &ledge);
+                    self.practice.pairs.insert(k, p);
+                    p
+                }
+            };
+            let Ok(p) = pairing else { continue };
+            let (to, crouch) = match (primed, p.crouch) {
+                (true, _) => (p.approach, None),
+                (false, Some(c)) => (prime_start(&c), Some(c)),
+                (false, None) => continue,
+            };
+            if walks >= REACH_QUERIES {
+                return Pick::Later;
+            }
+            walks += 1;
+            if walk(at, to).is_some() {
+                return Pick::Site(s, crouch);
+            }
+            self.practice
+                .out_of_reach
+                .push((k, tick.wrapping_add(OUT_OF_REACH_TICKS)));
+        }
+        Pick::Nothing
     }
 
     fn practice_idle(&mut self, me: Me, tick: u32, pause: u32) {
@@ -418,8 +534,8 @@ impl Mind {
                 self.practice_idle(me, tick, pause);
             }
             Some(Phase::Idle { until, .. }) if reached(tick, until) => {
-                match self.pick_practice(me.position, tick) {
-                    Some(site) => {
+                match self.pick_practice(me.position, tick, map) {
+                    Pick::Site(site, crouch) => {
                         self.practice.waiting = false;
                         claim(
                             self.practice.board,
@@ -432,6 +548,7 @@ impl Mind {
                             mode: Mode::Fun,
                             show_off: false,
                             site: Some(site),
+                            crouch,
                         });
                         self.practice.phase = Some(Phase::Route(site));
                         self.practice.primed_seen = false;
@@ -447,7 +564,10 @@ impl Mind {
                         self.practice_tally(site);
                         self.practice_idle(me, tick, PAUSE_MAX);
                     }
-                    None => {
+                    Pick::Later => {
+                        self.practice_idle(me, tick, PAIRING_PAUSE);
+                    }
+                    Pick::Nothing => {
                         self.practice.waiting = true;
                         self.practice_idle(me, tick, NOTHING_PAUSE);
                     }
