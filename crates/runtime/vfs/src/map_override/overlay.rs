@@ -2,12 +2,15 @@
 //! byte replacements and appended extents over the map files, held in
 //! memory beside whatever file serves a map.
 //!
-//! Both readers of a map file serve through it: the guest's reads in
-//! [`super::MapOverrideBackend::read_at`] and the native loaders' reads
-//! through `assets::ResourceFiles` (`crates/extensions/game/src/native_map.rs`).
-//! A file is named by its lowercase stem (`ascension`, `shared`), the name
-//! the guest opens it by under `maps\`. Nothing here touches a file on
-//! disk; a play copy's private generation stays immutable.
+//! A map is named by its lowercase stem (`ascension`, `shared`). Both
+//! readers of its raw data serve through the overlay: the guest, which
+//! reads the cache slot file the map was copied into, through
+//! [`crate::Vfs::read`] and the aliases the hot-edit glue sets
+//! ([`RawOverlay::alias`]); and the native loaders, which read the map
+//! itself through `assets::ResourceFiles`
+//! (`crates/extensions/game/src/native_map.rs`). Nothing here touches a
+//! file on disk: a slot file, a cache template and a play copy's private
+//! generation never hold an overlay byte.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -120,6 +123,9 @@ pub struct OverlaySummary {
 #[derive(Default)]
 struct Shared {
     files: RwLock<HashMap<String, FileOverlay>>,
+    /// Lowercase VFS object names (`\device\harddisk0\partition4\cache003.map`)
+    /// served as the map they name.
+    aliases: RwLock<HashMap<String, String>>,
     /// Set while any file holds anything: a read of an untouched overlay
     /// takes no lock.
     busy: AtomicBool,
@@ -134,13 +140,6 @@ impl std::fmt::Debug for RawOverlay {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("RawOverlay").field(&self.summary()).finish()
     }
-}
-
-/// The overlay key for a VFS path `maps\<name>.map` (any case): the
-/// lowercase stem. Anything else has none.
-pub fn overlay_key(path: &str) -> Option<String> {
-    let name = super::is_map_path(path)?;
-    Some(name[..name.len() - 4].to_ascii_lowercase())
 }
 
 impl RawOverlay {
@@ -267,9 +266,36 @@ impl RawOverlay {
         })
     }
 
-    /// Drops everything: the map the overlay was made for is gone.
+    /// Serves the VFS object `object` (a full object name, any case) as
+    /// the map `file`: [`crate::Vfs::read`] applies `file`'s overlay to it.
+    pub fn alias(&self, object: &str, file: &str) {
+        self.0
+            .aliases
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(object.to_ascii_lowercase(), file.to_ascii_lowercase());
+    }
+
+    /// The map the VFS object `object` is served as, if it is an alias of
+    /// one the overlay holds.
+    pub fn aliased(&self, object: &str) -> Option<String> {
+        if self.is_empty() {
+            return None;
+        }
+        let file = self
+            .0
+            .aliases
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&object.to_ascii_lowercase())
+            .cloned()?;
+        self.touches(&file).then_some(file)
+    }
+
+    /// Drops everything, aliases too: the map the overlay was made for is gone.
     pub fn clear(&self) {
         self.write(HashMap::clear);
+        self.0.aliases.write().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
     pub fn summary(&self) -> OverlaySummary {
@@ -367,9 +393,16 @@ mod tests {
     }
 
     #[test]
-    fn keys_are_the_lowercase_stem_of_a_map_path() {
-        assert_eq!(overlay_key("maps\\Shared.MAP").as_deref(), Some("shared"));
-        assert_eq!(overlay_key("maps\\sub\\x.map"), None);
-        assert_eq!(overlay_key("default.xbe"), None);
+    fn an_alias_names_its_map_only_while_the_overlay_holds_it() {
+        let o = RawOverlay::new();
+        let slot = "\\Device\\Harddisk0\\Partition4\\cache003.map";
+        o.alias(slot, "Level");
+        assert_eq!(o.aliased(slot), None);
+        o.put("level", 0, &[1]);
+        assert_eq!(o.aliased(&slot.to_ascii_uppercase()).as_deref(), Some("level"));
+        assert_eq!(o.aliased("\\Device\\Harddisk0\\Partition4\\cache004.map"), None);
+        o.clear();
+        o.put("level", 0, &[1]);
+        assert_eq!(o.aliased(slot), None, "clear drops the aliases");
     }
 }
