@@ -28,7 +28,6 @@ pub(super) struct Capture {
     quitting: BTreeSet<u32>,
     result_order: Vec<u32>,
     host_machine: Option<String>,
-    live_service: bool,
     pub(super) archived_on_live: bool,
     lease_mode: Option<Mode>,
 }
@@ -62,7 +61,6 @@ impl Capture {
             vfs: None,
             live: Weak::new(),
             sim_bots: vec![],
-            live_service: header.live_service,
         }
     }
 
@@ -161,9 +159,12 @@ impl Capture {
                 || self.live.upgrade().is_some_and(|h| h.matchmade().is_some())
             {
                 Mode::Matchmaking
-            } else if !self.live_service
-                && s.is_some_and(|s| g.u32(s.wrapping_add(net::PROTOCOL)).is_ok_and(|p| matches!(p, 1 | 2)))
-            {
+            } else if s.is_some_and(|s| {
+                system_link(
+                    g.u32(s.wrapping_add(net::PROTOCOL)).ok(),
+                    g.u32(s.wrapping_add(crate::variant_ext::SESSION_NETWORK_CLASS)).ok(),
+                )
+            }) {
                 Mode::SystemLink
             } else {
                 Mode::Custom
@@ -700,9 +701,25 @@ pub(super) fn verify_events(g: &Guest, events: &[Event]) -> Result<()> {
     Ok(())
 }
 
+/// A networked game's session is System Link: a networked protocol (1 or
+/// 2) and the network class 1 (`crate::variant_ext::SESSION_NETWORK_CLASS`;
+/// a Live game's is 2, whichever Live service it runs on).
+fn system_link(protocol: Option<u32>, class: Option<u32>) -> bool {
+    matches!(protocol, Some(1 | 2)) && class == Some(crate::variant_ext::SYSTEM_LINK)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_link_is_the_network_class_not_the_service() {
+        assert!(system_link(Some(2), Some(1)));
+        assert!(system_link(Some(1), Some(1)));
+        assert!(!system_link(Some(2), Some(2)), "a Live game");
+        assert!(!system_link(Some(0), Some(1)), "a local protocol");
+        assert!(!system_link(Some(2), None), "an unreadable class");
+    }
 
     #[test]
     fn checks_the_mounted_map_bytes_and_only_allows_guest_map_slots() {

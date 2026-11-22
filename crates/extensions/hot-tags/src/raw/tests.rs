@@ -210,7 +210,7 @@ fn cluster(i: u32) -> Value {
 fn write(owner: Value, offset: u32, bytes: &[u8], was: Option<Was>) -> RawBatch {
     RawBatch {
         raw: vec![RawWrite { owner, offset, bytes: bytes.to_vec(), was }],
-        evict: Vec::new(),
+        ..RawBatch::default()
     }
 }
 
@@ -257,7 +257,7 @@ fn a_was_mismatch_writes_nothing_at_all() {
     let e = ed
         .batch_with(&mut g, &writes, &write(cluster(0), 0, &[9; 4], Some(Was::Hash(1))), None)
         .unwrap_err();
-    let BatchError::Mismatch { fields, raw } = e else { panic!("not a mismatch") };
+    let BatchError::Mismatch { fields, raw, .. } = e else { panic!("not a mismatch") };
     assert!(fields.is_empty());
     assert_eq!(raw[0]["offset"], 0);
     assert_eq!(raw[0]["owner"], ed_owner_json(0));
@@ -346,7 +346,7 @@ fn an_eviction_marks_the_section_unloaded_and_revert_evicts_it_again() {
     let mut g = level();
     let fake = files();
     let (mut ed, pushed) = editor(&fake);
-    let batch = RawBatch { raw: Vec::new(), evict: vec![cluster(0)] };
+    let batch = RawBatch { evict: vec![cluster(0)], ..RawBatch::default() };
     // The block info's pointer moves to an appended block in the same batch.
     let appended = ed.raw_append(&g, ResourceFile::Local, &[0xab; 8], 16).unwrap();
     let pointer = appended["pointer"].as_u64().unwrap() as u32;

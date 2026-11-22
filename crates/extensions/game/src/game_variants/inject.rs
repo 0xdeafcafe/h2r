@@ -284,9 +284,3 @@ pub fn retarget(name_field: &[u8], engine: i32, block: [u8; variants::ext::LEN])
     }
     hit
 }
-
-/// Sets the listing directly (tests).
-#[cfg(test)]
-pub fn set_listed(l: Vec<Listed>) {
-    *listed() = l;
-}

@@ -96,10 +96,7 @@ pub fn profile_flags(opt: Option<&str>, debug: Option<&str>) -> Result<Vec<Strin
 ///   exact reference paths for bisecting a divergence
 ///   (docs/runtime/BOOT.md); direct calls between generated handlers
 ///   (`H2_DIRECT_CALLS`, module feature 2), whose off build is the
-///   reference the direct-call tests compare with; and charging a counting
-///   handler's accesses in the RAM view (`H2_VIEW_CHARGE`, on since
-///   feddd0402; its off path stays until a profile in the game settles
-///   it).
+///   reference the direct-call tests compare with.
 /// - Off unless `1`, the flat memory model (`H2_FLAT_RAM`, module feature
 ///   16): every access one host instruction through the runtime's flat RAM
 ///   window, a fixup row sending a faulting one to the checked helper
@@ -109,15 +106,6 @@ pub fn profile_flags(opt: Option<&str>, debug: Option<&str>) -> Result<Vec<Strin
 ///   (`H2_FLAT_SPAN`, the M0 measurement's image), and with it set
 ///   `H2_FLAT_RAM` is the runtime's switch for that image alone and
 ///   leaves the flags (and the stamp) alone.
-/// - Off unless `1`, awaiting a measurement in full images: the per-hold
-///   RAM page cache (`H2_RAM_PAGE_CACHE`),
-///   checked x87 TOP specialisation (`H2_X87_TOP`), the RAM gate taken at
-///   a handler's start (`H2_ENTRY_GATE`, `h2fastmem.h`), store sites
-///   testing the dirty bit before marking a page (`H2_DIRTY_INLINE`), and
-///   lending the RAM gate (`H2_DIRECT_GATE`) or the access count
-///   (`H2_DIRECT_COUNT`) across direct calls (`h2gen.h`). Each trades fewer
-///   hot operations for more live state or larger generated code
-///   (docs/perf/guest-memory.md).
 /// - Off unless `1`, diagnostics: loop and x87 counters (`H2_PERF`), and
 ///   cold guest accesses counted by cause (`H2_COLD_STATS`, printed to
 ///   stderr). `H2_FLAT_STATS_OWNER` (a guest address) counts one owner's
@@ -143,16 +131,9 @@ pub fn cflags_for(arch: Arch) -> Result<Vec<String>, Error> {
         ("H2_PERF", false),
         ("H2_FASTMEM", true),
         ("H2_X87_NATIVE", true),
-        ("H2_X87_TOP", false),
         ("H2_SSE_NATIVE", true),
-        ("H2_RAM_PAGE_CACHE", false),
         ("H2_DIRECT_CALLS", true),
-        ("H2_DIRTY_INLINE", false),
         ("H2_COLD_STATS", false),
-        ("H2_DIRECT_GATE", false),
-        ("H2_DIRECT_COUNT", false),
-        ("H2_ENTRY_GATE", false),
-        ("H2_VIEW_CHARGE", true),
     ] {
         if flag(name, env(name).as_deref(), default)? {
             v.push(format!("-D{name}=1"));
@@ -1588,21 +1569,12 @@ mod tests {
             "H2_X87_NATIVE",
             "H2_SSE_NATIVE",
             "H2_DIRECT_CALLS",
-            "H2_VIEW_CHARGE",
         ] {
             let on = std::env::var(name).as_deref() != Ok("0");
             assert_eq!(flags.contains(&format!("-D{name}=1")), on, "{name}");
         }
-        let inline = std::env::var("H2_DIRTY_INLINE").as_deref() == Ok("1");
-        assert_eq!(flags.contains(&"-DH2_DIRTY_INLINE=1".to_string()), inline);
         let stats = std::env::var("H2_COLD_STATS").as_deref() == Ok("1");
         assert_eq!(flags.contains(&"-DH2_COLD_STATS=1".to_string()), stats);
-        let gate = std::env::var("H2_DIRECT_GATE").as_deref() == Ok("1");
-        assert_eq!(flags.contains(&"-DH2_DIRECT_GATE=1".to_string()), gate);
-        for name in ["H2_DIRECT_COUNT", "H2_ENTRY_GATE"] {
-            let on = std::env::var(name).as_deref() == Ok("1");
-            assert_eq!(flags.contains(&format!("-D{name}=1")), on, "{name}");
-        }
     }
 
     #[test]

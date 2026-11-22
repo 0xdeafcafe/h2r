@@ -570,8 +570,8 @@ is independent of the tag slices except for `tags::fields`.
   and conflicts.
 - [click-to-edit.md](click-to-edit.md): the inspector that shares this
   panel.
-- [polish-plan.md](polish-plan.md): P12, P13 and P18, the slices this
-  design builds on.
+- [editor.md](editor.md): the editor shell and live editing this design
+  builds on.
 - [agent-api.md](agent-api.md): the socket API.
 - [tag-definitions.md](../formats/tag-definitions.md): the definition
   file format and its evidence rules.

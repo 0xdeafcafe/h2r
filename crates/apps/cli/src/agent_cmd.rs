@@ -109,7 +109,7 @@ or a short form:
                          fault and whether execution went on from it, with
                          the N (20) most frequent fault PCs
   render                 render.stats: in-between frames and why they held,
-                         the pipelined render, the frame-stats counters
+                         the frame-stats counters
   state save <name> [replace]  state.save: the whole machine at the next tick
                          boundary where nothing is live, under the cache
                          directory's snapshots/ (retries for 90 ticks, then

@@ -380,6 +380,8 @@ fn hosted(
         theater: None,
         theater_playback: None,
         perf_overlay: None,
+        cheat_line: None,
+        game_code: None,
         editor_link: None,
         debug_views: None,
         world_line_sources: Vec::new(),
@@ -742,6 +744,15 @@ pub(crate) fn run_with_theater(
     // A start on the fast tier while clang builds runs slowly: say so on
     // screen, and say when the full-speed image is ready.
     let building_clang = tier_plan.background_clang.then(|| out.clone());
+    // What the debug menu's Game > Game code page and `game.code` show.
+    let game_code = Arc::new(boot::game_code::GameCode {
+        tier: tier_plan.tier.name(),
+        module: lib.clone(),
+        stamp: boot::stamp_path(&lib),
+        background_log: building_clang.as_deref().map(boot::tier::background_log),
+        full_speed_module: boot::tier::clang_dylib(&out),
+        restart: restart_in_place(),
+    });
     if crate::mappack_cmd::auto_enabled(no_mappack) {
         crate::mappack_cmd::auto_install(&disc, &data);
     }
@@ -783,6 +794,9 @@ pub(crate) fn run_with_theater(
     config.closer = Some(closer.clone());
     let interrupted = watch_signals(closer);
     crate::boot_cmd::start_memory_watch(&opts.data_root);
+    // Under `h2 follow`, a restart exits for the follower to start the
+    // next build; on its own, `h2 play` starts itself again.
+    let followed = follow_status.is_some();
     // After the signal mask is set, so the reader thread inherits it.
     #[cfg(unix)]
     if let Some(path) = follow_status {
@@ -796,10 +810,8 @@ pub(crate) fn run_with_theater(
             std::env::var("H2_RENDER_THREAD").ok().as_deref(),
         )));
     }
-    if config.banner.is_none()
-        && let Some(out) = building_clang
-    {
-        config.banner = Some(tier_banner(out));
+    if config.banner.is_none() && building_clang.is_some() {
+        config.banner = Some(tier_banner(Arc::clone(&game_code)));
     }
     if let Some(c) = frame_stats {
         timeline::phase::start(c).context("starting frame stats")?;
@@ -818,6 +830,7 @@ pub(crate) fn run_with_theater(
         .then(debug_menu::Shared::default);
     config.debug_menu = debug_menu.clone();
     let perf_overlay = config.watermark.as_ref().map(app::Watermark::switch);
+    let cheat_line = config.watermark.as_ref().map(app::Watermark::cheats_handle);
     let editor_link = EditorLink::default();
     config.editor_link = Some(Arc::new(EditorPlateSource(editor_link.clone())));
     if boot::forge_glue::requested().map_err(anyhow::Error::msg)? {
@@ -863,6 +876,8 @@ pub(crate) fn run_with_theater(
         host.discoverable_agent = true;
         host.embedded_live = live.local;
         host.perf_overlay = perf_overlay;
+        host.cheat_line = cheat_line;
+        host.game_code = Some(game_code);
         host.editor_link = Some(editor_link);
         boot::debug_views::register(&mut host);
         boot::superbounce_mode::register(&mut host);
@@ -897,9 +912,18 @@ pub(crate) fn run_with_theater(
     drop(session);
     #[cfg(unix)]
     if report.restart_requested {
-        println!("play: restarting into the update");
-        std::process::exit(crate::follow::RESTART_EXIT);
+        if followed {
+            println!("play: restarting into the update");
+            std::process::exit(crate::follow::RESTART_EXIT);
+        }
+        // F5 on the window's "the game stopped" notice.
+        if let Some(restart) = restart_in_place() {
+            println!("play: starting the game again");
+            restart().map_err(anyhow::Error::msg)?;
+        }
     }
+    #[cfg(not(unix))]
+    let _ = followed;
     Ok(())
 }
 
@@ -1276,21 +1300,28 @@ impl app::EditorPlateSource for EditorPlateSource {
 
 /// The window's banner while clang builds the full-speed image in the
 /// background (`boot::tier::background_build`): this start runs on the
-/// slow fast tier until the next one.
-fn tier_banner(out: PathBuf) -> app::Banner {
+/// slower fast tier until the next one. The text is
+/// `boot::game_code::banner_text`, the state the debug menu's Game code
+/// page shows.
+fn tier_banner(code: Arc<boot::game_code::GameCode>) -> app::Banner {
+    use boot::game_code::{BuildState, banner_text};
     let banner = app::Banner::new();
     let b = banner.clone();
-    b.set(tier_notice(TierBuild::Building));
+    let notice = |state: BuildState, elapsed: Duration| {
+        banner_text(state, elapsed).map(|text| app::Notice {
+            kind: if state == BuildState::Failed { app::NoticeKind::Error } else { app::NoticeKind::Info },
+            text,
+        })
+    };
+    b.set(notice(BuildState::Building, Duration::ZERO));
     std::thread::Builder::new()
         .name("tier-status".into())
         .spawn(move || {
-            let log = boot::tier::background_log(&out);
             loop {
                 std::thread::sleep(Duration::from_secs(2));
-                let text = std::fs::read_to_string(&log).unwrap_or_default();
-                let state = tier_build_state(&text);
-                b.set(tier_notice(state));
-                if state != TierBuild::Building {
+                let (state, elapsed, _) = code.build();
+                b.set(notice(state, elapsed.unwrap_or_default()));
+                if state != BuildState::Building {
                     return;
                 }
             }
@@ -1299,42 +1330,47 @@ fn tier_banner(out: PathBuf) -> app::Banner {
     banner
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TierBuild {
-    Building,
-    Ready,
-    Failed,
+/// Starts `h2 play` again in this process (the same executable and
+/// arguments), so the new start picks clang's module when it is current.
+/// Files Rust opens close on exec; the window and the GPU go with the old
+/// image.
+#[cfg(unix)]
+fn restart_in_place() -> Option<boot::game_code::Restart> {
+    use std::os::unix::process::CommandExt;
+    let exe = std::env::current_exe().ok()?;
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    Some(Arc::new(move || {
+        let mut c = std::process::Command::new(&exe);
+        c.args(&args);
+        // SAFETY: only async-signal-safe libc calls on a local set. The
+        // signal mask survives exec, and `watch_signals` blocked SIGINT and
+        // SIGTERM; the new start must begin with them unblocked.
+        unsafe {
+            c.pre_exec(|| {
+                let mut set: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut set);
+                libc::sigaddset(&mut set, libc::SIGINT);
+                libc::sigaddset(&mut set, libc::SIGTERM);
+                libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
+                Ok(())
+            });
+        }
+        // The agent socket is named for this pid, which exec keeps: free
+        // the path so the new start can listen on it again.
+        for sock in [boot::agent_glue::socket_from_env(), Some(agent_proto::discover::process_socket())]
+            .into_iter()
+            .flatten()
+        {
+            let _ = std::fs::remove_file(sock);
+        }
+        let err = c.exec();
+        Err(format!("exec {}: {err}", exe.display()))
+    }))
 }
 
-/// Where clang's background build is, from its log: its summary line
-/// (`clang (...): N compiled, ...`) ends a good build, `Error:` a failed
-/// one.
-fn tier_build_state(log: &str) -> TierBuild {
-    if log.lines().any(|l| l.starts_with("Error:") || l.starts_with("error:")) {
-        TierBuild::Failed
-    } else if log.lines().any(|l| l.starts_with("clang (") && l.contains(" compiled, ")) {
-        TierBuild::Ready
-    } else {
-        TierBuild::Building
-    }
-}
-
-fn tier_notice(state: TierBuild) -> Option<app::Notice> {
-    let (kind, text) = match state {
-        TierBuild::Building => (
-            app::NoticeKind::Info,
-            "Slow start: building the full-speed game in the background. Restart when it's ready.",
-        ),
-        TierBuild::Ready => (
-            app::NoticeKind::Info,
-            "Full-speed game built. Quit and start h2 play again to use it.",
-        ),
-        TierBuild::Failed => (
-            app::NoticeKind::Error,
-            "The full-speed build failed; see clang-build.log. This start stays slow.",
-        ),
-    };
-    Some(app::Notice { kind, text: text.into() })
+#[cfg(not(unix))]
+fn restart_in_place() -> Option<boot::game_code::Restart> {
+    None
 }
 
 /// Whether `h2 play` renders on a render thread, from `H2_RENDER_THREAD`
@@ -1440,25 +1476,6 @@ mod tests {
             .unwrap();
         let (plate, _) = source.current(now).unwrap();
         assert_eq!(plate.lines().collect::<Vec<_>>(), ["Editor · viewing"]);
-    }
-
-    #[test]
-    fn the_tier_banner_follows_clang_s_log() {
-        assert_eq!(tier_build_state(""), TierBuild::Building);
-        assert_eq!(
-            tier_build_state("lift: 0.2s\nemit: 2.6s, 18662 owners\n"),
-            TierBuild::Building
-        );
-        assert_eq!(
-            tier_build_state("emit: 2.6s\nclang (O1): 965 compiled, 42 reused, 1.0s keying\n"),
-            TierBuild::Ready
-        );
-        assert_eq!(tier_build_state("emit: 2.6s\nError: clang failed\n"), TierBuild::Failed);
-        let text = tier_notice(TierBuild::Building).unwrap().text;
-        assert!(text.len() <= 96, "fits the banner: {text}");
-        for s in [TierBuild::Ready, TierBuild::Failed] {
-            assert!(tier_notice(s).unwrap().text.len() <= 96);
-        }
     }
 
     /// `h2 play`, `h2 run` and the editor's variant store share one default

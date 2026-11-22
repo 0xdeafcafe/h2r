@@ -3,7 +3,8 @@
 Status: Partly built. Live object streaming, the game's cameras (the
 `camera` layer, frustums, Follow, Through its eyes and Game camera), pause
 and step, a windowless paired editor, conditional tag edits, live object
-edits and reload from a play copy are built. The richer live view, timeline
+edits, live placement adds and removes (`world.placement.edit`) and
+reload from a play copy are built. The richer live view, timeline
 and substantial structural edits are designs. Real-game parity and cost
 checks are pending.
 Code: `crates/extensions/agent-proto/src/live` (wire format), `crates/extensions/agent/src/live` (capture and stream), `crates/extensions/game/src/scene_glue.rs` (the camera source), `crates/tools/live-mirror` (editor store), `crates/apps/studio/src/play` and `crates/tools/scenario-edit` (pairing and viewport).
@@ -32,7 +33,9 @@ tag editor, and Halo 1 tags are in [click-to-edit.md](click-to-edit.md).
 | The game's cameras in the editor | Built: the `camera` layer from the last sealed `FrameScene`, a frustum per game view, Follow, Through its eyes and Game camera | `scene_glue::install_cameras`, `play/presence/camera.rs`, `viewport/mirror.rs`, `geometry::Exact` |
 | A paired editor with no window | Built: `h2-editor --serve` runs the game link between requests | `Api::serve_once` (`crates/apps/studio/src/api/mod.rs`) |
 | Placement field edits sent live | Built: a diff against `sync::Baseline` every 200 ms, one conditional `edit.batch` with the tag document’s fields and raw placement paths on the game’s `scnr`; shows when the object is next made | `play/sync.rs` |
+| Geometry and painted pixels sent live | Built: a diff of the Modeling tool's patches and the Textures tool's encoded tiles against `raw_sync::RawBaseline`, sent as `edit.batch` `raw` entries with the bounds as `writes`; a grown section as `edit.raw.append`, then the batch with `evict`; shows on the next frame ([realtime-edits.md](realtime-edits.md)) | `play/raw_sync.rs` |
 | Move, delete and remake live objects | In Edit the streamed placement object follows a move or delete. Respawn reads the loaded scenario entry and returns an unlinked preview. | `crates/apps/studio/src/play/objects.rs`, [Object edits](../runtime/agent-api.md#object-edits) |
+| Add and remove placements live | In Edit an added, removed, undone or redone entry is one `world.placement.edit` on its block; the receipt advances the loaded layout | `crates/apps/studio/src/play/objects/drive/placements.rs`, `play/sync.rs` (`Baseline::transaction`), [Placement edits](../runtime/agent-api.md#placement-edits) |
 | Reload the running map | The editor writes a play copy and the host queues the active campaign or multiplayer options. The editor checks the returned activation and checksum. | `crates/extensions/agent/src/sim/edits.rs`, [Test maps](../runtime/agent-api.md#test-maps) |
 | Tag field writes in the game | Built: View/Edit, field effects, the Pending tab, `edit.map`, conditional `edit.batch`, journal adoption and `edit.revert` | `crates/extensions/hot-tags`, [hot-iteration.md](../graphics/hot-iteration.md) |
 | No writes in co-op or as a client | Built | `agent_proto::sim::SessionKind::writes` |
@@ -288,15 +291,27 @@ heads its group in the Pending tab.
 
 | Effect (chip) | Sentence | Edits | Reaches the game by |
 |---|---|---|---|
-| `now` (**Now**) | Applies now. | values the draw path reads every draw: shader colours, vectors and bitmaps, effect and light colours where the draw reads the tag | `edit.batch`; shows on the next frame |
+| `now` (**Now**) | Applies now. | values the draw path reads every draw: shader colours, vectors and bitmaps, effect and light colours where the draw reads the tag; moved and grown render geometry (clusters, instanced definitions, `mode` sections) and painted pixels of the same size and format | `edit.batch`; shows on the next frame. A grown section's row says the level rebuilds for a moment |
 | `next_use` (**Next use**) | Applies the next time the game uses it. | values read when used: damage, rates of fire, machine speeds and delays, a projectile's drag | `edit.batch`; shows on the next shot, hit or cycle |
 | `next_spawn` (**Next spawn**) | Applies when the object next spawns. | values copied into an object when it is made: a projectile's initial speed, an object's vitality, placement fields | `edit.batch`, then optionally a respawn. **Respawn now** remakes supported, unattached occupants of unnamed palette entries with default creation fields. Other placements take the edit on their next creation or a reload |
 | `not_known` (**Not known**) | Not known; reload to be sure. | any field with no recorded `applies` | `edit.batch`; written at once, when the game reads it is not known |
-| `reload` (**After reload**) | Applies after reload. | placement slots added, duplicated or removed, changes to tag block counts, new tags, new strings, grown blocks, structure BSP and lightmap edits, bitmap pixels of another size | saving the play copy and loading the map again |
+| `reload` (**After reload**) | Applies after reload. | placement slots added, duplicated or removed in a game without `world.placement.edit` or that refuses the transaction, sound scenery slots, changes to tag block counts, new tags, new strings, grown blocks, structure BSP and lightmap fields edited in the Tags tool, a geometry edit the save refuses or whose tag the game has not loaded, a grown section a play copy already holds, a bitmap resized or reformatted | saving the play copy and loading the map again |
 
-Moving, turning or deleting a thing that exists, and previewing a new
-placement, reach the game by `world.object.set`, `.delete` and
-`.respawn` on the next tick; their Pending rows have `doc` `object`.
+Moving or turning a thing that exists reaches the game by
+`world.object.set` on the next tick. Adding and removing placements
+reach it by `world.placement.edit`, one transaction per block, on the
+next tick. A game without that method gets the older path: deletes by
+`world.object.delete` and previews of new placements by
+`world.object.respawn`. Object call rows in Pending have `doc` `object`.
+
+**Geometry and pixels.** In Edit, a Modeling edit and a Textures stroke
+go as raw entries (`play/raw_sync.rs`, [realtime-edits.md](realtime-edits.md),
+"The editor"): one Pending row per edited section (`doc` `geometry`,
+`path` the target id) and per painted image (`doc` `bitmaps`), each
+**Now** until the game acknowledges it. Every entry carries the bytes the
+editor takes the game to hold as `was`; when the game holds others the
+row is marked as a conflict and waits until the edit changes or **Send**
+is pressed again. Undo sends the old bytes. View mode sends nothing.
 
 The effect of a field is data, not a guess made in the UI: `tags::defs`
 has an `applies` attribute (`frame`, `use`, `creation`) with its
@@ -307,8 +322,43 @@ its first content. A field with none is `not_known`.
 **Placements.** In Edit, dragging a placement writes its scenario fields
 and moves its linked object with `world.object.set`. The editor sends at
 most one move per object per push interval during a drag. The released
-frame follows its scenario field acknowledgement. Deleting the placement deletes the live object. Undoing the delete
-requests a respawn at the original loaded slot. **Respawn now** applies
+frame follows its scenario field acknowledgement.
+
+Adding or removing a placement, and undoing or redoing either, changes the
+block's layout revision. When the game offers `world.placement.edit`
+(design: [realtime-edits.md](realtime-edits.md), "Placements"; the
+method: [Placement edits](../runtime/agent-api.md#placement-edits)), the
+editor sends that block as one transaction instead of putting it behind
+reload (`play/objects/drive/placements.rs`). `sync::Baseline` holds what
+the game's block holds: its records, the document placement in each slot,
+and the bytes a removal left past the count. `Baseline::transaction`
+compares that with the document: placements gone from the document are
+`delete`d, survivors in another slot are `relink`ed, new ones are
+`create`d, every slot whose bytes differ is a record with its old bytes as
+`was` where known, and object names follow. Spawn points, netgame flags
+and netgame equipment take records and the count only. On the receipt,
+`Baseline::placed` advances the loaded revision to the document's, so
+later field edits of that block are ordinary writes to the new slots and
+the object rows follow the new numbering. Undo is the inverse transaction,
+computed the same way; no second undo log exists.
+
+The editor sends one transaction at a time, never beside a field batch or
+an object call. While it is out, the block's Pending row reads "Applies
+now". A refusal (other people in the game, no room in the block, a
+mismatch with the game's records, the session) puts the block under
+**Reload map** with the game's reason, and that exact transaction is not
+sent again until the document or the peer confirmation changes it; going
+back to the game's layout clears it. A created entry the game answers
+with `created: false` (a named record, placement flags, a scale,
+type-specific fields) shows under **Reload map** with its reason. A
+transaction whose answer is lost (the link closes, or the call times out)
+puts the block under **Reload map** until the map loads again: the game
+may hold it, so the editor never sends it twice. Sound scenery has no live
+object method and stays behind reload.
+
+Without `world.placement.edit`, deleting the placement deletes the live
+object, and undoing the delete requests a respawn at the original loaded
+slot. **Respawn now** applies
 creation-time fields that differ from the last actual creation. A replacement
 uses the salted object ID. The host creates it before deleting the old
 occupant, so an allocation refusal keeps the old object. An observed empty
@@ -317,7 +367,8 @@ Every object request carries the map epoch the editor paired on
 (`play/objects/drive/wire.rs`), so the host refuses an edit that arrives
 after the map changed.
 
-An added placement requests a preview through `world.object.respawn`.
+In a game without `world.placement.edit`, an added placement requests a
+preview through `world.object.respawn`.
 The host reads creation fields from its loaded scenario. An index beyond
 that block needs a reload on this host. On success, the editor tracks the
 returned salted object ID, moves it to the document frame, and uses the
@@ -329,11 +380,13 @@ Pending recommends reloading the map. The editor keeps that outcome visible
 through undo and reconnect so it cannot spawn a second preview by retrying.
 
 **Reload.** The editor compares each placement block's layout revision with the
-revision in the loaded file or Play copy. A remove followed by an add can
-leave the count unchanged and still move a placement to a different slot.
-All fields in that block wait for reload. Undoing the structural edits
-restores the earlier revision. Loading a Play copy sets the baseline to
-the layout saved in that copy.
+revision in the loaded file or Play copy, advanced by each acknowledged
+placement transaction. A remove followed by an add can leave the count
+unchanged and still move a placement to a different slot. While the
+revisions differ and no transaction can carry the block (View, a game
+without the method, a refusal), all fields in that block wait for reload.
+Undoing the structural edits restores the earlier revision. Loading a Play
+copy sets the baseline to the layout saved in that copy.
 
 Pending reload edits collect under one **Reload map** button.
 Like F5, it sends the game the path and checks the queued reply against the
@@ -357,7 +410,8 @@ the set of writes to send, so undo sends the old bytes back with no
 second undo log. Each write carries `was`, the bytes the baseline
 expects; the game refuses a batch whose `was` differs
 (`MISMATCH`, naming the field and what it holds), which replaces "trust
-that the game runs the map as shown". After undo or redo, `play::objects::diff` compares the placement document
+that the game runs the map as shown". After undo or redo, `Baseline::transaction` brings a block whose layout
+changed, and `play::objects::diff` compares the placement document
 with the acknowledged object edits and requests the corresponding move,
 delete or respawn.
 

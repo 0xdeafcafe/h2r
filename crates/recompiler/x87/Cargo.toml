@@ -5,12 +5,7 @@ version.workspace = true
 license.workspace = true
 
 [features]
-default = ["abi", "fast-trans"]
+default = ["abi"]
 # The `#[repr(C)]` state structs and the `extern "C"` `h2x87_v1_*` surface
 # (docs/lifter/FLOAT-ABI.md §1-§4).
 abi = []
-# Guarded 128-bit evaluation for the measured gameplay transcendentals:
-# FYL2X, F2XM1, FSIN, FCOS, FSINCOS, FPTAN, FPATAN (on by default;
-# bit-identical to the 512-bit reference, flags included).
-# Ambiguous rounding and operands outside the documented domain use 512 bits.
-fast-trans = []

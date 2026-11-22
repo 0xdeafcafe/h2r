@@ -13,7 +13,7 @@ render-overrides = ["dep:hot-render"]
 mem-watch.workspace = true
 render-bridge = { path = "../../rewrites/render-bridge", default-features = false }
 sim-bridge = { path = "../../rewrites/sim-bridge" }
-agent-proto = { path = "../agent-proto", features = ["serve-memory"] }
+agent-proto = { path = "../agent-proto" }
 forge = { path = "../forge" }
 forge-doc.workspace = true
 serde.workspace = true

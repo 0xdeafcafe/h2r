@@ -96,8 +96,9 @@ struct MapState {
     name: String,
     generation: u64,
     job: Arc<()>,
-    /// The scenario palette's residency, for the game-view gate.
-    palette: Arc<palette::Palette>,
+    /// Held only to keep the scenario palette alive: the game-view gate
+    /// reaches it through a weak handle ([`palette::activate`]).
+    _palette: Arc<palette::Palette>,
     /// The frame during which the worker finished, and its resident models.
     published: Option<(u64, Arc<Models>)>,
 }
@@ -178,7 +179,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             name: name.clone(),
             generation,
             job: Arc::clone(&job),
-            palette: Arc::clone(&palette),
+            _palette: Arc::clone(&palette),
             published: None,
         });
         drop(state);
@@ -1422,7 +1423,7 @@ mod tests {
     #[test]
     fn a_completed_upload_is_visible_only_after_a_swap() {
         let mut state = MapState {
-            name: "arena".into(), generation: 3, job: Arc::new(()), palette: Arc::default(), published: None,
+            name: "arena".into(), generation: 3, job: Arc::new(()), _palette: Arc::default(), published: None,
         };
         assert!(state.resident(10).is_none());
         let models = Arc::new(Models::default());
@@ -1436,7 +1437,7 @@ mod tests {
         let first = Arc::new(());
         let second = Arc::new(());
         let state = MapState {
-            name: "arena".into(), generation: 3, job: Arc::clone(&second), palette: Arc::default(), published: None,
+            name: "arena".into(), generation: 3, job: Arc::clone(&second), _palette: Arc::default(), published: None,
         };
         assert!(!state.owns(&first, 3), "the same name, another load");
         assert!(!state.owns(&second, 4), "a snapshot reset");

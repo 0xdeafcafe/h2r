@@ -4,18 +4,23 @@ Status: Partly built. The mesh kernel (slice 1), the in-place
 geometry path (slices 2 and 3, for clusters, instanced definitions and
 `mode` sections), grown raw writes (slice 7, with
 `MapEditor::append_raw` and **Use for lower LODs** in the session), the
-collision compiler with `coll` BSPs as meshes (slice 8, the crate only)
-and the Textures tool (slices 5 and 6: painting, exporting, and writing
-the edited images with the map's save) are implemented; the Modeling window is a section of the
-map inspector with buttons, not yet the gizmo, overlays and keymap below,
-and has no control or API method for **Use for lower LODs** yet. A `coll`
-BSP is not yet a `geometry-edit` target, so the window, `geometry.*` and
-the map's save do not reach it. Structure collision and markers are
-designs.
+collision compiler with `coll` BSPs as meshes (slice 8, the crate only),
+adding solids to a structure's level collision (slice 11, the crates and
+the map's save only) and the Textures tool (slices 5 and 6: painting,
+exporting, and writing the edited images with the map's save) are
+implemented; the Modeling window is a section of the map inspector with
+buttons, not yet the gizmo, overlays and keymap below, and has no control
+or API method for **Use for lower LODs** yet. A `coll` BSP and a
+structure's collision are not yet `geometry-edit` targets, so the window,
+`geometry.*` and the session do not reach them; nothing in the editor
+calls `geometry_edit::level_collision` yet. Rebuilding a level's collision
+and markers are designs.
 Code: `crates/tools/mesh-edit`, `crates/tools/geometry-edit`,
 `crates/tools/collision-build`,
+`crates/tools/collision-build/src/{merge,level}.rs`,
+`crates/tools/geometry-edit/src/level_collision.rs`,
 `crates/formats/tags/src/geometry_write.rs`,
-`crates/formats/map/src/writer.rs` (`append_raw`),
+`crates/formats/map/src/writer.rs` (`append_raw`, `append_metadata`),
 `crates/tools/scenario-edit/src/save.rs`,
 `crates/platform/assets/src/{encode,write}.rs`,
 `crates/apps/studio/src/app/{modeling,textures}.rs`,
@@ -23,11 +28,11 @@ Code: `crates/tools/mesh-edit`, `crates/tools/geometry-edit`,
 `crates/apps/studio/src/api/geometry.rs`,
 `crates/apps/studio/src/ui/modeling.rs`.
 Tests: `crates/tools/mesh-edit/tests`,
-`crates/tools/geometry-edit/src/{session,write,grow}_tests.rs`,
-`crates/tools/collision-build/src/{build,coll}_tests.rs`,
+`crates/tools/geometry-edit/src/{session,write,grow,level_collision}_tests.rs`,
+`crates/tools/collision-build/src/{build,coll,merge}_tests.rs`,
 `crates/formats/tags/src/geometry_write_tests.rs`, the `append*raw*`
 tests in `crates/formats/map/src/tests.rs`,
-`a_geometry_raw_append_*` and `bitmap_changes_*` in
+`a_geometry_raw_append_*`, `a_geometry_grown_block_*` and `bitmap_changes_*` in
 `crates/tools/scenario-edit/src/tests.rs`,
 `crates/platform/assets/src/encode_tests.rs`, the write tests in
 `crates/apps/studio/src/api/tests/bitmaps_tests.rs`, the `geometry_*` and `doc_undo_on_the_map_*` tests in
@@ -250,6 +255,53 @@ with retail's slot words (`0x81`, `0x80`, `0x81`). `stage_blocks` gives
 one BSP's eight blocks by name (`BLOCK_NAMES`, the fields of
 `tags::collision::Bsp`) for `edit.collision.stage`
 ([realtime-edits.md](realtime-edits.md), "Collision").
+
+**Adding solids** (`merge.rs`, `level.rs`; slice 11).
+`merge::merge(level, piece)` appends a compiled solid to a level's BSP
+by modeling-targets.md's method ("Structure collision", step 2), the
+method of `h1convert::scenery_collision::merge` on this crate's types
+and `Limits`: the piece's planes, 2D nodes, surfaces, edges, vertices and
+references go after the level's, one copy of its 3D tree serves every
+open level leaf its solid reaches, each through six nodes testing its box
+grown by `BOX_MARGIN` (0.05), and the copy's open leaves carry the
+references of the level leaves they stand in whose planes their cells
+touch. Every existing index holds; only the parent of a gated leaf
+changes a child. The piece's surfaces keep material and flags but get no
+breakable surface (bit 3 cleared, byte `0xff`). `Merged` names, per added
+leaf, its stand-in (the first level leaf it stands in) and every host.
+A copy that serves several level leaves carries all their references, so
+`verify::check`'s path rule names a reference off one of its paths; the
+engine's matcher only spends a lookup on it, and the rule holds for a
+solid inside one level leaf.
+
+`level::Level` is a structure's level collision as plain data: the BSP,
+the per-leaf block (`sbsp+0x2c`, `LEAF_SIZE` 8 bytes a leaf, the cluster
+an `i16` at `+0`), the MOPP block (`sbsp+0x1e0`) and the collision
+material count (`sbsp+0x0c`). `Level::add_solid(polygons, options)`
+compiles the solid, refuses a material past the list, merges it, refuses
+a solid that reaches no open space or a merged BSP that fails
+`Bsp::validate`, copies each added leaf's stand-in element whole (so the
+leaf is in its stand-in's cluster), and rebuilds the MOPP over every
+structure surface plus every other key of the old program as the box its
+old path guarantees (`level::rebuild_mopp`, as `replaced_retail_levels`
+in `crates/formats/mopp/tests/disc.rs` does; an old program that does not
+parse is refused, not dropped). `Added::stage` gives the eight blocks by
+name, the per-leaf block and the MOPP for `edit.collision.stage`
+(`level::LevelStage`). The structure checksum (`sbsp+0x08`) is kept: it
+is not a hash of the collision.
+
+`geometry_edit::level_collision` reads a `Level` from a map (`read`,
+each block where its pair points, in the structure's region or the
+ordinary metadata) and writes an added solid back
+(`LevelEdit::writes`): a block whose count holds is patched in place, one
+whose count grows is a `GrownBlock`, appended to the ordinary metadata
+16-aligned with its pair pointed there, and the MOPP goes over the old
+program when it fits (count set to the new length, the old tail zeroed),
+else it grows too. Adding a solid grows all eight blocks that gain
+elements and the per-leaf block. The save takes grown blocks as
+`scenario_edit::GeometryChanges::grown` (`MapEditor::append_metadata`,
+then `patch_metadata` or `patch_bsp` for the pair), and the writer
+repairs the header checksum. `LevelEdit::stage` sends the same bytes.
 
 **From render** (`from_render.rs`): weld, drop degenerate and repeated
 triangles (one drawn both ways becomes two-sided), then join neighbours
@@ -628,6 +680,11 @@ Slices 4 and 5 need nothing from 2 and 3 and can run beside them.
   "Not verified"), and that Havok's surface shape, which copies a ring as
   one polygon, takes rings in the compiler's winding (counter-clockwise
   about the open side, as the converted Halo 1 rings run).
+- That a level with an added solid loads and plays: its collision blocks,
+  per-leaf block and MOPP pointed from a BSP region into the ordinary
+  metadata (modeling-targets.md, "Not verified": an `sbsp` block in
+  ordinary metadata), and Havok's structure shape built over the
+  rebuilt MOPP. No game run has loaded one.
 - That the Blender preset's keys do not collide with Dear ImGui's own
   on every platform's keyboard.
 

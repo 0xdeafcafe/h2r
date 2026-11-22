@@ -28,9 +28,7 @@
 //! `d3d::Device::render_state` at the ask and resolves each material's
 //! words over it. Nothing runs after the body, so the chain needs no
 //! Rust continuation, and the observer is context-only: it reads and
-//! writes the memory its context sees, so the pipelined render runs it
-//! on its own thread (docs/graphics/pipelined-render.md,
-//! "Render-safe hooks"). It sits inside `render-timing`'s observers at
+//! writes the memory its context sees. It sits inside `render-timing`'s observers at
 //! the point (`after_feature`), after the world's (which restores its
 //! own bits first).
 

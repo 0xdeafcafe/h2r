@@ -1,5 +1,5 @@
 //! The level collision the session reads with the map
-//! ([`crate::collision_view`]; docs/editor/polish-plan.md, slice P10): the
+//! ([`crate::collision_view`]; docs/editor/editor.md): the
 //! surfaces, a surface pick and a surface selection. Read only: a
 //! collision surface is edited through the barrier edits, which rebuild
 //! the BSP.

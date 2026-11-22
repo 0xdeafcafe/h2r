@@ -135,6 +135,12 @@ pub struct Host {
     pub embedded_live: bool,
     /// The perf overlay's on/off switch, for `perf.overlay`.
     pub perf_overlay: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// The watermark's active-cheats line, which the debug menu glue keeps
+    /// filled from `cheat.list` (docs/runtime/debug-menu.md).
+    pub cheat_line: Option<Arc<std::sync::Mutex<Vec<String>>>>,
+    /// This start's game code (tier, module, background build), for
+    /// `game.code` (crate::game_code).
+    pub game_code: Option<Arc<crate::game_code::GameCode>>,
     /// Shared with the registered debug-view world-line producer on a windowed run.
     pub debug_views: Option<Arc<agent::debug_views::DebugViews>>,
     /// The window consumer for the paired-editor plate and focus requests.
@@ -151,8 +157,8 @@ pub struct Host {
 impl Host {
     /// Registers a window-overlay producer before boot. Keep the source's
     /// active state in an atomic so inactive sources make no capture calls
-    /// or allocations. Capture may run on the pipelined worker and only
-    /// reads shared host state and that worker's guest view. The window
+    /// or allocations. Capture only reads shared host state and the
+    /// render owner's guest view. The window
     /// consumes the owned sample later, even when it re-shows an image.
     #[cfg(feature = "gpu")]
     pub fn add_world_line_source(&mut self, source: Arc<dyn crate::world_lines::WorldLineSource>) {

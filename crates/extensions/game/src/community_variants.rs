@@ -40,13 +40,11 @@ const LOCALIZED_STRING: u32 = 0x001a_0180;
 /// out of range). Plain `ret`.
 const NUMBER_STRING_ID: u32 = 0x0019_fd00;
 // The string and description hooks are marked context-only
-// (`Dispatch::mark_context_only`), so the pipelined render thread runs them
-// (docs/graphics/pipelined-render.md): the HUD's text reaches the string
-// lookup there. Both read registers, the stack and the memory of the
-// context they run on, write only the caller's buffer there, and otherwise
-// run the original on that same context, so on the render thread they act
-// on its view as the original would. `community:builtins` is not marked:
-// it prints, and runs only when the variant list loads.
+// (`Dispatch::mark_context_only`): they read registers, the stack and the
+// memory of the context they run on, write only the caller's buffer there,
+// and otherwise run the original on that same context, so they act on
+// whichever context calls them as the original would. `community:builtins`
+// is not marked: it prints, and runs only when the variant list loads.
 const STRINGS_HOOK: &str = "community:strings";
 const DESCRIPTIONS_HOOK: &str = "community:descriptions";
 
@@ -1100,78 +1098,6 @@ mod tests {
                 None,
             );
         }
-    }
-
-    /// A stand-in for the generated string lookup: `r` into the buffer.
-    fn lookup_original(
-        cpu: &mut runtime::CpuAbi,
-        ctx: &mut runtime::ExecCtx,
-        _: u32,
-    ) -> Result<runtime::TransferAbi, runtime::GuestFault> {
-        let rt = Arc::clone(ctx.runtime());
-        let mut m = rt.memory();
-        let buf = m.u32(cpu.esp + 4)?;
-        m.write_bytes(buf, &utf16_buffer("r"), 1)?;
-        m.ret(cpu, 4)
-    }
-
-    /// The HUD's text reaches the string lookup on the pipelined render
-    /// thread: the hook is allowed there (no fallback), answers our ids and
-    /// passes others to the original, all in the render's view, leaving
-    /// live RAM alone.
-    #[test]
-    fn the_string_hook_runs_on_the_pipelined_render_thread_in_its_view() {
-        use runtime::executor::SecondExecutor;
-        const BUF: u32 = 0x2_0000;
-        const STACK: u32 = 0x3_0000;
-        let mut d = runtime::Dispatch::default();
-        d.register_generated_rust(LOCALIZED_STRING, lookup_original)
-            .unwrap();
-        let mut g = Guest::new();
-        g.map_zeroed(BUF, 0x1000, Permissions::RW).unwrap();
-        g.map_zeroed(STACK - 0x1000, 0x1000, Permissions::RW)
-            .unwrap();
-        g.map_zeroed(LOCALIZED_STRING & !0xfff, 0x1000, Permissions::RX)
-            .unwrap();
-        g.prepare_fast_pages();
-        let rt = runtime::Runtime::new(g, d);
-        let o = rt.resolve_original(LOCALIZED_STRING).unwrap();
-        rt.edit_dispatch(|d| register_strings(d, Arc::new(o), None));
-        let mut exec = SecondExecutor::new(&rt, crate::d3d_glue::pipeline_allow(&[]));
-        exec.snapshot(&rt);
-        let ours = text(name_id(0)).unwrap();
-        for (id, want) in [(name_id(0), ours.as_str()), (0x1234, "r")] {
-            let mut cpu = runtime::CpuAbi {
-                esp: STACK - 0x100,
-                edi: id,
-                ..Default::default()
-            };
-            exec.call(&mut cpu, LOCALIZED_STRING, &[BUF])
-                .unwrap_or_else(|e| panic!("{id:#x}: {e}"));
-            let want = utf16_buffer(want);
-            let mut got = vec![0; want.len()];
-            exec.runtime()
-                .memory()
-                .read_bytes(BUF, &mut got, 1)
-                .unwrap();
-            assert_eq!(got, want, "{id:#x}");
-            let mut live = vec![0xff; want.len()];
-            rt.memory().read_bytes(BUF, &mut live, 1).unwrap();
-            assert!(live.iter().all(|&b| b == 0), "live RAM untouched");
-        }
-        // The mark goes with the hook: another one registered at the same
-        // address is refused again.
-        rt.edit_dispatch(|d| {
-            assert!(d.is_context_only(LOCALIZED_STRING));
-            d.register_override(LOCALIZED_STRING, "other:strings", |cpu, ctx, _| {
-                ctx.runtime().memory().ret(cpu, 4)
-            });
-            assert!(!d.is_context_only(LOCALIZED_STRING));
-        });
-        assert!(!crate::d3d_glue::pipeline_allow(&[])(
-            BUILTINS_LOAD,
-            "community:builtins"
-        ));
     }
 
     /// Sparse little-endian memory; unwritten bytes read as missing.

@@ -34,7 +34,6 @@ fn render_frame_and_stats_through_the_socket() {
         &PROBE,
         RenderSources {
             interp: Box::new(|| Some(json!({"frames": 7, "unsure_camera": 1}))),
-            pipeline: Box::new(|| None),
             counters: Box::new(|| None),
         },
     );
@@ -54,7 +53,6 @@ fn render_frame_and_stats_through_the_socket() {
 
     let s = c.call(method::RENDER_STATS, Value::Null).unwrap();
     assert_eq!(s["interp"]["unsure_camera"], 1);
-    assert_eq!(s["pipeline"], Value::Null, "not running");
 
     let r = c.call(method::RENDER_FRAME, Value::Null).unwrap();
     assert_eq!(r["armed"], false);

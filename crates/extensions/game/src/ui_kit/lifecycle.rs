@@ -77,24 +77,6 @@ pub fn takes_close(m: &dyn engine::memory::GuestMemory, screen: u32) -> Result<b
     Ok(m.u8(screen + SCREEN_STATE)? & 2 == 0)
 }
 
-/// Closes `screen` itself, whether or not it is its window's top: the
-/// close message `0x2351d4` sends, sent to the screen directly. For a
-/// screen under one being freed: while the stack frees a screen
-/// (`0x2351ea`) the window's top word is 0 until the window's next update,
-/// and the close by window and slot ([`close_slot`]) reads `0 + 0x42`.
-pub async fn close_screen(cx: &Cx, screen: u32) -> Result<(), EntryError> {
-    if !cx.read(|m| takes_close(m, screen))? {
-        return Ok(());
-    }
-    cx.call(
-        GuestCall::new(SCREEN_MESSAGE)
-            .ecx(screen)
-            .args([MESSAGE_CLOSE]),
-    )
-    .await?;
-    Ok(())
-}
-
 /// The row handle on the channel's focused widget path for `list`, as
 /// LIST_FOCUSED_ROW finds it via the focused item's membership in that path.
 pub(crate) fn focused_row_handle(

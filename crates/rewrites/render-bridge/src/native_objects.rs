@@ -2,8 +2,7 @@
 //! and material inputs. The walk reads the sorted layer-3 entries before
 //! the guest prepares their draws. A complete span of objects can return
 //! directly from the geometry handler after GPU reservation. It uses the
-//! render context's snapshot of guest memory, including on the pipelined
-//! render thread.
+//! render context's snapshot of guest memory.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};

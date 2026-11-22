@@ -8,7 +8,7 @@ use agent_proto::{
 use engine::datum::layout;
 use engine::testing::FakeGuest;
 use engine::view::{fake, objects::Header};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::*;
 use crate::sim::{self, bots::FakeBots, calls};

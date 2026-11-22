@@ -44,7 +44,7 @@ class that holds it, and the status bar and `geometry.check` name it.
 |---|---|---|---|
 | **In place** | no element count changes: verts moved, coordinates or normals changed | `raw_patches` over the old block, `tag_patches` for bounds | Allow unverified geometry writes, until a game run has loaded one |
 | **Grown raw** | vertex, index or part counts change | a new raw block in `raw_new`; `tag_patches` for the block info, resource entries and counts | Allow unverified geometry writes, until a game run has loaded one |
-| **Grown blocks** | a tag block gets more elements (collision, a new material) | `raw_new` as needed, and the block appended to the ordinary metadata with its `(count, address)` pointed there (`Changes::tag_grown`) | Allow growing full blocks, and for a block of an `sbsp` also Allow unverified geometry writes |
+| **Grown blocks** | a tag block gets more elements (collision, a new material) | `raw_new` as needed, and the block appended to the ordinary metadata with its `(count, address)` pointed there (`Changes::tag_grown`; a structure's level collision through `Changes::geometry_grown`, whose pair may lie in a BSP region) | Allow growing full blocks, and for a block of an `sbsp` also Allow unverified geometry writes |
 
 A package of such a map is a BPS patch when the length changed, as for
 grown scenario blocks, and its `[result] geometry` hash
@@ -153,18 +153,21 @@ steps of rising risk.
    path on the side its flip bit says; and for a set of random segments
    the first hit of `vector` equals a brute-force ray against the
    polygons.
-2. **Adding solids** to a level. A closed mesh compiles to its own small
-   `Bsp` and unites with the level's through
-   `scenery_collision::merge`, which appends and so keeps every existing
-   plane, surface and leaf index. Each added leaf takes the cluster of
-   the leaf it stands in (`Merged::stand_ins`), in the per-leaf block at
-   `sbsp+0x2c`. Then the structure's MOPP is rebuilt
-   (`mopp::build_structure` plus retail's other keys, as the test
-   `replaced_retail_levels` does) and written over the old program when
-   it fits, else as a grown block. A level with pathfinding (`sbsp+0xc4`)
-   keeps its sectors; the new solid has none. This is the grown-blocks
-   class: all eight collision blocks and the leaf block move to the
-   ordinary metadata.
+2. **Adding solids** to a level (`collision_build::{merge, level}` and
+   `geometry_edit::level_collision`, built; modeling.md, "The collision
+   compiler"). A closed mesh compiles to its own small `Bsp` and unites
+   with the level's through `collision_build::merge::merge` (the method of
+   `h1convert::scenery_collision::merge`), which appends and so keeps
+   every existing plane, surface and leaf index. Each added leaf takes the
+   cluster of the leaf it stands in (`Merged::stand_ins`): its element of
+   the per-leaf block at `sbsp+0x2c` is a copy of the stand-in's. Then
+   the structure's MOPP is rebuilt (`mopp::build` over every structure
+   surface plus retail's other keys, as the test `replaced_retail_levels`
+   does) and written over the old program when it fits, else as a grown
+   block. A level with pathfinding (`sbsp+0xc4`) keeps its sectors; the
+   new solid has none. This is the grown-blocks class: every collision
+   block that gains elements and the per-leaf block move to the ordinary
+   metadata.
 3. **Rebuilding** a level's collision from its edited surfaces (moving or
    deleting a wall). Every table that indexes the collision must follow:
    the per-leaf block (cluster per leaf, by locating each new leaf's

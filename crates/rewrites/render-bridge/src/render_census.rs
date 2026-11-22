@@ -1,7 +1,7 @@
 //! `render-census`: which guest pages the render front-end writes and reads,
 //! and how they meet the simulation's, to decide whether the render
 //! front-end can run one frame behind the simulation on its own thread
-//! (docs/graphics/pipelined-render.md).
+//! (docs/graphics/notes/pipelined-render.md).
 //!
 //! Off by default (`H2_FEATURES=render-census`). Observers before and after
 //! `render_frame_and_present` (the same pair `render-timing` uses) split
@@ -1171,7 +1171,7 @@ impl Feature for RenderCensus {
     fn manifest(&self) -> Manifest {
         Manifest::new(ID, "Render front-end memory census")
             .off_by_default()
-            .doc("docs/graphics/pipelined-render.md")
+            .doc("docs/graphics/notes/pipelined-render.md")
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {

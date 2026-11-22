@@ -168,11 +168,6 @@ pub(crate) fn parity(c: &CpuAbi) -> bool {
     c.eflags & 0x04 != 0
 }
 
-#[allow(dead_code, reason = "keeps the equality predicate with the SSE comparison flag helpers")]
-pub(crate) fn zero_flag(c: &CpuAbi) -> bool {
-    c.eflags & 0x40 != 0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

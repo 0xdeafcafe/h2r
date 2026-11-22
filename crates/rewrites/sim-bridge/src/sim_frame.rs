@@ -3,8 +3,7 @@
 //!
 //! At `render_frame_and_present` (`0x00223240`) on the game thread:
 //!
-//! 1. **Decide** as the pipelined render does
-//!    ([`pipeline_render`](render_bridge::pipeline_render), `serial_reason`): a
+//! 1. **Decide**: a
 //!    world frame is the world path taken (engine globals active, not the
 //!    UI's world skip) with both resource-cache countdowns at or below 0.
 //!    Menus, loading screens and Bink run the original, so loading drives
@@ -18,8 +17,7 @@
 //!
 //! The other features' hooks on the point (the bots' pads before it and
 //! their views back after it) run around this one as they would around the
-//! original. The pipelined render implements the same point, so it must be
-//! off when this is on (the plan refuses both).
+//! original.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -33,8 +31,7 @@ use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 pub const ID: &str = "sim-frame";
 
 /// The guest addresses the skip reads and writes; [`Addrs::HALO2`] for the
-/// game, anything for a synthetic test. The same words as
-/// [`pipeline_render::Addrs`](render_bridge::pipeline_render::Addrs).
+/// game, anything for a synthetic test.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Addrs {
     /// The engine frame wait, run on the game thread at a skipped frame.
@@ -79,8 +76,7 @@ pub enum FrameKind {
     Unreadable,
 }
 
-/// The frame about to run, read from live memory (the prototype's
-/// `serial_reason`, as a kind).
+/// The frame about to run, read from live memory.
 pub fn frame_kind(a: &Addrs, g: &dyn GuestMemory) -> FrameKind {
     let world = (|| -> Result<bool, MemFault> {
         let w = g.u32(a.engine_globals)?;

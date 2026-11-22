@@ -531,7 +531,6 @@ Listed in [switches.md](../runtime/switches.md). This section's behaviour:
 | `impl.render.interpolate` (in `H2_FEATURES`) | on by default; wraps the window's backend in `d3d::InterpBackend`, inside the render thread. `-impl.render.interpolate` turns it off. Only this exact switch counts: `impl.render=on` does not set it |
 | Frame Rate row / `H2_FPS` / `h2 play --fps` | 30: the replay records nothing and forwards every call. 60, 120 and uncapped: in-between frames at 60 (`interp::pacing::MAX_REPLAY_HZ`; 120 waits on measured headroom) |
 | `H2_RENDER_THREAD=0` | the replay stays off (it runs only on the render thread) |
-| `impl.render.pipelined_frame=on` | the replay stays off: the lockstep harness cannot certify the combination |
 
 It is Rust in `d3d` and `boot`; no image rebuild.
 
@@ -594,7 +593,7 @@ At exit (and every 5 s while running) the replay prints one line: `d3d: interpol
 - through `ThreadedBackend`, the render thread's idle step draws in-between frames;
 - menu frames (a screen-space perspective shared by the panels, orthographic text, a pre-transformed background) are shown as drawn in D and both E1 variants; a made frame of another host size is not shown; slots are dropped while the GPU is busy; a sampled render target replays from its snapshot, and a copied-in surface holds.
 
-`cargo test -p d3d --test it interp_gpu::` runs D and E1 on the GPU through `ScaledBackend` at 2x and 3x: every presented frame is the guest's size at that scale, D's made frames have the guest's pixels exactly and E1's (a still camera) agree within filtering on over 98% of pixels. `cargo test -p boot --lib interpolation` checks the switch's decision (on by default, needs the render thread, off with `impl.render.pipelined_frame`) and `H2_FPS` parsing.
+`cargo test -p d3d --test it interp_gpu::` runs D and E1 on the GPU through `ScaledBackend` at 2x and 3x: every presented frame is the guest's size at that scale, D's made frames have the guest's pixels exactly and E1's (a still camera) agree within filtering on over 98% of pixels. `cargo test -p boot --lib interpolation` checks the switch's decision (on by default, needs the render thread) and `H2_FPS` parsing.
 
 ### Not verified
 
@@ -620,7 +619,7 @@ Listed in [switches.md](../runtime/switches.md).
 | `impl.render.reproject_ahead` | E1 with the rotation carried on past N by alpha of the last turn (F, extrapolation, for aim only): no added latency for turning, overshoots when a turn stops |
 | `impl.render.interpolate` | D (section 7), on by default. With a reproject switch also on, E1 wins |
 
-The reproject switches are off by default, since D is the main path; exact switches only (`impl.render=on` turns none of them on). Same rules as D: render thread only, off with `impl.render.pipelined_frame`, the Frame Rate row above 30 (in-between frames at 60). Rust in `d3d`, `gfx` and `boot`; no image rebuild.
+The reproject switches are off by default, since D is the main path; exact switches only (`impl.render=on` turns none of them on). Same rules as D: render thread only, the Frame Rate row above 30 (in-between frames at 60). Rust in `d3d`, `gfx` and `boot`; no image rebuild.
 
 ```sh
 H2_FEATURES=impl.render.reproject h2 play --fps 60 ...
@@ -641,7 +640,7 @@ H2_OPT=2 H2_BOOT_GFX=$TMPDIR/h2-gfx H2_BOOT_GFX_EVERY=never \
 h2 agent render          # "interp": frames, warps, the held split
 ```
 
-- **What runs.** `boot::d3d_glue::install_headless` puts the GPU backend (at 1x, or `ScaledBackend` under `H2_RENDER_SCALE`) behind `InterpBackend` on the render thread, as a window does; which host has a GPU backend is `d3d_glue::interp_render_thread`. Without `H2_BOOT_GFX` (the recorder draws nothing) and under `H2_BOOT_GFX_LIGHTING_AB` there are no in-between frames. `H2_RENDER_THREAD=0` and `impl.render.pipelined_frame` turn them off.
+- **What runs.** `boot::d3d_glue::install_headless` puts the GPU backend (at 1x, or `ScaledBackend` under `H2_RENDER_SCALE`) behind `InterpBackend` on the render thread, as a window does; which host has a GPU backend is `d3d_glue::interp_render_thread`. Without `H2_BOOT_GFX` (the recorder draws nothing) and under `H2_BOOT_GFX_LIGHTING_AB` there are no in-between frames. `H2_RENDER_THREAD=0` turns them off.
 - **Pacing.** Outside a headless clip, the in-between frames are paced on the wall clock at the frame rate, the same schedule a window uses (`pacing::Schedule`). At real-time speed a guest frame at 30 gets one in-between frame at 60; a serve sped up past that shows fewer, since a frame arriving early takes the slot. Each is made for real (the world image warped, the overlay drawn, presented through `GfxBackend::on_present_replay`) and every guest frame is classified, so `blended_frames`, `replays`, `warps` and the hold reasons are the game's own. A guest frame more than 45 ms after the last is `unpaired_gap`, as in a window.
 - **Pictures.** `H2_BOOT_GFX_BETWEEN=N` writes the first N in-between frames to the directory as `frame-NNNNN-between-KK.png` (the KK-th after guest swap NNNNN), and each one's neighbours as `frame-NNNNN.png`: the guest frame shown before it and the one shown after it (as shown: a blended present is a warped frame too). At most N in-between and 2N guest frames are written. While captures are left, each guest frame is copied on the GPU (no read back) and the copy is read back only once an in-between frame follows it, so a long run does not read back every frame. In-between frames go to their own hook, so the guest's swap numbering (`H2_BOOT_GFX_EVERY`, `H2_BOOT_GFX_SHADOWS`) is unchanged.
 - **Held frames, draw by draw.** `interp.holds` in `render.stats` names the draws that keep gameplay at 30 (next section).

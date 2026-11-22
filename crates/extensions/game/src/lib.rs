@@ -55,6 +55,8 @@ pub mod rules;
 pub mod fov_row;
 #[cfg(feature = "gpu")]
 pub mod render_aspect;
+pub mod game_code;
+pub mod game_load;
 pub mod game_menu;
 pub mod game_setup_help;
 pub mod h1_recordings;
@@ -181,7 +183,6 @@ pub mod precision;
 #[cfg(feature = "desktop-runtime")]
 pub mod render_probe;
 #[cfg(feature = "desktop-runtime")]
-pub mod render_thread;
 pub mod retail_rows;
 #[cfg(feature = "gpu")]
 pub mod return_to_menu;
@@ -231,7 +232,6 @@ pub mod superbounce_world;
 pub mod superbounce_mode;
 pub mod superbounce_verify;
 pub mod superbounce_view;
-pub mod sweep_diag;
 pub mod teabag;
 pub mod theater;
 pub mod theater_ui;

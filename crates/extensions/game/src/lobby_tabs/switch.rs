@@ -114,6 +114,10 @@ pub fn plan(from: Tab, to: Tab) -> Plan {
 /// `current` (its list id), with `catalogue` the map list: `None` when the
 /// lobby's own is inside the tab's category or the tab takes any map, else
 /// the category's first; or why there is none.
+///
+/// FIREFIGHT never refuses: with no map that carries the kit installed (or
+/// the map list not read yet) the lobby keeps its map, and Start Game says
+/// why it cannot start (`lobby_mode::start_refusal`).
 pub fn map_for(
     to: Tab,
     current: Option<u32>,
@@ -125,9 +129,9 @@ pub fn map_for(
             inside(c.maps(Category::Halo2).iter().map(|m| m.id), current).ok_or(Reason::NoForgeMap)
         }
         Tab::Firefight => {
-            let c = catalogue.ok_or(Reason::NoMapList)?;
+            let Some(c) = catalogue else { return Ok(None) };
             let kit = lobby_start::kit_maps(c);
-            inside(kit.iter().map(|m| m.id), current).ok_or(Reason::NoKitMap)
+            Ok(inside(kit.iter().map(|m| m.id), current).flatten())
         }
         Tab::Multiplayer | Tab::CustomGames | Tab::CoOp => Ok(None),
     }

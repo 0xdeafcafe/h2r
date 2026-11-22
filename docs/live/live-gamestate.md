@@ -549,7 +549,7 @@ There is no single decoded BSP world AABB in the repository. For exact bounds, r
 
 ### Reusing the viewer for the web
 
-`crates/tools/viewer/src/bin/bsp.rs:591` already has `world_triangles`, which builds all world-space triangles for one BSP:
+The standalone viewer's `bsp` tool (removed; see `git log -- crates/tools/viewer`) had `world_triangles`, which builds all world-space triangles for one BSP:
 
 - cluster positions are already world-space (`:613-616`);
 - definitions are loaded once and transformed per placement (`:618-626`);
@@ -565,7 +565,7 @@ The public lower-level APIs are:
 
 Two practical export routes:
 
-1. **Lowest effort:** run the existing `bsp --render` path offline and ship its top-down PNG plus the world-to-image scale/offset. The renderer looks down Z and culls faces with `normal.z <= 0` (`crates/tools/viewer/src/bin/bsp.rs:728-746`). Its framing is the 1st–99th percentile of triangle centroids, not exact world bounds (`:707-725`), so export those computed framing values rather than recomputing an AABB on the server.
+1. **Lowest effort:** revive the removed `bsp --render` path offline and ship its top-down PNG plus the world-to-image scale/offset. The renderer looks down Z and culls faces with `normal.z <= 0`. Its framing is the 1st–99th percentile of triangle centroids, not exact world bounds (`:707-725`), so export those computed framing values rather than recomputing an AABB on the server.
 2. **Vector/interactive:** refactor the private `world_triangles` logic into an offline exporter, project drawn triangles to XY, and emit quantized triangles, an occupancy raster, or boundary edges as SVG/JSON. This currently has no triangle/SVG/GeoJSON/outline CLI. Use exact vertex bounds if the vector output should include everything; optionally retain the renderer's back-face/percentile policy to hide the enclosing shell.
 
 Precompute every scenario BSP offline. Runtime traffic then needs only `{map, bsp_index}` and player XY/heading, not live BSP geometry.
@@ -625,4 +625,4 @@ Consistency rules:
 
 ## References
 
-- Local anchors and layouts: `docs/engine/engine-map.md`, `docs/engine/datum_new.md`, `docs/engine/memory_pool.md`, `docs/formats/structure-bsp.md`, `crates/hooking/guest-layout/src/datum.rs`, `crates/formats/tags/src/structure.rs`, `crates/formats/tags/src/geometry.rs`, `crates/tools/viewer/src/bin/bsp.rs`.
+- Local anchors and layouts: `docs/engine/engine-map.md`, `docs/engine/datum_new.md`, `docs/engine/memory_pool.md`, `docs/formats/structure-bsp.md`, `crates/hooking/guest-layout/src/datum.rs`, `crates/formats/tags/src/structure.rs`, `crates/formats/tags/src/geometry.rs`.
