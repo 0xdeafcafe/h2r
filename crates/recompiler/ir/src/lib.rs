@@ -586,6 +586,18 @@ pub enum SseOp {
 }
 
 impl SseOp {
+    /// Every operation, in declaration order: `ALL[op as usize] == op`,
+    /// the number the fast tier's SSE helper takes
+    /// ([`interp::sse_helper`]).
+    pub const ALL: [SseOp; 28] = {
+        use SseOp::*;
+        [
+            AddSs, AddPs, SubSs, SubPs, MulSs, MulPs, DivSs, DivPs, SqrtSs, SqrtPs, MinSs, MinPs, MaxSs, MaxPs,
+            RcpSs, RcpPs, RsqrtSs, RsqrtPs, CmpSs, CmpPs, Comiss, Ucomiss, Cvtsi2ss, Cvtss2si, Cvttss2si,
+            Cvtpi2ps, Cvtps2pi, Cvttps2pi,
+        ]
+    };
+
     /// (argument widths, result widths).
     pub fn signature(self) -> (&'static [Width], &'static [Width]) {
         use SseOp::*;

@@ -10,7 +10,8 @@
 //!   module (xbe, analyze, ir, lift, the IR passes, emit and its C, x87, the
 //!   runtime ABI header and the boot bridge C), for the dylib's build stamp
 //!   (lib.rs).
-//! - `FAST_TIER_SOURCE_HASH`: the same plus crates/recompiler/clif and the
+//! - `FAST_TIER_SOURCE_HASH`: the same plus crates/recompiler/clif,
+//!   crates/recompiler/simd (its SSE helper's semantics) and the
 //!   `Cargo.lock` entries of the packages clif reaches (the Cranelift
 //!   version), for the Cranelift fast tier's stamp (tier.rs).
 //!
@@ -90,10 +91,11 @@ fn main() {
     );
     println!("cargo:rustc-env=GENERATOR_SOURCE_HASH={generator:016x}");
     // The fast tier's module (tier.rs): the generator's sources plus
-    // crates/recompiler/clif and the lockfile entries clif reaches (the
+    // crates/recompiler/clif, the SSE semantics its helper runs
+    // (crates/recompiler/simd) and the lockfile entries clif reaches (the
     // Cranelift version).
     let fast = hash(
-        &["../../formats/xbe/src", "../../recompiler/analyze/src", "../../recompiler/ir/src", "../../recompiler/lift/src", "../../recompiler/opt/src", "../../recompiler/emit/src", "../../recompiler/emit/c", "../../recompiler/x87/src", "../../runtime/runtime/include", "c", "../../recompiler/clif/src", "../../recompiler/clif/c"],
+        &["../../formats/xbe/src", "../../recompiler/analyze/src", "../../recompiler/ir/src", "../../recompiler/lift/src", "../../recompiler/opt/src", "../../recompiler/emit/src", "../../recompiler/emit/c", "../../recompiler/x87/src", "../../runtime/runtime/include", "c", "../../recompiler/clif/src", "../../recompiler/simd/src"],
         &["rs", "c", "h"],
         &entry_sources,
     );

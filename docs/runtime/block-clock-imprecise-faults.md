@@ -98,7 +98,7 @@ Calls, returns, loop polls, `FaultIf` (divide errors), stops, intrinsics,
 
 `opt::Report::imprecise_faults` says a function was planned this way, and
 the emitter then declares `H2GEN_FEATURE_IMPRECISE_FAULTS` (128) for the
-module; the Cranelift tier's registry (`clif::registry_c`) declares it the
+module; the Cranelift tier's registry (`clif::module::registry`) declares it the
 same way. The runtime accepts the bit; the census counts a continuation from
 a fault while the bit is registered as `continued_imprecise` as well, and
 logs the first one: that is the case the rule forbids.
