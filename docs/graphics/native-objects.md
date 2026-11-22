@@ -102,6 +102,26 @@ editor's and Theater's `GpuModels` replace a model under its index with
 `GpuModels::replace_model`. The sun's caster models
 (`native_render::sun_casters`) keep the geometry they loaded.
 
+#### Shared program resources
+
+Because the load walks every object tag, a multiplayer map uploads a few
+thousand material programs. They repeat a small set of generated
+shaders, stage layouts and samplers, and a material's passes bind the
+same bitmaps. One `LitObjects` set makes each of these once
+(`object_program_gpu::Shared`): a module with its pipeline layout and
+pipeline table per WGSL and stage layout, a bind group layout per entry
+list, a sampler per descriptor, and a stage texture per stage index,
+bitmap image (or the objects' lightmap stage) and signed channels. Each
+program keeps only its own bind group. A stage whose image is missing
+gets a black texel that is never shared. A staging set
+(`LitObjects::empty_with_layout`) starts with nothing shared, so a
+refreshed model uploads its edited images again. An image rewrite
+(`LitObjects::rewrite_image`) writes the shared texture, so every
+program that binds it sees the edit. `LitObjects::created` counts what a
+set made. With one resource set per program, Ascension's load reached
+about 9,000 textures, 12,800 samplers and 3,600 modules and layouts in
+lab run 0076.
+
 The palette status (`scene_palette_*` in `render.scene`) distinguishes
 pending definitions, explicit null model references, failures, partial
 native coverage and resident definitions. A resident definition has a

@@ -359,6 +359,145 @@ pub struct LitObjects {
     /// The vector normalization cube, as the lights load it (engine
     /// texture 1).
     normalization: Option<wgpu::TextureView>,
+    /// What the set's programs share ([`Shared`]).
+    shared: Shared,
+}
+
+/// A stage image's identity within one set: the stage it is bound at,
+/// what it samples (a bitmap's image, or `None` for the objects' lightmap
+/// stage) and the channels stored biased. A set's uploads come from one
+/// map load, which decodes equal keys to equal pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct StageImage {
+    stage: usize,
+    bitmap: Option<(map::TagId, u32)>,
+    signed: [bool; 4],
+}
+
+impl StageImage {
+    fn of(program: &crate::program::MaterialProgram, stage: usize) -> Option<Self> {
+        let bitmap = match program.stages[stage] {
+            Stage::Bitmap { bitmap, image } => Some((bitmap, image)),
+            Stage::Lightmap => None,
+            _ => return None,
+        };
+        Some(Self { stage, bitmap, signed: program.signed[stage] })
+    }
+}
+
+/// How many GPU resources a set made for its programs. Equal programs
+/// share theirs, so uploading a model whose programs and stage images the
+/// set already holds leaves these unchanged.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Created {
+    pub shader_modules: u64,
+    pub layouts: u64,
+    pub samplers: u64,
+    pub textures: u64,
+}
+
+/// The GPU resources of one set's programs, made once per distinct input.
+/// A map's object materials repeat a few generated shaders, stage layouts
+/// and samplers across models and implementations, and their passes bind
+/// the same bitmaps; the loader uploads every object definition in the tag
+/// index, so one of each per program came to thousands of modules,
+/// layouts, samplers and textures (docs/graphics/native-objects.md,
+/// "Shared program resources").
+#[derive(Default)]
+struct Shared {
+    layouts: HashMap<Vec<wgpu::BindGroupLayoutEntry>, wgpu::BindGroupLayout>,
+    /// Per WGSL and stage layout: the module, its pipeline layout and its
+    /// table of pipelines.
+    shaders: HashMap<(String, Vec<wgpu::BindGroupLayoutEntry>), crate::pipelines::Pipelines>,
+    /// Few distinct, and the descriptor does not hash.
+    samplers: Vec<(wgpu::SamplerDescriptor<'static>, wgpu::Sampler)>,
+    images: HashMap<StageImage, wgpu::TextureView>,
+    created: Created,
+}
+
+impl Shared {
+    fn layout(&mut self, device: &wgpu::Device, entries: &[wgpu::BindGroupLayoutEntry]) -> wgpu::BindGroupLayout {
+        if let Some(layout) = self.layouts.get(entries) {
+            return layout.clone();
+        }
+        self.created.layouts += 1;
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("native object program textures"),
+            entries,
+        });
+        self.layouts.insert(entries.to_vec(), layout.clone());
+        layout
+    }
+
+    fn sampler(&mut self, device: &wgpu::Device, descriptor: wgpu::SamplerDescriptor<'static>) -> wgpu::Sampler {
+        if let Some((_, sampler)) = self.samplers.iter().find(|(d, _)| *d == descriptor) {
+            return sampler.clone();
+        }
+        self.created.samplers += 1;
+        let sampler = device.create_sampler(&descriptor);
+        self.samplers.push((descriptor, sampler.clone()));
+        sampler
+    }
+
+    /// The shader for `wgsl` over the set's uniforms and `textures`, or
+    /// `None` when the device refuses it (not kept: nothing else differs
+    /// on a retry).
+    fn shader(
+        &mut self,
+        device: &wgpu::Device,
+        wgsl: &str,
+        uniforms: &wgpu::BindGroupLayout,
+        textures: (&[wgpu::BindGroupLayoutEntry], &wgpu::BindGroupLayout),
+    ) -> Option<crate::pipelines::Pipelines> {
+        let key = (wgsl.to_owned(), textures.0.to_vec());
+        if let Some(shader) = self.shaders.get(&key) {
+            return Some(shader.clone());
+        }
+        self.created.shader_modules += 1;
+        let module = gfx::program::validated_resource(device, || {
+            device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("native object program"),
+                source: wgpu::ShaderSource::Wgsl(wgsl.into()),
+            })
+        })?;
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("native object program"),
+            bind_group_layouts: &[Some(uniforms), Some(textures.1)],
+            immediate_size: 0,
+        });
+        let shader = ShaderProgram {
+            module, layout, vs_entry: "vs_main".into(), fs_entry: "fs_main".into(), count_entry: None,
+        };
+        let compiler = crate::pipelines::Pipelines::new(device, wgsl, shader, "native object program");
+        self.shaders.insert(key, compiler.clone());
+        Some(compiler)
+    }
+
+    /// Stage `n`'s texture of `program` from `image`, or the one made
+    /// from an equal stage before. A missing image gets a black texel of
+    /// its own, never kept, so it cannot stand in for a later real one.
+    fn image(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        program: &crate::program::MaterialProgram,
+        n: usize,
+        image: Option<Image>,
+    ) -> wgpu::TextureView {
+        let key = StageImage::of(program, n);
+        if let Some(view) = key.and_then(|k| self.images.get(&k)) {
+            return view.clone();
+        }
+        let keep = image.is_some();
+        let mut image = image.unwrap_or(Image { width: 1, height: 1, rgba: vec![0, 0, 0, 255], mips: Vec::new(), blocks: None });
+        bias_signed(&mut image, program.signed[n]);
+        self.created.textures += 1;
+        let view = texture(device, queue, &image, "native object program stage");
+        if keep && let Some(key) = key {
+            self.images.insert(key, view.clone());
+        }
+        view
+    }
 }
 
 /// One accepted item's draw, resolved at the hook ([`LitObjects::plan`]):
@@ -467,7 +606,7 @@ impl LitObjects {
     /// An empty draw set whose uniform bindings are compatible with models
     /// uploaded here. The loader keeps its private normalization cube.
     pub fn empty_with_layout(&self) -> Self {
-        Self { uniforms_layout: self.uniforms_layout.clone(), models: HashMap::new(), normalization: None }
+        Self { uniforms_layout: self.uniforms_layout.clone(), models: HashMap::new(), normalization: None, shared: Shared::default() }
     }
 
     /// Publish a completed upload into the draw set without creating GPU
@@ -482,7 +621,12 @@ impl LitObjects {
     }
 
     pub fn new(device: &wgpu::Device) -> Self {
-        Self { uniforms_layout: uniforms_layout(device), models: HashMap::new(), normalization: None }
+        Self { uniforms_layout: uniforms_layout(device), models: HashMap::new(), normalization: None, shared: Shared::default() }
+    }
+
+    /// The GPU resources this set made for its programs so far.
+    pub fn created(&self) -> Created {
+        self.shared.created
     }
 
     /// Uploads the normalization cube the programs' normalization stages
@@ -536,18 +680,12 @@ impl LitObjects {
         true
     }
 
-    fn program(&self, device: &wgpu::Device, queue: &wgpu::Queue, input: LitProgramInput) -> Option<LitProgram> {
+    fn program(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, input: LitProgramInput) -> Option<LitProgram> {
         let LitProgramInput { pass, mut images } = input;
         let p = &pass.program;
-        let module = gfx::program::validated_resource(device, || {
-            device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("native object program"),
-                source: wgpu::ShaderSource::Wgsl(p.wgsl.clone().into()),
-            })
-        })?;
         let mut layout_entries = Vec::new();
         let mut views = Vec::new();
-        let samplers: Vec<wgpu::Sampler> = (0..4).map(|n| device.create_sampler(&sampler_descriptor(p.samplers[n].as_ref()))).collect();
+        let samplers: Vec<wgpu::Sampler> = (0..4).map(|n| self.shared.sampler(device, sampler_descriptor(p.samplers[n].as_ref()))).collect();
         for (n, d) in p.dims.iter().enumerate() {
             if d.is_none() {
                 continue;
@@ -582,14 +720,10 @@ impl LitObjects {
                 continue;
             }
             // Checked at load: every sampled stage has its image.
-            let mut image = images[n].take().unwrap_or(Image { width: 1, height: 1, rgba: vec![0, 0, 0, 255], mips: Vec::new(), blocks: None });
-            bias_signed(&mut image, p.signed[n]);
-            views.push((n, texture(device, queue, &image, "native object program stage")));
+            views.push((n, self.shared.image(device, queue, p, n, images[n].take())));
         }
-        let textures_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("native object program textures"),
-            entries: &layout_entries,
-        });
+        let textures_layout = self.shared.layout(device, &layout_entries);
+        let compiler = self.shared.shader(device, &p.wgsl, &self.uniforms_layout, (&layout_entries, &textures_layout))?;
         let textures = if pass.texaccum.contains(&true) {
             None
         } else {
@@ -597,15 +731,6 @@ impl LitObjects {
                 texture_group(device, &textures_layout, &views, &[], &samplers)
             })?)
         };
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("native object program"),
-            bind_group_layouts: &[Some(&self.uniforms_layout), Some(&textures_layout)],
-            immediate_size: 0,
-        });
-        let shader = ShaderProgram {
-            module, layout, vs_entry: "vs_main".into(), fs_entry: "fs_main".into(), count_entry: None,
-        };
-        let compiler = crate::pipelines::Pipelines::new(device, &p.wgsl, shader, "native object program");
         Some(LitProgram {
             pass, compiler, textures_layout, views, samplers, textures,
             accum_groups: Vec::new(), pipelines: HashMap::new(), inherited: Default::default(),
@@ -2773,6 +2898,75 @@ mod tests {
         input.parts[0].subparts = None;
         input.parts[0].indices = 2..4;
         assert!(!input.valid_draw_references());
+    }
+
+    /// The map loader uploads every object definition in the tag index:
+    /// programs equal across models and implementations must share their
+    /// module, layout, samplers and stage textures, or a map's load makes
+    /// thousands of each (lab 0076, Ascension: 9k textures, 12k samplers,
+    /// 3.6k modules and layouts).
+    #[test]
+    fn equal_programs_share_their_gpu_resources_across_models() {
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let mut objects = LitObjects::new(&ctx.device);
+        let bitmap = |n: u32| Stage::Bitmap { bitmap: map::TagId(0xe000_0100 + n), image: 0 };
+        // Stage 0 samples `stage`: the layout binds it, which the module
+        // need not read.
+        let program = |stage: Stage, image: Option<Image>| {
+            let mut pass = equal_pass(0);
+            pass.program.dims[0] = Some(shaders::psh::TextureDim::D2);
+            pass.program.stages[0] = stage;
+            LitProgramInput { pass, images: [image, None, None, None] }
+        };
+        let solid = || Some(Image::solid([200, 100, 50, 255]));
+        let model = |programs: Vec<LitProgramInput>| {
+            let pass = equal_pass(0);
+            let registers: Vec<_> = (0u8..16).filter(|i| pass.program.inputs & (1u16 << i) != 0).collect();
+            LitModelInput {
+                parts: vec![part(0, 0, [Some((0, 0)), None, None, None, None])],
+                buffers: vec![LitBufferInput {
+                    vertices: vec![[0; SLOT]; 3 * registers.len()],
+                    formats: vec![Attribute::Float(4); registers.len()],
+                    registers,
+                    indices: vec![0, 1, 2],
+                }],
+                programs,
+                layers: Vec::new(),
+            }
+        };
+        let (device, queue) = (&ctx.device, &ctx.queue);
+        assert!(objects.add_model(device, queue, 1, model(vec![program(bitmap(0), solid()), program(bitmap(0), solid())])));
+        let first = objects.created();
+        assert_eq!((first.shader_modules, first.layouts, first.textures), (1, 1, 1), "one model's two equal programs share: {first:?}");
+        for index in 2..40 {
+            assert!(objects.add_model(device, queue, index, model(vec![program(bitmap(0), solid())])));
+        }
+        assert_eq!(objects.created(), first, "equal programs of other models make nothing");
+        let texture = |objects: &LitObjects, index: u32| objects.models[&index].programs[0].views[0].1.texture().clone();
+        assert_eq!(texture(&objects, 1), texture(&objects, 39));
+        assert_eq!(objects.image_stages(map::TagId(0xe000_0100), 0), vec![0]);
+
+        // Another bitmap is another texture, and only that.
+        assert!(objects.add_model(device, queue, 40, model(vec![program(bitmap(1), solid())])));
+        assert_eq!(objects.created(), Created { textures: first.textures + 1, ..first });
+        assert_ne!(texture(&objects, 1), texture(&objects, 40));
+
+        // A missing image's black texel is never kept for its stage: the
+        // real image after it gets a texture of its own, which is.
+        assert!(objects.add_model(device, queue, 41, model(vec![program(bitmap(2), None)])));
+        assert!(objects.add_model(device, queue, 42, model(vec![program(bitmap(2), solid())])));
+        assert!(objects.add_model(device, queue, 43, model(vec![program(bitmap(2), solid())])));
+        assert_eq!(objects.created().textures, first.textures + 3);
+        assert_ne!(texture(&objects, 41), texture(&objects, 42));
+        assert_eq!(texture(&objects, 42), texture(&objects, 43));
+
+        // A staging set made for a refresh shares nothing with the draw
+        // set: an edited model's images upload again.
+        let mut staging = objects.empty_with_layout();
+        assert!(staging.add_model(device, queue, 1, model(vec![program(bitmap(0), solid())])));
+        assert_eq!(staging.created().textures, 1);
+        assert!(staging.move_model_into(1, &mut objects));
+        assert_ne!(texture(&objects, 1), texture(&objects, 2));
     }
 
     #[test]
