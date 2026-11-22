@@ -321,6 +321,37 @@ fn group_a(group: TagGroup) -> &'static str {
     }
 }
 
+/// A label's requirement in Forge's words: `exactly 1 zone labelled
+/// "goal"`, `at most 16 zones labelled "ctf_flag_spawn", one for each
+/// team`, `any number of objects labelled "barrier"`. The workbench's
+/// "What a map needs" lists it.
+pub fn describe(def: &LabelDef) -> String {
+    let text = def.text.as_str();
+    let mut out = if def.range().is_some() {
+        format!(
+            "{} labelled \"{text}\", numbered {}",
+            noun(def.kind, 2),
+            range_text(def.lo, def.hi)
+        )
+    } else {
+        let one = def.single() || def.max == 1 || (def.min == 1 && !def.bounded());
+        let count = if def.min == 0 && !def.bounded() {
+            "any number of".to_string()
+        } else {
+            needs(def)
+        };
+        let mut s = format!("{count} {} labelled \"{text}\"", noun(def.kind, if one { 1 } else { 2 }));
+        if def.numbered() {
+            s.push_str(", each with a number");
+        }
+        s
+    };
+    if def.per_team() {
+        out.push_str(", one for each team");
+    }
+    out
+}
+
 /// How many members the label needs, in the words of a requirement.
 fn needs(def: &LabelDef) -> String {
     if def.single() {
@@ -565,6 +596,25 @@ mod tests {
         census.tags.insert(path, ObjectType::Vehicle);
         assert_eq!(check(&any, &census, TEAMS), vec![]);
         assert_eq!(check(&ir, &minimal(&ir, TEAMS), TEAMS), vec![]);
+    }
+
+    #[test]
+    fn a_requirement_reads_in_forges_words() {
+        let ir = siege();
+        let words: Vec<String> = ir.labels.iter().map(describe).collect();
+        assert_eq!(
+            words,
+            vec![
+                "exactly 1 zone labelled \"goal\"",
+                "exactly 1 object labelled \"core\"",
+                "zones labelled \"zone\", numbered 0 and 1",
+                "any number of zones labelled \"hill_corner\", each with a number",
+                "at most 16 zones labelled \"ctf_flag_spawn\", one for each team",
+                "at most 1 object labelled \"bonus\"",
+                "at least 1 starting location labelled \"attack\"",
+                "any number of objects labelled \"barrier\"",
+            ]
+        );
     }
 
     #[test]

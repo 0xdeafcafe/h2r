@@ -1,6 +1,6 @@
 # Rules start gate: a map must satisfy the script's labels
 
-Status: Design. The check (`rules::labels::check`) is built; nothing calls it yet.
+Status: Design. The check (`rules::labels::check`) is built; the workbench, `h2 rules run` and the match generator call it, and the host, the lobby and Live's hoppers do not yet.
 Code: `crates/extensions/game/src/rules/` (the host runtime), `crates/extensions/game/src/lobby_mode.rs` (the lobby's start state), `crates/live/live-server/src/admin.rs` (the hopper builder). Tests: none yet; the slices in [rules-language-types.md](rules-language-types.md#implementation-plan) name them.
 Switch: none.
 
@@ -60,7 +60,7 @@ from one fixture and asserts they are equal.
 | The lobby, at Start | the `after` on `LOBBY_START_STATE` in `lobby_mode.rs`: `lobby_mode::start_state` answers `REFUSED_STATE` in place of ready when `lobby_mode::start_refused` reads `gate::blocked()`, the path a Forge lobby with a remote member takes. Start Game acts only on ready, so no countdown runs | the kept verdict | Start Game does nothing |
 | The host, at the game's start: the final authority | `Runtime::start` (`rules/runtime.rs`), from the `rules` feature's `on_start` observer after a successful `GAME_ACTIVATE` (`rules/feature.rs`), after `verify::load` and `verify::unhostable` and before `runtime::host_refusal` | `of_game` | `Status::Blocked`, and the game is ended (below) |
 | Live, when a hopper is edited | `admin::check_pairs`, called by `admin::put_hopper` after `admin::apply_patch` (`crates/live/live-server/src/admin.rs`) | the map's census on Live | the edit is refused |
-| The workbench | `workbench::run` (rules-language-types.md, "The workbench") | the scenario's map | problems of kind `map`, and no run |
+| The workbench | `workbench::run` (rules-language-types.md, "The workbench") | the scenario's map (`scenario::resolve_map`) | `RunError::Map` with the problems, and no run |
 
 The lobby's check is a courtesy to the player; only the host's decides.
 It runs on the machine that starts the game, and a guest runs neither

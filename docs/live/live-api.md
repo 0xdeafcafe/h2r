@@ -1864,15 +1864,28 @@ homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
   player, team, object), `ir_bytes` and `ir_limit`, `capabilities: [{name,
   words, grantable, known}]` with the lobby's plain words, and
   `unhostable`: the entries the script calls that no host can make yet on
-  the script's carrier.
+  the script's carrier, `labels` and `minimal`. `labels` is what a map
+  needs, one line for each label the script declares, in its table's order:
+  `{text, kind: "object" | "zone" | "spawn", min, max?, single, numbered,
+  range?: [lo, hi], per_team, needs}`, with `max` absent when the label
+  states no limit and `needs` the requirement in Forge's words (`exactly 1
+  zone labelled "goal"`). `minimal` is the smallest map that passes, as a
+  scenario's `map` lists things (`{label, object, number?, team?, class}`,
+  handles from 256); a page that merges it into a map gives the things
+  handles of its own.
 - A run's `scenario` is `{players: [{slot, team, lives, unit?}], teams,
-  variant, labelled: [{label, object, number?, placement?,
-  team?}], options,
+  variant, map: [{label, object, number?, placement?, team?, class?}],
+  options,
   seed, round_time, ticks, start, timeline: [{tick, events}]}`. `unit` is
   the object that is the player's unit, so `enter` and `leave` find its
-  player; `labelled` lists the objects `objects labelled` visits, each with
-  the `team` that `o.team` reads when it has one; a
-  `variant` field left out reads the stock record of the script's
+  player; `map` (`labelled` is its older name) lists the things `objects
+  labelled` visits, each with the `team` that `o.team` reads when it has
+  one and a `class` (`object`, `flag`, `volume` or `spawn`; the one its
+  label's kind suggests when absent). Without a `map` the run is played
+  on the script's minimal map; with one, the script's labels check it
+  first, and a run it fails answers `{ok: false, errors: [], map:
+  ["the map has no zone labelled \"goal\"; Siege needs exactly 1", ...]}`
+  and runs nothing. A `variant` field left out reads the stock record of the script's
   carrier. An event is `{type, ...}` with the handler's event name:
   `kill {victim, killer}`, `spawn`, `death`, `join`, `quit {player}`,
   `pickup`, `drop`, `press`, `edit {player, object}`, `bounce {player,

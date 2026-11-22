@@ -1289,8 +1289,10 @@ Tooling:
   (`slot`, `team`, `alive`, `score`, `lives`, and `unit`, the object
   that is the player's unit), `teams`, `variant` (record fields by name;
   each one left out reads the stock record of the script's carrier,
-  `fake::stock_variant`), `labelled` (`label`, `object`, `number`,
-  `placement`: what `objects labelled` visits and `o.number` reads),
+  `fake::stock_variant`), `map` (the things the game holds that a script
+  labels: `label`, `object`, `number`, `placement`, `team` and `class`,
+  below; what `objects labelled` visits and `o.number` reads;
+  `labelled` is its older name),
   `round_time_left`, and `ticks`, each with `events` of `kill`
   (`victim`, `killer`), `spawn`, `death`, `join`, `quit`, `enter` and
   `leave` (`zone`, `object`), `press`, `pickup`, `drop` and
@@ -1362,8 +1364,22 @@ Game Types**. The layout, its states and its copy are described in
   the lobby's words, Control) whose rows insert a snippet at the caret;
   the events and the API come from the completion route at a blank
   top-level line and a blank statement, over a list the page keeps.
+- **The map.** A scenario's `map` (`scenario::ScenarioLabel`) lists
+  things: `label` (text), `object` (the handle), `number?`, `placement?`,
+  `team?` and `class?`, one of `object`, `flag`, `volume` or `spawn`.
+  A thing with no `class` takes the one its label's kind suggests in the
+  script's label table: a volume for a zone label, a starting location
+  for a spawn label, an object for any other label and for a label the
+  script does not declare. A scenario with no `map` runs on
+  `labels::minimal(ir, teams)`: things numbered from `scenario::MAP_BASE`
+  (0x100) in label order, with `teams` the scenario's, or 0 and 1. A
+  scenario with a `map` is checked first, by `scenario::resolve_map`
+  (`labels::check` over `scenario::census_of`); a problem is
+  `RunError::Map` with the check's text, and nothing runs. An empty `map`
+  is a map with nothing on it, not an absent one. See
+  [rules-start-gate.md](rules-start-gate.md#the-check) for the texts.
 - **Run.** `workbench::run` steps a scenario (seated players with their
-  units, variant fields, labelled objects, options, seed, round time,
+  units, variant fields, the map, options, seed, round time,
   and a list of events by tick) over `fake::FakeGame`, through the same
   `scenario::step` that `h2 rules run` takes. Each tick: the queue is
   flushed, the tick's events fire in order, then `update` runs timers
@@ -1406,7 +1422,12 @@ Game Types**. The layout, its states and its copy are described in
   respawns players itself, players walking into and out of the labelled
   objects the script names, objectives picked up and dropped, and
   `bounce`, `edit`, `press`, `actor_kill`, `actor_assist` and
-  `squad_dead` only for a script with that handler. The seed fixes the
+  `squad_dead` only for a script with that handler. The objects it
+  walks into are the things of the script's minimal map
+  (`labels::minimal` for the match's teams, a free-for-all match reading
+  teams 0 and 1), apart from starting locations: each label has its
+  count, its numbers and a member for each team it asks for, so a
+  generated match is never a blocked one. The seed fixes the
   whole match. The match stops when the script ends the round, a limit
   is reached, the script fails, or 4,096 events or 36,000 ticks pass.
   Its output is a `workbench::Scenario` and the trace of running it;
