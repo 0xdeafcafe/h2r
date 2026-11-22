@@ -357,8 +357,15 @@ that column's condition. [Shadow census](../graphics/notes/e3-lighting.md).
   27 occur) are reported by id. Which render target or global texture each
   id means is not mapped.
 - **Engine render-state and sampler-state bindings** (`+0x11e`, `+0x120`)
-  are only fully decoded for byte 1 = 1, which reads a scalar input. They
-  are returned raw.
+  are returned raw and decoded by `material::EngineState`
+  (`engine_states`). A render binding is `[target, source, -, slot]`
+  (`0x0001a170`), a sampler binding `[stage, target, source, slot]`
+  (`0x0001ab50`); the target indexes `0x467020` or `0x46703c`
+  (`shader::ANIMATED_RENDER_STATES`, `ANIMATED_STAGE_STATES`: state,
+  component, kind). Source 1 reads the scalar at `ctx + 0x5c + 4·slot`;
+  any other the colour at `ctx + 0x108 + 12·slot`, packed by `0x00131ed0`
+  into the state's low 24 bits with its alpha byte kept. Their values
+  are not evaluated.
 - **Engine input semantics** (which scalar or vector is time, camera, light
   colour and so on) are not named, apart from the root-fed ones.
 - **Persistent state.** The engine keeps texture slots, constant banks and the

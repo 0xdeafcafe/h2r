@@ -1028,6 +1028,28 @@ fn input_reads_unions_masks_bindings_and_selectors() {
     assert_eq!(r.ints, 1 << 4 | 1 << 6);
 }
 
+/// `0x0001a170`'s and `0x0001ab50`'s bindings: a render state's target in
+/// byte 0, a stage state's stage in byte 0 and target in byte 1; source
+/// 1 a scalar slot, any other a colour slot.
+#[test]
+fn an_engine_state_is_its_target_source_and_slot() {
+    let b = |bytes| ExternalBinding { bytes };
+    // Render target 2: ALPHAREF (0x3d), an integer, from scalar slot 5.
+    let r = EngineState::render(b([2, 1, 0, 5])).unwrap();
+    assert_eq!(r, EngineState { state: 0x3d, stage: None, kind: EngineStateKind::Integer, source: EngineStateSource::Scalar(5) });
+    assert_eq!(r.name(), Some("ALPHAREF"));
+    // Render target 6: FOGCOLOR (0x8a), a colour, from colour slot 1.
+    let f = EngineState::render(b([6, 0, 0, 1])).unwrap();
+    assert_eq!((f.state, f.kind, f.source), (0x8a, EngineStateKind::Colour, EngineStateSource::Colour(1)));
+    assert_eq!(EngineState::render(b([7, 1, 0, 0])), None, "past the table");
+    // Stage 2, target 0: MIPMAPLODBIAS (6), a float, from scalar slot 3.
+    let s = EngineState::stage(b([2, 0, 1, 3])).unwrap();
+    assert_eq!(s, EngineState { state: 6, stage: Some(2), kind: EngineStateKind::Float, source: EngineStateSource::Scalar(3) });
+    assert_eq!(s.name(), Some("MIPMAPLODBIAS"));
+    assert_eq!(EngineState::stage(b([4, 0, 1, 3])), None, "past the four stages");
+    assert_eq!(EngineState::stage(b([0, 10, 1, 3])), None, "past the table");
+}
+
 /// `0x00019be0`'s word: register, bank, mode and stage, the input in
 /// byte 3; a mode writes its components only.
 #[test]

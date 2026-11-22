@@ -1210,6 +1210,94 @@ impl EngineVertexConstant {
     }
 }
 
+/// How an engine-driven state's value is converted for its state (byte 3
+/// of its entry in [`ANIMATED_RENDER_STATES`] or [`ANIMATED_STAGE_STATES`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EngineStateKind {
+    /// 0: a colour word.
+    Colour,
+    /// 1: the float's bits.
+    Float,
+    /// 2: the float rounded to an integer (`fistp`, `0x0001a1f8`).
+    Integer,
+}
+
+/// Where an engine-driven state's value comes from in the shader draw's
+/// context (`0x0001a170`, `0x0001ab50`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EngineStateSource {
+    /// Source byte 1: the scalar at `ctx + 0x5c + 4·slot`, the shader's
+    /// evaluated parameter (`0x0001a1cd`).
+    Scalar(u8),
+    /// Any other source byte: the colour at `ctx + 0x108 + 12·slot`,
+    /// packed by `0x00131ed0` into the state's low 24 bits, its alpha byte
+    /// kept (`0x0001a89c`).
+    Colour(u8),
+}
+
+/// One engine-driven render or texture-stage state: an entry of an
+/// implementation's `+0x11e` (render) or `+0x120` (stage) range of the
+/// `spas` bindings, as `0x0001a170` and `0x0001ab50` read it. A render
+/// binding is `[target, source, -, slot]`, a stage binding `[stage,
+/// target, source, slot]`; the target indexes [`ANIMATED_RENDER_STATES`]
+/// (`0x467020`) or [`ANIMATED_STAGE_STATES`] (`0x46703c`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EngineState {
+    /// The D3D render or texture-stage state (the table entry's word).
+    pub state: u8,
+    /// The texture stage, for a stage state.
+    pub stage: Option<u8>,
+    pub kind: EngineStateKind,
+    pub source: EngineStateSource,
+}
+
+impl EngineState {
+    /// A render-state binding, or `None` when its target is past the
+    /// table (the guest would read past it).
+    pub fn render(e: ExternalBinding) -> Option<Self> {
+        let [target, source, _, slot] = e.bytes;
+        Self::of(&ANIMATED_RENDER_STATES, target, None, source, slot)
+    }
+
+    /// A texture-stage-state binding, or `None` when its target is past
+    /// the table or its stage past the four stages.
+    pub fn stage(e: ExternalBinding) -> Option<Self> {
+        let [stage, target, source, slot] = e.bytes;
+        if stage >= 4 {
+            return None;
+        }
+        Self::of(&ANIMATED_STAGE_STATES, target, Some(stage), source, slot)
+    }
+
+    fn of(table: &[(u8, u8, u8)], target: u8, stage: Option<u8>, source: u8, slot: u8) -> Option<Self> {
+        let &(state, _, kind) = table.get(usize::from(target))?;
+        let kind = match kind {
+            0 => EngineStateKind::Colour,
+            1 => EngineStateKind::Float,
+            _ => EngineStateKind::Integer,
+        };
+        let source = if source == 1 { EngineStateSource::Scalar(slot) } else { EngineStateSource::Colour(slot) };
+        Some(Self { state, stage, kind, source })
+    }
+
+    /// The state's name ([`render_state_name`], [`stage_state_name`]).
+    pub fn name(self) -> Option<&'static str> {
+        match self.stage {
+            None => render_state_name(self.state),
+            Some(_) => stage_state_name(u16::from(self.state)),
+        }
+    }
+}
+
+/// `imp`'s engine-driven render and texture-stage states, in the order
+/// `0x0001a170` and `0x0001ab50` apply them, or `None` when one does not
+/// decode ([`EngineState`]).
+pub fn engine_states(imp: &ResolvedImplementation) -> Option<(Vec<EngineState>, Vec<EngineState>)> {
+    let render = imp.engine_render_states.iter().map(|&e| EngineState::render(e)).collect::<Option<Vec<_>>>()?;
+    let stage = imp.engine_stage_states.iter().map(|&e| EngineState::stage(e)).collect::<Option<Vec<_>>>()?;
+    Some((render, stage))
+}
+
 /// `imp`'s engine-driven vertex constants in the order `0x00019be0`
 /// applies them.
 pub fn engine_vertex_constants(spas: &PassPostprocess, imp: &Implementation) -> Vec<EngineVertexConstant> {

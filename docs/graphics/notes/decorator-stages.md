@@ -2,6 +2,12 @@
 
 Evidence for [native-decorators.md](../native-decorators.md) ("Rules and limits": the lightmap and engine-driven states). Nothing here states what the code does today. Entries are newest first.
 
+## 2026-11-22: the engine-state bindings' byte layout, read
+
+Commit: `a6ff6f83c`. Method: `h2 disasm` of `0x0001ab50` (to `0x0001ac58`) and of `0x0001a170`'s other-source branch `0x0001a89c`.
+
+The sampler-state applier does not share the render-state layout the entry below assumed. A sampler binding is `[stage, target, source, slot]`: `0x0001ab94` takes the target from byte 1 (into `0x46703c`), `0x0001ab98` compares byte 2 with 1, `0x0001ab9c` takes the slot from byte 3, and `0x0001abe2` the stage from byte 0 (the state's cache at `0x404dd0 + 4·(32·stage + state)`). A render binding is `[target, source, -, slot]`. A source other than 1 reads the colour at `ctx + 0x108 + 12·slot` (`0x0001a89c`: `(slot + 0x16)·12`), packs it through `0x00131ed0` and keeps the state's alpha byte (`and 0xffffff` with the cached word). `tags::material::EngineState` decodes both.
+
 ## 2026-11-22: the lightmap page a decorator samples, and what engine-driven states need
 
 Commit: `4072032fe`. Method: `h2 disasm` of the decorator draw `0x0004e260`, the geometry draw `0x0004d0b0` around its lightmap bind (`0x0004d28b`..`0x0004d428`), the pass setup `0x0004d9c0`, shader draw begin `0x0001bbf0`, the stage setup `0x00018c30`..`0x00018d1f` and the engine render-state applier `0x0001a170`; the tables `crates/formats/tags/src/shader.rs` (`ANIMATED_RENDER_STATES`, `ANIMATED_STAGE_STATES`, `render_state_name`, `stage_state_name`). Re-run by repeating the reads at a later commit.
