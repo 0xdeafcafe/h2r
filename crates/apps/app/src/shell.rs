@@ -82,7 +82,10 @@ const STATUS_WINDOW: Duration = Duration::from_secs(5);
 
 struct Status {
     last: Instant,
+    /// The guest's own presents.
     guest: WindowedRate,
+    /// In-between frames the render thread made (`FrameStats::made`).
+    made: WindowedRate,
     shown: WindowedRate,
     dropped: WindowedRate,
     epoch: Instant,
@@ -196,6 +199,7 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
         status: Status {
             last: now,
             guest: WindowedRate::new(STATUS_WINDOW),
+            made: WindowedRate::new(STATUS_WINDOW),
             shown: WindowedRate::new(STATUS_WINDOW),
             dropped: WindowedRate::new(STATUS_WINDOW),
             epoch: now,
@@ -674,18 +678,25 @@ impl Shell {
         }
         let stats = g.source.stats();
         let now = self.status.epoch.elapsed();
-        let guest_fps = self.status.guest.record(now, stats.published);
+        // The guest's own presents; in-between frames are counted apart.
+        let guest_fps = self
+            .status
+            .guest
+            .record(now, stats.published.saturating_sub(stats.made));
+        let made_fps = self.status.made.record(now, stats.made);
         let shown_fps = self.status.shown.record(now, stats.shown);
         self.status.dropped.record(now, stats.dropped);
         self.status.last = Instant::now();
-        let mut line = format!(
-            "{} | guest {:.1} fps | shown {:.1} fps | dropped {} (last {}s)",
-            self.config.title,
-            guest_fps,
+        let mut line = format!("{} | guest {:.1} fps", self.config.title, guest_fps);
+        if made_fps > 0.0 {
+            line.push_str(&format!(" | made {made_fps:.1} fps"));
+        }
+        line.push_str(&format!(
+            " | shown {:.1} fps | dropped {} (last {}s)",
             shown_fps,
             self.status.dropped.count(),
             STATUS_WINDOW.as_secs()
-        );
+        ));
         if self.life.is_paused() {
             line.push_str(" | paused");
         }
@@ -823,9 +834,10 @@ impl ApplicationHandler<UserEvent> for Shell {
             UserEvent::Frame => {
                 if let Some(g) = &self.gpu {
                     g.source.ack_wake();
-                    if self.display.redraw_on_publish() {
-                        g.window.request_redraw();
-                    }
+                    // Every publish (a guest frame or an in-between frame)
+                    // is drawn once; the display grid only fills gaps.
+                    self.display.published(self.status.epoch.elapsed());
+                    g.window.request_redraw();
                 }
             }
             UserEvent::EditorChanged => {
@@ -1236,10 +1248,8 @@ impl ApplicationHandler<UserEvent> for Shell {
                 if let Some(v) = vsync {
                     g.surface.set_vsync(v);
                 }
-                if self.display.redraw_on_publish() {
-                    // A publish just before the switch may still be waiting for a slot.
-                    g.window.request_redraw();
-                }
+                // A publish just before the switch may still be waiting.
+                g.window.request_redraw();
             }
             eprintln!("app: frame rate {target}");
         }
