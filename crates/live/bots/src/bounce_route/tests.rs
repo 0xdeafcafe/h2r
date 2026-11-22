@@ -1845,6 +1845,7 @@ fn a_training_loop_flies_the_boards_knobs_folds_its_tries_and_writes_the_file() 
     // The route's own run-off bounces on this body: the arms round saw it.
     assert!(line.hits > 0, "{line:?}");
     let _ = std::fs::remove_dir_all(&dir);
+}
 
 // ---- the approach to a crouch spot ----
 
