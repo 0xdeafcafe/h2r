@@ -109,10 +109,17 @@ impl SubpartRanges {
 }
 
 /// The world layers besides 3 whose passes an object item draws natively
-/// from the scene (docs/graphics/framescene.md, slice 4): 1, 7, 8 and
-/// 20. Layer 5's geometry draw adds a stream of its own for an object's
-/// record (`frame_scene::LayerObjectRefusal::Layer5Stream`).
-pub const OBJECT_LAYERS: [u8; 4] = [1, 7, 8, 20];
+/// from the scene (docs/graphics/framescene.md, slice 4): 1, 5, 7, 8 and
+/// 20. In layer 5 only the items whose model has no PRT block: for the
+/// rest the geometry draw adds the model's PRT stream and constants
+/// (`frame_scene::PrtStream`), which the programs do not bind
+/// ([`plan_layer_part`]), and a layer-5 program that reads those
+/// constants does not compile ([`PRT_LAYER`]).
+pub const OBJECT_LAYERS: [u8; 5] = [1, PRT_LAYER, 7, 8, 20];
+
+/// The world layer whose geometry draw adds an object's PRT stream
+/// (`scene_extract::layout::prt`).
+pub const PRT_LAYER: u8 = 5;
 
 /// One pass of a lit part's world layer: how many implementations the
 /// pass has (with one, every item draws it; otherwise the item's,
@@ -922,6 +929,9 @@ pub fn plan_layer_part<'a>(
     if let Some(why) = item.refusal {
         return Err(why.name().into());
     }
+    if item.prt.is_some() {
+        return Err("layer 5's PRT stream, which the native programs do not bind".into());
+    }
     if item.flags.contains(PartFlags::AUX_DEPTH) {
         return Err("the auxiliary state toggle outside layer 3".into());
     }
@@ -1452,8 +1462,8 @@ pub fn lit_model(
                     }
                     let index_list = |s: u16| lists[&s].0.clone();
                     let compiled = compile_layer_sections(
-                        pass.pass, imp, &secs, formats, engine, &mut *vertex, &mut *image, &mut buffers, &mut out.input.buffers,
-                        &index_list,
+                        layer, pass.pass, imp, &secs, formats, engine, &mut *vertex, &mut *image, &mut buffers,
+                        &mut out.input.buffers, &index_list,
                     );
                     match compiled {
                         Ok(got) => {
@@ -1489,14 +1499,17 @@ pub fn lit_model(
     out
 }
 
-/// One implementation of a world layer's pass (`pass` its tag) compiled
-/// for every section in `secs` through the declaration the game builds
-/// there ([`object_layer_pass`]), each section's buffer for that
+/// One implementation of world layer `layer`'s pass (`pass` its tag)
+/// compiled for every section in `secs` through the declaration the game
+/// builds there ([`object_layer_pass`]), each section's buffer for that
 /// declaration made once over `buffers` (its indices the section's list,
 /// `index_list`), with its stages' images; the first failure, as the
-/// reason the implementation is left out.
+/// reason the implementation is left out. In layer 5 a vertex program
+/// that reads a constant from `c[68]` on does not compile: only the PRT
+/// stream's draw sets those (`frame_scene::PRT_FIRST_CONSTANT`).
 #[allow(clippy::too_many_arguments)]
 fn compile_layer_sections(
+    layer: u8,
     pass: map::TagId,
     imp: &tags::material::ResolvedImplementation,
     secs: &[&LitSection<'_>],
@@ -1518,6 +1531,17 @@ fn compile_layer_sections(
             .collect::<Result<Vec<_>, _>>()?;
         let data: Vec<Option<StreamData<'_>>> = s.streams.iter().map(|t| t.map(|(_, d)| d)).collect();
         let (microcode, semantics) = vertex(vs, s.geometry, s.influences).map_err(|e| format!("section {}: {e}", s.index))?;
+        if layer == PRT_LAYER {
+            let program = shaders::vsh::Program::parse(&microcode).map_err(|e| format!("section {}: vertex program: {e:?}", s.index))?;
+            // Reads relative to a0.x (the node rows) are not bounded here.
+            let prt = program.instructions.iter().flat_map(|i| i.sources()).find_map(|src| match src.reg {
+                shaders::vsh::SrcReg::Const { index, relative: false } if index >= frame_scene::PRT_FIRST_CONSTANT => Some(index),
+                _ => None,
+            });
+            if let Some(c) = prt {
+                return Err(format!("section {}: vertex program reads c[{c}], which only the PRT stream's draw sets", s.index));
+            }
+        }
         let decl = declaration(&semantics, &streams);
         let compiled = object_layer_pass(pass, imp, &microcode, registers(&decl), input_fetch(&decl))
             .map_err(|e| format!("section {}: {e}", s.index))?;
@@ -2107,6 +2131,7 @@ mod tests {
             flags: PartFlags::NONE,
             subparts: None,
             refusal: None,
+            prt: None,
         };
         let rows = [[1.0f32; 4]; 3];
         // The device's blend op reads (the passes inherit it).
@@ -2129,6 +2154,9 @@ mod tests {
         assert!(plan(Some(0), 7, &seven, &other, &e).unwrap_err().contains("shader"));
         let refused = LayerItem { refusal: Some(LayerObjectRefusal::Fade), ..item(0) };
         assert_eq!(plan(Some(0), 7, &seven, &refused, &e).unwrap_err(), "object_fade", "extraction's cause");
+        let prt = frame_scene::PrtStream { kind: 0x39, stride: 10, data: 0x8000_0000, constants: vec![[0.0; 4]; 2] };
+        let streamed = LayerItem { prt: Some(prt), ..item(0) };
+        assert!(plan(Some(0), 7, &seven, &streamed, &e).unwrap_err().contains("PRT stream"));
         let aux = LayerItem { flags: PartFlags::AUX_DEPTH, ..item(0) };
         assert!(plan(Some(0), 7, &seven, &aux, &e).unwrap_err().contains("auxiliary"));
         let no_defaults = LayerPass { inputs: LayerInputs::default(), ..layer_pass(7, false) };

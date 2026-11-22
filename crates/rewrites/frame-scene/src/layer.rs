@@ -52,7 +52,36 @@ pub struct LayerItem {
     /// named cause, the item's guest draw kept. `None` for one that is,
     /// and for the structure's.
     pub refusal: Option<LayerObjectRefusal>,
+    /// Layer 5: the stream and constants the geometry draw adds for an
+    /// object item whose model has a PRT block; `None` elsewhere, and
+    /// where the draw adds none.
+    pub prt: Option<PrtStream>,
 }
+
+/// What the geometry draw `0x0004d0b0` adds for an object item of layer
+/// 5 whose model has a PRT block (`0x0004d220`: `0x00024040` sets the
+/// constants, `0x00024490` points the model's PRT stream at the item's
+/// section), as `scene_extract::layout::prt` reads it.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PrtStream {
+    /// The stream header's type: its record in the stream format table
+    /// (`0x0043f408`), which names the registers the stream feeds.
+    pub kind: u8,
+    /// Bytes per vertex (the header's `+1`).
+    pub stride: u8,
+    /// Where the item's section's vertices begin in the stream at the
+    /// object's detail level: a guest address (the contiguous mapping of
+    /// the vertex buffer's data, plus the offset `0x00024490` writes).
+    pub data: u32,
+    /// The vertex constants from [`PRT_FIRST_CONSTANT`] on: the object's
+    /// entry's vector, the fixed vector of `c[69]`, then the object's
+    /// coefficients.
+    pub constants: Vec<[f32; 4]>,
+}
+
+/// The first vertex constant layer 5's draw sets for an object's PRT
+/// stream (`c[68]`, hardware numbering).
+pub const PRT_FIRST_CONSTANT: u8 = 68;
 
 /// Why an object item of a layer draw keeps its guest draw: what the
 /// geometry draw `0x0004d0b0` does for it that the scene does not carry
@@ -68,8 +97,11 @@ pub enum LayerObjectRefusal {
     /// The item's argument has a high byte, or its `+0x14` is set: the
     /// pass setup (`0x0004d9c0`) takes them.
     Argument,
-    /// Layer 5: the draw adds a stream of its own for an object's record
-    /// (`0x00024040`, `0x00024490`), which is not read.
+    /// Layer 5: the stream and constants the draw adds for an object's
+    /// record whose model has a PRT block (`0x00024040`, `0x00024490`)
+    /// do not read, or the draw leaves one of them as the draws before it
+    /// left it (no entry for the object, no coefficients, or geometry not
+    /// resident).
     Layer5Stream,
     /// No bit 9 on a part that is not a triangle list.
     Topology,

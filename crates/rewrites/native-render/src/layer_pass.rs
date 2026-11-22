@@ -533,6 +533,33 @@ pub fn item_stencil(layer: u8, stencil_off: bool, device: gfx::state::StencilSta
     ItemStencil { stencil: device, needs_mode_1: marked }
 }
 
+/// Whether skipping the guest's draw of a pass with implementation `imp`
+/// leaves the device as drawing it would (`read`: the device's render
+/// state at a guest slot, at the layer call), as layer 3's walk requires
+/// of the parts it skips (docs/graphics/framescene.md, slice 4, "The
+/// stage"; **Code**, `h2 disasm`, docs/graphics/layer-draw.md):
+///
+/// - each draw sets the pass's render-state list (`0x0001a170`), with
+///   no comparison against the device;
+/// - a pass switch restores the cached implementation's restore list
+///   (`0x00018900` on `[0x00485b48 + 0x24] + 0x11c`), and the layer setup
+///   `0x00016b10` restores it and clears the cache at the next layer
+///   draw (and at each layer's first shader begin, `0x0001bbf0`).
+///
+/// The layer draw runs the setup before any item, so a skipped run from
+/// the list's first begins on a cleared cache, and the first item the
+/// guest keeps begins on one too. Skipped, the run leaves the device
+/// unchanged; drawn, it would leave every state of the lists it set and
+/// restored. Both agree exactly when every state of both lists already
+/// holds. A pass with engine-driven render states sets values decided
+/// per draw, and refuses. The first shader begin's fixed states and its
+/// cleared texture caches are redone by the first shader begin the guest
+/// keeps (the byte `0x004670bc` stays set), or by the next layer draw's.
+pub fn skip_holds(imp: &ResolvedImplementation, read: &dyn Fn(u32) -> Option<u32>) -> bool {
+    imp.engine_render_states.is_empty()
+        && imp.render_states.iter().chain(&imp.restore_states).all(|s| read(u32::from(s.state)) == Some(s.value))
+}
+
 /// The world's owner of a layer item, `None` for an object's.
 pub fn world_owner(owner: LayerOwner) -> Option<crate::world::Owner> {
     match owner {
@@ -674,7 +701,7 @@ mod tests {
     fn item(owner: LayerOwner, implementation: usize, lighting: Option<Lighting>) -> LayerItem {
         LayerItem {
             slot: 4, key: key(implementation), owner, model: u32::MAX, rows: 0..0, lighting,
-            flags: frame_scene::PartFlags::NONE, subparts: None, refusal: None,
+            flags: frame_scene::PartFlags::NONE, subparts: None, refusal: None, prt: None,
         }
     }
 
@@ -887,6 +914,24 @@ mod tests {
         }
         let (drawn, _) = clear_prefix(&mut m, 7, &|_| true).unwrap();
         assert_eq!(drawn.len(), 1);
+    }
+
+    #[test]
+    fn a_skipped_pass_holds_only_when_every_state_it_sets_and_restores_already_holds() {
+        use tags::shader::RenderStateValue;
+        let mut imp = implementation(0, InputReads::default(), Vec::new());
+        imp.render_states = vec![RenderStateValue { state: 11, value: 13 }];
+        imp.restore_states = vec![RenderStateValue { state: 19, value: 20 }];
+        let device = |slot: u32| match slot {
+            11 => Some(13),
+            19 => Some(20),
+            _ => Some(0),
+        };
+        assert!(skip_holds(&imp, &device));
+        assert!(!skip_holds(&imp, &|slot| if slot == 19 { Some(21) } else { device(slot) }), "a restore that would change the device");
+        assert!(!skip_holds(&imp, &|slot| if slot == 11 { None } else { device(slot) }), "a state that does not read");
+        imp.engine_render_states = vec![tags::shader::ExternalBinding { bytes: [0; 4] }];
+        assert!(!skip_holds(&imp, &device), "per-draw states");
     }
 
     #[test]

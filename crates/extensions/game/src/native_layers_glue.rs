@@ -13,8 +13,8 @@
 //!   and layer, their stage images decoded; the parts that can draw them;
 //!   and each material resolved once, with its instance's animated
 //!   properties and input scales, for the plan. Object models compile
-//!   their materials' passes of layers 1, 7, 8 and 20 with their layer-3
-//!   passes, over the same buffers (`object_program_gpu::lit_model`).
+//!   their materials' passes of layers 1, 5, 7, 8 and 20 with their
+//!   layer-3 passes, over the same buffers (`object_program_gpu::lit_model`).
 //! - **Per layer call** ([`Glue::ask`], before the layer draw of a scene
 //!   view or of the first person): the bridge extracts the layer's pass
 //!   from guest memory (`render_bridge::native_layers::extract`); the plan
@@ -23,7 +23,11 @@
 //!   static (the material as resolved at the load, no animation: what the
 //!   compiled programs hold) and the layer's set draws its part with its
 //!   shader. An object item is drawn when extraction names no cause
-//!   (`frame_scene::LayerObjectRefusal`), its model is resident in the
+//!   (`frame_scene::LayerObjectRefusal`), the draw adds no PRT stream
+//!   for it (layer 5, `frame_scene::PrtStream`: `object_prt`), every
+//!   state its passes set and restore already holds
+//!   (`layer_pass::skip_holds`: `object_state`; `state` for a structure
+//!   item), its model is resident in the
 //!   caller's set (the scene's, `native_objects_glue::layer_models`, or
 //!   the first person's, `native_first_person_glue::layer_models`), and
 //!   each of its material's passes in the layer plans
@@ -113,9 +117,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let is_object = |slot: u32| object_items.iter().any(|i| i.slot == slot);
         // The plan of the structure's items, from the scene alone.
         let mut taken: HashMap<u32, u32> = HashMap::new();
-        match world {
-            Some((view, _)) => {
-                let plan = layer_pass::plan(scene, pass, &mut Loaded(view));
+        let plan = world.map(|(view, _)| layer_pass::plan(scene, pass, &mut Loaded(view)));
+        match &plan {
+            Some(plan) => {
                 for (slot, r) in &plan.refused {
                     if !is_object(*slot) {
                         *outcomes.entry(cause(r)).or_default() += 1;
@@ -148,12 +152,14 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             *outcomes.entry("program").or_default() += taken.len() as u64;
             taken.clear();
         }
-        // Extraction's causes, and layer 5's, before anything is asked of
-        // the device.
+        // Extraction's causes, and layer 5's PRT stream, before anything
+        // is asked of the device.
         let mut objects: Vec<&LayerItem> = Vec::with_capacity(object_items.len());
         for &item in &object_items {
             if let Some(why) = item.refusal {
                 *outcomes.entry(why.name()).or_default() += 1;
+            } else if item.prt.is_some() {
+                *outcomes.entry("object_prt").or_default() += 1;
             } else if !OBJECT_LAYERS.contains(&l) {
                 *outcomes.entry("object_layer").or_default() += 1;
             } else {
@@ -187,6 +193,20 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         if !taken.is_empty() && !world.is_some_and(|(_, palettes)| palettes_hold(palettes, &|n| d.stage_palette(&read, n))) {
             *outcomes.entry("palettes").or_default() += taken.len() as u64;
             taken.clear();
+        }
+        // Skipping an item's draws must leave the device as drawing them
+        // would: every state its passes set and restore already holds
+        // (`layer_pass::skip_holds`, as layer 3's walk requires).
+        if let Some(plan) = &plan {
+            let device_state = |slot: u32| d.render_state(&read, slot);
+            for draw in &plan.draws {
+                if taken.contains_key(&draw.slot)
+                    && !draw.passes.iter().all(|p| draw.implementation(p).is_some_and(|imp| layer_pass::skip_holds(imp, &device_state)))
+                {
+                    taken.remove(&draw.slot);
+                    *outcomes.entry("state").or_default() += 1;
+                }
+            }
         }
         let planned = if objects.is_empty() { None } else { plan_objects(&d, mem, l, caller, scene, pass, &objects, &mut outcomes) };
         let (models, mut object_draws) = match planned {
@@ -368,6 +388,7 @@ fn plan_objects<B: d3d::backend::Backend>(
     }
     let fog_words = device_fog_words(d, mem);
     let specular = crate::native_objects_glue::device_specular(d, mem);
+    let device_state = |slot: u32| d.render_state(&read, slot);
     let ready: Vec<bool> = items.iter().map(|i| models.ready(i.model)).collect();
     let Ok(guard) = models.lit().try_lock() else { return all("object_models") };
     let Some(lit) = guard.as_ref() else { return all("object_models") };
@@ -387,6 +408,10 @@ fn plan_objects<B: d3d::backend::Backend>(
         };
         if draws.iter().any(|d| d.texaccum) {
             *outcomes.entry("object_texaccum").or_default() += 1;
+            continue;
+        }
+        if !draws.iter().all(|draw| lit.planned_pass(item.model, draw).is_some_and(|p| layer_pass::skip_holds(&p.implementation, &device_state))) {
+            *outcomes.entry("object_state").or_default() += 1;
             continue;
         }
         let passes = draws.len();

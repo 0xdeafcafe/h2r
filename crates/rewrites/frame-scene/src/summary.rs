@@ -192,6 +192,18 @@ pub fn summary_hash(scene: &FrameScene) -> u64 {
                     None => h.word(0),
                 }
                 h.word(i.refusal.map_or(0, |r| 1 + r as u32));
+                match &i.prt {
+                    Some(p) => {
+                        h.word(1);
+                        h.word(u32::from(p.kind) | u32::from(p.stride) << 8);
+                        h.word(p.data);
+                        h.word(p.constants.len() as u32);
+                        for c in &p.constants {
+                            h.floats(c);
+                        }
+                    }
+                    None => h.word(0),
+                }
             }
         }
         crate::decorator::summary_words(scene, v, &mut |w| h.word(w));

@@ -132,7 +132,14 @@ same reads, in the same order.
    `native_decorators_glue`). At the scene's layer 3, the open view's
    materials are made ready, the view is planned over the ready ones,
    and the host reserves one external pass (stage `World`) as the fog's
-   does: the device must be W-buffered with the stencil off, layer 3's
+   does: the device must be W-buffered, the stage palettes the load
+   expanded palettized stage bitmaps through must still be bound
+   (`palettes_hold`), the device's stencil must read, and so must its
+   cull when a planned pass leaves the cull to the device. The draw
+   `0x0004e260` sets neither, so the pipelines draw under the stencil
+   and cull the device holds at the layer-3 call
+   (`decorators_gpu::DrawKey`; the stencil through
+   `fog_gpu::layer_stencil`, its reference set on the pass). Layer 3's
    bit is cleared on every planned item through a preview
    (`clear_slots`, all or nothing: each slot an item of build
    `0x0004de20` with the bit set), and the masks are applied and the
@@ -177,12 +184,17 @@ same reads, in the same order.
   whose material is not ready stay the guest's while the rest draw
   natively.
 - A pass stays on the D3D path when it has engine-driven render or
-  stage states, leaves the cull to the device, samples a lightmap, has a
-  palettized stage bitmap, computes anything per draw, reads a constant
-  the stage does not set (it sets `c[0..18]`, `c[53]` and the pass's
-  own), or its set's stream supplies one of `v11..v15`.
-- The pipelines test no stencil, so a layer 3 drawn with the stencil on
-  is the D3D path's.
+  stage states, samples a lightmap, computes anything per draw, reads a
+  constant the stage does not set (it sets `c[0..18]`, `c[53]` and the
+  pass's own), or its set's stream supplies one of `v11..v15`.
+- A palettized stage bitmap is expanded at load through the palette its
+  stage holds then, as the world's are; a view whose stage palettes
+  differ stays on the D3D path.
+- A pass that sets no `CULLMODE` draws with the device's cull and
+  winding; a view where the cull does not read stays on the D3D path.
+- A view whose stencil tests or writes on a copy whose depth has no
+  stencil aspect has no pipeline for that copy, so the view stays on the
+  D3D path.
 - The pipeline draws with two-sided lighting on, as the draw sets it.
 - Extraction repeats the build's implementation lookup: an item whose
   build declines is not in the scene, as the guest draws nothing for it.

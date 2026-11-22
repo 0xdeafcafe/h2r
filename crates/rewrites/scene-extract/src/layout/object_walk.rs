@@ -347,9 +347,8 @@ fn read_part(
 ///
 /// - Outside layer 3 the draw takes no lightmap (`0x0004d28b`: the page
 ///   and its coordinate stream only for layer 3), and in layer 5 it adds
-///   a stream of its own for an object's record (`0x0004d220`,
-///   `0x00024040` and `0x00024490`), which is not read
-///   ([`LayerObjectRefusal::Layer5Stream`]).
+///   the model's PRT stream for an object's record (`0x0004d220`,
+///   `0x00024040` and `0x00024490`), which [`crate::layout::prt`] reads.
 /// - The prologue `0x0004d640` changes a render state from the record's
 ///   fade byte (`+0x1a`) unless it is `0xff`
 ///   ([`LayerObjectRefusal::Fade`]), toggles the auxiliary state with
@@ -365,9 +364,6 @@ pub fn layer_part(
     mem: &dyn GuestRead, layer: u8, item: u32, record: u32, key: ItemKey,
 ) -> Result<(PartFlags, Option<Subparts>), frame_scene::LayerObjectRefusal> {
     use frame_scene::LayerObjectRefusal as R;
-    if layer == 5 {
-        return Err(R::Layer5Stream);
-    }
     let packed = word(mem, item, 0xc).ok_or(R::Unread)?;
     if (half(mem, record, RECORD_DRAW_FLAGS).ok_or(R::Unread)? as u8) != u8::MAX {
         return Err(R::Fade);
@@ -750,10 +746,9 @@ mod tests {
         let (item, record, parts, shader) = (0x3000, RENDER_RECORDS + RENDER_RECORD_SIZE, 0x9000, 0xa000);
         let key = part().key;
         let at = |mem: &Mem, layer| layer_part(mem, layer, item, record, key);
-        for layer in [1, 7, 8, 20] {
+        for layer in [1, 5, 7, 8, 20] {
             assert_eq!(at(&mem, layer), Ok((PartFlags::NONE, None)), "layer {layer}");
         }
-        assert_eq!(at(&mem, 5), Err(R::Layer5Stream), "layer 5 adds a stream of its own");
         mem.w(record, 3 << 29 | RECORD_STENCIL_MARK);
         assert_eq!(at(&mem, 1), Ok((PartFlags::STENCIL_MARK, None)));
         assert_eq!(at(&mem, 8), Ok((PartFlags::NONE, None)), "no mark outside layers 1 and 3");

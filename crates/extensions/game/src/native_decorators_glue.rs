@@ -10,9 +10,9 @@
 //!   decorator set (`DECR`) names, resolved (`tags::material`), and each
 //!   of its layer-3 passes at each detail level as the build picks it
 //!   (`native_render::decorators_load::decorator_look`), with the stage
-//!   bitmaps decoded. A palettized stage bitmap refuses the pass: the
-//!   stage expands no palette. One line says how many passes load and
-//!   why the rest stay on the D3D path.
+//!   bitmaps decoded (a palettized one expanded through the device
+//!   palette its stage holds at load, as the world's are). One line says
+//!   how many passes load and why the rest stay on the D3D path.
 //! - **At first sight** ([`Host::prepare`], at the layer-3 call, once per
 //!   load and material): the set's geometry and stream format from guest
 //!   memory (`set_geometry_with`, `object_streams::StreamFormats`). A
@@ -20,11 +20,16 @@
 //!   uploads its buffers and images. The first view of each frame takes
 //!   finished materials from this load. A set that is not resident is
 //!   tried again at the next view.
-//! - **Per view** ([`Host::ask`]): the device's checks (W-buffered, no
-//!   stencil), the skip over a preview (`clear_slots`), and the reserved
-//!   pass, then the masks and the commit, as the fog's.
+//! - **Per view** ([`Host::ask`]): the device's checks (W-buffered, the
+//!   palettes the load expanded still bound, the cull read when a pass
+//!   inherits it), the device's stencil and cull for the pipelines
+//!   (`decorators_gpu::DrawKey`), the skip over a preview
+//!   (`clear_slots`), and the reserved pass, then the masks and the
+//!   commit, as the fog's.
 //! - **The pass** (`DecoratorPass`): the device's view constants and W
-//!   clip at the issue and the pass's pipeline for each copy's formats.
+//!   clip at the issue and the pass's pipeline for each copy's formats
+//!   under the view's stencil and cull (none when the stencil tests on a
+//!   depth with no stencil aspect).
 //!   An unfinished pipeline keeps the slots on D3D. `decorators_gpu::bind`
 //!   and `encode` record after all copies pass.
 
@@ -36,7 +41,7 @@ use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use engine::memory::GuestMemory;
 use map::{FourCC, Map, TagId};
 use native_render::decorators::{Material, Plan, clear_slots};
-use native_render::decorators_gpu::{DecoratorTarget, MaterialGpu, bind, encode};
+use native_render::decorators_gpu::{DecoratorTarget, DrawKey, MaterialGpu, bind, encode};
 use native_render::decorators_load::{
     DECORATOR_CLASSIFICATION, DecoratorLook, SetGeometry, SetRefusal, buffers, compile, decorator_look, set_geometry_with,
 };
@@ -47,7 +52,7 @@ use native_render::program::ViewInputs;
 use native_render::skip::{Cleared, LIGHTMAP_LAYER};
 use render_bridge::native_decorators::Host;
 
-use crate::native_world_glue::{ReadMemory, Ready, StageDecoder, StageImages, State, current_ready};
+use crate::native_world_glue::{ReadMemory, Ready, StageDecoder, StageImages, StagePalettes, State, current_ready, inherited_cull, palettes_hold};
 
 /// The layer the model decorators draw in (`skip::LIGHTMAP_LAYER`), as
 /// the template's layer list numbers it.
@@ -67,6 +72,9 @@ const SHAD: FourCC = FourCC(*b"shad");
 pub struct DecoratorLooks {
     looks: HashMap<(u16, u8, u8), Result<DecoratorLook, String>>,
     images: StageImages,
+    /// The device palettes the load expanded palettized stage bitmaps
+    /// through (`StageDecoder::used`): a view draws only while they hold.
+    palettes: StagePalettes,
     prepared: Mutex<Prepared>,
     gpu: Mutex<HashMap<Material, MaterialGpu>>,
 }
@@ -102,14 +110,6 @@ fn set_shaders<R: Read + Seek>(map: &Map<R>, lib: &tags::material::ShaderLibrary
     out
 }
 
-/// Whether image `image` of `bitmap` is palettized (the stage would
-/// expand it through the device's palette).
-fn palettized<R: Read + Seek>(map: &mut Map<R>, bitmap: TagId, image: u32) -> Result<bool, String> {
-    let tag = tags::DecodedTag::read(map, bitmap).map_err(|e| format!("bitmap does not read ({e})"))?;
-    let tags::TagData::Bitmap(b) = tag.data else { return Err("stage datum is not a bitmap".into()) };
-    let i = b.images.get(image as usize).ok_or("bitmap has no such image")?;
-    Ok(matches!(i.format, tags::PixelFormat::P8 | tags::PixelFormat::P8Bump))
-}
 
 /// Reads every layer-3 pass of the shaders the map's decorator sets name.
 /// Called from the world's worker.
@@ -122,12 +122,13 @@ pub fn load<R: Read + Seek>(
         Ok(lib) => lib,
         Err(e) => {
             eprintln!("native-decorators: the shader tags do not read ({e}); the D3D path draws the decorators");
-            return Arc::new(DecoratorLooks { looks, images, prepared: Mutex::default(), gpu: Mutex::default() });
+            return Arc::new(DecoratorLooks {
+                looks, images, palettes: StagePalettes::default(), prepared: Mutex::default(), gpu: Mutex::default(),
+            });
         }
     };
     let shaders = set_shaders(map, &lib);
     let mut refused: HashMap<String, usize> = HashMap::new();
-    let mut palettes: HashMap<(TagId, u32), Result<bool, String>> = HashMap::new();
     for &shader in &shaders {
         let material = match lib.material(shader, None) {
             Ok(m) => m,
@@ -153,13 +154,6 @@ pub fn load<R: Read + Seek>(
                 let look = look.and_then(|look| {
                     for (n, s) in look.look.textures.iter().enumerate() {
                         let Stage::Bitmap { bitmap, image } = *s else { continue };
-                        let p = palettes
-                            .entry((bitmap, image))
-                            .or_insert_with(|| palettized(map, bitmap, image))
-                            .clone();
-                        if p.map_err(|why| format!("stage {n} {why}"))? {
-                            return Err(format!("stage {n} bitmap is palettized"));
-                        }
                         decoder.decode(map, files, &mut images, bitmap, image, n, true)?;
                     }
                     Ok(look)
@@ -179,7 +173,7 @@ pub fn load<R: Read + Seek>(
         looks.values().filter(|l| l.is_ok()).count(),
         looks.len(),
     );
-    Arc::new(DecoratorLooks { looks, images, prepared: Mutex::default(), gpu: Mutex::default() })
+    Arc::new(DecoratorLooks { looks, images, palettes: decoder.used().clone(), prepared: Mutex::default(), gpu: Mutex::default() })
 }
 
 type MaterialResult = Result<MaterialGpu, String>;
@@ -373,8 +367,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     fn ask(&self, mem: &mut dyn GuestMemory, plan: Plan) -> Option<Cleared> {
         use timeline::native::{Metric, Stage};
         let ready = self.ready(mem)?;
+        let looks = ready.decorators.get()?;
         let writes_depth = {
-            let looks = ready.decorators.get()?;
             let p = looks.prepared.lock().ok()?;
             let mut writes_depth = false;
             for b in &plan.batches {
@@ -382,6 +376,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             }
             writes_depth
         };
+        let inherits_cull = plan.batches.iter().any(|b| matches!(looks.look(&b.material), Some(Ok(l)) if l.inherits_cull));
         let mut d = self.device.lock().ok()?;
         if !d.can_external_pass()
             || !d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()?
@@ -389,18 +384,26 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             return None;
         }
         // The programs write w as depth (`w_buffer`): a view whose draws
-        // store z is the D3D path's. The pipelines test no stencil: a
-        // layer drawn with it on is the D3D path's.
+        // store z is the D3D path's.
         if d.hw().control0.is_some_and(|c| c & d3d::nv2a::CONTROL0_Z_PERSPECTIVE == 0) {
             return None;
         }
         let read = ReadMemory(mem);
-        if !d.stencil_state(&read).is_some_and(|s| !s.enable) {
-            if !STENCIL.swap(true, Ordering::Relaxed) {
-                eprintln!("native-decorators: layer 3 draws with the stencil on or unread; the D3D path draws the decorators");
-            }
+        if !palettes_hold(&looks.palettes, &|n| d.stage_palette(&read, n)) {
             return None;
         }
+        // The draw `0x0004e260` sets neither the stencil nor the cull: the
+        // placements draw under the device's (`DrawKey`). One that does
+        // not read keeps the view on the D3D path, as does an unread cull
+        // that a pass inherits.
+        let cull = d.cull_state(&read).map(inherited_cull);
+        let Some(stencil) = d.stencil_state(&read).filter(|_| cull.is_some() || !inherits_cull) else {
+            if !STENCIL.swap(true, Ordering::Relaxed) {
+                eprintln!("native-decorators: layer 3's stencil or inherited cull is unread; the D3D path draws the decorators");
+            }
+            return None;
+        };
+        let draw = DrawKey { stencil, cull };
         // The skip over a preview: nothing touches the guest until the
         // reservation has recorded on every copy.
         let planning = timeline::native::Timer::start(Stage::World, Metric::PrepareNs);
@@ -413,7 +416,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
         let external = d3d::ExternalPlan { stage: Stage::World, view, ranges, slots: Vec::new() };
-        let pass = Box::new(DecoratorPass { plan, ready: Arc::clone(&ready), view: None, w_clip: None, writes_depth });
+        let pass = Box::new(DecoratorPass { plan, ready: Arc::clone(&ready), view: None, w_clip: None, writes_depth, draw });
         drop(planning);
         let reservation = d
             .prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), external, pass, Vec::new())
@@ -454,6 +457,8 @@ struct DecoratorPass {
     view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
     w_clip: Option<([f32; 2], bool)>,
     writes_depth: bool,
+    /// The device's stencil and cull at the layer-3 call.
+    draw: DrawKey,
 }
 
 impl DecoratorPass {
@@ -462,12 +467,13 @@ impl DecoratorPass {
     fn record(&self, t: d3d::ExternalTarget<'_>, view: &ViewInputs) -> Result<usize, &'static str> {
         let looks = self.ready.decorators.get().ok_or("decorator load unavailable")?;
         let mut gpu = looks.gpu.lock().unwrap_or_else(|e| e.into_inner());
-        let bound = bind(t.device, &mut gpu, &self.plan, view, t.color_format, t.depth_format)?;
+        let bound = bind(t.device, &mut gpu, &self.plan, view, t.color_format, t.depth_format, self.draw)?;
         drop(gpu);
         let target = DecoratorTarget {
             color: t.color,
             depth: t.depth,
             stencil: t.depth_format.has_stencil_aspect(),
+            stencil_reference: u32::from(self.draw.stencil.reference),
             size: t.size,
             viewport: t.viewport,
         };
@@ -493,13 +499,16 @@ impl d3d::ExternalPass for DecoratorPass {
         let mut ready = true;
         for batch in &self.plan.batches {
             let material = gpu.get_mut(&batch.material).ok_or("decorator material unavailable")?;
-            ready &= material.pipeline_ready(t.device, t.color_format, t.depth_format);
+            ready &= material.pipeline_ready(t.device, t.color_format, t.depth_format, self.draw);
         }
         ready.then_some(()).ok_or("decorator pipeline pending")
     }
 
     fn writes(&self) -> d3d::ExternalWrites {
-        d3d::ExternalWrites { color: true, depth_stencil: self.writes_depth }
+        d3d::ExternalWrites {
+            color: true,
+            depth_stencil: self.writes_depth || native_render::fog_gpu::stencil_writes(&self.draw.stencil),
+        }
     }
 
     fn record_ranges(&mut self, t: d3d::ExternalTarget<'_>) -> usize {
