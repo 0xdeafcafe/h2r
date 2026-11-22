@@ -28,7 +28,7 @@ pub const MAX_TEXT: usize = 500;
 
 /// What a report says about the player: the title's feedback types, by
 /// the public XDK's `XONLINE_FEEDBACK_TYPE` values. Halo 2 offers ten of
-/// them (docs/live/live-boundary.md, "XOnlineFeedbackSend"); the public
+/// them (the `XOnlineFeedbackSend` row of docs/live/live-boundary.md); the public
 /// header's names for 10, 11 and 12 are not confirmed here, so they keep
 /// their numbers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]

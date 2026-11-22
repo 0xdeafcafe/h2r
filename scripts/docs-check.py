@@ -271,15 +271,21 @@ CODE_REF = re.compile(
     r"(docs/[A-Za-z0-9_/.\-]+\.md)(?:[\s,;:(]{0,4}(?:§\s*([0-9]+(?:\.[0-9]+)*)|\"([^\"]{3,80})\"))?"
 )
 # Paths used as examples in doc comments, not citations.
-CODE_REF_EXAMPLES = {"docs/x.md"}
+CODE_REF_EXAMPLES = {"docs/x.md", "docs/a.md"}
+
+
+# A bold lead-in (`**Sky.**`, `- **Sky.**`) names its paragraph or list item:
+# code may cite it as a section.
+RUN_IN = re.compile(r"^\s*(?:[-*]\s+|\d+\.\s+)?\*\*([^*]{3,80}?)[.:]?\*\*")
 
 
 def headings(path):
-    return [
-        HEADING.match(line).group(2).replace("`", "").lower()
-        for _, line in prose_lines(path)
-        if HEADING.match(line)
-    ]
+    found = []
+    for _, line in prose_lines(path):
+        m = HEADING.match(line) or RUN_IN.match(line)
+        if m:
+            found.append(m.group(m.lastindex).replace("`", "").lower())
+    return found
 
 
 def check_code_refs():

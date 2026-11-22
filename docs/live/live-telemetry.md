@@ -214,7 +214,7 @@ retail fifteen fit. The server keeps the field in `GameStarted`, returns it
 in game summaries, details and recent games, and filters by it
 (`GET /v1/games?skulls=4,6`, [live-api.md](live-api.md)).
 
-Campaign: the map activation `0x0018f000` also runs on every checkpoint
+**Campaign.** The map activation `0x0018f000` also runs on every checkpoint
 revert and mission restart (`0x0018e700` re-activates with a copy of the
 active options). A re-activation of the campaign map the current game is on
 continues that game instead of ending it and starting another (which also
