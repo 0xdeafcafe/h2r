@@ -65,7 +65,7 @@ impl KitMaps {
         };
         KitMaps {
             lobby: map.is_some_and(|id| c.all().any(|m| m.id == id && is_kit_map(m))),
-            installed: c.all().any(|m| is_kit_map(m)),
+            installed: c.all().any(is_kit_map),
         }
     }
 

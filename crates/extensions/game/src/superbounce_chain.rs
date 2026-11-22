@@ -228,9 +228,7 @@ impl Chain {
             airborne: t.airborne,
             word: t.word,
         };
-        let Some(p) = self.prev.replace(now) else {
-            return None;
-        };
+        let p = self.prev.replace(now)?;
         if p.unit != t.unit {
             // A new unit on the same tick the old one went: a death and a
             // respawn, or a vehicle.

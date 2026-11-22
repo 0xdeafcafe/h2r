@@ -860,9 +860,7 @@ pub fn frame(guest: &dyn GuestMemory, s: &State, spots: &[Spot]) -> Vec<Callout>
         .flatten();
     if let Some(body) = &body {
         let on = assist::opted_in();
-        let target = Some(body)
-            .filter(|_| on)
-            .and_then(|b| assist::pick(spots, b));
+        let target = on.then_some(body).and_then(|b| assist::pick(spots, b));
         out.extend(prompts::callouts(
             spots,
             body,
