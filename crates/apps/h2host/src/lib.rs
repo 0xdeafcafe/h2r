@@ -104,6 +104,7 @@ fn guest(layout: Layout, store: Arc<settings::Store>) -> app::worker::GuestFn {
             debug_menu: None,
             perf_overlay: None,
             cheat_line: None,
+            game_code: None,
             discoverable_agent: false,
             settings: Some(store),
             trace_limit: Some(TRACE_LIMIT),

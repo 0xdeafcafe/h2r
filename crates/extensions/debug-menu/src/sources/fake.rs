@@ -18,6 +18,8 @@ pub struct Game {
     pub snapshots: Vec<&'static str>,
     pub with_players: bool,
     pub frame_stats: bool,
+    /// `game.code`: clang's background build has finished.
+    pub code_ready: bool,
 }
 
 impl Default for Game {
@@ -32,6 +34,7 @@ impl Default for Game {
             snapshots: vec!["quick", "before_the_bridge"],
             with_players: true,
             frame_stats: true,
+            code_ready: false,
         }
     }
 }
@@ -50,6 +53,25 @@ impl Game {
                        "phase": "gameplay", "paused": false, "boundary": "tick"},
                 "protocol": 1, "fps": 29.97, "controller": false, "claimed": false,
             })),
+            // game::game_code::GameCode::answer, on the fast tier.
+            "game.code" => {
+                let ready = self.code_ready;
+                Ok(json!({
+                    "tier": "fast", "full_speed": false,
+                    "module": "/tmp/h2boot/fast/libh2game.dylib",
+                    "stamp": "xbe 1f2e generator 9a8b abi 7",
+                    "background": {
+                        "state": if ready { "ready" } else { "building" },
+                        "log": "/tmp/h2boot/clang-build.log",
+                        "elapsed_s": 230, "typical_s": 900,
+                        "step": if ready { "clang (O1): 965 compiled, 42 reused" } else { "emit: 2.6s, 18662 owners" },
+                    },
+                    "restart": {
+                        "ok": ready,
+                        "why": (!ready).then_some("the full-speed version is still building"),
+                    },
+                }))
+            }
             "sim.session" => {
                 let coop = self.kind == "coop_host";
                 Ok(json!({

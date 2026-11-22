@@ -8,11 +8,16 @@
 //! answers BUSY with the blockers in its message, which the menu shows as
 //! the failure. A load, a restart and a quit are destructive, so each
 //! asks twice.
+//!
+//! Game code (`game.code`) says which game code this start runs: clang's
+//! full-speed module, or the slower fast tier while clang builds the
+//! full-speed one in the background, how that build is going, and offers
+//! the restart into it once it is ready (`game.code.restart`).
 
 use serde_json::{Value, json};
 
 use super::method::{
-    GAME_MENU, MAP_RELOAD, MAPS_TEST_LIST, MAPS_TEST_LOAD, SIM_SESSION, STATE_LIST, STATE_LOAD,
+    GAME_CODE, GAME_CODE_RESTART, GAME_MENU, MAP_RELOAD, MAPS_TEST_LIST, MAPS_TEST_LOAD, SIM_SESSION, STATE_LIST, STATE_LOAD,
     STATE_SAVE, STATUS,
 };
 use super::{at_menu, get, list, nothing, problem, str_of, writes_blocked};
@@ -43,6 +48,13 @@ pub fn pages() -> Vec<Section> {
             about: "every saved snapshot of this build; select one to load it".into(),
             calls: vec![Call::bare(STATE_LIST), Call::bare(SIM_SESSION)],
             rows: snapshot_rows,
+        },
+        Section {
+            id: "game/code".into(),
+            title: "Game code".into(),
+            about: "full speed or the slower start, and the full-speed build".into(),
+            calls: vec![Call::bare(GAME_CODE)],
+            rows: code_rows,
         },
         Section {
             id: "game/test-maps".into(),
@@ -117,6 +129,8 @@ fn game_rows(a: &[Answer]) -> Vec<Row> {
         restart,
         Row::open("Test maps", "game/test-maps"),
         quit,
+        Row::open("Game code", "game/code")
+            .about("full speed or the slower start; restart into full speed when it's built"),
     ]
 }
 
@@ -202,6 +216,66 @@ fn test_map_rows(a: &[Answer]) -> Vec<Row> {
         .collect()
 }
 
+/// Minutes, rounded up, for a build's elapsed and remaining time.
+fn minutes(secs: u64) -> u64 {
+    secs.div_ceil(60).max(1)
+}
+
+fn code_rows(a: &[Answer]) -> Vec<Row> {
+    let v = match get(a, 0) {
+        Ok(v) => v,
+        Err(e) => return vec![problem("Game code", e)],
+    };
+    let full = v["full_speed"].as_bool().unwrap_or(false);
+    let running = if full {
+        format!("full speed ({})", text(&v["tier"]))
+    } else {
+        "slower start (fast tier)".to_owned()
+    };
+    let bg = &v["background"];
+    let state = bg["state"].as_str().unwrap_or("none");
+    let build = match state {
+        "building" => {
+            let done = bg["elapsed_s"].as_u64().unwrap_or(0);
+            let left = bg["typical_s"].as_u64().unwrap_or(0).saturating_sub(done);
+            format!("building, {} min in, about {} min left", minutes(done), minutes(left))
+        }
+        "ready" => "ready: restart to use it".to_owned(),
+        "failed" => "failed: see the log".to_owned(),
+        _ => "not needed".to_owned(),
+    };
+    let mut rows = vec![
+        Row::info("Running", running).about(if full {
+            "the optimised clang module: the game at full speed"
+        } else {
+            "the Cranelift fast tier, built in seconds so the game starts; it runs slower"
+        }),
+        Row::info("Full-speed build", build)
+            .about("clang builds the full-speed module in the background; the next start uses it"),
+    ];
+    if state == "building"
+        && let Some(step) = bg["step"].as_str()
+    {
+        rows.push(Row::info("Last step", step.to_owned()).about("the build log's last line"));
+    }
+    if let Some(log) = bg["log"].as_str() {
+        rows.push(Row::info("Build log", log.to_owned()));
+    }
+    rows.push(Row::info("Module", text(&v["module"])).about("the game code this start loaded"));
+    if let Some(stamp) = v["stamp"].as_str() {
+        rows.push(Row::info("Stamp", stamp.to_owned()).about("image and generator the module was built for"));
+    }
+    let restart = Row::action("Restart at full speed", Call::bare(GAME_CODE_RESTART))
+        .confirm()
+        .on_ok(|_| "restarting at full speed".into())
+        .about("starts the game again on the full-speed module; unsaved progress is lost, press again to confirm");
+    rows.push(match v["restart"]["why"].as_str() {
+        Some(why) if v["restart"]["ok"] != Value::Bool(true) => restart.disabled(why.to_owned()),
+        _ => restart,
+    });
+    rows
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::fake::{Game, page, row};
@@ -228,7 +302,8 @@ mod tests {
                 "Snapshots",
                 "Restart map",
                 "Test maps",
-                "Quit to main menu"
+                "Quit to main menu",
+                "Game code"
             ]
         );
         assert_eq!(
@@ -313,5 +388,24 @@ mod tests {
     fn toasts_read_the_results() {
         assert_eq!(restart_toast(&json!({"queued": true, "map": "coagulation"})), "restarting coagulation");
         assert_eq!(restart_toast(&json!({"queued": true})), "restarting the map");
+    }
+
+    #[test]
+    fn game_code_says_slower_start_build_progress_and_waits_to_restart() {
+        let mut g = Game::default();
+        let rows = page(&mut g, "game/code");
+        assert_eq!(row(&rows, "Running").shown(), "slower start (fast tier)");
+        assert_eq!(row(&rows, "Full-speed build").shown(), "building, 4 min in, about 12 min left");
+        assert_eq!(row(&rows, "Last step").shown(), "emit: 2.6s, 18662 owners");
+        let r = row(&rows, "Restart at full speed");
+        assert_eq!(r.disabled.as_deref(), Some("the full-speed version is still building"));
+        assert_eq!(call_of(&r).method, "game.code.restart");
+        assert!(r.confirm);
+
+        g.code_ready = true;
+        let rows = page(&mut g, "game/code");
+        assert_eq!(row(&rows, "Full-speed build").shown(), "ready: restart to use it");
+        assert!(row(&rows, "Restart at full speed").disabled.is_none());
+        assert!(rows.iter().all(|r| r.label != "Last step"));
     }
 }
