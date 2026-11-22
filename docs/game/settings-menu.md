@@ -199,8 +199,9 @@ described in [determinism](../graphics/high-resolution.md#determinism).
 
 Pinned keeps corner-anchored HUD groups near the edges of each player's
 viewport. Centered keeps those groups inside a centred 4:3 safe area.
-Both settings keep menu widgets centred and preserve their proportions.
-The scene backdrop fills the viewport. See
+HUD Position does not change menus. Menu widgets stay centred and keep
+their proportions. Full-width menu background art and the scene backdrop
+fill the viewport. See
 [widescreen projection](../graphics/high-resolution.md#widescreen-projection).
 
 The frame rate applies at the window's next turn (`app::fps::FpsControl`).

@@ -1301,8 +1301,11 @@ Tooling:
 - **Studio**: the Game type script window
   ([editor-guide.md](../editor/editor-guide.md#game-type-scripts);
   `crates/apps/studio/src/app/rules_edit.rs`) colours the text by
-  `rules::ide`'s semantic tokens, lists its diagnostics as you type, and
-  offers completion, hover, signature help and format; its check report
+  `rules::ide`'s semantic tokens, underlines and lists its diagnostics
+  as you type, and offers completion as you type (ranked by
+  `sort_text`, snippets with their defaults), hover, signature help,
+  quick fixes (`ide::actions`), rename, go to definition, the uses of
+  the name at the cursor (`ide::references`) and format; its check report
   is `rules::workbench::check` (worst-tick estimate against the budget,
   the costliest handler, slots, IR bytes, capabilities). It reloads the
   script into the paired game ("Reloading a running script"). The blob

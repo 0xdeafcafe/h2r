@@ -903,3 +903,47 @@ fn a_training_bot_flies_its_rounds_folds_its_tries_and_writes_the_file_between_r
     assert!(mind.practice.training.held.is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The host clears the drill every tick (`set_drill(None)` with no drill
+/// set): a training bot at its start still asks for the word.
+#[test]
+fn a_training_bot_at_its_start_asks_for_the_word_with_no_drill_set() {
+    static BOARD: learn::Shared = Mutex::new(None);
+    let m = map();
+    let s = site([10.0, 0.0, 0.0], Status::Likely);
+    let name = "train_ask_test";
+    crate::spots::publish(name, Vec::new());
+    let dir = std::env::temp_dir().join(format!("h2-train-ask-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut mind = Mind::new(Skill::Normal, 48);
+    mind.known = Known {
+        sites: vec![s],
+        crouches: vec![Crouch::at([3.0, 0.0, 0.0])],
+    };
+    mind.practice.learn_board = &BOARD;
+    mind.practice.learned_dir = Some(dir.clone());
+    mind.set_practice(true);
+    mind.set_train(
+        Some(Train {
+            shard: 0,
+            shards: 1,
+            budget: 30,
+            seed: 1,
+        }),
+        name,
+    );
+    let me = Me {
+        position: s.bounce.from(),
+        ..bot(1.0)
+    };
+    mind.pair_word = Some(0);
+    let mut asked = false;
+    for t in 0..200 {
+        // As the bots' host does before each step.
+        mind.set_drill(None);
+        asked |= mind.drill_wants_arm();
+        mind.step(&scene(me, t), Some(&m));
+    }
+    assert!(asked, "never asked for the word");
+    let _ = std::fs::remove_dir_all(&dir);
+}
