@@ -33,22 +33,22 @@ states:
     focus: 0
 widgets:
   title:
-    component: hud.forge.hud.26
+    component: hud.text
     text: "{title}"
     at: [-264, 198]
     size: [304, 27]
   budget:
-    component: hud.forge.hud.27
+    component: hud.forge.hud.36
     text: "Budget 12 / 80"
     at: [40, 198]
     size: [224, 27]
   reticle:
-    component: hud.forge.hud.28
+    component: hud.forge.hud.37
     text: "+"
     at: [-12, 9]
     size: [24, 25]
   legend:
-    component: hud.forge.hud.28
+    component: hud.forge.hud.37
     text: "{legend}"
     at: [-264, -183]
     size: [528, 25]

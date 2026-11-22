@@ -11,7 +11,7 @@ states:
 widgets:
   title:
     component: title
-    text: "Lab request"
+    text: "LAB REQUEST"
   body:
     component: body
     text: "Lab driver requests a lab run.\ncb9b315e1, about 4 min\nAllow, then quit when ready."

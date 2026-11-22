@@ -11,7 +11,7 @@ states:
 widgets:
   title:
     component: title
-    text: "Choices"
+    text: "CHOICES"
   description:
     component: description
     at: [-224, 143]

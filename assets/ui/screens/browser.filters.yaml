@@ -13,7 +13,7 @@ states:
 widgets:
   title:
     component: title
-    text: "Game Filters"
+    text: "GAME FILTERS"
   description:
     component: description
     at: [-224, 143]

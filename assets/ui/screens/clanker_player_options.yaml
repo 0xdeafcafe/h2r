@@ -13,7 +13,7 @@ states:
 widgets:
   title:
     component: title
-    text: "Clanker (bot)"
+    text: "CLANKER (BOT)"
   description:
     component: description.clanker_player_options.30
     text: "{help}"

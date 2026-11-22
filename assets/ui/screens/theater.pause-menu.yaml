@@ -27,82 +27,82 @@ widgets:
   legend:
     component: legend
   scoreboard.title:
-    component: text.theater.playback.32
+    component: text.emphasis
     text: "Scoreboard"
     at: [19, 170]
     size: [145, 21]
   scoreboard.score:
-    component: text.theater.playback.35
+    component: text.theater.playback.39
     text: "Sc..."
     at: [168, 170]
     size: [42, 21]
   scoreboard.kd:
-    component: text.theater.playback.35
+    component: text.theater.playback.39
     text: "K..."
     at: [215, 170]
     size: [43, 21]
   scoreboard.0.name:
-    component: text.theater.playback.32
+    component: text.emphasis
     text: "Chief"
     at: [19, 148]
     size: [145, 20]
   scoreboard.0.score:
-    component: text.theater.playback.34
+    component: text.value
     text: "21"
     at: [168, 148]
     size: [42, 20]
   scoreboard.0.kd:
-    component: text.theater.playback.34
+    component: text.value
     text: "17..."
     at: [215, 148]
     size: [43, 20]
   scoreboard.1.name:
-    component: text.theater.playback.32
+    component: text.emphasis
     text: "Marathon"
     at: [19, 128]
     size: [145, 20]
   scoreboard.1.score:
-    component: text.theater.playback.34
+    component: text.value
     text: "18"
     at: [168, 128]
     size: [42, 20]
   scoreboard.1.kd:
-    component: text.theater.playback.34
+    component: text.value
     text: "15..."
     at: [215, 128]
     size: [43, 20]
   scoreboard.2.name:
-    component: text.theater.playback.32
+    component: text.emphasis
     text: "Echo"
     at: [19, 108]
     size: [145, 20]
   scoreboard.2.score:
-    component: text.theater.playback.34
+    component: text.value
     text: "13"
     at: [168, 108]
     size: [42, 20]
   scoreboard.2.kd:
-    component: text.theater.playback.34
+    component: text.value
     text: "12..."
     at: [215, 108]
     size: [43, 20]
   scoreboard.3.name:
-    component: text.theater.playback.32
+    component: text.emphasis
     text: "Haven"
     at: [19, 88]
     size: [145, 20]
   scoreboard.3.score:
-    component: text.theater.playback.34
+    component: text.value
     text: "11"
     at: [168, 88]
     size: [42, 20]
   scoreboard.3.kd:
-    component: text.theater.playback.34
+    component: text.value
     text: "9 /..."
     at: [215, 88]
     size: [43, 20]
   scoreboard.empty:
-    component: text.theater.playback.33
+    component: text.theater.playback.38
     text: "No match stats available"
     at: [19, 147]
     size: [237, 21]

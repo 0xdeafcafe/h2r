@@ -219,3 +219,23 @@ components:
     font: body
     colour: theater.playback.7
     justify: right
+  hud.forge.hud.36:
+    role: "hud of forge.hud, as the converter found it"
+    font: body
+    colour: white
+    justify: right
+  hud.forge.hud.37:
+    role: "hud of forge.hud, as the converter found it"
+    font: body
+    colour: white
+    justify: centre
+  text.theater.playback.38:
+    role: "text of theater.playback, as the converter found it"
+    font: body
+    colour: hint_blue
+    justify: left
+  text.theater.playback.39:
+    role: "text of theater.playback, as the converter found it"
+    font: body
+    colour: hint_blue
+    justify: right

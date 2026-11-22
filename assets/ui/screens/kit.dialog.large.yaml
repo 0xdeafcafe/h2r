@@ -11,7 +11,7 @@ states:
 widgets:
   title:
     component: title
-    text: "Choices"
+    text: "CHOICES"
   legend:
     component: legend
     prompts: [[[Left, Right], "CHANGE"], [B, "BACK"]]
