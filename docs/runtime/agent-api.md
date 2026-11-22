@@ -845,13 +845,29 @@ assist did at its last pad read
 | `enabled` | the player's `superbounce.fall_assist` setting is on; the assist is opt in and never steers while it is off |
 | `test_hold` | `superbounce.assist_test` is holding the button |
 | `engaged` | the assist steered the player at its last read |
-| `target` | the strip's stand point, world units |
-| `aim` | the point being aimed at, a little before the stand point along the drift (X, Y) |
+| `reason` | why. Engaged, how the strip was chosen: `kept` (the strip the read before steered onto, still in reach), `marked` (the strip the HUD marks) or `nearest` (the strip the coasting landing misses by least, one the fall is fast enough for first). Held and not engaged: `not_falling`, `no_strip` (none within 6 units), `refused` (every strip near was) or `no_body`. Else `not_held`, `off` (the setting) or `inactive` (the mode) |
+| `target` | the chosen strip's stand point, world units |
+| `point` | the point of that strip being landed on: the stand point moved along the strip to where the fall comes down |
+| `aim` | the point being aimed at, a little before `point` along the drift (X, Y) |
 | `landing` | where the player lands if the stick is let go (X, Y) |
 | `fall_time` | seconds until touchdown at the strip's height |
 | `stick` | the left stick sent to the guest, `[x (right), y (forward)]`, -1 to 1 |
+| `from`, `velocity` | the player's origin and velocity at the read; absent while the button is up |
+| `candidates` | the strips judged at the read, while the button is held: the chosen one, the others in reach, then the refused, nearest first, at most 12 |
+| `chose` | the read the assist last engaged on, the choice at the press: `target`, `point`, `reason`, `from`, `velocity` and `candidates`. Kept after the button is let go, until the next engagement |
 
-The last five are absent while not engaged.
+`target` to `stick` are absent while not engaged. A candidate:
+
+| Field | Meaning |
+|---|---|
+| `stand` | the strip's stand point, world units |
+| `verdict` | `chosen`; `passed` (in reach, another was chosen); or why it was refused: `above` (not below the player), `long` (a fall over 3 s), `far` (over 3 units sideways), `out_of_reach` (the stick cannot bring the landing onto it in the time left), `covered` (a floor is between the player and it) or `walled` (something solid is between) |
+| `distance` | from the player to the strip's edge, sideways, world units |
+| `speed`, `need` | the touchdown speed the fall to it gives, and the speed it needs, units/s |
+| `point`, `fall_time`, `miss` | in reach only: the point of the strip to land on, the seconds to it, and how far the coasting landing misses the aim |
+
+A wrong pull shows in `chose`: the strip it took, why, and what it made
+of the strip the player meant.
 
 `superbounce.assist_test {"hold": true|false}` (access: act) holds the
 assist's button as if it were pressed, so an agent can try the assist

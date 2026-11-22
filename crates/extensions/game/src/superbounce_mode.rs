@@ -857,6 +857,7 @@ fn reset() {
     *lock(&TRACKER) = Tracker::new();
     *lock(&MEDALS) = Medals::empty();
     *lock(&LOCAL) = None;
+    crate::superbounce_assist::set_marked(None);
     crate::superbounce_view::reset();
     crate::superbounce_ghost::reset();
 }
@@ -960,13 +961,18 @@ fn on_tick(o: &hooks::Obs) {
         &spots,
     );
     let landing = match (live.position, live.velocity) {
-        (Some(position), Some(velocity)) => crate::superbounce_assist::predict(
+        (Some(position), Some(velocity)) => crate::superbounce_assist::predict_on(
             &spots,
             &crate::superbounce_assist::Body {
                 position,
                 velocity,
                 yaw: live.yaw.unwrap_or(0.0),
                 airborne: live.airborne,
+            },
+            // A strip under a floor is not one the fall lands on.
+            &crate::superbounce_assist::Ground {
+                floor: &|xy: [f32; 2], top: f32| room.floor_at(xy, top),
+                ..crate::superbounce_assist::Ground::open()
             },
         ),
         _ => None,
@@ -980,6 +986,13 @@ fn on_tick(o: &hooks::Obs) {
         }
         _ => step.nav_target,
     };
+    // The assist steers onto the strip that is marked
+    // (superbounce_assist::choose).
+    crate::superbounce_assist::set_marked(
+        nav_target
+            .filter(|n| n.kind == NavKind::Strip)
+            .map(|n| n.at),
+    );
     let takeoff = match (nav_target, live.position) {
         (Some(n), Some(p)) if n.kind == NavKind::Strip && !live.airborne => spots
             .iter()

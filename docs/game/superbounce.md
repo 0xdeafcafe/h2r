@@ -890,20 +890,45 @@ show it and hold the button without a pad.
 player's X is held
 (pad X, keyboard E by default; the `BUTTON` constant), the player is
 airborne and falling (vertical speed at most 0.5 units/s), and a bounce spot
-passes the reach cone:
+passes the reach cone (`judge`):
 
-- its stand point is below the player and within 3 units sideways;
-- the time to fall to its height is at most 3 s (`fall_time`, from the
-  height and vertical speed under gravity 4.15 units/s²);
+- it is below the player, and the time to fall to its height is at most
+  3 s (`fall_time`, from the height and vertical speed under gravity
+  4.15 units/s²);
+- its point to land on is within 3 units sideways. A strip bounces along
+  its whole length, so the point is the stand point moved along the
+  strip's edge to where the coasting landing comes down, a capsule's
+  radius (0.175) inside its ends (`stand_near`): a fall onto one end of a
+  long strip is not pulled to its middle;
 - the landing the player would have if the stick were let go (`predicted_landing`,
   coasting for that time) is within what the stick can move in the time left:
   half the air acceleration times the fall time squared, plus 0.4 units. The
-  cone is wider the longer the fall.
+  cone is wider the longer the fall;
+- no floor is between the player and the point (`covered`): the highest
+  floor under it, up to 0.5 over the player's feet
+  (`superbounce_capsule::Room::floor_at`), is no more than 0.3 above it.
+  A strip under a slab, a bridge or the ledge the player left is refused;
+- nothing solid stands between them: the sight line from 0.3 over the
+  player's origin to 0.25 over the point is clear of the scan's collision
+  (`superbounce::view::Geometry`).
 
-Of the spots that pass, the one the coasting landing misses by least is
-steered onto.
+**Which strip.** Every bounce strip whose edge is within 6 units sideways
+is judged, and of those that pass (`choose`):
 
-**The steer.** The aim is the stand point, 0.1 units back along the spot's
+1. the strip the read before steered onto, while it still passes, so the
+   target never changes in the middle of a fall;
+2. else the strip the HUD marks, the navpoint's and the world marker's
+   ([Floor marks](#floor-marks); `set_marked`, from the mode each tick),
+   so the pull is toward the mark the player sees;
+3. else the strip the coasting landing misses by least, one the fall is
+   fast enough for (touchdown speed at least its `need`) before one it is
+   too slow for.
+
+`superbounce.assist` returns the choice: the reason, each strip judged
+with its verdict, and the read the assist last engaged on
+([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type)).
+
+**The steer.** The aim is the strip's point, 0.1 units back along the spot's
 drift, crossed at 0.8 units/s along the drift. A PD controller (`steer`,
 5 rad/s, damping 0.8) tracks the line that arrives there: the position the
 player would be at, the time left before touchdown, moving at the arrival
@@ -1163,10 +1188,12 @@ joints) and `need` (the touchdown speed its `fall` is worked from;
 [Floor marks](#floor-marks) and [Lock-on](#lock-on); this is the state
 under them.
 
-- **On course.** The state's `landing` (`superbounce_assist::predict`)
+- **On course.** The state's `landing` (`superbounce_assist::predict_on`)
   is there whenever the player is airborne and falling, primed or not:
-  of the strips below whose stand point the coasting landing is within
-  3 units of, the one it lands nearest the slot of, with its `verdict`
+  of the strips below with no floor between
+  ([the assist's rule](#hold-x-the-fall-assist)) and a point within
+  3 units of the coasting landing, the one it lands nearest the slot of,
+  with its `verdict`
   (`OnSlot`, `Fixable` by the assist's reach gate, else `Miss`), `speed`
   and `need`, and the strip's `edge`, `stand`, `width` and `fall`.
   `miss` is how far outside the slot it lands (0 inside), and it is
