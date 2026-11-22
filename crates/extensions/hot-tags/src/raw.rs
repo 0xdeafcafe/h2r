@@ -721,3 +721,6 @@ fn refresh_json(r: Refresh) -> Value {
             "bitmap": format!("{bitmap:#010x}"), "image": image}}),
     }
 }
+
+#[cfg(test)]
+mod tests;
