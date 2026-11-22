@@ -168,6 +168,9 @@ pub fn write_patched<R: Read + Seek>(
     if let Some(reason) = &changes.geometry_refusal {
         return Err(Error::Declined(format!("geometry: {reason}")));
     }
+    if let Some(reason) = &changes.bitmap_refusal {
+        return Err(Error::Declined(format!("bitmap: {reason}")));
+    }
     let first = map.strings().len();
     let mut editor = map.edit();
     // New string IDs first: the patches already hold their values.

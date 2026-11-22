@@ -2711,3 +2711,74 @@ fn geometry_raw_patches_save_with_the_map_and_a_refusal_refuses_the_save() {
     assert!(e.to_string().contains("a grown write"), "{e}");
     assert!(out.into_inner().is_empty());
 }
+
+#[test]
+fn bitmap_changes_save_beside_the_modeling_tools_and_a_refusal_refuses_the_save() {
+    use crate::scenario::{GeometryChanges, RawAppend, RawPatch};
+    let src = fixture_with_textured_bsp();
+    let mut s = read(src.clone());
+    let block = map::RawPointer {
+        file: map::ResourceFile::Local,
+        offset: TEX_BLOCK_FILE as u32,
+    };
+    let before = s.changes();
+    // Pixels patched in place: the same bytes as a geometry raw patch.
+    s.set_bitmap_changes(GeometryChanges {
+        raw_patches: vec![RawPatch {
+            block,
+            block_size: 0x40,
+            offset: 0x10,
+            bytes: vec![0x11, 0x22, 0x33],
+        }],
+        ..GeometryChanges::default()
+    })
+    .unwrap();
+    assert_ne!(s.changes(), before);
+    // A modeling write elsewhere in the same block does not clash.
+    s.set_geometry_changes(GeometryChanges {
+        raw_patches: vec![RawPatch {
+            block,
+            block_size: 0x40,
+            offset: 0x30,
+            bytes: vec![0xab],
+        }],
+        ..GeometryChanges::default()
+    })
+    .unwrap();
+    let out = write(&src, &s);
+    let ranges: Vec<_> = diff(&src, &out)
+        .into_iter()
+        .filter(|&(a, _)| !(0x2d0..0x2d4).contains(&a))
+        .collect();
+    let at = TEX_BLOCK_FILE;
+    assert_eq!(ranges, [(at + 0x10, at + 0x13), (at + 0x30, at + 0x31)]);
+    // A patch over the scenario's payload is the Scenario tool's.
+    assert!(
+        s.set_bitmap_changes(GeometryChanges {
+            patches: vec![(META + SCNR as u32, vec![1])],
+            ..GeometryChanges::default()
+        })
+        .is_err()
+    );
+    // Undoing the edit (an empty set) is the source again, byte for byte.
+    s.set_geometry_changes(GeometryChanges::default()).unwrap();
+    s.set_bitmap_changes(GeometryChanges::default()).unwrap();
+    assert_eq!(s.changes(), before);
+    assert_eq!(write(&src, &s), src);
+    // A refusal names the Textures tool and stops the save before it writes.
+    s.set_bitmap_changes(GeometryChanges {
+        raw_appends: vec![RawAppend {
+            bytes: vec![0; 16],
+            align: 0x200,
+            pointer_space: None,
+            pointer_address: 0,
+        }],
+        refusal: Some("image 0: not written".into()),
+        ..GeometryChanges::default()
+    })
+    .unwrap();
+    let mut sink = Cursor::new(Vec::new());
+    let e = save::write_patched(&mut open(src.clone()), &s, &mut sink).unwrap_err();
+    assert!(e.to_string().contains("bitmap: image 0: not written"), "{e}");
+    assert!(sink.into_inner().is_empty());
+}
