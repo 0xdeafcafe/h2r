@@ -37,6 +37,72 @@ group weap 0x10
     })
 }
 
+/// [`registry`] with the weapon's `mode` left unnamed: the two bytes at
+/// `+0x6` fall in its Unnamed fields group.
+pub(crate) fn partial_registry() -> &'static Registry {
+    static R: std::sync::OnceLock<Registry> = std::sync::OnceLock::new();
+    R.get_or_init(|| {
+        let schema = tags::schema::Schema::parse(
+            "group scnr 0x10 align 4\ngroup weap 0x10 align 4\n  0x8 block 0xc align 4\n    0x0 tagref\n",
+        )
+        .unwrap();
+        let mut defs = tags::defs::Defs::default();
+        defs.parse_into(
+            "test",
+            "\
+group weap 0x10
+  0x0 f32 speed
+  0x4 flags16 flags bits=loud|quiet
+  0x6 unknown 0x2
+  0x8 block parts 0xc align 4
+    0x0 tagref item groups=itmc
+    0x8 u32 value
+",
+        )
+        .unwrap();
+        Registry::build(&schema, &defs)
+    })
+}
+
+/// [`registry`] with titles: the weapon is a `Weapon`, and each part is
+/// titled by its `value`.
+pub(crate) fn titled_registry() -> &'static Registry {
+    static R: std::sync::OnceLock<Registry> = std::sync::OnceLock::new();
+    R.get_or_init(|| {
+        let schema = tags::schema::Schema::parse(
+            "group scnr 0x10 align 4\ngroup weap 0x10 align 4\n  0x8 block 0xc align 4\n    0x0 tagref\n",
+        )
+        .unwrap();
+        let mut defs = tags::defs::Defs::default();
+        defs.parse_into(
+            "test",
+            "\
+group weap 0x10 title=\"Weapon\"
+  0x0 f32 speed
+  0x4 flags16 flags bits=loud|quiet
+  0x6 enum16 mode values=off|on|auto
+  0x8 block parts 0xc align 4 title=value
+    0x0 tagref item groups=itmc
+    0x8 u32 value
+",
+        )
+        .unwrap();
+        Registry::build(&schema, &defs)
+    })
+}
+
+/// An app with the invented map open in the Tags tool, over
+/// [`titled_registry`].
+pub(crate) fn app_titled(t: &Path) -> (App, PathBuf, Vec<u8>) {
+    app_with_registry(t, map(), titled_registry())
+}
+
+/// An app with the invented map open in the Tags tool, over
+/// [`partial_registry`].
+pub(crate) fn app_partial(t: &Path) -> (App, PathBuf, Vec<u8>) {
+    app_with_registry(t, map(), partial_registry())
+}
+
 pub(crate) const WEAP: u32 = META + 0x1100;
 pub(crate) const PARTS: u32 = WEAP + 0x10;
 pub(crate) fn weap_id() -> TagId {
@@ -95,12 +161,20 @@ pub(crate) fn app(t: &Path) -> (App, PathBuf, Vec<u8>) {
 }
 
 fn app_on(t: &Path, src: Vec<u8>) -> (App, PathBuf, Vec<u8>) {
+    app_with_registry(t, src, registry())
+}
+
+pub(crate) fn app_with_registry(
+    t: &Path,
+    src: Vec<u8>,
+    registry: &'static Registry,
+) -> (App, PathBuf, Vec<u8>) {
     let path = t.join("example.map");
     std::fs::write(&path, &src).unwrap();
     let mut app = App::new();
     app.set_data_root(t.join("data"));
     app.session.build_scenes = false;
-    app.tags = TagDoc::new(registry());
+    app.tags = TagDoc::new(registry);
     app.dispatch(Action::OpenSource(path.clone()));
     app.dispatch(Action::SetTool(ToolKind::Tags));
     (app, path, src)
@@ -139,6 +213,271 @@ fn diff(a: &[u8], b: &[u8]) -> Vec<(usize, usize)> {
 }
 
 #[test]
+fn scene_owned_scenario_blocks_are_read_only_in_the_panel() {
+    let mut map = map::Map::from_reader(std::io::Cursor::new(fixture::fixture())).unwrap();
+    let mut doc = TagDoc::default();
+    doc.load(&mut map).unwrap();
+    let id = fixture::id(1);
+    let address = doc.tag(id).unwrap().address;
+    let layout = doc.layout(id).unwrap();
+    for def in scenario_edit::layout::BLOCKS {
+        let blocks = std::iter::once((def.offset, def.stride))
+            .chain(def.palette.as_ref().map(|p| (p.offset, p.stride)));
+        for (offset, stride) in blocks {
+            let field = layout.field_at(offset).unwrap();
+            let tags::registry::Kind::Block(child) = &field.kind else {
+                panic!("{} has no block layout at {offset:#x}", def.label);
+            };
+            assert!(field.named);
+            assert_eq!(child.size, stride);
+            let pair = address + offset;
+            assert_eq!(
+                doc.scene_block(id, pair).map(|owner| owner.kind),
+                Some(def.kind)
+            );
+            for op in [BlockOp::Add, BlockOp::Remove(0), BlockOp::Duplicate(0)] {
+                assert_eq!(
+                    doc.block_refusal(id, pair, child, &op),
+                    Some(tag_doc::SCENARIO_OWNED)
+                );
+            }
+        }
+    }
+    assert!(doc.scene_block(id, address + 0x8).is_none());
+    assert_eq!(doc.refusal(id), Some(tag_doc::SCENARIO_OWNED));
+    let shown = read_tag(&doc, id).unwrap();
+    assert!(shown["fields"]["weapons"][0]["position"].is_array());
+}
+
+fn bsp_fixture() -> (Vec<u8>, [TagId; 3]) {
+    use map::CacheType;
+    use map::build::{Block, BspField, FixupKind, TagPayload, TagSet};
+
+    let mut set = TagSet::new(CacheType::Multiplayer, "regions", "test\\regions");
+    for group in [b"matg", b"scnr", b"sbsp", b"ltmp"] {
+        set.add_group(FourCC(*group), None, None);
+    }
+    set.globals = set
+        .add_tag(
+            FourCC(*b"matg"),
+            "test\\globals",
+            TagPayload::Built(Block::zeroed(4)),
+        )
+        .unwrap();
+    let mut add = |group, name, root| {
+        set.add_tag(FourCC(group), name, TagPayload::Built(root))
+            .unwrap()
+    };
+    let bsp = |checksum, value| {
+        let mut root = Block::zeroed(0x23c);
+        let mut elements = Block::zeroed(2 * 0x18);
+        elements.put_f32(0xc, value).put_f32(0x24, value + 1.0);
+        root.put_u32(8, checksum).block(0x8c, 2, elements);
+        root
+    };
+    let first = add(*b"sbsp", "test\\first", bsp(0x11, 7.0));
+    let second = add(*b"sbsp", "test\\second", bsp(0x22, 17.0));
+    let mut light = Block::zeroed(0x104);
+    light.put_f32(0x34, 2.5);
+    let lightmap = add(*b"ltmp", "test\\light", light);
+    let mut entries = Block::zeroed(2 * 0x44);
+    let regions = [(first, None), (second, Some(lightmap))];
+    for (i, (bsp, light)) in regions.into_iter().enumerate() {
+        let section = set.add_bsp(bsp, light);
+        let at = (i * 0x44) as u32;
+        for (offset, field) in [
+            (0, BspField::FileOffset),
+            (4, BspField::Size),
+            (8, BspField::Address),
+        ] {
+            entries.fixup(at + offset, FixupKind::Bsp { section, field });
+        }
+        entries
+            .tag_ref(at + 0x10, bsp)
+            .tag_ref(at + 0x18, light.unwrap_or(TagId::NULL));
+    }
+    let mut scenario = Block::zeroed(0x3e0);
+    scenario.block(0x210, 2, entries);
+    set.scenario = set
+        .add_tag(FourCC(*b"scnr"), "test\\regions", TagPayload::Built(scenario))
+        .unwrap();
+
+    let (bytes, _) = set.build().unwrap();
+    (bytes, [first, second, lightmap])
+}
+
+#[test]
+fn bsp_and_lightmap_fields_save_at_their_own_file_offsets_and_undo() {
+    let t = Temp::new("bsp-edit");
+    let (bytes, [first, second, lightmap]) = bsp_fixture();
+    let (mut app, _, source) = app_with_registry(&t.0, bytes, Registry::builtin());
+
+    let a = app.tags.tag(first).unwrap();
+    let b = app.tags.tag(second).unwrap();
+    let light = app.tags.tag(lightmap).unwrap();
+    assert_eq!(a.address, b.address);
+    assert_ne!(
+        a.bsp.unwrap().space.file_offset,
+        b.bsp.unwrap().space.file_offset
+    );
+    assert_eq!(b.bsp.unwrap().space, light.bsp.unwrap().space);
+    for (entry, index) in [(a, 0), (b, 1), (light, 1)] {
+        assert_eq!(entry.access, Access::Edit);
+        assert_eq!(entry.bsp.unwrap().index, Some(index));
+        assert_eq!(
+            super::tag_tree::bsp_label(entry),
+            Some(format!("BSP {index}"))
+        );
+    }
+    let a_pair = a.address + 0x8c;
+    let b_pair = b.address + 0x8c;
+    let child = app.tags.pair(first, a_pair).unwrap().1;
+    assert_eq!(app.tags.pair(second, b_pair), Some((2, child)));
+    let radius = child + 0xc;
+    let at_a = a.bsp.unwrap().space.translate(radius, 4).unwrap() as usize;
+    let at_b = b.bsp.unwrap().space.translate(radius, 4).unwrap() as usize;
+    let at_light = light
+        .bsp
+        .unwrap()
+        .space
+        .translate(light.address + 0x34, 4)
+        .unwrap() as usize;
+    let value = |app: &App, id| {
+        read_tag(&app.tags, id).unwrap()["fields"]["weather_polyhedra"][0]["bounding_sphere_radius"]
+            .clone()
+    };
+    let period =
+        |app: &App| read_tag(&app.tags, lightmap).unwrap()["fields"]["cycle_period"].clone();
+    assert_eq!(value(&app, first), json!(7.0));
+    assert_eq!(value(&app, second), json!(17.0));
+    assert_eq!(period(&app), json!(2.5));
+
+    // The field panel's drag actions for the same address use the same merge key.
+    for (id, n) in [(first, 9.0f32), (second, 19.0)] {
+        app.dispatch(crate::fields::write_action(
+            id,
+            radius,
+            n.to_le_bytes().to_vec(),
+            "bounding_sphere_radius",
+        ));
+    }
+    let edit = set_field(&app.tags, lightmap, "cycle_period", &json!(4.0)).unwrap();
+    tag(&mut app, edit);
+    assert_eq!(value(&app, first), json!(9.0));
+    assert_eq!(value(&app, second), json!(19.0));
+    assert_eq!(period(&app), json!(4.0));
+    assert!(app.session.is_dirty());
+    assert!(
+        app.tags.is_changed(first) && app.tags.is_changed(second) && app.tags.is_changed(lightmap)
+    );
+    assert!(app.tags.patches().is_empty());
+    let (writes, pending) = crate::play::tag_sync::diff(&Default::default(), &app.tags);
+    assert!(writes.is_empty());
+    assert_eq!(pending.len(), 2);
+    assert!(
+        pending
+            .iter()
+            .all(crate::play::tag_sync::Effect::is_reload)
+    );
+
+    let out = t.0.join("out.map");
+    app.dispatch(Action::SaveMapAs(out.clone()));
+    assert!(!app.session.is_dirty(), "{:?}", app.log().last());
+    let saved = std::fs::read(&out).unwrap();
+    for (at, expected) in [
+        (at_a, 9.0f32.to_le_bytes()),
+        (at_b, 19.0f32.to_le_bytes()),
+        (at_light, 4.0f32.to_le_bytes()),
+    ] {
+        assert_eq!(saved[at..at + 4], expected);
+    }
+    for (lo, hi) in diff(&source, &saved) {
+        assert!(
+            [at_a, at_b, at_light, 0x2d0]
+                .into_iter()
+                .any(|at| lo >= at && hi <= at + 4),
+            "{lo:#x}..{hi:#x} changed"
+        );
+    }
+    let mut reread = map::Map::from_reader(std::io::Cursor::new(saved)).unwrap();
+    reread.validate_checksum().unwrap();
+    let mut doc = TagDoc::default();
+    doc.load(&mut reread).unwrap();
+    for (id, expected) in [(first, 9.0), (second, 19.0)] {
+        assert_eq!(
+            read_tag(&doc, id).unwrap()["fields"]["weather_polyhedra"][0]["bounding_sphere_radius"],
+            json!(expected)
+        );
+    }
+    assert_eq!(
+        read_tag(&doc, lightmap).unwrap()["fields"]["cycle_period"],
+        json!(4.0)
+    );
+
+    app.dispatch(Action::Undo);
+    assert_eq!(period(&app), json!(2.5));
+    app.dispatch(Action::Undo);
+    assert_eq!(value(&app, second), json!(17.0));
+    assert_eq!(value(&app, first), json!(9.0));
+    assert!(!app.tags.is_changed(second));
+    app.dispatch(Action::Undo);
+    assert_eq!(value(&app, first), json!(7.0));
+    assert!(app.tags.bsp_patches().is_empty());
+    assert!(app.session.is_dirty());
+    app.dispatch(Action::SaveMapAs(out.clone()));
+    assert_eq!(std::fs::read(&out).unwrap(), source);
+    app.dispatch(Action::Redo);
+    assert_eq!(value(&app, first), json!(9.0));
+    assert!(app.session.is_dirty());
+}
+
+#[test]
+fn bsp_block_operations_use_source_capacity_even_with_growth_enabled() {
+    let (bytes, [first, second, _]) = bsp_fixture();
+    let mut map = map::Map::from_reader(std::io::Cursor::new(bytes)).unwrap();
+    let mut doc = TagDoc::default();
+    doc.load(&mut map).unwrap();
+    doc.allow_growth = true;
+    let pair = doc.tag(first).unwrap().address + 0x8c;
+    let layout = doc.layout(first).unwrap().field_at(0x8c).unwrap();
+    let tags::registry::Kind::Block(child) = &layout.kind else {
+        panic!("expected block")
+    };
+    let child = child.clone();
+    for op in [BlockOp::Add, BlockOp::Duplicate(0)] {
+        assert_eq!(
+            doc.block_refusal(first, pair, &child, &op),
+            Some(tag_doc::BSP_GROWTH_REFUSAL)
+        );
+    }
+    let original = read_tag(&doc, first).unwrap()["fields"]["weather_polyhedra"].clone();
+    doc.block_op(first, pair, &child, &BlockOp::Remove(1))
+        .unwrap();
+    doc.block_op(first, pair, &child, &BlockOp::Duplicate(0))
+        .unwrap();
+    assert_eq!(
+        read_tag(&doc, first).unwrap()["fields"]["weather_polyhedra"][1],
+        original[0]
+    );
+    doc.block_op(first, pair, &child, &BlockOp::Remove(0))
+        .unwrap();
+    doc.block_op(first, pair, &child, &BlockOp::Add).unwrap();
+    let fields = read_tag(&doc, first).unwrap()["fields"]["weather_polyhedra"].clone();
+    assert_eq!(fields[1]["bounding_sphere_radius"], json!(0.0));
+    assert_eq!(doc.pair(second, pair).unwrap().0, 2);
+    assert!(!doc.is_changed(second));
+    assert!(doc.grown().is_empty());
+    for _ in 0..4 {
+        doc.undo().unwrap();
+    }
+    assert_eq!(
+        read_tag(&doc, first).unwrap()["fields"]["weather_polyhedra"],
+        original
+    );
+    assert!(doc.bsp_patches().is_empty());
+}
+
+#[test]
 fn the_tags_tool_lists_every_tag_with_its_fields_named() {
     let t = Temp::new("list");
     let (app, ..) = app(&t.0);
@@ -173,7 +512,7 @@ fn a_field_edit_saves_byte_exactly_and_undoes() {
     app.dispatch(Action::SaveMapAs(out.clone()));
     assert!(!app.session.is_dirty(), "{:?}", app.log().last());
     let saved = std::fs::read(&out).unwrap();
-    let w = (META_FILE + 0x1100) as usize;
+    let w = META_FILE + 0x1100;
     let item = w + 0x10 + 0xc;
     for (lo, hi) in diff(&src, &saved) {
         let ok = (lo >= w && hi <= w + 4)
@@ -199,6 +538,19 @@ fn a_field_edit_saves_byte_exactly_and_undoes() {
     assert_eq!(std::fs::read(&out).unwrap(), src);
     app.dispatch(Action::Redo);
     assert_eq!(fields(&app)["speed"], json!(4.0));
+}
+
+#[test]
+fn enum_offset_writes_must_fit_the_field_width() {
+    let t = Temp::new("enum-width");
+    let (mut app, ..) = app(&t.0);
+    let max = u64::from(u16::MAX);
+    assert!(set_field(&app.tags, weap_id(), "+0x6", &json!(max + 1)).is_err());
+    assert!(!app.tags.can_undo());
+    set(&mut app, "+0x6", json!(max));
+    assert_eq!(fields(&app)["mode"], max);
+    app.dispatch(Action::Undo);
+    assert_eq!(fields(&app)["mode"], "auto");
 }
 
 #[test]
@@ -256,7 +608,7 @@ fn blocks_change_within_the_elements_they_had() {
     let f = fields(&app);
     assert_eq!(f["parts"][1]["item"], json!(null));
     assert_eq!(f["parts"][1]["value"], json!(0));
-    assert_eq!(app.tags.capacity(WEAP + 8), 2);
+    assert_eq!(app.tags.capacity(weap_id(), WEAP + 8), 2);
     for _ in 0..4 {
         app.dispatch(Action::Undo);
     }
@@ -283,7 +635,7 @@ fn a_full_block_grows_when_allowed_and_saves_appended() {
     app.dispatch(Action::SetAllowGrowth(true));
     block(&mut app, BlockOp::Duplicate(1)).unwrap();
     // Room for twice the elements: the next add fits where they went.
-    assert_eq!(app.tags.capacity(WEAP + 8), 4);
+    assert_eq!(app.tags.capacity(weap_id(), WEAP + 8), 4);
     block(&mut app, BlockOp::Add).unwrap();
     set(&mut app, "parts[3].value", json!(5));
     let f = fields(&app);
@@ -365,13 +717,19 @@ fn a_string_the_map_lacks_is_added_and_saved() {
     };
     let id = (9 << 24) | n as u32;
     set_string(&mut app, WEAP + 0x2c, "brand_new");
-    assert_eq!(app.tags.read(WEAP + 0x2c, 4).unwrap(), id.to_le_bytes());
+    assert_eq!(
+        app.tags.read(weap_id(), WEAP + 0x2c, 4).unwrap(),
+        id.to_le_bytes()
+    );
     assert_eq!(app.tags.string(id), Some("brand_new"));
     assert_eq!(app.tags.string_id("brand_new"), Some(id));
     // The same text again is the same string.
     set_string(&mut app, WEAP + 0x30, "brand_new");
     assert_eq!(app.tags.new_strings(), ["brand_new"]);
-    assert_eq!(app.tags.read(WEAP + 0x30, 4).unwrap(), id.to_le_bytes());
+    assert_eq!(
+        app.tags.read(weap_id(), WEAP + 0x30, 4).unwrap(),
+        id.to_le_bytes()
+    );
     // Too long for its slot.
     set_string(&mut app, WEAP + 0x34, &"x".repeat(0x80));
     assert_eq!(app.tags.new_strings().len(), 1);
@@ -772,4 +1130,88 @@ fn resources_and_lookups_read_the_shown_document() {
     assert!(id(json!("nothing")).is_err());
     // The tree marks nothing away: the fixture has no raw data.
     assert_eq!(app.tags.homes(weap_id()).map(|h| h.away()), Some(0));
+}
+
+/// The invented weapon with a model reference, an hlmt and its render model.
+pub(crate) fn placement_map() -> Vec<u8> {
+    let mut b = map();
+    let groups = fixture::INDEX + 32;
+    let old_tags = groups + 4 * 12;
+    let tags = groups + 6 * 12;
+    b.copy_within(old_tags..old_tags + 4 * 16, tags);
+    put(&mut b, fixture::INDEX + 4, 6);
+    put(&mut b, fixture::INDEX + 8, 0x8000_0020 + 6 * 12);
+    put(&mut b, fixture::INDEX + 24, 6);
+    let names_size = u32::from_le_bytes(b[0x2c8..0x2cc].try_into().unwrap());
+    let mut name_offset = names_size;
+    for (slot, name) in [(4, &b"test_model\0"[..]), (5, &b"test_mesh\0"[..])] {
+        put(&mut b, 0x900 + slot * 4, name_offset);
+        let start = 0x980 + name_offset as usize;
+        b[start..start + name.len()].copy_from_slice(name);
+        name_offset += name.len() as u32;
+    }
+    put(&mut b, 0x2c0, 6);
+    put(&mut b, 0x2c8, name_offset);
+    for (slot, group, at, size) in [
+        (4, FourCC(*b"hlmt"), 0x1300, 0x10),
+        (5, FourCC(*b"mode"), 0x1400, 0x10),
+    ] {
+        let g = groups + slot * 12;
+        put(&mut b, g, group.as_u32());
+        put(&mut b, g + 4, u32::MAX);
+        put(&mut b, g + 8, u32::MAX);
+        let t = tags + slot * 16;
+        put(&mut b, t, group.as_u32());
+        put(&mut b, t + 4, fixture::id(slot as u32).0);
+        put(&mut b, t + 8, META + at);
+        put(&mut b, t + 12, size);
+    }
+    // Keep the fixture's weapon fields and put the model after the parts.
+    put(&mut b, META_FILE + 0x1130, FourCC(*b"hlmt").as_u32());
+    put(&mut b, META_FILE + 0x1134, fixture::id(4).0);
+    put(&mut b, META_FILE + 0x1300, FourCC(*b"mode").as_u32());
+    put(&mut b, META_FILE + 0x1304, fixture::id(5).0);
+    // An ordinary reference back to the weapon exercises cycle handling.
+    put(&mut b, META_FILE + 0x1400, FourCC(*b"weap").as_u32());
+    put(&mut b, META_FILE + 0x1404, weap_id().0);
+    b
+}
+
+pub(crate) fn placement_app(path: &Path) -> App {
+    static REGISTRY: std::sync::OnceLock<Registry> = std::sync::OnceLock::new();
+    let registry = REGISTRY.get_or_init(|| {
+        let schema = tags::schema::Schema::parse(
+            "\
+group weap 0x38 align 4
+  0x8 block 0xc align 4
+    0x0 tagref
+  0x30 tagref
+group hlmt 0x8 align 4
+  0x0 tagref
+group mode 0x8 align 4
+  0x0 tagref
+",
+        ).unwrap();
+        let mut defs = tags::defs::Defs::default();
+        defs.parse_into("placement fixture", "\
+group weap 0x38
+  0x0 f32 speed
+  0x4 pad 4
+  0x8 block parts 0xc align 4
+    0x0 tagref item groups=itmc
+    0x8 u32 value
+  0x10 pad 0x20
+  0x30 tagref model groups=hlmt
+group hlmt 0x8
+  0x0 tagref render_model groups=mode
+group mode 0x8
+  0x0 tagref example_back_reference
+").unwrap();
+        Registry::build(&schema, &defs)
+    });
+    let (mut app, _, _) = app_on(path, placement_map());
+    app.tags = TagDoc::new(registry);
+    app.dispatch(Action::SetTool(ToolKind::Scenario));
+    app.sync_tags();
+    app
 }

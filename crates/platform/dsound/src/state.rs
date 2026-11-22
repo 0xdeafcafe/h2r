@@ -344,6 +344,26 @@ const VOICE_PROPS_SIZE: u32 = 0x5c;
 /// Unused `GetVoiceProperties` slot: bin `-1`, volume `-10000` (`0xFFFFD8F0`).
 const VOICE_PROPS_UNUSED: (u32, u32) = (0xffff_ffff, 0xffff_d8f0);
 
+/// A `DSBCAPS_MIXIN` buffer that is not `DSBCAPS_FXIN`: a submix, whose input
+/// bin is `DSMIXBIN_SUBMIX` (`0x37cf1b`).
+fn is_submix(flags: u32) -> bool {
+    flags & DSBCAPS_MIXIN != 0 && flags & DSBCAPS_FXIN_MASK == 0
+}
+
+/// A voice's guest routing as the mixer takes it. `DSMIXBIN_SUBMIX` names the
+/// voice's own output buffer, so it becomes that submix's host bin
+/// (`audio::Mixer::add_submix`), or stays the guest bin, which reaches
+/// nothing, when the voice has no submix.
+fn mixer_bins(pairs: Vec<(u32, i32)>, submix_bin: Option<u32>) -> Vec<(u32, i32)> {
+    let Some(host) = submix_bin else {
+        return pairs;
+    };
+    pairs
+        .into_iter()
+        .map(|(bin, vol)| (if bin == DSMIXBIN_SUBMIX { host } else { bin }, vol))
+        .collect()
+}
+
 /// The routing a voice gets when it is created, or `SetMixBins`, without a
 /// `DSMIXBINS` (default tables at `0x38590c`..`0x38595c`, picked by `0x37bc89`
 /// from the voice's flags and `channels >> 1`). Volumes are 0.
@@ -1158,6 +1178,14 @@ impl DirectSound {
             (None, true) => Vec::new(),
             (None, false) => default_mix_bins(d.flags, format.map_or(2, |f| f.channels() as usize)),
         };
+        // The library's input bin (`0x37cf1b`): an FX-in buffer reads the bin
+        // it names; a submix gets `DSMIXBIN_SUBMIX`, which Halo 2 records for
+        // its own (`0x220b33`) and compares voice properties against.
+        let input_mix_bin = if is_submix(d.flags) {
+            DSMIXBIN_SUBMIX
+        } else {
+            d.input_mix_bin
+        };
         let mut obj = BufferObj {
             refs: 1,
             flags: d.flags,
@@ -1170,7 +1198,7 @@ impl DirectSound {
             frequency: None,
             fx: VoiceFx::default(),
             mix_bins: VoiceBins::from_pairs(&mix_bins),
-            input_mix_bin: d.input_mix_bin,
+            input_mix_bin,
             gate: Gate::Open,
             resume: None,
             looping: false,
@@ -1184,12 +1212,14 @@ impl DirectSound {
             output: VoiceOutput::Main,
         };
         if mix_in {
-            obj.bus = Some(
-                self.mixer
-                    .lock()
-                    .unwrap()
-                    .add_mix_in(MixIn::new(d.input_mix_bin)),
-            );
+            let mut m = self.mixer.lock().unwrap();
+            obj.bus = Some(if is_submix(d.flags) {
+                // Each submix has a host bin of its own: the guest's shared
+                // `DSMIXBIN_SUBMIX` means "my output buffer" (`mixer_bins`).
+                m.add_submix(MixIn::new(DSMIXBIN_SUBMIX))
+            } else {
+                m.add_mix_in(MixIn::new(input_mix_bin))
+            });
         }
         if let (Some(fmt), true) = (format, d.buffer_bytes != 0) {
             let align = fmt.block_align() as u32;
@@ -1384,13 +1414,15 @@ impl DirectSound {
     }
 
     /// The mixer submix of a mix-in buffer: volume, routing, 3D and whether
-    /// it passes audio (played, and not paused or held).
+    /// it passes audio (not paused or held, and played, or a submix: Halo 2
+    /// never plays the submixes it positions its sounds through, `0x220a70`,
+    /// and plays every FX-in buffer it makes).
     fn apply_mix_in(b: &BufferObj, mi: &mut MixIn) {
         mi.set_volume(b.volume_mb);
         mi.set_source_3d(Self::source_3d(b));
         mi.set_mix_bins(Some(b.mix_bins.pairs()));
         mi.set_fx(b.fx.clone());
-        if b.mix_in_playing && b.gate == Gate::Open {
+        if (b.mix_in_playing || is_submix(b.flags)) && b.gate == Gate::Open {
             mi.play();
         } else {
             mi.stop();
@@ -1431,12 +1463,27 @@ impl DirectSound {
     /// Pushes a stream's routing to its mixer voice.
     fn sync_stream_bins(&mut self, ptr: u32) -> Result<(), Stop> {
         let mixer = Arc::clone(&self.mixer);
+        let submix = self.stream_submix(ptr);
         let s = self.stream(ptr)?;
         let (bins, audio) = (s.mix_bins.pairs(), s.audio);
-        if let Some(st) = mixer.lock().unwrap().stream_mut(audio) {
+        let mut m = mixer.lock().unwrap();
+        let bins = mixer_bins(bins, submix.and_then(|id| m.mix_in(id)).map(MixIn::input_bin));
+        if let Some(st) = m.stream_mut(audio) {
             st.set_mix_bins(Some(bins));
         }
         Ok(())
+    }
+
+    /// The mixer bus of the stream's output buffer, when that buffer is a
+    /// submix (`DSBCAPS_MIXIN`, not FX-in).
+    fn stream_submix(&self, ptr: u32) -> Option<MixInId> {
+        let Some(Object::Stream(s)) = self.objects.get(&ptr) else {
+            return None;
+        };
+        match self.objects.get(&s.output_buffer?) {
+            Some(Object::Buffer(b)) if b.mix_in && is_submix(b.flags) => b.bus,
+            _ => None,
+        }
     }
 
     /// The input bin of the stream's output buffer, and the stream's channel
@@ -1905,6 +1952,19 @@ impl DirectSound {
 
     // ---- streams ---------------------------------------------------------
 
+    /// The mixer playhead for a guest stream interface. Returns the
+    /// stream-local packet ID and the whole source-frame offset within that
+    /// packet. Paused streams retain the cursor. Empty queues and unknown
+    /// handles have no playhead.
+    pub fn stream_playhead(&self, ptr: u32) -> Option<(u64, u64)> {
+        let Some(Object::Stream(s)) = self.objects.get(&ptr) else {
+            return None;
+        };
+        let mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
+        let (packet, source_frame_offset) = mixer.stream(s.audio)?.packet_playhead()?;
+        Some((packet.0, source_frame_offset))
+    }
+
     /// `Process(pSrc, pDst)`: queues one packet. `pDst` is unused by
     /// DirectSound streams (verified: the real `Process` never touches it).
     pub fn stream_process(&mut self, h: &mut dyn Host, ptr: u32, src: u32, _dst: u32) -> R {
@@ -1933,7 +1993,7 @@ impl DirectSound {
             })?;
             st.format().block_align()
         };
-        if pkt.max_size as usize % align != 0 {
+        if !(pkt.max_size as usize).is_multiple_of(align) {
             return Ok(E_INVALIDARG);
         }
         // Writes first: nothing is queued if the guest's pointers fault.

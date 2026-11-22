@@ -14,6 +14,7 @@ export interface Lift {
   id: string; x: number; y: number; z: number;
   /** Which way it pushes (unit), how far, and how wide. */
   dir: V3; length: number; radius: number;
+  placement?: { kind: string; stem: string; index: number };
 }
 export interface MapFeatures { teleporters: Teleporter[]; links: TeleporterLink[]; lifts: Lift[] }
 
@@ -46,8 +47,11 @@ export function parseFeatures(extras: unknown): MapFeatures | null {
     const id = idOf(l?.id);
     if (!id || !isV3(l.pos)) continue;
     const d = isV3(l.dir) ? l.dir : [0, 0, 1] as V3, len = Math.hypot(d[0], d[1], d[2]);
+    // The exporter identifies placed lifts in the source as "kind stem index: sizing".
+    const source = typeof l.source === "string" ? /^(scen|mach|ctrl|bloc) (.+) (\d{1,5}): /.exec(l.source) : null;
     lifts.push({
       id, x: l.pos[0], y: l.pos[1], z: l.pos[2],
+      ...(source ? { placement: { kind: source[1]!, stem: source[2]!, index: Number(source[3]) } } : {}),
       dir: len > 1e-6 ? [d[0] / len, d[1] / len, d[2] / len] : [0, 0, 1],
       length: Math.max(0.5, Math.min(200, num(l.length, 4))), radius: Math.max(0.2, Math.min(20, num(l.radius, 0.8))),
     });

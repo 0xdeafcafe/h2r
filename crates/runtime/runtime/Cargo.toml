@@ -4,7 +4,12 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
+[features]
+guest-file-reads = ["dep:vfs"]
+
 [dependencies]
+# The kernel can supply a range pinned and certified immutable by the VFS.
+vfs = { workspace = true, optional = true }
 thiserror.workspace = true
 xbe.workspace = true
 x87.workspace = true
@@ -16,6 +21,9 @@ rustc-hash = "2"
 libc = "0.2"
 # The flat RAM window's fault region (src/window.rs).
 hostfault = { path = "../../recompiler/hostfault" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Security", "Win32_System_Memory", "Win32_System_SystemInformation"] }
 
 [dev-dependencies]
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder"] }

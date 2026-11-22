@@ -59,11 +59,17 @@ fn command_passes_boot_values_verbatim_and_isolates_writable_data() {
         let data = root.join("hosts").join(id);
         assert!(data.is_dir());
         let args: Vec<&OsStr> = cmd.get_args().collect();
+        for (key, value) in [("H2_TOKEN", &boot.token), ("H2_DATA_URL", &boot.data_url)] {
+            let value = OsStr::new(value);
+            assert!(
+                cmd.get_envs()
+                    .any(|(k, v)| k == OsStr::new(key) && v == Some(value))
+            );
+            assert!(!args.contains(&value));
+        }
         for (flag, value) in [
             ("--lease", id),
             ("--live", boot.live_url.as_str()),
-            ("--token", boot.token.as_str()),
-            ("--data-url", boot.data_url.as_str()),
             ("--data-sha", boot.data_sha256.as_str()),
             ("--region", "lhr"),
         ] {

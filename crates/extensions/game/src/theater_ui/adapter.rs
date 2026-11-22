@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
+use agent_proto::theater::{Compatibility, CompatibilityState};
 use agent_proto::{CallError, Client};
 use debug_menu::{Call, Rpc};
 use serde::{Deserialize, Serialize};
@@ -25,6 +26,8 @@ pub struct Player {
     #[serde(default)]
     pub medals: std::collections::BTreeMap<String, u32>,
     pub name: String,
+    #[serde(default)]
+    pub emblem_colour: Option<[u8; 3]>,
     #[serde(default)]
     pub team: Option<String>,
     #[serde(default)]
@@ -50,13 +53,17 @@ pub struct FilmMeta {
     pub ticks_per_second: Option<u16>,
     pub version: Option<u32>,
     pub scoreboard: Vec<Player>,
+    /// The film can identify camera subjects even when its stats are absent.
+    pub roster: Vec<Player>,
     pub source: Source,
     pub image_stamp: String,
-    pub playable_here: bool,
+    pub compatibility: CompatibilityState,
+    pub compatibility_reason: Option<String>,
     pub saved: bool,
     pub result: Option<String>,
     pub host: Option<String>,
     pub live_game_id: Option<String>,
+    pub shared: bool,
     pub live_start_tick: Option<u64>,
     pub kill_ticks: Vec<u64>,
 }
@@ -99,6 +106,10 @@ impl FilmSummary for FilmMeta {
 }
 
 impl FilmMeta {
+    pub(super) fn camera_roster(&self) -> &[Player] {
+        if self.roster.is_empty() { &self.scoreboard } else { &self.roster }
+    }
+
     pub(super) fn tick_rate(&self) -> u64 {
         u64::from(
             self.ticks_per_second
@@ -158,6 +169,7 @@ impl FilmMeta {
                     kills: ledger.and_then(|p| p.kills),
                     deaths: ledger.and_then(|p| p.deaths),
                     medals: player.medals,
+                    emblem_colour: ledger.and_then(|p| p.emblem_colour),
                 }
             })
             .collect();
@@ -175,11 +187,35 @@ impl FilmMeta {
         }
     }
 
-    pub(super) fn watch_unavailable(&self) -> Option<&'static str> {
+    pub fn apply_compatibility(&mut self, report: Compatibility) {
+        self.compatibility = report.state;
+        self.compatibility_reason = report.reasons.into_iter().next();
+    }
+
+    pub(super) fn check_cached(&mut self, dir: &Path, installation: &crate::theater::Installation) {
+        if self.source == Source::Host
+            && let Some(game) = self.archive_id()
+            && let Ok(path) = archive_path(dir, game)
+            && let Ok(entry) = archive_entry(&path, game)
+        {
+            self.version = Some(entry.version);
+            self.apply_compatibility(installation.compatibility(&entry));
+        }
+    }
+
+    pub(super) fn watch_unavailable(&self) -> Option<&str> {
         match self.source {
             Source::Archive => Some("No host film was recorded."),
             Source::Local if self.version == Some(1) => Some("No playback track was saved."),
-            Source::Local | Source::Host if !self.playable_here => Some("Needs a different build."),
+            Source::Local | Source::Host
+                if self.compatibility == CompatibilityState::Unavailable =>
+            {
+                Some(
+                    self.compatibility_reason
+                        .as_deref()
+                        .unwrap_or("Needs a compatible game build."),
+                )
+            }
             Source::Host | Source::Local => None,
         }
     }
@@ -257,6 +293,9 @@ impl TryFrom<live_hle::films::RecentFilm> for FilmMeta {
         let rate = film.ticks_per_second.filter(|hz| *hz != 0).unwrap_or(30);
         let mut row = Self {
             id: format!("live:{}", film.game_id),
+            saved: film.saved,
+            shared: film.shared,
+            length_ticks: film.length_ticks,
             map: film.map,
             game_type,
             mode: Some(mode),
@@ -270,7 +309,11 @@ impl TryFrom<live_hle::films::RecentFilm> for FilmMeta {
             } else {
                 Source::Archive
             },
-            playable_here: film.has_host_film,
+            compatibility: if film.has_host_film {
+                CompatibilityState::Playable
+            } else {
+                CompatibilityState::Unavailable
+            },
             result: film.result.map(|result| title_words(&result)),
             live_game_id: Some(film.game_id),
             live_start_tick: film.start_tick,
@@ -281,6 +324,20 @@ impl TryFrom<live_hle::films::RecentFilm> for FilmMeta {
         }
         Ok(row)
     }
+}
+
+pub(super) fn team_colour(team: &str) -> Option<[u8; 3]> {
+    Some(match team {
+        "Red" => [219, 98, 96],
+        "Blue" => [100, 154, 247],
+        "Green" => [103, 192, 134],
+        "Orange" => [238, 153, 83],
+        "Purple" => [180, 131, 229],
+        "Gold" => [229, 194, 101],
+        "Brown" => [186, 146, 116],
+        "Pink" => [237, 137, 184],
+        _ => return None,
+    })
 }
 
 fn team_name(team: i32) -> String {
@@ -337,6 +394,10 @@ pub fn archive_path(dir: &Path, game: &str) -> Result<PathBuf, String> {
 pub fn archive_entry(path: &Path, game: &str) -> anyhow::Result<film::LibraryEntry> {
     let entry = film::LibraryEntry::read(path)?;
     anyhow::ensure!(
+        entry.version != 4,
+        "This recording is cached. Playback requires a build with the split-film player."
+    );
+    anyhow::ensure!(
         entry.meta.source == film::Source::Host,
         "Live did not return a host recording"
     );
@@ -349,8 +410,22 @@ pub fn archive_entry(path: &Path, game: &str) -> anyhow::Result<film::LibraryEnt
     Ok(entry)
 }
 
+pub(super) fn cached_film(
+    account: &live_hle::films::sync::Sync,
+    dir: &Path,
+    game: &str,
+    clip: Option<&Clip>,
+    start: Option<u64>,
+) -> Option<Result<Option<Clip>, String>> {
+    let expected = account.cached_revision(game)?;
+    let path = archive_path(dir, game).ok()?;
+    (film::share::revision(&path).ok()? == expected)
+        .then(|| downloaded_clip(&path, game, clip, start))
+}
+
 pub(super) fn download_film(
     archive: &live_hle::films::Archive,
+    account: Option<&live_hle::films::sync::Sync>,
     dir: &Path,
     game: &str,
     account_clip: Option<&Clip>,
@@ -359,6 +434,18 @@ pub(super) fn download_film(
     let path = archive_path(dir, game)?;
     std::fs::create_dir_all(path.parent().expect("archive directory"))
         .map_err(|e| e.to_string())?;
+    if let Some((size, digest)) = archive.revision(game)? {
+        film::share::download(&path, size, &digest, |r| {
+            archive
+                .range(game, r, size, &digest)
+                .map_err(anyhow::Error::msg)
+        })
+        .map_err(|e| e.to_string())?;
+        if let Some(account) = account {
+            account.remember_download(game, &(size, digest))?;
+        }
+        return downloaded_clip(&path, game, account_clip, live_start_tick);
+    }
     let part = path.with_extension(format!("{}.part", live_proto::sign::random_id()));
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -370,38 +457,15 @@ pub(super) fn download_film(
     let file = options.open(&part).map_err(|e| e.to_string())?;
     let result = (|| {
         archive.download(game, file)?;
-        let film = archive_entry(&part, game).map_err(|e| format!("Invalid host film: {e}"))?;
-        let playback_clip = account_clip
-            .map(|clip| {
-                if film.version < 3 {
-                    // Pre-CIDX recorders and their selector used the stored bounds
-                    // directly. They did not record a guest-to-tape clock mapping.
-                    return Ok::<_, String>(clip.clone());
-                }
-                let input = std::fs::File::open(&part).map_err(|e| e.to_string())?;
-                let reader = film::range::RangeReader::new(input).map_err(|e| e.to_string())?;
-                let [from_tick, to_tick] = reader
-                    .directory
-                    .film_range_for_guest(
-                        clip.from_tick,
-                        clip.to_tick,
-                        reader
-                            .front
-                            .match_start_tick
-                            .or_else(|| reader.directory.chunks.first().map(|c| c.first))
-                            .unwrap_or(0),
-                        live_start_tick.unwrap_or(0),
-                    )
-                    .ok_or_else(|| "Live clip is outside the recorded match clock".to_owned())?;
-                Ok(Clip {
-                    film: clip.film.clone(),
-                    from_tick,
-                    to_tick,
-                })
-            })
-            .transpose()?;
+        let clip = downloaded_clip(&part, game, account_clip, live_start_tick)?;
         std::fs::rename(&part, &path).map_err(|e| e.to_string())?;
-        Ok(playback_clip)
+        if let Some(account) = account {
+            account.remember_download(
+                game,
+                &film::share::revision(&path).map_err(|e| e.to_string())?,
+            )?;
+        }
+        Ok(clip)
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(part);
@@ -409,8 +473,46 @@ pub(super) fn download_film(
     result
 }
 
+fn downloaded_clip(
+    path: &Path,
+    game: &str,
+    account_clip: Option<&Clip>,
+    live_start_tick: Option<u64>,
+) -> Result<Option<Clip>, String> {
+    let film = archive_entry(path, game).map_err(|e| format!("Invalid host film: {e}"))?;
+    account_clip
+        .map(|clip| {
+            if film.version < 3 {
+                // Pre-CIDX recorders and their selector used the stored bounds
+                // directly. They did not record a guest-to-tape clock mapping.
+                return Ok::<_, String>(clip.clone());
+            }
+            let input = std::fs::File::open(path).map_err(|e| e.to_string())?;
+            let reader = film::range::RangeReader::new(input).map_err(|e| e.to_string())?;
+            let [from_tick, to_tick] = reader
+                .directory
+                .film_range_for_guest(
+                    clip.from_tick,
+                    clip.to_tick,
+                    reader
+                        .front
+                        .match_start_tick
+                        .or_else(|| reader.directory.chunks.first().map(|c| c.first))
+                        .unwrap_or(0),
+                    live_start_tick.unwrap_or(0),
+                )
+                .ok_or_else(|| "Live clip is outside the recorded match clock".to_owned())?;
+            Ok(Clip {
+                film: clip.film.clone(),
+                from_tick,
+                to_tick,
+            })
+        })
+        .transpose()
+}
+
 pub trait Library: Send + Sync {
-    fn list(&self, stamps: &[String]) -> Result<Vec<FilmMeta>, String>;
+    fn list(&self, installation: &crate::theater::Installation) -> Result<Vec<FilmMeta>, String>;
     fn save(&self, id: &str) -> Result<(), String>;
     fn unsave(&self, id: &str) -> Result<(), String>;
     fn delete(&self, id: &str) -> Result<(), String>;
@@ -544,4 +646,27 @@ impl Rpc for SocketRpc {
     fn recv(&mut self) -> Vec<(u64, Result<Value, String>)> {
         self.answers.try_iter().collect()
     }
+}
+
+/// Pin an exact recording in Saved. A cached Live recording can share its
+/// local data with the library through a hard link.
+pub(super) fn save_playback(recording: &Path, dir: &Path) -> anyhow::Result<()> {
+    use std::fs;
+    let entry = film::LibraryEntry::read(recording)?;
+    let library = film::Library::open(dir)?;
+    if recording.canonicalize()?.parent() != Some(dir.canonicalize()?.as_path()) {
+        if library.get(&entry.meta.id).is_ok() {
+            return library.save(&entry.meta.id);
+        }
+        let target = dir.join(format!("saved-{}.h2film", live_proto::sign::random_id()));
+        fs::hard_link(recording, &target)?;
+        let stats = recording.with_extension("h2stats");
+        if let Err(error) = fs::hard_link(&stats, target.with_extension("h2stats"))
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            let _ = fs::remove_file(&target);
+            return Err(error.into());
+        }
+    }
+    library.save(&entry.meta.id)
 }

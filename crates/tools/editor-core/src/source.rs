@@ -4,12 +4,15 @@
 //! file, or a folder of `.map` files (an extracted `maps` directory).
 //! Read-only; nothing is copied anywhere.
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use map::{Map, ResourceFile};
+use map::{Header, Map, ResourceFile};
+
+use crate::map_groups::MapGroup;
 
 /// A disc image's `/maps/*.map` files.
 pub struct Disc {
@@ -37,27 +40,44 @@ impl Disc {
     /// Map names (without `.map`) in on-disc order: only files directly
     /// under `/maps/`, the set [`Disc::open_map`] accepts.
     pub fn map_names(&self) -> Vec<String> {
-        self.entries
-            .iter()
-            .filter(|e| !e.is_dir)
-            .filter_map(|e| map_name(&e.path))
-            .map(str::to_owned)
-            .collect()
+        self.map_regions().map(|(name, _)| name.to_owned()).collect()
     }
 
     /// The byte range `(offset, length)` of `/maps/<name>.map` in the image.
     pub fn region(&self, name: &str) -> Result<(u64, u64)> {
         let want = name.strip_suffix(".map").unwrap_or(name);
-        let e = self
+        self.map_regions()
+            .find(|(name, _)| name.eq_ignore_ascii_case(want))
+            .map(|(_, region)| region)
+            .with_context(|| format!("no /maps/{want}.map on disc"))
+    }
+
+    fn map_regions(&self) -> impl Iterator<Item = (&str, (u64, u64))> {
+        self.entries.iter().filter(|e| !e.is_dir).filter_map(|e| {
+            let name = map_name(&e.path)?;
+            let base = self.partition + u64::from(e.sector) * xiso::SECTOR;
+            Some((name, (base, u64::from(e.size))))
+        })
+    }
+
+    /// A file in the disc's root directory (`default.xbe`), at most `max`
+    /// bytes. Names match without regard to case.
+    pub fn read_root_file(&self, name: &str, max: u64) -> Result<Vec<u8>> {
+        let entry = self
             .entries
             .iter()
-            .filter(|e| !e.is_dir)
-            .find(|e| map_name(&e.path).is_some_and(|n| n.eq_ignore_ascii_case(want)))
-            .with_context(|| format!("no /maps/{want}.map on disc"))?;
-        Ok((
-            self.partition + u64::from(e.sector) * xiso::SECTOR,
-            u64::from(e.size),
-        ))
+            .find(|e| !e.is_dir && e.path.trim_start_matches('/').eq_ignore_ascii_case(name))
+            .with_context(|| format!("no {name} on the disc"))?;
+        if u64::from(entry.size) > max {
+            bail!("{name} is larger than {max} bytes");
+        }
+        let mut file = File::open(&self.path)?;
+        file.seek(SeekFrom::Start(
+            self.partition + u64::from(entry.sector) * xiso::SECTOR,
+        ))?;
+        let mut bytes = vec![0; entry.size as usize];
+        file.read_exact(&mut bytes)?;
+        Ok(bytes)
     }
 
     pub fn open_map(&self, name: &str) -> Result<Map<BufReader<File>>> {
@@ -111,8 +131,8 @@ impl MapSource {
         }
     }
 
-    /// What the sidebar lists: every map on a disc or in the folder (sorted),
-    /// or the loose map's stem.
+    /// Every map stem in the source. Disc maps follow on-disc order, and
+    /// folder maps are sorted by stem.
     pub fn map_names(&self) -> Vec<String> {
         match self {
             MapSource::Disc(d) => d.map_names(),
@@ -121,6 +141,37 @@ impl MapSource {
                 .file_stem()
                 .map(|s| vec![s.to_string_lossy().into_owned()])
                 .unwrap_or_default(),
+        }
+    }
+
+    /// Sections keyed by map stem, read from the cache headers.
+    pub fn map_groups(&self) -> HashMap<String, MapGroup> {
+        match self {
+            Self::Disc(disc) => {
+                let mut file = File::open(disc.path()).ok();
+                disc.map_regions()
+                    .map(|(name, (base, length))| {
+                        let header = file.as_mut().and_then(|file| {
+                            Header::read_region(file, base, length).ok()
+                        });
+                        (name.to_owned(), map_group(name, header))
+                    })
+                    .collect()
+            }
+            Self::Folder(dir) => folder_entries(dir)
+                .into_iter()
+                .map(|(name, path)| {
+                    let group = map_group(&name, file_header(&path).ok());
+                    (name, group)
+                })
+                .collect(),
+            Self::Loose(path) => self.map_names()
+                .into_iter()
+                .map(|name| {
+                    let group = map_group(&name, file_header(path).ok());
+                    (name, group)
+                })
+                .collect(),
         }
     }
 
@@ -151,6 +202,47 @@ impl MapSource {
                 None,
             )),
         }
+    }
+
+    /// The game's executable, `default.xbe`, for tools that read the
+    /// game's own tables from it (the Scripts tool,
+    /// docs/editor/rich-editors.md, "Scripts"): the disc image's root;
+    /// for a folder of maps or a loose map, the folder it is in, then the
+    /// one above (an extracted disc's `maps`). Read when asked, never
+    /// copied. The error names every place it looked. Returns where it
+    /// was read and its bytes.
+    pub fn executable(&self) -> Result<(String, Vec<u8>)> {
+        let dir = match self {
+            MapSource::Disc(d) => {
+                let mut iso = xiso::Xiso::open(BufReader::new(File::open(d.path())?))
+                    .with_context(|| format!("open {}", d.path().display()))?;
+                let entry = iso
+                    .find("default.xbe")
+                    .with_context(|| format!("no default.xbe in {}", d.path().display()))?;
+                return Ok((format!("{} (default.xbe)", d.path().display()), iso.read(&entry)?));
+            }
+            MapSource::Folder(dir) => Some(dir.as_path()),
+            MapSource::Loose(p) => p.parent(),
+        };
+        let dirs: Vec<&Path> = dir.into_iter().chain(dir.and_then(Path::parent)).collect();
+        for d in &dirs {
+            let found = std::fs::read_dir(d).ok().and_then(|entries| {
+                entries.flatten().map(|e| e.path()).find(|p| {
+                    p.is_file()
+                        && p.file_name()
+                            .is_some_and(|n| n.eq_ignore_ascii_case("default.xbe"))
+                })
+            });
+            if let Some(p) = found {
+                let bytes = std::fs::read(&p).with_context(|| format!("read {}", p.display()))?;
+                return Ok((p.display().to_string(), bytes));
+            }
+        }
+        let places: Vec<String> = dirs
+            .iter()
+            .map(|d| d.join("default.xbe").display().to_string())
+            .collect();
+        bail!("no default.xbe at {}", places.join(" or "))
     }
 
     fn loose_file(&self, name: &str) -> Option<PathBuf> {
@@ -203,6 +295,16 @@ impl MapSource {
     }
 }
 
+fn file_header(path: &Path) -> Result<Header> {
+    let mut file = File::open(path)?;
+    let length = file.metadata()?.len();
+    Ok(Header::read_region(&mut file, 0, length)?)
+}
+
+fn map_group(name: &str, header: Option<Header>) -> MapGroup {
+    MapGroup::classify(name, header.map_or(MapGroup::Other, |h| h.cache_type.into()))
+}
+
 /// Reads raw-resource byte ranges, bounded by each map file's extent.
 pub struct Resources {
     files: Vec<(ResourceFile, PathBuf, u64, u64)>,
@@ -253,7 +355,7 @@ pub fn folder_maps(dir: &Path) -> Vec<String> {
 }
 
 /// `(stem, path)` of each `*.map` file directly in `dir`, sorted by stem.
-fn folder_entries(dir: &Path) -> Vec<(String, PathBuf)> {
+pub(super) fn folder_entries(dir: &Path) -> Vec<(String, PathBuf)> {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -339,6 +441,27 @@ mod tests {
         std::fs::create_dir_all(&empty).unwrap();
         assert!(MapSource::open(&empty).is_err());
         std::fs::remove_dir_all(&empty).unwrap();
+    }
+
+    #[test]
+    fn the_executable_is_beside_the_maps_or_one_folder_up() {
+        let root = std::env::temp_dir().join(format!("h2-editor-xbe-{}", std::process::id()));
+        let maps = root.join("maps");
+        std::fs::create_dir_all(&maps).unwrap();
+        let map = maps.join("example.map");
+        std::fs::write(&map, b"x").unwrap();
+        let src = MapSource::Loose(map.clone());
+        let e = src.executable().unwrap_err().to_string();
+        assert!(e.contains(&maps.join("default.xbe").display().to_string()), "{e}");
+        assert!(e.contains(&root.join("default.xbe").display().to_string()), "{e}");
+        // An extracted disc: the executable is above `maps`, any case.
+        std::fs::write(root.join("DEFAULT.XBE"), b"invented").unwrap();
+        assert_eq!(src.executable().unwrap().1, b"invented");
+        assert_eq!(MapSource::Folder(maps.clone()).executable().unwrap().1, b"invented");
+        // One beside the maps wins.
+        std::fs::write(maps.join("default.xbe"), b"beside").unwrap();
+        assert_eq!(src.executable().unwrap().1, b"beside");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

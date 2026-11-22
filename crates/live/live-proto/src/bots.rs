@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Gamertag, Xuid};
 
+pub mod names;
+
 /// The most bots in one roster: a 16-player session with one human.
 pub const MAX_BOTS: usize = 15;
 

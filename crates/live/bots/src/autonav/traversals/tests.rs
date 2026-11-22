@@ -1,5 +1,5 @@
 use super::*;
-use crate::nav::{Follower, Poly};
+use crate::nav::{Follower, NavMesh, Poly};
 
 fn floor(x: f32, z: f32) -> Poly {
     Poly::new(vec![

@@ -163,10 +163,15 @@ and `CMcpx*` class) are not reached by the game.
   pOuter)`. Descriptor (6 dwords, `dwSize = 0x18` verified at every call
   site): `dwSize, dwFlags, dwBufferBytes, lpwfxFormat, lpMixBins,
   dwInputMixBin`. Two shapes appear in Halo 2:
-  1. flags `0x100000`, `0x100010`, `0x2010`, no format, `dwBufferBytes = 0`,
-     `dwInputMixBin` set to bins `0x17..0x19` (init `0x21e82b`/`0x21e885`,
-     sound core `0x220ac3`, `0x220c21`): mix-in/FX buffers that carry no
-     samples. `CMcpxBuffer_Play` forces looping when `flags & 0x182000`.
+  1. flags `0x100000`, `0x100010`, `0x80010`, `0x2010`, no format,
+     `dwBufferBytes = 0`: mix-in/FX buffers that carry no samples.
+     `CMcpxBuffer_Play` forces looping when `flags & 0x182000`. The
+     `DSBCAPS_FXIN` ones (`0x180000` bits; init `0x21e82b`/`0x21e885`,
+     sound core `0x220c21`, `0x220d1d`) read the FX send their
+     `dwInputMixBin` names (`0x17..0x19` and up). The `DSBCAPS_MIXIN` ones
+     (`0x2010`, sound core `0x220ac3`) leave `dwInputMixBin` 0: the library
+     gives every mix-in that is not FX-in the input bin `0x1f`
+     (`DSMIXBIN_SUBMIX`, `0x37cf1b`..`0x37cf36`).
   2. standalone `DirectSoundCreateBuffer` (`0x221539`): format set, data
      supplied with `SetBufferData(buf, pv, bytes)` pointing into the game's
      own memory (allocated from its arena at `0x510800`), then
@@ -189,27 +194,56 @@ and `CMcpx*` class) are not reached by the game.
 
 ### Positioned sound
 
-Halo 2 positions sound through mix-in buffers, not through 3D streams. Its
-sound core (`0x220b90`, with `0x220a70`) creates a `DSBCAPS_CTRL3D` mix-in
-(flags `0x80010`, `0x100010` or `0x2010`, no data) whose `dwInputMixBin` is
-an FX send (`0x17` and up). The mix-in's own mix bins are the default 3D set
-`{6, 8, 7, 9, 10}`; its min and max distance are `FLT_MAX`, rolloff, doppler
-and cone outside volume 0. A stream (music, dialogue) is routed into the
-mix-in by `SetMixBins`/`SetMixBinVolumes` on that send bin. `SetPosition`
-at `0x220ea1` (to `IDirectSound3DBuffer_SetPosition`, `0x37c668`) moves the
-mix-in. Halo also calls `GetStatus`, `Play` and `StopEx` on mix-ins.
+Halo 2 positions sound through 3D mix-in buffers, not through 3D streams.
+Its sound core keeps a table of submix records at `[sound globals] +
+0x1a18` (`0x3c` bytes each, the buffer at `+0x34`, the bin Halo routes to
+at `+0`). Two kinds fill it:
 
-The shim gives every mix-in buffer an `audio::MixIn` on its input bin
-(removed on `Release`). Every buffer and stream gets its mix bins from
-creation and from `SetMixBins`/`SetMixBinVolumes`; position, distances,
-cone, rolloff and the listener reach `audio` through `refresh_3d`. A stream
-sending to a playing mix-in is heard panned by the mix-in's position against
-the listener (the model is in `docs/audio/audio.md`, "Positional model"); a mix-in
-that is not playing, or a send bin no mix-in owns, is silent, as an unused
-FX send was on the MCPX. With Halo's parameters (rolloff 0, `FLT_MAX`
-distances) the shim's own distance curve is unity: Halo attenuates by
-distance itself, through the voice's mix-bin volumes (below), which is what
-the hardware did.
+- **Static submixes**, one per slot at init (`0x21e755` calls `0x220a70`
+  for each of the config's `+0xc` slots, a count kept at globals `+8`).
+  Each is a `DSBCAPS_MIXIN | DSBCAPS_CTRL3D` buffer (`0x2010`, no input
+  bin) and its record's bin is `0x1f`, the library's `DSMIXBIN_SUBMIX`
+  (`0x220b33`). These carry the positioned world sounds.
+- **Dynamic submixes** (`0x220b90`, from slot `[globals+6]` up): an FX-in
+  pair, a `0x100000` buffer on the caller's FX send with speaker bins
+  `0..5`, and a `0x80010`/`0x100010` 3D buffer reading the same send. Their
+  record's bin is that send (`0x17` and up).
+
+Every 3D submix's own mix bins are the default 3D set `{6, 8, 7, 9, 10}`
+and its min and max distance are `FLT_MAX` (`0x220b29`..`0x220b48`,
+`0x220d7e`..`0x220da5`), so no distance is ever past the minimum. The static
+ones also get rolloff, Doppler and cone outside volume 0
+(`0x220b53`..`0x220b69`). A channel's stream
+joins its submix with `SetOutputBuffer` (`0x21f911`), which puts the
+submix's input bin in the stream's list (`0x37bd54` through `0x37a500`).
+`SetPosition` at `0x220ea1` (to `IDirectSound3DBuffer_SetPosition`,
+`0x37c668`) moves the submix. Halo plays every FX-in buffer it makes, and
+none of the static submixes: their creation is the only `CreateSoundBuffer`
+site with no `Play` after it (call sites in the table above). It calls
+`GetStatus` on a sound's static submix before it starts the sound
+(`0x1296aa`) and takes "not playing" as free.
+
+The shim gives every mix-in buffer an `audio::MixIn` (removed on `Release`).
+An FX-in buffer's bus reads its FX send, as on the MCPX: every voice sending
+to that bin reaches it. A static submix's bus gets a host bin of its own
+(`audio::Mixer::add_submix`, `0x100` up), because every submix has the same
+guest bin `0x1f`, which means "my output buffer" and not a shared bus. The
+guest sees `0x1f` in `GetVoiceProperties` and `SetMixBins`, as the library
+reports it. When the shim pushes a stream's routing to the mixer it swaps
+`0x1f` for the host bin of the stream's own output buffer
+(`state.rs`, `mixer_bins`). A `0x1f` with no submix output buffer reaches
+nothing. A static submix passes audio while it is not paused, played or not.
+Its `GetStatus` still reports playing only after `Play`, so Halo's free-slot
+test finds it free. Every buffer and stream gets its mix bins from creation
+and from `SetMixBins`/`SetMixBinVolumes`; position, distances, cone,
+rolloff and the listener reach `audio` through `refresh_3d`. A stream sent
+to a submix is heard panned by the submix's position against the listener
+(the model is in `docs/audio/audio.md`, "Positional model"). An FX-in
+mix-in that is not playing, or a send bin no mix-in owns, is silent, as an
+unused FX send was on the MCPX. With Halo's parameters (rolloff 0,
+`FLT_MAX` distances) the DirectSound 3D distance curve is unity: Halo
+attenuates by distance itself, through the voice's volume and mix-bin
+volumes (below), as it did on the hardware.
 
 ### Distance attenuation
 
@@ -228,11 +262,17 @@ channel's parameters) takes three paths:
   Speaker bins are `{0, 1, 4, 5}` for a sound flagged for the speakers,
   otherwise the crosstalk bins `{6, 7, 8, 9}`; bin 10 (I3DL2) carries the
   reverb send.
-- **Streams in a submix** (a 3D mix-in from the table at `+0x1a18`, given by
-  `SetOutputBuffer` at `0x21f911` when the channel starts): the stream's
-  `SetVolume` is 0 and the gain goes to the send bin through
-  `SetMixBinVolumes` (`0x2215d0`), or the panner's pairs arrive through
-  `SetMixBins` alongside the send.
+- **Streams in a static submix** (a slot below globals `+8`, given by
+  `SetOutputBuffer` at `0x21f911` when the channel starts): `SetVolume`
+  with the channel gain (`0x21fbe1`), and `SetMixBins` (`0x220136`) with
+  the panner's pairs, to which panner method `+0x10` appends bin `0x1f`
+  at the submix gain term (`0x2200c3`, channel `+0x28`).
+- **Streams in a dynamic submix** (a slot from globals `+8` up): the
+  stream's `SetVolume` is 0 and the gain goes to the record's send bin
+  through `SetMixBinVolumes` (`0x2215d0`, which diffs against
+  `GetVoiceProperties` and falls back to `SetMixBins`); the submix's
+  buffers get `SetVolume` with the submix gain and their own pairs
+  (`0x21ff09`..`0x22002d`).
 - **Filters**: `0x2201f0` evaluates the sound's filter curves and calls
   stream `SetFilter` (`0x2203e9`) and `SetLFO`; the submix update
   `0x2211e0` sets the mix-in's `SetI3DL2Source` (obstruction and
@@ -252,8 +292,8 @@ listener from the human seats ([bots.md](../game/bots.md#51-what-has-to-be-made-
 The shim applies `DS3D_DEFERRED` settings at once. Halo commits
 every frame, so only the moment inside a frame differs.
 
-So the attenuation lives in mix-bin volumes, and those must survive
-`SetOutputBuffer`. The library keeps a voice's bin list and a per-bin
+So the attenuation lives in the voice volume and mix-bin volumes, and those
+must survive `SetOutputBuffer`. The library keeps a voice's bin list and a per-bin
 volume table apart (`crates/platform/dsound/src/mixbins.rs`, from `0x37bc89`
 `SetMixBins`, `0x37a4db` `SetMixBinVolumes`, `0x37bd54` `SetOutputBuffer`
 and `0x37a500`): `SetOutputBuffer(mix-in)` replaces the list with the
@@ -471,10 +511,11 @@ from the completion DPC (see "Notification and callback contracts").
   packet submitted at 32 ms is pending after a 32 ms `advance_to` that came
   first, and complete after one that came second, whatever the host
   threads did. The thread never touches the mixer, guest memory or events:
-  it plays the rendered PCM, resampling if the sink's rate differs. At most
-  `max_queued` of rendered audio waits for it; older audio beyond that is
-  dropped and counted (`OutputStats::dropped_frames`), so a runner ahead of
-  real time does not grow the queue. Audio time stands still between
+  it plays the rendered PCM, resampling if the sink's rate differs. The
+  queue limit is `max_queued` raised as needed to hold one render quantum and
+  the highest playout target. Older audio beyond that limit is dropped and
+  counted (`OutputStats::dropped_frames`), so a runner ahead of real time
+  does not grow the queue. Audio time stands still between
   `advance_to` calls, so a runner that stops calling it while the game
   waits on a stream event with no timeout would hang the game.
 
@@ -544,7 +585,7 @@ playout:
   a dropout is one clean gap;
 - after a dropout, raises the target by `step_ms` (25), up to
   `max_target_ms` (150), and after `relax_after` (30 s) of clean play lowers
-  it by 1 ms a second;
+  it by 1 ms a second. The clean-play period starts when playback resumes;
 - trims the playback rate by at most `MAX_RATE_TRIM` (0.5%, about 9 cents)
   to hold the average fill at the target. This absorbs device clock drift
   and bleeds off the latency a hitch leaves behind. The trim is a linear
@@ -580,8 +621,10 @@ audio: 5.0s fill 48ms (30-70) target 75ms trim -1200ppm | dropouts +1 | dev unde
 - `dropouts`: times the device ran dry while playing, one gap each.
   `dev underruns` counts the device callbacks that came up short; a gap
   spans several.
-- `dropped`: rendered audio thrown away (the 250 ms queue overflowed, or
-  the sink refused it).
+- `dropped`: rendered audio thrown away (the queue overflowed, or the sink
+  refused it). The queue holds 250 ms by default and grows for higher
+  configured playout targets so it can hold the maximum adaptive target
+  plus the render quantum that crosses it.
 - `late wakes`, `max gap`: the output thread was held up for more than
   10 ms past its period (a device probe, the host).
 - `stream starves`: a stream ran out of packets and was fed again within
@@ -607,7 +650,7 @@ audio: 5.0s fill 48ms (30-70) target 75ms trim -1200ppm | dropouts +1 | dev unde
 - `pad ...`: the controller speaker's sink, when configured.
 
 A headless run plays into `audio::NullSink`, which nothing drains: `fill`
-sits at its ring plus the 250 ms queue (about 590 ms), `trim` at its
+sits at its ring plus the queue (about 590 ms by default), `trim` at its
 limit, and almost everything rendered is `dropped`. That is the sink only.
 The output thread's queue and playout never feed back into logical time,
 rendering or completions, so the stream counters are still the game's.
@@ -641,7 +684,7 @@ shim keeps that contract:
 | buffer and stream `SetFilter`, stream `SetLFO` and `SetEG` (amplitude generator), `SetHeadroom`, buffer `SetI3DL2Source`, `SetDopplerFactor` (buffer and listener), `SetOutputBuffer`, `XAudioSetEffectData` type 12 on the reverb index | real, applied to `audio` (see "Voice effects") |
 | `SetMixBinHeadroom`, `SetEffectData`, distance factor, `UseLightHRTF4Channel`, `SetEG` generator 0 (pitch/filter envelope) | stored; counted by name in `DirectSound::ignored()` where counted |
 | `GetCaps`, `GetSpeakerConfig` | answered (`DSCAPS` layout from memory: free 2D/3D voices 64, SGEs `0x7fff`, 0; stereo speakers) |
-| mix-in/FX buffers | real buses (`audio::MixIn`, see "Positioned sound"); `Play` counted as `mix-in buffer Play`; I3DL2 source and headroom apply |
+| mix-in/FX buffers | real buses (`audio::MixIn`, see "Positioned sound"): FX-in buffers on their FX send, `DSBCAPS_MIXIN` submixes on the library's bin `0x1f` and a host bus of their own; `Play` counted as `mix-in buffer Play`; I3DL2 source and headroom apply |
 | the game's WMA codec (`0x38a0c5`..`0x38a1cc`) | native, `dsound::xwma` over `wma::boundary` (see `docs/audio/wma.md`, "Runtime boundary") |
 | `XAudioDownloadEffectsImage` (flags 1, name `"DSPImage"`, dry image), `Get/SetEffectData` | real, against the dry image (see "Dry effects image") |
 | `XAudioSetEffectData` | real, dry (see "Effects, voice entries and FlushEx") |
@@ -1202,7 +1245,12 @@ covers, with synthetic data only (no disc bytes):
   concurrent pump and `Process` never signal a packet before it is pinned.
 - Positioned sound: a stream sent to a 3D mix-in through its FX bin is
   panned by the mix-in's position and follows `SetPosition`; rolloff 0
-  removes the shim's distance attenuation; doppler is counted.
+  removes the shim's distance attenuation; doppler is counted. Halo's
+  static submix (`halo_submix`): a stream given one by `SetOutputBuffer`
+  lists bin `0x1f` in `GetVoiceProperties`, the unplayed submix reports
+  not playing, the submix gain on `0x1f` attenuates the sound by exactly
+  its millibels and the submix pans it by its position, a silent send is
+  silent, and a second submix does not hear another's stream.
 - Consumers: only one of output thread, render pump, `set_frames_per_do_work`
   and manual `advance_audio` may hold the mixer; dropping the holder frees it.
   A second output thread or render pump is refused, and a stale lease
@@ -1267,7 +1315,8 @@ H2_XBE="$PWD/disc/default.xbe" \
 
 Layouts and values taken from XDK headers rather than the binary:
 `DSCAPS`, `DSSTREAMDESC` flag meanings, `DSBCAPS` bit names (only `0x10`,
-`0x2000`, and the `0x182000` mask are tied to behaviour), `Play` flag names
+`0x2000`, the `0x180000` FX-in bits and the `0x182000` mask are tied to
+behaviour), `Play` flag names
 (bits 0x1/0x2/0x4 are used as loop/from-start/synch; 2 and 4 are verified as
 distinct tests in `CMcpxBuffer_Play`, 1 is assumed to be looping),
 `GetStatus` bit names (decoded from `CMcpxBuffer_GetStatus`: 1 playing, 2
@@ -1282,7 +1331,11 @@ approximations from public semantics instead, see "Voice effects"), the voice
 level word and 3D/LFO state in `GetVoiceProperties`, hardware volume
 quantisation, envelope release and timestamp scheduling for
 `FlushEx`/`StopEx`, and a stream's "active" state
-after its queue drains naturally (the shim keeps it active). Whether
+after its queue drains naturally (the shim keeps it active). A static
+submix's hardware state is inferred, not traced: that it passes audio
+without `Play` follows from Halo never playing one, and its `GetStatus`
+while a voice feeds it (the MCPX may report it playing, which would make
+Halo's `0x1296aa` test treat it as busy) is not reproduced. Whether
 `GetInfo` is ever called is unproven; no site was found. The `pRaw` and
 default-routing facts above come from small constants read at the cited
 addresses.

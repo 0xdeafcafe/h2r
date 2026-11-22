@@ -53,12 +53,27 @@ try {
   assert.equal(session.tick(), 9120);
   assert.equal(session.playing(), false);
 
-  deliverRecording([0, 30, 60, 90, 120, 150, 180].map(frame));
+  const observed = (tick: number, x: number): Frame => ({
+    ...frame(tick), projectiles: [{ id: "01020003", kind: "frag_grenade", pos: [x, 0, 0] }],
+  });
+  deliverRecording([
+    ...[0, 30, 60, 90].map(frame),
+    observed(120, 1), observed(122, 5), observed(124, 3), frame(150), frame(180),
+  ]);
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(session.timeline()?.startTick, 9000);
   assert.equal(session.timeline()?.endTick, 9180);
   assert.equal(session.tick(), 9120);
   assert.equal(session.playing(), false);
+  // Play across the bounce, then seek to the sample on the far side.
+  // A seek keeps the observed head but empties all earlier trail segments.
+  session.toggle();
+  assert.deepEqual(session.frame(performance.now() + 220).projectileTrails?.[0]?.points, [
+    [1, 0, 0], [5, 0, 0], [3, 0, 0],
+  ]);
+  session.toggle();
+  session.seek(9124);
+  assert.deepEqual(session.frame(performance.now()).projectileTrails?.[0]?.points, [[3, 0, 0]]);
   // A published archive can arrive after the raw recording opened. The
   // player remains paused while events are still in flight.
   const index = chunkIndex({game_id:id, ended:true, archive_sha256:"a".repeat(64), items:[

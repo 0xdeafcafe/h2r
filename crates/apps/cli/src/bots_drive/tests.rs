@@ -188,14 +188,19 @@ fn main_menu_to_the_lobby_to_start() {
 
 #[test]
 fn split_screen_is_backed_out_of_and_said() {
-    for (marker, ups) in [("", 1), (MAIN_MENU_THEATER_MARKER, 2)] {
+    let rows = agent_proto::sim::menu::main_menu_marker(true, 3);
+    for (marker, ups) in [
+        ("", 1),
+        (agent_proto::sim::menu::MAIN_MENU_THEATER_MARKER, 2),
+        (rows.as_str(), 4),
+    ] {
         let mut d = at_main();
         presses(&mut d, 2500, 5000);
         d.line(
             5100,
             &format!("ui: screen 0x1e (window 5, slot 4){marker}, mode 1"),
         );
-        let p = presses(&mut d, 5200, 9000);
+        let p = presses(&mut d, 5200, 14000);
         assert_eq!(p.len(), ups + 2, "{p:?}");
         assert!(p[0].starts_with("b that was Split Screen"));
         assert!(

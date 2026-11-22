@@ -6,7 +6,7 @@ use anyhow::{Result, bail};
 use crate::{bundle, BundleSpec};
 
 const USAGE: &str = "usage: h2 host bundle --disc <iso|dir> --out <dir>
-                      [--stripped-maps <dir>] [--force] [--zstd-level 1..=21]
+                      [--stripped-maps <dir>] [--sim-stores <dir>] [--force] [--zstd-level 1..=21]
 
 Writes <out>/host-data.tar.zst — the files a multiplayer host reads off
 the DVD (default.xbe, mainmenu/shared/single_player_shared and every
@@ -16,7 +16,10 @@ file in it.
 
 --disc is the owner's own disc: an XISO image or a directory holding the
 disc's files. --stripped-maps replaces a map with the same-named one from that
-directory when its header and size match the original. The bundle is the
+directory when its header and size match the original. --sim-stores takes
+shared.h2store and/or single_player_shared.h2store from the directory. Each
+must cover the cache header and match the disc at every recorded byte.
+Mainmenu and playable maps keep their regular files. The bundle is the
 owner's own game data: upload it to a private bucket only, never commit
 it or bake it into an image.";
 
@@ -33,10 +36,11 @@ pub fn bundle_cmd(args: Vec<String>) -> Result<()> {
     let out = bundle::build(&spec)?;
     println!(
         "host-data: {mp} multiplayer maps + {shared} shared ({stripped} from the stripped dir, \
-         {campaign} campaign and {unknown} other maps left out)",
+         {stores} resource stores, {campaign} campaign and {unknown} other maps left out)",
         mp = out.multiplayer,
         shared = out.shared,
         stripped = out.stripped_used,
+        stores = out.stores_used,
         campaign = out.campaign_skipped,
         unknown = out.unknown_skipped,
     );
@@ -56,6 +60,7 @@ pub fn bundle_cmd(args: Vec<String>) -> Result<()> {
 fn parse_args(args: &[String]) -> Result<Option<BundleSpec>, String> {
     use std::path::PathBuf;
     let (mut disc, mut out, mut stripped, mut force, mut level) = (None, None, None, false, 3);
+    let mut sim_stores = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -67,6 +72,9 @@ fn parse_args(args: &[String]) -> Result<Option<BundleSpec>, String> {
             }
             "--stripped-maps" => {
                 stripped = Some(PathBuf::from(it.next().ok_or("--stripped-maps needs a directory")?));
+            }
+            "--sim-stores" => {
+                sim_stores = Some(PathBuf::from(it.next().ok_or("--sim-stores needs a directory")?));
             }
             "--force" => force = true,
             "--zstd-level" => {
@@ -82,7 +90,7 @@ fn parse_args(args: &[String]) -> Result<Option<BundleSpec>, String> {
     if !(1..=21).contains(&level) {
         return Err(format!("--zstd-level {level} is outside 1..=21"));
     }
-    Ok(Some(BundleSpec { disc, out, stripped, force, zstd_level: level }))
+    Ok(Some(BundleSpec { disc, out, stripped, sim_stores, force, zstd_level: level }))
 }
 
 #[cfg(test)]
@@ -96,13 +104,14 @@ mod tests {
     #[test]
     fn the_flags_fill_the_spec() {
         let spec = parse_args(&args(&[
-            "--disc", "d.iso", "--out", "o", "--stripped-maps", "s", "--force", "--zstd-level", "7",
+            "--disc", "d.iso", "--out", "o", "--stripped-maps", "s", "--sim-stores", "t", "--force", "--zstd-level", "7",
         ]))
         .unwrap()
         .unwrap();
         assert_eq!(spec.disc, std::path::Path::new("d.iso"));
         assert_eq!(spec.out, std::path::Path::new("o"));
         assert_eq!(spec.stripped.as_deref(), Some(std::path::Path::new("s")));
+        assert_eq!(spec.sim_stores.as_deref(), Some(std::path::Path::new("t")));
         assert!(spec.force);
         assert_eq!(spec.zstd_level, 7);
     }

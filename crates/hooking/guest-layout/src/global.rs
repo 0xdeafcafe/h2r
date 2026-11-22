@@ -34,6 +34,8 @@ crate::globals! { GLOBALS;
     KOTH_GLOBALS @ 0x0051_ecc8; "docs/game/bots.md";
     TERRITORIES_GLOBALS @ 0x0051_eccc; "docs/game/bots.md";
     JUGGERNAUT_GLOBALS @ 0x0051_0c9c; "docs/game/bots.md";
+    /// Loaded hudg metadata; the motion sensor reads its range at +0x290.
+    HUD_GLOBALS_TAG @ 0x0051_0c94; "docs/halo1/hud.md";
     /// Loaded matg metadata. Its multiplayer reference leads to the weapon list.
     GLOBALS_TAG @ 0x004e_034c; "docs/game/bots.md";
     /// Pointer to the game globals ([`crate::game::GameGlobals`]): active
@@ -69,6 +71,14 @@ crate::globals! { GLOBALS;
     /// dist-client; not the game mode's numbering, see `0x68da8`), the update number at `+0x28`, the out-of-sync latch
     /// byte at `+0x2c`.
     SIM_GLOBALS @ 0x004c_f77c; "docs/live/live-coop.md";
+    /// Pointer to the shared simulation entity and event type registry.
+    SIM_REPLICATION_REGISTRY @ 0x004c_f784; "docs/game/notes/creature-entity.md";
+    /// Generic object entity definition vtable. The probe inherits its object adapter.
+    SIM_OBJECT_ENTITY_VTABLE @ 0x0045_2030; "docs/game/notes/creature-entity.md";
+    /// Network time override enable byte, with the override milliseconds at +4.
+    SIM_NETWORK_TIME_OVERRIDE @ 0x0051_0548; "docs/game/notes/creature-entity.md";
+    /// GetTickCount's import cell pointing at the kernel's millisecond counter.
+    KERNEL_TICK_COUNT_IMPORT @ 0x0041_1690; "docs/runtime/xapi.md";
     /// The simulation's "ended" latch byte.
     SIM_ENDED @ 0x004c_f772; "docs/live/live-coop.md";
     /// The network life cycle's ready byte.
@@ -84,6 +94,28 @@ crate::globals! { GLOBALS;
     /// Pointer to sound state. The four local-user listeners start at
     /// `+0x88` and have stride `0x48`.
     SOUND_GLOBALS @ 0x004e_6380; "docs/audio/dsound.md";
+    /// UI elapsed milliseconds, accumulated by the UI frame service.
+    UI_CLOCK @ 0x0054_d5b8; "docs/audio/bink-hle.md";
+    /// UI-clock milliseconds of the last input that resets the idle timer.
+    UI_LAST_INPUT @ 0x0054_d5bc; "docs/audio/bink-hle.md";
+    /// UI-clock origin set by the title menu and movie wrapper.
+    UI_ATTRACT_RESET @ 0x0051_ebec; "docs/audio/bink-hle.md";
+    /// Byte the attract timer clears to request a music fade.
+    UI_MUSIC_GATE @ 0x0047_01b8; "docs/audio/bink-hle.md";
+    /// Attract movie timeout, in UI-clock milliseconds.
+    UI_ATTRACT_TIMEOUT @ 0x0047_01bc; "docs/audio/bink-hle.md";
+    /// The menu music controller's current and requested modes (+0 and +4).
+    UI_MUSIC_STATE @ 0x0054_e7e0; "docs/audio/bink-hle.md";
+    /// Pending cache copy flag read by the movie wrapper's busy check.
+    CACHE_COPY_PENDING @ 0x0055_bf28; "docs/audio/bink-hle.md";
+    /// Pointer to the active looping-sound datum array (0x21a0d6).
+    LOOPING_SOUNDS @ 0x0050_2110; "docs/runtime/agent-api.md";
+    /// Pointer to the sound instance datum array (0x1254c3).
+    SOUND_INSTANCES @ 0x004e_637c; "docs/runtime/agent-api.md";
+    /// Pointer to the sound-channel records (0x129f20).
+    SOUND_CHANNELS @ 0x004e_6378; "docs/runtime/agent-api.md";
+    /// Pointer to the sound-driver globals, which hold its stream records (0x21f8a0).
+    SOUND_DRIVER @ 0x0051_ebe4; "docs/runtime/agent-api.md";
     /// The loaded map's short name in the cache header (`lockout`), 32
     /// bytes, NUL-terminated.
     CACHE_MAP_NAME @ 0x0054_7898; "docs/live/live-gamestate.md";
@@ -91,6 +123,11 @@ crate::globals! { GLOBALS;
     /// the pickup (`0x1df3e0`) and our campaign start; every reader gates
     /// on a campaign.
     SKULLS @ 0x004f_55dc; "docs/game/skulls.md";
+    /// Pointer to the AI globals: byte `+0` is "AI on" (the script's `ai`
+    /// switch), byte `+1` is set once AI is initialised for the map.
+    /// `ai_update` (`0x1c83c0`) needs both, and never runs on a
+    /// distributed client.
+    AI_GLOBALS @ 0x004f_55d0; "docs/game/notes/ai-networking.md";
     /// Pointer to the actor datum array (`0x888`-byte actors).
     ACTORS @ 0x004f_55f0; "docs/live/live-gamestate.md";
     /// likely: the four local player slots, one per controller, `0xc70`

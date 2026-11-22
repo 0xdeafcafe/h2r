@@ -4,9 +4,7 @@
 //! submits the pending pass before anything of the next draw is staged, and
 //! many draws share one pass. Synthetic resources; skipped without a GPU.
 
-mod common;
-
-use common::*;
+use crate::common::*;
 use d3d::layout::device_field as f;
 use d3d::{Device, GfxBackend, GuestMemory, SparseMemory, UploadPolicy};
 use gfx::GfxContext;

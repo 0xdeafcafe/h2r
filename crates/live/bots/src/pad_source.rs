@@ -63,6 +63,30 @@ pub trait PadSource: Send {
         None
     }
 
+    fn combat_stats(&self) -> Option<&crate::stats::CombatStats> {
+        None
+    }
+
+    /// Asks the source for a bounce route to `to` (docs/game/bots.md,
+    /// "Superbounce routes"); `false` when it takes no orders.
+    fn order_bounce(&mut self, to: crate::brain::Vec3, mode: crate::bounce_route::Mode) -> bool {
+        let _ = (to, mode);
+        false
+    }
+
+    /// Where its bounce route stands; `None` when it takes no orders.
+    fn order_view(&self) -> Option<crate::mind::OrderView> {
+        None
+    }
+
+    /// Sends `pad` every sample in place of its own until called with
+    /// `None` (`superbounce.verify`'s trials on a bot seat); `false` for a
+    /// source that cannot be held.
+    fn hold_pad(&mut self, pad: Option<HostPadState>) -> bool {
+        let _ = pad;
+        false
+    }
+
     /// The phantom's action stream was interrupted by a new unit or match.
     fn reset_input(&mut self) {}
 

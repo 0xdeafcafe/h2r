@@ -13,6 +13,7 @@ pub struct LibraryEntry {
     pub ticks_per_second: Option<u16>,
     pub version: u32,
     pub runtime_stamp: String,
+    pub simulation_hooks: Option<String>,
     pub xbe_sha256: String,
     pub guest_image: Option<crate::image::GuestImage>,
     pub saved: bool,
@@ -21,10 +22,81 @@ pub struct LibraryEntry {
     pub path: PathBuf,
 }
 impl LibraryEntry {
+    fn split(path: &Path, file: &mut fs::File) -> Result<Self> {
+        let (header, layout, seed) = crate::share::read_seed(file)?;
+        let stats = match fs::File::open(path.with_extension("h2stats")) {
+            Ok(mut f) => {
+                let front = crate::range::read_front(&mut f)?;
+                ensure!(
+                    Some(front.id.as_str()) == seed["game_id"].as_str(),
+                    "stats belong to another game"
+                );
+                Some(front)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e.into()),
+        };
+        let compat: live_proto::film::sharing::Compat =
+            serde_json::from_value(seed["compat"].clone())?;
+        let started_ms = stats.as_ref().map(|s| s.started_ms).unwrap_or_else(|| {
+            file.metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_millis() as u64)
+        });
+        Ok(Self {
+            meta: FilmMeta {
+                id: live_proto::sign::hex(&header[16..32]),
+                map: seed["map"].as_str().context("missing film map")?.into(),
+                variant: stats
+                    .as_ref()
+                    .map(|s| s.summary.variant_name.clone())
+                    .unwrap_or_default(),
+                started_ms,
+                length_ticks: u64::from(layout.ticks),
+                players: stats
+                    .as_ref()
+                    .map(|s| {
+                        s.summary
+                            .players
+                            .iter()
+                            .map(|p| crate::Player {
+                                name: p.name.clone(),
+                                team: p.team,
+                                score: p.score,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                source: crate::Source::Local,
+                image_stamp: String::new(),
+            },
+            version: 4,
+            runtime_stamp: compat.abi,
+            simulation_hooks: Some(compat.hooks).filter(|h| !h.is_empty()),
+            xbe_sha256: compat.xbe,
+            guest_image: None,
+            ticks_per_second: Some(header[12].into()),
+            summary: stats.map(|s| s.summary),
+            saved: path.with_extension("h2film.saved").is_file(),
+            lease_id: None,
+            // A local game's simulation ID is independent of its upload reservation.
+            game_id: None,
+            path: path.into(),
+        })
+    }
+
     /// Read the selector row for one file, including a downloaded archive
     /// outside the local library. V3 needs only the front, footer and final HEAD.
     pub fn read(path: &Path) -> Result<Self> {
         let mut file = fs::File::open(path)?;
+        use std::io::Read;
+        let mut magic = [0; 8];
+        file.read_exact(&mut magic)?;
+        if &magic == b"H2FILM4!" {
+            return Self::split(path, &mut file);
+        }
         let (header, summary, ticks_per_second) = match crate::range::listing(&mut file)? {
             Some((header, front)) => (header, Some(front.summary), front.ticks_per_second),
             None => {
@@ -52,6 +124,7 @@ impl LibraryEntry {
         Ok(Self {
             version: header.version,
             runtime_stamp: header.runtime_stamp,
+            simulation_hooks: header.simulation_hooks,
             xbe_sha256: header.xbe_sha256,
             guest_image: header.guest_image,
             summary,
@@ -62,6 +135,28 @@ impl LibraryEntry {
             path: path.into(),
             meta: header.meta,
         })
+    }
+
+    /// Current writers place the start manifest right after the first HEAD.
+    /// Use the index for films laid out differently.
+    pub fn check_initial_files(&self, root: &Path) -> Result<()> {
+        let mut file = fs::File::open(&self.path)?;
+        let offset = if self.version >= 3 {
+            crate::range::DATA_OFFSET
+        } else {
+            0
+        };
+        let head = crate::prefix(&mut file, offset)?;
+        ensure!(head.tag == crate::HEAD, "film must begin with HEAD");
+        let next = crate::prefix(&mut file, offset + 8 + u64::from(head.size))?;
+        let manifest: crate::manifest::Manifest = if next.tag == crate::DATA {
+            crate::decode(&mut file, &next)?
+        } else {
+            let mut reader = Reader::new(file)?;
+            let data = reader.machine_section().unique(crate::DATA)?.clone();
+            reader.read(&data)?
+        };
+        manifest.check_initial_files(root)
     }
 }
 
@@ -129,8 +224,10 @@ impl Library {
     }
     pub fn delete(&self, id: &str) -> Result<()> {
         let path = self.get(id)?.path;
-        remove_pin(&path)?;
-        Ok(fs::remove_file(path)?)
+        crate::sidecar::remove_film_with(&self.dir, id, || {
+            remove_pin(&path)?;
+            Ok(fs::remove_file(path)?)
+        })
     }
 }
 fn remove_pin(path: &Path) -> Result<()> {

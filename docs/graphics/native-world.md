@@ -49,8 +49,12 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   vertical FOV `+0x28`, viewport `+0x30` (i16 top, left, bottom, right),
   near `+0x40`, far `+0x44` ([occlusion-culling.md](occlusion-culling.md),
   "Camera and view"). From it, a view matrix and a projection with the
-  game's own aspect rule (`0x0002fb70`). Read once per view, at the layer-3
-  hook (below), so it is the camera the game's own draws would use.
+  game's own aspect rule (`0x0002fb70`). When available, the paired
+  projection at `0x004b9e14` supplies both diagonal scales and off-centre
+  terms. The display copy adjusts the horizontal row for the presented
+  viewport. The retail copy keeps the original lens. Both operate on
+  the structure parts and objects admitted by the guest.
+  See [widescreen projection](high-resolution.md#widescreen-projection).
 - **Cull.** Frustum planes from the view-projection, tested against each
   draw's world bounds on the CPU (a few thousand AABBs: microseconds). The
   result is `instance_count` 0 or 1 in the indirect buffer (one 20-byte
@@ -351,10 +355,9 @@ there is no hand-written look in between.
   observers (`after_feature`). One observer call per layer draw, nothing
   per draw. It runs on the pipelined render thread (context-only, nothing
   after the body). It touches the guest memory its context sees (item
-  masks, camera, active BSP, map name); the host's load state (a mutex
-  only `ask` takes; the loader is a host thread that opens the map
-  through the VFS's mutex and never touches guest memory); and the D3D
-  device's current targets, which the render owns while it is in flight.
+  masks, camera, active BSP, map name), the published host resources and
+  the D3D device's current targets. The loader opens the map through the
+  VFS and works from the map and the captured device palettes.
   The host drains previous commands, previews the list and confirms one
   batched reservation for the view before applying masks.
   Tests: `crates/rewrites/render-bridge/tests/native_world.rs` (the plan with
@@ -387,8 +390,14 @@ there is no hand-written look in between.
   left to D3D is native too. The lights' split clears by shader
   (`feature::native_lights`), so the lights take only the materials whose
   shader is native whole. Each layer-3 view then asks the device for a
-  `WorldPass` with the view's camera; the first pass uploads the world on
-  the render thread. Log lines per load: `native-world: N of M materials
+  `WorldPass` with the view's camera. The map worker uploads the world
+  on the backend's device and queue, then makes the light, fog, water,
+  scene-layer and decorator resources. Each ready stage transfers at
+  `RENDER_VIEWS` before the first view. A busy GPU world defers that
+  transfer until another frame. A BSP switch or revert opens a fresh
+  receiver and D3D draws its parts until the new stage is ready.
+  The final packet releases the BSP's resources to a sleeping utility
+  worker for destruction. Log lines per load: `native-world: N of M materials
   draw natively with their own programs (P of Q parts); K stay on the D3D
   path for R reasons`, one line per reason, most parts first; `native-world:
   <map> BSP at <addr>: N draws in B batches, P parts native, in S s`; and
@@ -450,6 +459,20 @@ and these constants (hardware numbering, D3D register + 96):
 | `c[18..20]` | stage 0..2 texture-coordinate scale (xy) and offset (zw) | the instance (`0x00018e80`) | `tags::material`'s instance constants |
 | `c[50..52]` | model transform rows | `0x0004d830` from the render record's matrix, skipped for clusters (`[record+8] == -1`) | identity for clusters; for a placement (rigid program) its rows per draw, `world::model_rows` |
 | `c[170..172]` | position and texcoord decompression (scale, offset) | `0x0001cdd0`; `0x0004d7c0` passes no compression for the BSP (record `+4` is `-1`), so the default upload (`0x0001cf29`, scale 1, offset 0) | `c[170]` all 1, `c[171]` 0, `c[172]` `(1, 1, 0, 0)`: BSP vertices are uncompressed |
+
+With no game (the editor), `program::ViewInputs::from_camera` builds
+the per-view block from a camera: `c[0..3]` the view-projection rows
+scaled by `zs / far` (so `w` is the W-buffer's, "The W scale" in
+[occlusion-culling.md](occlusion-culling.md)) with the z row equal to the
+w row, `c[5].w` 0.5, `c[10]` and `c[11]` the guest viewport (x, y, z);
+the clip range is the game's `[near / far, 1] · zs`. The other registers
+and components, `c[4]`, `c[5].xyz`, `c[6]`, `c[7..9]`, the `w` of `c[10]`
+and `c[11]` and the block at `c[12..17]`, are not known well enough to
+synthesise and are not given (`program::CAMERA_GIVEN`). The editor loads
+the layers with that mask (`layers_load::load_with`): a pass whose vertex
+program reads a component outside it, by any lane of a swizzle or by a
+relative read based in the block, is refused and named with the register
+(`program::ungiven_view_read`), never drawn with zeros.
 
 Where `v5` and `v6` come from depends on the render record
 (`0x004ba138 + 0x20·i`). `0x0002cbf0` packs its `+0xc` as bits 0..3 an
@@ -525,7 +548,14 @@ lightmap), sampler states and instance constants. Materials without
 one (no layer 3, more than one pass, an engine texture source other
 than the lightmap, per-draw engine inputs) stay on the D3D path.
 Base maps upload their decoded mip chain (`gpu::Image::from_levels`).
-`native-render::program` makes one pipeline per (program, definition) through `shaders::link`, the uniforms filled as the D3D path fills them, one bind group per material:
+`native_render::program` links each material's programs and fills its
+uniforms and bind groups. During the BSP upload, `WorldPipelines` opens
+the material's archived pipeline descriptors. The compile workers build
+pipelines for those descriptors and for new combinations of target
+formats, stencil and inherited cull requested by a live view. At guest
+admission, `GpuWorld::prewarm_world` checks every selected cluster and
+placement. D3D draws that selection until all its bindings are present
+and its pipeline completions have crossed a frame boundary.
 
 - `look::layer3_pass` takes the pass's implementation as above and
   its own render states (`pass_state`, as transparents do): depth test
@@ -588,7 +618,7 @@ Base maps upload their decoded mip chain (`gpu::Image::from_levels`).
   palettes bound at stages 0..3 when it starts (`Device::stage_palette`,
   read-only), and refuses a palettized bitmap at stage 3 or at a stage
   with no full 256-entry palette. One decoder does this for every pass
-  loaded with the world (`native_world_glue::StageDecoder`: layer 3
+  loaded with the world (`native_render::stage_images::StageDecoder`: layer 3
   and the transparents' layer-15 passes, which share its images; the
   objects can take it too): an image is expanded once, and another
   stage shares it only when it holds the same palette; a refusal for

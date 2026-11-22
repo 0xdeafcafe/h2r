@@ -19,8 +19,8 @@
 //! alignment allows, so an editor can still show and change it. Unnamed
 //! fields are marked ([`Field::named`] false) so names can grow.
 //!
-//! No name here comes from a community tool or plugin: they come from our
-//! own definitions, and those from the XBE's readers and the disc.
+//! Field names, descriptions and their evidence come from the checked-in definitions.
+pub use crate::defs::{Title, Unit};
 use crate::defs::{self, Defs, Kind as DefKind, StructDef};
 use crate::schema::{self, Schema};
 use map::FourCC;
@@ -49,6 +49,12 @@ pub struct Layout {
     pub size: u32,
     pub align: u32,
     pub fields: Vec<Field>,
+    /// The definition's `title=`: the kind in words for a group, or the
+    /// element field that titles each element of a block.
+    pub title: Option<Title>,
+    /// The `title="..."` of each embedded struct, by [`Field::section`]
+    /// path (`unit.obje`). A struct without one is not listed.
+    pub section_titles: BTreeMap<String, String>,
 }
 
 /// One field of a [`Layout`].
@@ -67,6 +73,18 @@ pub struct Field {
     pub kind: Kind,
     /// The definition's note: what it means and the evidence.
     pub meaning: String,
+    /// Editor description from the definition.
+    pub doc: Option<String>,
+    /// When a live write shows: the field's own `applies=`, else the
+    /// nearest one declared on the `block`, `struct` or `group` line above
+    /// it, else `None`.
+    pub applies: Option<&'static str>,
+    /// The definition's `label="..."`, when the derived label is wrong.
+    pub label: Option<String>,
+    /// The definition's `unit=` of a numeric field.
+    pub unit: Option<Unit>,
+    /// The definition's `axes=`: one component letter per array element.
+    pub axes: Vec<String>,
 }
 
 /// A field's type, as an editor shows it.
@@ -218,6 +236,17 @@ impl Coverage {
 }
 
 impl Layout {
+    /// Flatten one text definition without supplying a pointer schema.
+    pub fn from_definition(definition: &StructDef) -> Self {
+        merge(
+            &definition.name,
+            Some(definition),
+            None,
+            None,
+            &mut Vec::new(),
+        )
+    }
+
     /// The field at `offset` exactly.
     pub fn field_at(&self, offset: u32) -> Option<&Field> {
         self.fields
@@ -293,6 +322,7 @@ impl Registry {
                 &name,
                 defs.groups.get(&g),
                 schema.groups.get(&g),
+                None,
                 &mut r.conflicts,
             );
             r.groups.insert(g, Arc::new(layout));
@@ -321,22 +351,74 @@ struct Leaf<'a> {
     at: u32,
     section: String,
     def: &'a defs::FieldDef,
+    doc: Option<String>,
+    meaning: String,
+    /// The field's `applies=`, else the nearest declared above it.
+    applies: Option<&'static str>,
 }
 
-fn flatten<'a>(s: &'a StructDef, base: u32, section: &str, out: &mut Vec<Leaf<'a>>) {
+/// What [`flatten`] collects.
+#[derive(Default)]
+struct Flat<'a> {
+    leaves: Vec<Leaf<'a>>,
+    titles: BTreeMap<String, String>,
+}
+
+fn evidence(context: &str, leaf: &str) -> String {
+    match (context, leaf) {
+        ("", text) | (text, "") => text.to_owned(),
+        _ => format!("{context}\n{leaf}"),
+    }
+}
+
+/// `inherit` is the `applies=` declared above `s` (its embedding line and
+/// whatever encloses that); `s`'s own header is nearer to its fields.
+fn flatten<'a>(
+    s: &'a StructDef,
+    base: u32,
+    section: &str,
+    context: Option<&str>,
+    context_evidence: &str,
+    inherit: Option<&'static str>,
+    out: &mut Flat<'a>,
+) {
+    let here = s.applies.or(inherit);
     for f in &s.fields {
+        let doc = match (context, f.doc.as_deref()) {
+            (Some(outer), Some(inner)) => Some(format!("{outer} {inner}")),
+            (outer, inner) => outer.or(inner).map(str::to_owned),
+        };
         if let DefKind::Struct(sub) = &f.kind {
             let sec = if section.is_empty() {
                 f.name.clone()
             } else {
                 format!("{section}.{}", f.name)
             };
-            flatten(sub, base + f.offset, &sec, out);
+            let note = if f.doc.is_some() && !f.meaning.is_empty() {
+                evidence(context_evidence, &format!("{sec}: {}", f.meaning))
+            } else {
+                context_evidence.to_owned()
+            };
+            if let Some(Title::Text(t)) = &sub.title {
+                out.titles.insert(sec.clone(), t.clone());
+            }
+            flatten(
+                sub,
+                base + f.offset,
+                &sec,
+                doc.as_deref(),
+                &note,
+                f.applies.or(here),
+                out,
+            );
         } else {
-            out.push(Leaf {
+            out.leaves.push(Leaf {
+                applies: f.applies.or(here),
                 at: base + f.offset,
                 section: section.to_owned(),
                 def: f,
+                doc,
+                meaning: evidence(context_evidence, &f.meaning),
             });
         }
     }
@@ -363,17 +445,24 @@ fn is_data(s: &schema::Struct) -> bool {
     s.size == 1 && s.fields.is_empty()
 }
 
-fn hint(name: &str, meaning: &str, count: u32) -> Hint {
+/// How to show a float array. A field with a `unit=` is shown by it, not
+/// by a guess from its name: only `degrees` and `degrees_per_second` make
+/// an angle.
+fn hint(name: &str, meaning: &str, count: u32, unit: Option<Unit>) -> Hint {
     let n = name.to_ascii_lowercase();
     let m = meaning.to_ascii_lowercase();
     if count == 3 && (n.contains("colour") || n.contains("color")) {
         Hint::Colour
-    } else if n.contains("angle")
-        || n.contains("field_of_view")
-        || n.ends_with("_yaw")
-        || n.ends_with("_pitch")
-        || m.contains("radians")
-    {
+    } else if match unit {
+        Some(u) => u.is_angle(),
+        None => {
+            n.contains("angle")
+                || n.contains("field_of_view")
+                || n.ends_with("_yaw")
+                || n.ends_with("_pitch")
+                || m.contains("radians")
+        }
+    } {
         Hint::Angle
     } else if count == 2 && (n.contains("bounds") || n.ends_with("_range")) {
         Hint::Bounds
@@ -388,6 +477,7 @@ fn merge(
     name: &str,
     def: Option<&StructDef>,
     schema: Option<&schema::Struct>,
+    inherit: Option<&'static str>,
     conflicts: &mut Vec<String>,
 ) -> Layout {
     let def = def.filter(|d| schema.is_none_or(|s| s.size == d.size));
@@ -399,14 +489,20 @@ fn merge(
     let empty = BTreeMap::new();
     let sfields = schema.map_or(&empty, |s| &s.fields);
     let mut fields: Vec<Field> = Vec::new();
+    let mut unknown_docs = Vec::new();
+    let mut section_titles = BTreeMap::new();
 
     if let Some(d) = def {
-        let mut leaves = Vec::new();
-        flatten(d, 0, "", &mut leaves);
-        for leaf in leaves {
+        let mut flat = Flat::default();
+        flatten(d, 0, "", None, "", inherit, &mut flat);
+        section_titles = flat.titles;
+        for leaf in flat.leaves {
             let f = leaf.def;
             let (lo, hi) = (leaf.at, leaf.at + f.kind.width());
             if matches!(f.kind, DefKind::Unknown { .. }) {
+                if let Some(doc) = leaf.doc {
+                    unknown_docs.push((lo, hi, doc, leaf.meaning));
+                }
                 continue;
             }
             // A schema field inside these bytes must be this field.
@@ -436,7 +532,7 @@ fn merge(
                 },
                 DefKind::Float { count } => Kind::Float {
                     count: *count,
-                    hint: hint(&f.name, &f.meaning, *count),
+                    hint: hint(&f.name, &f.meaning, *count, f.unit),
                 },
                 DefKind::Enum { bytes, values } => Kind::Enum {
                     bytes: *bytes,
@@ -467,6 +563,7 @@ fn merge(
                         &format!("{name}.{}", f.name),
                         Some(sub),
                         child,
+                        leaf.applies,
                         conflicts,
                     )))
                 }
@@ -484,7 +581,12 @@ fn merge(
                 section: leaf.section,
                 named,
                 kind,
-                meaning: f.meaning.clone(),
+                meaning: leaf.meaning,
+                doc: leaf.doc,
+                applies: leaf.applies,
+                label: f.label.clone(),
+                unit: f.unit,
+                axes: f.axes.clone(),
             });
         }
     }
@@ -502,6 +604,7 @@ fn merge(
                 &format!("{name}+{o:#x}"),
                 None,
                 Some(c),
+                None,
                 conflicts,
             ))),
             schema::Field::TagRef => Kind::TagRef { groups: Vec::new() },
@@ -522,6 +625,11 @@ fn merge(
                 named: false,
                 kind,
                 meaning: String::new(),
+                doc: None,
+                applies: None,
+                label: None,
+                unit: None,
+                axes: Vec::new(),
             },
         );
     }
@@ -546,11 +654,25 @@ fn merge(
         at = out.last().map_or(0, |f| f.offset + f.kind.width());
     }
     fill(&mut out, at, size);
+    // An unnamed word can straddle two definition spans. Only carry the
+    // description onto rows whose complete value belongs to that span.
+    for (lo, hi, doc, meaning) in unknown_docs {
+        let start = out.partition_point(|f| f.offset < lo);
+        for f in &mut out[start..] {
+            if f.offset + f.kind.width() > hi {
+                break;
+            }
+            f.doc = Some(doc.clone());
+            f.meaning.clone_from(&meaning);
+        }
+    }
     Layout {
         name: def.map_or_else(|| name.to_owned(), |d| d.name.clone()),
         size,
         align,
         fields: out,
+        title: def.and_then(|d| d.title.clone()),
+        section_titles,
     }
 }
 
@@ -579,6 +701,11 @@ fn fill(out: &mut Vec<Field>, mut lo: u32, hi: u32) {
             named: false,
             kind,
             meaning: String::new(),
+            doc: None,
+            applies: None,
+            label: None,
+            unit: None,
+            axes: Vec::new(),
         });
         lo += len;
     }

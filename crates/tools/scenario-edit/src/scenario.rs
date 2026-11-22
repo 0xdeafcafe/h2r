@@ -3,14 +3,21 @@
 //! only the bytes of the field they name, and [`Scenario::patches`] turns
 //! the difference from the source into fixed-size tag patches.
 use crate::layout::{self, BlockDef, BlockKind, FieldDef, FieldType, Role};
+use crate::volumes::{self, Frame, VolumeBlock, VolumeKind, Volumes};
 use crate::{Error, Result};
 use map::{FourCC, Map, TagId};
 use std::collections::HashMap;
 use std::io::{Read, Seek};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The `scnr` root is at least this long: the furthest block pair this crate
 /// reads is crates' palette at `+0x330`.
 const ROOT: u32 = 0x338;
+
+/// The compiled script syntax nodes' block pair. Script atoms name
+/// trigger volumes by index; the editor does not read the atoms' types, so
+/// a map with any node keeps its source volumes in their slots.
+const SCRIPT_NODES: usize = 0x238;
 
 /// An 8-byte tag reference.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -76,6 +83,27 @@ pub struct TagInfo {
     pub name: Option<String>,
 }
 
+// Layout identities also distinguish divergent edits to cloned scenarios.
+fn next_layout_rev() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LayoutChange {
+    before: u64,
+    after: u64,
+}
+
+/// Identity of an entry within its document and block. A swap-removal changes
+/// the last entry's index without changing which placement it represents.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PlacementId {
+    Source(usize),
+    /// The layout revision created by the append. Redo reuses the same revision.
+    Added(u64),
+}
+
 /// One placement block.
 #[derive(Clone, Debug)]
 pub struct Block {
@@ -84,10 +112,29 @@ pub struct Block {
     pub address: u32,
     entries: Vec<Vec<u8>>,
     original: Vec<Vec<u8>>,
+    ids: Vec<PlacementId>,
+    layout_rev: u64,
+    // unadd takes bytes, so it needs the parent of each consecutive append.
+    // A removal carries this trail in its undo receipt.
+    before_appends: Vec<u64>,
     /// The palette's tag references, when the block has a palette.
     pub palette: Vec<TagRef>,
 }
 impl Block {
+    /// Identity of the block's ordered placement slots. Zero names the source
+    /// layout. Field edits preserve it and undo restores the prior identity.
+    pub fn layout_rev(&self) -> u64 {
+        self.layout_rev
+    }
+    fn change_layout(&mut self, replay: Option<LayoutChange>) -> LayoutChange {
+        let before = self.layout_rev;
+        // Redo can reuse an identity only when it starts from its parent.
+        let after = replay
+            .filter(|change| change.before == before)
+            .map_or_else(next_layout_rev, |change| change.after);
+        self.layout_rev = after;
+        LayoutChange { before, after }
+    }
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -97,6 +144,22 @@ impl Block {
     /// Current bytes of an element (including every unknown byte).
     pub fn entry(&self, index: usize) -> Option<&[u8]> {
         self.entries.get(index).map(Vec::as_slice)
+    }
+    pub fn placement_id(&self, index: usize) -> Option<PlacementId> {
+        self.ids.get(index).copied()
+    }
+    pub fn source_entries(&self) -> &[Vec<u8>] {
+        &self.original
+    }
+    /// Decode a field supplied by the game's conditional write reply.
+    pub fn field_value(&self, index: usize, field: &FieldDef, bytes: &[u8]) -> Option<Value> {
+        let mut entry = self.entry(index)?.to_vec();
+        if bytes.len() != field.ty.size() as usize {
+            return None;
+        }
+        let at = field.offset as usize;
+        entry.get_mut(at..at + bytes.len())?.copy_from_slice(bytes);
+        Some(read_field(&entry, field))
     }
     /// Elements the source block holds: up to this many fit in place.
     pub fn capacity(&self) -> usize {
@@ -112,22 +175,66 @@ pub struct Changes {
     /// the root count of a block that shrank or grew back within its source
     /// size.
     pub patches: Vec<(u32, Vec<u8>)>,
+    /// Fixed-size replacements in structure BSP regions.
+    pub bsp_patches: Vec<BspPatch>,
     /// Blocks that outgrew their source: written as a new copy appended to
     /// the metadata, then the root's `(count, address)` pointed at it.
     pub grown: Vec<Grown>,
     /// Other tags' blocks that outgrew their source (the tag editor's),
-    /// written the same way.
+    /// and the scenario's volume blocks that did, written the same way.
     pub tag_grown: Vec<TagGrown>,
     /// String IDs to add after the map's own, in order (the tag editor's).
     pub strings: Vec<String>,
+    /// Fixed-size replacements inside local raw blocks (the Modeling
+    /// tool's in-place geometry writes).
+    pub raw_patches: Vec<RawPatch>,
+    /// Why the Modeling tool's edits cannot be saved, when they cannot: a
+    /// save is then refused whole, before anything is written.
+    pub geometry_refusal: Option<String>,
 }
 impl Changes {
     pub fn is_empty(&self) -> bool {
         self.patches.is_empty()
+            && self.bsp_patches.is_empty()
             && self.grown.is_empty()
             && self.tag_grown.is_empty()
             && self.strings.is_empty()
+            && self.raw_patches.is_empty()
+            && self.geometry_refusal.is_none()
     }
+}
+
+/// A fixed-size replacement inside a raw data block of the map
+/// (`map::MapEditor::patch_raw`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RawPatch {
+    pub block: map::RawPointer,
+    pub block_size: u32,
+    /// Offset of the first byte in the block.
+    pub offset: u32,
+    pub bytes: Vec<u8>,
+}
+
+/// What the Modeling tool hands the save (docs/editor/modeling-targets.md,
+/// "The session and the save"): tag patches in the ordinary metadata and
+/// BSP regions, raw block patches, or the reason it cannot be written.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GeometryChanges {
+    pub patches: Vec<(u32, Vec<u8>)>,
+    pub bsp_patches: Vec<BspPatch>,
+    pub raw_patches: Vec<RawPatch>,
+    pub refusal: Option<String>,
+}
+
+/// A fixed-size replacement inside a structure BSP region.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BspPatch {
+    /// The source region, whose file offset distinguishes BSPs at the same virtual address.
+    pub space: map::AddressSpace,
+    /// Starting virtual address in the region.
+    pub address: u32,
+    /// Replacement bytes, in file order.
+    pub bytes: Vec<u8>,
 }
 
 /// A block of a tag other than the scenario with more elements than its
@@ -164,6 +271,21 @@ pub struct Removed {
     /// Object names repointed by the removal: (name index, old placement
     /// index).
     pub renamed: Vec<(usize, i16)>,
+    pub(crate) layout: LayoutChange,
+    id: PlacementId,
+    before_appends: Vec<u64>,
+}
+
+/// A volume block removal, recorded so it can be undone exactly.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VolumeRemoved {
+    pub kind: VolumeKind,
+    pub index: usize,
+    /// The removed element's bytes.
+    pub entry: Vec<u8>,
+    /// Kill triggers and BSP switches that named the moved last volume and
+    /// now name its new slot: (kind, entry index, old volume index).
+    pub repointed: Vec<(VolumeKind, usize, i16)>,
 }
 
 /// The scenario object names block, kept so a removal can repoint names.
@@ -189,6 +311,14 @@ impl Names {
             at(layout::OBJECT_NAME_PLACEMENT),
         ))
     }
+    /// The text of name `i` (its 32 bytes up to the first NUL), or `None`
+    /// past the block or for bytes that are not UTF-8.
+    pub fn name(&self, i: usize) -> Option<&str> {
+        let e = self.entries.get(i)?;
+        let text = &e[..e.len().min(32)];
+        let end = text.iter().position(|&b| b == 0).unwrap_or(text.len());
+        std::str::from_utf8(&text[..end]).ok()
+    }
     fn set_placement(&mut self, i: usize, placement: i16) {
         let o = layout::OBJECT_NAME_PLACEMENT;
         self.entries[i][o..o + 2].copy_from_slice(&placement.to_le_bytes());
@@ -205,15 +335,30 @@ pub struct Scenario {
     pub blocks: Vec<Block>,
     /// Scenario object names (edited only by removals).
     pub names: Names,
+    /// Trigger volumes and what names them, decoded from
+    /// [`Self::volume_block`] after every edit.
+    pub volumes: Volumes,
+    /// The trigger volume, kill trigger and BSP switch blocks' bytes, by
+    /// [`VolumeKind`].
+    volume_blocks: [VolumeBlock; 3],
+    /// Each trigger volume name's text, by string ID, from the map's table.
+    volume_names: HashMap<u32, String>,
+    /// Why the volume blocks may not be edited, when they may not.
+    volume_lock: Option<String>,
+    /// The scenario has compiled script nodes (see [`SCRIPT_NODES`]).
+    scripted: bool,
     pub tags: HashMap<TagId, TagInfo>,
     /// Patches to other tags' bytes (the tag editor's field edits, kept
     /// outside this tag): `(ordinary metadata virtual address, bytes)`,
     /// saved with the scenario's own. See [`Self::set_tag_patches`].
     tag_patches: Vec<(u32, Vec<u8>)>,
+    bsp_patches: Vec<BspPatch>,
     /// Other tags' grown blocks. See [`Self::set_tag_grown`].
     tag_grown: Vec<TagGrown>,
     /// New string IDs. See [`Self::set_tag_strings`].
     tag_strings: Vec<String>,
+    /// The Modeling tool's writes. See [`Self::set_geometry_changes`].
+    geometry: GeometryChanges,
 }
 
 pub(crate) fn u32_at(b: &[u8], o: usize) -> u32 {
@@ -275,7 +420,15 @@ impl Scenario {
             let at = map.file_offset(address, size)?;
             Ok(map.read_file_range(at, size.into())?)
         };
-        Self::decode(id, loc.address, &bytes, tags, &mut fetch)
+        let mut scenario = Self::decode(id, loc.address, &bytes, tags, &mut fetch)?;
+        scenario.volumes.resolve_names(map.strings());
+        scenario.volume_names = scenario
+            .volumes
+            .triggers
+            .iter()
+            .filter_map(|v| Some((v.name_id, v.name.clone()?)))
+            .collect();
+        Ok(scenario)
     }
 
     /// Decode from a payload whose first byte is at virtual `address`.
@@ -338,7 +491,10 @@ impl Scenario {
                 def,
                 address: start,
                 original: entries.clone(),
+                ids: (0..entries.len()).map(PlacementId::Source).collect(),
                 entries,
+                layout_rev: 0,
+                before_appends: Vec::new(),
                 palette,
             });
         }
@@ -348,6 +504,25 @@ impl Scenario {
             original: names_entries.clone(),
             entries: names_entries,
         };
+        // A volume block that does not read leaves the volumes empty and
+        // locked with the reason, and the placements still open.
+        let read = VolumeKind::ALL.map(|kind| {
+            let (offset, stride) = kind.block();
+            elements(offset, stride)
+        });
+        let (volumes, volume_blocks, mut volume_lock) = match read {
+            [Ok(t), Ok(k), Ok(w)] => {
+                let volumes = Volumes::from_rows(&t.1, &k.1, &w.1);
+                let blocks = [t, k, w].map(|(at, rows)| VolumeBlock::new(at, rows));
+                (volumes, blocks, None)
+            }
+            [Err(e), ..] | [_, Err(e), _] | [.., Err(e)] => {
+                let why = e.to_string();
+                let lock = format!("the volume blocks do not read: {why}");
+                (Volumes::failed(why), Default::default(), Some(lock))
+            }
+        };
+        let scripted = u32_at(bytes, SCRIPT_NODES) != 0;
         // Blocks this editor writes must not overlap each other, or one
         // patch would change another block's element.
         let mut spans: Vec<(u64, u64)> = blocks
@@ -368,16 +543,36 @@ impl Scenario {
         if spans.windows(2).any(|w| w[0].1 > w[1].0) {
             return Err(Error::Invalid("scenario placement blocks overlap"));
         }
+        // The volume blocks are written the same way: one that overlaps
+        // another block is drawn but not edited.
+        for (kind, block) in VolumeKind::ALL.iter().zip(&volume_blocks) {
+            if block.is_empty() {
+                continue;
+            }
+            let a = u64::from(block.address);
+            spans.push((a, a + block.len() as u64 * u64::from(kind.block().1)));
+        }
+        spans.sort();
+        if volume_lock.is_none() && spans.windows(2).any(|w| w[0].1 > w[1].0) {
+            volume_lock = Some("a volume block overlaps another block".into());
+        }
         Ok(Self {
             tag,
             address,
             size,
             blocks,
             names,
+            volumes,
+            volume_blocks,
+            volume_names: HashMap::new(),
+            volume_lock,
+            scripted,
             tags,
             tag_patches: Vec::new(),
+            bsp_patches: Vec::new(),
             tag_grown: Vec::new(),
             tag_strings: Vec::new(),
+            geometry: GeometryChanges::default(),
         })
     }
 
@@ -502,6 +697,7 @@ impl Scenario {
     pub fn is_modified(&self) -> bool {
         self.blocks.iter().any(|b| b.entries != b.original)
             || self.names.entries != self.names.original
+            || self.volume_blocks.iter().any(VolumeBlock::is_modified)
     }
 
     /// What a save must write: the minimal fixed-size patches for blocks
@@ -512,10 +708,16 @@ impl Scenario {
     pub fn changes(&self) -> Changes {
         let mut out = Changes {
             patches: self.tag_patches.clone(),
+            bsp_patches: self.bsp_patches.clone(),
             tag_grown: self.tag_grown.clone(),
             strings: self.tag_strings.clone(),
+            raw_patches: self.geometry.raw_patches.clone(),
+            geometry_refusal: self.geometry.refusal.clone(),
             ..Changes::default()
         };
+        out.patches.extend(self.geometry.patches.iter().cloned());
+        out.bsp_patches
+            .extend(self.geometry.bsp_patches.iter().cloned());
         for b in &self.blocks {
             let root = self.address + b.def.offset;
             if b.len() > b.capacity() {
@@ -546,6 +748,25 @@ impl Scenario {
             &self.names.entries,
             &self.names.original,
         );
+        // The volume blocks, by the same rules; one that outgrew its
+        // source is written as the tag editor's grown blocks are.
+        for (kind, b) in VolumeKind::ALL.iter().zip(&self.volume_blocks) {
+            let (offset, stride) = kind.block();
+            let root = self.address + offset;
+            if b.len() > b.capacity() {
+                out.tag_grown.push(TagGrown {
+                    root,
+                    count: b.len() as u32,
+                    bytes: b.entries.concat(),
+                });
+                continue;
+            }
+            diff_into(&mut out.patches, b.address, stride, &b.entries, &b.original);
+            if b.len() != b.capacity() {
+                out.patches
+                    .push((root, (b.len() as u32).to_le_bytes().to_vec()));
+            }
+        }
         out.patches.sort();
         out
     }
@@ -572,6 +793,36 @@ impl Scenario {
     /// The patches to other tags' bytes.
     pub fn tag_patches(&self) -> &[(u32, Vec<u8>)] {
         &self.tag_patches
+    }
+
+    /// Replace the BSP region patches. Save checks the ranges against the source map.
+    pub fn set_bsp_patches(&mut self, patches: Vec<BspPatch>) {
+        self.bsp_patches = patches;
+    }
+
+    /// Replace the Modeling tool's writes (all of them, not a delta).
+    /// Refused when a tag patch touches this scenario's payload. A patch
+    /// that overlaps the tag editor's is refused by the save, which names
+    /// both as overlapping edits.
+    pub fn set_geometry_changes(&mut self, changes: GeometryChanges) -> Result<()> {
+        let (lo, hi) = (
+            u64::from(self.address),
+            u64::from(self.address) + u64::from(self.size),
+        );
+        if changes.patches.iter().any(|(a, b)| {
+            let (a, e) = (u64::from(*a), u64::from(*a) + b.len() as u64);
+            a < hi && lo < e
+        }) {
+            return Err(Error::Refused(
+                "the scenario tag's bytes belong to the Scenario tool",
+            ));
+        }
+        self.geometry = changes;
+        Ok(())
+    }
+    /// The Modeling tool's writes.
+    pub fn geometry_changes(&self) -> &GeometryChanges {
+        &self.geometry
     }
 
     /// Replace the other tags' grown blocks (all of them, not a delta).
@@ -617,6 +868,226 @@ impl Scenario {
         &self.tag_strings
     }
 
+    /// A volume block's bytes.
+    pub fn volume_block(&self, kind: VolumeKind) -> &VolumeBlock {
+        &self.volume_blocks[kind.slot()]
+    }
+
+    /// Whether the map has compiled script nodes, which can name trigger
+    /// volumes by index.
+    pub fn is_scripted(&self) -> bool {
+        self.scripted
+    }
+
+    /// Why entries of a volume block may not be changed or added, if they
+    /// may not. BSP switches are read only: what else names a switch is
+    /// not surveyed.
+    pub fn volume_refusal(&self, kind: VolumeKind) -> Option<String> {
+        if let Some(why) = &self.volume_lock {
+            return Some(why.clone());
+        }
+        (kind == VolumeKind::BspSwitch).then(|| "BSP switches are read only".to_owned())
+    }
+
+    /// Why entry `index` of a volume block may not be removed, if it may
+    /// not: a trigger volume a kill trigger or BSP switch names (each is
+    /// named), or a source volume of a scripted map, whose scripts may
+    /// name it or the last volume by index.
+    pub fn volume_remove_refusal(&self, kind: VolumeKind, index: usize) -> Option<String> {
+        if let Some(why) = self.volume_refusal(kind) {
+            return Some(why);
+        }
+        let block = self.volume_block(kind);
+        if index >= block.len() {
+            return Some(format!(
+                "no {} {index} (the map has {})",
+                kind.noun(),
+                block.len()
+            ));
+        }
+        if kind != VolumeKind::Trigger {
+            return None;
+        }
+        let holders = self.volumes.holders(index);
+        if !holders.is_empty() {
+            let names: Vec<String> = holders.iter().map(|h| h.describe()).collect();
+            return Some(format!(
+                "{} is named by {}",
+                self.volumes.label(index),
+                names.join(" and ")
+            ));
+        }
+        (self.scripted && index < block.capacity()).then(|| {
+            format!(
+                "{} came with the map, whose scripts can name trigger volumes by index; \
+                 only a volume added in this editor can be removed",
+                self.volumes.label(index)
+            )
+        })
+    }
+
+    fn check_volume_entry(&self, kind: VolumeKind, entry: &[u8], count: usize) -> Result<()> {
+        if entry.len() != kind.block().1 as usize {
+            return Err(Error::Invalid("entry is not one element long"));
+        }
+        match kind {
+            VolumeKind::Trigger if volumes::entry_frame(entry).axes().is_none() => {
+                Err(Error::Value(
+                    "frame",
+                    "needs a finite origin, a positive size and two directions that are not parallel",
+                ))
+            }
+            VolumeKind::Kill | VolumeKind::BspSwitch => {
+                let v = volumes::named_volume(entry);
+                if usize::try_from(v).ok().is_some_and(|v| v < count) {
+                    Ok(())
+                } else {
+                    Err(Error::Value("trigger_volume", "names no trigger volume"))
+                }
+            }
+            VolumeKind::Trigger => Ok(()),
+        }
+    }
+
+    fn refresh_volumes(&mut self) {
+        let [t, k, w] = &self.volume_blocks;
+        let mut volumes = Volumes::from_rows(&t.entries, &k.entries, &w.entries);
+        volumes.name_with(|id| self.volume_names.get(&id).cloned());
+        self.volumes = volumes;
+    }
+
+    /// Replace entry `index` of a volume block after validating it.
+    /// Returns the old bytes.
+    pub fn set_volume(
+        &mut self,
+        kind: VolumeKind,
+        index: usize,
+        entry: Vec<u8>,
+    ) -> Result<Vec<u8>> {
+        if let Some(why) = self.volume_refusal(kind) {
+            return Err(Error::Declined(why));
+        }
+        let triggers = self.volume_block(VolumeKind::Trigger).len();
+        self.check_volume_entry(kind, &entry, triggers)?;
+        self.write_volume(kind, index, entry)
+    }
+
+    /// Replace a volume entry without validation (undo).
+    pub(crate) fn write_volume(
+        &mut self,
+        kind: VolumeKind,
+        index: usize,
+        entry: Vec<u8>,
+    ) -> Result<Vec<u8>> {
+        let block = &mut self.volume_blocks[kind.slot()];
+        let slot = block
+            .entries
+            .get_mut(index)
+            .ok_or_else(|| Error::Declined(format!("no {} {index}", kind.noun())))?;
+        if slot.len() != entry.len() {
+            return Err(Error::Invalid("entry is not one element long"));
+        }
+        let old = std::mem::replace(slot, entry);
+        self.refresh_volumes();
+        Ok(old)
+    }
+
+    /// Set trigger volume `index`'s frame (squared, every other byte
+    /// kept). Returns the old entry.
+    pub fn set_volume_frame(&mut self, index: usize, frame: &Frame) -> Result<Vec<u8>> {
+        let like = self
+            .volume_block(VolumeKind::Trigger)
+            .entry(index)
+            .ok_or_else(|| Error::Declined(format!("no trigger volume {index}")))?;
+        let frame = frame.squared().unwrap_or(*frame);
+        let entry = volumes::trigger_entry(Some(like), &frame);
+        self.set_volume(VolumeKind::Trigger, index, entry)
+    }
+
+    /// Append an entry to a volume block. Returns its index. A block that
+    /// grows past its source size is written as a new copy on save.
+    pub fn add_volume(&mut self, kind: VolumeKind, entry: Vec<u8>) -> Result<usize> {
+        if let Some(why) = self.volume_refusal(kind) {
+            return Err(Error::Declined(why));
+        }
+        let triggers = self.volume_block(VolumeKind::Trigger).len();
+        self.check_volume_entry(kind, &entry, triggers)?;
+        let block = &mut self.volume_blocks[kind.slot()];
+        block.entries.push(entry);
+        let index = block.len() - 1;
+        self.refresh_volumes();
+        Ok(index)
+    }
+
+    /// Undo [`Self::add_volume`]: drop the last entry, which must be `entry`.
+    pub fn unadd_volume(&mut self, kind: VolumeKind, entry: &[u8]) -> Result<()> {
+        let block = &mut self.volume_blocks[kind.slot()];
+        if block.entries.last().map(Vec::as_slice) != Some(entry) {
+            return Err(Error::Invalid("the added entry is no longer last"));
+        }
+        block.entries.pop();
+        self.refresh_volumes();
+        Ok(())
+    }
+
+    /// Swap-remove entry `index` of a volume block: the last entry moves
+    /// into its slot, and the kill triggers and BSP switches that named a
+    /// moved trigger volume follow it. Refused as
+    /// [`Self::volume_remove_refusal`] says.
+    pub fn remove_volume(&mut self, kind: VolumeKind, index: usize) -> Result<VolumeRemoved> {
+        if let Some(why) = self.volume_remove_refusal(kind, index) {
+            return Err(Error::Declined(why));
+        }
+        let block = &mut self.volume_blocks[kind.slot()];
+        let last = block.len() - 1;
+        let entry = block.entries.swap_remove(index);
+        let mut repointed = Vec::new();
+        if kind == VolumeKind::Trigger && index != last {
+            for holder in [VolumeKind::Kill, VolumeKind::BspSwitch] {
+                let block = &mut self.volume_blocks[holder.slot()];
+                for (i, e) in block.entries.iter_mut().enumerate() {
+                    let v = volumes::named_volume(e);
+                    if usize::try_from(v).ok() == Some(last) {
+                        repointed.push((holder, i, v));
+                        volumes::set_named_volume(e, index as i16);
+                    }
+                }
+            }
+        }
+        self.refresh_volumes();
+        Ok(VolumeRemoved {
+            kind,
+            index,
+            entry,
+            repointed,
+        })
+    }
+
+    /// Undo [`Self::remove_volume`], byte for byte.
+    pub fn unremove_volume(&mut self, removed: &VolumeRemoved) -> Result<()> {
+        let block = &mut self.volume_blocks[removed.kind.slot()];
+        if removed.index > block.len() {
+            return Err(Error::Declined(format!(
+                "no {} {}",
+                removed.kind.noun(),
+                removed.index
+            )));
+        }
+        if removed.index == block.len() {
+            block.entries.push(removed.entry.clone());
+        } else {
+            let moved = std::mem::replace(&mut block.entries[removed.index], removed.entry.clone());
+            block.entries.push(moved);
+        }
+        for &(holder, i, v) in removed.repointed.iter().rev() {
+            if let Some(e) = self.volume_blocks[holder.slot()].entries.get_mut(i) {
+                volumes::set_named_volume(e, v);
+            }
+        }
+        self.refresh_volumes();
+        Ok(())
+    }
+
     /// Why entries of a block may not be removed, if they may not.
     pub fn remove_refusal(&self, kind: BlockKind) -> Option<&'static str> {
         layout::block(kind).remove_refusal
@@ -625,6 +1096,15 @@ impl Scenario {
     /// Swap-remove an element: the last element moves into its slot and
     /// the count drops by one. Returns what [`Self::unremove`] needs.
     pub fn remove(&mut self, kind: BlockKind, index: usize) -> Result<Removed> {
+        self.remove_with_rev(kind, index, None)
+    }
+
+    pub(crate) fn remove_with_rev(
+        &mut self,
+        kind: BlockKind,
+        index: usize,
+        replay: Option<LayoutChange>,
+    ) -> Result<Removed> {
         if let Some(why) = self.remove_refusal(kind) {
             return Err(Error::Refused(why));
         }
@@ -635,6 +1115,9 @@ impl Scenario {
         let last = block.len() - 1;
         let ty = block.def.object_type;
         let entry = block.entries.swap_remove(index);
+        let id = block.ids.swap_remove(index);
+        let layout = block.change_layout(replay);
+        let before_appends = std::mem::take(&mut block.before_appends);
         // Names point at placements by (type, index): the removed one's
         // name now names nothing, the moved one's follows it.
         let mut renamed = Vec::new();
@@ -661,7 +1144,10 @@ impl Scenario {
             kind,
             index,
             entry,
+            id,
             renamed,
+            layout,
+            before_appends,
         })
     }
 
@@ -682,11 +1168,28 @@ impl Scenario {
         if removed.index > block.len() {
             return Err(Error::NoEntry(removed.kind, removed.index));
         }
+        // unremove can also be applied to a different layout outside History.
+        let id = if block.layout_rev != removed.layout.after && block.ids.contains(&removed.id) {
+            PlacementId::Added(next_layout_rev())
+        } else {
+            removed.id
+        };
         if removed.index == block.len() {
+            block.ids.push(id);
             block.entries.push(removed.entry.clone());
         } else {
+            let last_id = std::mem::replace(&mut block.ids[removed.index], id);
+            block.ids.push(last_id);
             let moved = std::mem::replace(&mut block.entries[removed.index], removed.entry.clone());
             block.entries.push(moved);
+        }
+        if block.layout_rev == removed.layout.after {
+            block.layout_rev = removed.layout.before;
+            block.before_appends.clone_from(&removed.before_appends);
+        } else {
+            // Applied to another layout, this insertion creates new slots.
+            block.layout_rev = next_layout_rev();
+            block.before_appends.clear();
         }
         for &(n, p) in removed.renamed.iter().rev() {
             self.names.set_placement(n, p);
@@ -711,6 +1214,15 @@ impl Scenario {
     /// A block that grows past its source size is written as a new copy at
     /// the end of the metadata on save.
     pub fn add(&mut self, kind: BlockKind, entry: Vec<u8>) -> Result<usize> {
+        self.add_with_rev(kind, entry, None).map(|(index, _)| index)
+    }
+
+    pub(crate) fn add_with_rev(
+        &mut self,
+        kind: BlockKind,
+        entry: Vec<u8>,
+        replay: Option<LayoutChange>,
+    ) -> Result<(usize, LayoutChange)> {
         if let Some(why) = self.add_refusal(kind) {
             return Err(Error::Refused(why));
         }
@@ -719,7 +1231,10 @@ impl Scenario {
             return Err(Error::Invalid("entry is not one element long"));
         }
         block.entries.push(entry);
-        Ok(block.len() - 1)
+        let layout = block.change_layout(replay);
+        block.ids.push(PlacementId::Added(layout.after));
+        block.before_appends.push(layout.before);
+        Ok((block.len() - 1, layout))
     }
 
     /// Undo [`Self::add`]: drop the last element, which must be `entry`.
@@ -729,6 +1244,8 @@ impl Scenario {
             return Err(Error::Invalid("the added entry is no longer last"));
         }
         block.entries.pop();
+        block.ids.pop();
+        block.layout_rev = block.before_appends.pop().unwrap_or_else(next_layout_rev);
         Ok(())
     }
 

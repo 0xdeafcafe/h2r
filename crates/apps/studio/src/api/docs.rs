@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use agent_proto::RpcError;
+use editor_core::map_groups::MapGroup;
 use scenario_edit::layout;
 use serde_json::{Value, json};
 use studio_proto::{code, method as m};
@@ -14,7 +15,8 @@ use super::params::block_name;
 use super::scenario::refused;
 use super::{P, Reply, err};
 use crate::App;
-use crate::app::{Action, ToolKind};
+use crate::app::map_cards::MapEntry;
+use crate::app::{Action, SaveTarget, ToolKind};
 
 /// A `doc` param as a tool (default: the tool shown).
 pub fn doc_kind(app: &App, p: &P) -> Result<ToolKind, RpcError> {
@@ -32,10 +34,11 @@ pub fn parse_doc(d: &str) -> Result<ToolKind, RpcError> {
         "ui" | "ui-screens" => ToolKind::UiScreens,
         "tags" => ToolKind::Tags,
         "hud" => ToolKind::Hud,
+        "scripts" => ToolKind::Scripts,
         other => {
             return Err(err(
                 code::INVALID_PARAMS,
-                format!("no document {other:?} (map, tags, variant, playlists, ui, hud)"),
+                format!("no document {other:?} (map, tags, scripts, variant, playlists, ui, hud)"),
             ));
         }
     })
@@ -49,6 +52,7 @@ pub fn doc_name(t: ToolKind) -> &'static str {
         ToolKind::UiScreens => "ui",
         ToolKind::Tags => "tags",
         ToolKind::Hud => "hud",
+        ToolKind::Scripts => "scripts",
     }
 }
 
@@ -60,18 +64,24 @@ fn is_open(app: &App, t: ToolKind) -> bool {
         ToolKind::UiScreens => app.ui_screens.pick.is_some(),
         ToolKind::Tags => app.session.is_open(),
         ToolKind::Hud => app.hud.session.is_some(),
+        ToolKind::Scripts => app.scripts_loaded().is_ok(),
     }
 }
 
 fn can(app: &App, t: ToolKind) -> (bool, bool) {
     match t {
+        // A target in edit mode takes the map's undo (docs/editor/modeling.md).
+        ToolKind::Scenario if app.modeling.session.active.is_some() => {
+            let g = &app.modeling.session;
+            (g.can_undo(), g.can_redo())
+        }
         ToolKind::Scenario => (app.session.can_undo(), app.session.can_redo()),
         ToolKind::Variants => app
             .variants
             .as_ref()
             .map_or((false, false), |e| (e.can_undo(), e.can_redo())),
         ToolKind::Playlists => (app.hoppers.can_undo(), app.hoppers.can_redo()),
-        ToolKind::UiScreens => (false, false),
+        ToolKind::UiScreens | ToolKind::Scripts => (false, false),
         ToolKind::Tags => (app.tags.can_undo(), app.tags.can_redo()),
         ToolKind::Hud => app
             .hud
@@ -101,6 +111,7 @@ fn name_of(app: &App, t: ToolKind) -> Option<String> {
             Some(h) => format!("{} / {}", s.name, h.name),
             None => s.name.clone(),
         }),
+        ToolKind::Scripts => app.scripts_loaded().ok().map(|l| l.map.clone()),
     }
 }
 
@@ -157,6 +168,15 @@ pub fn outside_git(path: &Path) -> Result<(), RpcError> {
     Ok(())
 }
 
+fn source_entries(entries: Vec<MapEntry<'_>>) -> Vec<Value> {
+    entries
+        .into_iter()
+        .map(|entry| {
+            json!({ "map": entry.stem, "label": entry.label, "group": entry.group.key() })
+        })
+        .collect()
+}
+
 pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
     match method {
         m::SOURCE_OPEN => {
@@ -170,12 +190,22 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
             let log = run(app, Action::OpenSource(path), p.bool("discard")?)?;
             Ok(json!({ "maps": app.maps(), "loaded": app.loaded_map(), "log": log }))
         }
-        m::SOURCE_MAPS => Ok(json!({
-            "source": app.source().map(|s| s.path().display().to_string()),
-            "maps": app.maps(),
-            "loaded": app.loaded_map(),
-            "packages": app.packages().iter().map(|e| json!({"key": e.key(), "label": e.label(), "map": e.map})).collect::<Vec<_>>(),
-        })),
+        m::SOURCE_MAPS => {
+            app.poll_cards();
+            Ok(json!({
+                "source": app.source().map(|s| s.path().display().to_string()),
+                "maps": app.maps(),
+                "map_entries": source_entries(app.halo2_map_entries()),
+                "halo1_maps": source_entries(app.halo1_map_entries()),
+                "loaded": app.loaded_map(),
+                "map_pack": app.map_pack_entries().into_iter().map(|m| json!({
+                    "map": m.map, "label": m.name, "group": MapGroup::MapPack.key(),
+                })).collect::<Vec<_>>(),
+                "packages": app.packages().iter().map(|e| json!({
+                    "key": e.key(), "label": e.label(), "map": e.map, "group": e.map_group().key(),
+                })).collect::<Vec<_>>(),
+            }))
+        }
         m::DOC_LIST => Ok(list(app)),
         m::DOC_OPEN => open(app, p),
         m::DOC_SAVE => save(app, map_for_tags(doc_kind(app, p)?)),
@@ -332,6 +362,9 @@ pub fn game_type(t: &str) -> Result<GameType, RpcError> {
         })
 }
 
+/// The Scripts tool writes nothing (docs/editor/rich-editors.md, slice H3).
+const SCRIPTS_READ_ONLY: &str = "the Scripts tool is read only: it saves nothing";
+
 /// Tag edits save and diff with the map: the session writes them.
 fn map_for_tags(t: ToolKind) -> ToolKind {
     match t {
@@ -354,13 +387,28 @@ fn need_open(app: &App, t: ToolKind) -> Result<(), RpcError> {
 fn save(app: &mut App, t: ToolKind) -> Reply {
     need_open(app, t)?;
     match t {
-        ToolKind::Scenario | ToolKind::Tags => match app.saved_path().map(Path::to_path_buf) {
-            Some(path) => save_as(app, t, path),
-            None => Err(err(
-                code::REFUSED,
-                "the map has no file of its own yet: doc.save_as {\"path\": ...} (its source is never overwritten)",
-            )),
-        },
+        ToolKind::Scenario | ToolKind::Tags => {
+            let target = app.save_target();
+            let log = run(app, Action::Save, false)?;
+            match target {
+                SaveTarget::File(path) => {
+                    let bytes = std::fs::metadata(&path).map(|m| m.len()).ok();
+                    Ok(json!({
+                        "saved": true, "path": path.display().to_string(), "bytes": bytes, "log": log,
+                    }))
+                }
+                SaveTarget::Package(dir) => Ok(json!({
+                    "saved": true, "path": dir.display().to_string(), "log": log,
+                })),
+                SaveTarget::PackageForm { .. } => {
+                    let form = app.package_form.as_ref().expect("Save opened the package form");
+                    Ok(json!({
+                        "saved": false, "package_form": {"name": form.name, "dir": form.dir}, "log": log,
+                    }))
+                }
+                SaveTarget::Nothing => Err(err(code::NO_DOCUMENT, "no map is open")),
+            }
+        }
         ToolKind::Variants => {
             let log = run(app, Action::SaveVariant, false)?;
             Ok(json!({ "saved": true, "log": log }))
@@ -375,6 +423,7 @@ fn save(app: &mut App, t: ToolKind) -> Reply {
             code::REFUSED,
             "UI screens have nothing to save: ui.render writes a PNG",
         )),
+        ToolKind::Scripts => Err(err(code::REFUSED, SCRIPTS_READ_ONLY)),
         ToolKind::Hud => match app.hud.session.as_ref().and_then(|s| s.saved_path.clone()) {
             Some(path) => save_as(app, t, path),
             None => Err(err(
@@ -409,6 +458,7 @@ fn save_as(app: &mut App, t: ToolKind, path: PathBuf) -> Reply {
                 "UI screens save nothing: ui.render writes a PNG",
             ));
         }
+        ToolKind::Scripts => return Err(err(code::REFUSED, SCRIPTS_READ_ONLY)),
     };
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir)
@@ -433,7 +483,7 @@ fn diff(app: &mut App, t: ToolKind) -> Reply {
         ToolKind::Scenario | ToolKind::Tags => {
             let s = super::scenario::open(app)?;
             let changes = s.changes();
-            let patches: Vec<Value> = changes
+            let mut patches: Vec<Value> = changes
                 .patches
                 .iter()
                 .map(|(address, bytes)| {
@@ -469,7 +519,8 @@ fn diff(app: &mut App, t: ToolKind) -> Reply {
                         v["block"] = json!(block_name(b.def.kind));
                         v["fields"] = json!(["count"]);
                     } else if let Some(t) = app.tags.tags().iter().find(|t| {
-                        *address >= t.address
+                        t.bsp.is_none()
+                            && *address >= t.address
                             && (*address as u64) < t.address as u64 + t.size as u64
                     }) {
                         // A Tags tool edit.
@@ -479,6 +530,14 @@ fn diff(app: &mut App, t: ToolKind) -> Reply {
                     v
                 })
                 .collect();
+            patches.extend(changes.bsp_patches.iter().map(|patch| {
+                json!({
+                    "address": format!("{:#010x}", patch.address),
+                    "bsp_region_offset": patch.space.file_offset,
+                    "len": patch.bytes.len(),
+                    "bytes": hex(&patch.bytes),
+                })
+            }));
             let grown: Vec<Value> = changes
                 .grown
                 .iter()
@@ -523,6 +582,7 @@ fn diff(app: &mut App, t: ToolKind) -> Reply {
             Ok(json!({ "doc": "variant", "dirty": dirty, "changed_from_defaults": changed }))
         }
         ToolKind::UiScreens => Ok(json!({ "doc": "ui", "dirty": false })),
+        ToolKind::Scripts => Ok(json!({ "doc": "scripts", "dirty": false })),
         ToolKind::Hud => super::hud::diff(app),
     }
 }

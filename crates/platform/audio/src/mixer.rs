@@ -40,6 +40,11 @@ pub struct VoiceLevels {
     pub kind: &'static str,
     pub input_bin: Option<u32>,
     pub distance_units: Option<f32>,
+    /// The voice's DirectSound 3D state against the listener; `None` for a
+    /// 2D voice, which the 3D model leaves alone.
+    pub spatial: Option<SpatialLevels>,
+    /// The playing mix-ins this voice's sends reach, by id.
+    pub sends_to: Vec<u32>,
     pub volume_mb: i32,
     /// Raw guest pairs, in routing order. None is plain stereo.
     pub bins: Option<Vec<(u32, i32)>>,
@@ -50,6 +55,31 @@ pub struct VoiceLevels {
     pub direct_hf_db: f32,
     pub room_hf_db: f32,
     pub reference_hz: f32,
+}
+
+/// A positioned voice's DirectSound 3D terms ([`Listener::spatial`]).
+#[derive(Debug)]
+pub struct SpatialLevels {
+    /// The source position as the guest set it.
+    pub position: [f32; 3],
+    /// Relative to the listener (as given, for a head-relative source).
+    pub relative: [f32; 3],
+    pub min_distance: f32,
+    pub max_distance: f32,
+    /// The listener's rolloff factor times the source's.
+    pub rolloff: f32,
+    /// The inverse-distance term, linear.
+    pub distance_gain: f32,
+    /// The cone term, linear.
+    pub cone_gain: f32,
+    /// Both: the 3D gain the mix applies to every crosstalk and plain path.
+    pub gain: f32,
+    /// Pan gains, left and right.
+    pub pan: [f32; 2],
+    /// The front share of the crosstalk bins.
+    pub front: f32,
+    /// The Doppler playback-rate ratio.
+    pub pitch: f64,
 }
 
 /// Mixes voices to interleaved stereo `f32` at a fixed host rate.
@@ -239,6 +269,40 @@ impl Mixer {
         let mut record = |id, kind, input_bin, p: &VoiceParams| {
             let paths = VoicePaths::new(&self.listener, p, self.reverb(), self.distance_reverb);
             let gain = mb_to_gain(p.volume_mb) * headroom_gain(p.fx.headroom_mb);
+            let spatial = p.spatial.as_ref().and_then(|src| {
+                let a = self.listener.attenuation(src)?;
+                let s = self.listener.spatial(src);
+                Some(SpatialLevels {
+                    position: [src.position.x, src.position.y, src.position.z],
+                    relative: [a.relative.x, a.relative.y, a.relative.z],
+                    min_distance: src.min_distance,
+                    max_distance: src.max_distance,
+                    rolloff: (self.listener.rolloff_factor * src.rolloff_factor).max(0.0),
+                    distance_gain: a.distance_gain,
+                    cone_gain: a.cone_gain,
+                    gain: s.gain,
+                    pan: [s.left, s.right],
+                    front: s.front,
+                    pitch: s.pitch,
+                })
+            });
+            let sends_to = p
+                .mix_bins
+                .iter()
+                .flatten()
+                .filter_map(|&(bin, _)| match route::dest(bin) {
+                    Dest::Send(bin) => Some(bin),
+                    _ => None,
+                })
+                .flat_map(|bin| {
+                    self.mix_ins
+                        .iter()
+                        .filter(move |(_, m)| m.is_playing() && m.input_bin() == bin)
+                        .map(|(id, _)| id.0)
+                })
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
             rows.push(VoiceLevels {
                 id,
                 kind,
@@ -247,6 +311,8 @@ impl Mixer {
                     .spatial
                     .as_ref()
                     .and_then(|s| self.listener.source_distance(s)),
+                spatial,
+                sends_to,
                 volume_mb: p.volume_mb,
                 bins: p.mix_bins.clone(),
                 direct_gain: gain * paths.direct_gain,
@@ -305,6 +371,19 @@ impl Mixer {
         id
     }
 
+    /// Adds a submix: a mix-in on a host bin of its own
+    /// ([`route::HOST_SUBMIX_FIRST`] up, replacing `mix_in`'s input bin),
+    /// which only voices given that bin reach. A `DSBCAPS_MIXIN` buffer is
+    /// one: every voice routed into one lists the same guest bin,
+    /// [`route::SUBMIX`], and means its own output buffer by it.
+    pub fn add_submix(&mut self, mut mix_in: MixIn) -> MixInId {
+        let id = MixInId(self.take_id());
+        mix_in.input_bin = route::HOST_SUBMIX_FIRST.saturating_add(id.0);
+        mix_in.hrtf = self.hrtf.then(|| Hrtf::new(self.sample_rate));
+        self.mix_ins.insert(id, mix_in);
+        id
+    }
+
     fn take_id(&mut self) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
@@ -316,6 +395,9 @@ impl Mixer {
     }
     pub fn buffer_mut(&mut self, id: BufferId) -> Option<&mut SoundBuffer> {
         self.buffers.get_mut(&id)
+    }
+    pub fn stream(&self, id: StreamId) -> Option<&Stream> {
+        self.streams.get(&id)
     }
     pub fn stream_mut(&mut self, id: StreamId) -> Option<&mut Stream> {
         self.streams.get_mut(&id)
@@ -1597,7 +1679,7 @@ mod tests {
             // At Nyquist the alternating sum of an impulse response is its HF
             // gain. Divide by the DC sum to measure coloration independent of level.
             let (early, tail) = out.split_at(2 * 240);
-            let left = early.chunks_exact(2).map(|frame| f64::from(frame[0]));
+            let left = early.as_chunks::<2>().0.iter().map(|frame| f64::from(frame[0]));
             let dc: f64 = left.clone().sum();
             let hf: f64 = left
                 .enumerate()

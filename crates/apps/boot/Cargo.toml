@@ -92,9 +92,10 @@ serde_json.workspace = true
 perf = { path = "../../tools/perf", optional = true }
 # Test-map recipes built into packages (test_maps_recipes.rs).
 scenario-edit = { path = "../../tools/scenario-edit", optional = true }
+firefight-kit = { path = "../../tools/firefight-kit", optional = true }
 
 [features]
-default = ["gpu", "movie-playback", "local-io", "test-maps"]
+default = ["gpu", "movie-playback", "local-io", "test-maps", "rules"]
 desktop-runtime = ["render-bridge/native-render", "recomp/desktop-runtime", "game/desktop-runtime"]
 gpu = ["desktop-runtime", "gfx/gpu", "d3d/gpu", "agent/render-overrides", "dep:wgpu", "dep:native-render", "dep:shaders", "dep:hot-render", "game/gpu"]
 movie-playback = ["desktop-runtime", "bink-hle/playback", "dep:movies", "game/movie-playback"]
@@ -102,7 +103,10 @@ local-io = ["desktop-runtime", "dep:voice", "dsound/playback", "game/local-io"]
 perf = ["dep:perf", "game/perf"]
 # maps.test.* on the agent: test maps built from recipes (test_maps.rs,
 # docs/game/test-maps.md). The scenario editor's crate pulls in wgpu.
-test-maps = ["game/test-maps", "dep:scenario-edit"]
+test-maps = ["game/test-maps", "dep:scenario-edit", "dep:firefight-kit"]
+# The rules host runtime (docs/game/rules-engine.md); H2_FEATURES=rules
+# turns it on.
+rules = ["game/rules"]
 
 [dev-dependencies]
 # The fixture generated module, for hooks run through the real Runner.

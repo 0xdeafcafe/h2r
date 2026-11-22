@@ -138,12 +138,12 @@ fn field_panel_writes_are_hud_edits() {
     };
     app.dispatch(write(at + 0x34, 12i16.to_le_bytes().to_vec()));
     assert_eq!(app.hud.offset(STRAY), Some((12, -48)));
-    assert_eq!(app.hud.fields.read(at + 0x34, 2).unwrap(), 12i16.to_le_bytes());
+    assert_eq!(app.hud.fields.read(hud, at + 0x34, 2).unwrap(), 12i16.to_le_bytes());
     assert!(app.tool_dirty(ToolKind::Hud));
     assert!(app.can_undo());
     app.dispatch(Action::Undo);
     assert_eq!(app.hud.offset(STRAY), Some((40, -48)));
-    assert_eq!(app.hud.fields.read(at + 0x34, 2).unwrap(), 40i16.to_le_bytes());
+    assert_eq!(app.hud.fields.read(hud, at + 0x34, 2).unwrap(), 40i16.to_le_bytes());
     assert!(!app.tool_dirty(ToolKind::Hud));
     // Outside every widget: refused, logged, nothing changes.
     app.dispatch(write(at + 0x1000, vec![1]));

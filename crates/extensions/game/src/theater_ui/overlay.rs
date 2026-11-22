@@ -5,18 +5,20 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use agent_proto::theater::{self as api, CameraMode};
-use debug_menu::{Line, Tone, sources::method::CHEAT_SET};
+use debug_menu::sources::method::CHEAT_SET;
 use input::host::{HostButton, HostButtons, HostPadId, HostPadState};
 use input::{GatedPad, PadGate};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::adapter::{Clip, Playback, Player, Source};
-use super::{Entry, Theater};
+use super::{Entry, Theater, playback_page::{self, Command, Divergence, Jump, Keyframes, Menu}};
+use crate::ui_kit::{input::Input, spec::ScreenSpec};
+use crate::theater::SeekTaps;
 
 const REFRESH: Duration = Duration::from_millis(150);
 const LONG_PRESS: Duration = Duration::from_millis(500);
-const SPEEDS: [f64; 5] = [0.25, 0.5, 1.0, 2.0, 4.0];
+pub(super) const SPEEDS: [f64; 5] = [0.25, 0.5, 1.0, 2.0, 4.0];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Key {
@@ -39,6 +41,8 @@ pub enum Key {
     Rise,
     Fall,
     Leave,
+    Accept,
+    Step,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,10 +58,12 @@ pub enum Control {
     Mark,
     Screenshot,
     Leave,
+    Step,
+    Menu,
+    CancelJump,
 }
 
-/// The agent only needs to provide fields it can observe during this tier.
-/// Missing live scores keep the film's recorded roster values.
+/// Transport fields may be absent while the child reopens after a seek.
 #[derive(Debug, Default, Deserialize)]
 struct AgentState {
     #[serde(default)]
@@ -71,38 +77,56 @@ struct AgentState {
     #[serde(default)]
     length_ticks: Option<u64>,
     #[serde(default)]
-    players: Option<Vec<Player>>,
+    speed_reached: Option<f64>,
+    compatibility: Option<api::CompatibilityState>,
+    compatibility_reason: Option<String>,
+    hud: Option<bool>,
+    bar: Option<bool>,
     #[serde(default)]
     camera: Option<CameraMode>,
     #[serde(default)]
     camera_player: Option<String>,
     #[serde(default)]
     camera_seat: Option<u8>,
-    #[serde(default)]
+    camera_fallback: Option<api::CameraFallback>,
+    players: Option<Vec<Player>>,
     kills: Option<Vec<u64>>,
-    #[serde(default)]
     bookmarks: Option<Vec<u64>>,
+    #[serde(default)]
+    seek: Option<Jump>,
+    #[serde(default)]
+    divergence: Option<Divergence>,
 }
 
 #[derive(Clone, Debug)]
 pub(super) struct Track {
     pub film: String,
-    pub title: String,
     pub tick: u64,
     pub length: u64,
     pub paused: bool,
     pub speed: usize,
+    pub speed_requested: f64,
+    pub speed_reached: Option<f64>,
+    pub compatibility: api::CompatibilityState,
+    pub compatibility_reason: Option<String>,
     pub players: Vec<Player>,
+    pub scoreboard: Vec<Player>,
     pub camera: CameraMode,
+    camera_missing_view: bool,
     source: Source,
     local_viewports: bool,
-    tick_rate: u64,
+    shared_rig: bool,
+    pub tick_rate: u64,
     pub selected_player: usize,
     pub hud: bool,
     pub visible: bool,
     pub marks: (Option<u64>, Option<u64>),
     pub kills: Vec<u64>,
     pub bookmarks: Vec<u64>,
+    pub keyframes: Keyframes,
+    pub jump: Option<Jump>,
+    pub seeking: bool,
+    pub divergence: Option<Divergence>,
     range: Option<(u64, u64)>,
 }
 
@@ -110,26 +134,36 @@ impl Track {
     pub(super) fn from_entry(entry: &Entry) -> Self {
         Self {
             film: entry.film.id.clone(),
-            title: entry.film.map.clone(),
             tick: 0,
             length: entry.film.length_ticks,
             paused: false,
             speed: 2,
-            players: entry.film.scoreboard.clone(),
+            speed_requested: 1.0,
+            speed_reached: None,
+            compatibility: entry.film.compatibility,
+            compatibility_reason: entry.film.compatibility_reason.clone(),
+            players: entry.film.camera_roster().to_vec(),
+            scoreboard: entry.film.scoreboard.clone(),
             camera: if entry.film.source == Source::Host {
                 CameraMode::Free
             } else {
                 CameraMode::Default
             },
+            camera_missing_view: false,
             source: entry.film.source,
             tick_rate: entry.film.tick_rate(),
             local_viewports: entry.film.version.is_some_and(|v| v >= 3),
+            shared_rig: false,
             selected_player: 0,
             hud: true,
             visible: true,
             marks: (None, None),
             kills: entry.film.kill_ticks.clone(),
             bookmarks: Vec::new(),
+            keyframes: Keyframes::default(),
+            jump: None,
+            seeking: false,
+            divergence: None,
             range: entry
                 .clip
                 .as_ref()
@@ -137,16 +171,20 @@ impl Track {
         }
     }
 
-    fn bounds(&self) -> (u64, u64) {
+    pub(super) fn bounds(&self) -> (u64, u64) {
         self.range
-            .map(|(from, to)| (from, to.saturating_sub(1)))
+            .map(|(from, to)| (from, to.saturating_sub(1).max(from)))
             .unwrap_or((0, self.length))
     }
 
     fn skip(&self, seconds: i64) -> u64 {
         let delta = seconds.saturating_mul(self.tick_rate as i64);
         let (lo, hi) = self.bounds();
-        self.tick.saturating_add_signed(delta).clamp(lo, hi)
+        self.seek_origin().saturating_add_signed(delta).clamp(lo, hi)
+    }
+
+    fn seek_origin(&self) -> u64 {
+        self.jump.filter(|_| self.seeking).map_or(self.tick, |jump| jump.target)
     }
 
     fn select_player(&mut self, forward: bool) {
@@ -157,9 +195,10 @@ impl Track {
         }
     }
 
-    fn cameras(&self) -> &'static [(CameraMode, &'static str)] {
+    pub(super) fn cameras(&self) -> &'static [(CameraMode, &'static str)] {
         match self.source {
             Source::Host => &CAMERAS,
+            Source::Local if self.shared_rig => &RIG_CAMERAS,
             Source::Local if self.local_viewports => &LOCAL_CAMERAS,
             Source::Local => &LOCAL_CAMERAS[..1],
             Source::Archive => &[],
@@ -176,28 +215,44 @@ impl Track {
             .position(|(mode, _)| *mode == self.camera)
             .map_or(0, |i| (i + 1) % available.len());
         self.camera = available[next].0;
+        self.camera_missing_view = false;
     }
 
-    fn camera_target(&self) -> Option<&Player> {
+    pub(super) fn camera_target(&self) -> Option<&Player> {
         self.players
             .get(self.selected_player)
             .filter(|p| p.seat.is_some() || !p.name.is_empty())
     }
 
+    pub(super) fn camera_label(&self) -> &'static str {
+        if self.camera_missing_view {
+            return "Follow (no viewport)";
+        }
+        self.cameras().iter().find(|(mode, _)| *mode == self.camera)
+            .map_or("Recorded view", |(_, label)| *label)
+    }
+
+    pub(super) fn can_mark_out(&self) -> bool {
+        self.marks.0.is_some_and(|start| start < self.tick)
+    }
+
+    pub(super) fn clip_range(&self) -> Option<[u64; 2]> {
+        let (Some(from), Some(to)) = self.marks else { return None };
+        (from < to).then_some([from, to])
+    }
+
+    fn mark_out(&mut self) -> Option<Clip> {
+        let from = self.marks.0.filter(|&from| from < self.tick)?;
+        self.marks.1 = Some(self.tick);
+        Some(Clip { film: self.film.clone(), from_tick: from, to_tick: self.tick })
+    }
+
     fn mark(&mut self) -> Option<Clip> {
-        match self.marks {
-            (Some(from), None) if self.tick > from => {
-                self.marks.1 = Some(self.tick);
-                Some(Clip {
-                    film: self.film.clone(),
-                    from_tick: from,
-                    to_tick: self.tick,
-                })
-            }
-            _ => {
-                self.marks = (Some(self.tick), None);
-                None
-            }
+        if self.marks.1.is_none() && self.can_mark_out() {
+            self.mark_out()
+        } else {
+            self.marks = (Some(self.tick), None);
+            None
         }
     }
 
@@ -211,18 +266,42 @@ impl Track {
         if let Some(paused) = s.paused {
             self.paused = paused;
         }
-        if let Some(speed) = s.speed.and_then(|x| SPEEDS.iter().position(|&s| s == x)) {
-            self.speed = speed;
+        if let Some(speed) = s.speed.filter(|speed| (0.25..=4.0).contains(speed)) {
+            self.speed_requested = speed;
+            self.speed = SPEEDS.iter().position(|&s| s >= speed).unwrap_or(SPEEDS.len() - 1);
         }
-        if let Some(players) = s.players {
-            let selected = self.players.get(self.selected_player).map(|p| &p.name);
-            self.selected_player = selected
-                .and_then(|name| players.iter().position(|p| &p.name == name))
-                .unwrap_or(self.selected_player.min(players.len().saturating_sub(1)));
+        self.speed_reached = s.speed_reached.filter(|speed| speed.is_finite() && *speed >= 0.0);
+        if let Some(compatibility) = s.compatibility {
+            self.compatibility = compatibility;
+            if compatibility == api::CompatibilityState::Playable {
+                self.compatibility_reason = None;
+            } else if s.compatibility_reason.is_some() {
+                self.compatibility_reason = s.compatibility_reason;
+            }
+        }
+        self.shared_rig |= s.hud.is_some() && s.bar.is_some();
+        self.hud = s.hud.unwrap_or(self.hud);
+        self.visible = s.bar.unwrap_or(self.visible);
+        self.seeking = s.seeking;
+        self.jump = s.seek;
+        if s.divergence.is_some() {
+            self.divergence = s.divergence;
+        }
+        if let Some(players) = s.players.filter(|players| !players.is_empty()) {
             self.players = players;
+            self.selected_player = self.selected_player.min(self.players.len() - 1);
+        }
+        if let Some(kills) = s.kills {
+            self.kills.extend(kills);
+            self.kills.sort_unstable();
+            self.kills.dedup();
+        }
+        if let Some(bookmarks) = s.bookmarks {
+            self.bookmarks = bookmarks;
         }
         if let Some(camera) = s.camera {
-            self.camera = camera;
+            self.camera_missing_view = s.camera_fallback == Some(api::CameraFallback::NoRecordedViewport);
+            self.camera = if self.camera_missing_view { CameraMode::FirstPerson } else { camera };
             let selected = s
                 .camera_seat
                 .and_then(|seat| self.players.iter().position(|p| p.seat == Some(seat)))
@@ -234,14 +313,6 @@ impl Track {
                 self.selected_player = index;
             }
         }
-        if let Some(kills) = s.kills {
-            self.kills.extend(kills);
-            self.kills.sort_unstable();
-            self.kills.dedup();
-        }
-        if let Some(marks) = s.bookmarks {
-            self.bookmarks = marks;
-        }
     }
 
     /// The local review model steps these same controls without an agent.
@@ -249,7 +320,10 @@ impl Track {
         match c {
             Control::Pause => self.paused = !self.paused,
             Control::Skip(n) => self.tick = self.skip(n),
-            Control::Speed(up) => self.speed = step(self.speed, SPEEDS.len(), up),
+            Control::Speed(up) => {
+                self.speed = step(self.speed, SPEEDS.len(), up);
+                self.speed_requested = SPEEDS[self.speed];
+            }
             Control::Seek(tick) => self.tick = tick,
             Control::Camera => self.cycle_camera(),
             Control::Player(down) => self.select_player(down),
@@ -258,121 +332,15 @@ impl Track {
             Control::Mark => {
                 self.mark();
             }
-            Control::Screenshot | Control::Leave => {}
-        }
-    }
-
-    pub(super) fn view(&self, notice: Option<&str>) -> OverlayView {
-        let player_line = |i, p: &Player| {
-            let name: String = p.name.chars().take(17).collect();
-            let score = p.score.map_or_else(|| "--".into(), |s| s.to_string());
-            line(
-                format!("{name:<17} {score:>4}"),
-                if self.selected_player == i {
-                    Tone::Selected
-                } else {
-                    Tone::Normal
-                },
-            )
-        };
-        let first = self
-            .selected_player
-            .saturating_sub(3)
-            .min(self.players.len().saturating_sub(7));
-        let mut players = vec![line("Players / Score", Tone::Title)];
-        players.extend(
-            self.players
-                .iter()
-                .enumerate()
-                .skip(first)
-                .take(7)
-                .map(|(i, p)| player_line(i, p)),
-        );
-        if self.players.is_empty() {
-            players.push(line("No players", Tone::Greyed));
-        }
-        let mut top_right = vec![line("Camera", Tone::Title)];
-        for &(mode, label) in self.cameras() {
-            top_right.push(line(
-                label,
-                if self.camera == mode {
-                    Tone::Selected
-                } else {
-                    Tone::Normal
-                },
-            ));
-        }
-        top_right.push(line(
-            if self.hud { "HUD on" } else { "HUD off" },
-            Tone::Normal,
-        ));
-        let transport = if self.paused { "Paused" } else { "Playing" };
-        let mut bottom = vec![
-            line(
-                format!(
-                    "{transport}   {} / {}   {}x",
-                    super::selector::clock(self.tick, self.tick_rate),
-                    super::selector::clock(self.length, self.tick_rate),
-                    SPEEDS[self.speed]
-                ),
-                Tone::Title,
-            ),
-            line(self.timeline(43), Tone::Normal),
-            line("A/Space Play/Pause   LT/RT or [ ] Speed", Tone::Hint),
-            line("Left/Right 5s (hold 30s)   LB/RB Player", Tone::Hint),
-            line("Y/C Camera   Sticks/Mouse + WASD Move", Tone::Hint),
-            line("Start/J HUD   D-pad Up/F12 Capture", Tone::Hint),
-            line("X Mark clip   Back/H Hide   B/Esc Leave", Tone::Hint),
-        ];
-        if let Some(start) = self.marks.0 {
-            let end = self.marks.1.map_or_else(
-                || "--".into(),
-                |tick| super::selector::clock(tick, self.tick_rate),
-            );
-            bottom.push(line(
-                format!(
-                    "Clip  {} - {end}",
-                    super::selector::clock(start, self.tick_rate)
-                ),
-                Tone::Normal,
-            ));
-        }
-        if let Some(notice) = notice {
-            bottom.push(line(
-                notice.chars().take(51).collect::<String>(),
-                Tone::Normal,
-            ));
-        }
-        OverlayView {
-            players,
-            top_right,
-            bottom,
-        }
-    }
-
-    fn timeline(&self, width: usize) -> String {
-        let mut marks = vec!['-'; width];
-        let (start, end) = self.bounds();
-        let pos = |t: u64| {
-            ((u128::from(t.clamp(start, end) - start) * (width - 1) as u128)
-                / u128::from((end - start).max(1))) as usize
-        };
-        for (ticks, symbol) in [(&self.kills, '*'), (&self.bookmarks, '|')] {
-            for &t in ticks {
-                if (start..=end).contains(&t) {
-                    marks[pos(t)] = symbol;
-                }
+            Control::Step if self.paused => self.tick = self.tick.saturating_add(1).min(self.bounds().1),
+            Control::CancelJump => {
+                self.seeking = false;
+                self.jump = None;
             }
+            Control::Screenshot | Control::Leave | Control::Menu | Control::Step => {}
         }
-        if let Some(t) = self.marks.0 {
-            marks[pos(t)] = '[';
-        }
-        if let Some(t) = self.marks.1 {
-            marks[pos(t)] = ']';
-        }
-        marks[pos(self.tick)] = 'o';
-        marks.into_iter().collect()
     }
+
 }
 
 const CAMERAS: [(CameraMode, &str); 4] = [
@@ -387,12 +355,13 @@ const LOCAL_CAMERAS: [(CameraMode, &str); 2] = [
     (CameraMode::FirstPerson, "First person"),
 ];
 
-fn line(text: impl Into<String>, tone: Tone) -> Line {
-    Line {
-        text: text.into(),
-        tone,
-    }
-}
+const RIG_CAMERAS: [(CameraMode, &str); 5] = [
+    (CameraMode::Default, "Recorded view"),
+    CAMERAS[0],
+    CAMERAS[1],
+    CAMERAS[2],
+    CAMERAS[3],
+];
 
 fn step(current: usize, count: usize, forward: bool) -> usize {
     if forward {
@@ -402,21 +371,22 @@ fn step(current: usize, count: usize, forward: bool) -> usize {
     }
 }
 
-/// Three plates, passed directly to the host compositor's menu renderer.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OverlayView {
-    pub players: Vec<Line>,
-    pub top_right: Vec<Line>,
-    pub bottom: Vec<Line>,
-}
-
 enum Request {
     Open,
+    Prepare(String),
+    PrepareState(String),
     State,
+    Keyframes,
+    Step,
+    Export,
+    ExportStatus,
+    Share,
     Pause,
     Seek,
+    Cancel,
     Speed(usize),
-    Hud(bool),
+    Hud { game: Option<bool>, bar: Option<bool> },
+    LegacyHud(bool),
     Camera,
 }
 
@@ -428,6 +398,18 @@ pub(super) struct Session {
     ready: bool,
     last_poll: Option<Instant>,
     pub notice: Option<String>,
+    menu: Option<Menu>,
+    last_keyframes: Option<Instant>,
+    keyframes_unavailable: bool,
+    hud_unavailable: bool,
+    pub save_requested: bool,
+    export: Option<String>,
+    export_poll: Option<Instant>,
+    pub prepare_answers: Vec<(String, Result<api::PrepareState, String>)>,
+    last_prepare_poll: Option<(String, Instant)>,
+    seeks: SeekTaps,
+    starting_seek: Option<u64>,
+    cancel_on_connect: bool,
     pub open_error: Option<String>,
     pub screenshot: bool,
     pub leave_requested: bool,
@@ -446,7 +428,11 @@ impl Session {
         self.rpc = Some(Playback::new(agent));
     }
 
-    pub fn play(&mut self, entry: &Entry) -> Result<(), String> {
+    pub fn play(
+        &mut self,
+        entry: &Entry,
+        view: Option<agent_proto::theater::InitialView>,
+    ) -> Result<(), String> {
         if self.pending.values().any(|r| matches!(r, Request::Open)) {
             return Err("A film is already opening or playing".into());
         }
@@ -457,18 +443,61 @@ impl Session {
             .map(|clip| [clip.from_tick, clip.to_tick]);
         let id = rpc.send(
             agent_proto::theater::PLAY,
-            json!({"id": entry.film.id, "range": range}),
+            json!({"id": entry.film.id, "range": range, "view": view}),
         );
         self.pending.insert(id, Request::Open);
         Ok(())
     }
 
-    pub fn playback(entry: &Entry, rpc: Playback, [mark_in, mark_out]: [Option<u64>; 2]) -> Self {
+    pub fn prepare(&mut self, id: &str) -> Result<(), String> {
+        if self.rpc.is_none() {
+            return Err("Playback agent is unavailable".into());
+        }
+        self.send(
+            api::PREPARE,
+            json!(api::Prepare { id: id.to_owned() }),
+            Request::Prepare(id.to_owned()),
+        );
+        Ok(())
+    }
+
+    pub fn poll_prepare(&mut self, id: &str) {
+        let now = Instant::now();
+        if self.rpc.is_none()
+            || self
+                .last_prepare_poll
+                .as_ref()
+                .is_some_and(|(last_id, last)| last_id == id && now.duration_since(*last) < REFRESH)
+            || self.pending.values().any(|request| {
+                matches!(request, Request::Prepare(pending) | Request::PrepareState(pending) if pending == id)
+            })
+        {
+            return;
+        }
+        self.last_prepare_poll = Some((id.to_owned(), now));
+        self.send(
+            api::STATE,
+            json!(api::StateParams { id: Some(id.to_owned()) }),
+            Request::PrepareState(id.to_owned()),
+        );
+    }
+
+    pub fn playback(
+        entry: &Entry,
+        rpc: Playback,
+        [mark_in, mark_out]: [Option<u64>; 2],
+        starting_seek: Option<u64>,
+    ) -> Self {
         let mut track = Track::from_entry(entry);
         track.marks = (mark_in, mark_out);
+        if let Some(target) = starting_seek {
+            track.seeking = true;
+            track.jump = Some(Jump { target, from_tick: 0, remaining_ticks: target });
+        }
         Self {
             track: Some(track),
             rpc: Some(rpc),
+            starting_seek,
             ..Self::default()
         }
     }
@@ -489,10 +518,28 @@ impl Session {
             }
         }
         let now = Instant::now();
+        self.pump_transport(now);
         if let Some(seconds) = self.key_skip.held(now) {
-            self.control(Control::Skip(seconds));
+            self.control_at(Control::Skip(seconds), now);
         }
-        self.update_camera(now);
+        if self.menu.is_none() {
+            self.update_camera(now);
+        }
+        if let Some(job) = &self.export
+            && self.export_poll.is_none_or(|last| now.duration_since(last) >= Duration::from_secs(1))
+            && !self.pending.values().any(|r| matches!(r, Request::ExportStatus))
+        {
+            let job = job.clone();
+            self.export_poll = Some(now);
+            self.send(api::CLIP_STATUS, json!({"job": job}), Request::ExportStatus);
+        }
+        if self.ready && !self.keyframes_unavailable
+            && self.last_keyframes.is_none_or(|last| now.duration_since(last) >= Duration::from_secs(1))
+            && !self.pending.values().any(|r| matches!(r, Request::Keyframes))
+        {
+            self.last_keyframes = Some(now);
+            self.send(api::KEYFRAMES, json!({}), Request::Keyframes);
+        }
         if self.track.is_some()
             && self
                 .last_poll
@@ -507,8 +554,45 @@ impl Session {
         }
     }
 
+    fn pump_transport(&mut self, now: Instant) {
+        if !self.ready
+            || self
+                .pending
+                .values()
+                .any(|r| matches!(r, Request::Seek | Request::Cancel))
+        {
+            return;
+        }
+        if std::mem::take(&mut self.cancel_on_connect) {
+            if self
+                .track
+                .as_ref()
+                .is_some_and(|track| track.seeking)
+            {
+                self.send(api::SEEK, json!({"cancel": true}), Request::Cancel);
+            }
+        } else if let Some(target) = self.seeks.take_due(now) {
+            self.seek(target);
+        }
+    }
+
     fn answer(&mut self, request: Request, answer: Result<Value, String>) {
         match (request, answer) {
+            (Request::Prepare(id), answer) => {
+                let progress =
+                    answer.and_then(|value| serde_json::from_value(value).map_err(|e| e.to_string()));
+                self.prepare_answers.push((id, progress));
+            }
+            (Request::PrepareState(id), Ok(value)) => {
+                let starting = self
+                    .pending
+                    .values()
+                    .any(|r| matches!(r, Request::Prepare(pending) if pending == &id));
+                if !starting && let Ok(progress) = serde_json::from_value(value) {
+                    self.prepare_answers.push((id, Ok(progress)));
+                }
+            }
+            (Request::PrepareState(_), Err(_)) => {}
             (Request::Open, Ok(_)) => {}
             (Request::Open, Err(error)) => self.open_error = Some(error),
             (Request::State, Ok(value)) => {
@@ -521,18 +605,65 @@ impl Session {
                         s.camera = None;
                     }
                     self.ready = true;
+                    self.starting_seek = None;
                     let seeking = s.seeking;
                     track.read(s);
                     if let Some((start, end)) = track.range
                         && !seeking
+                        && !track.paused
                         && (track.tick < start || track.tick >= end)
-                        && !self.pending.values().any(|r| matches!(r, Request::Seek))
+                        && !self.seeks.is_pending()
+                        && !self.cancel_on_connect
+                        && !self
+                            .pending
+                            .values()
+                            .any(|r| matches!(r, Request::Seek | Request::Cancel))
                     {
                         self.seek(start);
                     }
                 }
             }
-            (Request::State, Err(_)) if !self.ready => {}
+            (Request::State, Err(_)) if !self.ready || self.track.as_ref().is_some_and(|t| t.seeking) => {}
+            (Request::Keyframes, Ok(value)) => {
+                if let (Some(track), Ok(keyframes)) = (&mut self.track, serde_json::from_value(value)) {
+                    track.keyframes = keyframes;
+                }
+            }
+            (Request::Keyframes, Err(error)) => {
+                self.keyframes_unavailable = error.contains("no method") || error.contains("not found");
+            }
+            (Request::Seek | Request::Cancel | Request::Step, Ok(value)) => {
+                if let (Some(track), Ok(state)) = (&mut self.track, serde_json::from_value(value)) {
+                    track.read(state);
+                }
+            }
+            (Request::Export, Ok(value)) => {
+                self.export = value.get("job").and_then(Value::as_str).map(str::to_owned);
+                self.export_poll = None;
+                self.notice = Some("Clip export started".into());
+            }
+            (Request::ExportStatus, Ok(value)) => {
+                self.notice = Some(if let Some(error) = value.get("error").and_then(Value::as_str) {
+                    self.export = None;
+                    format!("Clip export failed: {error}")
+                } else if value.get("finished").and_then(Value::as_bool) == Some(true) {
+                    self.export = None;
+                    "Clip exported".into()
+                } else {
+                    let done = value.get("frames_done").and_then(Value::as_u64).unwrap_or(0);
+                    let total = value.get("frames_total").and_then(Value::as_u64).unwrap_or(0);
+                    format!("Exporting {done} / {total} frames")
+                });
+            }
+            (Request::ExportStatus, Err(_)) if self.track.as_ref().is_some_and(|track| track.seeking) => {}
+            (Request::ExportStatus, Err(error)) => {
+                self.export = None;
+                self.notice = Some(error);
+            }
+            (Request::Share, Ok(value)) => {
+                self.notice = Some(value.get("url").and_then(Value::as_str)
+                    .map_or_else(|| "Film shared".into(), |url| format!("Shared: {url}")));
+            }
             (Request::Pause, Ok(value)) => {
                 if let Some(track) = &mut self.track {
                     track.paused = value
@@ -550,9 +681,23 @@ impl Session {
             (Request::Speed(speed), Ok(_)) => {
                 if let Some(track) = &mut self.track {
                     track.speed = speed;
+                    track.speed_requested = SPEEDS[speed];
                 }
             }
-            (Request::Hud(hud), Ok(_)) => {
+            (Request::Hud { game, bar }, result) => match result {
+                Ok(value) => {
+                    if let Some(track) = &mut self.track {
+                        track.visible = value.get("bar").and_then(Value::as_bool).or(bar).unwrap_or(track.visible);
+                        track.hud = value.get("hud").and_then(Value::as_bool).or(game).unwrap_or(track.hud);
+                    }
+                }
+                Err(error) if error.contains("no method") => {
+                    self.hud_unavailable = true;
+                    self.set_hud(game, bar);
+                }
+                Err(error) => self.notice = Some(error),
+            },
+            (Request::LegacyHud(hud), Ok(_)) => {
                 if let Some(track) = &mut self.track {
                     track.hud = hud;
                 }
@@ -562,24 +707,136 @@ impl Session {
         }
     }
 
-    pub fn view(&self) -> Option<OverlayView> {
+    pub fn view(&self) -> Option<ScreenSpec> {
         let track = self.track.as_ref()?;
-        track.visible.then(|| {
-            let mut view = track.view(self.notice.as_deref());
-            if !self.ready {
-                view.bottom.truncate(1);
-                view.bottom[0] = line("Opening film...", Tone::Title);
-            }
-            view
+        Some(if let Some(menu) = &self.menu {
+            menu.spec(track, self.notice.as_deref())
+        } else {
+            playback_page::bar(track, self.ready, self.notice.as_deref())
         })
     }
 
+    pub(super) fn timeline(&self) -> Option<[u32; 4]> {
+        (self.ready && self.menu.is_none() && self.track.as_ref().is_some_and(|track|
+            track.visible && track.compatibility == api::CompatibilityState::Playable))
+            .then_some(playback_page::TIMELINE)
+    }
+
+    pub(super) fn press(&mut self, input: Input) {
+        if let (Some(menu), Some(track)) = (&mut self.menu, &self.track) {
+            if let Some(command) = menu.press(track, input) {
+                self.command(command);
+            }
+            return;
+        }
+        let control = match input {
+            Input::A => Control::Pause,
+            Input::B => Control::CancelJump,
+            Input::X => Control::Mark,
+            Input::Y => Control::Camera,
+            Input::Start => Control::Menu,
+            Input::Back => Control::Hide,
+            Input::Up => Control::Screenshot,
+            Input::Down => Control::Step,
+            Input::Left => Control::Skip(-5),
+            Input::Right => Control::Skip(5),
+        };
+        self.control(control);
+    }
+
+    fn command(&mut self, command: Command) {
+        let Some(track) = &mut self.track else { return };
+        match command {
+            Command::Resume => {
+                self.menu = None;
+                self.send(api::PLAY, json!({}), Request::Pause);
+            }
+            Command::Restart => {
+                self.menu = None;
+                let start = track.bounds().0;
+                self.send(api::PLAY, json!({}), Request::Pause);
+                self.seek(start);
+            }
+            Command::Player(player) => {
+                track.selected_player = player;
+                if !matches!(track.camera, CameraMode::FirstPerson | CameraMode::Follow | CameraMode::Orbit) {
+                    track.camera = CameraMode::FirstPerson;
+                }
+                self.send_camera([0.; 3], [0.; 2], 0.);
+            }
+            Command::Camera(mode) => {
+                track.camera = mode;
+                track.camera_missing_view = false;
+                self.send_camera([0.; 3], [0.; 2], 0.);
+            }
+            Command::Screenshot => self.screenshot = true,
+            Command::MarkIn => track.marks = (Some(track.tick), None),
+            Command::MarkOut => self.completed_clip = track.mark_out(),
+            Command::ClearMarks => track.marks = (None, None),
+            Command::Export(format, fps) => {
+                if self.export.is_some() || self.pending.values().any(|r| matches!(r, Request::Export)) {
+                    self.notice = Some("A clip is already exporting".into());
+                    return;
+                }
+                if let Some([from, to]) = track.clip_range() {
+                    self.send(api::CLIP_EXPORT, json!({ "from": from, "to": to, "format": format, "fps": fps }), Request::Export);
+                }
+            }
+            Command::Save => self.save_requested = true,
+            Command::Share(visibility) => {
+                let id = track.film.clone();
+                let clip = track.clip_range();
+                self.send("theater.share", json!({ "id": id, "visibility": visibility, "clip": clip }), Request::Share);
+            }
+            Command::End => self.leave_requested = true,
+            Command::Cancel => {}
+        }
+    }
+
     pub fn control(&mut self, c: Control) {
+        self.control_at(c, Instant::now());
+    }
+
+    fn control_at(&mut self, c: Control, now: Instant) {
         let Some(track) = &mut self.track else { return };
         match c {
-            Control::Hide => track.visible = !track.visible,
-            Control::Leave => self.leave_requested = true,
+            Control::Hide => {
+                let shown = !track.visible;
+                self.set_hud(None, Some(shown));
+            }
+            Control::Leave | Control::CancelJump => {
+                let had_taps = self.seeks.take().is_some();
+                if track.seeking
+                    || self.starting_seek.is_some()
+                    || self.pending.values().any(|r| matches!(r, Request::Seek | Request::Cancel))
+                {
+                    self.cancel_on_connect = true;
+                } else if c == Control::Leave && !had_taps {
+                    self.press(if self.menu.is_some() { Input::B } else { Input::Start });
+                }
+            }
             _ if !self.ready => {}
+            Control::Menu if !track.seeking => {
+                self.seeks.take();
+                self.menu = Some(Menu::default());
+                self.key_skip = SkipHold::default();
+                self.mouse_look = [0.0; 2];
+                self.mouse_zoom = 0.0;
+                self.send(api::PAUSE, json!({}), Request::Pause);
+            }
+            Control::Step => {
+                if track.paused
+                    && !track.seeking
+                    && track.tick < track.bounds().1
+                    && !self
+                        .pending
+                        .values()
+                        .any(|r| matches!(r, Request::Step | Request::Seek | Request::Cancel))
+                {
+                    self.send(api::STEP, json!(api::Step { ticks: 1 }), Request::Step);
+                }
+            }
+            Control::Menu => {}
             Control::Pause => {
                 if !self.pending.values().any(|r| matches!(r, Request::Pause)) {
                     let method = if track.paused {
@@ -591,10 +848,23 @@ impl Session {
                 }
             }
             Control::Skip(seconds) => {
-                let tick = track.skip(seconds);
+                let delta = seconds.saturating_mul(track.tick_rate as i64);
+                self.seeks
+                    .push(track.seek_origin(), delta, track.bounds(), now);
+                if seconds.unsigned_abs() == 30
+                    && !self
+                        .pending
+                        .values()
+                        .any(|r| matches!(r, Request::Seek | Request::Cancel))
+                    && let Some(target) = self.seeks.take()
+                {
+                    self.seek(target);
+                }
+            }
+            Control::Seek(tick) => {
+                self.seeks.take();
                 self.seek(tick);
             }
-            Control::Seek(tick) => self.seek(tick),
             Control::Camera => {
                 track.cycle_camera();
                 self.mouse_look = [0.0; 2];
@@ -619,14 +889,8 @@ impl Session {
                 );
             }
             Control::Hud => {
-                if !self.pending.values().any(|r| matches!(r, Request::Hud(_))) {
-                    let hud = !track.hud;
-                    self.send(
-                        CHEAT_SET,
-                        json!({"name": "hide_hud", "value": !hud}),
-                        Request::Hud(hud),
-                    );
-                }
+                let shown = !track.hud;
+                self.set_hud(Some(shown), None);
             }
             Control::Mark => {
                 if let Some(clip) = track.mark() {
@@ -634,6 +898,22 @@ impl Session {
                 }
             }
             Control::Screenshot => self.screenshot = true,
+        }
+    }
+
+    fn set_hud(&mut self, game: Option<bool>, bar: Option<bool>) {
+        if self.pending.values().any(|r| matches!(r, Request::Hud { .. } | Request::LegacyHud(_))) {
+            return;
+        }
+        if self.hud_unavailable {
+            if let Some(track) = &mut self.track {
+                track.visible = bar.unwrap_or(track.visible);
+            }
+            if let Some(game) = game {
+                self.send(CHEAT_SET, json!({"name": "hide_hud", "value": !game}), Request::LegacyHud(game));
+            }
+        } else {
+            self.send(api::HUD, json!({ "game": game, "bar": bar }), Request::Hud { game, bar });
         }
     }
 
@@ -659,6 +939,12 @@ impl Session {
         if !down || repeat || !self.held_keys.insert(key) {
             return true;
         }
+        if self.menu.is_some() {
+            if let Some(input) = menu_key(key) {
+                self.press(input);
+            }
+            return true;
+        }
         let c = match key {
             Key::Space => Control::Pause,
             Key::Slower => Control::Speed(false),
@@ -671,6 +957,8 @@ impl Session {
             Key::Screenshot => Control::Screenshot,
             Key::Camera => Control::Camera,
             Key::Leave => Control::Leave,
+            Key::Accept => return true,
+            Key::Step => Control::Step,
             Key::Forward
             | Key::Backward
             | Key::StrafeLeft
@@ -689,12 +977,20 @@ impl Session {
     }
 
     fn seek(&mut self, tick: u64) {
-        if !self.pending.values().any(|r| matches!(r, Request::Seek)) {
+        if !self
+            .pending
+            .values()
+            .any(|r| matches!(r, Request::Seek | Request::Cancel))
+        {
             let clip_marks = self
                 .track
                 .as_ref()
                 .map(|track| [track.marks.0, track.marks.1]);
-            let params = api::Seek { tick, clip_marks };
+            let params = api::Seek {
+                tick: Some(tick),
+                clip_marks,
+                ..Default::default()
+            };
             self.send(api::SEEK, json!(params), Request::Seek);
         }
     }
@@ -702,7 +998,9 @@ impl Session {
     pub fn scrub(&mut self, fraction: f32) -> bool {
         if let Some(track) = &self.track
             && self.ready
+            && self.menu.is_none()
             && track.visible
+            && track.compatibility == api::CompatibilityState::Playable
             && fraction.is_finite()
         {
             let (start, end) = track.bounds();
@@ -714,7 +1012,7 @@ impl Session {
     }
 
     pub fn mouse_look(&mut self, dx: f64, dy: f64) -> bool {
-        if self
+        if self.menu.is_none() && self
             .track
             .as_ref()
             .is_some_and(|t| matches!(t.camera, CameraMode::Free | CameraMode::Orbit))
@@ -731,7 +1029,7 @@ impl Session {
     }
 
     pub fn mouse_zoom(&mut self, amount: f32) -> bool {
-        if self
+        if self.menu.is_none() && self
             .track
             .as_ref()
             .is_some_and(|t| t.camera == CameraMode::Orbit)
@@ -775,25 +1073,25 @@ impl Session {
         self.mouse_zoom = 0.0;
         if self.camera_dirty || movement != [0.0; 3] || look != [0.0; 2] || zoom != 0.0 {
             self.camera_dirty = false;
-            let player = match track.camera {
-                CameraMode::Orbit | CameraMode::Follow | CameraMode::FirstPerson => {
-                    track.camera_target()
-                }
-                CameraMode::Default | CameraMode::Free => None,
-            };
-            self.send(
-                api::CAMERA,
-                json!({
-                    "mode": track.camera,
-                    "player": player.map(|p| &p.name),
-                    "seat": player.and_then(|p| p.seat),
-                    "movement": movement,
-                    "look": look,
-                    "zoom": zoom
-                }),
-                Request::Camera,
-            );
+            self.send_camera(movement, look, zoom);
         }
+    }
+
+    fn send_camera(&mut self, movement: [f32; 3], look: [f32; 2], zoom: f32) {
+        let Some(track) = &self.track else { return };
+        let player = match track.camera {
+            CameraMode::Orbit | CameraMode::Follow | CameraMode::FirstPerson => track.camera_target(),
+            CameraMode::Default | CameraMode::Free => None,
+        };
+        let params = json!({
+            "mode": track.camera,
+            "player": player.map(|p| &p.name),
+            "seat": player.and_then(|p| p.seat),
+            "movement": movement,
+            "look": look,
+            "zoom": zoom
+        });
+        self.send(api::CAMERA, params, Request::Camera);
     }
 
     fn update_key_skip(&mut self) -> Option<i64> {
@@ -808,6 +1106,32 @@ impl Session {
         self.mouse_look = [0.0; 2];
         self.mouse_zoom = 0.0;
     }
+}
+
+fn menu_key(key: Key) -> Option<Input> {
+    Some(match key {
+        Key::Up => Input::Up,
+        Key::Down => Input::Down,
+        Key::Left => Input::Left,
+        Key::Right => Input::Right,
+        Key::Accept | Key::Space => Input::A,
+        Key::Leave => Input::B,
+        _ => return None,
+    })
+}
+
+fn menu_button(button: HostButton) -> Option<Input> {
+    Some(match button {
+        HostButton::South => Input::A,
+        HostButton::East => Input::B,
+        HostButton::Start => Input::Start,
+        HostButton::Back => Input::Back,
+        HostButton::DpadUp => Input::Up,
+        HostButton::DpadDown => Input::Down,
+        HostButton::DpadLeft => Input::Left,
+        HostButton::DpadRight => Input::Right,
+        _ => return None,
+    })
 }
 
 #[derive(Default)]
@@ -901,7 +1225,7 @@ impl PadGate for Gate {
         let leaving = self.active && !active;
         self.active = active;
         self.pads.retain(|k, _| pads.iter().any(|p| p.key == *k));
-        session.pad_motion = if active && !entering {
+        session.pad_motion = if active && !entering && session.menu.is_none() {
             pads.iter()
                 .find(|p| p.pad.physical)
                 .map_or_else(Drive::default, |p| Drive::pad(&p.pad.state))
@@ -913,21 +1237,39 @@ impl PadGate for Gate {
             let state = &mut pad.pad.state;
             let buttons = state.buttons;
             let triggers = (state.left_trigger >= 0.35, state.right_trigger >= 0.35);
-            if active && !entering {
+            if active && !entering && session.menu.is_some() {
+                for button in [
+                    HostButton::South, HostButton::East, HostButton::Start, HostButton::Back,
+                    HostButton::DpadUp, HostButton::DpadDown, HostButton::DpadLeft, HostButton::DpadRight,
+                ] {
+                    if buttons.contains(button) && !track.buttons.contains(button) {
+                        session.press(menu_button(button).unwrap());
+                        break;
+                    }
+                }
+                track.skip = SkipHold::default();
+            } else if active && !entering {
                 for (button, c) in [
                     (HostButton::South, Control::Pause),
-                    (HostButton::East, Control::Leave),
+                    (HostButton::East, Control::CancelJump),
                     (HostButton::West, Control::Mark),
                     (HostButton::Back, Control::Hide),
                     (HostButton::North, Control::Camera),
-                    (HostButton::Start, Control::Hud),
+                    (HostButton::Start, Control::Menu),
                     (HostButton::LeftBumper, Control::Player(false)),
                     (HostButton::RightBumper, Control::Player(true)),
                     (HostButton::DpadUp, Control::Screenshot),
+                    (HostButton::DpadDown, Control::Step),
                 ] {
                     if buttons.contains(button) && !track.buttons.contains(button) {
                         session.control(c);
                     }
+                }
+                let hud = |buttons: HostButtons| {
+                    buttons.contains(HostButton::LeftStick) && buttons.contains(HostButton::RightStick)
+                };
+                if hud(buttons) && !hud(track.buttons) {
+                    session.control(Control::Hud);
                 }
                 if triggers.0 && !track.triggers.0 {
                     session.control(Control::Speed(false));
@@ -987,7 +1329,7 @@ mod tests {
                 length_ticks: 3000,
                 source: Source::Host,
                 image_stamp: "test".into(),
-                playable_here: true,
+                compatibility: api::CompatibilityState::Playable,
                 ..FilmMeta::default()
             },
             clip: None,
@@ -1000,8 +1342,7 @@ mod tests {
         let mut track = sample_track();
         track.read(
             serde_json::from_value(json!({
-                "paused": true, "tick": 450, "speed": 0.5,
-                "kills": [110], "bookmarks": [250]
+                "paused": true, "tick": 450, "speed": 0.5
             }))
             .unwrap(),
         );
@@ -1019,14 +1360,13 @@ mod tests {
                 to_tick: 930
             })
         );
-        let timeline = track.timeline(100);
-        assert!(timeline.contains('*') && timeline.contains('|') && timeline.contains('['));
+        assert_eq!(track.clip_range(), Some([450, 930]));
     }
 
     #[test]
     fn first_person_uses_host_recordings_or_recorded_local_viewports() {
         let mut track = sample_track();
-        assert_eq!(track.view(None).top_right[1], line("Fly", Tone::Selected));
+        assert_eq!(track.camera_label(), "Fly");
         for mode in [
             CameraMode::Orbit,
             CameraMode::Follow,
@@ -1039,10 +1379,7 @@ mod tests {
         track.camera = CameraMode::Default;
         track.cycle_camera();
         assert_eq!(track.camera, CameraMode::Default);
-        assert_eq!(
-            track.view(None).top_right[1],
-            line("Recorded view", Tone::Selected)
-        );
+        assert_eq!(track.camera_label(), "Recorded view");
         track.local_viewports = true;
         track.cycle_camera();
         assert_eq!(track.camera, CameraMode::FirstPerson);
@@ -1070,7 +1407,7 @@ mod tests {
         let agent = Agent::new();
         let (calls, received) = std::sync::mpsc::channel();
         agent.add_method(api::STATE, Access::Read, |_| Ok(json!({"tick": 60})));
-        for method in [api::PAUSE, api::SPEED, api::SEEK, api::CAMERA, CHEAT_SET] {
+        for method in [api::PAUSE, api::SPEED, api::SEEK, api::CAMERA, api::HUD] {
             let calls = calls.clone();
             agent.add_method(method, Access::Act, move |params| {
                 calls.send((method, params)).unwrap();
@@ -1120,7 +1457,13 @@ mod tests {
         assert_eq!(params["player"], "A");
         session.control(Control::Pause);
         session.control(Control::Speed(true));
-        session.control(Control::Skip(5));
+        let now = Instant::now();
+        for i in 0..5 {
+            let tap = now + Duration::from_millis(i * 40);
+            session.control_at(Control::Skip(5), tap);
+            session.pump_transport(tap);
+        }
+        session.pump_transport(now + Duration::from_millis(410));
         session.control(Control::Hud);
         drive(&mut session);
         assert_eq!(
@@ -1128,13 +1471,67 @@ mod tests {
             [
                 (api::PAUSE, json!({})),
                 (api::SPEED, json!({"speed": 2.0})),
-                (api::SEEK, json!({"tick": 210, "clip_marks": [null, null]})),
-                (CHEAT_SET, json!({"name": "hide_hud", "value": true})),
+                (api::SEEK, json!({"tick": 810, "clip_marks": [null, null]})),
+                (api::HUD, json!({"game": false, "bar": null})),
             ]
         );
         assert!(!session.track.as_ref().unwrap().hud);
         agent.shutdown();
         drop(server);
+    }
+
+    #[test]
+    fn playback_page_input_reports_bar_pause_and_picker_via_agent() {
+        struct Empty;
+        impl agent::Reader for Empty {
+            fn status(&mut self) -> agent::GameStatus { Default::default() }
+            fn objects(&mut self) -> Result<Vec<agent_proto::Object>, String> { Ok(vec![]) }
+        }
+
+        let theater = Theater::default();
+        *theater.session() = Session { track: Some(sample_track()), ready: true, ..Default::default() };
+        let agent = agent::Agent::new();
+        theater.add_playback_methods(&agent);
+        let (send, receive) = std::sync::mpsc::sync_channel(8);
+        let client = agent.connect(send);
+        let call = |method, params| {
+            agent.submit(client, &json!({"jsonrpc":"2.0", "id":1, "method":method, "params":params}).to_string());
+            agent.poll_theater(&mut Empty);
+            serde_json::from_str::<Value>(&receive.try_recv().unwrap()).unwrap()
+        };
+
+        assert_eq!(call(agent_proto::method::UI_SCREEN, json!({}))["result"]["screen"], super::super::OVERLAY);
+        let press = |input| call(agent_proto::method::UI_INPUT, json!({"input": input}));
+        assert_eq!(press("start")["result"]["screen"], super::super::PAUSE_MENU);
+        for _ in 0..3 { press("down"); }
+        let picker = press("a");
+        assert_eq!(picker["result"]["screen"], super::super::PAUSE_MENU);
+        assert_eq!(picker["result"]["dialog"]["name"], crate::ui_kit::picker::GAME_NAME);
+        assert_eq!(press("b")["result"]["focus"], 3);
+        assert_eq!(press("b")["result"]["screen"], super::super::OVERLAY);
+        assert!(press("unknown")["error"].is_object());
+    }
+
+    #[test]
+    fn keyboard_and_controller_use_the_same_navigation_for_all_pause_rows() {
+        let mut t = sample_track();
+        t.tick = 60;
+        t.marks = (Some(10), Some(30));
+        t.players.push(Player { name: "Chief".into(), ..Default::default() });
+        for row in 0..10 {
+            let mut keyboard = Menu::default();
+            let mut controller = Menu::default();
+            for _ in 0..row {
+                keyboard.press(&t, menu_key(Key::Down).unwrap());
+                controller.press(&t, menu_button(HostButton::DpadDown).unwrap());
+            }
+            assert_eq!(keyboard.spec(&t, None).focus, row);
+            assert_eq!(
+                keyboard.press(&t, menu_key(Key::Accept).unwrap()),
+                controller.press(&t, menu_button(HostButton::South).unwrap()),
+            );
+            assert_eq!(keyboard.spec(&t, None), controller.spec(&t, None));
+        }
     }
 
     #[test]

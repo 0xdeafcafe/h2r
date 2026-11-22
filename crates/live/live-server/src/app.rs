@@ -218,14 +218,30 @@ pub struct Live {
     pub(crate) mutes: Arc<crate::mutes::Mutes>,
     /// Holds a mute's checks and its append together.
     pub(crate) mute_writes: tokio::sync::Mutex<()>,
+    /// Saved game-type scripts (docs/game/rules-engine.md, "Workbench").
+    pub(crate) rules: Arc<crate::rule_scripts::Rules>,
+    /// Holds a script's checks and its append together.
+    pub(crate) rules_writes: tokio::sync::Mutex<()>,
+    /// Workbench checks and runs per client address
+    /// ([`crate::rule_scripts::RATE`]).
+    pub(crate) rules_rate: RateLimiter,
+    /// Published game variants (docs/live/live-api.md, "Game variants").
+    pub(crate) variants: Arc<crate::game_variants::Variants>,
+    /// Holds a variant's checks and its append together.
+    pub(crate) variant_writes: tokio::sync::Mutex<()>,
+    /// Editor requests (`POST /v1/rules/ide`) per client address, at the
+    /// same rate in a bucket of their own.
+    pub(crate) rules_ide_rate: RateLimiter,
     /// Each account's own cloud saves (docs/live/live-cloud-saves.md).
     pub(crate) cloud: crate::cloud_saves::CloudSaves,
-    /// Unix seconds the service started.
+    /// Unix seconds the native service started.
+    #[cfg(feature = "native")]
     pub(crate) started_at: i64,
     data_dir: crate::status::DataDir,
     /// Where content, cloud saves and published art are kept
     /// ([`crate::blobs`]); the data directory unless [`Live::set_blobs`].
     blobs: std::sync::OnceLock<crate::blobs::Blobs>,
+    screenshot_classifier: std::sync::OnceLock<Arc<dyn crate::screenshot_classifier::Classifier>>,
     /// Shared game art in the public blob store, redirected to once it is
     /// uploaded ([`crate::art::PublishedArt`]).
     published_art: std::sync::OnceLock<crate::art::PublishedArt>,
@@ -283,6 +299,8 @@ fn may_write(author: &Author, stream: &str, kind: &str) -> bool {
         || stream.starts_with("bots-")
         || stream.starts_with("bans-")
         || stream.starts_with("mutes-")
+        || stream.starts_with(live_proto::rules::STREAM_PREFIX)
+        || stream.starts_with(live_proto::game_variants::STREAM_PREFIX)
         || kind == live_proto::rank::CHANGED
         || live_proto::arbitration::KINDS.contains(&kind)
         || live_proto::bots::KINDS.contains(&kind)
@@ -290,6 +308,9 @@ fn may_write(author: &Author, stream: &str, kind: &str) -> bool {
         || live_proto::reports::KINDS.contains(&kind)
         || live_proto::bans::KINDS.contains(&kind)
         || live_proto::mutes::KINDS.contains(&kind)
+        || live_proto::rules::KINDS.contains(&kind)
+        || live_proto::game_variants::KINDS.contains(&kind)
+        || matches!(kind, crate::invites::GRANTED | crate::invites::GRANT_REVOKED)
     {
         return false;
     }
@@ -546,9 +567,16 @@ impl Live {
         dispatcher.subscribe(bans.clone());
         let mutes = Arc::new(crate::mutes::Mutes::default());
         dispatcher.subscribe(mutes.clone());
+        let rules = Arc::new(crate::rule_scripts::Rules::default());
+        dispatcher.subscribe(rules.clone());
+        let variants = Arc::new(crate::game_variants::Variants::default());
+        dispatcher.subscribe(variants.clone());
         let stats = Arc::new(crate::stats::Stats::with_model(model.clone()));
         dispatcher.subscribe(stats.clone());
-        let usage = Arc::new(crate::usage::Usage::default());
+        let usage = Arc::new(match timers {
+            Timers::Spawned => crate::usage::Usage::default(),
+            Timers::Driven => crate::usage::Usage::worker(),
+        });
         usage.load(&store.usage().await?);
         dispatcher.subscribe(usage.clone());
         let hosts =
@@ -604,10 +632,18 @@ impl Live {
             ban_writes: Default::default(),
             mutes,
             mute_writes: Default::default(),
+            rules,
+            rules_writes: Default::default(),
+            rules_rate: RateLimiter::new(crate::rule_scripts::RATE.0, crate::rule_scripts::RATE.1),
+            variants,
+            variant_writes: Default::default(),
+            rules_ide_rate: RateLimiter::new(crate::rule_scripts::RATE.0, crate::rule_scripts::RATE.1),
             cloud: Default::default(),
+            #[cfg(feature = "native")]
             started_at: now(),
             data_dir: Default::default(),
             blobs: Default::default(),
+            screenshot_classifier: Default::default(),
             published_art: Default::default(),
             policy,
             dispatcher,
@@ -681,6 +717,21 @@ impl Live {
 
     pub fn blobs(&self) -> Option<&crate::blobs::Blobs> {
         self.blobs.get()
+    }
+
+    /// Installs the screenshot classifier once, before the router is built.
+    /// With no classifier, screenshots wait for review.
+    pub fn set_screenshot_classifier(
+        &self,
+        classifier: Arc<dyn crate::screenshot_classifier::Classifier>,
+    ) {
+        let _ = self.screenshot_classifier.set(classifier);
+    }
+
+    pub(crate) fn screenshot_classifier(
+        &self,
+    ) -> Option<Arc<dyn crate::screenshot_classifier::Classifier>> {
+        self.screenshot_classifier.get().cloned()
     }
 
     /// Redirects `/art/game/*` to `art`'s public copies once it has
@@ -823,15 +874,18 @@ impl Live {
     }
 
     pub(crate) fn server_event(&self, stream: String, kind: &str, data: Value) -> NewEvent {
+        self.server_event_at(stream, kind, data, time::OffsetDateTime::now_utc())
+    }
+
+    pub(crate) fn server_event_at(
+        &self,
+        stream: String,
+        kind: &str,
+        data: Value,
+        at: time::OffsetDateTime,
+    ) -> NewEvent {
         let key = &self.identity.key;
-        let body = EventBody::new(
-            key,
-            &self.identity.author(),
-            &stream,
-            kind,
-            data,
-            time::OffsetDateTime::now_utc(),
-        );
+        let body = EventBody::new(key, &self.identity.author(), &stream, kind, data, at);
         NewEvent {
             jws: body.sign(key).into(),
             jws_index: None,
@@ -865,6 +919,15 @@ impl Live {
         jws: &str,
         device: Option<crate::signins::Device>,
     ) -> Result<CreatedAccount, ApiError> {
+        self.register_account(jws, device, None).await
+    }
+
+    pub(crate) async fn register_account(
+        &self,
+        jws: &str,
+        device: Option<crate::signins::Device>,
+        bearer: Option<&str>,
+    ) -> Result<CreatedAccount, ApiError> {
         if !self.creates.allow("accounts.create") {
             return Err(ApiError::new(
                 ErrorCode::RateLimited,
@@ -873,6 +936,15 @@ impl Live {
         }
         let (req, key) = AccountRequest::open(jws, &self.identity.id, now()).map_err(sign_error)?;
         let tag = Gamertag::new(&req.gamertag).map_err(|e| invalid(e.to_string()))?;
+        if self.admins.is_configured(&tag) {
+            self.authorize_operator(bearer, &AccountRequest::operator_scope(jws))?;
+        }
+        // Keep redemption and its account append ordered with invite revocation.
+        let _invite_guard = if self.policy.invite_only && req.invite.is_some() {
+            Some(self.invites.writes.lock().await)
+        } else {
+            None
+        };
         let now = now();
         let invite = match (&req.invite, self.policy.invite_only) {
             // A signed code (the older, long form) or a short one.
@@ -1090,6 +1162,22 @@ impl Live {
                 "title files are at most 2 MiB",
             ));
         }
+        if title == live_proto::HALO_2_TITLE_ID
+            && name == live_proto::hopper::HALO_2_HOPPER_FILE
+            && let Ok(file) = live_proto::hopper::HopperFile::parse_legacy(bytes)
+        {
+            for index in 0..live_proto::hopper::HOPPERS {
+                if file.contains_addon_maps(index).map_err(|err| invalid(err.to_string()))?
+                    && !file.records(index).map_err(|err| invalid(err.to_string()))?
+                        .iter().any(|entry| live_proto::hopper::is_base_map(entry.id))
+                {
+                    return Err(invalid(format!(
+                        "Playlist {} needs a Halo 2 disc map for players without the Map Pack.",
+                        index + 1
+                    )));
+                }
+            }
+        }
         let meta = PublishedFile {
             title_id: title,
             name: name.into(),
@@ -1137,7 +1225,9 @@ impl Live {
 
     pub fn discovery(&self) -> Discovery {
         Discovery {
+            sim_combat: true,
             ingest_frame_versions: vec![live_proto::pack::LIVE_VERSION],
+            ingest_frame_batch: true,
             id: self.identity.id.clone(),
             api: "/v1".into(),
             keys: vec![self.identity.key.public().jwk()],
@@ -1167,6 +1257,7 @@ impl Live {
             .then(|| read.last().map(|e| e.position.to_string()))
             .flatten();
         let items: Vec<WireEvent> = {
+            let catalog = self.catalog.read();
             let s = self.model.read();
             read.iter()
                 .filter_map(|e| match viewer {
@@ -1176,6 +1267,7 @@ impl Live {
                     {
                         None
                     }
+                    _ if !viewer.is_admin() && catalog.hides_content_stream(&e.body.stream) => None,
                     _ => crate::sessions::wire_for(&s, e, viewer),
                 })
                 .collect()
@@ -1194,6 +1286,7 @@ impl Live {
             created_at: a.created_at.clone(),
             online: s.presence.contains_key(&a.xuid),
             admin: self.admins.is_admin_of(&a.gamertag, a.xuid),
+            invite_grant: self.invites.grant(a.xuid),
             bot: false,
         }
     }
@@ -1266,6 +1359,7 @@ impl Live {
                 created_at: s.bots.issued_at.get(&b.xuid).cloned().unwrap_or_default(),
                 online: false,
                 admin: false,
+                invite_grant: None,
                 bot: true,
             },
             id: Author::Account {

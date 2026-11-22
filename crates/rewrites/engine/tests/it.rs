@@ -23,6 +23,8 @@ mod light_constants_differential;
 mod light_passes;
 #[path = "light_passes_differential.rs"]
 mod light_passes_differential;
+#[path = "map_status_differential.rs"]
+mod map_status_differential;
 #[path = "point_shapes.rs"]
 mod point_shapes;
 #[path = "screen_effects_differential.rs"]

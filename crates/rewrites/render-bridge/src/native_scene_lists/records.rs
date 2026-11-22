@@ -19,21 +19,22 @@ const FULL_RECT: u32 = 0x0050_9410;
 const EMPTY_RECT: u32 = 0x0050_9411;
 const RECT_MIN: u32 = 0x0044_09d4;
 const RECT_MAX: u32 = 0x0044_aed4;
-const PIXEL_QUANTIZE: u32 = 0x0045_dc20;
+pub(super) const PIXEL_QUANTIZE: u32 = 0x0045_dc20;
 const SHADE_QUANTIZE: u32 = 0x0045_dd5c;
 const RECORD_LIMIT: u32 = 0x352;
 
-pub(super) fn build(m: &dyn GuestMemory, cpu: &CpuAbi) -> (SceneList, Result<Output>) {
-    (SceneList::ObjectRecord, append(m, cpu))
+pub(super) fn build(m: &dyn GuestMemory, cpu: &CpuAbi, scale: f32) -> (SceneList, Result<Output>) {
+    (SceneList::ObjectRecord, append(m, cpu, scale))
 }
 
-fn append(m: &dyn GuestMemory, cpu: &CpuAbi) -> Result<Output> {
+fn append(m: &dyn GuestMemory, cpu: &CpuAbi, scale: f32) -> Result<Output> {
     fp_supported(cpu)?;
     let mut out = plan_append(
         m,
         cpu.eax,
         cpu.ecx,
         cpu.edx,
+        scale,
         |offset| stack(m, cpu, offset),
         None,
     )?;
@@ -70,7 +71,7 @@ pub(super) struct ObjectRecord {
 }
 
 impl ObjectRecord {
-    pub(super) fn plan(&self, m: &dyn GuestMemory) -> Result<Output> {
+    pub(super) fn plan(&self, m: &dyn GuestMemory, scale: f32) -> Result<Output> {
         let words = [
             self.flags,
             self.model,
@@ -97,6 +98,7 @@ impl ObjectRecord {
             self.section,
             u32::from(self.selector),
             u32::from(self.node_count),
+            scale,
             |offset| {
                 words
                     .get(offset as usize / 4)
@@ -113,6 +115,7 @@ fn plan_append(
     section: u32,
     selector: u32,
     lod: u32,
+    scale: f32,
     args: impl Fn(u32) -> Result<u32>,
     sphere: Option<([f32; 3], f32)>,
 ) -> Result<Output> {
@@ -176,7 +179,8 @@ fn plan_append(
         u8::MAX
     };
     out.byte(at(ATTACHMENTS, count)?, attachment_index);
-    let size = f32::from_bits(args(0x24)?) * m.f32(PIXEL_QUANTIZE)?;
+    let unit = m.f32(PIXEL_QUANTIZE)?;
+    let size = object_lod::record_pixels(f32::from_bits(args(0x24)?), scale, unit) * unit;
     out.byte(at(PIXEL_SIZES, count)?, quantize(size, f32::floor)?);
     if lighting != 0 && attachment != NONE {
         let mirror = args(0x38)? as u8 != 0;

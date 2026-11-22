@@ -221,6 +221,7 @@ fn fast() -> Timing {
         ack_timeout: Duration::from_millis(500),
         settle: Duration::from_millis(100),
         steady: Duration::from_secs(30),
+        frame_batch: Duration::from_millis(150),
     }
 }
 
@@ -358,9 +359,16 @@ fn sim_sink_finishes_live_and_deferred_packed_recordings() {
             bots: bots.clone(),
             deferred,
         };
+        let samples = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = samples.clone();
+        let feed = crate::hooks::CombatFeed::default();
+        assert!(feed.set(Box::new(move || {
+            seen.fetch_add(1, Ordering::Relaxed);
+            vec![game::SimCombatSample { index: 0, tick: 4, ..Default::default() }]
+        })).is_ok());
         let mut sink = ServerSink::new(live.embedded.url.clone(), account.clone())
             .unwrap()
-            .with_sim(&metadata, deferred.then(|| live.dir.join("deferred.lock")));
+            .with_sim(&metadata, deferred.then(|| live.dir.join("deferred.lock")), feed);
         let id = start_session(&mut sink, Session::new("test", None).with_sim(metadata));
         let mut live_frames = live.embedded.live.frames();
         let stopped = game::MachinePosition { i: 7, p: 0 };
@@ -391,6 +399,7 @@ fn sim_sink_finishes_live_and_deferred_packed_recordings() {
                 assert_eq!(d.frame.cut, None);
             }
         }
+        assert_eq!(samples.load(Ordering::Relaxed), usize::from(!deferred));
         if deferred {
             assert!(live_frames.try_recv().is_err());
         }
@@ -401,23 +410,41 @@ fn sim_sink_finishes_live_and_deferred_packed_recordings() {
             "result": {"end": "tick_limit"}, "ticks": 6, "wall": {"speedup": 2.8}, "players": [],
         }))
         .unwrap();
+        assert_eq!(samples.load(Ordering::Relaxed), usize::from(!deferred));
         if deferred {
             assert!(live_frames.try_recv().is_err());
         } else {
             assert_eq!(live_frames.try_recv().unwrap().frame.tick, 4);
         }
         assert_eq!(live.kinds(&id), [game::GAME_STARTED, game::GAME_ENDED]);
-        let token = sign::issue_token(
-            &live.operator,
-            &format!("server:{}", live.discovery.id),
-            &live.discovery.id,
-            lxm::READ,
-            time::OffsetDateTime::now_utc().unix_timestamp(),
-        );
+        let read_token = || {
+            sign::issue_token(
+                &live.operator,
+                &format!("server:{}", live.discovery.id),
+                &live.discovery.id,
+                lxm::READ,
+                time::OffsetDateTime::now_utc().unix_timestamp(),
+            )
+        };
+        let list: serde_json::Value = live
+            .agent
+            .get(&format!(
+                "{}/v1/admin/sim-runs?include_options=1&tuning_choice=custom",
+                live.embedded.url,
+            ))
+            .set("authorization", &format!("Bearer {}", read_token()))
+            .call()
+            .unwrap()
+            .into_json()
+            .unwrap();
+        assert_eq!(list["items"][0]["game_id"].as_str(), Some(id.as_str()));
+        assert_eq!(list["items"][0]["sim"]["seed"], "42");
+        assert_eq!(list["items"][0]["has_report"], true);
+        assert_eq!(list["options"]["custom_tuning"], true);
         let detail: serde_json::Value = live
             .agent
             .get(&format!("{}/v1/admin/sim-runs/{id}", live.embedded.url))
-            .set("authorization", &format!("Bearer {token}"))
+            .set("authorization", &format!("Bearer {}", read_token()))
             .call()
             .unwrap()
             .into_json()
@@ -456,6 +483,8 @@ fn a_cut_socket_reconnects_and_the_events_made_while_down_land_once() {
     // Nothing failed: the events wait, the connection is gone.
     assert!(sink.connection.is_none());
     assert_eq!(sink.waiting_events(), 2);
+    // Frames made once the outage is known are dropped.
+    sink.frame(frame(&local, 28)).unwrap();
     assert!(
         sink.dropped_frames > 0,
         "frames made while down are dropped"
@@ -475,6 +504,108 @@ fn a_cut_socket_reconnects_and_the_events_made_while_down_land_once() {
         "every event once, in order"
     );
     assert_eq!(sink.dropped_events, 0);
+}
+
+#[test]
+fn frames_go_out_one_message_a_window_and_none_is_lost() {
+    let live = Live::new();
+    let mut timing = fast();
+    timing.frame_batch = Duration::from_secs(30);
+    let mut sink = ServerSink::new(live.embedded.url.clone(), live.account("Alpha"))
+        .unwrap()
+        .with_timing(timing);
+    let local = start(&mut sink);
+    let server_id = sink.games[&local].clone();
+    let mut frames = live.embedded.live.frames();
+    // A burst inside the window waits for it, in order.
+    for t in 5..=7 {
+        sink.frame(frame(&local, t * 2)).unwrap();
+    }
+    sink.flush().unwrap();
+    assert_eq!(sink.pending.records, 3);
+    assert!(
+        frames.try_recv().is_err(),
+        "frames leave before the window ends"
+    );
+    sink.pending.since = Some(Instant::now() - timing.frame_batch);
+    sink.flush().unwrap();
+    let mut ticks = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while ticks.len() < 3 {
+        assert!(Instant::now() < deadline, "the window's frames never landed");
+        match frames.try_recv() {
+            Ok(f) => ticks.push(f.frame.tick),
+            Err(_) => std::thread::sleep(Duration::from_millis(10)),
+        }
+    }
+    assert_eq!(ticks, [10, 12, 14]);
+
+    // An events batch flushes what is held, ahead of itself.
+    sink.frame(frame(&local, 16)).unwrap();
+    sink.event(score(&local, 16, 1)).unwrap();
+    sink.flush().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        assert!(Instant::now() < deadline, "the held frame never landed");
+        if let Ok(f) = frames.try_recv() {
+            assert_eq!(f.frame.tick, 16);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        live.kinds(&server_id),
+        [game::GAME_STARTED, game::SCORE_CHANGED]
+    );
+    assert_eq!(sink.dropped_frames, 0);
+    assert_eq!(sink.dropped_events, 0);
+}
+
+#[test]
+fn idle_pipeline_and_shutdown_flush_partial_frame_batches() {
+    let live = Live::new();
+    let mut timing = fast();
+    timing.frame_batch = Duration::from_millis(200);
+    let mut sink = ServerSink::new(live.embedded.url.clone(), live.account("Alpha"))
+        .unwrap()
+        .with_timing(timing);
+    let local = start(&mut sink);
+    let mut frames = live.embedded.live.frames();
+    let pipeline = crate::pipeline::Pipeline::new(Session::new("test", None), sink);
+    let mut receive = || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            assert!(Instant::now() < deadline, "the held frame never landed");
+            if let Ok(f) = frames.try_recv() {
+                break f.frame.tick;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    pipeline.forward(vec![Output::Frame(frame(&local, 10))]).unwrap();
+    assert_eq!(receive(), 10);
+    pipeline.forward(vec![Output::Frame(frame(&local, 12))]).unwrap();
+    drop(pipeline);
+    assert_eq!(receive(), 12);
+}
+
+#[test]
+fn oversized_signed_event_groups_split_without_losing_events() {
+    let live = Live::new();
+    let mut sink = ServerSink::new(live.embedded.url.clone(), live.account("Alpha"))
+        .unwrap()
+        .with_timing(fast());
+    let local = start(&mut sink);
+    let server_id = sink.games[&local].clone();
+    for i in 1..=16 {
+        let mut event = score(&local, u64::from(i) * 2, i);
+        event.data["padding"] = serde_json::json!("x".repeat(2 * 1024));
+        sink.event(event).unwrap();
+    }
+    sink.flush().unwrap();
+    assert_eq!(sink.waiting_events(), 0);
+    assert_eq!(sink.dropped_events, 0);
+    assert_eq!(count(&live.kinds(&server_id), game::SCORE_CHANGED), 16);
 }
 
 #[test]
@@ -562,4 +693,20 @@ fn an_account_the_server_refuses_stops_the_sink_after_a_few_tries() {
     assert_eq!(sink.auth_refusals, MAX_AUTH_REFUSALS);
     // It stays stopped.
     assert!(sink.frame(frame(&local, 2)).is_err());
+}
+
+#[test]
+fn large_sim_upload_retains_bot_stats_and_small_reports_keep_their_traces() {
+    let stats = serde_json::json!([{"combat":{"melee_presses":3},
+        "weapon_accuracy":[{"damage_code":8,"range":"close","shots":4,"hits":2,"accuracy":0.5}]}]);
+    let small = serde_json::json!({"players":stats, "state_hashes_v1":[{"tick":5,"hash":"abc"}]});
+    let decode = |r| serde_json::from_slice::<serde_json::Value>(&super::encode_sim_report(r).unwrap()).unwrap();
+    assert_eq!(decode(small.clone()), small);
+    let mut large = small.clone();
+    large["state_components_v1"] = serde_json::json!(["x".repeat(game::MAX_SIM_REPORT_BYTES)]);
+    let saved = decode(large);
+    assert_eq!(saved["players"], stats);
+    assert!(saved.get("state_hashes_v1").is_none());
+    assert!(saved.get("state_components_v1").is_none());
+    assert!(saved["notes"][0].as_str().unwrap().contains("determinism"));
 }

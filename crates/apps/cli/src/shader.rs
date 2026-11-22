@@ -1,5 +1,7 @@
 //! `h2 shader`: print a resolved material, or validate every `shad`, `stem`
 //! and `spas` in one map or the whole disc. Writes nothing to disk.
+mod shadow_coverage;
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::io::BufReader;
@@ -18,7 +20,8 @@ and per pass implementation the texture stages, sampler and render states,
 vertex constants/defaults and the final pixel shader definition. --all
 decodes and validates every shad, stem and spas (and translates every
 resolved pixel shader to WGSL through crates/formats/shaders and naga), printing
-counts; it exits non-zero on any failure. Nothing is written to disk.";
+counts and each map's shadow-template coverage; it exits non-zero on any failure.
+Nothing is written to disk.";
 
 pub(super) fn run(args: Vec<String>) -> Result<()> {
     let mut args = args.into_iter();
@@ -219,6 +222,7 @@ struct Counts {
     stem: usize,
     spas: usize,
     names: [HashSet<String>; 3],
+    shadows_by_name: HashMap<String, shadow_coverage::Coverage>,
     implementations: usize,
     variants: usize,
     no_vertex_shader: usize,
@@ -283,6 +287,8 @@ fn validate(which: &str, disc: Option<PathBuf>) -> Result<usize> {
     println!("{} maps", c.maps);
     println!("shad {} tags ({} unique names)", c.shad, c.names[0].len());
     println!("stem {} tags ({} unique names)", c.stem, c.names[1].len());
+    let unique = c.shadows_by_name.values().copied().collect::<Vec<_>>();
+    shadow_coverage::print("unique names (any map)", &unique, c.names[1].len());
     println!(
         "spas {} tags ({} unique names), {} implementations ({} variant pixel shaders, {} without a vertex shader)",
         c.spas,
@@ -328,6 +334,8 @@ fn validate(which: &str, disc: Option<PathBuf>) -> Result<usize> {
 
 fn check_map(label: &str, map: &mut Map<BufReader<File>>, c: &mut Counts) -> Result<()> {
     c.maps += 1;
+    let initial_templates = c.stem;
+    let mut shadow_templates = Vec::new();
     let mut lib = ShaderLibrary::read(map)?;
     let tags: Vec<_> = map
         .tags()
@@ -420,8 +428,19 @@ fn check_map(label: &str, map: &mut Map<BufReader<File>>, c: &mut Counts) -> Res
                         ));
                         continue;
                     }
-                    if let Err(e) = t.postprocess[0].validate() {
-                        c.fail(format!("{what}: {e}"));
+                    match t.postprocess[0]
+                        .validate()
+                        .map_err(anyhow::Error::from)
+                        .and_then(|()| shadow_coverage::read(&mut lib, &t.postprocess[0], &groups))
+                    {
+                        Ok(coverage) => {
+                            shadow_templates.push(coverage);
+                            c.shadows_by_name
+                                .entry(name.clone())
+                                .or_default()
+                                .include(coverage);
+                        }
+                        Err(e) => c.fail(format!("{what}: {e}")),
                     }
                     for r in t.references {
                         if !ref_ok(r, SHAD) {
@@ -494,6 +513,7 @@ fn check_map(label: &str, map: &mut Map<BufReader<File>>, c: &mut Counts) -> Res
             }
         }
     }
+    shadow_coverage::print(label, &shadow_templates, c.stem - initial_templates);
     Ok(())
 }
 

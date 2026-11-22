@@ -26,7 +26,12 @@ pub fn from_schema(name: &str, s: &Struct) -> StructDef {
                     seen: String::new(),
                 },
                 meaning: String::new(),
+                doc: None,
                 default: None,
+                applies: None,
+                label: None,
+                unit: None,
+                axes: Vec::new(),
             });
             o = end;
         }
@@ -55,7 +60,12 @@ pub fn from_schema(name: &str, s: &Struct) -> StructDef {
             name,
             kind,
             meaning: String::new(),
+            doc: None,
             default: None,
+            applies: None,
+            label: None,
+            unit: None,
+            axes: Vec::new(),
         });
         at = o + w;
     }
@@ -65,6 +75,8 @@ pub fn from_schema(name: &str, s: &Struct) -> StructDef {
         size: s.size,
         align: s.align,
         fields,
+        title: None,
+        applies: None,
     }
 }
 

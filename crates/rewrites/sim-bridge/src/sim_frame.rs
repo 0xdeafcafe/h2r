@@ -119,7 +119,7 @@ pub fn skip(kind: FrameKind, world_index: u64, render_every: u32) -> bool {
     if kind != FrameKind::World {
         return false;
     }
-    render_every == 0 || world_index % u64::from(render_every) != 0
+    render_every == 0 || !world_index.is_multiple_of(u64::from(render_every))
 }
 
 /// The stubs after the frame wait of a skipped frame: what the render

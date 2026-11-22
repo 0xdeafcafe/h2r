@@ -3,7 +3,20 @@
 //! physical footprint on macOS, where the two differ by the clean mapped
 //! pages (the shared dylib's code, the disc image's resident pages).
 
+use live_proto::host_pack::memory::ResidentMemory;
 use sim_bench::metrics::MemoryUsage;
+
+/// The Linux split is read only on demand because smaps walks the mappings.
+pub(super) fn resident_split() -> Option<ResidentMemory> {
+    #[cfg(target_os = "linux")]
+    {
+        ResidentMemory::from_rollup(&std::fs::read_to_string("/proc/self/smaps_rollup").ok()?)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
 
 /// The process's memory now. `ru_maxrss` is a high-water mark, so this is
 /// safe to sample wherever a report is built.
@@ -41,22 +54,17 @@ fn peak_rss_mib() -> u64 {
     }
 }
 
-/// `proc_pid_rusage`'s `ri_phys_footprint`, in MiB. `None` off Apple
-/// hosts, where there is no footprint number, only the RSS.
+/// Returns a snapshot of the calling process's resource use.
+#[cfg(target_os = "macos")]
+pub(super) fn process_rusage() -> Option<libc::rusage_info_v4> {
+    mem_watch::process_rusage(std::process::id())
+}
+
+/// The physical footprint in MiB on macOS.
 fn footprint_mib() -> Option<u64> {
     #[cfg(target_os = "macos")]
     {
-        let mut info = std::mem::MaybeUninit::<libc::rusage_info_v4>::uninit();
-        // SAFETY: a pointer to that struct, as the flavor's buffer.
-        let ok = unsafe {
-            libc::proc_pid_rusage(
-                std::process::id() as libc::c_int,
-                libc::RUSAGE_INFO_V4,
-                info.as_mut_ptr().cast(),
-            )
-        } == 0;
-        // SAFETY: on success the kernel filled the requested v4 structure.
-        ok.then(|| unsafe { info.assume_init() }.ri_phys_footprint / (1 << 20))
+        process_rusage().map(|info| info.ri_phys_footprint / (1 << 20))
     }
     #[cfg(not(target_os = "macos"))]
     {

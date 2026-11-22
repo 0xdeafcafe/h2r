@@ -1,8 +1,7 @@
-//! Our "Video" screen: a "Video" row on Halo 2's top-level Settings list
-//! (after Player Profiles and Game Variants) that opens a Controls screen
-//! holding the display rows (Field of View, Frame Rate, Resolution and
-//! Lighting) instead of the retail six. See docs/game/settings-menu.md "Video
-//! screen" for the trace.
+//! Video Settings opens from the main menu's Settings list and the pause
+//! menu's Player Settings. The screen uses the Controls layout for Field
+//! of View, Frame Rate, Resolution, Lighting, HUD Position and LOD Distance.
+//! See docs/game/settings-menu.md "Video screen" for the trace.
 //!
 //! **The row.** The Settings list (screen id 19, list handler `0x2b1cca` at
 //! `screen + 0x614`, vtable `0x45b060`) builds its datum array named
@@ -35,8 +34,9 @@ use settings::Store;
 
 use crate::layout_glue::Gm;
 use crate::setting_defs::{
-    AIM_ASSIST, FOV, PAD_SPEAKER, STEAM_LEFT_PAD, STEAM_SENSITIVITY, STEAM_SPEAKER, TOUCH_ACCEL,
-    TOUCH_AUTO_FIRE, TOUCH_CROUCH, TOUCH_GYRO, TOUCH_LOOK,
+    AIM_ASSIST, FOV, HUD_POSITION, LOD_DISTANCE, PAD_LIGHTBAR, PAD_SPEAKER, RESOLUTION,
+    STEAM_LEFT_PAD, STEAM_SENSITIVITY, STEAM_SPEAKER, SUPERBOUNCE_FALL_ASSIST, TOUCH_ACCEL, TOUCH_AUTO_FIRE, TOUCH_CROUCH,
+    TOUCH_GYRO, TOUCH_LOOK,
 };
 use crate::speaker_row;
 use crate::ui::{self, List, Model, Row, Screen};
@@ -73,17 +73,21 @@ pub fn is_model_id(id: u32) -> bool {
 
 /// Which of our rows the model has. A game gets [`Switches::PLATFORM`]:
 /// every row, with the touch controls' rows in the Steam Controller's
-/// place on iOS (no Steam Controller reaches an iPhone or iPad) and no
-/// touch rows elsewhere. Tests build models with rows left out.
+/// place on iOS (no Steam Controller reaches an iPhone or iPad), no touch
+/// rows elsewhere, and the Lightbar row on macOS. Tests build models with
+/// rows left out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Switches {
     pub speaker_row: bool,
-    /// The Steam Controller's three rows on Controls, after the speaker's.
+    pub lightbar_row: bool,
+    /// The Steam Controller's three rows on Controls.
     pub steam_rows: bool,
     /// The touch controls' three rows on Controls (iOS), after the
     /// speaker's: look speed, crouch, gyro.
     pub touch_rows: bool,
     pub fov_row: bool,
+    /// The superbounce Fall Assist row on Controls, last.
+    pub fall_assist_row: bool,
     pub video_screen: bool,
     /// The Voice screen (`crate::voice_settings`).
     pub voice_screen: bool,
@@ -92,16 +96,19 @@ pub struct Switches {
 impl Switches {
     pub const ALL: Switches = Switches {
         speaker_row: true,
+        lightbar_row: true,
         steam_rows: true,
         touch_rows: false,
         fov_row: true,
+        fall_assist_row: true,
         video_screen: true,
         voice_screen: true,
     };
 
     /// This platform's rows: [`Switches::ALL`] with the touch rows in
-    /// place of Steam's on iOS.
+    /// place of Steam's on iOS, and a Lightbar row on macOS.
     pub const PLATFORM: Switches = Switches {
+        lightbar_row: cfg!(target_os = "macos"),
         steam_rows: !IOS,
         touch_rows: IOS,
         ..Switches::ALL
@@ -122,14 +129,30 @@ pub const SETTINGS_ROW_TEXT: u32 = 0x002b_1d6e;
 pub const SETTINGS_ROW_CHOSEN: u32 = 0x002b_1da9;
 pub const SETTINGS_THIRD_ITEM: u32 = 0x220;
 
+#[path = "video_screen_resolution.rs"]
+pub(crate) mod resolution;
+
+use crate::run_opts::NativeSize;
+
 /// The model of our rows: the Video screen from the settings that name it,
 /// the Video row that opens it on the Settings list (left out when the
-/// screen has no rows), and on Controls the Controller Speaker row and the
-/// Steam Controller's three (on/off rows with the game's own On and Off).
+/// screen has no rows), and the controller options on Controls.
 pub fn model(store: Arc<Store>, on: Switches) -> Result<Model, String> {
-    let mut video = Screen::new(SCREEN).title("Video");
+    model_with_native_size(store, on, Arc::new(|| crate::setting_defs::GUEST_FRAME))
+}
+
+pub fn model_with_native_size(
+    store: Arc<Store>,
+    on: Switches,
+    native: NativeSize,
+) -> Result<Model, String> {
+    let mut video = Screen::new(SCREEN).title("Video Settings");
     if on.video_screen {
-        video = video.rows_from_settings(&store.defs());
+        video = video
+            .rows_from_settings(&store.defs())
+            .with_picker(RESOLUTION.key)
+            .with_picker(HUD_POSITION.key)
+            .with_picker(LOD_DISTANCE.key);
     }
     if !on.fov_row {
         video = video.without(FOV.key);
@@ -138,6 +161,12 @@ pub fn model(store: Arc<Store>, on: Switches) -> Result<Model, String> {
     if on.speaker_row {
         controls = controls
             .row(Row::setting(PAD_SPEAKER.key).bool_ids(speaker_row::ON_ID, speaker_row::OFF_ID));
+    }
+    if on.lightbar_row {
+        controls = controls.row(
+            Row::setting(PAD_LIGHTBAR.key)
+                .bool_ids(speaker_row::LIGHTBAR_TEAM_ID, speaker_row::OFF_ID),
+        );
     }
     // The Steam Controller's rows (docs/input/steam-controller.md) sit with
     // the controller and speaker options.
@@ -159,8 +188,16 @@ pub fn model(store: Arc<Store>, on: Switches) -> Result<Model, String> {
             )
             .row(Row::setting(AIM_ASSIST.key));
     }
+    // The superbounce fall assist, opt in (docs/game/superbounce.md, "Hold
+    // X: the fall assist"): a press turns it on or off.
+    if on.fall_assist_row {
+        controls = controls.row(
+            Row::setting(SUPERBOUNCE_FALL_ASSIST.key)
+                .bool_ids(speaker_row::ON_ID, speaker_row::OFF_ID),
+        );
+    }
     let settings = ui::extend(List::Settings, SETTINGS_ROWS).row(Row::open(SCREEN));
-    // The Voice screen opens from pause Settings and Edit Profile.
+    // The Voice screen opens from Player Settings and Edit Profile.
     let mut voice = Screen::new(VOICE_SCREEN).title("Voice");
     if on.voice_screen {
         voice = voice.rows_from_settings(&store.defs());
@@ -172,6 +209,7 @@ pub fn model(store: Arc<Store>, on: Switches) -> Result<Model, String> {
         extensions,
         vec![MODEL_IDS, MORE_MODEL_IDS],
     )
+    .map(|m| m.with_native_size(native))
 }
 
 /// The Voice screen's id and list.
@@ -230,7 +268,7 @@ pub fn text_row<M: Gm>(m: &M, esp: u32) -> Option<i16> {
 mod tests {
     use super::*;
     use crate::layout_glue::{chosen_row, is_ours};
-    use crate::setting_defs::{ALL, FPS, LIGHTING, PAD_MUTE, RENDER_SCALE};
+    use crate::setting_defs::{ALL, FPS, LIGHTING, PAD_MUTE};
     use crate::ui::{Chosen, RowKind};
     use settings::Value;
     use std::collections::BTreeMap;
@@ -312,8 +350,10 @@ mod tests {
             [
                 RowKind::Setting(FOV.key),
                 RowKind::Setting(FPS.key),
-                RowKind::Setting(RENDER_SCALE.key),
+                RowKind::Setting(RESOLUTION.key),
                 RowKind::Setting(LIGHTING.key),
+                RowKind::Setting(HUD_POSITION.key),
+                RowKind::Setting(LOD_DISTANCE.key),
             ]
         );
         let store = || Arc::new(Store::defaults(ALL));
@@ -325,9 +365,9 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(no_fov.rows(LIST).len(), 3);
+        assert_eq!(no_fov.rows(LIST).len(), 5);
         assert_eq!(m.count(List::Settings, SETTINGS_ROWS), 3);
-        assert_eq!(m.count(List::Controls, 6), 10, "the speaker's and Steam's");
+        assert_eq!(m.count(List::Controls, 6), 12);
         // No Video screen: no Video row on Settings either.
         let none = model(
             store(),
@@ -338,16 +378,18 @@ mod tests {
         )
         .unwrap();
         assert!(none.rows(LIST).is_empty());
-        assert_eq!(none.count(List::Controls, 6), 10);
+        assert_eq!(none.count(List::Controls, 6), 12);
         assert_eq!(none.count(List::Settings, SETTINGS_ROWS), 2);
         let bare = model(
             store(),
             Switches {
                 video_screen: false,
                 speaker_row: false,
+                lightbar_row: false,
                 steam_rows: false,
                 touch_rows: false,
                 fov_row: true,
+                fall_assist_row: false,
                 voice_screen: true,
             },
         )
@@ -360,6 +402,7 @@ mod tests {
     #[test]
     fn the_touch_rows_take_the_steam_rows_place_on_ios() {
         let ios = Switches {
+            lightbar_row: false,
             steam_rows: false,
             touch_rows: true,
             ..Switches::ALL
@@ -367,8 +410,8 @@ mod tests {
         let m = model(Arc::new(Store::defaults(ALL)), ios).unwrap();
         assert_eq!(
             m.count(List::Controls, 6),
-            13,
-            "the speaker's and the touch rows"
+            14,
+            "the speaker's, the touch rows and Fall Assist"
         );
         assert_eq!(drawn(&m, List::Controls, 7), s("Touch Look Speed", "5"));
         assert_eq!(drawn(&m, List::Controls, 8), s("Touch Crouch", "Toggle"));
@@ -382,7 +425,11 @@ mod tests {
             Chosen::Stepped("controls.aim_assist: default".into())
         );
         assert_eq!(drawn(&m, List::Controls, 12), s("Aim Assist", "Default"));
-        assert_eq!(drawn(&m, List::Controls, 13), None);
+        assert_eq!(
+            drawn(&m, List::Controls, 13).map(|(label, _)| label).as_deref(),
+            Some("Fall Assist")
+        );
+        assert_eq!(drawn(&m, List::Controls, 14), None);
         let desktop = all();
         assert_eq!(desktop.index_of(List::Controls, &RowKind::Setting(AIM_ASSIST.key)), None);
         let platform = model(Arc::new(Store::defaults(ALL)), Switches::PLATFORM).unwrap();
@@ -398,7 +445,13 @@ mod tests {
         if cfg!(target_os = "ios") {
             assert_eq!(Switches::PLATFORM, ios);
         } else {
-            assert_eq!(Switches::PLATFORM, Switches::ALL);
+            assert_eq!(
+                Switches::PLATFORM,
+                Switches {
+                    lightbar_row: cfg!(target_os = "macos"),
+                    ..Switches::ALL
+                }
+            );
         }
     }
 
@@ -407,7 +460,7 @@ mod tests {
         let m = all();
         assert_eq!(m.index_of(List::Settings, &RowKind::Open(SCREEN)), Some(2));
         assert_eq!(m.index_of(List::Controls, &RowKind::Open(SCREEN)), None);
-        assert_eq!(drawn(&m, List::Settings, 2), s("Video", ""));
+        assert_eq!(drawn(&m, List::Settings, 2), s("Video Settings", ""));
         assert_eq!(
             drawn(&m, List::Controls, 6),
             s("Controller Speaker", "0x2000181")
@@ -416,12 +469,16 @@ mod tests {
             assert_eq!(drawn(&m, List::Settings, r), None, "{r}");
         }
         assert_eq!(
-            drawn(&m, List::Controls, 7),
+            drawn(&m, List::Controls, 8),
             s("Steam Pad Speaker", "0x2000181")
         );
-        assert_eq!(drawn(&m, List::Controls, 8), s("Trackpad Aim", "5"));
-        assert_eq!(drawn(&m, List::Controls, 9), s("Left Trackpad", "D-Pad"));
-        assert_eq!(drawn(&m, List::Controls, 10), None);
+        assert_eq!(drawn(&m, List::Controls, 9), s("Trackpad Aim", "5"));
+        assert_eq!(drawn(&m, List::Controls, 10), s("Left Trackpad", "D-Pad"));
+        assert_eq!(
+            drawn(&m, List::Controls, 11).map(|(label, _)| label).as_deref(),
+            Some("Fall Assist")
+        );
+        assert_eq!(drawn(&m, List::Controls, 12), None);
         // The Settings row text draws one text: the label, in slot 0.
         let title = m.title_id(SCREEN).unwrap();
         assert_eq!(settings_text(&m, Some(2)), Some((0, title)));
@@ -442,10 +499,10 @@ mod tests {
             no_speaker.index_of(List::Settings, &RowKind::Open(SCREEN)),
             Some(2)
         );
-        assert_eq!(no_speaker.count(List::Controls, 6), 9, "Steam's rows only");
+        assert_eq!(no_speaker.count(List::Controls, 6), 11, "Steam, Lightbar and Fall Assist");
         assert_eq!(
             no_speaker.index_of(List::Controls, &RowKind::Setting(STEAM_SPEAKER.key)),
-            Some(6)
+            Some(7)
         );
         let no_steam = model(
             Arc::new(Store::defaults(ALL)),
@@ -455,7 +512,42 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(no_steam.count(List::Controls, 6), 7, "the speaker row only");
+        assert_eq!(no_steam.count(List::Controls, 6), 9, "Speaker, Lightbar and Fall Assist");
+    }
+
+    /// The superbounce fall assist is off until the player turns it on
+    /// from its Controls row.
+    #[test]
+    fn the_fall_assist_row_turns_the_assist_on_and_off() {
+        let store = Arc::new(Store::defaults(ALL));
+        let on = store.handle::<bool>(SUPERBOUNCE_FALL_ASSIST.key);
+        let m = model(Arc::clone(&store), Switches::ALL).unwrap();
+        let row = m
+            .index_of(
+                List::Controls,
+                &RowKind::Setting(SUPERBOUNCE_FALL_ASSIST.key),
+            )
+            .expect("a Fall Assist row");
+        assert!(!on.get(), "off by default");
+        assert!(matches!(press(&m, List::Controls, row), Chosen::Stepped(_)));
+        assert!(on.get());
+        press(&m, List::Controls, row);
+        assert!(!on.get());
+        let without = model(
+            store,
+            Switches {
+                fall_assist_row: false,
+                ..Switches::ALL
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            without.index_of(
+                List::Controls,
+                &RowKind::Setting(SUPERBOUNCE_FALL_ASSIST.key)
+            ),
+            None
+        );
     }
 
     #[test]
@@ -481,7 +573,7 @@ mod tests {
     #[test]
     fn the_controls_list_grows_by_our_rows() {
         let m = all();
-        assert_eq!(list_count(&m, speaker_row::LIST_NAME, 6), 10);
+        assert_eq!(list_count(&m, speaker_row::LIST_NAME, 6), 12);
         assert_eq!(list_count(&m, speaker_row::LIST_NAME, 4), 4);
         assert_eq!(list_count(&m, crate::layout_glue::LIST_NAME, 6), 6);
         assert_eq!(list_count(&m, 0x1234, 6), 6);
@@ -509,9 +601,14 @@ mod tests {
         let m = all();
         assert_eq!(drawn(&m, LIST, 0), s("Field of View", "70"));
         assert_eq!(drawn(&m, LIST, 1), s("Frame Rate", "30"));
-        assert_eq!(drawn(&m, LIST, 2), s("Resolution", "640x480"));
+        assert_eq!(
+            m.line(m.row(LIST, 2).unwrap()),
+            "Resolution: Native (640x480)"
+        );
         assert_eq!(drawn(&m, LIST, 3), s("Lighting", "Retail"));
-        assert_eq!(drawn(&m, LIST, 4), None);
+        assert_eq!(drawn(&m, LIST, 4), s("HUD Position", "Pinned"));
+        assert_eq!(drawn(&m, LIST, 5), s("LOD Distance", "1x"));
+        assert_eq!(drawn(&m, LIST, 6), None);
         assert_eq!(drawn(&m, LIST, -1), None);
     }
 
@@ -539,12 +636,12 @@ mod tests {
         let store = Arc::new(Store::load(ALL, Some(&path), &|_| None, &[]).0);
         let fov = store.handle::<u32>(FOV.key);
         let fps = store.handle::<u32>(FPS.key);
-        let scale = store.handle::<u32>(RENDER_SCALE.key);
+        let resolution = store.handle::<settings::Resolution>(RESOLUTION.key);
         let mute = store.handle::<bool>(PAD_MUTE.key);
         let lighting = store.handle::<u32>(LIGHTING.key);
         // What the window, the view backend and the HID thread are told.
         let told = Arc::new(std::sync::Mutex::new(Vec::new()));
-        for key in [FPS.key, RENDER_SCALE.key, LIGHTING.key, PAD_MUTE.key] {
+        for key in [FPS.key, RESOLUTION.key, LIGHTING.key, PAD_MUTE.key] {
             let told = Arc::clone(&told);
             store.on_change(key, move |v| told.lock().unwrap().push((key, *v)));
         }
@@ -567,9 +664,20 @@ mod tests {
         );
         assert_eq!(drawn(&m, LIST, 0), s("Field of View", "75"));
         assert_eq!(fov.get(), 75, "applies at once");
-        press(&m, LIST, 2);
-        assert_eq!(drawn(&m, LIST, 2), s("Resolution", "1280x960"));
-        assert_eq!(scale.get(), 2, "applies at once");
+        use crate::ui_kit::picker;
+        assert_eq!(press(&m, LIST, 2), Chosen::Open(picker::NAME));
+        let pick = picker::current().unwrap();
+        assert_eq!(pick.values, ["Native (640x480)", "640x480"]);
+        assert_eq!(pick.current, 0);
+        (pick.set)(1);
+        assert_eq!(m.line(m.row(LIST, 2).unwrap()), "Resolution: 640x480");
+        assert_eq!(resolution.get(), settings::Resolution::Fixed(640, 480));
+        assert_eq!(press(&m, LIST, 4), Chosen::Open(picker::NAME));
+        let pick = picker::current().unwrap();
+        assert_eq!(pick.values, ["Centered", "Pinned"]);
+        assert_eq!(pick.current, 1);
+        (pick.set)(0);
+        assert_eq!(drawn(&m, LIST, 4), s("HUD Position", "Centered"));
         assert_eq!(press(&m, List::Settings, 2), Chosen::Open(SCREEN));
         assert_eq!(
             drawn(&m, List::Controls, 6),
@@ -582,14 +690,14 @@ mod tests {
         );
         // The Steam Controller's rows step and save like the speaker's.
         assert_eq!(
-            press(&m, List::Controls, 7),
+            press(&m, List::Controls, 8),
             Chosen::Stepped("steam_pad.speaker: false".into())
         );
-        assert_eq!(drawn(&m, List::Controls, 8), s("Trackpad Aim", "5"));
-        press(&m, List::Controls, 8);
-        assert_eq!(drawn(&m, List::Controls, 8), s("Trackpad Aim", "6"));
+        assert_eq!(drawn(&m, List::Controls, 9), s("Trackpad Aim", "5"));
         press(&m, List::Controls, 9);
-        assert_eq!(drawn(&m, List::Controls, 9), s("Left Trackpad", "Stick"));
+        assert_eq!(drawn(&m, List::Controls, 9), s("Trackpad Aim", "6"));
+        press(&m, List::Controls, 10);
+        assert_eq!(drawn(&m, List::Controls, 10), s("Left Trackpad", "Stick"));
         assert_eq!(
             press(&m, LIST, 3),
             Chosen::Stepped("graphics.lighting: e3".into())
@@ -614,7 +722,10 @@ mod tests {
                 (FPS.key, Value::Int(120)),
                 (FPS.key, Value::Int(0)),
                 (FPS.key, Value::Int(30)),
-                (RENDER_SCALE.key, Value::Int(2)),
+                (
+                    RESOLUTION.key,
+                    settings::Resolution::Fixed(640, 480).value()
+                ),
                 (LIGHTING.key, Value::Int(1)),
                 (PAD_MUTE.key, Value::Bool(false)),
             ]
@@ -622,12 +733,12 @@ mod tests {
         // Rows past ours, or no row, are not ours.
         assert_eq!(press(&m, LIST, 7), Chosen::Nothing);
         assert_eq!(press(&m, List::Controls, 5), Chosen::Nothing);
-        assert_eq!(press(&m, List::Controls, 10), Chosen::Nothing);
+        assert_eq!(press(&m, List::Controls, 12), Chosen::Nothing);
         // Saved as the old code saved them; other keys kept.
         let t: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
         assert_eq!(t["graphics"]["fov"].as_integer(), Some(75));
         assert_eq!(t["graphics"]["fps"].as_integer(), Some(30));
-        assert_eq!(t["graphics"]["render_scale"].as_integer(), Some(2));
+        assert_eq!(t["graphics"]["resolution"].as_str(), Some("640x480"));
         assert_eq!(t["graphics"]["lighting"].as_str(), Some("e3"));
         assert_eq!(t["pad_speaker"]["enabled"].as_bool(), Some(true));
         assert_eq!(t["pad"]["mute_button"].as_bool(), Some(false));
@@ -635,8 +746,67 @@ mod tests {
         assert_eq!(t["steam_pad"]["sensitivity"].as_integer(), Some(6));
         assert_eq!(t["steam_pad"]["left_pad"].as_str(), Some("stick"));
         let next = Store::load(ALL, Some(&path), &|_| None, &[]).0;
-        assert_eq!(next.get(RENDER_SCALE.key), Some(Value::Int(2)));
+        assert_eq!(
+            next.get(RESOLUTION.key),
+            Some(settings::Resolution::Fixed(640, 480).value())
+        );
+        assert_eq!(next.get(HUD_POSITION.key), Some(Value::Int(0)));
         assert_eq!(next.get(LIGHTING.key), Some(Value::Int(1)));
+    }
+
+    #[test]
+    fn native_follows_a_resize_and_an_open_pick_keeps_its_values() {
+        use crate::ui_kit::picker;
+        let dims = Arc::new(std::sync::Mutex::new((5120, 2880)));
+        let read = Arc::clone(&dims);
+        let m = model_with_native_size(
+            Arc::new(Store::defaults(ALL)),
+            Switches::ALL,
+            Arc::new(move || *read.lock().unwrap()),
+        )
+        .unwrap();
+        let row = m.row(LIST, 2).unwrap();
+        let slot = m.texts(row)[1].1;
+        m.bind_resolution_slot(&[(slot, 0x8000)]);
+        let native = |w, h| resolution::label(settings::Resolution::Native, (w, h));
+        let studio = native(5120, 2880);
+        assert_eq!(m.resolution_write(), Some((0x8000, format!("{studio}\0").into_bytes())));
+        assert_eq!(m.line(row), format!("Resolution: {studio}"));
+        assert_eq!(m.press(row), Chosen::Open(picker::NAME));
+        let open = picker::current().unwrap();
+        *dims.lock().unwrap() = (2560, 1600);
+        assert_eq!(
+            m.resolution_write(),
+            Some((0x8000, b"Native (2560x1600)\0".to_vec()))
+        );
+        assert_eq!(m.line(row), "Resolution: Native (2560x1600)");
+        (open.set)(2);
+        assert_eq!(m.line(row), "Resolution: 1920x1080");
+        assert_eq!(m.press(row), Chosen::Open(picker::NAME));
+        let next = picker::current().unwrap();
+        assert_eq!(next.values[0], "Native (2560x1600)");
+        assert_eq!(next.values[next.current], "1920x1080");
+    }
+
+    #[test]
+    fn lod_distance_opens_a_picker_and_only_a_selection_changes_it() {
+        use crate::ui_kit::picker;
+        let m = all();
+        let row = m.index_of(LIST, &RowKind::Setting(LOD_DISTANCE.key)).unwrap();
+        let lod = m.store().handle::<u32>(LOD_DISTANCE.key);
+        assert_eq!(press(&m, LIST, row), Chosen::Open(picker::NAME));
+        let pick = picker::current().unwrap();
+        assert_eq!(pick.values, ["Retail", "0.5x", "1x", "1.5x", "2x", "3x", "4x"]);
+        assert_eq!(pick.values[pick.current], "1x");
+        assert_eq!(lod.get(), 2, "opening leaves the current value alone");
+        (pick.set)(3);
+        assert_eq!(lod.get(), 3);
+        assert_eq!(drawn(&m, LIST, row), s("LOD Distance", "1.5x"));
+        assert_eq!(press(&m, LIST, row), Chosen::Open(picker::NAME));
+        assert_eq!(picker::current().unwrap().current, 3);
+        m.store().force(LOD_DISTANCE.key, Value::Int(8), "locked").unwrap();
+        assert!(matches!(press(&m, LIST, row), Chosen::Stepped(_)));
+        assert_eq!(drawn(&m, LIST, row), s("LOD Distance", "4x"));
     }
 
     #[test]
@@ -657,12 +827,12 @@ mod tests {
         let all = m.strings();
         let text = |t: &str| all.iter().any(|(_, s)| s == t);
         for t in [
-            "Video",
+            "Video Settings",
             "Uncapped",
             "60",
-            "640x480",
-            "2560x1920",
-            "3840x2880",
+            "HUD Position",
+            "Centered",
+            "Pinned",
             "Off",
             "150",
             "30",
@@ -677,7 +847,7 @@ mod tests {
         let mut ids: Vec<u32> = all.iter().map(|(i, _)| *i).collect();
         assert!(ids.iter().all(|i| is_ours(*i) && is_model_id(*i)));
         ids.extend(
-            crate::layout_glue::served_strings(true)
+            crate::layout_glue::served_strings(true, true)
                 .iter()
                 .map(|(i, _)| *i),
         );

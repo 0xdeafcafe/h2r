@@ -1,0 +1,4 @@
+.dk-screenshot-list { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.dk-screenshot-list li { display: grid; gap: 8px; padding: 12px; background: var(--well); border: 1px solid var(--grid); }
+.dk-screenshot-list p { margin: 0; overflow-wrap: anywhere; }
+.dk-screenshot-list img { display: block; max-width: 100%; max-height: 65vh; width: auto; height: auto; }

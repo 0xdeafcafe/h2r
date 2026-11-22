@@ -1,6 +1,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::Path;
+use std::time::Instant;
 
 use live_proto::game::Frame;
 use serde::Serialize;
@@ -19,6 +20,10 @@ pub trait Sink: Send + 'static {
     fn flush(&mut self) -> Result<(), String> {
         Ok(())
     }
+    /// When buffered output needs a flush even if the game sends no work.
+    fn flush_deadline(&self) -> Option<Instant> {
+        None
+    }
     fn finish_sim(&mut self, _report: serde_json::Value) -> Result<(), String> {
         Err("this telemetry sink does not upload simulation reports".into())
     }
@@ -33,6 +38,9 @@ impl Sink for Box<dyn Sink> {
     }
     fn flush(&mut self) -> Result<(), String> {
         (**self).flush()
+    }
+    fn flush_deadline(&self) -> Option<Instant> {
+        (**self).flush_deadline()
     }
     fn finish_sim(&mut self, report: serde_json::Value) -> Result<(), String> {
         (**self).finish_sim(report)

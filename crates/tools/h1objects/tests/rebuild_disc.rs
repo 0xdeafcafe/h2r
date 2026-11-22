@@ -192,9 +192,9 @@ fn read_back(tree: &Tree, c: &Converted, name: &str) -> Record {
 }
 
 fn word(r: &Record, path: &str) -> u32 {
-    match r.at(path) {
-        Some(Val::Bytes(b)) if b.len() == 4 => u32::from_le_bytes(b[..4].try_into().unwrap()),
-        x => panic!("{path}: {x:?}"),
+    match r.bytes(path, 4) {
+        Some(b) => u32::from_le_bytes(b[..4].try_into().unwrap()),
+        None => panic!("{path}: no 4 plain bytes"),
     }
 }
 
@@ -245,7 +245,7 @@ fn every_scenery_rebuilds_from_its_definition() {
                     Some(&Val::floats(&obj.bounding_offset)),
                     "{name}"
                 );
-                assert_eq!(word(&r, "object.unknown_6c"), 0, "{name}");
+                assert_eq!(word(&r, "object.apply_collision_damage_scale"), 0, "{name}");
                 assert_eq!(
                     r.at("object.widgets"),
                     Some(&Val::Block(Vec::new())),
@@ -299,7 +299,7 @@ fn every_scenery_rebuilds_from_its_definition() {
                         .sum();
                     let got: usize = (0..4)
                         .map(
-                            |k| match r.at(&format!("object.change_colors[{k}].block_0")) {
+                            |k| match r.at(&format!("object.change_colors[{k}].initial_permutations")) {
                                 Some(Val::Block(b)) => b.len(),
                                 _ => 0,
                             },
@@ -372,14 +372,14 @@ fn every_scenery_rebuilds_from_its_definition() {
                     panic!("{name}: predicted")
                 };
                 assert!(!pred.is_empty(), "{name}: predicts its model");
-                assert_eq!(word(&pred[0], "unknown_0"), 0xffff_0002, "{name}");
+                assert_eq!(word(&pred[0], "type"), 0xffff_0002, "{name}");
                 assert_eq!(
                     pred[0].at("tag"),
                     Some(&Val::Datum(Target::Id(mode))),
                     "{name}"
                 );
                 for p in &pred[1..] {
-                    assert_eq!(word(p, "unknown_0"), 0, "{name}");
+                    assert_eq!(word(p, "type"), 0, "{name}");
                     let Some(Val::Datum(Target::Id(b))) = p.at("tag") else {
                         panic!("{name}: predicted bitmap")
                     };

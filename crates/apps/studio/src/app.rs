@@ -4,15 +4,21 @@
 //! guard. The Dear ImGui layer (`ui`) turns
 //! clicks and shortcuts into [`Action`]s and draws this state; tests drive
 //! it directly.
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+pub mod audition;
 pub mod commands;
 pub(crate) mod convert;
 pub mod hud;
 mod editing;
 mod library;
+mod navigation;
 pub mod map_cards;
 pub mod map_pack;
+pub mod modeling;
+pub mod rules_edit;
+pub mod scripts;
 pub mod shared_refs;
 pub mod tag_api;
 pub mod tag_browse;
@@ -28,11 +34,15 @@ pub use convert::{
 pub use h1convert::convert::Sandbox as ConvertSandbox;
 pub use library::{Compare, block_of, kind_of, markers as library_markers, tris as library_tris};
 pub use hud::HudTool;
+pub use scripts::{ScriptAction, ScriptsTool};
+pub use navigation::{NavAction, NavHistory, NavLocation};
 pub use tag_doc::{BlockOp, TagAction, TagDoc, TagWrite};
 pub use ui_screens::{Pick, UiScreens};
 
+use editor_core::map_groups::MapGroup;
 use editor_core::{MapPack, MapSource, Status, variant_sources};
 use hopper_edit::HopperSession;
+use scenario_edit::layers::{LayerId, Layers};
 use scenario_edit::{BlockKind, MapSource as EditSource, PackageForm, Session};
 use variants::panel::Origin;
 use variants::{GameType, GameVariant, SettingId, VariantEditor};
@@ -54,12 +64,16 @@ pub enum ToolKind {
     Hud,
     /// Every field of every tag of the open map (docs/editor/editor.md).
     Tags,
+    /// The open map's scripts as source, read only
+    /// (docs/editor/rich-editors.md, "Scripts").
+    Scripts,
 }
 
 impl ToolKind {
-    pub const ALL: [ToolKind; 6] = [
+    pub const ALL: [ToolKind; 7] = [
         ToolKind::Scenario,
         ToolKind::Tags,
+        ToolKind::Scripts,
         ToolKind::Variants,
         ToolKind::Playlists,
         ToolKind::UiScreens,
@@ -73,8 +87,34 @@ impl ToolKind {
             ToolKind::UiScreens => "UI Screens",
             ToolKind::Hud => "HUD",
             ToolKind::Tags => "Tags",
+            ToolKind::Scripts => "Scripts",
         }
     }
+}
+
+/// The inspected document and subject, including placement changes made by undo.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SelectionRevision {
+    world: u64,
+    primary: Option<(BlockKind, usize)>,
+    volume: Option<usize>,
+    navigation: u64,
+}
+
+/// The primary subject of the scenario inspector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Selection {
+    Placement(BlockKind, usize),
+    Tag(map::TagId),
+}
+
+/// Where Save writes the map, or what it asks for first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SaveTarget {
+    File(PathBuf),
+    Package(PathBuf),
+    PackageForm { name: String },
+    Nothing,
 }
 
 /// One user command. Everything the menus, toolbar, outliner and keyboard
@@ -85,6 +125,8 @@ pub enum Action {
     OpenSource(PathBuf),
     /// Open a map from the source's list.
     SelectMap(String),
+    /// Save the map to its current destination or open the package form.
+    Save,
     /// Write the edited map as a new `.map` file.
     SaveMapAs(PathBuf),
     /// Save the edits as a map package under the data root.
@@ -103,6 +145,9 @@ pub enum Action {
     SelectHalo1Map(String),
     /// Draw a converted map's Halo 1 source over it.
     SetOverlay(bool),
+    SetLayers(Layers),
+    /// The viewport's Lighting mode (docs/editor/polish-plan.md, P14).
+    SetLighting(scenario_edit::native_view::Lighting),
     /// Convert the Halo 1 map on show to Halo 2, in the background.
     ConvertHalo1(ConvertSandbox),
     /// The sandbox "Convert to Halo 2" uses.
@@ -152,6 +197,34 @@ pub enum Action {
         ypr: Option<[f32; 3]>,
     },
     Select(Option<(BlockKind, usize)>),
+    /// Select a trigger volume by index (clearing the placements), or none.
+    SelectVolume(Option<usize>),
+    /// Select a level collision surface by index (clearing the placements
+    /// and the volume), or none. Read only.
+    SelectSurface(Option<usize>),
+    /// The viewport gizmo's drag on the selected volume: its new box.
+    /// Every one until [`Action::EndGesture`] is one undo step.
+    VolumeGesture(scenario_edit::volumes::Frame),
+    /// Give a trigger volume a new box as one undo step; edits with the
+    /// same merge key in a row are one (an inspector drag).
+    SetVolumeFrame {
+        index: usize,
+        frame: scenario_edit::volumes::Frame,
+        merge: Option<u64>,
+    },
+    /// Add a trigger volume at `frame` (or a small box at the camera
+    /// focus); with `kill`, a kill trigger naming it in the same undo step
+    /// (Make a kill volume).
+    AddVolume {
+        frame: Option<scenario_edit::volumes::Frame>,
+        kill: bool,
+    },
+    /// Remove an entry of a volume block: a trigger volume or a kill
+    /// trigger.
+    RemoveVolume(scenario_edit::volumes::VolumeKind, usize),
+    Navigate(NavAction),
+    /// Open the Map workspace on the palette's tag or placement.
+    GoTo(Selection),
     /// Add a placement to the selection, or take it out (Ctrl/Cmd+click).
     ToggleSelect((BlockKind, usize)),
     /// Select these placements, the first as the primary (Shift+click in
@@ -171,7 +244,13 @@ pub enum Action {
     DuplicateEntry(BlockKind, usize),
     FrameAll,
     FocusSelected,
+    SetFlySpeed(f32),
     SetAllowGrowth(bool),
+    /// "Allow unverified geometry writes": while off, a save with
+    /// Modeling edits is refused (docs/editor/modeling.md).
+    SetAllowUnverifiedGeometry(bool),
+    /// A Modeling command: open, edit, undo a structure or model section.
+    Model(modeling::ModelAction),
     /// Show another tool.
     SetTool(ToolKind),
 
@@ -236,6 +315,10 @@ pub enum Action {
     // Tags.
     /// A tag editor command: select a tag, write a field, change a block.
     Tag(TagAction),
+    /// An inspector edit always targets the open map's tag document.
+    InspectorTag(TagAction),
+    /// Open a tag from a shared cache by group and name.
+    BrowseSharedTag(map::TagId),
     /// Show another map of the source in the Tags tool, read-only (a
     /// shared cache), or (`None`) the open map again.
     BrowseTags(Option<String>),
@@ -253,6 +336,11 @@ pub enum Action {
         path: PathBuf,
         options: tag_bundle::ImportOptions,
     },
+
+    // Scripts.
+    /// A Scripts tool command: show a definition, follow a link, name
+    /// builtins from a documentation listing.
+    Script(ScriptAction),
 
     // Playlists.
     /// Open a `multiplayer_hopper.dat` (either form).
@@ -320,8 +408,7 @@ impl Action {
 /// The answer to the unsaved-changes prompt.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Answer {
-    /// Save in place first (a variant to its save, a playlist file to its
-    /// path), then go on.
+    /// Save to the document's current destination, then go on.
     Save,
     /// Save the edited map or playlist file here first, then go on.
     SaveAs(PathBuf),
@@ -343,11 +430,13 @@ pub struct LogLine {
 pub struct App {
     source: Option<MapSource>,
     maps: Vec<String>,
+    h2_map_groups: HashMap<String, MapGroup>,
     /// The map loaded into the scenario session, by name.
     loaded: Option<String>,
-    /// The file the edited map was last saved to.
+    /// The current map's standalone output, if that was its last save.
     saved_path: Option<PathBuf>,
     pub tool: ToolKind,
+    fly_speed: f32,
     pub session: Session,
     /// The action held behind the unsaved-changes prompt, and the tool
     /// whose edits it would drop.
@@ -395,12 +484,15 @@ pub struct App {
     /// The open Halo 1 source and its maps.
     h1: Option<editor_core::halo1::H1Source>,
     h1_maps: Vec<String>,
+    h1_map_groups: HashMap<String, MapGroup>,
     /// The Halo 1 map shown read-only, and its name.
     h1_view: Option<editor_core::halo1::H1View>,
     h1_loaded: Option<String>,
     /// The open converted map's Halo 1 source.
     compare: Option<Compare>,
-    show_overlay: bool,
+    pub layers: Layers,
+    /// What the viewport's level shows: the Lighting menu's mode.
+    pub lighting: scenario_edit::native_view::Lighting,
     overlay_rev: u64,
     /// The conversion running, why the last one wrote nothing, and what
     /// runs it.
@@ -413,22 +505,34 @@ pub struct App {
     pub ui_screens: UiScreens,
     /// The HUD tool.
     pub hud: HudTool,
+    /// The Scripts tool: the open map's scripts, read.
+    pub scripts: ScriptsTool,
     /// Pairing with a running game: what the agent API asks of it and what
     /// it publishes back (`crate::play::pair`).
     pub pairing: crate::play::pair::Bridge,
     /// The tag editor's document over the open map.
     pub tags: TagDoc,
+    /// The Modeling tool: the open map's geometry session.
+    pub modeling: modeling::Modeling,
+    /// How the field panel shows unnamed fields, saved with the layout
+    /// (`fields::Settings`).
+    pub tag_fields: crate::fields::Settings,
     /// The selected tag's shared-map line, for the tag and revision.
     tag_homes: std::cell::RefCell<Option<(map::TagId, u64, Option<String>, Option<String>)>>,
     /// Another map of the source shown read-only in the Tags tool (a
     /// shared cache), beside the open map's document ([`Self::tags`]).
     pub(crate) tag_browse: Option<tag_browse::Browse>,
+    nav: NavHistory,
     /// The bitmap preview of the open map's document (the browsed map's
     /// is its own): the tag and the picture, or why there is none.
     tag_preview: Option<(map::TagId, Result<std::sync::Arc<map_pack::Picture>, String>)>,
     /// What the last tag export and import did, for the agent API.
     pub(crate) last_tag_export: Option<(PathBuf, tag_bundle::ExportReport)>,
     pub(crate) last_tag_import: Option<tag_bundle::ImportReport>,
+    /// Sound audition: the decoded sound, the audio output and what plays.
+    pub audition: audition::Audition,
+    /// The game type script editor (`rules_edit`).
+    pub rules: rules_edit::RulesEditor,
 }
 
 impl Default for App {
@@ -442,9 +546,11 @@ impl App {
         Self {
             source: None,
             maps: Vec::new(),
+            h2_map_groups: HashMap::new(),
             loaded: None,
             saved_path: None,
             tool: ToolKind::Scenario,
+            fly_speed: crate::camera::DEFAULT_SPEED,
             session: Session::new(),
             pending: None,
             variants: None,
@@ -470,10 +576,12 @@ impl App {
             pkg_cards: Default::default(),
             h1: None,
             h1_maps: Vec::new(),
+            h1_map_groups: HashMap::new(),
             h1_view: None,
             h1_loaded: None,
             compare: None,
-            show_overlay: true,
+            layers: Layers::default(),
+            lighting: Default::default(),
             overlay_rev: 0,
             convert: None,
             convert_error: None,
@@ -481,13 +589,19 @@ impl App {
             convert_sandbox: ConvertSandbox::Halo2,
             ui_screens: UiScreens::default(),
             hud: HudTool::default(),
+            scripts: ScriptsTool::default(),
             pairing: Default::default(),
             tags: TagDoc::default(),
+            modeling: Default::default(),
+            tag_fields: Default::default(),
             tag_homes: Default::default(),
             tag_browse: None,
+            nav: NavHistory::default(),
             tag_preview: None,
             last_tag_export: None,
             last_tag_import: None,
+            audition: Default::default(),
+            rules: Default::default(),
         }
     }
 
@@ -531,6 +645,22 @@ impl App {
     pub fn saved_path(&self) -> Option<&Path> {
         self.saved_path.as_deref()
     }
+    /// Decide from the open document's origin, without touching the filesystem.
+    pub fn save_target(&self) -> SaveTarget {
+        let Some(map) = self.session.map_name() else {
+            return SaveTarget::Nothing;
+        };
+        if let Some(path) = &self.saved_path {
+            SaveTarget::File(path.clone())
+        } else if let Some(dir) = self.session.package_dir() {
+            SaveTarget::Package(self.session.maps_dir().join(dir))
+        } else {
+            SaveTarget::PackageForm {
+                name: format!("{map} edit"),
+            }
+        }
+    }
+
     /// Any tool has unsaved edits.
     pub fn is_dirty(&self) -> bool {
         ToolKind::ALL.into_iter().any(|t| self.tool_dirty(t))
@@ -544,7 +674,7 @@ impl App {
             ToolKind::Hud => self.hud.is_dirty(),
             // The tag editor's edits are the map's: the scenario session
             // saves them and its dirty mark counts them.
-            ToolKind::UiScreens | ToolKind::Tags => false,
+            ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => false,
         }
     }
     /// The action waiting on the unsaved-changes prompt, if any.
@@ -562,24 +692,42 @@ impl App {
     /// The active tool can undo or redo.
     pub fn can_undo(&self) -> bool {
         match self.tool {
+            ToolKind::Scenario if self.modeling.session.active.is_some() => {
+                self.modeling.session.can_undo()
+            }
             ToolKind::Scenario => self.session.can_undo(),
             ToolKind::Variants => self.variants.as_ref().is_some_and(|e| e.can_undo()),
             ToolKind::Playlists => self.hoppers.can_undo(),
             ToolKind::UiScreens => false,
             ToolKind::Hud => self.hud.session.as_ref().is_some_and(|s| s.can_undo()),
             ToolKind::Tags => self.tags.can_undo(),
+            ToolKind::Scripts => false,
         }
     }
     pub fn can_redo(&self) -> bool {
         match self.tool {
+            ToolKind::Scenario if self.modeling.session.active.is_some() => {
+                self.modeling.session.can_redo()
+            }
             ToolKind::Scenario => self.session.can_redo(),
             ToolKind::Variants => self.variants.as_ref().is_some_and(|e| e.can_redo()),
             ToolKind::Playlists => self.hoppers.can_redo(),
             ToolKind::UiScreens => false,
             ToolKind::Hud => self.hud.session.as_ref().is_some_and(|s| s.can_redo()),
             ToolKind::Tags => self.tags.can_redo(),
+            ToolKind::Scripts => false,
         }
     }
+    pub fn fly_speed(&self) -> f32 {
+        self.fly_speed
+    }
+
+    pub(crate) fn set_fly_speed(&mut self, speed: f32) {
+        if speed.is_finite() {
+            self.fly_speed = speed.clamp(crate::camera::MIN_SPEED, crate::camera::MAX_SPEED);
+        }
+    }
+
     pub fn should_quit(&self) -> bool {
         self.quit
     }
@@ -591,9 +739,8 @@ impl App {
         self.log.last().map(|l| &l.status)
     }
 
-    /// The window title: what the active tool edits, a dirty mark, the
-    /// app.
-    pub fn title(&self) -> String {
+    /// The document name and its unsaved mark, shared by both title bars.
+    pub(crate) fn document_caption(&self) -> Option<String> {
         let what = match self.tool {
             ToolKind::Scenario => self.loaded.clone(),
             ToolKind::Variants => self
@@ -617,14 +764,19 @@ impl App {
                 format!("{} / {hud}", s.name)
             }),
             ToolKind::Tags => self.shown_map_name().map(str::to_owned),
+            ToolKind::Scripts => self.loaded.clone(),
         };
         // A browsed map is never dirty: the open map's mark is its own.
         let dirty = self.tool_dirty(self.tool)
             || (self.tool == ToolKind::Tags && self.browsing().is_none() && self.session.is_dirty());
-        match what {
-            Some(name) => format!("{name}{} - h2-editor", if dirty { " *" } else { "" }),
-            None => "h2-editor".to_owned(),
-        }
+        what.map(|name| if dirty { format!("{name} *") } else { name })
+    }
+
+    pub fn title(&self) -> String {
+        self.document_caption().map_or_else(
+            || "h2-editor".to_owned(),
+            |name| format!("{name} - h2-editor"),
+        )
     }
 
     pub fn info(&mut self, msg: impl Into<String>) {
@@ -684,18 +836,18 @@ impl App {
             Answer::Cancel => return,
             Answer::Discard => self.close_tool(tool),
             Answer::Save => match tool {
-                ToolKind::Scenario => self.error("save the map with Save as..."),
+                ToolKind::Scenario => self.run(Action::Save),
                 ToolKind::Variants => self.run(Action::SaveVariant),
                 ToolKind::Playlists => self.run(Action::SaveHopper),
                 ToolKind::Hud => self.error("save the HUD edits with Save as..."),
-                ToolKind::UiScreens | ToolKind::Tags => {}
+                ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => {}
             },
             Answer::SaveAs(path) => match tool {
                 ToolKind::Scenario => self.run(Action::SaveMapAs(path)),
                 ToolKind::Playlists => self.run(Action::SaveHopperAs(path)),
                 ToolKind::Variants => self.run(Action::SaveVariant),
                 ToolKind::Hud => self.run(Action::HudSaveAs(path)),
-                ToolKind::UiScreens | ToolKind::Tags => {}
+                ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => {}
             },
         }
         if self.tool_dirty(tool) {
@@ -712,6 +864,7 @@ impl App {
             ToolKind::Scenario => {
                 self.session.close();
                 self.loaded = None;
+                self.saved_path = None;
                 self.forget_library_state();
             }
             ToolKind::Variants => {
@@ -721,7 +874,7 @@ impl App {
             }
             ToolKind::Playlists => self.hoppers.close(),
             ToolKind::Hud => self.hud = HudTool::default(),
-            ToolKind::UiScreens | ToolKind::Tags => {}
+            ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => {}
         }
     }
 
@@ -733,6 +886,7 @@ impl App {
                 if self.loaded.as_deref() == Some(name.as_str())
                     && self.opened_package.is_none() => {}
             Action::SelectMap(name) => self.select_map(&name),
+            Action::Save => self.save_map(),
             Action::SaveMapAs(path) => {
                 if let Some(why) = self.save_refusal(&path) {
                     self.error(why);
@@ -746,17 +900,15 @@ impl App {
             Action::SavePackage(form) => {
                 let r = self.session.save_package(&form);
                 if self.session_result(r).is_some() {
-                    self.package_form = None;
-                    self.refresh_packages();
-                    if self.packages.iter().any(|e| e.key() == form.dir) {
-                        self.opened_package = Some(form.dir.clone());
-                    }
+                    self.package_saved();
                 }
             }
             Action::OpenPackageEntry(key) => self.open_package_entry(&key),
             Action::OpenMapPack(key) => self.open_pack_map(&key),
             Action::SelectHalo1Map(name) => self.select_halo1_map(&name),
-            Action::SetOverlay(on) => self.set_overlay(on),
+            Action::SetOverlay(on) => self.layers.set(LayerId::Halo1, on),
+            Action::SetLayers(layers) => self.layers = layers,
+            Action::SetLighting(lighting) => self.lighting = lighting,
             Action::ConvertHalo1(sandbox) => self.start_convert(sandbox),
             Action::SetConvertSandbox(sandbox) => {
                 self.convert_sandbox = sandbox;
@@ -764,7 +916,10 @@ impl App {
             }
             Action::OpenPackage(dir) => {
                 let r = self.session.open_package(&dir);
-                self.session_result(r);
+                if self.session_result(r).is_some() {
+                    self.saved_path = None;
+                    self.opened_package = Some(dir);
+                }
             }
             Action::Undo => self.undo_redo(self.tool, true),
             Action::Redo => self.undo_redo(self.tool, false),
@@ -801,15 +956,91 @@ impl App {
                 ypr,
             } => self.move_placement(block, index, position, ypr),
             Action::EditPlaylist(edit) => self.edit_playlist(edit),
-            Action::Select(sel) => self.session.select(sel),
-            Action::ToggleSelect(e) => self.session.toggle_select(e),
-            Action::SelectMany(all) => self.session.select_many(all),
+            Action::Select(sel) => {
+                let before = self.nav_location();
+                self.session.select(sel);
+                self.record_placement_selection(before);
+            }
+            Action::SelectVolume(index) => {
+                let count = self.session.volumes().map_or(0, |v| v.triggers.len());
+                if let Some(i) = index.filter(|&i| i >= count) {
+                    return self.error(format!("no trigger volume {i} (the map has {count})"));
+                }
+                let before = self.nav_location();
+                self.session.select_volume(index);
+                self.record_placement_selection(before);
+            }
+            Action::SelectSurface(index) => {
+                let count = self.session.collision().map_or(0, |c| c.surfaces.len());
+                if let Some(i) = index.filter(|&i| i >= count) {
+                    return self.error(format!("no collision surface {i} (the map has {count})"));
+                }
+                let before = self.nav_location();
+                self.session.select_surface(index);
+                self.record_placement_selection(before);
+            }
+            Action::VolumeGesture(frame) => {
+                if let Err(e) = self.session.volume_gesture(&frame) {
+                    self.error(e.to_string());
+                }
+            }
+            Action::SetVolumeFrame {
+                index,
+                frame,
+                merge,
+            } => {
+                let r = self.session.edit_volume_frame(index, &frame, merge);
+                self.ok_or_log(r);
+            }
+            Action::AddVolume { frame, kill } => {
+                let before = self.nav_location();
+                let r = if kill {
+                    self.session.make_kill_volume(frame)
+                } else {
+                    self.session.add_volume(frame)
+                };
+                if let Some(i) = self.ok_or_log(r) {
+                    let what = if kill {
+                        "kill volume"
+                    } else {
+                        "trigger volume"
+                    };
+                    self.info(format!("added {what} {i}"));
+                    self.record_placement_selection(before);
+                }
+            }
+            Action::RemoveVolume(kind, i) => {
+                let r = self.session.remove_volume(kind, i);
+                if self.ok_or_log(r).is_some() {
+                    self.info(format!("removed {} {i}", kind.noun()));
+                }
+            }
+            Action::ToggleSelect(e) => {
+                let before = self.nav_location();
+                self.session.toggle_select(e);
+                self.record_placement_selection(before);
+            }
+            Action::SelectMany(all) => {
+                let before = self.nav_location();
+                self.session.select_many(all);
+                self.record_placement_selection(before);
+            }
+            Action::Navigate(action) => {
+                if let Err(e) = self.navigate(action) {
+                    self.error(e);
+                }
+            }
+            Action::GoTo(selection) => self.go_to(selection),
             Action::PlaceAt(kind, like, at) => self.place_at(kind, like, at),
             Action::Delete if self.session.selection().len() > 1 => self.delete_selection(),
             Action::Duplicate if self.session.selection().len() > 1 => self.duplicate_selection(),
-            Action::Delete => match self.session.selected() {
-                Some((kind, i)) => self.run(Action::DeleteEntry(kind, i)),
-                None => self.error("select a placement to delete"),
+            Action::Delete => match (self.session.selected(), self.session.selected_volume()) {
+                (Some((kind, i)), _) => self.run(Action::DeleteEntry(kind, i)),
+                (None, Some(i)) => self.run(Action::RemoveVolume(
+                    scenario_edit::volumes::VolumeKind::Trigger,
+                    i,
+                )),
+                (None, None) => self.error("select a placement to delete"),
             },
             Action::Duplicate => match self.session.selected() {
                 Some((kind, i)) => self.run(Action::DuplicateEntry(kind, i)),
@@ -835,10 +1066,13 @@ impl App {
             }
             Action::FrameAll => self.session.frame_all(),
             Action::FocusSelected => self.frame_selection(),
+            Action::SetFlySpeed(speed) => self.set_fly_speed(speed),
             Action::SetAllowGrowth(allow) => {
                 self.session.set_allow_growth(allow);
                 self.tags.allow_growth = allow;
             }
+            Action::SetAllowUnverifiedGeometry(allow) => self.set_allow_unverified_geometry(allow),
+            Action::Model(a) => self.run_model(a),
             Action::SetTool(tool) => self.set_tool(tool),
             Action::Quit => self.quit = true,
             Action::UiPick(pick) => {
@@ -889,6 +1123,12 @@ impl App {
             }
             Action::HudRefused(why) => self.error(why),
             Action::Tag(a) => self.run_tag(a),
+            Action::Script(a) => self.run_script(a),
+            Action::InspectorTag(action) => {
+                self.sync_tags();
+                self.run_map_tag(action);
+            }
+            Action::BrowseSharedTag(tag) => self.browse_shared_tag(tag),
             Action::BrowseTags(name) => self.browse_tags(name.as_deref()),
             Action::TagPreview(id) => self.preview_tag(id),
             Action::TagExport { tags, out, options } => {
@@ -962,6 +1202,14 @@ impl App {
     }
 
     fn undo_redo(&mut self, tool: ToolKind, undo: bool) {
+        // A target in edit mode takes the map's undo (docs/editor/modeling.md).
+        if tool == ToolKind::Scenario && self.modeling.session.active.is_some() {
+            return self.run_model(if undo {
+                modeling::ModelAction::Undo
+            } else {
+                modeling::ModelAction::Redo
+            });
+        }
         let done = match tool {
             ToolKind::Scenario => {
                 let done = if undo {
@@ -986,7 +1234,7 @@ impl App {
                     self.hoppers.redo()
                 }
             }
-            ToolKind::UiScreens => false,
+            ToolKind::UiScreens | ToolKind::Scripts => false,
             ToolKind::Hud => self.hud_undo_redo(undo),
             ToolKind::Tags => {
                 self.sync_tags();
@@ -1022,12 +1270,19 @@ impl App {
             ToolKind::UiScreens => self.sync_ui_disc(),
             ToolKind::Hud => {}
             ToolKind::Tags => self.sync_tags(),
+            ToolKind::Scripts => self.sync_scripts(),
         }
+    }
+
+    /// The Scenario inspector's placement or tag selection.
+    pub fn selection(&self) -> Option<Selection> {
+        self.nav_location().selection()
     }
 
     /// Load the tag editor's document from the open map when the session
     /// opened another one since (its edits went with that map).
     pub fn sync_tags(&mut self) {
+        let _scope = mem_watch::scope("assets.tag_load");
         self.tags.allow_growth = self.session.allow_growth();
         let rev = Some(self.session.world_rev());
         if self.tags.for_rev == rev && self.tags.is_open() == self.session.is_open() {
@@ -1062,6 +1317,8 @@ impl App {
         }
         let r = self.session.set_tag_patches(self.tags.patches());
         self.ok_or_log(r);
+        let r = self.session.set_bsp_patches(self.tags.bsp_patches());
+        self.ok_or_log(r);
         let r = self.session.set_tag_grown(self.tags.grown());
         self.ok_or_log(r);
         let r = self
@@ -1088,6 +1345,10 @@ impl App {
             }
             return;
         }
+        self.run_map_tag(action);
+    }
+
+    pub(crate) fn run_map_tag(&mut self, action: TagAction) {
         let r = match action {
             TagAction::Select(id) => {
                 if self.tags.tag(id).is_some() {
@@ -1110,6 +1371,16 @@ impl App {
                 text,
                 label,
             } => self.tags.set_string(tag, address, &text, &label),
+            TagAction::ResizeData {
+                tag,
+                element,
+                layout,
+                field,
+                bytes,
+                label,
+            } => self
+                .tags
+                .resize_data(tag, element, &layout, field, &bytes, &label),
             TagAction::Seal => {
                 self.tags.seal();
                 Ok(())
@@ -1301,6 +1572,7 @@ impl App {
     }
 
     fn open_source(&mut self, path: &Path) {
+        let _scope = mem_watch::scope("studio.map");
         // The Map Pack is told by its contents. It joins the open source
         // rather than replacing it: its maps need the Halo 2 disc's caches.
         if self.try_open_mappack(path) {
@@ -1312,6 +1584,7 @@ impl App {
         match MapSource::open(path) {
             Ok(source) => {
                 self.maps = source.map_names();
+                self.h2_map_groups = source.map_groups();
                 self.info(format!(
                     "opened {} ({} maps)",
                     path.display(),
@@ -1336,6 +1609,7 @@ impl App {
                     ToolKind::UiScreens => self.sync_ui_disc(),
                     ToolKind::Scenario | ToolKind::Hud => {}
                     ToolKind::Tags => self.sync_tags(),
+                    ToolKind::Scripts => self.sync_scripts(),
                 }
             }
             Err(e) => self.error(format!("{}: {e:#}", path.display())),
@@ -1343,6 +1617,7 @@ impl App {
     }
 
     fn select_map(&mut self, name: &str) {
+        let _scope = mem_watch::scope("studio.map");
         if self.select_shared_cache(name) {
             return;
         }
@@ -1394,6 +1669,70 @@ impl App {
         }
     }
 
+    fn save_map(&mut self) {
+        match self.save_target() {
+            SaveTarget::File(path) => {
+                if let Some(why) = Self::map_output_refusal(&path) {
+                    return self.error(why);
+                }
+                self.run(Action::SaveMapAs(path));
+            }
+            SaveTarget::Package(dir) => {
+                if let Some(why) = Self::map_output_refusal(&dir.join("manifest.toml")) {
+                    return self.error(why);
+                }
+                let r = self.session.rewrite_package();
+                if self.session_result(r).is_some() {
+                    self.package_saved();
+                }
+            }
+            SaveTarget::PackageForm { name } => {
+                let map = self
+                    .session
+                    .map_name()
+                    .expect("a package form needs an open map");
+                let form = PackageForm {
+                    dir: PackageForm::default_dir(map, "edit"),
+                    name,
+                    ..PackageForm::default()
+                };
+                self.show_package_form(form);
+            }
+            SaveTarget::Nothing => self.error("open an editable map first"),
+        }
+    }
+
+    fn package_saved(&mut self) {
+        self.saved_path = None;
+        self.package_form = None;
+        self.refresh_packages();
+        let dir = self
+            .session
+            .package_dir()
+            .expect("the saved package has a directory");
+        self.opened_package = self
+            .packages
+            .iter()
+            .any(|e| e.key() == dir)
+            .then(|| dir.to_owned());
+    }
+
+    fn map_output_refusal(path: &Path) -> Option<String> {
+        let dir = path
+            .parent()
+            .filter(|d| !d.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let repo = ui_screens::git_checkout(dir).or_else(|| {
+            let real_dir = dir.canonicalize().ok()?;
+            ui_screens::git_checkout(&real_dir)
+        })?;
+        Some(format!(
+            "save refused: {} is inside {}",
+            path.display(),
+            repo.display()
+        ))
+    }
+
     /// The default file name for "Save map as": the last save, else
     /// `<map>.map`.
     pub fn suggested_save_name(&self) -> String {
@@ -1411,16 +1750,24 @@ impl App {
     /// Open the "Save as package" form with its defaults.
     pub fn open_package_form(&mut self) {
         if self.session.is_open() {
-            self.package_form = Some(self.session.form_defaults());
-            self.package_image.clear();
+            self.show_package_form(self.session.form_defaults());
         } else {
             self.error("open a map first");
         }
+    }
+
+    fn show_package_form(&mut self, form: PackageForm) {
+        self.package_form = Some(form);
+        self.package_image.clear();
     }
 }
 
 #[cfg(test)]
 pub(crate) mod tag_tests;
+#[cfg(test)]
+mod tag_data_tests;
+#[cfg(test)]
+mod audition_tests;
 #[cfg(test)]
 pub(crate) mod map_cards_tests;
 #[cfg(test)]

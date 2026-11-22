@@ -136,7 +136,7 @@ fn bloodgulch_sandboxes_side_by_side() {
         .iter_mut()
         .map(|(l, m)| (l.to_string(), ambient_refs(m)))
         .collect();
-    for (k, _) in &refs[1].1 {
+    for k in refs[1].1.keys() {
         let get = |i: usize| refs[i].1.get(k).cloned().unwrap_or_default();
         let (h2s, h1s) = (get(1), get(2));
         println!(

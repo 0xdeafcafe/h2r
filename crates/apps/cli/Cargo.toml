@@ -10,9 +10,12 @@ path = "src/main.rs"
 required-features = ["host"]
 
 [dependencies]
+mem-watch.workspace = true
 film = { path = "../../live/film" }
 # The default data root (`content::store::default_data_root`).
 content.workspace = true
+# The app data, cache and config directories (coop, Live, lab, follow).
+host-dirs.workspace = true
 hs = { workspace = true, optional = true }
 tags = { workspace = true, optional = true }
 shaders = { path = "../../formats/shaders", optional = true }
@@ -24,12 +27,19 @@ xiso = { workspace = true, optional = true }
 h1map = { path = "../../tools/h1map", optional = true }
 # Halo 1 multiplayer maps converted (`h2 h1 convert`).
 h1convert = { path = "../../tools/h1convert", optional = true }
+viewer = { path = "../../tools/viewer", optional = true }
 scenario-edit = { path = "../../tools/scenario-edit", optional = true }
+firefight-kit = { path = "../../tools/firefight-kit", optional = true }
+forge = { workspace = true, optional = true }
+forge-build = { workspace = true, optional = true }
 # Halo 1 campaign levels converted (`h2 h1 convert <iso> a30`).
 h1campaign = { path = "../../tools/h1campaign", optional = true }
 h1-assets = { path = "../../tools/h1-assets", optional = true }
 # Halo 1 objects for the Halo 1 sandbox (`h2 h1 convert --sandbox h1`).
 h1objects = { path = "../../tools/h1objects", optional = true }
+# `h2 hud preview` and `h2 hud sheet`: the HUD kit's preview and checks
+# (docs/game/hud-kit.md).
+hud-kit = { path = "../../tools/hud-kit", optional = true }
 movies = { workspace = true, optional = true }
 xbe = { workspace = true, optional = true }
 analyze = { workspace = true, optional = true }
@@ -38,11 +48,17 @@ lift = { workspace = true, optional = true }
 emit = { workspace = true, optional = true }
 ir = { workspace = true, optional = true }
 anyhow.workspace = true
+# The heap profiler behind the `dhat-heap` feature (docs/perf/profiling.md).
+# Not optional, so the Buck rules always have it; unused without the feature.
+dhat = "0.3.3"
 sha2 = { version = "0.10", optional = true }
 boot = { path = "../boot", default-features = false }
 host-data = { path = "../../live/host-data" }
 # Bots for sim runs and `h2 bots nav` (docs/game/bots.md).
 bots = { path = "../../live/bots" }
+# `h2 superbounce scan`: bounce and forced-crouch spots in a map's
+# collision (docs/game/superbounce.md, "Spots in the geometry").
+superbounce = { path = "../../live/superbounce", optional = true }
 # h2 sim: match, batch and report files, the comparison (docs/runtime/sim.md).
 sim-bench = { path = "../../live/sim-bench" }
 # `h2 agent` and `h2 serve` (docs/runtime/agent-api.md).
@@ -51,9 +67,16 @@ agent-proto = { path = "../../extensions/agent-proto" }
 agent = { path = "../../extensions/agent", default-features = false }
 # h2 studio: the editor's agent API client (docs/editor/agent-api.md).
 studio-proto = { path = "../studio-proto", optional = true }
+# `h2 rules`: the scripted game types' tooling (docs/game/rules-engine.md).
+rules.workspace = true
+# `h2 variants port`: self-contained .h2variant files (variants_cmd.rs).
+variants = { path = "../../formats/variants" }
+# `h2 rules lsp`: the stdio language server over `rules::ide`.
+lsp-server.workspace = true
+lsp-types.workspace = true
 # Our settings (play --set, h2 settings).
 settings = { path = "../../formats/settings" }
-timeline = { path = "../../runtime/timeline", optional = true }
+timeline = { path = "../../runtime/timeline" }
 app = { path = "../app", optional = true }
 debug-menu = { path = "../../extensions/debug-menu", optional = true }
 lockstep = { path = "../../extensions/lockstep", optional = true }
@@ -69,6 +92,7 @@ vfs.workspace = true
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "intel"], optional = true }
 asf = { path = "../../formats/asf", optional = true }
 wma = { path = "../../platform/wma", optional = true }
+live-hle = { path = "../../live/live-hle", optional = true }
 live-proto.workspace = true
 live-server.workspace = true
 # Cloud saves while signed in to Live (docs/live/live-cloud-saves.md).
@@ -97,16 +121,31 @@ time = "0.3"
 gltf = { version = "1", default-features = false, features = ["names"] }
 png = "0.18"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_SystemInformation", "Win32_System_Threading"] }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+# Paired LAN lab connections (TLS 1.3 and HMAC).
+ring = { version = "0.17", optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
+subtle = { version = "2", optional = true }
 # Enable runtime-detected ARM SHA instructions for full-image cache
 # validation. sha2-asm has no MSVC build; Windows uses the portable code.
 sha2 = { version = "0.10", features = ["asm"], optional = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSAppleEventDescriptor", "NSAppleEventManager", "NSNotification", "NSString"], optional = true }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSAlert", "NSResponder"], optional = true }
+
 [features]
 default = ["desktop"]
 # The runtime commands, agent client, simulation and dedicated-host entry point.
-host = []
+host = ["boot/rules"]
+# dhat as the global allocator; writes dhat-heap.json when `h2` returns
+# from `main` (`-c build_mode.dhat=true` under Buck).
+dhat-heap = []
 # The windowed client and authoring, import and diagnostic commands.
 desktop = [
     "host",
@@ -120,13 +159,19 @@ desktop = [
     "dep:font",
     "dep:assets",
     "dep:map",
+    "dep:superbounce",
     "dep:xiso",
     "dep:h1map",
     "dep:h1convert",
     "dep:scenario-edit",
+    "dep:firefight-kit",
+    "dep:forge",
+    "dep:forge-build",
+    "dep:viewer",
     "dep:h1campaign",
     "dep:h1-assets",
     "dep:h1objects",
+    "dep:hud-kit",
     "dep:movies",
     "dep:xbe",
     "dep:analyze",
@@ -135,8 +180,10 @@ desktop = [
     "dep:emit",
     "dep:ir",
     "dep:studio-proto",
-    "dep:timeline",
     "dep:app",
+    "dep:objc2",
+    "dep:objc2-foundation",
+    "dep:objc2-app-kit",
     "dep:debug-menu",
     "dep:lockstep",
     "dep:d3d",
@@ -151,7 +198,11 @@ desktop = [
     "dep:cloud-saves",
     "dep:image",
     "dep:flate2",
+    "dep:live-hle",
     "dep:sha2",
+    "dep:ring",
+    "dep:rustls",
+    "dep:subtle",
 ]
 perf = ["desktop", "dep:perf", "boot/perf"]
 

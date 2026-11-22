@@ -45,10 +45,10 @@ pub mod native_world;
 pub mod native_world_layers;
 pub mod pipeline_render;
 pub mod render_census;
+pub mod residual_census;
 #[cfg(feature = "native-render")]
 pub mod render_loop;
 pub mod render_timing;
 #[cfg(feature = "native-render")]
 pub mod scene_step;
-pub mod scene_entries;
 pub mod scope_zoom_hud;

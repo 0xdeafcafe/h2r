@@ -18,6 +18,7 @@
 
 pub mod bsp;
 pub mod mem;
+pub mod structure;
 mod world;
 
 #[cfg(any(test, feature = "synth"))]
@@ -47,10 +48,14 @@ pub enum Bail {
     /// An output or context record overlaps an input, the BSP or the
     /// stack the original would write.
     Alias,
+    /// The debugger needs the original guest memory access sequence.
+    Trap,
+    /// The resident budget or bounded address index cannot admit this BSP.
+    Budget,
 }
 
 /// The number of [`Bail`] reasons.
-pub const BAILS: usize = 6;
+pub const BAILS: usize = 8;
 
 impl Bail {
     pub const ALL: [Bail; BAILS] = [
@@ -60,6 +65,8 @@ impl Bail {
         Bail::Data,
         Bail::Depth,
         Bail::Alias,
+        Bail::Trap,
+        Bail::Budget,
     ];
 
     pub fn name(self) -> &'static str {
@@ -70,6 +77,8 @@ impl Bail {
             Bail::Data => "data",
             Bail::Depth => "depth",
             Bail::Alias => "alias",
+            Bail::Trap => "trap",
+            Bail::Budget => "budget",
         }
     }
 }

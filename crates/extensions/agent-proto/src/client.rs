@@ -3,11 +3,11 @@
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
-#[cfg(unix)]
-use std::os::unix::net::UnixStream;
+use std::net::{Shutdown, TcpStream, ToSocketAddrs};
+#[cfg(any(unix, windows))]
+use crate::local_socket::UnixStream;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -15,7 +15,7 @@ use crate::{Endpoint, Event, Request, RpcError, ServerLine};
 
 /// The connection under a [`Client`].
 enum Conn {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     Unix(UnixStream),
     Tcp(TcpStream),
 }
@@ -23,7 +23,7 @@ enum Conn {
 impl Conn {
     fn try_clone(&self) -> std::io::Result<Conn> {
         Ok(match self {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Conn::Unix(s) => Conn::Unix(s.try_clone()?),
             Conn::Tcp(s) => Conn::Tcp(s.try_clone()?),
         })
@@ -31,9 +31,23 @@ impl Conn {
 
     fn set_read_timeout(&self, t: Option<Duration>) -> std::io::Result<()> {
         match self {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Conn::Unix(s) => s.set_read_timeout(t),
             Conn::Tcp(s) => s.set_read_timeout(t),
+        }
+    }
+}
+
+/// Wakes a blocking reader when its owner disconnects, including during a
+/// subscription handshake or in the middle of a binary frame.
+pub struct ConnectionShutdown(Conn);
+
+impl ConnectionShutdown {
+    pub fn shutdown(&self) -> std::io::Result<()> {
+        match &self.0 {
+            #[cfg(any(unix, windows))]
+            Conn::Unix(s) => s.shutdown(Shutdown::Both),
+            Conn::Tcp(s) => s.shutdown(Shutdown::Both),
         }
     }
 }
@@ -41,7 +55,7 @@ impl Conn {
 impl Read for Conn {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         match self {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Conn::Unix(s) => s.read(buf),
             Conn::Tcp(s) => s.read(buf),
         }
@@ -51,14 +65,14 @@ impl Read for Conn {
 impl Write for Conn {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match self {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Conn::Unix(s) => s.write(buf),
             Conn::Tcp(s) => s.write(buf),
         }
     }
     fn flush(&mut self) -> std::io::Result<()> {
         match self {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Conn::Unix(s) => s.flush(),
             Conn::Tcp(s) => s.flush(),
         }
@@ -98,6 +112,23 @@ pub struct Client {
     events: VecDeque<Event>,
 }
 
+fn connect_tcp(address: &str, timeout: Duration) -> std::io::Result<TcpStream> {
+    use std::io::{Error, ErrorKind};
+    let start = Instant::now();
+    let mut last = Error::new(ErrorKind::AddrNotAvailable, "no TCP address resolved");
+    for addr in address.to_socket_addrs()? {
+        let remaining = timeout.saturating_sub(start.elapsed());
+        if remaining.is_zero() {
+            return Err(Error::new(ErrorKind::TimedOut, "TCP connect timed out"));
+        }
+        match TcpStream::connect_timeout(&addr, remaining) {
+            Ok(socket) => return Ok(socket),
+            Err(error) => last = error,
+        }
+    }
+    Err(last)
+}
+
 impl Client {
     /// Connects to a Unix socket at `path`, or to TCP when `path` reads
     /// `tcp://HOST:PORT` ([`Endpoint::parse`]).
@@ -106,10 +137,19 @@ impl Client {
     }
 
     pub fn connect_to(endpoint: &Endpoint) -> std::io::Result<Client> {
+        Self::connect_with_timeout(endpoint, None)
+    }
+
+    /// Connect with a time budget across the resolved TCP addresses.
+    /// Unix sockets keep their normal local connect behavior.
+    pub fn connect_with_timeout(
+        endpoint: &Endpoint,
+        timeout: Option<Duration>,
+    ) -> std::io::Result<Client> {
         let s = match endpoint {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Endpoint::Unix(p) => Conn::Unix(UnixStream::connect(p)?),
-            #[cfg(not(unix))]
+            #[cfg(not(any(unix, windows)))]
             Endpoint::Unix(p) => {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::Unsupported,
@@ -117,7 +157,10 @@ impl Client {
                 ));
             }
             Endpoint::Tcp(a) => {
-                let s = TcpStream::connect(a.as_str())?;
+                let s = match timeout {
+                    None => TcpStream::connect(a.as_str())?,
+                    Some(timeout) => connect_tcp(a, timeout)?,
+                };
                 s.set_nodelay(true)?;
                 Conn::Tcp(s)
             }
@@ -133,6 +176,16 @@ impl Client {
     /// No answer within `t` is an I/O error (`None`: wait forever).
     pub fn set_timeout(&self, t: Option<Duration>) -> std::io::Result<()> {
         self.lines.get_ref().set_read_timeout(t)
+    }
+
+    pub fn shutdown_handle(&self) -> std::io::Result<ConnectionShutdown> {
+        self.out.try_clone().map(ConnectionShutdown)
+    }
+
+    /// After the live subscription's JSON reply the same socket carries
+    /// binary frames. Keep any bytes read ahead with the response line.
+    pub fn into_live_reader(self) -> impl Read + Send {
+        self.lines
     }
 
     /// Sends a request and waits for its response; events that arrive

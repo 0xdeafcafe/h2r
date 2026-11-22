@@ -8,10 +8,12 @@ import { For, Show, createEffect, on, onCleanup, onMount } from "solid-js";
 import type { MapFrame } from "../components/MapCanvas";
 import { onAnimationFrame } from "./scheduler";
 import { readPalette, type MapPalette } from "./palette";
-import { EMPTY_VEHICLE_ALPHA, EMPTY_VEHICLE_COLOUR, drawFeatures, drawActor, drawGrenade, drawHit, drawVehicle, strokeAim, strokeTracer, vehicleColour, type RosterEntry } from "./render";
+import { EMPTY_VEHICLE_ALPHA, EMPTY_VEHICLE_COLOUR, damageLabel, drawFeatures, drawActor, drawProjectileTrail, drawHits, drawVehicle, drawVitals, strokeAim, strokeTracer, vehicleColour, type DamageDot, type RosterEntry } from "./render";
 import { actorColour, vehicleBox } from "../viewer/models";
 import { ShotQueue } from "./shots";
-import { EventFeed, grenadeTrail } from "./events";
+import { EventFeed } from "./events";
+import { damagePref, vitalsNumber, VitalsTrack, type DamageMode } from "./vitals";
+import { projectileColour } from "../state/projectile-trails";
 import type { MapFeatures } from "./features";
 import {
   clampPan, depthOf, easePanZoom, fitPicture, viewAxis, viewLabel, worldToPixel, yawOnView, zoomAbout,
@@ -42,6 +44,9 @@ export default function ViewMap(props: {
   view: string;
   image: (id: string) => string;
   highlight?: () => number | null;
+  follow?: () => number | null;
+  soughtAt?: () => number;
+  damage?: DamageMode;
   /** The map's teleporters and lifts, to draw under the players. */
   features?: () => MapFeatures | null;
   label?: string;
@@ -62,6 +67,7 @@ export default function ViewMap(props: {
   const images = new Map<string, HTMLImageElement>();
   const shots = new ShotQueue();
   const feed = new EventFeed();
+  const vitals = new VitalsTrack();
   const still = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   const def = (): MapViewDef => props.views.views.find((v) => v.id === props.view) ?? props.views.views[0]!;
@@ -92,6 +98,7 @@ export default function ViewMap(props: {
 
   onMount(() => {
     pal = readPalette(wrap);
+    const defaultDamage = damagePref(new URLSearchParams(window.location.search).get("dmg"));
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     const resize = () => {
@@ -168,6 +175,7 @@ export default function ViewMap(props: {
       document.addEventListener("pointerdown", away);
     }
 
+    let lastSeek = 0;
     const stop = onAnimationFrame((now) => {
       if (!visible || document.hidden || !cur || !target) return;
       const dt = last ? now - last : 16;
@@ -179,6 +187,22 @@ export default function ViewMap(props: {
       const roster = props.roster();
       const highlight = props.highlight?.() ?? null;
       const sx = (px: number) => cur!.x + px * cur!.k, sy = (py: number) => cur!.y + py * cur!.k;
+      const project = (x: number, y: number, z: number) => {
+        const [px, py] = worldToPixel(m, x, y, z);
+        return [sx(px), sy(py)] as const;
+      };
+      const soughtAt = props.soughtAt?.() ?? 0;
+      const quiet = soughtAt !== lastSeek;
+      lastSeek = soughtAt;
+      const mode = props.mini ? "off" : props.damage ?? defaultDamage;
+      if (!props.mini) {
+        if (quiet) feed.hits.clear();
+        feed.observe(f, now, { quiet });
+      }
+      const currentVitals = props.mini ? undefined : vitals.observe(f, now, { quiet, reducedMotion: still });
+      const damageVitals = mode === "off" ? undefined : currentVitals;
+      const hits = props.mini ? [] : feed.liveHits(now);
+      const dots = mode !== "off" && hits.length ? new Map<string, DamageDot>() : undefined;
 
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, w, h);
@@ -234,26 +258,34 @@ export default function ViewMap(props: {
       }
       // The map's own furniture, plotted in the world so an iso view stands a lift up.
       const feats = props.mini ? null : props.features?.();
-      if (feats) drawFeatures(ctx, feats, (x, y, z) => { const [px, py] = worldToPixel(m, x, y, z); return [sx(px), sy(py)]; }, Math.hypot(m[0][0], m[0][1], m[0][2]) * cur.k);
+      if (feats) drawFeatures(ctx, feats, project, Math.hypot(m[0][0], m[0][1], m[0][2]) * cur.k);
       // Vehicles, then the AI (small squares, never named), under the players.
       if (!props.mini) for (const veh of f.vehicles ?? []) {
         if (veh.parent) continue; // a turret: drawn as its vehicle
         const [px, py] = worldToPixel(m, veh.x, veh.y, veh.z), [fx, fy] = worldToPixel(m, veh.x + veh.forward[0], veh.y + veh.forward[1], veh.z + veh.forward[2]);
         const [len, wid] = vehicleBox(veh.kind), unit = Math.hypot(m[0][0], m[0][1], m[0][2]) * cur.k, k = Math.max(unit, 9 / wid);
+        const x = sx(px), y = sy(py);
+        const colour = veh.occupied ? vehicleColour(veh.id, f.players, f.actors, roster) : EMPTY_VEHICLE_COLOUR;
         if (!veh.occupied) ctx.globalAlpha = EMPTY_VEHICLE_ALPHA;
-        drawVehicle(ctx, sx(px), sy(py), Math.atan2(fy - py, fx - px), len * k, wid * k, veh.occupied ? vehicleColour(veh.id, f.players, f.actors, roster) : EMPTY_VEHICLE_COLOUR);
+        drawVehicle(ctx, x, y, Math.atan2(fy - py, fx - px), len * k, wid * k, colour);
+        dots?.set(veh.id, { at: [x, y], radius: wid * k / 2, colour, vehicle: true });
         ctx.globalAlpha = 1;
       }
       for (const a of f.actors ?? []) {
         if (!a.alive || a.vehicle) continue;
-        const [px, py] = worldToPixel(m, a.x, a.y, a.z);
-        drawActor(ctx, sx(px), sy(py), props.mini ? 1.5 : 2.5, actorColour(a.actor?.team));
+        const [x, y] = project(a.x, a.y, a.z);
+        const radius = props.mini ? 1.5 : 2.5, colour = actorColour(a.actor?.team);
+        drawActor(ctx, x, y, radius, colour);
+        if (a.actor) dots?.set(a.actor.id, { at: [x, y], radius, colour });
+        const vitals = damageVitals?.get(a.index);
+        if (vitals) drawVitals(ctx, x, y, radius, vitals);
       }
       for (const q of placed) {
         const info = roster.get(q.p.index);
         const colour = info?.colour ?? "#999";
         const picked = hover === q.p.index || highlight === q.p.index;
         const rr = picked ? r * 1.4 : r;
+        dots?.set("p" + q.p.index, { at: [q.x, q.y], radius: rr, colour });
         // Where they are looking, when the frame says.
         if (!props.mini && q.p.aim) {
           const [ax, ay, az] = q.p.aim;
@@ -276,17 +308,31 @@ export default function ViewMap(props: {
         ctx.beginPath();
         ctx.arc(q.x, q.y, rr, 0, Math.PI * 2);
         ctx.fill(); ctx.stroke();
+        const vitals = damageVitals?.get(q.p.index);
+        if (vitals) drawVitals(ctx, q.x, q.y, rr, vitals);
       }
-      for (const q of placed) {
+      if (!props.mini) for (const q of placed) {
         const info = roster.get(q.p.index);
-        if (info && (hover === q.p.index || highlight === q.p.index)) label(ctx, pal, q.x, q.y, r, info.name);
+        const picked = hover === q.p.index || highlight === q.p.index;
+        const vitals = damageVitals?.get(q.p.index);
+        if (info && (picked || (mode === "numbers" && vitalsNumber(vitals)))) {
+          const labelRadius = vitals ? (picked ? r * 1.4 : r) + 4 : r;
+          label(ctx, pal, q.x, q.y, labelRadius, damageLabel(info.name, vitals, mode === "numbers"));
+        }
       }
-      // Over everyone: grenades in flight and damage, plotted in the world like the shots.
+      if (damageVitals) for (const p of f.players) {
+        if (p.alive) continue;
+        const vitals = damageVitals.get(p.index);
+        if (!vitals || vitals.chipFrom === null) continue;
+        const [x, y] = project(p.x, p.y, p.z);
+        drawVitals(ctx, x, y, r, vitals);
+        const info = roster.get(p.index);
+        if (info && mode === "numbers") label(ctx, pal, x, y, r + 4, damageLabel(info.name, vitals, true));
+      }
+      // Over everyone: recorded projectile paths and damage, plotted in the world.
       if (!props.mini) {
-        feed.observe(f, now);
-        const at = (x: number, y: number, z: number) => { const [px, py] = worldToPixel(m, x, y, z); return [sx(px), sy(py)] as const; };
-        if (!still) for (const g of feed.liveGrenades(now)) drawGrenade(ctx, grenadeTrail(g, g.age).map((q) => at(...q)), g.alpha, g.type);
-        for (const hit of feed.liveHits(now)) drawHit(ctx, hit.from ? at(hit.from.x, hit.from.y, hit.from.z + 0.5) : null, at(hit.x, hit.y, hit.z), hit, still);
+        if (!still) for (const p of f.projectileTrails ?? []) drawProjectileTrail(ctx, p.points.map((q) => project(...q)), projectileColour(p.kind));
+        if (dots) drawHits(ctx, hits, project, dots, roster, props.follow?.() ?? null, highlight, still);
       }
     });
     onCleanup(() => {

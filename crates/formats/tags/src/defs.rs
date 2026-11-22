@@ -17,16 +17,17 @@
 //! field by field with another ([`diff`]).
 //!
 //! The definitions are checked-in text files (`src/defs/*.txt`, format in
-//! `docs/formats/tag-definitions.md`), inferred from retail data and the
-//! XBE's readers. No community definition was used. The files record
-//! offsets, types and our names; never retail values at length.
+//! `docs/formats/tag-definitions.md`). A field's evidence identifies the
+//! source of its layout. Its name and editor description are our own.
 
 use map::FourCC;
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
+pub mod attrs;
 pub mod skeleton;
 pub mod value;
+pub use attrs::{Title, Unit};
 pub use value::*;
 
 #[cfg(test)]
@@ -96,8 +97,12 @@ pub const FILES: &[(&str, &str)] = &[
         "recorded_animation.txt",
         include_str!("defs/recorded_animation.txt"),
     ),
+    ("scnr.txt", include_str!("defs/scnr.txt")),
     ("egor.txt", include_str!("defs/egor.txt")),
     ("trak.txt", include_str!("defs/trak.txt")),
+    ("hudg.txt", include_str!("defs/hudg.txt")),
+    ("DECR.txt", include_str!("defs/DECR.txt")),
+    ("PRTM.txt", include_str!("defs/PRTM.txt")),
 ];
 
 /// One array element's layout (a group's root, a block's element, or a
@@ -112,11 +117,17 @@ pub struct StructDef {
     pub align: u32,
     /// Every field, by ascending offset, tiling `0..size` exactly.
     pub fields: Vec<FieldDef>,
+    /// `title=` on the `group` or `struct` line (fixed words), or on the
+    /// `block` line (the element field whose value titles each element).
+    pub title: Option<Title>,
+    /// `applies=` on the `group` or `struct` line: the timing of every
+    /// field below that has none of its own.
+    pub applies: Option<&'static str>,
 }
 
 impl FieldDef {
     /// A field whose type is known but whose role is not: by convention
-    /// its name ends in `_<offset in hex>` (`string_1c`, `foot_ref_54`).
+    /// its name ends in `_<offset in hex>` (`string_1c`, `phys_ref_18`).
     pub fn typed_only(&self) -> bool {
         self.name.ends_with(&format!("_{:x}", self.offset))
     }
@@ -131,12 +142,24 @@ pub struct FieldDef {
     pub name: String,
     /// Type.
     pub kind: Kind,
-    /// What it means and the evidence for the name (`E` engine code, `V`
+    /// What it means, with any evidence for it (`E` engine code, `V`
     /// checked on the retail disc, `D` a choice made here).
     pub meaning: String,
+    /// Description shown by editors, in the definition author's own words.
+    pub doc: Option<String>,
     /// Default value text for a fresh tag (`default=` in the file), else
     /// zero, null or empty.
     pub default: Option<String>,
+    /// When a live write shows, where the field has evidence. On a `block`
+    /// or `struct` line it is also the timing of every field below that has
+    /// none of its own.
+    pub applies: Option<&'static str>,
+    /// `label="..."`: the label when the derived one is wrong.
+    pub label: Option<String>,
+    /// `unit=<word>`: the unit of a numeric field.
+    pub unit: Option<Unit>,
+    /// `axes=a|b|c`: the component letters of an array, one per element.
+    pub axes: Vec<String>,
 }
 
 /// A field's type.
@@ -253,7 +276,19 @@ impl Defs {
             if l.indent != 0 {
                 return Err(err("expected `group` or `struct` at column 0".into()));
             }
-            let t: Vec<&str> = l.text.split_whitespace().collect();
+            let mut t = Vec::new();
+            let mut attrs = BTreeMap::new();
+            for w in &l.words {
+                match w.split_once('=') {
+                    Some((k, v)) => {
+                        attrs.insert(k, v);
+                    }
+                    None => t.push(*w),
+                }
+            }
+            if l.doc.is_some() || l.label.is_some() {
+                return Err(err("a header takes no doc or label".into()));
+            }
             let (is_group, name) = match t.first() {
                 Some(&"group") => (true, t.get(1).copied()),
                 Some(&"struct") => (false, t.get(1).copied()),
@@ -269,6 +304,24 @@ impl Defs {
                 (None, _) => 4,
                 _ => return Err(err("expected `align <n>`".into())),
             };
+            let mut title = l.title.clone().map(Title::Text);
+            let mut applies = None;
+            for (k, v) in &attrs {
+                match *k {
+                    "applies" => applies = Some(parse_applies(v).map_err(&err)?),
+                    "title" => {
+                        return Err(err(
+                            "title on a group or struct is text: title=\"...\"".into(),
+                        ));
+                    }
+                    _ => return Err(err(format!("a header takes no {k}="))),
+                }
+            }
+            if let Some(Title::Text(text)) = &title {
+                attrs::check_text(text).map_err(|why| err(format!("title {why}")))?;
+            } else {
+                title = None;
+            }
             i += 1;
             let fields = self.fields(file, &lines, &mut i, 2)?;
             let s = StructDef {
@@ -276,6 +329,8 @@ impl Defs {
                 size,
                 align,
                 fields,
+                title,
+                applies,
             };
             check(&s).map_err(err)?;
             if is_group {
@@ -292,7 +347,7 @@ impl Defs {
     fn fields(
         &self,
         file: &str,
-        lines: &[Line],
+        lines: &[Line<'_>],
         i: &mut usize,
         indent: usize,
     ) -> Result<Vec<FieldDef>, ParseError> {
@@ -308,7 +363,7 @@ impl Defs {
                 return Err(err(format!("indent {} where {indent} expected", l.indent)));
             }
             *i += 1;
-            let t: Vec<&str> = l.text.split_whitespace().collect();
+            let t = &l.words;
             let offset = t
                 .first()
                 .and_then(|s| parse_num(s))
@@ -357,11 +412,39 @@ impl Defs {
                         .ok_or_else(|| err("block needs an element size".into()))?;
                     let align = align_of(&words, 2)?;
                     let fields = self.fields(file, lines, i, indent + 2)?;
+                    if l.title.is_some() {
+                        return Err(err(
+                            "a block's title is a field name: title=<field>".into(),
+                        ));
+                    }
+                    let title = match params.get("title") {
+                        None => None,
+                        Some(f) => {
+                            let titled = fields.iter().find(|x| x.name == *f).ok_or_else(|| {
+                                err(format!("title={f}: the element has no such field"))
+                            })?;
+                            if matches!(
+                                titled.kind,
+                                Kind::Block(_)
+                                    | Kind::Data { .. }
+                                    | Kind::Struct(_)
+                                    | Kind::Unknown { .. }
+                                    | Kind::Pad { .. }
+                            ) {
+                                return Err(err(format!(
+                                    "title={f}: a title needs a field with a value"
+                                )));
+                            }
+                            Some(Title::Field(f.clone()))
+                        }
+                    };
                     let s = StructDef {
                         name: name.clone(),
                         size,
                         align,
                         fields,
+                        title,
+                        applies: None,
                     };
                     check(&s).map_err(err)?;
                     (name, Kind::Block(Box::new(s)))
@@ -499,12 +582,63 @@ impl Defs {
                     (name_at(0)?, kind)
                 }
             };
+            if (l.title.is_some() || params.contains_key("title"))
+                && !matches!(kind, Kind::Block(_))
+            {
+                return Err(err("title is for a group, struct or block line".into()));
+            }
+            let label = l.label.clone();
+            if let Some(text) = &label {
+                if matches!(
+                    kind,
+                    Kind::Unknown { .. } | Kind::Pad { .. } | Kind::Struct(_)
+                ) {
+                    return Err(err(format!("{name} takes no label")));
+                }
+                attrs::check_text(text).map_err(|why| err(format!("label {why}")))?;
+            }
+            let numeric = matches!(kind, Kind::Int { .. } | Kind::Float { .. });
+            let unit = match params.get("unit") {
+                None => None,
+                Some(_) if !numeric => return Err(err("unit needs a numeric field".into())),
+                Some(w) => Some(
+                    Unit::from_word(w).ok_or_else(|| err(format!("unknown unit={w}")))?,
+                ),
+            };
+            let axes = match params.get("axes") {
+                None => Vec::new(),
+                Some(v) => {
+                    let count = match kind {
+                        Kind::Int { count, .. } | Kind::Float { count } if count > 1 => count,
+                        _ => return Err(err("axes needs an array field".into())),
+                    };
+                    let axes: Vec<String> = v.split('|').map(str::to_owned).collect();
+                    if axes.iter().any(|a| !attrs::check_word(a)) {
+                        return Err(err(format!("axes={v}: each axis is a word")));
+                    }
+                    if axes.len() as u32 != count {
+                        return Err(err(format!(
+                            "axes={v}: {} names for {count} components",
+                            axes.len()
+                        )));
+                    }
+                    axes
+                }
+            };
             out.push(FieldDef {
                 offset,
                 name,
                 kind,
-                meaning: l.meaning.clone(),
+                meaning: l.meaning.to_owned(),
+                doc: l.doc.clone(),
                 default: params.get("default").cloned(),
+                applies: match params.get("applies") {
+                    None => None,
+                    Some(w) => Some(parse_applies(w).map_err(&err)?),
+                },
+                label,
+                unit,
+                axes,
             });
         }
         Ok(out)
@@ -541,14 +675,46 @@ fn check(s: &StructDef) -> Result<(), String> {
     Ok(())
 }
 
-struct Line {
+struct Line<'a> {
     number: usize,
     indent: usize,
-    text: String,
-    meaning: String,
+    words: Vec<&'a str>,
+    meaning: &'a str,
+    doc: Option<String>,
+    label: Option<String>,
+    /// `title="..."`; a bare `title=<field>` stays among the words.
+    title: Option<String>,
 }
 
-fn lex(file: &str, text: &str) -> Result<Vec<Line>, ParseError> {
+/// The `applies=` word, or why it is refused.
+fn parse_applies(word: &str) -> Result<&'static str, String> {
+    attrs::applies_word(word).ok_or_else(|| format!("unknown applies={word}"))
+}
+
+/// Read the contents after the opening quote of a doc attribute.
+fn quoted_doc(input: &str) -> Result<(String, &str), &'static str> {
+    let mut chars = input.chars();
+    let mut value = String::new();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                let rest = chars.as_str();
+                if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+                    return Err("expected a space after the field description");
+                }
+                return Ok((value, rest));
+            }
+            '\\' => match chars.next() {
+                Some(c @ ('"' | '\\')) => value.push(c),
+                _ => return Err("expected an escaped quote or backslash in the field description"),
+            },
+            _ => value.push(c),
+        }
+    }
+    Err("unterminated field description")
+}
+
+fn lex<'a>(file: &str, text: &'a str) -> Result<Vec<Line<'a>>, ParseError> {
     let mut out = Vec::new();
     for (n, raw) in text.lines().enumerate() {
         let trimmed = raw.trim_start();
@@ -563,15 +729,60 @@ fn lex(file: &str, text: &str) -> Result<Vec<Line>, ParseError> {
                 why: "indent with spaces".into(),
             });
         }
-        let (body, meaning) = match trimmed.split_once(" -- ") {
-            Some((b, m)) => (b.trim_end(), m.trim()),
-            None => (trimmed.trim_end(), ""),
+        let err = |why: &str| ParseError {
+            file: file.into(),
+            line: n + 1,
+            why: why.into(),
         };
+        let mut rest = trimmed;
+        let mut words = Vec::new();
+        let mut doc = None;
+        let mut label = None;
+        let mut title = None;
+        let mut meaning = "";
+        while !rest.is_empty() {
+            let quoted_key = [("doc=", 0), ("label=", 1), ("title=", 2)]
+                .into_iter()
+                .find_map(|(key, slot)| rest.strip_prefix(key).map(|v| (key, slot, v)))
+                // A bare `title=<field>` is a word on a block line.
+                .filter(|(_, slot, v)| *slot != 2 || v.starts_with('"'));
+            if let Some((key, slot, value)) = quoted_key {
+                let target = match slot {
+                    0 => &mut doc,
+                    1 => &mut label,
+                    _ => &mut title,
+                };
+                if target.is_some() {
+                    return Err(if slot == 0 {
+                        err("duplicate field description")
+                    } else {
+                        err("duplicate attribute")
+                    });
+                }
+                let quoted = value
+                    .strip_prefix('"')
+                    .ok_or_else(|| err(&format!("expected {key}\"...\"")))?;
+                let (value, tail) = quoted_doc(quoted).map_err(err)?;
+                *target = Some(value);
+                rest = tail.trim_start();
+            } else {
+                let (word, tail) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+                if word == "--" {
+                    meaning = tail.trim();
+                    break;
+                }
+                words.push(word);
+                rest = tail.trim_start();
+            }
+        }
         out.push(Line {
             number: n + 1,
             indent,
-            text: body.to_owned(),
-            meaning: meaning.to_owned(),
+            words,
+            meaning,
+            doc,
+            label,
+            title,
         });
     }
     Ok(out)
@@ -702,8 +913,30 @@ impl StructDef {
                     let _ = write!(out, "pad {len:#x}");
                 }
             }
+            if let Some(u) = f.unit {
+                let _ = write!(out, " unit={}", u.word());
+            }
+            if !f.axes.is_empty() {
+                let _ = write!(out, " axes={}", f.axes.join("|"));
+            }
+            if let Kind::Block(s) = &f.kind
+                && let Some(Title::Field(t)) = &s.title
+            {
+                let _ = write!(out, " title={t}");
+            }
+            if let Some(a) = f.applies {
+                let _ = write!(out, " applies={a}");
+            }
             if let Some(d) = &f.default {
                 let _ = write!(out, " default={d}");
+            }
+            if let Some(label) = &f.label {
+                let escaped = label.replace('\\', "\\\\").replace('"', "\\\"");
+                let _ = write!(out, " label=\"{escaped}\"");
+            }
+            if let Some(doc) = &f.doc {
+                let escaped = doc.replace('\\', "\\\\").replace('"', "\\\"");
+                let _ = write!(out, " doc=\"{escaped}\"");
             }
             if !f.meaning.is_empty() {
                 let _ = write!(out, " -- {}", f.meaning);
@@ -713,6 +946,21 @@ impl StructDef {
                 s.fields_text(indent + 2, out);
             }
         }
+    }
+
+    /// The attributes of the `group` or `struct` line that declares this
+    /// definition, as file text with a leading space (empty when it has
+    /// none).
+    pub fn header_attrs(&self) -> String {
+        let mut out = String::new();
+        if let Some(Title::Text(t)) = &self.title {
+            let escaped = t.replace('\\', "\\\\").replace('"', "\\\"");
+            out.push_str(&format!(" title=\"{escaped}\""));
+        }
+        if let Some(a) = self.applies {
+            out.push_str(&format!(" applies={a}"));
+        }
+        out
     }
 
     /// The field named `name`.

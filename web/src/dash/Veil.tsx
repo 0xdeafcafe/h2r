@@ -8,10 +8,11 @@
 // On the stats side it also leaves a hairline of dashboard green across
 // the very top of the page.
 
-import { Show, createEffect, createSignal, on, onCleanup, onMount, type JSX } from "solid-js";
+import { Show, createSignal, onCleanup, onMount, type JSX } from "solid-js";
 import { useLocation, useNavigate } from "@solidjs/router";
-import { CROSS_IN_MS, CROSS_OUT_MS, crosses, sideOf, type Side } from "./cross";
+import { CROSS_IN_MS, CROSS_OUT_MS, crosses, observeSide, sideOf, type Side } from "./cross";
 import "../styles/dash-veil.css";
+import { NotificationToast } from "./Notifications";
 
 interface VeilState { to: Side; phase: "in" | "out" }
 
@@ -57,11 +58,14 @@ function skip() {
 export default function Veil(props: { children?: JSX.Element }) {
   const location_ = useLocation();
   navigate = useNavigate();
-  const side = () => sideOf(location_.pathname);
 
   // A change of side that didn't come through crossTo (the browser's back
   // button, a redirect): the route has already changed, so only clear off.
-  createEffect(on(side, (to) => { const hush = quiet; quiet = false; if (!hush && !veil() && !reducedMotion()) reveal(to); }, { defer: true }));
+  const side = observeSide(() => location_.pathname, (to) => {
+    const hush = quiet;
+    quiet = false;
+    if (!hush && !veil() && !reducedMotion()) reveal(to);
+  });
 
   function onClick(e: MouseEvent) {
     if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
@@ -89,6 +93,7 @@ export default function Veil(props: { children?: JSX.Element }) {
     <>
       <Show when={side() === "stats"}><i class="xf-echo" aria-hidden="true" /></Show>
       {props.children}
+      <NotificationToast />
       <Show when={veil()}>{(v) => <div class={`xf xf--to-${v().to} xf--${v().phase}`} aria-hidden="true"><i class="xf-n" /><i class="xf-g" /></div>}</Show>
     </>
   );

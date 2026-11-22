@@ -22,7 +22,7 @@ use std::sync::Mutex;
 
 use agent_proto::trace::{
     DumpParams, FlightParams, FlightStatus, InputRead, MAX_OBJECTS, TICKS_PER_SECOND, TickRow,
-    TraceParams, TraceStatus, method,
+    TraceParams, TraceStatus, method, valid_file_name,
 };
 use agent_proto::{At, OBJECT_FIELDS, Object, ObjectId, RpcError, code};
 use input::gamepad::Gamepad;
@@ -110,7 +110,11 @@ pub(crate) struct Tick {
     pub map: Option<String>,
 }
 
+static TRACE_WRITER_BYTES: mem_watch::Counter = mem_watch::Counter::new("trace.writer_buffer_bytes");
+static FLIGHT_ROW_BYTES: mem_watch::Counter = mem_watch::Counter::new("trace.flight_row_bytes");
+
 struct Trace {
+    writer_bytes: mem_watch::Gauge,
     sel: Selection,
     path: PathBuf,
     /// `None` once stopped (or failed).
@@ -148,10 +152,12 @@ impl Trace {
     fn fail(&mut self, e: std::io::Error) {
         self.error = Some(format!("writing {}: {e}", self.path.display()));
         self.out = None;
+        self.writer_bytes.set(0);
     }
 
     /// Flushes and closes the file.
     fn stop(&mut self) {
+        self.writer_bytes.set(0);
         if let Some(mut out) = self.out.take()
             && let Err(e) = out.flush()
         {
@@ -176,6 +182,7 @@ impl Trace {
 }
 
 struct Flight {
+    row_bytes: mem_watch::Gauge,
     sel: Selection,
     seconds: u32,
     capacity: usize,
@@ -199,6 +206,7 @@ impl Flight {
                 self.bytes -= old.len();
             }
         }
+        self.row_bytes.set(self.bytes as u64);
     }
 
     fn status(&self, at: At, active: bool) -> FlightStatus {
@@ -254,6 +262,7 @@ impl Recorders {
         if !self.active() {
             return;
         }
+        let _scope = mem_watch::scope("trace.record");
         let world = reader.objects();
         if let Some(t) = self.trace.as_mut().filter(|t| t.out.is_some()) {
             t.write(&t.sel.row(tick, &world));
@@ -278,8 +287,7 @@ impl Recorders {
         }
     }
 
-    /// Answers a `trace.*` or `flight.*` method. `dir` is the cache
-    /// directory (files go under its `traces/` and `flights/`).
+    /// Answers a recorder method. Files go under `dir` in `traces/` and `flights/`.
     pub fn handle(
         &mut self,
         m: &str,
@@ -288,7 +296,10 @@ impl Recorders {
         dir: &Path,
         input: &Mutex<Input>,
     ) -> Result<Value, RpcError> {
+        let _scope = mem_watch::scope("trace.record");
         match m {
+            method::TRACE_LIST => crate::outputs::trace_list(dir),
+            method::TRACE_READ => crate::outputs::trace_read(dir, params(p)?),
             method::TRACE_START => {
                 let p: TraceParams = params(p)?;
                 if self.trace.as_ref().is_some_and(|t| t.out.is_some()) {
@@ -305,10 +316,12 @@ impl Recorders {
                         format!("creating {}: {e}", path.display()),
                     )
                 })?;
+                let out = BufWriter::with_capacity(64 << 10, file);
                 let t = Trace {
+                    writer_bytes: TRACE_WRITER_BYTES.track(out.capacity() as u64),
                     sel,
                     path,
-                    out: Some(BufWriter::with_capacity(64 << 10, file)),
+                    out: Some(out),
                     rows: 0,
                     bytes: 0,
                     first_tick: None,
@@ -350,6 +363,7 @@ impl Recorders {
                 let sel = Selection::new(p.objects, p.fields)?;
                 let capacity = (seconds * TICKS_PER_SECOND) as usize;
                 let f = Flight {
+                    row_bytes: FLIGHT_ROW_BYTES.track(0),
                     sel,
                     seconds,
                     capacity,
@@ -404,16 +418,11 @@ fn not_flying() -> RpcError {
 
 /// `path` as a bare file name under `dir/sub`, or a fresh name there. The
 /// socket may be TCP with no authentication, so a caller never picks where
-/// outside the cache directory the game writes.
+/// outside the output directory the game writes.
 fn place(dir: &Path, sub: &str, stem: &str, path: Option<&str>) -> Result<PathBuf, RpcError> {
     match path {
         Some(p) => {
-            let name = Path::new(p);
-            let bare = matches!(
-                name.components().collect::<Vec<_>>().as_slice(),
-                [std::path::Component::Normal(_)]
-            );
-            if !bare {
+            if !valid_file_name(p) {
                 return Err(RpcError::new(
                     code::INVALID_PARAMS,
                     format!(
@@ -422,7 +431,7 @@ fn place(dir: &Path, sub: &str, stem: &str, path: Option<&str>) -> Result<PathBu
                     ),
                 ));
             }
-            Ok(dir.join(sub).join(name))
+            Ok(dir.join(sub).join(p))
         }
         None => {
             let ms = std::time::SystemTime::now()

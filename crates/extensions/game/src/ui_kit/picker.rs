@@ -87,6 +87,10 @@ pub struct Pick {
     pub current: usize,
     /// What the setting does, on the right.
     pub description: String,
+    /// A line per value, shown on the right while it has the focus in
+    /// place of `description` (the object menu's object lines). Empty:
+    /// `description` for every value.
+    pub details: Vec<String>,
     /// What the picker opened over, for the preview.
     pub opener: Opener,
     /// Stores value `i`; what to log.
@@ -118,6 +122,7 @@ impl Pick {
             current: current.min(values.len().saturating_sub(1)),
             values,
             description: description.into(),
+            details: Vec::new(),
             opener: Opener::MAIN_MENU,
             set,
         }
@@ -125,6 +130,17 @@ impl Pick {
     pub fn over(mut self, opener: Opener) -> Pick {
         self.opener = opener;
         self
+    }
+    /// A line per value ([`Pick::details`]).
+    pub fn details(mut self, details: Vec<String>) -> Pick {
+        self.details = details;
+        self
+    }
+    /// What the right side says while value `i` has the focus.
+    pub fn line(&self, i: usize) -> &str {
+        self.details
+            .get(i)
+            .map_or(self.description.as_str(), String::as_str)
     }
 }
 
@@ -317,7 +333,7 @@ impl Picker {
         let p = current();
         let (title, description) = p
             .as_ref()
-            .map(|p| (p.title.as_str(), p.description.as_str()))
+            .map(|p| (p.title.as_str(), p.line(p.current)))
             .unwrap_or_default();
         self.texts.set(TITLE, title);
         self.texts.set(DESCRIPTION, description);
@@ -348,6 +364,10 @@ const fn name_family(ingame: bool) -> &'static str {
 }
 
 impl Rows for Picker {
+    fn content_spec(&self) -> Option<crate::ui_kit::spec::ScreenSpec> {
+        Some(self.spec())
+    }
+
     /// The title's slot, the same for every pick: [`Picker::refresh`]
     /// fills it as the screen opens.
     fn title(&self) -> u32 {
@@ -387,10 +407,12 @@ impl Rows for Picker {
         self.chosen.store(true, Ordering::SeqCst);
         Chosen::Act
     }
-    fn description(&self, _row: i16) -> Option<u32> {
+    fn description(&self, row: i16) -> Option<u32> {
         with_pick(|p| {
-            p.as_ref()
-                .map(|p| self.texts.set(DESCRIPTION, &p.description))
+            p.as_ref().map(|p| {
+                let line = usize::try_from(row).map_or(p.description.as_str(), |i| p.line(i));
+                self.texts.set(DESCRIPTION, line)
+            })
         })
     }
     fn write_texts(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
@@ -411,31 +433,56 @@ impl Rows for Picker {
 
 impl Describe for Picker {
     fn spec(&self) -> ScreenSpec {
-        let p = current();
-        let title = p.as_ref().map(|p| p.title.clone()).unwrap_or_default();
-        let mut s = ScreenSpec::new(self.name, &title);
-        s.list = ListPlace::from(Some(Self::layout()));
-        s.style = self.base.style();
-        s.description = Some(PICKER_HELP_TEXT.into());
-        s.prompts = prompts();
-        s.inputs = vec![Input::Up, Input::Down, Input::A, Input::B];
-        s.footer = true;
-        if let Some(p) = &p {
-            s.rows = p
-                .values
-                .iter()
-                .map(|v| RowSpec::action(v).describe(&p.description))
-                .collect();
-            s.focus = p.current;
-            s.scrolls = p.values.len() > PICKER_LIST_ROWS;
+        let pick = current();
+        let (title, values, focus, description, opener) = pick.as_ref().map_or(
+            ("", &[][..], 0, "", Opener::MAIN_MENU),
+            |p| (p.title.as_str(), p.values.as_slice(), p.current, p.description.as_str(), p.opener),
+        );
+        let mut s = picker_spec(self.name, self.base, title, values, focus, description, opener);
+        if let Some(p) = &pick {
+            for (i, row) in s.rows.iter_mut().enumerate() {
+                row.description = Some(p.line(i).to_string());
+            }
+            if let Some(d) = &mut s.dialog {
+                d.rows.clone_from(&s.rows);
+            }
         }
-        s.dialog = Some(DialogSpec {
-            base: self.base,
-            rows: s.rows.clone(),
-            ..DialogSpec::new("", p.map_or(Opener::MAIN_MENU, |p| p.opener))
-        });
         s
     }
+}
+
+/// Playback owns the dialog and its selection while the replayed guest
+/// remains paused. Use the same in-game picker geometry and legend.
+pub(crate) fn playback_spec(title: &str, values: &[String], focus: usize, help: &str) -> ScreenSpec {
+    picker_spec(GAME_NAME, DialogBase::Large, title, values, focus, help, Opener::MAIN_MENU)
+}
+
+fn picker_spec(
+    name: &str,
+    base: DialogBase,
+    title: &str,
+    values: &[String],
+    focus: usize,
+    help: &str,
+    opener: Opener,
+) -> ScreenSpec {
+    let mut s = ScreenSpec::new(name, title);
+    s.list = ListPlace::from(Some(Picker::layout()));
+    s.style = base.style();
+    s.description = Some(PICKER_HELP_TEXT.into());
+    s.prompts = prompts();
+    s.inputs = vec![Input::Up, Input::Down, Input::A, Input::B];
+    s.footer = true;
+    s.content.picker = true;
+    s.rows = values.iter().map(|v| RowSpec::action(v).describe(help)).collect();
+    s.focus = focus;
+    s.scrolls = values.len() > PICKER_LIST_ROWS;
+    s.dialog = Some(DialogSpec {
+        base,
+        rows: s.rows.clone(),
+        ..DialogSpec::new("", opener)
+    });
+    s
 }
 
 /// The picker's texts as a locale source, as [`crate::ui_kit::screen::KitTexts`]

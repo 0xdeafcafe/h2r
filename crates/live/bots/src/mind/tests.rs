@@ -339,18 +339,11 @@ fn a_dead_bot_lets_go_of_everything() {
 }
 
 #[test]
-fn grenades_are_rare_and_spaced() {
+fn unknown_grenade_stock_never_pulls_the_left_trigger() {
     let mut m = Mind::new(Skill::Legendary, 5);
-    let mut throws = Vec::new();
     for t in 0..(60 * 30u32) {
         let pad = look(&mut m, X, vec![enemy(1, [6.0, 0.0, 0.0])], t, None);
-        if pad.left_trigger > 0.0 && throws.last().is_none_or(|&l: &u32| t > l + 3) {
-            throws.push(t);
-        }
-    }
-    assert!(throws.len() <= 8, "{throws:?}");
-    for w in throws.windows(2) {
-        assert!(w[1] - w[0] >= GRENADE_COOLDOWN, "{throws:?}");
+        assert_eq!(pad.left_trigger, 0.0);
     }
 }
 
@@ -802,20 +795,7 @@ fn it_chases_someone_last_seen_in_the_air() {
 
 #[test]
 fn fighting_on_a_narrow_bridge_it_does_not_strafe_off() {
-    let quad = |x0: f32, y0: f32, x1: f32, y1: f32, z: f32| {
-        Poly::new(vec![[x0, y0, z], [x1, y0, z], [x1, y1, z], [x0, y1, z]])
-    };
-    let map = MapData {
-        places: Default::default(),
-        nav: NavMesh::new(
-            vec![
-                quad(-20.0, -0.4, 20.0, 0.4, 2.0),
-                quad(-20.0, -20.0, 20.0, 20.0, 0.0),
-            ],
-            vec![],
-        ),
-        walls: Walls::default(),
-    };
+    let map = bridge_map();
     let mut m = Mind::new(Skill::Legendary, 2);
     let mut walked = 0;
     for t in 0..120 {
@@ -839,6 +819,152 @@ fn fighting_on_a_narrow_bridge_it_does_not_strafe_off() {
     }
     // Not frozen either: it steps along the bridge instead.
     assert!(walked > 60, "{walked}");
+}
+
+/// A bridge 0.8 wide along X at height 2, over a pit floor at 0.
+fn bridge_map() -> MapData {
+    let quad = |x0: f32, y0: f32, x1: f32, y1: f32, z: f32| {
+        Poly::new(vec![[x0, y0, z], [x1, y0, z], [x1, y1, z], [x0, y1, z]])
+    };
+    MapData {
+        places: Default::default(),
+        nav: NavMesh::new(
+            vec![
+                quad(-20.0, -0.4, 20.0, 0.4, 2.0),
+                quad(-20.0, -20.0, 20.0, 20.0, 0.0),
+            ],
+            vec![],
+        ),
+        walls: Walls::default(),
+    }
+}
+
+#[test]
+fn stuck_on_a_bridge_it_never_sidesteps_off() {
+    let map = bridge_map();
+    let mut m = Mind::new(Skill::Normal, 1);
+    m.slot = Some(5);
+    let at = [0.0, 0.0, 2.0];
+    let goal = [8.0, 0.0, 2.0];
+    let w = crate::stuck::WINDOW;
+    // It never moves, so the stuck machine escalates: sidestep, jump,
+    // crouch-jump, repath. None of them may leave the bridge.
+    for t in 1..=(4 * w + 2) {
+        let mut pad = HostPadState::default();
+        if let Some(walk) = m.go(at, goal, t, Some(&map), &mut pad, &[]) {
+            assert!(walk.walk[1].abs() < 0.05, "tick {t}: {walk:?}");
+        }
+    }
+    assert_eq!(m.stuck.repaths, 1);
+}
+
+#[test]
+fn a_body_beside_the_path_never_turns_the_walk_off_a_bridge() {
+    let map = bridge_map();
+    let mut m = Mind::new(Skill::Normal, 1);
+    let mut pad = HostPadState::default();
+    let bodies = [[0.5, 0.15, 2.0]];
+    let walk = m
+        .go(
+            [0.0, 0.0, 2.0],
+            [8.0, 0.0, 2.0],
+            1,
+            Some(&map),
+            &mut pad,
+            &bodies,
+        )
+        .unwrap();
+    assert!(walk.walk[0] > 0.5 && walk.walk[1].abs() < 0.05, "{walk:?}");
+}
+
+#[test]
+fn a_bot_pushed_off_its_route_does_not_walk_or_hop_over_a_gap() {
+    let mut map = bridge_map();
+    let mut polys = map.nav.polys;
+    polys.push(Poly::new(vec![
+        [22.0, -2.0, 2.0],
+        [28.0, -2.0, 2.0],
+        [28.0, 2.0, 2.0],
+        [22.0, 2.0, 2.0],
+    ]));
+    map.nav = NavMesh::new(polys, vec![]);
+    let mut m = Mind::new(Skill::Normal, 1);
+    let goal = [26.0, 0.0, 2.0];
+    let mut pad = HostPadState::default();
+    m.go([23.0, 0.0, 2.0], goal, 1, Some(&map), &mut pad, &[])
+        .unwrap();
+
+    // The original waypoint is still on the other platform. Both the
+    // follower and the stuck machine request hops after waiting here.
+    let at = [19.6, 0.0, 2.0];
+    for t in 2..=2 * crate::stuck::WINDOW + 2 {
+        let mut pad = HostPadState::default();
+        let walk = m.go(at, goal, t, Some(&map), &mut pad, &[]).unwrap();
+        assert_eq!(walk.walk, [0.0; 2], "tick {t}: {walk:?}");
+        assert!(!pad.buttons.contains(JUMP), "tick {t}");
+    }
+    assert_eq!(m.stuck.level, crate::stuck::Level::Jump);
+}
+
+#[test]
+fn an_off_mesh_start_can_walk_to_its_snapped_waypoint() {
+    let map = MapData {
+        places: Default::default(),
+        nav: floor(),
+        walls: Walls::default(),
+    };
+    let mut m = Mind::new(Skill::Normal, 1);
+    let mut pad = HostPadState::default();
+    let walk = m
+        .go(
+            [-1.5, 5.0, 0.0],
+            [5.0, 5.0, 0.0],
+            1,
+            Some(&map),
+            &mut pad,
+            &[],
+        )
+        .unwrap();
+    assert!(walk.walk[0] > 0.5, "{walk:?}");
+}
+
+#[test]
+fn a_planned_drop_off_a_ledge_is_still_walked_off() {
+    let quad = |x0: f32, y0: f32, x1: f32, y1: f32, z: f32| {
+        Poly::new(vec![[x0, y0, z], [x1, y0, z], [x1, y1, z], [x0, y1, z]])
+    };
+    let map = MapData {
+        places: Default::default(),
+        nav: NavMesh::new(
+            vec![
+                quad(0.0, 0.0, 4.0, 4.0, 1.2),
+                quad(4.0, 0.0, 8.0, 4.0, 0.0),
+            ],
+            vec![Edge {
+                from: 0,
+                to: 1,
+                a: [4.0, 0.0, 1.2],
+                b: [4.0, 4.0, 1.2],
+                kind: crate::nav::Kind::Drop,
+            }],
+        ),
+        walls: Walls::default(),
+    };
+    let goal = [7.0, 2.0, 0.0];
+    let mut m = Mind::new(Skill::Normal, 1);
+    let mut pad = HostPadState::default();
+    // Walking to the edge point: the footing check looks no farther than
+    // the waypoint, so the edge ahead is fine.
+    let walk = m
+        .go([3.6, 2.0, 1.2], goal, 1, Some(&map), &mut pad, &[])
+        .unwrap();
+    assert!(walk.walk[0] > 0.5, "{walk:?}");
+    // At the edge the path steps off on purpose: never held back.
+    let mut pad = HostPadState::default();
+    let walk = m
+        .go([3.9, 2.0, 1.2], goal, 2, Some(&map), &mut pad, &[])
+        .unwrap();
+    assert!(walk.walk[0] > 0.5, "{walk:?}");
 }
 
 // ---- objectives (section 3.7) ----
@@ -1487,4 +1613,33 @@ fn a_killed_targets_respawn_guess_hunts_past_the_search_window() {
     m.step(&late, Some(&map));
     assert_eq!(m.doing, Doing::Roam);
     assert_eq!(m.goal, Some(far), "the sighting carries the hunt");
+}
+
+#[test]
+fn radar_use_is_sampled_per_glance_with_the_names_probability() {
+    let scans = |chance: f32| {
+        let mut mind = Mind::new(Skill::Normal, 41);
+        let mut p = Perception::default();
+        let at = [0., 4., 0.];
+        let mut seen = 0;
+        for scan in 0..256 {
+            p.tick = 10 * scan;
+            p.observations.radar = Some(at);
+            mind.glance_at_tracker(&p, 10, chance);
+            let looked = mind.radar;
+            seen += usize::from(looked.is_some());
+            // A different dot between glances gives no extra rolls.
+            p.observations.radar = Some([4., 0., 0.]);
+            for _ in 1..10 {
+                p.tick += 1;
+                mind.glance_at_tracker(&p, 10, chance);
+                assert_eq!(mind.radar, looked);
+            }
+        }
+        seen
+    };
+    let low = scans(0.2);
+    let high = scans(0.8);
+    assert!(low > 0 && high > low + 80 && high < 256, "{low} vs {high}");
+    assert_eq!(scans(0.8), high);
 }

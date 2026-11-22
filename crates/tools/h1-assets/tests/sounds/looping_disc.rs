@@ -190,7 +190,7 @@ fn level_loops_and_their_character() {
     let refs = h1map::Block::read(scnr, 0x4b4).unwrap();
     let refs = h1.block(refs, 0x28).unwrap();
     println!("== {level}: script references");
-    for e in refs.chunks_exact(0x28) {
+    for e in refs.as_chunks::<0x28>().0 {
         let Some(t) = h1map::TagRef::read(e, 0x18).and_then(|r| h1.tag(r.id).ok()) else {
             continue;
         };
@@ -239,7 +239,7 @@ fn level_loops_and_their_character() {
         let Ok(es) = h1.block(blk, 0x48) else {
             continue;
         };
-        for a in es.chunks_exact(0x48) {
+        for a in es.as_chunks::<0x48>().0 {
             if u32_at(a, 0) != u32::from_be_bytes(*b"lsnd") {
                 continue;
             }

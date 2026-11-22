@@ -21,8 +21,13 @@ xiso.workspace = true
 # The native renderer's world path: an instance's own lightmap coordinates
 # (the lightmap group's buckets) and a pass's blend from its render states.
 native-render = { path = "../../rewrites/native-render" }
+# The native world's upload ring (native_view.rs) and the tests' wgpu
+# instance, with the backends per host (gfx::GpuHost).
+gfx = { path = "../../platform/gfx", default-features = false, features = ["gpu"] }
 # The Halo 2 `sky ` reader: the sky's lights and fog for the viewport.
 h1-assets = { path = "../h1-assets" }
+# The layered test map's invented pixel and vertex shaders (fixture.rs).
+shaders = { path = "../../formats/shaders" }
 
 [dev-dependencies]
 pollster = "1"

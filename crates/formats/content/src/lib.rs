@@ -19,6 +19,7 @@
 //! and hash, and the tests use synthetic maps.
 pub mod campaign_list;
 mod canonical;
+pub mod forge;
 mod hash;
 mod id;
 pub mod manifest;
@@ -32,6 +33,8 @@ pub mod store;
 pub use canonical::{NotInteger, canonicalize};
 pub use hash::{BadHex, Hasher, Sha256};
 pub use id::MapId;
+/// Cache map types used when resolving and validating package contents.
+pub use map;
 pub use manifest::{HudSwap, LevelHud, Manifest, ManifestError, Origin, Swap, Variant};
 pub use resolve::{
     ACTIVE_FILE, BaseRef, CACHE_DIR, DEFAULT_CACHE_CAP, Data, DiscHashes, Library, Package,

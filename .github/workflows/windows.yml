@@ -1,0 +1,67 @@
+name: Windows desktop
+
+on:
+  push:
+    branches: [windows-desktop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  desktop:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true # images, the app icon among them
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-msvc
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Install LLVM 22
+        shell: pwsh
+        run: |
+          $bin = "$env:ProgramFiles\LLVM\bin"
+          if (!(Test-Path "$bin\clang.exe") -or ((& "$bin\clang.exe" --version)[0] -notmatch 'clang version 22\.')) {
+            $url = 'https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/LLVM-22.1.8-win64.exe'
+            $installer = "$env:RUNNER_TEMP\llvm.exe"
+            curl.exe -fLsS --retry 3 $url -o $installer
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            $result = Start-Process $installer -ArgumentList '/S' -Wait -PassThru
+            if ($result.ExitCode) { exit $result.ExitCode }
+          }
+          & "$bin\clang.exe" --version
+          $bin >> $env:GITHUB_PATH
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Check workspace and tests
+        run: cargo check --workspace --tests --keep-going
+      - name: Run synthetic unit tests
+        run: cargo test -p ir -p runtime -p asf -p xiso -p snapshot --lib
+      - name: Verify input mapping and audio mixing
+        run: cargo test -p input -p audio --lib
+      - name: Check the guest C ABI
+        run: cargo test -p runtime --test layout
+      - name: Check local agent connections
+        run: cargo test -p agent --test socket --test tcp
+      - name: Exercise host fault dispatch
+        run: cargo test -p hostfault
+      - name: Compare the Cranelift and C tiers
+        run: cargo test -p clif --test differential
+      - name: Compile and load a generated DLL
+        run: cargo test -p emit --test windows -- --nocapture
+      - name: Prepare and load both desktop tiers
+        run: cargo test -p recomp --features desktop-runtime --lib windows_play_prepares_and_loads_both_tiers
+      - name: Link and start h2.exe
+        run: cargo run -p cli -- settings list

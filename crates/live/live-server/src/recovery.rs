@@ -53,6 +53,7 @@ pub struct Recovery {
     issuer: String,
     lockout: Backoff,
     attempts: RateLimiter,
+    per_account: RateLimiter,
     /// `(xuid, step)` pairs already used.
     used: ReplayGuard,
 }
@@ -69,6 +70,8 @@ impl Recovery {
             issuer: identity.id.clone(),
             lockout,
             attempts,
+            // A burst allows for a few mistyped codes across devices.
+            per_account: RateLimiter::new(1.0 / 300.0, 10),
             used: ReplayGuard::default(),
         }
     }
@@ -211,6 +214,12 @@ pub async fn recover(
         }
         (a.xuid, a.gamertag.clone())
     };
+    if !live.recovery.per_account.allow(&xuid.to_string()) {
+        return Err(ApiError::new(
+            ErrorCode::RateLimited,
+            "too many recovery attempts for this account",
+        ));
+    }
     let secret = live
         .recovery
         .secret(xuid)

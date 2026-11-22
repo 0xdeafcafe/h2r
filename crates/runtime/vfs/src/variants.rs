@@ -221,7 +221,7 @@ impl<B: Backend> VariantFiles<B> {
                 }
                 Some(ServerPack {
                     mapping: crate::disc::map_read_only(&file)?,
-                    file: HostFile { path: source, offset: 0, len: size },
+                    file: HostFile { generation: None, path: source, offset: 0, len: size },
                     source: file,
                 })
             })();
@@ -276,6 +276,10 @@ impl<B: Backend> VariantFiles<B> {
 }
 
 impl<B: Backend> Backend for VariantFiles<B> {
+    fn snapshot_map_bindings(&self) -> std::result::Result<Vec<(String, String)>, crate::StateError> {
+        self.inner.snapshot_map_bindings()
+    }
+
     fn read_only(&self) -> bool {
         self.inner.read_only()
     }
@@ -359,7 +363,7 @@ impl<B: Backend> Backend for VariantFiles<B> {
             return p.served(path)?.film_source().map(Some);
         }
         if let Some(pack) = self.server_pack(path) {
-            return Ok(Some(crate::FilmMapSource::region(pack.source.try_clone()?, 0)));
+            return Ok(Some(crate::FilmMapSource::immutable_region(pack.source.try_clone()?, 0, pack.file.len)));
         }
         self.inner.film_source(path)
     }
@@ -373,6 +377,7 @@ impl<B: Backend> Backend for VariantFiles<B> {
         };
         let len = self.served(path)?.ok()?.len;
         Some(HostFile {
+            generation: None,
             path: pair.pick(halo1).file.clone(),
             offset: 0,
             len,
@@ -418,6 +423,12 @@ impl<B: Backend> Backend for VariantFiles<B> {
         self.inner.rescan()
     }
     fn resolves_on_use(&mut self, path: &str) -> bool {
+        if self.variant(path).is_some() {
+            return false;
+        }
+        if let Some(p) = self.package(path) {
+            return p.resolves_on_use(path);
+        }
         self.inner.resolves_on_use(path)
     }
     fn map_changed(&mut self, path: &str) -> bool {

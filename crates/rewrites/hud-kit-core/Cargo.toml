@@ -1,0 +1,19 @@
+[package]
+name = "hud-kit-core"
+description = "The HUD kit's shared core: the element model, the templates and their resolution from a map, the compiler to nhdt widget records and the HUDs of ours, for the offline preview and the game's runtime alike (docs/game/hud-kit.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.h2]
+doc = ["game/hud-kit.md"]
+status = "in progress"
+
+[dependencies]
+# FourCC and TagId, and the map file the runtime resolves templates from.
+map.workspace = true
+# The bitmap tag (`map_file::MapFile`'s sprites).
+tags.workspace = true
+# The strip's texels, for the cropped meter's ramp.
+assets.workspace = true

@@ -18,12 +18,14 @@
 //!
 //! **Pipelined**, the thinks staged at tick N run while the guest
 //! simulates tick N, and their pads are tick N+1's: a bot acts on what it
-//! saw one tick ago, inside the phantom's modelled network latency (the
-//! uplink takes the tick back off its wire delay, `phantom::action`).
+//! saw one tick ago. The uplink credits this tick toward any configured
+//! transport delay (`phantom::action`).
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
+use std::time::Instant;
 
 use engine::memory::GuestMemory;
 use input::host::HostPadState;
@@ -66,6 +68,34 @@ pub const PIPELINE_ENV: &str = "H2_BOT_PIPELINE";
 
 /// The most workers asked for by number.
 pub const MAX_THREADS: usize = 32;
+
+/// Nanoseconds the game thread has spent sampling phantom pads, in any
+/// [`Mode`], since the process began: the read, think and conclude phases
+/// that run on it, and the wait for workers. A think that runs on a worker
+/// is not in it. `h2 sim` reports the delta over a match as
+/// `wall.bots_ms_per_tick`.
+static GAME_THREAD_NS: AtomicU64 = AtomicU64::new(0);
+
+/// [`GAME_THREAD_NS`]'s value now.
+pub fn game_thread_ns() -> u64 {
+    GAME_THREAD_NS.load(Ordering::Relaxed)
+}
+
+/// Adds the time from its creation to its drop to [`GAME_THREAD_NS`].
+pub(crate) struct GameThreadTimer(Instant);
+
+impl GameThreadTimer {
+    pub(crate) fn start() -> Self {
+        Self(Instant::now())
+    }
+}
+
+impl Drop for GameThreadTimer {
+    fn drop(&mut self) {
+        let ns = u64::try_from(self.0.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        GAME_THREAD_NS.fetch_add(ns, Ordering::Relaxed);
+    }
+}
 
 fn auto_threads() -> usize {
     std::thread::available_parallelism()
@@ -195,6 +225,22 @@ impl Pool {
         self.shared.work.notify_all();
     }
 
+    /// Retire the previous map's work without helping or waiting. A job
+    /// already popped by a worker has its own source and output slot.
+    fn cancel_queued(&self) {
+        let mut q = lock(&self.shared.queue);
+        let queued = q.jobs.len();
+        q.jobs.clear();
+        q.unfinished -= queued;
+        if q.unfinished == 0 {
+            self.shared.idle.notify_all();
+        }
+    }
+
+    fn busy(&self) -> bool {
+        lock(&self.shared.queue).unfinished != 0
+    }
+
     /// Returns once every submitted job is done, running queued ones on
     /// this thread meanwhile. A job's panic goes on here.
     pub fn wait(&self) {
@@ -256,7 +302,29 @@ pub struct Seat<'a> {
     pub machine: [u8; 6],
 }
 
-type Slot = Arc<Mutex<Option<HostPadState>>>;
+/// The pad and the observation it came from travel together, including
+/// while the next tick's think is running on another thread.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Report {
+    pub(crate) pad: HostPadState,
+    pub(crate) latency: crate::tuning::PhantomLatency,
+    pub(crate) think_ticks: u32,
+    /// A brain report can have no current target. Scripts have no decision.
+    pub(crate) shot_range: Option<Option<f32>>,
+}
+
+impl Report {
+    pub(crate) fn from_source(pad: HostPadState, source: &dyn PadSource) -> Self {
+        Self {
+            pad,
+            latency: source.phantom_latency(),
+            think_ticks: 0,
+            shot_range: source.combat_stats().map(|s| s.range),
+        }
+    }
+}
+
+type Slot = Arc<Mutex<Option<Report>>>;
 
 struct Thought {
     key: u32,
@@ -277,6 +345,7 @@ pub struct Thinker {
     pool: Option<Pool>,
     radio: &'static Mutex<radio::Radio>,
     in_flight: Option<InFlight>,
+    retiring: bool,
 }
 
 impl Default for Thinker {
@@ -292,6 +361,7 @@ impl Thinker {
             pool: None,
             radio: radio::host(),
             in_flight: None,
+            retiring: false,
         }
     }
 
@@ -324,9 +394,28 @@ impl Thinker {
         self.pool.get_or_insert_with(|| Pool::new(threads))
     }
 
-    /// Finishes and concludes the pipelined thinks in flight, dropping
-    /// their pads: the stream they were for has ended (a game ended, the
-    /// mode changed).
+    /// The action stream ended on a render frame. Drop its unpublished pads
+    /// and radio messages. The next session may sample only after any worker
+    /// that already took a job releases the old source.
+    pub(crate) fn end_game(&mut self) {
+        if self.in_flight.take().is_some() {
+            if let Some(pool) = &self.pool {
+                pool.cancel_queued();
+                self.retiring = true;
+            }
+            radio::lock(self.radio).end_batch();
+        }
+    }
+
+    pub(crate) fn ready_for_game(&mut self) -> bool {
+        if self.retiring {
+            self.retiring = self.pool.as_ref().is_some_and(Pool::busy);
+        }
+        !self.retiring
+    }
+
+    /// Finishes and publishes pipelined decisions before changing modes,
+    /// dropping their pads. A game transition uses `end_game` instead.
     pub fn settle(&mut self) {
         if let Some(f) = self.in_flight.take() {
             self.conclude(&f);
@@ -350,9 +439,9 @@ impl Thinker {
         tick: u32,
         guest: &dyn GuestMemory,
         seats: &[Seat<'_>],
-    ) -> (Vec<HostPadState>, Vec<(usize, Thought)>) {
+    ) -> (Vec<Report>, Vec<(usize, Thought)>) {
         radio::lock(self.radio).begin_batch();
-        let mut pads = vec![HostPadState::default(); seats.len()];
+        let mut pads = vec![Report::default(); seats.len()];
         let mut thoughts = Vec::new();
         for (i, seat) in seats.iter().enumerate() {
             let frame = Frame {
@@ -361,8 +450,9 @@ impl Thinker {
                 machine: seat.machine,
                 guest,
             };
-            match lock_source(seat.source).observe(&frame) {
-                Sampled::Pad(pad) => pads[i] = pad,
+            let mut source = lock_source(seat.source);
+            match source.observe(&frame) {
+                Sampled::Pad(pad) => pads[i] = Report::from_source(pad, &**source),
                 Sampled::Think => thoughts.push((
                     i,
                     Thought {
@@ -379,8 +469,9 @@ impl Thinker {
             .map(|(_, t)| {
                 let (source, pad) = (Arc::clone(&t.source), Arc::clone(&t.pad));
                 Box::new(move || {
-                    let thought = lock_source(&source).think();
-                    *lock(&pad) = Some(thought);
+                    let mut source = lock_source(&source);
+                    let thought = source.think();
+                    *lock(&pad) = Some(Report::from_source(thought, &**source));
                 }) as Job
             })
             .collect();
@@ -395,18 +486,33 @@ impl Thinker {
         guest: &dyn GuestMemory,
         seats: &[Seat<'_>],
     ) -> Vec<HostPadState> {
+        self.sample_reports(tick, guest, seats)
+            .into_iter()
+            .map(|report| report.pad)
+            .collect()
+    }
+
+    pub(crate) fn sample_reports(
+        &mut self,
+        tick: u32,
+        guest: &dyn GuestMemory,
+        seats: &[Seat<'_>],
+    ) -> Vec<Report> {
+        let _timer = GameThreadTimer::start();
         match self.mode {
             Mode::Serial => {
                 self.settle();
                 seats
                     .iter()
                     .map(|s| {
-                        lock_source(s.source).pad(&Frame {
+                        let mut source = lock_source(s.source);
+                        let pad = source.pad(&Frame {
                             frame: s.frame,
                             tick,
                             machine: s.machine,
                             guest,
-                        })
+                        });
+                        Report::from_source(pad, &**source)
                     })
                     .collect()
             }
@@ -443,6 +549,10 @@ impl Thinker {
                                 .find(|p| p.key == t.key && p.generation == t.generation)
                         })
                         .and_then(|p| *lock(&p.pad))
+                        .map(|report| Report {
+                            think_ticks: 1,
+                            ..report
+                        })
                         .unwrap_or_default();
                 }
                 self.in_flight = Some(InFlight {

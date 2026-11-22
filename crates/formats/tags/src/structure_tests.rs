@@ -140,6 +140,7 @@ fn bsp_with(res: &[Res]) -> (Vec<u8>, Raw) {
     // Cluster block at 0x200, definitions at 0x400, instances at 0x600.
     put32(&mut p, 0x9c, 1);
     put32(&mut p, 0xa0, BASE + 0x200);
+    p[0x200 + 0x6e] = 0xfe;
     put_geometry(&mut p, 0x200, 0x800, &block, &table);
     for (i, v) in [-1.0f32, 2.0, -1.0, 2.0, -1.0, 1.0].iter().enumerate() {
         put32(&mut p, 0x200 + 0x54 + 4 * i, v.to_bits());
@@ -202,6 +203,7 @@ fn decodes_and_loads_structure_geometry() {
         (1, 1, 1)
     );
     let c = &bsp.clusters[0];
+    assert_eq!(c.sky_index, -2);
     assert_eq!(c.bounds, [-1.0, 2.0, -1.0, 2.0, -1.0, 1.0]);
     let s = c.geometry.load(&mut raw, Some(8)).unwrap().unwrap();
     assert_eq!(s.indices, [0, 1, 2]);
@@ -855,4 +857,82 @@ fn block_info_sizes() {
     assert_eq!(GeometryBlockInfo::SIZE, 0x24);
     assert_eq!(crate::structure::GeometryHeader::SIZE, 0x54);
     assert_eq!(STRUCTURE_SECTION.section_size, 0x44);
+}
+
+/// An invented structure BSP with one instanced geometry definition whose
+/// collision BSP (a unit quad) sits at definition `+0x70`, its blocks
+/// after the definition, and one placement of it: the definition's
+/// collision reads back and the placement names it.
+#[test]
+fn an_instance_definitions_collision_reads_back() {
+    use crate::collision::{Bsp, Edge, Plane, Surface, Vertex};
+    use crate::structure::{
+        InstancedGeometryDefinition, InstancedGeometryInstance, SBSP_INSTANCE_DEFINITIONS,
+        instance_definitions,
+    };
+    let mut quad = Bsp::default();
+    for (k, p) in [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
+        .into_iter()
+        .enumerate()
+    {
+        let k = k as u16;
+        quad.vertices.push(Vertex {
+            point: [p[0], p[1], 0.0],
+            edge: u32::from(k),
+        });
+        quad.edges.push(Edge {
+            start_vertex: k,
+            end_vertex: (k + 1) % 4,
+            forward_edge: (k + 1) % 4,
+            reverse_edge: (k + 3) % 4,
+            left_surface: 0,
+            right_surface: 0xffff,
+        });
+    }
+    quad.planes.push(Plane([0.0, 0.0, 1.0, 0.0]));
+    quad.surfaces.push(Surface {
+        plane: 0,
+        first_edge: 0,
+        flags: 0,
+        breakable_surface: 0xff,
+        material: 0,
+    });
+    let def_at = 0x200;
+    let data_at = def_at + InstancedGeometryDefinition::SIZE;
+    // The blocks' data follows the definition; their fields go in it.
+    let encoded = quad.encode_blocks(BASE + data_at as u32 - 0x40);
+    let place_at = data_at + encoded.len() - 0x40;
+    let mut b = vec![0u8; place_at + InstancedGeometryInstance::SIZE];
+    let fields = def_at + InstancedGeometryDefinition::COLLISION;
+    b[fields..fields + 0x40].copy_from_slice(&encoded[..0x40]);
+    b[data_at..data_at + encoded.len() - 0x40].copy_from_slice(&encoded[0x40..]);
+    put32(&mut b, SBSP_INSTANCE_DEFINITIONS, 1);
+    put32(&mut b, SBSP_INSTANCE_DEFINITIONS + 4, BASE + def_at as u32);
+    put32(&mut b, 0x140, 1);
+    put32(&mut b, 0x144, BASE + place_at as u32);
+    let p = place_at;
+    for (o, v) in [
+        (0, 1.0f32),
+        (4, 1.0),
+        (0x14, 1.0),
+        (0x24, 1.0),
+        (0x28, 10.0),
+        (0x2c, 20.0),
+        (0x30, 30.0),
+    ] {
+        put32(&mut b, p + o, v.to_bits());
+    }
+    let view = TagView::new(&b, BASE);
+    let defs = instance_definitions(&view).unwrap();
+    assert_eq!(defs.len(), 1);
+    let read = InstancedGeometryDefinition::collision(&view, defs[0]).unwrap();
+    assert_eq!(read.surfaces, quad.surfaces);
+    assert_eq!(read.vertices, quad.vertices);
+    assert_eq!(read.surface_ring(0), [0, 1, 2, 3]);
+    let placed = InstancedGeometryInstance::placements(&view, defs.len()).unwrap();
+    assert_eq!(placed[0].definition, 0);
+    assert_eq!(placed[0].transform([1.0, 1.0, 0.0]), [11.0, 21.0, 30.0]);
+    // A slice from another buffer is refused, not misread.
+    let other = vec![0u8; InstancedGeometryDefinition::SIZE];
+    assert!(InstancedGeometryDefinition::collision(&view, &other).is_err());
 }

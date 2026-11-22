@@ -8,7 +8,7 @@ use runtime::guest::Permissions;
 use tags::scope_zoom::MAGIC;
 
 // The profile reads native_post shares (src/scope_zoom_hud.rs there).
-use render_bridge::scope_zoom_hud::{HUD_SCREEN_RETURN, hud_profile, profile, tag_def};
+use render_bridge::scope_zoom_hud::{hud_profile, profile, tag_def};
 
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy, points};
 
@@ -224,6 +224,7 @@ fn prepare_blur(mem: &mut dyn GuestMemory, esp: u32) -> Option<()> {
 mod tests {
     use super::*;
     use engine::memory::FlatMemory;
+    use render_bridge::scope_zoom_hud::HUD_SCREEN_RETURN;
     use engine::tags::{TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL, entry_layout, index_layout};
     use tags::scope_zoom::{Blur, Filter, Profile};
 

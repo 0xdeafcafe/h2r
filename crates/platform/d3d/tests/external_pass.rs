@@ -6,12 +6,10 @@
 //! (both copies). Dropped without a backend that can. Synthetic device;
 //! skipped without an adapter or without `DEPTH32FLOAT_STENCIL8`.
 
-mod common;
-
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use common::*;
+use crate::common::*;
 use d3d::{
     Backend, Device, ExternalPass, ExternalTarget, GfxBackend, GuestMemory, InterpBackend, RecordingBackend,
     SparseMemory, SwapFinish, ThreadedBackend, UploadPolicy,

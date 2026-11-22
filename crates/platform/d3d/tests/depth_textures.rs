@@ -6,9 +6,7 @@
 //! the recording backend, and pixels on a real GPU (skipped without an
 //! adapter).
 
-mod common;
-
-use common::*;
+use crate::common::*;
 use d3d::device::DEPTH_BUFFER_DATA;
 use d3d::resource::SurfaceHeader;
 use d3d::{

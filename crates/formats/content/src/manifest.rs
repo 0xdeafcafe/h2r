@@ -50,8 +50,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{MapId, Sha256};
 
-/// The manifest format this build reads and writes.
+/// The manifest format of retail, patch, pack and converted maps.
 pub const FORMAT: u32 = 1;
+/// The manifest format of a locally materialised Forge document.
+pub const FORGE_FORMAT: u32 = 2;
 /// The largest preview image accepted.
 pub const MAX_IMAGE_BYTES: u64 = 512 * 1024;
 /// The manifest's file name inside a package directory.
@@ -68,6 +70,9 @@ pub struct Manifest {
     /// Content packs (`map-variant`), applied in memory after the load.
     #[serde(default, rename = "pack", skip_serializing_if = "Vec::is_empty")]
     pub packs: Vec<Layer>,
+    /// Format 2 has exactly one local Forge layer.
+    #[serde(default, rename = "forge", skip_serializing_if = "Vec::is_empty")]
+    pub forge: Vec<ForgeLayer>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<ResultInfo>,
     /// Display data for 1.0's multiplayer map list, for a map whose name the
@@ -239,6 +244,19 @@ pub struct Layer {
     pub sha256: Sha256,
 }
 
+/// One `[[forge]]` layer tying a document to its local materialisation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForgeLayer {
+    /// SHA-256 of the canonical document with `expect` omitted.
+    pub document: Sha256,
+    /// The full canonical document, including its expectation when present.
+    pub document_file: String,
+    /// The materialised .map within the package directory.
+    pub file: String,
+    pub sha256: Sha256,
+}
+
 /// `[result]`: facts about the patched map.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -252,8 +270,10 @@ pub struct ResultInfo {
 pub enum ManifestError {
     #[error("manifest: {0}")]
     Toml(#[from] toml::de::Error),
-    #[error("manifest format {0} is not supported (this build reads {FORMAT})")]
+    #[error("manifest format {0} is not supported (this build reads {FORMAT} and {FORGE_FORMAT})")]
     Format(u32),
+    #[error("[[forge]]: {0}")]
+    Forge(&'static str),
     #[error("package name is empty")]
     EmptyName,
     #[error("base map name {0:?} is not a plain map name")]
@@ -290,6 +310,7 @@ impl Manifest {
             },
             patches: Vec::new(),
             packs: Vec::new(),
+            forge: Vec::new(),
             result: None,
             list: None,
             variants: Vec::new(),
@@ -371,8 +392,11 @@ impl Manifest {
     /// Checks that need no files: the format version, the names, the paths.
     /// Hex is checked when parsing.
     pub fn validate(&self) -> Result<(), ManifestError> {
-        if self.package.format != FORMAT {
-            return Err(ManifestError::Format(self.package.format));
+        match self.package.format {
+            FORMAT if self.forge.is_empty() => {}
+            FORMAT => return Err(ManifestError::Forge("requires format 2")),
+            FORGE_FORMAT => self.validate_forge()?,
+            format => return Err(ManifestError::Format(format)),
         }
         if self.package.name.trim().is_empty() {
             return Err(ManifestError::EmptyName);
@@ -417,6 +441,36 @@ impl Manifest {
             }
         }
         Ok(())
+    }
+
+    fn validate_forge(&self) -> Result<(), ManifestError> {
+        let [layer] = self.forge.as_slice() else {
+            return Err(ManifestError::Forge("format 2 needs exactly one Forge layer"));
+        };
+        if self.base.derived || self.base.sha256.is_none() {
+            return Err(ManifestError::Forge("requires a hashed disc base"));
+        }
+        if !self.patches.is_empty() || !self.packs.is_empty() || !self.variants.is_empty() {
+            return Err(ManifestError::Forge(
+                "cannot mix Forge and patch, pack or variant layers",
+            ));
+        }
+        let doc = relative(&layer.document_file)?;
+        let map = relative(&layer.file)?;
+        if doc.extension().and_then(|s| s.to_str()) != Some("h2forge")
+            || map.extension().and_then(|s| s.to_str()) != Some("map")
+        {
+            return Err(ManifestError::Forge("requires an .h2forge document and a .map file"));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn layer_files(&self) -> impl Iterator<Item = &String> {
+        self.patches
+            .iter()
+            .chain(&self.packs)
+            .map(|l| &l.file)
+            .chain(self.forge.iter().flat_map(|l| [&l.document_file, &l.file]))
     }
 
     /// [`validate`](Self::validate), then the checks that read the package

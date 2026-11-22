@@ -154,7 +154,13 @@ impl Mind {
             } else {
                 (Pull::Hold(aim.burst), dist < FIRE_RANGE, SHOT_SPEED)
             };
-            let led = add(target, scale(vel, aim.lead * dist / speed_of_shot));
+            let projected = add(target, scale(vel, aim.lead * dist / speed_of_shot));
+            let clear = |at| map.is_none_or(|m| m.walls.clear(eye, at));
+            let (led, shot_clear) = if clear(projected) {
+                (projected, true)
+            } else {
+                (target, clear(target))
+            };
             // The hand (mind::look): flick, lag and drift as on foot.
             self.hand.wield(if riding.role == SeatRole::Passenger {
                 held.map_or(crate::arms::Role::Unknown, |g| g.role())
@@ -172,7 +178,7 @@ impl Mind {
             let off = angle_between(sub(led, eye), me.aim);
             let cone = aim.fire_cone + (0.4 / dist.max(0.5)).min(0.3);
             let guns = !driver || spec.driver_guns;
-            if guns && in_range {
+            if guns && in_range && shot_clear {
                 if self.fight.trigger(p.tick, pull, off < cone) {
                     pad.right_trigger = 1.0;
                 }
@@ -581,7 +587,7 @@ impl Mind {
         let mem = &self.vehicles;
         let speed = |id| mem.speed(id);
         let shunned = |id| mem.shunned(id, tick);
-        let contested = known.or_else(|| match goal {
+        let contested = known.or(match goal {
             Some(Goal::Hold(at, _) | Goal::Hunt(_, at)) => Some(at),
             _ => None,
         });

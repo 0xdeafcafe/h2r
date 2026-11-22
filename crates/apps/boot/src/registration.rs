@@ -30,6 +30,23 @@ use crate::{
     skulls_mp, snapshot_probe, telemetry, touch_glue, ui, ui_back, ui_watch, variant_ext, variant_page, xapi_glue,
 };
 
+/// The three subsystems measured together on a light host. Resolve each
+/// default through the ordinary implementation hierarchy so a group or leaf
+/// override wins, and a new subsystem only joins after its own parity gate.
+pub(crate) fn profile_switches(mut switches: hooks::Switches, light: bool) -> hooks::Switches {
+    if light && switches.feature("host-light-native", false) {
+        for subsystem in [
+            sim_bridge::sim_native::ANIM,
+            sim_bridge::sim_native::COLLISION,
+            sim_bridge::sim_objects::OBJECTS,
+        ] {
+            let enabled = switches.implementation(subsystem, true);
+            switches = switches.with(&format!("impl.{subsystem}"), enabled);
+        }
+    }
+    switches
+}
+
 /// The light profile requires a headless backend and the clock-only DirectSound shim.
 pub(crate) fn register_viewer_skips(
     features: &mut hooks::Registry,
@@ -41,6 +58,10 @@ pub(crate) fn register_viewer_skips(
             .map_err(anyhow::Error::msg)?;
         features
             .add(&sim_bridge::sim_submix::SimSubmix)
+            .map_err(anyhow::Error::msg)?;
+        // Off unless `impl.sim.status-poll` is set (docs/runtime/cache-slots.md).
+        features
+            .add(&sim_bridge::sim_status_poll::StatusPoll)
             .map_err(anyhow::Error::msg)?;
     }
     Ok(())
@@ -70,32 +91,79 @@ pub struct CoreInputs<'a> {
 
 /// What [`register_core`] decided, for the install lines after the plan.
 pub struct Core {
+    pub editor_sources: Option<Arc<crate::loaded_map::EditorSources>>,
     pub telemetry: Option<Arc<telemetry::Telemetry>>,
     pub ui_navigation: Arc<ui_back::Navigation>,
-    pub skulls_on: bool,
+    pub skulls: Option<Arc<skulls::Tracker>>,
     pub skulls_mp_on: bool,
     pub skulls_custom_on: bool,
     pub health_on: bool,
     /// The bots are installed (their nav meshes may be built at boot).
     pub bots_on: bool,
+    /// The slot-17 probe was selected for this plan.
+    pub creature_probe: bool,
 }
 
 /// Registers everything from the telemetry hooks to the touch glue.
 pub fn register_core(features: &mut hooks::Registry, i: CoreInputs<'_>) -> anyhow::Result<Core> {
-    register_core_film(features, i, None)
+    register_core_film(features, i, None, false, None)
 }
 
 pub(crate) fn register_core_film(
     features: &mut hooks::Registry,
     i: CoreInputs<'_>,
     film: Option<Arc<crate::theater::Session>>,
+    non_player: bool,
+    editor: Option<vfs::MapRebind>,
 ) -> anyhow::Result<Core> {
+    let sources = editor.zip(i.vfs.as_ref()).map(|(handle, vfs)| {
+        Arc::new(crate::loaded_map::EditorSources::new(vfs, handle))
+    });
     let rt: &Runtime = i.rt;
+    let creature_probe = features
+        .add(&crate::actor_net::creature::CreatureProbe)
+        .map_err(|e| anyhow::anyhow!("creature-probe: {e}"))?;
+    let replication_version = live_proto::replication::local(creature_probe);
+    if film.as_ref().is_none_or(|film| film.uses_replication_admission()) {
+        let admission = features
+            .add(&crate::replication_admission::ReplicationAdmission::new(replication_version))
+            .map_err(|e| anyhow::anyhow!("replication admission: {e}"))?;
+        anyhow::ensure!(admission, "replication admission must be enabled");
+        if let Some(live) = &i.live {
+            live.set_replication_version(replication_version);
+        }
+    } else {
+        anyhow::ensure!(!creature_probe, "creature probe requires replication admission");
+    }
     let config = i.telemetry.unwrap_or_else(|error| {
         eprintln!("live telemetry transport disabled: {error}");
         telemetry::TelemetryConfig::default()
     });
     let telemetry = register_telemetry(features, &config, film.as_ref())?;
+    let link = Arc::new(crate::actor_net_link::HostLink::default());
+    let reset = Arc::clone(&link);
+    let live = i.live.clone();
+    let capture = crate::actor_net::Capture::new(
+        move |_, tick, host| {
+            let result = link.post_tick(live.as_deref(), tick, |peer, budget, request_key| {
+                // P3 leaves controls off. Tunnel peer IDs are connection IDs.
+                match host.schedule(budget, None, request_key) {
+                    Ok(packet) => packet,
+                    Err(error) => {
+                        eprintln!("actor-net: scheduling peer {peer} at tick {tick}: {error}");
+                        None
+                    }
+                }
+            });
+            if let Err(error) = result {
+                eprintln!("actor-net: sending host tick {tick}: {error}");
+            }
+        },
+        move || reset.reset(),
+    );
+    features
+        .add(&capture)
+        .map_err(|e| anyhow::anyhow!("actor channel host capture: {e}"))?;
     if let Some(vfs) = i.vfs.clone() {
         features
             .add(&map_slots::MapSlots { vfs })
@@ -144,6 +212,9 @@ pub(crate) fn register_core_film(
         );
         game_setup_help::install(features).context("installing the Game Setup help")?;
     }
+    let live_browser = i.live.as_ref().filter(|_| i.settings.is_some() && !non_player);
+    custom_games::browser_filters::install(features, live_browser, i.data_root)
+        .context("installing the custom games browser filters")?;
     // The game variant editor's More Options row and page (our options in
     // the record's extension block; docs/game/game-options.md section 3).
     {
@@ -156,6 +227,12 @@ pub(crate) fn register_core_film(
             .add(&variant_page::MoreRow)
             .map_err(|e| anyhow::anyhow!("variant options row: {e}"))?;
     }
+    // The game type list's Tweakers row, after Territories, and its variant
+    // lists: Superbounce and the other tweaked-rules variants
+    // (docs/game/community-gametypes.md "Tweakers").
+    features
+        .add(&crate::tweakers::Tweakers)
+        .map_err(|e| anyhow::anyhow!("tweakers: {e}"))?;
     features.add(&hud::Hud).map_err(|e| anyhow::anyhow!("hud: {e}"))?;
     features
         .add(&crate::loaded_map::LoadedMap)
@@ -169,6 +246,8 @@ pub(crate) fn register_core_film(
     // screen opened from the logon's polling (docs/live/live.md, "In-game
     // sign-in").
     signin_screen::install(rt, features, i.live.as_ref()).context("installing the sign-in prompt")?;
+    crate::join_link::install(features, i.live.clone(), non_player || film.is_some())
+        .context("installing Live join links")?;
     // A campaign level in place of the main menu (`h2 play --level`,
     // H2_LEVEL) and the level-loaded mark H2_PERF_FROM=level waits on
     // (docs/runtime/level-boot.md).
@@ -177,7 +256,7 @@ pub(crate) fn register_core_film(
     // campaign start turns on the profile's chosen skulls (docs/game/skulls.md).
     // Headless runs (no settings store) leave skulls as retail. Hooks on
     // the feature plan; the line after the plan installs says where.
-    let skulls_on = skulls::install(features, i.settings.clone()).context("installing the skulls")?;
+    let skulls = skulls::install(features, i.settings.clone()).context("installing the skulls")?;
     // Skulls in multiplayer games: the host's set, advertised to guests on
     // our Live service and applied on every machine at game start
     // (docs/game/skulls.md "In multiplayer").
@@ -188,6 +267,29 @@ pub(crate) fn register_core_film(
     features
         .add(&variant_ext::Transport { hle: i.live.clone() })
         .map_err(|e| anyhow::anyhow!("variant options transport: {e}"))?;
+    // The game-variant store: its variants in the variant list, their
+    // options and script on the game at its start, the saved variants
+    // ported at boot (docs/game/rules-engine.md, "Live game variants in the
+    // game").
+    let port = i.settings.as_ref().map_or(crate::game_variants::port::PortScript::Keep, |s| {
+        crate::game_variants::port::script_setting(
+            s.handle::<i64>(crate::setting_defs::VARIANTS_PORT_SCRIPT.key).get(),
+        )
+    });
+    crate::game_variants::install(
+        features,
+        crate::game_variants::Boot {
+            data_root: i.data_root.to_path_buf(),
+            live: i.live.clone(),
+            port,
+        },
+    )
+    .context("installing the game-variant store")?;
+    if let Some(hle) = i.live.clone() {
+        features
+            .add(&crate::live_hopper::MapPackRotation(hle))
+            .map_err(|e| anyhow::anyhow!("matchmaking map pack rotation: {e}"))?;
+    }
     // Its damage, shield and health scales on each damage instance.
     features
         .add(&variant_ext::Vitality)
@@ -196,14 +298,69 @@ pub(crate) fn register_core_film(
     // ours on the tick (docs/game/skulls.md "Our skulls"). The skull weapon's
     // tag comes from the loaded map's file, found through the VFS.
     let custom_maps: Option<skulls_custom::MapLocator> = i.vfs.map(|vfs| -> skulls_custom::MapLocator {
-        Box::new(move |map| {
+        Box::new(move |name, path| {
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-            let file = crate::map_override::map_file(&mut v, map)?;
-            Some(telemetry::MapFile { path: file.path, offset: file.offset, len: file.len })
+            crate::map_override::map_file_at(&mut v, name, path)
         })
     });
-    let skulls_custom_on = skulls_custom::install(features, i.settings.clone(), telemetry.clone(), custom_maps)
+    let skulls_custom_on = skulls_custom::install_for_maps(
+        features, i.settings.clone(), telemetry.clone(), custom_maps, sources.as_deref(),
+    )
         .context("installing our skulls")?;
+    // Firefight on a kit map (docs/game/firefight.md, "The host runtime"):
+    // off unless H2_FEATURES names `firefight`. A film replays the host's
+    // entries.
+    // Its Game Setup row and options page come with it, where there is a
+    // settings store to keep the choices.
+    let firefight_options = i.settings.as_ref().map(crate::firefight::options::source);
+    // The host's scores and result go to Live and the film through telemetry.
+    let firefight_reports = telemetry.clone().map(|t| {
+        Box::new(move |report: crate::firefight::runtime::Report| match report {
+            crate::firefight::runtime::Report::Score(score) => t.firefight_score(score),
+            crate::firefight::runtime::Report::Ended(ended) => t.firefight_ended(ended),
+        }) as Box<crate::firefight::runtime::ReportSink>
+    });
+    let firefight_on = crate::firefight::feature::install_with(
+        features,
+        film.is_some(),
+        firefight_options,
+        firefight_reports,
+    )
+        .context("installing Firefight")?;
+    if firefight_on && let Some(store) = i.settings.as_ref() {
+        crate::firefight::options::install(features, store)
+            .context("installing the Firefight options page")?;
+    }
+    // The party lobby: its mode strip and Multiplayer, Forge and
+    // Firefight as modes of the lobby (docs/game/party-lobby.md). It has
+    // no switch. It is in every run a settings store is opened for, as
+    // Game Setup's other rows of ours are.
+    if let Some(store) = i.settings.as_ref() {
+        let offer = crate::lobby_start::Offer {
+            forge: crate::forge_glue::enabled(features.switches()),
+            firefight: firefight_on,
+        };
+        // The mode strip's FORGE and FIREFIGHT tabs, with their features
+        // (docs/game/party-lobby.md, "Where each tab runs").
+        crate::lobby_tabs::set_present(|p| {
+            p.forge = offer.forge;
+            p.firefight = offer.firefight;
+        });
+        crate::lobby_mode::install(
+            features,
+            crate::lobby_mode::LobbyMode {
+                offer,
+                store: Some(Arc::clone(store)),
+                data: i.data_root.to_path_buf(),
+            },
+        )
+        .context("installing the party lobby")?;
+    }
+    // Rules scripts (docs/game/rules-engine.md, "The host runtime"): off
+    // unless H2_FEATURES names `rules`. A Live host puts the script's hash
+    // on its session.
+    #[cfg(feature = "rules")]
+    crate::rules::feature::install(features, i.live.clone()).context("installing rules scripts")?;
     for effect in [
         &crate::h1_particle_physics::H1ParticlePhysics as &dyn hooks::Feature,
         &crate::h1_flag::H1Flag,
@@ -251,18 +408,45 @@ pub(crate) fn register_core_film(
     // pull at each map load, from the Aim Assist setting (Auto: Strong
     // while the touch controls show). Headless runs keep retail.
     aim_assist::install(features, i.settings.clone()).context("installing the aim assist")?;
+    // The superbounce game type's HUD plate and spot lines
+    // (docs/game/superbounce.md): idle unless the variant or
+    // H2_SUPERBOUNCE asks for it.
+    crate::superbounce_mode::install(features, telemetry.clone()).context("installing the superbounce mode")?;
+    // Teabags in every game, for the incel medal (docs/game/teabag.md):
+    // recorded to Live and the film on the console that records the game.
+    crate::teabag::install(features, telemetry.clone()).context("installing the teabag watch")?;
+    // HUD elements of ours drawn by the game's HUD (docs/game/hud-kit.md),
+    // and the superbounce HUD on it, fed from the mode's state; its
+    // tutorial's seen flag is a setting.
+    crate::hud_kit::install(features).context("installing the HUD kit")?;
+    crate::superbounce_hud::install(features, i.settings.clone())
+        .context("installing the superbounce HUD")?;
+    // Hold X while falling to steer onto a bounce strip, opt in by the
+    // superbounce.fall_assist setting
+    // (docs/game/superbounce.md, "Hold X: the fall assist"). Its input tap
+    // goes in with the XAPI input taps (register_late).
+    crate::superbounce_assist::install(features, i.settings.clone())
+        .context("installing the superbounce assist")?;
     // Bots (docs/game/bots.md): phantom peers in a session this console
     // hosts. Idle with none.
+    let playing_film = film.is_some();
     let mut bots_on = false;
     if i.bots {
         crate::clanker_card::install(features, i.live.clone())
             .context("installing Clanker player options")?;
         let bot_tape = film.filter(|f| f.has_bot_tape());
-        bots_on = bot_glue::install_film(features, i.data_root, bot_tape).context("installing the bots")?;
+        bots_on = bot_glue::install_for_maps(features, i.data_root, bot_tape, sources.as_deref())
+            .context("installing the bots")?;
         // The Clankers page and its Game Setup row (stage 7).
         if let Some(store) = i.settings.as_ref() {
             clankers::install(features, store, i.live.clone(), telemetry.as_ref()).context("installing the Clankers page")?;
         }
+    }
+    if let Some(hle) = i.live.as_ref().filter(|_| !playing_film) {
+        crate::live_glue::install_browser_advertisement(
+            features, hle, i.settings.as_ref(), bots_on,
+        )
+        .context("installing Live browser advertisements")?;
     }
     if let Some(store) = i.settings.as_ref() {
         features
@@ -277,7 +461,17 @@ pub(crate) fn register_core_film(
     // look into player one's facing, and the layout from player one's
     // seat and weapon. Idle while no touch controls show.
     touch_glue::install(features).context("installing the touch glue")?;
-    Ok(Core { telemetry, ui_navigation, skulls_on, skulls_mp_on, skulls_custom_on, health_on, bots_on })
+    Ok(Core {
+        editor_sources: sources,
+        telemetry,
+        ui_navigation,
+        skulls,
+        skulls_mp_on,
+        skulls_custom_on,
+        health_on,
+        bots_on,
+        creature_probe,
+    })
 }
 
 /// The agent API's way in.
@@ -295,6 +489,14 @@ pub enum AgentSource {
 /// What [`register_late`] needs: the registrations after the host's d3d,
 /// audio and input are in.
 pub struct LateInputs<'a> {
+    /// The effective resolution source of the backend drawing this run.
+    #[cfg(feature = "gpu")]
+    pub view: Option<&'a crate::d3d_glue::DrawingView>,
+    /// Retail guest geometry, or a legacy film's recorded geometry.
+    #[cfg(feature = "gpu")]
+    pub fixed_lod: Option<f32>,
+    #[cfg(feature = "gpu")]
+    pub world_line_present: Option<Arc<dyn render_bridge::scene_step::PresentObserver>>,
     pub rt: &'a Arc<Runtime>,
     pub lockstep: lockstep_glue::Config,
     pub agent: AgentSource,
@@ -350,7 +552,7 @@ pub(crate) fn register_late_for_profile(
     );
     let lockstep_on = i.lockstep.enabled();
     let input_replay = i.lockstep.replay.is_some();
-    let xa = i.xa.map(|x| &**x);
+    let xa = i.xa.map(AsRef::as_ref);
     // H2_LOCKSTEP / H2_INPUT_RECORD / H2_INPUT_REPLAY (lockstep_glue.rs).
     let harness = if lockstep_on {
         let h = lockstep_glue::Lockstep::install(features, i.lockstep, lockstep::TickHook::HALO2, xa)?;
@@ -361,12 +563,16 @@ pub(crate) fn register_late_for_profile(
     } else {
         None
     };
+    // The superbounce fall assist's input tap (superbounce_assist.rs): under
+    // the agent's tap, over a recording's or replay's, so a recording logs the
+    // pad the guest got and a replay overwrites it.
+    crate::superbounce_assist::install_tap(xa);
     // H2_AGENT=<socket>: the agent API (agent_glue.rs, docs/runtime/agent-api.md).
     let agent = match i.agent {
         // Over TCP (the Xbox app) a refused port must not stop the game:
         // it runs on, undriven, and says why.
         AgentSource::Socket(path) if matches!(agent_proto::Endpoint::from(path.clone()), agent_proto::Endpoint::Tcp(_)) => {
-            match agent_glue::AgentGlue::install(features, path, xa, input_replay, i.allow_bot_add) {
+            match agent_glue::AgentGlue::install(features, path, xa, input_replay, i.allow_bot_add, i.data_root) {
                 Ok(a) => Some(a),
                 Err(e) => {
                     eprintln!("agent: not listening: {e:#}");
@@ -375,11 +581,11 @@ pub(crate) fn register_late_for_profile(
             }
         }
         AgentSource::Socket(path) => Some(agent_glue::AgentGlue::install(
-            features, path, xa, input_replay, i.allow_bot_add,
+            features, path, xa, input_replay, i.allow_bot_add, i.data_root,
         )?),
         // The debug menu talks to an agent: a local one, with no socket.
         AgentSource::Recording => Some(agent_glue::AgentGlue::with_endpoint(
-            features, None, xa, input_replay, i.allow_bot_add,
+            features, None, xa, input_replay, i.allow_bot_add, i.data_root,
         )?),
         AgentSource::Local => Some(agent_glue::AgentGlue::local()),
         AgentSource::None => None,
@@ -387,15 +593,22 @@ pub(crate) fn register_late_for_profile(
     // Our cheats (cheats.rs): refused in co-op and lockstep runs, and on
     // Live but for the allowed gamertags.
     if let Some(a) = &agent {
+        a.install_matchmaking_trace(features)?;
         cheats::install(features, &a.agent, i.rt, lockstep_on, i.live.clone())?;
     }
-    // The Rust datum, tag and locale functions, when H2_FEATURES has
-    // impl.engine=on (off by default).
+    // The Rust datum, tag and locale functions (on unless H2_FEATURES has
+    // impl.engine=off).
     features
         .add(&hooks::leaves::EngineLeaves)
         .map_err(|e| anyhow::anyhow!("engine leaves: {e}"))?;
     features.add(&sim_bridge::sim_physics::NativePhysics)
         .map_err(|e| anyhow::anyhow!("simulation physics: {e}"))?;
+    // SimExt, the extension records saved with checkpoints and snapshots
+    // (docs/engine/sim-rewrite.md section 2). Always on; with no records it
+    // saves nothing and leaves the sim hash alone.
+    features
+        .add(&sim_bridge::sim_ext::SimExtFeature)
+        .map_err(|e| anyhow::anyhow!("sim ext: {e}"))?;
     // Render front-end time in the frame stats, when H2_FEATURES has
     // render-timing (off by default).
     features
@@ -414,13 +627,28 @@ pub(crate) fn register_late_for_profile(
     features.add(&i.pipeline).map_err(|e| anyhow::anyhow!("pipeline render: {e}"))?;
     #[cfg(feature = "gpu")]
     if render_hooks == film::RenderHooks::Gpu {
+        use render_bridge::native_scene_lists::NativeSceneLists;
+
+        let view_scale = if let Some(view) = i.view {
+            let lod = crate::lod_distance::LodDistance::new(i.settings.as_deref(), view.scale_stats.clone())?;
+            let lod = match i.fixed_lod {
+                Some(factor) => lod.with_fixed_multiplier(factor),
+                None => lod,
+            };
+            features.add(&lod).map_err(|e| anyhow::anyhow!("LOD distance: {e}"))?;
+            lod.view_scale()
+        } else {
+            None
+        };
         features
             .add(&render_bridge::native_map_work::NativeMapWork)
             .map_err(|e| anyhow::anyhow!("native map lifecycle: {e}"))?;
         // The frame step's FrameScene: camera, world and objects extracted
         // for the native stages (docs/graphics/framescene.md).
         features
-            .add(&render_bridge::scene_step::FrameSceneStep)
+            .add(&render_bridge::scene_step::FrameSceneStep {
+                present: i.world_line_present,
+            })
             .map_err(|e| anyhow::anyhow!("frame scene: {e}"))?;
         // The static world on the native GPU renderer
         // (on by default, H2_FEATURES=impl.render.native=off turns it
@@ -481,9 +709,11 @@ pub(crate) fn register_late_for_profile(
         features
             .add(&render_bridge::native_world_layers::NativeWorldLayers)
             .map_err(|e| anyhow::anyhow!("native world layers: {e}"))?;
-        features
-            .add(&render_bridge::native_scene_lists::NativeSceneLists)
-            .map_err(|e| anyhow::anyhow!("native scene lists: {e}"))?;
+        if let Some(scale) = view_scale {
+            features.add(&NativeSceneLists::with_lod_scale(scale))
+        } else {
+            features.add(&NativeSceneLists)
+        }.map_err(|e| anyhow::anyhow!("native scene lists: {e}"))?;
         // Mark the sorted geometry entries so their resolved indexed draws
         // can use a cached vertex binding in the game's order (off by default).
         features
@@ -549,7 +779,7 @@ pub(crate) fn register_late_for_profile(
     }
     // H2_UI_WATCH=1: the screen player one's input goes to, a line on each
     // change and `ui.screen` (`h2 coop test --drive`; ui_watch.rs).
-    ui_watch::install(features)?;
+    ui_watch::install(features, i.disc)?;
     // H2_COOP_PROBE=1: the retail synchronous campaign path over System Link
     // (docs/live/live-coop.md section 9). Added last, so it can see every
     // override placed outside the plan and refuse instead of failing it.
@@ -590,6 +820,7 @@ pub(crate) fn register_late_for_profile(
         }
         let on = crate::coop_live::install(features, i.live.clone(), arm, i.settings.clone(), i.disc)?;
         custom_games::set_coop_row(on);
+        crate::lobby_tabs::set_present(|p| p.co_op = on);
     }
     // The mod repository (docs/game/maps.md §5, "Mod downloads"): the Xbox
     // Live menu's last row opens our Mods screens in place of Content
@@ -600,6 +831,11 @@ pub(crate) fn register_late_for_profile(
     // OptiMatch playlists into the server's clanker hoppers and the rest.
     if i.allow_bot_add {
         crate::clankermatch::install(features, i.live.clone()).context("installing Clankermatch")?;
+        // The mode strip's CLANKERS tab: present with Clankermatch on, and
+        // on where the server lists a Clanker playlist.
+        let clankers = features.switches().feature(crate::clankermatch::FEATURE, true);
+        crate::lobby_tabs::set_present(|p| p.clankers = clankers);
+        crate::lobby_tabs::strip::set_live(i.live.clone());
     }
     // Back to the Xbox Live menu, the cursor is on the browser or co-op
     // row the player chose, past the four rows retail restores.

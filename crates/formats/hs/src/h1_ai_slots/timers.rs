@@ -52,7 +52,7 @@ pub fn build(timers: impl IntoIterator<Item = (u16, u32, f32)>) -> Option<Vec<u3
         words.push(value);
     }
     let mut count = 0;
-    for block in words[1..HEADER as usize].chunks_exact_mut(2) {
+    for block in words[1..HEADER as usize].as_chunks_mut::<2>().0 {
         block[1] = count;
         count += block[0].count_ones();
     }

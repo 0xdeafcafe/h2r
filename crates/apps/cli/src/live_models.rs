@@ -3503,37 +3503,17 @@ fn build_biped(disc: &Disc, stems: &[&str]) -> Result<(Model, BipedInfo)> {
 
 /// The species key of a biped tag: its directory's name, lower case
 /// (`objects\\characters\\grunt\\grunt` -> `grunt`), as telemetry sends it.
+/// The rule is `forge::look::census`'s, which lists the Forge monitor's
+/// models by the same key.
 pub fn species_of(tag: &str) -> Option<String> {
-    let mut parts = tag.rsplit('\\');
-    parts.next()?;
-    let dir = parts.next()?.to_ascii_lowercase();
-    is_id(&dir).then_some(dir)
+    forge::look::census::species_of(tag)
 }
 
 /// Per species, the biped tag to draw it with, from every biped tag name and
 /// the number of maps it is on: the one named like its directory, else the
 /// most common, else the shortest name (then the first alphabetically).
 pub fn choose_bipeds(tags: &BTreeMap<String, usize>) -> BTreeMap<String, String> {
-    let mut by_species: BTreeMap<String, Vec<(&String, usize)>> = BTreeMap::new();
-    for (name, &count) in tags {
-        if let Some(sp) = species_of(name) {
-            by_species.entry(sp).or_default().push((name, count));
-        }
-    }
-    by_species
-        .into_iter()
-        .map(|(sp, mut names)| {
-            names.sort_by(|a, b| {
-                let own = |n: &str| !last_component(n).eq_ignore_ascii_case(&sp);
-                own(a.0)
-                    .cmp(&own(b.0))
-                    .then(b.1.cmp(&a.1))
-                    .then(a.0.len().cmp(&b.0.len()))
-                    .then(a.0.cmp(b.0))
-            });
-            (sp, names[0].0.clone())
-        })
-        .collect()
+    forge::look::census::choose_bipeds(tags)
 }
 
 /// Campaign characters: every biped tag on the campaign maps, one per

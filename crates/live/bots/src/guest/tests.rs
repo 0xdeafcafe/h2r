@@ -674,3 +674,68 @@ fn decisions_honesty_replays_hidden_changes_from_the_guest_object_table() {
     };
     crate::perceive::honesty::paired_worlds(Some(&map), [(left, right)]);
 }
+
+#[test]
+fn hidden_motion_makes_an_anonymous_horizontal_blip_only_while_the_sensor_can_show_it() {
+    use live_proto::hopper::variant::flag::{MOTION_SENSOR, TEAM_PLAY};
+
+    let mut g = game(&[
+        (0, [0.; 3], X, false),
+        (0, [0., 1., 0.], X, false),
+        (1, [0., 4.3, 9.], X, false),
+    ], true);
+    const HUD: u32 = 0x006b_0000;
+    const MATG: u32 = 0x006c_0000;
+    const CONTROLS: u32 = 0x006d_0000;
+    let enemy = BODIES + 0x800;
+    let flags = GAME + OPTIONS + VARIANT_FLAGS;
+    g.put_u32(flags, TEAM_PLAY | MOTION_SENSOR)
+        .put_u32(points::HUD_GLOBALS_TAG.base, HUD)
+        .put_f32(HUD + 0x290, 6.0)
+        .put_u32(points::GLOBALS_TAG.base, MATG)
+        .put_u32(MATG + 0x134, CONTROLS)
+        .put_f32(CONTROLS + 0x3c, 1.0)
+        .put_f32(0x0045_e1f0, 0.5)
+        .put_f32(0x0045_e1f4, 0.5)
+        .put_u8(BODIES + radar::UNIT_ZOOM, u8::MAX)
+        .put_f32(BODIES + 0x400 + 0x88, 1.0)
+        .put_f32(enemy + 0x88, 1.0);
+    let observed = |g: &FakeGuest| {
+        let mut p = perceive(g, machine(0)).unwrap();
+        crate::perceive::observe(&mut p, &mut Default::default(), &mut [], None);
+        assert!(p.others.iter().all(|o| p.teams && o.team == 0));
+        assert!(p.observations.contacts.is_empty());
+        p.observations.radar
+    };
+    assert_eq!(observed(&g), Some([0., 4.5, 0.]));
+    g.put_u32(flags, MOTION_SENSOR);
+    assert_eq!(observed(&g), Some([0., 1., 0.]), "FFA uses the nearer dot");
+    g.put_u32(flags, TEAM_PLAY | MOTION_SENSOR)
+        .put_u32(enemy + BIPED_UNIT_FLAGS, BIPED_CROUCH_REQUEST);
+    assert_eq!(observed(&g), None);
+    g.put_u32(enemy + BIPED_UNIT_FLAGS, 0).put_f32(enemy + 0x88, 0.25);
+    assert_eq!(observed(&g), None);
+    g.put_f32(enemy + 0x88, 3.0).put_f32(HUD + 0x290, 4.0);
+    assert_eq!(observed(&g), None);
+    g.put_f32(HUD + 0x290, 6.0).put_u8(BODIES + radar::UNIT_ZOOM, 0);
+    assert_eq!(observed(&g), None);
+    g.put_u8(BODIES + radar::UNIT_ZOOM, u8::MAX).put_u32(flags, TEAM_PLAY);
+    assert_eq!(observed(&g), None);
+}
+
+#[test]
+fn only_a_visible_enemy_with_depleted_shields_gives_a_melee_finishing_cue() {
+    let mut g = three();
+    let map = crate::cache::MapData::default();
+    let shield = BODIES + 0x400 + 0xf0;
+    let observed = |g: &FakeGuest, geometry| {
+        let mut p = perceive(g, machine(0)).unwrap();
+        crate::perceive::observe(&mut p, &mut Default::default(), &mut [], geometry);
+        p.observations.contacts.into_iter().find(|c| c.id == 1).and_then(|c| c.shield)
+    };
+    g.put_f32(shield, 0.);
+    assert_eq!(observed(&g, Some(&map)), Some(0.));
+    assert_eq!(observed(&g, None), None);
+    g.put_f32(shield, 0.35);
+    assert_eq!(observed(&g, Some(&map)), None);
+}

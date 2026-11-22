@@ -52,6 +52,12 @@ use crate::layout::skip::{GEOMETRY_BUILD, GEOMETRY_DRAW, ITEM_SIZE, RENDER_RECOR
 
 /// The structure BSP's pointer.
 pub const ACTIVE_BSP: u32 = 0x004e_0348;
+/// The light weight an object shadow's mask branch publishes
+/// before its layers: `0x00032912` is `movss [0x00485a30], xmm0`, the
+/// product loaded from `[esp+0x14]` at `0x0003290a`. It is the word layer
+/// inputs 16 and 17 read (`layout::layer_inputs::LIGHT_WEIGHT`;
+/// docs/graphics/e3-lighting.md, "Sun shadows from objects").
+pub const OBJECT_SHADOW_WEIGHT: u32 = crate::layout::layer_inputs::LIGHT_WEIGHT;
 /// The shadow projection block, 36 words.
 pub const SHADOW_PROJECTION: u32 = 0x004c_9798;
 
@@ -313,8 +319,18 @@ pub fn push(
     let projection = matches!(layer, 10 | 11).then(|| projection(mem)).flatten();
     let group = LightGroup { light: 0, layer, site, projection, entries: 0..0, remainder: out.remainder() };
     match site {
-        GroupSite::ObjectShadow => builder.push_shadow_group(group, &entries)?,
-        _ => builder.push_light_group(group, &entries)?,
+        GroupSite::ObjectShadow => {
+            builder.push_shadow_group(group, &entries)?;
+            // The mask branch publishes its weight before its layers.
+            if layer == 11
+                && let Some(weight) = mem.read_u32(OBJECT_SHADOW_WEIGHT).map(f32::from_bits)
+            {
+                builder.set_shadow_weight(weight)?;
+            }
+        }
+        _ => {
+            builder.push_light_group(group, &entries)?;
+        }
     };
     Ok(out)
 }
@@ -433,7 +449,7 @@ mod tests {
         b.begin(SceneId::default());
         b.open_view(ViewKey { kind: ViewKind::Game, player: 0, view: 0 }, crate::layout::camera::read(&cam, 0x1000).unwrap())
             .unwrap();
-        let light = SceneLight { handle: 1, definition: 2, flags: 4, definition_flags: 0, additional_casters: true, steps: 0..0 };
+        let light = SceneLight { handle: 1, definition: 2, flags: 4, definition_flags: 0, additional_casters: true, steps: 0..0, ..Default::default() };
         let step = LightStep { layer: 10, stencil: None, target: LightTarget::ShadowMap, draws: true };
         b.push_light(light, &[step]).unwrap();
     }
@@ -536,14 +552,18 @@ mod tests {
         let mut b = SceneBuilder::default();
         scene_with_light(&mut b);
         assert_eq!(push(&m, LIST, 10, GroupSite::ObjectShadow, &[sorted(2)], &mut b), Err(BuildError::NoShadow));
-        b.push_object_shadow([7, 8]).unwrap();
+        b.push_object_shadow([7, 8], false).unwrap();
+        m.w(OBJECT_SHADOW_WEIGHT, 0.375f32.to_bits());
         let got = push(&m, LIST, 10, GroupSite::ObjectShadow, &[sorted(2), sorted(0)], &mut b).unwrap();
         assert_eq!(got.entries, 2);
+        assert_eq!(b.scene().unwrap().object_shadows[0].weight(), None, "layer 10 reads no weight");
+        push(&m, LIST, 11, GroupSite::ObjectShadow, &[sorted(0)], &mut b).unwrap();
         let s = b.seal(Stamp::default()).unwrap();
         s.check().unwrap();
         assert!(s.groups_of(0).is_empty());
         let shadow = &s.object_shadows_of(0)[0];
         let group = &s.shadow_groups_of(shadow)[0];
         assert_eq!((group.layer, group.site, s.entries_of(group).len()), (10, GroupSite::ObjectShadow, 2));
+        assert_eq!(shadow.weight(), Some(0.375), "layer 11 reads the weight");
     }
 }

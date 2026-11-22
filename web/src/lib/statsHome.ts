@@ -31,6 +31,17 @@ export interface PlaylistRow { playlist: string; games: number }
 export interface SkullRow { skull: number; games: number }
 export interface ActivityRow { hour: string; games: number; kills: number }
 
+/** Firefight's part of the summary (docs/game/firefight.md "Scoring and
+ *  stats"): matches against the director, folded by the server from the
+ *  host's `FirefightScore` and `FirefightEnded` events. */
+export interface FirefightSet { set: string; games: number; won: number; rounds_cleared: number }
+export interface FirefightClass { class: string; kills: number }
+export interface FirefightPlayer { xuid: string; name: string; score: number; kills: number; assists: number; games: number }
+export interface FirefightSummary {
+  games: number; won: number; rounds_cleared: number; lives_used: number; score: number;
+  sets: FirefightSet[]; kills_by_class: FirefightClass[]; players: FirefightPlayer[];
+}
+
 export interface StatsSummary {
   window: StatsWindow;
   from: string | null;
@@ -45,6 +56,7 @@ export interface StatsSummary {
   playlists: PlaylistRow[];
   skulls: SkullRow[];
   activity: ActivityRow[];
+  firefight: FirefightSummary;
 }
 
 const TOTAL_KEYS: Array<keyof Totals> = [
@@ -64,6 +76,24 @@ export function emptyTotals(): Totals {
 function totals(v: unknown): Totals {
   const o = (v && typeof v === "object" ? v : {}) as Record<string, unknown>;
   return Object.fromEntries(TOTAL_KEYS.map((k) => [k, n(o[k])])) as unknown as Totals;
+}
+
+export function emptyFirefight(): FirefightSummary {
+  return { games: 0, won: 0, rounds_cleared: 0, lives_used: 0, score: 0, sets: [], kills_by_class: [], players: [] };
+}
+
+/** A server without Firefight stats sends no `firefight`; that reads as none. */
+function firefight(v: unknown): FirefightSummary {
+  const o = (v && typeof v === "object" ? v : {}) as Record<string, unknown>;
+  return {
+    games: n(o.games), won: n(o.won), rounds_cleared: n(o.rounds_cleared), lives_used: n(o.lives_used), score: n(o.score),
+    sets: arr(o.sets).filter((r) => typeof r.set === "string")
+      .map((r) => ({ set: s(r.set), games: n(r.games), won: n(r.won), rounds_cleared: n(r.rounds_cleared) })),
+    kills_by_class: arr(o.kills_by_class).filter((r) => typeof r.class === "string")
+      .map((r) => ({ class: s(r.class), kills: n(r.kills) })),
+    players: arr(o.players).filter((r) => typeof r.xuid === "string")
+      .map((r) => ({ xuid: s(r.xuid), name: s(r.name), score: n(r.score), kills: n(r.kills), assists: n(r.assists), games: n(r.games) })),
+  };
 }
 
 /** Reads a summary body; anything missing or malformed reads as nothing. */
@@ -91,6 +121,7 @@ export function parseSummary(raw: unknown): StatsSummary {
     skulls: arr(o.skulls).filter((k) => typeof k.skull === "number").map((k) => ({ skull: n(k.skull), games: n(k.games) })),
     activity: arr(o.activity).filter((a) => typeof a.hour === "string" && !Number.isNaN(Date.parse(s(a.hour))))
       .map((a) => ({ hour: s(a.hour), games: n(a.games), kills: n(a.kills) })),
+    firefight: firefight(o.firefight),
   };
 }
 

@@ -105,12 +105,11 @@ fn wave(v: &[i64]) -> Option<Wave> {
             continue;
         }
         let w = co.acos() / k as f64;
-        if let Some((e, _)) = fit(v, w, sample) {
-            if e < best {
+        if let Some((e, _)) = fit(v, w, sample)
+            && e < best {
                 best = e;
                 freq = w;
             }
-        }
     }
     if !best.is_finite() {
         return None;
@@ -126,12 +125,11 @@ fn wave(v: &[i64]) -> Option<Wave> {
             if w <= 0. {
                 continue;
             }
-            if let Some((e, _)) = fit(v, w, sample) {
-                if e < best {
+            if let Some((e, _)) = fit(v, w, sample)
+                && e < best {
                     best = e;
                     freq = w;
                 }
-            }
         }
         delta *= 0.35;
     }

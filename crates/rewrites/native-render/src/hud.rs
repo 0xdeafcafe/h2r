@@ -64,11 +64,6 @@ fn short(mem: &dyn GuestRead, addr: u32) -> Option<i16> {
     Some((if addr & 2 == 0 { w } else { w >> 16 }) as u16 as i16)
 }
 
-fn byte(mem: &dyn GuestRead, addr: u32) -> Option<u8> {
-    let w = mem.read_u32(addr & !3)?;
-    Some((w >> (8 * (addr & 3))) as u8)
-}
-
 fn finite(mem: &dyn GuestRead, addr: u32) -> Option<f32> {
     mem.read_f32(addr).filter(|v| v.is_finite())
 }

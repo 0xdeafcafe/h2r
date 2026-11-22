@@ -23,7 +23,7 @@ describe("nav and crumbs", () => {
     const nav = statsNav(null, false);
     expect(nav[0]).toEqual({ label: STATS_NAME, href: STATS_HOME, end: true });
     expect(nav.some((n) => n.href === "/" || /dashboard/i.test(n.label))).toBe(false);
-    expect(nav.map((n) => n.label)).toEqual([STATS_NAME, "My Stats", "Games", "Players", "Clans", "Mods", "Event Log", "Server"]);
+    expect(nav.map((n) => n.label)).toEqual([STATS_NAME, "My Stats", "Games", "Players", "Clans", "Mods", "Game Types", "Event Log", "Server"]);
   });
 
   test("my stats follows the signed-in account, and admins get their tab", () => {
@@ -214,6 +214,17 @@ describe("the mock's summary", () => {
     expect(f.summary("1y", T0, pos)).toBeNull();
   });
 
+  test("an environmental kill earns credit but does not rank as a weapon", () => {
+    const f = new StatsFold();
+    f.apply(ev("g", "GameStarted", T0, { mode: "multiplayer", map: "arena", players: [] }));
+    for (const weapon of ["fall", "collision", "splatter", "guardians", "teleporter", "explosion", "frag_grenade"]) {
+      f.apply(ev("g", "PlayerKilled", T0 + 1000, { victim: 1, killer: 0, kind: "kill", weapon }));
+    }
+    const s = f.summary("7d", T0 + 2000, pos)!;
+    expect(s.totals.kills).toBe(7);
+    expect(s.weapons).toEqual([{ weapon: "frag_grenade", kills: 1 }]);
+  });
+
   test("the archive is a month of games, the same every time", () => {
     const accts = Array.from({ length: 8 }, (_, i) => ({ xuid: `00090000000000${String(i).padStart(2, "0")}`, gamertag: `P${i}` }));
     const a = archive(accts, T0), b = archive(accts, T0);
@@ -227,5 +238,33 @@ describe("the mock's summary", () => {
     expect(s.totals.campaign).toBeGreaterThan(0);
     expect(s.activity.length).toBeGreaterThan(50);
     expect(leaderboards(parseSummary(s).players).every((bd) => bd.id === "legendary" || bd.rows.length > 0)).toBe(true);
+  });
+});
+
+describe("the Firefight summary", () => {
+  // The Rust projection's golden answer (live-server's tests/fixtures), the
+  // same file both Live homes' tests compare against.
+  const golden = JSON.parse(
+    readFileSync(`${import.meta.dir}/../../crates/live/live-server/tests/fixtures/firefight-summary.json`, "utf8")
+      .replace("$HOST", "0009000000000001"),
+  );
+
+  test("reads the server's golden summary as it is", () => {
+    expect(parseSummary({ firefight: golden }).firefight).toEqual(golden);
+  });
+
+  test("a server without Firefight stats reads as none", () => {
+    for (const raw of [{}, { firefight: null }, { firefight: "x" }, null]) {
+      expect(parseSummary(raw).firefight).toEqual({
+        games: 0, won: 0, rounds_cleared: 0, lives_used: 0, score: 0, sets: [], kills_by_class: [], players: [],
+      });
+    }
+  });
+
+  test("malformed rows and numbers are left out or zero", () => {
+    const f = parseSummary({ firefight: { games: -1, won: "x", sets: [{ games: 2 }, { set: "Holdout", games: 2 }], players: [{ name: "a" }] } }).firefight;
+    expect([f.games, f.won]).toEqual([0, 0]);
+    expect(f.sets).toEqual([{ set: "Holdout", games: 2, won: 0, rounds_cleared: 0 }]);
+    expect(f.players).toEqual([]);
   });
 });

@@ -23,23 +23,15 @@ use crate::{
 pub const MAPS_DIR: &str = "maps";
 
 /// The runtime's default data root, as `h2 play`, `h2 run` and `h2
-/// settings` use when `--data` is not given: a persistent directory,
-/// `~/Library/Application Support/h2recomp/data` (every Unix) or
-/// `%LOCALAPPDATA%\h2recomp\data` on Windows. `H2_DATA` names another.
-/// It was `$TMPDIR/h2boot-data`, which the system purges and which differs
-/// per shell session, so saves went missing; nothing is taken from there.
+/// settings` use when `--data` is not given: `H2_DATA`, else
+/// `<app data>/data` ([`host_dirs::data`]), a persistent directory. Saves are
+/// never put under `$TMPDIR`, which the system purges and which differs per
+/// shell session; it is the root only when no app data directory resolves.
 pub fn default_data_root() -> PathBuf {
     if let Some(d) = std::env::var_os("H2_DATA").filter(|d| !d.is_empty()) {
         return PathBuf::from(d);
     }
-    let base = if cfg!(windows) {
-        std::env::var_os("LOCALAPPDATA").filter(|p| !p.is_empty()).map(PathBuf::from)
-    } else {
-        std::env::var_os("HOME")
-            .filter(|p| !p.is_empty())
-            .map(|h| PathBuf::from(h).join("Library/Application Support"))
-    };
-    base.map_or_else(|| std::env::temp_dir().join("h2boot-data"), |b| b.join("h2recomp").join("data"))
+    host_dirs::data().map_or_else(|| std::env::temp_dir().join("h2boot-data"), |b| b.join("data"))
 }
 
 /// `<data>/maps`.
@@ -106,12 +98,7 @@ pub fn write_package(
             )));
         }
     }
-    let named = manifest
-        .patches
-        .iter()
-        .chain(&manifest.packs)
-        .map(|l| &l.file);
-    for f in named.chain(&manifest.package.image) {
+    for f in manifest.layer_files().chain(&manifest.package.image) {
         if !files.iter().any(|(n, _)| n == f) {
             return Err(StoreError::Io(io::Error::other(format!(
                 "the manifest names {f}, which is not being written"
@@ -127,10 +114,11 @@ pub fn write_package(
         }
         return replace_in(&target, &text, files);
     }
-    let tmp = maps.join(format!(".{dir}.{}.new", std::process::id()));
-    let _ = std::fs::remove_dir_all(&tmp);
+    static NEXT_PACKAGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT_PACKAGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = maps.join(format!(".{dir}.{}.{n}.new", std::process::id()));
+    std::fs::create_dir(&tmp)?;
     let result = (|| {
-        std::fs::create_dir(&tmp)?;
         for (name, bytes) in files {
             write_synced(&tmp.join(name), bytes)?;
         }
@@ -158,8 +146,7 @@ fn replace_in(target: &Path, text: &str, files: &[(&str, &[u8])]) -> Result<Path
     // Files only the old manifest named.
     if let Some(old) = old {
         let keep: Vec<&str> = files.iter().map(|f| f.0).collect();
-        let named = old.patches.iter().chain(&old.packs).map(|l| &l.file);
-        for f in named.chain(&old.package.image) {
+        for f in old.layer_files().chain(&old.package.image) {
             if !keep.contains(&f.as_str())
                 && let Ok(rel) = relative(f)
             {
@@ -186,8 +173,16 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         .ok_or_else(|| io::Error::other("no file name"))?
         .to_string_lossy()
         .into_owned();
-    let tmp = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
-    let result = write_synced(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path));
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    static NEXT_FILE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT_FILE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_file_name(format!(".{name}.{}.{n}.tmp", std::process::id()));
+    let mut file = File::create_new(&tmp)?;
+    let result = file.write_all(bytes).and_then(|()| file.sync_all());
+    drop(file);
+    let result = result.and_then(|()| std::fs::rename(&tmp, path));
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }

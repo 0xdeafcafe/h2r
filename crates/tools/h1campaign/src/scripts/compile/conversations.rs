@@ -397,7 +397,7 @@ impl<'p, 'c, 's, 'a> Scene<'p, 'c, 's, 'a> {
                 let voice = program.global("profile", short(-1))?;
                 let mut words = participant
                     .voices
-                    .chunks_exact(2)
+                    .as_chunks::<2>().0.iter()
                     .map(|v| long(u32::from(v[0] as u16) | (u32::from(v[1] as u16) << 16)));
                 // Native scoring reads these five consecutive globals for each role.
                 let voices = program.global("voices", words.next().unwrap())?.index;

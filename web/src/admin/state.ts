@@ -6,11 +6,11 @@
 import { createEffect, createRoot, createSignal } from "solid-js";
 import { identity } from "../state/identity";
 import { live } from "../state/live";
+import type { InviteGrant } from "../api/types";
 
 export const adminState = createRoot(() => {
-  // `${server base}|${xuid}` -> is that account an admin there (absent:
-  // not asked yet).
-  const [known, setKnown] = createSignal<Record<string, boolean>>({});
+  // `${server base}|${xuid}` -> the signed-in account's roles there.
+  const [known, setKnown] = createSignal<Record<string, { admin: boolean; invite_grant: InviteGrant | null }>>({});
   const key = () => {
     const me = identity.me();
     return me ? `${live.server().base}|${me.xuid}` : null;
@@ -23,7 +23,7 @@ export const adminState = createRoot(() => {
     if (!k || known()[k] !== undefined) return;
     try {
       const body = await live.api().account(me.gamertag);
-      setKnown({ ...known(), [k]: body.admin === true });
+      setKnown({ ...known(), [k]: { admin: body.admin === true, invite_grant: body.invite_grant ?? null } });
     } catch {
       /* offline; the Admin page shows its own error */
     }
@@ -40,7 +40,13 @@ export const adminState = createRoot(() => {
     /** True/false once known; null while unasked (or nobody signed in). */
     isMeAdmin: (): boolean | null => {
       const k = key();
-      return k ? (known()[k] ?? null) : null;
+      return k ? (known()[k]?.admin ?? null) : null;
+    },
+    myInviteGrant(): InviteGrant | null {
+      const me = identity.me(), k = key();
+      if (!me || !k) return null;
+      const streamed = live.state.accounts[me.xuid]?.invite_grant;
+      return streamed === undefined ? known()[k]?.invite_grant ?? null : streamed;
     },
     /** After a grant, a server or an account switch: ask again. */
     reset(): void {

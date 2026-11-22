@@ -83,7 +83,7 @@ pub fn load<R: std::io::Read + std::io::Seek>(
     lightmaps: &HashMap<LightmapKey, Image>,
     images: &mut StageImages,
     decoder: &mut StageDecoder,
-) -> Arc<FogView> {
+) -> FogView {
     let mut programs: HashMap<u16, Vec<FogProgram>> = HashMap::new();
     let mut words: HashMap<u16, FogWords> = HashMap::new();
     let mut parts: Vec<((Owner, u8), (u32, u32, Option<LightmapKey>, u16))> = Vec::new();
@@ -186,25 +186,23 @@ pub fn load<R: std::io::Read + std::io::Seek>(
         .iter()
         .filter_map(|&(k, (_, _, _, m))| Some((k, shaders.get(usize::from(m))?.0 as u16)))
         .collect();
-    Arc::new(FogView { programs, words, parts, part_set })
+    FogView { programs, words, parts, part_set }
 }
 
-/// Uploads the fog set onto `gpu` (the world's `upload`, once its own and
-/// the transparents' are done): `stage_image` decodes a stage's bitmap,
-/// `lightmap` a page.
+/// Builds the fog resources on the BSP loader's device.
 pub fn upload_fog(
     fog: &FogView,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    gpu: &mut native_render::gpu::GpuWorld,
+    world: &World,
     stage_image: &mut dyn FnMut(Stage) -> Option<Image>,
     lightmap: &mut dyn FnMut(LightmapKey) -> Option<Image>,
-) {
-    let set = fog_gpu::FogSet::new(device, queue, gpu.world(), fog.parts.clone(), fog.programs.clone(), stage_image, lightmap);
+) -> fog_gpu::FogSet {
+    let set = fog_gpu::FogSet::new(device, queue, world, fog.parts.clone(), fog.programs.clone(), stage_image, lightmap);
     if hooks::native_verbose() {
         eprintln!("native-fog: {} materials' layer-16 passes uploaded, {} parts", set.len(), fog.parts.len());
     }
-    gpu.set_fog(set);
+    set
 }
 
 /// The device's fog words at the layer-16 call, by [`FOG_WORD_SLOTS`]
@@ -235,7 +233,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             Arc::clone(current_ready(&state, mem)?)
         };
-        let fog = ready.fog.clone()?;
+        let (fog, palettes) = ready.fog.get()?;
         let Ok(mut d) = self.device.lock() else { return None };
         if !d.can_external_pass()
             || !d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()?
@@ -244,7 +242,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }
         let read = ReadMemory(mem);
         if !d.stencil_state(&read).is_some_and(|s| !s.enable)
-            || !palettes_hold(&ready.palettes, &|n| d.stage_palette(&read, n))
+            || !palettes_hold(palettes, &|n| d.stage_palette(&read, n))
         {
             return None;
         }
@@ -281,6 +279,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         if selected.is_empty() {
             return None;
         }
+        ready.with_pipeline_target(&d, mem, |gpu, device, color, depth| {
+            gpu.prewarm_fog(device, color, depth).then_some(())
+        })?;
         // The view's fog into the frame step's scene; the stage draws the
         // scene's copy. A view the scene cannot take stays on the D3D path.
         let parts: Vec<LatePart> = selected.iter().map(|item| LatePart { owner: item.owner, part: item.part }).collect();
@@ -431,6 +432,10 @@ struct FogViewPass {
 }
 
 impl d3d::ExternalPass for FogViewPass {
+    // The selection and constants belong to this view. Ready pins the BSP,
+    // and each recording binds the target copy passed to it by the renderer.
+    fn replays_scene(&self) -> bool { true }
+
     /// Packets need no worker round trip, and the pass samples no guest
     /// texture, level or slot (its stage textures are its own).
     fn batch_key(&self) -> Option<u64> {
@@ -445,11 +450,11 @@ impl d3d::ExternalPass for FogViewPass {
         self.w_clip = (clip.w_buffered == Some(true)).then_some((clip.range, clip.clamp));
     }
 
-    fn prepare_copy(&mut self, t: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
+    fn prepare_copy(&mut self, _t: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
         if self.view.is_none() || self.w_clip.is_none() {
             return Err("fog view constants or W-buffer clip unavailable");
         }
-        let mut guard = crate::native_world_glue::upload(&self.ready, t);
+        let mut guard = self.ready.gpu();
         let gpu = guard.as_mut().ok_or("world geometry unavailable")?;
         let set = gpu.fog().ok_or("fog materials unavailable")?;
         for &(owner, part) in &self.selected {
@@ -475,10 +480,10 @@ impl d3d::ExternalPass for FogViewPass {
         if self.w_clip.is_none() {
             return Some(Err("fog W-buffer clip unavailable"));
         }
-        let mut guard = crate::native_world_glue::upload_on(&self.ready, &t.device, &t.queue);
+        let mut guard = self.ready.gpu();
         let Some(gpu) = guard.as_mut() else { return Some(Err("world geometry unavailable")) };
         let view = ViewInputs {
-            constants,
+            constants: request.view_constants(t.copy, constants),
             guest_size: request.surface_size,
             size: t.size,
             z_scale: request.z_scale,
@@ -495,13 +500,13 @@ impl d3d::ExternalPass for FogViewPass {
             return 0;
         };
         let view = ViewInputs {
-            constants,
+            constants: t.view_constants(constants),
             guest_size: t.guest_size,
             size: t.size,
             z_scale: t.z_scale,
             w_clip: self.w_clip,
         };
-        let mut gpu = crate::native_world_glue::upload(&self.ready, &t);
+        let mut gpu = self.ready.gpu();
         let Some(gpu) = gpu.as_mut() else { return 0 };
         {
             let mut uploads = t.encoder_uploads();

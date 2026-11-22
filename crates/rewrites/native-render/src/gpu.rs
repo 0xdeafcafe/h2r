@@ -10,8 +10,7 @@ use crate::camera::{Mat4, RenderCamera};
 use crate::cull::{CullStats, Frustum, IndirectSlot, SLOT_SIZE, cull, indirect_slots};
 use crate::fog_gpu::FogSet;
 use crate::light_gpu::{LightDraw, LightSet, LightTarget};
-use crate::light_look::LightStage;
-use crate::program::{MaterialUse, ProgramSet, ViewInputs};
+use crate::program::{MaterialUse, PipelineUse, ProgramSet, ViewInputs, WorldPipelines};
 use crate::world::{LightmapKey, Owner, World, WorldDraw, WorldVertex};
 
 /// An RGBA8 image (linear rows, no padding) with its smaller levels.
@@ -255,10 +254,7 @@ pub struct GpuWorld {
     frame: wgpu::Buffer,
     frame_group: wgpu::BindGroup,
     batch_groups: Vec<wgpu::BindGroup>,
-    frame_layout: wgpu::BindGroupLayout,
-    batch_layout: wgpu::BindGroupLayout,
-    shader: wgpu::ShaderModule,
-    pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat), wgpu::RenderPipeline>,
+    fixed: WorldPipelines,
     /// Materials drawn with their own programs ([`crate::program`]); the
     /// rest draw with stage 1's.
     programs: Option<ProgramSet>,
@@ -406,12 +402,15 @@ impl GpuWorld {
         let slots = indirect_slots(&world);
         let empty_slot = [IndirectSlot::default()];
         let slot_bytes = if slots.is_empty() { &empty_slot[..] } else { &slots[..] };
-        let vertices = init("native world vertices", bytemuck::cast_slice(verts), wgpu::BufferUsages::VERTEX);
+        // COPY_DST: an editor moves a section's vertices in place
+        // ([`GpuWorld::set_section_vertices`]).
+        let vertex_usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
+        let vertices = init("native world vertices", bytemuck::cast_slice(verts), vertex_usage);
         let program_vertices = if world.program_vertices.len() == world.vertices.len() && !world.program_vertices.is_empty() {
             init(
                 "native world program vertices",
                 bytemuck::cast_slice(&world.program_vertices),
-                wgpu::BufferUsages::VERTEX,
+                vertex_usage,
             )
         } else {
             vertices.clone()
@@ -538,6 +537,13 @@ impl GpuWorld {
             label: Some("native world"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
         });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("native world"),
+            bind_group_layouts: &[Some(&frame_layout), Some(&batch_layout)],
+            immediate_size: 0,
+        });
+        let attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x2, 3 => Float32x3];
+        let fixed = WorldPipelines::new(device, SHADER, shader, layout, gfx::pipeline::ShaderId(0), "native world", attributes.to_vec());
         let part_slots = world.draws.iter().enumerate().map(|(i, d)| ((d.owner, d.part), i)).collect();
         Self {
             part_slots, world,
@@ -551,10 +557,7 @@ impl GpuWorld {
             frame,
             frame_group,
             batch_groups,
-            frame_layout,
-            batch_layout,
-            shader,
-            pipelines: HashMap::new(),
+            fixed,
             programs,
             fog: None,
             layers: HashMap::new(),
@@ -573,6 +576,36 @@ impl GpuWorld {
 
     pub fn world(&self) -> &World {
         &self.world
+    }
+
+    /// Move `owner`'s section to `positions` (and `normals`), in its own
+    /// space, and write its run of both vertex buffers: the editor's
+    /// live preview of a geometry edit (docs/editor/modeling.md, "The
+    /// tools in the window"). False when the world has no such section
+    /// or the counts differ. Culling bounds stay as uploaded.
+    pub fn set_section_vertices(
+        &mut self,
+        queue: &wgpu::Queue,
+        owner: Owner,
+        positions: &[[f32; 3]],
+        normals: Option<&[[f32; 3]]>,
+    ) -> bool {
+        let Some(run) = self.world.set_section_vertices(owner, positions, normals) else {
+            return false;
+        };
+        let range = run.first_vertex as usize..(run.first_vertex + run.vertex_count) as usize;
+        let offset = (run.first_vertex as usize * std::mem::size_of::<WorldVertex>()) as u64;
+        queue.write_buffer(&self.vertices, offset, bytemuck::cast_slice(&self.world.vertices[range.clone()]));
+        let separate = self.world.program_vertices.len() == self.world.vertices.len()
+            && !self.world.program_vertices.is_empty();
+        if separate {
+            queue.write_buffer(
+                &self.program_vertices,
+                offset,
+                bytemuck::cast_slice(&self.world.program_vertices[range]),
+            );
+        }
+        true
     }
 
     /// Draws the world's layer-16 passes of `set`'s materials from now on.
@@ -782,6 +815,7 @@ impl GpuWorld {
         let (vertices, indices) = (program_vertices.clone(), indices.clone());
         let has_stencil = depth_format.has_stencil_aspect();
         let ranges = selected.len();
+        let draws = items.len();
         let commands = move |encoder: &mut wgpu::CommandEncoder| {
             for (src, at, dst, offset, len) in &copies {
                 encoder.copy_buffer_to_buffer(src, *at, dst, *offset, *len);
@@ -818,7 +852,7 @@ impl GpuWorld {
                 pass.draw_indexed(it.first..it.first + it.count, 0, 0..1);
             }
         };
-        Ok(gfx::external::ExternalEncoded { ranges, passes: 1, commands: Box::new(commands) })
+        Ok(gfx::external::ExternalEncoded { ranges, draws, passes: 1, commands: Box::new(commands) })
     }
 
     /// The fog uniforms for one view ([`FogSet::prepare`]), through the
@@ -852,46 +886,47 @@ impl GpuWorld {
         target_size: (u32, u32),
         selected: &[(Owner, u8)],
     ) -> usize {
-        let Some(set) = self.fog.as_mut() else { return 0 };
-        set.pipelines(device, color_format, depth_format);
-        let set = &*set;
-        let has_stencil = depth_format.has_stencil_aspect();
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("native fog"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: color,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: depth,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: has_stencil.then_some(wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                }),
-            }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        // The programs carry the game's viewport in their constants: the
-        // pass covers the whole target, as the world's programs do. The
-        // buffer is the program vertices (the layer-3 programs' own):
-        // clusters' are their placed world positions, and a placement's
-        // unplaced local coordinates, which its rigid program places with
-        // its rows.
-        pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
-        pass.set_vertex_buffer(0, self.program_vertices.slice(..));
-        pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-        set.draw(&mut pass, color_format, depth_format, selected)
+        let Self { fog, program_vertices, indices, .. } = self;
+        let Some(set) = fog.as_mut() else { return 0 };
+        encode_set(set, "native fog", program_vertices, indices, device, encoder, color, color_format, depth, depth_format, target_size, selected)
+    }
+
+    /// The uniforms of `layer`'s set for one view ([`FogSet::prepare`];
+    /// `fogs` the fog unit each material draws with), through the
+    /// submission's upload arena.
+    pub fn prepare_layer(
+        &mut self,
+        layer: u8,
+        uploads: &mut gfx::ring::EncoderUploads<'_>,
+        view: &ViewInputs,
+        fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
+    ) {
+        if let Some(set) = self.layers.get(&layer) {
+            set.prepare(uploads, view, fogs);
+        }
+    }
+
+    /// Records one view's draws of `layer`'s selected parts in a pass of
+    /// their own over the target and its depth (loaded and kept), as
+    /// [`GpuWorld::encode_fog`] does layer 16's: for a host that owns its
+    /// passes (the editor). The uniforms are [`GpuWorld::prepare_layer`]'s.
+    /// Returns how many parts were drawn.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_layer(
+        &mut self,
+        layer: u8,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        color: &wgpu::TextureView,
+        color_format: wgpu::TextureFormat,
+        depth: &wgpu::TextureView,
+        depth_format: wgpu::TextureFormat,
+        target_size: (u32, u32),
+        selected: &[(Owner, u8)],
+    ) -> usize {
+        let Self { layers, program_vertices, indices, .. } = self;
+        let Some(set) = layers.get_mut(&layer) else { return 0 };
+        encode_set(set, "native layer", program_vertices, indices, device, encoder, color, color_format, depth, depth_format, target_size, selected)
     }
     /// [`GpuWorld::prepare_fog`] and [`GpuWorld::encode_fog`] as packets for
     /// the D3D pass already open on these attachments, the uniforms as
@@ -937,11 +972,9 @@ impl GpuWorld {
         scissor: [u32; 4],
         view: &ViewInputs,
         draws: &[LightDraw<'_>],
-        stage_image: &mut dyn FnMut(usize, LightStage) -> Option<Image>,
-        gel_image: &mut dyn FnMut(u32) -> Option<Image>,
     ) -> Result<gfx::external::ExternalDraws, &'static str> {
         self.lights.as_mut().ok_or("light passes unavailable")?.draws(
-            target, &self.program_vertices, &self.indices, view, scissor, draws, stage_image, gel_image,
+            target, &self.program_vertices, &self.indices, view, scissor, draws,
         )
     }
 
@@ -986,56 +1019,25 @@ impl GpuWorld {
         }
     }
 
-    fn pipeline(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) -> &wgpu::RenderPipeline {
-        let (shader, fl, bl) = (&self.shader, &self.frame_layout, &self.batch_layout);
-        self.pipelines.entry((color, depth)).or_insert_with(|| {
-            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("native world"),
-                bind_group_layouts: &[Some(fl), Some(bl)],
-                immediate_size: 0,
-            });
-            let attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x2, 3 => Float32x3];
-            gfx::churn::create_render_pipeline(device, &wgpu::RenderPipelineDescriptor {
-                label: Some("native world"),
-                layout: Some(&layout),
-                vertex: wgpu::VertexState {
-                    module: shader,
-                    entry_point: Some("vs_main"),
-                    compilation_options: Default::default(),
-                    buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<WorldVertex>() as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &attributes,
-                    })],
-                },
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    // S: the BSP's winding is not checked yet; draw both.
-                    cull_mode: None,
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: depth,
-                    depth_write_enabled: Some(true),
-                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
-                    stencil: wgpu::StencilState::default(),
-                    bias: wgpu::DepthBiasState::default(),
-                }),
-                multisample: wgpu::MultisampleState::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: shader,
-                    entry_point: Some("fs_main"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: color,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
-        })
+    /// Enqueue the selected programs for the live target. A false result leaves
+    /// every selected draw to the guest until a later admission check succeeds.
+    pub fn prewarm_world(
+        &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, selection: &WorldSelection,
+    ) -> bool {
+        self.selection_ready(device, color, depth, selection, PipelineUse::Preflight)
+    }
+
+    /// Enqueue this BSP's fog, water, or translated scene-layer materials for the bound formats.
+    pub fn prewarm_fog(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) -> bool {
+        self.fog.as_mut().is_some_and(|set| set.prepare_pipelines(device, color, depth, PipelineUse::Preflight))
+    }
+
+    pub fn prewarm_water(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) -> bool {
+        self.water.as_mut().is_some_and(|set| set.prepare_pipelines(device, color, depth, PipelineUse::Preflight))
+    }
+
+    pub fn prewarm_layer(&mut self, layer: u8, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) -> bool {
+        self.layers.get_mut(&layer).is_some_and(|set| set.prepare_pipelines(device, color, depth, PipelineUse::Preflight))
     }
 
     /// Resolve all geometry and program bindings the guest's selected parts need
@@ -1066,13 +1068,19 @@ impl GpuWorld {
     pub fn prepare_selection(
         &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, selection: &WorldSelection,
     ) -> bool {
+        self.selection_ready(device, color, depth, selection, PipelineUse::Direct)
+    }
+
+    fn selection_ready(
+        &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat,
+        selection: &WorldSelection, usage: PipelineUse,
+    ) -> bool {
         let Some(p) = &mut self.programs else {
-            self.pipeline(device, color, depth);
-            return true;
+            return self.fixed.prepare(device, color, depth, None, None, &wgpu::StencilState::default(), usage);
         };
         let state = &self.stencil.state;
-        p.selected_pipelines(device, color, depth, state, &selection.materials);
-        selection.spans.iter().all(|&(batch, _, _)| p.batch_textures(batch).is_some())
+        p.selected_pipelines(device, color, depth, state, &selection.materials, usage)
+            && selection.spans.iter().all(|&(batch, _, _)| p.batch_textures(batch).is_some())
             && selection.vertices.iter().all(|&(material, instance)| match instance {
                 Some(n) => p.rigid(material, n, color, depth, state).is_some(),
                 None => p.cluster(material, color, depth, state).is_some(),
@@ -1094,9 +1102,10 @@ impl GpuWorld {
     }
 
     fn prepare_pipelines(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) {
-        self.pipeline(device, color, depth);
         if let Some(p) = &mut self.programs {
             p.pipelines(device, color, depth, &self.stencil.state, self.inherited_cull);
+        } else {
+            self.fixed.prepare(device, color, depth, None, None, &wgpu::StencilState::default(), PipelineUse::Direct);
         }
     }
 
@@ -1450,7 +1459,10 @@ impl GpuWorld {
                 if own != Some(false) {
                     pass.set_viewport(viewport.x, viewport.y, viewport.width, viewport.height, 0.0, 1.0);
                     pass.set_vertex_buffer(0, self.vertices.slice(..));
-                    pass.set_pipeline(&self.pipelines[&(color_format, depth_format)]);
+                    let Some(pipeline) = self.fixed.get(color_format, depth_format, &wgpu::StencilState::default(), None) else {
+                        return 0;
+                    };
+                    pass.set_pipeline(pipeline);
                     pass.set_bind_group(0, &self.frame_group, &[]);
                 }
                 own = Some(false);
@@ -1470,6 +1482,66 @@ impl GpuWorld {
         recorded
     }
 }
+
+/// One view's draws of `set`'s selected parts in a pass of their own over
+/// `color` and `depth` (loaded and kept): [`GpuWorld::encode_fog`] and
+/// [`GpuWorld::encode_layer`].
+#[allow(clippy::too_many_arguments)]
+fn encode_set(
+    set: &mut FogSet,
+    label: &str,
+    program_vertices: &wgpu::Buffer,
+    indices: &wgpu::Buffer,
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    color: &wgpu::TextureView,
+    color_format: wgpu::TextureFormat,
+    depth: &wgpu::TextureView,
+    depth_format: wgpu::TextureFormat,
+    target_size: (u32, u32),
+    selected: &[(Owner, u8)],
+) -> usize {
+    set.pipelines(device, color_format, depth_format);
+    let set = &*set;
+    let has_stencil = depth_format.has_stencil_aspect();
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some(label),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: color,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+            view: depth,
+            depth_ops: Some(wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            }),
+            stencil_ops: has_stencil.then_some(wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            }),
+        }),
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+    });
+    // The programs carry the game's viewport in their constants: the
+    // pass covers the whole target, as the world's programs do. The
+    // buffer is the program vertices (the layer-3 programs' own):
+    // clusters' are their placed world positions, and a placement's
+    // unplaced local coordinates, which its rigid program places with
+    // its rows.
+    pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
+    pass.set_vertex_buffer(0, program_vertices.slice(..));
+    pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
+    set.draw(&mut pass, color_format, depth_format, selected)
+}
+
 
 /// Join adjacent complete triangle lists only while their render state is bound.
 fn append_triangles(

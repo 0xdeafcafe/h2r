@@ -32,16 +32,33 @@ enum Bytes {
 
 /// An opened file region, sparse store, or composed logical map stream.
 pub struct FilmMapSource {
+    /// Logical extent when the operator mounts this region as immutable.
+    immutable_len: Option<u64>,
     bytes: Bytes,
     pub(crate) override_name: Option<String>,
     /// Header bytes rewritten by a registered package alias.
     pub(crate) alias: Option<[u8; 32]>,
 }
 
+/// A contiguous guest read from an immutable mounted input. Only the VFS
+/// may construct it, after resolving overlays, logical EOF and store holes.
+pub struct ImmutableRead<'a> {
+    file: &'a File,
+    offset: u64,
+    len: usize,
+}
+
+impl ImmutableRead<'_> {
+    pub fn file(&self) -> &File { self.file }
+    pub fn offset(&self) -> u64 { self.offset }
+    pub fn byte_len(&self) -> usize { self.len }
+}
+
 impl FilmMapSource {
     fn new(bytes: Bytes) -> Self {
         Self {
             bytes,
+            immutable_len: None,
             override_name: None,
             alias: None,
         }
@@ -49,6 +66,34 @@ impl FilmMapSource {
     pub(crate) fn region(file: File, offset: u64) -> Self {
         Self::new(Bytes::Region(file, offset))
     }
+    pub(crate) fn immutable_region(file: File, offset: u64, len: u64) -> Self {
+        let mut source = Self::region(file, offset);
+        source.immutable_len = Some(len);
+        source
+    }
+
+    /// Resolve the complete logical read through the same pinned source as
+    /// the backend. A hole or split store range is left to its ordinary read.
+    pub(crate) fn immutable_read(&self, at: u64, len: usize) -> Option<ImmutableRead<'_>> {
+        if self.alias.is_some() {
+            return None;
+        }
+        let (file, offset, available) = match &self.bytes {
+            Bytes::Region(file, start) => (file, start.checked_add(at)?, self.immutable_len?.saturating_sub(at)),
+            Bytes::Store(store) => {
+                let r = store.index.containing(at)?;
+                let len = (len as u64).min(store.logical_len().saturating_sub(at));
+                if len > r.len - (at - r.logical) {
+                    return None;
+                }
+                (&store.file, r.data + (at - r.logical), len)
+            }
+            _ => return None,
+        };
+        let len = available.min(len as u64) as usize;
+        (len > 0).then_some(ImmutableRead { file, offset, len })
+    }
+
     pub(crate) fn store(store: Arc<Store>) -> Self {
         Self::new(Bytes::Store(store))
     }
@@ -178,6 +223,56 @@ impl Drop for FilmMapSource {
                 .backend
                 .closed(path);
         }
+    }
+}
+
+/// An independent cursor over the mounted map bytes. On Unix the pinned
+/// source uses positional reads, so disk and overlay IO needs no VFS lock.
+#[cfg(unix)]
+#[derive(Clone)]
+pub struct DetachedMapReader {
+    source: Arc<FilmMapSource>,
+    pos: u64,
+    len: u64,
+}
+
+#[cfg(unix)]
+impl Vfs {
+    /// Open a reader with its own cursor for a background map job. A backend
+    /// without a pinned source can still serve reads through a VFS handle.
+    /// Callers doing speculative work must first check `resolves_on_use`.
+    pub fn detached_map_reader(&mut self, name: &str) -> Option<(DetachedMapReader, u64)> {
+        let (mount, path) = self.resolve(name).ok()?;
+        let backend = &mut self.mounts[mount].backend;
+        let source = backend.film_source(&path).ok()??;
+        let len = backend.stat(&path).ok()?.end_of_file;
+        Some((DetachedMapReader { source: Arc::new(source), pos: 0, len }, len))
+    }
+}
+
+#[cfg(unix)]
+impl Read for DetachedMapReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let len = self.len.saturating_sub(self.pos).min(buf.len() as u64) as usize;
+        if len == 0 {
+            return Ok(0);
+        }
+        let got = self.source.read(self.pos, &mut buf[..len]).map_err(std::io::Error::other)?;
+        self.pos += got as u64;
+        Ok(got)
+    }
+}
+
+#[cfg(unix)]
+impl std::io::Seek for DetachedMapReader {
+    fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+        use std::io::SeekFrom;
+        self.pos = match to {
+            SeekFrom::Start(n) => Some(n),
+            SeekFrom::End(n) => self.len.checked_add_signed(n),
+            SeekFrom::Current(n) => self.pos.checked_add_signed(n),
+        }.ok_or_else(|| std::io::Error::other("seek outside map address range"))?;
+        Ok(self.pos)
     }
 }
 

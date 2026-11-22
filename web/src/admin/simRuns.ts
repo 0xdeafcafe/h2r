@@ -47,6 +47,42 @@ export interface SimPlayer {
   deaths: number;
   shots?: number;
   accuracy?: number;
+  grenades?: number;
+  combat?: SimCombat;
+  weapon_accuracy?: {
+    damage_code: number;
+    weapon: string;
+    range: "close" | "mid" | "long" | "unknown";
+    shots: number;
+    hits: number;
+    accuracy: number;
+  }[];
+}
+
+export interface SimCombat {
+  tick?: number | null;
+  goal?: string | null;
+  weapon?: number | null;
+  weapon_role?: string | null;
+  range?: number | null;
+  think_ms?: number | null;
+  last_decisions?: { tick: number; action: string }[];
+  melee_presses: number;
+  grenade_requests: number;
+  grenades_used?: number;
+  switch_presses: number;
+  weapon_switches?: number;
+  reactions: number;
+  total_reaction_ticks: number;
+  think_ticks: number;
+  total_think_ms: number;
+}
+
+export interface SimLiveCombat {
+  index: number;
+  tick: number;
+  combat: SimCombat;
+  weapon_accuracy?: SimPlayer["weapon_accuracy"];
 }
 
 export interface SimReport {
@@ -55,8 +91,30 @@ export interface SimReport {
   notes?: string[];
 }
 
-export interface SimDetail { run: SimRun; game: GameDetail; report: SimReport | null }
-export interface SimFilter { map?: string; tuning?: string; batch?: string; before?: string }
+export interface SimDetail {
+  run: SimRun;
+  game: GameDetail;
+  report: SimReport | null;
+  live_combat?: SimLiveCombat[];
+}
+export interface SimFilter {
+  map?: string;
+  tuning?: string;
+  tuning_choice?: string;
+  batch?: string;
+  before?: string;
+  include_options?: 1;
+}
+
+export interface SimFilterOptions {
+  maps: string[];
+  arms: string[];
+  batches: string[];
+  custom_tuning: boolean;
+  default_tuning: boolean;
+}
+
+export const TRAINING_BATCH_COMMAND = "h2 sim batch docs/runtime/sim-examples/batch.toml --parallel 4 --upload";
 
 export function trainingHref(run?: string, batch?: string): string {
   const q = new URLSearchParams({ tab: "training" });

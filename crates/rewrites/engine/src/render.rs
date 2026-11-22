@@ -31,6 +31,11 @@ fn vec3_at(b: &[u8], off: usize) -> [f32; 3] {
     [f32_at(b, off), f32_at(b, off + 4), f32_at(b, off + 8)]
 }
 
+pub mod light_volume;
+
+/// Per-caster inputs to the object-shadow projection.
+pub mod object_shadow;
+
 /// The engine's dynamic lights.
 pub mod light {
     use super::*;
@@ -92,6 +97,8 @@ pub mod light {
         pub const COLOUR_B: usize = 0xe0;
         /// f32 shadow-related scalar: shadows need it above zero.
         pub const SHADOW_SCALAR: usize = 0xf8;
+        /// f32 maximum weight copied to the visible-light row at 0x00031a17.
+        pub const VISIBLE_WEIGHT: usize = 0x100;
     }
 
     /// One light record, decoded. Fields we have not interpreted stay in
@@ -120,6 +127,7 @@ pub mod light {
         pub colour_a: [f32; 3],
         pub colour_b: [f32; 3],
         pub shadow_scalar: f32,
+        pub visible_weight: f32,
         pub raw: Box<[u8; RECORD_SIZE]>,
     }
 
@@ -151,6 +159,7 @@ pub mod light {
                 colour_a: vec3_at(b, COLOUR_A),
                 colour_b: vec3_at(b, COLOUR_B),
                 shadow_scalar: f32_at(b, SHADOW_SCALAR),
+                visible_weight: f32_at(b, VISIBLE_WEIGHT),
                 raw: Box::new(*b),
             }
         }
@@ -250,7 +259,7 @@ pub mod light {
         /// Set: the light never casts a shadow (`0x00031e02`). Clear, the
         /// shadow passes run when shadows are enabled globally and the
         /// record's [`SHADOW_SCALAR`](super::layout::SHADOW_SCALAR) is above
-        /// zero.
+        /// zero and the posed volume has a nonzero shape code.
         pub const NO_SHADOW: u32 = 1 << 3;
         /// Tested with bit 18 before the frame is refreshed from the parent
         /// marker (`0x00031d3a`), and forces the shadow-apply layer in the
@@ -261,7 +270,8 @@ pub mod light {
         pub const IGNORE_PARENT_FADE: u32 = 1 << 7;
         /// Set with bit 5: the frame is not refreshed from the marker.
         pub const BIT_18: u32 = 1 << 18;
-        /// Copied into the visible-light list entry (`0x00031ad5`).
+        /// Preserves a same-owner light and exempts it from fade-out below
+        /// the visibility budget (`0x0004adf0` and `0x0004ac30`).
         pub const BIT_20: u32 = 1 << 20;
         /// Adds a per-light pass (`0x00031ed6` -> `0x00031c20`) and widens
         /// the object gather (`0x00031e59`).
@@ -576,6 +586,7 @@ mod tests {
         put_f32s(&mut b, 0xcc, &[2.0, 0.5]);
         put_f32s(&mut b, 0xd4, &[1.0, 0.5, 0.25, 0.0, 0.125, 1.0]);
         put_f32s(&mut b, 0xf8, &[0.75]);
+        put_f32s(&mut b, 0x100, &[0.625]);
         b
     }
 
@@ -598,6 +609,7 @@ mod tests {
         assert_eq!(r.colour_a, [1.0, 0.5, 0.25]);
         assert_eq!(r.colour_b, [0.0, 0.125, 1.0]);
         assert_eq!(r.shadow_scalar, 0.75);
+        assert_eq!(r.visible_weight, 0.625);
         assert_eq!(r.check(), Ok(()));
     }
 

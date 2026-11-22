@@ -34,7 +34,7 @@ Nothing on this page was established by running the game.
    `register_core` and `register_late`
    (`crates/apps/boot/src/registration.rs`).
 2. `Registry::add` asks the feature's `Manifest` (`id`, `title`,
-   `default_on`, `doc`), checks its switch, and runs `Feature::build`
+   `default_on`, `always_on`, `doc`), checks its switch, and runs `Feature::build`
    against a `Builder`. A switched-off feature declares nothing. A feature
    whose `build` fails is left out with the reason.
 3. `Registry::build(&dyn ImageAddrs)` calls `plan::build`
@@ -176,7 +176,10 @@ RAM; a feature that says nothing is `Unaudited` and blocks machine snapshots
 
 Read from `H2_FEATURES` (`crates/hooking/hooks/src/switches.rs`): a comma-separated
 list of `id` (on), `-id` (off) or `id=on|off`. A feature is on unless its
-manifest says `off_by_default` or the list switches it. An `impl.<name>`
+manifest says `off_by_default` or the list switches it. A feature whose
+manifest says `always_on` is how the game works and has no switch:
+`Registry::add` refuses `-id` or `id=off` for it by name, and boot stops
+with the reason (the party lobby, `game::lobby_mode`). An `impl.<name>`
 entry switches an implementation: `Switches::implementation(name, default)`
 falls back from `impl.engine.tags.<name>` to `impl.engine.tags`, then
 `impl.engine`. The native renderer's one switch, `impl.render.native`, is
@@ -421,8 +424,11 @@ sides of the four orchestrators, `render_frame_and_present` and the per-light
 pass, and reports the front-end's guest time as the frame stats' `render`
 phase with an exclusive split per stage
 ([gameplay-budget.md](../perf/notes/gameplay-budget.md)).
-`scene_effect_instruction_entries` lists the retail instruction boundaries the
-emitter must route through entry dispatch for those stages.
+`guest_layout::points::scene_effects::instruction_entries` lists the retail
+instruction boundaries those stages hook mid-function. Discovery for both
+image tiers (`recomp::analyze_cached`, used by `h2 build`, `h2 emit` and the
+fast tier) makes each one an entry, whatever features the builder has, so
+a module built on one machine serves the native stages on another.
 
 ## State
 
@@ -451,8 +457,8 @@ Settings carry the class (`settings::Scope`):
 
 | Class | Meaning | Examples |
 |---|---|---|
-| `Host` | never on the guest thread, never writes guest memory | render scale, vsync, bindings |
-| `View` | on the guest thread or writes guest memory, presentation only | UI screens, strings, FOV, the tick hash |
+| `Host` | never on the guest thread, never writes guest memory | output resolution, frame rate, vsync, bindings |
+| `View` | on the guest thread or writes guest memory, presentation only | UI screens, strings, FOV, HUD position, LOD distance, the tick hash |
 | `Sim` | changes what the simulation computes or is given | game variants, the game-start path, button layouts |
 
 - Observers do not write guest memory by convention (`Obs`).
@@ -491,7 +497,7 @@ Design only. No type, crate or command named here exists.
 - **Content packs.** Data that changes what the game loads: a manifest naming
   things on the user's own disc with hashes to check it applies, a `ContentKind`
   validated on a copy and then applied, identity by the SHA-256 of the canonical
-  JSON form ([forge.md](../game/forge.md) 2.1). A pack is data, never code, and
+  JSON form ([forge-design.md](../game/forge-design.md), "The document"). A pack is data, never code, and
   carries no game bytes.
 - **Recording and replay.** Every place something from outside reaches the guest
   is a named boundary (pad reads, device changes, network, random, Live answers,

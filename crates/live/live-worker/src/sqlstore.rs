@@ -423,7 +423,7 @@ impl<S: Sql> EventStore for SqlStore<S> {
             .collect())
     }
 
-    /// One atomic batch: every add, then the cut.
+    /// One atomic write, adding increments and applying the cutoff if it changed.
     async fn add_usage(&self, rows: &[UsageRow], keep_from: &str) -> Result<(), StoreError> {
         let mut statements: Vec<Statement> = rows
             .iter()
@@ -439,8 +439,15 @@ impl<S: Sql> EventStore for SqlStore<S> {
                 )
             })
             .collect();
-        statements.push((sql::PRUNE_USAGE, vec![keep_from.into()]));
-        self.sql.batch(statements).await?;
+        if !keep_from.is_empty() {
+            statements.push((sql::PRUNE_USAGE, vec![keep_from.into()]));
+        }
+        if statements.len() == 1 {
+            let (sql, params) = statements.pop().unwrap();
+            self.sql.all(sql, params).await?;
+        } else if !statements.is_empty() {
+            self.sql.batch(statements).await?;
+        }
         Ok(())
     }
 
@@ -459,6 +466,10 @@ impl<S: Sql> EventStore for SqlStore<S> {
             .collect())
     }
 }
+
+#[cfg(test)]
+#[path = "../../live-server/tests/common/session_browser.rs"]
+mod session_browser;
 
 #[cfg(test)]
 mod tests {
@@ -572,6 +583,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
+    #[tokio::test]
+    async fn browser_filters_cover_worker_sessions() {
+        use live_server::{Live, Policy, ServerIdentity, app::Timers};
+
+        let path = temp_db("session-browser");
+        let store = SqlStore::open(Sqlite(pool(&path).await)).await.unwrap();
+        let identity = ServerIdentity::open(path.parent().unwrap(), Some("live.test")).unwrap();
+        let live = Live::start_with(Arc::new(store), identity, Policy::default(), Timers::Driven)
+            .await
+            .unwrap();
+        super::session_browser::run(live_server::http::router(live)).await;
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
     /// The rows are the SQLite store's own: a log the Worker wrote opens
     /// on a machine (and the other way), which is how a log moves between
     /// them (`h2 live store copy`, docs/live/live-worker.md).
@@ -618,6 +643,34 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(tail, more);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn worker_film_library() {
+        use live_server::{
+            Live, Policy, ServerIdentity,
+            app::Timers,
+            blobs::{BlobStore, Blobs},
+            titleblobs::BlobsElsewhere,
+        };
+        let path = temp_db("film-library");
+        let store = SqlStore::open(Sqlite(pool(&path).await)).await.unwrap();
+        let private = BlobStore::memory();
+        let store = BlobsElsewhere::new(Arc::new(store), private.clone());
+        let identity = ServerIdentity::open(path.parent().unwrap(), Some("live.test")).unwrap();
+        let policy = Policy {
+            write_rate: (1000., 1000),
+            ..Policy::default()
+        };
+        let live = Live::start_with(Arc::new(store), identity, policy, Timers::Driven)
+            .await
+            .unwrap();
+        live.set_blobs(Blobs {
+            private,
+            public: None,
+        });
+        crate::film_library_parity::exercise(live).await;
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -680,6 +733,140 @@ mod tests {
         let (status, _) = get("/v1/rank-stats?leaderboards=1&xuids=nope").await;
         assert_eq!(status, 400);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn worker_usage_survives_hub_restart() {
+        use std::time::Duration;
+
+        use axum::{body::Body, http::Request};
+        use http_body_util::BodyExt;
+        use live_proto::sign::{AccountRequest, KeyPair, issue_token};
+        use live_proto::{ClientMessage, lxm};
+        use live_server::{
+            Live, Policy, ServerIdentity,
+            app::{Timers, now},
+            blobs::{BlobStore, Blobs, Meta},
+            ingest::IngestSession,
+            titleblobs::BlobsElsewhere,
+        };
+        use tower::ServiceExt;
+
+        let path = temp_db("worker-usage");
+        let dir = path.parent().unwrap();
+        let private = BlobStore::memory();
+        let start = || async {
+            let store = SqlStore::open(Sqlite(pool(&path).await)).await.unwrap();
+            let store = BlobsElsewhere::new(Arc::new(store), private.clone());
+            let identity = ServerIdentity::open(dir, Some("live.test")).unwrap();
+            let live = Live::start_with(Arc::new(store), identity, Policy::default(), Timers::Driven)
+                .await
+                .unwrap();
+            live.set_blobs(Blobs {
+                private: private.clone(),
+                public: None,
+            });
+            live
+        };
+        let call = |live: Arc<Live>, req: Request<Body>| async move {
+            let r = live_server::http::router(live).oneshot(req).await.unwrap();
+            let status = r.status();
+            let body = r.into_body().collect().await.unwrap().to_bytes();
+            (status, serde_json::from_slice::<Value>(&body).unwrap())
+        };
+
+        let live = start().await;
+        // Exercise the direct upgrade's response counter immediately after
+        // startup. A lone upgrade arms the sweep without writing per request.
+        live.count_api_request(101).await;
+        live.count_api_request(429).await;
+        assert_eq!(live.usage().pending(), 1);
+        assert!(live.sweep_due_with_hosts().is_some());
+        assert!(live.store().usage().await.unwrap().is_empty());
+
+        let key = KeyPair::generate();
+        let req = Request::post("/v1/accounts")
+            .body(Body::from(AccountRequest::sign(
+                &key, "Host", None, "live.test", now(),
+            )))
+            .unwrap();
+        let (status, account) = call(live.clone(), req).await;
+        assert_eq!(status, 201, "{account}");
+        let xuid = account["xuid"].as_str().unwrap();
+        private
+            .put(
+                &format!("storage/{xuid}/blobs/aa/{}", "a".repeat(64)),
+                "save-data".into(),
+                &Meta::default(),
+            )
+            .await
+            .unwrap();
+        private
+            .put(
+                &format!("storage/{xuid}/index.json"),
+                "index metadata".into(),
+                &Meta::default(),
+            )
+            .await
+            .unwrap();
+
+        // Frame traffic uses the same ingest session as the hub.
+        let mut ingest = IngestSession::new(live.clone());
+        let auth = serde_json::to_string(&ClientMessage::Auth {
+            token: issue_token(
+                &key,
+                account["id"].as_str().unwrap(),
+                "live.test",
+                lxm::GAMES_WRITE,
+                now(),
+            ),
+        })
+        .unwrap();
+        assert!(ingest.on_text(&auth).await.is_empty());
+        // Malformed frame data still traverses the authenticated socket.
+        ingest.on_binary(&[0u8; 40]).await;
+        drop(ingest);
+        if live.usage().pending() != 0 {
+            let deadline = live
+                .sweep_due_with_hosts()
+                .expect("a small usage batch schedules an alarm");
+            tokio::time::sleep(Duration::from_secs((deadline - now()).max(0) as u64)).await;
+        }
+        live.sweep_with_hosts().await;
+        assert_eq!(live.usage().pending(), 0);
+        drop(live);
+
+        // The idle alarm has written the request and frame batch to SQLite.
+        let live = start().await;
+        let usage = live.usage().overview(2);
+        assert_eq!(usage.totals.requests, Some(2));
+        assert_eq!(usage.totals.up["frames"], 40);
+
+        let operator = ServerIdentity::load(dir).unwrap();
+        for uri in ["/v1/admin/usage", "/v1/admin/usage/accounts?sort=stored"] {
+            let bearer = issue_token(
+                &operator.key,
+                &operator.author(),
+                "live.test",
+                "admin.read",
+                now(),
+            );
+            let req = Request::get(uri)
+                .header("authorization", format!("Bearer {bearer}"))
+                .body(Body::empty())
+                .unwrap();
+            let (status, usage) = call(live.clone(), req).await;
+            assert_eq!(status, 200, "{usage}");
+            assert_eq!(usage["saves_storage_measured"], true);
+            if let Some(items) = usage["items"].as_array() {
+                assert_eq!(items[0]["xuid"], xuid);
+                assert_eq!(items[0]["stored"]["saves"], 9);
+            } else {
+                assert_eq!(usage["stored"]["saves"], 9);
+                assert_eq!(usage["totals"]["requests"], 2);
+            }
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// A host's own Clankers on the Worker's composition, as on a machine
@@ -754,7 +941,7 @@ mod tests {
             ("PlayerJoined", serde_json::json!({"player": clanker(2)})),
             (
                 "PlayerKilled",
-                serde_json::json!({"tick": 30, "victim": 1, "killer": 0, "kind": "kill"}),
+                serde_json::json!({"tick": 30, "victim": 1, "killer": 0, "kind": "kill", "weapon": "frag_grenade", "headshot": false}),
             ),
             (
                 "PlayerKilled",
@@ -778,6 +965,10 @@ mod tests {
         assert_eq!(status, 201, "{body}");
 
         let (_, g) = call("GET", format!("/v1/games/{id}"), None, String::new()).await;
+        assert_eq!(g["kills"][0]["weapon"], "frag_grenade");
+        assert_eq!(g["kills"][0]["headshot"], false);
+        assert!(g["kills"][1].get("weapon").is_none());
+        assert!(g["kills"][1].get("headshot").is_none());
         let players = g["players"].as_array().unwrap();
         assert_eq!(players.len(), 3, "{g}");
         assert!(
@@ -798,6 +989,413 @@ mod tests {
         assert_eq!(
             (rows[0]["kills"].as_u64(), rows[0]["deaths"].as_u64()),
             (Some(0), Some(0))
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// The Firefight summary on the Worker's composition, as on a machine
+    /// (live-server's `tests/stats.rs`, docs/game/firefight.md "Scoring and
+    /// stats"): the same fixture events give the same golden summary, and
+    /// the same match moves nobody's rank.
+    #[tokio::test]
+    async fn the_firefight_summary_is_the_same_on_the_worker() {
+        use axum::{body::Body, http::Request};
+        use http_body_util::BodyExt;
+        use live_proto::sign::{
+            AccountRequest, EventBody, KeyPair, format_unix, issue_token, parse_time, sign_batch,
+        };
+        use live_proto::{Xuid, lxm};
+        use live_server::{Live, Policy, ServerIdentity, app::Timers};
+        use tower::ServiceExt;
+
+        let path = temp_db("firefight");
+        let store = SqlStore::open(Sqlite(pool(&path).await)).await.unwrap();
+        let identity = ServerIdentity::open(path.parent().unwrap(), Some("live.test")).unwrap();
+        let live = Live::start_with(Arc::new(store), identity, Policy::default(), Timers::Driven)
+            .await
+            .unwrap();
+        let call = |method: &'static str, uri: String, auth: Option<String>, body: String| {
+            let live = live.clone();
+            async move {
+                let mut req = Request::builder().method(method).uri(uri);
+                if let Some(a) = auth {
+                    req = req.header("authorization", format!("Bearer {a}"));
+                }
+                let r = live_server::http::router(live)
+                    .oneshot(req.body(Body::from(body)).unwrap())
+                    .await
+                    .unwrap();
+                let status = r.status().as_u16();
+                let body = r.into_body().collect().await.unwrap().to_bytes();
+                (
+                    status,
+                    serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null),
+                )
+            }
+        };
+        let now = live_server::app::now;
+        let key = KeyPair::generate();
+        let (status, created) = call(
+            "POST",
+            "/v1/accounts".into(),
+            None,
+            AccountRequest::sign(&key, "Host", None, "live.test", now()),
+        )
+        .await;
+        assert_eq!(status, 201, "{created}");
+        let xuid = Xuid::parse(created["xuid"].as_str().unwrap()).unwrap();
+        let author = created["id"].as_str().unwrap().to_string();
+        let token = || issue_token(&key, &author, "live.test", lxm::GAMES_WRITE, now());
+        let game = serde_json::json!({
+            "console": "Den", "map": "lockout", "mode": "multiplayer", "variant": "Firefight",
+            "team_play": false, "tick": 0, "kind": "custom",
+            "players": [
+                {"index": 0, "name": "Host", "xuid": xuid, "team": 0, "local": true},
+                {"index": 1, "name": "Clanker 1", "team": 0, "local": true, "bot": true}
+            ]
+        });
+        let (status, started) =
+            call("POST", "/v1/games".into(), Some(token()), game.to_string()).await;
+        assert_eq!(status, 201, "{started}");
+        let id = started["game_id"].as_str().unwrap().to_string();
+        let at = parse_time(&format_unix(now())).unwrap();
+        let mut events: Vec<(String, Value)> = serde_json::from_str::<Vec<Value>>(include_str!(
+            "../../live-server/tests/fixtures/firefight-events.json"
+        ))
+        .unwrap()
+        .into_iter()
+        .map(|e| (e["kind"].as_str().unwrap().to_string(), e["data"].clone()))
+        .collect();
+        events.push((
+            "GameEnded".into(),
+            serde_json::json!({"tick": 900, "reason": "finished", "winner": {"player": 0}}),
+        ));
+        let bodies: Vec<EventBody> = events
+            .into_iter()
+            .map(|(kind, data)| {
+                EventBody::new(&key, &author, &format!("game-{id}"), &kind, data, at)
+            })
+            .collect();
+        let (status, body) = call(
+            "POST",
+            format!("/v1/games/{id}/events"),
+            Some(token()),
+            sign_batch(&key, &bodies),
+        )
+        .await;
+        assert_eq!(status, 201, "{body}");
+
+        let (_, v) = call(
+            "GET",
+            "/v1/stats/summary?window=all".into(),
+            None,
+            String::new(),
+        )
+        .await;
+        let golden: Value = serde_json::from_str(
+            &include_str!("../../live-server/tests/fixtures/firefight-summary.json")
+                .replace("$HOST", &xuid.to_string()),
+        )
+        .unwrap();
+        assert_eq!(v["firefight"], golden);
+        assert_eq!(v["totals"]["kills"], 0);
+        let (status, ranks) = call(
+            "GET",
+            "/v1/accounts/Host/ranks".into(),
+            None,
+            String::new(),
+        )
+        .await;
+        assert_eq!(status, 200, "{ranks}");
+        assert_eq!(ranks["ranks"], serde_json::json!({}));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// Superbounces and bounce deaths on the Worker's composition, as on a
+    /// machine (live-server's `tests/games.rs`,
+    /// `the_host_reports_bounces_and_the_game_and_stats_serve_them`): the
+    /// host's are taken, a bad one is refused, the game serves them, a
+    /// bot's included, and the stats count them in the totals and in the
+    /// host's row.
+    #[tokio::test]
+    async fn the_host_reports_bounces_on_the_worker() {
+        use axum::{body::Body, http::Request};
+        use http_body_util::BodyExt;
+        use live_proto::sign::{
+            AccountRequest, EventBody, KeyPair, format_unix, issue_token, parse_time, sign_batch,
+        };
+        use live_proto::{Xuid, lxm};
+        use live_server::{Live, Policy, ServerIdentity, app::Timers};
+        use tower::ServiceExt;
+
+        let path = temp_db("bounces");
+        let store = SqlStore::open(Sqlite(pool(&path).await)).await.unwrap();
+        let identity = ServerIdentity::open(path.parent().unwrap(), Some("live.test")).unwrap();
+        let live = Live::start_with(Arc::new(store), identity, Policy::default(), Timers::Driven)
+            .await
+            .unwrap();
+        let call = |method: &'static str, uri: String, auth: Option<String>, body: String| {
+            let live = live.clone();
+            async move {
+                let mut req = Request::builder().method(method).uri(uri);
+                if let Some(a) = auth {
+                    req = req.header("authorization", format!("Bearer {a}"));
+                }
+                let r = live_server::http::router(live)
+                    .oneshot(req.body(Body::from(body)).unwrap())
+                    .await
+                    .unwrap();
+                let status = r.status().as_u16();
+                let body = r.into_body().collect().await.unwrap().to_bytes();
+                (
+                    status,
+                    serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null),
+                )
+            }
+        };
+        let now = live_server::app::now;
+        let key = KeyPair::generate();
+        let (status, created) = call(
+            "POST",
+            "/v1/accounts".into(),
+            None,
+            AccountRequest::sign(&key, "Host", None, "live.test", now()),
+        )
+        .await;
+        assert_eq!(status, 201, "{created}");
+        let xuid = Xuid::parse(created["xuid"].as_str().unwrap()).unwrap();
+        let author = created["id"].as_str().unwrap().to_string();
+        let token = || issue_token(&key, &author, "live.test", lxm::GAMES_WRITE, now());
+        let game = serde_json::json!({
+            "console": "Den", "map": "lockout", "mode": "multiplayer", "variant": "Slayer",
+            "team_play": false, "tick": 0, "kind": "custom",
+            "players": [
+                {"index": 0, "name": "Host", "xuid": xuid, "team": 0, "local": true},
+                {"index": 1, "name": "Clanker 1", "team": 1, "local": true, "bot": true}
+            ]
+        });
+        let (status, started) =
+            call("POST", "/v1/games".into(), Some(token()), game.to_string()).await;
+        assert_eq!(status, 201, "{started}");
+        let id = started["game_id"].as_str().unwrap().to_string();
+        let at = parse_time(&format_unix(now())).unwrap();
+        let post = |rows: Vec<(&str, Value)>| {
+            let bodies: Vec<EventBody> = rows
+                .into_iter()
+                .map(|(kind, data)| {
+                    EventBody::new(&key, &author, &format!("game-{id}"), kind, data, at)
+                })
+                .collect();
+            call(
+                "POST",
+                format!("/v1/games/{id}/events"),
+                Some(token()),
+                sign_batch(&key, &bodies),
+            )
+        };
+        let (status, body) = post(vec![(
+            "Superbounce",
+            serde_json::json!({"tick": 9, "player": 0, "chain": 0}),
+        )])
+        .await;
+        assert_eq!(status, 400, "{body}");
+        let (status, body) = post(vec![
+            (
+                "Superbounce",
+                serde_json::json!({"tick": 40, "player": 0, "chain": 1}),
+            ),
+            (
+                "Superbounce",
+                serde_json::json!({"tick": 70, "player": 0, "chain": 2, "monster": true}),
+            ),
+            (
+                "Superbounce",
+                serde_json::json!({"tick": 80, "player": 1, "chain": 1}),
+            ),
+            ("Bounced", serde_json::json!({"tick": 90, "player": 1})),
+            (
+                "GameEnded",
+                serde_json::json!({"tick": 900, "reason": "finished", "winner": {"player": 0}}),
+            ),
+        ])
+        .await;
+        assert_eq!(status, 201, "{body}");
+
+        let (_, g) = call("GET", format!("/v1/games/{id}"), None, String::new()).await;
+        let chains: Vec<_> = g["bounces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| {
+                (
+                    b["player"].as_u64(),
+                    b["chain"].as_u64(),
+                    b["monster"].as_bool(),
+                )
+            })
+            .collect();
+        // A Monster's row carries `monster`; any other has no key.
+        assert_eq!(
+            chains,
+            [
+                (Some(0), Some(1), None),
+                (Some(0), Some(2), Some(true)),
+                (Some(1), Some(1), None)
+            ]
+        );
+        assert_eq!(g["bounced"][0]["player"], 1);
+        let (_, v) = call(
+            "GET",
+            "/v1/stats/summary?window=all".into(),
+            None,
+            String::new(),
+        )
+        .await;
+        assert_eq!(
+            (
+                v["totals"]["bounces"].as_u64(),
+                v["totals"]["bounced"].as_u64()
+            ),
+            (Some(3), Some(1))
+        );
+        let rows = v["players"].as_array().unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(
+            (rows[0]["bounces"].as_u64(), rows[0]["bounced"].as_u64()),
+            (Some(2), Some(0))
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// Teabags on the Worker's composition, as on a machine (live-server's
+    /// `tests/games.rs`,
+    /// `the_host_reports_teabags_and_the_game_and_stats_serve_them`): the
+    /// host's are taken, a player's own body is refused, the game serves
+    /// them, a bot's included, and the stats count them in the totals and,
+    /// given and received, in the host's row.
+    #[tokio::test]
+    async fn the_host_reports_teabags_on_the_worker() {
+        use axum::{body::Body, http::Request};
+        use http_body_util::BodyExt;
+        use live_proto::sign::{
+            AccountRequest, EventBody, KeyPair, format_unix, issue_token, parse_time, sign_batch,
+        };
+        use live_proto::{Xuid, lxm};
+        use live_server::{Live, Policy, ServerIdentity, app::Timers};
+        use tower::ServiceExt;
+
+        let path = temp_db("teabags");
+        let store = SqlStore::open(Sqlite(pool(&path).await)).await.unwrap();
+        let identity = ServerIdentity::open(path.parent().unwrap(), Some("live.test")).unwrap();
+        let live = Live::start_with(Arc::new(store), identity, Policy::default(), Timers::Driven)
+            .await
+            .unwrap();
+        let call = |method: &'static str, uri: String, auth: Option<String>, body: String| {
+            let live = live.clone();
+            async move {
+                let mut req = Request::builder().method(method).uri(uri);
+                if let Some(a) = auth {
+                    req = req.header("authorization", format!("Bearer {a}"));
+                }
+                let r = live_server::http::router(live)
+                    .oneshot(req.body(Body::from(body)).unwrap())
+                    .await
+                    .unwrap();
+                let status = r.status().as_u16();
+                let body = r.into_body().collect().await.unwrap().to_bytes();
+                (
+                    status,
+                    serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null),
+                )
+            }
+        };
+        let now = live_server::app::now;
+        let key = KeyPair::generate();
+        let (status, created) = call(
+            "POST",
+            "/v1/accounts".into(),
+            None,
+            AccountRequest::sign(&key, "Host", None, "live.test", now()),
+        )
+        .await;
+        assert_eq!(status, 201, "{created}");
+        let xuid = Xuid::parse(created["xuid"].as_str().unwrap()).unwrap();
+        let author = created["id"].as_str().unwrap().to_string();
+        let token = || issue_token(&key, &author, "live.test", lxm::GAMES_WRITE, now());
+        let game = serde_json::json!({
+            "console": "Den", "map": "lockout", "mode": "multiplayer", "variant": "Slayer",
+            "team_play": false, "tick": 0, "kind": "custom",
+            "players": [
+                {"index": 0, "name": "Host", "xuid": xuid, "team": 0, "local": true},
+                {"index": 1, "name": "Clanker 1", "team": 1, "local": true, "bot": true}
+            ]
+        });
+        let (status, started) =
+            call("POST", "/v1/games".into(), Some(token()), game.to_string()).await;
+        assert_eq!(status, 201, "{started}");
+        let id = started["game_id"].as_str().unwrap().to_string();
+        let at = parse_time(&format_unix(now())).unwrap();
+        let post = |rows: Vec<(&str, Value)>| {
+            let bodies: Vec<EventBody> = rows
+                .into_iter()
+                .map(|(kind, data)| {
+                    EventBody::new(&key, &author, &format!("game-{id}"), kind, data, at)
+                })
+                .collect();
+            call(
+                "POST",
+                format!("/v1/games/{id}/events"),
+                Some(token()),
+                sign_batch(&key, &bodies),
+            )
+        };
+        let (status, body) = post(vec![(
+            "Teabag",
+            serde_json::json!({"tick": 9, "player": 0, "victim": 0}),
+        )])
+        .await;
+        assert_eq!(status, 400, "{body}");
+        let (status, body) = post(vec![
+            (
+                "Teabag",
+                serde_json::json!({"tick": 40, "player": 0, "victim": 1}),
+            ),
+            (
+                "Teabag",
+                serde_json::json!({"tick": 70, "player": 1, "victim": 0}),
+            ),
+            (
+                "GameEnded",
+                serde_json::json!({"tick": 900, "reason": "finished", "winner": {"player": 0}}),
+            ),
+        ])
+        .await;
+        assert_eq!(status, 201, "{body}");
+
+        let (_, g) = call("GET", format!("/v1/games/{id}"), None, String::new()).await;
+        let bags: Vec<_> = g["teabags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| (b["player"].as_u64(), b["victim"].as_u64()))
+            .collect();
+        assert_eq!(bags, [(Some(0), Some(1)), (Some(1), Some(0))]);
+        let (_, v) = call(
+            "GET",
+            "/v1/stats/summary?window=all".into(),
+            None,
+            String::new(),
+        )
+        .await;
+        assert_eq!(v["totals"]["teabags"].as_u64(), Some(2));
+        let rows = v["players"].as_array().unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(
+            (
+                rows[0]["teabags_given"].as_u64(),
+                rows[0]["teabags_received"].as_u64()
+            ),
+            (Some(1), Some(1))
         );
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
@@ -876,6 +1474,8 @@ mod tests {
             campaign: None,
             ping_ms: None,
             variant_ext: None,
+            rules: None,
+            browser: None,
         })
         .unwrap();
         let (status, session) = call(

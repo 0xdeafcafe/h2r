@@ -4,6 +4,7 @@
 #![deny(unsafe_code)]
 
 pub mod account_setup;
+pub use actor_net;
 mod auto;
 pub mod clankermatch;
 mod client;
@@ -11,7 +12,10 @@ mod config;
 mod feedback;
 mod film_service;
 pub mod films;
+pub mod game_variants;
 mod invites;
+pub mod join_resolver;
+pub mod join_link;
 pub mod maps;
 pub mod mods;
 mod messages;
@@ -34,8 +38,11 @@ pub use outbox::{
     BuiltMessage, MessageProperty, MessageRecipient, MessageSend, MessageSendKind, MessageUser,
     MessageValue, RecruitProperties,
 };
+mod browser;
+pub use browser::{BrowserProbe, BrowserStatus};
 mod qos;
 mod qos_memory;
+mod socket_wait;
 mod sessions;
 pub use sessions::{
     LocalSession, MapProbe, SessionAttribute, SessionAttributeValue, SessionSlots, SkullsProbe,
@@ -85,6 +92,8 @@ pub mod status {
     /// gets (docs/live/live-boundary.md, game result 2, dialog 0x27).
     pub const ACCOUNT_REQUIRES_MANAGEMENT: u32 = 0x8015_1200;
     pub const BUFFER_TOO_SMALL: u32 = 0x8015_0001;
+    /// HLE's customer HRESULT for a terminal Live queue refusal.
+    pub const REPLICATION_VERSION_MISMATCH: u32 = 0xa015_5100;
     pub const MATCH_INVALID_SESSION: u32 = 0x8015_5100;
     pub const MATCH_INVALID_DATA_TYPE: u32 = 0x8015_5102;
     pub const MATCH_INVALID_SEARCH: u32 = 0x8015_5105;
@@ -161,6 +170,22 @@ pub enum HostVariantExt {
     },
 }
 
+/// What a guest knows of its host's rules IR hash ([`Hle::host_rules`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostRules {
+    /// No session joined.
+    NotJoined,
+    /// Joined `session`, whose advertisement was never read.
+    Unknown { session: String },
+    /// Joined `session`, whose host advertised `rules` (None: a host that
+    /// sends none); `refreshed` when read just now.
+    Known {
+        session: String,
+        rules: Option<String>,
+        refreshed: bool,
+    },
+}
+
 /// What a host knows of its players' builds ([`Hle::players_lacking`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Lacking {
@@ -211,6 +236,10 @@ impl Joined {
     }
 }
 
+/// Read-only admission check installed for an external service with an editor
+/// mount. A published editor map refuses sign-in until process exit.
+pub type LogonMapCheck = Box<dyn Fn() -> u32 + Send>;
+
 pub struct Hle {
     offline_film: bool,
     service_taped: std::sync::OnceLock<bool>,
@@ -245,6 +274,12 @@ impl Hle {
             .get()
             .filter(|_| self.film_service_taped())
             .cloned()
+    }
+
+    /// Fixes the version used by Live QoS admission. Boot calls this once
+    /// before starting the guest, with the version of its entity definitions.
+    pub fn set_replication_version(&self, version: u16) {
+        self.network.version.set(version);
     }
 
     pub fn film_address(&self) -> SocketAddrV4 {
@@ -297,11 +332,12 @@ impl Hle {
         }
         let address = network.address;
         let accounts = config.accounts()?;
+        let version = qos::Version::default();
         let service = if config.enabled {
             config
                 .server_url
                 .as_ref()
-                .map(|url| client::Service::start(url.clone(), options))
+                .map(|url| client::Service::start(url.clone(), options, version.clone()))
                 .transpose()
                 .map_err(|_| ConfigError::Worker)?
         } else {
@@ -318,7 +354,7 @@ impl Hle {
                 config.clone(),
             )),
             config,
-            network: network::Network::new(network),
+            network: network::Network::new(network, version),
         }))
     }
     /// Preserve the dedicated lobby's configured session class, with no HTTP
@@ -341,7 +377,7 @@ impl Hle {
                 config.clone(),
             )),
             config,
-            network: network::Network::new(network),
+            network: network::Network::new(network, qos::Version::default()),
         }))
     }
     /// Reads the accounts file again (after [`account_setup::save`]), so a
@@ -398,6 +434,26 @@ impl Hle {
     fn lock(&self) -> std::sync::MutexGuard<'_, state::State> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
+
+    pub fn set_logon_map_check(&self, check: LogonMapCheck) {
+        self.lock().logon_map_check = Some(check);
+    }
+
+    /// Serialize the start of a DVD reservation with external logon. The
+    /// caller reserves its DVD source here, without acquiring guest memory.
+    pub fn with_editor_reservation<T>(
+        &self,
+        reserve: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let state = self.lock();
+        if state.logon_blocks_editor_map() {
+            return Err("Sign out of Xbox Live before loading an editor map.".into());
+        }
+        let result = reserve();
+        drop(state);
+        result
+    }
+
     /// Telemetry can call this after the server assigns a game ID; no I/O or
     /// guest memory access occurs on the caller's thread. None returns to online.
     pub fn set_game_id(&self, id: Option<&str>) -> Result<(), u32> {
@@ -424,6 +480,28 @@ impl Hle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .set_visibility_probe(probe)
+    }
+    /// Change the next Live custom browser search, preserving other title searches.
+    pub fn set_browser_filters(&self, filters: live_proto::session::BrowserFilters) {
+        self.lock().set_browser_filters(filters);
+    }
+    /// The last match count and whether the server supports browser filters,
+    /// sampled by the browser footer without copying the variant names.
+    pub fn browser_result(&self) -> (Option<usize>, Option<bool>) {
+        self.lock().browser_result()
+    }
+    /// The last completed search for the current filters and its variant choices.
+    pub fn browser_status(&self) -> BrowserStatus {
+        self.lock().browser_status()
+    }
+    /// Collect the host's multiplayer browser metadata while the title advertises.
+    pub fn set_browser_probe(&self, probe: BrowserProbe) {
+        self.lock().set_browser_probe(probe);
+    }
+    /// Refresh discovery metadata after lobby selections change, even if
+    /// the title has no new matchmaking attributes to send.
+    pub fn lobby_browser_changed(&self, guest: &runtime::Guest) {
+        self.lock().lobby_browser_changed(guest);
     }
     /// Lets advertisements name the host's selected map
     /// (`NewSession.map_id`, docs/game/maps.md §5). Without it they name none.
@@ -472,20 +550,7 @@ impl Hle {
             let (pending, seen) = s.refresh_session(&id);
             (id, pending, seen)
         };
-        let mut refreshed = false;
-        if let Some(p) = pending {
-            let until = std::time::Instant::now() + wait;
-            loop {
-                if let Some(r) = p.take() {
-                    refreshed = r.is_ok();
-                    break;
-                }
-                if std::time::Instant::now() >= until {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-        }
+        let refreshed = pending.and_then(|p| p.wait(wait)).is_some_and(|r| r.is_ok());
         let known = seen.and_then(|m| {
             m.lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -513,6 +578,12 @@ impl Hle {
         let keys = self.network.registered_keys();
         self.lock().matchmade(&keys)
     }
+    /// Whether this match has a Live session whose host supplies the library film.
+    /// A System Link peer also registers a key, but has no Live advertisement.
+    pub fn archived_session(&self) -> bool {
+        let keys = self.network.registered_keys();
+        self.lock().archived_session(&keys)
+    }
     /// Whether Live assigned frame uploads to the host for this match alone.
     /// The uploader reads it when it latches the published session ID.
     pub fn frames_from_host(&self, session_id: &str) -> bool {
@@ -523,12 +594,21 @@ impl Hle {
         }
         self.lock().frames_from_host(session_id)
     }
-    /// Dedicated host progress for the retail matchmaking lobby line.
+    /// Map Pack availability, host progress and replication refusals for matchmaking.
     pub fn matchmaking_status(&self) -> Option<String> {
         if let Some(value) = self.film_view(|v| v.status.clone()) {
             return value;
         }
         self.lock().matchmaking_status().map(str::to_owned)
+    }
+    /// The mounted console has the original Multiplayer Map Pack installed.
+    pub fn has_map_pack(&self) -> bool {
+        self.lock().has_map_pack()
+    }
+    /// Only a queue assignment for this console's hosted lobby may use an
+    /// add-on entry in the guest's weighted map picker.
+    pub fn allow_hopper_addons(&self, hopper: u32) -> bool {
+        self.lock().allow_hopper_addons(hopper)
     }
     /// The clanker hoppers the server served last (docs/game/bots.md §8):
     /// the playlists the Clankermatch row lists and OptiMatch does not.
@@ -660,12 +740,14 @@ impl Hle {
     ) -> Result<(), String> {
         self.lock().roster_bots(request, done)
     }
-    /// Look up a remote or recent Clanker on the Live worker. The UI stays usable offline.
+    /// Queues a remote or recent Clanker lookup. A queued lookup calls
+    /// `done` with its result on the Live worker. A lookup that cannot
+    /// be queued returns its status immediately.
     pub fn bot_card(
         &self,
         xuid: live_proto::Xuid,
-        done: Box<dyn FnOnce(live_proto::bots::PlayerCard) + Send>,
-    ) {
+        done: Box<dyn FnOnce(Result<live_proto::bots::PlayerCard, u32>) + Send>,
+    ) -> Result<(), u32> {
         self.lock().bot_card(xuid, done)
     }
     /// Whether the guest has a signed-in player who can read the mod list.
@@ -673,7 +755,7 @@ impl Hle {
     pub fn check_mod_list(&self) -> Result<(), mods::ModsError> {
         self.lock().check_mod_list()
     }
-    /// A page of the mod repository, newest first (`GET /v1/maps?sort=new`
+    /// A page of the mod repository, newest pack first (`GET /v1/mod-packs`
     /// with a `read` token, docs/game/maps.md §5 "Mod downloads"). Returns
     /// at once; `done` is called on the Live worker with the page, or why
     /// there is none. Never touches guest memory.
@@ -730,6 +812,58 @@ impl Hle {
             },
         }
     }
+    /// A rules IR blob by its full SHA-256 (64 lowercase hex digits), from
+    /// `GET /v1/rules/{hash}/ir` as the first account signed in. Waits at
+    /// most `wait` for the server; call with no guest memory held, it never
+    /// takes guest memory. The blob is as the server sent it: the caller
+    /// checks its hash and verifies it (docs/game/rules-engine.md, "The
+    /// host runtime").
+    pub fn fetch_rules_ir(
+        &self,
+        hash: &str,
+        wait: std::time::Duration,
+    ) -> Result<Vec<u8>, game_variants::FetchError> {
+        use game_variants::FetchError;
+        if !game_variants::valid_hash(hash) {
+            return Err(FetchError::BadHash(hash.to_owned()));
+        }
+        let pending = self.lock().rules_ir(hash)?;
+        match pending.wait(wait) {
+            Some(Ok(client::Reply::RulesIr(r))) => r,
+            Some(Ok(_)) => Err(FetchError::Server("not a rules blob".into())),
+            Some(Err(code)) => Err(FetchError::Server(format!("{code:#010x}"))),
+            None => Err(FetchError::Timeout(wait.as_millis())),
+        }
+    }
+    /// The first signed-in account's Live game variants, from
+    /// `GET /v1/variants?author=<xuid>`. Waits at most `wait`; never takes
+    /// guest memory, so call it off the game thread.
+    pub fn my_game_variants(
+        &self,
+        wait: std::time::Duration,
+    ) -> Result<Vec<game_variants::LiveVariant>, game_variants::FetchError> {
+        use game_variants::FetchError;
+        let pending = self.lock().game_variants()?;
+        match pending.wait(wait) {
+            Some(Ok(client::Reply::GameVariants(v))) => Ok(v),
+            Some(Ok(_)) => Err(FetchError::Server("not a variant list".into())),
+            Some(Err(code)) => Err(FetchError::Server(format!("{code:#010x}"))),
+            None => Err(FetchError::Timeout(wait.as_millis())),
+        }
+    }
+    /// What the host of the session this console joined advertised as the
+    /// SHA-256 of its rules IR blob: [`Hle::joined`]'s answer.
+    pub fn host_rules(&self, wait: std::time::Duration) -> HostRules {
+        match self.joined(wait) {
+            Joined::NotJoined => HostRules::NotJoined,
+            Joined::Unknown { session } => HostRules::Unknown { session },
+            Joined::Known { session, refreshed } => HostRules::Known {
+                session: session.session_id.clone(),
+                rules: session.advertisement.rules.clone(),
+                refreshed,
+            },
+        }
+    }
     /// Which of `xuids` (the players of this console's game: the session's
     /// roster, or the game's own player list) are on a build without
     /// `capability`, from their presence ([`live_proto::lacking`]). Waits at
@@ -752,23 +886,15 @@ impl Hle {
         else {
             return Lacking::Unknown("not signed in to a Live server");
         };
-        let until = std::time::Instant::now() + wait;
-        loop {
-            match pending.take() {
-                Some(Ok(client::Reply::Presence(all))) => {
-                    return Lacking::Known(
-                        live_proto::lacking(capability, xuids, &all)
-                            .iter()
-                            .map(|p| p.gamertag.as_str().to_string())
-                            .collect(),
-                    );
-                }
-                Some(_) => return Lacking::Unknown("the server's presence read failed"),
-                None if std::time::Instant::now() >= until => {
-                    return Lacking::Unknown("the server did not answer in time");
-                }
-                None => std::thread::sleep(std::time::Duration::from_millis(5)),
-            }
+        match pending.wait(wait) {
+            Some(Ok(client::Reply::Presence(all))) => Lacking::Known(
+                live_proto::lacking(capability, xuids, &all)
+                    .iter()
+                    .map(|p| p.gamertag.as_str().to_string())
+                    .collect(),
+            ),
+            Some(_) => Lacking::Unknown("the server's presence read failed"),
+            None => Lacking::Unknown("the server did not answer in time"),
         }
     }
     /// The final setting returned to the game after a Live request (including
@@ -817,6 +943,15 @@ impl Hle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .set_session_variant_ext(ext)
+    }
+    /// The host's rules IR hash (64 lowercase hex digits) for the game it
+    /// starts: advertisements carry it from now, and open ones are updated
+    /// at once. No guest memory access.
+    pub fn set_session_rules(&self, rules: Option<String>) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_session_rules(rules)
     }
     /// The bots (server accounts) in this console's hosted game, beside
     /// its signed-in users: the Live session their roster is for
@@ -931,6 +1066,12 @@ impl Hle {
             .unwrap_or_else(|e| e.into_inner())
             .set_auto(crate::auto::Auto::from_values(invite, accept_from));
     }
+    /// Publish the active host squad's actual capacity for lobbies whose
+    /// title advertisement omits the slot counts.
+    pub fn sync_squad_slots(&self, slots: SessionSlots) {
+        self.lock().sync_squad_slots(slots);
+    }
+
     /// The signed-in player on controller `controller`, 0 for none.
     pub fn user(&self, controller: usize) -> u64 {
         if self.offline_film && self.film_service_taped() {
@@ -1018,6 +1159,12 @@ impl Hle {
             .unwrap_or_else(|e| e.into_inner())
             .local_team_action(actor, action)
     }
+    /// Interrupt a host tick wait on inbound XNet traffic. Leaves all
+    /// reads, guest timeouts and readiness reporting to the game.
+    pub fn wait_for_network_input(&self, timeout: std::time::Duration) -> bool {
+        self.network.wait_for_input(timeout)
+    }
+
     pub fn network_config(&self) -> &NetworkConfig {
         &self.network.config
     }

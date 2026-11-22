@@ -128,7 +128,9 @@ fn strings_have_ids_in_the_family_one_a_map() {
     let cat = sample();
     let s = cat.strings();
     let n = cat.all().count();
-    assert_eq!(s.len(), 3 + 4 + n);
+    // Three titles, a name per category (Halo 2, the map pack, Halo 1,
+    // mods, Firefight) and one per map.
+    assert_eq!(s.len(), 3 + Category::ALL.len() + n);
     assert!(s.iter().all(|(id, _)| IDS.owns(*id)), "{s:?}");
     let mut ids: Vec<u32> = s.iter().map(|(i, _)| *i).collect();
     ids.sort();
@@ -687,4 +689,72 @@ fn a_package_installed_while_the_game_runs_is_listed_without_a_restart() {
     assert!(!sel.take_content_changed());
     assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
     std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn pack_picker_uses_exact_installed_slots_for_disc_and_dlc_bases() {
+    let mut cat = sample();
+    let lockout = content::MapId([1; 32]);
+    let warlock = content::MapId([2; 32]);
+    let index: PackIndex = serde_json::from_value(serde_json::json!({
+        "release-one": {"name":"After Hours", "members": {
+            (lockout.to_string()): "lockout", (warlock.to_string()): "warlock"
+        }}
+    })).unwrap();
+    let a = 0x2_0001;
+    let b = 0x2_0002;
+    cat.package_slots.insert(lockout, a);
+    assert!(index.installed(&cat).is_empty(), "an incomplete install cannot become active");
+    cat.package_slots.insert(warlock, b);
+    cat.packs = index.installed(&cat);
+    assert_eq!(list_for(&cat, Mode::Maps(Category::Mods), &|_| 0), [(a, 0)]);
+    assert_eq!(row_label(&cat, Mode::Maps(Category::Mods), a).unwrap().1, "After Hours");
+    assert_eq!(list_for(&cat, Mode::Pack(a), &|_| 0), [(a, 0), (b, 0)]);
+    assert_eq!(row_label(&cat, Mode::Pack(a), b).unwrap().1, "Warlock");
+    cat.active_pack = Some("release-one".into());
+    let disc = list_for(&cat, Mode::Maps(Category::Halo2), &|id| u8::from(id == 0x0a));
+    assert!(disc.contains(&(a, 1)), "the pack maps onto the retail row with its lock flag");
+    assert!(disc.contains(&(0x14, 0)), "uncovered bases stay on disc");
+    assert!(list_for(&cat, Mode::Maps(Category::MapPack), &|_| 0).contains(&(b, 0)));
+    assert_eq!(row_label(&cat, Mode::Maps(Category::Halo2), a).unwrap().1, "Lockout (After Hours)");
+    let original = cat.original_row().unwrap();
+    assert_eq!(row_label(&cat, Mode::Maps(Category::Mods), original).unwrap().1, "Use original maps");
+}
+
+/// The kit maps are the Firefight category, which only a Firefight lobby
+/// opens; a Forge lobby opens the original maps; a Multiplayer lobby lists
+/// the categories without Firefight.
+#[test]
+fn the_lobbys_mode_picks_what_change_map_opens() {
+    use crate::lobby_start::Mode;
+    let kit = map(
+        0x2_0003,
+        "Firefight \u{2013} Lockout",
+        1000,
+        &new_map_path(0x2_0003, "lockout"),
+    );
+    let probe = map(
+        0x2_0004,
+        "Firefight Probe \u{2013} Lockout",
+        1000,
+        &new_map_path(0x2_0004, "lockout"),
+    );
+    assert_eq!(kit.category(), Category::Firefight);
+    assert_eq!(probe.category(), Category::Mods, "the probe is not offered as Firefight");
+    let cat = Catalogue::new([
+        map(1, "Lockout", 1, r"d:\maps\lockout"),
+        kit.clone(),
+        probe.clone(),
+    ]);
+    assert_eq!(cat.categories(), [Category::Halo2, Category::Mods]);
+    assert_eq!(cat.maps(Category::Firefight), [kit]);
+    assert_eq!(mode_category(Mode::Multiplayer), None);
+    assert_eq!(mode_category(Mode::Forge), Some(Category::Halo2));
+    assert_eq!(mode_category(Mode::Firefight), Some(Category::Firefight));
+    assert_eq!(Category::Firefight.label(), "Firefight");
+    // The Firefight label has its own string id, clear of the footers.
+    let ids: Vec<u32> = cat.strings().into_iter().map(|(id, _)| id).collect();
+    let unique: std::collections::BTreeSet<_> = ids.iter().collect();
+    assert_eq!(unique.len(), ids.len(), "every string has its own id");
+    assert!(ids.iter().all(|&id| IDS.owns(id)));
 }

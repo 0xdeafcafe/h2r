@@ -174,18 +174,21 @@ fn sound_environment_decodes_float_parameters_and_retains_opaque_bits() {
 }
 #[test]
 fn sky_lights_are_bounded_and_opaque_values_are_not_interpreted() {
-    let mut b = vec![0; 0xac + 0x34];
+    let mut b = vec![0; 0xac + 0x34 + 0x28];
     put(&mut b, 4, u32::MAX);
     block(&mut b, 0x78, 1, 0xac);
     put(&mut b, 0x34, 0.25f32.to_bits());
     put(&mut b, 0xac + 0xc, 1.5f32.to_bits());
     put(&mut b, 0xac + 0x14, FourCC(*b"lens").as_u32());
     put(&mut b, 0xac + 0x18, 0xe111_0002);
+    block(&mut b, 0xac + 0x2c, 1, 0xe0);
+    put(&mut b, 0xe0, 0x534);
     // An unreviewed descriptor carries an invalid pointer; don't follow it.
     block(&mut b, 0x48, 0xffffffff, 0xdead);
     let Atmosphere::Sky(s) = Atmosphere::decode(FourCC(*b"sky "), &view(&b)).unwrap() else {
         panic!()
     };
+    assert_eq!(s.lights[0].parameter_flags, Some(0x534));
     assert_eq!(s.lights[0].yaw_pitch[0], 1.5);
     assert_eq!(s.lights[0].lens_flare.id, TagId(0xe111_0002));
     assert_eq!(s.fallback_rgb, [0.25, 0.0, 0.0]);
@@ -409,7 +412,7 @@ fn alias_map() -> Vec<u8> {
         (*b"matg", 0, 0x10),
         (*b"scnr", 0x100, 0x218),
         (*b"sky ", 0x400, 0xac),
-        (*b"sky ", 0x600, 0xe0),
+        (*b"sky ", 0x600, 0x108),
         (*b"fog ", 0x800, 0x60),
         (*b"fog ", 0x800, 0),
     ]
@@ -429,6 +432,8 @@ fn alias_map() -> Vec<u8> {
     block(&mut b, 0x1600 + 0x78, 1, 0x6ac);
     put(&mut b, 0x16ac + 0x18, u32::MAX);
     put(&mut b, 0x16ac + 0xc, 0.75f32.to_bits());
+    block(&mut b, 0x16ac + 0x2c, 1, 0x6e0);
+    put(&mut b, 0x16e0, 0x1234_0001);
     for o in [0x3c, 0x44, 0x54, 0x5c] {
         put(&mut b, 0x1800 + o, u32::MAX);
     }
@@ -444,6 +449,7 @@ fn sky_children_and_zero_sized_fog_roots_can_alias_same_class_payloads() {
         panic!()
     };
     assert!(s.lights_alias);
+    assert_eq!(s.lights[0].parameter_flags, Some(0x1234_0001));
     assert_eq!(s.lights[0].yaw_pitch[0], 0.75);
     assert_eq!(s.opaque.len(), 0xac);
     let Atmosphere::Sky(s) = Atmosphere::read(&mut m, TagId(0xa0000003)).unwrap() else {

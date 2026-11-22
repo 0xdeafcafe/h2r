@@ -27,6 +27,17 @@ pub struct TargetInfo {
     pub depth_format: Option<D3DFormat>,
 }
 
+/// Host allocation sizes for a draw's attachments and texture stages.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RenderExtents {
+    pub color: Option<(u32, u32)>,
+    pub depth: Option<(u32, u32)>,
+    pub textures: [Option<(u32, u32)>; 4],
+}
+
+/// A display surface's extent and its tightly packed BGRA8 pixels.
+pub type DisplaySurfacePixels = ((u32, u32), Vec<u8>);
+
 /// A bound texture, as its guest header describes it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TextureInfo {
@@ -265,6 +276,13 @@ impl IndexedTail {
 /// world. The device decides where (the bound targets and viewport); the
 /// backend gives the pass its encoder and the targets' views.
 pub trait ExternalPass: Send {
+    /// The scene may retain this pass after presentation and record it again
+    /// on other attachments of the same device. Its selections, view and
+    /// material inputs must stay valid for the lifetime of the pass. It
+    /// must produce packets or encoded commands using only the attachments
+    /// and uploads supplied to that recording, with no guest feedback.
+    fn replays_scene(&self) -> bool { false }
+
     fn indexed_tail(&self) -> Option<IndexedTail> { None }
 
     /// All these ranges share the textures resolved at the first draw.
@@ -333,7 +351,16 @@ pub trait ExternalPass: Send {
 
     /// A resolved draw admission can retain its original, immutable D3D packet for
     /// ordered fallback on the worker. Guest-mask reservations leave this empty.
+    /// For a native producer (`Device::try_native_*_draw`) the packet stands in
+    /// for the guest's own emission, which is skipped once the draw is queued, so
+    /// it must be the whole draw the guest would issue.
     fn resolved_fallback(&self) -> Option<std::sync::Arc<ResolvedDraw>> { None }
+
+    /// An immutable packet for render diagnostics, independent of whether
+    /// this pass can replay that packet as a fallback.
+    fn diagnostic_draw(&self) -> Option<std::sync::Arc<ResolvedDraw>> {
+        self.resolved_fallback()
+    }
 
     /// Number of suppressed guest items represented by this reservation. Most
     /// geometry promises one range per item; multi-range effects override it.
@@ -411,6 +438,7 @@ pub struct ExternalTarget<'a> {
     /// The depth format's full scale as the guest's W-buffer uses it
     /// (device `+0x948`).
     pub z_scale: f32,
+    pub display_projection_factor: f32,
     /// The colour target's size in guest pixels (what the game's viewport
     /// constants are in) and in this copy's texels (larger under the
     /// render scale).
@@ -431,6 +459,19 @@ pub struct ExternalTarget<'a> {
     /// discarded with a refused or cancelled recording.
     pub on_submit: Option<&'a mut Vec<Box<dyn FnOnce() + Send>>>,
 }
+
+#[cfg(feature = "gpu")]
+impl ExternalTarget<'_> {
+    pub fn projection_factor(&self) -> f32 {
+        if self.copy == TargetCopy::Display { self.display_projection_factor } else { 1.0 }
+    }
+
+    pub fn view_constants(&self, mut c: [[f32; 4]; VIEW_CONSTANTS]) -> [[f32; 4]; VIEW_CONSTANTS] {
+        crate::device::widen_projection_rows(&mut c[..4], self.projection_factor());
+        c
+    }
+}
+
 
 #[cfg(feature = "gpu")]
 impl ExternalTarget<'_> {
@@ -551,6 +592,7 @@ impl ExternalAttachments {
         ExternalTarget {
             device: &self.device, queue: &self.queue, encoder, color: &self.color, color_format: self.color_format,
             depth: &self.depth, depth_format: self.depth_format, viewport: external_viewport(&request, self.size),
+            display_projection_factor: request.display_projection_factor,
             z_scale: request.z_scale, guest_size: request.surface_size, size: self.size, sampled: &self.sampled,
             uploads: &self.uploads, slots: &self.slots, stages: self.stages.each_ref().map(Option::as_ref), copy: self.copy,
             on_submit,
@@ -824,7 +866,6 @@ pub struct DrawSnapshot<'a> {
     pub bound_textures: [u32; 4],
     pub sampled_stages: [bool; 4],
     pub palettes: [u32; 4],
-    pub palette_entries: [Option<Vec<u32>>; 4],
     pub color_header: u32,
     pub depth_header: u32,
 }
@@ -869,17 +910,28 @@ pub struct ExternalPassRequest {
     pub rect: (u32, u32, u32, u32),
     pub surface_size: (u32, u32),
     pub z_scale: f32,
+    pub display_projection_factor: f32,
+}
+
+impl ExternalPassRequest {
+    pub fn projection_factor(&self, copy: TargetCopy) -> f32 {
+        if copy == TargetCopy::Display { self.display_projection_factor } else { 1.0 }
+    }
+
+    #[cfg(feature = "gpu")]
+    pub fn view_constants(&self, copy: TargetCopy, mut c: [[f32; 4]; VIEW_CONSTANTS]) -> [[f32; 4]; VIEW_CONSTANTS] {
+        crate::device::widen_projection_rows(&mut c[..4], self.projection_factor(copy));
+        c
+    }
 }
 
 /// The viewport of `request` in a `texels`-sized target: `[x, y, w, h]`.
 pub fn external_viewport(request: &ExternalPassRequest, texels: (u32, u32)) -> [f32; 4] {
-    let (gw, gh) = request.surface_size;
-    let (sx, sy) = (
-        texels.0 as f32 / gw.max(1) as f32,
-        texels.1 as f32 / gh.max(1) as f32,
-    );
+    let Some(scale) = gfx::raster::RenderScale::between(request.surface_size, texels) else {
+        return [0.0; 4];
+    };
     let (x, y, w, h) = request.rect;
-    [x as f32 * sx, y as f32 * sy, w as f32 * sx, h as f32 * sy]
+    scale.rect(x, y, w, h).map(|n| n as f32)
 }
 
 /// `D3DVIEWPORT8`.
@@ -913,9 +965,76 @@ pub struct PixelRect {
 }
 
 impl PixelRect {
+    /// Reproject a perspective draw's guest scissor around its viewport
+    /// centre. A bound already clipped to the viewport remains there: its
+    /// original projected edge may have been outside the retail frame.
+    pub fn projected_x(self, viewport: (u32, u32, u32, u32), factor: f32) -> Self {
+        if factor == 1.0 || self.width == 0 { return self; }
+        let (left, _, width, _) = viewport;
+        let right = left.saturating_add(width);
+        let centre = f64::from(left) + f64::from(width) * 0.5;
+        let edge = |x| centre + (f64::from(x) - centre) * f64::from(factor);
+        let end = self.x.saturating_add(self.width);
+        let x = if self.x <= left { left } else { (edge(self.x).floor() as u32).clamp(left, right) };
+        let end = if end >= right { right } else { (edge(end).ceil() as u32).clamp(left, right) };
+        Self { x, width: end.saturating_sub(x), ..self }
+    }
+
     /// Whether this is the whole `w x h` target.
     pub fn is_whole(&self, w: u32, h: u32) -> bool {
         self.x == 0 && self.y == 0 && self.width == w && self.height == h
+    }
+}
+
+/// Affine placement in the guest window, captured while a UI or projected
+/// sprite producer owns the draw.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UiFit {
+    /// x' = x * sx + ox, y' = y * sy + oy, before the host raster shift.
+    pub transform: [f32; 4],
+    // A flare moves in its viewport. UI widgets carry a local scissor.
+    fit_scissor: bool,
+}
+
+impl UiFit {
+    pub const IDENTITY: Self = Self { transform: [1.0, 1.0, 0.0, 0.0], fit_scissor: true };
+
+    /// Fit guest pixels uniformly on the output, about a pivot in guest
+    /// window coordinates. Each player's viewport has its own pivot.
+    pub fn about(output: (u32, u32), pivot: [f32; 2]) -> Option<Self> {
+        let (w, h) = output;
+        if w == 0 || h == 0 || u64::from(w) * 3 == u64::from(h) * 4 {
+            return None;
+        }
+        let sx = w as f32 / 640.0;
+        let sy = h as f32 / 480.0;
+        Self::from_pixel_ratio(1.0 / (sx / sy), pivot)
+    }
+
+    /// Guest pixel width/height divided by displayed pixel width/height.
+    /// For anamorphic Xbox artwork the numerator already includes its lens.
+    pub fn from_pixel_ratio(ratio: f32, pivot: [f32; 2]) -> Option<Self> {
+        if !ratio.is_finite() || ratio <= 0.0 || ratio == 1.0 { return None; }
+        let x = ratio.min(1.0);
+        let y = ratio.recip().min(1.0);
+        Some(Self { transform: [x, y, pivot[0] * (1.0 - x), pivot[1] * (1.0 - y)], fit_scissor: true })
+    }
+
+    /// A CPU-projected sprite or query retains its player's scissor.
+    pub fn projected_sprite(scale: f32, offset: f32) -> Self {
+        Self { transform: [scale, 1.0, offset, 0.0], fit_scissor: false }
+    }
+
+    pub fn map_rect(&self, r: PixelRect) -> PixelRect {
+        if !self.fit_scissor { return r; }
+        let [sx, sy, ox, oy] = self.transform;
+        let x = |edge: u32| (edge as f32 * sx + ox).round() as u32;
+        let y = |edge: u32| (edge as f32 * sy + oy).round() as u32;
+        let left = x(r.x);
+        let top = y(r.y);
+        PixelRect { x: left, y: top,
+            width: x(r.x.saturating_add(r.width)).saturating_sub(left),
+            height: y(r.y.saturating_add(r.height)).saturating_sub(top) }
     }
 }
 
@@ -1038,6 +1157,11 @@ pub struct ResolvedDraw {
     /// Header addresses of the bound textures (identity for the backend's
     /// own bookkeeping; the resolved host textures are passed separately).
     pub textures: [Option<u32>; 4],
+    /// Layout of this draw when issued by a screen or HUD callback.
+    pub ui_fit: Option<UiFit>,
+    /// Original GPU constants when this perspective draw has a different
+    /// display lens. The exact reference and its readbacks use these.
+    pub retail_constants: Option<(crate::shader::Constants, f32)>,
     /// Stages (bit `n` for stage `n`) whose texture is the game's glyph
     /// cache ([`crate::glyph`]): text a view backend may magnify with the
     /// glyph filter. Zero when smoothing is off.
@@ -1045,6 +1169,37 @@ pub struct ResolvedDraw {
 }
 
 impl ResolvedDraw {
+    /// The exact copy sees retail placement and lens. Identity draws need
+    /// neither a new packet nor another copy of the constant block.
+    pub fn for_reference(&self) -> std::borrow::Cow<'_, Self> {
+        if self.ui_fit.is_none() && self.retail_constants.is_none() {
+            return std::borrow::Cow::Borrowed(self);
+        }
+        let mut retail = self.clone();
+        if let Some((constants, _)) = retail.retail_constants.take() {
+            retail.shader.constants = constants;
+        }
+        retail.ui_fit = None;
+        std::borrow::Cow::Owned(retail)
+    }
+
+    pub fn for_copy(&self, copy: TargetCopy) -> std::borrow::Cow<'_, Self> {
+        if copy == TargetCopy::Reference { self.for_reference() } else { std::borrow::Cow::Borrowed(self) }
+    }
+
+    /// Translate a scissor in the same guest-pixel space as its draw.
+    pub fn display_rect(&self, rect: PixelRect) -> PixelRect {
+        if let Some(fit) = self.ui_fit { return fit.map_rect(rect); }
+        let Some((_, factor)) = &self.retail_constants else { return rect };
+        let v = self.viewport;
+        rect.projected_x((v.x, v.y, v.width, v.height), *factor)
+    }
+
+    /// Texture stages whose program reads the bound image.
+    pub fn sampled_texture_stages(&self) -> [bool; 4] {
+        crate::device::sampled_stages(&self.shader, &self.raw, &self.state)
+    }
+
     /// Whether submission can change the attached guest depth or stencil.
     pub fn writes_depth_stencil(&self) -> bool {
         crate::device::writes_depth_or_stencil(&self.state.render, self.target.depth_format)
@@ -1079,14 +1234,83 @@ pub enum DrawOutcome {
     Unsupported(String),
 }
 
+/// Create immutable, device-local assets for future scene draws. This
+/// command has no target handles, guest bindings, frame encoder or reads.
+#[cfg(feature = "gpu")]
+pub type AssetUpload = Box<dyn FnOnce(&wgpu::Device, &wgpu::Queue) + Send>;
+
+/// The resolution setting and guest surface size at the start of a Swap.
+/// A scaled backend applies setting changes after it shows the frame.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RasterMeasurement {
+    pub configured: Option<u32>,
+    pub guest: Option<(u32, u32)>,
+}
+
+impl RasterMeasurement {
+    pub fn finish(self, shown: Option<(u32, u32)>) -> crate::scene_sink::window::PresentScale {
+        let physical = self.guest.zip(shown).and_then(|((gw, gh), (w, h))| {
+            let scale = w.checked_div(gw)?;
+            (gh != 0 && scale != 0 && gw.checked_mul(scale) == Some(w)
+                && gh.checked_mul(scale) == Some(h)).then_some(scale)
+        });
+        crate::scene_sink::window::PresentScale { configured: self.configured, physical }
+    }
+}
+
+#[cfg(test)]
+mod raster_tests {
+    use super::RasterMeasurement;
+
+    #[test]
+    fn a_physical_scale_needs_a_uniform_integral_extent_in_both_dimensions() {
+        let measure = RasterMeasurement { configured: Some(4), guest: Some((8, 4)) };
+        for shown in [None, Some((0, 0)), Some((28, 14)), Some((32, 4)), Some((4, 2))] {
+            assert_eq!(measure.finish(shown).physical, None);
+        }
+        assert_eq!(measure.finish(Some((8, 4))).physical, Some(1));
+        assert_eq!(measure.finish(Some((32, 16))).physical, Some(4));
+        assert_eq!(RasterMeasurement::default().finish(Some((32, 16))).physical, None);
+    }
+}
+
+/// The ordinary display probe reads tightly packed guest-format BGRA pixels.
+pub(crate) fn read_frame_probe<B: Backend + ?Sized>(
+    backend: &mut B, surface: B::Surface, width: u32, height: u32,
+) -> Result<Vec<u8>, String> {
+    let pitch = width.checked_mul(4).ok_or("frame probe row pitch overflow")?;
+    pitch.checked_mul(height).ok_or("frame probe image size overflow")?;
+    backend.read_surface(surface, D3DFormat::LinA8R8G8B8, width, height, GuestLayoutKind::Linear { pitch })
+}
+
 /// Host rendering for the device.
 /// `Send` (with its handles) so a device can sit behind the runtime's
 /// `Send + Sync` override handlers.
 pub trait Backend: Send {
+    /// Run an asset upload on the same device that records scene stages.
+    /// A backend without a GPU discards the request.
+    #[cfg(feature = "gpu")]
+    fn upload_scene_assets(&mut self, _upload: AssetUpload) {}
+
     /// Handle of a colour or depth/stencil surface.
     type Surface: Copy + Eq + std::fmt::Debug + Send;
     /// A host texture made from guest texture memory.
     type Texture: Send;
+
+    /// Pins the GPU images bound by the original texture. Immutable samples
+    /// can be shared. A live view uses these handles only to verify that its
+    /// original source allocation still matches the current frame target.
+    #[cfg(feature = "gpu")]
+    fn frozen_images(&self, _texture: &Self::Texture) -> Option<crate::scene_sink::FrozenImages> {
+        None
+    }
+
+    /// The threaded backend resolves its proxy in queue order without a
+    /// guest wait. Synchronous encoders can share the submitted images now.
+    #[cfg(feature = "gpu")]
+    fn retain_scene_sample(&self, texture: &Self::Texture) -> Option<crate::scene_sink::FrozenSample> {
+        self.frozen_images(texture).map(crate::scene_sink::FrozenSample::ready)
+    }
 
     /// Creates a surface (`depth` selects depth/stencil).
     fn create_surface(
@@ -1101,6 +1325,11 @@ pub trait Backend: Send {
     fn destroy_surface(&mut self, surface: Self::Surface) -> Result<(), String>;
     /// Uploads a decoded guest texture.
     fn upload_texture(&mut self, texture: &DecodedTexture) -> Result<Self::Texture, String>;
+    /// An immutable upload shared with a scene. The render queue can
+    /// identify its exact texels by allocation across frames.
+    fn upload_shared(&mut self, texture: std::sync::Arc<DecodedTexture>) -> Result<Self::Texture, String> {
+        self.upload_texture(&texture)
+    }
     /// Whether the backend can supply descriptor-only textures. Such handles
     /// never back real drawing, and no texel or palette data is needed.
     fn uses_texture_placeholders(&self) -> bool {
@@ -1140,6 +1369,19 @@ pub trait Backend: Send {
         let r = self.draw(color, depth, &draw, textures);
         (r, draw.streams)
     }
+    /// Submit a packet whose immutable contents also belong to a sealed
+    /// frame. Queued renderers may share it with the replay until Swap.
+    fn draw_shared(
+        &mut self,
+        color: Self::Surface,
+        depth: Option<Self::Surface>,
+        draw: std::sync::Arc<ResolvedDraw>,
+        textures: [Option<&Self::Texture>; 4],
+    ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
+        let result = self.draw(color, depth, &draw, textures);
+        let streams = std::sync::Arc::into_inner(draw).map(|d| d.streams).unwrap_or_default();
+        (result, streams)
+    }
     /// Marks this thread's frame-stat boundary. Asynchronous backends
     /// forward queued statistics without waiting for the render thread.
     fn frame_stats(&mut self) {}
@@ -1150,6 +1392,19 @@ pub trait Backend: Send {
     fn stamp_present(&mut self, at: std::time::Instant) {
         let _ = at;
     }
+    /// Observe the next original Swap on this device. A wrapping display may
+    /// provide the guest extent itself and arm its view with no surface.
+    fn measure_present_raster(&mut self, _surface: Option<Self::Surface>) -> RasterMeasurement {
+        RasterMeasurement::default()
+    }
+    /// Physical texel extent actually handed to the display for that Swap.
+    /// A failed or unshown Swap and a backend without an observer return None.
+    fn take_presented_extent(&mut self) -> Option<(u32, u32)> { None }
+
+    /// True only when the last ordinary Swap exhausted all display attempts.
+    /// Backends without display feedback leave the outcome unknown.
+    fn last_present_unshown(&self) -> bool { false }
+
     /// Shows a host-only frame between the guest's presents (an
     /// interpolated replay, `crate::interp`): the present hook sees it,
     /// but it is not a guest frame, so frame counters, shader upkeep and
@@ -1184,6 +1439,35 @@ pub trait Backend: Send {
         let _ = surface;
         None
     }
+    /// Host allocation sizes of the selected display copy, or the
+    /// reference copy when that draw has no display allocation. A backend
+    /// may need to wait for resource creation on a worker. This reports
+    /// backing allocations, so a temporary attachment used by a particular
+    /// draw can have a different size.
+    fn render_extents(
+        &mut self,
+        color: Self::Surface,
+        depth: Option<Self::Surface>,
+        textures: [Option<&Self::Texture>; 4],
+    ) -> RenderExtents {
+        let _ = textures;
+        RenderExtents {
+            color: self.surface_extent(color),
+            depth: depth.and_then(|surface| self.surface_extent(surface)),
+            textures: [None; 4],
+        }
+    }
+
+    /// Reads a selected display allocation at its host size for diagnostics.
+    /// Unsupported backends return `Ok(None)`.
+    fn read_display_surface(
+        &mut self,
+        surface: Self::Surface,
+    ) -> Result<Option<DisplaySurfacePixels>, String> {
+        let _ = surface;
+        Ok(None)
+    }
+
     /// Submits the work recorded so far and returns a check that answers
     /// whether the GPU has finished it, without waiting. Host-only: the
     /// interpolated replay drops an in-between frame while the last one is
@@ -1205,6 +1489,11 @@ pub trait Backend: Send {
     fn drain(&mut self) -> Result<(), String> {
         Ok(())
     }
+    /// Discards host mark samples when a snapshot restores the device.
+    fn reset_present_metadata(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Shows `surface` (`Swap`). `flags` are the guest's `D3DSWAP_*` flags.
     fn present(&mut self, surface: Self::Surface, flags: u32) -> Result<(), String>;
     /// Presents with the current DAC ramp. Backends without a display may ignore it.
@@ -1231,6 +1520,16 @@ pub trait Backend: Send {
             clear.color.map(|c| c.1)
         )))
     }
+    /// Diagnostic pixels at this pass boundary. A worker that adopts the
+    /// sealed scene discards this callback; its graph provides the snapshot.
+    /// A read failure belongs to the probe and leaves guest rendering live.
+    fn queue_frame_probe_read(
+        &mut self, surface: Self::Surface, width: u32, height: u32,
+        done: Box<dyn FnOnce(Result<Vec<u8>, String>) + Send>,
+    ) {
+        done(read_frame_probe(self, surface, width, height));
+    }
+
     /// Reads a colour surface back as guest bytes: `format` texels of a
     /// `width x height` level laid out as `layout` (render-to-texture
     /// write-back). The default cannot.
@@ -1380,6 +1679,11 @@ pub trait Backend: Send {
         }
     }
 
+    /// The backend can accept this particular pass into a scene reservation.
+    /// Checked while the guest still owns all the draws. A sink that keeps
+    /// a replay requires the pass to support repeated recording.
+    fn accepts_scene_pass(&self, _pass: &dyn ExternalPass) -> bool { true }
+
     /// Whether [`queue_scene_stage`](Self::queue_scene_stage) takes a
     /// stage now: a render thread whose backend
     /// [runs scene stages](Self::runs_scene_stages). Asked before the
@@ -1398,6 +1702,13 @@ pub trait Backend: Send {
     /// implementing prepare must also implement commit. Commit cannot refuse.
     fn commit_external(&mut self, _recording: ExternalRecording) {
         unreachable!("backend did not prepare an external recording")
+    }
+
+    /// Device and queue shared by every copy this backend draws. A map
+    /// loader can prepare immutable resources without touching a live pass.
+    #[cfg(feature = "gpu")]
+    fn upload_device(&self) -> Option<(wgpu::Device, wgpu::Queue)> {
+        None
     }
 
     /// Whether [`external_pass`](Self::external_pass) can draw (asked

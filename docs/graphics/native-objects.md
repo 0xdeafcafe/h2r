@@ -68,20 +68,42 @@ skipping `0x0004d0b0` and its per-part shader and geometry preparation,
 including `0x0001bbf0` and
 `0x00016b90`, for committed runs.
 
-The activation hook starts an eager scan of the mounted map's object
-definitions. The worker decodes each distinct render model once,
-including all its sections, and queues its GPU upload during the load.
-A later spawn uses the same resident model. A scene that arrives before
-its models or bindings are ready draws those objects on the guest.
-A map activation or snapshot reload changes the generation, so work for
-a previous load cannot suppress any of the new load's draws.
+The activation hook starts a utility-priority worker for the mounted
+map. The worker reads every object palette in the mounted scenario,
+including entries with no placement, and walks those definitions first,
+followed by the remaining object tags. It decodes each distinct render
+model once, creates its GPU resources and submits its texture uploads.
+It publishes the completed definition index and resident models
+together. The first swap after publication makes them eligible for
+native draws. Later spawns share those models. D3D draws each run until
+its models, bindings and target pipelines are ready. Map activation and
+snapshot reload invalidate the previous load's work. A pass that already
+committed holds its models until recording ends. The last reference sends
+their GPU resources to the shared map retirement worker for destruction.
+First-person models use the same worker.
+
+The palette status (`scene_palette_*` in `render.scene`) distinguishes
+pending definitions, explicit null model references, failures, partial
+native coverage and resident definitions. A resident definition has a
+published model and a layer-3 material program for every drawn part and
+declared implementation across the model's sections. Material LODs with
+different base passes and parts outside the native object renderer's
+coverage keep the definition partial. Extraction checks the model's
+published upload as well as the selected part's native coverage. A
+failed GPU lookup for a covered part is a residency fallback
+(`native_objects_walk_unresident`).
 
 #### Frame stats
 
 The `native_objects_walk_native` and `native_objects_walk_fallback`
 columns count objects per view. Fallback reason columns have the same
-prefix and end in `unsupported`, `order`, `model`, `inputs`, `state`
-or `reservation`. `walk_unreadable` counts views whose sorted list or
+prefix and end in `unsupported`, `order`, `model`, `inputs`, `state`,
+`reservation` or `unresident`. `walk_unresident` counts the objects
+returned to the guest in a run whose requested model agrees with the
+loader's part coverage but has no uploaded geometry and materials.
+`walk_model` includes unresolved definitions, mismatched models and
+loader lock contention. These planning refusals keep the guest draws.
+`walk_unreadable` counts views whose sorted list or
 ownership could not be established. These views may have an unknown
 object count. `walk_part_aux_state`, `walk_part_subparts` and
 `walk_part_topology` count the parts (not objects) behind
@@ -160,7 +182,9 @@ Node matrices are read once per view at the hook, from the body
 the frame's animation and attachment updates (the records exist, so
 `0x00133ab0`'s node pass ran). They are uploaded raw (13 floats a node)
 into one storage buffer per pass, with one small instance record per
-object (node base, inverse base). The inverse rest frames are resident
+object (node base, node count, and an RGBA8 highlight the lit colour
+mixes towards by its alpha; zero for the game, the selection in the
+editor). The inverse rest frames are resident
 per model. No matrix product is done on the CPU. An object whose node
 count disagrees with its model's stays on the D3D path.
 
@@ -209,7 +233,12 @@ queues it.
 
 `native_first_person_glue` and `native_first_person_load` are separate from
 the objects stage's cache, but use its public model, stream and object
-program code. `begin_external_boundary` drains preceding packets before the
+program code. A utility-priority worker opens the map, waits for requested
+record models and uploads each one into private GPU storage. It publishes
+the completed model and adds its parts to the admission set for the next
+swap. The draw hook requests the exact target pipelines before applying
+any masks. A cold pipeline leaves the first-person draw on D3D.
+`begin_external_boundary` drains preceding packets before the
 entry states and first-person view constants are read (the camera itself is
 built by `0x0023c110` upstream), rather than copying the scene camera. The
 pass requires a known W-buffered depth mode and a full-target viewport with
@@ -326,11 +355,10 @@ shader (`native_render::object_program`, `object_program_gpu`), or left
 to D3D, each piece with synthetic tests. The base-map
 stand-in is not used for opaque parts: it would light them flat and pose
 them from the object's node matrices rather than the rows their records
-upload. The native set accepts a
-shader per definition (`NativeSet::shaders` holds `(definition, shader)`):
-a material one model draws through its programs may be refused for
-another whose sections take other programs, and that one's items keep
-their D3D draws.
+upload. Draw admission looks up each object's definition in the
+resident model index and checks the part, shader and implementation
+of that model. Other models using the same material can require
+different programs and keep their D3D draws.
 
 A material with no layer-3 pass ("it has no layer-3 pass" in the load
 log) is not drawn at layer 3 at all: its items sit in other layers, which
@@ -587,7 +615,8 @@ vertex and no matrix work on the CPU.
   uniform and two storage writes, one pass with an indexed draw per
   (object, part), `instance_index` the object) and `models.wgsl`
   (skinning `Σ w · N · I · p`, base map times ambient plus one
-  directional term, the W depth). Tests: the unit tests in each module on
+  directional term, mixed towards the instance's highlight, the W
+  depth). Tests: the unit tests in each module on
   invented models and synthetic guest memory; `tests/models_gpu.rs` draws
   an invented two-node model whose square hangs on a turned node, checks
   colour (lit by the skinned normal), W depth, one object culled and one
@@ -610,17 +639,13 @@ vertex and no matrix work on the CPU.
   registration tests); `render_thread`'s test checks the layer draw is
   render-thread safe with the world and objects on (see "Pipelined
   render").
-- **Boot glue** (`crates/extensions/game/src/native_objects_glue.rs`). Per map, a
-  worker with the map, its shared maps and the object tag context open;
-  definitions arrive one at a time from the feature and are loaded once;
-  a model is queued for upload before its definition is published, so a
-  pass that sees it finds it. Materials whose base map does not decode
-  leave the model and keep their D3D draws. The render thread uploads the
-  queue at the next pass. Log lines: `native-objects: <map>: definition
-  <datum>: D draws, N nodes, in T ms (L models native, R left to D3D)`, or
-  `... left to the D3D path (<why>)`; every 1,800 views
-  `native-objects: D of V layer-3 views drawn natively, O objects, I
-  object items skipped`.
+- **Boot glue** (`crates/extensions/game/src/native_objects_glue.rs`).
+  The map worker owns the definition scan and GPU upload, palette
+  definitions first. A validated model contributes its supported parts to
+  draw admission. Materials whose base map cannot decode keep their D3D
+  draws. The worker logs readiness after submitting the uploads and
+  publishing its result as
+  `native-objects: <map>: N definitions ready, M left to D3D`.
 - **Diagnostics.** Every layer-3 call of the observer ends in one counted
   `Stop`: first person (`[esp]` is `0x00040136`, left to D3D), wrong caller
   (`[esp]` is neither that nor `0x0002bed5`), no host, no camera, no map, no

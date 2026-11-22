@@ -10,9 +10,12 @@ default = ["render-overrides"]
 render-overrides = ["dep:hot-render"]
 
 [dependencies]
+mem-watch.workspace = true
 render-bridge = { path = "../../rewrites/render-bridge", default-features = false }
 sim-bridge = { path = "../../rewrites/sim-bridge" }
-agent-proto = { path = "../agent-proto" }
+agent-proto = { path = "../agent-proto", features = ["serve-memory"] }
+forge = { path = "../forge" }
+forge-doc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 runtime.workspace = true
@@ -23,9 +26,12 @@ guest-layout = { path = "../../hooking/guest-layout" }
 # The simulation's typed object views (src/sim/objects.rs, `sim.objects`).
 sim-state.workspace = true
 live-telemetry = { path = "../../live/live-telemetry" }
+live-proto.workspace = true
 timeline = { path = "../../runtime/timeline" }
 xapi = { path = "../../platform/xapi" }
 input = { path = "../../platform/input", default-features = false }
+# The retail object types and their scenario placement/palette layout.
+tags.workspace = true
 # Hot iteration: live tag edits and render overrides (src/hot.rs).
 hot-render = { path = "../../platform/hot-render", optional = true }
 hot-tags = { path = "../hot-tags" }
@@ -37,13 +43,17 @@ snapshot = { path = "../../runtime/snapshot" }
 # render.compare reads and writes PNGs (src/compare.rs).
 png = "0.18"
 
+background.workspace = true
+map.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 # A synthetic lifted original for the shadow.* tests.
 lifted = { path = "../../runtime/lifted" }
-live-proto.workspace = true
 # sim.hashes' rows against the sim report's (src/sim/hashes.rs); renamed
 # so it can't be mistaken for this crate's `sim` module.
 sim-report = { package = "sim-bench", path = "../../live/sim-bench" }
-# Synthetic tags laid out by their definitions (src/hot/tests.rs).
-tags.workspace = true
+# Synthetic maps for src/hot/tests.rs.
 map.workspace = true

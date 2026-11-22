@@ -192,6 +192,7 @@ struct State {
 pub(crate) struct Network {
     pub config: NetworkConfig,
     pub tap: std::sync::OnceLock<Arc<dyn ::film::tape::Tap>>,
+    pub version: qos::Version,
     state: Arc<Mutex<State>>,
     listeners: qos::Listeners,
     pings: qos::Pings,
@@ -213,9 +214,10 @@ impl Drop for Cleanup {
     }
 }
 impl Network {
-    pub fn new(config: NetworkConfig) -> Self {
+    pub fn new(config: NetworkConfig, version: qos::Version) -> Self {
         Self {
             config,
+            version,
             tap: Default::default(),
             state: Arc::new(Mutex::new(State {
                 next: 0x100,
@@ -275,10 +277,25 @@ impl Network {
                 self.listeners.clone(),
                 self.pings.clone(),
                 self.asked.clone(),
+                self.version.clone(),
             )?);
         }
         Ok(())
     }
+    /// A pace wait observes the same native descriptors as guest select.
+    /// The tunnel's bridge delivers into those sockets too. Only the Arc
+    /// snapshot is held over poll, so cleanup can interrupt a wait.
+    pub fn wait_for_input(&self, timeout: std::time::Duration) -> bool {
+        let sockets: Vec<_> = lock(&self.state).sockets.values().cloned().collect();
+        if sockets.is_empty() {
+            return false;
+        }
+        let read: Vec<_> = sockets.iter().map(|socket| (&socket.host, 1)).collect();
+        let millis = timeout.as_nanos().div_ceil(1_000_000).min(i32::MAX as u128) as i32;
+        // Interrupts and socket errors use the ordinary pace for this turn.
+        host::wait(&read, millis).map_or(true, |events| events.iter().any(|&e| e != 0))
+    }
+
     /// The round trips pinging peers reported within `fresh`, by address.
     pub fn reported_pings(&self, fresh: std::time::Duration) -> Vec<(Ipv4Addr, u16)> {
         lock(&self.pings)
@@ -948,7 +965,7 @@ impl Network {
     }
     fn qos_listen(&self, a: &[u32], rt: &Runtime) -> Result<u32> {
         let kid: [u8; 8] = read(rt, a[0], 8)?.try_into().unwrap();
-        if a[2] > 1020 || a[4] & !0x1f != 0 || a[4] & 3 == 3 {
+        if a[2] > qos::MAX_LOOKUP_DATA as u32 || a[4] & !0x1f != 0 || a[4] & 3 == 3 {
             return Err(10022);
         }
         let data = if a[4] & 4 != 0 {
@@ -976,6 +993,7 @@ impl Network {
                 self.listeners.clone(),
                 self.pings.clone(),
                 self.asked.clone(),
+                self.version.clone(),
             );
             if let Err(e) = &started {
                 eprintln!(
@@ -1069,16 +1087,23 @@ impl Network {
             }
         }
         // All guest input is copied and outputs checked before the bounded I/O.
+        let local = self.version.get();
         let results: Vec<_> = targets
             .iter()
-            .map(|&(address, kid)| qos::query_why(self.qos_target(address), kid, a[7] as u16))
+            .map(|&(address, kid)| {
+                qos::query_why(self.qos_target(address), kid, a[7] as u16, local)
+            })
             .collect();
         self.say_lookup(&targets, &results);
         let infos: Vec<_> = results
             .into_iter()
             .map(|r| {
-                r.unwrap_or(qos::Info {
-                    flags: 1,
+                r.unwrap_or_else(|e| qos::Info {
+                    flags: if qos::version_refusal(&e).is_some() {
+                        7 // Contacted, but service is incompatible and supplied no title data.
+                    } else {
+                        1
+                    },
                     ..qos::Info::default()
                 })
             })
@@ -1146,6 +1171,7 @@ pub(crate) fn lookup_line(
                         qos::QUERY_TRIES
                     )
                 }
+                Err(e) if qos::version_refusal(e).is_some() => format!("refused: {e}"),
                 Err(e) => format!("no answer: {e}"),
             };
             format!("{qos} session {}: {what}", hex(kid))

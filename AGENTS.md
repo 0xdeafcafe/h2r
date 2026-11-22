@@ -11,6 +11,10 @@ UI with synthetic input, or add one-off debug hooks.
 
 `session.methods` lists every method each API offers.
 
+See the [agent API skill](.claude/skills/h2-agent-api/SKILL.md) for running-game checks and the [lab skill](.claude/skills/h2-lab/SKILL.md) for runs on another Mac.
+
+See the [rules skill](.claude/skills/h2-rules/SKILL.md) to write, check, test and ship a game type script (`h2 rules`, `h2 variants port`); scenarios are its test, not the game.
+
 If the API can't do what you need, don't route around it. Decide whether
 the API should be expanded to cover it:
 

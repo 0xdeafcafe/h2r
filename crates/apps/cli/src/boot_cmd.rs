@@ -42,7 +42,7 @@ const USAGE: &str = "usage:
   tier only; `clang` builds clang's in the foreground, as before tiers.
   `build --background` is that background build: low priority, and gone at
   once when another holds --out.
---data defaults to ~/Library/Application Support/h2recomp/data, or $H2_DATA (host root of the hard-disk partitions).
+--data defaults to `data` in the app data directory (docs/runtime/storage.md), or $H2_DATA (host root of the hard-disk partitions).
 --fresh-data empties it first: the cache partitions, profiles and saves a
   run leaves behind change what the next run does, so runs compared frame
   for frame need it (and must not share a data directory while running).
@@ -75,6 +75,19 @@ H2_OPT the image was built with.
 --host-light skips steady-state world rendering, uses a silent sound clock,
   disables kernel tracing and paces to real time. Requires --system-link.
 --host-bots enables bot support on a light host.";
+
+pub(crate) fn start_memory_watch(data: &Path) {
+    mem_watch::register_probe("perf.frame_buffer_bytes", timeline::phase::frame_buffer_bytes);
+    mem_watch::register_probe(
+        "perf.timeline_event_buffer_bytes",
+        timeline::event_buffer_bytes,
+    );
+    #[cfg(feature = "desktop")]
+    let commit = Some(app::BuildInfo::baked().sha).filter(|sha| *sha != "unknown");
+    #[cfg(not(feature = "desktop"))]
+    let commit = option_env!("H2_BUILD_SHA");
+    mem_watch::start(data, commit);
+}
 
 pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     let tmp = std::env::temp_dir();
@@ -234,7 +247,6 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
         } else if fast {
             boot::tier::build_fast_for(&xbe, &out, jobs, arch)?;
         } else {
-            #[cfg(unix)]
             let _lock = if background {
                 match background_lock(&out)? {
                     Some(l) => Some(l),
@@ -246,8 +258,6 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             } else {
                 None
             };
-            #[cfg(not(unix))]
-            let _ = background;
             boot::build_for(&xbe, &out, jobs, arch)?;
         }
         return Ok(());
@@ -285,6 +295,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
         #[cfg(not(feature = "desktop"))]
         bail!("the host CLI requires h2 serve");
     };
+    start_memory_watch(&data);
     if fresh {
         for d in fresh_data_dirs(&data, &[&disc, &out])? {
             std::fs::remove_dir_all(&d).with_context(|| format!("emptying {}", d.display()))?;
@@ -402,28 +413,38 @@ fn settings_store(cmd: &str, dir: &Path) -> Arc<settings::Store> {
 /// `build --background`: lower this process's priority (clang's processes
 /// inherit it) and take `out`'s background-build lock, held until the
 /// returned file drops; `None` when another build holds it.
-#[cfg(all(unix, feature = "desktop"))]
+#[cfg(feature = "desktop")]
 fn background_lock(out: &Path) -> Result<Option<std::fs::File>> {
-    use std::os::fd::AsRawFd;
     std::fs::create_dir_all(out)?;
     let path = out.join("clang-build.lock");
     let f = std::fs::File::options()
         .create(true)
         .truncate(false)
+        .read(true)
         .write(true)
         .open(&path)
         .with_context(|| format!("opening {}", path.display()))?;
-    // SAFETY: flock on a descriptor this function owns.
-    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        let e = std::io::Error::last_os_error();
-        if e.raw_os_error() == Some(libc::EWOULDBLOCK) {
-            return Ok(None);
+    match f.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => return Ok(None),
+        Err(std::fs::TryLockError::Error(error)) => {
+            return Err(error).with_context(|| format!("locking {}", path.display()));
         }
-        return Err(e).with_context(|| format!("locking {}", path.display()));
     }
+    #[cfg(unix)]
     // SAFETY: plain priority change of this process.
     if unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, 19) } != 0 {
         eprintln!("warning: build --background: lowering priority: {}", std::io::Error::last_os_error());
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Threading::{
+            BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, SetPriorityClass,
+        };
+        // Child processes inherit a below-normal priority class by default.
+        if unsafe { SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS) } == 0 {
+            eprintln!("warning: build --background: lowering priority: {}", std::io::Error::last_os_error());
+        }
     }
     Ok(Some(f))
 }

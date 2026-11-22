@@ -59,7 +59,7 @@ fn speed_uses_the_native_argument_frame_and_waits_for_child_expressions() {
     let argument_call = GuestCall::new(EVALUATE_ARGUMENTS).args([THREAD, 1, DESCRIPTOR + 14, 1]);
     let pending = testing::run(&f, g.clone(), regs(), |_, _| Regs::default());
     assert_eq!(pending.result, Ok(Ret::new(0, 12)));
-    assert_eq!(pending.calls, [argument_call.clone()]);
+    assert_eq!(pending.calls, std::slice::from_ref(&argument_call));
     assert_eq!(pending.guest.u32(CLOCK + crate::cheats::TIME_SPEED), Ok(0));
 
     let done = testing::run(&f, g, regs(), |call, _| Regs {

@@ -438,7 +438,7 @@ fn compile(
 /// (`light_look` refuses passes reading them).
 pub fn colour_uniforms(p: &LightProgram, colour_a: [f32; 3], colour_b: [f32; 3]) -> (VertexUniforms, PixelUniforms) {
     let mut vertex = p.vertex.clone();
-    let mut pixel = p.pixel.clone();
+    let mut pixel = p.pixel;
     for b in &p.colours {
         let colour = match b.source {
             5 => colour_a,

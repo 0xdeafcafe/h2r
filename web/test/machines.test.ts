@@ -4,7 +4,7 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import type { Frame, FrameMachine } from "../src/api/types";
 import { FrameBuffer, MAX_MACHINES, fromFrameMachine, sampleMachines } from "../src/state/frames";
 import { fetchFeatures, glbExtras, glbJsonEnd, liftEnd, linkArc, linkEnds, parseFeatures } from "../src/map/features";
-import { buildFeatures, RING } from "../src/viewer/features3d";
+import { buildFeatures, placeLiftGuides, RING } from "../src/viewer/features3d";
 import { isIdentity, machineMatrix, machineNode, placeMachine } from "../src/viewer/machines3d";
 import { parseModels } from "../src/viewer/models";
 import { buildArena, enclose, encodeGlb, furnish, mockMapGeometry } from "../mock/arena";
@@ -145,7 +145,7 @@ describe("a map's teleporters and lifts", () => {
     expect(linkArc({ x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 }, 3)[1]![2]).toBe(1);
   });
 
-  test("the 3D view builds a ring per teleporter, an arc per link and a column per lift", () => {
+  test("the 3D view builds teleporter rings, link arcs and compact lift guides", () => {
     const g = buildFeatures(parseFeatures(raw)!);
     const names = g.children.map((c) => c.name).filter(Boolean);
     expect(names).toEqual(["teleporter:t0", "teleporter:t1", "teleporter:t2", "teleporter:t3", "link:t0:t1", "link:t2:t3", "lift:l0", "lift:l1"]);
@@ -157,11 +157,37 @@ describe("a map's teleporters and lifts", () => {
     g.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(t1);
     expect(box.max.y - 2).toBeGreaterThan(RING * 2);
-    // The lift's column stands the lift's length up from its base.
     const lift = new THREE.Box3().setFromObject(g.getObjectByName("lift:l0")!);
-    expect(lift.min.y).toBeCloseTo(-0.06, 1);
-    expect(lift.max.y).toBeGreaterThan(6);
-    expect(lift.max.x - lift.min.x).toBeCloseTo(2.4 + 0.12, 1);
+    expect(lift.min.y).toBeCloseTo(0);
+    expect(lift.max.y).toBeCloseTo(1.5);
+    expect(lift.max.x - lift.min.x).toBeCloseTo(1.5);
+  });
+
+  test("a tower-sized lift has a small guide aligned to its placement and sampled pose", () => {
+    const f = parseFeatures({ lifts: [{
+      id: "tower", pos: [1, 2, 3], dir: [0, -1, 0], length: 180, radius: 20,
+      source: "mach tower_lift 7: render model bounds",
+    }, {
+      id: "scenery", pos: [2, 3, 4], source: "scen grav_pad 3: nominal size",
+    }] })!;
+    const guides = buildFeatures(f, 4);
+    const tower = guides.getObjectByName("lift:tower")!;
+    const up = () => new THREE.Vector3(0, 1, 0).applyQuaternion(tower.quaternion);
+    expect(tower.position.toArray()).toEqual([1, 3, -2]);
+    expect(up().distanceTo(new THREE.Vector3(0, 0, 1))).toBeLessThan(1e-6);
+    const span = new THREE.Box3().setFromObject(tower).getSize(new THREE.Vector3());
+    expect([span.x, span.y, span.z].every(size => size <= 1.501)).toBe(true);
+
+    const pose = fromFrameMachine(machine({ node: "tower_lift_7", pos: [4, 5, 6], forward: [0, 1, 0], up: [1, 0, 0] }))!;
+    const scenery = guides.getObjectByName("lift:scenery")!;
+    expect(placeLiftGuides(guides, [pose], [{ k: "scen", i: 3, gone: true }])).toBe(true);
+    expect(tower.position.toArray()).toEqual([4, 6, -5]);
+    expect(up().distanceTo(new THREE.Vector3(1, 0, 0))).toBeLessThan(1e-6);
+    expect(scenery.visible).toBe(false);
+    expect(placeLiftGuides(guides, [pose], [{ k: "scen", i: 3, gone: true }])).toBe(false);
+    expect(placeLiftGuides(guides, [])).toBe(true);
+    expect(tower.position.toArray()).toEqual([1, 3, -2]);
+    expect(scenery.visible).toBe(true);
   });
 
   test("the 2D map reads the features from the head of the glb, without the meshes", async () => {

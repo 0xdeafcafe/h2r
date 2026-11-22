@@ -87,6 +87,11 @@ uses which id was not traced.
 
 Record 0 is a blank space on the Latin fonts. A character-map entry of 0 means
 "no glyph" and the engine draws record 0 (nothing in the font says otherwise).
+Some fonts also map characters they lack to a record of their own holding a
+copy of their stand-in box: MSLCD-14 draws the same box for `.`, `-` and `~`
+(D, `h2 font MSLCD-14 '1.2'`). `Font::has_glyph` (`crates/formats/font/src/lib.rs`)
+counts a unit as missing if it reads record 0 (the space excepted), the record
+U+FFFF reads, or a non-empty bitmap equal to either.
 63 records in `arial-13` (and some in the other fonts) are placeholders for the engine's
 private-use range with width 0, `data_len` 0 and a bogus shared offset; they
 have no pixels and are accepted.
@@ -129,7 +134,10 @@ From the measuring and drawing routines (`0x13ef40`, `0x13f0e0`, `0x13f700`):
   `y = baseline - y_offset`; then the pen moves by
   `kerning + x_offset + advance`. Lines are `ascent + descent + leading` apart.
 * Kerning (`0x122570`) applies only when both units are 1 to 255 and the
-  previous unit is in the header bit set; the amount is added before the glyph.
+  previous unit is in the header bit set. The amount is added before the glyph.
+  A transparent leading glyph still advances the pen and becomes the previous
+  unit for kerning. `font::render` lays out every glyph before compositing
+  its pixels.
 * The text scanner (`0x13f5a0`) treats `0x0d` as a line break, `0x0a` as
   ignorable, `0x09` as a tab, `0xe405..0xe407` as alignment tokens, `|` as the
   start of an inline markup escape (`0x13fbd0`) and `0xe000..0xe3ff` as the

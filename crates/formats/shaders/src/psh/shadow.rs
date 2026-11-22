@@ -42,6 +42,11 @@
 //! their coordinates, so the average is one tap too. Only the
 //! render-scale view sets it; the backend the guest reads never does.
 //!
+//! **Sharp shadows** average four bilinear comparisons offset by half a
+//! texel along each axis. The resulting 3x3 filter gives continuous coverage
+//! across texel boundaries. A ramp centred at half coverage uses the screen
+//! gradient to keep the transition about one pixel wide.
+//!
 //! The renderer hands depth textures over as their raw bits in RGBA8
 //! (`gfx::convert::depth_channels`): 32-bit formats give the depth bytes,
 //! most significant first, in red, green and blue; 16-bit formats give
@@ -196,21 +201,28 @@ fn xps_shadow_addr(i: i32, n: i32, mode: u32) -> i32 {
 }
 "#;
 
-/// The stages a hard stage `i` takes the mean coordinate of: those in
-/// `group`, and `i` itself. Empty when the stage is not hard.
-fn hard_stages(i: usize, group: u8) -> Vec<usize> {
-    if group == 0 {
-        return Vec::new();
+/// How a stage filters its depth comparisons.
+#[derive(Clone, Copy)]
+pub(super) enum Filter {
+    Retail,
+    Hard(u8),
+    Sharp { derivatives: bool },
+}
+
+impl Filter {
+    /// The stages a hard stage takes the mean coordinate of.
+    fn hard_stages(self, i: usize) -> Vec<usize> {
+        let Self::Hard(group) = self else {
+            return Vec::new();
+        };
+        let group = group | 1 << i;
+        (0..4).filter(|j| group >> j & 1 != 0).collect()
     }
-    let group = group | 1 << i;
-    (0..4).filter(|j| group >> j & 1 != 0).collect()
 }
 
 /// The statement block that sets `t{i}` for a shadow-map stage.
-/// `project3d` selects the `r/q` reference; otherwise it is 0. `hard` is
-/// the stage's [`super::PixelOptions::hard_shadow`] group: zero for
-/// retail's lookup, else one tap at the group's mean coordinate.
-pub(crate) fn wgsl_stage(i: usize, sh: &Shadow, project3d: bool, hard: u8) -> String {
+/// `project3d` selects the `r/q` reference; otherwise it is 0.
+pub(super) fn wgsl_stage(i: usize, sh: &Shadow, project3d: bool, filter: Filter) -> String {
     let op = match sh.func {
         AlphaFunc::Never => return format!("t{i} = vec4f(0.0);"),
         AlphaFunc::Always => return format!("t{i} = vec4f(1.0);"),
@@ -218,7 +230,7 @@ pub(crate) fn wgsl_stage(i: usize, sh: &Shadow, project3d: bool, hard: u8) -> St
     };
     let tc = format!("i.t{i}");
     let mut s = String::from("{\n");
-    let group = hard_stages(i, hard);
+    let group = filter.hard_stages(i);
     if group.len() > 1 {
         let taps: Vec<String> = group
             .iter()
@@ -254,7 +266,28 @@ pub(crate) fn wgsl_stage(i: usize, sh: &Shadow, project3d: bool, hard: u8) -> St
     let test = |x: &str, y: &str| {
         format!("select(0.0, 1.0, {dec}(textureLoad(xps_tex{i}, vec2i({x}, {y}), 0)) {op} r)")
     };
-    if sh.linear && group.is_empty() {
+    if let Filter::Sharp { derivatives } = filter {
+        // The two bilinear taps on either side of an axis share the middle
+        // texel. Fold them together before sampling (nine loads).
+        s.push_str("        let p = uv * vec2f(size);\n");
+        s.push_str("        let base = vec2i(floor(p));\n");
+        s.push_str("        let f = fract(p);\n");
+        s.push_str("        let wx = vec3f(1.0 - f.x, 1.0, f.x) * 0.5;\n");
+        s.push_str("        let wy = vec3f(1.0 - f.y, 1.0, f.y) * 0.5;\n");
+        s.push_str("        var coverage = 0.0;\n");
+        s.push_str("        for (var row = 0; row < 3; row++) {\n");
+        let _ = writeln!(s, "            let y = xps_shadow_addr(base.y + row - 1, size.y, {av}u);");
+        s.push_str("            for (var col = 0; col < 3; col++) {\n");
+        let _ = writeln!(s, "                let x = xps_shadow_addr(base.x + col - 1, size.x, {au}u);");
+        let _ = writeln!(s, "                coverage += wx[col] * wy[row] * {};", test("x", "y"));
+        s.push_str("            }\n        }\n");
+        if derivatives {
+            s.push_str("        let width = max(length(vec2f(dpdxFine(coverage), dpdyFine(coverage))), 1e-6);\n");
+        } else {
+            s.push_str("        let width = 1e-6;\n");
+        }
+        let _ = writeln!(s, "        t{i} = vec4f(clamp(0.5 + (coverage - 0.5) / width, 0.0, 1.0));");
+    } else if sh.linear && group.is_empty() {
         s.push_str("        let p = uv * vec2f(size) - 0.5;\n");
         s.push_str("        let base = vec2i(floor(p));\n");
         s.push_str("        let f = p - floor(p);\n");
@@ -287,13 +320,13 @@ pub(crate) fn wgsl_stage(i: usize, sh: &Shadow, project3d: bool, hard: u8) -> St
 }
 
 /// The reference evaluation of [`wgsl_stage`]: `tc` are the stages'
-/// texture coordinates, `scales` their `tex_scale`, `hard` the stage's
-/// hard-shadow group.
-pub(crate) fn sample(
+/// texture coordinates and `scales` their `tex_scale`. A single fragment
+/// has no screen derivatives, so Sharp uses a zero-width footprint.
+pub(super) fn sample(
     stage: usize,
     sh: &Shadow,
     project3d: bool,
-    hard: u8,
+    filter: Filter,
     tc: &[Vec4; 4],
     scales: &[Vec4; 4],
     sampler: &dyn Sampler,
@@ -308,7 +341,7 @@ pub(crate) fn sample(
         let (t, s) = (tc[j], scales[j]);
         [(t[0] / t[3]) * s[0], (t[1] / t[3]) * s[1]]
     };
-    let group = hard_stages(stage, hard);
+    let group = filter.hard_stages(stage);
     let uv = if group.len() > 1 {
         // Summed in stage order, then divided, as the translation does.
         let mut sum = uv_of(group[0]);
@@ -333,7 +366,23 @@ pub(crate) fn sample(
         let d = sh.format.decode(sampler.load(stage, x as u32, y as u32));
         if sh.func.passes(d, r) { 1.0f32 } else { 0.0 }
     };
-    let v = if sh.linear && group.is_empty() {
+    let v = if let Filter::Sharp { .. } = filter {
+        let p = [uv[0] * w as f32, uv[1] * h as f32];
+        let base = p.map(|v| v.floor() as i32);
+        let [wx, wy] = p.map(|v| {
+            let f = v - v.floor();
+            [0.5 * (1.0 - f), 0.5, 0.5 * f]
+        });
+        let mut coverage = 0.0;
+        for (row, wy) in wy.into_iter().enumerate() {
+            for (col, wx) in wx.into_iter().enumerate() {
+                let x = base[0].wrapping_add(col as i32 - 1);
+                let y = base[1].wrapping_add(row as i32 - 1);
+                coverage += wx * wy * test(x, y);
+            }
+        }
+        (0.5 + (coverage - 0.5) / 1e-6).clamp(0.0, 1.0)
+    } else if sh.linear && group.is_empty() {
         let p = [uv[0] * w as f32 - 0.5, uv[1] * h as f32 - 0.5];
         let base = [p[0].floor() as i32, p[1].floor() as i32];
         let f = [p[0] - p[0].floor(), p[1] - p[1].floor()];

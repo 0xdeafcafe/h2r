@@ -178,6 +178,33 @@ fn renders_text_with_kerning_and_lines() {
 }
 
 #[test]
+fn a_transparent_leading_glyph_keeps_its_advance_and_kerning() {
+    let bytes = build(
+        1,
+        1,
+        0,
+        &[
+            G {
+                data: vec![0x04], // Four alpha-zero pixels.
+                ..solid(u16::from(b'A'), 5, 1)
+            },
+            solid(u16::from(b'V'), 3, 1),
+        ],
+        &[(b'A', b'V', -2)],
+    );
+    let font = Font::parse(&bytes).unwrap();
+    let text = [u16::from(b'A'), u16::from(b'V')];
+    let bitmap = render(&font, &text, RenderOptions::default()).unwrap();
+
+    // A is invisible. V starts at x = 1 + 5 - 2 + 1 = 5.
+    assert_eq!((bitmap.width, bitmap.height), (8, 2));
+    for row in bitmap.rgba.chunks_exact(8 * 4) {
+        let alpha: Vec<_> = row.chunks_exact(4).map(|pixel| pixel[3]).collect();
+        assert_eq!(alpha, [0, 0, 0, 0, 0, 255, 255, 0]);
+    }
+}
+
+#[test]
 fn glyph_colors_are_optional() {
     // literal word 0xf0f0 (colour 0x0f0, green), then a 1-pixel opaque run in that colour
     let g = G {
@@ -331,4 +358,37 @@ fn every_disc_font_validates() {
         n += 1;
     }
     assert!(n >= 30, "only {n} fonts found");
+}
+
+/// A unit that reads record 0, or a copy of it (MSLCD-14 maps `.` to its
+/// missing-glyph box), has no glyph; the space reading record 0 does.
+#[test]
+fn a_copy_of_the_missing_box_is_no_glyph() {
+    let tall = |unit| G {
+        unit,
+        advance: 2,
+        x_offset: 0,
+        y_offset: 1,
+        width: 1,
+        height: 4,
+        data: vec![0x44],
+    };
+    let bytes = build(
+        1,
+        1,
+        0,
+        &[
+            // Record 0: the box an unmapped unit draws.
+            solid(0, 3, 0),
+            tall(b'1' as u16),
+            // A unit mapped to a record of its own that copies the box.
+            solid(b'.' as u16, 3, 0),
+        ],
+        &[],
+    );
+    let f = Font::parse(&bytes).unwrap();
+    assert!(f.has_glyph(b'1' as u16));
+    assert!(!f.has_glyph(b'.' as u16), "a copy of record 0");
+    assert!(!f.has_glyph(b'-' as u16), "unmapped");
+    assert!(f.has_glyph(b' ' as u16), "the space reads record 0");
 }

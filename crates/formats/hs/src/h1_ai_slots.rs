@@ -54,7 +54,7 @@ impl Registry {
         match self {
             Self::Vehicles if matches!(index % VEHICLE_WIDTH, 2..=4) => 0,
             Self::Playfight => 0,
-            Self::Follow if index >= FOLLOW_WORDS || index % 3 == 0 => 0,
+            Self::Follow if index >= FOLLOW_WORDS || index.is_multiple_of(3) => 0,
             Self::Follow if index % 3 == 2 => DEFAULT_FOLLOW_RADIUS.to_bits() as i32,
             _ => -1,
         }

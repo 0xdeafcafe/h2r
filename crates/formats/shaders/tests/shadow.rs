@@ -541,7 +541,30 @@ fn gpu_compares_every_function_and_format() {
 /// The programs the golden files hold: retail's lookups as the game's
 /// first level uses them (linear PROJECT3D `GREATER` on D24) and a point
 /// PROJECT2D one, and a pass sampling one map on two stages.
-fn golden_programs(hard: bool) -> Vec<(String, PixelShaderDef, PixelOptions)> {
+#[derive(Clone, Copy)]
+enum Form {
+    Retail,
+    Hard,
+    Sharp,
+}
+
+impl Form {
+    fn select(self, opts: &mut PixelOptions, stages: u8) {
+        match self {
+            Self::Retail => {}
+            Self::Hard => {
+                for i in 0..4 {
+                    if stages & (1 << i) != 0 {
+                        opts.hard_shadow[i] = stages;
+                    }
+                }
+            }
+            Self::Sharp => opts.sharp_shadow = stages,
+        }
+    }
+}
+
+fn golden_programs(form: Form) -> Vec<(String, PixelShaderDef, PixelOptions)> {
     let mut out = Vec::new();
     for (name, mode, sh) in [
         (
@@ -556,24 +579,20 @@ fn golden_programs(hard: bool) -> Vec<(String, PixelShaderDef, PixelOptions)> {
         ),
     ] {
         let mut opts = options(sh);
-        if hard {
-            opts.hard_shadow[0] = 1;
-        }
+        form.select(&mut opts, 0b01);
         out.push((name.to_string(), def(mode), opts));
     }
     let sh = shadow(DepthFormat::D24, AlphaFunc::Greater, true);
     let mut opts = two_stage_options(sh);
-    if hard {
-        opts.hard_shadow = [0b11, 0b11, 0, 0];
-    }
+    form.select(&mut opts, 0b11);
     out.push(("two stages, one map".into(), two_stage_def(REG_T1), opts));
     out
 }
 
 /// Every golden program's module, each under a header line.
-fn golden_text(hard: bool) -> String {
+fn golden_text(form: Form) -> String {
     let mut s = String::new();
-    for (name, d, opts) in golden_programs(hard) {
+    for (name, d, opts) in golden_programs(form) {
         let ps = psh::translate(&d, &opts);
         assert!(ps.warnings.is_empty(), "{name}: {:?}", ps.warnings);
         common::check(&ps.module());
@@ -601,7 +620,7 @@ fn golden(name: &str, text: &str) {
 /// golden file was written by the code before the option.
 #[test]
 fn retail_shadow_lookups_are_unchanged() {
-    golden("shadow_retail.wgsl", &golden_text(false));
+    golden("shadow_retail.wgsl", &golden_text(Form::Retail));
     // And the option at zero is retail, whatever else is set.
     let mut opts = options(shadow(DepthFormat::D24, AlphaFunc::Greater, true));
     let retail = psh::translate(&def(TEX_PROJECT3D), &opts).module();
@@ -610,14 +629,15 @@ fn retail_shadow_lookups_are_unchanged() {
     // Left out of persisted keys at zero, so existing caches still match.
     let json = serde_json::to_string(&opts).unwrap();
     assert!(!json.contains("hard_shadow"), "{json}");
+    assert!(!json.contains("sharp_shadow"), "{json}");
 }
 
 /// E3's translation: one `textureLoad` per shadow stage and no filter
 /// weights, at the stage's coordinate or the mean of its group's.
 #[test]
 fn e3_shadow_lookups_are_one_tap() {
-    golden("shadow_e3.wgsl", &golden_text(true));
-    for (name, d, opts) in golden_programs(true) {
+    golden("shadow_e3.wgsl", &golden_text(Form::Hard));
+    for (name, d, opts) in golden_programs(Form::Hard) {
         let ps = psh::translate(&d, &opts);
         for i in 0..2 {
             if opts.shadow[i].is_none() || !ps.body.contains(&format!("t{i} = vec4f(select")) {
@@ -628,13 +648,19 @@ fn e3_shadow_lookups_are_one_tap() {
         }
         assert!(!ps.body.contains("mix("), "{name}: no filter weights");
     }
-    let (_, d, opts) = golden_programs(true).pop().unwrap();
+    let (_, d, opts) = golden_programs(Form::Hard).pop().unwrap();
     let ps = psh::translate(&d, &opts);
     assert!(
         ps.body.contains("let uv = ((i.t0.xy / i.t0.w) * xps.tex_scale[0].xy + (i.t1.xy / i.t1.w) * xps.tex_scale[1].xy) / 2.0;"),
         "{}",
         ps.body
     );
+}
+
+#[test]
+fn sharp_shadow_lookups_are_tent_filtered() {
+    let text = golden_text(Form::Sharp);
+    golden("shadow_sharp.wgsl", text.strip_suffix('\n').unwrap());
 }
 
 /// A hard stage is the point lookup, whatever the stage's filter: the
@@ -801,4 +827,200 @@ fn harness(@builtin(global_invocation_id) id: vec3u) {
             assert_eq!(out, [want[k]; 4], "{:?} t{k}", opts.hard_shadow);
         }
     }
+}
+
+/// A half-plane caster, rasterized at shadow-map texel centres. Render
+/// strips at different subpixel offsets so the readback resolves the ramp
+/// more finely than one display pixel without changing the derivatives.
+#[test]
+fn gpu_sharp_shadow_resolves_a_slanted_edge_at_each_map_scale() {
+    let Some(gpu) = common::gpu() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    const MAP: u32 = 32;
+    const PHASES: u32 = 32;
+    const ROWS: u32 = 7;
+    let outline = |y: f32| 12.17 + y * 0.125;
+    let depths: Vec<_> = (0..MAP)
+        .flat_map(|y| {
+            (0..MAP).map(move |x| {
+                if x as f32 + 0.5 < outline(y as f32 + 0.5) { 2 } else { 0 }
+            })
+        })
+        .collect();
+    let tex = DepthTexture::new(DepthFormat::D24, MAP, MAP, &depths);
+    let map = gpu.texture(wgpu::TextureViewDimension::D2, [MAP, MAP, 1], &tex.texels);
+
+    let mut opts = options(shadow(DepthFormat::D24, AlphaFunc::Greater, true));
+    Form::Sharp.select(&mut opts, 0b01);
+    let ps = psh::translate(&def(TEX_PROJECT3D), &opts);
+    for ratio in [1, 2, 4] {
+        let src = format!(
+            "{}\nconst ratio = {ratio}.0;\nconst map_size = {MAP}.0;\nconst phases = {PHASES}u;\n{}",
+            ps.module(),
+            SHARP_STRIPS,
+        );
+        let width = MAP * ratio;
+        let ramp = render_sharp_strips(&gpu, &map, &src, width, 4 * PHASES * ROWS);
+        for row in 0..ROWS {
+            let y = (row * 4 + 4) as f32;
+            let edge = outline(y) * ratio as f32;
+            // Quad derivatives may vary with x parity. Measure each
+            // independently, sampling a full two pixels of phase.
+            for parity in 0..2 {
+                let mut samples = Vec::new();
+                for x in (parity..width).step_by(2) {
+                    for phase in 0..PHASES {
+                        let screen_x = x as f32 + 0.5 + 2.0 * phase as f32 / PHASES as f32;
+                        let screen_y = (row * PHASES + phase) * 4 + 1;
+                        samples.push((screen_x, ramp[(screen_y * width + x) as usize]));
+                    }
+                }
+                let last_lit = samples.iter().rposition(|&(_, v)| v == 255).unwrap();
+                let first_dark = samples.iter().position(|&(_, v)| v == 0).unwrap();
+                assert!(last_lit + 1 < first_dark, "1:{ratio}, row {row}: missing ramp");
+                let measured = samples[first_dark].0 - samples[last_lit].0;
+                assert!(measured <= 1.5, "1:{ratio}, row {row}: ramp spans {measured} pixels");
+                let centre = samples[last_lit..=first_dark]
+                    .windows(2)
+                    .find_map(|s| {
+                        let [(x0, v0), (x1, v1)] = [s[0], s[1]];
+                        (v0 >= 128 && v1 <= 127).then(|| {
+                            x0 + (x1 - x0) * (v0 as f32 - 127.5) / (v0 as f32 - v1 as f32)
+                        })
+                    })
+                    .unwrap();
+                assert!((centre - edge).abs() <= ratio as f32,
+                    "1:{ratio}, row {row}: centre {centre}, caster edge {edge}");
+            }
+        }
+    }
+}
+
+const SHARP_STRIPS: &str = r#"
+@vertex
+fn strip_vs(@builtin(vertex_index) n: u32) -> @builtin(position) vec4f {
+    let p = array(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
+    return vec4f(p[n], 0.0, 1.0);
+}
+@fragment
+fn strip_fs(@builtin(position) p: vec4f) -> @location(0) vec4f {
+    let band = u32(p.y) / 4u;
+    let shift = 2.0 * f32(band % phases) / f32(phases);
+    let x = (p.x + shift) / ratio;
+    let y = f32(band / phases * 4u + 4u) + (p.y - f32(band * 4u) - 1.5) / ratio;
+    let z = vec4f(0.0);
+    let coord = vec4f(vec2f(x, y) / map_size, 1.0, 1.0);
+    return xps_program(XpsInputs(z, z, z, z, coord, z, z, z, 0.0, true)).color;
+}
+"#;
+
+fn render_sharp_strips(
+    gpu: &common::Gpu,
+    map: &wgpu::TextureView,
+    src: &str,
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    use wgpu::util::DeviceExt as _;
+
+    common::check(src);
+    let d = &gpu.device;
+    let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: None,
+        source: wgpu::ShaderSource::Wgsl(src.into()),
+    });
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let pipeline = d.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: None,
+        layout: None,
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("strip_vs"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: Default::default(),
+        depth_stencil: None,
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some("strip_fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(format.into())],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+    let binding = |group, binding, resource| d.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &pipeline.get_bind_group_layout(group),
+        entries: &[wgpu::BindGroupEntry { binding, resource }],
+    });
+    let uniform = d.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        contents: &PixelUniforms::default().to_bytes(),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    let constants = binding(0, 1, uniform.as_entire_binding());
+    let texture = binding(1, 0, wgpu::BindingResource::TextureView(map));
+    let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
+    let target = d.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = target.create_view(&Default::default());
+    let pitch = (4 * width).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+    let readback = d.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: u64::from(pitch * height),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut enc = d.create_command_encoder(&Default::default());
+    {
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &constants, &[]);
+        pass.set_bind_group(1, &texture, &[]);
+        pass.draw(0..3, 0..1);
+    }
+    enc.copy_texture_to_buffer(
+        target.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(pitch),
+                rows_per_image: Some(height),
+            },
+        },
+        size,
+    );
+    gpu.queue.submit([enc.finish()]);
+    let slice = readback.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |r| r.expect("map"));
+    d.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+    let data = slice.get_mapped_range().expect("mapped");
+    data.chunks_exact(pitch as usize)
+        .flat_map(|row| row[..(4 * width) as usize].iter().step_by(4).copied())
+        .collect()
 }

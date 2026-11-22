@@ -496,6 +496,17 @@ with the Halo 2 disc's shared maps.
 
 ### Mods
 
+The Mods catalog serves each release's cover and gallery from Live. On the
+uploader's machine, `h2 live mods capture PACK_ID|MAP_ID` starts a private
+headless game for each member. The CLI gets a Live capture permit and uses
+the game agent to load the installed package, place the camera at player
+starts and capture three rendered views. The game binds the exact package,
+tick, camera and PNG digest to the returned frame. For a pack, the CLI also
+selects three member views for the release gallery. Private captures enter
+the review queue and appear in the gallery after approval. The site labels
+retail map art when it uses it as a fallback.
+[Capture options](../runtime/switches.md#tools) · [Gallery API](live-api.md#verified-screenshot-uploads)
+
 Installed mods, the map packages under `<data>/maps/`
 ([maps.md](../game/maps.md)), get art of their own, extracted from the
 patched map the game would load (`live_mods`), so the 3D view of a game
@@ -1056,6 +1067,16 @@ seams like the collage's, a glow from the top right, scan lines), so a
 server without game art, or a browser it won't share the art with, still
 gets a finished header. The home strip is 180 px tall either way, so the
 page doesn't jump when the art arrives.
+
+**Source art.** `web/art-source/medals/` holds the Live and superbounce
+medals drawn natively at 512 × 512 and halved to 256 (`<id>-512.png`,
+`<id>-256.png`, transparent, 8 bits a channel, no 4-bit quantisation):
+source art for banners and other pictures, not for a medal view, where
+they would sit wrong beside the 24-pixel medals and Halo 2's glyphs. They
+are outside `web/public/`, so not served, and no page names them.
+`python3 scripts/live-medals.py --out DIR --hires` draws them (about four
+minutes) into `DIR/hires/`, from the same drawing as the site's medal files
+(`web/public/art/ART.md`, Batches 06 to 08).
 
 **Limits.** Shots name spawn indexes and map stems of the retail disc; a
 different disc or map pack may need new ones (`check` catches only a

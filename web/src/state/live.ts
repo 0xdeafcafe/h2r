@@ -55,14 +55,15 @@ function createLive() {
   }
   let gen = 0;
 
-  const listeners = new Set<(ev: WireEvent) => void>();
+  const listeners = new Set<(ev: WireEvent, isLive: boolean) => void>();
 
-  function flush() {
+  function flush(replaying = false) {
     flushScheduled = false;
     if (!pending.length) return;
     const evs = pending;
     pending = [];
     const live = caughtUpAt !== null;
+    const isLive = !replaying && live && status() === "live";
     const now = performance.now();
     setState(produce((s) => { for (const ev of evs) applyEvent(s, ev); }));
     confirmHeld();
@@ -78,7 +79,7 @@ function createLive() {
         }
       }
     }
-    for (const ev of evs) for (const l of listeners) l(ev);
+    for (const ev of evs) for (const l of listeners) l(ev, isLive);
   }
 
   function schedule() {
@@ -86,8 +87,9 @@ function createLive() {
     flushScheduled = true;
     // While catching up, fold big bursts into one update; when live, apply
     // on the next frame so kill feeds feel instant.
-    if (typeof requestAnimationFrame !== "undefined" && caughtUpAt !== null) requestAnimationFrame(flush);
-    else setTimeout(flush, 16);
+    if (typeof requestAnimationFrame !== "undefined" && !document.hidden && caughtUpAt !== null) {
+      requestAnimationFrame(() => flush());
+    } else setTimeout(flush, 16);
   }
 
   function onVerifyResults(rs: VerifyResult[]) {
@@ -178,7 +180,7 @@ function createLive() {
         },
         onFrame: (f) => frameHub.push(f, performance.now()),
         onCaughtUp: (position) => {
-          flush();
+          flush(true);
           caughtUpAt = performance.now();
           setState("caughtUp", true);
           if (position > state.position) setState("position", position);
@@ -254,6 +256,8 @@ function createLive() {
   }
 
   function start() {
+    // A queued animation frame can stop running when the tab is hidden.
+    document.addEventListener("visibilitychange", () => { if (document.hidden && flushScheduled) flush(); });
     const base = server().base;
     // Discover first so a relative or moved `api` is honoured from the start.
     fetchWellKnown(base).then((wk) => {
@@ -290,7 +294,7 @@ function createLive() {
     api: () => rest,
     setReader(fn: () => Promise<string | null>) { reader = fn; },
     verifyStatus: (position: number): VerifyStatus | null => verify[position]?.status ?? null,
-    onEvent(fn: (ev: WireEvent) => void) {
+    onEvent(fn: (ev: WireEvent, isLive: boolean) => void) {
       listeners.add(fn);
       return () => listeners.delete(fn);
     },

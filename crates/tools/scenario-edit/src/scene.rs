@@ -31,15 +31,26 @@
 use crate::geometry::{
     self, Bounds, Marker, Ray, Vec3, WorldPart, add, dot, normalize, scale, sub,
 };
+use crate::layers::{LayerId, Layers};
 use crate::layout::BlockKind;
 use crate::save::MapSource;
 use assets::{Region, ResourceFiles};
 use map::{FourCC, Map, ResourceFile, TagId};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::io::{Read, Seek};
 use tags::anim_sample::{Mat4, NodeTransform, mat_mul};
 use tags::geometry::{RawSource, TagView};
 use tags::model::RenderModelGeometry;
+
+/// Bind-pose meshes missing from the open scene, resolved against the
+/// same map and shared resource files as the scenario's placed objects.
+pub(crate) fn streamed_models(source: &MapSource, objects: Vec<TagId>) -> crate::Result<Scene> {
+    let mut map = source.open()?;
+    let mut raw = geometry::RawFiles::open(source)?;
+    let mut builder = SceneBuilder::new(&mut map, &mut raw, resource_files(source));
+    builder.object_models(objects, false);
+    Ok(builder.finish())
+}
 
 /// The largest side of an uploaded texture.
 pub const MAX_TEXTURE: u32 = 512;
@@ -786,6 +797,9 @@ pub struct Scene {
     pub models: Vec<Mesh>,
     /// Placed object tag → index into [`Self::models`].
     pub objects: HashMap<TagId, usize>,
+    /// Placement meshes which include the variant's attached objects. A
+    /// live instance uses the bare mesh: children have their own records.
+    pub composite_objects: std::collections::HashSet<TagId>,
     /// The level's sky, drawn behind everything at infinity.
     pub sky: Option<SceneSky>,
     /// Textures drawn clamped to their edges, not repeated
@@ -1163,7 +1177,44 @@ impl Scene {
 
     /// The nearest placement whose model (or glyph) the ray hits.
     pub fn pick(&self, markers: &[Marker], ray: &Ray) -> Option<(BlockKind, usize)> {
-        let mut best = geometry::pick_glyph(markers, ray);
+        let glyph = geometry::pick_glyph(markers, ray);
+        self.pick_models(markers.iter(), ray, glyph)
+    }
+
+    /// Pick the same authoring glyphs and static models the viewport draws.
+    /// A live-linked placement has its glyph at the authored position and
+    /// the stream supplies the mesh at the object's current position.
+    pub(crate) fn pick_visible(
+        &self,
+        markers: &[Marker],
+        ray: &Ray,
+        layers: &Layers,
+        selected: &[(BlockKind, usize)],
+        linked: &BTreeSet<(BlockKind, usize)>,
+    ) -> Option<(BlockKind, usize)> {
+        let placements = markers.iter().filter(|m| layers.placement(m.block));
+        let glyph = if layers.visible(LayerId::Markers) {
+            let glyphs = placements.clone().filter(|m| {
+                let entry = (m.block, m.index);
+                self.model_of(m).is_none() || selected.contains(&entry) || linked.contains(&entry)
+            });
+            geometry::pick_glyph(glyphs, ray)
+        } else {
+            None
+        };
+        if !layers.visible(LayerId::Objects) {
+            return glyph.map(|(_, block, index)| (block, index));
+        }
+        let models = placements.filter(|m| !linked.contains(&(m.block, m.index)));
+        self.pick_models(models, ray, glyph)
+    }
+
+    fn pick_models<'a>(
+        &self,
+        markers: impl Iterator<Item = &'a Marker>,
+        ray: &Ray,
+        mut best: Option<(f32, BlockKind, usize)>,
+    ) -> Option<(BlockKind, usize)> {
         for m in markers {
             let Some(model) = self.model_of(m).and_then(|i| self.models.get(i)) else {
                 continue;
@@ -1343,6 +1394,10 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
     /// A model for every placed object tag that resolves to one, with the
     /// objects its model variant attaches ([`object_model_of`]).
     pub fn objects(&mut self, objects: impl IntoIterator<Item = TagId>) {
+        self.object_models(objects, true);
+    }
+
+    fn object_models(&mut self, objects: impl IntoIterator<Item = TagId>, attachments: bool) {
         let ctx = match tags::object::Context::read(self.map) {
             Ok(c) => c,
             Err(_) => return,
@@ -1355,9 +1410,17 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
                 continue;
             }
             self.scene.stats.objects += 1;
-            let Some(wanted) = object_model_of(&ctx, object, multiplayer) else {
+            let wanted = if attachments {
+                object_model_of(&ctx, object, multiplayer)
+            } else {
+                render_model_of(&ctx, object).map(|mode| ObjectModel { mode, attached: Vec::new() })
+            };
+            let Some(wanted) = wanted else {
                 continue;
             };
+            if !wanted.attached.is_empty() {
+                self.scene.composite_objects.insert(object);
+            }
             let model = match by_model.get(&wanted) {
                 Some(m) => *m,
                 None => {
@@ -2689,6 +2752,50 @@ mod tests {
             (p[0] - 8.0).abs() < 1e-5 && (p[1] - 2.0).abs() < 1e-5,
             "{p:?}"
         );
+    }
+
+    #[test]
+    fn picking_uses_the_visible_model_or_authoring_glyph() {
+        let mut scene = Scene::default();
+        let mut model = Mesh::default();
+        model.push(None, None, Blend::Opaque, &quad(false));
+        scene.models.push(model);
+        scene.objects.insert(TagId(12), 0);
+        let markers = [Marker {
+            block: BlockKind::Vehicles,
+            index: 4,
+            position: [0.0; 3],
+            axes: geometry::rotation([0.0; 3]),
+            scale: 1.0,
+            object: Some(TagId(12)),
+        }];
+        let entry = (markers[0].block, markers[0].index);
+        let down = |x, y| Ray {
+            origin: [x, y, 2.0],
+            dir: [0.0, 0.0, -1.0],
+        };
+        let model_only = down(0.7, 0.8);
+        let glyph_only = down(-0.1, -0.1);
+        let unpaired = BTreeSet::new();
+        let mut layers = Layers::default();
+        let pick = |ray: &Ray, layers: &Layers, selected: &[_], linked: &BTreeSet<_>| {
+            scene.pick_visible(&markers, ray, layers, selected, linked)
+        };
+        assert_eq!(pick(&model_only, &layers, &[], &unpaired), Some(entry));
+        assert_eq!(pick(&glyph_only, &layers, &[], &unpaired), None);
+
+        let linked = BTreeSet::from([entry]);
+        assert_eq!(pick(&model_only, &layers, &[], &linked), None);
+        assert_eq!(pick(&glyph_only, &layers, &[], &linked), Some(entry));
+
+        layers.set(LayerId::Objects, false);
+        assert_eq!(pick(&model_only, &layers, &[], &unpaired), None);
+        assert_eq!(pick(&glyph_only, &layers, &[], &unpaired), None);
+        assert_eq!(pick(&glyph_only, &layers, &[entry], &unpaired), Some(entry));
+        layers.set(LayerId::Placement(entry.0), false);
+        assert_eq!(pick(&glyph_only, &layers, &[entry], &unpaired), None);
+        layers.set(LayerId::Objects, true);
+        assert_eq!(pick(&model_only, &layers, &[], &unpaired), None);
     }
 
     fn near(a: [f32; 3], b: [f32; 3]) -> bool {

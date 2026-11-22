@@ -207,6 +207,7 @@ impl GfxBackend {
 /// Whether `writes` can go at the front of the submission: no command
 /// writes their buffers in draw order (`ordered`) and no range overlaps
 /// other bytes `held` there or earlier in `writes`.
+#[allow(clippy::mutable_key_type, reason = "wgpu hashes and compares buffers by stable handle identity")]
 fn fits_front(
     held: &std::collections::HashMap<wgpu::Buffer, Vec<(u64, Vec<u8>)>>,
     ordered: impl Fn(&wgpu::Buffer) -> bool,
@@ -234,6 +235,7 @@ mod tests {
             label: None, size: 256, usage: wgpu::BufferUsages::COPY_DST, mapped_at_creation: false,
         });
         let (a, b) = (buffer(), buffer());
+        #[allow(clippy::mutable_key_type, reason = "wgpu hashes and compares buffers by stable handle identity")]
         let mut held = std::collections::HashMap::new();
         held.insert(a.clone(), vec![(0, vec![1; 16])]);
         let none = |_: &wgpu::Buffer| false;

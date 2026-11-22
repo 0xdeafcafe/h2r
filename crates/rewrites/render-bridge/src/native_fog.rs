@@ -120,7 +120,7 @@ impl GuestWrite for Mem<'_> {
 /// draw's return address (`[esp]` at entry).
 pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     restore_pending(mem);
-    let mut m = Mem(mem);
+    let m = Mem(mem);
     if m.read_u32(skip::CURRENT_LAYER) != Some(FOG_LAYER as u32) {
         return;
     }

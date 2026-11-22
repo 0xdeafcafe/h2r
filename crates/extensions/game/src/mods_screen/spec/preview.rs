@@ -75,7 +75,7 @@ impl Preview {
 
         if state == "long-name" {
             let mut entries = sample_entries();
-            entries[0].name = "WWWWWWWW WWWWWWWW WWWWWWWW: Swords".into();
+            entries[0].name = "Wwwwwwww Wwwwwwww Wwwwwwww: Swords".into();
             entries[0].credit = Some("Waterworks Map Making Community".into());
             entries[0].description = Some("Flooded passages beneath the base. ".repeat(9));
             self.repo.listed(Ok(entries));
@@ -160,6 +160,21 @@ impl Live for Preview {
             _ => {}
         }
         format!("{effect:?}")
+    }
+
+    fn audit_press(&mut self, input: Input) -> Option<bool> {
+        let (screen, focus) = self.stack.last_mut()?;
+        let page = screen.page(Arc::clone(&self.repo));
+        // Open rows only select an in-memory entry. Retry and download
+        // can spawn workers even with the synthetic catalog source.
+        if input == Input::X
+            || input == Input::A
+                && !page.spec(focus).rows.get(focus.0)
+                    .is_some_and(|row| matches!(row.press, crate::ui_kit::spec::Press::Open(_)))
+        {
+            return None;
+        }
+        Some(page.step(focus, input) != ListEffect::None)
     }
 
     fn spec(&self) -> ScreenSpec {

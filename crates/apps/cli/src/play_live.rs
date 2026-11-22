@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use live_proto::{Gamertag, ServerOverride, Xuid};
+use live_proto::{Gamertag, JoinLink, ServerOverride, Xuid};
 
 use crate::live_accounts::{self, LocalAccount};
 use crate::live_cmd::{Client, status_of};
@@ -37,6 +37,8 @@ pub struct LiveOpts {
     /// `--live-server`: this service. With `--live` alone it is filled in
     /// from `$H2_LIVE_SERVER` or [`DEFAULT_LIVE_SERVER`] ([`choose`]).
     pub server: Option<String>,
+    /// A validated session link. It enables Live but never selects the server.
+    pub join: Option<JoinLink>,
     /// `--live-listen`: where the embedded server binds (default
     /// 127.0.0.1 on a free port).
     pub listen: Option<SocketAddr>,
@@ -72,6 +74,13 @@ impl LiveOpts {
     pub fn take(&mut self, flag: &str, value: &mut dyn FnMut() -> Result<String>) -> Result<bool> {
         match flag {
             "--live" => self.enabled = true,
+            "--join" => {
+                if self.join.is_some() {
+                    bail!("Only one --join URL can be opened at a time.");
+                }
+                self.join = Some(value()?.parse().context("Invalid --join URL")?);
+                self.enabled = true;
+            }
             "--live-local" => self.embedded(),
             "--offline" | "--no-live" => self.offline = true,
             "--live-server" => {
@@ -117,6 +126,9 @@ impl LiveOpts {
     }
 
     pub fn check(&self) -> Result<()> {
+        if self.offline && self.join.is_some() {
+            bail!("Joining a session requires Live. Remove --offline or --no-live.");
+        }
         if self.offline && self.enabled {
             bail!(
                 "--offline plays without Live; drop --live, --live-local, --live-server or \
@@ -166,6 +178,33 @@ impl LiveOpts {
             bail!(
                 "--live-local runs a server on this machine and --live-server signs in to \
                  another; pick one"
+            );
+        }
+        Ok(())
+    }
+
+    /// Resolve the service before account discovery or creation. A URL from
+    /// another service can only be used after explicitly choosing its server.
+    pub fn play_choice(&self, env: Option<&str>) -> Result<Choice> {
+        let choice = choose(self, env, DEFAULT_LIVE_SERVER);
+        match &choice {
+            Choice::Offline { .. } if self.join.is_some() => {
+                bail!("Joining a session requires Live. Choose a Live server to sign in.");
+            }
+            Choice::Server { url, .. } => self.check_join_server(url)?,
+            _ => {}
+        }
+        Ok(choice)
+    }
+
+    pub fn check_join_server(&self, url: &str) -> Result<()> {
+        if let Some(link) = &self.join
+            && !link.matches_server(url)
+        {
+            bail!(
+                "This game is on {}. To join it, choose that service with --live-server {}.",
+                link.server(),
+                link.server()
             );
         }
         Ok(())
@@ -309,7 +348,13 @@ pub fn start(
         (None, Some(url)) => url.clone(),
         (None, None) => bail!("no Live server: --live-local or a --live-server URL"),
     };
-    let client = Client::at(&url)?;
+    let mut client = Client::at(&url)?;
+    if embedded
+        .as_ref()
+        .is_some_and(|e| !e.live.unclaimed_admins().is_empty())
+    {
+        client.signup_operator = Some(live_server::ServerIdentity::load(&places.server_data)?);
+    }
     let mut terminal = terminal_ask;
     // The terminal asks only when told to; otherwise a code is the game's
     // to ask for (docs/live/live.md, "In-game sign-in").
@@ -1112,6 +1157,26 @@ mod tests {
     }
 
     #[test]
+    fn join_link_enables_live_and_preserves_the_players_server_choice() {
+        let link = "h2recomp://join?server=https%3A%2F%2Fother.example&session=8000000000001234";
+        let opts = parse(&["--join", link]).unwrap();
+        assert!(opts.join.as_ref().unwrap().matches_server("https://other.example"));
+        assert!(opts.play_choice(None).unwrap_err().to_string().contains("--live-server"));
+        assert!(opts.play_choice(Some("off")).is_err());
+        assert!(opts.play_choice(Some("https://other.example")).is_ok());
+        let pick = |args: &[&str]| choose(&parse(args).unwrap(), None, DEFAULT_LIVE_SERVER);
+        assert_eq!(pick(&["--join", link]), pick(&["--live"]));
+        assert_eq!(
+            pick(&["--join", link, "--live-server", "https://other.example"]),
+            pick(&["--live-server", "https://other.example"]),
+        );
+        assert!(parse(&["--join", "https://other.example"]).is_err());
+        assert!(parse(&["--join"]).is_err());
+        assert!(parse(&["--join", link, "--join", link]).is_err());
+        assert!(parse(&["--join", link, "--offline"]).is_err());
+    }
+
+    #[test]
     fn the_embedded_server_and_another_do_not_mix() {
         let e = parse(&["--live-local", "--live-server", "https://h.example"]).unwrap_err();
         assert!(format!("{e}").contains("pick one"), "{e}");
@@ -1467,6 +1532,7 @@ mod tests {
 
     /// A test-only cloudflared: prints a quick tunnel URL, records its
     /// arguments and pid, then waits to be stopped.
+    #[cfg(unix)]
     fn fake_cloudflared(dir: &Path) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let bin = dir.join("bin");
@@ -1486,6 +1552,7 @@ mod tests {
         p
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_tunnelled_session_publishes_the_url_and_keeps_signin_local() {
         let dir = temp("tunnel");
@@ -1558,6 +1625,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_named_tunnel_is_set_up_before_the_session_publishes_it() {
         use std::os::unix::fs::PermissionsExt;

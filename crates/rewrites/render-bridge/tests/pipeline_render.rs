@@ -1132,7 +1132,7 @@ fn portable_render_entry_finishes_in_live_memory_and_restores_the_callers_callba
                 let rt = Arc::clone(ctx.runtime());
                 let mut m = rt.memory();
                 ctx.call_guest_named(cpu, &mut m, FRAME, "test: outer game callback", |cpu, ctx| {
-                    let mut m = ctx.memory();
+                    let m = ctx.memory();
                     assert_eq!(m.u32(RENDER_ENTRY_RESULT)?, 201);
                     m.ret(cpu, 0)
                 })

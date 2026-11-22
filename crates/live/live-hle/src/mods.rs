@@ -2,7 +2,7 @@
 //! server's published maps, newest first, as the game's Mods screen shows
 //! them, and what counts as new.
 //!
-//! The list is `GET /v1/maps?sort=new&limit=N[&cursor=C]`, read with the
+//! The list is `GET /v1/mod-packs` (older servers use `GET /v1/maps`), read with the
 //! signed-in account's `read` token through the Live worker's retrying GET
 //! ([`crate::Hle::mod_list`]). Installing one goes through
 //! [`crate::maps::MapGate::install`] on a thread of its own
@@ -83,6 +83,10 @@ pub struct ModPack {
     /// `YYYY`, `YYYY-MM` or `YYYY-MM-DD`.
     pub released: Option<String>,
     pub source_url: Option<String>,
+    /// First-class packs may contain a single map.
+    pub published_pack: bool,
+    pub size: Option<u64>,
+    pub advisory: Option<live_proto::maps::ModPackAdvisory>,
     /// Its images: the `n`th is [`ModPack::image_path`].
     pub images: Vec<ModImage>,
 }
@@ -90,7 +94,12 @@ pub struct ModPack {
 impl ModPack {
     /// The API path of image `n`.
     pub fn image_path(&self, n: usize) -> String {
-        format!("/v1/mappacks/{}/images/{n}", self.id)
+        let route = if self.published_pack {
+            "mod-packs"
+        } else {
+            "mappacks"
+        };
+        format!("/v1/{route}/{}/images/{n}", self.id)
     }
 }
 
@@ -208,7 +217,17 @@ pub fn list_path(limit: u32, cursor: Option<&str>) -> String {
 /// How many of `items` are new to a player who last saw position `seen`:
 /// published after it.
 pub fn new_count(items: &[ModEntry], seen: u64) -> usize {
-    items.iter().filter(|e| is_new(e, seen)).count()
+    let mut packs = std::collections::BTreeSet::new();
+    items
+        .iter()
+        .filter(|e| is_new(e, seen))
+        .filter(|e| {
+            e.pack_info
+                .as_ref()
+                .filter(|p| p.published_pack)
+                .is_none_or(|p| packs.insert(p.id.clone()))
+        })
+        .count()
 }
 
 /// Whether `e` was published after position `seen`.
@@ -352,6 +371,9 @@ impl RawPack {
             authors,
             released: text(self.released),
             source_url: text(self.source_url),
+            published_pack: false,
+            size: None,
+            advisory: None,
             images: self.images.into_iter().map(RawImage::into_image).collect(),
         }
     }
@@ -455,6 +477,65 @@ struct RawPage {
     packs: Vec<RawPack>,
 }
 
+/// First-class pack rows. Page boundaries fall between packs so an install
+/// always sees every member even when a pack is larger than the page size.
+#[derive(Deserialize)]
+pub(crate) struct PackPage {
+    items: Vec<PackWithMembers>,
+    position: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct PackWithMembers {
+    #[serde(flatten)]
+    pack: RawPack,
+    version: Option<String>,
+    year: Option<u16>,
+    size: Option<u64>,
+    advisory: Option<live_proto::maps::ModPackAdvisory>,
+    members: Vec<RawEntry>,
+}
+
+impl PackPage {
+    pub(crate) fn page(self, limit: u32, cursor: Option<&str>) -> ModPage {
+        let offset = cursor.and_then(|c| c.parse::<usize>().ok()).unwrap_or(0);
+        let end = self
+            .items
+            .len()
+            .min(offset.saturating_add(limit.clamp(1, MAX_LIMIT) as usize));
+        let next = (end < self.items.len()).then(|| end.to_string());
+        let mut items = Vec::new();
+        for group in self.items.into_iter().take(end).skip(offset) {
+            let mut info = group.pack.into_pack();
+            info.published_pack = true;
+            info.size = group.size;
+            info.advisory = group.advisory;
+            if info.released.is_none() {
+                info.released = group.year.map(|year| year.to_string());
+            }
+            for e in group.members {
+                let mut member = e.into_entry(
+                    Some(info.clone()),
+                    Some(info.name.clone()),
+                    info.description.clone(),
+                );
+                if member.credit.is_none() {
+                    member.credit.clone_from(&info.authors);
+                }
+                if member.version.is_none() {
+                    member.version.clone_from(&group.version);
+                }
+                items.push(member);
+            }
+        }
+        ModPage {
+            items,
+            cursor: next,
+            position: self.position.unwrap_or_default(),
+        }
+    }
+}
+
 impl From<RawPage> for ModPage {
     fn from(r: RawPage) -> Self {
         let cursor = match r.cursor {
@@ -482,41 +563,50 @@ impl From<RawPage> for ModPage {
                         .or_else(|| pack_info.as_ref().and_then(|p| p.description.clone()));
                     (e, pack, pack_info, pack_description)
                 })
-                .map(|(e, pack, pack_info, pack_description)| ModEntry {
-                    pack_info,
-                    pack,
-                    pack_description,
-                    credit: e.credit_line(),
-                    id: e.id,
-                    name: e.name,
-                    description: e.description.filter(|d| !d.trim().is_empty()),
-                    author: e.author.into_name(),
-                    base: e.base.into_name(),
-                    image: e.image.is_some_and(|v| !v.is_null()),
-                    size: e.size,
-                    position: e.position,
-                    downloads: e.downloads,
-                    published_at: e.published_at,
-                    features: live_proto::maps::in_order(&e.features, &live_proto::maps::FEATURES),
-                    gametypes: live_proto::maps::in_order(
-                        &e.gametypes,
-                        &live_proto::maps::GAMETYPES,
-                    ),
-                    version: e
-                        .version
-                        .map(|v| v.trim().to_string())
-                        .filter(|v| !v.is_empty()),
-                    images: e.images.into_iter().map(RawImage::into_image).collect(),
-                    contents: e
-                        .contents
-                        .into_iter()
-                        .map(|l| l.trim().to_string())
-                        .filter(|l| !l.is_empty())
-                        .collect(),
-                })
+                .map(|(entry, name, info, description)| entry.into_entry(info, name, description))
                 .collect(),
             cursor,
             position: r.position,
+        }
+    }
+}
+
+impl RawEntry {
+    fn into_entry(
+        self,
+        pack_info: Option<ModPack>,
+        pack: Option<String>,
+        pack_description: Option<String>,
+    ) -> ModEntry {
+        let e = self;
+        ModEntry {
+            pack_info,
+            pack,
+            pack_description,
+            credit: e.credit_line(),
+            id: e.id,
+            name: e.name,
+            description: e.description.filter(|d| !d.trim().is_empty()),
+            author: e.author.into_name(),
+            base: e.base.into_name(),
+            image: e.image.is_some_and(|v| !v.is_null()),
+            size: e.size,
+            position: e.position,
+            downloads: e.downloads,
+            published_at: e.published_at,
+            features: live_proto::maps::in_order(&e.features, &live_proto::maps::FEATURES),
+            gametypes: live_proto::maps::in_order(&e.gametypes, &live_proto::maps::GAMETYPES),
+            version: e
+                .version
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty()),
+            images: e.images.into_iter().map(RawImage::into_image).collect(),
+            contents: e
+                .contents
+                .into_iter()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect(),
         }
     }
 }
@@ -526,6 +616,38 @@ mod tests {
     use super::*;
 
     const ID: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+    #[test]
+    fn page_size_counts_whole_packs_and_inherits_the_pack_credit() {
+        let member = |n| {
+            serde_json::json!({
+                "id": MapId([n;32]), "name": "Mod", "base": "test",
+                "position": n, "author": {"gamertag": "Uploader"}
+            })
+        };
+        let packs: PackPage = serde_json::from_value(serde_json::json!({
+            "items": [
+              {"id":"one", "name":"Friends", "authors":["Mira"], "version":"2",
+                "size":55, "year":2006, "advisory":"not_for_online", "members":[member(3),member(2)]},
+              {"id":"two", "name":"Friends", "members":[member(1)]}
+            ],
+            "position":3
+        })).unwrap();
+        let page = packs.page(1, None);
+        assert_eq!(page.cursor.as_deref(), Some("1"));
+        assert_eq!(page.items.len(), 2);
+        assert_eq!(new_count(&page.items, 0), 1);
+        for entry in page.items {
+            assert_eq!(entry.author, "Uploader");
+            assert_eq!(entry.credit.as_deref(), Some("Mira"));
+            assert_eq!(entry.version.as_deref(), Some("2"));
+            let pack = entry.pack_info.unwrap();
+            assert_eq!(pack.id, "one");
+            assert_eq!(pack.released.as_deref(), Some("2006"));
+            assert_eq!(pack.size, Some(55));
+            assert_eq!(pack.image_path(0), "/v1/mod-packs/one/images/0");
+        }
+    }
 
     #[test]
     fn the_repository_shape_reads() {

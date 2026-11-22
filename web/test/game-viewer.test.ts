@@ -79,7 +79,7 @@ const game = (over: Partial<GameState> = {}): GameState => ({
   score_limit: 15, time_limit_s: null, started_at: "2026-11-18T20:00:00.000Z", ended_at: "2026-11-18T20:05:00.000Z",
   status: "ended", end_reason: null, winner: null, start_tick: 0,
   players: { 0: { index: 0, name: "Sneaky Pete", xuid: null, team: 0, local: true } as unknown as GameState["players"][number] },
-  scores: {}, teams: {}, kills: [], last_tick: 0, first_position: 0, positions: [],
+  scores: {}, teams: {}, kills: [], bounces: [], teabags: [], last_tick: 0, first_position: 0, positions: [],
   ...over,
 });
 
@@ -88,6 +88,8 @@ let viewerMode: (view: string | undefined, ok: boolean) => string;
 let keyIsForControl: (t: EventTarget | null) => boolean;
 let renderControls: (session: ReplaySession) => string;
 
+let renderFilmPage: (film: string, clip?: string) => string;
+let selectedServer: string;
 beforeAll(async () => {
   const ROUTER = `${import.meta.dir}/../node_modules/@solidjs/router/dist/index.jsx`;
   const babel = await import("@babel/core");
@@ -96,7 +98,8 @@ beforeAll(async () => {
     name: "solid-ssr-viewer",
     setup(build) {
       build.onLoad({ filter: /(\/src\/.*\.tsx|\/@solidjs\/router\/dist\/.*\.jsx)$/ }, async ({ path }) => {
-        const src = await Bun.file(path).text();
+        const original = await Bun.file(path).text();
+        const src = original;
         const out = await babel.transformAsync(src, {
           filename: path, babelrc: false, configFile: false,
           parserOpts: { plugins: ["jsx", "typescript"] },
@@ -109,12 +112,26 @@ beforeAll(async () => {
   const { renderToString } = await import("solid-js/web");
   const { createComponent } = await import("solid-js");
   const { Router, Route } = await import(ROUTER);
+  const { GameView } = await import("../src/stats/Game");
+  const { live } = await import("../src/state/live");
+  selectedServer = live.server().base;
+  renderFilmPage = (film, clip) => {
+    const path = clip ? "/theater/:id/clip/:clip" : "/games/halo2/games/:id";
+    const url = (clip ? `/theater/${film}/clip/${clip}` : `/games/halo2/games/${film}`) + "?t=42";
+    return renderToString(() => createComponent(Router, { url, get children() {
+      return createComponent(Route, { path, component: () => createComponent(GameView, {
+        game: game({ game_id: film }),
+        clip: clip ? { id: clip, game: film, title: "Finish", by: "0000000000000002",
+          created_ms: 0, from_tick: 20, to_tick: 50 } : undefined,
+      }) });
+    } }));
+  };
   const mod = await import("../src/viewer/GameViewer");
   const { default: Transport } = await import("../src/viewer/Transport");
   viewerMode = mod.viewerMode;
   keyIsForControl = mod.keyIsForControl;
   renderControls = (session) => renderToString(() => createComponent(Transport, { session, matchStartTick: 0 }));
-  render = (url, g, extra = {}) => renderToString(() => createComponent(Router, {
+  const page = (url: string, g: GameState, extra = {}) => createComponent(Router, {
     url,
     get children() {
       return createComponent(Route, {
@@ -127,7 +144,15 @@ beforeAll(async () => {
         } as unknown as Parameters<typeof mod.default>[0]),
       });
     },
-  }));
+  });
+  render = (url, g, extra) => renderToString(() => page(url, g, extra));
+});
+
+test("film and clip pages offer the encoded Open in Halo 2 target", () => {
+  for (const clip of [undefined, "clip-7"]) {
+    const html = renderFilmPage("film_1", clip).replaceAll("&amp;", "&");
+    expect(html).toContain(`href="h2recomp://theater/film_1?server=${encodeURIComponent(selectedServer)}${clip ? "&clip=clip-7" : ""}&t=42">Open in Halo 2</a>`);
+  }
 });
 
 describe("the inline viewer", () => {
@@ -151,7 +176,7 @@ describe("the inline viewer", () => {
   test("mounts in the page: its bar, the 2D map in its stage, the controls under it, and a full screen button", () => {
     const html = render("/games/halo2/games/g1", game());
     expect(html).toMatch(/<section class="gv\s*"/);
-    expect(html).toContain("Game Viewer<small>Slayer on Orchard</small>");
+    expect(html).toContain("Game Viewer<small> Slayer on Orchard</small>");
     expect(html).toMatch(/class="gv-stage\s*"[^>]*tabindex="-1"/);
     // The 2D map shows first, with its tools.
     expect(html).toContain("Player positions");
@@ -169,6 +194,8 @@ describe("the inline viewer", () => {
   test("a link to the 3D view (the old pop-out's too) opens the inline viewer on it", () => {
     const html = render("/games/halo2/games/g1?view=3d&cam=top", game());
     expect(html).toContain("gv-stage gv-stage--3d");
+    expect(html).toContain('data-state="boot"');
+    expect(html).toContain("Map uplink");
     expect(html).toMatch(/<button[^>]*aria-pressed="true"[^>]*>3D view<\/button>/);
     expect(html).not.toContain("Player positions");
   });

@@ -34,10 +34,14 @@ override, holding the guest memory lock and then the device lock.
 | the present hook (PNG or the app's frame copy) | `GfxBackend::present_with_gamma` | render thread |
 | the `D3DSWAP_FINISH` GPU wait | `GfxBackend` (`SwapFinish`) | render thread |
 
-The window thread in `h2 play` only shows the frame the hook published; the
-hook publishes into a shared frame slot, so it runs on the render thread
-unchanged. The persistent pipeline cache and its compile workers belong to
-the backend and move with it.
+The hook publishes into a shared frame slot (`crates/apps/app/src/frame.rs`).
+The `h2 play` window thread redraws the latest slot whenever the window
+size changes, independently of guest frame publication
+(`crates/apps/app/src/shell.rs`). On macOS, the window thread reconfigures
+and presents the Metal drawable during the resize callback
+(`crates/apps/app/src/surface.rs`, `crates/apps/app/src/metal_resize.rs`).
+The persistent pipeline cache and its compile workers belong to the backend
+and move with it.
 
 The boot glue wraps the backend when `d3d_glue::render_thread_requested()`
 holds (only the value `0` turns it off, `render_thread_from`): the
@@ -55,8 +59,7 @@ the guest's critical path.
 
 **Batches.** Calls collect in one pending list and cross the channel
 together: one send and one wake per batch. A batch goes at every call that
-waits (before the wait), at every present (before the frame-in-flight
-wait), every `threaded::BATCH` (64) calls and on drop. Texture-proxy drops
+waits (before the wait), at every present, every `threaded::BATCH` (64) calls and on drop. Texture-proxy drops
 go into the same list, so they keep their place. The render thread runs a
 batch in order, so the calls and their order are the synchronous ones; they
 only start later. The device hands each draw over with
@@ -172,6 +175,23 @@ Each `Backend` method falls in one of these classes
    on the GPU (`gfx::guest_words::GuestWords::depth_alias`, [d3d.md](d3d.md)
    "Depth aliases on the GPU"), so neither thread reads the depth buffer
    back for the formats that pass covers.
+7. **Native draws.** A draw a native pass admits
+   ([native-renderer.md](native-renderer.md), "Admission") is queued
+   (`Backend::queue_external_draw`) when its pass retains the resolved D3D
+   packet (`ExternalPass::resolved_fallback`), the packet writes the same
+   colour and depth as the pass (`ExternalBinding::same_draw_writes`) and
+   the judge answers `Drawn` for it. The device marks the targets written
+   at once, and for a native producer (`Device::try_native_*_draw`)
+   reports the draw committed, so the guest skips its own emission. The
+   render thread records the pass or, if it refuses, draws the packet,
+   which is the draw the guest would have issued. The guest's memory and
+   the device's model are those of a committed draw either way, so the
+   render thread's choice is not visible to the guest. Any other admission
+   waits for the render thread's recording (`Backend::prepare_external`),
+   one round trip each, unless its pass pins the attachments once per run
+   (`ExternalPass::batch_key`). The particle, effect, single-draw UI and
+   transparent passes are queued; a UI model draw with sibling ranges
+   waits, because its packet holds only the first range.
 
 Against the requirements:
 
@@ -186,9 +206,12 @@ Against the requirements:
 - **Guest reads of GPU-written memory, pixel counters.** Class 1.
 - **Vblank and present pacing.** Vblanks, the frame wait and the swap count
   are the device's and the kernel's, on logical time. The render thread
-  finishes presents in order. `Swap` waits on wall time when the guest is
-  more than two presents ahead (`MAX_FRAMES_IN_FLIGHT`), which bounds
-  memory and latency. That wait, like every class-1 wait, is on host wall
+  finishes presents in order. On the original stack, `Swap` waits on wall
+  time when the guest is more than two completed presents ahead
+  (`MAX_FRAMES_IN_FLIGHT`). With the scene owner installed, the producer
+  can enqueue two waiting transactions. An adopted transaction releases
+  its slot as soon as the worker takes it for drawing. A declined
+  transaction releases its slot when the original present completes. That wait, like every class-1 wait, is on host wall
   time and never charges logical time, so it changes no guest-visible
   value. `H2_BOOT_REALTIME` makes logical time follow wall time; the render
   thread only lets the runner reach a vblank sooner.
@@ -236,8 +259,8 @@ Against the requirements:
 - A backend error stops the guest at the next backend call.
 - RTT write-backs the guest asks for (`BlockOnResource`, the busy check,
   `BlockOnTime`, push-buffer callbacks) wait for the queue.
-- At most two presents are in flight; under load that limit is what holds
-  the guest.
+- At most two display transactions wait behind an adopted native frame.
+  The original renderer counts a frame in progress against its two slots.
 
 ## Evidence
 
@@ -267,6 +290,11 @@ Against the requirements:
 - Test: depth-alias textures made on the render thread give the same
   read-backs, uploads, draws, skips and stats
   (`crates/platform/d3d/tests/depth_textures.rs`).
+- Test: a native producer whose pass retains its packet commits without
+  waiting for the render thread, which draws the same packet the guest's
+  own draw resolves to when the recording is refused
+  (`crates/platform/d3d/tests/admission_scope.rs`,
+  `a_native_fan_with_a_retained_packet_commits_without_waiting_for_the_render_thread`).
 - Test: the persistent pipeline cache builds the same pipelines behind the
   render thread.
 
@@ -274,7 +302,10 @@ Against the requirements:
 
 The numbers (fps, guest-thread CPU, waits, byte-identical frames) are in
 [notes/render-thread.md](notes/render-thread.md), with their dates, commits
-and methods. `cargo bench -p d3d --bench pushbuf` and `--bench draw_main`
+and methods. The native particle and UI round trips and their removal are
+measured on a Steam Machine in
+[steammachine-perf.md](../perf/notes/steammachine-perf.md).
+`cargo bench -p d3d --bench pushbuf` and `--bench draw_main`
 time the guest's side of a draw through `ThreadedBackend`.
 
 ## Not verified

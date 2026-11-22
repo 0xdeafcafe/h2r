@@ -50,6 +50,9 @@ pub(super) struct FilmEvents {
 }
 
 impl FilmEvents {
+    /// Player file shares validate stats events without importing them into the ledger.
+    pub(super) fn discard_rows(&mut self) { self.rows.clear(); }
+
     pub(super) fn chunk(&mut self, raw: &[u8]) -> ApiResult<usize> {
         let before = self.rows.len();
         let chunk = stream::Chunk::parse(raw).map_err(invalid)?;
@@ -562,20 +565,8 @@ impl Spool {
                 host,
                 game: new,
             };
-            let key = &live.identity.key;
-            let body = EventBody::at_unix(
-                key,
-                &live.identity.author(),
-                &game::stream(id),
-                game::GAME_STARTED,
-                json!(started),
-                start,
-            );
-            events.push(NewEvent {
-                jws: body.sign(key).into(),
-                jws_index: None,
-                body,
-            });
+            let at = time::OffsetDateTime::from_unix_timestamp(start).expect("bounded film start");
+            events.extend(live.game_start_events(started, at));
         } else {
             events.push(live.server_event(
                 game::stream(id),
@@ -638,7 +629,16 @@ impl Prefix {
                 after: start.unwrap_or(0),
                 types: game::CLIENT_GAME_EVENTS
                     .iter()
-                    .map(|k| k.to_string())
+                    .copied()
+                    // Public actor kills and Firefight records are absent from
+                    // the private import rows.
+                    .filter(|&kind| {
+                        !matches!(
+                            kind,
+                            game::ACTOR_KILLED | game::FIREFIGHT_SCORE | game::FIREFIGHT_ENDED
+                        )
+                    })
+                    .map(str::to_owned)
                     .collect(),
                 limit: 32,
                 ..Default::default()

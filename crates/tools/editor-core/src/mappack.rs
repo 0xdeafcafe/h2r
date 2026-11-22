@@ -252,7 +252,7 @@ pub fn default_source(explicit: Option<PathBuf>, disc: Option<&Path>) -> Option<
         explicit,
         std::env::var_os(ENV).filter(|v| !v.is_empty()).map(PathBuf::from),
         disc,
-        Some(repo).filter(|_| !off),
+        (!off).then_some(repo),
         off,
     )
 }

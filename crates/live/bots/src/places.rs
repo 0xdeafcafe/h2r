@@ -5,7 +5,8 @@ use crate::brain::Vec3;
 use crate::decisions::{distance, supplies::Powerup};
 use crate::los::Walls;
 use crate::mind::{CHEST, EYE};
-use crate::nav::NavMesh;
+use crate::nav::{NavMesh, ordered_build_chunks};
+use crate::vis::Threads;
 use std::collections::{BTreeMap, VecDeque};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -67,7 +68,22 @@ fn traffic(routes: &[Vec<usize>]) -> Vec<usize> {
 }
 
 impl Places {
+    #[cfg(test)]
     pub(crate) fn build(nav: &NavMesh, walls: &Walls, starts: &[Vec3]) -> Self {
+        Self::build_with(
+            nav,
+            walls,
+            starts,
+            Threads { count: 1, background: false },
+        )
+    }
+
+    pub(crate) fn build_with(
+        nav: &NavMesh,
+        walls: &Walls,
+        starts: &[Vec3],
+        threads: Threads,
+    ) -> Self {
         let mut routes = vec![vec![]; nav.polys.len()];
         for e in &nav.edges {
             routes[e.from as usize].push(e.to as usize);
@@ -113,36 +129,43 @@ impl Places {
             }
         }
         let stride = patches.len().div_ceil(384).max(1);
-        let mut candidates = Vec::new();
-        for &i in patches.values().step_by(stride) {
-            let at = nav.polys[i].center;
-            let eye = raised(at, EYE);
-            let mut coverage = 0.;
-            let mut height = 0.;
-            let mut watch = None;
-            for (rank, &lane) in lanes.iter().enumerate() {
-                let d = distance(at, lane);
-                if !(4.0..=65.0).contains(&d) || !walls.clear(eye, raised(lane, CHEST)) {
-                    continue;
+        let patches: Vec<_> = patches.into_values().step_by(stride).collect();
+        let mut candidates: Vec<_> = ordered_build_chunks(patches.len(), 8, threads, |range| {
+            let mut candidates = Vec::new();
+            for &i in &patches[range] {
+                let at = nav.polys[i].center;
+                let eye = raised(at, EYE);
+                let mut coverage = 0.;
+                let mut height = 0.;
+                let mut watch = None;
+                for (rank, &lane) in lanes.iter().enumerate() {
+                    let d = distance(at, lane);
+                    if !(4.0..=65.0).contains(&d) || !walls.clear(eye, raised(lane, CHEST)) {
+                        continue;
+                    }
+                    let traffic = 1.0 / (1.0 + rank as f32 / 12.0);
+                    coverage += traffic;
+                    height += traffic * ((at[2] - lane[2]) / 4.0).clamp(0., 1.);
+                    watch.get_or_insert(lane);
                 }
-                let traffic = 1.0 / (1.0 + rank as f32 / 12.0);
-                coverage += traffic;
-                height += traffic * ((at[2] - lane[2]) / 4.0).clamp(0., 1.);
-                watch.get_or_insert(lane);
+                let Some(watches) = watch else {
+                    continue;
+                };
+                let cover = [[2., 0.], [-2., 0.], [0., 2.], [0., -2.]]
+                    .into_iter()
+                    .filter(|d| !walls.clear(eye, [eye[0] + d[0], eye[1] + d[1], eye[2]]))
+                    .count();
+                let score = 0.50 * coverage / (coverage + 3.)
+                    + 0.18 * height / coverage
+                    + 0.20 * (cover.min(2) as f32 / 2.)
+                    + 0.12 * (routes[i].len().min(4) as f32 / 4.);
+                candidates.push(Vantage { at, watches, score });
             }
-            let Some(watches) = watch else {
-                continue;
-            };
-            let cover = [[2., 0.], [-2., 0.], [0., 2.], [0., -2.]]
-                .into_iter()
-                .filter(|d| !walls.clear(eye, [eye[0] + d[0], eye[1] + d[1], eye[2]]))
-                .count();
-            let score = 0.50 * coverage / (coverage + 3.)
-                + 0.18 * height / coverage
-                + 0.20 * (cover.min(2) as f32 / 2.)
-                + 0.12 * (routes[i].len().min(4) as f32 / 4.);
-            candidates.push(Vantage { at, watches, score });
-        }
+            candidates
+        })
+        .into_iter()
+        .flatten()
+        .collect();
         candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
         let mut vantages: Vec<Vantage> = Vec::new();
         // Fill underrepresented regions first. A long ridge can contribute

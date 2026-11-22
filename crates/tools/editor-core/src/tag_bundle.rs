@@ -345,7 +345,7 @@ pub mod b64 {
     /// Decodes [`encode`]'s output; whitespace is skipped.
     pub fn decode(s: &str) -> Result<Vec<u8>, String> {
         let s: Vec<u8> = s.bytes().filter(|c| !c.is_ascii_whitespace()).collect();
-        if s.len() % 4 != 0 {
+        if !s.len().is_multiple_of(4) {
             return Err("base64 of a length that is not a multiple of 4".into());
         }
         let mut out = Vec::with_capacity(s.len() / 4 * 3);
@@ -418,6 +418,11 @@ mod tests {
             named: false,
             kind,
             meaning: String::new(),
+            doc: None,
+            applies: None,
+            label: None,
+            unit: None,
+            axes: Vec::new(),
         }
     }
 
@@ -427,6 +432,8 @@ mod tests {
             size,
             align: 4,
             fields,
+            title: None,
+            section_titles: Default::default(),
         }
     }
 

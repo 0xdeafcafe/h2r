@@ -17,6 +17,9 @@ gfx = { path = "../gfx", default-features = false }
 wgpu = { version = "30", optional = true }
 thiserror.workspace = true
 runtime.workspace = true
+# The prewarm thread's and the translator's allocations are tagged
+# (`render.prewarm`, `render.translate`; nv2a.rs).
+mem-watch.workspace = true
 # Swap/KickOff/drain/submit spans and the frame counter (docs/perf/profiling.md).
 timeline = { path = "../../runtime/timeline" }
 # NV2A program translation behind `nv2a::Nv2aShaders` (the ShaderProvider).
@@ -26,6 +29,8 @@ hot-render = { path = "../hot-render", optional = true }
 # Pipeline and program keys are persisted (d3d::pipeline_store).
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", optional = true }
+# The cache directory the pipeline cache lives in (d3d::pipeline_store).
+host-dirs.workspace = true
 # Per-draw program-key lookups (nv2a::Nv2aShaders).
 rustc-hash = "2"
 # Guest words read straight into `u32` arrays (state::read_words_into).
@@ -115,6 +120,10 @@ path = "tests/hot_overrides.rs"
 [[test]]
 name = "pipeline_cache"
 path = "tests/pipeline_cache.rs"
+
+[[test]]
+name = "pipeline_scope"
+path = "tests/pipeline_scope.rs"
 
 [[test]]
 name = "pipeline_cost"

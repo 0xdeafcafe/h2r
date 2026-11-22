@@ -166,6 +166,7 @@ fn base_file(data_root: &Path, disc: &mut dyn Disc, map: &str) -> Result<vfs::Ho
     let (_, _, path) = crate::map_bases::map_pack_file(data_root, map)
         .with_context(|| format!("the disc and Map Pack have no {map}.map"))?;
     Ok(vfs::HostFile {
+        generation: None,
         len: path.metadata()?.len(),
         path,
         offset: 0,
@@ -441,6 +442,13 @@ struct Marker {
     source: String,
     map: String,
     map_id: MapId,
+}
+
+/// The full package identity of the offer whose record names `file`.
+pub(super) fn package_id(dir: &Path, file: &str) -> Option<MapId> {
+    let marker = std::fs::read_to_string(dir.join(MARKER)).ok()?;
+    let marker: Marker = toml::from_str(&marker).ok()?;
+    marker.map.eq_ignore_ascii_case(file).then_some(marker.map_id)
 }
 
 /// Write the data the retail content scan consumes. The .map entry is

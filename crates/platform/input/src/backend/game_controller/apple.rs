@@ -23,6 +23,10 @@
 //! handles / all / default locality ([`plan_rumble`]). Each engine plays one
 //! long looping continuous event whose intensity is a dynamic parameter.
 //!
+//! PlayStation lightbars use the input controller's `GCDeviceLight`. The
+//! backend captures its colour before the first override and restores that
+//! colour when the override ends or the controller entry is released.
+//!
 //! An Apple TV remote has no extended profile, only a micro gamepad: it
 //! gets the same treatment with absolute clickpad values, read into a
 //! [`RemoteSnapshot`] (mapped by `super::remote`).
@@ -49,8 +53,9 @@ use objc2_core_haptics::{
 };
 use objc2_foundation::{NSArray, NSDate, NSDefaultRunLoopMode, NSRunLoop, NSString};
 use objc2_game_controller::{
-    GCController, GCControllerButtonInput, GCControllerDirectionPad, GCControllerElement, GCDevice,
-    GCDeviceHaptics, GCDualSenseGamepad, GCDualShockGamepad, GCExtendedGamepad, GCHapticsLocality, GCMicroGamepad, GCHapticsLocalityAll, GCHapticsLocalityDefault,
+    GCColor, GCController, GCControllerButtonInput, GCControllerDirectionPad, GCControllerElement,
+    GCDevice, GCDeviceHaptics, GCDeviceLight, GCDualSenseGamepad, GCDualShockGamepad, GCExtendedGamepad,
+    GCHapticsLocality, GCMicroGamepad, GCHapticsLocalityAll, GCHapticsLocalityDefault,
     GCHapticsLocalityHandles, GCHapticsLocalityLeftHandle, GCHapticsLocalityRightHandle,
     GCPhysicalInputProfile,
 };
@@ -148,6 +153,30 @@ enum Rumbler {
     Combined(Option<Motor>),
 }
 
+struct Lightbar {
+    light: Retained<GCDeviceLight>,
+    original: Retained<GCColor>,
+    rgb: [u8; 3],
+}
+
+impl Lightbar {
+    fn write(light: &GCDeviceLight, rgb: [u8; 3]) {
+        let [red, green, blue] = rgb.map(|v| f32::from(v) / 255.0);
+        // SAFETY: the device light is retained and each component is in 0..=1.
+        unsafe {
+            let color = GCColor::initWithRed_green_blue(GCColor::alloc(), red, green, blue);
+            light.setColor(&color);
+        }
+    }
+}
+
+impl Drop for Lightbar {
+    fn drop(&mut self) {
+        // SAFETY: restore a colour the same retained light supplied.
+        unsafe { self.light.setColor(&self.original) };
+    }
+}
+
 struct Entry {
     key: u64,
     controller: Retained<GCController>,
@@ -164,10 +193,38 @@ struct Entry {
     remote: Arc<Mutex<RemoteSnapshot>>,
     plan: Option<RumblePlan>,
     rumbler: Option<Rumbler>,
+    lightbar: Option<Lightbar>,
+}
+
+impl Entry {
+    fn set_lightbar(&mut self, rgb: Option<[u8; 3]>) {
+        let Some(rgb) = rgb else {
+            self.lightbar = None; // dropping the override restores the light
+            return;
+        };
+        if let Some(lightbar) = &mut self.lightbar {
+            if lightbar.rgb != rgb {
+                Lightbar::write(&lightbar.light, rgb);
+                lightbar.rgb = rgb;
+            }
+            return;
+        }
+        if !matches!(self.kind, Profile::DualSense | Profile::DualShock4) {
+            return;
+        }
+        // SAFETY: properties on live objects, called serially by the backend.
+        let Some(light) = (unsafe { self.controller.light() }) else {
+            return;
+        };
+        let original = unsafe { light.color() };
+        Lightbar::write(&light, rgb);
+        self.lightbar = Some(Lightbar { light, original, rgb });
+    }
 }
 
 impl Drop for Entry {
     fn drop(&mut self) {
+        self.set_lightbar(None);
         if let Some(p) = &self.profile {
             // SAFETY: clearing a handler on a live profile.
             unsafe { p.setValueDidChangeHandler(None) };
@@ -214,7 +271,7 @@ pub struct AppleSource {
 }
 
 // SAFETY: the Objective-C objects held are reference counted and only used
-// for thread-safe property reads and haptics calls from `&mut self` methods;
+// for controller properties, light and haptics calls from `&mut self` methods;
 // profile element values are touched only on `queue` (see module docs). The
 // source is owned by one backend and never shared.
 unsafe impl Send for AppleSource {}
@@ -375,6 +432,7 @@ impl AppleSource {
                     remote,
                     plan,
                     rumbler: None,
+                    lightbar: None,
                 });
                 self.next_key += 1;
             }
@@ -508,6 +566,12 @@ impl ControllerSource for AppleSource {
                 }
             })
             .collect()
+    }
+
+    fn set_lightbar(&mut self, key: u64, rgb: Option<[u8; 3]>) {
+        if let Some(entry) = self.entries.iter_mut().find(|e| e.key == key) {
+            entry.set_lightbar(rgb);
+        }
     }
 
     fn set_rumble(&mut self, key: u64, left: f32, right: f32) {

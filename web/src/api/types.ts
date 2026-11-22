@@ -336,9 +336,20 @@ export interface PlayerKilled {
   pos?: [number, number, number] | null;
   victim: number;
   killer?: number | null;
+  /** Killing damage source, including non-weapon causes such as a fall. */
   weapon?: string | null;
+  headshot?: boolean | null;
   kind: KillKind;
 }
+/** A bounce off a superbounce crease; `chain` is its place in the chain,
+ *  1 for a first bounce, and `monster` is true for a Monster bounce, absent
+ *  otherwise (docs/game/superbounce.md, "Recording"). */
+export interface Superbounce { tick: number; player: number; chain: number; monster?: boolean }
+/** A death falling out of or through the map while trying a bounce. */
+export interface Bounced { tick: number; player: number; chain?: number }
+/** A teabag: `player` crouched over the body of `victim`
+ *  (docs/game/teabag.md). Neither earns `incel` in that game. */
+export interface Teabag { tick: number; player: number; victim: number }
 export interface ScoreChanged { tick: number; players: PlayerScore[]; teams?: TeamScore[] | null }
 /** `{team}` in team games, `{player}` (slot index) otherwise, null for a draw or quit. */
 export type Winner = { team: number } | { player: number };
@@ -361,9 +372,11 @@ export type StreamMessage =
  *  `position` the log head when it was read. */
 export interface ListResponse<T> { items: T[]; next: string | null; position: number }
 
+export interface InviteGrant { open_cap: number | null }
+
 /** `bot` is true for a bot account (docs/game/bots.md §6); absent for humans.
  *  `GET /v1/accounts` never lists bots; `GET /v1/accounts/{tag}` answers for one. */
-export interface AccountSummary { xuid: Xuid; gamertag: string; created_at?: string; online?: boolean; admin?: boolean; bot?: boolean }
+export interface AccountSummary { xuid: Xuid; gamertag: string; created_at?: string; online?: boolean; admin?: boolean; bot?: boolean; invite_grant?: InviteGrant }
 
 export interface PresenceEntry { xuid: Xuid; gamertag: string; state: string; game_id?: GameId | null; activity?: string | null; since: string }
 
@@ -382,6 +395,9 @@ export interface GameSummary extends GameKindFields, DedicatedHostFields {
 }
 
 export interface KillRecord extends PlayerKilled { position?: number; at?: string }
+export interface BounceRecord extends Superbounce { position?: number; at?: string }
+export interface BouncedRecord extends Bounced { position?: number; at?: string }
+export interface TeabagRecord extends Teabag { position?: number; at?: string }
 
 /** `GET /v1/games/{id}`: the summary plus scoreboard and the last 50 kills.
  *  Fields past the summary are read when present. */
@@ -389,6 +405,15 @@ export interface GameDetail extends GameSummary {
   position?: number;
   scoreboard?: PlayerScore[];
   kills?: KillRecord[];
+  /** The last 100 superbounces and the last 100 bounce deaths, oldest
+   *  first; absent from servers before them. */
+  bounces?: BounceRecord[];
+  bounced?: BouncedRecord[];
+  /** The last 100 teabags, oldest first; absent from servers before them. */
+  teabags?: TeabagRecord[];
+  /** Slots of players in the game who joined after its first kill: no
+   *  `incel` for them. Absent when none. */
+  joined_late?: number[];
   team_play?: boolean;
   score_limit?: number | null;
   time_limit_s?: number | null;

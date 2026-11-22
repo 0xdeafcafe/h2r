@@ -305,7 +305,10 @@ async fn a_game_page_carries_its_header_pre_rendered() {
     let ended = web.page(&format!("/games/halo2/games/{id}")).await;
     assert!(ended.contains(r#"s-gamehead-flag">FINAL<"#), "{ended}");
     assert!(ended.contains("<span>Red Team won</span>"), "{ended}");
-    assert!(ended.contains("<header><span>Red</span><b>50</b></header>"), "{ended}");
+    assert!(
+        ended.contains("<header><span>Red</span> <b>50</b></header>"),
+        "{ended}"
+    );
 
     // The JSON the Worker asks for carries the header too.
     let j = h

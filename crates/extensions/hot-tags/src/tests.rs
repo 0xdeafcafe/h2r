@@ -1,6 +1,6 @@
 //! Against synthetic guest memory: a tag index at the engine's globals,
-//! a shader (`shad`), a bitmap (`bitm`) and a scenario (`scnr`, no
-//! definition), laid out by the definitions' own offsets. No game data.
+//! a shader (`shad`), a bitmap (`bitm`) and a scenario (`scnr`), laid
+//! out by the definitions' own offsets. No game data.
 
 use super::*;
 use runtime::guest::Permissions;
@@ -329,6 +329,8 @@ fn names_select_tags() {
 #[test]
 fn a_tag_without_a_definition_takes_raw_fields() {
     let mut g = level();
+    // `scnr` has a definition; an invented group at its slot has none.
+    entry(&mut g, 0, b"zzzz", SCNR, META, 0x100);
     let mut ed = Editor::new();
     let s = sel("0xe0000000");
     let v = ed.get(&g, &s, "+0x10:f32").unwrap();
@@ -538,4 +540,91 @@ fn find_tag_resolves_a_name_or_a_datum() {
     );
     assert!(ed.find_tag(&g, "nothing").is_err());
     assert!(ed.find_tag(&g, "0x12345678").is_err(), "not in the index");
+}
+
+fn byte_edit(ed: &mut Editor, g: &mut Guest, at: u32, bytes: &str) -> u64 {
+    ed.batch(g, &[json!({"at": at, "value": bytes})], None)
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap()
+}
+
+#[test]
+fn reverse_revert_leaves_overlapping_game_bytes_alone() {
+    for separate in [false, true] {
+        let mut g = level();
+        let mut ed = Editor::new();
+        byte_edit(&mut ed, &mut g, META, "1122");
+        byte_edit(&mut ed, &mut g, META + 1, "3344");
+        let last = byte_edit(&mut ed, &mut g, META + 2, "55");
+        byte_edit(&mut ed, &mut g, META + 4, "66");
+        // The game restores an earlier journal value. Skipping the newest
+        // write also protects its wider predecessor and that one's overlap.
+        g.write_bytes(META + 2, &[0x44], 1).unwrap();
+        if separate {
+            let r = ed.revert(&mut g, Some(last)).unwrap();
+            assert_eq!(r["dropped"][0]["holds_bytes"], "44");
+        }
+        let r = ed.revert(&mut g, None).unwrap();
+        let dropped = r["dropped"].as_array().unwrap();
+        assert_eq!(dropped.len(), if separate { 2 } else { 3 });
+        assert_eq!(dropped.last().unwrap()["at"], META);
+        assert_eq!(dropped.last().unwrap()["holds_bytes"], "1133");
+        assert_eq!(r["reverted"][0]["at"], META + 4);
+        assert_eq!(r["reverted"][0]["holds_bytes"], "00");
+        assert_eq!(read_bytes(&g, META, 5).unwrap(), [0x11, 0x33, 0x44, 0, 0]);
+    }
+}
+
+#[test]
+fn reverting_a_game_change_to_an_older_written_value_preserves_it() {
+    let mut g = level();
+    let mut ed = Editor::new();
+    byte_edit(&mut ed, &mut g, META, "11");
+    byte_edit(&mut ed, &mut g, META, "22");
+    g.write_bytes(META, &[0x11], 1).unwrap();
+    let r = ed.revert(&mut g, None).unwrap();
+    assert_eq!(r["dropped"].as_array().unwrap().len(), 2);
+    assert_eq!(r["reverted"], json!([]));
+    assert_eq!(g.u32(META).unwrap(), 0x11);
+}
+
+#[test]
+fn bsp_switch_revalidates_surviving_tag_allocations_and_write_history() {
+    let mut g = level();
+    let mut ed = Editor::new();
+    ed.at_epoch(&g, 1, 1).unwrap();
+    byte_edit(&mut ed, &mut g, META, "11");
+    byte_edit(&mut ed, &mut g, META, "22");
+    byte_edit(&mut ed, &mut g, META + 1, "33");
+    byte_edit(&mut ed, &mut g, SHAD_AT, "44");
+    g.write_bytes(META + 1, &[0x55], 1).unwrap();
+    // The shader datum survives, but its allocation moved.
+    entry(&mut g, 1, b"shad", SHAD, META + 0x7000, 0x54);
+    g.set_u32(engine::points::TAG_INDEX.base, 0).unwrap();
+    assert_eq!(
+        ed.at_epoch(&g, 2, 1).unwrap_err().kind,
+        ErrorKind::Unavailable
+    );
+    g.set_u32(engine::points::TAG_INDEX.base, HEADER).unwrap();
+    ed.at_epoch(&g, 2, 1).unwrap();
+    let journal = ed.changes(&g);
+    let changes = journal["changes"].as_array().unwrap();
+    assert_eq!(changes.len(), 3);
+    assert_eq!(changes[1]["fields"][0]["live"], true);
+    assert_eq!(changes[2]["fields"][0]["holds"], "55");
+    // Even if the game cycles back to the journal value, a change seen
+    // across the switch is no longer ours to restore.
+    g.write_bytes(META + 1, &[0x33], 1).unwrap();
+    assert_eq!(ed.changes(&g)["changes"][2]["fields"][0]["live"], false);
+    let r = ed.revert(&mut g, None).unwrap();
+    assert_eq!(r["reverted"].as_array().unwrap().len(), 2);
+    assert_eq!(r["dropped"][0]["holds_bytes"], "33");
+    assert_eq!(g.u32(META).unwrap(), 0x3300);
+    assert_eq!(g.u32(SHAD_AT).unwrap(), 0x44);
+
+    byte_edit(&mut ed, &mut g, META, "11");
+    // A full reload of the same map can reuse every address.
+    ed.at_epoch(&g, 4, 3).unwrap();
+    assert_eq!(ed.changes(&g)["changes"], json!([]));
 }

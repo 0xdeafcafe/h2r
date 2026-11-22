@@ -365,13 +365,12 @@ fn compare(
                 r.name, r.port, r.original
             ),
         )
-    } else if let Some(r) = memory.first() {
+    } else {
+        let r = memory.first()?;
         (
             "memory",
             format!("{memory_bytes} bytes differ, first at {}", r.address),
         )
-    } else {
-        return None;
     };
     Some(Diff {
         kind,

@@ -80,6 +80,9 @@ pub static DECLARED: &[(&Point, &[Check])] = &[
     // Function points the image does not reach from a return or padding.
     (&points::CONTROLS_ROW_CHOSEN, &[Frame]),
     (&points::LOBBY_START_STATE, &[Frame]),
+    // Directly called at 0x232ccc and 0x25125c, after the preceding
+    // function ends in a tail jump at 0x199e37.
+    (&points::PARTY_LEAVE, &[Frame]),
     (&points::CAMPAIGN_CHECKPOINT_POLL, &[Frame]),
     (&points::AI_DIALOGUE_ENQUEUE, &[]),
     (&points::AI_SPAWN_AT_SQUAD_START, &[]),
@@ -88,6 +91,16 @@ pub static DECLARED: &[(&Point, &[Check])] = &[
     (&points::MAP_SCREEN_FREE, &[]),
     (&points::PLAYER_PICKUP_SCAN, &[]),
     (&points::LOBBY_MODE_SET, &[]),
+    // After the preceding function's jump table (its last entry's address
+    // bytes come right before).
+    (&points::SIM_EVENT_GENERATE, &[]),
+    (&points::GAME_SETUP_EVENT, &[]),
+    (&points::WEAPON_UPDATE, &[]),
+    // After a `jmp $` (eb fe).
+    (&points::UI_ATTRACT_TIMER, &[Frame]),
+    // A vtable slot body (0x45c948 +0x48) right after the previous
+    // function's tail jump at 0x2c022b; it opens with push ecx.
+    (&points::TERRITORIES_TICK, &[]),
     // Sites that are calls.
     (&points::OBJECT_RECORD_APPEND, &[DirectCall]),
     (&points::TRANSPARENT_GEOMETRY_ENTRY, &[DirectCall]),
@@ -214,6 +227,17 @@ mod tests {
         assert!(Check::IndirectCall.holds(&[0; 3], &at([0xff, 0x50, 0x10])));
         assert!(!Check::IndirectCall.holds(&[0; 3], &at([0xff, 0x60, 0x10])));
         assert!(Check::Frame.holds(&[0; 3], &at([0x55, 0x8b, 0xec])));
+    }
+
+    #[test]
+    fn party_leave_entry_has_a_frame_after_a_tail_jump() {
+        let addr = points::PARTY_LEAVE.base;
+        // Synthetic jmp rel32, then push ebp; mov ebp, esp.
+        let image = reader(addr - 5, &[0xe9, 0x11, 0x22, 0x33, 0x44, 0x55, 0x8b, 0xec]);
+        assert_eq!(verify(&points::PARTY_LEAVE, addr, &image), Verdict::Holds);
+
+        let image = reader(addr - 5, &[0xe9, 0x11, 0x22, 0x33, 0x44, 0x53, 0x56, 0x57]);
+        assert!(matches!(verify(&points::PARTY_LEAVE, addr, &image), Verdict::Mismatch(_)));
     }
 
     #[test]

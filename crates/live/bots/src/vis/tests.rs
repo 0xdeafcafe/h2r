@@ -45,7 +45,7 @@ fn never_is_certain(vis: &Vis, walls: &Walls) -> usize {
     assert!(walls.vis().is_none(), "check against the bare walk");
     let top: V3 = std::array::from_fn(|k| vis.origin[k] + vis.size[k] * vis.dims[k] as f32);
     let mut r = Lcg(7);
-    let mut point = |r: &mut Lcg| -> V3 {
+    let point = |r: &mut Lcg| -> V3 {
         let snap = r.next() < 0.3;
         std::array::from_fn(|k| {
             let v = vis.origin[k] + (top[k] - vis.origin[k]) * r.next();
@@ -319,7 +319,7 @@ fn a_fresh_nav_file_without_a_grid_gets_one_built() {
 fn a_stopped_grid_build_keeps_its_progress_and_carries_on_to_the_same_grid() {
     let dir = tmp("resume");
     crate::autonav::write_map(&dir, "lockout", 9, &[data()]).unwrap();
-    let full = build(&floor(), &thin_wall());
+    let full = reference_grid(&floor(), &thin_wall());
     assert!(full.cells() > 2);
     // Stopped after its first chunk: no grid yet, its progress saved.
     let stopped = rebuild_resumable(&dir, "lockout", Threads::foreground(), &|| true).unwrap();
@@ -344,4 +344,150 @@ fn a_stopped_grid_build_keeps_its_progress_and_carries_on_to_the_same_grid() {
         .unwrap();
     assert_eq!(again.walls.vis().map(|v| &**v), Some(&full));
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn light_index_budget_preserves_dense_cell_and_pair_answers() {
+    // Just large enough to exceed the light index budget. Include both
+    // ends of the lattice and a pair with a set visibility bit.
+    let columns = (LIGHT_INDEX_BYTES / size_of::<u16>() + 1) as u32;
+    let make = |budget| {
+        let mut grid = Vis::with_index_budget(
+            [0.0; 3], [1.0; 3], [columns, 1, 1], vec![0, 10, columns - 1], 0, budget,
+        ).unwrap();
+        grid.bits[0] = 1;
+        grid
+    };
+    let light = make(LIGHT_INDEX_BYTES);
+    let dense = make(usize::MAX);
+    assert_eq!(light.index.capacity(), 0);
+    assert_eq!(dense.index.len(), columns as usize);
+    for x in -1..=columns as i32 {
+        let p = [x as f32 + 0.5, 0.5, 0.5];
+        assert_eq!(light.cell(p), dense.cell(p));
+        assert_eq!(light.never([0.5; 3], p), dense.never([0.5; 3], p));
+    }
+    assert_eq!(light.to_bytes(Stamp::now(7)), dense.to_bytes(Stamp::now(7)));
+    assert!(Vis::with_index_budget(
+        [0.0; 3], [1.0; 3], [columns, 1, 1], vec![columns], 0, 0,
+    ).is_none());
+}
+
+fn reference_grid(nav: &NavMesh, walls: &Walls) -> Vis {
+    let mut vis = layout(nav, walls);
+    let boxes: Vec<_> = vis.voxels.iter().map(|&v| vis.voxel_box(v)).collect();
+    for (i, &a) in boxes.iter().enumerate() {
+        for (j, &b) in boxes.iter().enumerate().skip(i + 1) {
+            if legacy::never_between(walls, a, b) {
+                let bit = pair_bit(vis.cells(), i, j);
+                vis.bits[bit / 64] |= 1 << (bit % 64);
+            }
+        }
+    }
+    vis
+}
+
+/// Tiled, sloping ground under an overlapping raised deck, with an
+/// oblique partition and cross walls. All coordinates are synthetic.
+fn stacked_rooms(width: u32, height: u32) -> (NavMesh, Walls) {
+    let mut polys = Vec::new();
+    let mut triangles = Vec::new();
+    let across = width as f32 * 1.5;
+    let along = height as f32 * 1.5;
+    let deck = [[0., 0., 3.], [across, 0., 3.], [across, along * 0.5, 3.], [0., along * 0.5, 3.]];
+    polys.push(Poly::new(deck.to_vec()));
+    Walls::fan_polygon(deck, &mut triangles);
+    for row in 0..height {
+        for column in 0..width {
+            let x = column as f32 * 1.5;
+            let y = row as f32 * 1.5;
+            let z = x * 0.0625;
+            let tile = [[x, y, z], [x + 1.5, y, z + 0.09375],
+                [x + 1.5, y + 1.5, z + 0.09375], [x, y + 1.5, z]];
+            polys.push(Poly::new(tile.to_vec()));
+            Walls::fan_polygon(tile, &mut triangles);
+        }
+    }
+    for fraction in [0.29, 0.65] {
+        let x = across * fraction;
+        let wall = [[x, -1., -1.], [x + 0.7, along + 1., -1.],
+            [x + 0.7, along + 1., 5.], [x, -1., 5.]];
+        Walls::fan_polygon(wall, &mut triangles);
+    }
+    let y = along * 0.75;
+    let low_wall = [[0., y, 0.], [across, y, 0.], [across, y, 1.7], [0., y, 1.7]];
+    Walls::fan_polygon(low_wall, &mut triangles);
+    (NavMesh::new(polys, vec![]), Walls::new(triangles))
+}
+
+#[test]
+fn visibility_build_matches_legacy_grid_bytes() {
+    let stamp = Stamp::now(17);
+    let (stacked, walls) = stacked_rooms(6, 4);
+    for (nav, walls) in [(floor(), thin_wall()), (floor(), thick_wall()), (stacked, walls)] {
+        let expected = reference_grid(&nav, &walls);
+        assert!(expected.never_pairs() > 0);
+        assert!(expected.never_pairs() < pairs(expected.cells()) as u64);
+        let bytes = expected.to_bytes(stamp);
+        for count in [1, 4] {
+            let built = build_with(&nav, &walls, Threads { count, background: false });
+            assert_eq!(built.to_bytes(stamp), bytes);
+        }
+    }
+}
+
+#[test]
+fn factored_edge_proof_matches_rounded_projection_at_the_margin() {
+    let mut a = Box3 { lo: [-2., 0., 0.], hi: [-1., 1., 1.] };
+    let mut b = Box3 { lo: [1., 0., 0.], hi: [2., 1., 1.] };
+    let margin = EDGE + EDGE_PER_LENGTH * a.longest_to(&b);
+    let triangle = [[0., -10., 0.], [0., 10., 0.], [0., 0., 10.]];
+    let fast = Occluder::new(&triangle).unwrap();
+    let (mut accepts, mut rejects) = (0, 0);
+    for i in -32..=32 {
+        let z = margin + f64::from(i) * f64::EPSILON;
+        for bound in [&mut a, &mut b] {
+            bound.lo[2] = z;
+            bound.hi[2] = z + 1.0;
+        }
+        for (left, right) in [(a, b), (b, a)] {
+            let expected = legacy::covers(&triangle, &left, &right);
+            assert_eq!(fast.covers(&left, &right), expected);
+            if expected {
+                accepts += 1;
+            } else {
+                rejects += 1;
+            }
+        }
+    }
+    assert!(accepts > 0 && rejects > 0);
+}
+
+#[test]
+#[ignore = "synthetic visibility build timing"]
+fn visibility_build_timing() {
+    use std::time::Instant;
+
+    let (nav, walls) = stacked_rooms(18, 12);
+    let stamp = Stamp::now(17);
+    let start = Instant::now();
+    let old = reference_grid(&nav, &walls);
+    let old_time = start.elapsed();
+
+    let start = Instant::now();
+    let serial = build_with(&nav, &walls, Threads { count: 1, background: false });
+    let serial_time = start.elapsed();
+
+    let threads = Threads::foreground();
+    let start = Instant::now();
+    let parallel = build_with(&nav, &walls, threads);
+    let parallel_time = start.elapsed();
+    let bytes = old.to_bytes(stamp);
+    assert_eq!(serial.to_bytes(stamp), bytes);
+    assert_eq!(parallel.to_bytes(stamp), bytes);
+    eprintln!(
+        "{} cells, {} pairs, {} triangles: legacy serial {old_time:.3?}, serial {serial_time:.3?} ({:.2}x), {} foreground workers {parallel_time:.3?}",
+        old.cells(), pairs(old.cells()), walls.tris.len(),
+        old_time.as_secs_f64() / serial_time.as_secs_f64(), threads.count,
+    );
 }

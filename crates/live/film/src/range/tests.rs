@@ -37,10 +37,10 @@ fn film() -> Vec<u8> {
 /// Mimic an HTTP server which will refuse requests for the host's private ranges.
 struct Allowed<'a> {
     data: Cursor<&'a [u8]>,
-    allowed: Vec<Range<u64>>,
+    allowed: &'a [Range<u64>],
 }
 impl<'a> Allowed<'a> {
-    fn new(bytes: &'a [u8], allowed: Vec<Range<u64>>) -> Self {
+    fn new(bytes: &'a [u8], allowed: &'a [Range<u64>]) -> Self {
         Self {
             data: Cursor::new(bytes),
             allowed,
@@ -72,14 +72,15 @@ fn independent_summary_directory_and_time_ranges() {
     let f = footer(&mut Cursor::new(&bytes), len).unwrap();
     let front_len = Prefix::decode(&bytes[..PREFIX_BYTES]).unwrap().json_len;
     let metadata = 0..PREFIX_BYTES as u64 + u64::from(front_len);
-    let front = read_front(&mut Allowed::new(&bytes, vec![metadata.clone()])).unwrap();
+    let front = read_front(&mut Allowed::new(&bytes, std::slice::from_ref(&metadata))).unwrap();
     assert_eq!(front.summary.level, "ascension");
     assert_eq!(front.image_stamp, "image A");
     assert_eq!(front.ticks_per_second, Some(60));
     let json = std::str::from_utf8(&bytes[PREFIX_BYTES..metadata.end as usize]).unwrap();
     assert!(!json.contains("xnet_addr") && !json.contains("127.0.0.1"));
+    let directory_range = f.cidx_offset..f.indx_offset;
     let index = directory(
-        &mut Allowed::new(&bytes, vec![f.cidx_offset..f.indx_offset]),
+        &mut Allowed::new(&bytes, std::slice::from_ref(&directory_range)),
         &f,
     )
     .unwrap();
@@ -90,13 +91,13 @@ fn independent_summary_directory_and_time_ranges() {
     assert_eq!(index.nearest_keyframe(8).unwrap().tick, 6);
     assert!(index.nearest_keyframe(5).is_none());
     let c = &rows[0];
-    let allowed = vec![
+    let allowed = [
         metadata,
-        f.cidx_offset..f.indx_offset,
+        directory_range,
         len - FOOTER_BYTES as u64..len,
         c.offset..c.offset + 8 + u64::from(c.size),
     ];
-    let mut r = RangeReader::new(Allowed::new(&bytes, allowed)).unwrap();
+    let mut r = RangeReader::new(Allowed::new(&bytes, &allowed)).unwrap();
     assert_eq!(r.chunk(1).unwrap(), [7, 2]);
     assert!(r.chunk(0).is_err());
     let local = Reader::new(Cursor::new(&bytes)).unwrap();

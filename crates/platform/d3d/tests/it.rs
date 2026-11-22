@@ -7,6 +7,8 @@
 //! a `[[test]]` of its own in Cargo.toml when it must have a process to
 //! itself (the last test here fails until it has one or the other).
 
+mod common;
+
 #[path = "admission_scope.rs"]
 mod admission_scope;
 #[path = "batching.rs"]
@@ -23,6 +25,8 @@ mod first_frame;
 mod fog_xbe;
 #[path = "fragments.rs"]
 mod fragments;
+#[path = "guest_draw_pass.rs"]
+mod guest_draw_pass;
 #[path = "glyph_text.rs"]
 mod glyph_text;
 #[path = "interp.rs"]
@@ -43,8 +47,13 @@ mod passes;
 mod recheck_fixes;
 #[path = "registration.rs"]
 mod registration;
+#[path = "residual_tally.rs"]
+mod residual_tally;
 #[path = "render_scale.rs"]
 mod render_scale;
+#[cfg(feature = "gpu")]
+#[path = "scene_camera.rs"]
+mod scene_camera;
 #[path = "scene_sink.rs"]
 mod scene_sink;
 #[path = "scene_stage.rs"]

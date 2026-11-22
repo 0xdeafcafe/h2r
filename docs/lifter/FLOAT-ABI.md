@@ -470,10 +470,9 @@ override.
 
 Out of scope for this document. SSE1 semantics, MXCSR and `#XM` are defined
 by `crates/recompiler/simd` and [docs/lifter/simd.md](simd.md). That design is integer
-soft-float, with C side `h2simd.h`, and uses no host floating point. The
-previous §5 here assumed FTZ was live. That was wrong: nothing in the XBE sets
-FTZ, DAZ or RC. Every MXCSR write is `saved | 0x1f80` or `saved & ~0x3f` (at
-`0x535ab`, `0x535e2` and `0x53f69`).
+soft-float, with C side `h2simd.h`, and uses no host floating point. Two routines set FTZ at `0x339ada` and `0x339eaa`. Other
+claimed MXCSR reloads mask exceptions or clear sticky flags. Entry-specific
+control words are observable through the [collision census](../engine/collision-queries.md#status-instruction-census).
 
 ## 6. `crates/recompiler/x87`
 

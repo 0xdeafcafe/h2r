@@ -1,6 +1,6 @@
 # Writes a tick can make outside the arena
 
-The sim tier's rollback ([sim-review.md](sim-review.md) section 4.2)
+The [sim tier's rollback](sim-review.md#42-sim-tier-contract)
 restores the arena when a tick hits a rare event. That is only sound if
 every byte the tick can write is in the copy. This page lists every store
 the tick's code can make, by where it lands, so the state outside the
@@ -38,11 +38,9 @@ checking each root's target against the arena range is the next step.
 H2_XBE=/path/to/default.xbe cargo test -p emit --release --test sim_tier_writes -- --ignored --nocapture
 ```
 
-It prints the census as markdown and writes it to
-`target/tmp/sim-tier-writes.md`, with how much of the tick the sim tier
-compiles and why the rest is refused, and the whole image's store classes
-for scale.
-
 ## Output
 
-The census of a run goes here, with the commit it came from.
+The test prints the census as Markdown and writes it to
+`target/tmp/sim-tier-writes.md`. It reports how much of the tick the sim
+tier compiles, the reasons for refused functions and the store classes
+for the whole image.

@@ -29,6 +29,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use agent::sim::calls::{Arg, GameStep};
 use anyhow::{Context, Result, bail};
 use runtime::guest::Permissions;
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
@@ -615,6 +616,74 @@ pub fn call_of(step: Step, buf: u32) -> Option<GuestCall> {
     Some(GuestCall { target, args, eax, esi })
 }
 
+/// Records the level boot's writes instead of making them.
+#[derive(Default)]
+struct Writes(Vec<(u32, Vec<u8>)>);
+
+impl crate::layout_glue::Gm for Writes {
+    fn rd(&self, _: u32, _: &mut [u8]) -> bool {
+        false
+    }
+    fn wr(&mut self, addr: u32, data: &[u8]) -> bool {
+        self.0.push((addr, data.to_vec()));
+        true
+    }
+}
+
+/// The level boot's steps for `req` as guest-call steps over an options
+/// block at offset 0 (`call_of` with the block's address
+/// given at the call). `None` when the options can't hold the request.
+pub fn game_steps(req: &Request) -> Option<Vec<GameStep>> {
+    let call = |target: u32, args: Vec<Arg>, eax: Option<Arg>, esi: Option<Arg>, report| {
+        GameStep::Call {
+            target,
+            args,
+            eax,
+            esi,
+            report,
+        }
+    };
+    let opts = Arg::Options(0);
+    let mut out = Vec::new();
+    for step in steps(req.kind) {
+        let s = match step {
+            Step::New => call(OPTIONS_NEW, vec![], None, Some(opts), None),
+            Step::Fill => {
+                let mut w = Writes::default();
+                if !fill_options(&mut w, 0, req) {
+                    return None;
+                }
+                out.extend(
+                    w.0.into_iter()
+                        .map(|(offset, bytes)| GameStep::Write { offset, bytes }),
+                );
+                continue;
+            }
+            Step::Variant => call(
+                VARIANT_DEFAULTS,
+                vec![
+                    Arg::Options(OPT_VARIANT),
+                    Arg::Value(GAME_TYPE_SLAYER),
+                ],
+                None,
+                None,
+                None,
+            ),
+            Step::Players => call(
+                OPTIONS_PLAYERS,
+                vec![Arg::Value(1), opts],
+                None,
+                None,
+                None,
+            ),
+            Step::Check => call(OPTIONS_CHECK, vec![opts], None, None, Some("check")),
+            Step::Queue => call(OPTIONS_QUEUE, vec![], Some(opts), None, None),
+        };
+        out.push(s);
+    }
+    Some(out)
+}
+
 /// The active game's options mode (1 campaign, 2 multiplayer), once
 /// activation has set the globals' active byte. Cheap: for per-tick hooks.
 pub fn active_mode<M: Gm>(m: &M) -> Option<u32> {
@@ -704,6 +773,8 @@ impl hooks::Feature for LoadedMark {
         let req = self.0.clone();
         b.game().on_start("loaded mark", move |o| {
             if loaded_at().is_some() {
+                #[cfg(feature = "gpu")]
+                crate::scene_glue::next_game();
                 return;
             }
             let found = active_game(&*o.guest());
@@ -711,6 +782,8 @@ impl hooks::Feature for LoadedMark {
                 Some((mode, path)) if is_wanted(req.as_deref(), mode, &path) => {
                     let n = crate::d3d_diag::presents();
                     LOADED_AT.store(n, Ordering::Relaxed);
+                    #[cfg(feature = "gpu")]
+                    crate::scene_glue::level_activated(short(&path), n);
                     eprintln!("level boot: {} loaded at present {n}", short(&path));
                 }
                 Some((mode, path)) if req.is_some() => {

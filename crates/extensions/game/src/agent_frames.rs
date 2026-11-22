@@ -20,7 +20,10 @@
 
 use std::sync::Mutex;
 
-pub struct AgentFrames;
+#[derive(Default)]
+pub struct AgentFrames {
+    pub(crate) views: std::sync::Arc<crate::agent_spawn_view::SpawnViews>,
+}
 
 impl hooks::Feature for AgentFrames {
     fn manifest(&self) -> hooks::Manifest {
@@ -35,6 +38,7 @@ impl hooks::Feature for AgentFrames {
         // Diagnostics only: a load moves the tick, which starts the hash
         // series again, and a capture waiting then never binds.
         b.snapshot(hooks::SnapshotPolicy::Stateless);
+        self.views.install_hooks(b)?;
         let projected = b.switches().implementation("sim.metrics-projection", true);
         let arena = b
             .switches()

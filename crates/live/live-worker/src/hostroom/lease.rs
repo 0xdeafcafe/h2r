@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use live_proto::host_pack::{AddMatch, DEFAULT_MAX_MATCHES, valid_pack};
+use live_proto::host_pack::{AddMatch, class_limits, valid_pack};
 use live_proto::hosts::{HostClass, HostLease, HostState, ProviderKind, Transport};
 use live_proto::{ErrorCode, Xuid};
 use live_server::{ApiError, hosts::HostBoot};
@@ -130,27 +130,20 @@ pub(crate) fn role(name: &str) -> Option<Role> {
     }
 }
 
-/// Matches per container, from `LIVE_HOST_PACK_MATCHES`. Eight slots of
-/// seven UDP ports from 31000 stay below the control port.
-pub(crate) fn pack_matches(setting: Option<&str>) -> usize {
-    setting
-        .and_then(|v| v.trim().parse().ok())
-        .unwrap_or(DEFAULT_MAX_MATCHES)
-        .clamp(1, 8)
+/// Operator cap, bounded by the class's slot and port allocation.
+pub(crate) fn pack_matches(class: &HostClass, setting: Option<&str>) -> usize {
+    class_limits(class, setting.and_then(|v| v.trim().parse().ok())).max_matches
 }
 
-/// The container's environment: no lease, only the pack's shape. Sizes
-/// match each class's `instance_type` in wrangler.toml.
+/// The supervisor uses the same admission envelope on both homes. A capped
+/// Cloudflare application provisions at least 3 GiB per vCPU in Wrangler.
 pub(crate) fn pack_env(class: &HostClass, max_matches: usize) -> BTreeMap<&'static str, String> {
-    let (vcpus, memory_mib) = match class {
-        HostClass::Small => (1, 3072),
-        HostClass::Large => (2, 6144),
-    };
+    let limits = class_limits(class, Some(max_matches));
     BTreeMap::from([
         ("H2_PACK", "1".to_owned()),
-        ("H2_PACK_MAX_MATCHES", max_matches.to_string()),
-        ("H2_PACK_VCPUS", vcpus.to_string()),
-        ("H2_PACK_MEMORY_MIB", memory_mib.to_string()),
+        ("H2_PACK_MAX_MATCHES", limits.max_matches.to_string()),
+        ("H2_PACK_VCPUS", limits.vcpus.to_string()),
+        ("H2_PACK_MEMORY_MIB", limits.memory_mib.to_string()),
         ("H2_PACK_CONTROL", format!("0.0.0.0:{CONTROL_PORT}")),
         ("H2_TUNNEL_LISTEN", format!("0.0.0.0:{TUNNEL_PORT}")),
     ])

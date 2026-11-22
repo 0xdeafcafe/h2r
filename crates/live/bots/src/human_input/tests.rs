@@ -12,16 +12,21 @@ use std::sync::Mutex;
 #[test]
 fn perception_and_motor_delay_add_once_to_first_sight_reaction() {
     let skill = Skill::Legendary;
-    let mut immediate = Brain::new(skill, 11).with_tuning(Tuning {
-        perception_ticks: Some(0),
-        motor_ticks: Some(0),
-        button_sigma_ms: Some(0.0),
-        ..Default::default()
-    });
-    let mut human = Brain::new(skill, 11).with_tuning(Tuning {
-        button_sigma_ms: Some(0.0),
-        ..Default::default()
-    });
+    // The reaction is measured from first sight: no warm-up before it.
+    let mut immediate = Brain::new(skill, 11)
+        .with_tuning(Tuning {
+            perception_ticks: Some(0),
+            motor_ticks: Some(0),
+            button_sigma_ms: Some(0.0),
+            ..Default::default()
+        })
+        .without_warmup();
+    let mut human = Brain::new(skill, 11)
+        .with_tuning(Tuning {
+            button_sigma_ms: Some(0.0),
+            ..Default::default()
+        })
+        .without_warmup();
     let limits = human.tuning().unwrap().input_limits(skill);
     let (fast_board, slow_board) = (Mutex::new(Radio::default()), Mutex::new(Radio::default()));
     let mut fast_fire = None;
@@ -95,12 +100,46 @@ fn death_discards_queued_live_input() {
 }
 
 #[test]
+fn a_combat_tap_waits_for_the_look_stick_to_centre() {
+    let limits = Tuning {
+        motor_ticks: Some(0),
+        button_sigma_ms: Some(0.0),
+        ..Default::default()
+    }
+    .input_limits(Skill::Normal);
+    let look = HostPadState {
+        right_stick: (1.0, 0.0),
+        ..Default::default()
+    };
+    for button in [HostButton::East, HostButton::North, HostButton::West] {
+        let mut controller = Controller::new(1);
+        for tick in 0..3 {
+            controller.step(tick, look, limits);
+        }
+        let mut tap = look;
+        tap.buttons.set(button, true);
+        assert!(!controller.step(3, tap, limits).buttons.contains(button));
+        assert!(!controller.step(4, look, limits).buttons.contains(button));
+        let reported = controller.step(5, look, limits);
+        assert_eq!(reported.right_stick, (0.0, 0.0));
+        assert!(reported.buttons.contains(button));
+        assert!(!controller.step(6, look, limits).buttons.contains(button));
+
+        controller.step(7, look, limits);
+        controller.step(8, look, limits);
+        controller.step(9, tap, limits);
+        controller.reset();
+        assert!(!controller.step(10, look, limits).buttons.contains(button));
+    }
+}
+
+#[test]
 fn timing_scatter_is_centered_and_scales_with_skill() {
     let (mut last, samples) = (1.0, 40_000);
     for skill in Skill::ALL {
         let sigma = Tuning::default().input_limits(skill).button_sigma_ms;
         let mut rng = Rng::new(6);
-        let mut counts = [0; 3];
+        let mut counts = [0_i32; 3];
         for _ in 0..samples {
             counts[(tick_slip(&mut rng, sigma) + 1) as usize] += 1;
         }
@@ -110,7 +149,7 @@ fn timing_scatter_is_centered_and_scales_with_skill() {
             (slips - mean_abs_gaussian / TICK_MS).abs() < 0.01,
             "{skill:?}: {counts:?}"
         );
-        assert!((counts[0] as i32 - counts[2] as i32).abs() < samples / 100);
+        assert!((counts[0] - counts[2]).abs() < samples / 100);
         assert!(slips < last);
         last = slips;
     }

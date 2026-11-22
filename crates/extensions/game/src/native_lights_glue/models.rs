@@ -9,7 +9,7 @@
 //! layer keeps its handlers.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 
 use map::TagId;
 use native_render::gpu::Image;
@@ -25,7 +25,9 @@ use tags::model::RenderModelGeometry;
 use crate::native_world_glue::{Raw, StagePalettes, light_image};
 
 /// What the light passes draw a map's models with.
+#[derive(Default)]
 pub struct ModelLights {
+    retire: Option<crate::native_map::RetireQueue>,
     pub models: LightModels,
     /// Vertex programs by (`vrtx`, classification).
     pub microcode: HashMap<(TagId, u32), Vec<u8>>,
@@ -39,48 +41,67 @@ pub struct ModelLights {
     pub instances: HashMap<u32, (TagId, EngineInputs)>,
 }
 
-/// The load for the current map: its name and generation, and the
-/// result once the worker is done.
+impl Drop for ModelLights {
+    fn drop(&mut self) {
+        if let Some(queue) = self.retire.take() {
+            crate::native_map::retire(queue, timeline::setup::Stage::Lights, self);
+        }
+    }
+}
+
+struct Load {
+    map: String,
+    generation: u64,
+    checked_frame: Option<u64>,
+    result: mpsc::Receiver<Arc<ModelLights>>,
+    ready: Option<Arc<ModelLights>>,
+}
+
 #[derive(Default)]
 pub struct Loader {
-    state: Arc<Mutex<Option<(String, u64, Option<Arc<ModelLights>>)>>>,
+    state: Mutex<Option<Load>>,
 }
 
 impl Loader {
-    /// The current map's model parts; the first ask for a map starts the
-    /// worker, and `None` until it is done.
-    pub fn get(&self, name: &str, formats: impl FnOnce() -> Option<StreamFormats>, palettes: impl FnOnce() -> StagePalettes)
-        -> Option<Arc<ModelLights>>
-    {
+    /// A view sees the same models for the whole frame. The worker sends
+    /// only after uploading the section buffers for this device.
+    pub fn get(
+        &self, name: &str, device: &wgpu::Device, formats: impl FnOnce() -> Option<StreamFormats>,
+        palettes: impl FnOnce() -> StagePalettes,
+    ) -> Option<Arc<ModelLights>> {
         let generation = native_map_work::generation();
+        let frame = timeline::frames();
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((map, g, done)) = state.as_ref()
-            && map == name && *g == generation
-        {
-            return done.clone();
+        if let Some(load) = state.as_mut().filter(|load| load.map == name && load.generation == generation) {
+            if load.ready.is_none() && load.checked_frame != Some(frame) {
+                load.ready = load.result.try_recv().ok();
+                load.checked_frame = Some(frame);
+            }
+            return load.ready.clone();
         }
-        *state = Some((name.to_string(), generation, None));
+        let _handoff = timeline::setup::dispatch();
+        let (send, result) = mpsc::channel();
+        let retired = state.replace(Load {
+            map: name.to_string(), generation, result, checked_frame: Some(frame), ready: None,
+        });
         drop(state);
-        let Some(formats) = formats() else {
-            eprintln!("native-lights: {name}: the game's stream formats do not read; object entries keep their handlers");
-            return None;
-        };
+        let formats = formats();
         let palettes = palettes();
-        let slot = Arc::clone(&self.state);
+        let device = device.clone();
         let name = name.to_string();
-        let launched = std::thread::Builder::new().name("native-lights models".into()).spawn(move || {
-            let loaded = match load(&name, generation, &formats, &palettes) {
-                Ok(l) => l,
-                Err(why) => {
-                    eprintln!("native-lights: {name}: model parts not loaded ({why}); object entries keep their handlers");
-                    return;
-                }
+        let launched = background::spawn("native-lights models", move || {
+            drop(retired);
+            let Some(formats) = formats else {
+                eprintln!("native-lights: {name}: the game's stream formats do not read; object entries keep their handlers");
+                return;
             };
-            let mut state = slot.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some((map, g, done)) = state.as_mut()
-                && *map == name && *g == generation && native_map_work::generation() == generation
-            {
-                *done = Some(Arc::new(loaded));
+            let _setup = timeline::setup::Stage::Lights.worker();
+            match load(&name, generation, &formats, &palettes, &device) {
+                Ok(loaded) => { let _ = send.send(Arc::new(loaded)); }
+                Err(why) if generation == native_map_work::generation() => {
+                    eprintln!("native-lights: {name}: model parts not loaded ({why}); object entries keep their handlers");
+                }
+                Err(_) => {}
             }
         });
         if let Err(e) = launched {
@@ -118,13 +139,14 @@ fn lit_passes(lib: &mut ShaderLibrary, shader: TagId) -> (Vec<TagId>, Vec<(usize
     (shaders, bitmaps)
 }
 
-fn load(name: &str, generation: u64, formats: &StreamFormats, palettes: &StagePalettes) -> Result<ModelLights, String> {
+fn load(name: &str, generation: u64, formats: &StreamFormats, palettes: &StagePalettes, device: &wgpu::Device) -> Result<ModelLights, String> {
     let (mut map, files) = crate::native_map::open(name).map_err(|e| e.to_string())?;
     let mut raw = Raw(files);
     let mut lib = ShaderLibrary::read(&mut map).map_err(|e| format!("the shader tags do not read ({e})"))?;
     let meta = tags::object::Metadata::read(&mut map).ok();
     let modes: Vec<TagId> = map.tags().iter().filter(|t| t.group.0 == *b"mode").map(|t| t.id).collect();
     let mut out = ModelLights {
+        retire: Some(crate::native_map::retire_queue().map_err(|e| e.to_string())?),
         models: LightModels::default(),
         microcode: HashMap::new(),
         images: HashMap::new(),
@@ -232,6 +254,12 @@ fn load(name: &str, generation: u64, formats: &StreamFormats, palettes: &StagePa
         if hooks::native_verbose() {
             for w in &why {
                 eprintln!("native-lights: {name}: model {:#010x}: {w}", mode.0);
+            }
+        }
+        for section in model.sections.values() {
+            section.indices.get(device);
+            for buffer in &section.buffers {
+                buffer.vertices.get(device);
             }
         }
         out.models.models.insert(mode.0, model);

@@ -7,11 +7,16 @@ use super::{
     Network, Op, Result as WsaResult, Socket, endpoint, lock, put_word, read, sockaddr, word,
     writable,
 };
-use crate::{host, qos, traffic};
+use crate::{host, qos, socket_wait::SocketWait, traffic};
+use actor_net::{Packet, Record, WireError, budget::TICKS_PER_SECOND};
 use live_proto::{
     Xuid,
-    tunnel::{Frame, Kind, decode, encode},
+    tunnel::{
+        ACTOR_CHANNEL_HEADER, ACTOR_CHANNEL_OFFER, ACTOR_CHANNEL_VERSION, Frame, Kind, decode,
+        encode,
+    },
 };
+use polling::Poller;
 use runtime::Runtime;
 use std::{
     collections::BTreeMap,
@@ -26,7 +31,7 @@ use std::{
 };
 use tungstenite::{
     Message, WebSocket, accept_hdr_with_config,
-    handshake::server::{Request, Response},
+    handshake::server::{ErrorResponse, Request, Response},
     protocol::WebSocketConfig,
 };
 
@@ -40,7 +45,9 @@ const OUTBOX_DEPTH: usize = 64;
 const SEND_BURST: usize = 16;
 const RATE_PER_SECOND: u128 = 240;
 const RATE_BURST: u128 = 64;
-const TURN: Duration = Duration::from_millis(4);
+// Bound one read of a partially buffered WebSocket frame. An empty read
+// parks the worker on the socket and its outgoing queue until the next ping.
+const READ_WINDOW: Duration = Duration::from_millis(4);
 const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
 const PING_INTERVAL: Duration = Duration::from_secs(5);
 const PONG_TIMEOUT: Duration = Duration::from_secs(15);
@@ -102,20 +109,44 @@ impl Rate {
 
 struct Peer {
     out: SyncSender<Frame>,
+    wake: Arc<Poller>,
     rate: Rate,
+    actor: Option<ActorPeer>,
+}
+
+struct ActorPeer {
+    needs_key: bool,
+    last_key: Option<u32>,
+}
+
+impl ActorPeer {
+    fn key_requested(&self, tick: u32) -> bool {
+        self.needs_key
+            && self
+                .last_key
+                .is_none_or(|last| tick.wrapping_sub(last) >= TICKS_PER_SECOND)
+    }
 }
 
 impl Peer {
     fn send(&mut self, id: u32, port: u16, payload: &[u8], now: Instant) {
         if self.rate.take(now) {
-            // A full queue drops datagrams, as a busy UDP link would.
-            let _ = self.out.try_send(Frame {
+            self.enqueue(Frame {
                 kind: Kind::Datagram,
                 port,
                 peer: id,
                 payload: payload.to_vec(),
             });
         }
+    }
+
+    fn enqueue(&self, frame: Frame) -> bool {
+        // A full queue drops frames, as a busy datagram link would.
+        if self.out.try_send(frame).is_err() {
+            return false;
+        }
+        let _ = self.wake.notify();
+        true
     }
 }
 
@@ -126,7 +157,12 @@ struct Peers {
 }
 
 impl Peers {
-    fn register(&mut self, now: Instant) -> Option<(u32, Receiver<Frame>)> {
+    fn register(
+        &mut self,
+        now: Instant,
+        wake: Arc<Poller>,
+        actor_channel: bool,
+    ) -> Option<(u32, Receiver<Frame>)> {
         if self.active.len() >= MAX_PEERS || self.last_id >= u32::from(u16::MAX - 1) {
             return None;
         }
@@ -139,7 +175,12 @@ impl Peers {
             id,
             Peer {
                 out,
+                wake,
                 rate: Rate::new(now),
+                actor: actor_channel.then_some(ActorPeer {
+                    needs_key: true,
+                    last_key: None,
+                }),
             },
         );
         Some((id, incoming))
@@ -158,6 +199,47 @@ impl Peers {
             peer.send(id, port, payload, now);
         }
         !self.active.is_empty()
+    }
+
+    fn actor_peers(&self, tick: u32) -> Vec<(u32, bool)> {
+        self.active
+            .iter()
+            .filter_map(|(&id, peer)| {
+                peer.actor
+                    .as_ref()
+                    .map(|actor| (id, actor.key_requested(tick)))
+            })
+            .collect()
+    }
+
+    fn request_actor_key(&mut self, id: u32) {
+        if let Some(actor) = self.active.get_mut(&id).and_then(|peer| peer.actor.as_mut()) {
+            actor.needs_key = true;
+        }
+    }
+
+    fn send_actor(&mut self, id: u32, packet: &Packet) -> Result<bool, WireError> {
+        let Some(peer) = self.active.get_mut(&id) else {
+            return Ok(false);
+        };
+        let Some(actor) = &peer.actor else {
+            return Ok(false);
+        };
+        let key = packet
+            .records
+            .iter()
+            .any(|record| matches!(record, Record::Key { .. }));
+        if actor.last_key.is_none() && !key {
+            return Ok(false);
+        }
+        let sent = peer.enqueue(control(Kind::Actor, id, actor_net::encode(packet)?));
+        if key && let Some(actor) = &mut peer.actor {
+            actor.needs_key = !sent;
+            if sent {
+                actor.last_key = Some(packet.tick);
+            }
+        }
+        Ok(sent)
     }
 
     fn source(&self, id: u32, base: u16, port: u16) -> Option<SocketAddrV4> {
@@ -192,6 +274,7 @@ struct TunnelHost {
     listeners: qos::Listeners,
     pings: qos::Pings,
     asked: qos::Asked,
+    version: qos::Version,
 }
 
 impl TunnelHost {
@@ -221,6 +304,7 @@ impl TunnelHost {
             listeners: network.listeners.clone(),
             pings: network.pings.clone(),
             asked: network.asked.clone(),
+            version: network.version.clone(),
         });
         let worker = tunnel.clone();
         thread::Builder::new()
@@ -270,25 +354,60 @@ impl TunnelHost {
             .max_write_buffer_size(4096)
             .max_frame_size(limit)
             .max_message_size(limit);
+        use live_proto::matchmaking::{PACK_ECHO_PATH, REGION_ECHO};
         let mut xuid = None;
-        let mut ws = accept_hdr_with_config(
-            stream,
-            |request: &Request, response: Response| {
-                xuid = request
+        let mut echo = false;
+        let mut actor_channel = false;
+        #[allow(clippy::result_large_err)]
+        let on_request = |request: &Request, mut response: Response| -> Result<_, ErrorResponse> {
+            if request.headers().contains_key("origin") {
+                return Err(tungstenite::http::Response::builder()
+                    .status(403)
+                    .body(Some("private host tunnel".into()))
+                    .expect("static response"));
+            }
+            if request.uri().path() == PACK_ECHO_PATH {
+                echo = true;
+                if request
                     .headers()
-                    .get("x-h2-tunnel-peer")
-                    .and_then(|header| header.to_str().ok())
-                    .and_then(|value| Xuid::parse(value).ok());
-                Ok(response)
-            },
-            Some(config),
-        )
-        .map_err(|error| error.to_string())?;
-        ws.get_mut().set_read_timeout(Some(TURN))?;
+                    .get("sec-websocket-protocol")
+                    .and_then(|h| h.to_str().ok())
+                    == Some(REGION_ECHO)
+                {
+                    response
+                        .headers_mut()
+                        .insert("sec-websocket-protocol", REGION_ECHO.parse().unwrap());
+                }
+                return Ok(response);
+            }
+            actor_channel = request
+                .headers()
+                .get(ACTOR_CHANNEL_HEADER)
+                .is_some_and(|offer| offer == ACTOR_CHANNEL_OFFER);
+            xuid = request
+                .headers()
+                .get("x-h2-tunnel-peer")
+                .and_then(|header| header.to_str().ok())
+                .and_then(|value| Xuid::parse(value).ok());
+            Ok(response)
+        };
+        let mut ws = accept_hdr_with_config(stream, on_request, Some(config))
+            .map_err(|error| error.to_string())?;
+        if echo {
+            ws.get_mut().set_read_timeout(Some(Duration::from_secs(1)))?;
+            if let Message::Text(text) = ws.read()?
+                && text.as_str() == REGION_ECHO
+            {
+                ws.send(Message::Text(text))?;
+            }
+            return Ok(());
+        }
         wait_for_hello(&mut ws)?;
-
+        ws.get_ref().set_read_timeout(Some(READ_WINDOW))?;
+        let wake = Arc::new(Poller::new()?);
+        let wait = SocketWait::new(wake.clone(), Some(ws.get_ref()), None)?;
         let (id, out) = lock(&self.peers)
-            .register(Instant::now())
+            .register(Instant::now(), wake, actor_channel)
             .ok_or("host tunnel is full")?;
         let peer = ConnectedPeer {
             tunnel: self,
@@ -299,8 +418,8 @@ impl TunnelHost {
             "live: host tunnel joined peer {id} ({}, xuid {peer})",
             peer_ip(id)
         );
-        write_frame(&mut ws, &hello(id))?;
-        self.exchange(&mut ws, id, out)
+        write_frame(&mut ws, &hello(id, actor_channel))?;
+        self.exchange(&mut ws, id, out, wait)
     }
 
     fn exchange(
@@ -308,6 +427,7 @@ impl TunnelHost {
         ws: &mut WebSocket<TcpStream>,
         id: u32,
         out: Receiver<Frame>,
+        mut wait: SocketWait,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut ingress = Rate::new(Instant::now());
         let mut last_ping = Instant::now();
@@ -321,7 +441,9 @@ impl TunnelHost {
                 ws.send(Message::Ping(Default::default()))?;
                 last_ping = now;
             }
+            let mut sent = 0;
             for frame in out.try_iter().take(SEND_BURST) {
+                sent += 1;
                 write_frame(ws, &frame)?;
             }
             match ws.read() {
@@ -335,6 +457,10 @@ impl TunnelHost {
                             self.deliver(id, &frame);
                         }
                         Kind::Datagram => {}
+                        Kind::ActorKeyRequest if ingress.take(Instant::now()) => {
+                            lock(&self.peers).request_actor_key(id);
+                        }
+                        Kind::ActorKeyRequest => {}
                         Kind::Bye => {
                             lock(&self.peers).remove(id);
                             write_frame(ws, &control(Kind::Bye, id, Vec::new()))?;
@@ -342,6 +468,7 @@ impl TunnelHost {
                             return Ok(());
                         }
                         Kind::Hello => return Err("duplicate client tunnel hello".into()),
+                        Kind::Actor => return Err("unexpected client actor packet".into()),
                     }
                 }
                 Ok(Message::Pong(_)) => last_pong = Instant::now(),
@@ -352,7 +479,12 @@ impl TunnelHost {
                     return Ok(());
                 }
                 Ok(_) => return Err("expected a binary tunnel frame".into()),
-                Err(error) if pending(&error) => {}
+                Err(error) if pending(&error) => {
+                    if sent < SEND_BURST {
+                        let deadline = (last_ping + PING_INTERVAL).min(last_pong + PONG_TIMEOUT);
+                        wait.wait(Some(deadline.saturating_duration_since(Instant::now())))?;
+                    }
+                }
                 Err(tungstenite::Error::ConnectionClosed) => return Ok(()),
                 Err(error) => return Err(error.into()),
             }
@@ -385,27 +517,14 @@ impl TunnelHost {
         if let Some(pong) = qos::answer_ping(input, ip, &self.pings) {
             return Some(Some(pong.to_vec()));
         }
-        if input.len() != 24 || &input[..8] != b"H2QOS001" {
-            return None;
-        }
-        let kid: [u8; 8] = input[16..24].try_into().unwrap();
-        Some(
-            qos::answer(&lock(&self.listeners), &kid).map(|(enabled, bandwidth, data)| {
-                lock(&self.asked).insert(ip, kid);
-                let mut reply = Vec::with_capacity(23 + data.len());
-                reply.extend_from_slice(b"H2QOR001");
-                reply.extend_from_slice(&input[8..16]);
-                reply.push(if enabled {
-                    3 | if data.is_empty() { 0 } else { 8 }
-                } else {
-                    7
-                });
-                reply.extend_from_slice(&bandwidth.to_le_bytes());
-                reply.extend_from_slice(&(data.len() as u16).to_le_bytes());
-                reply.extend_from_slice(&data);
-                reply
-            }),
-        )
+        let lookup = qos::decode_lookup(input)?;
+        Some(qos::answer_lookup(
+            &self.listeners,
+            &self.asked,
+            ip,
+            &lookup,
+            self.version.get(),
+        ))
     }
 
     fn recv_udp(
@@ -436,8 +555,8 @@ impl TunnelHost {
 
     fn destination(&self, id: u32) -> Option<SocketAddrV4> {
         let channel = lock(&self.channels).get(&id)?.clone();
-        let target = *lock(&channel.destination);
-        target
+        
+        *lock(&channel.destination)
     }
 
     fn reap_addresses(&self, network: &Network) {
@@ -519,21 +638,33 @@ fn control(kind: Kind, peer: u32, payload: Vec<u8>) -> Frame {
     }
 }
 
-fn hello(peer: u32) -> Frame {
-    control(Kind::Hello, peer, HOST_IP.octets().to_vec())
+fn hello(peer: u32, actor_channel: bool) -> Frame {
+    let mut payload = HOST_IP.octets().to_vec();
+    if actor_channel {
+        payload.push(ACTOR_CHANNEL_VERSION);
+    }
+    control(Kind::Hello, peer, payload)
 }
 
 fn valid_client_frame(frame: &Frame) -> bool {
     frame.peer == 0
         && match frame.kind {
             Kind::Datagram => datagram_fits(frame.port, frame.payload.len()),
-            Kind::Hello | Kind::Bye => frame.port == 0 && frame.payload.is_empty(),
+            Kind::Hello | Kind::Bye | Kind::ActorKeyRequest => {
+                frame.port == 0 && frame.payload.is_empty()
+            }
+            Kind::Actor => false,
         }
 }
 
 fn wait_for_hello(ws: &mut WebSocket<TcpStream>) -> Result<(), Box<dyn std::error::Error>> {
-    let started = Instant::now();
-    while started.elapsed() < HELLO_TIMEOUT {
+    let deadline = Instant::now() + HELLO_TIMEOUT;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("client tunnel hello timed out".into());
+        }
+        ws.get_ref().set_read_timeout(Some(remaining))?;
         match ws.read() {
             Ok(Message::Binary(bytes)) => {
                 let frame = decode(&bytes).map_err(|_| "invalid client tunnel hello")?;
@@ -549,11 +680,13 @@ fn wait_for_hello(ws: &mut WebSocket<TcpStream>) -> Result<(), Box<dyn std::erro
             Err(error) => return Err(error.into()),
         }
     }
-    Err("client tunnel hello timed out".into())
 }
 
-fn write_frame(ws: &mut WebSocket<TcpStream>, frame: &Frame) -> tungstenite::Result<()> {
-    ws.send(Message::binary(encode(frame)))
+fn write_frame(
+    ws: &mut WebSocket<TcpStream>,
+    frame: &Frame,
+) -> Result<(), Box<dyn std::error::Error>> {
+    ws.send(Message::binary(encode(frame))).map_err(Into::into)
 }
 
 fn pending(error: &tungstenite::Error) -> bool {
@@ -579,6 +712,30 @@ fn enabled(network: &Network) -> Option<&'static TunnelHost> {
     tunnel
         .as_deref()
         .filter(|tunnel| tunnel.address == network.config.address)
+}
+
+impl crate::Hle {
+    fn actor_host_tunnel(&self) -> Option<&'static TunnelHost> {
+        HOST.get()?
+            .as_deref()
+            .filter(|tunnel| !self.offline_film && tunnel.address == self.network.config.address)
+    }
+
+    /// Actor-capable tunnel peer IDs and whether each needs a key at this tick.
+    /// IDs are unique to a connection within the lease.
+    pub fn actor_tunnel_peers(&self, tick: u32) -> Vec<(u32, bool)> {
+        self.actor_host_tunnel()
+            .map_or_else(Vec::new, |tunnel| lock(&tunnel.peers).actor_peers(tick))
+    }
+
+    /// Queue an actor packet for one peer. A missing peer or a full queue
+    /// returns false. The scheduler charges the encoded payload separately.
+    pub fn send_actor_tunnel_packet(&self, peer: u32, packet: &Packet) -> Result<bool, WireError> {
+        let Some(tunnel) = self.actor_host_tunnel() else {
+            return Ok(false);
+        };
+        lock(&tunnel.peers).send_actor(peer, packet)
+    }
 }
 
 /// One Winsock dispatch hook. Operations that need no tunnel work continue
@@ -811,38 +968,108 @@ fn bound_offset(socket: &Socket) -> Option<u16> {
 }
 
 #[cfg(test)]
+#[path = "tunnel_host/actor_tests.rs"]
+mod actor_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::{collections::VecDeque, sync::mpsc::TryRecvError};
 
     const BASE: u16 = 31000;
 
+    fn register(peers: &mut Peers, now: Instant) -> Option<(u32, Receiver<Frame>)> {
+        peers.register(now, Arc::new(Poller::new().unwrap()), false)
+    }
+
     #[test]
     fn hello_and_bye_use_the_contract_wire() {
         assert_eq!(
-            encode(&hello(0x0102)),
+            encode(&hello(0x0102, false)),
             [1, 1, 0, 0, 2, 1, 0, 0, 10, 77, 0, 1],
         );
         assert_eq!(
             encode(&control(Kind::Bye, 0x0102, Vec::new())),
             [1, 2, 0, 0, 2, 1, 0, 0],
         );
+        assert_eq!(
+            encode(&hello(0x0102, true)),
+            [1, 1, 0, 0, 2, 1, 0, 0, 10, 77, 0, 1, ACTOR_CHANNEL_VERSION],
+        );
+        let request = control(Kind::ActorKeyRequest, 0, Vec::new());
+        assert_eq!(encode(&request), [1, 4, 0, 0, 0, 0, 0, 0]);
+        assert!(valid_client_frame(&request));
+        assert!(!valid_client_frame(&control(Kind::ActorKeyRequest, 0, vec![1])));
+        assert!(!valid_client_frame(&control(Kind::Actor, 0, Vec::new())));
 
         let client_hello = decode(&[1, 1, 0, 0, 0, 0, 0, 0]).unwrap();
         assert!(matches!(client_hello.kind, Kind::Hello));
         assert!(valid_client_frame(&client_hello));
-        assert!(!valid_client_frame(&hello(0x0102)));
+        assert!(!valid_client_frame(&hello(0x0102, false)));
         assert!(!valid_client_frame(&control(Kind::Hello, 0, vec![1])));
         assert!(!valid_client_frame(&control(Kind::Bye, 0x0102, Vec::new())));
         assert!(valid_client_frame(&control(Kind::Bye, 0, Vec::new())));
     }
 
     #[test]
+    fn regional_echo_accepts_one_text_frame_and_never_registers_a_game_peer() {
+        use live_proto::matchmaking::{PACK_ECHO_PATH, REGION_ECHO};
+        use tungstenite::client::IntoClientRequest;
+
+        let bridge = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let SocketAddr::V4(bridge_address) = bridge.local_addr().unwrap() else { unreachable!() };
+        let host = TunnelHost {
+            address: SocketAddrV4::new(Ipv4Addr::LOCALHOST, BASE),
+            bridge, bridge_address, peers: Mutex::default(), channels: Mutex::default(),
+            listeners: Default::default(), pings: Default::default(), asked: Default::default(),
+            version: Default::default(),
+        };
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        thread::scope(|scope| {
+            let server = scope.spawn(|| {
+                let (stream, _) = listener.accept().unwrap();
+                assert!(host.serve(stream).is_err());
+                for _ in 0..2 {
+                    let (stream, _) = listener.accept().unwrap();
+                    host.serve(stream).unwrap();
+                }
+            });
+            let addr = listener.local_addr().unwrap();
+            let mut browser = format!("ws://{addr}{PACK_ECHO_PATH}")
+                .into_client_request()
+                .unwrap();
+            browser
+                .headers_mut()
+                .insert("origin", "https://example.test".parse().unwrap());
+            let denied = tungstenite::client(browser, TcpStream::connect(addr).unwrap());
+            assert!(matches!(denied, Err(tungstenite::HandshakeError::Failure(
+                tungstenite::Error::Http(response))) if response.status().as_u16() == 403));
+            for text_frame in [true, false] {
+                let mut req = format!("ws://{addr}{PACK_ECHO_PATH}").into_client_request().unwrap();
+                req.headers_mut().insert("sec-websocket-protocol", REGION_ECHO.parse().unwrap());
+                let stream = TcpStream::connect(addr).unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                let (mut client, response) = tungstenite::client(req, stream).unwrap();
+                assert_eq!(response.headers()["sec-websocket-protocol"], REGION_ECHO);
+                if text_frame {
+                    client.send(Message::Text(REGION_ECHO.into())).unwrap();
+                    assert_eq!(client.read().unwrap(), Message::Text(REGION_ECHO.into()));
+                } else {
+                    client.send(Message::Binary(encode(&control(Kind::Hello, 0, vec![])).into())).unwrap();
+                    assert!(client.read().is_err());
+                }
+            }
+            server.join().unwrap();
+        });
+        assert_eq!(lock(&host.peers).last_id, 0);
+    }
+
+    #[test]
     fn maps_each_peer_to_all_seven_xnet_channels() {
         let mut peers = Peers::default();
         let now = Instant::now();
-        let (first, _) = peers.register(now).unwrap();
-        let (second, _) = peers.register(now).unwrap();
+        let (first, _) = register(&mut peers, now).unwrap();
+        let (second, _) = register(&mut peers, now).unwrap();
         let first_ip = Ipv4Addr::new(10, 77, 0, 2);
         let second_ip = Ipv4Addr::new(10, 77, 0, 3);
         assert_eq!(address_id(first_ip), Some(first));
@@ -867,8 +1094,8 @@ mod tests {
     fn addressable_unicast_and_discovery_fan_out_with_recipient_ids() {
         let mut peers = Peers::default();
         let now = Instant::now();
-        let (first, first_rx) = peers.register(now).unwrap();
-        let (second, second_rx) = peers.register(now).unwrap();
+        let (first, first_rx) = register(&mut peers, now).unwrap();
+        let (second, second_rx) = register(&mut peers, now).unwrap();
 
         assert!(peers.send(second, 6, b"game", now));
         assert!(matches!(first_rx.try_recv(), Err(TryRecvError::Empty)));
@@ -911,8 +1138,8 @@ mod tests {
 
         let mut peers = Peers::default();
         let now = Instant::now();
-        let (first, first_rx) = peers.register(now).unwrap();
-        let (second, second_rx) = peers.register(now).unwrap();
+        let (first, first_rx) = register(&mut peers, now).unwrap();
+        let (second, second_rx) = register(&mut peers, now).unwrap();
         for _ in 0..RATE_BURST + 1 {
             assert!(peers.send(first, 0, b"game", now));
         }
@@ -943,14 +1170,14 @@ mod tests {
         let mut peers = Peers::default();
         let now = Instant::now();
         let slots: Vec<_> = (0..MAX_PEERS)
-            .map(|_| peers.register(now).unwrap())
+            .map(|_| register(&mut peers, now).unwrap())
             .collect();
-        assert!(peers.register(now).is_none());
+        assert!(register(&mut peers, now).is_none());
 
         let (old, old_rx) = &slots[0];
         let old_ip = peer_ip(*old);
         peers.remove(*old);
-        let (replacement, _) = peers.register(now).unwrap();
+        let (replacement, _) = register(&mut peers, now).unwrap();
         assert_ne!(*old, replacement);
         assert!(!peers.contains_ip(old_ip));
         assert_eq!(peers.source(*old, BASE, 5), None);
@@ -966,7 +1193,7 @@ mod tests {
     #[test]
     fn stale_ingress_is_skipped_without_another_blocking_wait() {
         let mut peers = Peers::default();
-        let (old, _) = peers.register(Instant::now()).unwrap();
+        let (old, _) = register(&mut peers, Instant::now()).unwrap();
         peers.remove(old);
         let bridge = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 43210);
         let mut flags_seen = Vec::new();
@@ -993,8 +1220,8 @@ mod tests {
     fn peek_discards_stale_ingress_and_leaves_the_live_datagram_queued() {
         let mut peers = Peers::default();
         let now = Instant::now();
-        let (old, _) = peers.register(now).unwrap();
-        let (current, _) = peers.register(now).unwrap();
+        let (old, _) = register(&mut peers, now).unwrap();
+        let (current, _) = register(&mut peers, now).unwrap();
         peers.remove(old);
         let bridge = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 43210);
         let packet = |id: u32, byte: u8| [id.to_le_bytes().as_slice(), &[byte]].concat();

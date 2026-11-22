@@ -331,7 +331,8 @@ Changes to the order, and why:
 - **Three small fixes need no rewrite:**
   - the per-frame map status poll `163680 → 213f10 → 214db0` formats a path
     with `sprintf` and compares it every frame: 265 visible samples (0.31%)
-    plus about 0.5% in the CRT's `printf` and string compare beneath it;
+    plus about 0.5% in the CRT's `printf` and string compare beneath it
+    (`impl.sim.status-poll` answers it from its last result);
   - `OBJECT_DAMAGE_UPDATE` (`d5de0`) is hooked before and after by h1-health
     for every object every tick, so `bc470` unwinds on each one;
   - the profiler should give `bots::`, `boot::`, `feature::`, `sim::`,
@@ -473,9 +474,8 @@ weapon HUD and target state, called UI).
 2. **Attribution in the tool.** Port `attribute.py` to `h2 profile attribute`
    in `crates/tools/perf`, reading the owner map as data, so a census prints this
    page's tables.
-3. **Map status poll.** Read `163680` and `213f10`: find why the status is
-   asked every frame in a game, and answer it from the last result when the
-   path and slot generation are unchanged.
+3. **Map status poll.** Built under `impl.sim.status-poll`: the read and
+   the memo are in [cache-slots.md](../runtime/cache-slots.md#the-status-poll).
 4. **Damage hook.** Move h1-health off `d5de0`'s before and after pair onto
    the damage application points, or gate it on the object being a player
    biped before leaving the direct path.

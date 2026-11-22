@@ -4,9 +4,7 @@
 //! device `+0x934`. Synthetic values only; the ignored tests at the end
 //! decode the retail image in `$H2_XBE`.
 
-mod common;
-
-use common::*;
+use crate::common::{self, *};
 use d3d::abi::Regs;
 use d3d::backend::Viewport;
 use d3d::hw::method as hw;
@@ -607,7 +605,7 @@ fn the_fence_register_follows_set_fence() {
     let completed = m
         .read_u32(m.read_u32(DEV + f::GPU_COMPLETED).unwrap())
         .unwrap();
-    assert_eq!(completed, 3);
+    assert_eq!(completed, 6);
     let fence = reg_word(&m, reg::PGRAPH_FENCE);
     // What BlockOnTime (0x3fa910) waits for: bits 6:2 equal to the
     // completion word's low bits.
@@ -618,7 +616,7 @@ fn the_fence_register_follows_set_fence() {
         ((fence >> 5) & 0x07FF_FFFC) | 0x8000_0000,
         (at & 0x07FF_FFFC) | 0x8000_0000
     );
-    assert_eq!(fence, regs::fence_word(3, at, 0));
+    assert_eq!(fence, regs::fence_word(completed, at, 0));
 }
 
 #[test]

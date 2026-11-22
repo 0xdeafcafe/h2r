@@ -3,18 +3,19 @@
 //! and the walls for line of sight. Derived from the disc, so never
 //! committed.
 
-use tags::collision::Bsp;
+use tags::{collision::Bsp, pathfinding::PathfindingData};
 
-use crate::los::{V3, Walls};
+use crate::los::Walls;
 use crate::nav::{Build, NavMesh};
 
 /// The loaded map's data, for every bot's mind; `None` until a map with a
 /// cache file loads.
 static CURRENT: std::sync::RwLock<Option<std::sync::Arc<MapData>>> = std::sync::RwLock::new(None);
 
-/// Sets the loaded map's data.
-pub fn set_current(d: Option<std::sync::Arc<MapData>>) {
-    *CURRENT.write().unwrap_or_else(|e| e.into_inner()) = d;
+/// Exchange the active pointer. Release the retired map outside any lock
+/// shared with a bot sampling a frame.
+pub(crate) fn replace_current(d: Option<std::sync::Arc<MapData>>) -> Option<std::sync::Arc<MapData>> {
+    std::mem::replace(&mut *CURRENT.write().unwrap_or_else(|e| e.into_inner()), d)
 }
 
 /// The loaded map's data.
@@ -111,21 +112,47 @@ pub fn file_name(map: &str, bsp: usize) -> String {
 
 /// Builds a structure BSP's data from its collision.
 pub fn build(bsp: &Bsp) -> Result<MapData, String> {
-    let pf = pathfind::generate::generate(bsp, 0, 0, &pathfind::generate::Options::default())
-        .map_err(|e| e.to_string())?;
-    let mut polys: Vec<Vec<V3>> = Vec::with_capacity(bsp.surfaces.len());
-    for s in 0..bsp.surfaces.len() {
-        if let Some(ring) = pathfind::generate::surface_edges(bsp, s) {
-            polys.push(ring.iter().map(|&(_, v)| bsp.vertices[v].point).collect());
-        }
-    }
-    let walls = Walls::from_polygons(polys.iter().map(Vec::as_slice));
-    let nav = NavMesh::from_collision(&pf, &Build::default(), &walls);
-    Ok(MapData {
+    build_with(bsp, crate::vis::Threads::foreground())
+}
+
+pub(crate) fn build_with(bsp: &Bsp, threads: crate::vis::Threads) -> Result<MapData, String> {
+    Ok(build_geometry(bsp, 0, 0, threads)?.1)
+}
+
+/// Generate the engine's pathfinding element alongside the bot mesh that
+/// uses its sector indices. The element carries the owning BSP's checksum
+/// and one reference per instanced-geometry placement.
+pub fn build_with_pathfinding(
+    bsp: &Bsp,
+    instances: usize,
+    checksum: u32,
+) -> Result<(PathfindingData, MapData), String> {
+    build_geometry(bsp, instances, checksum, crate::vis::Threads::foreground())
+}
+
+fn build_geometry(
+    bsp: &Bsp,
+    instances: usize,
+    checksum: u32,
+    threads: crate::vis::Threads,
+) -> Result<(PathfindingData, MapData), String> {
+    let mut tris = Vec::with_capacity(bsp.surfaces.len());
+    let pf = pathfind::generate::generate_with_surfaces(
+        bsp,
+        instances,
+        checksum,
+        &pathfind::generate::Options::default(),
+        |ring| Walls::fan_polygon(ring.iter().map(|&(_, v)| bsp.vertices[v].point), &mut tris),
+    )
+    .map_err(|e| e.to_string())?;
+    let walls = Walls::new(tris);
+    let nav = NavMesh::from_collision(&pf, &Build::default(), &walls, threads);
+    let data = MapData {
         nav,
         walls,
         places: Default::default(),
-    })
+    };
+    Ok((pf, data))
 }
 
 impl MapData {

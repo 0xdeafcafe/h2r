@@ -1,141 +1,108 @@
 //! The lab's client commands (`h2 lab status|run|...`), and `h2 lab record`.
 
-use std::io::{BufRead, BufReader, Read, Write};
-use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::cell::Cell;
+use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, Write};
+use std::net::SocketAddr;
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 
-use super::proto::{self, BuildSpec, RunReq, sh_quote};
-use super::{USAGE, default_socket};
+use super::proto::{self, BuildSpec, RunReq, SimReq};
+use super::transfer::Artifacts;
+use super::{USAGE, default_socket, discovery, forensics, lan, simbench, transfer, watch};
 
-/// Where the host is.
-enum Target {
-    /// The socket on this machine.
+enum Remote {
     Local(PathBuf),
-    Ssh {
-        host: String,
-        /// `--socket` for the remote pipe, when not its default.
-        socket: Option<String>,
-        remote_h2: String,
+    Unspecified,
+    Lan {
+        name: String,
+        addr: Cell<Option<SocketAddr>>,
     },
 }
 
-/// The remote h2 when neither --remote-h2 nor $H2_LAB_REMOTE_H2 says: the
-/// link `h2 lab host` keeps in its default root, relative to the remote
-/// home (where ssh starts).
-const REMOTE_H2: &str = "Library/Caches/h2recomp/lab/h2";
-
-struct Remote {
-    target: Target,
-    /// The ssh command: $H2_LAB_SSH, else ssh in batch mode.
-    ssh: Vec<String>,
-    ssh_overridden: bool,
-}
-
 impl Remote {
-    /// A command line run on the host's machine: through ssh, or `sh -c`.
-    fn shell(&self, line: &str) -> Command {
-        match &self.target {
-            Target::Local(_) => {
-                let mut c = Command::new("sh");
-                c.arg("-c").arg(line);
-                c
-            }
-            Target::Ssh { host, .. } => {
-                let mut c = Command::new(&self.ssh[0]);
-                c.args(&self.ssh[1..]).arg(host).arg(line);
-                c
-            }
-        }
-    }
-
     fn connect(&self) -> Result<Conn> {
-        match &self.target {
-            Target::Local(p) => {
-                let s = std::os::unix::net::UnixStream::connect(p).with_context(|| {
-                    format!("connecting to {}: is `h2 lab host` running?", p.display())
+        match self {
+            Self::Local(path) => {
+                let socket = UnixStream::connect(path).with_context(|| {
+                    format!(
+                        "connecting to {}: is `h2 lab host` running?",
+                        path.display()
+                    )
                 })?;
-                Ok(Conn {
-                    r: BufReader::new(Box::new(s.try_clone()?)),
-                    w: Some(Box::new(s)),
-                    child: None,
-                })
+                Ok(Conn::new(socket))
             }
-            Target::Ssh {
-                socket, remote_h2, ..
-            } => {
-                let mut line = format!("{} lab pipe", sh_quote(remote_h2));
-                if let Some(s) = socket {
-                    line += &format!(" --socket {}", sh_quote(s));
-                }
-                let mut child = self
-                    .shell(&line)
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .spawn()
-                    .with_context(|| format!("starting {}", self.ssh[0]))?;
-                let r = child.stdout.take().unwrap();
-                let w = child.stdin.take().unwrap();
-                Ok(Conn {
-                    r: BufReader::new(Box::new(r)),
-                    w: Some(Box::new(w)),
-                    child: Some(child),
-                })
+            Self::Unspecified => {
+                bail!("which host? specify --host NAME|IP|local or set H2_LAB_HOST")
             }
-        }
-    }
-
-    /// Where `git push` sends to: the checkout's path, or `HOST:path`.
-    fn git_url(&self, repo: &str) -> String {
-        match &self.target {
-            Target::Local(_) => repo.to_string(),
-            Target::Ssh { host, .. } => format!("{host}:{repo}"),
+            Self::Lan { name, addr } => {
+                // Validate the command before Bonjour discovery or a TCP connection.
+                let address = match addr.get() {
+                    Some(address) => address,
+                    None => {
+                        let address = discovery::resolve(name)?;
+                        addr.set(Some(address));
+                        address
+                    }
+                };
+                Ok(Conn::new(lan::connect(name, address)?))
+            }
         }
     }
 }
 
-struct Conn {
-    r: BufReader<Box<dyn Read + Send>>,
-    w: Option<Box<dyn Write + Send>>,
-    child: Option<Child>,
-}
+trait Wire: Read + Write {}
+impl<T: Read + Write> Wire for T {}
+
+struct Conn(BufReader<Box<dyn Wire>>);
 
 impl Conn {
-    fn call(&mut self, req: Value) -> Result<Value> {
-        let w = self.w.as_mut().unwrap();
+    fn new(socket: impl Wire + 'static) -> Self {
+        Self(BufReader::new(Box::new(socket)))
+    }
+
+    fn request(&mut self, req: Value) -> Result<()> {
+        let w = self.0.get_mut();
         writeln!(w, "{req}")?;
         w.flush()?;
-        let mut line = String::new();
-        if self.r.read_line(&mut line)? == 0 {
-            bail!("the lab host closed the connection (is `h2 lab host` running there?)");
-        }
-        let v: Value =
-            serde_json::from_str(&line).with_context(|| format!("bad answer {line:?}"))?;
-        if v["ok"] != Value::Bool(true) {
-            bail!("{}", v["error"].as_str().unwrap_or("the host refused"));
-        }
-        Ok(v)
+        Ok(())
+    }
+
+    fn reply(&mut self) -> Result<Value> {
+        read_reply(&mut self.0)
+    }
+
+    fn log_reply(&mut self) -> Result<Value> {
+        read_reply((&mut self.0).take(transfer::FRAME_MAX as u64))
+    }
+
+    fn call(&mut self, req: Value) -> Result<Value> {
+        self.request(req)?;
+        self.reply()
     }
 }
 
-impl Drop for Conn {
-    fn drop(&mut self) {
-        self.w = None;
-        if let Some(mut c) = self.child.take() {
-            let _ = c.wait();
-        }
+fn read_reply(mut reader: impl BufRead) -> Result<Value> {
+    let mut line = String::new();
+    if reader.read_line(&mut line)? == 0 {
+        bail!("the lab host closed the connection");
     }
+    ensure!(line.ends_with('\n'), "unterminated lab reply");
+    let value: Value =
+        serde_json::from_str(&line).with_context(|| format!("bad answer {line:?}"))?;
+    if value["ok"] != Value::Bool(true) {
+        bail!("{}", value["error"].as_str().unwrap_or("the host refused"));
+    }
+    Ok(value)
 }
 
 /// Options every client command takes; the rest stay for the command.
 fn remote(args: Vec<String>) -> Result<(Remote, Vec<String>)> {
     let mut host = std::env::var("H2_LAB_HOST").ok().filter(|h| !h.is_empty());
     let mut socket = None;
-    let mut remote_h2 = std::env::var("H2_LAB_REMOTE_H2")
-        .ok()
-        .filter(|h| !h.is_empty());
     let mut rest = Vec::new();
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
@@ -144,41 +111,25 @@ fn remote(args: Vec<String>) -> Result<(Remote, Vec<String>)> {
                 rest.push(a);
                 rest.extend(it.by_ref());
             }
-            "--host" => host = Some(it.next().context("--host needs [user@]HOST or local")?),
+            "--host" => host = Some(it.next().context("--host needs a name, address or local")?),
             "--socket" => socket = Some(it.next().context("--socket needs a path")?),
-            "--remote-h2" => remote_h2 = Some(it.next().context("--remote-h2 needs a path")?),
             _ => rest.push(a),
         }
     }
-    let host = host.context("which host? --host [user@]HOST (or local), or set H2_LAB_HOST")?;
-    ensure!(!host.starts_with('-'), "--host {host:?} is not a host name");
-    let (ssh, ssh_overridden) = match std::env::var("H2_LAB_SSH")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-    {
-        Some(s) => (s.split_whitespace().map(String::from).collect(), true),
-        None => (
-            ["ssh", "-o", "BatchMode=yes"].map(String::from).to_vec(),
-            false,
-        ),
-    };
-    let target = if host == "local" {
-        Target::Local(socket.map_or_else(default_socket, PathBuf::from))
-    } else {
-        Target::Ssh {
-            host,
-            socket,
-            remote_h2: remote_h2.unwrap_or_else(|| REMOTE_H2.into()),
+    let target = match host {
+        None => Remote::Unspecified,
+        Some(name) if name == "local" => {
+            Remote::Local(socket.map_or_else(default_socket, PathBuf::from))
+        }
+        Some(name) => {
+            ensure!(socket.is_none(), "--socket requires --host local");
+            Remote::Lan {
+                name,
+                addr: Cell::new(None),
+            }
         }
     };
-    Ok((
-        Remote {
-            target,
-            ssh,
-            ssh_overridden,
-        },
-        rest,
-    ))
+    Ok((target, rest))
 }
 
 pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
@@ -188,9 +139,14 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             no_more(&args)?;
             print(&r.connect()?.call(json!({"cmd": "status"}))?)
         }
+        "update" => {
+            no_more(&args)?;
+            print(&r.connect()?.call(json!({"cmd": "update"}))?)
+        }
         "run" => run_cmd(&r, args),
         "agent" => agent_cmd(&r, args),
         "bench" => bench_cmd(&r, args),
+        "sim" => sim_cmd(&r, args),
         "build" => build_cmd(&r, args),
         "wait" => {
             let (id, timeout) = id_and_timeout(&args)?;
@@ -206,27 +162,18 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             print(&r.connect()?.call(json!({"cmd": "stop", "id": id}))?)
         }
         "runs" => runs_cmd(&r, args),
+        "logs" => logs_cmd(&r, args),
         "fetch" => {
-            let mut id = None;
-            let mut to = None;
-            let mut it = args.into_iter();
-            while let Some(a) = it.next() {
-                match a.as_str() {
-                    "--to" => {
-                        to = Some(PathBuf::from(it.next().context("--to needs a directory")?))
-                    }
-                    _ if id.is_none() && !a.starts_with('-') => id = Some(a),
-                    _ => bail!("unexpected {a}\n\n{USAGE}"),
-                }
-            }
-            let id = id.context("usage: h2 lab fetch <id> [--to DIR]")?;
-            let root = status(&r)?["root"]
-                .as_str()
-                .context("status names no root")?
-                .to_string();
-            let dest = fetch(&r, &root, &id, to)?;
+            let (id, to) = forensics::fetch_args(cmd, args)?;
+            let dest = fetch(&r, &id, to)?;
             println!("{}", dest.display());
             Ok(())
+        }
+        "mem" => {
+            let (id, to) = forensics::fetch_args(cmd, args)?;
+            let (dest, summary) = fetch_artifacts(&r, &id, to, Artifacts::Memory, forensics::Summary::read)?;
+            println!("Memory evidence: {}", dest.display());
+            summary.print()
         }
         "put" => put_cmd(&r, args),
         "recordings" => {
@@ -245,11 +192,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             if branches.is_empty() {
                 branches.push(current_branch()?);
             }
-            let repo = status(&r)?["repo"]
-                .as_str()
-                .context("status names no checkout")?
-                .to_string();
-            for (b, sha) in sync(&r, &repo, &branches)? {
+            for (b, sha) in sync(&r, &branches)? {
                 println!("lab/{b} {sha}");
             }
             Ok(())
@@ -270,10 +213,6 @@ fn print(v: &Value) -> Result<()> {
     }
     println!("{}", serde_json::to_string_pretty(&v)?);
     Ok(())
-}
-
-fn status(r: &Remote) -> Result<Value> {
-    r.connect()?.call(json!({"cmd": "status"}))
 }
 
 fn id_and_timeout(args: &[String]) -> Result<(String, Option<f64>)> {
@@ -299,13 +238,13 @@ fn id_and_timeout(args: &[String]) -> Result<(String, Option<f64>)> {
     ))
 }
 
-/// Exit status for `wait`: 0 when the job finished well, 1 when it failed
-/// or was stopped, 3 when it is still going.
+/// Exit status for `wait`: 0 for completed and skipped jobs, 1 when
+/// a job failed or was stopped, 3 when it is still going.
 fn finished_ok(v: &Value) -> Result<()> {
     if v["finished"] != Value::Bool(true) {
         std::process::exit(3);
     }
-    if v["job"]["state"] != "done" {
+    if !matches!(v["job"]["state"].as_str(), Some("done" | "skipped")) {
         std::process::exit(1);
     }
     Ok(())
@@ -340,7 +279,7 @@ impl Source {
     }
 
     /// The rev for the request: none for --current; --rev as given (it must
-    /// be on the host already); else the branch, pushed first and named by
+    /// be on the host already); else the branch, synced first and named by
     /// its commit, or `lab/<branch>` as last synced with --no-sync.
     fn resolve(&self, r: &Remote) -> Result<Option<String>> {
         ensure!(
@@ -364,12 +303,8 @@ impl Source {
         if self.no_sync {
             return Ok(Some(format!("lab/{branch}")));
         }
-        let repo = status(r)?["repo"]
-            .as_str()
-            .context("status names no checkout")?
-            .to_string();
-        let pushed = sync(r, &repo, std::slice::from_ref(&branch))?;
-        Ok(Some(pushed[0].1.clone()))
+        let synced = sync(r, std::slice::from_ref(&branch))?;
+        Ok(Some(synced[0].1.clone()))
     }
 }
 
@@ -386,7 +321,11 @@ fn run_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
         let mut val = || it.next().with_context(|| format!("{a} needs a value"));
         match a.as_str() {
             "--level" => req.level = Some(val()?),
+            "--name" => req.name = proto::job_name(&val()?)?.into(),
             "--difficulty" => req.difficulty = Some(val()?),
+            "--mem-limit" => {
+                req.mem_limit = Some(mem_watch::parse_size(&val()?).map_err(anyhow::Error::msg)?)
+            }
             "--frames" => req.frames = Some(val()?.parse().context("--frames needs a count")?),
             "--stats-from" => {
                 req.stats_from = Some(val()?.parse().context("--stats-from needs a present")?)
@@ -394,6 +333,7 @@ fn run_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
             "--no-stats" => req.stats = Some(false),
             "--replay" => req.replay = Some(val()?),
             "--record" => req.record = Some(val()?),
+            "--film" => req.film = Some(val()?),
             "--perf" => req.perf = true,
             "--env" => {
                 let (k, v) = kv(&val()?, "--env")?;
@@ -427,13 +367,13 @@ fn run_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
     wait_and_fetch(r, &mut c, &id, to)
 }
 
-/// Validates `req`, resolves and pushes its build, and starts it. Returns
+/// Validates `req`, resolves and syncs its build, and starts it. Returns
 /// the connection and the host's answer (with the job's `id`).
 fn launch(r: &Remote, mut req: RunReq, src: &Source) -> Result<(Conn, Value)> {
     if req.perf && !req.build.features.iter().any(|f| f == "perf") && !src.current {
         req.build.features.push("perf".into());
     }
-    // Refuse what the host would before pushing anything.
+    // Refuse what the host would before syncing anything.
     proto::validate_run(&RunReq {
         build: BuildSpec {
             rev: Some("x".into()),
@@ -448,6 +388,57 @@ fn launch(r: &Remote, mut req: RunReq, src: &Source) -> Result<(Conn, Value)> {
     body["cmd"] = "run".into();
     let v = c.call(body)?;
     Ok((c, v))
+}
+
+/// `h2 lab sim`: uploads a match or batch file (with the tuning files it
+/// names) as a sim benchmark job. With `--wait`, fetches the run and prints
+/// its summary (`simbench`).
+fn sim_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
+    let mut src = Source::default();
+    let mut rest = Vec::new();
+    let mut it = args.into_iter();
+    while let Some(a) = it.next() {
+        if !src.take(&a, &mut it)? {
+            rest.push(a);
+        }
+    }
+    let simbench::Parsed { mut req, path, data, wait, to } = simbench::parse_args(rest)?;
+    let loaded = simbench::load_files(&path)?;
+    // The bots' meshes come from this Mac's data root; a map without one
+    // is refused before anything syncs.
+    let root = data.unwrap_or_else(content::store::default_data_root);
+    req.data = simbench::bot_data(&loaded.maps, &root)?;
+    req.file = loaded.file;
+    req.batch = loaded.batch;
+    req.files = loaded.files;
+    // Refuse what the host would before syncing anything.
+    proto::validate_sim(&SimReq {
+        build: BuildSpec {
+            rev: Some("x".into()),
+            ..req.build.clone()
+        },
+        ..req.clone()
+    })?;
+    req.build.rev = src.resolve(r)?;
+    proto::validate_sim(&req)?;
+    let mut c = r.connect()?;
+    let mut body = serde_json::to_value(&req)?;
+    body["cmd"] = "sim".into();
+    let v = c.call(body)?;
+    let id = v["id"].as_str().context("no id in the answer")?.to_string();
+    if !wait {
+        return print(&v);
+    }
+    eprintln!("lab: sim job {id} started");
+    let v = c.call(json!({"cmd": "wait", "id": id}))?;
+    let dest = fetch(r, &id, to)?;
+    print(&v)?;
+    match std::fs::read_to_string(dest.join(simbench::SUMMARY_TEXT)) {
+        Ok(text) => print!("{text}"),
+        Err(e) => eprintln!("lab: no {} in {}: {e}", simbench::SUMMARY_TEXT, dest.display()),
+    }
+    println!("{}", dest.display());
+    finished_ok(&v)
 }
 
 fn build_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
@@ -493,51 +484,73 @@ fn build_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
 /// it went.
 fn wait_and_fetch(r: &Remote, c: &mut Conn, id: &str, to: Option<PathBuf>) -> Result<()> {
     let v = c.call(json!({"cmd": "wait", "id": id}))?;
-    let root = c.call(json!({"cmd": "status"}))?["root"]
-        .as_str()
-        .context("status names no root")?
-        .to_string();
-    let dest = fetch(r, &root, id, to)?;
+    let dest = fetch(r, id, to)?;
     print(&v)?;
     println!("{}", dest.display());
     finished_ok(&v)
 }
 
-/// Copies the host's `runs/<id>` into `to` (default `$RUSH_KEEP/lab`, else
-/// `./lab`) as `<to>/<id>`, through tar over the same ssh.
-fn fetch(r: &Remote, root: &str, id: &str, to: Option<PathBuf>) -> Result<PathBuf> {
-    proto::check_name("id", id)?;
+/// Copies the host's `runs/<id>` into `to` as `<to>/<id>`.
+fn fetch(r: &Remote, id: &str, to: Option<PathBuf>) -> Result<PathBuf> {
+    fetch_artifacts(r, id, to, Artifacts::Run, |_| ()).map(|(path, ())| path)
+}
+
+fn fetch_artifacts<T>(
+    r: &Remote,
+    id: &str,
+    to: Option<PathBuf>,
+    artifacts: Artifacts,
+    inspect: impl FnOnce(&Path) -> T,
+) -> Result<(PathBuf, T)> {
+    proto::check_job_id(id)?;
     let to = to.unwrap_or_else(
         || match std::env::var_os("RUSH_KEEP").filter(|v| !v.is_empty()) {
             Some(k) => PathBuf::from(k).join("lab"),
             None => PathBuf::from("lab"),
         },
     );
+    let mut archive = transfer::TempFile::new(&std::env::temp_dir())?;
+    let mut conn = r.connect()?;
+    conn.call(json!({"cmd": artifacts.command(), "id": id}))?;
+    transfer::receive_archive(&mut conn.0, &mut archive.file)?;
+    conn.reply()?;
     std::fs::create_dir_all(&to).with_context(|| format!("creating {}", to.display()))?;
-    let runs = format!("{}/runs", root.trim_end_matches('/'));
-    let mut src = r
-        .shell(&format!(
-            "tar -C {} -cf - {}",
-            sh_quote(&runs),
-            sh_quote(id)
-        ))
-        .stdout(Stdio::piped())
-        .spawn()
-        .context("starting the remote tar")?;
-    let st = Command::new("tar")
-        .arg("-C")
-        .arg(&to)
-        .arg("-xf")
-        .arg("-")
-        .stdin(src.stdout.take().unwrap())
-        .status()
-        .context("running tar")?;
-    let sst = src.wait()?;
-    ensure!(
-        sst.success() && st.success(),
-        "fetching runs/{id} failed (remote tar {sst}, local tar {st})"
-    );
-    Ok(to.join(id))
+    transfer::extract(&archive.path, &to, id, artifacts, inspect)
+}
+
+fn logs_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
+    let mut id = None;
+    let mut follow = false;
+    for arg in args {
+        match arg.as_str() {
+            "--follow" if !follow => follow = true,
+            _ if id.is_none() && !arg.starts_with('-') => id = Some(arg),
+            _ => bail!("unexpected {arg}\n\n{USAGE}"),
+        }
+    }
+    let id = id.context("usage: h2 lab logs <id|current> [--follow] --host NAME")?;
+    proto::check_log_id(&id)?;
+
+    let mut conn = r.connect()?;
+    conn.request(json!({"cmd": "logs", "id": id, "follow": follow}))?;
+    conn.log_reply()?;
+
+    let mut stdout = io::stdout().lock();
+    let color = stdout.is_terminal();
+    let received = transfer::receive_logs(&mut conn.0, |line| {
+        watch::write_line(&mut stdout, line, color)
+    });
+    if received
+        .as_ref()
+        .err()
+        .and_then(|error| error.downcast_ref::<io::Error>())
+        .is_some_and(|e| e.kind() == io::ErrorKind::BrokenPipe)
+    {
+        return Ok(());
+    }
+    received?;
+    conn.log_reply()?;
+    Ok(())
 }
 
 fn runs_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
@@ -573,17 +586,27 @@ fn runs_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
             _ => "-".into(),
         };
         println!(
-            "{} {} {} {} {} {} {}",
+            "{} {} {} {} {} {} {} {}",
             s("id"),
             s("kind"),
             s("state"),
             exit,
             dur,
             commit,
-            s("level")
+            s("level"),
+            s("name")
         );
+        if let (Some(last), Some(peak)) = (
+            j["last_footprint_bytes"].as_u64(),
+            j["peak_footprint_bytes"].as_u64(),
+        ) {
+            println!("    game memory: {last} bytes last, {peak} bytes peak");
+        }
         if let Some(e) = j["error"].as_str() {
             println!("    error: {e}");
+        }
+        if let Some(reason) = j["skip_reason"].as_str() {
+            println!("    {reason}");
         }
         for l in j["summary"].as_array().into_iter().flatten() {
             println!("    {}", l.as_str().unwrap_or(""));
@@ -659,38 +682,54 @@ fn current_branch() -> Result<String> {
     Ok(b)
 }
 
-/// Pushes each local branch to the host's checkout as `lab/<branch>` (forced:
-/// they are the lab's copies), over the lab's ssh. Returns each branch's
-/// commit. Uncommitted changes here are not in it; says so.
-fn sync(r: &Remote, repo: &str, branches: &[String]) -> Result<Vec<(String, String)>> {
-    let dirty = Command::new("git")
+/// Sends committed branch contents as git bundles and updates the host's
+/// lab refs. Known commits only need a ref update.
+fn sync(r: &Remote, branches: &[String]) -> Result<Vec<(String, String)>> {
+    let repo = Path::new(".");
+    let dirty = transfer::git(repo)
         .args(["status", "--porcelain", "--untracked-files=no"])
         .output()?;
     if !dirty.stdout.is_empty() {
         eprintln!("lab: this checkout has uncommitted changes; the host builds commits only");
     }
-    let mut out = Vec::new();
-    let mut push = Command::new("git");
-    push.args(["push", "--force", "--quiet"])
-        .arg(r.git_url(repo));
-    for b in branches {
-        proto::check_rev(b)?;
-        let o = Command::new("git")
-            .args(["rev-parse", "--verify", "--quiet"])
-            .arg(format!("refs/heads/{b}"))
-            .output()?;
-        ensure!(o.status.success(), "no local branch {b}");
-        let sha = String::from_utf8_lossy(&o.stdout).trim().to_string();
-        push.arg(format!("refs/heads/{b}:refs/heads/lab/{b}"));
-        out.push((b.clone(), sha));
+    let mut synced = Vec::new();
+    for branch in branches {
+        let (source, _) = transfer::branch_refs(branch)?;
+        let commit = transfer::resolve_commit(repo, &source)?
+            .with_context(|| format!("no local branch {branch}"))?;
+        let info = r
+            .connect()?
+            .call(json!({"cmd": "sync_bases", "branch": branch, "commit": commit}))?;
+        let mut bundle = if info["known"] == true {
+            None
+        } else {
+            let bases: Vec<String> = serde_json::from_value(info["bases"].clone())?;
+            Some(transfer::make_bundle(&source, &bases)?)
+        };
+        let bytes = match &bundle {
+            Some(bundle) => bundle.file.metadata()?.len(),
+            None => 0,
+        };
+        ensure!(
+            bytes <= proto::BUNDLE_MAX,
+            "git bundle is too large for lab sync"
+        );
+        let mut conn = r.connect()?;
+        conn.call(json!({"cmd": "sync", "branch": branch, "commit": commit, "bytes": bytes}))?;
+        if let Some(bundle) = &mut bundle {
+            bundle.file.rewind()?;
+            let w = conn.0.get_mut();
+            io::copy(&mut bundle.file, &mut *w)?;
+            w.flush()?;
+        }
+        let result = conn.reply()?;
+        ensure!(
+            result["commit"].as_str() == Some(commit.as_str()),
+            "unexpected commit from server"
+        );
+        synced.push((branch.clone(), commit));
     }
-    if r.ssh_overridden {
-        push.env("GIT_SSH_COMMAND", r.ssh.join(" "))
-            .env("GIT_SSH_VARIANT", "simple");
-    }
-    let st = push.status().context("running git push")?;
-    ensure!(st.success(), "git push to the lab host failed");
-    Ok(out)
+    Ok(synced)
 }
 
 /// `h2 lab record`: the user plays; their input goes to
@@ -701,7 +740,7 @@ pub fn record(args: Vec<String>) -> Result<()> {
         stats: Some(false),
         ..RunReq::default()
     };
-    let mut name = None;
+    let mut recording = None;
     let mut socket = None;
     let mut host_args = Vec::new();
     let mut it = args.into_iter();
@@ -709,8 +748,9 @@ pub fn record(args: Vec<String>) -> Result<()> {
         let mut val = || it.next().with_context(|| format!("{a} needs a value"));
         match a.as_str() {
             "--level" => req.level = Some(val()?),
+            "--name" => req.name = proto::job_name(&val()?)?.into(),
             "--difficulty" => req.difficulty = Some(val()?),
-            "--name" => name = Some(val()?),
+            "--record" => recording = Some(val()?),
             "--socket" => socket = Some(PathBuf::from(val()?)),
             "--root" | "--repo" | "--disc" | "--h2" | "--out" | "--data" => {
                 host_args.push(a.clone());
@@ -720,6 +760,7 @@ pub fn record(args: Vec<String>) -> Result<()> {
             _ => bail!("unexpected {a}\n\n{USAGE}"),
         }
     }
+    proto::job_name(&req.name)?;
     let level = req
         .level
         .clone()
@@ -727,16 +768,18 @@ pub fn record(args: Vec<String>) -> Result<()> {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    let name = name.unwrap_or_else(|| format!("{level}-{secs}"));
+    let name = recording.unwrap_or_else(|| {
+        if proto::check_name("recording", &req.name).is_ok() {
+            req.name.clone()
+        } else {
+            format!("{level:.40}-{secs}")
+        }
+    });
     req.record = Some(name.clone());
     proto::validate_run(&req)?;
     let socket = socket.unwrap_or_else(default_socket);
-    if let Ok(s) = std::os::unix::net::UnixStream::connect(&socket) {
-        let mut c = Conn {
-            r: BufReader::new(Box::new(s.try_clone()?)),
-            w: Some(Box::new(s)),
-            child: None,
-        };
+    if let Ok(socket) = UnixStream::connect(&socket) {
+        let mut c = Conn::new(socket);
         let mut body = serde_json::to_value(&req)?;
         body["cmd"] = "run".into();
         let v = c.call(body)?;
@@ -858,6 +901,7 @@ fn bench_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
         let mut val = || it.next().with_context(|| format!("{a} needs a value"));
         match a.as_str() {
             "--level" => req.level = Some(val()?),
+            "--name" => req.name = proto::job_name(&val()?)?.into(),
             "--difficulty" => req.difficulty = Some(val()?),
             "--scale" => {
                 let n: u32 = val()?.parse().context("--scale needs a number")?;
@@ -881,6 +925,7 @@ fn bench_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
             _ => bail!("unexpected {a}\n\n{USAGE}"),
         }
     }
+    proto::job_name(&req.name)?;
     ensure!(req.level.is_some(), "h2 lab bench needs --level MAP");
     ensure!(
         (1..=36_000).contains(&ticks),
@@ -893,7 +938,11 @@ fn bench_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
     let (mut c, v) = launch(r, req.clone(), &src)?;
     let id = v["id"].as_str().context("no id in the answer")?.to_string();
     eprintln!("lab: bench job {id} started");
-    let measured = bench_measure(&mut c, &id, ticks, gameplay_timeout);
+    let measured = match bench_measure(&mut c, &id, ticks, gameplay_timeout) {
+        Ok(BenchOutcome::Skipped(v)) => return print(&v),
+        Ok(BenchOutcome::Captured(m)) => Ok(m),
+        Err(e) => Err(e),
+    };
     // Whatever happened, the game does not stay up.
     let _ = c.call(json!({"cmd": "stop", "id": id}));
     let ended = c.call(json!({"cmd": "wait", "id": id, "timeout": 60}));
@@ -907,18 +956,16 @@ fn bench_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
             );
         }
     };
-    let root = status(r)?["root"]
-        .as_str()
-        .context("status names no root")?
-        .to_string();
-    let dest = fetch(r, &root, &id, to)?;
+    let dest = fetch(r, &id, to)?;
     for (name, text) in [
         ("capture.json", &m.capture),
         ("render-stats.json", &m.render),
         ("profile-counters.json", &m.counters),
     ] {
-        std::fs::write(dest.join(name), text)
-            .with_context(|| format!("writing {}", dest.join(name).display()))?;
+        let mut file = transfer::TempFile::new(&dest)?;
+        file.file.write_all(text.as_bytes())?;
+        std::fs::rename(&file.path, dest.join(name))
+            .with_context(|| format!("saving {}", dest.join(name).display()))?;
     }
     let tag = {
         let mut t: Vec<String> = req.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
@@ -942,14 +989,27 @@ struct Measured {
     counters: String,
 }
 
+enum BenchOutcome {
+    Captured(Measured),
+    Skipped(Value),
+}
+
 /// With the job started: waits for it to run, then for gameplay with
 /// `map_ticks >= 30`, then reads the capture, `render.stats` and
 /// `profile.counters`.
-fn bench_measure(c: &mut Conn, id: &str, ticks: u64, gameplay_timeout: f64) -> Result<Measured> {
+fn bench_measure(
+    c: &mut Conn,
+    id: &str,
+    ticks: u64,
+    gameplay_timeout: f64,
+) -> Result<BenchOutcome> {
     // The build can take a long time; the game then has to boot.
     loop {
         let v = c.call(json!({"cmd": "wait", "id": id, "timeout": 0}))?;
         if v["finished"] == Value::Bool(true) {
+            if v["job"]["state"] == "skipped" {
+                return Ok(BenchOutcome::Skipped(v));
+            }
             bail!(
                 "the job ended before gameplay ({}{})",
                 v["job"]["state"].as_str().unwrap_or("?"),
@@ -995,11 +1055,11 @@ fn bench_measure(c: &mut Conn, id: &str, ticks: u64, gameplay_timeout: f64) -> R
     );
     let render = call(c, &["render"], 60.0).context("render.stats")?;
     let counters = call(c, &["counters"], 60.0).context("profile.counters")?;
-    Ok(Measured {
+    Ok(BenchOutcome::Captured(Measured {
         capture,
         render,
         counters,
-    })
+    }))
 }
 
 /// One line for a `profile.capture` answer: fps, busy-time percentiles and
@@ -1036,6 +1096,31 @@ pub fn bench_summary(cap: &Value, level: &str, tag: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_game_command_requires_a_label_before_discovering_the_host() {
+        for name in [None, Some("  ")] {
+            let mut args = vec!["--level".into(), "fixture".into()];
+            if let Some(label) = name {
+                args.extend(["--name".into(), label.into()]);
+            }
+            assert!(
+                record(args.clone())
+                    .unwrap_err()
+                    .to_string()
+                    .contains("--name")
+            );
+            args.extend(["--host".into(), "missing.invalid".into()]);
+            for cmd in ["run", "bench"] {
+                assert!(
+                    run(cmd, args.clone())
+                        .unwrap_err()
+                        .to_string()
+                        .contains("--name")
+                );
+            }
+        }
+    }
 
     #[test]
     fn the_bench_line_has_fps_busy_percentiles_and_phases_biggest_first() {

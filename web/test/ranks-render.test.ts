@@ -58,6 +58,7 @@ beforeAll(async () => {
             each: [
               createComponent(PlaylistMenu, { playlists: menu, current: "1", counts }),
               createComponent(PlaylistHead, { info: menu[1], id: "1", rows: board, capped: false }),
+              createComponent(PlaylistHead, { info: { ...menu[1]!, hasMapPackMaps: true }, id: "1", rows: [], capped: false, hasMapPack: false }),
               createComponent(Row, { r: board[0]!, place: 1, you: false }),
               createComponent(Row, { r: board[1]!, place: 2, you: false }),
               createComponent(Row, { r: board[2]!, place: 3, you: true }),
@@ -94,6 +95,10 @@ describe("the Ranked page, rendered", () => {
     expect(pieces).toContain("<dt>Ranked Players</dt><dd>3</dd>");
     expect(pieces).toContain("<dd>1,140</dd>"); // every ranked player's games added up
     expect(pieces).toContain('title="Every ranked player');
+  });
+
+  test("a Map Pack rotation tells a non-owner they can still match on the disc maps", () => {
+    expect(pieces).toContain("The console you last searched from is missing the Map Pack. You can still match on Halo 2 disc maps.");
   });
 
   test("a row is place, player, badge, XP, games, wins, win rate — bots and you marked", () => {

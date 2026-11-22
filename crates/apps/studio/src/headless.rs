@@ -18,6 +18,7 @@ const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 /// An offscreen studio.
 pub struct Headless {
+    _census: mem_watch::gpu::DeviceRegistration,
     device: wgpu::Device,
     queue: wgpu::Queue,
     renderer: WgpuRenderer,
@@ -41,7 +42,7 @@ impl Headless {
     /// A studio of `size` points at `scale` pixels per point. Errors when
     /// the machine has no wgpu adapter.
     pub fn new(size: [f32; 2], scale: f32) -> Result<Self> {
-        let instance = wgpu::Instance::default();
+        let instance = gfx::instance();
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             ..Default::default()
@@ -49,6 +50,7 @@ impl Headless {
         .map_err(|e| anyhow!("no wgpu adapter: {e}"))?;
         let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))
             .context("request a wgpu device")?;
+        let census = mem_watch::gpu::DeviceRegistration::new(&instance, &adapter, &device);
         let (mut ctx, fonts) = crate::context(None);
         let io = ctx.io_mut();
         io.set_display_size(size);
@@ -79,6 +81,7 @@ impl Headless {
         // Screenshots want the camera where it was put, not gliding there.
         studio.viewport.camera.smooth = false;
         Ok(Self {
+            _census: census,
             device,
             queue,
             renderer,
@@ -451,11 +454,392 @@ pub fn write_png(path: &Path, rgba: &[u8], w: u32, h: u32) -> Result<()> {
     Ok(())
 }
 
+/// A 2D RGBA8 texture's texels as tightly packed rows (the texture needs
+/// `COPY_SRC`).
+pub fn read_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+) -> Result<Vec<u8>> {
+    let (w, h) = (texture.width(), texture.height());
+    let row = (w * 4).div_ceil(256) * 256;
+    let buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: u64::from(row * h),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut enc = device.create_command_encoder(&Default::default());
+    enc.copy_texture_to_buffer(
+        texture.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buf,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(row),
+                rows_per_image: Some(h),
+            },
+        },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([enc.finish()]);
+    buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+    device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .map_err(|e| anyhow!("wgpu poll: {e}"))?;
+    let data = buf
+        .slice(..)
+        .get_mapped_range()
+        .map_err(|e| anyhow!("map the readback: {e}"))?;
+    let mut out = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h as usize {
+        let start = y * row as usize;
+        out.extend_from_slice(&data[start..start + (w * 4) as usize]);
+    }
+    Ok(out)
+}
+
+/// Dear ImGui allows one context at a time: the tests take turns.
+#[cfg(test)]
+pub(crate) static ONE_CONTEXT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::Action;
     use scenario_edit::{BlockKind, fixture};
+
+    #[cfg(unix)]
+    #[test]
+    fn the_game_link_shows_in_every_tool() {
+        use crate::ToolKind;
+        use crate::play::Play;
+        use crate::play::testing::{Temp, fake};
+        use agent_proto::sim::SessionKind;
+
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let mut app = App::new();
+        // This test's link is independent of any real game on the machine.
+        h.studio.play.play = Play::new();
+        for tool in ToolKind::ALL {
+            app.dispatch(Action::SetTool(tool));
+            h.frames(&mut app, 3).unwrap();
+            assert!(
+                h.scene
+                    .items
+                    .iter()
+                    .any(|i| { i.window == "##studio-bar" && i.label.starts_with("No game") }),
+                "game link missing in {tool:?}",
+            );
+            assert!(
+                h.scene
+                    .items
+                    .iter()
+                    .any(|i| { i.window.ends_with("###game") && i.label.starts_with("No game") }),
+                "Game tab missing in {tool:?}",
+            );
+            // No map is open, so F5 reaches Play and reports the missing map.
+            let log_len = app.log().len();
+            h.step(&mut app, &Step::Key(dear_imgui_rs::Key::F5, 1))
+                .unwrap();
+            assert!(app.log().len() > log_len);
+            assert!(
+                app.status()
+                    .is_some_and(|s| s.text().contains("open a map"))
+            );
+        }
+
+        let temp = Temp::new("bar-link");
+        app.set_data_root(temp.0.join("data"));
+        app.dispatch(Action::OpenSource(temp.map("example")));
+        let game = fake::Game::start("bar-link", "example", SessionKind::Local);
+        fake::pair_for_view(&mut h.studio.play.play, &mut app, &game);
+        h.frames(&mut app, 3).unwrap();
+        assert!(!h.studio.play.play.live_edits);
+        assert!(
+            h.scene
+                .items
+                .iter()
+                .any(|i| { i.window == "##studio-bar" && i.label.starts_with("Viewing") }),
+        );
+        let edit = h
+            .scene
+            .items
+            .iter()
+            .find(|i| i.window == "##studio-bar" && i.label.starts_with("Edit"))
+            .unwrap()
+            .label
+            .clone();
+        h.step(
+            &mut app,
+            &Step::Click(format!("##studio-bar>{edit}"), Button::Left),
+        )
+        .unwrap();
+        assert!(h.studio.play.play.live_edits);
+    }
+
+    #[test]
+    fn the_default_layout_places_every_window() {
+        use crate::ToolKind;
+        let Some((_turn, mut h)) = headless() else { return };
+        let source = crate::app::map_cards_tests::Temp::new("workspaces");
+        let mut app = App::new();
+        app.set_data_root(source.0.join("data"));
+        let workspaces = [
+            (ToolKind::Scenario, ["maps", "viewport", "inspector"]),
+            (ToolKind::Tags, ["tags", "viewport", "inspector"]),
+            (ToolKind::Scripts, ["scripts", "viewport", "inspector"]),
+            (ToolKind::Variants, ["variants-list", "variants-settings", "variants-inspector"]),
+            (ToolKind::Playlists, ["playlists-list", "playlists-entries", "playlists-inspector"]),
+            (ToolKind::UiScreens, ["screens-list", "screens-preview", "screens-inspector"]),
+            (ToolKind::Hud, ["hud-list", "hud-preview", "hud-inspector"]),
+        ];
+        // Each workspace's own IDs use the same dock geometry. Scenario,
+        // Tags and Scripts are tabs of Map, so they share its centre and
+        // right.
+        let mut regions = None;
+        let mut workspace_keys = std::collections::HashSet::new();
+        for (tool, keys) in workspaces {
+            if !matches!(tool, ToolKind::Tags | ToolKind::Scripts) {
+                assert!(keys.iter().all(|key| workspace_keys.insert(*key)));
+            }
+            app.dispatch(Action::SetTool(tool));
+            h.frames(&mut app, 4).unwrap();
+            let actual = keys.map(|key| h.scene.find(&format!("win:###{key}")).unwrap().0);
+            assert!(actual[0][2] < actual[1][0] && actual[1][2] < actual[2][0]);
+            if let Some(regions) = regions {
+                assert_eq!(actual, regions, "{tool:?} must fit the same regions");
+            }
+            regions = Some(actual);
+        }
+    }
+
+    #[test]
+    fn the_saved_layout_with_the_three_old_ids_loads() {
+        use crate::ToolKind;
+        let Some((_turn, mut first)) = headless() else { return };
+        let mut app = App::new();
+        let source = crate::app::map_cards_tests::Temp::new("legacy-layout");
+        let path = source.0.join("invented.map");
+        std::fs::write(&path, fixture::fixture()).unwrap();
+        app.set_data_root(source.0.join("data"));
+        app.dispatch(Action::OpenSource(path));
+        first.frames(&mut app, 4).unwrap();
+        let before = ["outliner", "viewport", "inspector"].map(|name| {
+            first.scene.find(&format!("win:###{name}")).unwrap().0
+        });
+        let mut settings = String::new();
+        first.ctx.save_ini_settings(&mut settings);
+        drop(first);
+
+        let legacy = settings
+            .split("
+
+")
+            .filter(|section| {
+                section.starts_with("[Docking]")
+                    || ["outliner", "viewport", "inspector", "log", "game"]
+                        .iter()
+                        .any(|name| section.starts_with(&format!("[Window][###{name}]")))
+            })
+            .collect::<Vec<_>>()
+            .join("
+
+");
+        assert!(legacy.contains("[Window][###outliner]"));
+        assert!(legacy.contains("[Docking]"));
+
+        let mut h = Headless::new([1280.0, 800.0], 1.0).unwrap();
+        h.ctx.load_ini_settings(&legacy);
+        h.frames(&mut app, 4).unwrap();
+        let after = ["outliner", "viewport", "inspector"].map(|name| {
+            h.scene.find(&format!("win:###{name}")).unwrap().0
+        });
+        assert_eq!(after, before);
+
+        app.dispatch(Action::SetTool(ToolKind::Variants));
+        h.frames(&mut app, 4).unwrap();
+        let variants = ["variants-list", "variants-settings", "variants-inspector"].map(|name| {
+            h.scene.find(&format!("win:###{name}")).unwrap().0
+        });
+        assert_eq!(variants, before);
+    }
+
+    #[test]
+    fn the_legacy_scenario_click_switches_to_map() {
+        use crate::ToolKind;
+        let Some((_turn, mut h)) = headless() else { return };
+        let source = crate::app::map_cards_tests::Temp::new("legacy-scenario");
+        let mut app = App::new();
+        app.set_data_root(source.0.join("data"));
+        app.dispatch(Action::SetTool(ToolKind::Variants));
+        h.frames(&mut app, 3).unwrap();
+        let script = crate::script::parse("click ###tools>Scenario").unwrap();
+        h.step(&mut app, &script[0]).unwrap();
+        assert_eq!(app.tool, ToolKind::Scenario);
+        assert!(h.scene.find("##studio-bar>###tool-Map").is_ok());
+        assert!(h.scene.find("Open a disc or map...").is_ok());
+    }
+
+    #[test]
+    fn the_toolbar_has_icon_buttons_and_visible_snap_steps() {
+        let Some((_turn, mut h)) = headless() else { return };
+        let source = crate::app::map_cards_tests::Temp::new("toolbar");
+        let path = source.0.join("invented.map");
+        std::fs::write(&path, fixture::fixture()).unwrap();
+        let mut app = App::new();
+        app.set_data_root(source.0.join("data"));
+        app.dispatch(Action::OpenSource(path));
+        let steps = crate::script::parse(
+            "click Rotate (E); click ##Grid step; click Combo>1; click ##Angle step; click Combo>45°",
+        )
+        .unwrap();
+        crate::probe::want(crate::script::labels(crate::script::targets(&steps)));
+        h.frames(&mut app, 4).unwrap();
+        for step in &steps {
+            h.step(&mut app, step).unwrap();
+        }
+        assert_eq!(h.studio.viewport.op, crate::viewport::GizmoOp::Rotate);
+        let snap = h.studio.viewport.snap;
+        assert!(snap.grid && snap.angle);
+        assert_eq!((snap.grid_step, snap.angle_step), (1.0, 45.0));
+    }
+
+    #[test]
+    fn ui_colours_come_from_the_theme() {
+        fn check(file: &Path) {
+            if file.is_dir() {
+                for entry in file.read_dir().unwrap() {
+                    check(&entry.unwrap().path());
+                }
+                return;
+            }
+            if file.extension().and_then(|e| e.to_str()) != Some("rs") {
+                return;
+            }
+            let source = std::fs::read_to_string(file).unwrap();
+            let code = source.lines()
+                .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
+                .collect::<Vec<_>>()
+                .join("
+");
+            for value in code.split('[').filter_map(|s| s.split_once(']').map(|(v, _)| v)) {
+                let numbers: Vec<_> = value.split(',').map(str::trim).filter(|v| !v.is_empty()).collect();
+                assert!(
+                    numbers.len() != 4 || !numbers.iter().all(|n| n.parse::<f32>().is_ok()),
+                    "{} has a colour literal [{value}]",
+                    file.display()
+                );
+            }
+            for constructor in ["rgb(", "rgba(", "from_rgb(", "from_rgba("] {
+                assert!(!code.contains(constructor), "{} calls {constructor}", file.display());
+            }
+        }
+
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        check(&src.join("ui.rs"));
+        check(&src.join("ui"));
+    }
+
+    /// `theme::panel_body` and `theme::bounded_list` are the only callers of
+    /// `child_window` in `ui.rs`, `ui/`, `fields.rs` and `fields/`.
+    #[test]
+    fn child_windows_come_from_the_panel_helpers() {
+        fn check(file: &Path) {
+            if file.is_dir() {
+                for entry in file.read_dir().unwrap() {
+                    check(&entry.unwrap().path());
+                }
+                return;
+            }
+            if file.extension().and_then(|e| e.to_str()) != Some("rs") {
+                return;
+            }
+            let source = std::fs::read_to_string(file).unwrap();
+            for line in source.lines() {
+                let code = line.split_once("//").map_or(line, |(code, _)| code);
+                assert!(
+                    !code.contains("child_window("),
+                    "{} calls child_window; use theme::panel_body or theme::bounded_list",
+                    file.display()
+                );
+            }
+        }
+
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        check(&src.join("ui.rs"));
+        check(&src.join("ui"));
+        check(&src.join("fields.rs"));
+        check(&src.join("fields"));
+    }
+
+    /// At 1000 by 420 every tool draws no child window but a panel body or
+    /// a bounded list, and the scene outliner's filter is above its body.
+    /// Skipped without a wgpu adapter.
+    #[test]
+    fn every_panel_scrolls_as_a_whole_on_a_short_window() {
+        use crate::ToolKind;
+        let turn = ONE_CONTEXT.lock().unwrap_or_else(|e| e.into_inner());
+        let mut h = match Headless::new([1000.0, 420.0], 1.0) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("skipping: {e}");
+                return;
+            }
+        };
+        let dir = std::env::temp_dir().join(format!("h2-editor-short-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let map = dir.join("example.map");
+        std::fs::write(&map, fixture::fixture()).unwrap();
+        let mut app = App::new();
+        app.set_data_root(dir.join("data"));
+        app.dispatch(Action::OpenSource(map));
+        // The ids of `theme::panel_body` and `theme::bounded_list` callers
+        // (and the empty card).
+        const ALLOWED: [&str; 10] = [
+            "##outliner-body",
+            // The script editor's text scrolls on its own, as an editor does.
+            "##rules-body",
+            "##h1-outliner-body",
+            "##log-lines",
+            "##map-grid",
+            "##variant-list",
+            "##playlist-list",
+            "##palette-results",
+            "##empty-card",
+            "##bsp-bytes",
+        ];
+        for tool in [
+            ToolKind::Scenario,
+            ToolKind::Tags,
+            ToolKind::Variants,
+            ToolKind::Playlists,
+            ToolKind::UiScreens,
+            ToolKind::Hud,
+        ] {
+            app.dispatch(Action::SetTool(tool));
+            h.frames(&mut app, 4).unwrap();
+            for window in &h.scene.windows {
+                let Some((_, child)) = window.name.rsplit_once('/') else {
+                    continue;
+                };
+                let id = child.rsplit_once('_').map_or(child, |(id, _)| id);
+                assert!(
+                    !id.starts_with("##") || ALLOWED.contains(&id) || id.starts_with("##Table"),
+                    "{tool:?} draws child window {:?}",
+                    window.name
+                );
+            }
+        }
+        drop(turn);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// One real frame of the shell over the invented test map, read back:
     /// the UI drew something other than the clear colour, and the PNG
@@ -489,8 +873,8 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// The UI Screens tool through its widgets, as a user would: pick the
-    /// sign-in prompt's code page in the tree, press Up and A on the pad,
+    /// The UI Screens tool through its widgets, as a user would: filter the
+    /// tree to the sign-in prompt and pick its code page, press Up and A on the pad,
     /// hover the picture. The page steps, the picture is on screen, and the
     /// hovered widget's JSON is found. Skipped without a wgpu adapter.
     #[test]
@@ -504,8 +888,12 @@ mod tests {
         app.dispatch(Action::SetTool(ToolKind::UiScreens));
         h.frames(&mut app, 3).unwrap();
         let click = |t: &str| Step::Click(t.into(), Button::Left);
+        // Filter first: unfiltered, the sign-in screen sits far enough down
+        // the list that its states start at the panel's bottom edge, and a
+        // click at a row's middle lands below the panel.
         for step in [
-            click("signin-code"),
+            click("##ui-filter"),
+            Step::Type("signin-code".into()),
             click("code##ui-signin-code-code"),
             click("Up##pad-Up"),
             click("Right##pad-Right"),
@@ -613,10 +1001,85 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[test]
+    fn enter_in_go_to_anything_dispatches_the_selected_command() {
+        use dear_imgui_rs::Key;
+
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let t = crate::app::map_cards_tests::Temp::new("palette-ui");
+        let map = t.0.join("example.map");
+        std::fs::write(&map, fixture::fixture()).unwrap();
+        let mut app = App::new();
+        app.set_data_root(t.0.join("data"));
+        app.dispatch(Action::OpenSource(map));
+        for x in [7.0, 9.0] {
+            app.dispatch(Action::MovePlacement {
+                block: BlockKind::NetgameFlags,
+                index: 0,
+                position: [x, 3.0, 3.0],
+                ypr: None,
+            });
+        }
+        app.dispatch(Action::Undo);
+        assert!(app.can_undo() && app.can_redo());
+        h.frames(&mut app, 3).unwrap();
+
+        h.ctx.io_mut().add_key_event(Key::ModCtrl, true);
+        h.step(&mut app, &Step::Key(Key::P, 1)).unwrap();
+        h.ctx.io_mut().add_key_event(Key::ModCtrl, false);
+        h.frames(&mut app, 2).unwrap();
+        h.scene.find("win:###palette").unwrap();
+        h.step(&mut app, &Step::Type("cmd+z".into())).unwrap();
+        // Undo is first and Redo is second. Run Redo using the keyboard.
+        h.step(&mut app, &Step::Key(Key::DownArrow, 1)).unwrap();
+        h.step(&mut app, &Step::Key(Key::Enter, 1)).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        assert!(!app.can_redo());
+        assert!(h.scene.find("win:###palette").is_err());
+    }
+
+    #[test]
+    fn cmd_s_rewrites_an_open_package_without_a_dialog() {
+        use dear_imgui_rs::Key;
+
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let t = crate::app::map_cards_tests::Temp::new("save-package-ui");
+        let map = t.0.join("example.map");
+        std::fs::write(&map, fixture::fixture()).unwrap();
+        let mut app = App::new();
+        app.set_data_root(t.0.join("data"));
+        app.dispatch(Action::OpenSource(map));
+        app.dispatch(Action::SavePackage(app.session.form_defaults()));
+        app.dispatch(Action::SelectMap("example".into()));
+        app.dispatch(Action::OpenPackageEntry("example-edit".into()));
+        let manifest = app.session.maps_dir().join("example-edit/manifest.toml");
+        let first = std::fs::read(&manifest).unwrap();
+        app.dispatch(Action::MovePlacement {
+            block: BlockKind::NetgameFlags,
+            index: 0,
+            position: [7.0, 3.0, 3.0],
+            ypr: None,
+        });
+        assert!(app.is_dirty());
+        h.frames(&mut app, 3).unwrap();
+
+        h.ctx.io_mut().add_key_event(Key::ModCtrl, true);
+        h.step(&mut app, &Step::Key(Key::S, 1)).unwrap();
+        h.ctx.io_mut().add_key_event(Key::ModCtrl, false);
+        assert!(app.package_form.is_none());
+        assert!(!app.is_dirty());
+        assert_ne!(std::fs::read(manifest).unwrap(), first);
+    }
+
     /// The Tags tool through its widgets: open the weapon group in the
     /// tree, pick the weapon, tick a flag and pick an enum value in the
     /// field panel. The edits land in the document, as undo steps, and
-    /// the hex pane shows the element. Skipped without a wgpu adapter.
+    /// a click on a row selects it for Data and bytes, which keeps it while
+    /// the mouse moves. Skipped without a wgpu adapter.
     #[test]
     fn the_tags_tool_edits_a_field_through_its_widgets() {
         use crate::app::tag_tests;
@@ -627,38 +1090,55 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("h2-editor-tags-ui-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (mut app, ..) = tag_tests::app(&dir);
-        h.frames(&mut app, 3).unwrap();
+        h.frames(&mut app, 4).unwrap();
         let click = |t: &str| Step::Click(t.into(), Button::Left);
         h.step(&mut app, &click("weap  (1)")).unwrap();
         h.frames(&mut app, 2).unwrap();
         h.step(&mut app, &click("objects\\test\\blaster")).unwrap();
         h.frames(&mut app, 2).unwrap();
         assert_eq!(app.tags.selected, Some(tag_tests::weap_id()));
-        h.step(&mut app, &click("quiet##b1")).unwrap();
+        h.step(&mut app, &click("Flags")).unwrap();
+        h.step(&mut app, &click("Quiet##b1")).unwrap();
         h.frames(&mut app, 2).unwrap();
-        let flags = app.tags.read(tag_tests::WEAP + 4, 2).unwrap();
+        let flags = app
+            .tags
+            .read(tag_tests::weap_id(), tag_tests::WEAP + 4, 2)
+            .unwrap();
         assert_eq!(flags, [3, 0], "both flags set");
         assert!(app.tags.is_changed(tag_tests::weap_id()));
-        // The block lists its elements; the hex pane follows the mouse.
-        assert!(
-            h.scene
-                .items
-                .iter()
-                .any(|i| i.label.starts_with("parts  [2]"))
-        );
-        h.step(&mut app, &Step::Hover("loud##b0".into())).unwrap();
-        h.frames(&mut app, 2).unwrap();
-        assert_eq!(
+        // One line per row: labels in words, the changed row dotted, the
+        // list's size beside its name.
+        assert!(h.scene.items.iter().any(|i| i.label == "Parts"));
+        let drawn = &h.studio.tags.panel.drawn;
+        let flags = drawn.iter().find(|d| d.path == "flags").unwrap();
+        assert_eq!((flags.label.as_str(), flags.edited), ("Flags", true));
+        let parts = drawn.iter().find(|d| d.path == "parts").unwrap();
+        assert_eq!(parts.summary.as_deref(), Some("2 items"));
+        // A click on a label selects the row; Data and bytes follows the
+        // selection, not the mouse.
+        h.step(&mut app, &click("Speed##label")).unwrap();
+        let selected = |h: &Headless, app: &App| {
             h.studio
                 .tags
                 .panel
-                .hovered
-                .as_ref()
-                .map(|h| h.name.as_str()),
-            Some("flags")
-        );
+                .selected_row(&app.tags, tag_tests::weap_id())
+                .map(|r| r.path)
+        };
+        assert_eq!(selected(&h, &app).as_deref(), Some("speed"));
+        h.step(&mut app, &Step::Hover("Loud##b0".into())).unwrap();
+        h.step(&mut app, &Step::Move("Parts".into())).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(selected(&h, &app).as_deref(), Some("speed"), "the mouse moving keeps it");
+        h.step(&mut app, &click("Loud##b0")).unwrap();
+        assert_eq!(selected(&h, &app).as_deref(), Some("flags"));
         app.dispatch(Action::Undo);
-        assert_eq!(app.tags.read(tag_tests::WEAP + 4, 2).unwrap(), [1, 0]);
+        app.dispatch(Action::Undo);
+        assert_eq!(
+            app.tags
+                .read(tag_tests::weap_id(), tag_tests::WEAP + 4, 2)
+                .unwrap(),
+            [1, 0]
+        );
         let (rgba, _) = h.capture(&mut app, 2).unwrap();
         let distinct: std::collections::HashSet<[u8; 4]> = rgba
             .as_chunks::<4>()
@@ -671,11 +1151,370 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The pick dialog through its widgets: an enum value, a number
+    /// outside the names, a reference's No tag and then a tag, and an
+    /// unnamed bit. Each pick is one undo step, and the dialog lists what
+    /// `tag.choices` returns. Skipped without a wgpu adapter.
+    #[test]
+    fn the_pick_dialog_sets_choices_references_and_unnamed_bits() {
+        use crate::app::tag_tests;
+        use crate::script::{Button, Step};
+        use studio_proto::method as m;
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("h2-editor-pick-ui-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut app, ..) = tag_tests::app(&dir);
+        h.frames(&mut app, 4).unwrap();
+        let click = |t: &str| Step::Click(t.into(), Button::Left);
+        h.step(&mut app, &click("weap  (1)")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        h.step(&mut app, &click("objects\\test\\blaster")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        let weap = tag_tests::weap_id();
+        let id = format!("{:#010x}", weap.0);
+        let mut api = crate::api::Api::new();
+        let names = |v: &serde_json::Value, list: &str| -> Vec<String> {
+            v[list]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x["name"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        let bytes_at = |app: &App, at: u32, n: u32| app.tags.read(weap, at, n).unwrap();
+
+        // An enum: its named values, one picked.
+        h.step(&mut app, &click("Auto##choose")).unwrap();
+        let mode = api
+            .call(&mut app, m::TAG_CHOICES, serde_json::json!({"tag": id, "path": "mode"}))
+            .unwrap();
+        assert_eq!(h.studio.tags.panel.listed, names(&mode, "values"));
+        assert_eq!(h.studio.tags.panel.listed, ["Off", "On", "Auto"]);
+        h.step(&mut app, &click("On##pick-1")).unwrap();
+        assert_eq!(bytes_at(&app, tag_tests::WEAP + 6, 2), [1, 0]);
+        assert!(h.studio.tags.panel.listed.is_empty(), "the dialog closed");
+
+        // A number no name has.
+        h.step(&mut app, &click("On##choose")).unwrap();
+        h.step(&mut app, &click("Enter a number...##pick-number")).unwrap();
+        h.step(&mut app, &Step::Type("9".into())).unwrap();
+        h.step(&mut app, &Step::Key(dear_imgui_rs::Key::Enter, 1)).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(bytes_at(&app, tag_tests::WEAP + 6, 2), [9, 0]);
+        let drawn = &h.studio.tags.panel.drawn;
+        let mode_row = drawn.iter().find(|d| d.path == "mode").unwrap();
+        assert_eq!(mode_row.summary.as_deref(), Some("Value 9 (not named)"));
+
+        // A reference in the list's first element: No tag, then the kit
+        // again.
+        h.step(&mut app, &click("Parts")).unwrap();
+        h.step(&mut app, &click("0  kit")).unwrap();
+        h.step(&mut app, &click("Change...##change")).unwrap();
+        let item = api
+            .call(&mut app, m::TAG_CHOICES, serde_json::json!({"tag": id, "path": "parts[0].item"}))
+            .unwrap();
+        assert_eq!(h.studio.tags.panel.listed, names(&item, "tags"));
+        assert_eq!(h.studio.tags.panel.listed, ["objects\\test\\kit"]);
+        h.step(&mut app, &click("No tag##pick-none")).unwrap();
+        let none = bytes_at(&app, tag_tests::PARTS, 8);
+        assert_eq!(none[..4], map::FourCC(*b"itmc").as_u32().to_le_bytes(), "No tag keeps the kind");
+        assert_eq!(none[4..], u32::MAX.to_le_bytes());
+        h.step(&mut app, &click("Change...##change")).unwrap();
+        h.step(&mut app, &click("objects\\test\\kit##pick-t0")).unwrap();
+        assert_eq!(bytes_at(&app, tag_tests::PARTS + 4, 4), fixture::id(3).0.to_le_bytes());
+
+        // An unnamed bit, in the folded group.
+        h.step(&mut app, &click("Flags")).unwrap();
+        h.step(&mut app, &click("Unnamed bits")).unwrap();
+        h.step(&mut app, &click("Bit 5##b5")).unwrap();
+        assert_eq!(bytes_at(&app, tag_tests::WEAP + 4, 2), [0x21, 0]);
+        let drawn = &h.studio.tags.panel.drawn;
+        let flags = drawn.iter().find(|d| d.path == "flags").unwrap();
+        assert_eq!(flags.summary.as_deref(), Some("1 of 2 on: Loud, Bit 5"));
+
+        // One undo step each.
+        app.dispatch(Action::Undo);
+        assert_eq!(bytes_at(&app, tag_tests::WEAP + 4, 2), [1, 0]);
+        app.dispatch(Action::Undo);
+        assert_eq!(bytes_at(&app, tag_tests::PARTS + 4, 4), u32::MAX.to_le_bytes());
+        app.dispatch(Action::Undo);
+        app.dispatch(Action::Undo);
+        assert_eq!(bytes_at(&app, tag_tests::WEAP + 6, 2), [1, 0]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The Tags tool draws exactly the rows `tag.fields` returns, and a row
+    /// shows when a change takes effect only with a game connected: none
+    /// unpaired; with the fake game viewing, the list's `After reload`.
+    #[cfg(unix)]
+    #[test]
+    fn tag_rows_match_tag_fields_and_chips_need_a_game() {
+        use crate::app::tag_tests;
+        use crate::play::Play;
+        use crate::play::testing::{Temp, fake};
+        use crate::script::{Button, Step};
+        use agent_proto::sim::SessionKind;
+        use studio_proto::method as m;
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let t = Temp::new("tag-rows-chips");
+        let (mut app, ..) = tag_tests::app(&t.0);
+        h.studio.play.play = Play::new();
+        h.frames(&mut app, 4).unwrap();
+        let click = |t: &str| Step::Click(t.into(), Button::Left);
+        h.step(&mut app, &click("weap  (1)")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        h.step(&mut app, &click("objects\\test\\blaster")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        let mut api = crate::api::Api::new();
+        let weap = format!("{:#010x}", tag_tests::weap_id().0);
+        let mut same_rows = |h: &Headless, app: &mut App| {
+            let fields = api
+                .call(app, m::TAG_FIELDS, serde_json::json!({ "tag": weap }))
+                .unwrap();
+            let rows = fields["fields"].as_array().unwrap().clone();
+            let drawn = &h.studio.tags.panel.drawn;
+            assert_eq!(drawn.len(), rows.len(), "one drawn row per tag.fields row");
+            for (d, r) in drawn.iter().zip(&rows) {
+                assert_eq!(r["path"], d.path.as_str());
+                assert_eq!(r["label"], d.label.as_str());
+                assert_eq!(r["edited"], d.edited);
+                assert_eq!(r["chip"], serde_json::json!(d.chip));
+                assert_eq!(r["summary"], serde_json::json!(d.summary));
+            }
+            rows
+        };
+        let unpaired = same_rows(&h, &mut app);
+        assert!(unpaired.iter().all(|r| r["chip"].is_null()), "no chip unpaired");
+        assert!(h.studio.tags.panel.drawn.iter().all(|d| d.chip.is_none()));
+
+        let game = fake::Game::start("tag-rows-chips", "example", SessionKind::Local);
+        fake::pair_for_view(&mut h.studio.play.play, &mut app, &game);
+        h.frames(&mut app, 3).unwrap();
+        assert_eq!(h.studio.tags.panel.link, crate::fields::Link::Viewing);
+        let viewing = same_rows(&h, &mut app);
+        let parts = viewing.iter().find(|r| r["path"] == "parts").unwrap();
+        assert_eq!(parts["chip"], "After reload");
+        let speed = viewing.iter().find(|r| r["path"] == "speed").unwrap();
+        assert!(speed["chip"].is_null(), "an unchanged not_known field has no chip");
+        assert_eq!(speed["effect"]["id"], "not_known");
+    }
+
+    /// A list's rows are `index  title`, one element open at a time; Open
+    /// alone shows an element as the whole panel under breadcrumbs, a
+    /// crumb returns to the root, and Back restores the element. Skipped
+    /// without a wgpu adapter.
+    #[test]
+    fn a_list_opens_one_element_and_shows_it_alone() {
+        use crate::app::{NavAction, tag_tests};
+        use crate::script::{Button, Step};
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("h2-editor-lists-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut app, ..) = tag_tests::app(&dir);
+        h.frames(&mut app, 4).unwrap();
+        let click = |t: &str| Step::Click(t.into(), Button::Left);
+        h.step(&mut app, &click("weap  (1)")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        h.step(&mut app, &click("objects\\test\\blaster")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        let drawn = |h: &Headless| -> Vec<String> {
+            h.studio.tags.panel.drawn.iter().map(|d| d.path.clone()).collect()
+        };
+        h.step(&mut app, &click("Parts")).unwrap();
+        assert!(h.scene.items.iter().any(|i| i.label == "0  kit"), "titled by its item");
+        assert!(!h.scene.items.iter().any(|i| i.label.starts_with("element")), "no number box");
+        assert!(!drawn(&h).iter().any(|p| p.starts_with("parts[")), "none open at first");
+
+        h.step(&mut app, &click("1")).unwrap();
+        let open = drawn(&h);
+        assert!(open.contains(&"parts[1].item".to_owned()), "{open:?}");
+        h.step(&mut app, &click("0  kit")).unwrap();
+        let open = drawn(&h);
+        assert!(open.contains(&"parts[0].item".to_owned()), "{open:?}");
+        assert!(!open.iter().any(|p| p.starts_with("parts[1]")), "one open at a time");
+
+        h.step(&mut app, &click("Open alone##alone1")).unwrap();
+        assert_eq!(app.nav_location().element.as_deref(), Some("parts[1]"));
+        assert_eq!(drawn(&h), ["parts[1].item", "parts[1].value"]);
+        h.step(&mut app, &click("weap: objects\\test\\blaster##crumb0")).unwrap();
+        assert_eq!(app.nav_location().element, None);
+        assert!(drawn(&h).contains(&"parts".to_owned()), "back at the root");
+
+        app.dispatch(Action::Navigate(NavAction::Back));
+        h.frames(&mut app, 3).unwrap();
+        assert_eq!(drawn(&h), ["parts[1].item", "parts[1].value"], "Back restores the element");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The Tags header says how a change reaches the game in each link
+    /// state, counts unsaved changes and shows no datum or address; a
+    /// changed field reads `Waiting` while viewing and `Sent · Not known`
+    /// with Edit on. `tag.view`'s `header` is the drawn lines.
+    #[cfg(unix)]
+    #[test]
+    fn the_tags_header_says_how_changes_reach_the_game() {
+        use crate::app::tag_tests;
+        use crate::fields::Link;
+        use crate::play::Play;
+        use crate::play::testing::{Temp, fake};
+        use crate::script::{Button, Step};
+        use agent_proto::sim::SessionKind;
+        use studio_proto::method as m;
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let t = Temp::new("tag-header-link");
+        let (mut app, ..) = tag_tests::app(&t.0);
+        h.studio.play.play = Play::new();
+        h.frames(&mut app, 4).unwrap();
+        let click = |t: &str| Step::Click(t.into(), Button::Left);
+        h.step(&mut app, &click("weap  (1)")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        h.step(&mut app, &click("objects\\test\\blaster")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        let mut api = crate::api::Api::new();
+        let weap = format!("{:#010x}", tag_tests::weap_id().0);
+        let header = |api: &mut crate::api::Api, h: &Headless, app: &mut App| {
+            let view = api.call(app, m::TAG_VIEW, serde_json::json!({})).unwrap();
+            let drawn = h.studio.tags.header.clone();
+            assert_eq!(
+                view["header"],
+                serde_json::json!(drawn),
+                "tag.view's header is the drawn lines"
+            );
+            assert!(
+                drawn.iter().all(|l| !l.contains("0x")),
+                "no datum or address in the header: {drawn:?}"
+            );
+            drawn
+        };
+        let chip = |h: &Headless, path: &str| {
+            h.studio.tags.panel.drawn.iter().find(|d| d.path == path).and_then(|d| d.chip)
+        };
+
+        let set_speed = |app: &mut App, v: f32| {
+            app.dispatch(Action::Tag(crate::app::TagAction::Write(crate::app::TagWrite {
+                tag: tag_tests::weap_id(),
+                address: tag_tests::WEAP,
+                bytes: v.to_le_bytes().to_vec(),
+                label: "speed".into(),
+                merge: None,
+            })));
+            app.dispatch(Action::Tag(crate::app::TagAction::Seal));
+        };
+
+        let off = header(&mut api, &h, &mut app);
+        assert_eq!(off[..2], ["weap  blaster", "objects\\test\\blaster"]);
+        assert_eq!(off[2..], ["Changes are saved with the map."]);
+        set_speed(&mut app, 3.0);
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(
+            header(&mut api, &h, &mut app)[1],
+            "objects\\test\\blaster · 1 unsaved change"
+        );
+        assert_eq!(chip(&h, "speed"), None, "no chip with no game");
+        app.dispatch(Action::Undo);
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(header(&mut api, &h, &mut app)[1], "objects\\test\\blaster");
+
+        let game = fake::Game::start("tag-header-link", "example", SessionKind::Local);
+        fake::pair_for_view(&mut h.studio.play.play, &mut app, &game);
+        h.frames(&mut app, 3).unwrap();
+        assert_eq!(h.studio.tags.panel.link, Link::Viewing);
+        let viewing = header(&mut api, &h, &mut app);
+        assert_eq!(
+            viewing[2..],
+            ["Game connected, viewing. Changes wait in Pending until you turn Edit on."]
+        );
+        assert_eq!(chip(&h, "speed"), None, "an unchanged not_known field has no chip");
+        set_speed(&mut app, 3.0);
+        h.frames(&mut app, 3).unwrap();
+        assert_eq!(chip(&h, "speed"), Some("Waiting"));
+
+        api.call(&mut app, m::PAIR_EDIT, serde_json::json!({"enabled": true}))
+            .unwrap();
+        fake::until(&mut h.studio.play.play, &mut app, "Edit on", |_, a| {
+            Link::of(a) == Link::Editing
+        });
+        h.frames(&mut app, 3).unwrap();
+        // A change made with Edit on is sent as it is made.
+        set_speed(&mut app, 4.0);
+        h.frames(&mut app, 3).unwrap();
+        let editing = header(&mut api, &h, &mut app);
+        assert_eq!(
+            editing[2..],
+            [
+                "Game connected. Changes are sent as you make them.",
+                "Fields with no mark are sent at once; when the game reads them is not known. \
+                 Reload the map to be sure.",
+            ]
+        );
+        assert_eq!(chip(&h, "speed"), Some("Sent · Not known"));
+    }
+
+    /// Unnamed fields sit in a folded group under the named ones; focusing
+    /// one (`tag.view field`) opens it, and so does changing one after the
+    /// group was folded by hand. The drawn rows are `tag.view`'s.
+    #[test]
+    fn the_unnamed_fields_group_folds_and_opens_on_focus_and_change() {
+        use crate::app::tag_tests;
+        use crate::script::{Button, Step};
+        use studio_proto::method as m;
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("h2-editor-unnamed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut app, ..) = tag_tests::app_partial(&dir);
+        h.frames(&mut app, 4).unwrap();
+        let click = |t: &str| Step::Click(t.into(), Button::Left);
+        h.step(&mut app, &click("weap  (1)")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        h.step(&mut app, &click("objects\\test\\blaster")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        let drawn = |h: &Headless| -> Vec<String> {
+            h.studio.tags.panel.drawn.iter().map(|d| d.path.clone()).collect()
+        };
+        assert!(h.scene.items.iter().any(|i| i.label == "Unnamed fields (1)"));
+        assert_eq!(drawn(&h), ["speed", "flags", "parts"], "folded");
+        let mut api = crate::api::Api::new();
+        let view = api.call(&mut app, m::TAG_VIEW, serde_json::json!({})).unwrap();
+        let rows: Vec<_> = view["rows"].as_array().unwrap().iter().map(|r| r["path"].clone()).collect();
+        assert_eq!(serde_json::json!(drawn(&h)), serde_json::json!(rows));
+
+        api.call(&mut app, m::TAG_VIEW, serde_json::json!({"field": "+0x6"}))
+            .unwrap();
+        h.frames(&mut app, 3).unwrap();
+        assert_eq!(drawn(&h), ["speed", "flags", "parts", "+0x6"], "open on focus");
+
+        h.step(&mut app, &click("Unnamed fields (1)")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(drawn(&h), ["speed", "flags", "parts"], "folded by hand");
+        let weap = format!("{:#010x}", tag_tests::weap_id().0);
+        api.call(
+            &mut app,
+            m::TAG_SET,
+            serde_json::json!({"tag": weap, "path": "+0x6", "value": 5}),
+        )
+        .unwrap();
+        h.frames(&mut app, 3).unwrap();
+        assert_eq!(drawn(&h), ["speed", "flags", "parts", "+0x6"], "open on change");
+        let edited = h.studio.tags.panel.drawn.iter().find(|d| d.path == "+0x6").unwrap();
+        assert!(edited.edited);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The Maps list's Map Pack group through its widgets: with nothing
     /// installed it says how to install it; with an (invented) install it
     /// lists the map by its record's name with the picture beside it, and
     /// a click opens it in the scenario tool. The window is tall enough
-    /// for the Tools pane to show the group unscrolled: Dear ImGui names a
+    /// for the Maps tab to show the group unscrolled: Dear ImGui names a
     /// clipped row to nobody, so the probe would not find it. Skipped
     /// without a wgpu adapter.
     #[test]
@@ -718,11 +1557,6 @@ mod tests {
             h.studio.map_list.shown(Group::MapPack),
             Some(&Shown::Maps(vec![("Ridge".into(), true)]))
         );
-        h.step(&mut app, &Step::Click("Ridge##pack-ridge".into(), Button::Left))
-            .unwrap();
-        h.frames(&mut app, 2).unwrap();
-        assert_eq!(app.opened_pack_map(), Some("ridge"));
-        assert!(app.session.is_open());
         let (rgba, _) = h.capture(&mut app, 2).unwrap();
         // The picture (R 0xe0, G 0x80, B 0x20 at the record's alpha 0xbf,
         // so blended a quarter with the dark panel) fills the thumbnail.
@@ -733,6 +1567,11 @@ mod tests {
             .filter(|p| (150..215).contains(&p[0]) && (80..135).contains(&p[1]) && p[2] < 70)
             .count();
         assert!(orange >= 100, "the thumbnail is drawn: {orange} pixels");
+        h.step(&mut app, &Step::Click("Ridge##pack-ridge".into(), Button::Left))
+            .unwrap();
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(app.opened_pack_map(), Some("ridge"));
+        assert!(app.session.is_open());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -742,8 +1581,8 @@ mod tests {
     /// menu's names, each with its picture beside it, and the shared cache
     /// and the menu itself by file name with none; a package with an image
     /// of its own shows it; the Map Pack, not installed, its hint. A click
-    /// on a named map opens it. The window is tall enough for the Tools
-    /// pane to show every group unscrolled. Skipped without a wgpu
+    /// on a named map opens it. The window is tall enough for the Maps
+    /// tab to show every group unscrolled. Skipped without a wgpu
     /// adapter.
     #[test]
     fn the_maps_list_names_and_pictures_every_group() {
@@ -773,12 +1612,11 @@ mod tests {
         };
         assert_eq!(
             h.studio.map_list.shown(Group::Halo2).cloned(),
-            rows(&[
-                ("The Pier", true),
-                ("mainmenu", false),
-                ("shared", false),
-                ("Yard", true)
-            ])
+            rows(&[("Yard", true), ("The Pier", true)])
+        );
+        assert_eq!(
+            h.studio.map_list.shown(Group::SharedAndMenu).cloned(),
+            rows(&[("mainmenu", false), ("shared", false)])
         );
         assert_eq!(
             h.studio.map_list.shown(Group::Packages).cloned(),
@@ -788,7 +1626,7 @@ mod tests {
         assert_eq!(h.studio.map_list.shown(Group::Halo1), None);
         h.step(
             &mut app,
-            &Step::Click("The Pier##map-02_pier".into(), Button::Left),
+            &Step::Click("##map-grid>The Pier##map-02_pier".into(), Button::Left),
         )
         .unwrap();
         h.frames(&mut app, 2).unwrap();
@@ -796,8 +1634,78 @@ mod tests {
         assert!(app.session.is_open());
     }
 
-    /// Dear ImGui allows one context at a time: the tests take turns.
-    static ONE_CONTEXT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// P8: a click on a trigger volume in the viewport selects it in
+    /// place of the placements, the Scene tab lists the volumes and the
+    /// inspector shows the box; a click on nothing clears it. Skipped
+    /// when the machine has no wgpu adapter.
+    #[test]
+    fn a_click_on_a_volume_selects_it() {
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("h2-editor-volumes-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let map = dir.join("volumes.map");
+        std::fs::write(&map, fixture::fixture_with_volumes()).unwrap();
+        let mut app = App::new();
+        app.set_data_root(dir.join("data"));
+        app.dispatch(Action::OpenSource(map));
+        app.dispatch(Action::Select(Some((BlockKind::Weapons, 0))));
+        h.frames(&mut app, 4).unwrap();
+        // Coming back from the Tags tab brings the Scene tab to the front
+        // of the left dock, whichever tab the first frames left there.
+        app.dispatch(Action::SetTool(crate::ToolKind::Tags));
+        h.frames(&mut app, 2).unwrap();
+        app.dispatch(Action::SetTool(crate::ToolKind::Scenario));
+        h.frames(&mut app, 2).unwrap();
+        // Look straight down on the kill box, far from every placement.
+        let centre = app.session.volumes().unwrap().triggers[1]
+            .frame
+            .center()
+            .unwrap();
+        *app.session.camera_mut() = scenario_edit::geometry::Camera {
+            target: centre,
+            yaw: 0.0,
+            pitch: 1.5,
+            distance: 20.0,
+            ..*app.session.camera()
+        };
+        h.frames(&mut app, 2).unwrap();
+        let (rect, _) = h.studio.viewport.shown().unwrap();
+        let middle = format!("{},{}", rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0);
+        h.step(&mut app, &Step::Click(middle, Button::Left))
+            .unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(app.session.selected_volume(), Some(1));
+        assert_eq!(app.session.selected(), None);
+        // The pick opens the Volumes group and scrolls its row into view.
+        let scene: Vec<&str> = h
+            .scene
+            .items
+            .iter()
+            .filter(|i| i.window.contains("###outliner"))
+            .map(|i| i.label.as_str())
+            .collect();
+        assert!(
+            scene.iter().any(|l| l.contains("Volumes  (2)")),
+            "the Scene tab lists the volumes: {scene:?}"
+        );
+        assert!(
+            scene.iter().any(|l| l.ends_with("###volume-1")),
+            "the Scene tab shows the picked volume's row: {scene:?}"
+        );
+        assert!(
+            h.scene
+                .items
+                .iter()
+                .any(|i| i.window.contains("inspector") && i.label.ends_with(" Frame")),
+            "the inspector shows the volume"
+        );
+        let corner = format!("{},{}", rect[0] + rect[2] - 12.0, rect[1] + rect[3] - 12.0);
+        h.step(&mut app, &Step::Click(corner, Button::Left))
+            .unwrap();
+        assert_eq!(app.session.selected_volume(), None);
+    }
 
     fn headless() -> Option<(std::sync::MutexGuard<'static, ()>, Headless)> {
         let turn = ONE_CONTEXT.lock().unwrap_or_else(|e| e.into_inner());
@@ -895,53 +1803,4 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
-}
-
-/// A 2D RGBA8 texture's texels as tightly packed rows (the texture needs
-/// `COPY_SRC`).
-pub fn read_texture(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
-) -> Result<Vec<u8>> {
-    let (w, h) = (texture.width(), texture.height());
-    let row = (w * 4).div_ceil(256) * 256;
-    let buf = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size: u64::from(row * h),
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    let mut enc = device.create_command_encoder(&Default::default());
-    enc.copy_texture_to_buffer(
-        texture.as_image_copy(),
-        wgpu::TexelCopyBufferInfo {
-            buffer: &buf,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(row),
-                rows_per_image: Some(h),
-            },
-        },
-        wgpu::Extent3d {
-            width: w,
-            height: h,
-            depth_or_array_layers: 1,
-        },
-    );
-    queue.submit([enc.finish()]);
-    buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-    device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .map_err(|e| anyhow!("wgpu poll: {e}"))?;
-    let data = buf
-        .slice(..)
-        .get_mapped_range()
-        .map_err(|e| anyhow!("map the readback: {e}"))?;
-    let mut out = Vec::with_capacity((w * h * 4) as usize);
-    for y in 0..h as usize {
-        let start = y * row as usize;
-        out.extend_from_slice(&data[start..start + (w * 4) as usize]);
-    }
-    Ok(out)
 }

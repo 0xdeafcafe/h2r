@@ -109,8 +109,8 @@ impl BatchRows {
 
 /// A usage counter's change ([`crate::usage`]): `n` added to the counter
 /// for (`day`, `account`, `metric`). `day` is a UTC day, `YYYY-MM-DD`, or
-/// empty for a counter with no day (a running total such as cloud saves
-/// stored); `account` a xuid in hex, or empty for the server's own.
+/// empty for a counter with no day; `account` a xuid in hex, or empty for
+/// the server's own.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct UsageRow {
     pub day: String,
@@ -130,7 +130,9 @@ pub(crate) fn add_usage_to(
         *map.entry((r.day.clone(), r.account.clone(), r.metric.clone()))
             .or_default() += r.n;
     }
-    map.retain(|(day, _, _), _| day.is_empty() || day.as_str() >= keep_from);
+    if !keep_from.is_empty() {
+        map.retain(|(day, _, _), _| day.is_empty() || day.as_str() >= keep_from);
+    }
 }
 
 pub(crate) fn usage_rows(
@@ -301,8 +303,8 @@ pub trait EventStore: Send + Sync + 'static {
     async fn checkpoints(&self) -> Result<Vec<(String, u64)>, StoreError>;
 
     /// Adds each row's `n` to its usage counter (made at 0 if new), then
-    /// drops every counter for a day before `keep_from` (dayless ones
-    /// stay), in one go ([`crate::usage`]). A store that keeps no counters
+    /// drops every daily counter before `keep_from` if the cutoff is set,
+    /// in one go ([`crate::usage`]). A store that keeps no counters
     /// takes them and forgets them: the server's own copy, in memory,
     /// still counts until it restarts.
     async fn add_usage(&self, rows: &[UsageRow], keep_from: &str) -> Result<(), StoreError> {

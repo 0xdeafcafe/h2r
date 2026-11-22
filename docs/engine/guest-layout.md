@@ -1,6 +1,6 @@
 # Guest layout, switch table and point shapes
 
-Change 5 of the [November 2026 architecture review](../architecture-review-2026-11.md)
+Change 5 of the [November 2026 architecture review](../reviews/2026-11-20-architecture.md)
 (sections 2.6 and 3.4): one place for every guest offset and global
 address, one bounded table of `impl.*` switches, and hook points that fail
 by name when their address is wrong.
@@ -43,7 +43,9 @@ crate's tests check for overlaps and bounds.
   (unit, biped, weapon, device), `player`, `game` (game globals, options,
   variant, game time, player globals, engine statistics), `datum_array`
   (a datum array's header), `tag` (the tag index and its entries),
-  `damage` (the damage report `d9640` applies).
+  `damage` (the damage report `d9640` applies), and `sound` (looping
+  sounds, tracks, instances and channel-to-stream links for
+  [`audio.loops`](../runtime/agent-api.md)).
 - **Globals.** `global` is the one table of global addresses; `points`
   re-exports it unchanged. New globals go here.
 - **The guest boundary and the points.** `memory` (`GuestMemory`,

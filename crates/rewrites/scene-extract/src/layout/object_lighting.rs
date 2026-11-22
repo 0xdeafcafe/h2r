@@ -153,13 +153,7 @@ pub struct ShaderValues {
 /// `0.0 ..= 1.0` as the evaluators clamp (`comiss`): below 0 is 0, above
 /// 1 is 1, and NaN stays.
 fn clamp01(x: f32) -> f32 {
-    if 0.0 > x {
-        0.0
-    } else if x > 1.0 {
-        1.0
-    } else {
-        x
-    }
+    x.clamp(0.0, 1.0)
 }
 
 fn floats(v: [u32; 3]) -> [f32; 3] {

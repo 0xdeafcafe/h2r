@@ -14,6 +14,7 @@ pub(super) type Samples = BTreeMap<Xuid, Option<u16>>;
 pub(super) struct Entrant<'a> {
     pub xuid: Xuid,
     pub level: u8,
+    pub has_map_pack: bool,
     pub since: i64,
     pub samples: &'a Samples,
 }
@@ -23,6 +24,7 @@ pub(super) struct Host {
     pub xuid: Xuid,
     pub dedicated: bool,
     pub connectivity: Connectivity,
+    pub requires_map_pack: bool,
 }
 
 impl Host {
@@ -32,12 +34,19 @@ impl Host {
     }
 
     fn rtt(self, member: &Entrant<'_>) -> Option<u16> {
+        if self.requires_map_pack && !member.has_map_pack {
+            return None;
+        }
         if self.xuid == member.xuid {
             Some(0)
         } else {
             member.samples.get(&self.xuid).copied().flatten()
         }
     }
+}
+
+pub(super) fn owns_map_pack(members: &[Entrant<'_>]) -> bool {
+    members.iter().all(|member| member.has_map_pack)
 }
 
 pub(super) struct Selected {
@@ -132,9 +141,11 @@ pub(super) fn group<'a>(
                 }
                 // Wait for every eligible contender to be attempted, so
                 // request order does not elect the first one measured.
+                let all_own_pack = owns_map_pack(&group);
                 if !group.iter().all(|p| {
                     hosts.iter().all(|h| {
-                        h.xuid == p.xuid
+                        (h.requires_map_pack && !all_own_pack)
+                            || h.xuid == p.xuid
                             || (!h.dedicated && !group.iter().any(|m| m.xuid == h.xuid))
                             || p.samples.contains_key(&h.xuid)
                     })
@@ -186,7 +197,7 @@ mod tests {
     use super::*;
 
     fn peer(id: u64) -> Host {
-        Host { xuid: Xuid(id), dedicated: false, connectivity: Connectivity::default() }
+        Host { xuid: Xuid(id), dedicated: false, connectivity: Connectivity::default(), requires_map_pack: false }
     }
 
     fn samples(values: &[(u64, Option<u16>)]) -> Samples {
@@ -194,7 +205,7 @@ mod tests {
     }
 
     fn entrant(id: u64, level: u8, samples: &Samples) -> Entrant<'_> {
-        Entrant { xuid: Xuid(id), level, since: 0, samples }
+        Entrant { xuid: Xuid(id), level, has_map_pack: false, since: 0, samples }
     }
 
     #[test]

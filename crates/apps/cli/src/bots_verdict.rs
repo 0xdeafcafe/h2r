@@ -114,7 +114,7 @@ pub struct Verdict {
 }
 
 /// Lines (merged) and their texts.
-struct Log<'a> {
+pub(crate) struct Log<'a> {
     raw: Vec<&'a str>,
     texts: Vec<&'a str>,
 }

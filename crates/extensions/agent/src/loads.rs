@@ -12,7 +12,7 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use agent_proto::{LoadParams, LoadRecord, LoadSegment};
-use timeline::phase::{Counter, Phase, Totals};
+use timeline::phase::{Phase, Totals};
 
 /// A gap between ticks at least this long is a stall (the agent's
 /// `loading` phase starts at the same point).
@@ -233,6 +233,8 @@ impl LoadTracker {
 
 #[cfg(test)]
 mod tests {
+    use timeline::phase::Counter;
+
     use super::*;
 
     fn totals(frames: u64, read: u64, shaders: u64) -> Option<Totals> {

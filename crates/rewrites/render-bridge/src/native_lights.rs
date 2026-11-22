@@ -209,7 +209,7 @@ fn refused(why: &'static str) -> bool {
 }
 
 /// The registers at the light passes' entry the constants need: EAX the
-/// `ligh` datum, ECX the view context, ESP (the return address; the light
+/// `ligh` datum, ECX the light volume, ESP (the return address; the light
 /// datum, its frame, the shadow word and the weight above it), and the
 /// floating-point modes the arithmetic runs under.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -327,7 +327,8 @@ fn scene_light(light: &Light, inputs: &light_passes::Inputs) -> frame_scene::Sce
         flags: inputs.flags,
         definition_flags: inputs.definition_flags,
         additional_casters: inputs.additional_casters,
-        steps: 0..0,
+        guest_weight: Some(light.weight),
+        ..Default::default()
     }
 }
 

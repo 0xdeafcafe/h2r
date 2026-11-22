@@ -7,6 +7,7 @@
 import { ApiError } from "../api/http";
 import type { LocalAccount } from "../state/account";
 import { parseMapSummary, type MapSummary } from "../lib/maps";
+import { parseModPack, type ModPack } from "../lib/modPacks";
 import { issueToken } from "./token";
 
 export const CONTENT_MODERATE = "content.moderate";
@@ -15,6 +16,9 @@ export type ContentState = "ok" | "hidden" | "deleted" | "blocked";
 export type ModerateAction = "hide" | "unhide" | "delete" | "block" | "unblock";
 
 export interface ModeratedMap extends MapSummary { state: ContentState; reports: number }
+
+export type ContentTarget = "map" | "pack" | "content";
+export interface ModeratedPack extends ModPack { state: ContentState; reports: number }
 
 export interface ModeratedBlob {
   sha256: string;
@@ -25,9 +29,10 @@ export interface ModeratedBlob {
   stored_at: string;
 }
 
-export interface ContentReport { target: "map" | "content"; id: string; by: string; reason: string; at: string }
+export interface ContentReport { target: ContentTarget; id: string; by: string; reason: string; at: string }
 
 export interface ContentList {
+  packs: ModeratedPack[];
   maps: ModeratedMap[];
   blobs: ModeratedBlob[];
   reports: ContentReport[];
@@ -50,6 +55,11 @@ export function parseContent(body: unknown): ContentList {
     const s = parseMapSummary(m);
     if (s) maps.push({ ...s, state: state(m.state), reports: num(m.reports) });
   }
+  const packs: ModeratedPack[] = [];
+  for (const p of list(o.packs)) {
+    const pack = parseModPack(p);
+    if (pack) packs.push({ ...pack, state: state(p.state), reports: num(p.reports) });
+  }
   const blobs = list(o.blobs).filter((b) => /^[0-9a-f]{64}$/.test(str(b.sha256))).map((b) => ({
     sha256: str(b.sha256),
     size: num(b.size),
@@ -58,15 +68,14 @@ export function parseContent(body: unknown): ContentList {
     reports: num(b.reports),
     stored_at: str(b.stored_at),
   }));
-  const reports = list(o.reports).filter((r) => str(r.id)).map((r) => ({
-    target: r.target === "content" ? "content" as const : "map" as const,
-    id: str(r.id),
-    by: str(r.by) || "unknown",
-    reason: str(r.reason),
-    at: str(r.at),
-  })).sort((a, b) => b.at.localeCompare(a.at));
+  const reports: ContentReport[] = [];
+  for (const r of list(o.reports)) {
+    if (!str(r.id) || (r.target !== "map" && r.target !== "pack" && r.target !== "content")) continue;
+    reports.push({ target: r.target, id: str(r.id), by: str(r.by) || "unknown", reason: str(r.reason), at: str(r.at) });
+  }
+  reports.sort((a, b) => b.at.localeCompare(a.at));
   const uploads_off = Array.isArray(o.uploads_off) ? o.uploads_off.filter((t): t is string => typeof t === "string") : [];
-  return { maps, blobs, reports, uploads_off, position: typeof o.position === "number" ? o.position : null };
+  return { packs, maps, blobs, reports, uploads_off, position: typeof o.position === "number" ? o.position : null };
 }
 
 /** The actions that make sense from a state: hidden can be unhidden,
@@ -81,13 +90,13 @@ export function actionsFor(s: ContentState): ModerateAction[] {
   }
 }
 
-/** `/admin/maps/{id}/{action}` or `/admin/content/{sha256}/{action}`. */
-export function moderatePath(target: "map" | "content", id: string, action: ModerateAction): string {
-  return `/admin/${target === "map" ? "maps" : "content"}/${encodeURIComponent(id)}/${action}`;
+const collection: Record<ContentTarget, string> = { map: "maps", pack: "mod-packs", content: "content" };
+export function moderatePath(target: ContentTarget, id: string, action: ModerateAction): string {
+  return `/admin/${collection[target]}/${encodeURIComponent(id)}/${action}`;
 }
 
 /** Reports on one package or blob. */
-export function reportsFor(c: Pick<ContentList, "reports">, target: "map" | "content", id: string): ContentReport[] {
+export function reportsFor(c: Pick<ContentList, "reports">, target: ContentTarget, id: string): ContentReport[] {
   return c.reports.filter((r) => r.target === target && r.id === id);
 }
 
@@ -125,7 +134,7 @@ export async function fetchContent(api: string, aud: string, me: LocalAccount, f
   }
 }
 
-export async function moderate(api: string, aud: string, me: LocalAccount, target: "map" | "content", id: string, action: ModerateAction, fetchFn: typeof fetch = fetch): Promise<void> {
+export async function moderate(api: string, aud: string, me: LocalAccount, target: ContentTarget, id: string, action: ModerateAction, fetchFn: typeof fetch = fetch): Promise<void> {
   await call(api, moderatePath(target, id, action), aud, me, { method: "POST" }, fetchFn);
 }
 
@@ -142,12 +151,20 @@ export const CONTENT_WRITE = "content.write";
 
 /** Flags a package for the admins: any signed-in account, a
  *  `content.write` token. The reason is trimmed and kept short. */
-export async function reportMap(api: string, aud: string, me: LocalAccount, mapId: string, reason: string, fetchFn: typeof fetch = fetch): Promise<void> {
+async function report(api: string, aud: string, me: LocalAccount, target: "map" | "pack", id: string, reason: string, fetchFn: typeof fetch): Promise<void> {
   const token = await issueToken(me, aud, CONTENT_WRITE);
-  const r = await fetchFn(`${api}/maps/${encodeURIComponent(mapId)}/report`, {
+  const r = await fetchFn(`${api}/${collection[target]}/${encodeURIComponent(id)}/report`, {
     method: "POST",
     headers: { accept: "application/json", "content-type": "application/json", authorization: `Bearer ${token}` },
     body: JSON.stringify({ reason: reason.trim().slice(0, 500) }),
   });
   if (!r.ok) return fail(r);
+}
+
+export function reportMap(api: string, aud: string, me: LocalAccount, mapId: string, reason: string, fetchFn: typeof fetch = fetch): Promise<void> {
+  return report(api, aud, me, "map", mapId, reason, fetchFn);
+}
+
+export function reportPack(api: string, aud: string, me: LocalAccount, packId: string, reason: string, fetchFn: typeof fetch = fetch): Promise<void> {
+  return report(api, aud, me, "pack", packId, reason, fetchFn);
 }

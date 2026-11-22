@@ -78,8 +78,16 @@ pub mod method {
     pub const DOC_CLOSE: &str = "doc.close";
 
     pub const TAG_LIST: &str = "tag.list";
+    pub const TAG_FIELDS: &str = "tag.fields";
+    pub const TAG_VIEW: &str = "tag.view";
+    pub const TAG_CHOICES: &str = "tag.choices";
+    pub const TAG_BYTES: &str = "tag.bytes";
+    pub const TAG_RESET: &str = "tag.reset";
+    pub const TAG_ELEMENTS: &str = "tag.elements";
     pub const TAG_READ: &str = "tag.read";
+    pub const TAG_TREE: &str = "tag.tree";
     pub const TAG_REFS: &str = "tag.refs";
+    pub const TAG_CHAIN: &str = "tag.chain";
     pub const TAG_FOLLOW: &str = "tag.follow";
     pub const TAG_SET: &str = "tag.set";
     pub const TAG_BLOCK_ADD: &str = "tag.block.add";
@@ -90,6 +98,10 @@ pub mod method {
     pub const TAG_EXPORT: &str = "tag.export";
     pub const TAG_IMPORT: &str = "tag.import";
 
+    pub const SOUND_READ: &str = "sound.read";
+    pub const SOUND_PLAY: &str = "sound.play";
+    pub const SOUND_STOP: &str = "sound.stop";
+
     pub const SCENARIO_BLOCKS: &str = "scenario.blocks";
     pub const SCENARIO_LIST: &str = "scenario.list";
     pub const SCENARIO_GET: &str = "scenario.get";
@@ -99,6 +111,19 @@ pub mod method {
     pub const SCENARIO_DELETE: &str = "scenario.delete";
     pub const SCENARIO_DUPLICATE: &str = "scenario.duplicate";
     pub const SCENARIO_SELECT: &str = "scenario.select";
+    pub const VOLUME_LIST: &str = "volume.list";
+    pub const VOLUME_SELECT: &str = "volume.select";
+    pub const VOLUME_SET: &str = "volume.set";
+    pub const VOLUME_ADD: &str = "volume.add";
+    pub const VOLUME_REMOVE: &str = "volume.remove";
+    pub const COLLISION_SURFACES: &str = "collision.surfaces";
+    pub const COLLISION_AT: &str = "collision.at";
+    pub const COLLISION_SELECT: &str = "collision.select";
+    pub const COLLISION_OBJECTS: &str = "collision.objects";
+    pub const NAV_STATUS: &str = "nav.status";
+    pub const NAV_BACK: &str = "nav.back";
+    pub const NAV_FORWARD: &str = "nav.forward";
+    pub const NAV_GO: &str = "nav.go";
 
     pub const VARIANT_LIST: &str = "variant.list";
     pub const VARIANT_OPEN: &str = "variant.open";
@@ -118,6 +143,7 @@ pub mod method {
     pub const PLAYLIST_ENTRY: &str = "playlist.entry";
     pub const PLAYLIST_ENTRY_VARIANT: &str = "playlist.entry_variant";
 
+    pub const UI_PALETTE: &str = "ui.palette";
     pub const UI_SCREENS: &str = "ui.screens";
     pub const UI_PICK: &str = "ui.pick";
     pub const UI_PRESS: &str = "ui.press";
@@ -129,10 +155,55 @@ pub mod method {
     pub const PAIR_CONNECT: &str = "pair.connect";
     pub const PAIR_DISCONNECT: &str = "pair.disconnect";
     pub const PAIR_AUTO: &str = "pair.auto";
+    pub const PAIR_PLAY: &str = "pair.play";
+    pub const PAIR_PLAYTEST: &str = "pair.playtest";
+    pub const PAIR_SETTINGS: &str = "pair.settings";
+    pub const PAIR_STOP: &str = "pair.stop";
+    pub const PAIR_EDIT: &str = "pair.edit";
+    pub const PAIR_CONTROL: &str = "pair.control";
+
+    pub const MIRROR_STATUS: &str = "mirror.status";
+    pub const MIRROR_PENDING: &str = "mirror.pending";
+    pub const MIRROR_APPLY: &str = "mirror.apply";
+    pub const MIRROR_PICK: &str = "mirror.pick";
+    pub const MIRROR_AIM_SELECT: &str = "mirror.aim_select";
+    pub const MIRROR_CAMERA: &str = "mirror.camera";
+    pub const MIRROR_CONTROL: &str = "mirror.control";
+    pub const MIRROR_PLAYER: &str = "mirror.player";
+    pub const MIRROR_OBJECTS: &str = "mirror.objects";
 
     pub const VIEW_CAMERA: &str = "view.camera";
+    pub const VIEW_LAYERS: &str = "view.layers";
+    pub const VIEW_LIGHTING: &str = "view.lighting";
     pub const VIEW_SNAPSHOT: &str = "view.snapshot";
     pub const VIEW_STATS: &str = "view.stats";
+    pub const GEOMETRY_LIST: &str = "geometry.list";
+    pub const GEOMETRY_OPEN: &str = "geometry.open";
+    pub const GEOMETRY_CLOSE: &str = "geometry.close";
+    pub const GEOMETRY_READ: &str = "geometry.read";
+    pub const GEOMETRY_CHECK: &str = "geometry.check";
+    pub const MESH_MODE: &str = "mesh.mode";
+    pub const MESH_SELECT: &str = "mesh.select";
+    pub const MESH_TRANSFORM: &str = "mesh.transform";
+    pub const MESH_OPS: &str = "mesh.ops";
+    pub const MESH_APPLY: &str = "mesh.apply";
+
+    // The Scripts tool (docs/editor/rich-editors.md, "Scripts").
+    pub const SCRIPT_LIST: &str = "script.list";
+    pub const SCRIPT_SOURCE: &str = "script.source";
+    pub const SCRIPT_FOLLOW: &str = "script.follow";
+    pub const SCRIPT_USES: &str = "script.uses";
+    pub const SCRIPT_BUILTINS: &str = "script.builtins";
+    pub const SCRIPT_DOC: &str = "script.doc";
+
+    // The game type script editor (docs/editor/editor-guide.md, "Game
+    // type scripts").
+    pub const RULES_OPEN: &str = "rules.open";
+    pub const RULES_GET: &str = "rules.get";
+    pub const RULES_SET: &str = "rules.set";
+    pub const RULES_SAVE: &str = "rules.save";
+    pub const RULES_FORMAT: &str = "rules.format";
+    pub const RULES_RELOAD: &str = "rules.reload";
 
     // Planned namespaces: listed by `session.methods` with status
     // "planned"; a call answers NOT_YET until its lane registers it.

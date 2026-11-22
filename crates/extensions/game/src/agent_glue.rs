@@ -35,13 +35,15 @@
 //! on the agent and runs due saves and loads between slices
 //! ([`crate::snapshot_glue`]).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use agent::Access;
 use agent_proto::{Endpoint, RpcError, code, method};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
+
+mod matchmaking;
 
 /// Optional second listener, supplied by the dedicated-host supervisor
 /// as a TCP address (without the tcp:// prefix).
@@ -70,7 +72,7 @@ pub fn socket_from_env() -> Option<PathBuf> {
 /// ([`agent_proto::discover`]). `None` when `H2_AGENT` switches it off, or
 /// where there are no Unix sockets.
 pub fn discoverable_socket() -> Option<PathBuf> {
-    if !cfg!(unix) || agent_proto::discover::off_from_env() {
+    if !cfg!(any(unix, windows)) || agent_proto::discover::off_from_env() {
         return None;
     }
     let path = agent_proto::discover::process_socket();
@@ -92,6 +94,31 @@ pub fn discoverable_socket() -> Option<PathBuf> {
 /// The longest Unix socket path that binds on every platform we run on.
 const MAX_SOCKET_PATH: usize = 100;
 
+/// Recording/playback hosts retain the ordinary dispatch and report why a
+/// live editor cannot queue a different set of options or map bytes.
+pub fn reload_recording_refusal(
+    theater_playback: bool,
+    film: bool,
+    lockstep: &crate::lockstep_glue::Config,
+) -> Option<&'static str> {
+    if theater_playback || lockstep.replay.is_some() {
+        Some("map reload is disabled during playback")
+    } else if lockstep.record.is_some() {
+        Some("map reload is disabled while recording input")
+    } else if film {
+        Some("map reload is disabled while recording a film")
+    } else {
+        None
+    }
+}
+
+fn editor_points() -> impl Iterator<Item = &'static hooks::points::Point> {
+    use hooks::points::{GAME_ACTIVATE, GAME_STATE_REVERT, GAME_TICK};
+    [&GAME_TICK, &GAME_ACTIVATE, &GAME_STATE_REVERT]
+        .into_iter()
+        .chain(agent::sim::calls::reload_hook_points())
+}
+
 impl AgentGlue {
     /// Listens at `path`, adds the feature to `registry`, and puts the input
     /// tap on `xapi`. `replaying`: the tap already there is a replay, which
@@ -103,8 +130,9 @@ impl AgentGlue {
         xapi: Option<&Mutex<xapi::Xapi<S>>>,
         replaying: bool,
         allow_bot_add: bool,
+        data_root: &Path,
     ) -> Result<AgentGlue> {
-        Self::with_endpoint(registry, Some(Endpoint::from(path)), xapi, replaying, allow_bot_add)
+        Self::with_endpoint(registry, Some(Endpoint::from(path)), xapi, replaying, allow_bot_add, data_root)
     }
 
     /// A recording uses the player's observation and input hooks even when no
@@ -116,6 +144,7 @@ impl AgentGlue {
         xapi: Option<&Mutex<xapi::Xapi<S>>>,
         replaying: bool,
         allow_bot_add: bool,
+        data_root: &Path,
     ) -> Result<AgentGlue> {
         if let Some(Endpoint::Unix(p)) = &endpoint
             && let Some(dir) = p.parent()
@@ -130,25 +159,184 @@ impl AgentGlue {
         }
         let agent = agent::Agent::new();
         add_host_methods(&agent);
-        // render.scene: the frame step's FrameScene (docs/graphics/framescene.md).
+        // render.scene: the frame step's FrameScene (docs/graphics/framescene.md),
+        // and the live mirror's camera layer from the same sealed scene.
         #[cfg(feature = "gpu")]
-        crate::scene_glue::install();
+        {
+            crate::scene_glue::install();
+            crate::scene_glue::install_cameras(&agent);
+        }
         let sim = install_sim(&agent, allow_bot_add);
         // The game's own functions for sim (teleports, give, spawn): a
         // `before` on the tick that makes the calls queued for it.
         let calls = agent::sim::calls::shared();
+        agent::sim::calls::lock(&calls)
+            .set_spawn_enrollment(crate::actor_net::creature::spawn_enrollment);
         match registry.add(&agent::sim::calls::CallsFeature(calls.clone())) {
-            Ok(true) => sim.set_calls(calls),
+            Ok(true) => {
+                // The superbounce verifier's trials teleport through it too.
+                crate::superbounce_verify::set_calls(calls.clone());
+                sim.set_calls(calls)
+            }
             Ok(false) => eprintln!(
                 "agent: agent-calls switched off by H2_FEATURES; sim teleports, give and spawn are off"
             ),
             Err(e) => anyhow::bail!("agent-calls: {e}"),
         }
+        agent::forge::install(&agent, sim.clone(), &agent::sim::hashes::HASHES);
+        // firefight.*: the Firefight runtime, or why there is none
+        // (docs/game/firefight.md, "Agent API").
+        agent::firefight::install(
+            &agent,
+            std::sync::Arc::new(crate::firefight::feature::AgentSource::installed()),
+        );
+        // rules.state and rules.reload: the game's rules script, or why
+        // there is none, and putting a new one in (docs/game/rules-engine.md,
+        // "The host runtime", "Reloading a running script"). A restart
+        // queues the game through the agent's guest calls; a film's
+        // playback takes no reload.
+        #[cfg(feature = "rules")]
+        agent::rules::install(
+            &agent,
+            std::sync::Arc::new(
+                crate::rules::feature::AgentSource::installed().playback(replaying),
+            ),
+            sim.calls(),
+        );
+        let probes = agent::probe::Probes::default();
+        if registry.add(&probes).map_err(|e| anyhow::anyhow!("agent-probes: {e}"))? {
+            probes.install(&agent, &sim);
+        }
         agent::ai::install(&agent);
+        // net.replication: the event counter is an observer of its own, so
+        // H2_FEATURES can drop it and leave the method's other readings.
+        match registry.add(&agent::net::NetFeature) {
+            Ok(true) => {}
+            Ok(false) => eprintln!(
+                "agent: agent-net switched off by H2_FEATURES; net.replication counts no events"
+            ),
+            Err(e) => anyhow::bail!("agent-net: {e}"),
+        }
+        agent::net::install(
+            &agent,
+            || {
+                let t = live_hle::traffic::snapshot();
+                Some(agent::net::Traffic {
+                    sent: t.sent,
+                    sent_bytes: t.sent_bytes,
+                    received: t.received,
+                    received_bytes: t.received_bytes,
+                    largest: t.largest,
+                })
+            },
+            |m| {
+                use crate::actor_net::creature;
+                if !creature::registered(m) {
+                    return agent::net::CreatureReplication::default();
+                }
+                agent::net::CreatureReplication {
+                    slot: Some(creature::SLOT),
+                    entities: creature::snapshot(m)
+                        .into_iter()
+                        .map(|row| agent::net::CreatureEntity {
+                            entity: row.entity,
+                            object: row.object,
+                            updates: row.updates,
+                        })
+                        .collect(),
+                }
+            },
+        );
         agent::havok::install(&agent);
         // The native collision world's counters (impl.sim.native.collision).
         agent::collision::install(&agent);
         agent::raw::install(&agent, &sim);
+        agent::havok::install_writes(&agent, &sim);
+        // `world.*`'s `physics.standing_fits`: the superbounce mode's
+        // capsule test, while it is on (docs/game/superbounce.md, "Charge").
+        agent.set_standing_fits(Box::new(crate::superbounce_mode::StandingFitsNow));
+        // The superbounce game type's state, published each tick by
+        // `superbounce_mode` (docs/game/superbounce.md).
+        agent.add_game_method(
+            agent_proto::superbounce::method::STATE,
+            Access::Read,
+            |params, _ctx| {
+                crate::superbounce_mode::no_params(&params)
+                    .map_err(|why| RpcError::new(code::INVALID_PARAMS, why))?;
+                Ok(serde_json::to_value(crate::superbounce_mode::state_reply())
+                    .expect("superbounce.state serialises"))
+            },
+        );
+        // Turns the superbounce mode on or off over the game type, so a
+        // run whose environment can't carry H2_SUPERBOUNCE (the lab) can
+        // still use it.
+        agent.add_game_method(
+            agent_proto::superbounce::method::SET,
+            Access::Act,
+            |params, _ctx| {
+                let p: agent_proto::superbounce::SetParams = if params.is_null() {
+                    Default::default()
+                } else {
+                    serde_json::from_value(params)
+                        .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?
+                };
+                let mode = crate::superbounce_mode::set_override(p.on).to_string();
+                Ok(serde_json::to_value(agent_proto::superbounce::Set { mode })
+                    .expect("superbounce.set serialises"))
+            },
+        );
+        // The superbounce fall assist (superbounce_assist.rs,
+        // docs/game/superbounce.md, "Hold X: the fall assist").
+        agent.add_game_method(
+            agent_proto::superbounce::ASSIST,
+            Access::Read,
+            |params, _ctx| {
+                crate::superbounce_assist::no_params(&params)
+                    .map_err(|why| RpcError::new(code::INVALID_PARAMS, why))?;
+                Ok(serde_json::to_value(crate::superbounce_assist::assist_reply())
+                    .expect("superbounce.assist serialises"))
+            },
+        );
+        // Holds the assist's button for an agent with no pad.
+        agent.add_game_method(
+            agent_proto::superbounce::ASSIST_TEST,
+            Access::Act,
+            |params, _ctx| {
+                let p: agent_proto::superbounce::AssistTestParams =
+                    serde_json::from_value(params)
+                        .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?;
+                let hold = crate::superbounce_assist::set_test_hold(p.hold);
+                Ok(serde_json::to_value(agent_proto::superbounce::AssistTest { hold })
+                    .expect("superbounce.assist_test serialises"))
+            },
+        );
+        // A bounce at a chain count for the first local player, as a real
+        // one shows (superbounce_chain.rs, docs/game/superbounce.md,
+        // "Medals").
+        agent.add_game_method(
+            agent_proto::superbounce::MEDAL_TEST,
+            Access::Act,
+            |params, _ctx| {
+                let p: agent_proto::superbounce::MedalTestParams =
+                    serde_json::from_value(params)
+                        .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?;
+                let r = crate::superbounce_mode::medal_test(&p)
+                    .map_err(|why| RpcError::new(code::INVALID_PARAMS, why))?;
+                Ok(serde_json::to_value(r).expect("superbounce.medal_test serialises"))
+            },
+        );
+        // Trials of the spots in the game (superbounce_verify.rs,
+        // docs/game/superbounce.md, "Verifying spots").
+        crate::superbounce_verify::install(&agent);
+        // The bounce view on the flashlight and the tracker
+        // (superbounce_view.rs, docs/game/superbounce.md, "The bounce view").
+        crate::superbounce_view::install(&agent);
+        // Ghost runs of the spots (superbounce_ghost.rs,
+        // docs/game/superbounce.md, "Ghost runs").
+        crate::superbounce_ghost::install(&agent);
+        // Drive player.0 somewhere with the bots' route brain
+        // (player_goto.rs, docs/runtime/agent-api.md, "player.goto").
+        crate::player_goto::install(&agent);
         // HaloScript state: the threads and globals of the running scenario.
         agent::hs_state::install(&agent);
         // On the game thread: the sampler's main target.
@@ -164,19 +352,21 @@ impl AgentGlue {
         if let Some(endpoint) = endpoint {
             listeners.push(listen(&endpoint, &agent)?);
         }
-        match registry.add(&agent::AgentFeature(agent.clone())) {
-            Ok(true) => {}
+        let ticks = match registry.add(&agent::AgentFeature(agent.clone())) {
+            Ok(true) => true,
             Ok(false) => {
                 agent.set_no_tick_hook();
                 eprintln!(
                     "agent: switched off by H2_FEATURES; answering between slices only, no pausing"
-                )
+                );
+                false
             }
             Err(e) => anyhow::bail!("agent: {e}"),
-        }
+        };
         // render.capture's tick marks and sim.hashes' rows.
-        match registry.add(&crate::agent_frames::AgentFrames) {
-            Ok(true) => {}
+        let frames = crate::agent_frames::AgentFrames::default();
+        match registry.add(&frames) {
+            Ok(true) => frames.views.install_method(&agent),
             Ok(false) => eprintln!(
                 "agent: agent-frames switched off by H2_FEATURES; render.capture and sim.hashes see no ticks"
             ),
@@ -194,6 +384,9 @@ impl AgentGlue {
                 let inner = x.take_input_tap().map(|t| (t, chain));
                 let tap = agent.input_tap(inner);
                 crate::ui_press::install(&agent, tap.menu_pad());
+                if ticks {
+                    crate::agent_route::install(registry, &agent, tap.route_ports(), data_root)?;
+                }
                 x.set_input_tap(Some(Box::new(tap)));
             }
             None => eprintln!("agent: no XAPI input; the input methods are off"),
@@ -234,11 +427,107 @@ impl AgentGlue {
         }
     }
 
+    /// Observe matchmaking and target-session cleanup for the Live trace.
+    pub fn install_matchmaking_trace(&self, registry: &mut hooks::Registry) -> Result<()> {
+        matchmaking::install(registry, &self.agent)
+    }
+
     /// The installed plan, for `features.list`.
     pub fn set_plan(&self, plan: &hooks::Plan, installed: &hooks::Installed) {
         let mut lines: Vec<String> = plan.text().lines().map(str::to_owned).collect();
         lines.extend(installed.notes.iter().cloned());
         self.agent.set_plan(lines);
+    }
+
+    /// Windowed macOS games advertise an enabled agent to the lab even when
+    /// the player uses a custom endpoint.
+    pub fn configure_takeover(
+        &mut self,
+        features: &mut hooks::Registry,
+        window: bool,
+        accepts_player_input: bool,
+    ) -> Result<()> {
+        crate::lab_takeover::add_info(&self.agent, window);
+        if window && accepts_player_input {
+            crate::lab_takeover::install(features, &self.agent)?;
+        }
+        if cfg!(target_os = "macos")
+            && window
+            && !self._listeners.is_empty()
+            && let Some(endpoint) = discoverable_socket().map(Endpoint::Unix)
+            && !self._listeners.iter().any(|s| s.endpoint() == endpoint)
+        {
+            match listen(&endpoint, &self.agent) {
+                Ok(listener) => self._listeners.push(listener),
+                Err(e) => eprintln!("agent: lab discovery: {e:#}"),
+            }
+        }
+        Ok(())
+    }
+
+    /// Publish capabilities once the ordinary tick hooks are installed. Hook
+    /// the reload and placement lifecycle only on the first authorized write.
+    pub fn install_editor_methods(
+        &self,
+        plan: &hooks::Plan,
+        installed: &hooks::Installed,
+        rt: &std::sync::Arc<runtime::Runtime>,
+        enabled: bool,
+        recording_or_playback: Option<&'static str>,
+        skulls: Option<std::sync::Arc<crate::skulls::Tracker>>,
+        sources: Option<std::sync::Arc<crate::loaded_map::EditorSources>>,
+        rebind: agent::sim::MapRebind,
+    ) {
+        let Some(sim) = &self.sim else { return };
+        let active = |feature: &str| plan.is_on(feature) && installed.off_reason(feature).is_none();
+        if !active("agent") || !active(agent::sim::calls::FEATURE) {
+            return;
+        }
+        if let Some(reason) = recording_or_playback {
+            sim.install_reload_refusal(&self.agent, reason);
+            return;
+        }
+        if !enabled {
+            return;
+        }
+        let Some(queue) = sim.calls() else { return };
+        let Some(scratch) = plan.allocs.iter().find(|a| a.feature == agent::sim::calls::FEATURE)
+            .map(|a| a.addr)
+        else { return };
+        let Some(shadow) = plan.chains.get(&hooks::points::GAME_TICK.base)
+            .and_then(|c| c.shadow).filter(|s| installed.placed.contains(s))
+        else { return };
+        // A late wrapper can invoke the active handler at entry. A native
+        // implementation with separate resume PCs owns additional dispatch
+        // state, so leave those chains intact.
+        if editor_points().any(|p| {
+            rt.resolve_original(p.base).is_none() || plan.chains.get(&p.base)
+                .and_then(|chain| chain.implement.as_ref())
+                .is_some_and(|hook| active(hook.feature) && !hook.continuation_sites().0.is_empty())
+        }) {
+            return;
+        }
+        if active(crate::map_slots::FEATURE) {
+            sim.set_map_rebind(rebind);
+        }
+        let runtime = std::sync::Arc::downgrade(rt);
+        sim.on_first_edit(&self.agent, move |agent| {
+            let rt = runtime.upgrade().ok_or("the game has shut down")?;
+            let mut registry = hooks::Registry::new(hooks::Switches::default());
+            let sources = sources.clone().map(|sources| -> agent::EditorActivation {
+                std::sync::Arc::new(move |guest| sources.activated(guest))
+            });
+            registry.add(&agent::EditLifecycleFeature(queue.clone(), agent.clone(), sources))
+                .map_err(|e| format!("editor lifecycle: {e}"))?;
+            let observers = registry.build(&hooks::Base)
+                .map_err(|conflicts| format!("editor lifecycle: {conflicts:?}"))?;
+            observers.attach_observers(&rt, shadow)?;
+            if let Some(tracker) = &skulls {
+                tracker.set_editor_queue(scratch, &queue);
+            }
+            Ok(())
+        });
+        sim.install_world_edits(&self.agent);
     }
 
     /// Between slices: answer what's queued.
@@ -339,6 +628,54 @@ pub fn faults_json(c: &runtime::fault_census::FaultCounts, features: u32, top: u
 
 /// The host methods (module docs).
 pub fn add_host_methods(agent: &agent::Agent) {
+    crate::lab_takeover::add_info(agent, false);
+    crate::sim_bots::install_pair_reader();
+    agent.add_game_method(agent_proto::sim::method::BOT_STATS, Access::Read, |v, _| {
+        crate::sim_bots::stats(v, bots::phantom::global())
+    });
+    agent.add_method(agent_proto::bot_bounce::BOUNCE_TO, Access::Act, |v| {
+        crate::sim_bots::bounce_to(v, bots::phantom::global())
+    });
+    agent.add_method(agent_proto::bot_bounce::BOUNCE_STATUS, Access::Read, |v| {
+        crate::sim_bots::bounce_status(v, bots::phantom::global())
+    });
+    agent.add_method(agent_proto::superbounce::SPOTS, Access::Read, crate::sim_bots::spots);
+    agent.add_method(method::UI_BROWSER_FILTERS, Access::Read, |params| {
+        if !params.is_null() && !params.as_object().is_some_and(|fields| fields.is_empty()) {
+            return Err(RpcError::new(
+                code::INVALID_PARAMS,
+                "ui.browser.filters takes no parameters",
+            ));
+        }
+        let filters = crate::custom_games::browser_filters::active_filters();
+        Ok(json!({ "filters": filters }))
+    });
+    agent.add_method(method::LIVE_JOIN_OPEN, Access::Act, |params| {
+        use live_hle::join_link::{self, Source, SubmitError};
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Open {
+            url: String,
+        }
+        let open: Open = serde_json::from_value(params)
+            .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?;
+        let link = open.url.parse::<live_proto::JoinLink>()
+            .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?;
+        let id = join_link::submit(link, Source::External).map_err(|e| {
+            let code = match e {
+                SubmitError::Busy => code::BUSY,
+                SubmitError::Unavailable => code::UNAVAILABLE,
+            };
+            RpcError::new(code, e.to_string())
+        })?;
+        Ok(json!({ "id": id }))
+    });
+    agent.add_method(method::LIVE_JOIN_STATUS, Access::Read, |params| {
+        if !params.is_null() && !params.as_object().is_some_and(|fields| fields.is_empty()) {
+            return Err(RpcError::new(code::INVALID_PARAMS, "Expected no parameters."));
+        }
+        Ok(json!({ "join": live_hle::join_link::status() }))
+    });
     if crate::sampling::available() {
         agent.add_method(method::SAMPLE_START, Access::Act, |v| {
             crate::sampling::start(v).map_err(rpc(code::UNAVAILABLE))
@@ -355,6 +692,8 @@ pub fn add_host_methods(agent: &agent::Agent) {
     // render.parity (their sources register on agent::render::HOSTED).
     #[cfg(feature = "desktop-runtime")]
     agent::render::add_frame_methods(agent, &agent::render::CAPTURE, &agent::render::HOSTED);
+    #[cfg(feature = "gpu")]
+    agent::render::clip::add_methods(agent);
     agent.add_method(method::PROFILE_FALLBACKS, Access::Read, |v| {
         let top = match v.get("top") {
             None => 20,
@@ -419,6 +758,22 @@ pub fn add_host_methods(agent: &agent::Agent) {
             .map(|lines| json!({"lines": lines}))
             .ok_or_else(|| RpcError::new(code::UNAVAILABLE, "no active custom game options panel"))
     });
+    agent.add_game_method(method::HOST_PEER_RTTS, Access::Read, |params, ctx| {
+        if !params.is_null() && !params.as_object().is_some_and(|p| p.is_empty()) {
+            return Err(RpcError::new(code::INVALID_PARAMS, "host.peer_rtts takes no parameters"));
+        }
+        ctx.read_guest(crate::lobby_quality::match_peer_rtts)?
+    });
+    agent.add_game_method(method::UI_LOBBY_TABS, Access::Read, |params, ctx| {
+        if !params.is_null() && !params.as_object().is_some_and(|p| p.is_empty()) {
+            return Err(RpcError::new(
+                code::INVALID_PARAMS,
+                "ui.lobby.tabs takes no parameters",
+            ));
+        }
+        ctx.read_guest(crate::lobby_tabs::strip::inspect)?
+            .map_err(|why| RpcError::new(code::UNAVAILABLE, why))
+    });
     agent.add_game_method(method::UI_LOBBY_PLAYERS, Access::Read, |params, ctx| {
         if !params.is_null() && !params.as_object().is_some_and(|p| p.is_empty()) {
             return Err(RpcError::new(
@@ -431,12 +786,13 @@ pub fn add_host_methods(agent: &agent::Agent) {
     agent.add_method(
         method::UI_SCREEN,
         Access::Read,
-        |_| match crate::ui_watch::last() {
-            Some((age, top, dialog)) => Ok(crate::ui_watch::screen_json(age, top, dialog)),
-            None => Err(RpcError::new(
-                code::UNAVAILABLE,
-                "no screen read yet (H2_UI_WATCH=1; read on each game tick)",
-            )),
+        |_| {
+            crate::ui_watch::last_json().ok_or_else(|| {
+                RpcError::new(
+                    code::UNAVAILABLE,
+                    "no screen read yet (H2_UI_WATCH=1; read on each game tick)",
+                )
+            })
         },
     );
 }
@@ -462,6 +818,28 @@ impl crate::layout_glue::Gm for Mem<'_> {
     fn wr(&mut self, _: u32, _: &[u8]) -> bool {
         false
     }
+}
+
+/// Called on an external Live service, at gameplay boundaries. Matchmaking plays
+/// in its target session, custom games in the squad. Refuse an unreadable
+/// session until the next probe can positively identify its network class.
+pub fn remote_live_game(m: &dyn engine::GuestMemory) -> bool {
+    use bots::lobby;
+    use crate::variant_ext::{SESSION_NETWORK_CLASS, SYSTEM_LINK};
+
+    let local = || -> Option<bool> {
+        if m.u8(lobby::NETWORKING).ok()? == 0 {
+            return Some(true);
+        }
+        let cycle = m.u32(lobby::SESSION_TYPE).ok()?;
+        let session = m.u32(lobby::game_session_at(cycle)).ok()?;
+        if session == 0 || m.u32(session.checked_add(lobby::STATE)?).ok()? == 0 {
+            return Some(true);
+        }
+        let class = m.u32(session.checked_add(SESSION_NETWORK_CLASS)?).ok()?;
+        Some(matches!(class, 0 | SYSTEM_LINK))
+    };
+    local() != Some(true)
 }
 
 /// The session kind from the simulation mode, and the squad session
@@ -495,6 +873,141 @@ impl Drop for AgentGlue {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    /// Build the real tick features, supply their final install result, and
+    /// ask the public registry which editor operations this host offers.
+    fn editor_methods(
+        theater: bool,
+        input_replay: bool,
+        recording: bool,
+        off: Option<&'static str>,
+        missing: Option<&'static str>,
+    ) -> Vec<&'static str> {
+        use agent_proto::sim::method::{EDITS, MAP_RELOAD};
+
+        struct Image(Option<&'static str>);
+        impl hooks::ImageAddrs for Image {
+            fn resolve(&self, point: &hooks::points::Point) -> Option<u32> {
+                (self.0 != Some(point.name)).then_some(point.base)
+            }
+        }
+        let agent = agent::Agent::new();
+        let sim = install_sim(&agent, true);
+        let calls = agent::sim::calls::shared();
+        let mut registry = hooks::Registry::new(hooks::Switches::default());
+        registry
+            .add(&agent::sim::calls::CallsFeature(calls.clone()))
+            .unwrap();
+        registry.add(&agent::AgentFeature(agent.clone())).unwrap();
+        sim.set_calls(calls);
+        let glue = AgentGlue {
+            agent,
+            sim: Some(sim),
+            _listeners: Vec::new(),
+        };
+        let plan = registry.build(&Image(missing)).unwrap();
+        assert!(plan.is_on("agent"), "the ordinary tick agent stays available");
+        let mut d = runtime::Dispatch::default();
+        for point in editor_points() {
+            if missing != Some(point.name) {
+                d.register_generated_rust(point.base, |_, _, _| unreachable!()).unwrap();
+            }
+        }
+        let rt = runtime::Runtime::new(runtime::Guest::new(), d);
+        let mut installed = hooks::Installed::default();
+        installed.placed.push(plan.chains[&hooks::points::GAME_TICK.base].shadow.unwrap());
+        if let Some(feature) = off {
+            installed.off.push((feature, "missing generated tick entry".into()));
+        }
+        let blocked = if recording {
+            Some("map reload is disabled while recording a film")
+        } else if theater || input_replay {
+            Some("map reload is disabled during playback")
+        } else {
+            None
+        };
+        glue.install_editor_methods(
+            &plan, &installed, &rt, off != Some(agent::EDIT_LIFECYCLE), blocked, None, None,
+            Box::new(|_, _, _, _| panic!("a playback or uninstalled hook must not prepare a map")),
+        );
+        assert!(!plan.is_on(agent::EDIT_LIFECYCLE));
+        assert!(rt.read_dispatch(|d| d.override_name(hooks::points::GAME_ACTIVATE.base).is_none()));
+        let mem = Mutex::new(runtime::Guest::new());
+        let mut reader = agent::GuestReader::new(|| mem.lock().unwrap());
+        let (tx, rx) = std::sync::mpsc::sync_channel(4);
+        let conn = glue.agent.connect(tx);
+        let mut call = |method: &str| -> Value {
+            let request = json!({"jsonrpc": "2.0", "id": 1, "method": method});
+            glue.agent.submit(conn, &request.to_string());
+            glue.agent.on_tick(&mut reader);
+            serde_json::from_str(&rx.try_recv().unwrap()).unwrap()
+        };
+        let response = call(method::METHODS);
+        let methods = response["result"].as_array().unwrap();
+        if off.is_none() && missing.is_none() && (theater || input_replay || recording) {
+            let error = call(MAP_RELOAD);
+            assert_eq!(error["error"]["code"], agent_proto::sim::REFUSED);
+            assert_eq!(
+                error["error"]["data"]["why"],
+                if recording {
+                    "map reload is disabled while recording a film"
+                } else {
+                    "map reload is disabled during playback"
+                }
+            );
+        }
+        EDITS.iter()
+            .copied()
+            .filter(|name| methods.contains(&json!(name)))
+            .collect()
+    }
+
+    #[test]
+    fn theater_without_an_input_replay_offers_only_the_reload_refusal() {
+        let reload = [agent_proto::sim::method::MAP_RELOAD];
+        assert_eq!(editor_methods(true, false, false, None, None), reload);
+        assert_eq!(editor_methods(false, true, false, None, None), reload);
+    }
+
+    #[test]
+    fn a_launch_recording_input_refuses_reloads_while_a_trace_only_launch_can_edit() {
+        let mut config = crate::lockstep_glue::Config {
+            trace: Some("fixture.trace".into()),
+            ..Default::default()
+        };
+        assert_eq!(reload_recording_refusal(false, false, &config), None);
+        config.record = Some("fixture.input".into());
+        assert_eq!(
+            reload_recording_refusal(false, false, &config),
+            Some("map reload is disabled while recording input")
+        );
+    }
+
+    #[test]
+    fn film_recording_offers_a_reload_refusal_with_the_recording_reason() {
+        assert_eq!(
+            editor_methods(false, false, true, None, None),
+            [agent_proto::sim::method::MAP_RELOAD],
+        );
+    }
+
+    #[test]
+    fn both_installed_tick_features_are_required_for_editor_methods() {
+        assert_eq!(editor_methods(false, false, false, None, None), agent_proto::sim::method::EDITS);
+        for feature in ["agent", agent::sim::calls::FEATURE, agent::EDIT_LIFECYCLE] {
+            assert!(editor_methods(false, false, false, Some(feature), None).is_empty());
+            if feature != agent::EDIT_LIFECYCLE {
+                assert!(editor_methods(true, false, false, Some(feature), None).is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn missing_each_edit_lifecycle_observer_leaves_the_base_tick_available() {
+        for point in [&hooks::points::GAME_ACTIVATE, &hooks::points::GAME_STATE_REVERT] {
+            assert!(editor_methods(false, false, false, None, Some(point.name)).is_empty());
+        }
+    }
 
     #[cfg(unix)]
     #[test]
@@ -540,6 +1053,31 @@ mod tests {
             std::thread::sleep(Duration::from_millis(2));
         }
         assert_eq!(clients.join().unwrap(), [json!(1), json!(2)]);
+    }
+
+    #[test]
+    fn remote_live_probe_uses_the_active_session_and_refuses_unreadable_state() {
+        use bots::lobby;
+        use crate::variant_ext::{SESSION_NETWORK_CLASS, SYSTEM_LINK};
+        let mut g = engine::testing::FakeGuest::new();
+        assert!(remote_live_game(&g));
+        let squad = 0x4000;
+        let target = 0x14000;
+        g.map(lobby::NETWORKING, 0x80)
+            .put_u8(lobby::NETWORKING, 1)
+            .put_u32(lobby::SESSION, squad)
+            .put_u32(lobby::TARGET_SESSION, target);
+        for (addr, class) in [(squad, SYSTEM_LINK), (target, 2)] {
+            g.map(addr, 0x8000)
+                .put_u32(addr + lobby::STATE, 5)
+                .put_u32(addr + SESSION_NETWORK_CLASS, class);
+        }
+        g.put_u32(lobby::SESSION_TYPE, 3);
+        assert!(!remote_live_game(&g));
+        g.put_u32(lobby::SESSION_TYPE, 8);
+        assert!(remote_live_game(&g));
+        g.put_u8(lobby::NETWORKING, 0);
+        assert!(!remote_live_game(&g));
     }
 
     #[test]
@@ -591,6 +1129,17 @@ mod tests {
         };
         let r = call(method::UI_LOBBY_PLAYERS, json!({"unknown": true}));
         assert_eq!(r["error"]["code"], code::INVALID_PARAMS, "{r}");
+        let r = call(method::UI_LOBBY_TABS, json!({"unknown": true}));
+        assert_eq!(r["error"]["code"], code::INVALID_PARAMS, "{r}");
+        let r = call(method::UI_BROWSER_FILTERS, json!({"kind": "coop"}));
+        assert_eq!(r["error"]["code"], code::INVALID_PARAMS, "{r}");
+        let r = call(method::UI_BROWSER_FILTERS, Value::Null);
+        assert_eq!(
+            r["result"]["filters"],
+            serde_json::to_value(crate::custom_games::browser_filters::active_filters()).unwrap()
+        );
+        let r = call(agent_proto::sim::method::BOT_STATS, json!({}));
+        assert!(r["result"]["bots"].is_array(), "{r}");
         let r = call(method::RENDER_STATS, Value::Null);
         assert!(r["result"].as_object().is_some_and(|o| o.contains_key("counters")), "{r}");
         let r = call(method::PROFILE_FALLBACKS, json!({"top": 3}));

@@ -8,7 +8,7 @@ A Sapien-style scenario placement editor for Halo 2 cache files: typed `scnr` pl
 
 ## Layout
 
-- `src/layout.rs`: the `scnr` placement blocks, strides and fields.
+- `src/layout.rs`: the shared `map::scenario_layout` placement schema.
 - `src/scenario.rs`, `src/edit.rs`: typed get/set and the minimal patches.
 - `src/session/`, `src/session.rs`: the UI-free editor session.
 - `src/save.rs`: writing the patched `.map` through `map::writer::MapEditor`.

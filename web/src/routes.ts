@@ -30,10 +30,24 @@ export function movedStatsPath(path: string): string | null {
   return statsPath(rest === "/" ? "" : rest);
 }
 
-/** A whole film, or one named range of it. IDs occupy separate path segments. */
+export const GAME_VIEWER_ID = "game-viewer";
+const GAME_VIEWER_HASH = `#${GAME_VIEWER_ID}`;
+
+export function gameHref(game: string, options?: { player?: string }): string {
+  const path = statsPath(`/games/${encodeURIComponent(game)}`);
+  return options?.player ? `${path}?player=${encodeURIComponent(options.player)}` : path;
+}
+
+/** Whole films open in Game Details. Shared clips keep their distinct URL. */
 export function theaterHref(game: string, clip?: string): string {
-  const film = `/theater/${encodeURIComponent(game)}`;
-  return clip === undefined ? film : `${film}/clip/${encodeURIComponent(clip)}`;
+  return clip === undefined
+    ? gameHref(game) + GAME_VIEWER_HASH
+    : `/theater/${encodeURIComponent(game)}/clip/${encodeURIComponent(clip)}`;
+}
+
+export function movedTheaterPath(path: string, search = ""): string | null {
+  const match = /^\/theater\/([^/]+)\/?$/.exec(path);
+  return match ? statsPath(`/games/${match[1]}`) + search + GAME_VIEWER_HASH : null;
 }
 
 export function clipShareUrl(origin: string, game: string, clip: string): string {

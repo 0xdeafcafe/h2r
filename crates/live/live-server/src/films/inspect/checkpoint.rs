@@ -7,7 +7,7 @@ use serde::{Serialize, de::DeserializeOwned};
 const MAGIC: &[u8; 8] = b"H2INGST1";
 const HEADER: usize = 16;
 
-pub(super) mod digest {
+pub(in crate::films) mod digest {
     use serde::{Deserialize, Deserializer, Serializer, de::Error};
     use sha2_checkpoint::{Sha256, digest::common::hazmat::SerializableState};
 

@@ -1,22 +1,8 @@
-.theater-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(212px, 27%);
-  align-items: start;
-  gap: 8px;
-  padding: 8px;
-}
-.theater-grid .gv { margin: 0; }
-.theater-grid .gv-bar { flex-wrap: wrap; }
-.theater-grid .gv-bar h2 { flex-basis: 70%; line-height: 25px; }
-.theater-grid .gv-buttons { margin: 0 0 5px; flex-wrap: wrap; }
-.theater-grid .gv-status { flex: 1; text-align: right; }
+.gv-bar:has(.theater-cameras) { flex-wrap: wrap; }
+.gv-buttons:has(.theater-cameras) { flex-wrap: wrap; }
 .theater-cameras { display: flex; flex-wrap: wrap; gap: 4px; }
 .theater-cameras button:last-child { margin-left: 4px; }
-.theater-grid .gv-stage { max-height: none; }
-.theater-grid .gv-stage--3d > .v3-body { inset: 0; }
-.theater-scoreboard { margin: 0; min-width: 0; }
-.theater-scoreboard .score-name { white-space: nowrap; }
-.theater-scoreboard .score-pov {
+.s-viewer--below .score-pov {
   max-width: calc(100% - 14px);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -28,9 +14,9 @@
   padding: 0 2px;
   cursor: pointer;
 }
-.theater-scoreboard .score-pov:hover { text-decoration: underline; }
-.theater-scoreboard .score-row--picked td { background: color-mix(in srgb, var(--row) 35%, #1e1e1e); }
-.theater-scoreboard .score-row--picked .score-pov { color: white; }
+.s-viewer--below .score-pov:hover { text-decoration: underline; }
+.s-viewer--below .score-row--picked td { background: color-mix(in srgb, var(--row) 35%, #1e1e1e); }
+.s-viewer--below .score-row--picked .score-pov { color: white; }
 .theater-byline {
   display: flex;
   flex-wrap: wrap;
@@ -79,16 +65,11 @@
 .scrub__boundary--in { background: #8af3d0; }
 .scrub__boundary--out { background: #ffce84; }
 
-@media (max-width: 730px) {
-  .theater-grid { grid-template-columns: minmax(0, 1fr); }
-}
 @media (max-width: 480px) {
-  .theater .replay-bar { flex-wrap: wrap; height: auto; padding-block: 5px; gap: 5px; }
-  .theater .replay-time { min-width: auto; }
-  .theater-grid .gv-buttons { gap: 4px; }
+  .s-game .replay-bar { flex-wrap: wrap; height: auto; padding-block: 5px; gap: 5px; }
+  .s-game .replay-time { min-width: auto; }
 }
 
-.stats:has(.theater) { --s-width: 1180px; }
 .stats .film-library {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 186px), 1fr));

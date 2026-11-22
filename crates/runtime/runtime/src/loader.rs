@@ -38,6 +38,8 @@ pub struct ReservationRequest {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LoadOptions {
     pub physical_reservations: Vec<ReservationRequest>,
+    /// Prepare paged RAM for a VFS that maps immutable reads directly into it.
+    pub map_guest_reads: bool,
 }
 impl LoadOptions {
     /// Reserve [`HALO2_PHYSICAL_ARENA`] with its contiguous alias window
@@ -49,6 +51,7 @@ impl LoadOptions {
                 aliases: vec![CONTIGUOUS_ALIAS_BASE + HALO2_PHYSICAL_ARENA.start],
                 owner: "halo2 physical arena",
             }],
+            ..Self::default()
         }
     }
 }
@@ -127,7 +130,7 @@ pub fn load_xbe_with(bytes: &[u8], options: &LoadOptions) -> Result<LoadedImage,
     if image.size_of_headers > image.size_of_image {
         return Err(LoadError::Invalid("headers exceed image"));
     }
-    let mut memory = Guest::new();
+    let mut memory = Guest::with_mapped_reads(options.map_guest_reads);
     for r in &options.physical_reservations {
         let len = r
             .physical

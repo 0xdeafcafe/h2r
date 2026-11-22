@@ -68,6 +68,10 @@ pub struct Manifest {
     /// On unless switched off.
     pub default_on: bool,
     pub doc: &'static str,
+    pub(crate) presentation_only: bool,
+    /// How the game works, not an enhancement: it has no switch (set by
+    /// the builder method of the same name).
+    pub(crate) always_on: bool,
 }
 
 impl Manifest {
@@ -77,12 +81,29 @@ impl Manifest {
             title,
             default_on: true,
             doc: "",
+            presentation_only: false,
+            always_on: false,
         }
+    }
+    /// The feature is how the game works and has no switch: `-<id>` (or
+    /// `<id>=off`) is refused by name at [`Registry::add`] rather than
+    /// leaving it out.
+    pub fn always_on(mut self) -> Self {
+        self.always_on = true;
+        self.default_on = true;
+        self
     }
     pub fn off_by_default(mut self) -> Self {
         self.default_on = false;
         self
     }
+    /// Private render state may be installed on a film player alone. Give
+    /// it arena addresses that leave the recording's simulation plan intact.
+    pub fn presentation_only(mut self) -> Self {
+        self.presentation_only = true;
+        self
+    }
+
     pub fn doc(mut self, doc: &'static str) -> Self {
         self.doc = doc;
         self
@@ -104,6 +125,8 @@ impl std::fmt::Display for BuildError {
         f.write_str(&self.0)
     }
 }
+
+impl std::error::Error for BuildError {}
 
 /// Where a hook sits relative to the others of its kind at one point.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -361,6 +384,7 @@ pub struct Alloc {
     pub addr: u32,
     pub len: u32,
     pub perms: Permissions,
+    pub presentation_only: bool,
 }
 
 /// Collects every feature's declarations. See the crate docs.
@@ -396,11 +420,19 @@ impl Registry {
     }
 
     /// Builds `feature` when its switch is on. `Ok(false)`: switched off.
+    /// A feature that is [`Manifest::always_on`] and switched off is an
+    /// error naming it.
     /// A build error leaves the feature out (nothing it declared is kept)
     /// and is returned. A second feature with the same id is a conflict at
     /// [`build`](Self::build).
     pub fn add(&mut self, feature: &dyn Feature) -> Result<bool, BuildError> {
         let m = feature.manifest();
+        if m.always_on && !self.switches.feature(m.id, true) {
+            return Err(BuildError(format!(
+                "{} has no switch: it is how the game works ({})",
+                m.id, m.doc
+            )));
+        }
         let on = self.switches.feature(m.id, m.default_on);
         if !on {
             self.features
@@ -409,6 +441,7 @@ impl Registry {
         }
         let mut b = Builder {
             feature: m.id,
+            presentation_only: m.presentation_only,
             hooks: Vec::new(),
             arena: self.arena.clone(),
             allocs: Vec::new(),
@@ -486,6 +519,7 @@ impl Registry {
 /// What a feature declares through. See [`Feature::build`].
 pub struct Builder<'r> {
     feature: &'static str,
+    presentation_only: bool,
     hooks: Vec<Hook>,
     arena: Arena,
     allocs: Vec<Alloc>,
@@ -533,15 +567,17 @@ impl<'r> Builder<'r> {
     /// Guest memory for this feature, from the one reserved range, mapped
     /// (zeroed) at install. Page-granular.
     pub fn guest_alloc(&mut self, len: u32, perms: Permissions) -> Result<u32, BuildError> {
-        let addr = self
-            .arena
-            .alloc(len)
-            .ok_or_else(|| BuildError(format!("guest arena full ({len:#x} bytes)")))?;
+        let addr = if self.presentation_only {
+            self.arena.alloc_high(len)
+        } else {
+            self.arena.alloc(len)
+        }.ok_or_else(|| BuildError(format!("guest arena full ({len:#x} bytes)")))?;
         self.allocs.push(Alloc {
             feature: self.feature,
             addr,
             len,
             perms,
+            presentation_only: self.presentation_only,
         });
         Ok(addr)
     }

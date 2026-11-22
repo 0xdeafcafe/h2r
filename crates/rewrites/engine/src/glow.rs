@@ -23,7 +23,7 @@
 //! x87 under its control word), checked against the lifted original by
 //! `engine/tests/glow_differential.rs`. Image constants stay in the image.
 
-use crate::colour_pass::{Parameters, pack_colour};
+use crate::colour_pass::Parameters;
 use crate::light_constants::{Error, Sse, X87};
 use crate::memory::GuestMemory;
 

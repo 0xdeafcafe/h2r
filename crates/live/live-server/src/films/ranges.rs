@@ -96,8 +96,8 @@ fn revision(key: &str) -> String {
 
 #[derive(Deserialize, Default)]
 pub(crate) struct RangeQuery {
-    rev: Option<String>,
-    span: Option<String>,
+    pub(super) rev: Option<String>,
+    pub(super) span: Option<String>,
     auth: Option<String>,
 }
 
@@ -108,7 +108,7 @@ fn unavailable() -> ApiError {
     ApiError::new(ErrorCode::Unavailable, "the film range is unavailable")
 }
 
-fn parse_range(headers: &HeaderMap, size: u64) -> Option<Range<u64>> {
+pub(super) fn parse_range(headers: &HeaderMap, size: u64) -> Option<Range<u64>> {
     let all = headers.get_all(header::RANGE);
     let mut ranges = all.iter();
     let value = ranges.next()?.to_str().ok()?.strip_prefix("bytes=")?;
@@ -133,7 +133,7 @@ fn parse_range(headers: &HeaderMap, size: u64) -> Option<Range<u64>> {
     (start < end && end <= size).then_some(start..end)
 }
 
-fn range_response(
+pub(super) fn range_response(
     status: StatusCode,
     range: Option<&Range<u64>>,
     total: u64,
@@ -181,7 +181,7 @@ impl WebRanges {
         Ok(bytes)
     }
 
-    async fn read(
+    pub(super) async fn read(
         &self,
         cache: &WebIndexCache,
         store: &BlobStore,
@@ -263,6 +263,12 @@ pub(crate) async fn read_film(
     headers: HeaderMap,
 ) -> ApiResult<Response> {
     game_id(&id)?;
+    if let Some(share) = {
+        let model = live.model.read();
+        model.films.shared.get(&id).cloned()
+    } {
+        return super::shared::read_object(&live, &headers, share, None, &query).await;
+    }
     if !headers.contains_key(header::RANGE)
         && query.rev.is_none()
         && query.span.is_none()

@@ -2,7 +2,7 @@
 // the height cut (nothing above a chosen height is drawn), and the
 // see-through (level geometry between the camera and the player in focus is
 // cut away). The parts that need no three.js, so they can be tested; the
-// shader text here is what viewer/scene.ts patches into the map's materials.
+// shader text here is what cutaway3d.ts patches into the scene materials.
 
 import type { Vec3 } from "../map/views";
 
@@ -68,81 +68,32 @@ export function cutHeight(cut: { on: boolean; height: number }, followZ: number 
 
 // ---- the see-through ----
 
-/** How far round the player in focus is kept clear (game units), before
- *  the marker scale. */
-export const SEE_RADIUS = 2.4;
-
+/** A player-sized window projected from the eye. World axes are y-up. */
 export interface SeeThrough {
   eye: Vec3;
-  /** The point kept in view: the player's chest. */
   target: Vec3;
-  /** The clear radius at the target; 0 turns it off. */
   radius: number;
-  /** Nothing at or below this height is cut: the floor they stand on stays. */
-  floor: number;
+  halfHeight: number;
 }
 
-/** How far behind a surface (game units, along its normal) the point kept
- *  in view has to be before the surface counts as in the way. Keeps
- *  ground that the line of sight only grazes, and stops a surface nearly
- *  edge-on to the line from flickering as the camera moves. */
-export const SEE_BEHIND = 0.15;
-
-/** A surface whose normal is at least this close to straight up or down
- *  (|y|) is a floor, terrain or ceiling: it is taken as level, so a bump
- *  in the ground tilted towards the camera doesn't count as rising over
- *  the player just because its slope, carried on, would. */
-export const SEE_LEVEL = 0.7;
-
-/** Slack (game units) on how near the point the line of sight has to
- *  cross its surface, over the cone's radius there. */
-export const SEE_NEAR = 0.5;
-/** The shallowest the line of sight is taken to meet a surface at (the
- *  cosine to its normal) when sizing the cone's footprint on it. */
-export const SEE_GRAZE = 0.15;
-
-/** Whether the see-through removes a point (all in one y-up space, as the
- *  shader sees them). The point lies inside the cone from the eye to a disc
- *  of `radius` round the target, short of the target and above the floor;
- *  and its surface actually stands in the way: the line of sight passes
- *  through the surface's plane (the target more than [`SEE_BEHIND`] behind
- *  it), near the point. Ground under the line, the floor round a player
- *  and a wall running beside the line all have the target in front of
- *  them, so they stay. `normal` is the surface's, either way round (the
- *  face towards the eye when left out); one within [`SEE_LEVEL`] of
- *  vertical is taken as level. The cone ends in a clean edge: it used to
- *  thin out through a per-pixel dither, which speckled the rim, crawled as
- *  the camera moved and, read back from the depth, freckled the occlusion
- *  along it. The shader below is this, line for line. */
-export function seeThroughHides(p: Vec3, s: SeeThrough, normal?: Vec3): boolean {
-  if (!(s.radius > 0) || p[1] <= s.floor) return false;
-  const ax: Vec3 = [s.target[0] - s.eye[0], s.target[1] - s.eye[1], s.target[2] - s.eye[2]];
-  const len = Math.hypot(ax[0], ax[1], ax[2]);
-  if (len < 1e-4) return false;
-  const dir: Vec3 = [ax[0] / len, ax[1] / len, ax[2] / len];
-  const rel: Vec3 = [p[0] - s.eye[0], p[1] - s.eye[1], p[2] - s.eye[2]];
-  const t = rel[0] * dir[0] + rel[1] * dir[1] + rel[2] * dir[2];
-  if (t <= 0 || t >= len - s.radius * 0.5) return false;
-  const d = Math.hypot(rel[0] - dir[0] * t, rel[1] - dir[1] * t, rel[2] - dir[2] * t);
-  if (!(d < s.radius * (t / len))) return false;
-  // The surface's normal, turned to face the eye; level when near vertical.
-  let n: Vec3 = normal ?? [-dir[0], -dir[1], -dir[2]];
-  const nl = Math.hypot(n[0], n[1], n[2]);
-  if (!(nl > 1e-9)) return false;
-  n = [n[0] / nl, n[1] / nl, n[2] / nl];
-  if (n[0] * -rel[0] + n[1] * -rel[1] + n[2] * -rel[2] < 0) n = [-n[0], -n[1], -n[2]];
-  if (Math.abs(n[1]) > SEE_LEVEL) n = [0, Math.sign(n[1]), 0];
-  // Which side of the surface the eye and the target are on; the line
-  // crosses it at `u` of the way along, `x` from the point.
-  const eyeSide = -(rel[0] * n[0] + rel[1] * n[1] + rel[2] * n[2]);
-  const behind = (s.target[0] - p[0]) * n[0] + (s.target[1] - p[1]) * n[1] + (s.target[2] - p[2]) * n[2];
-  if (!(eyeSide > 0) || !(behind < -SEE_BEHIND)) return false;
-  const u = eyeSide / (eyeSide - behind);
-  const x: Vec3 = [s.eye[0] + ax[0] * u - p[0], s.eye[1] + ax[1] * u - p[1], s.eye[2] + ax[2] * u - p[2]];
-  // The cone's footprint on the surface: its radius there, stretched by
-  // how slantwise the line meets it (capped for a line that only grazes).
-  const slant = Math.max(SEE_GRAZE, Math.abs(dir[0] * n[0] + dir[1] * n[1] + dir[2] * n[2]));
-  return Math.hypot(x[0], x[1], x[2]) < (s.radius * u) / slant + SEE_NEAR;
+/** A fragment is cut when its pixel ray crosses the player's ellipsoid
+ *  and the fragment lies on the near side of that window. In ellipsoid
+ *  space the radii become one, so the ray must pass within one unit of
+ *  the centre and its closest approach must be past the fragment. This
+ *  leaves room for a slab flush against the player while preserving the
+ *  surfaces beyond them. The camera must be outside the ellipsoid. */
+export function seeThroughHides(p: Vec3, s: SeeThrough): boolean {
+  if (s.radius <= 0 || s.halfHeight <= 0) return false;
+  const [ex, ey, ez] = s.eye;
+  const [tx, ty, tz] = s.target;
+  const x = (tx - ex) / s.radius, y = (ty - ey) / s.halfHeight, z = (tz - ez) / s.radius;
+  if (x * x + y * y + z * z <= 1) return false;
+  const dx = (p[0] - ex) / s.radius, dy = (p[1] - ey) / s.halfHeight, dz = (p[2] - ez) / s.radius;
+  const raySq = dx * dx + dy * dy + dz * dz;
+  const along = dx * x + dy * y + dz * z;
+  if (raySq >= along) return false;
+  const cx = dy * z - dz * y, cy = dz * x - dx * z, cz = dx * y - dy * x;
+  return cx * cx + cy * cy + cz * cz <= raySq;
 }
 
 /** At most this many players are seen through at once. */
@@ -170,8 +121,8 @@ export function nextSee(m: SeeMode): SeeMode {
 }
 
 /** Whether any of several see-throughs removes a point. */
-export function seeThroughHidesAny(p: Vec3, list: readonly SeeThrough[], normal?: Vec3): boolean {
-  return list.some((s) => seeThroughHides(p, s, normal));
+export function seeThroughHidesAny(p: Vec3, list: readonly SeeThrough[]): boolean {
+  return list.some((s) => seeThroughHides(p, s));
 }
 
 export const SEE_VERTEX_HEAD = /* glsl */ `varying vec3 vSeeWorld;\n`;
@@ -192,43 +143,27 @@ vSeeWorld = (modelMatrix * seeLocal).xyz;
 `;
 export const SEE_FRAGMENT_HEAD = /* glsl */ `
 varying vec3 vSeeWorld;
+uniform vec3 uSeeEye;
 uniform vec4 uSeeTargets[${SEE_MAX}];
-uniform float uSeeFloors[${SEE_MAX}];
+uniform float uSeeHalfHeights[${SEE_MAX}];
 uniform int uSeeCount;
 `;
-/** After `clipping_planes_fragment`: [`seeThroughHides`] for each target
- *  (xyz the point kept in view, w the clear radius). The surface's normal
- *  is the triangle's own, from the screen-space change of its world
- *  position (taken before any branch, as derivatives need), turned to
- *  face the camera. */
+/** Same ray test as seeThroughHides. Discarding only the occluding
+ *  fragments opens the window in the colour and depth buffers together. */
 export const SEE_FRAGMENT_BODY = /* glsl */ `
-vec3 seeFace = cross(dFdx(vSeeWorld), dFdy(vSeeWorld));
-if (uSeeCount > 0) {
-  float seeFaceLen = length(seeFace);
-  vec3 seeN = seeFaceLen > 1e-12 ? seeFace / seeFaceLen : vec3(0.0);
-  if (dot(seeN, cameraPosition - vSeeWorld) < 0.0) seeN = -seeN;
-  if (abs(seeN.y) > ${SEE_LEVEL.toFixed(2)}) seeN = vec3(0.0, sign(seeN.y), 0.0);
-  float seeEyeSide = dot(cameraPosition - vSeeWorld, seeN);
-  for (int seeI = 0; seeI < ${SEE_MAX}; seeI++) {
-    if (seeI >= uSeeCount) break;
-    vec4 seeTarget = uSeeTargets[seeI];
-    if (seeTarget.w <= 0.0 || vSeeWorld.y <= uSeeFloors[seeI]) continue;
-    vec3 seeAxis = seeTarget.xyz - cameraPosition;
-    float seeLen = length(seeAxis);
-    if (seeLen <= 1e-4) continue;
-    vec3 seeDir = seeAxis / seeLen;
-    vec3 seeRel = vSeeWorld - cameraPosition;
-    float seeT = dot(seeRel, seeDir);
-    if (seeT <= 0.0 || seeT >= seeLen - seeTarget.w * 0.5) continue;
-    float seeD = length(seeRel - seeDir * seeT);
-    if (!(seeD < seeTarget.w * (seeT / seeLen))) continue;
-    if (seeFaceLen <= 1e-12) continue;
-    float seeBehind = dot(seeTarget.xyz - vSeeWorld, seeN);
-    if (!(seeEyeSide > 0.0) || !(seeBehind < -${SEE_BEHIND.toFixed(2)})) continue;
-    float seeU = seeEyeSide / (seeEyeSide - seeBehind);
-    float seeSlant = max(${SEE_GRAZE.toFixed(2)}, abs(dot(seeDir, seeN)));
-    if (length(cameraPosition + seeAxis * seeU - vSeeWorld) < seeTarget.w * seeU / seeSlant + ${SEE_NEAR.toFixed(2)}) discard;
-  }
+for (int seeI = 0; seeI < ${SEE_MAX}; seeI++) {
+  if (seeI >= uSeeCount) break;
+  vec4 seeTarget = uSeeTargets[seeI];
+  float seeHeight = uSeeHalfHeights[seeI];
+  if (seeTarget.w <= 0.0 || seeHeight <= 0.0) continue;
+  vec3 seeInvSize = 1.0 / vec3(seeTarget.w, seeHeight, seeTarget.w);
+  vec3 seeCentre = (seeTarget.xyz - uSeeEye) * seeInvSize;
+  if (dot(seeCentre, seeCentre) <= 1.0) continue;
+  vec3 seeRay = (vSeeWorld - uSeeEye) * seeInvSize;
+  float seeRaySq = dot(seeRay, seeRay);
+  if (seeRaySq >= dot(seeRay, seeCentre)) continue;
+  vec3 seeCross = cross(seeRay, seeCentre);
+  if (dot(seeCross, seeCross) <= seeRaySq) discard;
 }
 `;
 

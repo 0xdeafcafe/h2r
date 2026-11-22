@@ -99,10 +99,13 @@ impl<B: Backend> Device<B> {
         if clear.color.is_none() && clear.depth.is_none() && clear.stencil.is_none() {
             return Ok(());
         }
-        self.before_target_write(target)?;
+        self.materialize_display_copy(target)?;
         self.backend
             .clear(target, depth, clear)
             .map_err(D3dError::Backend)?;
+        if clear.color.is_some() {
+            self.present_cameras.color_written(target);
+        }
         self.mark_written(clear.depth.is_some() || clear.stencil.is_some());
         Ok(())
     }

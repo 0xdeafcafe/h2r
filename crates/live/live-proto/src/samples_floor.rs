@@ -15,7 +15,7 @@ fn movers() -> (Vec<Mover>, Vec<Mover>) {
 
 fn sample(frames: &[Frame], players: &[Mover], rides: &[Mover], tick: usize) -> Frame {
     let mut f = frames[tick / 2].clone();
-    if tick % 2 != 0 {
+    if !tick.is_multiple_of(2) {
         let t = tick as f64 / 30.;
         f.tick += 1;
         // Non-random fields use the original analytic fixture at this tick.

@@ -9,7 +9,7 @@ import { live } from "../state/live";
 import { identity } from "../state/identity";
 import { accountByGamertag, type AccountState, type GameState } from "../state/reducer";
 import {
-  MEDALS, OUTCOME_WORDS, RANKS, campaignHistory, countMedals, gameHistory, gameMedals, nextRankAt, ordinal, playedWith, rankIndex,
+  MEDALS, OUTCOME_WORDS, RANKS, campaignHistory, countMedals, gameAwards, gameHistory, isBounceMedal, nextRankAt, ordinal, playedWith, rankIndex,
   serviceRecord, serviceTag, type CampaignRow, type HistoryRow, type MedalId, type ServiceRecord,
 } from "../state/derive";
 import type { GameMode } from "../state/reducer";
@@ -24,7 +24,7 @@ import { Crumbs, Derived, Pager, Panel, Tabs, Title, playerHref } from "./Layout
 import GametypeIcon from "../components/GametypeIcon";
 import { SkullBadges } from "../components/SkullIcon";
 import { MapPreview, MapThumb, PeopleFinder, Pills, RecentGames, gameTitle, playlist } from "./Side";
-import { titleCase } from "../lib/format";
+import { damageSourceName } from "../lib/format";
 import { gameSeconds, teamName } from "../lib/game";
 import { now } from "../lib/now";
 import Wordmark from "./Wordmark";
@@ -33,7 +33,8 @@ import CoopGames from "./CoopGames";
 import PlayerFilms from "../theater/PlayerFilms";
 import { hms, longDate, num, ratio, usDate, usDateTime } from "./fmt";
 import { parseCommendations, type Commendations } from "../admin/bans";
-import { STATS_ROOT, statsPath } from "../routes";
+import { STATS_ROOT, gameHref, statsPath } from "../routes";
+import { fetchVariants, variantHref, type Variant } from "../lib/variants";
 
 function useAccount() {
   const params = useParams<{ tag: string }>();
@@ -185,8 +186,9 @@ export function ServiceRecordPage() {
                 ...(me() && me()!.xuid !== a().xuid ? [{ label: "Compare With Me", href: `${base()}/career?compare=${encodeURIComponent(me()!.gamertag)}` }] : []),
                 { label: "Players & Leaderboards", href: statsPath("/players") },
               ]} />
-              <RecentGames games={hist().slice(0, 12).map((h) => h.game)} title="Recent h2 live Games" empty="Their first chapter is still ahead." />
+              <RecentGames player={a().gamertag} games={hist().slice(0, 12).map((h) => h.game)} title="Recent h2 live Games" empty="Their first chapter is still ahead." />
               <PlayedWith account={a()} />
+              <Show when={!a().bot}><GameTypesPanel account={a()} /></Show>
               <Show when={!a().bot}><PlayerSocial account={a()} /></Show>
               <PeopleFinder />
             </aside>
@@ -196,7 +198,7 @@ export function ServiceRecordPage() {
                 <Show when={latest()} fallback={<span class="s-dim">Latest game</span>}>
                   {(h) => (
                     <>
-                      <A href={`${STATS_ROOT}/games/${h().game.game_id}`}>{gameTitle(h().game)} on {gameMapTitle(h().game)}</A>
+                      <A href={gameHref(h().game.game_id, { player: a().gamertag })}>{gameTitle(h().game)} on {gameMapTitle(h().game)}</A>
                       <span class="s-capbar-right">{h().game.status === "live" ? "playing now" : usDate(h().game.started_at)}</span>
                     </>
                   )}
@@ -235,7 +237,7 @@ export function ServiceRecordPage() {
                 <header>Recent Medals</header>
                 <div class="s-achieve-body">
                   <dl class="s-facts">
-                    <div><dt>Earned</dt><dd>{rec().medals.size} of {MEDALS.length}</dd></div>
+                    <div><dt>Earned</dt><dd>{rec().medals.size} of {medalsOn(rec()).length}</dd></div>
                     <div><dt>Medal Count</dt><dd><Derived>{num(medalTotal())}</Derived></dd></div>
                     <div><dt>[ <A href={`${base()}/career`}>see the medal chest</A> ]</dt><dd /></div>
                   </dl>
@@ -251,6 +253,32 @@ export function ServiceRecordPage() {
         );
       }}
     </PlayerFrame>
+  );
+}
+
+/** The game variants they've published (GET /v1/variants?author=), the
+ *  public ones; hidden when there are none or the server has no route. */
+function GameTypesPanel(props: { account: AccountState }) {
+  const [list, setList] = createSignal<Variant[]>([]);
+  createEffect(on(() => [props.account.xuid, live.server().api] as const, ([xuid, api]) => {
+    setList([]);
+    fetchVariants(api, xuid).then((items) => { if (props.account.xuid === xuid) setList(items.filter((v) => v.visibility === "public")); }, () => {});
+  }));
+  return (
+    <Show when={list().length}>
+      <Panel title="Game Types" sub="game variants they've published">
+        <ul class="s-mini-list">
+          <For each={list()}>
+            {(v) => (
+              <li>
+                <A href={variantHref(v.id)}>{v.name}</A>
+                <span class="s-dim">{v.game_type}{v.script_name ? ` · scripted: ${v.script_name}` : ""} · {usDate(v.created)}</span>
+              </li>
+            )}
+          </For>
+        </ul>
+      </Panel>
+    </Show>
   );
 }
 
@@ -274,7 +302,7 @@ function CommendationFacts(props: { xuid: string }) {
   );
 }
 
-function HistoryTable(props: { rows: HistoryRow[]; selected?: string; onSelect: (id: string) => void }) {
+function HistoryTable(props: { rows: HistoryRow[]; gamertag: string; selected?: string; onSelect: (id: string) => void }) {
   return (
     <table class="s-grid">
       <thead><tr><th /><th class="num">Date</th><th>Map</th><th class="hide-s">Playlist</th><th class="num">Place</th><th /></tr></thead>
@@ -282,7 +310,7 @@ function HistoryTable(props: { rows: HistoryRow[]; selected?: string; onSelect: 
         <For each={props.rows} fallback={<tr><td colspan="6" class="s-dim">Your first chapter is still ahead.</td></tr>}>
           {(r) => (
             <tr classList={{ sel: props.selected === r.game.game_id }} onClick={() => props.onSelect(r.game.game_id)}>
-              <td><span class="s-who"><GametypeIcon variant={r.game.variant} /><A href={`${STATS_ROOT}/games/${r.game.game_id}`}>{gameTitle(r.game)}</A><SkullBadges skulls={r.game.skulls} size={16} /></span></td>
+              <td><span class="s-who"><GametypeIcon variant={r.game.variant} /><A href={gameHref(r.game.game_id, { player: props.gamertag })}>{gameTitle(r.game)}</A><SkullBadges skulls={r.game.skulls} size={16} /></span></td>
               <td class="num">{usDateTime(r.game.started_at)}</td>
               <td><span class="s-who"><MapPreview map={r.game.map} mapId={r.game.map_id} />{gameMapTitle(r.game)}</span></td>
               <td class="hide-s">{playlist(r.game)}</td>
@@ -296,7 +324,7 @@ function HistoryTable(props: { rows: HistoryRow[]; selected?: string; onSelect: 
   );
 }
 
-function CampaignTable(props: { rows: CampaignRow[]; selected?: string; onSelect: (id: string) => void }) {
+function CampaignTable(props: { rows: CampaignRow[]; gamertag: string; selected?: string; onSelect: (id: string) => void }) {
   return (
     <table class="s-grid">
       <thead><tr><th>Level</th><th class="num">Date</th><th class="hide-s">Type</th><th>Result</th><th class="num">Deaths</th><th /></tr></thead>
@@ -304,7 +332,7 @@ function CampaignTable(props: { rows: CampaignRow[]; selected?: string; onSelect
         <For each={props.rows} fallback={<tr><td colspan="6" class="s-dim">No campaign games on record yet.</td></tr>}>
           {(r) => (
             <tr classList={{ sel: props.selected === r.game.game_id }} onClick={() => props.onSelect(r.game.game_id)}>
-              <td><span class="s-who"><MapPreview map={r.game.map} mapId={r.game.map_id} /><A href={`${STATS_ROOT}/games/${r.game.game_id}`}>{gameMapTitle(r.game)}</A><SkullBadges skulls={r.game.skulls} size={16} /></span></td>
+              <td><span class="s-who"><MapPreview map={r.game.map} mapId={r.game.map_id} /><A href={gameHref(r.game.game_id, { player: props.gamertag })}>{gameMapTitle(r.game)}</A><SkullBadges skulls={r.game.skulls} size={16} /></span></td>
               <td class="num">{usDateTime(r.game.started_at)}</td>
               <td class="hide-s">{gameTypeLine(r.game)}</td>
               <td>{r.outcome === "playing" ? <span class="s-live-tag">LIVE</span> : OUTCOME_WORDS[r.outcome]}</td>
@@ -322,8 +350,8 @@ function CampaignPreview(props: { row: CampaignRow; gamertag: string }) {
   const g = () => props.row.game;
   return (
     <aside class="s-preview">
-      <A href={`${STATS_ROOT}/games/${g().game_id}`} class="s-preview-pic" style={{ display: "block" }}><MapThumb game={g()} /></A>
-      <div class="s-preview-title"><A href={`${STATS_ROOT}/games/${g().game_id}`}>{gameMapTitle(g())}</A></div>
+      <A href={gameHref(g().game_id, { player: props.gamertag })} class="s-preview-pic" style={{ display: "block" }}><MapThumb game={g()} /></A>
+      <div class="s-preview-title"><A href={gameHref(g().game_id, { player: props.gamertag })}>{gameMapTitle(g())}</A></div>
       <p>
         {gameTypeLine(g())}<br />
         {longDate(g().started_at)}<br />
@@ -342,7 +370,7 @@ function CampaignPreview(props: { row: CampaignRow; gamertag: string }) {
       <div class="s-preview-head">Game Record ({g().positions.length})</div>
       <ul class="s-pad">
         <li><VerifySummary positions={() => g().positions} /></li>
-        <li><A href={`${STATS_ROOT}/games/${g().game_id}`}>{g().status === "live" ? "Watch it live" : "Mission report and replay"}</A></li>
+        <li><A href={gameHref(g().game_id, { player: props.gamertag })}>{g().status === "live" ? "Watch it live" : "Mission report and replay"}</A></li>
       </ul>
     </aside>
   );
@@ -391,7 +419,7 @@ export function HistoryPage() {
                 <div class="s-history">
                   <div class="s-grid-wrap">
                     {pager()}
-                    <HistoryTable rows={rows()} selected={chosen()?.game.game_id} onSelect={setSel} />
+                    <HistoryTable gamertag={a().gamertag} rows={rows()} selected={chosen()?.game.game_id} onSelect={setSel} />
                     {pager(true)}
                   </div>
                   <Show when={chosen()} keyed>{(r) => <Preview row={r} gamertag={a().gamertag} />}</Show>
@@ -401,7 +429,7 @@ export function HistoryPage() {
               <div class="s-history">
                 <div class="s-grid-wrap">
                   {pager()}
-                  <CampaignTable rows={crows()} selected={cchosen()?.game.game_id} onSelect={setSel} />
+                  <CampaignTable gamertag={a().gamertag} rows={crows()} selected={cchosen()?.game.game_id} onSelect={setSel} />
                   {pager(true)}
                 </div>
                 <Show when={cchosen()} keyed>{(r) => <CampaignPreview row={r} gamertag={a().gamertag} />}</Show>
@@ -417,7 +445,7 @@ export function HistoryPage() {
 
 function Preview(props: { row: HistoryRow; gamertag: string }) {
   const g = () => props.row.game;
-  const medals = createMemo(() => [...countMedals(gameMedals(g().kills), new Set(props.row.slots)).entries()].sort((a, b) => b[1] - a[1]));
+  const medals = createMemo(() => [...countMedals(gameAwards(g()), new Set(props.row.slots)).entries()].sort((a, b) => b[1] - a[1]));
   const victim = createMemo(() => {
     const m = new Map<number, number>();
     for (const k of g().kills) if (k.killer !== null && props.row.slots.includes(k.killer) && k.kind === "kill") m.set(k.victim, (m.get(k.victim) ?? 0) + 1);
@@ -427,8 +455,8 @@ function Preview(props: { row: HistoryRow; gamertag: string }) {
   const length = () => gameSeconds(g(), now());
   return (
     <aside class="s-preview">
-      <A href={`${STATS_ROOT}/games/${g().game_id}`} class="s-preview-pic" style={{ display: "block" }}><MapThumb game={g()} /></A>
-      <div class="s-preview-title"><A href={`${STATS_ROOT}/games/${g().game_id}`}>{gameTitle(g())}</A> on {gameMapTitle(g())}</div>
+      <A href={gameHref(g().game_id, { player: props.gamertag })} class="s-preview-pic" style={{ display: "block" }}><MapThumb game={g()} /></A>
+      <div class="s-preview-title"><A href={gameHref(g().game_id, { player: props.gamertag })}>{gameTitle(g())}</A> on {gameMapTitle(g())}</div>
       <p>
         Playlist: {playlist(g())}<br />
         {longDate(g().started_at)}<br />
@@ -452,7 +480,7 @@ function Preview(props: { row: HistoryRow; gamertag: string }) {
       <div class="s-preview-head">Game Record ({g().positions.length})</div>
       <ul class="s-pad">
         <li><VerifySummary positions={() => g().positions} /></li>
-        <li><A href={`${STATS_ROOT}/games/${g().game_id}`}>{g().status === "live" ? "Watch it live" : "Carnage report and replay"}</A></li>
+        <li><A href={gameHref(g().game_id, { player: props.gamertag })}>{g().status === "live" ? "Watch it live" : "Carnage report and replay"}</A></li>
       </ul>
     </aside>
   );
@@ -462,8 +490,12 @@ const CHEST: MedalId[][] = [
   ["opening-act", "last-word", "payback"],
   ["twofer", "hat-trick", "full-house", "encore"],
   ["hot-streak", "wildfire", "untouchable"],
+  ["superbounce", "double-bounce", "triple-bounce", "quad-bounce", "chain-bounce", "bouncetacular", "bounced", "monster-bounce"],
 ];
 const MEDAL = Object.fromEntries(MEDALS.map((m) => [m.id, m]));
+const hasBounceMedals = (rec: ServiceRecord) => [...rec.medals.keys()].some(isBounceMedal);
+/** The medals a record can show: the bounce medals once it has one. */
+const medalsOn = (rec: ServiceRecord) => (hasBounceMedals(rec) ? MEDALS : MEDALS.filter((m) => !isBounceMedal(m.id)));
 const perGame = (n: number, games: number) => (games ? n / games : 0).toFixed(3);
 
 export function MedalChest(props: { rec: ServiceRecord; versus?: ServiceRecord | null }) {
@@ -476,7 +508,7 @@ export function MedalChest(props: { rec: ServiceRecord; versus?: ServiceRecord |
   return (
     <div class="s-chest">
       <div class="s-chest-cap">Medal Count (count per game){props.versus ? " - Player with better per game ratio highlighted" : ""}</div>
-      <For each={CHEST}>
+      <For each={CHEST.filter((group) => !group.every(isBounceMedal) || hasBounceMedals(props.rec) || (props.versus && hasBounceMedals(props.versus)))}>
         {(group) => (
           <div class="s-chest-group">
             <For each={group}>
@@ -529,8 +561,8 @@ export function ToolOfDestruction(props: { rec: ServiceRecord; sort: Sort; versu
       <div class="s-tod">
         <For each={all() ? rows() : rows().slice(0, 7)} fallback={<p class="s-tod-empty">No knockouts recorded.</p>}>
           {(r) => (
-            <div class="s-tod-row" classList={{ "s-tod-row--top": !!props.versus && better(r.weapon, r.kills) }} title={titleCase(r.weapon)}>
-              <span class="s-tod-ico"><span><WeaponIcon weapon={r.weapon} width={50} /><small>{titleCase(r.weapon)}</small></span></span>
+            <div class="s-tod-row" classList={{ "s-tod-row--top": !!props.versus && better(r.weapon, r.kills) }} title={damageSourceName(r.weapon)}>
+              <span class="s-tod-ico"><span><WeaponIcon weapon={r.weapon} width={50} /><small>{damageSourceName(r.weapon)}</small></span></span>
               <div class="s-tod-bars">
                 <div class="s-tod-bar"><span style={{ width: `${(r.ks / max()) * 78}%` }} />{(r.ks * 100).toFixed(2)}%</div>
                 <div class="s-tod-bar"><span style={{ width: `${(r.ds / max()) * 78}%` }} />{(r.ds * 100).toFixed(2)}%</div>

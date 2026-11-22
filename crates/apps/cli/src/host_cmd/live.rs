@@ -1,13 +1,15 @@
-use std::net::SocketAddrV4;
+use std::io::Read;
+use std::net::{SocketAddr, SocketAddrV4};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
-use live_proto::hosts::{EndReason, HostEndpoint, HostState, Transport};
+use live_proto::hosts::{EndReason, HostEndpoint, HostState, PackUsage, Transport};
 use serde::Serialize;
 
 pub(super) struct Live<'a> {
     base: String,
     path: String,
+    lease: String,
     token: &'a str,
     http: ureq::Agent,
 }
@@ -18,6 +20,8 @@ struct Report<'a> {
     players: u8,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<&'a EndReason>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pack_usage: Option<PackUsage>,
 }
 
 impl<'a> Live<'a> {
@@ -48,6 +52,7 @@ impl<'a> Live<'a> {
         Ok(Self {
             base: url.as_str().trim_end_matches('/').to_owned(),
             path: format!("/v1/hosts/{lease}"),
+            lease: lease.to_owned(),
             token,
             http,
         })
@@ -69,11 +74,12 @@ impl<'a> Live<'a> {
                 state: HostState::Playing,
                 players,
                 reason: None,
+                pack_usage: None,
             },
         )
     }
 
-    pub fn ended(&self, reason: &EndReason, players_peak: u8) -> Result<()> {
+    pub fn ended(&self, reason: &EndReason, players_peak: u8, pack: Option<SocketAddr>) -> Result<()> {
         self.post(
             "/report",
             "reporting ended",
@@ -81,8 +87,25 @@ impl<'a> Live<'a> {
                 state: HostState::Ended,
                 players: players_peak,
                 reason: Some(reason),
+                pack_usage: pack.and_then(|control| self.pack_usage(control)),
             },
         )
+    }
+
+    fn pack_usage(&self, control: SocketAddr) -> Option<PackUsage> {
+        let read = || -> Result<PackUsage> {
+            let path = live_proto::host_pack::MATCHES_PATH;
+            let url = format!("http://{control}{path}/{}/usage", self.lease);
+            let response = self.http.get(&url).call()?;
+            Ok(serde_json::from_reader(response.into_reader().take(4096))?)
+        };
+        match read() {
+            Ok(usage) => Some(usage),
+            Err(error) => {
+                eprintln!("h2 host {}: pack usage unavailable: {error}", self.lease);
+                None
+            }
+        }
     }
 
     pub fn endpoint(
@@ -196,6 +219,7 @@ mod tests {
             state: HostState::Playing,
             players: 4,
             reason: None,
+            pack_usage: None,
         };
         assert_eq!(
             serde_json::to_value(playing).unwrap(),
@@ -205,6 +229,7 @@ mod tests {
             state: HostState::Ended,
             players: 5,
             reason: Some(&EndReason::MatchOver),
+            pack_usage: None,
         };
         assert_eq!(
             serde_json::to_value(ended).unwrap(),

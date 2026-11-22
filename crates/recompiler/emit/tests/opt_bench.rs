@@ -7,6 +7,9 @@
 //! `cargo test -p emit --release --test opt_bench -- --ignored --nocapture`
 //! (`H2_OPT` picks the clang level, as for the image; default `-O1`).
 
+// The benchmark measures POSIX per-thread CPU time.
+#![cfg(unix)]
+
 mod common;
 
 use std::collections::{BTreeMap, BTreeSet};

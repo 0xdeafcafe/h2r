@@ -13,7 +13,298 @@ use live_proto::hopper::{MAX_DESCRIPTION, MAX_RECORDS, MAX_TITLE};
 use scenario_edit::layout::{self, Role};
 use scenario_edit::{BlockKind, Command, Value};
 
-use super::{Action, App, ToolKind};
+use super::{Action, App, NavAction, Selection, ToolKind, tag_tree};
+
+/// Commands that the menus and the palette can dispatch directly.
+#[derive(Clone, Copy)]
+pub(crate) enum MenuCommand {
+    Save,
+    SaveVariant,
+    SavePlaylist,
+    NewPlaylist,
+    DefaultPlaylist,
+    Undo,
+    Redo,
+    Duplicate,
+    Delete,
+    AllowGrowth,
+    AllowUnverifiedGeometry,
+    FrameAll,
+    FocusSelected,
+    Overlay,
+    Quit,
+}
+
+pub(crate) struct MenuItem {
+    pub label: &'static str,
+    pub shortcut: &'static str,
+    pub action: Option<Action>,
+}
+
+impl MenuCommand {
+    const ALL: [Self; 15] = [
+        Self::Save,
+        Self::SaveVariant,
+        Self::SavePlaylist,
+        Self::NewPlaylist,
+        Self::DefaultPlaylist,
+        Self::Undo,
+        Self::Redo,
+        Self::Duplicate,
+        Self::Delete,
+        Self::AllowGrowth,
+        Self::AllowUnverifiedGeometry,
+        Self::FrameAll,
+        Self::FocusSelected,
+        Self::Overlay,
+        Self::Quit,
+    ];
+
+    pub fn item(self, app: &App) -> MenuItem {
+        let map = matches!(app.tool, ToolKind::Scenario | ToolKind::Tags);
+        let playlists = app.tool == ToolKind::Playlists;
+        let open = app.session.is_open();
+        let selected = app.session.selected().is_some();
+        let (label, shortcut, action, enabled) = match self {
+            Self::Save => ("Save", "Cmd+S", Action::Save, map && open),
+            Self::SaveVariant => (
+                "Save variant",
+                "Cmd+S",
+                Action::SaveVariant,
+                app.tool == ToolKind::Variants
+                    && app
+                        .variants
+                        .as_ref()
+                        .is_some_and(|e| e.is_dirty() && !e.is_read_only()),
+            ),
+            Self::SavePlaylist => (
+                "Save playlist file",
+                "Cmd+S",
+                Action::SaveHopper,
+                playlists && app.hoppers.path().is_some(),
+            ),
+            Self::NewPlaylist => ("New playlist file", "", Action::NewHopper, playlists),
+            Self::DefaultPlaylist => (
+                "New from the default lineup",
+                "",
+                Action::NewDefaultHopper,
+                playlists,
+            ),
+            Self::Undo => ("Undo", "Cmd+Z", Action::Undo, app.can_undo()),
+            Self::Redo => ("Redo", "Shift+Cmd+Z", Action::Redo, app.can_redo()),
+            Self::Duplicate => (
+                "Duplicate",
+                "Cmd+D",
+                Action::Duplicate,
+                app.tool == ToolKind::Scenario && selected,
+            ),
+            Self::Delete => (
+                "Delete",
+                "Del",
+                Action::Delete,
+                app.tool == ToolKind::Scenario && selected,
+            ),
+            Self::AllowGrowth => (
+                "Allow growing full blocks",
+                "",
+                Action::SetAllowGrowth(!app.session.allow_growth()),
+                open,
+            ),
+            Self::AllowUnverifiedGeometry => (
+                "Allow unverified geometry writes",
+                "",
+                Action::SetAllowUnverifiedGeometry(!app.modeling.allow_unverified),
+                open,
+            ),
+            Self::FrameAll => ("Frame map", "Home", Action::FrameAll, open),
+            Self::FocusSelected => ("Focus selection", "F", Action::FocusSelected, selected),
+            Self::Overlay => (
+                "Halo 1 overlay",
+                "",
+                Action::SetOverlay(!app.overlay_shown()),
+                app.compare().is_some_and(|c| c.view.is_ok()),
+            ),
+            Self::Quit => ("Quit", "Cmd+Q", Action::Quit, true),
+        };
+        MenuItem {
+            label,
+            shortcut,
+            action: enabled.then_some(action),
+        }
+    }
+}
+
+pub(crate) const PALETTE_LIMIT: usize = 20;
+
+#[derive(Clone, Copy)]
+pub(crate) enum Kind {
+    Map,
+    Tag,
+    Placement,
+    Command,
+}
+
+impl Kind {
+    pub const ALL: [Self; 4] = [Self::Map, Self::Tag, Self::Placement, Self::Command];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Map => "map",
+            Self::Tag => "tag",
+            Self::Placement => "placement",
+            Self::Command => "command",
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Map => "Maps",
+            Self::Tag => "Tags",
+            Self::Placement => "Placements",
+            Self::Command => "Commands",
+        }
+    }
+}
+
+pub(crate) struct Entry {
+    pub kind: Kind,
+    pub label: String,
+    pub detail: String,
+    pub action: Action,
+}
+
+#[derive(Default)]
+pub(crate) struct Palette {
+    pub entries: Vec<Entry>,
+    totals: [usize; Kind::ALL.len()],
+}
+
+impl Palette {
+    pub fn total(&self, kind: Kind) -> usize {
+        self.totals[kind as usize]
+    }
+
+    fn add(
+        &mut self,
+        kind: Kind,
+        label: impl Into<String>,
+        detail: impl Into<String>,
+        action: Action,
+    ) {
+        let count = &mut self.totals[kind as usize];
+        *count += 1;
+        if *count <= PALETTE_LIMIT {
+            self.entries.push(Entry {
+                kind,
+                label: label.into(),
+                detail: detail.into(),
+                action,
+            });
+        }
+    }
+}
+
+fn words_match(query: &str, label: &str, detail: &str) -> bool {
+    let haystack = format!("{label} {detail}").to_ascii_lowercase();
+    query
+        .split_whitespace()
+        .all(|word| haystack.contains(&word.to_ascii_lowercase()))
+}
+
+/// Matches the outliner row's block, placement label or explicit index.
+pub(crate) fn placement_matches(query: &str, block: &str, label: &str, index: usize) -> bool {
+    words_match(query, label, &format!("{block} #{index}"))
+}
+
+/// The palette's visible entries and untruncated counts, in display order.
+pub(crate) fn palette(app: &mut App, query: &str) -> Palette {
+    app.sync_tags();
+    let mut results = Palette::default();
+    let mut map = |label: &str, detail: String, action: Action| {
+        if words_match(query, label, &detail) {
+            results.add(Kind::Map, label, detail, action);
+        }
+    };
+    for entry in app.halo2_map_entries() {
+        let action = if app.loaded_map() == Some(entry.stem) && app.opened_package().is_none() {
+            Action::SetTool(ToolKind::Scenario)
+        } else {
+            Action::SelectMap(entry.stem.to_owned())
+        };
+        map(
+            entry.label,
+            format!("{}.map · {}", entry.stem, entry.group.label()),
+            action,
+        );
+    }
+    for entry in app.map_pack_entries() {
+        let action = if app.opened_pack_map() == Some(entry.map.as_str()) {
+            Action::SetTool(ToolKind::Scenario)
+        } else {
+            Action::OpenMapPack(entry.map.clone())
+        };
+        map(&entry.name, format!("{}.map · Map Pack", entry.map), action);
+    }
+    for entry in app.packages() {
+        let key = entry.key();
+        let action = if app.opened_package() == Some(key.as_str()) {
+            Action::SetTool(ToolKind::Scenario)
+        } else {
+            Action::OpenPackageEntry(key)
+        };
+        map(
+            &entry.label(),
+            format!("{}.map · Package {}", entry.map, entry.dir),
+            action,
+        );
+    }
+    for entry in app.halo1_map_entries() {
+        let action = if app.loaded_halo1() == Some(entry.stem) {
+            Action::SetTool(ToolKind::Scenario)
+        } else {
+            Action::SelectHalo1Map(entry.stem.to_owned())
+        };
+        map(entry.label, format!("{}.map · Halo 1", entry.stem), action);
+    }
+
+    let tags = app.tags.tags();
+    for i in tag_tree::search(tags, query) {
+        let tag = &tags[i];
+        results.add(
+            Kind::Tag,
+            tag.name.as_str(),
+            tags::defs::fourcc_text(tag.group),
+            Action::GoTo(Selection::Tag(tag.id)),
+        );
+    }
+
+    if let Some(scenario) = app.session.scenario() {
+        for block in &scenario.blocks {
+            let kind = block.def.kind;
+            for index in 0..block.len() {
+                let label = scenario.label(kind, index);
+                if placement_matches(query, block.def.label, &label, index) {
+                    results.add(
+                        Kind::Placement,
+                        label,
+                        block.def.label,
+                        Action::GoTo(Selection::Placement(kind, index)),
+                    );
+                }
+            }
+        }
+    }
+
+    for command in MenuCommand::ALL {
+        let item = command.item(app);
+        if let Some(action) = item.action
+            && words_match(query, item.label, item.shortcut)
+        {
+            results.add(Kind::Command, item.label, item.shortcut, action);
+        }
+    }
+    results
+}
 
 /// One playlist edit, applied to the working copy as one undo step. The
 /// playlist table's row buttons and weight drags, and `playlist.*` calls,
@@ -198,6 +489,28 @@ pub fn field_name(kind: BlockKind, field: &str) -> Result<&'static str, String> 
 }
 
 impl App {
+    pub(super) fn go_to(&mut self, selection: Selection) {
+        match selection {
+            Selection::Tag(tag) => {
+                if let Err(e) = self.navigate(NavAction::SelectTag(tag)) {
+                    return self.error(e);
+                }
+            }
+            Selection::Placement(kind, index) => {
+                if !self
+                    .session
+                    .scenario()
+                    .is_some_and(|s| index < s.block(kind).len())
+                {
+                    return self.error(format!("no {kind:?} placement {index}"));
+                }
+                self.run(Action::Select(Some((kind, index))));
+                self.frame_selection();
+            }
+        }
+        self.set_tool(ToolKind::Scenario);
+    }
+
     /// Uses `editor` as the variant tool's (tests and tools with their own
     /// save storage).
     pub fn set_variant_editor(&mut self, editor: variants::VariantEditor) {

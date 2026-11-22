@@ -1,6 +1,6 @@
 // The Halo admin area, a stats-site page at /games/halo2/admin shown only to
 // admins: the message-of-the-day editor, the playlist (hopper) builder and
-// custom content moderation (map packages, blobs, reports, uploads). Only
+// custom content moderation and Clanker Training. Only
 // the game's own things live here; running the service (invites, accounts
 // and admins, importing an account, the server's status) is the dashboard's
 // "server" screens, linked from the title bar (./tabs.ts).
@@ -9,6 +9,7 @@ import { Show, lazy } from "solid-js";
 import { A, useSearchParams } from "@solidjs/router";
 import { Crumbs, Panel, Tabs, Title } from "../stats/Layout";
 import { identity } from "../state/identity";
+import { live } from "../state/live";
 import { adminState } from "./state";
 import MotdEditor from "./MotdEditor";
 import HopperBuilder from "./HopperBuilder";
@@ -27,7 +28,7 @@ export default function Admin() {
   return (
     <div class="s-full">
       <Crumbs trail={[["Home", STATS_ROOT], ["Halo Admin"]]} />
-      <Title class="s-title--bar" right={<A class="adm-server-link" href={SERVER_ADMIN}>Dashboard server admin ›</A>}>
+      <Title class="s-title--bar" right={<A class="adm-server-link" href={SERVER_ADMIN}>Server admin ›</A>}>
         Halo Admin
       </Title>
       <div class="adm">
@@ -71,7 +72,7 @@ export default function Admin() {
               <Show when={tab() === "motd"}>
                 <MotdEditor />
               </Show>
-              <Show when={tab() === "hopper"}>
+              <Show when={tab() === "hopper" && `${live.server().base}|${me().xuid}`} keyed>
                 <HopperBuilder />
               </Show>
               <Show when={tab() === "content"}>

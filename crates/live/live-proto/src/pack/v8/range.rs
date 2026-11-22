@@ -95,9 +95,12 @@ pub(super) struct Tape<'a, E> {
     pub(super) engine: E,
     pub(super) t: &'a mut Tables,
 }
-impl<E: Engine> Tape<'_, E> {
+impl<E> Tape<'_, E> {
     #[inline]
-    fn uniform(&mut self, bits: u32, want: u64) -> u64 {
+    fn uniform(&mut self, bits: u32, want: u64) -> u64
+    where
+        E: Engine,
+    {
         let shift = 12 - bits;
         let sym = if E::WRITE {
             want as u16

@@ -18,10 +18,10 @@ use agent_proto::Endpoint;
 use agent_proto::discover::{self, Found, MapMatch};
 use serde_json::Value;
 
-use super::launch;
+use super::{LinkState, LinkView, launch};
 
 /// How often the finder looks again.
-pub const SCAN_EVERY: Duration = Duration::from_secs(2);
+pub const SCAN_EVERY: Duration = Duration::from_secs(1);
 
 /// What a scan does: the games it found.
 pub type ScanFn = Arc<dyn Fn() -> Vec<Found> + Send + Sync>;
@@ -70,10 +70,12 @@ impl Finder {
     }
 
     /// Once a frame: takes a finished scan, starts the next when due.
-    pub fn poll(&mut self) {
+    pub fn poll(&mut self) -> bool {
+        let mut refreshed = false;
         if let Some(rx) = &self.pending {
             match rx.try_recv() {
                 Ok(found) => {
+                    refreshed = true;
                     self.games = found;
                     self.scanned = true;
                     self.pending = None;
@@ -86,11 +88,19 @@ impl Finder {
         if self.pending.is_none() && due {
             self.start();
         }
+        refreshed
     }
 
     /// Looks again at the next [`Finder::poll`].
     pub fn look_again(&mut self) {
         self.last = None;
+    }
+
+    /// A child exit is newer than either a cached or an in-flight scan.
+    pub(super) fn forget(&mut self, endpoint: &Endpoint) {
+        self.games.retain(|g| &g.endpoint() != endpoint);
+        self.pending = None;
+        self.look_again();
     }
 
     fn start(&mut self) {
@@ -114,6 +124,17 @@ impl Finder {
     }
 }
 
+/// The game reports the cache header name, which a renamed document can retain.
+pub(crate) fn map_match(app: &crate::App, game: Option<&str>) -> MapMatch {
+    let by_name = MapMatch::of(app.loaded_map(), game);
+    let cache = app.session.source_identity().map(|(name, _)| name);
+    if by_name == MapMatch::Different && MapMatch::of(cache, game) == MapMatch::Same {
+        MapMatch::Same
+    } else {
+        by_name
+    }
+}
+
 /// How a game's map compares with the editor's, in words.
 pub fn relation_text(m: MapMatch, game: Option<&str>, open: Option<&str>) -> String {
     match (m, game, open) {
@@ -127,43 +148,41 @@ pub fn relation_text(m: MapMatch, game: Option<&str>, open: Option<&str>) -> Str
 /// What the editor tells the user about a game it can pair with.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Notice {
-    /// For the status bar.
+    /// For the game link pill.
     pub short: String,
-    /// For the Game panel.
+    /// The relationship between the game's map and the editor's.
     pub text: String,
     /// The socket the Pair button pairs with; `None` with several games
     /// (the user picks one).
     pub socket: Option<PathBuf>,
+    pub map: Option<String>,
     pub matches: MapMatch,
 }
 
 /// The notice for the games the finder sees, when not paired.
-pub fn notice(games: &[&Found], open: Option<&str>) -> Option<Notice> {
+pub fn notice(games: &[&Found], app: &crate::App) -> Option<Notice> {
     match games {
         [] => None,
         [g] => {
             let map = g.map();
-            let m = MapMatch::of(open, map);
+            let m = map_match(app, map);
             let shown = map.unwrap_or("no map yet");
             let text = match m {
-                MapMatch::Same => format!(
-                    "Halo 2 is running {shown}, the map open here. It can pair: edits to its placements reach it as you make them."
-                ),
+                MapMatch::Same => format!("Halo 2 is running {shown}, the map open here."),
                 MapMatch::Different => format!(
-                    "Halo 2 is running {shown}; the editor has {} open. It can pair, but edits stay here until the maps match.",
-                    open.unwrap_or("-")
+                    "Halo 2 is running {shown}. The editor has {} open.",
+                    app.loaded_map().unwrap_or("-")
                 ),
-                MapMatch::Unknown => format!(
-                    "Halo 2 is running ({shown}). It can pair; edits start once it is on the map open here."
-                ),
+                MapMatch::Unknown => format!("Halo 2 is running ({shown})."),
             };
             Some(Notice {
-                short: match m {
-                    MapMatch::Same => format!("Halo 2 is running {shown} (matches)"),
-                    _ => format!("Halo 2 is running ({shown})"),
-                },
+                short: map.map_or_else(
+                    || "Halo 2 is running".into(),
+                    |map| format!("Halo 2 is running {map}"),
+                ),
                 text,
                 socket: Some(g.path.clone()),
+                map: map.map(str::to_owned),
                 matches: m,
             })
         }
@@ -171,6 +190,7 @@ pub fn notice(games: &[&Found], open: Option<&str>) -> Option<Notice> {
             short: format!("{} games are running", many.len()),
             text: format!("{} Halo 2 games are running: pick one under Pair.", many.len()),
             socket: None,
+            map: None,
             matches: MapMatch::Unknown,
         }),
     }
@@ -180,30 +200,234 @@ pub fn notice(games: &[&Found], open: Option<&str>) -> Option<Notice> {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
     Pair(Endpoint),
+    PairSocket(Endpoint),
     Unpair,
+    Apply(super::Apply),
+    Play,
+    PlayAnswer(super::playtest::Prompt, String),
+    Stop,
+    Edit(bool),
+    Pause,
+    Resume,
+    Step(u64),
+    MovePlayer(super::presence::PlayerMove),
+    PlayerMoveRefused(super::feedback::MoveContext, String),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Source {
+    Finder,
+    Named,
+}
+
+impl Request {
+    pub fn refusal(&self, link: &LinkView) -> Option<&'static str> {
+        match self {
+            Self::Play | Self::PlayAnswer(..) if matches!(link.state, LinkState::Connecting | LinkState::Reconnecting { .. }) => {
+                Some("wait for the game link to connect or cancel it")
+            }
+            Self::Play | Self::PlayAnswer(..) if link.playtest_busy => {
+                Some("a playtest is already in progress")
+            }
+            Self::Play | Self::PlayAnswer(..) if !link.can_play => Some("open a map first"),
+            Self::Stop if !link.can_stop => Some("the editor has no game of its own to stop"),
+            Self::Edit(_) if !link.state.can_edit() => Some("pair with a game first"),
+            Self::Pause => link.controls.pause,
+            Self::Resume => link.controls.resume,
+            Self::Step(_) => link.controls.step.or_else(|| {
+                (!link.paused).then_some("pause the game before stepping")
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// The host and session whose peer count the user saw in Pending.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PeerConfirmation {
+    pub(super) pairing: u64,
+    pub(super) epoch: u64,
+    pub peers: u32,
 }
 
 /// Where the agent API and the window's [`super::Play`] meet, on the app
 /// they both see.
 #[derive(Debug)]
 pub struct Bridge {
-    /// Pair on its own with the one game running, once per game. On by
-    /// default: pairing only reads the game; nothing is sent until an
-    /// edit is made on a matching map.
+    /// Pair on its own with the one game running, once per game. On by default.
     pub auto_pair: bool,
-    /// Left by `pair.connect` and `pair.disconnect`, taken once a frame.
+    pub pause_while_editing: bool,
+    pub open_pending: bool,
+    pub spawn: Option<super::Spawn>,
+    pub playtest: Option<super::playtest::Offer>,
+    pub prompt: Option<super::playtest::Prompt>,
+    pub(super) next_prompt: u64,
+    pub peer_confirmation: Option<PeerConfirmation>,
+    /// Left by `pair.*`, taken once a frame.
     pub requests: Vec<Request>,
     /// What `Play` last published: `None` until a window has drawn a
     /// frame (headless, there is no pairing).
     pub published: Option<Value>,
+    /// The same game-link state the bar and Game panel read.
+    pub link: Option<Arc<LinkView>>,
+    pub pending: super::issues::Pending,
+    pub journal: Vec<Value>,
+    pub leaving: bool,
+    /// One socket and its exact tick samples for the current pairing.
+    pub mirror: Option<Arc<super::stream::Stream>>,
+    /// The sample shown this editor frame, shared by the viewport and API.
+    pub shown: Option<live_mirror::Sample>,
+    pub(crate) display: super::display::DisplayState,
+    pub latest: bool,
+    pub(crate) selection: super::select::LiveSelection,
+    pub(crate) camera: super::presence::SharedCamera,
+    /// Slot layouts verified against a loaded play copy. An absent baseline uses source slots.
+    layouts: Vec<(scenario_edit::BlockKind, Option<u64>)>,
+    pub(super) previews: super::objects::previews::Previews,
+    /// Pairing, editor document and game epoch that accept a player move.
+    pub(crate) player_scope: Result<(u64, u64, u64), String>,
+    pub(crate) move_context: Option<super::feedback::MoveContext>,
+    /// Counters reported by the game's writer for this stream.
+    pub counters: Option<Value>,
+    /// Map identity from the handshake, refreshed over live.status after a cut.
+    pub stream_map: Value,
+    /// A Play copy may include edits. Its checksum belongs to this open document.
+    pub(super) play_copy: Option<(u64, u32)>,
 }
 
 impl Default for Bridge {
     fn default() -> Self {
         Bridge {
             auto_pair: true,
+            pause_while_editing: false,
+            open_pending: false,
+            spawn: None,
+            playtest: None,
+            prompt: None,
+            next_prompt: 1,
+            peer_confirmation: None,
             requests: Vec::new(),
             published: None,
+            link: None,
+            pending: Default::default(),
+            journal: Vec::new(),
+            leaving: false,
+            mirror: None,
+            shown: None,
+            display: Default::default(),
+            latest: false,
+            selection: Default::default(),
+            camera: Default::default(),
+            layouts: Vec::new(),
+            previews: Default::default(),
+            player_scope: Err("waiting for the editor to pair in Edit mode".into()),
+            move_context: None,
+            counters: None,
+            stream_map: Value::Null,
+            play_copy: None,
         }
+    }
+}
+
+impl Bridge {
+    pub(super) fn set_player_scope(&mut self, scope: Result<(u64, u64, u64), &str>) {
+        match (&mut self.player_scope, scope) {
+            (Err(last), Err(why)) => {
+                if last.as_str() != why {
+                    why.clone_into(last);
+                }
+            }
+            (slot, next) => *slot = next.map_err(str::to_owned),
+        }
+    }
+
+    pub(crate) fn show_prompt(&mut self, prompt: Option<super::playtest::Prompt>) {
+        if let Some(prompt) = &prompt {
+            self.next_prompt = prompt.id + 1;
+        }
+        self.prompt = prompt;
+    }
+
+    pub(super) fn clear_mirror(&mut self) {
+        self.prompt = None;
+        self.peer_confirmation = None;
+        self.pending.clear();
+        self.journal.clear();
+        self.leaving = false;
+        self.play_copy = None;
+        self.previews.clear();
+        self.drop_stream();
+    }
+
+    pub(super) fn drop_stream(&mut self) {
+        self.selection = Default::default();
+        self.camera = Default::default();
+        self.layouts.clear();
+        self.set_player_scope(Err("waiting for the editor to pair in Edit mode"));
+        self.move_context = None;
+        self.mirror = None;
+        self.shown = None;
+        self.display.clear();
+        self.counters = None;
+        self.stream_map = Value::Null;
+    }
+
+    pub(super) fn update_placement_layouts(
+        &mut self,
+        session: &scenario_edit::Session,
+        loaded: Option<&super::sync::Baseline>,
+    ) {
+        self.layouts.clear();
+        if let (Some(scenario), Some(loaded)) = (session.scenario(), loaded) {
+            self.layouts.extend(scenario_edit::layout::BLOCKS.iter().map(|block| {
+                let kind = block.kind;
+                let revision = loaded.layout_matches(scenario, kind)
+                    .then(|| scenario.block(kind).layout_rev());
+                (kind, revision)
+            }));
+        }
+    }
+
+    pub(crate) fn placement_matches(
+        &self,
+        session: &scenario_edit::Session,
+        kind: scenario_edit::BlockKind,
+    ) -> bool {
+        let Some(scenario) = session.scenario() else { return true };
+        let current = scenario.block(kind).layout_rev();
+        match self.layouts.iter().find(|(block, _)| *block == kind) {
+            Some((_, revision)) => *revision == Some(current),
+            None => self.play_copy.is_none() && current == 0,
+        }
+    }
+
+    /// Only resolve definition handles and world-space coordinates against
+    /// the editor map when the name belongs to this exact frame's epoch.
+    pub(crate) fn matches_sample(&self, app: &crate::App, sample: &live_mirror::Sample) -> bool {
+        if !app.session.is_open()
+            || self.stream_map["epoch"].as_u64() != Some(sample.epoch)
+            || map_match(app, self.stream_map["name"].as_str()) != MapMatch::Same
+        {
+            return false;
+        }
+        let expected = self.play_copy
+            .filter(|(revision, _)| *revision == app.session.world_rev())
+            .map(|(_, sum)| sum)
+            .or_else(|| app.session.source_checksum());
+        match (expected, self.stream_map["checksum"].as_u64()) {
+            (Some(a), Some(b)) => u64::from(a) == b,
+            // Different documents can retain the same internal cache name.
+            // Using that alias for coordinates needs the checksum as well.
+            _ => MapMatch::of(app.loaded_map(), self.stream_map["name"].as_str()) == MapMatch::Same,
+        }
+    }
+
+    pub fn player(&self) -> Option<(&agent_proto::live::Player, &agent_proto::live::Object)> {
+        let shown = self.shown.as_ref()?;
+        shown.players.iter().filter_map(|player| {
+            let unit = player.unit?;
+            let object = shown.objects.iter().find(|object| object.id == unit)?;
+            Some((player, object))
+        }).min_by_key(|(player, _)| (player.local_user.unwrap_or(u16::MAX), player.index))
     }
 }

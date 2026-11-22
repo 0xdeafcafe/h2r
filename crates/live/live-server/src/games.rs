@@ -28,7 +28,12 @@ use crate::host_identity::{Publisher, TELEMETRY_INGEST}; // dh-identity
 use crate::model::{Game, nonce_key};
 use crate::store::{NewEvent, Query};
 
-/// Live frames go to readers at most this often per game.
+/// Private join and arbitration metadata. Each link immediately precedes its
+/// public game start in the same store append.
+pub(crate) const SESSION_LINKS: &str = "lobby-links";
+pub(crate) const SESSION_LINKED: &str = "GameSessionLinked";
+
+/// Ordinary live frames are admitted at this average interval per game.
 const FRAME_INTERVAL: Duration = Duration::from_millis(1000 / 15);
 /// `GET /v1/games/{id}/frames` page size.
 pub const FRAMES_PAGE: usize = 600;
@@ -169,8 +174,13 @@ impl CausalStream {
 }
 
 struct FrameClock {
-    last_sent: Instant,
+    last_sent: Option<Instant>,
+    /// Virtual time advances one frame interval for each admitted frame.
+    next_frame_credit: Instant,
     sim_tick: Option<u64>,
+    /// Private live training samples, replaced in seat order. Never encoded
+    /// in a frame, a stream broadcast or an archive chunk.
+    sim_combat: BTreeMap<u8, game::SimCombatSample>,
     /// What throttled frames carried (shots, actions, hits, machines),
     /// handed to the next frame sent so none is lost.
     unsent: game::FrameCarry,
@@ -200,8 +210,10 @@ struct FrameClock {
 impl FrameClock {
     fn new(now: Instant, sid: u64) -> Self {
         FrameClock {
-            last_sent: now - FRAME_INTERVAL,
+            last_sent: None,
+            next_frame_credit: now,
             sim_tick: None,
+            sim_combat: BTreeMap::new(),
             unsent: game::FrameCarry::default(),
             machines: BTreeMap::new(),
             machine_positions: BTreeMap::new(),
@@ -380,18 +392,33 @@ impl FrameClock {
         });
     }
 
-    fn admit(&mut self, frame: &mut Frame, now: Instant, machine_baseline: bool) -> bool {
+    fn admit(
+        &mut self,
+        frame: &mut Frame,
+        now: Instant,
+        machine_baseline: bool,
+        batch_frames: bool,
+    ) -> bool {
         self.observe_travel(frame, machine_baseline);
-        self.admit_live(frame, now)
+        self.admit_live(frame, now, batch_frames)
     }
 
     /// Throttles the wall-clock fan-out, carrying actions and hits forward.
-    fn admit_live(&mut self, frame: &mut Frame, now: Instant) -> bool {
-        if now.duration_since(self.last_sent) < FRAME_INTERVAL {
+    fn admit_live(&mut self, frame: &mut Frame, now: Instant, batch_frames: bool) -> bool {
+        let burst = FRAME_INTERVAL * (live_proto::MAX_INGEST_BATCH_FRAMES as u32 - 1);
+        // All publishers of this game spend the same budget. A batched
+        // stream can use its accumulated credit in a single message.
+        if self.next_frame_credit > now + burst
+            || (!batch_frames
+                && self
+                    .last_sent
+                    .is_some_and(|last| now.duration_since(last) < FRAME_INTERVAL))
+        {
             self.unsent.add(frame);
             return false;
         }
-        self.last_sent = now;
+        self.last_sent = Some(now);
+        self.next_frame_credit = self.next_frame_credit.max(now) + FRAME_INTERVAL;
         frame.absorb(std::mem::take(&mut self.unsent));
         true
     }
@@ -418,7 +445,7 @@ pub enum FrameOutcome {
     /// Fanned out and added to the recording; `recorded` when it closed a
     /// chunk, which was stored.
     Sent { recorded: bool },
-    /// Dropped: faster than 15 Hz.
+    /// Dropped: exceeded the frame rate budget.
     Throttled,
 }
 
@@ -491,10 +518,19 @@ pub fn parse_skulls(v: &str) -> Result<Vec<u8>, String> {
 impl Live {
     /// The live game `id`, if `author` may write to it.
     fn writable_game(&self, id: &str, author: &Publisher, frame: bool) -> Result<Game, ApiError> {
-        let s = self.model.read();
+        self.writable_game_in(&self.model.read(), id, author, frame).cloned()
+    }
+
+    fn writable_game_in<'a>(
+        &self,
+        s: &'a crate::model::State,
+        id: &str,
+        author: &Publisher,
+        frame: bool,
+    ) -> Result<&'a Game, ApiError> {
         let g = s.games.get(id).ok_or_else(|| not_found("no such game"))?;
         if g.started.game.sim.is_some()
-            && author.peer().is_some_and(|a| !self.admins.is_admin(a, &s))
+            && author.peer().is_some_and(|a| !self.admins.is_admin(a, s))
         {
             return Err(forbidden("simulation recording requires an admin"));
         }
@@ -512,7 +548,32 @@ impl Live {
         if !author.may_write(g) {
             return Err(forbidden("only the game's host and players write to it"));
         }
-        Ok(g.clone())
+        Ok(g)
+    }
+
+    /// Sign the public start and its optional private lobby link separately.
+    /// Project the link first so the game appears with its full session context.
+    pub(crate) fn game_start_events(
+        &self,
+        mut started: GameStarted,
+        at: time::OffsetDateTime,
+    ) -> Vec<NewEvent> {
+        let mut events = Vec::new();
+        if let Some(session_id) = started.game.session_id.take() {
+            events.push(self.server_event_at(
+                SESSION_LINKS.into(),
+                SESSION_LINKED,
+                json!({ "game_id": started.game_id, "session_id": session_id }),
+                at,
+            ));
+        }
+        events.push(self.server_event_at(
+            game::stream(&started.game_id),
+            game::GAME_STARTED,
+            json!(started),
+            at,
+        ));
+        events
     }
 
     /// `POST /v1/games`: the server writes `GameStarted` with a fresh id
@@ -564,10 +625,7 @@ impl Live {
             && let Some(g) = self.model.read().games.get(id)
         {
             return if g.started.host == author.to_string() && g.started.game == new {
-                Ok(GameCreated {
-                    game_id: id.clone(),
-                    position: g.position,
-                })
+                Ok(GameCreated::new(id.clone(), g.position))
             } else {
                 Err(conflict("that game id is already in use"))
             };
@@ -581,15 +639,11 @@ impl Live {
             game: new,
         };
         let stream = game::stream(&game_id);
-        let event = self.server_event(
-            stream.clone(),
-            game::GAME_STARTED,
-            serde_json::to_value(&started).expect("serializes"),
-        );
-        let recorded = self.store.append(vec![event], &[(stream, 0)]).await?;
-        let position = recorded[0].position;
+        let events = self.game_start_events(started, time::OffsetDateTime::now_utc());
+        let recorded = self.store.append(events, &[(stream, 0)]).await?;
+        let position = recorded.last().expect("game start appended").position;
         self.wait_applied(position).await?;
-        Ok(GameCreated { game_id, position })
+        Ok(GameCreated::new(game_id, position))
     }
 
     /// `POST /v1/games/{id}/events` (after [`Live::authenticate`]).
@@ -720,6 +774,30 @@ impl Live {
                 game::PLAYER_LEFT => {
                     players.retain(|p| Some(p.index as u64) != b.data["index"].as_u64())
                 }
+                game::ACTOR_KILLED if !by_host => {
+                    return Err(forbidden(format!(
+                        "event {i}: only the host reports actor kills"
+                    )));
+                }
+                game::FIREFIGHT_SCORE | game::FIREFIGHT_ENDED if !by_host => {
+                    return Err(forbidden(format!(
+                        "event {i}: only the host reports Firefight scores and results"
+                    )));
+                }
+                // The console that records the game reports every
+                // player's bounces (docs/game/superbounce.md, "Recording").
+                game::SUPERBOUNCE | game::BOUNCED if !by_host => {
+                    return Err(forbidden(format!(
+                        "event {i}: only the host reports superbounces"
+                    )));
+                }
+                // And every player's teabags (docs/game/teabag.md,
+                // "Recording"): a guest would report its own player's.
+                game::TEABAG if !by_host => {
+                    return Err(forbidden(format!(
+                        "event {i}: only the host reports teabags"
+                    )));
+                }
                 game::GAME_ENDED if !by_host => {
                     return Err(forbidden(format!(
                         "event {i}: only the host ends the game; a player leaves with PlayerLeft"
@@ -772,8 +850,8 @@ impl Live {
         Ok(last)
     }
 
-    /// A telemetry frame from the ingest socket: fanned out to stream
-    /// readers at up to 15 Hz per game, and every frame sent recorded in
+    /// A telemetry frame with the single-frame rate limit: fanned out to
+    /// stream readers at up to 15 Hz per game and recorded in
     /// the game's frame chunks ([`live_proto::chunk`]): a chunk is stored
     /// when a frame lands in the next ten seconds, or the game ends.
     pub async fn ingest_frame(
@@ -781,15 +859,16 @@ impl Live {
         author: &Author,
         frame: Frame,
     ) -> Result<FrameOutcome, ApiError> {
-        self.ingest_frame_with_machine_baseline(&Publisher::Peer(author.clone()), frame, false)
+        self.ingest_frame_from_socket(&Publisher::Peer(author.clone()), frame, false, false)
             .await
     }
 
-    pub(crate) async fn ingest_frame_with_machine_baseline(
+    pub(crate) async fn ingest_frame_from_socket(
         &self,
         author: &Publisher,
         mut frame: Frame,
         machine_baseline: bool,
+        batch_frames: bool,
     ) -> Result<FrameOutcome, ApiError> {
         if !game::valid_id(&frame.game_id) {
             return Err(invalid("bad game_id"));
@@ -836,7 +915,7 @@ impl Live {
                         } else {
                             state.record(&frame)
                         };
-                        if !sim.deferred && state.admit_live(&mut frame, now) {
+                        if !sim.deferred && state.admit_live(&mut frame, now, false) {
                             let _ = self.frames.send(state.publish_versions(
                                 frame,
                                 self.packed.versions(&game_id),
@@ -845,7 +924,7 @@ impl Live {
                         }
                         chunk
                     } else {
-                        if !state.admit(&mut frame, now, machine_baseline) {
+                        if !state.admit(&mut frame, now, machine_baseline, batch_frames) {
                             return Ok(FrameOutcome::Throttled);
                         }
                         let closed = state.record(&frame);
@@ -870,6 +949,51 @@ impl Live {
             self.write_pending(&game_id, &clock).await?;
         }
         Ok(FrameOutcome::Sent { recorded })
+    }
+
+    pub(crate) fn ingest_sim_combat(
+        &self,
+        author: &Publisher,
+        id: &str,
+        sample: game::SimCombatSample,
+    ) -> Result<(), ApiError> {
+        if !game::valid_id(id) {
+            return Err(invalid("bad game_id"));
+        }
+        // Hold the projection read guard through the insert so the end of
+        // a run cannot drop its clock and have a late message recreate it.
+        let state = self.model.read();
+        let game = self.writable_game_in(&state, id, author, true)?;
+        if author.to_string() != game.started.host {
+            return Err(forbidden("only the run host supplies combat samples"));
+        }
+        if !game.started.game.sim.as_ref().is_some_and(|s| !s.deferred) {
+            return Err(invalid("combat samples require a live simulation"));
+        }
+        if u64::from(sample.tick).saturating_sub(game.started.game.tick.unwrap_or(0))
+            > crate::sim_runs::MAX_TICKS
+        {
+            return Err(invalid("combat sample exceeds the simulation tick limit"));
+        }
+        if !sample.valid() {
+            return Err(invalid("invalid combat sample"));
+        }
+        if !game.players.iter().any(|p| p.index == u32::from(sample.index) && p.is_bot()) {
+            return Err(invalid("unknown combat sample bot seat"));
+        }
+        let clock = self.ingest.clock(id);
+        let mut clock = clock.lock().unwrap();
+        if clock.sim_combat.get(&sample.index).is_none_or(|old| sample.tick > old.tick) {
+            clock.sim_combat.insert(sample.index, sample);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn sim_combat(&self, id: &str) -> Vec<game::SimCombatSample> {
+        let clock = self.ingest.games.lock().unwrap().get(id).cloned();
+        clock.map_or_else(Vec::new, |clock| {
+            clock.lock().unwrap().sim_combat.values().cloned().collect()
+        })
     }
 
     pub(crate) fn sim_tick(&self, id: &str) -> Option<u64> {
@@ -1296,6 +1420,10 @@ impl Live {
             last_tick: g.last_tick,
             scoreboard: g.scoreboard.clone(),
             kills: g.kills.iter().cloned().collect(),
+            bounces: g.bounces.iter().cloned().collect(),
+            bounced: g.bounced.iter().cloned().collect(),
+            teabags: g.teabags.iter().cloned().collect(),
+            joined_late: g.joined_late.iter().copied().collect(),
             winner: g.ended.as_ref().and_then(|e| e.0.winner.clone()),
             end_reason: g.ended.as_ref().map(|e| e.0.reason.clone()),
             position,
@@ -1442,6 +1570,7 @@ impl Live {
     pub async fn sweep(&self) {
         let now = now();
         crate::films::continue_staged(self).await;
+        crate::films::shared::sweep(self).await;
         let cleanup = self.model.read().films.next_cleanup();
         if let Some(id) = cleanup {
             crate::films::cleanup_published(self, &id).await;
@@ -1491,6 +1620,7 @@ impl Live {
         };
         let mut expect = Vec::new();
         let mut events = Vec::new();
+        let mut finished_games = Vec::new();
         for xuid in expired {
             events.push(self.server_event(
                 streams::presence(xuid),
@@ -1516,7 +1646,7 @@ impl Live {
                 game::GAME_ENDED,
                 serde_json::to_value(ended).expect("serializes"),
             ));
-            self.ingest.games.lock().unwrap().remove(&id);
+            finished_games.push(id);
         }
         if events.is_empty() {
             return;
@@ -1524,9 +1654,12 @@ impl Live {
         match self.store.append(events, &expect).await {
             Ok(recorded) => {
                 // Wait, so the next sweep does not write them twice.
-                let _ = self
-                    .wait_applied(recorded.last().map_or(0, |e| e.position))
-                    .await;
+                if self.wait_applied(recorded.last().map_or(0, |e| e.position)).await.is_ok() {
+                    let mut clocks = self.ingest.games.lock().unwrap();
+                    for id in finished_games {
+                        clocks.remove(&id);
+                    }
+                }
             }
             Err(e) => eprintln!("live: sweep: {e}"),
         }
@@ -1582,13 +1715,29 @@ mod tests {
         let at = |ms: u64| start + Duration::from_millis(ms);
 
         let mut f = frame(1, 0);
-        assert!(clock.admit(&mut f, at(0), false));
+        assert!(clock.admit(&mut f, at(0), false, false));
         assert_eq!(shots(&f), (Some(1), None));
         let mut f = frame(4, 0);
-        assert!(!clock.admit(&mut f, at(20), false), "throttled");
+        assert!(!clock.admit(&mut f, at(20), false, false), "throttled");
         let mut f = frame(0, 3);
-        assert!(clock.admit(&mut f, at(100), false));
+        assert!(clock.admit(&mut f, at(100), false, false));
         assert_eq!(shots(&f), (Some(4), Some(3)), "carries the throttled frame");
+    }
+
+    #[test]
+    fn batched_frames_can_spend_at_most_one_burst_of_credit() {
+        let start = Instant::now();
+        let mut clock = FrameClock::new(start, 0);
+        for _ in 0..live_proto::MAX_INGEST_BATCH_FRAMES {
+            assert!(clock.admit(&mut frame(0, 0), start, false, true));
+        }
+        assert!(!clock.admit(&mut frame(3, 0), start, false, true));
+        // A legacy frame spends the same credit that a batch would use.
+        let next = start + FRAME_INTERVAL;
+        assert!(clock.admit(&mut frame(0, 0), next, false, false));
+        let mut f = frame(0, 0);
+        assert!(!clock.admit(&mut f, next, false, true));
+        assert!(clock.admit(&mut f, next + FRAME_INTERVAL, false, true));
     }
 
     fn machine(id: &str, position: f64) -> live_proto::game::FrameMachine {
@@ -1611,7 +1760,7 @@ mod tests {
         let mut chunks = Vec::new();
         let mut send = |clock: &mut FrameClock, mut f: Frame, ms: u64| {
             clock.observe_machines(&f);
-            if clock.admit(&mut f, at(ms), false) {
+            if clock.admit(&mut f, at(ms), false, false) {
                 chunks.extend(clock.record(&f));
             }
         };
@@ -1667,7 +1816,7 @@ mod tests {
             f.tick = tick;
             f.cut = cut;
             f.machine_positions.extend_from_slice(positions);
-            if !clock.admit(&mut f, start + Duration::from_millis(ms), false) {
+            if !clock.admit(&mut f, start + Duration::from_millis(ms), false, false) {
                 return None;
             }
             let _ = clock.record(&f);
@@ -1720,7 +1869,7 @@ mod tests {
         f.tick = 10;
         let at = |p| game::MachinePosition { i: 9, p };
         f.machine_positions.push(at(20));
-        assert!(clock.admit(&mut f, start, true));
+        assert!(clock.admit(&mut f, start, true, false));
         clock.publish_versions(f, [false, true], &next_sid);
         assert_eq!(clock.pack.next_seq(), 0, "v8 alone only needs its own writer");
 
@@ -1728,7 +1877,7 @@ mod tests {
         let mut throttled = frame(0, 0);
         throttled.tick = 11;
         throttled.machine_positions.push(at(40));
-        assert!(!clock.admit(&mut throttled, start + Duration::from_millis(5), false));
+        assert!(!clock.admit(&mut throttled, start + Duration::from_millis(5), false, false));
         for v8 in [false, true] {
             let mut out = Vec::new();
             let mut follow = crate::packed::Follow::default();
@@ -1753,18 +1902,18 @@ mod tests {
         let mut first = frame(0, 0);
         first.tick = 10;
         first.machine_positions = vec![game::MachinePosition { i: 7, p: 200 }];
-        assert!(clock.admit(&mut first, start, true));
+        assert!(clock.admit(&mut first, start, true, false));
         assert!(clock.record(&first).is_none());
         clock.publish(first);
 
         let mut throttled = frame(0, 0);
         throttled.tick = 12;
         throttled.machine_positions = vec![game::MachinePosition { i: 8, p: 128 }];
-        assert!(!clock.admit(&mut throttled, start + Duration::from_millis(10), false));
+        assert!(!clock.admit(&mut throttled, start + Duration::from_millis(10), false, false));
 
         let mut reset = frame(0, 0);
         reset.tick = 14;
-        assert!(clock.admit(&mut reset, start + Duration::from_millis(70), true));
+        assert!(clock.admit(&mut reset, start + Duration::from_millis(70), true, false));
         assert!(reset.machine_positions.is_empty());
         assert!(clock.record(&reset).is_none());
         let live = clock.publish(reset);
@@ -1791,7 +1940,7 @@ mod tests {
             .map(|i| game::MachinePosition { i, p: 127 })
             .collect();
         let expected = f.machine_positions.clone();
-        assert!(clock.admit(&mut f, start, false));
+        assert!(clock.admit(&mut f, start, false, false));
         assert_eq!(clock.machine_positions.len(), 195);
         let live = clock.publish(f);
         let mut decoder = pack::Decoder::new();

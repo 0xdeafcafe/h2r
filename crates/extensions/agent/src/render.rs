@@ -1,4 +1,4 @@
-//! `render.frame` and `render.stats` (docs/runtime/agent-api.md, phase 5).
+//! `render.frame`, `render.frame_layout` and `render.stats` (docs/runtime/agent-api.md, phase 5).
 //!
 //! [`FrameProbe`] records one whole guest frame when armed: the backend
 //! wrapper in front of the D3D backend (boot's `d3d_diag`) tells it each
@@ -21,9 +21,10 @@
 //!   `H2_BOOT_GFX` present hook) writes, or which [`FrameProbe`] reads a
 //!   pass of.
 //! - `render.scene`: the host's [`SceneSource`] ([`set_scene_source`]).
-//! - `render.parity`: arms the in-process two-path draw for one frame
-//!   ([`parity_armed`], [`take_parity_arm`]); answered by the host's
-//!   [`ParitySource`]. A diagnostic, deleted with the D3D backend.
+//! - `render.parity`: compares one presented reference frame to a private
+//!   rendering of its sealed scene, through the host's [`ParitySource`].
+//! - `render.residual`: what the guest front-end still asks `d3d` to do,
+//!   by caller and producer, over a window of presents ([`residual`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -32,13 +33,18 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use agent_proto::{
-    FrameCaptureParams, CaptureReply, CompareParams, CompareReply, DepthRecord, DrawRecord,
-    FrameParams, FrameRecord, FrameReply, OpRecord, ParityParams, ParityReply, PassRecord,
-    RenderStats, RpcError, SceneParams, SceneReply, SnapRecord, code, method,
+    CaptureCamera, CaptureReply, CaptureSource, CompareParams, DepthRecord, DrawLayout, DrawRecord,
+    FrameCaptureParams, FrameParams, FrameRecord, FrameReply, OpRecord, ParityParams,
+    PassRecord, RenderStats, RpcError, SceneParams, SceneReply, SnapRecord, code, method,
 };
+use live_proto::maps::{MapId, Sha256};
 use serde_json::{Map, Value, json};
 
 use crate::exec::{Access, Agent, DEFER_TICKS_MAX, GameCtx};
+
+pub mod clip;
+pub mod private_graph;
+pub mod residual;
 
 /// One draw, as the backend wrapper describes it.
 #[derive(Debug, Clone, Default)]
@@ -66,15 +72,21 @@ pub struct DrawInfo {
     /// The draw's constant registers, hardware order (D3D register + 96),
     /// shared with the backend: the probe copies out the ones asked for.
     pub constants: Option<Arc<[[f32; 4]]>>,
+    /// Geometry supplied by the host for a layout frame.
+    pub layout: Option<DrawLayout>,
 }
 
 /// What the wrapper should do after telling the probe about a draw or a
 /// clear: read back the pass that just ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SnapAsk {
+    /// A retry of the same arming after its original display disappeared.
+    attempt: u64,
     /// The arming's number, for the file name.
     pub seq: u64,
     pub pass: usize,
+    /// Read the display raster for a layout capture.
+    pub display: bool,
 }
 
 /// The recorder. One per process ([`PROBE`]); tests make their own.
@@ -84,6 +96,7 @@ pub struct FrameProbe {
 }
 
 struct ProbeState {
+    attempt: u64,
     next_seq: u64,
     stage: Stage,
     last: Option<FrameRecord>,
@@ -94,13 +107,23 @@ enum Stage {
     Idle,
     Waiting(Arming),
     Recording(Box<Recording>),
+    Graph(Arming),
+    /// The original draw report, pending the worker's choice for this device Swap.
+    Routing {
+        swap: u64,
+        arming: Arming,
+        original: Box<FrameRecord>,
+        original_files: Vec<private_capture::Written>,
+    },
 }
 
 #[derive(Clone)]
 struct Arming {
+    attempt: u64,
     seq: u64,
     at_present: u64,
     draws: bool,
+    layout: bool,
     max_draws: usize,
     snap: BTreeSet<usize>,
     constants: Vec<i32>,
@@ -108,6 +131,9 @@ struct Arming {
 
 struct Recording {
     arming: Arming,
+    // Original snapshots become public with their report. A rearm or
+    // a native presentation discards any files still held by this route.
+    files: Vec<private_capture::Written>,
     began: Instant,
     rec: FrameRecord,
     targets: BTreeSet<String>,
@@ -129,6 +155,7 @@ impl FrameProbe {
         FrameProbe {
             armed: AtomicBool::new(false),
             state: Mutex::new(ProbeState {
+                attempt: 0,
                 next_seq: 1,
                 stage: Stage::Idle,
                 last: None,
@@ -149,6 +176,16 @@ impl FrameProbe {
 
     /// Arms for the next whole frame; forgets the last one.
     pub fn arm(&self, p: &FrameParams) -> Result<FrameReply, String> {
+        self.arm_frame(p, false)
+    }
+
+    /// Arms for display layout, including draws and display snapshots.
+    pub fn arm_layout(&self, p: &FrameParams) -> Result<FrameReply, String> {
+        self.arm_frame(p, true)
+    }
+
+    fn arm_frame(&self, p: &FrameParams, layout: bool) -> Result<FrameReply, String> {
+        let draws = p.draws || layout;
         let max_draws = p.max_draws.unwrap_or(FrameParams::DEFAULT_DRAWS);
         if max_draws > FrameParams::MAX_DRAWS {
             return Err(format!("max_draws is at most {}", FrameParams::MAX_DRAWS));
@@ -169,24 +206,43 @@ impl FrameProbe {
         {
             return Err(format!("constants: c{r} is not a register (-96..=95)"));
         }
-        if !p.constants.is_empty() && !p.draws {
+        if !p.constants.is_empty() && !draws {
             return Err("constants go with draws".into());
         }
         let mut s = self.lock();
         let seq = s.next_seq;
         s.next_seq += 1;
         let at_present = s.presents;
-        s.stage = Stage::Waiting(Arming {
+        s.attempt = 0;
+        let old = std::mem::replace(&mut s.stage, Stage::Waiting(Arming {
+            attempt: 0,
             seq,
             at_present,
-            draws: p.draws,
+            draws,
+            layout,
             max_draws,
             snap: p.snap.iter().copied().collect(),
             constants: p.constants.clone(),
-        });
+        }));
         s.last = None;
         self.armed.store(true, Ordering::Relaxed);
-        Ok(reply(&s))
+        let answer = reply(&s);
+        drop(s);
+        drop(old);
+        Ok(answer)
+    }
+
+    /// A superseded pass capture owns only its own display arming. An
+    /// independent render.frame request may already have replaced it.
+    fn cancel_capture_pass(&self, job: Option<&CaptureJob>) {
+        let Some(seq) = job.and_then(|j| j.probe_seq) else { return };
+        let mut s = self.lock();
+        if s.stage.arming().is_some_and(|a| a.seq == seq) {
+            let old = std::mem::replace(&mut s.stage, Stage::Idle);
+            self.armed.store(false, Ordering::Relaxed);
+            drop(s);
+            drop(old);
+        }
     }
 
     /// The last frame, and whether one is still to come.
@@ -202,6 +258,11 @@ impl FrameProbe {
             Stage::Recording(r) => Some(f(r)),
             _ => None,
         }
+    }
+
+    /// Whether the frame currently being recorded requests display layout.
+    pub fn layout_requested(&self) -> bool {
+        self.recording(|r| r.arming.layout).unwrap_or(false)
     }
 
     /// Work is about to go to `color` (and `depth`): when that ends a pass
@@ -227,50 +288,7 @@ impl FrameProbe {
     pub fn draw(&self, d: DrawInfo) -> Option<SnapAsk> {
         self.recording(|r| {
             let ask = r.enter(&d.color, d.depth.as_deref());
-            r.targets.insert(d.color.clone());
-            let index = r.rec.totals.draws;
-            let pass_index = r.rec.passes.len() - 1;
-            let p = r.pass();
-            p.target.get_or_insert_with(|| d.target.clone());
-            p.draws += 1;
-            p.vertices += u64::from(d.vertices);
-            p.first_draw.get_or_insert(index);
-            *p.outcomes.entry(d.outcome.clone()).or_default() += 1;
-            *p.primitives.entry(d.primitive.clone()).or_default() += 1;
-            *p.entries.entry(d.entry.clone()).or_default() += 1;
-            for t in &d.textures {
-                *p.textures.entry(t.clone()).or_default() += 1;
-            }
-            p.programs += u64::from(d.program);
-            p.blended += u64::from(d.blend);
-            p.depth_writes += u64::from(d.depth_write);
-            let t = &mut r.rec.totals;
-            t.draws += 1;
-            t.vertices += u64::from(d.vertices);
-            *t.outcomes.entry(d.outcome.clone()).or_default() += 1;
-            if r.arming.draws {
-                if r.rec.draws.len() < r.arming.max_draws {
-                    let constants = picked_constants(&r.arming.constants, d.constants.as_deref());
-                    r.rec.draws.push(DrawRecord {
-                        index,
-                        pass: pass_index,
-                        entry: d.entry,
-                        primitive: d.primitive,
-                        vertices: d.vertices,
-                        indices: d.indices,
-                        outcome: d.outcome,
-                        textures: d.textures,
-                        program: d.program,
-                        blend: d.blend,
-                        depth_write: d.depth_write,
-                        vs: d.vs,
-                        depth: d.depth_state,
-                        constants,
-                    });
-                } else {
-                    r.rec.truncated = true;
-                }
-            }
+            r.draw(d);
             ask
         })
         .flatten()
@@ -297,6 +315,13 @@ impl FrameProbe {
     /// the last pass when it wants a snapshot: read it back before the
     /// present goes on.
     pub fn present(&self, n: u64) -> Option<SnapAsk> {
+        self.present_routed(n, None)
+    }
+
+    /// On an owned device the renderer selects the displayed graph or original
+    /// commands on its own thread. Keep the original report until that decision.
+    /// `swap` is device-local, while `n` numbers the run's presents on the wire.
+    pub fn present_routed(&self, n: u64, swap: Option<u64>) -> Option<SnapAsk> {
         let mut s = self.lock();
         s.presents = n;
         if !self.armed() {
@@ -304,6 +329,10 @@ impl FrameProbe {
         }
         match std::mem::replace(&mut s.stage, Stage::Idle) {
             Stage::Idle => None,
+            pending @ (Stage::Graph(_) | Stage::Routing { .. }) => {
+                s.stage = pending;
+                None
+            }
             Stage::Waiting(arming) => {
                 s.stage = Stage::Recording(Box::new(Recording {
                     rec: FrameRecord {
@@ -312,6 +341,7 @@ impl FrameProbe {
                         ..Default::default()
                     },
                     arming,
+                    files: Vec::new(),
                     began: Instant::now(),
                     targets: BTreeSet::new(),
                     key: None,
@@ -327,9 +357,16 @@ impl FrameProbe {
                 r.rec.ms = (r.began.elapsed().as_secs_f64() * 1e5).round() / 100.0;
                 r.rec.totals.passes = r.rec.passes.len();
                 r.rec.totals.targets = r.targets.len();
-                s.last = Some(r.rec);
-                if ask.is_none() {
-                    self.armed.store(false, Ordering::Relaxed);
+                if let Some(swap) = swap {
+                    s.stage = Stage::Routing {
+                        swap, arming: r.arming, original: Box::new(r.rec), original_files: r.files,
+                    };
+                } else {
+                    for file in r.files { file.retain(); }
+                    s.last = Some(r.rec);
+                    if ask.is_none() {
+                        self.armed.store(false, Ordering::Relaxed);
+                    }
                 }
                 ask
             }
@@ -339,7 +376,50 @@ impl FrameProbe {
     /// Where a snapshot the probe asked for went, or why it failed. The
     /// frame may be done already (a snapshot asked for at its present).
     pub fn snapped(&self, pass: usize, result: Result<String, String>) {
+        self.note_snap(None, pass, result, None);
+    }
+
+    /// A callback can arrive after a second arming. Only the request which
+    /// paid for this readback may consume it.
+    pub fn snapped_for(&self, ask: SnapAsk, result: Result<String, String>) {
+        self.note_snap(Some(ask), ask.pass, result, None);
+    }
+
+    /// Write the original pass for this arming. A stale request skips the
+    /// read, and a replacement during readback or PNG encoding discards the
+    /// file. The display worker may still choose a different graph.
+    pub fn write_snapshot(&self, ask: SnapAsk, read: impl FnOnce() -> Result<crate::compare::Rgba, String>) {
+        self.write_snapshot_in(ask, &agent_proto::cache_dir().join("frames"), read);
+    }
+
+    fn write_snapshot_in(&self, ask: SnapAsk, dir: &Path, read: impl FnOnce() -> Result<crate::compare::Rgba, String>) {
+        let wanted = {
+            let s = self.lock();
+            s.attempt == ask.attempt && match &s.stage {
+                Stage::Recording(r) => r.arming.seq == ask.seq,
+                Stage::Routing { original, .. } => original.seq == ask.seq,
+                Stage::Idle => s.last.as_ref().is_some_and(|f| f.seq == ask.seq && f.display_frame.is_none()),
+                _ => false,
+            }
+        };
+        if !wanted { return; }
+        let written = read().and_then(|image| {
+            let retry = retry_suffix(ask.attempt);
+            let name = format!("frame-{}-{}{retry}-pass-{}.png", std::process::id(), ask.seq, ask.pass);
+            let file = private_capture::Written::new(dir.join(name));
+            crate::compare::write_png(file.path(), &image).map_err(|e| e.to_string())?;
+            Ok(file)
+        });
+        match written {
+            Ok(file) => self.note_snap(Some(ask), ask.pass, Ok(file.path().display().to_string()), Some(file)),
+            Err(error) => self.snapped_for(ask, Err(error)),
+        }
+    }
+
+    fn note_snap(&self, ask: Option<SnapAsk>, pass: usize, result: Result<String, String>, file: Option<private_capture::Written>) {
         let mut s = self.lock();
+        let attempt = s.attempt;
+        let belongs = |actual| ask.is_none_or(|wanted| wanted.seq == actual && wanted.attempt == attempt);
         let snap = match result {
             Ok(file) => SnapRecord {
                 pass,
@@ -353,20 +433,75 @@ impl FrameProbe {
             },
         };
         match &mut s.stage {
-            Stage::Recording(r) => r.rec.snaps.push(snap),
-            _ => {
-                if let Some(last) = &mut s.last {
+            Stage::Recording(r) if belongs(r.arming.seq) => {
+                r.rec.snaps.push(snap);
+                r.files.extend(file);
+            }
+            Stage::Routing { original, original_files, .. } if belongs(original.seq) => {
+                original.snaps.push(snap);
+                original_files.extend(file);
+            }
+            Stage::Idle => {
+                if let Some(last) = &mut s.last && belongs(last.seq) && last.display_frame.is_none() {
                     last.snaps.push(snap);
-                }
-                if matches!(s.stage, Stage::Idle) {
+                    if let Some(file) = file { file.retain(); }
                     self.armed.store(false, Ordering::Relaxed);
                 }
             }
+            _ => {}
         }
     }
 }
 
 impl Recording {
+    fn draw(&mut self, d: DrawInfo) {
+        self.targets.insert(d.color.clone());
+        let index = self.rec.totals.draws;
+        let pass_index = self.rec.passes.len() - 1;
+        let p = self.pass();
+        p.target.get_or_insert_with(|| d.target.clone());
+        p.draws += 1;
+        p.vertices += u64::from(d.vertices);
+        p.first_draw.get_or_insert(index);
+        *p.outcomes.entry(d.outcome.clone()).or_default() += 1;
+        *p.primitives.entry(d.primitive.clone()).or_default() += 1;
+        *p.entries.entry(d.entry.clone()).or_default() += 1;
+        for t in &d.textures {
+            *p.textures.entry(t.clone()).or_default() += 1;
+        }
+        p.programs += u64::from(d.program);
+        p.blended += u64::from(d.blend);
+        p.depth_writes += u64::from(d.depth_write);
+        let t = &mut self.rec.totals;
+        t.draws += 1;
+        t.vertices += u64::from(d.vertices);
+        *t.outcomes.entry(d.outcome.clone()).or_default() += 1;
+        if self.arming.draws {
+            if self.rec.draws.len() < self.arming.max_draws {
+                let constants = picked_constants(&self.arming.constants, d.constants.as_deref());
+                self.rec.draws.push(DrawRecord {
+                    index,
+                    pass: pass_index,
+                    entry: d.entry,
+                    primitive: d.primitive,
+                    vertices: d.vertices,
+                    indices: d.indices,
+                    outcome: d.outcome,
+                    textures: d.textures,
+                    program: d.program,
+                    blend: d.blend,
+                    depth_write: d.depth_write,
+                    vs: d.vs,
+                    depth: d.depth_state,
+                    constants,
+                    layout: if self.arming.layout { d.layout } else { None },
+                });
+            } else {
+                self.rec.truncated = true;
+            }
+        }
+    }
+
     /// Starts a new pass unless this work is on the current pass's
     /// targets; answers the pass that ended when it wants a snapshot.
     fn enter(&mut self, color: &str, depth: Option<&str>) -> Option<SnapAsk> {
@@ -399,16 +534,40 @@ impl Recording {
         self.arming
             .snap
             .contains(&pass)
-            .then_some(SnapAsk { seq, pass })
+            .then_some(SnapAsk {
+                seq,
+                pass,
+                attempt: self.arming.attempt,
+                display: self.arming.layout,
+            })
+    }
+}
+
+fn retry_suffix(attempt: u64) -> String {
+    if attempt == 0 { String::new() } else { format!("-retry-{attempt}") }
+}
+
+impl ProbeState {
+    fn retry_original(&mut self) -> Option<Stage> {
+        let mut next = self.stage.arming()?.clone();
+        self.attempt = self.attempt.wrapping_add(1);
+        next.attempt = self.attempt;
+        Some(std::mem::replace(&mut self.stage, Stage::Waiting(next)))
+    }
+}
+
+impl Stage {
+    fn arming(&self) -> Option<&Arming> {
+        match self {
+            Self::Idle => None,
+            Self::Waiting(a) | Self::Graph(a) | Self::Routing { arming: a, .. } => Some(a),
+            Self::Recording(r) => Some(&r.arming),
+        }
     }
 }
 
 fn reply(s: &ProbeState) -> FrameReply {
-    let arming = match &s.stage {
-        Stage::Idle => None,
-        Stage::Waiting(a) => Some(a),
-        Stage::Recording(r) => Some(&r.arming),
-    };
+    let arming = s.stage.arming();
     FrameReply {
         armed: arming.is_some(),
         seq: arming.map(|a| a.seq),
@@ -502,30 +661,43 @@ pub struct RenderSources {
     pub counters: Box<dyn Fn() -> Option<Value> + Send>,
 }
 
-/// Adds `render.frame` (over `probe`) and `render.stats` (over `sources`).
+/// Adds the frame recorders (over `probe`) and `render.stats` (over `sources`).
 pub fn add_methods(agent: &Agent, probe: &'static FrameProbe, sources: RenderSources) {
-    agent.add_method(method::RENDER_FRAME, Access::Read, move |v| {
-        let p: FrameParams = if v.is_null() {
-            FrameParams::default()
-        } else {
-            serde_json::from_value(v)
-                .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?
-        };
-        let r = if p.arm {
-            probe
-                .arm(&p)
-                .map_err(|e| RpcError::new(code::INVALID_PARAMS, e))?
-        } else {
-            if p.draws || p.max_draws.is_some() || !p.snap.is_empty() || !p.constants.is_empty() {
-                return Err(RpcError::new(
-                    code::INVALID_PARAMS,
-                    "draws, max_draws, snap and constants go with arm",
-                ));
-            }
-            probe.reply()
-        };
-        serde_json::to_value(r).map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))
-    });
+    for (name, layout) in [
+        (method::RENDER_FRAME, false),
+        (method::RENDER_FRAME_LAYOUT, true),
+    ] {
+        agent.add_method(name, Access::Read, move |v| {
+            let p: FrameParams = if v.is_null() {
+                FrameParams::default()
+            } else {
+                serde_json::from_value(v)
+                    .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?
+            };
+            let probe = if p.source == Some(agent_proto::frame_graph::Source::Private) {
+                if !private_capture_available() {
+                    return Err(RpcError::new(code::UNAVAILABLE, "no private-target scene renderer registered"));
+                }
+                &private_graph::PROBE
+            } else {
+                probe
+            };
+            let r = if p.arm {
+                probe
+                    .arm_frame(&p, layout)
+                    .map_err(|e| RpcError::new(code::INVALID_PARAMS, e))?
+            } else {
+                if p.draws || p.max_draws.is_some() || !p.snap.is_empty() || !p.constants.is_empty() {
+                    return Err(RpcError::new(
+                        code::INVALID_PARAMS,
+                        "draws, max_draws, snap and constants go with arm",
+                    ));
+                }
+                probe.reply()
+            };
+            serde_json::to_value(r).map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))
+        });
+    }
     agent.add_method(method::RENDER_STATS, Access::Read, move |v| {
         if !(v.is_null() || v.as_object().is_some_and(Map::is_empty)) {
             return Err(RpcError::new(
@@ -534,6 +706,8 @@ pub fn add_methods(agent: &Agent, probe: &'static FrameProbe, sources: RenderSou
             ));
         }
         let s = RenderStats {
+            display_frame: private_graph::display_stats(),
+            private_frame: private_graph::last_stats(),
             interp: (sources.interp)().unwrap_or(Value::Null),
             pipeline: (sources.pipeline)().unwrap_or(Value::Null),
             counters: (sources.counters)().unwrap_or(Value::Null),
@@ -547,23 +721,15 @@ pub fn add_methods(agent: &Agent, probe: &'static FrameProbe, sources: RenderSou
 /// Fills `render.scene` (boot's scene glue registers it).
 pub type SceneSource = fn(dump: bool) -> Result<agent_proto::SceneReply, String>;
 
-/// Answers `render.parity`: the comparison of the frame whose frame step
-/// took the arming ([`take_parity_arm`]). Called at the first tick boundary
-/// after the arming was taken; it may wait there for the render thread's
-/// comparison.
-pub type ParitySource = fn() -> Result<CompareReply, String>;
+mod parity;
+pub use parity::{ParityRequest, ParitySource};
 
-/// What the host registers for `render.scene` and `render.parity`, the
-/// parity arming, and the last tick that ended. One per process
-/// ([`HOSTED`]); tests make their own.
+/// The host's scene and parity sources, and the last tick that ended.
 pub struct Hosted {
     scene: Mutex<Option<SceneSource>>,
     parity: Mutex<Option<ParitySource>>,
-    parity_armed: AtomicBool,
     /// The last tick that ended; `u64::MAX` before the first.
     last_tick: AtomicU64,
-    /// [`Hosted::last_tick`] when the frame step took the parity arming.
-    parity_tick: AtomicU64,
 }
 
 /// The game's.
@@ -580,9 +746,7 @@ impl Hosted {
         Hosted {
             scene: Mutex::new(None),
             parity: Mutex::new(None),
-            parity_armed: AtomicBool::new(false),
             last_tick: AtomicU64::new(u64::MAX),
-            parity_tick: AtomicU64::new(u64::MAX),
         }
     }
 
@@ -590,8 +754,8 @@ impl Hosted {
         *self.scene.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
     }
 
-    pub fn set_parity_source(&self, f: ParitySource) {
-        *self.parity.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
+    pub fn set_parity_source(&self, f: Option<ParitySource>) {
+        *self.parity.lock().unwrap_or_else(|e| e.into_inner()) = f;
     }
 
     fn scene_source(&self) -> Option<SceneSource> {
@@ -600,26 +764,6 @@ impl Hosted {
 
     fn parity_source(&self) -> Option<ParitySource> {
         *self.parity.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    /// Whether the next frame step should draw both paths: the one check
-    /// the frame step makes, one relaxed load.
-    #[inline]
-    pub fn parity_armed(&self) -> bool {
-        self.parity_armed.load(Ordering::Relaxed)
-    }
-
-    /// The frame step takes the arming: true once per `render.parity`.
-    pub fn take_parity_arm(&self) -> bool {
-        if !self.parity_armed() {
-            return false;
-        }
-        let took = self.parity_armed.swap(false, Ordering::Relaxed);
-        if took {
-            let t = self.last_tick.load(Ordering::Relaxed);
-            self.parity_tick.store(t, Ordering::Relaxed);
-        }
-        took
     }
 
     /// The last tick that ended, as the host's tick observer said
@@ -631,11 +775,6 @@ impl Hosted {
 
     fn note_tick(&self, tick: u64) {
         self.last_tick.store(tick, Ordering::Relaxed);
-    }
-
-    fn parity_tick(&self) -> Option<u64> {
-        let t = self.parity_tick.load(Ordering::Relaxed);
-        (t != u64::MAX).then_some(t)
     }
 
     /// `render.scene`: the source's answer, or why there is none.
@@ -663,24 +802,19 @@ pub fn set_scene_source(f: SceneSource) {
     HOSTED.set_scene_source(f);
 }
 
-/// Registers `render.parity`'s source (the stage that replaces a whole
-/// guest entry, framescene.md slice 4).
-pub fn set_parity_source(f: ParitySource) {
-    HOSTED.set_parity_source(f);
-}
-
-/// [`Hosted::parity_armed`] on the game's.
-#[inline]
-pub fn parity_armed() -> bool {
-    HOSTED.parity_armed()
-}
-
-/// [`Hosted::take_parity_arm`] on the game's.
-pub fn take_parity_arm() -> bool {
-    HOSTED.take_parity_arm()
+/// Registers the reference and private rendering pair for `render.parity`.
+pub fn set_parity_source(source: Option<ParitySource>) {
+    HOSTED.set_parity_source(source);
 }
 
 // ---- render.capture ----
+
+mod private_capture;
+pub use private_capture::{PrivateCaptureScene, PrivateCaptureSource, PrivateCaptureWrite, private_capture_available, set_private_capture_source};
+
+fn capture_interrupted() -> RpcError {
+    RpcError::new(code::INTERRUPTED, "a later render.capture or a renderer reset replaced this one")
+}
 
 /// `render.capture`'s state: the frame of a tick, by tick. One per process
 /// ([`CAPTURE`]); tests make their own.
@@ -698,18 +832,23 @@ pub fn take_parity_arm() -> bool {
 pub struct FrameCapture {
     /// A capture waits for its present: the tick and present calls look.
     pending: AtomicBool,
+    source_armed: AtomicBool,
     /// The present whose image the frame writer should write; 0 for none.
     want: AtomicU64,
     probe: &'static FrameProbe,
     hosted: &'static Hosted,
     state: Mutex<CaptureState>,
+    map_source: Mutex<Option<Arc<CaptureMapSource>>>,
 }
+
+type CaptureMapSource = dyn Fn(&str) -> Option<(MapId, String)> + Send + Sync;
 
 struct CaptureState {
     /// The host can write presented frames.
     writer: bool,
     next_seq: u64,
     job: Option<CaptureJob>,
+    private: private_capture::PrivateState,
 }
 
 struct CaptureJob {
@@ -722,8 +861,22 @@ struct CaptureJob {
     bound: Option<(u64, u64)>,
     scene_hash: Option<String>,
     path: PathBuf,
+    source: Option<CaptureSourceJob>,
     /// The frame writer's result, or why it failed before.
-    outcome: Option<Result<(), String>>,
+    outcome: Option<Result<Option<Sha256>, String>>,
+}
+
+struct CaptureSourceJob {
+    game_id: String,
+    drawn: Option<(String, CaptureCamera)>,
+    frame: Option<(String, MapId, CaptureCamera)>,
+}
+
+/// The frame writer's destination and whether the exact PNG needs a digest.
+#[derive(Debug, PartialEq, Eq)]
+pub struct CaptureWrite {
+    pub path: PathBuf,
+    pub digest: bool,
 }
 
 /// The game's.
@@ -733,13 +886,16 @@ impl FrameCapture {
     pub const fn new(probe: &'static FrameProbe, hosted: &'static Hosted) -> FrameCapture {
         FrameCapture {
             pending: AtomicBool::new(false),
+            source_armed: AtomicBool::new(false),
             want: AtomicU64::new(0),
             probe,
             hosted,
+            map_source: Mutex::new(None),
             state: Mutex::new(CaptureState {
                 writer: false,
                 next_seq: 1,
                 job: None,
+                private: private_capture::PrivateState::new(),
             }),
         }
     }
@@ -754,10 +910,50 @@ impl FrameCapture {
         self.lock().writer = true;
     }
 
+    /// The host resolves a drawn map's cache alias to its installed package and base name.
+    pub fn set_map_source(
+        &self,
+        source: impl Fn(&str) -> Option<(MapId, String)> + Send + Sync + 'static,
+    ) {
+        *self.map_source.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(source));
+    }
+
+    /// The renderer applied this spawn view to the frame in progress.
+    /// Resolves the map and the pose only for an armed provenance capture.
+    pub fn note_drawn_camera(&self, read: impl FnOnce() -> Option<(String, CaptureCamera)>) {
+        if self.source_armed.load(Ordering::Relaxed)
+            && let Some(source) = self.lock().job.as_mut().and_then(|j| j.source.as_mut())
+        {
+            source.drawn = read();
+        }
+    }
+
+    /// The old map's draw can no longer be used for a provenance capture.
+    pub fn clear_drawn_camera(&self) {
+        self.note_drawn_camera(|| None);
+    }
+
     /// Arms for `p.tick` (default: the tick after the last one ended); the
     /// image goes under `dir`. Replaces a capture still waiting. Answers
     /// the arming's number for [`finish`](Self::finish).
     pub fn arm(&self, p: &FrameCaptureParams, dir: &Path) -> Result<u64, RpcError> {
+        if let Some(id) = &p.game_id
+            && (p.pass.is_some() || !live_proto::game::valid_id(id))
+        {
+            return Err(RpcError::new(
+                code::INVALID_PARAMS,
+                "game_id must be a valid Live id and can only accompany a whole-frame capture",
+            ));
+        }
+        if let Some(lighting) = p.lighting {
+            if p.pass.is_some() {
+                return Err(RpcError::new(code::INVALID_PARAMS, "lighting selects a whole scene and cannot be combined with pass"));
+            }
+            if p.game_id.is_some() {
+                return Err(RpcError::new(code::INVALID_PARAMS, "game_id captures the displayed frame and cannot be combined with lighting"));
+            }
+            return self.arm_private(lighting, p.tick, dir);
+        }
         let Some(last) = self.hosted.last_tick() else {
             return Err(RpcError::new(
                 code::UNAVAILABLE,
@@ -798,7 +994,12 @@ impl FrameCapture {
             probe_seq: None,
             bound: None,
             scene_hash: None,
-            path: dir.join(format!("capture-{seq}-tick-{target}.png")),
+            path: dir.join(format!("capture-{}-{seq}-tick-{target}.png", std::process::id())),
+            source: p.game_id.clone().map(|game_id| CaptureSourceJob {
+                game_id,
+                drawn: None,
+                frame: None,
+            }),
             outcome: None,
         };
         if let Some(pass) = p.pass
@@ -806,8 +1007,11 @@ impl FrameCapture {
         {
             job.probe_seq = Some(self.arm_probe(pass)?);
         }
+        self.probe.cancel_capture_pass(s.job.as_ref());
+        s.private.active = None;
         s.job = Some(job);
         self.want.store(0, Ordering::Relaxed);
+        self.source_armed.store(p.game_id.is_some(), Ordering::Relaxed);
         self.pending.store(true, Ordering::Relaxed);
         Ok(seq)
     }
@@ -856,7 +1060,7 @@ impl FrameCapture {
             return;
         }
         let last = self.hosted.last_tick();
-        let seq = {
+        let (seq, drawn) = {
             let mut s = self.lock();
             let Some(j) = &mut s.job else {
                 return;
@@ -864,29 +1068,48 @@ impl FrameCapture {
             if j.bound.is_some() || j.outcome.is_some() {
                 return;
             }
+            // A view belongs only to this present. Dropping a draw from an
+            // early present prevents a later, camera-less frame using it.
+            let drawn = j.source.as_mut().and_then(|source| source.drawn.take());
             let Some(tick) = last.filter(|&t| t >= j.target) else {
                 return;
             };
-            j.bound = Some((tick, n));
-            if j.pass.is_none() {
-                self.want.store(n, Ordering::Relaxed);
+            if j.source.is_some() && drawn.is_none() {
+                return;
             }
+            j.bound = Some((tick, n));
             self.pending.store(false, Ordering::Relaxed);
-            j.seq
+            self.source_armed.store(false, Ordering::Relaxed);
+            (j.seq, drawn)
         };
-        // The source is the host's; called without the lock held.
+        // The sources are the host's. Call them without the capture lock.
+        let frame = drawn.and_then(|(map, camera)| {
+            let source = self.map_source.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
+            let (id, base) = source(&map)?;
+            Some((id, base, camera))
+        });
         let hash = self.hosted.scene_hash();
         if let Some(j) = &mut self.lock().job
             && j.seq == seq
         {
             j.scene_hash = hash;
+            if let Some(source) = &mut j.source {
+                let Some((map_id, map, camera)) = frame else {
+                    j.outcome = Some(Err("the drawn map is not an installed package".into()));
+                    return;
+                };
+                source.frame = Some((map, map_id, camera));
+            }
+            if j.pass.is_none() {
+                self.want.store(n, Ordering::Relaxed);
+            }
         }
     }
 
     /// The frame writer, at present `present`: where to write its image,
     /// when it is wanted (one relaxed load when not). Call
     /// [`written`](Self::written) after.
-    pub fn wanted(&self, present: u64) -> Option<PathBuf> {
+    pub fn wanted(&self, present: u64) -> Option<CaptureWrite> {
         if present == 0 || self.want.load(Ordering::Relaxed) != present {
             return None;
         }
@@ -894,12 +1117,15 @@ impl FrameCapture {
         s.job
             .as_ref()
             .filter(|j| j.bound.map(|b| b.1) == Some(present) && j.outcome.is_none())
-            .map(|j| j.path.clone())
+            .map(|j| CaptureWrite {
+                path: j.path.clone(),
+                digest: j.source.is_some(),
+            })
     }
 
     /// The frame writer wrote present `present`'s image where
-    /// [`wanted`](Self::wanted) said, or failed.
-    pub fn written(&self, present: u64, result: Result<(), String>) {
+    /// [`wanted`](Self::wanted) said, with a digest if requested, or failed.
+    pub fn written(&self, present: u64, result: Result<Option<Sha256>, String>) {
         let _ = self
             .want
             .compare_exchange(present, 0, Ordering::Relaxed, Ordering::Relaxed);
@@ -915,12 +1141,16 @@ impl FrameCapture {
     /// The answer for arming `seq`; `None` while it waits.
     pub fn finish(&self, seq: u64) -> Option<Result<CaptureReply, RpcError>> {
         let mut s = self.lock();
+        if let Some((active, job)) = &s.private.active
+            && *active == seq
+        {
+            let job = Arc::clone(job);
+            drop(s);
+            return self.finish_private(seq, job);
+        }
         let out = {
             let Some(j) = s.job.as_ref().filter(|j| j.seq == seq) else {
-                return Some(Err(RpcError::new(
-                    code::INTERRUPTED,
-                    "a later render.capture replaced this one",
-                )));
+                return Some(Err(capture_interrupted()));
             };
             match j.pass {
                 None => self.frame_outcome(j)?,
@@ -929,6 +1159,7 @@ impl FrameCapture {
         };
         s.job = None;
         self.pending.store(false, Ordering::Relaxed);
+        self.source_armed.store(false, Ordering::Relaxed);
         self.want.store(0, Ordering::Relaxed);
         Some(out)
     }
@@ -939,14 +1170,33 @@ impl FrameCapture {
                 code::UNAVAILABLE,
                 format!("writing the frame: {e}"),
             ))),
-            Ok(()) => {
+            Ok(digest) => {
                 let (tick, present) = j.bound?;
+                let source = if let Some(source) = &j.source {
+                    let (Some((map, map_id, camera)), Some(digest)) = (&source.frame, digest) else {
+                        return Some(Err(RpcError::new(
+                            code::UNAVAILABLE,
+                            "the capture writer did not supply complete provenance",
+                        )));
+                    };
+                    Some(CaptureSource {
+                        game_id: source.game_id.clone(),
+                        map_id: map_id.to_string(),
+                        map: map.clone(),
+                        camera: *camera,
+                        digest: digest.to_string(),
+                    })
+                } else {
+                    None
+                };
                 Some(Ok(CaptureReply {
                     path: j.path.display().to_string(),
                     tick,
                     present,
                     pass: None,
+                    lighting: None,
                     scene_hash: j.scene_hash.clone(),
+                    source,
                 }))
             }
         }
@@ -987,7 +1237,9 @@ impl FrameCapture {
                     tick,
                     present,
                     pass: Some(pass),
+                    lighting: None,
                     scene_hash: j.scene_hash.clone(),
+                    source: None,
                 })),
                 (None, e) => fail(format!(
                     "reading pass {pass} back: {}",
@@ -1022,14 +1274,13 @@ pub fn add_frame_methods(agent: &Agent, capture: &'static FrameCapture, hosted: 
             serde_json::from_value(v).map_err(invalid)?
         };
         let seq = capture.arm(&p, &agent_proto::cache_dir().join("frames"))?;
-        ctx.defer(
-            DEFER_TICKS_MAX,
-            Box::new(move |_: &mut GameCtx<'_>| {
-                capture
-                    .finish(seq)
-                    .map(|r| r.and_then(|r| reply(serde_json::to_value(r))))
-            }),
-        );
+        let encode = move |result: Result<CaptureReply, RpcError>| result.and_then(|r| reply(serde_json::to_value(r)));
+        if p.lighting.is_some() {
+            let lease = private_capture::Lease::new(capture, seq);
+            ctx.defer_host(move || lease.finish().map(encode));
+        } else {
+            ctx.defer(DEFER_TICKS_MAX, Box::new(move |_| capture.finish(seq).map(encode)));
+        }
         Ok(Value::Null)
     });
     agent.add_method(method::RENDER_SCENE, Access::Read, move |v| {
@@ -1040,6 +1291,14 @@ pub fn add_frame_methods(agent: &Agent, capture: &'static FrameCapture, hosted: 
         };
         reply(serde_json::to_value(hosted.scene(p.dump)?))
     });
+    agent.add_method(method::RENDER_RESIDUAL, Access::Read, move |v| {
+        let p: agent_proto::ResidualParams = if v.is_null() {
+            agent_proto::ResidualParams::default()
+        } else {
+            serde_json::from_value(v).map_err(invalid)?
+        };
+        reply(serde_json::to_value(residual::answer(&p)?))
+    });
     agent.add_game_method(method::RENDER_PARITY, Access::Act, move |v, ctx| {
         let p: ParityParams = serde_json::from_value(v).map_err(invalid)?;
         if !p.arm {
@@ -1048,30 +1307,11 @@ pub fn add_frame_methods(agent: &Agent, capture: &'static FrameCapture, hosted: 
                 "render.parity {\"arm\": true} arms the next frame step",
             ));
         }
-        let Some(source) = hosted.parity_source() else {
-            return Err(RpcError::new(
-                code::UNAVAILABLE,
-                "render.parity has no second path to draw: the in-process two-path draw needs a \
-                 stage that replaces a whole guest entry (docs/graphics/framescene.md, slice 4), \
-                 and none is registered",
-            ));
-        };
-        hosted.parity_armed.store(true, Ordering::Relaxed);
-        ctx.defer(
-            DEFER_TICKS_MAX,
-            Box::new(move |_: &mut GameCtx<'_>| {
-                if hosted.parity_armed() {
-                    return None;
-                }
-                Some(match source() {
-                    Ok(compare) => reply(serde_json::to_value(ParityReply {
-                        tick: hosted.parity_tick(),
-                        compare,
-                    })),
-                    Err(e) => Err(RpcError::new(code::UNAVAILABLE, e)),
-                })
-            }),
-        );
+        let source = hosted.parity_source().ok_or_else(|| RpcError::new(
+            code::UNAVAILABLE,
+            "render.parity needs both the D3D display and the sealed scene's private renderer",
+        ))?;
+        parity::arm(ctx, source);
         Ok(Value::Null)
     });
 }
@@ -1111,6 +1351,38 @@ mod tests {
             depth_write: true,
             ..DrawInfo::default()
         }
+    }
+
+    #[test]
+    fn original_snapshots_survive_only_if_their_frame_is_published() {
+        let p = FrameProbe::new();
+        let params = FrameParams { arm: true, snap: vec![0], ..Default::default() };
+        let dir = std::env::temp_dir().join(format!("h2-probe-original-{}", std::process::id()));
+        let arm = |start| {
+            let seq = p.arm(&params).unwrap().seq.unwrap();
+            p.present(start);
+            p.clear("colour", None);
+            (SnapAsk { seq, pass: 0, attempt: 0, display: false }, dir.join(format!("frame-{}-{seq}-pass-0.png", std::process::id())))
+        };
+        let image = || Ok(crate::compare::Rgba::filled(2, 1, [40, 12, 9, 255]));
+
+        // The first snapshot arrives while the original frame is open.
+        let (old, old_path) = arm(1);
+        p.write_snapshot_in(old, &dir, image);
+        assert!(old_path.is_file());
+        p.present_routed(2, Some(2));
+        let (current, path) = arm(3);
+        assert!(!old_path.exists(), "the abandoned route released its PNG");
+        p.write_snapshot_in(old, &dir, || panic!("a stale pass requested pixels"));
+
+        // The final pass's callback can arrive after the original present.
+        assert_eq!(p.present(4), Some(current));
+        p.write_snapshot_in(current, &dir, image);
+        assert_eq!(p.reply().frame.unwrap().snaps[0].file.as_deref(), path.to_str());
+        p.arm(&params).unwrap();
+        assert!(path.is_file(), "a published reply owns its file");
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(dir).unwrap();
     }
 
     #[test]
@@ -1192,12 +1464,25 @@ mod tests {
         assert_eq!(p.draw(draw("a", "drawn", 3)), None);
         assert_eq!(
             p.draw(draw("b", "drawn", 3)),
-            Some(SnapAsk { seq: 1, pass: 0 })
+            Some(SnapAsk {
+                seq: 1,
+                pass: 0,
+                attempt: 0,
+                display: false,
+            })
         );
         p.snapped(0, Ok("/tmp/p0.png".into()));
         // The last pass ends at the present: the frame is done, the probe
         // stays armed until the snapshot is in.
-        assert_eq!(p.present(2), Some(SnapAsk { seq: 1, pass: 1 }));
+        assert_eq!(
+            p.present(2),
+            Some(SnapAsk {
+                seq: 1,
+                pass: 1,
+                attempt: 0,
+                display: false,
+            })
+        );
         assert!(p.armed());
         p.snapped(1, Err("readback failed".into()));
         assert!(!p.armed());
@@ -1207,6 +1492,72 @@ mod tests {
         assert_eq!(f.snaps[1].error.as_deref(), Some("readback failed"));
         // Nothing more is recorded while the snapshot was pending.
         assert_eq!(p.reply().frame.unwrap().totals.draws, 3);
+    }
+
+    #[test]
+    fn layout_records_one_frame_and_requests_display_snapshots() {
+        let p = FrameProbe::new();
+        let params = FrameParams {
+            arm: true,
+            snap: vec![0, 1],
+            constants: vec![0],
+            ..Default::default()
+        };
+        assert!(p.arm(&params).is_err(), "the regular recorder needs draws");
+        p.arm_layout(&params).unwrap();
+        assert!(!p.layout_requested(), "the current frame is still drawing");
+        p.present(1);
+        assert!(p.layout_requested());
+        let layout = DrawLayout {
+            guest_size: [640, 480],
+            display_size: Some([1920, 1080]),
+            viewport: [0, 0, 640, 480],
+            projection_factor: Some(0.75),
+            ..Default::default()
+        };
+        p.draw(DrawInfo {
+            layout: Some(layout.clone()),
+            ..draw("scene", "drawn", 6)
+        });
+        assert_eq!(
+            p.enter("output", None),
+            Some(SnapAsk {
+                seq: 1,
+                pass: 0,
+                attempt: 0,
+                display: true,
+            })
+        );
+        p.snapped(0, Ok("scene.png".into()));
+        assert_eq!(
+            p.present(2),
+            Some(SnapAsk {
+                seq: 1,
+                pass: 1,
+                attempt: 0,
+                display: true,
+            })
+        );
+        assert!(!p.layout_requested());
+        p.snapped(1, Ok("output.png".into()));
+        let frame = p.reply().frame.unwrap();
+        assert_eq!(frame.draws[0].layout.as_ref(), Some(&layout));
+        assert_eq!(frame.snaps.len(), 2);
+
+        p.arm(&FrameParams {
+            arm: true,
+            draws: true,
+            ..Default::default()
+        })
+        .unwrap();
+        p.present(3);
+        assert!(!p.layout_requested());
+        p.draw(DrawInfo {
+            layout: Some(layout),
+            ..draw("output", "drawn", 4)
+        });
+        p.present(4);
+        assert!(p.reply().frame.unwrap().draws[0].layout.is_none());
     }
 
     #[test]
@@ -1380,7 +1731,7 @@ mod frame_scene_tests {
     fn whole(tick: u64) -> FrameCaptureParams {
         FrameCaptureParams {
             tick: Some(tick),
-            pass: None,
+            ..Default::default()
         }
     }
 
@@ -1421,10 +1772,12 @@ mod frame_scene_tests {
         c.tick_ended(12);
         c.present(42);
         assert_eq!(c.wanted(41), None, "only the bound present");
-        let path = c.wanted(42).unwrap();
-        assert_eq!(path, dir.join(format!("capture-{seq}-tick-12.png")));
+        let write = c.wanted(42).unwrap();
+        assert!(!write.digest);
+        let path = write.path;
+        assert_eq!(path, dir.join(format!("capture-{}-{seq}-tick-12.png", std::process::id())));
         assert_eq!(c.finish(seq), None, "not written yet");
-        c.written(42, Ok(()));
+        c.written(42, Ok(None));
         assert_eq!(c.wanted(42), None);
         let r = c.finish(seq).unwrap().unwrap();
         assert_eq!(r.path, path.display().to_string());
@@ -1434,6 +1787,87 @@ mod frame_scene_tests {
         c.tick_ended(13);
         c.present(43);
         assert_eq!(c.wanted(43), None);
+    }
+
+    fn spawn_camera() -> CaptureCamera {
+        CaptureCamera {
+            position: [1.0, 2.0, 3.0],
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+        }
+    }
+
+    #[test]
+    fn live_capture_binds_the_drawn_map_camera_and_png_to_one_present() {
+        let (_, _, c) = rigs();
+        let map = MapId([0x1f; 32]);
+        c.set_map_source(move |name| (name == "package-alias").then(|| (map, "lockout".into())));
+        c.set_writer();
+        c.tick_ended(10);
+        let params = FrameCaptureParams {
+            tick: Some(12),
+            game_id: Some("private-game-id".into()),
+            ..Default::default()
+        };
+        let seq = c.arm(&params, Path::new(DIR)).unwrap();
+        let camera = spawn_camera();
+        c.note_drawn_camera(|| Some(("earlier-map".into(), camera)));
+        c.present(40); // Tick 10's draw must not carry forward.
+        c.tick_ended(12);
+        c.present(41);
+        assert_eq!(c.wanted(41), None);
+        assert_eq!(c.finish(seq), None);
+        c.note_drawn_camera(|| Some(("package-alias".into(), camera)));
+        c.tick_ended(13);
+        c.present(42);
+        let write = c.wanted(42).unwrap();
+        assert!(write.digest);
+        assert_eq!(c.finish(seq), None);
+        let digest = Sha256::of(b"synthetic PNG");
+        c.written(42, Ok(Some(digest)));
+        let capture = c.finish(seq).unwrap().unwrap();
+        assert_eq!((capture.tick, capture.present), (13, 42));
+        assert_eq!(capture.path, write.path.display().to_string());
+        let source = capture.source.unwrap();
+        assert_eq!(source.game_id, "private-game-id");
+        assert_eq!(source.map_id, map.to_string());
+        assert_eq!(source.map, "lockout");
+        assert_eq!(source.camera, camera);
+        assert_eq!(source.digest, digest.to_string());
+    }
+
+    #[test]
+    fn live_capture_requires_a_whole_frame_installed_map_and_writer_digest() {
+        let (_, _, c) = rigs();
+        c.set_writer();
+        c.tick_ended(10);
+        let mut params = FrameCaptureParams {
+            game_id: Some("private-game-id".into()),
+            pass: Some(0),
+            ..Default::default()
+        };
+        let dir = Path::new(DIR);
+        assert_eq!(c.arm(&params, dir).unwrap_err().code, code::INVALID_PARAMS);
+        params.pass = None;
+        let seq = c.arm(&params, dir).unwrap();
+        c.note_drawn_camera(|| Some(("package-alias".into(), spawn_camera())));
+        c.tick_ended(11);
+        c.present(40);
+        assert_eq!(c.wanted(40), None);
+        assert_eq!(c.finish(seq).unwrap().unwrap_err().code, code::UNAVAILABLE);
+
+        c.set_map_source(|_| Some((MapId([0x1f; 32]), "lockout".into())));
+        let seq = c.arm(&params, dir).unwrap();
+        c.note_drawn_camera(|| Some(("package-alias".into(), spawn_camera())));
+        c.clear_drawn_camera();
+        c.tick_ended(12);
+        c.present(41);
+        assert_eq!(c.wanted(41), None);
+        c.note_drawn_camera(|| Some(("package-alias".into(), spawn_camera())));
+        c.present(42);
+        assert!(c.wanted(42).unwrap().digest);
+        c.written(42, Ok(None));
+        assert_eq!(c.finish(seq).unwrap().unwrap_err().code, code::UNAVAILABLE);
     }
 
     fn sealed(dump: bool) -> Result<SceneReply, String> {
@@ -1476,7 +1910,7 @@ mod frame_scene_tests {
         let seq = c.arm(&FrameCaptureParams::default(), Path::new(DIR)).unwrap();
         c.tick_ended(14);
         c.present(51);
-        c.written(51, Ok(()));
+        c.written(51, Ok(None));
         let r = c.finish(seq).unwrap().unwrap();
         assert_eq!((r.tick, r.present), (14, 51));
         assert_eq!(r.scene_hash.as_deref(), Some("00ff00ff"));
@@ -1499,6 +1933,7 @@ mod frame_scene_tests {
         let p = FrameCaptureParams {
             tick: Some(22),
             pass: Some(1),
+            ..Default::default()
         };
         let seq = c.arm(&p, Path::new(DIR)).unwrap();
         assert!(!probe.armed(), "armed at the end of the tick before");
@@ -1525,8 +1960,8 @@ mod frame_scene_tests {
         // A pass the frame doesn't have.
         let seq = c.arm(
             &FrameCaptureParams {
-                tick: None,
                 pass: Some(5),
+                ..Default::default()
             },
             Path::new(DIR),
         )
@@ -1600,13 +2035,16 @@ mod frame_scene_tests {
         }
     }
 
-    fn parity() -> Result<CompareReply, String> {
-        Ok(CompareReply {
-            size: [4, 4],
-            max_channel: 6,
-            within_bar: true,
-            ..Default::default()
-        })
+    fn parity(request: ParityRequest) {
+        request.finish(Ok(agent_proto::ParityReply {
+            tick: Some(6),
+            compare: agent_proto::CompareReply {
+                size: [4, 4],
+                max_channel: 6,
+                within_bar: true,
+                ..Default::default()
+            },
+        }));
     }
 
     #[test]
@@ -1622,8 +2060,7 @@ mod frame_scene_tests {
         );
         let e = r.call(method::RENDER_PARITY, json!({"arm": true}), 2);
         assert_eq!(e["error"]["code"], code::UNAVAILABLE, "{e}");
-        assert!(e["error"]["message"].as_str().unwrap().contains("slice 4"));
-        assert!(!r.hosted.parity_armed());
+        assert!(e["error"]["message"].as_str().unwrap().contains("private renderer"));
         let e = r.call(method::RENDER_PARITY, json!({"arm": false}), 3);
         assert_eq!(e["error"]["code"], code::INVALID_PARAMS, "{e}");
 
@@ -1636,19 +2073,54 @@ mod frame_scene_tests {
         let s = r.call(method::RENDER_SCENE, json!({"dump": true}), 5);
         assert_eq!(s["result"]["dump"], "/nowhere/scene.json");
 
-        r.hosted.set_parity_source(parity);
+        r.hosted.set_parity_source(Some(parity));
         r.capture.tick_ended(6);
         r.send(method::RENDER_PARITY, json!({"arm": true}));
         assert_eq!(r.tick(6), None, "answered after the frame step");
-        assert!(r.hosted.parity_armed());
-        // The frame step after tick 6 takes it, once.
-        assert!(r.hosted.take_parity_arm());
-        assert!(!r.hosted.take_parity_arm());
         r.capture.tick_ended(7);
         let p = r.tick(7).expect("the comparison");
         assert_eq!(p["result"]["tick"], 6, "{p}");
         assert_eq!(p["result"]["max_channel"], 6);
         assert_eq!(p["result"]["within_bar"], true);
+    }
+
+    #[test]
+    fn residual_refuses_bad_params_and_says_why_without_the_entry_watch() {
+        // No test here registers the function lookup: the census is not
+        // wired, so even a well-formed request is unavailable.
+        let r = Rig::new();
+        let e = r.call(method::RENDER_RESIDUAL, json!({"top": 0}), 1);
+        assert_eq!(e["error"]["code"], code::INVALID_PARAMS, "{e}");
+        let e = r.call(method::RENDER_RESIDUAL, json!({"arm": {"frames": 0}}), 2);
+        assert_eq!(e["error"]["code"], code::INVALID_PARAMS, "{e}");
+        let e = r.call(method::RENDER_RESIDUAL, json!({"frames": 600}), 3);
+        assert_eq!(e["error"]["code"], code::INVALID_PARAMS, "{e}");
+        let e = r.call(method::RENDER_RESIDUAL, json!({"arm": {"frames": 600}}), 4);
+        assert_eq!(e["error"]["code"], code::UNAVAILABLE, "{e}");
+        assert!(e["error"]["message"].as_str().unwrap().contains("entry watch"), "{e}");
+    }
+
+    #[test]
+    fn a_lighting_capture_needs_a_private_renderer_even_with_a_present_writer() {
+        let r = Rig::new();
+        r.capture.set_writer();
+        r.capture.tick_ended(7);
+        for (tick, params, code) in [
+            (7, json!({"lighting": "e3"}), code::UNAVAILABLE),
+            (8, json!({"pass": 1, "lighting": "retail"}), code::INVALID_PARAMS),
+            (9, json!({"lighting": "sharp"}), code::INVALID_PARAMS),
+        ] {
+            let out = r.call(method::RENDER_CAPTURE, params, tick);
+            assert_eq!(out["error"]["code"], code, "{out}");
+        }
+        r.capture.present(30);
+        assert!(r.capture.wanted(30).is_none());
+
+        // The renderer can answer while the guest is held on this
+        // boundary. A private draw should not need a simulation step.
+        r.capture.set_private_source(Some(|_| Err(RpcError::new(code::UNAVAILABLE, "tick expired"))));
+        let out = r.call(method::RENDER_CAPTURE, json!({"lighting": "retail", "tick": 3}), 10);
+        assert_eq!(out["error"]["message"], "tick expired", "{out}");
     }
 
     #[test]
@@ -1660,6 +2132,7 @@ mod frame_scene_tests {
             method::RENDER_CAPTURE,
             method::RENDER_SCENE,
             method::RENDER_PARITY,
+            method::RENDER_RESIDUAL,
         ] {
             assert!(m["result"].as_array().unwrap().contains(&json!(name)), "{name}");
         }
@@ -1678,7 +2151,7 @@ mod frame_scene_tests {
         r.capture.tick_ended(8);
         r.capture.present(30);
         assert!(r.capture.wanted(30).is_some());
-        r.capture.written(30, Ok(()));
+        r.capture.written(30, Ok(None));
         let c = r.tick(8).expect("the capture");
         assert_eq!(c["result"]["tick"], 8, "{c}");
         assert_eq!(c["result"]["present"], 30);

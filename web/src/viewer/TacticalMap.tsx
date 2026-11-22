@@ -12,6 +12,7 @@ import { featuresFor, geometryFor } from "../map/geometry";
 import type { RosterEntry } from "../map/render";
 import ViewMap, { ViewPicker } from "../map/ViewMap";
 import { pickView, viewParam } from "../map/views";
+import type { DamageMode } from "../map/vitals";
 import { outlineFor } from "../state/outlines";
 import type { GameState } from "../state/reducer";
 
@@ -33,6 +34,10 @@ export default function TacticalMap(props: {
   frame: (now: number) => MapFrame;
   roster: () => Map<number, RosterEntry>;
   highlight: () => number | null;
+  follow?: () => number | null;
+  soughtAt?: () => number;
+  damage: DamageMode;
+  onDamage: (mode: DamageMode) => void;
   label: string;
 }) {
   const outline = outlineFor(() => props.game.map);
@@ -57,6 +62,14 @@ export default function TacticalMap(props: {
       <div class="s-map-tools">
         <span>Player positions</span>
         <span class="s-map-tools-right">
+          <label>
+            Damage{" "}
+            <select class="s-3d-button" value={props.damage} onChange={(e) => props.onDamage(e.currentTarget.value as DamageMode)}>
+              <option value="off">Off</option>
+              <option value="bars">Bars</option>
+              <option value="numbers">Bars and numbers</option>
+            </select>
+          </label>
           <Show when={views()} fallback={<LayerPicker count={outline()?.layers.length ?? 0} value={layer()} onChange={setLayer} />}>
             {(v) => <ViewPicker views={v()} value={viewId()} onChange={setView} />}
           </Show>
@@ -70,7 +83,8 @@ export default function TacticalMap(props: {
           when={views()}
           fallback={
             <>
-              <MapCanvas frame={props.frame} roster={props.roster} outline={outline} layer={layer} highlight={props.highlight} label={props.label} features={drawn} />
+              <MapCanvas frame={props.frame} roster={props.roster} outline={outline} layer={layer} highlight={props.highlight} label={props.label}
+                features={drawn} damage={props.damage} follow={props.follow} soughtAt={props.soughtAt} />
               <Show when={!outline()}><div class="s-map-note">Map outline not available; the grid is fitted to where players have been.</div></Show>
             </>
           }
@@ -79,6 +93,7 @@ export default function TacticalMap(props: {
             <ViewMap
               frame={props.frame} roster={props.roster} views={v()} view={viewId()} image={geometry()!.image}
               highlight={props.highlight} label={props.label} onError={() => setBroken(true)} features={drawn}
+              damage={props.damage} follow={props.follow} soughtAt={props.soughtAt}
             />
           )}
         </Show>

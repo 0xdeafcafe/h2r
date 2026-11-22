@@ -17,6 +17,9 @@
 //!   E1 warps through and overscans.
 //! - [`screen_space`]: E1's pass-through world draws (window pixels:
 //!   sprites, full-target layers) moved with the overscanned world.
+//! - [`marks`]: the camera each view of a made frame is drawn with, as a
+//!   shift of the source image's, so the window's world marks land where
+//!   the world under them is drawn.
 //! - [`holds`]: which draws held E1's frames, kind by kind (the
 //!   diagnostic behind `render.stats`'s `interp.holds`).
 //! - [`camera`] and [`math`]: perspective matrices split and rebuilt.
@@ -25,6 +28,7 @@ pub mod backend;
 pub mod camera;
 pub mod epilogue;
 pub mod holds;
+pub mod marks;
 pub mod math;
 pub mod model;
 pub mod pacing;

@@ -361,6 +361,8 @@ fn stream_packets_complete_in_order_with_status_and_events() {
     let mut rig = Rig::new();
     let wfx = rig.wfx(1, 1, RATE, 16, 2);
     let stream = rig.create_stream(wfx, 8, 0, 0);
+    assert_eq!(rig.ds.stream_playhead(stream), None);
+    assert_eq!(rig.ds.stream_playhead(rig.ds_ptr), None);
     // The guest's virtual calls land on the override addresses.
     assert_eq!(
         rig.h.read_u32(stream).unwrap(),
@@ -383,6 +385,7 @@ fn stream_packets_complete_in_order_with_status_and_events() {
         let data = pcm16(&vec![8192; *n]);
         slots.push(rig.process(stream, &data, 0x101 + i as u32));
     }
+    assert_eq!(rig.ds.stream_playhead(stream), Some((1, 0)));
     for (status, done) in &slots {
         assert_eq!(
             rig.h.read_u32(*status).unwrap(),
@@ -395,6 +398,7 @@ fn stream_packets_complete_in_order_with_status_and_events() {
     // Mix 5 frames: packet 0 (4 frames) is done, packet 1 is half played.
     let out = rig.render(5);
     assert_eq!(out[0], 0.25);
+    assert_eq!(rig.ds.stream_playhead(stream), Some((2, 1)));
     rig.call(DO_WORK, &[]);
     assert_eq!(
         rig.h.read_u32(slots[0].0).unwrap(),
@@ -409,6 +413,7 @@ fn stream_packets_complete_in_order_with_status_and_events() {
 
     // Finish the rest: completion order is submission order.
     rig.render(16);
+    assert_eq!(rig.ds.stream_playhead(stream), None);
     rig.call(DO_WORK, &[]);
     assert_eq!(rig.h.signalled, vec![0x101, 0x102, 0x103]);
     for (i, (status, done)) in slots.iter().enumerate() {
@@ -456,14 +461,16 @@ fn stream_flush_pause_and_capacity() {
     let pkt = rig.put(&[0u8; 24]);
     assert_eq!(rig.call(PROCESS, &[stream, pkt, 0]).eax, DSERR_INVALIDCALL);
 
-    // Paused streams consume nothing.
+    // Paused streams consume nothing and retain their cursor.
+    rig.render(2);
     rig.call(STREAM_PAUSE, &[stream, 1]);
     assert!(rig.render(4).iter().all(|&v| v == 0.0));
+    assert_eq!(rig.ds.stream_playhead(stream), Some((1, 2)));
     rig.call(STREAM_PAUSE, &[stream, 0]);
-    rig.render(2);
 
     // Flush completes both with the flushed status and signals both events.
     assert_eq!(rig.call(FLUSH, &[stream]).eax, S_OK);
+    assert_eq!(rig.ds.stream_playhead(stream), None);
     for (st, done) in [a, b] {
         assert_eq!(rig.h.read_u32(st).unwrap(), XMEDIAPACKET_STATUS_FLUSHED);
         // Verified in the binary (0x37f850 -> 0x37f3a8): a flushed packet
@@ -2704,4 +2711,126 @@ fn hostile_i3dl2_source_values_stay_finite() {
         let out = rig.render(2000);
         assert!(out.iter().all(|v| v.is_finite()));
     }
+}
+
+/// One of Halo 2's static submixes (`0x220a70`, one per slot at init from
+/// `0x21e755`): `DSBCAPS_MIXIN | DSBCAPS_CTRL3D` with no input bin and no
+/// mix bins in the descriptor, then the 3D routing `{6, 8, 7, 9, 10}`,
+/// `FLT_MAX` distances, rolloff, Doppler and cone volume 0, and the position
+/// (`0x220ea1`). Halo never plays it.
+fn halo_submix(rig: &mut Rig, x: f32) -> u32 {
+    let f = |v: f32| v.to_bits();
+    let mix = rig.create_buffer(DSBCAPS_MIXIN | DSBCAPS_CTRL3D, 0, 0);
+    let bins = mix_bins(rig, &[(6, 0), (8, 0), (7, 0), (9, 0), (10, 0)]);
+    assert_eq!(rig.call(SET_MIX_BINS_BUF, &[mix, bins]).eax, S_OK);
+    for (va, v) in [
+        (0x0037c620, f(f32::MAX)),
+        (0x0037c644, f(f32::MAX)),
+        (0x0037c6c1, 0),
+        (0x0037c69d, 0),
+        (0x0037c600, 0),
+    ] {
+        assert_eq!(rig.call(va, &[mix, v, 1]).eax, S_OK, "{va:#x}");
+    }
+    assert_eq!(rig.call(0x0037c668, &[mix, f(x), f(0.0), f(0.0), 1]).eax, S_OK);
+    mix
+}
+
+/// Left and right RMS of `out[from..]` (frames) against the half-scale input.
+fn channel_levels(out: &[f32], from: usize) -> [f64; 2] {
+    let t = &out[from * 2..];
+    let n = (t.len() / 2) as f64;
+    let mut ms = [0.0f64; 2];
+    for f in t.chunks_exact(2) {
+        ms[0] += f64::from(f[0]).powi(2);
+        ms[1] += f64::from(f[1]).powi(2);
+    }
+    ms.map(|m| (m / n).sqrt() / (0.5 / std::f64::consts::SQRT_2))
+}
+
+/// A channel's stream in a static submix, as the sound channel update leaves
+/// it (`0x21fa80`): `SetOutputBuffer` (`0x21f911`), then `SetMixBins`
+/// (`0x220136`) with the panner's direct pairs and the submix gain on bin
+/// `0x1f` (`0x2200c3`). The direct pairs are silent here, so everything
+/// heard came through the submix.
+fn submixed(rig: &mut Rig, mix: u32, send_mb: i32) -> u32 {
+    let s = mono_stream(rig);
+    assert_eq!(rig.call(STREAM_SET_OUTPUT_BUFFER, &[s, mix]).eax, S_OK);
+    let pairs = mix_bins(
+        rig,
+        &[
+            (6, -10_000),
+            (7, -10_000),
+            (8, -10_000),
+            (9, -10_000),
+            (DSMIXBIN_SUBMIX, send_mb),
+        ],
+    );
+    assert_eq!(rig.call(STREAM_SET_MIX_BINS, &[s, pairs]).eax, S_OK);
+    s
+}
+
+fn submix_levels(send_mb: i32, x: f32) -> [f64; 2] {
+    let mut rig = Rig::new();
+    let mix = halo_submix(&mut rig, x);
+    let s = submixed(&mut rig, mix, send_mb);
+    rig.process(s, &sine16(1000.0, RATE as usize), 0);
+    let out = rig.render(RATE as usize);
+    channel_levels(&out, RATE as usize / 2)
+}
+
+#[test]
+fn a_stream_sent_to_a_halo_submix_lists_the_submix_bin() {
+    // The library gives a mix-in that is not FX-in the input bin 0x1f
+    // (`0x37cf36`) and SetOutputBuffer puts it in the voice's list
+    // (`0x37bd54`); Halo's diff (`0x2215d0`) compares against exactly that.
+    let mut rig = Rig::new();
+    let mix = halo_submix(&mut rig, 10.0);
+    let s = mono_stream(&mut rig);
+    rig.process(s, &pcm16(&[100; 64]), 0);
+    assert_eq!(rig.call(STREAM_SET_OUTPUT_BUFFER, &[s, mix]).eax, S_OK);
+    let out = rig.scratch(0x5c);
+    assert_eq!(rig.call(GET_VOICE_PROPS_STREAM, &[s, out]).eax, S_OK);
+    assert_eq!(&voice_props(&rig, out)[..3], &[1, DSMIXBIN_SUBMIX, 0]);
+    // Never played, so Halo's free-slot test (`0x1296aa`) finds it free.
+    assert_eq!(rig.status(mix), 0);
+}
+
+#[test]
+fn a_halo_submix_carries_the_games_distance_gain_and_pans_by_position() {
+    let near = submix_levels(0, 10.0);
+    // A source to the right: full on the right, the pan's far share left.
+    assert!((near[1] - 1.0).abs() < 0.05, "{near:?}");
+    assert!(near[0] > 0.1 && near[0] < 0.3, "{near:?}");
+    // The game's distance attenuation is the submix gain on bin 0x1f.
+    let far = submix_levels(-2400, 10.0);
+    for ch in 0..2 {
+        assert!((db(far[ch] / near[ch]) + 24.0).abs() < 0.5, "{far:?} {near:?}");
+    }
+    // Mirrored position, mirrored pan.
+    let left = submix_levels(0, -10.0);
+    assert!((left[0] - near[1]).abs() < 1e-3 && (left[1] - near[0]).abs() < 1e-3);
+    // A silent send is silent: nothing reaches the speakers at full level
+    // around the submix (bin 0x1f used to be dropped and the stream played
+    // unattenuated on bin 0, front left).
+    let silent = submix_levels(-10_000, 10.0);
+    assert!(silent[0] < 1e-6 && silent[1] < 1e-6, "{silent:?}");
+}
+
+#[test]
+fn each_halo_submix_hears_only_its_own_streams() {
+    let mut rig = Rig::new();
+    let right = halo_submix(&mut rig, 10.0);
+    let _left = halo_submix(&mut rig, -10.0);
+    let s = submixed(&mut rig, right, 0);
+    rig.process(s, &sine16(1000.0, RATE as usize), 0);
+    let out = rig.render(RATE as usize);
+    let [l, r] = channel_levels(&out, RATE as usize / 2);
+    // Both submixes list bin 0x1f; only the stream's own output buffer may
+    // take it, or the left-hand one would make the left channel as loud.
+    assert!((r - 1.0).abs() < 0.05 && l < 0.3, "{l} {r}");
+    // Taking the stream out of its submix silences it.
+    assert_eq!(rig.call(STREAM_SET_OUTPUT_BUFFER, &[s, 0]).eax, S_OK);
+    let after = rig.render(RATE as usize / 4);
+    assert!(after.iter().all(|&v| v == 0.0));
 }

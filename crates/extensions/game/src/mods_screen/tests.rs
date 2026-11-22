@@ -320,9 +320,9 @@ fn x_on_the_list_downloads_the_focused_map_without_its_page() {
     let (got, _, done) = fake.installs.lock().unwrap().pop().unwrap();
     assert_eq!(got, id(1));
     assert_eq!(repo.selected(), None, "no page opened");
-    assert_eq!(repo.list_line(2).unwrap(), "Lockout Rockets  \u{2193} 0%");
+    assert_eq!(repo.list_line(2).unwrap(), "Lockout Rockets \u{2193} 0%");
     done(Ok(PathBuf::from("/data/maps/live-0101010101010101")));
-    assert_eq!(repo.list_line(2).unwrap(), "Lockout Rockets  \u{2713}");
+    assert_eq!(repo.list_line(2).unwrap(), "Lockout Rockets \u{2713}");
     // Installed: X on the list leaves it alone; nothing focused: nothing.
     assert!(repo.x_list(Some(2)).contains("installed"));
     assert!(repo.x_list(None).contains("no map focused"));
@@ -656,7 +656,7 @@ fn every_text_fits_and_has_an_id_of_the_family() {
     assert_eq!(rows.description(MAX_ROWS as i16), None);
     // Row 0 was published at position 0: seen. Row 1 is new.
     assert!(repo.list_line(0).unwrap().ends_with("..."));
-    assert!(repo.list_line(1).unwrap().ends_with("...  \u{2605}"));
+    assert!(repo.list_line(1).unwrap().ends_with("... \u{2605}"));
     repo.press_list(0);
     assert!(facts(&repo.selected().unwrap()).contains(&("Downloads", "1234".to_string())));
     let detail = DetailRows::new(Arc::clone(&repo));
@@ -865,7 +865,7 @@ fn a_pack_is_one_row_at_its_newest_maps_place() {
     let (_, repo) = listed(items, None);
     repo.opened();
     assert_eq!(repo.list_count(), 4);
-    assert_eq!(repo.list_line(1).unwrap(), "Phantom Mappack  \u{2605}");
+    assert_eq!(repo.list_line(1).unwrap(), "Phantom Mappack \u{2605}");
     assert_eq!(
         repo.list_description(1).unwrap(),
         "3 maps, by Phantom, Ghost\nClassic maps, remade for\nsmall teams.\n0/3 installed, 10.2 MB\nNew maps"
@@ -878,7 +878,7 @@ fn a_pack_is_one_row_at_its_newest_maps_place() {
     let (_, seen) = listed(old, None);
     seen.opened();
     seen.opened();
-    assert!(seen.list_line(1).unwrap().ends_with("  3 maps"));
+    assert!(seen.list_line(1).unwrap().ends_with(" 3 maps"));
 }
 
 #[test]
@@ -892,8 +892,8 @@ fn a_packs_list_has_download_all_then_its_maps_each_opening_its_page() {
     let rows = PackRows::new(Arc::clone(&repo));
     assert_eq!(rows.count(), 4);
     assert_eq!(repo.pack_line(0).unwrap(), "Download All (3)");
-    assert_eq!(repo.pack_line(1).unwrap(), "Phantom Ascension  \u{2605}");
-    assert_eq!(repo.pack_line(3).unwrap(), "Phantom Colossus  \u{2605}");
+    assert_eq!(repo.pack_line(1).unwrap(), "Phantom Ascension \u{2605}");
+    assert_eq!(repo.pack_line(3).unwrap(), "Phantom Colossus \u{2605}");
     assert_eq!(repo.pack_line(4), None);
     assert!(repo.pack_description(0).unwrap().ends_with("3 to download"));
     assert!(
@@ -917,25 +917,22 @@ fn a_packs_list_has_download_all_then_its_maps_each_opening_its_page() {
     assert_eq!(repo.pack_line(0).unwrap(), "Download All (2)");
     // Download All starts the two not here, together on the rows.
     assert!(matches!(repo.press_pack(0), Chosen::Stepped(_)));
-    let mut started: Vec<_> = fake.installs.lock().unwrap().drain(..).collect();
-    let ids: BTreeSet<MapId> = started.iter().map(|(i, ..)| *i).collect();
-    assert_eq!(ids, BTreeSet::from([id(5), id(2)]));
-    for (_, progress, _) in &mut started {
-        progress(50, 100);
-    }
-    assert_eq!(repo.pack_line(0).unwrap(), "Downloading 66%");
-    assert!(repo.list_line(1).unwrap().ends_with("  \u{2193} 66%"));
+    let (first, mut progress, done) = fake.installs.lock().unwrap().pop().unwrap();
+    assert_eq!(first, id(5));
+    assert!(fake.installs.lock().unwrap().is_empty(), "one member transfers at a time");
+    progress(50, 100);
+    assert_eq!(repo.pack_line(0).unwrap(), "Downloading 50%");
     assert!(
-        repo.x_pack(Some(0))
-            .contains("every map is installed or downloading")
+        repo.x_pack(Some(0)).contains("every map is installed or downloading")
     );
-    let (_, _, done) = started.pop().unwrap();
-    done(Ok(PathBuf::from("/data/maps/live")));
+    done(Ok(PathBuf::from("/data/maps/live-05")));
+    let (second, mut progress, done) = fake.installs.lock().unwrap().pop().unwrap();
+    assert_eq!(second, id(2));
+    progress(50, 100);
     assert_eq!(repo.pack_line(0).unwrap(), "Downloading 83%");
-    let (_, _, done) = started.pop().unwrap();
-    done(Ok(PathBuf::from("/data/maps/live")));
+    done(Ok(PathBuf::from("/data/maps/live-02")));
     assert_eq!(repo.pack_line(0).unwrap(), "All Installed");
-    assert_eq!(repo.list_line(1).unwrap(), "Phantom Mappack  \u{2713}");
+    assert_eq!(repo.list_line(1).unwrap(), "Phantom Mappack \u{2713}");
     assert!(
         repo.list_description(1)
             .unwrap()
@@ -950,7 +947,7 @@ fn x_on_a_packs_row_downloads_every_map_of_it() {
         repo.x_list(Some(1)),
         "mods: Phantom Mappack: downloading 3 maps"
     );
-    assert_eq!(fake.installs.lock().unwrap().len(), 3);
+    assert_eq!(fake.installs.lock().unwrap().len(), 1, "remaining members are queued");
     assert_eq!(repo.selected(), None, "nothing opened");
 }
 
@@ -1015,7 +1012,7 @@ fn a_big_packs_texts_fit_and_have_ids_of_the_family() {
     );
     assert_eq!(repo.press_list(0), Chosen::Open(PACK));
     let rows = PackRows::new(Arc::clone(&repo));
-    assert_eq!(rows.count(), MAX_PACK_ROWS, "Download All and all 40 maps");
+    assert_eq!(rows.count(), 51, "Download All and all 50 maps");
     assert!(TEXTS.owns(rows.title()));
     for r in 0..rows.count() as i16 {
         let texts = rows.texts(r);
@@ -1031,7 +1028,7 @@ fn a_big_packs_texts_fit_and_have_ids_of_the_family() {
         );
     }
     assert!(rows.texts(MAX_PACK_ROWS as i16).is_empty());
-    assert_eq!(repo.pack_line(0).unwrap(), "Download All (40)");
+    assert_eq!(repo.pack_line(0).unwrap(), "Download All (50)");
     assert!(rows.describe(2).unwrap().contains("...\"; rows: [0]"));
 }
 
@@ -1093,7 +1090,7 @@ fn wide_published_text_leaves_room_for_state_facts_and_status() {
     let (_, repo) = listed(vec![map], None);
     let list = spec::list_spec(&repo);
     let row = &list.rows[0];
-    assert!(row.label.ends_with("...  ★"));
+    assert!(row.label.ends_with("... ★"));
     assert!(text_fit::width(&row.label) <= text_fit::ROW);
     let summary = row.description.as_deref().unwrap();
     assert!(
@@ -1120,7 +1117,7 @@ fn wide_published_text_leaves_room_for_state_facts_and_status() {
 #[test]
 fn pack_rows_drop_only_the_repeated_pack_name_and_keep_full_page_titles() {
     let repo = spec::sample_repo(spec::Sample::Pack);
-    assert_eq!(repo.pack_line(3).as_deref(), Some("Beaver Creek  ★"));
+    assert_eq!(repo.pack_line(3).as_deref(), Some("Beaver Creek ★"));
     repo.press_pack(3);
     assert_eq!(
         repo.texts.get(DETAIL_TITLE).as_deref(),
@@ -1240,4 +1237,31 @@ fn loading_a_snapshot_requires_a_fresh_removal_confirmation() {
     assert_eq!(repo.detail_line(0).as_deref(), Some("Remove"));
     repo.act();
     assert!(fake.removed.lock().unwrap().is_empty());
+}
+
+#[test]
+fn same_pack_name_from_two_uploaders_keeps_its_member_and_action() {
+    let pack_member = |n, key: &str, base: &str| {
+        let mut e = entry(n, &format!("Friends: {base}"), Some(n.into()));
+        e.pack = Some("Friends".into());
+        e.base = base.into();
+        e.pack_info = Some(live_hle::mods::ModPack {
+            id: key.into(), name: "Friends".into(), published_pack: true,
+            ..Default::default()
+        });
+        e
+    };
+    let (_, repo) = listed(vec![
+        pack_member(3, "new-release", "Ascension"),
+        pack_member(2, "other-release", "Lockout"),
+        pack_member(1, "new-release", "Zanzibar"),
+    ], None);
+    assert_eq!(repo.list_count(), 2);
+    assert_eq!(repo.press_list(1), Chosen::Open(PACK));
+    assert_eq!(repo.pack_count(), 2);
+    assert!(repo.pack_line(1).unwrap().starts_with("Lockout"));
+    assert!(repo.x_pack(Some(0)).contains("downloading 1 map"));
+    assert_eq!(repo.press_list(0), Chosen::Open(PACK));
+    assert_eq!(repo.pack_count(), 3);
+    assert!(repo.pack_line(0).unwrap().contains("(2)"), "the other uploader's release was untouched");
 }

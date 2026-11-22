@@ -12,6 +12,12 @@
 //! uniforms staged in the submission's upload arena, its pipeline and
 //! texture group cached across frames. [`ParticleRenderer::prepare`] keeps
 //! the self-contained form (own buffers, own render pass) as the fallback.
+//!
+//! Texture groups are kept while draws use them ([`crate::texture_groups`]):
+//! the caller names each draw's frame ([`ParticleRenderer::begin_frame`]),
+//! and a group unused for a few frames is dropped with the views it holds.
+//! A view of a frame-buffer copy or depth alias is new every frame, so a
+//! group of one never outlives the frames that drew with it.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -23,6 +29,8 @@ use shaders::{psh, vsh};
 use wgpu::util::DeviceExt;
 
 use crate::particles::{DrawIdentity, Vertex};
+pub use crate::texture_groups::Held;
+use crate::texture_groups::TextureGroups;
 
 /// Host attachment identities include recreation generations. `copy` in
 /// DrawIdentity distinguishes reference/display, even at equal sizes.
@@ -270,9 +278,14 @@ struct Program {
 
 /// Names the particle pipelines in a recorded packet's description.
 const PARTICLE_PROGRAM: ShaderId = ShaderId(u32::MAX - 1);
-/// Texture groups kept before the cache starts over: bounded so views of
-/// retired textures are not held for ever.
-const GROUP_LIMIT: usize = 256;
+
+static GROUP_BYTES: mem_watch::Counter =
+    mem_watch::Counter::new("native.particle_group_texture_bytes");
+
+type GroupKey = (
+    wgpu::BindGroupLayout,
+    Vec<(u32, wgpu::TextureView, wgpu::Sampler)>,
+);
 
 /// A pipeline made once: the pipeline itself for the self-contained pass,
 /// and the same pipeline with its description for packets.
@@ -301,7 +314,7 @@ pub struct ParticleRenderer {
     pipelines: HashMap<(ShaderKey, String), Cached>,
     uniforms: Option<wgpu::BindGroupLayout>,
     samplers: HashMap<gfx::translate::SamplerKey, wgpu::Sampler>,
-    groups: HashMap<(wgpu::BindGroupLayout, Vec<(u32, wgpu::TextureView, wgpu::Sampler)>), wgpu::BindGroup>,
+    groups: TextureGroups<GroupKey>,
     created: Created,
 }
 
@@ -313,7 +326,7 @@ impl ParticleRenderer {
             pipelines: HashMap::new(),
             uniforms: None,
             samplers: HashMap::new(),
-            groups: HashMap::new(),
+            groups: TextureGroups::new(&GROUP_BYTES),
             created: Created::default(),
         }
     }
@@ -321,6 +334,17 @@ impl ParticleRenderer {
     /// What this renderer created so far.
     pub fn created(&self) -> Created {
         self.created
+    }
+
+    /// The texture groups held now and the textures they keep alive.
+    pub fn held(&self) -> Held {
+        self.groups.held()
+    }
+
+    /// The frame the following draws belong to. Texture groups no draw
+    /// used for [`crate::texture_groups::KEEP_FRAMES`] frames are dropped.
+    pub fn begin_frame(&mut self, frame: u64) {
+        self.groups.begin_frame(frame);
     }
 
     /// The sampler for `key`, made once: a texture binding built from it
@@ -476,8 +500,8 @@ impl ParticleRenderer {
         Ok((program, cached))
     }
 
-    /// The group of `s`'s resident textures for `program`, made once per
-    /// distinct views and samplers.
+    /// The group of `s`'s textures for `program`, made once per distinct
+    /// views and samplers and kept while draws use it.
     fn texture_group(&mut self, device: &wgpu::Device, program: &Program, s: &ImmediateDrawSnapshot) -> wgpu::BindGroup {
         let bound: Vec<(u32, wgpu::TextureView, wgpu::Sampler)> = program
             .sampled
@@ -492,7 +516,7 @@ impl ParticleRenderer {
         let key = (program.textures.clone(), bound);
         if let Some(group) = self.groups.get(&key) {
             gfx::churn::native_cache(true);
-            return group.clone();
+            return group;
         }
         gfx::churn::native_cache(false);
         let mut entries = Vec::new();
@@ -514,11 +538,13 @@ impl ParticleRenderer {
                 entries: &entries,
             },
         );
-        if self.groups.len() >= GROUP_LIMIT {
-            self.groups.clear();
-        }
         self.created.texture_groups += 1;
-        self.groups.insert(key, group.clone());
+        let textures: Vec<_> = key
+            .1
+            .iter()
+            .map(|(_, view, _)| view.texture().clone())
+            .collect();
+        self.groups.insert(key, group.clone(), textures);
         group
     }
 

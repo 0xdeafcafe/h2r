@@ -9,6 +9,7 @@ use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
 use dear_imgui_rs::{Direction, TableColumnFlags, TableColumnWidth, TableFlags, TreeNodeFlags, Ui};
+use editor_core::map_groups::MapGroup;
 use hopper_edit::choices::{Choice, variant_label};
 use hopper_edit::model::{self, EditHopper, EditRecord, MAX_WEIGHT};
 use hopper_edit::presets::{self, PRESETS};
@@ -119,7 +120,7 @@ pub fn list(ui: &Ui, app: &mut App, fonts: &Fonts, dialogs: bool, actions: &mut 
     };
     let errors = app.hoppers.errors();
     let mut pick = None;
-    ui.child_window("##playlist-list").build(ui, || {
+    theme::panel_body(ui, "##playlist-list", || {
         for h in hoppers {
             let bad = errors
                 .iter()
@@ -221,7 +222,7 @@ pub fn entries(ui: &Ui, app: &mut App, fonts: &Fonts, actions: &mut Vec<Action>)
     let out = app.hoppers.edit_with(|hoppers, view| {
         let mut fr = Frame::default();
         let h = &mut hoppers[sel];
-        let f = ui.push_font(fonts.bold);
+        let f = ui.push_font(fonts.title);
         ui.text(format!("{}  Playlist {}", icon::LAYERS, sel + 1));
         f.pop();
         ui.same_line();
@@ -359,7 +360,7 @@ fn entries_table(
                 pick = Some((i, v));
             }
             ui.table_next_column();
-            if ui.small_button("Edit") {
+            if ui.button("Edit") {
                 actions.push(Action::EditEntryVariant(sel, i));
             }
             ui.set_item_tooltip("Edit in the variant tool: opens a copy of this variant there");
@@ -467,7 +468,16 @@ fn map_picker(ui: &Ui, view: &EditView<'_>, r: &mut EditRecord) {
         .map(|m| m.name.clone())
         .unwrap_or_else(|| format!("id {} (not a map in this game)", r.id));
     if let Some(_c) = ui.begin_combo("##map", shown) {
-        for m in &c.maps {
+        let group = MapGroup::Multiplayer;
+        let mut maps: Vec<_> = c
+            .maps
+            .iter()
+            .filter(|m| MapGroup::classify(m.key.as_deref().unwrap_or_default(), group) == group)
+            .collect();
+        maps.sort_by_cached_key(|m| (group.sort_key(&m.name), m.id));
+        let mut last = None;
+        for m in maps {
+            super::map_list::section(ui, &mut last, group);
             if ui.selectable_config(&m.name).selected(m.id == r.id).build() {
                 r.id = m.id;
             }
@@ -503,7 +513,7 @@ fn variant_picker(ui: &Ui, view: &EditView<'_>, r: &EditRecord) -> Option<GameVa
         if list.is_empty() {
             continue;
         }
-        ui.separator_with_text(title);
+        theme::section(ui, title);
         for (k, ch) in list.iter().enumerate() {
             if let Some(v) = choice_row(ui, ch, current.as_ref(), title, k) {
                 picked = Some(v);
@@ -781,23 +791,4 @@ fn advanced(ui: &Ui, h: &mut EditHopper, sel: usize, fr: &mut Frame) {
             fr.changed(ui, c, key(("raw-dword2", sel, i)));
         }
     }
-}
-
-/// The status bar's summary of the open file.
-pub fn summary(app: &App) -> String {
-    let Some(hoppers) = app.hoppers.hoppers() else {
-        return String::new();
-    };
-    let used = hoppers.iter().filter(|h| !h.records.is_empty()).count();
-    let entries: usize = hoppers.iter().map(|h| h.records.len()).sum();
-    let errors = app.hoppers.errors().len();
-    format!(
-        "{} {used} playlists in use   {entries} entries{}",
-        icon::LAYERS,
-        if errors > 0 {
-            format!("   {errors} errors")
-        } else {
-            String::new()
-        }
-    )
 }

@@ -477,43 +477,9 @@ pub fn add_startup_placements(
     if out.nodes.len().saturating_add(added) > MAX_NODES {
         return Err(invalid(format!("startup placements exceed the syntax pool's {MAX_NODES} nodes")));
     }
-    let push = |out: &mut Compiled, opcode: u16, ty: u16, flags: u16, token: &[u8], data: u32| {
-        let string = out.strings.len() as u32;
-        out.strings.extend_from_slice(token);
-        out.strings.push(0);
-        let slot = out.nodes.len();
-        let salt = 0x8000 | (slot as u16 & 0x7fff);
-        let mut b = [0u8; Node::SIZE];
-        b[0..2].copy_from_slice(&salt.to_le_bytes());
-        b[2..4].copy_from_slice(&opcode.to_le_bytes());
-        b[4..6].copy_from_slice(&ty.to_le_bytes());
-        b[6..8].copy_from_slice(&flags.to_le_bytes());
-        b[8..12].copy_from_slice(&Datum::NULL.0.to_le_bytes());
-        b[12..16].copy_from_slice(&string.to_le_bytes());
-        b[16..20].copy_from_slice(&data.to_le_bytes());
-        out.nodes.push(Node::decode(&b).expect("20 bytes"));
-        Datum(u32::from(salt) << 16 | slot as u32)
-    };
-    let link = |out: &mut Compiled, d: Datum, next: Datum| {
-        let mut b = out.nodes[d.slot()].encode();
-        b[8..12].copy_from_slice(&next.0.to_le_bytes());
-        out.nodes[d.slot()] = Node::decode(&b).expect("20 bytes");
-    };
-    // A call: head atom, arguments chained after it, then the call node.
-    let call =
-        |out: &mut Compiled, b: &crate::scripts::translate::H2Builtin, token: &[u8], args: &[Datum]| {
-            let head = push(out, b.index, h2t::FUNCTION_NAME, ATOM, token, 0);
-            let mut prev = head;
-            for &a in args {
-                link(out, prev, a);
-                prev = a;
-            }
-            // Both calls stand where a script expects void.
-            push(out, b.index, h2t::VOID, CALL, b"", head.0)
-        };
     let mut calls = Vec::new();
     for squad in squads {
-        let atom = push(out, ai, ai, ATOM, squad.as_bytes(), NONE);
+        let atom = append_node(out, ai, ai, ATOM, squad.as_bytes(), NONE);
         out.hooks.push(Hook {
             slot: atom.slot() as u16,
             h2_type: ai,
@@ -521,20 +487,73 @@ pub fn add_startup_placements(
             h1_type: "ai".into(),
             token: squad.clone(),
         });
-        calls.push(call(out, &place, b"ai_place", &[atom]));
+        calls.push(void_call(out, place.index, b"ai_place", &[atom]));
     }
-    let body = call(out, &begin, b"begin", &calls);
+    let body = void_call(out, begin.index, b"begin", &calls);
     helper[36..40].copy_from_slice(&body.0.to_le_bytes());
     // Keep every authored script index. Run the placements before the
     // first startup script can inspect an encounter or wake a mission.
     if let Some(startup) = startup {
         let original = Datum(u32::from_le_bytes(out.scripts[startup][36..40].try_into().unwrap()));
-        let head = push(out, index, h2t::FUNCTION_NAME, ATOM, name.as_bytes(), 0);
-        let invoke = push(out, index, h2t::VOID, SCRIPT_CALL, b"", head.0);
-        let root = call(out, &begin, b"begin", &[invoke, original]);
+        let head = append_node(out, index, h2t::FUNCTION_NAME, ATOM, name.as_bytes(), 0);
+        let invoke = append_node(out, index, h2t::VOID, SCRIPT_CALL, b"", head.0);
+        let root = void_call(out, begin.index, b"begin", &[invoke, original]);
         out.scripts[startup][36..40].copy_from_slice(&root.0.to_le_bytes());
     }
     out.scripts.push(helper);
+    Ok(())
+}
+
+// Place nodes at the end of the pool so existing salted datums remain valid.
+fn append_node(out: &mut Compiled, opcode: u16, ty: u16, flags: u16, token: &[u8], data: u32) -> Datum {
+    let string = out.strings.len() as u32;
+    out.strings.extend_from_slice(token);
+    out.strings.push(0);
+    let slot = out.nodes.len();
+    let salt = 0x8000 | (slot as u16 & 0x7fff);
+    let mut b = [0u8; Node::SIZE];
+    b[0..2].copy_from_slice(&salt.to_le_bytes());
+    b[2..4].copy_from_slice(&opcode.to_le_bytes());
+    b[4..6].copy_from_slice(&ty.to_le_bytes());
+    b[6..8].copy_from_slice(&flags.to_le_bytes());
+    b[8..12].copy_from_slice(&Datum::NULL.0.to_le_bytes());
+    b[12..16].copy_from_slice(&string.to_le_bytes());
+    b[16..20].copy_from_slice(&data.to_le_bytes());
+    out.nodes.push(Node::decode(&b).expect("20 bytes"));
+    Datum(u32::from(salt) << 16 | slot as u32)
+}
+
+fn link_sibling(out: &mut Compiled, d: Datum, next: Datum) {
+    let mut b = out.nodes[d.slot()].encode();
+    b[8..12].copy_from_slice(&next.0.to_le_bytes());
+    out.nodes[d.slot()] = Node::decode(&b).expect("20 bytes");
+}
+
+// A void call: its function-name atom, arguments chained after it, then the call node.
+fn void_call(out: &mut Compiled, opcode: u16, token: &[u8], args: &[Datum]) -> Datum {
+    let head = append_node(out, opcode, h2t::FUNCTION_NAME, ATOM, token, 0);
+    let mut prev = head;
+    for &a in args {
+        link_sibling(out, prev, a);
+        prev = a;
+    }
+    append_node(out, opcode, h2t::VOID, CALL, b"", head.0)
+}
+
+/// Append an independent startup thread that places one already resolved
+/// Halo 2 squad. The squad definition supplies both the actors and the count.
+pub fn add_startup_squad(out: &mut Compiled, script: &str, squad: &str, index: u16) -> Result<()> {
+    if out.nodes.len().saturating_add(3) > hs::RETAIL_NODES
+        || out.scripts.len() >= hs::MAX_DEFINITIONS
+    {
+        return Err(invalid("startup squad placement exceeds retail script capacity"));
+    }
+    let mut row = definition(script, 0, h2t::VOID, Datum::NULL, out.scripts.len())?;
+    let ai = hs::casts::types::AI;
+    let atom = append_node(out, ai, ai, ATOM, squad.as_bytes(), u32::from(index));
+    let call = void_call(out, crate::scripts::aicontrol::AI_PLACE, b"ai_place", &[atom]);
+    row[36..40].copy_from_slice(&call.0.to_le_bytes());
+    out.scripts.push(row);
     Ok(())
 }
 

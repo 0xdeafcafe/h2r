@@ -92,6 +92,65 @@ fn a_once_per_pull_gun_is_pulled_again_and_again() {
 }
 
 #[test]
+fn a_shotgun_only_fires_at_clear_targets_inside_its_projectile_reach() {
+    use crate::cache::MapData;
+    use crate::los::Walls;
+
+    let mut arms = holding(Trigger::Automatic, rounds(6, 24));
+    let held = arms.held.as_mut().unwrap();
+    held.profile.pellets = 15;
+    held.profile.cone_range = 15.0;
+    held.profile.damage_reach = 3.0;
+    let me = bot(Some(arms));
+    let wall = MapData {
+        walls: Walls::new(vec![[[1.0, -10.0, -5.0], [1.0, 10.0, -5.0], [1.0, 0.0, 10.0]]]),
+        ..Default::default()
+    };
+
+    for (distance, map, expect_fire) in [
+        (6.0, None, false),
+        (2.0, Some(&wall), false),
+        (2.0, None, true),
+    ] {
+        let mut mind = Mind::new(Skill::Legendary, 3);
+        let mut fires = false;
+        for tick in 0..60 {
+            let p = Perception {
+                me: Some(me),
+                others: vec![enemy(1, [distance, 0.0, 0.0])],
+                tick,
+                ..Default::default()
+            };
+            fires |= mind.step(&p, map).right_trigger > 0.0;
+        }
+        assert_eq!(
+            fires, expect_fire,
+            "distance {distance}, wall {}",
+            map.is_some()
+        );
+    }
+}
+
+#[test]
+fn dual_wielding_checks_the_range_of_each_gun() {
+    let mut arms = holding(Trigger::Automatic, rounds(36, 108));
+    let mut left = arms.held.unwrap();
+    left.profile.damage_reach = 3.0;
+    arms.left = Some(left);
+    let me = bot(Some(arms));
+    for (distance, expect_left) in [(6.0, false), (2.0, true)] {
+        let mut mind = Mind::new(Skill::Legendary, 3);
+        let mut fired = [false; 2];
+        for tick in 0..60 {
+            let pad = step(&mut mind, me, vec![enemy(1, [distance, 0.0, 0.0])], false, tick);
+            fired[0] |= pad.right_trigger > 0.0;
+            fired[1] |= pad.left_trigger > 0.0;
+        }
+        assert_eq!(fired, [true, expect_left]);
+    }
+}
+
+#[test]
 fn it_never_fires_an_empty_magazine() {
     let mut m = Mind::new(Skill::Legendary, 3);
     let me = bot(Some(holding(Trigger::Automatic, rounds(0, 40))));
@@ -166,7 +225,7 @@ fn no_grenade_into_a_teammate() {
         }
         // It turns to each throw's arc before letting go (the game's
         // turning, roughly).
-        let mut me = bot(None);
+        let mut me = bot(Some(holding(Trigger::Single, rounds(36, 108))));
         let n = (0..180 * 30u32)
             .filter(|&t| {
                 let pad = step(&mut m, me, others.clone(), true, t);
@@ -198,6 +257,7 @@ fn plasma_pistol() -> Gun {
         def: 0xa002_0002,
         ammo: Ammo::Battery(0.9),
         profile: Profile {
+            dual: Some(crate::arms::DualGun::PlasmaPistol),
             trigger: Trigger::Charge,
             pellets: 1,
             shot_speed: 60.0,
@@ -368,6 +428,33 @@ fn holding_y_requests_a_second_smg_even_when_the_primary_is_full() {
 }
 
 #[test]
+fn a_named_easy_seat_holds_y_only_for_accepted_pairs() {
+    let mut a = holding(Trigger::Automatic, rounds(36, 108));
+    let smg = a.held.as_mut().unwrap();
+    smg.profile.dual = Some(arms::DualGun::Smg);
+    let pickup = arms::Pickup { id: 9, position: [0.1, 0.0, 0.0], gun: *smg };
+    let mut p = Perception {
+        me: Some(bot(Some(a))),
+        pickups: vec![pickup],
+        ..Default::default()
+    };
+    let mut accepted = 0;
+    for seed in 1..=64 {
+        let mut brain = crate::Brain::new(Skill::Easy, seed).with_name_profile("Gunslinger");
+        p.tick = 1;
+        let first = brain.mind.step(&p, None).buttons.contains(SWITCH);
+        accepted += usize::from(first);
+        for t in 2..=8 {
+            p.tick = t;
+            let pad = brain.mind.step(&p, None);
+            assert_eq!(pad.buttons.contains(SWITCH), first);
+            assert!(!pad.buttons.contains(RELOAD));
+        }
+    }
+    assert!(accepted > 0 && accepted < 64);
+}
+
+#[test]
 fn the_dual_plasma_pistol_charges_and_releases_in_either_hand() {
     use arms::DualGun;
     let pistol = Gun {
@@ -455,4 +542,141 @@ fn juggernaut_transfer_changes_the_fight_and_the_bot_melees_as_juggernaut() {
         me.aim = turned(me.aim, &pad);
     }
     assert!(hit);
+}
+
+#[test]
+fn a_calm_bot_walks_to_visible_grenades_it_can_use() {
+    use crate::grenades::Kind;
+    let mut m = Mind::new(Skill::Normal, 7);
+    let mut a = holding(Trigger::Single, rounds(36, 108));
+    a.grenades = [2, 0];
+    let mut p = Perception {
+        me: Some(bot(Some(a))),
+        ..Default::default()
+    };
+    p.observations.ground_grenades = vec![
+        ([2.0, 0.0, 0.0], Kind::Frag),
+        ([5.0, 0.0, 0.0], Kind::Plasma),
+    ];
+    m.step(&p, None);
+    assert_eq!(m.doing, Doing::Supply([5.0, 0.0, 0.0]));
+    p.tick += 1;
+    p.observations.ground_grenades.pop();
+    m.step(&p, None);
+    assert_ne!(m.doing, Doing::Supply([2.0, 0.0, 0.0]));
+}
+
+#[test]
+fn a_sword_uses_the_trigger_to_lunge_and_b_to_slash_up_close() {
+    for (dist, lunge) in [(1.8, true), (0.6, false)] {
+        let mut m = Mind::new(Skill::Normal, 1);
+        let mut a = holding(Trigger::Absent, Ammo::Battery(0.8));
+        a.held.as_mut().unwrap().profile.cone_range = 2.0;
+        let mut me = bot(Some(a));
+        let mut pressed = false;
+        for tick in 0..90 {
+            let pad = step(&mut m, me, vec![enemy(1, [dist, 0.0, 0.0])], false, tick);
+            me.aim = turned(me.aim, &pad);
+            if lunge {
+                pressed |= pad.right_trigger > 0.0;
+                assert!(!pad.buttons.contains(MELEE));
+            } else {
+                pressed |= pad.buttons.contains(MELEE);
+                assert_eq!(pad.right_trigger, 0.0);
+            }
+        }
+        assert!(pressed);
+    }
+}
+
+// ---- the start-of-match warm-up (mind::warmup) ----
+
+#[test]
+fn a_warm_up_is_two_to_four_seconds_stable_for_a_name_and_varied_across_names() {
+    use super::warmup::{WARMUP_MAX_TICKS, WARMUP_MIN_TICKS, warmup_ticks};
+    let names = ["Clanker", "Sprocket", "Rivet", "Gasket", "Widget", "Ratchet"];
+    let ticks: Vec<u32> = names
+        .iter()
+        .map(|n| warmup_ticks(crate::name_profile::NameProfile::for_name(n).seed))
+        .collect();
+    for (n, t) in names.iter().zip(&ticks) {
+        assert!((WARMUP_MIN_TICKS..=WARMUP_MAX_TICKS).contains(t), "{n}: {t}");
+        let again = warmup_ticks(crate::name_profile::NameProfile::for_name(n).seed);
+        assert_eq!(*t, again, "{n} is the same every match");
+    }
+    let mut distinct = ticks.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert!(distinct.len() >= 3, "{ticks:?}");
+    assert_eq!(WARMUP_MIN_TICKS, 60);
+    assert_eq!(WARMUP_MAX_TICKS, 120);
+}
+
+#[test]
+fn a_warm_up_holds_until_its_tick_and_damage_ends_it() {
+    use super::warmup::Warmup;
+    let mut w = Warmup::Due;
+    assert!(w.holding(100, 60, false));
+    assert_eq!(w.left(130), Some(30));
+    assert!(w.holding(159, 60, false));
+    assert!(!w.holding(160, 60, false));
+    assert_eq!(w, Warmup::Over);
+    // It never starts again in that mind (a respawn).
+    assert!(!w.holding(500, 60, false));
+    let mut hurt = Warmup::Due;
+    assert!(hurt.holding(0, 60, false));
+    assert!(!hurt.holding(5, 60, true), "shot: over at once");
+    assert!(!Warmup::default().holding(0, 60, false), "a mind not made for a match has none");
+}
+
+#[test]
+fn a_bot_in_its_warm_up_does_not_shoot_and_fires_once_it_is_over() {
+    let warm = super::warmup::warmup_ticks(3);
+    let mut m = Mind::new(Skill::Legendary, 3);
+    m.warmup = super::warmup::Warmup::Due;
+    let me = Me {
+        shield: 1.0,
+        health: 1.0,
+        ..bot(Some(holding(Trigger::Automatic, rounds(36, 108))))
+    };
+    let mut first = None;
+    for t in 0..warm + 90 {
+        let pad = step(&mut m, me, vec![enemy(1, [6.0, 0.0, 0.0])], false, t);
+        let attacking = pad.right_trigger > 0.0
+            || pad.left_trigger > 0.0
+            || pad.buttons.contains(MELEE);
+        if t < warm {
+            assert!(!attacking, "tick {t} of a {warm}-tick warm-up");
+            assert!(!matches!(m.doing, Doing::Fight(_)));
+        } else if attacking && first.is_none() {
+            first = Some(t);
+        }
+    }
+    assert!(first.is_some(), "it fights after the warm-up");
+}
+
+#[test]
+fn a_bot_shot_in_its_warm_up_fights_back_at_once() {
+    let warm = super::warmup::warmup_ticks(3);
+    let mut m = Mind::new(Skill::Legendary, 3);
+    m.warmup = super::warmup::Warmup::Due;
+    let fresh = Me {
+        shield: 1.0,
+        health: 1.0,
+        ..bot(Some(holding(Trigger::Automatic, rounds(36, 108))))
+    };
+    let hit = Me {
+        shield: 0.6,
+        ..fresh
+    };
+    let mut first = None;
+    for t in 0..warm {
+        let me = if t < 5 { fresh } else { hit };
+        let pad = step(&mut m, me, vec![enemy(1, [6.0, 0.0, 0.0])], false, t);
+        if pad.right_trigger > 0.0 && first.is_none() {
+            first = Some(t);
+        }
+    }
+    let first = first.expect("it fired before the warm-up would have ended");
+    assert!(first >= 5 && first < warm, "{first}");
 }

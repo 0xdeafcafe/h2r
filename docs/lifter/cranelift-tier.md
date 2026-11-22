@@ -233,8 +233,9 @@ the next start uses clang's module.** No hot swap.
 
 - `h2 build --tier fast` writes `<out>/fast/libh2game.dylib` and its own
   stamp (`crates/runtime/recomp/src/tier.rs`): it starts `tier fast` and names the
-  image, the generator's sources plus crates/recompiler/clif and Cargo.lock, the IR
-  passes, Cranelift's optimisation level and the module ABI. Neither
+  image, the generator's sources plus crates/recompiler/clif and the `Cargo.lock`
+  entries of the packages clif reaches (name, version, source, checksum; other
+  dependency changes leave it alone), the IR passes, Cranelift's optimisation level and the module ABI. Neither
   tier's stamp passes for the other's. Plain `h2 build` builds clang's
   module in `<out>/libh2game.dylib`.
 - `h2 run` and `h2 play` (`--tier auto`, the default, or `H2_TIER`) run
@@ -245,7 +246,10 @@ the next start uses clang's module.** No hot swap.
   once when another background build holds `<out>/clang-build.lock`. It
   builds in place: `boot::build` removes the old stamp first and writes the
   new one last, so a half-built module is never current. The next start
-  finds clang's module current and uses it. `--tier fast` runs the fast
+  finds clang's module current and uses it. While that build runs, `h2
+  play`'s window shows a notice that this start is slow, then that the
+  full-speed module is built and the next start uses it (or that the build
+  failed), from the log (`play_cmd.rs`, `tier_banner`). `--tier fast` runs the fast
   tier only; `--tier clang` is the foreground clang build. `h2 serve` never
   builds and runs clang's module unless told `--tier`.
 - **Why not hot-swap**: a running guest has handlers on the host stack

@@ -1,4 +1,4 @@
-//! `render.*`: one frame's passes, draws and targets as data, and the
+//! `render.*`: frame passes, draws, target layouts, and the
 //! render pipeline's counters (docs/runtime/agent-api.md, phase 5).
 
 use std::collections::BTreeMap;
@@ -6,16 +6,28 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// `render.frame`: record the next whole frame (`arm`), or read the last
-/// one recorded.
+/// `render.spawn_view`: select a player starting location, or release the camera.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SpawnViewParams {
+    pub index: Option<u32>,
+    pub yaw_offset: Option<f32>,
+    pub reset: bool,
+}
+
+/// `render.frame` and `render.frame_layout`: record the next whole frame
+/// (`arm`), or read the last one recorded.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrameParams {
+    /// Omit for the displayed frame. A private graph runs on an explicit lighting capture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<crate::frame_graph::Source>,
     /// Record the next whole frame: from the next present to the one after.
     /// Replaces an arming not yet done, and forgets the last frame.
     #[serde(default)]
     pub arm: bool,
-    /// List every draw, not only each pass's totals.
+    /// List each draw. `render.frame_layout` always lists draws.
     #[serde(default)]
     pub draws: bool,
     /// List at most this many draws (default 2000, at most 20000).
@@ -23,6 +35,7 @@ pub struct FrameParams {
     pub max_draws: Option<usize>,
     /// Passes (by index in the frame) whose colour target is read back as
     /// a PNG when the pass ends: at most [`FrameParams::MAX_SNAPS`].
+    /// `render.frame_layout` requests the display copy.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub snap: Vec<usize>,
     /// Vertex shader constant registers (D3D numbering, -96..=95) to
@@ -61,6 +74,12 @@ pub struct FrameReply {
 /// between two presents.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct FrameRecord {
+    /// Counters from an actual native graph presented to the display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_frame: Option<crate::frame_graph::FrameGraphStats>,
+    /// Identifies the sealed scene and the draw mode for a private-target recording.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_frame: Option<crate::frame_graph::FrameGraphStats>,
     /// The arming that asked for it.
     pub seq: u64,
     /// The present that began it and the one that ended it.
@@ -102,6 +121,12 @@ pub struct FrameTotals {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PassRecord {
+    /// Named typed stages, in execution order within the attachment run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stages: Vec<String>,
+    /// Carried slots in execution order on this pair of private graph attachments.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub slots: Vec<crate::frame_graph::PassSlot>,
     pub index: usize,
     /// The colour surface (the backend's handle, as text) and its size and
     /// format as the guest describes it (`640x480 X8R8G8B8`), once a draw
@@ -160,6 +185,57 @@ pub struct DrawRecord {
     /// D3D register number, as the draw saw them.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub constants: BTreeMap<i32, [f32; 4]>,
+    /// Display geometry requested with `render.frame_layout`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<DrawLayout>,
+}
+
+/// The guest and display geometry of a draw.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DrawLayout {
+    pub guest_size: [u32; 2],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_size: Option<[u32; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_depth_size: Option<[u32; 2]>,
+    /// Guest viewport and writable rectangles as x, y, width, height.
+    pub viewport: [u32; 4],
+    pub clip: Vec<[u32; 4]>,
+    /// Writable display rectangles, in display raster pixels when known.
+    pub display_clip: Vec<[u32; 4]>,
+    /// Horizontal clip correction applied to the draw, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection_factor: Option<f32>,
+    /// Display-space UI scale and translation in guest window units.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_fit: Option<[f32; 4]>,
+    pub vertex_position: String,
+    pub sampled: Vec<LayoutTexture>,
+    /// The native stage that submits the draw, when observed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_stage: Option<String>,
+    /// Minimum and maximum guest-window X/Y, when the bounds are available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_xy: Option<[[f32; 2]; 2]>,
+}
+
+/// One sampled stage and the image it reads.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LayoutTexture {
+    pub stage: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    pub header: u32,
+    pub guest_size: [u32; 2],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_size: Option<[u32; 2]>,
+    /// U and V address modes.
+    pub address: [String; 2],
+    /// Minimum and maximum normalized U/V, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uv: Option<[[f32; 2]; 2]>,
 }
 
 /// A draw's depth state: the render states, the viewport's depth range
@@ -221,6 +297,12 @@ pub struct SnapRecord {
 /// each `null` where that piece isn't running.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RenderStats {
+    /// Counters from an actual native graph presented to the display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_frame: Option<crate::frame_graph::DisplayStats>,
+    /// The latest completed private-target draw while its renderer is installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_frame: Option<crate::frame_graph::FrameGraphStats>,
     /// In-between frames (`impl.render.interpolate`, `.reproject`):
     /// `d3d::interp::InterpStats`, every field, including the hold reasons
     /// (`unsure_*`, `mismatch_*`, `dropped`).
@@ -282,6 +364,14 @@ impl CompareReply {
     }
 }
 
+/// Lighting for a private draw of one sealed scene.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CaptureLighting {
+    Retail,
+    E3,
+}
+
 /// `render.capture`: the frame of a sim tick as a PNG.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -294,6 +384,14 @@ pub struct FrameCaptureParams {
     /// instead of the presented image.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pass: Option<usize>,
+    /// Draw the selected sealed scene with this mode into private targets.
+    /// The tick defaults to the latest sealed scene. Excludes `pass`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lighting: Option<CaptureLighting>,
+    /// Include the rendered package, spawn camera and PNG digest for this
+    /// Live capture game. Only whole frames from a spawn view qualify.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game_id: Option<String>,
 }
 
 impl FrameCaptureParams {
@@ -316,9 +414,33 @@ pub struct CaptureReply {
     /// The pass read back, when one was asked for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pass: Option<usize>,
+    /// The mode the private renderer drew, when requested.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lighting: Option<CaptureLighting>,
     /// The sealed scene's summary hash at that present (`render.scene`);
     /// `null` with no scene source.
     pub scene_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<CaptureSource>,
+}
+
+/// Render provenance for the captured frame. The capture reply supplies
+/// the corresponding game tick.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CaptureSource {
+    pub game_id: String,
+    pub map_id: String,
+    pub map: String,
+    pub camera: CaptureCamera,
+    pub digest: String,
+}
+
+/// World-space eye position and orientation used to render this frame.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct CaptureCamera {
+    pub position: [f32; 3],
+    pub forward: [f32; 3],
+    pub up: [f32; 3],
 }
 
 /// `render.scene`.
@@ -333,6 +455,12 @@ pub struct SceneParams {
 /// (docs/graphics/framescene.md, section 4).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SceneReply {
+    /// Counters from an actual native graph presented to the display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_frame: Option<crate::frame_graph::DisplayStats>,
+    /// The last private-target draw if it used exactly this sealed scene.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_frame: Option<crate::frame_graph::FrameGraphStats>,
     /// False until a scene has been sealed.
     pub sealed: bool,
     pub map_epoch: u32,
@@ -359,9 +487,80 @@ pub struct SceneReply {
     /// recorded no frame.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carried: Option<SceneCarried>,
+    /// Side target uses and readbacks across all frames the device's sink recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carried_census: Option<SceneCarriedCensus>,
+    /// Frozen census corpus at original Swap 3000.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carried_checkpoint: Option<SceneCensusCheckpoint>,
+    /// Activation of the requested level on a fresh level boot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carried_activation: Option<SceneCensusActivation>,
     /// The JSON file written when `dump` was asked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dump: Option<String>,
+}
+
+/// Totals over sink frames, including targets that only appeared during loading.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneCarriedCensus {
+    pub frames: u64,
+    /// Frames containing a guest D3D op inside a game view.
+    pub game_frames: u64,
+    pub targets: Vec<SceneTargetUse>,
+    pub reads: Vec<SceneReadUse>,
+}
+
+/// Only a consecutive prefix from boot can supply the inventory and the
+/// measured window. Each field appears when its own side reaches the Swap.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneCensusCheckpoint {
+    pub present: u64,
+    pub sealed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inventory: Option<SceneCarriedCensus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counters: Option<BTreeMap<String, u64>>,
+}
+
+/// The level-boot mark, used as the baseline for post-load deltas.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneCensusActivation {
+    pub map: String,
+    pub present: u64,
+    /// The sink frame reached at activation.
+    pub frame: u64,
+    pub counters: BTreeMap<String, u64>,
+}
+
+/// Occurrences of a census row. Sink frames are numbered from one.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneUses {
+    pub count: u64,
+    pub first_frame: u64,
+    pub last_frame: u64,
+}
+
+/// A side surface class, where it was used, and how.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneTargetUse {
+    pub width: u32,
+    pub height: u32,
+    pub format: u32,
+    pub depth: bool,
+    pub slot: String,
+    pub operation: String,
+    #[serde(flatten)]
+    pub uses: SceneUses,
+}
+
+/// Guest reads inside or outside a game view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneReadUse {
+    pub slot: String,
+    pub kind: String,
+    #[serde(flatten)]
+    pub uses: SceneUses,
 }
 
 /// `render.scene`'s entry census.
@@ -452,7 +651,14 @@ pub struct SceneViewRecord {
     pub instances: u32,
     pub parts: u32,
     pub rows: u32,
+    /// Guest-selected lights, in the view's draw list.
     pub lights: u32,
+    /// All extracted light candidates, including the guest-selected lights.
+    #[serde(default)]
+    pub lights_candidates: u32,
+    /// Candidates with both sets of lighting constants and any projection.
+    #[serde(default)]
+    pub lights_with_constants: u32,
     /// Lights that cast their shadow: the view's shadow maps.
     pub shadows: u32,
     /// Lights by each layer their passes draw (`"10"` to `"14"`); layers
@@ -554,17 +760,164 @@ pub struct ParityReply {
     pub compare: CompareReply,
 }
 
+/// `render.residual` (docs/graphics/retire-d3d.md, "New method:
+/// `render.residual`"): arm a window, or read the last one.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResidualParams {
+    /// Start a window at the next present; replaces one in progress.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arm: Option<ResidualArm>,
+    /// Rows of `producers` and `callers` kept: 1 to 500, 50 by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top: Option<usize>,
+}
+
+/// `render.residual`'s `arm`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResidualArm {
+    /// Presents in the window, 1 to 3600.
+    pub frames: u32,
+}
+
+/// `render.residual`'s answer: the state, and the last finished window.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ResidualReply {
+    /// `idle`, `armed` or `done`.
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<ResidualWindow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub totals: Option<ResidualTotals>,
+    /// By `residual` then `entries`; absent without `frame-scene.census`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producers: Option<Vec<ResidualProducer>>,
+    /// By `residual` then `entries`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callers: Option<Vec<ResidualCaller>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unattributed: Option<ResidualUnattributed>,
+    /// Return addresses past the census's bound: they count in `totals`
+    /// only.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sites_full: bool,
+    /// Producer exits with nothing to end, and producers dropped unended.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub unbalanced: u64,
+}
+
+fn is_zero_u64(n: &u64) -> bool {
+    *n == 0
+}
+
+/// The window a `render.residual` answer covers.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ResidualWindow {
+    pub frames: u32,
+    pub game_frames: u32,
+    /// `Swap` ordinals of the first and last present.
+    pub presents: [u64; 2],
+    /// The last tick that had ended at the start and the end.
+    pub ticks: [Option<u64>; 2],
+    pub map: Option<String>,
+    /// The run has `render-timing`.
+    pub timing: bool,
+}
+
+/// What the guest front-end asked `d3d` to do over the window.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ResidualTotals {
+    /// Guest draws resolved.
+    pub draws: u64,
+    /// Of those, a native replacement committed.
+    pub claimed: u64,
+    /// Of those, reached the backend.
+    pub residual: u64,
+    /// D3D entry calls.
+    pub entries: u64,
+    pub push_words: u64,
+    pub state_words: u64,
+    pub clears: u64,
+    pub binds: u64,
+    pub copies: u64,
+    pub uploads: u64,
+    pub locks: u64,
+    pub queries: u64,
+    pub presents: u64,
+    pub d3d_ms: f64,
+}
+
+/// One producer's row.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ResidualProducer {
+    pub producer: String,
+    /// `native`, `d3d` or `unknown`.
+    pub status: String,
+    /// The carried slot its work lands in.
+    pub slot: String,
+    pub calls: u64,
+    pub draws: u64,
+    pub claimed: u64,
+    pub residual: u64,
+    pub entries: u64,
+    pub push_words: u64,
+    pub state_words: u64,
+    pub clears: u64,
+    pub binds: u64,
+    pub copies: u64,
+    pub uploads: u64,
+    pub d3d_ms: f64,
+    /// Exclusive guest time; `null` without `render-timing`.
+    pub guest_ms: Option<f64>,
+}
+
+/// One caller's row: the analysed guest function holding the entry
+/// calls' return addresses.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ResidualCaller {
+    /// Hex, as `profile.fallbacks` names a function; the return address
+    /// itself when no analysed function holds it.
+    pub function: String,
+    /// Return addresses in it, hex.
+    pub sites: Vec<String>,
+    /// Calls by entry name.
+    pub entries: BTreeMap<String, u64>,
+    /// Draws the entries resolved themselves.
+    pub draws: u64,
+    /// Draws decoded from the push buffer at its entries.
+    pub inline_draws: u64,
+    pub residual: u64,
+    pub d3d_ms: f64,
+}
+
+impl ResidualCaller {
+    /// Its entry calls.
+    pub fn calls(&self) -> u64 {
+        self.entries.values().sum()
+    }
+}
+
+/// Work filed under no producer.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResidualUnattributed {
+    pub draws: u64,
+    pub entries: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn a_draw_without_depth_or_constants_prints_neither() {
+    fn a_draw_omits_layout_depth_and_constants_when_absent() {
         let d = DrawRecord::default();
         let v = serde_json::to_value(&d).unwrap();
         assert!(v.get("depth").is_none());
         assert!(v.get("constants").is_none());
         assert!(v.get("vs").is_none());
+        assert!(v.get("layout").is_none());
+        assert_eq!(serde_json::from_value::<DrawRecord>(v).unwrap(), d);
     }
 
     #[test]
@@ -597,6 +950,37 @@ mod tests {
         assert!(v["depth"].get("clamp").is_none(), "clamp only when on");
         let back: DrawRecord = serde_json::from_value(v).unwrap();
         assert_eq!(back, d);
+    }
+
+    #[test]
+    fn draw_layout_round_trips_extents_and_a_sampled_stage() {
+        let d = DrawRecord {
+            layout: Some(DrawLayout {
+                guest_size: [640, 480],
+                display_size: Some([2560, 1920]),
+                clip: vec![[0, 0, 640, 480]],
+                display_clip: vec![[0, 0, 2560, 1920]],
+                window_xy: Some([[0.0, 0.0], [640.0, 480.0]]),
+                sampled: vec![LayoutTexture {
+                    stage: 1,
+                    id: Some(5),
+                    source: Some("render target".into()),
+                    guest_size: [160, 120],
+                    display_size: Some([160, 120]),
+                    address: ["Clamp".into(), "Clamp".into()],
+                    uv: Some([[-0.0625, 0.0], [1.0625, 1.0]]),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&d).unwrap();
+        let layout = &v["layout"];
+        assert_eq!(layout["display_size"], serde_json::json!([2560, 1920]));
+        assert_eq!(layout["sampled"][0]["stage"], 1);
+        assert!(layout.get("projection_factor").is_none());
+        assert_eq!(serde_json::from_value::<DrawRecord>(v).unwrap(), d);
     }
 
     #[test]
@@ -658,6 +1042,45 @@ mod tests {
     }
 
     #[test]
+    fn the_census_preserves_counts_and_frame_bounds_on_the_wire() {
+        let uses = SceneUses { count: 3, first_frame: 2, last_frame: 7 };
+        let reply = SceneReply {
+            carried_checkpoint: Some(SceneCensusCheckpoint {
+                present: 3000, sealed: true, inventory: None,
+                counters: Some(BTreeMap::from([("scene_window_games".into(), 5)])),
+            }),
+            carried_activation: Some(SceneCensusActivation {
+                map: "invented".into(), present: 2, frame: 2,
+                counters: BTreeMap::from([("scene_readback".into(), 1)]),
+            }),
+            carried_census: Some(SceneCarriedCensus {
+                frames: 10,
+                game_frames: 8,
+                targets: vec![SceneTargetUse {
+                    width: 9, height: 7, format: 6, depth: false,
+                    slot: "after_lights".into(), operation: "copy_from".into(), uses,
+                }],
+                reads: vec![SceneReadUse { slot: "outside".into(), kind: "mirror".into(), uses }],
+            }),
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&reply).unwrap();
+        let saved = &v["carried_checkpoint"];
+        assert_eq!(saved["present"], 3000);
+        assert_eq!(saved["counters"]["scene_window_games"], 5);
+        assert!(saved.get("inventory").is_none());
+        let census = &v["carried_census"];
+        assert_eq!(census["targets"][0]["first_frame"], 2);
+        assert_eq!(census["reads"][0]["last_frame"], 7);
+        assert_eq!(census["reads"][0]["count"], 3);
+        assert_eq!(serde_json::from_value::<SceneReply>(v).unwrap(), reply);
+        let mut old = serde_json::to_value(SceneReply::default()).unwrap();
+        assert!(old.get("carried_checkpoint").is_none());
+        assert!(old.as_object_mut().unwrap().remove("carried_census").is_none());
+        assert!(serde_json::from_value::<SceneReply>(old).unwrap().carried_census.is_none());
+    }
+
+    #[test]
     fn a_scenes_carried_part_prints_only_when_the_sink_recorded() {
         let v = serde_json::to_value(SceneReply::default()).unwrap();
         assert!(v.get("carried").is_none());
@@ -695,5 +1118,25 @@ mod tests {
         let v = serde_json::to_value(CaptureReply::default()).unwrap();
         assert_eq!(v["scene_hash"], Value::Null, "null, not missing");
         assert!(v.get("pass").is_none());
+    }
+
+    #[test]
+    fn residual_params_take_their_shape_and_refuse_strangers() {
+        let p: ResidualParams = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(p, ResidualParams::default());
+        let p: ResidualParams = serde_json::from_value(serde_json::json!({"arm": {"frames": 600}, "top": 5})).unwrap();
+        assert_eq!((p.arm, p.top), (Some(ResidualArm { frames: 600 }), Some(5)));
+        assert!(serde_json::from_value::<ResidualParams>(serde_json::json!({"frames": 600})).is_err());
+        assert!(serde_json::from_value::<ResidualParams>(serde_json::json!({"arm": {"frame": 1}})).is_err());
+        let v = serde_json::to_value(ResidualReply { state: "idle".into(), ..Default::default() }).unwrap();
+        assert_eq!(v, serde_json::json!({"state": "idle"}));
+        let r = ResidualReply {
+            state: "done".into(),
+            producers: Some(vec![ResidualProducer { producer: "hud".into(), guest_ms: None, ..Default::default() }]),
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["producers"][0]["guest_ms"], Value::Null, "null, not missing");
+        assert_eq!(serde_json::from_value::<ResidualReply>(v).unwrap(), r);
     }
 }

@@ -44,7 +44,7 @@ fn sample(tick: u64) -> Tick {
     action[4] = 0x80;
     action[91] = if tick < 140 { 2 } else { 3 };
     let mut inputs = Vec::new();
-    if tick < 4 || tick > 10 {
+    if !(4..=10).contains(&tick) {
         inputs.push(SeatInput {
             seat: 0,
             pad: Some(pad),
@@ -174,6 +174,26 @@ fn seek_flushes_partial_blocks_and_resumes_after_restored_tick() {
         );
     }
     assert!(track.seek(301).is_err());
+}
+
+#[test]
+fn ring_cursor_resumes_inside_a_tick_block_without_a_file_keyframe() {
+    for version in [2, 3] {
+        let bytes = encoded_as(version);
+        let reader = || TrackReader::new(Reader::new(Cursor::new(&bytes)).unwrap()).unwrap();
+        let mut linear = reader();
+        let mut expected = Vec::new();
+        while let Some(tick) = linear.step().unwrap() {
+            expected.push(tick);
+        }
+        let mut track = reader();
+        for tick in [0, 83, 6, 192, 300, 12, 299, 83] {
+            track.resume_after_tick(tick).unwrap();
+            assert_eq!(track.keyframe_offset(), None);
+            assert_eq!(track.step().unwrap().as_ref(), expected.get(tick as usize));
+        }
+        assert!(track.resume_after_tick(301).is_err());
+    }
 }
 
 #[test]
@@ -312,6 +332,88 @@ fn unified_time_chunks_restore_inputs_and_skip_future_payload_types() {
             .iter()
             .any(|r| r.tag == stream::MARKER && r.payload == b"Overtime")
     );
+}
+
+#[test]
+fn actor_killed_round_trips_in_a_film() {
+    use live_proto::film::{events, privacy};
+    use live_proto::game::ActorKilled;
+
+    let expected = events::Record {
+        tick: 41,
+        event: events::Event::ActorKilled(ActorKilled {
+            tick: 41,
+            unit: 0x8007_0002,
+            character: Some(0xe123_0004),
+            killer: Some(15),
+            weapon: Some("test_weapon".into()),
+        }),
+    };
+
+    let mut header = header(2);
+    header.version = 3;
+    let mut out = Writer::new(Cursor::new(Vec::new()), &header).unwrap();
+    let mut track = TrackWriter::default();
+    let first = sample(1);
+    let mut second = sample(2);
+    let Event::Join { player } = &mut second.events[0] else {
+        panic!("expected the fixture to join a player");
+    };
+    player.xuid = Some(0x1234);
+    track
+        .push_clocked(
+            &mut out,
+            first.clone(),
+            vec![RecordData::pose(vec![0, 0, 0, 0])],
+            Some(40),
+        )
+        .unwrap();
+    track
+        .push_clocked(
+            &mut out,
+            second.clone(),
+            vec![RecordData::stats_event(expected.encode().unwrap())],
+            Some(41),
+        )
+        .unwrap();
+    track
+        .finish(&mut out, &MatchHeader::default(), &Summary::default())
+        .unwrap();
+    let bytes = out.finish().unwrap().into_inner();
+
+    let mut remote = crate::range::RangeReader::new(Cursor::new(&bytes)).unwrap();
+    let public = remote.chunk(0).unwrap();
+    assert!(privacy::is_public_tick(&public));
+    let records: Vec<_> = stream::Chunk::parse(&public)
+        .unwrap()
+        .records()
+        .map(|r| r.unwrap())
+        .filter_map(|r| {
+            let (&subtype, data) = r.payload.split_first()?;
+            (r.tag == stream::EVENT && subtype == stream::STATS_EVENT)
+                .then(|| (r.tick, events::Record::decode(data).unwrap()))
+        })
+        .collect();
+    assert_eq!(records, [(second.tick, expected)]);
+
+    let mut local = Reader::new(Cursor::new(&bytes)).unwrap();
+    let private_entry = local
+        .entries
+        .iter()
+        .find(|e| e.tag == privacy::PRIVATE_TAG)
+        .unwrap()
+        .clone();
+    let private = local.read_bytes(&private_entry).unwrap();
+    let mut records = stream::Chunk::parse(&private).unwrap().records();
+    let join = records.next().unwrap().unwrap();
+    assert_eq!(join.tag, stream::EVENT);
+    assert_eq!(join.payload.first(), Some(&stream::LIFECYCLE_EVENT));
+    assert!(records.next().is_none());
+
+    let mut replay = TrackReader::new(local).unwrap();
+    assert_eq!(replay.step().unwrap(), Some(first));
+    assert_eq!(replay.step().unwrap(), Some(second));
+    assert!(replay.step().unwrap().is_none());
 }
 
 #[test]

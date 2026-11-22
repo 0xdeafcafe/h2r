@@ -109,6 +109,18 @@ describe("the stats home, rendered", () => {
     expect(panel).not.toContain('class="s-empty"');
   });
 
+  test("the open games list shows the filters button before the first session response", () => {
+    const start = html.indexOf('aria-labelledby="s-open-h"');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const panel = html.slice(start, html.indexOf("</section>", start));
+    expect(panel).toContain("Open Games");
+    expect(panel).toContain('aria-controls="s-open-filters"');
+    expect(panel).toContain("Loading open games");
+    for (const filter of ["Campaign Co-op", "Clankers", "Game type", "Any variant", "Map category", "Difficulty", "Has space"]) {
+      expect(panel).toContain(filter);
+    }
+  });
+
   test("the menu column drops zero rows and keeps the ones that always count", () => {
     const report = html.slice(html.indexOf("Server Report"), html.indexOf("Daily Count"));
     expect(report).toContain("Games on Record");

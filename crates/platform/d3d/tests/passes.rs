@@ -5,9 +5,7 @@
 //! read back from synthetic frames on a real GPU (skipped without an
 //! adapter).
 
-mod common;
-
-use common::*;
+use crate::common::*;
 use d3d::abi::Regs;
 use d3d::device::{
     BACK_BUFFER_DATA, COPY_SWAP_FLAG, DEPTH_BUFFER_DATA, DISPLAY_BUFFER_DATA, Rect,
@@ -347,10 +345,9 @@ fn back_and_display_surfaces_are_distinct_and_swap_rotates_their_data() {
     );
     // Then 0x3f9cc0 stamps the display header's Lock with the GPU time and
     // records a fence for this swap's parity.
-    let (data, lock) = header_words(&m, f::DISPLAY_SURFACE);
-    let time = m.read_u32(L.device + f::GPU_TIME).unwrap();
-    assert_eq!((data, lock), (BACK_BUFFER_DATA, time - 1));
-    assert_eq!(m.read_u32(L.device + f::SWAP_FENCES + 4).unwrap(), time);
+    assert_eq!(header_words(&m, f::DISPLAY_SURFACE), (BACK_BUFFER_DATA, 2));
+    assert_eq!(m.read_u32(L.device + f::SWAP_FENCES + 4).unwrap(), 2);
+    assert_eq!(m.read_u32(L.device + f::GPU_TIME).unwrap(), 4);
     assert_eq!((d.back_buffer(), d.front_buffer()), (Some(f0), Some(b0)));
     // The headers themselves stay where they are.
     assert_eq!(m.read_u32(L.device + f::BACK_BUFFER).unwrap(), back);
@@ -363,10 +360,11 @@ fn back_and_display_surfaces_are_distinct_and_swap_rotates_their_data() {
         Some(b0)
     );
     d.swap(&mut m, 0).unwrap();
-    assert_eq!(
-        header_words(&m, f::BACK_BUFFER),
-        (BACK_BUFFER_DATA, time - 1)
-    );
+    assert_eq!(header_words(&m, f::BACK_BUFFER), (BACK_BUFFER_DATA, 2));
+    assert_eq!(header_words(&m, f::DISPLAY_SURFACE), (DISPLAY_BUFFER_DATA, 6));
+    assert_eq!(m.read_u32(L.device + f::SWAP_FENCES).unwrap(), 6);
+    assert_eq!(m.read_u32(L.device + f::SWAP_FENCES + 4).unwrap(), 2);
+    assert_eq!(m.read_u32(L.device + f::GPU_TIME).unwrap(), 8);
     assert_eq!((d.back_buffer(), d.front_buffer()), (Some(b0), Some(f0)));
     // Drawing into the back buffer never copies into the front: it holds
     // the image presented until the next flip.
@@ -486,6 +484,9 @@ const THIRD_HEADER: u32 = f::DISPLAY_SURFACE + 4;
 #[test]
 fn copy_swap_flags_follow_the_original() {
     let (mut d, mut m) = create_copy_swap(RecordingBackend::new(), UploadPolicy::Always);
+    let display = m.read_u32(L.device + f::DISPLAY_SURFACE).unwrap();
+    m.write_u32(display + 8, 0x1111).unwrap();
+    m.write_u32(L.device + f::SWAP_FENCES, 0x2222).unwrap();
     // FINISH alone, or no flag bit 1/2: nothing shown, no count
     // (0x3f9d35 -> 0x3f98f0 without the increment).
     for flags in [4, 8] {
@@ -493,9 +494,9 @@ fn copy_swap_flags_follow_the_original() {
     }
     assert!(presents(&d).is_empty());
     // FINISH still stamps the display header and records a fence.
-    let time = m.read_u32(L.device + f::GPU_TIME).unwrap();
-    assert_eq!(header_words(&m, f::DISPLAY_SURFACE).1, time - 1);
-    assert_eq!(m.read_u32(L.device + f::SWAP_FENCES).unwrap(), time);
+    assert_eq!(header_words(&m, f::DISPLAY_SURFACE).1, 0);
+    assert_eq!(m.read_u32(L.device + f::SWAP_FENCES).unwrap(), 0);
+    assert_eq!(m.read_u32(L.device + f::GPU_TIME).unwrap(), 2);
     // COPY alone counts and, with two frame buffers, scans out at once.
     let (back, front) = (d.back_buffer().unwrap(), d.front_buffer().unwrap());
     assert_eq!(d.swap(&mut m, 1).unwrap(), 1);
@@ -614,14 +615,11 @@ fn three_buffer_copy_swap_shows_the_copy_only_on_finish() {
     let fences = m.read_u32(L.device + f::SWAP_FENCES + 4).unwrap();
     assert_eq!(d.swap(&mut m, 4).unwrap(), 1);
     assert_eq!(presents(&d), [display]);
-    let time = m.read_u32(L.device + f::GPU_TIME).unwrap();
-    assert_eq!(
-        header_words(&m, f::DISPLAY_SURFACE),
-        (THIRD_BUFFER_DATA, time - 1)
-    );
+    assert_eq!(header_words(&m, f::DISPLAY_SURFACE), (THIRD_BUFFER_DATA, 2));
     let slot = m.read_u32(L.device + f::SWAP_FENCES + 4).unwrap();
     assert_ne!(slot, fences);
-    assert_eq!(slot, time);
+    assert_eq!(slot, 2);
+    assert_eq!(m.read_u32(L.device + f::GPU_TIME).unwrap(), 4);
     // COPY | FINISH together: exchanged back, copied and shown at once.
     assert_eq!(d.swap(&mut m, 5).unwrap(), 2);
     assert_eq!(header_words(&m, f::DISPLAY_SURFACE).0, DISPLAY_BUFFER_DATA);

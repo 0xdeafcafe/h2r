@@ -373,3 +373,78 @@ fn a_standing_step_stops_at_a_roof_inside_its_floor_polygon() {
     assert!(!headroom(&map, [1.8, 2.0, 0.0], [1.0, 0.0]));
     assert!(headroom(&map, [1.8, 2.0, 0.0], [-1.0, 0.0]));
 }
+
+#[test]
+fn a_body_at_the_edge_never_turns_the_walk_off_it() {
+    let map = bridge();
+    // The turn around the body ahead-left would leave the bridge.
+    let bodies = [[0.5, 0.15, 2.0]];
+    let turned = around_bodies([0.0, 0.0, 2.0], [1.0, 0.0], &bodies);
+    assert!(turned[1] < -0.5, "{turned:?}");
+    assert!(!standable(&map, [0.0, 0.0, 2.0], turned));
+    assert_eq!(
+        around_bodies_safe(Some(&map), [0.0, 0.0, 2.0], [1.0, 0.0], &bodies),
+        [1.0, 0.0]
+    );
+    // On open floor the same turn stands.
+    let w = around_bodies_safe(Some(&open()), [0.0; 3], [1.0, 0.0], &[[0.5, 0.15, 0.0]]);
+    assert!(w[1] < -0.5, "{w:?}");
+    // And in the fight itself: the strafe is checked, and the turn around
+    // a body beside it is not allowed to undo that check.
+    let mut m = Moves::new(1);
+    let i = input(Skill::Legendary, 0, [0.0, 0.0, 2.0], [6.0, 0.0, 2.0]);
+    let mv = m.fight(&i, Some(&map), &bodies);
+    assert_eq!(mv.walk, [1.0, 0.0]);
+}
+
+/// A platform 2.6 across at height 2, over a void.
+fn narrow_platform() -> MapData {
+    MapData {
+        places: Default::default(),
+        nav: NavMesh::new(vec![quad(-1.3, -10.0, 1.3, 10.0, 2.0)], vec![]),
+        walls: Walls::default(),
+    }
+}
+
+#[test]
+fn a_hop_is_never_taken_where_its_landing_leaves_the_floor() {
+    let map = narrow_platform();
+    // The walk checks reach 1.0 and pass; the jump's longer carry ends
+    // off the platform, both ways.
+    assert!(standable(&map, [0.0, 0.0, 2.0], [1.0, 0.0]));
+    assert!(!jumpable(&map, [0.0, 0.0, 2.0], [1.0, 0.0]));
+    assert!(!jumpable(&map, [0.0, 0.0, 2.0], [-1.0, 0.0]));
+    assert!(jumpable(&open(), [0.0; 3], [1.0, 0.0]));
+    let eager = Style {
+        strafe: (8, 26),
+        stand: 0.0,
+        juke: 0.0,
+        jump: 1.0,
+        crouch: 0.0,
+        keep: 0.0,
+        cover: false,
+    };
+    // The enemy on +Y: the strafe runs along X, ending off the platform
+    // inside a jump's carry either way it is picked.
+    let mut m = Moves::new(7);
+    let i = input(Skill::Legendary, 0, [0.0, 0.0, 2.0], [0.0, 5.0, 2.0]);
+    let mv = m.fight_with_style(&i, Some(&map), &[], eager);
+    assert!(mv.walk[0].abs() > 0.5, "{mv:?}");
+    assert!(!mv.jump, "{mv:?}");
+    // On a wide floor the same hop is taken.
+    let mut m = Moves::new(7);
+    let i = input(Skill::Legendary, 0, [0.0; 3], [0.0, 5.0, 0.0]);
+    let mv = m.fight_with_style(&i, Some(&open()), &[], eager);
+    assert!(mv.jump, "{mv:?}");
+
+    // A turn can be safe on foot and still carry off the edge in a hop.
+    // Put the body in the path of the strafe selected by the same seed.
+    let corridor = MapData {
+        nav: NavMesh::new(vec![quad(-10.0, -1.3, 10.0, 1.3, 0.0)], vec![]),
+        ..open()
+    };
+    let mut m = Moves::new(7);
+    let bodies = [[0.5 * mv.walk[0].signum(), 0.15, 0.0]];
+    let turned = m.fight_with_style(&i, Some(&corridor), &bodies, eager);
+    assert!(turned.walk[1] < -0.5 && !turned.jump, "{turned:?}");
+}

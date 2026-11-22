@@ -16,9 +16,10 @@ members = [
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
-license = "MIT OR Apache-2.0"
+license = "WTFPL"
 
 [workspace.dependencies]
+mem-watch = { path = "crates/platform/mem-watch" }
 hs = { path = "crates/formats/hs" }
 tags = { path = "crates/formats/tags" }
 map = { path = "crates/formats/map" }
@@ -27,6 +28,7 @@ xiso = { path = "crates/formats/xiso" }
 movies = { path = "crates/formats/movies" }
 xbe = { path = "crates/formats/xbe" }
 h1-contract = { path = "crates/formats/h1-contract" }
+host-log = { path = "crates/formats/host-log" }
 analyze = { path = "crates/recompiler/analyze" }
 symbols = { path = "crates/recompiler/symbols" }
 runtime = { path = "crates/runtime/runtime" }
@@ -37,10 +39,12 @@ emit = { path = "crates/recompiler/emit" }
 clif = { path = "crates/recompiler/clif" }
 simd = { path = "crates/recompiler/simd" }
 sim-core = { path = "crates/rewrites/sim-core" }
+hud-kit-core = { path = "crates/rewrites/hud-kit-core" }
 sim-anim = { path = "crates/rewrites/sim-anim" }
 sim-collision = { path = "crates/rewrites/sim-collision" }
 sim-objects = { path = "crates/rewrites/sim-objects" }
 sim-state = { path = "crates/rewrites/sim-state" }
+sim-ext = { path = "crates/rewrites/sim-ext" }
 x87 = { path = "crates/recompiler/x87" }
 kernel = { path = "crates/runtime/kernel" }
 voice = { path = "crates/platform/voice" }
@@ -48,6 +52,11 @@ vfs = { path = "crates/runtime/vfs" }
 background = { path = "crates/runtime/background" }
 boot = { path = "crates/apps/boot" }
 content = { path = "crates/formats/content" }
+forge = { path = "crates/extensions/forge" }
+forge-doc = { path = "crates/formats/forge-doc" }
+rules = { path = "crates/formats/rules" }
+forge-build = { path = "crates/tools/forge-build" }
+host-dirs = { path = "crates/formats/host-dirs" }
 live-proto = { path = "crates/live/live-proto" }
 live-server = { path = "crates/live/live-server" }
 cloud-saves = { path = "crates/live/cloud-saves" }
@@ -55,6 +64,9 @@ thiserror = "2"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# `h2 rules lsp`: the rules language server (docs/game/rules-engine.md, "Tooling").
+lsp-server = "0.7"
+lsp-types = "0.97"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "sync", "time"] }
 
 # Debug builds keep file/line backtraces but drop full debug info, which is
@@ -62,11 +74,6 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "sync",
 # variables in a debugger, build with CARGO_PROFILE_DEV_DEBUG=2.
 [profile.dev]
 debug = "line-tables-only"
-# Debug info stays in the object files: no dsymutil run and no .dSYM beside
-# each test binary. This is cargo's macOS default, pinned so an environment
-# or config override can't bring `packed` back.
-split-debuginfo = "unpacked"
-
 # Dependencies carry no debug info at all: smaller rlibs and less for every
 # test binary's link to read. A panic still names its file and line, and a
 # backtrace still names their functions (docs/dev/build-speed.md).

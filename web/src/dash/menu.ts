@@ -7,7 +7,7 @@
 import { LIVE_ADMIN, statsPath } from "../routes";
 import type { GlyphName } from "./parts";
 
-export type SectionId = "live" | "games" | "friends" | "teams" | "players" | "settings" | "signup" | "server" | "signin" | "recover" | "account";
+export type SectionId = "live" | "games" | "friends" | "teams" | "players" | "settings" | "session" | "signup" | "server" | "signin" | "recover" | "account";
 
 export function menuFor(signedIn: boolean): SectionId[] {
   return signedIn
@@ -28,6 +28,7 @@ export function lockedHint(id: SectionId, signedIn: boolean): string | null {
 export function settingsRows(signedIn: boolean, admin: boolean | null): { key: string; label: string; glyph: GlyphName }[] {
   return [
     { key: "/dash/signup", label: signedIn ? "profile" : "sign up", glyph: "key" },
+    ...(signedIn ? [{ key: "/dash/settings/notifications", label: "notifications", glyph: "gear" as const }] : []),
     { key: "/dash/games", label: "games", glyph: "disc" },
     { key: admin === true ? `${LIVE_ADMIN}/events` : statsPath("/events"), label: "event log", glyph: "history" },
     { key: "/dash/server", label: "server", glyph: "server" },

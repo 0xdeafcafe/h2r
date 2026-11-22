@@ -615,7 +615,7 @@ fn rebuilt_scenery_has_only_definition_bytes() {
     let mut want = defs::default_record(def);
     want.set("object.object_type", Val::Enum(6)).unwrap();
     want.set("object.flags", Val::Flags(4)).unwrap();
-    want.set("object.unknown_14", Val::Bytes(1.75f32.to_le_bytes().to_vec())).unwrap();
+    want.set("object.acceleration_scale", Val::Bytes(1.75f32.to_le_bytes().to_vec())).unwrap();
     want.set("object.bounding_radius", Val::Float(2.5)).unwrap();
     want.set("object.bounding_offset", Val::floats(&[1.0, 2.0, 3.0]))
         .unwrap();
@@ -636,16 +636,16 @@ fn rebuilt_scenery_has_only_definition_bytes() {
     assert_eq!(left, Vec::new());
     // The model first (kind 2, index -1), then its bitmaps (kind 0).
     assert_eq!(
-        got.at("object.predicted_resources[0].unknown_0"),
-        Some(&Val::Bytes(0xffff_0002u32.to_le_bytes().to_vec()))
+        got.bytes("object.predicted_resources[0].type", 4),
+        Some(0xffff_0002u32.to_le_bytes().to_vec())
     );
     assert_eq!(
         got.at("object.predicted_resources[0].tag"),
         Some(&Val::Datum(Target::Id(mode_id)))
     );
     assert_eq!(
-        got.at("object.predicted_resources[1].unknown_0"),
-        Some(&Val::Bytes(vec![0; 4]))
+        got.bytes("object.predicted_resources[1].type", 4),
+        Some(vec![0; 4])
     );
     assert_eq!(
         got.at("object.predicted_resources[1].tag"),
@@ -759,21 +759,21 @@ fn rebuilt_scenery_carries_its_change_colours() {
         other => panic!("{p}: {other:?}"),
     };
     assert_eq!(n("object.change_colors"), 4);
-    assert_eq!(n("object.change_colors[0].block_0"), 2);
+    assert_eq!(n("object.change_colors[0].initial_permutations"), 2);
     for k in 1..4 {
-        assert_eq!(n(&format!("object.change_colors[{k}].block_0")), 0);
+        assert_eq!(n(&format!("object.change_colors[{k}].initial_permutations")), 0);
     }
-    assert_eq!(n("object.change_colors[0].block_8"), 0);
-    let f = |p: &str| match got.at(p) {
-        Some(Val::Bytes(b)) => f32::from_le_bytes(b[..4].try_into().unwrap()),
-        other => panic!("{p}: {other:?}"),
+    assert_eq!(n("object.change_colors[0].functions"), 0);
+    let f = |p: &str| match got.bytes(p, 4) {
+        Some(b) => f32::from_le_bytes(b[..4].try_into().unwrap()),
+        None => panic!("{p}"),
     };
-    let p = "object.change_colors[0].block_0[1]";
-    assert_eq!(f(&format!("{p}.unknown_0")), 0.667);
-    assert_eq!(f(&format!("{p}.unknown_4")), 0.769);
-    assert_eq!(f(&format!("{p}.unknown_c")), 0.4);
-    assert_eq!(f(&format!("{p}.unknown_10")), 0.737);
-    assert_eq!(f(&format!("{p}.unknown_18")), 0.427);
+    let p = "object.change_colors[0].initial_permutations[1]";
+    assert_eq!(f(&format!("{p}.weight")), 0.667);
+    assert_eq!(f(&format!("{p}.color_lower_bound")), 0.769);
+    assert_eq!(f(&format!("{p}.color_lower_bound+0x8")), 0.4);
+    assert_eq!(f(&format!("{p}.color_upper_bound")), 0.737);
+    assert_eq!(f(&format!("{p}.color_upper_bound+0x8")), 0.427);
     // Without change colours the block stays empty, as before.
     let plain = crate::h1::Object {
         change_colours: Vec::new(),
@@ -884,19 +884,19 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
     }
     // The label is the rider's mode as the converted graphs name it.
     s.set("label", Val::text("c_turret_ap_d")).unwrap();
-    s.set("string_8", Val::text("driver")).unwrap();
+    s.set("seat_marker_name", Val::text("driver")).unwrap();
     // Marker names as the converted model keeps them (Halo 1's).
-    s.set("string_c", Val::text("driver enter")).unwrap();
-    s.set("string_60", Val::text("camera")).unwrap();
+    s.set("entry_marker_name", Val::text("driver enter")).unwrap();
+    s.set("camera_marker_name", Val::text("camera")).unwrap();
     // Halo 1's seat flags: the driver's, so the rider drives.
-    s.set("unknown_0", word(0x1d)).unwrap();
+    s.set("flags", word(0x1d)).unwrap();
     want.set(VEHI_SEATS, Val::Block(vec![s])).unwrap();
     let pr = def.child("unit.obje.predicted_resources").unwrap();
     let res = [(0xffff_0002u32, mode), (0, bitmap)]
         .iter()
         .map(|(w, id)| {
             let mut x = defs::default_record(pr);
-            x.set("unknown_0", word(*w)).unwrap();
+            x.set("type", word(*w)).unwrap();
             x.set("tag", Val::Datum(Target::Id(*id))).unwrap();
             x
         })
@@ -925,12 +925,12 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
     want.set("unit.weapons", Val::Block(vec![w])).unwrap();
     assert_eq!(defs::diff(def, &want, &got), Vec::new());
     assert_eq!(
-        got.at("block_1c8[0].label"),
+        got.at("seats[0].label"),
         Some(&Val::String(Str::Text("c_turret_ap_d".into())))
     );
     // References a fresh vehicle must not point at tag 0: the two the
     // schema could not see are null references, not zero words.
-    for r in ["snd_ref_284", "foot_ref_294"] {
+    for r in ["suspension_sound", "foot_ref_294"] {
         assert_eq!(
             got.at(r),
             Some(&Val::Ref {
@@ -1052,7 +1052,7 @@ fn rebuilt_vehicle_keeps_source_drag_and_direction_records() {
     assert_eq!(got.at("vehicle_type"), Some(&Val::Enum(1)));
     assert_eq!(got.at("vehicle_flags"), Some(&Val::Int(0xcd1)));
     use tags::object::direct_drive::{CONTACT_DATA, CONTACT_HEADER, CONTACT_MAGIC, WHEEL_BYTES};
-    let meta = |offset| got.at(&format!("block_2f8[0].unknown_{offset:x}")).cloned();
+    let meta = |offset| got.bytes(&format!("phantom_shapes[0].@{offset:#x}"), 4).map(Val::Bytes);
     let wheel = CONTACT_DATA + CONTACT_HEADER;
     let ice = wheel + 2 * WHEEL_BYTES;
     assert_eq!(meta(CONTACT_DATA), word(CONTACT_MAGIC));
@@ -1063,32 +1063,32 @@ fn rebuilt_vehicle_keeps_source_drag_and_direction_records() {
     assert_eq!(meta(wheel + 12), word(0.45f32.to_bits()));
     assert_eq!(meta(ice), word(19));
     assert_eq!(meta(ice + 4), word(0.125f32.to_bits()));
-    assert_eq!(got.at("unknown_2b0").cloned(), word(0));
+    assert_eq!(got.bytes("ground_friction", 4).map(Val::Bytes), word(0));
     assert_eq!(
-        got.at("block_2f8[0].unknown_48").cloned(),
+        got.bytes("phantom_shapes[0].x0", 4).map(Val::Bytes),
         word(0.5_f32.to_bits())
     );
 
-    assert_eq!(got.get("unknown_2c0").cloned(), word(0));
-    assert_eq!(got.get("unknown_2c4").cloned(), word(0.0f32.next_up().to_bits()));
+    assert_eq!(got.bytes("ground_maximum_slope_0", 4).map(Val::Bytes), word(0));
+    assert_eq!(got.bytes("ground_maximum_slope_1", 4).map(Val::Bytes), word(0.0f32.next_up().to_bits()));
     let mut passive = physics;
     passive[0x68..0x6c].copy_from_slice(&1u32.to_le_bytes());
     let passive = crate::rebuild::vehicle(&VehicleSpec { physics: Some(&passive), ..spec }).unwrap();
     let passive = defs::from_built(def, &passive).unwrap();
-    assert_eq!(passive.get("unknown_260").cloned(), word(0));
-    let Some(Val::Block(gears)) = passive.get("block_268") else { panic!("missing direction records") };
+    assert_eq!(passive.bytes("engine_moment", 4).map(Val::Bytes), word(0));
+    let Some(Val::Block(gears)) = passive.get("gears") else { panic!("missing direction records") };
     assert_eq!(gears.len(), 2);
     assert!(gears.iter().all(|g| g.get("speed_ratio") == Some(&Val::Float(0.0))));
     // Each seat takes its kind's words.
-    assert_eq!(got.at("block_1c8[0].unknown_20").cloned(), word(0));
-    assert_eq!(got.at("block_1c8[1].unknown_20").cloned(), word(0));
-    assert_eq!(got.at("block_1c8[0].unknown_0").cloned(), word(0x14));
-    assert_eq!(got.at("block_1c8[1].unknown_0").cloned(), word(0x60));
+    assert_eq!(got.bytes("seats[0].turnover_time", 4).map(Val::Bytes), word(0));
+    assert_eq!(got.bytes("seats[1].turnover_time", 4).map(Val::Bytes), word(0));
+    assert_eq!(got.bytes("seats[0].flags", 4).map(Val::Bytes), word(0x14));
+    assert_eq!(got.bytes("seats[1].flags", 4).map(Val::Bytes), word(0x60));
     // Halo 1's entry markers face the vehicle's forward: no facing test,
     // whatever the role's seats hold.
     for k in 0..2 {
         assert_eq!(
-            got.at(&format!("block_1c8[{k}].unknown_9c")).cloned(),
+            got.bytes(&format!("seats[{k}].entry_marker_cone_angle"), 4).map(Val::Bytes),
             word(std::f32::consts::PI.to_bits()),
         );
     }
@@ -1099,44 +1099,44 @@ fn rebuilt_vehicle_keeps_source_drag_and_direction_records() {
         Some(&Val::floats(&[0.1, 0.0, 0.5]))
     );
     assert_eq!(
-        got.at("block_1c8[0].label"),
+        got.at("seats[0].label"),
         Some(&Val::text("warthog_d"))
     );
     // The contact marker and region come from the source powered point.
     assert_eq!(
-        got.at("block_2f0[0].string_0"),
+        got.at("friction_points[0].marker_name"),
         Some(&Val::text("tire_front_left"))
     );
     assert_eq!(
-        got.at("block_2f0[0].string_44"),
+        got.at("friction_points[0].region_name"),
         Some(&Val::text("left_front_tire"))
     );
-    assert_eq!(got.at("block_2f0[1].unknown_8").cloned(), word(0));
+    assert_eq!(got.bytes("friction_points[1].fraction_of_total_mass", 4).map(Val::Bytes), word(0));
     // Each point's region index is its own, never the role's: the front
     // point's region is the model's third, the back point names none.
-    assert_eq!(got.at("block_2f0[0].unknown_48").cloned(), word(2));
-    assert_eq!(got.at("block_2f0[1].unknown_48").cloned(), word(0xffff_ffff));
-    assert_eq!(got.at("unknown_1f2"), Some(&Val::Bytes(vec![0, 0])));
+    assert_eq!(got.bytes("friction_points[0].region_index", 4).map(Val::Bytes), word(2));
+    assert_eq!(got.bytes("friction_points[1].region_index", 4).map(Val::Bytes), word(0xffff_ffff));
+    assert_eq!(got.bytes("control", 2), Some(vec![0, 0]));
     // Halo 1 countersteers the second powered group.
-    assert_eq!(got.at("block_2f0[0].unknown_4").cloned(), word(6));
-    assert_eq!(got.at("block_2f0[1].unknown_4").cloned(), word(10));
-    assert!(matches!(got.at("block_2e8"), Some(Val::Block(b)) if b.is_empty()));
-    assert_eq!(got.at("block_268[0].speed_ratio"), Some(&Val::Float(-1.0)));
-    assert_eq!(got.at("block_268[1].speed_ratio"), Some(&Val::Float(1.0)));
+    assert_eq!(got.bytes("friction_points[0].flags", 4).map(Val::Bytes), word(6));
+    assert_eq!(got.bytes("friction_points[1].flags", 4).map(Val::Bytes), word(10));
+    assert!(matches!(got.at("anti_gravity_points"), Some(Val::Block(b)) if b.is_empty()));
+    assert_eq!(got.at("gears[0].speed_ratio"), Some(&Val::Float(-1.0)));
+    assert_eq!(got.at("gears[1].speed_ratio"), Some(&Val::Float(1.0)));
     let again = defs::to_built(def, &got, &mut |_| None).unwrap();
     assert_eq!(defs::from_built(def, &again).unwrap(), got);
     // This ground vehicle has no vertical speed.
-    assert_eq!(got.at("unknown_23c").cloned(), word(0));
+    assert_eq!(got.bytes("minimum_flipping_angular_velocity", 4).map(Val::Bytes), word(0));
     // The driver's seat names its camera track; the passenger's names
     // none (the engine's default unit track).
     assert_eq!(
-        got.at("block_1c8[0].block_74[0].ref_0"),
+        got.at("seats[0].camera_tracks[0].track"),
         Some(&Val::Ref {
             group: 0,
             target: Target::Id(track),
         })
     );
-    assert!(matches!(got.at("block_1c8[1].block_74"), Some(Val::Block(b)) if b.is_empty()));
+    assert!(matches!(got.at("seats[1].camera_tracks"), Some(Val::Block(b)) if b.is_empty()));
 }
 
 /// A Halo 1 camera track becomes a Halo 2 `trak` with the same points, in
@@ -1146,13 +1146,14 @@ fn rebuilt_vehicle_keeps_source_drag_and_direction_records() {
 /// elevation the engine searches by rises along it, as on retail tracks.
 #[test]
 fn camera_track_keeps_halo_1s_control_points() {
+    use std::f32::consts::FRAC_1_SQRT_2;
     use tags::defs::{self, Defs, Val};
     let h1 = crate::h1::CameraTrack {
         flags: 0,
         points: vec![
-            ([0.5, 0.0, 3.5], [0.0, -0.7071, 0.0, 0.7071]),
+            ([0.5, 0.0, 3.5], [0.0, -FRAC_1_SQRT_2, 0.0, FRAC_1_SQRT_2]),
             ([-2.75, 0.0, 0.68], [0.0, 0.0, 0.0, 1.0]),
-            ([-1.0, 0.0, -0.18], [0.0, 0.7071, 0.0, 0.7071]),
+            ([-1.0, 0.0, -0.18], [0.0, FRAC_1_SQRT_2, 0.0, FRAC_1_SQRT_2]),
         ],
     };
     let root = crate::rebuild::camera_track(&h1).unwrap();
@@ -1629,9 +1630,9 @@ fn biped_carries_each_source_word_and_leaves_unmapped_fields_at_default() {
     let r = defs::from_built(d, &root).unwrap();
     let again = defs::to_built(d, &r, &mut |_| None).unwrap();
     assert_eq!(defs::from_built(d, &again).unwrap(), r);
-    let word = |p: &str| match r.at(p) {
-        Some(Val::Bytes(b)) => u32::from_le_bytes(b[..4].try_into().unwrap()),
-        x => panic!("{p}: {x:?}"),
+    let word = |p: &str| match r.bytes(p, 4) {
+        Some(b) => u32::from_le_bytes(b[..4].try_into().unwrap()),
+        None => panic!("{p}"),
     };
     assert_eq!(r.at("unit.obje.object_type"), Some(&Val::Enum(BIPED_TYPE)));
     assert_eq!(r.at("unit.obje.bounding_radius"), Some(&Val::Float(0.7)));
@@ -1640,11 +1641,11 @@ fn biped_carries_each_source_word_and_leaves_unmapped_fields_at_default() {
         r.at("unit.obje.model"),
         Some(Val::Ref { target: Target::Id(id), .. }) if *id == hlmt
     ));
-    assert_eq!(word("unknown_1d0"), 0);
+    assert_eq!(word("boost_peak_power"), 0);
     for (path, at) in BIPED_WORDS {
         assert_eq!(word(path), (*at as f32).to_bits(), "{path}");
     }
-    assert!(matches!(r.at("unit.block_1b8"), Some(Val::Block(entries)) if entries.is_empty()));
+    assert!(matches!(r.at("unit.powered_seats"), Some(Val::Block(entries)) if entries.is_empty()));
     let Some(Val::Block(pr)) = r.at("unit.obje.predicted_resources") else {
         panic!()
     };
@@ -1718,8 +1719,8 @@ fn rebuilt_biped_uses_source_shapes_tracks_weapons_and_hud() {
     };
     assert_eq!(id("unit.obje.model"), hlmt, "Halo 1's model");
     assert_eq!(id("unit.weapons[0].weapon"), weapon);
-    assert_eq!(id("unit.block_e8[0].ref_0"), track);
-    assert_eq!(id(&format!("{BIPD_HUD}[1].ref_0")), hud);
+    assert_eq!(id("unit.camera_tracks[0].track"), track);
+    assert_eq!(id(&format!("{BIPD_HUD}[1].hud_interface")), hud);
     // The camera at the head, a weapon in the right hand; no left hand
     // marker, so none named.
     let text = |p: &str| match r.at(p) {
@@ -1727,30 +1728,30 @@ fn rebuilt_biped_uses_source_shapes_tracks_weapons_and_hud() {
         Some(Val::String(defs::Str::Null)) | None => None,
         x => panic!("{p}: {x:?}"),
     };
-    assert_eq!(text("unit.string_d4").as_deref(), Some("head"));
-    assert_eq!(text("unit.string_158").as_deref(), Some("right hand"));
-    assert_eq!(text("unit.string_15c"), None);
-    let f = |p: &str| match r.at(p) {
-        Some(Val::Bytes(b)) => f32::from_le_bytes(b[..4].try_into().unwrap()),
-        x => panic!("{p}: {x:?}"),
+    assert_eq!(text("unit.camera_marker_name").as_deref(), Some("head"));
+    assert_eq!(text("unit.right_hand_node").as_deref(), Some("right hand"));
+    assert_eq!(text("unit.left_hand_node"), None);
+    let f = |p: &str| match r.bytes(p, 4) {
+        Some(b) => f32::from_le_bytes(b[..4].try_into().unwrap()),
+        None => panic!("{p}"),
     };
     assert_eq!(
-        [f("unknown_268"), f("unknown_26c"), f("unknown_270")],
+        [f("height_standing"), f("height_crouching"), f("radius")],
         [0.7, 0.5, 0.2]
     );
     let close = |a: f32, b: f32| (a - b).abs() < 1e-6;
     for (i, top) in [0.5, 0.3].into_iter().enumerate() {
         let p = format!("{BIPD_PILLS}[{i}]");
-        assert!(close(f(&format!("{p}.unknown_2c")), 0.2));
-        assert!(close(f(&format!("{p}.unknown_38")), top), "{p}");
-        assert!(close(f(&format!("{p}.unknown_48")), 0.2));
+        assert!(close(f(&format!("{p}.radius")), 0.2));
+        assert!(close(f(&format!("{p}.bottom+0x8")), top), "{p}");
+        assert!(close(f(&format!("{p}.top+0x8")), 0.2));
         // The Havok header the engine writes stays zero.
         assert_eq!(f(&format!("{p}.unknown_20")), 0.0);
     }
     for (i, k) in [1.0, 1.35, 1.7].into_iter().enumerate() {
         let p = format!("{BIPD_SPHERES}[{i}]");
-        assert!(close(f(&format!("{p}.unknown_2c")), 0.2 * k));
-        assert!(close(f(&format!("{p}.unknown_78")), 0.2 * k));
+        assert!(close(f(&format!("{p}.radius")), 0.2 * k));
+        assert!(close(f(&format!("{p}.translation+0x8")), 0.2 * k));
         assert_eq!(f(&format!("{p}.unknown_3c")), 0.0, "the child pointer");
     }
 }
@@ -2328,12 +2329,12 @@ fn rebuilt_vehicle_holds_its_functions_and_primary_scales() {
     crate::rebuild::object_effects(b"vehi", &mut r, "unit.obje", &a, None).unwrap();
     crate::rebuild::object_functions(b"vehi", &mut r, "unit.obje", &f).unwrap();
     let r = defs::from_built(d, &defs::to_built(d, &r, &mut |_| None).unwrap()).unwrap();
-    assert_eq!(r.at("unit.obje.functions[0].string_4"), Some(&Val::text("engine_hack")));
+    assert_eq!(r.at("unit.obje.functions[0].import_name"), Some(&Val::text("engine_hack")));
     assert_eq!(r.at("unit.obje.functions[0].output"), Some(&Val::text("c_out")));
-    assert_eq!(r.at("unit.obje.functions[0].string_c"), Some(&Val::text("a_out")));
-    assert_eq!(r.at("unit.obje.functions[0].data_14"), Some(&Val::Data(vec![0; 0x14])));
-    assert_eq!(r.at("unit.obje.attachments[0].string_10"), Some(&Val::text("c_out")));
-    assert_eq!(r.at("unit.obje.attachments[0].string_14"), Some(&Val::text("b_out")));
+    assert_eq!(r.at("unit.obje.functions[0].turn_off_with"), Some(&Val::text("a_out")));
+    assert_eq!(r.at("unit.obje.functions[0].default_function"), Some(&Val::Data(vec![0; 0x14])));
+    assert_eq!(r.at("unit.obje.attachments[0].primary_scale"), Some(&Val::text("c_out")));
+    assert_eq!(r.at("unit.obje.attachments[0].secondary_scale"), Some(&Val::text("b_out")));
     assert_eq!(r.at("unit.obje.attachments[0].change_colour"), Some(&Val::Int(0)));
 }
 
@@ -2449,7 +2450,7 @@ fn shotgun_and_automatic_have_distinct_inputs_on_the_same_barrel() {
         };
         let built = weapon(&w, &source, &WeaponParts::default()).unwrap();
         let r = defs::from_built(d, &built).unwrap();
-        let Some(Val::Block(triggers)) = r.at("block_2c8") else {
+        let Some(Val::Block(triggers)) = r.at("triggers") else {
             panic!("triggers")
         };
         let Some(Val::Block(barrels)) = r.at("barrels") else {
@@ -2460,7 +2461,7 @@ fn shotgun_and_automatic_have_distinct_inputs_on_the_same_barrel() {
                 .unwrap()
                 .bytes
         };
-        let tr = bytes("block_2c8", &triggers[0]);
+        let tr = bytes("triggers", &triggers[0]);
         let b = bytes("barrels", &barrels[0]);
         let short = |buf: &[u8], offset: usize| i16::from_le_bytes([buf[offset], buf[offset + 1]]);
         assert_eq!(short(&tr, 6), single);
@@ -2631,12 +2632,12 @@ fn a_weapon_fires_and_reloads_with_halo1_s_effects() {
     };
     let barrels = block(&r, "barrels");
     assert_eq!(barrels.len(), 2);
-    assert_eq!(barrels[0].at("unknown_d4"), Some(&Val::Bytes(4.0f32.to_le_bytes().to_vec())));
-    assert_eq!(barrels[1].at("unknown_d4"), Some(&Val::Bytes(1000.0f32.to_le_bytes().to_vec())));
-    let fx = block(&barrels[0], "block_e4");
+    assert_eq!(barrels[0].bytes("rate_of_fire_acceleration_rate", 4), Some(4.0f32.to_le_bytes().to_vec()));
+    assert_eq!(barrels[1].bytes("rate_of_fire_acceleration_rate", 4), Some(1000.0f32.to_le_bytes().to_vec()));
+    let fx = block(&barrels[0], "firing_effects");
     assert_eq!(fx.len(), 2);
-    assert_eq!(fx[0].at("unknown_0"), Some(&Val::Bytes(vec![2, 0, 7, 0])));
-    assert_eq!(fx[1].at("unknown_0"), Some(&Val::Bytes(vec![8, 0, 12, 0])));
+    assert_eq!(fx[0].bytes("shot_count_lower_bound", 4), Some(vec![2, 0, 7, 0]));
+    assert_eq!(fx[1].bytes("shot_count_lower_bound", 4), Some(vec![8, 0, 12, 0]));
     let effects = |e: &Record| FIRING_EFFECT_REFS.map(|p| target(e, p));
     let damage = |e: &Record| FIRING_DAMAGE_REFS.map(|p| target(e, p));
     assert_eq!(effects(&fx[0]), [Some(local(3)), None, Some(local(4))]);
@@ -2646,15 +2647,15 @@ fn a_weapon_fires_and_reloads_with_halo1_s_effects() {
     assert_eq!(damage(&fx[0]), [Some(shake), None, None]);
     assert_eq!(effects(&fx[1]), [Some(local(5)), None, None]);
     assert!(
-        block(&barrels[1], "block_e4").is_empty(),
+        block(&barrels[1], "firing_effects").is_empty(),
         "the second trigger has no firing effects of its own"
     );
     let mags = block(&r, "magazines");
-    assert_eq!(mags[0].at("unknown_0"), Some(&Val::Bytes(5u32.to_le_bytes().to_vec())));
-    assert_eq!(mags[0].at("unknown_18"), Some(&Val::Bytes(1.25f32.to_le_bytes().to_vec())));
-    let objects = block(&mags[0], "block_54");
-    assert_eq!(objects[0].at("unknown_0"), Some(&Val::Bytes(9u32.to_le_bytes().to_vec())));
-    assert_eq!(target(&objects[0], "ref_4"), Some(local(12)));
+    assert_eq!(mags[0].bytes("flags", 4), Some(5u32.to_le_bytes().to_vec()));
+    assert_eq!(mags[0].bytes("chamber_time", 4), Some(1.25f32.to_le_bytes().to_vec()));
+    let objects = block(&mags[0], "magazine_equipment");
+    assert_eq!(objects[0].bytes("rounds", 4), Some(9u32.to_le_bytes().to_vec()));
+    assert_eq!(target(&objects[0], "equipment"), Some(local(12)));
     assert_eq!(target(&mags[0], MAGAZINE_RELOADING_EFFECT), Some(local(6)));
     assert_eq!(target(&mags[0], MAGAZINE_CHAMBERING_EFFECT), Some(local(7)));
     assert_eq!(target(&r, "ready_effect"), Some(local(8)));
@@ -2725,14 +2726,14 @@ fn hover_points_keep_their_source_lift() {
         point("left", 1.85, 0.0),
         point("right", 1.85, 0.45),
     ]);
-    let at = |r: &defs::Record, i: usize, k: &str| r.at(&format!("{VEHI_HOVER}[{i}].{k}")).cloned();
-    assert_eq!(at(&got, 0, "unknown_8"), word(3.75 * GRAVITY_RATIO));
-    assert_eq!(at(&got, 1, "unknown_8"), word(1.85 * GRAVITY_RATIO));
-    assert_eq!(at(&got, 2, "unknown_10"), word(0.45));
-    assert_eq!(at(&got, 1, "unknown_10"), word(0.0));
+    let at = |r: &defs::Record, i: usize, k: &str| r.bytes(&format!("{VEHI_HOVER}[{i}].{k}"), 4).map(Val::Bytes);
+    assert_eq!(at(&got, 0, "antigrav_strength"), word(3.75 * GRAVITY_RATIO));
+    assert_eq!(at(&got, 1, "antigrav_strength"), word(1.85 * GRAVITY_RATIO));
+    assert_eq!(at(&got, 2, "antigrav_height"), word(0.45));
+    assert_eq!(at(&got, 1, "antigrav_height"), word(0.0));
     let got = build(&[point("a", 1.85, 0.45), point("b", 1.85, 0.0)]);
-    assert_eq!(at(&got, 0, "unknown_8"), word(1.85 * GRAVITY_RATIO));
-    assert_eq!(at(&got, 1, "unknown_8"), word(1.85 * GRAVITY_RATIO));
+    assert_eq!(at(&got, 0, "antigrav_strength"), word(1.85 * GRAVITY_RATIO));
+    assert_eq!(at(&got, 1, "antigrav_strength"), word(1.85 * GRAVITY_RATIO));
 }
 
 /// A wheel's pieces are cut at the hull's lowest point and what is left
@@ -2822,7 +2823,7 @@ fn only_the_source_projectile_slots_get_references() {
     };
     assert_eq!(target(PROJECTILE_FLYBY_SOUND), Target::Null);
     assert_eq!(target(PROJECTILE_DETONATION), Target::Id(local(3)));
-    assert_eq!(target("ref_140"), Target::Null);
+    assert_eq!(target("impact_effect"), Target::Null);
 }
 
 #[test]

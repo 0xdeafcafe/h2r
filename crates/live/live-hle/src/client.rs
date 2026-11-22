@@ -13,7 +13,7 @@ use std::{
     collections::BTreeMap,
     io::Read,
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         mpsc::{self, SyncSender},
     },
@@ -112,10 +112,12 @@ pub(crate) enum Reply {
     Done,
     Teams(Vec<live_proto::team::Team>),
     Matches(Vec<live_proto::session::Session>),
+    BrowserMatches(BrowserPage),
     Matchmaking(Box<crate::matchmaking::Step>),
     MatchmakingUnsupported,
     Social(SocialSnapshot),
     InviteAccepted(live_proto::mailbox::Invite),
+    JoinLink(Result<live_proto::mailbox::Invite, String>),
     /// A mute list, oldest first.
     Mutes(Vec<u64>),
     Ranks(Vec<live_proto::rank::LeaderboardRow>),
@@ -129,6 +131,11 @@ pub(crate) enum Reply {
     Mods(crate::mods::ModPage),
     /// The served hopper file's clanker hoppers (docs/game/bots.md §8).
     ClankerHoppers(live_proto::hopper::clankers::ClankerHoppers),
+    /// A rules IR blob as the server sent it, or why there is none
+    /// (`NotFound` kept apart from the other refusals).
+    RulesIr(Result<Vec<u8>, crate::game_variants::FetchError>),
+    /// The first signed-in account's Live game variants.
+    GameVariants(Vec<crate::game_variants::LiveVariant>),
     /// Where content is fetched from (the API base) and the map gate that
     /// installs it, for a download on a thread of its own.
     Content {
@@ -138,17 +145,40 @@ pub(crate) enum Reply {
         reader: Option<crate::maps::Reader>,
     },
 }
+#[derive(Default)]
+struct Completion {
+    result: Mutex<Option<Result<Reply, u32>>>,
+    ready: Condvar,
+}
+
 #[derive(Clone)]
-pub(crate) struct Pending(Arc<Mutex<Option<Result<Reply, u32>>>>);
+pub(crate) struct Pending(Arc<Completion>);
 impl Pending {
     fn new() -> Self {
         Self(Arc::default())
     }
     pub fn take(&self) -> Option<Result<Reply, u32>> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).take()
+        self.0.result.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+    /// Inspect the worker's result without taking it away from the guest's task.
+    pub fn failed(&self) -> bool {
+        self.0.result
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(Result::is_err)
+    }
+    /// Synchronous reads own this completion and retain their original deadline.
+    /// Guest task polling continues to use the nonblocking `take`.
+    pub fn wait(&self, timeout: Duration) -> Option<Result<Reply, u32>> {
+        let guard = self.0.result.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut result, _) = self.0.ready.wait_timeout_while(guard, timeout, |r| r.is_none())
+            .unwrap_or_else(|e| e.into_inner());
+        result.take()
     }
     fn finish(&self, value: Result<Reply, u32>) {
-        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(value);
+        *self.0.result.lock().unwrap_or_else(|e| e.into_inner()) = Some(value);
+        self.0.ready.notify_one();
     }
 }
 #[derive(Clone)]
@@ -170,6 +200,9 @@ impl Session {
     }
     fn cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
+    }
+    pub fn same_logon(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.cancelled, &other.cancelled)
     }
     pub fn status(&self) -> u32 {
         self.status.load(Ordering::Acquire)
@@ -197,6 +230,13 @@ pub(crate) enum TeamRequest {
     Team(Xuid),
     Change(live_proto::team::Action),
 }
+#[derive(Clone, serde::Deserialize)]
+pub(crate) struct BrowserPage {
+    pub items: Vec<live_proto::session::Session>,
+    /// Omitted by Live servers that do not support custom game filters.
+    pub variants: Option<Vec<String>>,
+}
+
 #[derive(Clone)]
 pub(crate) enum MatchRequest {
     Create {
@@ -218,6 +258,11 @@ pub(crate) enum MatchRequest {
         attributes: BTreeMap<u32, live_proto::session::AttributeValue>,
         optimatch: Option<live_proto::optimatch::Query>,
     },
+    Browse {
+        limit: u32,
+        query: live_proto::optimatch::Query,
+        filters: live_proto::session::BrowserFilters,
+    },
     Find(String),
     /// The hosted session's players changed: `PlayerJoined` and
     /// `PlayerLeft` on `session-<id>`, one signed batch each, so a refused
@@ -234,6 +279,7 @@ pub(crate) enum SocialRequest {
     Send { to: Vec<Xuid>, session_id: String },
     Answer(live_proto::mailbox::Answered),
     Join { from: Xuid, session_id: String },
+    JoinLink(String),
 }
 /// A player report ([`crate::feedback`]).
 #[derive(Clone)]
@@ -287,6 +333,10 @@ enum Work {
     /// `GET /v1/hoppers/clankers` (docs/game/bots.md §8), as the first
     /// account signed in on this console.
     ClankerHoppers,
+    /// `GET /v1/rules/{hash}/ir`, as the first account signed in.
+    RulesIr(String),
+    /// `GET /v1/variants?author=<xuid>`, the first signed-in account's.
+    GameVariants,
     Wake,
 }
 /// Called on the worker with a command's result, once it has one.
@@ -300,6 +350,8 @@ struct Command {
 #[derive(Clone)]
 pub(crate) struct Service {
     pub machine: bool,
+    pub has_map_pack: bool,
+    addon_hoppers: Arc<AtomicU32>,
     sender: SyncSender<Command>,
     metrics: Arc<Metrics>,
     /// The sessions the worker read most recently: what their hosts advertised
@@ -338,13 +390,20 @@ impl SessionCache {
     }
 }
 impl Service {
-    pub fn start(base: String, options: ServerOptions) -> std::io::Result<Self> {
+    pub fn start(
+        base: String,
+        options: ServerOptions,
+        replication: crate::qos::Version,
+    ) -> std::io::Result<Self> {
         let (sender, receiver) = mpsc::sync_channel::<Command>(64);
         let metrics = Arc::new(Metrics::default());
         let counters = metrics.clone();
         let seen = Seen::default();
         let seen_by_worker = seen.clone();
         let machine = options.publisher.is_some();
+        let has_map_pack = options.maps.as_ref().is_some_and(|maps| maps.has_map_pack());
+        let addon_hoppers = Arc::new(AtomicU32::new(0));
+        let hoppers_by_worker = addon_hoppers.clone();
         std::thread::Builder::new()
             .name("h2-live-http".into())
             .spawn(move || {
@@ -355,7 +414,9 @@ impl Service {
                 let mut worker = Worker {
                     base,
                     maps: options.maps.clone(),
+                    addon_hoppers: hoppers_by_worker,
                     software: Software::from_options(&options),
+                    replication,
                     agent,
                     publisher: options.publisher,
                     connection: None,
@@ -364,6 +425,7 @@ impl Service {
                     seen: seen_by_worker,
                     retry: options.retry,
                     grace: options.connection_grace,
+                    ping_batch: true,
                     retry_after: Cell::new(None),
                 };
                 let mut next_ping = Instant::now() + options.heartbeat_interval;
@@ -407,10 +469,16 @@ impl Service {
             })?;
         Ok(Self {
             machine,
+            has_map_pack,
+            addon_hoppers,
             sender,
             metrics,
             seen,
         })
+    }
+    pub fn addon_hopper(&self, hopper: u32) -> bool {
+        hopper < live_proto::hopper::HOPPERS as u32
+            && self.addon_hoppers.load(Ordering::Acquire) & (1 << hopper) != 0
     }
     fn submit(&self, session: &Session, work: Work) -> Result<Pending, u32> {
         self.submit_then(session, work, None)
@@ -528,6 +596,14 @@ impl Service {
     pub fn read_presence(&self, s: &Session) -> Result<Pending, u32> {
         self.submit(s, Work::ReadPresence)
     }
+    /// A rules IR blob by its full hash (`GET /v1/rules/{hash}/ir`).
+    pub fn rules_ir(&self, s: &Session, hash: String) -> Result<Pending, u32> {
+        self.submit(s, Work::RulesIr(hash))
+    }
+    /// The first signed-in account's game variants (`GET /v1/variants`).
+    pub fn game_variants(&self, s: &Session) -> Result<Pending, u32> {
+        self.submit(s, Work::GameVariants)
+    }
     /// A page of the mod repository; `then` gets it on the worker.
     pub fn mods(
         &self,
@@ -604,7 +680,9 @@ struct Worker {
     publisher: Option<HostPublisher>,
     base: String,
     maps: Option<Arc<crate::maps::MapGate>>,
+    addon_hoppers: Arc<AtomicU32>,
     software: Software,
+    replication: crate::qos::Version,
     agent: ureq::Agent,
     connection: Option<Connection>,
     active: Option<Active>,
@@ -613,6 +691,10 @@ struct Worker {
     retry: Retry,
     /// How long the heartbeat may fail before the connection is lost.
     grace: Duration,
+    /// Whether the server has `POST /v1/presence/ping/batch` (one request
+    /// a heartbeat for the whole console). A 404 from it says an older
+    /// server: back to one ping per account.
+    ping_batch: bool,
     /// The last error answer's `Retry-After`, for [`Worker::retried`].
     retry_after: Cell<Option<Duration>>,
 }
@@ -630,6 +712,18 @@ enum Error {
     Replayed,
 }
 impl Error {
+    /// For a log line: what the server said, or that it said nothing.
+    fn describe(self) -> String {
+        match self {
+            Self::Status(code) => format!("the server answered {code}"),
+            Self::Transport => "the server could not be reached".into(),
+            Self::Protocol => "the server's answer did not parse".into(),
+            Self::TooLarge => "the server's answer was too large".into(),
+            Self::Team(_) => "the server refused it for the team".into(),
+            Self::Banned => "the account is banned".into(),
+            Self::Replayed => "the server already had it (409)".into(),
+        }
+    }
     fn result(self) -> u32 {
         match self {
             Self::Team(error) => error.hresult(),
@@ -648,6 +742,39 @@ impl Error {
             Self::Transport | Self::Status(429 | 500 | 502 | 503 | 504)
         )
     }
+}
+
+fn console_hopper_file(
+    bytes: Vec<u8>,
+    has_map_pack: bool,
+) -> Result<(Vec<u8>, u32), live_proto::hopper::HopperError> {
+    use live_proto::hopper::{HOPPERS, HopperFile};
+
+    // The title handles a malformed or older envelope with its own
+    // defaults. Keep its download intact when it is not a usable image.
+    let Ok(mut file) = HopperFile::parse(&bytes) else {
+        return Ok((bytes, 0));
+    };
+    let mut addon_hoppers = 0;
+    for hopper in 0..HOPPERS {
+        if file.contains_addon_maps(hopper)? {
+            addon_hoppers |= 1 << hopper;
+        }
+    }
+    let bytes = if !has_map_pack && file.retain_base_maps()? {
+        file.build_checked()?
+    } else {
+        bytes
+    };
+    Ok((bytes, addon_hoppers))
+}
+
+/// Old servers reject unknown fields on these request types. A single
+/// compatibility retry forfeits add-on selection on that server.
+fn without_map_pack(request: &impl serde::Serialize) -> Result<String, Error> {
+    let mut value = serde_json::to_value(request).map_err(|_| Error::Protocol)?;
+    value.as_object_mut().ok_or(Error::Protocol)?.remove("has_map_pack");
+    serde_json::to_string(&value).map_err(|_| Error::Protocol)
 }
 /// Results that mean the server refused the account itself rather than
 /// could not be reached: they end the connection at once, with no grace.
@@ -726,6 +853,10 @@ impl Worker {
         body: Option<&str>,
         limit: usize,
     ) -> Result<Vec<u8>, Error> {
+        self.retry_response(|| self.response(build(), body, limit))
+    }
+
+    fn retry_response(&self, send: impl Fn() -> Result<Vec<u8>, Error>) -> Result<Vec<u8>, Error> {
         let attempts = self.retry.attempts.max(1);
         let mut wait = self.retry.backoff;
         // The server's own answer says more than a later failure to reach it.
@@ -733,7 +864,7 @@ impl Worker {
         let mut attempt = 1;
         loop {
             self.retry_after.set(None);
-            let error = match self.response(build(), body, limit) {
+            let error = match send() {
                 Ok(bytes) => return Ok(bytes),
                 // An earlier attempt landed and its answer was lost.
                 Err(Error::Replayed) if attempt > 1 => return Ok(Vec::new()),
@@ -796,6 +927,7 @@ impl Worker {
             api: api.as_str().trim_end_matches('/').into(),
             id: discovery.id,
         });
+        self.ping_batch = true;
         Ok(())
     }
     fn author(&self, user: &Identity) -> String {
@@ -861,12 +993,25 @@ impl Worker {
         Ok(())
     }
     fn fetch(&self, user: &Identity, name: &'static str, id: u32) -> Result<File, Error> {
+        use live_proto::hopper::{FULL_HOPPER_QUERY, HALO_2_HOPPER_FILE};
+
         let path = format!("/titles/4D530064/files/{name}");
-        let bytes = self.retried(
-            || self.request("GET", &path, user, lxm::READ),
-            None,
-            MAX_FILE,
-        )?;
+        let download = |path: &str| {
+            self.retried(|| self.request("GET", path, user, lxm::READ), None, MAX_FILE)
+        };
+        let bytes = if name == HALO_2_HOPPER_FILE {
+            let full = format!("{path}?{FULL_HOPPER_QUERY}");
+            let bytes = match download(&full) {
+                Err(Error::Status(400 | 404)) => download(&path)?,
+                result => result?,
+            };
+            let has_map_pack = self.maps.as_ref().is_some_and(|maps| maps.has_map_pack());
+            let (file, hoppers) = console_hopper_file(bytes, has_map_pack).map_err(|_| Error::Protocol)?;
+            self.addon_hoppers.store(hoppers, Ordering::Release);
+            file
+        } else {
+            download(&path)?
+        };
         Ok(File {
             id,
             bytes: bytes.into(),
@@ -1000,13 +1145,20 @@ impl Worker {
     ) -> Result<Reply, Error> {
         use crate::matchmaking::{Outcome, QueueAction, Step, queue_action};
 
+        let put = |body: &str| {
+            self.response(
+                self.request("PUT", "/matchmaking/queue", user, lxm::SESSIONS_WRITE)
+                    .set("content-type", "application/json"),
+                Some(body),
+                64 * 1024,
+            )
+        };
         let body = serde_json::to_string(ticket).map_err(|_| Error::Protocol)?;
-        let bytes = match self.response(
-            self.request("PUT", "/matchmaking/queue", user, lxm::SESSIONS_WRITE)
-                .set("content-type", "application/json"),
-            Some(&body),
-            64 * 1024,
-        ) {
+        let answer = match put(&body) {
+            Err(Error::Status(400)) => put(&without_map_pack(ticket)?),
+            result => result,
+        };
+        let bytes = match answer {
             Err(Error::Status(404)) => return Ok(Reply::MatchmakingUnsupported),
             Err(error) if error.retryable() => {
                 // Allocation may outlast the HTTP timeout. Let the search
@@ -1018,9 +1170,38 @@ impl Worker {
         let me = Xuid(user.xuid);
         let value = serde_json::from_slice(&bytes).map_err(|_| Error::Protocol)?;
         let step = match queue_action(value, ticket.hopper, me).ok_or(Error::Protocol)? {
-            QueueAction::Probe(candidates) => {
-                let samples = crate::qos::measure(candidates, Duration::from_millis(450))
-                    .map_err(|_| Error::Transport)?;
+            QueueAction::Probe(candidates, region_echoes) => {
+                let connection = self.connection.as_ref().ok_or(Error::Protocol)?;
+                // Echo targets carry a validated region code. Only the discovery
+                // origin may receive a bearer, including on a failed upgrade.
+                let mut probes = Vec::new();
+                for probe in region_echoes {
+                    let mut url = Url::parse(&format!("{}/hosts/regions/{}/echo", connection.api, probe.region))
+                        .map_err(|_| Error::Protocol)?;
+                    let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
+                    url.set_scheme(scheme).map_err(|_| Error::Protocol)?;
+                    let token = issue_token(&user.key, &self.author(user), &connection.id, lxm::SESSIONS_RELAY, now());
+                    probes.push((probe, url, token));
+                }
+                let samples = std::thread::scope(|scope| {
+                    let mut pending = Vec::new();
+                    for (probe, url, token) in probes {
+                        let task = std::thread::Builder::new()
+                            .name("live-region-qos".into())
+                            .spawn_scoped(scope, move || crate::tunnel_client::region_echo(url.as_str(), &token));
+                        pending.push((probe, task));
+                    }
+                    let mut samples = crate::qos::measure(candidates, Duration::from_millis(450))
+                        .map_err(|_| Error::Transport)?;
+                    for (probe, task) in pending {
+                        samples.push(live_proto::matchmaking::Sample {
+                            target: probe.xuid,
+                            generation: probe.generation,
+                            rtt_ms: task.ok().and_then(|t| t.join().ok()).flatten(),
+                        });
+                    }
+                    Ok::<_, Error>(samples)
+                })?;
                 Step::Retry(samples)
             }
             QueueAction::Wait => Step::Retry(Vec::new()),
@@ -1107,18 +1288,17 @@ impl Worker {
         }
         let kid = crate::sessions::wire_id(session_id).ok_or(Error::Protocol)?;
         let address = std::net::SocketAddrV4::new(row.endpoint.addr, row.endpoint.port);
-        if self.map_ready(&row, true)
-            && crate::qos::query_why(address, kid, 1).is_ok_and(|r| !r.data.is_empty())
-        {
-            Ok(Step::Complete(Outcome::Join {
-                rows: vec![row],
-                frames_from_host,
-                dedicated: None,
-                tunnel: None,
-            }))
-        } else {
-            Ok(Step::Retry(Vec::new()))
+        let retry = Step::Retry(Vec::new());
+        if !self.map_ready(&row, true) {
+            return Ok(retry);
         }
+        let ready = crate::qos::ready_to_join(address, kid, self.replication.get());
+        Ok(Step::after_qos(ready, retry, || Outcome::Join {
+            rows: vec![row],
+            frames_from_host,
+            dedicated: None,
+            tunnel: None,
+        }))
     }
     fn join_dedicated(
         &self,
@@ -1144,21 +1324,20 @@ impl Worker {
         let qos_base = tunnel
             .as_ref()
             .map_or(join.route.address, |(_, handle)| handle.qos_base());
-        if !crate::qos::query_why(qos_base, kid, 1).is_ok_and(|r| !r.data.is_empty()) {
-            return Ok(Step::RequeueDedicated);
-        }
-
-        let mut row = join.row.clone();
-        join.route.apply(&mut row);
-        self.saw(std::slice::from_ref(&row));
-        Ok(Step::Complete(Outcome::Join {
-            rows: vec![row],
-            frames_from_host: join.frames_from_host,
-            dedicated: Some(DedicatedMatch {
-                hopper: join.hopper,
-                route: join.route.clone(),
-            }),
-            tunnel,
+        let ready = crate::qos::ready_to_join(qos_base, kid, self.replication.get());
+        Ok(Step::after_qos(ready, Step::RequeueDedicated, || {
+            let mut row = join.row.clone();
+            join.route.apply(&mut row);
+            self.saw(std::slice::from_ref(&row));
+            Outcome::Join {
+                rows: vec![row],
+                frames_from_host: join.frames_from_host,
+                dedicated: Some(DedicatedMatch {
+                    hopper: join.hopper,
+                    route: join.route.clone(),
+                }),
+                tunnel,
+            }
         }))
     }
     fn matches_request(
@@ -1174,16 +1353,13 @@ impl Worker {
             } => {
                 vec![self.create_match(Writer::Account(user), &new, assignment.as_deref())?]
             }
-            MatchRequest::Queue { .. } | MatchRequest::JoinDedicated(_) => {
+            MatchRequest::Queue { .. }
+            | MatchRequest::JoinDedicated(_)
+            | MatchRequest::Browse { .. } => {
                 return Err(Error::Protocol);
             }
             MatchRequest::Update { id, update } => {
-                self.match_event(
-                    user,
-                    &id,
-                    session::UPDATED,
-                    serde_json::to_value(update).map_err(|_| Error::Protocol)?,
-                )?;
+                self.write_match_update(Writer::Account(user), &id, &update)?;
                 self.fetch_match(user, &id)?
             }
             MatchRequest::Delete(id) => {
@@ -1209,22 +1385,27 @@ impl Worker {
                 attributes,
                 optimatch,
             } => {
-                let mut query = url::form_urlencoded::Serializer::new(String::new());
-                query.append_pair(
-                    "attributes",
-                    &serde_json::to_string(&attributes).map_err(|_| Error::Protocol)?,
-                );
-                if let Some(q) = optimatch {
-                    query.append_pair(
-                        "optimatch",
-                        &serde_json::to_string(&q).map_err(|_| Error::Protocol)?,
-                    );
-                }
-                let filter = query.finish();
-                let page: live_proto::Page<session::Session> = self.team_json(
-                    user,
-                    &format!("/sessions?state=open&limit={}&{filter}", limit.max(1)),
-                )?;
+                let attributes = serde_json::to_string(&attributes).map_err(|_| Error::Protocol)?;
+                let search = |optimatch: Option<&str>| {
+                    let mut filter = url::form_urlencoded::Serializer::new(String::new());
+                    filter.append_pair("attributes", &attributes);
+                    if let Some(optimatch) = optimatch {
+                        filter.append_pair("optimatch", optimatch);
+                    }
+                    self.team_json::<live_proto::Page<session::Session>>(
+                        user,
+                        &format!("/sessions?state=open&limit={}&{}", limit.max(1), filter.finish()),
+                    )
+                };
+                let page = if let Some(q) = optimatch {
+                    let query = serde_json::to_string(&q).map_err(|_| Error::Protocol)?;
+                    match search(Some(&query)) {
+                        Err(Error::Status(400)) => search(Some(&without_map_pack(&q)?)),
+                        result => result,
+                    }?
+                } else {
+                    search(None)?
+                };
                 if page.items.len() > limit as usize && limit != 0 {
                     return Err(Error::Protocol);
                 }
@@ -1238,7 +1419,49 @@ impl Worker {
                 }
             }
         };
-        for item in &items {
+        self.remember_matches(&items)?;
+        Ok(items)
+    }
+
+    fn browse_matches(
+        &self,
+        user: &Identity,
+        limit: u32,
+        query: &live_proto::optimatch::Query,
+        filters: &live_proto::session::BrowserFilters,
+    ) -> Result<Reply, Error> {
+        let query_json = serde_json::to_string(query).map_err(|_| Error::Protocol)?;
+        let filters_json = serde_json::to_string(filters).map_err(|_| Error::Protocol)?;
+        let search = |query: &str| {
+            let mut params = url::form_urlencoded::Serializer::new(String::new());
+            params
+                .append_pair("state", "open")
+                .append_pair("limit", &limit.max(1).to_string())
+                .append_pair("optimatch", query)
+                .append_pair("browser_variants", "true");
+            if filters != &live_proto::session::BrowserFilters::default() {
+                params.append_pair("filters", &filters_json);
+            }
+            self.team_json::<BrowserPage>(user, &format!("/sessions?{}", params.finish()))
+        };
+        let mut page = match search(&query_json) {
+            Err(Error::Status(400)) => search(&without_map_pack(query)?),
+            result => result,
+        }?;
+        if page.items.len() > limit as usize && limit != 0 {
+            return Err(Error::Protocol);
+        }
+        if limit == 0 {
+            page.items.clear();
+        }
+        page.items.retain(|s| self.map_ready(s, false));
+        self.remember_matches(&page.items)?;
+        Ok(Reply::BrowserMatches(page))
+    }
+
+    fn remember_matches(&self, items: &[live_proto::session::Session]) -> Result<(), Error> {
+        use live_proto::session;
+        for item in items {
             item.advertisement.validate().map_err(|_| Error::Protocol)?;
             if !session::valid_id(&item.session_id)
                 || item.xnkid != item.session_id
@@ -1247,8 +1470,8 @@ impl Worker {
                 return Err(Error::Protocol);
             }
         }
-        self.saw(&items);
-        Ok(items)
+        self.saw(items);
+        Ok(())
     }
     /// Keeps recent sessions, for a guest's game start (the host's
     /// skulls) and its co-op join screen (the campaign, the host).
@@ -1262,6 +1485,20 @@ impl Worker {
     /// search result, made ready (downloaded) for a join. A refusal is
     /// printed with its reason and the session is dropped.
     fn map_ready(&self, s: &live_proto::session::Session, join: bool) -> bool {
+        if s.advertisement.hopper_id.is_some()
+            && self.maps.as_ref().is_none_or(|gate| !gate.has_map_pack())
+            && let Some(map) = s
+                .advertisement
+                .map
+                .as_deref()
+                .filter(|map| content::map_pack::is_map_name(map))
+        {
+            eprintln!(
+                "live: not joining {}'s game: {map:?} requires the Multiplayer Map Pack (h2 import-mappack)",
+                s.host_gamertag,
+            );
+            return false;
+        }
         let (Some(gate), Some(c)) = (&self.maps, &self.connection) else {
             return true;
         };
@@ -1342,6 +1579,25 @@ impl Worker {
             }
         }
         last
+    }
+
+    fn write_match_update(
+        &self,
+        writer: Writer<'_>,
+        id: &str,
+        update: &live_proto::session::Update,
+    ) -> Result<(), Error> {
+        let write = |update: &live_proto::session::Update| {
+            let data = serde_json::to_value(update).map_err(|_| Error::Protocol)?;
+            self.write_match_event(writer, id, live_proto::session::UPDATED, data)
+        };
+        match write(update) {
+            // The old strict payload decoder rejects unknown fields.
+            Err(Error::Status(400)) if update.browser.is_some() => {
+                write(&live_proto::session::Update { browser: None, ..update.clone() })
+            }
+            result => result,
+        }
     }
 
     fn match_event(
@@ -1427,18 +1683,20 @@ impl Worker {
         }
         Ok(page.items)
     }
+    fn friends_for(&self, user: &Identity) -> Result<live_proto::Friends, Error> {
+        self.team_json(
+            user,
+            &format!(
+                "/accounts/{}/friends",
+                url::form_urlencoded::byte_serialize(user.gamertag.as_bytes()).collect::<String>()
+            ),
+        )
+    }
     fn social_request(&self, user: &Identity, request: &SocialRequest) -> Result<Reply, Error> {
-        use live_proto::mailbox::{self, Answer, Invite};
+        use live_proto::mailbox::{self, Answer};
         match request {
             SocialRequest::Refresh => {
-                let friends: live_proto::Friends = self.team_json(
-                    user,
-                    &format!(
-                        "/accounts/{}/friends",
-                        url::form_urlencoded::byte_serialize(user.gamertag.as_bytes())
-                            .collect::<String>()
-                    ),
-                )?;
+                let friends = self.friends_for(user)?;
                 let invites = self.mailbox(user)?;
                 let sessions = self.matches_request(
                     user,
@@ -1484,14 +1742,7 @@ impl Worker {
                 })
             }
             SocialRequest::Join { from, session_id } => {
-                let friends: live_proto::Friends = self.team_json(
-                    user,
-                    &format!(
-                        "/accounts/{}/friends",
-                        url::form_urlencoded::byte_serialize(user.gamertag.as_bytes())
-                            .collect::<String>()
-                    ),
-                )?;
+                let friends = self.friends_for(user)?;
                 if !friends.friends.iter().any(|f| f.xuid == *from) {
                     return Err(Error::Status(403));
                 }
@@ -1500,15 +1751,36 @@ impl Worker {
                     .into_iter()
                     .find(|v| v.host_xuid == *from)
                     .ok_or(Error::Status(404))?;
-                Ok(Reply::InviteAccepted(Invite {
-                    id: 0,
-                    from: *from,
-                    to: Xuid(user.xuid),
-                    gamertag: row.host_gamertag,
-                    session_id: session_id.clone(),
-                    sent_at: time::OffsetDateTime::now_utc().unix_timestamp(),
-                    answer: None,
-                }))
+                Ok(Reply::InviteAccepted(crate::join_resolver::friend_join(
+                    row,
+                    Xuid(user.xuid),
+                )))
+            }
+            SocialRequest::JoinLink(id) => {
+                let Some(row) = self.fetch_match(user, id)?.into_iter().next() else {
+                    return Ok(Reply::JoinLink(Err(
+                        "This game is no longer available.".into()
+                    )));
+                };
+                let friend =
+                    if row.advertisement.visibility == live_proto::session::Visibility::Friends {
+                        self.friends_for(user)?
+                            .friends
+                            .iter()
+                            .any(|f| f.xuid == row.host_xuid)
+                    } else {
+                        false
+                    };
+                let viewer = Xuid(user.xuid);
+                if !crate::matchmaking::valid_address(row.endpoint.addr, row.endpoint.port) {
+                    return Ok(Reply::JoinLink(Err(
+                        "This game has an invalid host address.".into(),
+                    )));
+                }
+                Ok(Reply::JoinLink(
+                    row.check_join_link(Some(viewer), |_, _| friend)
+                        .map(|()| crate::join_resolver::friend_join(row, viewer)),
+                ))
             }
         }
     }
@@ -1692,6 +1964,11 @@ impl Worker {
                         .map(|step| Reply::Matchmaking(Box::new(step)))
                         .map_err(Error::result);
                 }
+                if let MatchRequest::Browse { limit, query, filters } = request {
+                    return self
+                        .browse_matches(&user, *limit, query, filters)
+                        .map_err(Error::result);
+                }
                 let rows = self
                     .matches_request(&user, request.clone())
                     .map_err(|e| match e {
@@ -1774,18 +2051,29 @@ impl Worker {
                 if active.users.is_empty() {
                     return Err(NO_USER);
                 }
+                let url = format!("/arbitration/{path}");
+                // A second registration or report writes nothing on the
+                // server, so those ride out an outage; an extension is sent
+                // once.
+                let repeatable = !path.ends_with("/extend");
                 for user in active.users.values() {
-                    self.response(
-                        self.request(
-                            "POST",
-                            &format!("/arbitration/{path}"),
-                            user,
-                            lxm::GAMES_WRITE,
-                        ),
-                        Some(body),
-                        64 * 1024,
-                    )
-                    .map_err(Error::result)?;
+                    let build = || self.request("POST", &url, user, lxm::GAMES_WRITE);
+                    let sent = if repeatable {
+                        self.retried(build, Some(body), 64 * 1024)
+                    } else {
+                        self.response(build(), Some(body), 64 * 1024)
+                    };
+                    if let Err(e) = sent {
+                        // The title ends a matchmaking lobby whose
+                        // registration failed (docs/live/live-matchmaking.md
+                        // "Arbitration (built)"), so say which call and why.
+                        eprintln!(
+                            "live: arbitration {path} for {} failed: {}",
+                            user.gamertag,
+                            e.describe()
+                        );
+                        return Err(e.result());
+                    }
                 }
                 Ok(Reply::Done)
             }
@@ -1911,9 +2199,15 @@ impl Worker {
                     .filter(|a| a.session.id == c.session.id)
                     .ok_or(NO_SESSION)?;
                 let user = active.users.values().next().ok_or(NO_USER)?;
-                let path = crate::mods::list_path(*limit, cursor.as_deref());
-                self.team_json::<crate::mods::ModPage>(user, &path)
-                    .map(Reply::Mods)
+                let page = match self.team_json::<crate::mods::PackPage>(user, "/mod-packs") {
+                    Ok(packs) => Ok(packs.page(*limit, cursor.as_deref())),
+                    Err(Error::Status(404)) => {
+                        let path = crate::mods::list_path(*limit, cursor.as_deref());
+                        self.team_json::<crate::mods::ModPage>(user, &path)
+                    }
+                    Err(error) => Err(error),
+                };
+                page.map(Reply::Mods)
                     .map_err(Error::result)
             }
             Work::ClankerHoppers => {
@@ -1927,6 +2221,39 @@ impl Worker {
                 self.team_json::<live_proto::hopper::clankers::ClankerHoppers>(user, path)
                     .map(Reply::ClankerHoppers)
                     .map_err(Error::result)
+            }
+            Work::RulesIr(hash) => {
+                use crate::game_variants::{FetchError, MAX_IR, ir_path};
+                let active = self
+                    .active
+                    .as_ref()
+                    .filter(|a| a.session.id == c.session.id)
+                    .ok_or(NO_SESSION)?;
+                let user = active.users.values().next().ok_or(NO_USER)?;
+                let path = ir_path(hash);
+                Ok(Reply::RulesIr(
+                    match self.retried(|| self.request("GET", &path, user, lxm::READ), None, MAX_IR) {
+                        Ok(bytes) => Ok(bytes),
+                        Err(Error::Status(404)) => Err(FetchError::NotFound),
+                        Err(e) => Err(FetchError::Server(e.describe())),
+                    },
+                ))
+            }
+            Work::GameVariants => {
+                use crate::game_variants::{MAX_LIST, VariantList, list_path};
+                let active = self
+                    .active
+                    .as_ref()
+                    .filter(|a| a.session.id == c.session.id)
+                    .ok_or(NO_SESSION)?;
+                let user = active.users.values().next().ok_or(NO_USER)?;
+                let path = list_path(Xuid(user.xuid));
+                let bytes = self
+                    .retried(|| self.request("GET", &path, user, lxm::READ), None, MAX_LIST)
+                    .map_err(Error::result)?;
+                serde_json::from_slice::<VariantList>(&bytes)
+                    .map(|l| Reply::GameVariants(l.items))
+                    .map_err(|_| Error::Protocol.result())
             }
             Work::ContentApi => {
                 self.active
@@ -1982,9 +2309,35 @@ impl Worker {
             return;
         };
         let users: Vec<Identity> = active.users.values().cloned().collect();
+        let outcomes = if self.ping_batch && (2..=live_proto::MAX_PING_BATCH).contains(&users.len()) {
+            match self.keep_alive_batch(&users) {
+                Ok(outcomes) => Some(outcomes),
+                // A route-level 404 means the server only supports single pings.
+                Err(Error::Status(404)) => {
+                    self.ping_batch = false;
+                    None
+                }
+                Err(e) => {
+                    let result = e.result();
+                    self.metrics.last_error.store(result, Ordering::Release);
+                    return self.health(Some(result));
+                }
+            }
+        } else {
+            None
+        };
         let mut failure = None;
-        for user in &users {
-            match self.keep_alive(user) {
+        for (index, user) in users.iter().enumerate() {
+            let ping = match &outcomes {
+                Some(outcomes) => outcomes[index],
+                None => self.keep_alive(user),
+            };
+            let ping = match ping {
+                // An expired presence is restored with the last known state.
+                Err(Error::Status(404)) => self.announce(user),
+                other => other,
+            };
+            match ping.and_then(|()| self.flush_unsent(user)) {
                 Ok(()) => {
                     self.metrics.pings.fetch_add(1, Ordering::AcqRel);
                 }
@@ -1999,23 +2352,55 @@ impl Worker {
         }
         self.health(failure);
     }
-    /// One account's heartbeat, and the presence the game set while the
-    /// server could not be reached.
-    fn keep_alive(&mut self, user: &Identity) -> Result<(), Error> {
-        let ping = self.retried(
+    fn keep_alive(&self, user: &Identity) -> Result<(), Error> {
+        self.retried(
             || self.request("POST", "/presence/ping", user, lxm::EVENTS_WRITE),
             Some(""),
             64 * 1024,
-        );
-        match ping {
-            // The server has no presence for the player: it expired while
-            // the server could not be reached. The player never left: it
-            // signs in again, as it is.
-            Err(Error::Status(404)) => self.announce(user)?,
-            other => {
-                other?;
-            }
+        )
+        .map(|_| ())
+    }
+    /// Every signed-in account's heartbeat in one request
+    /// (`POST /v1/presence/ping/batch`): each account is its own
+    /// `events.write` token, answered in order, so a console of four costs
+    /// one request a heartbeat instead of four. Per account the outcome is
+    /// its single ping's: ok, `404` to sign in again, or the failure.
+    fn keep_alive_batch(&self, users: &[Identity]) -> Result<Vec<Result<(), Error>>, Error> {
+        let c = self.connection.as_ref().unwrap();
+        let url = format!("{}/presence/ping/batch", c.api);
+        let bytes = self.retry_response(|| {
+            // An attempt may have reached the server and spent its tokens.
+            let now = now();
+            let tokens = users
+                .iter()
+                .map(|u| issue_token(&u.key, &self.author(u), &c.id, lxm::EVENTS_WRITE, now))
+                .collect();
+            let body = serde_json::to_string(&live_proto::PingBatch { tokens })
+                .map_err(|_| Error::Protocol)?;
+            let request = self.agent.post(&url).set("content-type", "application/json");
+            self.response(request, Some(&body), 64 * 1024)
+        })?;
+        let reply: live_proto::PingBatchReply =
+            serde_json::from_slice(&bytes).map_err(|_| Error::Protocol)?;
+        if reply.results.len() != users.len() {
+            return Err(Error::Protocol);
         }
+        Ok(reply
+            .results
+            .into_iter()
+            .map(|outcome| match outcome {
+                live_proto::PingOutcome::Ok { .. } => Ok(()),
+                live_proto::PingOutcome::Failed {
+                    error: live_proto::ErrorCode::Banned,
+                    ..
+                } => Err(Error::Banned),
+                live_proto::PingOutcome::Failed { status, .. } => Err(Error::Status(status)),
+            })
+            .collect())
+    }
+    /// The presence the game set while the server could not be reached,
+    /// after a good heartbeat.
+    fn flush_unsent(&mut self, user: &Identity) -> Result<(), Error> {
         let unsent = self
             .active
             .as_mut()
@@ -2125,7 +2510,161 @@ pub(crate) fn presence_data(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn synchronous_completion_consumes_one_reply_and_keeps_late_answers() {
+        let p = super::Pending::new();
+        assert!(p.wait(std::time::Duration::ZERO).is_none());
+        let worker = p.clone();
+        let done = std::thread::spawn(move || worker.finish(Err(42)));
+        assert!(matches!(p.wait(std::time::Duration::from_secs(5)), Some(Err(42))));
+        done.join().unwrap();
+        assert!(p.take().is_none());
+        p.finish(Err(17));
+        assert!(matches!(p.wait(std::time::Duration::ZERO), Some(Err(17))));
+    }
+
     use super::*;
+    use std::{
+        io::{BufRead, BufReader, Write},
+        net::TcpListener,
+    };
+
+    #[test]
+    fn a_console_heartbeat_batches_accounts_and_renews_tokens_on_retry() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let users: BTreeMap<_, _> = [1, 2]
+            .into_iter()
+            .map(|xuid| {
+                let user = Identity {
+                    xuid,
+                    gamertag: format!("Player{xuid}"),
+                    key: Arc::new(KeyPair::generate()),
+                };
+                (xuid, user)
+            })
+            .collect();
+        let expected: Vec<_> = users.values().cloned().collect();
+        let server = std::thread::spawn(move || {
+            let mut seen_nonces = std::collections::HashSet::new();
+            for (status, reply) in [
+                ("200 OK", r#"{"results":[{"ttl":90},{"ttl":90}]}"#),
+                ("503 Service Unavailable", r#"{"error":"unavailable"}"#),
+                ("200 OK", r#"{"results":[{"ttl":90},{"ttl":90}]}"#),
+            ] {
+                let (mut conn, _) = listener.accept().unwrap();
+                conn.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                let mut request = BufReader::new(&conn);
+                let mut line = String::new();
+                request.read_line(&mut line).unwrap();
+                assert_eq!(line.trim_end(), "POST /v1/presence/ping/batch HTTP/1.1");
+                let mut length = None;
+                loop {
+                    line.clear();
+                    assert_ne!(request.read_line(&mut line).unwrap(), 0);
+                    if line.trim_end().is_empty() {
+                        break;
+                    }
+                    let (name, value) = line.split_once(':').unwrap();
+                    if name.eq_ignore_ascii_case("content-length") {
+                        length = Some(value.trim().parse::<usize>().unwrap());
+                    }
+                }
+                let mut body = vec![0; length.unwrap()];
+                request.read_exact(&mut body).unwrap();
+                let batch: live_proto::PingBatch = serde_json::from_slice(&body).unwrap();
+                assert_eq!(batch.tokens.len(), expected.len());
+                for (raw, user) in batch.tokens.iter().zip(&expected) {
+                    let token = live_proto::sign::Token::parse(raw).unwrap();
+                    token
+                        .verify(user.key.public(), "live.test", lxm::EVENTS_WRITE, now())
+                        .unwrap();
+                    assert_eq!(
+                        token.claims.iss,
+                        Author::Account {
+                            xuid: Xuid(user.xuid),
+                            server: "live.test".into(),
+                        }
+                        .to_string()
+                    );
+                    assert!(seen_nonces.insert(token.claims.jti), "spent token reused");
+                }
+                write!(
+                    conn,
+                    "HTTP/1.1 {status}\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{reply}",
+                    reply.len()
+                )
+                .unwrap();
+            }
+        });
+        let mut worker = Worker {
+            publisher: None,
+            replication: crate::qos::Version::default(),
+            base: base.clone(),
+            maps: None,
+            addon_hoppers: Arc::new(AtomicU32::new(0)),
+            software: Software::default(),
+            agent: ureq::AgentBuilder::new().timeout(Duration::from_secs(2)).build(),
+            connection: Some(Connection {
+                api: format!("{base}/v1"),
+                id: "live.test".into(),
+            }),
+            active: Some(Active {
+                published: None,
+                session: Session::new(1),
+                users,
+                presence: BTreeMap::new(),
+                matches: BTreeMap::new(),
+                unsent: BTreeMap::new(),
+                failing_since: None,
+            }),
+            metrics: Arc::new(Metrics::default()),
+            seen: Seen::default(),
+            retry: Retry {
+                attempts: 2,
+                backoff: Duration::ZERO,
+                max_wait: Duration::ZERO,
+            },
+            grace: Duration::from_secs(90),
+            ping_batch: true,
+            retry_after: Cell::new(None),
+        };
+        worker.ping();
+        assert_eq!(worker.metrics.pings.load(Ordering::Acquire), 2);
+        worker.ping();
+        assert_eq!(worker.metrics.pings.load(Ordering::Acquire), 4);
+        assert_eq!(worker.metrics.last_error.load(Ordering::Acquire), 0);
+        assert!(worker.active.as_ref().unwrap().failing_since.is_none());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn hopper_download_keeps_the_full_rotation_only_when_installed() {
+        use live_proto::hopper::HopperFile;
+
+        let mut file = HopperFile::default_set();
+        let base = file.entry(0, 0).unwrap();
+        let mut addon = base.clone();
+        addon.map_id = 0x12345;
+        file.set_entries(0, &[addon, base]).unwrap();
+        let bytes = file.build_checked().unwrap();
+
+        let (full, hoppers) = console_hopper_file(bytes.clone(), true).unwrap();
+        assert_eq!(full, bytes);
+        assert_eq!(hoppers, 1);
+        let (disc, hoppers) = console_hopper_file(bytes, false).unwrap();
+        assert_eq!(hoppers, 1, "the client still sees which slot needs the queue");
+        let disc = HopperFile::parse(&disc).unwrap();
+        assert_eq!(disc.entry_count(0).unwrap(), 1);
+        assert_eq!(disc.slot(0, 0).unwrap(), file.slot(0, 1).unwrap());
+    }
+
+    #[test]
+    fn the_legacy_retry_removes_only_the_map_pack_field() {
+        let query = json!({"hopper": 2, "party": 1, "has_map_pack": true});
+        let retry = without_map_pack(&query).ok().unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&retry).unwrap(), json!({"hopper": 2, "party": 1}));
+    }
 
     #[test]
     fn recent_session_cache_bounds_churn_and_keeps_refreshed_rows() {

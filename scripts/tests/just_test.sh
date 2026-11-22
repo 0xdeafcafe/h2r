@@ -13,13 +13,14 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/h2just.XXXXXX")
 trap 'rm -rf "$work"' EXIT INT TERM
 
 repo=$work/repo
-mkdir -p "$repo/scripts" "$repo/platform/tvos" "$repo/platform/ios" "$repo/platform/windows" "$repo/disc" "$work/bin"
+mkdir -p "$repo/platform/macos" "$repo/scripts" "$repo/platform/tvos" "$repo/platform/ios" "$repo/platform/windows" "$repo/disc" "$work/bin"
 cp "$root/justfile" "$repo/justfile"
 cp "$root/scripts/just.sh" "$repo/scripts/just.sh"
 stub() {
   printf '#!/bin/sh\necho "%s $*"\n' "$2" >"$1"
   chmod +x "$1"
 }
+stub "$repo/platform/macos/install.sh" "macos/install.sh"
 stub "$repo/platform/tvos/build.sh" "tvos/build.sh"
 stub "$repo/platform/ios/build.sh" "ios/build.sh"
 stub "$work/bin/cargo" "cargo"
@@ -111,6 +112,7 @@ expect "xbox maps=demo leaves the map pack out" "xbox/build.sh $disc/halo2.iso" 
 rm "$repo/disc/mappack.iso"
 expect "xbox-deploy passes ip= as H2_XBOX" "deploy.sh to 10.0.0.2" -- xbox-deploy ip=10.0.0.2
 expect "xbox-deploy needs an address" "no console address" -- xbox-deploy
+expect "mac-install packages a reference to the selected disc" "macos/install.sh $disc/halo2.iso" -- mac-install
 expect "mac builds with h2 build" "cargo h2 build $disc/halo2.iso" -- mac
 expect "mac-play imports a map pack kept elsewhere" "cargo h2 import-mappack $(cd "$work/elsewhere" && pwd -P)/pack.iso --disc $disc/halo2.iso" -- mac-play mappack="$work/elsewhere/pack.iso"
 

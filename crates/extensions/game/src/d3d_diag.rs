@@ -31,11 +31,13 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use d3d::backend::{
-    Backend, DrawOutcome, GuestLayoutKind, RectClear, ResolvedDraw, StreamBytes, TargetInfo,
-    TextureInfo,
+    Backend, DisplaySurfacePixels, DrawOutcome, GuestLayoutKind, RectClear, RenderExtents,
+    ResolvedDraw, StreamBytes, TargetInfo, TextureInfo,
 };
 use gfx::texture::{DecodedTexture, TextureDesc, TextureKind};
 use gfx::{Clear, D3DFormat};
+
+mod layout;
 
 /// Presents so far, for timelines keyed on frames (`H2_BOOT_INPUT`).
 static PRESENTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -238,6 +240,7 @@ pub struct DiagBackend<B: Backend> {
     /// The agent's `render.frame` recorder (`agent::render::PROBE`; a
     /// test's own in tests).
     probe: &'static agent::render::FrameProbe,
+    owner_probe: bool,
     /// The current pass's colour target and size, while a frame is being
     /// recorded, so a pass asked for can be read back when it ends.
     probe_target: Option<(B::Surface, u32, u32)>,
@@ -255,9 +258,16 @@ pub struct DiagBackend<B: Backend> {
 }
 
 /// A host texture with the ID the capture names it by.
-pub struct Tracked<T> {
+pub struct Tracked<T, S> {
     pub id: u64,
     pub inner: T,
+    source: TextureSource<S>,
+}
+
+enum TextureSource<S> {
+    Upload,
+    Placeholder,
+    Surface(&'static str, S),
 }
 
 struct Capture {
@@ -348,6 +358,7 @@ impl<B: Backend> DiagBackend<B> {
             DiagBackend {
                 inner,
                 probe: &agent::render::PROBE,
+                owner_probe: false,
                 probe_target: None,
                 stats: Arc::clone(&stats),
                 log,
@@ -360,6 +371,12 @@ impl<B: Backend> DiagBackend<B> {
             },
             stats,
         )
+    }
+
+    /// The renderer reports a final routing decision for every Swap of this device.
+    pub fn with_owner_probe(mut self, enabled: bool) -> Self {
+        self.owner_probe = enabled;
+        self
     }
 
     /// The same, recording frames for `render.frame` into `probe`.
@@ -446,35 +463,62 @@ impl<B: Backend> DiagBackend<B> {
     /// Reads the current pass's colour target back into a PNG under the
     /// cache directory's `frames/`, and tells the probe.
     fn probe_snap(&mut self, ask: agent::render::SnapAsk) {
-        let result = match self.probe_target {
-            None => Err("the pass's size is unknown (no draw in it)".to_owned()),
-            Some((surface, w, h)) => {
-                let layout = GuestLayoutKind::Linear { pitch: w * 4 };
-                self.inner
-                    .read_surface(surface, D3DFormat::LinA8R8G8B8, w, h, layout)
-                    .and_then(|bgra| {
-                        let rgba: Vec<u8> = bgra
-                            .chunks_exact(4)
-                            .flat_map(|p| [p[2], p[1], p[0], 0xff])
-                            .collect();
-                        let dir = agent_proto::cache_dir().join("frames");
-                        let path = dir.join(format!("frame-{}-pass-{}.png", ask.seq, ask.pass));
-                        std::fs::create_dir_all(&dir)
-                            .map_err(|e| e.to_string())
-                            .and_then(|()| {
-                                crate::d3d_glue::write_png(&path, &rgba, w, h)
-                                    .map_err(|e| e.to_string())
-                            })
-                            .map(|()| path.display().to_string())
-                    })
-            }
+        let probe = self.probe;
+        let Some((surface, width, height)) = self.probe_target else {
+            probe.snapped_for(ask, Err("the pass's size is unknown (no draw in it)".into()));
+            return;
         };
-        self.probe.snapped(ask.pass, result);
+        if ask.display {
+            // A layout capture reads the displayed raster at its own size.
+            probe.write_snapshot(ask, || {
+                let ((width, height), mut pixels) = self.inner.read_display_surface(surface)?
+                    .ok_or_else(|| "the backend has no display readback for this surface".to_owned())?;
+                if pixels.len() as u64 != u64::from(width) * u64::from(height) * 4 {
+                    return Err(format!("display readback has {} bytes for {width}x{height}", pixels.len()));
+                }
+                for pixel in pixels.chunks_exact_mut(4) {
+                    pixel.swap(0, 2);
+                    pixel[3] = 255;
+                }
+                Ok(agent::compare::Rgba { width, height, pixels })
+            });
+            return;
+        }
+        let Some(pitch) = width.checked_mul(4) else {
+            probe.snapped_for(ask, Err("frame probe row pitch overflow".into()));
+            return;
+        };
+        let Some(size) = pitch.checked_mul(height) else {
+            probe.snapped_for(ask, Err("frame probe image size overflow".into()));
+            return;
+        };
+        let rgba = move |mut pixels: Vec<u8>| {
+            if pixels.len() != size as usize {
+                return Err(format!("frame probe read {} bytes, expected {size}", pixels.len()));
+            }
+            for pixel in pixels.chunks_exact_mut(4) {
+                pixel.swap(0, 2);
+                pixel[3] = 255;
+            }
+            Ok(agent::compare::Rgba { width, height, pixels })
+        };
+        if self.owner_probe {
+            // Only the renderer that draws the pass should read it back.
+            // The worker executes this at the pass boundary on fallback.
+            self.inner.queue_frame_probe_read(surface, width, height, Box::new(move |result| {
+                probe.write_snapshot(ask, || result.and_then(rgba));
+            }));
+        } else {
+            probe.write_snapshot(ask, || {
+                self.inner.read_surface(surface, D3DFormat::LinA8R8G8B8, width, height,
+                    GuestLayoutKind::Linear { pitch }).and_then(rgba)
+            });
+        }
     }
 }
 
 /// A draw for `render.frame`.
-fn probe_draw<S: std::fmt::Debug>(
+pub(crate) fn probe_draw<S: std::fmt::Debug>(
     color: S,
     depth: Option<S>,
     draw: &ResolvedDraw,
@@ -503,6 +547,7 @@ fn probe_draw<S: std::fmt::Debug>(
         vs: vertex_name(&draw.shader.vertex),
         depth_state: Some(depth_record(draw)),
         constants: Some(draw.shader.constants.clone() as Arc<[[f32; 4]]>),
+        layout: None,
     }
 }
 
@@ -556,318 +601,9 @@ fn outcome_name(r: &Result<DrawOutcome, String>) -> String {
 }
 
 impl<B: Backend> DiagBackend<B> {
-    /// Adds a draw's outcome to the stats; returns the outcome's and the
-    /// target's names.
-    fn count(
-        &self,
-        r: &Result<DrawOutcome, String>,
-        t: &TargetInfo,
-        info: &[Option<TextureInfo>; 4],
-    ) -> (String, String) {
-        self.tally(r, t, info);
-        (outcome_name(r), target_name(t))
-    }
-
-    /// [`Self::count`] without the names: the path every draw takes.
-    fn tally(
-        &self,
-        r: &Result<DrawOutcome, String>,
-        t: &TargetInfo,
-        info: &[Option<TextureInfo>; 4],
-    ) {
-        let frame = self.stats.lock().unwrap().add(r, t, info);
-        if let Some(n) = frame {
-            SHADOW_FRAMES.lock().unwrap().insert(n);
-        }
-    }
-}
-
-impl<B: Backend> Backend for DiagBackend<B> {
-    type Surface = B::Surface;
-    type Texture = Tracked<B::Texture>;
-
-    fn create_surface(
-        &mut self,
-        format: D3DFormat,
-        width: u32,
-        height: u32,
-        depth: bool,
-    ) -> Result<Self::Surface, String> {
-        let r = self.inner.create_surface(format, width, height, depth);
-        self.line(format!(
-            "create_surface {format:?} {width}x{height} depth={depth} -> {r:?}"
-        ));
-        if let Some(c) = &self.capture {
-            c.append(
-                "surfaces.txt",
-                &format!(
-                    "frame {} create_surface {format:?} {width}x{height} depth={depth} -> {r:?}",
-                    self.in_frame
-                ),
-            );
-        }
-        r
-    }
-    fn destroy_surface(&mut self, surface: Self::Surface) -> Result<(), String> {
-        self.inner.destroy_surface(surface)
-    }
-    // Every provided method is forwarded: a default here would silently
-    // replace the inner backend's (a frame-buffer snapshot would skip draws).
-    fn snapshot_surface(
-        &mut self,
-        surface: Self::Surface,
-        opaque: bool,
-    ) -> Result<Option<Self::Texture>, String> {
-        let r = self.inner.snapshot_surface(surface, opaque)?;
-        self.line(format!(
-            "snapshot_surface {surface:?} opaque={opaque} -> {}",
-            if r.is_some() { "ok" } else { "unsupported" }
-        ));
-        Ok(r.map(|inner| {
-            let id = self.next_texture;
-            self.next_texture += 1;
-            if let Some(c) = self.capturing() {
-                c.append(
-                    "frame.txt",
-                    &format!("snapshot_surface {surface:?} opaque={opaque} -> tex {id}"),
-                );
-            }
-            self.origin(id, || {
-                format!("copy of surface {surface:?} opaque={opaque}")
-            });
-            Tracked { id, inner }
-        }))
-    }
-    fn judge(&self) -> Option<Box<dyn d3d::backend::DrawJudge>> {
-        self.inner.judge()
-    }
-    fn can_mirror(&self) -> bool {
-        self.inner.can_mirror()
-    }
-    fn mirror_reserve(&mut self, len: u32) -> Result<(), String> {
-        self.inner.mirror_reserve(len)
-    }
-    fn mirror_write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), String> {
-        self.inner.mirror_write(offset, bytes)
-    }
-    fn mirror_store(
-        &mut self,
-        surface: Self::Surface,
-        format: gfx::D3DFormat,
-        width: u32,
-        height: u32,
-        layout: d3d::backend::GuestLayoutKind,
-        offset: u32,
-    ) -> Result<(), String> {
-        self.inner
-            .mirror_store(surface, format, width, height, layout, offset)
-    }
-    fn mirror_load(
-        &mut self,
-        surface: Self::Surface,
-        format: gfx::D3DFormat,
-        width: u32,
-        height: u32,
-        layout: d3d::backend::GuestLayoutKind,
-        offset: u32,
-    ) -> Result<(), String> {
-        self.inner
-            .mirror_load(surface, format, width, height, layout, offset)
-    }
-    fn mirror_read(&mut self, offset: u32, len: u32) -> Result<Vec<u8>, String> {
-        self.inner.mirror_read(offset, len)
-    }
-    fn handles_surface_aliases(&self) -> bool { self.inner.handles_surface_aliases() }
-
-    fn defers_depth_aliases(&self) -> bool {
-        self.inner.defers_depth_aliases()
-    }
-    #[allow(clippy::too_many_arguments)]
-    fn depth_alias_texture(
-        &mut self,
-        depth: Self::Surface,
-        format: D3DFormat,
-        width: u32,
-        height: u32,
-        pitch: u32,
-        generation: u64,
-        offset: usize,
-        desc: &TextureDesc,
-        options: gfx::texture::DecodeOptions,
-    ) -> Result<Option<Self::Texture>, String> {
-        let r = self.inner.depth_alias_texture(
-            depth, format, width, height, pitch, generation, offset, desc, options,
-        )?;
-        Ok(r.map(|inner| {
-            let id = self.next_texture;
-            self.next_texture += 1;
-            self.origin(id, || {
-                format!("depth bits of surface {depth:?} ({format:?} {width}x{height}) at +{offset:#x} generation {generation}")
-            });
-            Tracked { id, inner }
-        }))
-    }
-    fn can_sample_surfaces(&self) -> bool {
-        self.inner.can_sample_surfaces()
-    }
-    fn surface_texture(&mut self, surface: Self::Surface) -> Result<Option<Self::Texture>, String> {
-        let r = self.inner.surface_texture(surface)?;
-        Ok(r.map(|inner| {
-            let id = self.next_texture;
-            self.next_texture += 1;
-            if let Some(c) = self.capturing() {
-                c.append(
-                    "frame.txt",
-                    &format!("surface_texture {surface:?} -> tex {id}"),
-                );
-            }
-            self.origin(id, || {
-                format!("render-to-texture surface {surface:?} in place")
-            });
-            Tracked { id, inner }
-        }))
-    }
-    fn clear_pixel_count(&mut self) -> Result<(), String> {
-        self.inner.clear_pixel_count()
-    }
-    fn report_pixel_count(&mut self) -> Result<Option<u64>, String> {
-        self.inner.report_pixel_count()
-    }
-    fn read_pixel_count(&mut self, ticket: u64) -> Result<u64, String> {
-        self.inner.read_pixel_count(ticket)
-    }
-    fn try_pixel_count(&mut self, ticket: u64) -> Result<Option<u64>, String> {
-        self.inner.try_pixel_count(ticket)
-    }
-    fn pixel_count_unsubmitted(&self, ticket: u64) -> bool {
-        self.inner.pixel_count_unsubmitted(ticket)
-    }
-    fn can_sample_depth_surfaces(&self) -> bool {
-        self.inner.can_sample_depth_surfaces()
-    }
-    #[cfg(feature = "gpu")]
-    fn external_attachments(
-        &mut self, surfaces: d3d::ExternalSurfaces<Self::Surface>, textures: [Option<&Self::Texture>; 4],
-        copy: d3d::TargetCopy,
-    ) -> Result<d3d::ExternalCopies, String> {
-        self.inner.external_attachments(surfaces, textures.map(|t| t.map(|t| &t.inner)), copy)
-    }
-
-    fn prepare_external(
-        &mut self, surfaces: d3d::ExternalSurfaces<Self::Surface>, request: d3d::ExternalPassRequest,
-        textures: [Option<&Self::Texture>; 4], plan: &d3d::ExternalPlan, copy: d3d::TargetCopy, pass: d3d::SharedReplacement,
-    ) -> Result<Option<Vec<d3d::ExternalRecording>>, String> {
-        self.inner.prepare_external(surfaces, request, textures.map(|t| t.map(|t| &t.inner)), plan, copy, pass)
-    }
-
-    fn reusable_external_attachments(&self) -> bool {
-        self.inner.reusable_external_attachments()
-    }
-
-    // Scene stages (docs/graphics/framescene.md, slice 2): typed native
-    // stages, not guest draws; the probes and captures see the frame they
-    // join, as with the other native passes.
-    fn runs_scene_stages(&self) -> bool {
-        self.inner.runs_scene_stages()
-    }
-
-    fn run_scene_stage(&mut self, stage: d3d::SceneStage<Self::Surface>) -> Result<bool, String> {
-        self.inner.run_scene_stage(stage)
-    }
-
-    fn queues_scene_stages(&self) -> bool {
-        self.inner.queues_scene_stages()
-    }
-
-    fn queue_scene_stage(&mut self, stage: d3d::SceneStage<Self::Surface>) -> bool {
-        self.inner.queue_scene_stage(stage)
-    }
-
-    fn queue_external_draw(
-        &mut self, mut candidate: d3d::backend::QueuedExternalDraw<Self::Surface>,
-        textures: [Option<&Self::Texture>; 4],
-    ) -> bool {
-        let draw = &candidate.fallback;
-        if self.capturing().is_some() || self.logging() || self.sweep.is_some() || self.probe.armed() {
-            return false;
-        }
-        let stats = Arc::clone(&self.stats);
-        let frame = self.in_frame;
-        let (target, info) = (draw.target, draw.texture_info);
-        let finished = candidate.finished;
-        candidate.finished = Box::new(move |fallback| {
-            if let Some(r) = fallback {
-                let shadow = stats.lock().unwrap().add_at(frame, r, &target, &info);
-                if let Some(frame) = shadow {
-                    SHADOW_FRAMES.lock().unwrap().insert(frame);
-                }
-            }
-            finished(fallback);
-        });
-        self.inner.queue_external_draw(candidate, textures.map(|t| t.map(|t| &t.inner)))
-    }
-
-    fn commit_external(&mut self, recording: d3d::ExternalRecording) {
-        self.inner.commit_external(recording);
-    }
-
-    fn supports_external_pass(&self) -> bool {
-        self.inner.supports_external_pass()
-    }
-    fn external_pass(
-        &mut self,
-        color: Self::Surface,
-        depth: Self::Surface,
-        sampled: Vec<Option<Self::Surface>>,
-        request: d3d::ExternalPassRequest,
-        pass: Box<dyn d3d::ExternalPass>,
-    ) -> Result<bool, String> {
-        self.inner.external_pass(color, depth, sampled, request, pass)
-    }
-    fn warp_surface(
-        &mut self,
-        src: Self::Surface,
-        dst: Self::Surface,
-        h: [[f32; 3]; 3],
-    ) -> Result<bool, String> {
-        self.inner.warp_surface(src, dst, h)
-    }
-    fn surface_extent(&self, surface: Self::Surface) -> Option<(u32, u32)> {
-        self.inner.surface_extent(surface)
-    }
-    fn gpu_fence(&mut self) -> Option<Box<dyn Fn() -> bool + Send>> {
-        self.inner.gpu_fence()
-    }
-
-    fn depth_level_texture(
-        &mut self,
-        surface: Self::Surface,
-    ) -> Result<Option<Self::Texture>, String> {
-        let r = self.inner.depth_level_texture(surface)?;
-        Ok(r.map(|inner| {
-            let id = self.next_texture;
-            self.next_texture += 1;
-            self.origin(id, || format!("depth level surface {surface:?}"));
-            Tracked { id, inner }
-        }))
-    }
-    fn drop_pixel_count(&mut self, ticket: u64) {
-        self.inner.drop_pixel_count(ticket)
-    }
-    fn uses_texture_placeholders(&self) -> bool {
-        self.inner.uses_texture_placeholders()
-    }
-    fn texture_placeholder(
-        &mut self,
-        desc: &gfx::texture::TextureDesc,
-    ) -> Result<Self::Texture, String> {
-        let inner = self.inner.texture_placeholder(desc)?;
-        let id = self.next_texture;
-        self.next_texture += 1;
-        Ok(Tracked { id, inner })
-    }
-    fn upload_texture(&mut self, texture: &DecodedTexture) -> Result<Self::Texture, String> {
-        let r = self.inner.upload_texture(texture);
+    fn observe_upload(
+        &mut self, texture: &DecodedTexture, r: Result<B::Texture, String>,
+    ) -> Result<Tracked<B::Texture, B::Surface>, String> {
         if let Some(s) = &mut self.sweep {
             s.upload(texture);
         }
@@ -918,44 +654,20 @@ impl<B: Backend> Backend for DiagBackend<B> {
                 ),
             );
         }
-        r.map(|inner| Tracked { id, inner })
+        r.map(|inner| Tracked { id, inner, source: TextureSource::Upload })
     }
-    fn bc_supported(&self) -> bool {
-        self.inner.bc_supported()
+
+    fn inspects_draw(&mut self) -> bool {
+        self.capturing().is_some() || self.logging() || self.sweep.is_some() || self.probe.armed()
     }
-    fn clear(
+
+    fn diagnosed_draw(
         &mut self,
-        color: Self::Surface,
-        depth: Option<Self::Surface>,
-        clear: Clear,
-    ) -> Result<(), String> {
-        self.line(format!("clear {color:?} depth={depth:?} {clear:?}"));
-        if let Some(s) = &mut self.sweep
-            && s.dumping(self.in_frame)
-        {
-            s.line(&format!("clear {color:?} depth={depth:?} {clear:?}"));
-        }
-        if let Some(c) = self.capturing() {
-            c.append(
-                "frame.txt",
-                &format!("clear color={color:?} depth={depth:?} {clear:?}"),
-            );
-        }
-        if self.probe.armed() {
-            self.probe_enter(color, depth, None);
-            self.probe.clear(
-                &format!("{color:?}"),
-                depth.map(|d| format!("{d:?}")).as_deref(),
-            );
-        }
-        self.inner.clear(color, depth, clear)
-    }
-    fn draw(
-        &mut self,
-        color: Self::Surface,
-        depth: Option<Self::Surface>,
+        color: B::Surface,
+        depth: Option<B::Surface>,
         draw: &ResolvedDraw,
-        textures: [Option<&Self::Texture>; 4],
+        shared: Option<&Arc<ResolvedDraw>>,
+        textures: [Option<&Tracked<B::Texture, B::Surface>>; 4],
     ) -> Result<DrawOutcome, String> {
         let ids: Vec<Option<u64>> = textures.iter().map(|t| t.map(|t| t.id)).collect();
         let mut snap = None;
@@ -1004,9 +716,17 @@ impl<B: Backend> Backend for DiagBackend<B> {
         }
         let inner: [Option<&B::Texture>; 4] =
             std::array::from_fn(|i| textures[i].map(|t| &t.inner));
-        let r = self.inner.draw(color, depth, draw, inner);
+        let r = match shared {
+            Some(packet) => self.inner.draw_shared(color, depth, Arc::clone(packet), inner).0,
+            None => self.inner.draw(color, depth, draw, inner),
+        };
         if probing {
-            self.probe.draw(probe_draw(color, depth, draw, &r));
+            let mut info = probe_draw(color, depth, draw, &r);
+            if self.probe.layout_requested() {
+                let extents = self.inner.render_extents(color, depth, inner);
+                info.layout = Some(layout::describe(draw, textures, extents, None));
+            }
+            self.probe.draw(info);
         }
         if let Some(s) = &mut self.sweep {
             if s.dumping(self.in_frame) {
@@ -1107,6 +827,438 @@ impl<B: Backend> Backend for DiagBackend<B> {
         }
         r
     }
+
+    /// Adds a draw's outcome to the stats; returns the outcome's and the
+    /// target's names.
+    fn count(
+        &self,
+        r: &Result<DrawOutcome, String>,
+        t: &TargetInfo,
+        info: &[Option<TextureInfo>; 4],
+    ) -> (String, String) {
+        self.tally(r, t, info);
+        (outcome_name(r), target_name(t))
+    }
+
+    /// [`Self::count`] without the names: the path every draw takes.
+    fn tally(
+        &self,
+        r: &Result<DrawOutcome, String>,
+        t: &TargetInfo,
+        info: &[Option<TextureInfo>; 4],
+    ) {
+        let frame = self.stats.lock().unwrap().add(r, t, info);
+        if let Some(n) = frame {
+            SHADOW_FRAMES.lock().unwrap().insert(n);
+        }
+    }
+}
+
+impl<B: Backend> Backend for DiagBackend<B> {
+    type Surface = B::Surface;
+    type Texture = Tracked<B::Texture, B::Surface>;
+
+    #[cfg(feature = "gpu")]
+    fn upload_scene_assets(&mut self, upload: d3d::backend::AssetUpload) {
+        self.inner.upload_scene_assets(upload);
+    }
+
+    #[cfg(feature = "gpu")]
+    fn frozen_images(&self, texture: &Self::Texture) -> Option<d3d::scene_sink::FrozenImages> {
+        self.inner.frozen_images(&texture.inner)
+    }
+
+    #[cfg(feature = "gpu")]
+    fn retain_scene_sample(&self, texture: &Self::Texture) -> Option<d3d::scene_sink::FrozenSample> {
+        self.inner.retain_scene_sample(&texture.inner)
+    }
+
+    fn create_surface(
+        &mut self,
+        format: D3DFormat,
+        width: u32,
+        height: u32,
+        depth: bool,
+    ) -> Result<Self::Surface, String> {
+        let r = self.inner.create_surface(format, width, height, depth);
+        self.line(format!(
+            "create_surface {format:?} {width}x{height} depth={depth} -> {r:?}"
+        ));
+        if let Some(c) = &self.capture {
+            c.append(
+                "surfaces.txt",
+                &format!(
+                    "frame {} create_surface {format:?} {width}x{height} depth={depth} -> {r:?}",
+                    self.in_frame
+                ),
+            );
+        }
+        r
+    }
+    fn destroy_surface(&mut self, surface: Self::Surface) -> Result<(), String> {
+        self.inner.destroy_surface(surface)
+    }
+    // Every provided method is forwarded: a default here would silently
+    // replace the inner backend's (a frame-buffer snapshot would skip draws).
+    fn snapshot_surface(
+        &mut self,
+        surface: Self::Surface,
+        opaque: bool,
+    ) -> Result<Option<Self::Texture>, String> {
+        let r = self.inner.snapshot_surface(surface, opaque)?;
+        self.line(format!(
+            "snapshot_surface {surface:?} opaque={opaque} -> {}",
+            if r.is_some() { "ok" } else { "unsupported" }
+        ));
+        Ok(r.map(|inner| {
+            let id = self.next_texture;
+            self.next_texture += 1;
+            if let Some(c) = self.capturing() {
+                c.append(
+                    "frame.txt",
+                    &format!("snapshot_surface {surface:?} opaque={opaque} -> tex {id}"),
+                );
+            }
+            self.origin(id, || {
+                format!("copy of surface {surface:?} opaque={opaque}")
+            });
+            Tracked { id, inner, source: TextureSource::Surface("snapshot of", surface) }
+        }))
+    }
+    fn judge(&self) -> Option<Box<dyn d3d::backend::DrawJudge>> {
+        self.inner.judge()
+    }
+    fn can_mirror(&self) -> bool {
+        self.inner.can_mirror()
+    }
+    fn mirror_reserve(&mut self, len: u32) -> Result<(), String> {
+        self.inner.mirror_reserve(len)
+    }
+    fn mirror_write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), String> {
+        self.inner.mirror_write(offset, bytes)
+    }
+    fn mirror_store(
+        &mut self,
+        surface: Self::Surface,
+        format: gfx::D3DFormat,
+        width: u32,
+        height: u32,
+        layout: d3d::backend::GuestLayoutKind,
+        offset: u32,
+    ) -> Result<(), String> {
+        self.inner
+            .mirror_store(surface, format, width, height, layout, offset)
+    }
+    fn mirror_load(
+        &mut self,
+        surface: Self::Surface,
+        format: gfx::D3DFormat,
+        width: u32,
+        height: u32,
+        layout: d3d::backend::GuestLayoutKind,
+        offset: u32,
+    ) -> Result<(), String> {
+        self.inner
+            .mirror_load(surface, format, width, height, layout, offset)
+    }
+    fn mirror_read(&mut self, offset: u32, len: u32) -> Result<Vec<u8>, String> {
+        self.inner.mirror_read(offset, len)
+    }
+    fn handles_surface_aliases(&self) -> bool { self.inner.handles_surface_aliases() }
+
+    fn defers_depth_aliases(&self) -> bool {
+        self.inner.defers_depth_aliases()
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn depth_alias_texture(
+        &mut self,
+        depth: Self::Surface,
+        format: D3DFormat,
+        width: u32,
+        height: u32,
+        pitch: u32,
+        generation: u64,
+        offset: usize,
+        desc: &TextureDesc,
+        options: gfx::texture::DecodeOptions,
+    ) -> Result<Option<Self::Texture>, String> {
+        let r = self.inner.depth_alias_texture(
+            depth, format, width, height, pitch, generation, offset, desc, options,
+        )?;
+        Ok(r.map(|inner| {
+            let id = self.next_texture;
+            self.next_texture += 1;
+            self.origin(id, || {
+                format!("depth bits of surface {depth:?} ({format:?} {width}x{height}) at +{offset:#x} generation {generation}")
+            });
+            Tracked { id, inner, source: TextureSource::Surface("depth bits of", depth) }
+        }))
+    }
+    fn can_sample_surfaces(&self) -> bool {
+        self.inner.can_sample_surfaces()
+    }
+    fn surface_texture(&mut self, surface: Self::Surface) -> Result<Option<Self::Texture>, String> {
+        let r = self.inner.surface_texture(surface)?;
+        Ok(r.map(|inner| {
+            let id = self.next_texture;
+            self.next_texture += 1;
+            if let Some(c) = self.capturing() {
+                c.append(
+                    "frame.txt",
+                    &format!("surface_texture {surface:?} -> tex {id}"),
+                );
+            }
+            self.origin(id, || {
+                format!("render-to-texture surface {surface:?} in place")
+            });
+            Tracked { id, inner, source: TextureSource::Surface("render-to-texture", surface) }
+        }))
+    }
+    fn clear_pixel_count(&mut self) -> Result<(), String> {
+        self.inner.clear_pixel_count()
+    }
+    fn report_pixel_count(&mut self) -> Result<Option<u64>, String> {
+        self.inner.report_pixel_count()
+    }
+    fn read_pixel_count(&mut self, ticket: u64) -> Result<u64, String> {
+        self.inner.read_pixel_count(ticket)
+    }
+    fn try_pixel_count(&mut self, ticket: u64) -> Result<Option<u64>, String> {
+        self.inner.try_pixel_count(ticket)
+    }
+    fn pixel_count_unsubmitted(&self, ticket: u64) -> bool {
+        self.inner.pixel_count_unsubmitted(ticket)
+    }
+    fn can_sample_depth_surfaces(&self) -> bool {
+        self.inner.can_sample_depth_surfaces()
+    }
+    #[cfg(feature = "gpu")]
+    fn external_attachments(
+        &mut self, surfaces: d3d::ExternalSurfaces<Self::Surface>, textures: [Option<&Self::Texture>; 4],
+        copy: d3d::TargetCopy,
+    ) -> Result<d3d::ExternalCopies, String> {
+        self.inner.external_attachments(surfaces, textures.map(|t| t.map(|t| &t.inner)), copy)
+    }
+
+    fn prepare_external(
+        &mut self, surfaces: d3d::ExternalSurfaces<Self::Surface>, request: d3d::ExternalPassRequest,
+        textures: [Option<&Self::Texture>; 4], plan: &d3d::ExternalPlan, copy: d3d::TargetCopy, pass: d3d::SharedReplacement,
+    ) -> Result<Option<Vec<d3d::ExternalRecording>>, String> {
+        let draw = if self.probe.layout_requested() {
+            pass.lock().unwrap_or_else(|e| e.into_inner()).diagnostic_draw()
+        } else {
+            None
+        };
+        let (color, depth) = (surfaces.color, surfaces.depth);
+        let inner = textures.map(|t| t.map(|t| &t.inner));
+        let result = self.inner.prepare_external(surfaces, request, inner, plan, copy, pass);
+        if matches!(&result, Ok(Some(recordings)) if !recordings.is_empty())
+            && let Some(draw) = draw
+        {
+            let depth = draw.target.depth_format.map(|_| depth);
+            self.probe_enter(color, depth, Some((draw.target.width, draw.target.height)));
+            let extents = self.inner.render_extents(color, depth, inner);
+            let mut info = probe_draw(color, depth, &draw, &Ok(DrawOutcome::Drawn));
+            info.layout = Some(layout::describe(
+                &draw, textures, extents, Some(format!("{:?}", plan.stage)),
+            ));
+            self.probe.draw(info);
+        }
+        result
+    }
+
+    fn reusable_external_attachments(&self) -> bool {
+        self.inner.reusable_external_attachments()
+    }
+
+    // Scene stages (docs/graphics/framescene.md, slice 2): typed native
+    // stages, not guest draws; the probes and captures see the frame they
+    // join, as with the other native passes.
+    fn runs_scene_stages(&self) -> bool {
+        self.inner.runs_scene_stages()
+    }
+
+    fn run_scene_stage(&mut self, stage: d3d::SceneStage<Self::Surface>) -> Result<bool, String> {
+        self.inner.run_scene_stage(stage)
+    }
+
+    fn accepts_scene_pass(&self, pass: &dyn d3d::ExternalPass) -> bool {
+        self.inner.accepts_scene_pass(pass)
+    }
+
+    fn queues_scene_stages(&self) -> bool {
+        self.inner.queues_scene_stages()
+    }
+
+    fn queue_scene_stage(&mut self, stage: d3d::SceneStage<Self::Surface>) -> bool {
+        self.inner.queue_scene_stage(stage)
+    }
+
+    fn queue_external_draw(
+        &mut self, mut candidate: d3d::backend::QueuedExternalDraw<Self::Surface>,
+        textures: [Option<&Self::Texture>; 4],
+    ) -> bool {
+        let draw = &candidate.fallback;
+        if self.capturing().is_some() || self.logging() || self.sweep.is_some() || self.probe.armed() {
+            return false;
+        }
+        let stats = Arc::clone(&self.stats);
+        let frame = self.in_frame;
+        let (target, info) = (draw.target, draw.texture_info);
+        let finished = candidate.finished;
+        candidate.finished = Box::new(move |fallback| {
+            if let Some(r) = fallback {
+                let shadow = stats.lock().unwrap().add_at(frame, r, &target, &info);
+                if let Some(frame) = shadow {
+                    SHADOW_FRAMES.lock().unwrap().insert(frame);
+                }
+            }
+            finished(fallback);
+        });
+        self.inner.queue_external_draw(candidate, textures.map(|t| t.map(|t| &t.inner)))
+    }
+
+    fn commit_external(&mut self, recording: d3d::ExternalRecording) {
+        self.inner.commit_external(recording);
+    }
+
+    #[cfg(feature = "gpu")]
+    fn upload_device(&self) -> Option<(wgpu::Device, wgpu::Queue)> {
+        self.inner.upload_device()
+    }
+
+    fn supports_external_pass(&self) -> bool {
+        self.inner.supports_external_pass()
+    }
+    fn external_pass(
+        &mut self,
+        color: Self::Surface,
+        depth: Self::Surface,
+        sampled: Vec<Option<Self::Surface>>,
+        request: d3d::ExternalPassRequest,
+        pass: Box<dyn d3d::ExternalPass>,
+    ) -> Result<bool, String> {
+        self.inner.external_pass(color, depth, sampled, request, pass)
+    }
+    fn warp_surface(
+        &mut self,
+        src: Self::Surface,
+        dst: Self::Surface,
+        h: [[f32; 3]; 3],
+    ) -> Result<bool, String> {
+        self.inner.warp_surface(src, dst, h)
+    }
+    fn queue_frame_probe_read(
+        &mut self, surface: Self::Surface, width: u32, height: u32,
+        done: Box<dyn FnOnce(Result<Vec<u8>, String>) + Send>,
+    ) {
+        self.inner.queue_frame_probe_read(surface, width, height, done)
+    }
+
+    fn measure_present_raster(&mut self, surface: Option<Self::Surface>) -> d3d::backend::RasterMeasurement {
+        self.inner.measure_present_raster(surface)
+    }
+    fn last_present_unshown(&self) -> bool {
+        self.inner.last_present_unshown()
+    }
+
+    fn take_presented_extent(&mut self) -> Option<(u32, u32)> {
+        self.inner.take_presented_extent()
+    }
+    fn surface_extent(&self, surface: Self::Surface) -> Option<(u32, u32)> {
+        self.inner.surface_extent(surface)
+    }
+
+    fn render_extents(
+        &mut self, color: Self::Surface, depth: Option<Self::Surface>,
+        textures: [Option<&Self::Texture>; 4],
+    ) -> RenderExtents {
+        self.inner.render_extents(color, depth, textures.map(|t| t.map(|t| &t.inner)))
+    }
+
+    fn read_display_surface(
+        &mut self, surface: Self::Surface,
+    ) -> Result<Option<DisplaySurfacePixels>, String> {
+        self.inner.read_display_surface(surface)
+    }
+    fn gpu_fence(&mut self) -> Option<Box<dyn Fn() -> bool + Send>> {
+        self.inner.gpu_fence()
+    }
+
+    fn depth_level_texture(
+        &mut self,
+        surface: Self::Surface,
+    ) -> Result<Option<Self::Texture>, String> {
+        let r = self.inner.depth_level_texture(surface)?;
+        Ok(r.map(|inner| {
+            let id = self.next_texture;
+            self.next_texture += 1;
+            self.origin(id, || format!("depth level surface {surface:?}"));
+            Tracked { id, inner, source: TextureSource::Surface("depth level", surface) }
+        }))
+    }
+    fn drop_pixel_count(&mut self, ticket: u64) {
+        self.inner.drop_pixel_count(ticket)
+    }
+    fn uses_texture_placeholders(&self) -> bool {
+        self.inner.uses_texture_placeholders()
+    }
+    fn texture_placeholder(
+        &mut self,
+        desc: &gfx::texture::TextureDesc,
+    ) -> Result<Self::Texture, String> {
+        let inner = self.inner.texture_placeholder(desc)?;
+        let id = self.next_texture;
+        self.next_texture += 1;
+        Ok(Tracked { id, inner, source: TextureSource::Placeholder })
+    }
+    fn upload_texture(&mut self, texture: &DecodedTexture) -> Result<Self::Texture, String> {
+        let result = self.inner.upload_texture(texture);
+        self.observe_upload(texture, result)
+    }
+    fn upload_shared(&mut self, texture: Arc<DecodedTexture>) -> Result<Self::Texture, String> {
+        let result = self.inner.upload_shared(Arc::clone(&texture));
+        self.observe_upload(&texture, result)
+    }
+    fn bc_supported(&self) -> bool {
+        self.inner.bc_supported()
+    }
+    fn clear(
+        &mut self,
+        color: Self::Surface,
+        depth: Option<Self::Surface>,
+        clear: Clear,
+    ) -> Result<(), String> {
+        self.line(format!("clear {color:?} depth={depth:?} {clear:?}"));
+        if let Some(s) = &mut self.sweep
+            && s.dumping(self.in_frame)
+        {
+            s.line(&format!("clear {color:?} depth={depth:?} {clear:?}"));
+        }
+        if let Some(c) = self.capturing() {
+            c.append(
+                "frame.txt",
+                &format!("clear color={color:?} depth={depth:?} {clear:?}"),
+            );
+        }
+        if self.probe.armed() {
+            self.probe_enter(color, depth, None);
+            self.probe.clear(
+                &format!("{color:?}"),
+                depth.map(|d| format!("{d:?}")).as_deref(),
+            );
+        }
+        self.inner.clear(color, depth, clear)
+    }
+    fn draw(
+        &mut self,
+        color: Self::Surface,
+        depth: Option<Self::Surface>,
+        draw: &ResolvedDraw,
+        textures: [Option<&Self::Texture>; 4],
+    ) -> Result<DrawOutcome, String> {
+        self.diagnosed_draw(color, depth, draw, None, textures)
+    }
     fn draw_owned(
         &mut self,
         color: Self::Surface,
@@ -1116,11 +1268,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
     ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
         // Capturing, logging and the sweep diagnostic read the draw after
         // the inner backend has drawn it.
-        if self.capturing().is_some()
-            || self.logging()
-            || self.sweep.is_some()
-            || self.probe.armed()
-        {
+        if self.inspects_draw() {
             let r = self.draw(color, depth, &draw, textures);
             return (r, draw.streams);
         }
@@ -1130,6 +1278,22 @@ impl<B: Backend> Backend for DiagBackend<B> {
         let (r, spare) = self.inner.draw_owned(color, depth, draw, inner);
         self.tally(&r, &target, &info);
         (r, spare)
+    }
+    fn draw_shared(
+        &mut self,
+        color: Self::Surface,
+        depth: Option<Self::Surface>,
+        draw: Arc<ResolvedDraw>,
+        textures: [Option<&Self::Texture>; 4],
+    ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
+        if self.inspects_draw() {
+            let result = self.diagnosed_draw(color, depth, &draw, Some(&draw), textures);
+            return (result, Vec::new());
+        }
+        let (target, info) = (draw.target, draw.texture_info);
+        let (result, spare) = self.inner.draw_shared(color, depth, draw, textures.map(|t| t.map(|t| &t.inner)));
+        self.tally(&result, &target, &info);
+        (result, spare)
     }
     fn frame_stats(&mut self) {
         self.inner.frame_stats()
@@ -1152,6 +1316,10 @@ impl<B: Backend> Backend for DiagBackend<B> {
     fn idle(&mut self) -> Option<std::time::Instant> {
         self.inner.idle()
     }
+    fn reset_present_metadata(&mut self) -> Result<(), String> {
+        self.inner.reset_present_metadata()
+    }
+
     fn drain(&mut self) -> Result<(), String> {
         self.inner.drain()
     }
@@ -1194,11 +1362,13 @@ impl<B: Backend> Backend for DiagBackend<B> {
         crate::host_perf::on_present(n);
         // render.frame: the frame's last pass is read back before the
         // present when it was asked for.
-        if let Some(ask) = self.probe.present(n) {
+        if let Some(ask) = self.probe.present_routed(n, self.owner_probe.then_some(self.in_frame)) {
             self.probe_snap(ask);
         }
         // render.capture: the present after the tick asked for is its frame.
         agent::render::CAPTURE.present(n);
+        #[cfg(feature = "gpu")]
+        agent::render::clip::CLIPS.present(n);
         if !self.probe.armed() {
             self.probe_target = None;
         }
@@ -1206,7 +1376,11 @@ impl<B: Backend> Backend for DiagBackend<B> {
         if let Some(l) = &mut self.log {
             let _ = l.flush();
         }
-        self.inner.present_with_gamma(surface, flags, gamma)
+        let presented = self.inner.present_with_gamma(surface, flags, gamma);
+        if presented.is_err() && self.owner_probe {
+            agent::render::private_graph::discard_display(self.in_frame - 1);
+        }
+        presented
     }
     fn clear_rects(
         &mut self,
@@ -1509,6 +1683,94 @@ mod tests {
         assert!(!PROBE.armed());
     }
 
+    /// The outer sink records the same draw packets the worker sees. A pass
+    /// snapshot between them, or at Swap, must leave that pairing intact.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn pass_snapshots_follow_the_display_worker_without_changing_its_choice() {
+        use d3d::scene_sink::ReplayFrame;
+        use d3d::threaded::owner::{Candidate, FrameOwner, Outputs, Submission};
+        use d3d::{RecordingBackend, SceneSink, ThreadedBackend};
+        use frame_scene::{Slot, SlotAt, TargetRef};
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let _one = PRESENTING.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = crate::frame_parity::RPC_RENDERER.lock().unwrap_or_else(|e| e.into_inner());
+        let probe = &agent::render::PROBE;
+        for native in [true, false] {
+            let slot = Arc::new(Mutex::new(None::<Arc<ReplayFrame>>));
+            let sealed = Arc::clone(&slot);
+            let adopted = Arc::new(AtomicU64::new(0));
+            let owner_swap = Arc::clone(&adopted);
+            let mut recording = RecordingBackend::new();
+            recording.readback_fill = 0x6d;
+            struct ProbeEvents;
+            impl d3d::threaded::owner::OwnerEvents for ProbeEvents {
+                fn declined(&self, _: u64, n: u64) { agent::render::private_graph::display_declined(n); }
+                fn failed(&self, _: u64, _: u64) { panic!("synthetic Swap failed"); }
+                fn stopped(&self) { agent::render::private_graph::display_stopped(); }
+            }
+            let worker = ThreadedBackend::new(recording).unwrap().with_frame_owner(FrameOwner {
+                select: Box::new(move |n, _| {
+                    let frame = slot.lock().unwrap().take()?;
+                    let selected = Arc::clone(&owner_swap);
+                    Some(Submission::Native(Candidate {
+                        frame,
+                        before_original: None,
+                        eligible: Box::new(move |_, _| native),
+                        draw: Box::new(move |gpu: &mut RecordingBackend, targets| {
+                            gpu.present(targets[&TargetRef::SceneColour], 0)?;
+                            selected.store(n, Ordering::Relaxed);
+                            Ok(Outputs::default())
+                        }),
+                    }))
+                }),
+                events: Arc::new(ProbeEvents),
+            });
+            let (diag, _) = DiagBackend::new(worker);
+            let mut sink = SceneSink::new(diag.with_owner_probe(true), || Some(SlotAt { slot: Slot::Opaque, view: 0 }))
+                .with_census(false)
+                .with_replay(move |frame| *sealed.lock().unwrap() = Some(Arc::new(frame)));
+            let back = sink.create_surface(D3DFormat::LinA8R8G8B8, 2, 1, false).unwrap();
+            let side = sink.create_surface(D3DFormat::LinA8R8G8B8, 1, 1, false).unwrap();
+
+            probe.arm(&agent_proto::FrameParams { arm: true, snap: vec![0, 1], ..Default::default() }).unwrap();
+            sink.present(back, 0).unwrap();
+            let mut draw = depth_draw();
+            draw.target.width = 2;
+            draw.target.height = 1;
+            draw.target.depth_format = None;
+            sink.draw(back, None, &draw, [None; 4]).unwrap();
+            draw.target.width = 1;
+            sink.draw(side, None, &draw, [None; 4]).unwrap();
+            sink.present(back, 0).unwrap();
+
+            let trace = sink.inner_mut().inner.with_inner(|gpu| {
+                gpu.calls.iter().filter_map(|call| match call {
+                    d3d::Recorded::Draw { .. } => Some("draw"),
+                    d3d::Recorded::ReadSurface { .. } => Some("read"),
+                    d3d::Recorded::Present { .. } => Some("swap"),
+                    _ => None,
+                }).collect::<Vec<_>>()
+            }).unwrap();
+            if native {
+                assert_eq!(adopted.load(Ordering::Relaxed), 2);
+                assert_eq!(trace, ["swap", "swap"]);
+            } else {
+                assert_eq!(adopted.load(Ordering::Relaxed), 0);
+                assert_eq!(trace, ["swap", "draw", "read", "draw", "read", "swap"]);
+                let report = probe.reply().frame.unwrap();
+                assert_eq!(report.snaps.len(), 2);
+                for (snap, width) in report.snaps.into_iter().zip([2, 1]) {
+                    let file = std::path::PathBuf::from(snap.file.expect("original pass PNG"));
+                    let image = agent::compare::read_png(&file).unwrap();
+                    std::fs::remove_file(file).unwrap();
+                    assert_eq!(image, agent::compare::Rgba::filled(width, 1, [0x6d, 0x6d, 0x6d, 255]));
+                }
+            }
+        }
+    }
+
     /// A W-buffered draw of a vertex program to a D24S8 target, depth
     /// clamped, LessEqual without a depth write.
     fn depth_draw() -> ResolvedDraw {
@@ -1575,6 +1837,8 @@ mod tests {
             clip_rects: Vec::new(),
             hw,
             textures: [None; 4],
+            retail_constants: None,
+            ui_fit: None,
             glyph_cache: 0,
         }
     }
@@ -1647,6 +1911,33 @@ mod tests {
     }
 
     #[test]
+    fn frame_layout_keeps_guest_clip_and_reports_the_display_clip() {
+        let _one = PRESENTING.lock().unwrap_or_else(|e| e.into_inner());
+        static PROBE: agent::render::FrameProbe = agent::render::FrameProbe::new();
+        let mut inner = d3d::RecordingBackend::new();
+        inner.extents.insert(1, (1920, 1080));
+        let (backend, _) = DiagBackend::new(inner);
+        let mut backend = backend.with_probe(&PROBE);
+
+        let mut draw = depth_draw();
+        draw.clip = Some(d3d::backend::PixelRect { x: 0, y: 0, width: 640, height: 480 });
+        draw.ui_fit = d3d::backend::UiFit::about((1920, 1080), [320.0, 240.0]);
+
+        PROBE.arm_layout(&agent_proto::FrameParams { arm: true, ..Default::default() }).unwrap();
+        backend.present(1, 0).unwrap();
+        backend.draw(1, None, &draw, [None; 4]).unwrap();
+        backend.present(1, 0).unwrap();
+
+        let frame = PROBE.reply().frame.unwrap();
+        let layout = frame.draws[0].layout.as_ref().unwrap();
+        assert_eq!(layout.guest_size, [640, 480]);
+        assert_eq!(layout.display_size, Some([1920, 1080]));
+        assert_eq!(layout.clip, [[0, 0, 640, 480]]);
+        assert_eq!(layout.display_clip, [[240, 0, 1440, 1080]]);
+        assert_eq!(layout.ui_fit, Some([0.75, 1.0, 80.0, 0.0]));
+    }
+
+    #[test]
     fn the_headless_gpu_stack_pins_plain_lights_once() {
         struct PlainLight {
             index: u32,
@@ -1679,7 +1970,7 @@ mod tests {
             depth: backend.create_surface(D3DFormat::LinD16, 8, 8, true).unwrap(),
             sampled: vec![], slots: vec![], slot_sizes: vec![],
         };
-        let request = d3d::ExternalPassRequest { rect: (0, 0, 8, 8), surface_size: (8, 8), z_scale: 65_535. };
+        let request = d3d::ExternalPassRequest { rect: (0, 0, 8, 8), surface_size: (8, 8), display_projection_factor: 1.0, z_scale: 65_535. };
         let plan = d3d::ExternalPlan { stage: timeline::native::Stage::Lights, view: 0, ranges: 1, slots: vec![] };
         let seen = Arc::new(Mutex::new(Vec::new()));
         let reads = backend.inner.waits().reads;
@@ -1692,6 +1983,44 @@ mod tests {
         assert_eq!(backend.inner.waits().reads - reads, 1);
         assert_eq!(*seen.lock().unwrap(), [0, 1, 2, 3]);
         backend.drain().unwrap();
+    }
+
+    /// Exercise the same two decorators and display-worker window as a game
+    /// installation. Asset uploads and immutable textures must reach the GPU
+    /// even when this present uses the original renderer.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn scene_assets_samples_and_original_presents_cross_the_diagnostic_stack() {
+        let _one = PRESENTING.lock().unwrap_or_else(|e| e.into_inner());
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let window = Arc::new(d3d::scene_sink::window::PresentWindow::new(false));
+        let worker = d3d::ThreadedBackend::new(d3d::GfxBackend::new(ctx)).unwrap()
+            .with_present_window(Some(Arc::clone(&window)));
+        let (diag, _) = DiagBackend::new(worker);
+        let mut backend = d3d::SceneSink::new(diag, || None)
+            .with_census(false)
+            .with_present_window(Some(Arc::clone(&window)), || true);
+        let (mark, uploaded) = std::sync::mpsc::channel();
+        backend.upload_scene_assets(Box::new(move |_, _| { mark.send(()).unwrap(); }));
+
+        let colour = backend.create_surface(D3DFormat::LinA8R8G8B8, 4, 4, false).unwrap();
+        backend.clear(colour, None, Clear { color: Some([0.5; 4]), ..Clear::NONE }).unwrap();
+        let texture = backend.snapshot_surface(colour, false).unwrap().unwrap();
+        window.activate();
+        window.game_view(Some(true));
+        backend.present(colour, 0).unwrap();
+        // A threaded backend retains the prior Swap's exact proxy. Falling
+        // through to the synchronous GPU-image default would return None.
+        let held = backend.retain_scene_sample(&texture).expect("immutable scene texture");
+        drop(texture);
+        backend.drain().unwrap();
+        assert!(uploaded.try_recv().is_ok());
+        let counts = window.counters();
+        assert_eq!(counts["scene_window_games"], 1);
+        assert_eq!(counts["scene_window_ordinary"], 1);
+        assert_eq!(counts["scene_window_owned"], 0);
+        assert_eq!(counts["scene_window_gaps"], 0);
+        drop(held);
     }
 
     /// Every `Backend` method must be forwarded by `DiagBackend`; a missed

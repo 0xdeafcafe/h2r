@@ -17,7 +17,9 @@ struct Frame {
 struct Instance {
     node_base: u32,
     node_count: u32,
-    pad0: u32,
+    // RGBA8, red in the low byte: the colour the lit colour mixes
+    // towards, by alpha (0: as lit).
+    highlight: u32,
     pad1: u32,
 };
 
@@ -72,6 +74,7 @@ struct V {
     @builtin(position) @invariant position: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) normal: vec3<f32>,
+    @location(2) @interpolate(flat) highlight: vec4<f32>,
 };
 
 @vertex
@@ -104,6 +107,7 @@ fn vs_main(
     out.position = frame.view_proj * vec4<f32>(p, 1.0);
     out.uv = uv;
     out.normal = n;
+    out.highlight = unpack4x8unorm(inst.highlight);
     return out;
 }
 
@@ -127,5 +131,6 @@ fn fs_main(v: V) -> Out {
     if (len > 1e-6) {
         lit = lit + frame.light.w * max(dot(v.normal / len, frame.light.xyz), 0.0);
     }
-    return Out(vec4<f32>(base.rgb * lit, 1.0), w_depth(v.position));
+    let c = mix(base.rgb * lit, v.highlight.rgb, v.highlight.a);
+    return Out(vec4<f32>(c, 1.0), w_depth(v.position));
 }

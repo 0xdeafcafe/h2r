@@ -145,15 +145,26 @@ pub const CACHE_MAP_NAME: u32 = 0x0054_7898;
 
 /// The loaded map's name ([`CACHE_MAP_NAME`], at most 32 bytes).
 pub fn loaded_map_name(m: &dyn GuestMemory) -> Result<String, MemFault> {
-    let mut name = Vec::new();
-    for i in 0..32 {
-        let c = m.u8(CACHE_MAP_NAME + i)?;
-        if c == 0 {
-            break;
+    Ok(read_map_name(m, &mut [0; 32])?.into_owned())
+}
+
+/// Read the resident cache identity for a draw without allocating an owned name.
+pub(crate) fn read_map_name<'a>(
+    m: &dyn GuestMemory, field: &'a mut [u8; 32],
+) -> Result<std::borrow::Cow<'a, str>, MemFault> {
+    let len = if m.read(CACHE_MAP_NAME, field).is_ok() {
+        field.iter().position(|&b| b == 0).unwrap_or(field.len())
+    } else {
+        // A partial mapping is sufficient when the terminator is readable.
+        let mut len = 0;
+        for byte in field.iter_mut() {
+            *byte = m.u8(CACHE_MAP_NAME + len as u32)?;
+            if *byte == 0 { break }
+            len += 1;
         }
-        name.push(c);
-    }
-    Ok(String::from_utf8_lossy(&name).into_owned())
+        len
+    };
+    Ok(String::from_utf8_lossy(&field[..len]))
 }
 
 /// After a machine snapshot loads: the model for the loaded map, as the

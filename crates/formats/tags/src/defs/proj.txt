@@ -3,47 +3,47 @@
 # (Weapons, equipment, projectiles and damage).
 group proj 0x1a4
   0x0 struct object obje -- the obje layer
-  0xbc unknown 0x4 seen=14 -- small integers
-  0xc0 unknown 0x4 seen=12
-  0xc4 unknown 0x4 seen=2 -- floats
+  0xbc flags32 flags
+  0xc0 enum16 detonation_timer_starts
+  0xc2 enum16 impact_noise
+  0xc4 f32 ai_perception_radius
   0xc8 f32 collision_radius -- V: equals Halo 1's proj +0x1a0 on the retail pairs (weapon_rebuild_disc)
-  0xcc unknown 0x4 seen=2 -- floats
-  0xd0 unknown 0x4 seen=6 -- floats
-  0xd4 unknown 0x4 seen=6 -- floats
-  0xd8 unknown 0x4 seen=7 -- floats
-  0xdc unknown 0x4 seen=2 -- floats
+  0xcc f32 arming_time
+  0xd0 f32 danger_radius
+  0xd4 f32[2] timer
+  0xdc f32 minimum_velocity
   0xe0 f32 maximum_range -- V: world units; equals Halo 1's proj +0x1c8 on three retail pairs
-  0xe4 unknown 0x4 seen=5
-  0xe8 tagref ref_e8
-  0xf0 tagref ref_f0
-  0xf8 tagref ref_f8
+  0xe4 enum16 detonation_noise
+  0xe6 i16 super_detonation_projectile_count
+  0xe8 tagref detonation_started
+  0xf0 tagref airborne_detonation_effect
+  0xf8 tagref ground_detonation_effect
   0x100 tagref detonation_damage groups=jpt! -- V: retail rocket_launcher_explosion, needler_shard_detonation
-  0x108 tagref ref_108
-  0x110 tagref ref_110
+  0x108 tagref attached_detonation_damage
+  0x110 tagref super_detonation
   0x118 tagref super_detonation_damage groups=jpt! -- V: retail needler_shard_super_detonation
-  0x120 tagref ref_120
-  0x128 unknown 0x4 seen=27 -- small integers
+  0x120 tagref detonation_sound
+  0x128 enum8 damage_reporting_type
+  0x129 unknown 0x3
   0x12c tagref attached_super_detonation_damage groups=jpt! -- V: retail needler_shard_attached_super_detonation
-  0x134 unknown 0x4 seen=3 -- floats
-  0x138 tagref ref_138
-  0x140 tagref ref_140
+  0x134 f32 material_effect_radius
+  0x138 tagref flyby_sound
+  0x140 tagref impact_effect
   0x148 tagref impact_damage groups=jpt! -- V: every retail bullet's and bolt's damage effect (smg_bullet, magnum_bullet, ...), rocket_launcher_impact, needler_shard_impact
-  0x150 unknown 0x4 seen=2 -- floats
-  0x154 tagref ref_154
-  0x15c tagref ref_15c
-  0x164 unknown 0x4 seen=7 -- floats
-  0x168 unknown 0x4 seen=3 -- floats
-  0x16c unknown 0x4 seen=13 -- floats
-  0x170 unknown 0x4 seen=6 -- floats
-  0x174 unknown 0x4 seen=2 -- floats
-  0x178 unknown 0x4 seen=5 -- floats
-  0x17c unknown 0x4 seen=18 -- floats
-  0x180 unknown 0x4 seen=18 -- floats
-  0x184 unknown 0x4 seen=6 -- floats
-  0x188 unknown 0x4 seen=7 -- floats
+  0x150 f32 boarding_detonation_time
+  0x154 tagref boarding_detonation_damage
+  0x15c tagref boarding_attached_detonation_damage
+  0x164 f32 air_gravity_scale
+  0x168 f32[2] air_damage_range
+  0x170 f32 water_gravity_scale
+  0x174 f32[2] water_damage_range
+  0x17c f32 initial_velocity
+  0x180 f32 final_velocity
+  0x184 f32 guided_angular_velocity_lower unit=degrees
+  0x188 f32 guided_angular_velocity_upper unit=degrees
   0x18c f32[2] velocity_change_distance -- E 0x000f9527 subtracts the lower bound from travelled distance; V the rocket's 0..20
   0x194 f32 inverse_velocity_change_distance -- E 0x000f954e and 0x000fbf61 multiply the difference by this
-  0x198 unknown 0x4 seen=4 -- floats
+  0x198 f32 targeted_leading_fraction
   0x19c block material_responses 0x58 align 4 -- V: one element per global material the projectile meets differently; the field order is Halo 1's proj +0x240 element (0xa0) with the padding gone (weapon_rebuild_disc)
     0x0 u16 flags -- V: zero on every retail element seen
     0x2 u16 response -- V: Halo 1's response through arsenal::response on the retail pairs (bounce 4, attach 3, overpenetrate 2, impact 0)

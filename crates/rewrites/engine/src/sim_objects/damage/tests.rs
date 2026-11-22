@@ -188,3 +188,88 @@ fn the_recorders_append_damage_and_kill_events_and_the_tick_clears_them() {
     tick_starts();
     assert!(events::with(<[SimEvent]>::is_empty));
 }
+
+const ACTORS: u32 = REPORT + 0x1000;
+const ACTOR_DATA: u32 = ACTORS + 0x100;
+const KILLER: u32 = 0xe101_0001;
+const CHARACTER: u32 = 0xe200_0007;
+
+fn actor_world() -> Guest {
+    use guest_layout::{DatumArray, ObjectHeader, ObjectType, Unit, actor::Actor, global};
+
+    let (_, mut g) = world();
+    let bitmap = HEADERS + 0x100;
+    g.set_u32(ARRAY + DatumArray::ELEMENT_SIZE.offset, ObjectHeader::SIZE).unwrap();
+    g.set_u32(ARRAY + DatumArray::HIGH_WATER.offset, 2).unwrap();
+    g.set_u32(ARRAY + DatumArray::BITMAP.offset, bitmap).unwrap();
+    g.set_u32(bitmap, 1 << 1).unwrap();
+    let header = HEADERS + ObjectHeader::SIZE;
+    g.set_u16(header + ObjectHeader::SALT.offset, Datum(OBJECT).salt()).unwrap();
+    g.set_u8(header + ObjectHeader::KIND.offset, ObjectType::Biped as u8).unwrap();
+    g.set_u32(BODY + Unit::PLAYER.offset, u32::MAX).unwrap();
+    g.set_u32(BODY + Unit::ACTOR.offset, 0xa000_0000).unwrap();
+    g.set_u32(global::ACTORS.base, ACTORS).unwrap();
+    g.set_u32(ACTORS + DatumArray::ELEMENT_SIZE.offset, Actor::SIZE).unwrap();
+    g.set_u32(ACTORS + DatumArray::HIGH_WATER.offset, 1).unwrap();
+    g.set_u32(ACTORS + DatumArray::DATA.offset, ACTOR_DATA).unwrap();
+    g.set_u16(ACTOR_DATA, 0xa000).unwrap();
+    g.set_u32(ACTOR_DATA + Actor::UNIT, OBJECT).unwrap();
+    g.set_u32(ACTOR_DATA + Actor::CHARACTER, CHARACTER).unwrap();
+
+    let m: &mut dyn GuestMemory = &mut g;
+    let report = DamageReport::at(REPORT);
+    report.set(m, DamageReport::FLAGS, guest_layout::damage::DEPLETING).unwrap();
+    report.set(m, DamageReport::OWNER_PLAYER, Datum(KILLER)).unwrap();
+    report.set(m, DamageReport::CODE, 0x4d).unwrap();
+    g
+}
+
+#[test]
+fn a_fatal_damage_to_an_actor_unit_is_one_actor_killed() {
+    let mut g = actor_world();
+    tick_starts();
+    damage_report(&g, REPORT, OBJECT);
+    // Another hit to the body carries no depletion transition.
+    g.set_u32(REPORT + DamageReport::FLAGS.offset, 0).unwrap();
+    damage_report(&g, REPORT, OBJECT);
+    events::with(|got| {
+        assert!(matches!(got, [SimEvent::Damage(_), SimEvent::ActorKilled { .. }, SimEvent::Damage(_)]));
+        assert_eq!(
+            got[1],
+            SimEvent::ActorKilled {
+                unit: Datum(OBJECT),
+                character: Datum(CHARACTER),
+                killer: Datum(KILLER),
+                weapon: 0x4d,
+            }
+        );
+    });
+}
+
+#[test]
+fn a_player_death_is_not_an_actor_kill() {
+    let mut g = actor_world();
+    let player = 0xe100_0000;
+    // A player takes precedence even if the unit retains an actor link.
+    g.set_u32(BODY + guest_layout::Unit::PLAYER.offset, player).unwrap();
+    let esp = STACK - 0x20;
+    g.set_u32(esp + 4, KILLER).unwrap();
+    g.set_u32(esp + 8, player).unwrap();
+    g.set_u32(esp + 16, 0x4d).unwrap();
+
+    tick_starts();
+    damage_report(&g, REPORT, OBJECT);
+    player_killed(&g, esp);
+    events::with(|got| {
+        assert!(matches!(got, [SimEvent::Damage(_), SimEvent::Kill(k)] if k.victim == Datum(player)));
+    });
+}
+
+#[test]
+fn a_stale_actor_link_does_not_credit_a_kill() {
+    let mut g = actor_world();
+    g.set_u16(ACTOR_DATA, 0xa001).unwrap();
+    tick_starts();
+    damage_report(&g, REPORT, OBJECT);
+    events::with(|got| assert!(matches!(got, [SimEvent::Damage(_)])));
+}

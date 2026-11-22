@@ -2,6 +2,9 @@
 //! resolved handler owns its adapter, so Runtime drops its table lock before
 //! invocation, including handlers which change dispatch or reenter services.
 
+mod observer;
+pub use observer::ReturnObservation;
+
 use crate::{CpuAbi, ExecCtx, GuestFault, GuestFn, TransferAbi};
 use std::sync::Arc;
 

@@ -527,7 +527,6 @@ fn store_builds_once_and_flushes_on_epoch() {
         get(&store, other).is_none(),
         "blob length no longer matches"
     );
-    drop(get);
     // Built twice from the clip's own layout, then asked for a longer one.
     let n = c.bytes().len();
     assert_eq!(lens.len(), 3);

@@ -11,7 +11,7 @@
 
 import { gameMapTitle } from "../state/maps";
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack, type JSX } from "solid-js";
-import { useNavigate, useParams } from "@solidjs/router";
+import { A, useNavigate, useParams } from "@solidjs/router";
 import { live } from "../state/live";
 import { identity, download } from "../state/identity";
 import { accountByGamertag, liveGames, standings, teamStandings, type GameState, type AccountState } from "../state/reducer";
@@ -37,7 +37,8 @@ import { MuteButton, MutedList } from "./Mutes";
 import { adminState } from "../admin/state";
 import { DECK_ENTRY } from "../deck/back";
 import type { BladeControls } from "./Blades";
-import { fetchServerFacts, serverPods } from "../admin/server";
+import { fetchServerFacts, serverPods, writeInviteGrant } from "../admin/server";
+import { InviteGrantControl, InviteSomeone, MY_INVITES } from "./InviteGrant";
 import "../styles/dash-server.css";
 import MapCanvas, { type MapFrame } from "../components/MapCanvas";
 import Emblem from "../components/Emblem";
@@ -58,6 +59,8 @@ import "../styles/dash-pages.css";
 import SocialScreen from "./Social";
 import SignInsScreen from "./SignIns";
 import GamesScreen from "./Games";
+import { NotificationSettingsPlate, notificationRows, NotificationSession } from "./Notifications";
+import { notifications } from "../state/notifications";
 import "../styles/social.css";
 import { DASH_NAME } from "../brand";
 import Legal from "../components/Legal";
@@ -73,6 +76,7 @@ const LABELS: Record<SectionId, () => string> = {
   teams: () => "teams",
   players: () => "players",
   settings: () => "settings",
+  session: () => "game session",
   signup: () => (identity.me() ? "profile" : "create account"),
   server: () => "server",
   signin: () => "sign in",
@@ -86,6 +90,7 @@ const menuItems = (): SectionId[] => menuFor(!!identity.me());
  *  players when signed out), as they did in the original Live menu. */
 function menuHome(s: SectionId): SectionId {
   if (menuItems().includes(s)) return s;
+  if (s === "session") return "live";
   if (s === "teams") return identity.me() ? "friends" : "players";
   return s === "friends" ? "players" : "settings";
 }
@@ -207,11 +212,12 @@ export default function Dashboard() {
       : online();
   });
 
+  const notificationScreen = () => section() === "settings" && params.tag === "notifications" && !!identity.me();
   const settings = createMemo(() => settingsRows(!!identity.me(), adminState.isMeAdmin()));
 
   const rows = createMemo((): Row[] => {
     switch (section()) {
-      case "settings": return settings();
+      case "settings": return notificationScreen() ? notificationRows() : settings();
       case "live":
         return liveGames(live.state).map((g) => ({ key: g.game_id, label: gameMapTitle(g), meta: `${rowType(g)} ${clock(elapsedSeconds(g, now()))}` }));
       case "friends":
@@ -236,8 +242,11 @@ export default function Dashboard() {
   });
 
   const [sel, setSelRaw] = createSignal(0);
-  const setSel = (i: number) => { setSelRaw(i); const s = section(); if (s) listSel[s] = i; };
-  createEffect(() => { const s = section(); setSelRaw(s ? listSel[s] ?? 0 : 0); });
+  const setSel = (i: number) => { setSelRaw(i); const s = section(); if (s && !notificationScreen()) listSel[s] = i; };
+  createEffect(() => {
+    const s = section();
+    setSelRaw(notificationScreen() ? 0 : s ? listSel[s] ?? 0 : 0);
+  });
   createEffect(() => { if (screen() === "list" && sel() >= rows().length) setSelRaw(Math.max(0, rows().length - 1)); });
 
   function openRow(i: number) {
@@ -253,6 +262,11 @@ export default function Dashboard() {
         const a = identity.accounts().find((x) => x.xuid === r.key);
         if (a) { identity.signIn(a); go("/", "back"); }
       }
+      return;
+    }
+    if (notificationScreen()) {
+      if (r.key === "friendGames" || r.key === "otherGames") notifications.toggle(r.key);
+      else if (r.key === "permission") void notifications.requestPermission();
       return;
     }
     if (s === "settings") go(r.key, "deeper");
@@ -333,6 +347,9 @@ export default function Dashboard() {
         ];
       case "server": {
         const sub = serverSub();
+        if (sub === "my-invites") {
+          return [{ label: "profile", glyph: "career", act: () => go("/dash/signup", "back") }];
+        }
         if (sub !== "connect") {
           const view = sub === "invites" || sub === "accounts" || sub === "import" || sub === "reports" || sub === "bans" ? sub : "overview";
           return serverPods(view, serverInfo.admin()).map((p): Sat => ({
@@ -384,7 +401,10 @@ export default function Dashboard() {
     else if (screen() === "recovery" || screen() === "recover") go(s === "signup" ? "/dash/signup" : "/", "back");
     else if (screen() === "player" && s !== "signup") go(`/dash/${s}`, "back");
     else if (s === "server" && params.tag === "import" && !identity.me()) go("/dash/signin", "back");
+    else if (s === "server" && params.tag === "my-invites") go("/dash/signup", "back");
     else if (s === "server" && params.tag) go("/dash/server", "back");
+    else if (s === "settings" && params.tag === "notifications") go("/dash/settings", "back");
+    else if (s === "session") go("/dash/live", "back");
     else if (s === "signup" || s === "server") go("/dash/settings", "back");
     else if (s === "teams") go(`/dash/${menuHome("teams")}`, "back");
     else go("/", "back");
@@ -452,7 +472,7 @@ export default function Dashboard() {
   function onKey(e: KeyboardEvent) {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     // Let a tab-focused link or prompt perform its own activation.
-    if (e.key === "Enter" && (e.target as HTMLElement).closest?.("a[href], .dx-prompt")) return;
+    if (e.key === "Enter" && (e.target as HTMLElement).closest?.("a[href], .dx-prompt, .dx-notice-dismiss, [data-dash-native]")) return;
     const typing = (e.target as HTMLElement).closest?.("input, textarea, select");
     // A field in a column of rows (data-nav) still lets up and down move on.
     const rowField = typing && (e.target as HTMLElement).dataset?.nav && (e.key === "ArrowUp" || e.key === "ArrowDown");
@@ -563,6 +583,9 @@ export default function Dashboard() {
         <Show when={identity.me()} fallback={<Show when={section() !== "signin"}><a class="dx-chip dx-chip--link dx-chip--join" href="/dash/signin" onClick={(e) => { e.preventDefault(); go("/dash/signin", "deeper"); }}>sign in</a></Show>}>
           {(me) => <a class="dx-chip dx-chip--me" href="/dash/signup" onClick={(e) => { e.preventDefault(); if (screen() !== "player" || section() !== "signup") go("/dash/signup", section() === "signup" ? "back" : "deeper"); }}>{me().gamertag}</a>}
         </Show>
+        <Show when={identity.me() && adminState.isMeAdmin() === true}>
+          <A class="dx-chip dx-chip--link dx-chip--admin" href={LIVE_ADMIN} state={DECK_ENTRY}>live admin</A>
+        </Show>
         <Show when={section() !== "games"}>
           <a class="dx-chip dx-chip--link" href="/dash/games">games</a>
         </Show>
@@ -612,6 +635,24 @@ export default function Dashboard() {
             <GamesScreen back={back} bind={(f) => { screenAct = f; }} />
           </Match>
 
+          <Match when={notificationScreen()}>
+            <div class="dx-screen dx-list dx-pages dx-settings">
+              <ListPanel title="notifications" rows={rows()} sel={sel()} onSel={setSel} onAct={openRow} empty="" />
+              <div class="dx-preview"><BigPod wire><Glyph name="gear" /></BigPod></div>
+              <NotificationSettingsPlate />
+              <Prompts onA={select} onB={back} />
+            </div>
+          </Match>
+
+          <Match when={section() === "session"}>
+            <div class="dx-screen dx-list dx-pages">
+              <Show when={identity.me()} keyed fallback={<Plate small="live now" title="game session" main><p>Sign in to see this game session.</p></Plate>}>
+                <NotificationSession id={params.tag} />
+              </Show>
+              <Prompts onB={back} />
+            </div>
+          </Match>
+
           <Match when={section() === "settings"}>
             <div class="dx-screen dx-list dx-pages dx-settings">
               <ListPanel title="settings" rows={rows()} sel={sel()} onSel={setSel} onAct={openRow} empty="" />
@@ -642,7 +683,7 @@ export default function Dashboard() {
                 </BigPod>
               </div>
               <Show when={section() === "live"} fallback={
-                <Show when={selAccount()}>{(a) => <PlayerPlate account={a()} />}</Show>
+                <Show when={selAccount()?.xuid} keyed>{(xuid) => <PlayerPlate account={live.state.accounts[xuid]!} manageInvites={section() === "players"} />}</Show>
               }>
                 <Show when={selGame()}>{(g) => <GamePlate game={g()} />}</Show>
               </Show>
@@ -665,7 +706,8 @@ export default function Dashboard() {
               <div class="dx-screen dx-pods dx-pages">
                 <div class="dx-centre"><BigPod wire><Emblem seed={a.xuid} size={220} class="dx-emblem" /></BigPod></div>
                 <Sats sats={sats()} sel={sat()} onSel={setSat} />
-                <PlayerPlate account={a} main mine={identity.me()?.xuid === a.xuid} />
+                <PlayerPlate account={a} main mine={identity.me()?.xuid === a.xuid} manageInvites
+                  invite={() => go(MY_INVITES, "deeper")} />
                 <Prompts onA={select} onB={back} />
               </div>
             )}
@@ -723,11 +765,13 @@ export default function Dashboard() {
             </div>
           </Match>
 
-          <Match when={screen() === "server" && serverSub() === "invites"}>
+          <Match when={screen() === "server" && (serverSub() === "invites" || serverSub() === "my-invites")}>
             <div class="dx-screen dx-pods dx-pods--form dx-pages dx-server dx-invites-screen">
               <div class="dx-centre"><BigPod wire><Glyph name="key" /></BigPod></div>
               <Sats sats={sats()} sel={sat()} onSel={setSat} />
-              <InvitesPlate info={serverInfo} bind={bindPlate("invites")} />
+              <Show when={serverSub()} keyed>
+                {(sub) => <InvitesPlate info={serverInfo} own={sub === "my-invites"} bind={bindPlate(sub)} />}
+              </Show>
               <Prompts onA={() => act("select")} onB={back} onX={blades()?.alt() ? () => act("alt") : undefined} xLabel={blades()?.alt() ?? undefined} />
             </div>
           </Match>
@@ -902,7 +946,7 @@ function GamePlate(props: { game: GameState }) {
 
 const PRESENCE_WORD = { playing: "in a game", online: "online", away: "away", offline: "offline" } as const;
 
-function PlayerPlate(props: { account: AccountState; main?: boolean; mine?: boolean }) {
+function PlayerPlate(props: { account: AccountState; main?: boolean; mine?: boolean; manageInvites?: boolean; invite?: () => void }) {
   // Games, wins and K/D are multiplayer's; campaign is a line of its own.
   const rec = createMemo(() => serviceRecord(live.state, props.account.xuid));
   const camp = createMemo(() => campaignRecord(live.state, props.account.xuid, now()));
@@ -916,7 +960,17 @@ function PlayerPlate(props: { account: AccountState; main?: boolean; mine?: bool
         <dt>rank</dt><dd>{rec().rank}</dd>
         <Show when={props.mine}><dt>key</dt><dd>kept in this browser</dd></Show>
       </dl>
-      <Show when={props.mine && props.main}><BanNotice /><MutedList /></Show>
+      <Show when={props.mine && props.main}>
+        <InviteSomeone grant={adminState.myInviteGrant()} go={() => props.invite?.()} />
+        <BanNotice /><MutedList />
+      </Show>
+      <Show when={props.manageInvites && !props.account.bot}>
+        <InviteGrantControl admin={adminState.isMeAdmin() === true} grant={props.account.invite_grant ?? null} write={async (grant) => {
+          const me = identity.me(), wk = live.wellKnown();
+          if (!me || !wk) throw new Error("connect to this server first");
+          await writeInviteGrant(live.server().api, wk.id, me, props.account.gamertag, grant);
+        }} />
+      </Show>
       <Show when={!props.mine && props.main && identity.me()}>
         <MuteButton target={{ xuid: props.account.xuid, gamertag: props.account.gamertag }} />
       </Show>

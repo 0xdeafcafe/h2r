@@ -12,6 +12,18 @@ pub const GAME_STARTED: &str = "GameStarted";
 pub const PLAYER_JOINED: &str = "PlayerJoined";
 pub const PLAYER_LEFT: &str = "PlayerLeft";
 pub const PLAYER_KILLED: &str = "PlayerKilled";
+pub const ACTOR_KILLED: &str = "ActorKilled";
+/// A Firefight `Score` command as credited ([`crate::firefight`]).
+pub const FIREFIGHT_SCORE: &str = "FirefightScore";
+/// A Firefight match's end ([`crate::firefight`]).
+pub const FIREFIGHT_ENDED: &str = "FirefightEnded";
+/// A player bounced off a superbounce crease (docs/game/superbounce.md, "Medals").
+pub const SUPERBOUNCE: &str = "Superbounce";
+/// A player died falling out of or through the map while trying a bounce.
+pub const BOUNCED: &str = "Bounced";
+/// A player teabagged another's body (docs/game/teabag.md): the event the
+/// `incel` medal is worked out from.
+pub const TEABAG: &str = "Teabag";
 pub const SCORE_CHANGED: &str = "ScoreChanged";
 pub const GAME_FRAME: &str = "GameFrame";
 pub const GAME_ENDED: &str = "GameEnded";
@@ -20,16 +32,94 @@ pub const MAP_OUTLINE_STORED: &str = "MapOutlineStored";
 
 /// The game event types a player's console may append in a batch; the
 /// server writes `GameStarted` (from `POST /v1/games`) and `GameFrame`.
-pub const CLIENT_GAME_EVENTS: [&str; 5] = [
+pub const CLIENT_GAME_EVENTS: [&str; 11] = [
     PLAYER_JOINED,
     PLAYER_LEFT,
     PLAYER_KILLED,
+    ACTOR_KILLED,
+    FIREFIGHT_SCORE,
+    FIREFIGHT_ENDED,
+    SUPERBOUNCE,
+    BOUNCED,
+    TEABAG,
     SCORE_CHANGED,
     GAME_ENDED,
 ];
 
 /// Most players a game holds (Halo 2 allows 16).
 pub const MAX_PLAYERS: usize = 16;
+
+/// Maximum JSON body on the private simulation report endpoint.
+pub const MAX_SIM_REPORT_BYTES: usize = 512 * 1024;
+
+/// Shots registered by the game's weapon stats and credited as hitting an enemy,
+/// grouped by the shooter's decision range at fire time.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WeaponAccuracy {
+    pub damage_code: u8,
+    pub weapon: String,
+    pub range: String,
+    pub shots: u64,
+    pub hits: u64,
+    pub accuracy: f64,
+}
+
+/// The private training preview holds the most-used weapon/range buckets.
+pub const MAX_LIVE_ACCURACY_ROWS: usize = 64;
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SimCombatSample {
+    pub index: u8,
+    pub tick: u32,
+    pub combat: SimCombatCounters,
+    pub weapon_accuracy: Vec<WeaponAccuracy>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SimCombatCounters {
+    pub melee_presses: u32,
+    pub grenade_requests: u32,
+    pub grenades_used: u32,
+    pub switch_presses: u32,
+    pub weapon_switches: u32,
+    pub reactions: u32,
+    pub total_reaction_ticks: u64,
+    pub think_ticks: u64,
+    pub total_think_ms: f64,
+    pub goal: Option<String>,
+    pub weapon: Option<u32>,
+    pub weapon_role: Option<String>,
+    pub range: Option<f32>,
+    pub think_ms: Option<f64>,
+    pub last_decisions: Vec<SimDecision>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SimDecision {
+    pub tick: u32,
+    pub action: String,
+}
+
+impl SimCombatSample {
+    pub fn valid(&self) -> bool {
+        let c = &self.combat;
+        let label = |name: &str| (1..=32).contains(&name.len())
+            && name.bytes().all(|b| b.is_ascii_lowercase() || b == b'_');
+        usize::from(self.index) < MAX_PLAYERS
+            && c.goal.as_deref().is_none_or(label)
+            && c.weapon_role.as_deref().is_none_or(label)
+            && c.range.is_none_or(|d| d.is_finite() && d >= 0.0)
+            && c.think_ms.is_none_or(|t| t.is_finite() && t >= 0.0)
+            && c.total_think_ms.is_finite() && c.total_think_ms >= 0.0
+            && c.last_decisions.len() <= 1
+            && c.last_decisions.iter().all(|d| label(&d.action))
+            && self.weapon_accuracy.len() <= MAX_LIVE_ACCURACY_ROWS
+            && self.weapon_accuracy.iter().all(|r| r.damage_code < 64 && label(&r.weapon)
+                && matches!(r.range.as_str(), "close" | "mid" | "long" | "unknown")
+                && r.shots > 0 && r.hits <= r.shots
+                && (r.accuracy - r.hits as f64 / r.shots as f64).abs() < 1e-12)
+    }
+}
 
 pub fn stream(game_id: &str) -> String {
     format!("game-{game_id}")
@@ -250,12 +340,81 @@ pub struct PlayerKilled {
     pub victim: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub killer: Option<u32>,
+    /// Stable damage-source key when the killing blow identifies one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weapon: Option<String>,
+    /// Whether the killing blow was a headshot, when its report identifies that.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headshot: Option<bool>,
     pub kind: String,
     /// The victim's position.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pos: Option<[f64; 3]>,
+}
+
+/// A unit lost to a body-depleting damage report while controlled by AI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActorKilled {
+    pub tick: u64,
+    /// Salted unit object datum.
+    pub unit: u32,
+    /// Salted character tag datum, when assigned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub character: Option<u32>,
+    /// The credited player's roster slot, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub killer: Option<u32>,
+    /// Stable damage-source key from the killing blow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weapon: Option<String>,
+}
+
+/// A bounce off a superbounce crease, with the count of the chain it is in
+/// (docs/game/superbounce.md, "The rule"). The medals are worked out from
+/// `chain` and `monster` wherever they are shown
+/// (`film::events::medals::bounce_medals_with`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Superbounce {
+    pub tick: u64,
+    /// The bouncing player's slot.
+    pub player: u32,
+    /// The bounce's place in its chain: 1 for a first bounce.
+    pub chain: u32,
+    /// The bounce launched well above a normal one: the `monster-bounce`
+    /// medal. Absent (false) from a host that sends none, and left out of
+    /// the JSON when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub monster: bool,
+}
+
+/// A death falling out of or through the map while trying a bounce: the
+/// `bounced` medal. The superbounce mode decides what an attempt is
+/// (docs/game/superbounce.md, "Medals"); the death itself is the
+/// `PlayerKilled` beside it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Bounced {
+    pub tick: u64,
+    /// The player's slot.
+    pub player: u32,
+    /// The count of the chain the death ended, 0 if none was live. Absent
+    /// (0) from a host that sends no chain.
+    #[serde(default)]
+    pub chain: u32,
+}
+
+/// A teabag: the player in slot `player` crouched over the body of the
+/// player in slot `victim`, as the game's teabag rule has it
+/// (docs/game/teabag.md, "The rule"). A player in a game with none, giving
+/// or getting one, who completed the game earns `incel`
+/// (`film::events::medals`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Teabag {
+    pub tick: u64,
+    /// The crouching player's slot.
+    pub player: u32,
+    /// The slot of the player whose body it was.
+    pub victim: u32,
 }
 
 pub const KILL_KINDS: [&str; 4] = ["kill", "suicide", "betrayal", "world"];
@@ -294,12 +453,12 @@ pub fn kill_kind(killer: Option<u32>, victim: u32, betrayal: bool) -> &'static s
 /// another player is settled again by `betrayal` ([`is_betrayal`]), since
 /// hosts before the fix recorded free-for-all kills as betrayals; `suicide`
 /// and `world` stay as recorded.
-pub fn settled_kill_kind<'a>(
-    recorded: &'a str,
+pub fn settled_kill_kind(
+    recorded: &str,
     killer: Option<u32>,
     victim: u32,
     betrayal: bool,
-) -> &'a str {
+) -> &str {
     match recorded {
         "kill" | "betrayal" if killer.is_some_and(|k| k != victim) => {
             if betrayal {
@@ -945,6 +1104,34 @@ pub struct KillRecord {
     pub at: String,
 }
 
+/// A bounce as `GET /v1/games/{id}` lists it: the event data plus where
+/// it is in the log.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BounceRecord {
+    #[serde(flatten)]
+    pub bounce: Superbounce,
+    pub position: u64,
+    pub at: String,
+}
+
+/// A bounce death as `GET /v1/games/{id}` lists it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BouncedRecord {
+    #[serde(flatten)]
+    pub bounced: Bounced,
+    pub position: u64,
+    pub at: String,
+}
+
+/// A teabag as `GET /v1/games/{id}` lists it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TeabagRecord {
+    #[serde(flatten)]
+    pub teabag: Teabag,
+    pub position: u64,
+    pub at: String,
+}
+
 /// `GET /v1/games/{id}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GameDetail {
@@ -962,6 +1149,21 @@ pub struct GameDetail {
     pub scoreboard: Vec<PlayerScore>,
     /// The last 50, oldest first.
     pub kills: Vec<KillRecord>,
+    /// The last 100 superbounces, oldest first; empty in a game with none
+    /// and from servers before bounces.
+    #[serde(default)]
+    pub bounces: Vec<BounceRecord>,
+    /// The last 100 bounce deaths, oldest first.
+    #[serde(default)]
+    pub bounced: Vec<BouncedRecord>,
+    /// The last 100 teabags, oldest first.
+    #[serde(default)]
+    pub teabags: Vec<TeabagRecord>,
+    /// The slots of the players in the game who joined it after its first
+    /// `PlayerKilled`: they did not play all of it, so earn no `incel`
+    /// (docs/game/teabag.md, "The medal"). Left out when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub joined_late: Vec<u32>,
     pub winner: Option<Winner>,
     pub end_reason: Option<String>,
     pub position: u64,
@@ -972,6 +1174,50 @@ pub struct GameDetail {
 pub struct GameCreated {
     pub game_id: String,
     pub position: u64,
+    /// Earlier Live homes did not issue simulation identifiers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identifiers: Option<GameIdentifiers>,
+}
+
+/// Slots, including spare slots for joins, are scoped to Live's fresh game ID.
+/// A machine hosting multiple seats uses one machine slot for all of them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GameIdentifiers {
+    pub seats: [String; 16],
+    pub machines: [String; 16],
+}
+
+impl GameIdentifiers {
+    pub fn for_game(game: &str) -> Self {
+        use sha2::{Digest, Sha256};
+        let hash = |domain: &[u8], slot: usize| {
+            let mut h = Sha256::new();
+            h.update(b"h2-film-id/v1\0");
+            h.update(game.as_bytes());
+            h.update([0]);
+            h.update(domain);
+            h.update([slot as u8]);
+            h.finalize()
+        };
+        Self {
+            seats: std::array::from_fn(|s| crate::sign::hex(&hash(b"seat", s)[..8])),
+            machines: std::array::from_fn(|s| {
+                let mut h = hash(b"machine", s);
+                h[0] = (h[0] & 0xfc) | 2; // locally administered unicast
+                crate::sign::hex(&h[..6])
+            }),
+        }
+    }
+}
+
+impl GameCreated {
+    pub fn new(game_id: String, position: u64) -> Self {
+        Self {
+            identifiers: Some(GameIdentifiers::for_game(&game_id)),
+            game_id,
+            position,
+        }
+    }
 }
 
 /// Checks game event data by type; `Err` is a message for a 400.
@@ -1012,6 +1258,53 @@ pub fn validate(kind: &str, data: &Value, players: &[Player]) -> Result<(), Stri
             if d.pos.is_some_and(|p| p.iter().any(|c| !c.is_finite())) {
                 return Err("pos must be finite".into());
             }
+        }
+        ACTOR_KILLED => {
+            let d: ActorKilled = parse(data)?;
+            if d.unit == u32::MAX || d.unit >> 16 == 0 {
+                return Err("unit must be a salted object datum".into());
+            }
+            if d.killer.is_some_and(|k| !known(k)) {
+                return Err("killer must be a player of the game".into());
+            }
+            if d.weapon.as_deref().is_some_and(|w| !valid_id(w)) {
+                return Err("weapon must be a damage-source key".into());
+            }
+        }
+        FIREFIGHT_SCORE => {
+            let d: crate::firefight::FirefightScore = parse(data)?;
+            d.validate()?;
+            if !known(d.player) {
+                return Err("player must be a player of the game".into());
+            }
+        }
+        SUPERBOUNCE => {
+            let d: Superbounce = parse(data)?;
+            if !known(d.player) {
+                return Err("player must be a player of the game".into());
+            }
+            if d.chain == 0 {
+                return Err("chain must be at least 1".into());
+            }
+        }
+        BOUNCED => {
+            let d: Bounced = parse(data)?;
+            if !known(d.player) {
+                return Err("player must be a player of the game".into());
+            }
+        }
+        TEABAG => {
+            let d: Teabag = parse(data)?;
+            if !known(d.player) || !known(d.victim) {
+                return Err("player and victim must be players of the game".into());
+            }
+            if d.player == d.victim {
+                return Err("a player cannot teabag their own body".into());
+            }
+        }
+        FIREFIGHT_ENDED => {
+            let d: crate::firefight::FirefightEnded = parse(data)?;
+            d.validate()?;
         }
         SCORE_CHANGED => {
             let d: ScoreChanged = parse(data)?;
@@ -1894,6 +2187,24 @@ mod tests {
     }
 
     #[test]
+    fn kill_damage_fields_round_trip_and_are_optional_on_old_records() {
+        let old = json!({"tick": 9, "victim": 1, "killer": 0, "kind": "kill"});
+        let kill: PlayerKilled = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!((kill.weapon.as_deref(), kill.headshot), (None, None));
+        assert_eq!(serde_json::to_value(kill).unwrap(), old);
+
+        for headshot in [true, false] {
+            let mut data = old.clone();
+            data["weapon"] = json!("battle_rifle");
+            data["headshot"] = json!(headshot);
+            let kill: PlayerKilled = serde_json::from_value(data.clone()).unwrap();
+            assert_eq!(kill.weapon.as_deref(), Some("battle_rifle"));
+            assert_eq!(kill.headshot, Some(headshot));
+            assert_eq!(serde_json::to_value(kill).unwrap(), data);
+        }
+    }
+
+    #[test]
     fn game_events_validate() {
         let p = players();
         for (kind, data) in [
@@ -1922,6 +2233,14 @@ mod tests {
                 GAME_ENDED,
                 json!({"tick": 99, "reason": "quit", "winner": null}),
             ),
+            (SUPERBOUNCE, json!({"tick": 9, "player": 1, "chain": 1})),
+            (SUPERBOUNCE, json!({"tick": 9, "player": 0, "chain": 7})),
+            (
+                SUPERBOUNCE,
+                json!({"tick": 9, "player": 0, "chain": 2, "monster": true}),
+            ),
+            (BOUNCED, json!({"tick": 9, "player": 1})),
+            (TEABAG, json!({"tick": 9, "player": 0, "victim": 1})),
         ] {
             assert_eq!(validate(kind, &data, &p), Ok(()), "{kind} {data}");
         }
@@ -1949,6 +2268,17 @@ mod tests {
                 GAME_ENDED,
                 json!({"tick": 9, "reason": "finished", "winner": {"player": 9}}),
             ),
+            (SUPERBOUNCE, json!({"tick": 9, "player": 5, "chain": 1})),
+            (SUPERBOUNCE, json!({"tick": 9, "player": 0, "chain": 0})),
+            (SUPERBOUNCE, json!({"tick": 9, "player": 0})),
+            (SUPERBOUNCE, json!({"player": 0, "chain": 1})),
+            (BOUNCED, json!({"tick": 9, "player": 5})),
+            (BOUNCED, json!({"tick": 9})),
+            (TEABAG, json!({"tick": 9, "player": 5, "victim": 1})),
+            (TEABAG, json!({"tick": 9, "player": 0, "victim": 5})),
+            (TEABAG, json!({"tick": 9, "player": 1, "victim": 1})),
+            (TEABAG, json!({"tick": 9, "player": 0})),
+            (TEABAG, json!({"player": 0, "victim": 1})),
             (GAME_STARTED, json!({})),
             (GAME_FRAME, json!({})),
         ] {

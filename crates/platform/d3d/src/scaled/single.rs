@@ -4,7 +4,8 @@ use super::*;
 
 impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
     pub(super) fn single(&self) -> bool {
-        self.single_copy && self.scale > 1
+        self.single_copy && (self.scale != RenderScale::ONE || self.scene_active
+            || (self.anamorphic_guest_frame() && self.lighting == Lighting::Retail))
     }
 
     pub(super) fn guest(&self, s: Surf<R, V>) -> V::Surface {
@@ -12,6 +13,11 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
     }
 
     pub(super) fn image(&self, s: Surf<R, V>) -> V::Surface {
+        if self.scene_active {
+            // L3's carried draws share the baseline shadow-map policy in
+            // both modes. At 1x a guest image aliases the reference store.
+            return if self.scale == RenderScale::ONE { self.guest(s) } else { self.live(s.view).unwrap_or_else(|| self.guest(s)) };
+        }
         self.live(s.view).or_else(|| {
             if self.lighting == Lighting::Retail { return None; }
             self.shadow_at(&s.reference).and_then(|i| {
@@ -40,7 +46,7 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
     // Make an E3 shadow's scaled attachment current before its first draw
     // or clear. The unscaled level remains the source until this succeeds.
     fn shadow_attachment(&mut self, depth: Surf<R, V>) -> Result<Option<(V::Surface, V::Surface)>, String> {
-        if self.lighting == Lighting::Retail { return Ok(None); }
+        if self.scene_active || self.lighting == Lighting::Retail { return Ok(None); }
         let Some(i) = self.shadow_at(&depth.reference) else { return Ok(None) };
         let guest = self.guest(depth);
         let Some(v) = self.shadow_view(i) else { return Ok(None) };
@@ -96,6 +102,11 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
         } else {
             self.view.draw(c, z, draw, vt)?
         };
+        if out == DrawOutcome::Drawn && let Some(i) = self.scene_tile(depth) {
+            // The guest-size level took the draw as retail. Repeat it
+            // into the tile, colour writes off, through its own colour.
+            self.shadow_draw(i, false, draw, vt, true);
+        }
         if out == DrawOutcome::Drawn {
             self.stats.display_draws += 1;
             if proxy_color.is_some() { self.stats.proxy_depth_draws += 1; }
@@ -108,6 +119,24 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
             }
         }
         Ok(out)
+    }
+
+    /// The shadow level of `depth` when a native E3 draw keeps a tile of
+    /// it (`private_scene`): a side copy at the E3 factor that each of the
+    /// level's draws and clears is repeated into, sampled in its place.
+    pub(super) fn scene_tile(&self, depth: Option<Surf<R, V>>) -> Option<usize> {
+        let d = depth?;
+        if !self.scene_active || !self.scene_tiles.contains(&d.reference) {
+            return None;
+        }
+        self.shadow_at(&d.reference)
+    }
+
+    /// A clear of a tiled level, repeated into its tile.
+    pub(super) fn scene_tile_clear(&mut self, depth: Option<Surf<R, V>>, clear: Clear, rects: Option<&RectClear>) {
+        if let Some(i) = self.scene_tile(depth) {
+            self.shadow_clear(i, Clear { color: None, ..clear }, rects);
+        }
     }
 
     // Clears of a guest-size colour and a scaled depth need no readback.

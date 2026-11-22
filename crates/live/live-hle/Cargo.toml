@@ -6,6 +6,10 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+actor-net = { path = "../actor-net" }
+cloud-saves.workspace = true
+background.workspace = true
+polling = "3"
 film = { path = "../film" }
 runtime.workspace = true
 serde.workspace = true
@@ -21,6 +25,7 @@ url = "2"
 tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 
 [dev-dependencies]
+coop = { path = "../coop" }
 tokio.workspace = true
 live-server = { path = "../live-server" }
 flate2 = "1"

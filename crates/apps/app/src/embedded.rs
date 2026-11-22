@@ -22,8 +22,7 @@ use crate::audio_out::{AudioOut, FALLBACK_RATE};
 use crate::frame::{self, Compositor, FrameSource};
 use crate::lifecycle::Lifecycle;
 use crate::pacing::{PaceStats, Pacer};
-use crate::scale;
-use crate::surface::WindowSurface;
+use crate::surface::{SurfaceKind, WindowSurface};
 use crate::worker::{GuestFn, GuestWorker};
 use crate::{AppConfig, ExitReport, GuestExit, GuestHost};
 
@@ -40,28 +39,22 @@ pub mod host_surface {
     #[cfg(windows)]
     pub const NAME: &str = "SwapChainPanel";
 
-    /// The backends the shell's instance may use: Metal on Apple
-    /// platforms; on Windows, DX12 only. wgpu's GL backend imports
-    /// `opengl32.dll`, which an Xbox app container lacks: it is
-    /// delay-loaded (platform/xbox/build.sh) and must never be called.
-    pub fn backends() -> wgpu::Backends {
-        if cfg!(windows) { wgpu::Backends::DX12 } else { wgpu::Backends::all() }
-    }
+    /// The GPU host the shell's instance is made for
+    /// ([`gfx::GpuHost`]): the tvOS and iOS apps are Apple hosts.
+    #[cfg(target_vendor = "apple")]
+    pub const GPU: gfx::GpuHost = gfx::GpuHost::Apple;
+    /// The GPU host the shell's instance is made for
+    /// ([`gfx::GpuHost`]): the UWP app, DX12 alone.
+    #[cfg(windows)]
+    pub const GPU: gfx::GpuHost = gfx::GpuHost::WindowsApp;
 
-    /// The instance a host's surface is made on, with [`backends`].
-    pub fn instance() -> wgpu::Instance {
-        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-        desc.backends = backends();
-        // The swap chain kind and whether acquire waits on DXGI's frame
-        // latency object, once (the Xbox's frame pacing, docs/runtime/xbox.md).
-        #[cfg(windows)]
-        eprintln!(
-            "app: dx12 presentation {:?}, frame latency waitable object {:?}",
-            desc.backend_options.dx12.presentation_system,
-            desc.backend_options.dx12.latency_waitable_object
-        );
-        wgpu::Instance::new(desc)
-    }
+    /// What the host's layer presents as: a `CAMetalLayer` is a window.
+    #[cfg(target_vendor = "apple")]
+    pub(crate) const SURFACE: super::SurfaceKind = super::SurfaceKind::Window;
+    /// What the host's layer presents as: a `SwapChainPanel` is a DXGI
+    /// composition swap chain.
+    #[cfg(windows)]
+    pub(crate) const SURFACE: super::SurfaceKind = super::SurfaceKind::Composition;
 
     /// The wgpu target for the host's `layer`.
     #[cfg(target_vendor = "apple")]
@@ -108,11 +101,11 @@ impl Embedded {
         if layer.is_null() {
             anyhow::bail!("no {}", host_surface::NAME);
         }
-        let instance = host_surface::instance();
+        let instance = gfx::instance_for(host_surface::GPU);
         // SAFETY: the caller guarantees the layer and its lifetime.
         let surface = unsafe { instance.create_surface_unsafe(host_surface::target(layer)) }?;
         let ctx = pollster::block_on(GfxContext::new(instance, Some(&surface)))?;
-        let surface = WindowSurface::new(&ctx, surface, size, config.fps.vsync(config.vsync))?;
+        let surface = WindowSurface::new(&ctx, surface, size, &config, host_surface::SURFACE)?;
         let info = ctx.adapter.get_info();
         eprintln!(
             "app: {} ({:?}), surface {:?} {}x{}, features {:?}",
@@ -138,6 +131,7 @@ impl Embedded {
         let kept_keyboard = keyboard.clone();
         let pace_stats = Arc::default();
         let host = GuestHost {
+            native_size: surface.native_size.clone(),
             gfx: crate::share_context(&ctx),
             sink,
             input: Some(input),
@@ -187,17 +181,7 @@ impl Embedded {
             return;
         };
         let view = target.texture.create_view(&Default::default());
-        let viewport = frame
-            .as_ref()
-            .map(|f| {
-                scale::place(
-                    f.size,
-                    self.config.aspect,
-                    self.config.scaling,
-                    self.surface.size(),
-                )
-            })
-            .unwrap_or_default();
+        let viewport = self.surface.viewport(frame.as_ref());
         let mut enc = self
             .ctx
             .device
@@ -269,7 +253,7 @@ fn caps_present_modes(ctx: &GfxContext, surface: &WindowSurface) -> Vec<wgpu::Pr
 }
 
 /// The shell settings a tvOS or iOS host starts from: full screen with the
-/// 4:3 guest picture fitted, pads (the remote, the on-screen controls) on,
+/// drawable's native aspect, pads (the remote, the on-screen controls) on,
 /// no mouse, and `h2 play`'s shutdown grace. `keyboard` stays on for the
 /// player-one pad that merges the devices and records the one last used,
 /// and for the host's text in the game's virtual keyboard.
@@ -277,6 +261,7 @@ pub fn device_config() -> AppConfig {
     AppConfig {
         title: "Halo 2".into(),
         fullscreen: true,
+        aspect: crate::DisplayAspect::Source,
         keyboard: true,
         mouse_capture: false,
         gamepads: true,
@@ -301,19 +286,17 @@ mod tests {
         });
         assert!(keyboard.is_some());
         assert!(!c.audio, "boot's DirectSound owns the device");
-        assert_eq!(c.aspect, crate::DisplayAspect::Standard);
+        assert_eq!(c.aspect, crate::DisplayAspect::Source);
         assert_eq!(c.scaling, crate::Scaling::Fit);
     }
 
     #[test]
-    fn windows_hosts_use_dx12_alone() {
-        // No GL on Windows: opengl32.dll is not in the Xbox app container.
-        let b = host_surface::backends();
-        if cfg!(windows) {
-            assert_eq!(b, wgpu::Backends::DX12);
-        } else {
-            assert_eq!(b, wgpu::Backends::all());
-        }
+    fn each_embedded_host_has_its_gpu_host() {
+        // The backends per host are gfx's table (gfx::context's tests).
+        let want = if cfg!(windows) { gfx::GpuHost::WindowsApp } else { gfx::GpuHost::Apple };
+        assert_eq!(host_surface::GPU, want);
+        let want = if cfg!(windows) { SurfaceKind::Composition } else { SurfaceKind::Window };
+        assert_eq!(host_surface::SURFACE, want);
     }
 
     #[test]

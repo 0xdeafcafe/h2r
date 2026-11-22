@@ -4,7 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { customSection, parseCatalog, parsePins, togglePin, withCustom } from "../src/admin/catalog";
-import { actionsFor, fetchContent, moderate, moderatePath, parseContent, reportMap, reportsFor, setUploads, shortHash } from "../src/admin/content";
+import { actionsFor, fetchContent, moderate, moderatePath, parseContent, reportMap, reportPack, reportsFor, setUploads, shortHash } from "../src/admin/content";
 import { parseMapSummaries } from "../src/lib/maps";
 import type { LocalAccount } from "../src/state/account";
 import { parseJws } from "../src/state/verify";
@@ -75,7 +75,17 @@ describe("moderation", () => {
     expect(reportsFor(c, "map", ID).map((r) => r.by)).toEqual(["Noble Six", "Grunt Birthday"]);
     expect(c.uploads_off).toEqual(["Spammy"]);
     expect(c.position).toBe(99);
-    expect(parseContent(null)).toEqual({ maps: [], blobs: [], reports: [], uploads_off: [], position: null });
+    expect(parseContent(null)).toEqual({ packs: [], maps: [], blobs: [], reports: [], uploads_off: [], position: null });
+  });
+
+  test("pack reports keep their own target when a map has the same id", () => {
+    const c = parseContent({ reports: [
+      { target: "map", id: ID, reason: "one member" },
+      { target: "pack", id: ID, reason: "whole pack" },
+      { target: "invalid", id: ID, reason: "ignored" },
+    ] });
+    expect(reportsFor(c, "pack", ID).map((r) => r.reason)).toEqual(["whole pack"]);
+    expect(reportsFor(c, "map", ID).map((r) => r.reason)).toEqual(["one member"]);
   });
 
   test("actions offered follow the state", () => {
@@ -86,6 +96,7 @@ describe("moderation", () => {
   });
 
   test("paths for packages and blobs", () => {
+    expect(moderatePath("pack", "orchard-night", "hide")).toBe("/admin/mod-packs/orchard-night/hide");
     expect(moderatePath("map", ID, "hide")).toBe(`/admin/maps/${ID}/hide`);
     expect(moderatePath("content", BLOB, "unblock")).toBe(`/admin/content/${BLOB}/unblock`);
     expect(shortHash(BLOB)).toBe("c3c3c3c3…");
@@ -107,6 +118,17 @@ describe("moderation", () => {
     expect(await fetchContent("http://h/v1", "localhost", me(), none.f)).toBeNull();
     const refused = recorder(() => json({ error: "forbidden", message: "admins only" }, 403));
     await expect(moderate("http://h/v1", "localhost", me(), "map", ID, "hide", refused.f)).rejects.toMatchObject({ status: 403, code: "forbidden" });
+  });
+
+  test("moderation and reporting address the pack as one unit", async () => {
+    const { f, calls } = recorder(() => json({ ok: true }));
+    await moderate("http://h/v1", "localhost", me(), "pack", "orchard-night", "block", f);
+    await reportPack("http://h/v1", "localhost", me(), "orchard-night", "  Missing credit  ", f);
+    expect(calls.map(({ init, url }) => [init.method, url, lxm(init)])).toEqual([
+      ["POST", "http://h/v1/admin/mod-packs/orchard-night/block", "content.moderate"],
+      ["POST", "http://h/v1/mod-packs/orchard-night/report", "content.write"],
+    ]);
+    expect(JSON.parse(calls[1]!.init.body as string)).toEqual({ reason: "Missing credit" });
   });
 
   test("anyone signed in reports a package with a content.write token", async () => {

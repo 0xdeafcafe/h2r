@@ -362,13 +362,13 @@ fn incomplete_writes_nothing_and_kicks_a_fence_once() {
     assert_eq!(words, [0xAAAA_AAAA; 3], "incomplete writes nothing");
     assert_eq!(
         m.read_u32(DEV + f::GPU_TIME).unwrap(),
-        time + 1,
+        time + 2,
         "the fence kick"
     );
-    assert_eq!(d.gpu_completed(), time + 1);
+    assert_eq!(d.gpu_completed(), time + 2);
     // The GPU time has moved: no second fence.
     assert_eq!(get(&mut d, &mut m, 5).0, D3DERR_TESTINCOMPLETE);
-    assert_eq!(m.read_u32(DEV + f::GPU_TIME).unwrap(), time + 1);
+    assert_eq!(m.read_u32(DEV + f::GPU_TIME).unwrap(), time + 2);
     for _ in 0..VISIBILITY_PENDING_SWAPS {
         d.swap(&mut m, 0).unwrap();
         assert_eq!(get(&mut d, &mut m, 5).0, D3DERR_TESTINCOMPLETE);
@@ -436,4 +436,120 @@ pub fn bench() {
 #[ignore = "benchmark: cargo bench -p d3d --bench visibility_wait"]
 fn visibility_wait() {
     bench();
+}
+
+/// The same stream is drawn in the window and privately. Only the
+/// canonical draw writes the GPU counter, in guest pixel units.
+#[cfg(feature = "gpu")]
+#[test]
+fn native_flare_reports_use_guest_pixels_and_a_private_capture_leaves_the_counter_alone() {
+    use d3d::gfx_backend::GuestDrawPass;
+    use d3d::scene_sink::{ReplayOp, SceneSink};
+    use frame_scene::{Slot, SlotAt};
+    use std::sync::mpsc;
+
+    let Ok(ctx) = gfx::GfxContext::headless() else { return };
+    let mut gpu = d3d::GfxBackend::new(ctx);
+    for scale in [1, 4] {
+        let (tx, rx) = mpsc::channel();
+        let sink = SceneSink::new(RecordingBackend::new(), || {
+            Some(SlotAt { slot: Slot::Transparents, view: 0 })
+        }).with_replay(move |frame| tx.send(frame).unwrap());
+        let (mut d, mut m) = device(sink, false);
+        use d3d::device::clear_flags::{STENCIL, TARGET, ZBUFFER};
+        d.clear(&mut m, 0, 0, TARGET | ZBUFFER | STENCIL, 0, 1.0, 0).unwrap();
+        begin_inline(&mut m);
+        inline_quad(&mut m, 0.0, 0.0, 32.0, 16.0, [0, 255, 0, 255]);
+        inline_quad(&mut m, 40.0, 50.0, 47.0, 61.0, [0, 0, 255, 255]);
+        d.end_visibility_test(&mut m, 0).unwrap();
+        d.swap(&mut m, 0).unwrap();
+        let frame = rx.try_recv().unwrap();
+        let reports: Vec<_> = frame.ops.iter().filter_map(|(_, op)| match op {
+            ReplayOp::EndFlareQuery(proxy) => Some(*proxy),
+            _ => None,
+        }).collect();
+        assert_eq!(reports.len(), 1);
+        let mut display = GuestDrawPass::new_display(&mut gpu, &frame, scale).unwrap();
+        for (_, op) in &frame.ops { display.apply(op).unwrap(); }
+        let output = display.present_with_outputs(0, None).unwrap().tickets;
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0].0, reports[0]);
+        let expected = 32 * 16 + 7 * 11;
+        assert_eq!(gpu.read_pixel_count(output[0].1), Ok(expected), "{scale}x");
+
+        let mut capture = GuestDrawPass::new(&mut gpu, &frame, scale).unwrap();
+        for (_, op) in &frame.ops { capture.apply(op).unwrap(); }
+        // Even an intervening clear in a capture must not reset the
+        // display's running counter before its next GET_REPORT.
+        capture.apply(&ReplayOp::BeginFlareQuery).unwrap();
+        capture.submit().unwrap();
+        drop(capture);
+        let ticket = gpu.report_pixel_count().unwrap().unwrap();
+        assert_eq!(gpu.read_pixel_count(ticket), Ok(expected));
+    }
+}
+
+#[test]
+fn canonical_flare_tickets_and_mid_frame_reads_keep_their_original_proxy() {
+    use d3d::scene_sink::{ReplayFrame, ReplayOp, SceneSink};
+    use d3d::threaded::owner::{Candidate, FrameOwner, Submission, Outputs};
+    use frame_scene::{Slot, SlotAt};
+    use std::sync::{Arc, Mutex};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let scene = Arc::new(Mutex::new(None::<ReplayFrame>));
+    let selected = Arc::clone(&scene);
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let displayed = Arc::clone(&accepted);
+    let owner = FrameOwner {
+        select: Box::new(move |_, _| {
+            let frame = Arc::new(selected.lock().unwrap().take()?);
+            let played = Arc::clone(&frame);
+            let displayed = Arc::clone(&displayed);
+            Some(Submission::Native(Candidate {
+                frame,
+                before_original: None,
+                eligible: Box::new(|_, _| true),
+                draw: Box::new(move |gpu: &mut RecordingBackend, targets| {
+                    displayed.fetch_add(1, Ordering::Relaxed);
+                    let mut outputs = Outputs::default();
+                    for (_, op) in &played.ops {
+                        if let ReplayOp::EndFlareQuery(proxy) = op {
+                            // Distinct from the zero samples drawn by the
+                            // original empty queries; also distinct per slot.
+                            gpu.pixel_count = 50 + *proxy;
+                            let ticket = gpu.report_pixel_count()?.ok_or("missing synthetic pixel counter")?;
+                            outputs.tickets.push((*proxy, ticket));
+                        }
+                    }
+                    gpu.present(targets[&played.presented], 0)?;
+                    Ok(outputs)
+                }),
+            }))
+        }),
+        events: std::sync::Arc::new(()),
+    };
+    let threaded = ThreadedBackend::new(RecordingBackend::new()).unwrap().with_frame_owner(owner);
+    let mut sink = SceneSink::new(threaded, || Some(SlotAt { slot: Slot::Transparents, view: 1 }))
+        .with_replay(move |frame| *scene.lock().unwrap() = Some(frame));
+    let surface = sink.create_surface(gfx::D3DFormat::LinA8R8G8B8, 8, 8, false).unwrap();
+
+    // A synchronous read before Swap needs the original queue. Its
+    // commands must be issued exactly once; the owner must decline.
+    sink.clear_pixel_count().unwrap();
+    let first = sink.report_pixel_count().unwrap().unwrap();
+    assert_eq!(sink.read_pixel_count(first), Ok(0));
+    sink.present(surface, 0).unwrap();
+
+    sink.clear_pixel_count().unwrap();
+    let second = sink.report_pixel_count().unwrap().unwrap();
+    sink.clear_pixel_count().unwrap();
+    let third = sink.report_pixel_count().unwrap().unwrap();
+    sink.present(surface, 0).unwrap();
+    sink.inner_mut().finish().unwrap();
+    assert_eq!(accepted.load(Ordering::Relaxed), 1);
+    // Poll a later report first. Landing a different ticket must
+    // neither block reception nor spend the earlier proxy.
+    assert_eq!(sink.try_pixel_count(third), Ok(Some(50 + third)));
+    assert_eq!(sink.read_pixel_count(second), Ok(50 + second));
 }

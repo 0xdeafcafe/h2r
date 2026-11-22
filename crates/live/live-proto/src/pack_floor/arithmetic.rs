@@ -85,7 +85,7 @@ impl<'a, T: Bits> Coder<'a, T> {
     }
     #[inline]
     fn split(&mut self, p: u64, want: bool) -> bool {
-        let cut = self.lo + ((self.hi - self.lo + 1) * p >> 12);
+        let cut = self.lo + (((self.hi - self.lo + 1) * p) >> 12);
         let one = self.io.choose(cut, want);
         if one {
             self.lo = cut;
@@ -132,9 +132,6 @@ impl<'a, T: Bits> Coder<'a, T> {
             n = 2 * n + u64::from(self.bit(ctx + 16 + j.min(15) as usize, (x >> j) & 1 != 0));
         }
         n - 1
-    }
-    pub fn signed(&mut self, ctx: usize, want: i64) -> i64 {
-        super::super::unzigzag(self.uint(ctx, super::super::zigzag(want)))
     }
     pub fn literal(&mut self, want: u8) -> u8 {
         (0..8).rev().fold(0, |n, i| {

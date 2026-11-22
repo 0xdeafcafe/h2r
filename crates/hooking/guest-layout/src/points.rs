@@ -20,6 +20,12 @@
 //! }
 //! ```
 
+pub mod render_aspect;
+pub mod scene_effects;
+
+/// Vertical pixels per projection unit in the current retail view.
+pub const PIXEL_SCALE: u32 = 0x004b_9ed0;
+
 /// Where one argument or the result lives at the function's entry or exit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Loc {
@@ -129,6 +135,13 @@ pub const TRANSPARENT_ORDER_BEGIN: Point = Point::new(
 pub const TRANSPARENT_ORDER_READY: Point = Point::new(
     "TRANSPARENT_ORDER_READY", 0x0001_e3bc, Sig::Site, "docs/graphics/native-renderer.md",
 );
+
+/// Return sites on the retail depleting damage report's kill-credit path.
+/// Used to identify that caller's stack layout at PLAYER_KILLED entry.
+pub mod kill_credit {
+    pub const RETURN_TO_ATTRIBUTION: u32 = 0x001e_a465;
+    pub const RETURN_TO_DAMAGE_REPORT: u32 = 0x000d_9acf;
+}
 
 /// Return addresses for the retail lobby leave and party leader queries.
 pub mod party_leave {
@@ -312,6 +325,8 @@ points! { ALL;
     COLLISION_BSP_SEGMENT @ 0x001d_e6d0: [fn(query: stack 0, node: stack 1, lo: stack 2, hi: stack 3) -> al ret 16], Hot; "docs/perf/sim-budget.md";
     /// BSP vector test: one segment through a collision BSP into the result record.
     COLLISION_VECTOR_TEST @ 0x001d_e630: [fn(out: eax, flags: ecx, bsp: edx, limit: xmm0, breakable_count: stack 0, breakable_mask: stack 1, start: stack 2, delta: stack 3) -> al ret 16], Hot; "docs/engine/collision-queries.md";
+    /// The instanced-geometry trace in one cluster.
+    COLLISION_INSTANCE_TRACE @ 0x0024_4980: [fn(cluster: eax, start: esi, delta: edi, flags: stack 0, filter: stack 1, out: stack 2) -> al ret 12], Hot; "docs/engine/collision-queries.md";
     /// Location of a point in the structure BSP: leaf, cluster, BSP index.
     COLLISION_LOCATION @ 0x0011_bed0: [fn(point: edx, out: esi) ret 0], Hot; "docs/engine/collision-queries.md";
     SIM_COLLISION_QUERY @ 0x0016_97c0: [fn(flags: stack 0, start: stack 1, delta: stack 2, ignore_a: stack 3, ignore_b: stack 4, out: stack 5) -> al ret 24], Hot; "docs/perf/sim-budget.md";
@@ -360,11 +375,46 @@ points! { ALL;
     HS_UNIT_GRENADE_COUNT @ 0x002a_4310: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
     /// HaloScript's object awareness evaluator, index 305.
     HS_AI_SEE_OBJECT @ 0x002a_53b0: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
-    HS_CONVERSATION_SPAWN_WAVE @ 0x0020_1520: [fn(count: eax, squad: stack 0, location: stack 1) ret 16]; "docs/halo1/ai.md";
+    /// HaloScript's two-argument `ai_place` evaluator (291): a squad and a
+    /// count. It places a plain squad (the top two bits of the `ai` value
+    /// clear) through [`AI_SQUAD_PLACE`] with any start, not forced, spawn
+    /// flag 1, and stores the `ai` value at AI globals `+0x364`.
+    HS_AI_PLACE_COUNTED @ 0x002a_5010: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12], Optional; "docs/game/firefight.md";
+    /// HaloScript's `ai_set_team` evaluator (322): calls [`AI_SET_TEAM`].
+    HS_AI_SET_TEAM @ 0x002a_5850: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12], Optional; "docs/game/firefight.md";
+    /// HaloScript's `ai_erase` evaluator (297): calls [`AI_ERASE`].
+    HS_AI_ERASE @ 0x002a_5210: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12], Optional; "docs/game/firefight.md";
+    /// HaloScript's `ai_set_orders` evaluator (333): calls [`AI_SET_ORDERS`].
+    HS_AI_SET_ORDERS @ 0x002a_5c10: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12], Optional; "docs/game/firefight.md";
+    /// Place `count` actors of a scenario squad. The character is read per
+    /// actor at placement, from the start's character or else the squad's
+    /// (`+0x36`). `location` -1 lets [`AI_CHOOSE_SQUAD_START`] pick each
+    /// start; a given location places one actor. `force` (a byte) skips the
+    /// location's availability check and the vehicle-seat attempt;
+    /// `spawn_flags` goes to [`AI_SPAWN_AT_SQUAD_START`]. Returns at once
+    /// while the AI globals' initialised byte is clear.
+    AI_SQUAD_PLACE @ 0x0020_1520: [fn(count: eax, squad: stack 0, location: stack 1, force: stack 2, spawn_flags: stack 3) ret 16]; "docs/game/firefight.md";
+    /// Delete every actor of an `ai` value (a squad, or a group as
+    /// `0x4000_0000 | index`) with its unit, then the objects the squad
+    /// placed (runtime squad `+0x70`) that nothing else keeps.
+    AI_ERASE @ 0x0027_36c0: [fn(ai: stack 0) ret 4], Optional; "docs/game/firefight.md";
+    /// Set the team of a squad or group: runtime squad `+0x76`, each
+    /// actor's `+0x24` and its unit's `+0x138`.
+    AI_SET_TEAM @ 0x0027_5b60: [fn(ai: eax, team: ebx) ret 0], Optional; "docs/game/firefight.md";
+    /// Give a squad or group a scenario order (the order block at scenario
+    /// `+0x240`); an index outside the block is ignored.
+    AI_SET_ORDERS @ 0x0027_5cb0: [fn(ai: eax, order: ecx) ret 0], Optional; "docs/game/firefight.md";
+    /// The AI's clear-line test between two points: the collision query
+    /// with flags `0x0180_8c2d` (structure, instanced geometry and
+    /// objects). True when nothing is hit, or the hit is within about a
+    /// third of a world unit of `to`.
+    AI_LINE_OF_SIGHT @ 0x0029_dd50: [fn(from: esi, to: edi, ignore_a: edx, ignore_b: ecx) -> al ret 0], Optional; "docs/game/firefight.md";
     HS_CONVERSATION_UNIT_NEW @ 0x000c_4410: [fn(unit: stack 0) ret 12]; "docs/halo1/ai.md";
     /// Initializes the unit's speech block from its model and variant name.
     UNIT_DIALOGUE_SET_VARIANT @ 0x0011_4ec0: [fn(unit: eax, variant: stack 0) ret 4]; "docs/halo1/ai.md";
-    /// Enqueue the selected candidate in the AI dialogue scheduler.
+    /// Enqueue the selected candidate in the AI dialogue scheduler. Its first
+    /// word is the vocabulary index and its dword at +4 is the speaking unit.
+    /// AL is nonzero when the immediate speech or queue insertion succeeds.
     AI_DIALOGUE_ENQUEUE @ 0x0020_d0c0: [fn(vocabulary: stack 0, time: stack 1, stimulus: stack 2, candidate: stack 3, context: stack 4, parent: stack 5, queued: stack 6) -> al ret 28]; "docs/halo1/ai.md";
     /// Check whether a unit can play a line and resolve its sound.
     UNIT_DIALOGUE_CHECK @ 0x0011_4520: [fn(unit: eax, vocalization: edx, priority: stack 0, speech_time: stack 1, sound: stack 2) -> al ret 12]; "docs/halo1/ai.md";
@@ -481,6 +531,35 @@ points! { ALL;
     /// The `mach` and `bloc` levels' function import (slot `+4c`).
     MACHINE_FUNCTION_IMPORT @ 0x0011_bd60: [fn(object: stack 0, name: stack 1, value: stack 2, active: stack 3) -> al ret 16], Hot; "docs/engine/object-update.md";
     AI_UPDATE @ 0x001c_83c0: [opaque], Optional; "docs/engine/engine-map.md";
+    /// Queue one replication event in a distributed game (world mode 4 or
+    /// 5; a no-op otherwise): the event type, the number of entities it
+    /// refers to, their object handles, the payload's size and bytes, and
+    /// a context word. A sixth register argument (EAX) is not read here.
+    SIM_EVENT_GENERATE @ 0x000b_5a70: [fn(kind: stack 0, references: stack 1, objects: stack 2, size: stack 3, payload: stack 4, context: stack 5) ret 24], Optional; "docs/game/notes/ai-networking.md";
+    /// Populate the simulation registry and return the two occupied counts.
+    SIM_REGISTER_REPLICATION_TYPES @ 0x0008_2240: [fn(registry: eax, event_count: ecx, entity_count: stack 0) ret 4], Optional; "docs/game/notes/creature-entity.md";
+    /// Choose an entity type for an object's loaded definition tag.
+    SIM_OBJECT_ENTITY_TYPE @ 0x000b_5990: [fn(definition: eax, root: edx) -> eax ret 0], Optional; "docs/game/notes/creature-entity.md";
+    /// Enroll a host object and bind its new entity to it.
+    SIM_ENROLL_OBJECT @ 0x000a_7870: [fn(object: stack 0) ret 4], Optional; "docs/game/notes/creature-entity.md";
+    /// Collect and distribute the entity database's pending dirty masks.
+    SIM_ENTITY_COLLECT_UPDATES @ 0x0008_a090: [fn(database: stack 0) ret 4], Optional; "docs/game/notes/creature-entity.md";
+    /// Compute an entity creation's priority and payload size for a view.
+    SIM_ENTITY_CREATION_RELEVANCE @ 0x0008_a460: [fn(database: ecx, entity: stack 0, mask: stack 1, view: stack 2, priority: stack 3, bits: stack 4) ret 20], Optional; "docs/game/notes/creature-entity.md";
+    /// Compute update priority with optional distance and period outputs.
+    SIM_ENTITY_UPDATE_RELEVANCE @ 0x000a_bac0: [fn(distance: eax, record: stack 0, context: stack 1, period: stack 2) -> xmm0 ret 12], Optional; "docs/game/notes/creature-entity.md";
+    /// Append one entity update operation to a peer view's replication batch.
+    SIM_VIEW_WRITE_ENTITY_UPDATE @ 0x0009_89f0: [fn(stream: eax, slot: ecx, view: stack 0, context: stack 1, reserve: stack 2) -> al ret 12], Optional; "docs/game/notes/creature-entity.md";
+    /// The object entity adapter that creates and binds a local replica.
+    SIM_OBJECT_CREATE_REPLICA @ 0x000a_5a60: [fn(definition: ecx, record: stack 0, creation_size: stack 1, creation: stack 2, mask: stack 3, state_size: stack 4, state: stack 5) -> al ret 24], Optional; "docs/game/notes/creature-entity.md";
+    /// Initialize an object placement record from a local definition datum.
+    CREATURE_PROBE_PLACEMENT_NEW @ 0x000b_7930: [fn(placement: esi, definition: stack 0, owner: stack 1, source: stack 2) ret 12], Optional; "docs/game/notes/creature-entity.md";
+    /// Allocate and place an object from a placement record.
+    CREATURE_PROBE_OBJECT_NEW @ 0x000b_7b40: [fn(placement: stack 0) -> eax ret 4], Optional; "docs/game/notes/creature-entity.md";
+    /// Apply an object transform and update its placement in the world.
+    CREATURE_PROBE_OBJECT_POSITION @ 0x000b_75a0: [fn(position: eax, forward: ecx, up: edx, object: stack 0, a: stack 1, b: stack 2) ret 12], Optional; "docs/game/notes/creature-entity.md";
+    /// Select replica physics for an object at its initial placement.
+    CREATURE_PROBE_REPLICA_PHYSICS @ 0x000b_9b90: [fn(replica: edx, object: stack 0) ret 4], Optional; "docs/game/notes/creature-entity.md";
     SCRIPT_UPDATE @ 0x0020_9310: [opaque], Optional; "docs/engine/engine-map.md";
     EFFECT_PART_CREATE @ 0x0017_a8a0: [opaque], Optional; "docs/engine/engine-map.md";
     PARTICLE_SYSTEM_UPDATE @ 0x0024_7140: [opaque], Optional; "docs/engine/engine-map.md";
@@ -494,7 +573,14 @@ points! { ALL;
     CAMERA_DIRECTOR @ 0x0015_54b0: [opaque], Optional; "docs/engine/engine-map.md";
     CAMERA_OBSERVER @ 0x0016_f280: [opaque], Optional; "docs/engine/engine-map.md";
     CAMERA_FIRST_PERSON @ 0x0023_c110: [opaque], Optional; "docs/engine/engine-map.md";
-    UI_UPDATE @ 0x0014_79c3: [opaque], Optional; "docs/engine/engine-map.md";
+    /// The per-frame UI update: one float argument, the elapsed time.
+    UI_UPDATE @ 0x0014_79c3: [fn(elapsed: stack 0) ret 4], Optional; "docs/engine/engine-map.md";
+    /// Updates the menu music gate and returns true when the attract movie is due.
+    UI_ATTRACT_TIMER @ 0x0022_3976: [fn() -> al ret 0]; "docs/audio/bink-hle.md";
+    /// Starts the attract movie through the retail Bink wrapper.
+    UI_ATTRACT_START @ 0x0022_3a21: [fn() ret 0]; "docs/audio/bink-hle.md";
+    /// Closes the finished or dismissed movie and resets the idle clock.
+    UI_MOVIE_RETURN @ 0x0015_65a0: [fn() ret 0]; "docs/audio/bink-hle.md";
     UI_RENDER_LAYERS @ 0x0014_7af1: [fn(user: eax, fallback_user: stack 0, bounds: stack 1) ret 8], Optional; "docs/engine/engine-map.md";
     UI_HUD_DRAW @ 0x0019_17eb: [fn() ret 0], Optional; "docs/graphics/native-renderer.md";
     UI_FADE_DRAW @ 0x0004_0890: [fn() ret 0], Optional; "docs/graphics/native-renderer.md";
@@ -502,17 +588,107 @@ points! { ALL;
     UI_LOADING_DRAW @ 0x0002_89e0: [fn() -> al ret 0], Optional; "docs/graphics/native-renderer.md";
     NETWORK_PRE_UPDATE @ 0x0008_df50: [opaque], Optional; "docs/engine/engine-map.md";
     NETWORK_POST_UPDATE @ 0x0008_dfc0: [opaque], Optional; "docs/engine/engine-map.md";
-    /// The game-end path; the end latch is game globals `+0x1128`.
-    GAME_END @ 0x0013_89c0: [opaque]; "docs/live/live-gamestate.md";
+    /// The game-end path; the end latch is game globals `+0x1128`. Sets
+    /// the latch once, the end delay at `+0x112c` from the tick rate, and
+    /// clears `+0x1129`; a second call does nothing.
+    GAME_END @ 0x0013_89c0: [fn() ret 0]; "docs/live/live-gamestate.md";
+    /// Add `delta` (its low 16 bits, signed) to a player's statborg score
+    /// (`+0x308 + 0x1c * slot` in the game engine globals), clamped to
+    /// ±30,000, then the team score and the score limit. True when it
+    /// wrote: a game engine, its state `+0x6c` 1, and the engine's
+    /// authority (`+0xc04` 1, or game globals `+0x0c` 4).
+    SCORE_ADD @ 0x0015_b7c0: [fn(delta: eax, player: stack 0) -> al ret 4], Optional; "docs/game/firefight.md";
+    /// The gate [`SCORE_ADD`] opens with: true when that machine's engine
+    /// keeps scores and lives.
+    GAME_ENGINE_AUTHORITATIVE @ 0x0015_b2f0: [fn() -> al ret 0], Optional; "docs/game/firefight.md";
+    /// Mark fields of the player's game-engine player entity for
+    /// replication; bit `0x20` is lives remaining (player `+0x1ac`).
+    PLAYER_ENTITY_DIRTY @ 0x000a_7840: [fn(player: stack 0, mask: stack 1) ret 8], Optional; "docs/game/firefight.md";
+    /// True when the variant's lives setting (game globals `+0x1b8`) is
+    /// positive and the unitless player has no lives left (`+0x1ac` 0).
+    PLAYER_OUT_OF_LIVES @ 0x0015_db30: [fn(player: ecx) -> al ret 0], Optional; "docs/game/firefight.md";
+    /// Whether a waiting player respawns this tick: counts its respawn
+    /// delay (`+0x164`) down, and refuses a player out of lives.
+    PLAYER_RESPAWN_READY @ 0x0015_dd40: [fn(player: eax) -> al ret 0], Optional; "docs/game/firefight.md";
     /// A player was killed: `(attacker player, victim player, flag, packed
     /// damage)` on the stack. The flag is not a betrayal flag (it is set in
-    /// free-for-all too). Who pops them is not read.
+    /// free-for-all too). The low byte of the fourth argument is the
+    /// credited damage reporting type and modifier.
     PLAYER_KILLED @ 0x0015_ce70: [opaque]; "docs/live/live-gamestate.md";
+    /// The game engine's per-tick update, from `GAME_TICK` at `0x13803c`.
+    /// With an engine object it runs each player's engine work with the
+    /// engine's per-player slot `+0x3c`, then its per-tick slot `+0x48`,
+    /// then the engine's shared steps (`0x15c000` and on). No engine
+    /// object, nothing.
+    ENGINE_UPDATE @ 0x0015_c150: [fn() ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// Slayer's kill callback, vtable `0x45c6d8` slot `+0x78`, which
+    /// `PLAYER_KILLED` calls last (`0x15d6a4`): thiscall with the engine
+    /// object, then that routine's attacker, victim and flag, and a kill
+    /// kind it works out. It is all of Slayer's kill scoring, through
+    /// `SCORE_ADD`: +1 to the attacker, or -1 when the flag is set (a
+    /// suicide only with type-area flag bit 1); -1 to the victim with bit
+    /// 2; a bonus to the attacker with bit 0. Nothing in a distributed
+    /// client (`[0x4e6948]+0xc` 4).
+    SLAYER_KILL @ 0x002b_c000: [fn(engine: ecx, attacker: stack 0, victim: stack 1, flag: stack 2, kind: stack 3) ret 16], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// Juggernaut's kill callback, slot `+0x78` of vtable `0x453d38`, as
+    /// [`SLAYER_KILL`]: moves the Juggernaut role and scores through
+    /// `SCORE_ADD` (`0x19238c`, `0x1923db`).
+    JUGGERNAUT_KILL @ 0x0019_22a0: [fn(engine: ecx, attacker: stack 0, victim: stack 1, flag: stack 2, kind: stack 3) ret 16], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// Oddball's per-tick slot `+0x48`: each ball's carrier scores through
+    /// `0x2bc990` and `0x2bce70`, which calls `SCORE_ADD`.
+    ODDBALL_TICK @ 0x002b_cbb0: [fn(engine: ecx) ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// King of the Hill's per-tick slot `+0x48`; its hill scoring
+    /// `0x2beee0` (from `0x2bd729`) calls `SCORE_ADD`.
+    KOTH_TICK @ 0x002b_d680: [fn(engine: ecx) ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// Territories' per-tick slot `+0x48`; it ends in a tail jump to its
+    /// scoring `0x2c0a90`, which calls `SCORE_ADD`.
+    TERRITORIES_TICK @ 0x002c_0230: [fn(engine: ecx) ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// Juggernaut's per-tick slot `+0x48`.
+    JUGGERNAUT_TICK @ 0x0019_2530: [fn(engine: ecx) ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// The per-tick slot `+0x48` that CTF and Assault share (vtable
+    /// `0x459d18`). Their capture scoring `0x242e00` runs from the
+    /// per-player slot `+0x3c` and from `0x242741`, not from here.
+    CTF_TICK @ 0x0024_0d70: [fn(engine: ecx) ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// The base trait query: Slayer's slot `+0x8c`, and where every other
+    /// engine's `+0x8c` ends for the traits it does not answer itself
+    /// (Juggernaut `0x19273c`, CTF and Assault `0x242084`, Oddball
+    /// `0x2bcd03`, KotH `0x2bda4e`, Territories' `0x2c02e0` is a jump).
+    /// True when the variant gives `player` the trait: 1 active camo
+    /// (record flag bit 2), 2 extra damage (bit 12), 3 damage resistance
+    /// (bit 13). The slot is called at `0x15b28e`, `0x2404ad`, `0x2bc967`.
+    ENGINE_TRAIT_QUERY @ 0x0024_dda0: [fn(engine: ecx, player: stack 0, trait: stack 1) -> al ret 8], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// Juggernaut's role setter: sets (ECX's low byte nonzero) or clears
+    /// the player's bit of the role mask `[JUGGERNAUT_GLOBALS]+0` (`u16`;
+    /// EAX the salted player datum, its index the bit). Setting posts the
+    /// engine event that announces the Juggernaut (`0xa7c50`, `0x19eb30`),
+    /// except in a distributed client; either way it marks the
+    /// engine-globals entity (`E+0x24`, bit `0x20`) and rebuilds the teams'
+    /// mask at `+2` (`0x192b20`). Juggernaut's trait query `0x1926c0`
+    /// answers the role's traits from the mask. [`JUGGERNAUT_KILL`] and the
+    /// role pick `0x192a30` call it.
+    JUGGERNAUT_ROLE_SET @ 0x0019_2970: [fn(player: eax, on: ecx) ret 0], Optional; "docs/engine/notes/2026-11-22-script-scoring-and-roles.md";
+    /// Oddball's ball return: ball `n` (EAX; its objective record's team,
+    /// `+4`) back to its spawn flag (`[ODDBALL_GLOBALS]+0xc+4n`, a netgame
+    /// flag's position) through [`OBJECTIVE_RETURN`]. Its idle timer
+    /// (`0x2bc990`) calls it; the caller checks the ball has a spawn.
+    ODDBALL_BALL_RETURN @ 0x002b_c340: [fn(ball: eax) ret 0], Optional; "docs/engine/notes/2026-11-22-script-scoring-and-roles.md";
+    /// The objective return the engines share (Oddball `0x2bc361`, CTF
+    /// `0x242b41`, `0x242c7e`): drops the objective object (ESI) from the
+    /// unit carrying it, moves it to the position (a pointer to three
+    /// floats) with the default orientation, and clears its `+0x14c` and
+    /// `+0x150`. No engine, nothing.
+    OBJECTIVE_RETURN @ 0x0015_e360: [fn(object: esi, position: stack 0) ret 4], Optional; "docs/engine/notes/2026-11-22-script-scoring-and-roles.md";
     /// One weapon barrel fires: stdcall `(weapon object datum, barrel
     /// index)`. One call is one shot (likely).
     WEAPON_FIRE @ 0x0010_4150: [fn(weapon: stack 0, barrel: stack 1) ret 8], Optional; "docs/live/live-gamestate.md";
+    /// Map a packed reporting code to its multiplayer weapon statistics bucket.
+    WEAPON_STAT_BUCKET @ 0x0019_6ef0: [fn(code: ecx) -> eax ret 0], Optional; "docs/runtime/sim.md";
     /// Object deletion before the salted header and body are freed.
     OBJECT_DELETE @ 0x000b_8540: [fn(object: stack 0) ret 4], Optional; "docs/game/skulls.md";
+    /// Retail calls this after object_new succeeds for a barrel projectile.
+    BARREL_PROJECTILE @ 0x000f_a100: [fn(projectile: ecx) ret 0]; "docs/runtime/agent-api.md";
+    /// Projectile update passes the completed collision result before resolving damage.
+    PROJECTILE_IMPACT @ 0x000f_aa60: [opaque]; "docs/runtime/agent-api.md";
     /// Attach a weapon to a unit, or detach when the unit is -1.
     ITEM_SET_UNIT @ 0x0010_ca80: [fn(item: eax, unit: stack 0) ret 4], Optional; "docs/game/bots.md";
     /// Successful power-up application before the consumed equipment is deleted.
@@ -605,6 +781,8 @@ points! { ALL;
     RENDER_FRAME_TAIL @ 0x0001_3b90: [opaque]; "docs/graphics/native-renderer.md";
     /// `render_scene_passes`: the scene pass sequence of one view.
     RENDER_SCENE_PASSES @ 0x0002_bcd0: [opaque]; "docs/graphics/e3-lighting.md";
+    /// Resets the record counters immediately before the two structure walks.
+    RESET_SCENE_RECORDS @ 0x0002_cb30: [fn() ret 0]; "docs/graphics/occlusion-culling.md";
     /// Main view's visible structure cluster and placement record walks.
     WORLD_CLUSTER_RECORDS @ 0x0013_3390: [fn(visibility: ebx) ret 0]; "docs/graphics/native-renderer.md";
     /// One visible row entering the gather. A cold neighbour can require
@@ -628,6 +806,13 @@ points! { ALL;
     /// after `0x00043a40` selects the mode and its state. Stack `(list, unused)`,
     /// `ret 8`; the only native decal replacement point.
     DECAL_RENDER @ 0x0004_4040: [fn(list: stack 0, unused: stack 1) ret 8]; "docs/graphics/native-decals-research.md";
+    /// `render_decal_mode` (`0x0002c370`): one mode of the dynamic decals,
+    /// EAX the mode 0 to 6: the mode's state (`0x00043a40`), then
+    /// `DECAL_RENDER` per entry of `[0x00547f94]`. `render_scene_passes`
+    /// calls it seven times for view kinds 1 and 2; mode 1 (return
+    /// `0x0002c04d`) is the next call after `RENDER_DYNAMIC_LIGHTS`
+    /// returns, with no test between them.
+    RENDER_DECAL_MODE @ 0x0002_c370: [opaque]; "docs/graphics/native-decals-research.md";
     /// `render_dynamic_lights`: the visible lights, each gathered and drawn
     /// with `RENDER_LIGHT_PASSES` (`render_scene_passes` calls it after
     /// layer 7).
@@ -736,8 +921,11 @@ points! { ALL;
     LIGHT_GEOMETRY_FLAGS @ 0x0003_1660: [fn(light: eax, definition: ecx, vis: esi, owner: stack 0, root: stack 1, point: stack 2, shadow: stack 3) ret 16]; "docs/graphics/native-renderer.md";
     /// Append the optional owner or owning unit as a dynamic light caster.
     LIGHT_EXTRA_CASTER @ 0x0003_1c20: [fn(shadow: al, owner: ecx, vis: stack 0) ret 4]; "docs/graphics/native-renderer.md";
+    /// Select a model detail tier. The scaled camera distance is in the low
+    /// float of XMM4. The return value and fraction drive the per-view hysteresis.
+    MODEL_LOD @ 0x0004_c450: [fn(distances: ecx, fraction: ebx, object: stack 0) -> al ret 4]; "docs/graphics/occlusion-culling.md";
     /// Write one BSP or model render record, with its associated cache state.
-    SCENE_RECORD_WRITER @ 0x0002_cbf0: [opaque]; "docs/graphics/native-renderer.md";
+    SCENE_RECORD_WRITER @ 0x0002_cbf0: [fn(section: eax, selector: ecx, node_count: edx, pixels: stack 9) -> eax ret 84]; "docs/graphics/native-renderer.md";
     /// The object render records for a visibility struct: EAX the struct
     /// (`0x00547f88` the main view's), stack 0 an argument passed on,
     /// `ret 4`. Reorders the struct's object list (`0x00134240`), then
@@ -818,6 +1006,41 @@ points! { ALL;
     /// The variant editor's category list row chosen: words 0 to 5 open a
     /// category's screen; any other word returns having done nothing.
     VARIANT_OPTIONS_ROW_CHOSEN @ 0x002b_75e8: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/game/skulls.md";
+    /// The game type list's screen constructor (screens 207 and 60, "SELECT
+    /// GAME"; vtable `0x45aff0`): EDI the screen, then the request's
+    /// window, slot and player, the screen id and three mode flags it
+    /// keeps at `+0xb38..+0xb3a` (settings, create, pick). Builds the list
+    /// at `+0x614` (`0x2c55f8`): a datum array "game engine variant
+    /// category list" of nine, one datum per game type, its word at `+2`
+    /// (0 Slayer, 1 King of the Hill, 3 Oddball, 4 Juggernaut, 6 CTF, 7
+    /// Assault, 8 Territories).
+    VARIANT_CATEGORY_SCREEN_CTOR @ 0x002b_1ab3: [fn(screen: edi, window: stack 0, slot: stack 1, player: stack 2, id: stack 3, settings: stack 4, create: stack 5, pick: stack 6) -> eax ret 28]; "docs/game/community-gametypes.md";
+    /// The game type list's row text: looks the row's word up in a table
+    /// of seven; an unknown word leaves the text as it was.
+    VARIANT_CATEGORY_ROW_TEXT @ 0x002c_5823: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/game/community-gametypes.md";
+    /// The game type list's row chosen: by the row's word, opens that game
+    /// type's variant list (the create flag: a new variant of it); any
+    /// word past the table runs Territories'.
+    VARIANT_CATEGORY_ROW_CHOSEN @ 0x002c_5897: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/game/community-gametypes.md";
+    /// The variant list's screen constructor (screens 208 and 15, vtable
+    /// `0x45d6f8`, `0x4fe0` bytes): EDI the screen, then the screen id and
+    /// the request's window, slot and player. Its 21 loaders (seven game
+    /// types, three modes) then store the content category at `+0x4fd8`.
+    VARIANT_LIST_SCREEN_CTOR @ 0x002c_9ddb: [fn(screen: edi, id: stack 0, window: stack 1, slot: stack 2, player: stack 3) -> eax ret 16]; "docs/game/community-gametypes.md";
+    /// The variant list's per-frame update (screen vtable slot 3): sets
+    /// its title (text 5) and description (text 2) and the picture
+    /// (bitmap 4) by the category at `+0x4fd8`, then the base update
+    /// (`0x22e391`, which updates the children).
+    VARIANT_LIST_UPDATE @ 0x002c_ad45: [fn(screen: ecx) ret 0]; "docs/game/community-gametypes.md";
+    /// The variant list's own loader (screen vtable slot 26), by the
+    /// category at `+0x4fd8` and the mode bytes at `+0x4fdc`, `+0x4fdd`:
+    /// what a screen stack reopens it with.
+    VARIANT_LIST_LOADER @ 0x002c_ac1a: [fn(screen: ecx) -> eax ret 0]; "docs/game/community-gametypes.md";
+    /// The variants of a content category for a player: up to `*count`
+    /// (a `u16`, written back) content handles into `handles`, saved ones
+    /// and, with `builtins`, the built-in ones. The variant list's fill
+    /// (`0x2ca0d9`, the list handler in EBX) calls it from `0x2ca10e`.
+    VARIANTS_ENUMERATE @ 0x0021_5900: [fn(player: stack 0, category: stack 1, count: stack 2, handles: stack 3, builtins: stack 4) ret 20]; "docs/game/community-gametypes.md";
     /// The Edit Profile list's row text (screen 38, `edit_profile_menu`):
     /// switches on the item's row index, 0 to 5 (Controls, Appearance,
     /// Voice Output, Voice Masking, Online Status, Subtitles); any other
@@ -849,6 +1072,9 @@ points! { ALL;
     /// `0x002b1ff4` (return address `0x002b2069`), which stores the index
     /// in each row's datum at `+4`, so a skipped hopper leaves no hole.
     HOPPER_LISTED @ 0x0019_2db0: [fn(index: ecx) -> al ret 0]; "docs/game/bots.md";
+    /// Reads one hopper rotation into the caller's block. The weighted map
+    /// picker calls it separately from the validator and playlist UI.
+    HOPPER_BLOCK_READ @ 0x0019_43d0: [fn(index: eax, block: stack 0) -> al ret 4]; "docs/live/live-matchmaking.md";
     /// The hopper Quickmatch searches: local player `player`'s saved
     /// playlist (`[0x54e9dc + player*0xc70]`), or -1 when the player has
     /// none (flag bit 4 of `[0x54e8e0 + player*0xc70]` clear). Its one
@@ -983,6 +1209,11 @@ points! { ALL;
     /// An item widget's `index`-th text widget of kind 6 (thiscall on the
     /// item; the game pushes 0, the index, 6), or 0.
     ITEM_TEXT @ 0x0022_edb8: [fn(item: ecx, kind: stack 0, index: stack 1, zero: stack 2) -> eax ret 12]; "docs/audio/playstation-audio.md";
+    /// The lifecycle-6 matchmaking update. ECX is its state object.
+    MATCHMAKING_UPDATE @ 0x0007_06f0: [fn(state: ecx) -> al ret 0]; "docs/runtime/agent-api.md";
+    /// Stops QoS and unregisters the session's key. The key id is in the
+    /// session at +0x1c while +0x24 is set.
+    SESSION_RELEASE_KEY @ 0x0005_fb60: [fn(session: esi) ret 0]; "docs/runtime/agent-api.md";
     /// The network session's game start: builds game options from the
     /// session in EDX and starts the game (`0x18e8b0`); AL 1 when it
     /// started. Refuses a campaign session with more than one peer
@@ -1020,6 +1251,12 @@ points! { ALL;
     /// once its session is made (`0x23101b`), the lobby's "Switch To: Co-Op
     /// Game" with 0 (`0x2bba30`).
     LOBBY_MODE_SET @ 0x0019_9a03: [fn(mode: stack 0) ret 4]; "docs/live/live-coop.md";
+    /// Available Games' Create row (local and Live flags both zero for System Link).
+    BROWSER_CREATE_SQUAD @ 0x0019_9df9: [fn(local: stack 0, live: stack 1) -> al ret 8]; "docs/live/dedicated-host.md";
+    /// Per-frame reconciliation of the local UI screen and network life cycle.
+    UI_SYNC_NETWORK_SCREEN @ 0x0019_9b08: [fn() ret 0]; "docs/live/dedicated-host.md";
+    /// The menu leaves the squad and target, immediately or gracefully.
+    UI_LEAVE_SESSIONS @ 0x0019_9e2e: [fn(immediate: stack 0) ret 4]; "docs/live/dedicated-host.md";
     /// Lobby: why the game cannot start yet (stdcall, an optional float
     /// out); 9 ready, 7 the teams or co-op check (`0x19a4be`: co-op needs
     /// exactly two players, both on this console), 8 and 10 the load and
@@ -1047,7 +1284,8 @@ points! { ALL;
     PARTY_PEER_COUNT @ 0x0019_9f34: [fn() -> eax ret 0]; "docs/game/bots.md";
     /// Whether the player slot in AX is occupied in the squad membership.
     PARTY_PLAYER_VALID @ 0x0019_a951: [fn(player: eax) -> al ret 0]; "docs/game/bots.md";
-    /// The lobby Back or pause Leave Game has committed to leaving.
+    /// The lobby Back or pause Leave Game has committed to leaving. The
+    /// entry follows the tail jump of `UI_LEAVE_SESSIONS` at `0x199e37`.
     PARTY_LEAVE @ 0x0019_9e3c: [fn(controller: stack 0) ret 4]; "docs/game/bots.md";
     /// The player accepted the matchmaking lobby's Back confirmation.
     MATCHMAKING_CANCEL_CONFIRMED @ 0x0025_2150: [fn(controller: stack 0) -> al ret 4]; "docs/game/bots.md";
@@ -1083,10 +1321,23 @@ points! { ALL;
     /// them every player's unit (`0x14df40`, `0x14deb0`) and "some player
     /// dead" (`players_globals+5`); AL 1 when safe.
     SAVE_SAFE @ 0x0022_6190: [fn() -> al ret 0]; "docs/live/live-coop.md";
+    /// The Live join lifecycle. Its update promotes the target squad or records
+    /// the title's reason for declining the join.
+    LIVE_JOIN_UPDATE @ 0x0006_fd10: [fn(context: ecx) -> al ret 0], Optional; "docs/live/live-custom-games.md";
     /// The host's answer to a join request (session in EAX, request in
     /// EDI): 0 accepts, 3 refuses unless the session state (`S+0x741c`)
     /// is 5 (the lobby), 2 for an invite-only session, 4 when full.
-    SESSION_JOIN_CHECK @ 0x0006_2fe0: [fn(session: eax, request: edi) -> eax ret 0], Optional; "docs/live/live-coop.md";
+    SESSION_JOIN_CHECK @ 0x0006_2fe0: [fn(session: eax, request: edi) -> eax ret 0]; "docs/live/live-coop.md";
+    /// Build the shared game description sent in LAN discovery and Live QoS.
+    SESSION_DESCRIBE @ 0x0006_4d70: [fn(description: stack 0) -> al ret 4]; "docs/game/notes/creature-entity.md";
+    /// Validate a host description before connecting. The first failure reason
+    /// lives at context +0x104. Both the browser and accepted invites call it.
+    SESSION_CHECK_DESCRIPTION @ 0x0006_f2b0: [fn(description: esi, context: edi, players: stack 0) ret 4]; "docs/game/notes/creature-entity.md";
+    /// Encode message 8, including its 16-bit version word.
+    SESSION_WRITE_JOIN_REQUEST @ 0x000a_cc20: [fn(stream: stack 0, size: stack 1, message: stack 2) ret 12]; "docs/game/notes/creature-entity.md";
+    /// Dispatch decoded message 8 to its session before checking or queueing
+    /// the inner request.
+    SESSION_RECEIVE_JOIN_REQUEST @ 0x0009_4100: [fn(network: ecx, message: esi, peer: stack 0) ret 4]; "docs/game/notes/creature-entity.md";
     /// Sync-server: start sending the game state to a joining client's
     /// view (EAX): compress the block and queue the join and state pieces
     /// ahead of its updates. AL 1 when queued.
@@ -1252,6 +1503,10 @@ points! { ALL;
     /// `0x18d4dc`, on the game thread (the object and effect updates and the
     /// per-frame update `0x18c060`).
     SOUND_OWNER_USER @ 0x0018_d4f0: [fn(object: stack 0, kind: stack 1, user: stack 2) ret 12]; "docs/game/bots.md";
+    /// Start a spatial sound at an object marker. Returns the sound instance.
+    SOUND_START_AT_MARKER @ 0x0018_91d0: [fn(marker: eax, object: esi, parameters: stack 0) -> eax ret 4]; "docs/game/ai-networking.md";
+    /// Bind the sound instance to the speaking biped's mouth animation.
+    BIPED_DIALOGUE_LIP_SYNC @ 0x0010_9220: [fn(unit: ebx, sound: stack 0, instance: stack 1) ret 8]; "docs/game/ai-networking.md";
     /// Per-type file bound called by the cache header validator (0x1228b8).
     CACHE_TYPE_LIMIT @ 0x0021_4ed0: [fn(kind: ecx) -> eax ret 0]; "docs/halo1/sounds.md";
     /// Apply the unit control packet (EAX unit datum, ECX control). The
@@ -1264,6 +1519,12 @@ points! { ALL;
     /// (once a frame, at `0x1639bd`), the main loop `0x12b450` and the
     /// flush loop `0x213fa0` (back to back, nothing drawn).
     CACHE_COPY_STEP @ 0x0021_41f0: [fn() -> al ret 0]; "docs/runtime/cache-slots.md";
+    /// A map's cache status by path (EAX, a C string): 3 resident in a
+    /// slot, 4 a copy request done, 2 queued, 1 the other queue, 0 none.
+    /// Reads only the slot paths, the copy requests, the two queued paths
+    /// and the CRT locale; writes only its own stack. The frame poll
+    /// `0x163680` asks it three to five times a frame.
+    MAP_STATUS @ 0x0021_3f10: [fn(path: eax) -> eax ret 0], Optional; "docs/runtime/cache-slots.md";
     // Slice 11 of docs/engine/sim-rewrite-objects.md: the small type updates.
     /// Item update: slot `+40` of `item` (weapons, equipment and garbage inherit it).
     ITEM_UPDATE @ 0x0010_b4d0: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
@@ -1467,6 +1728,19 @@ mod tests {
         assert_eq!(WEAPON_FIRE.class, Class::Optional);
         assert!(LOCALE_FIND.hot && !GAME_TICK.hot);
         assert!(PLAYER_KILLED.sig.is_opaque());
+        // The engine vtable slots are thiscall: the engine object in ECX.
+        assert_eq!(SLAYER_KILL.sig.arg("engine"), Some(Loc::Ecx));
+        assert_eq!(SLAYER_KILL.sig.arg("victim"), Some(Loc::Stack(1)));
+        assert!(matches!(SLAYER_KILL.sig, Sig::Fn { ret: None, pop: 16, .. }));
+        assert!(matches!(ENGINE_TRAIT_QUERY.sig, Sig::Fn { ret: Some(Loc::Al), pop: 8, .. }));
+        // The routines a script's calls reach: register arguments, no pop.
+        assert_eq!(JUGGERNAUT_ROLE_SET.sig.arg("player"), Some(Loc::Eax));
+        assert_eq!(JUGGERNAUT_ROLE_SET.sig.arg("on"), Some(Loc::Ecx));
+        assert!(matches!(JUGGERNAUT_ROLE_SET.sig, Sig::Fn { ret: None, pop: 0, .. }));
+        assert_eq!(ODDBALL_BALL_RETURN.sig.arg("ball"), Some(Loc::Eax));
+        assert!(matches!(ODDBALL_BALL_RETURN.sig, Sig::Fn { ret: None, pop: 0, .. }));
+        assert_eq!(OBJECTIVE_RETURN.sig.arg("object"), Some(Loc::Esi));
+        assert!(matches!(OBJECTIVE_RETURN.sig, Sig::Fn { ret: None, pop: 4, .. }));
         assert_eq!(by_base(0x0013_7fe0).map(|p| p.name), Some("GAME_TICK"));
     }
 }

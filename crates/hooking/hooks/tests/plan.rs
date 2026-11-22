@@ -68,20 +68,24 @@ fn leaves(switches: &str) -> Vec<&'static str> {
 }
 
 #[test]
-fn only_the_locale_leaves_are_on_by_default() {
+fn every_leaf_is_on_by_default() {
+    assert_eq!(leaves("").len(), engine::abi::OVERRIDES.len());
     assert_eq!(
-        leaves(""),
+        leaves("impl.engine.tags=off,impl.engine.datums=off"),
         ["locale_string_id_find", "locale_string_id_exists"]
     );
-    assert!(leaves("impl.engine.locale=off").is_empty());
+    assert_eq!(
+        leaves("impl.engine.locale=off").len(),
+        engine::abi::OVERRIDES.len() - 2
+    );
     assert!(leaves("impl.engine=off").is_empty());
     assert_eq!(leaves("impl.engine=on").len(), engine::abi::OVERRIDES.len());
-    let one = leaves("impl.engine.locale=off,impl.engine.tags.tag_get_checked=on");
+    let one = leaves("impl.engine=off,impl.engine.tags.tag_get_checked=on");
     assert_eq!(one, ["tag_get_checked"]);
     assert_eq!(
-        leaves("impl.engine.datums=on").len(),
-        18 + 2,
-        "datums and the default locale"
+        leaves("impl.engine.tags=off,impl.engine.locale=off").len(),
+        engine::abi::OVERRIDES.len() - 4,
+        "only the datums"
     );
 }
 
@@ -290,6 +294,28 @@ fn one_address_with_two_names_is_refused() {
     ));
 }
 
+/// A second copy of GAME_TICK, as a `const` inlined into another crate is:
+/// the same point at a different address in memory.
+static TICK_COPY: Point = Point::new(
+    "GAME_TICK",
+    0x0013_7fe0,
+    Sig::Opaque,
+    "docs/engine/engine-map.md",
+);
+
+#[test]
+fn copies_of_one_point_share_its_chain() {
+    let mut r = Registry::new(Switches::defaults());
+    r.add(&from_fn("x", |b| {
+        b.frame().on_tick("t", |_| {});
+        b.raw().observe_after(&TICK_COPY, "u", |_| {});
+        Ok(())
+    }))
+    .unwrap();
+    let plan = r.build(&Base).unwrap();
+    assert_eq!(plan.chains[&points::GAME_TICK.base].observe_after.len(), 2);
+}
+
 #[test]
 fn duplicate_ids_are_refused() {
     let mut r = Registry::new(Switches::defaults());
@@ -299,6 +325,35 @@ fn duplicate_ids_are_refused() {
         r.build(&Base).err().unwrap(),
         [Conflict::DuplicateFeature("x")]
     );
+}
+
+/// A feature with no switch, for [`a_feature_that_is_always_on_refuses_its_switch`].
+struct Always;
+
+impl hooks::Feature for Always {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new("always", "a part of the game")
+            .doc("docs/x.md")
+            .always_on()
+    }
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), BuildError> {
+        b.frame().on_tick("t", |_| {});
+        Ok(())
+    }
+}
+
+#[test]
+fn a_feature_that_is_always_on_refuses_its_switch() {
+    let mut r = Registry::new(Switches::defaults());
+    assert_eq!(r.add(&Always), Ok(true));
+    for spec in ["-always", "always=off"] {
+        let mut r = Registry::new(Switches::parse(spec).unwrap());
+        let e = r.add(&Always).unwrap_err();
+        assert!(e.0.contains("always has no switch"), "{spec}: {e}");
+        assert!(e.0.contains("docs/x.md"), "{spec}: {e}");
+    }
+    let mut r = Registry::new(Switches::parse("always=on").unwrap());
+    assert_eq!(r.add(&Always), Ok(true), "on is what it is anyway");
 }
 
 #[test]

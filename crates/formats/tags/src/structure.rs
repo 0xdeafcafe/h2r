@@ -17,6 +17,15 @@ use crate::{Error, Result};
 use map::{FourCC, Map, TagId};
 use std::io::{Read, Seek};
 
+/// The scenario's BSPs in active-index order (docs/formats/structure-bsp.md).
+pub fn scenario_bsp_ids(scenario: &TagView<'_>) -> Result<Vec<TagId>> {
+    Ok(scenario
+        .block(scenario.bytes(), 0x210, 0x44)?
+        .into_iter()
+        .map(|entry| TagId(u32_at(entry, 0x14)))
+        .collect())
+}
+
 /// Section struct of clusters and instanced definitions (0x44 bytes).
 pub const STRUCTURE_SECTION: SectionLayout = SectionLayout {
     section_size: 0x44,
@@ -170,6 +179,8 @@ pub struct Cluster {
     pub geometry: GeometryHeader,
     /// Axis bounds at +0x54: x min, x max, y min, y max, z min, z max.
     pub bounds: [f32; 6],
+    /// Scenario sky selector at +0x6e, read by the view at 0x0014b38d.
+    pub sky_index: i8,
     /// All 0xb0 bytes.
     pub raw: Vec<u8>,
 }
@@ -189,6 +200,36 @@ pub struct InstancedGeometryDefinition {
 impl InstancedGeometryDefinition {
     /// Element stride (engine `imul 0C8h` at 0x000410d0).
     pub const SIZE: usize = 0xc8;
+    /// The definition's collision BSP: the eight block fields of a
+    /// structure collision BSP at `+0x70`, without a leading word (E: the
+    /// instance trace tests the definition's BSP at `+0x70`,
+    /// docs/engine/collision-queries.md, entry E).
+    pub const COLLISION: usize = 0x70;
+
+    /// The collision BSP of the definition `element`, a slice of `view`'s
+    /// payload (one of [`instance_definitions`]).
+    pub fn collision(view: &TagView<'_>, element: &[u8]) -> Result<crate::collision::Bsp> {
+        let at = (element.as_ptr() as usize)
+            .checked_sub(view.bytes().as_ptr() as usize)
+            .filter(|at| at + Self::SIZE <= view.bytes().len())
+            .ok_or(Error::Invalid("definition outside the structure payload"))?;
+        crate::collision::Bsp::decode_structure(view.bytes(), view.address(), at + Self::COLLISION)
+    }
+}
+
+/// `sbsp+0x138`: the instanced geometry definition block.
+pub const SBSP_INSTANCE_DEFINITIONS: usize = 0x138;
+
+/// The structure BSP's instanced geometry definitions, one slice of the
+/// payload each ([`InstancedGeometryDefinition::SIZE`] bytes), for
+/// [`InstancedGeometryDefinition::collision`] and
+/// [`InstancedGeometryInstance::placements`].
+pub fn instance_definitions<'a>(view: &TagView<'a>) -> Result<Vec<&'a [u8]>> {
+    view.block(
+        view.bytes(),
+        SBSP_INSTANCE_DEFINITIONS,
+        InstancedGeometryDefinition::SIZE,
+    )
 }
 
 /// One placement of a definition (0x58 bytes).
@@ -209,6 +250,30 @@ pub struct InstancedGeometryInstance {
 impl InstancedGeometryInstance {
     /// Element stride (engine `imul 58h` at 0x000410c2).
     pub const SIZE: usize = 0x58;
+    /// Read the placement block independently of render geometry. Definition
+    /// indices also address the collision BSP embedded in each definition.
+    pub fn placements(view: &TagView<'_>, definition_count: usize) -> Result<Vec<Self>> {
+        view.block(view.bytes(), 0x140, InstancedGeometryInstance::SIZE)?
+            .into_iter()
+            .map(|b| {
+                let v = |o| [f32_at(b, o), f32_at(b, o + 4), f32_at(b, o + 8)];
+                let i = InstancedGeometryInstance {
+                    scale: f32_at(b, 0),
+                    basis: [v(4), v(0x10), v(0x1c)],
+                    position: v(0x28),
+                    definition: u16_at(b, 0x34) as i16,
+                    raw: b.to_vec(),
+                };
+                if !finite(&[i.scale]) || !finite(i.basis.as_flattened()) || !finite(&i.position) {
+                    return Err(Error::Invalid("non-finite instance placement"));
+                }
+                if i.definition < 0 || i.definition as usize >= definition_count {
+                    return Err(Error::Invalid("instance refers to a missing definition"));
+                }
+                Ok(i)
+            })
+            .collect()
+    }
     /// Local to world: `position + scale * (x*forward + y*left + z*up)`.
     pub fn transform(&self, p: [f32; 3]) -> [f32; 3] {
         let mut out = self.position;
@@ -303,6 +368,7 @@ impl StructureRender {
                 Ok(Cluster {
                     geometry: GeometryHeader::decode(view, b, tag)?,
                     bounds,
+                    sky_index: b[0x6e] as i8,
                     raw: b.to_vec(),
                 })
             })
@@ -317,27 +383,7 @@ impl StructureRender {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        let instances = view
-            .block(h, 0x140, InstancedGeometryInstance::SIZE)?
-            .into_iter()
-            .map(|b| {
-                let v = |o| [f32_at(b, o), f32_at(b, o + 4), f32_at(b, o + 8)];
-                let i = InstancedGeometryInstance {
-                    scale: f32_at(b, 0),
-                    basis: [v(4), v(0x10), v(0x1c)],
-                    position: v(0x28),
-                    definition: u16_at(b, 0x34) as i16,
-                    raw: b.to_vec(),
-                };
-                if !finite(&[i.scale]) || !finite(i.basis.as_flattened()) || !finite(&i.position) {
-                    return Err(Error::Invalid("non-finite instance placement"));
-                }
-                if i.definition < 0 || i.definition as usize >= instance_definitions.len() {
-                    return Err(Error::Invalid("instance refers to a missing definition"));
-                }
-                Ok(i)
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let instances = InstancedGeometryInstance::placements(view, instance_definitions.len())?;
         Ok(Self {
             tag,
             checksum: u32_at(h, 8),

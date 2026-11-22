@@ -9,6 +9,9 @@
 //! Offsets come from `guest_layout`; this crate adds typed ids and kinds,
 //! not offsets.
 
+mod actors;
+pub use actors::{ActorControl, ActorView, visit_actors};
+
 use guest_layout::object::{NODE_MATRIX_SIZE, header};
 use guest_layout::{Datum, Fault, Mem, Off, Unit};
 use sim_objects::view::{Children as ChildLinks, Slots};
@@ -124,6 +127,26 @@ pub fn object<M: Mem + ?Sized>(m: &M, id: ObjectId) -> Result<Option<ObjectView<
     Ok(pool.resolve(m, id.datum())?.map(|obj| ObjectView { m, pool, obj }))
 }
 
+/// Visit the listed players in slot order, including players between lives.
+pub fn visit_players(
+    m: &dyn guest_layout::GuestMemory,
+    mut visit: impl FnMut(u16, guest_layout::Player) -> Result<(), Fault>,
+) -> Result<(), Fault> {
+    use guest_layout::view::players;
+
+    if let Some(array) = players::array(m)? {
+        for row in array.live_iter(m, 16)? {
+            let (handle, slot) = row?;
+            let player = guest_layout::Player::at(slot.addr);
+            // live_iter already excludes free slots.
+            if player.flags(m)? & guest_layout::player::LEAVING == 0 {
+                visit(handle.index(), player)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// One event of the tick: `ObjectDeleted` from finalize's delete pass,
 /// [`Damage`] from the damage report, [`Kill`] from the kill credit.
 pub use sim_objects::{Damage, Kill, SimEvent};
@@ -174,13 +197,27 @@ impl<'a, M: Mem + ?Sized> ObjectView<'a, M> {
         self.obj.handle.into()
     }
 
+    /// The header type byte, including values outside the known type table.
+    pub fn kind_byte(&self) -> Result<u8, Fault> {
+        self.obj.header.kind(self.m)
+    }
+
     /// The kind, `None` for a value outside the type table.
     pub fn kind(&self) -> Result<Option<ObjectKind>, Fault> {
         self.obj.kind(self.m)
     }
 
+    pub fn flag_bits(&self) -> Result<u8, Fault> {
+        self.obj.flags(self.m)
+    }
+
     pub fn flags(&self) -> Result<ObjectFlags, Fault> {
-        self.obj.flags(self.m).map(ObjectFlags::from_bits)
+        self.flag_bits().map(ObjectFlags::from_bits)
+    }
+
+    /// The index in this kind's scenario placement block.
+    pub fn placement(&self) -> Result<Option<u16>, Fault> {
+        Ok(u16::try_from(self.obj.body.placement_index(self.m)?).ok())
     }
 
     /// The definition tag.
@@ -231,6 +268,21 @@ impl<'a, M: Mem + ?Sized> ObjectView<'a, M> {
             shield: b.shield(m)?,
             flags: b.damage_flags(m)?,
         })
+    }
+
+    /// Copy the active render permutation for each model region. The block
+    /// holds ten bytes per region; the selections occupy its first column.
+    pub fn region_permutations(&self, out: &mut [u8]) -> Result<usize, Fault> {
+        let body = self.obj.body;
+        let count = usize::from(body.regions_size(self.m)?) / 10;
+        let offset = body.regions_offset(self.m)?;
+        if offset <= 0 || count == 0 {
+            return Ok(0);
+        }
+        let n = count.min(out.len());
+        self.m
+            .read_bytes(body.addr.wrapping_add(offset as u32), &mut out[..n])?;
+        Ok(n)
     }
 
     /// Its node matrices: where and how many, `None` when it has none.

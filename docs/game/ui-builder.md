@@ -63,12 +63,30 @@ Page   ── state + input ──▶ step() ──▶ (new state, Effect)    pu
 | `List` | the Controls tag (`KitScreen`) | header layout 0 | settings-style lists over the game shell |
 | `Dialog` | a retail dialog's tag (`DialogBase`): its backing art and header layout, our rows in its list, a body text or none ("The Dialog kind") | the base's: layout 1 (Quick Options) or 2 (large: title 498 wide, panel 536) | settings pages over the lobby (Clankers, Halo 1 options), questions, errors |
 | `CodeEntry` | `Dialog` large, plus N cells: the Live passcode dialog's box art (screen 21's `password` blocks) with a digit text over each, the cursor cell tinted bright | layout 2 | the sign-in code |
+| `Hud` | text and art widgets over the running game (`ScreenSpec::hud`) | supplied by the tool | the Forge monitor strip, reticle and controls |
 | keyboard handoff | any kind; `Effect::Keyboard(field)` opens the game's keyboard (`signin_keyboard`), the typed text comes back as an `Input::Typed` | — | gamertag, invite |
 
 **Backing.** A `Dialog` or `CodeEntry` is `Over` (drawn over the screen
 beneath, as the game's own dialogs are) or `Own` (it carries the game shell
 backing, `framing_center` from screen 5, under its panel, so the screen
 beneath doesn't matter).
+
+The Forge monitor HUD has no list or focus. The compositor draws its
+widgets on a transparent surface with the preview renderer and disc fonts;
+its preview pages are `forge.hud`, `forge.palette` and `forge.menu`
+(`crates/extensions/game/src/ui_kit/forge.rs`), until slice U7 removes
+them.
+
+The Forge screens are the game's: list classes of ours on the large
+dialog (the object menu, Tools, Link and the questions) and on the
+in-game Controller Settings host (Properties, Tool settings, Forge
+options, Controls), opened over the running world
+(`crates/extensions/game/src/forge_screens.rs`,
+[forge-firefight-ui.md](forge-firefight-ui.md), "The screens"). A value
+row opens `kit.picker.game` over them. Their preview pages are
+`forge.objects`, `forge.properties`, `forge.tools`, `forge.settings`,
+`forge.link`, `forge.question`, `forge.options` and `forge.controls`,
+drawn over the main menu, which stands in for the game.
 
 **Sign-in is a modal.** The sign-in
 prompt and its new-account gamertag and invite pages are `Over` dialogs,
@@ -129,7 +147,7 @@ Commands (output only to a directory you name, never the repository):
 
 ```sh
 h2 ui preview list                                       # screens and their states
-h2 ui preview <screen> [--state NAME|all] [--focus N] [--synthetic] [--out DIR]
+h2 ui preview <screen> [--state NAME|all] [--focus N] [--animation PHASE] [--synthetic] [--out DIR]
 h2 ui sheet [--synthetic] [--out DIR]                    # every screen x state, and sheet.png
 ```
 
@@ -154,6 +172,34 @@ h2 ui sheet [--synthetic] [--out DIR]                    # every screen x state,
 Screens come in as `ScreenSpec`s, from their `Page` ("Behaviour"). A spec
 with `ScreenSpec::dialog` set is drawn as a modal ("The modal dialog").
 
+## Transitions
+
+The kit uses the retail pane, list and skin animation tracks. The pane's
+track moves and fades its panel art, title, description, footer and other
+text together. Rows and the selection bar use the list and skin tracks.
+Dialogs and pickers animate over the existing page, including their body,
+status and icons. `ListClass::animation` and `KitScreen::animation` set a
+page's preference. `TransitionStyle::Default` inherits the source tracks,
+`Off` disables the pane and list transitions, and `Retail { pane, rows }`
+selects one-based slots from the active map's interface tag. A zero slot
+disables that track. An unavailable override falls back to the source pane
+and list.
+
+`AnimatedView` captures the resting widget bounds and opacity once.
+`seek(Phase)` reuses those buffers and computes the same pose for the same
+tick. The builder samples a page slide and fade, staggered rows and
+selection, and a modal fade. These samples use representative timing.
+The game plays the native curves from the active map. Both paths move the
+text with the other widgets on its track.
+
+Use `--animation in:6`, `--animation rest`, `--animation out:4` or
+`--animation all` to append the sampled phase to each PNG and JSON name.
+For example, `h2 ui preview theater.playback --animation all --synthetic`
+writes both ends and middle samples of playback's transitions. The UI
+Screens tab in the editor offers the same fixed samples in its
+**Transition** selector. Layout and content checks use the resting pose,
+so a deliberate slide never produces a false overflow.
+
 ## The checks
 
 They run over a `View` and a `Metrics` (text widths, line heights, image
@@ -170,7 +216,8 @@ state.
 | covered (art) | frame art from a screen without a list is covered by other art or text over at most 24 visible pixels (alpha at least 24) |
 | off screen (art) | no art's visible pixels fall past the screen edge |
 | reserved | nothing overlaps the reserved areas of the screen beneath (its logo and header), unless the screen is `Own`; a modal may cover them with its panel, but everything in it stays inside the panel |
-| safe area | texts and row art stay inside the title-safe area: x ±272, y 204 down to -211 (the middle 85%, down to the bottom of retail's footer rectangle, where the game's own legends sit); frame art is exempt |
+| safe area | the full rectangles of visible texts and rows stay within x ±272, y 204 down to -211, including the footer |
+| container | modal text and rows stay inside the usable panel. Bitmap padding does not extend that area. |
 | over the opener (modals, flagged only) | a dialog text whose ink meets a text of the screen that opened it is a `Note::OverOpener` in `Report::notes`, never an issue: retail's dialogs sit over their opener as it is, texts included |
 | contrast | every text against what is drawn under it (the view rendered without its texts), WCAG ratio at least 2.5 |
 | legend | a screen that takes inputs past up, down, A and B shows a button legend (a text with a button glyph) |
@@ -183,7 +230,11 @@ them, and says so (`Report::skipped`). The provenance check runs without a
 disc for the screens our art comes from (Controls 39, level select 11).
 
 The checks are `ui_kit::layout::check(view, source, rules)`, and
-`h2 ui preview` prints them per state. The tests:
+`h2 ui preview` prints them per state. Page-model tests check bounds
+after every input from every named state, including the visible window
+of a scrolling dialog. The agent's `ui.screen` applies the same
+rectangle checks to instantiated widgets. The builder also uses font
+metrics to catch text that exceeds its text box. The tests:
 
 - unit tests with synthetic metrics, plus one with a solid-image source
   for the two pixel checks;
@@ -191,13 +242,34 @@ The checks are `ui_kit::layout::check(view, source, rules)`, and
 - every screen in every state passes against the disc with nothing
   skipped (the disc test).
 
-No finding is left on purpose.
+### Content findings
+
+`ui_kit::content::check` checks the authored spec and visible widgets.
+CLI previews and the editor display these findings alongside the layout
+findings. `ui.screen` reports them separately in `content_findings`.
+
+| Finding | What it checks |
+|---|---|
+| broken strings | Required empty text, unresolved keys and format tokens, raw hexadecimal IDs, editing markers, invalid encoding, repeated or trailing spaces, angle selectors and inconsistent row-label casing |
+| font and fit | Characters missing from the selected font when its metrics are available, and visible text wider or taller than its box |
+| dead controls | Action rows without a confirm action, prompts without a supported input, and offline focus routes or input probes that cannot reach or operate a control |
+| missing content | Empty lists without a message, pickers without choices, absent descriptions for rows that share a help slot, missing icon or emblem widgets or unresolved required preview images, and sentinel values without an explicitly unavailable source |
+
+Use `ScreenSpec::content` to declare empty-state and required icon
+widgets, shared description slots, or a value awaiting its source.
+The content tests visit every registered page and named state, traverse
+focus in both directions, and probe advertised buttons on fresh offline
+models. Worker-backed or external actions use the authored action
+contract. The live watcher examines the current widget tree and registered
+Rust list models without sending input. It can inspect resolved text from
+stock screens that have no authored model and uses installed font
+metrics for authored text when available.
 
 What the checks hold the screens to:
 
 - **Unfocused rows stay readable.** Unfocused rows draw at about 40% alpha (`view::UNFOCUSED_ALPHA`, observed from a game screenshot, not traced); contrast on the real bars is 2.9 to 3.1.
 - **The skulls page keeps none of the Controls art.** It copies the level select's own bracket (`ul_02`) at run time (`ListClass::frame`); the frame provenance check names a bracket borrowed from the wrong list. Its view draws the skull picture (`ScreenSpec::art`), untinted.
-- **Legends sit in the footer**, not in the description block: the account menu's, and the co-op screens' (`A SELECT`, `START START GAME` or `READY`, `B BACK`, set in game from the co-op text table by `coop_live::prompts`).
+- **Legends sit in the footer.** The account and co-op screens use a footer separate from their description. Co-op offers Start and Back when applicable and leaves confirm off informational rows. The campaign options footer follows the focused Start, picker, toggle or locked row.
 
 **The full-height Game Options list.** The Game Options page lays out
 13 rows
@@ -210,9 +282,8 @@ same anchor under the same bracket (its list block's visible count), so
 rows running past it are retail's own composition. A "list longer than
 its frame" check would flag the game's screen, so there is none.
 `ListPlace::Moved` carries the layout's visible count, and both
-geometries (synthetic and disc) draw that many rows. The bracket plays its own animation from the level select (2, read off the disc,
-`skulls_menu::FRAME_ANIMATION`), so it slides out with the page and isn't
-left drawn over the screen coming back on B. The sheet's files are named
+geometries (synthetic and disc) draw that many rows. The bracket joins
+the pane's track, so it exits with the title and descriptions. The sheet's files are named
 by the preview's screen name, not the spec's: `skulls.h1` and `skulls`
 are both `skulls` specs, and the Halo 1 page's tiles overwrote the
 campaign page's.
@@ -295,8 +366,8 @@ row lit (`view_of`'s list). The preview draws that under the dialog. The
 openers:
 
 - `Opener::MAIN_MENU`: the main menu on the Xbox Live row (rows as
-  `ui_watch` reads them: Campaign, Xbox Live, Split Screen, System
-  Link, Settings).
+  the list hooks show them: Campaign, Xbox Live, Split Screen, System
+  Link, THEATER, Settings).
 - `Opener::XBOX_LIVE_MENU`: the Xbox Live menu (screen `0xba`, pane 0)
   on Quickmatch, with our five rows.
 
@@ -606,8 +677,8 @@ its description:
 A on a value sets it through the row's own setter (the settings store:
 saved, its change callbacks run) and closes; B closes and changes
 nothing; X, Start, left and right do nothing there. Left and right on
-the row itself still step. A row with one value, or more than
-`picker::MAX_CHOICES` (61, its string-id family), keeps stepping on A.
+the row itself still step. A kit value row can open a picker with one
+option. Pickers with many options reuse text slots as the list scrolls.
 The legend is `(A) SELECT (B) CANCEL`; the pages' own legends include
 `(A) SELECT`.
 
@@ -616,10 +687,17 @@ over the library with A, including a filter whose only entry is All.
 Long lists reuse text slots as new rows scroll into view. The preview
 composites the dialog over the library with its tab, rows and focus intact.
 
-Not on the picker: the Video and Voice screens (`ui::Model` rows,
-`Model::press`), the skulls (toggles, not settings) and the variant
-editor's More Options page (`variant_page`, its own rows). They step
-on A.
+Theater's playback window draws the bar, pause menu and its choice dialogs
+from the same specs used by `h2 ui preview theater.playback` and
+`theater.pause-menu`. The compositor renders the kit's view using the
+owned disc's fonts and row art, then blends it over the published film
+picture. The pause menu's pickers keep their parent focused behind them.
+`ui.screen` and `ui.input` use that same playback model.
+
+The Video and Voice screens use `ui::Model::press`. The skulls are
+direct toggles. More Options (`variant_page`) and the Halo 1 Assets and
+HUD rows open the kit picker on A. Back dismisses a picker without
+changing the held value.
 
 `h2 ui preview kit.picker` and `kit.picker.game` draw it (the kit's
 Count, nine values, 4 held, over Game Setup).
@@ -767,6 +845,7 @@ actions sets text 2 to our description and the picture to our image:
 | Row | Picture | Description |
 |---|---|---|
 | Clanker Options... | image 1, the roster no retail row uses | `clankers::ROW_HELP`, a slot of the page's (`KitScreen::row_help`) |
+| Firefight Options... | image 6, Switch To: Custom Game's | `firefight::options::ROW_HELP`, a slot of the page's (`KitScreen::row_help`) |
 | Halo 1 Options... | image 2, Quick Options' own | `h1_options::ROW_HELP` (`ROW_HELP_ID`, served with the other Halo 1 strings) |
 
 Texts 3 and 4 stay empty, as retail leaves them for a row with no value.
@@ -785,10 +864,11 @@ between empty and ours.
 The custom game information panel on Xbox Live, System Link and Split
 Screen uses pane 0 of screen 14 (`pregame_lobby`). In the lobby update,
 `LOBBY_VARIANT_PANEL` (`0x2501c0`) calls the formatter at `0x25092c` for
-five retail option rows. Text widgets 6 through 10 use the pane's text
-blocks 4 through 8. Text block 9 gives the panel a sixth row with the
-same font, colour, animation and 19-unit spacing. The last row ends at
-y −190.
+five option rows. Text widgets 6 through 10 use the pane's text blocks
+4 through 8. The last of these rows ends at y −171, above the footer.
+The next widget sits below the Quick Options box and is excluded from
+the summary. `ui.screen` checks both the five rows and the spare widget
+against the Quick Options box when they are visible.
 
 `crates/extensions/game/src/lobby_options.rs` adds the enabled options in
 this order: Clankers with the configured count and difficulty on the
@@ -797,9 +877,8 @@ Halo 1 on a converted map, and the multiplayer skull count. Hosted games
 use the signed-in profiles' skull choices. Xbox Live guests read the last
 cached host advertisement for skulls.
 
-The enabled lines follow the retail options that fit. With all five
-retail rows filled, one extra line uses the spare sixth row and each
-further line replaces a bottom retail option. The hook sets each extra
+The enabled lines follow the retail options that fit. When all five
+rows are filled, each enabled line replaces a bottom retail option. The hook sets each extra
 text widget through `TEXT_SET` and the shared locale table
 (`layout_glue::StringsFeature`, IDs from `ui_kit::ids`). The read-only
 [`ui.lobby_options` agent method](../runtime/agent-api.md#ui-what-the-menus-show)
@@ -911,7 +990,7 @@ A game run has to show:
 - draw order: our dialog on top of the screen beneath, and the footer widget keeping our legend (`0x2300cf` may refill it from the tag);
 - alpha 0 hiding a widget, and tint changes taking effect while the screen is up;
 - the backing's blend: whether `framing_center` and `dialog1`/`dialog2` draw as opaque as the preview shows;
-- transitions and animations (the preview draws everything at rest);
+- the native animation timing and the panel, rows and selection in both directions on the game shell and paused game;
 - input timing: key repeat, the opener-press guard, and the keyboard's return;
 - that the Controls constructor accepts a tag recipe whose list holds one item and whose pane has more text blocks than the Controls tag;
 - the "Not verified" items of the modal, picker, header and Game Setup sections above, through their game runs.

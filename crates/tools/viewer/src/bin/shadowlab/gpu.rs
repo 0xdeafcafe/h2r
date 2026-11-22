@@ -356,7 +356,7 @@ impl Lab {
         pollster::block_on(Self::new_async())
     }
     async fn new_async() -> Result<Self> {
-        let instance = wgpu::Instance::default();
+        let instance = gfx::instance();
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,

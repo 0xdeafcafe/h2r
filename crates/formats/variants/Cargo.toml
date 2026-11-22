@@ -12,6 +12,8 @@ tags.workspace = true
 xbe.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# Version-2 `.h2variant` files carry their rules script (portable.rs).
+rules.workspace = true
 thiserror.workspace = true
 # The runtime's default data root, shared with `h2 play`.
 content.workspace = true

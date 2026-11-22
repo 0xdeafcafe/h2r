@@ -143,7 +143,7 @@ fn imprecise() -> Passes {
 
 #[test]
 fn imprecise_faults_are_named_not_part_of_all() {
-    assert!(!Passes::ALL.imprecise_faults);
+    const { assert!(!Passes::ALL.imprecise_faults) };
     assert!(!Passes::parse("all").unwrap().imprecise_faults);
     let p = imprecise();
     assert!(p.dead_flags && p.lazy_flags && p.imprecise_faults);

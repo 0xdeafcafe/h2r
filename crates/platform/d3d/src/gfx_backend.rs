@@ -65,11 +65,19 @@
 //! translation) counts nothing. Clearing and reporting the counter submit
 //! the pending pass first, so they stay in order with the counted draws.
 
+mod frozen_target;
+pub use frozen_target::FrozenTarget;
+
+pub(crate) mod guest_draw_pass;
 mod native_runs;
+
+pub use guest_draw_pass::GuestDrawPass;
+pub use guest_draw_pass::tiles::{ShadowTiles, TileWork};
 
 use std::collections::HashMap;
 
 use gfx::occlusion::{PixelCounter, PixelReport};
+use gfx::raster::RenderScale;
 use gfx::renderer::{SHADER_XYZRHW_DIFFUSE, d3dz_max};
 use gfx::surface::{SurfaceDesc, SurfaceId, SurfaceKind, SurfaceStore};
 use gfx::texture::DecodedTexture;
@@ -79,13 +87,20 @@ use gfx::{
     VertexStream,
 };
 
-use crate::backend::{Backend, DrawOutcome, GuestLayoutKind, RectClear, ResolvedDraw};
+use crate::backend::{
+    Backend, DisplaySurfacePixels, DrawOutcome, GuestLayoutKind, RectClear, RenderExtents,
+    ResolvedDraw,
+};
 use crate::nv2a::{Nv2aShaders, builtin_equivalent};
 use crate::shader::{ShaderProvider, VertexProcessing};
 
 /// Called on every `Swap` with the surface shown and the swap flags.
 pub type PresentHook =
     Box<dyn FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>) + Send>;
+
+/// Observes the dispatched guest present, including a sleeping scaled view
+/// showing a surface from its reference store.
+type GuestPresentObserver = Box<dyn FnMut(u64, &GfxContext, &SurfaceStore, SurfaceId, crate::Lighting) + Send>;
 
 /// Inspects a completed batch in encoder order while its upload ranges
 /// and texture bindings still name this batch's data.
@@ -102,6 +117,10 @@ pub struct HostTexture {
 }
 
 impl HostTexture {
+    pub(crate) fn same_sample(&self, other: &Self) -> bool {
+        self.texture == other.texture && self.view == other.view
+    }
+
     /// Another handle to the same texture and view (for a backend on the
     /// same device, `crate::scaled`).
     pub fn shared(&self) -> HostTexture {
@@ -147,8 +166,17 @@ pub struct GfxBackend {
     /// The draw path.
     pub renderer: Renderer,
     shaders: Option<Box<dyn ShaderProvider>>,
+    lighting: crate::Lighting,
     presented: Option<SurfaceId>,
+    /// Last scene-owned display target, retained through the next display swap.
+    scene_presented: Option<SurfaceId>,
+    scene_uploads: guest_draw_pass::TextureCache,
     present_hook: Option<PresentHook>,
+    guest_present_observer: Option<GuestPresentObserver>,
+    unshown_observer: Option<Box<dyn FnMut(u64) + Send>>,
+    last_present_unshown: bool,
+    measure_raster: bool,
+    displayed_extent: Option<(u32, u32)>,
     recorded_pass_observer: Option<RecordedPassObserver>,
     submission_uploads: Option<Box<dyn FnMut() + Send>>,
     submitted_frame_observer: Option<Box<dyn FnMut() + Send>>,
@@ -190,7 +218,7 @@ pub struct GfxBackend {
     merge_check_frame: Option<u64>,
     /// Host pixels per guest pixel of surfaces made at a multiple of their
     /// guest size (a view backend, `crate::scaled`); absent is 1.
-    pub(crate) scales: HashMap<SurfaceId, u32>,
+    pub(crate) scales: HashMap<SurfaceId, RenderScale>,
     /// Whether counted draws count (off on a view backend: the reference
     /// answers every count).
     pub(crate) count_samples: bool,
@@ -198,6 +226,7 @@ pub struct GfxBackend {
     resizer: Option<gfx::resize::Resizer>,
     alias_decoder: gfx::surface_alias::AliasDecoder,
     pub(crate) single_copy_aliases: bool,
+    only_display: bool,
     pub(crate) blitter: Option<gfx::blit::Blitter>,
     /// The interpolated reprojection's warp pass (made on first use).
     warper: Option<gfx::blit::Warper>,
@@ -296,8 +325,28 @@ impl GfxBackend {
     /// on (`ShaderProvider::set_hard_shadows`). Only a render-scale view
     /// sets it (`crate::scaled`); the backend the guest reads stays retail.
     pub fn set_hard_shadows(&mut self, on: bool) {
+        self.lighting = if on { crate::Lighting::E3 } else { crate::Lighting::Retail };
+        self.set_scene_receiver(on);
+    }
+
+    /// The Sharp edge for the draws prepared from now on
+    /// (`ShaderProvider::set_sharp_shadows`). The native graph sets it
+    /// around each receiver of a shadow tile and clears it after.
+    pub(crate) fn set_sharp_receiver(&mut self, on: bool) {
         if let Some(s) = self.shaders.as_mut() {
-            s.set_hard_shadows(on);
+            s.set_sharp_shadows(on);
+        }
+    }
+
+    pub(crate) fn scene_lighting(&self) -> crate::Lighting {
+        self.lighting
+    }
+
+    /// Select the carried draw's shadow lookup without relabelling the
+    /// lighting mode of the Swap that observers will receive.
+    pub(crate) fn set_scene_receiver(&mut self, hard: bool) {
+        if let Some(s) = self.shaders.as_mut() {
+            s.set_hard_shadows(hard);
         }
     }
 
@@ -320,8 +369,16 @@ impl GfxBackend {
             store,
             renderer,
             shaders: Some(Box::new(Nv2aShaders::new())),
+            lighting: crate::Lighting::Retail,
             presented: None,
+            scene_presented: None,
+            scene_uploads: Default::default(),
             present_hook: None,
+            guest_present_observer: None,
+            unshown_observer: None,
+            last_present_unshown: false,
+            measure_raster: false,
+            displayed_extent: None,
             recorded_pass_observer: None,
             submission_uploads: None,
             submitted_frame_observer: None,
@@ -351,6 +408,7 @@ impl GfxBackend {
             resizer: None,
             alias_decoder: Default::default(),
             single_copy_aliases: false,
+            only_display: false,
             warper: None,
             last_submit: None,
             prev_frame_end: None,
@@ -445,8 +503,16 @@ impl GfxBackend {
         self.merge_check_frame = frame;
     }
 
+    /// Mark the directly presented backend as the sole display copy. Native
+    /// replacements use the same presentation lens as ordinary D3D draws.
+    pub fn as_only_display(mut self) -> Self {
+        self.only_display = true;
+        self
+    }
+
     /// Replaces the shader translator for textured and programmable draws.
-    pub fn with_shaders(mut self, shaders: Box<dyn ShaderProvider>) -> Self {
+    pub fn with_shaders(mut self, mut shaders: Box<dyn ShaderProvider>) -> Self {
+        shaders.set_hard_shadows(self.lighting == crate::Lighting::E3);
         self.shaders = Some(shaders);
         self
     }
@@ -472,6 +538,40 @@ impl GfxBackend {
     ) -> Self {
         self.present_hook = Some(Box::new(hook));
         self
+    }
+
+    /// A host-only replay may use a surface from the sleeping view's 1x
+    /// reference. It still goes to the replay hook and has no guest ordinal.
+    pub(crate) fn show_replay(
+        &mut self,
+        from: Option<&GfxBackend>,
+        surface: SurfaceId,
+        gamma: Option<&[u8; 768]>,
+    ) -> Result<(), String> {
+        self.flush()?;
+        let (ctx, store) = match from {
+            Some(reference) => (&reference.ctx, &reference.store),
+            None => (&self.ctx, &self.store),
+        };
+        if let Some(hook) = self.replay_hook.as_mut().or(self.present_hook.as_mut()) {
+            hook(ctx, store, surface, 0, gamma);
+        }
+        Ok(())
+    }
+
+    /// Observe the guest swaps on this backend. A host-only interpolated
+    /// present does not consume a number or notify this observer. The lighting
+    /// mode is the view policy in effect for this swap, before retargeting.
+    pub fn observe_guest_present(
+        &mut self,
+        observer: impl FnMut(u64, &GfxContext, &SurfaceStore, SurfaceId, crate::Lighting) + Send + 'static,
+    ) {
+        self.guest_present_observer = Some(Box::new(observer));
+    }
+
+    /// A scaled display exhausted its last fallback without an image.
+    pub fn observe_unshown_guest_present(&mut self, observer: impl FnMut(u64) + Send + 'static) {
+        self.unshown_observer = Some(Box::new(observer));
     }
 
     /// Observe complete packets before their original pass records. Used by
@@ -623,6 +723,14 @@ impl GfxBackend {
         }
     }
 
+    fn submit_full_external_batch(&mut self) {
+        let passes = self.external_prefix.len() + self.open.as_ref().map_or(0, |(_, passes)| *passes)
+            + self.pending.as_ref().map_or(0, |p| p.encoded);
+        if passes >= MAX_ENCODED_PASSES && self.encode_before_external() {
+            self.submit_open();
+        }
+    }
+
     /// Submits the pending pass, if any, and every pass encoded before it.
     pub fn flush(&mut self) -> Result<(), String> {
         let encoded = self.encode_pending();
@@ -726,7 +834,7 @@ impl GfxBackend {
                 .any(RecordedDraw::counts_samples)
                 .then(|| {
                     let counter = self.counter.get_or_insert_with(|| PixelCounter::new(ctx));
-                    counter.set_sample_stride(self.scales.get(&p.color).copied().unwrap_or(1));
+                    counter.set_sample_scale(self.scales.get(&p.color).copied().unwrap_or(RenderScale::ONE));
                     counter
                 });
             let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "render encode");
@@ -1035,9 +1143,39 @@ impl GfxBackend {
         flags: u32,
         gamma: Option<&[u8; 768]>,
     ) -> Result<(), String> {
+        let result = self.submit_present(from, surface, flags, gamma, true, self.lighting);
+        if result.is_err() && from.is_some() {
+            // Showing the reference is the scaled backend's final attempt for
+            // this guest swap. Even an unshown frame consumes its ordinal.
+            self.last_present_unshown = true;
+            self.displayed_extent = None;
+            if let Some(observer) = &mut self.unshown_observer {
+                observer(self.frame);
+            }
+            self.frame += 1;
+            self.frame_draw = 0;
+        }
+        result
+    }
+
+    pub(crate) fn submit_present(
+        &mut self,
+        from: Option<&GfxBackend>,
+        surface: SurfaceId,
+        flags: u32,
+        gamma: Option<&[u8; 768]>,
+        honour_finish: bool,
+        lighting: crate::Lighting,
+    ) -> Result<(), String> {
         let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
         let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "present");
         self.flush()?;
+        // Start the already-submitted query reads before exposing this swap.
+        // If one fails, a scaled display can still fall back to the reference
+        // without handing the window or parity observer a second image.
+        for report in self.reports.values().filter(|r| r.is_submitted()) {
+            report.try_read(&self.ctx)?;
+        }
         if let Some(observer) = &mut self.submitted_frame_observer {
             observer();
         }
@@ -1051,16 +1189,36 @@ impl GfxBackend {
         if from.is_none() {
             self.presented = Some(surface);
         }
-        if let Some(hook) = self.present_hook.as_mut() {
-            match from {
+        let (ctx, store) = match from {
+            Some(reference) => (&reference.ctx, &reference.store),
+            None => (&self.ctx, &self.store),
+        };
+        self.last_present_unshown = false;
+        if self.measure_raster {
+            self.displayed_extent = store.get(surface).ok().map(|s| (s.desc().width, s.desc().height));
+        }
+        if let Some(observer) = &mut self.guest_present_observer {
+            observer(self.frame - 1, ctx, store, surface, lighting);
+        }
+        if let Some(hook) = &mut self.present_hook {
+            if from.is_some() {
                 // Another backend's surface (a view showing its reference's
                 // image, `crate::scaled`), on the same device.
-                Some(other) => hook(&other.ctx, &other.store, surface, flags, gamma),
-                None => hook(&self.ctx, &self.store, surface, flags, gamma),
+                let mut metadata = crate::present_camera::current();
+                use crate::present_camera::Present;
+                match &mut metadata {
+                    Some(Present::Guest { reference, .. } | Present::Synthetic { reference, .. }) => {
+                        *reference = true;
+                    }
+                    None => {}
+                }
+                crate::present_camera::with(metadata, || hook(ctx, store, surface, flags, gamma));
+            } else {
+                hook(ctx, store, surface, flags, gamma);
             }
         }
         let frame_end = self.last_submit.clone();
-        if flags & 4 != 0 {
+        if honour_finish && flags & 4 != 0 {
             // D3DSWAP_FINISH: wait for the GPU (for the previous frame's
             // work, unless `SwapFinish::Full`).
             let wait = match self.swap_finish {
@@ -1082,12 +1240,6 @@ impl GfxBackend {
             }
         }
         self.prev_frame_end = frame_end;
-        // Reports from this frame and before are read later (Halo reads a
-        // visibility test two frames after it ends): start their reads now,
-        // so the read finds the count mapped instead of waiting.
-        for r in self.reports.values().filter(|r| r.is_submitted()) {
-            r.try_read(&self.ctx)?;
-        }
         Ok(())
     }
 
@@ -1167,18 +1319,10 @@ impl GfxBackend {
     }
 }
 
-/// `r` in the pixels of a surface `scale` times its guest size (exact for
-/// an integer scale: pieces that tile the guest target tile the host one).
-fn scale_rect(r: ScissorRect, scale: u32) -> ScissorRect {
-    if scale == 1 {
-        return r;
-    }
-    ScissorRect {
-        x: r.x.saturating_mul(scale),
-        y: r.y.saturating_mul(scale),
-        width: r.width.saturating_mul(scale),
-        height: r.height.saturating_mul(scale),
-    }
+/// Convert shared edges of the viewport, clip pieces and clears identically.
+fn scale_rect(r: ScissorRect, scale: RenderScale) -> ScissorRect {
+    let [x, y, width, height] = scale.rect(r.x, r.y, r.width, r.height);
+    ScissorRect { x, y, width, height }
 }
 
 /// A level at mirror byte `offset` as the guest-word passes address it.
@@ -1197,6 +1341,10 @@ fn word_layout(layout: GuestLayoutKind, offset: u32) -> Result<gfx::guest_words:
 impl Backend for GfxBackend {
     type Surface = SurfaceId;
     type Texture = HostTexture;
+
+    fn frozen_images(&self, texture: &HostTexture) -> Option<crate::scene_sink::FrozenImages> {
+        Some(crate::scene_sink::FrozenImages::single(&self.ctx.device, texture))
+    }
 
     fn create_surface(
         &mut self,
@@ -1217,7 +1365,11 @@ impl Backend for GfxBackend {
 
     fn destroy_surface(&mut self, surface: SurfaceId) -> Result<(), String> {
         self.flush()?;
-        self.scales.remove(&surface);
+        if self.scales.remove(&surface).is_some()
+            && let (Some(counter), Ok(image)) = (self.counter.as_mut(), self.store.get(surface))
+        {
+            counter.retire_extent(image.desc().width, image.desc().height);
+        }
         if self.store.remove(surface) {
             Ok(())
         } else {
@@ -1293,8 +1445,8 @@ impl Backend for GfxBackend {
         }
         // A surface made at a multiple of its guest size (a view backend)
         // takes guest-pixel rectangles: scissors scale, geometry does not.
-        let scale = self.scales.get(&color).copied().unwrap_or(1);
-        if depth.is_some_and(|z| self.scales.get(&z).copied().unwrap_or(1) != scale) {
+        let scale = self.scales.get(&color).copied().unwrap_or(RenderScale::ONE);
+        if depth.is_some_and(|z| self.scales.get(&z).copied().unwrap_or(RenderScale::ONE) != scale) {
             return Ok(DrawOutcome::Skipped(
                 "colour and depth surfaces at different scales".into(),
             ));
@@ -1312,41 +1464,16 @@ impl Backend for GfxBackend {
         // Vertex cache snapshots keep their GPU buffers across frames.
         let stream_ids: Vec<Option<u64>> = d.streams.iter().map(|s| s.data.cache_id()).collect();
         // Window-coordinate geometry: the clip rectangle only scissors.
-        let pieces: Vec<Option<ScissorRect>> = d
-            .clip_rects
-            .iter()
-            .map(|c| {
-                Some(ScissorRect {
-                    x: c.x,
-                    y: c.y,
-                    width: c.width,
-                    height: c.height,
-                })
-            })
-            .map(|p| p.map(|r| scale_rect(r, scale)))
-            .collect();
-        let scissor = Some(scale_rect(
-            match d.clip {
-                Some(c) => ScissorRect {
-                    x: c.x,
-                    y: c.y,
-                    width: c.width,
-                    height: c.height,
-                },
-                None => {
-                    let v = d.viewport;
-                    ScissorRect::from_edges(
-                        v.x as i64,
-                        v.y as i64,
-                        v.x as i64 + v.width as i64,
-                        v.y as i64 + v.height as i64,
-                    )
-                }
-            },
-            scale,
-        ));
+        let host_scissor = |rect: crate::PixelRect| {
+            let r = d.display_rect(rect);
+            scale_rect(ScissorRect { x: r.x, y: r.y, width: r.width, height: r.height }, scale)
+        };
+        let pieces: Vec<_> = d.clip_rects.iter().map(|&r| Some(host_scissor(r))).collect();
+        let scissor = Some(host_scissor(d.clip.unwrap_or(crate::PixelRect {
+            x: d.viewport.x, y: d.viewport.y, width: d.viewport.width, height: d.viewport.height,
+        })));
         // Pre-transformed positions stay in the guest's window.
-        let window = (scale > 1).then_some((d.target.width, d.target.height));
+        let window = (scale != RenderScale::ONE).then_some((d.target.width, d.target.height));
         let count_samples = d.hw.zpass_count_enable && self.count_samples;
         let indices = d.indices.as_deref();
         let index_id = d.indices.as_ref().and_then(|i| i.cache_id());
@@ -1363,6 +1490,7 @@ impl Backend for GfxBackend {
                 indices,
                 count_samples,
                 window,
+                window_transform: d.ui_fit.map_or([1.0, 1.0, 0.0, 0.0], |fit| fit.transform),
                 stream_ids: &stream_ids,
                 index_id,
                 ..Draw::new(
@@ -1450,7 +1578,7 @@ impl Backend for GfxBackend {
             depth: c.depth,
             stencil: c.stencil,
         };
-        let scale = self.scales.get(&color).copied().unwrap_or(1);
+        let scale = self.scales.get(&color).copied().unwrap_or(RenderScale::ONE);
         let rects: Vec<ScissorRect> = c
             .rects
             .iter()
@@ -1666,7 +1794,9 @@ impl Backend for GfxBackend {
                 targets: (surfaces.color, surfaces.depth),
                 uploads,
                 device: self.ctx.device.clone(), queue: self.ctx.queue.clone(), color: cv, color_format: cf,
-                depth: dv, depth_format: df, size, sampled, slots, copy, stages, single_display: false,
+                depth: dv, depth_format: df, size, sampled, slots, stages,
+                copy: if self.only_display { crate::TargetCopy::Display } else { copy },
+                single_display: self.only_display,
             }]))
         })();
         Ok(match attachments? {
@@ -1704,11 +1834,16 @@ impl Backend for GfxBackend {
         self.retain_uploads(recording.uploads);
         // The pass limit can submit this recording immediately.
         self.external_on_submit.extend(recording.on_submit);
-        let passes = self.external_prefix.len() + self.open.as_ref().map_or(0, |(_, passes)| *passes)
-            + self.pending.as_ref().map_or(0, |p| p.encoded);
-        if passes >= MAX_ENCODED_PASSES && self.encode_before_external() {
-            self.submit_open();
-        }
+        self.submit_full_external_batch();
+    }
+
+    #[cfg(feature = "gpu")]
+    fn upload_scene_assets(&mut self, upload: crate::backend::AssetUpload) {
+        upload(&self.ctx.device, &self.ctx.queue);
+    }
+
+    fn upload_device(&self) -> Option<(wgpu::Device, wgpu::Queue)> {
+        Some((self.ctx.device.clone(), self.ctx.queue.clone()))
     }
 
     fn supports_external_pass(&self) -> bool {
@@ -1740,12 +1875,13 @@ impl Backend for GfxBackend {
             depth: &dv,
             depth_format: df,
             viewport: crate::backend::external_viewport(&request, size),
+            display_projection_factor: request.display_projection_factor,
             z_scale: request.z_scale,
             guest_size: request.surface_size,
             size,
             sampled: &sampled,
             slots: &[],
-            copy: crate::TargetCopy::Reference,
+            copy: if self.only_display { crate::TargetCopy::Display } else { crate::TargetCopy::Reference },
             stages: [None; 4],
             on_submit: None,
         });
@@ -1787,13 +1923,13 @@ impl Backend for GfxBackend {
         };
         // The pass reads `D24S8` words in rows of the surface's width.
         let scale = if (width, height) == (d.width, d.height) {
-            1
+            RenderScale::ONE
         } else {
-            self.scales.get(&depth).copied().unwrap_or(1)
+            self.scales.get(&depth).copied().unwrap_or(RenderScale::ONE)
         };
         let gpu = format == D3DFormat::LinD24S8
             && pitch == width * 4
-            && (d.width, d.height) == (width.saturating_mul(scale), height.saturating_mul(scale))
+            && (d.width, d.height) == scale.size(width, height)
             && d.samples == 1
             && texture.format() == wgpu::TextureFormat::Depth32FloatStencil8
             && offset.is_multiple_of(4)
@@ -1807,7 +1943,7 @@ impl Backend for GfxBackend {
             let words = self.guest_words.get_or_insert_with(|| gfx::guest_words::GuestWords::new(ctx));
             let layout = gfx::guest_words::WordLayout { base: (offset / 4) as u32, pitch_words };
             let flip = gfx::guest_words::sign_flip(options.signed);
-            let made = words.depth_alias_scaled(ctx, &mut enc, &texture, desc.format, (desc.width, desc.height), layout, flip, scale);
+            let made = words.depth_alias_at_extent(ctx, &mut enc, &texture, desc.format, (desc.width, desc.height), layout, flip, (width, height));
             // A failed pass records nothing; the passes before it stay.
             self.side_done(enc, passes);
             // Out of bounds or an odd swizzle: the CPU path says why.
@@ -1891,7 +2027,7 @@ impl Backend for GfxBackend {
         let (mut enc, passes) = self.side_encoder()?;
         let ctx = &self.ctx;
         let words = self.guest_words.get_or_insert_with(|| gfx::guest_words::GuestWords::new(ctx));
-        let scale = self.scales.get(&surface).copied().unwrap_or(1);
+        let scale = self.scales.get(&surface).copied().unwrap_or(RenderScale::ONE);
         let stored = match kind {
             SurfaceKind::Color => words.store_color_scaled(ctx, &mut enc, &texture, format, (width, height), &m, layout, scale),
             SurfaceKind::DepthStencil => words.store_depth_scaled(ctx, &mut enc, &texture, (width, height), &m, layout, scale),
@@ -2085,9 +2221,59 @@ impl Backend for GfxBackend {
         Ok(true)
     }
 
+    fn measure_present_raster(&mut self, surface: Option<SurfaceId>) -> crate::backend::RasterMeasurement {
+        self.measure_raster = true;
+        self.displayed_extent = None;
+        crate::backend::RasterMeasurement {
+            configured: Some(1),
+            guest: surface.and_then(|s| self.surface_extent(s)),
+        }
+    }
+
+    fn last_present_unshown(&self) -> bool {
+        self.last_present_unshown
+    }
+
+    fn take_presented_extent(&mut self) -> Option<(u32, u32)> {
+        self.measure_raster = false;
+        self.displayed_extent.take()
+    }
+
     fn surface_extent(&self, surface: SurfaceId) -> Option<(u32, u32)> {
         let d = *self.store.get(surface).ok()?.desc();
         Some((d.width, d.height))
+    }
+
+    fn render_extents(
+        &mut self,
+        color: SurfaceId,
+        depth: Option<SurfaceId>,
+        textures: [Option<&HostTexture>; 4],
+    ) -> RenderExtents {
+        RenderExtents {
+            color: self.surface_extent(color),
+            depth: depth.and_then(|surface| self.surface_extent(surface)),
+            textures: textures.map(|texture| {
+                texture.and_then(|texture| texture.view.as_ref()).map(|view| {
+                    let texture = view.texture();
+                    (texture.width(), texture.height())
+                })
+            }),
+        }
+    }
+
+    fn read_display_surface(
+        &mut self,
+        surface: SurfaceId,
+    ) -> Result<Option<DisplaySurfacePixels>, String> {
+        let size = self.surface_extent(surface).ok_or("display surface is not live")?;
+        let (mut pixels, order) = self.read_color(surface)?;
+        if order == gfx::surface::HostPixelOrder::Rgba8 {
+            for pixel in pixels.chunks_exact_mut(4) {
+                pixel.swap(0, 2);
+            }
+        }
+        Ok(Some((size, pixels)))
     }
 
     fn gpu_fence(&mut self) -> Option<Box<dyn Fn() -> bool + Send>> {
@@ -2117,11 +2303,7 @@ impl Backend for GfxBackend {
         // A host-only frame (crate::interp): submitted and shown through
         // the hook; the frame count, shader upkeep, `presented` and the
         // swap wait belong to the guest's presents.
-        self.flush()?;
-        if let Some(hook) = self.replay_hook.as_mut().or(self.present_hook.as_mut()) {
-            hook(&self.ctx, &self.store, surface, 0, gamma);
-        }
-        Ok(())
+        self.show_replay(None, surface, gamma)
     }
 
     fn clear_pixel_count(&mut self) -> Result<(), String> {
@@ -2306,6 +2488,48 @@ fn split<'a>(draw: Draw<'a>, pieces: &[Option<ScissorRect>]) -> Vec<Draw<'a>> {
 mod tests {
     use super::merge_split;
     use wgpu::ColorWrites as W;
+
+    #[test]
+    fn an_unshown_scaled_swap_still_consumes_its_guest_ordinal() {
+        use super::{Backend, GfxBackend, GfxContext};
+        use std::sync::{Arc, Mutex};
+
+        let Ok(ctx) = GfxContext::headless() else { return };
+        let mut reference = GfxBackend::new(GfxContext {
+            instance: ctx.instance.clone(),
+            adapter: ctx.adapter.clone(),
+            device: ctx.device.clone(),
+            queue: ctx.queue.clone(),
+            caps: ctx.caps,
+        });
+        let mut display = GfxBackend::new(ctx);
+        let back = reference.create_surface(gfx::D3DFormat::LinA8R8G8B8, 8, 8, false).unwrap();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let ordinals = Arc::clone(&observed);
+        let missed = Arc::new(Mutex::new(Vec::new()));
+        let failures = Arc::clone(&missed);
+        display.observe_unshown_guest_present(move |n| failures.lock().unwrap().push(n));
+        display.observe_guest_present(move |n, _, _, _, _| ordinals.lock().unwrap().push(n));
+
+        // A failed view may still show the reference under the same number.
+        display.measure_present_raster(None);
+        display.external_ordering_error = Some("failed scaled view".into());
+        assert!(display.present_from(None, back, 0, None).is_err());
+        display.present_from(Some(&reference), back, 0, None).unwrap();
+        assert_eq!(display.take_presented_extent(), Some((8, 8)));
+        // A lost fallback consumes the number, without showing an image.
+        display.measure_present_raster(None);
+        display.external_ordering_error = Some("failed reference view".into());
+        assert!(display.present_from(Some(&reference), back, 0, None).is_err());
+        assert_eq!(display.take_presented_extent(), None);
+        assert!(display.last_present_unshown());
+        display.measure_present_raster(None);
+        display.present_from(Some(&reference), back, 0, None).unwrap();
+        assert_eq!(display.take_presented_extent(), Some((8, 8)));
+        assert!(!display.last_present_unshown());
+        assert_eq!(*observed.lock().unwrap(), [1, 3]);
+        assert_eq!(*missed.lock().unwrap(), [2]);
+    }
 
     #[test]
     fn merged_draws_split_only_after_a_partly_masked_draw() {

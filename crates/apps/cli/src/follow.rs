@@ -35,7 +35,8 @@ const USAGE: &str = "usage:
 Runs `h2 play` as a child and follows a branch: every --poll seconds (45)
 it fetches <remote>/<branch> (or reads the local <branch> with --no-fetch),
 builds each new commit in its own worktree under the cache dir (default
-~/Library/Caches/h2recomp/follow), and shows a banner in the game window.
+`follow` in the cache directory, docs/runtime/storage.md), and shows a
+banner in the game window.
 F5 on \"Update ready\" restarts into the new build; F6 hides the banner.
 The game's data dir stays the same unless --fresh-data. Closing the window
 ends it. The child installs a mappack.iso beside the disc into its data dir
@@ -417,6 +418,9 @@ const PLAY_VALUE_FLAGS: &[&str] = &[
     "--bindings",
     "--follow-status",
     "--movies",
+    "--join",
+    "--live-server",
+    "--gamertag",
 ];
 
 #[derive(Debug, PartialEq, Eq)]
@@ -489,17 +493,9 @@ fn play_paths(play: &[String]) -> (Option<PathBuf>, PathBuf, Option<PathBuf>) {
 }
 
 fn default_cache() -> Result<PathBuf> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .context("HOME is not set")?;
-    Ok(if cfg!(target_os = "macos") {
-        home.join("Library/Caches/h2recomp/follow")
-    } else {
-        std::env::var_os("XDG_CACHE_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".cache"))
-            .join("h2recomp/follow")
-    })
+    Ok(host_dirs::cache()
+        .context("no cache directory: HOME is not set")?
+        .join("follow"))
 }
 
 /// Appends a line to `<cache>/logs/follow.log` and prints it.
@@ -891,7 +887,7 @@ impl Step<'_> {
     }
 }
 
-fn niced(program: impl AsRef<std::ffi::OsStr>) -> Command {
+pub(crate) fn niced(program: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut c = Command::new("nice");
     c.args(["-n", "15"]).arg(program);
     c
@@ -995,7 +991,11 @@ fn common_dir(dir: &Path) -> Result<PathBuf, String> {
 /// worktree's. Anything else at that path is refused,
 /// never reset, cleaned or removed: the user's work could be there.
 fn own_checkout(repo: &Path, cache: &Path) -> Result<bool, String> {
-    let path = cache.join("checkout");
+    owned_worktree(repo, cache, "checkout")
+}
+
+pub(crate) fn owned_worktree(repo: &Path, cache: &Path, name: &str) -> Result<bool, String> {
+    let path = cache.join(name);
     let meta = match fs::symlink_metadata(&path) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(format!("{}: {e}", path.display())),
@@ -1014,7 +1014,7 @@ fn own_checkout(repo: &Path, cache: &Path) -> Result<bool, String> {
         return refuse("it is not a directory");
     }
     let here = canonical(&path)?;
-    if here != canonical(cache)?.join("checkout") {
+    if here != canonical(cache)?.join(name) {
         return refuse("it resolves outside the cache");
     }
     let list = git(repo, &["worktree", "list", "--porcelain"]).map_err(|e| format!("{e:#}"))?;
@@ -2764,6 +2764,8 @@ fn main() {
         assert_eq!(out, PathBuf::from("/o"));
         assert_eq!(data, Some(PathBuf::from("/d")));
         // A value that looks like a path is not taken for the disc.
+        let (disc, ..) = play_paths(&args("--join LINK --live-server URL --gamertag Player disc.iso"));
+        assert_eq!(disc, Some(PathBuf::from("disc.iso")));
         let (disc, ..) = play_paths(&args("--bindings keys.toml disc.iso"));
         assert_eq!(disc, Some(PathBuf::from("disc.iso")));
         assert!(parse_args(args("--follow --follow-status x")).is_err());

@@ -52,7 +52,7 @@ pub struct TickMark {
 
 /// The tick a frame that ended at `ns` belongs to: the last tick that had
 /// ended by then (the first one, for frames before it).
-fn tick_of<'a>(marks: &'a [TickMark], ns: u64) -> Option<&'a TickMark> {
+fn tick_of(marks: &[TickMark], ns: u64) -> Option<&TickMark> {
     let i = marks.partition_point(|m| m.ns <= ns);
     marks.get(i.saturating_sub(1))
 }
@@ -97,7 +97,7 @@ fn top(s: &FrameSample) -> Vec<String> {
         .map(|p| (p, s.phase_ns[p as usize]))
         .filter(|&(_, ns)| ns > 0)
         .collect();
-    p.sort_by(|a, b| b.1.cmp(&a.1));
+    p.sort_by_key(|phase| std::cmp::Reverse(phase.1));
     p.into_iter()
         .take(3)
         .map(|(p, _)| p.label().to_owned())
@@ -405,6 +405,16 @@ mod tests {
         assert_eq!(s.causes["shader_compile"], 1);
         assert_eq!(s.causes["guest_cpu"], 1, "counted for unlisted spikes too");
         assert_eq!(s.causes.values().sum::<usize>(), 5);
+    }
+
+    #[test]
+    fn a_slow_slot_check_reports_vfs_contention_separately_from_the_scan() {
+        let mut sample = frame(8, 500, 52, 2, 3);
+        sample.counts[Counter::MapSlotVfsWaitNs as usize] = 40_000_000;
+        sample.counts[Counter::MapSlotCheckNs as usize] = 2_000_000;
+        let capture = summarise(&[sample], &[], 33.3, 1);
+        assert_eq!(capture.spikes[0].counts["map_slot_vfs_wait_ns"], 40_000_000);
+        assert_eq!(capture.counts["map_slot_check_ns"].total, 2_000_000);
     }
 
     #[test]

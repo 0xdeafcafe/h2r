@@ -12,6 +12,7 @@
 
 use map::{FourCC, Map};
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::fs::File;
 use std::io::BufReader;
 use tags::registry::{Kind, Layout, Registry};
@@ -72,11 +73,8 @@ fn walk(
     seen
 }
 
-#[test]
-#[ignore = "needs the owner's disc: set H2_DISC"]
-fn every_disc_tag_walks_through_the_registry() -> Res<()> {
-    let disc = std::env::var_os("H2_DISC").ok_or("set H2_DISC")?;
-    let mut iso = xiso::Xiso::open(BufReader::new(File::open(&disc)?))?;
+fn disc_maps(disc: &OsStr) -> Res<Vec<(String, u64, u64)>> {
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(disc)?))?;
     let mut maps = Vec::new();
     for e in iso.entries()? {
         let file = e.path.rsplit(['/', '\\']).next().unwrap_or("");
@@ -85,6 +83,42 @@ fn every_disc_tag_walks_through_the_registry() -> Res<()> {
             maps.push((file.to_owned(), base, u64::from(e.size)));
         }
     }
+    Ok(maps)
+}
+
+#[test]
+#[ignore = "needs the owner's disc: set H2_DISC"]
+fn every_disc_scenario_walks_through_its_definition() -> Res<()> {
+    let disc = std::env::var_os("H2_DISC").ok_or("set H2_DISC")?;
+    let group = FourCC(*b"scnr");
+    let root = Registry::builtin().group(group).expect("scenario layout");
+    assert!(
+        root.field_at(0x210)
+            .is_some_and(|f| f.name == "structure_bsps")
+    );
+    let mut bad = Vec::new();
+    let mut scenarios = 0;
+    for (name, base, size) in disc_maps(&disc)? {
+        let mut map = Map::from_region(BufReader::new(File::open(&disc)?), base, size)?;
+        let Some(scenario) = map.scenario() else { continue };
+        scenarios += 1;
+        let loc = scenario.location.expect("scenario payload");
+        assert!(loc.size >= root.size, "{name}: shorter than the scenario root");
+        let space = map.metadata_space().expect("scenario metadata space");
+        assert_eq!(loc.space, space, "{name}: scenario outside ordinary metadata");
+        let meta = map.read_file_range(space.file_offset, u64::from(space.size))?;
+        walk(&meta, space.virtual_base, root, loc.address, 1, &mut bad, &name);
+    }
+    assert!(scenarios > 0, "disc contains no scenarios");
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+    Ok(())
+}
+
+#[test]
+#[ignore = "needs the owner's disc: set H2_DISC"]
+fn every_disc_tag_walks_through_the_registry() -> Res<()> {
+    let disc = std::env::var_os("H2_DISC").ok_or("set H2_DISC")?;
+    let maps = disc_maps(&disc)?;
     let r = Registry::builtin();
     let mut bad = Vec::new();
     let mut by_group: BTreeMap<FourCC, (u64, u64)> = BTreeMap::new();

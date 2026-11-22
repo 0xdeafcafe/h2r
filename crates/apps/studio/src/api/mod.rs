@@ -19,20 +19,27 @@
 //! [`Action`]: crate::app::Action
 //! [`App::dispatch`]: crate::App::dispatch
 
-use agent_proto::{Request, Response, RpcError};
+use agent_proto::{Request, Response, RpcError, memory_forensics as mem};
 use serde_json::{Value, json};
 use studio_proto::{code, method as m};
 
 use crate::App;
 
+mod collision;
 mod docs;
+mod game_script;
+mod geometry;
 mod hud;
+mod mirror;
+mod nav;
 mod pair;
 mod params;
 mod playlists;
 mod scenario;
+mod scripts;
 pub mod seams;
 pub mod server;
+mod sound;
 mod tag_fields;
 mod tag_io;
 mod tags;
@@ -44,6 +51,7 @@ mod view;
 mod tests;
 
 pub use params::P;
+pub(crate) use params::block_name;
 pub use seams::Provider;
 
 /// One method: what it does, its params and result, and an example call.
@@ -101,6 +109,48 @@ const fn planned(
 /// Every method, in the order `session.methods` lists them.
 pub const METHODS: &[MethodDef] = &[
     def(
+        agent_proto::method::HOST_MEMORY,
+        "Process footprint, limits, recent samples, probes and report files",
+        r#"{"report?":"boolean"}"#,
+        r#"{"footprint_bytes":"integer","peak_bytes":"integer","soft":"integer","hard":"integer","growth_bytes_per_min":"number","samples":"[[t_ms,bytes]]","probes":"object","reports":"[path]"}"#,
+        "null",
+    ),
+    def(
+        mem::HISTORY,
+        "Read a page of the editor's memory flight recorder",
+        r#"{"since_ms?":"integer"}"#,
+        r#"{"records":"[record]","next_since_ms":"integer|null"}"#,
+        "null",
+    ),
+    def(
+        mem::HEAP,
+        "Live allocation counts and bytes per tag, and top live sampled stacks",
+        r#"{"top?":"integer (1..128, default 20)"}"#,
+        r#"{"tags":"object","stacks":"[stack]","sample_interval_bytes":"integer","dropped_samples":"integer"}"#,
+        r#"{"top":20}"#,
+    ),
+    def(
+        mem::GPU,
+        "Live graphics resource counts, tracked bytes and driver totals",
+        "{}",
+        r#"{"metric name":"integer"}"#,
+        "null",
+    ),
+    def(
+        mem::DIFF,
+        "Rank memory growth between a recorded uptime and the latest record",
+        r#"{"from_ms":"integer"}"#,
+        r#"{"from_ms":"integer","to_ms":"integer","footprint_delta":"integer","growers":"[change]"}"#,
+        r#"{"from_ms":0}"#,
+    ),
+    def(
+        mem::POSTMORTEM,
+        "Explain a dead process's recording in the memory report directory",
+        r#"{"pid?":"integer"}"#,
+        r#"{"pid":"integer","file":"path","diff":"object","reports":"[path]","report":"object|null"}"#,
+        "null",
+    ),
+    def(
         m::STATUS,
         "The editor: protocol, window or headless, the tool shown, the source and every document",
         "{}",
@@ -130,9 +180,9 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::SOURCE_MAPS,
-        "The source's maps, the map loaded, and the packages under the data root",
+        "The source maps and library entries with their picker groups, and the map loaded",
         "{}",
-        r#"{"source":"string|null","maps":"[string]","loaded":"string|null","packages":"[{key,label}]"}"#,
+        r#"{"source":"string|null","maps":"[string]","map_entries":"[{map,label,group}]","halo1_maps":"[{map,label,group}]","map_pack":"[{map,label,group}]","loaded":"string|null","packages":"[{key,map,label,group}]"}"#,
         "null",
     ),
     def(
@@ -151,9 +201,9 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::DOC_SAVE,
-        "Save in place: a variant to its save, a playlist file to its path, a map to the file it was last saved as",
+        "Save to the document's destination, or open the package form for a source map",
         r#"{"doc?":"map|variant|playlists (default: the tool shown)"}"#,
-        r#"{"saved":"boolean","path?":"string","log":"[string]"}"#,
+        r#"{"saved":"boolean","path?":"string","bytes?":"integer","package_form?":"{name,dir}","log":"[string]"}"#,
         r#"{"doc":"map"}"#,
     ),
     def(
@@ -203,13 +253,6 @@ pub const METHODS: &[MethodDef] = &[
         "A tag as structured JSON: its blocks, references and string IDs from the layout schema, named fields where a registry knows them",
         r#"{"tag":"string (0x... id, or name[.group])","depth?":"integer (default 1)","elements?":"integer (per block, default 8)","hex?":"boolean"}"#,
         r#"{"id":"string","group":"string","name":"string|null","size":"integer","fields":"[field]"}"#,
-        r#"{"tag":"scnr"}"#,
-    ),
-    def(
-        m::TAG_REFS,
-        "Every tag reference in a tag (through its blocks), with where it sits and what it names",
-        r#"{"tag":"string","limit?":"integer (default 500)"}"#,
-        r#"[{"path":"string","group":"string","id":"string","name":"string|null"}]"#,
         r#"{"tag":"scnr"}"#,
     ),
     def(
@@ -305,10 +348,73 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::SCENARIO_SELECT,
-        "Select a placement in the window (and frame it with focus)",
-        r#"{"block?":"string","index?":"integer","focus?":"boolean"}"#,
-        r#"{"selected":"{block,index}|null"}"#,
+        "Select a placement (and frame it with focus), select a tag as the inspector's root, or clear the selection",
+        r#"{"block?":"string","index?":"integer","focus?":"boolean","tag?":"string|integer"}"#,
+        r#"{"selected":"{block,index}|{tag}|null"}"#,
         r#"{"block":"netgame_flags","index":0}"#,
+    ),
+    def(
+        m::VOLUME_LIST,
+        "The open map's trigger volumes as oriented boxes (corner, forward, up, full size), what each is drawn as, and the kill triggers and BSP switches that name it",
+        r#"{"kind?":"trigger|kill|bsp_switch"}"#,
+        r#"{"volumes":"[{index,name,label,kinds,origin,forward,up,size,center,parent,world,named_by:[{kind,index,from?,to?}]}]","kill_triggers":"integer","bsp_switches":"integer","selected":"integer|null","error":"string|null"}"#,
+        r#"{"kind":"kill"}"#,
+    ),
+    def(
+        m::VOLUME_SELECT,
+        "Select a trigger volume by index (clearing the placements) and frame it with focus, or clear the selection",
+        r#"{"index?":"integer","focus?":"boolean"}"#,
+        r#"{"selected":"integer|null"}"#,
+        r#"{"index":0,"focus":true}"#,
+    ),
+    def(
+        m::VOLUME_SET,
+        "Give a trigger volume a new box as one undo step: forward, up and size over its own, then the corner origin or the centre (its own when neither is given). Forward and up are squared",
+        r#"{"index":"integer","origin?":"[x,y,z]","center?":"[x,y,z]","forward?":"[x,y,z]","up?":"[x,y,z]","size?":"[x,y,z]"}"#,
+        r#"{"volume":"{index,name,label,kinds,origin,forward,up,size,center,parent,world,named_by}"}"#,
+        r#"{"index":0,"center":[102,102,3],"size":[4,4,6]}"#,
+    ),
+    def(
+        m::VOLUME_ADD,
+        "Add a trigger volume (a 2-unit cube at the camera focus unless the box is given) and select it; kill adds a kill trigger naming it in the same undo step (Make a kill volume). Refused past the block's source size while growth is off",
+        r#"{"kill?":"boolean","center?":"[x,y,z]","origin?":"[x,y,z]","forward?":"[x,y,z]","up?":"[x,y,z]","size?":"[x,y,z]"}"#,
+        r#"{"index":"integer","kill_trigger":"integer|null","volume":"{index,...}"}"#,
+        r#"{"kill":true,"center":[0,0,2]}"#,
+    ),
+    def(
+        m::VOLUME_REMOVE,
+        "Remove a trigger volume or a kill trigger (the last entry takes its slot; kill triggers and BSP switches follow a moved volume). A volume a kill trigger or BSP switch names is refused, naming them, as is a source volume of a scripted map",
+        r#"{"kind?":"trigger|kill","index":"integer"}"#,
+        r#"{"removed":"{kind,index}","triggers":"integer","kill_triggers":"integer","selected":"integer|null"}"#,
+        r#"{"kind":"kill","index":0}"#,
+    ),
+    def(
+        m::COLLISION_SURFACES,
+        "The open map's level collision surfaces (each structure BSP's collision BSP): plane, raw flags, material, ring, and class, collision_only when no drawn triangle lies on the surface's plane over it (the invisible walls). Filter by class or BSP; offset and limit (200) page the list",
+        r#"{"class?":"drawn|collision_only","bsp?":"integer","offset?":"integer","limit?":"integer"}"#,
+        r#"{"bsps":"[string]","counts":"{drawn,collision_only}","matching":"integer","surfaces":"[{index,bsp,surface,class,plane,flags,breakable,breakable_surface,material,covered,area,center,ring}]","selected":"integer|null","errors":"[{bsp,error}]"}"#,
+        r#"{"class":"collision_only","limit":10}"#,
+    ),
+    def(
+        m::COLLISION_AT,
+        "The level collision surface a ray meets first (origin and dir) or the one a point lies on (within 0.05 units of its plane, over it), and its class, whatever layers are shown; select selects it (or clears the selection on a miss)",
+        r#"{"origin?":"[x,y,z]","dir?":"[x,y,z]","point?":"[x,y,z]","within?":"number","select?":"boolean"}"#,
+        r#"{"surface":"{index,bsp,surface,class,...}|null","distance":"number|null","selected":"integer|null"}"#,
+        r#"{"origin":[205,205,1],"dir":[1,0,0]}"#,
+    ),
+    def(
+        m::COLLISION_SELECT,
+        "Select a level collision surface by index (clearing the placements and the volume) and frame it with focus, or clear the selection. Read only",
+        r#"{"index?":"integer","focus?":"boolean"}"#,
+        r#"{"selected":"integer|null"}"#,
+        r#"{"index":0,"focus":true}"#,
+    ),
+    def(
+        m::COLLISION_OBJECTS,
+        "The placed objects' collision: each object tag's model, coll and phmo, and every shape a placement places (coll BSPs, phmo spheres, pills, boxes and polyhedra), posed by its node's rest transform and the placement's, in world space. Filter by block and index",
+        r#"{"block?":"string","index?":"integer"}"#,
+        r#"{"models":"[{object,resolved,model,coll,phmo,nodes,shapes,errors}]","shapes":"[{block,index,object,kind,tag,shape,node,center,radius,edges}]","error":"string|null"}"#,
+        r#"{"block":"scenery","index":0}"#,
     ),
     def(
         m::VARIANT_LIST,
@@ -402,6 +508,13 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"playlist":0,"entry":0}"#,
     ),
     def(
+        m::UI_PALETTE,
+        "Search the Go to anything palette, or run a shown entry by its zero-based index",
+        r#"{"query":"string","run?":"integer"}"#,
+        r#"{"entries":"[{kind,label,detail}]","totals":"{map,tag,placement,command}","ran?":"integer"}"#,
+        r#"{"query":"blaster"}"#,
+    ),
+    def(
         m::UI_SCREENS,
         "Our UI screens and their states (and the disc's retail screens when a disc is open)",
         "{}",
@@ -438,10 +551,24 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::VIEW_CAMERA,
-        "Read or set the viewport camera (degrees and world units), or frame a placement",
-        r#"{"yaw?":"number","pitch?":"number","distance?":"number","target?":"[x,y,z]","focus?":{"block":"string","index":"integer"},"all?":"boolean"}"#,
-        r#"{"yaw":"number","pitch":"number","distance":"number","target":"[x,y,z]"}"#,
+        "Read or set the viewport camera (degrees and world units), set fly speed, or frame a placement",
+        r#"{"yaw?":"number","pitch?":"number","distance?":"number","target?":"[x,y,z]","focus?":{"block":"string","index":"integer"},"all?":"boolean","fly_speed?":"number (0.5..1000 units/s)"}"#,
+        r#"{"yaw":"number","pitch":"number","distance":"number","target":"[x,y,z]","fly_speed":"number"}"#,
         r#"{"yaw":45,"pitch":30,"distance":40}"#,
+    ),
+    def(
+        m::VIEW_LAYERS,
+        "Read the viewport legend, or apply a preset, layer switches and X-ray to the window and snapshots",
+        r#"{"set?":"{layer name: boolean}","preset?":"art|gameplay|collision|everything","xray?":"boolean"}"#,
+        r#"{"layers":"[{name,label,group,on,count,color}]","xray":"boolean"}"#,
+        r#"{"preset":"everything","set":{"fog":false},"xray":true}"#,
+    ),
+    def(
+        m::VIEW_LIGHTING,
+        "Read the viewport's Lighting mode, or set it, for the window and snapshots: game (base map times lightmap), flat (no lightmap), lightmap (the lightmap on white), collision (flat at a third)",
+        r#"{"mode?":"game|flat|lightmap|collision"}"#,
+        r#"{"mode":"string","modes":"[string]"}"#,
+        r#"{"mode":"flat"}"#,
     ),
     def(
         m::VIEW_SNAPSHOT,
@@ -587,6 +714,7 @@ impl Api {
     /// Runs one call: checks its params against the method's shape, then
     /// asks the providers, then the built-in methods.
     pub fn call(&mut self, app: &mut App, method: &str, params: Value) -> Reply {
+        let _scope = mem_watch::scope("agent.request");
         let methods = self.methods();
         let Some(d) = methods.iter().find(|d| d.name == method) else {
             return Err(err(
@@ -615,6 +743,9 @@ impl Api {
             return Err(e);
         }
         check_params(d, &params)?;
+        if agent_proto::memory_serve::supports(method) {
+            return agent_proto::memory_serve::call(method, params);
+        }
         for p in &mut self.providers {
             if let Some(r) = p.call(app, method, &params) {
                 return r;
@@ -626,6 +757,8 @@ impl Api {
             "source" | "doc" => docs::call(app, method, &p),
             "tag" => tags::call(app, method, &p),
             "scenario" => scenario::call(app, method, &p),
+            "volume" => scenario::volume(app, method, &p),
+            "collision" => collision::call(app, method, &p),
             "variant" => variants::call(app, method, &p),
             "playlist" => playlists::call(app, method, &p),
             "ui" => ui_screens::call(app, method, &p),
@@ -667,7 +800,9 @@ impl Api {
     fn view(&mut self, app: &mut App, method: &str, p: &P) -> Reply {
         match method {
             m::VIEW_CAMERA => view::camera(app, p),
+            m::VIEW_LAYERS => view::layers(app, p),
             m::VIEW_STATS => view::stats(app, p),
+            m::VIEW_LIGHTING => view::lighting(app, p),
             m::VIEW_SNAPSHOT => {
                 let gpu = self
                     .gpu
@@ -679,6 +814,30 @@ impl Api {
             }
             _ => Err(err(code::METHOD_NOT_FOUND, format!("no method {method}"))),
         }
+    }
+
+    /// One turn of `h2-editor --serve`: waits up to `wait` for a request,
+    /// answers every one queued, then runs the game link as the window does
+    /// between frames, so `pair.*` and `mirror.*` work with no window.
+    /// False once the socket's queue has closed.
+    pub fn serve_once(
+        &mut self,
+        app: &mut App,
+        play: &mut crate::play::Play,
+        rx: &std::sync::mpsc::Receiver<server::Incoming>,
+        wait: std::time::Duration,
+    ) -> bool {
+        use std::sync::mpsc::RecvTimeoutError;
+        match rx.recv_timeout(wait) {
+            Ok(inc) => {
+                inc.answer(self.handle(app, inc.request.clone()));
+                self.pump(app, rx);
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return false,
+        }
+        play.update(app);
+        true
     }
 
     /// Answers every request waiting on `rx`; returns how many.
@@ -744,7 +903,8 @@ fn check_params(d: &MethodDef, params: &Value) -> Result<(), RpcError> {
     }
     if let Some((missing, _)) = keys
         .iter()
-        .find(|(k, req)| *req && obj.get(k).is_none_or(Value::is_null))
+        // Present counts as given: null is a value (a reference set to none).
+        .find(|(k, req)| *req && !obj.contains_key(k.as_str()))
     {
         return Err(err(
             code::INVALID_PARAMS,
@@ -762,5 +922,6 @@ pub fn tool_name(t: crate::ToolKind) -> &'static str {
         crate::ToolKind::UiScreens => "ui-screens",
         crate::ToolKind::Tags => "tags",
         crate::ToolKind::Hud => "hud",
+        crate::ToolKind::Scripts => "scripts",
     }
 }

@@ -1,5 +1,5 @@
 //! The small unsafe boundary to the system AVFoundation reader.
-use crate::{AudioInfo, MovieDecoder, MovieStream, StreamInfo};
+use crate::{AudioInfo, MovieDecoder, MovieOpenError, MovieStream, StreamInfo};
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
@@ -48,6 +48,10 @@ unsafe impl Send for Stream {}
 impl MovieDecoder for AvFoundationDecoder {
     fn open(&self, path: &Path) -> Option<Box<dyn MovieStream>> {
         self.try_open(path).ok()
+    }
+
+    fn try_open(&self, path: &Path) -> Result<Box<dyn MovieStream>, MovieOpenError> {
+        AvFoundationDecoder::try_open(self, path).map_err(|e| MovieOpenError::Decoder(e.to_string()))
     }
 }
 impl AvFoundationDecoder {

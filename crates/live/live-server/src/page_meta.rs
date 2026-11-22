@@ -167,20 +167,28 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// The page under [`STATS_ROOT`] that `path` (with its `query`) named
-/// when the stats site was at [`OLD_STATS_ROOT`]; `None` for any other
-/// path. Both homes answer it with a 301.
+/// Canonical address for an old stats page or whole-film link. Both homes
+/// answer with a 301. Clip links keep their own address and preview.
 pub fn moved(path: &str, query: Option<&str>) -> Option<String> {
-    let rest = path.strip_prefix(OLD_STATS_ROOT)?;
-    if !(rest.is_empty() || rest.starts_with('/')) {
-        return None;
-    }
-    let rest = if rest == "/" { "" } else { rest };
-    let mut to = format!("{STATS_ROOT}{rest}");
+    let (mut to, fragment) = if let Some(rest) = path.strip_prefix(OLD_STATS_ROOT) {
+        if !(rest.is_empty() || rest.starts_with('/')) {
+            return None;
+        }
+        let rest = if rest == "/" { "" } else { rest };
+        (format!("{STATS_ROOT}{rest}"), "")
+    } else {
+        let id = path.strip_prefix("/theater/")?;
+        let id = id.strip_suffix('/').unwrap_or(id);
+        if id.is_empty() || id.contains('/') {
+            return None;
+        }
+        (format!("{STATS_ROOT}/games/{id}"), "#game-viewer")
+    };
     if let Some(q) = query.filter(|q| !q.is_empty()) {
         to.push('?');
         to.push_str(q);
     }
+    to.push_str(fragment);
     Some(to)
 }
 
@@ -848,6 +856,20 @@ mod tests {
         for not in ["/", "/statsx", "/games/halo2", "/v1/stats/summary", "/dash/stats"] {
             assert_eq!(moved(not, None), None, "{not}");
         }
+    }
+
+    #[test]
+    fn old_whole_film_links_open_the_game_viewer() {
+        assert_eq!(
+            moved("/theater/abc", None).as_deref(),
+            Some("/games/halo2/games/abc#game-viewer")
+        );
+        assert_eq!(
+            moved("/theater/a%2Fb/", Some("t=2.5&view=3d")).as_deref(),
+            Some("/games/halo2/games/a%2Fb?t=2.5&view=3d#game-viewer")
+        );
+        assert_eq!(moved("/theater/abc/clip/xyz", None), None);
+        assert_eq!(moved("/theater/", None), None);
     }
 
     #[test]

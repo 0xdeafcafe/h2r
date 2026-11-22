@@ -31,7 +31,7 @@
 use crate::light_constants::{Error, LightGlobals, Sse};
 use crate::memory::{GuestMemory, MemFault};
 
-/// `render_light_passes`: EAX the light datum, ECX the view context, stack
+/// `render_light_passes`: EAX the light datum, ECX the projection volume, stack
 /// `(datum, frame, shadow, weight)`, `ret 0x10`.
 pub const RENDER_LIGHT_PASSES: u32 = 0x0003_1170;
 /// The return address of its `0x0004a1e0` call: the flag code starts here,
@@ -79,7 +79,7 @@ pub mod constant {
 
 /// Bits of `[0x004ba014]`.
 pub mod flag {
-    /// The context's first word is 0 (its type, as `0x000497a0` reads it).
+    /// The effective volume is spherical (shape code 0 at `0x0003121d`).
     pub const CONTEXT_ZERO: u32 = 1;
     /// A colour B component above the threshold: layer 13 draws (with
     /// [`CONTEXT_ZERO`]).

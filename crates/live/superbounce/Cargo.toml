@@ -1,0 +1,10 @@
+[package]
+name = "superbounce"
+description = "Superbounce and forced-crouch spots found in a map's collision geometry (docs/game/superbounce.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+tags = { path = "../../formats/tags" }
+map = { path = "../../formats/map" }

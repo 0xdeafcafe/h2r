@@ -154,11 +154,15 @@ fn view<'a>(r: stream::Record<'a>, packer: Option<&mut crate::pack::Decoder>) ->
                     };
                     let import = match &record.event {
                         GameStarted(_) | PlayerJoined(_) | PlayerLeft(_) | PlayerKilled(_)
-                        | ScoreChanged(_) | GameEnded(_) => true,
+                        | ScoreChanged(_) | GameEnded(_) | Superbounce(_) | Bounced(_)
+                        | Teabag(_) => true,
                         Assist { .. }
                         | Medal { .. }
                         | WeaponFire { .. }
                         | Damage(_)
+                        | ActorKilled(_)
+                        | FirefightScore(_)
+                        | FirefightEnded(_)
                         | Impact(_)
                         | ProjectileEnded(_)
                         | Pickup { .. }
@@ -286,6 +290,30 @@ mod tests {
         assert_eq!(result.private.unwrap(), raw);
         assert!(!result.public.windows(13).any(|s| s == b"198.51.100.17"));
         assert!(!result.public.windows(6).any(|s| s == b"future"));
+    }
+
+    /// A bounce is public and, as a stats-import kind, kept in the private
+    /// import sequence beside a record that forces one. A kind this reader
+    /// does not know (as `Superbounce` is to a reader before it) stays private.
+    #[test]
+    fn a_superbounce_is_public_and_imported_and_an_unknown_kind_stays_private() {
+        let mut bounce = vec![stream::STATS_EVENT];
+        bounce.extend(br#"{"tick":1,"kind":"Superbounce","data":{"tick":1,"player":0,"chain":2}}"#);
+        let mut medal = vec![stream::STATS_EVENT];
+        medal.extend(br#"{"tick":1,"kind":"Medal","data":{"player":0,"earned_at":1,"medal":"double-bounce"}}"#);
+        assert!(is_public_tick(&block(&[&bounce, &medal], stream::EVENT)));
+
+        let mut future = vec![stream::STATS_EVENT];
+        future.extend(br#"{"tick":1,"kind":"FutureBounce","data":{"player":0}}"#);
+        let raw = block(&[&bounce, &medal, &future], stream::EVENT);
+        assert!(!is_public_tick(&raw));
+        let result = project(&raw).unwrap();
+        assert!(is_public_tick(&result.public));
+        assert_eq!(result.public, block(&[&bounce, &medal], stream::EVENT));
+        assert_eq!(
+            result.private.unwrap(),
+            block(&[&bounce, &future], stream::EVENT)
+        );
     }
 
     #[test]

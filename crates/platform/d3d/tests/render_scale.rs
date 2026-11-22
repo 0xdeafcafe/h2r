@@ -7,9 +7,7 @@
 //! image box-filtered down must be the reference's. Synthetic resources;
 //! the GPU tests skip without an adapter.
 
-mod common;
-
-use common::*;
+use crate::common::*;
 use d3d::abi::Regs;
 use d3d::hw::method as hw;
 use d3d::scaled::ScaledBackend;
@@ -120,7 +118,7 @@ fn triangle<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory, color: u32) {
 
 /// A quad over `r` sampling all of the 32x32 linear texture (texel
 /// coordinates).
-fn textured_quad<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory, r: (f32, f32, f32, f32)) {
+pub(super) fn textured_quad<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory, r: (f32, f32, f32, f32)) {
     let mut vb = Vec::new();
     for (u, v) in [(0.0f32, 0.0f32), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
         for f in [r.0 + (r.2 - r.0) * u, r.1 + (r.3 - r.1) * v, 0.5, 1.0] {
@@ -399,6 +397,75 @@ fn only_frame_sized_surfaces_scale() {
         2560,
         "a snapshot of a scaled surface is scaled"
     );
+}
+
+#[test]
+fn polygon_stipple_is_anchored_to_the_guest_framebuffer() {
+    let Some(ctx) = context() else { return };
+    for single_copy in [false, true] {
+        for size in [
+            (W, H), (2 * W, 2 * H), (3 * W, 3 * H), (6 * W, 6 * H),
+            (96, 112), (48, 96), (149, 101),
+        ] {
+            let grid = d3d::scaled::RenderScale::between((W, H), size).unwrap();
+            let backend = ScaledBackend::with_resolution(
+                GfxBackend::new(share(&ctx)),
+                GfxBackend::new(share(&ctx)),
+                grid,
+                single_copy,
+            )
+            .unwrap();
+            let (mut d, mut m) = create(backend, UploadPolicy::Tracked);
+            set_states(&mut d, &mut m);
+            d.clear(&mut m, 0, 0, 0xF0, 0xFF00_0000, 1.0, 0).unwrap();
+
+            // The set bits cover guest pixels (4,4), (8,4) and (5,5),
+            // repeated in each 32x32 tile. The scissor has another origin.
+            let mut pattern = [0; 32];
+            pattern[27] = 1 << 3 | 1 << 15;
+            pattern[26] = 1 << 2;
+            let mut commands = vec![(32 << 18) | hw::STIPPLE_PATTERN];
+            commands.extend(pattern);
+            commands.extend([(1 << 18) | hw::STIPPLE_CONTROL, 1]);
+            push_words(&mut m, &commands);
+            rects(&mut m, &[[3, 2, W - 3, H - 2]]);
+            d.set_scissors(&mut m, 1, 0, RECTS).unwrap();
+            flat_quad(
+                &mut d,
+                &mut m,
+                (0.0, 0.0, W as f32, H as f32),
+                0xFFFF_FFFF,
+            );
+
+            let bb = d.back_buffer().unwrap();
+            let (image, (width, height)) = if size == (W, H) {
+                pixels(d.backend.reference_mut(), bb.reference)
+            } else {
+                let view = d.backend.view_surface(&bb).expect("scaled back buffer");
+                pixels(d.backend.view_mut(), view)
+            };
+            assert_eq!((width, height), size);
+            // RenderScale rounds guest edges up at half a host pixel. A host
+            // centre exactly at a guest edge belongs to the preceding cell.
+            // At 96 pixels across, guest (4,4)'s last column is x=7.
+            let cell = |p, guest, host| ((2 * p + 1) * guest - 1) / (2 * host);
+            for y in 0..height {
+                for x in 0..width {
+                    let (gx, gy) = (cell(x, W, width), cell(y, H, height));
+                    let visible = (3..W - 3).contains(&gx)
+                        && (2..H - 2).contains(&gy)
+                        && matches!((gx % 32, gy % 32), (4, 4) | (8, 4) | (5, 5));
+                    let expected = if visible { [255; 4] } else { [0, 0, 0, 255] };
+                    let i = ((y * width + x) * 4) as usize;
+                    assert_eq!(
+                        image[i..i + 4],
+                        expected,
+                        "{width}x{height} single_copy={single_copy} at host ({x},{y})",
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -1070,6 +1137,141 @@ fn edge_scene<B: Backend>(backend: B, pass: EdgePass) -> Device<B> {
 }
 
 #[test]
+fn fractional_per_axis_surfaces_keep_fullscreen_edges_and_guest_answers() {
+    let Some(ctx) = context() else { return };
+    let output = (149, 101);
+    let grid = d3d::scaled::RenderScale::between((W, H), output).unwrap();
+    let backend = |single| ScaledBackend::with_resolution(
+        GfxBackend::new(share(&ctx)), GfxBackend::new(share(&ctx)), grid, single,
+    ).unwrap();
+    let (_, _, retail) = frame(GfxBackend::new(share(&ctx)));
+    let (device, _, answers) = frame(backend(false));
+    assert_eq!(answers, retail, "reads and visibility counts come from the reference");
+    assert_eq!(device.backend.stats().view_errors, 0);
+
+    let request = d3d::ExternalPassRequest { rect: (1, 3, 11, 9), surface_size: (W, H), display_projection_factor: 1.0, z_scale: 1.0 };
+    assert_eq!(d3d::external_viewport(&request, output), [2.0, 5.0, 26.0, 14.0]);
+    for single in [false, true] {
+        for pass in [EdgePass::Flat, EdgePass::SmallBlur, EdgePass::FrameChain] {
+            let mut device = edge_scene(backend(single), pass);
+            let buffer = device.back_buffer().unwrap();
+            let (shown, size) = pixels(device.backend.view_mut(), buffer.view.unwrap());
+            let pass_pixel = PASS.to_le_bytes(); // BGRA color attachment
+            assert_eq!(size, output);
+            assert!(shown.chunks_exact(4).all(|p| p == pass_pixel), "{pass:?}, single={single}");
+        }
+    }
+}
+
+#[test]
+fn render_diagnostics_read_display_allocations_on_the_worker() {
+    use d3d::backend::RenderExtents;
+
+    let Some(ctx) = context() else { return };
+    let guest = (16, 12);
+    let display = (39, 25);
+    let small = (8, 6);
+    let scale = d3d::scaled::RenderScale::between(guest, display).unwrap();
+    let color_format = gfx::D3DFormat::LinA8R8G8B8;
+    for single in [false, true] {
+        let scaled = ScaledBackend::with_resolution(
+            GfxBackend::new(share(&ctx)),
+            GfxBackend::new(share(&ctx)),
+            scale,
+            single,
+        ).unwrap();
+        let mut backend = ThreadedBackend::new(scaled).unwrap();
+        let color = backend.create_surface(color_format, guest.0, guest.1, false).unwrap();
+        let depth = backend.create_surface(gfx::D3DFormat::LinD24S8, guest.0, guest.1, true).unwrap();
+        let blur = backend.create_texture_target(color_format, small.0, small.1).unwrap();
+        backend.clear(color, None, gfx::Clear::all([1.0, 0.0, 0.0, 1.0])).unwrap();
+        let frame_sample = backend.snapshot_surface(color, false).unwrap().unwrap();
+        let blur_sample = backend.surface_texture(blur).unwrap().unwrap();
+
+        assert_eq!(
+            backend.render_extents(color, Some(depth), [Some(&frame_sample), None, Some(&blur_sample), None]),
+            RenderExtents {
+                color: Some(display),
+                depth: Some(display),
+                textures: [Some(display), None, Some(small), None],
+            },
+        );
+        assert_eq!(backend.render_extents(blur, None, [None; 4]).color, Some(small));
+
+        let (size, pixels) = backend.read_display_surface(color).unwrap().unwrap();
+        assert_eq!(size, display);
+        assert_eq!(pixels.len(), (display.0 * display.1 * 4) as usize);
+        assert!(pixels.chunks_exact(4).all(|pixel| pixel == [0, 0, 255, 255]));
+    }
+}
+
+#[test]
+fn fractional_feedback_preserves_patterned_guest_cells_and_snapshot_lifetime() {
+    let Some(ctx) = context() else { return };
+    let output = (149, 101);
+    let grid = d3d::scaled::RenderScale::between((W, H), output).unwrap();
+    let mut backend = ScaledBackend::with_resolution(
+        GfxBackend::new(share(&ctx)), GfxBackend::new(share(&ctx)), grid, true,
+    ).unwrap();
+    let format = gfx::D3DFormat::LinA8R8G8B8;
+    let frame = backend.create_surface(format, W, H, false).unwrap();
+    let desc = gfx::TextureDesc::new(format, gfx::texture::TextureKind::D2, W, H, 1, 1);
+    let cell = |x: u32, y: u32| [x as u8, y as u8, (x ^ y) as u8, 255];
+    let guest: Vec<u8> = (0..H).flat_map(|y| (0..W).flat_map(move |x| cell(x, y))).collect();
+    assert!(backend.write_surface(frame, &desc, &guest).unwrap());
+    let snapshot = backend.snapshot_surface(frame, true).unwrap().unwrap().view.unwrap().texture;
+    let readback = backend.read_surface(
+        frame, format, W, H, d3d::GuestLayoutKind::Linear { pitch: W * 4 },
+    ).unwrap();
+    assert_eq!(readback, guest);
+    backend.clear(frame, None, gfx::Clear::all([0.0; 4])).unwrap();
+    backend.view_mut().flush().unwrap();
+    assert_eq!((snapshot.width(), snapshot.height()), output);
+    let pixels = gfx::readback::read_texture(&ctx, &snapshot, wgpu::TextureAspect::All, 4, output);
+    for y in 0..H {
+        for x in 0..W {
+            let [left, top, width, height] = grid.rect(x, y, 1, 1);
+            for row in top..top + height {
+                for col in left..left + width {
+                    let at = ((row * output.0 + col) * 4) as usize;
+                    assert_eq!(&pixels[at..at + 4], &cell(x, y), "snapshot at ({col}, {row})");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn fractional_clears_and_scissors_tile_the_same_texels() {
+    let Some(ctx) = context() else { return };
+    let grid = d3d::scaled::RenderScale::between((W, H), (149, 101)).unwrap();
+    let backend = ScaledBackend::with_resolution(
+        GfxBackend::new(share(&ctx)), GfxBackend::new(share(&ctx)), grid, true,
+    ).unwrap();
+    let (mut d, mut m) = create(backend, UploadPolicy::Tracked);
+    d.clear(&mut m, 0, 0, 0xF0, 0xff00_0000, 1.0, 0).unwrap();
+    rects(&mut m, &[[1, 3, 12, 12]]);
+    d.clear(&mut m, 1, RECTS, 0xF0, 0xffff_0000, 1.0, 0).unwrap();
+    set_states(&mut d, &mut m);
+    rects(&mut m, &[[12, 3, 31, 12]]);
+    d.set_scissors(&mut m, 1, 0, RECTS).unwrap();
+    flat_quad(&mut d, &mut m, FULL, 0xff00_ff00);
+    let buffer = d.back_buffer().unwrap();
+    let (shown, (w, h)) = pixels(d.backend.view_mut(), buffer.view.unwrap());
+    for y in 0..h {
+        for x in 0..w {
+            let expected: u32 = match (x, y) {
+                (2..28, 5..19) => 0xffff_0000,
+                (28..72, 5..19) => 0xff00_ff00,
+                _ => 0xff00_0000,
+            };
+            let start = ((y * w + x) * 4) as usize;
+            assert_eq!(&shown[start..start + 4], &expected.to_le_bytes(), "({x},{y})");
+        }
+    }
+}
+
+#[test]
 fn a_full_screen_pass_reaches_the_far_edges_at_every_scale() {
     let Some(ctx) = context() else { return };
     for pass in [EdgePass::Flat, EdgePass::SmallBlur, EdgePass::FrameChain] {
@@ -1503,6 +1705,221 @@ fn e3_shadows_are_one_tap_and_follow_the_caster_closer() {
     }
 }
 
+// --- E3 tiles on the native frame graph (docs/graphics/e3-lighting.md,
+// "Shadows from local lights", slice L4) ----------------------------------
+//
+// The same shadow pass as a sealed frame names it: the map (`Aux(0)`, with
+// its colour level `Aux(1)`) cleared and drawn, then the back buffer
+// cleared and the receiver sampling the map. Replayed in E3 mode, the map
+// is drawn as a tile at `shadow_scale` times its size and the receiver
+// compares it with the Sharp edge.
+
+/// The device's caster and receiver draws, recorded without a GPU, in a
+/// sealed frame.
+fn tile_frame() -> d3d::scene_sink::ReplayFrame {
+    use d3d::scene_sink::{ReplayFrame, ReplayOp, ReplaySample, ReplayTexture};
+    use frame_scene::carried::CameraUse;
+    use frame_scene::{AuxTarget, Slot, SlotAt, TargetRef};
+    let mut recorder = d3d::RecordingBackend::new();
+    recorder.sample_depth = true;
+    recorder.sample_surfaces = true;
+    let (mut d, mut m) = create(recorder, UploadPolicy::Tracked);
+    d.set_rtt_direct(true);
+    smap_headers(&mut m);
+    shadow_pass(&mut d, &mut m, true);
+    let draws = d.backend.draws();
+    let caster = draws
+        .iter()
+        .find(|draw| (draw.target.width, draw.target.height) == (SMAP, SMAP))
+        .map(|draw| Arc::new((*draw).clone()))
+        .expect("the caster");
+    let receiver = draws
+        .iter()
+        .find(|draw| draw.texture_info[0].is_some())
+        .map(|draw| Arc::new((*draw).clone()))
+        .expect("the receiver");
+    let (level, map, main) = (TargetRef::Aux(0), TargetRef::Aux(1), TargetRef::SceneColour);
+    let colour = |width, height, format: gfx::D3DFormat| AuxTarget {
+        width,
+        height,
+        format: format as u32,
+        depth: false,
+    };
+    let at = SlotAt {
+        slot: Slot::Opaque,
+        view: 0,
+    };
+    let ops = vec![
+        ReplayOp::Bind {
+            colour: map,
+            depth: level,
+        },
+        ReplayOp::Clear {
+            colour: map,
+            depth: level,
+            clear: gfx::Clear {
+                color: Some([0.0; 4]),
+                depth: Some(1.0),
+                stencil: Some(0),
+            },
+        },
+        ReplayOp::Draw {
+            draw: caster.clone(),
+            textures: [None, None, None, None],
+            camera: CameraUse::Screen,
+        },
+        ReplayOp::Bind {
+            colour: main,
+            depth: TargetRef::None,
+        },
+        ReplayOp::Clear {
+            colour: main,
+            depth: TargetRef::None,
+            clear: gfx::Clear {
+                color: Some([0.0, 0.0, 1.0, 1.0]),
+                ..gfx::Clear::NONE
+            },
+        },
+        ReplayOp::Sample {
+            of: level,
+            id: 0,
+            how: ReplaySample::Depth,
+        },
+        ReplayOp::Draw {
+            draw: receiver.clone(),
+            textures: [Some(ReplayTexture::Sample(0)), None, None, None],
+            camera: CameraUse::Screen,
+        },
+    ];
+    ReplayFrame {
+        colour: Some(colour(W, H, receiver.target.format)),
+        aux: vec![
+            AuxTarget {
+                depth: true,
+                ..colour(SMAP, SMAP, gfx::D3DFormat::LinD24S8)
+            },
+            colour(SMAP, SMAP, caster.target.format),
+        ],
+        presented: main,
+        ops: ops.into_iter().map(|op| (at, op)).collect(),
+        ..Default::default()
+    }
+}
+
+/// Signed distance from host pixel `p` to the caster's shadow outline, in
+/// host pixels at render scale `scale`: positive in its shadow. Both draws
+/// sample where `gfx::raster::window_shift` puts them, not at pixel
+/// centres. At 1x host pixel `P` samples guest coordinate `P` (D3D puts
+/// pixel centres on integers); above, `(P + 1/4) / s`. The receiver reads
+/// map point `guest / 2`. The caster, drawn into a tile at `f` texels per
+/// map texel (`f > 1`), covers tile texel `j` when guest point
+/// `(j + 1/4) / f` is inside it, so its shadow is the caster moved by
+/// `1/4` of a tile texel, `1 / (4 f)` map texels.
+fn caster_distance(p: (f32, f32), scale: u32) -> f32 {
+    let s = scale as f32;
+    let guest = |v: f32| if scale == 1 { v } else { (v + 0.25) / s };
+    let f = d3d::scaled::shadow_scale(scale, d3d::Lighting::E3) as f32;
+    let q = (guest(p.0) / 2.0 - 0.25 / f, guest(p.1) / 2.0 - 0.25 / f);
+    let segment = |a: (f32, f32), b: (f32, f32)| {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let t = (((q.0 - a.0) * dx + (q.1 - a.1) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+        ((q.0 - a.0 - t * dx).powi(2) + (q.1 - a.1 - t * dy).powi(2)).sqrt()
+    };
+    let [a, b, c] = CASTER;
+    // Map texels to host pixels: a map texel covers 2x2 guest pixels.
+    let d = 2.0 * s * segment(a, b).min(segment(b, c)).min(segment(c, a));
+    // `in_shadow` takes guest frame coordinates, twice map ones.
+    if in_shadow(2.0 * q.0, 2.0 * q.1) { d } else { -d }
+}
+
+/// The L1 edge, in host pixels where a tile texel is `texel` of them:
+/// beyond one texel of the outline the light is on the caster's side,
+/// beyond two it is pure black or white, and the ramp between is
+/// anti-aliased (some pixels are neither).
+fn assert_sharp_edge(size: [u32; 2], rgba: &[u8], scale: u32, texel: f32, what: &str) {
+    let mut ramp = 0;
+    for y in 0..size[1] {
+        for x in 0..size[0] {
+            let lit = rgba[((y * size[0] + x) * 4) as usize];
+            let d = caster_distance((x as f32, y as f32), scale);
+            if d.abs() >= texel {
+                assert_eq!(lit < 0x80, d > 0.0, "{what}: ({x}, {y}) {d:.2} px from the outline lit {lit}");
+            }
+            if d.abs() >= 2.0 * texel {
+                assert!(lit == 0 || lit == 0xFF, "{what}: ({x}, {y}) {d:.2} px from the outline is {lit}");
+            }
+            ramp += u32::from(lit != 0 && lit != 0xFF);
+        }
+    }
+    assert!(ramp > 0, "{what}: the edge is anti-aliased, not stepped");
+}
+
+/// Slice L4's synthetic check: in E3 mode the replayed map is a tile and
+/// its shadow has the Sharp edge, at 1x on the graph's own targets and at
+/// 2x through the mixed-size private pass; retail mode replays the map at
+/// the guest's size, and the two differ only near the outline.
+#[test]
+fn e3_tiles_give_a_replayed_shadow_the_sharp_edge() {
+    use d3d::gfx_backend::{GuestDrawPass, TileWork};
+    use d3d::scaled::private_scene::MixedPrivatePass;
+    let Some(ctx) = context() else { return };
+    if !ctx.caps.depth32_stencil8 {
+        eprintln!("skipping: depth levels are not sampled in place");
+        return;
+    }
+    let frame = tile_frame();
+    let one_light = TileWork {
+        tiles: 1,
+        tile_draws: 1,
+        marks: 1,
+        refused: 0,
+    };
+    let mut gpu = GfxBackend::new(share(&ctx));
+    let draw = |gpu: &mut GfxBackend, lighting| {
+        let mut pass = GuestDrawPass::new_lit(gpu, &frame, 1, lighting).unwrap();
+        for (_, op) in &frame.ops {
+            pass.apply(op).unwrap();
+        }
+        let work = pass.tile_work();
+        let (size, rgba) = pass.read_rgba().unwrap();
+        assert_eq!(size, [W, H]);
+        (work, rgba)
+    };
+    let (retail_work, retail) = draw(&mut gpu, d3d::Lighting::Retail);
+    let (e3_work, e3) = draw(&mut gpu, d3d::Lighting::E3);
+    assert_eq!(retail_work, None, "retail plans no tiles");
+    assert_eq!(e3_work, Some(one_light));
+    // At 1x a tile texel (the map at 2x) is one frame pixel.
+    assert_sharp_edge([W, H], &e3, 1, 1.0, "1x");
+    assert_ne!(e3, retail, "the edge changed");
+    for y in 0..H {
+        for x in 0..W {
+            let i = ((y * W + x) * 4) as usize;
+            let d = caster_distance((x as f32, y as f32), 1);
+            // Retail's 2x2 filter reaches a map texel and a half past the edge.
+            if d.abs() > 5.0 {
+                assert_eq!(e3[i..i + 4], retail[i..i + 4], "({x}, {y}) away from the edge");
+            }
+        }
+    }
+
+    let mut pass = MixedPrivatePass::new_lit(&mut gpu, &frame, 2, d3d::Lighting::E3).unwrap();
+    for (_, op) in &frame.ops {
+        pass.apply(op).unwrap();
+    }
+    assert_eq!(pass.tile_work(), Some(one_light));
+    let (size, rgba) = pass.read_target(frame.presented).unwrap();
+    assert_eq!(size, [2 * W, 2 * H]);
+    // At 2x the tile is the map at 2x: a tile texel is two host pixels.
+    assert_sharp_edge(size, &rgba, 2, 2.0, "2x");
+    drop(pass);
+    let mut retail = MixedPrivatePass::new_lit(&mut gpu, &frame, 2, d3d::Lighting::Retail).unwrap();
+    for (_, op) in &frame.ops {
+        retail.apply(op).unwrap();
+    }
+    assert_eq!(retail.tile_work(), None);
+}
+
 /// The Lighting row changes at a frame boundary, both ways, with no
 /// restart and no fallback frame; at render scale 1 E3 wakes the view
 /// (frame at 1x, shadow map at 2x) and retail puts it back to sleep. The
@@ -1904,6 +2321,55 @@ fn a_frame_covered_by_a_small_level_shows_no_lighting_difference() {
     assert!(e3_px.chunks(4).all(|p| p == &e3_px[i..i + 4]), "one colour over the frame");
 }
 
+/// A 640×480 raster shown anamorphically still has distinct guest and
+/// display results in exact mode. A single-copy run issues the draw once.
+#[test]
+fn forced_widescreen_at_guest_resolution_preserves_the_selected_readback_policy() {
+    let Some(ctx) = context() else { return };
+    let (w, h) = (640, 480);
+    let wide = (1920, 1080);
+    for single in [false, true] {
+        let mut b = ScaledBackend::with_single_copy(
+            GfxBackend::new(share(&ctx)), GfxBackend::new(share(&ctx)), 1, single,
+        ).unwrap();
+        let width = Arc::new(AtomicU32::new(1440));
+        let current = width.clone();
+        b.follow_presentation(move |_| (current.load(Ordering::Relaxed), 1080));
+        let (mut d, mut m) = create_with(b, UploadPolicy::Tracked, |params| {
+            (params.width, params.height) = (w, h);
+        });
+        let bb = d.back_buffer().unwrap();
+        assert!(d.backend.view_surface(&bb).is_none());
+        width.store(wide.0, Ordering::Relaxed);
+        d.swap(&mut m, 0).unwrap();
+        let bb = d.back_buffer().unwrap();
+        assert_eq!(d.backend.stats().presentation, wide);
+        set_states(&mut d, &mut m);
+        d.clear(&mut m, 0, 0, 0xF3, 0xff00_0000, 1.0, 0).unwrap();
+        d.set_ui_fit(&mut m, d3d::backend::UiFit::about(wide, [0., 0.])).unwrap();
+        flat_quad(&mut d, &mut m, (24., 8., 48., 40.), 0xffff_ffff);
+
+        let lit = |bytes: &[u8], x: u32| bytes[((20 * w + x) * 4) as usize] != 0;
+        let read = d.backend.read_surface(bb, gfx::D3DFormat::LinA8R8G8B8, w, h,
+            d3d::GuestLayoutKind::Linear { pitch: w * 4 }).unwrap();
+        assert_eq!((lit(&read, 20), lit(&read, 44)), (single, !single));
+        if !single {
+            let v = d.backend.view_surface(&bb).unwrap();
+            let (px, extent) = pixels(d.backend.view_mut(), v);
+            assert_eq!(extent, (w, h));
+            assert!(lit(&px, 20) && !lit(&px, 44));
+        }
+        let stats = d.backend.stats();
+        assert_eq!((stats.reference_draws, stats.display_draws), (u64::from(!single), 1));
+        assert_eq!(stats.downsamples, 0, "both render targets are guest-sized");
+
+        width.store(1440, Ordering::Relaxed);
+        d.swap(&mut m, 0).unwrap();
+        assert_eq!(d.backend.stats().presentation, (1440, 1080));
+        assert!(d.backend.view_surface(&d.back_buffer().unwrap()).is_none());
+    }
+}
+
 #[test]
 fn single_copy_records_once_and_only_resolves_when_the_cpu_reads() {
     let Some(ctx) = context() else { return };
@@ -2054,6 +2520,35 @@ fn single_copy_reinterprets_colour_memory_on_gpu() {
         }
     }
     assert_eq!((b.stats().downsamples, b.stats().cpu_readbacks), (0, 0));
+}
+
+#[test]
+fn fractional_frame_aliases_keep_cube_faces_and_volume_mips_at_guest_size() {
+    use gfx::texture::{DecodeOptions, TextureKind, decode_texture};
+
+    let Some(ctx) = context() else { return };
+    let grid = d3d::scaled::RenderScale::between((W, H), (149, 101)).unwrap();
+    let mut backend = ScaledBackend::with_resolution(
+        GfxBackend::new(share(&ctx)), GfxBackend::new(share(&ctx)), grid, true,
+    ).unwrap();
+    let format = gfx::D3DFormat::LinA8R8G8B8;
+    let frame = backend.create_surface(format, W, H, false).unwrap();
+    let src = gfx::TextureDesc::new(format, TextureKind::D2, W, H, 1, 1);
+    let bytes: Vec<_> = (0..W * H * 4).map(|i| (i ^ (i >> 5)) as u8).collect();
+    assert!(backend.write_surface(frame, &src, &bytes).unwrap());
+
+    let options = DecodeOptions::default();
+    for (kind, depth, layers) in [(TextureKind::Cube, 1, 6), (TextureKind::Volume, 4, 4)] {
+        let desc = gfx::TextureDesc::new(gfx::D3DFormat::A8B8G8R8, kind, 8, 8, depth, 4);
+        let expected = decode_texture(&desc, &bytes, None, options).unwrap();
+        let alias = backend.depth_alias_texture(frame, format, W, H, W * 4, 1, 0, &desc, options)
+            .unwrap().unwrap().view.unwrap().texture;
+        backend.view_mut().flush().unwrap();
+        assert_eq!((alias.width(), alias.height(), alias.depth_or_array_layers()), (8, 8, layers));
+        assert_eq!(alias.mip_level_count(), 4);
+        let first_slice = gfx::readback::read_texture(&ctx, &alias, wgpu::TextureAspect::All, 4, (8, 8));
+        assert_eq!(first_slice.as_slice(), &expected.levels[0].data[..8 * 8 * 4], "{kind:?}");
+    }
 }
 
 #[test]

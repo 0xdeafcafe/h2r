@@ -1,23 +1,31 @@
 //! The float rules for every Rust sim kernel (docs/engine/sim-rewrite.md
 //! section 3, "Float rules"), and the arithmetic that follows them.
 //!
-//! - IEEE binary32 add, subtract and multiply only, each rounded once.
+//! - IEEE binary32 or binary64 arithmetic, each operation rounded once.
 //!   No `mul_add` (the crate's clippy.toml forbids it) and no fast-math.
 //! - Reciprocal and reciprocal square root estimates are the Pentium III's
 //!   tables from the `simd` crate, never the host's `rcp`/`rsqrt`.
 //! - The guest's float environment is checked once per call, at entry
 //!   ([`fast_env`]), not reset per operation.
-//! - An x87 sequence runs only where a host operation is proven to give
-//!   the guest's bits in every precision control the guest may select
-//!   ([`x87_env`] at entry; [`x87_neg_quotient`]). Anything else declines.
+//! - [`checked`] tests the thread's host float status around its scalar
+//!   operations. [`Chain`] reproduces masked, round-to-nearest x87 chains
+//!   in single and double precision. [`x87_neg_quotient`] also handles
+//!   extended precision for the bounded BSP split.
 //!
-//! [`Fp`] is the arithmetic a bar-E kernel uses. Each operation computes
+//! [`Fp`] provides range-proved arithmetic. Each operation computes
 //! the correctly rounded host result and records whether its operands lie
 //! in the fast-path range ([`crate::lanes::ordinary1`]). When every operand
-//! of every operation did, and [`fast_env`] held at entry, the results are
-//! the bits the guest's SSE produces and the guest's MXCSR would not have
-//! changed. When any did not, [`Fp::exact`] is false and the caller must
+//! of every operation did, and [`fast_env`] and [`host_fast_env`] held
+//! at entry, the results match guest SSE and the guest's MXCSR is unchanged.
+//! When any input fails, [`Fp::exact`] is false and the caller must
 //! discard the results and let the original code run.
+mod chain;
+mod host;
+mod region;
+
+pub use chain::Chain;
+pub use region::{Checked, checked, checked_env, checked_inputs, host_fast_env};
+
 use crate::lanes::{self, Op, Vec4};
 
 /// MXCSR in the state the fast path needs: all exceptions masked, round to
@@ -157,11 +165,11 @@ pub fn x87_env(control: u16, status: u16, tag: u16, free: u32) -> bool {
     if control & 0x3f != 0x3f || control & 0xc00 != 0 || control & 0x300 == 0x100 {
         return false;
     }
-    if status & 0x80 != 0 {
+    if status & 0x80 != 0 || free > 8 {
         return false;
     }
     let top = u32::from(status >> 11) & 7;
-    (1..=free.min(8)).all(|k| {
+    (1..=free).all(|k| {
         let r = (top + 8 - k) & 7;
         (tag >> (2 * r)) & 3 == 3
     })
@@ -208,6 +216,7 @@ mod tests {
         assert!(x87_env(0x037f, 0, 0xffff, 2));
         assert!(x87_env(0x027f, 0, 0xffff, 2));
         assert!(x87_env(0x007f, 0, 0xffff, 2));
+        assert!(!x87_env(0x037f, 0, 0xffff, 9), "more than eight pushes");
         assert!(!x87_env(0x017f, 0, 0xffff, 2), "reserved precision");
         assert!(!x87_env(0x0b7f, 0, 0xffff, 2), "round up");
         assert!(!x87_env(0x037e, 0, 0xffff, 2), "IE unmasked");

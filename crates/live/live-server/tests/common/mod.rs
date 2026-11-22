@@ -139,14 +139,34 @@ impl Harness {
         issue_token(key, iss, &self.id, method, now())
     }
 
+    pub fn signup_headers(&self, tag: &str, proof: &str) -> Vec<(&'static str, String)> {
+        let configured = self
+            .live
+            .policy()
+            .admins
+            .iter()
+            .any(|a| a.as_str().eq_ignore_ascii_case(tag));
+        if configured {
+            let token = self.token(
+                &self.operator,
+                &format!("server:{}", self.id),
+                &AccountRequest::operator_scope(proof),
+            );
+            vec![("authorization", format!("Bearer {token}"))]
+        } else {
+            Vec::new()
+        }
+    }
+
     pub async fn create(&self, gamertag: &str) -> User {
         let key = KeyPair::generate();
+        let proof = AccountRequest::sign(&key, gamertag, None, &self.id, now());
         let r = self
             .call(
                 Method::POST,
                 "/v1/accounts",
-                &[],
-                AccountRequest::sign(&key, gamertag, None, "live.test", now()),
+                &self.signup_headers(gamertag, &proof),
+                proof,
             )
             .await;
         assert_eq!(
@@ -273,6 +293,33 @@ impl Harness {
         )
         .await
     }
+
+    /// `POST /v1/presence/ping/batch` with each user's `events.write`
+    /// token, in order.
+    pub async fn ping_batch(&self, users: &[&User]) -> Resp {
+        let tokens: Vec<String> = users
+            .iter()
+            .map(|u| self.token(&u.key, &u.author, lxm::EVENTS_WRITE))
+            .collect();
+        self.call(
+            Method::POST,
+            "/v1/presence/ping/batch",
+            &[],
+            json!({"tokens": tokens}).to_string(),
+        )
+        .await
+    }
+
+    /// `POST /v1/presence/ping/batch` with raw tokens (bad ones included).
+    pub async fn ping_batch_raw(&self, body: Value) -> Resp {
+        self.call(
+            Method::POST,
+            "/v1/presence/ping/batch",
+            &[],
+            body.to_string(),
+        )
+        .await
+    }
 }
 
 /// A two-player team game; player 0 is `host`'s account.
@@ -322,3 +369,33 @@ pub async fn streamed(addr: std::net::SocketAddr, token: Option<String>) -> Vec<
         }
     }
 }
+
+const FIREFIGHT_EVENTS: &str = include_str!("../fixtures/firefight-events.json");
+
+/// A Firefight match for `host`: the host and one of its Clankers.
+pub fn firefight_game(host: &User) -> Value {
+    json!({
+        "console": "Den", "map": "lockout", "mode": "multiplayer", "variant": "Firefight",
+        "team_play": false, "tick": 0, "kind": "custom",
+        "players": [
+            {"index": 0, "name": "Host", "xuid": host.xuid, "team": 0, "local": true},
+            {"index": 1, "name": "Clanker 1", "team": 0, "local": true, "bot": true}
+        ]
+    })
+}
+
+/// The fixture's events as a batch's `(kind, data)` pairs, then `GameEnded`.
+pub fn firefight_batch() -> Vec<(String, Value)> {
+    let mut events: Vec<(String, Value)> =
+        serde_json::from_str::<Vec<Value>>(FIREFIGHT_EVENTS)
+            .unwrap()
+            .into_iter()
+            .map(|e| (e["kind"].as_str().unwrap().to_string(), e["data"].clone()))
+            .collect();
+    events.push((
+        "GameEnded".into(),
+        json!({"tick": 900, "reason": "finished", "winner": {"player": 0}}),
+    ));
+    events
+}
+

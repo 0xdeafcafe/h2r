@@ -5,25 +5,28 @@
 // recent games. The windowed numbers come from the server's summary
 // (`GET /v1/stats/summary`); the live parts from the live state.
 
-import { For, Show, createMemo, type JSX } from "solid-js";
+import { For, Index, Show, createMemo, type JSX } from "solid-js";
 import { A, useSearchParams } from "@solidjs/router";
 import { live } from "../state/live";
 import { identity } from "../state/identity";
 import { social } from "../state/social";
-import { useSessions } from "../state/sessions";
+import { dedicatedHostLabel } from "../lib/hosts";
+import { JoinLink } from "../components/JoinLink";
+import { canJoinSession, joinHref } from "../lib/join";
+import { useSessionFilters, useSessions } from "../state/sessions";
 import { useStatsSummary, type SummaryStatus } from "../state/statsSummary";
 import { endedGames, isCampaign, liveGames, type GameState } from "../state/reducer";
 import { gameMapTitle } from "../state/maps";
 import { isHalo1Map, mapTitle } from "../state/gameart";
 import { difficultyName, gameTypeLine } from "../state/gametype";
-import { OUTCOME_WORDS, campaignOutcome, countMedals, gameMedals, MEDAL_BY_ID, type MedalId } from "../state/derive";
+import { OUTCOME_WORDS, campaignOutcome, countMedals, gameAwards, MEDAL_BY_ID, type MedalId } from "../state/derive";
 import {
   DAYS, STATS_WINDOWS, alsoPopular, clanStandings, dailyGames, heatmap, missionOfTheWeek, nonZeroRows, hourName, hoursOf, kd, leaderboards, level, ofTheWeek, peak, shares,
   statsWindow, type Board, type StatsSummary, type StatsWindow, type Totals,
 } from "../lib/statsHome";
 import { campaignLine, gametype, listed, mapName, pingText, seats, sortSessions, kind as sessionKind } from "../lib/sessions";
 import { SKULLS } from "../lib/skulls";
-import { titleCase } from "../lib/format";
+import { damageSourceName } from "../lib/format";
 import { now } from "../lib/now";
 import { useMotd } from "../state/motd";
 import { motdMessages } from "../lib/motd";
@@ -36,6 +39,7 @@ import { DidYouKnow, MapPreview, MapThumb, Pills, Who, fireteam, gameTitle } fro
 import { ScoreLine } from "./Games";
 import { ClanEmblem } from "./clanBits";
 import LiveIdle from "./LiveIdle";
+import OpenGameFilters from "./OpenGameFilters";
 import MapPicture from "../components/MapPicture";
 import { clanHref } from "./modes";
 import { agoWords, count, num, ratio, usDate } from "./fmt";
@@ -69,8 +73,11 @@ function LiveNow(props: { week: StatsSummary | null }) {
   const games = createMemo(() => [...liveGames(live.state)].sort((a, b) =>
     Number(isCampaign(a)) - Number(isCampaign(b)) || Object.keys(b.players).length - Object.keys(a.players).length));
   const online = createMemo(() => Object.values(live.state.accounts).filter((a) => a.online).length);
-  const feed = useSessions();
+  const { filters, apply } = useSessionFilters();
+  const feed = useSessions(undefined, filters);
   const open = createMemo(() => sortSessions(feed.items().filter((s) => s.state === "open" && listed(s))));
+  const filtering = () => Object.values(filters()).some((value) => value !== undefined);
+  const loaded = () => feed.status() === "ok" || feed.status() === "unfiltered";
   return (
     <section id="live" aria-labelledby="s-live-h">
       <div class="s-capbar">
@@ -79,7 +86,9 @@ function LiveNow(props: { week: StatsSummary | null }) {
         <span class="s-capbar-right s-livecounts">
           <span><b>{num(online())}</b> {online() === 1 ? "player" : "players"} online</span>
           <span><b>{num(games().length)}</b> {games().length === 1 ? "game" : "games"} in progress</span>
-          <Show when={feed.status() !== "unsupported"}><span><b>{num(open().length)}</b> open {open().length === 1 ? "game" : "games"}</span></Show>
+          <Show when={loaded()}>
+            <span><b>{num(open().length)}</b> {filtering() && feed.status() === "ok" ? "matching" : "open"} {open().length === 1 ? "game" : "games"}</span>
+          </Show>
         </span>
       </div>
       <div class="s-matte s-live">
@@ -87,25 +96,44 @@ function LiveNow(props: { week: StatsSummary | null }) {
           {(g) => <LiveCard game={g} />}
         </For>
         <Show when={games().length > 4}><p class="s-items-more"><A href={statsPath("/games")}>{games().length - 4} more live {games().length - 4 === 1 ? "game" : "games"}</A></p></Show>
-        <Show when={open().length}>
-          <div class="s-grid-wrap s-open">
-            <table class="s-grid">
-              <caption class="sr-only">Open games looking for players</caption>
-              <thead><tr><th>Open Games</th><th>Map</th><th class="hide-s">Type</th><th class="num">Players</th></tr></thead>
-              <tbody>
-                <For each={open().slice(0, 5)}>
-                  {(s) => (
-                    <tr>
-                      <td><Who xuid={s.host_xuid} name={s.host_gamertag} /> <span class="s-dim">{gametype(s)}</span></td>
-                      <td><Show when={campaignLine(s, mapTitle)} fallback={<span class="s-who"><Show when={s.map}><MapPreview map={s.map!} mapId={s.map_id} /></Show>{mapName(s, mapTitle)}</span>}>{(c) => <span class="s-who">{c()}</span>}</Show></td>
-                      <td class="hide-s">{sessionKind(s)}</td>
-                      <td class="num">{seats(s).filled} of {seats(s).max}<Show when={pingText(s)}>{(p) => <span class="s-dim"> · {p()}</span>}</Show></td>
-                    </tr>
-                  )}
-                </For>
-              </tbody>
-            </table>
-          </div>
+        <Show when={feed.status() !== "unsupported"}>
+          <section class="s-grid-wrap s-open" aria-labelledby="s-open-h">
+            <OpenGameFilters value={filters()} variants={feed.variants()} apply={apply} />
+            <Show when={feed.status() === "unfiltered"}>
+              <div class="s-open-status">
+                <p role="status">This server does not support filters.</p>
+                <button type="button" class="s-btn" onClick={() => apply({})}>Clear filters</button>
+              </div>
+            </Show>
+            <Show when={open().length} fallback={
+              <div class="s-open-status">
+                <p role="status">{feed.status() === "loading" ? "Loading open games…"
+                  : feed.status() === "error" ? "Could not load open games."
+                  : filtering() && feed.status() === "ok" ? "No games match." : "No open games."}</p>
+                <Show when={feed.status() === "ok" && filtering()}>
+                  <button type="button" class="s-btn" onClick={() => apply({})}>Clear filters</button>
+                </Show>
+              </div>
+            }>
+              <table class="s-grid">
+                <caption class="sr-only">Open games looking for players</caption>
+                <thead><tr><th>Host</th><th>Map</th><th class="hide-s">Type</th><th class="num">Players</th><th><span class="sr-only">Join game</span></th></tr></thead>
+                <tbody>
+                  <Index each={open().slice(0, 5)}>
+                    {(s) => (
+                      <tr>
+                        <td><Show when={dedicatedHostLabel(s())} fallback={<Who xuid={s().host_xuid} name={s().host_gamertag} />}>{(label) => label()}</Show> <span class="s-dim">{gametype(s())}</span></td>
+                        <td><Show when={campaignLine(s(), mapTitle)} fallback={<span class="s-who"><Show when={s().map}><MapPreview map={s().map!} mapId={s().map_id} /></Show>{mapName(s(), mapTitle)}</span>}>{(c) => <span class="s-who">{c()}</span>}</Show></td>
+                        <td class="hide-s">{sessionKind(s())}</td>
+                        <td class="num">{seats(s()).filled} of {seats(s()).max}<Show when={pingText(s())}>{(p) => <span class="s-dim"> · {p()}</span>}</Show></td>
+                        <td><Show when={loaded() && canJoinSession(s(), identity.me()?.xuid) && joinHref(live.server().base, s().session_id)}>{(href) => <JoinLink href={href()} />}</Show></td>
+                      </tr>
+                    )}
+                  </Index>
+                </tbody>
+              </table>
+            </Show>
+          </section>
         </Show>
       </div>
     </section>
@@ -205,7 +233,7 @@ function OfTheWeek(props: { sum: StatsSummary | null }) {
           <Panel title="Weapon of the Week" sub="most kills, last 7 days" class="s-week-box">
             <div class="s-week-body">
               <span class="s-week-art s-week-art--weapon"><WeaponIcon weapon={w().weapon} width={112} /></span>
-              <div><b>{titleCase(w().weapon)}</b><span>{num(w().kills)} kills</span><span class="s-dim">{weaponShare()}% of all kills</span></div>
+              <div><b>{damageSourceName(w().weapon)}</b><span>{num(w().kills)} kills</span><span class="s-dim">{weaponShare()}% of all kills</span></div>
             </div>
           </Panel>
         )}
@@ -348,6 +376,40 @@ function GameTypes(props: { sum: StatsSummary }) {
   );
 }
 
+/** Firefight: matches against the director, from the server's summary.
+ *  Nothing shows until a match has been played in the window. */
+function Firefight(props: { sum: StatsSummary }) {
+  const f = () => props.sum.firefight;
+  return (
+    <Show when={f().games > 0}>
+      <section class="s-sec s-firefight" aria-labelledby="s-ff-h">
+        <header><h3 id="s-ff-h">Firefight</h3><small>{num(f().games)} {f().games === 1 ? "match" : "matches"}, {num(f().won)} won</small></header>
+        <dl class="s-rows">
+          <div><dt>Rounds Cleared</dt><dd>{num(f().rounds_cleared)}</dd></div>
+          <div><dt>Lives Used</dt><dd>{num(f().lives_used)}</dd></div>
+          <div><dt>Points Scored</dt><dd>{num(f().score)}</dd></div>
+        </dl>
+        <div class="s-home-pair">
+          <section class="s-sec">
+            <header><h3>Wave Sets</h3><small>matches</small></header>
+            <Bars rows={f().sets.slice(0, 5)} value={(r) => r.games} name={(r) => r.set} label={(r) => `${r.set} (${num(r.won)} won)`} unit="matches" empty="" />
+          </section>
+          <section class="s-sec">
+            <header><h3>Kills by Enemy</h3><small>kills</small></header>
+            <Bars rows={f().kills_by_class.slice(0, 6)} value={(r) => r.kills} name={(r) => r.class} label={(r) => r.class} unit="kills" empty="" />
+          </section>
+        </div>
+        <Show when={f().players.length}>
+          <section class="s-sec">
+            <header><h3>Top Scores</h3><small>points</small></header>
+            <Bars rows={f().players.slice(0, 5)} value={(r) => r.score} name={(r) => r.name} label={(r) => <Who xuid={r.xuid} name={r.name} />} unit="points" empty="" />
+          </section>
+        </Show>
+      </section>
+    </Show>
+  );
+}
+
 function Skulls(props: { sum: StatsSummary }) {
   const rows = () => [...props.sum.skulls].sort((a, b) => b.games - a.games || a.skull - b.skull);
   return (
@@ -371,7 +433,7 @@ function TopMedals(props: { since: number }) {
     const total = new Map<MedalId, number>();
     for (const g of endedGames(live.state, 500, "multiplayer")) {
       if (Date.parse(g.started_at) < props.since) continue;
-      for (const [id, n] of countMedals(gameMedals(g.kills))) total.set(id, (total.get(id) ?? 0) + n);
+      for (const [id, n] of countMedals(gameAwards(g))) total.set(id, (total.get(id) ?? 0) + n);
     }
     return [...total].sort((a, b) => b[1] - a[1]).slice(0, 6);
   });
@@ -555,14 +617,15 @@ export function HomeView(props: { win: StatsWindow; week: StatsSummary | null; w
                     </section>
                     <section class="s-sec">
                       <header><h3>Most Used Weapons</h3><small>kills</small></header>
-                      <Bars rows={weaponRows()} value={(w) => w.kills} name={(w) => titleCase(w.weapon)} unit="kills" empty={`No kills ${label()}.`}
-                        label={(w) => <span class="s-who"><WeaponIcon weapon={w.weapon} width={34} />{titleCase(w.weapon)}</span>} />
+                      <Bars rows={weaponRows()} value={(w) => w.kills} name={(w) => damageSourceName(w.weapon)} unit="kills" empty={`No weapon kills ${label()}.`}
+                        label={(w) => <span class="s-who"><WeaponIcon weapon={w.weapon} width={34} />{damageSourceName(w.weapon)}</span>} />
                       <Show when={weaponRows().length}>
-                        <p class="s-sec-foot">{shares(s().weapons, (w) => w.kills, 1).map((x) => `${titleCase(x.row.weapon)}: ${x.pct}% of kills`)[0]}</p>
+                        <p class="s-sec-foot">{shares(s().weapons, (w) => w.kills, 1).map((x) => `${damageSourceName(x.row.weapon)}: ${x.pct}% of weapon kills`)[0]}</p>
                       </Show>
                     </section>
                   </div>
                   <Heatmap sum={s()} />
+                  <Firefight sum={s()} />
                   <div class="s-home-pair">
                     <GameTypes sum={s()} />
                     <div class="s-home-stack">

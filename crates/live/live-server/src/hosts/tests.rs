@@ -233,13 +233,20 @@ async fn lifecycle_replays_and_keeps_boot_credentials_out_of_the_log() {
     drop(live);
     let live = start(store.clone(), &key, fake.clone()).await;
     assert_eq!(live.host_for_assignment(&lease.assignment_id), Some(prior));
+    // Let one millisecond elapse on the server clock for this microsecond sample.
+    tokio::time::sleep(Duration::from_millis(2)).await;
+    let usage = live_proto::hosts::PackUsage {
+        slot_us: 1_000, container_share_us: 500, charge_start: false,
+        cpu_us: Some(100), peak_pss_bytes: Some(1024),
+    };
     let row = live
-        .host_report(
+        .host_report_with_usage(
             Some(&token),
             &lease.id,
             HostState::Ended,
             1,
             Some(EndReason::MatchOver),
+            Some(usage),
         )
         .await
         .unwrap();
@@ -287,6 +294,7 @@ async fn lifecycle_replays_and_keeps_boot_credentials_out_of_the_log() {
             HOST_ENDED
         ]
     );
+    assert_eq!(events.last().unwrap().body.data["pack_usage"], json!(usage));
     for e in events {
         assert_eq!(e.body.author, live.identity.author());
         assert!(!e.body.data.to_string().contains(&token));
@@ -313,6 +321,29 @@ async fn lifecycle_replays_and_keeps_boot_credentials_out_of_the_log() {
     assert_eq!(restarted.host_sweep_due_ms(), None);
     drop(restarted);
     assert_eq!(start(store, &key, fake).await.host_sweep_due_ms(), None);
+}
+
+#[tokio::test]
+async fn impossible_usage_ends_the_lease_without_signing_the_discount() {
+    let (live, _) = setup().await;
+    let lease = live.request_host(request("bad-usage")).await.unwrap();
+    let token = register(&live, &lease).await;
+    let usage = live_proto::hosts::PackUsage {
+        slot_us: u64::MAX,
+        container_share_us: u64::MAX / 2,
+        charge_start: false,
+        cpu_us: None,
+        peak_pss_bytes: None,
+    };
+    let row = live.host_report_with_usage(Some(&token), &lease.id, HostState::Ended, 2, None, Some(usage))
+        .await.unwrap();
+    assert_eq!(row.state, HostState::Ended);
+    let events = live.store.read(&Query {
+        stream: Some(STREAM.into()),
+        ..Query::after(0, 100)
+    }).await.unwrap();
+    let ended = events.iter().find(|e| e.body.kind == HOST_ENDED).unwrap();
+    assert!(ended.body.data.get("pack_usage").is_none());
 }
 
 #[tokio::test]
@@ -530,6 +561,19 @@ fn max_hosts_defaults_to_four_and_zero_disables_launches() {
     );
 }
 
+#[test]
+fn max_hosts_accepts_operator_selected_steps_and_fails_closed() {
+    let cap = |value: &str| {
+        HostConfig::from_env(&|key| (key == "LIVE_MAX_HOSTS").then(|| value.to_owned())).max_hosts
+    };
+    for n in [0, 1, 2, 3, 4, 16, 64, 256, 1024] {
+        assert_eq!(cap(&n.to_string()), n);
+    }
+    for invalid in ["5", "65", "1025", "-1", "", "auto"] {
+        assert_eq!(cap(invalid), 0, "{invalid}");
+    }
+}
+
 #[tokio::test]
 async fn monthly_budget_refuses_before_reservation_or_provider_call() {
     let live = Live::start_with_host_costs(
@@ -581,6 +625,7 @@ async fn reaper_recovers_the_reserved_room_after_a_lost_start_reply() {
         HostRequested {
             lease: lease.clone(),
             provider_ref: Some(reference.clone()),
+            pack_linger: false,
         },
     )
     .await

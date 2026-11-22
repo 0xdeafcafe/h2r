@@ -5,6 +5,9 @@
 import { describe, expect, test } from "bun:test";
 import { ENGINES, baseMapId } from "../src/admin/catalog";
 import {
+  duplicatePlaylist, entryShares, groupEntries, moveGroupEntry, playlistDiff, shareLabel,
+} from "../src/admin/playlistDraft";
+import {
   buildPatch,
   choiceKey,
   clearPlaylist,
@@ -16,6 +19,7 @@ import {
   withVariant,
   type BuiltinVariant,
   type ClearHopper,
+  type EditRecord,
   type HopperView,
   type PatchHopper,
   type PlaylistTemplate,
@@ -192,4 +196,81 @@ describe("custom maps' base maps", () => {
     expect(baseMapId(maps, "beavercreek")).toBe(100);
     expect(baseMapId(maps, "zanzibar")).toBeNull();
   });
+});
+
+describe("playlist rotation", () => {
+  test("groups nonadjacent entries by variant while leaving published slot order intact", () => {
+    const [hopper] = toEditable(file());
+    const [slayer, hardcore] = hopper!.records;
+    const alternate = { ...hardcore!, src: 2, variant: { name: "Team Hardcore", engine: 2, team: false } };
+    const anotherMap = { ...slayer!, id: 10, src: 3 };
+    const records = [slayer!, hardcore!, alternate, anotherMap];
+    const groups = groupEntries(records);
+    expect(groups.map((group) => group.slots)).toEqual([[0, 3], [1], [2]]);
+    expect(groups.map((group) => group.label)).toEqual([
+      "Team Slayer · Slayer · teams", "Team Hardcore · Slayer · teams", "Team Hardcore · Slayer",
+    ]);
+    expect(records.map((record) => record.src)).toEqual([0, 1, 2, 3]);
+    expect(moveGroupEntry(records, groups[0]!.slots, 0, 1).map((record) => record.src)).toEqual([3, 1, 2, 0]);
+  });
+
+  test("uses the game's signed, clamped weights across all variant groups", () => {
+    const [hopper] = toEditable(file());
+    const [slayer, hardcore] = hopper!.records;
+    expect(entryShares([slayer!, { ...hardcore!, dwords: [70, 0] }]).map(shareLabel)).toEqual(["12.5%", "87.5%"]);
+    expect(entryShares([slayer!])).toEqual([100]);
+    expect(entryShares([])).toEqual([]);
+    const shares = entryShares([0, 1100, 0xffff_ffff].map((weight): EditRecord => ({ ...slayer!, dwords: [weight, 0] })));
+    expect(shares[0]).toBeCloseTo(100 / 1002);
+    expect(shares[1]).toBeCloseTo(100000 / 1002);
+    expect(shares[2]).toEqual(shares[0]);
+    expect(shareLabel(shares[0]!)).toBe("<0.1%");
+  });
+
+  test("duplicates edit data and uses the original source hopper for every copied record", () => {
+    const original = toEditable(file());
+    const draft = toEditable(file());
+    const source = draft[0]!;
+    source.title = "Équipe Hardcore";
+    source.records[1] = { ...source.records[1]!, srcHopper: 1 };
+    draft[2] = duplicatePlaylist(source, draft[2]!, TEAM_SLAYER);
+    const patches = buildPatch(original, draft).hoppers as PatchHopper[];
+    expect(patches[1]).toMatchObject({
+      index: 2, template: TEAM_SLAYER.id, title: "Équipe Ha copy",
+      records: [{ from: 0, from_hopper: 0 }, { from: 1, from_hopper: 1 }],
+    });
+  });
+
+  test("diffs edits, reorders, additions and removals against the published slots", () => {
+    const original = toEditable(file());
+    const draft = toEditable(file());
+    const name = (id: number) => id === 50 ? "Lockout" : "Ascension";
+    expect(playlistDiff(original, draft, name)).toEqual([]);
+    const [first, second] = draft[0]!.records;
+    draft[0] = {
+      ...draft[0]!, title: "New Slayer", records: [{ ...second!, dwords: [8, 9] }, first!],
+    };
+    draft[1] = clearPlaylist(draft[1]!);
+    draft[2] = createPlaylist(draft[2]!, TEAM_SLAYER, BUILTINS);
+    const review = playlistDiff(original, draft, name);
+    expect(review.map(({ index, action }) => [index, action])).toEqual([[0, "Edited"], [1, "Removed"], [2, "Added"]]);
+    expect(review[0]!.lines).toContainEqual({ field: "Title", before: "Team Slayer", after: "New Slayer" });
+    const entry = review[0]!.lines.find((line) => line.field === "Entry 1");
+    expect(entry?.before).toContain("Lockout · Team Slayer · Slayer · teams · Weight 10");
+    expect(entry?.after).toContain("Ascension · Team Hardcore · Slayer · teams · Weight 8");
+    expect(review[0]!.lines).toContainEqual({ field: "Entry 1 source", before: "Playlist 1, entry 1", after: "Playlist 1, entry 2" });
+    expect(review[0]!.lines).toContainEqual({ field: "Entry 1 flags", before: "1", after: "3" });
+    expect(review[2]!.lines).toContainEqual({ field: "Descriptor template", before: null, after: "2" });
+  });
+});
+
+
+test("a Map Pack rotation keeps a disc-map entry", () => {
+  const original = toEditable(file());
+  const first = original[0]!;
+  const addon = { ...first.records[0]!, id: 0x12345 };
+  const disc = [{ id: first.records[0]!.id, name: "A disc map" }];
+  const edit = (records: EditRecord[]) => [ { ...first, records }, ...original.slice(1) ];
+  expect(editErrors(original, edit([addon, first.records[0]!]), disc).size).toBe(0);
+  expect(editErrors(original, edit([addon]), disc).get(0)).toContain("Keep a Halo 2 disc map for players without the Map Pack.");
 });

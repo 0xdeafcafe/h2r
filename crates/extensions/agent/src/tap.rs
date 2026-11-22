@@ -20,7 +20,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use agent_proto::{
@@ -43,6 +43,9 @@ struct Delivered {
     number: u32,
     pad: [u8; Gamepad::SIZE],
     seen: bool,
+    /// The last read was a route's or a step's, so the next live one is a
+    /// change the game must see.
+    agent: bool,
 }
 
 /// Recording or replaying through the tap.
@@ -74,8 +77,10 @@ pub struct Input {
     /// The same, for the recorder's tick stamps.
     ticks: Arc<AtomicU64>,
     mode: Mode,
+    editor_calls: Weak<Mutex<crate::sim::calls::Queue>>,
     /// Each controller port's steps.
     pads: [Remote; PORTS as usize],
+    routes: [Option<RouteReport>; PORTS as usize],
     /// The first read of a guarded menu press can cancel the steps if
     /// its row no longer owns input. Ordinary pad steps have no guard.
     menu_press: Option<MenuPress>,
@@ -84,7 +89,7 @@ pub struct Input {
     delivered: BTreeMap<u32, Delivered>,
     /// An [`AgentTap`] was made (the game has XAPI input).
     pub(crate) tap: bool,
-    /// Where input logs (and captures) go; the cache directory unless set.
+    /// Explicit root for input logs, traces, flights and captures.
     pub(crate) dir: Option<PathBuf>,
     /// The flight recorder's reads since the last tick (`crate::trace`);
     /// `None` while it isn't running.
@@ -157,7 +162,7 @@ impl MenuPad {
                 "controller zero is not open",
             ));
         }
-        if input.pads[0].busy() {
+        if input.pads[0].busy() || input.routes[0].is_some() {
             return Err(RpcError::new(
                 code::BUSY,
                 "controller zero has pending input",
@@ -178,10 +183,76 @@ impl MenuPad {
     }
 }
 
+/// Exclusive reports from a game-thread controller. Routing shares the
+/// normal packet numbering and recording, and takes over one port.
+struct RouteReport {
+    pad: Gamepad,
+    interrupted: Arc<OnceLock<&'static str>>,
+}
+
+#[derive(Clone)]
+pub struct RoutePorts(Arc<Mutex<Input>>);
+
+impl RoutePorts {
+    pub fn acquire(&self, port: u32) -> Result<RoutePad, RpcError> {
+        let index = player(port)?;
+        let mut input = lock(&self.0);
+        if !input.ports.values().any(|&p| p == port) {
+            return Err(RpcError::new(code::UNAVAILABLE, "controller port is not open"));
+        }
+        if input.routes[index].is_some() || input.pads[index].busy() {
+            return Err(RpcError::new(code::BUSY, "controller port has pending input"));
+        }
+        let interrupted = Arc::new(OnceLock::new());
+        input.routes[index] = Some(RouteReport {
+            pad: Gamepad::default(),
+            interrupted: Arc::clone(&interrupted),
+        });
+        Ok(RoutePad { input: Arc::clone(&self.0), index, interrupted })
+    }
+}
+
+pub struct RoutePad {
+    input: Arc<Mutex<Input>>,
+    index: usize,
+    interrupted: Arc<OnceLock<&'static str>>,
+}
+
+impl RoutePad {
+    pub fn interruption(&self) -> Option<&'static str> {
+        self.interrupted.get().copied()
+    }
+
+    pub fn set(&self, pad: Gamepad) {
+        let mut input = lock(&self.input);
+        if let Some(report) = &mut input.routes[self.index]
+            && Arc::ptr_eq(&report.interrupted, &self.interrupted)
+        {
+            report.pad = pad;
+        }
+    }
+}
+
+impl Drop for RoutePad {
+    fn drop(&mut self) {
+        let mut input = lock(&self.input);
+        if input.routes[self.index]
+            .as_ref()
+            .is_some_and(|report| Arc::ptr_eq(&report.interrupted, &self.interrupted))
+        {
+            input.routes[self.index] = None;
+        }
+    }
+}
+
 impl Input {
-    /// Where input logs (and captures) go.
+    /// Where profile captures go.
     pub fn dir(&self) -> PathBuf {
         self.dir.clone().unwrap_or_else(agent_proto::cache_dir)
+    }
+
+    pub(crate) fn output_dir(&self) -> PathBuf {
+        self.dir.clone().unwrap_or_else(agent_proto::output_dir)
     }
 
     /// The game's tick moved (or a map loaded and it started again).
@@ -195,6 +266,19 @@ impl Input {
     pub fn clear_pads(&mut self) {
         self.cancel_menu("map changed");
         self.pads.iter().for_each(Remote::clear);
+        self.clear_routes("map_changed");
+    }
+
+    pub(crate) fn clear_routes(&mut self, reason: &'static str) {
+        for index in 0..self.routes.len() {
+            self.cancel_route(index, reason);
+        }
+    }
+
+    fn cancel_route(&mut self, index: usize, reason: &'static str) {
+        if let Some(route) = self.routes.get_mut(index).and_then(Option::take) {
+            let _ = route.interrupted.set(reason);
+        }
     }
 
     fn expire_menu_press(&mut self) {
@@ -272,7 +356,24 @@ impl Input {
         Ok(())
     }
 
+    /// Input logs contain pad reads, with no record of an editor map change.
+    pub(crate) fn allow_reload(&mut self, queue: &crate::sim::calls::Shared) -> Result<(), String> {
+        self.check_mode()?;
+        self.editor_calls = Arc::downgrade(queue);
+        Ok(())
+    }
+
     fn must_be_live(&self) -> Result<(), String> {
+        if self.editor_calls.upgrade().is_some_and(|queue| {
+            crate::sim::calls::lock(&queue).blocks_input_log()
+        }) {
+            return Err("an editor map reload is in progress".into());
+        }
+
+        self.check_mode()
+    }
+
+    fn check_mode(&self) -> Result<(), String> {
         match &self.mode {
             Mode::Live => Ok(()),
             Mode::Recording { name, .. } => {
@@ -363,6 +464,9 @@ impl Input {
                 )));
             }
         }
+        if *status != 0 && let Some(&port) = self.ports.get(&handle) {
+            self.cancel_route(port as usize, "controller_disconnected");
+        }
         self.step(handle, packet);
         if menu_port && !self.pads[0].busy() {
             self.finish_menu(Ok(()));
@@ -373,6 +477,7 @@ impl Input {
         if let Some(f) = &mut self.flight {
             if f.reads.len() < agent_proto::trace::InputRead::MAX_PER_TICK {
                 let port = self.ports.get(&handle).copied();
+                let _scope = mem_watch::scope("trace.record");
                 f.reads.push((port, handle, *status, *packet));
             } else {
                 f.dropped += 1;
@@ -385,13 +490,13 @@ impl Input {
     /// the game gets changes, as a real pad's does; reads pass untouched
     /// until the first step.
     fn step(&mut self, handle: u32, packet: &mut [u8; PACKET]) {
-        let remote = self
-            .ports
-            .get(&handle)
-            .and_then(|&p| self.pads.get(p as usize))
-            .filter(|r| r.busy());
-        let stepped = remote.is_some();
-        if let Some(r) = remote {
+        let port = self.ports.get(&handle).map(|&p| p as usize);
+        let route = port.and_then(|p| self.routes.get(p)?.as_ref());
+        let remote = port.and_then(|p| self.pads.get(p)).filter(|r| r.busy());
+        let stepped = route.is_some() || remote.is_some();
+        if let Some(route) = route {
+            packet[4..].copy_from_slice(&route.pad.to_bytes());
+        } else if let Some(r) = remote {
             let step = r.state_at_tick(Instant::now(), self.clock);
             r.state_read();
             let live = Gamepad::from_bytes(packet[4..].try_into().unwrap());
@@ -401,7 +506,7 @@ impl Input {
         let live = u32::from_le_bytes(packet[..4].try_into().unwrap());
         let mut number = live.wrapping_add(d.offset);
         let now: [u8; Gamepad::SIZE] = packet[4..].try_into().unwrap();
-        let touched = stepped || d.offset != 0;
+        let touched = stepped || d.offset != 0 || d.agent;
         if touched && d.seen && now != d.pad && number == d.number {
             d.offset = d.offset.wrapping_add(1);
             number = number.wrapping_add(1);
@@ -412,6 +517,7 @@ impl Input {
         d.number = number;
         d.pad = now;
         d.seen = true;
+        d.agent = stepped;
     }
 }
 
@@ -436,6 +542,10 @@ pub struct AgentTap {
 impl AgentTap {
     pub fn menu_pad(&self) -> MenuPad {
         MenuPad(Arc::clone(&self.input))
+    }
+
+    pub fn route_ports(&self) -> RoutePorts {
+        RoutePorts(Arc::clone(&self.input))
     }
 
     pub(crate) fn new(input: Arc<Mutex<Input>>, inner: Option<(Box<dyn InputTap>, Chain)>) -> Self {
@@ -497,8 +607,13 @@ impl InputTap for AgentTap {
     fn closed(&mut self, handle: u32) {
         {
             let mut i = lock(&self.input);
-            if i.ports.remove(&handle) == Some(0) {
-                i.cancel_menu("controller zero closed");
+            if let Some(port) = i.ports.remove(&handle) {
+                if port == 0 {
+                    i.cancel_menu("controller zero closed");
+                }
+                if !i.ports.values().any(|&p| p == port) {
+                    i.cancel_route(port as usize, "controller_closed");
+                }
             }
             i.delivered.remove(&handle);
         }
@@ -548,6 +663,7 @@ pub(crate) const ANALOG: &[(&str, usize)] = &[
 
 /// `input.pad` steps as [`Remote`] steps.
 pub fn pad_steps(steps: &[PadStep]) -> Result<Vec<Step>, String> {
+    let _scope = mem_watch::scope("input.pad");
     steps
         .iter()
         .map(|s| {
@@ -696,6 +812,9 @@ pub(crate) fn add_input_methods(agent: &Agent, input: &Arc<Mutex<Input>>) {
         }
         let n = steps.len();
         let mut i = lock(&i);
+        if i.routes[port].is_some() {
+            return Err(RpcError::new(code::BUSY, "controller port has an active route"));
+        }
         if port == 0 && i.menu_press.is_some() {
             if p.append {
                 return Err(RpcError::new(code::BUSY, "menu press in progress"));
@@ -723,8 +842,15 @@ pub(crate) fn add_input_methods(agent: &Agent, input: &Arc<Mutex<Input>>) {
             i.cancel_menu("pad queue released");
         }
         match p.player {
-            Some(port) => i.pads[player(port)?].clear(),
-            None => i.pads.iter().for_each(Remote::clear),
+            Some(port) => {
+                let port = player(port)?;
+                i.pads[port].clear();
+                i.cancel_route(port, "released");
+            }
+            None => {
+                i.pads.iter().for_each(Remote::clear);
+                i.clear_routes("released");
+            }
         }
         Ok(json!({ "pad": pad_state(&i.pads[0]) }))
     });
@@ -735,7 +861,7 @@ pub(crate) fn add_input_methods(agent: &Agent, input: &Arc<Mutex<Input>>) {
     let i = Arc::clone(input);
     agent.add_method(method::INPUT_RECORD, Access::Act, move |v| {
         let p: RecordParams = params(v)?;
-        let path = log_path(&lock(&i).dir(), &p.name)?;
+        let path = log_path(&lock(&i).output_dir(), &p.name)?;
         if path.exists() && !p.replace {
             return Err(RpcError::new(
                 code::INVALID_PARAMS,
@@ -750,7 +876,7 @@ pub(crate) fn add_input_methods(agent: &Agent, input: &Arc<Mutex<Input>>) {
     let i = Arc::clone(input);
     agent.add_method(method::INPUT_REPLAY, Access::Act, move |v| {
         let p: ReplayParams = params(v)?;
-        let path = log_path(&lock(&i).dir(), &p.name)?;
+        let path = log_path(&lock(&i).output_dir(), &p.name)?;
         let bad =
             |e: String| RpcError::new(code::INVALID_PARAMS, format!("{}: {e}", path.display()));
         let text = std::fs::read_to_string(&path).map_err(|e| bad(e.to_string()))?;
@@ -890,6 +1016,36 @@ mod tests {
                 "{b}"
             );
         }
+    }
+
+    #[test]
+    fn route_owns_only_its_port_and_a_released_driver_cannot_overwrite_the_next() {
+        let (input, mut t) = tap();
+        let ports = t.route_ports();
+        assert_eq!(ports.acquire(2).err().unwrap().code, code::UNAVAILABLE);
+        let old = ports.acquire(1).unwrap();
+        assert_eq!(ports.acquire(1).err().unwrap().code, code::BUSY);
+
+        let mut report = Gamepad::default();
+        report.thumb_ly = 2000;
+        report.analog[0] = 255;
+        old.set(report);
+        assert_eq!(read(&mut t, H0, live(7, 300)).1.thumb_lx, 300);
+        let (n, got) = read(&mut t, H1, live(7, 300));
+        assert_eq!((got.thumb_lx, got.thumb_ly, got.analog[0]), (0, 2000, 255));
+
+        lock(&input).cancel_route(1, "released");
+        assert_eq!(old.interruption(), Some("released"));
+        let (released, pad) = read(&mut t, H1, live(7, 300));
+        assert_eq!(released, n + 1);
+        assert_eq!((pad.thumb_lx, pad.analog[0]), (300, 0));
+
+        let next = ports.acquire(1).unwrap();
+        old.set(report);
+        drop(old);
+        assert_eq!(read(&mut t, H1, live(7, 300)).1, Gamepad::default());
+        drop(next);
+        assert_eq!(read(&mut t, H1, live(7, 300)).1.thumb_lx, 300);
     }
 
     #[test]

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use editor_core::halo1::{self, H1Kind, H1Source, H1View};
 use editor_core::{MapPack, MapSource};
 use editor_core::packages::{self, Halo1Origin, PackageEntry};
+use scenario_edit::layers::LayerId;
 use scenario_edit::geometry::{Marker, Tri, WorldPart};
 use scenario_edit::scene::{Blend, Image, ReferencePart, Scene, reference_scene};
 use scenario_edit::{BlockKind, MapSource as EditSource, Reference};
@@ -125,19 +126,19 @@ impl App {
     pub fn compare(&self) -> Option<&Compare> {
         self.compare.as_ref()
     }
-    /// Changes when the overlay's geometry or visibility changes.
+    /// Changes when the overlay's source geometry changes.
     pub fn overlay_rev(&self) -> u64 {
         self.overlay_rev
     }
     /// The overlay to draw: the converted map's Halo 1 source, when shown.
     pub fn overlay(&self) -> Option<&H1View> {
-        if !self.show_overlay {
+        if !self.overlay_shown() {
             return None;
         }
         self.compare.as_ref()?.view.as_ref().ok()
     }
     pub fn overlay_shown(&self) -> bool {
-        self.show_overlay
+        self.layers.visible(LayerId::Halo1)
     }
 
     /// Re-read the packages under the data root.
@@ -147,9 +148,46 @@ impl App {
         self.refresh_map_pack();
     }
 
-    pub(super) fn set_overlay(&mut self, on: bool) {
-        self.show_overlay = on;
-        self.overlay_rev += 1;
+    /// Contents present in the loaded document, including layers temporarily hidden.
+    pub fn layer_count(&self, id: LayerId) -> usize {
+        let scene = self.session.scene();
+        let markers = self.session.markers();
+        match id {
+            LayerId::Structure => scene.map_or_else(
+                || self.session.world().0.len(),
+                |s| s.world.triangle_count(),
+            ),
+            LayerId::Sky => usize::from(scene.is_some_and(|s| s.sky.is_some())),
+            LayerId::Fog => usize::from(scene.is_some_and(|s| s.atmosphere.fog.is_some())),
+            LayerId::Objects => scene.map_or(0, |s| {
+                markers.iter().filter(|m| s.model_of(m).is_some()).count()
+            }),
+            LayerId::Markers => markers.len(),
+            LayerId::Placement(kind) => self.session.scenario().map_or_else(
+                || markers.iter().filter(|m| m.block == kind).count(),
+                |s| s.block(kind).len(),
+            ),
+            LayerId::SpawnPoints => self.layer_count(LayerId::Placement(BlockKind::StartingLocations)),
+            LayerId::Flags => self.layer_count(LayerId::Placement(BlockKind::NetgameFlags)),
+            LayerId::NetgameItems => self.layer_count(LayerId::Placement(BlockKind::NetgameEquipment)),
+            LayerId::Volume(kind) => self.session.scenario().map_or(0, |s| s.volumes.count(kind)),
+            LayerId::LevelCollision => self
+                .session
+                .collision()
+                .map_or(0, |c| c.surfaces.len() - c.instance_count()),
+            LayerId::InstanceCollision => {
+                self.session.collision().map_or(0, |c| c.instance_count())
+            }
+            LayerId::ObjectCollision => self.session.object_shape_count(),
+            LayerId::CollisionOnly => self.session.collision().map_or(0, |c| {
+                c.count(scenario_edit::collision_view::SurfaceClass::CollisionOnly)
+            }),
+            LayerId::Halo1 => self.compare().and_then(|c| c.view.as_ref().ok())
+                .map_or(0, |v| v.tris.len() + v.placements.len()),
+            LayerId::Live => self.pairing.shown.as_ref()
+                .filter(|s| self.pairing.matches_sample(self, s))
+                .map_or(0, |s| s.objects.len()),
+        }
     }
 
     /// Open `path` as a Halo 1 source if it is one. Returns false (and
@@ -159,6 +197,7 @@ impl App {
             return false;
         };
         self.h1_maps = src.map_names();
+        self.h1_map_groups = src.map_groups();
         self.info(format!(
             "opened Halo 1 {} ({} maps, read only)",
             path.display(),

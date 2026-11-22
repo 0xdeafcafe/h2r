@@ -395,8 +395,7 @@ pub fn place(lines: &[String], area: Viewport, align: Align) -> Placement {
     let scale = scale_for(area.height);
     let margin = MARGIN * scale;
     // Each panel keeps to its third of the image, so they never overlap.
-    let share = area.width / 3;
-    let room = share.saturating_sub(2 * margin) / scale;
+    let room = (area.width / 3).saturating_sub(2 * margin) / scale;
     let cols = (room.saturating_sub(2 * PAD) / CELL) as usize;
     let lines: Vec<String> = lines.iter().map(|l| fit(l, cols)).collect();
     let rows = lines.len() as u32;

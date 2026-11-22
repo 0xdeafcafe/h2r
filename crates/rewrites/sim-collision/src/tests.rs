@@ -345,6 +345,17 @@ fn the_decoder_marks_what_the_guest_would_read_out_of_range() {
 }
 
 #[test]
+fn a_same_side_cycle_declines_without_recursing() {
+    let mut b = wall(0);
+    b.nodes[0].2 = node(0);
+    let img = image(&b);
+    let bsp = decode(&img);
+    // Both endpoints are in front. The tail walk would revisit node 0
+    // forever without ever incrementing the split recursion depth.
+    assert_eq!(run(&img, &bsp, &query([2.0, 0.0, 0.0], [0.0; 3], 0)), Err(Bail::Data));
+}
+
+#[test]
 fn the_source_hash_sees_a_changed_byte() {
     let mut img = image(&wall(0));
     let bsp = decode(&img);
@@ -384,7 +395,7 @@ fn the_world_caches_by_pointer_and_header_and_drops_on_the_epoch() {
 
     world.record(Entry::VectorTest, &Ok(()));
     world.record::<()>(Entry::VectorTest, &Err(Bail::Float));
-    world.record_precision(0x027f);
+    world.observe_environment(Entry::VectorTest, 0x1fa0, 0x027f);
     let s = world.stats();
     assert_eq!(s.decodes, 4);
     assert_eq!(s.decode_failures, 1);
@@ -395,6 +406,39 @@ fn the_world_caches_by_pointer_and_header_and_drops_on_the_epoch() {
         1
     );
     assert_eq!(s.precision, [0, 0, 1, 0]);
+}
+
+/// Interleaved arrivals compete to claim the fast bins and also reach the
+/// sparse tail. Full words (including sticky flags) remain distinguishable.
+#[test]
+fn entry_environment_counts_every_word_once() {
+    static EPOCH: Epoch = Epoch::new();
+    let world = CollisionWorld::new(&EPOCH);
+    std::thread::scope(|scope| {
+        for offset in 0..4u32 {
+            let world = &world;
+            scope.spawn(move || {
+                for i in 0..32 {
+                    let k = (i + offset) % 32;
+                    let mxcsr = 0x1f80 | k;
+                    world.observe_environment(Entry::PointToLeaf, mxcsr, 0x037f);
+                    world.observe_environment(Entry::InstanceTrace, mxcsr, 0x0200 | k as u16);
+                }
+            });
+        }
+    });
+    let stats = world.stats();
+    let point = &stats.entries[Entry::PointToLeaf as usize];
+    let instance = &stats.entries[Entry::InstanceTrace as usize];
+    for k in 0..32 {
+        assert_eq!(point.mxcsr[&(0x1f80 | k)], 4);
+        assert_eq!(instance.mxcsr[&(0x1f80 | k)], 4);
+        assert_eq!(instance.x87_control[&(0x0200 | k as u16)], 4);
+    }
+    assert_eq!(point.x87_control[&0x037f], 128);
+    assert_eq!(stats.precision, [0; 4]);
+    assert_eq!(instance.native, 0);
+    assert!(stats.entries[Entry::Location as usize].mxcsr.is_empty());
 }
 
 /// Random BSPs and segments: every query answers or bails, answers are
@@ -426,4 +470,227 @@ fn random_bsps_answer_consistently() {
         }
     }
     assert!(answered > 3200, "{answered} of 6400");
+}
+
+#[test]
+fn an_old_decode_cannot_replace_the_new_generation_at_the_same_address() {
+    static EPOCH: Epoch = Epoch::new();
+    let world = CollisionWorld::new(&EPOCH);
+    let old = image(&wall(0));
+    let new = image(&wall(8));
+    let late = world.bsp(&old, AT, || {
+        EPOCH.bump();
+        world.bsp(&new, AT, || Ok(CONSTS)).unwrap();
+        Ok(CONSTS)
+    });
+    assert_eq!(late.unwrap_err(), Bail::Data);
+    let retained = world.bsp(&new, AT, || panic!("already decoded")).unwrap();
+    assert!(retained.verify(&new));
+    assert!(!retained.verify(&old));
+}
+
+#[test]
+fn an_alias_decline_invalidates_geometry_before_the_lifted_write() {
+    static EPOCH: Epoch = Epoch::new();
+    let world = CollisionWorld::new(&EPOCH);
+    let mut mem = image(&wall(0));
+    let before = world.bsp(&mem, AT, || Ok(CONSTS)).unwrap();
+    world.record::<()>(Entry::Location, &Err(Bail::Alias));
+    mem.word(before.block_addr(block::PLANES) + 12, 5.0f32.to_bits());
+    let after = world.bsp(&mem, AT, || Ok(CONSTS)).unwrap();
+    assert_eq!(after.point_to_leaf(0, bits([2.0, 0.0, 0.0])), Ok(0));
+    assert_ne!(before.source_hash(), after.source_hash());
+}
+
+#[test]
+fn a_replaced_guest_address_space_cannot_hit_another_bsps_header() {
+    struct View(Image, (u64, u64));
+    impl crate::GuestRead for View {
+        fn memory_revision(&self) -> (u64, u64) {
+            self.1
+        }
+        fn read(&self, addr: u32, dst: &mut [u8]) -> Result<(), crate::Fault> {
+            crate::GuestRead::read(&self.0, addr, dst)
+        }
+    }
+    static EPOCH: Epoch = Epoch::new();
+    let world = CollisionWorld::new(&EPOCH);
+    let first = View(image(&wall(0)), (1, 0));
+    let retained = world.bsp(&first, AT, || Ok(CONSTS)).unwrap();
+    for revision in [(2, 0), (2, 1)] {
+        let replacement = View(image(&wall(8)), revision);
+        let current = world.bsp(&replacement, AT, || Ok(CONSTS)).unwrap();
+        assert_eq!(retained.header(), current.header());
+        assert!(current.verify(&replacement));
+        assert!(!current.verify(&first));
+    }
+    assert_eq!(world.stats().decodes, 3);
+}
+
+#[test]
+fn header_at_the_end_of_guest_memory_must_not_wrap() {
+    use crate::bsp::{HEADER_BYTES, HEADER_WORDS};
+
+    // An extra backing byte lets the synthetic bus accept the wrapping
+    // address if the header reader ever skips the guest range check.
+    let last = u32::MAX - HEADER_BYTES + 1;
+    let mut mem = Image::new(last, HEADER_BYTES as usize + 1);
+    let words: [u32; HEADER_WORDS] = std::array::from_fn(|i| 0x0102_0300 + i as u32);
+    for (i, word) in words.iter().enumerate() {
+        mem.word(last + 4 * i as u32, *word);
+    }
+    assert_eq!(Bsp::read_header(&mem, last), Ok(words));
+    assert_eq!(Bsp::read_header(&mem, last + 1), Err(Bail::Fault));
+}
+
+#[test]
+fn budget_drops_borrowed_rings_and_preserves_scalar_results() {
+    static EPOCH: Epoch = Epoch::new();
+    let b = two_sided(0, 0, true);
+    let second = AT + b.size() + 0x100;
+    let mut mem = Image::new(0, (second + b.size() + 0x100) as usize);
+    for at in [AT, second] {
+        b.write(at, |a, data| mem.put(a, data));
+    }
+    let reference = decode(&mem);
+    let base = Bsp::essential_bytes(reference.header()).unwrap();
+    // Charge both BSP owners and both address records as well as arrays.
+    let metadata = 2 * (crate::world::BSP_OWNER_BYTES + crate::world::INDEX_RECORD_BYTES);
+    let limit = metadata + (reference.footprint() as u64).max(2 * base);
+    let world = CollisionWorld::with_budget(&EPOCH, limit);
+    let first = world.bsp(&mem, AT, || Ok(CONSTS)).unwrap();
+    assert!(!first.scalar_rings());
+    let next = world.bsp(&mem, second, || Ok(CONSTS)).unwrap();
+    assert!(first.scalar_rings() && next.scalar_rings());
+    assert_eq!(
+        first.read_surface_ring(&mem, 0).unwrap(),
+        reference.surface_ring(&reference.surfaces[0]).unwrap()
+    );
+    let stats = world.stats();
+    assert_eq!(stats.ring_fallbacks, 1);
+    assert_eq!(stats.bsps, 2);
+    assert!(stats.bytes <= stats.budget_bytes);
+    assert_eq!(
+        stats.array_bytes,
+        (first.footprint() + next.footprint()) as u64
+    );
+    assert_eq!(stats.bytes, stats.array_bytes + metadata);
+    let warm = world
+        .bsp(&mem, AT, || panic!("essential data retained"))
+        .unwrap();
+    assert!(std::sync::Arc::ptr_eq(&first, &warm));
+    let mut hit = false;
+    for y in [0.0, 4.0, 6.0] {
+        for direction in [1.0, -1.0] {
+            let q = query([-2.0 * direction, y, 0.0], [4.0 * direction, 0.0, 0.0], 0);
+            let want = run(&mem, &reference, &q).unwrap();
+            hit |= want.hit.is_some();
+            assert_eq!(run(&mem, &first, &q), Ok(want));
+        }
+    }
+    assert!(hit, "the scalar matcher must accept an inside point");
+    world.clear();
+    let reloaded = world.bsp(&mem, AT, || Ok(CONSTS)).unwrap();
+    assert!(
+        !reloaded.scalar_rings(),
+        "a new generation can retain rings"
+    );
+}
+
+#[test]
+fn budget_declines_an_oversized_header_before_reading_the_blocks() {
+    static EPOCH: Epoch = Epoch::new();
+    let mem = image(&wall(0));
+    let header = Bsp::read_header(&mem, AT).unwrap();
+    let limit = Bsp::essential_bytes(&header).unwrap()
+        + crate::world::BSP_OWNER_BYTES
+        + crate::world::INDEX_RECORD_BYTES
+        - 1;
+    let world = CollisionWorld::with_budget(&EPOCH, limit);
+    for _ in 0..2 {
+        assert_eq!(
+            world.bsp(&mem, AT, || panic!("no decode")).unwrap_err(),
+            Bail::Budget
+        );
+    }
+    let stats = world.stats();
+    assert_eq!((stats.bsps, stats.array_bytes, stats.decodes), (0, 0, 1));
+    assert_eq!(
+        stats.bytes,
+        crate::world::INDEX_RECORD_BYTES,
+        "refused header is charged"
+    );
+}
+
+#[test]
+fn budget_caps_empty_and_failed_address_slots() {
+    static EPOCH: Epoch = Epoch::new();
+    let mut mem = Image::new(0, 0x2000);
+    mem.word(AT, u32::MAX);
+    let world = CollisionWorld::with_limits(&EPOCH, 1024, 2);
+    assert_eq!(
+        world
+            .bsp(&mem, AT, || panic!("invalid header"))
+            .unwrap_err(),
+        Bail::Data
+    );
+    world.bsp(&mem, AT + 64, || Ok(CONSTS)).unwrap();
+    assert_eq!(
+        world.bsp(&mem, AT + 128, || panic!("full")).unwrap_err(),
+        Bail::Budget
+    );
+    assert_eq!(world.stats().array_bytes, 0);
+    assert_eq!(
+        world.stats().bytes,
+        2 * crate::world::INDEX_RECORD_BYTES + crate::world::BSP_OWNER_BYTES
+    );
+    world.clear();
+    assert!(world.bsp(&mem, AT + 128, || Ok(CONSTS)).is_ok());
+}
+
+#[test]
+fn scalar_ring_rejects_a_cycle_and_out_of_range_vertices() {
+    for bad_vertex in [false, true] {
+        let mut b = two_sided(0, 0, false);
+        if bad_vertex {
+            b.edges[0][0] = u16::MAX;
+        } else {
+            b.edges[3][2] = 1;
+        }
+        let mem = image(&b);
+        let reference = decode(&mem);
+        let scalar =
+            Bsp::decode_with_ring_limit(&mem, AT, *reference.header(), &CONSTS, 0).unwrap();
+        let q = query([-2.0, 0.0, 0.0], [4.0, 0.0, 0.0], 0);
+        assert_eq!(run(&mem, &reference, &q), Err(Bail::Data));
+        assert_eq!(run(&mem, &scalar, &q), Err(Bail::Data));
+    }
+}
+
+#[test]
+fn budget_is_rechecked_after_a_concurrent_first_decode() {
+    static EPOCH: Epoch = Epoch::new();
+    let b = wall(0);
+    let second = AT + b.size() + 0x80;
+    let mut mem = Image::new(0, (second + b.size() + 0x80) as usize);
+    for at in [AT, second] {
+        b.write(at, |a, row| mem.put(a, row));
+    }
+    let required = Bsp::essential_bytes(&Bsp::read_header(&mem, AT).unwrap()).unwrap();
+    let limit = crate::world::INDEX_RECORD_BYTES + crate::world::BSP_OWNER_BYTES + required;
+    let world = CollisionWorld::with_budget(&EPOCH, limit);
+    let outer = world.bsp(&mem, AT, || {
+        // While the outer decode is unlocked, the other BSP takes the budget.
+        world.bsp(&mem, second, || Ok(CONSTS)).unwrap();
+        Ok(CONSTS)
+    });
+    assert_eq!(outer.unwrap_err(), Bail::Budget);
+    let stats = world.stats();
+    assert_eq!(stats.bsps, 1);
+    assert!(stats.bytes <= limit);
+    assert!(
+        world
+            .bsp(&mem, second, || panic!("the winning decode remains cached"))
+            .is_ok()
+    );
 }

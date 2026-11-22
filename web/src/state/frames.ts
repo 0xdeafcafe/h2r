@@ -42,6 +42,12 @@ export interface SampledPlayer {
   actor?: { id: string; team: string | null };
   /** Velocity, game units a second, when the frame says (version 3 senders). */
   vel?: Aim;
+  /** Vitality held at the frame at or before the sampled tick, when known. */
+  body?: number;
+  shield?: number;
+  /** The observed tick and life state, which may precede a snapped pose. */
+  vitalsTick?: number;
+  vitalsAlive?: boolean;
   /** The animation the game plays on it, at the sampled tick (version 4). */
   anim?: SampledAnim;
   /** Its seat in `vehicle` (the vehicle's own seat index), when the frame says. */
@@ -85,6 +91,8 @@ export interface SampledHit {
   x: number; y: number; z: number;
   amount: number | null;
   kind: string | null;
+  /** Ticks before the containing frame's tick that this hit landed. */
+  ago?: number;
 }
 
 /** The damage in the frame at or before `tick`, with that frame's tick (so
@@ -100,7 +108,9 @@ export function sampleHits(frames: readonly Frame[], tick: number): { tick: numb
       if (c.length >= MAX_HITS_PER_FRAME) break;
       if (!h || !isPos(h.pos)) continue;
       const amount = typeof h.amount === "number" && Number.isFinite(h.amount) && h.amount >= 0 ? h.amount : null;
-      c.push({ from: cleanId(h.from), to: cleanId(h.to), weapon: cleanId(h.weapon), x: h.pos[0], y: h.pos[1], z: h.pos[2], amount, kind: cleanId(h.kind) });
+      const hit: SampledHit = { from: cleanId(h.from), to: cleanId(h.to), weapon: cleanId(h.weapon), x: h.pos[0], y: h.pos[1], z: h.pos[2], amount, kind: cleanId(h.kind) };
+      if (typeof h.ago === "number" && Number.isSafeInteger(h.ago) && h.ago >= 0) hit.ago = h.ago;
+      c.push(hit);
     }
     hitCache.set(f, c);
   }
@@ -291,27 +301,33 @@ export function lerpAngle(a: number, b: number, t: number): number {
   return a + d * t;
 }
 
-/** A frame's player as sampled. `shotsFrom` is the frame the sample's shots
- *  are read from (the one at or before the sampled tick), when not this one. */
-export function fromFramePlayer(p: FramePlayer, tick?: number, shotsFrom: FramePlayer | undefined = p): SampledPlayer {
+/** A frame's player as sampled. `held` is the observed player at or before
+ *  the sampled tick, where shots, actions and vitality come from. */
+export function fromFramePlayer(p: FramePlayer, tick?: number, held: FramePlayer | null = p): SampledPlayer {
   const out: SampledPlayer = { index: p.index, alive: p.alive, x: p.pos[0], y: p.pos[1], z: p.pos[2], yaw: p.yaw, vehicle: p.vehicle ?? null };
   const species = cleanId(p.species), weapon = cleanId(p.weapon), aim = cleanAim(p.aim);
   if (species) out.species = species;
   if (weapon) out.weapon = weapon;
   if (aim) out.aim = aim;
   // A frame with a fire mask has its shots placed on their ticks (blendPlayers).
-  const shots = tick === undefined || !shotsFrom || shotsFrom.fire != null ? 0 : cleanShots(shotsFrom.shots);
-  if (shots && shotsFrom!.alive) { out.shots = shots; out.shotTick = tick; }
+  const shots = tick === undefined || !held || held.fire != null ? 0 : cleanShots(held.shots);
+  if (shots && held!.alive) { out.shots = shots; out.shotTick = tick; }
   const stance = cleanStance(p.stance), speed = cleanSpeed(p.speed), grenade = cleanId(p.grenade);
   if (stance) out.stance = stance;
   if (speed !== null) out.speed = speed;
   if (grenade) out.grenade = grenade;
-  const actions = tick === undefined || !shotsFrom ? [] : cleanActions(shotsFrom.actions);
+  const actions = tick === undefined || !held ? [] : cleanActions(held.actions);
   if (actions.length) { out.actions = actions; out.actionTick = tick; }
   const vel = cleanVel(p.vel), anim = cleanAnim(p.anim), seat = out.vehicle ? cleanSeat(p.seat) : null;
   if (vel) out.vel = vel;
   if (anim) out.anim = anim;
   if (seat !== null) out.seat = seat;
+  if (typeof held?.body === "number" && held.body >= 0 && held.body <= 1) out.body = held.body;
+  if (typeof held?.shield === "number" && held.shield >= 0 && held.shield <= 4) out.shield = held.shield;
+  if (held && (out.body !== undefined || out.shield !== undefined)) {
+    if (tick !== undefined) out.vitalsTick = tick;
+    out.vitalsAlive = held.alive && held.stance !== "dead";
+  }
   return out;
 }
 
@@ -342,14 +358,14 @@ function blendPlayers(from: readonly FramePlayer[], to: readonly FramePlayer[] |
     if (!pb) { const s = fromFramePlayer(pa, a.tick); fired(s, pa, a.tick, a.tick - 32); out.push(s); continue; }
     const dx = pb.pos[0] - pa.pos[0], dy = pb.pos[1] - pa.pos[1], dz = pb.pos[2] - pa.pos[2];
     const far = dx * dx + dy * dy + dz * dz > SNAP_DISTANCE * SNAP_DISTANCE;
+    const observed = t < 1 ? pa : pb, observedTick = t < 1 ? a.tick : b.tick;
+    const s = fromFramePlayer(census || t < 0.5 ? pa : pb, observedTick, observed);
     if (!pa.alive || !pb.alive || far) {
       // No sliding a corpse to a spawn point: take the nearer frame.
-      out.push(fromFramePlayer(census || t < 0.5 ? pa : pb, a.tick, pa));
+      out.push(s);
       continue;
     }
-    // Discrete state uses the observed film tick or the nearer legacy frame; shots from `a`,
-    // or with masks each on its tick: the later frame's as the clock passes them.
-    const s = fromFramePlayer(census || t < 0.5 ? pa : pb, a.tick, pa);
+    // With fire masks each shot is on its tick, including the later frame's as the clock passes them.
     fired(s, pa, a.tick, a.tick - 32);
     fired(s, pb, b.tick, a.tick);
     const va = cleanVel(pa.vel), vb = cleanVel(pb.vel);
@@ -376,7 +392,9 @@ function blendPlayers(from: readonly FramePlayer[], to: readonly FramePlayer[] |
     if (sa !== null && sb !== null) s.speed = lerp(sa, sb, t);
     out.push(s);
   }
-  if (!census && t >= 0.5) for (const pb of next.values()) out.push(fromFramePlayer(pb));
+  if (!census && t >= 0.5) for (const pb of next.values()) {
+    out.push(t < 1 ? fromFramePlayer(pb, undefined, null) : fromFramePlayer(pb, b.tick));
+  }
   return out;
 }
 
@@ -446,7 +464,7 @@ function actorsOf(f: Frame): { players: FramePlayer[]; info: Map<number, { id: s
     players.push({
       index, alive: true, pos: a.pos, yaw: a.yaw, vehicle: cleanId(a.vehicle), species: a.species, aim: a.aim, weapon: a.weapon, shots: a.shots,
       stance: a.stance, speed: a.speed, actions: a.actions, grenade: a.grenade,
-      vel: a.vel, fire: a.fire, anim: a.anim, seat: a.seat,
+      vel: a.vel, fire: a.fire, anim: a.anim, seat: a.seat, body: a.body, shield: a.shield,
     });
   }
   return { players, info };
@@ -817,14 +835,39 @@ export function sampleObjects(frames: readonly Frame[], tick: number): FrameObje
 
 export interface DeathMarker { index: number; x: number; y: number; z: number; tick: number; bornAt: number }
 
+/** How long a window of arrivals `streamPace` measures over, and the
+ *  shortest span it trusts. */
+const PACE_WINDOW_MS = 3000;
+const PACE_MIN_SPAN_MS = 500;
+/** The fastest pace the live clock follows (an unpaced sim runs 3-16×). */
+export const MAX_STREAM_PACE = 32;
+
+/** The pace a live stream plays at: game time per real time, measured
+ *  over its recent arrivals (`{tick, at}` with `at` in ms, oldest first).
+ *  A real-time game, and any stream measured under 1.25×, is 1; a faster
+ *  one (an unpaced sim) rounds to the nearest half, up to `MAX_STREAM_PACE`. */
+export function streamPace(arrivals: readonly { tick: number; at: number }[]): number {
+  const first = arrivals[0], last = arrivals.at(-1);
+  if (!first || !last || last.at - first.at < PACE_MIN_SPAN_MS) return 1;
+  const measured = (last.tick - first.tick) * MS_PER_TICK / (last.at - first.at);
+  return measured < 1.25 ? 1 : Math.min(MAX_STREAM_PACE, Math.round(measured * 2) / 2);
+}
+
 /** A live game's recent frames plus a clock mapping wall time to ticks.
  *  Rendering runs `delayTicks` behind the newest frame so there is always a
- *  frame on both sides to interpolate between. */
+ *  frame on both sides to interpolate between. The clock runs at the
+ *  stream's own pace (`streamPace`), so a sim streaming faster than real
+ *  time plays smoothly at its live edge rather than at 1× with jumps. */
 export class FrameBuffer {
   frames: Frame[] = [];
   markers: DeathMarker[] = [];
-  /** Wall time (ms) at which tick 0 would have arrived; smoothed. */
+  /** Stream time (ms) at which tick 0 would have arrived; smoothed. */
   private offset: number | null = null;
+  /** Stream time runs `pace` times wall time from its anchor. */
+  pace = 1;
+  private streamAnchor = 0;
+  private wallAnchor = 0;
+  private arrivals: { tick: number; at: number }[] = [];
   readonly bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity, minZ: Infinity, maxZ: -Infinity };
 
   /** Every machine heard of, as last sent. */
@@ -865,6 +908,8 @@ export class FrameBuffer {
         this.machines.clear();
         this.travel = new MachinePositionHistory();
         this.offset = null;
+        this.arrivals = [];
+        this.setPace(1, now);
       } else return;
     }
     this.travel.push(frame);
@@ -883,16 +928,32 @@ export class FrameBuffer {
       if (y < b.minY) b.minY = y; if (y > b.maxY) b.maxY = y;
       if (z < b.minZ) b.minZ = z; if (z > b.maxZ) b.maxZ = z;
     }
-    const o = now - frame.tick * MS_PER_TICK;
+    this.arrivals.push({ tick: frame.tick, at: now });
+    while (this.arrivals.length > 2 && now - this.arrivals[0]!.at > PACE_WINDOW_MS) this.arrivals.shift();
+    this.setPace(streamPace(this.arrivals), now);
+    const o = this.streamTime(now) - frame.tick * MS_PER_TICK;
     if (this.offset === null || Math.abs(o - this.offset) > 1000) this.offset = o;
     // Late frames pull the clock back quickly; early ones nudge it slowly.
     else this.offset = o > this.offset ? this.offset * 0.9 + o * 0.1 : this.offset * 0.7 + o * 0.3;
   }
 
-  /** The (fractional) tick to render at wall time `now`. */
+  private streamTime(now: number): number {
+    return this.streamAnchor + (now - this.wallAnchor) * this.pace;
+  }
+
+  /** Changes the clock's rate without moving the stream time it reads now. */
+  private setPace(pace: number, now: number): void {
+    if (pace === this.pace) return;
+    this.streamAnchor = this.streamTime(now);
+    this.wallAnchor = now;
+    this.pace = pace;
+  }
+
+  /** The (fractional) tick to render at wall time `now`. A faster stream
+   *  sends more ticks per frame, so the delay scales with its pace. */
   renderTick(now: number): number {
     if (this.offset === null) return this.lastTick;
-    const est = (now - this.offset) / MS_PER_TICK - this.delayTicks;
+    const est = (this.streamTime(now) - this.offset) / MS_PER_TICK - this.delayTicks * this.pace;
     return Math.min(est, this.lastTick);
   }
 

@@ -1,9 +1,8 @@
 # Sim tier experiment
 
-The experiment behind step 2 of [sim-review.md](sim-review.md) section 6:
-compile five hot guest functions with the sim tier of section 4.2 and
-measure them against the reference tier (the emitted image) and the hand
-ports, with bit-identical effects. The gate is **at least 5x over the
+The [experimental sim tier](sim-review.md#42-sim-tier-contract) compiles
+five hot guest functions for comparison with the emitted reference image
+and the Rust ports. The gate is **at least 5x over the
 reference tier with identical memory and CPU state** on every case the
 tier completes.
 
@@ -143,7 +142,7 @@ the commit, the machine and the command; the table below links to it.
 
 - Inputs are synthetic. The fixtures exercise the paths the existing
   differential tests chose; a film-driven run on the tick is the next
-  proof (section 4.2, "Proof").
+  proof ([write census](sim-tier-writes.md)).
 - The census of writes outside the arena is static: indirect calls are
   not followed, and a store through a pointer of unknown origin is listed
   as unknown. See [sim-tier-writes.md](sim-tier-writes.md).

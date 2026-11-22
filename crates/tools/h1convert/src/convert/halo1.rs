@@ -566,6 +566,7 @@ pub fn prepare_halo1<R: Read + Seek>(
     p.grenades = grenades;
     p.weapon_list = weapon_list;
     p.vehicle_list = vehicle_list;
+    p.read_pickup_text(h1)?;
     Ok(p)
 }
 
@@ -1254,7 +1255,18 @@ pub fn prepare_halo2<R: Read + Seek>(
     p.objects = Some(with_collections(converted, first, collections));
     p.objects_first = first;
     p.scenery = Some(scenery);
+    p.read_pickup_text(h1)?;
     Ok(p)
+}
+
+impl Prepared {
+    fn read_pickup_text(&mut self, map: &H1Map) -> Result<()> {
+        self.pickup_text = Some(
+            h1_assets::text::multiplayer::PickupText::read(map, self.sandbox == Sandbox::Halo1)
+                .map_err(|e| Error::Objects(format!("{} pickup text: {e}", self.h1_name)))?,
+        );
+        Ok(())
+    }
 }
 
 /// The Halo 1 map's multiplayer player biped: the `bipd` named

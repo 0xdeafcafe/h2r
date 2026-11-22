@@ -302,7 +302,7 @@ impl Arch {
             v.push(sdk_path(sdk)?);
         }
         if self == Arch::X86_64Windows {
-            v.extend(windows_target_args(&xwin_dir()?));
+            v.extend(windows_target_args(windows_sysroot()?.as_deref()));
         }
         Ok(v)
     }
@@ -444,6 +444,16 @@ pub fn xwin_dir() -> Result<PathBuf, Error> {
     Ok(dir)
 }
 
+/// A cross-build needs a splat. Native clang finds the installed MSVC and
+/// Windows SDK headers and lld-link uses the developer shell's LIB path.
+fn windows_sysroot() -> Result<Option<PathBuf>, Error> {
+    if cfg!(windows) && std::env::var_os(XWIN_ENV).is_none_or(|v| v.is_empty()) {
+        Ok(None)
+    } else {
+        xwin_dir().map(Some)
+    }
+}
+
 /// The Windows target's clang arguments past `-target`, for the splat at
 /// `xwin`: the static C runtime (libcmt, libvcruntime, libucrt) and the
 /// CRT and UCRT headers as system headers.
@@ -454,35 +464,72 @@ pub fn xwin_dir() -> Result<PathBuf, Error> {
 /// (docs/runtime/xbox.md). The module keeps a CRT of its own: the
 /// generated C uses only the memory and math functions and never passes
 /// CRT state (heap blocks, `FILE*`, errno) across the host boundary.
-pub fn windows_target_args(xwin: &Path) -> Vec<String> {
-    let include = |p: &str| xwin.join(p).to_string_lossy().into_owned();
-    vec![
-        "-fms-runtime-lib=static".into(),
-        "-isystem".into(),
-        include("crt/include"),
-        "-isystem".into(),
-        include("sdk/include/ucrt"),
-    ]
+pub fn windows_target_args(xwin: Option<&Path>) -> Vec<String> {
+    let mut args = vec!["-fms-runtime-lib=static".into()];
+    if let Some(dir) = xwin {
+        for include in ["crt/include", "sdk/include/ucrt"] {
+            args.push("-isystem".into());
+            args.push(dir.join(include).to_string_lossy().into_owned());
+        }
+    }
+    args
 }
 
 /// `lld-link`'s arguments for linking `objects` into the DLL `out` against
 /// the splat at `xwin`. Exports are the definitions the sources mark
 /// `H2_EXPORT` (h2abi.h); no import library is written.
-pub fn windows_link_args(xwin: &Path, out: &Path, objects: &[PathBuf]) -> Vec<OsString> {
+pub fn windows_link_args(xwin: Option<&Path>, out: &Path, objects: &[PathBuf]) -> Vec<OsString> {
     let mut v: Vec<OsString> = ["/dll", "/nologo", "/machine:x64", "/noimplib", "/incremental:no"]
         .into_iter()
         .map(OsString::from)
         .collect();
-    for lib in ["crt/lib/x86_64", "sdk/lib/ucrt/x86_64", "sdk/lib/um/x86_64"] {
-        let mut a = OsString::from("/libpath:");
-        a.push(xwin.join(lib));
-        v.push(a);
+    if let Some(root) = xwin {
+        for lib in ["crt/lib/x86_64", "sdk/lib/ucrt/x86_64", "sdk/lib/um/x86_64"] {
+            let mut a = OsString::from("/libpath:");
+            a.push(root.join(lib));
+            v.push(a);
+        }
     }
     let mut o = OsString::from("/out:");
     o.push(out);
     v.push(o);
     v.extend(objects.iter().map(|p| p.as_os_str().to_owned()));
     v
+}
+
+/// A full image's object paths exceed CreateProcessW's command-line limit.
+/// llvm-lib and lld-link both accept the same MSVC-style response file.
+fn run_coff_tool(tool: &str, args: &[OsString], out: &Path) -> Result<std::process::Output, Error> {
+    let mut command = Command::new(windows_tool(tool)?);
+    let _response;
+    if cfg!(windows) {
+        _response = Temporary::new(out).map_err(err)?;
+        let mut contents = String::new();
+        for arg in args {
+            // All arguments are switches or file names; none end in a directory separator.
+            let arg = arg.to_str().ok_or_else(|| err("LLVM response file argument is not Unicode"))?;
+            contents.push('"');
+            contents.push_str(arg);
+            contents.push_str("\"\n");
+        }
+        std::fs::write(_response.path(), contents).map_err(err)?;
+        let mut rsp = OsString::from("@");
+        rsp.push(_response.path());
+        command.arg(rsp);
+    } else {
+        command.args(args);
+    }
+    command.output().map_err(|e| err(format!("running {tool}: {e}")))
+}
+
+/// Link Windows objects and their embedded default libraries into a DLL.
+pub fn link_windows_dll(out: &Path, objects: &[PathBuf]) -> Result<(), Error> {
+    let args = windows_link_args(windows_sysroot()?.as_deref(), out, objects);
+    let result = run_coff_tool("lld-link", &args, out)?;
+    if !result.status.success() {
+        return Err(err(format!("linking DLL: {}{}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr))));
+    }
+    Ok(())
 }
 
 /// Where Homebrew keeps the LLVM tools a Windows build uses, when neither
@@ -625,11 +672,16 @@ pub const TOOLCHAIN_PROBES: &[(&str, &[&str])] = &[
 /// `name` resolved on a `PATH`-style list: the first entry holding an
 /// executable file of that name, as `Command` would find it.
 pub fn resolve_on_path(name: &str, path: Option<OsString>) -> Option<PathBuf> {
-    std::env::split_paths(&path?).map(|d| d.join(name)).find(|p| std::fs::metadata(p).is_ok_and(|m| executable(&m)))
+    let name = if cfg!(windows) && Path::new(name).extension().is_none() {
+        format!("{name}.exe")
+    } else {
+        name.to_owned()
+    };
+    std::env::split_paths(&path?).map(|d| d.join(&name)).find(|p| std::fs::metadata(p).is_ok_and(|m| executable(&m)))
 }
 
 /// Whether a file's metadata says it can be run: an executable bit on Unix.
-/// Elsewhere (Windows, where the emitter is only compile-checked) any file.
+/// On Windows, the resolved executable must be a file.
 fn executable(m: &std::fs::Metadata) -> bool {
     #[cfg(unix)]
     {
@@ -920,7 +972,9 @@ pub fn archive_for(arch: Arch, library: &Path, objects: &[PathBuf]) -> Result<()
     let out = if arch.is_windows() {
         let mut out = OsString::from("/out:");
         out.push(tmp.path());
-        Command::new(windows_tool("llvm-lib")?).arg("/nologo").arg(out).args(objects).output()
+        let mut args = vec![OsString::from("/nologo"), out];
+        args.extend(objects.iter().map(|path| path.as_os_str().to_owned()));
+        Ok(run_coff_tool("llvm-lib", &args, tmp.path())?)
     } else if arch == Arch::X86_64Linux {
         // llvm-ar updates existing archives. Temporary reserves an empty file.
         std::fs::write(tmp.path(), b"!<arch>\n").map_err(err)?;
@@ -1225,9 +1279,12 @@ pub fn host_dylib(build: &Build, src_dir: &Path, extra: &[(&str, &str)], out: &P
         args.push(obj);
     }
     let temporary = Temporary::new(out).map_err(err)?;
-    let o = if build.arch.is_windows() {
-        Command::new(windows_tool("lld-link")?).args(windows_link_args(&xwin_dir()?, temporary.path(), &args)).output()
-    } else if build.arch == Arch::X86_64Linux {
+    if build.arch.is_windows() {
+        link_windows_dll(temporary.path(), &args)?;
+        temporary.require_nonempty().map_err(err)?;
+        return temporary.publish(out).map_err(err);
+    }
+    let o = if build.arch == Arch::X86_64Linux {
         Command::new(&cc)
             .args(&target)
             .args(generate.then_some(pgo::GEN_FLAG))
@@ -1329,10 +1386,10 @@ mod tests {
         assert_eq!(Arch::X86_64Windows.module_file_name(), "h2game.dll");
         let xwin = Path::new("/x");
         assert_eq!(
-            windows_target_args(xwin),
+            windows_target_args(Some(xwin)),
             ["-fms-runtime-lib=static", "-isystem", "/x/crt/include", "-isystem", "/x/sdk/include/ucrt"]
         );
-        let link = windows_link_args(xwin, Path::new("/o/h2game.dll"), &[PathBuf::from("/o/a.o"), PathBuf::from("/o/b.o")]);
+        let link = windows_link_args(Some(xwin), Path::new("/o/h2game.dll"), &[PathBuf::from("/o/a.o"), PathBuf::from("/o/b.o")]);
         let link: Vec<&str> = link.iter().map(|a| a.to_str().unwrap()).collect();
         assert_eq!(
             link,
@@ -1914,6 +1971,7 @@ mod tests {
 
     /// An included constant must match a clean build, including when it
     /// comes from a system include directory or a newly shadowing header.
+    #[cfg(unix)]
     #[test]
     fn transitive_headers_and_new_include_shadows_invalidate_objects() {
         use std::os::unix::fs::PermissionsExt;
@@ -1997,6 +2055,7 @@ mod tests {
     /// same generated C built from another checkout or shell directory
     /// (clang embeds its cwd as the compilation directory) reuses every
     /// object.
+    #[cfg(unix)]
     #[test]
     fn the_compilers_working_directory_is_not_part_of_the_object_key() {
         use std::os::unix::fs::PermissionsExt;
@@ -2056,6 +2115,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn driver_configuration_contents_and_expanded_response_options_are_keyed() {
         use std::os::unix::fs::PermissionsExt;
@@ -2127,6 +2187,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn mutable_abi_bridge_and_libraries_detach_links_but_cached_objects_keep_them() {
         use std::os::unix::fs::MetadataExt;
@@ -2300,6 +2361,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn resolution_follows_path_order_and_skips_non_executables() {
         use std::os::unix::fs::PermissionsExt;
@@ -2319,6 +2381,7 @@ mod tests {
 
     /// Two `clang` wrappers that answer every probe like the real compiler
     /// but compile differently must not share objects.
+    #[cfg(unix)]
     #[test]
     fn a_different_compiler_on_path_never_reuses_an_object() {
         use std::os::unix::fs::PermissionsExt;

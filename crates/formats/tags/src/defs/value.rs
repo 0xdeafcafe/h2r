@@ -8,6 +8,7 @@ use crate::repo::{Body, LooseTag, Node, RawRes, Region, TagKey, Tree, Value};
 use map::build::{Block, FixupKind, RawRef};
 use map::{FourCC, TagId};
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 /// What can go wrong between a definition and a tag.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -110,6 +111,47 @@ pub struct Record {
     /// cache compiler laid them out; blocks without one share by content.
     /// Layout, not a value: equality and [`diff`] ignore it.
     pub share: Option<u32>,
+    /// Where each field sits, one slot per field, for byte writes and
+    /// reads ([`Record::set`] with [`Val::Bytes`], [`Record::bytes`]).
+    /// Records from [`decode`], [`from_built`] and [`default_record`]
+    /// have it; [`Record::new`] leaves it out. Equality ignores it.
+    layout: Option<Arc<[Slot]>>,
+}
+
+/// One field's offset and width in its element, and its kind when the
+/// field holds plain bytes (enum and flag names left out).
+#[derive(Clone, Debug)]
+struct Slot {
+    offset: u32,
+    width: u32,
+    plain: Option<Kind>,
+}
+
+fn slots(def: &StructDef) -> Arc<[Slot]> {
+    def.fields
+        .iter()
+        .map(|f| Slot {
+            offset: f.offset,
+            width: f.kind.width(),
+            plain: match &f.kind {
+                Kind::Enum { bytes, .. } => Some(Kind::Enum {
+                    bytes: *bytes,
+                    values: Vec::new(),
+                }),
+                Kind::Flags { bytes, .. } => Some(Kind::Flags {
+                    bytes: *bytes,
+                    bits: Vec::new(),
+                }),
+                k @ (Kind::Int { .. }
+                | Kind::Float { .. }
+                | Kind::RawSize { .. }
+                | Kind::Word
+                | Kind::Unknown { .. }
+                | Kind::Pad { .. }) => Some(k.clone()),
+                _ => None,
+            },
+        })
+        .collect()
 }
 
 impl PartialEq for Record {
@@ -124,7 +166,16 @@ impl Record {
         Record {
             fields,
             share: None,
+            layout: None,
         }
+    }
+
+    /// The same record, with `def`'s field offsets for byte writes.
+    fn laid_out(mut self, def: &StructDef) -> Self {
+        if self.fields.len() == def.fields.len() {
+            self.layout = Some(slots(def));
+        }
+        self
     }
 }
 
@@ -182,7 +233,23 @@ impl Record {
     }
 
     /// Sets the value at `path`, which must exist and keep its kind.
+    ///
+    /// [`Val::Bytes`] may also go to plain fields: from the field the path
+    /// names on, they fill as many consecutive plain fields as they cover,
+    /// each read back as its own type. The path's last part is a field
+    /// name, a name and a byte offset into it (`range+0x4`), or a byte
+    /// offset in the element (`@0x38`).
     pub fn set(&mut self, path: &str, value: Val) -> Result<(), DefError> {
+        if let Val::Bytes(bytes) = &value {
+            let (parent, last) = split_last(path);
+            let addressed = last.starts_with('@') || last.contains('+');
+            if addressed || !matches!(self.at(path), None | Some(Val::Bytes(_))) {
+                let Some(rec) = self.element_mut(parent) else {
+                    return fail(path, "no such element");
+                };
+                return rec.write_bytes(last, bytes, path);
+            }
+        }
         let Some(v) = self.at_mut(path) else {
             return fail(path, "no such field");
         };
@@ -196,6 +263,115 @@ impl Record {
         }
         *v = value;
         Ok(())
+    }
+}
+
+impl Record {
+    /// `len` bytes of the element from `path` on, as [`Record::set`]
+    /// addresses them. `None` when the path names no field, the bytes
+    /// leave the element, or they cover a field that is not plain.
+    pub fn bytes(&self, path: &str, len: usize) -> Option<Vec<u8>> {
+        let (parent, last) = split_last(path);
+        let rec = self.element(parent)?;
+        let slots = rec.layout.as_deref()?;
+        let start = rec.locate(slots, last)?;
+        let end = start.checked_add(u32::try_from(len).ok()?)?;
+        let mut out = vec![0u8; len];
+        let mut covered = 0;
+        for (slot, (_, v)) in slots.iter().zip(&rec.fields) {
+            let (lo, hi) = (slot.offset, slot.offset + slot.width);
+            if hi <= start || lo >= end {
+                continue;
+            }
+            let mut buf = vec![0u8; slot.width as usize];
+            write_plain(slot.plain.as_ref()?, v, &mut buf, 0, path).ok()?;
+            let (a, b) = (start.max(lo), end.min(hi));
+            out[(a - start) as usize..(b - start) as usize]
+                .copy_from_slice(&buf[(a - lo) as usize..(b - lo) as usize]);
+            covered += b - a;
+        }
+        (covered == end - start).then_some(out)
+    }
+
+    fn write_bytes(&mut self, last: &str, bytes: &[u8], path: &str) -> Result<(), DefError> {
+        let Some(slots) = self.layout.clone() else {
+            return fail(path, "bytes for a field of a record without a layout");
+        };
+        let Some(start) = self.locate(&slots, last) else {
+            return fail(path, "no such field");
+        };
+        let end = start + bytes.len() as u32;
+        let mut covered = 0;
+        let mut out = self.fields.clone();
+        for (slot, (name, v)) in slots.iter().zip(out.iter_mut()) {
+            let (lo, hi) = (slot.offset, slot.offset + slot.width);
+            if hi <= start || lo >= end {
+                continue;
+            }
+            let Some(kind) = &slot.plain else {
+                return fail(path, format!("bytes over {name}, which is not plain"));
+            };
+            let mut buf = vec![0u8; slot.width as usize];
+            write_plain(kind, v, &mut buf, 0, path)?;
+            let (a, b) = (start.max(lo), end.min(hi));
+            buf[(a - lo) as usize..(b - lo) as usize]
+                .copy_from_slice(&bytes[(a - start) as usize..(b - start) as usize]);
+            *v = plain(kind, &buf, 0).expect("a plain kind");
+            covered += b - a;
+        }
+        if covered != end - start {
+            return fail(path, format!("{} bytes leave the element", bytes.len()));
+        }
+        self.fields = out;
+        Ok(())
+    }
+
+    /// The element offset `last` names: `@0x38`, `name` or `name+0x4`.
+    fn locate(&self, slots: &[Slot], last: &str) -> Option<u32> {
+        if let Some(at) = last.strip_prefix('@') {
+            return super::parse_num(at);
+        }
+        let (name, skip) = match last.split_once('+') {
+            Some((n, k)) => (n, super::parse_num(k)?),
+            None => (last, 0),
+        };
+        let i = self.fields.iter().position(|f| f.0 == name)?;
+        let slot = slots.get(i)?;
+        (skip < slot.width.max(1)).then_some(slot.offset + skip)
+    }
+
+    /// The record at `path` (an embedded struct or a block element), or
+    /// this one for `None`.
+    fn element(&self, path: Option<&str>) -> Option<&Record> {
+        let Some(path) = path else { return Some(self) };
+        let (first, rest) = split_path(path);
+        let (name, index) = parse_seg(first)?;
+        let r = match (self.get(name)?, index) {
+            (Val::Block(e), Some(i)) => e.get(i)?,
+            (Val::Struct(r), None) => r,
+            _ => return None,
+        };
+        r.element(rest)
+    }
+
+    fn element_mut(&mut self, path: Option<&str>) -> Option<&mut Record> {
+        let Some(path) = path else { return Some(self) };
+        let (first, rest) = split_path(path);
+        let (name, index) = parse_seg(first)?;
+        let r = match (self.get_mut(name)?, index) {
+            (Val::Block(e), Some(i)) => e.get_mut(i)?,
+            (Val::Struct(r), None) => r,
+            _ => return None,
+        };
+        r.element_mut(rest)
+    }
+}
+
+/// The element part of a path and its last part.
+fn split_last(path: &str) -> (Option<&str>, &str) {
+    match path.rsplit_once('.') {
+        Some((parent, last)) => (Some(parent), last),
+        None => (None, path),
     }
 }
 
@@ -358,7 +534,7 @@ impl Decoder<'_> {
             let v = self.field(f, node, at + f.offset, &p)?;
             out.push((f.name.clone(), v));
         }
-        Ok(Record::new(out))
+        Ok(Record::new(out).laid_out(def))
     }
 
     fn field(&mut self, f: &FieldDef, node: usize, at: u32, path: &str) -> Result<Val, DefError> {
@@ -876,6 +1052,7 @@ pub fn default_record(def: &StructDef) -> Record {
             .map(|f| (f.name.clone(), default_val(f)))
             .collect(),
     )
+    .laid_out(def)
 }
 
 fn default_val(f: &FieldDef) -> Val {
@@ -1231,7 +1408,7 @@ fn built_read(def: &StructDef, b: &Block, at: u32, path: &str) -> Result<Record,
         };
         out.push((f.name.clone(), v));
     }
-    Ok(Record::new(out))
+    Ok(Record::new(out).laid_out(def))
 }
 
 // ------------------------------------------------------------------ diff

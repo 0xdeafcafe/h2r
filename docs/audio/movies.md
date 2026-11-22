@@ -33,12 +33,20 @@ match report.status {
 # Ok::<(), std::io::Error>(())
 ```
 
-The default macOS destination is
-`~/Library/Application Support/h2recomp/movies`. A sandboxed app may provide
+The default destination is `movies` in the app data directory
+(`movies::install::app_movies_dir`; the paths per host are in
+[storage.md](../runtime/storage.md#host-directories)). A sandboxed app may provide
 its own container data directory through `InstallOptions::new`. Destinations
 inside a Git checkout or worktree, including symlink aliases, are rejected.
 Nothing writes into the source ISO or repository. The synchronous installer
 belongs on the installer's worker thread, before launching the game.
+
+`install_region` takes a named movie's file extent and runs the same
+conversion and publication path for that movie alone. The windowed boot
+uses it on a background worker for an unprepared attract clip after
+resolving the disc path through VFS. Other movies in the installation
+remain available. [Attract timer](bink-hle.md#attract-timer) describes how
+the menu handles preparation and fallback.
 
 Before creating the destination, ffmpeg is checked with `-version`,
 `-decoders`, and `-encoders`. It needs `binkvideo`, both Bink audio decoders,
@@ -86,8 +94,10 @@ risking deleting a movie another process is playing.
 with the existing CLI: source path, size and SHA-256; output name and size;
 duration; ffmpeg version; exact encoding settings. An additive
 `output_sha256` map records output hashes by file name. Legacy manifests
-without that map still load. They are upgraded through conversion, since
-the installer cannot establish output integrity from size alone. An
+without that map still load. When the installer publishes the first hashed
+output, it also hashes each remaining readable legacy output with the recorded
+size. These hashes record the files as they exist at migration, so installing
+only the attract clip keeps other valid legacy movies available. An
 `output_stamp` map records each output's size and mtime at the moment its
 hash was verified, so `locate` does not re-hash a multi-megabyte movie on
 every call; a changed stamp falls back to a full hash. Once a manifest has

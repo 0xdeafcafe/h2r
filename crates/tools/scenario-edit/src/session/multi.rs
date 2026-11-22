@@ -271,6 +271,15 @@ impl Session {
         geometry::surface(self.world().0, ray)
     }
 
+    /// Where the cursor meets the structure in the current viewport.
+    pub fn surface_hit_visible(&self, ray: &Ray, layers: &Layers) -> Option<Vec3> {
+        if layers.visible(LayerId::Structure) {
+            self.surface_hit(ray)
+        } else {
+            None
+        }
+    }
+
     /// Add an entry at `at` (where the cursor met the level), as one undo
     /// step: a copy of `like`, or a new entry with the palette's first
     /// item. Selects and returns its index.
@@ -378,8 +387,17 @@ impl Session {
     }
 
     /// A sphere round everything selected: the placements' models (their
-    /// bounds placed and scaled) or, without one, their glyphs.
+    /// bounds placed and scaled) or, without one, their glyphs; or round
+    /// the selected trigger volume's box or collision surface.
     pub fn selection_sphere(&self) -> Option<(Vec3, f32)> {
+        if let Some(surface) = self.selected_surface_data() {
+            return Some((surface.center(), surface.radius().max(0.5)));
+        }
+        if let Some(i) = self.selected_volume() {
+            // A parented volume's frame is relative to an object.
+            let volume = self.volumes()?.triggers.get(i).filter(|v| v.in_world())?;
+            return Some((volume.frame.center()?, volume.frame.radius()));
+        }
         let all = self.selection();
         let mut bounds = Bounds::EMPTY;
         for m in self

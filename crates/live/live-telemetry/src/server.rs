@@ -36,7 +36,10 @@ use crate::event::GameEvent;
 use crate::sink::Sink;
 
 const MAX_INGEST_MESSAGE: usize = 16 * 1024;
-const MAX_BATCH_EVENTS: usize = 4;
+/// Events of one game in one signed batch. Bursts (a multi-kill, a join
+/// wave) pack together; a steady trickle still seals one at a time, so a
+/// kill never waits for company.
+const MAX_BATCH_EVENTS: usize = 16;
 /// A packed keyframe every this many frames (ten seconds at 15 a second);
 /// the frames between are deltas (docs/live/live-telemetry.md, Packed frames).
 pub(crate) const FRAME_KEYFRAME_EVERY: u64 = 150;
@@ -45,8 +48,18 @@ pub(crate) const FRAME_KEYFRAME_EVERY: u64 = 150;
 /// leaves are never dropped.
 pub(crate) const MAX_OUTBOX: usize = 4096;
 /// Event kinds the outbox may drop when full: a later `ScoreChanged` and
-/// the `GameEnded` scoreboard carry the scores again.
-const DROPPABLE: [&str; 2] = [game::PLAYER_KILLED, game::SCORE_CHANGED];
+/// the `GameEnded` scoreboard carry the scores again. A dropped
+/// `Superbounce`, `Bounced` or `Teabag` is one the game record misses (a
+/// dropped teabag leaves Live an `incel` the film does not give); the film
+/// keeps it.
+const DROPPABLE: [&str; 6] = [
+    game::ACTOR_KILLED,
+    game::PLAYER_KILLED,
+    game::SCORE_CHANGED,
+    game::SUPERBOUNCE,
+    game::BOUNCED,
+    game::TEABAG,
+];
 /// A batch signed longer ago than this is signed again before it is sent
 /// (the server refuses an `at` more than five minutes off). New nonces: if
 /// the old copy did land unanswered, the server keeps both.
@@ -69,6 +82,8 @@ const MAX_DEFERRED_BYTES: usize = 32 * 1024 * 1024;
 const SIM_SETTLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 struct SimCapture {
+    combat: Option<crate::hooks::CombatFeed>,
+    next_combat: Option<Instant>,
     game_id: String,
     deferred: Option<Deferred>,
     pending: Vec<u8>,
@@ -113,6 +128,9 @@ pub(crate) struct Timing {
     pub settle: Duration,
     /// A connection up this long before it drops resets the backoff.
     pub steady: Duration,
+    /// How long the first packed frame waits for a batch
+    /// (docs/live/live-telemetry.md, "Server ingest").
+    pub frame_batch: Duration,
 }
 
 impl Default for Timing {
@@ -123,8 +141,18 @@ impl Default for Timing {
             ack_timeout: Duration::from_secs(10),
             settle: Duration::from_millis(500),
             steady: Duration::from_secs(30),
+            frame_batch: Duration::from_millis(500),
         }
     }
+}
+
+/// Packed frame records of the live stream held for the next flush, oldest
+/// first. The sim capture has its own.
+#[derive(Default)]
+struct Pending {
+    bytes: Vec<u8>,
+    records: usize,
+    since: Option<Instant>,
 }
 
 struct Connection {
@@ -207,6 +235,9 @@ pub struct ServerSink {
     /// Local games the server would not create: their events are dropped.
     refused: HashSet<String>,
     outbox: VecDeque<Item>,
+    /// Packed records held for the next flush (the live stream's; sims
+    /// have their own in [`SimCapture`]).
+    pending: Pending,
     timing: Timing,
     /// The next reconnect's wait.
     delay: Duration,
@@ -274,6 +305,7 @@ impl ServerSink {
             machine_cut: None,
             refused: HashSet::new(),
             outbox: VecDeque::new(),
+            pending: Pending::default(),
             timing,
             delay: timing.backoff_min,
             retry_at: None,
@@ -286,8 +318,12 @@ impl ServerSink {
         })
     }
 
-    pub fn with_sim(mut self, sim: &game::SimGame, deferred_lock: Option<PathBuf>) -> Self {
+    pub(crate) fn with_sim(
+        mut self, sim: &game::SimGame, deferred_lock: Option<PathBuf>, combat: crate::hooks::CombatFeed,
+    ) -> Self {
         self.sim = Some(SimCapture {
+            combat: (!sim.deferred && deferred_lock.is_none()).then_some(combat),
+            next_combat: None,
             game_id: game::sim_game_id(&sim.run_id),
             deferred: deferred_lock.map(|lock| Deferred {
                 lock,
@@ -309,6 +345,7 @@ impl ServerSink {
     }
 
     /// Starts and events not yet answered for.
+    #[cfg(test)]
     pub fn waiting_events(&self) -> usize {
         self.outbox.len()
     }
@@ -433,8 +470,17 @@ impl ServerSink {
     fn authenticate(&mut self) -> Result<(), Failure> {
         let token = self.token();
         self.connection.as_mut().unwrap().last_auth = Instant::now();
-        let text = serde_json::to_string(&ClientMessage::Auth { token }).expect("serializes");
+        let message = if self.batch_frames() {
+            ClientMessage::AuthBatched { token }
+        } else {
+            ClientMessage::Auth { token }
+        };
+        let text = serde_json::to_string(&message).expect("serializes");
         self.write(Message::Text(text.into()))
+    }
+
+    fn batch_frames(&self) -> bool {
+        self.sim.is_none() && self.discovery().ingest_frame_batch
     }
 
     /// A fresh token before the last one runs out.
@@ -492,7 +538,9 @@ impl ServerSink {
     fn drain(&mut self) -> Result<(), Failure> {
         for _ in 0..8 {
             match self.read_reply()? {
-                Some(IngestReply::Error { message, .. }) => self.frame_refused(&message),
+                Some(IngestReply::Error { message, .. } | IngestReply::FrameError { message, .. }) => {
+                    self.frame_refused(&message);
+                }
                 Some(IngestReply::Appended { .. }) => {}
                 None => break,
             }
@@ -511,10 +559,9 @@ impl ServerSink {
     }
 
     /// Sends a signed batch and waits for its answer. Replies come in the
-    /// order the server took the messages; frames are answered only when
-    /// refused, a batch always. So an `appended` is this batch's, and a
-    /// refusal is this batch's once [`Timing::settle`] passes with nothing
-    /// after it.
+    /// order the server took the messages. Batched sockets distinguish
+    /// frame errors from event errors. Generic errors settle after
+    /// [`Timing::settle`] with no further reply.
     fn send_batch(&mut self, text: &str) -> Result<Answer, Failure> {
         if text.len() > MAX_INGEST_MESSAGE {
             return Ok(Answer::Refused(
@@ -526,6 +573,7 @@ impl ServerSink {
             ));
         }
         self.send_pending_sim_frames()?;
+        self.send_pending_frames()?;
         self.drain()?;
         self.refresh_auth()?;
         self.write(Message::Text(text.to_owned().into()))?;
@@ -535,6 +583,7 @@ impl ServerSink {
         loop {
             match self.read_reply()? {
                 Some(IngestReply::Appended { .. }) => return Ok(Answer::Appended),
+                Some(IngestReply::FrameError { message, .. }) => self.frame_refused(&message),
                 Some(IngestReply::Error { error, message }) => {
                     self.frame_refused(&message);
                     refused = Some((error, message));
@@ -685,9 +734,8 @@ impl ServerSink {
         }
     }
 
-    /// Signs the events at the front (up to [`MAX_BATCH_EVENTS`] of one
-    /// game; a `GameEnded` alone, so no other event's refusal takes it
-    /// down) into a batch in their place.
+    /// Signs the events at the front into a batch of one game. A
+    /// `GameEnded` goes alone, so no other event's refusal takes it down.
     fn seal(&mut self) -> Result<(), Failure> {
         let Some(Item::Event(first)) = self.outbox.front() else {
             unreachable!()
@@ -721,36 +769,55 @@ impl ServerSink {
                 break;
             }
         }
-        let batch = self.sign(server_id, events)?;
-        self.outbox.push_front(Item::Batch(batch));
+        let now = OffsetDateTime::now_utc();
+        let mut count = events.len();
+        let text = loop {
+            let text = self.sign(&server_id, &events[..count], now)?;
+            if text.len() <= MAX_INGEST_MESSAGE || count == 1 {
+                break text;
+            }
+            count /= 2;
+        };
+        // A burst can exceed the byte cap before it reaches the count
+        // cap. Put its tail back in order for the next batch.
+        for event in events.drain(count..).rev() {
+            self.outbox.push_front(Item::Event(event));
+        }
+        self.outbox.push_front(Item::Batch(Batch {
+            server_id,
+            events,
+            text,
+            signed_at: now.unix_timestamp(),
+        }));
         Ok(())
     }
 
-    fn sign(&self, server_id: String, events: Vec<GameEvent>) -> Result<Batch, Failure> {
-        let now = OffsetDateTime::now_utc();
+    fn sign(
+        &self,
+        server_id: &str,
+        events: &[GameEvent],
+        now: OffsetDateTime,
+    ) -> Result<String, Failure> {
         let author = self.uploader.author(&self.discovery().id);
-        let message = signed_events_message(&self.key, &author, &server_id, &events, now)
+        let message = signed_events_message(&self.key, &author, server_id, events, now)
             .map_err(Failure::Fatal)?;
-        Ok(Batch {
-            server_id,
-            events,
-            text: serde_json::to_string(&message).expect("serializes"),
-            signed_at: now.unix_timestamp(),
-        })
+        Ok(serde_json::to_string(&message).expect("serializes"))
     }
 
     /// Sends the batch at the front and settles it by the server's answer.
     fn deliver_batch(&mut self) -> Result<(), Failure> {
         self.connect()?;
-        let now = OffsetDateTime::now_utc().unix_timestamp();
-        let Some(Item::Batch(batch)) = self.outbox.front_mut() else {
+        let now = OffsetDateTime::now_utc();
+        let Some(Item::Batch(batch)) = self.outbox.front() else {
             unreachable!()
         };
-        if now - batch.signed_at > RESIGN_AFTER_S {
-            let events = std::mem::take(&mut batch.events);
-            let server_id = batch.server_id.clone();
-            let fresh = self.sign(server_id, events)?;
-            self.outbox[0] = Item::Batch(fresh);
+        if now.unix_timestamp() - batch.signed_at > RESIGN_AFTER_S {
+            let text = self.sign(&batch.server_id, &batch.events, now)?;
+            let Some(Item::Batch(batch)) = self.outbox.front_mut() else {
+                unreachable!()
+            };
+            batch.text = text;
+            batch.signed_at = now.unix_timestamp();
         }
         let Some(Item::Batch(batch)) = self.outbox.front() else {
             unreachable!()
@@ -863,6 +930,10 @@ impl ServerSink {
         if let Some(sim) = &mut self.sim {
             sim.pending.clear();
         }
+        // Queued records are deltas of the dead connection's stream; the
+        // next connection starts a new one. Frames go now or never.
+        self.dropped_frames += self.pending.records as u64;
+        self.pending = Pending::default();
         if let Some(mut connection) = self.connection.take() {
             let _ = connection.socket.close(None);
             let _ = connection.socket.flush();
@@ -884,16 +955,93 @@ impl ServerSink {
         }
         if self.sim.is_some() {
             self.queue_sim_frame(message)?;
+            self.send_combat()?;
             // Retain a cut across connection failures until its batch is sent.
             if self.machine_cut.is_some() {
                 self.send_pending_sim_frames()?;
             }
+        } else if self.batch_frames() {
+            self.queue_frame(message)?;
         } else {
             self.write(message)?;
-            // Drain available replies without waiting on the guest.
             self.drain()?;
         }
         self.machine_cut = None;
+        Ok(())
+    }
+
+    fn pending_full_or_due(&self) -> bool {
+        self.pending.records >= live_proto::MAX_INGEST_BATCH_FRAMES
+            || self.pending.bytes.len() >= MAX_INGEST_MESSAGE
+            || self.flush_deadline().is_some_and(|at| Instant::now() >= at)
+    }
+
+    /// Holds a frame's message for the next flush, so a window's frames go
+    /// as one WebSocket message instead of one each. A text message (a
+    /// frame the packed format cannot carry) flushes first, keeping the
+    /// stream in order, and goes on its own.
+    fn queue_frame(&mut self, message: Message) -> Result<(), Failure> {
+        let Message::Binary(bytes) = message else {
+            self.send_pending_frames()?;
+            self.write(message)?;
+            return self.drain();
+        };
+        if !self.pending.bytes.is_empty()
+            && (self.pending.bytes.len() + bytes.len() > MAX_INGEST_MESSAGE
+                || self.pending_full_or_due())
+        {
+            self.send_pending_frames()?;
+            self.drain()?;
+        }
+        if self.pending.bytes.is_empty() {
+            self.pending.since = Some(Instant::now());
+        }
+        self.pending.records += 1;
+        self.pending.bytes.extend_from_slice(&bytes);
+        Ok(())
+    }
+
+    /// The held records in one message. On a failure they are gone, as
+    /// every frame the connection could not take: counted as dropped.
+    fn send_pending_frames(&mut self) -> Result<(), Failure> {
+        if self.pending.bytes.is_empty() {
+            return Ok(());
+        }
+        let bytes = std::mem::take(&mut self.pending.bytes);
+        let records = std::mem::take(&mut self.pending.records);
+        self.pending.since = None;
+        let sent = self
+            .refresh_auth()
+            .and_then(|()| self.write(Message::Binary(bytes.into())));
+        if sent.is_err() {
+            self.dropped_frames += records as u64;
+        }
+        sent
+    }
+
+    fn send_combat(&mut self) -> Result<(), Failure> {
+        if !self.discovery().sim_combat {
+            return Ok(());
+        }
+        let sim = self.sim.as_mut().expect("sim capture");
+        let Some(read) = sim.combat.as_ref().and_then(|feed| feed.get()) else {
+            return Ok(());
+        };
+        let now = Instant::now();
+        if sim.next_combat.is_some_and(|due| due > now) {
+            return Ok(());
+        }
+        let game_id = sim.game_id.clone();
+        let samples = read();
+        // The first frame can precede binding or spawning the sim roster.
+        sim.next_combat = Some(now + Duration::from_secs(if samples.is_empty() { 1 } else { 5 }));
+        for sample in samples {
+            let message = ClientMessage::SimCombat { game_id: game_id.clone(), sample: Box::new(sample) };
+            let text = serde_json::to_string(&message).expect("finite sim combat sample");
+            if text.len() <= MAX_INGEST_MESSAGE {
+                self.write(Message::Text(text.into()))?;
+            }
+        }
         Ok(())
     }
 
@@ -997,24 +1145,25 @@ impl ServerSink {
         self.send_pending_sim_frames()
             .map_err(|e| format!("final sim frames: {e:?}"))?;
         self.settle_sim_events()?;
-        let result = self.put_report(&id, &report);
+        let result = self.put_report(&id, report);
         drop(guard);
         result
     }
 
     pub(crate) fn report_after_film(
-        mut self, id: &str, report: &serde_json::Value,
+        mut self, id: &str, report: serde_json::Value,
     ) -> Result<(), String> {
         self.discovery = Some(self.discover().map_err(|e| format!("sim report discovery: {e:?}"))?);
         self.put_report(id, report)
     }
 
-    fn put_report(&self, id: &str, report: &serde_json::Value) -> Result<(), String> {
+    fn put_report(&self, id: &str, report: serde_json::Value) -> Result<(), String> {
         let api = resolve_api(&self.base_url, &self.discovery().api);
         let url = format!("{}/admin/sim-runs/{id}/report", api.trim_end_matches('/'));
         if !live_proto::bearer_allowed(&url) {
             return Err("sim report credentials require HTTPS or loopback HTTP".into());
         }
+        let bytes = encode_sim_report(report)?;
         let mut result = Ok(());
         for delay in [0, 1, 2] {
             if delay != 0 {
@@ -1024,20 +1173,50 @@ impl ServerSink {
             let response = Self::agent()
                 .put(&url)
                 .set("Authorization", &format!("Bearer {token}"))
-                .send_json(report);
+                .set("Content-Type", "application/json")
+                .send_bytes(&bytes);
             match response {
                 Ok(_) => {
                     eprintln!("sim: Live recording {id}");
                     return Ok(());
                 }
-                Err(e @ ureq::Error::Status(status, _)) if status < 500 && status != 429 => {
-                    return Err(format!("uploading sim report: {e}"));
+                Err(ureq::Error::Status(status, response)) if status < 500 && status != 429 => {
+                    let message = response
+                        .into_json::<ErrorBody>()
+                        .map_or_else(|_| format!("HTTP {status}"), |b| format!("HTTP {status}: {}", b.message));
+                    return Err(format!("uploading sim report to {url}: {message}"));
                 }
                 Err(e) => result = Err(format!("uploading sim report: {e}")),
             }
         }
         result
     }
+}
+
+/// Both immediate and deferred sim uploads use the same capped payload.
+fn encode_sim_report(mut report: serde_json::Value) -> Result<Vec<u8>, String> {
+    let mut bytes = vec![0; game::MAX_SIM_REPORT_BYTES];
+    let write = |bytes: &mut [u8], value: &serde_json::Value| {
+        let mut out = bytes;
+        serde_json::to_writer(&mut out, value)?;
+        Ok::<_, serde_json::Error>(game::MAX_SIM_REPORT_BYTES - out.len())
+    };
+    let len = match write(&mut bytes, &report) {
+        Ok(n) => n,
+        Err(error) if error.io_error_kind() == Some(ErrorKind::WriteZero) => {
+            let obj = report.as_object_mut().ok_or("expected a sim report object")?;
+            // The runner saves the full per-tick diff locally before upload.
+            obj.remove("state_components_v1");
+            obj.remove("state_hashes_v1");
+            if let Some(notes) = obj.entry("notes").or_insert_with(|| serde_json::json!([])).as_array_mut() {
+                notes.push("The per-tick determinism traces exceed the Live report limit and are omitted.".into());
+            }
+            write(&mut bytes, &report).map_err(|e| format!("sim report exceeds 512 KiB or failed to encode: {e}"))?
+        }
+        Err(e) => return Err(format!("encoding sim report: {e}")),
+    };
+    bytes.truncate(len);
+    Ok(bytes)
 }
 
 /// A close from the server: 4401 is the token refused (or expired), a
@@ -1085,8 +1264,8 @@ impl Sink for ServerSink {
         }
     }
 
-    /// A frame goes now or not at all: while the server is out of reach,
-    /// or its game is not created yet, it is dropped.
+    /// Frames wait for a batch only on a live connection. When the server
+    /// is out of reach or the game has no server ID, they are dropped.
     fn frame(&mut self, frame: Frame) -> Result<(), String> {
         if let Some(error) = &self.fatal {
             return Err(error.clone());
@@ -1141,7 +1320,18 @@ impl Sink for ServerSink {
     }
 
     fn flush(&mut self) -> Result<(), String> {
-        self.deliver()
+        self.deliver()?;
+        if self.connection.is_some() && self.pending_full_or_due() {
+            let step = self.send_pending_frames().and_then(|()| self.drain());
+            if let Err(failure) = step {
+                return self.failed(failure);
+            }
+        }
+        Ok(())
+    }
+
+    fn flush_deadline(&self) -> Option<Instant> {
+        self.pending.since.map(|since| since + self.timing.frame_batch)
     }
 
     fn finish_sim(&mut self, report: serde_json::Value) -> Result<(), String> {
@@ -1153,7 +1343,15 @@ impl Drop for ServerSink {
     fn drop(&mut self) {
         // One last go on a live connection; no reconnect on the way out.
         if self.connection.is_some() && self.fatal.is_none() {
-            let _ = self.deliver();
+            let sent = self.send_pending_frames().and_then(|()| self.send_pending_sim_frames());
+            match sent {
+                Ok(()) => {
+                    let _ = self.deliver();
+                }
+                Err(failure) => {
+                    let _ = self.failed(failure);
+                }
+            }
         }
         if !self.outbox.is_empty() {
             eprintln!(
@@ -1434,7 +1632,9 @@ mod tests {
             software: "test".into(),
             federation: false,
             url: None,
+            sim_combat: false,
             ingest_frame_versions: vec![],
+            ingest_frame_batch: false,
         };
         assert!(sink.check_host_destination(&discovery).is_ok());
         discovery.api = "https://other.example/v1".into();
@@ -1452,8 +1652,8 @@ mod tests {
         let event = GameEvent::new("local", game::GAME_ENDED, serde_json::json!({
             "tick": 1800, "reason": "finished", "players": [],
         }));
-        let batch = sink.sign("leased-game".into(), vec![event]).unwrap();
-        let ClientMessage::Events { jws, .. } = serde_json::from_str(&batch.text).unwrap() else {
+        let text = sink.sign("leased-game", &[event], time::OffsetDateTime::now_utc()).unwrap();
+        let ClientMessage::Events { jws, .. } = serde_json::from_str(&text).unwrap() else {
             panic!("expected an event batch")
         };
         let (signed, bodies) = SignedEvent::open_batch(&jws).unwrap();

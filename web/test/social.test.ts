@@ -243,9 +243,11 @@ describe("a team's combined record", () => {
     expect(teamRecord(s, [A, B]).medals.size).toBe(0);
     applyEvents(s, [ev("GameEnded", "game-medals", match[1]!.data)]);
     const medals = teamRecord(s, [A, B]).medals;
-    expect(medals.size).toBe(2);
+    expect(medals.size).toBe(3);
     expect(medals.get("twofer")).toBe(1);
     expect(medals.get("opening-act")).toBe(1);
+    // No teabag in the game: both members completed it clean.
+    expect(medals.get("incel")).toBe(2);
   });
 
   test("counts games two members played on one side, with their numbers and wins", () => {

@@ -8,7 +8,10 @@ use crate::structure::{Lightmap, LightmapGroup};
 use crate::wire::TagReference;
 use crate::{Error, Result};
 use map::{FourCC, Map, TagId};
-use std::io::{Read, Seek};
+use std::{
+    borrow::Cow,
+    io::{Read, Seek},
+};
 
 pub const ATMOSPHERE_GROUPS: [FourCC; 7] = [
     FourCC(*b"sky "),
@@ -145,11 +148,13 @@ pub fn palette_rgba(palette: &[u32; 256], index: u8) -> [u8; 4] {
     [r, g, b, a]
 }
 
-/// Sky light: only angles and lens-flare reference are interpreted here.
+/// Direction, lens flare and the raw flags of the first lighting parameter.
 #[derive(Clone, Debug)]
 pub struct SkyLight {
     pub yaw_pitch: [f32; 2],
     pub lens_flare: TagReference,
+    /// First word of the +0x2c child block, absent when the block is empty.
+    pub parameter_flags: Option<u32>,
     pub raw: [u8; 0x34],
 }
 #[derive(Clone, Debug)]
@@ -168,32 +173,43 @@ pub struct Sky {
 }
 impl Sky {
     fn decode(view: &TagView<'_>) -> Result<Self> {
-        Self::decode_with_lights(view, None)
+        Self::decode_with_aliases(view, |_, _| {
+            Err(Error::Invalid("sky block outside payload"))
+        })
     }
-    fn decode_with_lights(view: &TagView<'_>, alias: Option<&[u8]>) -> Result<Self> {
-        let h = view.at(0, 0xac)?;
-        let records = if let Some(bytes) = alias {
-            let size = u64::from(u32_at(h, 0x78)) * 0x34;
-            if size != bytes.len() as u64 {
-                return Err(Error::Invalid("sky alias size/budget mismatch"));
+
+    fn decode_with_aliases(
+        view: &TagView<'_>,
+        mut read_alias: impl FnMut(u32, u32) -> Result<Vec<u8>>,
+    ) -> Result<Self> {
+        // Sky records and their parameter blocks can belong to another sky.
+        // Charge each visit (even repeated aliases) before reading it.
+        let mut block = |record: &[u8], field, stride: u32| -> Result<Cow<'_, [u8]>> {
+            let count = u32_at(record, field);
+            let address = u32_at(record, field + 4);
+            let size = count
+                .checked_mul(stride)
+                .ok_or(Error::Invalid("sky block size"))?;
+            if count != 0 && !address.is_multiple_of(4) {
+                return Err(Error::Invalid("unaligned sky block"));
             }
-            // Alias bytes come from another payload; charge them here too.
-            view.charge(size)?;
-            bytes
-                .as_chunks::<0x34>()
-                .0
-                .iter()
-                .map(|b| b.as_slice())
-                .collect()
-        } else {
-            view.block(h, 0x78, 0x34)?
+            view.charge(u64::from(size))?;
+            Ok(match view.range(address, u64::from(size)) {
+                Ok(local) => Cow::Borrowed(local),
+                Err(_) => Cow::Owned(read_alias(address, size)?),
+            })
         };
+        let h = view.at(0, 0xac)?;
+        let records = block(h, 0x78, 0x34)?;
+        let lights_alias = matches!(&records, Cow::Owned(_));
         let lights = records
-            .into_iter()
+            .chunks_exact(0x34)
             .map(|b| {
+                let params = block(b, 0x2c, 0x28)?;
                 Ok(SkyLight {
                     yaw_pitch: floats(b, 0xc)?,
                     lens_flare: checked_reference(b, 0x14, FourCC(*b"lens"))?,
+                    parameter_flags: (!params.is_empty()).then(|| u32_at(&params, 0)),
                     raw: b.try_into().map_err(|_| Error::Invalid("sky light size"))?,
                 })
             })
@@ -205,7 +221,7 @@ impl Sky {
             fallback_rgb: floats(h, 0x34)?,
             rotation: floats::<1>(h, 0x80)?[0],
             lights,
-            lights_alias: alias.is_some(),
+            lights_alias,
             opaque: view.bytes().to_vec(),
         })
     }
@@ -338,22 +354,8 @@ impl Atmosphere {
         let (bytes, address) = read(map, id, group)?;
         let view = TagView::new(&bytes, address);
         let value = if group == FourCC(*b"sky ") {
-            let h = view.at(0, 0xac)?;
-            let count = u32_at(h, 0x78);
-            let pointer = u32_at(h, 0x7c);
-            let size = u64::from(count) * 0x34;
-            if count != 0 && !pointer.is_multiple_of(4) {
-                return Err(Error::Invalid("unaligned sky light block"));
-            }
-            if size > view.bytes().len() as u64 {
-                return Err(Error::Invalid("sky light alias/work budget exceeded"));
-            }
-            if count != 0 && view.range(pointer, size).is_err() {
-                let location = map.tag(id)?.location.ok_or(map::Error::NoTagData)?;
-                let size = u32::try_from(size).map_err(|_| Error::Invalid("sky block size"))?;
-                // A range needs an actual same-class owning payload, in the
-                // identical metadata address space. Unclaimed map bytes and
-                // a same address in another BSP space are never a fallback.
+            let location = map.tag(id)?.location.ok_or(map::Error::NoTagData)?;
+            Self::Sky(Sky::decode_with_aliases(&view, |pointer, size| {
                 let owned = map.tags().iter().any(|t| {
                     t.group == group
                         && t.location.is_some_and(|l| {
@@ -364,14 +366,11 @@ impl Atmosphere {
                         })
                 });
                 if !owned {
-                    return Err(Error::Invalid("sky light range has no same-class owner"));
+                    return Err(Error::Invalid("sky block has no same-class owner"));
                 }
                 let offset = location.space.translate(pointer, size)?;
-                let alias = map.read_file_range(offset, u64::from(size))?;
-                Self::Sky(Sky::decode_with_lights(&view, Some(&alias))?)
-            } else {
-                Self::Sky(Sky::decode(&view)?)
-            }
+                Ok(map.read_file_range(offset, u64::from(size))?)
+            })?)
         } else {
             Self::decode(group, &view)?
         };

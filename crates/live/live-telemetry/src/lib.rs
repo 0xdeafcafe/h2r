@@ -39,9 +39,9 @@ pub fn image_film_hooks(rt: &runtime::Runtime) -> live_proto::film::TelemetryHoo
 pub use layout::LIKELY_FIELDS;
 pub use memory::{
     FilmSceneReader, ThingState, active_bsp, actors, film_scene, game_info, game_tick, hit, loaded_map_name, object,
-    object_definition, players, sim_snapshot, snapshot, team_scores, things, world, yaw,
+    object_definition, players, rotation_axes, sim_snapshot, snapshot, team_scores, things, world, yaw,
 };
 pub use pipeline::Pipeline;
 pub use session::{Bots, Playlist};
 pub use sink::{JsonlSink, Sink};
-pub use tags::{BotsLocator, MapFile, MapIdLocator, MapLocator, PlaylistLocator, TagNames};
+pub use tags::{BotsLocator, HostedSessionLocator, MapFile, MapIdLocator, MapLocator, PlaylistLocator, TagNames};

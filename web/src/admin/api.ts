@@ -47,8 +47,9 @@ async function put<T>(path: string, body: unknown, lxm = "titles.write"): Promis
   const me = identity.me();
   const wk = live.wellKnown();
   if (!me || !wk) throw new ApiError(401, "unauthorized", "sign in first");
+  const url = `${live.server().api}${path}`;
   const token = await issueToken(me, wk.id, lxm);
-  const r = await fetch(`${live.server().api}${path}`, {
+  const r = await fetch(url, {
     method: "PUT",
     headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
     body: JSON.stringify(body),

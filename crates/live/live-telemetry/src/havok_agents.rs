@@ -17,6 +17,9 @@ const ISLAND_PAIRS: u32 = 0x68;
 const HANDLE_IN_ENTITY: u32 = 0x1c;
 const MAX_PAIRS: u32 = 32768;
 const MAX_CACHE_BYTES: u32 = 256 * 1024;
+/// The pair word's offset in a 16-byte pair record
+/// (docs/engine/havok-runtime.md, "Collision agents").
+pub const PAIR_WORD: u32 = 12;
 
 #[derive(Debug)]
 pub struct Pair {
@@ -50,9 +53,9 @@ fn array(
     Ok((ptr, count))
 }
 
-/// Collect all the component's rigid-body handles, including multi-body objects.
-fn handles(m: &dyn GuestMemory, datum: u32) -> Result<HashSet<u32>, MemFault> {
-    let mut out = HashSet::new();
+/// Entities in the object's current physics component, in component order.
+pub fn object_entities(m: &dyn GuestMemory, datum: u32) -> Result<Vec<u32>, MemFault> {
+    let mut out = Vec::new();
     let Some(handle) = DatumHandle::from_raw(datum) else {
         return Ok(out);
     };
@@ -84,7 +87,7 @@ fn handles(m: &dyn GuestMemory, datum: u32) -> Result<HashSet<u32>, MemFault> {
         let entity = m.u32(entry + layout::COMPONENT_BODY_RIGID)?;
         if entity != 0 {
             span(entity, HANDLE_IN_ENTITY + 4)?;
-            out.insert(entity + HANDLE_IN_ENTITY);
+            out.push(entity);
         }
     }
     Ok(out)
@@ -136,7 +139,7 @@ fn pair(
         other_entity,
         other_datum,
         other_fixed: fixed != 0 && other_island == Some(fixed),
-        pair_word: m.u32(entry + 12)?,
+        pair_word: m.u32(entry + PAIR_WORD)?,
         cache,
         tree,
     }))
@@ -150,7 +153,10 @@ pub fn agents(m: &dyn GuestMemory, datum: u32) -> Result<Vec<Pair>, MemFault> {
     if world == 0 {
         return Ok(out);
     }
-    let handles = handles(m, datum)?;
+    let handles: HashSet<_> = object_entities(m, datum)?
+        .into_iter()
+        .map(|entity| entity + HANDLE_IN_ENTITY)
+        .collect();
     if handles.is_empty() {
         return Ok(out);
     }
@@ -170,6 +176,92 @@ pub fn agents(m: &dyn GuestMemory, datum: u32) -> Result<Vec<Pair>, MemFault> {
         }
     }
     Ok(out)
+}
+
+/// The entry of the object's one pair against a fixed body, if it has
+/// exactly one.
+pub fn fixed_pair(m: &dyn GuestMemory, datum: u32) -> Result<Option<u32>, MemFault> {
+    let fixed: Vec<_> = agents(m, datum)?
+        .into_iter()
+        .filter(|p| p.other_fixed)
+        .map(|p| p.entry)
+        .collect();
+    Ok(match fixed[..] {
+        [entry] => Some(entry),
+        _ => None,
+    })
+}
+
+/// The word of the object's one pair against a fixed body (the level), or
+/// `None` without exactly one. The same pairs as [`fixed_pair`] finds, by a
+/// minimal walk: it checks each pair's handles and the other body's island
+/// and decodes no collision-agent cache or tree, so it is cheap enough to
+/// call every tick.
+pub fn fixed_pair_word(m: &dyn GuestMemory, datum: u32) -> Result<Option<u32>, MemFault> {
+    let world = m.u32(layout::HAVOK_WORLD_PTR)?;
+    if world == 0 {
+        return Ok(None);
+    }
+    let handles: HashSet<_> = object_entities(m, datum)?
+        .into_iter()
+        .map(|entity| entity + HANDLE_IN_ENTITY)
+        .collect();
+    if handles.is_empty() {
+        return Ok(None);
+    }
+    span(world, layout::WORLD_FIXED_ISLAND + 4)?;
+    let fixed = m.u32(world + layout::WORLD_FIXED_ISLAND)?;
+    if fixed == 0 {
+        return Ok(None);
+    }
+    let mut remaining_pairs = MAX_PAIRS;
+    let mut found = None;
+    for (island, _) in havok::islands(m, world)? {
+        span(island, ISLAND_PAIRS + 12)?;
+        let (ptr, count) = array(m, island + ISLAND_PAIRS, remaining_pairs, 16)?;
+        remaining_pairs -= count;
+        for i in 0..count {
+            let entry = ptr + 16 * i;
+            let sides = [m.u32(entry)?, m.u32(entry + 4)?];
+            let Some(side) = sides.iter().position(|h| handles.contains(h)) else {
+                continue;
+            };
+            if m.u32(entry + 8)? == 0 {
+                continue;
+            }
+            let other = sides[1 - side].checked_sub(0x10).ok_or_else(|| bad(sides[1 - side]))?;
+            span(other, 0x24)?;
+            if m.u32(other + 0x18)? != 1 {
+                continue;
+            }
+            let owner = m.u32(other + 0x20)?;
+            span(owner, 0x48)?;
+            if m.u32(owner + 0x44)? != fixed {
+                continue;
+            }
+            if found.replace(m.u32(entry + PAIR_WORD)?).is_some() {
+                return Ok(None);
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// Writes `word` over the pair word of `entry`, which must be one of the
+/// object's pairs as [`agents`] finds them. The word before, or `None` when
+/// `entry` isn't one of them.
+pub fn set_pair_word(
+    m: &mut dyn GuestMemory,
+    datum: u32,
+    entry: u32,
+    word: u32,
+) -> Result<Option<u32>, MemFault> {
+    if !agents(&*m, datum)?.iter().any(|p| p.entry == entry) {
+        return Ok(None);
+    }
+    let before = m.u32(entry + PAIR_WORD)?;
+    m.write(entry + PAIR_WORD, &word.to_le_bytes())?;
+    Ok(Some(before))
 }
 
 #[cfg(test)]

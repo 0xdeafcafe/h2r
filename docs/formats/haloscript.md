@@ -46,9 +46,13 @@ cargo run -p cli --release -- disasm disc/halo2.iso 0x2a0c40 30
 ## Scenario tables and per-table provenance
 
 Descriptors are `u32 count, u32 guest_address`, except the strings descriptor's
-count is bytes. Integers are little-endian. The parser checks nonempty spans
-against the owning scenario payload and requires four-byte alignment; zero
-count ignores the address. This deliberately does not guess other scnr blocks.
+count is bytes. Integers are little-endian. Each nonempty table starts on a
+four-byte boundary. A zero count ignores the address. In
+`crates/formats/hs/src/scenario.rs`, `Scenario::decode` bounds each span by
+the supplied scenario payload. `Scenario::read` reads the descriptors from
+the indexed scenario root and bounds each span by the map's ordinary metadata.
+This allows a packaged map to append script tables while keeping the root in
+place. Both paths preflight all five spans before allocating the tables.
 
 | Table / scnr field | Layout | Provenance and evidence |
 |---|---|---|
@@ -139,6 +143,40 @@ names, without conflicting spellings for an index. The other 521 descriptors
 remain unnamed; the XBE does not supply the missing names in this layout. No
 outside opcode table fills the gaps. `Catalog::observe` retains the map-derived
 names in memory and rejects conflicting evidence transactionally.
+
+### Builtin names from a documentation listing
+
+`crates/formats/hs/src/script_doc.rs`. The editor's Scripts tab can name
+more builtins from a script documentation listing that the user supplies:
+the `hs_doc` text from their own copy of the retail editing kit for Halo 2
+on MCC. The listing is read at run time from the path the user gives, and
+is never stored, committed or quoted. `ScriptDoc::parse` reads each entry
+as a signature line, `(<return> name <param> ...)`, followed by
+description lines up to a blank line. A `;` line opens a section, and
+entries after one that names globals are external globals. A text with no
+entries is an error, not an empty listing.
+
+`Naming::new` gives an entry's name to a builtin only when the
+descriptor's return type and parameter types, by type name and in order,
+are the entry's, and the pairing is not ambiguous:
+
+- A map-named builtin whose entry has the same signature is an anchor.
+  The longest run of anchors in the same order in both lists is kept.
+  An entry that names a map-named builtin with other types is reported as
+  a disagreement. That name never moves.
+- Between two anchors, the unnamed builtins and the unused entries pair
+  in order when there are as many of each and every pair matches.
+  Otherwise a builtin takes an entry only when each is the only one
+  between those anchors with that signature.
+- An entry with optional, repeated or grouped parameters (`[<x>]`,
+  `<x(s)>`) names nothing, and neither does a name the listing repeats. A
+  flags-2 builtin reads its own arguments, so its parameter list is not
+  its argument count: it takes no listing name.
+
+Every other builtin stays `#builtin:<index>`. The listing's order and
+format are matched against the user's copy when it is chosen. The editor
+reports how many entries were read, how many agree with the map's names,
+how many disagree and how many builtins were named.
 
 The supported XBE is checked by title/certificate/entry, count and dispatch
 instruction anchors, then bounded table reads. These are compatibility guards,
@@ -231,7 +269,9 @@ the 911 builtin descriptors or their scenario script definitions. No unrooted
 live nodes or salt mismatches were found. Every retained table passes byte-for-byte codec symmetry, including 43,545 free slots, name padding and reserved words.
 
 The decompiler preserves each call node and function-name atom as one Lisp
-list, without collapsing implicit `begin` wrappers. Its independently tokenized
+list, without collapsing implicit `begin` wrappers. `Scenario::decompile_each`
+renders each global and script alone, with the byte span of every atom and
+call name (`Token`), for the editor's linked source. Its independently tokenized
 output contains exactly **295,322 reconstructed node occurrences**. This is a
 **node-count** check, not a compiler capable of reconstructing original
 salts, cache addresses, resource bindings or inferred types. Whitespace/comments

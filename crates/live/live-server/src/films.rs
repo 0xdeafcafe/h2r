@@ -2,7 +2,10 @@
 //! availability, pins and clips are projected in both homes from signed events.
 
 mod catalogue;
+mod link;
+pub(crate) mod shared;
 use catalogue::{Source, Standalone};
+pub(crate) use link::{film_detail, film_object};
 mod import;
 pub(crate) use import::resume as resume_import;
 mod inspect;
@@ -48,7 +51,25 @@ const CLIP_DELETED: &str = "ClipDeleted";
 const HOST_FILM_STORED: &str = "HostFilmStored";
 const HOST_FILM_CLEANED: &str = "HostFilmCleaned";
 const HOST_FILM_CLEANUP_REQUESTED: &str = "HostFilmCleanupRequested";
-pub(crate) const KINDS: [&str; 11] = [SAVED, UNSAVED, CLIP_CREATED, CLIP_DELETED, HOST_FILM_STORED, import::STARTED, import::ADVANCED, HOST_FILM_CLEANED, legacy::QUEUED, legacy::FINISHED, HOST_FILM_CLEANUP_REQUESTED];
+pub(crate) const KINDS: [&str; 17] = [
+    shared::PURGED,
+    shared::REMOVED,
+    shared::RESERVED,
+    shared::PUBLISHED,
+    shared::VISIBILITY,
+    shared::DELETED,
+    SAVED,
+    UNSAVED,
+    CLIP_CREATED,
+    CLIP_DELETED,
+    HOST_FILM_STORED,
+    import::STARTED,
+    import::ADVANCED,
+    HOST_FILM_CLEANED,
+    legacy::QUEUED,
+    legacy::FINISHED,
+    HOST_FILM_CLEANUP_REQUESTED,
+];
 pub(crate) const HOST_FILM_PREFIX: &str = "films/";
 
 const LEGACY_TICKS_PER_SECOND: u16 = 30;
@@ -133,6 +154,11 @@ pub(crate) struct Films {
     pub(crate) imports: BTreeMap<String, import::Pending>,
     last_import: std::sync::Mutex<String>,
     next_version: u64,
+    garbage: BTreeMap<String, shared::Share>,
+    garbage_cursor: std::sync::Mutex<String>,
+    removed: HashMap<Xuid, BTreeSet<String>>,
+    shared: BTreeMap<String, shared::Share>,
+    downloads: HashMap<String, (u64, String)>,
     standalone: HashMap<String, Standalone>,
     standalone_order: BTreeMap<u64, String>,
     // Signed per-game journal versions survive both successful publication and
@@ -167,7 +193,7 @@ impl Films {
 
     pub(crate) fn film_work_due(&self) -> Option<i64> {
         self.legacy.due().into_iter().chain(
-            (!self.cleanup.is_empty() || !self.imports.is_empty()).then(|| crate::app::now() + 5)
+            (!self.cleanup.is_empty() || !self.imports.is_empty() || !self.garbage.is_empty()).then(|| crate::app::now() + 5)
         ).min()
     }
 
@@ -247,6 +273,12 @@ pub(crate) fn project(model: &mut Model, event: &RecordedEvent) {
         films.import_versions.insert(id.to_owned(), event.version + 1);
     }
     match event.body.kind.as_str() {
+        shared::RESERVED
+        | shared::PUBLISHED
+        | shared::VISIBILITY
+        | shared::DELETED
+        | shared::PURGED
+        | shared::REMOVED => shared::project(films, event),
         legacy::QUEUED | legacy::FINISHED => films.legacy.project(event),
         import::STARTED => {
             if let Ok(p) = serde_json::from_value::<import::Pending>(event.body.data.clone())
@@ -266,6 +298,13 @@ pub(crate) fn project(model: &mut Model, event: &RecordedEvent) {
         }
         HOST_FILM_STORED => {
             let Some(id) = event.body.data["game"].as_str() else { return };
+            films.downloads.remove(id);
+            if let (Some(size), Some(digest)) = (
+                event.body.data["size"].as_u64(),
+                event.body.data["sha256"].as_str(),
+            ) {
+                films.downloads.insert(id.into(), (size, digest.into()));
+            }
             films.imports.remove(id);
             films.legacy.published(id);
             films.cleanup.insert(id.to_owned());
@@ -303,7 +342,13 @@ pub(crate) fn project(model: &mut Model, event: &RecordedEvent) {
                 return;
             };
             let save = event.body.kind == SAVED;
-            let position = if let Some(game) = model.games.get_mut(&pin.game) {
+            if save && let Some(ids) = films.removed.get_mut(&pin.by) {
+                ids.remove(&pin.game);
+            }
+            let position = if let Some(share) = films.shared.get_mut(&pin.game) {
+                share.pinned = save;
+                share.position
+            } else if let Some(game) = model.games.get_mut(&pin.game) {
                 if save == films.saved.get(&pin.by).is_some_and(|pins| pins.contains_key(&game.position)) {
                     return;
                 }
@@ -426,12 +471,6 @@ fn game_result(game: &Game, player: Xuid) -> Option<&'static str> {
     Some(if wins { "win" } else { "loss" })
 }
 
-#[derive(Serialize)]
-struct ClipWithFilm<'a> {
-    clip: &'a Clip,
-    film: Film<'a>,
-}
-
 fn visible_game<'a>(model: &'a Model, id: &str, viewer: Viewer) -> Option<Source<'a>> {
     model.games.get(id).map(Source::Game)
         .or_else(|| model.films.standalone.get(id).map(Source::Standalone))
@@ -439,7 +478,24 @@ fn visible_game<'a>(model: &'a Model, id: &str, viewer: Viewer) -> Option<Source
 }
 
 pub(crate) fn visible_clip<'a>(model: &'a Model, id: &str, viewer: Viewer) -> Option<&'a Clip> {
+    let caller = if let Viewer::Account(by) = viewer {
+        Some(by)
+    } else {
+        None
+    };
+    clip_for(model, id, viewer, caller)
+}
+
+fn clip_for<'a>(
+    model: &'a Model,
+    id: &str,
+    viewer: Viewer,
+    caller: Option<Xuid>,
+) -> Option<&'a Clip> {
     let clip = model.films.clip(id)?;
+    if let Some(share) = model.films.shared.get(&clip.game) {
+        return share.visible(caller).then_some(clip);
+    }
     visible_game(model, &clip.game, viewer)?;
     Some(clip)
 }
@@ -471,15 +527,53 @@ pub(crate) async fn list(
     headers: HeaderMap,
     Query(params): Params,
 ) -> ApiResult<Response> {
-    let viewer = live.read_viewer(bearer(&headers))?;
+    let (viewer, caller) = live.read_viewer_account(bearer(&headers))?;
     let player = params
         .get("player")
         .and_then(|s| Xuid::parse(s).ok())
         .ok_or_else(|| invalid("player must be a XUID"))?;
     let position = live.position();
     let model = live.model.read();
-    let shown = |id: &str| visible_game(&model, id, viewer);
+    let shown = |id: &str| {
+        model
+            .films
+            .shared
+            .get(id)
+            .filter(|s| s.listed(caller))
+            .map(shared::Share::row)
+            .or_else(|| Some(json!(&visible_game(&model, id, viewer)?.listing(player))))
+    };
     match params.get("kind").map(String::as_str) {
+        Some("library") if caller == Some(player) => {
+            let paging = paging(&params)?;
+            Ok(shared::private_json(
+                StatusCode::OK,
+                &shared::library(&model, viewer, player, paging.after, paging.limit, position),
+            ))
+        }
+        Some("library") => Err(forbidden("sign in to your film library")),
+        Some("shared") => {
+            let paging = paging(&params)?;
+            let mut shares: Vec<_> = model
+                .films
+                .shared
+                .values()
+                .filter(|s| {
+                    s.owner == player
+                        && s.listed(caller)
+                        && (paging.after == 0 || s.position < paging.after)
+                })
+                .collect();
+            shares.sort_unstable_by_key(|s| std::cmp::Reverse(s.position));
+            Ok(shared::private_json(
+                StatusCode::OK,
+                &page(
+                    shares.into_iter().map(|s| (s.position, s.row())),
+                    paging.limit,
+                    position,
+                ),
+            ))
+        }
         Some("recent") => {
             let items = catalogue::recent(&model, player, viewer);
             Ok(json(
@@ -500,7 +594,7 @@ pub(crate) async fn list(
                 .get(&player)
                 .into_iter()
                 .flat_map(|pins| pins.range((Unbounded, before)).rev())
-                .filter_map(|(&key, id)| Some((key, shown(id)?.listing(player))));
+                .filter_map(|(&key, id)| Some((key, shown(id)?)));
             Ok(json(StatusCode::OK, &page(rows, paging.limit, position)))
         }
         Some("clips") => {
@@ -514,12 +608,13 @@ pub(crate) async fn list(
                 .flat_map(|clips| clips.range((Unbounded, before)).rev())
                 .filter_map(|key| {
                     let clip = &model.films.clips[key];
-                    let film = shown(&clip.game)?.listing(player);
-                    Some((*key, ClipWithFilm { clip, film }))
+                    Some((*key, json!({"clip":clip,"film":shown(&clip.game)?})))
                 });
             Ok(json(StatusCode::OK, &page(rows, paging.limit, position)))
         }
-        _ => Err(invalid("kind must be recent, saved or clips")),
+        _ => Err(invalid(
+            "kind must be recent, saved, clips, library or shared",
+        )),
     }
 }
 
@@ -541,28 +636,68 @@ impl Live {
         self.wait_applied(recorded[0].position).await
     }
 
+    /// Install a synthetic host receipt for the two-home quota suite, without allocating its payload.
+    #[cfg(feature = "conformance")]
+    pub async fn fixture_host_film(&self, by: Xuid, id: &str, size: u64) {
+        let version = self.model.read().films.next_version;
+        self.append_film(version, HOST_FILM_STORED, json!({
+            "game":id, "blob":format!("films/{id}"), "size":size, "sha256":"0".repeat(64),
+            "catalogue_host":"test", "catalogue_players":[by], "summary":live_proto::film::Summary::default(),
+            "web_ranges":{"size":size,"summary_bytes":1,"index_offset":1,"index_size":1,"index_sha256":"0".repeat(64)},
+            "stats_discrepancy":{"cause":"missing_start","event_index":0}
+        })).await.unwrap();
+    }
+
     async fn set_pin(&self, headers: &HeaderMap, id: String, save: bool) -> ApiResult<StatusCode> {
         let author = self.film_author(headers)?;
         let by = account(&author)?;
         game_id(&id)?;
         let _guard = self.film_writes.lock().await;
         let viewer = self.viewer_of(&author);
-        let version = {
+        let (version, evictions) = {
             let model = self.model.read();
-            let game =
-                visible_game(&model, &id, viewer).ok_or_else(|| not_found("no such game"))?;
-            let pinned = model.films.pinned_by(game, by);
-            if !game.players().contains(&by) && (save || !pinned) {
-                return Err(forbidden("only a player in the game can save it"));
+            if let Some(share) = model.films.shared.get(&id) {
+                if share.owner != by || !share.visible(Some(by)) {
+                    return Err(not_found("no such library film"));
+                }
+                if share.pinned == save {
+                    return Ok(StatusCode::NO_CONTENT);
+                }
+                (model.films.next_version, vec![])
+            } else {
+                let game =
+                    visible_game(&model, &id, viewer).ok_or_else(|| not_found("no such game"))?;
+                let pinned = model.films.pinned_by(game, by);
+                if !game.players().contains(&by) && (save || !pinned) {
+                    return Err(forbidden("only a player in the game can save it"));
+                }
+                if pinned == save {
+                    return Ok(StatusCode::NO_CONTENT);
+                }
+                let extra = if save {
+                    shared::host_size(&model, &id, game)?
+                } else {
+                    0
+                };
+                (
+                    model.films.next_version,
+                    if save {
+                        shared::evict(&model, by, extra, false)?
+                    } else {
+                        vec![]
+                    },
+                )
             }
-            if pinned == save {
-                return Ok(StatusCode::NO_CONTENT);
-            }
-            model.films.next_version
         };
         let pin = Pin { game: id, by };
-        self.append_film(version, if save { SAVED } else { UNSAVED }, json!(pin))
-            .await?;
+        shared::commit(
+            self,
+            version,
+            evictions,
+            if save { SAVED } else { UNSAVED },
+            json!(pin),
+        )
+        .await?;
         Ok(StatusCode::NO_CONTENT)
     }
 }
@@ -635,13 +770,21 @@ pub(crate) async fn game_clips(
     Path(id): Path<String>,
     Query(params): Params,
 ) -> ApiResult<Response> {
-    let viewer = live.read_viewer(bearer(&headers))?;
+    let (viewer, caller) = live.read_viewer_account(bearer(&headers))?;
     game_id(&id)?;
     let paging = paging(&params)?;
     let before = before(paging.after);
     let position = live.position();
     let model = live.model.read();
-    visible_game(&model, &id, viewer).ok_or_else(|| not_found("no such game"))?;
+    if !model
+        .films
+        .shared
+        .get(&id)
+        .is_some_and(|s| s.visible(caller))
+        && visible_game(&model, &id, viewer).is_none()
+    {
+        return Err(not_found("no such game"));
+    }
     let rows = model
         .films
         .by_game
@@ -693,10 +836,38 @@ pub(crate) async fn create_clip(
     let created_ms = (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64;
     let version = {
         let model = live.model.read();
-        let game = visible_game(&model, &id, viewer).ok_or_else(|| not_found("no such game"))?;
-        let rate = u64::from(film_tick_rate(game.ranges()));
-        if !(30 * rate..=300 * rate).contains(&duration) {
-            return Err(invalid("a clip must be 30 seconds to 5 minutes long"));
+        if let Some(share) = model.films.shared.get(&id) {
+            if !share.visible(Some(by)) {
+                return Err(not_found("no such film"));
+            }
+            if duration == 0 || body.to_tick > share.length().saturating_add(1) {
+                return Err(invalid("clip outside film bounds"));
+            }
+            if let Some(clip) = model
+                .films
+                .by_game
+                .get(&id)
+                .into_iter()
+                .flatten()
+                .filter_map(|k| model.films.clips.get(k))
+                .find(|c| {
+                    c.by == by
+                        && c.from_tick == body.from_tick
+                        && c.to_tick == body.to_tick
+                        && c.title == title
+                        && c.pov == body.pov
+                        && c.camera == body.camera
+                })
+            {
+                return Ok(shared::private_json(StatusCode::OK, clip));
+            }
+        } else {
+            let game =
+                visible_game(&model, &id, viewer).ok_or_else(|| not_found("no such game"))?;
+            let rate = u64::from(film_tick_rate(game.ranges()));
+            if !(30 * rate..=300 * rate).contains(&duration) {
+                return Err(invalid("a clip must be 30 seconds to 5 minutes long"));
+            }
         }
         let day = created_ms.div_euclid(DAY_MS);
         if model
@@ -733,9 +904,9 @@ pub(crate) async fn get_clip(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> ApiResult<Response> {
-    let viewer = live.read_viewer(bearer(&headers))?;
+    let (viewer, caller) = live.read_viewer_account(bearer(&headers))?;
     let model = live.model.read();
-    let clip = visible_clip(&model, &id, viewer).ok_or_else(|| not_found("no such clip"))?;
+    let clip = clip_for(&model, &id, viewer, caller).ok_or_else(|| not_found("no such clip"))?;
     Ok(json(StatusCode::OK, clip))
 }
 
@@ -749,7 +920,13 @@ pub(crate) async fn delete_clip(
     let viewer = live.viewer_of(&author);
     let version = {
         let model = live.model.read();
-        let clip = visible_clip(&model, &id, viewer).ok_or_else(|| not_found("no such clip"))?;
+        let caller = if let Author::Account { xuid, .. } = &author {
+            Some(*xuid)
+        } else {
+            None
+        };
+        let clip =
+            clip_for(&model, &id, viewer, caller).ok_or_else(|| not_found("no such clip"))?;
         let owns_clip = matches!(&author, Author::Account { xuid, .. } if *xuid == clip.by);
         if !owns_clip && !viewer.is_admin() {
             return Err(forbidden(

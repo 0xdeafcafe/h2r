@@ -12,14 +12,20 @@ pub mod bans;
 pub mod bots;
 pub mod chunk;
 pub mod film;
+pub mod firefight;
 pub mod game;
+pub mod game_variants;
 pub mod hopper;
 pub mod host_pack;
 pub mod hosts; // dh-lease
 pub mod jcs;
+pub mod join_link;
+pub mod theater_link;
+pub use join_link::JoinLink;
 pub mod mailbox;
 pub mod map_details;
 pub mod maps;
+mod mod_packs;
 pub mod motd;
 pub mod mutes;
 pub mod matchmaking;
@@ -27,9 +33,12 @@ pub mod optimatch;
 pub mod pack;
 pub mod rank;
 pub mod recovery;
+pub mod replication;
 pub mod reports;
+pub mod rules;
 #[doc(hidden)]
 pub mod samples;
+pub mod screenshots;
 pub mod session;
 pub mod sign;
 pub mod skulls;
@@ -330,6 +339,10 @@ pub mod lxm {
     pub const SESSIONS_RELAY: &str = "sessions.relay";
     pub const TITLES_WRITE: &str = "titles.write";
     pub const INVITES_WRITE: &str = "invites.write";
+    /// Listing only the caller's open invites.
+    pub const INVITES_READ: &str = "invites.read";
+    /// Admins and the operator setting an account's invite permission.
+    pub const INVITE_GRANTS_WRITE: &str = "invite-grants.write";
     /// Reading the account's own recovery secret and current code.
     pub const RECOVERY_READ: &str = "recovery.read";
     /// Setting up or resetting the account's recovery secret.
@@ -365,27 +378,19 @@ pub mod lxm {
 /// Whether a client may send a bearer token to `base_url`: always over
 /// HTTPS, over plain HTTP only to a loopback host (docs/live/live-security.md §6).
 pub fn bearer_allowed(base_url: &str) -> bool {
-    let lower = base_url.to_ascii_lowercase();
-    if lower.starts_with("https://") || lower.starts_with("wss://") {
-        return true;
-    }
-    let Some(rest) = lower
-        .strip_prefix("http://")
-        .or_else(|| lower.strip_prefix("ws://"))
-    else {
+    let Ok(url) = url::Url::parse(base_url) else {
         return false;
     };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let host_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-    let host = if let Some(v6) = host_port.strip_prefix('[') {
-        v6.split_once(']').map_or("", |(h, _)| h)
-    } else {
-        host_port.split(':').next().unwrap_or("")
-    };
-    host == "localhost"
-        || host
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback())
+    match url.scheme() {
+        "https" | "wss" => url.has_host(),
+        "http" | "ws" => match url.host() {
+            Some(url::Host::Domain(name)) => name == "localhost",
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            None => false,
+        },
+        _ => false,
+    }
 }
 
 /// One event as the API serves it (`/v1/events`, the stream). `stream`,
@@ -430,6 +435,12 @@ pub struct Discovery {
     /// Additional packed ingest versions this server accepts beyond the v7 baseline.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ingest_frame_versions: Vec<u8>,
+    /// This server accepts the `auth_batched` ingest mode.
+    #[serde(default)]
+    pub ingest_frame_batch: bool,
+    /// Private sim combat previews are accepted on the authenticated ingest socket.
+    #[serde(default)]
+    pub sim_combat: bool,
     pub id: String,
     pub api: String,
     pub keys: Vec<sign::Jwk>,
@@ -455,6 +466,14 @@ pub struct CreatedAccount {
     pub recovery: Option<recovery::RecoveryInfo>,
 }
 
+/// An account's explicit permission to create invites.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InviteGrant {
+    /// The maximum number of open invites, or no cap.
+    pub open_cap: Option<std::num::NonZeroU32>,
+}
+
 /// An entry of `GET /v1/accounts`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AccountSummary {
@@ -466,6 +485,8 @@ pub struct AccountSummary {
     /// startup or granted. Only this server's admins, not a federation view.
     #[serde(default)]
     pub admin: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invite_grant: Option<InviteGrant>,
     /// A bot account (docs/game/bots.md §9.5): issued by the server for
     /// Clankers, never signed in with a key, never recovered or claimed.
     /// Absent for a human.
@@ -535,6 +556,41 @@ impl Presence {
     }
 }
 
+/// Maximum accounts in one console heartbeat.
+pub const MAX_PING_BATCH: usize = 4;
+
+/// `POST /v1/presence/ping/batch`'s body: every account a console has
+/// signed in, as the `events.write` token its own single ping would bear
+/// (docs/live/live-api.md, Presence heartbeats). A console's heartbeat is one
+/// request instead of one per account.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PingBatch {
+    pub tokens: Vec<String>,
+}
+
+/// `POST /v1/presence/ping/batch`'s answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PingBatchReply {
+    /// One outcome per token of [`PingBatch::tokens`], in their order.
+    pub results: Vec<PingOutcome>,
+}
+
+/// One token's outcome in a [`PingBatchReply`]: the presence's new
+/// deadline, or the status and error the account's single ping would have
+/// answered with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PingOutcome {
+    Ok {
+        ttl: i64,
+    },
+    Failed {
+        status: u16,
+        error: ErrorCode,
+        message: String,
+    },
+}
+
 /// The data of a `SignedIn`, `PresenceChanged`, `SignedOut` or
 /// `PresenceExpired` event: what a console sets for one of its players.
 /// `build` and `capabilities` ride on the first two; an older server
@@ -560,6 +616,10 @@ pub mod capability {
     /// Applies a Live host's variant options: the extension block in the
     /// record's spare bytes, taken from the host's session (slice 4).
     pub const VARIANT_EXT: &str = "variant-ext/1";
+    /// Runs a host's rules script: fetches the rules IR blob named by the
+    /// host's session `rules` hash and plays it (docs/game/rules-engine.md,
+    /// "Carrying a script"). Not advertised by any build yet.
+    pub const RULES: &str = "rules/1";
 }
 
 /// The most capabilities one presence carries.
@@ -715,7 +775,7 @@ pub enum StreamMessage {
     Event {
         event: Box<WireEvent>,
     },
-    /// A live telemetry frame (not stored; up to 15 Hz per game).
+    /// A live telemetry frame (about 15 Hz per game, with bounded bursts).
     Frame {
         frame: Box<game::Frame>,
     },
@@ -723,6 +783,9 @@ pub enum StreamMessage {
         position: u64,
     },
 }
+
+/// Maximum records in one binary message on a batched ingest socket.
+pub const MAX_INGEST_BATCH_FRAMES: usize = 16;
 
 /// Messages a WebSocket client sends. Readers of `/v1/stream` send only
 /// `auth`; the game's `/v1/ingest` sends all of them.
@@ -732,9 +795,15 @@ pub enum ClientMessage {
     Auth {
         token: String,
     },
+    /// Authenticates an ingest stream that sends bursts of packed frames.
+    AuthBatched {
+        token: String,
+    },
     Frame {
         frame: Box<game::Frame>,
     },
+    /// Latest combat diagnostics for one bot in a running private sim.
+    SimCombat { game_id: String, sample: Box<game::SimCombatSample> },
     /// One batch JWS over game event bodies (security §2, Batches).
     Events {
         game_id: String,
@@ -752,6 +821,8 @@ pub enum IngestReply {
     Appended { game_id: String, position: u64 },
     /// A message was refused; the socket stays open unless auth failed.
     Error { error: ErrorCode, message: String },
+    /// A frame was refused on a batched ingest socket.
+    FrameError { error: ErrorCode, message: String },
 }
 
 /// Every non-2xx body: `{"error": "<code>", "message": "..."}`.
@@ -990,6 +1061,8 @@ mod wire_tests {
             "http://localhost.evil.com",
             "http://127.0.0.1@evil.com",
             "http://[::2]",
+            r"http://remote.invalid\@localhost/",
+            "http://localhost:invalid",
             "ftp://localhost",
             "localhost",
         ] {
@@ -1132,7 +1205,8 @@ mod wire_tests {
         ] {
             assert!(!valid_build(bad), "{bad}");
         }
-        for ok in [capability::VARIANT_EXT, "a/0", "x-2/10"] {
+        assert_eq!(capability::RULES, "rules/1");
+        for ok in [capability::VARIANT_EXT, capability::RULES, "a/0", "x-2/10"] {
             assert!(valid_capability(ok), "{ok}");
         }
         let long = format!("{}/1", "a".repeat(CAPABILITY_MAX - 1));

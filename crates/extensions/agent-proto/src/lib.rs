@@ -13,32 +13,55 @@ use std::collections::BTreeMap;
 
 mod client;
 pub mod discover;
+#[cfg(any(unix, windows))]
+pub mod local_socket;
+pub mod bot_bounce;
 pub mod collision;
+pub mod debug;
+pub mod editor;
 mod endpoint;
 pub mod expect;
+pub mod firefight;
+pub mod forge;
+pub mod frame_graph;
+pub mod goto;
 pub mod havok;
+pub mod superbounce;
+pub mod superbounce_view;
 pub mod host_lobby;
+pub mod host_memory;
+pub mod memory_forensics;
+#[cfg(feature = "serve-memory")]
+pub mod memory_serve;
 pub mod hot;
+pub mod live;
 mod load;
 mod pad;
+pub mod probe;
+pub mod route;
+pub mod rules;
 pub mod raw;
 mod render;
 pub mod shadow;
 pub mod sim;
 pub mod state;
+pub mod takeover;
 pub mod test_maps;
 pub mod theater;
 pub mod trace;
-pub use client::{CallError, Client};
+pub use client::{CallError, Client, ConnectionShutdown};
 pub use endpoint::Endpoint;
 pub use load::{LoadParams, LoadRecord, LoadSegment, Loads};
 pub use pad::{AtTick, Now, PAD_BUTTONS, PadParams, PadStep};
 pub use render::{
-    CaptureReply, CompareParams, CompareReply, DepthRecord, DrawRecord,
-    FrameCaptureParams, FrameParams, FrameRecord, FrameReply, FrameTotals, OpRecord, ParityParams, ParityReply,
-    PassRecord, RenderStats, SceneCarried, SceneEntries, SceneEntryRecord, SceneLateRecord, SceneOpCounts, SceneParams, ScenePostRecord, SceneReply,
-    SceneSideTarget, SceneViewRecord,
-    SnapRecord,
+    CaptureCamera, CaptureLighting, CaptureReply, CaptureSource, CompareParams, CompareReply, DepthRecord,
+    DrawLayout, DrawRecord, FrameCaptureParams, FrameParams, FrameRecord, FrameReply, FrameTotals,
+    LayoutTexture, OpRecord, ParityParams, ParityReply, PassRecord, RenderStats, ResidualArm,
+    ResidualCaller, ResidualParams, ResidualProducer, ResidualReply, ResidualTotals,
+    ResidualUnattributed, ResidualWindow, SceneCarried,
+    SceneEntries, SceneEntryRecord, SceneLateRecord, SceneOpCounts, SceneParams, ScenePostRecord,
+    SceneReply, SceneCarriedCensus, SceneCensusActivation, SceneCensusCheckpoint, SceneReadUse,
+    SceneSideTarget, SceneTargetUse, SceneUses, SceneViewRecord, SnapRecord, SpawnViewParams,
 };
 
 use serde::{Deserialize, Serialize};
@@ -51,14 +74,16 @@ pub const PROTOCOL: u32 = 1;
 /// path, or `tcp://HOST:PORT` ([`Endpoint`]).
 pub const ENV: &str = "H2_AGENT";
 
+/// The root for the game's traces, flights and input logs.
+pub const OUT_ENV: &str = "H2_AGENT_OUT";
+
 /// The TCP port the Xbox app listens on (docs/runtime/xbox.md, "Remote
 /// control").
 pub const XBOX_PORT: u16 = 4720;
 
 /// Where `h2 serve` listens and `h2 agent` connects when neither is told:
-/// `$H2_AGENT`, else the user's cache directory (`~/Library/Caches/h2recomp`
-/// on macOS, `$XDG_CACHE_HOME/h2recomp` or `~/.cache/h2recomp` elsewhere).
-/// Not under `$TMPDIR`, which differs between agent sessions.
+/// `$H2_AGENT`, else `agent.sock` in [`cache_dir`]. Not under `$TMPDIR`,
+/// which differs between agent sessions.
 pub fn default_socket() -> std::path::PathBuf {
     if let Some(p) = std::env::var_os(ENV).filter(|p| !p.is_empty()) {
         return p.into();
@@ -66,20 +91,21 @@ pub fn default_socket() -> std::path::PathBuf {
     cache_dir().join("agent.sock")
 }
 
-/// The user's cache directory for h2recomp (`~/Library/Caches/h2recomp`
-/// on macOS, `$XDG_CACHE_HOME/h2recomp` or `~/.cache/h2recomp` elsewhere).
-/// The agent keeps its input logs (`inputs/`) and captures (`captures/`)
-/// here, never in the repository.
+/// The user's cache directory for h2recomp ([`host_dirs::cache`],
+/// docs/runtime/storage.md), else `$TMPDIR/h2recomp` when the host has
+/// none. The agent keeps its input logs (`inputs/`) and captures
+/// (`captures/`) here, never in the repository.
 pub fn cache_dir() -> std::path::PathBuf {
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-    let cache = if cfg!(target_os = "macos") {
-        home.map(|h| h.join("Library/Caches"))
-    } else {
-        std::env::var_os("XDG_CACHE_HOME")
-            .map(Into::into)
-            .or_else(|| home.map(|h| h.join(".cache")))
-    };
-    cache.unwrap_or_else(std::env::temp_dir).join("h2recomp")
+    host_dirs::cache().unwrap_or_else(|| std::env::temp_dir().join(host_dirs::APP))
+}
+
+/// Where the game keeps its `traces/`, `flights/` and `inputs/` directories.
+pub fn output_dir() -> std::path::PathBuf {
+    output_dir_from(std::env::var_os(OUT_ENV))
+}
+
+fn output_dir_from(value: Option<std::ffi::OsString>) -> std::path::PathBuf {
+    value.filter(|p| !p.is_empty()).map_or_else(cache_dir, Into::into)
 }
 
 /// Method names. `session.methods` lists them at run time.
@@ -102,8 +128,12 @@ pub mod method {
     /// Level loads, BSP switches and stalls: how long, and what the frames
     /// in them read, uploaded and compiled ([`crate::LoadParams`]).
     pub const LOAD_TIMELINE: &str = "load.timeline";
+    /// List the names of saved input logs.
+    pub const INPUT_LIST: &str = "input.list";
+    /// Read a page of a saved input log.
+    pub const INPUT_LOG_READ: &str = "input.log.read";
 
-    /// Every method, in the order `session.methods` lists them.
+    /// Core methods, in the order `session.methods` lists them.
     pub const ALL: &[&str] = &[
         STATUS,
         METHODS,
@@ -121,18 +151,30 @@ pub mod method {
         PROFILE_CAPTURE,
         FEATURES,
         LOAD_TIMELINE,
+        INPUT_LIST,
+        INPUT_LOG_READ,
     ];
 
     /// Methods that change the run; they need `session.claim` first.
     pub const CONTROL: &[&str] = &[PAUSE, RESUME, STEP];
 
-    // Host methods: answered only where they are registered
-    // (`Agent::add_method`): the input methods by the agent's input tap
-    // when the game has XAPI input, the rest by boot's agent glue. So
-    // `session.methods` lists them only there.
+    // Optional methods: `session.methods` lists only those registered by
+    // the input tap, game-thread features or host glue.
 
+    /// Submit a website join through the same inbox as the OS and CLI.
+    pub const LIVE_JOIN_OPEN: &str = "live.join.open";
+    /// The latest web join and its outcome, if any.
+    pub const LIVE_JOIN_STATUS: &str = "live.join.status";
+    /// Guest matchmaking and session transitions, retained through teardown.
+    pub const LIVE_MATCHMAKING_TRACE: &str = "live.matchmaking.trace";
     /// Queue pad steps for a player ([`crate::PadParams`]).
     pub const INPUT_PAD: &str = "input.pad";
+    /// Drive one controller port through a sequence of movement legs.
+    pub const INPUT_ROUTE: &str = "input.route";
+    /// Read a port's active or most recent route.
+    pub const INPUT_ROUTE_STATUS: &str = "input.route.status";
+    /// Stop the active route and release the port.
+    pub const INPUT_ROUTE_STOP: &str = "input.route.stop";
     /// Drop the queued steps and let go of everything.
     pub const INPUT_RELEASE: &str = "input.release";
     /// What each pad holds now, what is queued, and recording or replay.
@@ -147,6 +189,10 @@ pub mod method {
     /// see them: profile class, touchpad, buttons, and whether the menu is
     /// open (`h2 agent hostpads`).
     pub const INPUT_HOST: &str = "input.host";
+    /// Desired PlayStation lightbar colours by Xbox controller port.
+    pub const INPUT_LIGHTBAR: &str = "input.lightbar";
+    /// Set or clear a temporary per-port RGB override.
+    pub const INPUT_LIGHTBAR_SET: &str = "input.lightbar.set";
     /// Start the in-process sampling profiler (`{"hz": 1000}`).
     pub const SAMPLE_START: &str = "profile.sample.start";
     /// Stop it and write the samples (`{"inline": true}` returns them too).
@@ -157,11 +203,19 @@ pub mod method {
     pub const HOST_PERF: &str = "host.perf";
     /// Recent tick cost and process resource use.
     pub const HOST_METRICS: &str = "host.metrics";
+    /// Process footprint, recent samples, registered counters and saved reports.
+    pub const HOST_MEMORY: &str = "host.memory";
+    pub const HOST_PEER_RTTS: &str = "host.peer_rtts";
     pub const HOST_AUDIT: &str = "host.audit";
     pub const HOST_LOBBY_OPEN: &str = "host.lobby.open";
     pub const HOST_LOBBY_STATE: &str = "host.lobby.state";
     pub const HOST_LOBBY_START: &str = "host.lobby.start";
     pub const HOST_LOBBY_CLOSE: &str = "host.lobby.close";
+    /// Leave the running campaign or multiplayer game for the main menu
+    /// as the title's own departure does (`game_menu.rs` in `game`).
+    pub const GAME_MENU: &str = "game.menu";
+    /// Queue an installed multiplayer package by its complete MapId.
+    pub const MAPS_LOAD: &str = "maps.load";
     /// Test maps (docs/game/test-maps.md, [`crate::test_maps`]): the
     /// built-in recipes and the test maps built.
     pub const MAPS_TEST_LIST: &str = "maps.test.list";
@@ -189,7 +243,15 @@ pub mod method {
     pub const UI_CAMPAIGN: &str = "ui.campaign";
     /// The pregame session's player slots, peer indices, names and connection bars.
     pub const UI_LOBBY_PLAYERS: &str = "ui.lobby.players";
+    /// The pregame lobby's mode strip: `{place, leader, selected, tabs:
+    /// [{tab, label, state, reason}], notice}` (docs/game/party-lobby.md).
+    pub const UI_LOBBY_TABS: &str = "ui.lobby.tabs";
     pub const UI_SCREEN: &str = "ui.screen";
+    /// Active filters of the Live Custom Game Browser.
+    pub const UI_BROWSER_FILTERS: &str = "ui.browser.filters";
+    pub const UI_INPUT: &str = "ui.input";
+    /// Main-menu attract movie, idle timer and last attempt.
+    pub const UI_ATTRACT: &str = "ui.attract";
     /// The visible option lines in the active pregame custom lobby.
     pub const UI_LOBBY_OPTIONS: &str = "ui.lobby_options";
     /// Active widget panes, resolved text and audit findings at this boundary.
@@ -201,16 +263,32 @@ pub mod method {
     /// Record the next whole frame's passes, draws and targets, or read
     /// the last one recorded ([`crate::FrameParams`]).
     pub const RENDER_FRAME: &str = "render.frame";
+    /// Record the next frame's display layout and sampled surfaces, or read
+    /// the same last frame as `render.frame` ([`crate::FrameParams`]).
+    pub const RENDER_FRAME_LAYOUT: &str = "render.frame_layout";
     /// The render pipeline's counters: in-between frames and their hold
     /// reasons, the pipelined render, the frame-stats counters
     /// ([`crate::RenderStats`]).
     pub const RENDER_STATS: &str = "render.stats";
+    /// Where the window drew the world marks on its last presents: the
+    /// frame kind, a made frame's blend fraction and camera shift, and the
+    /// first anchors' window pixels (no params; the first call arms it).
+    pub const RENDER_MARKS: &str = "render.marks";
     /// Two PNG files compared pixel by pixel ([`crate::CompareParams`]).
     pub const RENDER_COMPARE: &str = "render.compare";
     /// The frame of a sim tick as a PNG ([`crate::FrameCaptureParams`]).
     pub const RENDER_CAPTURE: &str = "render.capture";
+    /// Position the world camera at a loaded player starting location.
+    pub const RENDER_SPAWN_VIEW: &str = "render.spawn_view";
+    /// Arm a sequence of headless display presents, including in-between frames.
+    pub const RENDER_CAPTURE_CLIP: &str = "render.capture_clip";
+    /// Read the number of display frames written by a clip capture.
+    pub const RENDER_CAPTURE_CLIP_STATUS: &str = "render.capture_clip.status";
     /// The last sealed `FrameScene`'s counts ([`crate::SceneParams`]).
     pub const RENDER_SCENE: &str = "render.scene";
+    /// What the guest front-end still asks `d3d` to do, by caller and by
+    /// producer, over a window of presents ([`crate::ResidualParams`]).
+    pub const RENDER_RESIDUAL: &str = "render.residual";
     /// Arm the in-process two-path comparison for one frame
     /// ([`crate::ParityParams`]); a diagnostic, deleted with the D3D
     /// backend.
@@ -220,6 +298,8 @@ pub mod method {
     pub const AUDIO_VOICES: &str = "audio.voices";
     /// Active guest listeners and their local-user mappings.
     pub const AUDIO_LISTENERS: &str = "audio.listeners";
+    /// Active guest looping sounds, their transitions and host output health.
+    pub const AUDIO_LOOPS: &str = "audio.loops";
     /// Sim mode's match (`H2_SIM`, `boot::sim_glue`): the match file, the
     /// phase (`waiting`, `playing`, `over`), ticks, game and wall seconds,
     /// the speed-up so far, frames skipped, and the end once over.
@@ -229,6 +309,10 @@ pub mod method {
     pub const MATCH_REPORT: &str = "match.report";
     /// Sim mode: end the match at the next slice boundary, as `stopped`.
     pub const MATCH_STOP: &str = "match.stop";
+    /// Sim mode: the guest census (local users, the local visibility set,
+    /// the effect, particle, decal and light arrays' live counts) read now,
+    /// and the report's `guest_census` block so far (docs/runtime/sim.md §6).
+    pub const SIM_GUEST_CENSUS: &str = "sim.guest_census";
 }
 
 /// Error codes. The negative ones are JSON-RPC's own.
@@ -256,6 +340,8 @@ pub mod code {
     /// in the ticks it had; `data` is a [`crate::state::Busy`] naming what
     /// stayed live.
     pub const BUSY: i64 = 7;
+    /// A conditional tag batch disagreed with the loaded bytes.
+    pub const MISMATCH: i64 = 8;
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -399,6 +485,9 @@ pub struct At {
     pub tick: Option<u64>,
     /// Ticks the server has seen since the game started; never resets.
     pub ticks: u64,
+    /// Identity of the last observed full game start. Zero until one is observed.
+    #[serde(default)]
+    pub activation: u64,
     /// Ticks since the current map loaded. A level's scripts start its
     /// opening cutscene in its first ticks, so "in control" is better
     /// asked as `{"phase":"gameplay","map_ticks":30}` than as the phase
@@ -454,6 +543,9 @@ pub struct StepParams {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Until {
+    /// The exact full game start to observe, as returned by map.reload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation: Option<u64>,
     /// The game's own tick is at least this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tick: Option<u64>,
@@ -797,6 +889,13 @@ pub struct Physics {
     /// character contacts its ground test walks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub support: Option<Support>,
+    /// Bipeds: whether a standing capsule fits at the origin, the test
+    /// that decides whether releasing crouch clears the crouch request.
+    /// The superbounce mode's capsule test against the loaded map's
+    /// collision, while that mode is on and its scan is ready; absent
+    /// otherwise (docs/game/superbounce.md, "Charge").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standing_fits: Option<bool>,
 }
 
 /// A biped's ground support as the engine keeps it (biped `+0x349`,
@@ -1106,7 +1205,7 @@ pub struct Capture {
 pub const PORTS: u32 = 4;
 
 /// `input.record`: start logging every controller read the game makes
-/// to the cache directory's `inputs/<name>.input` (an `xapi::tap` input
+/// to the agent output directory's `inputs/<name>.input` (an `xapi::tap` input
 /// log, the format `H2_INPUT_RECORD` writes).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1198,6 +1297,14 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn agent_output_directory_uses_the_override_or_the_cache() {
+        let run_dir = std::path::PathBuf::from("runs/0007");
+        assert_eq!(output_dir_from(Some(run_dir.clone().into_os_string())), run_dir);
+        assert_eq!(output_dir_from(None), cache_dir());
+        assert_eq!(output_dir_from(Some("".into())), cache_dir());
+    }
+
+    #[test]
     fn ids_round_trip_and_keep_the_salt() {
         let id = ObjectId {
             kind: Kind::Actor,
@@ -1237,6 +1344,7 @@ mod tests {
         let at = At {
             tick: Some(5),
             ticks: 5,
+            activation: 1,
             map_ticks: 5,
             present: 9,
             map: None,

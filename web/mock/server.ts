@@ -48,6 +48,8 @@ import { Content, customFor } from "./content";
 import { Reports } from "./reports";
 import { Bans } from "./bans";
 import { Mutes } from "./mutes";
+import { MockRules } from "./rules";
+import { MockVariants } from "./variants";
 import { CloudSaves } from "./cloudsaves";
 import { hasAllSkulls, parseSkullsParam } from "../src/lib/skulls";
 import { StatsFold, archive } from "./stats";
@@ -161,6 +163,10 @@ const reports = new Reports(world, admin);
 const bans = new Bans(world, admin, reports);
 // Mute lists (mock/mutes.ts).
 const mutes = new Mutes(world, admin);
+// The rules workbench and saved scripts (mock/rules.ts).
+const rulesBench = new MockRules(world, process.env.H2_MOCK_RULES !== "0");
+// Game variants (mock/variants.ts), built from the workbench's scripts.
+const variants = new MockVariants(world, rulesBench);
 // Cloud saves (mock/cloudsaves.ts).
 const cloudSaves = new CloudSaves(world);
 if (admin.everyoneAdmin) console.log("[mock] H2_MOCK_ADMIN: accounts signed up in the browser are admins");
@@ -270,6 +276,10 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
   if (ban) return json(ban.body, ban.status);
   const mut = mutes.handle(req, u);
   if (mut) return json(mut.body, mut.status);
+  const rul = await rulesBench.handle(req, u);
+  if (rul) return json(rul.body, rul.status);
+  const vrt = await variants.handle(req, u);
+  if (vrt) return json(vrt.body, vrt.status, vrt.headers);
   const cs = cloudSaves.handle(req, u);
   if (cs) return cs instanceof Response ? cs : json(cs.body, cs.status);
   const con = await content.handle(req, u, (bytes) => new Response(bytes as Uint8Array<ArrayBuffer>, { headers: { "content-type": "image/png", "cache-control": "max-age=3600", ...CORS } }));
@@ -277,7 +287,7 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
 
   let m: RegExpMatchArray | null;
   if (path === "/v1/accounts" && req.method === "GET") {
-    return list([...world.accounts.values()].map((a) => ({ ...world.publicAccount(a), ...(admin.isAdmin(a) ? { admin: true } : {}) })).slice(0, limitOf(u)));
+    return list([...world.accounts.values()].map((a) => ({ ...world.publicAccount(a), ...admin.accountRoles(a) })).slice(0, limitOf(u)));
   }
   if (path === "/v1/accounts" && req.method === "POST") {
     // A JWS signed by the new key over {gamertag, jwk, invite?, aud, iat}
@@ -302,7 +312,7 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
     const a = world.accountByTag(decodeURIComponent(m[1]!));
     if (!a) return err(404, "not_found", "no such account");
     const recent = [...world.games.values()].filter((g) => g.players.some((p) => p.p.xuid === a.xuid)).slice(-20).reverse();
-    return json({ ...world.publicAccount(a), ...(admin.isAdmin(a) ? { admin: true } : {}), recent_games: recent.map((g) => world.gameSummary(g)), position: world.log.length });
+    return json({ ...world.publicAccount(a), ...admin.accountRoles(a), recent_games: recent.map((g) => world.gameSummary(g)), position: world.log.length });
   }
   if (path === "/v1/stats/summary") {
     const sum = statsSummary(u.searchParams.get("window") ?? "7d");

@@ -41,7 +41,7 @@ pub fn meta_damaged(bytes: &[u8]) -> bool {
         return true;
     };
     let units: Vec<u16> = body
-        .chunks_exact(2)
+        .as_chunks::<2>().0.iter()
         .map(|p| u16::from_le_bytes([p[0], p[1]]))
         .collect();
     let name: Vec<u16> = "Name".encode_utf16().collect();
@@ -197,7 +197,7 @@ fn find_name(dir: &Path, hash: u64) -> io::Result<Option<Vec<u16>>> {
             .read_to_end(&mut bytes)?;
         let utf16 = |offset: usize| {
             bytes[offset.min(bytes.len())..]
-                .chunks_exact(2)
+                .as_chunks::<2>().0.iter()
                 .map(|p| u16::from_le_bytes([p[0], p[1]]))
                 .collect::<Vec<u16>>()
         };

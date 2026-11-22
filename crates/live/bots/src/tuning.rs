@@ -34,7 +34,7 @@ pub struct InputLimits {
 /// The jitter is a bound on the variation in the one-way trip.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PhantomLatency {
-    /// None draws a fixed round trip in 40..80 ms from the phantom's seed.
+    /// Without an explicit ping the host gathers the pad on the same tick.
     pub ping_ms: Option<f32>,
     pub jitter_ms: f32,
 }
@@ -136,6 +136,11 @@ pub struct Tuning {
     /// 0..1.
     pub awareness: Option<f32>,
     pub aggression: Option<f32>,
+    /// Hosted custom-game pressure on the decision to advance or withdraw.
+    /// The bot's seeded personality and its current mood stay distinct.
+    pub push_bias: f32,
+    /// Use a quicker right-stick engagement and a larger acquisition flick.
+    pub twitchy: bool,
     pub caution: Option<f32>,
     pub teamwork: Option<f32>,
     pub objective_focus: Option<f32>,

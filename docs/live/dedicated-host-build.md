@@ -58,10 +58,10 @@ number of coverage misses while the process is up.
 
 Build a full clang module locally from the same XBE and checkout used for
 the candidate. Set `H2_DISC` and `H2_DATA` to the owner's local paths and
-choose separate directories for `H2_FULL_IMAGE` and `H2_SLIM_IMAGE`.
+choose separate directories for `full_image` and `slim_image`.
 
 ```sh
-env -u H2_HOST_MODULE H2_OPT=2 h2 build "$H2_DISC" --tier clang --out "$H2_FULL_IMAGE"
+env -u H2_HOST_MODULE H2_OPT=2 h2 build "$H2_DISC" --tier clang --out "$full_image"
 ```
 
 Install the owned map packs and each deployed mod map, and prepare their
@@ -75,7 +75,7 @@ independent.
 ```sh
 env -u H2_HOST_MODULE -u H2_SERVER_MAP_DIR H2_OPT=2 \
   h2 sim batch docs/runtime/sim-examples/light-host-corpus.toml \
-  --disc "$H2_DISC" --out "$H2_FULL_IMAGE" --tier clang \
+  --disc "$H2_DISC" --out "$full_image" --tier clang \
   --data "$H2_DATA" --parallel 4 --pace unpaced
 ```
 
@@ -89,8 +89,10 @@ peer join, match start, postgame and lobby close. The existing
 Check `audit-missing.json` and the equipment gap report before exporting.
 `audit-coverage` verifies that inputs share a full clang image and registry,
 have completed ticks and have no reported missing runs, hooks or unmapped
-selectors. It writes two eight-digit guest addresses per line, the owner
-and the entry or continuation that ran. It sorts and deduplicates the
+selectors. The audit counts guest code a second executor runs on a
+copy of guest RAM (the phantom bots' input, aim assist and vehicle entry
+searches) as well as the main runtime's. It writes two eight-digit guest
+addresses per line, the owner and the entry or continuation that ran. It sorts and deduplicates the
 pairs. Keep this small list with the matching XBE revision and corpus
 description. The audit JSON and all disc-derived build artifacts stay
 private.
@@ -106,7 +108,7 @@ the complete body and validated selectors for each observed owner.
 
 ```sh
 H2_OPT=2 h2 build "$H2_DISC" --tier clang --profile host \
-  --coverage "$H2_HOST_COVERAGE" --out "$H2_SLIM_IMAGE"
+  --coverage "$H2_HOST_COVERAGE" --out "$slim_image"
 ```
 
 For Linux, use the same options with `--arch x86_64-linux`, or stage it
@@ -116,6 +118,10 @@ and `H2_BIN` to a Mac `h2` from this checkout if it is already installed.
 ```sh
 H2_OPT=2 deploy/host/build.sh "$H2_DISC" --coverage "$H2_HOST_COVERAGE"
 ```
+
+Without `--coverage`, the script reads `H2_HOST_COVERAGE`, then
+`deploy/host/host-coverage.txt` (ignored by Git), and stages the full
+module only when neither is set.
 
 The Linux Rust binary uses the `host` Cargo feature without defaults.
 It leaves out the Cranelift compiler and module build commands, native
@@ -132,6 +138,39 @@ matching `H2_OPT` and other codegen settings to both the local run and the
 container. `h2 serve --system-link --host-light` and `h2 sim run` accept
 the staged slim module by its stamp with no separate coverage file.
 Use a distinct output directory for the full module.
+
+### Package recorded shared resources
+
+The private bundle accepts stores built by `h2 sim store build` from the
+owner’s recording. Supply either or both resource stores. The builder
+checks the logical length, cache header and every recorded byte against
+the disc before publishing the archive. For a selected resource it ships
+the store and the map’s cache header. The guest sees the original file
+length. Reading an uncovered range reports `NotInStore` with its offset.
+The menu and playable maps keep their ordinary files for native readers
+that resolve level IDs and build navigation before guest code runs.
+
+Run the full-image corpus one match at a time with map read recording
+enabled to accumulate a single coverage file. Use the same file during
+the dedicated lobby, join and end sequence. Calling `h2 agent hostaudit`
+before stopping the auditing host also flushes its recorded reads.
+
+```sh
+H2_OPT=2 H2_SIM_STORE_RECORD="$reads" h2 sim batch "$corpus" \
+  --disc "$H2_DISC" --out "$full_image" --tier clang \
+  --data "$H2_DATA" --parallel 1 --pace unpaced
+h2 sim store build all --disc "$H2_DISC" --out "$stores" --reads "$reads"
+h2 host bundle --disc "$H2_DISC" --sim-stores "$stores" --out "$bundle"
+wc -c "$bundle/host-data.tar.zst" deploy/host/stage/image/libh2game.so
+```
+
+Both human and sim leases activate the stores listed in the provisioned
+bundle on native Live and in the container. Each shared cache without a
+store uses its regular map. Choose either a stripped map or a store for
+each resource. Use the same recorded corpus to check the provisioned DVD
+directory with the slim image, and repeat the lobby sequence for a human
+lease. Keep separate results directories for the full and slim runs.
+Check every child log for unrecorded reads and slim fallback messages.
 
 ### Check size, memory and coverage
 
@@ -263,7 +302,7 @@ pub struct HostBoot {
 - Then it moves through `Booting → Joinable → Playing → Ended`.
 - **Boot timeout:** 60 s → `Failed(BootTimeout)`, plus the fallback.
 - **Reaper:** on the existing alarm/tick, it stops hosts past `max_match_s` or idle past `idle_timeout_s`.
-- **Max concurrent hosts:** `LIVE_MAX_HOSTS`, default 4.
+- **Max concurrent hosts:** `LIVE_MAX_HOSTS` defaults to 4. Both homes use the [fleet cap steps](host-halving.md#caps).
 
 Providers:
 
@@ -335,7 +374,7 @@ game sees it as an ordinary XNet peer.
 
 The owner runs `h2 host bundle --disc <iso> --out <dir>`. It writes:
 
-- `host-data.tar.zst`: only what a host needs. That's maps stripped by the light-host stage-2 stripper when present, and full maps otherwise, plus `shared.map`, `single_player_shared.map` and mainmenu.
+- `host-data.tar.zst`: only what a host needs. The menu and multiplayer maps come from the disc or the stripped-maps directory. A supplied shared resource store replaces the corresponding resource map's payload.
 - `host-data.json`: the sha256 and the file list.
 
 The owner uploads both to a **private** bucket. A host fetches the
@@ -364,8 +403,9 @@ month-to-date spend and the configured cap.
 
 ### 9. Host process (owned by `dh-supervisor` and `dh-lobby`)
 
-`h2 host run --lease <id> --live <url> --token <t> --data-url <u> --data-sha <h> [--region r]`
-(`crates/apps/cli/src/host_cmd.rs`, `dh-supervisor`):
+`h2 host run --lease <id> --live <url> --data-sha <h> [--region r]`
+uses `H2_TOKEN` and `H2_DATA_URL` from the host environment
+(`crates/apps/cli/src/host_cmd.rs`, `dh-supervisor`).
 
 1. Provision the data (contract 7).
 2. Boot the light host: the same boot path as `h2 serve --system-link --host-light`, with no window and no local player.

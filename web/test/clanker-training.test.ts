@@ -1,4 +1,4 @@
-import { beforeAll, expect, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { plugin } from "bun";
 import type { JSX } from "solid-js";
 import { api } from "../src/api/http";
@@ -22,6 +22,7 @@ function run(id: string, extra: Partial<SimRun> = {}): SimRun {
 }
 
 let page: typeof import("../src/admin/ClankerTraining");
+let watch: typeof import("../src/admin/SimWatch");
 let render: (content: () => JSX.Element) => string;
 let component: typeof import("solid-js").createComponent;
 
@@ -47,10 +48,50 @@ beforeAll(async () => {
   const { Router, Route } = await import(router);
   component = createComponent;
   page = await import("../src/admin/ClankerTraining");
+  watch = await import("../src/admin/SimWatch");
   render = (content) => renderToString(() => component(Router, {
     url: trainingHref(),
     get children() { return component(Route, { path: "/games/halo2/admin", component: content }); },
   }));
+});
+
+test("the empty state shows the upload command and previews the results", () => {
+  const html = render(() => component(page.TrainingEmpty, {}));
+  for (const expected of [
+    "No sim runs have been uploaded yet.",
+    "h2 sim batch docs/runtime/sim-examples/batch.toml --parallel 4 --upload",
+    "match results, simulation speed and per-bot stats",
+    "select two runs",
+  ]) {
+    expect(html).toContain(expected);
+  }
+});
+
+test("reads the signed training list and detail routes using the uploader's simulation game ID", async () => {
+  const uploaded = run("one", { status: "finished", has_report: true });
+  const detail: SimDetail = { run: uploaded, game: uploaded, report: { format: "h2-sim-report/1", players: [] } };
+  const options = { maps: ["lockout"], arms: ["aggressive"], batches: ["a-batch"], custom_tuning: false, default_tuning: false };
+  const calls: { url: URL; headers: Headers }[] = [];
+  const mocked = spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const url = new URL(String(input));
+    calls.push({ url, headers: new Headers(init?.headers) });
+    return Response.json(url.pathname.endsWith("/sim-one") ? detail : {
+      items: [uploaded], next: "42", position: 43, options,
+    });
+  });
+  try {
+    const client = api(targetFor("http://127.0.0.1:8074"), async () => "read-token");
+    const list = await client.simRuns({ map: "lockout", tuning_choice: "arm:aggressive", batch: "a-batch", before: "44", include_options: 1 });
+    expect(list).toEqual({ items: [uploaded], next: "42", position: 43, options });
+    expect(await client.simRun(list.items[0]!.game_id)).toEqual(detail);
+    expect(calls.map(({ url }) => url.pathname)).toEqual(["/v1/admin/sim-runs", "/v1/admin/sim-runs/sim-one"]);
+    expect(Object.fromEntries(calls[0]!.url.searchParams)).toEqual({
+      map: "lockout", tuning_choice: "arm:aggressive", batch: "a-batch", before: "44", include_options: "1", auth: "1",
+    });
+    expect(calls.every(({ headers }) => headers.get("authorization") === "Bearer read-token")).toBe(true);
+  } finally {
+    mocked.mockRestore();
+  }
 });
 
 test("groups batch matches and shows their running or finished state", () => {
@@ -72,7 +113,10 @@ test("shows the report, per-bot accuracy and comparison summary", () => {
   const detail: SimDetail = {
     run: left, game: left,
     report: { format: "h2-sim-report/1", players: [
-      { index: 0, name: "Bolt", bot: true, score: 2, kills: 2, deaths: 1, shots: 8, accuracy: 0.75 },
+      { index: 0, name: "Bolt", bot: true, score: 2, kills: 2, deaths: 1, shots: 8, accuracy: 0.75,
+        grenades: 1, combat: { melee_presses: 3, grenade_requests: 2, switch_presses: 5, reactions: 4,
+          total_reaction_ticks: 10, think_ticks: 16, total_think_ms: 4 },
+        weapon_accuracy: [{ damage_code: 8, weapon: "smg", range: "close", shots: 8, hits: 3, accuracy: 0.375 }] },
       { index: 1, name: "Chrome", bot: true, score: 0, kills: 0, deaths: 1, shots: 0, accuracy: 0 },
     ] },
   };
@@ -81,13 +125,47 @@ test("shows the report, per-bot accuracy and comparison summary", () => {
   expect(report).toContain("18446744073709551615");
   expect(report).toContain("Determinism");
   const stats = render(() => component(page.BotStats, { detail }));
-  expect(stats).toContain("75.0%");
+  for (const label of ["75.0%", "37.5%", "Decision range", "close", "2.5 ticks", "0.250 ms", "Melee presses"]) {
+    expect(stats).toContain(label);
+  }
   expect(stats).toContain("Chrome");
   expect(stats).not.toContain(">0.0%");
   expect(comparisonRows(left, right)).toContainEqual(["Speed", "2.80×", "1.00×"]);
   const comparison = render(() => component(page.RunComparison, { left, right }));
   expect(comparison).toContain("Compare runs");
   expect(comparison).toContain("Bot parameters");
+});
+
+test("running combat samples resolve the bot by player index before the first score", () => {
+  const running = run("combat", { scoreboard: [], players: [{ index: 4, name: "Chrome", team: 0, bot: true }] });
+  const detail: SimDetail = {
+    game: running, run: running, report: null,
+    live_combat: [{
+      index: 4, tick: 207,
+      combat: {
+        goal: "hold_angle", weapon: 2147483649, weapon_role: "scatter", range: 1.25, think_ms: 0.051,
+        switch_presses: 9, weapon_switches: 2, melee_presses: 3, grenade_requests: 4, grenades_used: 1,
+        reactions: 0, total_reaction_ticks: 0, think_ticks: 200, total_think_ms: 20,
+        last_decisions: [{ tick: 201, action: "reload_or_interact" }],
+      },
+      weapon_accuracy: [{ damage_code: 9, weapon: "shotgun", range: "close", shots: 4, hits: 3, accuracy: 0.75 }],
+    }],
+  };
+  const html = render(() => component(page.BotStats, { detail })).replace(/<!--.*?-->/g, "");
+  for (const expected of ["Chrome", "hold angle", "207", "scatter", "0x80000001", "1.3 world units",
+    "2 / 9", "1 / 4", "201", "reload or interact", "0.051 ms", "75.0%"]) {
+    expect(html).toContain(expected);
+  }
+  expect(html).not.toContain("Waiting for the first score");
+});
+
+test("older running details show scores without combat counters", () => {
+  const running = run("legacy", { players: [{ index: 0, name: "Bolt", team: 0, bot: true }] });
+  const detail: SimDetail = { game: running, run: running, report: null };
+  const html = render(() => component(page.BotStats, { detail }));
+  expect(html).toContain("Bolt");
+  expect(html).toContain("Kills");
+  expect(html).not.toContain("Completed switches");
 });
 
 test("requests a signed stream scoped to the selected game and its log", () => {
@@ -115,4 +193,20 @@ test("the shared viewer follows an unpaced sim at its live edge", () => {
   expect(playback.tickAt(now, edge)).toBe(220);
   playback.goLive(now);
   expect(playback.tickAt(now, edge)).toBe(edge);
+});
+
+test("a batch's watch grid has a tile per run with its seed, arms, clock and score", () => {
+  const finished = run("done", { status: "finished", ticks: 2700, sim: { ...run("done").sim, seed: "7" } });
+  const queued = run("queued", { sim: { ...run("queued").sim, seed: "8", deferred: true }, speedup: null });
+  const streaming = run("live", { sim: { ...run("live").sim, seed: "9" } });
+  const html = render(() => component(watch.BatchWatch, { batch: "a-batch", runs: [streaming, queued, finished], position: 43, onEnded() {} }))
+    .replace(/<!--.*?-->/g, "");
+  for (const expected of ["Seed 7", "Seed 8", "Seed 9", "aggressive", "Loading recording…", "Replay after match", "1:30",
+    "Speed", "16×", "Pause", "Restart", "Finished runs play in sync", "sim-done", "batch=a-batch"]) {
+    expect(html).toContain(expected);
+  }
+  expect(html).toMatch(/<option[^>]*value="8"[^>]*selected/);
+  // Tiles run in map, then seed order.
+  expect(html.indexOf("Seed 7")).toBeLessThan(html.indexOf("Seed 8"));
+  expect(html.indexOf("Seed 8")).toBeLessThan(html.indexOf("Seed 9"));
 });

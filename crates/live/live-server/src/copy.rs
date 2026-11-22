@@ -32,6 +32,7 @@ pub const PREFIXES: &[&str] = &[
     "storage/",
     crate::blobs::FRAMES_PREFIX,
     crate::films::HOST_FILM_PREFIX,
+    "stats/",
     "film-staging/",
     crate::sim_runs::REPORT_PREFIX,
 ];
@@ -132,7 +133,7 @@ pub async fn copy_blobs(
     let mut report = BlobReport::default();
     for prefix in prefixes {
         let mut objects = from.list(prefix).await?;
-        if *prefix == crate::films::HOST_FILM_PREFIX {
+        if *prefix == crate::films::HOST_FILM_PREFIX || *prefix == "stats/" {
             // A completed manifest is readable as soon as it arrives.
             // Move its data objects first, including on a resumed copy.
             objects.sort_by_key(|info| info.key.ends_with(".parts"));

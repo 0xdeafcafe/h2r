@@ -17,6 +17,7 @@
 //!   console the session's host when no other console is in it
 //!   ([`bots::phantom::session::game_start`]), so the game starts as the
 //!   distributed server and the phantoms can join.
+//!
 //! With no bots every hook returns at once.
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,12 +34,16 @@ pub struct Bots {
     phantoms: bots::phantom::Phantoms,
     /// Where each map's data is written (`h2 bots nav`, `bots_nav_auto`).
     dir: std::path::PathBuf,
-    map: Arc<Mutex<String>>,
+    map: Arc<Mutex<NavMap>>,
     frame: Arc<AtomicU64>,
-    /// The last lobby facts line said.
-    lobby_said: Arc<Mutex<String>>,
-    /// The lobby's player count last said (`bots::lobby::players_line`).
-    players_said: Arc<Mutex<Option<u32>>>,
+    diagnostics: Arc<Mutex<LobbyDiagnostics>>,
+}
+
+#[derive(Default)]
+struct LobbyDiagnostics {
+    facts: Option<bots::lobby::Facts>,
+    players: Option<u32>,
+    fault: Option<u32>,
 }
 
 impl Bots {
@@ -49,8 +54,7 @@ impl Bots {
             dir: bots::cache::dir(data_root),
             map: Arc::default(),
             frame: Arc::default(),
-            lobby_said: Arc::default(),
-            players_said: Arc::default(),
+            diagnostics: Arc::default(),
         }
     }
 }
@@ -156,14 +160,13 @@ impl hooks::Feature for Bots {
             .after_feature(crate::coop_probe::LIVE_ID);
 
         // Each frame: the phantoms' pads and the lobby they join.
-        let (phantoms, frame, map, dir) = (
+        let (phantoms, frame, map) = (
             self.phantoms.clone(),
             Arc::clone(&self.frame),
             Arc::clone(&self.map),
-            self.dir.clone(),
         );
-        let lobby_said = Arc::clone(&self.lobby_said);
-        let players_said = Arc::clone(&self.players_said);
+        let reader = MapLoader::new(self.dir.clone());
+        let diagnostics = Arc::clone(&self.diagnostics);
         let film = self.film.clone();
         b.raw().before(
             &points::RENDER_FRAME,
@@ -199,27 +202,37 @@ impl hooks::Feature for Bots {
                     return Ok(Flow::Continue);
                 }
                 let mut mem = rt.memory();
-                load_map_data(&map, &dir, &mem);
-                match phantoms.tick(&mut *mem, f) {
-                    Ok(lines) => lines.iter().for_each(|l| eprintln!("{l}")),
-                    Err(e) => eprintln!("bots: phantoms: fault at {:#x}", e.addr),
-                }
-                // What the lobby read gave, once per change, and its own
-                // player count: what a Clankermatch's start counts.
-                if let Ok(f) = bots::lobby::facts(&*mem) {
-                    let line = bots::lobby::pregame_line(&f);
-                    let mut said = lock(&lobby_said);
-                    if *said != line {
-                        eprintln!("{line}");
-                        *said = line;
+                load_map_data(&map, &reader, &mem);
+                let result = phantoms.tick(&mut *mem, f);
+                let lobby = bots::lobby::membership(&*mem).ok().map(|facts| {
+                    let n = bots::lobby::lobby_players(&*mem, &facts).ok().flatten();
+                    (facts, n)
+                });
+                drop(mem);
+                let mut said = lock(&diagnostics);
+                match result {
+                    Ok(lines) => {
+                        said.fault = None;
+                        for line in lines {
+                            eprintln!("{line}");
+                        }
                     }
-                    let n = bots::lobby::lobby_players(&*mem, &f).ok().flatten();
-                    let mut said = lock(&players_said);
-                    if *said != n {
-                        if let Some(n) = n {
+                    Err(e) if said.fault != Some(e.addr) => {
+                        said.fault = Some(e.addr);
+                        eprintln!("bots: phantoms: fault at {:#x}", e.addr);
+                    }
+                    Err(_) => {}
+                }
+                if let Some((facts, players)) = lobby {
+                    if said.facts.as_ref() != Some(&facts) {
+                        eprintln!("{}", bots::lobby::pregame_line(&facts));
+                        said.facts = Some(facts);
+                    }
+                    if said.players != players {
+                        if let Some(n) = players {
                             eprintln!("{}", bots::lobby::players_line(n));
                         }
-                        *said = n;
+                        said.players = players;
                     }
                 }
                 Ok(Flow::Continue)
@@ -227,6 +240,7 @@ impl hooks::Feature for Bots {
         );
 
         audio::install(b);
+        crate::bot_accuracy::install(b, self.phantoms.clone());
 
         // The same weapon-fire point used by Live telemetry, as a sound
         // cue. It can only draw a bot's gaze.
@@ -304,80 +318,157 @@ const MAP_NAME: u32 = 0x0054_7898;
 /// an `i16`; docs/live/live-gamestate.md "Cache identity").
 const MAP_KIND: u32 = 0x0054_7840;
 
-/// When the loaded map changes, loads its bot data on a background thread
-/// and, for a multiplayer map, asks the nav builder
-/// (`crate::bots_nav_auto`) to look at it next. Until then, and without a
-/// file, the bots walk straight and see through walls; a mesh built while
-/// the map runs goes in when it lands ([`bots::autonav::offer`]). The main
-/// menu and the shared resource maps get nothing: no bot plays there
-/// ([`bots::autonav::map_use`]).
-fn load_map_data(seen: &Mutex<String>, dir: &std::path::Path, mem: &runtime::Guest) {
+/// The source checksum distinguishes edits and sandbox variants with the
+/// same short name (inline cache header, `docs/runtime/cache-slots.md`).
+const MAP_CHECKSUM: u32 = 0x0054_79d0;
+
+#[derive(Default, PartialEq, Eq)]
+struct MapIdentity {
+    name: [u8; 32],
+    checksum: u32,
+}
+
+#[derive(Default)]
+struct NavMap {
+    seen: MapIdentity,
+    editor: Option<vfs::HostFile>,
+}
+
+/// When the loaded map changes, queue the cached data read and, for a
+/// multiplayer map, the background build. Bots steer toward known goals
+/// until the mesh arrives ([`bots::autonav::offer`]).
+/// Where a map's bot data is read: on a worker (play), or on the game
+/// thread before the frame's pads (`H2_BOTS_MAP_INLINE=1`, which sim sets),
+/// so the tick the bots first see the mesh does not depend on the host's
+/// load.
+enum MapLoader {
+    Worker(Option<std::sync::mpsc::Sender<MapRead>>),
+    Inline(std::path::PathBuf),
+}
+
+impl MapLoader {
+    fn new(dir: std::path::PathBuf) -> Self {
+        if std::env::var(MAP_INLINE_ENV).is_ok_and(|v| v == "1") {
+            MapLoader::Inline(dir)
+        } else {
+            MapLoader::Worker(map_reader(dir))
+        }
+    }
+}
+
+/// Read map bot data on the game thread (`1`).
+pub const MAP_INLINE_ENV: &str = "H2_BOTS_MAP_INLINE";
+
+fn load_map_data(
+    seen: &Mutex<NavMap>,
+    reader: &MapLoader,
+    mem: &runtime::Guest,
+) {
     use bots::autonav::{self, MapUse};
-    use engine::memory::GuestMemory;
-    let Ok(raw) = mem.cstr(MAP_NAME, 32) else {
+    let Ok(mut raw) = mem.read::<32>(MAP_NAME) else {
         return;
     };
-    let name = String::from_utf8_lossy(&raw).into_owned();
+    let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
+    raw[end..].fill(0);
+    let Ok(checksum) = mem.u32(MAP_CHECKSUM) else { return };
+    let identity = MapIdentity { name: raw, checksum };
     let mut last = lock(seen);
-    if *last == name {
+    if last.seen == identity {
         return;
     }
-    last.clone_from(&name);
-    autonav::map_loaded(&name);
+    let _dispatch = timeline::setup::dispatch();
+    last.seen = identity;
+    let editor = last.editor.clone();
+    drop(last);
+    let name = String::from_utf8_lossy(&raw[..end]).into_owned();
+    let (generation, retired) = autonav::map_loaded(&name);
     let kind = mem
         .u16(MAP_KIND)
         .ok()
         .map(|k| map::CacheType::from(u32::from(k)));
     let usage = autonav::map_use(&name, kind);
-    if usage == MapUse::Never {
+    if usage == MapUse::Never && retired.is_none() {
         return;
     }
     let auto = autonav::handle().filter(|_| usage == MapUse::Build);
-    if let Some(h) = auto {
-        h.want(&name);
+    if let Some(h) = &auto && editor.is_none() {
+        h.want_active(&name, crate::map_slots::active_file(mem), generation);
+        if retired.is_none() {
+            return;
+        }
     }
-    let file = dir.join(bots::cache::file_name(&name, 0));
-    let dir = dir.to_path_buf();
-    let thread_name = name.clone();
+    let read = MapRead { name, usage, generation, retired, auto: auto.is_some(), editor };
+    match reader {
+        MapLoader::Worker(Some(tx)) => {
+            let _ = tx.send(read);
+        }
+        MapLoader::Worker(None) => {}
+        MapLoader::Inline(dir) => read.load(dir),
+    }
+}
+
+struct MapRead {
+    name: String,
+    usage: bots::autonav::MapUse,
+    generation: u64,
+    retired: Option<Arc<bots::cache::MapData>>,
+    auto: bool,
+    editor: Option<vfs::HostFile>,
+}
+
+/// The receiver sleeps while the map is stable. Rapid transitions retire
+/// skipped maps on this worker and read only the newest queued map.
+fn map_reader(dir: std::path::PathBuf) -> Option<std::sync::mpsc::Sender<MapRead>> {
+    let (tx, rx) = std::sync::mpsc::channel::<MapRead>();
     let spawned = background::spawn("bots-map-data", move || {
-        let read = std::fs::read(&file);
-        let data = read
-            .as_ref()
-            .ok()
-            .and_then(|b| bots::cache::MapData::from_bytes(b));
-        match (data, read.is_ok(), auto.is_some()) {
-            (Some((d, stamp)), ..) => {
-                // The visibility grid beside it, or a line saying why not
-                // (every sight ray is then cast).
-                let vis = bots::vis::load(&dir, &name, 0, stamp, &d.walls);
-                let (polys, links, walls) =
-                    (d.nav.polys.len(), d.nav.edges.len(), d.walls.tris.len());
-                if autonav::offer(&name, d, false) {
-                    eprintln!(
-                        "bots: {name}: {polys} polygons, {links} links, {walls} wall triangles"
-                    );
-                    eprintln!("{vis}");
-                }
-            }
-            (None, false, true) => eprintln!(
-                "bots: no nav mesh for {name} yet; building it (bots walk straight until it lands)"
-            ),
-            (None, true, true) => eprintln!(
-                "bots: {name}: the nav mesh file is from an older version; building it (bots walk straight until it lands)"
-            ),
-            // Not a multiplayer map: a file only when built by hand.
-            (None, false, false) if usage == MapUse::LoadOnly => {}
-            (None, false, false) => eprintln!(
-                "bots: no nav mesh for {name}; run `h2 bots nav {name}` (bots walk straight until then)"
-            ),
-            (None, true, false) => eprintln!(
-                "bots: {}: not a bot data file of this version; run `h2 bots nav {name}`",
-                file.display()
-            ),
+        while let Ok(first) = rx.recv() {
+            let request = rx.try_iter().last().unwrap_or(first);
+            request.load(&dir);
         }
     });
-    if let Err(e) = spawned {
-        eprintln!("bots: {thread_name}: bot data not loaded: {e}");
+    match spawned {
+        Ok(_) => Some(tx),
+        Err(e) => {
+            eprintln!("bots: cannot start map data reader: {e}");
+            None
+        }
+    }
+}
+
+impl MapRead {
+    fn load(self, dir: &std::path::Path) {
+        use bots::autonav::{self, MapUse};
+        let MapRead { name, usage, generation, retired, auto, editor } = self;
+        // Free the retired mesh and its many polygon, edge and visibility
+        // allocations away from the frame that observed the transition.
+        drop(retired);
+        if let Some(file) = editor {
+            // The ordinary per-map cache can match the retail name and even its
+            // XOR checksum. Build from the pinned play copy, in memory only.
+            if auto {
+                let mut src = crate::bots_nav_auto::host_region(&name, file);
+                match src.build_with(bots::vis::Threads::background()) {
+                    Ok(bsps) => {
+                        if let Some(data) = bsps.into_iter().next() {
+                            autonav::offer(&name, Arc::new(data), generation);
+                        }
+                    }
+                    Err(why) => eprintln!("bots: nav mesh for edited {name} unavailable: {why}"),
+                }
+            }
+            return;
+        }
+        if usage == MapUse::Never || auto {
+            return;
+        }
+        match autonav::load_cached(dir, &name, generation, None) {
+            Ok(()) => {}
+            Err(autonav::Status::Missing) if usage == MapUse::LoadOnly => {}
+            Err(why) => eprintln!(
+                "bots: {name}: nav mesh {} (bots walk straight until built with `h2 bots nav {name}`)",
+                why.why()
+            ),
+        }
     }
 }
 
@@ -394,11 +485,28 @@ pub fn install_film(
     data_root: &std::path::Path,
     film: Option<Arc<crate::theater::Session>>,
 ) -> anyhow::Result<bool> {
+    install_for_maps(registry, data_root, film, None)
+}
+
+pub fn install_for_maps(
+    registry: &mut hooks::Registry,
+    data_root: &std::path::Path,
+    film: Option<Arc<crate::theater::Session>>,
+    sources: Option<&crate::loaded_map::EditorSources>,
+) -> anyhow::Result<bool> {
     let mut bots = Bots::new(bots::phantom::global().clone(), data_root);
     bots.film = film;
     let added = registry
         .add(&bots)
         .map_err(|e| anyhow::anyhow!("bots: {e}"))?;
+    if added && let Some(sources) = sources {
+        let map = Arc::downgrade(&bots.map);
+        sources.on_change(move |file| {
+            if let Some(map) = map.upgrade() {
+                *lock(&map) = NavMap { seen: MapIdentity::default(), editor: file.cloned() };
+            }
+        });
+    }
     if !added {
         eprintln!("bots: off: switched off (H2_FEATURES)");
     }
@@ -407,6 +515,7 @@ pub fn install_film(
 
 pub(crate) mod audio;
 mod retail_input;
+pub(crate) use retail_input::build_costs as phantom_build_costs;
 
 mod film_state;
 mod party_leave;

@@ -9,7 +9,7 @@ Switch: `H2_SIM`, `sim.render_every` and the `impl.sim.*` switches, listed in
 Code: `crates/live/sim-bench` (the match, batch and tuning files, pacing, the
 tally and report, the comparison), `crates/live/bots/src/tuning.rs`,
 `crates/rewrites/sim-bridge/src/sim_frame.rs`, `crates/extensions/game/src/sim_glue.rs` and its
-System Link lobby, `crates/apps/cli/src/sim_cmd.rs`, and the examples in
+System Link lobby, `crates/extensions/game/src/sim_census.rs`, `crates/apps/cli/src/sim_cmd.rs`, and the examples in
 [sim-examples/](sim-examples/).
 
 The goal: train and test the bots offline. Run the retail game's own
@@ -147,7 +147,10 @@ paced or not (`crates/runtime/kernel/src/pacer.rs`). So a paced and an unpaced r
 of the same match are the same match. `sim::clock` holds the parsing and
 the arithmetic (tested); boot sets `Machine::pacer` from it. Pass
 `--pace realtime` to `h2 sim run` or `h2 sim batch` to override the match
-file for this invocation.
+file for this invocation. A real-time light host can group its wall waits
+on the pack slot’s 30 Hz phase. Socket readiness releases the grouped wait
+at the ordinary deadline. The guest still observes each intervening vblank,
+audio completion and thread deadline. [Switches](switches.md)
 
 The report's speed-up is game time over wall time from the match's first
 tick to its end (`sim::clock::SpeedMeter`), and also over the whole
@@ -215,19 +218,23 @@ regular phantom uplink and remote gather.
 | `map` | the lobby's map row, resolved against the disc |
 | `game_type` | the lobby's variant built from the type's built-in list index (`VARIANT_DEFAULTS`, `0x19d220`) |
 | `time_limit_s`, `score_limit`, `team_play`, more `settings` | edits of the variant record with `variants::GameVariant::set` (setting 10 the time limit, the type's score setting, 91 team play, any other id) |
-| `seed` | written to the engine's shared random seed `[0x004e7408]+0` at the first tick, and folded into each brain's seed |
+| `seed` | written to the engine's shared random seed `[0x004e7408]+0` at the first tick, to the game options' two spawn words (`[[0x004e6948]+0x10]`, `+0x14`; `sim_glue::spawn_words`) ahead of the game's first spawn, and folded into each brain's seed |
 
 ### The playerless start
 
 **Code**: `sim_glue/hosted.rs` and
 `host_lobby/retail.rs`. One step per game tick at the start of the tick:
 
-1. **Open.** `PROFILE_SIGN_IN` (`0x18fb34`) is refused for the run, so no
-   port is ever signed in. The host creates the System Link squad
-   (`0x199df9(0,0)`, custom mode `0x199a03(2)`), sets the map
-   (`0x19a6f2`) and the variant (`0x19a728`) with the player limit at the
-   bot count, and waits until the squad shows them
-   (`sim: System Link host Create -> Start`).
+1. **Create and configure.** All four local profiles stay signed out.
+   With the menu and network session objects initialized, the host invokes
+   the Available Games browser's Create row. `0x199df9(0,0)` creates a
+   class-1 System Link squad via `0x59890(1,0,0)`. The host selects custom
+   mode with `0x199a03(2)` and records the new squad (`SquadCreated`).
+   The menu cannot retire this squad just because there is no controller
+   to enter the pregame screen. The host waits for retail's pregame
+   lifecycle (type 1 or 2), local host state 5 and stage 1
+   (`SessionStarted`). It applies the requested map, variant and bot-count
+   player limit. Their readback and distributed protocol 2 enable `Start`.
 2. **Gate.** The squad must be live (state 5), hosted here, distributed,
    on the match's map, with one player per seat and one peer per machine:
    this host's own peer plus one per phantom (`start_gate`).
@@ -245,23 +252,22 @@ regular phantom uplink and remote gather.
    `+0x4980` becomes 2 and the machines load the map
    (`sim: System Link host Start -> Loading`).
 
-Every wait says why, once per change:
-`sim: System Link host waits at Start: <reason>`, for example
-`peer 0 has map status 2 (...)` or
-`retail start state 7, blocked by the teams or co-op check (...)`.
+Each change in wait reason emits `sim: System Link host waits at <step>: <reason>`.
+A wait at `Start` can report `3 of 4 players` or a peer's map status.
+If the squad retires or is replaced during setup, the host releases ownership
+and returns to `Create`. If another network squad is still active, creation
+reports that a network squad already exists.
 The co-op hooks (`SESSION_GAME_LIMITS` "peer limit 2",
 `SESSION_GAME_START` "one peer for the campaign check",
 `LOBBY_START_STATE` "co-op over 2 to N consoles") act on campaign
 sessions only and leave this lobby as retail has it (tested).
 
-What `h2 sim run` logs on an all-phantom match (for example four
-phantoms, Slayer, Lockout): `Create -> Start`, the phantoms' joins,
-possibly `waits at Start: peer N has map status 2` while the map loads,
-then `Start -> Loading`, `sim: match started at tick N` and
-`bots: phantoms: the game's start waits for real consoles only`.
-`match.status` reaches `playing` with every logical seat in `bound_seats`,
-and the report lists just those players. A run that stalls names the check
-in its last `waits at Start` line.
+For four phantoms on Lockout the expected host transitions are
+`Create -> SquadCreated`, `SquadCreated -> SessionStarted`,
+`SessionStarted -> Start` and `Start -> Loading`. Phantom joins and
+map-readiness waits can interleave with these lines. Map activation logs
+`sim: match started at tick N`. The agent's `match.status.lobby` gives
+the last setup step, wait reason, session type and squad state.
 
 `match.status` enters `binding` on map activation. Combat sampling
 starts once the distributed server has a player and a spawned unit for
@@ -287,6 +293,9 @@ max_ticks = 9000            # stop after this many game ticks (5 min at 30 Hz)
 max_wall_s = 600            # and after this long on the clock
 render_every = 0
 pace = "unpaced"
+components = true           # false: no state_components_v1 in the report (timing arms)
+bot_threads = 3             # bot think workers: a count, "auto" or "off"; unset: see below
+bot_pipeline = false        # true: thinks overlap the guest's tick (a different match)
 
 [settings]                  # any variant setting by id (variants::record)
 83 = 1                      # weapons on map
@@ -317,12 +326,13 @@ reaction = 5
   `grenades_per_minute`;
 - `awareness` (0..1; the decisions' sense of the fight, per skill now);
 - the personality, each optional (0..1): `aggression`, `caution`,
-  `teamwork`, `objective_focus` (seeded per bot today);
+  `teamwork`, `objective_focus` (otherwise derived from the gamertag);
 - human input timing: `perception_ticks` and `motor_ticks` (0–30 ticks),
   `button_sigma_ms` (0–12 ms), `stick_step` (0.1–0.6 stick radii per
   tick), and `thumb_switch_ticks` (1–6 ticks);
-- phantom transport: `phantom_ping_ms` (0–1000 ms round trip) and
-  `phantom_jitter_ms` (0–50 ms bounded one-way variation);
+- phantom transport: `phantom_ping_ms` (0–1000 ms round trip, default 0)
+  and `phantom_jitter_ms` (0–50 ms bounded one-way variation for positive
+  ping, default 4);
 - host work intervals in game ticks (1–30 each): `foot_plan_ticks`
   (default 6), `vehicle_plan_ticks` (8) and `vehicle_lookahead_ticks` (3).
   Older files can still specify `player_los_ticks`. Player sight is
@@ -370,9 +380,17 @@ ticks; and the final score. The report is one JSON file per match:
   "result": { "end": "game_over", "winner": {"player": 2}, "teams": [] },
   "ticks": 9000, "game_seconds": 300.0,
   "wall": { "setup_s": 21.8, "match_s": 41.2, "process_s": 63.0, "speedup": 7.28,
-            "process_speedup": 4.76, "ms_per_tick": 4.58,
+            "process_speedup": 4.76, "ms_per_tick": 4.58, "bots_ms_per_tick": 0.45,
+            "phantom_build_ms_per_tick": 0.9, "phantom_snapshot_ms_per_tick": 0.5,
+            "phantom_snapshots_per_tick": 1.0, "phantom_snapshot_copy": "remap",
             "peak_rss_mib": 981, "footprint_mib": 143,
             "guest_written_pages": 2100, "guest_pages": 16384 },
+  "guest_census": { "ticks": 9000,
+                    "local_users": { "samples": 9000, "mean": 0.0, "peak": 0 },
+                    "local_visibility": { "samples": 9000, "empty_ticks": 9000 },
+                    "arrays": { "effect": { "samples": 9000, "mean": 6.1, "peak": 31 },
+                                "particle_system": { "...": "..." }, "particles": { "...": "..." },
+                                "decals": { "...": "..." }, "lights": { "...": "..." } } },
   "players": [
     { "index": 0, "name": "A1", "bot": true, "seat": 0, "arm": "base", "team": 0,
       "score": 12, "kills": 12, "deaths": 9, "assists": 2, "suicides": 0, "betrayals": 0,
@@ -381,10 +399,59 @@ ticks; and the final score. The report is one JSON file per match:
       "doing": { "fight": 2100, "roam": 3900 } }
   ],
   "kills": [ { "tick": 412, "killer": 0, "victim": 3, "kind": "kill" } ],
+  "flat": { "fixups_per_tick": 0.0 },
   "nav": "loaded",
   "notes": []
 }
 ```
+
+`wall.bots_ms_per_tick` is the game-thread time the bot brains cost per
+tick: every phantom's read, think and conclude phases, and the wait for
+workers, in any think mode (`bots::think::game_thread_ns`). A think that
+runs on a worker is not in it, so batched against serial shows the
+game-thread saving. `flat.fixups_per_tick` is the flat RAM window's
+fixups over the match, per tick (`runtime::window_process_stats`); the
+report has no `flat` without a window. Both count from the tick the
+match begins.
+
+The phantoms' action build is not in `bots_ms_per_tick`
+([sim-headless-skips.md](../perf/sim-headless-skips.md)). At the remote
+gather each phantom's pad goes through retail's local action builder in
+a private copy of guest RAM (`bot_glue::retail_input`, `Builder::sample`).
+`wall.phantom_build_ms_per_tick` is the game-thread time of those builds
+per tick: the snapshot, the reverts between seats, the view's writes and
+the six guest calls of every seat. A film that replays its builds runs
+none. `wall.phantom_snapshot_ms_per_tick` is the part spent in
+`SecondExecutor::snapshot`, the two copy-on-write copies of guest RAM a
+build takes at a tick's first seat. `wall.phantom_snapshots_per_tick`
+counts those snapshots; it is above 1 when a failed build or a seat reset
+starts a seat from live RAM again. `wall.phantom_snapshot_copy` says how
+they copied RAM (`runtime::CopyKind`): `remap` (a copy-on-write mapping
+of the same pages, macOS), `copy` (every byte), or `mixed`. All four count
+from the tick the match begins, as the costs above do, and a report has
+none of them when the run did not measure.
+
+The `guest_census` block (`crates/extensions/game/src/sim_census.rs`)
+counts the presentation-side state a headless match still holds. The
+tick observer reads it once a tick, from the tick the match begins:
+
+| Field | What | Read from |
+|---|---|---|
+| `ticks` | ticks sampled | |
+| `local_users` | the local-user count | `i16` at `[0x4e8c20] + 8` (`guest_layout::PlayerGlobals`) |
+| `local_visibility` | ticks the local players' visibility set was empty | the `0x40` bytes at `[0x4e6948] + 0x1178` (cleared at `0x137d5c`, built by the visibility pass at `0x138c5f`) |
+| `arrays.effect` | live effects | data array `[0x4ea93c]` (initialised at `0x175b93`) |
+| `arrays.particle_system` | live particle systems | `[0x510c74]` (`0x173e29`) |
+| `arrays.particles` | live particles | `[0x51ec84]` (`0x173e62`) |
+| `arrays.decals` | live decals | `[0x4ea950]` (`0x17d263`) |
+| `arrays.lights` | live lights | `[0x4e030c]` (`0xbfffb`) |
+
+A count carries `samples` (the ticks it was read on), `mean` and `peak`;
+an array counts from its header's live count (`+0x3c`), and only when
+the header has the data-array signature and the name the title gives it,
+so a wrong pointer is left out, never counted. An array never read is
+absent. The reads are three pointers, five headers and 64 bytes a tick.
+A report has no `guest_census` before its first counted tick.
 
 With `H2_DISPATCH_STATS=1`, the report includes `dispatch_per_tick`
 for the observed match interval. It records the CALLs, JUMPs, RESUMEs,
@@ -407,6 +474,23 @@ the report's body and shield amounts. Each shotgun pellet can count
 as a hit, and melee and splatter can land hits without firing a shot,
 so accuracy can exceed 1.
 
+Each phantom's `weapon_accuracy` rows count shots the multiplayer weapon
+stats register and shots the game credits with a hostile hit. The reporting
+code identifies the fired weapon. The decision range to the bot's visible
+target at fire is close (under 3 world units), mid (3 to under 12), long
+(12 and above) or unknown. A delayed projectile keeps its firing range.
+Pellets and splash from one registered shot can earn one hit.
+
+`crates/extensions/game/src/bot_accuracy.rs` observes `WEAPON_STAT_BUCKET`.
+The shot registration at `0x15cca0` stores a 16-bit shot ID, reporting code
+and tick in one of eight entries per shooter. It looks up the weapon bucket
+at `0x15cd65` before incrementing weapon statistic 4. The hit path at
+`0x15cd90` checks hostility and matches a pending shot ID before its lookup
+at `0x15ce40`, increments statistic 5 and invalidates the entry. The rows
+follow these same slots across weapon switches and report hits divided by
+registered shots. The separate `combat` object holds the decisions and timing
+available during play through `h2 agent bots.stats`.
+
 Each bot row includes its logical `seat`. Readers can continue to load
 earlier `h2-sim-report/1` reports.
 
@@ -416,6 +500,8 @@ The `wall` block carries the process's memory: `peak_rss_mib`
 fleet pays for), and, when the run loaded a shared copy-on-write guest
 RAM base (§6.2), `guest_written_pages` of `guest_pages`: the census of
 what the match wrote over the base, so batches record memory per run.
+`mapped_read_bytes` and `copied_read_bytes` count completed bytes transferred
+into guest RAM by NtReadFile since boot. Copied bytes include partial pages.
 The per-process memory of a Waterworks 2v2 sim run is in
 [notes/sim.md](notes/sim.md).
 
@@ -440,15 +526,29 @@ h2 sim store build all --disc disc/halo2.iso --out store --reads reads.txt
 H2_SIM_STORE=store h2 sim run match.toml   # or h2 serve --system-link --host-light
 ```
 
-The store file (`<map>.h2store`) is a 24-byte header, a sorted range
-index and the packed bytes of the ranges — nothing else. The serving
-side (`vfs::SimStoreBackend`, layered under `H2_MAP_DIR` and
-`H2_SERVER_MAP_DIR`) keeps only the index in memory, maps the file
-read-only and copies straight into the guest's own read buffer, so
-every process on one host shares the store's page-cache pages and
-nothing private is retained. `stat` keeps the map's logical length; a
-store-served map has no `host_file` (like a streamed overlay); an
-unreadable store file makes the map's reads fail, never fall back.
+The store file (`<map>.h2store`) contains a 24-byte header, a sorted
+range index and the recorded bytes. Version 1 of the index pads bulk
+ranges to the same offset within a 4 KiB page as their logical map
+offset. The reader also accepts packed version 0 indexes.
+`vfs::SimStoreBackend` maps the file read-only. The configured editor
+and server map layers take precedence. The guest sees the original
+logical file length, and an unreadable store fails its reads.
+
+On a light host, a read from an immutable disc map, verified server map
+or contiguous store range can supply whole pages directly to guest RAM.
+On macOS, boot selects a dedicated paged RAM mapping when this read path
+is enabled. Ordinary play and the light profile's copy control use the
+usual heap backing. Flat RAM keeps its separate aliasable mapping.
+The kernel attempts one mapping for the full NtReadFile request, before
+dividing a copied read into 64 KiB chunks. At least 16 whole host pages
+must fit. The physical destination and file offset must have the same
+remainder modulo the host page size. Partial edge pages are copied,
+and guest writes to a mapped page are private to that process. Flat
+RAM aliases, access traps, HLE write capture, mutable files and composed
+map streams take the ordinary copy path. The host reports the first
+refusal for each reason on stderr. See [the switch registry](switches.md)
+for the copy control.
+
 Two games on different maps still share `shared.map`'s store, the
 common tag data both read, and the dylib's code pages.
 
@@ -461,8 +561,7 @@ leaves no pages behind either.
 
 ### 6.2 Sharing guest RAM with machine snapshots
 
-Halo copies a map's tag data into guest RAM at load, so each process
-holds its own dirty copy. `state.save` with `"cow": true` writes, beside
+The snapshot shares guest RAM at a saved machine state. `state.save` with `"cow": true` writes, beside
 the snapshot, a sparse raw RAM image (`<name>.ram`: zero pages are
 holes); `state.load` with `"cow": true` maps that file private
 copy-on-write in place of decoding RAM in — pages the match never
@@ -542,6 +641,14 @@ params = "tuning/aggressive.toml"
   `<map>[-<gametype>][-<skill>]-s<seed>`, with the game type and skill
   segments included when those axes are set. Separate mode appends the
   arm name. In either swap mode the second leg appends `-swapped`.
+- **Z:'s map cache.** A run's data directory starts with Z:'s cache slots
+  (`shared`, `single_player_shared`) cloned from the image's template in
+  `<image out>/sim-cache/utility/`, so its boot skips their copy. The
+  first run of a batch with no template makes it while the other workers
+  wait. N:'s slots (the main menu and the match's map) are copied on
+  every run, since every boot formats N:. Each run's status line says
+  `warm Z:` or `cold Z:`; `H2_SIM_CACHE_TEMPLATE=0` turns the template
+  off ([cache-slots.md](cache-slots.md#sim-batches-a-warm-z)).
 - **Arms.** By default each run plays config A against config B in the
   same match: half the bots A, half B (2 v 2 with teams A and B in a team
   game; in free-for-all, alternating). That is the fairest comparison: the
@@ -602,8 +709,59 @@ Use the same disc, image and nav meshes you use for local runs.
 Sign into that server as an admin in h2 Uplink. Open **Halo Admin →
 Clanker Training** and select a running match to watch it. The viewer follows
 the live edge on the simulation's clock and shows its usual **Live** control
-for returning to it after a seek. The training page shows measured simulation
-speed. Use `--pace realtime` for normal game speed.
+for returning to it after a seek. The live clock runs at the stream's
+measured pace (`streamPace` in `web/src/state/frames.ts`): a sim streaming
+at 3× plays smoothly at 3× near its live edge. A finished run's replay opens
+at 8× and its speed menu goes from 0.25× to 16×. The training page shows
+measured simulation speed. Use `--pace realtime` for normal game speed.
+
+Above the results table, the page watches the runs it lists
+(`web/src/admin/SimWatch.tsx`). With no batch picked, it draws them as
+**One map**, described below. Pick a batch (the **Batch** filter, or a
+batch heading in the list) to watch it as a grid with one map tile per
+run, or switch the batch to **One map** with the **Grid** / **One map**
+switch in the replay controls. The grid's tiles are ordered by map, then
+seed, then tuning arms, so the arms played on one map and seed sit side by
+side. Each tile shows the map, seed, arms by team, game clock and score,
+and opens the run's page when clicked.
+
+- **Finished runs** replay on one shared clock, in sync from each run's
+  first frame. **Speed** picks 1×, 4×, 8× or 16× (8× to start). **Pause**,
+  **Play** and **Restart** apply to all tiles. A run that ends early holds
+  its last frame, and the clock stops when the longest run ends. Each tile
+  downloads its full recording once it nears the screen, at most three at
+  a time, and plays it in the browser, so speed needs no server support.
+- **Running runs** stream live at the sim's own pace. Up to six on-screen
+  tiles stream at once. The others show the latest score from the list,
+  which refreshes every five seconds.
+- **Deferred runs** say *Replay after match* until their recording is
+  uploaded.
+
+The maps are the stats site's small map renderers on the shared animation
+frame loop. A tile off screen draws nothing.
+
+**One map** draws every run on a map together in one large viewer, titled
+with the map and its run count. A page that lists runs on several maps has
+a viewer per map; the **Map** filter leaves one. The viewer uses the map's
+top view when the server has one, else its outline. Every run plays on the
+same clock and controls as the tiles, each at its own tick: finished runs
+replay their recordings, and running runs stream live under the same six
+slots, shared by the viewers on screen. Runs that wait for their recording
+are left out, with a note.
+
+Each run has its own colour from a fixed palette, in tile order, and its
+players and death marks are drawn in that colour instead of the team's. The
+viewer merges the runs' frames and rosters into one frame and one roster
+(`mergeFrames` and `mergeRosters` in `web/src/admin/batchWatch.ts`). Each
+run's players are keyed `slot * 1000 + index`, so players from different
+runs never meet, and the merged roster gives them the run's colour. The
+map renderers are the same as the tiles'.
+
+A legend beside the viewer has a row per run with its colour, seed, arms,
+live score and a link to the run. Pointing at a row, or at the run's row in
+the results table, draws that run at full strength and dims the others
+(their roster colour and marks turn translucent). Clicking a legend row
+holds the highlight; clicking it again lets go.
 
 Each batch streams at most two matches at once. Other running matches appear
 in the list with replay available after the match. They buffer packed
@@ -616,8 +774,16 @@ Uploaded players have bot flags and no Live account XUIDs.
 The finished-game viewer switches to the archive when it is published.
 [Replay playback](../live/replay-fidelity.md#current-recording-and-playback)
 
-The CLI still saves the
-local report, including when an upload fails. Training games are private
+During a streamed simulation, the Clanker Training bot stats panel reads
+the latest completed decision per bot roughly every five wall seconds.
+It shows the current goal, weapon and target range, the last action,
+grenade and melee use, weapon switches, mean attack reaction in ticks,
+think time and weapon accuracy by firing range. The preview carries the
+64 most-used weapon/range pairs per bot. The full breakdown and recent
+decision history appear in the uploaded report for streamed and deferred
+runs. The in-game agent exposes the current sample during play. If the
+private upload exceeds 512 KiB, the host omits the per-tick determinism traces from the upload and records that in the notes.
+The CLI saves the full local report, including when an upload fails. Training games are private
 and excluded from public stats and ranks. The
 [Live API](../live/live-api.md#clanker-training) describes the storage limits.
 
@@ -679,11 +845,12 @@ What a sim run's result depends on, and what breaks reproducibility:
 | The render front-end | **skipped**, so it no longer steps the shared seed: deterministic, but a different stream from a rendered run |
 | The render thread | none: no GPU backend |
 | Audio | logical pacing into a `NullSink` |
-| Input | bots only, no keyboard. Bots read guest memory on the game thread before `RENDER_FRAME`, once a frame |
-| Bot thinking threads (`H2_BOT_THREADS`, `H2_BOT_PIPELINE`) | the guest is read on the game thread only and the thinks are independent, so pads do not depend on the thread count. Batched equals serial; pipelined is a different match (pads a tick later, latency kept) that is equally reproducible ([bots.md §5.5](../game/bots.md)) |
-| The bots' randomness | seeded per bot: SplitMix64 of the match seed and logical seat (`sim::config::bot_seed`) |
+| Input | Each phantom observes guest state on the game thread during the simulation tick’s input gather |
+| Bot thinking threads (`H2_BOT_THREADS`, `H2_BOT_PIPELINE`) | the guest is read on the game thread only and the thinks are independent, so pads do not depend on the thread count. Batched equals serial. Pipelining is reproducible with pads delivered a tick later, crediting that tick toward any configured wire delay ([bots.md §5.5](../game/bots.md)) |
+| Spawn locations | `0x14ef00` mixes the player index and spawn count with two game-options words that the session fills anew for each game, not the shared seed. Sim writes them from the match seed ahead of the first spawn (`crates/extensions/game/src/sim_glue.rs`); without that, two runs start their players in different places |
+| The bots' randomness | SplitMix64 of the match seed and logical seat drives individual choices (`sim::config::bot_seed`). The gamertag fixes the profile |
 | `HashMap` iteration in the bots (`mind.rs` tracks, `los`, `nav`) | lookups and `retain` only, as read (**S**: worth a check in review) |
-| The nav mesh | built in the background on a thread at the wall clock's mercy (`bots_nav_auto`): **off in sim mode** (`H2_BOTS_NAV_AUTO=0`). A map with no current mesh is reported (`"nav": "missing"`); build them first with `h2 bots nav <map>` |
+| The nav mesh | built in the background on a thread at the wall clock's mercy (`bots_nav_auto`): **off in sim mode** (`H2_BOTS_NAV_AUTO=0`). A map with no current mesh is reported (`"nav": "missing"`); build them first with `h2 bots nav <map>`. A built mesh is read on the game thread in sim mode (`H2_BOTS_MAP_INLINE=1`): read on a worker, the bots of a loaded host acted without it for their first ticks, and two runs split soon after the opening hold |
 | Wall-clock limits (`max_wall_s`) | can end a match at a different tick on a slower host: the report says `"end": "wall_limit"`. Use `max_ticks` for reproducible ends |
 | Our own observers | read-only; the agent's tick observer adds dispatch transfers, the same in every run that has it |
 
@@ -700,11 +867,13 @@ Host methods while `H2_SIM` is on (`boot::sim_glue::Sim::add_methods`,
 
 | Method | Access | What |
 |---|---|---|
-| `match.status` | read | the match file, phase (`waiting`, `playing`, `over`), ticks, game seconds, wall seconds and speed-up so far, the end reason once over |
+| `match.status` | read | the match file, phase (`waiting`, `binding`, `playing`, `over`), lobby setup step and session state, ticks, game seconds, wall seconds and speed-up so far, the end reason once over |
 | `match.report` | read | the report as it would be written now (players, kills so far) |
 | `match.stop` | act | end the match at the next slice boundary, with `"end": "stopped"` |
+| `sim.guest_census` | read | the guest census read now (`now`) and the report's `guest_census` block so far (`match`), §6 |
 
-`h2 agent match.status`, `h2 agent match.report`, `h2 agent match.stop`.
+`h2 agent match.status`, `h2 agent match.report`, `h2 agent match.stop`,
+`h2 agent sim.guest_census`.
 Stepping is the existing `session.pause` and `session.step N`.
 
 ## 10. Expected speed-up
@@ -757,8 +926,11 @@ that a digest does. Each report also carries `state_components_v1`: the
 same ticks as `state_hashes_v1`, broken into named components with their
 values as text. The first row lists every component; each later row lists
 only those that changed (a component that goes away reads `-`). It is on in
-every `h2 sim run` and is bounded at 250,000 recorded values; a longer match
-keeps its first ticks and sets `truncated_after`.
+every `h2 sim run` unless the match file sets `components = false`, and is
+bounded at 250,000 recorded values; a longer match keeps its first ticks and
+sets `truncated_after`. A timing arm that leaves it out still has
+`state_hashes_v1`, and `h2 sim diff` against it compares those digests
+and says that one report has no component breakdown.
 
 Components: `time.tick`, `rng.seed`, `world.bsp`, `world.flags`,
 `team.NN.score`, and for each player slot `player.NN.{id, stats, pos,
@@ -842,8 +1014,14 @@ and some conditional tactical or route outputs can still allocate.
 
 The brains can think off the game thread ([bots.md §5.5](../game/bots.md)):
 `H2_BOT_THREADS=auto` batches every phantom's think across workers, and
-`H2_BOT_PIPELINE=1` also overlaps the thinks with the guest's tick. The
-default is serial. To measure, run the same match file (Waterworks and
+`H2_BOT_PIPELINE=1` also overlaps the thinks with the guest's tick. A
+single `h2 sim run` thinks batched on `min(phantoms, cores - 1)` workers
+unless told otherwise; `h2 sim batch` children stay serial, because the
+children already fill the cores. Per variable, an `H2_BOT_THREADS` or
+`H2_BOT_PIPELINE` already in the environment wins, then the match file's
+`bot_threads` and `bot_pipeline`, then that default
+(`crates/apps/cli/src/sim_cmd.rs`, `think_env`). The run's first log line
+names the values it ended with. To measure, run the same match file (Waterworks and
 Lockout, phantoms, seed 7) serial, batched and pipelined. Compare
 `state_hashes_v1`: batched must match serial at every tick, and pipelined
 must match itself across thread counts. Then compare ms/tick and the
@@ -951,8 +1129,12 @@ points. The telemetry worker has a separate bucket for consumed samples.
 Divide each total by report ticks for an inclusive per-tick
 attribution. Nested buckets overlap, and totals include lobby and load
 work where the hook runs. Auditing bypasses generated native direct
-calls to count visible entries. Inlined blocks with no selector cannot
-be counted separately. Use an unaudited batch for throughput.
+calls to count visible entries. Second executors forked from the main
+runtime (`runtime::executor`), such as the phantom bots' retail input
+builder, share its coverage and bypass direct calls the same way, so
+the guest code they run is counted with the main runtime's. Inlined
+blocks with no selector cannot be counted separately. Use an unaudited
+batch for throughput.
 
 For a deployable module, export the owner/selector pairs with
 `h2 sim audit-coverage OUTPUT AUDIT [AUDIT ...]` and use
@@ -983,21 +1165,25 @@ headers and blocks while those dependencies are being traced.
 
 - `h2 sim` never builds: it stops with `h2 build` when the image is not
   current for this `h2` (`crates/apps/cli/src/sim_cmd.rs`), as `h2 serve` does.
+- `h2 lab sim` runs a match or batch on the lab host's image and keeps the
+  reports, with per-arm medians and a state-hash comparison, for timings
+  taken on the other Mac ([Sim benchmarks](lab.md#sim-benchmarks)).
 - Sim mode never builds nav meshes: run `h2 bots nav <map>`
   (`crates/apps/cli/src/bots_nav.rs`) once per map first.
 - Each batch run has its own data directory (`<out>/runs/<id>/data`, its
-  `bots/` linked to `--data`'s). For supported Map Pack runs the batch
-  stages the selected offer from the shared data directory.
+  `bots/` linked to `--data`'s, Z:'s cache slots cloned from the image's
+  template). For supported Map Pack runs the batch stages the selected
+  offer from the shared data directory.
 - The match's pace replaces `H2_BOOT_REALTIME` (unpaced unless the match
   says otherwise).
 - Example match and batch files are in [sim-examples/](sim-examples/).
 
 ## Not verified
 
-- Same-build determinism: two runs of one match with the same seed give
-  equal `state_hashes_v1` series ([Post-tick state hashes](#post-tick-state-hashes),
-  `h2 sim diff`). The [simulation budget](../perf/sim-budget.md) names
-  same-build repeatability as open.
+- Same-build determinism beyond the example batch: repeated runs of its
+  15 matches (Lockout, Midship, Ascension; four phantoms; 9000 ticks) give
+  identical components at every tick ([notes/sim.md](notes/sim.md)).
+  Other maps, rosters and game types are unchecked.
 - Whether skipping the render changes anything the tick reads beyond the
   seed: compare a skipped run with the same match at `render_every = 1`.
   `render_every` is the fallback if it does.
@@ -1007,12 +1193,17 @@ headers and blocks while those dependencies are being traced.
   the requested variant.
 - Phantom team assignments holding through respawns.
 - The end latch at the time or score limit ending a run.
+- The `guest_census` reads and the `wall.phantom_*` timers in a run: the
+  array pointers and names come from the retail XBE, and the reads are
+  tested over a fake guest only.
 
 ## Tests
 
 `cargo test -p sim-bench` (config, metrics, compare, clock, the examples
 here), `cargo test -p bots tuning` and `cargo test -p bots
 a_tuned_brain` (the overrides), `cargo test -p sim-bridge sim_frame` (the skip's decision
-and stubs over a fake guest), `cargo test -p boot sim_glue` (snapshots to
-samples, limits and phantom tuning), and `cargo test -p cli
-sim_cmd` (child arguments, per-run data, the results directory).
+and stubs over a fake guest), `cargo test -p game sim_glue` (snapshots to
+samples, limits and phantom tuning), `cargo test -p game sim_census` (the
+census reads over a fake guest and `sim.guest_census`'s answer), and `cargo
+test -p cli sim_cmd` (child arguments, per-run data, the results directory,
+the Z: template's key, saving, populating, gate and cleanup).

@@ -534,7 +534,7 @@ fn an_arm_swap_plays_each_arm_in_every_seat() {
             "midship-s4-swapped"
         ]
     );
-    for pair in b.runs.chunks_exact(2) {
+    for pair in b.runs.as_chunks::<2>().0 {
         let (first, second) = (&pair[0].config, &pair[1].config);
         assert_eq!(first.arms_swapped, Some(false));
         assert_eq!(second.arms_swapped, Some(true));
@@ -757,4 +757,21 @@ fn bot_work_rates_overlay_per_field_and_validate_tick_limits() {
 
     let bad: BotParams = toml::from_str("foot_plan_ticks = 0\nvehicle_plan_ticks = 31").unwrap();
     assert_eq!(bad.problems("bot").len(), 2);
+}
+
+#[test]
+fn think_and_component_keys() {
+    let ok = |extra: &str| {
+        let text = format!("map = \"lockout\"\n{extra}\n[[bot]]\n");
+        resolve(parse_match(&text, false).unwrap(), &no_files)
+    };
+    let m = ok("bot_threads = 3\nbot_pipeline = true\ncomponents = false").unwrap();
+    assert_eq!(m.config.bot_threads, Some(BotThreads::Count(3)));
+    assert_eq!(m.config.bot_pipeline, Some(true));
+    assert_eq!(m.config.components, Some(false));
+    let m = ok("bot_threads = \"Auto\"").unwrap();
+    assert_eq!(m.config.bot_threads.unwrap().env_value(), "auto");
+    assert_eq!(ok("").unwrap().config.bot_threads, None);
+    assert!(ok("bot_threads = \"many\"").unwrap_err().contains("bot_threads"));
+    assert!(ok("bot_threads = 99").unwrap_err().contains("at most 32"));
 }

@@ -2,7 +2,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use bots::{decisions::Personality, guest, mind::Skill, phantom};
+use bots::{decisions::Personality, guest, mind::Skill, name_profile::NameProfile, phantom};
 use engine::entry::{Cx, EntryError, GuestCall, Ret};
 use engine::memory::{GuestMemory, MemFault};
 use engine::points;
@@ -12,9 +12,10 @@ use runtime::GuestFault;
 
 use crate::list_class;
 use crate::ui_kit::{
-    dialog::DialogBase,
+    dialog::{DialogBase, PICKER_ANIMATION},
     dialog_tag, ids,
     input::{Glyph, Prompt},
+    page::{ListPage, described},
     screen::{KitScreen, KitTexts, Row, Then},
     view::Opener,
 };
@@ -54,55 +55,113 @@ struct Card {
     name: String,
     difficulty: String,
     style: String,
+    has_difficulty: bool,
+    has_style: bool,
+    profile: String,
+    loading: bool,
 }
 
 impl Card {
-    fn new(name: String, brain: Option<(Skill, Personality)>) -> Self {
-        let Some((skill, p)) = brain else {
-            return Self {
-                name,
-                difficulty: "Unavailable".into(),
-                style: "Unavailable".into(),
-            };
-        };
-        let traits = [
-            (p.aggression, "Aggressive"),
-            (p.caution, "Cautious"),
-            (p.teamwork, "Team player"),
-            (p.objective_focus, "Objective-minded"),
-            (p.composure, "Composed"),
-            (p.patience, "Patient"),
-            (p.showboating, "Showboat"),
-            (p.weapon_loyalty, "Weapon specialist"),
-            (p.chattiness, "Chatty"),
-        ];
-        let style = traits
-            .into_iter()
-            .max_by(|a, b| a.0.total_cmp(&b.0))
-            .unwrap()
-            .1;
+    /// On the host, display the running brain's skill and temperament.
+    /// A rostered card knows its last skill and derives the same temperament
+    /// from the full account name. The named profile also works offline.
+    fn new(name: String, skill: Option<Skill>, traits: Option<Personality>) -> Self {
+        let profile = NameProfile::for_name(&name);
+        let style = traits.or_else(|| skill.map(|k| profile.personality(k)));
         Self {
+            difficulty: skill.map_or_else(|| "Unavailable".into(), |k| format!("{k:?}")),
+            style: style.map_or("Unavailable", strongest_trait).into(),
+            has_difficulty: skill.is_some(),
+            has_style: style.is_some(),
+            profile: if name.trim().is_empty() {
+                "Profile unavailable".into()
+            } else {
+                profile.summary()
+            },
             name,
-            difficulty: format!("{skill:?}"),
-            style: style.into(),
+            loading: false,
+        }
+    }
+
+    fn account(account: live_proto::bots::PlayerCard) -> Self {
+        Self::new(
+            account.gamertag.to_string(),
+            account.skill.map(crate::clankers::skill_of),
+            None,
+        )
+    }
+
+    fn skill_detail<'a>(&self, value: &'a str) -> &'a str {
+        if self.loading {
+            "Loading..."
+        } else {
+            value
+        }
+    }
+
+    fn finish_lookup(&mut self, card: Option<live_proto::bots::PlayerCard>) -> bool {
+        self.loading = false;
+        if let Some(card) = card {
+            let resolved = Self::account(card);
+            let changed = self.name != resolved.name;
+            *self = resolved;
+            changed
+        } else {
+            false
         }
     }
 }
 
-fn route(selection: &Selection, known: Option<(String, Option<bots::BrainView>)>) -> Option<Card> {
-    if let Some((name, brain)) = known {
-        return Some(Card::new(name, brain.map(|v| (v.skill, v.personality))));
-    }
-    is_bot_xuid(selection.xuid()).then(|| Card::new(selection.name.clone(), None))
+fn strongest_trait(p: Personality) -> &'static str {
+    [
+        (p.aggression, "Aggressive"),
+        (p.caution, "Cautious"),
+        (p.teamwork, "Team player"),
+        (p.objective_focus, "Objective-minded"),
+        (p.composure, "Composed"),
+        (p.patience, "Patient"),
+        (p.showboating, "Showboat"),
+        (p.weapon_loyalty, "Weapon specialist"),
+        (p.chattiness, "Chatty"),
+    ]
+    .into_iter()
+    .max_by(|a, b| a.0.total_cmp(&b.0))
+    .unwrap()
+    .1
 }
 
-fn known(c: &Call, s: &Selection) -> Option<(String, Option<bots::BrainView>)> {
-    if let Some(p) = phantom::list().into_iter().find(|p| {
+enum Known {
+    Hosted(String, Option<bots::BrainView>),
+    Remote(String),
+}
+
+fn route(selection: &Selection, known: Option<Known>) -> Option<Card> {
+    match known {
+        Some(Known::Hosted(name, Some(brain))) => {
+            Some(Card::new(name, Some(brain.skill), Some(brain.personality)))
+        }
+        Some(Known::Hosted(name, None)) => {
+            let mut card = Card::new(name, None, None);
+            card.profile = "Unavailable".into();
+            Some(card)
+        }
+        Some(Known::Remote(name)) => Some(Card::new(name, None, None)),
+        None => is_bot_xuid(selection.xuid()).then(|| Card::new(selection.name.clone(), None, None)),
+    }
+}
+
+fn hosted(phantoms: &phantom::Phantoms, s: &Selection) -> Option<Known> {
+    let p = phantoms.list().into_iter().find(|p| {
         p.identity.xuid == s.xuid().0
             && (is_bot_xuid(s.xuid())
                 || phantom::session::player_id(p.identity.xuid, p.machine) == s.id)
-    }) {
-        return Some((p.identity.gamertag, phantom::global().brain_view(p.handle)));
+    })?;
+    Some(Known::Hosted(p.identity.gamertag, phantoms.brain_view(p.handle)))
+}
+
+fn known(c: &Call, s: &Selection) -> Option<Known> {
+    if let Some(p) = hosted(phantom::global(), s) {
+        return Some(p);
     }
     let m = c.ctx.runtime().memory();
     if m.u8(points::NETWORK_READY.base).ok()? == 0 {
@@ -113,7 +172,7 @@ fn known(c: &Call, s: &Selection) -> Option<(String, Option<bots::BrainView>)> {
     if !(3..=8).contains(&state) {
         return None;
     }
-    marked_session_player(&*m, session, s).map(|name| (name, None))
+    marked_session_player(&*m, session, s).map(Known::Remote)
 }
 
 /// A guest bot on another console may share an account XUID with its human.
@@ -201,12 +260,14 @@ fn account_name_source(m: &dyn GuestMemory, caller: u32, src: u32) -> u32 {
 // own card, so a late server reply cannot change the next selection.
 type Current = Arc<Mutex<Option<Arc<Mutex<Card>>>>>;
 
-fn field(current: &Current, get: fn(&Card) -> &String) -> String {
-    let guard = current.lock().unwrap_or_else(|e| e.into_inner());
-    guard
-        .as_ref()
-        .map(|c| get(&c.lock().unwrap_or_else(|e| e.into_inner())).clone())
-        .unwrap_or_default()
+fn card_value<T>(current: &Current, get: impl FnOnce(&Card) -> T) -> Option<T> {
+    let current = current.lock().unwrap_or_else(|e| e.into_inner());
+    let card = current.as_ref()?.lock().unwrap_or_else(|e| e.into_inner());
+    Some(get(&card))
+}
+
+fn field(current: &Current, get: fn(&Card) -> &str) -> String {
+    card_value(current, |card| get(card).to_owned()).unwrap_or_default()
 }
 
 #[derive(Default)]
@@ -232,7 +293,7 @@ fn show(
         return Ok(Flow::Continue);
     };
     let known = known(c, &s);
-    let remote = known.as_ref().is_none_or(|(_, brain)| brain.is_none())
+    let remote = !matches!(&known, Some(Known::Hosted(..)))
         && live_proto::bots::is_server_xuid(s.xuid());
     let Some(card) = route(&s, known) else {
         return Ok(Flow::Continue);
@@ -254,22 +315,25 @@ fn show(
         *open = Some(card.clone());
     }
     if remote && let Some(live) = live {
+        card.lock().unwrap_or_else(|e| e.into_inner()).loading = true;
+        let loading = card.clone();
         let widget = widget.clone();
-        live.bot_card(
-            s.xuid(),
-            Box::new(move |r| {
-                let brain = r.skill.map(|k| {
-                    let skill = crate::clankers::skill_of(k);
-                    (skill, Personality::for_skill(r.seed, skill))
-                });
-                let mut old = card.lock().unwrap_or_else(|e| e.into_inner());
-                let changed = old.name != r.gamertag.as_str();
-                *old = Card::new(r.gamertag.to_string(), brain);
-                if changed {
-                    widget.refresh.store(true, Ordering::Release);
-                }
-            }),
-        );
+        if live
+            .bot_card(
+                s.xuid(),
+                Box::new(move |r| {
+                    let mut card = loading.lock().unwrap_or_else(|e| e.into_inner());
+                    if card.finish_lookup(r.ok()) {
+                        widget.refresh.store(true, Ordering::Release);
+                    }
+                }),
+            )
+            .is_err()
+        {
+            card.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .finish_lookup(None);
+        }
     }
     let current = current.clone();
     c.answer_async(move |cx| {
@@ -377,6 +441,8 @@ impl hooks::Feature for Options {
     }
 }
 
+pub(crate) const EMBLEM_RECT: [i16; 4] = [30, 120, -50, 200];
+
 // Skin 6 is the Live players list in both interfaces. Its first table's
 // skin (player_skin_ymenu) contains the retail medium emblem shader.
 fn emblem_block(m: &dyn GuestMemory, skin: u32) -> Result<Option<[u8; 0x24]>, MemFault> {
@@ -396,7 +462,7 @@ fn emblem_block(m: &dyn GuestMemory, skin: u32) -> Result<Option<[u8; 0x24]>, Me
     block[0] &= !2;
     for (pair, coord) in block[0x1c..]
         .chunks_exact_mut(2)
-        .zip([30i16, 120, -50, 200])
+        .zip(EMBLEM_RECT)
     {
         pair.copy_from_slice(&coord.to_le_bytes());
     }
@@ -423,12 +489,14 @@ async fn add_emblem(
         .call(GuestCall::new(points::UI_LIST_SKIN.base).args([6]))
         .await?
         .eax;
-    let Some(block) = cx.read(|m| emblem_block(m, skin))? else {
+    let Some(mut block) = cx.read(|m| emblem_block(m, skin))? else {
         return Ok(());
     };
     let mut profile = [0; 16];
     profile[..8].copy_from_slice(&guest::bot_look(&name));
     cx.write(|m| {
+        let animation = list_class::widget_animation_index(m, screen)?;
+        block[4..6].copy_from_slice(&animation.to_le_bytes());
         m.write(d.page + BLOCK, &block)?;
         m.write(d.page + PROFILE, &profile)
     })?;
@@ -454,6 +522,47 @@ async fn add_emblem(
     Ok(())
 }
 
+// Inside the panel below the title, above the emblem and clear of the list.
+const PROFILE_LINE: list_class::TextBlock = list_class::TextBlock {
+    rect: [68, -15, 42, 249],
+    font: 1,
+    colour: [0.560784, 0.694118, 0.811765],
+    animation: PICKER_ANIMATION,
+};
+
+fn card_screen(current: &Current) -> KitScreen {
+    let (name, difficulty, style, summary) =
+        (current.clone(), current.clone(), current.clone(), current.clone());
+    KitScreen::new(
+        "clanker-card",
+        SCREEN,
+        ids::family("clanker card"),
+        "Clanker (bot)",
+    )
+    .dialog(DialogBase::Large, Opener::XBOX_LIVE_MENU)
+    .row(Row::info("Gamertag", move || field(&name, |v| &v.name)))
+    .row(Row::info_from_source("Difficulty", move || {
+        card_value(&difficulty, |v| {
+            (v.skill_detail(&v.difficulty).to_owned(), v.has_difficulty && !v.loading)
+        }).unwrap_or_default()
+    }))
+    .row(Row::info_from_source("Style", move || {
+        card_value(&style, |v| {
+            (v.skill_detail(&v.style).to_owned(), v.has_style && !v.loading)
+        }).unwrap_or_default()
+    }))
+    .row(Row::action("Back", || Then::Close))
+    .live_help(PROFILE_LINE, move || field(&summary, |v| &v.profile))
+    .prompts(&[Prompt::new(&[Glyph::B], "Back")])
+}
+
+pub(crate) fn page_sample() -> ListPage {
+    let card = Card::new("Rusty Bolt".into(), Some(Skill::Heroic), None);
+    let current = Arc::new(Mutex::new(Some(Arc::new(Mutex::new(card)))));
+    let screen = Arc::new(card_screen(&current));
+    ListPage::new(screen.class(), described(&screen))
+}
+
 pub fn install(
     registry: &mut hooks::Registry,
     live: Option<Arc<live_hle::Hle>>,
@@ -461,23 +570,7 @@ pub fn install(
     let current: Current = Arc::default();
     let widget = Arc::new(EmblemWidget::default());
     let (drawn, closing) = (widget.clone(), widget.clone());
-    let (name, difficulty, style) = (current.clone(), current.clone(), current.clone());
-    let page = Arc::new(
-        KitScreen::new(
-            "clanker-card",
-            SCREEN,
-            ids::family("clanker card"),
-            "Clanker (bot)",
-        )
-        .dialog(DialogBase::Large, Opener::XBOX_LIVE_MENU)
-        .row(Row::info("Gamertag", move || field(&name, |v| &v.name)))
-        .row(Row::info("Difficulty", move || {
-            field(&difficulty, |v| &v.difficulty)
-        }))
-        .row(Row::info("Style", move || field(&style, |v| &v.style)))
-        .row(Row::action("Back", || Then::Close))
-        .prompts(&[Prompt::new(&[Glyph::B], "Back")]),
-    );
+    let page = Arc::new(card_screen(&current));
     let (freed, names, open) = (page.on_free(), current.clone(), current.clone());
     let class = page
         .class()
@@ -529,6 +622,7 @@ mod tests {
             assert_eq!(model.is_some(), card);
             if let Some(m) = model {
                 assert_eq!(m.name, "Rusty Lugnut");
+                assert_eq!(m.profile, NameProfile::for_name(&m.name).summary());
             }
         }
     }
@@ -554,10 +648,12 @@ mod tests {
         {
             m.put_u16(p + P_EFFECTIVE + 2 * i as u32, u);
         }
-        assert_eq!(
-            marked_session_player(&m, session, &s).as_deref(),
-            Some("Bolt")
-        );
+        let name = marked_session_player(&m, session, &s).unwrap();
+        let card = route(&s, Some(Known::Remote(name))).unwrap();
+        let scripted = route(&s, Some(Known::Hosted("Bolt".into(), None))).unwrap();
+        assert_eq!(scripted.profile, "Unavailable");
+        assert_eq!(card.name, "Bolt");
+        assert_eq!(card.profile, NameProfile::for_name("Bolt").summary());
         s.id[8] = 0;
         assert!(marked_session_player(&m, session, &s).is_none());
     }
@@ -594,11 +690,154 @@ mod tests {
     fn card_shows_the_active_difficulty_and_strongest_trait() {
         let mut p = Personality::for_skill(73, Skill::Heroic);
         p.teamwork = 1.0;
-        let card = Card::new("Rusty Lugnut".into(), Some((Skill::Heroic, p)));
+        let card = Card::new("Rusty Lugnut".into(), Some(Skill::Heroic), Some(p));
         assert_eq!(card.name, "Rusty Lugnut");
         assert_eq!(card.difficulty, "Heroic");
         assert_eq!(card.style, "Team player");
-        assert_eq!(Card::new(card.name, None).difficulty, "Unavailable");
+        let pending = Card::new(card.name, None, None);
+        assert_eq!(pending.difficulty, "Unavailable");
+        assert_eq!(pending.profile, card.profile);
+    }
+
+    #[test]
+    fn a_hosted_clanker_uses_its_active_brain_and_full_name() {
+        let phantoms = phantom::Phantoms::default();
+        let xuid = live_proto::bots::local_xuid(1);
+        let name = "Copper Circuit";
+        let brain = bots::Brain::new(Skill::Legendary, 1).with_name_profile(name);
+        let style = strongest_trait(brain.view().personality);
+        phantoms
+            .add(
+                phantom::Identity {
+                    xuid: xuid.0,
+                    gamertag: name.into(),
+                },
+                None,
+                Box::new(brain),
+            )
+            .unwrap();
+        let mut selection = Selection {
+            id: [0; guest::ID_LEN],
+            name: "Copper".into(),
+        };
+        selection.id[..8].copy_from_slice(&xuid.0.to_le_bytes());
+        let card = route(&selection, hosted(&phantoms, &selection)).unwrap();
+        assert_eq!(card.name, name);
+        assert_eq!(card.difficulty, "Legendary");
+        assert_eq!(card.style, style);
+        assert_eq!(card.profile, NameProfile::for_name(name).summary());
+    }
+
+    #[test]
+    fn a_lookup_shows_loading_until_it_succeeds_or_fails() {
+        use crate::ui_kit::spec::Describe;
+
+        let card = Arc::new(Mutex::new(Card::new("Copper".into(), None, None)));
+        let current = Arc::new(Mutex::new(Some(card.clone())));
+        let screen = card_screen(&current);
+        let values = || {
+            let spec = screen.spec();
+            [
+                spec.rows[1].plain_value().unwrap(),
+                spec.rows[2].plain_value().unwrap(),
+            ]
+        };
+        card.lock().unwrap().loading = true;
+        assert_eq!(values(), ["Loading...", "Loading..."]);
+        assert!(!card.lock().unwrap().finish_lookup(None));
+        assert_eq!(values(), ["Unavailable", "Unavailable"]);
+
+        card.lock().unwrap().loading = true;
+        let account = live_proto::bots::PlayerCard {
+            xuid: Xuid(live_proto::bots::SERVER_XUID_MARK | 81),
+            gamertag: live_proto::Gamertag::new("Copper Circuit").unwrap(),
+            seed: 9,
+            skill: Some(live_proto::bots::HEROIC),
+        };
+        let profile = NameProfile::for_name("Copper Circuit");
+        let style = strongest_trait(profile.personality(Skill::Heroic));
+        assert!(card.lock().unwrap().finish_lookup(Some(account)));
+        assert_eq!(values(), ["Heroic", style]);
+        assert_eq!(
+            screen.spec().rows[0].plain_value().as_deref(),
+            Some("Copper Circuit")
+        );
+    }
+
+    #[test]
+    fn a_rostered_card_uses_the_full_name_and_last_skill_like_the_host() {
+        let name = "Silver Circuit";
+        let profile = NameProfile::for_name(name);
+        let mut account = live_proto::bots::PlayerCard {
+            xuid: Xuid(live_proto::bots::SERVER_XUID_MARK | 81),
+            gamertag: live_proto::Gamertag::new(name).unwrap(),
+            seed: 9,
+            skill: None,
+        };
+        let waiting = Card::account(account.clone());
+        assert_eq!(waiting.profile, profile.summary());
+        assert_eq!(waiting.difficulty, "Unavailable");
+        let selection = Selection { id: [0; guest::ID_LEN], name: name.into() };
+        for (skill, value) in Skill::ALL.into_iter().zip([
+            live_proto::bots::EASY,
+            live_proto::bots::NORMAL,
+            live_proto::bots::HEROIC,
+            live_proto::bots::LEGENDARY,
+        ]) {
+            let brain = bots::Brain::new(skill, 73).with_name_profile(name);
+            let host = route(&selection, Some(Known::Hosted(name.into(), Some(brain.view())))).unwrap();
+            account.skill = Some(value);
+            for seed in [0, u64::MAX] {
+                account.seed = seed;
+                assert_eq!(Card::account(account.clone()), host);
+            }
+        }
+    }
+
+    #[test]
+    fn the_profile_line_refreshes_without_moving_focus_and_preserves_the_card_rows() {
+        use crate::list_class::Rows;
+        use crate::ui_kit::{
+            dialog::DialogGeometry,
+            spec::Describe,
+            view::{Metrics, Synthetic},
+        };
+
+        let card = Arc::new(Mutex::new(Card::new("Rusty Bolt".into(), None, None)));
+        let current = Arc::new(Mutex::new(Some(Arc::clone(&card))));
+        let screen = card_screen(&current);
+        let spec = screen.spec();
+        let labels: Vec<_> = spec.rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels, ["Gamertag", "Difficulty", "Style", "Back"]);
+        let initial = spec.description_text().unwrap();
+        assert_eq!(initial, NameProfile::for_name("Rusty Bolt").summary());
+        assert!(screen.live_text().redraw);
+        assert!(!screen.live_text().redraw);
+
+        let resolved = (0..128)
+            .map(|i| Card::new(format!("Circuit {i}"), Some(Skill::Heroic), None))
+            .find(|c| c.profile != initial)
+            .unwrap();
+        let updated = resolved.profile.clone();
+        *card.lock().unwrap() = resolved;
+        assert!(screen.live_text().redraw);
+        assert!(!screen.live_text().redraw);
+        assert_eq!(screen.spec().description_text().as_deref(), Some(updated.as_str()));
+
+        let [top, left, bottom, right] = PROFILE_LINE.rect;
+        let geometry = DialogGeometry::fallback_for(DialogBase::Large);
+        let list_right = geometry.list.anchor[0] + geometry.rows.label.0.right;
+        assert!(left > list_right);
+        assert!(bottom > EMBLEM_RECT[0]);
+        assert!(top < geometry.header.bottom && right <= geometry.header.right);
+        let encoded = PROFILE_LINE.bytes();
+        assert_eq!(u16::from_le_bytes([encoded[4], encoded[5]]), PICKER_ANIMATION);
+        assert!(Synthetic.line_height(PROFILE_LINE.font) <= i32::from(top - bottom));
+        for i in 0..256 {
+            let text = NameProfile::for_name(&format!("Circuit {i}")).summary();
+            assert!(!text.contains('\n'));
+            assert!(Synthetic.width(PROFILE_LINE.font, &text) <= i32::from(right - left));
+        }
     }
 
     #[test]

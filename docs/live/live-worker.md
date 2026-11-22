@@ -25,6 +25,7 @@ without the crate's `native` feature, so the routes are not forked.
 | Game ingest (`/v1/ingest`) | `LiveHub` | Frames feed the read model and the stream. A per-game object is the fallback if one hub's CPU is not enough. |
 | Co-op relay (`/v1/sessions/{id}/relay`) | `CoopRelay`, one object per session id | Its traffic stays off the hub's thread, and the object can sit near the players (location hint). |
 | Content, cloud saves, published art | R2 bucket `BLOBS` (published art in a public bucket) | `BlobStore` over R2 (`crates/live/live-worker/src/r2.rs`). |
+| Screenshot classification | Workers AI binding `SCREENSHOT_AI` | A shared server classifier adapter sends only the normalized WebP to Clef Flash and reads its NSFW score. Without a valid result, the image stays pending. |
 | Title files | R2, under `title/<sha256>` (`live_server::titleblobs`) | A Durable Object's SQLite row holds at most 2 MB, but a title file may be up to 2 MiB (`MAX_TITLE_FILE`). Ones already in the log's `blobs` table are still read from there. |
 | Server key | Worker secret `H2_LIVE_SERVER_KEY` | `ServerIdentity::from_secret`. The id is the variable `H2_LIVE_ID` ([Settings](#settings)). |
 | Web app | Workers static assets (`web/dist`) | Served by Cloudflare ahead of the Worker; it is immutable and cached at the edge. |
@@ -171,6 +172,8 @@ checks, in order:
 - with `WAKE=S`, a hibernation wake with a socket open;
 - game ingest to JSON and packed readers, then game close, alarm-driven archive publication and reads of both stored segments;
 - R2: a multipart content upload, a cloud save and a 2 MiB title file;
+- the same screenshot HTTP contract as native Live, from proof rejection
+  and private preview through approval, reporting and removal;
 - warm timings;
 - with `--seed N`, 2N more events so a restart has a log to replay.
 
@@ -248,7 +251,7 @@ R2 simulated locally by miniflare.
 | Title file, 2 MiB | 243 ms to publish and read back (too big for a SQLite row) |
 
 `run.sh` makes a fresh admin gamertag each run (`H2_LIVE_ADMINS`); the
-smoke test signs up as it to publish the title file.
+smoke test uses the local dev operator key to register it and publish the title file as that account.
 
 ## Slice 5 results
 
@@ -324,13 +327,14 @@ the game socket's logic, driven by axum's task on a machine and by the hub
 (`crates/live/live-worker/src/ingest.rs`). The hub handles each ingest socket's
 messages one at a time, behind an async lock, since a message's work awaits
 the store. The shared session checks the 16 KiB message cap before parsing
-the auth message or decoding any frames. The attachment keeps the author
-and token expiry. After a wake, the sender's next keyframe restarts the
-packed decoder.
+auth or decoding frames, and accepts up to 16 frame records per message
+in batched mode. The attachment keeps the author, token expiry and
+ingest mode. After a wake, the sender's next keyframe restarts the packed
+decoder. [Ingest wire format](live-api.md#streams-websocket)
 
 ## Timers and hibernation
 
-A Durable Object with a timer pending does not hibernate. On a machine
+In-memory timers keep a Durable Object awake. On a machine
 the server spawns loops: the dispatcher's poll, the sweep every 5 s and the
 100 ms packed tick. The hub starts the server with `Timers::Driven`
 instead, which spawns none of them:
@@ -338,12 +342,18 @@ instead, which spawns none of them:
   writer, and its wake sees every append.
 - After every request, socket message and alarm, the hub sets its one
   alarm (`LiveHub::schedule`) for the earliest of:
-  - `Live::sweep_due`: the next presence to expire, game to end as lost,
-    or co-op session to expire;
+  - `Live::sweep_due_with_hosts`: the next presence, game, session, film,
+    dedicated host or usage deadline;
   - each stream or ingest socket's auth deadline or token end.
 
   With nothing due there is no alarm. The alarm runs the sweep and the
   sockets' checks, then sets the next one.
+- Metered [usage](live-api.md#usage) accumulates in memory and flushes to
+  SQLite after five seconds or 256 meter increments, whichever comes first.
+  Requests and ingest messages both arm the sweep while a batch is pending.
+  The flush deadline is shorter than Cloudflare's usual ten-second idle
+  period before hibernation. A deploy or abrupt reset can discard a pending
+  batch. [Durable Object lifecycle](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/)
 - The packed tick runs only while a game is live (`Live::packed_active`),
   and stops by itself when none is.
 
@@ -372,6 +382,10 @@ A body over 8 MiB (`doretry::KEEP_BODY_BYTES`), or one without a
 `Content-Length`, is sent once without a copy, so a 95 MiB content upload
 never sits twice in a 128 MB isolate; a reset under it is the 503 above,
 and the client sends it again.
+
+`POST /v1/presence/ping/batch` goes to the hub's shared HTTP router.
+The edge returns 503 on a transient hub failure so the client can issue
+new per-account tokens for its next attempt.
 
 Anything else thrown surfaces as before. The single-use token guard (`jti`)
 is in the hub's memory and is lost on a reset, so a repeat with the same
@@ -418,8 +432,9 @@ member, and accepts a current ticket for renewal.
 
 When Live grants a Cloudflare lease, the hub calls the room named by the
 lease ID. Its private `start` request asks the class's pool room to place
-the match on a pack container with room. Only when no pack has room does a
-new pack room launch the image entrypoint with `H2_PACK=1`, which executes
+the match on a pack container with room. An eligible search can start a pack
+before a lease exists. When placement finds no room, a new pack room launches
+the image entrypoint with `H2_PACK=1`, which executes
 `/opt/h2/h2 host pack`. The pack starts the match's `h2 host run`.
 [Packed hosts](dedicated-host.md#packed-hosts) The
 host receives the lease ID, Live URL, lease-scoped token, signed bundle URL
@@ -438,10 +453,21 @@ meet the default scheduling policy's 3 GiB per vCPU minimum.
 [Scheduling policies](https://developers.cloudflare.com/containers/configuration/scheduling-policy/) ·
 [Custom instance constraints](https://developers.cloudflare.com/changelog/post/2026-09-29-remove-disk-to-memory-ratio/)
 
+Both applications run one image from the account's Cloudflare registry,
+`h2-live-host`, tagged with a hash of what `deploy/host/Dockerfile`
+copies: the Dockerfile, the entrypoint and the binaries `deploy/host/build.sh` stages.
+`crates/live/live-worker/deploy.sh` computes the tag and checks the
+registry. A tag the registry holds is deployed as it is, so a deploy
+needs Docker only when the host binaries change; then it builds and
+pushes the image first (`wrangler containers build --push`) and stops
+with a named error if Docker is not running. The generated config names
+`registry.cloudflare.com/<account>/h2-live-host:<tag>` in place of the
+Dockerfile. [Image management](https://developers.cloudflare.com/containers/platform-details/image-management/)
+
 | Worker setting | Purpose |
 |---|---|
-| `LIVE_MAX_HOSTS` | Shared cap across both classes. Defaults to 4. Set each application's numeric `max_instances` to the same value when deploying. |
-| `LIVE_HOST_PACK_MATCHES` | Matches per host container. Defaults to 3, at most 8. Each container still admits a match only when its measured load leaves room. |
+| `LIVE_MAX_HOSTS` | Shared lease cap across both classes. The default is 4. Operators may select 0–4 or a measured fleet step (16, 64, 256, 1,024). Deployment calculates a separate container limit for each class. [Fleet caps](host-halving.md#caps) |
+| `LIVE_HOST_PACK_MATCHES` | Optional slot cap per container. Small packs have five slots and large packs ten. A numeric value lowers the class cap. Admission also checks gameplay tick p99, CPU and memory. |
 | `LIVE_HOST_PRICES` | Optional JSON price table used to estimate lease costs, including when replaying past host events. |
 | `LIVE_HOST_BUDGET_USD` | Estimated dedicated-host spend cap in USD per UTC calendar month. Defaults to $25. Set to `0` to disable new leases. Falls back to `LIVE_HOST_BUDGET_USD_MONTH` when unset. |
 | `LIVE_HOST_LIVE_URL` | URL the host can reach for registration and reports. Defaults to Live's public URL. |
@@ -469,7 +495,10 @@ returns the WebSocket response. The supervisor uses the same port through
 `H2_TUNNEL_LISTEN=0.0.0.0:31100`. It drives the game through a private
 Unix socket. The image's `H2_AGENT` fallback stays on container loopback.
 Each binary message carries one tunnel frame end to end. The host assigns
-peer IDs and handles the game ports.
+peer IDs and handles the game ports. LiveHub forwards the optional
+`x-h2-actor-channel: 1` upgrade offer. The host's binary hello acknowledges
+the offer and the same socket carries actor frames.
+[Host tunnel](dedicated-host.md#host-tunnel)
 [WebSocket forwarding](https://developers.cloudflare.com/containers/examples/websocket/)
 
 Only provider start can launch a container. A liveness check reads
@@ -573,13 +602,15 @@ its own Durable Objects (so its own log), bucket and key:
 without the route (to copy the log into before the switch), `production`
 with it (the switch). Both need `--yes-production`.
 
-Every environment declares the dedicated host containers, built from
-`deploy/host/Dockerfile` with the image `deploy/host/build.sh` stages. Until
-that image is staged, deploy with `--no-hosts`: the script writes
-`wrangler.nohosts.toml` beside `wrangler.toml` without the `[[containers]]`
-blocks and with `LIVE_MAX_HOSTS = "0"`, so Live refuses host launches and
-everything else deploys. Without the image and without the flag it stops
-before deploying.
+Every environment declares the dedicated host containers. They run the
+registry image `h2-live-host` at the tag in `deploy/host/image-tag`
+([Dedicated host containers](#dedicated-host-containers)).
+`deploy.sh --no-hosts` (with the environment name) omits the container
+applications and sets the lease cap to zero. For a host
+deployment, edit the environment's variables in `wrangler.toml`.
+`python3 crates/live/live-worker/host_capacity.py` prints the effective
+config, including each application's container limit. The deploy script
+passes this config to Wrangler and removes its temporary copy on exit.
 
 `deploy.sh` prints each step as it goes:
 
@@ -592,8 +623,14 @@ before deploying.
 3. **Wasm.** `worker-build --release` into `crates/live/live-worker/build`.
 4. **Sign-in.** `wrangler whoami`; if you are not signed in, it stops and
    says to run `bunx wrangler@4 login`.
-5. **Bucket.** It creates the environment's R2 bucket if it is missing.
-6. **Key.** It asks for the key only if the Worker has no
+5. **Host image.** With the binaries `deploy/host/build.sh` stages, the
+   tag is their hash: a tag the registry lacks is built and pushed (this
+   needs Docker; without it the script stops and says so) and written to
+   `deploy/host/image-tag`, which you commit. Without them, as in CI, it
+   deploys the committed tag and stops if the registry lacks it. Skipped
+   when the environment's lease cap is zero.
+6. **Bucket.** It creates the environment's R2 bucket if it is missing.
+7. **Key.** It asks for the key only if the Worker has no
    `H2_LIVE_SERVER_KEY` secret:
    - **staging:** it makes a fresh one;
    - **cutover and production:** it reads `$H2_LIVE_KEY_FILE`, or asks for
@@ -603,11 +640,23 @@ before deploying.
 
    The key goes to `wrangler secret put` on stdin, after the deploy (the
    Worker has to exist to hold it). It is never printed.
-7. **Deploy.** `wrangler deploy --env <env>`.
-8. **Health.** `/healthz` and the discovery document's id.
+8. **Deploy.** `wrangler deploy --env <env>`; its failure stops the script.
+9. **Health.** `/healthz` and the discovery document's id.
 
 `--dry-run` builds and bundles without signing in or uploading.
 `--skip-build` deploys what `build/` and `web/dist` already hold.
+
+### Deploy from CI
+
+`.github/workflows/live-deploy.yml` runs `deploy.sh production
+--yes-production` on each push to master, and on demand. It never builds
+the host image, which holds the disc-compiled module; it deploys the tag
+in `deploy/host/image-tag`, so a deploy that pushed a new image locally is
+followed by committing that file. The job reads two repository secrets:
+`CLOUDFLARE_API_TOKEN` (a token with Workers Scripts, Workers Routes,
+Containers and R2 edit, and Account Settings read) and
+`CLOUDFLARE_ACCOUNT_ID`. Without the token it skips and deploys nothing.
+The server key and the host-data secrets stay on the Worker.
 
 ### Staging
 
@@ -640,7 +689,8 @@ header, the Worker reads `GET /v1/games/{id}` anonymously and builds the
 model from the matching game detail. The hub's generic metadata response
 skips the fallback, and the detail read enforces the same anonymous
 visibility rules. Both homes use the same renderer to put the header
-and its emblem URLs above the app's root in the initial HTML.
+and its emblem URLs in an inert template in the initial HTML. Game Details
+mounts it below the breadcrumbs.
 [Worker page rendering](../../crates/live/live-worker/src/site.rs)
 
 The Worker routes `/art/emblem/*` ahead of static assets. The stable
@@ -649,14 +699,15 @@ directory and the PNG renderer version. On a cache hit the Worker serves
 the PNG directly. On a miss it reads the manifest and two mask PNGs from
 `H2_LIVE_GAME_ART_URL` and composes them with the native server's Rust
 renderer. The Worker caches successful PNGs under their full revisioned
-URL, per data center, with `public, max-age=31536000, immutable`. Changing
-the published directory changes the revision. The stable redirect
-revalidates and errors are uncached.
+URL, per data center, with `public, max-age=31536000, immutable`; a
+request that bears `Authorization` never reads from or fills that cache,
+so a cache key holds no auth. Changing the published directory changes the
+revision. The stable redirect revalidates and errors are uncached.
 [Workers Cache API](https://developers.cloudflare.com/workers/runtime-apis/cache/)
 
-The `/v1/` cache rules (`public, … s-maxage=5` with an `ETag` for
-anonymous reads, `private, no-store` for the rest) are the router's, so
-they hold on the Worker too.
+The `/v1/` cache rules (`public, … s-maxage=5` with an `ETag` and `Vary:
+Authorization` for anonymous reads, `private, no-store` for the rest) are
+the router's, so they hold on the Worker too.
 
 The Worker's source art is the published copy. Extracting everything the
 viewer and the stats site use

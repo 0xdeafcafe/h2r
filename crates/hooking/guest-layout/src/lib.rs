@@ -44,12 +44,14 @@ pub mod view;
 pub use handle::DatumHandle;
 pub use memory::{FlatMemory, GuestMemory, MemFault};
 
+pub mod actor;
 pub mod damage;
 pub mod datum_array;
 pub mod game;
 pub mod global;
 pub mod object;
 pub mod player;
+pub mod sound;
 pub mod tag;
 pub mod unit;
 

@@ -3,7 +3,11 @@ use agent::Access;
 use agent_proto::{RpcError, code, theater as api};
 use serde::de::DeserializeOwned;
 
-fn params<T: DeserializeOwned>(v: Value) -> Result<T, RpcError> {
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Empty {}
+
+pub(super) fn params<T: DeserializeOwned>(v: Value) -> Result<T, RpcError> {
     serde_json::from_value(if v.is_null() {
         serde_json::json!({})
     } else {
@@ -12,6 +16,7 @@ fn params<T: DeserializeOwned>(v: Value) -> Result<T, RpcError> {
     .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))
 }
 impl State {
+
     fn camera_request(&mut self, request: api::Camera) -> Result<(), RpcError> {
         use api::CameraMode::*;
         let Mode::Replay(_, replay) = &self.mode else {
@@ -26,62 +31,36 @@ impl State {
         {
             return Err(RpcError::new(code::INVALID_PARAMS, "invalid camera target"));
         }
-        let Some(engine) = &self.engine else {
-            if request.seat.is_some() {
-                return Err(unavailable("legacy camera requires a player name"));
+        let roster = self.engine.iter().flat_map(|engine| {
+            engine.track.descriptor.roster.iter().map(|p| (p.seat, p.name.as_str()))
+                .chain(engine.track.summary.players.iter().map(|p| (p.seat, p.name.as_str())))
+        });
+        let mut roster_seats = 0u16;
+        let mut named_seats = BTreeSet::new();
+        for (seat, name) in roster.filter(|(seat, _)| *seat < 16) {
+            roster_seats |= 1 << seat;
+            if request.player.as_deref() == Some(name) {
+                named_seats.insert(seat);
             }
-            self.presentation
-                .camera
-                .control(request)
-                .map_err(|e| RpcError::new(code::INVALID_PARAMS, e))?;
-            return Ok(());
+        }
+        let seat = if request.player.is_some() && roster_seats != 0 {
+            match request.seat {
+                Some(seat) if named_seats.contains(&seat) => Some(seat),
+                Some(_) => return Err(unavailable("player and seat do not match the recorded roster")),
+                None if named_seats.len() == 1 => named_seats.first().copied(),
+                None => return Err(unavailable("select a recorded player seat")),
+            }
+        } else {
+            request.seat
         };
-        let local = self.header.meta.source == Source::Local;
-        if local
-            && request.mode != Default
-            && !(self.header.version >= 3 && request.mode == FirstPerson)
+        if self.header.meta.source == Source::Host
+            && self.engine.is_some()
+            && seat.is_some_and(|seat| roster_seats & (1 << seat) == 0 && !replay.camera.has_seat(seat))
         {
-            return Err(unavailable(
-                "local playback provides the recorded retail viewports",
-            ));
+            return Err(unavailable("that seat is absent from the film roster and current view"));
         }
-        let seat = match request.player.as_deref() {
-            Some(name) => {
-                let seats: BTreeSet<_> = engine
-                    .track
-                    .descriptor
-                    .roster
-                    .iter()
-                    .filter(|p| p.name == name)
-                    .map(|p| p.seat)
-                    .chain(
-                        engine
-                            .track
-                            .summary
-                            .players
-                            .iter()
-                            .filter(|p| p.name == name)
-                            .map(|p| p.seat),
-                    )
-                    .collect();
-                match request.seat {
-                    Some(seat) if seats.contains(&seat) => Some(seat),
-                    Some(_) => {
-                        return Err(unavailable(
-                            "player and seat do not match the recorded roster",
-                        ));
-                    }
-                    None if seats.len() == 1 => seats.first().copied(),
-                    None => return Err(unavailable("select a recorded player seat")),
-                }
-            }
-            None => request.seat,
-        };
-        if local && request.mode == FirstPerson && seat.is_none() {
-            return Err(unavailable("select a local player viewport"));
-        }
-        replay.camera.control(request, seat).map_err(unavailable)?;
-        replay.camera.save(&mut self.presentation);
+        replay.camera.control(request, seat)
+            .map_err(|e| RpcError::new(code::INVALID_PARAMS, e))?;
         Ok(())
     }
 }
@@ -89,14 +68,31 @@ impl State {
 impl Session {
     pub fn add_methods(self: &Arc<Self>, a: &agent::Agent) {
         a.set_lobby_tape(self.clone());
+        let session = self.clone();
+        a.add_method(api::MEASUREMENTS, Access::Read, move |p| {
+            let _: Empty = params(p)?;
+            let s = session.lock();
+            let run = s.measurements.as_ref().ok_or_else(|| {
+                RpcError::new(code::UNAVAILABLE, "start with H2_THEATER_MEASURE=1")
+            })?;
+            Ok(serde_json::json!(run.snapshot()))
+        });
         if !self.replaying() {
             return;
         }
-        for name in api::METHODS {
+        let unpaced = matches!(&self.lock().mode, Mode::Replay(_, replay) if replay.unpaced);
+        if !unpaced {
+            self.add_verify_method(a);
+            self.add_media_methods(a);
+        }
+        for name in api::TRANSPORT_METHODS {
+            if unpaced && name != api::STATE {
+                continue;
+            }
             let session = self.clone();
             a.add_method(
                 name,
-                if name == api::STATE {
+                if matches!(name, api::STATE | api::KEYFRAMES) {
                     Access::Read
                 } else {
                     Access::Act
@@ -115,17 +111,12 @@ impl Session {
                             if p.id.is_some_and(|id| id != s.header.meta.id) {
                                 return Err(RpcError::new(code::GONE, "film is not loaded"));
                             }
-                            s.paused = false;
+                            s.set_transport_pause(false);
                         }
                         api::PAUSE | api::STATE => {
-                            if !(p.is_null() || p.as_object().is_some_and(|o| o.is_empty())) {
-                                return Err(RpcError::new(
-                                    code::INVALID_PARAMS,
-                                    "expected empty parameters",
-                                ));
-                            }
+                            let _: Empty = params(p)?;
                             if name == api::PAUSE {
-                                s.paused = true;
+                                s.set_transport_pause(true);
                             }
                         }
                         api::SPEED => {
@@ -136,54 +127,76 @@ impl Session {
                                     "speed must be 0.25 to 4",
                                 ));
                             }
-                            s.speed = p.speed;
+                            s.set_speed(p.speed);
                         }
                         api::SEEK => {
-                            let p = params::<api::Seek>(p)?;
-                            if p.tick > s.header.meta.length_ticks {
-                                return Err(RpcError::new(
-                                    code::INVALID_PARAMS,
-                                    "seek beyond film",
-                                ));
+                            s.seek(params(p)?)?;
+                        }
+                        api::STEP => {
+                            s.step(params(p)?)?;
+                        }
+                        api::HUD => {
+                            let p = params::<api::Hud>(p)?;
+                            let Mode::Replay(_, replay) = &s.mode else { unreachable!() };
+                            if let Some(visible) = p.game {
+                                replay.camera.set_hud(visible);
+                                s.presentation.hud = visible;
                             }
-                            if let Some(marks) = p.clip_marks {
-                                let [start, end] = marks;
-                                if start.is_some_and(|tick| tick > s.header.meta.length_ticks)
-                                    || end.is_some_and(|tick| {
-                                        tick > s.header.meta.length_ticks.saturating_add(1)
-                                            || start.is_none_or(|start| tick <= start)
-                                    })
-                                {
-                                    return Err(RpcError::new(
-                                        code::INVALID_PARAMS,
-                                        "invalid clip marks",
-                                    ));
-                                }
-                                s.presentation.clip_marks = marks;
+                            if let Some(visible) = p.bar {
+                                s.presentation.bar = visible;
                             }
-                            s.restart = Some(p.tick);
+                            if p.game.is_some() {
+                                s.request_camera_redraw();
+                            }
                         }
                         api::CAMERA => {
                             let p = params::<api::Camera>(p)?;
                             s.camera_request(p)?;
+                            s.request_camera_redraw();
+                        }
+                        api::KEYFRAMES => {
+                            let _: Empty = params(p)?;
+                            return Ok(serde_json::json!(api::Keyframes {
+                                film: s
+                                    .engine
+                                    .as_ref()
+                                    .map(|engine| engine.track.keyframe_ticks())
+                                    .unwrap_or_default(),
+                                sidecar: s.engine.as_ref()
+                                    .map(|engine| engine.track.sidecar_ticks())
+                                    .unwrap_or_default(),
+                                ring: s.ring_status.ticks.clone(),
+                                capture_points: s.capture_points.clone(),
+                                ring_bytes: s.ring_status.bytes as u64,
+                                ring_cap: s.ring_status.cap as u64,
+                                sidecar_bytes: s.engine.as_ref()
+                                    .map_or(0, |engine| engine.track.sidecar_bytes()),
+                            }));
                         }
                         _ => unreachable!(),
                     }
                     let Mode::Replay(_, replay) = &s.mode else {
                         unreachable!()
                     };
-                    let seat = replay.camera.requested_seat();
+                    let camera = replay.camera.state();
                     Ok(serde_json::json!(api::State {
                         id: s.header.meta.id.clone(),
-                        tick: s.tick,
-                        length_ticks: s.header.meta.length_ticks,
-                        paused: s.paused,
+                        tick: s.visible_tick(),
+                        length_ticks: s.length(),
+                        paused: s.visible_pause(),
                         speed: s.speed,
-                        seeking: s.seeking.is_some() || s.restart.is_some(),
-                        camera_seat: seat,
-                        camera: s.presentation.camera.mode,
-                        camera_player: s.presentation.camera.player.clone(),
+                        speed_reached: if s.camera_redraw.is_some() && s.visible_pause() { Some(0.0) } else { s.speed_reached() },
+                        seeking: s.camera_redraw.is_none() && s.jump_in_progress(),
+                        compatibility: api::CompatibilityState::Playable,
+                        camera_seat: camera.seat,
+                        camera: camera.mode,
+                        camera_player: camera.player,
+                        camera_pose: camera.pose,
+                        camera_fallback: camera.fallback,
+                        hud: s.presentation.hud,
+                        bar: s.presentation.bar,
                         kills: s.presentation.kills.iter().copied().collect(),
+                        seek: if s.camera_redraw.is_none() { s.seek_info() } else { None },
                     }))
                 },
             );
@@ -210,17 +223,85 @@ pub fn playback_images(xbe: &[u8], out: &std::path::Path) -> Vec<(PathBuf, Strin
         .collect()
 }
 
-pub fn playable_entry(entry: &film::LibraryEntry, stamp: &str) -> bool {
-    (entry.version >= 2 || entry.meta.source == Source::Host)
-        && image_match(
-            entry.version,
-            &entry.meta.image_stamp,
-            &entry.runtime_stamp,
-            entry.guest_image.as_ref(),
-            stamp,
-            &entry.xbe_sha256,
-        )
-        .is_ok()
+fn library_entry(dir: &std::path::Path, id: &str) -> Result<film::LibraryEntry, RpcError> {
+    let unavailable = |e: String| RpcError::new(code::UNAVAILABLE, e);
+    if let Some(game) = id.strip_prefix("live:") {
+        let path = crate::theater_ui::adapter::archive_path(dir, game).map_err(unavailable)?;
+        crate::theater_ui::adapter::archive_entry(&path, game)
+    } else {
+        if !dir.is_dir() {
+            return Err(unavailable("unknown film ID".into()));
+        }
+        film::Library::open(dir).and_then(|lib| lib.get(id))
+    }
+    .map_err(|e| unavailable(e.to_string()))
+}
+
+pub(super) struct LibraryLaunch {
+    dir: PathBuf,
+    disc: PathBuf,
+    out: PathBuf,
+    data: PathBuf,
+    installation: Installation,
+}
+
+impl LibraryLaunch {
+    pub(super) fn entry(&self, id: &str) -> Result<film::LibraryEntry, RpcError> {
+        let unavailable = |e: String| RpcError::new(code::UNAVAILABLE, e);
+        let entry = library_entry(&self.dir, id)?;
+        let compatibility = self.installation.compatibility(&entry);
+        if compatibility.state == api::CompatibilityState::Unavailable {
+            return Err(unavailable(compatibility.reasons.join(" ")));
+        }
+        Ok(entry)
+    }
+
+    pub(super) fn command(
+        &self,
+        mode: &str,
+        id: &str,
+        path: &std::path::Path,
+        socket: &std::path::Path,
+    ) -> Result<std::process::Command, RpcError> {
+        let unavailable = |e: String| RpcError::new(code::UNAVAILABLE, e);
+        let exe = std::env::current_exe().map_err(|e| unavailable(e.to_string()))?;
+        let cli = exe.file_stem().is_some_and(|s| s == "h2");
+        let bundled_cli = cfg!(target_os = "macos") && exe.ends_with("Contents/MacOS/Halo2");
+        if !cli && !bundled_cli {
+            return Err(unavailable(format!(
+                "launch host films with h2 theater {mode}"
+            )));
+        }
+        let mut command = std::process::Command::new(exe);
+        command
+            .args(["theater", mode])
+            .arg(path)
+            .arg("--data")
+            .arg(&self.data)
+            .arg("--disc")
+            .arg(&self.disc)
+            .arg("--out")
+            .arg(&self.out)
+            .arg("--socket")
+            .arg(socket)
+            .env("H2_FILM_DIR", &self.dir)
+            .env("H2_THEATER_FILM_ID", id)
+            .env_remove("H2_THEATER_RANGE")
+            .env_remove("H2_THEATER_VIEW")
+            .env_remove("H2_THEATER_WORK");
+        Ok(command)
+    }
+}
+
+fn valid_prepare_id(id: &str) -> Result<(), RpcError> {
+    if id.is_empty()
+        || id
+            .strip_prefix("live:")
+            .is_some_and(|game| !live_proto::game::valid_id(game))
+    {
+        return Err(RpcError::new(code::INVALID_PARAMS, "invalid film ID"));
+    }
+    Ok(())
 }
 
 /// In the original game, Watch selects a local or downloaded film and
@@ -231,7 +312,7 @@ pub fn library_methods(
     disc: PathBuf,
     out: PathBuf,
     data: PathBuf,
-    image_stamps: Vec<String>,
+    installation: Installation,
 ) {
     struct PlayerProcess {
         child: std::process::Child,
@@ -239,20 +320,64 @@ pub fn library_methods(
         id: String,
     }
     let player = Arc::new(Mutex::new(None::<PlayerProcess>));
-    let image_stamps = Arc::new(image_stamps);
-    for name in api::METHODS {
+    let launch = Arc::new(LibraryLaunch {
+        dir,
+        disc,
+        out,
+        data,
+        installation,
+    });
+    let compat = launch.clone();
+    a.add_method(api::COMPAT, Access::Read, move |p| {
+        let request = params::<api::Compat>(p)?;
+        let entry = library_entry(&compat.dir, &request.id)?;
+        Ok(serde_json::json!(compat.installation.compatibility(&entry)))
+    });
+    let jobs = super::prepare::Jobs::default();
+    a.add_method(api::PREPARE, Access::Act, {
+        let launch = launch.clone();
+        let jobs = jobs.clone();
+        move |p| {
+            let request = params::<api::Prepare>(p)?;
+            valid_prepare_id(&request.id)?;
+            Ok(serde_json::json!(jobs.start(request.id, launch.clone())?))
+        }
+    });
+    let active = player.clone();
+    a.add_connection_read(api::VERIFY, move |p| {
+        let unavailable = |e| RpcError::new(code::UNAVAILABLE, e);
+        let socket = active.lock().unwrap_or_else(|e| e.into_inner())
+            .as_ref().map(|player| player.socket.clone())
+            .ok_or_else(|| unavailable("no film loaded".to_owned()))?;
+        let mut client = agent_proto::Client::connect(&socket)
+            .map_err(|e| unavailable(format!("film player unavailable: {e}")))?;
+        client.call(api::VERIFY, p).map_err(|e| match e {
+            agent_proto::CallError::Rpc(e) => e,
+            other => unavailable(other.to_string()),
+        })
+    });
+    for name in api::METHODS.into_iter().filter(|&name| !matches!(name, api::MEASUREMENTS | api::VERIFY)) {
         let player = player.clone();
-        let image_stamps = image_stamps.clone();
-        let (dir, disc, out, data) = (dir.clone(), disc.clone(), out.clone(), data.clone());
+        let launch = launch.clone();
+        let jobs = jobs.clone();
         a.add_method(
             name,
-            if name == api::STATE {
+            if matches!(name, api::STATE | api::KEYFRAMES | api::CLIP_STATUS) {
                 Access::Read
             } else {
                 Access::Act
             },
             move |p| {
                 let unavailable = |e: String| RpcError::new(code::UNAVAILABLE, e);
+                let p = if name == api::STATE {
+                    if let Some(id) = params::<api::StateParams>(p)?.id {
+                        valid_prepare_id(&id)?;
+                        return Ok(serde_json::json!(jobs.state(&id)));
+                    }
+                    serde_json::json!({})
+                } else {
+                    p
+                };
                 let mut player = player.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(active) = player.as_mut()
                     && active
@@ -269,21 +394,20 @@ pub fn library_methods(
                         if player.is_some() {
                             return Err(unavailable("A film is already playing".into()));
                         }
-                        let entry = if let Some(game) = id.strip_prefix("live:") {
-                            let path = crate::theater_ui::adapter::archive_path(&dir, game)
-                                .map_err(unavailable)?;
-                            crate::theater_ui::adapter::archive_entry(&path, game)
-                        } else {
-                            film::Library::open(&dir).and_then(|lib| lib.get(&id))
-                        }
-                        .map_err(|e| unavailable(e.to_string()))?;
-                        if !image_stamps
-                            .iter()
-                            .any(|stamp| playable_entry(&entry, stamp))
-                        {
-                            return Err(unavailable(
-                                "Recording needs a compatible game build and an engine film".into(),
-                            ));
+                        let entry = launch.entry(&id)?;
+                        if let Some(view) = request.view {
+                            if view.seat.is_some_and(|n| n >= 16)
+                                || view.tick.is_some_and(|tick| {
+                                    let t = u64::from(tick);
+                                    t > entry.meta.length_ticks
+                                        || request.range.is_some_and(|[a, b]| !(a..b).contains(&t))
+                                })
+                            {
+                                return Err(RpcError::new(
+                                    code::INVALID_PARAMS,
+                                    "invalid starting tick or seat",
+                                ));
+                            }
                         }
                         let meta = entry.meta;
                         let path = entry.path;
@@ -294,33 +418,18 @@ pub fn library_methods(
                         }
                         let socket = std::env::temp_dir()
                             .join(format!("h2t-{}.sock", live_proto::sign::random_id()));
-                        let exe =
-                            std::env::current_exe().map_err(|e| unavailable(e.to_string()))?;
-                        if exe.file_stem().is_none_or(|s| s != "h2") {
-                            return Err(unavailable(
-                                "launch host films with h2 theater play".into(),
-                            ));
+                        let mut command = launch.command("play", &id, &path, &socket)?;
+                        if let Some(view) = request.view {
+                            command.env(
+                                "H2_THEATER_VIEW",
+                                serde_json::to_string(&view)
+                                    .map_err(|e| unavailable(e.to_string()))?,
+                            );
                         }
-                        let mut command = std::process::Command::new(exe);
-                        command
-                            .env("H2_FILM_DIR", &dir)
-                            .env("H2_THEATER_FILM_ID", &id)
-                            .env_remove("H2_THEATER_RANGE");
                         if let Some([start, end]) = request.range {
                             command.env("H2_THEATER_RANGE", format!("{start}:{end}"));
                         }
                         let child = command
-                            .args(["theater", "play"])
-                            .arg(path)
-                            .arg("--data")
-                            .arg(&data)
-                            .arg("--disc")
-                            .arg(&disc)
-                            .arg("--out")
-                            .arg(&out)
-                            .arg("--socket")
-                            .arg(&socket)
-                            .env_remove("H2_THEATER_WORK")
                             .spawn()
                             .map_err(|e| unavailable(e.to_string()))?;
                         *player = Some(PlayerProcess {
@@ -340,8 +449,9 @@ pub fn library_methods(
                 };
                 let mut client = agent_proto::Client::connect(&active.socket)
                     .map_err(|_| unavailable(format!("film {} is starting", active.id)))?;
+                let timeout = if name == api::SCREENSHOT { 61 } else { 2 };
                 client
-                    .set_timeout(Some(std::time::Duration::from_secs(2)))
+                    .set_timeout(Some(std::time::Duration::from_secs(timeout)))
                     .map_err(|e| unavailable(e.to_string()))?;
                 client.call(name, p).map_err(|e| match e {
                     agent_proto::CallError::Rpc(e) => e,

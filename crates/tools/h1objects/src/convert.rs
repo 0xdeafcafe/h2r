@@ -722,20 +722,13 @@ fn add_point_markers(model: &mut h1_assets::models::h1::Model, points: &[Powered
     }
 }
 
-fn put_f32(b: &mut [u8], at: usize, v: f32) {
-    b[at..at + 4].copy_from_slice(&v.to_le_bytes());
-}
-fn get_f32(b: &[u8], at: usize) -> f32 {
-    f32::from_le_bytes(b[at..at + 4].try_into().unwrap())
-}
-
 /// The `hlmt` field a rebuilt biped's converted dialogue goes in: the
 /// model's dialogue (`+0x8c`, `udlg`; V: where retail models name theirs,
 /// `docs/formats/objects.md`).
 pub const DIALOGUE_FIELD: &str = "udlg_ref_8c";
 
 /// A rebuilt unit's material effects (`obje +0x54`, `foot`).
-pub const FOOT_FIELD: &str = "unit.obje.foot_ref_54";
+pub const FOOT_FIELD: &str = "unit.obje.material_effects";
 
 /// How the [`Converter`] builds tags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1085,7 +1078,7 @@ impl<'a> Converter<'a> {
     fn decal_uncached(&mut self, tag: &Tag) -> Result<TagId> {
         let x = h1::Decal::read(self.h1, tag)?;
         let next = x.next.map(|id| self.decal(self.h1_tag(id)?)).transpose()?;
-        let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
+        let rep = Self::report(tag, "none: rebuilt from tags::defs");
         let bitmap = self.source_bitmap(x.bitmap)?;
         let root = crate::rebuild::decal(&x, next, bitmap)?;
         self.tree.reports.push(rep);
@@ -1109,7 +1102,7 @@ impl<'a> Converter<'a> {
         }
         let l = h1::Light::read(self.h1, tag)?;
         let mut root = crate::rebuild::light(&l)?;
-        let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
+        let rep = Self::report(tag, "none: rebuilt from tags::defs");
         if let Some(id) = l.lens_flare {
             let lens = self.lens_flare(self.h1_tag(id)?)?;
             root = flares_conv::light_with_flare(&root, lens)?;
@@ -2244,7 +2237,7 @@ impl<'a> Converter<'a> {
         if first >= sprites.len() {
             return Ok(None);
         }
-        let selected = sprites[first].clone();
+        let selected = sprites[first];
         *sprites = vec![selected];
         let mut pixels = (0..bm.images.len())
             .map(|i| bm.pixels(source, i).map(|p| p.to_vec()))
@@ -2276,14 +2269,6 @@ impl<'a> Converter<'a> {
         let id = self.tree.push(&t.name, conv);
         self.done.insert(t.id.0, id);
         Ok(id)
-    }
-
-    fn stopgaps(&self, rep: &mut ObjectReport, root: &[u8], replaced: &[usize]) {
-        for (at, g, n) in self.base.references(root) {
-            if !replaced.contains(&at) {
-                rep.stopgaps.push((at, g.to_string(), n));
-            }
-        }
     }
 
     fn report(tag: &Tag, template: &str) -> ObjectReport {
@@ -2451,13 +2436,13 @@ impl<'a> Converter<'a> {
         let mut record =
             tags::defs::from_built(d, &root).map_err(|e| Error::Invalid(e.to_string()))?;
         for (at, field) in [
-            (0x1a0, "sound_ref_dc"),
-            (0x1b0, "sound_ref_e4"),
-            (0x1c0, "effect_ref_ec"),
-            (0x1d0, "effect_ref_f4"),
-            (0x1e0, "effect_ref_fc"),
-            (0x1f0, "effect_ref_104"),
-            (0x20c, "effect_ref_110"),
+            (0x1a0, "open"),
+            (0x1b0, "close"),
+            (0x1c0, "opened"),
+            (0x1d0, "closed"),
+            (0x1e0, "depowered"),
+            (0x1f0, "repowered"),
+            (0x20c, "delay_effect"),
         ] {
             let Some(id) = h1::reference(self.h1, bytes, at) else {
                 continue;
@@ -2606,9 +2591,9 @@ impl<'a> Converter<'a> {
         let points: Vec<_> = powered.into_iter().map(|p| p.point).collect();
         let weapons = self.unit_weapons(b, &mut rep)?;
         let mut references = Vec::new();
-        for (path, at) in [("snd_ref_284", 0x3b0), ("ref_28c", 0x3c0),
-                           ("foot_ref_294", 0x3d0), ("ref_29c", 0x3e0),
-                           ("unit.effe_ref_c4", 0x188), ("unit.ref_164", 0x288)] {
+        for (path, at) in [("suspension_sound", 0x3b0), ("crash_sound", 0x3c0),
+                           ("foot_ref_294", 0x3d0), ("special_effect", 0x3e0),
+                           ("unit.integrated_light_toggle", 0x188), ("unit.melee_damage", 0x288)] {
             let Some(id) = h1::reference(self.h1, b, at) else { continue };
             let t = self.h1_tag(id)?;
             let group = t.group.0.to_be_bytes();

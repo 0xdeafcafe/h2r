@@ -250,6 +250,7 @@ pub async fn grant(
     tag: &Gamertag,
 ) -> Result<WireEvent, ApiError> {
     operator(live, bearer)?;
+    let _guard = live.invites.writes.lock().await;
     if live.admins.is_configured(tag) {
         return Err(conflict(format!(
             "{tag} is an admin by configuration (--admin or {ENV_ADMINS}); nothing to grant"
@@ -270,6 +271,7 @@ pub async fn revoke(
     tag: &Gamertag,
 ) -> Result<WireEvent, ApiError> {
     operator(live, bearer)?;
+    let _guard = live.invites.writes.lock().await;
     if live.admins.is_configured(tag) {
         return Err(conflict(format!(
             "{tag} is an admin by configuration (--admin or {ENV_ADMINS}); remove it there and restart"
@@ -294,7 +296,7 @@ pub(crate) fn operator(live: &Live, bearer: Option<&str>) -> Result<Author, ApiE
     Ok(author)
 }
 
-fn account_xuid(live: &Live, tag: &Gamertag) -> Result<Xuid, ApiError> {
+pub(crate) fn account_xuid(live: &Live, tag: &Gamertag) -> Result<Xuid, ApiError> {
     live.model
         .read()
         .account_by_tag(tag)
@@ -308,11 +310,22 @@ async fn append_admin_event(
     tag: &Gamertag,
     kind: &str,
 ) -> Result<WireEvent, ApiError> {
-    let event = live.server_event(
-        streams::account(xuid),
+    append_account_event(
+        live,
+        xuid,
         kind,
         serde_json::json!({"xuid": xuid, "gamertag": tag}),
-    );
+    )
+    .await
+}
+
+pub(crate) async fn append_account_event(
+    live: &Live,
+    xuid: Xuid,
+    kind: &str,
+    data: Value,
+) -> Result<WireEvent, ApiError> {
+    let event = live.server_event(streams::account(xuid), kind, data);
     let recorded = live.store().append(vec![event], &[]).await?;
     let event = recorded.into_iter().next().expect("one appended");
     live.wait_applied(event.position).await?;
@@ -489,6 +502,8 @@ pub struct HopperDoc {
     #[serde(rename = "type")]
     pub hopper_type: u32,
     pub unused: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub has_map_pack_maps: bool,
     pub status: u32,
     pub record_count: u32,
     pub name: String,
@@ -660,6 +675,7 @@ fn hoppers_doc(live: &Live, file: &HopperFile) -> ApiResult<HoppersDoc> {
                 index: i,
                 hopper_type: h.hopper_type,
                 unused: h.hopper_type == 0,
+                has_map_pack_maps: file.contains_addon_maps(i).map_err(hopper_error)?,
                 status: h.status,
                 record_count: h.record_count,
                 name: h.name,
@@ -837,6 +853,11 @@ pub fn apply_patch(file: &mut HopperFile, patch: &HoppersPatch) -> ApiResult<()>
                     h.index
                 )));
             }
+            if !records.iter().any(|record| live_proto::hopper::is_base_map(record.id)) {
+                return Err(invalid(format!(
+                    "Playlist {n} needs a Halo 2 disc map for players without the Map Pack."
+                )));
+            }
             // The slots as they stood, so `from` names them.
             let mut bytes = Vec::with_capacity(n);
             for (j, r) in records.iter().enumerate() {
@@ -908,6 +929,48 @@ pub fn apply_patch(file: &mut HopperFile, patch: &HoppersPatch) -> ApiResult<()>
                     what.join("; ")
                 )));
             }
+        }
+    }
+    Ok(())
+}
+
+/// Every entry of each playlist a patch names whose variant runs a rules
+/// script, against the script policy of the playlist's kind
+/// (`rules::policy`): a ranked type (2, 4 and 5) takes the ranked
+/// policy, an unranked one a hopper's, with no deny list (a hopper keeps
+/// none). `check` answers for one script by its record's hash prefix
+/// (16 hex digits); [`Live::check_slot_script`] is the routes'.
+pub fn check_scripts(
+    file: &HopperFile,
+    patch: &HoppersPatch,
+    check: impl Fn(&str, rules::policy::Context<'static>) -> ApiResult<()>,
+) -> ApiResult<()> {
+    use variants::ext::{Block, Mode};
+    for h in patch.hoppers.iter().filter(|h| !h.clear) {
+        let hopper = file.hopper(h.index).map_err(hopper_error)?;
+        let ranked = live_proto::hopper::HopperType::from_raw(hopper.hopper_type)
+            .is_some_and(|t| t.ranked());
+        let context = if ranked {
+            rules::policy::Context::Ranked
+        } else {
+            rules::policy::Context::Hopper { deny: &[] }
+        };
+        for j in 0..(hopper.record_count as usize).min(MAX_RECORDS) {
+            let slot = file.slot(h.index, j).map_err(hopper_error)?;
+            let Ok(v) = variants::record::GameVariant::from_bytes(&slot[VARIANT_AT..RECORD]) else {
+                continue;
+            };
+            let Block::Ext(e) = v.ext_state() else {
+                continue;
+            };
+            if e.script.mode != Mode::Rules {
+                continue;
+            }
+            let prefix: String = e.script.prefix.iter().map(|b| format!("{b:02x}")).collect();
+            check(&prefix, context).map_err(|err| ApiError {
+                code: err.code,
+                message: format!("playlist {} entry {}: {}", h.index + 1, j + 1, err.message),
+            })?;
         }
     }
     Ok(())
@@ -1030,6 +1093,7 @@ pub async fn put_hopper(
     let patch: HoppersPatch =
         serde_json::from_slice(&bytes).map_err(|e| invalid(format!("hopper: {e}")))?;
     apply_patch(&mut file, &patch)?;
+    check_scripts(&file, &patch, |prefix, context| live.check_slot_script(prefix, context))?;
     let built = file.build_checked().map_err(|e| invalid(e.to_string()))?;
     let published = publish(&live, title, HALO_2_HOPPER_FILE, &built).await?;
     let doc = hoppers_doc(&live, &file)?;
@@ -1233,7 +1297,7 @@ mod tests {
         )
         .unwrap();
         file.set_record_count(0, 2).unwrap();
-        for (j, (id, s)) in [(1u32, "one"), (2, "two")].into_iter().enumerate() {
+        for (j, (id, s)) in [(10u32, "one"), (20, "two")].into_iter().enumerate() {
             file.set_record(
                 0,
                 j,
@@ -1280,6 +1344,66 @@ mod tests {
         }
     }
 
+    /// Writes entry `j` of hopper `i` with a Slayer variant that names the
+    /// rules script whose hash starts with `prefix`.
+    fn script_slot(file: &mut HopperFile, i: usize, j: usize, prefix: [u8; 8]) {
+        use live_proto::hopper::variant::GameType;
+        let stock = VariantRecord::stock(GameType::Slayer, "");
+        let mut v = variants::record::GameVariant::from_bytes(stock.bytes()).unwrap();
+        let mut e = v.ext();
+        e.script = variants::ext::Script {
+            mode: variants::ext::Mode::Rules,
+            prefix,
+            options: 0,
+        };
+        v.set_ext(&e).unwrap();
+        let mut slot = file.slot(i, j).unwrap().to_vec();
+        set_slot_entry(
+            &mut slot,
+            &Entry {
+                map_id: 10,
+                weight: 1,
+                map_name: String::new(),
+                variant: VariantRecord::from_bytes(v.bytes()).unwrap(),
+            },
+        )
+        .unwrap();
+        file.set_slot(i, j, &slot).unwrap();
+    }
+
+    #[test]
+    fn a_playlists_script_entries_are_held_to_its_kinds_policy() {
+        use std::cell::RefCell;
+        let mut file = base_file();
+        script_slot(&mut file, 0, 1, [0xab; 8]);
+        let mut p = patch(0, vec![]);
+        p.hoppers[0].records = None;
+        let seen = RefCell::new(Vec::new());
+        let record = |prefix: &str, c: rules::policy::Context<'static>| {
+            seen.borrow_mut().push((prefix.to_string(), c.name()));
+            Ok(())
+        };
+        // Type 4 is ranked; entry 0 names no script and is not asked about.
+        check_scripts(&file, &p, record).unwrap();
+        assert_eq!(*seen.borrow(), [("ab".repeat(8), "ranked")]);
+        // An unranked type is a hopper's.
+        let mut h = file.hopper(0).unwrap();
+        h.hopper_type = 3;
+        file.set_hopper(0, &h).unwrap();
+        seen.borrow_mut().clear();
+        check_scripts(&file, &p, record).unwrap();
+        assert_eq!(*seen.borrow(), [("ab".repeat(8), "hopper")]);
+        // A refusal names the entry.
+        let err = check_scripts(&file, &p, |_, _| Err(invalid("capability forge.move is not allowed")))
+            .unwrap_err();
+        assert_eq!(err.message, "playlist 1 entry 2: capability forge.move is not allowed");
+        // A playlist the patch clears has nothing to check.
+        let mut cleared = patch(0, vec![]);
+        cleared.hoppers[0].records = None;
+        cleared.hoppers[0].clear = true;
+        assert!(check_scripts(&file, &cleared, |_, _| Err(invalid("no"))).is_ok());
+    }
+
     #[test]
     fn patches_edit_reorder_and_add_records() {
         let mut file = base_file();
@@ -1293,14 +1417,14 @@ mod tests {
         // Reorder (1, 0), renaming the hopper.
         let mut p = patch(
             0,
-            vec![rec(2, "two first", Some(1)), rec(1, "one second", Some(0))],
+            vec![rec(20, "two first", Some(1)), rec(10, "one second", Some(0))],
         );
         p.hoppers[0].name = Some("Big Team".into());
         apply_patch(&mut file, &p).unwrap();
         let h = file.hopper(0).unwrap();
         assert_eq!((h.name.as_str(), h.record_count), ("Big Team", 2));
         let records = file.records(0).unwrap();
-        assert_eq!(records[0].id, 2);
+        assert_eq!(records[0].id, 20);
         assert_eq!(records[0].string, "two first");
         assert_eq!(records[1].string, "one second");
         // Slot 1's blob moved to slot 0 with its record.
@@ -1311,9 +1435,9 @@ mod tests {
         let p = patch(
             0,
             vec![
-                rec(2, "two first", Some(0)),
-                rec(1, "one second", Some(1)),
-                rec(3, "a copy of one", Some(1)),
+                rec(20, "two first", Some(0)),
+                rec(10, "one second", Some(1)),
+                rec(30, "a copy of one", Some(1)),
             ],
         );
         apply_patch(&mut file, &p).unwrap();
@@ -1321,7 +1445,7 @@ mod tests {
         assert_eq!(file.block_record_count(0).unwrap(), 3);
         assert_eq!(file.records(0).unwrap()[2].string, "a copy of one");
         // Removing is listing fewer: the count drops, the bytes stay.
-        let p = patch(0, vec![rec(2, "two first", Some(0))]);
+        let p = patch(0, vec![rec(20, "two first", Some(0))]);
         apply_patch(&mut file, &p).unwrap();
         assert_eq!(file.hopper(0).unwrap().record_count, 1);
         assert_eq!(file.records(0).unwrap().len(), 1);
@@ -1345,7 +1469,7 @@ mod tests {
         file.image_mut()[slot + 0x24c + 0x04] = b'A';
         let mut copy = rec(7, "", Some(0));
         copy.from_hopper = Some(1);
-        let mut p = patch(0, vec![rec(1, "one", None), copy]);
+        let mut p = patch(0, vec![rec(10, "one", None), copy]);
         p.hoppers[0].title = Some("Team Snipers".into());
         apply_patch(&mut file, &p).unwrap();
         assert_eq!(file.text(0).unwrap().title, "Team Snipers");
@@ -1360,7 +1484,7 @@ mod tests {
         assert!(apply_patch(&mut file, &patch(0, vec![bad.clone()])).is_err());
         bad.from_hopper = Some(HOPPERS);
         assert!(apply_patch(&mut file, &patch(0, vec![bad])).is_err());
-        let mut long = patch(0, vec![rec(1, "one", None)]);
+        let mut long = patch(0, vec![rec(10, "one", None)]);
         long.hoppers[0].title = Some("x".repeat(16));
         assert!(apply_patch(&mut file, &long).is_err());
     }
@@ -1404,11 +1528,11 @@ mod tests {
         // Zero records is invalid to the game, and 101 would be too.
         assert!(apply_patch(&mut file, &patch(0, vec![])).is_err());
         // A record_count that disagrees with the list.
-        let mut mismatch = patch(0, vec![rec(1, "a", None)]);
+        let mut mismatch = patch(0, vec![rec(10, "a", None)]);
         mismatch.hoppers[0].record_count = Some(2);
         assert!(apply_patch(&mut file, &mismatch).is_err());
         // `from` beyond the current records.
-        assert!(apply_patch(&mut file, &patch(0, vec![rec(1, "a", Some(9))])).is_err());
+        assert!(apply_patch(&mut file, &patch(0, vec![rec(10, "a", Some(9))])).is_err());
         // Field values the game would reject.
         let mut bad = HoppersPatch {
             hoppers: vec![HopperPatch {
@@ -1444,6 +1568,7 @@ mod tests {
             index: 0,
             hopper_type: h.hopper_type,
             unused: false,
+            has_map_pack_maps: false,
             status: h.status,
             record_count: h.record_count,
             name: h.name.clone(),
@@ -1469,8 +1594,8 @@ mod tests {
             "ranges": [1, 8, 6],
             "dwords": serde_json::json!(vec![0x7530_07a4u32; 18]),
             "records": [
-                {"id": 1, "string": "one", "flags": 0, "dwords": [0, 0], "variant": null},
-                {"id": 2, "string": "two", "flags": 0, "dwords": [1, 0], "variant": null}
+                {"id": 10, "string": "one", "flags": 0, "dwords": [0, 0], "variant": null},
+                {"id": 20, "string": "two", "flags": 0, "dwords": [1, 0], "variant": null}
             ]
         });
         assert_eq!(serde_json::to_value(&doc).unwrap(), expected);
@@ -1579,6 +1704,19 @@ mod tests {
         // It survives a build and parse.
         let back = HopperFile::parse(&file.build_checked().unwrap()).unwrap();
         assert!(back.image() == file.image());
+    }
+
+    #[test]
+    fn map_pack_rotation_needs_a_disc_fallback() {
+        let mut file = HopperFile::default_set();
+        let addon = record(0x12_345, 1, "rumble_slayer");
+        let only_addon = patch(0, vec![addon.clone()]);
+        let error = apply_patch(&mut file, &only_addon).unwrap_err();
+        assert!(error.to_string().contains("needs a Halo 2 disc map"));
+        let mixed = patch(0, vec![keep(&file, 0, 0), addon]);
+        apply_patch(&mut file, &mixed).unwrap();
+        assert!(file.contains_addon_maps(0).unwrap());
+        assert_eq!(file.entry(0, 1).unwrap().map_id, 0x12_345);
     }
 
     #[test]

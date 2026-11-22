@@ -185,6 +185,8 @@ fn session(flags: &str, hopper: Option<u32>, map_id: Option<MapId>) -> NewSessio
         campaign: None,
         ping_ms: None,
         variant_ext: None,
+        rules: None,
+        browser: None,
     }
 }
 
@@ -477,7 +479,7 @@ async fn packages_are_signed_checked_and_listed() {
     );
 
     let r = publish(&h, &u, &d).await;
-    assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.json());
     let body = r.json();
     assert_eq!(body["map"]["map_id"], id.to_string());
     assert_eq!(body["missing"], json!([]));
@@ -493,13 +495,16 @@ async fn packages_are_signed_checked_and_listed() {
     assert_eq!(map["layers"][0]["kind"], "patch");
     assert_eq!(map["layers"][0]["size"], patch.len());
     assert_eq!(map["size"], patch.len());
-    assert_eq!(map["image"], sha(PNG).to_string());
+    assert!(map["image"].is_null(), "a signed manifest cannot publish an unchecked image");
+    assert_eq!(map["manifest"]["package"]["image"], "preview.png");
     assert_eq!(map["geometry"], Sha256([0x22; 32]).to_string());
     assert_eq!(map["manifest"]["patch"][0]["file"], "snipers.ips");
     let img = h.get(&format!("/v1/maps/{id}/image")).await;
-    assert_eq!(img.status, StatusCode::OK);
-    assert_eq!(img.headers["content-type"], "image/png");
-    assert_eq!(img.body, PNG);
+    assert_eq!(img.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        h.get(&format!("/v1/content/{}", sha(PNG))).await.status,
+        StatusCode::NOT_FOUND
+    );
     assert_eq!(
         h.get(&format!("/v1/maps/{}", MapId([1; 32]))).await.status,
         StatusCode::NOT_FOUND
@@ -693,7 +698,7 @@ async fn moderation_hides_deletes_blocks_and_refuses_sessions() {
             json!({"reason": "offensive name"}).to_string(),
         )
         .await;
-    assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.json());
     let view = h
         .call(
             Method::GET,
@@ -738,6 +743,247 @@ async fn moderation_hides_deletes_blocks_and_refuses_sessions() {
         h.get(&format!("/v1/maps/{id}")).await.status,
         StatusCode::OK
     );
+}
+
+#[tokio::test]
+async fn pack_takedown_covers_member_reads_sessions_and_exclusive_blobs() {
+    let h = content_harness(small()).await;
+    let u = h.create("Publisher").await;
+    let reader = h.create("Reader").await;
+    let shared = b"shared layer";
+    let exclusive = b"exclusive layer";
+    let shared_hash = upload(&h, &u, shared).await;
+    let exclusive_hash = upload(&h, &u, exclusive).await;
+
+    let mut first = manifest(shared);
+    first.package.name = "Sky Pack: lockout".into();
+    let mut second = manifest(exclusive);
+    second.base.map = "zanzibar".into();
+    second.package.name = "Sky Pack: zanzibar".into();
+    let mut outside = manifest(shared);
+    outside.base.map = "ascension".into();
+    outside.package.name = "Hilltop".into();
+    for map in [&first, &second, &outside] {
+        assert_eq!(
+            publish(&h, &u, &doc(map.clone())).await.status,
+            StatusCode::CREATED
+        );
+    }
+    let mut staged_map = manifest(exclusive);
+    staged_map.base.map = "foundation".into();
+    let staged_id = MapId::of(&staged_map);
+    let mut staged = doc(staged_map);
+    staged.staged_for = Some("tomorrow".into());
+    assert_eq!(publish(&h, &u, &staged).await.status, StatusCode::CREATED);
+    let first_id = MapId::of(&first);
+    let second_id = MapId::of(&second);
+    let outside_id = MapId::of(&outside);
+    let view = h.get(&format!("/v1/maps/{first_id}")).await.json();
+    let id = view["map"]["pack"].as_str().expect("migrated pack ID");
+    let path = format!("/v1/mod-packs/{id}");
+    let map_log = format!("/v1/events?stream=package-{first_id}");
+    assert!(
+        !h.get(&map_log).await.json()["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    let report = |reason: &str| json!({"reason": reason}).to_string();
+    for report_path in [
+        format!("{path}/report"),
+        format!("/v1/maps/{first_id}/report"),
+    ] {
+        let response = h
+            .call(
+                Method::POST,
+                &report_path,
+                &[h.bearer(&reader, lxm::CONTENT_WRITE)],
+                report("wrong credit"),
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::CREATED);
+    }
+    let forbidden = h
+        .call(
+            Method::POST,
+            &format!("/v1/admin/mod-packs/{id}/hide"),
+            &[h.bearer(&u, lxm::CONTENT_MODERATE)],
+            Body::empty(),
+        )
+        .await;
+    assert_eq!(forbidden.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        moderate(&h, "mod-packs", id, "hide").await.status,
+        StatusCode::OK
+    );
+    let admin = h
+        .call(
+            Method::GET,
+            "/v1/admin/content",
+            &[moderator(&h)],
+            Body::empty(),
+        )
+        .await
+        .json();
+    let row = admin["packs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == id)
+        .unwrap();
+    assert_eq!(row["state"], "hidden");
+    assert_eq!(row["reports"], 2);
+    assert_eq!(row["members"].as_array().unwrap().len(), 2);
+    assert!(
+        admin["reports"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["target"] == "pack" && r["id"] == id)
+    );
+
+    assert!(
+        h.get(&map_log).await.json()["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let public_packs = h.get("/v1/mod-packs").await.json();
+    assert!(
+        public_packs["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["id"] != id)
+    );
+    for uri in [
+        &path[..],
+        &format!("/v1/maps/{first_id}"),
+        &format!("/v1/maps/{second_id}"),
+        &format!("/v1/content/{exclusive_hash}"),
+    ] {
+        assert_eq!(h.get(uri).await.status, StatusCode::GONE, "{uri}");
+    }
+    assert_eq!(
+        advertise(&h, &u, &session("custom", None, Some(first_id)))
+            .await
+            .status,
+        StatusCode::GONE
+    );
+    assert_eq!(
+        publish(&h, &u, &doc(first.clone())).await.status,
+        StatusCode::GONE
+    );
+    let mut relabeled = manifest(exclusive);
+    relabeled.base.map = "midship".into();
+    assert_eq!(
+        publish(&h, &u, &doc(relabeled)).await.status,
+        StatusCode::GONE
+    );
+    let new_pack = json!({"name": "Tomorrow", "authors": ["Painter"], "members": [staged_id]});
+    let late = h
+        .call(
+            Method::PUT,
+            "/v1/mod-packs/tomorrow",
+            &[h.bearer(&u, lxm::CONTENT_WRITE)],
+            new_pack.to_string(),
+        )
+        .await;
+    assert_eq!(
+        late.status,
+        StatusCode::GONE,
+        "moderation changed between staging and publication"
+    );
+    assert_eq!(
+        put(&h, &u, &exclusive_hash, exclusive).await.status,
+        StatusCode::GONE
+    );
+
+    assert_eq!(
+        h.get(&format!("/v1/maps/{outside_id}")).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        h.get(&format!("/v1/content/{shared_hash}")).await.status,
+        StatusCode::OK
+    );
+
+    assert_eq!(
+        moderate(&h, "mod-packs", id, "unhide").await.status,
+        StatusCode::OK
+    );
+    assert_eq!(h.get(&path).await.status, StatusCode::OK);
+    assert_eq!(
+        h.get(&format!("/v1/maps/{second_id}")).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        h.get(&format!("/v1/content/{exclusive_hash}")).await.status,
+        StatusCode::OK
+    );
+
+    assert_eq!(
+        moderate(&h, "mod-packs", id, "block").await.status,
+        StatusCode::OK
+    );
+    assert_eq!(h.get(&path).await.status, StatusCode::GONE);
+    assert_eq!(
+        moderate(&h, "mod-packs", id, "unhide").await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        h.get(&format!("/v1/maps/{first_id}")).await.status,
+        StatusCode::GONE
+    );
+    assert_eq!(
+        moderate(&h, "mod-packs", id, "unblock").await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        h.get(&path).await.status,
+        StatusCode::GONE,
+        "unblock leaves the pack deleted"
+    );
+}
+
+#[tokio::test]
+async fn a_ranked_session_names_a_script_the_ranked_policy_takes() {
+    let h = content_harness(small()).await;
+    let u = h.create("Host").await;
+    let with = |flags: &str, rules: &str| NewSession {
+        rules: Some(rules.into()),
+        ..session(flags, Some(3), None)
+    };
+    let slayer = rules::compile(rules::builtin::SLAYER).unwrap().id().to_string();
+    let r = advertise(&h, &u, &with("ranked", &slayer)).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.json());
+    // A script Live does not know cannot be checked, so a ranked game refuses it.
+    let unknown = "ee".repeat(32);
+    let r = advertise(&h, &u, &with("ranked", &unknown)).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.error());
+    assert_eq!(advertise(&h, &u, &with("custom", &unknown)).await.status, StatusCode::CREATED);
+
+    // A saved script that grants Forge edits plays custom games, never ranked.
+    let builder = "rules \"Builder\" 1\ncarrier slayer\nrequires forge.move\n\non kill(victim, killer) { score(killer, 1) }\n";
+    let saved = h
+        .call(
+            Method::POST,
+            "/v1/rules",
+            &[
+                h.bearer(&u, lxm::CONTENT_WRITE),
+                ("content-type", "application/json".into()),
+            ],
+            json!({"source": builder}).to_string(),
+        )
+        .await;
+    assert_eq!(saved.status, StatusCode::CREATED, "{}", saved.error());
+    let hash = rules::compile(builder).unwrap().id().to_string();
+    let r = advertise(&h, &u, &with("ranked", &hash)).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.error());
+    let message = r.json()["message"].as_str().unwrap_or("").to_string();
+    assert!(message.contains("capability forge.move is not allowed in a ranked game"), "{message}");
+    assert_eq!(advertise(&h, &u, &with("hopper", &hash)).await.status, StatusCode::CREATED);
 }
 
 #[tokio::test]
@@ -795,7 +1041,7 @@ async fn ranked_sessions_take_retail_or_pinned_maps_only() {
         json!([{"hopper_id": 3, "map_ids": [modded.to_string()]}])
     );
     let r = advertise(&h, &u, &session("hopper", Some(3), Some(modded))).await;
-    assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.json());
     assert_eq!(
         r.json()["session"]["advertisement"]["map_id"],
         modded.to_string()
@@ -883,4 +1129,50 @@ async fn no_data_directory_no_content() {
     let u = h.create("Modder").await;
     let r = put(&h, &u, &sha(b"PATCH"), b"PATCH").await;
     assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn legacy_optimatch_checks_the_published_base_for_map_id_only_ads() {
+    let h = content_harness(small()).await;
+    let host = h.create("Match Host").await;
+    let guest = h.create("Match Guest").await;
+    let patch = b"PATCH synthetic".as_slice();
+    upload(&h, &host, patch).await;
+    let mut ids = Vec::new();
+    for base in ["lockout", "turf"] {
+        let mut m = manifest(patch);
+        m.base.map = base.into();
+        let map_id = MapId::of(&m);
+        assert_eq!(publish(&h, &host, &doc(m)).await.status, StatusCode::CREATED);
+        let mut ad = session("custom", None, Some(map_id));
+        ad.map = None;
+        ad.attributes.insert(
+            live_proto::optimatch::attr::HOPPER,
+            live_proto::session::AttributeValue::Integer(2),
+        );
+        ad.attributes.insert(
+            live_proto::optimatch::attr::ROOM,
+            live_proto::session::AttributeValue::Integer(1),
+        );
+        let response = advertise(&h, &host, &ad).await;
+        assert_eq!(response.status, StatusCode::CREATED, "{}", response.error());
+        ids.push(response.json()["session_id"].clone());
+    }
+
+    for (pack, count) in [(false, 1), (true, 2)] {
+        let wire = json!({"hopper": 2, "average": 0, "has_map_pack": pack, "party": 1}).to_string();
+        let query = percent_encoding::utf8_percent_encode(&wire, percent_encoding::NON_ALPHANUMERIC);
+        let response = h.call(
+            Method::GET, &format!("/v1/sessions?optimatch={query}"),
+            &[h.bearer(&guest, lxm::READ)], Body::empty(),
+        ).await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.error());
+        let body = response.json();
+        let items = body["items"].as_array().unwrap();
+        assert_eq!(items.len(), count);
+        assert!(items.iter().any(|item| item["session_id"] == ids[0]));
+        assert_eq!(items.iter().any(|item| item["session_id"] == ids[1]), pack);
+    }
+    let public = h.get("/v1/sessions").await.json();
+    assert_eq!(public["items"].as_array().unwrap().len(), 2);
 }

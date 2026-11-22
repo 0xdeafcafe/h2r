@@ -1,6 +1,16 @@
 //! Visual prediction for synchronous Live co-op. Observe the channel's
 //! outgoing 0x28 and the 0x27 record actually applied to the local player.
 //! Only render_game_view receives the camera adjustment, in its own copy.
+//!
+//! The game thread owns the prediction ([`State`]). Every game-thread
+//! hook locks it through [`Look::state`], which first replays the render
+//! calls recorded since ([`Op`]) and, when the hook is done, publishes a
+//! snapshot of the users. The render hook works on its own copy of that
+//! snapshot ([`View`]) and posts what it did to an inbox, so it touches no
+//! state the game thread writes and runs on the pipelined render thread
+//! (`context_only`). Between two game-thread hooks a view draws exactly as
+//! the one state did, since the copy takes the same steps the replay then
+//! takes on the owner.
 mod prediction;
 pub mod view;
 
@@ -22,7 +32,7 @@ const USERS: usize = 4;
 const HISTORY: usize = 256;
 const ACTION_BYTES: u32 = 0x5c;
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct User {
     subject: Option<Subject>,
     prediction: Prediction,
@@ -32,7 +42,10 @@ impl User {
     /// Discontinuities discard sends from the old camera, including when
     /// a slot is rebound to a new salted player/unit between two frames.
     fn observe(&mut self, m: &dyn GuestMemory, user: usize) -> Result<Subject, &'static str> {
-        let next = view::subject(m, user);
+        self.rebind(view::subject(m, user))
+    }
+
+    fn rebind(&mut self, next: Result<Subject, &'static str>) -> Result<Subject, &'static str> {
         if next.is_err() || self.subject.zip(next.ok()).is_some_and(|(a, b)| a.cut(b)) {
             *self = Self::default();
         }
@@ -128,6 +141,9 @@ impl State {
         Some(())
     }
 
+    /// Draws `user`'s look as [`render_users`] does, on this state, and logs it.
+    /// The tests' reference for the published-copy path.
+    #[cfg(test)]
     fn render(
         &mut self,
         m: &mut dyn GuestMemory,
@@ -135,67 +151,33 @@ impl State {
         scratch: u32,
         enabled: bool,
     ) -> Option<()> {
-        let original = view::ptr(m, arg)?;
-        if m.u32(original).ok()? != 0 {
-            return None;
+        let op = render_users(&mut self.users, m, arg, scratch, enabled)?;
+        self.log(&op);
+        Some(())
+    }
+
+    /// Takes the steps a render call took on a view's copy.
+    fn replay(&mut self, op: &Op) {
+        if let Some(slot) = self.users.get_mut(op.user) {
+            step(slot, op.subject, op.mode, op.enabled, op.camera);
+            self.log(op);
         }
-        let u = m.u32(original.checked_add(8)?).ok()? as usize;
-        let slot = self.users.get_mut(u)?;
-        let frame = m.u32(engine::render_loop::occlusion::guest::FRAME).ok()?;
-        let camera = view::facing(m.vec3(original.checked_add(0x18)?).ok()?);
-        let mut drawn = camera;
-        let mut correction = 0.0;
-        let status = match view::mode(m) {
-            Some(3) => match slot.observe(m, u) {
-                Err(reason) => reason,
-                Ok(_) if !enabled => {
-                    slot.prediction.disable();
-                    "setting off"
-                }
-                Ok(_) => match camera.and_then(|a| slot.prediction.draw(a)) {
-                    None => "waiting",
-                    Some((offset, error)) => {
-                        correction = error;
-                        if offset == Aim::default() {
-                            "active"
-                        } else if view::draw_copy(
-                            m,
-                            arg,
-                            original,
-                            scratch + u as u32 * view::STRIDE,
-                            offset,
-                        )
-                        .is_some()
-                        {
-                            drawn = view::facing(
-                                m.vec3(scratch + u as u32 * view::STRIDE + 0x18).ok()?,
-                            );
-                            "active"
-                        } else {
-                            "invalid camera"
-                        }
-                    }
-                },
-            },
-            mode => {
-                *slot = User::default();
-                if mode == Some(2) {
-                    "host"
-                } else {
-                    "outside co-op"
-                }
-            }
-        };
-        let p = &slot.prediction;
+    }
+
+    fn log(&mut self, op: &Op) {
+        if !op.logged {
+            return;
+        }
+        let p = &self.users[op.user].prediction;
         self.serial += 1;
         if self.history.len() == HISTORY {
             self.history.pop_front();
         }
         self.history.push_back(Frame {
             sample: self.serial,
-            frame,
-            user: u,
-            status,
+            frame: op.frame,
+            user: op.user,
+            status: op.status,
             update: p.update,
             matched_send: p.ack_seq,
             matched_update: p.ack_update,
@@ -204,26 +186,213 @@ impl State {
             pending: p.pending(),
             dropped: p.dropped,
             confirmed: p.confirmed,
-            predicted: if enabled { p.target() } else { None },
-            camera,
-            drawn,
-            correction_rad: correction,
+            predicted: if op.enabled { p.target() } else { None },
+            camera: op.camera,
+            drawn: op.drawn,
+            correction_rad: op.correction,
         });
-        Some(())
+    }
+}
+
+/// One render call: what it read from the guest and what it decided, enough
+/// to take the same steps on the owner's state.
+#[derive(Clone, Copy)]
+struct Op {
+    user: usize,
+    frame: u32,
+    /// The user's subject, read only in co-op mode.
+    subject: Option<Result<Subject, &'static str>>,
+    mode: Option<u32>,
+    enabled: bool,
+    camera: Option<Aim>,
+    status: &'static str,
+    drawn: Option<Aim>,
+    correction: f32,
+    /// Whether the call reached its end and shows in the agent's frames.
+    logged: bool,
+}
+
+struct Step {
+    status: &'static str,
+    /// The look to add to the camera, when there is one to draw.
+    offset: Option<Aim>,
+    correction: f32,
+}
+
+/// The prediction's part of a render call: everything that changes `slot`.
+fn step(
+    slot: &mut User,
+    subject: Option<Result<Subject, &'static str>>,
+    mode: Option<u32>,
+    enabled: bool,
+    camera: Option<Aim>,
+) -> Step {
+    let mut out = Step { status: "", offset: None, correction: 0.0 };
+    out.status = match mode {
+        Some(3) => match slot.rebind(subject.unwrap_or(Err("no subject"))) {
+            Err(reason) => reason,
+            Ok(_) if !enabled => {
+                slot.prediction.disable();
+                "setting off"
+            }
+            Ok(_) => match camera.and_then(|a| slot.prediction.draw(a)) {
+                None => "waiting",
+                Some((offset, error)) => {
+                    out.correction = error;
+                    if offset != Aim::default() {
+                        out.offset = Some(offset);
+                    }
+                    "active"
+                }
+            },
+        },
+        mode => {
+            *slot = User::default();
+            if mode == Some(2) {
+                "host"
+            } else {
+                "outside co-op"
+            }
+        }
+    };
+    out
+}
+
+/// A render call on `users`: reads the guest, steps the user's prediction
+/// and draws its private camera. `None`: nothing to draw, nothing stepped.
+fn render_users(
+    users: &mut [User; USERS],
+    m: &mut dyn GuestMemory,
+    arg: u32,
+    scratch: u32,
+    enabled: bool,
+) -> Option<Op> {
+    let original = view::ptr(m, arg)?;
+    if m.u32(original).ok()? != 0 {
+        return None;
+    }
+    let u = m.u32(original.checked_add(8)?).ok()? as usize;
+    let slot = users.get_mut(u)?;
+    let frame = m.u32(engine::render_loop::occlusion::guest::FRAME).ok()?;
+    let camera = view::facing(m.vec3(original.checked_add(0x18)?).ok()?);
+    let mode = view::mode(m);
+    let subject = (mode == Some(3)).then(|| view::subject(m, u));
+    let stepped = step(slot, subject, mode, enabled, camera);
+    let mut op = Op {
+        user: u,
+        frame,
+        subject,
+        mode,
+        enabled,
+        camera,
+        status: stepped.status,
+        drawn: camera,
+        correction: stepped.correction,
+        logged: true,
+    };
+    if let Some(offset) = stepped.offset {
+        let private = scratch + u as u32 * view::STRIDE;
+        if view::draw_copy(m, arg, original, private, offset).is_some() {
+            match m.vec3(private + 0x18) {
+                Ok(forward) => op.drawn = view::facing(forward),
+                Err(_) => op.logged = false,
+            }
+        } else {
+            op.status = "invalid camera";
+        }
+    }
+    Some(op)
+}
+
+/// What the game thread last published, and when.
+#[derive(Default)]
+struct Published {
+    epoch: u64,
+    users: [User; USERS],
+}
+
+/// The render hook's copy of the published users.
+#[derive(Default)]
+struct View {
+    epoch: Option<u64>,
+    users: [User; USERS],
+}
+
+#[derive(Default)]
+struct Shared {
+    published: Mutex<Published>,
+    view: Mutex<View>,
+    /// Render calls the game thread has yet to replay, oldest first.
+    inbox: Mutex<Vec<Op>>,
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The game thread's lock on the state: renders replayed on the way in, the
+/// users published on the way out.
+struct Game<'a> {
+    guard: MutexGuard<'a, State>,
+    shared: &'a Shared,
+}
+
+impl std::ops::Deref for Game<'_> {
+    type Target = State;
+    fn deref(&self) -> &State {
+        &self.guard
+    }
+}
+
+impl std::ops::DerefMut for Game<'_> {
+    fn deref_mut(&mut self) -> &mut State {
+        &mut self.guard
+    }
+}
+
+impl Drop for Game<'_> {
+    fn drop(&mut self) {
+        let mut published = lock(&self.shared.published);
+        published.epoch += 1;
+        published.users = self.guard.users.clone();
     }
 }
 
 #[derive(Clone)]
 struct Look {
     state: Arc<Mutex<State>>,
+    shared: Arc<Shared>,
     arm: Arc<Arm>,
     setting: Option<Setting<bool>>,
     default: bool,
 }
 
 impl Look {
-    fn state(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    /// The game thread's state, with the renders since replayed.
+    fn state(&self) -> Game<'_> {
+        let mut guard = lock(&self.state);
+        let ops = std::mem::take(&mut *lock(&self.shared.inbox));
+        for op in &ops {
+            guard.replay(op);
+        }
+        Game { guard, shared: &self.shared }
+    }
+
+    /// The render hook: draws from this view's copy of the published users
+    /// and posts the call for the game thread. Takes no lock the game
+    /// thread holds while it works.
+    fn render(&self, m: &mut dyn GuestMemory, arg: u32, scratch: u32) {
+        let mut view = lock(&self.shared.view);
+        {
+            let published = lock(&self.shared.published);
+            if view.epoch != Some(published.epoch) {
+                view.users = published.users.clone();
+                view.epoch = Some(published.epoch);
+            }
+        }
+        if let Some(op) = render_users(&mut view.users, m, arg, scratch, self.enabled()) {
+            lock(&self.shared.inbox).push(op);
+        }
     }
 
     fn enabled(&self) -> bool {
@@ -282,15 +451,14 @@ impl Feature for Look {
             .before(&points::RENDER_GAME_VIEW, "draw guest look", move |c| {
                 if look.arm.active() {
                     let mut m = c.ctx.memory();
-                    let _ = look.state().render(
-                        &mut *m,
-                        c.cpu.esp.wrapping_add(4),
-                        scratch,
-                        look.enabled(),
-                    );
+                    look.render(&mut *m, c.cpu.esp.wrapping_add(4), scratch);
                 }
                 Ok(Flow::Continue)
-            });
+            })
+            // Reads and writes this call's guest memory, and the view's own
+            // copy of the users; the game thread's state is reached only
+            // through the inbox.
+            .context_only();
         let look = self.clone();
         b.raw()
             .observe_before(
@@ -362,6 +530,7 @@ pub fn install(
     let look = Look {
         arm,
         state: Arc::default(),
+        shared: Arc::default(),
         setting: store.map(|s| s.handle(COOP_LOOK_PREDICTION.key)),
         default: std::env::var("H2_COOP_LOOK_PREDICTION")
             .ok()

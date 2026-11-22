@@ -13,6 +13,7 @@ import { LEVELS, multiplayerKind, mockSkulls } from "./coop";
 const HOUR = 3_600_000;
 const DAY = 86_400_000;
 const KEEP_DAYS = 30;
+const NON_WEAPONS = new Set(["", "fall", "collision", "splatter", "guardians", "teleporter", "explosion"]);
 const MAX_GAME_MS = 12 * HOUR;
 export const WINDOWS: Record<string, number | null> = { today: 1, "7d": 7, "30d": 30, all: null };
 
@@ -27,15 +28,17 @@ interface Game {
 interface PlayerAgg {
   name: string; named: number; games: number; multiplayer: number; campaign: number; wins: number; kills: number;
   deaths: number; betrayals: number; best_spree: number; seconds: number; legendary: Set<string>;
+  bounces: number; bounced: number;
 }
-type Totals = Record<"games" | "multiplayer" | "campaign" | "matchmaking" | "custom" | "coop" | "kills" | "deaths" | "betrayals" | "suicides" | "campaign_deaths" | "player_seconds" | "legendary", number>;
-const zero = (): Totals => ({ games: 0, multiplayer: 0, campaign: 0, matchmaking: 0, custom: 0, coop: 0, kills: 0, deaths: 0, betrayals: 0, suicides: 0, campaign_deaths: 0, player_seconds: 0, legendary: 0 });
+type Totals = Record<"games" | "multiplayer" | "campaign" | "matchmaking" | "custom" | "coop" | "kills" | "deaths" | "betrayals" | "suicides" | "campaign_deaths" | "player_seconds" | "legendary" | "bounces" | "bounced", number>;
+const zero = (): Totals => ({ games: 0, multiplayer: 0, campaign: 0, matchmaking: 0, custom: 0, coop: 0, kills: 0, deaths: 0, betrayals: 0, suicides: 0, campaign_deaths: 0, player_seconds: 0, legendary: 0, bounces: 0, bounced: 0 });
 
 /** One counted thing at a time: summaries filter these by time. */
 type Fact =
   | { k: "start"; at: number; t: Partial<Totals>; map: string; map_id: string | null; campaign: boolean; playlist: string | null; skulls: number[]; players: Array<[string, string]> }
   | { k: "join"; at: number; xuid: string; name: string; campaign: boolean }
   | { k: "kill"; at: number; t: Partial<Totals>; victim: [string, string] | null; killer: [string, string] | null; scoring: boolean; betrayal: boolean; spree: number; weapon: string | null; map: string; map_id: string | null }
+  | { k: "bounce"; at: number; t: Partial<Totals>; player: [string, string] | null }
   | { k: "end"; at: number; secs: number; people: number; players: Array<[string, string]>; winners: Set<string>; legendary: string | null };
 
 export class StatsFold {
@@ -105,8 +108,20 @@ export class StatsFold {
           k: "kill", at,
           t: { deaths: 1, ...(scoring ? { kills: 1 } : d.kind === "betrayal" ? { betrayals: 1 } : d.kind === "suicide" ? { suicides: 1 } : {}) },
           victim: v?.xuid && !bot ? [v.xuid, v.name] : null, killer: ks?.xuid ? [ks.xuid, ks.name] : null,
-          scoring, betrayal: d.kind === "betrayal", spree, weapon: scoring && typeof d.weapon === "string" && d.weapon ? d.weapon : null,
+          scoring, betrayal: d.kind === "betrayal", spree, weapon: scoring && typeof d.weapon === "string" && !NON_WEAPONS.has(d.weapon) ? d.weapon : null,
           map: g.map, map_id: g.map_id,
+        });
+        return;
+      }
+      case "Superbounce":
+      case "Bounced": {
+        // Every player's in the totals; an account's (not a bot's) in its row.
+        const g = this.games.get(id);
+        if (!g || typeof d.player !== "number") return;
+        const s = g.slots.get(d.player);
+        this.facts.push({
+          k: "bounce", at, t: e.type === "Bounced" ? { bounced: 1 } : { bounces: 1 },
+          player: s?.xuid && !s.bot ? [s.xuid, s.name] : null,
         });
         return;
       }
@@ -145,7 +160,7 @@ export class StatsFold {
     const add = (t: Totals, d: Partial<Totals>) => { for (const [k, v] of Object.entries(d)) t[k as keyof Totals] += v!; };
     const player = (x: string, name: string, at: number) => {
       let p = players.get(x);
-      if (!p) players.set(x, p = { name, named: at, games: 0, multiplayer: 0, campaign: 0, wins: 0, kills: 0, deaths: 0, betrayals: 0, best_spree: 0, seconds: 0, legendary: new Set() });
+      if (!p) players.set(x, p = { name, named: at, games: 0, multiplayer: 0, campaign: 0, wins: 0, kills: 0, deaths: 0, betrayals: 0, best_spree: 0, seconds: 0, legendary: new Set(), bounces: 0, bounced: 0 });
       if (at >= p.named) { p.name = name; p.named = at; }
       return p;
     };
@@ -156,7 +171,7 @@ export class StatsFold {
       return r;
     };
     for (const f of this.facts) {
-      const delta: Partial<Totals> = f.k === "start" || f.k === "kill" ? f.t
+      const delta: Partial<Totals> = f.k === "start" || f.k === "kill" || f.k === "bounce" ? f.t
         : f.k === "end" ? { player_seconds: f.secs * f.people, ...(f.legendary ? { legendary: 1 } : {}) } : {};
       add(all, delta);
       if (f.at >= Math.max(keepFrom, (nowH - 23) * HOUR) && f.at < (nowH + 1) * HOUR) add(last24, delta);
@@ -185,6 +200,9 @@ export class StatsFold {
             if (f.scoring) { p.kills++; p.best_spree = Math.max(p.best_spree, f.spree); } else if (f.betrayal) p.betrayals++;
           }
           break;
+        case "bounce":
+          if (f.player) { const p = player(...f.player, f.at); if (f.t.bounced) p.bounced++; else p.bounces++; }
+          break;
         case "end":
           for (const [x, n] of f.players) {
             const p = player(x, n, f.at);
@@ -202,6 +220,7 @@ export class StatsFold {
       players: [...players].map(([xuid, p]) => ({
         xuid, name: p.name, games: p.games, multiplayer: p.multiplayer, campaign: p.campaign, wins: p.wins, kills: p.kills,
         deaths: p.deaths, betrayals: p.betrayals, best_spree: p.best_spree, seconds: p.seconds, legendary: p.legendary.size,
+        bounces: p.bounces, bounced: p.bounced,
       })).sort((a, b) => b.kills - a.kills || b.games - a.games || a.xuid.localeCompare(b.xuid)).slice(0, 500),
       maps: [...maps.values()].sort((a, b) => b.games - a.games || b.kills - a.kills || a.map.localeCompare(b.map)),
       weapons: ranked(weapons).map(([weapon, kills]) => ({ weapon, kills })),

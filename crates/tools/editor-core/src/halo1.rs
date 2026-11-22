@@ -4,6 +4,7 @@
 //!
 //! Nothing here writes. Converting a map to Halo 2 is `h1convert`'s job
 //! (docs/halo1/multiplayer.md).
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -12,6 +13,8 @@ use anyhow::{Context, Result, bail};
 use h1map::scenario::{FlagKind, GameType, Multiplayer};
 use h1map::{H1Map, TagId, TagRef};
 use xiso::{Entry, Xiso};
+
+use crate::map_groups::MapGroup;
 
 /// Where Halo 1 maps come from.
 #[derive(Debug, Clone)]
@@ -28,11 +31,13 @@ pub fn is_h1_map_header(bytes: &[u8]) -> bool {
 }
 
 fn is_h1_map_file(path: &Path) -> bool {
-    let mut head = vec![0; h1map::HEADER_LEN];
-    File::open(path)
-        .and_then(|mut f| f.read_exact(&mut head))
-        .is_ok()
-        && is_h1_map_header(&head)
+    file_header(path).is_some()
+}
+
+fn file_header(path: &Path) -> Option<h1map::Header> {
+    let mut head = [0; h1map::HEADER_LEN];
+    File::open(path).ok()?.read_exact(&mut head).ok()?;
+    h1map::parse_header(&head).ok()
 }
 
 impl H1Source {
@@ -88,6 +93,44 @@ impl H1Source {
         }
     }
 
+    /// Sections keyed by file stem, read from the uncompressed headers.
+    pub fn map_groups(&self) -> HashMap<String, MapGroup> {
+        match self {
+            Self::Disc { path, maps } => {
+                let mut iso = File::open(path)
+                    .ok()
+                    .and_then(|f| Xiso::open(BufReader::new(f)).ok());
+                maps.iter()
+                    .map(|entry| {
+                        let name = h1map::disc::map_stem(entry);
+                        let kind = iso.as_mut().and_then(|iso| {
+                            if (entry.size as usize) < h1map::HEADER_LEN {
+                                return None;
+                            }
+                            let head = iso
+                                .read(&Entry {
+                                    size: h1map::HEADER_LEN as u32,
+                                    ..entry.clone()
+                                })
+                                .ok()?;
+                            Some(h1map::parse_header(&head).ok()?.cache_type)
+                        });
+                        (name.to_owned(), h1_group(name, kind))
+                    })
+                    .collect()
+            }
+            Self::Folder { dir, maps } => super::source::folder_entries(dir)
+                .into_iter()
+                .filter(|(name, _)| maps.contains(name))
+                .map(|(name, path)| {
+                    let kind = file_header(&path).map(|h| h.cache_type);
+                    let group = h1_group(&name, kind);
+                    (name, group)
+                })
+                .collect(),
+        }
+    }
+
     /// The map's file as stored (compressed).
     pub fn read_raw(&self, name: &str) -> Result<Vec<u8>> {
         match self {
@@ -111,6 +154,10 @@ impl H1Source {
     pub fn open_map(&self, name: &str) -> Result<H1Map> {
         Ok(H1Map::from_reader(&self.read_raw(name)?[..])?)
     }
+}
+
+fn h1_group(name: &str, kind: Option<h1map::CacheType>) -> MapGroup {
+    MapGroup::classify(name, kind.map_or(MapGroup::Other, MapGroup::from))
 }
 
 /// The Halo 1 maps in a folder, by name.
@@ -606,6 +653,24 @@ mod tests {
             seen += 1;
         }
         assert!(seen > 0, "no multiplayer maps in {}", path.display());
+    }
+
+    #[test]
+    fn a_renamed_ui_map_keeps_its_menu_group() {
+        let level = h1map::testing::tiny_map();
+        let mut menu = level.clone();
+        menu[0x60..0x62].copy_from_slice(&h1map::CacheType::UserInterface.raw().to_le_bytes());
+        let dir = std::env::temp_dir().join(format!("h2-editor-h1groups-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("level.map"), level).unwrap();
+        std::fs::write(dir.join("front_end.MAP"), menu).unwrap();
+
+        let source = H1Source::open(&dir).unwrap();
+        let groups = source.map_groups();
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(groups["level"], MapGroup::Campaign);
+        assert_eq!(groups["front_end"], MapGroup::SharedAndMenu);
     }
 
     #[test]

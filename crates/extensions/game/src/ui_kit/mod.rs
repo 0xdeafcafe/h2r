@@ -2,6 +2,7 @@
 //! than hand-wired, so the mistakes earlier screens made cannot be made
 //! again (docs/game/ui-screens.md).
 //!
+//! - [`animation`]: tick-driven page transitions for the UI builder.
 //! - [`choice`]: a row of many choices over a setting ([`choice::ChoiceRow`]).
 //! - [`dialog`]: modal dialogs over the screen beneath ([`dialog::DialogSpec`]).
 //! - [`dialog_tag`]: a dialog's tag pieces and tag copy, and the request
@@ -19,9 +20,12 @@
 //! - [`picker`]: the value picker, retail's `low_level_settings`.
 //! - [`page`]: a screen's behaviour as a pure state machine, table-tested.
 
+pub mod animation;
 pub mod choice;
+pub mod content;
 pub mod dialog;
 pub mod dialog_tag;
+pub mod forge;
 pub mod ids;
 pub mod input;
 pub mod layout;

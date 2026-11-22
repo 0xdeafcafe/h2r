@@ -175,13 +175,17 @@ export class Projectiles {
   }
 
   /** Moves every shot to `now`; true while any is in flight. */
-  update(now: number): boolean {
+  update(now: number, visible?: (at: THREE.Vector3) => boolean): boolean {
     const keep: Flying[] = [];
     for (const f of this.live) {
       const t = (now - f.born) / 1000;
       const done = this.place(f, t);
       if (done || now - f.born > MAX_FLIGHT_MS) { this.release(f.object); if (f.trail) this.release(f.trail); }
-      else keep.push(f);
+      else {
+        f.object.visible = visible?.(f.object.position) ?? true;
+        if (f.trail) f.trail.visible = f.object.visible;
+        keep.push(f);
+      }
     }
     this.live = keep;
     return keep.length > 0;

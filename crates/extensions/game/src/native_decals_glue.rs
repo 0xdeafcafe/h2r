@@ -76,6 +76,11 @@ fn clip(r: d3d::PixelRect) -> ClipRect {
 
 fn prepare(mode: Mode, snapshot: &DrawSnapshot<'_>) -> Result<Prepared, &'static str> {
     let d = snapshot.draw;
+    // This producer freezes one uniform block for both attachment copies.
+    // The ordinary D3D draw owns a pair with different lenses or UI layout.
+    if d.retail_constants.is_some() || d.ui_fit.is_some() {
+        return Err("attachment copies need distinct vertex constants");
+    }
     if d.primitive != PrimitiveType::QuadList
         || d.indices.is_some()
         || d.vertex_count == 0
@@ -236,6 +241,7 @@ impl DrawAdmission for Glue {
                 clip: None,
                 gpu: None,
                 caches: self.caches.clone(),
+                frame: crate::d3d_diag::presents(),
             }),
         ))
     }
@@ -246,6 +252,9 @@ struct DecalPass {
     clip: Option<d3d::DepthClip>,
     gpu: Option<DecalGpu>,
     caches: Caches,
+    /// The guest frame of the admission: the cache keeps a texture group
+    /// only while draws of recent frames use it.
+    frame: u64,
 }
 
 impl DecalPass {
@@ -312,6 +321,7 @@ impl d3d::ExternalPass for DecalPass {
         };
         let mut caches = self.caches.lock().unwrap_or_else(|e| e.into_inner());
         let cache = caches.entry(t.device.clone()).or_default();
+        cache.begin_frame(self.frame);
         match cache.draws(&t.device, &t.queue, &t.uploads, &self.prepared, clip, &target) {
             Ok(Some((packets, discards))) => Some(Ok(ExternalDraws {
                 ranges: 1,
@@ -324,7 +334,7 @@ impl d3d::ExternalPass for DecalPass {
         }
     }
 
-    fn record_ranges(&mut self, mut t: d3d::ExternalTarget<'_>) -> usize {
+    fn record_ranges(&mut self, t: d3d::ExternalTarget<'_>) -> usize {
         if let Err(why) = self.prepare(&t) {
             render_bridge::native_decals::note_refusal(why);
             return 0;

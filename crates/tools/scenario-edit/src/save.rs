@@ -162,6 +162,12 @@ pub fn write_patched<R: Read + Seek>(
         return Err(Error::Save("the scenario was read from a different map"));
     }
     let changes = scenario.changes();
+    // A geometry edit that cannot be written refuses the whole save,
+    // before anything is written (docs/editor/modeling.md, "Rules and
+    // limits").
+    if let Some(reason) = &changes.geometry_refusal {
+        return Err(Error::Declined(format!("geometry: {reason}")));
+    }
     let first = map.strings().len();
     let mut editor = map.edit();
     // New string IDs first: the patches already hold their values.
@@ -175,6 +181,12 @@ pub fn write_patched<R: Read + Seek>(
     }
     for (address, bytes) in &changes.patches {
         editor.patch_metadata(*address, bytes)?;
+    }
+    for patch in &changes.bsp_patches {
+        editor.patch_bsp(patch.space, patch.address, &patch.bytes)?;
+    }
+    for patch in &changes.raw_patches {
+        editor.patch_raw(patch.block, patch.block_size, patch.offset, &patch.bytes)?;
     }
     // A block that outgrew its source goes to the end of the metadata, and
     // its root pair points there; the old elements stay as dead data.

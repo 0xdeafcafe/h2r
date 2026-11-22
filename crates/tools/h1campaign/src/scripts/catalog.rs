@@ -143,7 +143,7 @@ impl Catalog {
         // H1 0x46a55 follows this signed slot index when the sound is absent.
         catalog.dialogue_fallback = x
             .bytes_at(0x1e0720, 512)?
-            .chunks_exact(2)
+            .as_chunks::<2>().0.iter()
             .map(|v| i16::from_le_bytes([v[0], v[1]]))
             .collect();
         catalog.unit_poses = names(UNIT_POSE_NAMES, 6)?;

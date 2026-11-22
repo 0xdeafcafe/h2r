@@ -24,6 +24,7 @@
 pub mod host;
 pub mod phase;
 pub mod native;
+pub mod setup;
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -219,6 +220,16 @@ struct State {
 /// in one capture never lands in a later one, however long its hook is
 /// held up between the load and the push.
 static CAPTURE: AtomicU64 = AtomicU64::new(0);
+static EVENT_BUFFER_BYTES: AtomicU64 = AtomicU64::new(0);
+
+/// Allocated bytes in the active timeline writer's event buffer.
+pub fn event_buffer_bytes() -> u64 {
+    EVENT_BUFFER_BYTES.load(Ordering::Relaxed)
+}
+
+fn publish_event_capacity(capacity: usize) {
+    EVENT_BUFFER_BYTES.store((capacity * size_of::<Ev>()) as u64, Ordering::Relaxed);
+}
 
 /// The capture's generation if `cat` is recording. One relaxed load.
 #[inline(always)]
@@ -378,7 +389,11 @@ fn push(ev: Ev, generation: u32) {
         return;
     }
     if s.events.len() < s.capacity {
+        let capacity = s.events.capacity();
         s.events.push(ev);
+        if s.events.capacity() != capacity {
+            publish_event_capacity(s.events.capacity());
+        }
     } else {
         s.dropped += 1;
     }
@@ -420,6 +435,7 @@ pub fn start(config: Config) {
     {
         let mut s = state();
         s.events = Vec::with_capacity(config.capacity.min(1 << 16));
+        publish_event_capacity(s.events.capacity());
         s.capacity = config.capacity;
         s.dropped = 0;
         s.waits.clear();
@@ -436,6 +452,7 @@ pub fn stop() -> Trace {
     s.active = false;
     publish(&s, 0);
     let mut events = std::mem::take(&mut s.events);
+    publish_event_capacity(s.events.capacity());
     events.sort_by_key(|e| e.ts);
     s.waits.clear();
     Trace {
@@ -839,7 +856,9 @@ mod tests {
         for _ in 0..5 {
             instant(Cat::D3d, Track::Host, "drain");
         }
+        assert_eq!(event_buffer_bytes(), 2 * size_of::<Ev>() as u64);
         let t = stop();
+        assert_eq!(event_buffer_bytes(), 0);
         assert_eq!(t.count("submit"), 0);
         assert_eq!(t.len(), 2);
         assert_eq!(t.dropped, 3);

@@ -8,7 +8,6 @@ use d3d::backend::{
     DrawAdmission, DrawSnapshot, ExternalAttachments, ExternalDraws, ExternalPass,
     ExternalPassRequest, ExternalPlan, ExternalSlot, ExternalTarget, ExternalWrites, ResolvedDraw,
 };
-use engine::memory::GuestMemory as _;
 use render_bridge::native_world_layers::{Layer, current};
 use native_render::camera::GuestRead;
 use native_render::world_layers::{

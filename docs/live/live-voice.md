@@ -586,8 +586,8 @@ chat report is the existing "Screaming" or "Harassment" feedback, as today.
 
 ## 4. Integration with pause-settings
 
-The pause-settings lane adds Video and Voice rows to the pause menu and owns
-these host settings in `crates/formats/settings` Defs:
+[Player Settings](../game/settings-menu.md#pause-menu) opens the Voice screen
+from the pause menu. Its rows edit these host settings:
 
 | Setting | Read where |
 |---|---|

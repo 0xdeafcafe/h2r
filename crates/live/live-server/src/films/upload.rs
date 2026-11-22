@@ -299,7 +299,8 @@ impl Upload<'_> {
                         .await
                         .map_err(blob_error)?;
                 }
-                let mut receipt = json!({"game":self.id, "blob":c.blob});
+                let mut receipt =
+                    json!({"game":self.id, "blob":c.blob, "size":c.size, "sha256":sha256});
                 if let Some(ranges) = film.web_ranges {
                     receipt["web_ranges"] = json!(ranges);
                 }
@@ -475,7 +476,7 @@ pub(crate) async fn upload_host_film(
     }
     let (mut slot, previous) = Slot::load(store, &id).await?;
     let previous = match previous {
-        Some(p) if &p.candidate().reservation != &*grant => {
+        Some(p) if p.candidate().reservation != *grant => {
             if matches!(request, Request::Part(0) | Request::Single) {
                 None
             } else {

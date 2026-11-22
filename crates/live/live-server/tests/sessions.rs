@@ -1,5 +1,7 @@
 //! Session router, signed batches, projection/replay and trusted tunnel source IP.
 mod common;
+#[path = "common/session_browser.rs"]
+mod session_browser;
 use axum::{
     body::Body,
     extract::ConnectInfo,
@@ -40,6 +42,8 @@ fn new() -> NewSession {
         campaign: None,
         ping_ms: None,
         variant_ext: None,
+        rules: None,
+        browser: None,
     }
 }
 async fn create(h: &Harness, u: &User, data: &NewSession) -> Resp {
@@ -481,6 +485,7 @@ async fn optimatch_searches_filter_by_playlist_window_and_room() {
         lowest: Some(8),
         highest: Some(14),
         party: Some(2),
+        has_map_pack: false,
     };
     let page = h.get(&optimatch_path(&duo, 50)).await.json();
     assert_eq!(names(page.clone()), ["nearest", "near"]);
@@ -507,6 +512,7 @@ async fn optimatch_searches_filter_by_playlist_window_and_room() {
         lowest: None,
         highest: None,
         party: None,
+        has_map_pack: false,
     };
     assert_eq!(
         names(h.get(&optimatch_path(&browser, 50)).await.json()),
@@ -547,6 +553,7 @@ async fn sessions_carry_the_hosts_variant_options() {
     let second = VariantExt::new(&[0; VARIANT_EXT_LEN], 2);
     let up = serde_json::to_value(Update {
         variant_ext: Some(second.clone()),
+        rules: None,
         ..Default::default()
     })
     .unwrap();
@@ -568,4 +575,55 @@ async fn sessions_carry_the_hosts_variant_options() {
             .status,
         StatusCode::BAD_REQUEST
     );
+}
+
+/// A host's rules IR hash (docs/game/rules-engine.md, "Carrying a script")
+/// is kept on its session and listed beside the variant options; an update
+/// replaces it, and a malformed hash is refused at create and at update.
+/// The Worker runs these routes too.
+#[tokio::test]
+async fn sessions_carry_the_hosts_rules_hash() {
+    let h = harness().await;
+    let a = h.create("Host").await;
+    let first = "ab".repeat(32);
+    let mut n = new();
+    for bad in ["zz", "AB", &"ab".repeat(31)[..]] {
+        n.rules = Some(bad.into());
+        assert_eq!(create(&h, &a, &n).await.status, StatusCode::BAD_REQUEST);
+    }
+    n.rules = Some(first.clone());
+    let r = create(&h, &a, &n).await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    let id = r.json()["session_id"].as_str().unwrap().to_owned();
+    let listed = h.get("/v1/sessions?hopper=7").await.json();
+    assert_eq!(listed["items"][0]["advertisement"]["rules"], json!(first));
+    let second = "cd".repeat(32);
+    let up = json!({"rules": second});
+    assert_eq!(
+        batch(&h, &a, &id, &[body(&a, &id, session::UPDATED, up)])
+            .await
+            .status,
+        StatusCode::CREATED
+    );
+    let listed = h.get("/v1/sessions?hopper=7").await.json();
+    assert_eq!(listed["items"][0]["advertisement"]["rules"], json!(second));
+    let bad = json!({"rules": "00"});
+    assert_eq!(
+        batch(&h, &a, &id, &[body(&a, &id, session::UPDATED, bad)])
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
+async fn browser_filters_cover_native_sessions() {
+    let dir = temp_dir();
+    let store = live_server::sqlite::SqliteStore::open(&dir.join("sessions.db"))
+        .await
+        .unwrap();
+    let h = start_driven(Arc::new(store), Policy::default()).await;
+    session_browser::run(h.app.clone()).await;
+    drop(h);
+    let _ = std::fs::remove_dir_all(dir);
 }

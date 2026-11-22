@@ -191,7 +191,9 @@ export function levelForExp(exp: number): number {
 }
 
 /** Our derived medals that mean the same as one of the game's. The rest
- *  (opening-act, last-word, payback) have no counterpart and keep the pack's art. */
+ *  (opening-act, last-word, payback) have no counterpart and keep the pack's
+ *  art, and so do the superbounce medals: the disc has none, and their
+ *  picture is new art (ART.md, "Batch 07"). */
 const MEDAL_ALIASES: Record<string, string> = {
   "twofer": "double_kill", "hat-trick": "triple_kill", "full-house": "killtacular", "encore": "kill_frenzy",
   "hot-streak": "killing_spree", "wildfire": "running_riot", "untouchable": "rampage",
@@ -203,11 +205,11 @@ export function medalKey(id: string): string | null {
 }
 
 const WEAPONS: Array<[RegExp, string]> = [
-  [/sword/, "energy_sword"],
+  [/sword|energy ?blade/, "energy_sword"],
   [/plasma ?pistol/, "plasma_pistol"],
   [/plasma ?rifle/, "plasma_rifle"],
   [/beam ?rifle/, "beam_rifle"],
-  [/sentinel/, "sentinel_beam"],
+  [/sentinel ?beam|^sentinel$/, "sentinel_beam"],
   [/sniper/, "sniper_rifle"],
   [/rocket/, "rocket_launcher"],
   [/\bsmg\b|sub ?machine/, "smg"],

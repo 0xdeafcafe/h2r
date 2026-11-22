@@ -437,7 +437,7 @@ impl Admission {
                 slots: Vec::new(),
             },
             Box::new(Pass {
-                draw: snapshot.draw.clone(),
+                draw: Arc::new(snapshot.draw.clone()),
                 id: pending.id,
                 color: snapshot.color_header,
                 depth: snapshot.depth_header,
@@ -446,13 +446,14 @@ impl Admission {
                 indices,
                 renderers: self.renderers.clone(),
                 prepared: Vec::new(),
+                frame: crate::d3d_diag::presents(),
             }),
         ))
     }
 }
 
 struct Pass {
-    draw: d3d::ResolvedDraw,
+    draw: Arc<d3d::ResolvedDraw>,
     id: u64,
     color: u32,
     depth: u32,
@@ -461,6 +462,10 @@ struct Pass {
     indices: Vec<u32>,
     renderers: Renderers,
     prepared: Vec<(PreparedDraw, DrawIdentity, TargetKey)>,
+    /// The guest frame the draw was admitted in. The renderer keeps a
+    /// texture group only while draws of recent frames use it: a view of
+    /// a frame-buffer copy or depth alias is new each frame.
+    frame: u64,
 }
 /// What a snapshot needs of one target copy, whether it comes from an
 /// isolated recording's `ExternalTarget` or the open pass's attachments.
@@ -497,6 +502,9 @@ impl<'a> CopyView<'a> {
         }
     }
 }
+// `wgpu::Device` is a handle hashed and compared by identity, so its interior
+// state never changes the key.
+#[allow(clippy::mutable_key_type)]
 fn renderer_for<'a>(
     renderers: &'a mut HashMap<wgpu::Device, (u64, ParticleRenderer)>,
     device: &wgpu::Device,
@@ -514,19 +522,12 @@ impl Pass {
         renderer: &mut ParticleRenderer,
         device_id: u64,
     ) -> Result<ImmediateDrawSnapshot, Refused> {
-        let d = &self.draw;
-        if t.guest_size != (d.target.width, d.target.height)
-            || t.guest_size.0 == 0
-            || t.guest_size.1 == 0
-            || !t.size.0.is_multiple_of(t.guest_size.0)
-            || !t.size.1.is_multiple_of(t.guest_size.1)
-        {
+        let draw = self.draw.for_copy(t.copy);
+        let d = draw.as_ref();
+        if t.guest_size != (d.target.width, d.target.height) {
             return Err(Refused::Target);
         }
-        let scale = t.size.0 / t.guest_size.0;
-        if scale == 0 || scale != t.size.1 / t.guest_size.1 {
-            return Err(Refused::Target);
-        }
+        let scale = d3d::scaled::RenderScale::between(t.guest_size, t.size).ok_or(Refused::Target)?;
         let caps = gfx::translate::Capabilities::from_features(t.device.features());
         let program = d3d::nv2a::resolved::resolve(d, t.stages.map(|v| v.is_some()), caps, scale)
             .map_err(Refused::Shader)?;
@@ -547,9 +548,8 @@ impl Pass {
         primitive.strip_index_format = (primitive.topology
             == wgpu::PrimitiveTopology::TriangleStrip)
             .then_some(wgpu::IndexFormat::Uint32);
-        let clip = d.clip.ok_or(Refused::Scissor)?;
-        let scissor = [clip.x, clip.y, clip.width, clip.height]
-            .map(|v| v.checked_mul(scale).ok_or(Refused::Scissor));
+        let clip = d.display_rect(d.clip.ok_or(Refused::Scissor)?);
+        let scissor = scale.rect(clip.x, clip.y, clip.width, clip.height);
         let mut textures = [None, None, None, None];
         for (n, slot) in textures.iter_mut().enumerate() {
             if let (Some(view), Some(dim), Some(header)) = (
@@ -605,12 +605,7 @@ impl Pass {
             color_writes: gfx::translate::color_writes(render.color_write),
             blend_constant: gfx::translate::blend_constant(&render),
             stencil_reference: render.stencil.reference as u32,
-            scissor: [
-                scissor[0].clone()?,
-                scissor[1].clone()?,
-                scissor[2].clone()?,
-                scissor[3].clone()?,
-            ],
+            scissor,
         })
     }
 }
@@ -624,12 +619,17 @@ impl ExternalPass for Pass {
                 || r.stencil.enable,
         }
     }
+    /// One packet per pass: the guest's draw, or the draw a producer stands in for.
+    fn resolved_fallback(&self) -> Option<Arc<d3d::ResolvedDraw>> {
+        Some(Arc::clone(&self.draw))
+    }
     fn prepare_copy(&mut self, target: &ExternalTarget<'_>) -> Result<(), &'static str> {
         self.prepared
             .retain(|p| p.1.copy != u32::from(target.copy == d3d::TargetCopy::Display));
         let renderers = self.renderers.clone();
         let mut renderers = renderers.lock().unwrap_or_else(|e| e.into_inner());
         let (id, renderer) = renderer_for(&mut renderers, target.device);
+        renderer.begin_frame(self.frame);
         let refusal = |why: Refused| {
             static LOGGED: AtomicU64 = AtomicU64::new(0);
             if LOGGED.fetch_add(1, Ordering::Relaxed) < 16 {
@@ -668,6 +668,7 @@ impl ExternalPass for Pass {
         let renderers = self.renderers.clone();
         let mut renderers = renderers.lock().unwrap_or_else(|e| e.into_inner());
         let (id, renderer) = renderer_for(&mut renderers, &t.device);
+        renderer.begin_frame(self.frame);
         let refusal = |why: Refused| {
             static LOGGED: AtomicU64 = AtomicU64::new(0);
             if LOGGED.fetch_add(1, Ordering::Relaxed) < 16 {
@@ -806,6 +807,8 @@ mod tests {
                 hw: Default::default(),
                 texture_info: [None; 4],
                 textures: [None; 4],
+                retail_constants: None,
+                ui_fit: None,
                 glyph_cache: 0,
             },
             source,
@@ -837,7 +840,6 @@ mod tests {
                 bound_textures: [0; 4],
                 sampled_stages: [false; 4],
                 palettes: [0; 4],
-                palette_entries: Default::default(),
                 color_header: 1,
                 depth_header: 2,
             }
@@ -949,11 +951,11 @@ mod tests {
         draw.hw.control0 = Some(d3d::nv2a::CONTROL0_Z_PERSPECTIVE);
         draw.state.render.depth_mode = gfx::state::DepthBufferMode::Disabled;
         let p =
-            d3d::nv2a::resolved::resolve(&draw, [false; 4], gfx::translate::Capabilities::NONE, 2)
+            d3d::nv2a::resolved::resolve(&draw, [false; 4], gfx::translate::Capabilities::NONE, 2u32)
                 .unwrap();
         assert!(p.pixel.explicit_final);
         assert!(p.vertex_uniforms.w_clip.is_some());
         assert!(!p.pixel_options.w_buffer);
-        assert_eq!(p.vertex_uniforms.shift, gfx::renderer::window_shift(1, 2));
+        assert_eq!(p.vertex_uniforms.shift, [gfx::renderer::window_shift(1, 2); 2]);
     }
 }

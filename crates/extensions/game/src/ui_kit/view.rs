@@ -37,6 +37,7 @@ impl Justify {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Art {
+    Solid { rgba: [u8; 4] },
     /// Bitmap `index` of pane `pane` of the screen whose `wgit` has
     /// `screen_id` (as `list_class::PictureSpec` names it), showing
     /// `image`.
@@ -87,7 +88,8 @@ pub struct Opener {
 }
 
 impl Opener {
-    /// The main menu with Theater installed and the Xbox Live row selected.
+    /// The main menu with Theater installed (after System Link, above
+    /// Settings) and the Xbox Live row selected.
     pub const MAIN_MENU: Opener = Opener {
         name: "main-menu",
         tag: r"ui\screens\game_shell\main_menu_screen\main_menu",
@@ -95,9 +97,9 @@ impl Opener {
         rows: &[
             "Campaign",
             "Xbox Live",
-            crate::theater_ui::menu::LABEL,
             "Split Screen",
             "System Link",
+            crate::theater_ui::menu::LABEL,
             "Settings",
         ],
         focus: 1,
@@ -125,6 +127,36 @@ impl Opener {
     /// [`Opener::GAME_SETUP`] on the Clanker Options row.
     pub const GAME_SETUP_CLANKERS: Opener = Opener {
         focus: 4,
+        ..Opener::GAME_SETUP
+    };
+    /// [`Opener::GAME_SETUP`] as a custom game on a Halo 2 map lists it,
+    /// on the Firefight Options row (after Clanker Options, as the hooks
+    /// add them).
+    pub const GAME_SETUP_FIREFIGHT: Opener = Opener {
+        rows: &[
+            "Change Map...",
+            "Change Rules...",
+            "Quick Options...",
+            "Clanker Options...",
+            "Firefight Options...",
+            "Switch To: Co-Op Game",
+            "Switch To: Matchmaking",
+        ],
+        focus: 4,
+        ..Opener::GAME_SETUP
+    };
+    /// [`Opener::GAME_SETUP`] as a Forge lobby lists it, on the Forge Map
+    /// row: what the Forge Map picker opens over (`crate::lobby_mode`).
+    pub const GAME_SETUP_FORGE: Opener = Opener {
+        rows: &[
+            "Change Map...",
+            crate::lobby_mode::FORGE_MAP_LABEL,
+            "Change Rules...",
+            "Quick Options...",
+            "Switch To: Co-Op Game",
+            "Switch To: Matchmaking",
+        ],
+        focus: 1,
         ..Opener::GAME_SETUP
     };
     /// The Xbox Live menu (screen `0xba`) on Quickmatch, its rows as the
@@ -264,6 +296,12 @@ impl View {
 pub trait Metrics {
     fn width(&self, font: i16, text: &str) -> i32;
     fn line_height(&self, font: i16) -> i32;
+
+    /// Whether this source can draw the character in the text's font.
+    /// Synthetic metrics stand in for every glyph unless a fixture says otherwise.
+    fn has_glyph(&self, _font: i16, _ch: char) -> bool {
+        true
+    }
 }
 
 /// Metrics without a disc: every character 6 units wide (about the
@@ -673,7 +711,7 @@ pub fn view_of(s: &ScreenSpec, g: &Geometry, m: &dyn Metrics, state: &str) -> Vi
     View {
         screen: s.name.clone(),
         state: state.into(),
-        backing: Backing::GameShell,
+        backing: if s.transparent { Backing::None } else { Backing::GameShell },
         underlay: None,
         widgets: w,
         focus: (!s.rows.is_empty()).then(|| format!("row.{}", s.focus)),
@@ -707,7 +745,7 @@ mod tests {
         // The row bar covers the item's origin up to its height.
         assert_eq!(bar(0), [130 + 26, -254, 130, -254 + 508]);
         assert_eq!(bar(1)[0] - bar(0)[0], -26);
-        assert_eq!(v.widget("row.2.value").unwrap().text(), Some("< On >"));
+        assert_eq!(v.widget("row.2.value").unwrap().text(), Some("On"));
         assert_eq!(v.focus.as_deref(), Some("row.0"));
     }
 

@@ -7,15 +7,16 @@ import { For, Show, createSignal, onMount } from "solid-js";
 import { Panel } from "../stats/Layout";
 import { identity } from "../state/identity";
 import { live } from "../state/live";
-import { mapTitle } from "../state/gameart";
 import { formatBytes } from "../lib/maps";
-import { modMakers } from "../lib/mods";
+import ModPackTable, { ModerationButtons } from "./ModPackTable";
 import { ago } from "../lib/format";
-import { actionsFor, fetchContent, moderate, reportsFor, setUploads, shortHash, type ContentList, type ModerateAction } from "./content";
+import { fetchContent, moderate, setUploads, shortHash, type ContentList, type ContentTarget, type ModerateAction } from "./content";
 
 export default function ContentAdmin() {
   const [content, setContent] = createSignal<ContentList | null>(null);
   const [missing, setMissing] = createSignal(false);
+  const [expanded, setExpanded] = createSignal<string | null>(null);
+  const [showBlobs, setShowBlobs] = createSignal(false);
   const [busy, setBusy] = createSignal(false);
   const [err, setErr] = createSignal("");
   const [tag, setTag] = createSignal("");
@@ -52,72 +53,59 @@ export default function ContentAdmin() {
       setBusy(false);
     }
   }
-  const act = (target: "map" | "content", id: string, a: ModerateAction) =>
+  const act = (target: ContentTarget, id: string, a: ModerateAction) =>
     void run(a, (c) => moderate(c.api, c.aud, c.me, target, id, a));
   const uploads = (gamertag: string, allowed: boolean) =>
     void run(allowed ? "switch uploads on" : "switch uploads off", (c) => setUploads(c.api, c.aud, c.me, gamertag, allowed));
 
-  const Buttons = (p: { target: "map" | "content"; id: string; state: Parameters<typeof actionsFor>[0] }) => (
-    <span class="adm-rec-btns adm-mod-btns">
-      <For each={actionsFor(p.state)}>{(a) => <button class="s-btn" disabled={busy()} onClick={() => act(p.target, p.id, a)}>{a}</button>}</For>
-    </span>
-  );
-
   return (
     <div class="adm-content">
       <Show when={!missing()} fallback={<Panel title="Custom content"><p>This server doesn't store custom content.</p></Panel>}>
-        <Panel title="Map packages" sub="published custom and modded maps" right={<button class="s-btn" disabled={busy()} onClick={() => void load()}>Refresh</button>}>
-          <Show when={content()?.maps.length} fallback={<p class="adm-preset-note">{content() ? "No packages yet." : "Loading…"}</p>}>
-            <table class="adm-records adm-mod">
-              <thead><tr><th class="adm-grow">Package</th><th>Made by</th><th>Uploader</th><th>Base</th><th>Size</th><th>State</th><th>Reports</th><th /></tr></thead>
-              <tbody>
-                <For each={content()!.maps}>
-                  {(m) => (
-                    <tr classList={{ off: m.state !== "ok" }}>
-                      <td title={m.description ?? m.map_id}>{m.name} <span class="adm-mono">{shortHash(m.map_id)}</span></td>
-                      <td>{modMakers(m) ?? "unknown"}</td>
-                      <td>{m.author.gamertag}</td>
-                      <td>{mapTitle(m.base.map)}</td>
-                      <td>{formatBytes(m.size)}</td>
-                      <td class={`adm-state adm-state--${m.state}`}>{m.state}</td>
-                      <td title={reportsFor(content()!, "map", m.map_id).map((r) => `${r.by}: ${r.reason}`).join("\n")}>{m.reports}</td>
-                      <td><Buttons target="map" id={m.map_id} state={m.state} /></td>
-                    </tr>
-                  )}
-                </For>
-              </tbody>
-            </table>
+        <Panel title="Mod packs" right={<button class="s-btn" disabled={busy()} onClick={() => void load()}>Refresh</button>}>
+          <Show when={content()} fallback={<p class="adm-preset-note">Loading…</p>}>
+            {(c) => <Show when={c().packs.length || c().maps.length} fallback={<p class="adm-preset-note">No mods published yet.</p>}>
+              <ModPackTable content={c()} api={live.server().api} expanded={expanded()} onExpand={setExpanded} busy={busy()} onAction={act} />
+            </Show>}
           </Show>
         </Panel>
-        <Panel title="Stored content" sub="patch and pack blobs by sha256">
+        <Panel title="Stored content" sub="patches, content packs and images by SHA-256">
           <Show when={content()?.blobs.length} fallback={<p class="adm-preset-note">{content() ? "Nothing stored yet." : "Loading…"}</p>}>
-            <table class="adm-records adm-mod">
-              <thead><tr><th class="adm-grow">sha256</th><th>Uploader</th><th>Size</th><th>Stored</th><th>State</th><th>Reports</th><th /></tr></thead>
-              <tbody>
-                <For each={content()!.blobs}>
-                  {(b) => (
-                    <tr classList={{ off: b.state !== "ok" }}>
-                      <td class="adm-mono" title={b.sha256}>{shortHash(b.sha256)}</td>
-                      <td>{b.uploader.gamertag}</td>
-                      <td>{formatBytes(b.size)}</td>
-                      <td>{b.stored_at ? ago(b.stored_at) : "–"}</td>
-                      <td class={`adm-state adm-state--${b.state}`}>{b.state}</td>
-                      <td>{b.reports}</td>
-                      <td><Buttons target="content" id={b.sha256} state={b.state} /></td>
-                    </tr>
-                  )}
-                </For>
-              </tbody>
-            </table>
+            <details class="adm-blob-details" onToggle={(e) => setShowBlobs(e.currentTarget.open)}>
+              <summary>{content()!.blobs.length} {content()!.blobs.length === 1 ? "stored file" : "stored files"}</summary>
+              <Show when={showBlobs()}>
+                <table class="adm-records adm-mod">
+                  <thead><tr><th class="adm-grow">SHA-256</th><th>Uploader</th><th>Size</th><th>Stored</th><th>State</th><th>Reports</th><th /></tr></thead>
+                  <tbody>
+                    <For each={content()!.blobs}>
+                      {(b) => (
+                        <tr classList={{ off: b.state !== "ok" }}>
+                          <td class="adm-mono" title={b.sha256}>{shortHash(b.sha256)}</td>
+                          <td>{b.uploader.gamertag}</td>
+                          <td>{formatBytes(b.size)}</td>
+                          <td>{b.stored_at ? ago(b.stored_at) : "–"}</td>
+                          <td class={`adm-state adm-state--${b.state}`}>{b.state}</td>
+                          <td>{b.reports}</td>
+                          <td><ModerationButtons target="content" id={b.sha256} state={b.state} busy={busy()} onAction={act} /></td>
+                        </tr>
+                      )}
+                    </For>
+                  </tbody>
+                </table>
+              </Show>
+            </details>
           </Show>
         </Panel>
-        <Panel title="Mod Reports" sub="map packages and blobs, newest first">
+        <Panel title="Mod reports" sub="packs, maps and stored content, newest first">
           <Show when={content()?.reports.length} fallback={<p class="adm-preset-note">No reports.</p>}>
             <ul class="adm-reports">
               <For each={content()!.reports}>
                 {(r) => {
-                  const name = () => (r.target === "map" ? content()!.maps.find((m) => m.map_id === r.id)?.name : null) ?? shortHash(r.id);
-                  return <li><b>{name()}</b> <span>{r.target === "map" ? "package" : "blob"} · by {r.by} · {r.at ? ago(r.at) : ""}</span><p>{r.reason || "(no reason given)"}</p></li>;
+                  const name = () => {
+                    if (r.target === "pack") return content()!.packs.find((pack) => pack.id === r.id)?.name ?? r.id;
+                    if (r.target === "map") return content()!.maps.find((m) => m.map_id === r.id)?.name ?? shortHash(r.id);
+                    return shortHash(r.id);
+                  };
+                  return <li><b>{name()}</b> <span>{r.target === "content" ? "blob" : r.target} · by {r.by}<Show when={r.at}> · {ago(r.at)}</Show></span><p>{r.reason || "(no reason given)"}</p></li>;
                 }}
               </For>
             </ul>

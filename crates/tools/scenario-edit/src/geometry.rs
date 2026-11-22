@@ -11,8 +11,12 @@ use crate::scenario::{Scenario, Value};
 use map::{Map, RawPointer, ResourceFile, TagId};
 use std::io::{Read, Seek};
 use std::path::Path;
+use std::sync::LazyLock;
 use tags::geometry::{RawSource, Section, TagView};
 use tags::structure::{Lightmap, LightmapGroup, LightmapRenderInfo, StructureRender};
+
+mod gameplay;
+pub use gameplay::{Gameplay, flag_outlines, flag_type_name};
 
 pub type Vec3 = [f32; 3];
 pub type Mat4 = [[f32; 4]; 4];
@@ -80,6 +84,19 @@ impl Bounds {
 pub struct RawFiles<R> {
     files: Vec<(ResourceFile, Map<R>)>,
 }
+impl RawFiles<crate::save::MapReader> {
+    /// The map of `source` and the shared caches it reads.
+    pub fn open(source: &MapSource) -> crate::Result<Self> {
+        let mut files = vec![(ResourceFile::Local, source.open()?)];
+        for (file, shared) in shared_sources(source) {
+            if let Ok(map) = shared.open() {
+                files.push((file, map));
+            }
+        }
+        Ok(Self::new(files))
+    }
+}
+
 impl<R: Read + Seek> RawFiles<R> {
     pub fn new(files: Vec<(ResourceFile, Map<R>)>) -> Self {
         Self { files }
@@ -150,11 +167,7 @@ pub fn scenario_bsps<R: Read + Seek>(map: &mut Map<R>) -> crate::Result<Vec<TagI
         .ok_or(crate::Error::Invalid("no scenario payload"))?;
     let bytes = map.read_tag_bytes(scenario.id)?;
     let view = TagView::new(&bytes, location.address);
-    Ok(view
-        .block(view.at(0, 0x218)?, 0x210, 0x44)?
-        .into_iter()
-        .map(|b| TagId(u32::from_le_bytes([b[0x14], b[0x15], b[0x16], b[0x17]])))
-        .collect())
+    Ok(tags::structure::scenario_bsp_ids(&view)?)
 }
 
 /// One drawn part of a BSP section, placed in the world: its own copy of
@@ -731,18 +744,97 @@ pub fn glyph_of(kind: BlockKind) -> Glyph {
     }
 }
 
+const SPAWN_LIFT: f32 = 0.6;
+const FLAG_LIFT: f32 = 0.8;
+
 /// Where a glyph is picked: a sphere's centre offset up from the
 /// placement, and its radius, at native size.
 pub fn glyph_bounds(glyph: Glyph) -> (f32, f32) {
+    static SPAWN: LazyLock<f32> =
+        LazyLock::new(|| styled_glyph_radius(BlockKind::StartingLocations, SPAWN_LIFT));
+    static FLAG: LazyLock<f32> =
+        LazyLock::new(|| styled_glyph_radius(BlockKind::NetgameFlags, FLAG_LIFT));
     match glyph {
         Glyph::Diamond => (0.0, MARKER_RADIUS * 1.5),
-        Glyph::Spawn => (0.6, 0.7),
-        Glyph::Flag => (0.8, 0.8),
+        Glyph::Spawn => (SPAWN_LIFT, *SPAWN),
+        Glyph::Flag => (FLAG_LIFT, *FLAG),
     }
 }
 
+fn styled_glyph_radius(block: BlockKind, lift: f32) -> f32 {
+    // Spawn and flag placements only rotate in yaw, so the radius is
+    // invariant around the vertical axis. Include every authored flag shape.
+    let marker = Marker {
+        block,
+        index: 0,
+        position: [0.0; 3],
+        axes: rotation([0.0; 3]),
+        scale: 1.0,
+        object: None,
+    };
+    let radius_squared = |pennant| {
+        glyph_triangles(&marker, pennant)
+            .into_iter()
+            .flatten()
+            .map(|p| {
+                let delta = sub(p, [0.0, 0.0, lift]);
+                dot(delta, delta)
+            })
+            .fold(0.0, f32::max)
+    };
+    let default = radius_squared(DEFAULT_PENNANT);
+    let farthest = if block == BlockKind::NetgameFlags {
+        FLAG_PENNANTS
+            .iter()
+            .map(|entry| radius_squared(entry.1))
+            .fold(default, f32::max)
+    } else {
+        default
+    };
+    // Leave room for rounding when the ray passes exactly through a tip.
+    farthest.sqrt() * 1.001
+}
+
+type Pennant = &'static [[f32; 2]];
+// The free edge in the forward/up plane, from bottom to top.
+const FLAG_PENNANTS: &[(std::ops::RangeInclusive<i64>, Pennant)] = &[
+    (0..=0, &[[0.75, 1.05], [0.75, 1.60]]),
+    (1..=1, &[[0.75, 1.05], [0.42, 1.32], [0.75, 1.60]]),
+    (2..=2, &[[0.48, 1.05], [0.75, 1.32], [0.48, 1.60]]),
+    (
+        3..=3,
+        &[[0.75, 1.05], [0.75, 1.39], [0.48, 1.39], [0.48, 1.60]],
+    ),
+    (
+        4..=4,
+        &[[0.45, 1.02], [0.72, 1.16], [0.72, 1.49], [0.45, 1.63]],
+    ),
+    (7..=7, &[[0.75, 1.05]]), // Lower point for a teleporter entrance.
+    (8..=8, &[[0.75, 1.60]]), // Upper point for a teleporter exit.
+    (10..=10, &[[0.60, 1.00], [0.75, 1.60]]),
+    (11..=18, &[[0.75, 1.05], [0.40, 1.65]]),
+];
+const DEFAULT_PENNANT: Pennant = &[[0.75, 1.32]];
+
 /// A marker's triangles at native size, by its block's [`Glyph`].
 pub fn marker_triangles(m: &Marker) -> Vec<[Vec3; 3]> {
+    marker_triangles_styled(m, None)
+}
+
+/// The authored flag type chooses its pennant silhouette. Other placements
+/// keep their ordinary glyph.
+pub fn marker_triangles_styled(m: &Marker, flag_type: Option<i64>) -> Vec<[Vec3; 3]> {
+    let pennant = flag_type
+        .and_then(|kind| {
+            FLAG_PENNANTS
+                .iter()
+                .find_map(|(kinds, edge)| kinds.contains(&kind).then_some(*edge))
+        })
+        .unwrap_or(DEFAULT_PENNANT);
+    glyph_triangles(m, pennant)
+}
+
+fn glyph_triangles(m: &Marker, pennant: Pennant) -> Vec<[Vec3; 3]> {
     let [f, l, u] = m.axes;
     let at = |base: Vec3, v: Vec3, s: f32| add(base, scale(v, s));
     let mut out = Vec::new();
@@ -767,7 +859,7 @@ pub fn marker_triangles(m: &Marker) -> Vec<[Vec3; 3]> {
         Glyph::Spawn => {
             // Body: a tall bipyramid, feet on the placement.
             let up = [0.0, 0.0, 1.0];
-            let c = at(m.position, up, 0.6);
+            let c = at(m.position, up, SPAWN_LIFT);
             bipyramid(c, up, 0.6, 0.6, f, l, 0.28);
             // An arrow along the facing at the feet.
             let foot = at(m.position, up, 0.04);
@@ -776,14 +868,17 @@ pub fn marker_triangles(m: &Marker) -> Vec<[Vec3; 3]> {
         Glyph::Flag => {
             let up = [0.0, 0.0, 1.0];
             // Pole.
-            let c = at(m.position, up, 0.8);
+            let c = at(m.position, up, FLAG_LIFT);
             bipyramid(c, up, 0.85, 0.85, f, l, 0.06);
             // Pennant along the facing at the top, both faces.
-            let top = at(m.position, up, 1.6);
-            let low = at(m.position, up, 1.05);
-            let tip = at(at(m.position, up, 1.32), f, 0.75);
-            out.push([top, low, tip]);
-            out.push([top, tip, low]);
+            let anchor = at(m.position, up, 1.32);
+            let mut previous = at(m.position, up, 1.05);
+            for &[forward, height] in pennant.iter().chain(&[[0.0, 1.6]]) {
+                let next = at(at(m.position, up, height), f, forward);
+                out.push([anchor, previous, next]);
+                out.push([anchor, next, previous]);
+                previous = next;
+            }
         }
     }
     out
@@ -846,9 +941,12 @@ impl Ray {
 /// The nearest marker glyph the ray hits, with its distance along the ray.
 /// Glyphs are enlarged with distance from the ray's origin as they are
 /// drawn ([`glyph_scale`]).
-pub fn pick_glyph(markers: &[Marker], ray: &Ray) -> Option<(f32, BlockKind, usize)> {
+pub fn pick_glyph<'a>(
+    markers: impl IntoIterator<Item = &'a Marker>,
+    ray: &Ray,
+) -> Option<(f32, BlockKind, usize)> {
     markers
-        .iter()
+        .into_iter()
         .filter_map(|m| {
             let (lift, r) = glyph_bounds(glyph_of(m.block));
             let s = glyph_scale(ray.origin, m.position);
@@ -880,6 +978,17 @@ pub const FRAME_DISTANCE: f32 = 1.4;
 /// The sky's near plane, in its model's units ([`Camera::sky_view_proj`]).
 pub const SKY_NEAR: f32 = 0.05;
 
+/// A pose taken whole from elsewhere (a paired game's view camera): its
+/// eye, basis, up and clip planes, as the game's renderer drew with them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Exact {
+    pub eye: Vec3,
+    pub forward: Vec3,
+    pub up: Vec3,
+    pub near: f32,
+    pub far: f32,
+}
+
 /// An orbit camera with a fly mode: it looks at `target` from `distance`
 /// along yaw and pitch; flying moves the target with the eye.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -889,6 +998,10 @@ pub struct Camera {
     pub pitch: f32,
     pub distance: f32,
     pub fov_y: f32,
+    /// While set, the eye, view and clip planes are this pose's, roll
+    /// included; whoever sets it keeps the orbit fields near it, so
+    /// clearing it does not jump.
+    pub exact: Option<Exact>,
 }
 impl Default for Camera {
     fn default() -> Self {
@@ -898,6 +1011,7 @@ impl Default for Camera {
             pitch: 0.6,
             distance: 30.0,
             fov_y: 60f32.to_radians(),
+            exact: None,
         }
     }
 }
@@ -916,13 +1030,27 @@ impl Camera {
         c
     }
     pub fn forward(&self) -> Vec3 {
+        if let Some(exact) = &self.exact {
+            return normalize(exact.forward);
+        }
         let (sy, cy) = self.yaw.sin_cos();
         let (sp, cp) = self.pitch.sin_cos();
         // Looking down at the target from above when pitch > 0.
         [-cy * cp, -sy * cp, -sp]
     }
     pub fn eye(&self) -> Vec3 {
+        if let Some(exact) = &self.exact {
+            return exact.eye;
+        }
         sub(self.target, scale(self.forward(), self.distance))
+    }
+    /// Forward, right and up: right from forward and the world's up (z),
+    /// or the exact pose's up.
+    pub fn basis(&self) -> [Vec3; 3] {
+        let f = self.forward();
+        let up = self.exact.map_or([0.0, 0.0, 1.0], |e| e.up);
+        let r = normalize(cross(f, up));
+        [f, r, cross(r, f)]
     }
     pub fn orbit(&mut self, dx: f32, dy: f32) {
         self.yaw += dx;
@@ -951,7 +1079,12 @@ impl Camera {
             add(scale(r, -dx * units), scale(u, dy * units)),
         );
     }
-    fn near_far(&self) -> (f32, f32) {
+    /// The near and far clip planes: the exact pose's, or ones that
+    /// scale with the orbit distance.
+    pub fn near_far(&self) -> (f32, f32) {
+        if let Some(exact) = &self.exact {
+            return (exact.near, exact.far);
+        }
         (
             (self.distance * 0.01).max(0.05),
             self.distance * 4.0 + 2000.0,
@@ -960,9 +1093,7 @@ impl Camera {
     /// Column-major view matrix (right-handed, looking down -z).
     pub fn view(&self) -> Mat4 {
         let eye = self.eye();
-        let f = self.forward();
-        let r = normalize(cross(f, [0.0, 0.0, 1.0]));
-        let u = cross(r, f);
+        let [f, r, u] = self.basis();
         [
             [r[0], u[0], -f[0], 0.0],
             [r[1], u[1], -f[1], 0.0],
@@ -1004,9 +1135,7 @@ impl Camera {
     }
     /// The ray through a viewport point given in 0..1 (x right, y down).
     pub fn ray(&self, u: f32, v: f32, aspect: f32) -> Ray {
-        let f = self.forward();
-        let r = normalize(cross(f, [0.0, 0.0, 1.0]));
-        let up = cross(r, f);
+        let [f, r, up] = self.basis();
         let t = (self.fov_y * 0.5).tan();
         let x = (2.0 * u - 1.0) * t * aspect;
         let y = (1.0 - 2.0 * v) * t;

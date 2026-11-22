@@ -10,9 +10,11 @@ memmap2 = "0.9"
 thiserror.workspace = true
 # Map packages (PackageBackend): manifests, patches, the resolver.
 content.workspace = true
+# `Config::for_title`: the app data directory.
+host-dirs.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-# fd-anchored traversal for HostBackend::format (openat/unlinkat, no symlink following).
+# Anchored format operations and page size for disc mappings.
 rustix = { version = "1", default-features = false, features = ["fs", "param", "std"] }
 # Dropping a disc mapping's pages after a bulk read (msync/madvise/fadvise).
 libc = "0.2"

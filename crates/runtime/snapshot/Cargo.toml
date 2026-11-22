@@ -12,6 +12,8 @@ thiserror.workspace = true
 # RAM image in well under a second.
 zstd = "0.11"
 crc32fast = "1"
+# The default root: the cache directory.
+host-dirs.workspace = true
 
 [dev-dependencies]
 # The post-load determinism check is lockstep's own whole-RAM hash.

@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::{
-    campaign_menu, community_variants, coop_live, custom_games, layout_glue, skulls_menu,
+    campaign_menu, community_variants, coop_live, custom_games, hud_kit, layout_glue, skulls_menu,
     variant_options, video_screen,
 };
 
@@ -31,8 +31,8 @@ fn table_members() -> Vec<(&'static str, Vec<u32>)> {
     let model = video_screen::model(store, video_screen::Switches::ALL).unwrap();
     vec![
         (
-            "layouts and speaker",
-            ids(layout_glue::served_strings(true)),
+            "layouts and controls",
+            ids(layout_glue::served_strings(true, true)),
         ),
         (
             "ui model",
@@ -47,6 +47,7 @@ fn table_members() -> Vec<(&'static str, Vec<u32>)> {
                 .collect(),
         ),
         ("lobby status", ids(crate::lobby_status::STRINGS.to_vec())),
+        ("lobby tabs", ids(crate::lobby_tabs::strings())),
         ("skulls pages", ids(skulls_menu::strings())),
         (
             "variant page",
@@ -64,6 +65,16 @@ fn table_members() -> Vec<(&'static str, Vec<u32>)> {
     ]
 }
 
+/// The game-variant store's ids: every name and description slot, and the
+/// shared description.
+fn game_variant_ids() -> Vec<u32> {
+    use crate::game_variants::inject;
+    (0..inject::MAX_LISTED)
+        .flat_map(|i| [inject::name_id(i), inject::description_id(i)])
+        .chain(inject::description_for(inject::SHARED_DESCRIPTION))
+        .collect()
+}
+
 fn families() -> Vec<Family> {
     let community = (0..community_variants::VARIANTS.len())
         .flat_map(|i| {
@@ -72,6 +83,7 @@ fn families() -> Vec<Family> {
                 community_variants::description_id(i),
             ]
         })
+        .chain(community_variants::TWEAKERS_IDS)
         .collect();
     vec![
         Family {
@@ -85,11 +97,24 @@ fn families() -> Vec<Family> {
             claims: |id| community_variants::is_ours(id) || community_variants::text(id).is_some(),
         },
         Family {
+            name: "game variants",
+            ids: game_variant_ids(),
+            claims: |id| {
+                crate::game_variants::inject::is_ours(id)
+                    || crate::game_variants::inject::text(id).is_some()
+            },
+        },
+        Family {
             name: "variant options",
             ids: (0..variants::extra::OPTIONS.len())
                 .map(variant_options::label_id)
                 .collect(),
             claims: |id| variant_options::text(id).is_some(),
+        },
+        Family {
+            name: "hud kit",
+            ids: vec![hud_kit::TRAINING_TEXT_ID],
+            claims: hud_kit::owns,
         },
         Family {
             name: "co-op texts",
@@ -179,6 +204,7 @@ fn every_served_id_is_in_its_registered_family() {
                 .collect(),
         ),
         ("lobby status", ids(crate::lobby_status::STRINGS.to_vec())),
+        ("lobby tabs", ids(crate::lobby_tabs::strings())),
         // The model's ids run past the "ui model" block into "ui model
         // more" (video_screen::MORE); each must be in one of the two.
         ("ui model", model_ids.0),
@@ -204,8 +230,10 @@ fn every_served_id_is_in_its_registered_family() {
                         community_variants::description_id(i),
                     ]
                 })
+                .chain(community_variants::TWEAKERS_IDS)
                 .collect(),
         ),
+        ("game variants", game_variant_ids()),
         (
             "signin",
             std::iter::once(crate::signin_screen::TITLE_ID)

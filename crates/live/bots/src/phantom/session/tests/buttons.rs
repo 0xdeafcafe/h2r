@@ -60,6 +60,72 @@ fn game_with_latency(
     (ph, g, slot)
 }
 
+/// Hold the old game's think while the render hook exits and the next
+/// simulation gathers its first action. Its result would be full fire.
+#[test]
+fn a_running_think_neither_holds_the_shell_nor_fires_into_the_next_match() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    struct Held {
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+    }
+    impl PadSource for Held {
+        fn pad(&mut self, _: &Frame<'_>) -> HostPadState {
+            unreachable!("batched input")
+        }
+        fn observe(&mut self, _: &Frame<'_>) -> crate::pad_source::Sampled {
+            crate::pad_source::Sampled::Think
+        }
+        fn think(&mut self) -> HostPadState {
+            self.entered.send(()).unwrap();
+            self.release.recv().unwrap();
+            HostPadState { right_trigger: 1.0, ..Default::default() }
+        }
+        fn conclude(&mut self) {
+            panic!("the retired decision must not be published");
+        }
+    }
+
+    let ph = Phantoms::default();
+    let board = Box::leak(Box::new(std::sync::Mutex::new(Default::default())));
+    ph.lock().thinker = crate::think::Thinker::on_radio(
+        crate::think::Mode::Batched { threads: 1, pipeline: true }, board,
+    );
+    let (entered, started) = mpsc::channel();
+    let (finish, release) = mpsc::channel();
+    let h = ph.add(
+        Identity { gamertag: "Gated".into(), xuid: 1 },
+        None, Box::new(Held { entered, release }),
+    ).unwrap();
+    let start = move |ph: &Phantoms| {
+        let mut g = hosted();
+        ph.tick(&mut g, 0).unwrap();
+        game_makes(&mut g, 1, machine_id(h), [1., 0., 0.]);
+        ph.tick(&mut g, 1).unwrap();
+        let slot = slot_of(&g, machine_id(h)).unwrap().unwrap();
+        (g, slot)
+    };
+    let (g, slot) = start(&ph);
+    let mut g = gather(&ph, g, slot);
+    started.recv_timeout(Duration::from_secs(5)).unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    let transition = std::thread::spawn(move || {
+        g.put_u32(points::GAME_TIME.base, 0);
+        ph.tick(&mut g, 2).unwrap();
+        let (g, slot) = start(&ph);
+        let g = gather(&ph, g, slot);
+        tx.send(g.f32(slot + SLOT_ACTION + 0x14).unwrap()).unwrap();
+        ph
+    });
+    let fire = rx.recv_timeout(Duration::from_secs(5));
+    finish.send(()).unwrap();
+    let _ph = transition.join().unwrap();
+    assert_eq!(fire.unwrap(), 0.0);
+}
+
 fn at_tick(g: &mut FakeGuest, tick: u32) {
     g.put_u32(TIME + guest::GAME_TIME_TICK, tick);
 }
@@ -333,14 +399,17 @@ fn phantom_acquires_an_enemy_on_the_tick_it_clears_cover_and_stops_at_cover() {
         walls: Walls::from_polygons([wall.as_slice()]),
         ..Default::default()
     });
-    let mut brain = Brain::new(Skill::Legendary, 17).with_tuning(Tuning {
-        perception_ticks: Some(0),
-        motor_ticks: Some(0),
-        button_sigma_ms: Some(0.0),
-        aim_model: Some(AimModel::Code),
-        burst: Some(false),
-        ..Default::default()
-    });
+    // The acquisition, not the start-of-match warm-up.
+    let mut brain = Brain::new(Skill::Legendary, 17)
+        .with_tuning(Tuning {
+            perception_ticks: Some(0),
+            motor_ticks: Some(0),
+            button_sigma_ms: Some(0.0),
+            aim_model: Some(AimModel::Code),
+            burst: Some(false),
+            ..Default::default()
+        })
+        .without_warmup();
     // This fixture has zero transport and controller delay so the action
     // carries the current brain report. The skill reaction still applies.
     let (ph, mut g, slot) = game(move |frame| {
@@ -524,7 +593,14 @@ fn arrived_pad_publishes_the_whole_local_action_once_per_tick() {
         },
         HostPadState::default(),
     ];
-    for (ping, delay) in [(0., 0), (80., 2)] {
+    // A scripted source already supplies this tick's report in pipeline
+    // mode too, so it must pay its full configured wire delay.
+    let pipeline = crate::think::Mode::Batched { threads: 0, pipeline: true };
+    for (ping, delay, mode) in [
+        (0., 0, crate::think::Mode::Serial),
+        (80., 2, crate::think::Mode::Serial),
+        (80., 2, pipeline),
+    ] {
         let (ph, mut g, slot) = game_with_latency(
             move |f| pads[(f.tick as usize - 100) % 3],
             PhantomLatency {
@@ -532,6 +608,7 @@ fn arrived_pad_publishes_the_whole_local_action_once_per_tick() {
                 jitter_ms: 0.,
             },
         );
+        ph.lock().thinker = crate::think::Thinker::on_radio(mode, Box::leak(Box::default()));
         for tick in [100, 101, 102, 102, 103, 104, 105] {
             at_tick(&mut g, tick);
             g = gather(&ph, g, slot);

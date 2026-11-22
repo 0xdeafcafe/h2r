@@ -1,8 +1,6 @@
 //! Whole clears, device-owned target switches, and flare result parity.
 
-mod common;
-
-use common::*;
+use crate::common::*;
 use d3d::abi::Regs;
 use d3d::hw::method as hw;
 use d3d::layout::device_field as field;

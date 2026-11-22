@@ -494,7 +494,7 @@ fn park_pocket(m: &mut Mind, map: &MapData, ticks: u32) -> (HostPadState, bool, 
 fn a_driver_with_nowhere_to_drive_gets_out_and_roams_on_foot_instead() {
     let map = pocket_map(crate::nav::Kind::Jump);
     let mut m = Mind::new(Skill::Legendary, 7);
-    let (pad, x, swept, first_x) = park_pocket(&mut m, &map, 200);
+    let (pad, _, swept, first_x) = park_pocket(&mut m, &map, 200);
     assert_eq!(m.doing, Doing::Drive(100));
     let t = first_x.expect("holds X to get out");
     // Not at once (it tried: a goal, a plan, a wait), and well within the

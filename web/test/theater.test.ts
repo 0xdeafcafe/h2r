@@ -72,7 +72,7 @@ describe("theater URLs", () => {
   const api = "https://live.example/v1";
 
   test("encodes game and clip IDs as individual path segments", () => {
-    expect(theaterHref("a/b")).toBe("/theater/a%2Fb");
+    expect(theaterHref("a/b")).toBe("/games/halo2/games/a%2Fb#game-viewer");
     expect(theaterHref("a/b", "c #d")).toBe("/theater/a%2Fb/clip/c%20%23d");
     expect(clipShareUrl("https://live.example", "a/b", "c #d")).toBe("https://live.example/theater/a%2Fb/clip/c%20%23d");
     expect(gameClipsUrl(api, "a/b")).toBe(`${api}/films/a%2Fb/clips`);
@@ -94,7 +94,7 @@ describe("theater film cards", () => {
 
   test("formats map, variant, result, game length and date", () => {
     expect(filmCard(film, "Lockout")).toEqual({
-      href: "/theater/match", title: "Lockout", mapName: "Lockout",
+      href: "/games/halo2/games/match#game-viewer", title: "Lockout", mapName: "Lockout",
       gameType: "Team Slayer", result: "Win", length: "8:07", date: "11/19/2026",
     });
   });

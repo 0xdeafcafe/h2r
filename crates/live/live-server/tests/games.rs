@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 fn kill(tick: u64, victim: u32, killer: u32) -> (&'static str, Value) {
     (
         "PlayerKilled",
-        json!({"tick": tick, "victim": victim, "killer": killer, "weapon": "battle_rifle", "kind": "kill", "pos": [1.5, -2.0, 3.25]}),
+        json!({"tick": tick, "victim": victim, "killer": killer, "weapon": "battle_rifle", "headshot": true, "kind": "kill", "pos": [1.5, -2.0, 3.25]}),
     )
 }
 
@@ -162,7 +162,10 @@ async fn a_game_from_start_to_end() {
                 json!({"player": {"index": 2, "name": "Late", "team": 0}}),
             ),
             kill(300, 1, 0),
-            kill(330, 2, 1),
+            (
+                "PlayerKilled",
+                json!({"tick": 330, "victim": 2, "killer": 1, "kind": "kill"}),
+            ),
             score(330, 1, 1),
         ],
     );
@@ -181,6 +184,8 @@ async fn a_game_from_start_to_end() {
     assert_eq!(items.len(), 5);
     assert_eq!(items[4]["position"], last);
     assert_eq!(items[2]["jws_index"], 1);
+    assert_eq!(items[2]["data"]["weapon"], "battle_rifle");
+    assert_eq!(items[2]["data"]["headshot"], true);
     assert_eq!(items[2]["jws"].as_str(), Some(jws.as_str()));
     assert!(items[0].get("jws_index").is_none());
     for w in items.windows(2) {
@@ -227,6 +232,10 @@ async fn a_game_from_start_to_end() {
     assert_eq!(g["players"].as_array().unwrap().len(), 3);
     let kills = g["kills"].as_array().unwrap();
     assert_eq!(kills.len(), 2);
+    assert_eq!(kills[0]["weapon"], "battle_rifle");
+    assert_eq!(kills[0]["headshot"], true);
+    assert!(kills[1].get("weapon").is_none());
+    assert!(kills[1].get("headshot").is_none());
     assert_eq!(kills[0]["pos"], json!([1.5, -2.0, 3.25]));
     assert!(kills[0]["position"].as_u64().is_some() && kills[0]["at"].is_string());
     assert!(g["ended_at"].is_string());
@@ -648,6 +657,61 @@ async fn invites_and_pings() {
     assert_eq!(r.json(), json!({"ok": true, "expires_in": 90}));
 }
 
+#[tokio::test]
+async fn a_batch_ping_covers_the_whole_console() {
+    let h = harness().await;
+    let pete = h.create("Pete").await;
+    let amy = h.create("Amy").await;
+    // Bob never signs in.
+    let bob = h.create("Bob").await;
+    // The batch is bounded (a console signs in at most four accounts).
+    assert_eq!(
+        h.ping_batch_raw(json!({"tokens": []})).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        h.ping_batch_raw(json!({"tokens": ["a", "b", "c", "d", "e"]}))
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        h.ping_batch_raw(json!({"tokens": ["a".repeat(live_server::http::MAX_BODY)]}))
+            .await
+            .status,
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+    assert_eq!(h.sign_in(&pete).await.status, StatusCode::CREATED);
+    assert_eq!(h.sign_in(&amy).await.status, StatusCode::CREATED);
+    // Every token answers in its order; a failed account fails its own
+    // line only.
+    let r = h.ping_batch(&[&pete, &amy, &bob]).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    let results = r.json()["results"].clone();
+    assert_eq!(results.as_array().unwrap().len(), 3);
+    assert_eq!(results[0], json!({"ttl": 90}));
+    assert_eq!(results[1], json!({"ttl": 90}));
+    assert_eq!(results[2]["status"], 404);
+    assert_eq!(results[2]["error"], "not_found");
+    // A token that is no token at all is an unauthorized line.
+    let r = h
+        .ping_batch_raw(json!({
+            "tokens": [
+                "not-a-token",
+                h.token(&pete.key, &pete.author, lxm::EVENTS_WRITE),
+            ]
+        }))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    let results = r.json()["results"].clone();
+    assert_eq!(results[0]["status"], 401);
+    assert_eq!(results[0]["error"], "unauthorized");
+    assert_eq!(results[1], json!({"ttl": 90}));
+    // The batch refreshes presence as the single ping does.
+    let r = h.ping(&pete).await;
+    assert_eq!(r.json(), json!({"ok": true, "expires_in": 90}));
+}
+
 /// A Durable Object's server runs nothing on a timer: it says when the
 /// sweep is due, and sweeps when called.
 #[tokio::test]
@@ -921,6 +985,8 @@ async fn postgres_games() {
         (Some("live"), json!([1.5, -2.0, 3.25]))
     );
     assert_eq!(g["scoreboard"][0]["score"], 1);
+    assert_eq!(g["kills"][0]["weapon"], "battle_rifle");
+    assert_eq!(g["kills"][0]["headshot"], true);
     assert_eq!(
         h.get(&format!("/v1/maps/{map}/outline")).await.json(),
         outline
@@ -1121,5 +1187,254 @@ async fn players_join_themselves_and_only_the_host_ends_the_game() {
     assert_eq!(
         h.post_batch(&host, &id, end(&host)).await.status,
         StatusCode::CREATED
+    );
+}
+
+/// Superbounces and bounce deaths (docs/game/superbounce.md, "Recording"):
+/// only the host reports them, for players of the game with a chain of at
+/// least 1; the game serves them, a bot's included, and the stats summary
+/// counts them in the totals and in the rows of players with accounts.
+/// The Worker runs the same checks (live-worker's `sqlstore.rs`).
+#[tokio::test]
+async fn the_host_reports_bounces_and_the_game_and_stats_serve_them() {
+    let h = harness().await;
+    let host = h.create("Host").await;
+    let guest = h.create("Guest").await;
+    let id = h
+        .start_game(
+            &host,
+            json!({
+                "console": "Den", "map": "lockout", "mode": "multiplayer", "variant": "Slayer",
+                "team_play": false, "tick": 0, "kind": "custom",
+                "players": [
+                    {"index": 0, "name": "Host", "xuid": host.xuid, "team": 0, "local": true},
+                    {"index": 1, "name": "Guest", "xuid": guest.xuid, "team": 1},
+                    {"index": 2, "name": "Clanker 2", "team": 1, "local": true, "bot": true}
+                ]
+            }),
+        )
+        .await;
+    let bounce = |player: u32, chain: u32| {
+        (
+            "Superbounce",
+            json!({"tick": 40 + chain, "player": player, "chain": chain}),
+        )
+    };
+    // A guest reports no bounces, not even its own.
+    let r = h
+        .post_batch(&guest, &id, h.batch(&guest, &id, &[bounce(1, 1)]))
+        .await;
+    assert_eq!(
+        r.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    for bad in [
+        bounce(0, 0),
+        bounce(7, 1),
+        ("Bounced", json!({"tick": 50, "player": 7})),
+    ] {
+        let r = h.post_batch(&host, &id, h.batch(&host, &id, &[bad])).await;
+        assert_eq!(
+            r.status,
+            StatusCode::BAD_REQUEST,
+            "{}",
+            String::from_utf8_lossy(&r.body)
+        );
+    }
+    let events = h.batch(
+        &host,
+        &id,
+        &[
+            bounce(0, 1),
+            (
+                "Superbounce",
+                json!({"tick": 42, "player": 0, "chain": 2, "monster": true}),
+            ),
+            bounce(1, 1),
+            bounce(2, 1),
+            ("Bounced", json!({"tick": 60, "player": 2})),
+            ("Bounced", json!({"tick": 61, "player": 1})),
+            (
+                "GameEnded",
+                json!({"tick": 900, "reason": "finished", "winner": {"player": 0}}),
+            ),
+        ],
+    );
+    let r = h.post_batch(&host, &id, events).await;
+    assert_eq!(
+        r.status,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+
+    let g = h.get(&format!("/v1/games/{id}")).await.json();
+    let bounces: Vec<(u64, u64)> = g["bounces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| (b["player"].as_u64().unwrap(), b["chain"].as_u64().unwrap()))
+        .collect();
+    assert_eq!(bounces, [(0, 1), (0, 2), (1, 1), (2, 1)]);
+    assert!(g["bounces"][0]["position"].as_u64().is_some());
+    assert_eq!(g["bounces"][1]["tick"], 42);
+    // A Monster's row says so; any other has no `monster` key.
+    assert_eq!(g["bounces"][1]["monster"], true);
+    assert!(g["bounces"][0].get("monster").is_none());
+    let bounced: Vec<u64> = g["bounced"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["player"].as_u64().unwrap())
+        .collect();
+    assert_eq!(bounced, [2, 1]);
+
+    let v = h.get("/v1/stats/summary?window=all").await.json();
+    assert_eq!(v["totals"]["bounces"], 4, "the totals count everyone");
+    assert_eq!(v["totals"]["bounced"], 2);
+    let row = |x: &User| {
+        v["players"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["xuid"] == x.xuid.to_string())
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(
+        (row(&host)["bounces"].clone(), row(&host)["bounced"].clone()),
+        (json!(2), json!(0))
+    );
+    assert_eq!(
+        (
+            row(&guest)["bounces"].clone(),
+            row(&guest)["bounced"].clone()
+        ),
+        (json!(1), json!(1))
+    );
+    assert_eq!(
+        v["players"].as_array().unwrap().len(),
+        2,
+        "no row for the bot"
+    );
+}
+
+/// Teabags (docs/game/teabag.md, "Recording"): only the host reports them,
+/// for two players of the game who are not the same one; the game serves
+/// them, a bot's included, and the players who joined after its first kill;
+/// the stats summary counts them in the totals and, given and received, in
+/// the rows of players with accounts. The Worker runs the same checks
+/// (live-worker's `sqlstore.rs`).
+#[tokio::test]
+async fn the_host_reports_teabags_and_the_game_and_stats_serve_them() {
+    let h = harness().await;
+    let host = h.create("Host").await;
+    let guest = h.create("Guest").await;
+    let id = h
+        .start_game(
+            &host,
+            json!({
+                "console": "Den", "map": "lockout", "mode": "multiplayer", "variant": "Slayer",
+                "team_play": false, "tick": 0, "kind": "custom",
+                "players": [
+                    {"index": 0, "name": "Host", "xuid": host.xuid, "team": 0, "local": true},
+                    {"index": 1, "name": "Guest", "xuid": guest.xuid, "team": 1},
+                    {"index": 2, "name": "Clanker 2", "team": 1, "local": true, "bot": true}
+                ]
+            }),
+        )
+        .await;
+    let bag = |player: u32, victim: u32| {
+        (
+            "Teabag",
+            json!({"tick": 40 + player, "player": player, "victim": victim}),
+        )
+    };
+    // A guest reports no teabags, not even its own.
+    let r = h
+        .post_batch(&guest, &id, h.batch(&guest, &id, &[bag(1, 0)]))
+        .await;
+    assert_eq!(
+        r.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    for bad in [bag(0, 0), bag(7, 1), bag(0, 7)] {
+        let r = h.post_batch(&host, &id, h.batch(&host, &id, &[bad])).await;
+        assert_eq!(
+            r.status,
+            StatusCode::BAD_REQUEST,
+            "{}",
+            String::from_utf8_lossy(&r.body)
+        );
+    }
+    let events = h.batch(
+        &host,
+        &id,
+        &[
+            (
+                "PlayerKilled",
+                json!({"tick": 30, "victim": 1, "killer": 0, "kind": "kill", "weapon": "br"}),
+            ),
+            (
+                "PlayerJoined",
+                json!({"player": {"index": 3, "name": "Clanker 3", "team": 0, "local": true, "bot": true}}),
+            ),
+            bag(0, 1),
+            bag(2, 0),
+            bag(1, 2),
+            (
+                "GameEnded",
+                json!({"tick": 900, "reason": "finished", "winner": {"player": 0}}),
+            ),
+        ],
+    );
+    let r = h.post_batch(&host, &id, events).await;
+    assert_eq!(
+        r.status,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+
+    let g = h.get(&format!("/v1/games/{id}")).await.json();
+    let bags: Vec<(u64, u64)> = g["teabags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| (b["player"].as_u64().unwrap(), b["victim"].as_u64().unwrap()))
+        .collect();
+    assert_eq!(bags, [(0, 1), (2, 0), (1, 2)]);
+    assert!(g["teabags"][0]["position"].as_u64().is_some());
+    assert_eq!(g["teabags"][1]["tick"], 42);
+    assert_eq!(g["joined_late"], json!([3]));
+
+    let v = h.get("/v1/stats/summary?window=all").await.json();
+    assert_eq!(v["totals"]["teabags"], 3, "the totals count everyone");
+    let row = |x: &User| {
+        v["players"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["xuid"] == x.xuid.to_string())
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(
+        (
+            row(&host)["teabags_given"].clone(),
+            row(&host)["teabags_received"].clone()
+        ),
+        (json!(1), json!(1))
+    );
+    assert_eq!(
+        (
+            row(&guest)["teabags_given"].clone(),
+            row(&guest)["teabags_received"].clone()
+        ),
+        (json!(1), json!(1))
     );
 }

@@ -21,6 +21,13 @@ export interface MapGeometry {
 // browser keep it (docs/live/live-art.md, "Caching").
 const url = (root: string, file: string, stamp?: string) => modelUrl(root, file, stamp);
 
+/** The 3D address is available as soon as the manifest is known. */
+export function mapGlb(map: string, id: string | null): string | null {
+  const art = gameArt();
+  const file = art && mapFilesFor(art.manifest.maps, map, id)?.files.geometry;
+  return art && file ? url(art.root, file, art.manifest.source) : null;
+}
+
 const viewsCache = new Map<string, Promise<MapViews | null>>();
 function loadViews(u: string): Promise<MapViews | null> {
   let p = viewsCache.get(u);

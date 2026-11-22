@@ -295,7 +295,7 @@ what they compile for; the target is in the objects' flags and the stamp
   - *Analysis* is cached in the boot cache (`H2_BOOT_CACHE`, default
     `$TMPDIR/h2boot-cache`; `off` disables it), keyed by the image's hash
     and size and by `ANALYSIS_SOURCE_HASH`: the xbe and analyze sources,
-    `Cargo.lock` and the rustc version. A change outside xbe and analyze
+    the `Cargo.lock` entries of the packages they reach, and the rustc version. A change outside xbe and analyze
     reuses it. `H2_TRACE` bypasses it, so diagnostics always come from a
     fresh analysis. A damaged, truncated or other-version file is
     recomputed (`Analysis::decode` refuses it).

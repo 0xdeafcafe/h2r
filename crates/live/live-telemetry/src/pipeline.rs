@@ -89,6 +89,29 @@ pub(crate) enum Work {
     Start(Box<Start>),
     Tick(Box<Snapshot>),
     Kill(Box<Kill>),
+    ActorKilled {
+        tick: u64,
+        unit: u32,
+        character: Option<u32>,
+        owner: Option<u32>,
+        weapon: u8,
+    },
+    Superbounce {
+        tick: u64,
+        player: u32,
+        chain: u32,
+        monster: bool,
+    },
+    Bounced {
+        tick: u64,
+        player: u32,
+        chain: u32,
+    },
+    Teabag {
+        tick: u64,
+        player: u32,
+        victim: u32,
+    },
     End(Box<Snapshot>),
     FinishSim(serde_json::Value),
 }
@@ -97,6 +120,7 @@ pub(crate) struct Kill {
     pub tick: u64,
     pub attacker: Option<u32>,
     pub victim: u32,
+    pub source: Option<crate::layout::KillSource>,
     pub object: Option<ObjectState>,
     /// A HaloScript cinematic was playing: the kill is not counted.
     pub cinematic: bool,
@@ -108,7 +132,7 @@ struct Queue {
     ticks: usize,
     /// The worker holds a batch.
     busy: bool,
-    /// The worker waits with no deadline: only a wake gets it going.
+    /// The worker stopped polling for ticks and needs a wake for new work.
     parked: bool,
     stop: bool,
 }
@@ -372,17 +396,26 @@ fn run(shared: &Shared, session: &Mutex<Session>, sink: &mut dyn Sink) {
         {
             let mut queue = shared.queue.lock().unwrap();
             queue.busy = false;
+            let deadline = if failed { None } else { sink.flush_deadline() };
             while queue.work.is_empty() && !queue.stop {
                 shared.idle.notify_all();
+                let remaining = deadline.map(|at| at.saturating_duration_since(Instant::now()));
+                if remaining.is_some_and(|wait| wait.is_zero()) {
+                    break;
+                }
                 if active.is_some_and(|at| at.elapsed() < PARK_AFTER) {
-                    queue = shared.wake.wait_timeout(queue, POLL).unwrap().0;
+                    let wait = remaining.map_or(POLL, |wait| wait.min(POLL));
+                    queue = shared.wake.wait_timeout(queue, wait).unwrap().0;
                 } else {
                     queue.parked = true;
-                    queue = shared.wake.wait(queue).unwrap();
+                    queue = match remaining {
+                        Some(wait) => shared.wake.wait_timeout(queue, wait).unwrap().0,
+                        None => shared.wake.wait(queue).unwrap(),
+                    };
                     queue.parked = false;
                 }
             }
-            if queue.work.is_empty() {
+            if queue.work.is_empty() && queue.stop {
                 shared.idle.notify_all();
                 break;
             }
@@ -392,7 +425,9 @@ fn run(shared: &Shared, session: &Mutex<Session>, sink: &mut dyn Sink) {
             shared.space.notify_all();
         }
         let start = Instant::now();
-        active = Some(start);
+        if !batch.is_empty() {
+            active = Some(start);
+        }
         let mut session = session.lock().unwrap();
         for work in batch.drain(..) {
             if failed {
@@ -473,11 +508,31 @@ pub(crate) fn apply(session: &mut Session, work: Work) -> Option<Box<Snapshot>> 
                 tick,
                 attacker,
                 victim,
+                source,
                 object,
                 cinematic,
             } = *kill;
-            session.kill(tick, attacker, victim, object, cinematic);
+            session.kill(tick, attacker, victim, source, object, cinematic);
         }
+        Work::ActorKilled { tick, unit, character, owner, weapon } => {
+            session.actor_killed(tick, unit, character, owner, weapon);
+        }
+        Work::Superbounce {
+            tick,
+            player,
+            chain,
+            monster,
+        } => session.superbounce(tick, player, chain, monster),
+        Work::Bounced {
+            tick,
+            player,
+            chain,
+        } => session.bounced(tick, player, chain),
+        Work::Teabag {
+            tick,
+            player,
+            victim,
+        } => session.teabag(tick, player, victim),
         Work::Forward(_) | Work::FinishSim(_) => unreachable!("handled by the worker"),
         Work::End(snapshot) => {
             session.end(&snapshot);
@@ -621,6 +676,7 @@ mod tests {
             tick,
             attacker: None,
             victim: 0,
+            source: None,
             object: None,
             cinematic: false,
         }))

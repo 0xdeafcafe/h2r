@@ -416,7 +416,7 @@ fn the_peer_limit_goes_back_to_two_for_a_campaign() {
     );
 }
 
-/// The playerless sim lobby (docs/runtime/sim.md, "More than four"): a
+/// The playerless sim lobby (docs/runtime/sim.md, "The playerless System Link host"): a
 /// System Link custom game the host leads with no player of its own, one
 /// peer per phantom. Neither the start's peer-count window nor the game
 /// limits' campaign fix may touch it, however the co-op arm is set: they

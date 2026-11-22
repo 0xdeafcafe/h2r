@@ -4,12 +4,10 @@
 //! via the teardown `0x3fc530`; then `0x12560`: CreateDevice again and
 //! SetShaderConstantMode).
 
-mod common;
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use common::{H, MISC, PARAMS, PB, PP_DEVICE, SCRATCH, W, synthetic_encode_bytes};
+use crate::common::{self, H, MISC, PARAMS, PB, PP_DEVICE, SCRATCH, W, synthetic_encode_bytes};
 use d3d::abi::{self, SharedDevice};
 use d3d::backend::ResolvedDraw;
 use d3d::runtime_glue::{self, Registration, Stop};

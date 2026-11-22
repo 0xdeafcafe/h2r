@@ -20,7 +20,7 @@ use crate::object_streams::{Attribute, Element, SLOT, StreamData, StreamElement,
 use crate::pass_state::{PassState, pass_state};
 use crate::program::{PassParts, VIEW_CONSTANTS, ViewInputs, constants_read, frame_pixel, frame_vertex, translate_pass_with_pixel, world_parity};
 
-pub use scene_extract::layout::decorators::{DECORATOR_CLASSIFICATION, Refusal as SetRefusal, SetGeometry, set_geometry};
+pub use scene_extract::layout::decorators::{DECORATOR_CLASSIFICATION, Refusal as SetRefusal, SetGeometry, set_geometry, set_geometry_with};
 
 /// `c[53]`, the batch's detail-level constant.
 pub const LOD_CONSTANT: usize = frame_scene::decorator::LOD_CONSTANT as usize;

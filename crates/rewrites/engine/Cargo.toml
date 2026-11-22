@@ -38,7 +38,7 @@ emit = { workspace = true, optional = true }
 # The shared lifted original (image fixture, register conversion,
 # stepping) the differential tests run against.
 lifted = { path = "../../runtime/lifted", optional = true }
-# For the disc sweep in tests/sim_anim_differential.rs only.
+# Owner-disc sweeps for the animation and collision differential oracles.
 tags = { workspace = true, optional = true }
 map = { workspace = true, optional = true }
 xiso = { workspace = true, optional = true }
@@ -49,6 +49,8 @@ runtime-glue = ["dep:runtime", "dep:mopp", "guest-layout/runtime-glue"]
 differential = ["runtime-glue", "dep:analyze", "dep:xbe", "dep:ir", "dep:lift", "sim-core/override", "sim-collision/synth", "dep:tags", "dep:map", "dep:xiso", "dep:emit", "dep:lifted"]
 
 [dev-dependencies]
+# Synthetic BSPs for the native adapter tests.
+sim-collision = { workspace = true, features = ["synth"] }
 # `lanes::with` for the unit tests that compare host lanes and the scalar loop.
 sim-core = { workspace = true, features = ["override"] }
 

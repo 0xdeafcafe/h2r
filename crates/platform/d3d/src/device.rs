@@ -44,7 +44,7 @@ use gfx::xdk::RenderStateTable;
 use gfx::{Clear, D3DFormat};
 
 use crate::backend::{
-    Backend, CachedBytes, CachedIndices, DrawOutcome, GuestLayoutKind, IndexData, ResolvedDraw, StreamBytes,
+    Backend, CachedBytes, CachedIndices, DrawOutcome, IndexData, ResolvedDraw, StreamBytes,
     StreamData, TargetInfo, TextureInfo, Viewport,
 };
 use crate::dirty::{UploadPolicy, WriteTracker, hash_bytes};
@@ -73,7 +73,23 @@ pub fn backend_draws() -> u64 {
     BACKEND_DRAWS.load(AtomicOrdering::Relaxed)
 }
 
+impl<B: Backend> Device<B> {
+    /// A guest draw reached the backend: [`BACKEND_DRAWS`], the device's
+    /// own count, and the always-on frame counter `d3d_residual_draws`
+    /// (one relaxed load when frame stats are off; a thread-local add
+    /// when they are on).
+    #[inline]
+    fn note_backend_draw(&mut self) {
+        BACKEND_DRAWS.fetch_add(1, AtomicOrdering::Relaxed);
+        self.stats.backend_draws += 1;
+        timeline::phase::count(timeline::phase::Counter::D3dResidualDraws, 1);
+    }
+}
+
 mod admission_scope;
+mod projection;
+#[cfg(feature = "gpu")]
+pub use projection::widen_projection_rows;
 mod display;
 mod fragments;
 mod mirror;
@@ -490,6 +506,18 @@ pub struct Stats {
     /// Indexed draws whose index list came from the index cache (already
     /// scanned and rebased).
     pub index_cache_hits: u64,
+    /// Guest draws resolved (not a native producer's packets): what
+    /// `render.residual` calls `draws` ([`crate::residual::Tally`]).
+    pub resolved_draws: u64,
+    /// Of those, draws a native replacement committed in their place (an
+    /// admission's recording, or a post call's held originals).
+    pub claimed_draws: u64,
+    /// Draws this device handed to the backend: its share of
+    /// [`backend_draws`].
+    pub backend_draws: u64,
+    /// Render-state and texture-state words the deferred-state commit
+    /// applied from the guest's arrays.
+    pub state_words: u64,
 }
 
 /// What made the device write a render-to-texture level back to guest
@@ -641,7 +669,7 @@ struct Swap<S> {
     shown: S,
     /// A `COPY` swap's copy of back0 into the front is still to be made
     /// (it is deferred to the first write into back0,
-    /// [`Device::before_target_write`]): the display header's image is
+    /// [`Device::materialize_display_copy`]): the display header's image is
     /// back0's contents.
     copy_pending: bool,
     /// Host format and size of the ring's surfaces.
@@ -1010,6 +1038,7 @@ pub struct Device<B: Backend> {
     /// A latched push-buffer failure.
     fault: Option<String>,
     swap_count: u32,
+    /// Current GPU time, also the completion time in the synchronous model.
     fence: u32,
     /// The push-buffer position the last fence was issued at.
     fence_at: u32,
@@ -1030,6 +1059,9 @@ pub struct Device<B: Backend> {
     /// since the last drain, issued after the next one in the order asked.
     pending_external: Vec<Box<dyn crate::backend::ExternalPass>>,
     admissions: Vec<Arc<dyn crate::DrawAdmission>>,
+    ui_fit: Option<crate::backend::UiFit>,
+    projection: projection::DisplayProjection,
+    present_cameras: crate::present_camera::Images<B::Surface>,
     opaque_world_admission: Option<usize>,
     opaque_targets: Option<PreparedOpaqueTargets>,
     scoped_admission: Option<(Arc<ScopeState>, Arc<dyn crate::DrawAdmission>)>,
@@ -1211,7 +1243,8 @@ impl<B: Backend> PreparedExternal<'_, B> {
         for recording in self.recordings {
             self.device.backend.commit_external(recording);
         }
-        for (header, _) in self.binding.colors {
+        for (header, surface) in self.binding.colors {
+            self.device.present_cameras.color_written(surface);
             self.device.mark_color_written(header);
         }
         if self.binding.depth_write { self.device.mark_depth_written(); }
@@ -1245,7 +1278,8 @@ impl<B: Backend> SceneReservation<'_, B> {
             crate::scene_stage::dropped(kind, ranges, "the render thread stopped taking scene stages");
             return;
         }
-        for (header, _) in self.binding.colors {
+        for (header, surface) in self.binding.colors {
+            self.device.present_cameras.color_written(surface);
             self.device.mark_color_written(header);
         }
         if self.binding.depth_write {
@@ -1358,6 +1392,9 @@ impl<B: Backend> Device<B> {
             hw: HwState::default(),
             pending_external: Vec::new(),
             admissions: Vec::new(),
+            ui_fit: None,
+            projection: Default::default(),
+            present_cameras: crate::present_camera::Images::new(),
             opaque_world_admission: None,
             opaque_targets: None,
             scoped_admission: None,
@@ -1400,6 +1437,22 @@ impl<B: Backend> Device<B> {
     /// Configuration.
     pub fn config(&self) -> &DeviceConfig {
         &self.cfg
+    }
+
+    /// The running totals `render.residual` subtracts around an entry call
+    /// (docs/graphics/retire-d3d.md, slice R0): plain reads of [`Stats`].
+    #[inline]
+    pub fn residual_tally(&self) -> crate::residual::Tally {
+        let s = &self.stats;
+        crate::residual::Tally {
+            draws: s.resolved_draws,
+            claimed: s.claimed_draws,
+            residual: s.backend_draws,
+            push_words: s.push_words,
+            state_words: s.state_words,
+            copies: s.frame_snapshots,
+            uploads: s.texture_uploads,
+        }
     }
 
     /// Counters.
@@ -1773,6 +1826,7 @@ impl<B: Backend> Device<B> {
         self.created = false;
         self.params = None;
         self.swap = None;
+        self.present_cameras.clear();
         self.depth = None;
         self.back_header = 0;
         self.frame_headers.clear();
@@ -2215,7 +2269,7 @@ impl<B: Backend> Device<B> {
     pub fn reserve_scene_stage(
         &mut self, mem: &mut dyn GuestMemory, plan: crate::ExternalPlan, mut pass: Box<dyn crate::ExternalPass>,
     ) -> Result<Option<SceneReservation<'_, B>>, D3dError> {
-        if !self.queues_scene_stages(plan.stage) || plan.ranges == 0 {
+        if !self.queues_scene_stages(plan.stage) || plan.ranges == 0 || !self.backend.accepts_scene_pass(&*pass) {
             return Ok(None);
         }
         self.swallow_external_boundary()?;
@@ -2239,7 +2293,7 @@ impl<B: Backend> Device<B> {
             return Ok(None);
         }
         for &(_, surface) in &binding.colors {
-            self.before_target_write(surface)?;
+            self.materialize_display_copy(surface)?;
         }
         let stage = crate::SceneStage {
             surfaces: binding.surfaces.clone(),
@@ -2337,7 +2391,7 @@ impl<B: Backend> Device<B> {
             self.refuse_external(ExternalRefusal::Backend);
             return Ok(None);
         };
-        for &(_, surface) in &binding.colors { self.before_target_write(surface)?; }
+        for &(_, surface) in &binding.colors { self.materialize_display_copy(surface)?; }
         Ok(Some(PreparedExternal { device: self, binding, recordings }))
     }
 
@@ -2677,14 +2731,19 @@ impl<B: Backend> Device<B> {
                 p.snapshots[i].as_ref().or_else(|| p.keys[i].and_then(|k| p.cached.get(&k)).map(|c| &c.host))
             });
             let entry = p.draw.entry;
+            let writes_color = p.draw.state.render.color_write.xbox_value() != 0;
             let (outcome, spare) = self.backend.draw_owned(p.color, p.depth, p.draw, textures);
-            BACKEND_DRAWS.fetch_add(1, AtomicOrdering::Relaxed);
+            self.note_backend_draw();
             self.recycle_streams(spare);
             self.stats.draws += 1;
             self.stats.inline_draws += u64::from(entry == "inline Begin/End");
             self.stats.swallow_draws_replayed += 1;
             match outcome.map_err(D3dError::Backend)? {
-                DrawOutcome::Drawn => {}
+                DrawOutcome::Drawn => {
+                    if writes_color {
+                        self.present_cameras.color_written(p.color);
+                    }
+                }
                 DrawOutcome::Skipped(reason) => self.events.push(Event::DrawSkipped { entry, reason }),
                 DrawOutcome::Unsupported(detail) => return Err(D3dError::Unimplemented { entry, detail }),
             }
@@ -2722,6 +2781,7 @@ impl<B: Backend> Device<B> {
         let request = crate::backend::ExternalPassRequest {
             rect: (v.x, v.y, v.width, v.height),
             surface_size: target.size,
+            display_projection_factor: 1.0, // Full-frame post processing.
             z_scale,
         };
         self.swallowing.as_mut().expect("post call").last = Some((color, request));
@@ -2880,8 +2940,14 @@ impl<B: Backend> Device<B> {
         pass.depth_clip(self.depth_clip(mem, request.z_scale));
 
         if !s.plan.drop {
+            let writes_color = pass.writes().color;
             match self.backend.external_pass(color, color, Vec::new(), request, pass) {
-                Ok(true) => self.stats.external_passes += 1,
+                Ok(true) => {
+                    if writes_color {
+                        self.present_cameras.color_written(color);
+                    }
+                    self.stats.external_passes += 1;
+                }
                 Ok(false) => self.refuse_external(ExternalRefusal::Backend),
                 Err(_) => self.refuse_external(ExternalRefusal::Failed),
             }
@@ -2918,7 +2984,11 @@ impl<B: Backend> Device<B> {
             for recording in recordings {
                 self.backend.commit_external(recording);
             }
+            for target in s.surfaces.iter().flatten() {
+                self.present_cameras.color_written(target.surface);
+            }
             self.stats.swallow_draws_dropped += plan.ranges as u64;
+            self.stats.claimed_draws += s.packets.len() as u64;
             self.stats.swallow_commits += 1;
             self.stats.external_passes += 1;
             for packet in s.packets {
@@ -3019,8 +3089,35 @@ impl<B: Backend> Device<B> {
         Ok(crate::backend::ExternalPassRequest {
             rect: (v.x, v.y, v.width, v.height),
             surface_size: (d.width, d.height),
+            display_projection_factor: self.projection_factor_for_target((d.width, d.height)),
             z_scale,
         })
+    }
+
+    /// Device and host formats of a native pass over the bound colour and depth.
+    /// Scaled copies recreate these surfaces with the same formats. The upload
+    /// device exists only when all copies share it. Resolve swap-chain formats
+    /// from their creation params, just as `surface_for` uses their live handles.
+    #[cfg(feature = "gpu")]
+    pub fn external_pipeline_target(
+        &self, mem: &dyn GuestMemory,
+    ) -> Option<(wgpu::Device, wgpu::TextureFormat, wgpu::TextureFormat)> {
+        if self.render_target == 0 || self.depth_stencil == 0 {
+            return None;
+        }
+        let (device, _) = self.backend.upload_device()?;
+        let color = if self.render_target == self.back_header || self.frame_headers.contains(&self.render_target) {
+            D3DFormat::from_raw(self.params?.back_buffer_format)?
+        } else {
+            self.header_desc(mem, self.render_target).ok()?.format
+        };
+        let depth = if self.depth_stencil == self.depth_header {
+            D3DFormat::from_raw(self.params?.auto_depth_stencil_format)?
+        } else {
+            self.header_desc(mem, self.depth_stencil).ok()?.format
+        };
+        let caps = gfx::translate::Capabilities::from_features(device.features());
+        Some((device, gfx::surface::color_surface_format(color)?, gfx::surface::depth_surface_format(depth, caps)?))
     }
 
     /// The device's depth full scale (`+0x948`), the D24 one when it is
@@ -3032,8 +3129,7 @@ impl<B: Backend> Device<B> {
     }
 
     fn issue_external_pass(&mut self, mem: &mut dyn GuestMemory, mut pass: Box<dyn crate::backend::ExternalPass>) -> bool {
-        let constants: [[f32; 4]; crate::backend::VIEW_CONSTANTS] = std::array::from_fn(|r| self.constant(r));
-        pass.view_constants(&constants);
+        pass.view_constants(&std::array::from_fn(|r| self.constant(r)));
         if let Some(z_max) = self.guest_z_scale(mem) {
             pass.depth_clip(self.depth_clip(mem, z_max));
         }
@@ -3054,9 +3150,14 @@ impl<B: Backend> Device<B> {
                 // gives it a scratch depth; `Backend::external_pass`).
                 Ok((color, depth)) => match if colour_only { Some(color) } else { depth } {
                     None => Err(ExternalRefusal::NoDepth),
-                    Some(_) if writes.color && self.before_target_write(color).is_err() => Err(ExternalRefusal::Failed),
+                    Some(_) if writes.color && self.materialize_display_copy(color).is_err() => Err(ExternalRefusal::Failed),
                     Some(depth) => match self.backend.external_pass(color, depth, sampled, request, pass) {
-                        Ok(true) => Ok(()),
+                        Ok(true) => {
+                            if writes.color {
+                                self.present_cameras.color_written(color);
+                            }
+                            Ok(())
+                        }
                         Ok(false) => Err(ExternalRefusal::Backend),
                         Err(_) => Err(ExternalRefusal::Failed),
                     },
@@ -3143,7 +3244,24 @@ impl<B: Backend> Device<B> {
     /// Executes queued words. With `stop_at_callback`, returns after the
     /// first push-buffer callback; without, a callback is an error (nothing
     /// could deliver it) and is left unconsumed.
+    ///
+    /// The words decoded go to the always-on frame counter
+    /// `d3d_push_words`, once per drain.
     fn drain(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        stop_at_callback: bool,
+    ) -> Result<Option<PushCallback>, D3dError> {
+        let before = self.stats.push_words;
+        let result = self.drain_words(mem, stop_at_callback);
+        let words = self.stats.push_words - before;
+        if words != 0 {
+            timeline::phase::count(timeline::phase::Counter::D3dPushWords, words);
+        }
+        result
+    }
+
+    fn drain_words(
         &mut self,
         mem: &mut dyn GuestMemory,
         stop_at_callback: bool,
@@ -3354,6 +3472,7 @@ impl<B: Backend> Device<B> {
         self.live("D3D_CommitState")?;
         self.sync_push_buffer(mem)?;
         self.refresh_pushed(mem)?;
+        self.stats.state_words += (RENDER_STATE_SLOTS + crate::layout::STAGES * crate::layout::STAGE_SLOTS) as u64;
         // `0x401013`: the commit keeps the bits it does not consume, the
         // vertex-format and binding bits (`0x70`) that `CDevice_SetStateVB`
         // (`0x401030`, native) reads, and the two top bits.
@@ -3363,26 +3482,25 @@ impl<B: Backend> Device<B> {
         Ok(())
     }
 
-    /// `D3D_SetFence`: the GPU is synchronous here, so every fence has
-    /// passed by the time it is returned. The GPU time (`+0x2C`) and the
-    /// completion word (`[+0x30]`, [`Device::gpu_completed`]) both become
-    /// the new fence.
+    /// `D3D_SetFence` returns the current GPU time and advances it by two
+    /// (`0x3fa69e..0x3fa73b`). The synchronous model publishes the advanced
+    /// time to both `+0x2C` and the completion word pointed to by `+0x30`.
     pub fn set_fence(&mut self, mem: &mut dyn GuestMemory) -> Result<u32, D3dError> {
         self.live("D3D_SetFence")?;
         self.sync_push_buffer(mem)?;
-        self.fence = self.fence.wrapping_add(1);
+        let fence = self.fence;
+        self.fence = fence.wrapping_add(2);
         self.fence_at = self.consumed;
         let dev = self.cfg.layout.device;
         mem.write_u32(dev + field::GPU_TIME, self.fence)?;
         mem.write_u32(self.gpu_completed_word()?, self.fence)?;
         self.sync_registers(mem)?;
-        Ok(self.fence)
+        Ok(fence)
     }
 
-    /// The GPU's completion time: the last fence whose work has executed.
-    /// The device executes the push buffer synchronously at every entry, so
-    /// once the queued words are drained this is the last fence handed out.
-    /// The guest sees it at `[device + 0x30]`.
+    /// The GPU's completion time. The device executes the push buffer
+    /// synchronously, so completion keeps pace with the current GPU time.
+    /// The guest sees it in the word pointed to by `device + 0x30`.
     pub fn gpu_completed(&self) -> u32 {
         self.fence
     }
@@ -4704,6 +4822,7 @@ impl<B: Backend> Device<B> {
         const E: &str = "D3DDevice_Swap";
         let _t = timeline::span(timeline::Cat::D3d, timeline::Track::Host, "Swap");
         self.live(E)?;
+        crate::residual::present();
         self.sync_push_buffer(mem)?;
         if self.immediate.is_open() {
             return Err(D3dError::invalid(E, "Swap inside Begin/End"));
@@ -4720,6 +4839,8 @@ impl<B: Backend> Device<B> {
             self.count_swap(mem)?;
             let sw = self.swap.as_mut().expect("created");
             let shown = sw.back[0];
+            self.present_cameras.capture(shown);
+            self.present_cameras.finish(shown);
             // The shown buffer becomes the front, the old front the last
             // back buffer.
             let old_front = std::mem::replace(&mut sw.front, shown);
@@ -4741,16 +4862,20 @@ impl<B: Backend> Device<B> {
                 // old front is made first, so the buffer that becomes the
                 // third holds its image.
                 let back0 = self.swap.as_ref().expect("created").back[0];
-                self.before_target_write(back0)?;
+                self.materialize_display_copy(back0)?;
                 let sw = self.swap.as_mut().expect("created");
                 std::mem::swap(&mut sw.front, &mut sw.back[1]);
                 self.exchange_display_headers(mem)?;
             }
+            let back = self.swap.as_ref().expect("created").back[0];
+            self.present_cameras.capture(back);
             if flags & 1 != 0 {
                 // The copy into the display buffer, made before back0 is
-                // next written (`Device::before_target_write`), so a frame
+                // next written (`Device::materialize_display_copy`), so a frame
                 // never drawn over costs nothing.
-                self.swap.as_mut().expect("created").copy_pending = true;
+                let sw = self.swap.as_mut().expect("created");
+                self.present_cameras.finish(sw.back[0]);
+                sw.copy_pending = true;
             }
             if !three {
                 self.scan_out(flags)?;
@@ -4758,6 +4883,10 @@ impl<B: Backend> Device<B> {
         }
         if finish {
             if three {
+                if flags & 3 == 0 {
+                    let back = self.swap.as_ref().expect("created").back[0];
+                    self.present_cameras.capture(back);
+                }
                 self.scan_out(flags)?;
             }
             self.finish_swap(mem)?;
@@ -4784,6 +4913,11 @@ impl<B: Backend> Device<B> {
         self.vblanks_after_swap(mem)
     }
 
+    /// The render-owned sample, detached at Swap after the guest draws.
+    pub fn set_mark_image_source(&mut self, source: fn() -> Option<crate::present_camera::Image>) {
+        self.present_cameras.set_source(source);
+    }
+
     /// Scanout moves to what the display header names: the front, or back0
     /// while the copy into the front is pending.
     fn scan_out(&mut self, flags: u32) -> Result<(), D3dError> {
@@ -4798,22 +4932,24 @@ impl<B: Backend> Device<B> {
             // A fresh image; a front a failed copy left stale stays lost.
             self.display.shown_lost = false;
         }
-        self.backend
-            .present_with_gamma(shown, flags, self.display.gamma.as_deref())
-            .map_err(D3dError::Backend)
+        let metadata = crate::present_camera::Present::Guest {
+            image: self.present_cameras.get(shown),
+            reference: false,
+        };
+        crate::present_camera::with(Some(metadata), || {
+            self.backend
+                .present_with_gamma(shown, flags, self.display.gamma.as_deref())
+        })
+        .map_err(D3dError::Backend)
     }
 
     /// `0x3f9cc0`, at the end of a `FINISH` swap: the display header's
     /// `Lock` (its parent's, for a level) takes the GPU time, and a new
     /// fence is recorded at `+0x1974[swap count & 1]`.
     ///
-    /// The order of stamp, fence and slot matches the original, the numbers
-    /// do not: retail `D3D_SetFence` (`0x3fa69e..0x3fa73b`) returns the old
-    /// GPU time and advances `+0x2C` by 2, while [`Device::set_fence`]
-    /// advances it by 1 and returns the new time (the completion word
-    /// always equals it, so no wait can stall). From zero, a flip's
-    /// pre-flip fence plus this leave `Lock` 2, slot 2, `+0x2C` 4 on the
-    /// Xbox and `Lock` 1, slot 2, `+0x2C` 2 here.
+    /// [`Device::set_fence`] returns the time used for the stamp, so the
+    /// parity slot records the same value. From zero, a flip's two fences
+    /// leave `Lock` and the slot at 2 and `+0x2C` at 4.
     fn finish_swap(&mut self, mem: &mut dyn GuestMemory) -> Result<(), D3dError> {
         let dev = self.cfg.layout.device;
         let display = mem.read_u32(dev + field::DISPLAY_SURFACE)?;
@@ -5367,6 +5503,8 @@ impl<B: Backend> Device<B> {
         prepared: Option<opaque_world::PacketInputs<'_>>,
     ) -> Result<(), D3dError> {
         let entry = parts.entry;
+        // A guest draw (a native producer's packet is not one).
+        self.stats.resolved_draws += u64::from(native.is_none());
         // Consume the candidate even when it proves empty, clipped or unresolved.
         let scoped = if native.is_none() {
             self.scoped_admission.take().filter(|(state, _)| !state.closed.load(AtomicOrdering::Acquire))
@@ -5398,7 +5536,8 @@ impl<B: Backend> Device<B> {
         let mut aliases: [Option<raster::DepthAliasKey>; 4] = [None; 4];
         let mut depth_levels: [Option<u32>; 4] = [None; 4];
         let mut bound = self.textures;
-        let shader = self.shader_inputs(mem, parts.vertex, &parts.layout, &parts.words)?;
+        #[allow(unused_mut)]
+        let mut shader = self.shader_inputs(mem, parts.vertex, &parts.layout, &parts.words)?;
         let state = self.translate_state(&parts.words);
         let sampled = sampled_stages(&shader, &parts.words, &state);
         let mut extras = parts.words.stage_extras();
@@ -5487,11 +5626,18 @@ impl<B: Backend> Device<B> {
             Some(p) if self.matches_opaque_targets(mem, p.targets) => (p.targets.info, false),
             _ => self.target_info(mem)?,
         };
+        #[cfg(feature = "gpu")]
+        let retail_constants = self.projection
+            .for_draw(&mut shader, self.ui_fit.is_none() && (target.width, target.height) == (640, 480))
+            .map(|constants| (constants, self.projection_factor()));
+        #[cfg(not(feature = "gpu"))]
+        let retail_constants = None;
+
         let (color, depth) = self.current_targets(mem, entry)?;
         let writes_depth = writes_depth_or_stencil(&state.render, target.depth_format);
         // The presented image is kept before anything draws over it; what
         // the draw dirties is noted only once it has drawn.
-        self.before_target_write(color)?;
+        self.materialize_display_copy(color)?;
         for b in &state.bad {
             self.events.push(Event::BadState(b.clone()));
         }
@@ -5513,6 +5659,8 @@ impl<B: Backend> Device<B> {
             target,
             textures: bound.map(|t| (t != 0).then_some(t)),
             texture_info,
+            retail_constants,
+            ui_fit: self.ui_fit.filter(|_| (target.width, target.height) == (640, 480)),
             glyph_cache,
         };
         let (mut draw, snapshots) = if self.swallowing.as_ref().is_some_and(|s| s.plan.call.is_some()) {
@@ -5539,9 +5687,6 @@ impl<B: Backend> Device<B> {
             let snapshot = crate::DrawSnapshot {
                 draw: &draw, vertex_shader: self.vertex_shader, pixel_shader: self.pixel_shader,
                 bound_textures: self.textures, sampled_stages: sampled, palettes: self.palettes,
-                palette_entries: if owner.is_some() { Default::default() } else {
-                    std::array::from_fn(|i| self.stage_palette(mem, i))
-                },
                 color_header: self.render_target, depth_header: self.depth_stencil,
             };
             if let Some(owner) = owner {
@@ -5610,9 +5755,11 @@ impl<B: Backend> Device<B> {
         if let Some((plan, pass, binding)) = replacement {
             // Layer-level mask edits and helper scopes need the answer immediately.
             // At a resolved draw the original packet is sufficient for worker fallback
-            // when both routes make precisely the same guest-visible writes.
+            // when both routes make precisely the same guest-visible writes. A native
+            // producer's packet is the draw its guest code would issue, so the
+            // suppression commits here and the worker draws one or the other.
             let tail = pass.indexed_tail();
-            let fallback = if native.is_none() && tail.is_none() && scoped.is_none()
+            let fallback = if tail.is_none() && scoped.is_none()
                 && binding.same_draw_writes(self.render_target, color, depth, writes_depth)
                 && !(parts.indexed_esp.is_some() && compatible_geometry_target && (self.indexed_geometry_scope)())
             {
@@ -5635,7 +5782,10 @@ impl<B: Backend> Device<B> {
                     }),
                 };
                 if self.backend.queue_external_draw(queued, textures) {
+                    self.present_cameras.color_written(color);
                     self.mark_written(writes_depth);
+                    self.stats.claimed_draws += u64::from(native.is_none());
+                    if let Some((_, committed)) = native.as_mut() { **committed = true; }
                     *streams = draw.streams;
                     return Ok(());
                 }
@@ -5647,9 +5797,10 @@ impl<B: Backend> Device<B> {
                 // The original first draw is still intact. On a stale
                 // cursor or a stack fault, drop every unpublished copy.
                 if tail.is_none_or(|t| t.consume(mem, parts.indexed_esp)) {
-                    for &(_, surface) in &binding.colors { self.before_target_write(surface)?; }
+                    for &(_, surface) in &binding.colors { self.materialize_display_copy(surface)?; }
                     PreparedExternal { device: self, binding, recordings }.commit();
                     if let Some(p) = prepared { timeline::native::world_packet(p.material, None); }
+                    self.stats.claimed_draws += u64::from(native.is_none());
                     if let Some((_, committed)) = native.as_mut() { **committed = true; }
                     if let Some((scope, _)) = scoped { scope.committed.store(true, AtomicOrdering::Release); }
                     *streams = draw.streams;
@@ -5677,8 +5828,9 @@ impl<B: Backend> Device<B> {
         } else {
             None
         };
+        let writes_color = draw.state.render.color_write.xbox_value() != 0;
         let (outcome, spare) = self.backend.draw_owned(color, depth, draw, textures);
-        BACKEND_DRAWS.fetch_add(1, AtomicOrdering::Relaxed);
+        self.note_backend_draw();
         if let Some(p) = prepared {
             timeline::native::world_packet(p.material, Some(fallback_reason));
         }
@@ -5692,7 +5844,12 @@ impl<B: Backend> Device<B> {
             *streams = spare;
         }
         match outcome.map_err(D3dError::Backend)? {
-            DrawOutcome::Drawn => self.mark_written(writes_depth),
+            DrawOutcome::Drawn => {
+                if writes_color {
+                    self.present_cameras.color_written(color);
+                }
+                self.mark_written(writes_depth);
+            }
             DrawOutcome::Skipped(reason) => self.events.push(Event::DrawSkipped { entry, reason }),
             DrawOutcome::Unsupported(detail) => {
                 return Err(D3dError::Unimplemented { entry, detail });
@@ -6523,7 +6680,7 @@ mod depth_write_tests {
     fn queued_fallback_requires_identical_guest_writes() {
         let mut binding = ExternalBinding {
             surfaces: crate::ExternalSurfaces { color: 1, depth: 2, slots: vec![], slot_sizes: vec![], sampled: vec![] },
-            request: crate::ExternalPassRequest { rect: (0, 0, 1, 1), surface_size: (1, 1), z_scale: 1.0 },
+            request: crate::ExternalPassRequest { rect: (0, 0, 1, 1), surface_size: (1, 1), display_projection_factor: 1.0, z_scale: 1.0 },
             colors: vec![(11, 1)], depth_write: true,
         };
         assert!(binding.same_draw_writes(11, 1, Some(2), true));

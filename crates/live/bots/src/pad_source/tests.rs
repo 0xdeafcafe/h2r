@@ -4,9 +4,10 @@ use input::host::HostPadState;
 use super::{Frame, PadSource, Recorded, Scripted};
 
 fn forward() -> HostPadState {
-    let mut pad = HostPadState::default();
-    pad.left_stick = (1.0, 0.0);
-    pad
+    HostPadState {
+        left_stick: (1.0, 0.0),
+        ..Default::default()
+    }
 }
 
 fn frame_at(n: u64, g: &FakeGuest) -> Frame<'_> {
@@ -46,10 +47,9 @@ fn a_recording_plays_once_from_its_first_frame() {
 #[test]
 fn a_closure_is_a_source() {
     let g = FakeGuest::new();
-    let mut s = |f: &Frame<'_>| {
-        let mut pad = HostPadState::default();
-        pad.right_stick = (f.frame as f32 / 10.0, 0.0);
-        pad
+    let mut s = |f: &Frame<'_>| HostPadState {
+        right_stick: (f.frame as f32 / 10.0, 0.0),
+        ..Default::default()
     };
     let a = s.pad(&frame_at(1, &g));
     let b = s.pad(&frame_at(5, &g));

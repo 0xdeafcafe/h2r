@@ -4,9 +4,7 @@
 //! inline pushes that change only the snapshot), and the snapshot follows
 //! those setters, through the synchronous backend and the render thread.
 
-mod common;
-
-use common::*;
+use crate::common::*;
 use d3d::abi::Regs;
 use d3d::backend::{Recorded, ResolvedDraw};
 use d3d::{Backend, Device, RecordingBackend, SparseMemory, ThreadedBackend, UploadPolicy};

@@ -116,13 +116,14 @@ async fn incomplete_stats_create_only_a_film_and_late_telemetry_attaches_it() {
     live.append_game_events(Some(&token), id, &batch(&live, &token, id, &[end()]))
         .await
         .unwrap();
-    let model = live.model.read();
-    let game = &model.games[id];
-    assert!(game.ended_by_host);
-    assert_eq!(game.film_blob.as_deref(), Some(blob.as_str()));
-    assert_eq!(game.recording.saved_by, 1);
-    assert!(model.films.standalone_host_blob(id).is_none());
-    drop(model);
+    {
+        let model = live.model.read();
+        let game = &model.games[id];
+        assert!(game.ended_by_host);
+        assert_eq!(game.film_blob.as_deref(), Some(blob.as_str()));
+        assert_eq!(game.recording.saved_by, 1);
+        assert!(model.films.standalone_host_blob(id).is_none());
+    }
     let rows = list(&live, "recent", Xuid(1)).await;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["duration_s"], 60);

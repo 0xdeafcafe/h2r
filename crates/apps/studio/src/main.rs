@@ -15,9 +15,12 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
+#[global_allocator]
+static ALLOCATOR: mem_watch::TaggedAllocator = mem_watch::TaggedAllocator;
+
 const USAGE: &str = "usage: h2-editor call <call> [args] | h2-editor --serve [--socket PATH] [...]
        h2-editor [--socket PATH | --no-listen] [--disc <iso> | --map <file.map> | --folder <maps dir>] \
-[--halo1 <iso|maps dir>] [--mappack <iso|folder>] [--data <dir>] [--package <dir>[#H1|#H2]] [--halo1-map <map> [--convert h2|h1]] [--overlay on|off] [--tool scenario|tags|variants|playlists|ui-screens|hud] [--tags-map <map>] [--tag <group>:<path>] [--ui-screen <screen>/<state> [--ui-press up,a,...]] \
+[--halo1 <iso|maps dir>] [--mappack <iso|folder>] [--data <dir>] [--package <dir>[#H1|#H2]] [--halo1-map <map> [--convert h2|h1]] [--overlay on|off] [--tool scenario|tags|scripts|variants|playlists|ui-screens|hud] [--hs-doc <hs_doc.txt>] [--tags-map <map>] [--tag <group>:<path>] [--ui-screen <screen>/<state> [--ui-press up,a,...]] \
 [--hud-map <map>|--hud-package <key>] [--hud <nhdt name>] [--hud-widget <name>] [--pick <map>] [--select <block>:<index>] [--hopper <file.dat>|default] \
 [--variant <built-in index>] [--copy-variant <name>] [--playlist <1..16>] [--preset <n>] \
 [--focus] [--camera <yaw>,<pitch>,<distance>] [--dialog unsaved|package] \
@@ -58,6 +61,9 @@ struct Args {
     tag: Option<String>,
     /// Another map of the source browsed in the Tags tool (`shared`).
     tags_map: Option<String>,
+    /// The script documentation listing the Scripts tool names builtins
+    /// from (the user's own copy, read at run time).
+    hs_doc: Option<PathBuf>,
     hopper: Option<String>,
     variant: Option<usize>,
     playlist: Option<usize>,
@@ -110,6 +116,7 @@ fn args() -> Result<Args> {
         hud_widget: None,
         tag: None,
         tags_map: None,
+        hs_doc: None,
         hopper: None,
         variant: None,
         playlist: None,
@@ -168,6 +175,7 @@ fn args() -> Result<Args> {
             "--hud-widget" => a.hud_widget = Some(value()?),
             "--tag" => a.tag = Some(value()?),
             "--tags-map" => a.tags_map = Some(value()?),
+            "--hs-doc" => a.hs_doc = Some(value()?.into()),
             "--tool" => {
                 a.tool = Some(match value()?.as_str() {
                     "scenario" => ToolKind::Scenario,
@@ -176,6 +184,7 @@ fn args() -> Result<Args> {
                     "ui-screens" => ToolKind::UiScreens,
                     "hud" => ToolKind::Hud,
                     "tags" => ToolKind::Tags,
+                    "scripts" => ToolKind::Scripts,
                     t => bail!("unknown tool {t}\n{USAGE}"),
                 })
             }
@@ -293,10 +302,19 @@ fn main() -> Result<()> {
         return studio_proto::cli::run("h2-editor call", std::env::args().skip(2).collect());
     }
     let args = args()?;
+    let data = args
+        .data
+        .clone()
+        .unwrap_or_else(content::store::default_data_root);
+    mem_watch::start(&data, option_env!("H2_BUILD_SHA"));
     let mut app = App::new();
     if let Some(d) = &args.data {
         app.set_data_root(d.clone());
     }
+    app.scripts.doc_path = args.hs_doc.clone();
+    // The field panel's settings live in the layout's file (`shutdown`).
+    app.tag_fields =
+        studio::fields::Settings::from_ini(&std::fs::read_to_string(ini_path()).unwrap_or_default());
     app.refresh_packages();
     let disc = editor_core::default_disc(args.source.clone()).filter(|_| !args.no_disc);
     // The Map Pack: --mappack, else $H2_MAPPACK_ISO, else mappack.iso beside
@@ -504,16 +522,19 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// How long `--serve` waits for a request before running the game link.
+const SERVE_FRAME: std::time::Duration = std::time::Duration::from_millis(16);
+
 /// `h2-editor --serve`: the agent API with no window, until killed.
 fn serve(mut app: App, socket: &std::path::Path) -> Result<()> {
     let (_listener, rx) = studio::api::server::listen(socket)
         .map_err(|e| anyhow!("listening on {}: {e}", socket.display()))?;
     eprintln!("h2-editor: agent API on {} (no window)", socket.display());
     let mut api = studio::api::Api::new();
-    for inc in rx.iter() {
-        let r = api.handle(&mut app, inc.request.clone());
-        inc.answer(r);
-    }
+    // The game link runs here as it does between the window's frames.
+    let mut play = studio::play::Play::discovering();
+    play.update(&mut app);
+    while api.serve_once(&mut app, &mut play, &rx, SERVE_FRAME) {}
     Ok(())
 }
 
@@ -529,6 +550,7 @@ struct Runner {
 }
 
 struct Win {
+    _census: mem_watch::gpu::DeviceRegistration,
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
@@ -553,10 +575,7 @@ impl Win {
         );
         // The editor runs unbundled: give its Dock tile the app icon.
         app_icon::set_dock_icon();
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::PRIMARY,
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
-        });
+        let instance = gfx::instance();
         let surface = instance.create_surface(window.clone())?;
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -564,6 +583,7 @@ impl Win {
             ..Default::default()
         }))?;
         let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))?;
+        let census = mem_watch::gpu::DeviceRegistration::new(&instance, &adapter, &device);
         let caps = surface.get_capabilities(&adapter);
         let format = [
             wgpu::TextureFormat::Bgra8UnormSrgb,
@@ -598,6 +618,7 @@ impl Win {
         .map_err(imgui_err)?;
         renderer.set_gamma_mode(GammaMode::Auto);
         Ok(Self {
+            _census: census,
             window,
             surface,
             config,
@@ -620,6 +641,7 @@ impl Win {
     }
 
     fn redraw(&mut self, app: &mut App) -> Result<()> {
+        let _scope = mem_watch::scope("studio.render");
         let (frame, reconfigure) = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) => (f, false),
             wgpu::CurrentSurfaceTexture::Suboptimal(f) => (f, true),
@@ -690,8 +712,18 @@ impl Win {
         Ok(())
     }
 
-    fn shutdown(&mut self) {
-        let _ = self.ctx.save_ini_settings_to_disk(ini_path());
+    /// Save the layout, with the field panel's settings after Dear
+    /// ImGui's own sections (`fields::Settings`).
+    fn shutdown(&mut self, app: &App) {
+        let mut ini = String::new();
+        self.ctx.save_ini_settings(&mut ini);
+        if !ini.is_empty() && !ini.ends_with('\n') {
+            ini.push('\n');
+        }
+        ini.push_str(&app.tag_fields.ini());
+        if let Err(e) = std::fs::write(ini_path(), ini) {
+            eprintln!("h2-editor: the layout was not saved: {e}");
+        }
         let _ = self.ctx.end_frame();
         if let Err(e) = self.renderer.shutdown(&mut self.ctx) {
             eprintln!("renderer shutdown: {e}");
@@ -730,6 +762,9 @@ impl ApplicationHandler for Runner {
                 let size = win.window.inner_size();
                 win.resize(size.width, size.height);
             }
+            WindowEvent::Focused(focused) if id == win.window.id() => {
+                win.studio.play.play.window_focus(&self.app, focused);
+            }
             WindowEvent::CloseRequested => self.app.dispatch(Action::Quit),
             WindowEvent::DroppedFile(path) => self.app.dispatch(Action::OpenSource(path)),
             WindowEvent::RedrawRequested => {
@@ -740,7 +775,7 @@ impl ApplicationHandler for Runner {
             _ => {}
         }
         if self.app.should_quit() {
-            win.shutdown();
+            win.shutdown(&self.app);
             event_loop.exit();
         }
     }

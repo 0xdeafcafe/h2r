@@ -12,6 +12,7 @@ export interface ReplayKill {
   victim: number;
   killer: number | null;
   weapon: string | null;
+  headshot?: boolean | null;
   kind: PlayerKilled["kind"];
   position: number;
   /** Where the victim died: the event's `pos`, else from the frames. */
@@ -182,7 +183,7 @@ export class ReplayTimeline {
         }
         this.kills.push({
           tick: d.tick, victim: d.victim, killer: d.killer ?? null, weapon: d.weapon ?? null,
-          kind: d.kind ?? "kill", position: ev.position, at,
+          kind: d.kind ?? "kill", headshot: d.headshot ?? null, position: ev.position, at,
         });
         endTick = Math.max(endTick, d.tick);
       } else if (ev.type === "ScoreChanged") {

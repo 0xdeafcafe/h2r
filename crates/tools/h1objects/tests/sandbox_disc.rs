@@ -24,6 +24,9 @@ use h1objects::sandbox::Objects;
 use map::{FourCC, Map, TagId};
 use scenario_edit::{BlockKind, Scenario};
 
+#[path = "support/sandbox_pickup_prompts.rs"]
+mod pickup_prompts;
+
 fn bloodgulch() -> H1Map {
     let path = std::env::var("H1_ISO").expect("set H1_ISO");
     let mut iso = xiso::Xiso::open(BufReader::new(File::open(path).unwrap())).unwrap();
@@ -130,9 +133,15 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
         .filter(|t| (t.id.0 & 0xffff) as usize >= first + added)
         .filter(|t| t.group == FourCC(*b"snd!") || t.group == FourCC(*b"lsnd"))
         .count();
+    let pickup_text = out
+        .tags()
+        .iter()
+        .filter(|t| t.group == FourCC(*b"hmt "))
+        .count();
+    assert_eq!(pickup_text, 1);
     assert!(
-        (first + added..=first + added + textures + sounds).contains(&slots),
-        "{slots} slots, not {first} + {added} + up to {textures} + {sounds}"
+        (first + added..=first + added + textures + sounds + pickup_text).contains(&slots),
+        "{slots} slots, not {first} + {added} + up to {textures} + {sounds} + {pickup_text}"
     );
     // Halo 1's textures on the converted models: each material names a
     // rebuilt shader whose bitmaps include one this conversion added.
@@ -2005,7 +2014,7 @@ fn pinned_bloodgulch_fits_its_tag_memory() {
             .filter(|t| t.0.index() < first)
             .map(|t| (bytes_of.get(&t.0).map_or(0, Vec::len), t))
             .collect();
-        kept.sort_by(|a, b| b.0.cmp(&a.0));
+        kept.sort_by_key(|a| std::cmp::Reverse(a.0));
         let kept_total: usize = kept.iter().map(|k| k.0).sum();
         eprintln!(
             "{sandbox:?}: {} base tags kept, {kept_total:#x} bytes; the largest and what names them:",
@@ -2035,7 +2044,7 @@ fn pinned_bloodgulch_fits_its_tag_memory() {
             e.1 += len;
         }
         let mut groups: Vec<_> = groups.into_iter().collect();
-        groups.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+        groups.sort_by_key(|a| std::cmp::Reverse(a.1.1));
         eprintln!("  by group: {:?}", &groups[..groups.len().min(15)]);
         let label = |id: TagId| {
             base_ids

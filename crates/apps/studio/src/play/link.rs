@@ -2,35 +2,55 @@
 //! the UI never waits on the game.
 //!
 //! The thread connects (retrying while a launched game starts), then runs
-//! the calls it is sent in order and, when idle, polls `session.status`
-//! and `world.query` a few times a second. Everything comes back as
+//! the calls it is sent in order and, when idle, polls `session.status`.
+//! The binary mirror has its own connection. Control replies come back as
 //! [`Event`]s that the UI drains once a frame ([`Link::drain`]).
 
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use agent_proto::{CallError, Client, Endpoint, method};
-use serde_json::{Value, json};
+use serde_json::Value;
+
+use super::{presence::PlayerMove, stream::Stream};
+
+mod object;
+pub(super) use object::ObjectDispatch;
 
 /// How often the idle link polls the game.
 pub const POLL: Duration = Duration::from_millis(250);
 /// How long one call may take before the link is taken as lost.
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
-/// The most world objects one poll lists.
-pub const OBJECTS: usize = 300;
 
 /// What a call was for, so its answer finds its way back.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Purpose {
-    /// `edit.tags {group: scnr}`: the loaded scenario's datum.
-    Scenario,
-    /// `sim.session`: whether host writes are allowed.
-    SessionKind,
-    /// An `edit.set` of a placement field (the diff's index).
+    /// The loaded file, map epoch and session write permissions.
+    Map,
+    Capabilities,
+    Reload(u64),
+    Focus,
+    Indicator,
+    Marks,
+    Journal(u64),
+    Revert {
+        leave: bool,
+        epoch: u64,
+    },
+
+    /// Stream counters on the JSON control connection.
+    LiveStatus,
+    /// One in-flight conditional document batch.
     Edit(u64),
-    Teleport,
+    Object(u64),
+    Take { id: u64, at: u32 },
+    Teleport(u64),
+    Spawn(Instant),
     Control(&'static str),
+    /// The script editor's `rules.reload`.
+    Rules,
     /// A call the user asked for by hand.
     Other,
 }
@@ -43,21 +63,46 @@ pub struct Call {
     pub purpose: Purpose,
 }
 
+#[derive(Debug)]
+enum QueuedCall {
+    Control {
+        call: Call,
+        /// A queued move cannot keep its stream alive after the editor unpairs.
+        player: Option<(Weak<Stream>, PlayerMove)>,
+    },
+    /// Play owns the payload until the worker enters the socket.
+    Object { ticket: u64, edit: Weak<ObjectDispatch> },
+}
+
+impl QueuedCall {
+    fn check_player(&self) -> Result<(), CallError> {
+        let Self::Control { player: Some((stream, request)), .. } = self else {
+            return Ok(());
+        };
+        stream
+            .upgrade()
+            .ok_or("the game stream closed before the move")
+            .and_then(|s| request.check_latest(&s))
+            .map_err(|why| {
+                CallError::Rpc(agent_proto::RpcError::new(agent_proto::sim::REFUSED, why))
+            })
+    }
+}
+
 /// What the link reports.
 #[derive(Clone, Debug)]
 pub enum Event {
     Connected,
     /// Connecting failed for good, or the connection broke.
     Lost(String),
-    /// One poll: `session.status` and `world.query`'s answers.
-    Poll {
-        status: Value,
-        world: Value,
-    },
+    /// The control connection's latest session status.
+    Poll(Value),
+    /// The edit was withdrawn or its stream changed before it reached the socket.
+    ObjectSkipped(u64),
     Answer {
         purpose: Purpose,
         method: String,
-        result: Result<Value, String>,
+        result: Result<Value, agent_proto::RpcError>,
     },
 }
 
@@ -68,6 +113,8 @@ pub struct Options {
     /// its socket once it has booted); zero tries once.
     pub wait: Duration,
     pub poll: Duration,
+    /// How long an unanswered request keeps this connection open.
+    pub call_timeout: Duration,
 }
 
 impl Default for Options {
@@ -75,6 +122,7 @@ impl Default for Options {
         Self {
             wait: Duration::ZERO,
             poll: POLL,
+            call_timeout: CALL_TIMEOUT,
         }
     }
 }
@@ -82,9 +130,28 @@ impl Default for Options {
 /// The UI's end of a connection. Dropping it ends the thread.
 pub struct Link {
     pub endpoint: Endpoint,
-    calls: Sender<Call>,
+    calls: Sender<QueuedCall>,
     events: Receiver<Event>,
-    stop: Sender<()>,
+    stop: Sender<Close>,
+}
+
+#[derive(Debug, Default)]
+struct Close {
+    clears: Vec<Call>,
+    done: Option<Sender<()>>,
+}
+
+/// A retiring worker can still hold or clear either lease on this game.
+pub(super) struct ClosingLink {
+    pub(super) endpoint: Endpoint,
+    done: Receiver<()>,
+}
+
+impl ClosingLink {
+    pub(super) fn pending(&self) -> bool {
+        // A dropped sender means the worker already lost the connection.
+        matches!(self.done.try_recv(), Err(mpsc::TryRecvError::Empty))
+    }
 }
 
 impl Link {
@@ -105,11 +172,49 @@ impl Link {
     }
 
     pub fn call(&self, method: &str, params: Value, purpose: Purpose) {
-        let _ = self.calls.send(Call {
+        let call = Call {
             method: method.to_owned(),
             params,
             purpose,
+        };
+        let _ = self.calls.send(QueuedCall::Control { call, player: None });
+    }
+
+    pub(super) fn offer_object(&self, ticket: u64, edit: &Arc<ObjectDispatch>) -> bool {
+        self.calls.send(QueuedCall::Object { ticket, edit: Arc::downgrade(edit) }).is_ok()
+    }
+
+    pub(super) fn move_player(
+        &self,
+        request: PlayerMove,
+        stream: &Arc<Stream>,
+        ticket: u64,
+    ) -> Result<(), String> {
+        let call = Call {
+            method: agent_proto::sim::method::STATE_SET.into(),
+            params: request.state_set_params(),
+            purpose: Purpose::Teleport(ticket),
+        };
+        self.calls
+            .send(QueuedCall::Control {
+                call,
+                player: Some((Arc::downgrade(stream), request)),
+            })
+            .map_err(|_| "the game link closed before the move".to_owned())
+    }
+
+    /// Discard queued work and release presentation leases on this connection.
+    /// The worker finishes an in-flight call before sending the clears.
+    pub(super) fn close_with(self, clears: Vec<Call>) -> ClosingLink {
+        let (ack, done) = mpsc::channel();
+        let _ = self.stop.send(Close {
+            clears,
+            done: Some(ack),
         });
+        ClosingLink {
+            endpoint: self.endpoint.clone(),
+            done,
+        }
     }
 
     /// Everything reported since the last drain.
@@ -125,11 +230,11 @@ impl Link {
 
 impl Drop for Link {
     fn drop(&mut self) {
-        let _ = self.stop.send(());
+        let _ = self.stop.send(Close::default());
     }
 }
 
-fn connect(ep: &Endpoint, options: &Options, stop: &Receiver<()>) -> Result<Client, String> {
+fn connect(ep: &Endpoint, options: &Options, stop: &Receiver<Close>) -> Result<Client, String> {
     let until = Instant::now() + options.wait;
     loop {
         match Client::connect_to(ep) {
@@ -151,9 +256,9 @@ fn connect(ep: &Endpoint, options: &Options, stop: &Receiver<()>) -> Result<Clie
 fn run(
     ep: Endpoint,
     options: Options,
-    calls: Receiver<Call>,
+    calls: Receiver<QueuedCall>,
     events: Sender<Event>,
-    stop: Receiver<()>,
+    stop: Receiver<Close>,
 ) {
     let mut c = match connect(&ep, &options, &stop) {
         Ok(c) => c,
@@ -162,52 +267,65 @@ fn run(
             return;
         }
     };
-    let _ = c.set_timeout(Some(CALL_TIMEOUT));
+    let _ = c.set_timeout(Some(options.call_timeout));
     let _ = events.send(Event::Connected);
     let mut next_poll = Instant::now();
     loop {
-        if stop.try_recv().is_ok() {
-            return;
-        }
         let wait = next_poll.saturating_duration_since(Instant::now());
-        match calls.recv_timeout(wait) {
-            Ok(call) => {
-                let result = c.call(&call.method, call.params);
+        match next_work(&stop, || calls.recv_timeout(wait)) {
+            Work::Call(queued) => {
+                let checked = queued.check_player();
+                // Reading the exact sample can overlap an unpair. Give its
+                // close request priority again before entering the socket.
+                if let Ok(close) = stop.try_recv() {
+                    clear_leases(&mut c, close);
+                    return;
+                }
+                let call = match queued {
+                    QueuedCall::Control { call, .. } => call,
+                    QueuedCall::Object { ticket, edit } => {
+                        let edit = edit.upgrade();
+                        let current = edit.as_ref().is_some_and(|edit| edit.current_stream());
+                        if let Ok(close) = stop.try_recv() {
+                            clear_leases(&mut c, close);
+                            return;
+                        }
+                        let Some(call) = edit.and_then(|edit| edit.dispatch(current)) else {
+                            let _ = events.send(Event::ObjectSkipped(ticket));
+                            continue;
+                        };
+                        call
+                    }
+                };
+                let result = checked.and_then(|()| c.call(&call.method, call.params));
                 let broke = matches!(&result, Err(e) if lost(e));
+                if broke {
+                    let _ = events.send(Event::Lost(result.unwrap_err().to_string()));
+                    return;
+                }
                 let _ = events.send(Event::Answer {
                     purpose: call.purpose,
                     method: call.method,
-                    result: result.map_err(|e| e.to_string()),
-                });
-                if broke {
-                    let _ = events.send(Event::Lost("the game closed the connection".into()));
-                    return;
-                }
-            }
-            Err(RecvTimeoutError::Disconnected) => return,
-            Err(RecvTimeoutError::Timeout) => {
-                next_poll = Instant::now() + options.poll;
-                let status = c.call(method::STATUS, Value::Null);
-                let world = c.call(
-                    method::WORLD_QUERY,
-                    json!({
-                        "fields": ["pos", "forward", "team", "name", "mounted_on"],
-                        "limit": OBJECTS,
+                    result: result.map_err(|e| match e {
+                        CallError::Rpc(e) => e,
+                        e => agent_proto::RpcError::new(
+                            agent_proto::code::UNAVAILABLE,
+                            e.to_string(),
+                        ),
                     }),
-                );
-                match (status, world) {
-                    (Ok(status), Ok(world)) => {
-                        let _ = events.send(Event::Poll { status, world });
+                });
+            }
+            Work::Close(close) => {
+                clear_leases(&mut c, close);
+                return;
+            }
+            Work::Poll => {
+                next_poll = Instant::now() + options.poll;
+                match c.call(method::STATUS, Value::Null) {
+                    Ok(status) => {
+                        let _ = events.send(Event::Poll(status));
                     }
-                    // World reads may be refused for a moment (a load): the
-                    // status still says where the game is.
-                    (Ok(status), Err(e)) if !lost(&e) => {
-                        let _ = events.send(Event::Poll {
-                            status,
-                            world: Value::Null,
-                        });
-                    }
-                    (Err(e), _) | (_, Err(e)) => {
+                    Err(e) => {
                         let _ = events.send(Event::Lost(e.to_string()));
                         return;
                     }
@@ -217,7 +335,44 @@ fn run(
     }
 }
 
+enum Work {
+    Call(QueuedCall),
+    Poll,
+    Close(Close),
+}
+
+fn next_work(
+    stop: &Receiver<Close>,
+    receive: impl FnOnce() -> Result<QueuedCall, RecvTimeoutError>,
+) -> Work {
+    if let Ok(close) = stop.try_recv() {
+        return Work::Close(close);
+    }
+    let received = receive();
+    // Unpair can arrive while recv_timeout waits, including when it wakes for a move.
+    if let Ok(close) = stop.try_recv() {
+        return Work::Close(close);
+    }
+    match received {
+        Ok(call) => Work::Call(call),
+        Err(RecvTimeoutError::Timeout) => Work::Poll,
+        Err(RecvTimeoutError::Disconnected) => Work::Close(Close::default()),
+    }
+}
+
+fn clear_leases(client: &mut Client, close: Close) {
+    for clear in close.clears {
+        let _ = client.call(&clear.method, clear.params);
+    }
+    if let Some(done) = close.done {
+        let _ = done.send(());
+    }
+}
+
 /// An error that means the connection is gone (not a refused request).
 fn lost(e: &CallError) -> bool {
     !matches!(e, CallError::Rpc(_))
 }
+
+#[cfg(all(test, unix))]
+mod tests;

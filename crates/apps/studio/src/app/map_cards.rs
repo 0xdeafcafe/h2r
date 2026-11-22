@@ -26,6 +26,7 @@ use std::sync::{Arc, mpsc};
 
 use editor_core::MapSource;
 use editor_core::halo1::H1Source;
+use editor_core::map_groups::MapGroup;
 use editor_core::packages::PackageEntry;
 use map::{Map, ResourceFile};
 use tags::ui_levels::{self, CampaignLevel, MpLevel};
@@ -50,6 +51,63 @@ pub struct Card {
     pub description: String,
     pub picture: Option<Arc<Picture>>,
     pub kind: Kind,
+}
+
+/// A source map as the pickers and agent API list it.
+#[derive(Clone, Copy)]
+pub struct MapEntry<'a> {
+    pub stem: &'a str,
+    pub label: &'a str,
+    pub group: MapGroup,
+    pub card: Option<&'a Card>,
+    pub halo1: bool,
+}
+
+impl MapEntry<'_> {
+    pub fn sort(entries: &mut [Self]) {
+        entries.sort_by_cached_key(|entry| (entry.group.sort_key(entry.label), entry.stem));
+    }
+
+    /// Take the final section so callers can put their other maps before it.
+    pub fn take_shared(entries: &mut Vec<Self>) -> Vec<Self> {
+        let first = entries.partition_point(|entry| entry.group != MapGroup::SharedAndMenu);
+        entries.split_off(first)
+    }
+}
+
+fn map_entries<'a>(
+    stems: &'a [String],
+    groups: &HashMap<String, MapGroup>,
+    cards: &'a CardSet,
+    halo1: bool,
+) -> Vec<MapEntry<'a>> {
+    let mut entries: Vec<_> = stems
+        .iter()
+        .map(|stem| {
+            let card = cards.get(stem);
+            let group = match groups.get(stem).copied().unwrap_or(MapGroup::Other) {
+                MapGroup::Other => MapGroup::classify(
+                    stem,
+                    match card.map(|card| card.kind) {
+                        Some(Kind::Campaign) => MapGroup::Campaign,
+                        Some(Kind::Multiplayer) => MapGroup::Multiplayer,
+                        _ => MapGroup::Other,
+                    },
+                ),
+                group => group,
+            };
+            let card = card.filter(|_| group != MapGroup::SharedAndMenu);
+            MapEntry {
+                stem,
+                label: card.map_or(stem.as_str(), |card| card.name.as_str()),
+                group,
+                card,
+                halo1,
+            }
+        })
+        .collect();
+    MapEntry::sort(&mut entries);
+    entries
 }
 
 /// Cards by key (a map file stem, or a package directory), any case.
@@ -366,6 +424,14 @@ pub fn halo1_note(map: &str) -> &'static str {
 }
 
 impl App {
+    pub fn halo2_map_entries(&self) -> Vec<MapEntry<'_>> {
+        map_entries(&self.maps, &self.h2_map_groups, &self.h2_cards, false)
+    }
+
+    pub fn halo1_map_entries(&self) -> Vec<MapEntry<'_>> {
+        map_entries(&self.h1_maps, &self.h1_map_groups, &self.h1_cards, true)
+    }
+
     /// The open Halo 2 source's card for map `name`, once read.
     pub fn halo2_card(&self, name: &str) -> Option<&Card> {
         self.h2_cards.get(name)
@@ -373,10 +439,6 @@ impl App {
     /// Whether the Halo 2 source's cards are still being read.
     pub fn halo2_cards_loading(&self) -> bool {
         self.h2_cards.loading()
-    }
-    /// The open Halo 1 source's card for map `name`, once read.
-    pub fn halo1_card(&self, name: &str) -> Option<&Card> {
-        self.h1_cards.get(name)
     }
     /// The picture of the package in directory `dir` (`<data>/maps/<dir>`).
     pub fn package_picture(&self, dir: &str) -> Option<&Arc<Picture>> {

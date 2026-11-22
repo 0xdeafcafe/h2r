@@ -7,5 +7,5 @@ group vrtx 0xc align 4
     0x0 unknown 0x4
     0x4 block block_4 0x2 align 4
       0x0 unknown 0x2
-    0xc data compiled_shader align 4 -- V 'x' 0x20 header, u16 instruction count, 16-byte NV2A instructions; translated by shaders::vsh (extract_shaders.rs:241,256; docs/graphics/shaders.md)
+    0xc data compiled_shader align 4 doc="NV2A vertex instructions with their program header." -- V 'x' 0x20 header, u16 instruction count, 16-byte NV2A instructions; translated by shaders::vsh (extract_shaders.rs:241,256; docs/graphics/shaders.md)
     0x14 unknown 0x8

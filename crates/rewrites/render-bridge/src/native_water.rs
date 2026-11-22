@@ -118,7 +118,7 @@ pub fn restore_pending(mem: &mut dyn GuestMemory) {
 /// layer draw's return address (`[esp]` at entry).
 pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     restore_pending(mem);
-    let mut m = crate::native_fog::Mem(mem);
+    let m = crate::native_fog::Mem(mem);
     if m.read_u32(CURRENT_LAYER) != Some(WATER_LAYER) {
         return;
     }

@@ -30,17 +30,6 @@ const SCOPES: [(UiScope, &Point, &Point, Option<&Point>); 6] = [
     (UiScope::Overlay, &OVERLAY_RECT_DRAW, &OVERLAY_RECT_RETURN, None),
 ];
 
-pub(crate) fn instruction_entries() -> impl Iterator<Item = u32> {
-    [
-        LAYERS_RETURN.base, ITEM_CALL.base, ITEM_RETURN.base, HUD_RETURN.base, HUD_HIDDEN_RETURN.base,
-        LOADING_RETURN.base, LOADING_EMPTY_RETURN.base, SCREEN_QUAD_READY.base, FADE_FAN_READY.base,
-        FADE_RETURN.base, OVERLAY_RECT_RETURN.base, LOADING_SPINNER_READY.base, LOADING_BITMAP_READY.base,
-        OUTLINE_VERTICES.base, OUTLINE_VERTICES_TAIL,
-    ].into_iter()
-        .chain(super::backdrop::instruction_entries())
-        .chain(super::model::instruction_entries())
-}
-
 const WIDGET_COUNT_FROM_EBP: u32 = 4;
 const WIDGET_LIST_FROM_EBP: u32 = 0xc0c;
 const WIDGET_ENTRY_BYTES: u32 = 0xc;
@@ -368,6 +357,86 @@ mod tests {
         assert_eq!(quad[3][1], (3, [11.0, 5.0, 0.0, 1.0]));
         assert_eq!(quad[3][2].1.map(f32::to_bits), [3.0, -0.0, 0.0, 1.0].map(f32::to_bits));
         assert!(screen_vertices(&mem, u32::MAX).is_none());
+    }
+
+    #[test]
+    fn screen_quad_keeps_the_transparent_leading_glyph() {
+        use std::sync::Mutex;
+
+        use runtime::guest::Permissions;
+        use runtime::{CpuAbi, Dispatch, ExecCtx, Guest, Runtime};
+
+        #[derive(Default)]
+        struct Record(Mutex<Vec<HudVertices>>);
+
+        impl super::super::Host for Record {
+            fn screen_fan(&self, _mem: &mut dyn GuestMemory, vertices: &HudVertices) -> bool {
+                self.0.lock().unwrap().push(*vertices);
+                true
+            }
+        }
+
+        let first = 0x1000;
+        let next = first + 4 * SCREEN_VERTEX_BYTES;
+        let mut mem = Guest::new();
+        mem.map_zeroed(first, 0x1000, Permissions::RW).unwrap();
+        for (base, x, u, color) in [
+            (first, 8.0_f32, 0.0_f32, 0x00ff_ffff),
+            (next, 13.0, 12.0, 0xffff_ffff),
+        ] {
+            let offsets: [[f32; 2]; 4] = [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]];
+            for (i, [dx, dy]) in offsets.into_iter().enumerate() {
+                let corner = base + i as u32 * SCREEN_VERTEX_BYTES;
+                for (offset, word) in [
+                    (0, (x + dx).to_bits()),
+                    (4, (6.0 + dy).to_bits()),
+                    (8, (u + dx).to_bits()),
+                    (12, dy.to_bits()),
+                    (16, color),
+                ] {
+                    mem.set_u32(corner + offset, word).unwrap();
+                }
+            }
+        }
+        let stack = 0x1100;
+        let saved_esi = 0x1234;
+        let ret = 0x2020;
+        mem.set_u32(stack, saved_esi).unwrap();
+        mem.set_u32(stack + 0x14, ret).unwrap();
+        let rt = Runtime::new(mem, Dispatch::default());
+        let mut ctx = ExecCtx::new(Arc::clone(&rt), 1);
+        let recorder = Arc::new(Record::default());
+        let previous = super::super::HOST.lock().unwrap().replace(recorder.clone());
+
+        let transfers = [first, next].map(|corners| {
+            rt.memory().set_u32(stack + 0x18, corners).unwrap();
+            let mut cpu = CpuAbi {
+                esp: stack,
+                ..Default::default()
+            };
+            let transfer = screen_quad(&mut Call {
+                cpu: &mut cpu,
+                ctx: &mut ctx,
+                addr: SCREEN_QUAD_READY.base,
+                point: &SCREEN_QUAD_READY,
+            });
+            (transfer, cpu.esp, cpu.esi)
+        });
+
+        *super::super::HOST.lock().unwrap() = previous;
+        assert_eq!(
+            transfers,
+            [(Some(TransferAbi::ret(ret)), stack + 0x1c, saved_esi); 2]
+        );
+        let quads = recorder.0.lock().unwrap();
+        let [leading, visible] = &quads[..] else {
+            panic!("expected two ordered glyph quads, got {}", quads.len());
+        };
+        assert!(leading.iter().all(|vertex| vertex[0] == (9, [1.0, 1.0, 1.0, 0.0])));
+        assert_eq!(leading[0][2], (0, [8.0, 6.0, 0.0, 1.0]));
+        assert_eq!(visible[0][0], (9, [1.0; 4]));
+        assert_eq!(visible[0][1], (3, [12.0, 0.0, 0.0, 1.0]));
+        assert_eq!(visible[0][2], (0, [13.0, 6.0, 0.0, 1.0]));
     }
 
     #[test]

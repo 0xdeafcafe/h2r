@@ -1,10 +1,18 @@
-//! The Tags tool's tag list, with no UI: which tags a search matches, and
-//! the same tags by group or as a tree of their paths
-//! (`objects\weapons\rifle\...`). The outliner draws one of the two;
-//! `tag.list` answers with the same search.
-use std::collections::BTreeMap;
+//! The scenario's tag tree and the searchable group and path views of
+//! all tags. The window and the socket use the same tree.
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    io::{Read, Seek},
+    sync::Arc,
+};
 
-use super::tag_doc::TagEntry;
+use map::{Map, TagId};
+use scenario_edit::{BlockKind, Role, Scenario, geometry, layout::BLOCKS, scene};
+
+use super::{
+    tag_api::{self, Node},
+    tag_doc::{TagDoc, TagEntry},
+};
 
 /// How the outliner arranges the tags.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -57,6 +65,228 @@ pub fn by_group(tags: &[TagEntry], hits: &[usize]) -> BTreeMap<String, Vec<usize
         list.sort_by(|a, b| tags[*a].name.cmp(&tags[*b].name));
     }
     out
+}
+
+/// The scenario roots read from the source index and scenario payload.
+pub struct ScenarioRoots {
+    bsps: Vec<(TagId, Option<TagId>)>,
+    skies: Vec<TagId>,
+    globals: Option<TagId>,
+}
+
+impl ScenarioRoots {
+    pub fn read<R: Read + Seek>(map: &mut Map<R>) -> Self {
+        Self {
+            bsps: geometry::scenario_bsp_lightmaps(map).unwrap_or_default(),
+            skies: scene::scenario_skies(map),
+            globals: map
+                .globals()
+                .map(|tag| tag.id)
+                .filter(|id| *id != TagId::NULL),
+        }
+    }
+}
+
+pub struct ScenarioTree {
+    pub root: Row,
+    /// Indices in the tag document, in its order.
+    pub unreachable: Vec<usize>,
+    /// A reference walk stopped early, so the complement is unknown.
+    pub incomplete: bool,
+    /// A displayed palette chain hit its own walk budget.
+    pub truncated: bool,
+}
+
+#[derive(Default)]
+pub struct Row {
+    pub tag: Option<TagId>,
+    pub label: String,
+    pub via: Option<String>,
+    /// Present for a palette entry, including one with no placements.
+    pub placements: Option<Vec<(BlockKind, usize)>>,
+    pub children: Arc<[Row]>,
+    pub cycle: bool,
+}
+
+impl Row {
+    fn section(label: impl Into<String>, children: Vec<Row>) -> Self {
+        Self {
+            label: label.into(),
+            children: children.into(),
+            ..Self::default()
+        }
+    }
+
+    fn tag(id: TagId) -> Self {
+        Self {
+            tag: Some(id),
+            ..Self::default()
+        }
+    }
+}
+
+impl From<Node> for Row {
+    fn from(node: Node) -> Self {
+        Self {
+            tag: Some(node.tag),
+            label: node.shortcut.unwrap_or("").into(),
+            via: Some(node.via),
+            children: node
+                .children
+                .into_iter()
+                .map(Row::from)
+                .collect::<Arc<[_]>>(),
+            cycle: node.cycle,
+            ..Self::default()
+        }
+    }
+}
+
+/// Build the named sections and the complement of the full reference walk.
+/// `depth` limits chains below palette entries; it does not limit reachability.
+pub fn scenario_tree(
+    doc: &TagDoc,
+    scenario: &Scenario,
+    roots: &ScenarioRoots,
+    depth: usize,
+) -> ScenarioTree {
+    let mut named = HashSet::from([scenario.tag]);
+    let mut sections = Vec::new();
+    let mut structure = Vec::new();
+    for (i, &(bsp, lightmap)) in roots.bsps.iter().enumerate() {
+        let mut row = Row::section(format!("BSP {i}"), Vec::new());
+        if bsp != TagId::NULL {
+            row.tag = Some(bsp);
+            named.insert(bsp);
+        }
+        if let Some(lightmap) = lightmap.filter(|id| *id != TagId::NULL) {
+            named.insert(lightmap);
+            row.children = Arc::from([Row {
+                label: "Lightmap".into(),
+                ..Row::tag(lightmap)
+            }]);
+        }
+        structure.push(row);
+    }
+    sections.push(Row::section("Structure", structure));
+
+    let skies = roots
+        .skies
+        .iter()
+        .copied()
+        .filter(|id| *id != TagId::NULL)
+        .map(|id| {
+            named.insert(id);
+            Row::tag(id)
+        })
+        .collect();
+    sections.push(Row::section("Skies", skies));
+
+    let mut chains: HashMap<TagId, Arc<[Row]>> = HashMap::new();
+    let mut truncated = false;
+    let mut objects = Vec::new();
+    for def in BLOCKS.iter().filter(|def| def.palette.is_some()) {
+        let block = scenario.block(def.kind);
+        let Some(field) = def.role(Role::PaletteIndex) else {
+            continue;
+        };
+        let mut placements = vec![Vec::new(); block.palette.len()];
+        for index in 0..block.len() {
+            if let Ok(value) = scenario.get(def.kind, index, field.name)
+                && let Some(slot) = value.as_int().and_then(|v| usize::try_from(v).ok())
+                && let Some(entries) = placements.get_mut(slot)
+            {
+                entries.push((def.kind, index));
+            }
+        }
+        let mut rows = Vec::with_capacity(block.palette.len());
+        for (slot, (reference, placed)) in block.palette.iter().zip(placements).enumerate() {
+            let mut row = Row {
+                placements: Some(placed),
+                ..Row::default()
+            };
+            if reference.is_none() {
+                row.label = format!("Empty entry {slot}");
+            } else {
+                let id = reference.id;
+                named.insert(id);
+                row.tag = Some(id);
+                row.children = Arc::clone(chains.entry(id).or_insert_with(|| {
+                    let chain = tag_api::chain(doc, Some((id, "")), depth);
+                    truncated |= chain.truncated;
+                    chain
+                        .root
+                        .into_iter()
+                        .flat_map(|node| node.children)
+                        .map(Row::from)
+                        .collect()
+                }));
+            }
+            rows.push(row);
+        }
+        objects.push(Row::section(
+            format!("{} ({})", def.label, rows.len()),
+            rows,
+        ));
+    }
+    sections.push(Row::section("Objects", objects));
+
+    let mut globals = Row::section("Globals", Vec::new());
+    globals.tag = roots.globals;
+    named.extend(roots.globals);
+    sections.push(globals);
+
+    let mut seen = named;
+    let scenario_refs = doc.tag_refs(scenario.tag, Some(scenario));
+    let mut incomplete = scenario_refs.incomplete;
+    let other: Vec<_> = scenario_refs
+        .links
+        .into_iter()
+        .filter(|link| doc.tag(link.tag).is_some() && seen.insert(link.tag))
+        .map(|link| Row {
+            via: Some(link.via),
+            ..Row::tag(link.tag)
+        })
+        .collect();
+    sections.push(Row::section(
+        format!("Other references ({})", other.len()),
+        other,
+    ));
+
+    // Seed the known roots even when a scenario layout does not name them.
+    // A datum is expanded once, independently of display depth and cycles.
+    let mut todo: Vec<_> = seen
+        .iter()
+        .copied()
+        .filter(|id| *id != scenario.tag)
+        .collect();
+    while let Some(id) = todo.pop() {
+        let refs = doc.tag_refs(id, None);
+        incomplete |= refs.incomplete;
+        for link in &refs.links {
+            if doc.tag(link.tag).is_some() && seen.insert(link.tag) {
+                todo.push(link.tag);
+            }
+        }
+    }
+    let unreachable = if incomplete {
+        Vec::new()
+    } else {
+        doc.tags()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, tag)| (!seen.contains(&tag.id)).then_some(i))
+            .collect()
+    };
+    ScenarioTree {
+        root: Row {
+            tag: Some(scenario.tag),
+            ..Row::section("Scenario", sections)
+        },
+        unreachable,
+        incomplete,
+        truncated,
+    }
 }
 
 /// A folder of the path tree.
@@ -114,6 +344,15 @@ pub fn leaf(name: &str) -> &str {
     name.rsplit('\\').next().unwrap_or(name)
 }
 
+/// The scenario BSP index shared by a structure and its lightmap.
+pub(crate) fn bsp_label(tag: &TagEntry) -> Option<String> {
+    let bsp = tag.bsp?;
+    Some(match bsp.index {
+        Some(index) => format!("BSP {index}"),
+        None => format!("BSP at {:#x}", bsp.space.file_offset),
+    })
+}
+
 /// Every tag in `folder` and below, in the tree's order.
 pub fn under(folder: &Folder) -> Vec<usize> {
     let mut out = Vec::new();
@@ -141,6 +380,7 @@ mod tests {
             address: 0,
             size: 0,
             access: Access::Edit,
+            bsp: None,
             elsewhere: None,
         }
     }

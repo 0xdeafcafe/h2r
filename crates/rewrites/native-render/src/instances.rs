@@ -18,7 +18,9 @@ pub struct InstanceRecord {
     pub node_base: u32,
     /// The object's node count (indices past it read node 0).
     pub node_count: u32,
-    pub _pad: [u32; 2],
+    /// [`ObjectInput::highlight`] as one RGBA8 word (red in the low byte).
+    pub highlight: u32,
+    pub _pad: u32,
 }
 
 /// One draw of the frame.
@@ -50,6 +52,9 @@ pub struct ObjectInput<'a> {
     pub model: u32,
     pub nodes: &'a [NodeMatrix],
     pub sphere: ([f32; 3], f32),
+    /// A colour the object's lit colour is mixed towards, by its alpha
+    /// (`[0; 4]` draws it as lit): the editor's selection.
+    pub highlight: [u8; 4],
 }
 
 /// Packs `objects` against `models`, dropping the ones `frustum` cannot see
@@ -85,7 +90,8 @@ pub fn pack<'a>(
         out.instances.push(InstanceRecord {
             node_base: out.nodes.len() as u32,
             node_count: o.nodes.len() as u32,
-            _pad: [0; 2],
+            highlight: u32::from_le_bytes(o.highlight),
+            _pad: 0,
         });
         out.nodes.extend_from_slice(o.nodes);
         out.draws.extend(model.draws.iter().map(|d| FrameDraw {
@@ -111,7 +117,9 @@ pub fn view_objects<'a>(
     scene
         .instances_of(view)
         .iter()
-        .filter_map(|i| Some(ObjectInput { model: model(i)?, nodes: scene.nodes_of(i), sphere: i.sphere }))
+        .filter_map(|i| {
+            Some(ObjectInput { model: model(i)?, nodes: scene.nodes_of(i), sphere: i.sphere, highlight: [0; 4] })
+        })
         .collect()
 }
 
@@ -142,6 +150,7 @@ mod tests {
             forward: [1.0, 0.0, 0.0],
             up: [0.0, 0.0, 1.0],
             fov: 90f32.to_radians(),
+            projection_xy: None,
             viewport: [0, 0, 100, 100],
             near: 0.1,
             far: 100.0,
@@ -156,11 +165,11 @@ mod tests {
         let two = [NodeMatrix::IDENTITY; 2];
         let one = [NodeMatrix::IDENTITY; 1];
         let objects = [
-            ObjectInput { model: 1, nodes: &one, sphere: ([10.0, 0.0, 0.0], 1.0) },
-            ObjectInput { model: 0, nodes: &two, sphere: ([10.0, 1.0, 0.0], 1.0) },
-            ObjectInput { model: 0, nodes: &two, sphere: ([-10.0, 0.0, 0.0], 1.0) },
-            ObjectInput { model: 0, nodes: &one, sphere: ([10.0, 0.0, 0.0], 1.0) },
-            ObjectInput { model: 7, nodes: &one, sphere: ([10.0, 0.0, 0.0], 1.0) },
+            ObjectInput { model: 1, nodes: &one, sphere: ([10.0, 0.0, 0.0], 1.0), highlight: [0; 4] },
+            ObjectInput { model: 0, nodes: &two, sphere: ([10.0, 1.0, 0.0], 1.0), highlight: [0; 4] },
+            ObjectInput { model: 0, nodes: &two, sphere: ([-10.0, 0.0, 0.0], 1.0), highlight: [0; 4] },
+            ObjectInput { model: 0, nodes: &one, sphere: ([10.0, 0.0, 0.0], 1.0), highlight: [0; 4] },
+            ObjectInput { model: 7, nodes: &one, sphere: ([10.0, 0.0, 0.0], 1.0), highlight: [0; 4] },
         ];
         let f = pack(&get, &objects, Some(&frustum()));
         assert_eq!((f.culled, f.mismatched), (1, 1));
@@ -174,13 +183,27 @@ mod tests {
     }
 
     #[test]
+    fn an_objects_highlight_packs_into_its_instance_record() {
+        let models = [model(1, &[(0, 0)])];
+        let get = |i: u32| models.get(i as usize);
+        let one = [NodeMatrix::IDENTITY; 1];
+        let objects = [
+            ObjectInput { model: 0, nodes: &one, sphere: ([10.0, 0.0, 0.0], 1.0), highlight: [0; 4] },
+            ObjectInput { model: 0, nodes: &one, sphere: ([10.0, 0.0, 0.0], 1.0), highlight: [255, 199, 64, 115] },
+        ];
+        let f = pack(&get, &objects, None);
+        let words: Vec<u32> = f.instances.iter().map(|i| i.highlight).collect();
+        assert_eq!(words, vec![0, 0x73_40_c7_ff]);
+    }
+
+    #[test]
     fn without_a_frustum_or_with_a_bad_radius_nothing_is_culled() {
         let models = [model(1, &[(0, 0)])];
         let get = |i: u32| models.get(i as usize);
         let one = [NodeMatrix::IDENTITY; 1];
-        let behind = [ObjectInput { model: 0, nodes: &one, sphere: ([-10.0, 0.0, 0.0], 1.0) }];
+        let behind = [ObjectInput { model: 0, nodes: &one, sphere: ([-10.0, 0.0, 0.0], 1.0), highlight: [0; 4] }];
         assert_eq!(pack(&get, &behind, None).instances.len(), 1);
-        let nan = [ObjectInput { model: 0, nodes: &one, sphere: ([-10.0, 0.0, 0.0], f32::NAN) }];
+        let nan = [ObjectInput { model: 0, nodes: &one, sphere: ([-10.0, 0.0, 0.0], f32::NAN), highlight: [0; 4] }];
         assert_eq!(pack(&get, &nan, Some(&frustum())).instances.len(), 1);
     }
 
@@ -198,6 +221,7 @@ mod tests {
             forward: [1.0, 0.0, 0.0],
             up: [0.0, 0.0, 1.0],
             fov: 90f32.to_radians(),
+            projection_xy: None,
             viewport: [0, 0, 100, 100],
             near: 0.1,
             far: 100.0,

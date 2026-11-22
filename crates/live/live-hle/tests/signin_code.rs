@@ -281,7 +281,9 @@ fn backing_out_fails_the_waiting_logon() {
     w.start();
     let task = w.logon_first();
     assert_eq!(w.call("XOnlineTaskContinue", &[task]), 0);
+    assert!(hle.with_editor_reservation(|| Ok(())).is_err(), "waiting for a code");
     hle.signin_cancel();
+    assert!(hle.with_editor_reservation(|| Ok(())).is_ok(), "cancelled before the next poll");
     assert_eq!(hle.signin().unwrap().phase, Phase::Cancelled);
     assert!(!hle.signin_submit("123456"), "nothing asked any more");
     assert_eq!(w.finish(task), INVALID_USER);

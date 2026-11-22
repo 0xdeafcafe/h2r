@@ -2,6 +2,7 @@
 use crate::{
     app::{ApiError, Live, conflict, forbidden, invalid},
     model::State,
+    sessions::pack_assignment_allows,
     store::RecordedEvent,
 };
 use axum::{
@@ -49,6 +50,9 @@ pub(crate) fn validate(s: &State, b: &EventBody) -> Result<(), ApiError> {
                 "only a signed-in host invites to an open session",
             ));
         }
+        if !pack_assignment_allows(session, recipient) {
+            return Err(forbidden("recipient has no seat on this Map Pack assignment"));
+        }
         if s.mailboxes
             .get(&recipient)
             .into_iter()
@@ -68,7 +72,7 @@ pub(crate) fn validate(s: &State, b: &EventBody) -> Result<(), ApiError> {
                 v.answer.is_none()
                     && s.sessions
                         .get(&v.session_id)
-                        .is_some_and(|s| s.state == "open")
+                        .is_some_and(|s| s.state == "open" && pack_assignment_allows(s, recipient))
             })
             .collect();
         if pending.len() >= 100
@@ -92,12 +96,14 @@ pub(crate) fn validate(s: &State, b: &EventBody) -> Result<(), ApiError> {
         if invite.session_id != d.session_id || invite.answer.is_some() {
             return Err(conflict("invite is not pending"));
         }
-        if d.answer == Answer::Accept
-            && s.sessions
+        if d.answer == Answer::Accept {
+            let session = s.sessions
                 .get(&d.session_id)
-                .is_none_or(|v| v.state != "open")
-        {
-            return Err(conflict("session is closed"));
+                .filter(|v| v.state == "open")
+                .ok_or_else(|| conflict("session is closed"))?;
+            if !pack_assignment_allows(session, recipient) {
+                return Err(forbidden("recipient has no seat on this Map Pack assignment"));
+            }
         }
     }
     Ok(())
@@ -158,7 +164,7 @@ pub(crate) async fn read(
                 && state
                     .sessions
                     .get(&v.session_id)
-                    .is_some_and(|s| s.state == "open")
+                    .is_some_and(|s| s.state == "open" && pack_assignment_allows(s, xuid))
         })
         .rev()
         .take(100)

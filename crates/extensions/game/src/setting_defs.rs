@@ -80,22 +80,20 @@ pub static FPS: Def = Def {
 /// "Terms" and "Prior art"), so no video mode changes it.
 pub const GUEST_FRAME: (u32, u32) = (640, 480);
 
-pub static RENDER_SCALE: Def = Def {
+pub(crate) const LEGACY_SCALE: settings::LegacyScale = settings::LegacyScale {
     key: "graphics.render_scale",
+    env: "H2_RENDER_SCALE",
+    frame: GUEST_FRAME,
+    max: d3d::MAX_SCALE,
+};
+
+pub static RESOLUTION: Def = Def {
+    key: "graphics.resolution",
     label: "Resolution",
-    help: "Internal resolution as a multiple of the game's 640x480; the row shows the \
-           size it renders at (1280x960 for 2). The row steps 1 to 4; the file and \
-           H2_RENDER_SCALE take up to 6. A change applies at the next frame.",
-    kind: Kind::Int {
-        valid: 1..=d3d::MAX_SCALE as i64,
-        steps: &[1, 2, 3, 4],
-        unit: Unit::Pixels {
-            width: GUEST_FRAME.0,
-            height: GUEST_FRAME.1,
-        },
-    },
-    default: Value::Int(1),
-    env: Some("H2_RENDER_SCALE"),
+    help: "Native follows the window up to the pixel count of 4K. Pick a size to render at that resolution.",
+    kind: Kind::Resolution(LEGACY_SCALE),
+    default: Value::Int(0),
+    env: Some("H2_RESOLUTION"),
     flag: None,
     aliases: &[],
     parse_env: None,
@@ -108,11 +106,99 @@ pub static RENDER_SCALE: Def = Def {
     }),
 };
 
+/// Resolution for headless graphics paths that have no settings store.
+pub fn resolution_from_env() -> Result<settings::Resolution, String> {
+    let vars = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+    if let Some(v) = vars("H2_RESOLUTION") {
+        return settings::Resolution::parse(&v)
+            .ok_or_else(|| format!("H2_RESOLUTION={v:?}: expected {}", RESOLUTION.expected()));
+    }
+    match vars(LEGACY_SCALE.env) {
+        Some(v) => LEGACY_SCALE
+            .parse(&v)
+            .map_err(|e| format!("{}={v:?}: {e}", LEGACY_SCALE.env)),
+        None => Ok(settings::Resolution::Native),
+    }
+}
+
+pub const HUD_PINNED: u32 = 1;
+
+pub static HUD_POSITION: Def = Def {
+    key: "graphics.hud_position",
+    label: "HUD Position",
+    help: "Centered keeps the HUD in the middle safe area. Pinned keeps edge and corner indicators near the edges of the screen.",
+    kind: Kind::Choice(&[
+        Choice {
+            value: 0,
+            name: "centered",
+            label: "Centered",
+        },
+        Choice {
+            value: HUD_PINNED as i64,
+            name: "pinned",
+            label: "Pinned",
+        },
+    ]),
+    default: Value::Int(HUD_PINNED as i64),
+    env: Some("H2_HUD_POSITION"),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::View,
+    tier: Tier::User,
+    menu: Some(Menu {
+        screen: "video",
+        order: 40,
+    }),
+};
+
+/// Render-distance multipliers in half units. Zero selects the guest's
+/// original pixel scale independently of the output resolution.
+pub static LOD_DISTANCE: Def = Def {
+    key: "graphics.lod_distance",
+    label: "LOD Distance",
+    help: "Choose how far away models keep their detail. 1x matches the rendering resolution. \
+           Network play and film recording use retail distances.",
+    kind: Kind::Choice(&[
+        Choice { value: 0, name: "retail", label: "Retail" },
+        Choice { value: 1, name: "0.5", label: "0.5x" },
+        Choice { value: 2, name: "1.0", label: "1x" },
+        Choice { value: 3, name: "1.5", label: "1.5x" },
+        Choice { value: 4, name: "2.0", label: "2x" },
+        Choice { value: 6, name: "3.0", label: "3x" },
+        Choice { value: 8, name: "4.0", label: "4x" },
+    ]),
+    default: Value::Int(2),
+    env: Some("H2_LOD_DISTANCE"),
+    flag: None,
+    aliases: &[
+        ("1", Value::Int(2)), ("2", Value::Int(4)),
+        ("3", Value::Int(6)), ("4", Value::Int(8)),
+    ],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::View,
+    tier: Tier::User,
+    menu: Some(Menu {
+        screen: "video",
+        order: 45,
+    }),
+};
+
+/// Convert one pixel of the guest's projected size to output pixels for LOD.
+pub fn lod_pixel_multiplier(output_height: u32, half_units: u32) -> f32 {
+    if half_units == 0 {
+        return 1.0;
+    }
+    (output_height as f32 / GUEST_FRAME.1 as f32) * (half_units as f32 * 0.5)
+}
+
 /// Select the readback and draw policy when rendering above guest resolution.
 pub static SINGLE_COPY: Def = Def {
     key: "graphics.single_copy",
     label: "Single-copy scaled rendering",
-    help: "Draw once at the selected resolution. Guest reads sample that image at guest pixel positions. Disable for exact 1x readbacks.",
+    help: "In offline play, draw once and sample that image for guest readbacks. Disable for exact Xbox readbacks. Network play, films and lockstep always use exact readbacks.",
     kind: Kind::Bool,
     default: Value::Bool(true),
     env: Some("H2_SINGLE_COPY"),
@@ -132,10 +218,8 @@ pub const LIGHTING_E3: i64 = 1;
 pub static LIGHTING: Def = Def {
     key: "graphics.lighting",
     label: "Lighting",
-    help: "Retail, or E3: harder, sharper shadows (docs/graphics/e3-lighting-setting.md). \
-           E3 draws the game's shadow maps at the render scale (at least twice the game's \
-           size) and compares them with one tap, in the shown image only; the game itself \
-           sees retail. A change applies at the next frame.",
+    help: "The scaled D3D renderer sharpens shadow edges in E3. The native frame renderer \
+           uses the game's retail lighting in both modes. Changes apply at the next frame.",
     kind: Kind::Choice(&[
         Choice {
             value: LIGHTING_RETAIL,
@@ -187,6 +271,23 @@ pub static PAD_SPEAKER: Def = Def {
     scope: Scope::Host,
     tier: Tier::User,
     // Its row is on the Controls screen (`video_screen::model`).
+    menu: None,
+};
+
+pub static PAD_LIGHTBAR: Def = Def {
+    key: "controls.lightbar",
+    label: "Lightbar",
+    help: "Match each PlayStation controller's lightbar to its player's team or primary armour colour.",
+    kind: Kind::Bool,
+    default: Value::Bool(true),
+    env: None,
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::User,
+    // Its row is on the Controls screen (video_screen::model).
     menu: None,
 };
 
@@ -741,22 +842,198 @@ pub fn halo1_sandbox(store: &Store) -> &'static str {
     }
 }
 
+const GIB: u64 = 1 << 30;
+const THEATER_CACHE_DEFAULT_GIB: i64 = (film::sidecar::DEFAULT_CAP_BYTES / GIB) as i64;
+
+pub static THEATER_CACHE_CAP: Def = Def {
+    key: "theater.cache_cap_gib",
+    label: "Theater Cache Cap",
+    help: "Disk space for Theater keyframe sidecars, in GiB. Set to 0 to disable the cache.",
+    kind: Kind::Int {
+        valid: 0..=(u64::MAX / GIB) as i64,
+        steps: &[0, 1, 2, 4, 8, 16],
+        unit: Unit::Plain,
+    },
+    default: Value::Int(THEATER_CACHE_DEFAULT_GIB),
+    env: None,
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Restart,
+    scope: Scope::Host,
+    tier: Tier::User,
+    menu: None,
+};
+
+/// The effective on-disk keyframe cache limit for this viewer, in bytes.
+pub fn theater_cache_cap_bytes(store: Option<&Store>) -> u64 {
+    let gib = store
+        .and_then(|store| store.get(THEATER_CACHE_CAP.key))
+        .and_then(Value::as_int)
+        .unwrap_or(THEATER_CACHE_DEFAULT_GIB);
+    gib as u64 * GIB
+}
+
+pub const THEATER_RING_MIB_ENV: &str = "H2_THEATER_RING_MIB";
+
+pub static THEATER_RING_MIB: Def = Def {
+    key: "theater.ring_mib",
+    label: "Theater Rewind Memory (MiB)",
+    help: "Memory available for recently watched keyframes. Zero disables the ring.",
+    kind: Kind::Int {
+        valid: 0..=((isize::MAX >> 20) as i64),
+        steps: &[0, 64, 128, 256, 512, 1024],
+        unit: Unit::Plain,
+    },
+    default: Value::Int(256),
+    env: Some(THEATER_RING_MIB_ENV),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Restart,
+    scope: Scope::Host,
+    tier: Tier::User,
+    menu: None,
+};
+
+/// How saved variants are ported into the game-variant store at boot
+/// (`crate::game_variants::port`): `keep` their retail rules, or attach the
+/// built-in script of their engine.
+pub static VARIANTS_PORT_SCRIPT: Def = Def {
+    key: "variants.port.script",
+    label: "Ported Variants' Script",
+    help: "What a saved variant ported into the game-variant store at boot runs: \
+           keep (its engine's own rules) or builtin (the engine's built-in rules script).",
+    kind: Kind::Choice(&[
+        Choice {
+            value: 0,
+            name: "keep",
+            label: "Keep",
+        },
+        Choice {
+            value: 1,
+            name: "builtin",
+            label: "Built-in Script",
+        },
+    ]),
+    default: Value::Int(0),
+    env: Some("H2_VARIANTS_PORT_SCRIPT"),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Restart,
+    scope: Scope::Host,
+    tier: Tier::User,
+    menu: None,
+};
+
+/// Whether the superbounce HUD's tutorial steps have been seen
+/// (docs/game/superbounce.md, "The superbounce game type").
+/// `superbounce_hud` sets it when the last step closes; `false` shows the
+/// steps again the next time a game starts, and
+/// `H2_SUPERBOUNCE_TUTORIAL=1` shows them whatever it says.
+pub static SUPERBOUNCE_TUTORIAL_SEEN: Def = Def {
+    key: "superbounce.tutorial_seen",
+    label: "Superbounce Tutorial Seen",
+    help: "The superbounce HUD's four tutorial steps have been shown to the end. \
+           Set it to false to see them again.",
+    kind: Kind::Bool,
+    default: Value::Bool(false),
+    env: None,
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::Diagnostic,
+    menu: None,
+};
+
+/// The superbounce fall assist, opt in (docs/game/superbounce.md, "Hold X:
+/// the fall assist"): holding X in the air steers the player onto a
+/// strip. Off, nothing steers and nothing on the map or the HUD asks for
+/// X. Its row is on the Controls screen (`video_screen::model`);
+/// `superbounce_assist` reads it live.
+pub static SUPERBOUNCE_FALL_ASSIST: Def = Def {
+    key: "superbounce.fall_assist",
+    label: "Fall Assist",
+    help: "Superbounce: hold X while falling and the stick is steered so you \
+           land on the strip. Off by default.",
+    kind: Kind::Bool,
+    default: Value::Bool(false),
+    env: None,
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::User,
+    menu: Some(Menu {
+        screen: "controls",
+        order: 70,
+    }),
+};
+
+/// `H2_SUPERBOUNCE_TUTORIAL=1` shows the superbounce tutorial steps even
+/// when [`SUPERBOUNCE_TUTORIAL_SEEN`] is set.
+pub const SUPERBOUNCE_TUTORIAL_ENV: &str = "H2_SUPERBOUNCE_TUTORIAL";
+
+/// Whether the superbounce tutorial shows this run: never seen, or forced
+/// by `env` (the value of [`SUPERBOUNCE_TUTORIAL_ENV`]).
+pub fn superbounce_tutorial_shows(seen: bool, env: Option<&str>) -> bool {
+    !seen || env.is_some_and(|v| v.trim() == "1")
+}
+
+/// Resolve the viewer's memory budget before the child mounts the film's private disk.
+pub fn theater_ring_mib(data: Option<&Path>) -> usize {
+    let path = data.map(settings::path_in);
+    let (store, problems) = Store::load(
+        &[&THEATER_RING_MIB],
+        path.as_deref(),
+        &|key| std::env::var(key).ok(),
+        &[],
+    );
+    for problem in problems {
+        eprintln!("theater: {problem}");
+    }
+    store.handle::<i64>(THEATER_RING_MIB.key).get() as usize
+}
+
+/// `H2_THEATER_RING`: the ring is on unless the variable is `0`, `off`,
+/// `false` or `no`.
+pub fn theater_ring_on(value: Option<&str>) -> bool {
+    !matches!(value, Some("0" | "off" | "false" | "no"))
+}
+
+/// The launcher passes the resolved MiB value in the child's environment.
+pub fn theater_ring_cap(data: Option<&Path>) -> Option<usize> {
+    theater_ring_on(std::env::var("H2_THEATER_RING").ok().as_deref())
+        .then(|| theater_ring_mib(data) << 20)
+        .filter(|bytes| *bytes != 0)
+}
+
 /// Every setting, in the order `h2 settings list` shows them.
 pub static ALL: &[&Def] = &[
     &FOV,
     &FPS,
-    &RENDER_SCALE,
+    &RESOLUTION,
+    &HUD_POSITION,
+    &LOD_DISTANCE,
     &SINGLE_COPY,
     &LIGHTING,
     &PAD_SPEAKER,
+    &PAD_LIGHTBAR,
     &PAD_MUTE,
     &STEAM_SPEAKER,
     &STEAM_SENSITIVITY,
     &STEAM_LEFT_PAD,
+    &THEATER_CACHE_CAP,
     &LIVE_VISIBILITY,
     &COOP_MAX_PLAYERS,
     &COOP_JOIN_IN_PROGRESS,
     &COOP_LOOK_PREDICTION,
+    &THEATER_RING_MIB,
+    &VARIANTS_PORT_SCRIPT,
     &AIM_ASSIST,
     &TOUCH_LOOK,
     &TOUCH_CROUCH,
@@ -766,6 +1043,8 @@ pub static ALL: &[&Def] = &[
     &HALO1_SANDBOX,
     &HALO1_ASSETS,
     &HALO1_HUD,
+    &SUPERBOUNCE_TUTORIAL_SEEN,
+    &SUPERBOUNCE_FALL_ASSIST,
     // The campaign skulls, kept per profile (crate::skulls, docs/game/skulls.md).
     &crate::skulls::SKULLS[0],
     &crate::skulls::SKULLS[1],
@@ -789,6 +1068,13 @@ pub static ALL: &[&Def] = &[
     &crate::skulls::SKULLS[18],
     &crate::skulls::SKULLS[19],
     &crate::skulls::SKULLS[20],
+    // The Forge monitor's look, kept per profile (forge::look::saved,
+    // docs/game/forge-monitor-appearance.md).
+    &forge::look::saved::DEFS[0],
+    &forge::look::saved::DEFS[1],
+    &forge::look::saved::DEFS[2],
+    &forge::look::saved::DEFS[3],
+    &forge::look::saved::DEFS[4],
     // Skulls in multiplayer games (crate::skulls_mp, docs/game/skulls.md).
     &crate::skulls_mp::MP_FAMINE,
     &crate::skulls_mp::MP_BLIND,
@@ -812,6 +1098,13 @@ pub static ALL: &[&Def] = &[
     &crate::clankers::AIM_STYLE,
     &crate::clankers::TAUNTS,
     &crate::clankers::GLITCHES,
+    // The Firefight page of a custom game's Game Setup
+    // (crate::firefight::options, docs/game/firefight.md).
+    &crate::firefight::options::ENABLED,
+    &crate::firefight::options::WAVE_SET,
+    &crate::firefight::options::DIFFICULTY,
+    &crate::firefight::options::LIVES,
+    &crate::firefight::options::SKULLS,
 ];
 
 /// Every setting of this run: [`ALL`], with the voice device settings
@@ -851,6 +1144,14 @@ pub fn load(data: &Path, flags: &[Flag]) -> (Store, Vec<Problem>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_theater_ring_is_on_unless_the_variable_says_off() {
+        assert!(super::theater_ring_on(None));
+        assert!(super::theater_ring_on(Some("1")));
+        assert!(!super::theater_ring_on(Some("0")));
+        assert!(!super::theater_ring_on(Some("off")));
+    }
+
     use super::*;
 
     fn tmp(name: &str) -> std::path::PathBuf {
@@ -881,12 +1182,76 @@ mod tests {
         envs.sort();
         envs.dedup();
         assert_eq!(keys.len(), ALL.len());
-        // Skulls are per-profile only and have no variable.
+        // Some settings are only changed through the store.
         assert_eq!(envs.len(), ALL.iter().filter(|d| d.env.is_some()).count());
         for d in ALL {
             assert!(d.key.contains('.'), "{}", d.key);
             assert_eq!(d.check(d.default), Ok(d.default), "{}", d.key);
         }
+    }
+
+    #[test]
+    fn the_superbounce_tutorial_shows_until_seen_or_when_forced() {
+        assert!(superbounce_tutorial_shows(false, None));
+        assert!(!superbounce_tutorial_shows(true, None));
+        assert!(!superbounce_tutorial_shows(true, Some("0")));
+        assert!(superbounce_tutorial_shows(true, Some("1")));
+        let store = Store::defaults(ALL);
+        assert_eq!(
+            store.get(SUPERBOUNCE_TUTORIAL_SEEN.key),
+            Some(Value::Bool(false))
+        );
+        store
+            .set(SUPERBOUNCE_TUTORIAL_SEEN.key, Value::Bool(true))
+            .unwrap();
+        assert!(store.handle::<bool>(SUPERBOUNCE_TUTORIAL_SEEN.key).get());
+    }
+
+    #[test]
+    fn the_fall_assist_is_opt_in_with_a_controls_row() {
+        let store = Store::defaults(ALL);
+        assert_eq!(
+            store.get(SUPERBOUNCE_FALL_ASSIST.key),
+            Some(Value::Bool(false))
+        );
+        assert_eq!(
+            SUPERBOUNCE_FALL_ASSIST.menu.expect("a row").screen,
+            "controls"
+        );
+        store
+            .set(SUPERBOUNCE_FALL_ASSIST.key, Value::Bool(true))
+            .unwrap();
+        assert!(store.handle::<bool>(SUPERBOUNCE_FALL_ASSIST.key).get());
+    }
+
+    #[test]
+    fn theater_cache_cap_uses_the_viewers_saved_gib() {
+        let data = tmp("theater-cache");
+        assert_eq!(theater_cache_cap_bytes(None), 4 << 30);
+        for (toml, bytes) in [
+            ("", 4 << 30),
+            ("[theater]\ncache_cap_gib = 8", 8 << 30),
+            ("[theater]\ncache_cap_gib = 0", 0),
+        ] {
+            std::fs::write(settings::path_in(&data), toml).unwrap();
+            let (store, problems) = with_env(&data, &[]);
+            assert!(problems.is_empty(), "{problems:?}");
+            assert_eq!(theater_cache_cap_bytes(Some(&store)), bytes);
+        }
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
+    #[test]
+    fn theater_ring_budget_defaults_to_256_mib_and_uses_the_viewers_override() {
+        let data = tmp("theater-ring");
+        let mib = |store: Store| store.handle::<i64>(THEATER_RING_MIB.key).get();
+        assert_eq!(mib(with_env(&data, &[]).0), 256);
+        std::fs::write(settings::path_in(&data), "[theater]\nring_mib = 128\n").unwrap();
+        assert_eq!(mib(with_env(&data, &[]).0), 128);
+        assert_eq!(mib(with_env(&data, &[(THEATER_RING_MIB_ENV, "0")]).0), 0);
+        let (store, problems) = with_env(&data, &[(THEATER_RING_MIB_ENV, "-1")]);
+        assert_eq!(mib(store), 128);
+        assert!(problems.iter().any(|p| p.key == Some(THEATER_RING_MIB.key)));
     }
 
     #[test]
@@ -902,13 +1267,70 @@ mod tests {
         assert!(p.is_empty(), "{p:?}");
         assert_eq!(s.get(FOV.key), Some(Value::Int(95)));
         assert_eq!(s.get(FPS.key), Some(Value::Int(0)));
-        assert_eq!(s.get(RENDER_SCALE.key), Some(Value::Int(2)));
+        assert_eq!(
+            s.get(RESOLUTION.key),
+            Some(settings::Resolution::Fixed(1280, 960).value())
+        );
         assert_eq!(s.get(SINGLE_COPY.key), Some(Value::Bool(true)));
         assert_eq!(s.get(PAD_SPEAKER.key), Some(Value::Bool(false)));
         assert_eq!(s.get(PAD_MUTE.key), Some(Value::Bool(true)));
         // `fov = 0` was retail.
         std::fs::write(settings::path_in(&data), "[graphics]\nfov = 0\n").unwrap();
         assert_eq!(with_env(&data, &[]).0.get(FOV.key), Some(Value::Int(70)));
+    }
+
+    #[test]
+    fn explicit_resolution_wins_at_its_own_precedence() {
+        use settings::Resolution::{Fixed, Native};
+
+        let data = tmp("resolution");
+        let path = settings::path_in(&data);
+        std::fs::write(
+            &path,
+            "[graphics]\nrender_scale = 3\nresolution = \"native\"\n",
+        )
+        .unwrap();
+        let load = |s: &Store| s.handle::<settings::Resolution>(RESOLUTION.key).get();
+        let (file, p) = with_env(&data, &[]);
+        assert!(p.is_empty());
+        assert_eq!(load(&file), Native);
+        let (legacy, p) = with_env(&data, &[("H2_RENDER_SCALE", "2")]);
+        assert!(p.is_empty());
+        assert_eq!(load(&legacy), Fixed(1280, 960));
+        assert_eq!(
+            legacy.state(RESOLUTION.key).unwrap().source,
+            settings::Source::Env("H2_RENDER_SCALE")
+        );
+
+        let (env, p) = with_env(
+            &data,
+            &[("H2_RESOLUTION", "3440X1440"), ("H2_RENDER_SCALE", "2")],
+        );
+        assert!(p.is_empty());
+        assert_eq!(load(&env), Fixed(3440, 1440));
+        assert!(env.state(RESOLUTION.key).unwrap().locked);
+        assert_eq!(lod_pixel_multiplier(1050, 2), 2.1875);
+        assert_eq!(lod_pixel_multiplier(2880, 2), 6.0);
+        for bad in [
+            "2",
+            "2x",
+            "0x1080",
+            "5120x0",
+            "8193x480",
+            "300x-1",
+            "800x600x1",
+        ] {
+            assert!(RESOLUTION.parse(bad).is_err(), "{bad}");
+        }
+        let flags = [Flag::parse_set("graphics.resolution=native").unwrap()];
+        let (flag, p) = Store::load(
+            ALL,
+            Some(&path),
+            &|k| (k == "H2_RENDER_SCALE").then(|| "2".into()),
+            &flags,
+        );
+        assert!(p.is_empty());
+        assert_eq!(load(&flag), Native);
     }
 
     #[test]
@@ -920,6 +1342,8 @@ mod tests {
                 ("H2_FOV", "0"),
                 ("H2_FPS", "Uncapped"),
                 ("H2_RENDER_SCALE", "6"),
+                ("H2_HUD_POSITION", "centered"),
+                ("H2_LOD_DISTANCE", "1.5"),
                 ("H2_SINGLE_COPY", "0"),
                 ("H2_PAD_SPEAKER", "0"),
                 ("H2_PAD_MUTE", "0"),
@@ -948,8 +1372,12 @@ mod tests {
                 ("H2_VOICE_INCOMING_MUTED", "0"),
                 ("H2_VOICE_INPUT_VOLUME", "50"),
                 ("H2_VOICE_OUTPUT_VOLUME", "80"),
+                ("H2_THEATER_RING_MIB", "128"),
+                ("H2_VARIANTS_PORT_SCRIPT", "builtin"),
             ],
         );
+        assert_eq!(s.get(THEATER_RING_MIB.key), Some(Value::Int(128)));
+        assert_eq!(s.get(VARIANTS_PORT_SCRIPT.key), Some(Value::Int(1)));
         {
             use crate::voice_settings::*;
             let h = VoiceHandles::new(&s);
@@ -981,7 +1409,10 @@ mod tests {
         );
         assert_eq!(s.get(FOV.key), Some(Value::Int(70)));
         assert_eq!(s.get(FPS.key), Some(Value::Int(0)));
-        assert_eq!(s.get(RENDER_SCALE.key), Some(Value::Int(6)));
+        assert_eq!(
+            s.get(RESOLUTION.key),
+            Some(settings::Resolution::Fixed(3840, 2880).value())
+        );
         assert_eq!(s.get(SINGLE_COPY.key), Some(Value::Bool(false)));
         assert_eq!(s.get(PAD_SPEAKER.key), Some(Value::Bool(false)));
         assert_eq!(s.get(PAD_MUTE.key), Some(Value::Bool(false)));
@@ -1156,6 +1587,34 @@ mod tests {
     }
 
     #[test]
+    fn lod_distance_matches_output_by_default_and_retail_is_independent_of_output() {
+        let data = tmp("lod-distance");
+        let (store, problems) = with_env(&data, &[]);
+        assert!(problems.is_empty());
+        let setting = store.handle::<u32>(LOD_DISTANCE.key);
+        assert_eq!(lod_pixel_multiplier(480, setting.get()), 1.0);
+        assert_eq!(lod_pixel_multiplier(1920, setting.get()), 4.0);
+        assert_eq!(lod_pixel_multiplier(2160, setting.get()), 4.5);
+        for (name, scale_at_4x) in [
+            ("0.5", 2.0), ("1", 4.0), ("1.0", 4.0), ("1.5", 6.0),
+            ("2", 8.0), ("3", 12.0), ("4", 16.0), ("retail", 1.0),
+        ] {
+            let v = LOD_DISTANCE.parse(name).unwrap();
+            store.set(LOD_DISTANCE.key, v).unwrap();
+            assert_eq!(lod_pixel_multiplier(1920, setting.get()), scale_at_4x);
+            assert_eq!(with_env(&data, &[]).0.get(LOD_DISTANCE.key), Some(v));
+        }
+        let (locked, problems) = with_env(&data, &[("H2_LOD_DISTANCE", "1.5")]);
+        assert!(problems.is_empty());
+        assert_eq!(locked.get(LOD_DISTANCE.key), Some(Value::Int(3)));
+        assert!(locked.state(LOD_DISTANCE.key).unwrap().locked);
+        assert!(LOD_DISTANCE.parse("5").is_err());
+        assert!(LOD_DISTANCE.parse("NaN").is_err());
+        assert_eq!(RESOLUTION.scope, Scope::Host);
+        assert_eq!(LOD_DISTANCE.scope, Scope::View);
+    }
+
+    #[test]
     fn lighting_is_retail_unless_asked_and_has_a_video_row() {
         let data = tmp("lighting");
         let (s, p) = with_env(&data, &[]);
@@ -1166,7 +1625,7 @@ mod tests {
         assert_eq!(lighting_of(LIGHTING_E3 as u32), d3d::Lighting::E3);
         let menu = LIGHTING.menu.expect("a row");
         assert_eq!(menu.screen, "video");
-        assert!(RENDER_SCALE.menu.unwrap().order < menu.order);
+        assert!(RESOLUTION.menu.unwrap().order < menu.order);
         assert_eq!(LIGHTING.apply, Apply::Live, "no restart");
         // The file takes the names; the variable locks it.
         std::fs::write(settings::path_in(&data), "[graphics]\nlighting = \"e3\"\n").unwrap();

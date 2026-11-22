@@ -8,9 +8,10 @@ license.workspace = true
 [features]
 default = ["gpu"]
 # Guest formats, texture decoding, state and vertex declarations are CPU-only.
-gpu = ["dep:wgpu", "dep:bytemuck", "dep:pollster", "dep:hashbrown", "dep:timeline"]
+gpu = ["dep:wgpu", "dep:bytemuck", "dep:pollster", "dep:hashbrown", "dep:timeline", "mem-watch/gpu"]
 
 [dependencies]
+mem-watch.workspace = true
 # `serde`: pipeline keys are persisted (d3d::pipeline_store).
 wgpu = { version = "30", features = ["serde"], optional = true }
 bytemuck = { version = "1", optional = true }
@@ -19,6 +20,7 @@ hashbrown = { version = "0.17", default-features = false, features = ["default-h
 # Pipeline and program keys are persisted (d3d::pipeline_store).
 serde = { version = "1", features = ["derive"] }
 pollster = { version = "1", optional = true }
+smallvec = "1"
 thiserror.workspace = true
 # Pipeline-creation spans (docs/perf/profiling.md); no dependencies of its own.
 timeline = { path = "../../runtime/timeline", optional = true }

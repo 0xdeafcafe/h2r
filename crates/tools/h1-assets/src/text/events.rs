@@ -1,13 +1,14 @@
 //! Bind native event slots to the Halo 1 message templates and their inputs.
 
 use h1map::{Group, H1Map, Tag, TagRef};
-use map::FourCC;
-use map::build::{Block, FixupKind, TagPayload, TagSet};
+use map::build::{FixupKind, TagPayload, TagSet};
+use map::{FourCC, TagId};
 
-use crate::text::Result;
 use crate::text::h1::{Hmt, HudMessage, MessagePart, Ustr};
 use crate::text::silhouettes::{Atlas, Silhouette};
+use crate::text::{Error, Result};
 
+#[derive(Clone)]
 pub(crate) struct Event {
     group: FourCC,
     object: String,
@@ -17,7 +18,7 @@ pub(crate) struct Event {
     pub args: [Option<usize>; 2],
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Events {
     pub entries: Vec<HudMessage>,
     pub routes: Vec<Event>,
@@ -29,6 +30,7 @@ pub(crate) struct Events {
     pub silhouettes: Vec<Silhouette>,
 }
 
+#[derive(Clone)]
 pub(crate) struct Subject {
     pub group: FourCC,
     pub object: String,
@@ -42,19 +44,23 @@ enum Field {
 }
 
 impl Event {
+    pub fn target(&self) -> (FourCC, &str) {
+        (self.group, &self.object)
+    }
+
     pub fn is_control(&self) -> bool {
         self.group == FourCC(*b"ctrl")
     }
 
     pub fn write(&self, set: &mut TagSet) {
-        let Some(tag) = set
-            .find(self.group, &self.object)
-            .and_then(|id| set.tag_mut(id))
-        else {
-            return;
-        };
-        let TagPayload::Built(root) = &mut tag.payload else {
-            return;
+        if let Some(id) = set.find(self.group, &self.object) {
+            self.write_at(set, id);
+        }
+    }
+
+    pub fn write_at(&self, set: &mut TagSet, id: TagId) -> bool {
+        let Some(TagPayload::Built(root)) = set.tag_mut(id).map(|tag| &mut tag.payload) else {
+            return false;
         };
         let (block, offset) = match self.field {
             Field::Root(offset) => (root, offset),
@@ -65,18 +71,20 @@ impl Event {
                     .find(|f| f.offset == 0x1c8)
                     .map(|f| &mut f.kind)
                 else {
-                    return;
+                    return false;
                 };
                 if i >= *count as usize {
-                    return;
+                    return false;
                 }
                 (child, 0xb0 * i as u32 + 0x84)
             }
         };
-        if offset as usize + 4 <= block.bytes.len() {
-            block.fixups.retain(|f| f.offset != offset);
-            block.string_id(offset, &self.key);
+        if offset as usize + 4 > block.bytes.len() {
+            return false;
         }
+        block.fixups.retain(|f| f.offset != offset);
+        block.string_id(offset, &self.key);
+        true
     }
 }
 
@@ -136,7 +144,31 @@ fn strings(map: &H1Map, tag: Option<TagRef>) -> Result<Vec<String>> {
     }
 }
 
-pub(crate) fn read(map: &H1Map, object_names: Option<TagRef>) -> Result<Events> {
+#[derive(Clone, Copy)]
+pub(crate) enum Scope {
+    Campaign(Option<TagRef>),
+    Multiplayer { weapons: bool },
+}
+
+impl Scope {
+    fn includes(self, group: &[u8; 4]) -> bool {
+        match self {
+            Self::Campaign(_) => matches!(group, b"weap" | b"eqip" | b"vehi" | b"ctrl"),
+            Self::Multiplayer { weapons } => group == b"eqip" || (weapons && group == b"weap"),
+        }
+    }
+}
+
+fn weapon_argument(scope: Scope, pickup: &str, name: Option<&str>, sprite: Option<char>) -> String {
+    match (scope, sprite) {
+        (Scope::Multiplayer { .. }, Some(sprite)) => format!("{} {sprite}", item_name(pickup)),
+        (Scope::Multiplayer { .. }, None) => item_name(pickup).to_owned(),
+        (Scope::Campaign(_), Some(sprite)) => sprite.to_string(),
+        (Scope::Campaign(_), None) => name.unwrap_or_else(|| item_name(pickup)).to_owned(),
+    }
+}
+
+pub(crate) fn read(map: &H1Map, scope: Scope) -> Result<Events> {
     let Some(globals) = map
         .tags()
         .iter()
@@ -151,8 +183,15 @@ pub(crate) fn read(map: &H1Map, object_names: Option<TagRef>) -> Result<Events> 
     let entries = Hmt::read(map, map.tag(reference.id)?)?.messages;
     let items = strings(map, TagRef::read(globals, 0x94))?;
     let icons = strings(map, TagRef::read(globals, 0xb4))?;
-    let object_names = strings(map, object_names)?;
-    let mut atlas = Atlas::read(map, globals)?;
+    let object_names = match scope {
+        Scope::Campaign(names) => strings(map, names)?,
+        Scope::Multiplayer { .. } => Vec::new(),
+    };
+    let mut atlas = if scope.includes(b"weap") {
+        Atlas::read(map, globals)?
+    } else {
+        None
+    };
     let mut silhouettes = Vec::new();
     let mut subjects = Vec::new();
     let mut b = Builder {
@@ -160,9 +199,20 @@ pub(crate) fn read(map: &H1Map, object_names: Option<TagRef>) -> Result<Events> 
         entries,
         routes: Vec::new(),
     };
+    if let Scope::Multiplayer { weapons } = scope {
+        for template in ["swap_powerup"].into_iter().chain(
+            ["pickup", "swap_weapon", "remind_to_switch_weapons"]
+                .into_iter()
+                .filter(|_| weapons),
+        ) {
+            if b.template(template).is_none() {
+                return Err(Error::Invalid(format!("missing HUD template {template}")));
+            }
+        }
+    }
     for tag in map.tags() {
         let group = tag.group.0.to_be_bytes();
-        if !matches!(&group, b"weap" | b"eqip" | b"vehi" | b"ctrl") {
+        if !scope.includes(&group) {
             continue;
         }
         let bytes = map.tag_data(tag)?;
@@ -174,6 +224,13 @@ pub(crate) fn read(map: &H1Map, object_names: Option<TagRef>) -> Result<Events> 
                 let pickup = short(bytes, 0x180)
                     .filter(|&i| i != 0)
                     .and_then(|i| items.get(i).map(|text| (i, text)));
+                if matches!(scope, Scope::Multiplayer { .. })
+                    && group == *b"eqip"
+                    && matches!(short(bytes, 0x308), Some(2 | 3 | 5))
+                    && pickup.is_none_or(|(_, text)| text.is_empty())
+                {
+                    return Err(Error::Invalid(format!("missing pickup text for {}", tag.name)));
+                }
                 if let Some((i, text)) = pickup {
                     let single = b.text(text);
                     b.route(tag, Field::Root(0xe0), single, [None; 2]);
@@ -190,10 +247,7 @@ pub(crate) fn read(map: &H1Map, object_names: Option<TagRef>) -> Result<Events> 
                         Some(atlas) => atlas.weapon(map, bytes, &mut silhouettes)?,
                         None => None,
                     };
-                    let arg = match sprite {
-                        Some(sprite) => b.text(sprite.encode_utf8(&mut [0; 4])),
-                        None => b.text(name.unwrap_or_else(|| item_name(pickup))),
-                    };
+                    let arg = b.text(&weapon_argument(scope, pickup, name, sprite));
                     for (field, template) in [
                         (0xcc, "pickup"),
                         (0xd0, "swap_weapon"),
@@ -236,7 +290,7 @@ pub(crate) fn read(map: &H1Map, object_names: Option<TagRef>) -> Result<Events> 
                 let Some(seats) = h1map::Block::read(bytes, 0x2e4) else {
                     continue;
                 };
-                for (i, seat) in map.block(seats, 0x11c)?.chunks_exact(0x11c).enumerate() {
+                for (i, seat) in map.block(seats, 0x11c)?.as_chunks::<0x11c>().0.iter().enumerate() {
                     let Some(label) = short(seat, 0xec).and_then(|i| icons.get(i)) else {
                         continue;
                     };
@@ -257,14 +311,14 @@ pub(crate) fn read(map: &H1Map, object_names: Option<TagRef>) -> Result<Events> 
             _ => unreachable!(),
         }
     }
-    let custom_device = b.template("custom_device");
-    let exit_vehicle = b.template("exit_vehicle");
+    let custom_device = b.template("custom_device").filter(|_| scope.includes(b"ctrl"));
+    let exit_vehicle = b.template("exit_vehicle").filter(|_| scope.includes(b"vehi"));
     let swap_powerup = b.template("swap_powerup");
     let mut control_phrases = Vec::new();
     if custom_device.is_some() {
         let scenario = map.tag_data(map.scenario())?;
         if let Some(controls) = h1map::Block::read(scenario, 0x2ac) {
-            for control in map.block(controls, 0x40)?.chunks_exact(0x40) {
+            for control in map.block(controls, 0x40)?.as_chunks::<0x40>().0 {
                 // 0x118f16 reads a one-based scenario-string row
                 // from the placement.
                 let phrase = short(control, 0x34)
@@ -313,5 +367,20 @@ mod tests {
         );
         assert_eq!(quantity("Found one widget"), None);
         assert_eq!(item_name("Picked up an example"), "example");
+    }
+
+    #[test]
+    fn multiplayer_weapon_arguments_include_the_label_and_authored_icon() {
+        let scope = Scope::Multiplayer { weapons: true };
+        let notice = "Picked up an example";
+        assert_eq!(
+            weapon_argument(scope, notice, Some("unrelated icon label"), Some('\u{e500}')),
+            "example \u{e500}",
+        );
+        assert_eq!(weapon_argument(scope, notice, None, None), "example");
+        assert_eq!(
+            weapon_argument(Scope::Campaign(None), notice, None, Some('\u{e500}')),
+            "\u{e500}",
+        );
     }
 }

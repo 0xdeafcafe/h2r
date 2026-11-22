@@ -1,7 +1,7 @@
 //! Guest RAM storage, and copy-on-write copies of it for a second executor
 //! (docs/runtime/second-executor.md, section 2).
 //!
-//! Linux x86-64 reserves live RAM between two guard pages. Other hosts use
+//! Windows and Linux x86-64 reserve live RAM between two guard pages. Other hosts use
 //! a heap block by default. Flat RAM uses a shared memfd on Linux and a
 //! dedicated anonymous mapping on macOS. A macOS snapshot can share pages through
 //! `mach_vm_remap(copy = TRUE)`. With that mapping,
@@ -42,10 +42,17 @@ pub(crate) struct Ram {
 }
 
 enum Backing {
-    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    #[cfg(not(any(windows, all(target_os = "linux", target_arch = "x86_64"))))]
     Heap,
+    #[cfg(windows)]
+    WindowsReserved { base: NonNull<u8> },
+    #[cfg(windows)]
+    WindowsFileView,
     #[cfg(target_os = "macos")]
     MachLive,
+    #[cfg(target_os = "macos")]
+    /// A paged runtime's dedicated reservation, without shared flat aliases.
+    MachPaged,
     #[cfg(target_os = "macos")]
     MachCopy,
     #[cfg(all(unix, not(all(target_os = "linux", target_arch = "x86_64"))))]
@@ -68,17 +75,20 @@ unsafe impl Sync for Ram {}
 impl Ram {
     /// The live, initially zero physical store; aliasable when flat RAM
     /// is selected (`H2_FLAT_RAM=1`).
-    pub(crate) fn zeroed(len: usize) -> Self {
+    pub(crate) fn zeroed(len: usize, map_guest_reads: bool) -> Self {
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
         let aliasable = crate::flat::enabled();
         #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64"))))]
         let aliasable = false;
-        Self::zeroed_with(len, aliasable)
+        Self::zeroed_with(len, aliasable, map_guest_reads)
     }
     /// The live, initially zero physical store. `aliasable` asks for a
     /// backing that [`Ram::alias`] can map into a window (a shared memfd on
-    /// Linux, a dedicated mapping on macOS); elsewhere it is ignored.
-    pub(crate) fn zeroed_with(len: usize, aliasable: bool) -> Self {
+    /// Linux, a dedicated mapping on macOS). A paged macOS light host also
+    /// needs an owned mapping when it installs immutable guest file pages.
+    pub(crate) fn zeroed_with(len: usize, aliasable: bool, map_guest_reads: bool) -> Self {
+        #[cfg(not(target_os = "macos"))]
+        let _ = map_guest_reads;
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         {
             linux::reserve(len, linux::PREFERRED_BASE, aliasable)
@@ -87,7 +97,7 @@ impl Ram {
         #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64"))))]
         let _ = aliasable;
         #[cfg(target_os = "macos")]
-        if aliasable {
+        if aliasable || (map_guest_reads && cfg!(feature = "guest-file-reads")) {
             // A dedicated mapping guarantees host-page alignment for shared
             // aliases, independent of the selected global allocator.
             let p = unsafe {
@@ -105,17 +115,21 @@ impl Ram {
                     return Self {
                         ptr,
                         len,
-                        backing: Backing::MachLive,
+                        backing: if aliasable { Backing::MachLive } else { Backing::MachPaged },
                         cow_base: None,
                     };
                 }
                 unsafe { libc::munmap(p, len) };
             }
         }
-        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        #[cfg(windows)]
+        {
+            win::reserve(len).expect("reserve guarded guest physical RAM")
+        }
+        #[cfg(not(any(windows, all(target_os = "linux", target_arch = "x86_64"))))]
         Self::from_box(vec![0u8; len].into_boxed_slice())
     }
-    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    #[cfg(not(any(windows, all(target_os = "linux", target_arch = "x86_64"))))]
     fn from_box(b: Box<[u8]>) -> Self {
         let len = b.len();
         let ptr = NonNull::new(Box::into_raw(b).cast::<u8>()).expect("Box is non-null");
@@ -146,7 +160,14 @@ impl Ram {
             copy.copy_from_slice(self);
             copy
         };
-        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        #[cfg(windows)]
+        let copy = {
+            let _ = window;
+            let mut copy = win::reserve(self.len).expect("reserve guarded snapshot RAM");
+            copy.copy_from_slice(self);
+            copy
+        };
+        #[cfg(not(any(windows, all(target_os = "linux", target_arch = "x86_64"))))]
         let copy = {
             // A heap copy: the window cannot alias it, and the Guest that
             // needs one copies it again (`Guest::ensure_aliasable_ram`).
@@ -197,7 +218,11 @@ impl Ram {
         {
             self.cow_base.is_some() && matches!(self.backing, Backing::Guarded { file: None, .. })
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            matches!(self.backing, Backing::WindowsFileView)
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             false
         }
@@ -213,7 +238,7 @@ impl Ram {
         if self.can_share() {
             return true;
         }
-        let mut fresh = Self::zeroed_with(self.len, true);
+        let mut fresh = Self::zeroed_with(self.len, true, false);
         if !fresh.can_alias() {
             return false;
         }
@@ -264,6 +289,78 @@ impl Ram {
         }
     }
 
+
+    /// Install only whole pages within our paged data reservation. A memfd
+    /// (Linux) or MachLive block can already have writable flat aliases, so
+    /// replacing its pages would give those aliases a stale view.
+    #[cfg(all(feature = "guest-file-reads", unix))]
+    pub(crate) fn install_file_pages(
+        &mut self, physical: usize, file: &File, offset: u64, len: usize, page: usize,
+    ) -> Result<(), &'static str> {
+        use std::os::fd::AsRawFd;
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        let paged = matches!(self.backing, Backing::Guarded { file: None, .. });
+        #[cfg(target_os = "macos")]
+        let paged = matches!(self.backing, Backing::MachPaged | Backing::MachCopy | Backing::FilePrivate);
+        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64"))))]
+        let paged = false;
+        if !paged {
+            return Err("RAM has aliases or no dedicated mapping");
+        }
+        if len == 0 || physical.checked_add(len).is_none_or(|end| end > self.len)
+            || !len.is_multiple_of(page) || !offset.is_multiple_of(page as u64)
+            || offset.checked_add(len as u64).is_none_or(|end| end > i64::MAX as u64)
+        {
+            return Err("range outside RAM or file offset limits");
+        }
+        // SAFETY: bounds checked above. The reservation and both guards
+        // (where present) remain at their original addresses.
+        let dst = unsafe { self.ptr.as_ptr().add(physical) };
+        if !(dst as usize).is_multiple_of(page) {
+            return Err("physical RAM is not page aligned");
+        }
+        // SAFETY: only our exclusively owned whole data pages are replaced,
+        // under the Guest gate. The caller has checked the extent on a VFS
+        // input whose contents stay immutable until every host releases it.
+        let mapped = unsafe {
+            libc::mmap(dst.cast(), len, libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_FIXED | libc::MAP_PRIVATE, file.as_raw_fd(), offset as libc::off_t)
+        };
+        if mapped == libc::MAP_FAILED {
+            // POSIX allows a failed MAP_FIXED to leave holes (e.g. kernel
+            // mapping-count exhaustion). The copy path needs writable RAM.
+            // If the reservation was lost, reinstall the entire interior
+            // and fill it from the pinned source before exposing it again.
+            let prot = libc::PROT_READ | libc::PROT_WRITE;
+            if unsafe { libc::mprotect(dst.cast(), len, prot) } != 0 {
+                let recovered = unsafe {
+                    libc::mmap(dst.cast(), len, prot,
+                        libc::MAP_FIXED | libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0)
+                };
+                if recovered == libc::MAP_FAILED {
+                    eprintln!("guest mapped read: failed to restore guest RAM reservation");
+                    std::process::abort();
+                }
+                use std::os::unix::fs::FileExt;
+                if let Err(error) = file.read_exact_at(&mut self[physical..physical + len], offset) {
+                    eprintln!("guest mapped read: failed to recover guest RAM contents: {error}");
+                    std::process::abort();
+                }
+            }
+            return Err("mmap refused file pages");
+        }
+        Ok(())
+    }
+
+    #[cfg(all(feature = "guest-file-reads", unix))]
+    pub(crate) fn host_page_size() -> Option<usize> {
+        static PAGE: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+        *PAGE.get_or_init(|| {
+            // SAFETY: sysconf has no pointer arguments.
+            usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).ok()
+                .filter(|p| p.is_power_of_two() && *p >= 4096)
+        })
+    }
 
     /// Make this block a private copy-on-write view of `file`, which must
     /// hold exactly this block's bytes: every read comes from the file's
@@ -335,7 +432,12 @@ impl Ram {
             self.cow_base = Some(file);
             Ok(())
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            *self = win::private_view(file, len)?;
+            Ok(())
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = (file, len);
             Err(std::io::Error::new(
@@ -398,7 +500,7 @@ impl DerefMut for Ram {
 impl Drop for Ram {
     fn drop(&mut self) {
         match self.backing {
-            #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+            #[cfg(not(any(windows, all(target_os = "linux", target_arch = "x86_64"))))]
             Backing::Heap => {
                 // SAFETY: from_box took this slice out of its Box.
                 unsafe {
@@ -408,8 +510,18 @@ impl Drop for Ram {
                     )));
                 }
             }
+            #[cfg(windows)]
+            Backing::WindowsReserved { base } => {
+                // SAFETY: reserve() owns the entire reservation at base.
+                unsafe { win::release(base) };
+            }
+            #[cfg(windows)]
+            Backing::WindowsFileView => {
+                // SAFETY: private_view() transferred the mapped view to Ram.
+                unsafe { win::unmap(self.ptr) };
+            }
             #[cfg(target_os = "macos")]
-            Backing::MachLive => {
+            Backing::MachLive | Backing::MachPaged => {
                 // SAFETY: this is the original live anonymous mapping.
                 unsafe { libc::munmap(self.ptr.as_ptr().cast(), self.len) };
             }
@@ -432,6 +544,9 @@ impl Drop for Ram {
         }
     }
 }
+
+#[cfg(windows)]
+mod win;
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod linux {
@@ -648,10 +763,21 @@ mod tests {
 
     const LEN: usize = 64 * 1024 * 1024;
 
+    #[cfg(all(target_os = "macos", feature = "guest-file-reads"))]
+    #[test]
+    fn mac_guest_file_reads_select_the_paged_backing_per_guest() {
+        let ordinary = Ram::zeroed_with(64 * 1024, false, false);
+        let mapped = Ram::zeroed_with(64 * 1024, false, true);
+        let flat = Ram::zeroed_with(64 * 1024, true, true);
+        assert!(matches!(ordinary.backing, Backing::Heap));
+        assert!(matches!(mapped.backing, Backing::MachPaged));
+        assert!(matches!(flat.backing, Backing::MachLive));
+    }
+
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     #[test]
     fn linux_live_ram_has_two_guards_and_collision_preserves_the_first_guest() {
-        let mut first = Ram::zeroed(LEN);
+        let mut first = Ram::zeroed(LEN, false);
         first[0] = 0xa5;
         let Backing::Guarded { base, .. } = first.backing;
         let mut other = linux::reserve(LEN, base.as_ptr() as usize, false).unwrap();
@@ -686,7 +812,7 @@ mod tests {
 
     #[test]
     fn a_copy_keeps_the_bytes_of_its_moment_and_its_own_writes() {
-        let mut live = Ram::zeroed(LEN);
+        let mut live = Ram::zeroed(LEN, false);
         live[0] = 1;
         live[LEN / 2] = 2;
         live[LEN - 1] = 3;
@@ -729,7 +855,7 @@ mod tests {
 
     #[test]
     fn copies_made_and_dropped_repeatedly_stay_independent() {
-        let mut live = Ram::zeroed(LEN);
+        let mut live = Ram::zeroed(LEN, false);
         for round in 0..64u8 {
             live[round as usize * 4096] = round;
             let (mut copy, _) = live.cow_copy();
@@ -748,7 +874,7 @@ mod tests {
     #[test]
     #[ignore = "benchmark"]
     fn cow_copy_cost() {
-        let mut live = Ram::zeroed(LEN);
+        let mut live = Ram::zeroed(LEN, false);
         let touched = 16 * 1024 * 1024;
         live[..touched].fill(1);
         for _ in 0..5 {

@@ -19,7 +19,7 @@ use crate::session::{Playlist, Session};
 use crate::sink::Sink;
 #[cfg(test)]
 use crate::sink::JsonlSink;
-use crate::tags::{BotsLocator, MapIdLocator, MapLocator, PlaylistLocator};
+use crate::tags::{BotsLocator, HostedSessionLocator, MapIdLocator, MapLocator, PlaylistLocator};
 
 /// Weapons with uncollected shots are few (only those fired since the last
 /// completed tick); past this many the counts are dropped, not grown.
@@ -27,7 +27,12 @@ const MAX_FIRING_WEAPONS: usize = 256;
 /// Damage reports kept between samples (one tick).
 const MAX_PENDING_HITS: usize = 256;
 
+pub(super) type CombatSource = Box<dyn Fn() -> Vec<live_proto::game::SimCombatSample> + Send + Sync>;
+pub(super) type CombatFeed = Arc<std::sync::OnceLock<CombatSource>>;
+
 pub struct Telemetry {
+    /// Shared only with the transport of an immediate, private simulation.
+    combat: CombatFeed,
     /// Legacy projection and transport run on the worker. During a film the
     /// game thread owns projection and queues only legacy transport work.
     pub(crate) pipeline: Pipeline,
@@ -53,6 +58,7 @@ pub struct Telemetry {
     map_ids: Mutex<Option<MapIdLocator>>,
     /// Names the starting game's playlist; set by the boot with Live.
     playlists: Mutex<Option<PlaylistLocator>>,
+    hosted_session: Mutex<Option<HostedSessionLocator>>,
     /// Names the starting game's bot roster; set by the boot with Live.
     bots: Mutex<Option<BotsLocator>>,
 }
@@ -61,6 +67,7 @@ impl Telemetry {
     pub(crate) fn new(session: Session, sink: impl Sink) -> Self {
         Self {
             pipeline: Pipeline::new(session, sink),
+            combat: Default::default(),
             film: None,
             hooks: live_proto::film::TelemetryHooks::EVENTS,
             disabled: AtomicBool::new(false),
@@ -72,6 +79,7 @@ impl Telemetry {
             maps: Mutex::new(None),
             map_ids: Mutex::new(None),
             playlists: Mutex::new(None),
+            hosted_session: Mutex::new(None),
             bots: Mutex::new(None),
         }
     }
@@ -81,6 +89,11 @@ impl Telemetry {
         self.submit(Work::FinishSim(report))?;
         self.pipeline.settle();
         self.pipeline.worker_error().map_or(Ok(()), Err)
+    }
+
+    /// Sampled on the telemetry worker alongside an immediate simulation's frames.
+    pub fn set_sim_combat(&self, read: impl Fn() -> Vec<live_proto::game::SimCombatSample> + Send + Sync + 'static) {
+        let _ = self.combat.set(Box::new(read));
     }
 
     /// Lets each match look up its map's biped and weapon tag names (frame
@@ -109,6 +122,11 @@ impl Telemetry {
         *self.playlists.lock().unwrap() = Some(locator);
     }
 
+    /// Reads the current advertisement when a multiplayer game starts.
+    pub fn set_hosted_session_locator(&self, locator: HostedSessionLocator) {
+        *self.hosted_session.lock().unwrap() = Some(locator);
+    }
+
     /// Lets each multiplayer game know its Clankers (docs/game/bots.md §6,
     /// stage 6c): asked at the start, so every bot goes out with `bot:
     /// true` and a game with a server roster names the roster's session.
@@ -130,6 +148,19 @@ impl Telemetry {
         self.configure(move |s| s.set_campaign_custom_skulls(skulls));
     }
 
+    /// A Firefight `Score` command as the host's director credited it, at
+    /// the guest's `tick`. Live records it as a public game event and the
+    /// film as an `ObjectiveScore` of game type `firefight`; with no game
+    /// running it is dropped.
+    pub fn firefight_score(&self, score: live_proto::firefight::FirefightScore) {
+        self.configure(move |s| s.firefight_score(score));
+    }
+
+    /// A Firefight match's result, sent before the game ends.
+    pub fn firefight_ended(&self, end: live_proto::firefight::FirefightEnded) {
+        self.configure(move |s| s.firefight_ended(end));
+    }
+
     /// A setting for the session, after everything already queued. Once
     /// telemetry has failed there is no session to set.
     pub(crate) fn configure(&self, f: impl FnOnce(&mut Session) + Send + 'static) {
@@ -144,7 +175,7 @@ impl Telemetry {
         }
         let file = {
             let maps = self.maps.lock().unwrap();
-            (maps.as_ref()?)(map)?
+            (maps.as_ref()?)(guest)?
         };
         Some(Names {
             map: map.to_owned(),
@@ -256,7 +287,7 @@ impl Telemetry {
                 .lock()
                 .unwrap()
                 .as_ref()
-                .and_then(|locate| locate(&info.map))
+                .and_then(|locate| locate(guest))
         } else {
             None
         };
@@ -275,6 +306,8 @@ impl Telemetry {
             Default::default()
         };
         if info.mode == "multiplayer" {
+            let hosted = self.hosted_session.lock().unwrap().as_ref().and_then(|get| get());
+            self.configure(move |s| s.hosted_session = hosted);
             let playlist = self
                 .playlists
                 .lock()
@@ -428,7 +461,98 @@ impl Telemetry {
         self.submit(Work::End(Box::new(snapshot)))
     }
 
-    fn kill(&self, guest: &runtime::Guest, attacker: u32, victim: u32) -> Result<(), String> {
+    fn actor_killed(&self, guest: &runtime::Guest, report: u32, victim: u32) -> Result<(), String> {
+        use guest_layout::Datum;
+        use sim_objects::{SimEvent, damage};
+
+        let Some(SimEvent::ActorKilled { unit, character, killer, weapon }) =
+            damage::actor_killed(guest, report, Datum(victim))
+        else {
+            return Ok(());
+        };
+        if memory::cinematic(guest).unwrap_or(false) {
+            return Ok(());
+        }
+        let tick = match memory::game_tick(guest) {
+            Ok(tick) => tick,
+            Err(fault) => return self.missing_sample("actor_kill_clock", fault),
+        };
+        self.submit(Work::ActorKilled {
+            tick,
+            unit: unit.raw(),
+            character: character.get(),
+            owner: killer.get(),
+            weapon,
+        })
+    }
+
+    /// A bounce off a superbounce crease by the player in slot `player`,
+    /// `chain` bounces into its chain, a Monster when `monster`, at the
+    /// guest's game tick (docs/game/superbounce.md, "Recording"). The
+    /// superbounce mode calls it on the console that records the game; the
+    /// session sends it as a `Superbounce` game event and the film records
+    /// it with its medals.
+    pub fn superbounce(&self, guest: &runtime::Guest, player: u32, chain: u32, monster: bool) {
+        self.bounce_work(guest, |tick| Work::Superbounce {
+            tick,
+            player,
+            chain,
+            monster,
+        });
+    }
+
+    /// The player in slot `player` died falling out of or through the map
+    /// while trying a bounce, ending a chain of `chain` (0 if none), as the
+    /// superbounce mode decides: a `Bounced`
+    /// game event, and the `bounced` medal in the film.
+    pub fn bounced(&self, guest: &runtime::Guest, player: u32, chain: u32) {
+        self.bounce_work(guest, |tick| Work::Bounced {
+            tick,
+            player,
+            chain,
+        });
+    }
+
+    /// The player in slot `player` teabagged the body of the player in slot
+    /// `victim`, as the game's teabag watch decides (docs/game/teabag.md):
+    /// a `Teabag` game event, which takes the `incel` medal from both in
+    /// the film and on Live. The watch calls it on the console that
+    /// records the game.
+    pub fn teabag(&self, guest: &runtime::Guest, player: u32, victim: u32) {
+        self.bounce_work(guest, |tick| Work::Teabag {
+            tick,
+            player,
+            victim,
+        });
+    }
+
+    /// Queues a medal event at the game tick, as a kill: none in a
+    /// cinematic.
+    fn bounce_work(&self, guest: &runtime::Guest, work: impl FnOnce(u64) -> Work) {
+        self.protect(|| {
+            if memory::cinematic(guest).unwrap_or(false) {
+                return Ok(());
+            }
+            let tick = match memory::game_tick(guest) {
+                Ok(tick) => tick,
+                Err(fault) => return self.missing_sample("superbounce_clock", fault),
+            };
+            self.submit(work(tick))
+        });
+    }
+
+    fn kill(&self, guest: &runtime::Guest, esp: u32) -> Result<(), String> {
+        use guest_layout::damage::{KillingDamage, killing_damage};
+
+        let (Ok(attacker), Ok(victim)) = (
+            guest.u32(esp.wrapping_add(4)),
+            guest.u32(esp.wrapping_add(8)),
+        ) else {
+            self.dropped_film_sample("kill");
+            return Ok(());
+        };
+        // Only the low byte of the fourth argument is initialized.
+        let credited_damage = guest.u8(esp.wrapping_add(0x10)).ok();
         let tick = match memory::game_tick(guest) {
             Ok(tick) => tick,
             Err(fault) => return self.missing_sample("kill_clock", fault),
@@ -444,10 +568,23 @@ impl Telemetry {
             Ok(object) => object,
             Err(fault) => self.missing_sample("kill_position", fault)?,
         };
+        let damage = killing_damage(
+            guest,
+            esp,
+            credited_damage.map(|code| KillingDamage {
+                code,
+                owner_player: guest_layout::Datum(attacker),
+            }),
+        );
+        let source = damage.and_then(|d| {
+            let other = d.owner_player.get().is_some_and(|owner| owner != victim);
+            layout::kill_source(d.code, other)
+        });
         self.submit(Work::Kill(Box::new(Kill {
             tick,
             attacker: (attacker != u32::MAX).then_some(attacker & 0xffff),
             victim: victim_index,
+            source,
             object,
             // The scripts' kills in a cutscene are not play.
             cinematic: memory::cinematic(guest).unwrap_or(false),
@@ -510,12 +647,12 @@ impl ::hooks::Feature for TelemetryFeature {
                         return;
                     };
                     t.protect(|| {
-                        let hit = memory::hit(&o.guest(), report, victim);
-                        match hit {
+                        let guest = o.guest();
+                        match memory::hit(&guest, report, victim) {
                             Ok(hit) => t.damaged(hit),
                             Err(_) => t.dropped_film_sample("damage"),
                         }
-                        Ok(())
+                        t.actor_killed(&guest, report, victim)
                     });
                 })
                 .optional();
@@ -524,22 +661,7 @@ impl ::hooks::Feature for TelemetryFeature {
         b.raw()
             .observe_before(&points::PLAYER_KILLED, "kill", move |o| {
                 if t.disabled() { return; }
-                let esp = o.cpu.esp;
-                let observation = {
-                    let guest = o.guest();
-                    (|| {
-                        let attacker = guest.u32(esp.wrapping_add(4))?;
-                        let victim = guest.u32(esp.wrapping_add(8))?;
-                        // `[esp+0x0c]` is not a betrayal flag (it is set in
-                        // free-for-all too): the session tells betrayals by
-                        // the players' teams.
-                        Ok::<_, runtime::GuestFault>((attacker, victim))
-                    })()
-                };
-                match observation {
-                    Ok((attacker, victim)) => t.protect(|| t.kill(&o.guest(), attacker, victim)),
-                    Err(_) => t.dropped_film_sample("kill"),
-                }
+                t.protect(|| t.kill(&o.guest(), o.cpu.esp));
             });
         // Observers only: nothing here writes the guest or feeds back into
         // it. The session is an outbound record of the run; a load winds
@@ -655,8 +777,9 @@ mod tests {
         let id = live_proto::maps::MapId([0x5c; 32]);
         let asked = std::sync::Arc::new(Mutex::new(Vec::new()));
         let seen = asked.clone();
-        telemetry.set_map_id_locator(Box::new(move |map| {
-            seen.lock().unwrap().push(map.to_string());
+        telemetry.set_map_id_locator(Box::new(move |guest| {
+            let map = memory::loaded_map_name(guest).ok()?;
+            seen.lock().unwrap().push(map.clone());
             (map == "mod-lockout").then_some((id, Some("lockout".into())))
         }));
         let mut guest = fixture::memory();
@@ -772,15 +895,36 @@ mod tests {
             .unwrap();
         assert_eq!(object.pos, [1.0, 2.0, 3.0]);
         telemetry.protect(|| telemetry.start(&guest));
-        telemetry.protect(|| telemetry.kill(&guest, 0x80010000, 0x80010001));
-        telemetry.protect(|| telemetry.kill(&guest, 0x80010000, 0x80010000));
+        let esp = 0x1a0000;
+        guest.set_u32(esp, 0x2222).unwrap();
+        guest.set_u32(esp + 4, 0x80010000).unwrap();
+        guest.set_u32(esp + 8, 0x80010001).unwrap();
+        guest.set_u8(esp + 0x10, (1 << 6) | 10).unwrap();
+        telemetry.protect(|| telemetry.kill(&guest, esp));
+        guest.set_u32(esp + 8, 0x80010000).unwrap();
+        guest.set_u8(esp + 0x10, 21).unwrap();
+        telemetry.protect(|| telemetry.kill(&guest, esp));
+        // A different player earns credit for earlier rifle damage, but
+        // the final hit was an unowned collision with the world.
+        use guest_layout::damage::{DEPLETING, DamageReport};
+        use points::kill_credit::{RETURN_TO_ATTRIBUTION, RETURN_TO_DAMAGE_REPORT};
+        let report = 0x1b0000;
+        guest.set_u32(esp + 8, 0x80010001).unwrap();
+        guest.set_u8(esp + 0x10, (1 << 6) | 10).unwrap();
+        guest.set_u32(esp, RETURN_TO_ATTRIBUTION).unwrap();
+        guest.set_u32(esp + 0x74, RETURN_TO_DAMAGE_REPORT).unwrap();
+        guest.set_u32(esp + 0x1c, report).unwrap();
+        guest.set_u32(report + DamageReport::FLAGS.offset, DEPLETING).unwrap();
+        guest.set_u8(report + DamageReport::CODE.offset, 2).unwrap();
+        guest.set_u32(report + DamageReport::OWNER_PLAYER.offset, u32::MAX).unwrap();
+        telemetry.protect(|| telemetry.kill(&guest, esp));
         // In a cutscene the scripts' kills are not counted, and the tick's
         // frame is a marked, empty one.
         fixture::set_cinematic(&mut guest, true);
         guest
             .set_u32(fixture::TIME + layout::TIME_TICK, 10)
             .unwrap();
-        telemetry.protect(|| telemetry.kill(&guest, 0x80010000, 0x80010001));
+        telemetry.protect(|| telemetry.kill(&guest, esp));
         telemetry.protect(|| telemetry.sample(&guest));
         assert!(!telemetry.disabled());
         drop(telemetry);
@@ -801,12 +945,19 @@ mod tests {
             .into_iter()
             .filter(|event: &serde_json::Value| event["type"] == "PlayerKilled")
             .collect();
-        assert_eq!(events.len(), 2);
+        assert_eq!(events.len(), 3);
         assert_eq!(events[0]["data"]["victim"], 1);
         assert_eq!(events[0]["data"]["kind"], "kill");
+        assert_eq!(events[0]["data"]["weapon"], "battle_rifle");
+        assert_eq!(events[0]["data"]["headshot"], true);
         assert_eq!(events[0]["data"]["pos"], serde_json::json!([1.0, 2.0, 3.0]));
         assert_eq!(events[1]["data"]["victim"], 0);
         assert_eq!(events[1]["data"]["kind"], "suicide");
+        assert_eq!(events[1]["data"]["weapon"], "frag_grenade");
+        assert_eq!(events[1]["data"]["headshot"], false);
+        assert_eq!(events[2]["data"]["killer"], 0);
+        assert_eq!(events[2]["data"]["weapon"], "collision");
+        assert!(events[2]["data"].get("headshot").is_none());
         let _ = std::fs::remove_file(path);
     }
 

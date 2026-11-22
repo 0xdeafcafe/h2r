@@ -1,6 +1,6 @@
 # sim-collision
 
-The native collision world: each collision BSP the guest names is decoded once into flat arrays, and a query is one Rust call over them. Nothing here writes guest memory.
+The collision world holds decoded BSPs for native point-to-leaf and location queries. It also supplies the segment kernels used in differential tests. The engine adapter commits accepted results to guest memory.
 
 ## Where it sits
 
@@ -9,7 +9,8 @@ The native collision world: each collision BSP the guest names is decoded once i
 ## Layout
 
 - `src/bsp/`: the decoded BSP and its tree walks.
-- `src/world.rs`: the collision world and its queries.
+- `src/world.rs`: decoded BSPs, map invalidation, memory accounting and entry counters.
+- `src/structure.rs`: the signed leaf-to-cluster table for the active structure.
 - `src/mem.rs`: the `GuestRead` boundary.
 - `src/synth.rs`: synthetic BSPs in guest form (`synth`).
 

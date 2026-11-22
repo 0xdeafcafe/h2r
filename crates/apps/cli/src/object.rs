@@ -579,7 +579,7 @@ fn validate(which: &str, disc: Option<&PathBuf>) -> Result<()> {
         s.perms.1, s.perms.0
     );
     let mut un: Vec<_> = s.unmatched.iter().collect();
-    un.sort_by(|a, b| b.1.cmp(a.1));
+    un.sort_by_key(|(_, n)| std::cmp::Reverse(**n));
     println!(
         "  most common unmatched names: {:?}",
         un.iter().take(8).collect::<Vec<_>>()

@@ -2108,7 +2108,7 @@ fn a10_cryotubes_are_placed_and_built_from_their_definition() {
         };
         assert_eq!(r.at("unit.obje.object_type"), Some(&Val::Enum(1)));
         assert_eq!(r.at("vehicle_type"), Some(&Val::Enum(6)), "turret");
-        let Some(Val::Block(seats)) = r.at("block_1c8") else {
+        let Some(Val::Block(seats)) = r.at("seats") else {
             panic!()
         };
         assert_eq!(seats.len(), 1, "pinned {pinned}: one seat");
@@ -2117,7 +2117,7 @@ fn a10_cryotubes_are_placed_and_built_from_their_definition() {
             Some(&Val::String(Str::Text("c_turret_ap_d".into())))
         );
         assert_eq!(
-            seats[0].get("string_8"),
+            seats[0].get("seat_marker_name"),
             Some(&Val::String(Str::Text("driver".into())))
         );
         let model = key(r.at("unit.obje.model")).expect("a model");
@@ -3027,9 +3027,9 @@ fn rebuilt_crew_and_sentinel_characters_reach_their_own_animation_resources() {
                 for k in (0..0x2c).step_by(4) {
                     let (h2_at, h1_at) = (0x2cc + k, 0x324 + k);
                     let want = if h1objects::rebuild::BIPED_RATES.iter().any(|r| r.1 == h1_at) {
-                        (30.0 * f32::from_bits(word(&source, h1_at))).to_bits()
+                        (30.0 * f32::from_bits(word(source, h1_at))).to_bits()
                     } else {
-                        word(&source, h1_at)
+                        word(source, h1_at)
                     };
                     assert_eq!(word(&b, h2_at), want, "{level} {}: bipd +{h2_at:#x} from +{h1_at:#x}", v.name);
                 }

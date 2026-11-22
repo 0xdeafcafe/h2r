@@ -3,14 +3,24 @@
 //!
 //! - `UNREAD_SOURCE_HASH`: the analyze crate and the fallback, for
 //!   the cached unread-target set (fallback.rs).
-//! - `ANALYSIS_SOURCE_HASH`: xbe, analyze, Cargo.lock and the rustc
-//!   version, for the cached analysis (lib.rs, `analysis_cache`).
+//! - `ANALYSIS_SOURCE_HASH`: xbe, analyze, the `Cargo.lock` entries of the
+//!   packages xbe and analyze reach, and the rustc version, for the cached
+//!   analysis (lib.rs, `analysis_cache`).
 //! - `GENERATOR_SOURCE_HASH`: everything that turns an XBE into the native
 //!   module (xbe, analyze, ir, lift, the IR passes, emit and its C, x87, the
 //!   runtime ABI header and the boot bridge C), for the dylib's build stamp
 //!   (lib.rs).
-//! - `FAST_TIER_SOURCE_HASH`: the same plus crates/recompiler/clif and Cargo.lock, for
-//!   the Cranelift fast tier's stamp (tier.rs).
+//! - `FAST_TIER_SOURCE_HASH`: the same plus crates/recompiler/clif and the
+//!   `Cargo.lock` entries of the packages clif reaches (the Cranelift
+//!   version), for the Cranelift fast tier's stamp (tier.rs).
+//!
+//! `Cargo.lock` is never hashed whole: a dependency change elsewhere in the
+//! workspace must not drop caches, saves or films. `lock_closure.rs` hashes
+//! the name, version, source and checksum of the packages reachable from
+//! the named roots, in sorted order (tests: tests/lock_closure.rs).
+
+#[path = "lock_closure.rs"]
+mod lock_closure;
 
 use std::path::{Path, PathBuf};
 
@@ -60,27 +70,34 @@ fn rustc_version() -> String {
 
 fn main() {
     // What discovery's result depends on: the image parser and the
-    // analyzer, their dependencies' versions (Cargo.lock) and the compiler.
-    let mut analysis = hash(&["../../formats/xbe/src", "../../recompiler/analyze/src"], &["rs"], &["../../../Cargo.lock"]);
-    for b in rustc_version().bytes() {
-        analysis ^= b as u64;
-        analysis = analysis.wrapping_mul(0x100_0000_01b3);
-    }
+    // analyzer, the lockfile entries they reach and the compiler.
+    let lock = "../../../Cargo.lock";
+    println!("cargo:rerun-if-changed={lock}");
+    let mut analysis = hash(&["../../formats/xbe/src", "../../recompiler/analyze/src"], &["rs"], &[]);
+    analysis = lock_closure::fold_closure(analysis, lock, &["xbe", "analyze"]);
+    analysis = lock_closure::fnv_extend(analysis, rustc_version().as_bytes());
     println!("cargo:rustc-env=ANALYSIS_SOURCE_HASH={analysis:016x}");
     let unread = hash(&["../../recompiler/analyze/src"], &["rs"], &["src/fallback.rs"]);
     println!("cargo:rustc-env=UNREAD_SOURCE_HASH={unread:016x}");
+    // The hook catalog changes lifted owner boundaries on both tiers.
+    // Include the gate and inherited HUD return sites as well as the list.
+    let entry_sources = ["src/render_entries.rs", "../../hooking/guest-layout/src/points.rs",
+        "../../hooking/guest-layout/src/points/render_aspect.rs",
+        "../../hooking/guest-layout/src/points/scene_effects.rs"];
     let generator = hash(
         &["../../formats/xbe/src", "../../recompiler/analyze/src", "../../recompiler/ir/src", "../../recompiler/lift/src", "../../recompiler/opt/src", "../../recompiler/emit/src", "../../recompiler/emit/c", "../../recompiler/x87/src", "../../runtime/runtime/include", "c"],
         &["rs", "c", "h"],
-        &[],
+        &entry_sources,
     );
     println!("cargo:rustc-env=GENERATOR_SOURCE_HASH={generator:016x}");
     // The fast tier's module (tier.rs): the generator's sources plus
-    // crates/recompiler/clif and Cargo.lock (the Cranelift version).
+    // crates/recompiler/clif and the lockfile entries clif reaches (the
+    // Cranelift version).
     let fast = hash(
         &["../../formats/xbe/src", "../../recompiler/analyze/src", "../../recompiler/ir/src", "../../recompiler/lift/src", "../../recompiler/opt/src", "../../recompiler/emit/src", "../../recompiler/emit/c", "../../recompiler/x87/src", "../../runtime/runtime/include", "c", "../../recompiler/clif/src", "../../recompiler/clif/c"],
         &["rs", "c", "h"],
-        &["../../../Cargo.lock"],
+        &entry_sources,
     );
+    let fast = lock_closure::fold_closure(fast, lock, &["clif"]);
     println!("cargo:rustc-env=FAST_TIER_SOURCE_HASH={fast:016x}");
 }

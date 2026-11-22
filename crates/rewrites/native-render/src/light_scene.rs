@@ -217,7 +217,7 @@ mod tests {
         let mut b = SceneBuilder::default();
         b.begin(SceneId::default());
         b.open_view(ViewKey { kind: ViewKind::Game, player: 0, view: 0 }, camera()).unwrap();
-        let light = SceneLight { handle: 1, definition: 2, flags: 7, definition_flags: 0, additional_casters: true, steps: 0..0 };
+        let light = SceneLight { handle: 1, definition: 2, flags: 7, definition_flags: 0, additional_casters: true, steps: 0..0, ..Default::default() };
         b.push_light(light, &[LightStep { layer: 12, stencil: Some(0), target: LightTarget::View, draws: true }]).unwrap();
         for (g, e) in groups {
             b.push_light_group(g.clone(), e).unwrap();

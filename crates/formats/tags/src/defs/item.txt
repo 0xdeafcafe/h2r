@@ -2,102 +2,105 @@
 # each group. Layer bounds: docs/formats/objects.md.
 struct item 0x12c
   0x0 struct obje obje -- the obje layer
-  0xbc unknown 0x4
-  0xc0 unknown 0x4
-  0xc4 unknown 0x4
-  0xc8 unknown 0x4
-  0xcc string string_cc
-  0xd0 string string_d0
-  0xd4 string string_d4
-  0xd8 string string_d8
-  0xdc string string_dc
-  0xe0 string string_e0
-  0xe4 string string_e4
-  0xe8 string string_e8
-  0xec string string_ec
-  0xf0 string string_f0
+  0xbc flags32 flags
+  0xc0 i16 old_message_index
+  0xc2 i16 sort_order
+  0xc4 f32 multiplayer_on_ground_scale
+  0xc8 f32 campaign_on_ground_scale
+  0xcc string pickup_message
+  0xd0 string swap_message
+  0xd4 string pickup_or_dual_wield_message
+  0xd8 string swap_or_dual_wield_message
+  0xdc string dual_wield_only_message
+  0xe0 string picked_up_message
+  0xe4 string singular_quantity_message
+  0xe8 string plural_quantity_message
+  0xec string switch_to_message
+  0xf0 string switch_to_from_ai_message
   0xf4 tagref ref_f4 groups=foot -- V: material effects in the item layer
   0xfc tagref collision_sound -- V: snd! on retail items (docs/halo1/objects.md, "Weapon effects and sounds")
-  0x104 block block_104 0x8 align 4
-    0x0 tagref ref_0
-  0x10c tagref ref_10c
-  0x114 unknown 0x4
-  0x118 unknown 0x4
+  0x104 block predicted_bitmaps 0x8 align 4
+    0x0 tagref bitmap
+  0x10c tagref detonation_damage_effect
+  0x114 f32[2] detonation_delay
   0x11c tagref detonating_effect -- S: effe group words on retail items; Halo 1 item +0x2e8
   0x124 tagref detonation_effect -- S: effe group words on retail items; Halo 1 item +0x2f8
 group weap 0x31c
   0x0 struct item item -- the item layer
   0x12c u32 weapon_flags -- E: bit 16 suppresses binocular zoom (0xc89c1..0xc89df), bits 22 and 23 permit the off hand (0xcd8a8..0xcd8d7, 0xcdaee..0xcdb0d)
   0x130 unknown 0x4
-  0x134 unknown 0x4
-  0x138 unknown 0x4
-  0x13c unknown 0x4
+  0x134 enum16 secondary_trigger_mode
+  0x136 i16 maximum_alternate_shots_loaded
+  0x138 f32 turn_on_time
+  0x13c f32 ready_time
   0x140 tagref ready_effect -- E/V: docs/halo1/objects.md, "Weapon effects and sounds"
-  0x148 tagref ref_148 groups=jpt! -- V (object/layouts.rs WEAP): jpt! where set; a definition default of zero words reads as a reference to tag 0
-  0x150 unknown 0x4
-  0x154 unknown 0x4
-  0x158 unknown 0x4
-  0x15c unknown 0x4
-  0x160 unknown 0x4
-  0x164 unknown 0x4
-  0x168 unknown 0x4
+  0x148 tagref ready_damage_effect groups=jpt! -- V (object/layouts.rs WEAP): jpt! where set; a definition default of zero words reads as a reference to tag 0
+  0x150 f32 heat_recovery_threshold
+  0x154 f32 overheated_threshold
+  0x158 f32 heat_detonation_threshold
+  0x15c f32 heat_detonation_fraction
+  0x160 f32 heat_loss_per_second
+  0x164 f32 heat_illumination
+  0x168 f32 overheated_heat_loss_per_second
   0x16c tagref overheated_effect -- E/V: docs/halo1/objects.md, "Weapon effects and sounds"
-  0x174 tagref ref_174 groups=jpt! -- V (object/layouts.rs WEAP): jpt! where set; a definition default of zero words reads as a reference to tag 0
+  0x174 tagref overheated_damage_effect groups=jpt! -- V (object/layouts.rs WEAP): jpt! where set; a definition default of zero words reads as a reference to tag 0
   0x17c tagref detonation_effect -- E/V: docs/halo1/objects.md, "Weapon effects and sounds"
-  0x184 tagref ref_184 groups=jpt! -- V (object/layouts.rs WEAP): jpt! where set; a definition default of zero words reads as a reference to tag 0
-  0x18c tagref ref_18c groups=jpt! -- V (object/layouts.rs WEAP): jpt! where set; a definition default of zero words reads as a reference to tag 0
-  0x194 tagref ref_194 groups=jpt! -- V (object/layouts.rs WEAP): jpt! where set; a definition default of zero words reads as a reference to tag 0
-  0x19c unknown 0x4
-  0x1a0 unknown 0x4
-  0x1a4 unknown 0x4
-  0x1a8 unknown 0x4
-  0x1ac unknown 0x4
-  0x1b0 unknown 0x4
-  0x1b4 unknown 0x4
-  0x1b8 unknown 0x4
+  0x184 tagref detonation_damage_effect groups=jpt! -- V (object/layouts.rs WEAP): jpt! where set; a definition default of zero words reads as a reference to tag 0
+  0x18c tagref player_melee_damage groups=jpt! -- V (object/layouts.rs WEAP): jpt! where set; a definition default of zero words reads as a reference to tag 0
+  0x194 tagref player_melee_response groups=jpt! -- V (object/layouts.rs WEAP): jpt! where set; a definition default of zero words reads as a reference to tag 0
+  0x19c f32 magnetism_angle unit=degrees
+  0x1a0 f32 magnetism_range
+  0x1a4 f32 throttle_magnitude
+  0x1a8 f32 throttle_minimum_distance
+  0x1ac f32 throttle_maximum_adjustment_angle unit=degrees
+  0x1b0 f32[2] damage_pyramid_angles unit=degrees
+  0x1b8 f32 damage_pyramid_depth
   0x1bc tagref ref_1bc
   0x1c4 tagref ref_1c4
   0x1cc tagref ref_1cc
   0x1d4 tagref ref_1d4
   0x1dc tagref ref_1dc
   0x1e4 tagref ref_1e4
-  0x1ec tagref ref_1ec
-  0x1f4 tagref ref_1f4
-  0x1fc unknown 0x2
+  0x1ec tagref lunge_melee_damage
+  0x1f4 tagref lunge_melee_response
+  0x1fc enum8 melee_damage_reporting_type
+  0x1fd unknown 0x1
   0x1fe i16 magnification_levels -- E: 0x1010cd bounds the scoped zoom level, 0xc89ca chooses between scoped and binocular zoom
   0x200 f32[2] magnification_range -- E: 0x101103 and 0x10111c read the lower and upper zoom magnification
-  0x208 unknown 0x4
-  0x20c unknown 0x4
+  0x208 f32 autoaim_angle unit=degrees
+  0x20c f32 autoaim_range
   0x210 unknown 0x4
   0x214 unknown 0x4
-  0x218 unknown 0x4
+  0x218 f32 deviation_angle unit=degrees
   0x21c unknown 0x4
   0x220 unknown 0x4
   0x224 unknown 0x4
   0x228 unknown 0x4
-  0x22c unknown 0x4
-  0x230 unknown 0x4
-  0x234 unknown 0x4
-  0x238 unknown 0x4
-  0x23c unknown 0x4
-  0x240 unknown 0x4
+  0x22c enum16 movement_penalized
+  0x22e unknown 0x2
+  0x230 f32 forward_movement_penalty
+  0x234 f32 sideways_movement_penalty
+  0x238 f32 ai_scariness
+  0x23c f32 weapon_power_on_time
+  0x240 f32 weapon_power_off_time
   0x244 tagref light_power_on_effect -- S: effe group words on retail weapons; Halo 1 weap +0x420
   0x24c tagref light_power_off_effect -- S: effe group words on retail weapons; Halo 1 weap +0x430
-  0x254 unknown 0x4
-  0x258 unknown 0x4
-  0x25c unknown 0x4
-  0x260 unknown 0x4
+  0x254 f32 age_heat_recovery_penalty
+  0x258 f32 age_rate_of_fire_penalty
+  0x25c f32 age_misfire_start
+  0x260 f32 age_misfire_chance
   0x264 tagref pickup_sound -- E/V: docs/halo1/objects.md, "Weapon effects and sounds"
   0x26c tagref zoom_in_sound -- E/V: docs/halo1/objects.md, "Weapon effects and sounds"
   0x274 tagref zoom_out_sound -- E/V: docs/halo1/objects.md, "Weapon effects and sounds"
-  0x27c unknown 0x4
-  0x280 unknown 0x4
+  0x27c f32 active_camo_ding
+  0x280 f32 active_camo_regrowth_rate
   0x284 unknown 0x4
-  0x288 string string_288
-  0x28c string string_28c
+  0x288 string weapon_class
+  0x28c string weapon_name
   0x290 i16 multiplayer_weapon_type -- E/V: 0 ordinary, 1 flag or bomb, 2 ball, 4 juggernaut powerup (0x101280, Zanzibar)
   0x292 i16 weapon_type -- E/V: shotgun 1 (shell reload at 0x10271d), needler 2, plasma pistol 3, plasma rifle 4
-  0x294 unknown 0x4
+  0x294 enum16 tracking_type
+  0x296 unknown 0x2
   0x298 unknown 0x4
   0x29c unknown 0x4
   0x2a0 unknown 0x4
@@ -106,20 +109,22 @@ group weap 0x31c
     0x0 tagref model groups=mode -- V: the weapon's first-person render model (retail fp_<weapon>, the same in both elements)
     0x8 tagref animations groups=jmad -- V: the first-person animation graph (retail characters\masterchief\fp\weapons\..., characters\dervish\fp\...)
   0x2b0 tagref hud groups=nhdt -- V: the weapon's HUD interface (retail ui\hud\<weapon>)
-  0x2b8 block block_2b8 0x8 align 4
-    0x0 unknown 0x4
-    0x4 datum datum_4
+  0x2b8 block predicted_resources 0x8 align 4
+    0x0 enum16 type
+    0x2 i16 resource_index
+    0x4 datum tag_index
   0x2c0 block magazines 0x5c align 4 -- V2 (docs/halo1/objects.md): magazine elements, stride 0x5c
-    0x0 unknown 0x4
-    0x4 unknown 0x2
+    0x0 flags32 flags
+    0x4 i16 rounds_recharged
     0x6 i16 rounds_total_initial -- V: equals Halo 1's magazine +0x6 on the retail pairs (weapon_rebuild_disc)
     0x8 i16 rounds_total_maximum -- V: equals Halo 1's magazine +0x8 on the retail pairs
     0xa i16 rounds_loaded_maximum -- V: equals Halo 1's magazine +0xa on five retail pairs (pistol and magnum, sniper rifles, rocket launchers, shotguns, ...)
-    0xc unknown 0x4
+    0xc i16 rounds_inventory_maximum
+    0xe unknown 0x2
     0x10 f32 reload_time -- V: seconds; equals Halo 1's magazine +0x14 on the retail pairs
     0x14 i16 rounds_reloaded -- V: equals Halo 1's magazine +0x18 on four retail pairs (one round at a time on both shotguns)
     0x16 unknown 0x2
-    0x18 unknown 0x4
+    0x18 f32 chamber_time
     0x1c unknown 0x4
     0x20 unknown 0x4
     0x24 unknown 0x4
@@ -132,106 +137,109 @@ group weap 0x31c
     0x44 tagref chambering_effect -- S: between two jpt! group words like the reloading effect's; Halo 1 magazine +0x48
     0x4c unknown 0x4
     0x50 unknown 0x4
-    0x54 block block_54 0xc align 4
-      0x0 unknown 0x4
-      0x4 tagref ref_4
-  0x2c8 block block_2c8 0x40 align 4
-    0x0 unknown 0x4
-    0x4 unknown 0x4
-    0x8 unknown 0x4
-    0xc unknown 0x4
-    0x10 unknown 0x4
-    0x14 unknown 0x4
-    0x18 unknown 0x4
-    0x1c unknown 0x4
-    0x20 unknown 0x4
-    0x24 unknown 0x4
-    0x28 unknown 0x4
-    0x2c unknown 0x4
-    0x30 tagref ref_30
-    0x38 tagref ref_38
+    0x54 block magazine_equipment 0xc align 4
+      0x0 i16 rounds
+      0x2 unknown 0x2
+      0x4 tagref equipment
+  0x2c8 block triggers 0x40 align 4
+    0x0 flags32 flags
+    0x4 enum16 input
+    0x6 enum16 behavior
+    0x8 i16 primary_barrel_index
+    0xa i16 secondary_barrel_index
+    0xc enum16 prediction
+    0xe unknown 0x2
+    0x10 f32 autofire_time
+    0x14 f32 autofire_throw
+    0x18 enum16 secondary_action
+    0x1a enum16 primary_action
+    0x1c f32 charging_time
+    0x20 f32 charged_time
+    0x24 enum16 overcharged_action
+    0x26 unknown 0x2
+    0x28 f32 charged_illumination
+    0x2c f32 spew_time
+    0x30 tagref charging_effect
+    0x38 tagref charging_damage_effect
   0x2d0 block barrels 0xec align 4 -- E (objects.md): stride 0xec; the Halo 1 converter writes one per trigger
-    0x0 unknown 0x4
-    0x4 unknown 0x4
-    0x8 unknown 0x4
-    0xc unknown 0x4
-    0x10 unknown 0x4
-    0x14 unknown 0x4
-    0x18 unknown 0x4
-    0x1c unknown 0x4
-    0x20 unknown 0x4
-    0x24 unknown 0x4
-    0x28 unknown 0x4
-    0x2c unknown 0x4
-    0x30 string string_30
+    0x0 flags32 flags
+    0x4 f32[2] rounds_per_second
+    0xc f32 acceleration_time
+    0x10 f32 deceleration_time
+    0x14 f32 barrel_spin_scale
+    0x18 f32 blurred_rate_of_fire
+    0x1c i16[2] shots_per_fire
+    0x20 f32 fire_recovery_time
+    0x24 f32 soft_recovery_fraction
+    0x28 i16 magazine_index
+    0x2a i16 rounds_per_shot
+    0x2c i16 minimum_rounds_loaded
+    0x2e i16 rounds_between_tracers
+    0x30 string optional_barrel_marker_name
     0x34 i16 prediction_type -- E/V: multiplayer firing at 0x10429b; continuous 1, discrete 2 on the SMG and shotgun
     0x36 i16 firing_noise -- V: equals Halo 1's trigger +0x2e (the AI's hearing of a shot: silent, medium, loud, ...) on eight retail pairs
     0x38 unknown 0x4
     0x3c unknown 0x4
-    0x40 unknown 0x4
-    0x44 unknown 0x4
+    0x40 f32[2] damage_error
     0x48 unknown 0x4
     0x4c unknown 0x4
     0x50 unknown 0x4
     0x54 unknown 0x4
-    0x58 unknown 0x4
-    0x5c unknown 0x4
-    0x60 unknown 0x4
-    0x64 unknown 0x4
-    0x68 unknown 0x4
-    0x6c unknown 0x4
+    0x58 f32 minimum_error unit=degrees
+    0x5c f32[2] error_angle unit=degrees
+    0x64 f32 dual_wield_damage_scale
+    0x68 enum16 distribution_function
+    0x6a i16 projectiles_per_shot
+    0x6c f32 distribution_angle unit=degrees
     0x70 unknown 0x4
     0x74 unknown 0x4
     0x78 unknown 0x4
-    0x7c unknown 0x4
-    0x80 unknown 0x4
-    0x84 unknown 0x4
-    0x88 unknown 0x4
+    0x7c f32[3] first_person_offset
+    0x88 enum8 damage_effect_reporting_type
+    0x89 unknown 0x3
     0x8c tagref projectile -- V2 (halo1/objects.md): a proj reference on every barrel that fires one
     0x94 tagref damage_effect groups=jpt! -- E: 0x1053f6 reads its datum after the projectile loop and skips -1
-    0x9c unknown 0x4
-    0xa0 unknown 0x4
-    0xa4 unknown 0x4
-    0xa8 unknown 0x4
-    0xac unknown 0x4
-    0xb0 unknown 0x4
-    0xb4 unknown 0x4
-    0xb8 unknown 0x4
-    0xbc unknown 0x4
-    0xc0 unknown 0x4
-    0xc4 unknown 0x4
-    0xc8 unknown 0x4
-    0xcc unknown 0x4
-    0xd0 unknown 0x4
-    0xd4 unknown 0x4
-    0xd8 unknown 0x4
-    0xdc unknown 0x4
-    0xe0 unknown 0x4
-    0xe4 block block_e4 0x34 align 4
-      0x0 unknown 0x4
-      0x4 tagref ref_4
-      0xc tagref ref_c
-      0x14 tagref ref_14
-      0x1c tagref ref_1c
-      0x24 tagref ref_24
-      0x2c tagref ref_2c
-  0x2d8 unknown 0x4
-  0x2dc unknown 0x4
-  0x2e0 unknown 0x4
-  0x2e4 unknown 0x4
-  0x2e8 unknown 0x4
-  0x2ec unknown 0x4
-  0x2f0 tagref ref_2f0
-  0x2f8 tagref ref_2f8
-  0x300 tagref ref_300
-  0x308 unknown 0x4
-  0x30c unknown 0x4
-  0x310 unknown 0x4
-  0x314 unknown 0x4
-  0x318 unknown 0x4
+    0x9c f32 ejection_port_recovery_time
+    0xa0 f32 illumination_recovery_time
+    0xa4 f32 heat_generated_per_round
+    0xa8 f32 age_generated_per_round
+    0xac f32 overload_time
+    0xb0 f32[2] angle_change_per_shot unit=degrees
+    0xb8 f32 angle_change_acceleration_time
+    0xbc f32 angle_change_deceleration_time
+    0xc0 enum16 angle_change_function
+    0xc2 unknown 0x2
+    0xc4 f32 angle_change_acceleration_rate
+    0xc8 f32 angle_change_deceleration_rate
+    0xcc f32 illumination_recovery_rate
+    0xd0 f32 ejection_port_recovery_rate
+    0xd4 f32 rate_of_fire_acceleration_rate
+    0xd8 f32 rate_of_fire_deceleration_rate
+    0xdc f32 error_acceleration_rate
+    0xe0 f32 error_deceleration_rate
+    0xe4 block firing_effects 0x34 align 4
+      0x0 i16 shot_count_lower_bound
+      0x2 i16 shot_count_upper_bound
+      0x4 tagref firing_effect
+      0xc tagref misfire_effect
+      0x14 tagref empty_effect
+      0x1c tagref firing_damage
+      0x24 tagref misfire_damage
+      0x2c tagref empty_damage
+  0x2d8 f32 weapon_power_on_velocity
+  0x2dc f32 weapon_power_off_velocity
+  0x2e0 f32 maximum_movement_acceleration
+  0x2e4 f32 maximum_movement_velocity
+  0x2e8 f32 maximum_turning_acceleration
+  0x2ec f32 maximum_turning_velocity
+  0x2f0 tagref deployed_vehicle
+  0x2f8 tagref age_effect
+  0x300 tagref aged_weapon
+  0x308 f32[3] first_person_weapon_offset
+  0x314 f32[2] first_person_scope_size
 group eqip 0x13c
   0x0 struct item item -- the item layer
   0x12c i16 powerup_type -- V: Halo 1's eqip +0x308 values on the retail pairs (over shield 2, active camouflage 3, grenades 6); health 5 (docs/halo1/health.md)
   0x12e i16 grenade_type -- V: Halo 1's eqip +0x30a (frag 0, plasma 1) on the grenade pairs
   0x130 f32 powerup_time -- V: seconds; Halo 1's eqip +0x30c on the powerup pairs (over shield 60, active camouflage 45)
-  0x134 tagref snd_ref_134 -- V
+  0x134 tagref pickup_sound -- V

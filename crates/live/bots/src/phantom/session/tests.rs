@@ -668,15 +668,7 @@ mod books {
         let slot = slot_of(&g, mac).unwrap().unwrap();
         g = buttons::gather(&ph, g, slot);
         assert_eq!(g.u32(slot + SLOT_STAMP).unwrap(), 100);
-        assert_eq!(g.f32(slot + SLOT_ACTION + 0x14).unwrap(), 0.0);
-
-        // The default uplink takes one or two ticks. Gather consecutive
-        // samples so the action stream stays live while the report arrives.
-        for tick in 101..=102 {
-            g.put_u32(TIME + guest::GAME_TIME_TICK, tick);
-            g = buttons::gather(&ph, g, slot);
-            assert_eq!(g.u32(slot + SLOT_STAMP).unwrap(), tick);
-        }
+        // A locally computed report reaches retail in the gather that requested it.
         assert_eq!(g.f32(slot + SLOT_ACTION + 0x14).unwrap(), 1.0);
         assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 2, "made once");
 
@@ -1165,6 +1157,43 @@ mod lobby {
         assert_eq!(find_peer(&g, S, machine_id(h)).unwrap(), None);
         assert_eq!(g.u32(S + PLAYER_COUNT).unwrap(), 1);
         assert!(log.iter().all(|l| !l.contains("joins")), "{log:?}");
+    }
+
+    #[test]
+    fn settled_custom_lobby_skips_reconciliation_and_repairs_unpublished_edits() {
+        let ph = Phantoms::default();
+        for n in 1..=4 {
+            ph.add(who(n, &format!("Seat {n}")), None, idle()).unwrap();
+        }
+        let mut g = lobby();
+        ph.tick(&mut g, 0).unwrap();
+        ph.tick(&mut g, 1).unwrap();
+        let revision = g.u32(S + UPDATE).unwrap();
+        for frame in 2..12 {
+            assert!(ph.tick(&mut g, frame).unwrap().is_empty());
+        }
+        assert_eq!(ph.maintenance().unchanged_lobby_frames, 10);
+        assert_eq!(g.u32(S + UPDATE).unwrap(), revision);
+
+        // Repair the same in-place edit twice; neither edit publishes a
+        // revision. Caching the pre-repair bytes would miss the second one.
+        let profile = S + PLAYERS + PLAYER_SIZE + P_EFFECTIVE;
+        for frame in [12, 13] {
+            g.put_u16(profile, 0);
+            ph.tick(&mut g, frame).unwrap();
+            assert_eq!(g.u16(profile).unwrap(), MARK as u16);
+        }
+        let host = S + PEERS;
+        g.put_u32(host + PEER_MAP_STATUS, 2);
+        ph.tick(&mut g, 14).unwrap();
+        for p in 1..=4 {
+            assert_eq!(g.u32(host + p * PEER_SIZE + PEER_MAP_STATUS).unwrap(), 2);
+        }
+
+        ph.remove(ph.list()[1].handle).unwrap();
+        ph.tick(&mut g, 15).unwrap();
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 4);
+        assert_eq!(ph.maintenance().frames, 16);
     }
 
     #[test]

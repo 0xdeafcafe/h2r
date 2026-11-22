@@ -47,10 +47,10 @@ const VIEW_METRICS: [&str; 9] = [
 ];
 const STRIDE: usize = METRICS.len() + VIEWS * VIEW_METRICS.len();
 const STAGE_COLUMNS: usize = STAGES.len() * STRIDE;
-const OBJECT_WALK_COLUMNS: [&str; 12] = [
+const OBJECT_WALK_COLUMNS: [&str; 13] = [
     "walk_native", "walk_fallback", "walk_unsupported", "walk_order", "walk_unreadable",
     "walk_model", "walk_inputs", "walk_state", "walk_reservation",
-    "walk_part_aux_state", "walk_part_subparts", "walk_part_topology",
+    "walk_part_aux_state", "walk_part_subparts", "walk_part_topology", "walk_unresident",
 ];
 const WORLD_OPAQUE_COLUMNS: [&str; 11] = [
     "prereserved_draws", "prereserved_sections", "guest_indexed_draws", "guest_indexed_sections",
@@ -384,6 +384,9 @@ pub enum ObjectWalk {
     PartAuxState,
     PartSubparts,
     PartTopology,
+    /// Objects returned to the guest in a run whose validated native model
+    /// had no uploaded GPU model. The run has not been consumed.
+    Unresident,
 }
 
 impl ObjectWalk {
@@ -527,13 +530,14 @@ mod tests {
         assert_eq!(ui, lists + SCENE_LISTS.len() * SCENE_LIST_RESULTS.len());
         assert_eq!(columns[ui - 1].1, "native_scene_lists_transparents_mismatch");
         assert_eq!(columns[ui].1, "native_ui_items");
-        assert_eq!(columns.last().unwrap().1, "native_ui_outline_fallback_reservation");
+        assert_eq!(columns[phase::Counter::ALL.len() + COLUMNS - 1].1, "native_ui_outline_fallback_reservation");
         let walk = phase::Counter::ALL.len() + STAGE_COLUMNS;
         assert_eq!(columns[walk + ObjectWalk::Native as usize].1, "native_objects_walk_native");
         assert_eq!(columns[walk + ObjectWalk::Reservation as usize].1, "native_objects_walk_reservation");
         assert_eq!(columns[walk + ObjectWalk::PartAuxState as usize].1, "native_objects_walk_part_aux_state");
         assert_eq!(columns[walk + ObjectWalk::PartTopology as usize].1, "native_objects_walk_part_topology");
-        assert_eq!(columns[walk + ObjectWalk::PartTopology as usize + 1].1, "native_world_opaque_prereserved_draws");
+        assert_eq!(columns[walk + ObjectWalk::Unresident as usize].1, "native_objects_walk_unresident");
+        assert_eq!(columns[walk + ObjectWalk::Unresident as usize + 1].1, "native_world_opaque_prereserved_draws");
         let world = phase::Counter::ALL.len() + Stage::World as usize * STRIDE;
         for (metric, label) in [(Metric::ExtractNs, "native_world_extract_ns"),
             (Metric::RenderPrepareNs, "native_world_render_prepare_ns"), (Metric::SceneStages, "native_world_scene_stages"),

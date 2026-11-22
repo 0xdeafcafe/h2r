@@ -4,7 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { dashboardPlayerHref, GAMES_ROOT, OLD_STATS_ROOT, STATS_ROOT, movedStatsPath, statsPath } from "../src/routes";
+import { dashboardPlayerHref, GAMES_ROOT, OLD_STATS_ROOT, STATS_ROOT, gameHref, movedStatsPath, movedTheaterPath, statsPath, theaterHref } from "../src/routes";
 
 const ROOT = resolve(import.meta.dir, "../..");
 
@@ -41,10 +41,30 @@ describe("the stats site's address", () => {
   test("the app redirects the old root and /games, replacing the entry", () => {
     const src = readFileSync(join("web/src/index.tsx"), "utf8");
     expect(src).toContain("<Route path={[OLD_STATS_ROOT, `${OLD_STATS_ROOT}/*rest`]} component={OldStats} />");
+    expect(src).toContain('<Route path="/theater/:id" component={OldTheater} />');
     expect(src).toContain("<Route path={GAMES_ROOT} component={() => <Navigate href={STATS_ROOT} />} />");
+  });
+});
+
+describe("whole-film links", () => {
+  test("the old URL and Watch in Theater lead to the Game Details viewer", () => {
+    expect(movedTheaterPath("/theater/abc")).toBe(theaterHref("abc"));
+    expect(movedTheaterPath("/theater/a%2Fb/", "?t=2.5&view=3d"))
+      .toBe("/games/halo2/games/a%2Fb?t=2.5&view=3d#game-viewer");
+  });
+
+  test("shared clips keep their separate link and playback range", () => {
+    expect(movedTheaterPath("/theater/abc/clip/xyz")).toBeNull();
+    expect(theaterHref("abc", "xyz")).toBe("/theater/abc/clip/xyz");
+    expect(movedTheaterPath("/theater/")).toBeNull();
   });
 });
 
 function join(p: string): string {
   return resolve(ROOT, p);
 }
+
+test("game links encode the game id and opening player", () => {
+  expect(gameHref("g/1")).toBe("/games/halo2/games/g%2F1");
+  expect(gameHref("g/1", { player: "Two & Co" })).toBe("/games/halo2/games/g%2F1?player=Two%20%26%20Co");
+});

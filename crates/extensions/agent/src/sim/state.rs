@@ -133,12 +133,37 @@ fn held_weapon(m: &dyn GuestMemory, unit: Body) -> Result<Option<Body>, RpcError
     Ok(objects::get(m, h).map_err(fault)?.map(|(_, b)| b))
 }
 
-/// What `sim.view` adds to a player: `health`, `shield`, `grenades`
-/// (`frag`, `plasma`) and the held weapon's `ammo` (`loaded`, `reserve`).
-/// Empty between lives.
+/// Player: lives remaining, `i16`; the engine writes it, -1 unlimited
+/// (docs/game/firefight.md, "Guest boundary", lives and respawn).
+pub const PLAYER_LIVES: u32 = 0x1ac;
+/// The game engine globals' per-player stat rows: `0x1c` bytes from `+0x308`,
+/// the score an `i16` at the row's `+0x00` (`SCORE_ADD`, `0x15b7c0`).
+pub const STAT_ROWS: u32 = 0x308;
+pub const STAT_ROW_SIZE: u32 = 0x1c;
+
+/// The player's lives remaining, `None` when unlimited (-1).
+pub fn lives(m: &dyn GuestMemory, p: Player) -> Result<Option<i16>, RpcError> {
+    let lives = m.u16(p.addr.wrapping_add(PLAYER_LIVES)).map_err(fault)? as i16;
+    Ok((lives != -1).then_some(lives))
+}
+
+/// Player `index`'s score in the game engine's stat row; `None` without a
+/// game engine (the menu, a campaign) or when its globals do not read.
+pub fn score(m: &dyn GuestMemory, index: u32) -> Option<i16> {
+    let engine = m.u32(engine::points::GAME_ENGINE.base).ok().filter(|&e| e != 0)?;
+    let row = engine.wrapping_add(STAT_ROWS + STAT_ROW_SIZE * index);
+    m.u16(row).ok().map(|s| s as i16)
+}
+
+/// What `sim.view` adds to a player: `lives` (null when unlimited) and
+/// `score` (null without a game engine) always, and with a unit `health`,
+/// `shield`, `grenades` (`frag`, `plasma`) and the held weapon's `ammo`
+/// (`loaded`, `reserve`).
 pub fn vitals(m: &dyn GuestMemory, index: u32) -> Result<serde_json::Map<String, Value>, RpcError> {
     let mut out = serde_json::Map::new();
     let p = player(m, index)?;
+    out.insert("lives".into(), json!(lives(m, p)?));
+    out.insert("score".into(), json!(score(m, index)));
     let Some(u) = unit(m, p)? else {
         return Ok(out);
     };

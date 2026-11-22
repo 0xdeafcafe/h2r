@@ -776,3 +776,664 @@ async fn features_game_types_and_version_are_checked_and_listed() {
     assert_eq!(plain["name"], "Lockout Plain");
     assert!(plain.get("features").is_none() && plain.get("version").is_none());
 }
+
+#[tokio::test]
+async fn staged_manifests_are_private_in_the_log_and_snapshot() {
+    let h = repo(Arc::new(MemoryStore::new()), policy()).await;
+    let owner = h.create("Uploader").await;
+    let reader = h.create("Reader").await;
+    let member = Mod::new("staged", "lockout", "Sample: Lockout");
+    let patch = member.patch();
+    let upload = h.call(
+        Method::PUT,
+        &format!("/v1/content/{}", Sha256::of(&patch)),
+        &[h.bearer(&owner, lxm::CONTENT_WRITE)],
+        Body::from(patch),
+    ).await;
+    assert!(upload.status.is_success(), "{}", upload.error());
+    let mut doc = member.doc();
+    doc.staged_for = Some(live_proto::maps::mod_pack_id_for(owner.xuid, "Sample"));
+    let staged = put_map(&h, &owner, &doc).await;
+    assert_eq!(staged.status, StatusCode::CREATED, "{}", staged.error());
+    for (path, field) in [("/v1/events", "items"), ("/v1/snapshot", "tail")] {
+        for (account, visible) in [(None, false), (Some(&reader), false), (Some(&owner), true)] {
+            let headers: Vec<_> = account.map(|u| h.bearer(u, lxm::READ)).into_iter().collect();
+            let response = h.call(Method::GET, path, &headers, Body::empty()).await;
+            assert_eq!(response.status, StatusCode::OK, "{}", response.error());
+            let events = response.json();
+            let found = events[field].as_array().unwrap().iter().any(|e| e["type"] == MAP_PUBLISHED);
+            assert_eq!(found, visible, "{path}");
+        }
+    }
+}
+
+struct ScreenshotClassifier(Result<f32, &'static str>);
+
+#[async_trait::async_trait]
+impl live_server::screenshot_classifier::Classifier for ScreenshotClassifier {
+    async fn classify(&self, webp: &[u8]) -> Result<f32, String> {
+        assert_eq!(live_proto::maps::image_type(webp), Some("image/webp"));
+        self.0.map_err(str::to_owned)
+    }
+}
+
+fn screenshot_png(red: u8) -> Vec<u8> {
+    use image::{ExtendedColorType, ImageEncoder};
+
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(&[red, 64, 128], 1, 1, ExtendedColorType::Rgb8)
+        .unwrap();
+    png
+}
+
+async fn screenshot_permit(
+    h: &Harness,
+    owner: &User,
+    map: MapId,
+    image: &[u8],
+) -> live_proto::screenshots::CaptureProof {
+    use live_proto::screenshots::{CameraPose, CapturePermit, CaptureProof};
+
+    let reply = h
+        .call(
+            Method::POST,
+            &format!("/v1/maps/{map}/screenshot-capture-session"),
+            &[h.bearer(owner, lxm::CONTENT_WRITE)],
+            Body::empty(),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CREATED);
+    let permit: CapturePermit = serde_json::from_value(reply.json()).unwrap();
+    CaptureProof {
+        map_id: map,
+        map: "lockout".into(),
+        tick: 52,
+        game_id: permit.game_id,
+        camera: CameraPose {
+            position: [0.0; 3],
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+        },
+        digest: Sha256::of(image),
+        permit: Some(permit.token),
+    }
+}
+
+async fn put_screenshot(
+    h: &Harness,
+    owner: &User,
+    uri: &str,
+    proof: Option<&live_proto::screenshots::CaptureProof>,
+    image: &[u8],
+) -> Resp {
+    let mut headers = vec![h.bearer(owner, lxm::CONTENT_WRITE)];
+    if let Some(proof) = proof {
+        headers.push((
+            live_proto::screenshots::PROOF_HEADER,
+            serde_json::to_string(proof).unwrap(),
+        ));
+    }
+    h.call(Method::PUT, uri, &headers, image.to_vec()).await
+}
+
+async fn review_screenshot(h: &Harness, hash: &str, action: &str, revision: &str) -> Resp {
+    h.call(
+        Method::POST,
+        &format!("/v1/admin/screenshots/{hash}/{action}?revision={revision}"),
+        &[operator(h)],
+        Body::empty(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn screenshot_routes_reject_invalid_provenance_and_capture_inputs() {
+    let h = repo(Arc::new(MemoryStore::new()), policy()).await;
+    let owner = h.create("Painter").await;
+    let visitor = h.create("Viewer").await;
+    let (id, _) = publish(&h, &owner, &Mod::new("paint", "lockout", "Colors: lockout")).await;
+    let (other, _) = publish(&h, &owner, &Mod::new("other", "midship", "Other: midship")).await;
+    let map = format!("/v1/maps/{id}");
+    let capture = format!("{map}/screenshots/capture/0");
+    let image = screenshot_png(32);
+    let proof = screenshot_permit(&h, &owner, id, &image).await;
+
+    let check =
+        async |uri: &str, proof: Option<&live_proto::screenshots::CaptureProof>, expected| {
+            assert_eq!(
+                put_screenshot(&h, &owner, uri, proof, &image).await.status,
+                expected,
+                "{uri}"
+            );
+        };
+    check(&capture, None, StatusCode::BAD_REQUEST).await;
+    check(
+        &format!("{map}/screenshots/upload/0"),
+        Some(&proof),
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+    check(
+        &format!("{map}/screenshots/capture/5"),
+        Some(&proof),
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+    check(
+        &format!("/v1/maps/{other}/screenshots/capture/0"),
+        Some(&proof),
+        StatusCode::FORBIDDEN,
+    )
+    .await;
+    assert_eq!(
+        put_screenshot(&h, &visitor, &capture, Some(&proof), &image)
+            .await
+            .status,
+        StatusCode::FORBIDDEN,
+    );
+    assert_eq!(
+        h.call(
+            Method::POST,
+            &format!("{map}/screenshot-capture-session"),
+            &[h.bearer(&visitor, lxm::CONTENT_WRITE)],
+            Body::empty()
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+    let mut forged = proof.clone();
+    forged.map_id = other;
+    check(&capture, Some(&forged), StatusCode::FORBIDDEN).await;
+    let mut forged = proof.clone();
+    forged.map = "midship".into();
+    check(&capture, Some(&forged), StatusCode::FORBIDDEN).await;
+    let mut forged = proof.clone();
+    forged.game_id = "capture-forged".into();
+    check(&capture, Some(&forged), StatusCode::FORBIDDEN).await;
+    let mut forged = proof.clone();
+    forged.permit = Some(format!("0.{}", "0".repeat(64)));
+    check(&capture, Some(&forged), StatusCode::FORBIDDEN).await;
+    let mut forged = proof.clone();
+    forged.camera.up = forged.camera.forward;
+    check(&capture, Some(&forged), StatusCode::BAD_REQUEST).await;
+    let mut forged = proof.clone();
+    forged.digest = Sha256([0; 32]);
+    check(&capture, Some(&forged), StatusCode::BAD_REQUEST).await;
+    let invalid = b"\x89PNG\r\n\x1a\n";
+    let mut forged = proof.clone();
+    forged.digest = Sha256::of(invalid);
+    assert_eq!(
+        put_screenshot(&h, &owner, &capture, Some(&forged), invalid)
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    let oversized = vec![0; 5 * 1024 * 1024 + 1];
+    assert_eq!(
+        put_screenshot(&h, &owner, &capture, Some(&proof), &oversized)
+            .await
+            .status,
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+
+    let game = h
+        .start_game(
+            &visitor,
+            serde_json::json!({
+                "map": "lockout", "map_id": id, "mode": "multiplayer",
+                "team_play": false, "tick": 52, "players": [
+                    {"index": 0, "xuid": visitor.xuid, "name": "Viewer", "team": 0}
+                ],
+            }),
+        )
+        .await;
+    let mut hosted = proof.clone();
+    hosted.game_id = game;
+    hosted.permit = None;
+    hosted.map = "lockout".into();
+    check(&capture, Some(&hosted), StatusCode::FORBIDDEN).await;
+    let game = h
+        .start_game(
+            &owner,
+            serde_json::json!({
+                "map": "lockout", "map_id": id, "mode": "multiplayer",
+                "team_play": false, "tick": 52, "players": [
+                    {"index": 0, "xuid": owner.xuid, "name": "Painter", "team": 0}
+                ],
+            }),
+        )
+        .await;
+    hosted.game_id = game;
+    hosted.tick = 53;
+    check(&capture, Some(&hosted), StatusCode::FORBIDDEN).await;
+    hosted.tick = 52;
+    hosted.map = "midship".into();
+    check(&capture, Some(&hosted), StatusCode::FORBIDDEN).await;
+    hosted.map = "lockout".into();
+    check(&capture, Some(&hosted), StatusCode::OK).await;
+}
+
+#[tokio::test]
+async fn screenshot_routes_hide_pending_and_reported_images_across_aliases_and_replay() {
+    let store = Arc::new(MemoryStore::new());
+    let h = repo(store.clone(), policy()).await;
+    let owner = h.create("Painter").await;
+    let visitor = h.create("Viewer").await;
+    let (id, _) = publish(&h, &owner, &Mod::new("paint", "lockout", "Colors: lockout")).await;
+    let packs = h.get("/v1/mod-packs").await.json();
+    let pack_id = packs["items"][0]["id"].as_str().unwrap();
+    let map = format!("/v1/maps/{id}");
+    let pack = format!("/v1/mod-packs/{pack_id}");
+    let image = screenshot_png(71);
+    let proof = screenshot_permit(&h, &owner, id, &image).await;
+    let mut hash = String::new();
+    for uri in [&map, &pack] {
+        let capture = format!("{uri}/screenshots/capture/4");
+        let receipt = put_screenshot(&h, &owner, &capture, Some(&proof), &image)
+            .await
+            .json();
+        assert_eq!(receipt["status"], "pending");
+        let got = receipt["sha256"].as_str().unwrap();
+        assert!(hash.is_empty() || hash == got);
+        hash = got.into();
+        assert_eq!(
+            h.get(&format!("{uri}/images/0")).await.status,
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert_eq!(
+        h.get(&format!("/v1/content/{hash}")).await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        h.get(&format!("{map}/image")).await.status,
+        StatusCode::NOT_FOUND
+    );
+    let queue = "/v1/admin/screenshots";
+    let preview = format!("{queue}/{hash}/image");
+    assert_eq!(h.get(queue).await.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        h.call(
+            Method::GET,
+            &preview,
+            &[h.bearer(&owner, lxm::CONTENT_MODERATE)],
+            Body::empty()
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+    let items = h
+        .call(Method::GET, queue, &[operator(&h)], Body::empty())
+        .await
+        .json();
+    assert_eq!(items["items"].as_array().unwrap().len(), 1);
+    assert_eq!(items["items"][0]["uploader"], owner.xuid.to_string());
+    assert_eq!(
+        items["items"][0]["reason"],
+        "The image classifier is unavailable."
+    );
+    assert!(items["items"][0]["proof"]["permit"].is_null());
+    let private = h
+        .call(Method::GET, &preview, &[operator(&h)], Body::empty())
+        .await;
+    assert_eq!(private.status, StatusCode::OK);
+    assert_eq!(private.headers["cache-control"], "private, no-store");
+    assert_eq!(private.headers["content-type"], "image/webp");
+    assert_eq!(Sha256::of(&private.body).to_string(), hash);
+
+    let revision = items["items"][0]["revision"].as_str().unwrap();
+    assert_eq!(
+        review_screenshot(&h, &hash, "approve", revision)
+            .await
+            .status,
+        StatusCode::OK
+    );
+    for uri in [&map, &pack] {
+        let read = h.get(&format!("{uri}/images/0?v={hash}")).await;
+        assert_eq!(read.status, StatusCode::OK);
+        assert_eq!(read.headers["cache-control"], "private, no-store");
+        assert_eq!(read.body, private.body);
+        assert_eq!(
+            h.get(&format!("{uri}/images/0?v={}", "0".repeat(64)))
+                .await
+                .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+    let report = format!("/v1/screenshots/{hash}/report");
+    assert_eq!(
+        h.call(Method::POST, &report, &[], Body::empty())
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            h.call(
+                Method::POST,
+                &report,
+                &[h.bearer(&visitor, lxm::CONTENT_WRITE)],
+                Body::empty()
+            )
+            .await
+            .status,
+            StatusCode::OK
+        );
+    }
+    for suffix in [
+        format!("{map}/image"),
+        format!("{map}/images/0"),
+        format!("{pack}/images/0"),
+        format!("/v1/content/{hash}"),
+    ] {
+        assert_eq!(h.get(&suffix).await.status, StatusCode::NOT_FOUND);
+    }
+
+    let replay = start(store, policy()).await;
+    replay.live.set_data_dir(&h.dir);
+    let list = replay
+        .call(Method::GET, queue, &[operator(&replay)], Body::empty())
+        .await
+        .json();
+    assert_eq!(
+        list["items"][0]["reason"],
+        "A player reported this capture."
+    );
+    assert_eq!(
+        review_screenshot(&replay, &hash, "approve", revision)
+            .await
+            .status,
+        StatusCode::CONFLICT
+    );
+    let revision = list["items"][0]["revision"].as_str().unwrap();
+    assert_eq!(
+        review_screenshot(&replay, &hash, "remove", revision)
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let capture = format!("{map}/screenshots/capture/1");
+    let proof = screenshot_permit(&replay, &owner, id, &image).await;
+    assert_eq!(
+        put_screenshot(&replay, &owner, &capture, Some(&proof), &image)
+            .await
+            .status,
+        StatusCode::GONE
+    );
+}
+
+#[tokio::test]
+async fn screenshot_routes_hold_geometry_mismatches_and_count_unique_classifier_strikes() {
+    let h = repo(Arc::new(MemoryStore::new()), policy()).await;
+    h.live
+        .set_screenshot_classifier(Arc::new(ScreenshotClassifier(Ok(0.04))));
+    let owner = h.create("Painter").await;
+    let (id, _) = publish(&h, &owner, &Mod::new("paint", "lockout", "Colors: lockout")).await;
+    let outline =
+        serde_json::json!({"map": id, "bounds": {"min": [-2,-2,-2], "max": [2,2,2]}, "layers": []});
+    let auth = (
+        "authorization",
+        format!(
+            "Bearer {}",
+            h.token(&h.operator, "server:live.test", lxm::GAMES_WRITE)
+        ),
+    );
+    assert_eq!(
+        h.call(
+            Method::PUT,
+            &format!("/v1/maps/{id}/outline"),
+            &[auth],
+            outline.to_string()
+        )
+        .await
+        .status,
+        StatusCode::OK
+    );
+    let image = screenshot_png(81);
+    let proof = screenshot_permit(&h, &owner, id, &image).await;
+    let capture = format!("/v1/maps/{id}/screenshots/capture/0");
+    assert_eq!(
+        put_screenshot(&h, &owner, &capture, Some(&proof), &image)
+            .await
+            .json()["status"],
+        "pending"
+    );
+    let queue = "/v1/admin/screenshots";
+    let items = h
+        .call(Method::GET, queue, &[operator(&h)], Body::empty())
+        .await
+        .json();
+    assert_eq!(
+        items["items"][0]["reason"],
+        "The image does not match the mapped view."
+    );
+
+    let h = repo(Arc::new(MemoryStore::new()), policy()).await;
+    h.live
+        .set_screenshot_classifier(Arc::new(ScreenshotClassifier(Ok(0.99))));
+    let owner = h.create("Painter").await;
+    let (id, _) = publish(&h, &owner, &Mod::new("paint", "lockout", "Colors: lockout")).await;
+    let mut proof = screenshot_permit(&h, &owner, id, &image).await;
+    for red in [81, 81, 82, 83] {
+        let image = screenshot_png(red);
+        proof.digest = Sha256::of(&image);
+        assert_eq!(
+            put_screenshot(&h, &owner, &capture, Some(&proof), &image)
+                .await
+                .json()["status"],
+            "pending"
+        );
+    }
+    let items = h
+        .call(Method::GET, queue, &[operator(&h)], Body::empty())
+        .await
+        .json();
+    assert_eq!(items["items"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        items["items"][0]["reason"],
+        "The image classifier flagged this capture."
+    );
+    assert_eq!(
+        put_screenshot(&h, &owner, &capture, Some(&proof), &image)
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    let patch = b"new binary upload";
+    let rejected = h
+        .call(
+            Method::PUT,
+            &format!("/v1/content/{}", Sha256::of(patch)),
+            &[h.bearer(&owner, lxm::CONTENT_WRITE)],
+            patch.as_slice(),
+        )
+        .await;
+    assert_eq!(rejected.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn screenshot_routes_hold_classifier_errors_and_invalid_scores() {
+    for result in [Err("classifier disconnected"), Ok(f32::NAN), Ok(1.01)] {
+        let h = repo(Arc::new(MemoryStore::new()), policy()).await;
+        h.live
+            .set_screenshot_classifier(Arc::new(ScreenshotClassifier(result)));
+        let owner = h.create("Painter").await;
+        let (id, _) = publish(&h, &owner, &Mod::new("paint", "lockout", "Colors: lockout")).await;
+        let image = screenshot_png(96);
+        let proof = screenshot_permit(&h, &owner, id, &image).await;
+        let capture = format!("/v1/maps/{id}/screenshots/capture/0");
+        let response = put_screenshot(&h, &owner, &capture, Some(&proof), &image).await;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(response.json()["status"], "pending");
+        let items = h
+            .call(
+                Method::GET,
+                "/v1/admin/screenshots",
+                &[operator(&h)],
+                Body::empty(),
+            )
+            .await
+            .json();
+        assert_eq!(
+            items["items"][0]["reason"],
+            "The image classifier is unavailable."
+        );
+    }
+}
+
+#[tokio::test]
+async fn pack_migration_groups_by_base_suffix_and_uploader_and_replays() {
+    let store: Arc<dyn EventStore> = Arc::new(MemoryStore::new());
+    let expected;
+    {
+        let h = repo(store.clone(), policy()).await;
+        let a = h.create("PublisherA").await;
+        let b = h.create("PublisherB").await;
+        let first = Mod::new("a", "lockout", "Night: Lockout");
+        let second = Mod::new("b", "midship", "Night: midship");
+        let third = Mod::new("c", "lockout", "Night: Lockout");
+        let solo = Mod::new("solo", "zanzibar", "Night: Low Gravity");
+        let (member, _) = publish(&h, &a, &first).await;
+        publish(&h, &a, &second).await;
+        publish(&h, &b, &third).await;
+        publish(&h, &a, &solo).await;
+        let id = live_proto::maps::mod_pack_id_for(a.xuid, "Night");
+        let page = h.get("/v1/mod-packs").await.json();
+        let packs = page["items"].as_array().unwrap();
+        assert_eq!(packs.len(), 3);
+        assert_eq!(packs[0]["name"], "Night: Low Gravity");
+        let migrated = h.get(&format!("/v1/mod-packs/{id}")).await.json();
+        assert_eq!(migrated["pack"]["map_count"], 2);
+        assert_eq!(migrated["pack"]["name"], "Night");
+        assert_eq!(migrated["pack"]["members"][0]["map_id"], member.to_string());
+        assert_eq!(migrated["pack"]["uploader"]["gamertag"], "PublisherA");
+        assert_eq!(h.get(&format!("/v1/maps/{member}")).await.json()["map"]["mod_pack"], id);
+        expected = page["items"].clone();
+    }
+    let h = repo(store, policy()).await;
+    assert_eq!(h.get("/v1/mod-packs").await.json()["items"], expected);
+}
+
+#[tokio::test]
+async fn publishing_an_owned_pack_is_atomic_and_keeps_member_credits() {
+    let h = repo(Arc::new(MemoryStore::new()), policy()).await;
+    let owner = h.create("Uploader").await;
+    let stranger = h.create("Stranger").await;
+    let path = "/v1/mod-packs/lan-edition";
+    let a = Mod::new("shared", "lockout", "First Map");
+    let mut b = Mod::new("shared", "midship", "Second Map");
+    b.credit = Some("Map Maker");
+    let layer = a.patch();
+    let r = h.call(Method::PUT, &format!("/v1/content/{}", Sha256::of(&layer)),
+        &[h.bearer(&owner, lxm::CONTENT_WRITE)], Body::from(layer.clone())).await;
+    assert!(r.status.is_success());
+    let mut ids = Vec::new();
+    for m in [a, b] {
+        let mut doc = m.doc();
+        doc.staged_for = Some("lan-edition".into());
+        let r = put_map(&h, &owner, &doc).await;
+        assert_eq!(r.status, StatusCode::CREATED);
+        ids.push(MapId::of(&doc.manifest));
+    }
+    assert!(h.get("/v1/mod-packs").await.json()["items"].as_array().unwrap().is_empty());
+    assert!(list(&h, "").await["items"].as_array().unwrap().is_empty());
+    assert_eq!(h.get(&format!("/v1/maps/{}", ids[0])).await.status, StatusCode::GONE);
+    let body = serde_json::json!({"name":"LAN Edition","authors":["Editor","Builder"],
+        "description":"Two maps","version":"1.2","source_url":"https://example.test/mods/lan",
+        "year":2006,"advisory":"not_for_online","members":ids});
+    let put = |user: &User, body: Value| put_admin(&h, h.bearer(user, lxm::CONTENT_WRITE), path, body);
+    assert_eq!(put(&stranger, body.clone()).await.status, StatusCode::FORBIDDEN);
+    for patch in [
+        serde_json::json!({"members":[ids[0], ids[0]]}),
+        serde_json::json!({"authors":[]}),
+        serde_json::json!({"year":12}),
+        serde_json::json!({"advisory":"nonsense"}),
+        serde_json::json!({"images":[]}),
+    ] {
+        let mut invalid = body.clone();
+        invalid.as_object_mut().unwrap().extend(patch.as_object().unwrap().clone());
+        assert_eq!(put(&owner, invalid).await.status, StatusCode::BAD_REQUEST);
+        assert_eq!(h.get(path).await.status, StatusCode::NOT_FOUND);
+    }
+    let mut missing = body.clone();
+    missing["members"] = serde_json::json!([ids[0], MapId([0x11;32])]);
+    assert_eq!(put(&owner, missing).await.status, StatusCode::NOT_FOUND);
+    let response = put(&owner, body.clone()).await.json();
+    let release = &response["pack"];
+    let typed: live_proto::maps::ModPackSummary = serde_json::from_value(release.clone()).unwrap();
+    assert_eq!(typed.map_count, 2);
+    assert_eq!(typed.size, layer.len() as u64);
+    assert_eq!(release["authors"], body["authors"]);
+    assert_eq!(release["year"], 2006);
+    assert_eq!(release["advisory"], "not_for_online");
+    assert_eq!(release["members"][0]["credit"], "Editor & Builder");
+    assert_eq!(release["members"][1]["credit"], "Map Maker");
+    assert_eq!(h.get(&format!("/v1/maps/{}", ids[0])).await.json()["map"]["credit"], "Editor & Builder");
+    assert_eq!(put(&owner, body.clone()).await.json(), response, "idempotent retry");
+    assert_eq!(put(&stranger, body).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(h.get("/v1/mod-packs").await.json()["items"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn curated_pack_credit_and_release_year_survive_migration() {
+    let h = repo(Arc::new(MemoryStore::new()), policy()).await;
+    let a = h.create("FirstUploader").await;
+    let b = h.create("NextUploader").await;
+    let (one, _) = publish(&h, &a, &Mod::new("one", "lockout", "Custom A")).await;
+    let (two, _) = publish(&h, &b, &Mod::new("two", "lockout", "Custom B")).await;
+    let details = serde_json::json!({"pack": "classic-edition"});
+    for member in [one, two] {
+        let r = put_admin(&h, operator(&h), &format!("/v1/maps/{member}/details"), details.clone()).await;
+        assert_eq!(r.status, StatusCode::OK);
+    }
+    let r = put_admin(&h, operator(&h), "/v1/mappacks/classic-edition", serde_json::json!({
+        "name":"Classic Edition", "authors":["The Cartographers"], "released":"2005-09",
+        "source_url":"https://example.test/editions/classic"
+    })).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let page = h.get("/v1/mod-packs").await.json();
+    let packs = page["items"].as_array().unwrap();
+    assert_eq!(packs.len(), 2);
+    for p in packs {
+        assert_eq!(p["map_count"], 1);
+        assert_eq!(p["year"], 2005);
+        assert_eq!(p["authors"][0], "The Cartographers");
+        assert_eq!(p["members"][0]["credit"], "The Cartographers");
+        assert_eq!(p["members"][0]["source_url"], p["source_url"]);
+    }
+    assert_ne!(packs[0]["id"], packs[1]["id"]);
+    assert_ne!(packs[0]["uploader"], packs[1]["uploader"]);
+}
+
+#[tokio::test]
+async fn abandoned_staging_can_be_retargeted_by_the_uploader() {
+    let store = Arc::new(MemoryStore::new());
+    let h = repo(store.clone(), policy()).await;
+    let u = h.create("Uploader").await;
+    let m = Mod::new("abandoned", "lockout", "One");
+    let patch = m.patch();
+    let upload = h.call(Method::PUT, &format!("/v1/content/{}", Sha256::of(&patch)),
+        &[h.bearer(&u, lxm::CONTENT_WRITE)], Body::from(patch)).await;
+    assert!(upload.status.is_success());
+    let mut doc = m.doc();
+    let id = MapId::of(&doc.manifest);
+    for key in ["old-name", "final-name"] {
+        doc.staged_for = Some(key.into());
+        assert_eq!(put_map(&h, &u, &doc).await.status, StatusCode::CREATED);
+        assert!(list(&h, "").await["items"].as_array().unwrap().is_empty());
+    }
+    let path = "/v1/mod-packs/final-name";
+    let r = put_admin(&h, h.bearer(&u, lxm::CONTENT_WRITE), path, serde_json::json!({
+        "name":"Final Name", "authors":["A"], "members":[id]
+    })).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let pack = r.json()["pack"].clone();
+    drop(h);
+    let loaded = repo(store, policy()).await;
+    assert_eq!(loaded.get(path).await.json()["pack"], pack);
+    assert_eq!(loaded.get("/v1/mod-packs/old-name").await.status, StatusCode::NOT_FOUND);
+    assert_eq!(loaded.get(&format!("/v1/maps/{id}")).await.json()["map"]["mod_pack"], "final-name");
+}

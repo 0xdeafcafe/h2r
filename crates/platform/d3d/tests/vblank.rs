@@ -4,9 +4,7 @@
 //! standing in for Halo's `0x12b2a0` -> `0x14280`, which increments the
 //! 64-bit counter at `0x485AB0`.
 
-mod common;
-
-use common::{H, MISC, PARAMS, PB, PP_DEVICE, SCRATCH, W, synthetic_encode_bytes};
+use crate::common::{H, MISC, PARAMS, PB, PP_DEVICE, SCRATCH, W, synthetic_encode_bytes};
 use d3d::abi::SharedDevice;
 use d3d::runtime_glue;
 use d3d::{DeviceConfig, FrameWait, PresentParameters, RecordingBackend, SparseMemory};

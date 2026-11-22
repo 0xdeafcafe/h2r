@@ -88,11 +88,7 @@ impl Personality {
     }
 
     pub(crate) fn favorite_detour(self) -> f32 {
-        if self.weapon_loyalty >= 0.5 {
-            6.0 + 8.0 * self.weapon_loyalty
-        } else {
-            0.0
-        }
+        14.0 * self.weapon_loyalty
     }
 
     /// Willingness to wait for an expected spawn, in 0..1.
@@ -267,7 +263,8 @@ pub(crate) struct Behavior {
 
 impl Behavior {
     pub fn drive(self) -> f32 {
-        (0.85 * self.mood.tilt + 0.65 * self.mood.confidence
+        (crate::tuning::current().map_or(0.0, |t| t.push_bias)
+            + 0.85 * self.mood.tilt + 0.65 * self.mood.confidence
             - self.mood.fear * (0.45 + 0.55 * self.personality.caution))
             .clamp(-1.0, 1.0)
     }
@@ -325,6 +322,19 @@ impl Behavior {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_custom_games_pressure_bias_changes_drive_without_changing_mood() {
+        let behavior = Behavior {
+            personality: Personality::seeded(99),
+            mood: MoodView::default(),
+        };
+        for push_bias in [-0.35, 0.0, 0.35] {
+            let tuning = crate::tuning::Tuning { push_bias, ..Default::default() };
+            assert_eq!(crate::tuning::with(Some(tuning), || behavior.drive()), push_bias);
+        }
+        assert_eq!(behavior.drive(), 0.0);
+    }
 
     #[test]
     fn temperament_draws_keep_each_skill_band_and_identity() {

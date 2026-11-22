@@ -1,7 +1,8 @@
 # Modeling targets: the Halo 2 round trip
 
-Status: Design. Nothing here is built.
-Code: `crates/tools/geometry-edit` (targets, session, save), `crates/formats/tags/src/geometry_write.rs` (the section encoder), `crates/formats/collision-build` (the BSP compiler), `map::MapEditor` (`patch_raw`, `append_raw`). Tests: each crate's own, on invented data.
+Status: Design. The geometry targets and map write path are planned.
+Code: `crates/tools/mesh-edit` provides the mesh kernel. The target
+readers and encoders below describe the proposed interfaces.
 Switch: none in the environment. The session switches **Allow growing full blocks** and **Allow unverified geometry writes** (both off by default) gate the write classes below.
 
 How each thing the Modeling tool of [modeling.md](modeling.md) edits is
@@ -36,7 +37,7 @@ class that holds it, and the status bar and `geometry.check` name it.
 
 | Class | When | Writes | Gate |
 |---|---|---|---|
-| **In place** | no element count changes: verts moved, coordinates or normals changed | `raw_patches` over the old block, `tag_patches` for bounds | none |
+| **In place** | no element count changes: verts moved, coordinates or normals changed | `raw_patches` over the old block, `tag_patches` for bounds | Allow unverified geometry writes, until a game run has loaded one |
 | **Grown raw** | vertex, index or part counts change | a new raw block in `raw_new`; `tag_patches` for the block info, resource entries and counts | Allow unverified geometry writes, until a game run has loaded one |
 | **Grown blocks** | a tag block gets more elements (collision, a new material) | `raw_new` as needed, and the block appended to the ordinary metadata with its `(count, address)` pointed there (`Changes::tag_grown`) | Allow growing full blocks, and for a block of an `sbsp` also Allow unverified geometry writes |
 
@@ -44,7 +45,7 @@ A package of such a map is a BPS patch when the length changed, as for
 grown scenario blocks, and its `[result] geometry` hash
 (`scenario_edit::package::geometry_hash`) differs from its base's.
 
-`crates/formats/tags/src/geometry_write.rs` (new) is the one section
+The proposed section encoder in `tags` is the one section
 encoder: `encode_section(layout: &SectionLayout, data: &SectionData)`
 returns the framed raw block (`blkh`, struct, `rsrc` resources, `blkf`)
 and its resource entries, for `STRUCTURE_SECTION` and `MODEL_SECTION`. It
@@ -103,7 +104,7 @@ and the session marks the target collision-stale; the viewport's
 collision overlay shows the difference. Changing the collision is three
 steps of rising risk.
 
-1. **The compiler** (`crates/formats/collision-build`, beside `mopp` and
+1. **The compiler** (the proposed `collision-build` crate, beside `mopp` and
    `pathfind`). `build(polygons: &[Polygon]) -> Result<Bsp>` from convex,
    planar polygons with a material and flags each:
    - weld vertices; build the winged-edge table (each edge names its two

@@ -3,11 +3,12 @@
 //! the game switches back to gets its earlier microcode copy. Only which
 //! allocations back a draw changes: the backend sees the same calls, the
 //! judge the same verdicts, and the device the same stats and events.
-mod common;
+
 mod draw_frame;
 
 use std::sync::Arc;
 
+use crate::common;
 use d3d::backend::{Recorded, RecordingBackend, ResolvedDraw};
 use d3d::shader::VertexProcessing;
 use d3d::{Backend, Device, GuestMemory, SparseMemory, ThreadedBackend};

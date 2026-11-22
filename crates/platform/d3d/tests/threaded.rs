@@ -433,3 +433,218 @@ fn batched_commands_run_in_order_and_reads_see_everything_before_them() {
         assert_eq!(t.misses(), 0);
     }
 }
+
+#[test]
+fn queued_and_repeated_frames_keep_their_own_mark_bounds_and_view_lenses() {
+    use d3d::backend::{DrawJudge, DrawOutcome, ResolvedDraw};
+    use d3d::present_camera::{self, Image, Present, View};
+    use frame_scene::{RenderCamera, transform};
+    use gfx::texture::DecodedTexture;
+    use gfx::world_lines::{ImageMarks, ImageSamples, WorldLine};
+
+    #[derive(Clone, Debug, PartialEq)]
+    struct Sample {
+        camera: f32,
+        points: [[f32; 3]; 2],
+        lens: [f32; 2],
+        projected_x: [[f32; 2]; 2],
+    }
+
+    #[derive(Debug)]
+    struct Line([f32; 3]);
+
+    impl ImageMarks for Line {
+        fn lines(&self, visit: &mut dyn FnMut(WorldLine<'_>)) {
+            let [x, y, z] = self.0;
+            visit(WorldLine {
+                edges: &[[self.0, [x, y, z + 1.0]]],
+                anchor: self.0,
+                color: [1.0, 0.0, 0.0],
+                dashed: false,
+                label: None,
+                style: Default::default(),
+            });
+        }
+    }
+
+    #[derive(Default)]
+    struct Recorder {
+        inner: RecordingBackend,
+        samples: Vec<Option<Sample>>,
+    }
+
+    struct SkipsDraws;
+
+    impl DrawJudge for SkipsDraws {
+        fn upload_view(&self, _: &DecodedTexture) -> bool {
+            true
+        }
+
+        fn surface_view(&self, _: gfx::D3DFormat) -> bool {
+            true
+        }
+
+        fn draw(&mut self, _: &ResolvedDraw, _: [Option<bool>; 4]) -> DrawOutcome {
+            DrawOutcome::Skipped("synthetic skipped draw".into())
+        }
+    }
+
+    impl Backend for Recorder {
+        type Surface = u32;
+        type Texture = u32;
+
+        fn judge(&self) -> Option<Box<dyn DrawJudge>> {
+            Some(Box::new(SkipsDraws))
+        }
+
+        fn create_surface(
+            &mut self,
+            format: gfx::D3DFormat,
+            width: u32,
+            height: u32,
+            depth: bool,
+        ) -> Result<u32, String> {
+            self.inner.create_surface(format, width, height, depth)
+        }
+
+        fn destroy_surface(&mut self, surface: u32) -> Result<(), String> {
+            self.inner.destroy_surface(surface)
+        }
+
+        fn upload_texture(&mut self, texture: &DecodedTexture) -> Result<u32, String> {
+            self.inner.upload_texture(texture)
+        }
+
+        fn bc_supported(&self) -> bool {
+            self.inner.bc_supported()
+        }
+
+        fn clear(&mut self, color: u32, depth: Option<u32>, clear: gfx::Clear) -> Result<(), String> {
+            self.inner.clear(color, depth, clear)
+        }
+
+        fn draw(
+            &mut self,
+            _: u32,
+            _: Option<u32>,
+            _: &ResolvedDraw,
+            _: [Option<&u32>; 4],
+        ) -> Result<DrawOutcome, String> {
+            Ok(DrawOutcome::Skipped("synthetic skipped draw".into()))
+        }
+
+        fn copy_surface(&mut self, src: u32, dst: u32) -> Result<bool, String> {
+            self.inner.copy_surface(src, dst)
+        }
+
+        fn present(&mut self, surface: u32, flags: u32) -> Result<(), String> {
+            let Some(Present::Guest { image, .. }) = present_camera::current() else {
+                panic!("the queued image must be a guest present");
+            };
+            let Some(image) = image else {
+                self.samples.push(None);
+                return self.inner.present(surface, flags);
+            };
+            let samples = image.payload.downcast_ref::<ImageSamples>().unwrap();
+            let views = [image.views[0].unwrap(), image.views[1].unwrap()];
+            let mut points = Vec::new();
+            let mut projected_x = Vec::new();
+            samples.visit(&std::time::Instant::now, &mut |line| {
+                let [x, y, z] = line.edges[0][0];
+                points.push([x, y, z]);
+                projected_x.push(views.map(|v| {
+                    let clip = transform(&v.camera.view_projection(), [x, y, z, 1.0]);
+                    clip[0] * v.horizontal_factor / clip[3]
+                }));
+            });
+            self.samples.push(Some(Sample {
+                camera: views[0].camera.position[0],
+                points: points.try_into().unwrap(),
+                lens: views.map(|v| v.horizontal_factor),
+                projected_x: projected_x.try_into().unwrap(),
+            }));
+            self.inner.present(surface, flags)
+        }
+    }
+
+    thread_local! {
+        static SAMPLE: std::cell::RefCell<Option<Image>> = const { std::cell::RefCell::new(None) };
+    }
+
+    let backend = ThreadedBackend::new(Recorder::default()).unwrap().with_jitter(17);
+    let (mut device, mut mem) = create_copy_swap(backend, UploadPolicy::Always);
+    device.set_mark_image_source(|| SAMPLE.take());
+    let stage = |camera, point: [f32; 3], lens: [f32; 2]| {
+        let views = [Some(lens[0]), Some(lens[1]), None, None].map(|factor| {
+            Some(View {
+                camera: RenderCamera {
+                    position: [camera, 0.0, 0.0],
+                    forward: [1.0, 0.0, 0.0],
+                    up: [0.0, 0.0, 1.0],
+                    fov: 1.0,
+                    projection_xy: Some([1.0, 1.0, 0.0, 0.0]),
+                    viewport: [0, 0, 480, 640],
+                    near: 1.0,
+                    far: 20.0,
+                },
+                horizontal_factor: factor?,
+            })
+        });
+        let [x, y, z] = point;
+        let mut samples = ImageSamples::default();
+        samples.sources.push(std::sync::Arc::new(Line(point)));
+        samples.sources.push(std::sync::Arc::new(Line([x, y + 1.0, z])));
+        let _ = SAMPLE.replace(Some(Image {
+            views,
+            payload: std::sync::Arc::new(samples),
+        }));
+    };
+
+    stage(1.0, [5.0, -2.0, 0.0], [0.5, 1.0]);
+    device.swap(&mut mem, 1).unwrap();
+    device.clear(&mut mem, 0, 0, 0x01, 0, 0.5, 0).unwrap(); // Depth only.
+    device.swap(&mut mem, 1).unwrap();
+    set_states(&mut device, &mut mem);
+    textured_quad(&mut device, &mut mem, [0.0, 0.0, 16.0, 16.0], 0xFFFF_FFFF);
+    assert!(device.take_events().iter().any(|event| matches!(
+        event, d3d::Event::DrawSkipped { reason, .. } if reason == "synthetic skipped draw"
+    )));
+    device.swap(&mut mem, 1).unwrap();
+
+    device.clear(&mut mem, 0, 0, 0xF0, 0, 1.0, 0).unwrap();
+    stage(3.0, [7.0, 1.0, 0.0], [1.0, 0.5]);
+    device.swap(&mut mem, 2).unwrap(); // BYPASSCOPY re-shows the first image.
+    device.swap(&mut mem, 1).unwrap(); // COPY shows the undisturbed second image.
+
+    device.clear(&mut mem, 0, 0, 0xF0, 0, 1.0, 0).unwrap();
+    stage(5.0, [9.0, 3.0, 0.0], [0.5, 1.0]);
+    device.swap(&mut mem, 2).unwrap(); // Re-shows the second image.
+    device.clear(&mut mem, 0, 0, 0xF0, 0, 1.0, 0).unwrap(); // Overwrites the third image.
+    device.swap(&mut mem, 1).unwrap(); // The replacement has no world camera.
+
+    let samples = device.backend.with_inner(|recorder| std::mem::take(&mut recorder.samples)).unwrap();
+    let first = Sample {
+        camera: 1.0,
+        points: [[5.0, -2.0, 0.0], [5.0, -1.0, 0.0]],
+        lens: [0.5, 1.0],
+        projected_x: [[0.25, 0.5], [0.125, 0.25]],
+    };
+    let second = Sample {
+        camera: 3.0,
+        points: [[7.0, 1.0, 0.0], [7.0, 2.0, 0.0]],
+        lens: [1.0, 0.5],
+        projected_x: [[-0.25, -0.125], [-0.5, -0.25]],
+    };
+    assert_eq!(
+        samples,
+        [
+            Some(first.clone()),
+            Some(first.clone()),
+            Some(first.clone()),
+            Some(first),
+            Some(second.clone()),
+            Some(second),
+            None,
+        ]
+    );
+}

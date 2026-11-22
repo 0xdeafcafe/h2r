@@ -101,6 +101,8 @@ fn a_published_package_is_fetched_over_http_and_installed() {
         campaign: None,
         ping_ms: None,
         variant_ext: None,
+        rules: None,
+        browser: None,
         map_id: Some(id),
     };
     let maps = data.join("maps");
@@ -206,6 +208,7 @@ fn installing_a_mod_counts_one_download_per_account() {
         &package_stream(&id),
         MAP_PUBLISHED,
         serde_json::to_value(&MapDocument {
+            staged_for: None,
             manifest: m,
             image: None,
             features: vec![],

@@ -321,7 +321,7 @@ impl World {
         self.rt.memory().read_bytes(p, &mut b, 1).unwrap();
         b
     }
-    fn begin(&mut self, slots: &[usize]) -> u32 {
+    fn prepare_logon(&mut self, slots: &[usize]) {
         assert_eq!(self.call("XNetStartup", &[0]), 0);
         assert_eq!(self.call("WSAStartup", &[2, DATA]), 0);
         assert_eq!(self.call("XOnlineStartup", &[0]), 0);
@@ -333,6 +333,9 @@ impl World {
             );
         }
         self.word(DATA + 0x4000, 2);
+    }
+    fn begin(&mut self, slots: &[usize]) -> u32 {
+        self.prepare_logon(slots);
         assert_eq!(
             self.call("XOnlineLogon", &[USERS, DATA + 0x4000, 1, 0, OUT]),
             0
@@ -417,6 +420,74 @@ fn motd() -> Vec<u8> {
     .unwrap()
 }
 #[test]
+fn external_logon_and_editor_reservation_exclude_each_other() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    let server = Server::new();
+    let account = server.account("Editor Test");
+    let mut w = World::new(&server.embedded.url, &[&account]);
+    let status = Arc::new(AtomicU32::new(OK));
+    let check = Arc::clone(&status);
+    w.hle.set_logon_map_check(Box::new(move || check.load(Ordering::Acquire)));
+
+    let task = w.begin(&[0]);
+    let reserve = || -> Result<(), String> { panic!("reserved during external logon") };
+    assert!(w.hle.with_editor_reservation(reserve).is_err());
+    assert_eq!(w.wait(task), CONNECTED);
+    assert!(w.hle.with_editor_reservation(reserve).is_err());
+    assert_eq!(w.call("XOnlineTaskClose", &[task]), OK);
+    w.hle.with_editor_reservation(|| {
+        status.store(TASK_BUSY, Ordering::Release);
+        Ok(())
+    }).unwrap();
+    w.prepare_logon(&[0]);
+    let args = [USERS, DATA + 0x4000, 1, 0, OUT];
+    w.word(OUT, u32::MAX);
+    assert_eq!(w.call("XOnlineLogon", &args), TASK_BUSY);
+    assert_eq!(w.u32(OUT), u32::MAX);
+
+    status.store(CANNOT_ACCESS_SERVICE, Ordering::Release);
+    for _ in 0..2 {
+        let task = w.begin(&[0]);
+        assert_eq!(w.wait(task), CANNOT_ACCESS_SERVICE);
+        assert_eq!(w.call("XOnlineTaskClose", &[task]), OK);
+    }
+    assert_eq!(server.events().iter().filter(|e| e.kind == types::SIGNED_IN).count(), 1);
+}
+
+#[test]
+fn an_unpolled_logon_failure_allows_a_bind_and_a_retry_shows_the_restart_reason() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let server = Server::new();
+    let unknown = synthetic_account();
+    let mut w = World::new(&server.embedded.url, &[&unknown]);
+    let bound = Arc::new(AtomicBool::new(false));
+    let check = Arc::clone(&bound);
+    w.hle.set_logon_map_check(Box::new(move || {
+        if check.load(Ordering::Acquire) {
+            CANNOT_ACCESS_SERVICE
+        } else {
+            OK
+        }
+    }));
+    let failed = w.begin(&[0]);
+    server.until(|| {
+        w.hle
+            .with_editor_reservation(|| {
+                bound.store(true, Ordering::Release);
+                Ok(())
+            })
+            .is_ok()
+    });
+    // Retail still owns the first handle and has never polled its completion.
+    let retry = w.begin(&[0]);
+    assert_eq!(w.wait(retry), CANNOT_ACCESS_SERVICE);
+    assert_eq!(w.wait(failed), INVALID_USER);
+    assert!(server.presence().is_empty());
+}
+
+#[test]
 fn logon_verifies_the_account_key_and_appends_signed_presence() {
     let server = Server::new();
     let account = server.account("Test Player");
@@ -464,6 +535,7 @@ fn unknown_account_and_wrong_or_missing_key_fail_as_invalid_user() {
         let mut w = World::new(&server.embedded.url, &[account]);
         let h = w.begin(&[0]);
         assert_eq!(w.wait(h), INVALID_USER);
+        assert!(w.hle.with_editor_reservation(|| Ok(())).is_ok());
         assert_eq!(w.call("XOnlineLogonTaskGetResults", &[h]), INVALID_USER);
         assert_eq!(w.call("XOnlineGetLogonUsers", &[]), 0);
     }
@@ -562,6 +634,7 @@ fn the_mod_list_reads_published_maps_newest_first() {
         }];
         let id = MapId::of(&m);
         let doc = MapDocument {
+            staged_for: None,
             manifest: m,
             image: None,
             features: vec![],
@@ -1017,6 +1090,10 @@ fn heartbeat_failure_reaches_the_persistent_connection_task() {
     assert_ne!(w.hle.server_status().last_error, 0);
     assert_eq!(w.call("XOnlineLogonTaskGetResults", &[h]), CONNECTION_LOST);
     assert_eq!(w.call("XOnlineGetLogonUsers", &[]), 0);
+    // Its HTTP worker can reannounce this account until retail closes the handle.
+    assert!(w.hle.with_editor_reservation(|| Ok(())).is_err());
+    assert_eq!(w.call("XOnlineTaskClose", &[h]), OK);
+    assert!(w.hle.with_editor_reservation(|| Ok(())).is_ok());
 }
 
 fn synthetic_account() -> Account {
@@ -1686,6 +1763,10 @@ fn the_host_asks_for_a_bot_roster_for_its_session() {
     let s = Server::new();
     let a = s.account("Host");
     let mut host = World::new(&s.embedded.url, &[&a]);
+    assert_eq!(
+        host.hle.bot_card(a.xuid, Box::new(|_| panic!("offline lookup was queued"))),
+        Err(NO_SESSION)
+    );
     host.logon();
     assert_eq!(host.hle.hosted_session(), None, "no advertisement yet");
     attr(&host, MATCH_ATTR, 1, 101);
@@ -1721,10 +1802,22 @@ fn the_host_asks_for_a_bot_roster_for_its_session() {
     let roster = ask(&session).expect("a roster");
     assert_eq!(roster.match_id, session);
     assert_eq!(roster.bots.len(), 2);
+    let lookup = |xuid| {
+        let (tx, rx) = mpsc::channel();
+        host.hle
+            .bot_card(xuid, Box::new(move |card| tx.send(card).unwrap()))
+            .unwrap();
+        rx.recv_timeout(Duration::from_secs(10)).unwrap()
+    };
+    assert!(lookup(a.xuid).is_err());
     for b in &roster.bots {
         assert!(bots::is_server_xuid(b.xuid), "{}", b.xuid);
         assert_eq!(b.skill, bots::HEROIC);
         assert_eq!(b.team, None);
+        let card = lookup(b.xuid).unwrap();
+        assert_eq!(card.xuid, b.xuid);
+        assert_eq!(card.gamertag, b.gamertag);
+        assert_eq!(card.skill, Some(bots::HEROIC));
     }
     assert!(
         s.events()
@@ -2106,6 +2199,107 @@ fn sessions_two_guests_publish_find_parse_update_and_delete() {
         vec!["SessionCreated", "SessionUpdated", "SessionDeleted"]
     );
 }
+
+#[test]
+fn a_full_clankermatch_target_stays_advertised_until_the_guest_deletes_it() {
+    use live_proto::{optimatch::attr as attr_id, session::Session};
+
+    const HOPPER: u32 = 8;
+    const CAPACITY: u32 = 8;
+    const SQUAD_ID: u32 = MATCH_ID + 8;
+    const SQUAD_KEY: u32 = MATCH_KEY + 16;
+
+    let server = Server::new();
+    let account = server.account("Host");
+    let mut host = World::new(&server.embedded.url, &[&account]);
+    host.logon();
+    server.until(|| host.hle.clanker_hoppers().contains(HOPPER));
+
+    assert_eq!(
+        host.call("XOnlineMatchSessionCreate", &[1, 15, 0, 0, 0, 0, 0, OUT]),
+        OK
+    );
+    let squad = host.u32(OUT);
+    assert_eq!(host.wait(squad), TASK_SUCCESS);
+    assert_eq!(
+        host.call("XOnlineMatchSessionGetInfo", &[squad, SQUAD_ID, SQUAD_KEY]),
+        OK
+    );
+    assert_eq!(host.call("XNetRegisterKey", &[SQUAD_ID, SQUAD_KEY]), OK);
+    let squad_id: [u8; 8] = host.bytes(SQUAD_ID, 8).try_into().unwrap();
+
+    attr(&host, MATCH_ATTR, attr_id::HOPPER, u64::from(HOPPER));
+    attr(&host, MATCH_ATTR + 16, attr_id::OPEN, u64::from(CAPACITY - 1));
+    assert_eq!(
+        host.call(
+            "XOnlineMatchSessionCreate",
+            &[1, CAPACITY - 1, 0, 0, 2, MATCH_ATTR, 0, OUT]
+        ),
+        OK
+    );
+    let target = host.u32(OUT);
+    assert_eq!(host.wait(target), TASK_SUCCESS);
+    assert_eq!(
+        host.call("XOnlineMatchSessionGetInfo", &[target, MATCH_ID, MATCH_KEY]),
+        OK
+    );
+    assert_eq!(host.call("XNetRegisterKey", &[MATCH_ID, MATCH_KEY]), OK);
+    let target_id = sign::hex(&host.bytes(MATCH_ID, 8));
+    let (lo, hi) = (host.u32(MATCH_ID), host.u32(MATCH_ID + 4));
+
+    // Advertise a slot change for each phantom the guest seats.
+    for filled in 2..=CAPACITY {
+        let open = CAPACITY - filled;
+        attr(&host, MATCH_ATTR + 16, attr_id::OPEN, u64::from(open));
+        assert_eq!(
+            host.call(
+                "XOnlineMatchSessionUpdate",
+                &[lo, hi, filled, open, 0, 0, 1, MATCH_ATTR + 16, 0, OUT]
+            ),
+            OK
+        );
+        let update = host.u32(OUT);
+        assert_eq!(host.wait(update), TASK_SUCCESS, "filled={filled}");
+        assert_eq!(
+            host.hle.clanker_hosted().map(|(id, _)| id).as_deref(),
+            Some(target_id.as_str())
+        );
+    }
+    let page: Page<Session> = server.get_as_operator("/v1/sessions");
+    let full = page
+        .items
+        .iter()
+        .find(|row| row.session_id == target_id)
+        .unwrap();
+    assert_eq!(full.advertisement.slots.public_filled, CAPACITY);
+    assert_eq!(full.advertisement.slots.public_open, 0);
+
+    // Unregister consumes the still-registered target key. The independent
+    // advertisement remains until the guest's delete completes.
+    assert_eq!(host.call("XNetUnregisterKey", &[MATCH_ID]), OK);
+    assert_eq!(
+        host.call("XNetUnregisterKey", &[MATCH_ID]),
+        WSA_INVALID_ARGUMENT
+    );
+    assert_eq!(
+        host.hle.hosted_session().as_deref(),
+        Some(target_id.as_str())
+    );
+    assert_eq!(host.call("XOnlineMatchSessionDelete", &[lo, hi, 0, OUT]), OK);
+    let delete = host.u32(OUT);
+    assert_eq!(host.wait(delete), TASK_SUCCESS);
+    assert_eq!(host.hle.clanker_hosted(), None);
+
+    let local = host.hle.local_sessions();
+    assert_eq!(local.len(), 1);
+    assert_eq!(local[0].id, squad_id);
+    let page: Page<Session> = server.get_as_operator("/v1/sessions");
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].session_id, sign::hex(&squad_id));
+    // The squad key survived the target's teardown.
+    assert_eq!(host.call("XNetUnregisterKey", &[SQUAD_ID]), OK);
+}
+
 /// A host's multiplayer skulls ride on its advertisement (docs/game/skulls.md
 /// "In multiplayer"): a guest that found and joined the session reads them
 /// at game start, asking the server again, so a change the host made after
@@ -2282,6 +2476,80 @@ fn guests_read_the_variant_options_their_host_advertises() {
         HostVariantExt::Known {
             session,
             ext: Some(ext),
+            refreshed: true
+        }
+    );
+}
+/// A Live host's rules IR hash rides on its advertisement beside the variant
+/// options (docs/game/rules-engine.md, "Carrying a script"): a joined guest
+/// reads it at its own game start, and a host that sets none leaves it out.
+#[test]
+fn guests_read_the_rules_hash_their_host_advertises() {
+    use live_hle::HostRules;
+    let s = Server::new();
+    let a = s.account("Host");
+    let b = s.account("Guest");
+    let mut host = World::new(&s.embedded.url, &[&a]);
+    let mut guest = World::raw_network(
+        &s.embedded.url,
+        json!([b.json()]),
+        Duration::from_millis(100),
+        32000,
+    );
+    host.logon();
+    guest.logon();
+    let wait = Duration::from_secs(5);
+    assert_eq!(guest.hle.host_rules(wait), HostRules::NotJoined);
+    for (i, id) in [1, 2, 3, 5, 6, 7, 8].into_iter().enumerate() {
+        attr(&host, MATCH_ATTR + i as u32 * 16, id, 100 + u64::from(id));
+    }
+    assert_eq!(
+        host.call(
+            "XOnlineMatchSessionCreate",
+            &[1, 7, 0, 0, 7, MATCH_ATTR, 0, OUT]
+        ),
+        0
+    );
+    let create = host.u32(OUT);
+    assert_eq!(host.wait(create), TASK_SUCCESS);
+    let created = s
+        .events()
+        .into_iter()
+        .find(|e| e.kind == "SessionCreated")
+        .unwrap();
+    assert!(created.data["advertisement"].get("rules").is_none());
+    let cap = guest.call("XOnlineMatchSearchResultsLen", &[50, 7, MATCH_SPEC]);
+    let (_, table, count) = match_search(&mut guest, 1, 0, cap);
+    assert_eq!(count, 1);
+    let row = guest.u32(table);
+    assert_eq!(guest.call("XNetRegisterKey", &[row + 4, row + 0x30]), 0);
+    let session = live_proto::sign::hex(&host.hle.local_sessions()[0].id);
+    assert_eq!(
+        guest.hle.host_rules(wait),
+        HostRules::Known {
+            session: session.clone(),
+            rules: None,
+            refreshed: true
+        }
+    );
+    let hash = "5e".repeat(32);
+    host.hle.set_session_rules(Some(hash.clone()));
+    s.until(|| {
+        s.get_as_operator::<Page<live_proto::session::Session>>("/v1/sessions")
+            .items[0]
+            .advertisement
+            .rules
+            .is_some()
+    });
+    assert_eq!(
+        host.hle.local_sessions()[0].rules.as_deref(),
+        Some(hash.as_str())
+    );
+    assert_eq!(
+        guest.hle.host_rules(wait),
+        HostRules::Known {
+            session,
+            rules: Some(hash),
             refreshed: true
         }
     );
@@ -2553,6 +2821,104 @@ fn a_coop_lobby_advertises_its_campaign_and_the_invited_guest_reads_it() {
     assert_eq!(host.hle.activity(), None);
     assert!(guest.hle.joined(wait).campaign().is_none());
 }
+#[test]
+fn browser_filters_stay_with_the_retail_search_and_refresh_host_metadata() {
+    use live_proto::{
+        optimatch::{PARAMS, Query, attr::HOPPER},
+        session::{AttributeValue, BrowserFilters, BrowserMetadata, MapCategory},
+    };
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let s = Server::new();
+    let a = s.account("Host");
+    let b = s.account("Browser");
+    let mut host = World::new(&s.embedded.url, &[&a]);
+    let mut reader = World::raw_network(
+        &s.embedded.url,
+        json!([b.json()]),
+        Duration::from_millis(100),
+        32000,
+    );
+    host.logon();
+    reader.logon();
+
+    let clankers = Arc::new(AtomicBool::new(true));
+    let flag = clankers.clone();
+    host.hle.set_browser_probe(Arc::new(move |_, _| {
+        Some(BrowserMetadata {
+            clankers: Some(flag.load(Ordering::Relaxed)),
+            game_type: Some(2),
+            variant: Some("Short Team Night".into()),
+            map_category: Some(MapCategory::Halo2),
+        })
+    }));
+    attr(&host, MATCH_ATTR, HOPPER, u64::MAX);
+    assert_eq!(
+        host.call("XOnlineMatchSessionCreate", &[1, 7, 0, 0, 1, MATCH_ATTR, 0, OUT]),
+        0
+    );
+    let create = host.u32(OUT);
+    assert_eq!(host.wait(create), TASK_SUCCESS);
+    assert!(s.events().iter().any(|event| {
+        event.kind == "SessionCreated"
+            && event.data["advertisement"]["browser"]["clankers"] == json!(true)
+    }));
+
+    let query = Query {
+        hopper: -1,
+        average: 0,
+        lowest: None,
+        highest: None,
+        party: None,
+        has_map_pack: false,
+    };
+    for (i, value) in query.to_params().into_iter().enumerate() {
+        let at = MATCH_ATTR + i as u32 * 16;
+        match value {
+            AttributeValue::Integer(value) => attr(&reader, at, 0, value),
+            AttributeValue::Null => attr(&reader, at, 0x00f0_0000, 0),
+            other => panic!("unexpected browser parameter {other:?}"),
+        }
+    }
+    let cap = reader.call("XOnlineMatchSearchResultsLen", &[50, 7, MATCH_SPEC]);
+    let params = PARAMS as u32;
+    let without = BrowserFilters { clankers: Some(false), ..Default::default() };
+    reader.hle.set_browser_filters(without.clone());
+    assert_eq!(match_search(&mut reader, 1, params, cap).2, 0);
+    let status = reader.hle.browser_status();
+    assert_eq!(status.matching, Some(0));
+    assert_eq!(status.variants, ["Short Team Night"]);
+    assert_eq!(status.filtering_supported, Some(true));
+    assert_eq!(match_search(&mut reader, 1, 0, cap).2, 1);
+
+    // A pending search cannot hand its old rows back after the filter changes,
+    // even if the worker finished before the guest polled the handle.
+    reader.hle.set_browser_filters(BrowserFilters::default());
+    assert_eq!(
+        reader.call("XOnlineMatchSearch", &[1, 50, params, MATCH_ATTR, cap, 0, OUT]),
+        0
+    );
+    let stale = reader.u32(OUT);
+    reader.hle.set_browser_filters(without);
+    assert_eq!(reader.wait(stale), TASK_SUCCESS);
+    assert_eq!(
+        reader.call("XOnlineMatchSearchGetResults", &[stale, OUT, OUT + 4]),
+        0
+    );
+    assert_eq!(reader.u32(OUT + 4), 0);
+    assert_eq!(reader.hle.browser_status().matching, None);
+
+    clankers.store(false, Ordering::Relaxed);
+    host.hle.lobby_browser_changed(&host.rt.memory());
+    s.until(|| {
+        s.events().iter().any(|event| {
+            event.kind == "SessionUpdated" && event.data["browser"]["clankers"] == json!(false)
+        })
+    });
+    assert_eq!(match_search(&mut reader, 1, params, cap).2, 1);
+    assert_eq!(reader.hle.browser_status().matching, Some(1));
+}
+
 /// The custom games browser (docs/live/live-custom-games.md) is the retail
 /// System Link browser in its Live mode: its search is `0x0008fa80`'s
 /// procedure 1 with 50 results, and `0x0008fb30` keeps rows with exactly
@@ -2903,6 +3269,19 @@ fn udp_socket(w: &mut World) -> u32 {
 }
 #[test]
 fn invites_message_accept_find_and_join_exchange_datagrams_without_broadcast() {
+    let version = live_proto::replication::STOCK;
+    exercise_live_invite(version, version);
+}
+
+#[test]
+fn live_invites_refuse_both_mixed_replication_versions() {
+    use live_proto::replication::{CREATURE_PROBE, STOCK};
+
+    exercise_live_invite(STOCK, CREATURE_PROBE);
+    exercise_live_invite(CREATURE_PROBE, STOCK);
+}
+
+fn exercise_live_invite(host_version: u16, peer_version: u16) {
     let s = Server::new();
     let a = s.account("Host");
     let b = s.account("Joiner");
@@ -2924,6 +3303,8 @@ fn invites_message_accept_find_and_join_exchange_datagrams_without_broadcast() {
         Duration::from_secs(30),
         peer_port,
     );
+    host.hle.set_replication_version(host_version);
+    peer.hle.set_replication_version(peer_version);
     host.logon();
     peer.logon();
     let (lo, hi) = invite_host(&mut host);
@@ -3083,6 +3464,15 @@ fn invites_message_accept_find_and_join_exchange_datagrams_without_broadcast() {
     );
     let qos = peer.u32(OUT);
     assert_eq!(peer.u32(qos + 4), 0);
+    if host_version != peer_version {
+        // The invite reaches FindFromID, but QoS denies the session
+        // before the guest can obtain the title's admission data.
+        assert_eq!(peer.bytes(qos + 8, 1), vec![7]);
+        assert_eq!(peer.bytes(qos + 14, 2), vec![0, 0]);
+        assert_eq!(peer.u32(qos + 16), 0);
+        assert_eq!(peer.call("XNetQosRelease", &[qos]), 0);
+        return;
+    }
     assert_eq!(peer.bytes(qos + 8, 1), vec![0xb]);
     assert_eq!(peer.bytes(peer.u32(qos + 16), 15), b"synthetic-lobby");
     assert_eq!(peer.call("XNetQosRelease", &[qos]), 0);
@@ -3228,6 +3618,141 @@ fn invites_friend_send_decline_remove_accept_and_join_are_asynchronous() {
         w.call("XOnlineFriendsGetAcceptedGameInvite", &[INV_RECORD]) == 0
     });
     assert_eq!(peer.bytes(INV_RECORD + 40, 8), host.bytes(MATCH_ID, 8));
+}
+
+fn resolve_link(peer: &World, id: &str) -> Result<live_hle::join_resolver::ResolvedJoin, String> {
+    let lookup = peer.hle.resolve_join_link(id)?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(result) = lookup.poll() {
+            return result;
+        }
+        assert!(Instant::now() < deadline, "join lookup timed out");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn a_join_link_resolves_as_the_console_account_and_delivers_an_accepted_invite_once() {
+    let server = Server::new();
+    let a = server.account("Host");
+    let b = server.account("Friend");
+    let c = server.account("Stranger");
+    friend_pair(&server, &a, &b);
+    let mut host = World::new(&server.embedded.url, &[&a]);
+    let mut peer = World::new(&server.embedded.url, &[&b]);
+    let mut stranger = World::new(&server.embedded.url, &[&c]);
+    host.logon();
+    let logon = peer.logon();
+    stranger.logon();
+    host.hle
+        .set_session_visibility(live_hle::Visibility::Friends);
+    invite_host(&mut host);
+    let id = live_proto::sign::hex(&host.bytes(MATCH_ID, 8));
+    assert!(peer.hle.join_link_ready());
+    assert!(peer.hle.resolve_join_link("../bad").is_err());
+    assert_eq!(
+        resolve_link(&stranger, &id).err().as_deref(),
+        Some("Only Host's friends can join this game.")
+    );
+    let join = resolve_link(&peer, &id).unwrap();
+    assert_eq!(join.host(), "Host");
+    assert_eq!(join.controller(), 0);
+    drop(peer.hle.accept_join_link(join).unwrap());
+    assert_eq!(
+        peer.call("XOnlineFriendsGetAcceptedGameInvite", &[INV_RECORD]),
+        NO_ACCEPTED_INVITE
+    );
+    let receipt = peer
+        .hle
+        .accept_join_link(resolve_link(&peer, &id).unwrap())
+        .unwrap();
+    assert!(!receipt.consumed());
+    assert_eq!(
+        peer.call("XOnlineFriendsGetAcceptedGameInvite", &[INV_RECORD]),
+        0
+    );
+    assert!(receipt.consumed());
+    assert_eq!(peer.bytes(INV_RECORD + 40, 8), host.bytes(MATCH_ID, 8));
+    assert_eq!(peer.bytes(INV_RECORD + 88, 8), b.xuid.0.to_le_bytes());
+    assert_eq!(
+        peer.call("XOnlineFriendsGetAcceptedGameInvite", &[INV_RECORD]),
+        NO_ACCEPTED_INVITE
+    );
+    let stale = resolve_link(&peer, &id).unwrap();
+    assert_eq!(peer.call("XOnlineTaskClose", &[logon]), 0);
+    assert!(peer.hle.accept_join_link(stale).is_err());
+    assert!(!peer.hle.join_link_ready());
+}
+
+#[test]
+fn zero_count_lobby_advertisements_follow_the_host_squad_capacity() {
+    let server = Server::new();
+    let a = server.account("Host");
+    let b = server.account("Joiner");
+    let mut host = World::new(&server.embedded.url, &[&a]);
+    let mut peer = World::new(&server.embedded.url, &[&b]);
+    host.logon();
+    peer.logon();
+    assert_eq!(
+        host.call("XOnlineMatchSessionCreate", &[0, 0, 0, 0, 0, 0, 0, OUT]),
+        OK
+    );
+    let task = host.u32(OUT);
+    assert_eq!(host.wait(task), TASK_SUCCESS);
+    assert_eq!(
+        host.call("XOnlineMatchSessionGetInfo", &[task, MATCH_ID, MATCH_KEY]),
+        OK
+    );
+    let id = live_proto::sign::hex(&host.bytes(MATCH_ID, 8));
+    let capacity = |filled, open| live_hle::SessionSlots {
+        public_filled: filled,
+        public_open: open,
+        ..Default::default()
+    };
+    for slots in [capacity(1, 1), capacity(2, 0)] {
+        server.until(|| {
+            host.hle.sync_squad_slots(slots);
+            host.hle.local_sessions()[0].slots == slots
+        });
+        let join = resolve_link(&peer, &id);
+        if slots.public_open == 0 {
+            assert_eq!(join.err().as_deref(), Some("Host's game is full."));
+        } else {
+            assert!(join.is_ok());
+        }
+    }
+    // A title update with reserved seats takes ownership back.
+    let lo = host.u32(MATCH_ID);
+    let hi = host.u32(MATCH_ID + 4);
+    assert_eq!(
+        host.call(
+            "XOnlineMatchSessionUpdate",
+            &[lo, hi, 1, 0, 0, 3, 0, 0, 0, OUT]
+        ),
+        OK
+    );
+    let task = host.u32(OUT);
+    assert_eq!(host.wait(task), TASK_SUCCESS);
+    host.hle.sync_squad_slots(capacity(1, 2));
+    assert!(
+        resolve_link(&peer, &id)
+            .err()
+            .unwrap()
+            .contains("invitation")
+    );
+    host.hle
+        .set_session_visibility(live_hle::Visibility::Invite);
+    server.until(|| {
+        server
+            .get_as_operator::<Page<live_proto::session::Session>>("/v1/sessions")
+            .items
+            .is_empty()
+    });
+    assert_eq!(
+        resolve_link(&peer, &id).err().as_deref(),
+        Some("Host's game is invite-only.")
+    );
 }
 
 #[test]
@@ -4170,6 +4695,61 @@ fn a_presence_change_whose_answer_is_lost_is_sent_once() {
     assert_eq!(kinds(&server, types::PRESENCE_CHANGED).len(), 1);
     assert_eq!(w.hle.server_status().last_error, 0);
     assert_eq!(w.call("XOnlineTaskContinue", &[h]), CONNECTED);
+}
+
+/// A matchmaking lobby ends when this console's arbitration registration
+/// fails (docs/game/bots.md §8.4, `0x72260`), so a registration rides out a
+/// deploy and a lost answer: the server writes a second one as nothing.
+/// An extension writes each time, so it is sent once.
+#[test]
+fn an_arbitration_registration_rides_out_a_deploy_and_a_lost_answer() {
+    const ROUND: u32 = DATA + 0x12000;
+    let server = Server::new();
+    let a = server.account("Registrar");
+    let proxy = Flaky::new(&server.embedded.url);
+    let mut w = outage_world(
+        &proxy,
+        &a,
+        Duration::from_secs(3600),
+        Duration::from_secs(90),
+    );
+    w.logon();
+    attr(&w, MATCH_ATTR, 1, 101);
+    assert_eq!(
+        w.call(
+            "XOnlineMatchSessionCreate",
+            &[1, 7, 0, 0, 1, MATCH_ATTR, 0, OUT]
+        ),
+        OK
+    );
+    let create = w.u32(OUT);
+    assert_eq!(w.wait(create), TASK_SUCCESS);
+    let session_hex = w.hle.hosted_session().expect("the advertised session");
+    let session_id: Vec<u8> = (0..8)
+        .map(|i| u8::from_str_radix(&session_hex[2 * i..2 * i + 2], 16).unwrap())
+        .collect();
+    w.put(ROUND, &session_id);
+    assert_eq!(w.call("XOnlineArbitrationCreateRoundID", &[ROUND + 8]), OK);
+
+    proxy.fail("/register", Fault::Busy);
+    proxy.fail("/register", Fault::Lost);
+    assert_eq!(
+        w.call("XOnlineArbitrationRegister", &[ROUND, 300, 0xc, 0, OUT]),
+        OK
+    );
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), TASK_SUCCESS);
+    assert_eq!(proxy.count("POST", "/register"), 3);
+    assert_eq!(kinds(&server, "ArbitrationRegistered").len(), 1);
+
+    proxy.fail("/extend", Fault::Busy);
+    assert_eq!(
+        w.call("XOnlineArbitrationExtendRound", &[ROUND, 300, 0, OUT]),
+        OK
+    );
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), SERVERS_BUSY);
+    assert_eq!(proxy.count("POST", "/extend"), 1);
 }
 
 #[test]

@@ -2,6 +2,8 @@
 // look nothing alike, so going from one to the other plays a short veil
 // (see Veil.tsx); moving about within a side does not.
 
+import { createEffect, createMemo, on, type Accessor } from "solid-js";
+
 export type Side = "dash" | "stats";
 
 /** Milliseconds the veil takes to cover the old side, then to clear off the new one. */
@@ -16,3 +18,12 @@ export function sideOf(path: string): Side {
 
 /** Whether following `href` from `from` changes sides. */
 export const crosses = (from: string, href: string) => sideOf(from) !== sideOf(href);
+
+
+/** Observe changes between sides after the initial route. */
+export function observeSide(pathname: Accessor<string>, changed: (to: Side) => void): Accessor<Side> {
+  // The memo keeps same-side pathname changes from notifying the veil.
+  const side = createMemo(() => sideOf(pathname()));
+  createEffect(on(side, changed, { defer: true }));
+  return side;
+}

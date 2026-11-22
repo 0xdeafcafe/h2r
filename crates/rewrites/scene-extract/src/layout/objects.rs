@@ -104,6 +104,30 @@ pub fn body(mem: &dyn GuestRead, handle: u32) -> Option<u32> {
     (body != 0).then_some(body)
 }
 
+/// The creature object type (header `+3`), whose object shadow takes the
+/// ground-shadow branch `0x00032ce0`.
+pub const CREATURE: u8 = 12;
+
+/// The type byte (header `+3`) of the live object `handle`, if any.
+pub fn kind(mem: &dyn GuestRead, handle: u32) -> Option<u8> {
+    if handle == u32::MAX {
+        return None;
+    }
+    let array = mem.read_u32(OBJECTS)?;
+    if array == 0 {
+        return None;
+    }
+    let slot = handle & 0xffff;
+    if slot >= mem.read_u32(array + ARRAY_HIGH_WATER)? {
+        return None;
+    }
+    let header = mem.read_u32(array + ARRAY_DATA)?.checked_add(HEADER_SIZE * slot)?;
+    // Salt in the low half, flags and type in the bytes above it.
+    let word = mem.read_u32(header)?;
+    let salt = word & 0xffff;
+    (salt != 0 && salt == handle >> 16).then_some((word >> 24) as u8)
+}
+
 /// Most object slots [`object_meets_sphere`] walks; past it the answer is
 /// yes.
 pub const MAX_SLOTS: u32 = 1 << 13;
@@ -525,6 +549,19 @@ pub fn restore(mem: &mut dyn GuestWrite, cleared: &ClearedObjects) {
 mod tests {
     use super::*;
     use crate::testing::{ARRAY, BODIES, CACHE, CACHE_DATA, HEADERS, Mem, lighting, object, record};
+
+    /// The type byte is the header's `+3`; a stale salt or no object
+    /// reads none.
+    #[test]
+    fn an_objects_kind_is_its_header_type_byte() {
+        let mut m = Mem::default();
+        let handle = object(&mut m, 2, 0xe100_0001, 1);
+        assert_eq!(kind(&m, handle), Some(1));
+        m.w(HEADERS + 0xc * 2, (handle >> 16) | u32::from(CREATURE) << 24);
+        assert_eq!(kind(&m, handle), Some(CREATURE));
+        assert_eq!(kind(&m, handle ^ 0x0001_0000), None, "a stale salt");
+        assert_eq!(kind(&m, u32::MAX), None);
+    }
 
     const LIST: u32 = 0x004c_1a48;
     const ITEMS: u32 = 0x0060_0000;

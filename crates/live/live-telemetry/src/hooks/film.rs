@@ -168,7 +168,8 @@ pub fn install_film(
     {
         session = session.with_sim(game.clone());
     }
-    let sink = transport_sink(config);
+    let combat = super::CombatFeed::default();
+    let sink = transport_sink(config, &combat);
     let (sink, transport) = match sink {
         Ok(sink) => (sink, config.enabled),
         Err(error) if observer.is_some() => {
@@ -191,6 +192,7 @@ pub fn install_film(
     } else {
         Telemetry::new(session, sink)
     };
+    telemetry.combat = combat;
     telemetry.hooks = hooks;
     // Replay needs the same hook addresses for scheduler parity. Its viewer
     // consumes the film: no second live telemetry session needs to observe it.
@@ -207,7 +209,7 @@ pub fn install_film(
     }
 }
 
-fn transport_sink(config: &TelemetryConfig) -> Result<Box<dyn Sink>, String> {
+fn transport_sink(config: &TelemetryConfig, combat: &super::CombatFeed) -> Result<Box<dyn Sink>, String> {
     if !config.enabled {
         return Ok(Box::new(crate::sink::Discard));
     }
@@ -224,7 +226,7 @@ fn transport_sink(config: &TelemetryConfig) -> Result<Box<dyn Sink>, String> {
         } => {
             let sink = ServerSink::for_host(base_url.clone(), token.clone())?;
             Box::new(match game {
-                Some(game) => sink.with_sim(game, None),
+                Some(game) => sink.with_sim(game, None, combat.clone()),
                 None => sink,
             })
         }
@@ -235,7 +237,7 @@ fn transport_sink(config: &TelemetryConfig) -> Result<Box<dyn Sink>, String> {
             deferred_lock,
         } => Box::new(
             ServerSink::new(base_url.clone(), account.clone())?
-                .with_sim(game, deferred_lock.clone()),
+                .with_sim(game, deferred_lock.clone(), combat.clone()),
         ),
     })
 }
@@ -248,6 +250,7 @@ mod tests {
     #[derive(Default)]
     struct CaptureLog {
         events: Mutex<Vec<String>>,
+        actor_kills: Mutex<Vec<GameEvent>>,
         frames: Mutex<Vec<u64>>,
         clock: Mutex<Option<u64>>,
         dropped: Mutex<Vec<&'static str>>,
@@ -260,6 +263,11 @@ mod tests {
         }
         fn event(&self, event: &GameEvent, _: u64) -> Result<(), String> {
             self.events.lock().unwrap().push(event.kind.clone());
+            if event.kind == live_proto::game::ACTOR_KILLED
+                || event.kind == live_proto::game::FIREFIGHT_SCORE
+            {
+                self.actor_kills.lock().unwrap().push(event.clone());
+            }
             Ok(())
         }
         fn frame(&self, frame: Frame) -> Result<(), String> {
@@ -354,6 +362,134 @@ mod tests {
         t.close_film();
         assert_eq!(*log.events.lock().unwrap(), ["GameStarted", "GameEnded"]);
         assert!(!t.disabled());
+    }
+
+    #[test]
+    fn actor_kill_telemetry_projects_one_stats_record_with_the_credited_seat() {
+        use crate::{layout, memory::fixture};
+        use guest_layout::{DamageReport, DatumArray, actor::Actor, damage::DEPLETING, global};
+        use live_proto::film::events::{Event, Tracker};
+        use live_proto::game::ActorKilled;
+
+        let log = Arc::new(CaptureLog::default());
+        let mut registry = ::hooks::Registry::new(::hooks::Switches::defaults());
+        let telemetry = install_film(
+            &mut registry,
+            &TelemetryConfig::default(),
+            Some(Box::new(log.clone())),
+            live_proto::film::TelemetryHooks::UNIFIED,
+        )
+        .unwrap()
+        .unwrap();
+
+        let mut guest = fixture::memory();
+        guest.set_u32(fixture::GLOBALS + layout::OPTIONS + layout::OPTIONS_TYPE, 2).unwrap();
+        guest.set_u16(fixture::GLOBALS + layout::OPTIONS + layout::OPTIONS_TICK_RATE, 30).unwrap();
+        guest.write_bytes(layout::CACHE_MAP_NAME, b"synthetic\0", 1).unwrap();
+        fixture::put_player(&mut guest, 0, "Killer", 0, true, u32::MAX);
+        fixture::put_actor(&mut guest, 1, 1, [1.0, 2.0, 3.0]);
+        let unit = fixture::object_datum(1);
+
+        let bitmap = 0x160000;
+        let actors = 0x161000;
+        let data = 0x162000;
+        let report = 0x164000;
+        let character = 0xe200_0003;
+        guest.set_u32(fixture::OBJECTS + DatumArray::BITMAP.offset, bitmap).unwrap();
+        guest.set_u32(bitmap, 1 << 1).unwrap();
+        guest.set_u32(global::ACTORS.base, actors).unwrap();
+        guest.set_u32(actors + DatumArray::ELEMENT_SIZE.offset, Actor::SIZE).unwrap();
+        guest.set_u32(actors + DatumArray::HIGH_WATER.offset, 2).unwrap();
+        guest.set_u32(actors + DatumArray::DATA.offset, data).unwrap();
+        let actor = data + Actor::SIZE;
+        guest.set_u16(actor, 0xa000).unwrap();
+        guest.set_u32(actor + Actor::UNIT, unit).unwrap();
+        guest.set_u32(actor + Actor::CHARACTER, character).unwrap();
+        guest.set_u32(report + DamageReport::OWNER_PLAYER.offset, 0x8001_0000).unwrap();
+        guest.set_u8(report + DamageReport::CODE.offset, 13).unwrap();
+
+        telemetry.start(&guest).unwrap();
+        guest.set_u32(fixture::TIME + layout::TIME_TICK, 12).unwrap();
+        telemetry.actor_killed(&guest, report, unit).unwrap();
+        guest.set_u32(report + DamageReport::FLAGS.offset, DEPLETING).unwrap();
+        telemetry.actor_killed(&guest, report, unit).unwrap();
+
+        let events = log.actor_kills.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        let records = Tracker::default().event(&events[0].kind, &events[0].data, 13).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].tick, 12);
+        assert_eq!(records[0].event, Event::ActorKilled(ActorKilled {
+            tick: 12,
+            unit,
+            character: Some(character),
+            killer: Some(0),
+            weapon: Some("sniper_rifle".into()),
+        }));
+    }
+
+    #[test]
+    fn a_firefight_score_is_a_game_event_and_a_running_objective_score_in_the_film() {
+        use crate::{layout, memory::fixture};
+        use live_proto::film::events::{Event, Tracker};
+        use live_proto::firefight::{FirefightEnded, FirefightScore};
+
+        let log = Arc::new(CaptureLog::default());
+        let mut registry = ::hooks::Registry::new(::hooks::Switches::defaults());
+        let telemetry = install_film(
+            &mut registry,
+            &TelemetryConfig::default(),
+            Some(Box::new(log.clone())),
+            live_proto::film::TelemetryHooks::UNIFIED,
+        )
+        .unwrap()
+        .unwrap();
+        let mut guest = fixture::memory();
+        guest.set_u32(fixture::GLOBALS + layout::OPTIONS + layout::OPTIONS_TYPE, 2).unwrap();
+        guest.set_u16(fixture::GLOBALS + layout::OPTIONS + layout::OPTIONS_TICK_RATE, 30).unwrap();
+        guest.write_bytes(layout::CACHE_MAP_NAME, b"synthetic\0", 1).unwrap();
+        fixture::put_player(&mut guest, 0, "Killer", 0, true, u32::MAX);
+        // Before a game runs, a score is dropped.
+        telemetry.firefight_score(FirefightScore {
+            tick: 1,
+            player: 0,
+            points: 5,
+            reason: "kill".into(),
+            class: None,
+        });
+        telemetry.start(&guest).unwrap();
+        guest.set_u32(fixture::TIME + layout::TIME_TICK, 12).unwrap();
+        for points in [100, 50] {
+            telemetry.firefight_score(FirefightScore {
+                tick: 12,
+                player: 0,
+                points,
+                reason: "kill".into(),
+                class: Some("grunt".into()),
+            });
+        }
+        telemetry.firefight_ended(FirefightEnded {
+            tick: 12,
+            set: "Holdout".into(),
+            outcome: "won".into(),
+            rounds_cleared: 3,
+            lives_used: 1,
+        });
+        let kinds = log.events.lock().unwrap().clone();
+        assert_eq!(kinds, ["GameStarted", "FirefightScore", "FirefightScore", "FirefightEnded"]);
+        let scores = log.actor_kills.lock().unwrap();
+        let mut tracker = Tracker::default();
+        let totals: Vec<i64> = scores
+            .iter()
+            .flat_map(|e| tracker.event(&e.kind, &e.data, 13).unwrap())
+            .filter_map(|r| match r.event {
+                Event::ObjectiveScore { game_type, player: Some(0), score, .. } if game_type == "firefight" => {
+                    Some(score)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(totals, [100, 150]);
     }
 
     #[test]

@@ -24,8 +24,11 @@ key can. Admins come from two places:
   h2 live: admins configured: Bob, afr
   ```
 
-  Configured admins need no account to exist; when the account exists, its
-  reads say so. Configuration cannot be revoked at runtime.
+  An existing account gets the configured role at startup. Registering a
+  reserved name requires a server-key bearer bound to the signed signup
+  request and any invite required by the server's policy.
+  Use `h2 live account create TAG --operator-data DIR` for this registration.
+  Configuration cannot be revoked at runtime.
 - **The log.** The operator runs
   `h2 live admin grant <gamertag>` / `h2 live admin revoke <gamertag>`
   (signed with the server key in `--data`, like `motd set`). Grant appends a
@@ -251,9 +254,18 @@ New playlists, removals and built-in variants:
   fields is refused with the validator's reasons.
 - Only the hoppers named are checked: unused slots elsewhere never block a
   publish.
+- Each entry of a named playlist whose variant runs a rules script (mode
+  2) names, by its hash prefix, one saved or built-in script, and the
+  playlist's kind takes that script's capabilities (the script policy,
+  [rules-engine.md, "Roles, powers and capabilities"](../game/rules-engine.md#roles-powers-and-capabilities)):
+  ranked types (2, 4 and 5) refuse every `forge.*` capability, and the
+  unranked ones keep no deny list, so they refuse none. A refusal names
+  the playlist, the entry and the capability; a prefix no script has is
+  refused too.
 
-This is `apply_patch` in `crates/live/live-server/src/admin.rs`; the Worker
-serves the same router, so both homes check the same way.
+This is `apply_patch` and `check_scripts` in
+`crates/live/live-server/src/admin.rs`; the Worker serves the same
+router, so both homes check the same way.
 
 ### Importing the base image
 
@@ -286,31 +298,51 @@ the game's own things: what it shows and plays. Running the service
 is the dashboard's server screens (§5), styled like the rest of the
 dashboard. Each side links to the other: the dashboard's "halo admin" pod
 opens `/games/halo2/admin`, and the Halo Admin title bar's "Server admin" goes back
-to `/dash/server`. The Halo Admin's three sections:
+to `/dash/server`. The Halo Admin sections are:
 
 - **Message of the Day** — the header and the message blocks, with a
   preview in the stats site's style and the game's limits enforced in the
   form (255 UTF-16 units, 32 messages). After a publish it notes that the
   game picks the new text up at its next sign-in.
-- **Playlists** — the 16 hoppers: pick one, edit its title and
-  description, and per entry its map (a picker of the game's maps, by
-  name, when the server has a catalog) and weight; each entry shows its
-  game variant. Reorder, duplicate, add or remove entries with the same
-  validation the server applies (title ≤ 15 bytes, description ≤ 127,
-  1..100 entries). Entries remember where their bytes come from, so
-  reorders and copies carry the game variant whole. **Advanced: raw
-  fields** keeps the type, status, ranges, raw name and every record word
-  editable as numbers. **Start from preset** fills the playlist from a
-  historical lineup (below).
+- **Playlists** — the list shows active playlists and how many of the 16
+  slots are in use. Add a playlist from a matchmaking template, or open a
+  playlist to see its kind and player counts. Its toolbar duplicates or
+  removes it, or resets its title, description, rotation and any ranges
+  supplied by a historical preset. **Change rules** applies a matchmaking template while keeping
+  the title, description and rotation. Clanker marks belong to the original
+  playlist ID and slot. A duplicate starts from a human matchmaking template.
 - **Custom content** — §7.
+- **Clanker Training** — upload a batch from the h2recomp checkout using
+  the command shown on the empty page. With runs on the server, the map,
+  tuning and batch filters use values from the uploaded runs across all
+  pages. Open a run for its results, speed, bot stats and live or replay
+  viewer, or select two runs to compare them. Filtered to one batch, the
+  tab shows a grid of map tiles above the results, one per run, playing
+  finished runs fast-forwarded in sync and running ones live. See
+  [Watching in Uplink](../runtime/sim.md#watching-in-uplink).
 
-The same playlist editing is available offline in the native editor's
-hopper tool (`h2-editor`, [editor.md](../editor/editor.md)): it opens and saves a
-`multiplayer_hopper.dat` file (raw image or envelope) with the same
-fields, validation and presets, and it can also give an entry another
-game variant (a disc built-in, a saved variant or a `.h2variant` file),
-which the web builder cannot; publish the result with `h2 live hopper
-import`.
+The playlist editor (`web/src/admin/HopperBuilder.tsx`) groups maps by
+game variant. Choose maps from a dialog that shows previews from game art
+when available. Use the weight stepper to set how often each entry plays.
+Its bar shows the entry's percentage of the playlist's total clamped weight.
+Drag a map's handle within its variant, or focus it and press Up or Down.
+**Advanced: raw fields** opens the editor for descriptor fields and the
+underlying entry list, including reordering across variants. Entries remember
+their published source slots so reorders and copies preserve the game variant.
+
+Titles are limited to 15 UTF-8 bytes, descriptions to 127, and playlists
+to 1–100 entries. **Review & publish** shows added, removed and edited
+playlists and their changed fields against the loaded published file.
+**Publish changes** checks that the published fields still match the draft's
+base before writing `multiplayer_hopper.dat`. The game downloads the file
+at sign-in.
+
+The native editor's hopper tool (`h2-editor`, [editor.md](../editor/editor.md))
+opens and saves the raw image or download envelope with the same fields,
+validation and presets. In the web editor, pick from built-in variants or
+variants already in the published file. The native tool also accepts saved
+variants and `.h2variant` files. Publish an offline edit with
+`h2 live hopper import`.
 
 Saves are the browser's first writes: each signs a self-issued 60-second
 token (`titles.write`) with the signed-in account's key, exactly as the CLI
@@ -516,9 +548,11 @@ the art extractor version `h2 live assets extract` now records in the
 manifest (null for older art). Nothing secret is in it: no keys, no file
 contents, no database URL; `data_dir` only when the caller is on this
 machine (a loopback peer with no proxy header, as for game art), so not
-through a tunnel. The plate shows uptime, how the server is reached,
-sign-up, reads, players, game art and the log's length (not the data
-directory or the admin list, which are long). Its pods: **invites**,
+through a tunnel. Native servers report `started_at` and `uptime_s` for the
+running service. Workers omit both fields because the Durable Object can
+cold-start while the service remains available. The plate shows uptime when
+reported, along with how the server is reached, sign-up, reads, players,
+game art and the log's length. Its pods: **invites**,
 **accounts**, **halo admin** (`/games/halo2/admin`) and another server.
 
 **Accounts** (`/dash/server/accounts`, admins): the counts, then blades
@@ -534,63 +568,70 @@ Actions on these plates are blades (`web/src/dash/Blades.tsx`): focusable
 rows moved through with up and down, A acts, X does a row's second action
 (revoke, on invites), the same on keyboard, gamepad, mouse and touch.
 
-**Invites** (`/dash/server/invites`, `crates/live/live-server/src/invites.rs`):
-pick how long it lasts (1, 7 or 30 days; at most 30), make one, and the
-code is shown and copied. Each is single-use, like the operator's. The
-list shows open invites (copy again, revoke) and recent used, revoked and
-expired ones, with who made and who used them.
+**Invite access.** Every non-admin starts with invitation permissions
+off. On the dashboard, an admin opens a player's page or selects them in
+the players list to change **can invite** and the **open invite cap**.
+A blank cap allows any number of open invites. Changing the cap leaves
+existing invites in place. Switching the grant off permanently closes a
+non-admin's open invites. An admin can invite through their role regardless
+of the explicit grant or its cap. Revoking the admin role permanently closes
+the account's open invites, even if it still holds a grant for future invites.
 
-- `POST /v1/invites`: an `invites.write` token from an admin account and,
-  as the body (`application/jose`), an `InviteCreated` event on the
-  `invites` stream, signed by the same key, data `{jti, exp}` (`jti` 16 to
-  64 of `[A-Za-z0-9_-]`, `exp` in unix seconds, at most 30 days ahead).
-  201 `{invite, jti, exp, position}`. The operator's form (no body,
-  `?days=`) is unchanged.
-- `GET /v1/invites`: admins only (`admin.read`); `{items: [{jti, by,
-  by_gamertag?, at, exp, state: open|used|revoked|expired, used_by?,
-  used_by_gamertag?, invite?}]}`, newest first. Open ones carry their code
-  again (the server's signature over the same `jti` and `exp`, which is
-  deterministic).
-- `POST /v1/invites/{jti}/revoke`: an `InviteRevoked` event `{jti}` by an
-  admin; 409 unless it is open.
+The operator uses `h2 live invite grant <gamertag> [--open-cap N]` and
+`h2 live invite ungrant <gamertag>` with the server key in `--data`.
+Both the dashboard and CLI use the grant endpoints in
+[Server invites](live-api.md#server-invites). The server signs
+`InviteGrantSet` or `InviteGrantRevoked` on the target account stream
+and records the acting admin or operator in `by`. The permission is
+replayed from the log at startup.
 
-At sign-up, an invite the log knows must be open and its maker still an
-admin. Rate limit: per author a burst of 10, then one a minute. The
-security reasoning is in [live-security.md](live-security.md) §3.
+**Invites** (`crates/live/live-server/src/invites.rs`). Admins open
+`/dash/server/invites` to manage the server's invites. A player with the
+grant opens **invite someone** on their dashboard profile
+(`/dash/server/my-invites`). Their list shows only their own open invites.
+Pick 1, 7 or 30 days, make a code and copy it to share. Each code works
+once. Admins can revoke any open code and see used, revoked and expired
+ones. Players with the grant can revoke their own open codes.
 
-In the mock (`bun run dev`), `H2_MOCK_ADMIN=1` makes every account signed
-up in the browser an admin, and the mock serves these endpoints
-(`web/mock/admin.ts`; it parses but does not verify tokens and events).
+Account-created invites use a signed `InviteCreated` event and the same
+`invites.write` token scope. A grant allows a burst of three invites for
+a non-admin account, with one slot replenished per minute. Admins have a
+separate burst of ten with the same refill rate.
+[Request tokens](live-security.md#3-request-tokens) covers authorisation
+and [Server invites](live-api.md#server-invites) describes the endpoints.
+
+The browser mock (`bun run dev`) serves the dashboard endpoints
+(`web/mock/admin.ts`). `H2_MOCK_ADMIN=1` makes accounts signed up in the
+browser admins.
 
 ### Invite codes people type
 
-Every invite the log knows has a short code. Generated ones look like old
-Xbox Live codes: 25 characters in five groups (`XXXXX-XXXXX-XXXXX-XXXXX-XXXXX`)
-from `BCDFGHJKMPQRTVWXY2346789` (no vowels, no 0/O, 1/I/L, 5/S). The code is
-derived from the invite's `jti` with a key derived from the server key, so
-it is never in the log and the list can show it again while the invite is
-open. An admin may pick a code instead (4 to 32 printable characters):
-`POST /v1/invites` with `{"event": <InviteCreated JWS>, "code": "..."}`.
-That code goes beside the signed event, never inside it; the server logs
-only its MAC, as a server-signed `InviteCodeSet {jti, mac}` in the same
-append, and the list shows it as a custom code. Codes match ignoring case,
-spaces and dashes; a custom code already held by an open invite is refused
-(409). The operator's invites (`h2 live invite create`, also `--code`)
-are now logged the same way, as server-signed `InviteCreated` events. The
-long signed codes from before still redeem.
+An invite code has 25 characters in five groups
+(`XXXXX-XXXXX-XXXXX-XXXXX-XXXXX`) from `BCDFGHJKMPQRTVWXY2346789`. The
+server derives it from the invite's `jti` with a server-only key. The list
+can show the same code while it is open.
 
-From the CLI: `h2 live invite create [--days N] [--code TEXT]` signs as the
-operator (`--data`) or, with `--as GAMERTAG`, as an admin account; `h2
-live invite list` and `h2 live invite revoke <jti> --as GAMERTAG`.
+An inviter can choose a custom code of 4 to 32 printable characters.
+`POST /v1/invites` takes `{"event": <InviteCreated JWS>, "code": "..."}`.
+The server logs only the custom code's MAC as a server-signed
+`InviteCodeSet {jti, mac}` in the same append. The list labels these as
+custom codes. Codes match ignoring case, spaces and dashes. A custom
+code held by an open invite is refused (409). Older long signed codes
+also redeem.
+
+`h2 live invite create [--days N] [--code TEXT]` signs as the operator
+(`--data`) or, with `--as GAMERTAG`, as an account with permission to
+invite. `h2 live invite list` is for admins and the operator.
+`h2 live invite revoke <jti> --as GAMERTAG` acts with the named account's
+permission to revoke that invite.
 
 ## 6. Security notes
 
-- Grant and revoke are operator-only (a server-key token with `lxm`
-  `admin.write`): an admin can publish content and invite people, not
-  make admins.
-- Admin invites are logged as the admin's own signed `InviteCreated`
-  events, rate-limited, and die with the admin's grant (§5,
-  [live-security.md](live-security.md) §3).
+- Only the operator grants or revokes the admin role using a server-key
+  token with `lxm` `admin.write`.
+- Invites from accounts are logged as their own signed `InviteCreated`
+  events and are rate-limited. A ban blocks redemption of a grantee's
+  codes while it is in force (§5 and [live-security.md](live-security.md) §3).
 - Admin publishes go through the same event log as operator ones
   (`TitleFilePublished` by the server key), so the audit trail does not
   say who clicked; the operator's own log of grants and the account reads
@@ -612,7 +653,8 @@ Players share custom and modded maps through the server's content store
 
 | endpoint | does |
 |---|---|
-| `GET /v1/admin/content` | `{maps, blobs, reports, uploads_off, position}`: every package (its summary plus `state` and `reports`), every stored blob (`sha256, size, uploader, state, reports, stored_at`), the reports newest first (`target, id, by, reason, at`), and the gamertags whose uploads are off |
+| `GET /v1/admin/content` | `{packs, maps, blobs, reports, uploads_off, position}`: every pack (including members, state and count of pack and member reports), every package (its summary plus `state` and `reports`), every stored blob (`sha256, size, uploader, state, reports, stored_at`), the reports newest first (`target, id, by, reason, at`), and the gamertags whose uploads are off |
+| `POST /v1/admin/mod-packs/{id}/{action}` | applies one action to a pack and all of its members |
 | `POST /v1/admin/maps/{map_id}/{action}` | acts on a package |
 | `POST /v1/admin/content/{sha256}/{action}` | acts on a blob, by hash |
 | `PUT /v1/admin/uploads/{gamertag}` `{allowed}` | switches an account's uploads and publishes off or on |
@@ -629,14 +671,45 @@ The actions, and the `state` they leave:
   publishes answer 410). A hash can be blocked before anyone uploads it.
   `unblock` leaves it deleted.
 
+Taking down a pack prevents downloads of its member manifests, images and
+exclusive layers. Sessions cannot advertise any of those members. A layer
+shared with a visible mod stays available to that mod. The admin can still
+inspect the pack and its reports. The public event log also omits the
+pack, member and exclusive blob streams. Unhiding the pack restores access to
+members that have no separate takedown. Unblocking leaves the pack deleted
+until its uploader republishes it.
+
 A package is refused in sessions (410) when it, or any of its layers, is
 hidden, deleted or blocked; a deleted layer alone shows up in the package's
 `missing` list. Each action is a server-signed `ContentModerated` event on
 the target's stream (`{target, id, action, by}`, `by` the admin's xuid),
-reports are `ContentReported` (`POST /v1/maps/{id}/report` or
+reports are `ContentReported` (`POST /v1/mod-packs/{id}/report`,
+`/v1/maps/{id}/report` or
 `/v1/content/{sha256}/report` by any account), the upload switch is
 `ContentUploadsSet` on the account's stream, and pins are `HopperPinsSet`
 on `hopper-<id>`. All of it replays from the log, so it survives restarts.
+
+### Screenshot review
+
+Open **Screenshot review** at `/dash/admin` to see the held images and why
+they entered the queue. **Show image** fetches the private, normalized
+preview. **Approve** makes it public across all assigned galleries.
+**Remove** hides all copies permanently, frees its quota and attempts to
+delete the stored image. The same review page holds approved captures
+that a player reports. Existing uploader gallery images enter the queue
+on replay if their upload predates proof checks.
+
+Three distinct images flagged by the classifier or removed in review
+switch off the uploader's content uploads. Player reports without an
+admin removal do not count. Approval clears a classifier strike on that
+hash. An admin can restore uploads through the account's upload switch.
+
+The Worker and the native server share the review queue and rules.
+Native Live holds captures for review when a local classifier is absent.
+The optional local adapter sends the display WebP in an HTTP POST and
+expects a JSON response such as `{"nsfw":0.25}`, with a numeric score
+between zero and one. The operator supplies the model service on loopback.
+[Classifier setting](../runtime/switches.md#tools) · [Screenshot API](live-api.md#verified-screenshot-uploads)
 
 **Pins.** The game's hopper file has no room for a `MapId`, so pins are kept
 beside it, keyed by the `hopper_id` sessions advertise. A session with
@@ -660,9 +733,9 @@ the list says, a manifest with no layers (only a retail base) is never
 published: it would be the retail map itself.
 
 The Halo Admin's **Custom content** tab (`/games/halo2/admin?tab=content`, linked
-from the dashboard's "halo admin" pod) lists packages and blobs with their state and
-report counts, the actions valid for each, the reports and the upload
-switch; the playlist builder pins published packages per hopper.
+from the dashboard's "halo admin" pod) lists packs with expandable member
+maps, standalone maps and blobs. It shows their states, report counts, available
+actions, reports and upload switch; the playlist builder pins published packages per hopper.
 
 ## 8. Player reports
 

@@ -16,10 +16,10 @@
 # Every shot renders at H2_RENDER_SCALE=4, with H2_OPT=2 (it must match the
 # image's build, or the image recompiles), and passes H2_FLAT_RAM through if
 # you set it. Use `h2` from $H2 or $PATH (cargo install --force from master).
-# The frames come from a scratch folder that is deleted on exit; only the
-# JPEGs are kept; scripts/readme-art.sh then rebuilds the README header and
-# montage from them. Game screenshots may only be committed as documentation
-# shots under docs/images/** (Git LFS): see CONTRIBUTING.md.
+# The frames come from a scratch folder that is deleted on exit. The JPEGs
+# supply fallback art to scripts/readme-art.sh when a level has no clip
+# from scripts/readme-video.sh. Commit documentation shots only under
+# docs/images/** (Git LFS), as described in CONTRIBUTING.md.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"

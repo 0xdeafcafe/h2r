@@ -17,8 +17,10 @@ pub const LEN: usize = 0x24;
 const MAGIC: [u8; 2] = *b"hx";
 const VERSION: u8 = 1;
 /// Flag bit 0 is reserved (it was "instant respawn", dropped by decision
-/// 3b); bit 1 is unlimited grenades.
+/// 3b); bit 1 is unlimited grenades; bit 2 is the superbounce game type
+/// (docs/game/superbounce.md, "The superbounce game type").
 const UNLIMITED_GRENADES: u8 = 1 << 1;
+const SUPERBOUNCE: u8 = 1 << 2;
 const CRC_AT: usize = LEN - 4;
 
 /// The percent scales' range. 100 is the game's own value.
@@ -27,6 +29,51 @@ pub const PERCENT: RangeInclusive<u16> = 10..=400;
 pub const GRAVITY: RangeInclusive<u16> = 10..=400;
 /// Team size: 0 means any, otherwise at most the engine's 16 players.
 pub const TEAM_SIZE: RangeInclusive<u8> = 0..=16;
+
+/// What the record's script reference names
+/// (docs/game/rules-engine.md, "Carrying a script").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mode {
+    /// No script: the record plays as its own game type.
+    #[default]
+    None,
+    Firefight,
+    /// A rules script, named by [`Script::prefix`].
+    Rules,
+    /// A mode a newer build wrote: kept and written back as it was,
+    /// never applied.
+    Unknown(u8),
+}
+
+impl Mode {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::None,
+            1 => Self::Firefight,
+            2 => Self::Rules,
+            n => Self::Unknown(n),
+        }
+    }
+
+    pub fn to_u8(self) -> u8 {
+        match self {
+            Self::None => 0,
+            Self::Firefight => 1,
+            Self::Rules => 2,
+            Self::Unknown(n) => n,
+        }
+    }
+}
+
+/// The script reference in the block's former reserved bytes
+/// (`+0x11f..+0x12b`): mode, the first 8 bytes of the definition's
+/// SHA-256, and 32 bits of packed option values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Script {
+    pub mode: Mode,
+    pub prefix: [u8; 8],
+    pub options: u32,
+}
 
 /// The extension's options. [`Ext::default`] is retail: everything at
 /// 100% and nothing else, and it encodes as all zero.
@@ -43,27 +90,42 @@ pub struct Ext {
     /// Movement speed, percent.
     pub speed: u16,
     pub unlimited_grenades: bool,
+    /// The superbounce game type: the HUD plate and the spot lines.
+    pub superbounce: bool,
     /// Our weapon id for the primary (0: the record's starting weapon).
     pub primary: u16,
     /// Our weapon id for the secondary (0: the record's).
     pub secondary: u16,
     /// Players per team (0: any).
     pub team_size: u8,
+    /// The script reference; edits keep it (it is part of the block).
+    pub script: Script,
+}
+
+impl Ext {
+    /// The game's own rules, as a constant ([`Ext::default`]).
+    pub const RETAIL: Ext = Ext {
+        gravity: 100,
+        damage: 100,
+        shield: 100,
+        health: 100,
+        speed: 100,
+        unlimited_grenades: false,
+        superbounce: false,
+        primary: 0,
+        secondary: 0,
+        team_size: 0,
+        script: Script {
+            mode: Mode::None,
+            prefix: [0; 8],
+            options: 0,
+        },
+    };
 }
 
 impl Default for Ext {
     fn default() -> Self {
-        Self {
-            gravity: 100,
-            damage: 100,
-            shield: 100,
-            health: 100,
-            speed: 100,
-            unlimited_grenades: false,
-            primary: 0,
-            secondary: 0,
-            team_size: 0,
-        }
+        Self::RETAIL
     }
 }
 
@@ -90,7 +152,8 @@ pub enum Why {
 }
 
 impl Ext {
-    /// Whether this is the game's own rules (encodes as all zero).
+    /// Whether this is the game's own rules (encodes as all zero). A
+    /// script reference is never default.
     pub fn is_default(&self) -> bool {
         *self == Self::default()
     }
@@ -133,7 +196,7 @@ impl Ext {
             UNLIMITED_GRENADES
         } else {
             0
-        };
+        } | if self.superbounce { SUPERBOUNCE } else { 0 };
         for (i, v) in [
             pct(self.gravity),
             pct(self.damage),
@@ -149,6 +212,9 @@ impl Ext {
             b[4 + 2 * i..6 + 2 * i].copy_from_slice(&v.to_le_bytes());
         }
         b[0x12] = self.team_size;
+        b[0x13] = self.script.mode.to_u8();
+        b[0x14..0x1c].copy_from_slice(&self.script.prefix);
+        b[0x1c..0x20].copy_from_slice(&self.script.options.to_le_bytes());
         let crc = crc32(&b[..CRC_AT]);
         b[CRC_AT..].copy_from_slice(&crc.to_le_bytes());
         b
@@ -179,9 +245,15 @@ impl Ext {
             health: pct(u16_at(3)),
             speed: pct(u16_at(4)),
             unlimited_grenades: b[3] & UNLIMITED_GRENADES != 0,
+            superbounce: b[3] & SUPERBOUNCE != 0,
             primary: u16_at(5),
             secondary: u16_at(6),
             team_size: b[0x12],
+            script: Script {
+                mode: Mode::from_u8(b[0x13]),
+                prefix: b[0x14..0x1c].try_into().unwrap(),
+                options: u32::from_le_bytes(b[0x1c..0x20].try_into().unwrap()),
+            },
         };
         match e.out_of_range() {
             Some(what) => Block::Ignored(Why::Range(what)),
@@ -215,11 +287,20 @@ impl Ext {
         if self.unlimited_grenades {
             parts.push("Unlimited grenades".into());
         }
+        if self.superbounce {
+            parts.push("Superbounce".into());
+        }
         if self.primary != 0 || self.secondary != 0 {
             parts.push(format!("Weapons {}/{}", self.primary, self.secondary));
         }
         if self.team_size != 0 {
             parts.push(format!("Teams of {}", self.team_size));
+        }
+        match self.script.mode {
+            Mode::None => {}
+            Mode::Firefight => parts.push("Firefight".into()),
+            Mode::Rules => parts.push("Rules script".into()),
+            Mode::Unknown(n) => parts.push(format!("Unknown script mode {n}")),
         }
         if parts.is_empty() {
             "none".into()
@@ -257,9 +338,22 @@ mod tests {
             health: 150,
             speed: 125,
             unlimited_grenades: true,
+            superbounce: false,
             primary: 7,
             secondary: 0,
             team_size: 4,
+            script: Script::default(),
+        }
+    }
+
+    fn scripted(mode: Mode) -> Ext {
+        Ext {
+            script: Script {
+                mode,
+                prefix: [1, 2, 3, 4, 5, 6, 7, 8],
+                options: 0xa1b2_c3d4,
+            },
+            ..Ext::default()
         }
     }
 
@@ -287,7 +381,7 @@ mod tests {
         assert_eq!(u16::from_le_bytes([b[4], b[5]]), 50, "gravity at +0x110");
         assert_eq!(u16::from_le_bytes([b[8], b[9]]), 0, "100% stores as 0");
         assert_eq!(b[0x12], 4, "team size at +0x11e");
-        assert!(b[0x13..CRC_AT].iter().all(|&x| x == 0), "reserved");
+        assert!(b[0x13..CRC_AT].iter().all(|&x| x == 0), "no script");
         assert_eq!(Ext::decode(&b), Block::Ext(e));
         assert_eq!(
             e.summary(),
@@ -300,6 +394,29 @@ mod tests {
             ..Ext::default()
         };
         assert_eq!(Ext::decode(&g.encode()), Block::Ext(g));
+    }
+
+    #[test]
+    fn the_superbounce_flag_is_bit_2_and_round_trips() {
+        let e = Ext {
+            superbounce: true,
+            ..Ext::default()
+        };
+        assert!(!e.is_default());
+        let b = e.encode();
+        assert_eq!(b[3], 0b100, "bit 2 superbounce");
+        assert_eq!(Ext::decode(&b), Block::Ext(e));
+        assert!(Ext::in_effect(&b).superbounce);
+        assert_eq!(e.summary(), "Superbounce");
+        // Beside unlimited grenades, each keeps its own bit.
+        let both = Ext {
+            superbounce: true,
+            unlimited_grenades: true,
+            ..Ext::default()
+        };
+        assert_eq!(both.encode()[3], 0b110);
+        assert_eq!(Ext::decode(&both.encode()), Block::Ext(both));
+        assert!(!Ext::in_effect(&some().encode()).superbounce);
     }
 
     #[test]
@@ -346,8 +463,10 @@ mod tests {
 
     #[test]
     fn out_of_range_values_are_ignored_even_with_a_good_crc() {
-        let mut e = Ext::default();
-        e.gravity = 5;
+        let e = Ext {
+            gravity: 5,
+            ..Ext::default()
+        };
         assert_eq!(e.out_of_range(), Some("gravity"));
         assert_eq!(
             Ext::decode(&e.encode()),
@@ -366,5 +485,67 @@ mod tests {
             ..Ext::default()
         };
         assert_eq!(e.out_of_range(), Some("speed"));
+    }
+
+    #[test]
+    fn a_script_reference_round_trips_in_every_mode() {
+        for (mode, text) in [
+            (Mode::Firefight, "Firefight"),
+            (Mode::Rules, "Rules script"),
+            (Mode::Unknown(9), "Unknown script mode 9"),
+        ] {
+            let e = scripted(mode);
+            assert!(!e.is_default());
+            let b = e.encode();
+            assert_ne!(b, [0; LEN], "a script with default extras has a block");
+            assert_eq!(b[0x13], mode.to_u8(), "mode at +0x11f");
+            assert_eq!(&b[0x14..0x1c], &[1, 2, 3, 4, 5, 6, 7, 8], "prefix at +0x120");
+            assert_eq!(
+                u32::from_le_bytes(b[0x1c..0x20].try_into().unwrap()),
+                0xa1b2_c3d4,
+                "options at +0x128"
+            );
+            assert_eq!(Ext::decode(&b), Block::Ext(e));
+            assert_eq!(Ext::in_effect(&b).script, e.script);
+            assert_eq!(e.summary(), text);
+        }
+        assert_eq!(Mode::from_u8(0), Mode::None);
+        assert_eq!(Mode::from_u8(1), Mode::Firefight);
+        assert_eq!(Mode::from_u8(2), Mode::Rules);
+    }
+
+    #[test]
+    fn the_crc_covers_the_script_bytes() {
+        let b = scripted(Mode::Rules).encode();
+        for i in 0x13..CRC_AT {
+            let mut c = b;
+            c[i] ^= 1;
+            assert_eq!(Ext::decode(&c), Block::Ignored(Why::Crc), "+{:#x}", AT + i);
+        }
+    }
+
+    #[test]
+    fn editing_an_extra_keeps_the_script() {
+        use crate::panel::VariantEditor;
+        use crate::record::GameType;
+        let mut e = VariantEditor::new(crate::schema::Schema::fallback(), None);
+        e.new_variant(GameType::Slayer);
+        let s = scripted(Mode::Rules);
+        e.set_ext(&s).unwrap();
+        let mut next = e.current().unwrap().ext();
+        assert_eq!(next, s);
+        next.gravity = 50;
+        e.set_ext(&next).unwrap();
+        let now = e.current().unwrap().ext();
+        assert_eq!(now.gravity, 50);
+        assert_eq!(now.script, s.script);
+        assert!(e.undo());
+        assert_eq!(e.current().unwrap().ext(), s);
+    }
+
+    #[test]
+    fn an_all_zero_block_has_no_script() {
+        assert_eq!(Ext::decode(&[0; LEN]), Block::None);
+        assert_eq!(Ext::in_effect(&[0; LEN]).script, Script::default());
     }
 }

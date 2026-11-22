@@ -15,8 +15,7 @@ use crate::ui_kit::input::{Input, Prompt, footer_legend, legend, legend_named};
 pub enum RowKind {
     /// A runs it.
     Action,
-    /// Left and right step through `values` (`< value >`); `current` is
-    /// shown. A toggle is a value with two.
+    /// A choice from `values`; the row displays the current value as text.
     Value { values: Vec<String>, current: usize },
     /// Shown, not pressed: `value` beside the label.
     Info { value: String },
@@ -28,10 +27,9 @@ pub enum RowKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ValueStyle {
-    /// In the label: `Mythic: < On >` (a one-text skin, the level select's).
+    /// In the label as `Mythic: On` on a one-text skin.
     Inline,
-    /// In the skin's value text (the Controls skin's second column):
-    /// `< On >`.
+    /// In the Controls skin's second text column.
     Column,
     /// In the skin's value text, the value alone (`On`), as the game's own
     /// settings dialog shows it: Quick Options' rows on its
@@ -152,12 +150,11 @@ impl RowSpec {
         self.art = Some(art);
         self
     }
-    /// The value as shown: `< On >` for a value row, the text for the
-    /// others, `None` for an action.
+    /// The value as shown, if this row has one.
     pub fn shown_value(&self) -> Option<String> {
         match &self.kind {
             RowKind::Action => None,
-            RowKind::Value { values, current } => Some(format!("< {} >", values.get(*current)?)),
+            RowKind::Value { values, current } => values.get(*current).cloned(),
             RowKind::Info { value } | RowKind::Text { value, .. } => {
                 (!value.is_empty()).then(|| value.clone())
             }
@@ -166,10 +163,7 @@ impl RowSpec {
     /// The value alone, as a settings dialog shows it: `On` for a value
     /// row, the text for the others, `None` for an action.
     pub fn plain_value(&self) -> Option<String> {
-        match &self.kind {
-            RowKind::Value { values, current } => values.get(*current).cloned(),
-            _ => self.shown_value(),
-        }
+        self.shown_value()
     }
     /// The texts the row's item draws: the label text, and the value text
     /// for a skin with a value column ([`ValueStyle::has_column`]).
@@ -177,8 +171,7 @@ impl RowSpec {
         match (style, self.shown_value()) {
             (ValueStyle::Inline, Some(v)) => (format!("{}: {v}", self.label), None),
             (ValueStyle::Inline, None) => (self.label.clone(), None),
-            (ValueStyle::Column, v) => (self.label.clone(), v),
-            (ValueStyle::Setting, _) => (self.label.clone(), self.plain_value()),
+            (ValueStyle::Column | ValueStyle::Setting, v) => (self.label.clone(), v),
         }
     }
     /// Every value the row can show, laid out as `cells` would (for the
@@ -278,12 +271,22 @@ pub struct PaneText {
     pub text: String,
 }
 
+/// A compositor HUD in title-safe coordinates. Its input belongs to the
+/// tool in the world. The HUD itself has neither a list nor a focus owner.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct HudSpec {
+    pub widgets: Vec<crate::ui_kit::view::Widget>,
+}
+
 /// A screen of ours, described.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ScreenSpec {
     /// The id `Open` rows and `list_class::loader_of` know it by.
     pub name: String,
     pub title: String,
+    /// The default transition or this page's override.
+    #[serde(skip_serializing_if = "crate::ui_kit::animation::TransitionStyle::is_default")]
+    pub animation: crate::ui_kit::animation::TransitionStyle,
     pub list: ListPlace,
     pub style: ValueStyle,
     pub rows: Vec<RowSpec>,
@@ -299,10 +302,15 @@ pub struct ScreenSpec {
     pub inputs: Vec<Input>,
     /// More rows than the list shows is meant (the list scrolls).
     pub scrolls: bool,
+    /// State-dependent content slots that must be populated.
+    #[serde(skip_serializing_if = "crate::ui_kit::content::Requirements::is_empty")]
+    pub content: crate::ui_kit::content::Requirements,
     /// The legend goes in the footer band (the screen's button legend,
     /// `list_class::FOOTER`), as on the game's own screens, rather than
     /// under the description.
     pub footer: bool,
+    /// The host composites the page over a live picture.
+    pub transparent: bool,
     /// The screen's own ids (title and the like).
     pub ids: Vec<u32>,
     /// Retail art the screen adds of its own (a frame, a picture), drawn
@@ -314,6 +322,9 @@ pub struct ScreenSpec {
     pub panel: Vec<crate::ui_kit::view::PaneArt>,
     /// Texts that belong to no row ([`PaneText`]), drawn over the art.
     pub texts: Vec<PaneText>,
+    /// A compositor HUD owns its widgets and has no list, focus or shell backing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hud: Option<HudSpec>,
     /// A modal dialog over the screen beneath, drawn by
     /// [`crate::ui_kit::dialog::dialog_view`] rather than as a list
     /// (docs/game/ui-builder.md "Screen kinds").
@@ -328,6 +339,7 @@ impl ScreenSpec {
         ScreenSpec {
             name: name.into(),
             title: title.into(),
+            animation: crate::ui_kit::animation::TransitionStyle::default(),
             list: ListPlace::Controls,
             style: ValueStyle::Column,
             rows: Vec::new(),
@@ -337,15 +349,27 @@ impl ScreenSpec {
             prompts: Vec::new(),
             inputs: Vec::new(),
             scrolls: false,
+            content: Default::default(),
             footer: false,
+            transparent: false,
             ids: Vec::new(),
             art: Vec::new(),
             panel: Vec::new(),
             texts: Vec::new(),
+            hud: None,
             dialog: None,
             underlay: None,
         }
     }
+    /// A transparent HUD made of kit widgets in title-safe screen coordinates.
+    pub fn hud(name: &str, title: &str, widgets: Vec<crate::ui_kit::view::Widget>) -> Self {
+        Self {
+            transparent: true,
+            hud: Some(HudSpec { widgets }),
+            ..Self::new(name, title)
+        }
+    }
+
     fn focused_prompts(&self) -> &[Prompt] {
         self.rows
             .get(self.focus)
@@ -597,14 +621,16 @@ pub fn check(spec: &ScreenSpec, room: &Room<'_>) -> Vec<Finding> {
                 row: i,
                 why: "an action row whose press does nothing".into(),
             }),
-            (RowKind::Value { values, .. }, _) if values.len() < 2 => out.push(Finding::Press {
+            (RowKind::Value { values, .. }, _) if values.is_empty() => out.push(Finding::Press {
                 row: i,
-                why: "a value row with fewer than two values".into(),
+                why: "a value row with no options".into(),
             }),
-            (RowKind::Value { .. }, _) if !sideways => out.push(Finding::Press {
-                row: i,
-                why: "a value row on a screen that does not take left and right".into(),
-            }),
+            (RowKind::Value { values, .. }, Press::Step) if !sideways || values.len() < 2 => {
+                out.push(Finding::Press {
+                    row: i,
+                    why: "a stepping row needs multiple options and left and right input".into(),
+                });
+            }
             (RowKind::Text { .. }, p) if *p != Press::Keyboard => out.push(Finding::Press {
                 row: i,
                 why: "a text row whose press does not open the keyboard".into(),
@@ -729,8 +755,7 @@ mod tests {
     }
 
     /// A settings dialog's row: the name, and the value alone in the
-    /// value column; the Controls column keeps its arrows, inline puts
-    /// them in the label.
+    /// value column; the inline skin puts the value in the label.
     #[test]
     fn a_setting_row_shows_its_value_alone() {
         let r = RowSpec::value("Difficulty", &["Easy", "Normal"], 1);
@@ -741,11 +766,11 @@ mod tests {
         );
         assert_eq!(
             cells(ValueStyle::Column),
-            ("Difficulty".into(), Some("< Normal >".into()))
+            ("Difficulty".into(), Some("Normal".into()))
         );
         assert_eq!(
             cells(ValueStyle::Inline),
-            ("Difficulty: < Normal >".into(), None)
+            ("Difficulty: Normal".into(), None)
         );
         assert!(ValueStyle::Setting.has_column() && !ValueStyle::Inline.has_column());
         assert_eq!(
@@ -765,25 +790,25 @@ mod tests {
     }
 
     /// The longest of every value is measured, not only the current one:
-    /// "Grunt Birthday Party: < Off >" against an inline skin.
+    /// "Grunt Birthday Party: Off" against an inline skin.
     #[test]
     fn every_value_of_a_row_must_fit() {
         let mut s = ScreenSpec::new("t", "T");
         s.style = ValueStyle::Inline;
         s.inputs = vec![Input::Left, Input::Right];
         s.rows = vec![RowSpec::value("Grunt Birthday Party", &["On", "Off"], 0)];
-        // On is 196 wide, Off 203: only Off overflows a 200-unit text.
+        // On is 168 wide, Off 175: only Off overflows a 170-unit text.
         let w = |t: &str| t.len() as i32 * 7;
         let f = check(
             &s,
             &Room {
-                label: 200,
+                label: 170,
                 ..room(&w)
             },
         );
         assert_eq!(f.len(), 1, "{f:?}");
         assert!(
-            matches!(&f[0], Finding::Wide { text, width: 203, room: 200, .. } if text == "Grunt Birthday Party: < Off >"),
+            matches!(&f[0], Finding::Wide { text, width: 175, room: 170, .. } if text == "Grunt Birthday Party: Off"),
             "{f:?}"
         );
     }
@@ -855,7 +880,7 @@ mod tests {
         s.prompts = vec![Prompt::new(&[Glyph::A], "Start")];
         assert_eq!(
             s.log_line(),
-            "kit.example: \"Example\"; rows: [0] \"Grunts\" = \"< Off >\" [1] \"Start\"; focus 0; prompts [A] Start"
+            "kit.example: \"Example\"; rows: [0] \"Grunts\" = \"Off\" [1] \"Start\"; focus 0; prompts [A] Start"
         );
     }
 }

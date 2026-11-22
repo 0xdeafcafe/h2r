@@ -305,7 +305,7 @@ pub(crate) fn summary_words(scene: &FrameScene, v: &View, word: &mut dyn FnMut(u
                 None => word(0),
             }
         }
-        word(l.items.map_or(u32::MAX, |i| i));
+        word(l.items.unwrap_or(u32::MAX));
         let materials = scene.late_materials_of(l);
         word(materials.len() as u32);
         for m in materials {

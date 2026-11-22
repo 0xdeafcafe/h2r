@@ -445,7 +445,7 @@ pub fn object_vertex_uniforms(
 /// lanes the binding keeps. An error names an input the port cannot give
 /// for this object.
 pub fn object_pixel_uniforms(base: &PixelUniforms, imp: &ResolvedImplementation, inputs: &ObjectInputs<'_>) -> Result<PixelUniforms, String> {
-    let mut u = base.clone();
+    let mut u = *base;
     for b in &imp.vector_bindings {
         let VectorTarget::Pixel { c1, slot, mask, half, .. } = b.target else { continue };
         if b.source >= 64 || LIGHTING_VECTORS & (1u64 << b.source) == 0 {

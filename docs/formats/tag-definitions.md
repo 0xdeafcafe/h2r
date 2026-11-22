@@ -1,7 +1,6 @@
 # Typed tag definitions (`tags::defs`)
 
-Status: Built for 18 groups, each proven against every retail tag of the
-group on the disc ("Proof"). Not run in the game.
+Status: Built. The disc checks under “Proof” cover the groups in the results table.
 Code: `crates/formats/tags/src/defs.rs` and `crates/formats/tags/src/defs/*.txt`.
 Evidence labels are those of [map-format.md](map-format.md): **E** engine
 code, **V** checked on the owner's disc, **D** a naming or interpretation
@@ -28,14 +27,13 @@ written from a definition has a defined value in every byte.
 
 ## Rules
 
-- **Our own names and evidence only.** No outside tag definition is used
-  for names or layouts. Unverified names elsewhere in the repo (the `S`
-  rows of [objects.md](../halo1/objects.md)) were not taken over: those
-  fields stay unknown or typed-only unless a disc check (V) or engine code
-  (E) supports the meaning, and then the name is ours.
-- **A name needs evidence.** A field whose type is known but not its role
-  (a reference, a string ID, a block found by the schema) gets a name
-  ending in `_<offset in hex>`: `string_1c`, `foot_ref_54`, `block_5c`.
+- Names and descriptions are written here, in our words. A name carries
+  no source label. A field's type and extent must agree with the local
+  layout. The names' reference, permission and the disagreements kept
+  are in [the field-name note](../editor/notes/tag-field-names.md).
+- **A name needs a known role.** A field whose type is known but not its
+  role (a reference, a string ID, a block found by the schema) gets a name
+  ending in `_<offset in hex>`: `string_1c`, `phys_ref_18`, `block_5c`.
   The coverage report counts those as **typed**, not **named**.
 - **No retail values at length.** Files record offsets, types and names.
   `seen=` summarises an unknown span's retail values as `zero`, `const`,
@@ -75,6 +73,8 @@ group scen 0xc4                       # a group's root
 A field line is `<offset> <type> <name> [key=value ...] [-- meaning]`.
 Fields must tile the element exactly, with no gap and no overlap. The
 parser refuses a gap ("every byte needs a field or an unknown span").
+An optional `doc="..."` before the evidence gives the editor a single-line
+description. Use `\"` for a quotation mark and `\\` for a backslash.
 
 | Type | Bytes | Value |
 |---|---|---|
@@ -92,6 +92,63 @@ parser refuses a gap ("every byte needs a field or an unknown span").
 | `struct <name> <struct>` | the struct's | an embedded struct |
 | `unknown <len> seen=...` | len | not understood; named `unknown_<offset>` |
 | `pad <len>` | len | zero in every retail instance and read by nothing found (the disc test checks the zero) |
+
+## Editor attributes
+
+Attributes the field panel reads. Each has a closed word list or a text
+check, and the parser refuses a word outside it with the line number
+(`defs/attrs.rs`). A unit or a timing written without evidence fails
+review, as a name does: the evidence goes in the line's meaning text.
+
+| Attribute | On | Value |
+|---|---|---|
+| `label="..."` | a field line | The label when the name derived from the field's name is wrong. |
+| `unit=<word>` | an integer or float field | One of `seconds`, `ticks`, `world_units`, `world_units_per_second`, `degrees`, `degrees_per_second`, `fraction`, `percent`, `pixels`, `count`, `index`. |
+| `axes=a\|b\|...` | an integer or float array | One word per component, as many as the array has. |
+| `title="..."` | a `group` or `struct` line | The kind in words (`Weapon`). |
+| `title=<field>` | a `block` line | The element's field whose value titles each element. It names a field with a value: not a block, data reference, struct, `unknown` or `pad`. |
+| `applies=frame\|use\|creation` | a field, `block`, `struct`, `group` line | When a live write shows. Inherited, below. |
+
+```text
+struct shared 0x8 title="Shared kind" applies=use
+  0x0 f32 rate unit=world_units_per_second label="Rate (fast)"
+group test 0x1c title="Test thing" applies=frame
+  0x0 struct inner shared
+  0x8 f32[3] offset axes=x|y|z unit=world_units
+  0x14 block parts 0x8 align 4 title=name applies=use
+    0x0 string name
+    0x4 f32 weight applies=creation
+```
+
+A `label` and a `title` are single-line text in our own words: not empty,
+no space at either end, no double space, no control character. They use
+the same `\"` and `\\` escapes as `doc=`. A group or struct line takes
+only `title=` and `applies=`. `label` is refused on `unknown`, `pad` and
+embedded `struct` lines; `unit` and `axes` on any other type; `title` on
+a field line that is not a `block`.
+
+`degrees` and `degrees_per_second` mean a value stored in radians and shown
+in degrees. A field with any `unit` is shown by it: the registry takes
+an angle from `degrees` and `degrees_per_second` only, not from a name
+that contains `angle`; a field with no `unit` keeps the name match
+(`registry::hint`).
+
+**`applies` is inherited.** `registry::Field::applies` is the field's own
+`applies=`, else the nearest one declared above it, nearest first:
+
+1. the `struct` or `group` line of the element the field is in;
+2. the `block` or `struct` line that embeds that element;
+3. the lines that enclose that line, by the same rule.
+
+A field's own value always wins. A field with no `applies` anywhere above
+it has `None`, which the editor reads as "not known". The evidence for an
+`applies` on a `group`, `struct` or `block` line goes in that line's
+meaning text, naming the reader that reads every field below it.
+
+In the registry (`tags::registry`), `Field` carries `label`, `unit`
+and `axes`; `Layout::title` holds a group's or a block's `title`; and
+`Layout::section_titles` maps the path of each embedded struct
+(`Field::section`) to its `title="..."`.
 
 `default=<value>` gives a fresh tag's value: an integer, floats
 `a,b,c`, an enum value name, flag names joined by `|`, or hex bytes for
@@ -134,6 +191,18 @@ rec.at("object.functions[0].output"); rec.set("object.bounding_radius", Val::Flo
   Encoding shares exactly those arrays, and shares fresh records with
   equal content. `share` is layout, not value: equality and `diff`
   ignore it.
+- **Raw bytes into typed fields.** `Record::set` with `Val::Bytes` also
+  writes over typed fields: from the field the path names, the bytes fill
+  as many consecutive plain fields (integers, floats, enums, flags,
+  unknown spans) as they cover, and each field reads them back as its own
+  type, bit for bit. The path's last part is a field name, a name and a
+  byte offset into it (`pitch_range+0x4`), or a byte offset in the
+  element (`@0x38`). Bytes that cover a reference, string or block, or
+  run past the element, are an error. `Record::bytes(path, len)` reads
+  the same span back. The Halo 1 converter writes its raw words this way,
+  so naming a field it writes does not change its output. Records from
+  `decode`, `from_built` and `default_record` carry the field offsets for
+  this; a `Record::new` has none.
 - **Builder trees.** `from_built` reads a reference fixup's group word as
   the builder will write it: null as `0xffffffff`, a target's group as 0.
   The builder fills in the target's group itself, so a template's stale
@@ -172,12 +241,16 @@ Options:
 - `H2_DEFS_ANNOTATE=1` refreshes `seen=`.
 - `H2_DEFS_EXTRA=file.txt` checks a draft outside the source tree.
 
-Unit tests (`cargo test -p tags defs`) cover:
+Unit tests (`cargo test -p tags defs`, and `registry` for inheritance
+and the merged fields) cover:
 
 - decode/encode on an invented tag;
 - a fixup inside a plain field refused;
 - defaults, shared arrays, diff paths and builder trees;
-- gaps refused and the text form round-tripping;
+- gaps refused and the text form round-tripping, header attributes
+  included (`title`, `applies` on a `group` or `struct` line);
+- each editor attribute parsed, printed back byte for byte, and refused
+  with a wrong word or on the wrong type of field;
 - agreement with the schema;
 - every built-in definition's default record round-tripping.
 
@@ -228,12 +301,12 @@ summary:
   - V: widgets, change colours, predicted resources (each element's `+4`
     an existing tag), the `weap` magazines and barrels (strides and the
     barrel's `proj` reference, [objects.md](../halo1/objects.md) V2).
-  - The `weap` aim-assist floats (`+0x208..+0x218`) stay unknown here.
-    Their offsets are E (`0x1a50a0`); [aim-assist.md](../game/aim-assist.md)
-    labels them by those reads (`cone_angle`, `cone_range`, `pull_angle`,
-    `pull_range`, `bend_angle`).
-    The heat, magazine and barrel scalars are `S` in docs/halo1/objects.md, so
-    they stay unknown too.
+  - The other object-family names (the `weap` heat, aim-assist, magazine
+    and barrel scalars, the `vehi` seats, gears and physics points, the
+    `bipd` movement and shapes, `proj`, `jpt!`) match the layouts the
+    [field-name note](../editor/notes/tag-field-names.md) records. The
+    `weap` aim-assist offsets are E (`0x1a50a0`);
+    [aim-assist.md](../game/aim-assist.md) describes them by those reads.
 - **`hlmt`**:
   - E: the model chain (`object_new`), variants (`0x0016d1bb`, region
     map `0x0016d764`), regions (`0x0016d205`).

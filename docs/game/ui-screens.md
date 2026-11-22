@@ -102,8 +102,11 @@ A screen is data a check can read. `ui_kit::spec::ScreenSpec` says what a screen
    [ui-builder.md](ui-builder.md) "The value picker"; a toggle is two values), `Row::info` (read-only), and `Row::text`
    (A opens the game's keyboard; the typed text comes back once the keyboard
    closes). `.layout(ListLayout, ValueStyle::Inline)` moves the list onto a
-   one-text skin and puts values in the label (`Mythic: < On >`), as the skulls
+   one-text skin and puts values in the label (`Mythic: On`), as the skulls
    page does. `.description(TextBlock)` adds the focused row's description.
+   Use `.live_help(block, get_text)` for a line shared by all rows, such as
+   the Clanker profile. It redraws when the text changes even if focus stays
+   on the same row.
    `.dialog(DialogBase::QuickOptions, opener)` makes the screen a dialog of its
    rows over whatever opened it, Quick Options inside and out: its panel and
    header, its own list (`setting_lists`, eleven rows from (-254, 87)), each

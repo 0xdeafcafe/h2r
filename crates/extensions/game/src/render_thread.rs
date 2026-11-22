@@ -20,6 +20,21 @@ const AFTER: &str = "something runs after the body (a Rust continuation a fallba
 /// stands for every point of a feature. A hook on a game-thread point costs
 /// nothing here, because the render never meets it.
 pub const REFUSED: &[(&str, &str, &str)] = &[
+    (
+        "agent-calls",
+        "GAME_TICK",
+        "the queued guest calls run at the end of the game tick; the render never meets it",
+    ),
+    (
+        "teabag",
+        "*",
+        "it watches the game's activate, tick and end, game-thread points; the render never meets them",
+    ),
+    (
+        "sim-ext",
+        "*",
+        "checkpoint save, revert and restore are game-thread points; the render never meets them",
+    ),
     // The render path's own points.
     (
         "render-timing",
@@ -92,6 +107,13 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ),
     #[cfg(feature = "gpu")]
     (
+        "native-map-work",
+        "RENDER_VIEWS",
+        "context-only, but shares render_views with render-timing (off by default), \
+         whose timer runs after the body",
+    ),
+    #[cfg(feature = "gpu")]
+    (
         "frame-scene",
         "RENDER_FRAME",
         "after render_frame_and_present, on the game thread: seals the frame's scene",
@@ -101,7 +123,88 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "CACHE_COPY_STEP",
         "the loading screen's cache copy on the game thread; steps it with guest calls",
     ),
+    // Co-op over Live: the session, the simulation's update apply and the
+    // script teleports, all on the game thread. The look prediction's one
+    // render-met hook, RENDER_GAME_VIEW, is context-only and is not here
+    // (`a_look_prediction_render_hook_runs_on_the_render_thread`).
+    (
+        "coop-look-prediction",
+        "*",
+        "the simulation's observers write the prediction the render hook's published copy comes from",
+    ),
+    (
+        "coop-jip",
+        "*",
+        "the session's join check and player-set changes on the game thread; read live RAM through the runtime",
+    ),
+    (
+        "coop-live",
+        "*",
+        "the retail synchronous campaign path: session, game start and joinable queries on the game thread",
+    ),
+    ("coop-players", "*", "players 3 to 16 spawn and follow teleports on the simulation thread"),
+    ("coop-latency", "*", "samples update arrival on the simulation thread into shared counters"),
+    // render-aspect's own hooks are context-only. Two of its chains still
+    // fall back: the game view's, only while render-timing (off by default)
+    // puts a timer after the body, and the menu backdrop's, whose fit must
+    // be restored after the body (menus only).
+    #[cfg(feature = "gpu")]
+    (
+        "render-aspect",
+        "RENDER_GAME_VIEW",
+        "context-only, but shares the view with render-timing (off by default), whose timer runs after the body",
+    ),
+    #[cfg(feature = "gpu")]
+    (
+        "render-aspect",
+        "UI_MENU_BACKDROP",
+        "restores the menu widget fit after the backdrop's body, which needs the after continuation (menus only)",
+    ),
+    // Game-thread and UI points: the render never meets them, so they cost
+    // the pipelined render nothing.
+    (
+        "return-to-menu",
+        "*",
+        "the options queue, game activation and the frame launch point run on the game thread",
+    ),
+    ("coop-screens", "*", "Live co-op's lobby and texts on the game thread"),
+    ("host-metrics", "*", "samples the host on the game tick"),
+    ("live-browser-ads", "*", "refreshes Live lobby metadata on the game tick"),
+    ("theater-texts", "*", "the Theater row's texts on the game tick"),
+    ("theater-link", "*", "opens a linked film page from the UI update"),
+    ("live-map-pack-rotation", "*", "the matchmaking hopper's block read on the game thread"),
+    ("live-join-link", "*", "the Live join link's UI update and session join on the game thread"),
+    ("browser-filter-texts", "*", "rebuilds the Live browser's header and footer in the UI"),
+    ("lab-takeover", "*", "opens and expires the lab request from the UI update"),
     // Game-thread points: the simulation, the UI and the level start.
+    ("actor-net", "*", "capture and dialogue share per-match state on the simulation thread"),
+    (
+        "creature-probe",
+        "*",
+        "the creature replication slot's definition, scheduling and skips on the simulation thread",
+    ),
+    (
+        "forge",
+        "*",
+        "parks the monitor's biped and applies input on the game tick, and resets at the game's \
+         start and end; its two render hooks are context-only",
+    ),
+    (
+        "firefight",
+        "*",
+        "the game's start and tick on the game thread: starts the mode, applies entries through \
+         guest calls before the tick (an async answer that re-enters it) and steps the director \
+         after it",
+    ),
+    #[cfg(feature = "rules")]
+    (
+        "rules",
+        "*",
+        "the game's start, kills, tick and end on the game thread: starts the script, runs its \
+         handlers and makes their calls through guest calls before the tick (an async answer \
+         that re-enters it), and answers the carrier engine's kill callbacks, Juggernaut tick \
+         and scoring in the game tick",
+    ),
     (
         "variant-vitality",
         "*",
@@ -160,6 +263,15 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ("skulls-custom", "GAME_TICK", AFTER),
     ("touch-glue", "GAME_TICK", AFTER),
     ("cheats", "GAME_TICK", AFTER),
+    ("superbounce", "*", AFTER),
+    ("superbounce-hud", "*", AFTER),
+    (
+        "hud-kit",
+        "GAME_ACTIVATE",
+        "the match start on the game thread: reads the map file and joins the kit's widgets to \
+         the player HUD tags",
+    ),
+    ("hud-kit", "GAME_TICK", AFTER),
     ("layouts-value", "CONTROLS_ROW_TEXT", AFTER),
     ("controls-text", "CONTROLS_ROW_TEXT", AFTER),
     // Features the test's registry gained when it began calling boot's own
@@ -180,6 +292,7 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ("hud", "GAME_ACTIVATE", AFTER),
     ("loaded_map", "GAME_ACTIVATE", AFTER),
     ("variant-ext-live", "GAME_ACTIVATE", AFTER),
+    ("game-variants", "GAME_ACTIVATE", AFTER),
     (
         "live-telemetry",
         "*",
@@ -202,6 +315,22 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "the Game Setup list's row, a UI event on the game thread",
     ),
     (
+        "tweakers",
+        "*",
+        "the game type list's row and its variant lists, UI events and a per-frame screen \
+         update on the game thread",
+    ),
+    (
+        "firefight-row",
+        "*",
+        "the Game Setup list's Firefight row on the game thread",
+    ),
+    (
+        "forge-screens",
+        "*",
+        "opens the Forge screens from the UI update and adds GAME MENU's Forge rows, UI on the game thread",
+    ),
+    (
         "game-setup-help",
         "SQUAD_SETTINGS_UPDATE",
         "the Game Setup screen's per-frame update (picture and description), UI on the game thread",
@@ -222,9 +351,20 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "removes the freed dialog from host navigation state on the game thread",
     ),
     (
+        "party-lobby",
+        "*",
+        "the party lobby's UI (its Game Setup rows, mode strip, bumpers, start refusal and \
+         leave) on the game thread, through guest calls and a game-thread reentry guard",
+    ),
+    (
         "lobby-options",
         "LOBBY_VARIANT_PANEL",
         "updates lobby widgets through guest calls and uses a game-thread reentry guard",
+    ),
+    (
+        "bots",
+        "WEAPON_STAT_BUCKET",
+        "credits phantom shots by weapon and range into the bots' game-thread tallies",
     ),
     (
         "bots",
@@ -277,6 +417,18 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ("bots", "RENDER_FRAME", AFTER),
     ("bots", "GAME_ACTIVATE", AFTER),
     ("bots", "SOUND_UPDATE", AFTER),
+    (
+        "agent-matchmaking",
+        "*",
+        "records lifecycle and session network state on the game thread",
+    ),
+    ("agent-audio", "SOUND_UPDATE", AFTER),
+    (
+        "replication-admission",
+        "*",
+        "session descriptions and join requests, written and checked by the game thread's \
+         network update; the render never meets them",
+    ),
     ("bots", "SOUND_LISTENERS_UPDATE", AFTER),
     ("bots", "SOUND_OWNER_USER", AFTER),
     (

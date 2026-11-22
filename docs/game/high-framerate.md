@@ -4,12 +4,13 @@ Status: Partly built. The setting, the determinism harness, the interpolated rep
 Code: `crates/extensions/lockstep`, `crates/platform/xapi/src/tap.rs`, `crates/apps/app/src/fps.rs`, `crates/platform/d3d/src/interp/`, `crates/extensions/game/src/d3d_glue.rs`, `crates/extensions/game/src/lockstep_glue.rs`. Tests: sections 6 to 8.
 Switch: `H2_FPS`, `impl.render.interpolate`, `impl.render.reproject`, `impl.render.reproject_ahead`, `H2_LOCKSTEP*`, `H2_INPUT_RECORD`, `H2_INPUT_REPLAY`, listed in [switches.md](../runtime/switches.md).
 
-The rule: **the guest tick stays 30 Hz, and 60 or 120 fps interpolates the picture.** Super bounces are a physics and collision quirk of the 30 Hz tick, so the simulation stays bit-identical to 30 Hz play and only what is drawn runs faster. Every community attempt that raised the tick lost super bounces; the ones that kept a 30 Hz tick and interpolated the picture kept them ([notes/high-framerate.md](notes/high-framerate.md) has the record). The planned home of 60 and 120 is the frame-scene renderer ([framescene.md](../graphics/framescene.md)); the rule carries over to it.
+The rule: **the guest tick stays 30 Hz at every display rate.** Super bounces are a physics and collision quirk of the 30 Hz tick, so the simulation stays bit-identical to 30 Hz play and only what is drawn runs faster. Every community attempt that raised the tick lost super bounces; the ones that kept a 30 Hz tick and interpolated the picture kept them ([notes/high-framerate.md](notes/high-framerate.md) has the record). The planned home of 60 and 120 is the frame-scene renderer ([framescene.md](../graphics/framescene.md)); the rule carries over to it.
 
 In short:
 
 - **The guest is untouched.** Same 60 Hz logical vblanks, same two-vblank frame interval, same one tick per frame, same input polls. No guest code, guest global or guest timing changes.
-- **The in-between frames are made on the host.** Every guest frame is a list of resolved draws that hold no guest pointers ([d3d.md](../graphics/d3d.md), "Draws"). The host keeps the last two guest frames and draws the newest one at the display's rate, with camera and object matrices blended between the two ticks. The guest never sees these frames.
+- **The in-between frames are made on the host.** Every guest frame is a list of resolved draws that hold no guest pointers ([d3d.md](../graphics/d3d.md), "Draws"). With interpolated replay (on by default), the host keeps the last two guest frames and blends camera and object matrices between the two ticks. By default the window repeats the newest frame. The guest never sees these frames.
+- **Host world marks follow the made frame's camera.** The window's marks (editor marks, the superbounce figures) project with the camera each in-between frame drew the world with, and animate by the window's clock (section 9).
 - **The proof is the guest's own state.** The same input recording gives the same guest-memory hash at every present and every tick with the mode off, at 60 and at 120 (section 6).
 
 The mode only helps once a level holds a steady 30 fps ([gameplay-budget.md](../perf/notes/gameplay-budget.md)); below that the pacer rebases and the game plays in slow motion.
@@ -104,8 +105,10 @@ Three things to take from this:
   33.3 ms of logical time and 2 vblanks ([gameplay-budget.md](../perf/notes/gameplay-budget.md)).
 - **Wall time is outside.** `app::pacing::Pacer` and `kernel::pacer::Pacer`
   only sleep the host so guest time doesn't run ahead of real time. They
-  never change the schedule ("schedule, history and guest state are the same
-  paced or not"). A slow host plays in slow motion.
+  use the kernel counter in 100 ns units. In windowed play the shell checks
+  it after each slice and each audio-only idle advance, including at
+  Uncapped. A slow host can fall below 30 ticks per wall second.
+  `h2 play --unpaced` explicitly removes the wall-clock limit for profiling.
 - **Presentation never blocks the guest.** Swap goes through the present
   hook into a 3-slot mailbox; the window shows the newest frame
   ([app.md](../runtime/app.md), "Presentation"). The render thread is the
@@ -324,8 +327,10 @@ Two answers, in order:
 - **Settings.** The toggle is the Video screen's Frame Rate row
   (`graphics.fps`, [settings-menu.md](settings-menu.md) "Video screen"), also
   `H2_FPS` / `h2 play --fps` (section 6). 30 means off: no replay.
-  The replay itself is behind `impl.render.interpolate` or
-  `impl.render.reproject`, off by default (sections 7 and 8).
+  The replay itself is `impl.render.interpolate`, on by default
+  (`-impl.render.interpolate` turns it off); `impl.render.reproject` and
+  `impl.render.reproject_ahead` are off by default and, when set, take its
+  place (sections 7 and 8).
 - **Pass tags.** A pass tag is what this design wants: which draws are the
   world, which the first-person weapon, which the HUD, and where E1
   captures the world colour. None is wired to the device; the first slice
@@ -486,12 +491,12 @@ h2 lockstep $TMPDIR/a.trace $TMPDIR/b.trace   # exit 0 identical, 1 differ
 
 ### The setting
 
-`H2_FPS=30|60|120|uncapped`, or `h2 play --fps`, sets `AppConfig::fps` (`app::fps::FpsTarget`). With neither, the Video screen's Frame Rate row decides (saved as `[graphics] fps` in `<data>/settings.toml`; [settings-menu.md](settings-menu.md), "Video screen"). A press there applies at the window's next turn: `app::fps::FpsControl` carries it, the `DisplaySchedule` is retargeted and, to or from uncapped, the surface's vsync is configured again (`app::fps::follow`). It reaches only the window:
+`H2_FPS=30|60|120|uncapped`, or `h2 play --fps`, sets `AppConfig::fps` (`app::fps::FpsTarget`). With neither, the Video screen's Frame Rate row decides (saved as `[graphics] fps` in `<data>/settings.toml`; [settings-menu.md](settings-menu.md), "Video screen"). A press there applies at the window's next turn: `app::fps::FpsControl` carries it, the `DisplaySchedule` is retargeted and, to or from uncapped, the surface's vsync is configured again (`app::fps::follow`). The window and any enabled render-thread replay read the setting.
 
 | setting | window |
 |---|---|
 | `30` (default) | a redraw per guest present; the code path is the plain one |
-| `60`, `120` | also redraws on its own `DisplaySchedule` at that rate (late redraws skip slots, never burst); `vsync` as set |
+| `60`, `120` | samples the newest picture on its own `DisplaySchedule` at that rate, skipping late slots, with `vsync` as set |
 | `uncapped` | redraws every event-loop turn, vsync off |
 
 Between guest presents a redraw shows the newest guest frame again, so **above 30 nothing looks smoother** unless the replay is switched on (`impl.render.interpolate` or `impl.render.reproject`, sections 7 and 8), which publishes in-between frames for those redraws to show. `app::fps::alpha` is the same fraction on the window's side, tested but not used; the replay computes its own (`d3d::interp::pacing::alpha`) on the render thread, from the frames' arrivals.
@@ -500,7 +505,8 @@ Between guest presents a redraw shows the newest guest frame again, so **above 3
 
 - `cargo test -p lockstep`: the hash sees any changed word and a swap of two, names the changed MiB; traces round-trip through text; compare finds the first divergence and truncation; the clock counts as guest state. On the toy guest (`lockstep::synthetic`: a generated tick handler, a game-time record, an `XINPUT_STATE` input and a crouched-landing-on-a-seam "super bounce"): equal inputs give equal traces; a replay reproduces the recording whatever the live pad does; releasing crouch on the landing read diverges exactly at that tick and loses the bounce; changing an ignored packet byte is still caught; the observer refuses a wrapped tick.
 - `cargo test -p xapi`: the tap's log holds exactly the bytes the guest got, replay gives them back over a different live pad, and a recorded failure status comes back as the call's error.
-- `cargo test -p app`: `H2_FPS` parsing and its default; 30 is never due on the schedule; 60 and 120 redraw 60 and 120 times a second on the fake clock; a late window skips slots; alpha. `crates/apps/app/tests/fps_lockstep.rs` runs the toy guest through the shell's triple buffer with a presenter on the fake clock at all four settings: every guest frame reaches the screen, redraws per guest frame are 1, 2, 4 and over 30, and the guest's trace is identical at every setting. A control shows the check catches a guest that ran one extra tick.
+- `crates/apps/app/tests/fps_lockstep.rs` replays the same input at all four display rates. On a fake wall clock each guest frame costs 16.67 ms of work plus the sleep requested by the shell pacer. The checks require 30 ticks in each wall second, identical guest traces, and 30, 60 or 120 window draws per second (every event-loop turn at Uncapped). Explicitly unpaced play takes only the simulated work time.
+- `crates/apps/boot/src/idle_audio.rs` checks that a pending sound advances the kernel clock by one quantum and that the host sees each new deadline before another slice can run.
 - `cargo test -p boot --lib lockstep`: the toy guest through boot's wiring writes traces that compare identical, or diverge at the changed tick.
 
 ### Next
@@ -512,7 +518,9 @@ Between guest presents a redraw shows the newest guest frame again, so **above 3
 
 Status: Built, tested on synthetic draw lists only. Code: `crates/platform/d3d/src/interp/` (`backend.rs`, `model.rs`, `camera.rs`, `pacing.rs`, `epilogue.rs`), `crates/extensions/game/src/d3d_glue.rs`. Tests: `crates/platform/d3d/tests/interp.rs`, `crates/platform/d3d/tests/interp_gpu.rs`.
 
-Design D's geometry replay at 60 Hz, for a single gameplay view, behind a switch.
+Design D's geometry replay for a single gameplay view runs at 60 Hz on
+the live schedule. A [headless display clip](../runtime/agent-api.md#rendercapture_clip)
+can sample it at 120 Hz.
 
 ### Switches
 
@@ -520,7 +528,7 @@ Listed in [switches.md](../runtime/switches.md). This section's behaviour:
 
 | switch | effect |
 |---|---|
-| `impl.render.interpolate` (in `H2_FEATURES`) | wraps the window's backend in `d3d::InterpBackend`, inside the render thread. Only this exact switch: `impl.render=on` does not turn it on |
+| `impl.render.interpolate` (in `H2_FEATURES`) | on by default; wraps the window's backend in `d3d::InterpBackend`, inside the render thread. `-impl.render.interpolate` turns it off. Only this exact switch counts: `impl.render=on` does not set it |
 | Frame Rate row / `H2_FPS` / `h2 play --fps` | 30: the replay records nothing and forwards every call. 60, 120 and uncapped: in-between frames at 60 (`interp::pacing::MAX_REPLAY_HZ`; 120 waits on measured headroom) |
 | `H2_RENDER_THREAD=0` | the replay stays off (it runs only on the render thread) |
 | `impl.render.pipelined_frame=on` | the replay stays off: the lockstep harness cannot certify the combination |
@@ -528,14 +536,15 @@ Listed in [switches.md](../runtime/switches.md). This section's behaviour:
 It is Rust in `d3d` and `boot`; no image rebuild.
 
 ```sh
-H2_FEATURES=impl.render.interpolate h2 play --fps 60 ...
+h2 play --fps 60 ...   # D is on by default
 ```
 
-At exit (and every 5 s while running) the replay prints one line: `d3d: interpolation: frames F blended B held H replays R substituted draws D snapped S deferred P size_mismatch Z (extent Ze mapping Zm screen Zs overlay Zo) unsure U (camera Uc unpinned Up) unpaired Q (gap Qg camera Qc views Qv counting Qn) dropped X; replay mode: N frames, A ms avg, M ms max`.
+At exit (and every 5 s while running) the replay prints one line: `d3d: interpolation: frames F blended B held H replays R substituted draws D held draws Hd (palette Hp) snapped S deferred P size_mismatch Z (extent Ze mapping Zm screen Zs overlay Zo) unsure U (camera Uc unpinned Up) unpaired Q (gap Qg camera Qc views Qv counting Qn) dropped X; replay mode: N frames, A ms avg, M ms max`.
 
 - `Z`, `U` and `X` count frames shown as the guest drew them by the guards below; `Z` and `U` split by the guard that held them.
 - `Q` counts frames with nothing to blend: no previous frame close enough (`gap`: the first, or after a load, a pause or a hitch over 45 ms), no camera (`camera`: a 2D menu), views other than the previous frame's or, for E1, not one view with a world (`views`), or a pixel count open at the present (`counting`).
 - Every held frame is in exactly one of `Z`, `U`, `Q` and `X`.
+- `Hd` counts draws, over all made frames, drawn at the newest frame's object matrices instead of blended, by reason: `palette`, the draw's node registers are not those of the draw it pairs with (see "Substitution" below).
 - `N` counts every frame the replay made (blended presents and in-between frames) and the times are the render thread's wall time for each: its draws, plus `present_replay` for in-between frames. The guest's own present is not counted. It is encode and submit; the GPU's own time is not in it. E1 prints its own part (section 8).
 
 ### How it works
@@ -546,17 +555,18 @@ At exit (and every 5 s while running) the replay prints one line: `d3d: interpol
   - the view's camera: per view (viewport and target size), the perspective value most draws compute their clip position from, bit for bit, used by at least two. Which block a draw computes it from is read from its program (`interp::epilogue::position`): the four constant rows `oPos.x` to `oPos.w` are each a `dp4`/`dph` with, followed through temporaries and moves, as they stand before the epilogue reads them back. A program that passes its vertices through (`mov oPos, v0`) is `Fixed`: no constant places them. Anything else (columns, products of blocks) is `Unknown` and does not vote. A rule that counted every perspective-looking block is wrong: see [the note](notes/high-framerate.md) ("Camera pick");
   - objects drawn with the camera: perspective blocks that are the camera times a rotation, uniform scale and translation (the world part recovered with the camera's inverse, accepted when it rebuilds within 1e-4: the guest's matrices come through x87 emulation, so matches are by tolerance, not bits);
   - draws with a projection of their own (the first-person weapon and hands): blended in camera space;
-  - in draws that use the camera, node matrices (three registers forming a rotation, uniform scale and translation), and the eye position (a register whose `xyz` is the camera's position, for fog, specular and sky).
-- **Pairing** (`model::match_draws`). A draw continues the previous frame's draw with the same signature (view, vertex program, primitive, vertex and index counts, stream strides and sizes, texture headers); among several (instances of one mesh) the nearest world position first. There is no object datum: a pass tag and an object tag from the render loop would replace the signature (section 3, "Pass tags").
-- **Substitution** (`model::substitute`). At alpha `a`: camera blocks get the in-between camera (eye lerped in a straight line, orientation slerped, projection lerped); object blocks get the in-between camera times the blended world; own-projection blocks blend in camera space; nodes blend; the eye register follows the camera. A draw with no match (spawned) keeps its own object matrices with the in-between camera, so it stays put in the world. At `a >= 1` nothing is substituted: the replay is frame N exactly. A camera that has not moved keeps its uploaded value.
+  - node matrices (three registers forming a rotation, uniform scale and translation) in draws that use the camera or that a projection of their own places (the first-person arms and weapon, whose nodes must move with that projection), and, in draws that use the camera, the eye position (a register whose `xyz` is the camera's position, for fog, specular and sky).
+- **Pairing** (`model::match_draws`). A draw continues the previous frame's draw with the same signature (view, vertex program, primitive, vertex and index counts, stream strides and sizes, texture headers, and 32 elements each from the start, middle and end of every vertex stream and of the index list); among several (instances of one mesh) the nearest world position first. The samples keep apart sections of one model that match on every count (a biped's sections share counts, palette registers and often the root bone their first node is on): paired by counts alone, one section's vertices would be drawn with another section's bones, and the model comes apart. Geometry rewritten every frame does not pair, and replays as spawned. There is no object datum: a pass tag and an object tag from the render loop would replace the signature (section 3, "Pass tags").
+- **Substitution** (`model::substitute`). At alpha `a`: camera blocks get the in-between camera (eye lerped in a straight line, orientation slerped, projection lerped); object blocks get the in-between camera times the blended world; own-projection blocks blend in camera space; nodes blend, register by register, only with a paired draw whose node registers are the same ones (otherwise the draw replays as spawned, counted in `held_draws_palette`), and not when the draw's own object or projection block snapped; the eye register follows the camera. A draw with no match (spawned) keeps its own object matrices with the in-between camera, so it stays put in the world. At `a >= 1` nothing is substituted: the replay is frame N exactly. A camera that has not moved keeps its uploaded value.
 - **Snaps** (`model::Tuning` defaults). A camera that moved more than 3 world units, turned more than 1 rad, or changed its projection by more than 5% (scope zoom, vehicle entry, a cinematic's lens) is not blended; neither is an object that moved more than 2 units or turned more than 1.6 rad. The pair is dropped altogether when the frames arrived more than 45 ms apart (`pacing::HOLD_GAP_NS`: the guest below about 22 fps, a load, a pause, a pacer rebase: the newest frame is held as drawn), when either frame has no camera, or when the set of views changed (a split-screen layout change).
 - **Pacing** (`interp::pacing`). Each present is stamped on the game's thread at the `Swap` entry (`Backend::stamp_present`, passed along by `ThreadedBackend`, which reads the `Instant` in `present_with_gamma`), not when the render thread reaches it. Frame N is shown from alpha 0 at its arrival to alpha 1 one measured interval later (when N+1 is due); nothing is extrapolated and a late frame holds at 1. A catch-up frame blends over its longer gap. In-between frames are due on a 60 Hz grid that skips late slots and restarts at each guest frame; a slot within a quarter period of the next frame's expected arrival waits for it (drawing alpha near 1 there would duplicate the next frame's alpha 0), and shows alpha 1 if the frame is late.
 - **The guest's present** shows the replay at its alpha (about 0: frame N-1's poses on frame N's draws) in place of the guest's surface, so the real frame is never shown ahead of the blend. It is still the guest's one present for the backend (frame count, shader upkeep, the `D3DSWAP_FINISH` wait). Frames with nothing to blend show the guest's surface as drawn.
-- **In-between frames** come from `Backend::idle`, which the render thread calls only when its queue is empty (a zero-timeout receive takes any waiting batch first), and are shown with `Backend::present_replay` (`GfxBackend`: submit and the present hook only; `ScaledBackend`: the view's surface, no frame boundary). The guest's commands always go first.
+- **In-between frames** on the live schedule come from `Backend::idle`, which the render thread calls only when its queue is empty (a zero-timeout receive takes any waiting batch first). `Backend::present_replay` shows them (`GfxBackend`: submit and the present hook only; `ScaledBackend`: the view's surface, no frame boundary).
+- **Headless clip sampling** runs the same replay at fixed fractions of each 30 Hz tick interval. `InterpBackend::with_capture_slots` asks for two samples at alpha 0 and 0.5, or four at 0, 0.25, 0.5 and 0.75. The render thread emits all samples for a guest present before processing the next one. Wall-clock gaps and GPU load do not drop slots during a clip, and a held replay fails the capture.
 
 ### Rules and limits
 
-- **What the replay may touch.** It draws only into surfaces of its own (a private copy of the presented surface and of each depth surface its draws use), never reads anything back, writes no guest memory, and never runs while a pixel count is open (cleared, not yet reported), so no replay draw lands in a visibility count. A replay error turns the replay off for the rest of the run instead of stopping the game.
+- **What the replay may touch.** It draws only into surfaces of its own (a private copy of the presented surface and of each depth surface its draws use), never reads anything back, writes no guest memory, and never runs while a pixel count is open (cleared, not yet reported), so no replay draw lands in a visibility count. The renderer waits for the command reporting the count before scheduling another replay. A replay error turns the replay off for the rest of the run instead of stopping the game.
 - **Shared GPU.** A pixel count submitted after a replay lands later, so a polled visibility test can answer `D3DERR_TESTINCOMPLETE` where it would not have. That is the timing class [render-thread.md](../graphics/render-thread.md) accepts; `Device::set_visibility_poll(false)` makes it exact.
 - **Pinned inputs.** Textures are pinned by `Arc`, targets are private, uniforms go through the backend's normal per-draw path.
 - **Resets.** Gaps over 45 ms, no camera and view-set changes reset the history; cuts snap. A checkpoint revert is caught only as a camera cut.
@@ -574,6 +584,8 @@ At exit (and every 5 s while running) the replay prints one line: `d3d: interpol
 
 - in-between frames at alpha 0 (frame N's draws with frame N-1's camera and nodes), 0.5 (camera half way along a straight eye path, node and eye register half way) and 1 (frame N bit for bit), the slot before the next frame waiting for it, then nothing more;
 - instances of one mesh pair by nearest position even when drawn in another order; a spawned object keeps its own matrix; a despawned one is dropped;
+- two sections of one model with the same counts and root bone, drawn in swapped order, each blend with their own bones; a paired draw whose node registers changed draws at its own matrices and is counted in `held_draws_palette`;
+- a first-person draw's nodes blend with its own projection, and stay at frame N when that projection snaps;
 - the HUD (orthographic, pre-transformed) replays with its constants untouched;
 - objects drawn with world-view-projection (column layout) blend in the world; a weapon with its own projection blends in camera space;
 - a zoom and a teleport snap; a 200 ms gap shows the guest's frame as drawn; no replay while a pixel count is open;
@@ -582,10 +594,11 @@ At exit (and every 5 s while running) the replay prints one line: `d3d: interpol
 - through `ThreadedBackend`, the render thread's idle step draws in-between frames;
 - menu frames (a screen-space perspective shared by the panels, orthographic text, a pre-transformed background) are shown as drawn in D and both E1 variants; a made frame of another host size is not shown; slots are dropped while the GPU is busy; a sampled render target replays from its snapshot, and a copied-in surface holds.
 
-`cargo test -p d3d --test it interp_gpu::` runs D and E1 on the GPU through `ScaledBackend` at 2x and 3x: every presented frame is the guest's size at that scale, D's made frames have the guest's pixels exactly and E1's (a still camera) agree within filtering on over 98% of pixels. `cargo test -p boot --lib interpolation` checks the switch's decision (off by default, needs the render thread, off with `impl.render.pipelined_frame`) and `H2_FPS` parsing.
+`cargo test -p d3d --test it interp_gpu::` runs D and E1 on the GPU through `ScaledBackend` at 2x and 3x: every presented frame is the guest's size at that scale, D's made frames have the guest's pixels exactly and E1's (a still camera) agree within filtering on over 98% of pixels. `cargo test -p boot --lib interpolation` checks the switch's decision (on by default, needs the render thread, off with `impl.render.pipelined_frame`) and `H2_FPS` parsing.
 
 ### Not verified
 
+- A menu with the player model at 60 (the lobby, the profile screens): the model holds together, and how many draws `held_draws_palette` counts there and in Forge.
 - A game run at 60: does the camera classify in gameplay (the stats line's `blended` against `held`), do objects blend, what pops. Then the phase 1 harness with the switch on: the per-tick trace must match a run with it off.
 - What a player should see (S, from the design): camera turns and movement at 60, about one tick behind the 30 fps picture; bipeds, vehicles and other objects whose matrices classify move at 60; the first-person weapon and hands blend with the camera; snaps instead of blends on cuts, scope zoom, teleports and respawns; anything whose matrices do not classify draws as frame N, never wrong. Still at 30 Hz: particles, contrails, beams and muzzle flashes, shadows, reflections and other render-to-texture effects, the HUD, motion sensor and text, and world-anchored markers (the care list in section 3).
 - Replay cost against 16.7 ms at 60 and 8.3 ms at 120 (the exit line measures render-thread time).
@@ -605,14 +618,14 @@ Listed in [switches.md](../runtime/switches.md).
 |---|---|
 | `impl.render.reproject` | E1, the display camera's rotation blended between frames N-1 and N (one frame behind, like D) |
 | `impl.render.reproject_ahead` | E1 with the rotation carried on past N by alpha of the last turn (F, extrapolation, for aim only): no added latency for turning, overshoots when a turn stops |
-| `impl.render.interpolate` | D (section 7). With a reproject switch also on, E1 wins |
+| `impl.render.interpolate` | D (section 7), on by default. With a reproject switch also on, E1 wins |
 
-Off by default; exact switches only (`impl.render=on` turns none of them on). Same rules as D: render thread only, off with `impl.render.pipelined_frame`, the Frame Rate row above 30 (in-between frames at 60). Rust in `d3d`, `gfx` and `boot`; no image rebuild.
+The reproject switches are off by default, since D is the main path; exact switches only (`impl.render=on` turns none of them on). Same rules as D: render thread only, off with `impl.render.pipelined_frame`, the Frame Rate row above 30 (in-between frames at 60). Rust in `d3d`, `gfx` and `boot`; no image rebuild.
 
 ```sh
 H2_FEATURES=impl.render.reproject h2 play --fps 60 ...
 H2_FEATURES=impl.render.reproject_ahead h2 play --fps 60 ...
-H2_FEATURES=impl.render.interpolate h2 play --fps 60 ...   # D, to compare
+h2 play --fps 60 ...   # D, to compare
 ```
 
 At exit, after the common counters: `; reproject mode: C world images A ms avg M ms max, W warped frames A ms avg M ms max`. A world image is the per-guest-frame draw described below; a warped frame is one shown frame (the warp, the overlay draws, and for in-between frames their present), at the guest's present and in between. Times are render-thread wall time measured the same way as D's `replay mode` part, so the two compare directly: D's per-frame cost against E1's world image per guest frame plus its warped frames.
@@ -629,7 +642,7 @@ h2 agent render          # "interp": frames, warps, the held split
 ```
 
 - **What runs.** `boot::d3d_glue::install_headless` puts the GPU backend (at 1x, or `ScaledBackend` under `H2_RENDER_SCALE`) behind `InterpBackend` on the render thread, as a window does; which host has a GPU backend is `d3d_glue::interp_render_thread`. Without `H2_BOOT_GFX` (the recorder draws nothing) and under `H2_BOOT_GFX_LIGHTING_AB` there are no in-between frames. `H2_RENDER_THREAD=0` and `impl.render.pipelined_frame` turn them off.
-- **Pacing.** No display, so no vsync: the in-between frames are paced on the wall clock at the frame rate, the same schedule a window uses (`pacing::Schedule`). At real-time speed a guest frame at 30 gets one in-between frame at 60; a serve sped up past that shows fewer, since a frame arriving early takes the slot. Each is made for real (the world image warped, the overlay drawn, presented through `GfxBackend::on_present_replay`) and every guest frame is classified, so `blended_frames`, `replays`, `warps` and the hold reasons are the game's own. A guest frame more than 45 ms after the last is `unpaired_gap`, as in a window.
+- **Pacing.** Outside a headless clip, the in-between frames are paced on the wall clock at the frame rate, the same schedule a window uses (`pacing::Schedule`). At real-time speed a guest frame at 30 gets one in-between frame at 60; a serve sped up past that shows fewer, since a frame arriving early takes the slot. Each is made for real (the world image warped, the overlay drawn, presented through `GfxBackend::on_present_replay`) and every guest frame is classified, so `blended_frames`, `replays`, `warps` and the hold reasons are the game's own. A guest frame more than 45 ms after the last is `unpaired_gap`, as in a window.
 - **Pictures.** `H2_BOOT_GFX_BETWEEN=N` writes the first N in-between frames to the directory as `frame-NNNNN-between-KK.png` (the KK-th after guest swap NNNNN), and each one's neighbours as `frame-NNNNN.png`: the guest frame shown before it and the one shown after it (as shown: a blended present is a warped frame too). At most N in-between and 2N guest frames are written. While captures are left, each guest frame is copied on the GPU (no read back) and the copy is read back only once an in-between frame follows it, so a long run does not read back every frame. In-between frames go to their own hook, so the guest's swap numbering (`H2_BOOT_GFX_EVERY`, `H2_BOOT_GFX_SHADOWS`) is unchanged.
 - **Held frames, draw by draw.** `interp.holds` in `render.stats` names the draws that keep gameplay at 30 (next section).
 
@@ -715,7 +728,7 @@ No pass tag is wired. The pass in progress is the return address of the call the
 - `the_hold_log_names_every_draw_that_held_a_frame` and `the_hold_log_says_off_centre_and_after_the_overlay`: the log has each kind with the guest draw and pass numbers, program id and disassembly, and a window covering the target; a frame with no camera is not logged;
 - `screen_space_sprites_and_layers_in_the_world_turn_with_it`, `screen_space_world_draws_e1_cannot_move_still_hold` and `screen_space_draws_turn_with_the_world_through_the_interpreter`: sprites and layers are shrunk or extended with texture coordinates and depth kept, the counters say 2 shrunk and 1 extended, a scissored sprite, a layer that looks a texture up from its own position and an orthographic quad hold, and a moved sprite lands where the level's program puts its world point.
 
-`cargo test -p d3d --test it interp_gpu::` draws E1 through the XDK's own epilogue and on one plain `GfxBackend` as a headless run has it: the in-between frame goes to the replay hook (flags 0), never the present hook, and is the guest's picture within filtering with the camera still; a 100 ms gap is counted as `unpaired_gap` and makes nothing after it. `cargo test -p boot --test headless_interp` (GPU; skips without an adapter) checks that with `H2_BOOT_GFX`, `impl.render.reproject` and `H2_FPS=60`, `install_headless` builds the interp and the agent's `render.stats` reads it, every hold reason and `interp.holds` present. `cargo test -p gfx --lib warp` validates the warp shader with naga. `cargo test -p boot --lib interpolation` checks the switches (off by default; reproject wins over interpolate, `_ahead` over plain) and which host has a GPU backend for them; `d3d_glue::tests::in_between_captures_stop_at_their_limit` and `in_between_captures_write_only_their_neighbours` check the `H2_BOOT_GFX_BETWEEN` names and that N slots write at most N in-between and 2N guest frames.
+`cargo test -p d3d --test it interp_gpu::` draws E1 through the XDK's own epilogue and on one plain `GfxBackend` as a headless run has it: the in-between frame goes to the replay hook (flags 0), never the present hook, and is the guest's picture within filtering with the camera still; a 100 ms gap is counted as `unpaired_gap` and makes nothing after it. `cargo test -p boot --test headless_interp` (GPU; skips without an adapter) checks that with `H2_BOOT_GFX`, `impl.render.reproject` and `H2_FPS=60`, `install_headless` builds the interp and the agent's `render.stats` reads it, every hold reason and `interp.holds` present. `cargo test -p gfx --lib warp` validates the warp shader with naga. `cargo test -p boot --lib interpolation` checks the switches (reproject wins over interpolate, `_ahead` over plain) and which host has a GPU backend for them; `d3d_glue::tests::in_between_captures_stop_at_their_limit` and `in_between_captures_write_only_their_neighbours` check the `H2_BOOT_GFX_BETWEEN` names and that N slots write at most N in-between and 2N guest frames.
 
 ### Not verified
 
@@ -724,3 +737,34 @@ No pass tag is wired. The pass in progress is the return address of the call the
 - Whether a loading screen is held by one of the unseen draw kinds above or is a centred camera scene the warp shows correctly.
 - A full-target quad that copies the screen made that frame (seen in a converted Halo 1 level, [the note](notes/high-framerate.md), "Camera pick") still holds: showing such frames needs either that pass on top of the warped world (only if nothing after it in the world depends on it) or the copy made from the overscanned world image; neither is proven.
 - Not built: drawing the world image by copying the guest's frame at a pass boundary with a wider projection set by the guest instead of a second world draw (halves the cost), the pass tag, and 120 Hz (a warp per display frame is cheap).
+
+## 9. World marks on made frames
+
+Status: Built, tested on synthetic cameras only; not run in the game.
+Code: `crates/platform/d3d/src/interp/marks.rs`, `crates/platform/d3d/src/present_camera.rs`, `crates/apps/cli/src/play_cmd.rs` (`mark_frame`, `mark_cameras`), `crates/apps/app/src/overlay/marks.rs`, `crates/extensions/game/src/superbounce_world.rs`.
+
+The window draws world marks (the editor's marks, the superbounce figures) over the finished frame, projecting each world point with a camera ([agent-api.md](../runtime/agent-api.md), "Drawing world-space lines over the frame"). A mark is captured with a genuine guest image and that image's per-view cameras. On a made frame the world is drawn with another camera, so a mark projected with the image's own would swim against the world by up to a tick of camera motion while the player turns.
+
+### The camera per present
+
+- **A genuine image:** its own cameras.
+- **A made frame (D):** per view, the camera the replay drew it with, by the rule `substitute` uses (`model::between`): the blended camera, or the newest frame's own when the camera did not move, on a cut (jump, sharp turn, zoom) and at a fraction of 1.
+- **A made frame (E1, with or without `_ahead`):** the newest frame's eye and projection turned to the display rotation (`reproject::display_rotation`, `reproject::display_camera`); a cut keeps the newest rotation.
+
+`interp::marks::metadata` puts this into `Present::Synthetic` as one `ViewShift` per view: `C⁻¹ B`, the source image's camera `C` for that view and the shown one `B`, both the guest's view-projection, in world space. `mark_cameras` multiplies each mark camera by its view's shift (matched by viewport, within a hundredth of the image on each side; a single view on each side pairs). The mark camera's own conventions (aspect factor, depth range) are left as they are: `M · C⁻¹ · B` projects a world point where `B` draws it, through `M`'s mapping.
+
+The marks come from the newest image, or from the frame before while a D replay that blends is under fraction 0.5, so what a mark shows (where it is, which spots are listed) lags the world by at most half a tick. Marks fixed to a moving object step at the tick rate while the object blends.
+
+### Motion in marks
+
+A mark's geometry is captured once a guest frame. Anything that moves within it goes in its style, which the window runs at each present by its own clock: `Pulse`, `Chevrons` with a speed, and `Fade` by distance. The superbounce way is the style's chevrons with no line under them (`LineStyle::stroke` off). `superbounce_world::Scene::seconds` is the capture time and steps at the tick rate; nothing draws from it.
+
+The superbounce logic counts game ticks, not presents or wall time: the mode's state, the charge tracker (38 still ticks to lose a charge, the 30 and 150 tick windows after it), the medals and the HUD values run in `GAME_TICK` observers, and the tutorial's step limits are game seconds (`superbounce_hud::tutorial_seconds`). Below 30 fps the game plays in slow motion and they slow with it.
+
+### Tests
+
+`cargo test -p d3d --lib interp::marks` (a mark at fractions 0.25, 0.5 and 0.75 lands where the blended camera draws the point, through a mark camera with conventions of its own; a zoom blend moves it with the projection; a cut, a still camera and fraction 1 give no shift and the newest marks; E1 marks follow the turned camera with and without `_ahead`, and a cut holds), `cargo test -p d3d --lib reproject` (`display_camera` draws a point where the warp shows it), `cargo test -p d3d --lib present_camera`, `cargo test -p cli made_frames_move_the_mark_camera`, `cargo test -p app --lib overlay::marks`, `cargo test -p gfx --lib probe`, `cargo test -p game --lib -- world_lines superbounce_world superbounce_hud`.
+
+### Checking it in the game
+
+`render.marks` ([agent-api.md](../runtime/agent-api.md), "render.marks") gives each present's frame kind, a made frame's fraction and `shifted`, and the first anchors' window pixels. Turning at a steady rate with a mark on screen at `H2_FPS=60`, an anchor's `x` steps by about the same amount on every present, and the made frames say `shifted: true`; with the tick camera held it would move on genuine presents only.

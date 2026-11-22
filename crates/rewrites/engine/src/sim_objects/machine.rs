@@ -225,7 +225,7 @@ pub(super) fn machine_update(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
                 } else {
                     c.edx = g.u32(points::PHYSICS_COMPONENTS.base)?;
                     sse::load(c, 0, g.u32(ONE)?);
-                    c.ecx = (c.ecx & 0xffff) * 5 << 5;
+                    c.ecx = ((c.ecx & 0xffff) * 5) << 5;
                     c.ecx = at(c.ecx, g.u32(at(c.edx, DATA))?);
                     c.eax >>= 10;
                     if c.eax & 1 == 0 {

@@ -1,6 +1,10 @@
 use super::*;
 use crate::game::{GameEngine, PlayerStats, TeamStats};
 use crate::global::GLOBALS;
+use crate::sound::{
+    LoopingSound, LoopingSoundTag, LoopingTrack, LoopingTrackTag, SoundChannel, SoundInstance,
+    SoundStream,
+};
 
 /// Every view's declared fields, for the layout checks.
 fn all_views() -> Vec<(&'static str, u32, &'static [FieldInfo])> {
@@ -28,6 +32,13 @@ fn all_views() -> Vec<(&'static str, u32, &'static [FieldInfo])> {
         v::<PlayerStats>(),
         v::<TeamStats>(),
         v::<DamageReport>(),
+        v::<LoopingSound>(),
+        v::<LoopingTrack>(),
+        v::<SoundInstance>(),
+        v::<LoopingSoundTag>(),
+        v::<LoopingTrackTag>(),
+        v::<SoundChannel>(),
+        v::<SoundStream>(),
     ]
 }
 

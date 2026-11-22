@@ -110,6 +110,9 @@ crate::layout! {
         /// Physics flags ([`physics_flags`]): the wake latch and its
         /// one-tick copy, the early-mover list, the component.
         PHYSICS_FLAGS physics_flags @ 0xc0: u8,
+        /// Full replication entity index, or all ones until attachment
+        /// (`0x000b7e78` initialises it, `0x0009dea0` attaches a unit).
+        ENTITY entity @ 0xd4: u32,
         /// Body vitality, 1.0 full. `object_get_health` (`0x002a1a20`)
         /// returns it, 0 instead while [`DEPLETED`] is set.
         HEALTH health @ 0xec: f32,
@@ -122,6 +125,11 @@ crate::layout! {
         NODES_SIZE nodes_size @ 0x114: u16,
         /// The node matrices' offset from the body (signed; world space).
         NODES_OFFSET nodes_offset @ 0x116: i16,
+        /// Region block reserved by object_new (docs/graphics/native-objects.md).
+        REGIONS_SIZE regions_size @ 0x118: u16,
+        /// Its first byte per region selects the live permutation, as the
+        /// marker lookup reads at 0x1d8faf (h1_hud_text/weapon/origin.rs).
+        REGIONS_OFFSET regions_offset @ 0x11a: i16,
         /// The attachments block's offset from the body (`0x000bef30`
         /// refreshes it).
         ATTACHMENTS_OFFSET attachments_offset @ 0x11e: i16,

@@ -16,16 +16,17 @@
 //!   (`bots_nav_auto`).
 //! - **The pace** is the match's ([`sim_bench::clock::Pace`]); unpaced by default.
 //! - **The metrics** come from read-only observers ([`SimMetrics`]): each
-//!   tick's player snapshot, the shots, the damage reports, the kills and
-//!   the end latch, into a [`sim_bench::metrics::Tally`].
+//!   tick's player snapshot and guest census ([`crate::sim_census`]), the
+//!   shots, the damage reports, the kills and the end latch, into a
+//!   [`sim_bench::metrics::Tally`].
 //! - **The RNG seed** is written once, before the match's
 //!   first tick ([`SimMetrics`]'s one writing hook).
 //! - **The end**: the game's end latch, the match's tick limit, its wall
 //!   limit or `match.stop` stop the boot loop ([`Sim::keep_running`]), and
 //!   [`Sim::finish`] writes the report to `H2_SIM_REPORT`.
 //!
-//! The agent gets `match.status`, `match.report` and `match.stop`
-//! ([`Sim::add_methods`]).
+//! The agent gets `match.status`, `match.report`, `match.stop` and
+//! `sim.guest_census` ([`Sim::add_methods`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -127,19 +128,26 @@ struct State {
     last_tick: Option<Instant>,
     dispatch_start: Option<runtime::DispatchCounts>,
     dispatch_end: Option<runtime::DispatchCounts>,
+    /// The running cost totals when counting began, for
+    /// `wall.bots_ms_per_tick`, `wall.phantom_*` and `flat.fixups_per_tick`.
+    costs_start: Option<Costs>,
     /// The initial RNG seed has been written for this match.
     set_up: bool,
+    /// The game options' spawn words have been written for this game.
+    spawn_seeded: bool,
     /// Weapon datums fired since the last tick.
     fired: Vec<u32>,
     notes: Vec<String>,
     /// A copy-on-write guest RAM base census at the match's end
     /// (`state.load` with `"cow": true`): pages written over the base.
     cow: Option<(u64, u64)>,
+    file_reads: vfs::GuestReadBytes,
 }
 
 struct Inner {
     path: PathBuf,
     hosted_map: std::sync::OnceLock<level_boot::Request>,
+    lobby: Arc<Mutex<hosted::LobbyState>>,
     matched: Match,
     report_path: Option<PathBuf>,
     frame: SimFrame,
@@ -224,6 +232,8 @@ pub fn tuning(p: &BotParams) -> bots::tuning::Tuning {
         grenades_per_minute: p.grenades_per_minute,
         awareness: p.awareness,
         aggression: p.aggression,
+        push_bias: 0.0,
+        twitchy: false,
         caution: p.caution,
         teamwork: p.teamwork,
         objective_focus: p.objective_focus,
@@ -248,25 +258,7 @@ pub fn tuning(p: &BotParams) -> bots::tuning::Tuning {
 
 /// What the brain is doing, as the report names it.
 pub fn doing_name(d: &bots::mind::Doing) -> &'static str {
-    use bots::mind::Doing;
-    match d {
-        Doing::Idle => "idle",
-        Doing::Fight(_) => "fight",
-        Doing::Chase(_) => "chase",
-        Doing::HoldAngle(_) => "hold_angle",
-        Doing::Roam => "roam",
-        Doing::Support(_) => "support",
-        Doing::Supply(_) => "supply",
-        Doing::Vantage(_) => "vantage",
-        Doing::Rearm(_) => "rearm",
-        Doing::Recover(_) => "recover",
-        Doing::Carry(_) => "carry",
-        Doing::Keep => "keep",
-        Doing::Play(_) => "play",
-        Doing::Mount(_) => "mount",
-        Doing::Drive(_) => "drive",
-        Doing::Ride(_) => "ride",
-    }
+    bots::stats::goal_name(*d)
 }
 
 /// One tick's telemetry snapshot as the tally takes it.
@@ -404,6 +396,7 @@ impl Sim {
         Sim(Arc::new(Inner {
             path,
             hosted_map: Default::default(),
+            lobby: Default::default(),
             matched,
             report_path,
             frame,
@@ -417,10 +410,13 @@ impl Sim {
                 last_tick: None,
                 dispatch_start: None,
                 dispatch_end: None,
+                costs_start: None,
                 set_up: false,
+                spawn_seeded: false,
                 fired: Vec::new(),
                 notes: Vec::new(),
                 cow: None,
+                file_reads: vfs::GuestReadBytes::default(),
             }),
             stop: AtomicBool::new(false),
             created: Instant::now(),
@@ -463,7 +459,9 @@ impl Sim {
     pub fn add_bots(&self) -> Result<()> {
         bots::phantom::global().set_playerless_host(true);
         for b in &self.0.matched.bots {
-            let brain = bots::Brain::new(skill(b.skill), b.seed).with_tuning(tuning(&b.params));
+            let brain = bots::Brain::new(skill(b.skill), b.seed)
+                .with_name_profile(&b.name)
+                .with_tuning(tuning(&b.params));
             let source = Metered {
                 seat: b.seat,
                 brain,
@@ -474,7 +472,6 @@ impl Sim {
             let id = bots::phantom::Identity {
                 xuid: live_proto::bots::local_xuid(u32::from(b.seat) + 1).0,
                 gamertag: b.name.clone(),
-                ..Default::default()
             };
             let handle =
                 bots::phantom::add(id, b.team, Box::new(source)).map_err(anyhow::Error::msg)?;
@@ -544,18 +541,55 @@ impl Sim {
         !inner.stop.load(Ordering::Acquire)
     }
 
+    /// Current bound players, sampled by the private Live training transport.
+    pub fn live_combat(&self) -> Vec<live_proto::game::SimCombatSample> {
+        let seats: Vec<_> = {
+            let s = self.0.lock();
+            if s.phase != Phase::Playing {
+                return Vec::new();
+            }
+            s.bindings.iter().filter_map(|(seat, &index)| {
+                let handle = bots::phantom::handle_of(*s.machines.get(seat)?)?;
+                Some((index, handle))
+            }).collect()
+        };
+        // The worker reads one completed decision per seat. It releases the
+        // tally first, since Metered can hold a brain while updating the tally.
+        seats.into_iter().filter_map(|(index, handle)| {
+            let stats = bots::phantom::global().combat_stats(handle)?;
+            combat_sample(index, &stats, crate::bot_accuracy::rows(handle))
+        }).collect()
+    }
+
     /// The report as it stands (`end`: the match's, else `Aborted`).
     pub fn report(&self) -> Report {
         let inner = &self.0;
-        let s = inner.lock();
-        build_report(inner, &s)
+        // Metered holds the pad source while recording to the sim tally.
+        // Release the tally before locking a source to read its diagnostics.
+        let (mut report, machines) = {
+            let state = inner.lock();
+            (build_report(inner, &state), state.machines.clone())
+        };
+        for player in &mut report.players {
+            let Some(handle) = player.seat
+                .and_then(|seat| machines.get(&seat).copied())
+                .and_then(bots::phantom::handle_of)
+            else {
+                continue;
+            };
+            player.weapon_accuracy = crate::bot_accuracy::rows(handle);
+            player.combat = bots::phantom::global().combat_stats(handle)
+                .map(|stats| json!(stats));
+        }
+        report
     }
 
     /// The guest RAM census at the match's end, for the report's `wall`
     /// block: `(written, total)` pages over a shared copy-on-write base.
-    pub fn note_cow(&self, written: Option<(u64, u64)>) {
+    pub fn note_memory(&self, written: Option<(u64, u64)>, reads: vfs::GuestReadBytes) {
         let mut s = self.0.lock();
         s.cow = written;
+        s.file_reads = reads;
     }
 
     /// The report at the end of the run, written to `H2_SIM_REPORT` when
@@ -600,8 +634,8 @@ impl Sim {
         Ok(r)
     }
 
-    /// `match.status`, `match.report` and `match.stop` (docs/runtime/agent-api.md,
-    /// "Sim matches").
+    /// `match.status`, `match.report`, `match.stop` and `sim.guest_census`
+    /// (docs/runtime/agent-api.md, "Sim matches").
     pub fn add_methods(&self, agent: &agent::Agent) {
         let me = self.clone();
         agent.add_method(method::MATCH_STATUS, Access::Read, move |_| Ok(me.status()));
@@ -618,11 +652,26 @@ impl Sim {
             inner.end(&mut s, End::Stopped);
             Ok(json!({ "stopping": true, "end": s.end.map(End::name), "already_over": already.is_some() }))
         });
+        let me = self.clone();
+        agent.add_game_method(
+            crate::sim_census::METHOD,
+            Access::Read,
+            move |params, ctx| {
+                let now = ctx.read_guest(|m| crate::sim_census::read(m)).ok();
+                let so_far = me.0.lock().tally.census();
+                crate::sim_census::answer(&params, now, so_far)
+            },
+        );
     }
 
     /// What `match.status` answers.
     pub fn status(&self) -> Value {
         let inner = &self.0;
+        let lobby = inner
+            .lobby
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .status();
         let s = inner.lock();
         let sp = speed(inner, &s);
         let f = inner.frame.stats();
@@ -632,6 +681,7 @@ impl Sim {
             "game_type": inner.matched.game_type.name(),
             "bots": inner.matched.bots.len(),
             "phase": s.phase.name(),
+            "lobby": lobby,
             "bound_seats": s.bindings,
             "ticks": s.tally.ticks(),
             "max_ticks": inner.matched.config.max_ticks,
@@ -648,6 +698,41 @@ impl Sim {
             "end": s.end.map(End::name),
         })
     }
+}
+
+fn combat_sample(
+    index: u8, stats: &bots::stats::CombatStats, mut accuracy: Vec<live_proto::game::WeaponAccuracy>,
+) -> Option<live_proto::game::SimCombatSample> {
+    use live_proto::game::{MAX_LIVE_ACCURACY_ROWS, SimCombatCounters, SimCombatSample, SimDecision};
+    let tick = stats.tick?;
+    if accuracy.len() > MAX_LIVE_ACCURACY_ROWS {
+        accuracy.sort_by_key(|row| std::cmp::Reverse(row.shots));
+        accuracy.truncate(MAX_LIVE_ACCURACY_ROWS);
+    }
+    Some(SimCombatSample {
+        index,
+        tick,
+        combat: SimCombatCounters {
+            melee_presses: stats.melee_presses,
+            grenade_requests: stats.grenade_requests,
+            grenades_used: stats.grenades_used,
+            switch_presses: stats.switch_presses,
+            weapon_switches: stats.weapon_switches,
+            reactions: stats.reactions,
+            total_reaction_ticks: stats.total_reaction_ticks,
+            think_ticks: stats.think_ticks,
+            total_think_ms: stats.total_think_ms,
+            goal: stats.goal.map(str::to_owned),
+            weapon: stats.weapon,
+            weapon_role: stats.weapon_role.map(str::to_owned),
+            range: stats.range,
+            think_ms: stats.think_ms,
+            last_decisions: stats.last_decisions.back().into_iter().map(|decision| SimDecision {
+                tick: decision.tick, action: decision.action.to_owned(),
+            }).collect(),
+        },
+        weapon_accuracy: accuracy,
+    })
 }
 
 fn build_report(inner: &Inner, s: &State) -> Report {
@@ -699,6 +784,8 @@ fn build_report(inner: &Inner, s: &State) -> Report {
         "missing"
     };
     let mut memory = crate::host_mem::usage();
+    memory.mapped_read_bytes = s.file_reads.mapped;
+    memory.copied_read_bytes = s.file_reads.copied;
     memory.guest_written_pages = s.cow.map(|(w, _)| w);
     memory.guest_pages = s.cow.map(|(_, t)| t);
     let mut report = s.tally.report(Finish {
@@ -720,7 +807,35 @@ fn build_report(inner: &Inner, s: &State) -> Report {
                 .collect(),
         );
     }
+    if let Some(start) = s.costs_start {
+        let now = costs_now();
+        report.set_costs(
+            now.bots.saturating_sub(start.bots),
+            start.fixups.zip(now.fixups).map(|(a, b)| b.saturating_sub(a)),
+        );
+        report.set_phantom_costs(now.phantom.since(start.phantom));
+    }
     report
+}
+
+/// The process's running cost totals, for the report's costs.
+#[derive(Clone, Copy)]
+struct Costs {
+    /// Bot game-thread nanoseconds ([`bots::think::game_thread_ns`]).
+    bots: u64,
+    /// Flat window fixups (`None` with no window).
+    fixups: Option<u64>,
+    /// The phantoms' action build ([`crate::bot_glue::phantom_build_costs`]).
+    phantom: sim_bench::metrics::PhantomCosts,
+}
+
+fn costs_now() -> Costs {
+    let w = runtime::window_process_stats();
+    Costs {
+        bots: bots::think::game_thread_ns(),
+        fixups: (w.windows > 0).then_some(w.fixups),
+        phantom: crate::bot_glue::phantom_build_costs(),
+    }
 }
 
 /// A bot's brain, counting per game tick what only it knows: stuck, its
@@ -736,6 +851,10 @@ pub struct Metered {
 }
 
 impl PadSource for Metered {
+    fn combat_stats(&self) -> Option<&bots::stats::CombatStats> {
+        Some(self.brain.combat_stats())
+    }
+
     fn brain_view(&self) -> Option<bots::BrainView> {
         Some(self.brain.view())
     }
@@ -835,9 +954,9 @@ impl hooks::Feature for SimMetrics {
     }
 
     fn build(&self, b: &mut hooks::Builder) -> std::result::Result<(), hooks::BuildError> {
-        let lobby = hosted::install(b, Arc::clone(&self.sim))?;
+        hosted::install(b, Arc::clone(&self.sim))?;
         let policy = match self.film_playback {
-            Some(playback) => film_state::policy(&self.sim, lobby, playback),
+            Some(playback) => film_state::policy(&self.sim, playback),
             None => hooks::SnapshotPolicy::Stateless,
         };
         b.snapshot(policy);
@@ -866,6 +985,7 @@ impl hooks::Feature for SimMetrics {
             s.first_tick = None;
             s.dispatch_start = None;
             s.dispatch_end = None;
+            s.costs_start = None;
             eprintln!("sim: match started at tick {tick}");
         });
         let me = Arc::clone(&self.sim);
@@ -917,6 +1037,8 @@ impl hooks::Feature for SimMetrics {
                 Some((base, hash)) => (Some(base), Some(hash)),
                 None => (None, None),
             };
+            // A handful of reads (docs/runtime/sim.md §6, `guest_census`).
+            let census = crate::sim_census::read(&*g);
             drop(g);
             let mut s = me.lock();
             match snap {
@@ -935,16 +1057,22 @@ impl hooks::Feature for SimMetrics {
                         s.first_tick = Some(Instant::now());
                         s.tally.start(sample.tick);
                         s.dispatch_start = o.runtime.dispatch_counts();
+                        s.costs_start = Some(costs_now());
                     }
                     let resets = s.tally.resets();
                     let tick = sample.tick;
                     s.tally
                         .tick_hashed(sample, state_hash::gameplay(&snap, rng), arena);
-                    let mut components = state_hash::components(&snap, rng);
-                    components.extend(arena_blocks.iter().enumerate().map(|(i, h)| {
-                        (format!("{}{i:02}", sim_bench::diff::ARENA_PREFIX), format!("{h:016x}"))
-                    }));
-                    s.tally.tick_components(tick, arena_base, components);
+                    s.tally.tick_census(tick, &census);
+                    // `components = false` in the match file leaves the
+                    // breakdown out (a timing arm); the digests above stay.
+                    if me.matched.config.components != Some(false) {
+                        let mut components = state_hash::components(&snap, rng);
+                        components.extend(arena_blocks.iter().enumerate().map(|(i, h)| {
+                            (format!("{}{i:02}", sim_bench::diff::ARENA_PREFIX), format!("{h:016x}"))
+                        }));
+                        s.tally.tick_components(tick, arena_base, components);
+                    }
                     if arena_buffer.is_some() && arena.is_none() {
                         const NOTE: &str = "arena hash unavailable on one or more sampled ticks";
                         if !s.notes.iter().any(|n| n == NOTE) {
@@ -953,9 +1081,11 @@ impl hooks::Feature for SimMetrics {
                     }
                     s.dispatch_end = o.runtime.dispatch_counts();
                     if s.tally.resets() != resets {
-                        // A tick jump resets the match timer and seed.
+                        // A tick jump resets the match timer, shot IDs and seed.
+                        crate::bot_accuracy::reset();
                         s.first_tick = Some(Instant::now());
                         s.dispatch_start = s.dispatch_end;
+                        s.costs_start = Some(costs_now());
                         s.set_up = false;
                         eprintln!(
                             "sim: the tick jumped to {tick} (a snapshot load); counting from here"
@@ -1082,6 +1212,31 @@ impl hooks::Feature for SimMetrics {
                     );
                 }
             });
+        // Spawn locations do not draw from the shared seed: `0x14ef00` mixes
+        // the player index and spawn count with two words of the game
+        // options (`[[0x4e6948]+0x10]`, `+0x14`), which the session fills
+        // anew for each game. Written from the match seed ahead of a game's
+        // first spawn, two runs of one match start their players in the
+        // same places.
+        let me = Arc::clone(&self.sim);
+        b.raw()
+            .observe_before(&points::GAME_ACTIVATE, "sim: new game", move |_| {
+                me.lock().spawn_seeded = false;
+            });
+        let me = Arc::clone(&self.sim);
+        b.raw()
+            .before(&points::PLAYER_SPAWN, "sim: spawn words", move |c| {
+                if std::mem::replace(&mut me.lock().spawn_seeded, true) {
+                    return Ok(Flow::Continue);
+                }
+                let rt = Arc::clone(c.ctx.runtime());
+                let mut g = rt.memory();
+                if let Err(e) = write_spawn_words(&mut g, me.matched.config.seed) {
+                    eprintln!("sim: the spawn words were not written: {e:?}");
+                }
+                Ok(Flow::Continue)
+            })
+            .first();
         let me = Arc::clone(&self.sim);
         b.raw()
             .before(&points::GAME_TICK, "sim: match seed", move |c| {
@@ -1121,6 +1276,24 @@ pub fn seed32(seed: u64) -> u32 {
     ((seed >> 32) as u32) ^ (seed as u32)
 }
 
+/// The game options' two spawn words (`[[0x4e6948]+0x10]`, `+0x14`) for a
+/// match seed: the 32-bit seed, then the same of the seed's SplitMix64 step.
+pub fn spawn_words(seed: u64) -> [u32; 2] {
+    let mut x = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    [seed32(seed), seed32(x ^ (x >> 31))]
+}
+
+const GAME_OPTIONS_SPAWN_WORDS: u32 = 0x10;
+
+fn write_spawn_words(g: &mut runtime::Guest, seed: u64) -> std::result::Result<(), runtime::GuestFault> {
+    let globals = g.u32(telemetry::layout::GAME_GLOBALS_PTR)?;
+    let [a, b] = spawn_words(seed);
+    g.set_u32(globals + GAME_OPTIONS_SPAWN_WORDS, a)?;
+    g.set_u32(globals + GAME_OPTIONS_SPAWN_WORDS + 4, b)
+}
+
 fn write_seed(g: &mut runtime::Guest, seed: u64) -> std::result::Result<u32, runtime::GuestFault> {
     let p = g.u32(RANDOM_SEED_PTR)?;
     let v = seed32(seed);
@@ -1131,6 +1304,40 @@ fn write_seed(g: &mut runtime::Guest, seed: u64) -> std::result::Result<u32, run
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spawn_words_follow_the_match_seed_alone() {
+        assert_eq!(spawn_words(1), spawn_words(1));
+        assert_eq!(spawn_words(1)[0], seed32(1));
+        assert_ne!(spawn_words(1), spawn_words(2));
+        assert_ne!(spawn_words(7)[0], spawn_words(7)[1]);
+    }
+
+    #[test]
+    fn live_combat_uses_the_last_completed_decision_and_bounds_the_preview() {
+        use bots::stats::{CombatStats, Decision};
+        use live_proto::game::{MAX_LIVE_ACCURACY_ROWS, WeaponAccuracy};
+        let mut stats = CombatStats::default();
+        assert!(combat_sample(2, &stats, vec![]).is_none());
+        stats.tick = Some(10);
+        stats.weapon_switches = 2;
+        stats.range = Some(6.0);
+        stats.last_decisions.extend([
+            Decision { tick: 8, action: "fight" }, Decision { tick: 10, action: "switch" },
+        ]);
+        let rows = (0..=MAX_LIVE_ACCURACY_ROWS).map(|i| WeaponAccuracy {
+            weapon: "spray".into(), damage_code: (i % 64) as u8, range: "close".into(),
+            hits: 0, shots: 1 + i as u64, accuracy: 0.0,
+        }).collect();
+        let sample = combat_sample(2, &stats, rows).unwrap();
+        assert_eq!((sample.index, sample.tick), (2, 10));
+        assert_eq!(sample.combat.weapon_switches, 2);
+        assert_eq!(sample.combat.last_decisions.len(), 1);
+        assert_eq!(sample.combat.last_decisions[0].action, "switch");
+        assert_eq!(sample.weapon_accuracy.len(), MAX_LIVE_ACCURACY_ROWS);
+        assert!(sample.weapon_accuracy.iter().all(|r| r.shots > 1));
+        assert!(sample.valid());
+    }
 
     #[test]
     fn tunings_carry_every_number() {

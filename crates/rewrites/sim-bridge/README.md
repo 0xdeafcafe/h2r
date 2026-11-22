@@ -4,7 +4,7 @@ The guest side of the native simulation: adapters from hook entries to the sim c
 
 ## Where it sits
 
-`rewrites` domain. Depends on `hooks`, `runtime`, `engine` and `lifted`. Used by `game`, `agent` and `boot`.
+`rewrites` domain. Depends on `hooks`, `runtime`, `engine`, `lifted` and `sim-ext`. Used by `game`, `agent` and `boot`.
 
 ## Layout
 
@@ -12,6 +12,7 @@ The guest side of the native simulation: adapters from hook entries to the sim c
 - `src/sim_native.rs`, `src/sim_objects.rs`, `src/sim_physics.rs`: the installs per subsystem.
 - `src/sim_frame.rs`: the tick driver.
 - `src/shadow.rs`: shadow checks against the guest.
+- `src/sim_ext.rs`: the `SimExt` records moved with checkpoint save, revert and full restore, and its snapshot section.
 - `src/sim_observer.rs`, `src/sim_static_light.rs`, `src/sim_submix.rs`: smaller ports.
 
 ## Tests

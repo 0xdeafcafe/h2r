@@ -493,3 +493,75 @@ fn a_packet_refuses_a_stencil_reference_it_cannot_carry() {
     assert_eq!(renderer.draws(&ctx.device, &ctx.queue, &arena, &s).err(), Some(Refused::State));
     assert!(renderer.prepare(&ctx.device, &s).is_ok(), "the isolated pass still takes it");
 }
+
+/// One textured packet of `texture`, staged in a fresh arena as frame `n`.
+fn textured_packet(
+    ctx: &gfx::GfxContext,
+    renderer: &mut ParticleRenderer,
+    n: u64,
+    texture: TextureBinding,
+) {
+    renderer.begin_frame(n);
+    let arena = gfx::ring::UploadPool::default().begin();
+    let s = textured(snapshot(1, 4., [1.; 4]), texture);
+    renderer.draws(&ctx.device, &ctx.queue, &arena, &s).unwrap();
+}
+
+#[test]
+fn a_texture_bound_every_frame_keeps_one_group() {
+    let Ok(ctx) = gfx::GfxContext::headless() else {
+        eprintln!("no GPU adapter; skipped");
+        return;
+    };
+    let mut renderer = ParticleRenderer::new(1);
+    let texture = solid_texture(&ctx, &mut renderer, [255, 128, 0, 255]);
+    for n in 1..=30 {
+        textured_packet(&ctx, &mut renderer, n, texture.clone());
+    }
+    assert_eq!(
+        renderer.created().texture_groups,
+        1,
+        "made once, hit on every later frame"
+    );
+    assert_eq!(
+        renderer.held(),
+        Held {
+            groups: 1,
+            textures: 1,
+            texture_bytes: 4 * 4 * 4
+        }
+    );
+}
+
+#[test]
+fn a_new_texture_every_frame_is_released_once_its_frames_pass() {
+    // A frame-buffer copy or depth alias is a new texture each frame. Its
+    // group must go with the frames that drew with it, not stay until a
+    // count fills (256 groups of 2560x1920 copies is over 5 GB).
+    let Ok(ctx) = gfx::GfxContext::headless() else {
+        eprintln!("no GPU adapter; skipped");
+        return;
+    };
+    let keep = native_render::texture_groups::KEEP_FRAMES;
+    let mut renderer = ParticleRenderer::new(1);
+    for n in 1..=40 {
+        let fresh = solid_texture(&ctx, &mut renderer, [n as u8, 0, 0, 255]);
+        textured_packet(&ctx, &mut renderer, n, fresh);
+        let held = renderer.held();
+        let live = (keep + 1).min(n) as usize;
+        assert_eq!(
+            held.groups, live,
+            "frame {n}: only the last {live} frames' groups"
+        );
+        assert_eq!(held.textures, live);
+        assert_eq!(held.texture_bytes, live as u64 * 4 * 4 * 4);
+    }
+    assert_eq!(
+        renderer.created().texture_groups,
+        40,
+        "one group per new texture"
+    );
+    // Draws that bind none of them: every group ages out and frees its texture.
+    renderer.begin_frame(40 + keep + 1);
+    assert_eq!(renderer.held(), Held::default());
+}

@@ -1,7 +1,7 @@
-//! Read-only `havok.*` methods (docs/runtime/agent-api.md, "havok"):
+//! `havok.*` methods (docs/runtime/agent-api.md, "havok"):
 //! bodies, contact constraints and collision-agent caches, with
-//! bodies named by the agent ids of their objects. Game methods, answered
-//! at a tick boundary.
+//! bodies named by the agent ids of their objects, and `havok.pair.set`,
+//! which overwrites one pair's word. Game methods, answered at a tick boundary.
 
 use std::collections::HashMap;
 
@@ -17,11 +17,19 @@ use crate::{Access, Agent};
 
 mod agents;
 
-/// Registers `havok.*` on `agent`.
+/// Registers the read-only `havok.*` methods on `agent`.
 pub fn install(agent: &Agent) {
     agent.add_game_method(method::AGENTS, Access::Read, agents::agents_method);
     agent.add_game_method(method::BODIES, Access::Read, bodies_method);
     agent.add_game_method(method::CONTACTS, Access::Read, contacts_method);
+}
+
+/// Registers `havok.pair.set`, using sim's host-write checks.
+pub fn install_writes(agent: &Agent, sim: &crate::sim::SimHandle) {
+    let sim = sim.clone();
+    agent.add_game_method(method::PAIR_SET, Access::Claimed, move |v, ctx| {
+        agents::pair_set_method(v, ctx, &sim)
+    });
 }
 
 fn params<T: serde::de::DeserializeOwned>(v: Value) -> Result<T, RpcError> {
@@ -502,6 +510,8 @@ mod tests {
     fn the_methods_are_registered() {
         let a = Agent::new();
         install(&a);
+        let sim = crate::sim::install(&a, Box::new(crate::sim::bots::NotLanded), None);
+        install_writes(&a, &sim);
         let (tx, rx) = std::sync::mpsc::sync_channel(8);
         let conn = a.connect(tx);
         a.submit(

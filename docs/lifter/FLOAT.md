@@ -27,7 +27,7 @@ The measured mix, compare idioms, x87 stack depths and the reachability bounds a
 - Every `fldcw` is in CRT code. Game code reaches it through `_control87`, which the platform bootstrap calls first, with precision 53, round-to-nearest and all exceptions masked: control word `0x027f`. `CpuAbi::xbox_thread()` starts threads at the same word (`crates/runtime/runtime/src/cpu.rs`).
 - Precision 64 and the directed rounding modes appear only inside CRT `floor`, `ceil` and the transcendental dispatchers.
 - Float-to-int is `_ftol2`: `fistp` at round-to-nearest, then a correction toward zero.
-- Every MXCSR write sets the exception masks or clears the sticky flags. None sets FTZ, DAZ or a rounding mode, so SSE runs with the thread default `0x1f80` and denormals are live.
+- The claimed MXCSR writes mask exceptions, clear sticky flags or enable flush-to-zero. Two sites enable FTZ while preserving the other bits. The control word at a particular call depends on the executed path. [Status-instruction census](../engine/collision-queries.md#status-instruction-census)
 
 ## 2. Design
 

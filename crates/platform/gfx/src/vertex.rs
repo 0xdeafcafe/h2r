@@ -540,17 +540,20 @@ impl VertexLayout {
 pub struct OwnedVertexBufferLayout {
     /// Bytes between vertices.
     pub stride: u64,
+    /// Advance this buffer once per vertex or instance. Older cached keys use vertices.
+    #[serde(default)]
+    pub step_mode: wgpu::VertexStepMode,
     /// Attributes read from this buffer.
     pub attributes: Vec<wgpu::VertexAttribute>,
 }
 
 #[cfg(feature = "gpu")]
 impl OwnedVertexBufferLayout {
-    /// Borrows as a wgpu layout (per-vertex stepping).
+    /// Borrows as a wgpu layout.
     pub fn as_wgpu(&self) -> wgpu::VertexBufferLayout<'_> {
         wgpu::VertexBufferLayout {
             array_stride: self.stride,
-            step_mode: wgpu::VertexStepMode::Vertex,
+            step_mode: self.step_mode,
             attributes: &self.attributes,
         }
     }

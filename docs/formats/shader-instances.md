@@ -323,6 +323,13 @@ implementation of its `spas`, because the caller picks one per draw. Each
 the three inputs the root supplies. Pass your own inputs to re-resolve
 variants and engine constants.
 
+`h2 shader --all` also walks every compiled template's LODs, including
+templates with no shader instance. Per map it counts model and BSP depth
+writers (layer 10), depth-map RGB receivers (layer 11) and pairs present
+at the same LOD. The last column requires both writers and the receiver
+at every LOD. The distinct-name summary counts a name if any copy meets
+that column's condition. [Shadow census](../graphics/notes/e3-lighting.md).
+
 ## Disc results
 
 `h2 shader --all all` on the retail disc (all 30 maps, cache build

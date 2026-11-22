@@ -227,6 +227,15 @@ export function weaponLabel(weapon: string | null | undefined): string {
  *  map, and nothing rescales them, however far away the camera is. */
 export const MODEL_SCALE = 1;
 
+export const CAPSULE_HEIGHT = 0.86;
+
+/** Feet to head and world scale, with or without biped art. The stand-in
+ *  has a fixed physical size on every map and in every view. */
+export function bipedSize(modelHeight: number | undefined, actor: boolean): { height: number; scale: number } {
+  const scale = modelHeight === undefined && actor ? 0.8 : MODEL_SCALE;
+  return { height: (modelHeight ?? CAPSULE_HEIGHT) * scale, scale };
+}
+
 // ---- finding the contract's nodes ----
 
 interface Named<T> { name: string; children: T[] }

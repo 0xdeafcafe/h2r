@@ -29,6 +29,7 @@ pub(super) struct Capture {
     result_order: Vec<u32>,
     host_machine: Option<String>,
     live_service: bool,
+    pub(super) archived_on_live: bool,
     lease_mode: Option<Mode>,
 }
 
@@ -49,6 +50,7 @@ impl Capture {
         });
         Self {
             descriptor: MatchHeader::default(),
+            archived_on_live: false,
             map_digest: None,
             lease_mode,
             variant_name: String::new(),
@@ -129,6 +131,7 @@ impl Capture {
                 &mut self.descriptor.variant_blob,
                 1,
             )?;
+            self.archived_on_live = s.is_some() && self.live.upgrade().is_some_and(|h| h.archived_session());
             self.descriptor.match_start_tick = Some(tick);
             self.descriptor.ticks_per_second = Some(info.tick_rate.max(1));
 
@@ -500,7 +503,15 @@ fn prepare_map(
         "invalid film map name"
     );
     let path = match cache_path {
-        Some(path) => crate::map_slots::slot_file(path).context("invalid film cache path")?,
+        Some(path) => {
+            let mounted = crate::map_slots::recorded_file(path).context("invalid film cache path")?;
+            if mounted == path && vfs.lock().unwrap_or_else(|e| e.into_inner()).query_path(&mounted).is_err() {
+                // A recorded title-content slot can be verified before the title links T:.
+                crate::map_slots::slot_file(path).unwrap_or(mounted)
+            } else {
+                mounted
+            }
+        }
         None => vfs.lock().unwrap_or_else(|e| e.into_inner())
             .content_map_path(name)
             .unwrap_or_else(|| format!("{}\\maps\\{name}.map", vfs::CDROM_DEVICE)),

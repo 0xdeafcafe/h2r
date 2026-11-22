@@ -14,9 +14,7 @@
 //! guest's bilinear filter) and after as `font-hd-before.png` and
 //! `font-hd-after.png`, composited over a dark blue.
 
-mod common;
-
-use common::*;
+use crate::common::*;
 use d3d::scaled::ScaledBackend;
 use d3d::{Backend, Device, GfxBackend, GuestMemory, SparseMemory, UploadPolicy};
 use gfx::GfxContext;

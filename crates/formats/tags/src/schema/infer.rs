@@ -508,7 +508,15 @@ pub fn apply_engine_refs(schema: &mut Schema) {
 /// stride and its datum at `+4` (`0x000a743b`..`0x000a7473`, through the
 /// object type table `0x00468630`; checked in
 /// `h1convert/tests/h2_scenario.rs`).
-pub const ENGINE_STRIDES: &[(FourCC, u32, u32, &[u32])] = &[(FourCC(*b"scnr"), 0x58, 0x28, &[0])];
+///
+/// The scenery placement stride comes from the same object type table
+/// (`scenario_edit::layout::BLOCKS`). HaloScript syntax slots are 0x14
+/// bytes each (`hs::Scenario::decode`, docs/formats/haloscript.md).
+pub const ENGINE_STRIDES: &[(FourCC, u32, u32, &[u32])] = &[
+    (FourCC(*b"scnr"), 0x50, 0x5c, &[]),
+    (FourCC(*b"scnr"), 0x58, 0x28, &[0]),
+    (FourCC(*b"scnr"), 0x238, 0x14, &[]),
+];
 
 /// Applies [`ENGINE_STRIDES`] to an inferred schema.
 pub fn apply_engine_strides(schema: &mut Schema) {
@@ -518,6 +526,12 @@ pub fn apply_engine_strides(schema: &mut Schema) {
         };
         if let Some(Field::Block(child)) = root.fields.get_mut(&offset) {
             child.size = size;
+            if group == FourCC(*b"scnr") && matches!(offset, 0x50 | 0x238) {
+                // These records contain inline placement data or script
+                // node data, with no relocations. The inferred short
+                // scenery records can pick up parts of positions as words.
+                child.fields.clear();
+            }
             for &r in refs {
                 child.fields.insert(r, Field::TagRef);
             }

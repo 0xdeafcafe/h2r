@@ -119,7 +119,10 @@ export function Row(props: { r: BoardRow; place: number; you: boolean }) {
 
 /** The panel above the table: what the playlist is, and what its board
  *  adds up to so far. */
-export function PlaylistHead(props: { info: PlaylistInfo | undefined; id: string; rows: BoardRow[]; capped: boolean }) {
+export function PlaylistHead(props: {
+  info: PlaylistInfo | undefined; id: string; rows: BoardRow[]; capped: boolean;
+  hasMapPack?: boolean | null;
+}) {
   const info = () => props.info;
   const name = () => info()?.name ?? playlistName(props.id);
   const stats = () => boardStats(props.rows);
@@ -137,6 +140,13 @@ export function PlaylistHead(props: { info: PlaylistInfo | undefined; id: string
           <p class="s-rank-rules">
             <Show when={info()?.size}><span>{info()!.size}</span></Show>
             <Show when={info()?.games.length}><span>{info()!.games.join(", ")}</span></Show>
+          </p>
+        </Show>
+        <Show when={info()?.hasMapPackMaps}>
+          <p class="s-rank-rules">
+            <Show when={props.hasMapPack === false} fallback="Map Pack maps are available when every console in the match has the pack.">
+              The console you last searched from is missing the Map Pack. You can still match on Halo 2 disc maps.
+            </Show>
           </p>
         </Show>
         <dl class="s-rank-stats">
@@ -198,6 +208,12 @@ export default function RanksPage() {
   const [rows, setRows] = createSignal<BoardRow[]>([]);
   const [status, setStatus] = createSignal<Status>("loading");
   const [page, setPage] = createSignal(0);
+  const [hasMapPack, setHasMapPack] = createSignal<boolean | null>(null);
+  poll(async (signal) => {
+    if (!me() || !live.wellKnown()) return;
+    const info = await live.api().matchmakingAvailability(signal).catch(() => null);
+    if (!signal.aborted) setHasMapPack(typeof info?.has_map_pack === "boolean" ? info.has_map_pack : null);
+  }, () => { me()?.xuid; live.wellKnown()?.id; setHasMapPack(null); }, MENU_REFRESH_MS);
 
   // The served hopper file's playlists and each board's player count,
   // read slowly: every count is a whole board. Until the file reads (or on
@@ -297,7 +313,7 @@ export default function RanksPage() {
           <PeopleFinder />
         </aside>
         <div class="s-right">
-          <PlaylistHead info={info()} id={playlist()} rows={rows()} capped={capped()} />
+          <PlaylistHead info={info()} id={playlist()} rows={rows()} capped={capped()} hasMapPack={hasMapPack()} />
           <Show when={status() === "ok" && me()} keyed>
             {(m) => (
               <Show

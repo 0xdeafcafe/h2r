@@ -78,11 +78,46 @@ fn draw(c: Block, mesh: u32, pretransformed: bool) -> ResolvedDraw {
             max_z: 1.0,
         },
         textures: [None; 4],
+        retail_constants: None,
+        ui_fit: None,
         glyph_cache: 0,
         clip: None,
         clip_rects: Vec::new(),
         hw: d3d::hw::HwState::default(),
     }
+}
+
+#[test]
+fn reference_uses_retail_lens_and_scissors_while_display_uses_its_own() {
+    let retail = world_block(&camera(3.0, 0.2));
+    let mut display = draw(retail, 3, false);
+    let guest = display.shader.constants.clone();
+    let factor = 0.5;
+    assert!(d3d::device::widen_projection_rows(
+        &mut Arc::make_mut(&mut display.shader.constants)[CAM..CAM+4], factor));
+    display.retail_constants = Some((guest.clone(), factor));
+    let scissor = d3d::PixelRect { x: 48, y: 20, width: 128, height: 44 };
+    let first = display.for_copy(d3d::TargetCopy::Reference);
+    assert!(Arc::ptr_eq(&first.shader.constants, &guest));
+    assert_eq!(first.display_rect(scissor), scissor);
+    let second = display.for_copy(d3d::TargetCopy::Display);
+    assert_eq!(second.shader.constants[CAM], guest[CAM].map(|v| v * factor));
+    assert_eq!(second.display_rect(scissor), d3d::PixelRect { x: 184, width: 64, ..scissor });
+    assert_eq!(second.display_rect(d3d::PixelRect { x: 0, width: 640, ..scissor }).width, 640);
+
+    let mut menu = draw(block(), 4, true);
+    menu.ui_fit = d3d::backend::UiFit::about((1920,1080), [320.,240.]);
+    assert_eq!(menu.for_reference().display_rect(scissor), scissor);
+    assert_eq!(menu.display_rect(scissor), d3d::PixelRect { x: 116, width: 96, ..scissor });
+
+    let mut probe = draw(block(), 4, true);
+    probe.hw.zpass_count_enable = true;
+    probe.ui_fit = Some(d3d::backend::UiFit::projected_sprite(1.0, -64.0));
+    assert!(probe.for_copy(d3d::TargetCopy::Reference).ui_fit.is_none());
+    let shown = probe.for_copy(d3d::TargetCopy::Display);
+    assert_eq!(shown.ui_fit, probe.ui_fit);
+    assert_eq!(shown.display_rect(scissor), scissor);
+
 }
 
 /// A camera at `x` along the world's x axis, turned `yaw`.
@@ -525,6 +560,167 @@ fn cuts_and_teleports_snap() {
     assert!(r.b.stats().lock().unwrap().snapped >= 2);
 }
 
+/// A section of a skinned model: the camera at c0, `nodes` from c4 up,
+/// and its own vertices (`bytes`), with the counts every section here
+/// shares.
+fn section(cam: &Mat4, bytes: u8, nodes: &[Similarity]) -> ResolvedDraw {
+    let mut c = world_block(cam);
+    for (i, n) in nodes.iter().enumerate() {
+        write(&mut c, NODE + 3 * i, Layout::Rows, 3, &n.to_mat4());
+    }
+    let mut d = draw(c, 55, false);
+    d.streams[0].data = vec![bytes; 48].into();
+    d
+}
+
+/// Two frames of `draws` with the camera still, then the in-between frame
+/// half way: its draws and the counters.
+fn half_way(
+    a: Draws<'_>,
+    b: Draws<'_>,
+) -> (Vec<(u32, ResolvedDraw)>, d3d::interp::InterpStats) {
+    let mut r = rig(60);
+    let s = scene(camera(0.0, 0.0));
+    r.at(F);
+    frame_with(&mut r, &s, a);
+    r.at(2 * F);
+    frame_with(&mut r, &s, b);
+    let before = r.calls();
+    r.b.idle_at(2 * F + F / 2);
+    (r.draws_since(before), *r.b.stats().lock().unwrap())
+}
+
+/// The bug behind a menu's player model coming apart: two sections of one
+/// model with the same counts, strides and textures, their palettes in the
+/// same registers and their first node on the same root bone, swap places
+/// in the draw order. They are not one draw: each blends with its own
+/// bones, never the other section's.
+#[test]
+fn two_sections_with_the_same_counts_blend_with_their_own_bones() {
+    let root = |turn: f64| node(0.0, turn);
+    let (d, st) = half_way(
+        &|cam| {
+            let mut v = level(cam);
+            v.push(section(cam, 1, &[root(0.0)]));
+            v.push(section(cam, 2, &[root(1.0)]));
+            v
+        },
+        &|cam| {
+            let mut v = level(cam);
+            v.push(section(cam, 2, &[root(1.2)]));
+            v.push(section(cam, 1, &[root(0.2)]));
+            v
+        },
+    );
+    // Level draws 0..3, then the two sections in frame b's order.
+    assert!(
+        close(&node_of(&d[3].1), &root(1.0).lerp(&root(1.2), 0.5).to_mat4()),
+        "section 2 blends from its own bone: {:?}",
+        node_of(&d[3].1)
+    );
+    assert!(
+        close(&node_of(&d[4].1), &root(0.0).lerp(&root(0.2), 0.5).to_mat4()),
+        "section 1 blends from its own bone: {:?}",
+        node_of(&d[4].1)
+    );
+    assert_eq!(st.held_draws, 0, "{st}");
+}
+
+/// A draw that pairs with one whose node registers are not its own is not
+/// blended register by register: it draws at its own matrices, counted.
+#[test]
+fn a_draw_whose_node_registers_change_is_drawn_at_its_own() {
+    let (d, st) = half_way(
+        &|cam| {
+            let mut v = level(cam);
+            v.push(section(cam, 1, &[node(0.0, 0.0)]));
+            v
+        },
+        &|cam| {
+            let mut v = level(cam);
+            v.push(section(cam, 1, &[node(1.0, 0.3), node(1.5, 0.1)]));
+            v
+        },
+    );
+    assert!(
+        close(&node_of(&d[3].1), &node(1.0, 0.3).to_mat4()),
+        "{:?}",
+        node_of(&d[3].1)
+    );
+    // Once at the guest's present, once half way.
+    assert_eq!((st.held_draws, st.held_draws_palette), (2, 2), "{st}");
+    assert!(st.to_string().contains("held draws 2 (palette 2)"), "{st}");
+}
+
+/// A first-person weapon's own projection at c0 and its nodes in the world
+/// at c4.
+fn weapon_with_nodes(pose: Mat4, n: Similarity) -> ResolvedDraw {
+    let mut c = block();
+    write(&mut c, CAM, Layout::Rows, 4, &pose);
+    write(&mut c, NODE, Layout::Rows, 3, &n.to_mat4());
+    draw(c, 901, false)
+}
+
+fn first_person(x: f64) -> Mat4 {
+    let fp = build::projection(1.0, 16.0 / 9.0, 0.01, 10.0);
+    mul(
+        &fp,
+        &Similarity {
+            rotation: build::axis([0.0, 1.0, 0.0], x),
+            scale: 1.0,
+            translation: [0.1, -0.1 + x, -0.3],
+        }
+        .to_mat4(),
+    )
+}
+
+/// The first-person arms and weapon: their nodes blend with their own
+/// projection, not left at frame N under frame N-1's view.
+#[test]
+fn first_person_nodes_blend_with_their_projection() {
+    let (d, _) = half_way(
+        &|cam| {
+            let mut v = level(cam);
+            v.push(weapon_with_nodes(first_person(0.0), node(0.0, 0.0)));
+            v
+        },
+        &|cam| {
+            let mut v = level(cam);
+            v.push(weapon_with_nodes(first_person(0.02), node(0.4, 0.2)));
+            v
+        },
+    );
+    assert!(close(&mat(&d[3].1, CAM, Layout::Rows), &first_person(0.01)));
+    assert!(
+        close(
+            &node_of(&d[3].1),
+            &node(0.0, 0.0).lerp(&node(0.4, 0.2), 0.5).to_mat4()
+        ),
+        "{:?}",
+        node_of(&d[3].1)
+    );
+}
+
+/// When the weapon's projection snaps (a weapon switch), its nodes stay
+/// with it at frame N.
+#[test]
+fn a_snapped_projection_keeps_its_nodes() {
+    let (d, _) = half_way(
+        &|cam| {
+            let mut v = level(cam);
+            v.push(weapon_with_nodes(first_person(0.0), node(0.0, 0.0)));
+            v
+        },
+        &|cam| {
+            let mut v = level(cam);
+            v.push(weapon_with_nodes(first_person(3.0), node(0.4, 0.2)));
+            v
+        },
+    );
+    assert!(close(&mat(&d[3].1, CAM, Layout::Rows), &first_person(3.0)));
+    assert!(close(&node_of(&d[3].1), &node(0.4, 0.2).to_mat4()));
+}
+
 #[test]
 fn a_gap_shows_the_frame_as_drawn() {
     let mut r = rig(60);
@@ -543,10 +739,10 @@ fn no_replay_while_a_pixel_count_is_open() {
     r.frame(2 * F, &scene(camera(1.0, 0.0)));
     r.b.clear_pixel_count().unwrap();
     let before = r.calls();
-    assert!(r.b.idle_at(2 * F + F / 2).is_some(), "asks again soon");
+    assert_eq!(r.b.idle_at(2 * F + F / 2), None, "wait for the count report");
     assert_eq!(r.calls(), before, "nothing drawn into the open count");
     r.b.report_pixel_count().unwrap();
-    r.b.idle_at(2 * F + F / 2 + 1_000_000);
+    r.b.idle_at(2 * F + F / 2);
     assert_eq!(r.presents_since(before).len(), 1);
 }
 
@@ -1551,6 +1747,32 @@ fn run_program(c: &Block, v: [f32; 3]) -> ([f32; 4], [f32; 4]) {
     let mut c = *c;
     let out = shaders::vsh::interp::run(&p, &inputs, &mut c);
     (out.get(OutReg::Pos), out.get(OutReg::T(0)))
+}
+
+#[test]
+fn hor_plus_clip_derived_lookup_samples_the_display_texel_drawn_by_the_world() {
+    // Synthetic program forwards its homogeneous clip position to the
+    // projective texture coordinates before its own viewport epilogue.
+    let mut retail = world_block(&build::projection(1.2, 4.0 / 3.0, 0.06, 1024.0));
+    retail[LOOKUP] = [0.5, 0.0, 0.0, 0.5];
+    retail[LOOKUP + 1] = [0.0, -0.5, 0.0, 0.5];
+    for (w, h) in [(1920, 1080), (3440, 1440), (5120, 1440)] {
+        let mut view = retail;
+        let factor = (4.0 / 3.0) / (w as f32 / h as f32);
+        assert!(d3d::device::widen_projection_rows(&mut view[CAM..CAM + 4], factor));
+        for point in [[0.3, 0.4, -5.0], [-4.1, 1.0, -4.0]] {
+            let (original, _) = run_program(&retail, point);
+            let (window, tex) = run_program(&view, point);
+            let same = |a: f32, b: f32| assert!((a - b).abs() < 0.001, "{a} != {b}");
+            same(window[0], 320.0 + (original[0] - 320.0) * factor);
+            same(window[1], original[1]);
+            if point[0] < 0.0 {
+                assert!(original[0] < 0.0 && window[0] > 0.0, "inside the wider lens");
+            }
+            same(tex[0] / tex[3] * w as f32, window[0] * (w as f32 / 640.0));
+            same(tex[1] / tex[3] * h as f32, window[1] * (h as f32 / 480.0));
+        }
+    }
 }
 
 #[test]

@@ -46,6 +46,7 @@ use crate::gamepad::{
     PollingParameters, Rumble, State,
 };
 use crate::host::{ConfigError, ConvertConfig, HostPad, HostPadId};
+use crate::lightbar::{Lightbars, Rgb};
 use crate::report::{HostReportHandle, PadInfo};
 
 /// One pad as a [`PadGate`] sees it: which backend reported it, and its
@@ -123,6 +124,7 @@ struct Device {
     published: State,
     polling: PollingParameters,
     rumble_sent: Rumble,
+    lightbar_sent: Option<Rgb>,
     pending: Vec<FeedbackRequest>,
     /// `get_state` returned this device's state since the last `sync`.
     read: AtomicBool,
@@ -172,9 +174,10 @@ pub struct InputManager {
     changes_ins: u32,
     changes_rem: u32,
     completions: Vec<Completion>,
-    gate: Option<Box<dyn PadGate>>,
+    gates: Vec<Box<dyn PadGate>>,
     /// The host pads as of the last sync ([`Self::host_report`]).
     report: HostReportHandle,
+    lightbars: Lightbars,
 }
 
 impl InputManager {
@@ -188,8 +191,9 @@ impl InputManager {
             changes_ins: 0,
             changes_rem: 0,
             completions: Vec::new(),
-            gate: None,
+            gates: Vec::new(),
             report: HostReportHandle::default(),
+            lightbars: Lightbars::default(),
         })
     }
 
@@ -212,7 +216,13 @@ impl InputManager {
 
     /// Puts `gate` between the backends and the ports (replacing any).
     pub fn set_gate(&mut self, gate: Box<dyn PadGate>) {
-        self.gate = Some(gate);
+        self.gates.clear();
+        self.add_gate(gate);
+    }
+
+    /// Appends a filter after the installed gates. Earlier gates retain priority.
+    pub fn add_gate(&mut self, gate: Box<dyn PadGate>) {
+        self.gates.push(gate);
     }
 
     /// The host pads as the backends and the gate saw them at each sync
@@ -221,9 +231,20 @@ impl InputManager {
         self.report.clone()
     }
 
+    pub fn lightbars(&self) -> Lightbars {
+        self.lightbars.clone()
+    }
+
     /// Pull host state and update the ports: removals, insertions, auto-poll
     /// publishing and rumble forwarding.
     pub fn sync(&mut self) {
+        // No source and no pad: nothing can arrive, leave, publish or
+        // complete, so only the report's count moves. A playerless host
+        // (a sim, whose bots are network peers) syncs after every slice.
+        if self.is_idle() {
+            self.report.set(Vec::new(), Vec::new());
+            return;
+        }
         // Tell backends which states the guest has read, before they report
         // new ones: a consumable input (mouse motion) is spent only once seen.
         for port in &self.ports {
@@ -257,12 +278,14 @@ impl InputManager {
                 }
             })
             .collect();
-        if let Some(gate) = &mut self.gate {
+        if !self.gates.is_empty() {
             let mut gated: Vec<GatedPad> = order
                 .iter()
                 .filter_map(|k| seen.remove(k).map(|pad| GatedPad { key: *k, pad }))
                 .collect();
-            gate.filter(&mut gated);
+            for gate in &mut self.gates {
+                gate.filter(&mut gated);
+            }
             seen.extend(gated.into_iter().map(|g| (g.key, g.pad)));
         }
 
@@ -274,6 +297,9 @@ impl InputManager {
                 .is_some_and(|d| !seen.contains_key(&d.host))
             {
                 let mut d = port.device.take().expect("checked");
+                if d.lightbar_sent.is_some() {
+                    self.backends[d.host.0].set_lightbar(d.host.1, None);
+                }
                 d.complete_all(ERROR_DEVICE_NOT_CONNECTED, &mut self.completions);
                 self.changes_rem |= 1 << i;
             }
@@ -310,6 +336,7 @@ impl InputManager {
                 published: State::default(),
                 polling: PollingParameters::default(),
                 rumble_sent: Rumble::default(),
+                lightbar_sent: None,
                 pending: Vec::new(),
                 read: AtomicBool::new(false),
             });
@@ -333,10 +360,17 @@ impl InputManager {
             }
             d.complete_all(ERROR_SUCCESS, &mut self.completions);
         }
-        // Tell each backend where its pads went.
-        for (i, port) in self.ports.iter().enumerate() {
-            if let Some(d) = &port.device {
-                self.backends[d.host.0].placed(d.host.1, i);
+        // Route output by the same port assignment the guest's input uses.
+        let lightbars = self.lightbars.state().desired();
+        for (i, port) in self.ports.iter_mut().enumerate() {
+            if let Some(d) = &mut port.device {
+                let backend = &mut self.backends[d.host.0];
+                backend.placed(d.host.1, i);
+                let rgb = lightbars[i];
+                if d.lightbar_sent != rgb {
+                    backend.set_lightbar(d.host.1, rgb);
+                    d.lightbar_sent = rgb;
+                }
                 if let Some(info) = infos.iter_mut().find(|p| p.key == (d.host.0, d.host.1.0)) {
                     info.port = Some(i);
                 }
@@ -344,6 +378,25 @@ impl InputManager {
         }
         let devices = self.backends.iter().flat_map(|b| b.devices()).collect();
         self.report.set(devices, infos);
+    }
+
+    /// No backend, no gate and no device on any port: a [`sync`](Self::sync)
+    /// would change nothing but the report's count.
+    pub fn is_idle(&self) -> bool {
+        self.backends.is_empty()
+            && self.gates.is_empty()
+            && self.ports.iter().all(|p| p.device.is_none())
+    }
+
+    /// Return each pad to its original colour before ending the game.
+    pub fn restore_lightbars(&mut self) {
+        for port in &mut self.ports {
+            if let Some(d) = &mut port.device
+                && d.lightbar_sent.take().is_some()
+            {
+                self.backends[d.host.0].set_lightbar(d.host.1, None);
+            }
+        }
     }
 
     /// Device generation and output capability for each occupied guest port.
@@ -590,6 +643,33 @@ mod tests {
                 g.pad.state.buttons.set(HostButton::South, false);
             }
         }
+    }
+
+    /// A manager with no source stays idle: each sync only counts, and the
+    /// ports, changes and report read as a full sync leaves them. A source
+    /// added later is pulled at the next sync.
+    #[test]
+    fn a_manager_with_no_source_only_counts_its_syncs() {
+        let mut m = InputManager::new(ConvertConfig::default()).unwrap();
+        for n in 1..=3 {
+            assert!(m.is_idle());
+            m.sync();
+            let r = m.host_report().get();
+            assert_eq!((r.syncs, r.devices.len(), r.pads.len()), (n, 0, 0));
+        }
+        assert_eq!(m.connected_mask(), 0);
+        assert_eq!(m.device_changes(), (0, 0));
+        assert!(m.take_completions().is_empty());
+
+        let sh = Arc::new(Mutex::new(Shared::default()));
+        sh.lock().unwrap().pads = vec![pad(10, false)];
+        m.add_backend(Box::new(Mock(sh.clone())));
+        assert!(!m.is_idle());
+        m.sync();
+        assert_eq!(m.connected_mask(), 1);
+        assert_eq!(m.device_changes(), (1, 0));
+        let r = m.host_report().get();
+        assert_eq!((r.syncs, r.pads.len()), (4, 1));
     }
 
     #[test]

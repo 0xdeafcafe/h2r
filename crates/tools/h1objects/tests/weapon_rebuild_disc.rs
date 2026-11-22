@@ -454,11 +454,11 @@ fn every_weapon_equipment_and_projectile_rebuilds() {
                         assert_eq!(int(m, "rounds_reloaded"), i64::from(h.rounds_reloaded));
                         assert_eq!(float(m, "reload_time"), h.reload_time);
                         // The reserve cap (+0xc): without it no reserve.
-                        let Some(Val::Bytes(c)) = m.at(arsenal::MAGAZINE_RESERVE_MAXIMUM) else {
+                        let Some(c) = m.bytes(arsenal::MAGAZINE_RESERVE_MAXIMUM, 4) else {
                             panic!("{name}: magazine +0xc")
                         };
                         assert_eq!(
-                            u16_at(c, 0),
+                            u16_at(&c, 0),
                             arsenal::reserve_maximum(
                                 h.rounds_total_maximum,
                                 h.rounds_loaded_maximum
@@ -477,8 +477,8 @@ fn every_weapon_equipment_and_projectile_rebuilds() {
                         "{name}: a trigger per weapon with barrels"
                     );
                     for t in triggers {
-                        let word = |k: usize| match t.at(&format!("unknown_{:x}", 4 * k)) {
-                            Some(Val::Bytes(b)) => u32_at(b, 0),
+                        let word = |k: usize| match t.bytes(&format!("@{:#x}", 4 * k), 4) {
+                            Some(b) => u32_at(&b, 0),
                             _ => 0,
                         };
                         let primary = word(2) as i16;
@@ -663,7 +663,7 @@ fn every_weapon_equipment_and_projectile_rebuilds() {
     if only.is_none() {
         assert!(maps >= 20, "the ten levels and the multiplayer maps");
         assert!(
-            counts.get("eqip powerup 2").is_some() && counts.get("eqip powerup 3").is_some(),
+            counts.contains_key("eqip powerup 2") && counts.contains_key("eqip powerup 3"),
             "over shield and camouflage rebuilt"
         );
     }
@@ -1065,7 +1065,7 @@ fn a50_marine_flashlight_is_a_scaled_rifle_attachment() {
     };
     let Some(function) = functions
         .iter()
-        .find(|f| f.at("string_4") == Some(&Val::text("integrated_light_power")))
+        .find(|f| f.at("import_name") == Some(&Val::text("integrated_light_power")))
     else {
         panic!("missing integrated light function");
     };

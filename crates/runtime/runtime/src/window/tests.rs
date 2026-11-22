@@ -9,7 +9,7 @@ use crate::{CopyKind, Dispatch, Guest, Runtime};
 #[test]
 fn alias_tracks_canonical_after_cow_copy() {
     const LEN: usize = 1 << 20;
-    let mut ram = Ram::zeroed_with(LEN, true);
+    let mut ram = Ram::zeroed_with(LEN, true, false);
     let w = Window::new().expect("a window on this host");
     assert!(os::can_alias(&ram, w.host_page()), "an aliasable backing");
     let at = w.base();
@@ -263,7 +263,7 @@ fn flat_module_registered_later_adopts_flat_ram() {
 /// `Ram::make_aliasable` keeps every byte, zero pages included.
 #[test]
 fn make_aliasable_keeps_the_bytes() {
-    let mut ram = Ram::zeroed_with(RAM_SIZE, false);
+    let mut ram = Ram::zeroed_with(RAM_SIZE, false, false);
     ram[5] = 1;
     ram[RAM_SIZE - 1] = 2;
     ram[0x12345] = 3;

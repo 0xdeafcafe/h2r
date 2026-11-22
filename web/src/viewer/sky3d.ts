@@ -137,6 +137,8 @@ export function skyUrl(mapUrl: string, glb: string): string {
 export class SkyDome {
   readonly group = new THREE.Group();
   private radius = 1;
+  private reveal = 1;
+  private colours: Array<{ material: THREE.MeshBasicMaterial; base: THREE.Color }> = [];
 
   constructor() {
     this.group.name = "sky";
@@ -186,6 +188,7 @@ export class SkyDome {
       }
       src.dispose();
       mesh.material = m;
+      this.colours.push({ material: m, base: m.color.clone() });
       mesh.frustumCulled = false;
       mesh.castShadow = mesh.receiveShadow = false;
       mesh.userData.noAo = true;
@@ -196,6 +199,13 @@ export class SkyDome {
     meshes.sort((a, b) => b.size - a.size).forEach(({ mesh }, k) => { mesh.renderOrder = -1000 + k; });
     this.group.add(gltf.scene);
     return meshes.length > 0;
+  }
+
+  /** Dim every layer from its original tint, including textured layers. */
+  setReveal(k: number) {
+    if (k === this.reveal) return;
+    this.reveal = k;
+    for (const { material, base } of this.colours) material.color.copy(base).multiplyScalar(k);
   }
 
   /** Puts the sky around the camera, inside its far plane. */
@@ -213,6 +223,7 @@ export class SkyDome {
       m.map?.dispose();
       m.dispose();
     });
+    this.colours = [];
     this.group.removeFromParent();
   }
 }

@@ -84,7 +84,7 @@ describe("icons", () => {
   test("every source is the project's own committed art", () => {
     for (const path of Object.values(SOURCES)) {
       expect(existsSync(join(ROOT, path))).toBe(true);
-      expect(path).toMatch(/^(art\/app-icon|platform\/(ios|tvos)\/.*Assets\.xcassets|crates\/app-icon\/assets|web\/src\/dash\/fonts)\//);
+      expect(path).toMatch(/^(art\/app-icon|platform\/(ios|tvos)\/.*Assets\.xcassets|crates\/apps\/app-icon\/assets|web\/src\/dash\/fonts)\//);
     }
   });
 

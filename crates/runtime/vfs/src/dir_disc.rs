@@ -138,11 +138,16 @@ impl Backend for DirDiscBackend {
             Some((opened, file, _)) if *opened == key => file.try_clone()?,
             _ => File::open(&self.entry(path)?.host)?,
         };
-        Ok(Some(crate::FilmMapSource::region(file, 0)))
+        Ok(Some(if self.mmap {
+            crate::FilmMapSource::immutable_region(file, 0, self.entry(path)?.size)
+        } else {
+            crate::FilmMapSource::region(file, 0)
+        }))
     }
     fn host_file(&mut self, path: &str) -> Option<HostFile> {
         let e = self.entry(path).ok().filter(|e| !e.is_dir)?;
         Some(HostFile {
+            generation: None,
             path: e.host.clone(),
             offset: 0,
             len: e.size,

@@ -1,17 +1,15 @@
-//! DualSense HID reports for the mute button, its LED and the speaker path.
+//! PlayStation HID reports for lightbars and the DualSense audio controls.
 //!
 //! GameController.framework has no element for the DualSense mute button and
 //! no way to light its LED (`GCDualSenseGamepad` exposes the touchpad and the
 //! adaptive triggers only), so both go through the raw HID reports. This
 //! module is the byte-level half: parse an input report, keep the mute
-//! toggle, and build the output report. Opening the HID device (IOKit or
+//! toggle, and build the output reports. Opening the HID device (IOKit or
 //! hidapi in shared mode) is the host's business; see
 //! `docs/audio/playstation-audio.md`.
 //!
-//! Layouts follow the Linux `hid-playstation` driver
-//! (`struct dualsense_input_report`, `struct dualsense_output_report_common`)
-//! and SDL's `SDL_hidapi_ps5.c`; offsets here are within the whole report,
-//! report ID at byte 0. The DualShock 4 has no mute button or LED.
+//! Layouts follow Linux's `hid-playstation` and `hid-sony` drivers and SDL's
+//! `SDL_hidapi_ps4.c` and `SDL_hidapi_ps5.c`. Report IDs occupy byte 0.
 
 /// Sony's USB vendor ID.
 pub const SONY_VID: u16 = 0x054c;
@@ -49,6 +47,14 @@ const BT_OUTPUT_TAG: u8 = 0x10;
 /// The byte hashed in front of a Bluetooth output report.
 const BT_CRC_SEED: u8 = 0xa2;
 
+const DS4_USB_OUTPUT_ID: u8 = 0x05;
+const DS4_USB_OUTPUT_LEN: usize = 32;
+const DS4_BT_OUTPUT_ID: u8 = 0x11;
+/// Bluetooth hardware-control bits indicating HID data and CRC32.
+const DS4_BT_HID_AND_CRC: u8 = 0xc0;
+const DS4_FLAG0_LIGHTBAR: u8 = 1 << 1;
+const DS4_LIGHTBAR_RGB: usize = 5;
+
 // Offsets within `dualsense_output_report_common`.
 const VALID_FLAG0: usize = 0;
 const VALID_FLAG1: usize = 1;
@@ -57,11 +63,13 @@ const AUDIO_CONTROL: usize = 7;
 const MUTE_BUTTON_LED: usize = 8;
 const POWER_SAVE_CONTROL: usize = 9;
 const AUDIO_CONTROL2: usize = 37;
+const LIGHTBAR_RGB: usize = 44;
 
 const FLAG0_SPEAKER_VOLUME: u8 = 1 << 5;
 const FLAG0_AUDIO_CONTROL: u8 = 1 << 7;
 const FLAG1_MIC_MUTE_LED: u8 = 1 << 0;
 const FLAG1_POWER_SAVE: u8 = 1 << 1;
+const FLAG1_LIGHTBAR: u8 = 1 << 2;
 const FLAG1_AUDIO_CONTROL2: u8 = 1 << 7;
 const POWER_SAVE_MIC_MUTE: u8 = 1 << 4;
 /// Output path select, bits 5:4 of `audio_control`. 3 mutes the headphone
@@ -72,7 +80,7 @@ const SPEAKER_VOLUME_MAX: u8 = 0x64;
 /// Speaker preamp gain +6 dB (bits 2:0 of `audio_control2`), as Linux sets.
 const SPEAKER_PREAMP: u8 = 2;
 
-/// Where the common output block starts.
+/// Where the common output block starts on both controllers.
 fn common_offset(t: Transport) -> usize {
     match t {
         Transport::Usb => 1,
@@ -141,7 +149,7 @@ impl MicMute {
 
 /// What one output report sets. Fields left `None` are untouched: their
 /// valid-flag bits stay clear, so the controller keeps its own state
-/// (rumble, lightbar and player LEDs are never touched here).
+/// (rumble and the separate player LEDs are always left alone).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OutputRequest {
     /// The mute LED, and with it the hardware mic mute (`Some(On)` or
@@ -151,6 +159,8 @@ pub struct OutputRequest {
     /// built-in speaker at full volume; `Some(false)` goes back to the
     /// headphone jack. Without this the firmware sends audio to the jack.
     pub speaker: Option<bool>,
+    /// The lightbar's red, green and blue intensities.
+    pub lightbar: Option<[u8; 3]>,
 }
 
 /// Builds a DualSense output report. `seq` is the Bluetooth sequence number
@@ -188,12 +198,46 @@ pub fn output_report(t: Transport, req: OutputRequest, seq: u8) -> Vec<u8> {
             r[c + AUDIO_CONTROL2] = SPEAKER_PREAMP;
         }
     }
+    if let Some(rgb) = req.lightbar {
+        r[c + VALID_FLAG1] |= FLAG1_LIGHTBAR;
+        let rgb_offset = c + LIGHTBAR_RGB;
+        r[rgb_offset..rgb_offset + rgb.len()].copy_from_slice(&rgb);
+    }
     if t == Transport::Bluetooth {
-        let n = BT_OUTPUT_LEN - 4;
-        let crc = crc32(&[&[BT_CRC_SEED], &r[..n]]);
-        r[n..].copy_from_slice(&crc.to_le_bytes());
+        append_bluetooth_crc(&mut r);
     }
     r
+}
+
+/// Builds a DualShock 4 output report with just the lightbar colour enabled.
+pub fn ds4_lightbar_report(t: Transport, rgb: [u8; 3]) -> Vec<u8> {
+    let mut r = match t {
+        Transport::Usb => {
+            let mut r = vec![0u8; DS4_USB_OUTPUT_LEN];
+            r[0] = DS4_USB_OUTPUT_ID;
+            r
+        }
+        Transport::Bluetooth => {
+            let mut r = vec![0u8; BT_OUTPUT_LEN];
+            r[0] = DS4_BT_OUTPUT_ID;
+            r[1] = DS4_BT_HID_AND_CRC;
+            r
+        }
+    };
+    let c = common_offset(t);
+    r[c + VALID_FLAG0] = DS4_FLAG0_LIGHTBAR;
+    let rgb_offset = c + DS4_LIGHTBAR_RGB;
+    r[rgb_offset..rgb_offset + rgb.len()].copy_from_slice(&rgb);
+    if t == Transport::Bluetooth {
+        append_bluetooth_crc(&mut r);
+    }
+    r
+}
+
+fn append_bluetooth_crc(r: &mut [u8]) {
+    let crc_offset = r.len() - 4;
+    let crc = crc32(&[&[BT_CRC_SEED], &r[..crc_offset]]);
+    r[crc_offset..].copy_from_slice(&crc.to_le_bytes());
 }
 
 /// CRC-32 (IEEE, reflected, as zlib and Linux `~crc32_le(~0, ..)`) over the
@@ -264,7 +308,7 @@ mod tests {
             Transport::Usb,
             OutputRequest {
                 mute_led: Some(MuteLed::On),
-                speaker: None,
+                ..OutputRequest::default()
             },
             0,
         );
@@ -278,7 +322,7 @@ mod tests {
             Transport::Usb,
             OutputRequest {
                 mute_led: Some(MuteLed::Off),
-                speaker: None,
+                ..OutputRequest::default()
             },
             0,
         );
@@ -291,8 +335,8 @@ mod tests {
         let r = output_report(
             Transport::Usb,
             OutputRequest {
-                mute_led: None,
                 speaker: Some(true),
+                ..OutputRequest::default()
             },
             0,
         );
@@ -304,8 +348,8 @@ mod tests {
         let jack = output_report(
             Transport::Usb,
             OutputRequest {
-                mute_led: None,
                 speaker: Some(false),
+                ..OutputRequest::default()
             },
             0,
         );
@@ -316,7 +360,7 @@ mod tests {
     fn bluetooth_report_has_header_and_crc() {
         let req = OutputRequest {
             mute_led: Some(MuteLed::Pulse),
-            speaker: None,
+            ..OutputRequest::default()
         };
         let r = output_report(Transport::Bluetooth, req, 0x15);
         assert_eq!(r.len(), 78);
@@ -327,5 +371,55 @@ mod tests {
         // Same body, different sequence: different CRC.
         let r2 = output_report(Transport::Bluetooth, req, 0x16);
         assert_ne!(r[74..], r2[74..]);
+    }
+
+    #[test]
+    fn dualsense_lightbar_reports_match_usb_and_bluetooth_layouts() {
+        let req = OutputRequest {
+            lightbar: Some([0x12, 0x34, 0xab]),
+            ..OutputRequest::default()
+        };
+        let mut usb = [0; 48];
+        usb[..3].copy_from_slice(&[0x02, 0, 0x04]);
+        usb[45..].copy_from_slice(&[0x12, 0x34, 0xab]);
+        assert_eq!(output_report(Transport::Usb, req, 0x15), usb);
+
+        let mut bt = [0; 78];
+        bt[..5].copy_from_slice(&[0x31, 0x50, 0x10, 0, 0x04]);
+        bt[47..50].copy_from_slice(&[0x12, 0x34, 0xab]);
+        bt[74..].copy_from_slice(&[0x5f, 0x7c, 0xdf, 0x42]);
+        assert_eq!(output_report(Transport::Bluetooth, req, 0x15), bt);
+    }
+
+    #[test]
+    fn dualsense_lightbar_combines_with_existing_outputs() {
+        let req = OutputRequest {
+            mute_led: Some(MuteLed::On),
+            speaker: Some(true),
+            lightbar: None,
+        };
+        let mut expected = output_report(Transport::Usb, req, 0);
+        // Black still sets the valid flag, leaving the audio controls in place.
+        expected[2] |= 0x04;
+        let combined = OutputRequest {
+            lightbar: Some([0, 0, 0]),
+            ..req
+        };
+        assert_eq!(output_report(Transport::Usb, combined, 0), expected);
+    }
+
+    #[test]
+    fn ds4_lightbar_reports_match_usb_and_bluetooth_layouts() {
+        let rgb = [0x12, 0x34, 0xab];
+        let mut usb = [0; 32];
+        usb[..2].copy_from_slice(&[0x05, 0x02]);
+        usb[6..9].copy_from_slice(&[0x12, 0x34, 0xab]);
+        assert_eq!(ds4_lightbar_report(Transport::Usb, rgb), usb);
+
+        let mut bt = [0; 78];
+        bt[..4].copy_from_slice(&[0x11, 0xc0, 0, 0x02]);
+        bt[8..11].copy_from_slice(&[0x12, 0x34, 0xab]);
+        bt[74..].copy_from_slice(&[0x55, 0x18, 0xbd, 0x6e]);
+        assert_eq!(ds4_lightbar_report(Transport::Bluetooth, rgb), bt);
     }
 }

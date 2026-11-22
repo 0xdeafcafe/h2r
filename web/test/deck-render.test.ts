@@ -13,6 +13,8 @@ let usage = "";
 let hosts = "";
 let events = "";
 let hub = "";
+let populatedHub = "";
+let quietHub = "";
 let signedOutHub = "";
 const ROUTER = `${import.meta.dir}/../node_modules/@solidjs/router/dist/index.jsx`;
 
@@ -40,7 +42,9 @@ beforeAll(async () => {
   const { default: UsagePage } = await import("../src/deck/UsagePage");
   const { default: HostsPage } = await import("../src/deck/HostsPage");
   const { default: EventLog } = await import("../src/dash/EventLog");
-  const { default: AdminPage } = await import("../src/deck/AdminPage");
+  const { default: AdminPage, AdminCards } = await import("../src/deck/AdminPage");
+  const { parseOverview } = await import("../src/admin/usage");
+  const { identity } = await import("../src/state/identity");
   const { adminState } = await import("../src/admin/state");
   const page = (url: string, component: typeof AdminPage) => renderToString(() => createComponent(Router, {
     url,
@@ -52,22 +56,68 @@ beforeAll(async () => {
   events = page("/dash/admin/events", EventLog);
   signedOutHub = page("/dash/admin", AdminPage);
   const admin = spyOn(adminState, "isMeAdmin").mockReturnValue(true);
-  try { hub = page("/dash/admin", AdminPage); } finally { admin.mockRestore(); }
+  const account = spyOn(identity, "me").mockReturnValue({
+    xuid: "0009000000000042", gamertag: "Operator", id: "acct:0009000000000042@live.example",
+    server: "https://live.example", server_id: "live.example", kid: "", key: "", x: "",
+  });
+  try {
+    hub = page("/dash/admin", AdminPage);
+  } finally {
+    admin.mockRestore();
+    account.mockRestore();
+  }
+  const lease = { id: "hl-1", provider: "fly", region: "lhr", class: "small", max_players: 8 } as const;
+  populatedHub = page("/dash/admin", () => createComponent(AdminCards, {
+    usage: parseOverview({
+      totals: { events: 301, up: { frames: 2048, content: 1024 } },
+      accounts_active: 17,
+    }),
+    hosts: {
+      running: [{ lease, state: "playing", players: 5, uptime_ms: 1200, cost_usd: 0 }],
+      recent: [{ lease, state: "failed", reason: "boot_timeout", cost_usd: 0 }],
+      month_to_date_usd: 0, budget_usd: null,
+    },
+    events: [{ position: 3, stream: "accounts", version: 3, type: "AccountCreated", at: "2026-11-20T10:30:00Z", data: { gamertag: "New Player" } }],
+  }));
+  quietHub = page("/dash/admin", () => createComponent(AdminCards, {
+    usage: null,
+    hosts: { running: [], recent: [], month_to_date_usd: 0, budget_usd: null },
+    events: [],
+  }));
 });
 
 describe("the Live admin hub", () => {
   test("links to the four tools when admin access is confirmed", () => {
     expect(hub).toContain("<h1>live admin</h1>");
     expect(hub).toMatch(/href="\/dash\/settings" class="dk-back[ "]/);
-    expect(hub).toMatch(/href="\/dash\/admin\/usage"[^>]*>usage<\/a>/);
-    expect(hub).toMatch(/href="\/dash\/admin\/hosts"[^>]*>hosts<\/a>/);
-    expect(hub).toMatch(/href="\/dash\/admin\/events"[^>]*>event log<\/a>/);
-    expect(hub).toMatch(/href="\/dash\/admin\/style"[^>]*>style<\/a>/);
+    for (const [path, title] of [["usage", "Usage"], ["hosts", "Hosts"], ["events", "Event Log"], ["style", "Style"]]) {
+      const link = hub.match(new RegExp(`<a[^>]*href="/dash/admin/${path}"[^>]*>.*?</a>`, "s"))?.[0];
+      expect(link).toContain(`<h2 id="dk-admin-${path}">${title}</h2>`);
+    }
+    expect(hub).toContain("Reading usage…");
+    expect(hub).toContain("Reading hosts…");
+    expect(hub).toContain("Reading events…");
+  });
+
+  test("uses the returned usage totals, host inventory and last event in the card summaries", () => {
+    for (const figure of ["17", "301", "3 KB", "1", "5"]) expect(populatedHub).toContain(`<dd>${figure}</dd>`);
+    expect(populatedHub).toContain("Recent failures");
+    expect(populatedHub).toContain("New Player signed up");
+    expect(populatedHub).toContain("2026-11-20 10:30 UTC");
+    expect(populatedHub).toContain("with sample data");
+  });
+
+  test("unavailable and empty cards retain their links", () => {
+    expect(quietHub).toContain("Usage is unavailable.");
+    expect(quietHub).toContain("No dedicated hosts are currently running.");
+    expect(quietHub).toContain("No visible events in the latest log window.");
+    expect(quietHub).toContain('href="/dash/admin/usage"');
+    expect(quietHub).toContain('href="/dash/admin/events"');
   });
 
   test("asks for sign-in when signed out", () => {
     expect(signedOutHub).toContain('href="/dash/signin"');
-    expect(signedOutHub).not.toContain('aria-label="Server tools"');
+    expect(signedOutHub).not.toContain("dk-admin-card");
   });
 
   test("each tool links back to the hub in its trail", () => {
@@ -98,9 +148,9 @@ describe("the dense dashboard style page", () => {
     expect(html).toMatch(/role="radio"[^>]*aria-checked="true"[^>]*>30 days/);
   });
 
-  test("six tiles, then every panel", () => {
+  test("six activity tiles and the shared usage panels", () => {
     expect(html.match(/class="dk-panel dk-tile/g)).toHaveLength(6);
-    for (const t of ["data uploaded", "stored", "events written", "messages sent", "players", "events by type", "top accounts"]) {
+    for (const t of ["recorded uploads", "stored", "events written", "messages sent", "players", "events by type", "top accounts"]) {
       expect(html).toContain(`<h2>${t}</h2>`);
     }
   });
@@ -138,9 +188,11 @@ describe("the dense dashboard style page", () => {
 });
 
 describe("the Live admin usage page", () => {
-  test("is on the dashboard side, under the server in the trail", () => {
+  test("keeps Server in the trail and goes back to Live Admin on a direct visit", () => {
     expect(sideOf("/dash/admin/usage")).toBe("dash");
-    expect(usage).toMatch(/href="\/dash\/server" class="dk-back[ "]/);
+    const trail = usage.match(/<nav class="dk-trail"[^>]*>(.*?)<\/nav>/s)?.[1];
+    expect(trail).toMatch(/href="\/dash\/server"[^>]*>server<\/a>.*href="\/dash\/admin"[^>]*>live admin<\/a>/s);
+    expect(usage).toMatch(/href="\/dash\/admin" class="dk-back[ "]/);
   });
 
   test("signed out it reads nothing and asks for an admin's sign-in, with no filters or numbers", () => {

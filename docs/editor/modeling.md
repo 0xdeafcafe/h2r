@@ -1,7 +1,20 @@
 # Modeling: mesh, BSP and texture editing in h2-editor
 
-Status: Design. Nothing here is built.
-Code: `crates/tools/mesh-edit` (the mesh kernel), `crates/tools/geometry-edit` (targets, session, save), `crates/tools/bitmap-edit` (the canvas), `crates/formats/collision-build` (the BSP compiler), a Modeling and a Textures tool in `crates/apps/studio`. Tests: each crate's own, on invented data.
+Status: Partly built. The mesh kernel (slice 1) and the in-place
+geometry path (slices 2 and 3, for clusters, instanced definitions and
+`mode` sections) are implemented; the Modeling window is a section of the
+map inspector with buttons, not yet the gizmo, overlays and keymap below.
+Grown writes, collision, markers, the Textures tool and the collision
+compiler are designs.
+Code: `crates/tools/mesh-edit`, `crates/tools/geometry-edit`,
+`crates/formats/tags/src/geometry_write.rs`,
+`crates/apps/studio/src/app/modeling.rs`,
+`crates/apps/studio/src/api/geometry.rs`,
+`crates/apps/studio/src/ui/modeling.rs`.
+Tests: `crates/tools/mesh-edit/tests`,
+`crates/tools/geometry-edit/src/{session,write}_tests.rs`,
+`crates/formats/tags/src/geometry_write_tests.rs`, the `geometry_*` and
+`doc_undo_on_the_map_*` tests in `crates/apps/studio/src/api/tests.rs`.
 Switch: none in the environment. Two session switches in the Edit menu: **Allow growing full blocks** (the existing one) and **Allow unverified geometry writes** (off by default).
 
 The editor gains two tools. **Modeling** edits the triangles the game
@@ -130,7 +143,9 @@ Halo's meshes are triangles, and loops and rings need quads, so
 
 ### Import and stable export
 
-`Mesh::from_triangles(positions, corners, triangles, groups)` welds
+#### Import and export
+
+`Mesh::from_triangles(Source)` in `crates/tools/mesh-edit/src/io.rs` welds
 source vertices that have bit-equal positions (and equal skin) into one
 `Vert` and keeps each source vertex's attributes on its corners.
 `Mesh::from_polygons` takes convex polygons (collision surfaces).
@@ -182,12 +197,13 @@ written and recomputed, the limits and the risks. In short:
 hands its changes to the map's save, so the dirty mark, **Save map
 as...** and packages count them. An edit falls into one of three write
 classes, named in the status bar and by `geometry.check`: **in place**
-(no count changes; fixed patches only, always allowed), **grown raw** (a
+(no count changes; fixed patches only; behind Allow unverified geometry
+writes until a game run has loaded one), **grown raw** (a
 new raw block; behind Allow unverified geometry writes until a game run
 has loaded one) and **grown blocks** (a tag block with more elements;
 behind Allow growing full blocks as well).
 
-## Texture editing (`crates/tools/bitmap-edit`)
+## Texture editing (proposed `bitmap-edit`)
 
 - **Decode.** `assets::bitmap::decode_image` gives every level, face and
   slice of an image as RGBA8. The canvas keeps the source's stored bytes
@@ -206,7 +222,7 @@ behind Allow growing full blocks as well).
   selection from a PNG, resampled (box down, bilinear up) when sizes
   differ; **Export** writes a PNG outside any Git checkout, as every
   render does ([agent-api.md](agent-api.md), "Documents").
-- **Encode** (`crates/platform/assets/src/encode.rs`, new). Linear and
+- **Encode** (an encoder in `assets`, new). Linear and
   swizzled packers for every format whose row is `Pixels` or
   `LayoutOnly` (`gfx::swizzle::swizzle`, rows padded to 64 bytes for
   linear images); DXT1, DXT3 and DXT5 by a deterministic block
@@ -273,7 +289,7 @@ behind Allow growing full blocks as well).
   shader use of the selected object when one is selected), the centre is
   the 2D canvas with zoom, pan, channel toggles, mip and face pickers,
   the inspector the tool's settings and the image's format and budget.
-- **Keys.** A table in `crates/apps/studio/src/ui/keymap.rs`, two
+- **Keys.** A table in the editor keymap, two
   presets. *Blender* (default in Edit mode): Tab mode; 1, 2, 3 vert,
   edge, face; G, R, S move, rotate, scale, then X, Y, Z to constrain; E
   extrude; Shift+D duplicate; X or Delete the delete menu; M merge;
@@ -290,7 +306,27 @@ behind Allow growing full blocks as well).
 
 ## Interfaces
 
-Every edit is an `Action` (`Action::Mesh(MeshOp)`,
+What is built (Code): every Modeling command is
+`Action::Model(ModelAction)` (`app/modeling.rs`): open, close, apply a
+list of `MeshOp`s as one undo step (or one merged step per `merge` key),
+seal, undo and redo. The provider `api/geometry.rs` answers
+`geometry.list {model?}`, `geometry.open`, `geometry.close`,
+`geometry.read`, `geometry.check`, `mesh.mode`, `mesh.select {ids, op |
+all | none | invert}`, `mesh.transform {translate | matrix, pivot?,
+merge?}`, `mesh.ops` and `mesh.apply`, each with a target id
+`kind:tag:index` (`cluster:e1000004:0`) or the target in edit mode.
+There is no `geometry` document: while a target is in edit mode the
+map's undo (`doc.undo {"doc":"map"}`, Cmd+Z) is the geometry session's,
+and the edits save with the map, counted in its dirty mark. After every
+command the session's writes go to the save
+(`scenario_edit::GeometryChanges`); with **Allow unverified geometry
+writes** off, or an edit that is not in place, the save is refused with
+the reason (`geometry.check`'s `save_refusal`) and writes nothing. The
+viewport redraws an open cluster, or each placement of an open
+definition, in the native world from `GeometrySession::previews`; a
+`mode` section has no live preview yet.
+
+The design the rest of this section describes: every edit is an `Action` (`Action::Mesh(MeshOp)`,
 `Action::Geometry(..)`, `Action::Bitmap(BitmapOp)`), dispatched by the
 window and performed by the API, so both make the same document
 ([agent-api.md](agent-api.md), "The command layer"). Two providers

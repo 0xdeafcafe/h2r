@@ -27,6 +27,16 @@ impl Reader for Fake {
     }
 }
 
+impl Agent {
+    /// Move one test connection's deferred deadline to the next boundary.
+    pub(crate) fn expire_deferred_for_test(&self, conn: ConnId) {
+        self.lock().deferred.iter_mut()
+            .find(|answer| answer.conn == conn)
+            .expect("a deferred answer")
+            .deadline = Instant::now();
+    }
+}
+
 fn obj(id: &str, kind: Kind, pos: [f64; 3], team: Option<i32>) -> Object {
     Object {
         id: id.into(),
@@ -684,6 +694,7 @@ fn methods_and_features_list() {
         method::ALL.len()
             + agent_proto::trace::method::ALL.len()
             + agent_proto::state::method::ALL.len()
+            + agent_proto::live::METHODS.len()
     );
     assert_eq!(next(&rx)["result"]["plan"][1], "agent: on");
 }
@@ -911,6 +922,61 @@ fn map_ticks_count_from_each_map_load() {
         ),
         (json!(1), json!(4))
     );
+}
+
+#[test]
+fn a_restore_counts_map_ticks_from_the_saved_full_start() {
+    let a = Agent::new();
+    let mut g = level();
+    for _ in 0..7 {
+        a.on_tick(&mut g);
+    }
+    a.game_started(24);
+    a.on_tick(&mut g);
+    let saved = a.save_state();
+    a.on_tick(&mut g);
+    a.load_state(&saved).unwrap();
+    assert_eq!(a.lock().at().map_ticks, 1);
+    assert_eq!(a.lock().at().activation, 0);
+
+    // Fresh-process restore reads exactly the same v2 field.
+    let fresh = Agent::new();
+    fresh.load_state(&saved).unwrap();
+    fresh.on_tick(&mut g);
+    assert_eq!(fresh.lock().at().map_ticks, 2);
+}
+
+#[test]
+fn only_the_requested_full_start_satisfies_a_reload_wait() {
+    let a = Agent::new();
+    let (c, rx) = client(&a);
+    let mut g = level();
+    a.game_started(10);
+    a.on_tick(&mut g);
+    let saved = a.save_state();
+    ask(
+        &a,
+        c,
+        1,
+        method::WAIT,
+        json!({"until": {"activation": 12, "map": g.status.map, "phase": "gameplay", "map_ticks": 1}}),
+    );
+    a.on_tick(&mut g);
+    // Both GAME_ACTIVATE during checkpoint reactivation and the revert
+    // return cut the epoch. Neither completed a new full game start.
+    a.live_cut();
+    a.live_cut();
+    a.on_tick(&mut g);
+    none(&rx);
+    a.load_state(&saved).unwrap();
+    a.game_started(13);
+    a.on_tick(&mut g);
+    none(&rx);
+    a.game_started(12);
+    a.on_tick(&mut g);
+    let at = next(&rx)["result"]["at"].clone();
+    assert_eq!(at["activation"], 12);
+    assert_eq!(at["map_ticks"], 1);
 }
 
 /// A snapshot loaded mid-cutscene still answers `cinematic`, and the
@@ -1467,4 +1533,184 @@ fn captures_are_refused_when_badly_asked_busy_or_without_frame_stats() {
         (v["id"].as_u64(), &v["error"]["code"]),
         (Some(8), &json!(code::SHUTDOWN))
     );
+}
+
+#[test]
+fn live_game_closes_menu_subscriber_and_refuses_a_new_stream() {
+    let agent = Agent::new();
+    // This synthetic reader has no guest. Without proof that the
+    // running match is local, a protected host refuses capture.
+    agent.set_live_session_probe(|_| true);
+    let mut game = level();
+    game.status.mode = Some("main_menu".into());
+    let (tx, output) = sync_channel(4);
+    let stream = agent.connect_socket(tx);
+    ask(&agent, stream, 1, agent_proto::live::SUBSCRIBE, json!({"layers": ["objects"]}));
+    agent.on_tick(&mut game);
+    let crate::server::Output::Upgrade { line, frames: _frames } = output.try_recv().unwrap() else {
+        panic!("menu subscription should open")
+    };
+    assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["result"]["stream"], stream);
+
+    let (tx, denied) = sync_channel(4);
+    let second = agent.connect_socket(tx);
+    ask(&agent, second, 2, agent_proto::live::SUBSCRIBE, json!({"layers": ["objects"]}));
+    let (control, replies) = client(&agent);
+    game.status.mode = Some("multiplayer".into());
+    agent.on_tick(&mut game);
+    let crate::server::Output::Line(line) = denied.try_recv().unwrap() else {
+        panic!("Live match must refuse the subscription")
+    };
+    assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["error"]["code"], code::UNAVAILABLE);
+    ask(&agent, control, 3, agent_proto::live::STATUS, json!({}));
+    agent.on_tick(&mut game);
+    assert_eq!(next(&replies)["result"]["streams"], json!([]));
+}
+
+#[test]
+fn a_connection_read_leaves_the_game_and_other_clients_running() {
+    let a = Agent::new();
+    let (caller, reply) = client(&a);
+    let (viewer, status) = client(&a);
+    let (begin, started) = sync_channel(1);
+    let (finish, done) = sync_channel(1);
+    let done = Mutex::new(done);
+    a.add_connection_read("fixture.verify", move |_| {
+        begin.send(()).unwrap();
+        done.lock().unwrap().recv_timeout(Duration::from_secs(5)).unwrap();
+        Ok(json!({"checked": 30}))
+    });
+    let worker = a.clone();
+    let req = thread::spawn(move || ask(&worker, caller, 1, "fixture.verify", json!({})));
+    started.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(a.connection_read_pending());
+    ask(&a, viewer, 2, method::STATUS, Value::Null);
+    a.between_slices(&mut Fake::default(), 8);
+    assert_eq!(next(&status)["result"]["at"]["present"], 8);
+    finish.send(()).unwrap();
+    req.join().unwrap();
+    assert_eq!(next(&reply)["result"]["checked"], 30);
+    assert!(!a.connection_read_pending());
+}
+
+/// A level whose tick boundary always yields a live capture.
+struct Streamed(Fake);
+
+impl Reader for Streamed {
+    fn status(&mut self) -> GameStatus {
+        self.0.status()
+    }
+    fn objects(&mut self) -> Result<Vec<Object>, String> {
+        self.0.objects()
+    }
+    fn live_capture(
+        &mut self,
+        _: agent_proto::live::Layers,
+        world: &mut agent_proto::live::World,
+    ) -> bool {
+        world.objects.clear();
+        world.players.clear();
+        true
+    }
+}
+
+fn subscribe_camera(agent: &Agent, game: &mut Streamed) -> (Value, crate::live::Frames) {
+    let (tx, output) = sync_channel(4);
+    let stream = agent.connect_socket(tx);
+    ask(
+        agent,
+        stream,
+        1,
+        agent_proto::live::SUBSCRIBE,
+        json!({"layers": ["objects", "camera"]}),
+    );
+    agent.on_tick(game);
+    let crate::server::Output::Upgrade { line, frames } = output.try_recv().unwrap() else {
+        panic!("the subscription should open")
+    };
+    let hello: Value = serde_json::from_str(&line).unwrap();
+    (hello["result"].clone(), frames)
+}
+
+#[test]
+fn camera_layer_is_refused_without_a_sealed_scene_source() {
+    let agent = Agent::new();
+    let mut game = Streamed(level());
+    let (hello, _frames) = subscribe_camera(&agent, &mut game);
+    assert_eq!(hello["layers"], json!(["objects"]));
+    assert_eq!(hello["refused"]["camera"], super::mirror::NO_CAMERA);
+
+    // The host's reason wins over a source registered beside it.
+    let agent = Agent::new();
+    agent.set_camera_source(Arc::new(|_: &mut Vec<agent_proto::live::View>| {
+        Ok::<(), String>(())
+    }));
+    agent.set_camera_unavailable("this host has no window");
+    agent.set_camera_unavailable("frame scene capture is off");
+    let (hello, _frames) = subscribe_camera(&agent, &mut game);
+    assert_eq!(hello["layers"], json!(["objects"]));
+    assert_eq!(hello["refused"]["camera"], "this host has no window");
+}
+
+#[test]
+fn camera_layer_carries_the_sealed_scene_views_sorted_by_key() {
+    use agent_proto::live::{View, World, view_key};
+    let view = |key, x| View {
+        key,
+        scene_tick: 99,
+        position: [x, 0., 1.],
+        forward: [0., 1., 0.],
+        up: [0., 0., 1.],
+        fov: 1.1,
+        near: 0.1,
+        far: 500.,
+        viewport: [0, 0, 480, 640],
+        cut: false,
+        drawn: vec![0x10001],
+    };
+    let views = vec![
+        view(view_key(0, 1, 0), 4.),
+        view(view_key(0, 0, 0), 2.),
+        view(0, 9.),
+    ];
+    let agent = Agent::new();
+    let source = views.clone();
+    agent.set_camera_source(Arc::new(move |out: &mut Vec<View>| {
+        out.extend(source.iter().cloned());
+        Ok::<(), String>(())
+    }));
+    let mut game = Streamed(level());
+    let (hello, frames) = subscribe_camera(&agent, &mut game);
+    assert_eq!(hello["layers"], json!(["objects", "camera"]));
+    assert_eq!(hello["refused"], json!({}));
+    game.0.status.tick = Some(101);
+    agent.on_tick(&mut game);
+    let frame = frames
+        .next(Duration::from_secs(5))
+        .expect("a frame with the camera");
+    let mut world = World::default();
+    frame.apply(&mut world).unwrap();
+    // Sorted, and the second view under key 0 dropped rather than sent twice.
+    assert_eq!(world.cameras, [views[1].clone(), views[0].clone()]);
+}
+
+#[test]
+fn a_ticker_runs_once_a_tick_with_the_game_at_the_boundary_and_never_between_slices() {
+    let a = Agent::new();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&seen);
+    a.add_ticker("test", move |ctx| {
+        log.lock().unwrap().push((ctx.at.ticks, ctx.conn, ctx.at.boundary));
+    });
+    let mut g = level();
+    a.on_tick(&mut g);
+    a.between_slices(&mut g, 1);
+    a.on_tick(&mut g);
+    let seen = seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    assert_eq!((seen[0].0, seen[1].0), (1, 2));
+    assert!(seen.iter().all(|s| s.1 == TICKER_CONN && s.2 == Boundary::Tick));
+    // The same name replaces it.
+    a.add_ticker("test", |_| {});
+    a.on_tick(&mut g);
 }

@@ -29,29 +29,11 @@ pub struct Map<R = File> {
     metadata_size: u32,
 }
 
-impl Map<File> {
-    /// Open a `.map` file without loading raw resource data into memory.
-    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        Self::from_reader(File::open(path)?)
-    }
-}
-
-impl<R: Read + Seek> Map<R> {
-    /// Parse a seekable stream whose offset zero is the map header.
-    /// The stream's current position is ignored.
-    pub fn from_reader(mut reader: R) -> Result<Self> {
-        let length = reader.seek(SeekFrom::End(0))?;
-        Self::from_region(reader, 0, length)
-    }
-
-    /// Parse a bounded map inside another file (e.g. an XDVDFS entry).
-    /// `base` and `length` describe the container region; exposed offsets stay
-    /// map-relative. Payload reads cannot escape the declared file size. Lossless
-    /// writing and checksumming include trailing bytes within the supplied region.
-    pub fn from_region(mut reader: R, base: u64, length: u64) -> Result<Self> {
-        let actual = reader.seek(SeekFrom::End(0))?;
-        bounds("container", base, length, actual)?;
-        let h = read_at(&mut reader, base, length, 0, HEADER_SIZE)?;
+impl Header {
+    /// Read the header at `base` in a region of `length` bytes, without
+    /// reading the cache's tag index or payloads.
+    pub fn read_region(reader: &mut (impl Read + Seek), base: u64, length: u64) -> Result<Self> {
+        let h = read_at(reader, base, length, 0, HEADER_SIZE)?;
         if &h[..4] != b"daeh" || &h[0x7fc..] != b"toof" {
             return Err(Error::Invalid("header/footer signature"));
         }
@@ -102,6 +84,33 @@ impl<R: Read + Seek> Map<R> {
         if u64::from(header.file_size) < HEADER_SIZE {
             return Err(Error::Invalid("declared file smaller than header"));
         }
+        Ok(header)
+    }
+}
+
+impl Map<File> {
+    /// Open a `.map` file without loading raw resource data into memory.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Self::from_reader(File::open(path)?)
+    }
+}
+
+impl<R: Read + Seek> Map<R> {
+    /// Parse a seekable stream whose offset zero is the map header.
+    /// The stream's current position is ignored.
+    pub fn from_reader(mut reader: R) -> Result<Self> {
+        let length = reader.seek(SeekFrom::End(0))?;
+        Self::from_region(reader, 0, length)
+    }
+
+    /// Parse a bounded map inside another file (e.g. an XDVDFS entry).
+    /// `base` and `length` describe the container region; exposed offsets stay
+    /// map-relative. Payload reads cannot escape the declared file size. Lossless
+    /// writing and checksumming include trailing bytes within the supplied region.
+    pub fn from_region(mut reader: R, base: u64, length: u64) -> Result<Self> {
+        let actual = reader.seek(SeekFrom::End(0))?;
+        bounds("container", base, length, actual)?;
+        let header = Header::read_region(&mut reader, base, length)?;
         let storage_length = length;
         let length = u64::from(header.file_size);
         let index = u64::from(header.index_offset);

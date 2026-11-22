@@ -182,7 +182,7 @@ fn halo2_firing_effect_groups() {
             _ => None,
         };
         for b in block(&r, "barrels") {
-            for e in block(b, "block_e4") {
+            for e in block(b, "firing_effects") {
                 elements += 1;
                 for p in FIRING_EFFECT_REFS {
                     if let Some(g) = group(e, p) {
@@ -357,7 +357,7 @@ fn every_weapon_fires_its_halo1_sounds() {
             let barrels = block(&r, "barrels");
             assert_eq!(barrels.len(), w.triggers.len(), "{}", t.name);
             for (i, (b, tr)) in barrels.iter().zip(&w.triggers).enumerate() {
-                let fx = block(b, "block_e4");
+                let fx = block(b, "firing_effects");
                 assert_eq!(fx.len(), tr.firing_effects.len(), "{} barrel {i}", t.name);
                 for (k, (e, f)) in fx.iter().zip(&tr.firing_effects).enumerate() {
                     for (slot, want) in FIRING_EFFECT_REFS.iter().zip(f.effects) {
@@ -636,11 +636,11 @@ fn weapon_effects_metadata() {
             tags_total + rows,
         );
         let mut by: Vec<_> = groups.into_iter().collect();
-        by.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+        by.sort_by_key(|a| std::cmp::Reverse(a.1.1));
         for (g, (n, b)) in by {
             println!("  {g}: {n} tags, {b:#x} bytes");
         }
-        sizes.sort_by(|a, b| b.0.cmp(&a.0));
+        sizes.sort_by_key(|a| std::cmp::Reverse(a.0));
         for (len, g, n) in sizes.iter().take(15) {
             println!("  {len:#7x} {g} {n}");
         }

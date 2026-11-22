@@ -1,11 +1,11 @@
-//! What a server says about itself (docs/live/live-api.md "Server"; docs/live/live-admin.md §5):
+//! What a server says about itself (docs/live/live-api.md "Read endpoints"; docs/live/live-admin.md §5):
 //!
 //! - `GET /v1/server`: the public facts — id, software, public URL, whether
 //!   sign-up needs an invite, whether reads are private, and counts. A read
 //!   like any other (a token on a `--private` server).
 //! - `GET /v1/admin/status`: those plus what an admin running the server
-//!   wants on one screen: uptime, the tunnel, game art, admins, the log and
-//!   the invites. Admin-only (an `admin.read` token from an admin account
+//!   wants on one screen: native uptime, the tunnel, game art, admins, the
+//!   log and the invites. Admin-only (an `admin.read` token from an admin account
 //!   or the operator). Nothing secret: no keys, no file contents, no
 //!   database URL. The data directory's path only to a caller on this
 //!   machine (a loopback peer with no proxy headers, like game art).
@@ -77,8 +77,12 @@ impl Live {
     pub async fn admin_status(&self, site: &SiteFacts, local: bool) -> Result<Value, ApiError> {
         let mut v = self.server_facts();
         let now = now();
-        v["started_at"] = json!(rfc3339(self.started_at));
-        v["uptime_s"] = json!((now - self.started_at).max(0));
+        // A Durable Object's cold start does not measure service availability.
+        #[cfg(feature = "native")]
+        {
+            v["started_at"] = json!(rfc3339(self.started_at));
+            v["uptime_s"] = json!((now - self.started_at).max(0));
+        }
         v["public"] = match self.policy().public.get_with_kind() {
             Some((url, cloudflare)) => {
                 json!({"url": url, "tunnel": tunnel_kind(&url, cloudflare)})
@@ -114,6 +118,7 @@ impl Live {
     }
 }
 
+#[cfg(feature = "native")]
 fn rfc3339(unix: i64) -> String {
     time::OffsetDateTime::from_unix_timestamp(unix)
         .ok()
@@ -180,6 +185,26 @@ pub(crate) type DataDir = std::sync::OnceLock<PathBuf>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(feature = "native"))]
+    #[tokio::test]
+    async fn worker_status_omits_uptime() {
+        let live = Live::start_with(
+            Arc::new(crate::store::MemoryStore::new()),
+            crate::ServerIdentity {
+                id: "live.test".into(),
+                key: live_proto::sign::KeyPair::generate(),
+            },
+            crate::Policy::default(),
+            crate::app::Timers::Driven,
+        )
+        .await
+        .unwrap();
+        let status = live.admin_status(&SiteFacts::default(), false).await.unwrap();
+        assert_eq!(status["id"], "live.test");
+        assert!(status.get("started_at").is_none());
+        assert!(status.get("uptime_s").is_none());
+    }
 
     #[test]
     fn tunnel_kinds() {

@@ -17,6 +17,7 @@ use std::path::PathBuf;
 
 use dear_imgui_rs::{MouseButton, TextureId, TreeNodeFlags, Ui};
 use dear_imgui_wgpu::ExternalTextureId;
+use editor_core::map_groups::MapGroup;
 
 use hud_edit::checks::Severity;
 use hud_edit::layout::{Field, Kind, Mode};
@@ -26,17 +27,14 @@ use hud_edit::{HudState, Value, WidgetKey, WidgetKind};
 
 use tags::registry::Kind as RegKind;
 
+use crate::app::map_cards::MapEntry;
 use crate::app::{Action, App, HudTool, TagAction};
 use crate::fields::{self, PanelState};
 use crate::theme::{self, Fonts, icon};
 use crate::viewport::Gpu;
 
-const RECT: [f32; 4] = [0.35, 0.8, 1.0, 0.45];
-const SELECTED: [f32; 4] = [1.0, 1.0, 1.0, 0.95];
-const BAD: [f32; 4] = [1.0, 0.3, 0.25, 1.0];
-const FRAME: [f32; 4] = [0.4, 1.0, 0.45, 0.8];
-const HIDDEN: [f32; 4] = [0.6, 0.6, 0.6, 0.5];
-const OTHER: [f32; 4] = [1.0, 0.75, 0.2, 0.5];
+use super::map_list;
+
 
 struct Texture {
     texture: wgpu::Texture,
@@ -66,6 +64,8 @@ pub struct HudUi {
     /// The finding under the mouse: its widgets light up.
     hot: Option<usize>,
     filter: String,
+    /// The filter over the HUD and widget lists.
+    list_filter: String,
 }
 
 fn heading(ui: &Ui, fonts: &Fonts, t: &str) {
@@ -86,58 +86,73 @@ pub fn tree(ui: &Ui, app: &mut App, st: &mut HudUi, fonts: &Fonts, actions: &mut
         ui.input_text("##hud-filter", &mut st.filter)
             .hint(format!("{} filter maps", icon::SEARCH))
             .build();
-        let filter = st.filter.to_ascii_lowercase();
-        let keep = |s: &str| filter.is_empty() || s.to_ascii_lowercase().contains(&filter);
+        let filter = st.filter.to_lowercase();
+        let keep = |s: &str| filter.is_empty() || s.to_lowercase().contains(&filter);
         if app.maps().is_empty() && app.packages().is_empty() {
             ui.text_disabled("Open a disc, a map or a folder of maps (File > Open).");
         }
-        for name in app.maps().to_vec() {
-            if !keep(&name) {
-                continue;
+        let mut entries = app.halo2_map_entries();
+        let shared = MapEntry::take_shared(&mut entries);
+        let mut last = None;
+        let draw_source = |entries: &[MapEntry<'_>],
+                           last: &mut Option<MapGroup>,
+                           actions: &mut Vec<Action>| {
+            for entry in entries {
+                let name = entry.stem;
+                let label = entry.label;
+                if !keep(name) && !keep(label) {
+                    continue;
+                }
+                map_list::section(ui, last, entry.group);
+                let glyph = map_list::map_icon(entry.group);
+                if ui
+                    .selectable_config(format!("{glyph}  {label}##hud-map-{name}"))
+                    .selected(opened.as_deref() == Some(name))
+                    .build()
+                {
+                    actions.push(Action::HudOpenMap(name.to_owned()));
+                }
             }
-            let on = opened.as_deref() == Some(name.as_str());
-            if ui
-                .selectable_config(format!("{}  {name}##hud-map-{name}", icon::MAP))
-                .selected(on)
-                .build()
-            {
-                actions.push(Action::HudOpenMap(name.clone()));
-            }
-        }
-        // Converted Halo 1 maps (their sandbox HUDs) and other packages.
-        let packages: Vec<_> = app
-            .packages()
-            .iter()
-            .map(|e| (e.key(), e.label(), e.halo1.is_some()))
-            .collect();
-        for (key, label, halo1) in packages {
+        };
+        draw_source(&entries, &mut last, actions);
+        for entry in app.packages() {
+            let label = entry.label();
             if !keep(&label) {
                 continue;
             }
-            let on = opened.as_deref() == Some(label.as_str());
-            let glyph = if halo1 { icon::MOUNTAIN } else { icon::PACKAGE };
+            let group = entry.map_group();
+            map_list::section(ui, &mut last, group);
+            let key = entry.key();
+            let glyph = map_list::map_icon(group);
             if ui
                 .selectable_config(format!("{glyph}  {label}##hud-pkg-{key}"))
-                .selected(on)
+                .selected(opened.as_deref() == Some(label.as_str()))
                 .build()
             {
-                actions.push(Action::HudOpenPackage(key.clone()));
+                actions.push(Action::HudOpenPackage(key));
             }
         }
+        draw_source(&shared, &mut last, actions);
     }
     ui.separator();
     let Some(s) = app.hud.session.as_ref() else {
         ui.text_disabled("Pick a map to list its HUDs.");
         return;
     };
-    heading(ui, fonts, "HUDs");
+    ui.set_next_item_width(-1.0);
+    ui.input_text("##hud-list-filter", &mut st.list_filter)
+        .hint(format!("{} Filter HUDs and widgets", icon::SEARCH))
+        .build();
+    let needle = st.list_filter.to_lowercase();
+    let keep = |name: &str| needle.is_empty() || name.to_lowercase().contains(&needle);
     let current = s.current;
     let edited = s.edited();
-    let mut last = "";
-    // A third of what is left, the rest for the widgets.
-    let list = (ui.content_region_avail()[1] / 3.0).clamp(48.0, 220.0);
-    ui.child_window("##hud-list").size([0.0, list]).build(ui, || {
-        for e in &s.huds {
+    let bold = ui.push_font(fonts.bold);
+    let huds_open = ui.collapsing_header("HUDs##hud-huds-header", TreeNodeFlags::DEFAULT_OPEN);
+    bold.pop();
+    if huds_open {
+        let mut last = "";
+        for e in s.huds.iter().filter(|e| keep(&e.name)) {
             if e.category() != last {
                 last = e.category();
                 ui.text_disabled(last);
@@ -163,25 +178,28 @@ pub fn tree(ui: &Ui, app: &mut App, st: &mut HudUi, fonts: &Fonts, actions: &mut
                 }
             ));
         }
-    });
-    ui.separator();
-    heading(ui, fonts, "Widgets");
+    }
     let Some(hud) = s.hud() else { return };
     let selected = app.hud.selected;
-    ui.child_window("##hud-widgets").build(ui, || for w in &hud.widgets {
-        let kind = match w.key.kind {
-            WidgetKind::Bitmap => icon::BOX,
-            WidgetKind::Text => icon::FILE,
-        };
-        let mark = if w.is_dirty() { "  *" } else { "" };
-        if ui
-            .selectable_config(format!("{kind}  {}{mark}##hud-w-{:?}-{}", w.name, w.key.kind, w.key.index))
-            .selected(selected == Some(w.key))
-            .build()
-        {
-            actions.push(Action::HudSelect(Some(w.key)));
+    let bold = ui.push_font(fonts.bold);
+    let widgets_open = ui.collapsing_header("Widgets##hud-widgets-header", TreeNodeFlags::DEFAULT_OPEN);
+    bold.pop();
+    if widgets_open {
+        for w in hud.widgets.iter().filter(|w| keep(&w.name)) {
+            let kind = match w.key.kind {
+                WidgetKind::Bitmap => icon::BOX,
+                WidgetKind::Text => icon::FILE,
+            };
+            let mark = if w.is_dirty() { "  *" } else { "" };
+            if ui
+                .selectable_config(format!("{kind}  {}{mark}##hud-w-{:?}-{}", w.name, w.key.kind, w.key.index))
+                .selected(selected == Some(w.key))
+                .build()
+            {
+                actions.push(Action::HudSelect(Some(w.key)));
+            }
         }
-    });
+    }
 }
 
 /// The picture with its overlays, the toolbar above it and the state below.
@@ -233,7 +251,7 @@ pub fn preview(ui: &Ui, app: &mut App, st: &mut HudUi, fonts: &Fonts, gpu: &mut 
         dl.add_rect(at([r.x0, r.y0]), at([r.x1, r.y1]), c).thickness(t).build();
     };
     if frame {
-        boxed(shot.picture.frame.rect(), FRAME, 1.0);
+        boxed(shot.picture.frame.rect(), theme::SAFE_FRAME, 1.0);
     }
     let bad: Vec<(usize, WidgetKey)> = shot
         .findings
@@ -245,15 +263,15 @@ pub fn preview(ui: &Ui, app: &mut App, st: &mut HudUi, fonts: &Fonts, gpu: &mut 
         let Some(r) = p.rect else { continue };
         let id = (p.hud, p.key);
         if hot.contains(&id) {
-            boxed(r, BAD, 3.0);
+            boxed(r, theme::WIDGET_ERROR, 3.0);
         } else if p.hud == 0 && selected == Some(p.key) {
-            boxed(r, SELECTED, 2.0);
+            boxed(r, theme::WIDGET_FOCUS, 2.0);
         } else if bad.contains(&id) {
-            boxed(r, BAD, 1.5);
+            boxed(r, theme::WIDGET_ERROR, 1.5);
         } else if rects && !p.shown {
-            boxed(r, HIDDEN, 1.0);
+            boxed(r, theme::HIDDEN_WIDGET, 1.0);
         } else if rects {
-            boxed(r, if p.hud == 0 { RECT } else { OTHER }, 1.0);
+            boxed(r, if p.hud == 0 { theme::HUD_WIDGET } else { theme::OTHER_HUD }, 1.0);
         }
     }
     drop(clip);
@@ -615,7 +633,7 @@ fn properties(ui: &Ui, h: &mut HudTool, panel: &mut PanelState, key: WidgetKey, 
         })
         .collect();
     if !own.is_empty() {
-        ui.separator_with_text("HUD fields");
+        theme::section(ui, "HUD fields");
         for f in own {
             let _id = ui.push_id(f.key);
             ui.align_text_to_frame_padding();
@@ -628,7 +646,7 @@ fn properties(ui: &Ui, h: &mut HudTool, panel: &mut PanelState, key: WidgetKey, 
             }
         }
     }
-    ui.separator_with_text("Fields");
+    theme::section(ui, "Fields");
     let mut out = Vec::new();
     fields::panel(ui, &h.fields, hud_id, &path, panel, &mut out);
     for a in out {

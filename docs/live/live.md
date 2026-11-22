@@ -22,8 +22,10 @@ its router with a Durable Object event log and R2 blobs.
   and rules. The web Ranked page shows standings, levels, XP and bot
   marks. Game results use the server's arbitration rules.
   [Matchmaking](live-matchmaking.md#8-ranks-what-the-game-does-and-what-the-server-does)
-- **Mods.** Installed mods get their own map slots. The lobby advertises
-  the exact package ID and joining consoles fetch missing layers.
+- **Mods.** Browse releases by pack, expand their maps and install them
+  together. Choosing a map in a pack selects its installed map slot. The
+  lobby advertises the member's exact package ID so joining consoles
+  can fetch its missing layers.
   [Maps](../game/maps.md#5-sharing-live)
 - **Spectating and replays.** Live ingest negotiates v8 in discovery.
   V7 readers and recordings remain supported. The viewer opens the
@@ -174,14 +176,18 @@ h2 live hopper defaults --out FILE [--raw] [--force]
 h2 live friend add|accept|decline|remove|list ...
 h2 live team ...
 h2 live maps publish|list ...
+h2 live mods import INPUT --pack NAME --author NAME --source-url URL
+h2 live mods capture PACK_OR_MAP_ID
 h2 live assets extract [--disc PATH] [--out DIR] [--mappack ISO] [--installed DATA]
 h2 live assets check [--out DIR]
 h2 live store copy [--from DB --to DB] [--from-blobs LOC --to-blobs LOC]
+h2 live invite grant <gamertag> [--open-cap N] [--server URL] [--data DIR]
+h2 live invite ungrant <gamertag> [--server URL] [--data DIR]
 h2 live invite create [--days N] [--code TEXT] [--as GAMERTAG] [--server URL] [--data DIR]
 h2 live invite list [--as GAMERTAG] [--server URL] [--data DIR]
 h2 live invite revoke <jti> --as GAMERTAG [--server URL]
 h2 live q <what> [--server URL] [--json|--jsonl]
-h2 play <disc> [--live | --live-server URL | --live-local | --offline] [--live-listen ADDR] [--gamertag NAME] [--invite CODE]
+h2 play <disc> [--live | --live-server URL | --live-local | --offline] [--live-listen ADDR] [--gamertag NAME] [--invite CODE] [--join URL]
 ```
 
 `h2 live serve` serves the web app from `web/dist` (or `$H2_LIVE_WEB`) at
@@ -197,7 +203,8 @@ that, with a notice saying how to copy it; [live-hosting.md](live-hosting.md#fre
 The same service runs on Cloudflare Workers. The architecture and the
 deployment steps are in [live-worker.md](live-worker.md).
 
-Host data lives in `~/Library/Application Support/h2recomp/live`, beside
+Host data lives in `%LOCALAPPDATA%\h2recomp\live` on Windows and
+`~/Library/Application Support/h2recomp/live` on Unix, beside
 the movies directory and the VFS data root ([storage.md](../runtime/storage.md)):
 
 - `accounts.json` (mode 0600): one entry per account held here, `{xuid,
@@ -249,6 +256,7 @@ other way round: on by default (below).
 |---|---|---|
 | none, `--offline`, `--no-live` | offline | ignored |
 | `--live` | signed in to `https://live.forbes.red` | a URL replaces it; `off` (`none`, `0`) plays offline with a line |
+| `--join URL` | opens a [session link](live-custom-games.md#join-in-halo-2) on the service selected by the ordinary Live flags; implies `--live` | as for `--live` |
 | `--live-server URL` | signed in to `URL` | ignored (the flag wins) |
 | `--live-local` | an embedded server in the process | ignored |
 | `--live-listen ADDR`, `--live-tunnel`, `--live-tunnel-name NAME` | as `--live-local` (they imply it) | ignored |
@@ -455,8 +463,8 @@ the CLI sign with exactly this code. `crates/live/live-server` is the service
 
 The API is [live-api.md](live-api.md) on `127.0.0.1:8074`. Built: health,
 discovery, accounts (create, list, one, keys by gamertag and by XUID),
-presence (with `POST /v1/presence/ping`), invites (`POST /v1/invites`,
-operator), the event log (`GET /v1/events` with `from`/`cursor`, `type`,
+presence ([heartbeats](live-api.md#presence-heartbeats)), [server invites](live-api.md#server-invites),
+the event log (`GET /v1/events` with `from`/`cursor`, `type`,
 `exclude`, `stream`, `limit`; `POST /v1/events` for one signed event), the
 `/v1/stream` WebSocket (replay from `?from=`, `caught_up`, then live events
 and game frames, with `types`/`exclude`/`stream`/`games`), title files,
@@ -495,14 +503,14 @@ recordings and their verified archives. The `/frames` endpoint serves
 recordings made before chunks. Accounts list their 10 latest games as
 `recent_games`. [Game reads](live-api.md#frame-chunks)
 
-**Ingest.** `/v1/ingest` is the game's WebSocket: the first message is
-`{kind: "auth", token}` (`games.write`), then `frame`, `events` (`{game_id,
-jws}`: one batch JWS, answered `{kind: "appended", game_id, position}` or
-`{kind: "error", error, message}`) and `ping`. Frames go out to stream
-readers at most 15 a second per game. The recorder stores admitted
-frames in H2CK chunks. Finished recordings are queued for H2AR
-publication. The socket closes (4401) when its token expires unless the
-same author sends a fresh `auth` message.
+**Ingest.** `/v1/ingest` is the game's WebSocket. After authentication
+the client sends packed frames and signed event batches. When discovery
+advertises batched ingest, the client combines packed frames in a
+single message. The server sends admitted frames to readers at about
+15 frames per second per game on average and records them in H2CK
+chunks. Finished recordings are queued for H2AR publication. The
+socket closes (4401) when its token expires unless the same author
+reauthenticates.
 [Stream and ingest API](live-api.md#streams-websocket) ·
 [Archives](live-api.md#finished-replay-archives)
 
@@ -514,8 +522,8 @@ upload and replace outlines. `GET` returns the bytes.
 **Managers.** One sweeper task (every 5 s) ends what clients leave behind,
 as the server: presence with no event or ping for 90 s gets
 `PresenceExpired`, and a game with no frame or event for 5 minutes gets
-`GameEnded {reason: "lost"}`. Pings (`POST /v1/presence/ping`, or `ping` on
-the ingest socket) refresh the in-memory deadline only. Deadlines start
+`GameEnded {reason: "lost"}`. HTTP heartbeats and `ping` on the ingest
+socket refresh the in-memory deadline. Deadlines start
 from the projection (the last event's `at`), so they survive a restart; a
 restart then renews every presence, open session and live game to a full
 deadline from the moment it finishes (`Model::renew_deadlines`). Pings and
@@ -817,7 +825,9 @@ The four transport channels are:
 | Additional game data | 1005 | VDP / UDP | 3079 |
 | Additional game data | 1006 | VDP / UDP | 3080 |
 
-Base+2 (3076) is the HLE QoS responder. Base+4 (3078) is reserved for the co-op
+Base+2 (3076) is the HLE QoS responder. Its worker sleeps until a query
+arrives or network cleanup signals it to stop, then releases the socket.
+Base+4 (3078) is reserved for the co-op
 pad-exchange transport (`coop::link::UdpLink`, [live-coop.md](live-coop.md),
 section 8), which would bind it on the host itself; nothing binds it today,
 since Co-op over Live uses the game's own path, and no guest socket maps to it.
@@ -963,6 +973,19 @@ CLI's accounts JSON path, and set `server_url` to the service base URL. Account
 creation remains the CLI's responsibility. Boot glue installs the same HLE and
 returns `Arc<Hle>` to an embedding host; no new boot argument is required.
 
+After `map.reload {file}` binds an editor map, the process refuses external
+Live sign-in until restart. The game's cannot-connect dialog says “An editor
+map was loaded. Restart the game to sign in to Xbox Live.” The HLE contacts
+no service for that logon. A DVD reservation in progress returns `TASK_BUSY`.
+A pending sign-in or an external logon that has signed in an account
+refuses a file reload. After a connection loss, the worker can still
+announce that account on a heartbeat until the game closes the logon.
+A failed initial sign-in allows binding as soon as the worker finishes,
+even before the game polls the failure. The embedded service continues
+to allow local play copies.
+See `crates/live/live-hle/src/state.rs` and
+`crates/extensions/game/src/live_notice.rs`.
+
 One `h2-live-http` worker owns a blocking `ureq` client. Guest calls only enqueue
 owned host data and poll completions. HTTP, signing, response parsing and waits
 never hold guest memory or HLE locks. The bounded queue fails with TASK_BUSY if
@@ -1025,8 +1048,11 @@ HTTPS; HTTP is allowed only for loopback. Discovery can select a same-origin API
 path, and redirects are disabled. A discovered URL cannot move bearer tokens to
 another origin. The per-account `server` field never overrides LiveConfig.
 
-While connected, signed POSTs to `/v1/presence/ping` keep each distinct account
-alive. NotificationSetState and PresenceInit/Submit queue PresenceChanged events:
+While connected, the worker sends one heartbeat per console every 30
+seconds. It uses `POST /v1/presence/ping/batch` for multiple accounts and
+individual `POST /v1/presence/ping` requests for a single account or a
+server without the batch route. NotificationSetState and
+PresenceInit/Submit queue PresenceChanged events:
 a clear ONLINE bit means away, otherwise online. `Hle::set_game_id(Some(id))` is
 the telemetry hook for playing with a server game ID; `None` returns to online.
 The raw Xbox session ID is not used as a server game ID. Identical states are
@@ -1346,7 +1372,9 @@ first button's buffer is never touched. Title and buttons keep the game's
 text. Finding the dialog this way needs no asset names, string IDs or
 string-table offsets.
 
-The text depends on the boot's `LiveConfig`:
+An external-service boot that has loaded an editor play copy uses this dialog
+to explain that signing in requires a restart. Otherwise its text follows the
+boot's `LiveConfig`:
 
 | Live | Server | Message |
 |---|---|---|
@@ -1803,8 +1831,19 @@ a controller whose account changed cannot create a join for the new account.
 The game can then use its existing FindFromID, search-result parsing, key
 registration, XNADDR conversion, QoS and sockets. The host's exchange key is
 never published; the remote key is zero for the current unencrypted HLE
-transport. An embedded-server test follows this path through a successful QoS
-probe and a two-way guest UDP exchange, with no broadcast peers configured.
+transport. The HLE QoS request carries the joining console's replication
+version in its echoed nonce. The responder adds its own version after the
+length-delimited title data. Both sides require an explicit match and the
+responder withholds the title data and session key hint on a mismatch.
+The diagnostic is `replication_version_mismatch`. This check applies to
+direct and invited joins and the queue's peer and dedicated host checks,
+including the dedicated tunnel. A queue refusal fails the search task with
+`REPLICATION_VERSION_MISMATCH` and keeps the diagnostic on its matchmaking
+status. The guest join check also gates membership on both transports.
+[AI over the network](../game/ai-networking.md#creature-entity)
+
+An embedded-server test follows this path through a successful QoS probe and
+a two-way guest UDP exchange, with no broadcast peers configured.
 The full retail invite menu/confirmation sequence, cancellation timing and a
 complete custom game still need owner play testing. No game was built or run.
 

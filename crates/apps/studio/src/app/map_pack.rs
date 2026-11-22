@@ -159,6 +159,14 @@ impl App {
     pub fn map_pack(&self) -> &[PackMap] {
         &self.pack
     }
+
+    /// Map Pack rows in display-name order.
+    pub fn map_pack_entries(&self) -> Vec<&PackMap> {
+        use editor_core::map_groups::MapGroup;
+        let mut entries: Vec<_> = self.pack.iter().collect();
+        entries.sort_by_cached_key(|m| (MapGroup::MapPack.sort_key(&m.name), m.map.as_str()));
+        entries
+    }
     /// The Map Pack map open in the scenario tool (not a package over it).
     pub fn opened_pack_map(&self) -> Option<&str> {
         self.loaded

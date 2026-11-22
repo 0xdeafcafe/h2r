@@ -22,6 +22,25 @@ use crate::app::{ApiError, invalid};
 const MAX_FRAME: usize = tunnel::HEADER_LEN + tunnel::MAX_PAYLOAD;
 const IO_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// One application-level echo (ping control frames can terminate at a proxy).
+pub(super) async fn region_echo(
+    State(live): Shared,
+    Path(region): Path<String>,
+    headers: HeaderMap,
+    ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
+) -> ApiResult<Response> {
+    use live_proto::matchmaking::REGION_ECHO;
+    let ws = ws.map_err(|_| invalid("the regional echo is a WebSocket"))?;
+    live.admit_region_echo(bearer(&headers), &region)?;
+    Ok(ws.max_message_size(32).max_frame_size(32).on_upgrade(|mut socket| async move {
+        if let Ok(Some(Ok(Message::Text(text)))) = timeout(IO_TIMEOUT, socket.recv()).await
+            && text.as_str() == REGION_ECHO
+        {
+            let _ = timeout(IO_TIMEOUT, socket.send(Message::Text(text))).await;
+        }
+    }))
+}
+
 pub(super) async fn upgrade(
     State(live): Shared,
     Path(id): Path<String>,
@@ -46,6 +65,15 @@ pub(super) async fn upgrade(
             .parse()
             .expect("XUID is a valid header value"),
     );
+    if headers
+        .get(tunnel::ACTOR_CHANNEL_HEADER)
+        .is_some_and(|offer| offer == tunnel::ACTOR_CHANNEL_OFFER)
+    {
+        request.headers_mut().insert(
+            tunnel::ACTOR_CHANNEL_HEADER,
+            axum::http::HeaderValue::from_static(tunnel::ACTOR_CHANNEL_OFFER),
+        );
+    }
     let config = WebSocketConfig::default()
         .read_buffer_size(4096)
         .max_message_size(Some(MAX_FRAME))
@@ -68,8 +96,8 @@ pub(super) async fn upgrade(
 }
 
 async fn bridge(mut client: WebSocket, mut upstream: WebSocketStream<TcpStream>) {
-    // Ping and pong are local to each WebSocket. Only binary datagrams
-    // cross the relay, with no decoding or buffering between sockets.
+    // Ping and pong are local to each WebSocket. Binary tunnel frames
+    // cross the relay with no decoding or buffering between sockets.
     loop {
         tokio::select! {
             message = client.recv() => match message {

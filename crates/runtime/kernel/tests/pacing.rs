@@ -208,15 +208,13 @@ fn removing_a_source_drops_what_it_owed_and_rejects_bad_rates() {
 fn a_paced_machine_waits_for_wall_time_without_changing_its_schedule() {
     // 100 ms of logical sleep takes about 100 ms of wall time paced, and
     // ends in the same state as unpaced.
-    let run = |paced: bool| {
+    let run = |pacer: Option<kernel::pacer::Pacer>| {
         let h = sleeper(1_000_000);
         h.kernel
             .add_periodic(source(CallConvention::Cdecl, Arc::new(Mutex::new(0))))
             .unwrap();
         let mut m = attach(&h);
-        if paced {
-            m.pacer = Some(kernel::pacer::Pacer::real_time());
-        }
+        m.pacer = pacer;
         let start = std::time::Instant::now();
         let outcome = m.run(100).unwrap();
         (
@@ -226,14 +224,18 @@ fn a_paced_machine_waits_for_wall_time_without_changing_its_schedule() {
             m.schedule().to_vec(),
         )
     };
-    let (fast, outcome, clock, schedule) = run(false);
-    let (slow, paced_outcome, paced_clock, paced_schedule) = run(true);
-    assert_eq!(
-        (outcome, clock, schedule),
-        (paced_outcome, paced_clock, paced_schedule)
-    );
-    assert!(slow >= std::time::Duration::from_millis(95), "{slow:?}");
-    assert!(fast < slow);
+    let (fast, outcome, clock, schedule) = run(None);
+    let ordinary = kernel::pacer::Pacer::real_time();
+    let mut grouped = ordinary.clone();
+    grouped.coalesce_host_ticks(8_333_333, |_| false);
+    for pacer in [ordinary, grouped] {
+        let (slow, paced_outcome, paced_clock, paced_schedule) = run(Some(pacer));
+        assert_eq!(outcome, paced_outcome);
+        assert_eq!(clock, paced_clock);
+        assert_eq!(schedule, paced_schedule);
+        assert!(slow >= std::time::Duration::from_millis(95), "{slow:?}");
+        assert!(fast < slow);
+    }
 }
 
 #[test]

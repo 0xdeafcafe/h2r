@@ -2,3 +2,4 @@ build/
 .wrangler/
 smoke/out/
 wrangler.nohosts.toml
+.wrangler-hosts-*.json

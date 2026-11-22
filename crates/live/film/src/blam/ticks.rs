@@ -64,7 +64,7 @@ fn encode_field<const N: usize>(old: Option<&[u8; N]>, new: &[u8; N], out: &mut 
 
 fn decode_field<const N: usize>(old: Option<[u8; N]>, input: &mut &[u8]) -> Result<[u8; N]> {
     let mask = bytes(input, N.div_ceil(8))?;
-    if N % 8 != 0 {
+    if !N.is_multiple_of(8) {
         ensure!(mask[mask.len() - 1] >> (N % 8) == 0, "invalid field mask");
     }
     let mut result = old.unwrap_or([0; N]);

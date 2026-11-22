@@ -7,7 +7,7 @@ use h1map::{Group, H1Map, TagRef};
 use crate::text::hud::{SILHOUETTE_BASE, SILHOUETTE_LIMIT};
 use crate::text::{Error, Result};
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Silhouette {
     pub width: u16,
     pub height: u16,

@@ -17,7 +17,7 @@
 //! reaching it; a custom game's lobby sets 2, Live or not), and on it the
 //! list value's low 16 bits are the cursor's row (`0xe16d0000` on row 0,
 //! `0xe16f0002` on row 2 in that run). The rows are 0 Campaign, 1 Xbox
-//! Live, then Theater when installed, then Split Screen, System Link and
+//! Live, 2 Split Screen, 3 System Link, then Theater when installed, then
 //! Settings (`0x230827`).
 //!
 //! The path, as `h2 coop test --drive`'s host takes it
@@ -68,7 +68,7 @@
 
 use std::collections::BTreeSet;
 
-use agent_proto::sim::menu::MAIN_MENU_THEATER_MARKER;
+use agent_proto::sim::menu::inserted_rows;
 
 use crate::bots_verdict::{phantom_joined_lobby, phantom_off};
 use crate::coop_drive::{
@@ -418,6 +418,7 @@ impl Driver {
         matches!(self.step, Step::Done | Step::Stuck)
     }
 
+    #[cfg(test)]
     pub fn stuck(&self) -> bool {
         self.step == Step::Stuck
     }
@@ -766,7 +767,7 @@ impl Driver {
                     "the players' screen for Xbox Live: on to the Live menu",
                 )]
             }
-            (false, Some(mode)) => back_to_live(mode, self.ui.contains(MAIN_MENU_THEATER_MARKER)),
+            (false, Some(mode)) => back_to_live(mode, inserted_rows(&self.ui)),
         };
         true
     }
@@ -802,12 +803,12 @@ impl Driver {
             presses: 0,
             tries,
         };
-        self.to_custom(now, now, 0, tries);
+        self.switch_to_custom(now, now, 0, tries);
     }
 
     /// On the Live menu: the next press toward Custom Game, from the row
     /// the last line showed.
-    fn to_custom(&mut self, now: u64, at: u64, presses: u32, tries: u32) {
+    fn switch_to_custom(&mut self, now: u64, at: u64, presses: u32, tries: u32) {
         if !self.live_menu() {
             // Something opened without our A (or a line is on its way).
             if now.saturating_sub(at.max(self.last_press)) > STEP_MS {
@@ -919,11 +920,7 @@ impl Driver {
                     if self.held(now, SETTLE_MS) {
                         self.at_live_menu(now, 0);
                     }
-                } else if self.on_the_way(now) {
-                    if !self.queue.is_empty() {
-                        self.step = Step::ToLive { at: now, tries };
-                    }
-                } else if self.in_picker(now) {
+                } else if self.on_the_way(now) || self.in_picker(now) {
                     if !self.queue.is_empty() {
                         self.step = Step::ToLive { at: now, tries };
                     }
@@ -997,7 +994,7 @@ impl Driver {
                 }
             }
             Step::ToCustom { at, presses, tries } => {
-                self.to_custom(now, at, presses, tries);
+                self.switch_to_custom(now, at, presses, tries);
             }
             Step::Hosting { at, tries } => {
                 if self.hosting_live() {

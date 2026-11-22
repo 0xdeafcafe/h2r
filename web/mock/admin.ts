@@ -13,6 +13,7 @@
 
 import { HOST, type World } from "./world";
 import { parseJws } from "../src/state/verify";
+import type { InviteGrant } from "../src/api/types";
 import { mockOverview, usageMock } from "../src/deck/mock";
 import { ACCOUNT_SORTS, type AccountUsage } from "../src/admin/usage";
 
@@ -41,6 +42,7 @@ export function inviteKey(code: string): string {
 export class Admin {
   readonly startedAt = Date.now();
   private invites = new Map<string, MockInvite>();
+  private grants = new Map<string, InviteGrant>();
   constructor(private world: World, readonly everyoneAdmin: boolean) {}
 
   /** Whether an account is an admin here: browser sign-ups, with H2_MOCK_ADMIN=1. */
@@ -48,16 +50,30 @@ export class Admin {
     return this.everyoneAdmin && !!a?.external;
   }
 
-  /** The account behind a bearer token, if it is an admin (not verified). */
-  caller(auth: string | null, lxm: string): { ok: true; author: string } | { ok: false; reply: Reply } {
+  accountRoles(a: { xuid: string; external?: boolean }) {
+    const grant = this.grants.get(a.xuid);
+    return { ...(this.isAdmin(a) ? { admin: true } : {}), ...(grant ? { invite_grant: grant } : {}) };
+  }
+
+  /** The account behind a bearer token (the mock parses, but does not verify). */
+  caller(auth: string | null, lxm: string, needAdmin = true): { ok: true; author: string; xuid: string; admin: boolean } | { ok: false; reply: Reply } {
     const t = auth?.startsWith("Bearer ") ? parseJws(auth.slice(7).trim()) : null;
     const claims = t?.payload as { iss?: string; lxm?: string } | undefined;
     if (!claims?.iss) return { ok: false, reply: fail(401, "unauthorized", "this needs Authorization: Bearer <token>") };
     if (claims.lxm !== lxm) return { ok: false, reply: fail(401, "unauthorized", `token lxm is not ${lxm}`) };
     const xuid = /^acct:([0-9a-f]{16})@/.exec(claims.iss)?.[1];
     const a = xuid ? this.world.accounts.get(xuid) : undefined;
-    if (!this.isAdmin(a)) return { ok: false, reply: fail(403, "forbidden", "this needs an admin (mock: run with H2_MOCK_ADMIN=1)") };
-    return { ok: true, author: claims.iss };
+    const admin = this.isAdmin(a);
+    if (!xuid || !a || (needAdmin && !admin)) return { ok: false, reply: fail(403, "forbidden", "this needs an admin (mock: run with H2_MOCK_ADMIN=1)") };
+    return { ok: true, author: claims.iss, xuid, admin };
+  }
+
+  private inviteCaller(auth: string | null, method: string): ReturnType<Admin["caller"]> {
+    const c = this.caller(auth, method, false);
+    if (c.ok && !c.admin && !this.grants.has(c.xuid)) {
+      return { ok: false, reply: fail(403, "forbidden", "an admin must enable invite access for this account") };
+    }
+    return c;
   }
 
   private facts() {
@@ -112,18 +128,53 @@ export class Admin {
       if (!c.ok) return c.reply;
       return usageReply(path, u.searchParams);
     }
-    if (path === "/v1/invites" && req.method === "GET") {
-      const c = this.caller(auth, "admin.read");
+    const grantPath = path.match(/^\/v1\/accounts\/([^/]+)\/invite-grant$/);
+    if (grantPath && (req.method === "POST" || req.method === "DELETE")) {
+      const c = this.caller(auth, "invite-grants.write");
       if (!c.ok) return c.reply;
-      const items = [...this.invites.values()].sort((a, b) => b.position - a.position).map((i) => {
-        const state = this.state(i);
-        const tag = this.world.accounts.get(/^acct:([0-9a-f]{16})@/.exec(i.by)?.[1] ?? "")?.gamertag;
-        return { jti: i.jti, by: i.by, by_gamertag: tag, at: i.at, exp: i.exp, state, custom: i.custom, invite: state === "open" && !i.custom ? i.code : null };
-      });
+      const a = this.world.accountByTag(decodeURIComponent(grantPath[1]!));
+      if (!a) return fail(404, "not_found", "no such account");
+      const data = { xuid: a.xuid, gamertag: a.gamertag, by: c.author };
+      if (req.method === "DELETE") {
+        if (!this.grants.delete(a.xuid)) return fail(409, "conflict", "this account has no invite grant");
+        const keepOpen = this.isAdmin(a);
+        if (!keepOpen) {
+          const by = this.world.author(a).author;
+          for (const i of this.invites.values()) if (i.by === by && this.state(i) === "open") i.revoked = true;
+        }
+        const [ev] = this.world.append(`account-${a.xuid}`, [{
+          type: "InviteGrantRevoked", data: keepOpen ? { ...data, keep_open: true } : data,
+        }], null);
+        return ok(ev);
+      }
+      const grant: unknown = await req.json().catch(() => null);
+      if (!grant || typeof grant !== "object" || Array.isArray(grant) || Object.keys(grant).some((k) => k !== "open_cap")) {
+        return fail(400, "invalid", "expected an invite grant with an optional open_cap");
+      }
+      const open_cap = (grant as Partial<InviteGrant>).open_cap ?? null;
+      if (open_cap !== null && (!Number.isInteger(open_cap) || open_cap < 1 || open_cap > 0xffffffff)) {
+        return fail(400, "invalid", "the open invite cap must be a positive whole number or null");
+      }
+      this.grants.set(a.xuid, { open_cap });
+      const [ev] = this.world.append(`account-${a.xuid}`, [{ type: "InviteGrantSet", data: { ...data, open_cap } }], null);
+      return ok(ev, 201);
+    }
+    const mine = path === "/v1/invites/mine";
+    if ((path === "/v1/invites" || mine) && req.method === "GET") {
+      const c = mine ? this.inviteCaller(auth, "invites.read") : this.caller(auth, "admin.read");
+      if (!c.ok) return c.reply;
+      const items = [...this.invites.values()]
+        .filter((i) => !mine || (i.by === c.author && this.state(i) === "open"))
+        .sort((a, b) => b.position - a.position)
+        .map((i) => {
+          const state = this.state(i);
+          const tag = this.world.accounts.get(/^acct:([0-9a-f]{16})@/.exec(i.by)?.[1] ?? "")?.gamertag;
+          return { jti: i.jti, by: i.by, by_gamertag: tag, at: i.at, exp: i.exp, state, custom: i.custom, invite: state === "open" && !i.custom ? i.code : null };
+        });
       return ok({ items, position: this.world.log.length });
     }
     if (path === "/v1/invites" && req.method === "POST") {
-      const c = this.caller(auth, "invites.write");
+      const c = this.inviteCaller(auth, "invites.write");
       if (!c.ok) return c.reply;
       const text = (await req.text()).trim();
       let compact = text, custom: string | null = null;
@@ -142,6 +193,10 @@ export class Admin {
       const now = Date.now() / 1000;
       if (typeof jti !== "string" || jti.length < 16) return fail(400, "invalid", "jti is 16 to 64 of [A-Za-z0-9_-]");
       if (typeof exp !== "number" || exp <= now || exp > now + MAX_DAYS * 86400 + 300) return fail(400, "invalid", `exp is in the future, at most ${MAX_DAYS} days`);
+      const cap = c.admin ? null : this.grants.get(c.xuid)?.open_cap;
+      if (cap != null && [...this.invites.values()].filter((i) => i.by === c.author && this.state(i) === "open").length >= cap) {
+        return fail(409, "conflict", `open invite limit reached (${cap})`);
+      }
       if (this.invites.has(jti)) return fail(409, "conflict", "that jti is taken");
       if (custom !== null && this.inviteFor(custom)) return fail(409, "conflict", "an open invite already has that code");
       const [w] = this.world.append("invites", [{ type: "InviteCreated", data: { jti, exp } }], null);
@@ -154,11 +209,11 @@ export class Admin {
     }
     const m = path.match(/^\/v1\/invites\/([^/]+)\/revoke$/);
     if (m && req.method === "POST") {
-      const c = this.caller(auth, "invites.write");
+      const c = this.inviteCaller(auth, "invites.write");
       if (!c.ok) return c.reply;
       const jti = decodeURIComponent(m[1]!);
       const i = this.invites.get(jti);
-      if (!i) return fail(404, "not_found", "no such invite");
+      if (!i || (!c.admin && i.by !== c.author)) return fail(404, "not_found", "no such invite");
       if (this.state(i) !== "open") return fail(409, "conflict", `that invite is ${this.state(i)}`);
       i.revoked = true;
       const [w] = this.world.append("invites", [{ type: "InviteRevoked", data: { jti } }], null);

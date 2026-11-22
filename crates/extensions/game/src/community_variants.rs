@@ -27,6 +27,7 @@ use std::sync::Arc;
 
 use runtime::Guest;
 use runtime::guest::Permissions;
+use variants::ext::Ext;
 
 // ---- guest addresses (hook points; see docs/game/community-gametypes.md) ----
 
@@ -262,9 +263,67 @@ fn score_setting(ty: GameType) -> u32 {
     }
 }
 
+/// Where the custom game's game type list files a variant
+/// (docs/game/community-gametypes.md "Tweakers").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Category {
+    /// Under its game type ([`Variant::ty`]).
+    GameType,
+    /// Under Tweakers, our row after Territories (`crate::tweakers`).
+    /// The game still plays it as its game type; the built-in's record
+    /// carries the tweak's extension block, which names a rules script
+    /// whose header says `list tweakers`, so a copy carries it too and is
+    /// listed under Tweakers as well.
+    Tweakers(Tweak),
+}
+
+/// What a Tweakers built-in's record carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tweak {
+    /// The superbounce game type ([`superbounce_ext`]).
+    Superbounce,
+}
+
+impl Tweak {
+    /// The extension block the built-in's record carries.
+    pub fn ext(self) -> Ext {
+        match self {
+            Tweak::Superbounce => superbounce_ext(),
+        }
+    }
+}
+
+/// Superbounce's extension block: a reference to the Superbounce rules
+/// script (`rules::builtin::SUPERBOUNCE`, compiled in) with its default
+/// options. The script's `requires hud.superbounce` turns the mode on and
+/// its `list tweakers` files the variant under Tweakers
+/// (docs/game/superbounce.md "The superbounce game type").
+pub fn superbounce_ext() -> Ext {
+    static EXT: std::sync::OnceLock<Ext> = std::sync::OnceLock::new();
+    *EXT.get_or_init(|| match ::rules::compile(::rules::builtin::SUPERBOUNCE) {
+        Ok(ir) => {
+            let mut prefix = [0; 8];
+            prefix.copy_from_slice(&ir.id().0[..8]);
+            Ext {
+                script: variants::ext::Script {
+                    mode: variants::ext::Mode::Rules,
+                    prefix,
+                    options: ir.default_options(),
+                },
+                ..Ext::RETAIL
+            }
+        }
+        Err(e) => {
+            eprintln!("community variants: the Superbounce script does not compile: {e}");
+            Ext::RETAIL
+        }
+    })
+}
+
 pub struct Variant {
     pub name: &'static str,
     pub ty: GameType,
+    pub category: Category,
     pub settings: &'static [Setting],
     pub description: &'static str,
 }
@@ -277,6 +336,32 @@ impl Variant {
     pub fn display_name(&self) -> String {
         format!("{} {ICON}", self.name)
     }
+    /// The extension block of a Tweakers variant.
+    pub fn tweak(&self) -> Option<Ext> {
+        match self.category {
+            Category::Tweakers(t) => Some(t.ext()),
+            Category::GameType => None,
+        }
+    }
+}
+
+/// The Tweakers built-in named `name`, as a record or the list holds it
+/// (the list's icon and trailing spaces ignored).
+pub fn tweaker_builtin(name: &str) -> Option<&'static Variant> {
+    let bare = name
+        .trim_end_matches(|c: char| c.is_whitespace() || ('\u{e000}'..='\u{f8ff}').contains(&c));
+    VARIANTS
+        .iter()
+        .find(|v| v.tweak().is_some() && v.name == bare)
+}
+
+/// Whether a variant record with this name and extension block is listed
+/// under Tweakers: it names a rules script whose header files it there
+/// (`crate::rules::header::block_is_tweaker`), or it has a Tweakers
+/// built-in's name (a built-in record before `crate::tweakers` wrote its
+/// block, as `crate::superbounce_mode` turns the mode on by name too).
+pub fn is_tweaker(name: &str, block: &[u8; variants::ext::LEN]) -> bool {
+    crate::rules::header::block_is_tweaker(block) || tweaker_builtin(name).is_some()
 }
 
 use Setting::*;
@@ -287,6 +372,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Zombies",
         ty: GameType::Slayer,
+        category: Category::GameType,
         settings: &[
             TeamPlay(true),
             StartingWeapon(Some(Weapon::Shotgun)),
@@ -308,6 +394,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Hide and Seek",
         ty: GameType::Juggernaut,
+        category: Category::GameType,
         settings: &[
             StartingWeapon(Some(Weapon::EnergySword)),
             SecondaryWeapon(None),
@@ -327,6 +414,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Jousting",
         ty: GameType::Slayer,
+        category: Category::GameType,
         settings: &[
             LightVehicle(LightVehicle::Warthog),
             SecondLightVehicle(LightVehicle::None),
@@ -343,6 +431,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "SWAT",
         ty: GameType::Slayer,
+        category: Category::GameType,
         settings: &[
             TeamPlay(true),
             Shields(Shields::None),
@@ -361,6 +450,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Duel",
         ty: GameType::Slayer,
+        category: Category::GameType,
         settings: &[
             MaxPlayers(2),
             StartingWeapon(Some(Weapon::Magnum)),
@@ -373,6 +463,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Clint Eastwood",
         ty: GameType::Juggernaut,
+        category: Category::GameType,
         settings: &[
             Shields(Shields::None),
             StartingWeapon(Some(Weapon::Shotgun)),
@@ -386,6 +477,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Sun King",
         ty: GameType::King,
+        category: Category::GameType,
         settings: &[
             TeamPlay(true),
             Shields(Shields::None),
@@ -402,6 +494,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Tower of Power",
         ty: GameType::Slayer,
+        category: Category::GameType,
         settings: &[
             TeamPlay(true),
             Shields(Shields::None),
@@ -422,6 +515,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Wheeeeee!",
         ty: GameType::Oddball,
+        category: Category::GameType,
         settings: &[
             TeamPlay(true),
             Shields(Shields::None),
@@ -438,6 +532,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Cops and Robbers",
         ty: GameType::Slayer,
+        category: Category::GameType,
         settings: &[
             TeamPlay(true),
             Lives(3),
@@ -453,6 +548,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Bounce Practice",
         ty: GameType::Slayer,
+        category: Category::GameType,
         settings: &[
             ScoreToWin(0),
             TimeLimit(0),
@@ -470,6 +566,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Glitch Hunt",
         ty: GameType::Slayer,
+        category: Category::GameType,
         settings: &[
             ScoreToWin(0),
             TimeLimit(0),
@@ -486,6 +583,7 @@ pub const VARIANTS: &[Variant] = &[
     Variant {
         name: "Bumper Cars",
         ty: GameType::Slayer,
+        category: Category::GameType,
         settings: &[
             StartingWeapon(None),
             SecondaryWeapon(None),
@@ -503,6 +601,24 @@ pub const VARIANTS: &[Variant] = &[
             ScoreToWin(25),
         ],
         description: "No weapons at all, only Warthogs and Ghosts. Splatter everyone else. Try Coagulation or Burial Mounds.",
+    },
+    Variant {
+        name: "Superbounce",
+        ty: GameType::Slayer,
+        category: Category::Tweakers(Tweak::Superbounce),
+        settings: &[
+            ScoreToWin(0),
+            TimeLimit(0),
+            RespawnSeconds(3),
+            SuicidePenaltySeconds(0),
+            Shields(Shields::Overshields),
+            DamageResistance(true),
+            StartingWeapon(Some(Weapon::Magnum)),
+            SecondaryWeapon(None),
+            WeaponsOnMap(WeaponSet::None),
+            GrenadesOnMap(false),
+        ],
+        description: "Bounce practice with a guide: a plate shows whether your crouch has primed the bounce, and lines mark the strips that launch you.",
     },
 ];
 
@@ -547,10 +663,32 @@ pub fn name_id(i: usize) -> u32 {
 pub fn description_id(i: usize) -> u32 {
     ID_BASE | 0x80 | i as u32
 }
+/// The Tweakers row's texts (`crate::tweakers`): the row's label, the
+/// title of its pane and of its variant list, and their description. At
+/// the top of the name range, past every variant's.
+pub const TWEAKERS_LABEL_ID: u32 = ID_BASE | 0x7d;
+pub const TWEAKERS_TITLE_ID: u32 = ID_BASE | 0x7e;
+pub const TWEAKERS_DESCRIPTION_ID: u32 = ID_BASE | 0x7f;
+pub const TWEAKERS_LABEL: &str = "Tweakers";
+pub const TWEAKERS_TITLE: &str = "TWEAKERS";
+pub const TWEAKERS_DESCRIPTION: &str = "Play familiar game types with tweaked rules, from bounce practice to new twists on the classics.";
+pub const TWEAKERS_IDS: [u32; 3] = [
+    TWEAKERS_LABEL_ID,
+    TWEAKERS_TITLE_ID,
+    TWEAKERS_DESCRIPTION_ID,
+];
+const _: () = assert!(VARIANTS.len() < 0x7d);
+
 /// The text for one of our ids.
 pub fn text(id: u32) -> Option<String> {
     if !is_ours(id) {
         return None;
+    }
+    match id {
+        TWEAKERS_LABEL_ID => return Some(TWEAKERS_LABEL.into()),
+        TWEAKERS_TITLE_ID => return Some(TWEAKERS_TITLE.into()),
+        TWEAKERS_DESCRIPTION_ID => return Some(TWEAKERS_DESCRIPTION.into()),
+        _ => {}
     }
     let i = (id & 0x7f) as usize;
     let v = VARIANTS.get(i)?;
@@ -575,7 +713,7 @@ pub fn description_for(n: u32) -> Option<u32> {
 /// address and number: our description id for the variant list only.
 pub fn description_answer(ret: u32, n: u32) -> Option<u32> {
     if ret == LIST_DESCRIPTION_RETURN {
-        description_for(n)
+        description_for(n).or_else(|| crate::game_variants::inject::description_for(n))
     } else {
         None
     }
@@ -629,14 +767,59 @@ pub fn usable(offered: &std::collections::HashMap<u32, Vec<i32>>) -> Vec<usize> 
 
 /// One list entry: name id, game type, settings block, description number.
 pub fn entry(i: usize, pairs_at: u32) -> [u8; ENTRY_SIZE as usize] {
-    let v = &VARIANTS[i];
-    let mut e = [0; ENTRY_SIZE as usize];
-    e[0..4].copy_from_slice(&name_id(i).to_le_bytes());
-    e[4..8].copy_from_slice(&(v.ty as u32).to_le_bytes());
-    e[8..12].copy_from_slice(&(v.settings.len() as u32).to_le_bytes());
-    e[12..16].copy_from_slice(&pairs_at.to_le_bytes());
-    e[16..20].copy_from_slice(&(DESCRIPTION_BASE + i as u32).to_le_bytes());
-    e
+    NewEntry::community(i).encode(pairs_at)
+}
+
+/// The most built-ins the content list takes (`0x217080`).
+pub const MAX_BUILTINS: u32 = 101;
+
+/// One entry to append: its name id, list type, `(setting, value)` pairs
+/// and description number.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewEntry {
+    pub name_id: u32,
+    pub list_type: u32,
+    pub pairs: Vec<(u32, i32)>,
+    pub description: u32,
+}
+
+impl NewEntry {
+    /// Community variant `i`.
+    pub fn community(i: usize) -> Self {
+        let v = &VARIANTS[i];
+        NewEntry {
+            name_id: name_id(i),
+            list_type: v.ty as u32,
+            pairs: v.pairs(),
+            description: DESCRIPTION_BASE + i as u32,
+        }
+    }
+
+    fn encode(&self, pairs_at: u32) -> [u8; ENTRY_SIZE as usize] {
+        let mut e = [0; ENTRY_SIZE as usize];
+        e[0..4].copy_from_slice(&self.name_id.to_le_bytes());
+        e[4..8].copy_from_slice(&self.list_type.to_le_bytes());
+        e[8..12].copy_from_slice(&(self.pairs.len() as u32).to_le_bytes());
+        e[12..16].copy_from_slice(&pairs_at.to_le_bytes());
+        e[16..20].copy_from_slice(&self.description.to_le_bytes());
+        e
+    }
+}
+
+/// One group of entries and the page `[start, end)` their pairs go to.
+pub struct Group<'a> {
+    pub entries: &'a [NewEntry],
+    pub start: u32,
+    pub end: u32,
+}
+
+/// What [`extend_with`] did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Merged {
+    /// Entries appended, by group.
+    pub added: [usize; 2],
+    /// Entries left out past [`MAX_BUILTINS`].
+    pub over: usize,
 }
 
 /// Append the variants in `which` to the `goof` tag's built-in list. The
@@ -651,40 +834,72 @@ pub fn extend_builtins<M: Mem>(
     base: u32,
     entries: u32,
 ) -> Option<bool> {
+    let ours: Vec<NewEntry> = which.iter().map(|&i| NewEntry::community(i)).collect();
+    let groups = [Group {
+        entries: &ours,
+        start: base,
+        end: entries,
+    }];
+    extend_with(m, goof, &groups, entries).map(|d| d.added.iter().sum::<usize>() > 0)
+}
+
+/// [`extend_builtins`] for up to two groups (the community variants, then
+/// the game-variant store's): retail, then each group in order, up to
+/// [`MAX_BUILTINS`] in all, each group's pairs in its own page.
+/// `Some(Merged::default())` when the tag already points at `entries` or
+/// there is nothing to add.
+pub fn extend_with<M: Mem>(
+    m: &mut M,
+    goof: u32,
+    groups: &[Group<'_>],
+    entries: u32,
+) -> Option<Merged> {
     let (n, old) = (
         m.u32(goof + GOOF_BUILTINS)?,
         m.u32(goof + GOOF_BUILTINS + 4)?,
     );
-    if old == entries || which.is_empty() {
-        return Some(false);
+    let total: usize = groups.iter().take(2).map(|g| g.entries.len()).sum();
+    if old == entries || total == 0 {
+        return Some(Merged::default());
     }
-    if n + which.len() as u32 > (DATA_BASE + DATA_SIZE - entries) / ENTRY_SIZE {
+    let room = MAX_BUILTINS.saturating_sub(n) as usize;
+    let take = total.min(room);
+    if n + take as u32 > (DATA_BASE + DATA_SIZE - entries) / ENTRY_SIZE {
         return None;
     }
     let mut block = vec![0; (n * ENTRY_SIZE) as usize];
     if !m.rd(old, &mut block) {
         return None;
     }
-    let mut at = base;
-    for &i in which {
-        let pairs: Vec<u8> = VARIANTS[i]
-            .pairs()
-            .into_iter()
-            .flat_map(|(s, v)| s.to_le_bytes().into_iter().chain(v.to_le_bytes()))
-            .collect();
-        if at + pairs.len() as u32 > entries || !m.wr(at, &pairs) {
-            return None;
+    let mut merged = Merged {
+        over: total - take,
+        ..Merged::default()
+    };
+    let mut left = take;
+    for (k, g) in groups.iter().enumerate().take(2) {
+        let mut at = g.start;
+        for e in g.entries.iter().take(left) {
+            let pairs: Vec<u8> = e
+                .pairs
+                .iter()
+                .flat_map(|(s, v)| s.to_le_bytes().into_iter().chain(v.to_le_bytes()))
+                .collect();
+            if at + pairs.len() as u32 > g.end || !m.wr(at, &pairs) {
+                return None;
+            }
+            block.extend_from_slice(&e.encode(at));
+            at += pairs.len() as u32;
+            merged.added[k] += 1;
         }
-        block.extend_from_slice(&entry(i, at));
-        at += pairs.len() as u32;
+        left -= merged.added[k];
     }
     if !m.wr(entries, &block) {
         return None;
     }
+    let count = n + take as u32;
     // The block first, then the count that makes it visible.
-    (m.set_u32(goof + GOOF_BUILTINS + 4, entries)
-        && m.set_u32(goof + GOOF_BUILTINS, n + which.len() as u32))
-    .then_some(true)
+    (m.set_u32(goof + GOOF_BUILTINS + 4, entries) && m.set_u32(goof + GOOF_BUILTINS, count))
+        .then_some(merged)
 }
 
 // ---- hooks ----
@@ -703,7 +918,9 @@ fn register_strings(
         });
         if let Some(t) = status
             .or_else(|| text(cpu.edi))
+            .or_else(|| crate::game_variants::inject::text(cpu.edi))
             .or_else(|| crate::variant_options::text(cpu.edi))
+            .or_else(|| crate::hud_kit::text(cpu.edi))
         {
             let mut mem = ctx.runtime().memory();
             let buf = mem.u32(cpu.esp + 4)?;
@@ -744,6 +961,11 @@ pub fn install_with_live(
 ) -> anyhow::Result<()> {
     rt.memory()
         .map_zeroed(DATA_BASE, DATA_SIZE, Permissions::RW)?;
+    rt.memory().map_zeroed(
+        crate::game_variants::PAIRS_BASE,
+        crate::game_variants::PAIRS_SIZE,
+        Permissions::RW,
+    )?;
     rt.memory().map_zeroed(
         crate::variant_options::BASE,
         crate::variant_options::SIZE,
@@ -791,12 +1013,49 @@ pub fn install_with_live(
                             (0..VARIANTS.len()).filter(|i| !which.contains(i)).map(|i| VARIANTS[i].name).collect();
                         eprintln!("community variants: left out (a setting the game does not offer): {left:?}");
                     }
-                    match extend_builtins(&mut *mem, goof, &which, DATA_BASE, ENTRIES_AT) {
-                        Some(true) => eprintln!("community variants: {} added to the built-in list", which.len()),
-                        Some(false) => {}
+                    // The game-variant store's after ours, in its own pairs
+                    // page (docs/game/community-gametypes.md, "The merged block").
+                    let offer = offered(&*mem, goof, tags).unwrap_or_default();
+                    let ours: Vec<NewEntry> = which.iter().map(|&i| NewEntry::community(i)).collect();
+                    let retail = mem.u32(goof + GOOF_BUILTINS).unwrap_or(0);
+                    let room = (MAX_BUILTINS.saturating_sub(retail) as usize).saturating_sub(ours.len());
+                    let (stored, lines) = {
+                        let store = crate::game_variants::store();
+                        let store = store.lock().unwrap_or_else(|e| e.into_inner());
+                        crate::game_variants::inject::entries(&store, &offer, room)
+                    };
+                    for line in lines {
+                        eprintln!("{line}");
+                    }
+                    let groups = [
+                        Group {
+                            entries: &ours,
+                            start: DATA_BASE,
+                            end: ENTRIES_AT,
+                        },
+                        Group {
+                            entries: &stored,
+                            start: crate::game_variants::PAIRS_BASE,
+                            end: crate::game_variants::PAIRS_BASE + crate::game_variants::PAIRS_SIZE,
+                        },
+                    ];
+                    match extend_with(&mut *mem, goof, &groups, ENTRIES_AT) {
+                        Some(d) if d.added != [0, 0] => eprintln!(
+                            "community variants: {} added to the built-in list; game variants: {} added{}",
+                            d.added[0],
+                            d.added[1],
+                            if d.over > 0 {
+                                format!(", {} left out past 101 built-ins", d.over)
+                            } else {
+                                String::new()
+                            }
+                        ),
+                        Some(_) => {}
                         None => eprintln!("community variants: could not extend the built-in list"),
                     }
                 }
+                // The Live variants for the next load, off the game thread.
+                crate::game_variants::refresh_live();
                 Ok(o.invoke(cpu, ctx, BUILTINS_LOAD))
             });
         }
@@ -1026,7 +1285,7 @@ mod tests {
 
     #[test]
     fn variants_are_well_formed() {
-        assert!((8..=13).contains(&VARIANTS.len()));
+        assert!((8..=16).contains(&VARIANTS.len()));
         let mut names = std::collections::HashSet::new();
         for v in VARIANTS {
             // The keyboard allows 16 characters; the copy starts from this.
@@ -1054,6 +1313,70 @@ mod tests {
         ] {
             assert!(!names.contains(clash));
         }
+    }
+
+    #[test]
+    fn superbounce_is_filed_under_tweakers_by_its_script() {
+        let sb = VARIANTS.iter().find(|v| v.name == "Superbounce").unwrap();
+        assert_eq!(sb.ty, GameType::Slayer, "played as Slayer underneath");
+        assert_eq!(sb.category, Category::Tweakers(Tweak::Superbounce));
+        let ext = superbounce_ext();
+        assert_eq!(sb.tweak(), Some(ext));
+        assert!(!ext.superbounce, "the script turns the mode on, not the flag");
+        assert!(ext.out_of_range().is_none());
+        assert_eq!(
+            Ext::decode(&ext.encode()),
+            variants::ext::Block::Ext(ext)
+        );
+        // Mode 2, naming the compiled-in Superbounce script with its
+        // default options.
+        let ir = ::rules::compile(::rules::builtin::SUPERBOUNCE).unwrap();
+        assert_eq!(ext.script.mode, variants::ext::Mode::Rules);
+        assert_eq!(ext.script.prefix[..], ir.id().0[..8]);
+        assert_eq!(ext.script.options, ir.default_options());
+        let found = crate::rules::runtime::compiled_in(ext.script.prefix).unwrap();
+        assert_eq!(found.id, ir.id());
+        // Its block files a renamed copy under Tweakers through the
+        // script's header, and its name alone files the built-in.
+        assert!(is_tweaker("My Bounce", &ext.encode()));
+        assert!(is_tweaker(&sb.display_name(), &[0; variants::ext::LEN]));
+        assert!(!is_tweaker("My Bounce", &[0; variants::ext::LEN]));
+        let flag_only = Ext {
+            superbounce: true,
+            ..Ext::RETAIL
+        };
+        assert!(!is_tweaker("My Bounce", &flag_only.encode()), "the flag files nothing");
+        // Every other variant stays under its game type.
+        for v in VARIANTS.iter().filter(|v| v.name != "Superbounce") {
+            assert_eq!(v.category, Category::GameType, "{}", v.name);
+            assert!(v.tweak().is_none());
+        }
+        // As the list and a record hold its name.
+        assert_eq!(
+            tweaker_builtin(&sb.display_name()).map(|v| v.name),
+            Some("Superbounce")
+        );
+        assert_eq!(
+            tweaker_builtin("Superbounce").map(|v| v.name),
+            Some("Superbounce")
+        );
+        assert!(tweaker_builtin("Zombies \u{e006}").is_none());
+        assert!(tweaker_builtin("Superbounce 2").is_none());
+    }
+
+    #[test]
+    fn the_tweakers_texts_are_ours_and_apart_from_the_variants() {
+        assert_eq!(text(TWEAKERS_LABEL_ID).as_deref(), Some(TWEAKERS_LABEL));
+        assert_eq!(text(TWEAKERS_TITLE_ID).as_deref(), Some(TWEAKERS_TITLE));
+        assert_eq!(
+            text(TWEAKERS_DESCRIPTION_ID).as_deref(),
+            Some(TWEAKERS_DESCRIPTION)
+        );
+        for id in TWEAKERS_IDS {
+            assert!(is_ours(id));
+            assert!((0..VARIANTS.len()).all(|i| id != name_id(i) && id != description_id(i)));
+        }
+        assert!(TWEAKERS_DESCRIPTION.encode_utf16().count() < 0xff);
     }
 
     #[test]

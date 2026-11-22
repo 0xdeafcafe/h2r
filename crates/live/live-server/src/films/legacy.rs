@@ -67,14 +67,13 @@ impl Queue {
                     self.pending.insert(id.to_owned(), job);
                 }
             }
-            FINISHED => {
+            FINISHED
                 if self
                     .pending
                     .get(id)
-                    .is_some_and(|j| Some(j.blob.as_str()) == event.body.data["blob"].as_str())
-                {
-                    self.pending.remove(id);
-                }
+                    .is_some_and(|j| Some(j.blob.as_str()) == event.body.data["blob"].as_str()) =>
+            {
+                self.pending.remove(id);
             }
             _ => {}
         }

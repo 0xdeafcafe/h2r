@@ -28,6 +28,10 @@
 //!   world's call, bail and decode counters.
 //! * [`havok`] answers `havok.bodies` and `havok.contacts`: the Havok
 //!   world's rigid bodies and contact points ([`Agent::add_game_method`]).
+//! * [`firefight`] answers `firefight.*` over the game's Firefight
+//!   runtime, which the game registers as a [`firefight::Source`].
+//! * [`rules`] answers `rules.state` over the game's rules runtime, which
+//!   the game registers as a [`rules::Source`].
 //! * [`raw`] answers `world.raw`: an object's body, physics component,
 //!   Havok entity, motion and shape as raw bytes. `world.poke` writes
 //!   bounded byte ranges within those parts.
@@ -51,13 +55,27 @@
 pub mod ai;
 mod capture;
 pub mod collision;
+mod collision_traces;
+pub use collision_traces::{CollisionTrace, CollisionTraces};
 pub mod compare;
+pub mod debug_views;
+pub mod editor;
 mod exec;
+pub mod firefight;
+pub mod forge;
+pub mod rules;
 pub mod havok;
 pub mod hostpads;
 pub mod hot;
+pub mod lightbar;
+mod live;
 mod loads;
+pub mod forensics;
+mod memory;
 pub mod menu;
+pub mod net;
+mod outputs;
+pub mod probe;
 pub mod raw;
 mod reader;
 pub mod render;
@@ -71,15 +89,16 @@ mod trace;
 pub use capture::{FrameSource, Sampler, TickMark, summarise, write_csv};
 pub use exec::{
     Access, Agent, ConnId, DEFER_TICKS_MAX, GameCtx, GameMethod, HostMethod, Later, LobbyTape,
-    Page, SnapshotMachine, Snapshots, TICK_STALE, query,
+    Page, SnapshotMachine, Snapshots, TICK_STALE, TICKER_CONN, Ticker, query,
 };
+pub use live::CameraSource;
 pub use loads::{LoadTracker, TimelineTotals, TotalsSource};
 pub use reader::{
-    GameStatus, GuestReader, Reader, TagNames, actor_object, machine_object, name_tags,
-    player_object, thing_object, vehicle_object,
+    GameStatus, GuestReader, Reader, StandingFits, TagNames, actor_object, fill_standing_fits,
+    machine_object, name_tags, player_object, thing_object, vehicle_object,
 };
 pub use server::Server;
-pub use tap::{AgentTap, Chain, Input, MenuPad, MenuReceipt, pad_steps};
+pub use tap::{AgentTap, Chain, Input, MenuPad, MenuReceipt, RoutePad, RoutePorts, pad_steps};
 
 /// The agent as a feature (`agent`): the tick observer, and the cutscene
 /// start and stop observers that set the `cinematic` phase.
@@ -114,11 +133,48 @@ impl hooks::Feature for AgentFeature {
                 .observe_after(point, label, move |_| a.set_cinematic(on))
                 .optional();
         }
+        let revert = self.0.clone();
+        b.raw().observe_after(&engine::points::GAME_STATE_REVERT, "mirror-cut", move |_| {
+            revert.live_cut();
+        }).optional();
         let (save, load) = (self.0.clone(), self.0.clone());
         b.snapshot(hooks::SnapshotPolicy::section(
             move || save.save_state(),
             move |bytes, _| load.load_state(bytes),
         ));
+        Ok(())
+    }
+}
+
+/// Lifecycle hooks that must be present before a queued world edit can run.
+pub const EDIT_LIFECYCLE: &str = "agent-edit-lifecycle";
+
+pub type EditorActivation = std::sync::Arc<dyn Fn(&dyn engine::GuestMemory) + Send + Sync>;
+
+pub struct EditLifecycleFeature(pub sim::calls::Shared, pub Agent, pub Option<EditorActivation>);
+
+impl hooks::Feature for EditLifecycleFeature {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(EDIT_LIFECYCLE, "Track the active game for queued editor writes")
+            .doc("docs/runtime/agent-api.md")
+    }
+
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
+        use sim::calls;
+
+        let start = self.0.clone();
+        let agent = self.1.clone();
+        b.game().on_start("map activation", move |o| {
+            let current = calls::preview_scenario(&*o.guest());
+            calls::lock(&start).map_activated(current);
+            agent.live_cut();
+        });
+        let revert = self.0.clone();
+        b.raw().observe_after(&engine::points::GAME_STATE_REVERT, "checkpoint previews", move |_| {
+            calls::lock(&revert).checkpoint_reverted();
+        });
+        calls::install_reload_recovery(b, self.0.clone(), self.1.clone(), self.2.clone());
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
     }
 }

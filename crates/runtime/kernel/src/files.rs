@@ -397,31 +397,43 @@ impl Core {
                 // offset; later chunks continue from the position the previous
                 // synchronous transfer left. A short chunk ends the transfer.
                 // An end-of-file after some bytes is a successful short read.
-                let mut done = 0usize;
-                let mut at = offset;
-                let result = loop {
-                    let n = (length - done).min(chunk.len());
-                    let target = guest_offset(buffer, done)?;
-                    let transferred = if write {
-                        memory.read_bytes(target, &mut chunk[..n], 1)?;
-                        storage.write(handle, at, &chunk[..n])
-                    } else {
-                        storage.read(handle, at, &mut chunk[..n])
-                    };
-                    match transferred {
-                        Ok(count) => {
-                            let count = count.min(n);
-                            if !write {
-                                memory.write_bytes(target, &chunk[..count], 1)?;
+                let mapped = if write {
+                    None
+                } else {
+                    storage.try_map_read(handle, offset, length, |source| {
+                        memory.map_file_read(buffer, source)
+                    })
+                };
+                let result = if let Some(bytes) = mapped {
+                    Ok(bytes)
+                } else {
+                    let mut done = 0usize;
+                    let mut at = offset;
+                    loop {
+                        let n = (length - done).min(chunk.len());
+                        let target = guest_offset(buffer, done)?;
+                        let transferred = if write {
+                            memory.read_bytes(target, &mut chunk[..n], 1)?;
+                            storage.write(handle, at, &chunk[..n])
+                        } else {
+                            storage.read(handle, at, &mut chunk[..n])
+                        };
+                        match transferred {
+                            Ok(count) => {
+                                let count = count.min(n);
+                                if !write {
+                                    memory.write_bytes(target, &chunk[..count], 1)?;
+                                    storage.note_guest_copy(count);
+                                }
+                                done += count;
+                                at = Offset::Current;
+                                if count < n || done == length {
+                                    break Ok(done);
+                                }
                             }
-                            done += count;
-                            at = Offset::Current;
-                            if count < n || done == length {
-                                break Ok(done);
-                            }
+                            Err(Error::EndOfFile) if !write && done > 0 => break Ok(done),
+                            Err(e) => break Err(e),
                         }
-                        Err(Error::EndOfFile) if !write && done > 0 => break Ok(done),
-                        Err(e) => break Err(e),
                     }
                 };
                 if let Some(position) = position {
@@ -919,6 +931,24 @@ impl Core {
     }
 }
 
+impl crate::snapshot::Persist for File {
+    fn put(&self, w: &mut snapshot::codec::Writer) {
+        let Self {
+            mode,
+            access,
+            synchronous,
+        } = self;
+        w.u32(*mode).u32(access.0).bool(*synchronous);
+    }
+    fn get(r: &mut snapshot::codec::Reader<'_>) -> Result<Self, crate::snapshot::CodecError> {
+        Ok(Self {
+            mode: r.u32()?,
+            access: vfs::Access(r.u32()?),
+            synchronous: r.bool()?,
+        })
+    }
+}
+
 #[cfg(test)]
 mod review_tests {
     use super::*;
@@ -940,23 +970,5 @@ mod review_tests {
             action,
             Action::Complete(crate::abi::Value::U32(status::SUCCESS))
         ));
-    }
-}
-
-impl crate::snapshot::Persist for File {
-    fn put(&self, w: &mut snapshot::codec::Writer) {
-        let Self {
-            mode,
-            access,
-            synchronous,
-        } = self;
-        w.u32(*mode).u32(access.0).bool(*synchronous);
-    }
-    fn get(r: &mut snapshot::codec::Reader<'_>) -> Result<Self, crate::snapshot::CodecError> {
-        Ok(Self {
-            mode: r.u32()?,
-            access: vfs::Access(r.u32()?),
-            synchronous: r.bool()?,
-        })
     }
 }

@@ -141,11 +141,21 @@ pub fn lobby_state(state: u32) -> bool {
 
 /// Reads what the start checks read.
 pub fn facts(m: &dyn GuestMemory) -> R<Facts> {
+    read(m, true)
+}
+
+/// The inputs to `joinable`, `pregame_line` and `lobby_players`. Only the
+/// start-state diagnostic needs every peer's map status and the countdown.
+pub fn membership(m: &dyn GuestMemory) -> R<Facts> {
+    read(m, false)
+}
+
+fn read(m: &dyn GuestMemory, start_checks: bool) -> R<Facts> {
     let mut f = Facts {
         lobby_on: m.u8(LOBBY_ON)? != 0,
         networking: m.u8(NETWORKING)? != 0,
         session_type: m.u32(SESSION_TYPE)?,
-        map_failed_here: m.u32(MAP_FAILED_HERE)? == 1,
+        map_failed_here: start_checks && m.u32(MAP_FAILED_HERE)? == 1,
         ..Facts::default()
     };
     if !f.networking {
@@ -164,7 +174,7 @@ pub fn facts(m: &dyn GuestMemory) -> R<Facts> {
     }
     let state = m.u32(s + STATE)?;
     f.state = Some(state);
-    if !lobby_state(state) {
+    if !start_checks || !lobby_state(state) {
         return Ok(f);
     }
     f.leader = m.u32(s + PEER)? == m.u32(s + LEADER_PEER)?;
@@ -260,12 +270,12 @@ pub fn pregame_line(f: &Facts) -> String {
 
 /// [`pregame`] over guest memory; a read that faults is no lobby.
 pub fn in_pregame(m: &dyn GuestMemory) -> bool {
-    facts(m).is_ok_and(|f| pregame(&f))
+    membership(m).is_ok_and(|f| pregame(&f))
 }
 
 /// [`joinable`] over guest memory; a read that faults is no lobby.
 pub fn in_joinable(m: &dyn GuestMemory) -> bool {
-    facts(m).is_ok_and(|f| joinable(&f))
+    membership(m).is_ok_and(|f| joinable(&f))
 }
 
 /// Session `+0x1118`: the session's player count, what the matchmaking

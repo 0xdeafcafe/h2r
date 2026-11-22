@@ -26,6 +26,7 @@ mod guest;
 pub mod late;
 pub mod layout;
 pub mod light_groups;
+pub mod lights;
 pub mod testing;
 
 pub use guest::{GuestRead, GuestWrite};

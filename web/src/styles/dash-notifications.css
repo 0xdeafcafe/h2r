@@ -1,0 +1,43 @@
+.dx-notice-region {
+  position: fixed;
+  inset: auto 1rem 1rem auto;
+  z-index: 1000;
+  width: min(22rem, calc(100% - 2rem));
+}
+
+.dx-notice {
+  display: flex;
+  align-items: start;
+  color: var(--d-ink);
+  background: linear-gradient(125deg, #153c0d, var(--d-deep));
+  border: 1px solid var(--d-panel-edge);
+  border-radius: .4rem;
+  box-shadow: 0 .35rem 1.25rem #0009;
+  font: 500 1.125rem/1.2 "Barlow Condensed", "Arial Narrow", sans-serif;
+}
+
+.dx-notice-link {
+  display: grid;
+  flex: 1;
+  gap: .25rem;
+  min-width: 0;
+  padding: .8rem 1rem;
+  color: inherit;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.dx-notice-link:hover strong { text-decoration: underline; }
+.dx-notice-link span { color: var(--d-ink-soft); }
+
+.dx-notice-dismiss {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  font: inherit;
+  cursor: pointer;
+}
+
+.dx-notice :focus-visible { outline: 2px solid var(--d-sel-1); outline-offset: -2px; }

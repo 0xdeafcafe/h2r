@@ -42,7 +42,7 @@ pub struct Switch {
 
 /// The most rows the table may hold. Raise it only with a reason in the
 /// commit; lower it when a switch goes.
-pub const BUDGET: usize = 40;
+pub const BUDGET: usize = 41;
 
 use Initial::{Group, Off, On};
 
@@ -73,7 +73,7 @@ pub const TABLE: &[Switch] = &[
         "the native renderer owns the frame (review 4.3): delete with the D3D path"),
     sw("impl.render.pipelined_frame", Off, "render", "2026-11-18",
         "the pipelined COW worker in its current form is a dead end (review 5): delete"),
-    sw("impl.render.interpolate", Off, "render", "2026-11-14",
+    sw("impl.render.interpolate", On, "render", "2026-11-14",
         "the presentation snapshot (sim-review lane 7) replaces it: delete"),
     sw("impl.render.reproject", Off, "render", "2026-11-18",
         "the presentation snapshot (sim-review lane 7) replaces it: delete"),
@@ -82,9 +82,9 @@ pub const TABLE: &[Switch] = &[
     // Engine leaves (the per-function keys are `crate::leaves`').
     sw("impl.engine", Group, "engine", "2026-11-16", "goes with its last group"),
     sw("impl.engine.locale", On, "engine", "2026-11-16", EXACT),
-    sw("impl.engine.tags", Off, "engine", "2026-11-16",
+    sw("impl.engine.tags", On, "engine", "2026-11-16",
         "hot leaves: on once thin transfers make an override free (review 5 item 1), else delete"),
-    sw("impl.engine.datums", Off, "engine", "2026-11-16",
+    sw("impl.engine.datums", On, "engine", "2026-11-16",
         "hot leaves: on once thin transfers make an override free (review 5 item 1), else delete"),
     // Audio.
     sw("impl.audio.packet-clock", On, "audio", "2026-11-20", EXACT),
@@ -103,6 +103,8 @@ pub const TABLE: &[Switch] = &[
     sw("impl.sim.observer-resources", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.submix-fx", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.native_simd", On, "sim", "2026-11-20", EXACT),
+    sw("impl.sim.status-poll", On, "sim", "2026-11-22",
+        "the map status poll answered from its last result (docs/perf/sim-10x.md, B2): deleted with its off path once a release has run with it on"),
     // Simulation: hand ports (`sim_bridge::sim_native`).
     sw("impl.sim.native_transform_compose", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_pose_matrix", Off, "sim", "2026-11-20", SIM_PORT),

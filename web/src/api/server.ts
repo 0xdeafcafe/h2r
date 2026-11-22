@@ -34,6 +34,18 @@ export function normalizeBase(input: string, fallbackProtocol = "http:"): string
   return u.origin + path;
 }
 
+/** Account setup exchanges a recovery secret even when signup needs no invite. */
+export function requireCredentialTransport(...addresses: string[]): void {
+  for (const address of addresses) {
+    const u = new URL(address, typeof location === "undefined" ? undefined : location.href);
+    const loopback = u.hostname === "localhost" || u.hostname === "[::1]"
+      || /^127(?:\.\d{1,3}){3}$/.test(u.hostname);
+    if (u.protocol !== "https:" && !(u.protocol === "http:" && loopback)) {
+      throw new Error("Live credentials require HTTPS or loopback");
+    }
+  }
+}
+
 export function wellKnownUrl(base: string): string {
   return base + "/.well-known/h2live.json";
 }

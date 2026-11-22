@@ -122,9 +122,9 @@ fn blend(m: &dyn GuestMemory, matrix_rows: &[Matrix], entry: u32) -> Result<Matr
             return Err(Refusal::Palette);
         }
         for (value, component) in result.iter_mut().zip(row) {
-            *value = *component * scale + *value;
+            *value += *component * scale;
         }
-        sum = scale + sum;
+        sum += scale;
     }
     Ok(result)
 }

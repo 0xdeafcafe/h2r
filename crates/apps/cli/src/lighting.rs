@@ -1,8 +1,12 @@
 //! Lighting inspection and bounded, no-clobber lightmap page export.
+mod census;
+mod split;
+
 use crate::safe_out::OutDir;
+use viewer::split::Raw;
 use anyhow::{Context, Result, bail};
 use assets::ResourceFiles;
-use map::{FourCC, Map, RawPointer, TagId};
+use map::{FourCC, Map, TagId};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::File,
@@ -11,7 +15,7 @@ use std::{
 };
 use tags::{
     DecodedTag, PixelFormat, TagData,
-    geometry::{RawSource, VertexKind},
+    geometry::VertexKind,
     lighting::{
         ATMOSPHERE_GROUPS, Atmosphere, LightmapLighting, VertexLighting, bsp_lightmaps,
         palette_rgba, vertex_lighting,
@@ -23,8 +27,10 @@ const LTMP: FourCC = FourCC(*b"ltmp");
 const USAGE: &str = "usage: h2 lighting <map> [--bsp N] [--disc ISO]
        h2 lighting <map> --bsp N --page N [--group N] [--palette N] --out DIR [--force] [--disc ISO]
        h2 lighting --all [<map>] [--disc ISO]
+       h2 lighting split <map> [--bsp N] [--light ID] [--disc ISO] --out DIR
 Summary only by default. --all validates reviewed metadata, references, bitmap
-pages and bucket resources; opaque fields are reported as unreviewed.
+pages and bucket resources, and reports page sizes, world texel density,
+cluster skies, sky light flags and incident-vector alignment per scenario BSP.
 --page exports one palette-coloured P8 page as PNG; ambiguous palette choices
 require --palette. A page is not the final shaded material.";
 
@@ -95,19 +101,6 @@ impl Options {
     }
 }
 
-/// Adapter reuses the bitmap reader's file routing, bounds and read-size cap.
-struct Raw<'a>(&'a mut ResourceFiles);
-impl RawSource for Raw<'_> {
-    fn read_raw(&mut self, p: RawPointer, size: u32) -> tags::Result<Vec<u8>> {
-        self.0.read(p.file, p.offset, size).map_err(|e| match e {
-            assets::Error::Map(e) => tags::Error::Map(e),
-            assets::Error::Io(e) => tags::Error::Map(e.into()),
-            assets::Error::MissingResource(f) => tags::Error::MissingResource(f),
-            _ => tags::Error::Invalid("bucket resource read rejected"),
-        })
-    }
-}
-
 #[derive(Default)]
 struct Stats {
     maps: usize,
@@ -161,6 +154,9 @@ impl Stats {
 }
 
 pub(super) fn run(args: Vec<String>) -> Result<()> {
+    if args.first().is_some_and(|a| a == "split") {
+        return split::run(args.into_iter().skip(1));
+    }
     let o = Options::parse(args)?;
     if o.help {
         println!("{USAGE}");
@@ -278,6 +274,9 @@ fn inspect(name: &str, o: &Options, stats: &mut Stats) -> Result<()> {
                 .failures
                 .push(format!("{name}: {} {}: {e:#}", tag.group, tag.id));
         }
+    }
+    if o.all && !pairs.is_empty() {
+        census::report(name, &mut map, &mut files, &pairs)?;
     }
     if !o.all
         && let Some(b) = o.bsp
@@ -510,7 +509,7 @@ mod export_tests {
             low_detail: None,
             lods: [
                 Some(tags::ResourceRange {
-                    pointer: RawPointer {
+                    pointer: map::RawPointer {
                         file: map::ResourceFile::Local,
                         offset: 0,
                     },

@@ -17,6 +17,7 @@ struct Game {
     cheats_refused: Option<String>,
     /// One cheat's own refusal (`cheat.list`'s per-cheat `refused`).
     speed_refused: Option<String>,
+    hitboxes: bool,
     god: bool,
     noclip: bool,
     speed: f64,
@@ -35,6 +36,7 @@ impl Default for Game {
             fov: 70,
             cheats_refused: None,
             speed_refused: None,
+            hitboxes: false,
             god: false,
             noclip: false,
             speed: 1.0,
@@ -118,9 +120,17 @@ impl Game {
                     Some("god") => self.god = p["value"].as_bool().ok_or("value")?,
                     Some("noclip") => self.noclip = p["value"].as_bool().ok_or("value")?,
                     Some("speed") if self.speed_refused.is_some() => return Err("refused".into()),
-                    Some("speed") =>self.speed = p["value"].as_f64().ok_or("value")?,
+                    Some("speed") => self.speed = p["value"].as_f64().ok_or("value")?,
                     _ => return Err("no cheat".into()),
                 }
+                Ok(json!({}))
+            }
+            "debug.views" => Ok(json!({"views":[
+                {"name":"hitboxes", "label":"Hitboxes", "on":self.hitboxes},
+                {"name":"traces", "label":"Traces", "on":false, "why":"entry unavailable"}
+            ], "range":48, "trace_ticks":30})),
+            "debug.view" if p["name"] == "hitboxes" => {
+                self.hitboxes = p["on"].as_bool().ok_or("on")?;
                 Ok(json!({}))
             }
             "perf.overlay" => Ok(json!({"on": true})),
@@ -235,6 +245,25 @@ fn enter(s: &Shared, section: &str) {
 }
 
 #[test]
+fn debug_view_rows_write_the_agent_registry_and_show_refusals() {
+    let (s, fake) = menu();
+    enter(&s, "debug-views");
+    to(&s, "Hitboxes");
+    go(&s, &[Nav::Select]);
+    assert_eq!(row(&s, "Hitboxes").value, json!(true));
+    assert!(fake.game(|g| g.hitboxes));
+    to(&s, "Traces");
+    go(&s, &[Nav::Select]);
+    assert_eq!(
+        fake.writes(),
+        vec![Call::new(
+            "debug.view",
+            json!({"name":"hitboxes", "on":true})
+        )]
+    );
+}
+
+#[test]
 fn the_first_page_lists_the_sections_and_back_closes() {
     let (s, _) = menu();
     assert!(s.lines().is_none(), "closed: nothing to draw");
@@ -248,7 +277,8 @@ fn the_first_page_lists_the_sections_and_back_closes() {
             "Tag edits",
             "Cheats",
             "Perf",
-            "Features"
+            "Features",
+            "Debug views"
         ]
     );
     go(&s, &[Nav::Down, Nav::Down, Nav::Select]);

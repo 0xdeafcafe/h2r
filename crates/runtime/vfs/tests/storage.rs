@@ -1528,6 +1528,8 @@ fn missing_home_is_a_configuration_error() {
     let status = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "missing_home_is_a_configuration_error"])
         .env_remove("HOME")
+        .env_remove("LOCALAPPDATA")
+        .env_remove("XDG_DATA_HOME")
         .env("VFS_TEST_NO_HOME", "1")
         .status()
         .unwrap();
@@ -1835,6 +1837,7 @@ fn opens_are_observed_with_their_host_bytes() {
     assert_eq!(
         host,
         HostFile {
+            generation: None,
             path: iso.clone(),
             offset: 36 * 2048,
             len: 3

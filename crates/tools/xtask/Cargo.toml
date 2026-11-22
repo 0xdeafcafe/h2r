@@ -9,7 +9,9 @@ publish = false
 [package.metadata.h2]
 doc = ["dev/build-speed.md", "dev/crate-structure.md"]
 
-# Kept to two small crates so `cargo xtask` builds in seconds.
+# Kept to three small crates so `cargo xtask` builds in seconds.
 [dependencies]
 anyhow.workspace = true
 serde_json.workspace = true
+# The cache directory the test ledger lives in (ledger::dir).
+host-dirs.workspace = true

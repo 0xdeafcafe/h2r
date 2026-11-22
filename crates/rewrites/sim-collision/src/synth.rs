@@ -199,6 +199,7 @@ impl Builder {
 pub struct Rng(pub u64);
 
 impl Rng {
+    #[allow(clippy::should_implement_trait, reason = "the fixture RNG returns a word on every call")]
     pub fn next(&mut self) -> u32 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;

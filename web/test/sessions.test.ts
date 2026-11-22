@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { gametype, kind, listed, mapName, parseSession, parseSessions, seats, sortSessions, type Session } from "../src/lib/sessions";
-import { Sessions } from "../mock/sessions";
+import { readSessionFilters, sessionFiltersParam, type SessionFilters } from "../src/lib/sessionFilters";
+import { COOP_LEVELS, Sessions } from "../mock/sessions";
 import { World } from "../mock/world";
 
 /** A session as the server sends it (crates/live/live-proto/src/session.rs). */
@@ -30,6 +31,11 @@ describe("reading sessions", () => {
     expect(s).toMatchObject({ session_id: "00112233445566aa", host_gamertag: "Sneaky Pete", host_xuid: "0009000000000001", state: "open", flags: "custom", map: "teacup", name: "Team Slayer" });
     expect(s.slots).toEqual({ public_filled: 3, public_open: 5, private_filled: 1, private_open: 1 });
     expect(Object.keys(s.players)).toEqual(["0009000000000001", "0009000000000002"]);
+  });
+
+  test("the advertised variant can name the game when the host has no separate title", () => {
+    const s = session({}, { name: null, browser: { game_type: 2, variant: "Rockets & Swords" } });
+    expect(gametype(s)).toBe("Rockets & Swords");
   });
 
   test("visibility reads as the server writes it; absent is public", () => {
@@ -103,6 +109,26 @@ describe("list order", () => {
   });
 });
 
+describe("saved session filters", () => {
+  test("normalization preserves false and zero, and ignores obsolete values", () => {
+    const filters = readSessionFilters({
+      kind: "coop", clankers: false, campaign: "halo_ce", difficulty: 0,
+      has_space: false, game_type: 99, map_category: "retail", variant: "   ", expired_key: "obsolete",
+    });
+    expect(JSON.parse(sessionFiltersParam(filters)!)).toEqual({
+      kind: "coop", clankers: false, campaign: "halo_ce", difficulty: 0,
+    });
+    expect(sessionFiltersParam(readSessionFilters(null))).toBeUndefined();
+  });
+
+  test("the variant uses the full trimmed title and the UTF-8 size limit", () => {
+    expect(JSON.parse(sessionFiltersParam({ variant: "    Rockets & Swords    " })!)).toEqual({ variant: "Rockets & Swords" });
+    expect(sessionFiltersParam({ variant: "é".repeat(128) })).toBeDefined();
+    expect(sessionFiltersParam({ variant: "é".repeat(129) })).toBeUndefined();
+    expect(sessionFiltersParam({ variant: "Team\0Slayer" })).toBeUndefined();
+  });
+});
+
 describe("mock sessions", () => {
   const get = (s: Sessions, path: string) => s.handle(new Request("http://mock" + path), new URL("http://mock" + path))!;
   const make = (n: number) => {
@@ -147,6 +173,47 @@ describe("mock sessions", () => {
     const onMap = parseSessions((get(s, `/v1/sessions?map=${map}`).body as { items: unknown[] }).items);
     expect(onMap.length).toBe(all.filter((x) => x.map === map).length);
     expect(get(s, "/v1/sessions?limit=0").status).toBe(400);
+  });
+
+  test("filters before paging, retains old unknown metadata, and provides visible variants", () => {
+    const s = make(4);
+    const ids = [...s.all.keys()].sort();
+    const known = (i: number) => s.all.get(ids[i]!)!.advertisement;
+    for (const id of ids) {
+      const ad = s.all.get(id)!.advertisement;
+      ad.slots = { public_open: 2, public_filled: 1, private_open: 0, private_filled: 0 };
+      ad.flags = "custom";
+      ad.visibility = "public";
+      ad.map = null;
+      delete ad.campaign;
+      delete ad.browser;
+    }
+    known(0).browser = { clankers: false, game_type: 1, variant: "Other Variant", map_category: "halo2" };
+    known(1).browser = { clankers: true, game_type: 2, variant: "Rockets & Swords", map_category: "map_pack" };
+    known(3).flags = "coop";
+    const [level, name] = COOP_LEVELS[0]!;
+    known(3).campaign = { level, name, difficulty: 0 };
+    known(3).browser = { clankers: false, map_category: "halo_ce" };
+    const list = (filters: SessionFilters, cursor?: string) => {
+      const q = new URLSearchParams({ limit: "1", filters: sessionFiltersParam(filters)!, browser_variants: "true" });
+      if (cursor) q.set("cursor", cursor);
+      return get(s, "/v1/sessions?" + q).body as { items: Array<{ session_id: string }>; next: string | null; variants?: string[] };
+    };
+
+    const filters = { kind: "multiplayer", clankers: true, game_type: 2, variant: "ROCKETS & SWORDS", map_category: "map_pack" } as const;
+    const first = list(filters);
+    expect(first.items.map((item) => item.session_id)).toEqual([ids[1]!]);
+    expect(first.next).toBe(ids[1]!);
+    expect(first.variants).toEqual(["Other Variant", "Rockets & Swords"]);
+    const second = list(filters, first.next!);
+    expect(second.items.map((item) => item.session_id)).toEqual([ids[2]!]);
+    expect(second.next).toBeNull();
+
+    expect(list({ kind: "coop", campaign: "halo_ce", difficulty: 0, has_space: true }).items.map((item) => item.session_id)).toEqual([ids[3]!]);
+    known(3).slots.public_open = 0;
+    known(3).slots.private_open = 2;
+    expect(list({ kind: "coop", has_space: true }).items).toEqual([]);
+    expect(get(s, "/v1/sessions?filters=broken").status).toBe(400);
   });
 
   test("one session by id; an unknown id is 404; nothing open is an empty list", () => {

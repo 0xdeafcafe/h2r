@@ -2,6 +2,7 @@
 //! tools:
 //!
 //! - [`source`]: where maps come from (a disc image or loose `.map`s).
+//! - [`map_groups`]: map sections and ordering for the editor.
 //! - [`undo`]: a snapshot undo stack any tool can use.
 //! - [`variant_sources`]: the game-variant schema, save names and save
 //!   storage for a source, for the variant and playlist tools.
@@ -18,6 +19,7 @@
 
 pub mod halo1;
 pub mod halo1_art;
+pub mod map_groups;
 pub mod mappack;
 pub mod packages;
 pub mod source;

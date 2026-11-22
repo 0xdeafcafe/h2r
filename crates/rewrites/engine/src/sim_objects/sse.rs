@@ -33,6 +33,7 @@ pub(crate) fn load(c: &mut CpuAbi, r: usize, bits: u32) {
 }
 
 /// `movss xmm, xmm`: lane 0 replaced, lanes 1 to 3 kept.
+#[cfg(test)]
 pub(crate) fn mov(c: &mut CpuAbi, dst: usize, bits: u32) {
     let v = get(c, dst);
     set(c, dst, (v & !u128::from(u32::MAX)) | u128::from(bits));
@@ -49,6 +50,7 @@ pub(crate) fn zero(c: &mut CpuAbi, r: usize) {
 }
 
 /// `xorps dst, [m128]` with a sign mask (`-x` on every lane).
+#[allow(dead_code, reason = "mirrors the packed XOR instruction alongside register zeroing")]
 pub(crate) fn xorps(c: &mut CpuAbi, dst: usize, mask: u128) {
     let v = get(c, dst);
     set(c, dst, v ^ mask);
@@ -61,7 +63,9 @@ pub(crate) enum Ss {
     Sub,
     Mul,
     Div,
+    #[allow(dead_code, reason = "keeps the x86 minss operation in the scalar SSE model")]
     Min,
+    #[allow(dead_code, reason = "keeps the x86 maxss operation in the scalar SSE model")]
     Max,
 }
 
@@ -103,6 +107,7 @@ pub(crate) fn ss_reg(c: &mut CpuAbi, op: Ss, dst: usize, src: usize) -> u32 {
 }
 
 /// `sqrtss dst, b`.
+#[allow(dead_code, reason = "mirrors the scalar square-root instruction for guest bodies")]
 pub(crate) fn sqrtss(c: &mut CpuAbi, dst: usize, b: u32) -> u32 {
     let a = get(c, dst);
     let r = simd::sqrtss(&mut c.mxcsr, a, b).expect("bodies run with every SSE exception masked");
@@ -119,6 +124,7 @@ pub(crate) fn cvtsi2ss(c: &mut CpuAbi, dst: usize, i: u32) -> u32 {
 }
 
 /// `cvttss2si r32, b`.
+#[allow(dead_code, reason = "pairs the guest conversion to float with the truncating conversion back")]
 pub(crate) fn cvttss2si(c: &mut CpuAbi, b: u32) -> u32 {
     simd::cvttss2si(&mut c.mxcsr, b).expect("bodies run with every SSE exception masked")
 }
@@ -162,6 +168,7 @@ pub(crate) fn parity(c: &CpuAbi) -> bool {
     c.eflags & 0x04 != 0
 }
 
+#[allow(dead_code, reason = "keeps the equality predicate with the SSE comparison flag helpers")]
 pub(crate) fn zero_flag(c: &CpuAbi) -> bool {
     c.eflags & 0x40 != 0
 }

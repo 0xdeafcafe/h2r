@@ -7,13 +7,19 @@
 // over it, so the page keeps Space and the arrows otherwise. Live games and
 // replays both use it, each with its own frame source.
 
-import { Show, Suspense, createEffect, createSignal, lazy, on, onCleanup, onMount, type JSX } from "solid-js";
+import { Show, Suspense, createEffect, createMemo, createSignal, lazy, on, onCleanup, onMount, type JSX } from "solid-js";
 import { useSearchParams } from "@solidjs/router";
 import type { MapFrame } from "../components/MapCanvas";
+import { mapPicture } from "../components/MapPicture";
+import { gameMapTitle } from "../state/maps";
+import { Overlay } from "./Overlay.tsx";
 import { GEOMETRY_CHANGED_NOTE } from "../lib/maps";
-import { geometryFor } from "../map/geometry";
+import { mapGlb } from "../map/geometry";
+import { damagePref, saveDamagePref, type DamageMode } from "../map/vitals";
 import type { RosterEntry } from "../map/render";
 import { geometryChanged } from "../state/maps";
+import { identity } from "../state/identity";
+import { addressPlayer, startCamera } from "./start";
 import type { GameState } from "../state/reducer";
 import type { ViewerDirector } from "./camera";
 import { afterChange, setFullscreen, type FullscreenDoc, type FullscreenState } from "./fullscreen";
@@ -42,6 +48,8 @@ export function keyIsForControl(target: EventTarget | null): boolean {
 const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 export default function GameViewer(props: {
+  id?: string;
+  open?: boolean;
   game: GameState;
   title: string;
   /** "Live coverage" or "Recorded replay", beside the title. */
@@ -59,6 +67,7 @@ export default function GameViewer(props: {
   keysLabel?: string;
   /** Optional page controls give 2D/3D and camera selection a shared owner. */
   director?: ViewerDirector;
+  focus?: () => number | null;
   viewControls?: JSX.Element;
   overlay?: JSX.Element;
   /** Under the view, full screen too: the replay's transport or the live clock. */
@@ -67,8 +76,15 @@ export default function GameViewer(props: {
   children?: JSX.Element;
 }) {
   let box!: HTMLElement;
-  const [params, setParams] = useSearchParams<{ view?: string; cam?: string; ao?: string; cut?: string; see?: string }>();
-  const geometry = geometryFor(() => props.game.map, () => props.game.map_id);
+  const [params, setParams] = useSearchParams<{ view?: string; cam?: string; ao?: string; cut?: string; see?: string; player?: string; dmg?: string }>();
+  const [storedDamage, setStoredDamage] = createSignal(damagePref());
+  const damage = () => damagePref(params.dmg, { getItem: storedDamage });
+  const setDamage = (mode: DamageMode) => {
+    setStoredDamage(mode);
+    saveDamagePref(mode);
+    if (params.dmg !== undefined) setParams({ dmg: mode }, { replace: true });
+  };
+  const backdrop = mapPicture(() => props.game.map, () => props.game.map_id);
   const mode = () => viewerMode(
     props.director ? (props.director.selection().mode === "top-down" ? undefined : "3d") : params.view,
     !geometryChanged(props.game),
@@ -99,12 +115,15 @@ export default function GameViewer(props: {
       cancelAnimationFrame(waiting);
       if (full() === "api") void setFullscreen(box, false, doc(), "api");
     });
-    // Sent here from the old pop-out address (or a link to the 3D view): bring the viewer into view.
-    if (!props.director && params.view === "3d") {
+    const bringIntoView = () => {
       box.scrollIntoView?.({ block: "start", behavior: reducedMotion() ? "auto" : "smooth" });
       focusInside();
-      focus3dWhenReady();
-    }
+      if (mode() === "3d") focus3dWhenReady();
+    };
+    // Hash links can arrive after the viewer is mounted or while the game
+    // detail is still loading. The older 3D link also opens the viewer.
+    if (params.view === "3d" && !props.open) bringIntoView();
+    createEffect(on(() => props.open, (open) => { if (open) bringIntoView(); }));
   });
   // The page under a box laid over the window doesn't scroll.
   createEffect(() => {
@@ -155,18 +174,34 @@ export default function GameViewer(props: {
     props.onKey?.(e);
   };
 
+  const players = () => Object.values(props.game.players);
+  const signedIn = () => identity.me()?.xuid;
+  const priorityPlayers = createMemo(() => [
+    addressPlayer(players(), params.player),
+    ...players().filter(p => p.xuid != null && p.xuid === signedIn()).map(p => p.index),
+  ]);
   const view3d = () => ({
-    glb: () => geometry()?.glb ?? null,
-    mode: (params.cam === "top" || params.cam === "follow" || params.cam === "eyes" ? params.cam : undefined) as ViewMode | undefined,
+    player: params.player,
+    start: (frame: MapFrame, player?: string) => startCamera(players(), frame.players, player, signedIn(), props.focus?.()),
+    priorityPlayers,
+    glb: () => mapGlb(props.game.map, props.game.map_id),
+    mode: (params.cam === "orbit" || params.cam === "top" || params.cam === "follow" || params.cam === "eyes" ? params.cam : undefined) as ViewMode | undefined,
     ao: params.ao !== "0",
     // `?cut=<height>` opens with the height cut there; `?see=0` without the see-through.
     cut: params.cut !== undefined && Number.isFinite(Number(params.cut)) ? Number(params.cut) : null,
     seeThrough: params.see !== "0",
   });
 
+  const open2D = () => {
+    if (props.director) props.director.pick("top-down", props.director.selection().follow);
+    else setMode("2d");
+    queueMicrotask(focusInside);
+  };
+
   return (
     <section
       ref={box}
+      id={props.id}
       class="gv"
       classList={{ "gv--full": full() !== null, "gv--window": full() === "window" }}
       aria-label={`Game viewer: ${props.title}`}
@@ -176,7 +211,7 @@ export default function GameViewer(props: {
       onKeyDown={onKeyDown}
     >
       <header class="gv-bar">
-        <h2>Game Viewer<small>{props.title}</small></h2>
+        <h2>Game Viewer<small>{" "}{props.title}</small></h2>
         <span class="gv-status">{props.status}</span>
         <span class="gv-buttons">
           <Show when={props.director} fallback={
@@ -215,11 +250,17 @@ export default function GameViewer(props: {
       >
         <Show
           when={mode() === "3d"}
-          fallback={<TacticalMap game={props.game} frame={props.frame} roster={props.roster} highlight={props.highlight} label={props.label} />}
+          fallback={
+            <TacticalMap game={props.game} frame={props.frame} roster={props.roster} highlight={props.highlight} label={props.label}
+              follow={() => props.director?.selection().follow ?? null} damage={damage()} onDamage={setDamage} soughtAt={props.soughtAt} />
+          }
         >
           <div class="v3-body">
-            <Suspense fallback={<div class="v3-note v3-note--mid">Loading the 3D view…</div>}>
-              <Viewer3D frame={props.frame} roster={props.roster} highlight={props.highlight} soughtAt={props.soughtAt} camera={props.director ? undefined : props.camera} director={props.director} {...view3d()} />
+            <Suspense fallback={<Overlay state="boot" title={props.title} backdrop={backdrop()} />}>
+              <Viewer3D title={props.title} mapName={gameMapTitle(props.game)} backdrop={backdrop()} on2D={open2D}
+                frame={props.frame} roster={props.roster} highlight={props.highlight} soughtAt={props.soughtAt}
+                camera={props.director ? undefined : props.camera} director={props.director}
+                damage={damage()} onDamage={setDamage} full={full() !== null} {...view3d()} />
             </Suspense>
           </div>
         </Show>

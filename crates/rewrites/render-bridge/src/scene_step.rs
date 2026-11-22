@@ -1,9 +1,10 @@
 //! The frame step's scene (docs/graphics/framescene.md, slice 1): a
 //! `FrameScene` begun at `render_views`, a view opened at each base-layer
 //! layer 3 with its camera, visible clusters and world state, its objects
-//! extracted at the object walk, its lights at each light passes' entry
-//! (`native_lights`), the items of its world layers 1, 5, 7, 8 and 20 at
-//! each one's draw, its model decorators at its layer 3
+//! extracted at the object walk, its guest-selected lights at each pass
+//! entry (`native_lights`), and all candidates at the end of the light
+//! pass. The items of world layers 1, 5, 7, 8 and 20 come from each
+//! layer's draw, the model decorators from layer 3
 //! (`scene_extract::decorators`), a first-person view with the items
 //! of its layers at the first-person draw `0x0003fdf0`, and the view's late
 //! passes (slice 5: the fog at layer 16 and the water at layer 6 from their
@@ -16,8 +17,8 @@
 //! instead of reading the guest themselves, at the same points and from
 //! the same reads. Nothing here writes guest memory.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 
 use engine::memory::GuestMemory;
@@ -41,6 +42,10 @@ pub const ID: &str = "frame-scene";
 /// The game-time record's tick count (`[GAME_TIME] + 8`).
 const GAME_TIME_TICK: u32 = 8;
 
+/// The return address of `render_scene_passes`' decal mode 1 call
+/// (`0x0002c048`), the next call after `render_dynamic_lights` returns.
+const DECALS_AFTER_LIGHTS: u32 = 0x0002_c04d;
+
 /// Guest memory, read only.
 struct Ro<'a>(&'a dyn GuestMemory);
 
@@ -50,9 +55,51 @@ impl GuestRead for Ro<'_> {
     }
 }
 
+pub type PresentPayload = Arc<dyn std::any::Any + Send + Sync>;
+
+/// Read-only inputs to the render context's image capture.
+pub trait PresentObserver: Send + Sync {
+    fn capture(&self, guest: &dyn GuestMemory) -> Option<PresentPayload>;
+    fn horizontal_factor(&self) -> f32;
+}
+
+#[derive(Clone, Copy)]
+pub struct CapturedView {
+    pub camera: Camera,
+    pub horizontal_factor: f32,
+}
+
+pub struct CapturedImage {
+    pub views: [Option<CapturedView>; 4],
+    pub payload: PresentPayload,
+}
+
+struct PresentViews {
+    observer: Weak<dyn PresentObserver>,
+    image: CapturedImage,
+}
+
+/// Detach the completed sample at Swap on the current render owner,
+/// including a render resumed on the game thread after worker fallback.
+pub fn take_present_image() -> Option<CapturedImage> {
+    if !PRESENT_READY.load(Ordering::Acquire) {
+        return None;
+    }
+    with_step(|step| {
+        PRESENT_READY.store(false, Ordering::Release);
+        step.presentation.take().map(|present| present.image)
+    })
+}
+
 #[derive(Default)]
 struct Step {
+    // SceneId can repeat after a snapshot load. A present belongs to one
+    // particular begin/seal interval, even when guest frame numbers repeat.
+    sequence: u64,
     builder: SceneBuilder,
+    // In-progress image metadata outlives the game-thread diagnostic seal
+    // when the render tail is still running on the pipelined worker.
+    presentation: Option<PresentViews>,
     /// The tick of the scene sealed last.
     tick: Option<u32>,
     /// The open view's clusters and world state are read: at its base
@@ -67,6 +114,11 @@ struct Step {
 }
 
 static STEP: Mutex<Option<Step>> = Mutex::new(None);
+static PRESENT_READY: AtomicBool = AtomicBool::new(false);
+/// The object shadow being drawn: its index in the open scene's
+/// `object_shadows`, or [`NO_SHADOW`] ([`object_shadow_at`]).
+static SHADOW_AT: AtomicU32 = AtomicU32::new(NO_SHADOW);
+const NO_SHADOW: u32 = u32::MAX;
 static LAST: Mutex<Option<Arc<FrameScene>>> = Mutex::new(None);
 static SEALED: AtomicU64 = AtomicU64::new(0);
 static UNSEALED: AtomicU64 = AtomicU64::new(0);
@@ -80,6 +132,9 @@ static LAYER_UNREAD: AtomicU64 = AtomicU64::new(0);
 static DECORATOR_DRAWS: AtomicU64 = AtomicU64::new(0);
 static DECORATOR_INSTANCES: AtomicU64 = AtomicU64::new(0);
 static DECORATOR_REMAINDER: AtomicU64 = AtomicU64::new(0);
+static LIGHT_EXTRACT_VIEWS: AtomicU64 = AtomicU64::new(0);
+static LIGHT_EXTRACT_NS: AtomicU64 = AtomicU64::new(0);
+static LIGHT_EXTRACT_UNREAD: AtomicU64 = AtomicU64::new(0);
 static LIGHT_GROUPS: AtomicU64 = AtomicU64::new(0);
 static LIGHT_GROUPS_WHOLE: AtomicU64 = AtomicU64::new(0);
 static LIGHT_ENTRIES: AtomicU64 = AtomicU64::new(0);
@@ -132,15 +187,29 @@ fn begin_step(step: &mut Step, m: &Ro<'_>) {
     if step.builder.is_building() {
         UNSEALED.fetch_add(1, Ordering::Relaxed);
     }
+    step.sequence = step.sequence.wrapping_add(1);
     step.builder.begin(id(m));
     step.light_open = false;
     step.shadow_open = false;
+    SHADOW_AT.store(NO_SHADOW, Ordering::Relaxed);
 }
 
-/// `render_views`' entry: a new scene.
-pub fn begin(mem: &dyn GuestMemory) {
+/// `render_views`' entry: a new scene. `present` samples the image the
+/// scene is drawn for; a scene-lifecycle test opens one with `None`.
+pub fn begin(mem: &dyn GuestMemory, present: Option<&Arc<dyn PresentObserver>>) {
     let m = Ro(mem);
-    with_step(|step| begin_step(step, &m));
+    let presentation = present.and_then(|observer| {
+        let payload = observer.capture(mem)?;
+        Some(PresentViews {
+            observer: Arc::downgrade(observer),
+            image: CapturedImage { views: [None; 4], payload },
+        })
+    });
+    with_step(|step| {
+        PRESENT_READY.store(presentation.is_some(), Ordering::Release);
+        step.presentation = presentation;
+        begin_step(step, &m);
+    });
 }
 
 /// The open view's camera at a base-layer layer 3, opening the view
@@ -162,6 +231,10 @@ pub fn open_view(mem: &dyn GuestMemory) -> Option<View> {
 /// are read, once: they are layer 3's (its list and its texture
 /// accumulation target), and the view can open earlier, at its layer 1.
 fn open_kind(mem: &dyn GuestMemory, kind: ViewKind) -> Option<View> {
+    open_kind_at_layer(mem, kind, false)
+}
+
+fn open_kind_at_layer(mem: &dyn GuestMemory, kind: ViewKind, layer_hook: bool) -> Option<View> {
     let m = Ro(mem);
     let Some(camera) = extract::camera(&m) else {
         NO_CAMERA.fetch_add(1, Ordering::Relaxed);
@@ -169,7 +242,7 @@ fn open_kind(mem: &dyn GuestMemory, kind: ViewKind) -> Option<View> {
     };
     let key = ViewKey { kind, player: 0, view: m.read_u32(VIEW_INDEX).unwrap_or(0) as u8 };
     let base = m.read_u32(CURRENT_LAYER) == Some(LIGHTMAP_LAYER);
-    with_step(|step| {
+    let (view, observer) = with_step(|step| {
         if !step.builder.is_building() {
             // A render this step did not see begin (no `render_views`
             // observer in this plan): the scene starts here.
@@ -193,14 +266,38 @@ fn open_kind(mem: &dyn GuestMemory, kind: ViewKind) -> Option<View> {
                 REFUSED.fetch_add(1, Ordering::Relaxed);
             }
         }
-        step.builder.view().cloned()
-    })
+        let observer = if layer_hook && kind == ViewKind::Game {
+            step.presentation.as_ref().and_then(|present| {
+                let old = present.image.views.get(usize::from(key.view))?;
+                if old.is_some_and(|old| old.camera == camera) {
+                    return None;
+                }
+                present.observer.upgrade()
+            })
+        } else {
+            None
+        };
+        Some((step.builder.view()?.clone(), observer))
+    })?;
+    if let Some(observer) = observer {
+        // Read the per-view lens outside the scene lock. Swap takes the
+        // locks in device-then-scene order when it detaches the sample.
+        let horizontal_factor = observer.horizontal_factor();
+        with_step(|step| {
+            if let Some(present) = &mut step.presentation
+                && let Some(slot) = present.image.views.get_mut(usize::from(key.view))
+            {
+                *slot = Some(CapturedView { camera, horizontal_factor });
+            }
+        });
+    }
+    Some(view)
 }
 
 /// The current list's `layer` items into the open view of `kind` (a
 /// layer draw of the scene's world layers or of the first person's).
 fn layer_items(mem: &dyn GuestMemory, kind: ViewKind, layer: u32) {
-    if open_kind(mem, kind).is_none() {
+    if open_kind_at_layer(mem, kind, true).is_none() {
         return;
     }
     let m = Ro(mem);
@@ -268,6 +365,34 @@ pub fn light(mem: &dyn GuestMemory, light: SceneLight, steps: &[LightStep]) {
     });
 }
 
+/// The main view's light pass is over (at the decal mode that follows
+/// it). Fill the candidate data alongside the original draw steps, which
+/// already hold their final group indices.
+fn light_candidates(mem: &dyn GuestMemory, fpu: engine::light_constants::Fpu) {
+    with_step(|step| {
+        let Some((scene, view)) = step.builder.open() else { return };
+        if view.key.kind != ViewKind::Game {
+            return;
+        }
+        step.light_open = false;
+        let start = Instant::now();
+        let drawn: Vec<u32> = scene.lights_of(view).iter()
+            .filter(|l| l.guest_selected).map(|l| l.handle).collect();
+        let eligible = |record, definition, flags| {
+            crate::native_scene_lists::light_candidate_eligible(mem, record, definition, flags)
+        };
+        if let Some(candidates) = scene_extract::lights::candidates(mem, fpu, &drawn, eligible) {
+            if step.builder.add_light_candidates(candidates).is_err() {
+                REFUSED.fetch_add(1, Ordering::Relaxed);
+            }
+        } else {
+            LIGHT_EXTRACT_UNREAD.fetch_add(1, Ordering::Relaxed);
+        }
+        LIGHT_EXTRACT_VIEWS.fetch_add(1, Ordering::Relaxed);
+        LIGHT_EXTRACT_NS.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    });
+}
+
 /// A light's passes begin: until [`light`] puts it in the view, its
 /// groups have no light to join.
 pub fn light_entry() {
@@ -275,21 +400,46 @@ pub fn light_entry() {
         step.light_open = false;
         step.shadow_open = false;
     });
+    SHADOW_AT.store(NO_SHADOW, Ordering::Relaxed);
+}
+
+/// The object shadow whose guest ops are being recorded: its index in the
+/// open scene's `object_shadows`, from its `0x00032350` call until its
+/// layer 11 ends ([`object_shadow_end`]), the next shadow or light, or the
+/// scene's end. The scene sink marks each shadow's ops with it
+/// (`d3d::SceneSink::with_object_shadows`) so the frame graph can find
+/// them; the marks draw nothing (docs/graphics/e3-lighting.md, L5).
+pub fn object_shadow_at() -> Option<u32> {
+    let at = SHADOW_AT.load(Ordering::Relaxed);
+    (at != NO_SHADOW).then_some(at)
+}
+
+/// An object shadow's layer 11 (its receivers) ends: the ops after it are
+/// not the shadow's.
+pub fn object_shadow_end() {
+    SHADOW_AT.store(NO_SHADOW, Ordering::Relaxed);
 }
 
 /// An object shadow `0x00032350` of the open view begins, with its call's
 /// two arguments (`identity`) when the caller matched its caster entry;
 /// `None` ends the one before without a new one. Opens the view first
-/// when none is.
+/// when none is. A creature caster is marked: it takes the ground-shadow
+/// branch.
 pub fn object_shadow(mem: &dyn GuestMemory, identity: Option<[u32; 2]>) {
     with_step(|step| step.shadow_open = false);
+    SHADOW_AT.store(NO_SHADOW, Ordering::Relaxed);
     let Some(identity) = identity else { return };
     if view(mem).is_none() {
         return;
     }
+    let creature = scene_extract::layout::objects::kind(&Ro(mem), identity[0]) == Some(scene_extract::layout::objects::CREATURE);
     with_step(|step| {
         step.light_open = false;
-        step.shadow_open = step.builder.push_object_shadow(identity).is_ok();
+        let pushed = step.builder.push_object_shadow(identity, creature);
+        step.shadow_open = pushed.is_ok();
+        if let Ok(at) = pushed {
+            SHADOW_AT.store(at, Ordering::Relaxed);
+        }
         if !step.shadow_open {
             REFUSED.fetch_add(1, Ordering::Relaxed);
         }
@@ -495,34 +645,92 @@ pub fn with_open<R>(f: impl FnOnce(Option<(&FrameScene, &View)>) -> R) -> R {
     with_step(|step| f(step.builder.open()))
 }
 
+/// A host which joins the typed scene to the owned device work seen
+/// during the same begin/seal interval. Invoked without the builder lock.
+#[derive(Clone, Copy)]
+pub struct SealObserver {
+    pub sealed: fn(u64, Arc<FrameScene>),
+    pub reset: fn(),
+}
+
+static OBSERVER: Mutex<Option<SealObserver>> = Mutex::new(None);
+
+pub fn set_seal_observer(observer: Option<SealObserver>) {
+    *OBSERVER.lock().unwrap_or_else(|e| e.into_inner()) = observer;
+}
+
+/// Identifies the scene being built at a guest Swap. A present outside a
+/// render frame cannot be joined to the last scene by tick number alone.
+pub fn open_identity() -> Option<(u64, SceneId)> {
+    with_step(|step| Some((step.sequence, step.builder.scene()?.id)))
+}
+
 /// After `render_frame_and_present`: seal and publish the scene.
 pub fn seal() {
+    SHADOW_AT.store(NO_SHADOW, Ordering::Relaxed);
     let sealed = with_step(|step| {
-        let tick = step.builder.scene()?.id.tick;
+        let id = step.builder.scene()?.id;
+        if id.map_epoch != crate::native_map_work::generation() {
+            return None;
+        }
+        let tick = id.tick;
         let ticks_run = step.tick.map_or(0, |t| tick.wrapping_sub(t).min(u32::from(u8::MAX)) as u8);
         let scene = step.builder.seal(Stamp { published: Some(Instant::now()), ticks_run })?;
         step.tick = Some(tick);
-        Some((scene, step.builder.free_list().clone()))
+        // Publish under the same lock that retires the open and sealed scenes.
+        // A slow observer may return after a map change.
+        let old = LAST.lock().unwrap_or_else(|e| e.into_inner()).replace(Arc::clone(&scene));
+        Some((step.sequence, scene, old, step.builder.free_list().clone()))
     });
-    let Some((scene, free)) = sealed else { return };
+    let Some((sequence, scene, old, free)) = sealed else { return };
     SEALED.fetch_add(1, Ordering::Relaxed);
-    let old = LAST.lock().unwrap_or_else(|e| e.into_inner()).replace(scene);
+    let observer = *OBSERVER.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(o) = observer {
+        (o.sealed)(sequence, scene);
+    }
     if let Some(old) = old {
         free.recycle(old);
     }
 }
 
-/// A snapshot load: the next scene is a cut, the one being written is
-/// dropped at the next begin.
+fn reset_timeline(why: Cut) {
+    with_step(|step| {
+        if step.builder.is_building() {
+            UNSEALED.fetch_add(1, Ordering::Relaxed);
+        }
+        step.builder.discard(why);
+        step.tick = None;
+        SHADOW_AT.store(NO_SHADOW, Ordering::Relaxed);
+        LAST.lock().unwrap_or_else(|e| e.into_inner()).take();
+    });
+    let observer = *OBSERVER.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(o) = observer {
+        (o.reset)();
+    }
+}
+
+/// Map activation invalidates renderer pins even before its first frame.
+pub(crate) fn map_changed() {
+    reset_timeline(Cut::MAP);
+}
+
+/// Snapshot restoration also abandons any guest entry/slot scopes.
 pub fn forget() {
-    with_step(|step| step.builder.cut(Cut::LOAD));
+    reset_timeline(Cut::LOAD);
+    with_step(|step| {
+        step.presentation = None;
+        PRESENT_READY.store(false, Ordering::Release);
+    });
     crate::entry_census::forget();
+    crate::residual_census::forget();
     crate::carried_slots::forget();
 }
 
 /// The scene sealed last.
 pub fn last() -> Option<Arc<FrameScene>> {
-    LAST.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    LAST.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+        .filter(|s| s.id.map_epoch == crate::native_map_work::generation())
+        .cloned()
 }
 
 /// The step's counters, for `render.scene`.
@@ -540,6 +748,9 @@ pub fn counters() -> Vec<(&'static str, u64)> {
         ("scene_decorator_draws", DECORATOR_DRAWS.load(Ordering::Relaxed)),
         ("scene_decorator_instances", DECORATOR_INSTANCES.load(Ordering::Relaxed)),
         ("scene_decorator_remainder", DECORATOR_REMAINDER.load(Ordering::Relaxed)),
+        ("scene_light_extract_views", LIGHT_EXTRACT_VIEWS.load(Ordering::Relaxed)),
+        ("scene_light_extract_ns", LIGHT_EXTRACT_NS.load(Ordering::Relaxed)),
+        ("scene_light_extract_unread", LIGHT_EXTRACT_UNREAD.load(Ordering::Relaxed)),
         ("scene_light_groups", LIGHT_GROUPS.load(Ordering::Relaxed)),
         ("scene_light_groups_whole", LIGHT_GROUPS_WHOLE.load(Ordering::Relaxed)),
         ("scene_light_entries", LIGHT_ENTRIES.load(Ordering::Relaxed)),
@@ -571,7 +782,7 @@ fn at_layer(mem: &dyn GuestMemory, ret: u32) {
     let Ok(layer) = mem.u32(CURRENT_LAYER) else { return };
     match (layer_site(layer, ret), layer) {
         (Site::Scene, LIGHTMAP_LAYER) => {
-            if view(mem).is_some() {
+            if open_kind_at_layer(mem, ViewKind::Game, true).is_some() {
                 decorators(mem);
             }
         }
@@ -581,7 +792,10 @@ fn at_layer(mem: &dyn GuestMemory, ret: u32) {
     }
 }
 
-pub struct FrameSceneStep;
+#[derive(Default)]
+pub struct FrameSceneStep {
+    pub present: Option<Arc<dyn PresentObserver>>,
+}
 
 impl Feature for FrameSceneStep {
     fn manifest(&self) -> Manifest {
@@ -606,10 +820,11 @@ impl Feature for FrameSceneStep {
         // Under impl.render.pipelined_frame the views are written on the
         // render thread and sealed on the game thread after the launch,
         // so a sealed scene there can be the frame before's.
+        let present = self.present.clone();
         b.raw()
-            .observe_before(&points::RENDER_VIEWS, "frame_scene_begin", |o| {
+            .observe_before(&points::RENDER_VIEWS, "frame_scene_begin", move |o| {
                 let g = o.guest();
-                begin(&*g);
+                begin(&*g, present.as_ref());
             })
             .context_only();
         b.raw()
@@ -617,6 +832,25 @@ impl Feature for FrameSceneStep {
                 let g = o.guest();
                 let ret = g.u32(o.cpu.esp).unwrap_or(0);
                 at_layer(&*g, ret);
+            })
+            .after_feature(crate::render_timing::ID)
+            .context_only();
+        // The light candidates once the light pass is over: before the
+        // decal mode 1 call, the next call after `render_dynamic_lights`
+        // returns, with nothing between them. A before there, not an
+        // after on the lights, keeps the lights' chain on the render
+        // thread. Render-timing's scene-call observer on the same point
+        // goes first, like at the layer draw.
+        b.raw()
+            .observe_before(&points::RENDER_DECAL_MODE, "frame_scene_light_candidates", |o| {
+                let g = o.guest();
+                if g.u32(o.cpu.esp).ok() != Some(DECALS_AFTER_LIGHTS) {
+                    return;
+                }
+                light_candidates(&*g, engine::light_constants::Fpu {
+                    mxcsr: o.cpu.mxcsr,
+                    x87_control: o.cpu.x87.control,
+                });
             })
             .after_feature(crate::render_timing::ID)
             .context_only();
@@ -637,6 +871,9 @@ impl Feature for FrameSceneStep {
         // since its exit observers give those entries an after part.
         if b.switches().feature(crate::entry_census::ID, false) {
             crate::entry_census::install(b);
+            // render.residual's producers ride the same option
+            // (docs/graphics/retire-d3d.md, "New method: render.residual").
+            crate::residual_census::install(b);
         }
         // The slot of the frame the guest's D3D work is in, for the
         // device's scene sink (slice 6): an option, its census of the
@@ -653,6 +890,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn worker_view_metadata_survives_the_game_thread_scene_seal() {
+        use scene_extract::layout::camera::RENDER_CAMERA;
+        use scene_extract::testing::{Mem, camera_record};
+
+        struct Observer;
+
+        impl PresentObserver for Observer {
+            fn capture(&self, _: &dyn GuestMemory) -> Option<PresentPayload> {
+                Some(Arc::new(19_u32))
+            }
+
+            fn horizontal_factor(&self) -> f32 {
+                0.75
+            }
+        }
+
+        let mut record = Mem::default();
+        camera_record(&mut record, RENDER_CAMERA);
+        let mut guest = engine::FlatMemory::new(RENDER_CAMERA, 0x100);
+        for (addr, word) in record.0 {
+            guest.set_u32(addr, word).unwrap();
+        }
+        let observer: Arc<dyn PresentObserver> = Arc::new(Observer);
+        begin(&guest, Some(&observer));
+        let first = open_kind_at_layer(&guest, ViewKind::Game, true).unwrap();
+        seal();
+        assert_eq!(last().unwrap().views[0].camera, first.camera);
+
+        // The worker reaches another view draw after the game-thread seal.
+        guest.set_u32(RENDER_CAMERA, 7.0_f32.to_bits()).unwrap();
+        let next = open_kind_at_layer(&guest, ViewKind::Game, true).unwrap();
+        assert_ne!(first.camera, next.camera);
+        let image = take_present_image().unwrap();
+        let captured = image.views[0].unwrap();
+        assert_eq!(captured.camera, next.camera);
+        assert_eq!(captured.horizontal_factor, 0.75);
+        assert_eq!(image.payload.downcast_ref::<u32>(), Some(&19));
+        assert!(take_present_image().is_none());
+    }
+
+    #[test]
     fn the_step_is_on_with_the_native_renderer_only() {
         let on = |spec| hooks::switches::native_render_on(&hooks::Switches::parse(spec).unwrap());
         assert!(on(""));
@@ -663,14 +941,23 @@ mod tests {
     fn the_entry_census_is_placed_only_with_its_option() {
         let text = |spec| {
             let mut r = hooks::Registry::new(hooks::Switches::parse(spec).unwrap());
-            assert!(r.add(&FrameSceneStep).unwrap());
+            assert!(r.add(&FrameSceneStep::default()).unwrap());
             r.build(&hooks::plan::Base).unwrap().text()
         };
         let off = text("");
         assert!(!off.contains("entry_census"), "{off}");
         assert!(off.contains("frame_scene_post"), "the post passes are extracted with or without it\n{off}");
         let on = text("frame-scene.census");
+        assert!(!off.contains("residual_census"), "{off}");
         for label in [
+            "residual_census_frame",
+            "residual_census_frame_end",
+            "residual_census_layer",
+            "residual_census_layer_end",
+            "residual_census_game_view",
+            "residual_census_hud_end",
+            "residual_census_light_passes_end",
+            "residual_census_frame_tail_end",
             "entry_census_layer",
             "entry_census_layer_end",
             "entry_census_light_passes_end",
@@ -689,7 +976,7 @@ mod tests {
     fn the_carried_slots_are_placed_only_with_their_option() {
         let text = |spec| {
             let mut r = hooks::Registry::new(hooks::Switches::parse(spec).unwrap());
-            assert!(r.add(&FrameSceneStep).unwrap());
+            assert!(r.add(&FrameSceneStep::default()).unwrap());
             r.build(&hooks::plan::Base).unwrap().text()
         };
         let off = text("");

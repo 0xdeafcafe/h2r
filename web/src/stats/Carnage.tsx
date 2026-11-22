@@ -5,13 +5,13 @@ import { For, Show, createMemo, createSignal } from "solid-js";
 import { A } from "@solidjs/router";
 import type { GameState, Standing } from "../state/reducer";
 import { standings, teamStandings } from "../state/reducer";
-import { bestSprees, countMedals, gameMedals, ordinal, places, weaponBreakdown, MEDALS, type MedalId } from "../state/derive";
+import { bestSprees, countMedals, gameAwards, isBounceMedal, ordinal, places, gameWeaponReport, MEDALS, type MedalId, type GameWeaponRow } from "../state/derive";
 import Emblem from "../components/Emblem";
 import { BotTag } from "../components/bits";
 import MedalIcon from "../components/MedalIcon";
 import WeaponIcon from "../components/WeaponIcon";
 import { colourFor, teamName } from "../lib/game";
-import { titleCase } from "../lib/format";
+import { damageSourceName } from "../lib/format";
 import { Derived, Tabs, Title, playerHref } from "./Layout";
 
 interface Row {
@@ -31,7 +31,7 @@ export default function Carnage(props: { game: GameState }) {
     const g = props.game;
     const pl = places(g);
     const sprees = bestSprees(g.kills);
-    const medals = gameMedals(g.kills);
+    const medals = gameAwards(g);
     const by = new Map<number, Row>();
     for (const s of standings(g)) {
       by.set(s.index, {
@@ -55,9 +55,11 @@ export default function Carnage(props: { game: GameState }) {
       return { team: t.team as number | null, score: t.score, place: players[0]?.place ?? 0, players };
     });
   });
-  const totalMedals = createMemo(() => [...countMedals(gameMedals(props.game.kills)).entries()].sort((a, b) => b[1] - a[1]));
-  const weapons = createMemo(() => weaponBreakdown(props.game.kills));
-  const max = () => Math.max(0.0001, ...weapons().map((w) => w.share));
+  const totalMedals = createMemo(() => [...countMedals(gameAwards(props.game)).entries()].sort((a, b) => b[1] - a[1]));
+  // The bounce medals only in a game that had bounces (a superbounce game).
+  const chest = createMemo(() => (props.game.bounces?.length ? MEDALS : MEDALS.filter((m) => !isBounceMedal(m.id))));
+
+  const weapons = createMemo(() => gameWeaponReport(props.game.kills));
   const ended = () => props.game.status === "ended";
 
   const Who = (p: { r: Row }) => (
@@ -123,21 +125,7 @@ export default function Carnage(props: { game: GameState }) {
                   </div>
                 </div>
               </section>
-              <section class="s-sec">
-                <header><span>Tool of Destruction</span><Derived /></header>
-                <div class="s-game-weapon-key"><span>Weapon / share of kills</span><span>Kills</span></div>
-                <div class="s-tod s-game-weapons">
-                  <For each={weapons().slice(0, 4)} fallback={<p class="s-tod-empty">No knockouts yet.</p>}>
-                    {(w) => (
-                      <div class="s-tod-row">
-                        <span class="s-tod-ico"><span><WeaponIcon weapon={w.weapon} width={50} /><small>{titleCase(w.weapon)}</small></span></span>
-                        <div class="s-tod-bars"><div class="s-tod-bar"><span style={{ width: `${(w.share / max()) * 74}%` }} />{(w.share * 100).toFixed(1)}%</div></div>
-                        <div class="s-tod-nums">{w.kills}</div>
-                      </div>
-                    )}
-                  </For>
-                </div>
-              </section>
+              <GameWeapons rows={gameWeaponReport(props.game.kills, 4)} scale={74} />
             </div>
           </div>
         </Show>
@@ -205,7 +193,7 @@ export default function Carnage(props: { game: GameState }) {
           <section class="s-sec s-game-medal-chest">
             <header><span>Total Game Medals</span><Derived /></header>
             <div class="s-game-medal-grid s-game-medal-grid--named">
-              <For each={MEDALS}>{(medal) => {
+              <For each={chest()}>{(medal) => {
                 const count = () => totalMedals().find(([id]) => id === medal.id)?.[1] ?? 0;
                 return <div class="s-game-medal" classList={{ empty: !count() }}>
                   <MedalIcon id={medal.id} size={30} dim={!count()} />
@@ -216,23 +204,35 @@ export default function Carnage(props: { game: GameState }) {
           </section>
         </Show>
         <Show when={tab() === "weapons"}>
-          <section class="s-sec">
-            <header><span>Tool of Destruction</span><Derived /></header>
-            <div class="s-game-weapon-key"><span>Weapon / share of kills</span><span>Kills</span></div>
-            <div class="s-tod s-game-weapons">
-              <For each={weapons()} fallback={<p class="s-tod-empty">No knockouts yet.</p>}>
-                {(w) => (
-                  <div class="s-tod-row">
-                    <span class="s-tod-ico"><span><WeaponIcon weapon={w.weapon} width={50} /><small>{titleCase(w.weapon)}</small></span></span>
-                    <div class="s-tod-bars"><div class="s-tod-bar"><span style={{ width: `${(w.share / max()) * 86}%` }} />{(w.share * 100).toFixed(1)}%</div></div>
-                    <div class="s-tod-nums">{w.kills}</div>
-                  </div>
-                )}
-              </For>
-            </div>
-          </section>
+          <GameWeapons rows={weapons()} scale={86} />
         </Show>
       </div>
+    </section>
+  );
+}
+
+function GameWeapons(props: { rows: GameWeaponRow[]; scale: number }) {
+  const max = () => Math.max(...props.rows.map((row) => row.share));
+  return (
+    <section class="s-sec">
+      <header><span>Tool of Destruction</span><Derived /></header>
+      <Show when={props.rows.length} fallback={<p class="s-tod-empty">Weapon data wasn't recorded for this game.</p>}>
+        <div class="s-game-weapon-key"><span>Weapon / share of kills</span><span>Kills</span></div>
+        <div class="s-tod s-game-weapons">
+          <For each={props.rows}>
+            {(row) => (
+              <div class="s-tod-row">
+                <span class="s-tod-ico"><span>
+                  <Show when={row.weapon}>{(weapon) => <WeaponIcon weapon={weapon()} width={50} />}</Show>
+                  <small>{row.weapon ? damageSourceName(row.weapon) : "Not recorded"}</small>
+                </span></span>
+                <div class="s-tod-bars"><div class="s-tod-bar"><span style={{ width: `${(row.share / max()) * props.scale}%` }} />{(row.share * 100).toFixed(1)}%</div></div>
+                <div class="s-tod-nums">{row.kills}</div>
+              </div>
+            )}
+          </For>
+        </div>
+      </Show>
     </section>
   );
 }

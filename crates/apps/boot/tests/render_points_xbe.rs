@@ -27,11 +27,15 @@ fn the_native_renderers_points_are_discovered_functions() {
         &points::VISIBLE_LIGHT_LIST,
         &points::LIGHT_GEOMETRY_FLAGS,
         &points::LIGHT_EXTRA_CASTER,
+        &points::RESET_SCENE_RECORDS,
+        &points::OBJECT_RENDER_RECORDS,
+        &points::MODEL_LOD,
         &points::SCENE_RECORD_WRITER,
         &points::TRANSPARENT_EFFECT_ENTRY,
         &points::TRANSPARENT_POLYGON_ENTRY,
         &points::OBJECT_RENDER_SETUP,
         &points::RENDER_DYNAMIC_LIGHTS,
+        &points::RENDER_DECAL_MODE,
         &points::RENDER_LIGHT_PASSES,
         &points::LIGHT_GEOMETRY_DRAW,
         &points::LIGHT_RESTORE_TARGET,
@@ -66,8 +70,23 @@ fn the_native_scene_list_sites_are_instruction_boundaries() {
     for site in sites.into_iter().chain([points::OBJECT_RECORD_APPENDED]) {
         assert!(matches!(analysis.claim(site), Some(('I', Some(_)))), "{site:#010x}");
     }
-    analysis.expose_instructions(boot::scene_effect_instruction_entries());
+    analysis.expose_instructions(points::scene_effects::instruction_entries());
     for site in sites {
         assert!(analysis.functions.contains_key(&site), "{site:#010x}");
+    }
+}
+
+#[test]
+#[ignore = "needs the retail default.xbe in $H2_XBE"]
+fn render_aspect_sites_are_dispatch_blocks_in_the_build_tiers_analysis() {
+    let data = std::fs::read(std::env::var_os("H2_XBE").expect("set H2_XBE")).unwrap();
+    let xbe = xbe::Xbe::parse(&data).unwrap();
+    assert!(recomp::has_retail_render_sites(&xbe));
+    let (analysis, _) = recomp::analyze_cached(&xbe, recomp::analysis_cache(&data).as_deref()).unwrap();
+    let builder = analyze::cfg::CfgBuilder::new(&analysis, &xbe);
+    for pc in points::render_aspect::instruction_entries().chain(points::scene_effects::instruction_entries()) {
+        assert!(analysis.functions.contains_key(&pc), "missing render hook entry {pc:#010x}");
+        let cfg = builder.build(pc).unwrap();
+        assert!(cfg.blocks.contains_key(&pc), "no block for render hook {pc:#010x}");
     }
 }

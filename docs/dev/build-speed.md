@@ -76,9 +76,9 @@ a second checkout can be served the first one's build.
   file and line (that comes from the panic location, not debug info); a
   backtrace still names the dependency's functions but not their lines.
   Workspace crates keep `line-tables-only`.
-- `split-debuginfo = "unpacked"` is now written out. It is cargo's
-  default on macOS, so by itself it changes nothing; it is there so an
-  override cannot bring `packed` and `dsymutil` back unnoticed.
+- Cargo selects the platform default for split debug info. macOS keeps
+  debug info in object files (unpacked). Windows MSVC writes a PDB
+  (packed), the format supported by its linker.
 - `opt-level = 3` for `miniz_oxide`, `zlib-rs`, `flate2`, `fdeflate`,
   `png`, `zune-jpeg`, `ruzstd`, `crc32fast`, `adler2`, `simd-adler32`
   and `sha2`: small codec and checksum crates that tests push whole
@@ -117,11 +117,11 @@ For `h1objects` (27 files), `h1convert` (16), `engine` (16) and `d3d`
 (37 of 50), the integration test files now build into one executable
 named `it`. 96 executables become 4.
 
-- No test file moved. `tests/it.rs` names each file as a module with
-  `#[path = "name.rs"]`. A file loaded that way resolves its own
-  `mod common;` beside itself, exactly as it did as a crate root, so the
-  files needed no edits (one exception: `d3d/tests/draw_frame/mod.rs`
-  said `crate::common` and now says `super::common`).
+- Each test file stays in place. `tests/it.rs` names it as a module with
+  `#[path = "name.rs"]`. In `d3d`, this target loads
+  `tests/common/mod.rs` once as `crate::common`. Standalone test and
+  benchmark targets declare their own `common` module when they use
+  these helpers.
 - The crate sets `autotests = false`, so cargo no longer builds every
   file under `tests/` by itself. To keep a new file from silently never
   running, `it.rs` ends with a shared guard test
@@ -400,8 +400,9 @@ time through a path the scan does not recognise. The scan covers
 
 ### 4. The test ledger
 
-xtask records passes in `~/Library/Caches/h2recomp/xtask-ledger`
-(`$XDG_CACHE_HOME/h2recomp/xtask-ledger` elsewhere), one file per key
+xtask records passes in `xtask-ledger` in the cache directory
+([storage.md](../runtime/storage.md#host-directories);
+`~/Library/Caches/h2recomp/xtask-ledger` on a Mac), one file per key
 (`crates/tools/xtask/src/ledger.rs`). A package's key covers what its
 test run can depend on:
 

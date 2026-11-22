@@ -20,6 +20,7 @@
 pub mod audio_out;
 #[cfg(any(target_vendor = "apple", windows))]
 pub mod embedded;
+pub mod forge_overlay;
 pub mod fps;
 pub mod frame;
 pub mod input_pump;
@@ -28,12 +29,16 @@ pub mod keymap;
 pub mod lifecycle;
 pub mod mailbox;
 pub mod menu_overlay;
+#[cfg(target_os = "macos")]
+mod metal_resize;
 pub mod overlay;
 pub mod pacing;
 pub mod tile;
 pub mod scale;
 #[cfg(not(any(target_os = "tvos", target_os = "ios")))]
 mod shell;
+#[cfg(target_os = "linux")]
+mod steam_keyboard;
 mod surface;
 pub mod watermark;
 pub mod worker;
@@ -53,16 +58,18 @@ pub mod theater_overlay;
 pub use frame::{Compositor, Filter, FrameError, FrameSink, FrameSource, FrameStats, ShownFrame};
 pub use input_pump::{PumpReport, pump_input};
 pub use lifecycle::{Control, Lifecycle};
-pub use overlay::{Banner, Notice, NoticeKind};
+pub use overlay::{Banner, EditorPlate, EditorPlateSource, Notice, NoticeKind};
 pub use pacing::{PaceAction, PacePolicy, PaceStats, Pacer, VBlank, WindowedRate};
-pub use scale::{DisplayAspect, Scaling, Viewport};
+pub use scale::{DisplayAspect, NativeFit, Scaling, Viewport};
 pub use watermark::{BuildInfo, LiveStats, Watermark};
 
 /// Shell settings.
 #[derive(Clone, Debug)]
 pub struct AppConfig {
-    /// Window title (the shell appends status).
+    /// Window title.
     pub title: String,
+    /// Append live frame rates and guest status to the window title.
+    pub status_in_title: bool,
     /// Initial inner size in logical points.
     pub window_size: (u32, u32),
     /// Column `.0` of `.1` across the primary screen ([`tile::tile`]),
@@ -73,6 +80,9 @@ pub struct AppConfig {
     /// Displayed shape of the guest frame.
     pub aspect: DisplayAspect,
     pub scaling: Scaling,
+    /// With Native resolution, Source aspect and Fit scaling, the game
+    /// image follows the drawable's aspect while the raster catches up.
+    pub native_fit: Option<NativeFit>,
     pub filter: Filter,
     /// Wait for the display's vblank when presenting (`Fifo`). Off uses
     /// `AutoNoVsync` (tearing allowed); guest pacing is unaffected either way.
@@ -123,23 +133,28 @@ pub struct AppConfig {
     /// (docs/runtime/app.md "Watermark"). F3 toggles it; F3 does not reach the
     /// guest while one is configured.
     pub watermark: Option<Watermark>,
+    /// The paired editor's leased plate and window focus requests.
+    pub editor_link: Option<Arc<dyn EditorPlateSource>>,
     /// Our debug menu (docs/runtime/debug-menu.md), drawn over the game
     /// image while open. Backquote opens and closes it; while it is open
     /// the arrows, Enter, Space, Escape and Backspace drive it and no key
     /// press reaches the guest.
     pub debug_menu: Option<debug_menu::Shared>,
     pub theater: Option<theater_overlay::Overlay>,
+    pub forge: Option<forge_overlay::Overlay>,
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
             title: "h2recomp".into(),
+            status_in_title: true,
             window_size: (1280, 960),
             tile: None,
             fullscreen: false,
             aspect: DisplayAspect::Standard,
             scaling: Scaling::Fit,
+            native_fit: None,
             filter: Filter::Linear,
             vsync: true,
             fps: fps::FpsTarget::Thirty,
@@ -159,8 +174,10 @@ impl Default for AppConfig {
             closer: None,
             banner: None,
             watermark: None,
+            editor_link: None,
             debug_menu: None,
             theater: None,
+            forge: None,
         }
     }
 }
@@ -255,6 +272,7 @@ pub struct ExitReport {
 
 /// The guest thread's view of the host. `Send`; moved into the guest thread.
 pub struct GuestHost {
+    native_size: scale::NativeSize,
     gfx: GfxContext,
     sink: FrameSink,
     input: Option<InputManager>,
@@ -284,6 +302,7 @@ impl GuestHost {
         let mixer = Arc::new(Mutex::new(audio::Mixer::new(audio_out::FALLBACK_RATE)));
         let life = Lifecycle::new();
         Ok(Self {
+            native_size: scale::NativeSize::new(DisplayAspect::Source, Scaling::Fit, (0, 0)),
             gfx: ctx,
             sink,
             input: Some(input),
@@ -301,6 +320,24 @@ impl GuestHost {
             pace_stats: Arc::default(),
             _source: Some(source),
         })
+    }
+
+    /// Reads the native render extent in physical pixels. Explicit display
+    /// aspects fit inside the drawable. The handle follows window resizes
+    /// and can move to the render thread.
+    pub fn native_size(&self) -> impl Fn() -> (u32, u32) + Clone + Send + Sync + 'static + use<> {
+        let size = self.native_size.clone();
+        move || size.get()
+    }
+
+    /// Reads the extent the compositor gives a frame of the supplied raster
+    /// size. The camera uses its aspect even when the source is anamorphic.
+    /// A headless host displays the source at its own size.
+    pub fn display_size(
+        &self,
+    ) -> impl Fn((u32, u32)) -> (u32, u32) + Clone + Send + Sync + 'static + use<> {
+        let size = self.native_size.clone();
+        move |src| size.display_size(src)
     }
 
     /// The device every guest GPU object must live on: build
@@ -322,6 +359,13 @@ impl GuestHost {
     /// A sink for frames that are not gfx surfaces (CPU pixels, other views).
     pub fn frame_sink(&self) -> FrameSink {
         self.sink.another()
+    }
+
+    /// Prepares the host's return-to-menu picture on this device. The callback
+    /// switches the window to it on `true` and lets the next published guest
+    /// frame replace it after `false`.
+    pub fn loading_screen(&self) -> Box<dyn Fn(bool) + Send + Sync> {
+        self.sink.loading_screen()
     }
 
     /// The input manager, once. Build `xapi::Xapi::new(config, input, storage)`
@@ -387,6 +431,11 @@ impl GuestHost {
                 Control::Continue
             };
         }
+    }
+
+    /// Whether the caller advances the guest on wall time or unpaced.
+    pub fn pace_policy(&self) -> PacePolicy {
+        self.pacer.policy()
     }
 
     /// Pacing counters so far.

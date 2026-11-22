@@ -243,17 +243,24 @@ stencil operations and reference, fill, winding, clip, colour writes and
 blend from the live draw. Point or wireframe fill requires the matching
 device feature. The 1× and display copies have separate clip transforms
 and the display uses the existing glyph shader option when enabled.
-Native UI uses the live textures, including the glyph cache.
+Native UI uses the live textures, including the glyph cache. The guest lays
+out the string before `native_hud::ui::screen_quad` reads the corners, so a
+leading glyph quad with zero alpha keeps its draw position and the next glyph
+uses the guest's pen advance and kerning.
 Ordered native packets can join the same GPU pass as adjacent compatible
 draws.
 
 **Fallback.** Each early producer observes the state point of the original
 operation, including the distinction between API Begin and inline pushed
-state. Register carry is installed only on commit. The device validates
-the packet against every required target copy and commits before the hook
-changes control flow. Either an early refusal leaves the guest to issue
-its original draw or an issued draw retains its resolved D3D packet for
-ordered fallback. Outstanding push callbacks, visibility queries, replay,
+state. Register carry is installed only on commit. Every single-draw pass
+retains its resolved D3D packet for ordered fallback. Behind the render
+thread the producer's draw is queued with that packet and commits at once:
+the render thread records it or draws the packet, which is the draw the
+guest would have issued ([render-thread.md](render-thread.md), "Keeping
+guest-visible semantics exact"). A model draw with sibling ranges, or any
+draw on the synchronous backend, is validated against every required target
+copy and commits before the hook changes control flow; a refusal there
+leaves the guest to issue its original draw. Outstanding push callbacks, visibility queries, replay,
 unavailable resources or attachments, unsupported shaders or methods,
 and GPU preparation failure all preserve the original path. In particular,
 the built-in diffuse shader, backend-specific shadow textures and enabled

@@ -4,12 +4,20 @@ pub const MAX_PAYLOAD: usize = 1264;
 pub const HEADER_LEN: usize = 8;
 pub const MAX_PORT: u16 = 6;
 
+/// An upgrade opts in to the actor channel. The host acknowledges the
+/// offered version by appending it to its four-byte binary Hello payload.
+pub const ACTOR_CHANNEL_HEADER: &str = "x-h2-actor-channel";
+pub const ACTOR_CHANNEL_VERSION: u8 = 1;
+pub const ACTOR_CHANNEL_OFFER: &str = "1";
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum Kind {
     Datagram = 0,
     Hello = 1,
     Bye = 2,
+    Actor = 3,
+    ActorKeyRequest = 4,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -56,6 +64,8 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, TunnelError> {
         0 => Kind::Datagram,
         1 => Kind::Hello,
         2 => Kind::Bye,
+        3 => Kind::Actor,
+        4 => Kind::ActorKeyRequest,
         other => return Err(TunnelError::Kind(other)),
     };
     let port = u16::from_le_bytes([header[2], header[3]]);
@@ -92,9 +102,15 @@ mod tests {
 
     #[test]
     fn every_kind_and_channel_round_trips_at_both_payload_limits() {
-        for (tag, kind) in [Kind::Datagram, Kind::Hello, Kind::Bye]
-            .into_iter()
-            .enumerate()
+        for (tag, kind) in [
+            Kind::Datagram,
+            Kind::Hello,
+            Kind::Bye,
+            Kind::Actor,
+            Kind::ActorKeyRequest,
+        ]
+        .into_iter()
+        .enumerate()
         {
             for port in 0..=MAX_PORT {
                 for size in [0, 1, MAX_PAYLOAD] {
@@ -132,7 +148,7 @@ mod tests {
                     Err(TunnelError::Version(byte))
                 );
             }
-            if byte > 2 {
+            if byte > Kind::ActorKeyRequest as u8 {
                 assert_eq!(
                     decode(&[1, byte, 0, 0, 0, 0, 0, 0]),
                     Err(TunnelError::Kind(byte))

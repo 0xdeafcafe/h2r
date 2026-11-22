@@ -8,8 +8,9 @@ use crate::{
 use live_proto::{
     Xuid,
     hosts::{HostEndpoint, HostLease, HostState, ProviderKind, Transport},
-    matchmaking::{Assignment, Candidate, Connectivity, Nat, Queue, Sample, Ticket},
+    matchmaking::{Assignment, Candidate, Connectivity, Nat, Queue, RegionProbe, Sample, Ticket},
     optimatch::Query,
+    replication::IncompatibleVersion,
     session,
 };
 use serde::Deserialize;
@@ -20,6 +21,9 @@ use std::{
     time::{Duration, Instant},
 };
 use url::Url;
+
+pub(crate) const BASE_MAPS_LOCAL: &str = "Base maps only. Install the Map Pack.";
+pub(crate) const BASE_MAPS_PARTY: &str = "Base maps only. A player needs the Map Pack.";
 
 pub(crate) fn config() -> Option<Connectivity> {
     static CONFIG: OnceLock<Option<Connectivity>> = OnceLock::new();
@@ -41,6 +45,7 @@ pub(crate) fn config() -> Option<Connectivity> {
 #[derive(Clone)]
 pub(crate) enum Outcome {
     Host(Assignment),
+    Incompatible(IncompatibleVersion),
     Join {
         rows: Vec<session::Session>,
         frames_from_host: bool,
@@ -59,8 +64,24 @@ pub(crate) enum Step {
     Complete(Outcome),
 }
 
+impl Step {
+    /// A peer or dedicated host match can finish only with a ready,
+    /// compatible title description. A version refusal is terminal.
+    pub fn after_qos(
+        ready: Result<bool, IncompatibleVersion>,
+        retry: Self,
+        join: impl FnOnce() -> Outcome,
+    ) -> Self {
+        match ready {
+            Ok(true) => Self::Complete(join()),
+            Ok(false) => retry,
+            Err(reason) => Self::Complete(Outcome::Incompatible(reason)),
+        }
+    }
+}
+
 pub(crate) enum QueueAction {
-    Probe(Vec<Candidate>),
+    Probe(Vec<Candidate>, Vec<RegionProbe>),
     Wait,
     WaitForHost(Assignment),
     Host(Assignment),
@@ -72,8 +93,8 @@ pub(crate) enum QueueAction {
 
 pub(crate) fn queue_action(queue: Queue, hopper: u32, me: Xuid) -> Option<QueueAction> {
     match queue {
-        Queue::Probing { candidates } if valid_probe_targets(&candidates, me) => {
-            Some(QueueAction::Probe(candidates))
+        Queue::Probing { candidates, region_echoes } if valid_probe_targets(&candidates, &region_echoes, me) => {
+            Some(QueueAction::Probe(candidates, region_echoes))
         }
         Queue::Host { assignment } | Queue::Waiting { assignment }
             if assignment.host_lease.is_some()
@@ -292,6 +313,7 @@ pub(crate) struct Search {
     pending: Option<Pending>,
     dedicated: Option<Box<DedicatedJoin>>,
     waiting: Option<Assignment>,
+    addon_hopper: bool,
     status: Option<String>,
     // Once a lease has been seen, a missing queue route must not induce
     // the title to host by falling back to a legacy empty search.
@@ -316,6 +338,7 @@ impl Search {
             },
         )?;
         let now = Instant::now();
+        let addon_hopper = service.addon_hopper(ticket.hopper);
         Ok(Self {
             ticket,
             legacy: MatchRequest::Search {
@@ -328,6 +351,7 @@ impl Search {
             pending: Some(pending),
             dedicated: None,
             waiting: None,
+            addon_hopper,
             status: None,
             saw_lease: false,
             after: now,
@@ -336,6 +360,10 @@ impl Search {
     }
 
     pub fn status(&self) -> Option<&str> {
+        self.host_status().or_else(|| (self.addon_hopper && !self.ticket.has_map_pack).then_some(BASE_MAPS_LOCAL))
+    }
+
+    pub fn host_status(&self) -> Option<&str> {
         self.status.as_deref()
     }
 
@@ -440,10 +468,13 @@ pub(crate) fn solo_hopper(query: Query, users: &[u64; 4]) -> Option<u32> {
         .then_some(hopper)
 }
 
-pub(crate) fn valid_probe_targets(candidates: &[Candidate], me: Xuid) -> bool {
+fn valid_probe_targets(candidates: &[Candidate], echoes: &[RegionProbe], me: Xuid) -> bool {
     use std::collections::BTreeSet;
     let mut seen = BTreeSet::new();
-    candidates.len() <= live_proto::matchmaking::MAX_CANDIDATES
+    echoes.len() <= live_proto::matchmaking::MAX_REGION_ECHOES
+        && candidates.len() + echoes.len() <= live_proto::matchmaking::MAX_CANDIDATES
+        && echoes.iter().all(|v| v.xuid != me && seen.insert(v.xuid)
+            && session::valid_id(&v.generation) && live_proto::matchmaking::valid_probe_region(&v.region))
         && candidates.iter().all(|v| {
             v.xuid != me
                 && seen.insert(v.xuid)
@@ -466,6 +497,17 @@ mod tests {
     const ME: Xuid = Xuid(10);
     const HOST: Xuid = Xuid(20);
 
+    #[test]
+    fn regional_probes_are_same_origin_labels_with_unique_targets() {
+        let mut probe = RegionProbe { xuid: HOST, region: "weur".into(), generation: ASSIGNMENT.into() };
+        assert!(valid_probe_targets(&[], &[probe.clone()], ME));
+        assert!(!valid_probe_targets(&[], &[probe.clone(), probe.clone()], ME));
+        for invalid in ["/other", "../escape", "x?next=z", "a%2fb", "example.com"] {
+            probe.region = invalid.into();
+            assert!(!valid_probe_targets(&[], &[probe.clone()], ME));
+        }
+    }
+
     fn assignment() -> Assignment {
         Assignment {
             id: ASSIGNMENT.into(),
@@ -473,6 +515,7 @@ mod tests {
             host: HOST,
             dedicated: true,
             members: vec![ME],
+            has_map_pack: false,
             teams: BTreeMap::new(),
             rtt_ms: BTreeMap::new(),
             host_lease: Some(LEASE.into()),
@@ -567,6 +610,27 @@ mod tests {
         let now = Instant::now();
         assert_eq!(dedicated_deadline(now + Duration::from_secs(2), now), now + Duration::from_secs(65));
         assert_eq!(dedicated_deadline(now + Duration::from_secs(100), now), now + Duration::from_secs(100));
+    }
+
+    #[test]
+    fn a_queue_version_refusal_is_terminal_for_either_host_route() {
+        use live_proto::replication::{CREATURE_PROBE, STOCK};
+
+        for (local, peer) in [(STOCK, CREATURE_PROBE), (CREATURE_PROBE, STOCK)] {
+            let reason = IncompatibleVersion { local, peer: Some(peer) };
+            for retry in [Step::Retry(Vec::new()), Step::RequeueDedicated] {
+                let step = Step::after_qos(Err(reason), retry, || panic!("incompatible join"));
+                assert!(matches!(step, Step::Complete(Outcome::Incompatible(e)) if e == reason));
+            }
+        }
+        assert!(matches!(
+            Step::after_qos(Ok(false), Step::Retry(Vec::new()), || panic!("unready peer")),
+            Step::Retry(_),
+        ));
+        assert!(matches!(
+            Step::after_qos(Ok(false), Step::RequeueDedicated, || panic!("unready host")),
+            Step::RequeueDedicated,
+        ));
     }
 
     #[test]

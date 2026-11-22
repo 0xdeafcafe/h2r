@@ -25,6 +25,29 @@ pub trait Reader {
     fn status(&mut self) -> GameStatus;
     /// Every object the API lists, unfiltered. Called per world request.
     fn objects(&mut self) -> Result<Vec<Object>, String>;
+    /// Fill a recycled mirror buffer at this tick boundary.
+    fn live_capture(&mut self, layers: agent_proto::live::Layers, out: &mut agent_proto::live::World) -> bool {
+        let mut ok = false;
+        self.with_guest(&mut |m| ok = crate::live::capture::read(m, layers, out).is_ok());
+        ok
+    }
+
+    /// Subscription metadata from the current game options and loaded cache header.
+    fn live_metadata(&mut self) -> (u16, Option<u32>) {
+        let mut rate = 30;
+        let mut checksum = None;
+        self.with_guest(&mut |m| {
+            if let Ok(Some(g)) = guest_layout::game::GameGlobals::current(m)
+                && let Ok(hz) = g.options().tick_rate(m)
+                && hz > 0
+            {
+                rate = hz;
+            }
+            checksum = guest_layout::game::cache_checksum(m).ok();
+        });
+        (rate, checksum)
+    }
+
     /// Runs `f` on guest memory, for the `sim.*` methods' own reads and
     /// their host writes (at a tick boundary). False where there is no
     /// guest (the default).
@@ -39,6 +62,25 @@ pub trait Reader {
 pub trait TagNames: Send {
     /// The names of `datums`, in order; `None` where unnamed.
     fn names(&mut self, datums: &[u32]) -> Vec<Option<String>>;
+}
+
+/// Whether a standing capsule fits at a biped's origin, for `world.*`
+/// results' `physics.standing_fits` ([`crate::Agent::set_standing_fits`]).
+pub trait StandingFits: Send {
+    /// `None` when the host cannot tell.
+    fn standing_fits(&mut self, origin: [f64; 3]) -> Option<bool>;
+}
+
+/// Fills `physics.standing_fits` of each biped (an object whose physics
+/// says whether it is airborne) from `fits`.
+pub fn fill_standing_fits(fits: &mut dyn StandingFits, objects: &mut [Object]) {
+    for o in objects.iter_mut() {
+        if let (Some(pos), Some(p)) = (o.pos, o.physics.as_mut())
+            && p.airborne.is_some()
+        {
+            p.standing_fits = fits.standing_fits(pos);
+        }
+    }
 }
 
 /// Fills each object's `tag_name` from its `tag`, asking `names` once for
@@ -164,6 +206,8 @@ fn physics(m: &Motion) -> Physics {
         havok_pos: m.havok.map(|(p, _)| p),
         havok_velocity: m.havok.map(|(_, v)| v),
         support: m.support.as_ref().map(support),
+        // The host's test fills it ([`crate::Agent::set_standing_fits`]).
+        standing_fits: None,
     }
 }
 
@@ -579,5 +623,35 @@ mod tests {
         // Nothing to name: no call.
         name_tags(&mut names, &mut [Object::default()]);
         assert_eq!(names.0.len(), 1);
+    }
+
+    #[test]
+    fn standing_fits_is_filled_for_bipeds_only() {
+        struct Low;
+        impl StandingFits for Low {
+            fn standing_fits(&mut self, origin: [f64; 3]) -> Option<bool> {
+                Some(origin[2] > 0.0)
+            }
+        }
+        let biped = |z: f64| Object {
+            pos: Some([0.0, 0.0, z]),
+            physics: Some(Physics {
+                airborne: Some(false),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let vehicle = Object {
+            pos: Some([0.0, 0.0, 1.0]),
+            physics: Some(Physics::default()),
+            ..Default::default()
+        };
+        let mut objects = vec![biped(1.0), biped(-1.0), vehicle, Object::default()];
+        fill_standing_fits(&mut Low, &mut objects);
+        let fits: Vec<_> = objects
+            .iter()
+            .map(|o| o.physics.as_ref().and_then(|p| p.standing_fits))
+            .collect();
+        assert_eq!(fits, [Some(true), Some(false), None, None]);
     }
 }

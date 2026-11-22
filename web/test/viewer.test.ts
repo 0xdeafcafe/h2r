@@ -5,6 +5,7 @@ import { TICKS_PER_SECOND, type SampledPlayer } from "../src/state/frames";
 import { applyClock, clockAgrees, isSyncMessage, nextCamera, readClock, smoothPlayers, syncChannelName, type SmoothPlayer } from "../src/viewer/sync";
 import { EYE_HEIGHT, FOLLOW_DISTANCE, cameraFit, eyeView, followDistance, markerScale } from "../src/viewer/camera";
 import { ViewerPlayback } from "../src/viewer/playback";
+import { CAPSULE_HEIGHT, bipedSize } from "../src/viewer/models";
 
 function frames(seconds: number): Frame[] {
   return Array.from({ length: seconds + 1 }, (_, s) => ({
@@ -246,22 +247,25 @@ describe("camera", () => {
     expect(tall.topDistance).toBeGreaterThan(wide.topDistance);
   });
 
-  test("players are life size on a small map and bigger, to a limit, on a large one", () => {
+  test("map effects scale with large levels to a limit", () => {
     expect(markerScale({ min: [0, 0, 0], max: [20, 20, 5] })).toBe(1);
     expect(markerScale(box)).toBeCloseTo(Math.hypot(80, 80) / 45, 9);
     expect(markerScale({ min: [0, 0, 0], max: [900, 900, 5] })).toBe(4);
   });
 
   test("following starts close to the player whatever the size of the level", () => {
-    // From far out on a huge campaign level: a few units from a life-size model, not a share of the map.
-    expect(followDistance(900, 4, true, 2.4)).toBe(FOLLOW_DISTANCE);
-    expect(followDistance(60, 1, true, 0.6)).toBe(FOLLOW_DISTANCE);
-    // Already closer than that: stay there, but not inside what the controls allow.
-    expect(followDistance(2, 1, true, 0.6)).toBe(2);
-    expect(followDistance(0.5, 1, true, 0.6)).toBe(1.2);
-    // A capsule is drawn bigger on a big map, and is followed from as much farther back.
-    expect(followDistance(900, 4, false, 2.4)).toBe(FOLLOW_DISTANCE * 4);
-    expect(followDistance(900, 1, false, 0.6)).toBe(FOLLOW_DISTANCE);
+    // The view follows at the same distance with or without biped art.
+    expect(followDistance(900, 2.4)).toBe(FOLLOW_DISTANCE);
+    expect(followDistance(60, 0.6)).toBe(FOLLOW_DISTANCE);
+    expect(followDistance(2, 0.6)).toBe(2);
+    expect(followDistance(0.5, 0.6)).toBe(1.2);
+  });
+
+  test("stand-in bipeds stay life-size before the models load on a large map", () => {
+    expect(markerScale({ min: [0, 0, 0], max: [900, 900, 30] })).toBe(4);
+    expect(bipedSize(undefined, false)).toEqual({ height: CAPSULE_HEIGHT, scale: 1 });
+    expect(bipedSize(0.75, false)).toEqual({ height: 0.75, scale: 1 });
+    expect(bipedSize(undefined, true).height).toBeCloseTo(CAPSULE_HEIGHT * 0.8);
   });
 });
 

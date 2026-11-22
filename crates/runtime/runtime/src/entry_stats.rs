@@ -102,8 +102,10 @@ pub(crate) const CONTINUATION: usize = 13;
 pub(crate) const THUNK: usize = 14;
 
 static COUNTS: [AtomicU64; 15] = [const { AtomicU64::new(0) }; 15];
+/// Transfers counted by cause, target and resume PC.
+type SiteCounts = HashMap<(usize, u32, u32), u64>;
 /// Per cause, target and resume PC: the transfers behind the counts.
-static SITES: Mutex<Option<HashMap<(usize, u32, u32), u64>>> = Mutex::new(None);
+static SITES: Mutex<Option<SiteCounts>> = Mutex::new(None);
 
 /// One invocation of cause `c` for transfer `t` (generated handlers only
 /// print; Rust ones are counted alongside).

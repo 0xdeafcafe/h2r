@@ -19,7 +19,7 @@ use crate::camera::Camera;
 use crate::decorator::{DecoratorDraw, DecoratorInstance};
 use crate::late::{FogState, LateMaterial, LatePart, PostEffect, PostParams, WaterState};
 use crate::layer::{LayerItem, LayerPass};
-use crate::light::{LightStep, SceneLight};
+use crate::light::{Light, LightStep};
 use crate::light_group::{LightEntry, LightGroup, ObjectShadow};
 use crate::node::NodeMatrix;
 use crate::object::{Defaults, ItemKey, Lighting};
@@ -168,7 +168,7 @@ pub struct View {
     /// What its [`PartFlags::AUX_DEPTH`] parts draw with; read when the
     /// view has one.
     pub aux_depth: Option<AuxDepth>,
-    /// Into [`FrameScene::lights`], in the guest's light order.
+    /// Into [`FrameScene::lights`], with guest selections in draw order.
     pub lights: Range<u32>,
     /// Into [`FrameScene::layer_passes`], in the guest's draw order.
     pub layers: Range<u32>,
@@ -332,7 +332,7 @@ pub struct FrameScene {
     /// Part indices, each view's in its guest list order.
     pub order: Vec<u32>,
     pub rows: Vec<Row>,
-    pub lights: Vec<SceneLight>,
+    pub lights: Vec<Light>,
     /// Each light's steps; lights index ranges of it.
     pub light_steps: Vec<LightStep>,
     pub layer_passes: Vec<LayerPass>,
@@ -415,11 +415,11 @@ impl FrameScene {
         slice(&self.rows, &part.rows)
     }
 
-    pub fn lights_of(&self, view: &View) -> &[SceneLight] {
+    pub fn lights_of(&self, view: &View) -> &[Light] {
         slice(&self.lights, &view.lights)
     }
 
-    pub fn steps_of(&self, light: &SceneLight) -> &[LightStep] {
+    pub fn steps_of(&self, light: &Light) -> &[LightStep] {
         slice(&self.light_steps, &light.steps)
     }
 
@@ -471,7 +471,12 @@ impl FrameScene {
             rows,
             remainder: view.remainder,
             flagged,
-            lights: lights.len() as u32,
+            lights: lights.iter().filter(|l| l.guest_selected).count() as u32,
+            lights_candidates: lights.len() as u32,
+            lights_with_constants: lights.iter()
+                .filter_map(|l| l.candidate.as_ref()?.constants.as_ref())
+                .filter(|sets| sets.complete())
+                .count() as u32,
             shadows: lights.iter().filter(|l| l.shadowed()).count() as u32,
             layers: self
                 .layers_of(view)
@@ -560,6 +565,8 @@ pub struct ViewCounts {
     /// left out.
     pub flagged: Vec<(&'static str, u32)>,
     pub lights: u32,
+    pub lights_candidates: u32,
+    pub lights_with_constants: u32,
     /// Lights that cast their shadow: the shadow maps the view draws.
     pub shadows: u32,
     /// Each layer pass: its layer, items and remainder.

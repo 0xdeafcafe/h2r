@@ -16,10 +16,10 @@
 //! 2. The world position, by the first of: a function source (`+54` not
 //!    `ffff`): the owner's node matrices from `b8c40(ecx = owner)`; with
 //!    definition flags bit 5, `16640f(matrices, +84, +ac, +b8)` (`ecx`
-//!    the owner, `ret 10`) and, when it answers, position `+90` = `+84`
-//!    + `+ac`; otherwise (or when it does not answer) the owner's marker
-//!    through `b8d30(owner, matrices, 1)` (`cl` 0, `ebx` the buffer,
-//!    `ret c`), whose origin and two directions are copied to `+84`,
+//!    the owner, `ret 10`) and, when it answers, position `+90` is the
+//!    sum of `+84` and `+ac`. Otherwise (or when it does not answer), use
+//!    the owner's marker through `b8d30(owner, matrices, 1)` (`cl` 0,
+//!    `ebx` the buffer, `ret c`), whose origin and two directions go to `+84`,
 //!    `+ac`, `+b8` before the sum. Else a marker parent (`+58` not none):
 //!    `142570(edx +84, eax +60, matrix)` (`ret 4`) puts the origin
 //!    through the parent's node matrix (body `+116` plus `34` × node
@@ -360,9 +360,9 @@ pub(in crate::sim_objects) fn link(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
                 return Ok(Next::Call { target: LOCATION, site: 0xc309f });
             }
             0xc309f => {
-                if g.u16(at(c.edi, 0x48))? != 0xffff {
-                    0xc30d2
-                } else if g.u8(at(c.edi, 2))? & 1 != 0 && g.u8(c.ebx)? & 8 == 0 {
+                if g.u16(at(c.edi, 0x48))? != 0xffff
+                    || (g.u8(at(c.edi, 2))? & 1 != 0 && g.u8(c.ebx)? & 8 == 0)
+                {
                     0xc30d2
                 } else {
                     c.ecx = g.u32(at(c.edi, 0x4c))?;

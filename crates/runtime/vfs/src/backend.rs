@@ -4,6 +4,12 @@ use crate::{BasicInfo, DirectoryEntry, Error, FileSource, HostFile, Metadata, Re
 /// Implementations must validate inputs even when used without Vfs. All calls are serialized by &mut Vfs.
 /// Mutation defaults implement a read-only filesystem.
 pub trait Backend: Send {
+    /// Editor-bound DVD paths and identities of their immutable contents.
+    /// A binding in transition cannot be snapshotted. Layers forward their
+    /// inner backend's dependencies.
+    fn snapshot_map_bindings(&self) -> std::result::Result<Vec<(String, String)>, crate::StateError> {
+        Ok(Vec::new())
+    }
     /// Volume mutability is cheap to query; opening a file must not scan disk usage.
     fn read_only(&self) -> bool;
     fn stat(&mut self, path: &str) -> Result<Metadata>;
@@ -53,7 +59,8 @@ pub trait Backend: Send {
     fn rescan(&mut self) {}
     /// Whether the map at `path` would now be served from another package
     /// (or none, or one where there was none) than when it was last
-    /// opened. False for a path never opened, open now, or not a map. The
+    /// opened. An explicit reload also marks a closed DVD source changed
+    /// when the cache supplied the old map without opening its DVD file. The
     /// game's map cache reuses a slot by its path alone
     /// (docs/runtime/cache-slots.md, "Changed maps"), so the boot uses this to
     /// invalidate a slot holding an outdated copy.
@@ -114,7 +121,8 @@ pub trait Backend: Send {
         Ok(())
     }
     /// Quick format: leave an empty volume. Only [`crate::Vfs::format_device`]
-    /// calls this, and only while no file object is open on the volume.
+    /// calls this, and only while no file object is open on the volume. A
+    /// failed format leaves the volume unchanged.
     fn format(&mut self) -> Result<()> {
         Err(Error::MediaWriteProtected)
     }

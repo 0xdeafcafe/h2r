@@ -23,7 +23,18 @@ const PROJECTILE_DATUM: u32 = 0x28;
 pub(crate) const PROJECTILE: u8 = 5;
 pub(crate) const DANGER: f32 = 3.2;
 
+/// Equipment datum in matg's grenade record, alongside the projectile datum.
+const EQUIPMENT_DATUM: u32 = 0x20;
+
 pub(crate) fn grenade_defs(m: &dyn GuestMemory) -> Option<[Option<DatumHandle>; 2]> {
+    grenade_references(m, PROJECTILE_DATUM)
+}
+
+pub(crate) fn equipment_defs(m: &dyn GuestMemory) -> Option<[Option<DatumHandle>; 2]> {
+    grenade_references(m, EQUIPMENT_DATUM)
+}
+
+fn grenade_references(m: &dyn GuestMemory, field: u32) -> Option<[Option<DatumHandle>; 2]> {
     let matg = m.u32(GLOBALS_TAG).ok().filter(|&a| a != 0)?;
     let count = m.u32(matg.checked_add(GRENADES)?).ok()?;
     let base = m
@@ -35,7 +46,7 @@ pub(crate) fn grenade_defs(m: &dyn GuestMemory) -> Option<[Option<DatumHandle>; 
             return None;
         }
         DatumHandle::from_raw(
-            m.u32(base.checked_add(i as u32 * GRENADE_STRIDE + PROJECTILE_DATUM)?)
+            m.u32(base.checked_add(i as u32 * GRENADE_STRIDE + field)?)
                 .ok()?,
         )
     }))
@@ -116,12 +127,15 @@ impl Evasion {
             .into_iter()
             .map(|turn| [(yaw + turn).cos(), (yaw + turn).sin()])
             .find(|&dir| map.is_none_or(|m| moves::standable(m, me.position, dir)))?;
+        // Check the jump's longer carry as well as overhead clearance.
         let jump = distance < 2.0
             && !notice.jumped
             && map.is_some_and(|m| {
                 let high = [eye[0], eye[1], eye[2] + 0.65];
                 let ahead = [high[0] + walk[0] * 0.7, high[1] + walk[1] * 0.7, high[2]];
-                m.walls.clear(eye, high) && m.walls.clear(high, ahead)
+                moves::jumpable(m, me.position, walk)
+                    && m.walls.clear(eye, high)
+                    && m.walls.clear(high, ahead)
             });
         notice.jumped |= jump;
         Some((walk, jump))

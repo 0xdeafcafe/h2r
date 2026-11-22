@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use agent::sim::calls::{self, Arg, Call, GameStep};
+use agent::sim::calls::{self, Call, GameStep};
 use agent::{Access, Agent, GameCtx};
 use agent_proto::test_maps::{
     CreateParams, CreateResult, ListParams, ListResult, Listed, LoadResult, NameParams,
@@ -32,7 +32,7 @@ use agent_proto::{RpcError, code, method};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-use crate::level_boot::{self, Kind, Request, Step};
+use crate::level_boot::{self, Kind, Request};
 use crate::new_maps::Disc as _;
 
 /// Ticks `maps.test.load` waits for the guest calls (one tick does them).
@@ -94,6 +94,7 @@ pub trait Recipes: Send + Sync + 'static {
         base: Option<&str>,
         source: BaseMap,
         data_root: &Path,
+        replace: bool,
     ) -> Result<Built, String>;
 }
 
@@ -237,19 +238,11 @@ fn build(
     paths: &Paths,
     cp: &CreateParams,
     r: &Resolved,
-    replace: bool,
 ) -> Result<(String, Value), String> {
-    let dir = paths.maps().join(&r.package_dir);
-    if dir.exists() {
-        if !replace {
-            return Err(format!("{} exists (replace: true rebuilds it)", dir.display()));
-        }
-        std::fs::remove_dir_all(&dir).map_err(|e| format!("removing {}: {e}", dir.display()))?;
-    }
     let source = base_source(&paths.disc, &r.base)?;
     let Built { map_id: id, report: built } = paths
         .recipes
-        .build(&cp.recipe, cp.base.as_deref(), source, &paths.data_root)?;
+        .build(&cp.recipe, cp.base.as_deref(), source, &paths.data_root, cp.replace)?;
     let report = report_path(&id);
     if let Some(parent) = report.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -272,72 +265,10 @@ fn publish(paths: &Paths, vfs: Option<&Arc<Mutex<vfs::Vfs>>>) {
     }
 }
 
-/// Records the level boot's writes instead of making them.
-#[derive(Default)]
-struct Writes(Vec<(u32, Vec<u8>)>);
-
-impl crate::layout_glue::Gm for Writes {
-    fn rd(&self, _: u32, _: &mut [u8]) -> bool {
-        false
-    }
-    fn wr(&mut self, addr: u32, data: &[u8]) -> bool {
-        self.0.push((addr, data.to_vec()));
-        true
-    }
-}
-
-/// The level boot's steps for `req` as guest-call steps over an options
-/// block at offset 0 (`level_boot::call_of` with the block's address
-/// given at the call). `None` when the options can't hold the request.
+/// The level boot's steps for `req` as guest-call steps: `maps.test.load`
+/// queues them ([`level_boot::game_steps`]).
 pub fn game_steps(req: &Request) -> Option<Vec<GameStep>> {
-    let call = |target: u32, args: Vec<Arg>, eax: Option<Arg>, esi: Option<Arg>, report| {
-        GameStep::Call {
-            target,
-            args,
-            eax,
-            esi,
-            report,
-        }
-    };
-    let opts = Arg::Options(0);
-    let mut out = Vec::new();
-    for step in level_boot::steps(req.kind) {
-        let s = match step {
-            Step::New => call(level_boot::OPTIONS_NEW, vec![], None, Some(opts), None),
-            Step::Fill => {
-                let mut w = Writes::default();
-                if !level_boot::fill_options(&mut w, 0, req) {
-                    return None;
-                }
-                out.extend(
-                    w.0.into_iter()
-                        .map(|(offset, bytes)| GameStep::Write { offset, bytes }),
-                );
-                continue;
-            }
-            Step::Variant => call(
-                level_boot::VARIANT_DEFAULTS,
-                vec![
-                    Arg::Options(level_boot::OPT_VARIANT),
-                    Arg::Value(level_boot::GAME_TYPE_SLAYER),
-                ],
-                None,
-                None,
-                None,
-            ),
-            Step::Players => call(
-                level_boot::OPTIONS_PLAYERS,
-                vec![Arg::Value(1), opts],
-                None,
-                None,
-                None,
-            ),
-            Step::Check => call(level_boot::OPTIONS_CHECK, vec![opts], None, None, Some("check")),
-            Step::Queue => call(level_boot::OPTIONS_QUEUE, vec![], Some(opts), None, None),
-        };
-        out.push(s);
-    }
-    Some(out)
+    level_boot::game_steps(req)
 }
 
 /// The multiplayer request for a listed test map: a local game, default
@@ -364,6 +295,54 @@ fn check_name(name: &str) -> Result<(), RpcError> {
     } else {
         Err(invalid(format!("name {name:?}: a test map's name (a-z, 0-9, '-')")))
     }
+}
+
+fn queue_load(
+    ctx: &mut GameCtx<'_>,
+    calls: Option<&calls::Shared>,
+    name: String,
+    listed: Listed,
+    expect: Vec<Value>,
+) -> Result<Value, RpcError> {
+    let steps = game_steps(&request(&name, &listed))
+        .ok_or_else(|| invalid(format!("{}: the path is longer than the options hold", listed.path)))?;
+    let q = calls.cloned().ok_or_else(|| {
+        unavailable(
+            "the game's own functions aren't reachable here: the agent-calls feature isn't \
+             installed",
+        )
+    })?;
+    let ticket = calls::submit(&q, Call::QueueGame { steps }).map_err(unavailable)?;
+    eprintln!("maps: queueing {name} ({}, map {:#x})", listed.path, listed.id);
+    ctx.defer(
+        CALL_TICKS,
+        Box::new(move |_: &mut GameCtx<'_>| {
+            let out = ticket.outcome()?;
+            Some(out.map(|v| {
+                json!(LoadResult {
+                    name: name.clone(),
+                    map: listed.clone(),
+                    check: v["check"].as_bool().unwrap_or(false),
+                    queued: v["queued"].as_bool().unwrap_or(false),
+                    expect: expect.clone(),
+                })
+            }))
+        }),
+    );
+    Ok(Value::Null)
+}
+
+/// The loaded path must resolve to the complete package hash. Two packages
+/// on the same base can have the same display name.
+fn listed_package(
+    cat: &crate::map_select::Catalogue,
+    id: content::MapId,
+    mut identify: impl FnMut(&str) -> Option<content::MapId>,
+) -> Option<Listed> {
+    cat.all().find_map(|map| {
+        let path = crate::map_slots::slot_file(&format!("{}.map", map.path))?;
+        (identify(&path) == Some(id)).then(|| Listed { id: map.id, path: map.path.clone() })
+    })
 }
 
 /// Registers `maps.test.list`, `create`, `load` and `remove` on `agent`.
@@ -430,12 +409,12 @@ pub fn install(
             );
         }
         let (p2, j2, vfs) = (p.clone(), j.clone(), v_create.clone());
-        let (r2, replace) = (r.clone(), cp.replace);
+        let r2 = r.clone();
         let cp2 = cp.clone();
         let spawned = std::thread::Builder::new()
             .name("test map build".into())
             .spawn(move || {
-                let out = build(&p2, &cp2, &r2, replace);
+                let out = build(&p2, &cp2, &r2);
                 if out.is_ok() {
                     publish(&p2, vfs.as_ref());
                 }
@@ -466,6 +445,22 @@ pub fn install(
         }))
     });
 
+    let root = paths.content_root();
+    let (package_vfs, package_calls) = (vfs.clone(), calls.clone());
+    agent.add_game_method(method::MAPS_LOAD, Access::Act, move |v, ctx| {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Load { map_id: content::MapId }
+        let Load { map_id } = params(v)?;
+        let vfs = package_vfs.as_ref().ok_or_else(|| unavailable("no game VFS"))?;
+        let catalogue = crate::map_select::read(&[], &root);
+        let mut vfs = vfs.lock().unwrap_or_else(|e| e.into_inner());
+        let listed = listed_package(&catalogue, map_id, |path| vfs.map_id(path))
+            .ok_or_else(|| unavailable(format!("no installed multiplayer slot for {map_id}")))?;
+        drop(vfs);
+        queue_load(ctx, package_calls.as_ref(), map_id.to_string(), listed, vec![])
+    });
+
     let (p, j) = (paths.clone(), jobs.clone());
     agent.add_game_method(method::MAPS_TEST_LOAD, Access::Act, move |v, ctx| {
         let NameParams { name } = params(v)?;
@@ -492,17 +487,6 @@ pub fn install(
                  docs/game/maps.md §4); remove other packages or test maps"
             ))
         })?;
-        let steps = game_steps(&request(&name, &listed))
-            .ok_or_else(|| invalid(format!("{}: the path is longer than the options hold", listed.path)))?;
-        let q = calls.clone().ok_or_else(|| {
-            unavailable(
-                "the game's own functions aren't reachable here: the agent-calls feature isn't \
-                 installed",
-            )
-        })?;
-        let ticket = calls::lock(&q)
-            .submit(Call::QueueGame { steps })
-            .map_err(unavailable)?;
         let expect: Vec<Value> = m
             .built
             .as_ref()
@@ -510,23 +494,7 @@ pub fn install(
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        eprintln!("test maps: queueing {name} ({}, map {:#x})", listed.path, listed.id);
-        ctx.defer(
-            CALL_TICKS,
-            Box::new(move |_: &mut GameCtx<'_>| {
-                let out = calls::lock(&q).take(ticket)?;
-                Some(out.map_err(unavailable).map(|v| {
-                    json!(LoadResult {
-                        name: name.clone(),
-                        map: listed.clone(),
-                        check: v["check"].as_bool().unwrap_or(false),
-                        queued: v["queued"].as_bool().unwrap_or(false),
-                        expect: expect.clone(),
-                    })
-                }))
-            }),
-        );
-        Ok(Value::Null)
+        queue_load(ctx, calls.as_ref(), name, listed, expect)
     });
 
     let (p, j) = (paths, jobs);

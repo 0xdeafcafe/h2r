@@ -1,0 +1,68 @@
+// Territories (engine index 8): markers (flag type 10, label "territory")
+// registered by territory, capture by standing in one uncontested for the
+// contest time, an owner per territory, and points for territories held.
+// docs/game/rules-engine.md, "Porting the seven engines".
+//
+// Entries a host cannot make yet (`verify::unhostable`):
+//   register_objective  traced (0x15e050; Territories' own call 0x2c0a7d)
+//   inside              not built (the marker's radius and height,
+//                       `T+0/+0x20/+0x40`)
+// Not reproduced: the Territories globals (`T=[0x51eccc]`: owners `T+0x70`,
+// occupants `T+0x95`) are not written; the marker's territory index is not
+// passed as its registration team; a contested or abandoned capture
+// starts again rather than decaying; the score interval is a script
+// option, as retail's is not traced; setting 99 is not read.
+rules "Territories" 1
+carrier territories
+
+option score_seconds: int 1..16 = 1 "Score interval" "Seconds between points for each territory held"
+
+object var owner: player = none
+object var progress: int = 0
+global var placed: int = 0
+global var pay: timer
+
+on round_start {
+    placed = 0
+    let n = clamp(variant.territories_count, 1, 8)
+    for each objects labelled "territory" m {
+        if placed < n {
+            register_objective(m, none)
+            m.owner = none
+            m.progress = 0
+            placed = placed + 1
+        }
+    }
+    pay = seconds(score_seconds)
+}
+
+on tick {
+    for each objectives m {
+        let lead = first(players p where p.alive and inside(p, m))
+        if lead == none {
+            m.progress = 0
+        } else {
+            let rivals = count(players q where q.alive and inside(q, m) and ((variant.team_play and q.team != lead.team) or (not variant.team_play and q != lead)))
+            let held = m.owner != none and ((variant.team_play and m.owner.team == lead.team) or m.owner == lead)
+            if rivals > 0 or held {
+                m.progress = 0
+            } else {
+                m.progress = m.progress + 1
+                if m.progress >= seconds(max(variant.territories_contest_time, 1)) {
+                    m.owner = lead
+                    m.progress = 0
+                }
+            }
+        }
+    }
+}
+
+on timer(pay) {
+    for each objectives m where m.owner != none { score(m.owner, 1) }
+    pay = seconds(score_seconds)
+}
+
+// A stale owner holds nothing (0x2bfa3f checks the owner's salt).
+on quit(p) {
+    for each objectives m where m.owner == p { m.owner = none }
+}

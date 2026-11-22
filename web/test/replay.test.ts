@@ -162,7 +162,15 @@ describe("ReplayClock", () => {
   });
 });
 
-describe("kill positions", () => {
+describe("recorded kills", () => {
+  test("the replay feed keeps credited weapons and optional headshots", () => {
+    const events = [true, false, undefined].map((headshot, tick) =>
+      ev("PlayerKilled", "game-g", { tick, victim: 0, killer: 1, kind: "kill", weapon: "smg", headshot }));
+    const timeline = new ReplayTimeline([], events);
+    expect(timeline.killsBetween(-Infinity, Infinity).map(k => [k.weapon, k.headshot]))
+      .toEqual([["smg", true], ["smg", false], ["smg", null]]);
+  });
+
   test("PlayerKilled.pos wins over the frames", () => {
     resetPos();
     const t = new ReplayTimeline([frame(0, 0), frame(30, 3)], [ev("PlayerKilled", "game-g", { tick: 15, victim: 0, kind: "world", pos: [7, 8, 9] })]);

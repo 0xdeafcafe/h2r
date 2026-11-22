@@ -138,9 +138,7 @@ fn constraints(p: &Record) -> Vec<Read> {
         .iter()
         .map(|b| int(b, "node"))
         .collect();
-    for other in ["block_f0"] {
-        assert!(block(p, other).is_empty(), "{other}");
-    }
+    assert!(block(p, "block_f0").is_empty(), "block_f0");
     let mut out = Vec::new();
     for (kind, path) in [(1, "limited_hinge_constraints"), (2, "ragdoll_constraints")] {
         for (i, c) in block(p, path).iter().enumerate() {
@@ -385,9 +383,9 @@ fn the_converted_cyborgs_ragdoll_against_retail() {
     let r = defs::from_built(def(b"bipd"), &local(&conv.tree, id).unwrap().root).unwrap();
     // The tag-side gate besides the physics model: `bipd +0x1f0` bit 11
     // (E 0x000e1097, 0x001d6c18) as the Chief's.
-    let word = |r: &Record| match r.at("unknown_1f0") {
-        Some(Val::Bytes(b)) => u32::from_le_bytes(b[..4].try_into().unwrap()),
-        other => panic!("{other:?}"),
+    let word = |r: &Record| match r.bytes("flags", 4) {
+        Some(b) => u32::from_le_bytes(b[..4].try_into().unwrap()),
+        None => panic!("bipd flags"),
     };
     let chief = base
         .record(
