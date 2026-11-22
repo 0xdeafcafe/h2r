@@ -493,8 +493,9 @@ with the start gate's check.
   gives the smallest census the check accepts: one of each single label,
   the minimum of each set, each number, one per team. The match
   generator (`sim::simulate`, `POST /v1/rules/simulate`) uses it as the
-  map of a match it invents (`sim::objects`), so a generated match is
-  never a blocked one; its players walk into every thing but a starting
+  map of a match it invents (`sim::objects`), with a member for each
+  team in play added to each label it leaves empty, so a generated match is never a blocked
+  one and an Oddball match has its ball; its players walk into every thing but a starting
   location. The match's scenario carries the map, so a saved match runs
   again.
 - **The page** (`web/src/stats/RulesTest.tsx`) lists the map's things

@@ -70,7 +70,7 @@ fn label_codes() {
     );
     assert!(m.contains("outside \"numbered 0..1\""), "{m}");
     let m = error(
-        &script("", "label a: zones = \"x\"\nlabel b: zones = \"x\"\non tick { for each a z { } for each b y { } }\n"),
+        &script("", "label a: zones = \"x\"\nlabel b: zones = \"x\"\non tick {\n    for each a z { }\n    for each b y { }\n}\n"),
         "label.same-text",
     );
     assert!(m.contains("both name the map label \"x\""), "{m}");

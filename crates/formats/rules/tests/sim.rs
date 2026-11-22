@@ -143,7 +143,9 @@ fn every_builtin_reaches_an_end() {
     let m = end(builtin::INFECTION, 8, 0);
     assert_eq!(m.end, End::Script);
     assert!(matches!(m.winner, Winner::Team(_)));
-    let m = end(builtin::SIEGE, 8, 0);
+    // Siege's attackers take the generated map's zones, and each one
+    // restarts the phase clock: a long round lets the last one run out.
+    let m = sim::simulate(builtin::SIEGE, &Setup { length: Some(1200), ..setup(8, 0, 1) }).unwrap();
     assert_eq!((m.end, m.winner), (End::Script, Winner::Team(1)));
     // Somebody scores in the modes that score.
     for src in [builtin::ODDBALL, builtin::KING, builtin::TERRITORIES, builtin::CTF, builtin::RACE] {
@@ -269,7 +271,8 @@ fn the_scenario_file_holds_the_match() {
     assert_eq!(scores, m.trace.scores);
 
     // Labelled objects with their teams, and the events past the engine's.
-    let m = sim::simulate(builtin::CTF, &setup(4, 2, 2)).unwrap();
+    const BASES: &str = "rules \"Bases\" 1\ncarrier slayer\nlabel bases: zones per team\non tick {\n    for each bases b { }\n}\n";
+    let m = sim::simulate(BASES, &setup(4, 2, 2)).unwrap();
     let (file, left) = sim::to_file(&m.scenario);
     assert!(left.is_empty(), "{left:?}");
     assert_eq!(file.map, m.scenario.map);

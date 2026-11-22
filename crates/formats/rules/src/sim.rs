@@ -18,7 +18,7 @@ use serde::Serialize;
 
 use crate::caps::{self, id};
 use crate::fake::FakeGame;
-use crate::ir::{Event, Ir, Op};
+use crate::ir::{Event, Ir, LabelKind, Op};
 use crate::labels::{self, Class};
 use crate::scenario::{self as file, ScenarioLabel};
 use crate::vm::{self, Input};
@@ -318,11 +318,35 @@ fn variant(ir: &Ir, setup: &Setup, teams: u8) -> BTreeMap<String, i32> {
 /// The map a match is played on: [`labels::minimal`] for the script's label
 /// table, so each label has its kind, its count, its numbers and a member
 /// for each team the label asks for, and the match is never a blocked one.
-/// A free-for-all match has teams 0 and 1, which only a `per team` label
-/// reads.
+/// A label the minimal map leaves empty (`objects`, `at most n`) gets a
+/// member for each team in play, numbered in turn when it is numbered, so the match plays what the label is
+/// for: an Oddball map with no ball spawn, or a CTF map with no team's
+/// flag spawn, scores nothing. A free-for-all match has teams 0 and 1,
+/// which only a `per team` label reads.
 fn objects(ir: &Ir, teams: u8) -> Vec<ScenarioLabel> {
     let in_play: Vec<u8> = if teams >= 2 { (0..teams).collect() } else { vec![0, 1] };
-    file::things_of(&labels::minimal(ir, &in_play), OBJECT_BASE)
+    let mut census = labels::minimal(ir, &in_play);
+    for def in ir.labels.iter().filter(|d| d.max >= 1) {
+        census.labels.entry(def.text.clone()).or_insert_with(|| {
+            let class = match def.kind {
+                LabelKind::Object => Class::Object,
+                LabelKind::Zone => Class::Volume,
+                LabelKind::Spawn => Class::Spawn,
+            };
+            let first = def.range().map_or(0, |r| *r.start());
+            in_play
+                .iter()
+                .take(def.max as usize)
+                .enumerate()
+                .map(|(i, &t)| labels::Member {
+                    class,
+                    number: def.numbered().then_some(first + i as i32),
+                    team: Some(t),
+                })
+                .collect()
+        });
+    }
+    file::things_of(&census, OBJECT_BASE)
 }
 
 // ---------- the director ----------
@@ -1223,7 +1247,8 @@ mod tests {
         assert_eq!(of("home").iter().map(|t| t.team).collect::<Vec<_>>(), [Some(0), Some(1)]);
         assert_eq!(of("start").len(), 2);
         assert!(of("start").iter().all(|t| t.class == Some(Class::Spawn)));
-        assert!(of("barrier").is_empty());
+        // A label the minimal map leaves empty gets one for each team.
+        assert_eq!(of("barrier").iter().map(|t| t.team).collect::<Vec<_>>(), [Some(0), Some(1)]);
         assert!(o.iter().all(|x| x.object >= OBJECT_BASE));
         // Four teams: a home for each.
         assert_eq!(objects(&ir, 4).iter().filter(|t| t.label == "home").count(), 4);
