@@ -209,7 +209,7 @@ describe("one map overlay", () => {
     expect(new Set(RUN_COLOURS).size).toBe(RUN_COLOURS.length);
     expect(runColour(0)).toBe(RUN_COLOURS[0]);
     expect(runColour(RUN_COLOURS.length)).toBe(runColour(0));
-    expect(runColour(-1)).toBe(RUN_COLOURS.at(-1));
+    expect(runColour(-1)).toBe(RUN_COLOURS[RUN_COLOURS.length - 1]!);
   });
 
   test("a colour dims to a translucent one, and a non-hex colour is left alone", () => {
