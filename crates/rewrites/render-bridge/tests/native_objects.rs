@@ -52,8 +52,8 @@ fn on_its_snapshot_policy_is_a_section() {
 const DEF_A: u32 = 0xe000_0100;
 const DEF_B: u32 = 0xe000_0200;
 
-/// Alone at the layer draw, and with the world, the chain runs on the
-/// pipelined render thread: context-only observers before, nothing after.
+/// Alone at the layer draw, and with the world, the chain runs on a second
+/// executor: context-only observers before, nothing after.
 #[test]
 fn its_layer_draw_chain_runs_on_the_render_thread() {
     let mut r = Registry::new(Switches::defaults());

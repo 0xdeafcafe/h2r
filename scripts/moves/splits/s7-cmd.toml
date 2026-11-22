@@ -1,5 +1,0 @@
-from = "cli"
-to = "cmd"
-direction = "down"
-description = "What every h2 command shares: the Command record and registry, the usage text built from it, the disc and output helpers"
-modules = ["safe_out"]

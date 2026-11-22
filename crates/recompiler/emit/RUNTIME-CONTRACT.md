@@ -79,16 +79,6 @@ memory or block on it, and may run under the gate. A new helper that takes
 the context must be preceded by `H2_GATE_DROP()`, or it deadlocks on its
 first memory guard.
 
-With `H2_ENTRY_GATE=1` (a `cflags` switch, off by default) a handler that
-has inline loads or stores takes the gate as it starts, after the entry's
-own calls (acquire, the budget), and again where a direct call returns
-inline, rather than at its first access through `h2_access_cold`. It is the
-same try (`h2_gate_try`): a busy or wanted gate leaves it not held, and the
-first access is cold as before. A hold begun at entry obeys every rule
-above: it is dropped before every call that takes the context, on every way
-out and by loop headers, so a Rust guard waits no longer than for a hold
-begun at a first access.
-
 The gate word has two bits: 1, held (by C or by a Rust guard), and 2, a
 Rust guard is waiting. C takes the gate only when the word is 0 and releases
 by clearing the held bit alone (`fetch_and(~1)`). A guard that finds it
@@ -469,8 +459,7 @@ function entry's selector, never at a cut-in. The runtime refuses the bit
 without feature 1, and a module whose clock differs from one already registered
 (docs/runtime/block-clock-imprecise-faults.md).
 
-`H2_VIEW_CHARGE` (a `cflags` switch, on by default; counting modules
-with `H2_FASTMEM`) makes no call to charge when the handler has a view: a
+A counting module with `H2_FASTMEM` makes no call to charge when the handler has a view: a
 charge adds the count to the view's own (`accesses`), raising SLICE on the
 preempt word when the sum reaches the view's `budget`, exactly as the
 inline RAM path's own count does without accounting; the budget is
@@ -815,8 +804,7 @@ Its semantics:
     return to its continuation with the word still zero, else a hand-up,
     so an HLE function that blocks, calls back into the guest with a
     continuation or raises a preemption reaches the runner as it would
-    have. On entry it settles what the caller lent (the view's count, a
-    lent count, a lent gate hold) and gives nothing back. Rust code under
+    have. On entry it settles what the caller lent (the view's count) and gives nothing back. Rust code under
     it sees the shadow stack the runner would have shown it: the frames
     not yet replayed are replayed on entry. On the way out it makes the
     callers' own test: if one will continue inline, the shadow stack is

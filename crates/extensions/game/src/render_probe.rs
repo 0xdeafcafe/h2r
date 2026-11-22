@@ -1,6 +1,5 @@
 //! What the agent's `render.stats` reads (crates/extensions/agent's `render`): the
-//! in-between frames' counters, the pipelined render's and the frame-stats
-//! window. The pieces register here when
+//! in-between frames' counters and the frame-stats window. The pieces register here when
 //! they are built; each reads as `null` when it isn't running.
 //!
 //! `render.frame` needs nothing here: the draw diagnostics wrapper
@@ -16,6 +15,7 @@ pub use private_frame::{OwnedFrame, PrivateFrame};
 #[cfg(feature = "gpu")]
 pub use agent::render::private_graph::{display_declined as owner_declined, display_stopped as owner_stopped};
 
+#[cfg(feature = "gpu")]
 use std::sync::Mutex;
 #[cfg(feature = "gpu")]
 use std::sync::Arc;
@@ -26,7 +26,6 @@ use serde_json::{Value, json};
 static INTERP: Mutex<Option<Arc<Mutex<d3d::interp::InterpStats>>>> = Mutex::new(None);
 #[cfg(feature = "gpu")]
 static HOLDS: Mutex<Option<Arc<Mutex<d3d::interp::HoldLog>>>> = Mutex::new(None);
-static PIPELINE: Mutex<Option<render_bridge::pipeline_render::PipelineRender>> = Mutex::new(None);
 
 #[cfg(feature = "gpu")]
 /// The interpolated replay's counters (`d3d::InterpBackend::stats`).
@@ -38,11 +37,6 @@ pub fn set_interp(stats: Arc<Mutex<d3d::interp::InterpStats>>) {
 /// E1's hold log (`d3d::InterpBackend::holds`): `interp.holds`.
 pub fn set_interp_holds(holds: Arc<Mutex<d3d::interp::HoldLog>>) {
     *HOLDS.lock().unwrap_or_else(|e| e.into_inner()) = Some(holds);
-}
-
-/// The pipelined render feature (a handle onto the same state).
-pub fn set_pipeline(p: render_bridge::pipeline_render::PipelineRender) {
-    *PIPELINE.lock().unwrap_or_else(|e| e.into_inner()) = Some(p);
 }
 
 #[cfg(feature = "gpu")]
@@ -61,11 +55,6 @@ fn interp() -> Option<Value> {
     Some(v)
 }
 
-fn pipeline() -> Option<Value> {
-    let p = PIPELINE.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
-    Some(agent::render::pipeline_json(&p.stats()))
-}
-
 /// The frame-stats window's per-frame means of the render counters
 /// (`profile.counters` has the rest).
 fn counters() -> Option<Value> {
@@ -79,7 +68,6 @@ pub fn sources() -> agent::render::RenderSources {
         interp: Box::new(interp),
         #[cfg(not(feature = "gpu"))]
         interp: Box::new(|| None),
-        pipeline: Box::new(pipeline),
         counters: Box::new(counters),
     }
 }
@@ -113,7 +101,5 @@ mod tests {
         assert_eq!(v["holds"]["frames"], 5, "the hold log beside the counters");
         assert_eq!(v["holds"]["kinds"], serde_json::json!([]));
         assert_eq!(v["frames"], 12);
-        set_pipeline(render_bridge::pipeline_render::PipelineRender::new());
-        assert_eq!(pipeline().unwrap()["pipelined"], 0);
     }
 }

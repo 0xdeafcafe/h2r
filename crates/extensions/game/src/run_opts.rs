@@ -151,8 +151,8 @@ pub struct Host {
 impl Host {
     /// Registers a window-overlay producer before boot. Keep the source's
     /// active state in an atomic so inactive sources make no capture calls
-    /// or allocations. Capture may run on the pipelined worker and only
-    /// reads shared host state and that worker's guest view. The window
+    /// or allocations. Capture only reads shared host state and the
+    /// render owner's guest view. The window
     /// consumes the owned sample later, even when it re-shows an image.
     #[cfg(feature = "gpu")]
     pub fn add_world_line_source(&mut self, source: Arc<dyn crate::world_lines::WorldLineSource>) {

@@ -10,7 +10,7 @@ Halo 2 is an SSE1 game with an x87 sidecar. Every floating-point instruction is 
 
 - **Exact x87 helpers.** `crates/recompiler/x87` is integer ext80 arithmetic, exact under every precision and rounding control; the generated C calls `h2x87_v1_*`. This is the authority and the path when `H2_X87_NATIVE=0`. [FLOAT-ABI.md](FLOAT-ABI.md).
 - **Guarded native x87.** `h2x87_native.h` runs add, subtract, multiply, divide, square root and integer loads in host binary64 when a value-level proof holds (PC=53, round-to-nearest, exceptions masked, operands exactly representable), and calls the helper otherwise. On by default. [x87-native.md](x87-native.md).
-- **Transcendentals.** `fsin`, `fcos`, `fptan`, `fpatan`, `fyl2x`, `fyl2xp1`, `f2xm1` and `fsincos` evaluate at 512 bits and round once; the `fast-trans` feature tries a guarded 128-bit pass first. [x87-transcendentals.md](x87-transcendentals.md).
+- **Transcendentals.** `fsin`, `fcos`, `fptan`, `fpatan`, `fyl2x`, `fyl2xp1`, `f2xm1` and `fsincos` evaluate at 512 bits and round once; a guarded 128-bit pass runs first. [x87-transcendentals.md](x87-transcendentals.md).
 - **SSE reference.** `crates/recompiler/simd` is integer soft-float for every SSE1 form, with MXCSR, NaN payloads and `#XM` exact; `h2simd.h` is its C side. [simd.md](simd.md), [sse-oracle.md](sse-oracle.md).
 - **Native SSE.** `h2sse_native.h` runs guarded SSE arithmetic on the host's vector unit and keeps MXCSR in guest state. On by default. [sse-native.md](sse-native.md).
 

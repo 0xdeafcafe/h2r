@@ -157,7 +157,7 @@ The method for comparing the walk with `impl.render.native=off` is in
 | `0x0004baf0`, `0x0004b5d0` | LOD choice by pixel size inside `0x00133790` ([occlusion-culling.md](occlusion-culling.md)). |
 | `0x0016d764` | Region permutation choice (Likely): the variant's region map, its regions at `+0x18`, then `0x0016dad0` ([objects.md](../formats/objects.md)). |
 | `0x00165f16` (`points::FIRST_PERSON_RENDER`) | One local player's first-person weapon and arms, after the transparents, with their own projection (camera `0x0023c110`, FOV `0x00187130`). |
-| `0x0003ddd0`, `[0x00509434]`, body `+0xcc` | The per-object render-state (lighting) cache: records of `0x100` bytes, lit per frame by `0x0003dfe0`, lighting at `+0x44..` and `+0xc0..` (layout not read; [pipelined-render.md](pipelined-render.md)). |
+| `0x0003ddd0`, `[0x00509434]`, body `+0xcc` | The per-object render-state (lighting) cache: records of `0x100` bytes, lit per frame by `0x0003dfe0`, lighting at `+0x44..` and `+0xc0..` (layout not read; [notes/pipelined-render.md](notes/pipelined-render.md)). |
 
 ### Layer-3 masks
 
@@ -592,23 +592,16 @@ implementation samples engine texture 3.
   block in one buffer at dynamic offsets, as the lights do; the viewport
   is the whole target, as the programs' own fix-up expects.
 
-### Pipelined render
+### Memory and host state
 
-The observer reads the object array and bodies during the render. With
-`impl.render.pipelined_frame` the render runs one frame behind the
-simulation on its own thread, while the next tick moves the same bodies and
-may compact the pool. On the render thread the observer's memory is the
-render's copy-on-write snapshot of the frame
-(docs/runtime/second-executor.md; `Obs::guest` is the executor's own
-runtime), so the handles, bodies and node matrices it reads are frame `k`'s,
-and the tick's writes to live RAM never reach it. The node matrices are
-copied out of that snapshot at the hook into the pass (`ObjectFrame`), and
-nothing reads guest memory after it. The observer is one hook (context-only,
-nothing after the body, the restore at the next layer draw), so the pipelined
-render runs it on its own thread like the world's. The host's writes are its
-map state (a mutex only the observer takes, with the model loader on host
-threads) and a reservation on the device for the current view, which
-commits in render order at the hook.
+The observer reads the object array and bodies during the render. The node
+matrices are copied out of guest memory at the hook into the pass
+(`ObjectFrame`), and nothing reads guest memory after it. The observer is
+one hook (context-only, nothing after the body, the restore at the next
+layer draw). The host's writes are its map state (a mutex only the
+observer takes, with the model loader on host threads) and a reservation
+on the device for the current view, which commits in render order at the
+hook.
 
 ### Per frame on the CPU
 

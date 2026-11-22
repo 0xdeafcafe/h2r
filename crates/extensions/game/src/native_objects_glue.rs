@@ -96,8 +96,9 @@ struct MapState {
     name: String,
     generation: u64,
     job: Arc<()>,
-    /// The scenario palette's residency, for the game-view gate.
-    palette: Arc<palette::Palette>,
+    /// Held only to keep the scenario palette alive: the game-view gate
+    /// reaches it through a weak handle ([`palette::activate`]).
+    _palette: Arc<palette::Palette>,
     /// The frame during which the worker finished, and its resident models.
     published: Option<(u64, Arc<Models>)>,
 }
@@ -178,7 +179,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             name: name.clone(),
             generation,
             job: Arc::clone(&job),
-            palette: Arc::clone(&palette),
+            _palette: Arc::clone(&palette),
             published: None,
         });
         drop(state);

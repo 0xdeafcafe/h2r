@@ -4347,7 +4347,7 @@ mod tests {
     /// object table scan, the frame build, and its JSON or packed form.
     /// `cargo test --release -p live-telemetry measure_frame_cost -- --ignored --nocapture`
     #[test]
-    #[ignore]
+    #[ignore = "manual benchmark: release mode"]
     fn measure_frame_cost() {
         use crate::memory::{fixture, world};
         use std::time::Instant;

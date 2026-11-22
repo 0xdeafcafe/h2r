@@ -7,7 +7,6 @@ use agent_proto::sim::{OBJECT_GROUPS, SpawnParams, hashes::HashesParams};
 use agent_proto::{Boundary, RpcError, code};
 use engine::{GuestMemory, MemFault};
 use guest_layout::{game::GameGlobals, global};
-use serde_json::Value;
 
 use crate::sim::{SimHandle, hashes::HashLog};
 use crate::{Access, Agent, GameCtx};

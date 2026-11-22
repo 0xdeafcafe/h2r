@@ -1,6 +1,6 @@
 # crates/tools
 
-The tools domain is offline work on game data: the Halo 1 readers and converters, the UI-free cores of the editor's tools, the profiler and the model viewer. Nothing here hooks a running guest. A crate here may depend on its own domain and on `formats`, `recompiler`, `runtime`, `platform`, `rewrites` and `live`; only `apps` may depend on it. Tests that read a disc are `#[ignore]`d and take the disc paths from `H2_DISC` and `H1_ISO`. The rules are checked by `python3 scripts/crate-graph.py layers --check` and set out in [crate-structure](../../docs/dev/crate-structure.md).
+The tools domain is offline work on game data: the Halo 1 readers and converters, the UI-free cores of the editor's tools, and the profiler. Nothing here hooks a running guest. A crate here may depend on its own domain and on `formats`, `recompiler`, `runtime`, `platform`, `rewrites` and `live`; only `apps` may depend on it. Tests that read a disc are `#[ignore]`d and take the disc paths from `H2_DISC` and `H1_ISO`. The rules are checked by `python3 scripts/crate-graph.py layers --check` and set out in [crate-structure](../../docs/dev/crate-structure.md).
 
 | Crate | What it is |
 |---|---|
@@ -19,4 +19,3 @@ The tools domain is offline work on game data: the Halo 1 readers and converters
 | [mesh-edit](mesh-edit/README.md) | The modeling kernel: an editable radial-edge mesh, its operations and stable export. |
 | [collision-build](collision-build/README.md) | The collision compiler: polygons to a Halo 2 collision BSP; `coll` BSPs as meshes. |
 | [perf](perf/README.md) | Sampling profiler, timeline capture and the benchmark harness. |
-| [viewer](viewer/README.md) | Render-model viewer and the offline BSP tools. |

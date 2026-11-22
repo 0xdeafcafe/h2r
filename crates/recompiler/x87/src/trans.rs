@@ -38,7 +38,6 @@ use crate::{F80, Flags, Rc, Transcendental};
 /// Working precision in 64-bit limbs.
 pub(crate) const W: usize = 8;
 
-#[cfg(any(feature = "fast-trans", test))]
 #[path = "trans_fast.rs"]
 mod fast;
 
@@ -290,7 +289,6 @@ pub(crate) fn tan_n<const N: usize>(a: F80) -> Transcendental {
 
 /// FSIN.
 pub fn sin(a: F80) -> Transcendental {
-    #[cfg(feature = "fast-trans")]
     if let Some(v) = fast::sin(a) {
         return v;
     }
@@ -299,7 +297,6 @@ pub fn sin(a: F80) -> Transcendental {
 
 /// FCOS.
 pub fn cos(a: F80) -> Transcendental {
-    #[cfg(feature = "fast-trans")]
     if let Some(v) = fast::cos(a) {
         return v;
     }
@@ -309,7 +306,6 @@ pub fn cos(a: F80) -> Transcendental {
 /// FPTAN's ST(0) result (the instruction then pushes 1.0, which the ABI
 /// layer does).
 pub fn tan(a: F80) -> Transcendental {
-    #[cfg(feature = "fast-trans")]
     if let Some(v) = fast::tan(a) {
         return v;
     }
@@ -321,7 +317,6 @@ pub fn tan(a: F80) -> Transcendental {
 /// out-of-range operand both values are the unchanged operand; for a NaN
 /// or invalid operand both are the NaN result.
 pub fn sincos(a: F80) -> (Transcendental, F80) {
-    #[cfg(feature = "fast-trans")]
     if let Some(v) = fast::sincos(a) {
         return v;
     }
@@ -361,7 +356,6 @@ fn pi_multiple<const N: usize>(num: u64, log2_den: i32, neg: bool) -> (F80, Flag
 
 /// FPATAN: `atan2(y, x)` with the SDM's table for zeros and infinities.
 pub fn patan(y: F80, x: F80) -> (F80, Flags) {
-    #[cfg(feature = "fast-trans")]
     if let Some(v) = fast::patan(y, x) {
         return v;
     }
@@ -446,7 +440,6 @@ fn log2_wf<const N: usize>(u: Wf<N>) -> (Wf<N>, bool) {
 
 /// FYL2X: `y * log2(x)`.
 pub fn yl2x(y: F80, x: F80) -> (F80, Flags) {
-    #[cfg(feature = "fast-trans")]
     if let Some(v) = fast::yl2x(y, x) {
         return v;
     }
@@ -585,7 +578,6 @@ fn log2p1<const N: usize>(fx: Fin) -> (Wf<N>, bool) {
 /// (overflowing to +inf with OE for large `a`, approaching -1 with PE for
 /// very negative `a`), `-1` for `-inf` and `+inf` for `+inf`.
 pub fn x2m1(a: F80) -> (F80, Flags) {
-    #[cfg(feature = "fast-trans")]
     if let Some(v) = fast::x2m1(a) {
         return v;
     }

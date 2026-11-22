@@ -71,8 +71,6 @@ pub const TABLE: &[Switch] = &[
     // Rendering.
     sw("impl.render.native", On, "render", "2026-11-14",
         "the native renderer owns the frame (review 4.3): delete with the D3D path"),
-    sw("impl.render.pipelined_frame", Off, "render", "2026-11-18",
-        "the pipelined COW worker in its current form is a dead end (review 5): delete"),
     sw("impl.render.interpolate", On, "render", "2026-11-14",
         "the presentation snapshot (sim-review lane 7) replaces it: delete"),
     sw("impl.render.reproject", Off, "render", "2026-11-18",

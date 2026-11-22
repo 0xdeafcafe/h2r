@@ -27,8 +27,7 @@
 //! its own context (the guest memory its `Obs` gives it, and the device
 //! the render's own D3D calls use) and writes only this census, which is
 //! behind a mutex the agent reads; they are marked context-only. All of
-//! them have an exit observer, so their chains stay off the pipelined
-//! render thread whatever the mark.
+//! them have an exit observer.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};

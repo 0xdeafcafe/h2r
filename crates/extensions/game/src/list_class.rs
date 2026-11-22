@@ -637,7 +637,7 @@ impl hooks::Feature for ScrollArrowLayout {
         })
         // It reads the layouts fixed when the lists are set up and edits
         // only the caller's stack frame and the quad it is about to
-        // transform: the pipelined render thread runs it too.
+        // transform.
         .context_only();
         Ok(())
     }

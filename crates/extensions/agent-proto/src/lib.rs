@@ -31,7 +31,6 @@ pub mod superbounce_view;
 pub mod host_lobby;
 pub mod host_memory;
 pub mod memory_forensics;
-#[cfg(feature = "serve-memory")]
 pub mod memory_serve;
 pub mod hot;
 pub mod live;
@@ -270,8 +269,7 @@ pub mod method {
     /// the same last frame as `render.frame` ([`crate::FrameParams`]).
     pub const RENDER_FRAME_LAYOUT: &str = "render.frame_layout";
     /// The render pipeline's counters: in-between frames and their hold
-    /// reasons, the pipelined render, the frame-stats counters
-    /// ([`crate::RenderStats`]).
+    /// reasons, the frame-stats counters ([`crate::RenderStats`]).
     pub const RENDER_STATS: &str = "render.stats";
     /// Where the window drew the world marks on its last presents: the
     /// frame kind, a made frame's blend fraction and camera shift, and the

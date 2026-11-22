@@ -358,7 +358,7 @@ impl Guest {
         }
     }
     /// Take over `source`'s subscriptions named `owner` for a copy-on-write
-    /// view of it (docs/runtime/second-executor.md, "What remains", item 4):
+    /// view of it (docs/runtime/second-executor.md):
     /// each gets a subscriber here with the same [`WatchId`], owner and
     /// watched pages (made the first time, its watched set refreshed after),
     /// and `source`'s undrained dirty pages move here (cleared there). A

@@ -46,7 +46,7 @@ pub(crate) struct Case {
     pub level: bool,
     /// The debug menu's local agent: our cheats.
     pub agent: bool,
-    /// `H2_LOCKSTEP`: the tick observer, and no pipelined render.
+    /// `H2_LOCKSTEP`: the tick observer.
     pub lockstep: bool,
     /// `H2_COOP_PROBE`.
     pub coop_probe: bool,
@@ -230,14 +230,6 @@ fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> hooks::Regis
         replay: None,
     };
     let lockstep_on = lockstep.enabled();
-    let pipeline = super::pipeline_for(
-        render_bridge::pipeline_render::PipelineRender::with(
-            true,
-            render_bridge::pipeline_render::Addrs::HALO2,
-        ),
-        lockstep_on,
-        case.light,
-    );
     let mut late = register_late_for_profile(
         &mut features,
         LateInputs {
@@ -256,7 +248,6 @@ fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> hooks::Regis
             },
             allow_bot_add: !case.light || core.bots_on,
             xa: None,
-            pipeline,
             coop_probe: case.coop_probe.then(|| {
                 crate::coop_probe::parse(|k| (k == "H2_COOP_PROBE").then(|| "1".to_owned()))
                     .unwrap()
@@ -467,36 +458,6 @@ fn lod_distance_requires_a_gpu_profile_and_a_drawing_view() {
     }
 }
 
-#[test]
-fn full_profile_allows_explicit_pipelining_for_tick_hashes() {
-    use render_bridge::pipeline_render::{Addrs, PipelineRender, SWITCH};
-
-    for (switches, lockstep, light, expected) in [
-        ("", false, false, false),
-        ("impl.render.native=on", false, false, false),
-        (SWITCH, false, false, true),
-        (
-            "impl.render.native=on,impl.render.pipelined_frame=on",
-            false,
-            false,
-            true,
-        ),
-        (SWITCH, false, true, false),
-        (SWITCH, true, false, false),
-    ] {
-        let mut features = hooks::Registry::new(hooks::Switches::parse(switches).unwrap());
-        let pipeline =
-            super::pipeline_for(PipelineRender::with(false, Addrs::HALO2), lockstep, light);
-        features.add(&pipeline).unwrap();
-        let plan = features.build(&hooks::Base).unwrap();
-        assert_eq!(
-            plan.chains.contains_key(&hooks::points::RENDER_FRAME.base),
-            expected,
-            "{switches}, lockstep={lockstep}, light={light}"
-        );
-    }
-}
-
 /// Boot with nothing optional: no settings, no XAPI, default switches.
 #[test]
 fn the_plan_builds_with_default_switches() {
@@ -504,9 +465,8 @@ fn the_plan_builds_with_default_switches() {
     assert_builds(&Case::full(""));
 }
 
-/// Every switch that adds hooks on (the census in a second build, since
-/// pipelining is off with it, and the native renderer off in a third), with
-/// everything a test can supply.
+/// Every switch that adds hooks on (the census in a second build, and the
+/// native renderer off in a third), with everything a test can supply.
 #[test]
 fn the_plan_builds_with_every_hook_switch_on() {
     assert_builds(&Case::none(ALL_ON));
@@ -925,134 +885,5 @@ fn viewer_skips_follow_the_light_profile_and_independent_switches() {
             expected,
             "{light} {spec}"
         );
-    }
-}
-
-/// The pipelined render thread's refusals (`render_thread::REFUSED`),
-/// checked against the whole plan this module builds.
-#[cfg(feature = "desktop-runtime")]
-mod render_thread_plan {
-    use std::sync::Arc;
-
-    use super::{ALL_ON, Case, NATIVE_OFF, registry};
-    use crate::render_thread::REFUSED;
-
-    /// The campaign picker's state over the two fixture campaigns, as
-    /// `campaign_menu`'s own tests build it.
-    fn campaign_state() -> crate::campaigns::State {
-        use content::campaign_list::{self as cl, CampaignManifest, FIXTURE, HALO1};
-        let ms = [
-            CampaignManifest::parse(HALO1).unwrap(),
-            CampaignManifest::parse(FIXTURE).unwrap(),
-        ];
-        crate::campaigns::State {
-            built: cl::build(&ms, &[1], &[0x65]).unwrap(),
-            selection: crate::campaigns::Selection::default(),
-            progress: crate::campaigns::Progress::memory(),
-            cards: Default::default(),
-        }
-    }
-
-    fn refused(feature: &str, point: &str) -> Option<usize> {
-        REFUSED
-            .iter()
-            .position(|&(f, p, _)| f == feature && (p == "*" || p == point))
-    }
-
-    /// Every hook boot's features place, with every switch that adds one
-    /// on (and the census in a second build, since pipelining is off with
-    /// it), either runs on the pipelined render thread or is listed in
-    /// [`REFUSED`] with its reason, and every listed entry is still used.
-    /// The ones the render path meets in a default run (the locale lookups,
-    /// Blind, the native world's and objects' layer draw) are context-only,
-    /// and so are the native transparents' geometry handler, the native
-    /// lights' passes, and the dynamic lights' call (the frame step reads
-    /// the light candidates before the decal mode after it, not on the
-    /// lights' return). The native post's colour pass and screen effect are
-    /// not: their return hooks commit or replay the held draws.
-    #[test]
-    fn every_feature_hook_runs_on_the_render_thread_or_says_why_not() {
-        let mut unlisted = Vec::new();
-        let mut used = vec![false; REFUSED.len()];
-        let mut safe = Vec::new();
-        // The empty switch string places every native stage (on by default
-        // since 2026-11-20): the native world and objects at the layer draw,
-        // and the transparents' handler, with nothing else there, are
-        // render-thread safe together, and so are the lights' skip and view
-        // observer (placed only without render-timing) and the HUD's
-        // screen-quad and HUD-quad befores.
-        for switches in [
-            String::new(),
-            format!("{ALL_ON},{NATIVE_OFF}"),
-            ALL_ON.to_owned(),
-            format!("{ALL_ON},render-census"),
-        ] {
-            let mut features = registry(&Case::full(&switches));
-            features
-                .add(&crate::campaign_menu::Campaigns {
-                    state: Arc::new(campaign_state()),
-                    picker: Arc::new(|| 0),
-                })
-                .unwrap();
-            let plan = features.build(&hooks::Base).unwrap();
-            for c in plan.chains.values() {
-                match c.render_thread() {
-                    Ok(()) => safe.push(c.point.name),
-                    Err(hooks) => {
-                        for (h, why) in hooks {
-                            match refused(h.feature, c.point.name) {
-                                Some(i) => used[i] = true,
-                                None => unlisted.push(format!(
-                                    "{} {} {}:{} ({why})",
-                                    c.point.name,
-                                    h.kind().as_str(),
-                                    h.feature,
-                                    h.label
-                                )),
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        assert!(
-            unlisted.is_empty(),
-            "hooks the pipelined render would fall back on; mark them context_only or list them in REFUSED:\n{}",
-            unlisted.join("\n")
-        );
-        let stale: Vec<_> = REFUSED
-            .iter()
-            .zip(&used)
-            .filter(|(_, u)| !**u)
-            // Boot adds agent-audio only with the agent and live audio
-            // (dsound_glue::add_loop_agent_method), which this plan omits.
-            .filter(|((f, _, _), _)| *f != "agent-audio")
-            .map(|(r, _)| r)
-            .collect();
-        assert!(stale.is_empty(), "listed but not placed: {stale:?}");
-        for p in [
-            "LOCALE_FIND",
-            "LOCALE_EXISTS",
-            "HUD_SHOWN",
-            "FIRST_PERSON_RENDER",
-            "UI_QUAD_TO_SCREEN",
-        ] {
-            assert!(safe.contains(&p), "{p} runs on the render thread");
-        }
-        #[cfg(feature = "gpu")]
-        for p in [
-            "LAYER_DRAW",
-            "TRANSPARENT_GEOMETRY",
-            "SCENE_TRANSPARENTS",
-            "SCENE_TRANSPARENTS_END",
-            "DECAL_RENDER",
-            "DECAL_RENDER_END",
-            "RENDER_LIGHT_PASSES",
-            "LIGHT_GEOMETRY_DRAW",
-            "RENDER_DYNAMIC_LIGHTS",
-            "RENDER_DECAL_MODE",
-        ] {
-            assert!(safe.contains(&p), "{p} runs on the render thread");
-        }
     }
 }

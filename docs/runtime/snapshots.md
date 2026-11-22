@@ -665,8 +665,7 @@ is not `Unaudited` and `state.save` is not refused. The other `native-*`
 features (`crates/rewrites/render-bridge/src/native_*.rs`) are `Stateless`.
 
 None of them changes simulation state. A save runs between slices, with
-the D3D render thread drained and the pipelined render not in flight
-(`pipeline-render` forbids while it is). Section loads run last, on the
+the D3D render thread drained. Section loads run last, on the
 game thread, over loaded guest RAM and a loaded device; they clear
 Mutex-guarded statics and take no device lock. Their GPU caches are
 keyed by what they read from guest RAM at every ask (the map name, and

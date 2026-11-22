@@ -153,7 +153,7 @@ pub enum Action {
     /// Draw a converted map's Halo 1 source over it.
     SetOverlay(bool),
     SetLayers(Layers),
-    /// The viewport's Lighting mode (docs/editor/polish-plan.md, P14).
+    /// The viewport's Lighting mode (docs/editor/editor.md).
     SetLighting(scenario_edit::native_view::Lighting),
     /// Convert the Halo 1 map on show to Halo 2, in the background.
     ConvertHalo1(ConvertSandbox),

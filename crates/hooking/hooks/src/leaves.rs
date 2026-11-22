@@ -85,8 +85,8 @@ impl Feature for EngineLeaves {
         }
         // Every adapter is a function of its registers and the memory of
         // the context it runs on (the string sources answer from state
-        // fixed at boot, or read only), so each runs on the pipelined
-        // render thread too.
+        // fixed at boot, or read only), so each runs on a second
+        // executor too.
         // Pure functions of guest memory; the string sources are fixed at
         // boot.
         b.snapshot(crate::SnapshotPolicy::Stateless);

@@ -163,22 +163,11 @@ enum {
     H2C_ENTRY, H2C_LENT_ENTRY, H2C_AFTER_DCALL, H2C_FLUSH, H2C_DROP, H2C_TICK, H2C_MISS, H2C_NO_GATE,
     H2C_COUNT
 };
-#if H2_RAM_PAGE_CACHE && H2_FASTMEM
-/* Private to a generated handler. A write slot also certifies that the
- * physical page was marked dirty if a watch was active in this hold. */
-typedef struct H2RamPage {
-    uint64_t end; /* exclusive guest end, 0 for an empty slot */
-    uint8_t *base;
-} H2RamPage;
-#endif
 typedef struct H2Gate {
     uint32_t held, dirtied;
     H2MemoryData *data;
 #if H2_COLD_STATS
     uint32_t why; /* H2C_*: why the gate is not held */
-#endif
-#if H2_RAM_PAGE_CACHE && H2_FASTMEM
-    H2RamPage ram_page[2]; /* last read and last write are independent */
 #endif
 } H2Gate;
 #define H2_GATE_TRIPS 32u
@@ -633,9 +622,6 @@ static inline H2MemoryData *h2_gate_try(H2FastAccess *f) {
  * and unused until the next hold). */
 static H2_ALWAYS_INLINE void h2_gate_adopt(H2Gate *g, H2MemoryData *d) {
     if (d) {
-#if H2_RAM_PAGE_CACHE && H2_FASTMEM
-        g->ram_page[0].end = g->ram_page[1].end = 0;
-#endif
         g->data = d;
         g->dirtied = UINT32_MAX;
         g->held = 1u;
@@ -657,24 +643,7 @@ static H2_ALWAYS_INLINE void h2_gate_tick(H2FastAccess *f, H2Gate *g) {
         g->held = 0u;
     }
 }
-/* H2_ENTRY_GATE=1 (emit-time, default off): a handler with inline loads
- * or stores takes the gate as it starts (H2_GATE_ENTER in h2gen.h, after
- * its entry calls: acquire and the budget), and again when a direct call
- * returns inline, instead of its first access taking it in h2_access_cold.
- * A busy gate or no view leaves it not held, and that first access is the
- * cold one as before. */
-#ifndef H2_ENTRY_GATE
-#define H2_ENTRY_GATE 0
-#endif
-#if H2_ENTRY_GATE && H2_FASTMEM && !H2_FLAT_
-#define H2_GATE_ENTER_(f, g)                                                    \
-    do {                                                                        \
-        if (!(g).held && (f)) h2_gate_adopt(&(g), h2_gate_try(f));              \
-    } while (0)
-#else
-#define H2_GATE_ENTER_(f, g) ((void)0)
-#endif
-/* H2_VIEW_CHARGE (on in h2 build/emit; counting modules): spend the
+/* Counting modules: spend the
  * handler's count in the RAM view, inline, where it called
  * h2abi_v1_charge, h2abi_v1_budget or h2abi_v1_exit (h2gen.h). The view's
  * count is the runtime's to settle, and it settles it before anything that
@@ -694,19 +663,6 @@ static H2_ALWAYS_INLINE void h2_view_spend(H2View *f, uint64_t n) {
 static H2_ALWAYS_INLINE uint64_t h2_view_left(const H2View *f) {
     return f->budget == UINT64_MAX || f->accesses >= f->budget ? UINT64_MAX : f->budget - f->accesses;
 }
-/* Whether physical page `physical` is already marked dirty. A set bit lies
- * inside [dirty_lo, dirty_hi): every marker sets the bit and widens the
- * bounds under the gate, and the drain clears both under it. So a marked
- * page needs nothing more. */
-#define H2_DIRTY_MARKED(d, physical) \
-    (((d)->dirty[(physical) >> 18] >> (((physical) >> 12) & 63u)) & 1u)
-/* H2_DIRTY_INLINE=1 (emit-time, `H2_DIRTY_INLINE` in the build's
- * environment; default off): store sites test the bit themselves and call
- * h2_mark_dirty only for an unmarked page, a load, a shift and a branch
- * more per store site in exchange for the call. */
-#ifndef H2_DIRTY_INLINE
-#define H2_DIRTY_INLINE 0
-#endif
 /* Mark a physical page dirty for the Rust side's drain. Out of line and
  * register-preserving: a site calls it only for a store to a page other
  * than the one this hold marked last (H2Gate.dirtied). A page already
@@ -746,8 +702,7 @@ static H2_COLD H2_PRESERVE void h2_mark_dirty(H2MemoryData *d, uint32_t physical
         if (!((page).permissions & ((write) ? 2u : 1u))) goto slow;             \
         if ((page).physical > 0x04000000u - 4096u) goto slow;                   \
         if ((write) && ((g).data->watching & 1u) && (page).physical != (g).dirtied) {  \
-            if (!H2_DIRTY_INLINE || !H2_DIRTY_MARKED((g).data, (page).physical)) \
-                h2_mark_dirty((g).data, (page).physical);                       \
+            h2_mark_dirty((g).data, (page).physical);                           \
             (g).dirtied = (page).physical;                                      \
         }                                                                       \
         H2_FAST_CHARGE(f);                                                      \
@@ -755,29 +710,6 @@ static H2_COLD H2_PRESERVE void h2_mark_dirty(H2MemoryData *d, uint32_t physical
     } while (0)
 #else
 #define H2_HELD_TRY(f, g, addr, width, write, page, host, slow) do { (void)(g); (void)(page); (host) = NULL; goto slow; } while (0)
-#endif
-/* Under this gate pages, RAM backing, page permissions and watch state
- * cannot change. A single unsigned range check validates the entire span,
- * including the final 32-bit guest page. An empty slot gives off >= 4096;
- * an address below the cached page underflows in uint64_t. Never form a
- * host pointer until the range check succeeds. Cold helpers and direct
- * callees may have released the gate: adoption clears both slots. */
-#if H2_RAM_PAGE_CACHE && H2_FASTMEM
-#define H2_PAGED_TRY(f, g, addr, width, write, page, host, slow)                 \
-    do {                                                                        \
-        H2RamPage *slot_ = &(g).ram_page[(write)];                              \
-        uint64_t off_ = (uint64_t)(addr) + 4096u - slot_->end;                  \
-        if ((g).held && H2_FAST_WIDTH_OK(width) && off_ <= 4096u - (width)) {   \
-            (host) = slot_->base + off_;                                        \
-            H2_FAST_CHARGE(f);                                                  \
-        } else {                                                                \
-            H2_HELD_TRY(f, g, addr, width, write, page, host, slow);             \
-            slot_->end = (uint64_t)((addr) | 4095u) + 1u;                       \
-            slot_->base = (host) - ((addr) & 4095u);                            \
-        }                                                                       \
-    } while (0)
-#else
-#define H2_PAGED_TRY H2_HELD_TRY
 #endif
 /* The opt-in span image (H2_FLAT_SPAN). The original view's watching
  * field was always 0 or 1. Bit 31 opts into the appended flat descriptor.
@@ -850,11 +782,11 @@ static H2_ALWAYS_INLINE uint8_t *h2_begin_span(H2FastAccess *f, H2Gate *g,
         (host) = H2_FAST_WIDTH_OK(width) ?                                      \
             h2_flat_span(&(g), (addr), (width), (write) ? 2u : 1u) : NULL;       \
         if (host) { on_flat; H2_FAST_CHARGE(f); }                               \
-        else { H2_PAGED_TRY(f, g, addr, width, write, page, host, slow); }       \
+        else { H2_HELD_TRY(f, g, addr, width, write, page, host, slow); }       \
     } while (0)
 #else
 #define H2_SITE_TRY(f, g, addr, width, write, page, host, slow, on_flat)        \
-    H2_PAGED_TRY(f, g, addr, width, write, page, host, slow)
+    H2_HELD_TRY(f, g, addr, width, write, page, host, slow)
 #endif
 /* What h2_access_cold leaves: the view if the handler now holds the gate
  * (else NULL), and the ordinary helper's status (0: it accessed). */
