@@ -279,7 +279,9 @@ fn a_bounce_reaches_on_bounce_and_scores_at_the_next_tick_boundary() {
 
 /// A host award reaches `on bounce` with its chain's count and whether it
 /// was a Monster, and a Bounced reaches `on bounced`: with Superbounce's
-/// default options a double scores 2, a Monster single 2, a Bounced -1.
+/// default options but the suicide penalty off (bit 3, so the Bounced
+/// penalty is the one that takes the point), a double scores 2, a Monster
+/// single 2, a Bounced -1.
 #[test]
 fn a_bounce_carries_its_chain_and_a_bounced_reaches_on_bounced() {
     use hud_kit_core::huds::superbounce::Medal;
@@ -287,7 +289,7 @@ fn a_bounce_carries_its_chain_and_a_bounced_reaches_on_bounced() {
     let id = ir.id();
     let store = Local::default();
     let s = shared(&store, Box::new(no_fetch));
-    let (m, _) = guest(block(prefix(&id), ir.default_options()), SLAYER);
+    let (m, _) = guest(block(prefix(&id), ir.default_options() & !(1 << 3)), SLAYER);
     s.lock().start(&m, false);
     assert!(s.lock().state().running);
     let mut monster = award(0, Some(80), 1);
