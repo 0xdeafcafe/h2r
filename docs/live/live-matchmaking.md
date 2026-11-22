@@ -1089,7 +1089,10 @@ lowercase hex digits.
      (`State::game_session`, the id the game record carries) and logs
      `live: arbitration: round <id> names the title's network key <key>;
      registering it under Live session <id>`. Any other id is posted as
-     the game named it (`arbitration::live_session`). The task reports 0
+     the game named it (`arbitration::live_session`). Extend and Report
+     go to the Live session their round was registered under
+     (`Arbiter::posted`): the host deletes the lobby's advertisement once
+     the match session takes over, before the game ends. The task reports 0
    until the server answers. It then succeeds, or completes with the
    failure's status as the Live worker maps it (an unreachable server is
    `CANNOT_ACCESS_SERVICE`). With no server (System Link, offline), the
