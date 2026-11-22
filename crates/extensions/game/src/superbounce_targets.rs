@@ -232,7 +232,7 @@ pub fn choose(targets: &[Target], at: Vec3, tag: Option<Vec3>, own: Option<Vec3>
 pub const AIM_CONE: f32 = 6.0 * std::f32::consts::PI / 180.0;
 /// World units either side of a target that count as on it.
 pub const AIM_SPAN: f32 = 0.4;
-/// A target nearer the eye than this (world units) is underfoot, not
+/// A target nearer the feet than this (world units) is underfoot, not
 /// aimed at.
 pub const AIM_MIN: f32 = 0.5;
 
@@ -253,10 +253,10 @@ pub fn aimed(at: Vec3, aim: Vec3, targets: &[Target]) -> Option<usize> {
         .filter_map(|(i, t)| {
             let p = t.at();
             let d = [p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]];
-            let far = distance(p, eye);
-            if far < AIM_MIN {
+            if distance(p, at) < AIM_MIN {
                 return None;
             }
+            let far = distance(p, eye);
             let cos = (d[0] * aim[0] + d[1] * aim[1] + d[2] * aim[2]) / (far * len);
             let off = cos.clamp(-1.0, 1.0).acos();
             (off <= AIM_CONE.max((AIM_SPAN / far).atan())).then_some((i, off))
@@ -506,7 +506,8 @@ mod tests {
                 ..line(at, Line::Learned, 6, None)
             },
         ] {
-            assert_eq!(class(&crease, &[l]), Some(Class::Candidate), "{l:?}");
+            let what = format!("{l:?}");
+            assert_eq!(class(&crease, &[l]), Some(Class::Candidate), "{what}");
         }
         // A failed seam and a crouch spot are never targets.
         let failed = Spot {

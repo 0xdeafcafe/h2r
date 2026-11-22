@@ -139,7 +139,7 @@ pub(super) fn run(args: Vec<String>) -> Result<()> {
 }
 
 fn list() {
-    for d in huds::all() {
+    for d in huds::previews() {
         let names: Vec<_> = d.states().into_iter().map(|s| s.0).collect();
         println!("{}: {}", d.hud().name, names.join(", "));
     }
@@ -153,8 +153,8 @@ fn preview_cmd(o: Opts) -> Result<()> {
         list();
         return Ok(());
     }
-    let d: Box<dyn Describe> = huds::find(name).with_context(|| {
-        let names: Vec<_> = huds::all().iter().map(|d| d.hud().name).collect();
+    let d: Box<dyn Describe> = huds::previews().into_iter().find(|d| d.hud().name == name).with_context(|| {
+        let names: Vec<_> = huds::previews().iter().map(|d| d.hud().name).collect();
         format!("no HUD {name:?}; one of {names:?}")
     })?;
     let out = o

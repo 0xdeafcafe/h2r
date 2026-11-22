@@ -255,7 +255,7 @@ fn the_synthetic_sheet_draws_and_passes() {
         [Check::Glyphs]
     );
     let states = Superbounce.states().len();
-    assert_eq!(states, 27);
+    assert_eq!(states, 26);
     assert_eq!(r.shots.len(), states * 3);
     let (sheet, tiles) = preview::sheet(&r.shots, 3);
     assert_eq!((sheet.width, sheet.height), (3 * 320, states as u32 * 240));
@@ -783,7 +783,7 @@ fn the_charge_meter_is_the_strips_end_under_the_pill() {
 /// `hud_input1` the fill), where retail draws it: centred 110 under the
 /// frame's centre; drawn in the recipe's states at their fills.
 #[test]
-fn the_arming_bar_is_assaults_where_retail_draws_it() {
+fn the_arming_bar_is_assaults_bottom_left_with_the_readout() {
     let mut src = synthetic();
     let hud = superbounce::hud();
     let t = src.templates(&hud);
@@ -805,8 +805,10 @@ fn the_arming_bar_is_assaults_where_retail_draws_it() {
     let centre = frame.anchor_point(4).unwrap();
     let rect = arm("held").rect.unwrap();
     assert_eq!([rect.width(), rect.height()], [140.0, 13.0]);
-    assert_eq!(rect.x0 + rect.width() / 2.0, centre[0]);
-    assert_eq!(rect.y0 + rect.height() / 2.0, centre[1] + 110.0);
+    // Bottom left with the readout, above its speed row.
+    let (x, y) = superbounce::ARM_FULL;
+    assert_eq!(rect.x0 + rect.width() / 2.0, centre[0] + f32::from(x));
+    assert_eq!(rect.y0 + rect.height() / 2.0, centre[1] + f32::from(y));
     assert!(arm("held").drawn && arm("near").drawn && arm("primed-ending").drawn);
     assert_eq!(arm("under").fill, Some(superbounce::FILL_UNDER));
     assert_eq!(arm("held").fill, Some(superbounce::FILL_HELD));

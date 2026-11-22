@@ -105,16 +105,16 @@ impl Options {
         }
     }
 
-    fn pack(self) -> u8 {
+    const fn pack(self) -> u8 {
         let t = match self.targets {
             TargetMode::Common => 0,
             TargetMode::Likely => 1,
             TargetMode::All => 2,
         };
-        t | u8::from(self.velocity) << 2
-            | u8::from(self.alignment) << 3
-            | u8::from(self.miss_info) << 4
-            | u8::from(self.medals) << 5
+        t | (self.velocity as u8) << 2
+            | (self.alignment as u8) << 3
+            | (self.miss_info as u8) << 4
+            | (self.medals as u8) << 5
     }
 
     fn unpack(b: u8) -> Options {

@@ -1422,8 +1422,6 @@ pub fn install(agent: &agent::Agent) {
 /// mode's own.
 #[cfg(feature = "gpu")]
 pub use gpu::Source;
-#[cfg(feature = "gpu")]
-pub(crate) use gpu::emit;
 
 #[cfg(feature = "gpu")]
 mod gpu {

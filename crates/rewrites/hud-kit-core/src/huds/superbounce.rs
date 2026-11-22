@@ -84,9 +84,13 @@ pub const FILL_HELD: f32 = 2.0 / 3.0;
 /// in the scoreboard `nhdt` (V: `zanzibar.map`).
 pub const ARM_HUD: &str = "ui\\hud\\scoreboard";
 pub const ARM_WIDGET: &str = "bomb_defusal";
-/// Fullscreen, the retail widget's place: centre, 110 down, registered at
-/// its centre (V).
-pub const ARM_FULL: (i16, i16) = (0, 110);
+/// Fullscreen, bottom left with the readout: right of the motion tracker,
+/// just above the readout's speed row (`superbounce_readout::SPEED_UP`),
+/// registered at its centre. The retail widget's own place is
+/// [`RETAIL_ARM_FULL`].
+pub const ARM_FULL: (i16, i16) = (-112, 121);
+/// The retail widget's fullscreen place: centre, 110 down (V).
+pub const RETAIL_ARM_FULL: (i16, i16) = (0, 110);
 /// The retail widget's split-screen place, 27 down (V): not ours.
 pub const RETAIL_ARM_SPLIT: (i16, i16) = (0, 27);
 /// Ours in split screen: 35 above the centre. Retail's 27 down puts the
@@ -1179,7 +1183,7 @@ mod tests {
         assert_eq!(e.at.anchor, Anchor::Centre);
         assert_eq!(
             (e.at.full, e.at.half, e.at.quarter),
-            ((0, 110), Some((0, -35)), Some((-7, -35)))
+            (ARM_FULL, Some((0, -35)), Some((-7, -35)))
         );
         assert_eq!(e.at.registration, [0.5, 0.5]);
         assert_eq!(e.hide_when_d, 0x400);
