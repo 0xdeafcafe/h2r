@@ -3,8 +3,8 @@
 
 use std::sync::Arc;
 
-use frame_scene::{AuxTarget, SlotAt, TargetRef};
-use frame_scene::carried::CameraUse;
+use frame_types::{AuxTarget, SlotAt, TargetRef};
+use frame_types::carried::CameraUse;
 use gfx::texture::{DecodeOptions, DecodedTexture, TextureDesc};
 use gfx::{Clear, D3DFormat};
 

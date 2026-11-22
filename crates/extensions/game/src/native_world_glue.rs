@@ -1066,6 +1066,10 @@ fn load_ready(
     };
     let opaque = opaque_materials::Library::load(&mut map, &shaders);
     let declared = world.materials().len();
+    // Every opaque part, before the layer-3 filter: E3's sun tiles draw
+    // object shadows on the structure (docs/graphics/e3-lighting.md, "Sun
+    // shadows from objects"). Retail never reads it.
+    let sun_world = native_render::sun_casters::SunWorld::new(&world);
     let world = keep_draws(world, &accepts);
     let parts = part_set(&world, &shaders);
     let part_bounds = RwLock::new(world.draws.iter().map(|d| ((d.owner, d.part), d.bounds)).collect());
@@ -1096,6 +1100,11 @@ fn load_ready(
         fog: OnceLock::new(), water: OnceLock::new(), layers: OnceLock::new(),
         decorators: OnceLock::new(), lights: OnceLock::new(),
     }))) { return Ok(()); }
+    let bsp = key.clone();
+    native_render::sun_casters::set_world(
+        key.generation,
+        Some(Arc::new(sun_world.with_current(move || bsp.current()))),
+    );
 
     drop(world_setup);
 
@@ -1309,8 +1318,13 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
         let pass = if no_lightmap_group {
             let selection = tags::material::PassSelection { lod: 0, layer: look::LIGHTMAP_LAYER, pass: 0,
                 implementation: look::UNLIT_BSP_IMPLEMENTATION };
-            lib.selected_implementation(shader, selection, None, None).map_err(|e| format!("material: {e}"))
-                .and_then(|pass| look::unlit_bsp_pass(&pass, normalization).map_err(|r| format!("layer 3: {r:?}")))
+            // Resolved with the instance's inputs, which the engine-driven
+            // states read too.
+            let inputs = lib.shader(shader).map(|s| tags::material::EngineInputs::for_shader(&s)).map_err(|e| format!("material: {e}"));
+            inputs.and_then(|inputs| {
+                lib.selected_implementation(shader, selection, Some(&inputs), None).map_err(|e| format!("material: {e}"))
+                    .and_then(|pass| look::unlit_bsp_pass(&pass, &inputs, normalization).map_err(|r| format!("layer 3: {r:?}")))
+            })
         } else {
             lib.material(shader, None).map_err(|e| format!("material: {e}"))
                 .and_then(|mat| look::layer3_pass(&mat).map_err(|r| format!("layer 3: {r:?}")))

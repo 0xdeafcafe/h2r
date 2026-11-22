@@ -319,7 +319,6 @@ fn pad_hid(config: input::pad_hid::PadHidConfig, wanted: bool) -> Option<input::
 /// window's handoff, DirectSound plays on the audio device, XAPI reads the
 /// window's input, and every slice paces against the wall clock and stops
 /// when the window closes.
-#[allow(clippy::too_many_arguments)]
 fn hosted(
     mut host: app::GuestHost,
     audio: bool,
@@ -829,6 +828,8 @@ pub(crate) fn run_with_theater(
     let debug_menu = debug_menu_on(std::env::var("H2_DEBUG_MENU").ok().as_deref())
         .then(debug_menu::Shared::default);
     config.debug_menu = debug_menu.clone();
+    // host.screenshot's default directory.
+    config.screenshots = Some(opts.data_root.join("screenshots"));
     let perf_overlay = config.watermark.as_ref().map(app::Watermark::switch);
     let cheat_line = config.watermark.as_ref().map(app::Watermark::cheats_handle);
     let editor_link = EditorLink::default();

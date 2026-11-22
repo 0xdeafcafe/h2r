@@ -9,4 +9,7 @@ description = "Bit-exact, MXCSR-exact reference semantics for the Pentium III's 
 
 [dev-dependencies]
 # Only for reading the SSE oracle's JSONL corpus in tests/oracle_corpus.rs.
-serde_json = "1"
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

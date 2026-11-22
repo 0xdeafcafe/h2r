@@ -165,7 +165,7 @@ with 175. The thirteen multiplayer scenarios have no authored script sounds.
 `both_sandboxes_rebuild_every_retail_map` checks the serialized reference tables
 and the datums of the compiled sound atoms.
 
-### Open work (2026-11-19)
+### Open work
 
 Everything the converter still lacks, each on its own branch
 (`h1-push-<name>`). The branches are written without building; they are

@@ -680,12 +680,21 @@ fn row_widgets(s: &ScreenSpec, d: &DialogSpec, g: &DialogGeometry, m: &dyn Metri
     list.list = DialogGeometry::list_place(g.list, shown);
     let rows = Geometry {
         visible: shown,
+        arrows: g
+            .rows
+            .arrows
+            .and_then(|a| crate::ui_kit::view::Arrows::of(a.skin, shown, false)),
         ..g.rows.clone()
     };
     view_of(&list, &rows, m, "")
         .widgets
         .into_iter()
-        .filter(|w| w.id.starts_with("row.") || w.id == "description" || w.id == "name")
+        .filter(|w| {
+            w.id.starts_with("row.")
+                || w.id.starts_with("scroll.")
+                || w.id == "description"
+                || w.id == "name"
+        })
         .collect()
 }
 

@@ -1841,7 +1841,6 @@ pub trait Backend: Send {
     /// guest memory, so a backend that renders on another thread can make
     /// it there without the guest waiting (`threaded`). `Ok(None)`: the
     /// device reads the depth back and decodes it itself (the default).
-    #[allow(clippy::too_many_arguments)]
     fn depth_alias_texture(
         &mut self,
         depth: Self::Surface,

@@ -38,7 +38,7 @@ fn page_has_two_working_answers_and_defaults_to_decline() {
         let mut focus = Focus::default();
         let spec = page.spec(&focus);
         assert_eq!(spec.rows[0].label, "Not now");
-        assert_eq!(spec.rows[1].label, "Allow");
+        assert_eq!(spec.rows[1].label, "Close and start");
         assert!(check_fallback(&spec).is_empty());
         let effect = input.into_iter().map(|i| page.step(&mut focus, i)).last();
         assert!(matches!(
@@ -85,8 +85,8 @@ fn dialog_content_fits_at_either_focus_and_neutralizes_remote_text() {
             let report = layout::check(&v, preview.source(), &Rules::for_spec(&spec));
             assert!(report.issues.is_empty(), "{:?}", report.issues);
             let body = v.widget("body").unwrap().text().unwrap();
-            assert_eq!(body.lines().count(), 4, "{body}");
-            assert!(body.contains(": build, then sim\n"));
+            assert_eq!(body.lines().count(), 3, "{body}");
+            assert!(body.contains(": build, then sim ("));
             assert!(body.contains("own data"));
             assert!(!body.contains(['|', '\r']));
         }
@@ -182,8 +182,8 @@ fn the_body_names_the_job_its_source_and_what_it_will_do() {
     let mut request = sample_request();
     assert_eq!(
         body(&request),
-        "Lab driver: build, then run\n\"Menu bands check\"\n\
-         lab/menu-bands at cb9b315\nlevel ascension, about 4 min"
+        "Lab driver: build, then run (about 4 min)\n\"Menu bands check\"\n\
+         lab/menu-bands at cb9b315, level ascension"
     );
     request.builds_image = false;
     request.level = None;
@@ -196,15 +196,15 @@ fn the_body_names_the_job_its_source_and_what_it_will_do() {
     request.estimate_seconds = 0;
     assert_eq!(
         body(&request),
-        "Lab driver: run a sim\n\"Menu bands check\"\n\
-         master at 0123456\nown data, time varies"
+        "Lab driver: run a sim (time varies)\n\"Menu bands check\"\n\
+         master at 0123456, own data"
     );
     request.source = Source::Current {
         commit: Some("b8eff97".into()),
     };
-    assert!(body(&request).contains("\ninstalled image at b8eff97\n"));
+    assert!(body(&request).ends_with("\ninstalled image at b8eff97, own data"));
     request.source = Source::Current { commit: None };
-    assert!(body(&request).contains("\ninstalled image\n"));
+    assert!(body(&request).ends_with("\ninstalled image, own data"));
 }
 
 #[test]
@@ -334,4 +334,114 @@ fn a_start_request_reads_as_before_and_a_running_one_says_so() {
     ] {
         assert_eq!(serde_json::to_value(decision).unwrap(), name);
     }
+}
+
+fn alongside_request() -> Request {
+    Request {
+        alongside: true,
+        ..sample_request()
+    }
+}
+
+#[test]
+fn start_alongside_is_a_row_only_when_the_request_offers_it() {
+    let rows = |request: Request| -> Vec<String> {
+        let dialog = Arc::new(Dialog::default());
+        dialog.submit(request.clone(), Instant::now()).unwrap();
+        shown(&dialog);
+        let spec = dialog.page(form(&request)).spec(&Focus::default());
+        spec.rows.iter().map(|r| r.label.clone()).collect()
+    };
+    assert_eq!(
+        rows(alongside_request()),
+        ["Not now", "Start alongside", "Close and start"]
+    );
+    assert_eq!(rows(sample_request()), ["Not now", "Close and start"]);
+}
+
+#[test]
+fn the_alongside_question_answers_by_row_and_defaults_to_decline() {
+    for (input, wanted) in [
+        (vec![Input::A], Decision::Declined),
+        (vec![Input::Down, Input::A], Decision::Alongside),
+        (vec![Input::Down, Input::Down, Input::A], Decision::Allowed),
+        (vec![Input::B], Decision::Declined),
+    ] {
+        let dialog = Arc::new(Dialog::default());
+        let id = dialog.submit(alongside_request(), Instant::now()).unwrap();
+        shown(&dialog);
+        let page = dialog.page(&ALONGSIDE);
+        let mut focus = Focus::default();
+        let spec = page.spec(&focus);
+        assert_eq!(spec.name, ALONGSIDE_SCREEN);
+        assert!(check_fallback(&spec).is_empty());
+        let effect = input.into_iter().map(|i| page.step(&mut focus, i)).last();
+        assert!(matches!(
+            effect,
+            Some(ListEffect::Action | ListEffect::Close)
+        ));
+        dialog.close(42);
+        assert_eq!(dialog.status(id, Instant::now()).unwrap(), wanted);
+    }
+}
+
+#[test]
+fn a_dialog_without_the_row_cannot_answer_alongside() {
+    let dialog = Dialog::default();
+    let now = Instant::now();
+    let id = dialog.submit(sample_request(), now).unwrap();
+    shown(&dialog);
+    // The other start dialog's rows aren't on screen for this request.
+    dialog.press(&ALONGSIDE, 1);
+    assert_eq!(dialog.status(id, now).unwrap(), Decision::Pending);
+    // Its own row 1 is Close and start.
+    dialog.press(&START, 1);
+    assert_eq!(dialog.status(id, now).unwrap(), Decision::Allowed);
+}
+
+#[test]
+fn the_alongside_question_fits_three_lines_above_three_rows() {
+    let dialog = Arc::new(Dialog::default());
+    dialog
+        .submit(
+            Request {
+                requester: format!("{}|A\r\n", "W".repeat(60)),
+                name: format!("|N{}", "W".repeat(60)),
+                level: Some("W".repeat(60)),
+                own_data: true,
+                ..alongside_request()
+            },
+            Instant::now(),
+        )
+        .unwrap();
+    for focus in [Focus(0), Focus(1), Focus(2)] {
+        let spec = dialog.page(&ALONGSIDE).spec(&focus);
+        assert!(check_fallback(&spec).is_empty());
+        let preview = From::Synthetic;
+        let v = preview.view(&spec, "test").unwrap();
+        let report = layout::check(&v, preview.source(), &Rules::for_spec(&spec));
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        let body = v.widget("body").unwrap().text().unwrap();
+        assert_eq!(body.lines().count(), 3, "{body}");
+    }
+}
+
+#[test]
+fn the_alongside_flag_is_left_out_when_offered_and_the_answer_has_a_name() {
+    let offered: Request = serde_json::from_str(
+        r#"{"requester":"a","name":"b","operation":"run","builds_image":false,
+            "source":{"kind":"current","commit":null},"level":null,"own_data":false,
+            "estimate_seconds":0,"timeout_seconds":60}"#,
+    )
+    .unwrap();
+    assert!(offered.alongside);
+    assert!(serde_json::to_value(&offered).unwrap().get("alongside").is_none());
+    assert_eq!(
+        serde_json::to_value(sample_request()).unwrap()["alongside"],
+        false
+    );
+    assert_eq!(
+        serde_json::to_value(Decision::Alongside).unwrap(),
+        "alongside"
+    );
 }

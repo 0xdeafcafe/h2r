@@ -604,7 +604,7 @@ fn a_shared_cache_lod_is_copied_with_only_the_painted_blocks_changed() {
         .zip(stored.chunks(8))
         .filter(|(a, b)| a != b)
         .count();
-    assert!(differs >= 1 && differs <= 3, "{differs} blocks changed");
+    assert!((1..=3).contains(&differs), "{differs} blocks changed");
     assert_eq!(
         copy.bytes,
         encode_lod(&img, 0, &planes(&img, &[&px])).unwrap()

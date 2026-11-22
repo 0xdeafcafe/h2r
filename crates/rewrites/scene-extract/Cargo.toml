@@ -9,3 +9,6 @@ license.workspace = true
 frame-scene = { path = "../frame-scene" }
 bytemuck = { version = "1", features = ["derive"] }
 engine = { path = "../engine" }
+
+[lints]
+workspace = true

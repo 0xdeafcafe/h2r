@@ -467,7 +467,6 @@ struct PanelSprite {
 }
 
 impl PanelSprite {
-    #[allow(clippy::too_many_arguments)]
     fn draw(
         &mut self,
         device: &wgpu::Device,
@@ -515,7 +514,6 @@ impl WatermarkRenderer {
 
     /// Records the passes drawing `panels` over `area` (the game image) in
     /// `dst`. Re-rasterises a panel only when its text changed.
-    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
         device: &wgpu::Device,

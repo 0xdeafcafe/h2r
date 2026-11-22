@@ -182,7 +182,15 @@ docs/game/ui-builder.md "Consistency") and returns
 `{findings: [{screen, state, ids, rule, text}], checked}`: the findings
 `consistency::ALLOWED` doesn't excuse, and how many screen states were
 checked. A screen not in `NAMES` is `INVALID_PARAMS`. Both read the kit
-alone: no disc and no window state.
+alone: no disc and no window state. The rules include the pattern rules
+(`button`, `handled`, `arrows`).
+
+`ui.widgets` answers `{widgets, findings: [{text, ids}], from_disc}` for
+the picked screen in its state. The findings are
+`ui_kit::findings::of_state`'s, the list `h2 ui preview` prints: each
+line starts with its check (`check`, `content`, `layout`, `consistency`)
+and covers the checks on what was drawn (`on_drawn`, `panel_shared`,
+`covers_under`, `drawn_outside`; docs/game/ui-builder.md "The checks").
 
 ## UI Screens folders
 
@@ -218,8 +226,9 @@ one labelled contact-sheet PNG (default: the grid shown; `states` draws
 every state of our screens, not only each one's first; `columns` defaults
 to 4; `out` defaults to `studio/ui/sheet-<path>.png` and is refused in a
 Git checkout). It answers `{path, width, height, tiles: [{pick, name, x,
-y, w, h, findings, checked, error?}]}`: each tile's picture rectangle in
-the PNG, its finding count (`checked` is false for retail screens, which
+y, w, h, findings, found, checked, error?}]}`: each tile's picture
+rectangle in the PNG, its finding count and `found`, one line per finding
+as `ui.widgets` gives them (`checked` is false for retail screens, which
 are drawn but not checked), and why it did not draw. Cells are drawn on
 the CPU like `ui.render`, with the same checks, and never disturb the page
 shown.

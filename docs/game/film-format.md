@@ -241,10 +241,9 @@ slot and ended chain's count (0 if none) of a death falling out of the map while
 ([superbounce.md](superbounce.md#recording)). Both are public stats
 records, imported into the game's events like a kill. The Tracker writes,
 at the same tick, a `Medal` record for each medal the bounce earns
-(`film::events::medals::bounce_medals_with`: `superbounce`,
+(`film::events::medals::bounce_medals_with`: `superbounce`, then
 `double-bounce`, `triple-bounce`, `quad-bounce`, `chain-bounce` or
-`bouncetacular` at chain 1, 2, 3, 4, 5 or 6 and over, then
-`monster-bounce` for a Monster) or
+`bouncetacular` at chain 2 to 6, then `monster-bounce` for a Monster) or
 `bounced` for the death, and counts them
 in the summary's `medals` map. The film's version stays 3.
 

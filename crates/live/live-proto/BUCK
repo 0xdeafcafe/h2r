@@ -42,6 +42,7 @@ workspace_library(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/rules:rules",
         "//third-party/rust:base64",
         "//third-party/rust:brotli",
         "//third-party/rust:chacha20poly1305",
@@ -72,6 +73,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/rules:rules",
         "//third-party/rust:base64",
         "//third-party/rust:brotli",
         "//third-party/rust:chacha20poly1305",
@@ -102,6 +104,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/rules:rules",
         "//third-party/rust:base64",
         "//third-party/rust:brotli",
         "//third-party/rust:chacha20poly1305",
@@ -133,6 +136,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/rules:rules",
         "//third-party/rust:base64",
         "//third-party/rust:brotli",
         "//third-party/rust:chacha20poly1305",
@@ -164,6 +168,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/content:content",
+        "//crates/formats/rules:rules",
         "//third-party/rust:base64",
         "//third-party/rust:brotli",
         "//third-party/rust:chacha20poly1305",

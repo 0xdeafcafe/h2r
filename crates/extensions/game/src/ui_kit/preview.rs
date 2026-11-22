@@ -45,8 +45,8 @@ pub use retail_edit::{
 use crate::ui_kit::dialog::{self, DialogGeometry, dialog_view};
 use crate::ui_kit::spec::{self, Finding, ListPlace, Room, RowSpec, ScreenSpec};
 use crate::ui_kit::view::{
-    Art, Backing, ItemArt, Justify, Kind, Layer, ListAt, Metrics, Opener, PaneArt, ROW_TEXT,
-    Synthetic, UNFOCUSED_ALPHA, View, Widget, view_of,
+    Arrows, Art, Backing, ItemArt, Justify, Kind, Layer, ListAt, Metrics, Opener, PaneArt,
+    ROW_TEXT, Synthetic, UNFOCUSED_ALPHA, View, Widget, view_of,
 };
 
 /// The Controls screen whose tag our screens are built from.
@@ -505,6 +505,7 @@ impl Disc {
                 })
                 .collect(),
             frame_art: self.pane_art(&self.controls, 0, |b| b.top_left.x < cut),
+            arrows: Arrows::of(skin_index, place.shown(), place == ListPlace::Controls),
         })
     }
 
@@ -684,6 +685,10 @@ impl Disc {
             Art::Skin { skin, index, image } => {
                 let b = self.skins.get(&skin)?.bitmaps.get(usize::from(index))?;
                 self.image(b.bitmap, image)
+            }
+            Art::Arrow { skin, image } => {
+                let bitmap = self.skins.get(&skin)?.bitmap;
+                self.image(bitmap, image)
             }
             Art::Screen {
                 screen_id,
@@ -1212,6 +1217,7 @@ impl Disc {
                 v.widgets.iter().filter(|w| w.id.starts_with("row.")),
                 self,
                 false,
+                None,
             );
         }
         for (i, t) in pane.text_blocks.iter().enumerate() {
@@ -1795,7 +1801,6 @@ pub trait Source: Metrics {
     /// ([`Disc::backdrop`]). [`Backing::Over`] draws it over the opener,
     /// and a view drawn over a screen of ours (its `underlay`) over that.
     fn backdrop(&self, c: &mut Canvas);
-    #[allow(clippy::too_many_arguments)]
     fn text(
         &self,
         c: &mut Canvas,
@@ -2086,12 +2091,217 @@ pub fn render_view_where(
     keep: &dyn Fn(&crate::ui_kit::view::Widget) -> bool,
     marks: bool,
 ) -> Canvas {
-    render_composite(v, src, keep, marks, [0, 0, 0, 255])
+    render_composite(v, src, keep, marks, [0, 0, 0, 255], None)
 }
 
 /// Draw a live kit page into a straight-alpha surface for the shell.
 pub fn render_overlay(v: &View, src: &dyn Source) -> Canvas {
-    render_composite(v, src, &|_| true, false, [0; 4])
+    render_composite(v, src, &|_| true, false, [0; 4], None)
+}
+
+/// A view drawn, with what each of its widgets really drew.
+pub struct Traced {
+    pub canvas: Canvas,
+    /// One per widget drawn (alpha above zero), in draw order. The
+    /// underlay's widgets are not here: trace the underlay for them.
+    pub footprints: Vec<Footprint>,
+}
+
+impl Traced {
+    pub fn footprint(&self, id: &str) -> Option<&Footprint> {
+        self.footprints.iter().find(|f| f.id == id)
+    }
+}
+
+/// [`render_view`] without the overflow marks, recording each widget's
+/// [`Footprint`] as it draws (docs/game/ui-builder.md "The checks").
+pub fn render_traced(v: &View, src: &dyn Source) -> Traced {
+    let mut footprints = Vec::new();
+    let canvas = render_composite(v, src, &|_| true, false, [0, 0, 0, 255], Some(&mut footprints));
+    Traced { canvas, footprints }
+}
+
+/// The canvas every view is drawn on, in pixels.
+const W: i32 = 640;
+const H: i32 = 480;
+
+/// What a widget really drew: the pixels it touched with alpha above
+/// zero, as the preview drew them. Art's footprint is its image's own
+/// pixels where the image put them, past its declared rectangle and the
+/// canvas edge included; a text's is its glyphs as the source's font drew
+/// them; a solid fill's, and the box drawn for art the source lacks, the
+/// rectangle.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+pub struct Footprint {
+    pub id: String,
+    /// The touched pixels' bounding box in UI units, `top, left, bottom,
+    /// right`; `None` when the widget drew nothing.
+    pub bbox: Option<[i16; 4]>,
+    /// Touched pixels on the canvas.
+    pub pixels: usize,
+    /// Which canvas pixels were touched, inside `window` (`x, y, width,
+    /// height` in canvas pixels).
+    #[serde(skip)]
+    window: [i32; 4],
+    #[serde(skip)]
+    bits: Vec<bool>,
+}
+
+impl Footprint {
+    /// The bounding box as a rectangle.
+    pub fn rect(&self) -> Option<Rect> {
+        self.bbox.map(|[top, left, bottom, right]| Rect {
+            top,
+            left,
+            bottom,
+            right,
+        })
+    }
+
+    /// Whether canvas pixel `(x, y)` was touched.
+    pub fn hits(&self, x: i32, y: i32) -> bool {
+        let [wx, wy, ww, wh] = self.window;
+        (wx..wx + ww).contains(&x)
+            && (wy..wy + wh).contains(&y)
+            && self.bits[((y - wy) * ww + (x - wx)) as usize]
+    }
+
+    /// The touched canvas pixels.
+    pub fn touched(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
+        let [wx, wy, ww, _] = self.window;
+        self.bits
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| **b)
+            .map(move |(i, _)| (wx + i as i32 % ww, wy + i as i32 / ww))
+    }
+
+    /// Pixels both touched.
+    pub fn overlap(&self, other: &Footprint) -> usize {
+        let [ax, ay, aw, ah] = self.window;
+        let [bx, by, bw, bh] = other.window;
+        let (x0, x1) = (ax.max(bx), (ax + aw).min(bx + bw));
+        let (y0, y1) = (ay.max(by), (ay + ah).min(by + bh));
+        (y0..y1)
+            .flat_map(|y| (x0..x1).map(move |x| (x, y)))
+            .filter(|&(x, y)| self.hits(x, y) && other.hits(x, y))
+            .count()
+    }
+
+    /// Touched pixels inside `r` (UI units).
+    pub fn pixels_in(&self, r: Rect) -> usize {
+        let (x0, x1) = (320 + i32::from(r.left), 320 + i32::from(r.right));
+        let (y0, y1) = (240 - i32::from(r.top), 240 - i32::from(r.bottom));
+        self.touched()
+            .filter(|&(x, y)| (x0..x1).contains(&x) && (y0..y1).contains(&y))
+            .count()
+    }
+
+    /// How far, in UI units, the bounding box runs past `r` on its worst
+    /// side; 0 inside it.
+    pub fn past(&self, r: Rect) -> i32 {
+        let Some(b) = self.rect() else {
+            return 0;
+        };
+        [
+            i32::from(b.top) - i32::from(r.top),
+            i32::from(r.left) - i32::from(b.left),
+            i32::from(r.bottom) - i32::from(b.bottom),
+            i32::from(b.right) - i32::from(r.right),
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or(0)
+        .max(0)
+    }
+
+    /// Nothing drawn.
+    fn none(id: &str) -> Footprint {
+        Footprint {
+            id: id.into(),
+            ..Footprint::default()
+        }
+    }
+
+    /// Canvas pixels `x0..x1` by `y0..y1` (unclipped) with `on` saying
+    /// which were touched; the box is of the touched ones, off the canvas
+    /// included.
+    fn of_pixels(id: &str, [x0, y0, x1, y1]: [i32; 4], on: &dyn Fn(i32, i32) -> bool) -> Footprint {
+        let (mut min, mut max) = ((i32::MAX, i32::MAX), (i32::MIN, i32::MIN));
+        let window = [x0.max(0), y0.max(0), (x1.min(W) - x0.max(0)).max(0), (y1.min(H) - y0.max(0)).max(0)];
+        let mut bits = vec![false; (window[2] * window[3]) as usize];
+        let mut pixels = 0;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                if !on(x, y) {
+                    continue;
+                }
+                min = (min.0.min(x), min.1.min(y));
+                max = (max.0.max(x), max.1.max(y));
+                if (0..W).contains(&x) && (0..H).contains(&y) {
+                    bits[((y - window[1]) * window[2] + (x - window[0])) as usize] = true;
+                    pixels += 1;
+                }
+            }
+        }
+        if min.0 == i32::MAX {
+            return Footprint::none(id);
+        }
+        let clamp = |v: i32| v.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+        Footprint {
+            id: id.into(),
+            bbox: Some([
+                clamp(240 - min.1),
+                clamp(min.0 - 320),
+                clamp(240 - (max.1 + 1)),
+                clamp(max.0 + 1 - 320),
+            ]),
+            pixels,
+            window,
+            bits,
+        }
+    }
+
+    /// A fill of `r`: all of it, when drawn at all.
+    fn of_rect(id: &str, r: Rect, drawn: bool) -> Footprint {
+        if !drawn || r.right <= r.left || r.top <= r.bottom {
+            return Footprint::none(id);
+        }
+        let x0 = 320 + i32::from(r.left);
+        let y0 = 240 - i32::from(r.top);
+        Footprint::of_pixels(
+            id,
+            [x0, y0, 320 + i32::from(r.right), 240 - i32::from(r.bottom)],
+            &|_, _| true,
+        )
+    }
+
+    /// `img` drawn with its top-left at UI point `(x, y)` at `alpha`, as
+    /// [`Canvas::image`] draws it.
+    fn of_image(id: &str, img: &Image, x: i32, y: i32, alpha: u8) -> Footprint {
+        let (x0, y0) = (320 + x, 240 - y);
+        let (w, h) = (img.width as i32, img.height as i32);
+        Footprint::of_pixels(id, [x0, y0, x0 + w, y0 + h], &|px, py| {
+            let i = (((py - y0) * w + (px - x0)) * 4 + 3) as usize;
+            u32::from(img.rgba[i]) * u32::from(alpha) / 255 != 0
+        })
+    }
+
+    /// What was drawn on `scratch` (clear but for it) in canvas rows
+    /// `y0..y1`; those rows are cleared after.
+    fn of_scratch(id: &str, scratch: &mut Canvas, y0: i32, y1: i32) -> Footprint {
+        let (y0, y1) = (y0.clamp(0, H), y1.clamp(0, H));
+        let width = scratch.width as i32;
+        let f = {
+            let rgba = &scratch.rgba;
+            Footprint::of_pixels(id, [0, y0, width, y1], &|x, y| {
+                rgba[((y * width + x) * 4 + 3) as usize] != 0
+            })
+        };
+        let (a, b) = ((y0 * width * 4) as usize, (y1 * width * 4) as usize);
+        scratch.rgba[a..b].iter_mut().for_each(|v| *v = 0);
+        f
+    }
 }
 
 fn render_composite(
@@ -2100,48 +2310,62 @@ fn render_composite(
     keep: &dyn Fn(&crate::ui_kit::view::Widget) -> bool,
     marks: bool,
     clear: [u8; 4],
+    trace: Option<&mut Vec<Footprint>>,
 ) -> Canvas {
     let mut c = if let Some(parent) = &v.underlay {
         // Widget filters apply to this screen. The parent stays painted
         // when an audit samples the pixels underneath the dialog's text,
         // under the backdrop a dialog draws over what it opened on.
-        let mut c = render_composite(parent, src, &|_| true, false, clear);
+        let mut c = render_composite(parent, src, &|_| true, false, clear, None);
         src.backdrop(&mut c);
         c
     } else {
-        let mut c = Canvas::new(640, 480, clear);
+        let mut c = Canvas::new(W as u32, H as u32, clear);
         src.backing(&mut c, v.backing);
         c
     };
-    paint(&mut c, v.widgets.iter().filter(|w| keep(w)), src, marks);
+    paint(&mut c, v.widgets.iter().filter(|w| keep(w)), src, marks, trace);
     c
 }
 
 /// `widgets` drawn on `c` from `src` by layer (frame art, row and cell
 /// art, texts), each with its alpha; with `marks`, texts that overflow
-/// are outlined in red.
+/// are outlined in red; with `trace`, each drawn widget's
+/// [`Footprint`] is pushed to it.
 fn paint<'a>(
     c: &mut Canvas,
     widgets: impl Iterator<Item = &'a crate::ui_kit::view::Widget>,
     src: &dyn Source,
     marks: bool,
+    mut trace: Option<&mut Vec<Footprint>>,
 ) {
+    // Texts are drawn a second time on this, clear, to see their glyphs.
+    let mut scratch: Option<Canvas> = None;
     let mut order: Vec<&crate::ui_kit::view::Widget> = widgets.collect();
     order.sort_by_key(|w| w.layer);
     for w in order.into_iter().filter(|w| w.alpha > 0) {
         let r = w.rect();
-        match &w.kind {
+        let footprint = match &w.kind {
             Kind::Art { art: Art::Solid { rgba }, .. } => {
                 let [red, green, blue, alpha] = *rgba;
-                c.fill(r, [red, green, blue, (u16::from(alpha) * u16::from(w.alpha) / 255) as u8]);
+                let a = (u16::from(alpha) * u16::from(w.alpha) / 255) as u8;
+                c.fill(r, [red, green, blue, a]);
+                trace.is_some().then(|| Footprint::of_rect(&w.id, r, a > 0))
             }
             Kind::Art { art, .. } => match src.art(art) {
-                Some(img) => c.image(&img, i32::from(r.left), i32::from(r.top), w.alpha),
+                Some(img) => {
+                    let (x, y) = (i32::from(r.left), i32::from(r.top));
+                    c.image(&img, x, y, w.alpha);
+                    trace
+                        .is_some()
+                        .then(|| Footprint::of_image(&w.id, &img, x, y, w.alpha))
+                }
                 None => {
                     // Over the synthetic backing this is about the
                     // Controls row bar's mean colour in game (27, 37, 56).
                     c.fill(r, [50, 70, 110, w.alpha / 4]);
                     c.outline(r, [120, 160, 220, w.alpha]);
+                    trace.is_some().then(|| Footprint::of_rect(&w.id, r, true))
                 }
             },
             Kind::Text {
@@ -2154,7 +2378,20 @@ fn paint<'a>(
                 if marks && overflows(w, src) {
                     c.outline(r, [230, 40, 40, 255]);
                 }
+                trace.is_some().then(|| {
+                    let s = scratch.get_or_insert_with(|| Canvas::new(W as u32, H as u32, [0; 4]));
+                    src.text(s, *font, text, r, *justify, *colour, w.alpha);
+                    // Every row the text can reach: its lines from the
+                    // top, a line's slack either side.
+                    let lh = src.line_height(*font).max(1);
+                    let lines = text.split('\n').count() as i32;
+                    let top = 240 - i32::from(r.top) - lh;
+                    Footprint::of_scratch(&w.id, s, top, top + (lines + 2) * lh)
+                })
             }
+        };
+        if let (Some(t), Some(f)) = (trace.as_deref_mut(), footprint) {
+            t.push(f);
         }
     }
 }
@@ -2291,7 +2528,6 @@ impl Canvas {
         self.text_alpha(fonts, index, text, r, just, rgb, 255);
     }
     /// [`Canvas::text`] at `alpha`.
-    #[allow(clippy::too_many_arguments)]
     pub fn text_alpha(
         &mut self,
         fonts: &Fonts,
@@ -2478,7 +2714,9 @@ impl From<'_> {
             View {
                 screen: s.name.clone(),
                 state: state.into(),
-                backing: Backing::None,
+                // Over a live picture, or (a specimen of widgets that sit
+                // on the shell's bands) over the game shell.
+                backing: if s.transparent { Backing::None } else { Backing::GameShell },
                 widgets: hud.widgets.clone(),
                 focus: None,
                 list: None,
@@ -2525,6 +2763,14 @@ impl From<'_> {
         let v = self.view(s, state)?;
         let c = render_view(&v, self.source());
         Ok((v, c))
+    }
+
+    /// `s` in state `state`: its view, its picture and what each widget
+    /// drew ([`render_traced`]).
+    pub fn draw_traced(&self, s: &ScreenSpec, state: &str) -> Result<(View, Traced)> {
+        let v = self.view(s, state)?;
+        let t = render_traced(&v, self.source());
+        Ok((v, t))
     }
 }
 
@@ -2776,5 +3022,126 @@ mod emblem_tests {
         assert_eq!(half.rgba[3], 255);
         // Layers of different sizes are not an emblem.
         assert!(emblem(&bg, &px(&[[0, 0, 0, 0]]), [fa, fb, ba, bb]).is_none());
+    }
+}
+
+#[cfg(test)]
+mod footprint_tests {
+    use super::*;
+
+    fn widget(id: &str, rect: [i16; 4], layer: Layer, kind: Kind) -> Widget {
+        Widget {
+            id: id.into(),
+            rect,
+            layer,
+            alpha: 255,
+            kind,
+        }
+    }
+
+    /// A fill's footprint is its rectangle, a placeholder box's too; a
+    /// text's is its glyphs, inside its ink; nothing hidden is traced.
+    #[test]
+    fn footprints_are_what_each_widget_drew() {
+        let mut hidden = widget(
+            "hidden",
+            [0, 0, -10, 10],
+            Layer::Content,
+            Kind::Text {
+                text: "x".into(),
+                font: 1,
+                justify: Justify::Left,
+                colour: [255; 3],
+            },
+        );
+        hidden.alpha = 0;
+        let v = View {
+            screen: "t".into(),
+            state: "s".into(),
+            backing: Backing::None,
+            underlay: None,
+            widgets: vec![
+                widget(
+                    "fill",
+                    [10, -20, -10, 20],
+                    Layer::Frame,
+                    Kind::Art {
+                        art: Art::Solid {
+                            rgba: [1, 2, 3, 255],
+                        },
+                        size: [40, 20],
+                    },
+                ),
+                widget(
+                    "box",
+                    [100, -300, 60, -200],
+                    Layer::Under,
+                    Kind::Art {
+                        art: Art::Skin {
+                            skin: 0,
+                            index: 0,
+                            image: 0,
+                        },
+                        size: [100, 40],
+                    },
+                ),
+                widget(
+                    "text",
+                    [50, 0, 30, 100],
+                    Layer::Content,
+                    Kind::Text {
+                        text: "ab".into(),
+                        font: 1,
+                        justify: Justify::Left,
+                        colour: [255; 3],
+                    },
+                ),
+                hidden,
+            ],
+            focus: None,
+            list: None,
+        };
+        let t = render_traced(&v, &SyntheticSource);
+        assert_eq!(t.footprints.len(), 3, "the hidden text is not drawn");
+        let fill = t.footprint("fill").unwrap();
+        assert_eq!(fill.bbox, Some([10, -20, -10, 20]));
+        assert_eq!(fill.pixels, 800);
+        assert_eq!(t.footprint("box").unwrap().bbox, Some([100, -300, 60, -200]));
+        // Two synthetic glyph blocks, 6 by 10 from one unit in and four
+        // down.
+        let text = t.footprint("text").unwrap();
+        assert_eq!(text.bbox, Some([46, 1, 36, 13]));
+        assert_eq!(text.pixels, 120);
+        assert_eq!(text.overlap(fill), 0);
+        assert_eq!(text.pixels_in(Rect { top: 50, left: 0, bottom: 30, right: 7 }), 60);
+        assert_eq!(text.past(Rect { top: 50, left: 0, bottom: 30, right: 100 }), 0);
+        assert_eq!(text.past(Rect { top: 50, left: 0, bottom: 30, right: 10 }), 3);
+    }
+
+    /// Art drawn from an image larger than its declared rectangle: the
+    /// footprint is the image's opaque pixels where it put them, off the
+    /// canvas included in the box.
+    #[test]
+    fn an_images_footprint_is_its_opaque_pixels() {
+        let mut rgba = [0u8; 4].repeat(8 * 4);
+        // Opaque in columns 2 to 5 of rows 1 and 2.
+        for row in 1..3 {
+            for col in 2..6 {
+                rgba[(row * 8 + col) * 4 + 3] = 255;
+            }
+        }
+        let img = Image {
+            width: 8,
+            height: 4,
+            rgba,
+        };
+        let f = Footprint::of_image("a", &img, 316, 0, 255);
+        // Columns 318 to 321 in UI units: two on the canvas, two past it.
+        assert_eq!(f.bbox, Some([-1, 318, -3, 322]));
+        assert_eq!(f.pixels, 4);
+        assert_eq!(f.past(Rect { top: 0, left: 316, bottom: -4, right: 320 }), 2);
+        assert!(f.hits(638, 241));
+        assert!(!f.hits(637, 241));
+        assert!(Footprint::of_image("b", &img, 0, 0, 0).bbox.is_none());
     }
 }

@@ -159,6 +159,7 @@ fn sheet(app: &mut App, p: &P) -> Reply {
                 "name": t.name,
                 "x": s.rect[0], "y": s.rect[1], "w": s.rect[2], "h": s.rect[3],
                 "findings": s.findings,
+                "found": s.found,
                 "checked": s.checked,
             });
             if let Some(e) = &s.error {

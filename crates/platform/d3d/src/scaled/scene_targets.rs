@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use frame_scene::TargetRef;
+use frame_types::TargetRef;
 use gfx::raster::RenderScale;
 use gfx::surface::SurfaceId;
 use gfx::{TextureDesc, texture::DecodedTexture};

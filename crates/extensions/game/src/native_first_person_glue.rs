@@ -264,14 +264,58 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
 
 /// Installs the host beside the other native render stages.
 pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
+    *LAYER_SOURCE.lock().unwrap_or_else(|e| e.into_inner()) = None;
     let Some(gpu) = device.lock().ok().and_then(|d| d.backend.upload_device()) else { return };
+    let state = Arc::new(Mutex::new(None));
+    *LAYER_SOURCE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&state));
     render_bridge::native_first_person::set_host(Arc::new(Glue {
         gpu,
         device: Arc::clone(device),
-        state: Arc::new(Mutex::new(None)),
+        state,
         generation: Mutex::new(0),
         entry: Mutex::new(None),
     }));
+}
+
+/// The first-person host's map state, which the first person's layers
+/// 1, 7, 8 and 20 draw their object items from (`native_layers_glue`): set at
+/// install.
+static LAYER_SOURCE: Mutex<Option<Arc<Mutex<Option<MapState>>>>> = Mutex::new(None);
+
+impl crate::native_layers_glue::LayerModels for Models {
+    fn lit(&self) -> &Mutex<Option<native_render::object_program_gpu::LitObjects>> {
+        &self.lit
+    }
+
+    fn ready(&self, model: u32) -> bool {
+        self.lit.try_lock().is_ok_and(|lit| lit.as_ref().is_some_and(|lit| lit.has(model)))
+    }
+}
+
+/// The current map's first-person models for the object items of the
+/// first person's layers (docs/graphics/framescene.md, slice 4): the
+/// ones its layer 3 draws from (its call loads them; this never does),
+/// only while the stage palettes they were expanded through hold.
+pub(crate) fn layer_models<B: d3d::backend::Backend>(
+    device: &d3d::Device<B>, mem: &dyn GuestMemory,
+) -> Option<Arc<dyn crate::native_layers_glue::LayerModels>> {
+    let source = LAYER_SOURCE.lock().ok()?.clone()?;
+    let mut map_name = [0; 32];
+    let name = crate::health::read_map_name(mem, &mut map_name).ok()?;
+    let map_generation = render_bridge::native_map_work::generation();
+    let models = {
+        let state = source.lock().unwrap_or_else(|e| e.into_inner());
+        let s = state.as_ref().filter(|s| s.name == name.as_ref() && s.map_generation == map_generation)?;
+        Arc::clone(&s.models)
+    };
+    let used = models.palettes.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if used.iter().any(Option::is_some) {
+        let now = stage_palettes(device, mem);
+        if !palettes_hold(&used, &|stage| now[stage].clone()) {
+            return None;
+        }
+    }
+    Some(models)
 }
 
 #[derive(Default)]
@@ -302,7 +346,7 @@ fn plan_view(
                 return Err("the device's draws are not W-buffered".into());
             }
             let lit = lit.as_ref().ok_or("no first-person model is uploaded")?;
-            let draw = lit.plan(model, frame, &item.key, &item.rows, &entry.states)?;
+            let draw = lit.plan_item(model, frame, item, &entry.states)?;
             if draw.texaccum {
                 return Err(
                     "it samples the texture accumulation target, which this pass does not bind"

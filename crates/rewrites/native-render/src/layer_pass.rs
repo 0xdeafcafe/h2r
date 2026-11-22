@@ -49,7 +49,7 @@ use tags::shader::AnimatedProperty;
 use crate::object_lighting::{LIGHTING_SCALARS, LIGHTING_VECTORS, ShaderValues, scalar_input, vector_input};
 
 /// The layers the stage plans: the scene's 1, 5, 7, 8 and 20 and the
-/// first person's 1, 7 and 8.
+/// first person's 1, 7, 8 and 20.
 pub const LAYERS: [u8; 5] = [1, 5, 7, 8, 20];
 
 /// The scalar input the shader instance gives (`shad +0x44`).
@@ -387,6 +387,24 @@ pub struct SkipItem {
     pub shader: u32,
 }
 
+/// One item of a layer draw's list as the skip sees it: a structure
+/// item, or an object's by its slot and shader datum (what the scene's
+/// [`LayerItem`] for it holds: the plan decides it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrefixItem {
+    World(SkipItem),
+    Object { slot: u32, shader: u32 },
+}
+
+impl PrefixItem {
+    pub fn slot(self) -> u32 {
+        match self {
+            PrefixItem::World(i) => i.slot,
+            PrefixItem::Object { slot, .. } => slot,
+        }
+    }
+}
+
 /// Clears `layer`'s bit on the longest run of the current list's items,
 /// from its first, that are structure geometry items `native` accepts:
 /// the native pass records before the guest's layer draw, so what it
@@ -400,6 +418,30 @@ pub fn clear_prefix(
     layer: u32,
     native: &dyn Fn(SkipItem) -> bool,
 ) -> Option<(Vec<SkipItem>, crate::skip::Cleared)> {
+    let (drawn, cleared) = clear_layer_prefix(mem, layer, &|item| match item {
+        PrefixItem::World(i) => native(i),
+        PrefixItem::Object { .. } => false,
+    })?;
+    let drawn = drawn
+        .into_iter()
+        .map(|i| match i {
+            PrefixItem::World(i) => i,
+            PrefixItem::Object { .. } => unreachable!("refused above"),
+        })
+        .collect();
+    Some((drawn, cleared))
+}
+
+/// [`clear_prefix`] over structure and object items alike: the run from
+/// the list's first item of the layer that are geometry items `native`
+/// accepts, a structure item's with its owner and part, an object's by
+/// its slot and shader. The walk stops at the first item of the layer it
+/// refuses or that is another build.
+pub fn clear_layer_prefix(
+    mem: &mut dyn crate::camera::GuestWrite,
+    layer: u32,
+    native: &dyn Fn(PrefixItem) -> bool,
+) -> Option<(Vec<PrefixItem>, crate::skip::Cleared)> {
     use crate::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, MAX_ITEMS, RENDER_RECORD_SIZE, RENDER_RECORDS};
     use crate::world::Owner;
     if layer >= 32 || mem.read_u32(CURRENT_LAYER)? != layer {
@@ -433,16 +475,18 @@ pub fn clear_prefix(
             break;
         }
         let base = RENDER_RECORDS + RENDER_RECORD_SIZE * record as u32;
-        if mem.read_u32(base + 4)? != u32::MAX {
-            break; // an object's
-        }
-        let packed = mem.read_u32(base + 0xc)?;
-        let owner = if mem.read_u32(base)? & (1 << 12) == 0 {
-            Owner::Cluster((packed >> 9) & 0x1ff)
+        let shader = mem.read_u32(item + 8)?;
+        let found = if mem.read_u32(base + 4)? != u32::MAX {
+            PrefixItem::Object { slot: i, shader }
         } else {
-            Owner::Instance((packed >> 18) & 0x7ff)
+            let packed = mem.read_u32(base + 0xc)?;
+            let owner = if mem.read_u32(base)? & (1 << 12) == 0 {
+                Owner::Cluster((packed >> 9) & 0x1ff)
+            } else {
+                Owner::Instance((packed >> 18) & 0x7ff)
+            };
+            PrefixItem::World(SkipItem { slot: i, owner, part: arg as u8, shader })
         };
-        let found = SkipItem { slot: i, owner, part: arg as u8, shader: mem.read_u32(item + 8)? };
         if !native(found) {
             break;
         }
@@ -456,6 +500,97 @@ pub fn clear_prefix(
         drawn.push(found);
     }
     Some((drawn, cleared))
+}
+
+/// The stencil a world layer's items draw under, and whether the device
+/// must already hold stencil mode 1 for the guest's draws to be skipped
+/// state-neutrally: the geometry draw's prologue (`0x0004d640`) sets a
+/// stencil mode only in layers 1 and 3, mode 0 when the stencil-off flags
+/// are set and mode 2 for a marked object's record, and its epilogue
+/// (`0x0004d720`) leaves mode 1 after either. So in layer 1 with the
+/// stencil off the items draw with the stencil disabled and the device
+/// must hold mode 1; with a marked item the device must hold mode 1 (the
+/// marked item's draw takes mode 2, `object_state::mark`). Otherwise, and
+/// in every other layer, the items draw under the device's stencil.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ItemStencil {
+    /// The stencil the unmarked items draw with.
+    pub stencil: gfx::state::StencilState,
+    /// The device must hold mode 1 (`object_state::structure_stencil(0)`).
+    pub needs_mode_1: bool,
+}
+
+/// [`ItemStencil`] for layer `layer`, the pass's `stencil_off`, the
+/// device's stencil at the layer call, and whether an item the pass
+/// takes is marked.
+pub fn item_stencil(layer: u8, stencil_off: bool, device: gfx::state::StencilState, marked: bool) -> ItemStencil {
+    if layer != 1 && layer != 3 {
+        return ItemStencil { stencil: device, needs_mode_1: false };
+    }
+    if stencil_off {
+        return ItemStencil { stencil: gfx::state::StencilState { enable: false, ..device }, needs_mode_1: true };
+    }
+    ItemStencil { stencil: device, needs_mode_1: marked }
+}
+
+/// Whether skipping the guest's draw of a pass with implementation `imp`
+/// leaves the device as drawing it would (`read`: the device's render
+/// state at a guest slot, at the layer call), as layer 3's walk requires
+/// of the parts it skips (docs/graphics/framescene.md, slice 4, "The
+/// stage"; **Code**, `h2 disasm`, docs/graphics/layer-draw.md):
+///
+/// - each draw sets the pass's render-state list (`0x0001a170`), with
+///   no comparison against the device;
+/// - a pass switch restores the cached implementation's restore list
+///   (`0x00018900` on `[0x00485b48 + 0x24] + 0x11c`), and the layer setup
+///   `0x00016b10` restores it and clears the cache at the next layer
+///   draw (and at each layer's first shader begin, `0x0001bbf0`).
+///
+/// The layer draw runs the setup before any item, so a skipped run from
+/// the list's first begins on a cleared cache, and the first item the
+/// guest keeps begins on one too. Skipped, the run leaves the device
+/// unchanged; drawn, it would leave every state of the lists it set and
+/// restored. Both agree exactly when every state of both lists already
+/// holds. A pass with engine-driven render states sets values decided
+/// per draw, and refuses here ([`skip_holds_with`] takes the draw's
+/// inputs). The first shader begin's fixed states and its cleared texture
+/// caches are redone by the first shader begin the guest keeps (the byte
+/// `0x004670bc` stays set), or by the next layer draw's.
+pub fn skip_holds(imp: &ResolvedImplementation, read: &dyn Fn(u32) -> Option<u32>) -> bool {
+    skip_holds_with(imp, None, read)
+}
+
+/// [`skip_holds`] for a draw whose engine inputs are `inputs`: the draw
+/// also sets each engine-driven render value (`0x0001a170`, after the
+/// static list), so each must hold too, computed over the value the
+/// device holds (`EngineState::value`; with every static state holding,
+/// that is the value the guest's draw starts from). A value whose source
+/// slot is not one of the inputs `0x0001ae70` evaluates (the
+/// implementation's input masks, `ResolvedImplementation::input_reads`)
+/// is whatever the context last held, and refuses, as does a pass whose
+/// inputs change per draw (`per_draw_inputs`: `inputs` would not be the
+/// guest's) and any engine-driven pass without `inputs`.
+pub fn skip_holds_with(imp: &ResolvedImplementation, inputs: Option<&EngineInputs>, read: &dyn Fn(u32) -> Option<u32>) -> bool {
+    if !imp.render_states.iter().chain(&imp.restore_states).all(|s| read(u32::from(s.state)) == Some(s.value)) {
+        return false;
+    }
+    if imp.engine_render_states.is_empty() {
+        return true;
+    }
+    let Some(inputs) = inputs.filter(|_| !imp.per_draw_inputs) else {
+        return false;
+    };
+    let Some((render, _)) = tags::material::engine_states(imp) else {
+        return false;
+    };
+    let evaluated = |s: &tags::material::EngineState| match s.source {
+        tags::material::EngineStateSource::Scalar(n) => n < 64 && imp.input_reads.scalars & (1u64 << n) != 0,
+        tags::material::EngineStateSource::Colour(n) => n < 64 && imp.input_reads.vectors & (1u64 << n) != 0,
+    };
+    render.iter().all(|s| {
+        let held = read(u32::from(s.state));
+        evaluated(s) && held.is_some() && held.and_then(|h| s.value(inputs, h)) == held
+    })
 }
 
 /// The world's owner of a layer item, `None` for an object's.
@@ -597,7 +732,10 @@ mod tests {
     }
 
     fn item(owner: LayerOwner, implementation: usize, lighting: Option<Lighting>) -> LayerItem {
-        LayerItem { slot: 4, key: key(implementation), owner, model: u32::MAX, rows: 0..0, lighting }
+        LayerItem {
+            slot: 4, key: key(implementation), owner, model: u32::MAX, rows: 0..0, lighting,
+            flags: frame_scene::PartFlags::NONE, subparts: None, refusal: None, prt: None,
+        }
     }
 
     #[test]
@@ -762,6 +900,115 @@ mod tests {
         let (drawn, cleared) = clear_prefix(&mut m, 5, &|i| i.owner != Owner::Cluster(7)).unwrap();
         assert!(drawn.is_empty() && cleared.items.is_empty());
         assert_eq!(clear_prefix(&mut m, 7, &|_| true), None, "not the current layer");
+    }
+
+    #[test]
+    fn the_skip_takes_object_items_the_plan_drew_in_the_same_run() {
+        use crate::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, RENDER_RECORD_SIZE, RENDER_RECORDS};
+        use crate::world::Owner;
+        use scene_extract::GuestRead;
+        use scene_extract::testing::Mem;
+        const LIST: u32 = 0x0060_0000;
+        const ITEMS: u32 = 0x0061_0000;
+        let mut m = Mem::default();
+        m.w(CURRENT_LAYER, 7);
+        m.w(CURRENT_LIST, LIST);
+        m.w(LIST + 4, 4);
+        m.w(LIST + 0xc, 0);
+        m.w(LIST + 0x14, ITEMS);
+        // Record 1 cluster 7, records 2 and 3 objects'.
+        for (r, model, packed) in [(1, u32::MAX, 7 << 9), (2, 0xe100_0001, 0), (3, 0xe100_0002, 0)] {
+            let base = RENDER_RECORDS + RENDER_RECORD_SIZE * r;
+            m.w(base, 0);
+            m.w(base + 4, model);
+            m.w(base + 0xc, packed);
+        }
+        for (i, record) in [(0u32, 1u32), (1, 2), (2, 1), (3, 3)] {
+            let at = ITEMS + ITEM_SIZE * i;
+            m.w(at, GEOMETRY_BUILD);
+            m.w(at + 8, 0xe000_0010 + i);
+            m.w(at + 0xc, record << 8);
+            m.w(at + 0x10, 1 << 7);
+        }
+        // The plan drew the object item at slot 1, not the one at 3.
+        let (drawn, cleared) = clear_layer_prefix(&mut m, 7, &|i| match i {
+            PrefixItem::World(_) => true,
+            PrefixItem::Object { slot, shader } => slot == 1 && shader == 0xe000_0011,
+        })
+        .unwrap();
+        assert_eq!(drawn.iter().map(|i| i.slot()).collect::<Vec<_>>(), [0, 1, 2], "the object between the structure's");
+        assert_eq!(drawn[1], PrefixItem::Object { slot: 1, shader: 0xe000_0011 });
+        assert!(matches!(drawn[2], PrefixItem::World(SkipItem { owner: Owner::Cluster(7), .. })));
+        assert_eq!(cleared.items.len(), 3);
+        assert_eq!(m.read_u32(ITEMS + 3 * ITEM_SIZE + 0x10), Some(1 << 7), "the refused object keeps its draw");
+        // The structure-only skip stops at the object.
+        for i in 0..4 {
+            m.w(ITEMS + ITEM_SIZE * i + 0x10, 1 << 7);
+        }
+        let (drawn, _) = clear_prefix(&mut m, 7, &|_| true).unwrap();
+        assert_eq!(drawn.len(), 1);
+    }
+
+    #[test]
+    fn a_skipped_pass_holds_only_when_every_state_it_sets_and_restores_already_holds() {
+        use tags::shader::RenderStateValue;
+        let mut imp = implementation(0, InputReads::default(), Vec::new());
+        imp.render_states = vec![RenderStateValue { state: 11, value: 13 }];
+        imp.restore_states = vec![RenderStateValue { state: 19, value: 20 }];
+        let device = |slot: u32| match slot {
+            11 => Some(13),
+            19 => Some(20),
+            _ => Some(0),
+        };
+        assert!(skip_holds(&imp, &device));
+        assert!(!skip_holds(&imp, &|slot| if slot == 19 { Some(21) } else { device(slot) }), "a restore that would change the device");
+        assert!(!skip_holds(&imp, &|slot| if slot == 11 { None } else { device(slot) }), "a state that does not read");
+        imp.engine_render_states = vec![tags::shader::ExternalBinding { bytes: [0; 4] }];
+        assert!(!skip_holds(&imp, &device), "per-draw states");
+    }
+
+    /// With the draw's inputs, an engine-driven render value holds when
+    /// the device already holds it, computed over the device's value.
+    #[test]
+    fn a_skipped_pass_with_engine_states_holds_when_their_values_do() {
+        use tags::shader::{ExternalBinding, RenderStateValue};
+        let mut imp = implementation(0, InputReads { scalars: 1 << 3, vectors: 1 << 2, ints: 0 }, Vec::new());
+        imp.per_draw_inputs = false;
+        imp.render_states = vec![RenderStateValue { state: 11, value: 13 }];
+        // ALPHAREF (0x3d) from scalar 3; BLENDCOLOR (0x4b) from colour 2.
+        imp.engine_render_states = vec![ExternalBinding { bytes: [2, 1, 0, 3] }, ExternalBinding { bytes: [0, 0, 0, 2] }];
+        let mut inputs = EngineInputs::default();
+        inputs.scalars[3] = 100.0;
+        inputs.vectors[2] = [0.0, 1.0, 0.0];
+        let device = |slot: u32| match slot {
+            11 => Some(13),
+            0x3d => Some(100),
+            // Green, over a top byte the draw keeps.
+            0x4b => Some(0x7700_ff00),
+            _ => Some(0),
+        };
+        assert!(skip_holds_with(&imp, Some(&inputs), &device));
+        assert!(!skip_holds(&imp, &device), "no inputs");
+        let other = |slot: u32| if slot == 0x3d { Some(99) } else { device(slot) };
+        assert!(!skip_holds_with(&imp, Some(&inputs), &other), "the draw would change ALPHAREF");
+        let mut unread = imp.clone();
+        unread.input_reads.vectors = 0;
+        assert!(!skip_holds_with(&unread, Some(&inputs), &device), "a slot 0x0001ae70 does not fill");
+        let mut per_draw = imp.clone();
+        per_draw.per_draw_inputs = true;
+        assert!(!skip_holds_with(&per_draw, Some(&inputs), &device), "inputs that change per draw");
+    }
+
+    #[test]
+    fn layer_1_items_draw_unstenciled_with_the_stencil_off_and_need_mode_1_to_skip() {
+        let device = crate::object_state::structure_stencil(0);
+        let off = item_stencil(1, true, device, false);
+        assert!(!off.stencil.enable && off.needs_mode_1, "the prologue's mode 0, the epilogue's mode 1");
+        assert_eq!(item_stencil(1, false, device, false), ItemStencil { stencil: device, needs_mode_1: false });
+        assert!(item_stencil(1, false, device, true).needs_mode_1, "a marked item's epilogue leaves mode 1");
+        for layer in [5, 7, 8, 20] {
+            assert_eq!(item_stencil(layer, true, device, true), ItemStencil { stencil: device, needs_mode_1: false }, "layer {layer}");
+        }
     }
 
     #[test]

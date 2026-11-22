@@ -272,7 +272,6 @@ fn world_geometry<R: Read + Seek>(
     Ok(world)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn add_section<R: Read + Seek>(
     map: &mut Map<R>,
     files: &mut ResourceFiles,

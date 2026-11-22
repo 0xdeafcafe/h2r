@@ -18,6 +18,7 @@ pub mod lang;
 pub mod policy;
 pub mod reload;
 pub mod scenario;
+pub mod show;
 pub mod sim;
 pub mod ty;
 pub mod verify;

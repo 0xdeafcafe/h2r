@@ -140,7 +140,7 @@ The engine passes a pointer to element `+4`, so its own offsets (`0x00` nodes ..
 | edges (`+0x34`) | 12 | `start_vertex, end_vertex, forward_edge, reverse_edge, left_surface, right_surface` (all `u16`; `0xffff` surface = none) | E (`0x001de2c0`): ring rule below |
 | vertices (`+0x3c`) | 16 | `x, y, z`, `u32 edge` | E (position), D (edge field: always a valid edge) |
 
-Ring rule (the engine's surface walk): starting at `first_edge`, if
+**Ring rule** (the engine's surface walk): starting at `first_edge`, if
 `edge.right_surface == surface` take `end_vertex` and continue at
 `reverse_edge`, otherwise take `start_vertex` and continue at `forward_edge`,
 until the first edge comes round again. This yields each surface's polygon.

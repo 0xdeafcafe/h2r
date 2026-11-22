@@ -157,14 +157,7 @@ let _perf = perf::Session::from_env();
 
 `Session::from_env` reads the following:
 
-| variable | meaning |
-|---|---|
-| `H2_PROFILE=<dir>` | sample the calling thread, write the profile there |
-| `H2_PROFILE_HZ` | rate (default 1000) |
-| `H2_PROFILE_TOP` | rows per table (default 25) |
-| `H2_PROFILE_CPU=1` | on-CPU samples only |
-| `H2_TIMELINE=<file.json>` | record a timeline and write it there |
-| `H2_TIMELINE_CATS` | categories, e.g. `all`, `default`, `frame,d3d,gfx`, `all,-hle` |
+The variables are listed under Profiling in [switches.md](../runtime/switches.md#profiling).
 
 A session starts its sampler before its timeline. If the sampler cannot
 start (on a host other than macOS, with no target threads, or when the
@@ -469,13 +462,4 @@ Results are in [notes/device-cost.md](notes/device-cost.md).
 Environment variables read by individual tests and benches, not by `h2`.
 Unset, each takes its default.
 
-| variable | read by | meaning |
-|---|---|---|
-| `H2_BENCH_FRAMES` | `cargo bench -p d3d` (`pushbuf`, `streams`, `vertex_fetch`) and the d3d benchmark tests (`--ignored`) | frames per run (the default differs per bench) |
-| `H2_BENCH_DRAWS` | the `pushbuf`, `streams` and `vertex_fetch` benches and some d3d benchmark tests | draws per frame (defaults 1200, 1000 and 1000 in the benches) |
-| `H2_BENCH_GUEST_ONLY` | `pushbuf` | set: run only the guest-memory dirty-tracking benchmark, then exit |
-| `H2_BENCH_MODES` | `vertex_fetch` | `cpu` or `gpu`: time one fetch mode only, e.g. to profile it |
-| `H2_BENCH_FILLS`, `H2_BENCH_SMALL`, `H2_BENCH_ROUNDS` | the ignored `render_churn` test in `crates/platform/d3d/tests/render_churn.rs`, its game-frame section | fills per visit (4), small draws per visit (0), rounds, the median reported (3) |
-| `H2_DIFF_SEEDS` | `crates/rewrites/engine/tests/{differential,layer_differential}.rs` (`--features differential`, need `H2_XBE`) | comma-separated seeds; the layer test defaults to `1,7,99`, `differential` to its first default seed |
-| `H2_DIFF_SCALE` | `crates/rewrites/engine/tests/differential.rs` | a multiplier on the cases per seed (default 1) |
-| `H2_EMIT_FULL` | `crates/recompiler/emit/tests/entry.rs` (needs `H2_XBE`) | `1`: build the whole image through generated C instead of only the functions the entry run lifted (minutes, cached afterwards) |
+Each variable is listed under Test, bench and disc-backed check inputs in [switches.md](../runtime/switches.md#test-bench-and-disc-backed-check-inputs).

@@ -43,10 +43,10 @@ bytes = "1"
 futures-util = "0.3"
 mime_guess = "2"
 percent-encoding = "2"
-png = "0.18"
+png = { workspace = true }
 # Pure Rust codecs, including WebP encoding on the Worker.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
-sha2 = "0.10"
+sha2 = { workspace = true }
 # Persistent multipart inspection needs RustCrypto's serialisable SHA-256 state.
 sha2-checkpoint = { package = "sha2", version = "0.11" }
 # Decode bounded film metadata and chronological chunks on both native and wasm.
@@ -121,7 +121,7 @@ s3s = "0.17"
 s3s-fs = "0.17"
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 # benches/telemetry.rs: process CPU time (getrusage).
-libc = "0.2"
+libc = { workspace = true }
 
 # Plain-loop benches, no Criterion (as crates/platform/d3d):
 # `cargo bench -p live-server --bench telemetry`.
@@ -134,3 +134,6 @@ required-features = ["native"]
 name = "h2-live-server"
 path = "src/bin/h2-live-server.rs"
 required-features = ["native"]
+
+[lints]
+workspace = true

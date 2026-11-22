@@ -14,8 +14,9 @@
 //! that per point: stronger shapes for sites that are calls, and the
 //! function points that do not follow a return or padding in the image
 //! (entries reached by falling through or after a call that does not
-//! return), with what they do have. `tests/point_shapes.rs` checks every
-//! point against the user's XBE.
+//! return), with what they do have.
+//! `crates/rewrites/engine/tests/point_shapes.rs` checks every point
+//! against the user's XBE.
 
 use crate::points::{self, Point, Sig, ui_render};
 

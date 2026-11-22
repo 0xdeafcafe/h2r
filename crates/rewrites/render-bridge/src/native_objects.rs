@@ -175,7 +175,6 @@ fn initialize_walk(layer: &mut WalkLayer, mem: &mut dyn GuestMemory, esp: u32, e
     };
     ObjectWalk::PartAuxState.count(causes.aux_state);
     ObjectWalk::PartSubparts.count(causes.subparts);
-    ObjectWalk::PartTopology.count(causes.topology);
     crate::scene_step::objects(&*mem, &entries);
     let decision = object_walk::decide(&entries, current);
     ObjectWalk::Unsupported.fallback(decision.unsupported);

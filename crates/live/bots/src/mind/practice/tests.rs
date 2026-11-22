@@ -92,7 +92,6 @@ fn bot(shield: f32) -> Me {
         shield,
         health: 1.0,
         arms: Some(armed()),
-        ..Me::default()
     }
 }
 

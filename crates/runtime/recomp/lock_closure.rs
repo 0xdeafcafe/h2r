@@ -89,7 +89,7 @@ pub fn closure_text(lock: &str, roots: &[&str]) -> Result<String, String> {
             let name = parts.next().unwrap_or_default();
             let version = parts.next();
             for (j, p) in pkgs.iter().enumerate() {
-                if p.name == name && version.map_or(true, |v| p.version == v) {
+                if p.name == name && version.is_none_or(|v| p.version == v) {
                     work.push(j);
                 }
             }

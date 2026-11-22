@@ -389,9 +389,9 @@ fn the_medal_is_the_last_local_awards_highest() {
             1,
             Some(0),
             10,
-            vec![Medal::DoubleBounce],
+            vec![Medal::Superbounce, Medal::DoubleBounce],
         ),
-        award(2, None, 12, vec![Medal::TripleBounce]),
+        award(2, None, 12, vec![Medal::Superbounce, Medal::TripleBounce]),
     ];
     assert_eq!(view(&s, None).medal, Some((Medal::DoubleBounce, 10)));
     let v = view(&s, None);
@@ -451,7 +451,7 @@ fn each_notification_is_sent_once() {
         2,
         Some(1),
         30,
-        vec![Medal::DoubleBounce],
+        vec![Medal::Superbounce, Medal::DoubleBounce],
     ));
     s.medals
         .recent

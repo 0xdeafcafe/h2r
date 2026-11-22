@@ -39,6 +39,8 @@ workspace_library(
     tree = ":lib-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/host-dirs:host-dirs",
+        "//crates/platform/mem-watch:mem-watch",
         "//third-party/rust:serde",
         "//third-party/rust:serde_json",
     ] + select({
@@ -61,6 +63,8 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/host-dirs:host-dirs",
+        "//crates/platform/mem-watch:mem-watch",
         "//third-party/rust:serde",
         "//third-party/rust:serde_json",
     ] + select({

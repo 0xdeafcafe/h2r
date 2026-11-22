@@ -20,7 +20,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use engine::points::{Class, Point};
+use guest_layout::points::{Class, Point};
 
 use crate::arena::{self, Arena};
 use crate::{Alloc, GuestMapping, Hook, Kind, Manifest};
@@ -251,7 +251,7 @@ fn place_locale(
     notes: &mut Vec<String>,
     addrs: &dyn ImageAddrs,
 ) -> Vec<String> {
-    use engine::points::LOCALE_FIND;
+    use guest_layout::points::LOCALE_FIND;
     let sources: Vec<_> = locale
         .sources
         .into_iter()
@@ -299,6 +299,7 @@ fn place_locale(
                         context_only: true,
                         resume_sites: &[],
                         generated_sites: &[],
+                        when_shared: None,
                     },
                 ));
                 "served by the locale bridge".to_owned()

@@ -247,10 +247,10 @@ the next start uses clang's module.** No hot swap.
   builds in place: `boot::build` removes the old stamp first and writes the
   new one last, so a half-built module is never current. The next start
   finds clang's module current and uses it. While that build runs, `h2
-  play`'s window says "Running slower while the full-speed version builds
-  (about N min). Restart when this says ready.", counting down from a
-  typical 15-minute cold build, then that the full-speed version is ready
-  (or that the build failed), from the log (`play_cmd.rs`, `tier_banner`;
+  play`'s window says "Running slower: full-speed version in about N
+  min.", counting down from a typical 15-minute cold build, then "Full-speed
+  ready. Restart from debug menu > Game > Game code." (or that the build
+  failed), each short enough for one line of the debug menu, from the log (`play_cmd.rs`, `tier_banner`;
   the text is `game_code::banner_text`). The debug menu's Game > Game code
   page and `game.code` show the same state, and `game.code.restart`
   starts `h2 play` again in place (same executable and arguments) once the

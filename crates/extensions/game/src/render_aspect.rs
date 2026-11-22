@@ -551,7 +551,7 @@ impl Feature for RenderAspect {
             .observe_before(&MENU_BACKDROP, "begin the full-view menu backdrop", move |o| {
                 let mut l = on_backdrop.lock().unwrap_or_else(|e| e.into_inner());
                 if l.begin_menu_composite() {
-                    sink.set_fit(&mut *o.guest(), None);
+                    sink.set_fit(&mut o.guest(), None);
                 }
             })
             .context_only()
@@ -561,7 +561,7 @@ impl Feature for RenderAspect {
             .observe_after(&MENU_BACKDROP, "restore the menu widget fit", move |o| {
                 let mut l = on_backdrop.lock().unwrap_or_else(|e| e.into_inner());
                 if l.end_group(MENU_BACKDROP.base) {
-                    sink.set_fit(&mut *o.guest(), l.current());
+                    sink.set_fit(&mut o.guest(), l.current());
                 }
             })
             .context_only()
@@ -596,7 +596,7 @@ impl Feature for RenderAspect {
             .observe_before(&ITEM_CALL, "restore the widget fit after background art", move |o| {
                 let mut l = on_item.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(fit) = l.end_fill() {
-                    sink.set_fit(&mut *o.guest(), fit);
+                    sink.set_fit(&mut o.guest(), fit);
                 }
             })
             .context_only()

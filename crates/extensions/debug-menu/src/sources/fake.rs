@@ -20,6 +20,8 @@ pub struct Game {
     pub frame_stats: bool,
     /// `game.code`: clang's background build has finished.
     pub code_ready: bool,
+    /// `host.pause`'s window pause.
+    pub paused: bool,
 }
 
 impl Default for Game {
@@ -35,6 +37,7 @@ impl Default for Game {
             with_players: true,
             frame_stats: true,
             code_ready: false,
+            paused: false,
         }
     }
 }
@@ -156,6 +159,50 @@ impl Game {
                 {"name": "broken", "base": "lockout", "state": "failed", "dir": "/maps/b", "error": "no BSP"},
             ]})),
             "maps.test.load" => Ok(json!({"name": p["name"], "queued": true})),
+            // agent_proto::host_pause::PauseState.
+            "host.pause" => {
+                if let Some(on) = p["on"].as_bool() {
+                    self.paused = on;
+                }
+                Ok(json!({"paused": self.paused, "held": self.paused, "tick": 5412}))
+            }
+            "host.step" => {
+                if !self.paused {
+                    return Err("not paused: host.pause {\"on\": true} first".into());
+                }
+                let ticks = p["ticks"].as_u64().unwrap_or(1);
+                Ok(json!({"paused": true, "held": true, "tick": 5412 + ticks, "stepped": ticks}))
+            }
+            // agent_proto::game_load::Levels and Loaded.
+            "game.levels" => Ok(json!({
+                "campaign": [
+                    {"name": "03a_oldmombasa", "scenario": "scenarios\\solo\\03a_oldmombasa\\03a_oldmombasa"},
+                ],
+                "multiplayer": [
+                    {"name": "coagulation", "scenario": "scenarios\\multi\\coagulation\\coagulation"},
+                    {"name": "lockout", "scenario": "scenarios\\multi\\lockout\\lockout"},
+                ],
+                "difficulties": ["easy", "normal", "heroic", "legendary"],
+                "variants": ["slayer", "oddball", "juggernaut", "king", "ctf", "assault", "territories"],
+            })),
+            "game.load" => Ok(json!({
+                "name": p["scenario"], "scenario": p["scenario"], "kind": "multiplayer",
+                "check": true, "queued": true,
+            })),
+            // agent_proto::sim::Mark and sim.state.set's teleport result.
+            "player.mark" => Ok(json!({
+                "slot": p["slot"].as_str().unwrap_or("quick"), "player": "player.1",
+                "pos": [36.7, -80.8, 1.7], "yaw": 90.0, "pitch": 0.0,
+                "map": "coagulation", "slots": ["quick"],
+            })),
+            "player.recall" => Ok(json!({
+                "slot": "quick", "player": "player.1", "wrote": true, "teleport": true,
+                "session": "local",
+            })),
+            // agent_proto::host_shot::Shot.
+            "host.screenshot" => Ok(json!({
+                "path": "/shots/h2-123.png", "width": 1280, "height": 960,
+            })),
             "perf.overlay" => Ok(json!({"on": true})),
             "profile.counters" if !self.frame_stats => {
                 Err("no frames in the frame-stats window yet".into())

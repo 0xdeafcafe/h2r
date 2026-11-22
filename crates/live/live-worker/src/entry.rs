@@ -48,7 +48,16 @@ async fn fetch(
     // path without its query string (live_server::refusals).
     let method = req.method().as_str().to_string();
     let path = req.uri().path().to_string();
-    let response = route(req, env, ctx).await?;
+    // The commit this deploy was built from (deploy.sh passes it as
+    // H2_LIVE_BUILD): /healthz names it in x-h2-build, so a deploy check
+    // can tell the new Worker from the one it replaced.
+    let build = (path == "/healthz")
+        .then(|| env.var(crate::settings::BUILD).ok().map(|v| v.to_string()))
+        .flatten();
+    let mut response = route(req, env, ctx).await?;
+    if let Some(value) = build.and_then(|b| http::HeaderValue::from_str(b.trim()).ok()) {
+        response.headers_mut().insert("x-h2-build", value);
+    }
     let log = |status: u16, line: &str| {
         if status >= 500 {
             worker::console_error!("{line}");

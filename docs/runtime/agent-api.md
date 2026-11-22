@@ -30,6 +30,8 @@ connection to hold `session.claim`.
 | `live.subscribe`, `live.status`, `live.close` | read | [Live mirror](#live-mirror) |
 | `session.pause`, `resume`, `step` | claim | [Control](#control) |
 | `host.pause`, `host.step` | act, without the controller check | [Window pause and frame step](#window-pause-and-frame-step) |
+| `host.screenshot` | act, without the controller check | [Window screenshots](#window-screenshots) |
+| `host.quit` | act, without the controller check | [Close the window](#close-the-window) |
 | `world.count`, `world.query`, `world.object` | read | [`world`](#world-what-is-in-the-level) |
 | `world.object.set`, `world.object.delete`, `world.object.respawn` | act | [Object edits](#object-edits) |
 | `world.placement.edit` | act | [Placement edits](#placement-edits) |
@@ -115,7 +117,7 @@ connection to hold `session.claim`.
 
 A new method gets a row here and a section for its domain. The names
 live in `crates/extensions/agent-proto/src` (`method::ALL`, `hot::method::ALL`,
-`state::method::ALL`, `sim`, `forge`, `firefight`, `rules`, `trace`, `theater`, `goto`, `host_pause`, `game_load`) and where the host adds
+`state::method::ALL`, `sim`, `forge`, `firefight`, `rules`, `trace`, `theater`, `goto`, `host_pause`, `host_shot`, `game_load`) and where the host adds
 them (`Agent::add_method`, `Agent::add_game_method`, `Agent::add_connection_read`).
 
 ## Connecting
@@ -362,11 +364,21 @@ or a source. The game shortens the requester, name, level and source for
 display. A second request returns `BUSY`
 while a prompt is queued or open.
 
-The status result is `pending`, `allowed`, `declined`, `timed_out` or
-`unavailable` (the dialog failed to open). **Not now** and Back both
-decline. **Allow** grants consent for that request, after which the lab
-waits for the player to quit. The game leaves saving and quitting with
-the player. A request expires even if the UI is still loading. The game
+`alongside` (a boolean, true when left out) says whether the dialog offers
+**Start alongside**. The lab sends `false` for a job whose numbers need a
+quiet machine (a benchmark).
+
+The status result is `pending`, `allowed`, `alongside`, `declined`,
+`timed_out` or `unavailable` (the dialog failed to open). **Not now** and
+Back both decline. **Close and start** answers `allowed`: consent for that
+request, after which the lab closes the game with
+[`host.quit`](#close-the-window) and waits for it to exit. **Start
+alongside** answers `alongside`: consent to start the job at once with the
+game left open, so the lab doesn't call `host.quit`. The dialog's rows are
+**Not now**, **Start alongside** and **Close and start** (screen
+`lab.takeover.alongside`, class `lab-takeover-alongside-dialog`), or only
+**Not now** and **Close and start** (`lab.takeover`) when `alongside` is
+false; a game never answers `alongside` to a request that withheld it. A request expires even if the UI is still loading. The game
 dismisses the expired dialog at the next UI update. The status method is
 read-only and answers `GONE` for an unknown or superseded id.
 
@@ -401,7 +413,8 @@ printf 'claim\npause\nstep 1\nobject player.0\nrelease\n' | h2 agent -
 ### Window pause and frame step
 
 `host.pause {on}` is the window's own pause, the one Cmd+P toggles, asked
-for over the API; `host.step {ticks?}` runs game ticks under it. They are
+for over the API; `host.pause {}` reads the state, changing nothing.
+`host.step {ticks?}` runs game ticks under the pause. They are
 meant for `h2 play` and other windowed games, where `session.pause` also
 stops the window's event loop. The window stays live: it keeps drawing
 its last frame, the debug menu and overlays keep working, and the audio
@@ -409,7 +422,7 @@ pauses as for Cmd+P.
 
 | Method | Params | Result |
 |---|---|---|
-| `host.pause` | `{on: bool}` | `{paused, held, tick}` once the window has applied it |
+| `host.pause` | `{on: bool}`, or `{}` to read | `{paused, held, tick}` once the window has applied it |
 | `host.step` | `{ticks?}`: 1 to 1800, default 1 | `{paused, held, tick, stepped}` once the ticks ran and the game is held again |
 
 `paused` is the window's pause (Cmd+P's, whoever set it); `held` says
@@ -453,6 +466,50 @@ world between ticks without running any.
 h2 agent host.pause '{"on":true}'
 h2 agent host.step '{"ticks":10}'
 h2 agent host.pause '{"on":false}'
+```
+
+### Window screenshots
+
+`host.screenshot {path?}` writes the window's newest published frame — the
+one it is showing, without the debug menu or the overlays — as a PNG, and
+answers `{path, width, height}` with what it wrote. With no `path` it
+names a new file in the window's screenshots directory (`h2 play`'s is
+`screenshots/` under the data root).
+
+Like `host.pause` it is answered on the connection's own thread, with the
+window shell's capture (`crates/apps/app/src/shell.rs`, over
+`agent_proto::host_shot`): the frame source's newest frame read back and
+encoded on the asking thread, so the debug menu's own call works while
+the game is paused, and a call from `h2 agent` never waits on the window's
+event loop. A headless game has no window: `UNAVAILABLE`, naming
+`render.capture` for a frame there. A window still starting, one with no
+frame yet, a write that fails, and a default-path shot where the window
+has no screenshots directory are `UNAVAILABLE` with the reason.
+
+```sh
+h2 agent host.screenshot '{}'
+h2 agent host.screenshot '{"path":"/tmp/ledge.png"}'
+```
+
+### Close the window
+
+`host.quit {}` closes the game window as its close button and Cmd+Q do:
+the window shell stops the guest and leaves its event loop, and the
+process exits once the guest has stopped. It answers `{closing: true}` at
+once, before the window has closed; the caller watches the process to
+see it go. It takes no params (`{}` or none), and a repeat is harmless.
+The lab calls it when the player answers **Close and start** to a
+[consent request](#lab-consent) ([Player consent before a
+job](lab.md#player-consent-before-a-job)).
+
+The game has no save step of its own to run first: a campaign keeps what
+its last checkpoint saved, as with the close button. Like `host.pause` it
+is answered on the connection's own thread, through the window shell's
+hub (`crates/apps/app/src/shell.rs`, over `agent_proto::host_quit`), so a
+paused game takes it too. A headless game has no window: `UNAVAILABLE`.
+
+```sh
+h2 agent host.quit '{}'
 ```
 
 ## `world`: what is in the level
@@ -795,7 +852,7 @@ with `INVALID_PARAMS`) answers from the state the
 | `landing` | while airborne and falling toward a strip, the landing the assist predicts: `at` (at the strip's floor height), `verdict` (`on_slot`, `fixable`, `miss`), `speed` (the touchdown speed, units/s), the strip's `need`, `miss` (world units outside the slot, 0 inside) and `locked` (in the slot at `need` or faster: the [lock-on](../game/superbounce.md#lock-on) is red) |
 | `last_landing` | the last touchdown within 0.5 of a strip: `result` (`bounce`, `not_primed`, `missed`, `too_slow`, `no_bounce`), the game `tick` and the origin `at` on the tick before ([superbounce.md](../game/superbounce.md#landings)) |
 | `standing_fits` | whether the standing capsule fits at the player's origin, as `world.object`'s `physics.standing_fits`; absent before the scan is ready |
-| `medals` | every player's medals this game, bots included ([superbounce.md](../game/superbounce.md#medals)): `players`, a row for each slot that has a chain or a medal (`player` the slot, `chain` its last chain's count, `live` whether its next bounce adds to it, `bounces` its bounces, `counts` each medal id's total), and `recent`, the last 8 awards, oldest first (`player`, `tick`, `chain`, `medals`: the ids, lowest first; and for a bounce `strips`, how many bounce strips were within 0.5 of its touchdown). The ids are `superbounce`, `double-bounce`, `triple-bounce`, `quad-bounce`, `chain-bounce`, `bouncetacular`, `bounced` and `monster-bounce` |
+| `medals` | every player's medals this game, bots included ([superbounce.md](../game/superbounce.md#medals)): `players`, a row for each slot that has a chain or a medal (`player` the slot, `chain` its last chain's count, `live` whether its next bounce adds to it, `counts` each medal id's total), and `recent`, the last 8 awards, oldest first (`player`, `tick`, `chain`, `medals`: the ids, lowest first; and for a bounce `strips`, how many bounce strips were within 0.5 of its touchdown). The ids are `superbounce`, `double-bounce`, `triple-bounce`, `quad-bounce`, `chain-bounce`, `bouncetacular`, `bounced` and `monster-bounce` |
 
 ```sh
 printf '%s\n' 'superbounce.state' | h2 agent -
@@ -845,13 +902,29 @@ assist did at its last pad read
 | `enabled` | the player's `superbounce.fall_assist` setting is on; the assist is opt in and never steers while it is off |
 | `test_hold` | `superbounce.assist_test` is holding the button |
 | `engaged` | the assist steered the player at its last read |
-| `target` | the strip's stand point, world units |
-| `aim` | the point being aimed at, a little before the stand point along the drift (X, Y) |
+| `reason` | why. Engaged, how the strip was chosen: `kept` (the strip the read before steered onto, still in reach), `marked` (the strip the HUD marks) or `nearest` (the strip the coasting landing misses by least, one the fall is fast enough for first). Held and not engaged: `not_falling`, `no_strip` (none within 6 units), `refused` (every strip near was) or `no_body`. Else `not_held`, `off` (the setting) or `inactive` (the mode) |
+| `target` | the chosen strip's stand point, world units |
+| `point` | the point of that strip being landed on: the stand point moved along the strip to where the fall comes down |
+| `aim` | the point being aimed at, a little before `point` along the drift (X, Y) |
 | `landing` | where the player lands if the stick is let go (X, Y) |
 | `fall_time` | seconds until touchdown at the strip's height |
 | `stick` | the left stick sent to the guest, `[x (right), y (forward)]`, -1 to 1 |
+| `from`, `velocity` | the player's origin and velocity at the read; absent while the button is up |
+| `candidates` | the strips judged at the read, while the button is held: the chosen one, the others in reach, then the refused, nearest first, at most 12 |
+| `chose` | the read the assist last engaged on, the choice at the press: `target`, `point`, `reason`, `from`, `velocity` and `candidates`. Kept after the button is let go, until the next engagement |
 
-The last five are absent while not engaged.
+`target` to `stick` are absent while not engaged. A candidate:
+
+| Field | Meaning |
+|---|---|
+| `stand` | the strip's stand point, world units |
+| `verdict` | `chosen`; `passed` (in reach, another was chosen); or why it was refused: `above` (not below the player), `long` (a fall over 3 s), `far` (over 3 units sideways), `out_of_reach` (the stick cannot bring the landing onto it in the time left), `covered` (a floor is between the player and it) or `walled` (something solid is between) |
+| `distance` | from the player to the strip's edge, sideways, world units |
+| `speed`, `need` | the touchdown speed the fall to it gives, and the speed it needs, units/s |
+| `point`, `fall_time`, `miss` | in reach only: the point of the strip to land on, the seconds to it, and how far the coasting landing misses the aim |
+
+A wrong pull shows in `chose`: the strip it took, why, and what it made
+of the strip the player meant.
 
 `superbounce.assist_test {"hold": true|false}` (access: act) holds the
 assist's button as if it were pressed, so an agent can try the assist
@@ -936,7 +1009,7 @@ tick, timed now:
 | `pulse_age`, `pulse_front` | seconds since the pulse left, and its ring's distance from the player in world units; absent without a pulse |
 | `grow` | the tracker's growth into the map, 0 to 1 |
 | `spots`, `marks`, `hidden`, `tested` | the spots the view knows, those marked in the world now, of those the ones behind a wall, and those with a line-of-sight answer |
-| `tracker` | `enabled` (the variant shows the tracker), `range` (world units) and `blips`: each `kind` (`bounce` or `crouch`), `proven`, `x` and `y` (right and ahead over the range; on the unit circle for a rim chevron), `level` (`same`, `above`, `below`), `rim` and `nav` |
+| `tracker` | `enabled` (the variant shows the tracker), `range` (world units) and `blips`, the next spot and then the one after it, at most two: each `kind` (`bounce` or `crouch`), `proven`, `x` and `y` (right and ahead over the range; on the unit circle when out of range), `level` (`same`, `above`, `below`), `rim` (out of range) and `nav` (the next spot) |
 | `map` | while held or shrinking: `floors`, `edges` and `pairs` drawn, and its `blips` over the map's 50 m |
 
 `superbounce.view_test {"mode": "pulse"|"hold"|"none"}` (access: act)
@@ -1292,10 +1365,14 @@ lights"): `e3.tiles` counts the caster draws into them, `e3.marks` the
 receivers compared with the Sharp edge, `lights_shadowed` the tiles (one
 per shadowed light of the guest's) and `tiles_refused` the shadow maps
 left at the guest's size. The display on the guest's live attachments
-draws no tiles. The other stages and counters are zero: the lights lit
-are still the guest's, and no game frame hands the renderer sun casters
-yet (`e3.sun_tiles`, `e3.sun`, `sun_tiles`, `sun_tiles_redrawn`, `atlas_halved`). The guest's light selections are in
-`render.scene.views`.
+draws no tiles. `lights_lit` and `lights_over_cap` are the renderer's
+own choice of lights from the scene's candidates (e3-lighting.md,
+"Lights: which, and how many"): the lights it chose, and the candidates
+its cap of 16 left out. The lights drawn are still the guest's, so
+`e3.lights` has no draws. The sun's stages and counters are zero: no
+game frame hands the renderer sun casters yet (`e3.sun_tiles`,
+`e3.sun`, `sun_tiles`, `sun_tiles_redrawn`, `atlas_halved`). The
+guest's light selections are in `render.scene.views`.
 Retail graph draws omit `e3`.
 
 `interp` exists when in-between frames run: in `h2 play`, or in an `h2
@@ -1593,8 +1670,10 @@ h2 agent render.parity '{"arm": true}'
   2) and `fog` and `water` (slice 5); unless `frame-scene.layers=off`
   is in `H2_FEATURES`, `layer_plan_asked`, `layer_plan_drawn`,
   `layer_plan_items` and the plan's outcomes by layer,
-  `layer_plan_<layer>_taken` and `layer_plan_<layer>_refused_<cause>`
-  (`render_bridge::native_layers`; framescene.md, slice 4); a later slice adds
+  `layer_plan_<layer>_taken` and `layer_plan_<layer>_refused_<cause>`,
+  the first person's as `layer_plan_fp<layer>_*`, object items' causes
+  named `object_*` (`render_bridge::native_layers`; framescene.md,
+  slice 4); a later slice adds
   `scene_held_draws`). With the [scene sink](../graphics/framescene.md#slice-6-the-renderer-owns-game-view-frames)
   enabled, the device files
   each guest D3D op by the frame's slot (`opaque`, `after_opaque`,
@@ -3120,6 +3199,8 @@ or “Editor · edits blocked”. Optional `text` appears on the second line.
 The plate expires on the wall clock, including while the game is paused.
 The shell draws it after the watermark and leaves room for the banner
 (`crates/apps/cli/src/play_cmd.rs`, `crates/apps/app/src/shell.rs`).
+While the debug menu is open, the plate's lines show inside the menu
+instead ([debug-menu.md](debug-menu.md#layout)).
 
 | Method | Access | Params | Result |
 |---|---|---|---|

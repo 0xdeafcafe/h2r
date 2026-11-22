@@ -285,7 +285,7 @@ fn a_convex_edge_beside_a_seam_is_no_bounce() {
 fn ascension_corner() -> Vec<Poly> {
     let (x0, x1) = (-12.0, -10.0);
     let ramp_z = -1.0 - 3.4 * RAMP_SLOPE;
-    let lip = [0.0, 0.7071, -0.7071];
+    let lip = [0.0, std::f32::consts::FRAC_1_SQRT_2, -std::f32::consts::FRAC_1_SQRT_2];
     vec![
         flat([x0, x1], [-0.5, 0.4], -1.0, true),
         quad(
@@ -902,7 +902,7 @@ fn low_ceiling(x: f32, y: f32, z: f32) -> Vec<Poly> {
     ]
 }
 
-fn region_near<'a>(regions: &'a [CrouchRegion], x: f32) -> &'a CrouchRegion {
+fn region_near(regions: &[CrouchRegion], x: f32) -> &CrouchRegion {
     regions
         .iter()
         .find(|r| r.spot.is_some() && r.min[0] <= x && r.max[0] >= x)

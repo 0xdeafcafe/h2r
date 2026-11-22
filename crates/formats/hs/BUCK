@@ -35,7 +35,9 @@ workspace_library(
     crate = "hs",
     crate_root = "crates/formats/hs/src/lib.rs",
     description = "",
-    features = [],
+    features = [
+        "fixture",
+    ],
     manifest = "crates/formats/hs",
     package = "hs",
     tree = ":lib-tree",
@@ -53,7 +55,9 @@ workspace_test(
     crate = "hs",
     crate_root = "crates/formats/hs/src/lib.rs",
     description = "",
-    features = [],
+    features = [
+        "fixture",
+    ],
     manifest = "crates/formats/hs",
     package = "hs",
     tree = ":test-tree",
@@ -72,7 +76,9 @@ workspace_test(
     crate = "casts_disc",
     crate_root = "crates/formats/hs/tests/casts_disc.rs",
     description = "",
-    features = [],
+    features = [
+        "fixture",
+    ],
     manifest = "crates/formats/hs",
     package = "hs",
     tree = ":test-tree",
@@ -92,7 +98,9 @@ workspace_test(
     crate = "vm_disc",
     crate_root = "crates/formats/hs/tests/vm_disc.rs",
     description = "",
-    features = [],
+    features = [
+        "fixture",
+    ],
     manifest = "crates/formats/hs",
     package = "hs",
     tree = ":test-tree",

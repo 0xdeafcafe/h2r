@@ -1028,6 +1028,66 @@ fn input_reads_unions_masks_bindings_and_selectors() {
     assert_eq!(r.ints, 1 << 4 | 1 << 6);
 }
 
+/// `0x0001a170`'s and `0x0001ab50`'s bindings: a render state's target in
+/// byte 0, a stage state's stage in byte 0 and target in byte 1; source
+/// 1 a scalar slot, any other a colour slot.
+#[test]
+fn an_engine_state_is_its_target_source_and_slot() {
+    let b = |bytes| ExternalBinding { bytes };
+    // Render target 2: ALPHAREF (0x3d), an integer, from scalar slot 5.
+    let r = EngineState::render(b([2, 1, 0, 5])).unwrap();
+    assert_eq!(r, EngineState { state: 0x3d, stage: None, kind: EngineStateKind::Integer, source: EngineStateSource::Scalar(5) });
+    assert_eq!(r.name(), Some("ALPHAREF"));
+    // Render target 6: FOGCOLOR (0x8a), a colour, from colour slot 1.
+    let f = EngineState::render(b([6, 0, 0, 1])).unwrap();
+    assert_eq!((f.state, f.kind, f.source), (0x8a, EngineStateKind::Colour, EngineStateSource::Colour(1)));
+    assert_eq!(EngineState::render(b([7, 1, 0, 0])), None, "past the table");
+    // Stage 2, target 0: MIPMAPLODBIAS (6), a float, from scalar slot 3.
+    let s = EngineState::stage(b([2, 0, 1, 3])).unwrap();
+    assert_eq!(s, EngineState { state: 6, stage: Some(2), kind: EngineStateKind::Float, source: EngineStateSource::Scalar(3) });
+    assert_eq!(s.name(), Some("MIPMAPLODBIAS"));
+    assert_eq!(EngineState::stage(b([4, 0, 1, 3])), None, "past the four stages");
+    assert_eq!(EngineState::stage(b([0, 10, 1, 3])), None, "past the table");
+}
+
+/// `0x0001a170`'s and `0x0001ab50`'s conversions: a scalar rounded, as its
+/// bits or as the top byte; a colour packed into the low 24 bits.
+#[test]
+fn an_engine_state_value_converts_its_input_by_kind() {
+    let b = |bytes| ExternalBinding { bytes };
+    let mut inputs = EngineInputs::default();
+    inputs.scalars[2] = 0.5;
+    inputs.scalars[3] = -0.25;
+    inputs.scalars[5] = 127.5;
+    inputs.scalars[6] = 126.5;
+    inputs.scalars[7] = 1e10;
+    inputs.vectors[1] = [1.0, 0.5, 0.0];
+    inputs.vectors[4] = [1.5, 0.0, 0.0];
+    inputs.vectors[63] = [0.0, 0.0, 1.0];
+    let held = 0x1122_3344;
+    let value = |bytes, stage: bool| {
+        let s = if stage { EngineState::stage(b(bytes)) } else { EngineState::render(b(bytes)) };
+        s.unwrap().value(&inputs, held)
+    };
+    // ALPHAREF from a scalar: rounded to nearest, ties to even.
+    assert_eq!(value([2, 1, 0, 5], false), Some(128));
+    assert_eq!(value([2, 1, 0, 6], false), Some(126));
+    assert_eq!(value([2, 1, 0, 7], false), Some(0x8000_0000), "out of range: the integer indefinite");
+    // BLENDCOLOR from a scalar: 0.5 x 255 rounded, the top byte.
+    assert_eq!(value([0, 1, 0, 2], false), Some(0x8022_3344));
+    // FOGCOLOR from a colour: red at 16, the top byte kept.
+    assert_eq!(value([6, 0, 0, 1], false), Some(0x11ff_8000));
+    // 1.5 x 255 = 382.5 rounds to 382 and wraps to 0x7e: no clamp.
+    assert_eq!(value([6, 0, 0, 4], false), Some(0x117e_0000));
+    // Stage 2 MIPMAPLODBIAS from a scalar: the float's bits.
+    assert_eq!(value([2, 0, 1, 3], true), Some((-0.25f32).to_bits()));
+    // Stage 1 BORDERCOLOR from colour slot 63.
+    assert_eq!(value([1, 2, 0, 63], true), Some(0x1100_00ff));
+    // A slot past the inputs.
+    assert_eq!(value([2, 1, 0, 64], false), None);
+    assert_eq!(value([6, 0, 0, 64], false), None);
+}
+
 /// `0x00019be0`'s word: register, bank, mode and stage, the input in
 /// byte 3; a mode writes its components only.
 #[test]

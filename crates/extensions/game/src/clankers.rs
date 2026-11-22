@@ -657,6 +657,11 @@ impl PadSource for Clanker {
         self.brain.reset_input();
     }
 
+    fn order(&mut self, order: Option<bots::brain::Order>) -> bool {
+        self.brain.set_order(order);
+        true
+    }
+
     fn phantom_latency(&self) -> bots::tuning::PhantomLatency {
         self.brain.phantom_latency()
     }

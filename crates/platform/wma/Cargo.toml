@@ -15,7 +15,7 @@ oracle = ["dep:unicorn-engine", "dep:anyhow"]
 [dependencies]
 xbe.workspace = true
 thiserror.workspace = true
-sha2 = "0.10.9"
+sha2 = { workspace = true }
 asf = { path = "../../formats/asf" }
 # Machine snapshots: a session's whole state (Session::save_state).
 snapshot = { path = "../../runtime/snapshot" }
@@ -28,3 +28,6 @@ asf = { path = "../../formats/asf", features = ["disc"] }
 [[example]]
 name = "wma_oracle"
 required-features = ["oracle"]
+
+[lints]
+workspace = true

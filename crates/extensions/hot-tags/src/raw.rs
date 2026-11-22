@@ -230,7 +230,6 @@ pub(crate) enum RawChange {
         file: ResourceFile,
         /// File offset of the first byte.
         at: u64,
-        old: Vec<u8>,
         new: Vec<u8>,
         /// The overlay's runs over the range before the write.
         held: Vec<(u64, Vec<u8>)>,
@@ -475,7 +474,7 @@ impl Editor {
                     "resident_holds_hash": resident.as_ref().map(|(_, b)| format!("{:#018x}", fnv1a64(b))),
                     "why": if file_ok { "the resident copy differs" } else { "the file view differs" }}));
             }
-            planned.push(Planned { loc, at, offset: w.offset, old: current, new: w.bytes.clone(), resident });
+            planned.push(Planned { loc, at, offset: w.offset, new: w.bytes.clone(), resident });
         }
         let mut evict = Vec::new();
         for v in &batch.evict {
@@ -528,7 +527,6 @@ impl Editor {
                 owner: p.loc.owner,
                 file: p.loc.file,
                 at: p.at,
-                old: p.old,
                 new: p.new,
                 held,
                 offset: p.offset,
@@ -637,18 +635,15 @@ impl Editor {
                             .map(|info| resident_base(g, info))
                             .transpose()?
                             .flatten();
-                        match now {
-                            Some(base) => {
-                                let addr = base + offset;
-                                if read_bytes(g, addr, len as u32)? == new {
-                                    g.write_bytes(addr, &old, 1).map_err(fault)?;
-                                    restored = true;
-                                } else {
-                                    why = Some("the resident copy changed since; the overlay was put back");
-                                }
+                        // Paged out since (None): the next page-in reads the restored file view.
+                        if let Some(base) = now {
+                            let addr = base + offset;
+                            if read_bytes(g, addr, len as u32)? == new {
+                                g.write_bytes(addr, &old, 1).map_err(fault)?;
+                                restored = true;
+                            } else {
+                                why = Some("the resident copy changed since; the overlay was put back");
                             }
-                            // Paged out since: the next page-in reads the restored file view.
-                            None => {}
                         }
                     }
                     let r = owner.refresh(false);
@@ -695,7 +690,6 @@ pub(crate) struct Planned {
     loc: Located,
     at: u64,
     offset: u32,
-    old: Vec<u8>,
     new: Vec<u8>,
     resident: Option<(u32, Vec<u8>)>,
 }

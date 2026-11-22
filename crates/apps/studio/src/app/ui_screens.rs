@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, bail};
 use boot::ui_kit::animation::{AnimatedView, Phase};
 use boot::ui_kit::input::Input;
-use boot::ui_kit::layout::{self, Rules};
+use boot::ui_kit::layout::Rules;
 use boot::ui_kit::page::Live;
 use boot::ui_kit::preview::{self, Canvas, Disc};
 use boot::ui_kit::screens;
@@ -45,7 +45,7 @@ impl Pick {
     }
 }
 
-/// One finding of the layout checks, with the widgets it names.
+/// One finding of the kit's checks, with the widgets it names.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Finding {
     pub text: String,
@@ -57,7 +57,7 @@ pub struct Shot {
     pub canvas: Canvas,
     /// The view (none for a retail screen: only its picture is drawn).
     pub view: Option<View>,
-    /// The checks' findings, the kit's then the layout's.
+    /// The checks' findings (`boot::ui_kit::findings::of_state`).
     pub findings: Vec<Finding>,
     /// A retail screen's widgets (with the map's moves), for the editing;
     /// none for ours (`view` has them) or without the disc.
@@ -299,24 +299,17 @@ impl UiScreens {
         let src = from.source();
         let view = from.view(&spec, state)?;
         let rules = Rules::for_spec(&spec);
-        let mut findings = Vec::new();
-        if let Some(d) = disc {
-            for f in d.check(&spec)? {
-                findings.push(Finding {
-                    text: format!("kit: {f}"),
-                    ids: Vec::new(),
-                });
-            }
-        }
-        let report = layout::check(&view, src, &rules);
-        findings.extend(boot::ui_kit::content::check_with_source(&spec, &view, src).into_iter().map(|f| Finding {
-            text: format!("content: {f}"),
-            ids: vec![f.id],
-        }));
-        findings.extend(report.issues.iter().map(|i| Finding {
-            text: i.to_string(),
-            ids: i.ids().into_iter().map(String::from).collect(),
-        }));
+        // Every check's findings, as `h2 ui preview` prints them
+        // (`boot::ui_kit::findings`).
+        let report = boot::ui_kit::findings::of_state(&from, &spec, &view)?;
+        let findings: Vec<Finding> = report
+            .findings
+            .iter()
+            .map(|f| Finding {
+                text: f.to_string(),
+                ids: f.ids.clone(),
+            })
+            .collect();
         let view = if phase == Phase::Rest {
             view
         } else {
@@ -540,7 +533,7 @@ mod tests {
         let shot = s.shot().unwrap();
         assert_eq!(shot.findings, vec![]);
         assert!(shot.view.as_ref().unwrap().widget("cell.0.art").is_some());
-        let issue = layout::Issue::Fit { id: "row.0".into() };
+        let issue = boot::ui_kit::layout::Issue::Fit { id: "row.0".into() };
         assert_eq!(issue.ids(), ["row.0"]);
     }
 

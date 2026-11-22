@@ -1014,10 +1014,11 @@ choice means). Adding an option is a setting in `setting_defs` (choices
   Quick Options' game type picture, and the legend in its footer. Left
   or right changes a row; A opens the value picker, which explains the
   option and both choices (`OptionRow::explain`); B backs out.
-- **Campaign:** a Halo 1 level's Game Options page (the skulls page after
-  the difficulty, docs/game/skulls.md) lists Assets and HUD under Start
+- **Campaign:** a Halo 1 level's Skulls page (after the difficulty,
+  docs/game/skulls.md "The page") lists Assets and HUD under Start
   Level, above the skulls, and opens even with no skull collected.
-  A opens the same value picker for either option.
+  A opens the same value picker for either option; left and right do
+  nothing there.
 - Each choice is saved to `settings.toml` at once and applies from the
   next game or level load; an environment variable locks it ("locked").
 - **HUD:** `boot::hud` is the switch only: each game start picks

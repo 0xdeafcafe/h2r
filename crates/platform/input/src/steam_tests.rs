@@ -22,7 +22,6 @@ fn d0g(packet: u32, raw: u32, lt: u8, rt: u8, left: (i16, i16), right: (i16, i16
 
 /// A 2026 state report (`0x42`/`0x45`, or `0x47` with the trackpad
 /// timestamp), 46 bytes.
-#[allow(clippy::too_many_arguments)]
 fn triton(
     id: u8,
     raw: u32,

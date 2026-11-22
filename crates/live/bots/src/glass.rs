@@ -5,7 +5,7 @@
 //! (`+5`, `0xff` none) is breakable: Zanzibar's window panes, cut into
 //! pieces, each piece its own surface. The game skips such a surface in
 //! collision once its bit in the BSP's live breakable mask is clear
-//! (docs/formats/collision.md, "Breakable mask"), so a broken piece is a
+//! (the breakable mask in docs/formats/collision.md), so a broken piece is a
 //! gap a body walks through and the pieces left are solid.
 //!
 //! The nav build keeps the breakable surfaces beside the walls

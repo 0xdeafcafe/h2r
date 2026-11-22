@@ -145,7 +145,6 @@ impl Case {
         trials
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn ray(
         &mut self,
         id: &str,

@@ -1658,6 +1658,7 @@ dependencies = [
  "app",
  "bytemuck",
  "frame-scene",
+ "frame-types",
  "gfx",
  "host-dirs",
  "hot-render",
@@ -2270,6 +2271,14 @@ name = "frame-scene"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "frame-types",
+ "serde",
+]
+
+[[package]]
+name = "frame-types"
+version = "0.1.0"
+dependencies = [
  "serde",
 ]
 
@@ -2982,7 +2991,7 @@ dependencies = [
 name = "hooks"
 version = "0.1.0"
 dependencies = [
- "engine",
+ "guest-layout",
  "render-bridge",
  "runtime",
  "runtime-test-probe",

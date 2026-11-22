@@ -9,11 +9,15 @@ license.workspace = true
 # and the native renderer all read guest structures, and none of them
 # should pull another to do it. `runtime` only behind `runtime-glue`.
 [features]
-# GuestMemory::take_write_watch and the runtime's memories as GuestMemory
-# (src/memory.rs); engine's `runtime-glue` turns it on.
+# GuestMemory::take_write_watch, the runtime's memories as GuestMemory
+# (src/memory.rs) and the adapters' registration (src/runtime_glue.rs);
+# `hooks` and engine's `runtime-glue` turn it on.
 runtime-glue = ["dep:runtime"]
 
 [dependencies]
 # Field names for the accessors `record!` generates (src/view.rs).
 paste = "1"
 runtime = { workspace = true, optional = true }
+
+[lints]
+workspace = true

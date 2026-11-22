@@ -1570,7 +1570,7 @@ impl<'s> Cx<'s> {
     /// arguments: a block function's statements, or a value function's
     /// expression, whose register it gives.
     fn inline(&mut self, f: &mut Fun, decl: &'s FnDecl, args: &'s [Expr], pos: Pos) -> R<Option<(Reg, Ty)>> {
-        if f.inlining.iter().any(|n| *n == decl.name) {
+        if f.inlining.contains(&decl.name) {
             return err(pos, format!("fn {} calls itself; recursion is not allowed", decl.name));
         }
         if f.inlining.len() >= 16 {

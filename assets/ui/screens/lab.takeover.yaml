@@ -14,7 +14,7 @@ widgets:
     text: "LAB REQUEST"
   body:
     component: body
-    text: "Lab driver: build, then run\n\"Menu bands check\"\nlab/menu-bands at cb9b315\nlevel ascension, about 4 min"
+    text: "Lab driver: build, then run (about 4 min)\n\"Menu bands check\"\nlab/menu-bands at cb9b315, level ascension"
   legend:
     component: legend
     prompts: [[A, "SELECT"], [B, "BACK"]]

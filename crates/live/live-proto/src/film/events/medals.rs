@@ -161,20 +161,20 @@ impl Incel {
     }
 }
 
-/// The medal a bounce earns at its place in a chain, as a list of one
-/// (docs/game/superbounce.md, "Medals"): Superbounce for the first, then
-/// the tier of its count, like Halo 2's multi-kills, and Bouncetacular
-/// again from the sixth on as Killimanjaro repeats from the seventh kill.
-/// A count of 0 is no bounce.
+/// The medals a bounce earns at its place in a chain, lowest first, so the
+/// last is the one a HUD line shows (docs/game/superbounce.md, "The rule").
+/// Superbounce is every bounce; a chain gives each of the others once, at
+/// 2 to 6 bounces, and from the seventh on only Superbounce. A count of 0
+/// is no bounce.
 pub fn bounce_medals(chain: u32) -> &'static [&'static str] {
     match chain {
         0 => &[],
-        1 => &[SUPERBOUNCE],
-        2 => &[DOUBLE_BOUNCE],
-        3 => &[TRIPLE_BOUNCE],
-        4 => &[QUAD_BOUNCE],
-        5 => &[CHAIN_BOUNCE],
-        _ => &[BOUNCETACULAR],
+        2 => &[SUPERBOUNCE, DOUBLE_BOUNCE],
+        3 => &[SUPERBOUNCE, TRIPLE_BOUNCE],
+        4 => &[SUPERBOUNCE, QUAD_BOUNCE],
+        5 => &[SUPERBOUNCE, CHAIN_BOUNCE],
+        6 => &[SUPERBOUNCE, BOUNCETACULAR],
+        _ => &[SUPERBOUNCE],
     }
 }
 
@@ -351,13 +351,13 @@ mod tests {
     fn bounce_medals_follow_the_chain_table() {
         assert_eq!(bounce_medals(0), &[] as &[&str]);
         assert_eq!(bounce_medals(1), [SUPERBOUNCE]);
-        assert_eq!(bounce_medals(2), [DOUBLE_BOUNCE]);
-        assert_eq!(bounce_medals(3), [TRIPLE_BOUNCE]);
-        assert_eq!(bounce_medals(4), [QUAD_BOUNCE]);
-        assert_eq!(bounce_medals(5), [CHAIN_BOUNCE]);
-        assert_eq!(bounce_medals(6), [BOUNCETACULAR]);
+        assert_eq!(bounce_medals(2), [SUPERBOUNCE, DOUBLE_BOUNCE]);
+        assert_eq!(bounce_medals(3), [SUPERBOUNCE, TRIPLE_BOUNCE]);
+        assert_eq!(bounce_medals(4), [SUPERBOUNCE, QUAD_BOUNCE]);
+        assert_eq!(bounce_medals(5), [SUPERBOUNCE, CHAIN_BOUNCE]);
+        assert_eq!(bounce_medals(6), [SUPERBOUNCE, BOUNCETACULAR]);
         for chain in [7, 8, 12, u32::MAX] {
-            assert_eq!(bounce_medals(chain), [BOUNCETACULAR], "{chain}");
+            assert_eq!(bounce_medals(chain), [SUPERBOUNCE], "{chain}");
         }
         assert_eq!(
             BOUNCE_MEDALS,
@@ -407,9 +407,9 @@ mod tests {
     #[test]
     fn a_monster_bounce_adds_its_medal_after_the_chain_medals() {
         let with = |chain, monster| bounce_medals_with(chain, monster).collect::<Vec<_>>();
-        assert_eq!(with(2, true), [DOUBLE_BOUNCE, MONSTER_BOUNCE]);
+        assert_eq!(with(2, true), [SUPERBOUNCE, DOUBLE_BOUNCE, MONSTER_BOUNCE]);
         assert_eq!(with(1, true), [SUPERBOUNCE, MONSTER_BOUNCE]);
-        assert_eq!(with(9, true), [BOUNCETACULAR, MONSTER_BOUNCE]);
+        assert_eq!(with(9, true), [SUPERBOUNCE, MONSTER_BOUNCE]);
         assert_eq!(with(0, true), [] as [&str; 0]);
         for chain in 0..=8 {
             assert_eq!(with(chain, false), bounce_medals(chain), "{chain}");
@@ -542,6 +542,7 @@ mod tests {
             bounces,
             [
                 (0, 0, 40, SUPERBOUNCE),
+                (0, 0, 52, SUPERBOUNCE),
                 (0, 0, 52, DOUBLE_BOUNCE),
                 (0, 0, 52, MONSTER_BOUNCE),
                 (1, 1, 55, BOUNCED),

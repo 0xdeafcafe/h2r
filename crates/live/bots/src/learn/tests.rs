@@ -134,7 +134,7 @@ fn search_finds_the_groove_on_a_fake_landing() {
         assert!(g < 0.05, "seed {seed}: lands {g} from the groove: {k:?}");
         // The line reads back as it is held.
         assert_eq!(
-            learned::parse(&learned::to_text(&[e.clone()])).unwrap(),
+            learned::parse(&learned::to_text(std::slice::from_ref(e))).unwrap(),
             vec![e.clone()]
         );
     }

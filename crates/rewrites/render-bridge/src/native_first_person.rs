@@ -20,6 +20,7 @@ use engine::memory::GuestMemory;
 use engine::points;
 use timeline::native::{Metric, Stage};
 use native_render::camera::{GuestRead, GuestWrite};
+use native_render::object_walk;
 use native_render::objects::{
     self, ClearedObjects, FIRST_PERSON_LAYER3_RETURN, ItemDraw, ItemKey, ObjectFrame, RECORD_MODEL,
     RecordOwner,
@@ -229,11 +230,21 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         let (Some(object), Ok(rows)) = (object, rows) else {
             continue;
         };
+        // What the record makes the geometry draw do, as the world layers
+        // read it: the topology and subparts it draws, or the item keeps
+        // its D3D draw.
+        let record = RENDER_RECORDS + RENDER_RECORD_SIZE * u32::from(key.record);
+        let Ok((flags, subparts)) = object_walk::layer_part(&m, LIGHTMAP_LAYER as u8, cleared.items[i], record, *key)
+        else {
+            continue;
+        };
         items.push(ItemDraw {
             index: i,
             object,
             key: *key,
             rows,
+            flags,
+            subparts,
         });
     }
     if items.is_empty() {

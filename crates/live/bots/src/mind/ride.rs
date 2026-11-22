@@ -48,7 +48,6 @@ impl Mind {
 
     /// In a vehicle: the whole of this frame's pad. On foot: `None`, and
     /// the mind goes on as usual.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn ride(
         &mut self,
         p: &Perception,
@@ -446,7 +445,6 @@ impl Mind {
         Some(pad)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn fly(
         &mut self,
         p: &Perception,
@@ -534,7 +532,6 @@ impl Mind {
     /// close and slow is boarded, in a fight or not; a free one is taken
     /// only when calm, not carrying, not going for a weapon, and not near
     /// the objective it is playing.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn mount_plan(
         &mut self,
         p: &Perception,
@@ -647,7 +644,6 @@ impl Mind {
     /// On foot, going for vehicle `id` ([`Mind::mount_plan`]): walks to the
     /// point beside the seat and holds X there; a boarder runs straight at
     /// a vehicle close by. The walk, and where to look.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn mount_step(
         &mut self,
         at: Vec3,

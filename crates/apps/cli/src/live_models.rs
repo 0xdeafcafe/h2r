@@ -3505,6 +3505,7 @@ fn build_biped(disc: &Disc, stems: &[&str]) -> Result<(Model, BipedInfo)> {
 /// (`objects\\characters\\grunt\\grunt` -> `grunt`), as telemetry sends it.
 /// The rule is `forge::look::census`'s, which lists the Forge monitor's
 /// models by the same key.
+#[cfg(test)]
 pub fn species_of(tag: &str) -> Option<String> {
     forge::look::census::species_of(tag)
 }

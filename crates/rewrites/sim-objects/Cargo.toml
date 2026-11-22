@@ -16,3 +16,6 @@ sim-core.workspace = true
 # `synth`: synthetic object pools and definition tags in guest form, for
 # the tests here and in the readers built on this crate. No game data.
 synth = []
+
+[lints]
+workspace = true

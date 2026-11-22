@@ -1674,7 +1674,6 @@ impl<B: Backend> Device<B> {
 
     /// `D3DDevice_Clear` (`0x3f9fc0`, stdcall `Count, pRects, Flags, Color,
     /// Z, Stencil`).
-    #[allow(clippy::too_many_arguments)] // the D3D signature
     pub fn clear(
         &mut self,
         mem: &mut dyn GuestMemory,

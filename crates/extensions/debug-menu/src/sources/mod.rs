@@ -75,6 +75,21 @@ pub mod method {
     pub const MAPS_TEST_LIST: &str = "maps.test.list";
     pub const MAPS_TEST_LOAD: &str = "maps.test.load";
     pub const GAME_MENU: &str = "game.menu";
+    /// `{}`: the campaign and multiplayer maps [`GAME_LOAD`] takes.
+    pub const GAME_LEVELS: &str = "game.levels";
+    /// `{"scenario", "difficulty"?, "variant"?}`: queue a level as the
+    /// next game, from the main menu or a running one.
+    pub const GAME_LOAD: &str = "game.load";
+    /// `{}` reads, `{"on": bool}` sets: the window's pause (Cmd+P's).
+    pub const HOST_PAUSE: &str = "host.pause";
+    /// `{"ticks"?}`: N game ticks under the window's pause, default 1.
+    pub const HOST_STEP: &str = "host.step";
+    /// `{"slot"?, "player"?}`: keep a player's position and facing.
+    pub const PLAYER_MARK: &str = "player.mark";
+    /// `{"slot"?, "player"?}`: put a player back at the kept spot.
+    pub const PLAYER_RECALL: &str = "player.recall";
+    /// `{"path"?}`: the window's newest frame as a PNG.
+    pub const HOST_SCREENSHOT: &str = "host.screenshot";
     /// `{}`: which game code runs (full-speed clang module or the slower
     /// fast tier), its module, and clang's background build.
     pub const GAME_CODE: &str = "game.code";

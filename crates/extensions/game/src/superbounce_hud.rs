@@ -373,6 +373,8 @@ impl Hud {
         LOCKED.store(reticle_locked(&s), Ordering::Relaxed);
         for (user, text) in self.sent.notes(Some(&s), mode::lost(&s)) {
             self.handle.notify(user, &text);
+            // A medal line is spoken too (medal_announcer.rs).
+            crate::medal_announcer::announce(&text);
         }
         self.lost = mode::lost(&s).or(self.lost);
         let now = tutorial_seconds(self.ticks);
@@ -455,6 +457,9 @@ pub fn install(
     let show = superbounce_tutorial_shows(seen, env.as_deref());
     let handle = hud_kit::register(Arc::new(Superbounce));
     handle.publish(hidden());
+    // The step chain beside it is the window's (superbounce_steps.rs), with
+    // its own switch.
+    crate::superbounce_steps::install(registry)?;
     let hud = Hud {
         handle,
         tutorial: Tutorial::new(show),

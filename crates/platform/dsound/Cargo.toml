@@ -21,7 +21,7 @@ wma = { path = "../wma" }
 snapshot = { path = "../../runtime/snapshot" }
 # The controller-speaker settings (padroute), in the input bindings' style.
 serde = { workspace = true }
-toml = "0.9"
+toml = { workspace = true }
 
 [dev-dependencies]
 wma = { path = "../wma", features = ["synthetic"] }
@@ -29,3 +29,6 @@ asf = { path = "../../formats/asf", features = ["disc"] }
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info"] }
 # tests/stream_feed.rs: stream feeding on the real scheduler and logical clock.
 kernel.workspace = true
+
+[lints]
+workspace = true

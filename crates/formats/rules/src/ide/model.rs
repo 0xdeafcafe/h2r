@@ -732,7 +732,6 @@ impl<'s> Model<'s> {
     /// A handler's arguments. A label in an argument's place is a use of
     /// the label: `capture` in `on enter(capture z, o)`, and `goal` in
     /// `on enter(goal, o)`, whose body reads `goal` as the zone entered.
-    #[allow(clippy::too_many_arguments)]
     fn handler(
         &mut self,
         item: usize,

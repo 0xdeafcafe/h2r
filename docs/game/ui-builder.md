@@ -77,6 +77,12 @@ its preview pages are `forge.hud`, `forge.palette` and `forge.menu`
 (`crates/extensions/game/src/ui_kit/forge.rs`), until slice U7 removes
 them.
 
+A `Hud` whose spec is not `transparent` is drawn over the game shell
+instead of a live picture (`preview::From::view`): widgets that sit on
+the shell's header and footer bands, such as the pregame lobby's mode
+strip (`lobby.tabs`, [party-lobby.md](party-lobby.md)). Its doc
+says `backing: shell`.
+
 The Forge screens are the game's: list classes of ours on the large
 dialog (the object menu, Tools, Link and the questions) and on the
 in-game Controller Settings host (Properties, Tool settings, Forge
@@ -239,13 +245,42 @@ state.
 | focus | the focused row's text is drawn on screen, and more opaque than the other rows' |
 | glyphs | every character exists in its font (the kit's `Finding::Glyph`) |
 | ids | every string id is in a registered family (the kit's `Finding::Id`) |
+| on drawn | a text's glyphs meet another group's drawn row or cell art, picture (`Art::Level`) or text over more than 24 pixels (`Issue::OnDrawn`); the pairs `overlap` already names are left out |
+| panel shared | a panel of the screen's own (not a modal's, and not a backdrop over more than half the title-safe area) holds the list's rows and another group's texts: at least half of each one's drawn pixels inside the panel's drawn box (`Issue::PanelShared`). A screen that draws the lobby's panel as retail's lobby does, the list and its status lines in one pane, is listed in `layout::drawn::SHARED_PANELS` with its retail precedent |
+| covers under | a modal over a kit screen (`View::underlay`) draws its text over more than 24 drawn pixels of that screen's content (the modal's panel hiding it is what a modal does): its pictures, and texts that are neither the list's (rows, cells, `description`, `name`) nor chrome (`title`, `legend`, `body`, `status`) nor the HUD's `reticle` (`Issue::CoversUnder`). A modal over a retail opener (`Backing::Over`) covers it as retail's do. A screen whose modal text may lie over it is listed in `layout::drawn::COVERS` with its retail precedent |
+| drawn outside | art drew more than `Rules::max_outside` (2) units past its declared rectangle (`Issue::DrawnOutside`): fix the rectangle |
+
+The last four read what the preview really drew. `preview::render_traced`
+draws the view and records each widget's `Footprint`: the pixels it
+touched with alpha above zero, their bounding box in UI units (past the
+canvas edge too, for art), and a mask of the touched canvas pixels. Art's
+footprint is its image's own opaque pixels where the image put them, so
+a skin, frame or picture whose image is wider than its declared rect is
+seen at its real size; a text's is its glyphs, drawn a second time on a
+clear canvas; a solid fill's, and the box the synthetic source draws for
+art it lacks, is the rectangle. `From::draw_traced` gives the view and
+the trace together.
+
+A widget's group is its id's first part, the spec's own naming:
+`button.start` is the buttons', `player.2` the roster's, `game` its own,
+and every row and cell is the list's (`layout::drawn::group`). A mode list
+that sits on a status panel beside the game's lines is what `panel
+shared` catches when no two rects meet; a picker whose text lies over the
+lobby's map picture is what `covers under` catches.
 
 The art checks need the images' pixels, so the synthetic source skips
 them, and says so (`Report::skipped`). The provenance check runs without a
 disc for the screens our art comes from (Controls 39, level select 11).
 
-The checks are `ui_kit::layout::check(view, source, rules)`, and
-`h2 ui preview` prints them per state. Page-model tests check bounds
+The checks are `ui_kit::layout::check(view, source, rules)`.
+`ui_kit::findings::of_state` gathers every check's findings for one state
+(the spec against the disc, content, layout, and the consistency rules
+that read one view), each with its check, kind, widget ids and line.
+`h2 ui preview` prints them per state, writes them into the state's JSON
+as `findings` (with `notes`, and each widget's footprint as `drawn`), and
+with `--strict` exits non-zero when any state has one, so a run shows
+the problems without opening the PNG. The editor's picture and gallery
+use the same list. Page-model tests check bounds
 after every input from every named state, including the visible window
 of a scrolling dialog. The agent's `ui.screen` applies the same
 rectangle checks to instantiated widgets. The builder also uses font
@@ -284,9 +319,9 @@ What the checks hold the screens to:
 
 - **Unfocused rows stay readable.** Unfocused rows draw at about 40% alpha (`view::UNFOCUSED_ALPHA`, observed from a game screenshot, not traced); contrast on the real bars is 2.9 to 3.1.
 - **The skulls page keeps none of the Controls art.** It copies the level select's own bracket (`ul_02`) at run time (`ListClass::frame`); the frame provenance check names a bracket borrowed from the wrong list. Its view draws the skull picture (`ScreenSpec::art`), untinted.
-- **Legends sit in the footer.** The account and co-op screens use a footer separate from their description. Co-op offers Start and Back when applicable and leaves confirm off informational rows. The campaign options footer follows the focused Start, picker, toggle or locked row.
+- **Legends sit in the footer.** The account and co-op screens use a footer separate from their description. Co-op offers Start and Back when applicable and leaves confirm off informational rows. The skulls pages' footer follows the focused row: Start Level, a row whose A opens the picker, or a locked skull (`skulls_menu::RowLegend`), the same on the campaign page and the multiplayer one.
 
-**The full-height Game Options list.** The Game Options page lays out
+**The full-height skulls list.** The campaign Skulls page lays out
 13 rows
 (`skulls_menu::VISIBLE_ROWS`), down to y -156. The level select's bracket
 (`ul_02`, `[177 -259 -79 -131]`) ends at -79, so rows 8 to 13 run past
@@ -751,9 +786,9 @@ owned disc's fonts and row art, then blends it over the published film
 picture. The pause menu's pickers keep their parent focused behind them.
 `ui.screen` and `ui.input` use that same playback model.
 
-The Video and Voice screens use `ui::Model::press`. The skulls are
-direct toggles. More Options (`variant_page`) and the Halo 1 Assets and
-HUD rows open the kit picker on A. Back dismisses a picker without
+The Video and Voice screens use `ui::Model::press`. More Options
+(`variant_page`), the skulls pages' collected skulls (On and Off) and the
+Halo 1 Assets and HUD rows open the kit picker on A. Back dismisses a picker without
 changing the held value.
 
 `h2 ui preview kit.picker` and `kit.picker.game` draw it (the kit's
@@ -851,7 +886,7 @@ sack, flag, bomb, four squares, banner of three stars, question mark.
 | Halo 1 Options | Sandbox | `BOMB` | Weapons, vehicles and health, from the next game. |
 | Halo 1 Options | HUD | `HELMET` | Shields, health, motion tracker and ammo counter. |
 
-(Halo 1's Assets row, on the campaign's Game Options page, has
+(Halo 1's Assets row, on the campaign's Skulls page, has
 `SPARTAN`.) Each line is 52 characters at most, inside the 494-unit
 help line on the kit's measure and in the disc's font 1.
 
@@ -1005,18 +1040,19 @@ The glue (`list_class` events, `TEXT_SET`, tints) keeps its runner tests
   `h2 ui preview --press`. `screens::live(name)` is every native screen's
   page, and `screens::states` and `sample` come from it, so the sheet
   draws exactly the states the tables start from.
-- **`ListPage`**: every list screen (Game Options, the Halo 1 options and
-  multiplayer skulls, the three co-op screens, the kit's example) is its
-  real `ListClass` stepped offline. An event goes through the class's own
+- **`ListPage`**: every list screen (the skulls pages, the Halo 1
+  options, the three co-op screens, the kit's example) is its real
+  `ListClass` stepped offline. An event goes through the class's own
   hook, then `list_class::route` (the same pure function the runtime's
   `event_with` uses: action buttons, then sideways steps), then the
   Controls handler: up and down move the focus, A presses the row
   (`Rows::press`), B and Back close. Effects: `Focus`, `Hook`, `Action`,
   `Stepped(line)`, `Open(screen)`, `Retail(line)`, `Close`. The rows keep
   their own state (an in-memory profile store, a lobby without Live), so
-  each table case builds a fresh page. Whether the game wraps the focus
-  at either end is not traced; the page stops it there, and the fidelity
-  loop will settle it.
+  each table case builds a fresh page. The page stops the focus at
+  either end. The game stops it there too, or wraps it to the other end
+  when the list block's flag bit 0 is set (`0x24c1c5`, below); the
+  value picker's `default6` list has the flag.
 - **`StackPage`**: list screens that open one another, walked as the
   player walks them: an `Open(screen)` it has pushes that screen, B or Back
   pops it, and the summary names the screen on top (`closed` once the
@@ -1036,9 +1072,10 @@ The glue (`list_class` events, `TEXT_SET`, tints) keeps its runner tests
   call ends). Typed text and server answers are events.
 
 The tables (`ui_kit/page/tests.rs`, `live_hle::signin` tests) cover every
-row of the list above, plus Game Options (Start Level's A runs the action,
-X and Start don't, left, right and A step a skull, a locked skull stays
-locked), the co-op screens (Start starts or readies, Invite a Friend opens
+row of the list above, plus the skulls pages (Start Level's A runs the
+action, X and Start don't, A opens the picker on a collected skull and
+does nothing on a locked one, left and right do nothing, each row kind's
+legend the same on both pages), the co-op screens (Start starts or readies, Invite a Friend opens
 the friends list), the account menu, and every screen taking every input
 in every state with its spec still passing the kit's checks.
 
@@ -1067,6 +1104,73 @@ Rules the tables hold:
 `h2 ui preview <screen> [--state S] --press up,right,a` steps a page,
 prints each effect and the summary, and draws where it ends as
 `<state>-pressed`.
+
+### Item count
+
+A list shows one row per item widget linked to its handler, and the
+game is given exactly the rows our list lays out
+([ui.md](../formats/ui.md) "Item widgets, scrolling and spacing"):
+
+- **Linking.** "Add items" (`0x24bb60`, list slot 17) links as many of
+  the handler's embedded items as slot 19 says. The Controls list's
+  slot 19 (`0x2b198a`) says six whatever its tag lays out. Our list
+  vtable's slot 19 (`list_class::item_count`) reads the visible count
+  of the list block the screen's pane was built from (the tag the
+  screen-tag function `0x22f871` serves, `list_class::laid_out`) and
+  links that many, less the item widgets of ours a list taller than six
+  gets (`list_class::item_widgets`). Embedded items an earlier call
+  linked past that count are unlinked first.
+- **What was wrong.** The layout (`0x24bc12`, called from the pane
+  builder at `0x22f828` with its "drop the rest" argument 0) places
+  children up to the visible count and leaves the rest. Rows go to
+  every child in order (`0x24c0c4`), so on a list laid out shorter than
+  six a row landed on a child never placed: not drawn, but Down reached
+  it, A pressed it, and past it the list scrolled. Every list of ours
+  built on the in-game Controller Settings tag (screen 200 lays out
+  five) with six rows or more had one; so did the theater film page
+  (four laid out, six actions).
+- **Focus.** Down (`0x24c1c5`) moves to the next child when it has a
+  row (`0x24ac76`); at the last child it scrolls while a row follows.
+  At the end it wraps to the first row (`0x24c0c4`) when the list
+  block's flag bit 0 is set (`0x24bc12` copies it to `+0x7c`), else it
+  stops. Up is the same back. A presses the focused child's row
+  (`0x24c024`); Start does too.
+- **Model.** `list_class::game_list::GameList` is the list as the game
+  holds it: item widgets, laid-out rows, rows, focus, scroll and arrows.
+  `game_list::tests::a_list_laid_out_shorter_than_its_six_items_had_a_phantom_row`
+  shows the retail count's phantom row, and
+  `consistency::tests::every_list_links_the_rows_it_lays_out_and_the_focus_stays_on_them`
+  holds every list of `NAMES` in every state: the item widgets are the
+  rows laid out, the focus stays on placed rows, A presses only a real
+  row, and a list whose rows all fit never scrolls.
+
+A dialog with no layout of its own takes its visible count from its
+row count when the class is built. A dialog whose rows outgrow that
+count scrolls to the rest.
+
+### Scroll arrows
+
+The list draw (`0x24bda2`) shows the up arrow while the first item
+widget's row has a row before it (`0x24c63e`) and the down arrow while
+the last one's has a row after it (`0x24c676`), so a list whose rows all
+fit shows neither. It places both from the list's top-left at the
+skin's two points (`skin +0xc` and `+0x10`), at the size of the skin
+`bitm`'s images 0 and 1. The down point is fixed: the `default` family
+puts it beside the last row of the skin's own list, `(rows - 2) × 22`
+below the anchor (`default5` -66 for five rows, `default6` -88 for
+six, `default` -44 for four), and `setting_lists` puts it under the
+Controls list's six. `list_class::SKIN_ARROWS` holds those numbers from
+the disc. On a moved list of ours (`list_class::ScrollArrowLayout`,
+through `UI_QUAD_TO_SCREEN`) the down arrow moves by the rows the list
+lays out more or fewer than the skin's own (`SkinArrows::placed`), so it
+keeps its place by the last row. The up arrow stays where the skin puts
+it. A class with arrows of its own (`ListClass::scroll_arrows`, the
+skulls page) keeps those. A list left where its tag has it keeps the
+game's.
+
+The preview draws them the same way (`view::scroll_arrows`, widgets
+`scroll.up` and `scroll.down`, art `Art::Arrow`), and the `items` and
+`scroll` consistency rules hold them.
 
 ## Screens in YAML
 
@@ -1144,9 +1248,19 @@ change to a screen's Rust, then the tests.
 `scrolls` and `over`; `build()` derives the inputs its rows and legend
 need. `components::row` makes each kind of row (`action`, `open`,
 `value`, `pick`, `info`, `text`, `disabled`) and `components::legend` the
-common prompts. `legend::well_formed` is the legend's format: each
+common prompts and the legends by row kind (`setting_row`: `A CHANGE  B
+BACK` on a row whose A opens the picker; `disabled_row`: `B BACK` alone).
+A `disabled` row is its label alone, with nothing where a value goes, and
+never pressed; its help line says why. On the level select's one-text
+skin a `pick` row's value is in its label (`row.pick-inline`, the skulls
+pages' rows). `legend::well_formed` is the legend's format: each
 prompt's glyphs two spaces apart, one space, its words in capitals,
 prompts two spaces apart.
+
+A component's `pattern` names the Halo 2 pattern its widgets keep, and its
+`ids` the widget ids it draws (`button.*`, a prefix and a star); the
+consistency drive holds those widgets to the pattern (`button`, the only
+one so far).
 
 Each component of `design.yaml` with a `specimen` has its page,
 `design.<component>` in `NAMES` (`design.title`, `design.row.action`,
@@ -1181,7 +1295,16 @@ named state without a disc and holds it to the design system:
 | `case` | a dialog's, a code entry's and a picker's title in capitals (`DYNAMIC` titles aside) |
 | `pitch` | a list's rows its skin's row height apart (`row_controls`, `row_default`) |
 | `fit` | a title and a legend fit their rectangles |
+| `items` | a list's item widgets are the rows it lays out (`list_class::item_widgets`), so no row is on a widget never placed, and no list draws more rows than it lays out ("Item count") |
+| `scroll` | a scroll arrow shows only on a list with more rows than it lays out, inside a dialog's panel or, on a screen, inside the screen and the title-safe area's height ("Scroll arrows") |
 | `empty` | a dialog's description area above its list (Quick Options' help line, beside the page's picture) says something in every state; a page with nothing to say there has no description block, so its rows sit under the title. A page with a name line (`ScreenSpec::name_line`) names the focused row there in every state |
+| `button` | a text whose component has `pattern: button` (its `ids` name the widgets: the lobby's `button.*`) is drawn on a list skin's art or a row's (`Art::Skin` or the `Under` layer under at least half its ink), as retail draws its buttons, never as bare text |
+| `handled` | every prompt the legend shows (the focused row's, else the page's) is an input the page takes (HUDs aside) |
+| `arrows` | no text draws a value between arrows (`< All >`, or an arrow alone): a value is chosen in the picker A opens |
+
+`consistency::view_findings(spec, view)` runs the rules that read one view
+(all but `place`), which `ui_kit::findings::of_state` adds to a state's
+findings.
 
 `consistency::ALLOWED` is the short list of findings that stand, each
 with its reason (the sign-in dialog's title carries the gamertag as

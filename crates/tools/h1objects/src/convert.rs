@@ -1460,7 +1460,6 @@ impl<'a> Converter<'a> {
     /// The `hlmt` from its typed definition ([`crate::rebuild::model`]):
     /// the same model chain, nodes and region map the template path
     /// writes, every other field at its default.
-    #[allow(clippy::too_many_arguments)]
     fn rebuilt_model(
         &mut self,
         rep: &mut ObjectReport,

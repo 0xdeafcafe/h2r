@@ -1026,8 +1026,7 @@ mod tests {
         let old = ports.acquire(1).unwrap();
         assert_eq!(ports.acquire(1).err().unwrap().code, code::BUSY);
 
-        let mut report = Gamepad::default();
-        report.thumb_ly = 2000;
+        let mut report = Gamepad { thumb_ly: 2000, ..Gamepad::default() };
         report.analog[0] = 255;
         old.set(report);
         assert_eq!(read(&mut t, H0, live(7, 300)).1.thumb_lx, 300);

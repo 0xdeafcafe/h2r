@@ -3883,6 +3883,12 @@ fn ui_sheet_renders_a_folders_previews_into_one_png() {
         assert!(tile["y"].as_u64().unwrap() + tile["h"].as_u64().unwrap() <= h);
         assert_eq!(tile["checked"], true);
         assert!(tile["findings"].is_u64() && tile.get("error").is_none());
+        // One line per finding, the count's own.
+        assert_eq!(
+            tile["found"].as_array().unwrap().len() as u64,
+            tile["findings"].as_u64().unwrap(),
+            "{tile}"
+        );
     }
     // Two columns: the second tile sits to the right of the first.
     if tiles.len() > 1 {

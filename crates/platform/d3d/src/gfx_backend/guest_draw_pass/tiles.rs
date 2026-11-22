@@ -19,7 +19,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use frame_scene::TargetRef;
+use frame_types::TargetRef;
 use gfx::D3DFormat;
 
 use crate::scene_sink::{ReplayFrame, ReplayOp, ReplaySample, ReplayTexture, TargetSeed};
@@ -262,7 +262,7 @@ mod tests {
     use crate::backend::{ResolvedDraw, TargetInfo, Viewport};
     use crate::shader::{ShaderInputs, VertexProcessing};
     use crate::state::StateWords;
-    use frame_scene::{AuxTarget, Slot, SlotAt};
+    use frame_types::{AuxTarget, Slot, SlotAt};
     use gfx::Clear;
     use gfx::vertex::{PrimitiveType, VertexLayout, fvf};
     use std::sync::Arc;
@@ -383,7 +383,7 @@ mod tests {
         ReplayOp::Draw {
             draw: packet(),
             textures: [texture.map(ReplayTexture::Sample), None, None, None],
-            camera: frame_scene::carried::CameraUse::Unknown,
+            camera: frame_types::carried::CameraUse::Unknown,
         }
     }
 

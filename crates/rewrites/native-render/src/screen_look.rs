@@ -35,6 +35,7 @@ use tags::shader::{PSDEF_SIZE, StageStates};
 use shaders::psh::{PixelUniforms, TextureDim};
 use shaders::vsh::VertexUniforms;
 
+use crate::engine_states::{EngineStateRefusal, apply_static};
 use crate::pass_state::{PassState, StateRefusal, pass_state};
 use crate::program::{PassParts, translate_pass};
 
@@ -278,8 +279,9 @@ pub enum ScreenRefusal {
     Lightmap,
     /// Its render states do not fit the native pass.
     State(StateRefusal),
-    /// It reads engine-driven render or stage states.
-    EngineStates,
+    /// Its engine-driven render or stage states do not fit
+    /// ([`crate::engine_states::apply_static`]).
+    EngineStates(EngineStateRefusal),
     /// A vertex register resolved from the engine that none of the
     /// engine vertex constants given names (not this implementation's).
     EngineVertexConstants,
@@ -327,9 +329,9 @@ pub fn screen_look(
     if unsupplied != InputReads::default() {
         return Err(ScreenRefusal::Reads(unsupplied));
     }
-    if !imp.engine_render_states.is_empty() || !imp.engine_stage_states.is_empty() {
-        return Err(ScreenRefusal::EngineStates);
-    }
+    // Engine-driven states over the pass's own, from the instance's
+    // inputs in `material`'s.
+    let applied = apply_static(imp, &material.inputs).map_err(ScreenRefusal::EngineStates)?;
     // Every register the resolver took from the engine is one of these.
     let index = |c: &EngineVertexConstant| if c.bank == 1 { 18 + c.reg } else { c.reg };
     let named = |bank: u8, i: u8| externals.iter().any(|c| c.bank == bank && index(c) == i);
@@ -353,7 +355,7 @@ pub fn screen_look(
             Some(TextureSource::Lightmap) => return Err(ScreenRefusal::Lightmap),
         };
     }
-    let state = pass_state(&imp.render_states).map_err(ScreenRefusal::State)?;
+    let state = pass_state(&applied.render_states).map_err(ScreenRefusal::State)?;
     if state.depth_write || state.depth_compare != wgpu::CompareFunction::Always {
         return Err(ScreenRefusal::Depth);
     }
@@ -372,7 +374,7 @@ pub fn screen_look(
         implementation,
         vertex_shader,
         textures,
-        stage_states: imp.stage_states.clone(),
+        stage_states: applied.stage_states,
         pixel_shader: imp.pixel_shader,
         vertex_constants: imp.vertex_constants.clone(),
         vertex_defaults: imp.vertex_defaults.clone(),
@@ -589,6 +591,27 @@ mod tests {
         for id in [0, 7, 11, 28, 255] {
             assert_eq!(engine_texture(id), EngineTexture::Invalid, "{id}");
         }
+    }
+
+    /// A blend colour whose alpha the engine drives from the instance's
+    /// scalar 21 over the pass's own colour; a driven value from a draw's
+    /// input keeps the D3D draws.
+    #[test]
+    fn engine_driven_states_take_the_instances_scalar() {
+        let mut imp = implementation(0);
+        imp.render_states.push(state(RenderStateType::BlendColor, 0x00ff_ffff));
+        imp.input_reads.scalars = 1 << 21;
+        imp.engine_render_states = vec![tags::shader::ExternalBinding { bytes: [0, 1, 0, 21] }];
+        let mut m = material(TEMPLATE_LAYER, 1, vec![imp.clone()]);
+        m.inputs.scalars[21] = 1.0;
+        let look = screen_look(&m, 0, 0, &[]).expect("a look");
+        assert_eq!(look.state.blend_constant, wgpu::Color::WHITE);
+        imp.engine_render_states = vec![tags::shader::ExternalBinding { bytes: [0, 1, 0, 3] }];
+        let m = material(TEMPLATE_LAYER, 1, vec![imp]);
+        assert_eq!(
+            screen_look(&m, 0, 0, &[]).unwrap_err(),
+            ScreenRefusal::EngineStates(EngineStateRefusal::PerDraw { state: 0x4b, stage: None })
+        );
     }
 
     #[test]

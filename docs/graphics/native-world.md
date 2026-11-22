@@ -73,7 +73,9 @@ world is resident and no refresh is running, and a worker applies it
   with a log line and the texture keeps its pixels until the map reloads.
 
 The refresh covers the layer-3 world. The fog, water, layers, lights and
-decorators keep the textures they loaded, and the editor's preview
+decorators keep the textures they loaded, E3's sun receivers
+(`native_render::sun_casters::SunWorld`) keep the geometry they loaded
+until the world reloads, and the editor's preview
 (`GpuWorld::set_section_vertices`) moves vertices without recomputing
 bounds.
 
@@ -599,7 +601,9 @@ and its pipeline completions have crossed a frame boundary.
   state the pass does not set is inherited from the previous draw on
   the D3D path (S, not traced): `ZFUNC` is taken as `LessEqual`, and
   an unset `CULLMODE` takes the device's at the layer-3 call
-  (`InheritedCull`, above; nothing where it does not read). It refuses: engine-driven render or stage states, a
+  (`InheritedCull`, above; nothing where it does not read). Its engine-driven render and stage states go over its own
+  (`engine_states::apply_static`, from the material's inputs; a source
+  other than the instance's scalar 21 refuses). It refuses: a
   blending pass, fog enabled, stencil, depth bias.
 - `program::compile_world` translates the pass (inputs `v0..v6` from
   the world vertex: position, uv, normal, binormal, tangent, lighting

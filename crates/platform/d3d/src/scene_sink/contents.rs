@@ -14,7 +14,7 @@ use crate::backend::PixelRect;
 use rects::Holes;
 use std::collections::HashMap;
 
-use frame_scene::{AuxTarget, TargetRef};
+use frame_types::{AuxTarget, TargetRef};
 use gfx::state::{CompareFunc, DepthBufferMode};
 use gfx::D3DFormat;
 
@@ -85,7 +85,7 @@ impl ReplayFrame {
     }
 
     fn read_refusal(&self, reads: &[(usize, TargetRef)], feedback: bool, all: bool, supplied: &[(TargetRef, u8)]) -> Option<&'static str> {
-        let Some(&(end, _)) = reads.last() else { return None };
+        let &(end, _) = reads.last()?;
         if end > self.ops.len() { return Some("invalid_scene_read"); }
         let mut reads = reads.iter().copied().peekable();
         let mut state = Contents::default();

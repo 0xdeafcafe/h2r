@@ -515,7 +515,9 @@ the `Hud` for the checks and the preview, whose states give it a text
 of at most 63 UTF-16 units and one line is sent whole; a longer one, or
 one with a line break, is refused by the `prompt` check and by
 `Handle::notify` (`hud_kit_core::model::message_fault`; E `0x0024cbee`
-copies 63).
+copies 63). A sender with no HUD of its own, such as a rules script's `message`
+([rules-world-api.md](rules-world-api.md#the-show-channel)), queues the
+same line through `hud_kit::notify(user, text)`.
 
 ### The runtime (`crates/extensions/game/src/hud_kit.rs`)
 
@@ -987,14 +989,20 @@ no other line (a bounce's landing has none of its own); a Bounced shows
 its own line. Each award is sent once, by its number
 (`superbounce_chain::Award::seq`; `superbounce_hud::Sent`).
 
+**The sound.** As a retail medal's line comes with its announcer sound
+("Game events and medals"), each medal line sent is handed to
+`medal_announcer::announce`, which queues the medal's clip behind the
+game's own announcer: every medal but Bounced has one
+([audio.md](../audio/audio.md#our-medals-announcer-lines)).
+
 | Medal | Earned | Line | Glyph |
 |---|---|---|---|
-| Superbounce | the chain's 1st bounce | `Superbounce!` | U+E2A0, a slate-blue disc, one chevron rising off a strip |
+| Superbounce | every bounce; its line on 1 and 7 and up | `Superbounce!` | U+E2A0, a slate-blue disc, one chevron rising off a strip |
 | Double Bounce | the chain's 2nd bounce | `Double bounce!` | U+E2A1, a gold disc, two chevrons |
 | Triple Bounce | the 3rd | `Triple bounce!` | U+E2A2, a steel disc, three chevrons |
 | Quad Bounce | the 4th | `Quad bounce!` | U+E2A3, a bronze disc, two pairs of chevrons |
 | Chain Bounce | the 5th | `Chain bounce!` | U+E2A4, a lavender disc, a chevron over two pairs |
-| Bouncetacular | the 6th and every bounce after it | `Bouncetacular!` | U+E2A5, a pale gold disc in a spiked rim, three pairs |
+| Bouncetacular | the 6th | `Bouncetacular!` | U+E2A5, a pale gold disc in a spiked rim, three pairs |
 | Bounced | a fall out of the map during a bounce | `Bounced!` | U+E2A6, a maroon disc, a chevron falling through a broken strip |
 | Monster Bounce | a bounce that launches well above a normal one, beside its other medals; its line wins | `Monster bounce!` | U+E2A8, a hot orange disc in a spiked crimson rim, one tall chevron out past the top over a V of seams |
 

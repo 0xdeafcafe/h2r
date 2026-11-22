@@ -8,7 +8,7 @@ Halo 2. The original Xbox one, from 2004. Recompiled into a native Mac app, no e
 
 The XBE gets lifted to C, all 18,700-odd functions of it, and clang compiles the lot into a native library. A Rust runtime stands in for the Xbox underneath: kernel, Direct3D and DirectSound all swapped out, with a native GPU renderer drawing the frame on Metal.
 
-Then I kept going. Xbox Live is back, there are bots, there's Forge and Firefight, and Halo 1 runs in the Halo 2 engine.
+Xbox Live is back, there are bots, there's Forge and Firefight, and Halo 1 runs in the Halo 2 engine.
 
 <p align="center">
   <img src="docs/images/readme/oldmombasa-4x.jpg" alt="Old Mombasa at 4x render scale" width="32%">

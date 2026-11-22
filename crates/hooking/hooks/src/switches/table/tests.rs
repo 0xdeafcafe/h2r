@@ -32,7 +32,7 @@ fn rows_parents_and_engine_leaves_are_known_and_nothing_else() {
     assert!(known("impl.render"), "a parent");
     assert!(known("impl.sim"), "a parent");
     assert!(known("impl.audio"), "a parent of impl.audio.packet-clock");
-    let leaf = engine::abi::OVERRIDES[0].name;
+    let leaf = guest_layout::abi::OVERRIDES[0].name;
     let key = format!("impl.engine.{}.{leaf}", crate::leaves::group(leaf));
     assert!(known(&key), "{key}");
     assert!(!known("impl.engine.tags.no_such_function"));
@@ -50,14 +50,6 @@ fn an_unknown_impl_switch_does_not_parse() {
     assert!(crate::Switches::parse("impl.render.native_fog=off").is_err());
     // Feature ids are not in the table: they are registered features.
     assert!(crate::Switches::parse("lockstep,-render-census").is_ok());
-}
-
-#[test]
-fn every_simulation_port_is_listed() {
-    for port in engine::sim_physics::PORTS {
-        let key = format!("impl.{}", port.switch);
-        assert!(get(&key).is_some(), "{key} is not in the switch table");
-    }
 }
 
 /// One `impl.*` read found in the sources.

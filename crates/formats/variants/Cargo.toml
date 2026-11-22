@@ -21,3 +21,6 @@ content.workspace = true
 [dev-dependencies]
 xiso = { path = "../xiso" }
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info"] }
+
+[lints]
+workspace = true

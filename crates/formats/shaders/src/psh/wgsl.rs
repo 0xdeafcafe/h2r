@@ -523,7 +523,6 @@ fn translate_program(def: &PixelShaderDef, options: &PixelOptions, default_final
     // Texture bindings.
     let mut textures = [None; 4];
     // `i` is the stage number: it indexes several per-stage arrays and names.
-    #[allow(clippy::needless_range_loop)]
     for i in 0..4 {
         let mode = c.texture_modes[i];
         let Some(default) = mode.texture_dim() else {
@@ -571,7 +570,6 @@ fn translate_program(def: &PixelShaderDef, options: &PixelOptions, default_final
     s.push_str("    var dot1 = 0.0;\n    var dot2 = 0.0;\n    var dot3 = 0.0;\n");
 
     // Texture stages (`i` indexes several per-stage arrays and names).
-    #[allow(clippy::needless_range_loop)]
     for i in 0..4 {
         let mode = c.texture_modes[i];
         let tc = format!("i.t{i}");

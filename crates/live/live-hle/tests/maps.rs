@@ -156,6 +156,10 @@ fn installing_a_mod_counts_one_download_per_account() {
         std::process::id(),
         live_proto::sign::random_id()
     ));
+    std::fs::create_dir_all(&data).unwrap();
+    // Work in the canonical dir (macOS's /var is a symlink), the spelling
+    // the Library's packages have.
+    let data = data.canonicalize().unwrap();
     let server = live_server::start_embedded(
         live_server::MEMORY_DB,
         "127.0.0.1:0".parse().unwrap(),

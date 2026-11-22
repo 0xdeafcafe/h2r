@@ -20,3 +20,6 @@ background.workspace = true
 [dev-dependencies]
 # The real server on loopback, for HttpRemote.
 live-server.workspace = true
+
+[lints]
+workspace = true

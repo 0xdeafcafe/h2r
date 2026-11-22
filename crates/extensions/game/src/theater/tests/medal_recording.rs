@@ -224,7 +224,7 @@ fn sealed_menu_counts_the_recorded_bounce_medals() {
     assert_eq!(
         emitted["Ada"],
         BTreeMap::from([
-            ("superbounce".into(), 1),
+            ("superbounce".into(), 3),
             ("double-bounce".into(), 1),
             ("triple-bounce".into(), 1),
             ("incel".into(), 1),

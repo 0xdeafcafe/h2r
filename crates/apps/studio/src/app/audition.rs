@@ -233,6 +233,7 @@ impl ResourceReader for Raw<'_> {
 }
 
 /// The resource reader over `files`, for decoding a permutation.
+#[cfg(test)]
 pub(crate) fn raw(files: &mut assets::ResourceFiles) -> impl ResourceReader + '_ {
     Raw(files)
 }
