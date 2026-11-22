@@ -17,12 +17,17 @@
 //! takes it as a version-2 bundle with no description and no script.
 //! [`export`] still writes it, for editors that have no script blob at
 //! hand; [`port`] makes a version-2 file from any variant.
+//!
+//! A script's own variant is [`record_for`]'s record: the stock record of
+//! its carrier with the script's `settings`, its name and the reference to
+//! it. [`from_script`] makes its bundle (docs/game/rules-variants.md, "The
+//! record of a script").
 
 use content::Sha256;
 use serde::{Deserialize, Serialize};
 
 use crate::ext::{self, Block, Mode};
-use crate::record::{self, GameType, GameVariant, RECORD_SIZE};
+use crate::record::{self, GameType, GameVariant, RECORD_SIZE, SettingId};
 
 pub const FORMAT: &str = "h2recomp-game-variant";
 /// The newest version this build reads and the one [`port`] writes.
@@ -160,6 +165,12 @@ pub enum PortableError {
     Carrier { record: i32, script: u8 },
     #[error("engine {0} has no built-in script")]
     NoBuiltin(i32),
+    #[error("the script rides engine {0}, which has no stock record")]
+    NoStock(u8),
+    /// A setting of the script's IR the record cannot take: past the
+    /// table, on a carrier it does not apply to, or out of its range.
+    #[error("the script's settings: {0}")]
+    Setting(String),
     #[error("{0}")]
     Edit(String),
 }
@@ -362,7 +373,8 @@ impl Bundle {
     /// that keep the name rules, a record the game keeps as it is and our
     /// own rules allow ([`record::refused`]), an extension block that is
     /// ours or absent, and a script that fits the VM's per-tick budget and
-    /// the IR cap (`rules::fits`).
+    /// the IR cap (`rules::fits`) and whose settings make a record the
+    /// game keeps ([`settings_record`]).
     pub fn check(&self) -> Result<Checked, PortableError> {
         let c = self.integrity()?;
         check_name(&self.name)?;
@@ -376,6 +388,9 @@ impl Bundle {
         if let Some((_, ir)) = &c.script {
             let report = rules::verify(ir).map_err(|e| PortableError::ScriptRefused(e.to_string()))?;
             rules::fits(ir, &report).map_err(|e| PortableError::ScriptCost(e.to_string()))?;
+            // A script whose own record the game would not keep makes no
+            // variant ([`settings_record`]).
+            settings_record(ir)?;
         }
         Ok(c)
     }
@@ -454,6 +469,158 @@ fn text_chars(s: &str) -> Result<(), &'static str> {
         }
     }
     Ok(())
+}
+
+// ---- the record of a script ----
+
+/// The record of a script's own variant: the stock record of its carrier
+/// ([`GameVariant::stock`]), the script's `settings` written through
+/// [`GameVariant::set`] or into the `hx` block, the script's name, and the
+/// script reference (mode 2, the first 8 bytes of [`rules::Ir::id`] and
+/// the option bits `options` pack to, [`rules::Ir::pack_options`]; an
+/// option left out takes its default). It refuses what the game would not
+/// keep ([`record::refused`]) and a name the name rules refuse; nothing
+/// falls back to another value. The one builder of a variant from a
+/// script (docs/game/rules-variants.md, "The record of a script").
+pub fn record_for(
+    ir: &rules::Ir,
+    options: &[(String, rules::ir::OptionValue)],
+) -> Result<GameVariant, PortableError> {
+    let mut v = settings_record(ir)?;
+    check_name(&ir.header.name)?;
+    v.set_name(&ir.header.name)
+        .map_err(|e| PortableError::Edit(e.to_string()))?;
+    let bits = ir
+        .pack_options(options)
+        .map_err(|e| PortableError::Options(e.to_string()))?;
+    let mut e = v.ext();
+    e.script = ext::Script {
+        mode: Mode::Rules,
+        prefix: ir.id().0[..8].try_into().unwrap(),
+        options: bits,
+    };
+    v.set_ext(&e)
+        .map_err(|e| PortableError::Edit(e.to_string()))?;
+    Ok(v)
+}
+
+/// The stock record of the script's carrier with the script's settings
+/// written, refused as [`record_for`] refuses it; it keeps the stock name
+/// and has no script reference. [`Bundle::check`] and `h2 rules check`
+/// hold a script to it.
+pub fn settings_record(ir: &rules::Ir) -> Result<GameVariant, PortableError> {
+    let carrier = ir.header.carrier;
+    let mut v = GameVariant::stock(GameType::from_engine(i32::from(carrier)))
+        .ok_or(PortableError::NoStock(carrier))?;
+    let mut e = ext::Ext::default();
+    for s in &ir.settings {
+        write_setting(&mut v, &mut e, carrier, *s)?;
+    }
+    v.set_ext(&e)
+        .map_err(|e| PortableError::Edit(e.to_string()))?;
+    if let Some(p) = record::refused(&v).into_iter().next() {
+        return Err(PortableError::Refused(p.what));
+    }
+    Ok(v)
+}
+
+/// The carrier's name in a script (`slayer`), for messages.
+fn carrier_word(carrier: u8) -> String {
+    rules::caps::CARRIERS
+        .iter()
+        .find(|&&(_, e)| e == carrier)
+        .map_or_else(|| format!("engine {carrier}"), |&(name, _)| name.to_string())
+}
+
+/// Writes one setting of a script into the record or the block.
+fn write_setting(
+    v: &mut GameVariant,
+    e: &mut ext::Ext,
+    carrier: u8,
+    s: rules::ir::Setting,
+) -> Result<(), PortableError> {
+    use rules::settings::{ExtField, Store};
+    let refuse = |what: String| Err(PortableError::Setting(what));
+    let Some(row) = rules::settings::row_at(s.index) else {
+        return refuse(format!("setting {} is past the table", s.index));
+    };
+    if !row.applies(carrier) {
+        return refuse(format!(
+            "{} is a {} setting; this script's carrier is {}",
+            row.name,
+            row.carrier_words(),
+            carrier_word(carrier)
+        ));
+    }
+    if !row.in_range(s.value) {
+        let (lo, hi) = row.kind.range();
+        return refuse(format!("{} takes {lo} to {hi}, not {}", row.name, s.value));
+    }
+    match row.store {
+        Store::Ext(field) => {
+            let percent = || {
+                u16::try_from(s.value).map_err(|_| PortableError::Setting(row.name.to_string()))
+            };
+            match field {
+                ExtField::Gravity => e.gravity = percent()?,
+                ExtField::Damage => e.damage = percent()?,
+                ExtField::Shield => e.shield = percent()?,
+                ExtField::Health => e.health = percent()?,
+                ExtField::UnlimitedGrenades => e.unlimited_grenades = s.value != 0,
+            }
+        }
+        Store::Setting(_) | Store::Score | Store::Paired { .. } => {
+            let Some(id) = row.setting(carrier) else {
+                return refuse(format!("{} has no record setting on this carrier", row.name));
+            };
+            v.set(SettingId(id), s.value)
+                .map_err(|e| PortableError::Setting(format!("{}: {e}", row.name)))?;
+        }
+    }
+    Ok(())
+}
+
+/// The value of a [`rules::settings::TABLE`] row in a record of the
+/// carrier with engine index `carrier`: the record setting the row stores
+/// there, or its `hx` field. `None` for a row that does not apply.
+pub fn setting_value(v: &GameVariant, row: &rules::settings::Row, carrier: u8) -> Option<i32> {
+    use rules::settings::{ExtField, Store};
+    if !row.applies(carrier) {
+        return None;
+    }
+    match row.store {
+        Store::Ext(field) => {
+            let e = v.ext();
+            Some(match field {
+                ExtField::Gravity => i32::from(e.gravity),
+                ExtField::Damage => i32::from(e.damage),
+                ExtField::Shield => i32::from(e.shield),
+                ExtField::Health => i32::from(e.health),
+                ExtField::UnlimitedGrenades => i32::from(e.unlimited_grenades),
+            })
+        }
+        Store::Setting(_) | Store::Score | Store::Paired { .. } => {
+            v.get(SettingId(row.setting(carrier)?))
+        }
+    }
+}
+
+/// The bundle of a script's own variant: [`record_for`]'s record, the
+/// script's name and `about` as the bundle's name and description, and
+/// the script part (its IR, and `source` when it is to travel). The same
+/// script and options give the same bundle, so the same [`Bundle::id`].
+pub fn from_script(
+    ir: &rules::Ir,
+    source: Option<&str>,
+    options: &[(String, rules::ir::OptionValue)],
+) -> Result<Bundle, PortableError> {
+    let v = record_for(ir, options)?;
+    let attach = Attach {
+        ir: ir.encode(),
+        source: source.map(str::to_string),
+        options: Some(v.ext().script.options),
+    };
+    Bundle::new(&v, &ir.header.name, &ir.header.about, Some(attach))
 }
 
 // ---- porting ----
@@ -987,5 +1154,225 @@ mod tests {
         assert_eq!(file_name("Team Slayer"), "Team Slayer.h2variant");
         assert_eq!(file_name("a/b:c"), "a_b_c.h2variant");
         assert_eq!(file_name(".."), "variant.h2variant");
+    }
+
+    // ---- the record of a script ----
+
+    const SWAT: &str = "rules \"SWAT\" 1
+carrier slayer
+scoring carrier
+about \"No shields, no motion sensor, battle rifles and magnums.\"
+quick score_limit, starting_weapon, secondary_weapon
+
+settings {
+    team_play = true
+    score_limit = 50
+    shields = none
+    motion_sensor = false
+    starting_weapon = battle_rifle
+    secondary_weapon = magnum
+    weapons_on_map = none
+    grenades_on_map = false
+    gravity = 50
+    unlimited_grenades = true
+}
+";
+
+    fn compiled(src: &str) -> rules::Ir {
+        rules::compile(src).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// A settings-only script of `carrier` named V.
+    fn carried(carrier: &str, lines: &str) -> String {
+        format!("rules \"V\" 1\ncarrier {carrier}\nscoring carrier\nsettings {{\n{lines}}}\n")
+    }
+
+    #[test]
+    fn record_for_is_stock_plus_the_scripts_settings() {
+        let ir = compiled(SWAT);
+        let got = record_for(&ir, &[]).unwrap();
+
+        let mut want = GameVariant::stock(GameType::Slayer).unwrap();
+        for (s, value) in [
+            (91, 1),
+            (2, 50),
+            (19, 1),
+            (20, 0),
+            (89, 3),
+            (94, 4),
+            (83, 1),
+            (86, 0),
+        ] {
+            want.set(SettingId(s), value).unwrap();
+        }
+        want.set_name("SWAT").unwrap();
+        want.set_ext(&ext::Ext {
+            gravity: 50,
+            unlimited_grenades: true,
+            script: ext::Script {
+                mode: Mode::Rules,
+                prefix: ir.id().0[..8].try_into().unwrap(),
+                options: ir.default_options(),
+            },
+            ..ext::Ext::default()
+        })
+        .unwrap();
+        assert_eq!(got, want);
+        assert!(record::refused(&got).is_empty());
+
+        // A setting the script leaves out has the stock value.
+        assert_eq!(got.get(SettingId(10)), Some(480));
+        assert_eq!(got.get(SettingId(17)), Some(5));
+
+        // The carrier's own score setting, and the pair CTF and Assault
+        // share by name.
+        let jugg = compiled(&carried("juggernaut", "score_limit = 10\njuggernaut_movement = slow\n"));
+        let v = record_for(&jugg, &[]).unwrap();
+        assert_eq!((v.get(SettingId(7)), v.get(SettingId(96))), (Some(10), Some(0)));
+        for (carrier, ty, flag_type) in [("ctf", GameType::Ctf, 50), ("assault", GameType::Assault, 59)] {
+            let ir = compiled(&carried(carrier, "ctf_flag_type = 1\nctf_reset_time = 15s\n"));
+            let v = record_for(&ir, &[]).unwrap();
+            assert_eq!(v.game_type(), ty);
+            assert_eq!(v.get(SettingId(flag_type)), Some(1), "{carrier}");
+            assert_eq!(v.get(ty.score_setting().unwrap()), Some(3), "{carrier}: stock score");
+            assert!(v.team_play(), "{carrier}");
+        }
+
+        // A script with no settings is the stock record, named, with its
+        // reference; given options pack into the block.
+        let slayer = compiled(rules::builtin::SLAYER);
+        let given = vec![("kill_points".to_string(), rules::ir::OptionValue::Int(3))];
+        let v = record_for(&slayer, &given).unwrap();
+        let mut stock = GameVariant::stock(GameType::Slayer).unwrap();
+        stock.set_name(&slayer.header.name).unwrap();
+        assert_eq!(v.bytes()[..ext::AT], stock.bytes()[..ext::AT]);
+        assert_eq!(v.ext().script.options, slayer.pack_options(&given).unwrap());
+        assert_eq!(v.ext().gravity, 100);
+    }
+
+    #[test]
+    fn record_for_refuses_what_the_game_would_not_keep() {
+        let refused = |src: &str| record_for(&compiled(src), &[]).unwrap_err();
+        assert_eq!(
+            refused(&carried("juggernaut", "team_play = true\n")),
+            PortableError::Refused("Juggernaut is never team play".into())
+        );
+        assert_eq!(
+            refused(&carried("ctf", "team_play = false\n")),
+            PortableError::Refused("this game type is always team play".into())
+        );
+        // `Bundle::check` holds a carried script to the same rule.
+        let jugg = compiled(&carried("juggernaut", "team_play = true\n"));
+        let mut v = GameVariant::stock(GameType::Juggernaut).unwrap();
+        v.set_name("Jugg").unwrap();
+        let attach = Attach {
+            ir: jugg.encode(),
+            source: None,
+            options: None,
+        };
+        assert_eq!(
+            Bundle::new(&v, "Jugg", "", Some(attach)).unwrap_err(),
+            PortableError::Refused("Juggernaut is never team play".into())
+        );
+
+        // A blob made by hand: what the compiler and `verify::load` refuse,
+        // record_for refuses too, with no value put in its place.
+        let base = compiled(&carried("slayer", "lives = 3\n"));
+        let edited = |f: &dyn Fn(&mut rules::Ir)| {
+            let mut ir = base.clone();
+            f(&mut ir);
+            record_for(&ir, &[]).unwrap_err()
+        };
+        let at = |name| rules::settings::named(name).unwrap().0;
+        assert!(matches!(
+            edited(&|ir: &mut rules::Ir| ir.settings[0].index = rules::settings::TABLE.len() as u16),
+            PortableError::Setting(_)
+        ));
+        assert_eq!(
+            edited(&|ir: &mut rules::Ir| ir.settings[0].index = at("juggernaut_movement")),
+            PortableError::Setting(
+                "juggernaut_movement is a Juggernaut setting; this script's carrier is slayer".into()
+            )
+        );
+        assert_eq!(
+            edited(&|ir: &mut rules::Ir| {
+                ir.settings[0] = rules::ir::Setting {
+                    index: at("shields"),
+                    value: 3,
+                }
+            }),
+            PortableError::Setting("shields takes 0 to 2, not 3".into())
+        );
+        assert!(matches!(
+            edited(&|ir: &mut rules::Ir| {
+                ir.settings[0] = rules::ir::Setting {
+                    index: at("gravity"),
+                    value: 5,
+                }
+            }),
+            PortableError::Setting(_)
+        ));
+        assert_eq!(edited(&|ir: &mut rules::Ir| ir.header.carrier = 5), PortableError::NoStock(5));
+        assert_eq!(
+            edited(&|ir: &mut rules::Ir| ir.header.name = "a|b".into()),
+            PortableError::Name("has a |")
+        );
+        assert!(matches!(
+            edited(&|ir: &mut rules::Ir| ir.header.name = "n".repeat(32)),
+            PortableError::Name(_)
+        ));
+        assert!(matches!(
+            record_for(
+                &base,
+                &[("nope".to_string(), rules::ir::OptionValue::Int(1))]
+            ),
+            Err(PortableError::Options(_))
+        ));
+    }
+
+    #[test]
+    fn from_script_is_the_same_bundle_twice() {
+        let ir = compiled(SWAT);
+        let a = from_script(&ir, Some(SWAT), &[]).unwrap();
+        let b = from_script(&ir, Some(SWAT), &[]).unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a.canonical(), b.canonical());
+        assert_eq!(a.id(), b.id());
+        assert_eq!(a.name, "SWAT");
+        assert_eq!(a.description, ir.header.about);
+        assert_eq!(a.engine, 2);
+        assert_eq!(a.variant().unwrap(), record_for(&ir, &[]).unwrap());
+        let s = a.script.as_ref().unwrap();
+        assert_eq!(s.name, "SWAT");
+        assert_eq!(s.hash, ir.id().to_string());
+        assert_eq!(s.source.as_deref(), Some(SWAT));
+        assert_eq!(a.ir().unwrap().unwrap(), ir.encode());
+        assert!(a.check().is_ok());
+        // It reads back as the same file.
+        assert_eq!(read(&a.canonical()).unwrap().id(), a.id());
+        // Without its source, another file; with options, another record.
+        let bare = from_script(&ir, None, &[]).unwrap();
+        assert!(bare.script.as_ref().unwrap().source.is_none());
+        assert_ne!(bare.id(), a.id());
+        assert_eq!(bare.variant().unwrap(), a.variant().unwrap());
+        let slayer = compiled(rules::builtin::SLAYER);
+        let given = [("kill_points".to_string(), rules::ir::OptionValue::Int(3))];
+        let plain = from_script(&slayer, None, &[]).unwrap();
+        let three = from_script(&slayer, None, &given).unwrap();
+        assert_ne!(plain.id(), three.id());
+        assert_eq!(three.variant().unwrap(), record_for(&slayer, &given).unwrap());
+    }
+
+    #[test]
+    fn setting_value_reads_the_record_and_the_block() {
+        let ir = compiled(SWAT);
+        let v = record_for(&ir, &[]).unwrap();
+        let row = |name| rules::settings::named(name).unwrap().1;
+        assert_eq!(setting_value(&v, row("score_limit"), 2), Some(50));
+        assert_eq!(setting_value(&v, row("gravity"), 2), Some(50));
+        assert_eq!(setting_value(&v, row("unlimited_grenades"), 2), Some(1));
+        assert_eq!(setting_value(&v, row("damage"), 2), Some(100));
+        assert_eq!(setting_value(&v, row("time_limit"), 2), Some(480));
+        assert_eq!(setting_value(&v, row("juggernaut_movement"), 2), None);
     }
 }
