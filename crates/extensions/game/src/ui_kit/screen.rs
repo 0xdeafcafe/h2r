@@ -26,14 +26,16 @@ use engine::entry::{Cx, EntryError, GuestCall};
 use engine::memory::{GuestMemory, MemFault};
 use runtime::guest::Permissions;
 
-use crate::list_class::{Action, ListClass, ListLayout, LiveText, OnFree, Rows, TextBlock};
+use crate::list_class::{
+    Action, Button, ListClass, ListLayout, LiveText, OnFree, Panel, PanelText, Rows, TextBlock,
+};
 use crate::ui::{Chosen, LABEL_SLOT, VALUE_SLOT};
 use crate::ui_kit::animation::TransitionStyle;
 use crate::ui_kit::dialog::{DialogBase, DialogSpec};
 use crate::ui_kit::ids::{self, Family};
-use crate::ui_kit::input::{Input, OpenerGuard, Prompt};
+use crate::ui_kit::input::{Glyph, Input, OpenerGuard, Prompt};
 use crate::ui_kit::lifecycle::AfterClose;
-use crate::ui_kit::spec::{self, Describe, ListPlace, RowSpec, ScreenSpec, ValueStyle};
+use crate::ui_kit::spec::{self, Describe, ListPlace, PaneText, RowSpec, ScreenSpec, ValueStyle};
 use crate::ui_kit::view::Opener;
 
 /// Work to run once a closed screen is freed: async, may call the guest.
@@ -95,8 +97,6 @@ pub struct Row {
     description: Option<String>,
     /// What the value picker says (a value row), else its description.
     explain: Option<String>,
-    /// Its icon in the page's header picture while it has the focus.
-    icon: Option<u16>,
 }
 
 impl Row {
@@ -178,24 +178,12 @@ impl Row {
         self.explain = Some(text.into());
         self
     }
-    /// The row's icon of `mp_games2.bitm` ([`crate::ui_kit::dialog::icon`]),
-    /// shown in the page's header picture while the row has the focus
-    /// ([`KitScreen::header`]).
-    pub fn icon(self, icon: u16) -> Self {
-        self.icon_opt(Some(icon))
-    }
-    /// [`Row::icon`], or none.
-    pub fn icon_opt(mut self, icon: Option<u16>) -> Self {
-        self.icon = icon;
-        self
-    }
     fn of(label: &str, kind: Kind) -> Self {
         Row {
             label: label.into(),
             kind,
             description: None,
             explain: None,
-            icon: None,
         }
     }
     fn spec(&self) -> RowSpec {
@@ -315,6 +303,37 @@ impl SlotTexts {
     }
 }
 
+/// A settings dialog's header (docs/game/ui-builder.md "The settings
+/// dialog"): its icon and its lines, from its doc's `settings:` block,
+/// the same in every state. Nothing row-indexed reaches it: the icon is
+/// [`Rows::picture_image`], asked once as the screen opens, and the lines
+/// are panel texts ([`Rows::panel_text`], which takes no row).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Header {
+    /// The icon of `mp_games2.bitm` in the base's picture
+    /// ([`crate::ui_kit::dialog::icon`]); the menu host only.
+    pub icon: Option<u16>,
+    /// Its lines in order: the name (`header.name`), when the host has
+    /// one, then what the window is for (`header.about`).
+    pub lines: Vec<HeaderLine>,
+}
+
+/// One line of a [`Header`]: its widget id, its text and its block (the
+/// `design.yaml` component's place, font and colour).
+#[derive(Clone, Debug, PartialEq)]
+pub struct HeaderLine {
+    pub id: &'static str,
+    pub text: String,
+    pub block: TextBlock,
+}
+
+/// A button besides the rows' ([`KitScreen::extra`]): its input, and what
+/// it does, as a line to log.
+struct Extra {
+    input: Input,
+    press: Get<String>,
+}
+
 /// A declared screen. See the module docs.
 pub struct KitScreen {
     feature: &'static str,
@@ -342,9 +361,10 @@ pub struct KitScreen {
     /// Its doc's fixed rows (`row.N`): each row's label and description,
     /// by place ([`KitScreen::row`]).
     doc_rows: Vec<Option<(String, Option<String>)>>,
-    /// Quick Options' header picture, and the icon it shows for a row with
-    /// none of its own ([`KitScreen::header`]).
-    header: Option<u16>,
+    /// A settings dialog's static header ([`Header`]).
+    header: Option<Header>,
+    /// Buttons besides the rows' ([`KitScreen::extra`]).
+    extras: Vec<Extra>,
     /// [`KitTexts`]' feature id, made once.
     texts_id: OnceLock<&'static str>,
 }
@@ -453,7 +473,56 @@ impl KitScreen {
             }
             s.doc_rows[n] = Some((r.text.clone(), r.help.clone()));
         }
+        if let Some(st) = &doc.settings {
+            s.settings_from(doc, st)?;
+        }
         Ok(s)
+    }
+
+    /// A settings dialog's parts from its doc's `settings:` block
+    /// (docs/game/ui-builder.md "The settings dialog"): the header, the
+    /// help block under the rows, the legend derived from its rows, and
+    /// the caller's row. The component places every one of them
+    /// (`design.yaml` `components.settings.*`); the doc gives none.
+    fn settings_from(
+        &mut self,
+        doc: &crate::ui_kit::data::ScreenDoc,
+        st: &crate::ui_kit::data::SettingsDoc,
+    ) -> Result<(), crate::ui_kit::data::DataError> {
+        use crate::ui_kit::settings::block;
+        let file = format!("screens/{}.yaml", doc.screen);
+        if st.host != "menu" {
+            return Err(crate::ui_kit::data::DataError::new(
+                &file,
+                "settings.host",
+                format!("{:?}: a settings dialog of ours is on the menu host", st.host),
+            ));
+        }
+        let animation = crate::ui_kit::dialog::QUICK_ANIMATION;
+        let mut lines = Vec::new();
+        if let Some(name) = &st.name {
+            lines.push(HeaderLine {
+                id: "header.name",
+                text: name.clone(),
+                block: block("settings.name", animation)?,
+            });
+        }
+        lines.push(HeaderLine {
+            id: "header.about",
+            text: st.about().to_string(),
+            block: block("settings.about", animation)?,
+        });
+        self.header = Some(Header {
+            icon: st.icon.as_deref().and_then(crate::ui_kit::dialog::icon::named),
+            lines,
+        });
+        self.description = Some(block("settings.help", animation)?);
+        self.prompts = crate::ui_kit::settings::legend(doc);
+        if let Some(c) = &st.caller {
+            self.row_label = Some(c.label.clone());
+            self.row_help = Some(c.help.clone());
+        }
+        Ok(())
     }
 
     fn bare(feature: &'static str, name: &'static str, ids: Family, title: &str) -> Self {
@@ -479,6 +548,7 @@ impl KitScreen {
             dialog: None,
             doc_rows: Vec::new(),
             header: None,
+            extras: Vec::new(),
             texts_id: OnceLock::new(),
         }
     }
@@ -523,17 +593,35 @@ impl KitScreen {
         self.style = base.style();
         self
     }
-    /// Quick Options' header on a page of ours (docs/game/ui-builder.md
-    /// "A page's header"), as Quick Options has its own at the top: its
-    /// game type picture ([`DialogBase::picture`]) shows the focused row's
-    /// icon of `mp_games2.bitm` ([`Row::icon`], [`crate::ui_kit::dialog::icon`]),
-    /// or `icon` for a row with none, and the help line beside it
-    /// ([`DialogBase::help`]) the focused row's one-line description. The
-    /// value picker A opens says more ([`Row::explain`]). A base with no
-    /// picture shows the help line alone.
-    pub fn header(mut self, icon: u16) -> Self {
-        self.header = Some(icon);
+    /// A button besides the rows' (a settings dialog's `actions:`, the
+    /// browser filters' X CLEAR FILTERS): `input` runs `press`, which says
+    /// what to log, and the legend gets `words` after the rows' prompts.
+    /// X and Start then no longer run the class's action
+    /// ([`ListClass::action_buttons`]): A on a row still does.
+    pub fn extra(
+        mut self,
+        input: Input,
+        words: &str,
+        press: impl Fn() -> String + Send + Sync + 'static,
+    ) -> Self {
+        self.prompts.push(Prompt::new(&[Glyph::of(input)], words));
+        self.extras.push(Extra {
+            input,
+            press: Arc::new(press),
+        });
         self
+    }
+    /// The settings dialog's header, when it is one.
+    pub fn header(&self) -> Option<&Header> {
+        self.header.as_ref()
+    }
+    /// The extra button `input` pressed: what it logged, `None` when the
+    /// screen has no such button.
+    pub fn press_extra(&self, input: Input) -> Option<String> {
+        let e = self.extras.iter().find(|e| e.input == input)?;
+        let line = (e.press)();
+        eprintln!("{}: {input:?}: {line}", self.name);
+        Some(line)
     }
     /// The focused row's description (and the legend) in `block`.
     pub fn description(mut self, block: TextBlock) -> Self {
@@ -550,8 +638,9 @@ impl KitScreen {
         self
     }
 
-    /// Where the focused row's description goes: the screen's own block,
-    /// else its dialog base's help line.
+    /// Where the focused row's description goes: the screen's own block
+    /// (a settings dialog's is under its rows), else its dialog base's
+    /// help block (the value picker's).
     fn description_block(&self) -> Option<TextBlock> {
         self.description
             .or_else(|| self.dialog.and_then(|(base, _)| base.help()))
@@ -611,7 +700,7 @@ impl KitScreen {
 
     // Slots: 0 the title, then a label and a value per row, then a
     // description per row, the footer, the opening row's text when there
-    // is one, and its help when there is one.
+    // is one, its help when there is one, and the header's lines.
     fn label_slot(row: usize) -> u32 {
         1 + 2 * row as u32
     }
@@ -621,24 +710,24 @@ impl KitScreen {
     fn footer_slot(&self) -> u32 {
         self.description_slot(self.rows.len())
     }
-    /// Where its header's icon goes: its dialog base's picture, and the
-    /// icon for a row with none of its own.
-    fn header_picture(&self) -> Option<(crate::list_class::PictureSpec, u16)> {
-        Some((self.dialog?.0.picture()?, self.header?))
-    }
-    /// The icon the header picture shows while row `row` has the focus.
-    pub fn row_icon(&self, row: usize) -> Option<u16> {
-        let (_, default) = self.header_picture()?;
-        let r = self.rows.get(row)?;
-        Some(r.icon.unwrap_or(default))
-    }
-    /// The slots the screen needs: fails the build of its class when its
-    /// family is too small.
-    pub fn slots(&self) -> u32 {
+    fn header_slot(&self) -> u32 {
         self.footer_slot()
             + 1
             + u32::from(self.row_label.is_some())
             + u32::from(self.row_help.is_some())
+    }
+    /// The header's lines.
+    fn header_lines(&self) -> &[HeaderLine] {
+        self.header.as_ref().map_or(&[], |h| h.lines.as_slice())
+    }
+    /// The header's icon and the base's picture it shows in.
+    fn header_icon(&self) -> Option<(crate::list_class::PictureSpec, u16)> {
+        Some((self.dialog?.0.picture()?, self.header.as_ref()?.icon?))
+    }
+    /// The slots the screen needs: fails the build of its class when its
+    /// family is too small.
+    pub fn slots(&self) -> u32 {
+        self.header_slot() + self.header_lines().len() as u32
     }
     fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         m.lock().unwrap_or_else(|e| e.into_inner())
@@ -783,8 +872,33 @@ impl KitScreen {
         if let Some(b) = self.description_block() {
             c = c.description(b);
         }
-        if let Some((picture, _)) = self.header_picture() {
+        if let Some((picture, _)) = self.header_icon() {
             c = c.picture(picture);
+        }
+        if !self.header_lines().is_empty() {
+            c = c.panel(Panel {
+                art: Vec::new(),
+                texts: self
+                    .header_lines()
+                    .iter()
+                    .map(|l| PanelText {
+                        block: l.block,
+                        right: false,
+                        bias: 0,
+                    })
+                    .collect(),
+            });
+        }
+        if !self.extras.is_empty() {
+            let me = Arc::clone(self);
+            c = c
+                .action_buttons(&[])
+                .buttons(Arc::new(move |kind, button| {
+                    match Input::from_event(kind, button).and_then(|i| me.press_extra(i)) {
+                        Some(_) => Button::Handled,
+                        None => Button::Pass,
+                    }
+                }));
         }
         if let Some(l) = self.layout {
             c = c.layout(l);
@@ -856,13 +970,24 @@ impl Rows for KitScreen {
             }
             Kind::Info(_) => Chosen::Nothing,
             Kind::Pick { offer, .. } => match offer() {
-                Ok(pick) => crate::ui_kit::picker::offer_list(
+                Ok(mut pick) => {
+                    // A settings dialog's picker is titled by the row and
+                    // says the setting's help: the row's explain, else its
+                    // help (`settings:` docs). Its per-value lines stay.
+                    if self.header.is_some() {
+                        pick.title = crate::ui_kit::picker::title(&r.label);
+                        if let Some(text) = r.explain.as_deref().or(r.description.as_deref()) {
+                            pick.description = text.into();
+                        }
+                    }
+                    crate::ui_kit::picker::offer_list(
                     pick.over(self.dialog.map_or(Opener::MAIN_MENU, |(_, o)| o)),
                 )
-                .map_or_else(
-                    || Chosen::Stepped(format!("{}: nothing to pick from", r.label)),
-                    Chosen::Open,
-                ),
+                    .map_or_else(
+                        || Chosen::Stepped(format!("{}: nothing to pick from", r.label)),
+                        Chosen::Open,
+                    )
+                }
                 Err(why) => Chosen::Stepped(why),
             },
             Kind::Text { .. } => pend(Pending::Keyboard(row as usize)),
@@ -895,16 +1020,6 @@ impl Rows for KitScreen {
         let text = spec.description_text()?;
         Some(self.texts.set(self.description_slot(i), &text))
     }
-    /// The focused row's label in the header's name line, beside its icon:
-    /// the label slot the row's own text uses (on Quick Options' skin the
-    /// label alone, the value in its own column).
-    fn name(&self, row: i16) -> Option<u32> {
-        self.header_picture()?;
-        let i = usize::try_from(row).ok()?;
-        let r = self.rows.get(i)?;
-        let (label, _) = r.spec().cells(self.style);
-        Some(self.texts.set(Self::label_slot(i), &label))
-    }
     fn live_text(&self) -> LiveText {
         let redraw = self.live_help.as_ref().is_some_and(|help| {
             let current = (help.get)();
@@ -922,13 +1037,15 @@ impl Rows for KitScreen {
         self.poll_keyboard(m)?;
         self.texts.write(m)
     }
-    /// The first row's icon: the focus starts there.
+    /// The header's icon, the same in every state.
     fn picture_image(&self) -> Option<u16> {
-        self.row_icon(0)
-            .or_else(|| self.header_picture().map(|(_, icon)| icon))
+        self.header_icon().map(|(_, icon)| icon)
     }
-    fn row_image(&self, row: i16) -> Option<u16> {
-        self.row_icon(usize::try_from(row).ok()?)
+    /// The header's line `i`: its name, then what the window is for. No
+    /// row reaches it.
+    fn panel_text(&self, i: usize) -> Option<u32> {
+        let line = self.header_lines().get(i)?;
+        Some(self.texts.set(self.header_slot() + i as u32, &line.text))
     }
     /// Asked as the screen opens: the opener guard starts, and the log
     /// gets the screen as [`ScreenSpec::log_line`] writes it.
@@ -945,12 +1062,9 @@ impl Describe for KitScreen {
         s.list = ListPlace::from(self.layout);
         s.style = self.style;
         for (i, row) in self.rows.iter().enumerate() {
-            let (mut row, loaded) = row.spec_with_source();
+            let (row, loaded) = row.spec_with_source();
             if !loaded {
                 s.content.unavailable_values.push(format!("row.{i}.value"));
-            }
-            if let Some(icon) = self.row_icon(i) {
-                row = row.art(crate::ui_kit::dialog::quick_icon(icon));
             }
             s.rows.push(row);
         }
@@ -963,10 +1077,22 @@ impl Describe for KitScreen {
             }
         }
         s.content.row_help = self.description.is_some() && self.live_help.is_none();
-        if let Some((base, _)) = self.dialog.filter(|_| self.header_picture().is_some()) {
+        if let Some((_, icon)) = self.header_icon() {
+            s.art = vec![crate::ui_kit::dialog::quick_icon(icon)];
             s.content.required_icons.push("art.0".into());
-            s.name_line = base.name_line().map(spec::DescriptionBlock::from);
         }
+        s.texts = self
+            .header_lines()
+            .iter()
+            .map(|l| PaneText {
+                id: l.id.into(),
+                rect: l.block.rect,
+                font: l.block.font,
+                colour: l.block.colour,
+                right: false,
+                text: l.text.clone(),
+            })
+            .collect();
         s.help = self.live_help.as_ref().map(|help| (help.get)());
         s.prompts = self.prompts.clone();
         s.inputs = vec![
@@ -1110,9 +1236,15 @@ mod tests {
     /// dialog class on the same list.
     #[test]
     fn a_dialog_screen_is_its_rows_in_its_bases_list() {
-        for (base, skin, anchor, style) in [
-            (DialogBase::QuickOptions, 2, [-254, 87], ValueStyle::Setting),
-            (DialogBase::Large, 0, [-235, 30], ValueStyle::Inline),
+        for (base, skin, anchor, style, help) in [
+            (
+                DialogBase::QuickOptions,
+                2,
+                [-254, 87],
+                ValueStyle::Setting,
+                Some(crate::ui_kit::dialog::SETTINGS_HELP_TEXT),
+            ),
+            (DialogBase::Large, 0, [-235, 30], ValueStyle::Inline, None),
         ] {
             let k = Arc::new(crate::ui_kit::screens::dialog_example(
                 crate::ui_kit::choice::example::store(),
@@ -1126,10 +1258,11 @@ mod tests {
             assert!(d.body.is_empty(), "rows, no message");
             assert_eq!(d.opener, Opener::MAIN_MENU);
             assert_eq!(s.style, style, "{base:?}");
-            // The description in the base's help line: Quick Options' own.
+            // Quick Options' sample is a settings dialog: its focused
+            // help under the rows. The large dialog has no help block.
             assert_eq!(
                 s.description,
-                base.help().map(spec::DescriptionBlock::from),
+                help.map(spec::DescriptionBlock::from),
                 "{base:?}"
             );
             assert_eq!(
@@ -1172,32 +1305,82 @@ mod tests {
         assert!(s.slots() <= IDS.len);
     }
 
-    /// The header's name line: the focused row's label, through the slot
-    /// the row's own label uses, on a page with Quick Options' header and
-    /// nowhere else.
+    /// A settings dialog's header is its doc's and the same whatever has
+    /// the focus: its icon asked once, its lines panel texts, which take
+    /// no row. Its help goes under the rows.
     #[test]
-    fn the_name_line_is_the_focused_rows_label() {
-        let (plain, _) = example();
-        assert_eq!(Rows::name(&plain, 0), None, "no header, no name line");
-        assert_eq!(plain.spec().name_line, None);
-        let s = example().0.dialog(DialogBase::QuickOptions, Opener::MAIN_MENU).header(0);
-        assert_eq!(
-            s.spec().name_line,
-            DialogBase::QuickOptions.name_line().map(spec::DescriptionBlock::from)
+    fn a_settings_dialogs_header_is_its_docs_whatever_has_the_focus() {
+        use crate::ui_kit::dialog::{QUICK_NAME_TEXT, SETTINGS_ABOUT_TEXT, SETTINGS_HELP_TEXT, icon};
+        let d = doc(
+            "screen: t\nkind: dialog\nlayout: settings\nbacking: over\nopener: game-setup\nsettings:\n  host: menu\n  icon: crown\n  name: \"The name\"\n  about: \"What it is for.\"\nwidgets:\n  title:\n    component: title\n    text: \"T\"\n",
         );
+        let s = Arc::new(
+            KitScreen::from_doc("t", "t", IDS, &d)
+                .unwrap()
+                .row(Row::info("One", || "1".into()).describe("First."))
+                .row(Row::info("Two", || "2".into()).describe("Second.")),
+        );
+        let h = s.header().expect("a header");
+        assert_eq!(h.icon, Some(icon::CROWN));
+        let lines: Vec<(&str, &str)> = h.lines.iter().map(|l| (l.id, l.text.as_str())).collect();
+        assert_eq!(lines, [("header.name", "The name"), ("header.about", "What it is for.")]);
+        assert_eq!(h.lines[0].block.rect, QUICK_NAME_TEXT.rect);
+        assert_eq!(h.lines[1].block.rect, SETTINGS_ABOUT_TEXT.rect);
+        assert_eq!(s.description_block(), Some(SETTINGS_HELP_TEXT));
+        assert_eq!(Rows::picture_image(&*s), Some(icon::CROWN));
         let t = |id: u32| {
             let slots = s.texts.slots.lock().unwrap();
             let b = &slots[(id - IDS.base) as usize].0;
             String::from_utf8_lossy(&b[..b.len() - 1]).into_owned()
         };
-        for row in 0..s.count() {
-            let id = Rows::name(&s, row as i16).expect("a name");
-            assert_eq!(id, s.texts(row as i16)[0].1, "the row's own label slot");
-            let (label, _) = s.rows[row].spec().cells(s.style);
-            assert_eq!(t(id), label, "row {row}");
+        let name = Rows::panel_text(&*s, 0).unwrap();
+        let about = Rows::panel_text(&*s, 1).unwrap();
+        assert_eq!((t(name), t(about)), ("The name".into(), "What it is for.".into()));
+        assert_eq!(Rows::panel_text(&*s, 2), None);
+        assert!(s.slots() <= IDS.len);
+        let class = s.class();
+        assert_eq!(class.panel_of().texts.len(), 2);
+        assert_eq!(class.panel_of().texts[0].block, QUICK_NAME_TEXT);
+        // Each focus: the same art and lines; only the help moves.
+        let mut helps = Vec::new();
+        for focus in 0..s.count() {
+            let f = ScreenSpec { focus, ..s.spec() };
+            assert_eq!(f.art, [crate::ui_kit::dialog::quick_icon(icon::CROWN)]);
+            let texts: Vec<&str> = f.texts.iter().map(|t| t.text.as_str()).collect();
+            assert_eq!(texts, ["The name", "What it is for."]);
+            assert_eq!((Rows::panel_text(&*s, 0), Rows::panel_text(&*s, 1)), (Some(name), Some(about)));
+            helps.push(f.description_text().unwrap());
         }
-        assert_eq!(Rows::name(&s, s.count() as i16), None);
-        assert_eq!(Rows::name(&s, -1), None);
+        assert_eq!(helps, ["First.", "Second."]);
+        assert_eq!(s.spec().content.required_icons, ["art.0"]);
+        // The legend: no value row, so no CHANGE.
+        let words: Vec<&str> = s.spec().prompts.iter().map(|p| p.text.as_str()).collect();
+        assert_eq!(words, ["SELECT", "BACK"]);
+    }
+
+    /// An extra button runs its press, says it in the legend, and takes X
+    /// from the class's action.
+    #[test]
+    fn an_extra_button_runs_its_press_and_shows_in_the_legend() {
+        let pressed = Arc::new(AtomicUsize::new(0));
+        let p = Arc::clone(&pressed);
+        let s = Arc::new(example().0.extra(Input::X, "CLEAR", move || {
+            p.fetch_add(1, Ordering::SeqCst);
+            "cleared".into()
+        }));
+        assert_eq!(s.press_extra(Input::X).as_deref(), Some("cleared"));
+        assert_eq!(s.press_extra(Input::Y), None);
+        assert_eq!(pressed.load(Ordering::SeqCst), 1);
+        let last = s.spec().prompts.last().cloned().unwrap();
+        assert_eq!(last, Prompt::new(&[Glyph::X], "CLEAR"));
+        let class = s.class();
+        let b = class.behaviour();
+        assert!(b.action_buttons.is_empty(), "X is the extra's, not the action's");
+        let (kind, button) = Input::X.event();
+        assert_eq!(b.hook.map(|h| h(kind, button)), Some(Button::Handled));
+        let (kind, button) = Input::A.event();
+        assert_eq!(b.hook.map(|h| h(kind, button)), Some(Button::Pass));
+        assert_eq!(pressed.load(Ordering::SeqCst), 2);
     }
 
     #[test]
@@ -1481,20 +1664,24 @@ mod tests {
         assert_eq!(spec.rows[1].label, "Second", "a row the doc doesn't have keeps its label");
     }
 
-    /// A dialog's description on its base's help line is the base's: the
-    /// screen names no block of its own.
+    /// A dialog's description on its base's help block is the base's: the
+    /// screen names no block of its own. Quick Options has none: a
+    /// settings dialog's help goes under its rows.
     #[test]
-    fn a_dialogs_help_line_stays_its_bases() {
-        let help = DialogBase::QuickOptions.help().unwrap();
-        let [top, left, bottom, right] = help.rect;
-        let d = doc(&format!(
-            "screen: t\nkind: dialog\nlayout: settings\nbacking: over\nopener: game-setup.clankers\nwidgets:\n  title:\n    component: title\n    text: \"T\"\n  description:\n    component: description\n    at: [{left}, {top}]\n    size: [{}, {}]\n",
-            right - left,
-            top - bottom
-        ));
+    fn a_dialogs_help_block_stays_its_bases() {
+        assert_eq!(DialogBase::QuickOptions.help(), None);
+        assert_eq!(DialogBase::Large.help(), None);
+        assert_eq!(
+            DialogBase::ValuePicker.help(),
+            Some(crate::ui_kit::dialog::PICKER_HELP_TEXT)
+        );
+        let d = doc(
+            "screen: t\nkind: dialog\nlayout: large\nbacking: over\nopener: main-menu\nwidgets:\n  title:\n    component: title\n    text: \"T\"\n",
+        );
         let s = KitScreen::from_doc("t", "t", IDS, &d).unwrap();
         assert_eq!(s.description, None);
-        assert_eq!(s.description_block().map(|b| b.rect), Some(help.rect));
+        assert_eq!(s.description_block(), None);
+        assert!(s.header().is_none());
     }
 
     #[test]

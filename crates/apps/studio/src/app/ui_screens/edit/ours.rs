@@ -1,8 +1,11 @@
 //! The "our screens" sink (docs/game/ui-builder.md "Editing in the
 //! editor"): an edit of one of our screens sets a field of its
 //! `ScreenDoc` (`boot::ui_kit::data`, `assets/ui/screens/<name>.yaml`) by
-//! widget id: a widget's `text`, `at` and `size`, or a row's `text`.
-//! Fields Rust owns are refused with the owner named.
+//! widget id: a widget's `text`, `at` and `size`, or a row's `text`. On a
+//! settings dialog the header's lines set its `settings:` block and the
+//! help under the rows sets the shown row's `help`
+//! ([`apply_settings`]). Fields Rust owns are refused with the owner
+//! named.
 //!
 //! The sink keeps the docs as edited, the docs as last read or saved, and
 //! an undo stack of whole-doc snapshots. Save writes `data::to_yaml` into
@@ -152,8 +155,88 @@ fn label_row(id: &str) -> Option<&str> {
     n.parse::<usize>().ok().map(|_| row)
 }
 
+/// The widgets of a settings dialog the `settings` component places
+/// (docs/game/ui-builder.md "The settings dialog"): the header's icon
+/// and lines and the help block. Their words are the doc's; their places
+/// are `design.yaml`'s.
+fn settings_part(id: &str) -> bool {
+    matches!(id, "header.name" | "header.about" | "description") || id.starts_with("art.")
+}
+
+/// A settings dialog's own edits, `None` for a widget any doc has: the
+/// header's name sets `settings.name`; its about line sets
+/// `settings.about`, or the caller's `help` when the dialog takes its
+/// about from the row that opens it; the help under the rows sets the
+/// help of the row it shows; and none of them moves.
+fn apply_settings(
+    screen: &str,
+    doc: &mut ScreenDoc,
+    w: &Widget,
+    change: &Change,
+) -> Option<Result<(), String>> {
+    let id = w.id.as_str();
+    if !settings_part(id) {
+        return None;
+    }
+    let st = doc.settings.as_mut()?;
+    let text = match change {
+        Change::Rect(_) => {
+            return Some(Err(format!(
+                "refused: {id} sits where the settings dialog puts it (`design.yaml` `components.settings.*` places it)"
+            )));
+        }
+        Change::Text(text) => text,
+    };
+    if id.starts_with("art.") {
+        return Some(Err(format!(
+            "refused: {id} is the header's icon (`settings.icon` in {SCREENS_DIR}/{screen}.yaml)"
+        )));
+    }
+    if text.trim().is_empty() {
+        return Some(Err(format!("refused: {id} says something in every state")));
+    }
+    if let Some(new) = slots(text).into_iter().next() {
+        return Some(Err(format!("refused: Rust fills no {{{new}}} slot in {id}")));
+    }
+    match id {
+        "header.name" => st.name = Some(text.clone()),
+        "header.about" => match (&mut st.about, &mut st.caller) {
+            (Some(about), _) => *about = text.clone(),
+            (None, Some(caller)) => caller.help = text.clone(),
+            (None, None) => {
+                return Some(Err(format!(
+                    "refused: {screen}'s settings: block has no about and no caller"
+                )));
+            }
+        },
+        _ => {
+            // The help block shows the focused row's help, wrapped: the
+            // row whose help it is now.
+            let Kind::Text { text: shown, .. } = &w.kind else {
+                return Some(Err(format!("refused: {id} is art, not a text")));
+            };
+            let words = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ");
+            let shown = words(shown);
+            let Some(row) = doc
+                .rows
+                .values_mut()
+                .find(|r| r.help.as_deref().map(words).as_deref() == Some(shown.as_str()))
+            else {
+                return Some(Err(format!(
+                    "refused: no row of {SCREENS_DIR}/{screen}.yaml has the help {shown:?}"
+                )));
+            };
+            row.help = Some(text.clone());
+        }
+    }
+    Some(Ok(()))
+}
+
 /// Sets `change` of widget `w` in `doc`, or why not.
 pub fn apply(screen: &str, doc: &mut ScreenDoc, w: &Widget, change: &Change) -> Result<(), String> {
+    if let Some(r) = apply_settings(screen, doc, w, change) {
+        return r;
+    }
     let id = w.id.as_str();
     match change {
         Change::Text(text) => {
@@ -240,8 +323,24 @@ impl Slot<'_> {
     }
 }
 
-/// Widget `id`'s entry in `doc` put back as `base` has it.
+/// Widget `id`'s entry in `doc` put back as `base` has it. A settings
+/// dialog's header line is its `settings:` block; its help block is the
+/// rows' helps.
 fn revert_widget(doc: &mut ScreenDoc, base: &ScreenDoc, id: &str) -> Result<(), String> {
+    if doc.settings.is_some() && settings_part(id) {
+        match id {
+            "header.name" | "header.about" => doc.settings = base.settings.clone(),
+            "description" => {
+                for (row, r) in doc.rows.iter_mut() {
+                    if let Some(b) = base.rows.get(row) {
+                        r.help = b.help.clone();
+                    }
+                }
+            }
+            _ => return Err(format!("{id} has no entry to revert")),
+        }
+        return Ok(());
+    }
     if let Some(row) = label_row(id) {
         match (doc.rows.get_mut(row), base.rows.get(row)) {
             (Some(d), Some(b)) => *d = b.clone(),

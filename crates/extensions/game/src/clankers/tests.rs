@@ -4,6 +4,11 @@ fn store() -> Arc<Store> {
     Arc::new(Store::defaults(&DEFS))
 }
 
+/// The page's doc: `assets/ui/screens/clankers.yaml`.
+fn doc() -> Arc<crate::ui_kit::data::ScreenDoc> {
+    crate::ui_kit::data::require(SCREEN).unwrap_or_else(|e| panic!("{e}"))
+}
+
 fn on(store: &Store, count: i64, difficulty: i64) {
     store.set(COUNT.key, Value::Int(count)).unwrap();
     store.set(DIFFICULTY.key, Value::Int(difficulty)).unwrap();
@@ -239,7 +244,7 @@ fn glitches_are_off_by_default_and_reach_the_bots_already_there() {
     assert_eq!(ph.list().len(), 1, "the same bot");
     // The page has the row, last, with Off, Some and Lots.
     assert_eq!(DEFS.last().map(|d| d.key), Some("clankers.glitches"));
-    assert_eq!(ROWS.len(), DEFS.len());
+    assert_eq!(page(store()).count(), DEFS.len());
 }
 
 #[test]
@@ -702,7 +707,8 @@ fn the_page_has_a_row_per_setting_and_its_steps_are_saved() {
     let row = p.row_label_id();
     assert_ne!(row, p.title());
     assert!(IDS.owns(row) && IDS.owns(p.title()));
-    assert_eq!(ROW_LABEL, "Clanker Options...");
+    let caller = doc().settings.clone().and_then(|s| s.caller).expect("a caller");
+    assert_eq!(caller.label, "Clanker Options...");
     let line = p.sideways(0, true).unwrap();
     assert!(line.contains("clankers.enabled -> On"), "{line}");
     assert_eq!(s.get(ENABLED.key), Some(Value::Bool(true)));
@@ -733,6 +739,7 @@ fn the_row_goes_after_the_halo1_row_on_the_plan() {
     let mut r = hooks::Registry::new(hooks::Switches::defaults());
     r.add(&h1row::SetupRow {
         data_root: std::env::temp_dir(),
+        page: crate::h1_options_row::test_page(),
     })
     .unwrap();
     let page = Arc::new(page(store()));
@@ -1151,92 +1158,93 @@ fn a_opens_the_value_picker_and_the_row_has_a_description() {
     assert!(IDS.owns(help));
     assert_ne!(help, p.row_label_id());
     assert!(p.slots() <= IDS.len);
-    assert!(ROW_HELP.len() < 120, "a few lines under Game Setup's list");
+    let caller = doc().settings.clone().and_then(|s| s.caller).expect("a caller");
+    assert!(caller.help.len() < 120, "a few lines under Game Setup's list");
 }
 
-/// The page has Quick Options' header: the focused row's one line in the
-/// help line and its icon in the game type picture, both following the
-/// focus, in the game (`Rows::description`, `Rows::row_image`) and in the
-/// spec the preview draws.
+/// The page is the shared settings dialog: its rows are [`DEFS`] in
+/// order, its header the same whatever has the focus (a Spartan, its
+/// name, what the window is for), and the focused row's help under the
+/// rows, in the game (`Rows::description`) and in the spec the preview
+/// draws.
 #[test]
-fn the_header_follows_the_focused_row() {
+fn the_header_stays_and_the_help_follows_the_focused_row() {
     use crate::list_class::Rows;
-    use crate::ui_kit::dialog::{QUICK_HELP, QUICK_PICTURE, quick_icon};
+    use crate::ui_kit::dialog::{SETTINGS_HELP_TEXT, icon, quick_icon};
     use crate::ui_kit::spec::{Describe, ScreenSpec};
+    let d = doc();
+    let keys: Vec<&str> = d.rows.values().filter_map(|r| r.setting.as_deref()).collect();
+    let defs: Vec<&str> = DEFS.iter().map(|d| d.key).collect();
+    assert_eq!(keys, defs, "a row per setting, in the page's order");
     let p = page(store());
     assert!(p.slots() <= IDS.len);
     let s = p.spec();
     assert_eq!(s.help, None, "no page line in place of the rows'");
-    assert!(s.art.is_empty(), "the icon is the focused row's");
-    let room = i32::from(QUICK_HELP.right) - i32::from(QUICK_HELP.left);
+    assert_eq!(s.art, [quick_icon(icon::SPARTAN)]);
+    assert_eq!(Rows::picture_image(&p), Some(icon::SPARTAN));
+    let texts: Vec<&str> = s.texts.iter().map(|t| t.text.as_str()).collect();
+    // The about line is the Game Setup row's help: the two always agree.
+    let caller = d.settings.clone().and_then(|s| s.caller).expect("a caller");
+    assert_eq!(texts, ["Bots in this game", caller.help.as_str()]);
+    assert_eq!(
+        caller.help,
+        "Add bots to this game: how many, how well they play, and which team they join."
+    );
+    assert_eq!(s.description.map(|b| b.rect), Some(SETTINGS_HELP_TEXT.rect));
+    let header = (Rows::panel_text(&p, 0), Rows::panel_text(&p, 1));
     let mut lines = Vec::new();
-    for (row, r) in ROWS.iter().enumerate() {
-        let icon = r.icon.expect("every row has an icon");
-        assert_eq!(Rows::row_image(&p, row as i16), Some(icon), "{}", r.label);
+    for (row, r) in d.rows.values().enumerate() {
         let focused = ScreenSpec {
             focus: row,
             ..s.clone()
         };
-        assert_eq!(focused.description_text().as_deref(), Some(r.description));
-        let art = focused.shown_art();
-        assert_eq!(art, [quick_icon(icon)], "{}", r.label);
-        assert_eq!(art[0].at, QUICK_PICTURE.at);
-        let line = Rows::description(&p, row as i16).expect("the help line");
+        assert_eq!(focused.description_text(), r.help.clone());
+        assert_eq!(focused.art, s.art, "{}: the icon stays", r.text);
+        assert_eq!(focused.texts, s.texts, "{}: the header stays", r.text);
+        let line = Rows::description(&p, row as i16).expect("the help");
         assert!(IDS.owns(line));
         lines.push(line);
-        assert!(
-            crate::ui_kit::spec::fallback::width(r.description) <= room,
-            "{}: one line",
-            r.label
-        );
+        assert_eq!((Rows::panel_text(&p, 0), Rows::panel_text(&p, 1)), header);
     }
     lines.dedup();
-    assert_eq!(lines.len(), ROWS.len(), "a line per row");
+    assert_eq!(lines.len(), d.rows.len(), "a help per row");
     assert_ne!(Some(lines[0]), p.row_help_id());
-    assert_eq!(Rows::picture_image(&p), ROWS[0].icon, "the focus starts on row 0");
-    assert_eq!(Rows::row_image(&p, ROWS.len() as i16), None, "no such row");
     assert_eq!(Rows::description(&p, 99), None, "no such row");
 }
 
-/// Every row has an icon of Quick Options' picture, a one-line help and
-/// an explanation for the value picker that says more than the help and
-/// is player copy: what the option does and what its choices mean.
+/// Every row has a help that fits the block under the rows and an
+/// explanation for the value picker that says more than the help and is
+/// player copy: what the option does and what its choices mean.
 #[test]
-fn every_row_has_an_icon_a_line_and_real_picker_copy() {
+fn every_row_has_a_help_and_real_picker_copy() {
     use crate::ui::Chosen;
-    use crate::ui_kit::dialog::{PICKER_HELP_TEXT, icon};
+    use crate::ui_kit::dialog::{PICKER_HELP_TEXT, SETTINGS_HELP_TEXT};
     use crate::ui_kit::picker;
     use crate::ui_kit::spec::{fallback, wrap};
-    let width = i32::from(PICKER_HELP_TEXT.rect[3]) - i32::from(PICKER_HELP_TEXT.rect[1]);
-    let height = i32::from(PICKER_HELP_TEXT.rect[0]) - i32::from(PICKER_HELP_TEXT.rect[2]);
+    let room = |b: crate::list_class::TextBlock| {
+        (i32::from(b.rect[3]) - i32::from(b.rect[1]), i32::from(b.rect[0]) - i32::from(b.rect[2]))
+    };
+    let (help_width, help_height) = room(SETTINGS_HELP_TEXT);
+    let (width, height) = room(PICKER_HELP_TEXT);
     let p = page(store());
-    let mut icons = Vec::new();
-    for (row, r) in ROWS.iter().enumerate() {
-        let i = r.icon.unwrap_or_else(|| panic!("{}: an icon", r.label));
-        assert!(i < icon::COUNT, "{}", r.label);
-        icons.push(i);
-        assert!(!r.description.is_empty() && !r.description.contains('\n'));
-        assert!(
-            r.description.encode_utf16().count() <= crate::h1_options::HELP_UNITS,
-            "{}: one line",
-            r.label
-        );
-        let e = r.explain;
-        assert!(!e.is_empty() && e != r.description, "{}", r.label);
-        assert!(e.encode_utf16().count() <= crate::h1_options::EXPLAIN_UNITS, "{}: {e}", r.label);
+    for (row, r) in doc().rows.values().enumerate() {
+        let h = r.help.as_deref().unwrap_or_default();
+        assert!(!h.is_empty() && !h.contains('\n'), "{}", r.text);
+        let lines = wrap(h, help_width, &fallback::width).len() as i32;
+        assert!(lines * fallback::LINE <= help_height, "{}: {lines} lines", r.text);
+        let e = r.explain.as_deref().unwrap_or_default();
+        assert!(!e.is_empty() && e != h, "{}", r.text);
+        assert!(e.encode_utf16().count() <= crate::ui_kit::settings::EXPLAIN_UNITS, "{}: {e}", r.text);
         let lines = wrap(e, width, &fallback::width).len() as i32;
-        assert!(lines * fallback::LINE <= height, "{}: {lines} lines", r.label);
+        assert!(lines * fallback::LINE <= height, "{}: {lines} lines", r.text);
         let lower = e.to_lowercase();
         for bad in ["docs/", "todo", "placeholder", "lorem", "tbd", "phantom", "peer", "session"] {
-            assert!(!lower.contains(bad), "{}: {e}", r.label);
+            assert!(!lower.contains(bad), "{}: {e}", r.text);
         }
         // A opens the value picker with that explanation.
-        assert_eq!(p.press(row as i16), Chosen::Open(picker::NAME), "{}", r.label);
-        assert_eq!(picker::current().expect("a pick").description, e, "{}", r.label);
+        assert_eq!(p.press(row as i16), Chosen::Open(picker::NAME), "{}", r.text);
+        assert_eq!(picker::current().expect("a pick").description, e, "{}", r.text);
     }
-    icons.sort();
-    icons.dedup();
-    assert_eq!(icons.len(), ROWS.len(), "each row its own icon");
 }
 
 #[test]

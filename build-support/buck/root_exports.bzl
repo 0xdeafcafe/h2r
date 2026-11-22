@@ -80,7 +80,6 @@ def root_exports():
             "assets/ui/screens/layout.dialog.large.yaml",
             "assets/ui/screens/layout.dialog.message.yaml",
             "assets/ui/screens/layout.dialog.over-screen.yaml",
-            "assets/ui/screens/layout.dialog.settings.header.yaml",
             "assets/ui/screens/layout.dialog.settings.yaml",
             "assets/ui/screens/layout.hud.yaml",
             "assets/ui/screens/layout.list.description.yaml",

@@ -27,16 +27,21 @@ impl Drop for Temp {
 
 /// An app on our example screen's first state, its checkout `t`.
 fn app(t: &Temp) -> App {
+    app_on(t, SCREEN)
+}
+
+/// An app on `screen`'s first state, its checkout `t`.
+fn app_on(t: &Temp, screen: &str) -> App {
     let mut app = App::new();
     app.ui_screens.edit.ours.set_checkout(Some(t.0.clone()));
     let state = UiScreens::tree()
         .into_iter()
-        .find(|(n, _)| *n == SCREEN)
+        .find(|(n, _)| *n == screen)
         .map(|(_, s)| s[0].clone())
         .unwrap();
     app.dispatch(Action::SetTool(ToolKind::UiScreens));
     app.dispatch(Action::UiPick(Pick::Native {
-        screen: SCREEN.into(),
+        screen: screen.into(),
         state,
     }));
     assert!(app.ui_screens.shot().is_some(), "{:?}", app.ui_screens.last);
@@ -201,6 +206,73 @@ fn rust_owned_widgets_are_refused_with_their_owner() {
     .unwrap_err();
     assert!(e.contains("top >= bottom"), "{e}");
     assert!(!app.tool_dirty(ToolKind::UiScreens));
+}
+
+/// A settings dialog's header lines edit its `settings:` block (the
+/// about line the caller's help when the dialog takes it from there), its
+/// help block edits the shown row's help, and none of them moves: the
+/// `settings` component places them.
+#[test]
+fn a_settings_dialogs_header_and_help_edit_its_doc() {
+    let t = Temp::new("settings");
+    let mut app = app_on(&t, "kit.dialog");
+    let set = |app: &mut App, id: &str, text: &str| {
+        edit(
+            app,
+            EditAction::SetText {
+                id: id.into(),
+                text: text.into(),
+            },
+        )
+    };
+    set(&mut app, "header.name", "Example").unwrap();
+    set(&mut app, "header.about", "What the example is for.").unwrap();
+    assert_eq!(widget(&mut app, "header.name").text(), Some("Example"));
+    let base = app.ui_screens.edit.ours.doc("kit.dialog").unwrap().clone();
+    let shown = widget(&mut app, "description").text().unwrap().replace('\n', " ");
+    let (row, _) = base
+        .rows
+        .iter()
+        .find(|(_, r)| r.help.as_deref() == Some(shown.as_str()))
+        .expect("the help block shows a row's help");
+    let row = row.clone();
+    set(&mut app, "description", "How many play.").unwrap();
+    let d = app.ui_screens.edit.ours.doc("kit.dialog").unwrap().clone();
+    let st = d.settings.clone().unwrap();
+    assert_eq!(st.name.as_deref(), Some("Example"));
+    assert_eq!(st.about.as_deref(), Some("What the example is for."));
+    assert_eq!(d.rows[&row].help.as_deref(), Some("How many play."));
+    for (id, r) in &d.rows {
+        if *id != row {
+            assert_eq!(r.help, base.rows[id].help, "{id}: only the shown row's help");
+        }
+    }
+    for id in ["header.name", "header.about", "description"] {
+        let e = edit(
+            &mut app,
+            EditAction::SetRect {
+                id: id.into(),
+                rect: [170, -224, 150, 0],
+                merge: false,
+            },
+        )
+        .unwrap_err();
+        assert!(e.starts_with("refused") && e.contains("components.settings"), "{id}: {e}");
+    }
+    let e = set(&mut app, "header.name", " ").unwrap_err();
+    assert!(e.starts_with("refused"), "{e}");
+    edit(&mut app, EditAction::Revert(Some("header.name".into()))).unwrap();
+    edit(&mut app, EditAction::Revert(Some("description".into()))).unwrap();
+    let d = app.ui_screens.edit.ours.doc("kit.dialog").unwrap().clone();
+    assert_eq!(d.settings.unwrap().name.as_deref(), Some("Name"));
+    assert_eq!(d.rows[&row].help, base.rows[&row].help);
+
+    // Clankers takes its about line from the Game Setup row's help.
+    let mut app = app_on(&t, "clankers");
+    set(&mut app, "header.about", "Bots, in this game.").unwrap();
+    let st = app.ui_screens.edit.ours.doc("clankers").unwrap().settings.clone().unwrap();
+    assert_eq!(st.about, None);
+    assert_eq!(st.caller.unwrap().help, "Bots, in this game.");
 }
 
 #[test]

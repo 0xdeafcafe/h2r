@@ -200,21 +200,35 @@ pub(crate) fn register_core_film(
     // Options row while its map is a converted Halo 1 map.
     if let Some(store) = i.settings.as_ref() {
         h1_options::install_switches(store);
-        let screen = Arc::new(h1_options::OptionsScreen { store: Arc::clone(store) });
-        let class = h1_options_row::class(screen);
-        if let Err(e) = features.add(&class) {
+        // The page (the shared settings dialog, its texts a feature of
+        // their own) and the Game Setup row that opens it.
+        let page = Arc::new(h1_options::page(Arc::clone(store)));
+        if let Err(e) = features.add(&crate::ui_kit::screen::KitTexts(Arc::clone(&page))) {
+            eprintln!("h1 options texts: {e}");
+        }
+        if let Err(e) = features.add(&page.class()) {
             eprintln!("h1 options: {e}");
         }
         features
-            .add(&h1_options_row::SetupRow { data_root: i.data_root.to_path_buf() })
+            .add(&h1_options_row::SetupRow {
+                data_root: i.data_root.to_path_buf(),
+                page: Arc::clone(&page),
+            })
             .map_err(|e| anyhow::anyhow!("h1 options row: {e}"))?;
         // The value picker A opens on a setting row, and our Game Setup
         // rows' picture and description (docs/game/ui-builder.md).
         crate::ui_kit::picker::install(features).context("installing the value picker")?;
+        // The row's description on Game Setup: the page's caller help,
+        // from the page's own slot.
         game_setup_help::register(
             h1_options_row::OPTIONS_ACTION,
             game_setup_help::image::QUICK_OPTIONS,
-            Arc::new(|_: &mut dyn engine::memory::GuestMemory| Some(h1_options::ROW_HELP_ID)),
+            Arc::new(move |m: &mut dyn engine::memory::GuestMemory| {
+                use crate::list_class::Rows;
+                let id = page.row_help_id()?;
+                page.write_texts(m).ok()?;
+                Some(id)
+            }),
         );
         game_setup_help::install(features).context("installing the Game Setup help")?;
     }

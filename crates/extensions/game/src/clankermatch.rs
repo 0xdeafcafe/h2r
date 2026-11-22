@@ -667,6 +667,7 @@ mod tests {
         let mut r = hooks::Registry::new(hooks::Switches::defaults());
         r.add(&h1row::SetupRow {
             data_root: std::env::temp_dir(),
+            page: crate::h1_options_row::test_page(),
         })
         .unwrap();
         let store = Arc::new(settings::Store::defaults(&crate::clankers::DEFS));

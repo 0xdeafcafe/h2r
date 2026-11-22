@@ -15,6 +15,7 @@
 //! - [`spec`]: a screen as data ([`spec::Describe`]) and the static checks.
 //! - [`screen`]: a declared screen ([`screen::KitScreen`]) on the list
 //!   class.
+//! - [`settings`]: the shared settings dialog, built from its doc.
 //! - [`screens`]: our existing screens described, with samples.
 //! - [`preview`]: a screen drawn offline from the disc's tags and fonts.
 //! - [`picker`]: the value picker, retail's `low_level_settings`.
@@ -45,6 +46,7 @@ pub mod picker;
 pub mod preview;
 pub mod screen;
 pub mod screens;
+pub mod settings;
 pub mod spec;
 pub(crate) mod text;
 pub(crate) mod text_fit;

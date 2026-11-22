@@ -267,7 +267,7 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 /// The screens `h2 ui preview` knows, by name: ours, then the design
 /// system's specimens (`design.<component>`) and the layout gallery
 /// (`layout.<name>`, [`crate::ui_kit::components::specimens::PAGES`]).
-pub const NAMES: [&str; 74] = [
+pub const NAMES: [&str; 73] = [
     "forge.hud",
     "forge.palette",
     "forge.menu",
@@ -335,7 +335,6 @@ pub const NAMES: [&str; 74] = [
     "layout.list.level-select",
     "layout.list.texts",
     "layout.dialog.settings",
-    "layout.dialog.settings.header",
     "layout.dialog.large",
     "layout.dialog.message",
     "layout.dialog.over-screen",
@@ -404,22 +403,33 @@ pub fn live(name: &str) -> Option<Box<dyn Live>> {
 
 /// The kit's choice rows as a dialog (docs/game/ui-builder.md "The Dialog
 /// kind"): on the game's own settings dialog (the lobby's Quick Options,
-/// `quick_options`), its description in Quick Options' help line, as the
-/// Clankers and Halo 1 Options pages are, or on the large dialog, the one
-/// the game maps have too (a pause menu's screen).
+/// `quick_options`) as the shared settings dialog its doc declares
+/// (`kit.dialog`, `crate::ui_kit::settings`), as the Clankers and Halo 1
+/// Options pages are, or on the large dialog, the one the game maps have
+/// too (a pause menu's screen).
 pub fn dialog_example(
     store: Arc<settings::Store>,
     base: crate::ui_kit::dialog::DialogBase,
 ) -> crate::ui_kit::screen::KitScreen {
     use crate::ui_kit::choice::example::{COUNT, LEVEL};
     use crate::ui_kit::dialog::DialogBase;
-    let (feature, name) = match base {
-        DialogBase::QuickOptions => ("kit-dialog", "kit.dialog"),
-        DialogBase::Large | DialogBase::ValuePicker => ("kit-dialog-large", "kit.dialog.large"),
-    };
-    crate::ui_kit::screen::KitScreen::new(feature, name, crate::ui_kit::ids::family(name))
+    match base {
+        DialogBase::QuickOptions => crate::ui_kit::settings::screen(
+            "kit-dialog",
+            "kit.dialog",
+            crate::ui_kit::ids::family("kit.dialog"),
+            Some(store),
+            crate::ui_kit::settings::Bindings::new(),
+        )
+        .unwrap_or_else(|e| panic!("{e}")),
+        DialogBase::Large | DialogBase::ValuePicker => crate::ui_kit::screen::KitScreen::new(
+            "kit-dialog-large",
+            "kit.dialog.large",
+            crate::ui_kit::ids::family("kit.dialog.large"),
+        )
         .row(COUNT.row(Arc::clone(&store)))
-        .row(LEVEL.row(store))
+        .row(LEVEL.row(store)),
+    }
 }
 
 /// The value picker's sample: the kit's Count (nine values, so the list
@@ -545,11 +555,8 @@ pub fn list_page(name: &str) -> Option<ListPage> {
             list(ListPage::new(class, described(&s)))
         }
         "h1-options" => {
-            let s = Arc::new(crate::h1_options::OptionsScreen {
-                store: skull_store(),
-            });
-            let class = crate::h1_options_row::class(Arc::clone(&s));
-            list(ListPage::new(class, move || s.spec()))
+            let s = Arc::new(crate::h1_options::page(skull_store()));
+            list(ListPage::new(s.class(), described(&s)))
         }
         "variant-more-options" => {
             let p = Arc::new(crate::variant_page::Page::new());
@@ -681,12 +688,18 @@ mod tests {
     }
 
     /// Our settings dialogs: the pages that are Quick Options inside.
-    const QUICK_PAGES: [&str; 3] = ["clankers", "h1-options", crate::firefight::options::SCREEN];
+    const QUICK_PAGES: [&str; 4] = [
+        "clankers",
+        "h1-options",
+        crate::firefight::options::SCREEN,
+        crate::custom_games::browser_filters::SCREEN,
+    ];
 
     /// Screen `name` drawn from `from` has every widget the kit's own
     /// Quick Options sample (`kit.dialog`) has where that sample has it:
-    /// the panel, the title, the rows' bars, labels and values, the help
-    /// line and the legend, each the same art or font and justification.
+    /// the panel, the title, the header's lines, the rows' bars, labels
+    /// and values, the help under the rows and the legend, each the same
+    /// art or font and justification.
     fn assert_quick_options_inside(from: &crate::ui_kit::preview::From<'_>, name: &str) {
         use crate::ui_kit::view::Kind;
         let (quick, _) = from.draw(&sample("kit.dialog").unwrap(), "q").unwrap();
@@ -694,7 +707,8 @@ mod tests {
         let mut compared = 0;
         for w in &quick.widgets {
             let same = w.id.starts_with("panel.")
-                || ["title", "description", "legend"].contains(&w.id.as_str())
+                || ["title", "header.name", "header.about", "description", "legend"]
+                    .contains(&w.id.as_str())
                 || ["row.0.", "row.1."].iter().any(|p| w.id.starts_with(p));
             if !same {
                 continue;
@@ -727,6 +741,8 @@ mod tests {
         for id in [
             "panel.0",
             "title",
+            "header.name",
+            "header.about",
             "description",
             "legend",
             "row.0.label",
@@ -738,21 +754,25 @@ mod tests {
         assert_eq!(v.list, quick.list, "{name}");
     }
 
-    /// The Clankers and Halo 1 Options pages are Quick Options inside, not
-    /// just its frame: a dialog on `quick_options`, its list (skin,
-    /// anchor, a row per setting), each value alone in the value column,
-    /// Quick Options' header (the focused row's one line in the help line,
-    /// its icon in the game type picture), a capitalised title and the
-    /// legend in its footer; drawn, laid out as the kit's Quick Options
-    /// sample is ([`assert_quick_options_inside`]), each row's icon where
-    /// Quick Options has its picture.
+    /// Our settings dialogs are the shared settings dialog on Quick
+    /// Options, inside as well as out: a dialog on `quick_options`, its
+    /// list (skin, anchor, a row per setting), each value alone in the
+    /// value column, a capitalised title and the legend in its footer;
+    /// the header (one icon in Quick Options' game type picture, the name
+    /// and what the window is for) the same in every focus, and the
+    /// focused row's help under the rows; drawn, laid out as the kit's
+    /// Quick Options sample is ([`assert_quick_options_inside`]).
     #[test]
     fn our_settings_dialogs_are_quick_options_inside() {
         use crate::ui_kit::dialog::{
-            DialogBase, DialogGeometry, QUICK_HELP, QUICK_HELP_TEXT, QUICK_OPTIONS_SCREEN_ID,
-            QUICK_PICTURE, QUICK_PICTURE_DEPTH, QUICK_PICTURE_SIZE,
+            DialogBase, DialogGeometry, QUICK_NAME_TEXT, QUICK_OPTIONS_SCREEN_ID, QUICK_PICTURE,
+            QUICK_PICTURE_DEPTH, QUICK_PICTURE_SIZE, SETTINGS_ABOUT_TEXT, SETTINGS_HELP_TEXT,
         };
+        use crate::ui_kit::spec::{fallback, wrap};
         let g = DialogGeometry::fallback_for(DialogBase::QuickOptions);
+        let lines = |text: &str, b: crate::list_class::TextBlock| {
+            wrap(text, i32::from(b.rect[3] - b.rect[1]), &fallback::width).len()
+        };
         for name in QUICK_PAGES {
             let s = sample(name).unwrap();
             let d = s
@@ -773,61 +793,58 @@ mod tests {
             );
             assert_eq!(
                 s.description,
-                Some(QUICK_HELP_TEXT.into()),
-                "{name}: the help line"
+                Some(SETTINGS_HELP_TEXT.into()),
+                "{name}: the help under the rows"
             );
             assert!(
                 s.footer && s.footer_text().is_some(),
                 "{name}: a footer legend"
             );
             assert_eq!(s.title, s.title.to_uppercase(), "{name}: as QUICK OPTIONS");
-            for r in &s.rows {
+            // The header: one icon, the name and the about lines.
+            assert_eq!(s.art.len(), 1, "{name}: one icon");
+            let icon = &s.art[0];
+            assert!(
+                matches!(
+                    icon.art,
+                    crate::ui_kit::view::Art::Screen { screen_id, pane: 0, index: 1, image }
+                        if screen_id == QUICK_OPTIONS_SCREEN_ID
+                            && (0..crate::ui_kit::dialog::icon::COUNT as i16).contains(&image)
+                ),
+                "{name}: {:?} is not an icon in Quick Options' picture",
+                icon.art
+            );
+            assert_eq!(
+                (icon.at, icon.size, icon.depth),
+                (QUICK_PICTURE.at, QUICK_PICTURE_SIZE, QUICK_PICTURE_DEPTH),
+                "{name}"
+            );
+            let ids: Vec<&str> = s.texts.iter().map(|t| t.id.as_str()).collect();
+            assert_eq!(ids, ["header.name", "header.about"], "{name}");
+            assert_eq!(s.texts[0].rect, QUICK_NAME_TEXT.rect, "{name}");
+            assert_eq!(s.texts[1].rect, SETTINGS_ABOUT_TEXT.rect, "{name}");
+            assert_eq!(lines(&s.texts[0].text, QUICK_NAME_TEXT), 1, "{name}: one name line");
+            assert!(lines(&s.texts[1].text, SETTINGS_ABOUT_TEXT) <= 2, "{name}: the about's two lines");
+            assert_eq!(s.help, None, "{name}: the rows' help, no page line");
+            for (row, r) in s.rows.iter().enumerate() {
                 let (label, value) = r.cells(s.style);
                 assert_eq!(label, r.label, "{name}");
                 let v = value.unwrap_or_else(|| panic!("{name}: {} has a value", r.label));
                 assert!(!v.contains('<') && !v.contains('>'), "{name}: {v:?}");
                 let help = r.description.as_deref().unwrap_or("");
                 assert!(!help.is_empty() && !help.contains('\n'), "{name}: {help:?}");
+                assert!(lines(help, SETTINGS_HELP_TEXT) <= 2, "{name}: {help:?}, two lines at most");
                 assert!(
-                    help.encode_utf16().count() <= 52,
-                    "{name}: {help:?}, one line"
+                    s.texts.iter().all(|t| t.text != help && t.text != r.label),
+                    "{name}: the about line says the window, not a row"
                 );
-            }
-            // Quick Options' header: the focused row's line in the help
-            // line, one line, and its icon in Quick Options' game type
-            // picture; nothing of the page's own in their place.
-            assert_eq!(s.help, None, "{name}: the rows' lines");
-            assert!(s.art.is_empty(), "{name}: the icon is the focused row's");
-            let room = i32::from(QUICK_HELP.right) - i32::from(QUICK_HELP.left);
-            for (row, r) in s.rows.iter().enumerate() {
                 let focused = ScreenSpec {
                     focus: row,
                     ..s.clone()
                 };
-                let help = r.description.as_deref().unwrap_or("");
-                assert!(
-                    crate::ui_kit::spec::fallback::width(help) <= room,
-                    "{name}: {help:?} is more than the help line's one line"
-                );
                 assert_eq!(focused.description_text().as_deref(), Some(help), "{name}");
-                let art = focused.shown_art();
-                assert_eq!(art.len(), 1, "{name}: {}'s icon", r.label);
-                let icon = &art[0];
-                assert!(
-                    matches!(
-                        icon.art,
-                        crate::ui_kit::view::Art::Screen { screen_id, pane: 0, index: 1, image }
-                            if screen_id == QUICK_OPTIONS_SCREEN_ID
-                                && (0..crate::ui_kit::dialog::icon::COUNT as i16).contains(&image)
-                    ),
-                    "{name}: {:?} is not an icon in Quick Options' picture",
-                    icon.art
-                );
-                assert_eq!(
-                    (icon.at, icon.size, icon.depth),
-                    (QUICK_PICTURE.at, QUICK_PICTURE_SIZE, QUICK_PICTURE_DEPTH),
-                    "{name}"
-                );
+                assert_eq!(focused.art, s.art, "{name}: the icon stays");
+                assert_eq!(focused.texts, s.texts, "{name}: the header stays");
             }
             assert_quick_options_inside(&crate::ui_kit::preview::From::Synthetic, name);
             let (v, _) = crate::ui_kit::preview::From::Synthetic
@@ -846,55 +863,7 @@ mod tests {
                 ],
                 "{name}: the icon where Quick Options has its picture"
             );
-        }
-    }
-
-    /// Quick Options' white name line beside the icon names the focused
-    /// row on each of our settings dialogs, in every state each page
-    /// offers and as the focus moves through its rows: the row's label
-    /// (a value row's label, its value staying in the row), white, in
-    /// Quick Options' name block above the help line.
-    #[test]
-    fn the_name_line_follows_focus_in_every_state_of_each_options_page() {
-        use crate::ui_kit::dialog::QUICK_NAME_TEXT;
-        use crate::ui_kit::view::{Kind, Widget};
-        let from = crate::ui_kit::preview::From::Synthetic;
-        for name in QUICK_PAGES {
-            let states = live(name).unwrap_or_else(|| panic!("{name}: live")).specs();
-            assert!(!states.is_empty(), "{name}: its states");
-            for (state, s) in states {
-                assert_eq!(
-                    s.name_line,
-                    Some(QUICK_NAME_TEXT.into()),
-                    "{name} [{state}]: Quick Options' name line"
-                );
-                assert!(!s.rows.is_empty(), "{name} [{state}]");
-                for (row, r) in s.rows.iter().enumerate() {
-                    let focused = ScreenSpec {
-                        focus: row,
-                        ..s.clone()
-                    };
-                    let (v, _) = from.draw(&focused, &state).unwrap();
-                    let w = v
-                        .widget("name")
-                        .unwrap_or_else(|| panic!("{name} [{state}] row {row}: no name line"));
-                    assert_eq!(
-                        w.text(),
-                        Some(r.label.trim()),
-                        "{name} [{state}] row {row}: the focused row's label"
-                    );
-                    let (label, _) = r.cells(s.style);
-                    assert_eq!(label.trim(), r.label.trim(), "{name}: the label alone");
-                    let Kind::Text { font, .. } = &w.kind else {
-                        panic!("{name}: the name line is text");
-                    };
-                    assert_eq!(*font, QUICK_NAME_TEXT.font, "{name}");
-                    let help = v.widget("description").map(|d: &Widget| d.rect);
-                    if let Some(help) = help {
-                        assert!(w.rect[2] >= help[0], "{name}: above the help line");
-                    }
-                }
-            }
+            assert!(v.widget("name").is_none(), "{name}: no name line follows the focus");
         }
     }
 
@@ -1179,9 +1148,9 @@ mod tests {
             assert_eq!([list.anchor.x, list.anchor.y], PICKER_LIST.anchor);
             assert_eq!(list.visible_items as usize, PICKER_LIST_ROWS);
         }
-        // Quick Options' help line and list, which the Clankers and Halo 1
-        // Options pages use, are its tag's own, and those pages are laid out
-        // as Quick Options on the disc's geometry too.
+        // Quick Options' help line, name line and list, which our settings
+        // dialogs' header and rows use, are its tag's own, and those pages
+        // are laid out as Quick Options on the disc's geometry too.
         {
             use crate::ui_kit::dialog::{
                 QUICK_ANIMATION, QUICK_HELP_TEXT, QUICK_LIST, QUICK_LIST_ROWS,
@@ -1201,8 +1170,8 @@ mod tests {
                 1,
                 "left-justified, as TextBlock::bytes writes"
             );
-            // The variant-name line, where a page of ours names its
-            // focused row.
+            // The variant-name line, where a settings dialog of ours names
+            // what its window changes.
             let name = &pane.text_blocks[1];
             let r = name.rect;
             let q = crate::ui_kit::dialog::QUICK_NAME_TEXT;
@@ -1247,13 +1216,20 @@ mod tests {
                     );
                 }
                 assert!(disc.image(pic.bitmap, icon::COUNT as i16).is_none());
-                // Our pages' rows' lines fit the help line in its font.
-                let room = i32::from(QUICK_HELP_TEXT.rect[3]) - i32::from(QUICK_HELP_TEXT.rect[1]);
+                // Our settings dialogs' copy in the disc's font: the name
+                // one line, the about and each row's help two at most.
+                use crate::ui_kit::dialog::{QUICK_NAME_TEXT, SETTINGS_ABOUT_TEXT, SETTINGS_HELP_TEXT};
+                let lines = |text: &str, b: crate::list_class::TextBlock| {
+                    let width = i32::from(b.rect[3]) - i32::from(b.rect[1]);
+                    crate::ui_kit::spec::wrap(text, width, &|t| disc.fonts.width(b.font, t)).len()
+                };
                 for name in QUICK_PAGES {
-                    for r in sample(name).unwrap().rows {
+                    let s = sample(name).unwrap();
+                    assert_eq!(lines(&s.texts[0].text, QUICK_NAME_TEXT), 1, "{name}: the name");
+                    assert!(lines(&s.texts[1].text, SETTINGS_ABOUT_TEXT) <= 2, "{name}: the about");
+                    for r in s.rows {
                         let help = r.description.unwrap_or_default();
-                        let w = disc.fonts.width(QUICK_HELP_TEXT.font, &help);
-                        assert!(w <= room, "{name}: {help:?}: {w} of {room}");
+                        assert!(lines(&help, SETTINGS_HELP_TEXT) <= 2, "{name}: {help:?}");
                     }
                 }
             }

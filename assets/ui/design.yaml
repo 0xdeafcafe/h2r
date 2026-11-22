@@ -18,6 +18,8 @@ spacing:
   cell_top: 6
   cell_gap: 4
   cell_half_gap: 12
+  settings_rows: 8
+  settings_game_rows: 3
 alpha:
   unfocused: 100
   frame_dim: 110
@@ -73,20 +75,45 @@ components:
     justify: left
     at: [39, -30]
     size: [221, 103]
-  description.settings:
-    role: "a settings dialog's help line beside its picture, above its list (Quick Options'): the focused row's one line, never empty, drawn over the panel"
-    font: body
-    colour: pale_blue
-    justify: left
-    at: [-224, 143]
-    size: [494, 20]
-  name.settings:
-    role: "a settings dialog's name line beside its picture, over its help line (Quick Options' variant-name line): the focused row's label, drawn over the panel"
+  settings:
+    role: "the shared settings dialog: a static header (icon, name, what the window is for), the rows, the focused row's help under them, the legend"
+    variants: [focus-0, focus-1, focus-2]
+    specimen: layout.dialog.settings
+  settings.name:
+    role: "the header's white line beside the icon: what the window changes, the same in every state"
     font: body
     colour: white
     justify: left
     at: [-224, 163]
     size: [224, 20]
+  settings.about:
+    role: "the header's lines under the name: what the window is for, two lines at most, the same in every state"
+    font: body
+    colour: pale_blue
+    justify: left
+    at: [-224, 143]
+    size: [494, 40]
+  settings.help:
+    role: "the focused row's help, under the rows and over the legend, two lines at most"
+    font: body
+    colour: pale_blue
+    justify: left
+    at: [-244, -133]
+    size: [490, 40]
+  settings.game.about:
+    role: "settings.about on the in-game host, under the large dialog's title"
+    font: body
+    colour: pale_blue
+    justify: left
+    at: [-243, 72]
+    size: [498, 20]
+  settings.game.help:
+    role: "settings.help on the in-game host"
+    font: body
+    colour: pale_blue
+    justify: left
+    at: [-243, -40]
+    size: [498, 40]
   description.picker:
     role: "the value picker's description, right of its list"
     font: body

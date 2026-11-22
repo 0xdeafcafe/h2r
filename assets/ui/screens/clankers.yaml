@@ -10,14 +10,63 @@ states:
     focus: 4
   focus-7:
     focus: 7
+settings:
+  host: menu
+  icon: spartan
+  name: "Bots in this game"
+  caller:
+    label: "Clanker Options..."
+    help: "Add bots to this game: how many, how well they play, and which team they join."
 widgets:
   title:
     component: title
     text: "CLANKERS"
-  description:
-    component: description
-    at: [-224, 143]
-    size: [494, 20]
-  legend:
-    component: legend
-    prompts: [[[Left, Right], "CHANGE"], [A, "SELECT"], [B, "BACK"]]
+rows:
+  row.0:
+    kind: value
+    text: "Clankers"
+    help: "Bots join this game and show in the lobby."
+    setting: clankers.enabled
+    explain: "Clankers are bots that play this game with you. On adds them to the lobby like any other player. Off plays without them."
+  row.1:
+    kind: value
+    text: "Count"
+    help: "How many bots join, up to 15."
+    setting: clankers.count
+    explain: "How many Clankers join this game, from 1 to 15. Each one takes a place in the lobby, so leave room for your friends."
+  row.2:
+    kind: value
+    text: "Difficulty"
+    help: "How well they play. Mixed varies it around Normal."
+    setting: clankers.difficulty
+    explain: "How well the Clankers aim, move and pick their fights. Easy is forgiving and Legendary plays like a veteran. Mixed gives you a spread of Easy, Normal and Heroic bots."
+  row.3:
+    kind: value
+    text: "Teams"
+    help: "Which team they join in a team game."
+    setting: clankers.team
+    explain: "Where the Clankers go in a team game. Auto-balance spreads them so the teams stay even. Red or Blue puts every bot on that team. Free for all games ignore this."
+  row.4:
+    kind: value
+    text: "Aggression"
+    help: "How eagerly they push into a fight."
+    setting: clankers.aggression
+    explain: "How hard the Clankers push. Calm bots hold back and wait for a good shot. Wild bots rush in and chase every kill. Normal sits in between."
+  row.5:
+    kind: value
+    text: "Aim style"
+    help: "Steady tracks smoothly; Twitchy flicks."
+    setting: clankers.aim_style
+    explain: "How the Clankers move their aim. Steady bots track you smoothly and stay on target. Twitchy bots snap onto you in quick flicks."
+  row.6:
+    kind: value
+    text: "Taunts"
+    help: "Whether they taunt after a kill."
+    setting: clankers.taunts
+    explain: "On lets the Clankers show off over you after a kill, as players do. Off keeps them on the move."
+  row.7:
+    kind: value
+    text: "Glitches"
+    help: "Whether they BXR, sword fly and super bounce."
+    setting: clankers.glitches
+    explain: "Halo 2's famous tricks: button combos like BXR, double shots, sword flying and super bounces. Off plays it straight. Some shows off now and then. Lots uses them whenever it can."

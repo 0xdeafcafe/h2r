@@ -20,6 +20,9 @@
 //! - The design system's rules ([`house_rules`]) are applied to the
 //!   screens drawn from their docs (`super::FROM_DOC`), whose Rust holds no
 //!   copy to disagree with (docs/game/ui-builder.md "Consistency").
+//! - A settings dialog's doc (one with a `settings:` block) is the source
+//!   its screen is built from (`crate::ui_kit::settings`): it is written
+//!   back as it was loaded, never rebuilt from its specs.
 
 use std::path::{Path, PathBuf};
 
@@ -49,9 +52,8 @@ pub const DYNAMIC: [(&str, &str); 8] = [
 ];
 
 /// Our screens whose rows are fixed: their labels go in the doc.
-pub const FIXED_ROWS: [&str; 6] = [
+pub const FIXED_ROWS: [&str; 5] = [
     "kit.example",
-    "kit.dialog",
     "kit.dialog.large",
     "kit.choices",
     "lab.takeover",
@@ -302,6 +304,7 @@ fn screen_doc(name: &str, states: &[(String, ScreenSpec)], design: &mut Design) 
         opener,
         scrolls: first.scrolls,
         states: IndexMap::new(),
+        settings: None,
         widgets: IndexMap::new(),
         rows: IndexMap::new(),
     };
@@ -373,7 +376,7 @@ fn screen_doc(name: &str, states: &[(String, ScreenSpec)], design: &mut Design) 
         let mut w = WidgetDoc::default();
         if fixed.is_some() {
             let component = design.component(
-                &["description", "description.pane", "description.settings", "description.picker", "legend.panel"],
+                &["description", "description.pane", "description.picker", "legend.panel"],
                 "description",
                 name,
                 d.font,
@@ -593,10 +596,16 @@ pub fn export(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut written = Vec::new();
     let mut docs = Vec::new();
     for name in crate::ui_kit::screens::NAMES {
-        let states = crate::ui_kit::screens::raw_states(name)
-            .with_context(|| format!("no states for {name}"))?;
-        anyhow::ensure!(!states.is_empty(), "{name} has no states");
-        let doc = screen_doc(name, &states, &mut design);
+        let doc = match super::baked(name).filter(|d| d.settings.is_some()) {
+            // A settings dialog is built from its doc: the doc stays.
+            Some(d) => (*d).clone(),
+            None => {
+                let states = crate::ui_kit::screens::raw_states(name)
+                    .with_context(|| format!("no states for {name}"))?;
+                anyhow::ensure!(!states.is_empty(), "{name} has no states");
+                screen_doc(name, &states, &mut design)
+            }
+        };
         let path = screens.join(format!("{name}.yaml"));
         std::fs::write(&path, super::to_yaml(&doc)).with_context(|| path.display().to_string())?;
         written.push(path);

@@ -26,12 +26,11 @@
 //! - **scroll**: a scroll arrow shows only on a list that scrolls (more
 //!   rows than it lays out), inside the dialog's panel, or on a screen
 //!   inside the screen and the title-safe area's height.
-//! - **empty**: a dialog's description area above its list (Quick
-//!   Options' help line, beside the page's picture) says something in
-//!   every state: the focused row's line or the page's help. An area left
-//!   empty is dead space between the title and the rows; a page with
-//!   nothing to say there has no description block, and its rows sit
-//!   under the title.
+//! - **empty**: a settings dialog's header lines (its name and what the
+//!   window is for, beside its icon) and its help under the rows say
+//!   something in every state, and so does any dialog's description area
+//!   above its list. An area left empty is dead space; a page with
+//!   nothing to say there has no description block.
 //!
 //! The pattern rules, from Halo 2's own screens:
 //!
@@ -231,10 +230,10 @@ fn view_rules(design: &DesignDoc, s: &ScreenSpec, v: &View, out: &mut Vec<Findin
     }
 }
 
-/// The empty rule on `v` (spec `s`): a dialog's description block that
-/// sits above its first row is drawn with text, and the page's picture
-/// (Quick Options' game type picture) has its line beside it; a name
-/// line (`ScreenSpec::name_line`) names the focused row.
+/// The empty rule on `v` (spec `s`): a settings dialog's header lines
+/// (`header.*`, beside its icon) and its help block are drawn with text,
+/// and so is any dialog's description block that sits above its first
+/// row.
 fn empty_rules(s: &ScreenSpec, v: &View, out: &mut Vec<Finding>) {
     let art: Vec<String> = v
         .widgets
@@ -258,35 +257,32 @@ fn empty_rules(s: &ScreenSpec, v: &View, out: &mut Vec<Finding>) {
             text,
         });
     };
-    if let Some(n) = s.name_line
-        && !says("name")
-    {
-        flag(
-            "name",
-            format!(
-                "the name line beside the picture ({:?}) says nothing: name the focused row",
-                n.rect
-            ),
-        );
+    let header: Vec<&crate::ui_kit::spec::PaneText> =
+        s.texts.iter().filter(|t| t.id.starts_with("header.")).collect();
+    for t in &header {
+        if !says(&t.id) {
+            flag(
+                &t.id,
+                format!("the header's {} ({:?}) says nothing: say what the window is for", t.id, t.rect),
+            );
+        }
     }
     let (Some(d), Some(_)) = (s.description, &s.dialog) else {
         return;
     };
-    let Some(first_row) = v
+    let first_row = v
         .widgets
         .iter()
         .filter(|w| w.id.starts_with("row.") && w.id.ends_with(".label") && w.alpha > 0)
         .map(|w| w.rect[0])
-        .max()
-    else {
-        return;
-    };
+        .max();
     let [_, _, bottom, _] = d.rect;
-    if bottom >= first_row && !says("description") {
+    let above = first_row.is_some_and(|top| bottom >= top);
+    if (above || !header.is_empty()) && !says("description") {
         flag(
             "description",
             format!(
-                "the description area above the list ({:?}) says nothing: give the focused row a line, or drop the block so the rows sit under the title",
+                "the description block ({:?}) says nothing: give the focused row its help, or drop the block",
                 d.rect
             ),
         );
@@ -742,11 +738,12 @@ mod tests {
         assert!(one.findings.iter().all(|f| f.screen == "kit.example"));
     }
 
-    /// The Firefight page with its rows' lines gone (the help line drawn
-    /// empty above the list, beside the page's picture) is found, on
-    /// every state; with them it is not.
+    /// The Firefight page with its rows' help gone (the block under the
+    /// rows drawn empty) is found, on every state; with it it is not. An
+    /// empty header line beside the icon is found too, on every settings
+    /// dialog.
     #[test]
-    fn an_empty_description_area_above_the_list_is_found() {
+    fn an_empty_help_or_header_line_is_found() {
         let all = views(&["firefight"]);
         assert!(!all.is_empty());
         for (s, v) in &all {
@@ -760,23 +757,22 @@ mod tests {
             assert_eq!(out[0].rule, "empty");
             assert!(out[0].ids.contains(&"art.0".to_string()), "{:?}", out[0].ids);
         }
-        // The name line beside the picture: an empty one is found too,
-        // on every options page that has one.
-        let named = views(&["firefight", "clankers", "h1-options"]);
-        assert!(named.iter().any(|(s, _)| s.name_line.is_some()));
-        for (s, v) in named.iter().filter(|(s, _)| s.name_line.is_some()) {
-            let mut out = Vec::new();
-            empty_rules(s, v, &mut out);
-            assert!(out.is_empty(), "{} [{}]: {out:?}", v.screen, v.state);
-            let mut unnamed = v.clone();
-            unnamed.widgets.retain(|w| w.id != "name");
-            empty_rules(s, &unnamed, &mut out);
-            assert_eq!(out.len(), 1, "{} [{}]: {out:?}", v.screen, v.state);
-            assert_eq!(out[0].rule, "empty");
-            assert_eq!(out[0].ids[0], "name");
+        let headed = views(&["firefight", "clankers", "h1-options", "browser.filters"]);
+        assert!(!headed.is_empty());
+        for (s, v) in &headed {
+            for id in ["header.name", "header.about"] {
+                assert!(s.texts.iter().any(|t| t.id == id), "{} [{}]: {id}", v.screen, v.state);
+                let mut out = Vec::new();
+                let mut gone = v.clone();
+                gone.widgets.retain(|w| w.id != id);
+                empty_rules(s, &gone, &mut out);
+                assert_eq!(out.len(), 1, "{} [{}]: {out:?}", v.screen, v.state);
+                assert_eq!(out[0].rule, "empty");
+                assert_eq!(out[0].ids[0], id);
+            }
         }
         // A list's description under its rows (the Controls list's) is
-        // not a header area: an empty one there is not this rule's.
+        // not a dialog's: an empty one there is not this rule's.
         let (s, mut v) = views(&["kit.example"]).into_iter().next().unwrap();
         v.widgets.retain(|w| w.id != "description");
         let mut out = Vec::new();

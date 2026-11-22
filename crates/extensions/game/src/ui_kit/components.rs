@@ -258,7 +258,9 @@ impl Screen {
     pub fn level_select(name: &str, title: &str) -> Screen {
         Screen::moved(name, title, crate::skulls_menu::LIST_LAYOUT, ValueStyle::Inline)
     }
-    /// A dialog on `base` over `opener`: its value style and help line.
+    /// A dialog on `base` over `opener`: its value style and its help
+    /// block, where the base has one. A settings dialog is its doc's
+    /// (`crate::ui_kit::settings`), not built here.
     pub fn dialog(name: &str, title: &str, base: DialogBase, opener: Opener) -> Screen {
         let mut spec = ScreenSpec::new(name, title);
         spec.footer = true;
@@ -269,10 +271,6 @@ impl Screen {
             ..DialogSpec::new("", opener)
         });
         Screen { spec }
-    }
-    /// A settings dialog: Quick Options' (header layout 1).
-    pub fn settings(name: &str, title: &str, opener: Opener) -> Screen {
-        Screen::dialog(name, title, DialogBase::QuickOptions, opener)
     }
     /// The large dialog (header layout 2).
     pub fn large(name: &str, title: &str, opener: Opener) -> Screen {

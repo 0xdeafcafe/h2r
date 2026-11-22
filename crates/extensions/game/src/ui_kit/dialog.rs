@@ -92,30 +92,41 @@ impl DialogBase {
             DialogBase::QuickOptions => crate::ui_kit::spec::ValueStyle::Setting,
         }
     }
-    /// Where a dialog of rows on this base says what the focused row does:
-    /// Quick Options' own help line ([`QUICK_HELP_TEXT`]); the large dialog
-    /// has none.
+    /// Where a dialog on this base says what the focused row does, as the
+    /// base itself has it: the value picker's description block
+    /// ([`PICKER_HELP_TEXT`]). Quick Options' help line is its window's
+    /// line ([`DialogBase::about`]), never a row's, and the large dialog
+    /// has none: a settings dialog's focused help goes under its rows
+    /// (`design.yaml` `components.settings.help`, `crate::ui_kit::settings`).
     pub fn help(self) -> Option<crate::list_class::TextBlock> {
         match self {
-            DialogBase::Large => None,
-            DialogBase::QuickOptions => Some(QUICK_HELP_TEXT),
+            DialogBase::Large | DialogBase::QuickOptions => None,
             DialogBase::ValuePicker => Some(PICKER_HELP_TEXT),
         }
     }
-    /// Where a page on this base names its focused row, beside its picture
-    /// and above the help line: Quick Options' variant-name line
-    /// ([`QUICK_NAME_TEXT`]). Only a page with the base's picture
-    /// ([`DialogBase::picture`]) shows it.
+    /// Where a page on this base says what the window is for, the same in
+    /// every state: Quick Options' help line ([`QUICK_HELP_TEXT`], its
+    /// one fixed string "Temporarily change settings for this game
+    /// variant."). The other bases have none of their own.
+    pub fn about(self) -> Option<crate::list_class::TextBlock> {
+        match self {
+            DialogBase::QuickOptions => Some(QUICK_HELP_TEXT),
+            DialogBase::Large | DialogBase::ValuePicker => None,
+        }
+    }
+    /// Where a page on this base says what the window changes, beside its
+    /// picture and above the about line: Quick Options' variant-name line
+    /// ([`QUICK_NAME_TEXT`]), the same in every state.
     pub fn name_line(self) -> Option<crate::list_class::TextBlock> {
         match self {
             DialogBase::QuickOptions => Some(QUICK_NAME_TEXT),
             DialogBase::Large | DialogBase::ValuePicker => None,
         }
     }
-    /// Which of the base pane's text blocks [`DialogBase::help`] is, where
-    /// the copy reads its render depth bias from
-    /// ([`crate::ui_kit::dialog_tag::description_bias`]): Quick Options'
-    /// help line is its text block 0. `None` where it isn't traced.
+    /// Which of the base pane's text blocks the copy reads its render
+    /// depth bias from ([`crate::ui_kit::dialog_tag::description_bias`]):
+    /// Quick Options' help line ([`DialogBase::about`]) is its text block
+    /// 0. `None` where it isn't traced.
     pub fn help_block(self) -> Option<u32> {
         match self {
             DialogBase::QuickOptions => Some(0),
@@ -247,16 +258,57 @@ pub const STATUS: Rect = rect(-51, -243, -80, 255);
 pub const LAYOUT1_HEADER: Rect = rect(190, -253, 170, 30);
 pub const LAYOUT1_FOOTER: Rect = rect(-178, -200, -198, 259);
 const LARGE_FOOTER: Rect = rect(-83, -243, -103, 240);
-/// `quick_options`' help line, above its list: where a settings dialog's
-/// description goes.
+/// A settings dialog's help block on Quick Options, under its rows and
+/// over the legend: the focused row's help, two lines at most
+/// (`design.yaml` `components.settings.help`, `crate::ui_kit::settings`).
+/// Its left and right are the rows' label left (-254 + 10) and value
+/// right (-254 + 500); its bottom is Game Setup's `change_map_help`
+/// bottom on the same header layout. Eight rows end at y -95, clear of
+/// it.
+pub const SETTINGS_HELP: Rect = rect(-133, -244, -173, 246);
+/// [`SETTINGS_HELP`]'s text block: font 1, the pale blue, the pane's
+/// animation, as Quick Options' own help line.
+pub const SETTINGS_HELP_TEXT: crate::list_class::TextBlock = crate::list_class::TextBlock {
+    rect: [
+        SETTINGS_HELP.top,
+        SETTINGS_HELP.left,
+        SETTINGS_HELP.bottom,
+        SETTINGS_HELP.right,
+    ],
+    font: 1,
+    colour: [0.388235, 0.580392, 0.756863],
+    animation: QUICK_ANIMATION,
+};
+/// A settings dialog's about block: what the window is for, from the top
+/// of Quick Options' help line ([`QUICK_HELP`]) down two lines, clear of
+/// the first row's bar at y 87 (`design.yaml`
+/// `components.settings.about`).
+pub const SETTINGS_ABOUT: Rect = rect(143, -224, 103, 270);
+/// [`SETTINGS_ABOUT`]'s text block: Quick Options' help line's font,
+/// colour and animation.
+pub const SETTINGS_ABOUT_TEXT: crate::list_class::TextBlock = crate::list_class::TextBlock {
+    rect: [
+        SETTINGS_ABOUT.top,
+        SETTINGS_ABOUT.left,
+        SETTINGS_ABOUT.bottom,
+        SETTINGS_ABOUT.right,
+    ],
+    font: 1,
+    colour: [0.388235, 0.580392, 0.756863],
+    animation: QUICK_ANIMATION,
+};
+/// `quick_options`' help line, above its list: its one fixed string says
+/// what the window is for, as a settings dialog's about block does.
 pub const QUICK_HELP: Rect = rect(143, -224, 123, 270);
 /// The help line's text block as `quick_options` has it (pane 0's text
 /// block 0, string `quick_options_help`: one line, "Temporarily change
 /// settings for this game variant."): left-justified, font 1, the pale
 /// blue, the pane's animation (31), so it comes and goes with the panel.
-/// A settings dialog of ours shows the focused row's description in it
-/// ([`DialogBase::help`]); `ui_kit::screens::tests::preview_and_check_against_the_disc`
-/// holds it to the disc's block.
+/// A settings dialog of ours says what its window is for in it, the same
+/// in every state ([`DialogBase::about`], `design.yaml`
+/// `components.settings.about`);
+/// `ui_kit::screens::tests::preview_and_check_against_the_disc` holds it
+/// to the disc's block.
 pub const QUICK_HELP_TEXT: crate::list_class::TextBlock = crate::list_class::TextBlock {
     rect: [
         QUICK_HELP.top,
@@ -270,10 +322,10 @@ pub const QUICK_HELP_TEXT: crate::list_class::TextBlock = crate::list_class::Tex
 };
 /// `quick_options`' variant-name line, above the help line and right of
 /// the game type picture: pane 0's text block 1 (`quick_options_variant_name`,
-/// filled by code), white, font 1, the pane's animation. A page of ours
-/// with Quick Options' picture shows its focused row's name there
-/// (docs/game/ui-builder.md "A page's header"), so the name and the help
-/// line beneath it describe the row the picture shows.
+/// filled by code), white, font 1, the pane's animation. A settings
+/// dialog of ours names what its window changes there, the same in every
+/// state (docs/game/ui-builder.md "A page's header", `design.yaml`
+/// `components.settings.name`).
 pub const QUICK_NAME: Rect = rect(163, -224, 143, 0);
 pub const QUICK_NAME_TEXT: crate::list_class::TextBlock = crate::list_class::TextBlock {
     rect: [QUICK_NAME.top, QUICK_NAME.left, QUICK_NAME.bottom, QUICK_NAME.right],
@@ -296,12 +348,12 @@ pub const QUICK_LIST_ROWS: usize = 11;
 /// Quick Options' game type picture: pane 0's bitmap block 1,
 /// `mp_games2.bitm` (eleven 40 x 40 icons, the variant's game type's
 /// filled by code) at (-267, 166), depth 3, the pane's animation (31),
-/// left of the variant's name and the help line. A page of ours on Quick
-/// Options shows its own icon of the set there
-/// ([`crate::ui_kit::screen::KitScreen::header`]): the block copied
-/// ([`crate::list_class::ListClass::picture`]) and its image set as the
-/// screen opens ([`crate::list_class::Rows::picture_image`]). The block's
-/// own image field is 0, as `PictureSpec::image` checks.
+/// left of the variant's name and the help line. A settings dialog of ours
+/// on Quick Options shows its own icon of the set there (`settings.icon`
+/// in its doc, [`crate::ui_kit::settings`]): the block copied
+/// ([`crate::list_class::ListClass::picture`]) and its image set once as
+/// the screen opens ([`crate::list_class::Rows::picture_image`]). The
+/// block's own image field is 0, as `PictureSpec::image` checks.
 /// `ui_kit::screens::tests::preview_and_check_against_the_disc` holds it
 /// to the disc's block.
 pub const QUICK_PICTURE: crate::list_class::PictureSpec = crate::list_class::PictureSpec {
@@ -332,10 +384,9 @@ pub fn quick_icon(image: u16) -> PaneArt {
     }
 }
 /// `mp_games2.bitm`'s icons (read off `mainmenu.map`, 2026-11-19, and
-/// looked at with `h2 bitmap`), by what each shows. The pages of ours give
-/// each row one (`crate::h1_options::OptionRow::icon`,
-/// `crate::ui_kit::choice::ChoiceRow::icon`), shown in Quick Options'
-/// game type picture while the row has the focus.
+/// looked at with `h2 bitmap`), by what each shows. A settings dialog's
+/// doc names one ([`icon::NAMES`], `settings.icon`), shown in Quick
+/// Options' game type picture beside its header.
 pub mod icon {
     /// A Spartan standing: Slayer's.
     pub const SPARTAN: u16 = 0;
@@ -361,6 +412,15 @@ pub mod icon {
     pub const QUESTION: u16 = 10;
     /// How many there are.
     pub const COUNT: u16 = 11;
+    /// Each icon's name in a doc, in image order.
+    pub const NAMES: [&str; COUNT as usize] = [
+        "spartan", "crown", "lightning", "skull", "helmet", "sack", "flag", "bomb", "squares",
+        "banner", "question",
+    ];
+    /// The icon a doc names (`settings.icon`), if it is one.
+    pub fn named(name: &str) -> Option<u16> {
+        NAMES.iter().position(|n| *n == name).map(|i| i as u16)
+    }
 }
 
 /// `low_level_settings`' list: `default6` (skin 22: `default`'s one text
@@ -658,7 +718,8 @@ pub fn status_place(
 
 /// Dialog `d`'s rows in its base's list, laid out as [`view_of`] lays a
 /// list on that skin (the focused row lit, the window around the focus),
-/// and the focused row's description in `s`'s description block, if any.
+/// and the focused row's description in `s`'s description block, if any
+/// (a settings dialog's help under its rows).
 fn row_widgets(s: &ScreenSpec, d: &DialogSpec, g: &DialogGeometry, m: &dyn Metrics) -> Vec<Widget> {
     if d.rows.is_empty() {
         return Vec::new();
@@ -675,7 +736,6 @@ fn row_widgets(s: &ScreenSpec, d: &DialogSpec, g: &DialogGeometry, m: &dyn Metri
     list.focus = s.focus;
     list.style = s.style;
     list.description = s.description;
-    list.name_line = s.name_line;
     list.help = s.help.clone();
     list.list = DialogGeometry::list_place(g.list, shown);
     let rows = Geometry {
@@ -689,12 +749,7 @@ fn row_widgets(s: &ScreenSpec, d: &DialogSpec, g: &DialogGeometry, m: &dyn Metri
     view_of(&list, &rows, m, "")
         .widgets
         .into_iter()
-        .filter(|w| {
-            w.id.starts_with("row.")
-                || w.id.starts_with("scroll.")
-                || w.id == "description"
-                || w.id == "name"
-        })
+        .filter(|w| w.id.starts_with("row.") || w.id.starts_with("scroll.") || w.id == "description")
         .collect()
 }
 
@@ -775,7 +830,8 @@ pub fn dialog_view(
         ));
     }
     w.extend(row_widgets(s, d, g, m));
-    // The screen's own art (a page's icon in Quick Options' picture).
+    // The screen's own art (a settings dialog's icon in Quick Options'
+    // picture).
     for (k, a) in s.shown_art().iter().enumerate() {
         let r = art_rect(a);
         w.push(Widget {
@@ -788,6 +844,19 @@ pub fn dialog_view(
                 size: a.size,
             },
         });
+    }
+    // Its texts of no row (a settings dialog's header lines).
+    for t in &s.texts {
+        let [top, left, bottom, right] = t.rect;
+        let lines = wrap(&t.text, i32::from(right - left), &|x| m.width(t.font, x));
+        w.push(text(
+            &t.id,
+            rect(top, left, bottom, right),
+            t.font,
+            if t.right { Justify::Right } else { Justify::Left },
+            lines.join("\n"),
+            rgb(t.colour),
+        ));
     }
     if let Some(c) = &d.cells {
         let [cw, ch] = g.cell.size.map(i32::from);
@@ -977,8 +1046,8 @@ mod tests {
     }
 
     /// A dialog of rows: Quick Options' panel, no body, its rows (a label
-    /// and a value each) where its list is, the focused one lit, and the
-    /// description in the help line; the checks pass it.
+    /// and a value each) where its list is, the focused one lit; the
+    /// checks pass it.
     #[test]
     fn a_rows_dialog_draws_its_rows_in_the_bases_list() {
         let mut s = ScreenSpec::new("t", "Bots");

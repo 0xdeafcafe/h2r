@@ -565,6 +565,7 @@ fn the_rows_go_after_the_other_rows_on_the_plan() {
     let mut r = hooks::Registry::new(hooks::Switches::defaults());
     r.add(&h1row::SetupRow {
         data_root: std::env::temp_dir(),
+        page: crate::h1_options_row::test_page(),
     })
     .unwrap();
     let ff_store = Arc::new(Store::defaults(&ff::DEFS));
@@ -608,6 +609,7 @@ fn the_arrangement_runs_after_every_row_is_added() {
     let mut r = hooks::Registry::new(hooks::Switches::defaults());
     r.add(&h1row::SetupRow {
         data_root: std::env::temp_dir(),
+        page: crate::h1_options_row::test_page(),
     })
     .unwrap();
     let bots = Arc::new(crate::clankers::page(Arc::new(Store::defaults(

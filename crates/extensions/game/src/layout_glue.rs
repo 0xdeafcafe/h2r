@@ -591,8 +591,9 @@ pub fn install(
     let with_skulls = model
         .as_ref()
         .is_some_and(|m| skulls_menu::enabled(m.store()));
-    // The Halo 1 options' texts (crate::h1_options): the campaign page's
-    // option rows and the Game Setup row and screen, wherever settings are.
+    // The Halo 1 options' texts (crate::h1_options): the Skulls page's
+    // option rows, wherever settings are. The multiplayer page and its
+    // Game Setup row serve their own (`ui_kit::screen::KitTexts`).
     let with_h1_options = model.is_some();
     let with_aim_assist = has(List::Controls, RowKind::Setting(crate::setting_defs::AIM_ASSIST.key));
     let model = model.unwrap_or_else(|| {
