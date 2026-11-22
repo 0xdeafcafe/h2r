@@ -1,10 +1,13 @@
 name: Live deploy
 
-# Deploys the Live Worker and web to production on each push to master
-# (docs/live/live-worker.md, "Deploy from CI"). The dedicated host image is
-# never built here: it holds the owner's disc-compiled module, so deploy.sh
-# runs the registry image named by deploy/host/image-tag. Skips until the
-# CLOUDFLARE_API_TOKEN secret is set.
+# Deploys the Live Worker, the web and the dedicated host image to
+# production on each push to master (docs/live/live-worker.md, "Deploy from
+# CI"). The host image holds public code only: this job builds the Linux h2
+# (deploy/host/build.sh --h2, glibc 2.36 through cargo-zigbuild) and
+# deploy.sh pushes the image by content tag. The game module compiled from
+# the owner's disc never comes near CI: hosts take it from the private
+# host-data bundle (docs/live/dedicated-host-build.md#the-game-module).
+# Skips until the CLOUDFLARE_API_TOKEN secret is set.
 
 on:
   push:
@@ -25,6 +28,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       H2_WORKER_HOME: ${{ github.workspace }}/.worker-home
+      RUSTC_WRAPPER: ""
     steps:
       - name: Skip without a Cloudflare token
         if: env.CLOUDFLARE_API_TOKEN == ''
@@ -41,6 +45,26 @@ jobs:
           path: .worker-home
           key: worker-home-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
           restore-keys: worker-home-
+      # The Linux host: Rust from rust-toolchain.toml with the glibc target,
+      # and cargo-zigbuild with Zig, the same tools build.sh uses on a Mac.
+      - name: Install Rust, Zig and cargo-zigbuild for the Linux host
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        run: |
+          channel=$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal --target x86_64-unknown-linux-gnu
+          python3 -m venv "$RUNNER_TEMP/zig"
+          "$RUNNER_TEMP/zig/bin/pip" install --quiet cargo-zigbuild==0.24.1 ziglang==0.17.1
+          printf '#!/bin/sh\nexec "%s" -m ziglang "$@"\n' "$RUNNER_TEMP/zig/bin/python3" > "$RUNNER_TEMP/zig/bin/zig"
+          chmod +x "$RUNNER_TEMP/zig/bin/zig"
+          echo "$RUNNER_TEMP/zig/bin" >> "$GITHUB_PATH"
+      - uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        with:
+          shared-key: live-host
+          cache-on-failure: true
+      - name: Stage the Linux h2
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        run: deploy/host/build.sh --h2
       - name: Deploy production
         if: env.CLOUDFLARE_API_TOKEN != ''
         run: crates/live/live-worker/deploy.sh production --yes-production
