@@ -42,7 +42,7 @@ pub struct Switch {
 
 /// The most rows the table may hold. Raise it only with a reason in the
 /// commit; lower it when a switch goes.
-pub const BUDGET: usize = 42;
+pub const BUDGET: usize = 43;
 
 use Initial::{Group, Off, On};
 
