@@ -17,6 +17,7 @@
 //! of range, or allocate more than a few hundred KiB beyond the font itself.
 use std::fmt;
 
+pub mod arrows;
 pub mod encode;
 pub mod gear;
 pub mod icons;
