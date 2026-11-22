@@ -3,9 +3,11 @@
 
 use crate::model::Describe;
 
+pub mod pill_block;
 pub mod superbounce;
 pub mod superbounce_all;
 pub mod superbounce_guide;
+pub mod superbounce_segments;
 pub mod superbounce_readout;
 
 /// Every registered HUD.

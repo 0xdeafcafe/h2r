@@ -994,10 +994,11 @@ bounce spot is the one with the nearest edge.
 **The HUD.** Drawn by Halo 2's own HUD through the HUD kit
 ([hud-kit.md](hud-kit.md), "The superbounce HUD on the kit"), for the
 first local player, in one block at the bottom left beside the motion
-tracker: a short grenade-style pill, lit while primed, with the `^` icon
-where a pill's count is; under it a charge meter cut from the energy
-sword's battery strip, filled by the time the charge has left; over it
-Assault's red arming bar, filled by the recipe's steps, with a short
+tracker: nine charge segments round the tracker's left, bottom and
+right sides, cut from the energy sword's battery strip, which fill a
+side for each of the recipe's steps and wipe back as the charge runs
+out ("The charge segments" in hud-kit.md); Assault's red arming bar
+over the readout's rows, filled by the recipe's steps, with a short
 ending when primed
 ("The arming bar" in hud-kit.md); "Charging..." and "Primed!" in the
 notification list, as Assault's "Bomb is arming..." and "Bomb armed!";
@@ -1113,10 +1114,10 @@ view and the fall assist agree):
 
 **In the air.** While the player is airborne the screen is the
 readout's and the motion tracker's. The
-HUD kit's superbounce elements keep the pill, the notification and the
-medal line and drop the charge strip, the arming bar, the prompt line,
+HUD kit's superbounce elements keep the notification and the
+medal line and drop the arming bar, the prompt line,
 the navpoint and the tutorial step (`superbounce_hud::in_air`); the
-readout's target navpoints stay. The
+readout's target navpoints and charge segments stay. The
 world keeps the chosen strip's rings and line and the lock-on, and no
 label. The mode draws no prompt over a strip:
 `crates/extensions/game/src/superbounce_prompts.rs` keeps `prompt_for`'s
@@ -1382,6 +1383,7 @@ unless a variant turns it off:
 | `medals` | bool, on | no medal line in the notification list and no announcer line; the chain, the score and the recorded events are unchanged ([Medals](#medals)) |
 | `second_bounce` | bool, on | no ranked seams after a bounce ([The second bounce](#the-second-bounce)): the navpoints, the last row and the fall row are as on any other fall |
 | `approach_guide` | bool, on | no pipper, box, ticks or drift arrow on the seam ([The approach guide](#the-approach-guide)); the lock-on's brackets are drawn on a fall as in split screen |
+| `charge_segments` | bool, on | no segments round the motion tracker ([hud-kit.md](hud-kit.md), "The charge segments"); priming is the arming bar, the prompt line and the notifications |
 
 The host reads them by name where it decides the mode is on, at a game's
 start and every 30 ticks (`superbounce_options::read`): the active
@@ -1526,9 +1528,9 @@ lab run.
 
 What the mode shows about the three steps of a bounce: getting the
 charge, keeping it, and landing it. The HUD parts (the arming bar, the
-meter under the pill, the prompt line, the notifications, the navpoint)
-are in [hud-kit.md](hud-kit.md), "The charge meter" and "The arming
-bar"; this is the state they
+charge segments, the prompt line, the notifications, the navpoint)
+are in [hud-kit.md](hud-kit.md), "The charge meter", "The arming
+bar" and "The charge segments"; this is the state they
 read, the scanner's rules and the world overlay. The numbers are in
 [notes/superbounce-spots.md](notes/superbounce-spots.md).
 

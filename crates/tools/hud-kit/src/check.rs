@@ -487,12 +487,18 @@ fn per_shot(
                     vec![d.id.into()],
                     format!("{} runs off the screen ({})", d.id, show(&c)),
                 ));
-            } else if !frame.contains(&c) {
-                r.push(f(
-                    Check::Frame,
-                    vec![d.id.into()],
-                    format!("{} leaves the HUD frame ({})", d.id, show(&c)),
-                ));
+            } else if !frame.contains(&c)
+                && !grown(s.frame.rect(), f32::from(e.outside).max(FRAME_SLACK)).contains(&c)
+            {
+                let text = match e.outside {
+                    0 => format!("{} leaves the HUD frame ({})", d.id, show(&c)),
+                    by => format!(
+                        "{} is more than its {by} outside the HUD frame ({})",
+                        d.id,
+                        show(&c)
+                    ),
+                };
+                r.push(f(Check::Frame, vec![d.id.into()], text));
             }
         }
         // Fit: a text against its longest and its neighbours.

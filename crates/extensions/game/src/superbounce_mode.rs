@@ -433,6 +433,7 @@ pub fn options_reply(o: crate::superbounce_options::Options) -> agent_proto::sup
         medals: o.medals,
         second_bounce: o.second_bounce,
         approach_guide: o.approach_guide,
+        charge_segments: o.charge_segments,
     }
 }
 

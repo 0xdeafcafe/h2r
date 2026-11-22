@@ -25,6 +25,7 @@ use hud_kit_core::huds::superbounce_readout::{
     self as rd, Fall, Miss, Next, Readout, Speed, Steer, View,
 };
 use hud_kit_core::huds::superbounce_guide as guide_marks;
+use hud_kit_core::huds::superbounce_segments::{self as segs, Segments};
 use hud_kit_core::model::Values;
 use hud_kit_core::world::Pose;
 use superbounce::Spot;
@@ -154,6 +155,8 @@ pub fn kinds(m: crate::superbounce_options::TargetMode) -> rd::Kinds {
 ///   targets to (`superbounce_targets::Switch`), over the other lines.
 /// - The navpoints: the mode's marks (`superbounce_targets::Marks`), each
 ///   with its distance in metres.
+/// - The approach guide: the state's `guide`, with `approach_guide`.
+/// - The charge segments: [`segments`], with `charge_segments`.
 pub fn view(s: &State, o: Options, info: Option<Miss>) -> View {
     let metres =
         |m: Option<crate::superbounce_targets::Mark>| m.map(|m| m.distance * METRES_PER_UNIT);
@@ -169,7 +172,18 @@ pub fn view(s: &State, o: Options, info: Option<Miss>) -> View {
         tag: metres(s.marks.tag),
         targets: s.marks.targets.map(metres),
         guide: s.guide.filter(|_| o.approach_guide).map(|g| g.view()),
+        segments: segments(s).filter(|_| o.charge_segments),
     }
+}
+
+/// The charge segments for `s` (docs/game/hud-kit.md, "The charge
+/// segments"): the mode's charge as its stage and how many are lit,
+/// once the map is scanned and has a spot; `None`, hidden, before that
+/// and on a map with none. In the air too: primed is worth seeing on the
+/// way down.
+pub fn segments(s: &State) -> Option<Segments> {
+    let ready = matches!(s.scan, mode::ScanState::Ready) && s.bounce + s.crouch > 0;
+    ready.then(|| segs::segments(crate::superbounce_hud::charge(s)))
 }
 
 /// The approach guide's marks' poses for `s` under `o`: each of

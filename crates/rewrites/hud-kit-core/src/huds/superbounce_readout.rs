@@ -1,7 +1,10 @@
 //! The superbounce readout (docs/game/hud-kit.md, "The superbounce
-//! readout"): three rows right of the motion tracker, and three
-//! navpoints, all drawn by Halo 2's own HUD.
+//! readout"): three rows right of the motion tracker, the charge
+//! segments round it, and three navpoints, all drawn by Halo 2's own
+//! HUD.
 //!
+//! - `sbr.seg.1` to `sbr.seg.9`: the charge segments round the motion
+//!   tracker, the priming indicator ([`super::superbounce_segments`]).
 //! - `sbr.speed`: an arrow for the way the player is moving against the
 //!   aim and the horizontal speed, and in the air the fall speed after
 //!   it. Hidden standing still.
@@ -32,8 +35,9 @@
 
 use crate::model::{Anchor, Art, Describe, Element, Font, Hud, Justify, Kind, Place, Value, Values};
 
-use super::superbounce::{DISTANCE_LONGEST, PILL_COLUMN, PILL_FULL, distance_text};
+use super::superbounce::{Charge, DISTANCE_LONGEST, Phase, distance_text};
 use super::superbounce_guide::{self as guide, Guide};
+use super::superbounce_segments::{self as segs, Segments};
 use crate::world::Pose;
 
 pub const NAME: &str = "superbounce-readout";
@@ -68,11 +72,13 @@ pub fn arrow(angle: f32) -> char {
     char::from_u32(ARROW_UP as u32 + step).unwrap_or(ARROW_UP)
 }
 
+/// Pixels between the charge segments' right side and the rows.
+pub const SEGMENTS_GAP: i16 = 6;
 /// The rows' left edge, from the frame's bottom-left corner (48, 444):
-/// right of the charge pill's column (`superbounce::PILL_FULL`, from the
-/// frame's left edge too: 8 pixels right of the motion tracker's rim,
-/// `rects::TRACKER`, x 47 to 130), at screen x 171.
-pub const LEFT: i16 = PILL_FULL.0 + PILL_COLUMN;
+/// beside the motion tracker (`rects::TRACKER`, x 47 to 130),
+/// [`SEGMENTS_GAP`] right of the charge segments' right side
+/// (`superbounce_segments::RIGHT_EDGE`, x 143), at screen x 149.
+pub const LEFT: i16 = segs::RIGHT_EDGE - segs::CORNER.0 + SEGMENTS_GAP;
 /// The rows' tops from the frame's bottom: y 376, 397 and 418 fullscreen,
 /// a line of font 6 (21) apart, the last ending 5 above the frame's foot.
 pub const SPEED_UP: i16 = -68;
@@ -210,6 +216,9 @@ pub struct View {
     /// The approach guide on the seam the player is going for
     /// ([`super::superbounce_guide`]).
     pub guide: Option<Guide>,
+    /// The charge segments round the motion tracker
+    /// ([`super::superbounce_segments`]).
+    pub segments: Option<Segments>,
 }
 
 fn one(v: f32, max: f32) -> String {
@@ -276,19 +285,22 @@ pub fn next_text(next: &[Option<Next>; NEXT]) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("  "))
 }
 
-/// The elements, in draw order: the rows, the navpoints, then the
-/// approach guide's world marks.
+/// The elements, in draw order: the bar, the charge segments, the rows'
+/// texts, the navpoints, then the approach guide's world marks.
 pub fn hud() -> Hud {
     let row = |up: i16| Place::new(Anchor::BottomLeft, (LEFT, up));
     let navpoint = |id| Element::channel(id, Kind::Navpoint { longest: DISTANCE_LONGEST });
+    let mut elements = vec![Element::meter(
+        FALL,
+        Art::StripMeterEnd(FALL_COLUMNS),
+        Place::new(Anchor::BottomLeft, (LEFT, FALL_UP + FALL_DOWN)),
+    )];
+    elements.extend(segs::elements());
     let mut hud = Hud {
         name: NAME,
-        elements: vec![
-            Element::meter(
-                FALL,
-                Art::StripMeterEnd(FALL_COLUMNS),
-                Place::new(Anchor::BottomLeft, (LEFT, FALL_UP + FALL_DOWN)),
-            ),
+        elements,
+    };
+    hud.elements.extend([
             Element::text(SPEED, Font::Hud, Justify::Start, SPEED_LONGEST, row(SPEED_UP)),
             Element::text(
                 STEER,
@@ -301,8 +313,7 @@ pub fn hud() -> Hud {
             navpoint(TAG),
             navpoint(TARGET_1),
             navpoint(TARGET_2),
-        ],
-    };
+    ]);
     hud.elements.extend(guide::elements());
     hud
 }
@@ -335,6 +346,7 @@ pub fn values(v: &View) -> Values {
     out.set(TARGET_1, nav(v.targets[0]));
     out.set(TARGET_2, nav(v.targets[1]));
     guide::set_values(&mut out, v.guide.as_ref());
+    segs::set_values(&mut out, v.segments.as_ref());
     out
 }
 
@@ -488,9 +500,31 @@ pub fn views() -> Vec<(&'static str, View)> {
             name,
             View {
                 guide: Some(g),
+                // The guide shows on a seam while primed.
+                segments: Some(segs::segments(Some(Charge {
+                    phase: Phase::Primed,
+                    fill: 1.0,
+                }))),
                 ..rows(name)
             },
         ));
+    }
+    // The charge segments' moments (`superbounce_segments::samples`).
+    for (name, charge) in segs::samples() {
+        out.push((
+            name,
+            View {
+                segments: Some(segs::segments(charge)),
+                ..View::default()
+            },
+        ));
+    }
+    // In every other state but `idle` (a map with no strips: nothing of
+    // the readout shows) the ring is there, empty: not primed.
+    for (name, v) in &mut out {
+        if *name != "idle" {
+            v.segments.get_or_insert(segs::segments(None));
+        }
     }
     out
 }
@@ -548,27 +582,35 @@ mod tests {
         assert!(Readout.multiplayer_only().is_some());
     }
 
-    /// Fullscreen only, bottom left, right of the tracker and of the charge
-    /// pill's column, clear of the middle of the screen; the rows a line
-    /// apart, the first level with the pill's top.
+    /// Fullscreen only, bottom left, right of the tracker and of the
+    /// charge segments' right side, clear of the middle of the screen;
+    /// the rows a line apart.
     #[test]
     fn the_rows_are_bottom_left_and_fullscreen_only() {
         let h = hud();
         for e in h.elements.iter().filter(|e| !e.kind.is_channel()) {
             assert_eq!(e.at.anchor, Anchor::BottomLeft, "{}", e.id);
             assert_eq!((e.at.half, e.at.quarter), (None, None), "{}", e.id);
+            if segs::IDS.contains(&e.id) {
+                continue;
+            }
             let (x, y) = (48 + e.at.full.0, 444 + e.at.full.1);
-            assert!(x >= 171, "{}: right of the pill's column, x 138 to 165", e.id);
+            assert!(x >= 149, "{}: right of the segments' right side, x 134 to 143", e.id);
             assert!((376..444).contains(&y), "{}: under the tracker's top, in the frame", e.id);
+            assert_eq!(e.outside, 0, "{}: inside the frame", e.id);
         }
+        assert_eq!(48 + LEFT, 149);
         let top = |id: &str| 444 + h.element(id).unwrap().at.full.1;
         assert_eq!((top(SPEED), top(STEER), top(INFO)), (376, 397, 418));
         // The bar is in the steer row, left of its text.
         let bar = h.element(FALL).unwrap().at.full;
-        assert_eq!((48 + bar.0, 444 + bar.1), (171, 403));
-        assert_eq!(48 + h.element(STEER).unwrap().at.full.0, 171 + 64 + 6);
-        assert_eq!(SPEED_UP, PILL_FULL.1 - super::super::superbounce::FRAME_HEIGHT);
-        assert_eq!(h.arts().len(), 2, "the strip and the navpoints' arrow");
+        assert_eq!((48 + bar.0, 444 + bar.1), (149, 403));
+        assert_eq!(48 + h.element(STEER).unwrap().at.full.0, 149 + 64 + 6);
+        assert_eq!(
+            h.arts().len(),
+            3,
+            "the strip's end at the bar's width and at a segment's, and the navpoints' arrow"
+        );
     }
 
     #[test]
@@ -732,6 +774,41 @@ mod tests {
         assert_eq!(shown("guide-falling-caught", guide::BOX).unwrap(), guide::WILL_BOUNCE);
         assert_eq!(shown("guide-too-shallow", guide::BOX).unwrap(), guide::TOO_SHALLOW);
         assert_eq!(shown("guide-falling-caught", STEER).unwrap(), ON_SEAM);
+    }
+
+    /// The charge segments are nine meters after the bar: the empty ring
+    /// in every state but `idle`, the guide's moments primed and full,
+    /// and their own moments one for each stage.
+    #[test]
+    fn the_segments_show_the_ring_in_every_state_but_idle() {
+        let h = hud();
+        let ids: Vec<_> = h.elements[1..=segs::SEGMENTS].iter().map(|e| e.id).collect();
+        assert_eq!(ids, segs::IDS);
+        let fills = |name: &str| -> Vec<Option<f32>> {
+            let v = state(name);
+            segs::IDS
+                .iter()
+                .map(|id| v.get(id).filter(|x| x.shown).map(|x| x.fill))
+                .collect()
+        };
+        assert_eq!(fills("idle"), [None; 9]);
+        assert_eq!(fills("moving"), [Some(0.0); 9]);
+        assert_eq!(fills("miss-too-slow"), [Some(0.0); 9]);
+        assert_eq!(fills("guide-lined-up"), [Some(1.0); 9]);
+        assert_eq!(fills("segments-idle"), [Some(0.0); 9]);
+        assert_eq!(fills("segments-near"), [Some(0.0); 9]);
+        let lit = |name: &str| fills(name).iter().filter(|f| **f == Some(1.0)).count();
+        assert_eq!(
+            ["segments-under", "segments-held", "segments-primed"].map(lit),
+            [3, 6, 9]
+        );
+        // Three quarters of the charge: 6.75 segments.
+        assert_eq!(fills("segments-draining")[5..], [Some(1.0), Some(0.75), Some(0.0), Some(0.0)]);
+        assert_eq!(lit("segments-warning"), 4);
+        assert_eq!(fills("segments-warning")[4], Some(0.5));
+        assert_eq!(lit("segments-lost"), 0);
+        let n = Readout.states().iter().filter(|(n, _)| n.starts_with("segments-")).count();
+        assert_eq!(n, segs::samples().len());
     }
 
     /// No text any state or any number gives is longer than its

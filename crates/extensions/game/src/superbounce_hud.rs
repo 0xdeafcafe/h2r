@@ -71,16 +71,7 @@ pub fn view(s: &State, tutorial: Option<u8>) -> View {
         ScanState::Failed(_) => Scan::Failed,
         ScanState::Idle | ScanState::Scanning => Scan::Scanning,
     };
-    let charge = s.charge.as_ref().map(|c| Charge {
-        phase: match &c.phase {
-            mode::ChargePhase::Near => Phase::Near,
-            mode::ChargePhase::Under => Phase::Under,
-            mode::ChargePhase::Held => Phase::Held,
-            mode::ChargePhase::Primed => Phase::Primed,
-            mode::ChargePhase::Lost => Phase::Lost,
-        },
-        fill: c.fill,
-    });
+    let charge = charge(s);
     let verb = match s.verb.as_ref() {
         Some(mode::Verb::LetGoOfCrouch) => Some(Verb::LetGoOfCrouch),
         Some(mode::Verb::WalkOutToStand) => Some(Verb::WalkOutToStand),
@@ -110,9 +101,24 @@ pub fn view(s: &State, tutorial: Option<u8>) -> View {
     }
 }
 
-/// `v` as it is shown in the air: the pill, the notification and the medal
-/// stay; the charge strip, the arming bar, the prompt line, the navpoint
-/// and the tutorial step go. In the air the screen is the readout's and
+/// The mode's charge in `s` as the HUDs read it: the phase of the recipe
+/// and the fill (`superbounce_charge::ChargePhase`, one for one).
+pub fn charge(s: &State) -> Option<Charge> {
+    s.charge.as_ref().map(|c| Charge {
+        phase: match &c.phase {
+            mode::ChargePhase::Near => Phase::Near,
+            mode::ChargePhase::Under => Phase::Under,
+            mode::ChargePhase::Held => Phase::Held,
+            mode::ChargePhase::Primed => Phase::Primed,
+            mode::ChargePhase::Lost => Phase::Lost,
+        },
+        fill: c.fill,
+    })
+}
+
+/// `v` as it is shown in the air: the notification and the medal stay;
+/// the arming bar, the prompt line, the navpoint and the tutorial step
+/// go. In the air the screen is the readout's and
 /// the tracker's (docs/game/superbounce.md, "In the air").
 pub fn in_air(v: View) -> View {
     View {

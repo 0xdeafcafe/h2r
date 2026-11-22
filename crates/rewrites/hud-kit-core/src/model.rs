@@ -94,6 +94,12 @@ pub struct Element {
     /// runtime's gate reads the word (E `0x0013ac87`, its third stack
     /// argument); the record's own words stay zero.
     pub hide_when_d: u16,
+    /// HUD pixels it may sit outside the view's HUD frame, in the
+    /// screen's margin: 0 for every element but one placed round retail
+    /// art that is on the frame's edge itself (the motion tracker's rim).
+    /// The frame check lets it out this far and no further, and never off
+    /// the screen.
+    pub outside: i16,
 }
 
 impl Element {
@@ -114,6 +120,7 @@ impl Element {
             at,
             over: None,
             hide_when_d: 0,
+            outside: 0,
         }
     }
     pub fn meter(id: &'static str, art: Art, at: Place) -> Self {
@@ -123,6 +130,7 @@ impl Element {
             at,
             over: None,
             hide_when_d: 0,
+            outside: 0,
         }
     }
     pub fn icon(id: &'static str, art: Art, at: Place) -> Self {
@@ -132,6 +140,7 @@ impl Element {
             at,
             over: None,
             hide_when_d: 0,
+            outside: 0,
         }
     }
     pub fn pointer(id: &'static str, art: Art, at: Place) -> Self {
@@ -141,6 +150,7 @@ impl Element {
             at,
             over: None,
             hide_when_d: 0,
+            outside: 0,
         }
     }
     /// A channel element: [`Kind::Message`], [`Kind::Prompt`],
@@ -154,6 +164,7 @@ impl Element {
             at: Place::GAME,
             over: None,
             hide_when_d: 0,
+            outside: 0,
         }
     }
     /// Drawn on `id` by design (see [`Element::over`]).
@@ -165,6 +176,11 @@ impl Element {
     /// [`Element::hide_when_d`]).
     pub fn hidden_on_d(mut self, bits: u16) -> Self {
         self.hide_when_d = bits;
+        self
+    }
+    /// Let `pixels` outside the HUD frame (see [`Element::outside`]).
+    pub fn outside(mut self, pixels: i16) -> Self {
+        self.outside = pixels;
         self
     }
 }

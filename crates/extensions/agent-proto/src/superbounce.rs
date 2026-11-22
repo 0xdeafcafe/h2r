@@ -112,6 +112,9 @@ pub struct Options {
     /// The approach guide: the pipper and the box on the seam.
     #[serde(default)]
     pub approach_guide: bool,
+    /// The charge segments round the motion tracker.
+    #[serde(default)]
+    pub charge_segments: bool,
 }
 
 /// `superbounce.state`'s `guide`: the approach guide on the seam the
@@ -1365,6 +1368,7 @@ mod tests {
                 medals: true,
                 second_bounce: true,
                 approach_guide: true,
+                charge_segments: true,
             },
             targets: Targets {
                 mode: "all".into(),

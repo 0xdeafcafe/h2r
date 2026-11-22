@@ -8,7 +8,7 @@
 // (Bouncetacular), and twice that for a Monster Bounce; a Bounced (a fall
 // out of the map during a bounce) costs a point, and so does a death by
 // the player's own hand. The medals, chains and the Monster test are the
-// host's, and so are the HUD's pieces, which the last six options turn
+// host's, and so are the HUD's pieces, which the last seven options turn
 // off.
 // docs/game/superbounce.md, "The superbounce game type", and
 // docs/game/rules-engine.md, "Firefight, AI and bounces".
@@ -51,6 +51,7 @@ option miss_info: bool = true "Miss info" "Why a landing did not bounce, on the 
 option medals: bool = true "Medals" "Bounce medals in the list, and their announcer"
 option second_bounce: bool = true "Second bounce" "After a bounce, the seams the flight can reach, the best first, and which way to steer"
 option approach_guide: bool = true "Approach guide" "On the seam you are going for: where you will land, and whether the fall will bounce"
+option charge_segments: bool = true "Charge segments" "Round the motion tracker: how far you are through priming, and how long the charge has left"
 
 player var bounces: int = 0
 

@@ -25,6 +25,7 @@ pub const MISS_INFO: &str = "miss_info";
 pub const MEDALS: &str = "medals";
 pub const SECOND_BOUNCE: &str = "second_bounce";
 pub const APPROACH_GUIDE: &str = "approach_guide";
+pub const CHARGE_SEGMENTS: &str = "charge_segments";
 
 /// Which seams get a target navpoint, by what is known about them
 /// ([`crate::superbounce_targets::Class`]). The script's `Targets` enum,
@@ -89,6 +90,9 @@ pub struct Options {
     /// The approach guide: the pipper and the box on the seam
     /// ([`crate::superbounce_guide`]).
     pub approach_guide: bool,
+    /// The charge segments round the motion tracker
+    /// (`hud_kit_core::huds::superbounce_segments`).
+    pub charge_segments: bool,
 }
 
 impl Default for Options {
@@ -107,6 +111,7 @@ impl Options {
         medals: true,
         second_bounce: true,
         approach_guide: true,
+        charge_segments: true,
     };
 
     /// The options a record's option bits `bits` give for the script
@@ -124,6 +129,7 @@ impl Options {
             medals: on(MEDALS, d.medals),
             second_bounce: on(SECOND_BOUNCE, d.second_bounce),
             approach_guide: on(APPROACH_GUIDE, d.approach_guide),
+            charge_segments: on(CHARGE_SEGMENTS, d.charge_segments),
         }
     }
 
@@ -139,6 +145,7 @@ impl Options {
             | (self.medals as u16) << 5
             | (self.second_bounce as u16) << 6
             | (self.approach_guide as u16) << 7
+            | (self.charge_segments as u16) << 8
     }
 
     fn unpack(b: u16) -> Options {
@@ -150,6 +157,7 @@ impl Options {
             medals: b & 1 << 5 != 0,
             second_bounce: b & 1 << 6 != 0,
             approach_guide: b & 1 << 7 != 0,
+            charge_segments: b & 1 << 8 != 0,
         }
     }
 }
@@ -191,7 +199,7 @@ mod tests {
         let ir = script();
         assert_eq!(Options::from_ir(&ir, ir.default_options()), Options::DEFAULT);
         assert!(Options::DEFAULT.velocity && Options::DEFAULT.medals);
-        assert!(Options::DEFAULT.approach_guide);
+        assert!(Options::DEFAULT.approach_guide && Options::DEFAULT.charge_segments);
         assert_eq!(Options::DEFAULT.targets, TargetMode::Likely);
     }
 
@@ -216,6 +224,10 @@ mod tests {
             with(APPROACH_GUIDE, OptionValue::Bool(false)),
             Options { approach_guide: false, ..d }
         );
+        assert_eq!(
+            with(CHARGE_SEGMENTS, OptionValue::Bool(false)),
+            Options { charge_segments: false, ..d }
+        );
         for mode in [TargetMode::Common, TargetMode::Likely, TargetMode::All] {
             assert_eq!(
                 with(TARGETS, OptionValue::Name(mode.name().into())),
@@ -238,7 +250,7 @@ mod tests {
     #[test]
     fn the_options_round_trip_through_the_current_slot() {
         for targets in [TargetMode::Common, TargetMode::Likely, TargetMode::All] {
-            for bits in 0..64u8 {
+            for bits in 0..128u8 {
                 let o = Options {
                     targets,
                     velocity: bits & 1 != 0,
@@ -247,6 +259,7 @@ mod tests {
                     medals: bits & 8 != 0,
                     second_bounce: bits & 16 != 0,
                     approach_guide: bits & 32 != 0,
+                    charge_segments: bits & 64 != 0,
                 };
                 assert_eq!(Options::unpack(o.pack()), o);
             }
