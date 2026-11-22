@@ -854,3 +854,116 @@ fn a_film_makes_no_bot_order() {
     let work = s.lock().pre_tick(&m).unwrap();
     assert_eq!(work.calls, []);
 }
+
+// ---- scoring carrier (docs/game/rules-variants.md, "A script that keeps
+// its carrier's rules") ----
+
+/// A settings-only Slayer script: the carrier engine scores.
+const CARRIED: &str = "rules \"SWAT\" 1\ncarrier slayer\nscoring carrier\nabout \"One headshot kills.\"\nsettings {\n    score_limit = 50\n}\n";
+
+/// A settings-only Slayer script that asks for the superbounce mode.
+const CARRIED_BOUNCES: &str = "rules \"Bounce Slayer\" 1\ncarrier slayer\nrequires hud.superbounce\nscoring carrier\nsettings {\n    score_limit = 25\n}\n";
+
+/// A runtime whose fetch answers `src`'s blob, started on a Slayer game
+/// whose record names it. Returns the runtime, the game and the hash.
+fn carried(store: &Local, src: &str) -> (Arc<Shared>, FakeGuest, Sha256) {
+    let ir = ::rules::compile(src).unwrap();
+    assert_eq!(ir.header.scoring, Scoring::Carrier);
+    let (blob, id) = (ir.encode(), ir.id());
+    let s = shared(store, Box::new(move |_: [u8; 8]| Ok::<_, String>(blob.clone())));
+    let (m, _) = guest(block(prefix(&id), 0), SLAYER);
+    let line = s.lock().start(&m, false);
+    assert!(line.contains("scoring carrier"), "{line}");
+    (s, m, id)
+}
+
+#[test]
+fn a_carrier_scored_script_answers_no_scoring_routine() {
+    use crate::rules::scoring;
+    let store = Local::default();
+    let (s, m, _) = carried(&store, CARRIED);
+    assert!(s.lock().carried().is_some());
+    // No boundary asks for the authority: there is no work at all, so the
+    // carrier's routines are never answered in place.
+    assert_eq!(s.lock().pre_tick(&m), None);
+    assert!(!scoring::script_scores(&s.lock()));
+    for &(at, carrier) in scoring::CARRIER_SCORE_SITES {
+        assert!(
+            !scoring::drops_score(&s.lock(), at + scoring::CALL_LEN),
+            "{carrier} at {at:#x} scores as retail"
+        );
+    }
+    // Even an authority answer, were one to come, changes nothing.
+    s.lock().finish(TICK + 1, Some(true), Vec::new());
+    assert!(!scoring::script_scores(&s.lock()));
+    assert!(s.lock().carried().is_some(), "a carrier game stays one");
+    // The kill and the tick run no handler and keep no call.
+    s.lock().kill(&m, 0, Some(1));
+    s.lock().post_tick(&m);
+    let state = s.lock().state();
+    assert_eq!((state.pending, state.errors.len()), (0, 0), "{state:?}");
+    assert!(s.lock().snapshot_blocker().is_none());
+}
+
+#[test]
+fn it_runs_no_vm_and_reports_scoring_carrier() {
+    let store = Local::default();
+    let (s, _m, id) = carried(&store, CARRIED);
+    assert!(s.lock().running().is_none(), "no VM");
+    assert_eq!(store.bytes(), None, "no RULES record");
+    let state = s.lock().state();
+    assert!(state.running, "{state:?}");
+    assert_eq!(state.scoring, Some(wire::Scoring::Carrier));
+    assert_eq!(state.refused, None);
+    assert_eq!(state.script.as_deref(), Some("SWAT"));
+    assert_eq!(state.version, Some(1));
+    assert_eq!(state.hash, Some(id.to_string()));
+    assert_eq!(state.source.as_deref(), Some("live"));
+    assert_eq!(state.carrier, Some(SLAYER as u8));
+    assert_eq!((state.options, state.authority, state.budget), (None, None, None));
+    // The Live session names no script for its guests to show.
+    assert_eq!(s.lock().hash(), None);
+    // No program to swap: refused by name.
+    let other = ::rules::compile(::rules::builtin::SLAYER).unwrap();
+    let why = s.lock().swap(other).unwrap_err();
+    assert!(why.contains("scoring carrier"), "{why}");
+    // The end returns it to idle.
+    s.lock().ended();
+    let state = s.lock().state();
+    assert!(!state.running);
+    assert_eq!(state.refused.as_deref(), Some("the game ended"));
+    assert_eq!(state.scoring, None);
+
+    // A script that scores says so.
+    let (m, _) = guest(block(prefix(&slayer().id), 2), SLAYER);
+    s.lock().start(&m, false);
+    assert_eq!(s.lock().state().scoring, Some(wire::Scoring::Script));
+    // ...and takes no carrier-scored program in place: nobody would score.
+    let why = s.lock().swap(::rules::compile(CARRIED).unwrap()).unwrap_err();
+    assert!(why.contains("scoring carrier"), "{why}");
+    assert_eq!(s.lock().state().scoring, Some(wire::Scoring::Script));
+}
+
+#[test]
+fn its_requires_still_turn_the_mode_on() {
+    let ir = ::rules::compile(CARRIED_BOUNCES).unwrap();
+    assert!(crate::rules::header::asks_superbounce(&ir));
+    // The mode is read from the record's script reference, so the blob is
+    // on this machine (the game-variant store), as a stored variant's is.
+    crate::game_variants::store()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .save_script(ir.encode())
+        .unwrap();
+    let store = Local::default();
+    let (s, _m, id) = carried(&store, CARRIED_BOUNCES);
+    let state = s.lock().state();
+    assert!(state.running, "{state:?}");
+    assert_eq!(state.scoring, Some(wire::Scoring::Carrier));
+    let ext = Ext::in_effect(&block(prefix(&id), 0));
+    assert!(crate::rules::header::script_asks_superbounce(ext.script));
+    assert!(crate::variant_ext::decide(ext, None, false).superbounce());
+    // A carrier script without the capability asks for nothing.
+    let plain = ::rules::compile(CARRIED).unwrap();
+    assert!(!crate::rules::header::asks_superbounce(&plain));
+}

@@ -26,7 +26,8 @@
 //! medals and statistics, the objective engines' kill callbacks (they post
 //! events only), their objects and their traits. A refused or idle script,
 //! a guest and a film's replayed non-authority leave every routine to the
-//! engine. The evidence is in
+//! engine, and so does a `scoring carrier` script, whose game runs no VM.
+//! The evidence is in
 //! docs/engine/notes/2026-11-22-script-scoring-and-roles.md.
 
 use std::sync::Arc;
@@ -35,7 +36,7 @@ use engine::GuestMemory;
 use engine::points;
 
 use super::feature::Shared;
-use super::runtime::Runtime;
+use super::runtime::{Runtime, Status};
 
 /// The kill callbacks' stack arguments (attacker, victim, flag, kind).
 pub const KILL_POP: u32 = 16;
@@ -68,11 +69,18 @@ pub fn carrier_site(ret: u32) -> Option<&'static str> {
         .map(|&(_, carrier)| carrier)
 }
 
-/// Whether the script makes this game's rules here: one runs, and
+/// Whether the script makes this game's rules here: its VM runs, and
 /// `GAME_ENGINE_AUTHORITATIVE` has answered true for this machine. Before
-/// the first tick boundary asks, the engine keeps its rules.
+/// the first tick boundary asks, the engine keeps its rules. A `scoring
+/// carrier` script never does: the carrier's routines answer as retail
+/// (docs/game/rules-variants.md, "A script that keeps its carrier's
+/// rules").
 pub fn script_scores(rt: &Runtime) -> bool {
-    rt.running().is_some_and(|r| r.authority == Some(true))
+    match &rt.status {
+        Status::Running(r) => r.authority == Some(true),
+        Status::Carrier(_) => false,
+        Status::Idle(_) | Status::Refused { .. } | Status::Blocked { .. } => false,
+    }
 }
 
 /// Whether `SCORE_ADD`, returning to `ret`, is answered with no score.

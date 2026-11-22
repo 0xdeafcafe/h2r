@@ -13,7 +13,10 @@
 //!   game then plays as the carrier engine's lifted rules. A map the gate
 //!   blocks plays no rules at all: [`Status::Blocked`] keeps every problem,
 //!   no VM is made, and the first tick boundary ends the game
-//!   (docs/game/rules-start-gate.md, "What a blocked start shows").
+//!   (docs/game/rules-start-gate.md, "What a blocked start shows"). A
+//!   `scoring carrier` script is loaded for its header only
+//!   ([`Status::Carrier`]): after the policy check, no gate, VM or record,
+//!   and none of the moments below does anything for it.
 //! - [`Runtime::pre_tick`] before each game tick: the VM's tick begins and
 //!   its queued calls join the calls the handlers made since the last
 //!   boundary. The feature makes them, in order, in an async body
@@ -50,7 +53,7 @@ use std::collections::VecDeque;
 use std::sync::OnceLock;
 
 use ::rules::caps::{self, Kind, Status as EntryStatus, id};
-use ::rules::ir::{Event, Ir, Op};
+use ::rules::ir::{Event, Ir, Op, Scoring};
 use ::rules::vm::{Arg, Call as VmCall, Game, Input, Placed, RulesExt, ScriptError, TICK_BUDGET, Vm};
 use ::rules::policy::{self, Context};
 use ::rules::{Sha256, verify};
@@ -629,9 +632,26 @@ impl Running {
     }
 }
 
+/// A `scoring carrier` script's game (docs/game/rules-variants.md, "A
+/// script that keeps its carrier's rules"): the script is loaded for its
+/// header only. No VM runs, no `RULES` record is written and no call is
+/// made; the carrier's own scoring routines answer as retail
+/// ([`super::scoring::script_scores`] is false), and the header's
+/// `requires` still turn their modes on, since those are read from the
+/// record's script reference (`super::header`).
+pub struct Carried {
+    pub hash: Sha256,
+    pub source: Source,
+    pub name: String,
+    pub version: u16,
+    pub carrier: u8,
+}
+
 /// Whether a script runs in this game, and why not.
 pub enum Status {
     Idle(&'static str),
+    /// A `scoring carrier` script runs: the carrier engine scores.
+    Carrier(Carried),
     /// `hash`: the full hash, or the record's prefix when the blob was not
     /// found.
     Refused { hash: Option<String>, why: String },
@@ -836,6 +856,8 @@ impl Runtime {
     }
 
     /// The running blob's full hash, for the Live session's `rules` field.
+    /// A `scoring carrier` script has none: its guests need no script to
+    /// show, since the carrier engine scores and labels the game.
     pub fn hash(&self) -> Option<String> {
         self.running().map(|r| r.hash.to_string())
     }
@@ -923,6 +945,11 @@ impl Runtime {
         {
             return self.refuse(full, d.to_string());
         }
+        // `scoring carrier`: the header only. No gate (no handler reads a
+        // label), no VM and no record; the carrier engine scores.
+        if ir.header.scoring == Scoring::Carrier {
+            return self.carry(&ir, hash, source, engine);
+        }
         if let Some(why) = unhostable_refusal(&ir) {
             return self.refuse(full, why);
         }
@@ -986,6 +1013,33 @@ impl Runtime {
             hash,
             source.name()
         )
+    }
+
+    /// Plays a `scoring carrier` script ([`Carried`]): its header is kept
+    /// for `rules.state` and nothing else runs. The record stays removed.
+    fn carry(&mut self, ir: &Ir, hash: Sha256, source: Source, engine: i32) -> String {
+        let h = &ir.header;
+        let line = format!(
+            "rules: {} ({hash}) from {} on engine {engine}, scoring carrier: the carrier engine scores and no VM runs",
+            h.name,
+            source.name()
+        );
+        self.status = Status::Carrier(Carried {
+            hash,
+            source,
+            name: h.name.clone(),
+            version: h.version,
+            carrier: h.carrier,
+        });
+        line
+    }
+
+    /// The `scoring carrier` script this game plays, if any.
+    pub fn carried(&self) -> Option<&Carried> {
+        match &self.status {
+            Status::Carrier(c) => Some(c),
+            _ => None,
+        }
     }
 
     /// Stops the running script with `why`, removing its record.
@@ -1202,11 +1256,14 @@ impl Runtime {
 
     /// The game ended: the record is removed and the script stops.
     pub fn ended(&mut self) {
-        if let Status::Running(r) = &self.status {
-            eprintln!("rules: {} ended with the game", r.vm.ir().header.name);
-            self.store.remove();
-            self.status = Status::Idle("the game ended");
-        }
+        let name = match &self.status {
+            Status::Running(r) => r.vm.ir().header.name.clone(),
+            Status::Carrier(c) => c.name.clone(),
+            _ => return,
+        };
+        eprintln!("rules: {name} ended with the game");
+        self.store.remove();
+        self.status = Status::Idle("the game ended");
     }
 
     /// Swaps the running script's program between ticks, keeping every
@@ -1214,9 +1271,20 @@ impl Runtime {
     /// synced first and written after. An error keeps the old program.
     pub fn swap(&mut self, ir: Ir) -> Result<Sha256, String> {
         let film = self.film;
-        let Status::Running(r) = &mut self.status else {
-            return Err("no script runs in this game".into());
+        let r = match &mut self.status {
+            Status::Running(r) => r,
+            Status::Carrier(_) => {
+                return Err("the game's script is scoring carrier: no VM runs to swap into".into());
+            }
+            _ => return Err("no script runs in this game".into()),
         };
+        // The carrier would score nowhere: its routines stay answered in
+        // place while the new program has no handler to score.
+        if ir.header.scoring == Scoring::Carrier {
+            return Err(
+                "the new script is scoring carrier, which runs no VM; restart the game with it".into(),
+            );
+        }
         if let Err(why) = sync(r, &*self.store) {
             self.stop(why.clone());
             return Err(why);
@@ -1291,6 +1359,19 @@ impl Runtime {
                 labelled: table.view(),
                 ..Default::default()
             },
+            // No VM: no options, authority, budget or calls to report.
+            Status::Carrier(c) => wire::State {
+                running: true,
+                refused: None,
+                script: Some(c.name.clone()),
+                version: Some(c.version),
+                hash: Some(c.hash.to_string()),
+                source: Some(c.source.name().into()),
+                carrier: Some(c.carrier),
+                scoring: Some(wire::Scoring::Carrier),
+                errors,
+                ..Default::default()
+            },
             Status::Running(r) => {
                 let ir = r.vm.ir();
                 let ext = r.vm.ext();
@@ -1302,6 +1383,7 @@ impl Runtime {
                     hash: Some(r.hash.to_string()),
                     source: Some(r.source.name().into()),
                     carrier: Some(ir.header.carrier),
+                    scoring: Some(wire::Scoring::Script),
                     options: Some(r.options),
                     authority: r.authority,
                     stopped: ext.stopped.as_ref().map(describe),

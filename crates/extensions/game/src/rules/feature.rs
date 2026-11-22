@@ -23,6 +23,14 @@
 //!   the carrier's own scoring and role-making return at once
 //!   ([`super::scoring`]).
 //!
+//! A `scoring carrier` script (docs/game/rules-variants.md, "A script that
+//! keeps its carrier's rules") is started for its header only
+//! ([`runtime::Status::Carrier`]): every hook above but the start and the
+//! end then lets the game run as retail, the Live session names no script
+//! (`Runtime::hash` is none), and `rules.state` reports it running with
+//! `scoring: carrier`. Its `requires` turn their modes on through the
+//! record's script reference (`super::header`), as for any script.
+//!
 //! The superbounce mode's tick observer feeds it each bounce its medal
 //! chain files ([`bounces`]).
 

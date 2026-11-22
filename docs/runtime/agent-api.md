@@ -4265,7 +4265,7 @@ builds with the `rules` cargo feature; with the `rules` switch off
 
 | Method and access | Parameters | Result |
 |---|---|---|
-| `rules.state` (read) | `{}` or omitted | `{running, refused?, script?, version?, hash?, source?, carrier?, options?, authority?, stopped?, budget?, pending, errors, last_reload?, blocked?, labelled?}` |
+| `rules.state` (read) | `{}` or omitted | `{running, refused?, script?, version?, hash?, source?, carrier?, scoring?, options?, authority?, stopped?, budget?, pending, errors, last_reload?, blocked?, labelled?}` |
 | `rules.reload` (act) | `{ir_b64 \| source, mode?: auto \| in_place \| restart}` | `{mode: in_place \| restarted, hash, reasons, tick}` |
 
 `running` is false with the switch off, outside a multiplayer game, for
@@ -4277,9 +4277,14 @@ built-in script has hash prefix ..., and fetching a blob from Live is
 not built"). `hash` is the blob's SHA-256 in hex, or the record's
 16-digit prefix when no blob was found. While a script runs: `script`
 and `version` are its header's, `source` is `builtin` or `live`,
-`carrier` the engine index it rides, `options` the record's option bits,
-and `authority` what `GAME_ENGINE_AUTHORITATIVE` answered at the first
-tick boundary (absent before it). `stopped` names the script error that
+`carrier` the engine index it rides, `scoring` who scores the game,
+`options` the record's option bits, and `authority` what
+`GAME_ENGINE_AUTHORITATIVE` answered at the first tick boundary (absent
+before it). `scoring` is `script` when the script's VM runs and
+`carrier` for a `scoring carrier` script
+([rules-variants.md](../game/rules-variants.md#a-script-that-keeps-its-carriers-rules)),
+which runs no VM: the carrier engine scores as retail, and `options`,
+`authority`, `stopped` and `budget` are absent. `stopped` names the script error that
 stopped the VM. `budget` is the VM's tick (`tick`), the ops it has used
 (`ops`) against `limit` (20,000), and the verifier's `worst_tick`
 estimate. `pending` counts the calls waiting for the next tick boundary.

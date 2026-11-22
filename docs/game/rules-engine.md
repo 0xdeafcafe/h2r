@@ -321,6 +321,23 @@ state becomes the `RULES` record. **A refused script is logged
 with its reason for `rules.state`, and the game plays as the record's
 own engine.** Nothing runs with a call stubbed out.
 
+**A `scoring carrier` script** ([rules-variants.md](rules-variants.md#a-script-that-keeps-its-carriers-rules))
+is loaded for its header only. It passes the same prefix, engine and
+policy checks; then, before the start gate (it can declare no label), the
+runtime keeps its name, version, hash, source and carrier
+(`Status::Carrier`, `runtime::Carried`) and stops there: no VM, no `on
+init`, no `RULES` record, and no tick boundary asks for the authority or
+makes a call. `scoring::script_scores` is false for it, so none of the
+carrier's scoring or role-making routines is answered ("One scorer") and
+the carrier plays as a record with no mode does. Its `requires` still
+turn their modes on, since those are read from the record's script
+reference (`rules::header::script_asks_superbounce`), not from the
+runtime. `Runtime::hash` is none, so a Live host's session names no
+script; `rules.state` reports it running, with `scoring: carrier`; a
+`rules.reload` can only restart the game with the new blob. The log line
+is `rules: <name> (<hash>) from <source> on engine <n>, scoring carrier:
+the carrier engine scores and no VM runs`.
+
 **A blocked start.** `Status::Blocked` keeps the full hash and every
 problem's text, which `rules.state` lists as `blocked`. No VM is made and
 no record is set; `rules: blocked, the game does not start: ...` is
