@@ -256,35 +256,24 @@ impl Common {
 const LIVE_SIM_SLOTS: usize = 2;
 const BATCH_ID_ENV: &str = "H2_SIM_BATCH_ID";
 const BATCH_LOCKS_ENV: &str = "H2_SIM_BATCH_LOCKS";
-/// Set by `h2 sim batch` on each local child: the children are already
-/// side by side, so they keep the serial brain unless the match or the
-/// environment says otherwise.
-const BATCH_CHILD_ENV: &str = "H2_SIM_BATCH_CHILD";
 
 /// What `h2 sim run` sets for the bot think mode (`bots::think::Mode`),
 /// as the values of `H2_BOT_THREADS` and `H2_BOT_PIPELINE`; `None` leaves
 /// the variable alone. Per variable, in order: the environment as it is
 /// (`env_*`, `Some` when set at all), the match's `bot_threads` and
-/// `bot_pipeline`, then the default. The default is batched on
-/// `min(phantoms, cores - 1)` workers for a single run and serial for a
-/// batch child; batched pads equal serial pads (docs/game/bots.md §5.5).
+/// `bot_pipeline`, then the default, serial: on the quiet laptop four
+/// phantoms think 9% slower batched than serial in one match
+/// (docs/perf/notes/sim-10x.md), and batched pads equal serial pads
+/// (docs/game/bots.md §5.5).
 fn think_env(
     config: &sim_bench::config::MatchConfig,
     env_threads: Option<&str>,
     env_pipeline: Option<&str>,
-    batch_child: bool,
-    phantoms: usize,
-    cores: usize,
 ) -> (Option<String>, Option<String>) {
     let threads = if env_threads.is_some() {
         None
-    } else if let Some(t) = &config.bot_threads {
-        Some(t.env_value())
-    } else if batch_child {
-        None
     } else {
-        let n = phantoms.min(cores.saturating_sub(1));
-        (n > 0).then(|| n.to_string())
+        config.bot_threads.as_ref().map(|t| t.env_value())
     };
     let pipeline = if env_pipeline.is_some() {
         None
@@ -431,9 +420,6 @@ fn run_one(args: Vec<String>) -> Result<()> {
             &m.config,
             std::env::var(bots::think::THREADS_ENV).ok().as_deref(),
             std::env::var(bots::think::PIPELINE_ENV).ok().as_deref(),
-            std::env::var_os(BATCH_CHILD_ENV).is_some(),
-            m.bots.len(),
-            std::thread::available_parallelism().map_or(1, |n| n.get()),
         );
         if let Some(v) = threads {
             std::env::set_var(bots::think::THREADS_ENV, v);
@@ -733,6 +719,7 @@ fn spawn(
     run: &RunDir,
     batch: Option<(&str, &Path)>,
     audit: bool,
+    cache_seed: &[PathBuf],
 ) -> Result<Child> {
     let log = std::fs::File::create(run.log())?;
     let err = log.try_clone()?;
@@ -740,9 +727,14 @@ fn spawn(
     child
         .args(child_args(common, run))
         .env_remove(BATCH_ID_ENV)
-        .env_remove(BATCH_LOCKS_ENV)
-        .env(BATCH_CHILD_ENV, "1");
+        .env_remove(BATCH_LOCKS_ENV);
     child.env_remove(boot::host_audit::ENV);
+    // N:'s slots from the template, cloned in after the child's boot formats
+    // N: (docs/runtime/cache-slots.md, "Sim batches: a warm N:").
+    child.env_remove(vfs::CACHE_SEED_ENV);
+    if !cache_seed.is_empty() {
+        child.env(vfs::CACHE_SEED_ENV, std::env::join_paths(cache_seed)?);
+    }
     if audit {
         child.env(boot::host_audit::ENV, run.audit());
     }
@@ -979,8 +971,9 @@ fn play_runs(
     parallel: usize,
 ) -> usize {
     let shared = common.data();
-    // Z:'s map cache from the image's template (docs/runtime/cache-slots.md,
-    // "Sim batches: a warm Z:").
+    // Z:'s and N:'s map cache from the image's template
+    // (docs/runtime/cache-slots.md, "Sim batches: a warm Z:" and "Sim
+    // batches: a warm N:").
     let template = cache_template::Template::for_batch(&common.out(), dylib, disc);
     let gate = cache_template::Gate::default();
     let next = AtomicUsize::new(0);
@@ -1003,14 +996,14 @@ fn play_runs(
                     let result = data
                         .and_then(|()| stage_map_pack(&rd, &shared, &r.map))
                         .and_then(|()| {
-                            let start = cache_template::start(template.as_ref(), &gate, &rd.data());
+                            let start =
+                                cache_template::start(template.as_ref(), &gate, &rd.data(), &r.map);
                             cache = start.label();
-                            let status = spawn(common, &rd, batch, audit)?.wait()?;
-                            if let (cache_template::Start::Producer(_), Some(t)) =
-                                (&start, &template)
+                            let status = spawn(common, &rd, batch, audit, start.seed())?.wait()?;
+                            if let (Some(parts), Some(t)) = (start.saves(), &template)
                                 && status.success()
                             {
-                                save_template(t, &rd.data());
+                                save_template(t, &rd.data(), parts);
                             }
                             // Dropping the start lets runs waiting for the
                             // template go.
@@ -1527,20 +1520,23 @@ fn harvest_runs(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-/// Saves a finished cold run's Z: slots as the batch's template.
-fn save_template(t: &cache_template::Template, data: &Path) {
+/// Saves the parts of the template a finished producer run made.
+fn save_template(t: &cache_template::Template, data: &Path, parts: &[cache_template::Part]) {
     use cache_template::Saved;
-    match t.save(data) {
-        Ok(Saved::Saved { slots, cloned }) => println!(
-            "map cache: saved {slots} Z: slots as template {} ({})",
-            t.key(),
-            if cloned { "cloned" } else { "copied, no clone" }
-        ),
-        Ok(Saved::Exists) => {}
-        Ok(Saved::NoSlots) => {
-            println!("map cache: the run left no finished Z: slot; every run copies Z:'s maps")
+    for part in parts {
+        let what = part.label();
+        match t.save(data, part) {
+            Ok(Saved::Saved { files, cloned }) => println!(
+                "map cache: saved {what} ({files} files) in template {} ({})",
+                t.key(),
+                if cloned { "cloned" } else { "copied, no clone" }
+            ),
+            Ok(Saved::Exists) => {}
+            Ok(Saved::Nothing) => {
+                println!("map cache: the run left no whole {what}; runs copy it from the disc")
+            }
+            Err(e) => println!("map cache: {what} not saved in template {}: {e}", t.key()),
         }
-        Err(e) => println!("map cache: template {} not saved: {e}", t.key()),
     }
 }
 
@@ -1708,6 +1704,7 @@ mod tests {
             ticks: 10,
             state_hashes_v1: Vec::new(),
             state_components_v1: None,
+            state_digest_v1: None,
             game_seconds: 0.3,
             wall: Default::default(),
             players: vec![p(0, arm_a, 1), p(1, arm_b, kills_b)],
@@ -1731,25 +1728,18 @@ mod tests {
         };
         let none = cfg(None, None);
         let s = |v: &str| Some(v.to_string());
-        // A single run: batched on min(phantoms, cores - 1).
-        assert_eq!(think_env(&none, None, None, false, 4, 8), (s("4"), None));
-        assert_eq!(think_env(&none, None, None, false, 4, 3), (s("2"), None));
-        assert_eq!(think_env(&none, None, None, false, 15, 64), (s("15"), None));
-        // One core: nothing to batch on.
-        assert_eq!(think_env(&none, None, None, false, 4, 1), (None, None));
-        // A batch child stays serial.
-        assert_eq!(think_env(&none, None, None, true, 4, 8), (None, None));
-        // The match's keys beat the default, in a batch child too.
+        // The default leaves both alone: serial.
+        assert_eq!(think_env(&none, None, None), (None, None));
+        // The match's keys beat the default.
         let keyed = cfg(Some(BotThreads::Count(2)), Some(true));
-        assert_eq!(think_env(&keyed, None, None, false, 4, 8), (s("2"), s("1")));
-        assert_eq!(think_env(&keyed, None, None, true, 4, 8), (s("2"), s("1")));
+        assert_eq!(think_env(&keyed, None, None), (s("2"), s("1")));
         let off = cfg(Some(BotThreads::Word("off".into())), Some(false));
-        assert_eq!(think_env(&off, None, None, false, 4, 8), (s("off"), s("0")));
+        assert_eq!(think_env(&off, None, None), (s("off"), s("0")));
         // The environment beats the match and the default, each variable alone.
-        assert_eq!(think_env(&keyed, Some("0"), None, false, 4, 8), (None, s("1")));
-        assert_eq!(think_env(&keyed, None, Some("0"), false, 4, 8), (s("2"), None));
-        assert_eq!(think_env(&none, Some("0"), None, false, 4, 8), (None, None));
-        assert_eq!(think_env(&keyed, Some(""), Some(""), false, 4, 8), (None, None));
+        assert_eq!(think_env(&keyed, Some("0"), None), (None, s("1")));
+        assert_eq!(think_env(&keyed, None, Some("0")), (s("2"), None));
+        assert_eq!(think_env(&none, Some("0"), None), (None, None));
+        assert_eq!(think_env(&keyed, Some(""), Some("")), (None, None));
     }
 
     #[test]
