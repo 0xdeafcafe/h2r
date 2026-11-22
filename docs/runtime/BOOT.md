@@ -162,9 +162,7 @@ fed on the guest's clock, the callback count, a monotonic clock and
     (`0x2d5b77`, which writes `xapi::register::addr::CACHE_ROW`).
 - **`d3d_diag.rs`**: a backend wrapper; the report gains draw outcomes by
   target, the texture formats drawn and device events by reason, and
-  `H2_BOOT_DRAWLOG` logs whole frames. `H2_SWEEP_DIAG=<file>`
-  (`sweep_diag.rs`) logs one level loading-screen frame: every draw's
-  combiner words and blend state, and the target read back after each.
+  `H2_BOOT_DRAWLOG` logs whole frames.
 
 ## Measuring the idle menu
 

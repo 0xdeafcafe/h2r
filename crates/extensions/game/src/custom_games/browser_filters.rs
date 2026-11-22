@@ -14,7 +14,7 @@ use live_hle::Hle;
 use live_proto::hopper::variant::GameType;
 use live_proto::session::{BrowserFilters, BrowserKind, CampaignTitle, MapCategory};
 
-use crate::list_class::{self, Button, ListClass, Rows};
+use crate::list_class::{Button, ListClass, Rows};
 use crate::ui::{Chosen, LABEL_SLOT, VALUE_SLOT};
 use crate::ui_kit::{
     dialog::{DialogBase, DialogSpec},

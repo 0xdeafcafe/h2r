@@ -31,7 +31,6 @@ pub mod superbounce_view;
 pub mod host_lobby;
 pub mod host_memory;
 pub mod memory_forensics;
-#[cfg(feature = "serve-memory")]
 pub mod memory_serve;
 pub mod hot;
 pub mod live;
