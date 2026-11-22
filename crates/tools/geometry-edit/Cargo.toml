@@ -18,6 +18,8 @@ mesh-edit = { path = "../mesh-edit" }
 mopp = { path = "../../formats/mopp" }
 # The snapshot undo stack every tool uses.
 editor-core = { path = "../editor-core" }
+# A solid added to a structure's level collision: compile, merge, MOPP.
+collision-build = { path = "../collision-build" }
 
 [dev-dependencies]
 # The invented textured map (one cluster, a local raw block).

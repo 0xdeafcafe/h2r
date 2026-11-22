@@ -212,6 +212,18 @@ pub fn write_patched<R: Read + Seek>(
         pair.extend_from_slice(&at.to_le_bytes());
         editor.patch_metadata(g.root, &pair)?;
     }
+    // The Modeling tool's grown blocks (a level's collision with a solid
+    // added): the copy in the ordinary metadata, the pair wherever its tag
+    // is, a structure BSP's region included.
+    for g in &changes.geometry_grown {
+        let at = editor.append_metadata(&g.bytes, g.align)?;
+        let mut pair = g.count.to_le_bytes().to_vec();
+        pair.extend_from_slice(&at.to_le_bytes());
+        match g.pair_space {
+            None => editor.patch_metadata(g.pair, &pair)?,
+            Some(space) => editor.patch_bsp(space, g.pair, &pair)?,
+        }
+    }
     Ok(editor.write_to(out)?)
 }
 

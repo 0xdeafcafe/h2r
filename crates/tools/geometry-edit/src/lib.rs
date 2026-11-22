@@ -21,9 +21,14 @@
 //!   model's strips are refused and named.
 //! - **Use for lower LODs** points a model permutation's lower levels of
 //!   detail at an edited section.
+//! - [`level_collision`]: a solid added to a structure's level collision
+//!   (`collision_build::level`), read from the map and written back as
+//!   patches and grown blocks in the ordinary metadata, or staged for the
+//!   live game.
 
 mod grow;
 mod import;
+pub mod level_collision;
 mod session;
 mod target;
 mod visibility;
