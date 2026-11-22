@@ -12,12 +12,10 @@ use runtime::GuestFault;
 
 use crate::list_class;
 use crate::ui_kit::{
-    dialog::{DialogBase, PICKER_ANIMATION},
+    dialog::PICKER_ANIMATION,
     dialog_tag, ids,
-    input::{Glyph, Prompt},
     page::{ListPage, described},
     screen::{KitScreen, KitTexts, Row, Then},
-    view::Opener,
 };
 
 pub const SCREEN: &str = "clanker_player_options";
@@ -522,24 +520,12 @@ async fn add_emblem(
     Ok(())
 }
 
-// Inside the panel below the title, above the emblem and clear of the list.
-const PROFILE_LINE: list_class::TextBlock = list_class::TextBlock {
-    rect: [68, -15, 42, 249],
-    font: 1,
-    colour: [0.560784, 0.694118, 0.811765],
-    animation: PICKER_ANIMATION,
-};
-
 fn card_screen(current: &Current) -> KitScreen {
     let (name, difficulty, style, summary) =
         (current.clone(), current.clone(), current.clone(), current.clone());
-    KitScreen::new(
-        "clanker-card",
-        SCREEN,
-        ids::family("clanker card"),
-        "Clanker (bot)",
-    )
-    .dialog(DialogBase::Large, Opener::XBOX_LIVE_MENU)
+    // The profile line goes in the doc's description block: inside the
+    // panel below the title, above the emblem and clear of the list.
+    KitScreen::new("clanker-card", SCREEN, ids::family("clanker card"))
     .row(Row::info("Gamertag", move || field(&name, |v| &v.name)))
     .row(Row::info_from_source("Difficulty", move || {
         card_value(&difficulty, |v| {
@@ -552,8 +538,8 @@ fn card_screen(current: &Current) -> KitScreen {
         }).unwrap_or_default()
     }))
     .row(Row::action("Back", || Then::Close))
-    .live_help(PROFILE_LINE, move || field(&summary, |v| &v.profile))
-    .prompts(&[Prompt::new(&[Glyph::B], "Back")])
+    .live_help(move || field(&summary, |v| &v.profile))
+    .description_animation(PICKER_ANIMATION)
 }
 
 pub(crate) fn page_sample() -> ListPage {
@@ -798,7 +784,7 @@ mod tests {
     fn the_profile_line_refreshes_without_moving_focus_and_preserves_the_card_rows() {
         use crate::list_class::Rows;
         use crate::ui_kit::{
-            dialog::DialogGeometry,
+            dialog::{DialogBase, DialogGeometry},
             spec::Describe,
             view::{Metrics, Synthetic},
         };
@@ -824,19 +810,18 @@ mod tests {
         assert!(!screen.live_text().redraw);
         assert_eq!(screen.spec().description_text().as_deref(), Some(updated.as_str()));
 
-        let [top, left, bottom, right] = PROFILE_LINE.rect;
+        let profile = screen.spec().description.expect("the profile line's block");
+        let [top, left, bottom, right] = profile.rect;
         let geometry = DialogGeometry::fallback_for(DialogBase::Large);
         let list_right = geometry.list.anchor[0] + geometry.rows.label.0.right;
         assert!(left > list_right);
         assert!(bottom > EMBLEM_RECT[0]);
         assert!(top < geometry.header.bottom && right <= geometry.header.right);
-        let encoded = PROFILE_LINE.bytes();
-        assert_eq!(u16::from_le_bytes([encoded[4], encoded[5]]), PICKER_ANIMATION);
-        assert!(Synthetic.line_height(PROFILE_LINE.font) <= i32::from(top - bottom));
+        assert!(Synthetic.line_height(profile.font) <= i32::from(top - bottom));
         for i in 0..256 {
             let text = NameProfile::for_name(&format!("Circuit {i}")).summary();
             assert!(!text.contains('\n'));
-            assert!(Synthetic.width(PROFILE_LINE.font, &text) <= i32::from(right - left));
+            assert!(Synthetic.width(profile.font, &text) <= i32::from(right - left));
         }
     }
 

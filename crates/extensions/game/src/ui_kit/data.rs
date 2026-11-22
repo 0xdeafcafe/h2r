@@ -580,6 +580,23 @@ pub fn fill(t: &str, slots: &[(&str, &str)]) -> Result<String, String> {
     Ok(out.replace('\u{0}', "{").replace('\u{1}', "}"))
 }
 
+// ---- which screens draw from their doc ----
+
+/// The screens whose presentation is their doc's alone: the game and the
+/// editor build them from it ([`crate::ui_kit::screen::KitScreen::new`]).
+/// Every other screen's doc is written from its Rust by the converter
+/// ([`export`]) and held to it by the equivalence test, until its Rust
+/// reads the doc too.
+pub const FROM_DOC: [&str; 7] = [
+    "kit.example",
+    "kit.choices",
+    "kit.dialog",
+    "kit.dialog.large",
+    crate::clankers::SCREEN,
+    crate::firefight::options::SCREEN,
+    crate::clanker_card::SCREEN,
+];
+
 // ---- where they are, and the loaded set ----
 
 /// A screen doc's path in a checkout: `assets/ui/screens/<name>.yaml`.

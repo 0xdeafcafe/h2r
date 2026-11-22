@@ -76,20 +76,26 @@ A screen is data a check can read. `ui_kit::spec::ScreenSpec` says what a screen
    `KitScreen` needs `2 + 3 × rows` slots (the title, a label, a value and
    a description per row, then the footer legend); `KitScreen::class` panics
    at install if the family is too small.
-2. **Declare it.**
+2. **Declare it.** Its presentation is its doc,
+   `assets/ui/screens/<name>.yaml` ([ui-builder.md](ui-builder.md)
+   "Screens in YAML"): the title, the legend, the kind and layout (the
+   Controls list, the level select's, or a dialog on Quick Options or the
+   large dialog over a named opener), the description block, whether it
+   scrolls, and the fixed rows' labels and descriptions.
+   `KitScreen::new(feature, name, ids)` reads it, and panics with the
+   doc's named error when the screen has none; the tests load every doc
+   first. Write a new screen's doc before its Rust (copy a like screen's:
+   `kit.example.yaml` for a list, `kit.dialog.yaml` for a settings
+   dialog); the converter builds the screen to write it, so it can't make
+   the first one. The Rust is the rows and what they do:
 
    ```rust
    const IDS: Family = ids::family("kit.example");
-   let screen = KitScreen::new("kit-example", "kit.example", IDS, "Example")
+   let screen = KitScreen::new("kit-example", "kit.example", IDS)
        .row(Row::value("Grunts", &["On", "Off"], get, set).describe("Grunts' heads pop."))
        .row(Row::info("Status", || "Ready".into()))
        .row(Row::text("Name", 15, get_name, |t| format!("typed {t:?}")))
-       .row(Row::action("Start", || Then::close_then(start_level)).describe("Start the level."))
-       .prompts(&[
-           Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
-           Prompt::new(&[Glyph::A], "Start"),
-           Prompt::new(&[Glyph::B], "Back"),
-       ]);
+       .row(Row::action("Start", || Then::close_then(start_level)).describe("Start the level."));
    let screen = Arc::new(screen);
    registry.add(&KitTexts(Arc::clone(&screen)))?; // its texts, as a locale source (feature ui-kit-texts.<name>)
    registry.add(&screen.class())?;                 // the list class
@@ -101,28 +107,32 @@ A screen is data a check can read. `ui_kit::spec::ScreenSpec` says what a screen
    the value picker on them, retail's `low_level_settings`, see
    [ui-builder.md](ui-builder.md) "The value picker"; a toggle is two values), `Row::info` (read-only), and `Row::text`
    (A opens the game's keyboard; the typed text comes back once the keyboard
-   closes). `.layout(ListLayout, ValueStyle::Inline)` moves the list onto a
-   one-text skin and puts values in the label (`Mythic: On`), as the skulls
-   page does. `.description(TextBlock)` adds the focused row's description.
-   Use `.live_help(block, get_text)` for a line shared by all rows, such as
-   the Clanker profile. It redraws when the text changes even if focus stays
-   on the same row.
-   `.dialog(DialogBase::QuickOptions, opener)` makes the screen a dialog of its
+   closes). A doc row (`row.N`) gives the row in that place its label, and
+   its description when it has one. `layout: level_select` moves the list
+   onto the level select's one-text skin and puts values in the label
+   (`Mythic: On`), as the skulls page does. A `description` widget adds
+   the focused row's description in its block. Use `.live_help(get_text)`
+   for a line in that block shared by all rows, such as the Clanker
+   profile; `.description_animation(track)` gives the block a widget
+   animation of its own. It redraws when the text changes even if focus
+   stays on the same row.
+   `kind: dialog`, `layout: settings`, `backing: over` and an `opener`
+   (`KitScreen::dialog(DialogBase::QuickOptions, opener)`) make the screen a dialog of its
    rows over whatever opened it, Quick Options inside and out: its panel and
    header, its own list (`setting_lists`, eleven rows from (-254, 87)), each
    row's name left and its value alone in the value column
    (`ValueStyle::Setting`: `Count  4`, no arrows), and the focused row's
    description in its one-line help line (`dialog::QUICK_HELP_TEXT`, 52
-   units at most) unless `.description` names another block. A settings
-   page that should look like the game's own (Clankers, Halo 1 Options)
-   is this and nothing more: no `.layout`, no `.description`, plus
+   units at most) unless the doc places its description elsewhere. A
+   settings page that should look like the game's own (Clankers, Halo 1
+   Options) is this and nothing more, plus
    `.header(icon)` for Quick Options' game type picture, which shows the
    focused row's `Row::icon` ([ui-builder.md](ui-builder.md) "A page's
    header"). `Row::explain` is what the value picker says about a value
    row, when it should say more than the one-line description. Or
-   `DialogBase::Large`, the one the game maps have; see
-   [ui-builder.md](ui-builder.md) "The Dialog kind". The prompts go in the footer
-   (below). `.scrolls()` says more rows than the list shows is meant.
+   `layout: large` (`DialogBase::Large`), the one the game maps have; see
+   [ui-builder.md](ui-builder.md) "The Dialog kind". The legend's prompts go in the footer
+   (below). `scrolls: true` says more rows than the list shows is meant.
    **Choice rows.** A row of many choices over a setting is a
    `ui_kit::choice::ChoiceRow`, the sibling of the Halo 1 options'
    two-choice `OptionRow`. It names a settings `Def`, a label and a
@@ -141,15 +151,13 @@ A screen is data a check can read. `ui_kit::spec::ScreenSpec` says what a screen
        .icon(icon::SQUARES);
    static LEVEL: ChoiceRow = ChoiceRow::new(&BOTS_LEVEL, "Difficulty", "How well they play.")
        .icon(icon::SKULL);
-   let page = KitScreen::new("bots", "bots", ids::family("bots"), "CLANKERS")
-       .dialog(DialogBase::QuickOptions, Opener::GAME_SETUP_CLANKERS)
+   // assets/ui/screens/bots.yaml: kind dialog, layout settings,
+   // backing over, opener game-setup.clankers, title "CLANKERS",
+   // legend [[[Left, Right], "CHANGE"], [B, "BACK"]].
+   let page = KitScreen::new("bots", "bots", ids::family("bots"))
        .header(icon::SPARTAN)
        .row(COUNT.row(Arc::clone(&store)))
-       .row(LEVEL.row(store))
-       .prompts(&[
-           Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
-           Prompt::new(&[Glyph::B], "Back"),
-       ]);
+       .row(LEVEL.row(store));
    ```
 
    The kit's own example is `kit.choices` (`h2 ui preview kit.choices`,
@@ -162,7 +170,8 @@ A screen is data a check can read. `ui_kit::spec::ScreenSpec` says what a screen
    window and slot instead, or it ends up under the lobby. For that, a
    `Rows::press` returns `Chosen::Push(name)` (`list_class::push`), with a
    request built the way the Halo 1 Options row builds its own.
-4. **Check it.** Add the screen to `ui_kit::screens::NAMES` and `sample`. The
+4. **Check it.** Add the screen to `ui_kit::screens::NAMES` and `sample`,
+   and to `ui_kit::data::FROM_DOC`. The
    tests then check it without the disc, and against the disc when it's
    there (below).
 5. **Preview it.**

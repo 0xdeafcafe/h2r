@@ -6,11 +6,11 @@
 //!
 //! ```ignore
 //! const IDS: Family = ids::family("kit.example");
-//! let s = KitScreen::new("kit-example", "kit.example", IDS, "Example")
+//! // Title, legend, layout and labels: assets/ui/screens/kit.example.yaml.
+//! let s = KitScreen::new("kit-example", "kit.example", IDS)
 //!     .row(Row::value("Grunts", &["On", "Off"], get, set))
 //!     .row(Row::info("Status", status))
-//!     .row(Row::action("Start", || Then::close_then(start)))
-//!     .prompts(&[Prompt::new(&[Glyph::A], "Start"), Prompt::new(&[Glyph::B], "Back")]);
+//!     .row(Row::action("Start", || Then::close_then(start)));
 //! let s = Arc::new(s);
 //! registry.add(&KitTexts(Arc::clone(&s)))?;
 //! registry.add(&s.class())?;
@@ -31,7 +31,7 @@ use crate::ui::{Chosen, LABEL_SLOT, VALUE_SLOT};
 use crate::ui_kit::animation::TransitionStyle;
 use crate::ui_kit::dialog::{DialogBase, DialogSpec};
 use crate::ui_kit::ids::{self, Family};
-use crate::ui_kit::input::{Glyph, Input, OpenerGuard, Prompt};
+use crate::ui_kit::input::{Input, OpenerGuard, Prompt};
 use crate::ui_kit::lifecycle::AfterClose;
 use crate::ui_kit::spec::{self, Describe, ListPlace, RowSpec, ScreenSpec, ValueStyle};
 use crate::ui_kit::view::Opener;
@@ -339,6 +339,9 @@ pub struct KitScreen {
     guard: OpenerGuard,
     /// Shown as a dialog of rows on a retail dialog, over its opener.
     dialog: Option<(DialogBase, Opener)>,
+    /// Its doc's fixed rows (`row.N`): each row's label and description,
+    /// by place ([`KitScreen::row`]).
+    doc_rows: Vec<Option<(String, Option<String>)>>,
     /// Quick Options' header picture, and the icon it shows for a row with
     /// none of its own ([`KitScreen::header`]).
     header: Option<u16>,
@@ -347,9 +350,113 @@ pub struct KitScreen {
 }
 
 impl KitScreen {
-    /// `feature` switches it (`features.<id>`), `name` is what `Open` rows
-    /// name, `ids` its family in [`crate::ui_kit::ids::FAMILIES`].
-    pub fn new(feature: &'static str, name: &'static str, ids: Family, title: &str) -> Self {
+    /// `feature` switches it (`features.<id>`), `name` is its screen in
+    /// [`crate::ui_kit::screens::NAMES`] and what `Open` rows name, `ids`
+    /// its family in [`crate::ui_kit::ids::FAMILIES`]. Its presentation is
+    /// its doc's, `assets/ui/screens/<name>.yaml` ([`KitScreen::from_doc`]).
+    /// Panics with the doc's named error when the screen has none or its
+    /// doc can't be shown: the tests load every doc first.
+    pub fn new(feature: &'static str, name: &'static str, ids: Family) -> Self {
+        let doc = crate::ui_kit::data::require(name).unwrap_or_else(|e| panic!("{e}"));
+        Self::from_doc(feature, name, ids, &doc).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// The screen as doc `doc` presents it (docs/game/ui-builder.md
+    /// "Screens in YAML"): its title, its legend, its kind and layout (the
+    /// Controls list, the level select's, or a dialog on Quick Options or
+    /// the large dialog over a named opener), its description block (a
+    /// dialog's is its base's help line unless the doc places it
+    /// elsewhere), whether it scrolls, and its fixed rows' labels and
+    /// descriptions. The rows, what they do and any live text stay the
+    /// caller's.
+    pub fn from_doc(
+        feature: &'static str,
+        name: &'static str,
+        ids: Family,
+        doc: &crate::ui_kit::data::ScreenDoc,
+    ) -> Result<Self, crate::ui_kit::data::DataError> {
+        use crate::ui_kit::data::{self, DataError};
+        let file = format!("screens/{}.yaml", doc.screen);
+        let bad = |at: &str, what: &str| DataError::new(&file, at, what);
+        let mut s = Self::bare(feature, name, ids, &doc.text("title", &[])?);
+        if doc.widget("legend").is_some() {
+            s.prompts = doc.prompts("legend")?;
+        }
+        s.scrolls = doc.scrolls;
+        let layout = doc.layout.as_deref().unwrap_or("");
+        let level_select = (doc.kind.as_str(), layout) == ("list", "level_select");
+        match (doc.kind.as_str(), layout) {
+            ("list", "controls") => {}
+            ("list", "level_select") => {
+                s = s.layout(crate::skulls_menu::LIST_LAYOUT, ValueStyle::Inline);
+            }
+            ("dialog", "settings" | "large") => {
+                let base = if layout == "settings" {
+                    DialogBase::QuickOptions
+                } else {
+                    DialogBase::Large
+                };
+                let opener = match (doc.backing.as_deref(), doc.opener.as_deref()) {
+                    (Some("over"), Some(o)) => data::opener_named(o)
+                        .ok_or_else(|| bad("opener", &format!("no opener {o:?}")))?,
+                    _ => return Err(bad("backing", "a kit dialog is over an opener (backing: over)")),
+                };
+                s = s.dialog(base, opener);
+            }
+            (k, l) => {
+                return Err(bad(
+                    "layout",
+                    &format!("a kit screen is a list (controls, level_select) or a dialog (settings, large), not {k} {l}"),
+                ));
+            }
+        }
+        if let Some(w) = doc.widget("description")
+            && let Some(c) = &w.component
+        {
+            let design = data::design();
+            let preset = design.component(c)?;
+            let (font, colour) = design.text_style(c)?;
+            let [x, y] = w
+                .at
+                .or(preset.at)
+                .ok_or_else(|| bad("widgets.description.at", "the description has a place"))?;
+            let [width, height] = w
+                .size
+                .or(preset.size)
+                .ok_or_else(|| bad("widgets.description.size", "the description has a size"))?;
+            let block = TextBlock {
+                rect: [y, x, y - height as i16, x + width as i16],
+                font,
+                colour,
+                // The level select's description fades in with its list.
+                animation: if level_select {
+                    crate::skulls_menu::DESCRIPTION_TEXT.animation
+                } else {
+                    0
+                },
+            };
+            let rgb = crate::ui_kit::components::rgb;
+            let base_help = s.dialog.and_then(|(b, _)| b.help());
+            let is_base_help = base_help.is_some_and(|h| {
+                h.rect == block.rect && h.font == block.font && rgb(h.colour) == rgb(block.colour)
+            });
+            if !is_base_help {
+                s.description = Some(block);
+            }
+        }
+        for (id, r) in &doc.rows {
+            let Some(n) = id.strip_prefix("row.").and_then(|n| n.parse::<usize>().ok()) else {
+                continue;
+            };
+            if s.doc_rows.len() <= n {
+                s.doc_rows.resize(n + 1, None);
+            }
+            s.doc_rows[n] = Some((r.text.clone(), r.help.clone()));
+        }
+        Ok(s)
+    }
+
+    fn bare(feature: &'static str, name: &'static str, ids: Family, title: &str) -> Self {
         KitScreen {
             feature,
             name,
@@ -370,11 +477,20 @@ impl KitScreen {
             typing: Mutex::new(None),
             guard: OpenerGuard::default(),
             dialog: None,
+            doc_rows: Vec::new(),
             header: None,
             texts_id: OnceLock::new(),
         }
     }
-    pub fn row(mut self, row: Row) -> Self {
+    /// The next row: its label (and description, when the doc gives one)
+    /// the doc's when the doc has the row.
+    pub fn row(mut self, mut row: Row) -> Self {
+        if let Some(Some((label, help))) = self.doc_rows.get(self.rows.len()) {
+            row.label = label.clone();
+            if let Some(h) = help {
+                row.description = Some(h.clone());
+            }
+        }
         self.rows.push(row);
         self
     }
@@ -424,13 +540,9 @@ impl KitScreen {
         self.description = Some(block);
         self
     }
-    /// A page-wide line that can change while the same row stays focused.
-    pub fn live_help(
-        mut self,
-        block: TextBlock,
-        text: impl Fn() -> String + Send + Sync + 'static,
-    ) -> Self {
-        self.description = Some(block);
+    /// A page-wide line, in the doc's description block, that can change
+    /// while the same row stays focused.
+    pub fn live_help(mut self, text: impl Fn() -> String + Send + Sync + 'static) -> Self {
         self.live_help = Some(LiveHelp {
             get: Arc::new(text),
             drawn: Mutex::default(),
@@ -446,6 +558,14 @@ impl KitScreen {
     }
     pub fn prompts(mut self, prompts: &[Prompt]) -> Self {
         self.prompts = prompts.to_vec();
+        self
+    }
+    /// The description block's animation (its widget's track), where the
+    /// doc's block shows with one of its own.
+    pub fn description_animation(mut self, animation: u16) -> Self {
+        if let Some(d) = &mut self.description {
+            d.animation = animation;
+        }
         self
     }
     /// The opener-press guard ([`crate::ui_kit::input::OPENER_GUARD`] by
@@ -916,13 +1036,7 @@ const IDS: Family = ids::family("kit.example");
 pub fn example() -> (KitScreen, Arc<AtomicUsize>) {
     let grunts = Arc::new(AtomicUsize::new(0));
     let (g, s) = (Arc::clone(&grunts), Arc::clone(&grunts));
-    let screen = KitScreen::new("kit-example", "kit.example", IDS, "Example")
-        .description(TextBlock {
-            rect: [-24, -242, -64, 120],
-            font: 1,
-            colour: [0.678431, 0.764706, 0.847059],
-            animation: 0,
-        })
+    let screen = KitScreen::new("kit-example", "kit.example", IDS)
         .row(
             Row::value(
                 "Grunts",
@@ -940,8 +1054,7 @@ pub fn example() -> (KitScreen, Arc<AtomicUsize>) {
             Row::text("Name", 15, || "Chief".into(), |t| format!("typed {t:?}"))
                 .describe("Choose a display name."),
         )
-        .row(Row::action("Start", || Then::Close).describe("Start the level."))
-        .prompts(&[Prompt::new(&[Glyph::B], "Back")]);
+        .row(Row::action("Start", || Then::Close).describe("Start the level."));
     (screen, grunts)
 }
 
@@ -1291,5 +1404,66 @@ mod tests {
         s.texts.write(&mut g).unwrap();
         g.read(BASE, &mut title).unwrap();
         assert_eq!(title, s.title.as_bytes());
+    }
+
+    fn doc(yaml: &str) -> crate::ui_kit::data::ScreenDoc {
+        crate::ui_kit::data::ScreenDoc::parse("t", yaml, crate::ui_kit::data::design())
+            .unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// A kit screen is its doc's: the title, the legend, the dialog and
+    /// its opener, the description block and the fixed rows' labels; the
+    /// rows' values and presses stay the caller's.
+    #[test]
+    fn a_kit_screen_is_presented_as_its_doc_says() {
+        let d = doc(concat!(
+            "screen: t\nkind: dialog\nlayout: large\nbacking: over\nopener: main-menu\n",
+            "widgets:\n",
+            "  title:\n    component: title\n    text: \"FROM THE DOC\"\n",
+            "  description:\n    component: description\n    at: [10, 60]\n    size: [200, 30]\n",
+            "  legend:\n    component: legend\n    prompts: [[B, \"BACK\"]]\n",
+            "rows:\n  row.0:\n    text: \"Doc Label\"\n    help: \"Doc help.\"\n",
+        ));
+        let s = KitScreen::from_doc("t", "t", IDS, &d)
+            .unwrap()
+            .row(Row::action("Rust Label", || Then::Close).describe("Rust help."))
+            .row(Row::action("Second", || Then::Close))
+            .description_animation(7);
+        let spec = s.spec();
+        assert_eq!(spec.title, "FROM THE DOC");
+        assert_eq!(spec.prompts.len(), 1);
+        assert_eq!(spec.prompts[0].text, "BACK");
+        assert_eq!(spec.dialog.as_ref().unwrap().base, DialogBase::Large);
+        assert_eq!(spec.dialog.as_ref().unwrap().opener, Opener::MAIN_MENU);
+        assert_eq!(spec.description.unwrap().rect, [60, 10, 30, 210]);
+        assert_eq!(s.description.unwrap().animation, 7);
+        assert_eq!(spec.rows[0].label, "Doc Label");
+        assert_eq!(spec.rows[0].description.as_deref(), Some("Doc help."));
+        assert_eq!(spec.rows[1].label, "Second", "a row the doc doesn't have keeps its label");
+    }
+
+    /// A dialog's description on its base's help line is the base's: the
+    /// screen names no block of its own.
+    #[test]
+    fn a_dialogs_help_line_stays_its_bases() {
+        let help = DialogBase::QuickOptions.help().unwrap();
+        let [top, left, bottom, right] = help.rect;
+        let d = doc(&format!(
+            "screen: t\nkind: dialog\nlayout: settings\nbacking: over\nopener: game-setup.clankers\nwidgets:\n  title:\n    component: title\n    text: \"T\"\n  description:\n    component: description\n    at: [{left}, {top}]\n    size: [{}, {}]\n",
+            right - left,
+            top - bottom
+        ));
+        let s = KitScreen::from_doc("t", "t", IDS, &d).unwrap();
+        assert_eq!(s.description, None);
+        assert_eq!(s.description_block().map(|b| b.rect), Some(help.rect));
+    }
+
+    #[test]
+    fn a_doc_a_kit_screen_cannot_take_is_a_named_error() {
+        let d = doc("screen: t\nkind: hud\nlayout: none\nwidgets:\n  title:\n    text: \"T\"\n");
+        let e = KitScreen::from_doc("t", "t", IDS, &d).err().unwrap();
+        assert_eq!(e.at, "layout");
+        let d = doc("screen: t\nkind: list\nlayout: controls\n");
+        assert_eq!(KitScreen::from_doc("t", "t", IDS, &d).err().unwrap().at, "widgets.title.text");
     }
 }

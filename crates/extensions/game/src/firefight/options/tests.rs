@@ -1,4 +1,5 @@
 use super::*;
+use crate::ui_kit::view::Opener;
 use crate::ui::Chosen;
 use crate::ui_kit::input::Input::{self, *};
 use crate::ui_kit::page::{ListEffect, ListPage, Page, described, named, run};
@@ -361,7 +362,9 @@ fn the_page_has_a_row_per_setting_and_a_row_text_of_its_own() {
 /// The copy is spaced and punctuated as the other pages' is.
 #[test]
 fn the_copy_is_spaced() {
-    let mut all: Vec<&str> = vec![ROW_LABEL, ROW_HELP, TITLE];
+    let doc = crate::ui_kit::data::require(SCREEN).unwrap();
+    let title = doc.text("title", &[]).unwrap();
+    let mut all: Vec<&str> = vec![ROW_LABEL, ROW_HELP, &title];
     for r in &ROWS {
         all.extend([r.label, r.description, r.explain, r.def.help]);
     }
@@ -381,7 +384,7 @@ fn the_copy_is_spaced() {
         assert!(!t.is_empty());
     }
     assert!(ROW_LABEL.ends_with("..."));
-    assert_eq!(TITLE, TITLE.to_uppercase());
+    assert_eq!(title, title.to_uppercase());
 }
 
 #[test]

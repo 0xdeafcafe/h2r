@@ -168,3 +168,12 @@ fn the_design_tokens_are_the_geometry_the_kit_draws() {
     assert_eq!(d.alpha["unfocused"], UNFOCUSED_ALPHA);
     assert_eq!(d.alpha["frame_dim"], FRAME_DIM);
 }
+
+#[test]
+fn the_screens_drawn_from_their_docs_are_screens_with_docs() {
+    for name in FROM_DOC {
+        assert!(NAMES.contains(&name), "{name} is not in screens::NAMES");
+        require(name).unwrap_or_else(|e| panic!("{e}"));
+        assert!(screens::live(name).is_some(), "{name}");
+    }
+}

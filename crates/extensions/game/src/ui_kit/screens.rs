@@ -425,19 +425,9 @@ pub fn dialog_example(
         DialogBase::QuickOptions => ("kit-dialog", "kit.dialog"),
         DialogBase::Large | DialogBase::ValuePicker => ("kit-dialog-large", "kit.dialog.large"),
     };
-    crate::ui_kit::screen::KitScreen::new(
-        feature,
-        name,
-        crate::ui_kit::ids::family(name),
-        "Choices",
-    )
-    .dialog(base, crate::ui_kit::view::Opener::MAIN_MENU)
-    .row(COUNT.row(Arc::clone(&store)))
-    .row(LEVEL.row(store))
-    .prompts(&[
-        Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
-        Prompt::new(&[Glyph::B], "Back"),
-    ])
+    crate::ui_kit::screen::KitScreen::new(feature, name, crate::ui_kit::ids::family(name))
+        .row(COUNT.row(Arc::clone(&store)))
+        .row(LEVEL.row(store))
 }
 
 /// The value picker's sample: the kit's Count (nine values, so the list
@@ -479,16 +469,9 @@ pub fn choices_example(store: Arc<settings::Store>) -> crate::ui_kit::screen::Ki
         "kit-choices",
         "kit.choices",
         crate::ui_kit::ids::family("kit.choices"),
-        "Choices",
     )
-    .layout(skulls_menu::LIST_LAYOUT, ValueStyle::Inline)
-    .description(skulls_menu::DESCRIPTION_TEXT)
     .row(COUNT.row(Arc::clone(&store)))
     .row(LEVEL.row(store))
-    .prompts(&[
-        Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
-        Prompt::new(&[Glyph::B], "Back"),
-    ])
 }
 
 /// The campaign picker with Halo 1 installed beside the test campaign,
