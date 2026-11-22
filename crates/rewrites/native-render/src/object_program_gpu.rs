@@ -1006,15 +1006,13 @@ impl LitObjects {
             // submission's uploads.
             let mut vertex_buffers = vec![(b.vertices.clone(), 0, b.vertices.size())];
             match &d.prt {
-                None => {}
                 Some((_, None)) => return Err("object PRT stream not gathered"),
-                Some((_, Some(v))) => {
-                    if !v.vertices.is_empty() {
-                        let bytes: &[u8] = bytemuck::cast_slice(v.vertices.as_slice());
-                        let (buffer, at) = uploads.stage(device, queue, bytes);
-                        vertex_buffers.push((buffer, at, bytes.len() as u64));
-                    }
+                Some((_, Some(v))) if !v.vertices.is_empty() => {
+                    let bytes: &[u8] = bytemuck::cast_slice(v.vertices.as_slice());
+                    let (buffer, at) = uploads.stage(device, queue, bytes);
+                    vertex_buffers.push((buffer, at, bytes.len() as u64));
                 }
+                None | Some((_, Some(_))) => {}
             }
             // One packet per range: the whole part, or each run of the
             // subparts its record chose (none when it chose none).
@@ -1913,6 +1911,8 @@ fn compile_layer_sections(
 }
 
 #[cfg(test)]
+// The tests name one-range draws as literal lists of ranges.
+#[allow(clippy::single_range_in_vec_init)]
 mod tests {
     use super::*;
     use crate::object_lighting::Lighting;
@@ -2525,7 +2525,7 @@ mod tests {
         materials.insert(0, LitMaterial { material, shader: ShaderValues::default() });
         let mut vertex = |_: map::TagId, _: u16, _: u8| Ok::<_, String>((rigid_program(), vec![0u16, 3, 2]));
         let mut image = |_: usize, _: map::TagId, _: u32| -> Option<Image> { None };
-        let build = lit_model(&[section.clone()], &materials, &prt_formats(), &EngineStages::default(), &mut vertex, &mut image);
+        let build = lit_model(std::slice::from_ref(&section), &materials, &prt_formats(), &EngineStages::default(), &mut vertex, &mut image);
         assert!(build.layer_refused.is_empty(), "{:?}", build.layer_refused);
         let p = &build.input.layers[0];
         assert_eq!(p.layer, PRT_LAYER);
