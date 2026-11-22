@@ -232,7 +232,9 @@ Notes on some:
   handlers, slots, IR size and capabilities), `mode`, `reload_on_save`,
   `reload` and the `starters` `rules.open {starter}` takes (a built-in's
   or example's name, any case). `rules.get {text: true}` adds the text.
-  `rules.open` is `UNSAVED` over unsaved edits without `discard`.
+  `rules.open` is `UNSAVED` over unsaved edits without `discard`, and
+  picks the window's tab. `rules.set` reaches the text widget even while
+  someone is typing in it, and leaves the keyboard where it is.
   `rules.save` with no `path` on a script that has no file is `REFUSED`.
   `rules.reload` compiles and verifies the text here, queues the blob for
   the game link and answers `{queued: hash}`; the game's answer arrives as
@@ -844,6 +846,19 @@ the window and the API stay one path.
   `save_refusal`, why a save would be refused (Allow unverified geometry
   writes off, `allow_unverified`, or an edit that changes a count);
   docs/editor/modeling.md, "Interfaces".
+- **Textures (studio-modeling slice 5).** `api/bitmaps.rs`:
+  `bitmap.list {name?}` gives the map's bitmap tags and their images;
+  `bitmap.read` one bitmap's images (size, format, mips, write class);
+  `bitmap.pixels {bitmap, image?, rect}` the RGBA of a rectangle (at most
+  65,536 pixels); `bitmap.paint`, `bitmap.fill` and `bitmap.adjust`
+  (invert, levels, hsv) and `bitmap.import` (a PNG, resampled to the
+  rectangle) are `Action::Bitmap`, one undo step each; `bitmap.export
+  {bitmap, image?, mip?, out}` writes a PNG and is refused inside a Git
+  checkout. A bitmap is named by hex tag id, path, `\key` path tail or a
+  unique substring. Edits are kept in the editor only: the write class is
+  `memory`, or `none` for P8, P8Bump, V8U8 and G8B8, and `doc.save` with
+  `"doc": "bitmaps"` (alias `textures`) is `REFUSED`. `doc.undo`, `doc.redo`
+  and `doc.diff` work on that doc. docs/editor/modeling.md, "Interfaces".
 - **Player models (planned, not started).** See "Planned: player
   models and customisation" below.
 - **Customisation (later).** Same section.

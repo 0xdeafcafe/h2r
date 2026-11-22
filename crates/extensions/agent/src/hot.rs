@@ -139,8 +139,8 @@ pub fn add_edit_methods(
         let mut s = session(g).settle();
         let why = if replaying {
             Some("Theater playback")
-        } else if ctx.live_session.is_some_and(|probe| probe(g)) {
-            Some("external Live session")
+        } else if let Some(why) = crate::exec::live_edit_refusal(ctx.live_session, ctx.live_edit, g) {
+            Some(why)
         } else if s.kind == agent_proto::sim::SessionKind::MpHost && s.peers.is_none() {
             Some("multiplayer host peer count is unknown")
         } else {

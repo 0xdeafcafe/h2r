@@ -247,9 +247,16 @@ pub fn link_colour(tone: LinkTone) -> [f32; 4] {
     }
 }
 
-/// The script editor's text widget draws its glyphs in this (none), and
-/// the colouring draws them over it (`ui::rules`).
+/// The script editor's text widget draws its glyphs and its frame in this
+/// (nothing): the window draws the frame and the coloured text under the
+/// widget's own child window (`ui::game_script`).
 pub const HIDDEN_TEXT: [f32; 4] = rgba(0, 0, 0, 0.0);
+
+/// The script editor's frame, drawn under the text widget.
+pub const SCRIPT_FRAME: [f32; 4] = RAISED;
+
+/// The script editor's highlight on each use of the name at the cursor.
+pub const SCRIPT_MARK: [f32; 4] = rgba(255, 255, 255, 0.08);
 
 /// A semantic token's colour in the script editor.
 pub fn token_colour(kind: rules::ide::TokenKind) -> [f32; 4] {

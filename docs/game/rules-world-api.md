@@ -1,7 +1,7 @@
 # Rules world API: a synced world for scripts
 
 Status: Design. Nothing on this page is built; it extends the rules engine of [rules-engine.md](rules-engine.md) and is built after that page's host runtime runs in a game.
-Code: none yet. The plan names `crates/formats/rules/src/caps.rs` (the entries), `crates/formats/rules/src/show.rs` and `crates/extensions/game/src/rules/world/` (new), and `crates/live/actor-net/src/wire.rs` (two records). Tests: named per slice in "Implementation plan".
+Code: none yet. The plan names `crates/formats/rules/src/caps.rs` (the entries), `crates/formats/rules/src/world/` and `crates/extensions/game/src/rules/world/` (new, one module per capability group), and `crates/live/actor-net/src/wire.rs` (two records). Tests: named per slice in "Implementation plan".
 Switch: none of its own; the `rules` feature of `H2_FEATURES` ([switches.md](../runtime/switches.md)).
 
 A rules script moves objects, flies drop ships, orders AI squads and
@@ -21,23 +21,35 @@ status word in an API table is `caps::Status`: **named** (a point in
 a doc), **untraced**, **not built** (the game-side part is ours and does
 not exist). No game data is on this page.
 
-## Decisions to confirm
+## Decisions
+
+Agreed by the user, under one rule: **secure and hardened, but performant
+and clean**. Where two of those pull apart, a check moves to the
+verifier or to load time, so that it costs nothing in a tick.
 
 1. **A script never runs on a distributed client.** Its world reaches
-   clients through the engine's own replication; what replication does
+   clients through the engine's own replication. What replication does
    not carry (HUD, messages, waypoints, sounds, music) travels on one
-   new host-to-client stream, the show channel.
+   host-to-client stream, the show channel, which is authenticated,
+   bounded and validated on the client.
 2. **A synchronous peer runs the script itself**, as it runs every other
-   part of the simulation. No call log is sent.
+   part of the simulation. No call log is sent, and the lockstep hash is
+   the check.
 3. **Places are labels first.** A script moves a thing to a labelled
    thing or along a labelled path. A `vec` exists for offsets,
-   velocities and reads.
+   velocities and reads. Every handle is typed; no script-facing API
+   takes a datum, an index into engine memory or a size.
 4. **Physics is read, and written only as velocity** at a tick boundary
-   through the engine's own entry. A script never writes Havok memory.
+   through the engine's own entry, inside a stated bound. A script never
+   writes Havok memory.
 5. **Bots are ordered, not driven.** An order is a hint to a phantom's
    brain on the host; it returns nothing to the script.
 6. **Splitting a script:** sections and an outline with the first slice
    that touches the editor; `use` modules later; no node editor.
+
+Every slice of "Implementation plan" is held to
+[rules-world-limits.md](rules-world-limits.md): its security rules,
+its caps and its bench gates.
 
 ## How it works
 
@@ -132,7 +144,35 @@ works") carries both, with two more record tags:
 
 `Digest` gains a 64-bit hash of the peer's filtered state; a mismatch
 asks for a `Key`. The host filters per peer, so a team's waypoint is not
-sent to the other team's machines. A `Viewer` applies records before the
+sent to the other team's machines.
+
+**Authenticated.** The tunnel and XNet's UDP mapping give no transport
+security of their own (**Code**, [dedicated-host.md](../live/dedicated-host.md#routing-assignment-and-arbitration)),
+so the channel carries its own:
+
+- The host makes an Ed25519 key pair for the session and puts the public
+  key on its Live session beside `rules` (`NewSession.show_key`), which
+  a guest reads over its authenticated Live connection.
+- A peer's first channel packet is a hello with an X25519 public key.
+  The host answers with its own, signed by the session key. Both derive
+  one key for that peer (HKDF-SHA-256 over the shared secret, the
+  session id and the peer id).
+- Every packet that holds a `Show` or `Cue` record ends with an 8-byte
+  HMAC-SHA-256 tag over the whole packet. A packet's tick orders it, and
+  an older or repeated tick is dropped, so a recorded packet cannot be
+  replayed.
+
+One signature per peer per session and one HMAC per packet keep the cost
+off the tick. Another guest cannot forge a record, since
+it holds neither the host's key nor the peer's. The tag proves who sent a
+record, never that the record is right: a `Viewer` validates every field
+([rules-world-limits.md](rules-world-limits.md#the-show-channel-on-a-client)).
+
+**Batched.** A peer gets at most one show packet a tick, and none when
+nothing is due. A tick's cues share one packet with any `Show` and any
+actor records due, under one header and one tag; the two repeat copies
+of a cue ride the next two packets that are sent anyway. `Show` is
+coalesced to the last state, at most 5 times a second. A `Viewer` applies records before the
 game tick and draws through `rules::show::view`, a pure function of the
 state bytes, the blob's tables and the local roster slot, the same
 function the `Authority` draws its own HUD with (the pattern of
@@ -142,7 +182,9 @@ dropped by (tick, sequence).
 **System Link.** The actor channel rides the Live tunnel, and a System
 Link session has none (ai-networking.md "Decisions"). The show channel
 gets a LAN carrier: datagrams of ours between the same peers the game's
-own packets reach (slice W11). Until it exists, a script that declares a
+own packets reach (slice W11), with the same handshake and tag; with no
+Live session to vouch for it, the host's public key comes in the
+discovery reply and is trusted for that session only. Until it exists, a script that declares a
 show capability plays on System Link with its world synced and its HUD,
 messages and sounds on the host only, and the lobby's status line says
 so by name; nothing is faked on the guest.
@@ -178,21 +220,6 @@ What keeps the `Authority` replayable:
 - A read never comes from a brain, a renderer, a socket or a thread
   other than the game's.
 
-### Bandwidth
-
-| Item | Per client | Host with 15 clients | Evidence |
-|---|---:|---:|---|
-| Show channel cap: its own `actor_net::Budget`, 600 bytes in any 30 ticks | 0.6 KB/s | 9 KB/s | **Design** |
-| One moved object: about 20 bytes at 10 updates a second | 200 B/s | 3 KB/s | **S**, ai-networking.md "Bandwidth" |
-| 16 movers and one drop ship with 8 riders | 5 KB/s | 75 KB/s | **S** |
-| Actors, as budgeted | 8 KB/s | 120 KB/s | **Design**, ai-networking.md |
-
-Retail's sender shares one per-client budget between entities by
-relevance (**E**, notes), so more moving objects lower every object's
-update rate before they raise the byte rate. Probe P4 of
-ai-networking.md measures it; the caps in "Rules and limits" move with
-that result.
-
 ## The world API
 
 Every entry is a row of `caps::ENTRIES` with its capability, kind, order
@@ -200,6 +227,22 @@ and status, appended to the table (nothing is published, so the API
 version stays 1). Reads need no capability. Every action here is
 `Order::Queued`: made by the `before` on the next `GAME_TICK`, in
 program order, returning nothing.
+
+**Code layout.** One module per capability group, on both sides: the
+entries, signatures and fake of a group in
+`crates/formats/rules/src/world/<group>.rs`, and its guest half in
+`crates/extensions/game/src/rules/world/<group>.rs`, for `objects`,
+`vehicles`, `squads`, `bots`, `audio`, `hud`, `physics`, `data` and
+`show`. `rules::vm::Game` gains one sub-trait per group, so a fake or a
+host implements a group whole or not at all. The traits take typed
+handles (`ObjectRef`, `PlayerSlot`, `SquadSlot`, `VehicleRef`,
+`WidgetId`, `WaypointId`, `TagRef`, `Vec3Fixed`), never a `u32`; a
+handle becomes a salted datum in one place,
+`crates/extensions/game/src/rules/guest.rs`, which checks it is live
+first. Each engine routine an entry reaches is one named point in
+`crates/hooking/guest-layout/src/points.rs` with its signature; a
+`world/` module holds no address, and an entry is **named**, and so
+hostable, only once its point exists.
 
 ### Types
 
@@ -389,7 +432,7 @@ heap is outside the checkpoint arena
 ([sim-rewrite-havok.md](../engine/sim-rewrite-havok.md#31-the-havok-heap-is-not-in-the-checkpoint-arena)),
 a write there is not in a snapshot, and nothing replicates it. So the
 API is one way in each direction: physics to script as rounded reads and
-events, script to physics as a clamped velocity. A superbounce stays
+events, script to physics as a bounded velocity. A superbounce stays
 observed, never made.
 
 ### Advanced data
@@ -410,180 +453,13 @@ field by our schema's name; it sees no offset.
 
 ## Firefight and Superbounce as scripts
 
-### What is engine code today
-
-| Mode | Engine-specific code | Entries only it uses |
-|---|---|---|
-| Firefight | the director and scoring (`crates/formats/firefight/src/director.rs`, `scoring.rs`); the generator that builds its IR (`src/script.rs`); the host and its log (`crates/extensions/game/src/firefight/host.rs`); the mode blob and HUD view (`firefight/hud.rs`); the sight pass | `ff_round`, `ff_wave`, `ff_skull`, `ff_lives`, `ff_score`, `ff_respawn`, `ff_finish`, `zone_seen`, `zone_distance`, `place_squad_at`; capability `firefight.director` |
-| Superbounce | the medal chain and its rule (`crates/extensions/game/src/superbounce_chain.rs`); the mode's HUD states and navpoint choice (`superbounce_mode.rs`, `superbounce_hud.rs`); the mode switch behind `hud.superbounce`, a capability that gates no entry | `on bounce`, `on bounced` |
-
-### Firefight
-
-| The mode needs | From the API |
-|---|---|
-| waves, rounds, gaps, the reserve and the cap | tables, timers and variables: the VM alone |
-| a squad placed at an unseen, far zone | `place_squad_at`, `sees`, `distance` |
-| squads sent at the players, erased in cleanup | `hunt`, `go_to`, `erase_squad` |
-| waves by drop ship | `place_squad_in`, `fly`, `on arrive`, `unload` |
-| kill points and assists | `on actor_kill`, `on actor_assist`, `score` |
-| shared lives and respawn | `set_lives`, `respawn`, `on death` |
-| skulls by round | `set_skull(id, on)`, a new entry of capability `game.skulls` over the skull flags Firefight's `Skull` command writes |
-| round, wave, enemies left and lives on every HUD | `hud_text`, `hud_fill`: the show state replaces the mode blob |
-| the wave's stinger and an Elite's taunt | `sound`, `say` |
-| the end of the game | `end_round` |
-
-```text
-rules "Holdout" 1
-carrier slayer
-teams 1
-requires ai.squads, vehicles.drive, hud.widgets, hud.message, audio.play
-
-table waves: (class: Class, per_player: int, min: int, max: int, gap: time, by_air: bool) = [ ... ]
-table points: (class: Class, score: int) = [ ... ]
-const per_round = 5
-
-label ff_drop: zones at least 6
-label ship: object
-label run_in: path
-label run_out: path
-
-hud wave_line: text at top_right
-hud lives_line: text at under_score
-
-option start_lives: int 1..20 = 7
-
-global var wave: int = 0
-global var pool: int = 7
-global var next: timer = 5s
-
-fn hidden(z: zone) -> bool = count(players p where p.alive and sees(p, z)) == 0
-
-fn show() {
-    let r = wave / per_round + 1
-    let w = wave % per_round + 1
-    hud_text(wave_line, "Round {r}, wave {w}")
-    hud_text(lives_line, "Lives {pool}")
-}
-
-on init { pool = start_lives; show() }
-
-on timer(next) {
-    let w = waves[wave]
-    let s = squad(wave % 16)
-    let n = clamp(count(players) * w.per_player, w.min, w.max)
-    if w.by_air {
-        place_squad_in(s, w.class, n, ship)
-        move_along(ship, run_in, 12s)
-    } else if let z = first(ff_drop z where hidden(z)) {
-        place_squad_at(s, w.class, n, z.id, 0)
-        hunt(s)
-    }
-    message(all, "Wave incoming")
-    show()
-}
-
-on arrive(o) {
-    if o == ship {
-        unload(ship)
-        hunt(squad(wave % 16))
-        move_along(ship, run_out, 12s)
-    }
-}
-
-on squad_dead(s) {
-    wave = wave + 1
-    if wave == len(waves) { end_round(team 0) } else { next = waves[wave - 1].gap }
-    show()
-}
-
-on actor_kill(killer, class) {
-    if killer != none { score(killer, points[class].score) }
-}
-
-on death(p) {
-    if pool > 0 { pool = pool - 1; respawn(p) }
-    else if count(players q where q.alive) == 0 { end_round(none) }
-    show()
-}
-```
-
-The shipped director is larger (the reserve, cleanup, the zone ranking,
-exact kill multipliers; firefight.md "The director"). It is written by
-hand as `firefight.rules` with the wave set as its tables, and
-`firefight::script::compile` fills the tables from a `Def` instead of
-building the whole IR. The Rust director stays the oracle in tests until
-the script has matched it on every scenario of
-`crates/formats/firefight/tests/script.rs`; then the `ff_*` entries and
-`firefight.director` are deleted.
-
-### Superbounce
-
-| The mode needs | From the API |
-|---|---|
-| a landing, with its speeds | `on touchdown(p, down, up)` |
-| whether the player was primed the tick before | `p.primed`, kept in a player variable each tick |
-| whether the landing was on a strip | the scanner's strips as a built-in label (`label strip: zones = "sb_strip"`), a label source beside the netgame flags in `rules/census.rs`; `distance` |
-| chains and a fall out of the map | player variables, `on kill` |
-| the priming pill, the next spot's navpoint | `hud_show`, `mark` |
-| medals | `medal` |
-
-```text
-rules "Superbounce" 1
-carrier slayer
-list tweakers
-requires hud.widgets, hud.waypoints
-
-label strip: zones = "sb_strip"
-
-hud primed_pill: text at above_weapon
-waypoint next_spot
-
-option bounce_points: int 0..5 = 1
-option monster_double: bool = true
-const launch = 8.0
-const monster = 13.0
-
-player var was_primed: bool = false
-player var chain: int = 0
-player var flying: bool = false
-
-on init { hud_text(primed_pill, "Primed") }
-
-on touchdown(p, down, up) {
-    if let s = first(strip z where distance(p, z) < 0.5) and p.was_primed and up > launch {
-        p.chain = p.chain + 1
-        p.flying = true
-        let n = p.chain
-        let points = bounce_points * min(n, 6)
-        if up > monster and monster_double { score(p, points * 2) } else { score(p, points) }
-        medal(p, "Superbounce x{n}")
-    } else {
-        p.chain = 0
-        p.flying = false
-    }
-}
-
-on kill(victim, killer) {
-    if killer == none and victim.flying { score(victim, -1); medal(victim, "Bounced") }
-    victim.chain = 0
-    victim.flying = false
-}
-
-on tick {
-    for each players p {
-        hud_show(primed_pill, p, p.primed)
-        if let s = first(strip z where distance(p, z) < 20.0) { mark(next_spot, s, p) } else { unmark(next_spot, p) }
-        p.was_primed = p.primed
-    }
-}
-```
-
-The two speeds are placeholders for the values superbounce.md measures.
-What stays Rust is what is not a rule: the scanner
-(`crates/live/superbounce`), the floor marks and lock-on drawn over the
-map (`superbounce_world.rs`), the fall assist, ghosts and the verifier.
-The marks stay behind `hud.superbounce` until a script can draw lines in
-the world, which this page does not design.
+[rules-world-modes.md](rules-world-modes.md) lists what each mode needs
+from this API, what of each is engine code today, and a sketch script
+for each. The Rust director (`crates/formats/firefight/src/director.rs`)
+and the medal chain (`crates/extensions/game/src/superbounce_chain.rs`)
+are the oracles: each is deleted only when its script gives the same
+commands and awards as the Rust code over that code's own test
+scenarios, and until then both run in tests side by side.
 
 ## Splitting a script
 
@@ -596,55 +472,37 @@ is several hundred. Three ways to keep one readable:
 | Modules | `use "waves.rules"` pulls another file's declarations in before checking. One blob, one hash, and the bundle stores every file. The CLI reads paths beside the script; Live and the workbench keep a script as a small set of named files | the bundle format, Live's script routes, the workbench's tabs, diagnostics with a file | after Firefight is a script and the need is measured; not before |
 | A node view | a read-only graph of handlers, the variables they touch and the calls they make, drawn from the checked script | a new web view | not now. Forge's logic graph is the visual front end and compiles to the same IR (rules-engine.md "A Forge graph is the same IR"); a second node editor would be a third front end |
 
-## Rules and limits
+## Security and limits
 
-**The budget.** A world call is one op in the VM and work in the engine,
-so each entry carries a cost the VM charges against the tick's 100,000
-ops (`caps::Entry` gains `cost`): 1 for a datum read, 8 for an action,
-64 for a new `sees` pair, 2 for a tag read. The worst-tick estimate uses
-the same costs.
+[rules-world-limits.md](rules-world-limits.md) is the contract every
+slice is held to, and each slice's row below names the tests that show
+it. In short:
 
-**Caps**, each a script error or a refused call when passed, the same
-way on every run:
+- **Who controls what** is named for each direction: script to engine,
+  host to client, client to host, Live to host and Live to client.
+- **The verifier refuses; the runtime does not clamp.** A constant out
+  of range, an index outside the blob's tables and a worst tick that
+  passes a write cap are refusals before the game. A computed value out
+  of range is a refused call, recorded; a cap passed at run time is a
+  script error.
+- **Every world write has a cap a tick and a cap a second**, and a
+  `Viewer` enforces the show channel's caps on what it receives.
+- **No script value reaches engine memory unchecked**: no entry takes a
+  size, an offset or an address, and a handle is checked live in one
+  place.
+- **A show record is used only after its tag and every field check**; a
+  bad one is dropped and counted.
+- **On Live**, the hopper gate checks the verifier's estimates, the
+  denied capabilities, the map's labels and sounds, and the HUD layout.
+- **Every new entry has a property test**, and the show codec a fuzz
+  target.
 
-| What | Cap |
-|---|---|
-| movers alive | 16, four of them vehicles |
-| teleports, pushes and velocity sets a tick | 16 each |
-| a pushed or set velocity | clamped to 50 world units a second |
-| `sees` pairs in the sight table | 64; 32 traces a tick boundary |
-| cues a tick | 8; 30 a second to any one player |
-| script sounds playing for one player | 4, and one music slot |
-| HUD elements, waypoints, countdowns | 16, 8, 4 |
-| a HUD text | 32 bytes after its holes are filled |
-| the show state | 255 bytes; 600 bytes a second to a client |
-| bot orders a tick | one per phantom |
-| objects alive from `create` | 64, as rules-engine.md "Budgets" |
+## Performance
 
-**What a script cannot do.** Run on a client. Read a gamertag, an XUID,
-an input, a camera or another machine's state. Write Havok memory, a tag
-or a datum. Name a coordinate system other than the world's. Play audio
-or show text the blob and the map do not hold. Add or remove a player
-seat. Reach the campaign's HaloScript.
-
-**On Live.**
-
-- Each new capability has its line of plain words in `caps::CAPABILITIES`,
-  shown in the lobby and on the variant's page before the game.
-  `player.move` and `player.push` are their own lines so a hopper's deny
-  list can refuse them alone (`rules::policy`, rules-engine.md "Roles,
-  powers and capabilities").
-- Ranked play stays behind the allow-list; nothing here loosens it.
-- A `Viewer` decodes show records with fixed bounds, and a record names
-  text and sounds by index into the verified blob. A modified host can
-  send a wrong value; it cannot send a string, a sound or a size the
-  blob does not hold.
-- A teleport outside the world is refused by the engine and kept in
-  `rules.state`'s `errors`. A script can still be unfair to its players:
-  it is the game the host chose, and the hopper builder is where a
-  curated list keeps such a script out.
-- Cue rates are per audience player, so a script cannot flood one
-  player's screen or ears.
+The same page gives each entry's cost in VM ops and what the host pays
+outside the VM, the rule that nothing allocates in a tick, the show
+channel's batching, the bandwidth table and the bench gates: three
+targets common to every slice, and the one in each slice's row below.
 
 ## Implementation plan
 
@@ -656,22 +514,28 @@ something to play. Paths under `rules/` are in
 and its scenario events to `scenario.rs`, and updates
 [rules-engine.md](rules-engine.md#the-engine-api)'s tables and the
 `h2-rules` skill in the same branch. A slice whose engine entry is not
-named starts with its research row below.
+named starts with its research row below, and ends with the point named
+in `points.rs`. Every slice's tests include a row of
+`tests/world_props.rs` for each entry it adds, the verifier's refusals
+and caps of [rules-world-limits.md](rules-world-limits.md) for those
+entries, and that page's zero-allocation test. The **Bench gate** is the slice's
+own target on top of the three common ones, as `rules.world_ns` at the
+99th percentile unless it says otherwise.
 
-| # | Slice | Owns | Tests | Done when | After |
-|---|---|---|---|---|---|
-| W0 | Roles: `Authority`, `Replica`, `Viewer` | `game/rules/runtime.rs`, `game/rules/feature.rs`; the blob as a start condition in `game/rules/gate.rs` | over invented guest memory: a mode 3 peer keeps its VM and makes the host's calls; a mode 5 client makes none; a peer without the blob blocks the start by name | a script game scores the same on both machines of a synchronous session | the host runtime running in a game; R1 |
-| W1 | Messages everywhere: cues | `rules/show.rs` (new: `Cue`, the codec), `game/rules/world/show.rs` (new), `crates/live/actor-net/src/wire.rs` and `budget.rs` (`Cue`), `game/actor_net/host.rs`, `client.rs`; `message*` to named | the codec round-trips and refuses each bad bound; a cue in three packets shows once; the budget drops the rest the same way twice; the fake logs each message with its audience | `message(all, "…")` from Siege shows on the host and on a Live guest | W0 |
-| W2 | Script HUD: show state, `hud` and `waypoint` declarations, sections | `rules/show.rs` (`State`, `view`), `lang/*` (the declarations, `section`), `ir.rs` (the header table), `ide/*` (outline, folding), `game/rules/world/hud.rs` (new, over `game/hud_kit.rs`), `wire.rs` (`Show`, the digest), the workbench's HUD strip in `web/src/stats/RulesTest.tsx` | a declared layout that overlaps is a compile error; `view` of the same bytes is the same on host and client at every tick of a fake match; a `Key` restores the state after loss | a script's wave counter and a waypoint draw on host and guest; Firefight's HUD view reads the show state | W1; the HUD kit's runtime drawing |
-| W3 | Objects in motion: `vec`, position reads, `teleport`, movers, `on arrive` | `lang/types.rs`, `lang/check.rs`, `lang/lower.rs` (`vec`), `vm.rs` (movers in `RulesExt`), `game/rules/world/objects.rs` (new) | `vec` arithmetic and each type error; a mover reaches its end on the stated tick and survives a checkpoint revert; a teleport outside the world is a refused call; a film of a mover replays to the same `RulesExt` hash | Race with moving platforms and a teleporter pad plays on Live | W0; R2, R3 |
-| W4 | Physics reads and pushes: `airborne`, `primed`, `on touchdown`, the sight table, `push`, `launch` | `vm.rs` (the sight table), `game/rules/world/physics.rs` (new), `game/superbounce_charge.rs` (the touchdown for every player), the `sb_strip` label source in `game/rules/census.rs`; `builtin/superbounce.rules`, `builtin/bounce_practice.rules` | the sketch above scores the chain's recorded scenarios as `superbounce_chain_tests.rs` does; a `sees` pair answers one tick after it is asked and never from a handler; a push is clamped | the Superbounce game type's chain and medals come from the script; `on bounce` and `on bounced` are deleted | W2, W3; R9 |
-| W5 | Audio: `say`, `sound`, `music`, `announce` | `game/rules/world/audio.rs` (new), the `sound` and `line` types in `lang/*`, the tag table's sound group in `ir.rs` and `verify.rs` | a sound that is not in the map blocks the start by name; a `sound_to` cue reaches only its audience; the music slot starts a late machine at the right tick | a wave's stinger and an Elite's taunt play on every machine of a Live Firefight | W1; R4, R5 |
-| W6 | AI orders and the hand-written director: `go_to`, `hold`, `set_skull`, `firefight.rules` | `crates/tools/firefight-kit` (an order per zone), `game/actor_net/squads.rs`, `builtin/firefight.rules` (new), `crates/formats/firefight/src/script.rs` (fills tables) | every scenario of `crates/formats/firefight/tests/script.rs` passes against the hand-written script; a squad sent to a zone gets that zone's order on the fake squad entry | Firefight runs from `firefight.rules`; the `ff_*` entries, `zone_seen`, `zone_distance` and `firefight.director` are deleted | W2, W4, W5; Firefight's runs R1 to R4 |
-| W7 | Bot orders | `crates/live/bots/src/brain.rs`, `decisions.rs` (an outside order as the goal), `game/rules/world/bots.rs` (new) | a phantom with `bot_hold` plans to the zone on a nav fixture; playback makes no order; an order changes no `RulesExt` byte | Clankers hold the zones a Firefight script sends them to | W0 |
-| W8 | Vehicles and drop ships: `vehicle`, `path`, `fly`, `seat`, `place_squad_in`, `unload` | `rules/labels.rs` (`path`), `game/rules/world/vehicles.rs` (new), the kit's stage 2 and its labelled ship and paths in `crates/tools/firefight-kit` | a `path` with a gap blocks the start; a ship flies a path in the stated ticks, facing its tangent; riders are placed and unloaded on the fake | a Firefight wave arrives by drop ship on a kit map | W3, W6; R6, R7, R8 |
-| W9 | Advanced data: tag reads, squad state, `on damage`, squads by name | `game/rules/world/data.rs` (new), the field resolver over `tags::schema` | a field the schema lacks is a load error naming it; a tag read is the same on two fake machines | a boss wave's bar shows the boss's shield | W2 |
-| W10 | Modules: `use` | `lang/*`, `crates/formats/variants` (the bundle's files), Live's script routes, the workbench's tabs | two files compile to the blob of the same text in one; a cycle is an error naming both files | Firefight's director and its wave tables are two files | W6 |
-| W11 | The show channel on System Link | a LAN carrier beside `crates/live/live-hle/src/tunnel_host.rs` and `tunnel_client.rs` | the two-socket System Link pair of ai-networking.md's probes exchanges a `Key` and a `Cue` | a System Link guest sees a script's HUD and hears its sounds | W2; R10 |
+| # | Slice | Owns | Tests | Done when | After | Bench gate |
+|---|---|---|---|---|---|---|
+| W0 | Roles: `Authority`, `Replica`, `Viewer` | `game/rules/runtime.rs`, `game/rules/feature.rs`; the blob as a start condition in `game/rules/gate.rs` | over invented guest memory: a mode 3 peer keeps its VM and makes the host's calls; a mode 5 client makes none; a peer without the blob blocks the start by name | a script game scores the same on both machines of a synchronous session | the host runtime running in a game; R1 | a script Slayer game against the lifted one: the tick's 99th percentile within 0.1 ms |
+| W1 | Messages everywhere: cues | `rules/show.rs` (new: `Cue`, the codec), `game/rules/world/show.rs` (new), `crates/live/actor-net/src/wire.rs` and `budget.rs` (`Cue`), `game/actor_net/host.rs`, `client.rs`; `message*` to named | the codec round-trips and refuses each bad bound; a cue in three packets shows once; the budget drops the rest the same way twice; the fake logs each message with its audience | `message(all, "…")` from Siege shows on the host and on a Live guest | W0 | 8 cues every tick to 15 peers: 0.05 ms, and 600 bytes a second to each |
+| W2 | Script HUD: show state, `hud` and `waypoint` declarations, sections | `rules/show.rs` (`State`, `view`), `lang/*` (the declarations, `section`), `ir.rs` (the header table), `ide/*` (outline, folding), `game/rules/world/hud.rs` (new, over `game/hud_kit.rs`), `wire.rs` (`Show`, the digest), the workbench's HUD strip in `web/src/stats/RulesTest.tsx` | a declared layout that overlaps is a compile error; `view` of the same bytes is the same on host and client at every tick of a fake match; a `Key` restores the state after loss | a script's wave counter and a waypoint draw on host and guest; Firefight's HUD view reads the show state | W1; the HUD kit's runtime drawing | 32 HUD writes every tick: 0.05 ms; `Show` at most 5 a second in `actors.net` |
+| W3 | Objects in motion: `vec`, position reads, `teleport`, movers, `on arrive` | `lang/types.rs`, `lang/check.rs`, `lang/lower.rs` (`vec`), `vm.rs` (movers in `RulesExt`), `game/rules/world/objects.rs` (new) | `vec` arithmetic and each type error; a mover reaches its end on the stated tick and survives a checkpoint revert; a teleport outside the world is a refused call; a film of a mover replays to the same `RulesExt` hash | Race with moving platforms and a teleporter pad plays on Live | W0; R2, R3 | 16 movers: 0.15 ms |
+| W4 | Physics reads and pushes: `airborne`, `primed`, `on touchdown`, the sight table, `push`, `launch` | `vm.rs` (the sight table), `game/rules/world/physics.rs` (new), `game/superbounce_charge.rs` (the touchdown for every player), the `sb_strip` label source in `game/rules/census.rs`; `builtin/superbounce.rules`, `builtin/bounce_practice.rules` | the sketch above scores the chain's recorded scenarios as `superbounce_chain_tests.rs` does; a `sees` pair answers one tick after it is asked and never from a handler; a push over the bound is a refused call | the Superbounce game type's chain and medals come from the script; `on bounce`, `on bounced` and the Rust chain are deleted only once the script gives the chain's awards on every scenario of its tests | W2, W3; R9 | 32 traces every tick: 0.25 ms |
+| W5 | Audio: `say`, `sound`, `music`, `announce` | `game/rules/world/audio.rs` (new), the `sound` and `line` types in `lang/*`, the tag table's sound group in `ir.rs` and `verify.rs` | a sound that is not in the map blocks the start by name; a `sound_to` cue reaches only its audience; the music slot starts a late machine at the right tick | a wave's stinger and an Elite's taunt play on every machine of a Live Firefight | W1; R4, R5 | 4 sounds every tick: 0.05 ms |
+| W6 | AI orders and the hand-written director: `go_to`, `hold`, `set_skull`, `firefight.rules` | `crates/tools/firefight-kit` (an order per zone), `game/actor_net/squads.rs`, `builtin/firefight.rules` (new), `crates/formats/firefight/src/script.rs` (fills tables) | every scenario of `crates/formats/firefight/tests/script.rs` passes against the hand-written script; a squad sent to a zone gets that zone's order on the fake squad entry | Firefight runs from `firefight.rules`; the `ff_*` entries, `zone_seen`, `zone_distance`, `firefight.director` and the Rust director are deleted only once the script matches the director on every scenario | W2, W4, W5; Firefight's runs R1 to R4 | the script director with 24 actors: `rules.vm_ns` at most 0.4 ms, and the tick within 2% of the Rust director's |
+| W7 | Bot orders | `crates/live/bots/src/brain.rs`, `decisions.rs` (an outside order as the goal), `game/rules/world/bots.rs` (new) | a phantom with `bot_hold` plans to the zone on a nav fixture; playback makes no order; an order changes no `RulesExt` byte | Clankers hold the zones a Firefight script sends them to | W0 | 16 orders every tick: 0.02 ms on the game thread |
+| W8 | Vehicles and drop ships: `vehicle`, `path`, `fly`, `seat`, `place_squad_in`, `unload` | `rules/labels.rs` (`path`), `game/rules/world/vehicles.rs` (new), the kit's stage 2 and its labelled ship and paths in `crates/tools/firefight-kit` | a `path` with a gap blocks the start; a ship flies a path in the stated ticks, facing its tangent; riders are placed and unloaded on the fake | a Firefight wave arrives by drop ship on a kit map | W3, W6; R6, R7, R8 | a drop ship with 8 riders in flight: 0.2 ms |
+| W9 | Advanced data: tag reads, squad state, `on damage`, squads by name | `game/rules/world/data.rs` (new), the field resolver over `tags::schema` | a field the schema lacks is a load error naming it; a tag read is the same on two fake machines | a boss wave's bar shows the boss's shield | W2 | 64 tag reads every tick: 0.02 ms |
+| W10 | Modules: `use` | `lang/*`, `crates/formats/variants` (the bundle's files), Live's script routes, the workbench's tabs | two files compile to the blob of the same text in one; a cycle is an error naming both files | Firefight's director and its wave tables are two files | W6 | none in the game; `h2 rules check` on 256 KiB of source in under 50 ms |
+| W11 | The show channel on System Link | a LAN carrier beside `crates/live/live-hle/src/tunnel_host.rs` and `tunnel_client.rs` | the two-socket System Link pair of ai-networking.md's probes exchanges a `Key` and a `Cue` | a System Link guest sees a script's HUD and hears its sounds | W2; R10 | W2's gate over the LAN carrier |
 
 W0 is first. W1, W3 and W7 then run side by side; W2 follows W1; W4 and
 W5 follow W2; W6 closes Firefight, W8 adds the drop ship, and W9 to W11
@@ -706,15 +570,20 @@ on it:
 - That the game's navpoint list draws more than one slot of ours.
 - How many labelled strips a map's scan yields against the 256-member
   bound of a label.
-- The cost of 32 line-of-sight traces at a tick boundary on a dedicated
-  host.
 - That a `Replica`'s VM and the host's stay equal through a join in
   progress in a synchronous session.
-- The 50 units a second clamp and the show channel's 600 bytes a second:
-  both are first guesses to set from a run and from probe P4.
+- Every cap and every bench target of rules-world-limits.md: each is a
+  first value to set from a run and from probe P4.
+- That the tunnel and the LAN carrier deliver a peer's hello to the host
+  unchanged, and where a System Link discovery reply has room for the
+  host's key.
+- The cost of one HMAC per packet and of 32 traces on a dedicated
+  host's core.
 
 ## Related
 
+- [rules-world-limits.md](rules-world-limits.md): security, caps, per-entry costs and bench gates
+- [rules-world-modes.md](rules-world-modes.md): Firefight and Superbounce as scripts over this API
 - [rules-engine.md](rules-engine.md): the language, the VM, capabilities, the engine API and the authority model this page extends
 - [rules-language-types.md](rules-language-types.md): front-end types, labels and message holes
 - [rules-start-gate.md](rules-start-gate.md): the check a `path` label and a sound tag join
@@ -725,3 +594,4 @@ on it:
 - [bots.md](bots.md): phantoms, the planner and the route runner
 - [havok-runtime.md](../engine/havok-runtime.md), [sim-rewrite-havok.md](../engine/sim-rewrite-havok.md): what of Havok is readable and why it is not written
 - [film-format.md](film-format.md), [theater.md](theater.md): tagged records and what a film replays
+- [dedicated-host.md](../live/dedicated-host.md), [lab.md](../runtime/lab.md): the host tunnel, and the bench the gates run on
