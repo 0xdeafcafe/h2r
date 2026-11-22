@@ -567,3 +567,43 @@ fn each_fetch_failure_is_refused_by_name() {
     let why = s.lock().state().refused.unwrap();
     assert!(why.contains("full hash is not known"), "{why}");
 }
+
+#[test]
+fn an_in_place_swap_keeps_the_state_and_the_next_kill_runs_the_new_handler() {
+    let store = Local::default();
+    let s = shared(&store, Box::new(no_fetch));
+    let (m, _) = guest(block(prefix(&slayer().id), 2), SLAYER);
+    s.lock().start(&m, false);
+    let before = s.lock().running().unwrap().vm.ext().clone();
+    let src = ::rules::builtin::SLAYER.replacen(
+        "score(killer, kill_points)",
+        "score(killer, kill_points * 10)",
+        1,
+    );
+    let ir = ::rules::compile(&src).unwrap();
+    let id = ir.id();
+    assert_eq!(s.lock().swap(ir), Ok(id));
+    let state = s.lock().state();
+    assert!(state.running, "{state:?}");
+    assert_eq!(state.hash, Some(id.to_string()));
+    assert_eq!(state.options, Some(2), "the record's option bits are kept");
+    assert_eq!(*s.lock().running().unwrap().vm.ext(), before);
+    assert_eq!(
+        RulesExt::decode(&store.bytes().unwrap()).unwrap(),
+        before,
+        "the record is written as it was"
+    );
+    s.lock().kill(&m, 0, Some(1));
+    assert_eq!(
+        s.lock().running().unwrap().pending(),
+        [Call::Score {
+            player: 1,
+            delta: 30
+        }]
+    );
+    // Another state shape keeps the old program.
+    let shaped = format!("{src}\nglobal var kills: int = 0\n");
+    let why = s.lock().swap(::rules::compile(&shaped).unwrap()).unwrap_err();
+    assert!(why.contains("global variables"), "{why}");
+    assert_eq!(s.lock().state().hash, Some(id.to_string()));
+}

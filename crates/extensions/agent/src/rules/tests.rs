@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use agent_proto::rules::{Budget, Refusal, State};
+use agent_proto::rules::{Budget, Refusal, Reloaded, State};
 use agent_proto::{Object, code};
 use engine::GuestMemory;
 use engine::testing::FakeGuest;
@@ -82,7 +82,7 @@ struct Harness {
 impl Harness {
     fn new(running: bool) -> Harness {
         let agent = Agent::new();
-        install(&agent, Arc::new(Fake { running }));
+        install(&agent, Arc::new(Fake { running }), None);
         let (tx, rx) = std::sync::mpsc::sync_channel(16);
         let conn = agent.connect(tx);
         Harness { agent, conn, rx }
@@ -131,4 +131,112 @@ fn state_names_a_refusal() {
     assert_eq!(s["running"], false);
     assert_eq!(s["refused"], "no blob with hash prefix 0102030405060708");
     assert!(s.get("script").is_none() && s.get("budget").is_none(), "{s}");
+}
+
+/// A runtime that answers each reload by its `source` text, and records
+/// what it is told.
+#[derive(Default)]
+struct Reloader {
+    outcomes: std::sync::Mutex<Vec<Result<String, String>>>,
+    restart_refusal: std::sync::Mutex<Option<Option<&'static str>>>,
+}
+
+fn result(mode: Reloaded) -> ReloadResult {
+    ReloadResult {
+        mode,
+        hash: "cd".repeat(32),
+        reasons: match mode {
+            Reloaded::InPlace => vec![],
+            Reloaded::Restarted => vec!["player variable best changed".into()],
+        },
+        tick: 40,
+    }
+}
+
+impl Source for Reloader {
+    fn state(&self) -> State {
+        State::default()
+    }
+
+    fn reload(
+        &self,
+        _m: &mut dyn GuestMemory,
+        params: ReloadParams,
+        restart: Option<&'static str>,
+    ) -> Result<Reload, RpcError> {
+        *self.restart_refusal.lock().unwrap() = Some(restart);
+        match params.source.as_deref() {
+            Some("same") => Ok(Reload::Done(result(Reloaded::InPlace))),
+            Some("shape") => Ok(Reload::Restart {
+                result: result(Reloaded::Restarted),
+                steps: Vec::new(),
+            }),
+            _ => Err(RpcError::new(
+                agent_proto::sim::REFUSED,
+                "a matchmade game takes no script edits",
+            )),
+        }
+    }
+
+    fn restart_outcome(&self, outcome: Result<&ReloadResult, &str>) {
+        self.outcomes
+            .lock()
+            .unwrap()
+            .push(outcome.map(|r| r.hash.clone()).map_err(str::to_owned));
+    }
+}
+
+fn reloader(calls: Option<crate::sim::calls::Shared>) -> (Harness, Arc<Reloader>) {
+    let agent = Agent::new();
+    let source = Arc::new(Reloader::default());
+    install(&agent, source.clone(), calls);
+    let (tx, rx) = std::sync::mpsc::sync_channel(16);
+    let conn = agent.connect(tx);
+    (Harness { agent, conn, rx }, source)
+}
+
+#[test]
+fn reload_takes_exactly_one_of_a_blob_or_source() {
+    let ((h, _), mut g) = (reloader(None), game());
+    for params in [
+        json!({}),
+        json!({"ir_b64": "AAAA", "source": "same"}),
+        json!({"source": "same", "mode": "sideways"}),
+        json!({"source": "same", "verbose": true}),
+    ] {
+        let r = h.call(&mut g, method::RELOAD, params.clone());
+        assert_eq!(r["error"]["code"], code::INVALID_PARAMS, "{params}: {r}");
+    }
+}
+
+#[test]
+fn an_in_place_reload_answers_at_once() {
+    let ((h, source), mut g) = (reloader(None), game());
+    let r = h.call(&mut g, method::RELOAD, json!({"source": "same", "mode": "auto"}));
+    assert!(r["error"].is_null(), "{r}");
+    assert_eq!(r["result"]["mode"], "in_place");
+    assert_eq!(r["result"]["hash"], "cd".repeat(32));
+    assert_eq!(r["result"]["reasons"], json!([]));
+    // Without guest calls the source is told it cannot restart.
+    assert!(source.restart_refusal.lock().unwrap().unwrap().is_some());
+}
+
+#[test]
+fn a_refusal_comes_back_with_its_reason() {
+    let ((h, _), mut g) = (reloader(None), game());
+    let r = h.call(&mut g, method::RELOAD, json!({"source": "ranked"}));
+    assert_eq!(r["error"]["code"], agent_proto::sim::REFUSED);
+    assert_eq!(r["error"]["message"], "a matchmade game takes no script edits");
+}
+
+#[test]
+fn a_restart_needs_the_guest_calls() {
+    // The queue exists but no tick hook arms it: the restart is refused by
+    // the queue's own reason, and the source was told it may restart.
+    let ((h, source), mut g) = (reloader(Some(crate::sim::calls::shared())), game());
+    let r = h.call(&mut g, method::RELOAD, json!({"source": "shape"}));
+    assert_eq!(r["error"]["code"], code::UNAVAILABLE, "{r}");
+    assert!(r["error"]["message"].as_str().unwrap().contains("agent-calls"), "{r}");
+    assert_eq!(*source.restart_refusal.lock().unwrap(), Some(None));
+    assert!(source.outcomes.lock().unwrap().is_empty());
 }

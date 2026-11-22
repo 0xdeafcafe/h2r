@@ -19,6 +19,9 @@
 //! - [`Runtime::post_tick`] after each game tick: timers, then `on tick`.
 //! - [`Runtime::ended`] after `GAME_END`: the record is removed.
 //!
+//! The agent API's `rules.reload` (`super::reload`) calls
+//! [`Runtime::swap`] at a tick boundary for an in-place reload.
+//!
 //! **Calls wait for the tick boundary.** `PLAYER_KILLED` is opaque, so a
 //! hook there can only observe; the carrier's kill callback (Slayer's
 //! vtable slot `+0x78`) has no named point; and the per-tick group runs
@@ -765,6 +768,27 @@ impl Runtime {
         }
     }
 
+    /// Swaps the running script's program between ticks, keeping every
+    /// slot value (`super::reload`, `Vm::swap_program`): the record is
+    /// synced first and written after. An error keeps the old program.
+    pub fn swap(&mut self, ir: Ir) -> Result<Sha256, String> {
+        let Status::Running(r) = &mut self.status else {
+            return Err("no script runs in this game".into());
+        };
+        if let Err(why) = sync(r, &*self.store) {
+            self.stop(why.clone());
+            return Err(why);
+        }
+        let hash = ir.id();
+        r.vm.swap_program(ir).map_err(|e| e.to_string())?;
+        r.hash = hash;
+        if let Err(why) = save(r, &mut *self.store) {
+            self.stop(why.clone());
+            return Err(why);
+        }
+        Ok(hash)
+    }
+
     /// Why a snapshot can't be taken now: calls wait for the tick boundary
     /// outside guest memory.
     pub fn snapshot_blocker(&self) -> Option<String> {
@@ -814,6 +838,7 @@ impl Runtime {
                     }),
                     pending: r.pending.len(),
                     errors,
+                    last_reload: None,
                 }
             }
         }

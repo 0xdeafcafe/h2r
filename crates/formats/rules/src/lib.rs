@@ -14,6 +14,7 @@ pub mod fake;
 pub mod ide;
 pub mod ir;
 pub mod lang;
+pub mod reload;
 pub mod scenario;
 pub mod ty;
 pub mod verify;

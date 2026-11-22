@@ -4,8 +4,10 @@
 //! `guest` holds the reads and engine calls behind the script's API
 //! entries; `runtime` is the `rules::Game` over them and one game's script
 //! and state; `feature` puts the runtime on the feature plan and answers
-//! the agent API's `rules.state`.
+//! the agent API's `rules.state`; `reload` answers `rules.reload`, in
+//! place or by a restart.
 
 pub mod feature;
 pub mod guest;
+pub mod reload;
 pub mod runtime;

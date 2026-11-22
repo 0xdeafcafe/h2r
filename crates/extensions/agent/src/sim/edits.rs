@@ -362,7 +362,7 @@ impl Sim {
 
 /// GAME_ACTIVATE publishes the active options at globals +8. OPTIONS_QUEUE
 /// takes a complete options block in EAX (docs/runtime/level-boot.md).
-pub(super) fn active_options(m: &dyn GuestMemory) -> Result<Vec<u8>, RpcError> {
+pub fn active_options(m: &dyn GuestMemory) -> Result<Vec<u8>, RpcError> {
     use guest_layout::game::{GameGlobals, MODE_CAMPAIGN, MODE_MULTIPLAYER};
     let fault = |e: engine::MemFault| {
         refused(format!("cannot read active game options at {:#x}", e.addr))
