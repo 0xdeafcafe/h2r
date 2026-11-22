@@ -1,7 +1,7 @@
 # Realtime edits: geometry, placements, collision and textures in the running game
 
-Status: Design. Nothing on this page is built; what it builds on is cited as **Code**.
-Code: planned in `crates/runtime/vfs/src/map_override`, `crates/extensions/hot-tags`, `crates/extensions/agent/src/hot.rs`, `crates/extensions/agent/src/sim/edits.rs`, `crates/rewrites/render-bridge`, `crates/rewrites/native-render` and `crates/apps/studio/src/play`. Tests: named per slice under "Build slices".
+Status: Design, with slice R3 (placement transactions) written: `world.placement.edit` is in `crates/extensions/agent/src/sim/calls/placement/edit.rs`, its tests beside it, and it is documented in [agent-api.md](../runtime/agent-api.md), "Placement edits". Nothing else on this page is built; what it builds on is cited as **Code**.
+Code: planned in `crates/runtime/vfs/src/map_override`, `crates/extensions/hot-tags`, `crates/extensions/agent/src/hot.rs`, `crates/rewrites/render-bridge`, `crates/rewrites/native-render` and `crates/apps/studio/src/play`; built for R3 in `crates/extensions/agent/src/sim/edits.rs`, `crates/extensions/agent/src/sim/calls/placement/edit.rs` and `crates/extensions/agent-proto/src/sim/edits.rs`. Tests: named per slice under "Build slices".
 Switch: none. With no editor paired and no edit sent, none of it runs.
 
 A paired editor's Modeling, Scenario and Textures edits reach the running
@@ -169,11 +169,14 @@ by `relink`; write the records, the object-name repoints and the count;
 create an object for each index in `create`.
 
 - **Add.** The record goes in slot `count` and the count rises. A block
-  has room while its count is under its capacity: its loaded count, or the
-  capacity of the arena block it moved to. With no room the host moves the
-  block into the arena with twice the capacity, bounded by the per-type
-  limit the editor enforces ([scenario-editor.md](scenario-editor.md)
-  section 6, "Add"), and refuses past it.
+  has room while its count is under its capacity: its loaded count, which
+  the host records at the block's first edit of a map activation
+  (`placement::edit::BlockState`), or the capacity of the arena block it
+  moved to. With no room the host will move the block into the arena with
+  twice the capacity, bounded by the per-type limit the editor enforces
+  ([scenario-editor.md](scenario-editor.md) section 6, "Add"), and refuses
+  past it. Until the arena (slice R4) exists, no room is a refusal with
+  `data.need` and `data.capacity`.
 - **Remove** is the save's swap-remove: the last record is written over
   the removed slot, the count drops, the removed entry's objects are
   deleted and the moved entry's objects are relinked to their new index,
@@ -194,8 +197,10 @@ create an object for each index in `create`.
   entry is reported `created: false` with the reason; that entry shows
   after a reload. Bipeds, light fixtures and sound scenery are the same
   until `placement::BLOCKS` covers them. Calling the engine's own
-  create-from-scenario-record entry removes these limits and is a research
-  point of slice R3 (**S**: its register and stack convention).
+  create-from-scenario-record entry removes these limits and stays a
+  research point (**S**: its register and stack convention; the by-name
+  caller is `object_create` at `0x000bb670`, which hands the record to the
+  builder `0x000d5060`, per live-telemetry's `BODY_PLACEMENT_INDEX`).
 - **Blocks the engine walks itself.** Starting locations, netgame
   equipment and starting equipment are walked from zero to the root count
   on each use (**E**, scenario-editor.md section 6), so the record and the
@@ -414,9 +419,13 @@ Plain integers keep `render-bridge` free of the agent's types.
   session or external Live. On a System Link host with other machines,
   `confirm_peers` admits render geometry, pixels and collision, which stay
   local to the host as tag pokes do. A `world.placement.edit` that changes
-  a count is refused there: network object creation sends a placement
-  index that each client checks against its own count
-  (scenario-editor.md section 6).
+  a count is refused there while other people are in the game: network
+  object creation sends a placement index that each client checks against
+  its own count (scenario-editor.md section 6). Phantom bots are not other
+  people (bots.md section 5: each is a peer on the host's own simulation),
+  so the host counts its peers less itself and the phantoms that have
+  joined, and allows the change when none are left. Matchmaking and Live
+  games are refused for every edit by the external Live check.
 - **Determinism.** Writes happen only before `game_tick`, never from the
   stream, a render hook or a worker. Film recording and playback exclude
   them, as they exclude object edits.

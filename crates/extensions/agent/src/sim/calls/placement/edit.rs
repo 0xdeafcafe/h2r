@@ -461,7 +461,8 @@ fn survey(
         }
         if !plan.delete.is_empty() || !plan.relink.is_empty() {
             let (by_index, held) = placed(m, kind, ty)?;
-            let previews = &lock(queue).previews;
+            let queued = lock(queue);
+            let previews = &queued.previews;
             let objects_of = |index: u16| -> Result<Vec<ObjectId>, RpcError> {
                 if held.contains(&index) {
                     return Err(refused(format!(

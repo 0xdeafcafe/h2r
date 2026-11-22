@@ -1252,6 +1252,33 @@ fn world_edits_gate_the_queue() {
     assert!(!super::calls::lock(&q).has_pending());
 }
 
+/// Matchmaking and Live custom games are the external Live probe's, whatever
+/// the peers: a placement edit, a count change or not, never reaches the queue.
+#[test]
+fn placement_edits_gate_the_queue_like_the_object_edits() {
+    let (h, q) = with_calls();
+    let mut g = game();
+    let requests = [
+        json!({"block": "scenery", "was_count": 1, "count": 2}),
+        json!({"block": "scenery", "was_count": 1, "count": 1}),
+    ];
+    for kind in [SessionKind::CoopHost, SessionKind::CoopGuest, SessionKind::MpClient] {
+        *h.kind.lock().unwrap() = kind;
+        for params in &requests {
+            let e = h.err(&mut g, method::PLACEMENT_EDIT, params.clone());
+            assert_eq!(e["code"], code::INVALID_REQUEST, "{kind:?}");
+        }
+    }
+    for kind in [SessionKind::Local, SessionKind::MpHost] {
+        *h.kind.lock().unwrap() = kind;
+        h.agent.set_live_session_probe(|_| true);
+        for params in &requests {
+            assert_eq!(h.err(&mut g, method::PLACEMENT_EDIT, params.clone())["code"], REFUSED);
+        }
+    }
+    assert!(!super::calls::lock(&q).has_pending());
+}
+
 #[test]
 fn object_edits_check_the_callers_epoch_again_before_the_engine_call() {
     for (name, mut params) in edit_requests().into_iter().take(3) {
