@@ -258,7 +258,7 @@ fn kv(s: &str, what: &str) -> Result<(String, String)> {
 }
 
 /// Which commit a run or build uses, from --branch/--rev/--current.
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct Source {
     branch: Option<String>,
     rev: Option<String>,
@@ -308,8 +308,12 @@ impl Source {
     }
 }
 
+/// What `h2 lab run` was asked: the request, its build source, `--wait`
+/// and `--to`.
+type RunArgs = (RunReq, Source, bool, Option<PathBuf>);
+
 fn run_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
-    let (req, src, wait, to) = parse_run(args)?;
+    let (req, src, wait, to) = parse_run_args(args)?;
     let (mut c, v) = launch(r, req, &src)?;
     let id = v["id"].as_str().context("no id in the answer")?.to_string();
     if !wait {
@@ -320,8 +324,7 @@ fn run_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
     wait_and_fetch(r, &mut c, &id, to)
 }
 
-/// `h2 lab run`'s flags: the request, its source, `--wait` and `--to`.
-fn parse_run(args: Vec<String>) -> Result<(RunReq, Source, bool, Option<PathBuf>)> {
+fn parse_run_args(args: Vec<String>) -> Result<RunArgs> {
     let mut req = RunReq::default();
     let mut src = Source::default();
     let mut wait = false;
@@ -364,6 +367,7 @@ fn parse_run(args: Vec<String>) -> Result<(RunReq, Source, bool, Option<PathBuf>
                 req.build.env.insert(k, v);
             }
             "--fresh-data" => req.fresh_data = true,
+            "--own-data" => req.own_data = true,
             "--note" => req.note = Some(val()?),
             "--serve" => req.serve = true,
             "--dedicated" => dedicated = true,
@@ -373,6 +377,10 @@ fn parse_run(args: Vec<String>) -> Result<(RunReq, Source, bool, Option<PathBuf>
             _ => bail!("unexpected {a}\n\n{USAGE}"),
         }
     }
+    ensure!(
+        !(req.own_data && req.fresh_data),
+        "--own-data plays on the host's own data; --fresh-data asks for an empty one"
+    );
     ensure!(
         !(wait && req.serve),
         "--serve runs until `h2 lab stop`; --wait would wait forever (h2 lab bench does the whole loop)"
@@ -1181,6 +1189,24 @@ mod tests {
     }
 
     #[test]
+    fn own_data_parses_and_refuses_fresh_data() {
+        let a = |extra: &[&str]| {
+            let mut v: Vec<String> = ["--name", "Play", "--level", "x", "--serve"]
+                .map(String::from)
+                .into();
+            v.extend(extra.iter().map(|s| s.to_string()));
+            parse_run_args(v)
+        };
+        let (req, ..) = a(&["--own-data"]).unwrap();
+        assert!(req.own_data && !req.fresh_data && req.serve);
+        assert!(!a(&[]).unwrap().0.own_data);
+        for extra in [["--own-data", "--fresh-data"], ["--fresh-data", "--own-data"]] {
+            let e = a(&extra).unwrap_err().to_string();
+            assert!(e.contains("--own-data") && e.contains("--fresh-data"), "{e}");
+        }
+    }
+
+    #[test]
     fn the_bench_line_has_fps_busy_percentiles_and_phases_biggest_first() {
         let cap = json!({
             "frames": 600, "fps": 29.97, "budget_ms": 33.3, "over_budget": 4, "complete": true,
@@ -1204,7 +1230,7 @@ mod tests {
 
     #[test]
     fn dedicated_flags_fill_the_dedicated_request() {
-        let (req, src, wait, _) = parse_run(words(
+        let (req, src, wait, _) = parse_run_args(words(
             "--name Join --dedicated --host-bots --map lockout --variant slayer \
              --max-players 4 --base-port 31000 --rev master --env H2_FEATURES=x",
         ))
@@ -1218,15 +1244,15 @@ mod tests {
         assert_eq!(req.env["H2_FEATURES"], "x");
         proto::validate_run(&req).unwrap();
 
-        let (req, ..) = parse_run(words("--name Join --dedicated")).unwrap();
+        let (req, ..) = parse_run_args(words("--name Join --dedicated")).unwrap();
         assert_eq!(req.dedicated, Some(proto::Dedicated::default()));
-        let (req, ..) = parse_run(words("--name Join --serve")).unwrap();
+        let (req, ..) = parse_run_args(words("--name Join --serve")).unwrap();
         assert!(req.dedicated.is_none());
     }
 
     #[test]
     fn dedicated_flags_need_dedicated_and_never_wait() {
-        let err = |s: &str| match parse_run(words(s)) {
+        let err = |s: &str| match parse_run_args(words(s)) {
             Ok(_) => panic!("{s} parsed"),
             Err(e) => e.to_string(),
         };

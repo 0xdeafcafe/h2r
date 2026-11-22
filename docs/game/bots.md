@@ -219,6 +219,26 @@ simulation. After uplink delivery the same retail reader, layout mapper
 and action builder run in the phantom's private local-user view. See
 §5.1, “The action from a pad”, for the fields and timing.
 
+#### Multiplayer round start (Built)
+
+The retail engine can already be in round state 1 while the local view is
+black. Map startup writes the fade alpha at `0x1585a4` and publishes
+state 1 at `0x1585f4`. The engine reduces the alpha during its tick and
+draws the overlay while it is positive (`0x15c4cc` and `0x1599b0`). The
+player action consumer also honours the shared input-disable byte at
+`[0x4e8c20]+6` (`0x14d765`).
+
+`bots::guest::round::playing` is true once the published and requested
+states are 1 and shared input is enabled. The phantom gather hook
+(`Phantoms::slot_action`) returns no action and clears the seat's input
+queue, uplink and source while it is false, so a delayed action from the
+last round cannot arrive in the next. The opening fade itself stays
+with `guest::match_opening_fading`: the phantom keeps observing and
+sends a neutral pad while the first local view is black, and a respawn
+fade later in the round does not close the round. A dedicated host has
+no local view and uses the engine state and input byte. The gate reads
+the same engine fields on retail and converted maps.
+
 ### 2.3 Views (traced)
 
 `render_game_views` `0x2234e0` takes its view count from `[0x4e8c20]+8`,
@@ -1608,23 +1628,28 @@ wait, and the trigger is the trick's.
 
 **The super bounce spots** (`glitches::spots::SPOTS`) hold only measured
 spots. Each spot has a map, the place to stand, a spread to nudge within
-between tries, a drift direction and a source. There is one:
+between tries, a drift direction, a source and, for a spot a standing
+jump can't reach, the takeoff of the running jump onto it
+(`Bounce::takeoff`) and where its traced bounces landed, which a route
+aims at (`Bounce::landing`, the site's `Site::aim`). There is one:
 
-| Map | Stand at (x, y, z) | Drift | Source |
-|---|---|---|---|
-| `ascension` | (−10.62, 3.88, −3.19), nudged up to 0.04 | +y | superbounce.md: the crease where the ramp meets the floor, 5 bounces in 20 standing-jump landings; the launch is a pinch between faces at y 4.12 and 3.94 |
+| Map | Stand at (x, y, z) | Drift | Takeoff | Aim | Source |
+|---|---|---|---|---|---|
+| `ascension` | (−10.62, 3.88, −3.19), nudged up to 0.04 | +y | (−8.4, 2.5, −0.76) | (−10.45, 3.985, −3.19) | superbounce.md: the crease where the ramp meets the floor; every traced bounce fell onto it at −5.26 to −5.40 from the recipe's running jump off the upper level, a 2.43 drop, landing on x −10.2 to −10.7, y 3.93 to 4.04 (the aim is the middle, which the takeoff heads at along the recipe's (−0.8, 0.6)); the launch is a pinch between faces at y 4.12 and 3.94 |
 
 A bounce needs the player primed first: a forced crouch leaves the
 level pair word at -3 and only a landing with it at -3 bounces
-([superbounce.md](superbounce.md), "The pair word"). The bot primes
-before it goes to a spot (below). Then it walks to 0.8 units short of the
-spot (lower y), steps onto it, stands still for 4 ticks, jumps with the
-stick let go, and pushes the stick 0.15 toward +y in the air, because
-every traced bounce came in moving slowly toward +y. Not every landing
-bounces, so it tries again from a nudged place; the word stays at -3
-until the pair is rebuilt (a crouch, or the body going to sleep), so a
-retry needs no new priming. It knows it bounced when it rises 0.4 units
-again after starting to fall: a plain landing never does. Community
+([superbounce.md](superbounce.md), "The pair word"), and the landing
+must come in fast enough: a standing jump lands at about −3 units/s and
+never bounces on Ascension's patch, which needs −5.4. The measured spot
+is therefore a drop from its takeoff (`spots::Site::measured`: fall 2.43,
+`spots::MEASURED_FALL`), the recipe's running jump (below). The bot
+primes before it goes to a spot (below). On a standing site it walks to
+0.8 units short of the spot, steps onto it, stands still for 4 ticks,
+jumps with the stick let go, and pushes the stick toward the drift in
+the air. Not every landing bounces, so it tries again from a nudged
+place. It knows it bounced when it rises 0.4 units again after starting
+to fall: a plain landing never does. Community
 guides ([Halopedia, Super bouncing](https://www.halopedia.org/Super_Bouncing))
 give spots on most maps by landmark only. A spot goes in the table only
 once a game run has found and traced it; the scan below finds the rest.
@@ -1643,8 +1668,9 @@ stamped file so it is not repeated every launch), stamped with the nav generator
 scan version (`spots::SCAN`) and the map's fingerprint. A scanned bounce
 spot becomes a `glitches::Bounce` (source `scan`, spread 0.03) with its
 launch speed (`spots::Site`); one at a measured spot's place is dropped.
-A site with no fall (0.5 or less) is jumped onto in place; one that needs
-a fall is dropped onto from a ledge (below).
+A site with no fall (0.5 or less) and no takeoff is jumped onto in place;
+one that needs a fall is dropped onto from its takeoff or a ledge
+(below).
 
 **Verified spots.** The map's verified file (`<data>/bots/<map>.verified`,
 written by `superbounce.verify`, [superbounce.md](superbounce.md),
@@ -1657,6 +1683,29 @@ its way in (`Crouch::start`); a proven strip carries the working landing
 point (`Site::aim`) and drop height (`Site::height`). The game sets the
 file's directory when it starts (`spots::set_verified_dir`, from
 `bots_nav_auto`).
+
+**Learned knobs.** The map's learned file (`<data>/bots/<map>.learned`,
+written by a sim's training run, [bounce-search.md](bounce-search.md)) is
+read from the same directory (`spots::learned_for`, cached;
+`spots::store_learned` replaces a site's line after a training round and
+bumps `spots::generation`). `Known::for_map` gives each site its line's
+knobs (`Site::knobs`, by `Site::learned`: the knobs of an `open`,
+`partial` or `learned` line, `superbounce::learned::knobs_for`) and the
+line's state (`Site::line`). A site whose line is `dead` is left out, as a
+failed one is, unless it is proven (measured, or proven by a verified
+entry); a `blocked` line changes nothing. A knob no line sets is the
+route's own: `bounce_route::flown(site, from, tune)` makes each of a
+site's numbers (`Flown`: the `how`, the target, the heading off the
+launch-to-target line by `yaw`, the run-up `back`, the run's stick, the
+jump's `early`, the air stick's `gain` and let-go distance, a standing
+jump's `drift` and `still`) from the knob, else the expression below, and
+the drop, its air steering and the standing bounce read `Flown` alone for
+them. A line's `fx fy fz` is the launch point ahead of the takeoff and the
+launch floor (`bounce_route::launch_from`), its `ax ay` the target ahead
+of the verified aim and the stand (`Site::target`; `Site::own_target` is
+the target without the line), and its `how` says whether the site is a
+standing jump or a drop (`Site::standing`). A site with no line plays
+exactly as it would without the file.
 
 `bounce_route::plan` plans a route from the bot to a point, purely, from
 a walk-length function over the nav mesh:
@@ -1676,16 +1725,55 @@ a walk-length function over the nav mesh:
    crouch 12 ticks, let go, stand up;
 3. for a site with no fall, walk to 0.8 units behind it, never
    crouching, then the bounce run (`glitches::BounceRun`) until it
-   launches. For a site that needs a fall, walk to its **launch
-   floor** (`bounce_route::launch_floor`: the nav mesh's point nearest
-   the site's aim sideways, within 3 units **[guess]**, whose floor is
-   the drop height over the strip, 0.2 under to 2.5 over), then
-   **drop**: line up on that point (45 ticks at most), walk off toward
-   the aim at half stick (60 ticks to leave the floor, else `no_drop`),
-   and steer the fall onto the aim, harder the farther off (2.5 a unit,
-   **[guess]**). It launched when it rises 0.4 over its lowest point; a
-   landing that did not launch walks back to the floor and drops again
-   (3 drops, then `no_bounce`);
+   launches. The run settles onto the stand and jumps; settling that
+   moves the body less than 0.002 units a tick for 12 ticks
+   (`glitches::SETTLE_STILL_TICKS`) jumps from where it is, since a
+   primed body that stands still 38 ticks sleeps and wakes with its word
+   at 0 ([superbounce.md](superbounce.md), "Charge"). For a site that needs a fall, walk to its **launch
+   point** (`bounce_route::launch_from`): its takeoff when it has one,
+   else its **launch floor** (`bounce_route::launch_floor`: the nav
+   mesh's point nearest the site's aim sideways, within 3 units
+   **[guess]**, whose floor is the drop height over the strip, 0.2 under
+   to 2.5 over), then **drop**. How a drop leaves the floor comes from the flight model
+   (`bounce_route::drop_takeoff`): gravity 4.15, a jump 3.08 up, the
+   ground speed of the run's stick (`bounce_route::ground_speed`: the
+   drill runs' map, nothing in the dead zone, about 1.05 units/s at 0.6
+   to 0.85 of stick, 2.0 at 1, **[needs more points]**), and what the air
+   stick can do over the fall (`bounce_route::air_reach`: it drives the
+   sideways speed toward the stick times 1.2 at 1.05 units/s², so it can
+   brake a flight to a stop and push one to 1.2 at most). A **run-off**
+   at full stick (no jump) is taken when it comes down at least as fast
+   as the site needs (`need`: a fall from rest lands at `sqrt(2 g h)`)
+   and the air stick can land it on the aim; else a run-off at the
+   tuning's slower `run_off_speed` that can; else a **running jump** at
+   full stick, then at `run_off_speed`, that comes down fast enough and
+   gets there; failing all, of those fast enough the one whose aim is
+   least out of reach (a learned `how` picks the run-off or the jump, and
+   `run` the stick). Either way the drop lines up 0.6 behind the launch
+   point (a learned `back`; 45 ticks at most) and runs at the aim (turned
+   by a learned `yaw`) at that stick, steered
+   back onto the line through the launch point (60 ticks to leave the
+   floor, else `no_drop`). A running jump presses A 0.05 short of the
+   launch point plus the ground the body covers in the 5 ticks it takes
+   to act on the press (`bounce_route::INPUT_LAG`), holds it 3 ticks and
+   keeps running until the body leaves the floor. Ascension's measured
+   spot is a full-stick running jump: a run-off from its 2.43 lands at
+   4.49, under the 5.4 the traced bounces came in at, and the jump's
+   flight, 2 units/s off the floor, reaches 1.9 to 2.8 against the aim's
+   2.5. In the air the stick steers where the landing comes down
+   (`bounce_route::air_stick`): with the sideways speed held, from where
+   the body is once the stick acts and the fall left then, against the
+   aim, it asks for the speed that, reached at 1.05 units/s² and then
+   held, lands on the aim, 1.2 times the change that is just enough
+   (`air_gain`, or a learned `gain`); within 0.03 (`AIR_DEAD`, or a
+   learned `letgo`) it holds the speed, and a landing more than
+   0.3 past the aim, or a miss it can't make up in the time, gets the
+   full stick. Every stick is at least 0.2 or none: under the move dead
+   zone (0.15) the body doesn't move. A measured spot aims at its traced
+   landing even once a verified drop says where one bounce landed
+   (`Site::verified`). It launched when it rises 0.4 over
+   its lowest point after the top; a landing that did not launch walks
+   back to the launch point and drops again (3 drops, then `no_bounce`);
 4. fly: steer toward the goal at full stick until down
    (vertical speed under 0.3 for 2 ticks after the top);
 5. walk the rest.
@@ -1693,7 +1781,15 @@ a walk-length function over the nav mesh:
 A touchdown during a bounce or a drop is kept (`bounce_route::Touchdown`:
 the tick, the origin before, the speeds in and out, how far outside the
 slot, the word) and named as the HUD's landings are: `bounce`,
-`not_primed`, `missed`, `too_slow` or `no_bounce`.
+`not_primed`, `missed`, `too_slow` or `no_bounce`. Each jump or drop is a
+**flight** (`bounce_route::Flight`, `OrderRun::flights`, the last 8):
+from the tick the step goes airborne (the jump pressed, or a run-off
+leaving the floor), where it left (for a jump, where A was pressed,
+about a quarter of a unit before the body leaves the floor at full
+stick), the ground speed then, the best vertical speed in the 10 ticks
+after, the word on that tick, the stick
+asked in the air (mean, most, and the ticks let go), and the touchdown
+it ended in with its result (`no_landing` when none was seen).
 
 The plan is the best bounce under the asker's mode. **Help** (the
 default) takes a bounce only where it reaches the goal and the plain walk
@@ -1703,6 +1799,55 @@ takes, of the spots within 60 units of walking, the highest launch (the
 cheaper on a tie) and then goes on to the goal. With no bounce that
 qualifies it is the plain walk. A bounce needs a crouch spot to prime at,
 unless the bot's pair word reads -3 already.
+
+**Walks to spots off the mesh.** A scanned stand sits on a seam or an
+edge, so the point a walk goes to (a prime's start, a bounce's
+approach, a drop's launch floor) may be just off the nav mesh, or a
+little under the floor beside it. A walk (`nav::RouteWalk`) first puts
+its goal on the mesh's floor where a polygon under it has one from 0.3
+under it to a standing height (0.725) over it (`nav::floor_goal`): an
+approach 0.8 behind a crease, on the ramp rising from it, keeps the
+crease's height otherwise, under the ramp. It has arrived within its
+tolerance sideways and 0.6 units up or down (`nav::route::ARRIVE_Z`).
+A goal off the mesh within 1.5 units (`nav::TAIL_REACH`) of the
+corridor's end, 0.5 units over it to 0.8 under it, with nothing solid
+between them at knee height and the collision's floor under the line
+every 0.25 units (within 0.3 over it to 0.5 under it, so never off a
+ledge or a sill), is walked to by a **last stretch**: the corridor to
+its end, then straight at the goal, slowing as it nears it. A last
+stretch that gets no 0.05 units nearer in 20 ticks (under the 38 still
+ticks a primed body sleeps after) ends a walk to a prime's start or a
+bounce's approach where the body got to (the prime and the bounce steer
+the rest themselves), and fails a walk to a goal (`tail_stuck`). A goal
+farther off is `goal_off_mesh`. Within 0.5 units of its goal on its
+last leg a walk does not stop for the standing capsule's headroom
+ahead (`nav::route::END_HEADROOM`): the probes reach past the goal, under
+the lip a crouch spot's start stands beside. A walk to a crouch spot's
+start (`RouteWalk::ducking`) does not stop for headroom at all: under a
+ceiling the standing body does not fit it crouches and walks on, since
+the prime crouches next anyway. Other walks stop there, standing.
+
+**A lost walk.** When the follower gives a walk up, the route plans the
+walk again from where the bot is, 3 times a step
+(`bounce_route::WALK_REPLANS`, each logged with the check), then fails
+naming the check and the leg (`bounce_route::lost_on`):
+`path_lost_<check>_<leg>`. The check is the follower's: `stuck` (no
+nearer in 30 ticks, a jump, and no nearer in 30 more), `fell` (its
+waypoint above it past 1.2 units plus the distance), `jump` (stuck at a
+jump or drop link), `link` (a lift, teleporter, elevator or crouch jump
+that did not carry it) or `ended` (no waypoint left). A walk lost at a
+jump or drop link (`jump`: a rail or lip the mesh lacks) is planned
+again around it: every later walk of the route skips a jump, drop or
+crouch-jump link within 0.5 units sideways (`nav::route::AVOID_REACH`)
+and 1 unit in height of where it gave up (`RouteWalk::failed_link`,
+`RouteWalk::new_avoiding`), so it takes another way down or fails
+`no_path` rather than pushing at the same link. The leg is
+`crouch` (to a crouch spot's start), `approach` (to a bounce's approach
+or a drop's launch floor) or `nav` (any other walk). The planner measures walks the way a walk is
+taken (`bounce_route::path_length`, `nav::walk_length`): no teleporter
+or crouch-jump link, and a goal off the mesh only within a last
+stretch's reach, so a plan holds no walk that fails `no_path` or
+`goal_off_mesh` when it is walked.
 
 A map can have hundreds of spots, so a plan is bounded: spots farther
 than the limit in a straight line (the walk it must beat in Help, 60
@@ -1726,8 +1871,10 @@ through a reader the host installs (`bots::set_pair_reader`: the unit's
 datum in, the word out; the game's reader is `live_telemetry::havok_agents`'s
 `fixed_pair_word`). It is read only while a route is asked for or under
 way (`Mind::wants_pair`), not on every sample. With it a priming ends when the word reads
--3, a word that reads anything else on the ground after priming sends
-the bot back to the crouch spot (twice at most), and a priming whose
+-3, a word that reads anything else on the ground after priming
+(walking, lining up or running off a drop, or settling on a bounce's
+stand before the jump) sends the bot back to the crouch spot (twice at
+most), and a priming whose
 word never reaches -3 fails (`prime_failed`). Without it the bot assumes
 it is primed once the stand-up has had its 12 ticks; `bots.bounce_status`
 says which (`primed_read`). `Mind::primed` is true from the priming to
@@ -1761,17 +1908,138 @@ is a practice loop (`mind::practice`, ahead of everything else in
 
 1. stand a moment, looking round (20 to 60 ticks at first, then 45 to
    150 between tries, drawn each time);
-2. pick a site within 120 units: weighed by distance (−1 a 60 units), a
-   proven site +2, one another bot practises at −3, the one just tried
-   −1.5, plus a random 0 to 0.8. A failed try blacklists the site for a
-   while (`Stuck::blacklist`), so the next try is somewhere else. With no
-   crouch spot to prime at (and the word not −3) or no site, it waits
-   300 ticks and looks again (`waiting`);
-3. run the bounce route to the site (a **Fun** route by that one site:
-   the walking prime, then the jump or the drop, the touchdown
-   classified), and tally it: a try, a bounce when the route ended done
-   by the site, else why (the route's error, or the landing's result for
-   one that landed without launching).
+2. pick a site within 120 units that a route reaches: weighed by
+   distance (−1 a 60 units), a proven site +2, a site the learned file
+   calls `learned` +1, one another bot practises at −3, the one just
+   tried −1.5, plus a random 0 to 0.8, the best
+   weighed first. A failed try blacklists the site for a while
+   (`Stuck::blacklist`), so the next try is somewhere else, and counts
+   against what it failed at (below). With no
+   crouch spot to prime at (and the word not −3) or no site a route
+   reaches, it waits 300 ticks and looks again (`waiting`);
+3. run the bounce route to the site (`bounce_route::plan_site`: that one
+   site, priming at its paired crouch spot, then the jump or the drop,
+   the touchdown classified, over once down from the launch), and tally
+   it: a try, a bounce when the route ended done by the site, else why
+   (the route's error, or the landing's result for one that landed
+   without launching).
+
+**Which sites a route reaches.** The first time a pick looks at a site
+it pairs the site with a crouch spot (`bounce_route::pair_site`), and
+the bot keeps the pairing while the map and its spots stay the same:
+the site's approach (behind it, or its launch floor), and of the 6
+crouch spots nearest that approach within 60 units, proven first, the
+one whose start a walk reaches and from which a walk reaches the
+approach, proven first and then the shortest walk. A site with no approach (a drop with no launch floor, no
+launch) or no crouch spot a walk reaches it from is never tried (a
+primed bot needs no crouch spot). A paired site is picked when the walk
+from the bot to its crouch spot's start (primed: to its approach)
+exists; one with none is passed over for 600 ticks
+(`practice::OUT_OF_REACH_TICKS`). When the walk that fails is the one
+to the paired crouch spot's start, the crouch spot is what is out of
+reach (a floor a walk drops down from to the site but none climbs to
+from the bot): it is set aside for the same 600 ticks, its sites pair
+again without it, and the pick looks again 2 ticks later. A pick makes at
+most 4 pairings and 4 of those walks, and with more to look at picks
+again 2 ticks later. A practice try is therefore never spent finding
+out that a site is out of reach: `no_route` is a site whose route
+failed to plan from where the bot stood, which a pairing rules out but
+for a bot that moved between the pick and the plan.
+
+**Giving up what keeps failing.** A failed try counts against what it
+failed at (`Mind::practice_strike`): a walk to the crouch spot that
+failed (`no_path`, `goal_off_mesh`, `tail_stuck`, `path_lost_*`), or
+its prime, against the crouch spot; a walk to the approach that failed,
+against the site. Strikes lapse: one more than 3600 ticks (2 min,
+`practice::STRIKE_TICKS`) after the last starts the count again. A
+crouch spot with 2 (`practice::CROUCH_STRIKES`) is given up and the
+sites paired with it pair again without it; a site with 3
+(`practice::SITE_STRIKES`) is given up. Either comes back after 5400
+ticks (3 min, `practice::GIVE_UP_TICKS`). A failed prime also counts
+for every bot on the map (`practice::PRIME_FAILS`, by the crouch spot,
+lapsing the same way): the geometry that refuses one bot's crouch
+refuses them all, so a crouch spot whose primes failed twice between
+the bots is given up by each of them. A proven crouch spot
+(`superbounce::PROVEN`, or verified) is never given up. When a pick
+finds nothing while something is given up, everything given up comes
+back at once and the pick looks again: giving up never leaves a map
+with nothing to try. A landing that did not bounce counts against
+neither. A pick that finds nothing says why once a map in the log
+(`bots: bounce practice: nothing to try: ...`: the sites and crouch
+spots known, how many crouch spots are set aside as out of reach, and
+how many sites had no crouch spot to prime at, no
+approach, no walk to them, were resting, given up or too far).
+
+**The drill.** A sim match's `[drill]` ([sim.md, "The bounce
+drill"](../runtime/sim.md#the-bounce-drill)) makes the practice try one
+site only (`bots::drill`, `Mind::set_drill`): the known site within 0.5
+of the drill's `site`. The bot walks to the drill's start (its `start`,
+else the site's approach: a drop's takeoff or launch floor) as a plain
+walk, and standing there unprimed asks the host for its word
+(`Mind::drill_wants_arm`; the brain passes its unit's datum to
+`drill::request_arm`), for 20 ticks before walking 1 unit off and back,
+since a body that sleeps has no level pair to write. Primed, it runs the
+route by the site from there (no prime: the walk to the approach, then
+the jump or the drop), tallied as a practice try, pauses 10 ticks and
+walks back to the start. The word is read between tries too
+(`Mind::wants_pair`). A route that starts primed from a word read at −3
+says so (`OrderRun::primed_read`: `primed_read`, and a practice event
+`Primed` with `read` and not `own`). The log says once a drill which
+site it found (`bots: bounce drill: site ... (a drop), aim ..., start
+..., N sites known`), after any `no known site` said while the map's
+spots were still coming in.
+
+**Training.** A sim match's `[train]` ([bounce-search.md](bounce-search.md),
+"Scheduling a batch") makes the practice fly the run's board instead
+(`Mind::set_train`, from `learn::current`; `learn::shared` keeps the
+board, built at the first pick from the known sites once the map's scan
+is in, `practice::site_in`: each site's allowed `how`s and the route's own
+knobs from `flown`, and its line of the learned file). A free bot takes
+the board's pick (`learn::Board::pick`) and flies the round's slots one
+after another, each as a drill try: the try's site is the known site
+with the search's knobs over its own, the bot walks to its approach (a
+drop's launch point), asks for the word as the drill does (the same
+`drill_wants_arm` and `drill::request_arm`), and runs the route by the
+site from there. One flight is a try: a landing that did not launch ends
+the route (`try_over`). The try is the route's first flight
+(`learn::Try::from_leap`, the miss from `Site::own_target`); a `died` is a
+scored try with a death; an end that says nothing about the knobs is
+void (`map_changed`, `practice_off`, `pair_lost`, `no_route`, a walk that
+failed, and the training's own `no_site`, `no_launch_floor`, `no_path`
+after 3 walks to the start, `not_armed` after 3 wake-ups). When the
+search has no slot left the round folds (`Board::fold`), the log says
+`bots: train: site (...) round N ...`, and the board's lines go to the
+map's learned file (`spots::store_learned`). Each try logs its line with
+`train` in place of `drill` and the knobs it flew appended (`; knobs
+how=runoff ax=... back=...`, `practice::knobs_text`). `bots.bounce_status`
+gives the round (`practice.train`).
+
+**The try's line.** Every tallied try, drilled or practised, logs one
+line (`mind::practice::try_line`):
+
+```text
+bots: bounce try: bot 0x2f drill site (-10.62, 3.88, -3.19) aim (-10.45, 3.99, -3.19): missed; jumps 3, the last: takeoff (-8.41, 2.49, -0.76) ground 1.21 vz +3.08 word -3; air 62 ticks stick mean (-0.05, +0.04) max 0.31 let go 20; down (-10.30, 4.11, -3.19) miss 0.204 in 5.38 out +0.00: missed; before: missed, too_slow
+```
+
+The bot (its seed), drill or practice, the site and its aim, what the
+try came to, then the last flight: where it took off, the ground and
+vertical speed, the word then (`unread` when it could not be read), the
+air stick in world axes, the touchdown (origin the tick before, the
+miss, the speeds in and out) and its result; then the results of the
+flights before it. A try with no flight ends `no jump, ended at step N
+(name)`. (The numbers above show the shape, not a run.)
+
+**The drill's drop at Ascension.** What lands in the slot there is a
+running jump at full stick: off the upper level at about 2 units/s and
+3.08 up, 60 ticks in the air, braked by the air stick to come down
+about 0.5 units/s sideways at −5.4 near (−10.13 to −10.3, 3.85 to
+4.07). A jump at half the speed (a walk, about 1.05 units/s at 0.6 to
+0.85 of stick) comes down on the floor short of the slot at −5.26
+whatever the air stick asks, since the stick can't push a flight past
+about 1.2 units/s. A landing braked to a standstill over the crease
+fell through it once. The numbers are in
+[the bounce-practice notes](notes/2026-11-21-bot-bounce-sim.md), "The
+drill four ways"; the route's plan for it is the drop above.
 
 The bots spread over the sites by claims on a board the process shares
 (`practice::CLAIMS`): a bot renews its claim each tick of its route, and
@@ -1788,6 +2056,59 @@ run, and the best run of each spot is kept in `<map>.ghosts` beside the
 spots and verified files, proving the spot as it goes
 ([superbounce.md](superbounce.md#ghost-runs)). Nothing in the bots crate
 records it: the game reads the bots' units each tick.
+
+The practice also queues an event for each route it starts, the first
+time the route's word reads −3, and each try it tallies
+(`mind::PracticeEvent`: `Started`, `Primed` with `read` and `own`,
+`Tried` with `bounced` and why not; at most 64 between takes, the oldest
+dropped). `Mind::take_practice_events` drains them; sim mode counts them
+into its report ([sim.md, "Bounce practice"](../runtime/sim.md#bounce-practice)).
+
+#### Tuning the bounce
+
+The bounce route's numbers are one struct, `bots::tuning::BounceTuning`,
+and its built-in values one constant, `bots::tuning::BOUNCE_DEFAULT`
+(`crates/live/bots/src/tuning.rs`): change a default there and every
+bot plays it. A brain's `Tuning::bounce` (`Some`: a tuning file's
+`[bounce]`, every field left out at the built-in value) replaces it for
+that brain; `tuning::bounce()` gives the thinking brain's, held to what
+the route can play (`BounceTuning::sane`: sticks 0 to 1, at least one
+try and one jump tick, the turn at most 90°). A route reads it once,
+when it starts.
+
+| Field | Default | What it moves |
+|---|---:|---|
+| `approach` | 0.8 | the walk to a standing site ends this far behind it (units; `Bounce::from`) |
+| `approach_speed` | 1.0 | the stick on that walk (`OrderRun`) |
+| `settle` | 0.05 | within this of the site it stands (units) |
+| `settle_ticks` | 90 | settling gives up after this long and jumps |
+| `settle_gain`, `settle_min`, `settle_max` | 4.0, 0.12, 0.6 | the settling stick: gain a unit off, held between min and max |
+| `still_ticks` | 4 | still this long before the jump |
+| `jump_ticks` | 3 | A held this long for the jump (a standing site's, and a drop's running jump) |
+| `drift` | 0.15 | the stick toward the drift in the air: the aim onto the crease (at 0.15, inside the move dead zone, the bounce-practice runs show no sideways speed at all) |
+| `bounce_tries` | 8 | jumps at a site before giving it up |
+| `crouch_first` | 6 | the prime: crouch first, standing still (ticks) |
+| `crouch_ticks` | 12 | crouch held under the lip (walking and in place) |
+| `release_ticks` | 6 | pushing in after letting go |
+| `in_speed` | 0.6 | the stick in |
+| `push_in` | 0.06 | how far past the stand it pushes (units) |
+| `start_out` | 0.35 | how far out a try starts (units) |
+| `approach_turn_deg` | 25 | the second and third tries' turn |
+| `out_speed` | 1.0 | the stick back out |
+| `line_up` | 0.15 | the drop: lined up on its run-up within this (units) ... |
+| `line_up_ticks` | 45 | ... or after this long |
+| `run_off_speed` | 0.6 | the stick of a drop's slower run, taken where a full-stick one overshoots (`drop_takeoff`) |
+| `air_gain` | 1.2 | the drop's air steering: the change in sideways speed it asks for over the one that just lands it (`air_stick`) |
+| `drop_tries` | 3 | drops before giving up |
+| `fly_speed` | 1.0 | the stick toward the goal riding a launch |
+
+A tuning file's `[bounce]` (`sim::config::BounceParams`, the same names,
+each held to a range) sets them for a sim's bots; `h2 sim sweep` tries
+values over maps and seeds and ranks them by bounce rate, then launch
+height ([sim.md, "Sweeping the bounce tuning"](../runtime/sim.md#sweeping-the-bounce-tuning)).
+A test in the game's `sim_glue` holds the file schema's defaults equal to
+`BOUNCE_DEFAULT`, and one in `glitches` that the default tuning plays as
+no tuning does.
 
 #### Driving a player
 

@@ -310,6 +310,11 @@ impl JobFeed {
             .take(12)
             .collect();
         let note = short(meta.request["note"].as_str().unwrap_or("-"), 100);
+        let data = if meta.request["own_data"].as_bool() == Some(true) {
+            " data=own"
+        } else {
+            ""
+        };
         let reason = if phase == Phase::Final {
             meta.error.as_deref().or(meta.skip_reason.as_deref())
                 .map_or_else(String::new, |reason| format!(" | {}", short(reason, 120)))
@@ -317,7 +322,7 @@ impl JobFeed {
             String::new()
         };
         emit(&format!(
-            "[{}] {state} {} level={level} commit={commit} {elapsed:.1}s note={note}{reason}",
+            "[{}] {state} {} level={level} commit={commit} {elapsed:.1}s note={note}{data}{reason}",
             self.id,
             short(&meta.kind, 12)
         ))?;
@@ -677,6 +682,21 @@ mod tests {
         lines.clear();
         assert!(!poll(&mut watch, &mut lines));
         assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn a_job_on_the_players_own_data_says_so() {
+        let scratch = Scratch::new();
+        let mut own = meta("0001", "queued");
+        own.request = serde_json::json!({"own_data": true});
+        save(&scratch.0, &own);
+        save(&scratch.0, &meta("0002", "queued"));
+        let mut watch = Watch::new(&scratch.0, None).unwrap();
+        let mut lines = Vec::new();
+        poll(&mut watch, &mut lines);
+        let line = |id: &str| lines.iter().find(|l| l.starts_with(id)).unwrap().clone();
+        assert!(line("[0001]").contains(" data=own"), "{lines:?}");
+        assert!(!line("[0002]").contains("data=own"));
     }
 
     #[test]

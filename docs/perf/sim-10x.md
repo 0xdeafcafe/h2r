@@ -135,7 +135,7 @@ discounted by risk.
 | 5 | Small host fixes: map status poll, input sync with no pad, file path rebuild, per-tick component strings | 0.10–0.20 | 0.25 | two small lanes | low | do |
 | 6 | Sound off in sims through the title's own no-device path | 0.5–0.65 | 0.73 | one static-reading step, one lane | medium: leaves bar E; needs sign-off unless the gameplay digest holds | blocked: the read found no complete no-device path; the per-map init calls DirectSound with the null interface ([note](notes/sim-10x.md#2026-11-22-lane-c1s-read-the-titles-no-sound-path)) |
 | 7 | **The sim tier in the image**: tick closures recompiled with registers as locals, unchecked flat memory, host floats, exact fallback | 0.9 (leaf families), 1.7 (60% of guest time), 2.4–3.0 (85%) | 3.7 | six to eight lanes; [spec](sim-10x-tier.md) | high: its 5× gate has no number yet | the only route to 20×; start with its two measurements |
-| 8 | Phantom seat residue: camera, first person, HUD and aim work a phantom host still runs ([sim-headless-skips.md](sim-headless-skips.md): the title gates the guest side off by itself; what is left is the per-tick copy of guest RAM for the phantoms' action build) | 0.2–1.0 | unknown | lanes H0 and H1 of that page | medium | measure |
+| 8 | Phantom seat residue: camera, first person, HUD and aim work a phantom host still runs ([sim-headless-skips.md](sim-headless-skips.md): the title gates the guest side off by itself; what is left is the phantoms' action build, measured at 1.15 ms of a 5.19 ms tick, [sim-phantom-build.md](sim-phantom-build.md)) | 0.8–0.95 | unknown | lanes P0 and P1 of [sim-phantom-build.md](sim-phantom-build.md) | medium | do |
 | 9 | In-place callouts for Rust bodies ([spec](sim-10x-callouts.md)) | 0.10–0.25 with objects on | 0.3 | one lane | medium: runner invariants | do; the tier's call-out uses the same primitive |
 | 10 | Emitter: sample the host float mode once per handler activation, not once per run of SSE operations (`h2sn_host_mode` is 1.4% of the Waterworks thread) | 0.05–0.15 | 0.27 | one emitter lane, one image rebuild | medium | batch with the next image rebuild |
 | 11 | PGO image trained on sim matches (`H2_PGO`, [BUILD-CACHE.md](../lifter/BUILD-CACHE.md)) | 0.1–0.25 | unknown | built; two image builds | low | measure in a quiet gap |
@@ -483,3 +483,4 @@ against M0's `aa1`, then `timed`, on Lockout and Waterworks.
 - [contract-thin-transfers-flat-ram.md](../runtime/contract-thin-transfers-flat-ram.md): levers 2 and 3.
 - [2026-11-20-sim.md](../reviews/2026-11-20-sim.md): the review that proposed the tier and the tick driver.
 - [host-halving.md](../live/host-halving.md): the same levers priced for a paced host.
+- [sim-light.md](sim-light.md): memory, disk and setup time per match in a batch.

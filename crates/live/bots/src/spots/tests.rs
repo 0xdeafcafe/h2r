@@ -205,6 +205,25 @@ fn verified_entries_prefer_what_worked_and_drop_what_failed() {
 }
 
 #[test]
+fn a_measured_spot_keeps_its_traced_landing_when_a_drop_on_it_is_verified() {
+    // The drill's first bounce wrote the touchdown it saw, a tick before
+    // contact, as the working point: (-10.28, 3.91). The aim stays the
+    // middle of the traced bounces.
+    let measured = SPOTS[0];
+    let ver = [Entry {
+        offset: [0.34, 0.03],
+        height: Some(2.43),
+        best: 13.1,
+        ..entry(Kind::Bounce, Status::Proven, measured.stand)
+    }];
+    let k = Known::merge_verified(vec![measured], &[], &ver);
+    let s = k.sites[0];
+    assert!(s.proven());
+    assert_eq!(Some(s.target()), measured.landing);
+    assert_eq!((s.drop_height(), s.launch), (2.43, 13.1));
+}
+
+#[test]
 fn a_verified_file_is_stored_merged_read_back_and_bumps_the_generation() {
     let dir = std::env::temp_dir().join(format!("h2-verified-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -232,5 +251,92 @@ fn a_verified_file_is_stored_merged_read_back_and_bumps_the_generation() {
     let st: Vec<_> = l.iter().map(|l| l.spot.status).collect();
     assert_eq!(st, vec![Status::Proven, Status::Failed]);
     assert!(Known::for_map(map).sites.is_empty());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+// ---- the learned file (docs/game/bounce-search.md) ----
+
+fn line(state: learned::State, at: Vec3) -> learned::Entry {
+    learned::Entry {
+        state,
+        at,
+        ..learned::Entry::default()
+    }
+}
+
+#[test]
+fn a_dead_site_is_left_out_unless_proven() {
+    use learned::State as L;
+    let measured = SPOTS[0];
+    let scan = [
+        bounce_spot([50.0, 0.0, 0.0], 10.0, 0.9),
+        bounce_spot([60.0, 0.0, 0.0], 15.0, 0.5),
+        bounce_spot([70.0, 0.0, 0.0], 15.0, 0.6),
+        bounce_spot([80.0, 0.0, 0.0], 15.0, 0.4),
+    ];
+    // 60 is proven by a verified entry.
+    let ver = [entry(Kind::Bounce, Status::Proven, [60.0, 0.0, 0.0])];
+    let aim = Knobs {
+        how: Some(learned::How::Stand),
+        aim: Some([70.1, 0.05]),
+        ..Knobs::default()
+    };
+    let lines = [
+        line(L::Dead, [50.0, 0.0, 0.0]),
+        line(L::Dead, [60.0, 0.0, 0.0]),
+        learned::Entry {
+            knobs: aim,
+            ..line(L::Learned, [70.0, 0.0, 0.0])
+        },
+        line(L::Blocked, [80.0, 0.0, 0.0]),
+        // The measured spot is proven by a game run: dead or not, kept.
+        line(L::Dead, measured.stand),
+    ];
+    let k = Known::merge_verified(vec![measured], &scan, &ver).with_learned(&lines);
+    let stands: Vec<_> = k.sites.iter().map(|s| s.bounce.stand[0]).collect();
+    // The dead likely one gone; the proven dead one, the measured one, the
+    // learned one and the blocked one kept.
+    assert_eq!(stands, vec![measured.stand[0], 60.0, 70.0, 80.0]);
+    // A dead line's knobs are not played; a learned line's are.
+    let s60 = k.sites[1];
+    assert!(s60.knobs.is_default() && s60.line == Some(L::Dead));
+    let s70 = k.sites[2];
+    assert_eq!((s70.knobs, s70.line), (aim, Some(L::Learned)));
+    assert_eq!(s70.target(), [70.1, 0.05, 0.0]);
+    assert_eq!(s70.own_target(), [70.0, 0.0, 0.0]);
+    assert!(s70.standing());
+    // A blocked line changes nothing.
+    let s80 = k.sites[3];
+    assert!(s80.knobs.is_default() && s80.target() == [80.0, 0.0, 0.0]);
+    // With no learned file, every site as before.
+    let plain = Known::merge_verified(vec![measured], &scan, &ver);
+    assert_eq!(plain.clone().with_learned(&[]), plain);
+    assert_eq!(plain.sites.len(), 5);
+}
+
+#[test]
+fn learned_lines_are_written_in_place_of_their_sites_and_read_back() {
+    use learned::State as L;
+    let dir = std::env::temp_dir().join(format!("h2-learned-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let map = "Learned_Test_Map";
+    assert!(read_learned(&dir, map).unwrap().is_empty());
+    let a = learned::Entry {
+        tries: 3,
+        ..line(L::Open, [1.0, 2.0, 3.0])
+    };
+    let b = line(L::Open, [4.0, 5.0, 6.0]);
+    let (path, all) = write_learned(&dir, map, &[a.clone(), b.clone()]).unwrap();
+    assert!(path.ends_with(learned_file_name("learned_test_map")));
+    assert_eq!(all.len(), 2);
+    // The same site further on replaces its line; the other is kept.
+    let a2 = learned::Entry {
+        tries: 9,
+        hits: 2,
+        ..a.clone()
+    };
+    write_learned(&dir, map, &[a2.clone()]).unwrap();
+    let back = read_learned(&dir, map).unwrap();
+    assert_eq!(back, vec![a2, b]);
     std::fs::remove_dir_all(&dir).unwrap();
 }

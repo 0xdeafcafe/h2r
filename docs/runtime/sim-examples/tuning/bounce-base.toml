@@ -1,0 +1,12 @@
+# The bounce route's numbers (docs/game/bots.md, "Tuning the bounce").
+# Every field is optional; one left out plays the built-in value, so an
+# empty [bounce] is the built-in route. These are the built-in values.
+skill = "legendary"
+
+[bounce]
+approach = 0.8
+still_ticks = 4
+drift = 0.15
+crouch_ticks = 12
+release_ticks = 6
+air_gain = 1.2

@@ -1144,13 +1144,17 @@ fn takeover_request(
             (Operation::Run, seconds)
         }
     };
+    let mut revision: String = commit.map_or_else(
+        || "installed image".into(),
+        |sha| sha.chars().take(12).collect(),
+    );
+    if matches!(job, Job::Run(run) if run.own_data) {
+        revision.push_str(", using your own data");
+    }
     TakeoverRequest {
         requester: requester.to_owned(),
         operation,
-        revision: commit.map_or_else(
-            || "installed image".into(),
-            |sha| sha.chars().take(12).collect(),
-        ),
+        revision,
         estimate_seconds,
         timeout_seconds,
     }
@@ -1539,18 +1543,19 @@ fn play_command(
     if let Some(out) = &image.out {
         cmd.arg("--out").arg(out);
     }
-    let data = if run.fresh_data {
-        let d = cfg.dir("scratch").join(id).join("data");
-        fs::create_dir_all(&d)?;
-        d
-    } else {
-        cfg.data.clone()
-    };
-    cmd.arg("--data").arg(data);
+    // `--own-data`: no `--data`, so the game takes its default data root
+    // (and settings, Live accounts) like `h2 play` on this Mac.
+    if let Some(data) = run_data_root(cfg, id, run) {
+        if run.fresh_data {
+            fs::create_dir_all(&data)?;
+        }
+        cmd.arg("--data").arg(data);
+    }
     let mut level = run.level.clone();
     let mut difficulty = run.difficulty.clone();
     for (k, _) in std::env::vars_os() {
-        if k.to_str().is_some_and(|k| k.starts_with("H2_")) {
+        let kept = |k: &str| run.own_data && proto::OWN_DATA_ENV.contains(&k);
+        if k.to_str().is_some_and(|k| k.starts_with("H2_") && !kept(k)) {
             cmd.env_remove(k);
         }
     }
@@ -1639,12 +1644,22 @@ fn play_command(
 /// the data root it plays with (`h2 play --data`), which is the run's own
 /// scratch root for `--fresh-data`.
 fn film_library(cfg: &HostConfig, id: &str, run: &RunReq) -> PathBuf {
-    let data = if run.fresh_data {
-        cfg.dir("scratch").join(id).join("data")
+    run_data_root(cfg, id, run)
+        .unwrap_or_else(content::store::default_data_root)
+        .join("films")
+}
+
+/// The `--data` a run's game gets: the run's scratch root for
+/// `--fresh-data`, none for `--own-data` (the game's default root), else the
+/// lab's `data/`.
+fn run_data_root(cfg: &HostConfig, id: &str, run: &RunReq) -> Option<PathBuf> {
+    if run.own_data {
+        None
+    } else if run.fresh_data {
+        Some(cfg.dir("scratch").join(id).join("data"))
     } else {
-        cfg.data.clone()
-    };
-    data.join("films")
+        Some(cfg.data.clone())
+    }
 }
 
 /// Keeps the film a `--film` run recorded: a link or copy in `runs/<id>/`
@@ -2175,6 +2190,79 @@ mod tests {
             .spawn()
             .unwrap();
         (child, log)
+    }
+
+    fn config(root: &Path) -> HostConfig {
+        HostConfig {
+            root: root.to_owned(),
+            socket: root.join("lab.sock"),
+            repo: root.join("repo"),
+            disc: root.join("halo2.iso"),
+            h2: "/bin/true".into(),
+            out: None,
+            data: root.join("data"),
+            cargo: "cargo".into(),
+            obj_cache_limit: 0,
+            target_limit: 0,
+            max_jobs: 1,
+            lan: None,
+            managed: false,
+            explicit_h2: true,
+            grace: Duration::from_secs(1),
+            takeover: takeover::Config::default(),
+        }
+    }
+
+    #[test]
+    fn own_data_runs_get_no_data_flag_and_keep_lives_variables() {
+        let root = std::env::temp_dir().join(format!("h2lab-own-{}", std::process::id()));
+        let cfg = config(&root);
+        let image = Image { h2: "/bin/true".into(), out: None, env: BTreeMap::new() };
+        let args = |run: &RunReq| -> Vec<String> {
+            let cmd = play_command(&cfg, "0001", run, &image, None).unwrap();
+            cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect()
+        };
+        let has_data = |a: &[String]| a.iter().any(|x| x == "--data");
+        let mut run = RunReq { name: "Play".into(), ..RunReq::default() };
+        let plain = args(&run);
+        let at = plain.iter().position(|x| x == "--data").unwrap();
+        assert_eq!(plain[at + 1], root.join("data").to_string_lossy());
+        run.fresh_data = true;
+        let fresh = args(&run);
+        assert!(fresh.iter().any(|x| x.ends_with("scratch/0001/data")));
+        run.fresh_data = false;
+        run.own_data = true;
+        assert!(!has_data(&args(&run)));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn own_data_runs_say_so_to_the_player_and_read_their_films() {
+        let cfg = config(Path::new("/lab"));
+        let mut run = RunReq::default();
+        assert_eq!(run_data_root(&cfg, "0001", &run), Some("/lab/data".into()));
+        run.fresh_data = true;
+        assert_eq!(
+            run_data_root(&cfg, "0001", &run),
+            Some("/lab/scratch/0001/data".into())
+        );
+        run.fresh_data = false;
+        run.own_data = true;
+        assert_eq!(run_data_root(&cfg, "0001", &run), None);
+        assert_eq!(
+            film_library(&cfg, "0001", &run),
+            content::store::default_data_root().join("films")
+        );
+        let ask = |run: &RunReq| {
+            takeover_request(&Job::Run(run.clone()), None, "Lab", false, 60).revision
+        };
+        assert_eq!(ask(&run), "installed image, using your own data");
+        run.own_data = false;
+        assert_eq!(ask(&run), "installed image");
+        for name in ["H2_DATA", "H2_LIVE_DIR", "H2_LIVE_SERVER"] {
+            assert!(proto::OWN_DATA_ENV.contains(&name));
+        }
+        assert!(!proto::RUN_ENV.iter().any(|k| proto::OWN_DATA_ENV.contains(k)));
     }
 
     #[test]

@@ -47,6 +47,18 @@ pub const RUN_ENV: &[&str] = &[
     "H2_BOT_PIPELINE",
 ];
 
+/// The host's own variables a `--own-data` run keeps (the others are
+/// dropped like any run): the data root and Live's directory, server,
+/// database, web app and cloud-saves switch, which `h2 play` there reads.
+pub const OWN_DATA_ENV: &[&str] = &[
+    "H2_DATA",
+    "H2_LIVE_DIR",
+    "H2_LIVE_SERVER",
+    "H2_LIVE_DB",
+    "H2_LIVE_WEB",
+    "H2_CLOUD_SAVES",
+];
+
 /// `H2_PIPELINE_CACHE` values a request may pass: `off`, or
 /// [`PIPELINE_CACHE_FRESH`]. The cache's path is the host's to choose.
 pub const PIPELINE_CACHE_VALUES: &[&str] = &["off", PIPELINE_CACHE_FRESH];
@@ -137,6 +149,12 @@ pub struct RunReq {
     pub build: BuildSpec,
     /// An empty data directory for this run only, removed after it.
     pub fresh_data: bool,
+    /// Play on the host Mac's own data root, Live accounts and settings, as
+    /// `h2 play` there would (no `--data`, Live's variables kept). Absent
+    /// when false, so an older host still reads the request. Refused with
+    /// `fresh_data`.
+    #[serde(skip_serializing_if = "is_false")]
+    pub own_data: bool,
     /// Game child footprint cap in bytes. Absent selects the host default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mem_limit: Option<u64>,
@@ -201,6 +219,10 @@ impl Dedicated {
             live: false,
         })
     }
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// One arm of a sim benchmark: a name (a path component, it names the
@@ -575,6 +597,10 @@ pub fn validate_run(r: &RunReq) -> Result<()> {
     ensure!(
         !(r.serve && r.frames.is_some()),
         "a --serve run never stops by itself; --frames can't be set (h2 lab stop ends it)"
+    );
+    ensure!(
+        !(r.own_data && r.fresh_data),
+        "--own-data plays on the host's own data; --fresh-data asks for an empty one"
     );
     if let Some(l) = &r.level {
         check_level(l)?;
@@ -1169,6 +1195,21 @@ mod tests {
         ] {
             assert!(run(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn own_data_round_trips_and_is_absent_for_older_hosts() {
+        let old: RunReq = serde_json::from_str(r#"{"name":"Fixture"}"#).unwrap();
+        assert!(!old.own_data);
+        assert!(!serde_json::to_string(&old).unwrap().contains("own_data"));
+        let own = run(r#"{"cmd":"run","name":"Fixture","own_data":true,"serve":true}"#);
+        assert!(own.is_ok());
+        let r = RunReq { name: "Fixture".into(), own_data: true, ..RunReq::default() };
+        let back: RunReq = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+        assert_eq!(back, r);
+        assert!(
+            run(r#"{"cmd":"run","name":"Fixture","own_data":true,"fresh_data":true}"#).is_err()
+        );
     }
 
     #[test]

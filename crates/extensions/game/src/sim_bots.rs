@@ -237,6 +237,7 @@ pub(crate) fn spots(raw: serde_json::Value) -> Result<serde_json::Value, agent_p
             out: l.spot.out,
             lip: l.spot.lip.edges().to_vec(),
             shape: l.spot.shape.name().into(),
+            learned: l.learned.as_ref().map(learned_view),
         })
         .collect();
     let out = Spots {
@@ -245,6 +246,42 @@ pub(crate) fn spots(raw: serde_json::Value) -> Result<serde_json::Value, agent_p
         spots,
     };
     Ok(serde_json::to_value(out).expect("spots serialise"))
+}
+
+/// A bounce site's knobs as the agent API gives them: the set ones, by
+/// the learned file's keys (docs/game/bounce-search.md).
+fn knobs_view(k: &superbounce::learned::Knobs) -> agent_proto::bot_bounce::LearnedKnobs {
+    agent_proto::bot_bounce::LearnedKnobs {
+        how: k.how.map(|h| h.name().into()),
+        fx: k.from.map(|f| f[0]),
+        fy: k.from.map(|f| f[1]),
+        fz: k.from.map(|f| f[2]),
+        ax: k.aim.map(|a| a[0]),
+        ay: k.aim.map(|a| a[1]),
+        yaw: k.yaw,
+        back: k.back,
+        run: k.run,
+        early: k.early,
+        gain: k.gain,
+        letgo: k.letgo,
+        drift: k.drift,
+        still: k.still,
+    }
+}
+
+/// A spot's line of the map's learned file, for `superbounce.spots`.
+fn learned_view(e: &superbounce::learned::Entry) -> agent_proto::bot_bounce::SpotLearned {
+    agent_proto::bot_bounce::SpotLearned {
+        state: e.state.name().into(),
+        knobs: knobs_view(&e.knobs),
+        tries: e.tries,
+        hits: e.hits,
+        n: e.n,
+        ok: e.ok,
+        score: e.score,
+        best: e.best,
+        why: e.why.clone(),
+    }
 }
 
 /// The brain-driven seat a request names: by handle, gamertag (any case)
@@ -335,6 +372,10 @@ pub(crate) fn bounce_status(
         primed: v.primed,
         primed_read: v.primed_read,
         error: v.error.map(Into::into),
+        knobs: v
+            .site
+            .filter(|s| !s.knobs.is_default())
+            .map(|s| knobs_view(&s.knobs)),
         practice: v.practice.map(|p| agent_proto::bot_bounce::BouncePractice {
             state: p.state.into(),
             site: p.site,
@@ -350,6 +391,13 @@ pub(crate) fn bounce_status(
                     why: t.why.into_iter().map(|(k, n)| (k.to_string(), n)).collect(),
                 })
                 .collect(),
+            train: p.train.map(|t| agent_proto::bot_bounce::PracticeTrain {
+                site: t.site,
+                stage: t.stage.into(),
+                axis: t.axis.map(Into::into),
+                slot: t.slot,
+                tries: t.tries,
+            }),
         }),
     })
     .expect("status serialises"))

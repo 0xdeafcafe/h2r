@@ -116,7 +116,7 @@ The host keeps its files under `--root`, by default
 | `target/` | the cargo target directory those builds share |
 | `image/` | the built `h2`, game module, generated sources and build stamp (`image.json`) |
 | `obj-cache/` | `H2_OBJ_CACHE` for every image build |
-| `data/` | the data root runs use; `data/films/` is the film library `theater.play` reads |
+| `data/` | the data root runs use unless they pass `--own-data`; `data/films/` is the film library `theater.play` reads |
 | `scratch/<id>/data` | the empty data root of a `--fresh-data` run, removed when it ends |
 
 Host and install flags take the same paths. `--repo` sets the checkout
@@ -257,6 +257,7 @@ the game has no window. Use `--note` for additional context.
 | `--env KEY=VALUE` | one of `H2_FRAME_STATS`, `H2_FRAME_STATS_FROM`, `H2_BOOT_STOP_AT_PRESENT`, `H2_PERF_FROM`, `H2_PROFILE_HZ`, `H2_HOST_PERF`, `H2_AUDIO_STATS`, `H2_FPS`, `H2_RESOLUTION`, `H2_HUD_POSITION`, `H2_LOD_DISTANCE`, `H2_RENDER_SCALE`, `H2_WATERMARK`, `H2_MAPPACK`, `H2_HALO1`, `H2_FEATURES`, `H2_LOCKSTEP_TICKS`, `H2_ICONS`, `H2_MEM_SAMPLE`, `H2_PREWARM_PROGRAMS`; `H2_PIPELINE_CACHE=off` (no pipeline cache) or `H2_PIPELINE_CACHE=fresh` (an empty one at `runs/<id>/pipeline-cache.jsonl`), never a path |
 | `-- FLAGS` | `h2 play` flags from a fixed list: `--no-audio`, `--no-vsync`, `--unpaced`, `--fps N`, `--set KEY=VALUE`, ... |
 | `--fresh-data` | an empty data root for this run, removed after it |
+| `--own-data` | play on this Mac's own data: no `--data`, so the game takes the default data root, its `settings.toml` and Live accounts as `h2 play` there would (see [Playing on your own data](#playing-on-your-own-data)); refused with `--fresh-data` |
 | `--wait [--to DIR]` | wait for the end, then fetch |
 
 Anything else is refused: no other variables (paths the game writes are
@@ -402,6 +403,36 @@ For larger files, fetch them or call
 The game and lab host must both support artifact readback. The host
 reserves `--socket` and `--xbox` for routing. Use `raw-diff` locally on
 fetched files.
+
+### Playing on your own data
+
+A lab run plays on the host's `data/`, so its profiles, saves,
+`settings.toml` and mappack are the lab's, not the player's. The Live sign-in
+(`accounts.json`, `play-accounts.json`) is read from `$H2_LIVE_DIR`, else
+`<app data>/live`, and the cloud saves of a signed-in account are merged into
+the data root: a run on `data/` signs in but merges into and plays from the
+lab's root. Every `H2_*` variable of the host's own environment is also
+dropped from the game, so `H2_DATA`, `H2_LIVE_DIR`, `H2_LIVE_SERVER` and
+`H2_CLOUD_SAVES` do not reach it.
+
+`--own-data` plays as `h2 play` on that Mac would: the host passes no
+`--data` (the game takes `content::store::default_data_root`, which honours
+`H2_DATA`), so the profiles, settings and Live accounts are the player's, and it
+keeps the host's `H2_DATA`, `H2_LIVE_DIR`, `H2_LIVE_SERVER`, `H2_LIVE_DB`,
+`H2_LIVE_WEB` and `H2_CLOUD_SAVES` (`proto::OWN_DATA_ENV`) when the host
+process has them. A LaunchAgent host has the agent's environment, not a
+shell's, so a variable set in the player's shell needs setting for the
+LaunchAgent too. Every other `H2_*` is still dropped.
+
+```
+h2 lab run --host laptop --name "Play" --current --level 03a_oldmombasa --serve --own-data
+```
+
+The consent prompt names the data ("using your own data"), and the job lines of `h2 lab logs` and
+`h2 lab host watch` show `data=own`; `request.own_data` is in the job's `meta.json`.
+`--film` records into that root's `films/`. Results are not repeatable, so
+use `--fresh-data` for runs compared frame for frame. An older host refuses
+the flag as an unknown field: `h2 lab update --host laptop` first.
 
 ### `--serve` and `bench`
 

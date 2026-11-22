@@ -1,8 +1,8 @@
 # Headless sim: work nobody consumes, and what may be skipped
 
-Status: Design. Lane H0's measurements are built (the sim report's `wall.phantom_*` fields and `guest_census` block, [sim.md §6](../runtime/sim.md#6-metrics)); nothing else is. Every ms figure is supposed until a run of H0 measures it.
+Status: Partly built. Lane H0's measurements are built (the sim report's `wall.phantom_*` fields and `guest_census` block, [sim.md §6](../runtime/sim.md#6-metrics)); no skip is. Row 1 and the census are measured; every other ms figure is supposed.
 Code: H0's, `crates/extensions/game/src/sim_census.rs` and `bot_glue/retail_input.rs`; each other lane below names its files. Tests: named per lane.
-Switch: proposed `impl.sim.skip.phantom-snapshot` (off until measured); it joins [switches.md](../runtime/switches.md) when its lane lands.
+Switch: none here. Row 1's is proposed in [sim-phantom-build.md](sim-phantom-build.md).
 
 A headless bot match ([sim.md](../runtime/sim.md)) has no screen, no
 speaker and no local player. This page asks which per-tick work it still
@@ -21,7 +21,8 @@ local class of effects on a local user being mapped. Nothing is
 replicated to a phantom either. What is left in the guest is small,
 unmeasured, or read back by the tick. The one large candidate is ours:
 each tick the host builds the phantoms' actions in a private
-copy-on-write copy of guest RAM, and that copy is remade every tick.
+copy-on-write copy of guest RAM. That build is 22% of the tick, and
+[sim-phantom-build.md](sim-phantom-build.md) is its design.
 
 Evidence labels are those of [docs-style.md](../meta/docs-style.md).
 Addresses are research points in the retail XBE.
@@ -34,7 +35,8 @@ The local-user map is `[[0x4e8c20] + 0xc + 4 * user]`, −1 for an unmapped
 user, and `[[0x4e8c20] + 8]` is the count of local users. A sim host
 leaves all four profiles signed out
 ([sim.md §5](../runtime/sim.md#5-setting-up-a-match-by-script)), so the
-map is four times −1 on the live side (**S**: read it in a run).
+map is four times −1 on the live side (**Run**: the census counts 0
+local users on every tick, [note](notes/sim-10x.md)).
 With that, by retail's own tests (**E**):
 
 | Work | Entry | Gate that skips it |
@@ -82,15 +84,21 @@ seat reverts the pages the view wrote. Every seat then makes six guest
 calls: bind `0x1872d0`, profile to look rates `0x190c34`, the camera
 origin `0x1557c0`, the input read `0x124c00`, the remap `0x217c40` and
 the builder `0x186ab0`, which runs the aim-assist search
-(`0x1a4900`). The action is game state; the copies are not. By
-[second-executor.md](../runtime/second-executor.md#2-guest-memory-view)
-a copy costs 0.43 to 0.60 ms with 16 MB resident on a loaded Mac, and
-afterwards the live side takes a fault of about 2.8 µs on its first
-write to each 16 KB host page. Where the host cannot remap (`cow.rs`:
-every host but macOS), a snapshot copies all RAM bytes. None of this is
-inside `wall.bots_ms_per_tick`: `bots::think::GameThreadTimer` wraps the
-brain only (**Code**), so it is counted as "the guest's tick" in the
-[note](notes/sim-10x.md).
+(`0x1a4900`). The action is game state; the copies are not. Measured
+on Lockout with four phantoms (**Run**, [note](notes/sim-10x.md)): the
+build is 1.15 ms of a 5.19 ms tick, and about 1.5 of 7.0 with eight
+matches at once. The two copies are 0.12 to 0.17 ms of it, one snapshot
+a tick, remapped. The rest is the guest calls, the reverts and what a
+mapping made each tick costs in kernel faults; the live side also takes
+a fault of about 2.8 µs on its first write to each 16 KB host page while
+the copies stand
+([second-executor.md](../runtime/second-executor.md#2-guest-memory-view)),
+which no timer covers. Where the host cannot remap (`cow.rs`: every host
+but macOS), a snapshot copies all RAM bytes. None of this is inside
+`wall.bots_ms_per_tick`: `bots::think::GameThreadTimer` wraps the brain
+only (**Code**); the report has it as `wall.phantom_build_ms_per_tick`.
+[sim-phantom-build.md](sim-phantom-build.md) reads the build call by
+call.
 
 **Sound.** The service `0x125b40` runs every frame. Lane C1's read found
 no clean no-sound path ([note](notes/sim-10x.md#2026-11-22-lane-c1s-read-the-titles-no-sound-path)).
@@ -108,7 +116,9 @@ local class draws from word +4 and is culled against the local-players
 set (`0x179730`). The local set is built from players with a local user
 only (`0x150891`), so on a phantom host it is empty and a local-class
 effect is suspended at its first update (`0x1797c7`): no events, no
-parts, no particles (**S**: the chain is read; the outcome needs a run).
+parts, no particles (**Run**: the census finds the local set empty on
+every tick, particles and decals 0, a mean of 8 effects and 30 lights,
+[note](notes/sim-10x.md)).
 Particle setup (`0x249170`, `0x247950`) draws from word +4 only.
 Effect parts are a switch at `0x17a8a0`: object creation draws word 0,
 damage and character parts change the world, decals, lights and sounds
@@ -164,16 +174,17 @@ the fire and damage paths would.
 
 ## Candidates, ranked
 
-Shares are of the 3.3 ms Lockout tick ([note](notes/sim-10x.md)). No
-profile of a phantom roster exists, so a share is the model's (sim-10x.md,
-"The budget", scaled to 3.3 ms) or unmeasured. "Exact" means the arena
-arm of `h2 sim diff` prints nothing.
+Row 1 is measured, as a share of the 5.19 ms tick of the run that
+measured it ([note](notes/sim-10x.md)). The other shares are of the
+3.3 ms Lockout tick: no profile of a phantom roster exists, so each is
+the model's (sim-10x.md, "The budget", scaled to 3.3 ms) or unmeasured.
+"Exact" means the arena arm of `h2 sim diff` prints nothing.
 
 | # | Candidate | Share | State | Films | Viewer | Mechanism | Lane | Expected ms |
 |---|---|---|---|---|---|---|---|---:|
-| 1 | Per-tick copy-on-write copies for the phantoms' action build | unmeasured; up to about 1 ms by the unit costs above | **safe** if the view's bytes at each call are unchanged: the action is the only output | **safe**: `BTAP` tapes the action, playback does not build | **safe** | a view kept across ticks and brought up to date from the live side's written pages, not remade | H0 measures, H1 builds | 0.2–1.0 (**S**) |
+| 1 | The phantoms' action build: the private view, its faults and reverts, around six guest calls a seat | 1.15 ms, 22% (**Run**); the copies alone 0.12 | **safe** if every action's bytes are unchanged: the action is the only output | **safe**: `BTAP` tapes the action, playback does not build | **safe** | the executor runs on live RAM with an undo journal, no mapping per tick ([sim-phantom-build.md](sim-phantom-build.md)) | P0 splits, P1 builds | 0.8–0.95 (**S**), plus the live side's faults |
 | 2 | Sound service and the audio clock under it | 0.33 + 0.11 (model) | **unsafe**: voice completion and the listener verdict are read by the tick ([sim-budget.md](sim-budget.md#headless-guest-dependencies)) | unsafe with it | safe | none: C1's read stands. One read left: whether a voice is admitted when no listener is active (`0x127d9e`) | none | 0 |
-| 3 | Effect tick `0x176e40` and frame update `0x137ed0` | 0.22 (model, from a local roster); probably far less | **unsafe** as entries: object and damage parts, word 0, lifetimes. The local class is already suspended by the title (**S**) | unsafe with it | safe | none beyond the title's own. H0's census says what is left | H0 | 0 until the census |
+| 3 | Effect tick `0x176e40` and frame update `0x137ed0` | 0.22 (model, from a local roster); far less with a mean of 8 effects and no particles (**Run**) | **unsafe** as entries: object and damage parts, word 0, lifetimes. The local class is already suspended by the title | unsafe with it | safe | none beyond the title's own | none | 0 |
 | 4 | Lights `0x0c1400` | about 0.04 (**S**) | **unknown**: the read of object `+4` bit `0x40`; the records are in the arena | not exact | safe | none | none | 0 |
 | 5 | Network record and entity scans (`0x684e0`, `0x8a090`, `0x8df50`, `0x8dfc0`) | 0.06 (model) | **unknown**: the pending masks the scan clears, and the session state the pumps keep alive | unknown | safe | none: the per-peer part is already zero | none | 0 |
 | 6 | Decals `0x17e670` (a collision trace per placement) | unmeasured, small | digest: **S** safe (word +4 only, no object); arena: **unsafe** (decal array, `0x17d271`) | plays with the switch; not exact against a film without it | safe | the title's own enable byte `[0x46dd48]`, tested at `0x17e67a` | none: not exact | ≤ 0.02 |
@@ -188,14 +199,13 @@ arm of `h2 sim diff` prints nothing.
 
 | Lane | Scope | Files | Switch | Proof |
 |---|---|---|---|---|
-| **H0** census | The sim report gains `wall.phantom_build_ms_per_tick` and `wall.phantom_snapshot_ms_per_tick` (game-thread time in `retail_input::gather` and in `SecondExecutor::snapshot`), the snapshot's `CopyKind`, and a `guest_census` block read once a tick by the sim's tick observer: the local-user count, whether the local visibility set `[0x4e6948] + 0x1178` is empty, and the live counts of the effect, particle-system, particle, decal and light arrays (their globals, read with `h2 disasm`, are in sim.md §6) as mean and peak. The same block is an agent method, `sim.guest_census` | `crates/extensions/game/src/bot_glue/retail_input.rs`, `crates/extensions/game/src/sim_glue.rs`, `crates/live/sim-bench/src/metrics.rs`, [sim.md](../runtime/sim.md), [agent-api.md](../runtime/agent-api.md) | none | metrics unit tests on the JSON; a fake-guest test of the census reads |
-| **H1** phantom view kept across ticks | Needs a spec first. `SecondExecutor` keeps its view and its base as private copies and, at each tick's first gather, copies in only the pages the live side stored to since the last one (a write-watch subscription on the live `Guest`), then reverts the view's own written pages as it does between seats. No remap per tick and no fault on the live side | `crates/runtime/runtime/src/executor.rs`, `guest/view.rs`, `cow.rs`, `crates/extensions/game/src/bot_glue/retail_input.rs`, [second-executor.md](../runtime/second-executor.md) | `impl.sim.skip.phantom-snapshot` | a runtime test: after N rounds of random live and view stores the kept view equals a fresh `cow_snapshot` byte for byte; `h2 sim diff` on against off, arena hashes on; two films of one seed, on and off, with equal `BTAP` and digest series |
+| **H0** census (built) | The sim report has `wall.phantom_build_ms_per_tick` and `wall.phantom_snapshot_ms_per_tick` (game-thread time in `retail_input::gather` and in `SecondExecutor::snapshot`), the snapshot's `CopyKind`, and a `guest_census` block read once a tick by the sim's tick observer: the local-user count, whether the local visibility set `[0x4e6948] + 0x1178` is empty, and the live counts of the effect, particle-system, particle, decal and light arrays (their globals, read with `h2 disasm`, are in sim.md §6) as mean and peak. The same block is an agent method, `sim.guest_census` | `crates/extensions/game/src/bot_glue/retail_input.rs`, `crates/extensions/game/src/sim_glue.rs`, `crates/live/sim-bench/src/metrics.rs`, [sim.md](../runtime/sim.md), [agent-api.md](../runtime/agent-api.md) | none | metrics unit tests on the JSON; a fake-guest test of the census reads |
+| **P0**, **P1**, **P2** the action build | Row 1: the split of the build's cost, then the alias view with its undo journal, then the small calls. The design, files and proofs are in [sim-phantom-build.md](sim-phantom-build.md#interfaces) | there | `impl.sim.phantom-alias` (proposed) | there |
 
-**Order.** H0 first: it is two timers and a handful of reads, and every
-row above waits on it. The coordinator's phantom-roster profile (census
-M1 of sim-10x.md) sizes row 1 a second way, by the kernel's remap and
-fault frames. H1 starts when row 1 measures at 0.15 ms or more. Rows 2
-to 12 get no lane.
+**Order.** H0 measured row 1 at 1.15 ms, so its lanes run: P0 and P1
+together, P2 after P0's figures. The coordinator's phantom-roster
+profile (census M1 of sim-10x.md) sizes row 1 a second way, by the
+kernel's remap and fault frames. Rows 2 to 12 get no lane.
 
 ## Rules and limits
 
@@ -211,8 +221,8 @@ to 12 get no lane.
 - **A film carries its switches.** A skip switch that defaults on makes
   every earlier sim film refuse to play. Nothing is published, so that
   costs nothing today; it is the reason a skip that is exact should not
-  need to be a boot fact at all, and H1's spec decides whether its
-  switch enters `Switches::spec`.
+  need to be a boot fact at all. `Switches::spec` holds only the
+  switches a launch names, so a switch left at its default is not one.
 
 ## Evidence
 
@@ -232,20 +242,17 @@ to 12 get no lane.
 | A film's switches must equal the player's | Code | `crates/extensions/game/src/theater.rs` ("film boot facts differ") |
 | Frame fields and their sources | Code | `crates/live/live-telemetry/src/memory.rs`, `hooks.rs`, `session.rs` |
 | 3.3 ms a tick, bots 0.24 ms | Run | [notes/sim-10x.md](notes/sim-10x.md) |
-| Every share and expected ms | S | lane H0, census M1 |
+| The build 1.15 of 5.19 ms, snapshots 0.12, one a tick, remapped; local users 0, the local set empty, the array counts | Run | [notes/sim-10x.md](notes/sim-10x.md), lab job 0060 |
+| Every other share and expected ms | S | lanes P0 and P1, census M1 |
 
-No game was run for this page; it is static reading, so the agent API
-was not used. H0 adds the one read the API lacks.
+No game was run to write this page; it is static reading, so the agent
+API was not used. H0's census is the one read the API lacked
+(`sim.guest_census`).
 
 ## Not verified
 
-- That the live local-user map is four times −1 and the local count 0
-  during a phantom match.
-- That the local visibility set is empty and local-class effects are
-  suspended, and how many effects, particles, decals and lights a
-  Lockout match then holds.
-- The cost of the two copies and of the live side's faults in a sim, on
-  macOS and on a Linux host, and whether a paged sim remaps or copies.
+- The cost of the live side's faults in a sim while the copies stand,
+  and of a snapshot on a Linux host, which copies.
 - Whether any local-class effect in the shipped tags has an object,
   damage or character part.
 - Whether a voice starts with no active listener.
@@ -257,6 +264,7 @@ was not used. H0 adds the one read the API lacks.
 
 - [sim-10x.md](sim-10x.md): the levers and the budget this page refines.
 - [sim-attribution.md](sim-attribution.md), [sim-budget.md](sim-budget.md): the local-roster profile and its dependency notes.
+- [sim-phantom-build.md](sim-phantom-build.md): row 1's design.
 - [second-executor.md](../runtime/second-executor.md): the private view.
 - [bots.md](../game/bots.md): phantoms and the action build.
 - [film-format.md](../game/film-format.md), [live-telemetry.md](../live/live-telemetry.md): the other two consumers.
