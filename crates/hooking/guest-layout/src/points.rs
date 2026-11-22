@@ -615,6 +615,14 @@ points! { ALL;
     /// free-for-all too). The low byte of the fourth argument is the
     /// credited damage reporting type and modifier.
     PLAYER_KILLED @ 0x0015_ce70: [opaque]; "docs/live/live-gamestate.md";
+    /// The game awards a medal: medal index EAX (its row in the medal
+    /// table at `0x0046e120`) to the player in absolute slot ECX, EBX
+    /// times (always 1). Every award the game makes is a call here: the
+    /// kill medals from `PLAYER_KILLED` (`0x15d45f` to `0x15d524`), Carjack
+    /// (`0x15e8d2`) and the flag and bomb medals (`0x240f59` on). It adds
+    /// to the post-game statistics when they are on (`[0x510ca0]` set and
+    /// `[0x510ca1]` clear).
+    GAME_MEDAL @ 0x0019_70a0: [fn(medal: eax, player: ecx, count: ebx) ret 0], Optional; "docs/live/live-gamestate.md";
     /// The game engine's per-tick update, from `GAME_TICK` at `0x13803c`.
     /// With an engine object it runs each player's engine work with the
     /// engine's per-player slot `+0x3c`, then its per-tick slot `+0x48`,
@@ -1728,6 +1736,11 @@ mod tests {
         assert_eq!(WEAPON_FIRE.class, Class::Optional);
         assert!(LOCALE_FIND.hot && !GAME_TICK.hot);
         assert!(PLAYER_KILLED.sig.is_opaque());
+        assert_eq!(GAME_MEDAL.sig.arg("medal"), Some(Loc::Eax));
+        assert_eq!(GAME_MEDAL.sig.arg("player"), Some(Loc::Ecx));
+        assert_eq!(GAME_MEDAL.sig.arg("count"), Some(Loc::Ebx));
+        assert!(matches!(GAME_MEDAL.sig, Sig::Fn { ret: None, pop: 0, .. }));
+        assert_eq!(GAME_MEDAL.class, Class::Optional);
         // The engine vtable slots are thiscall: the engine object in ECX.
         assert_eq!(SLAYER_KILL.sig.arg("engine"), Some(Loc::Ecx));
         assert_eq!(SLAYER_KILL.sig.arg("victim"), Some(Loc::Stack(1)));

@@ -606,18 +606,43 @@ pub fn sync_props(m: &mut dyn GuestMemory, s: u32, p: u32, name: &str) -> R<bool
 pub(super) fn sync_peer(
     m: &mut dyn GuestMemory, s: u32, p: u32, host: Option<&Properties>, identity: &PeerIdentity,
 ) -> R<bool> {
-    let Some(host) = host else { return Ok(false) };
+    let wrote = write_peer(m, s, p, host, identity)?.is_some();
+    if wrote {
+        bump(m, s)?;
+    }
+    Ok(wrote)
+}
+
+/// [`sync_peer`] without the membership bump, for a caller that writes
+/// several records in one frame and bumps once ([`bump`]). Returns `None`
+/// when nothing was written, else a mask of the 8-byte chunks of the
+/// properties that differed (bit `i`: bytes `8i..8i + 8`; 0 when only the
+/// properties-set byte was missing).
+pub(super) fn write_peer(
+    m: &mut dyn GuestMemory, s: u32, p: u32, host: Option<&Properties>, identity: &PeerIdentity,
+) -> R<Option<u32>> {
+    let Some(host) = host else { return Ok(None) };
     let want = named_properties(*host, identity);
     let a = peer(s, p);
     let mut have = [0; PROPS_SIZE as usize];
     m.read(a + PEER_PROPS, &mut have)?;
-    if have == want && m.u8(a + PEER_PROPS_SET)? == 1 {
-        return Ok(false);
+    let chunks = props_diff_chunks(&have, &want);
+    if chunks == 0 && m.u8(a + PEER_PROPS_SET)? == 1 {
+        return Ok(None);
     }
     m.set_u8(a + PEER_PROPS_SET, 1)?;
     m.write(a + PEER_PROPS, &want)?;
-    bump(m, s)?;
-    Ok(true)
+    Ok(Some(chunks))
+}
+
+/// Which 8-byte chunks of two property blocks differ (bit `i`: bytes
+/// `8i..8i + 8`; the `0xc8` bytes are 25 chunks).
+pub(super) fn props_diff_chunks(have: &Properties, want: &Properties) -> u32 {
+    have.chunks(8)
+        .zip(want.chunks(8))
+        .enumerate()
+        .filter(|(_, (a, b))| a != b)
+        .fold(0, |mask, (i, _)| mask | 1 << i)
 }
 
 /// This console's first session player (its own peer's lowest user with a
@@ -722,10 +747,14 @@ fn fewest(count: &[(u8, usize)]) -> u8 {
 /// Sets session player `slot`'s team, requested and effective, and bumps
 /// the counters.
 pub fn set_team(m: &mut dyn GuestMemory, s: u32, slot: u32, team: u8) -> R<()> {
+    write_team(m, s, slot, team)?;
+    bump(m, s)
+}
+
+fn write_team(m: &mut dyn GuestMemory, s: u32, slot: u32, team: u8) -> R<()> {
     let a = player(s, slot);
     m.set_u8(a + P_REQUESTED + CONFIG_TEAM as u32, team)?;
-    m.set_u8(a + P_EFFECTIVE + CONFIG_TEAM as u32, team)?;
-    bump(m, s)
+    m.set_u8(a + P_EFFECTIVE + CONFIG_TEAM as u32, team)
 }
 
 /// Keeps the teams even in a team game's lobby by moving the phantoms of
@@ -733,8 +762,20 @@ pub fn set_team(m: &mut dyn GuestMemory, s: u32, slot: u32, team: u8) -> R<()> {
 /// one's team has two players more than the smallest, it goes to the
 /// smallest. A human changing team, or the variant turning into a team
 /// game, is followed; nobody moves for a difference of one. Returns each
-/// move as (peer, from, to).
+/// move as (peer, from, to). The membership counters move once for all of
+/// them.
 pub fn rebalance(m: &mut dyn GuestMemory, s: u32, movable: &[u32]) -> R<Vec<(u32, u8, u8)>> {
+    let moved = rebalance_teams(m, s, movable)?;
+    if !moved.is_empty() {
+        bump(m, s)?;
+    }
+    Ok(moved)
+}
+
+/// [`rebalance`] without the membership bump ([`bump`] once after).
+pub(super) fn rebalance_teams(
+    m: &mut dyn GuestMemory, s: u32, movable: &[u32],
+) -> R<Vec<(u32, u8, u8)>> {
     if !team_game(&*m, s)? {
         return Ok(Vec::new());
     }
@@ -759,7 +800,7 @@ pub fn rebalance(m: &mut dyn GuestMemory, s: u32, movable: &[u32]) -> R<Vec<(u32
         if let Some(c) = count.iter_mut().find(|c| c.0 == to) {
             c.1 += 1;
         }
-        set_team(m, s, slot, to)?;
+        write_team(m, s, slot, to)?;
         moved.push((p, team, to));
     }
     Ok(moved)
@@ -813,7 +854,10 @@ fn multiplayer(m: &dyn GuestMemory) -> bool {
     g != 0 && m.u32(g + guest::OPTIONS).ok() == Some(guest::MODE_MULTIPLAYER)
 }
 
-fn bump(m: &mut dyn GuestMemory, s: u32) -> R<()> {
+/// Moves both membership counters (`+UPDATE`, `+CHANGES`) on, as the
+/// host's own membership edits do. The game rebuilds what depends on the
+/// membership once per change it sees, so a frame's edits share one bump.
+pub(super) fn bump(m: &mut dyn GuestMemory, s: u32) -> R<()> {
     let u = m.u32(s + UPDATE)?;
     m.set_u32(s + UPDATE, u.wrapping_add(1))?;
     let c = m.u32(s + CHANGES)?;
@@ -1004,14 +1048,18 @@ fn set_identity(c: &mut [u8; CONFIG_SIZE], name: &str) {
 // The host can rebuild a player's effective configuration while the phantom
 // is seated. A reclaimed peer can also carry an earlier profile. Publish the
 // identity in both copies without disturbing team, handicap or ready state.
-pub(super) fn sync_identity(m: &mut dyn GuestMemory, s: u32, p: u32, identity: &PeerIdentity) -> R<()> {
+// Returns whether it wrote; the caller bumps the membership once per frame
+// ([`bump`]).
+pub(super) fn write_identity(
+    m: &mut dyn GuestMemory, s: u32, p: u32, identity: &PeerIdentity,
+) -> R<bool> {
     let slot = m.u32(peer(s, p) + PEER_SLOTS)?;
     if slot >= MAX || m.u32(s + PLAYER_MASK)? & (1 << slot) == 0 {
-        return Ok(());
+        return Ok(false);
     }
     let a = player(s, slot);
     if m.u32(a + P_PEER)? != p {
-        return Ok(());
+        return Ok(false);
     }
     let want = &identity.player;
     let mut have = [0; CONFIG_LOOK + 8];
@@ -1023,10 +1071,7 @@ pub(super) fn sync_identity(m: &mut dyn GuestMemory, s: u32, p: u32, identity: &
             changed = true;
         }
     }
-    if changed {
-        bump(m, s)?;
-    }
-    Ok(())
+    Ok(changed)
 }
 
 /// Adds a peer for machine `mac`, unconnected and with no channel, as

@@ -5,14 +5,21 @@
 //!
 //! **No mode row.** The strip's bumpers are the one way to change mode
 //! (`crate::lobby_tabs::input`, on `PREGAME_LOBBY_INPUT`, which this
-//! feature places); Game Setup has no row that does.
+//! feature places); Game Setup has no row that does. Retail's "Switch To"
+//! rows (co-op 6, custom 7, matchmaking 8, and 9 in a custom list) and
+//! Clankermatch's (12) are dropped from every Game Setup list
+//! ([`SWITCH_ROWS`]).
 //!
 //! **Rows by mode** ([`arrange`]): an `after` on the list's constructor,
 //! after every other row of ours is added, rewrites the list
 //! ([`crate::h1_options_row::rewrite_rows`]): in Forge,
 //! **Forge Map...** ([`FORGE_MAP_ACTION`]) after Change Map, the game type
-//! row kept, Clanker Options and Firefight Options hidden; in Firefight,
-//! Firefight Options after Change Map and the game type row hidden.
+//! row and Clanker Options kept, Firefight Options hidden; in Firefight,
+//! Firefight Options after Change Map and the game type row hidden. In a
+//! matchmaking lobby (the MULTIPLAYER tab) action 9 stays, drawn as
+//! **Change Playlist...** ([`CHANGE_PLAYLIST_LABEL`]): its press opens the
+//! playlist screen with the Clanker and the human playlists on one page
+//! (`crate::clankermatch::Scope::All`).
 //!
 //! **Forge Map...** opens the picker of New and the maps saved under
 //! `<data>/forge` ([`forge_map_pick`]); the Forge session loads the choice
@@ -70,12 +77,21 @@ pub const CHANGE_RULES: i16 = 1;
 /// The rows' texts, the help lines and the panel lines.
 pub const IDS: Family = ids::family("lobby mode");
 const FORGE_MAP_LABEL_SLOT: u32 = 1;
+const CHANGE_PLAYLIST_SLOT: u32 = 2;
 const FORGE_MAP_HELP_SLOT: u32 = 3;
 const PANEL_SLOTS: u32 = 5;
 /// The most panel lines a mode has (Firefight's three).
 pub const MAX_PANEL_LINES: usize = 3;
 
 pub const FORGE_MAP_LABEL: &str = "Forge Map...";
+/// A matchmaking lobby's action 9 ([`crate::clankermatch::CHANGE_PLAYLIST`]).
+pub const CHANGE_PLAYLIST_LABEL: &str = "Change Playlist...";
+/// The rows that change the lobby's mode, which the strip does instead:
+/// retail's "Switch To: Co-Op Game" (6), "Switch To: Custom Game" (7) and
+/// "Switch To: Matchmaking" (8), and Clankermatch's "Switch To:
+/// Clankermatch". Action 9 is dropped only from a custom game's list,
+/// where it is "Switch To: Matchmaking" too.
+pub const SWITCH_ROWS: [i16; 4] = [6, 7, 8, crate::clankermatch::SWITCH_ACTION];
 /// The Forge Map picker's first choice: no saved map.
 pub const NEW_MAP: &str = "New";
 /// Why Start Game does nothing in a Forge lobby with a member on another
@@ -90,29 +106,41 @@ static TEXTS: LazyLock<SlotTexts> = LazyLock::new(|| SlotTexts::new(IDS));
 
 // ---- the rows ----
 
-/// Whether Game Setup shows `action` in `mode`: Forge hides Clanker
-/// Options and Firefight Options; Firefight hides the game type row.
+/// Whether Game Setup shows `action` in `mode`: Forge hides Firefight
+/// Options; Firefight hides the game type row. Clanker Options shows in
+/// every mode of the custom lobby.
 pub fn shown(mode: Mode, action: i16) -> bool {
     match mode {
         Mode::Multiplayer => true,
-        Mode::Forge => action != crate::clankers::ROW_ACTION && action != ff::ROW_ACTION,
+        Mode::Forge => action != ff::ROW_ACTION,
         Mode::Firefight => action != CHANGE_RULES,
     }
 }
 
+/// Whether a Game Setup row changes the lobby's mode, so the strip's tabs
+/// stand in for it: [`SWITCH_ROWS`], and action 9 in a custom game's list
+/// (`custom`, it has Change Map).
+pub fn switches_mode(action: i16, custom: bool) -> bool {
+    SWITCH_ROWS.contains(&action) || (custom && action == crate::clankermatch::CHANGE_PLAYLIST)
+}
+
 /// The rows of a Game Setup list with `actions` in `mode`, or `None` to
-/// leave it as built: not a custom game's list (no Change Map), or no mode
-/// besides Multiplayer on offer. No row changes the mode: that is the
-/// strip's.
+/// leave it as built (nothing to change). No row changes the mode: that is
+/// the strip's, so the Switch To rows go from every list. The mode's rows
+/// are a custom game's list's (it has Change Map), with a mode besides
+/// Multiplayer on `offer`.
 pub fn arrange(mode: Mode, offer: Offer, actions: &[i16]) -> Option<Vec<i16>> {
-    if !offer.any() || !actions.contains(&CHANGE_MAP) {
-        return None;
-    }
+    let custom = actions.contains(&CHANGE_MAP);
+    let mode = if custom && offer.any() {
+        mode
+    } else {
+        Mode::Multiplayer
+    };
     let firefight_row = mode == Mode::Firefight && actions.contains(&ff::ROW_ACTION);
     let mut out = Vec::new();
     for &a in actions
         .iter()
-        .filter(|a| **a != FORGE_MAP_ACTION && shown(mode, **a))
+        .filter(|a| **a != FORGE_MAP_ACTION && !switches_mode(**a, custom) && shown(mode, **a))
     {
         if firefight_row && a == ff::ROW_ACTION {
             continue;
@@ -126,7 +154,7 @@ pub fn arrange(mode: Mode, offer: Offer, actions: &[i16]) -> Option<Vec<i16>> {
             }
         }
     }
-    Some(out)
+    (out != actions).then_some(out)
 }
 
 /// The Forge Map row's help line: the map's description.
@@ -328,10 +356,13 @@ fn row_text(c: &mut Call, seen: &AtomicBool) -> Result<Flow, GuestFault> {
         let action = item
             .and_then(|i| mem.u32(i + 0x70).ok())
             .and_then(|row| h1row::row_action(&*mem, c.cpu.ecx, row));
-        if action != Some(FORGE_MAP_ACTION) {
-            return Ok(Flow::Continue);
-        }
-        let slot = FORGE_MAP_LABEL_SLOT;
+        let custom = h1row::setup_actions(&*mem, c.cpu.ecx)
+            .is_ok_and(|actions| actions.contains(&CHANGE_MAP));
+        let slot = match action {
+            Some(FORGE_MAP_ACTION) => FORGE_MAP_LABEL_SLOT,
+            Some(crate::clankermatch::CHANGE_PLAYLIST) if !custom => CHANGE_PLAYLIST_SLOT,
+            _ => return Ok(Flow::Continue),
+        };
         let Some(item) = item else {
             return Ok(Flow::Continue);
         };
@@ -453,12 +484,16 @@ impl hooks::Feature for LobbyMode {
         let base = b.guest_alloc(len.next_multiple_of(0x1000), Permissions::RW)?;
         TEXTS.base.store(base, Ordering::SeqCst);
         TEXTS.set(FORGE_MAP_LABEL_SLOT, FORGE_MAP_LABEL);
+        TEXTS.set(CHANGE_PLAYLIST_SLOT, CHANGE_PLAYLIST_LABEL);
         b.locale().source("lobby mode", |id| TEXTS.address(id));
 
         let request_at = b.guest_alloc(0x1000, Permissions::RW)?;
         // The mode strip's text blocks (`crate::lobby_tabs::strip`).
         let blocks = b.guest_alloc(0x1000, Permissions::RW)?;
         crate::lobby_tabs::strip::install(blocks);
+        // The tab switch's out-parameters (`crate::lobby_tabs::switch`).
+        let scratch = b.guest_alloc(0x1000, Permissions::RW)?;
+        crate::lobby_tabs::switch::install(scratch);
         let offer = self.offer;
         let building: Arc<Mutex<Vec<u32>>> = Arc::default();
         let (noted, live) = (Arc::clone(&building), Arc::clone(&building));
@@ -526,7 +561,8 @@ impl hooks::Feature for LobbyMode {
                 },
             )
             .optional();
-        // Leaving the lobby clears its mode and the strip's reason line.
+        // Leaving the lobby clears its mode, the strip's reason line and
+        // the playlists it found missing.
         b.raw()
             .before(
                 &points::PARTY_LEAVE,
@@ -534,6 +570,7 @@ impl hooks::Feature for LobbyMode {
                 |_| {
                     lobby_start::clear();
                     crate::lobby_tabs::clear_notice();
+                    crate::lobby_tabs::switch::forget_playlists();
                     Ok(Flow::Continue)
                 },
             )

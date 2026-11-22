@@ -199,6 +199,10 @@ struct Books {
     /// Phantoms join only once a game runs and leave when it ends (the
     /// lobby join off, [`LOBBY_ENV`]).
     game_only: bool,
+    /// Consecutive frames whose maintenance wrote the membership, and
+    /// whether [`churn_line`] was said for this run of them.
+    write_streak: u32,
+    churn_said: bool,
     /// A Clankermatch's phantoms: they join only the match's session (the
     /// matchmaking life cycle, types 6 to 9), never the party's lobby
     /// ([`Phantoms::set_match_only`]).
@@ -213,6 +217,34 @@ pub struct Maintenance {
     pub unchanged_lobby_frames: u64,
     pub total_ns: u64,
     pub max_ns: u64,
+    /// Frames on which the maintenance wrote the session's membership and
+    /// moved its counters (a join, a removal, or a repair below). The game
+    /// rebuilds what depends on the membership after each such frame.
+    pub write_frames: u64,
+    /// Phantom peer properties rewritten to follow this console's.
+    pub props_writes: u64,
+    /// Phantom names or looks written back into the session's player records.
+    pub identity_writes: u64,
+    /// Phantoms moved to keep the lobby's teams even.
+    pub team_moves: u64,
+    /// The 8-byte chunks of the `0xc8` peer properties that differed on any
+    /// properties rewrite (bit `i`: bytes `8i..8i + 8`).
+    pub props_diff_chunks: u32,
+}
+
+/// Consecutive membership-writing frames after which the log says the game
+/// keeps undoing a phantom write ([`churn_line`]).
+pub const CHURN_FRAMES: u32 = 30;
+
+/// The log line for [`CHURN_FRAMES`] membership writes in a row: the game
+/// rewrites what the phantoms repair each frame, and every repair makes it
+/// rebuild what depends on the membership.
+pub fn churn_line(frames: u32, m: &Maintenance) -> String {
+    format!(
+        "bots: phantoms: the session's membership was rewritten on {frames} frames in a row \
+         (totals: properties {}, identities {}, team moves {}; property chunks {:#x})",
+        m.props_writes, m.identity_writes, m.team_moves, m.props_diff_chunks
+    )
 }
 
 /// One tick's batched pads ([`Mode::Batched`]).
@@ -553,9 +585,11 @@ impl Phantoms {
     /// out and the phantom waits for the next. Returns lines for the log.
     pub fn tick(&self, m: &mut dyn GuestMemory, _frame: u64) -> Result<Vec<String>, MemFault> {
         let start = std::time::Instant::now();
-        let result = self.maintain(m);
+        let mut wrote = false;
+        let mut result = self.maintain(m, &mut wrote);
         let ns = start.elapsed().as_nanos() as u64;
         let mut books = self.lock();
+        let books = &mut *books;
         if result.is_err() {
             books.lobby_membership.invalidate();
         }
@@ -563,6 +597,20 @@ impl Phantoms {
         perf.frames += 1;
         perf.total_ns = perf.total_ns.saturating_add(ns);
         perf.max_ns = perf.max_ns.max(ns);
+        if wrote {
+            perf.write_frames += 1;
+            books.write_streak = books.write_streak.saturating_add(1);
+            if books.write_streak >= CHURN_FRAMES && !books.churn_said {
+                books.churn_said = true;
+                let line = churn_line(books.write_streak, perf);
+                if let Ok(log) = &mut result {
+                    log.push(line);
+                }
+            }
+        } else {
+            books.write_streak = 0;
+            books.churn_said = false;
+        }
         result
     }
 
@@ -570,7 +618,8 @@ impl Phantoms {
         self.lock().maintenance
     }
 
-    fn maintain(&self, m: &mut dyn GuestMemory) -> Result<Vec<String>, MemFault> {
+    /// `wrote`: set when this frame wrote the session's membership.
+    fn maintain(&self, m: &mut dyn GuestMemory, wrote: &mut bool) -> Result<Vec<String>, MemFault> {
         let mut log = Vec::new();
         // A starting game waits for no phantom (§5.1, "Phantoms in the
         // game"), whichever way they came in.
@@ -678,6 +727,7 @@ impl Phantoms {
             peers.sort_unstable_by(|a, b| b.cmp(a));
             for i in peers {
                 session::remove_peer(m, s, i)?;
+                *wrote = true;
             }
         }
 
@@ -723,6 +773,10 @@ impl Phantoms {
         };
 
         let host = session::host_properties(&*m, s)?;
+        // Repairs of seated phantoms' records share one membership bump at
+        // the end of the frame: the game rebuilds what depends on the
+        // membership once per change it sees, not once per phantom.
+        let mut repairs = Repairs::default();
         // Kept: a made phantom's peer the game took out (its own removal)
         // joins again; the others' properties follow this console's.
         for p in &mut b.list {
@@ -732,8 +786,8 @@ impl Phantoms {
             match session::find_peer_near(&*m, s, p.info.machine, p.peer_hint)? {
                 Some(peer) => {
                     p.peer_hint = Some(peer);
-                    session::sync_peer(m, s, peer, host.as_ref(), &p.peer_identity)?;
-                    session::sync_identity(m, s, peer, &p.peer_identity)?;
+                    repairs.props(session::write_peer(m, s, peer, host.as_ref(), &p.peer_identity)?);
+                    repairs.identity(session::write_identity(m, s, peer, &p.peer_identity)?);
                 }
                 None => {
                     p.made = false;
@@ -779,8 +833,8 @@ impl Phantoms {
             if let Some(stale) = session::find_peer(&*m, s, mac)? {
                 if session::peer_players(&*m, s, stale)? > 0 {
                     p.peer_hint = Some(stale);
-                    session::sync_peer(m, s, stale, host.as_ref(), &p.peer_identity)?;
-                    session::sync_identity(m, s, stale, &p.peer_identity)?;
+                    repairs.props(session::write_peer(m, s, stale, host.as_ref(), &p.peer_identity)?);
+                    repairs.identity(session::write_identity(m, s, stale, &p.peer_identity)?);
                     p.made = true;
                     p.waiting = None;
                     log.push(format!(
@@ -791,13 +845,16 @@ impl Phantoms {
                 }
                 // A peer with no player left: out, so it is never in twice.
                 session::remove_peer(m, s, stale)?;
+                *wrote = true;
             }
             let Some(peer) = session::add_peer(m, s, mac, &p.info.identity.gamertag)? else {
                 p.info.state = State::Failed("the session has no room for another machine".into());
                 continue;
             };
+            *wrote = true;
             p.peer_hint = Some(peer);
-            session::sync_peer(m, s, peer, host.as_ref(), &p.peer_identity)?;
+            // A new peer's properties: part of its join, not a repair.
+            session::write_peer(m, s, peer, host.as_ref(), &p.peer_identity)?;
             let id = session::player_id(p.info.identity.xuid, mac);
             if session::add_player(m, s, peer, id, &config)?.is_none() {
                 session::remove_peer(m, s, peer)?;
@@ -834,7 +891,8 @@ impl Phantoms {
                     n += 1;
                 }
             }
-            for (peer, from, to) in session::rebalance(m, s, &peers[..n])? {
+            for (peer, from, to) in session::rebalance_teams(m, s, &peers[..n])? {
+                repairs.team_moves += 1;
                 let machine = session::peer_machine(&*m, s, peer)?;
                 let name = b.list.iter().find(|p| p.info.machine == machine)
                     .map_or("?", |p| p.info.identity.gamertag.as_str());
@@ -843,6 +901,11 @@ impl Phantoms {
                 ));
             }
         }
+        if repairs.any() {
+            session::bump(m, s)?;
+            *wrote = true;
+        }
+        repairs.count(&mut b.maintenance);
         if in_lobby {
             // If a repair changed the guest, the sample above was the damaged
             // state. Never treat it as the repaired state on a later frame.
@@ -856,6 +919,40 @@ impl Phantoms {
             self.refresh_where(&*m, true)?;
         }
         Ok(log)
+    }
+}
+
+/// The seated phantoms' records one frame rewrote, which share one
+/// membership bump ([`session::bump`]).
+#[derive(Default)]
+struct Repairs {
+    props_writes: u64,
+    props_chunks: u32,
+    identity_writes: u64,
+    team_moves: u64,
+}
+
+impl Repairs {
+    fn props(&mut self, wrote: Option<u32>) {
+        if let Some(chunks) = wrote {
+            self.props_writes += 1;
+            self.props_chunks |= chunks;
+        }
+    }
+
+    fn identity(&mut self, wrote: bool) {
+        self.identity_writes += u64::from(wrote);
+    }
+
+    fn any(&self) -> bool {
+        self.props_writes + self.identity_writes + self.team_moves > 0
+    }
+
+    fn count(&self, m: &mut Maintenance) {
+        m.props_writes += self.props_writes;
+        m.props_diff_chunks |= self.props_chunks;
+        m.identity_writes += self.identity_writes;
+        m.team_moves += self.team_moves;
     }
 }
 

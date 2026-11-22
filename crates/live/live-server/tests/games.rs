@@ -1438,3 +1438,110 @@ async fn the_host_reports_teabags_and_the_game_and_stats_serve_them() {
         (json!(1), json!(1))
     );
 }
+
+/// Medals (docs/live/live-api.md, "Medals"): the host reports the game's
+/// own, a guest none and an id that is not Halo 2's is refused. The game,
+/// the game list, the stats summary and the account's medals serve what
+/// Live worked out: the game's Double Kill and Killing Spree, Incel at
+/// the end for whoever finished without a teabag (the bot too), and
+/// nothing made up from the kills.
+#[tokio::test]
+async fn the_host_reports_the_games_medals_and_live_serves_them() {
+    let h = harness().await;
+    let host = h.create("Host").await;
+    let guest = h.create("Guest").await;
+    let id = h
+        .start_game(
+            &host,
+            json!({
+                "console": "Den", "map": "lockout", "mode": "multiplayer", "variant": "Slayer",
+                "team_play": false, "tick": 0, "kind": "custom",
+                "players": [
+                    {"index": 0, "name": "Host", "xuid": host.xuid, "team": 0, "local": true},
+                    {"index": 1, "name": "Guest", "xuid": guest.xuid, "team": 1},
+                    {"index": 2, "name": "Clanker 2", "team": 1, "local": true, "bot": true}
+                ]
+            }),
+        )
+        .await;
+    let medal = |tick: u32, player: u32, medal: &str| {
+        (
+            "GameMedal",
+            json!({"tick": tick, "player": player, "medal": medal}),
+        )
+    };
+    let r = h
+        .post_batch(&guest, &id, h.batch(&guest, &id, &[medal(5, 1, "double-kill")]))
+        .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", String::from_utf8_lossy(&r.body));
+    for bad in [medal(5, 7, "double-kill"), medal(5, 0, "twofer"), medal(5, 0, "superbounce")] {
+        let r = h.post_batch(&host, &id, h.batch(&host, &id, &[bad])).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", String::from_utf8_lossy(&r.body));
+    }
+    let kill = |tick: u32, killer: u32, victim: u32| {
+        (
+            "PlayerKilled",
+            json!({"tick": tick, "victim": victim, "killer": killer, "kind": "kill", "weapon": "br"}),
+        )
+    };
+    let events = h.batch(
+        &host,
+        &id,
+        &[
+            kill(30, 0, 1),
+            kill(40, 0, 2),
+            medal(40, 0, "double-kill"),
+            kill(50, 0, 1),
+            medal(50, 0, "triple-kill"),
+            medal(60, 2, "killing-spree"),
+            ("Teabag", json!({"tick": 70, "player": 0, "victim": 1})),
+            (
+                "GameEnded",
+                json!({"tick": 900, "reason": "finished", "winner": {"player": 0}}),
+            ),
+        ],
+    );
+    let r = h.post_batch(&host, &id, events).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", String::from_utf8_lossy(&r.body));
+
+    let expected = json!([
+        {"player": 0, "name": "Host", "xuid": host.xuid,
+         "medals": {"double-kill": 1, "triple-kill": 1}},
+        {"player": 2, "name": "Clanker 2", "medals": {"killing-spree": 1, "incel": 1}}
+    ]);
+    let g = h.get(&format!("/v1/games/{id}")).await.json();
+    assert_eq!(g["medals"], expected);
+    let list = h.get("/v1/games?state=ended").await.json();
+    let listed = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["game_id"] == id.as_str())
+        .unwrap();
+    assert_eq!(listed["medals"], expected);
+
+    let v = h.get("/v1/stats/summary?window=all").await.json();
+    assert_eq!(
+        v["totals"]["medals"],
+        json!({"double-kill": 1, "triple-kill": 1, "killing-spree": 1, "incel": 1}),
+        "the totals count everyone's, the bot's included"
+    );
+    let row = |x: &User| {
+        v["players"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["xuid"] == x.xuid.to_string())
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(row(&host)["medals"], json!({"double-kill": 1, "triple-kill": 1}));
+    assert_eq!(row(&guest)["medals"], json!({}));
+
+    let mine = h.get(&format!("/v1/accounts/{}/medals", host.xuid)).await.json();
+    assert_eq!(mine["xuid"], json!(host.xuid));
+    assert_eq!(mine["medals"], json!({"double-kill": 1, "triple-kill": 1}));
+    let theirs = h.get("/v1/accounts/Guest/medals").await.json();
+    assert_eq!(theirs["medals"], json!({}));
+    assert_eq!(h.get("/v1/accounts/Nobody/medals").await.status, StatusCode::NOT_FOUND);
+}

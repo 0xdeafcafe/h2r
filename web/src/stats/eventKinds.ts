@@ -1,8 +1,10 @@
 import type { WireEvent } from "../api/types";
 
 // PlayerJoined and PlayerLeft also occur on Live session streams.
-// Medals are derived from game kills, bounces, bounce deaths and teabags and
-// have no wire event of their own.
+// GameMedal is one of Halo 2's own medals, as the host reports it. Our modes'
+// medals (the bounce family, Incel) have no wire event: Live works them out
+// from the bounce and teabag events and serves them with the game reads and
+// the stats.
 export const STATS_EVENT_KINDS: Readonly<Record<string, { stream: string; category: string }>> = {
   GameStarted: { stream: "game-", category: "game" },
   PlayerJoined: { stream: "game-", category: "game" },
@@ -11,6 +13,7 @@ export const STATS_EVENT_KINDS: Readonly<Record<string, { stream: string; catego
   Superbounce: { stream: "game-", category: "bounce" },
   Bounced: { stream: "game-", category: "bounce" },
   Teabag: { stream: "game-", category: "kill" },
+  GameMedal: { stream: "game-", category: "medal" },
   ScoreChanged: { stream: "game-", category: "score" },
   GameEnded: { stream: "game-", category: "game" },
   RankChanged: { stream: "rank-", category: "score" },

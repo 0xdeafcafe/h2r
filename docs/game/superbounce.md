@@ -1770,12 +1770,14 @@ they are shown, as kill medals are worked out from kills.
   is released before the consoles that send them. A game's snapshot
   serves its last 100 `bounces` (each with `monster` when true) and `bounced` beside its `kills`; the
   stats summary counts `bounces` and `bounced` in the totals and in an
-  account's row ([live-api.md](../live/live-api.md#stats-summary)). The
-  site derives the medals from them (`derive.ts`: `BounceMedalId`,
-  `MEDALS`, `bounceMedals` and `gameBounceMedals` beside `gameMedals`, and
-  `gameAwards` for both) for the carnage report, a game's preview, the
-  medal chest and the service record. A bot's bounces are in the game's
-  record and the summary's totals, and in no player's row.
+  account's row ([live-api.md](../live/live-api.md#stats-summary)). Live
+  projects the medals from them at ingest with the Tracker's projection
+  (`film::events::medals::Projection`) and serves them in the game's and
+  the account's `medals` ([live-api.md](../live/live-api.md#medals)). The
+  site reads those for the carnage report, a game's preview, the medal
+  chest and the service record; it does not count medals itself. A bot's
+  bounces are in the game's record and the summary's totals, and in no
+  player's row.
 - **The site's pictures.** A medal's badge is the art pack's file named
   after its id (`web/public/art/medals/<id>.webp` and `@2x`, original
   art, `web/public/art/ART.md`), or the game's own medal from the

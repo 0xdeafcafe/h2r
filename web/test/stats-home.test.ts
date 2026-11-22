@@ -15,7 +15,7 @@ import { STATS_ROOT } from "../src/routes";
 
 const P = (xuid: string, o: Partial<PlayerRow> = {}): PlayerRow => ({
   xuid, name: xuid.toUpperCase(), games: 0, multiplayer: 0, campaign: 0, wins: 0, kills: 0, deaths: 0, betrayals: 0,
-  best_spree: 0, seconds: 0, legendary: 0, ...o,
+  best_spree: 0, seconds: 0, legendary: 0, medals: {}, ...o,
 });
 
 describe("nav and crumbs", () => {
@@ -71,6 +71,20 @@ describe("reading a summary", () => {
     expect(s.players).toEqual([P("a", { name: "", kills: 4 })]);
     expect(s.activity).toEqual([{ hour: "2026-11-16T10:00:00Z", games: 2, kills: 0 }]);
     expect(parseSummary(null).maps).toEqual([]);
+  });
+
+  test("medal counts: everyone's in each total, an account's on its row", () => {
+    const s = parseSummary({
+      totals: { games: 2, medals: { "double-kill": 3, "superbounce": 1, "bad": "x", "neg": -2, "zero": 0 } },
+      last_24h: { medals: { "incel": 2 } },
+      all_time: { medals: null },
+      players: [{ xuid: "a", medals: { "killing-spree": 1, "new-medal": 2 } }, { xuid: "b", medals: [1, 2] }],
+    });
+    expect(s.totals.medals).toEqual({ "double-kill": 3, "superbounce": 1 });
+    expect(s.last_24h.medals).toEqual({ "incel": 2 });
+    expect(s.all_time.medals).toEqual({});
+    expect(s.players.map((p) => p.medals)).toEqual([{ "killing-spree": 1, "new-medal": 2 }, {}]);
+    expect(emptyTotals().medals).toEqual({});
   });
 
   test("windows", () => {

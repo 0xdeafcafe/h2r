@@ -6,7 +6,7 @@ import {
   countKeys, emblemChoice, gameArt, gameArtRoot, gametypeKey, levelForExp,
   artBase, emblemFromIndices, emblemPalette, loadGameArt, mapKey, normaliseMask, medalKey, weaponKey, parseHexColour, parseManifest, rankKey, EMBLEM_COLOURS, type EmblemSpec,
 } from "../src/lib/gameart";
-import { MEDALS, RANKS } from "../src/state/derive";
+import { BOUNCE_MEDALS, MEDALS, RANKS } from "../src/state/derive";
 import { encodePng, mockGameArt } from "../mock/gameart";
 import { openAccountRequest } from "../mock/account";
 import { generateKey, signAccountRequest } from "../src/state/account";
@@ -113,17 +113,22 @@ describe("game art keys", () => {
     expect(gametypeKey(null)).toBeNull();
   });
 
-  test("our derived medals map onto the game's where one means the same", () => {
-    expect(medalKey("twofer")).toBe("medal/double_kill");
-    expect(medalKey("hat-trick")).toBe("medal/triple_kill");
-    expect(medalKey("full-house")).toBe("medal/killtacular");
-    expect(medalKey("encore")).toBe("medal/kill_frenzy");
-    expect(medalKey("hot-streak")).toBe("medal/killing_spree");
-    expect(medalKey("wildfire")).toBe("medal/running_riot");
-    expect(medalKey("untouchable")).toBe("medal/rampage");
-    for (const id of ["opening-act", "last-word", "payback"]) expect(medalKey(id)).toBeNull();
-    // Every derived medal is either mapped or deliberately left to the pack.
-    expect(MEDALS.filter((m) => medalKey(m.id)).length).toBe(7);
+  test("Halo 2's own medals map onto the server's game-art names", () => {
+    const want: Record<string, string> = {
+      "double-kill": "double_kill", "triple-kill": "triple_kill", "killtacular": "killtacular", "kill-frenzy": "kill_frenzy",
+      "killtrocity": "killtrocity", "killimanjaro": "killimanjaro", "sniper-kill": "sniper_kill", "roadkill": "splatter",
+      "bonecracker": "bone_cracker", "stealth-kill": "assassin", "stick-it": "stick_it", "killing-spree": "killing_spree",
+      "running-riot": "running_riot", "rampage": "rampage", "berserker": "berserker", "overkill": "overkill",
+      "flag-save": "flag_carrier_kill", "bomb-save": "bomb_carrier_kill", "flag-returned": "flag_returned", "bomb-diffused": "bomb_returned",
+    };
+    for (const [id, alias] of Object.entries(want)) expect(medalKey(id)).toBe(`medal/${alias}`);
+    // No game art for these four: they show by name.
+    for (const id of ["vehicle-kill", "carjack", "flag-taken", "bomb-planted"]) expect(medalKey(id)).toBeNull();
+    // Our modes' medals keep the pack's art.
+    for (const id of [...BOUNCE_MEDALS, "incel"]) expect(medalKey(id)).toBeNull();
+    // Unknown ids, and the made-up medals that are gone.
+    for (const id of ["twofer", "hat-trick", "payback", "constructor", ""]) expect(medalKey(id)).toBeNull();
+    expect(MEDALS.filter((m) => medalKey(m.id)).length).toBe(20);
   });
 
   test("weapons go by the words of the reported name", () => {
@@ -286,7 +291,7 @@ describe("the mock's fake game art", () => {
     expect(a.has(mapKey("lighthouse"))).toBe(false); // one map without, so the fallback shows
     expect(a.has("live/0")).toBe(false);
     expect(a.has(weaponKey("sword")!)).toBe(true);
-    expect(a.has(medalKey("twofer")!)).toBe(true);
+    for (const id of ["double-kill", "killing-spree", "roadkill", "bomb-diffused"]) expect(a.has(medalKey(id)!)).toBe(true);
     expect(emblemPalette(m)).toHaveLength(18);
     expect(emblemPalette(m)[0]).toEqual(EMBLEM_COLOURS[17]!);
   });

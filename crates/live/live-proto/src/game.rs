@@ -24,6 +24,9 @@ pub const BOUNCED: &str = "Bounced";
 /// A player teabagged another's body (docs/game/teabag.md): the event the
 /// `incel` medal is worked out from.
 pub const TEABAG: &str = "Teabag";
+/// A medal Halo 2 itself awarded, as the game counts it
+/// (`film::events::medals::OFFICIAL`, docs/live/live-telemetry.md).
+pub const GAME_MEDAL: &str = "GameMedal";
 pub const SCORE_CHANGED: &str = "ScoreChanged";
 pub const GAME_FRAME: &str = "GameFrame";
 pub const GAME_ENDED: &str = "GameEnded";
@@ -32,7 +35,7 @@ pub const MAP_OUTLINE_STORED: &str = "MapOutlineStored";
 
 /// The game event types a player's console may append in a batch; the
 /// server writes `GameStarted` (from `POST /v1/games`) and `GameFrame`.
-pub const CLIENT_GAME_EVENTS: [&str; 11] = [
+pub const CLIENT_GAME_EVENTS: [&str; 12] = [
     PLAYER_JOINED,
     PLAYER_LEFT,
     PLAYER_KILLED,
@@ -42,6 +45,7 @@ pub const CLIENT_GAME_EVENTS: [&str; 11] = [
     SUPERBOUNCE,
     BOUNCED,
     TEABAG,
+    GAME_MEDAL,
     SCORE_CHANGED,
     GAME_ENDED,
 ];
@@ -415,6 +419,32 @@ pub struct Teabag {
     pub player: u32,
     /// The slot of the player whose body it was.
     pub victim: u32,
+}
+
+/// A medal the game awarded: the player in slot `player` earned `medal`,
+/// the id of one of Halo 2's own (`film::events::medals::OFFICIAL`), at
+/// `tick`. The console that records the game reports every award the
+/// game makes there, bots' included.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GameMedal {
+    pub tick: u64,
+    /// The earner's slot.
+    pub player: u32,
+    pub medal: String,
+}
+
+/// One participant's medals in a game, as `GET /v1/games` and
+/// `GET /v1/games/{id}` list them (`film::events::medals::Projection`):
+/// a seat taken again after a leave is a new row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlayerMedals {
+    /// The slot the participant played in.
+    pub player: u32,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub xuid: Option<Xuid>,
+    /// Medal id -> how many.
+    pub medals: std::collections::BTreeMap<String, u32>,
 }
 
 pub const KILL_KINDS: [&str; 4] = ["kill", "suicide", "betrayal", "world"];
@@ -1092,6 +1122,10 @@ pub struct GameSummary {
     /// The game's `NewGame.skulls`; left out when none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skulls: Option<Vec<u8>>,
+    /// Every medal of the game so far, by participant in join order, for
+    /// those with any (`film::events::medals`); left out when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub medals: Vec<PlayerMedals>,
 }
 
 /// A kill as `GET /v1/games/{id}` lists it: the event data plus where it
@@ -1300,6 +1334,15 @@ pub fn validate(kind: &str, data: &Value, players: &[Player]) -> Result<(), Stri
             }
             if d.player == d.victim {
                 return Err("a player cannot teabag their own body".into());
+            }
+        }
+        GAME_MEDAL => {
+            let d: GameMedal = parse(data)?;
+            if !known(d.player) {
+                return Err("player must be a player of the game".into());
+            }
+            if crate::film::events::medals::official(&d.medal).is_none() {
+                return Err(format!("{} is not one of Halo 2's medals", d.medal));
             }
         }
         FIREFIGHT_ENDED => {
@@ -2241,6 +2284,8 @@ mod tests {
             ),
             (BOUNCED, json!({"tick": 9, "player": 1})),
             (TEABAG, json!({"tick": 9, "player": 0, "victim": 1})),
+            (GAME_MEDAL, json!({"tick": 9, "player": 1, "medal": "double-kill"})),
+            (GAME_MEDAL, json!({"tick": 9, "player": 0, "medal": "bomb-diffused"})),
         ] {
             assert_eq!(validate(kind, &data, &p), Ok(()), "{kind} {data}");
         }
@@ -2279,6 +2324,13 @@ mod tests {
             (TEABAG, json!({"tick": 9, "player": 1, "victim": 1})),
             (TEABAG, json!({"tick": 9, "player": 0})),
             (TEABAG, json!({"player": 0, "victim": 1})),
+            (GAME_MEDAL, json!({"tick": 9, "player": 5, "medal": "double-kill"})),
+            // Not Halo 2's: an old made-up one, and our modes' own, which
+            // Live works out itself.
+            (GAME_MEDAL, json!({"tick": 9, "player": 0, "medal": "twofer"})),
+            (GAME_MEDAL, json!({"tick": 9, "player": 0, "medal": "superbounce"})),
+            (GAME_MEDAL, json!({"tick": 9, "player": 0, "medal": "incel"})),
+            (GAME_MEDAL, json!({"tick": 9, "player": 0})),
             (GAME_STARTED, json!({})),
             (GAME_FRAME, json!({})),
         ] {

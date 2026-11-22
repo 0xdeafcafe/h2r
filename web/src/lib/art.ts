@@ -34,11 +34,11 @@ export function emblemArt(index: number, size: number): ArtImage {
 }
 
 /** The medal ids the pack has files for (`medals/<id>.webp` and `@2x`):
- *  the kill medals (ART.md, "Batch 06"), the superbounce medals drawn from
- *  the game's HUD medal glyphs ("Batch 07"), and Incel ("Batch 08"). */
+ *  our modes' medals, the superbounce medals drawn from the game's HUD
+ *  medal glyphs (ART.md, "Batch 07") and Incel ("Batch 08"). Halo 2's own
+ *  medals have no pack art: the server's game art draws them (lib/gameart.ts
+ *  `medalKey`), else they show by name. */
 export const PACK_MEDALS: ReadonlySet<string> = new Set([
-  "opening-act", "last-word", "payback", "twofer", "hat-trick", "full-house", "encore",
-  "hot-streak", "wildfire", "untouchable",
   "superbounce", "double-bounce", "triple-bounce", "quad-bounce", "chain-bounce",
   "bouncetacular", "bounced", "monster-bounce",
   "incel",

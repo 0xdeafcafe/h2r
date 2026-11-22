@@ -1,14 +1,15 @@
-//! The party lobby's mode strip (docs/game/party-lobby.md): MATCHMAKING,
-//! CUSTOM GAMES, FORGE, FIREFIGHT, CO-OP and CLANKERS across the pregame
-//! lobby's header band, moved along with the bumpers.
+//! The party lobby's mode strip (docs/game/party-lobby.md): MULTIPLAYER,
+//! CUSTOM GAMES, FORGE, FIREFIGHT and CO-OP across the pregame lobby's
+//! header band, moved along with the bumpers.
 //!
-//! **A tab is a name for lobby state the game already has.** It is three
+//! **A tab is a name for lobby state the game already has.** It is two
 //! parts ([`Tab::parts`]): the retail lobby mode (`LOBBY_MODE_SET`: 0
-//! co-op, 2 custom game, 3 matchmaking), the lobby's mode of ours
-//! ([`crate::lobby_start::Mode`]) and whether the playlists are the Clanker
-//! ones ([`crate::clankermatch::active`]). [`Tab::of`] is the inverse, and
-//! the selected tab is always its answer for the lobby as it stands: the
-//! strip stores no tab of its own.
+//! co-op, 2 custom game, 3 matchmaking) and the lobby's mode of ours
+//! ([`crate::lobby_start::Mode`]). [`Tab::of`] is the inverse, and the
+//! selected tab is always its answer for the lobby as it stands: the strip
+//! stores no tab of its own. Whether MULTIPLAYER's playlist is a Clanker
+//! one is not a tab: it is the playlist the lobby holds, chosen on the one
+//! playlist page (`crate::clankermatch::Scope::All`).
 //!
 //! **Where each tab runs** ([`available`]): by the lobby's [`Place`] and a
 //! few [`Facts`], a tab is on or off with a [`Reason`]. A tab whose
@@ -21,7 +22,8 @@
 //! seconds ([`Notice`]).
 //!
 //! **The cells** ([`cells`]): one per tab present, cut for its label,
-//! 5 units apart from -244, on the header band.
+//! 5 units apart from -244, on the header band; Black's glyph follows the
+//! last ([`next_glyph`]).
 //!
 //! The strip drawn on the lobby and read by the agent API is [`strip`],
 //! the bumpers [`input`] and the switch [`switch`]; its preview (`h2 ui
@@ -50,12 +52,12 @@ pub mod switch;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Tab {
-    Matchmaking,
+    /// Matchmaking: the playlists, ordinary and Clanker ones on one page.
+    Multiplayer,
     CustomGames,
     Forge,
     Firefight,
     CoOp,
-    Clankers,
 }
 
 /// The retail lobby mode (`LOBBY_MODE_SET`'s argument).
@@ -96,42 +98,37 @@ impl RetailMode {
 pub struct Parts {
     pub retail: RetailMode,
     pub mode: Mode,
-    /// The playlists are the Clanker ones (`clankermatch::active`).
-    pub clanker: bool,
 }
 
 impl Tab {
     /// Every tab, in the strip's order.
-    pub const ALL: [Tab; 6] = [
-        Tab::Matchmaking,
+    pub const ALL: [Tab; 5] = [
+        Tab::Multiplayer,
         Tab::CustomGames,
         Tab::Forge,
         Tab::Firefight,
         Tab::CoOp,
-        Tab::Clankers,
     ];
 
     /// Its label on the strip, in capitals as retail's headers are.
     pub const fn label(self) -> &'static str {
         match self {
-            Tab::Matchmaking => "MATCHMAKING",
+            Tab::Multiplayer => "MULTIPLAYER",
             Tab::CustomGames => "CUSTOM GAMES",
             Tab::Forge => "FORGE",
             Tab::Firefight => "FIREFIGHT",
             Tab::CoOp => "CO-OP",
-            Tab::Clankers => "CLANKERS",
         }
     }
 
     /// Its name in the agent API (`ui.lobby.tabs`).
     pub const fn name(self) -> &'static str {
         match self {
-            Tab::Matchmaking => "matchmaking",
+            Tab::Multiplayer => "multiplayer",
             Tab::CustomGames => "custom_games",
             Tab::Forge => "forge",
             Tab::Firefight => "firefight",
             Tab::CoOp => "co_op",
-            Tab::Clankers => "clankers",
         }
     }
 
@@ -144,43 +141,35 @@ impl Tab {
     /// (docs/game/party-lobby.md, "The strip").
     pub const fn width(self) -> i16 {
         match self {
-            Tab::Matchmaking => 84,
+            Tab::Multiplayer => 84,
             Tab::CustomGames => 92,
             Tab::Forge => 40,
             Tab::Firefight => 70,
             Tab::CoOp => 40,
-            Tab::Clankers => 62,
         }
     }
 
     /// The lobby state it names.
     pub const fn parts(self) -> Parts {
-        let (retail, mode, clanker) = match self {
-            Tab::Matchmaking => (RetailMode::Matchmaking, Mode::Multiplayer, false),
-            Tab::CustomGames => (RetailMode::Custom, Mode::Multiplayer, false),
-            Tab::Forge => (RetailMode::Custom, Mode::Forge, false),
-            Tab::Firefight => (RetailMode::Custom, Mode::Firefight, false),
-            Tab::CoOp => (RetailMode::CoOp, Mode::Multiplayer, false),
-            Tab::Clankers => (RetailMode::Matchmaking, Mode::Multiplayer, true),
+        let (retail, mode) = match self {
+            Tab::Multiplayer => (RetailMode::Matchmaking, Mode::Multiplayer),
+            Tab::CustomGames => (RetailMode::Custom, Mode::Multiplayer),
+            Tab::Forge => (RetailMode::Custom, Mode::Forge),
+            Tab::Firefight => (RetailMode::Custom, Mode::Firefight),
+            Tab::CoOp => (RetailMode::CoOp, Mode::Multiplayer),
         };
-        Parts {
-            retail,
-            mode,
-            clanker,
-        }
+        Parts { retail, mode }
     }
 
     /// The tab the lobby is on: the inverse of [`Tab::parts`]. Our mode
-    /// counts only in the custom lobby, the Clanker flag only in the
-    /// matchmaking one, so every lobby state has its tab.
-    pub const fn of(retail: RetailMode, mode: Mode, clanker: bool) -> Tab {
-        match (retail, mode, clanker) {
-            (RetailMode::CoOp, _, _) => Tab::CoOp,
-            (RetailMode::Matchmaking, _, false) => Tab::Matchmaking,
-            (RetailMode::Matchmaking, _, true) => Tab::Clankers,
-            (RetailMode::Custom, Mode::Multiplayer, _) => Tab::CustomGames,
-            (RetailMode::Custom, Mode::Forge, _) => Tab::Forge,
-            (RetailMode::Custom, Mode::Firefight, _) => Tab::Firefight,
+    /// counts only in the custom lobby, so every lobby state has its tab.
+    pub const fn of(retail: RetailMode, mode: Mode) -> Tab {
+        match (retail, mode) {
+            (RetailMode::CoOp, _) => Tab::CoOp,
+            (RetailMode::Matchmaking, _) => Tab::Multiplayer,
+            (RetailMode::Custom, Mode::Multiplayer) => Tab::CustomGames,
+            (RetailMode::Custom, Mode::Forge) => Tab::Forge,
+            (RetailMode::Custom, Mode::Firefight) => Tab::Firefight,
         }
     }
 }
@@ -199,14 +188,13 @@ pub fn seen_mode(leader: bool, own: Mode, kit_map: bool) -> Mode {
 
 // ---- which tabs there are ----
 
-/// The tabs whose feature is on. MATCHMAKING and CUSTOM GAMES are retail's
+/// The tabs whose feature is on. MULTIPLAYER and CUSTOM GAMES are retail's
 /// and always present.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Present {
     pub forge: bool,
     pub firefight: bool,
     pub co_op: bool,
-    pub clankers: bool,
 }
 
 impl Present {
@@ -215,16 +203,14 @@ impl Present {
         forge: true,
         firefight: true,
         co_op: true,
-        clankers: true,
     };
 
     pub const fn has(self, tab: Tab) -> bool {
         match tab {
-            Tab::Matchmaking | Tab::CustomGames => true,
+            Tab::Multiplayer | Tab::CustomGames => true,
             Tab::Forge => self.forge,
             Tab::Firefight => self.firefight,
             Tab::CoOp => self.co_op,
-            Tab::Clankers => self.clankers,
         }
     }
 
@@ -238,7 +224,6 @@ static PRESENT: Mutex<Present> = Mutex::new(Present {
     forge: false,
     firefight: false,
     co_op: false,
-    clankers: false,
 });
 
 /// The tabs present in this run: set once at boot, as each feature is
@@ -267,10 +252,9 @@ pub enum Place {
 /// What the availability reads besides the place.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Facts {
-    /// The server lists a matchmaking playlist.
+    /// The server lists a matchmaking playlist of either kind: not known
+    /// to be empty ([`switch::no_playlists_seen`]).
     pub playlists: bool,
-    /// The server lists a Clanker playlist.
-    pub clanker_playlists: bool,
     /// An installed map carries the Firefight kit (`lobby_start::kit_maps`).
     pub kit_maps: bool,
     /// A member is on another console (`lobby_mode::remote_members`).
@@ -282,10 +266,9 @@ pub struct Facts {
 #[serde(rename_all = "snake_case")]
 pub enum Reason {
     MatchmakingNeedsLive,
-    ClankermatchNeedsLive,
     NoPlaylists,
-    NoClankerPlaylists,
     CoOpNotOnSystemLink,
+    CoOpRefused,
     NoKitMap,
     ForgeRemote,
     Starting,
@@ -294,10 +277,6 @@ pub enum Reason {
     NoForgeMap,
     MapRefused,
     NoSettings,
-    MatchmakingNotYet,
-    CoOpNotYet,
-    ClankersNotYet,
-    CustomNotYet,
 }
 
 /// The first reason's string id.
@@ -308,12 +287,11 @@ pub const NEXT_GLYPH_ID: u32 = IDS.id(7);
 
 impl Reason {
     /// Every reason, for the string table.
-    pub const ALL: [Reason; 17] = [
+    pub const ALL: [Reason; 12] = [
         Reason::MatchmakingNeedsLive,
-        Reason::ClankermatchNeedsLive,
         Reason::NoPlaylists,
-        Reason::NoClankerPlaylists,
         Reason::CoOpNotOnSystemLink,
+        Reason::CoOpRefused,
         Reason::NoKitMap,
         Reason::ForgeRemote,
         Reason::Starting,
@@ -322,21 +300,16 @@ impl Reason {
         Reason::NoForgeMap,
         Reason::MapRefused,
         Reason::NoSettings,
-        Reason::MatchmakingNotYet,
-        Reason::CoOpNotYet,
-        Reason::ClankersNotYet,
-        Reason::CustomNotYet,
     ];
 
     /// The status line's sentence.
     pub const fn text(self) -> &'static str {
         match self {
             Reason::MatchmakingNeedsLive => "Matchmaking needs Xbox Live.",
-            Reason::ClankermatchNeedsLive => "Clankermatch needs Xbox Live.",
             Reason::NoPlaylists => "No playlists are available.",
-            Reason::NoClankerPlaylists => "This server has no Clanker playlists.",
             Reason::CoOpNotOnSystemLink => "Co-op campaign is not available on System Link.",
-            Reason::NoKitMap => "No installed map carries Firefight.",
+            Reason::CoOpRefused => "Co-op campaign is not available in this lobby.",
+            Reason::NoKitMap => "No Firefight map is installed. Make one with h2 firefight kit.",
             Reason::ForgeRemote => crate::lobby_mode::REMOTE_REFUSAL,
             Reason::Starting => "The game is starting.",
             Reason::Searching => "Cancel the search to change mode.",
@@ -344,10 +317,6 @@ impl Reason {
             Reason::NoForgeMap => "No original map is installed for Forge.",
             Reason::MapRefused => "The game did not take the map for this mode.",
             Reason::NoSettings => "No settings store holds Firefight's options.",
-            Reason::MatchmakingNotYet => "Matchmaking from this lobby is not available yet.",
-            Reason::CoOpNotYet => "Co-op from this lobby is not available yet.",
-            Reason::ClankersNotYet => "Clankermatch from this lobby is not available yet.",
-            Reason::CustomNotYet => "Custom games from this lobby are not available yet.",
         }
     }
 
@@ -380,7 +349,7 @@ impl Avail {
 pub fn available(tab: Tab, place: Place, facts: Facts) -> Avail {
     use Avail::{Off, On};
     match tab {
-        Tab::Matchmaking => match place {
+        Tab::Multiplayer => match place {
             Place::XboxLive if facts.playlists => On,
             Place::XboxLive => Off(Reason::NoPlaylists),
             Place::SplitScreen | Place::SystemLink => Off(Reason::MatchmakingNeedsLive),
@@ -392,11 +361,6 @@ pub fn available(tab: Tab, place: Place, facts: Facts) -> Avail {
         Tab::Firefight => On,
         Tab::CoOp if place == Place::SystemLink => Off(Reason::CoOpNotOnSystemLink),
         Tab::CoOp => On,
-        Tab::Clankers => match place {
-            Place::XboxLive if facts.clanker_playlists => On,
-            Place::XboxLive => Off(Reason::NoClankerPlaylists),
-            Place::SplitScreen | Place::SystemLink => Off(Reason::ClankermatchNeedsLive),
-        },
     }
 }
 
@@ -512,9 +476,10 @@ pub const BAND_BOTTOM: i16 = 180;
 /// The first cell's left edge, and the gap between cells.
 pub const RUN_LEFT: i16 = -244;
 pub const GAP: i16 = 5;
-/// The White and Black glyphs' cells.
+/// White's glyph cell, left of the run.
 pub const PREV: [i16; 4] = [TOP, -270, BOTTOM, -248];
-pub const NEXT: [i16; 4] = [TOP, 174, BOTTOM, 196];
+/// The width of a glyph's cell.
+pub const GLYPH_WIDTH: i16 = 22;
 
 /// Each present tab's cell `[top left bottom right]`, left-aligned at
 /// [`RUN_LEFT`]: a tab absent closes the run up.
@@ -528,6 +493,12 @@ pub fn cells(tabs: &[Tab]) -> Vec<(Tab, [i16; 4])> {
             cell
         })
         .collect()
+}
+
+/// Black's glyph cell: [`GAP`] after the last of `tabs`' cells.
+pub fn next_glyph(tabs: &[Tab]) -> [i16; 4] {
+    let left = cells(tabs).last().map_or(RUN_LEFT, |(_, c)| c[3] + GAP);
+    [TOP, left, BOTTOM, left + GLYPH_WIDTH]
 }
 
 // ---- the reason line ----

@@ -18,11 +18,15 @@ export interface Totals {
   games: number; multiplayer: number; campaign: number; matchmaking: number; clankermatch: number; custom: number; coop: number;
   kills: number; deaths: number; betrayals: number; suicides: number; campaign_deaths: number;
   player_seconds: number; legendary: number;
+  /** Medals earned, by id: everyone's, bots included. */
+  medals: Record<string, number>;
 }
 
 export interface PlayerRow {
   xuid: string; name: string; games: number; multiplayer: number; campaign: number; wins: number;
   kills: number; deaths: number; betrayals: number; best_spree: number; seconds: number; legendary: number;
+  /** That account's medals, by id. */
+  medals: Record<string, number>;
 }
 
 export interface MapRow { map: string; map_id?: string; campaign: boolean; games: number; kills: number }
@@ -59,7 +63,7 @@ export interface StatsSummary {
   firefight: FirefightSummary;
 }
 
-const TOTAL_KEYS: Array<keyof Totals> = [
+const TOTAL_KEYS: Array<Exclude<keyof Totals, "medals">> = [
   "games", "multiplayer", "campaign", "matchmaking", "clankermatch", "custom", "coop", "kills", "deaths", "betrayals",
   "suicides", "campaign_deaths", "player_seconds", "legendary",
 ];
@@ -69,13 +73,22 @@ const s = (v: unknown) => (typeof v === "string" ? v : "");
 const arr = (v: unknown): Record<string, unknown>[] =>
   Array.isArray(v) ? v.filter((x): x is Record<string, unknown> => !!x && typeof x === "object") : [];
 
+/** Medal counts by id; anything but a positive count is left out. */
+function medals(v: unknown): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (v && typeof v === "object" && !Array.isArray(v)) {
+    for (const [id, c] of Object.entries(v as Record<string, unknown>)) if (n(c) > 0) out[id] = n(c);
+  }
+  return out;
+}
+
 export function emptyTotals(): Totals {
-  return Object.fromEntries(TOTAL_KEYS.map((k) => [k, 0])) as unknown as Totals;
+  return { ...Object.fromEntries(TOTAL_KEYS.map((k) => [k, 0])), medals: {} } as unknown as Totals;
 }
 
 function totals(v: unknown): Totals {
   const o = (v && typeof v === "object" ? v : {}) as Record<string, unknown>;
-  return Object.fromEntries(TOTAL_KEYS.map((k) => [k, n(o[k])])) as unknown as Totals;
+  return { ...Object.fromEntries(TOTAL_KEYS.map((k) => [k, n(o[k])])), medals: medals(o.medals) } as unknown as Totals;
 }
 
 export function emptyFirefight(): FirefightSummary {
@@ -110,7 +123,7 @@ export function parseSummary(raw: unknown): StatsSummary {
     players: arr(o.players).filter((p) => typeof p.xuid === "string").map((p) => ({
       xuid: s(p.xuid), name: s(p.name), games: n(p.games), multiplayer: n(p.multiplayer), campaign: n(p.campaign),
       wins: n(p.wins), kills: n(p.kills), deaths: n(p.deaths), betrayals: n(p.betrayals), best_spree: n(p.best_spree),
-      seconds: n(p.seconds), legendary: n(p.legendary),
+      seconds: n(p.seconds), legendary: n(p.legendary), medals: medals(p.medals),
     })),
     maps: arr(o.maps).filter((m) => typeof m.map === "string").map((m) => ({
       map: s(m.map), ...(typeof m.map_id === "string" ? { map_id: m.map_id } : {}), campaign: m.campaign === true,

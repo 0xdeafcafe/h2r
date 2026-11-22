@@ -155,7 +155,7 @@ fn view<'a>(r: stream::Record<'a>, packer: Option<&mut crate::pack::Decoder>) ->
                     let import = match &record.event {
                         GameStarted(_) | PlayerJoined(_) | PlayerLeft(_) | PlayerKilled(_)
                         | ScoreChanged(_) | GameEnded(_) | Superbounce(_) | Bounced(_)
-                        | Teabag(_) => true,
+                        | Teabag(_) | GameMedal(_) => true,
                         Assist { .. }
                         | Medal { .. }
                         | WeaponFire { .. }
@@ -303,16 +303,19 @@ mod tests {
         medal.extend(br#"{"tick":1,"kind":"Medal","data":{"player":0,"earned_at":1,"medal":"double-bounce"}}"#);
         assert!(is_public_tick(&block(&[&bounce, &medal], stream::EVENT)));
 
+        // The game's own award is public and Live imports it.
+        let mut game_medal = vec![stream::STATS_EVENT];
+        game_medal.extend(br#"{"tick":1,"kind":"GameMedal","data":{"tick":1,"player":0,"medal":"double-kill"}}"#);
         let mut future = vec![stream::STATS_EVENT];
         future.extend(br#"{"tick":1,"kind":"FutureBounce","data":{"player":0}}"#);
-        let raw = block(&[&bounce, &medal, &future], stream::EVENT);
+        let raw = block(&[&bounce, &medal, &game_medal, &future], stream::EVENT);
         assert!(!is_public_tick(&raw));
         let result = project(&raw).unwrap();
         assert!(is_public_tick(&result.public));
-        assert_eq!(result.public, block(&[&bounce, &medal], stream::EVENT));
+        assert_eq!(result.public, block(&[&bounce, &medal, &game_medal], stream::EVENT));
         assert_eq!(
             result.private.unwrap(),
-            block(&[&bounce, &future], stream::EVENT)
+            block(&[&bounce, &game_medal, &future], stream::EVENT)
         );
     }
 

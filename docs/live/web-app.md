@@ -157,7 +157,7 @@ leaderboards for today, this week, this month or all time (`?window=`):
 most kills, best K/D with 3+ games, most wins, longest killing spree,
 Legendary levels and time played; most played maps, most used weapons, an
 activity heatmap by day and hour in your time, game types and playlists,
-skull use, medals from loaded games (derived), the weapon and map of the
+skull use, the window's top medals (the server's), the weapon and map of the
 week, clan standings and recent games), games (`/games/halo2/games`: the featured
 live map and the games spotlight), game details (`/games/halo2/games/:id`:
 the match hero below the breadcrumbs, the Game Viewer with the live
@@ -350,37 +350,40 @@ when the killing hit reports one.
 
 ### Derived stats
 
-Medals, sprees, places, the weapon breakdown ("Tool of
-Destruction"), EXP and rank are computed in the browser from the games'
-events (`src/state/derive.ts`); the API does not serve them. They are
-marked with a `*` and a tooltip. They only cover games this browser has
-loaded, and a game's snapshot carries at most its recent kills, so they are
-estimates for long histories. Tool of Destruction groups scoring kills by
-their recorded damage source. A game with no source data shows a message.
-With partial data, the "Not recorded" row gives the share of kills without a
-source. A player's report pairs each weapon's "kills with" (gold bar) with
-"killed by" (blue bar). Medals (original names;
-the badges are raster art from `public/art/medals`, named after the medal
-ids): Opening Act (first kill of a game), Last Word
-(last kill), Payback (kill your last killer within 10 s), Twofer / Hat
-Trick / Full House / Encore (2 / 3 / 4 / 5+ kills, each within 4 s of the
-last), Hot Streak / Wildfire / Untouchable (5 / 10 / 15 kills without
-dying). The superbounce medals come from a game's `Superbounce` and
-`Bounced` events (and the snapshot's `bounces` and `bounced`) rather than
-its kills, by `bounceMedals`, the site's copy of the game's table
-([superbounce.md](../game/superbounce.md#the-rule)): Superbounce for every
-bounce; Double / Triple / Quad / Chain Bounce and Bouncetacular once a chain,
-at 2 / 3 / 4 / 5 / 6 bounces; and Bounced for a death falling out of the map
-while trying one. Incel comes at a finished game's end to every player
-still in it who joined before its first kill and was on neither side of a
-`Teabag` (`gameIncel`, the site's copy of the rule,
-[teabag.md](../game/teabag.md#the-medal); `late` from a join after a
-kill, or the snapshot's `joined_late`). A game's record holds every
-player's, a bot's included; a career holds the player's own. The carnage report's medal chest and a
-player's medal chest list them only once a game or player has one. Their
-pictures are the game's HUD medal glyphs, upscaled (`public/art/ART.md`,
-"Batch 07"). A medal id the pack has no file for shows its name in a round
-badge (`MedalIcon`). EXP is games completed plus two per win.
+Sprees, places, the weapon breakdown ("Tool of Destruction"), EXP and rank
+are computed in the browser from the games' events (`src/state/derive.ts`);
+the API does not serve them. They are marked with a `*` and a tooltip. They
+only cover games this browser has loaded, and a game's snapshot carries at
+most its recent kills, so they are estimates for long histories. Tool of
+Destruction groups scoring kills by their recorded damage source. A game
+with no source data shows a message. With partial data, the "Not recorded"
+row gives the share of kills without a source. A player's report pairs each
+weapon's "kills with" (gold bar) with "killed by" (blue bar). EXP is games
+completed plus two per win.
+
+### Medals
+
+Medals are the server's, never counted in the browser
+([live-api.md](live-api.md#medals)). A game's record holds every player's
+(a bot's included) from the game reads' `medals` rows, kept by slot in
+`GameState.medals` (`src/state/reducer.ts`); a `GameMedal` streamed after
+the last read adds one, and a later read replaces the counts and adds back
+only the awards past its position. A career is the account's
+`GET /v1/accounts/{who}/medals` (`src/state/accountMedals.ts`), or the sum
+over its loaded games until that answers; with a tab, map or game-type
+filter the chest sums the matching loaded games. The home's Top Medals is
+the stats summary's `medals` for the window. Clans and the social model sum
+the server's medals for their slots.
+
+The names are the game's (`MEDALS` in `src/state/derive.ts`): Halo 2's 24
+medals in the game's order, then our modes' (the superbounce family and
+Incel). An id the site does not know shows by its id. The carnage report's
+and a player's medal chests list them only once a game or player has one,
+in rows: multi-kills, sprees, kill types, vehicle, objective, Incel, the
+bounce medals, then any others. A Halo 2 medal's picture is the server's
+game art (`medalKey`, [web-viewer.md](web-viewer.md)); our modes' are the
+pack's (`PACK_MEDALS`, `public/art/ART.md`, "Batch 07" and "Batch 08"). A
+medal with neither shows its name in a round badge (`MedalIcon`).
 
 ### Sign up in the browser
 

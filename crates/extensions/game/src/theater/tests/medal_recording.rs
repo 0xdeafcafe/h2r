@@ -6,10 +6,11 @@ use live_proto::{
 use std::collections::BTreeMap;
 
 /// Exercise the production observer, completed tick writer, teardown flush
-/// and front-of-file range reader. Ben's last-word is announced after he
-/// left and Cara took his seat. The match clock starts long after boot.
-/// Ada, in it throughout with no teabag, earns incel at the end; Ben left
-/// and Cara joined after the first kill (docs/game/teabag.md, "The medal").
+/// and front-of-file range reader. The match clock starts long after boot.
+/// The game's own Double Kill for Ada is recorded as the game awarded it,
+/// and kills alone award nothing. Ada, in it throughout with no teabag,
+/// earns incel at the end; Ben left and Cara joined after the first kill
+/// (docs/game/teabag.md, "The medal").
 #[test]
 fn sealed_menu_medals_match_the_recorded_awards_across_a_seat_replacement() {
     let dir = std::env::temp_dir().join(format!("film-medals-{}", live_proto::sign::random_id()));
@@ -48,6 +49,13 @@ fn sealed_menu_medals_match_the_recorded_awards_across_a_seat_replacement() {
                 "tick":tick,"killer":killer,"victim":victim,"kind":"kill","weapon":"smg"
             }),
         );
+        if tick == 1010 {
+            emit(
+                game::GAME_MEDAL,
+                tick,
+                json!({"tick":tick,"player":killer,"medal":"double-kill"}),
+            );
+        }
         session.checkpoint(&guest);
     }
     emit(game::PLAYER_LEFT, 1022, json!({"index":1}));
@@ -57,7 +65,7 @@ fn sealed_menu_medals_match_the_recorded_awards_across_a_seat_replacement() {
         json!({"player":{"index":1,"name":"Cara","team":0}}),
     );
     session.checkpoint(&guest);
-    // No further engine tick. Last-word must survive in the closing records.
+    // No further engine tick. Incel must survive in the closing records.
     emit(
         game::GAME_ENDED,
         1050,
@@ -107,7 +115,8 @@ fn sealed_menu_medals_match_the_recorded_awards_across_a_seat_replacement() {
                     earned_at,
                     medal,
                 } => {
-                    // Incel is given at the end, to whoever holds the seat.
+                    // Incel is given at the end, to whoever holds the seat;
+                    // the Double Kill with its kill.
                     let name = if medal == "incel" {
                         &slot[&player]
                     } else {
@@ -121,16 +130,9 @@ fn sealed_menu_medals_match_the_recorded_awards_across_a_seat_replacement() {
     }
     assert_eq!(
         emitted["Ada"],
-        BTreeMap::from([
-            ("opening-act".into(), 1),
-            ("twofer".into(), 1),
-            ("incel".into(), 1)
-        ])
+        BTreeMap::from([("double-kill".into(), 1), ("incel".into(), 1)])
     );
-    assert_eq!(
-        emitted["Ben"],
-        BTreeMap::from([("payback".into(), 1), ("last-word".into(), 1)])
-    );
+    assert!(emitted["Ben"].is_empty());
     assert!(emitted["Cara"].is_empty());
     assert_eq!(summary, emitted);
     std::fs::remove_dir_all(dir).unwrap();

@@ -1,5 +1,6 @@
 // Player pages: service record, game history and career stats (with
-// compare), all derived from the events the client has seen.
+// compare), derived from the events the client has seen; medals are the
+// server's (each game's, and the account's career total).
 
 import { gameMapGroupLabel, gameMapTitle } from "../state/maps";
 import { mapGroupKey } from "../lib/maps";
@@ -9,9 +10,10 @@ import { live } from "../state/live";
 import { identity } from "../state/identity";
 import { accountByGamertag, type AccountState, type GameState } from "../state/reducer";
 import {
-  MEDALS, OUTCOME_WORDS, RANKS, campaignHistory, countMedals, gameAwards, gameHistory, isBounceMedal, nextRankAt, ordinal, playedWith, rankIndex,
-  serviceRecord, serviceTag, type CampaignRow, type HistoryRow, type MedalId, type ServiceRecord,
+  BOUNCE_MEDALS, MEDALS, OUTCOME_WORDS, RANKS, campaignHistory, gameHistory, gameMedalCounts, isBounceMedal, medalDef, medalName, nextRankAt, ordinal,
+  playedWith, rankIndex, serviceRecord, serviceTag, topMedalCounts, withCareerMedals, type CampaignRow, type HistoryRow, type MedalId, type ServiceRecord,
 } from "../state/derive";
+import { useAccountMedals } from "../state/accountMedals";
 import type { GameMode } from "../state/reducer";
 import { difficultyName, gameTypeLine, variantLabel } from "../state/gametype";
 import { historyTab, recordHref } from "./modes";
@@ -64,7 +66,7 @@ function NotFound(props: { tag: string }) {
   );
 }
 
-const topMedals = (m: Map<MedalId, number>, n: number) => [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, n);
+const topMedals = (m: Map<string, number>, n: number) => topMedalCounts(m, n);
 
 /** The identity strip across the top of every player page. */
 export function PlayerStrip(props: { account: AccountState; rec: ServiceRecord }) {
@@ -115,7 +117,10 @@ export function ModeTabs(props: { gamertag: string; mode: GameMode | "films" }) 
 
 export function PlayerFrame(props: { which: Which; children: (a: () => AccountState, rec: () => ServiceRecord, hist: () => HistoryRow[]) => JSX.Element }) {
   const { tag, acct } = useAccount();
-  const rec = createMemo(() => (acct() ? serviceRecord(live.state, acct()!.xuid) : null));
+  // Career medals are the server's, over every game; until they are read,
+  // the loaded games' own.
+  const career = useAccountMedals(() => acct()?.xuid);
+  const rec = createMemo(() => (acct() ? withCareerMedals(serviceRecord(live.state, acct()!.xuid), career()) : null));
   const hist = createMemo(() => (acct() ? gameHistory(live.state, acct()!.xuid) : []));
   return (
     <Show when={acct()} fallback={<><Crumbs trail={[["Home", STATS_ROOT], ["Players", statsPath("/players")], [tag()]]} /><NotFound tag={tag()} /></>}>
@@ -238,7 +243,7 @@ export function ServiceRecordPage() {
                 <div class="s-achieve-body">
                   <dl class="s-facts">
                     <div><dt>Earned</dt><dd>{rec().medals.size} of {medalsOn(rec()).length}</dd></div>
-                    <div><dt>Medal Count</dt><dd><Derived>{num(medalTotal())}</Derived></dd></div>
+                    <div><dt>Medal Count</dt><dd>{num(medalTotal())}</dd></div>
                     <div><dt>[ <A href={`${base()}/career`}>see the medal chest</A> ]</dt><dd /></div>
                   </dl>
                   <div class="s-achieve-medals">
@@ -445,7 +450,7 @@ export function HistoryPage() {
 
 function Preview(props: { row: HistoryRow; gamertag: string }) {
   const g = () => props.row.game;
-  const medals = createMemo(() => [...countMedals(gameAwards(g()), new Set(props.row.slots)).entries()].sort((a, b) => b[1] - a[1]));
+  const medals = createMemo(() => topMedalCounts(gameMedalCounts(g(), props.row.slots)));
   const victim = createMemo(() => {
     const m = new Map<number, number>();
     for (const k of g().kills) if (k.killer !== null && props.row.slots.includes(k.killer) && k.kind === "kill") m.set(k.victim, (m.get(k.victim) ?? 0) + 1);
@@ -473,7 +478,7 @@ function Preview(props: { row: HistoryRow; gamertag: string }) {
         <div><dt>Total Kills</dt><dd>{props.row.kills}</dd></div>
         <div><dt>Most Killed</dt><dd>{victim() ?? "–"}</dd></div>
       </dl>
-      <div class="s-preview-head">Top Medals of {medals().reduce((n, [, x]) => n + x, 0)} Earned <Derived>{""}</Derived></div>
+      <div class="s-preview-head">Top Medals of {medals().reduce((n, [, x]) => n + x, 0)} Earned</div>
       <div class="s-preview-medals">
         <For each={medals().slice(0, 4)} fallback={<span class="s-dim">None this game.</span>}>{([id, n]) => <span><MedalIcon id={id} size={38} />{n > 1 ? <small>x{n}</small> : null}</span>}</For>
       </div>
@@ -486,20 +491,27 @@ function Preview(props: { row: HistoryRow; gamertag: string }) {
   );
 }
 
+/** The medal chest's rows: Halo 2's multi-kills, sprees, kill types,
+ *  vehicle medals and objective medals, then Incel and the bounce medals. */
 const CHEST: MedalId[][] = [
-  ["opening-act", "last-word", "payback"],
-  ["twofer", "hat-trick", "full-house", "encore"],
-  ["hot-streak", "wildfire", "untouchable"],
-  ["superbounce", "double-bounce", "triple-bounce", "quad-bounce", "chain-bounce", "bouncetacular", "bounced", "monster-bounce"],
+  ["double-kill", "triple-kill", "killtacular", "kill-frenzy", "killtrocity", "killimanjaro"],
+  ["killing-spree", "running-riot", "rampage", "berserker", "overkill"],
+  ["sniper-kill", "bonecracker", "stealth-kill", "stick-it"],
+  ["roadkill", "vehicle-kill", "carjack"],
+  ["flag-taken", "flag-save", "flag-returned", "bomb-planted", "bomb-save", "bomb-diffused"],
+  ["incel"],
+  BOUNCE_MEDALS,
 ];
-const MEDAL = Object.fromEntries(MEDALS.map((m) => [m.id, m]));
 const hasBounceMedals = (rec: ServiceRecord) => [...rec.medals.keys()].some(isBounceMedal);
 /** The medals a record can show: the bounce medals once it has one. */
 const medalsOn = (rec: ServiceRecord) => (hasBounceMedals(rec) ? MEDALS : MEDALS.filter((m) => !isBounceMedal(m.id)));
+/** Medals a record has that the site doesn't list (a newer server's), by id. */
+const unlisted = (...recs: Array<ServiceRecord | null | undefined>) =>
+  [...new Set(recs.flatMap((r) => (r ? [...r.medals.keys()] : [])).filter((id) => !medalDef(id)))].sort();
 const perGame = (n: number, games: number) => (games ? n / games : 0).toFixed(3);
 
 export function MedalChest(props: { rec: ServiceRecord; versus?: ServiceRecord | null }) {
-  const better = (id: MedalId) => {
+  const better = (id: string) => {
     const v = props.versus;
     if (!v) return false;
     const mine = (props.rec.medals.get(id) ?? 0) / Math.max(1, props.rec.games);
@@ -508,16 +520,19 @@ export function MedalChest(props: { rec: ServiceRecord; versus?: ServiceRecord |
   return (
     <div class="s-chest">
       <div class="s-chest-cap">Medal Count (count per game){props.versus ? " - Player with better per game ratio highlighted" : ""}</div>
-      <For each={CHEST.filter((group) => !group.every(isBounceMedal) || hasBounceMedals(props.rec) || (props.versus && hasBounceMedals(props.versus)))}>
+      <For each={[
+        ...CHEST.filter((group) => !group.every(isBounceMedal) || hasBounceMedals(props.rec) || (props.versus && hasBounceMedals(props.versus))),
+        ...(unlisted(props.rec, props.versus).length ? [unlisted(props.rec, props.versus)] : []),
+      ] as string[][]}>
         {(group) => (
           <div class="s-chest-group">
             <For each={group}>
               {(id) => {
                 const n = () => props.rec.medals.get(id) ?? 0;
                 return (
-                  <div class="s-medal" classList={{ empty: !n(), best: better(id) }} title={`${MEDAL[id]!.name}: ${MEDAL[id]!.blurb} (derived)`}>
+                  <div class="s-medal" classList={{ empty: !n(), best: better(id) }} title={medalDef(id) ? `${medalName(id)}: ${medalDef(id)!.blurb}` : medalName(id)}>
                     <MedalIcon id={id} size={30} dim={!n()} />
-                    <div><b>{num(n())} ({perGame(n(), props.rec.games)})</b><small>{MEDAL[id]!.name}</small></div>
+                    <div><b>{num(n())} ({perGame(n(), props.rec.games)})</b><small>{medalName(id)}</small></div>
                   </div>
                 );
               }}
@@ -621,7 +636,7 @@ function CompareColumn(props: { account: AccountState; rec: ServiceRecord; versu
         <ToolOfDestruction rec={props.rec} sort={props.sort} versus={props.versus} />
       </section>
       <section class="s-sec">
-        <header><span>Medal Chest</span><Derived /></header>
+        <header><span>Medal Chest</span></header>
         <MedalChest rec={props.rec} versus={props.versus} />
       </section>
     </div>
@@ -644,9 +659,20 @@ export function CareerPage() {
     (tab() === "all" || (tab() === "team") === g.team_play) && (!map() || mapGroupKey(g) === map()) && (!variant() || (g.variant ?? g.mode) === variant());
   return (
     <PlayerFrame which="career">
-      {(a, _all, hist) => {
-        const rec = createMemo(() => serviceRecord(live.state, a().xuid, only));
-        const otherRec = createMemo(() => (other() ? serviceRecord(live.state, other()!.xuid, only) : null));
+      {(a, all, hist) => {
+        // Unfiltered, the medals are each account's career total (the
+        // server's); filtered, the sum over the matching loaded games.
+        const unfiltered = () => tab() === "all" && !map() && !variant();
+        const otherCareer = useAccountMedals(() => other()?.xuid);
+        const rec = createMemo(() => {
+          const r = serviceRecord(live.state, a().xuid, only);
+          return unfiltered() ? withCareerMedals(r, all().medals) : r;
+        });
+        const otherRec = createMemo(() => {
+          if (!other()) return null;
+          const r = serviceRecord(live.state, other()!.xuid, only);
+          return unfiltered() ? withCareerMedals(r, otherCareer()) : r;
+        });
         const maps = createMemo(() => {
           const m = new Map<string, GameState>();
           // A modded map is its own entry (its map_id), never the retail one.
@@ -710,7 +736,7 @@ export function CareerPage() {
                     </div>
                     <div class="s-career-col">
                       <section class="s-sec">
-                        <header><span>Medal Chest</span><Derived /></header>
+                        <header><span>Medal Chest</span></header>
                         <MedalChest rec={rec()} />
                       </section>
                     </div>
@@ -722,7 +748,7 @@ export function CareerPage() {
                   <CompareColumn account={other()!} rec={otherRec()!} versus={rec()} sort={sort()} onStop={stop} />
                 </div>
               </Show>
-              <p class="s-note"><sup>*</sup> Medals, sprees, weapon counts, EXP and rank are derived in your browser from the multiplayer games this page has loaded. Campaign games have <A href={`${playerHref(a().gamertag)}/campaign`}>their own record</A>.</p>
+              <p class="s-note"><sup>*</sup> Sprees, weapon counts, EXP and rank are derived in your browser from the multiplayer games this page has loaded; medals are the server's. Campaign games have <A href={`${playerHref(a().gamertag)}/campaign`}>their own record</A>.</p>
             </div>
           </div>
         );

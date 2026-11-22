@@ -211,8 +211,8 @@ network player can have a complete consumed action without a local pad.
 The event envelope carries both the film observation time and, in subtype 1,
 the originating match clock. A late hit, medal or final scoreboard retains
 its original time. The game statistics projection consumes GameStarted,
-PlayerJoined, PlayerLeft, PlayerKilled, Superbounce, Bounced, Teabag,
-ScoreChanged and GameEnded (`Record::decode_telemetry`); a reader passes over a kind it
+PlayerJoined, PlayerLeft, PlayerKilled, GameMedal, Superbounce, Bounced,
+Teabag, ScoreChanged and GameEnded (`Record::decode_telemetry`); a reader passes over a kind it
 does not know, and `film::privacy` keeps a record it cannot decode private,
 so a film with bounces reads in an older reader as one without them.
 Highlights include actor kills, additional weapon fire, damage, assists,
@@ -223,7 +223,16 @@ that duplicates a canonical event only contributes once to stats.
 the character tag datum, credited player slot and damage-source key when
 available. It comes from the report that depleted an actor unit's body.
 It is public stats data, with no input, score or digest attached. Player
-kill totals and medals come from `PlayerKilled`.
+kill totals come from `PlayerKilled`.
+
+`GameMedal` carries the match tick, the player's slot and `medal`, the id
+of a medal the game itself awarded, one of the 24 in
+`film::events::medals::OFFICIAL` (`double-kill` to `bomb-diffused`,
+[live-gamestate.md](../live/live-gamestate.md#medals)). It is a public
+stats record, imported into the game's events like a kill. The Tracker
+writes a `Medal` record for it at the same tick and counts it in the
+summary's `medals` map. Kill medals are not worked out from the kills:
+the game's own award is the only source.
 
 `Superbounce` carries the match tick, the player's slot, `chain`, the
 bounce's place in its chain (1 and up), and `monster`, true for a Monster
