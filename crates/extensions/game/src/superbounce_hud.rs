@@ -436,8 +436,8 @@ impl hooks::Feature for SuperbounceHud {
             .on_tick("superbounce hud: values", move |_| lock(&hud).tick());
         // The red reticle while the lock holds is drawn by the host, not
         // through the game's reticle inputs: an after hook on
-        // HUD_WIDGET_INPUTS would take the HUD off the pipelined render
-        // thread (render_thread.rs). [`reticle_lock_now`] is what it reads.
+        // HUD_WIDGET_INPUTS would put a guest hook on the HUD.
+        // [`reticle_lock_now`] is what it reads.
         Ok(())
     }
 }

@@ -97,8 +97,7 @@ struct Step {
     // particular begin/seal interval, even when guest frame numbers repeat.
     sequence: u64,
     builder: SceneBuilder,
-    // In-progress image metadata outlives the game-thread diagnostic seal
-    // when the render tail is still running on the pipelined worker.
+    // In-progress image metadata outlives the diagnostic seal.
     presentation: Option<PresentViews>,
     /// The tick of the scene sealed last.
     tick: Option<u32>,
@@ -817,9 +816,6 @@ impl Feature for FrameSceneStep {
         }));
         // Context-only like the layer-draw observer: it reads guest
         // memory and writes only the step's own state, behind its lock.
-        // Under impl.render.pipelined_frame the views are written on the
-        // render thread and sealed on the game thread after the launch,
-        // so a sealed scene there can be the frame before's.
         let present = self.present.clone();
         b.raw()
             .observe_before(&points::RENDER_VIEWS, "frame_scene_begin", move |o| {

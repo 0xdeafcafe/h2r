@@ -87,7 +87,7 @@ quarters of that is rendering.
 
 The pipelined-render census measured exactly which guest memory the render
 front-end writes and the simulation then reads
-([pipelined-render.md](../graphics/pipelined-render.md), "Every dependency
+([pipelined-render.md](../graphics/notes/pipelined-render.md), "Every dependency
 line" and "The new dependency sites"). Skipping the render is the extreme
 case of running it on another thread: it never runs. Each dependency line,
 and what sim mode does with it:
@@ -172,8 +172,7 @@ What it changes (**Code**, `crates/extensions/game/src/sim_glue.rs`,
    around the original. The host's present count (`d3d_diag::presents`,
    which `H2_BOOT_STOP_AT_PRESENT`, the input script and the agent stamp
    count) moves on by one per skipped frame. Full headless runs
-   (`-host-light`) keep the render entry and can explicitly enable the
-   [render worker for hash comparisons](../graphics/pipelined-render.md#tick-ordering-and-hash-parity).
+   (`-host-light`) keep the render entry.
 2. **No GPU and no window.** `Host::gfx` stays `None`; `H2_BOOT_GFX` is
    refused. The D3D layer stays installed over a `RecordingBackend`, so
    the game's own D3D calls outside the render (device creation, the

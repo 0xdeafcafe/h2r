@@ -617,10 +617,7 @@ returns a `Handle`), then publishes a `Values` whenever its state changes
 
 The styles the runtime draws are `Normal`, and `Flash` as `Normal`; a
 widget in `Dim` or `Inactive` is not drawn until the colour hook
-(slice 4). The draw hooks are `context_only` and read one shared table,
-so they run on the render thread
-(`crates/extensions/game/src/render_thread.rs`); the install and the tick
-are listed there as refused. The feature is presentation-only and
+(slice 4). The draw hooks are `context_only` and read one shared table. The feature is presentation-only and
 snapshot-stateless: what the roots and the scenario held is in guest
 memory, and the draw table is rebuilt at each install (a snapshot loaded
 mid-game draws no kit widget until the next game starts).

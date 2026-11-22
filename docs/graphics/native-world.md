@@ -181,9 +181,8 @@ per layer draw, not one per item:
 - **before the next layer draw** (5 and up follow 3 on the scene list,
   in the same view): set the bits back, on each item that still holds
   the mask the skip left. Not after the layer itself: something after the
-  body makes the chain call it through a Rust continuation, which the
-  pipelined render thread cannot run (docs/graphics/pipelined-render.md,
-  "Render-safe hooks").
+  body makes the chain call it through a Rust continuation, which a
+  second executor cannot run.
 
 The layer draw then builds no entry for the world: no build call, no
 shader draw, no geometry submission, no push-buffer words. Objects,
@@ -397,12 +396,10 @@ there is no hand-written look in between.
   batched reservation for the view before applying masks.
   Tests: `crates/rewrites/render-bridge/tests/native_world.rs` (the plan with
   `render-timing`, deep, and the layer-draw port all on; alone, the chain
-  runs on the render thread; on by default, keeping pipelining;
+  runs on a second executor; on by default;
   `impl.render.native=off` places nothing; the skip and its restore at the
   next layer draw on synthetic memory, a rebuilt list left alone, and a
-  part left to D3D keeping its bit though its shader is drawn);
-  `crates/extensions/game/src/render_thread.rs` (the default plan's `LAYER_DRAW` is
-  render-thread safe).
+  part left to D3D keeping its bit though its shader is drawn).
 - **Boot glue** (`crates/extensions/game/src/native_world_glue.rs`). On a new (map
   name, active BSP address) a worker opens the loaded map through the VFS
   with its shared maps, picks the scenario BSP whose tag data sits at that

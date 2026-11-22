@@ -90,8 +90,7 @@ pub struct Entry<B: Backend> {
 /// At the end of the volume material setup (0x4fe20), all four stock
 /// blend-factor mirrors have been written. A converted lightning draw
 /// carries its source equation in the unused high bits of its final bool
-/// argument. Apply it to the same device that received the original push,
-/// including the pipelined renderer's device.
+/// argument. Apply it to the same device that received the original push.
 fn h1_ribbon_blend<B: Backend>(
     d: &mut Device<B>,
     m: &mut dyn GuestMemory,

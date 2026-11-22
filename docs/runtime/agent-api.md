@@ -1191,10 +1191,7 @@ No params. `interp` is `d3d::interp::InterpStats` with every field
 `mismatch_*`, `dropped`, and per draw `held_draws_*`: draws a made frame
 drew at their own matrices, `held_draws_palette` when their node
 registers are not their pair's), read from its `Debug` text so fields added there
-appear with no change here; `pipeline` is the pipelined render's totals
-(`pipelined`, `completed`, `serial` reasons, `fallbacks` by call, joins,
-snapshot coverage, and times in ms including `overlap_ms` for the worker's
-execution before the game-thread join); `counters` is the frame-stats
+appear with no change here; `counters` is the frame-stats
 window's line. Each is `null` where that piece is not running.
 
 `display_frame` gives the identity, lighting and backend counter deltas
@@ -1239,8 +1236,7 @@ the in-game render ([high-framerate.md](../game/high-framerate.md),
 each with its guest draw and pass number (as `render.frame` numbers
 them), vertex program, transform and where it lands
 ([high-framerate.md](../game/high-framerate.md), "Held frames, draw by
-draw"). Without `H2_BOOT_GFX`, with `H2_RENDER_THREAD=0` or under
-`impl.render.pipelined_frame`, `interp` is `null`. `H2_BOOT_GFX_BETWEEN=N`
+draw"). Without `H2_BOOT_GFX` or with `H2_RENDER_THREAD=0`, `interp` is `null`. `H2_BOOT_GFX_BETWEEN=N`
 writes the first N in-between frames as PNGs, with the guest frame before
 and after each ([switches.md](switches.md)).
 
@@ -2955,7 +2951,7 @@ stream epoch change clears the entire set
 Each genuine guest image captured while a mark lease is active carries
 the bounds sampled from the guest state that renders it, along with
 each view's camera and aspect factor.
-This applies to serial rendering, pipelined workers and repeated
+This applies to serial rendering and repeated
 scanout of the same image. The window projects marks over the finished
 frame. Hidden edges show at full strength, with the same styling as
 visible edges. The candidate style uses dashes. `xray` has no effect
@@ -3058,7 +3054,7 @@ An inactive producer costs an atomic poll. When all producers are
 inactive, there is no capture, guest read for the overlay, or sample
 allocation. The inline collection holds two additional samples
 before growing. Active sources read only the supplied guest view
-and shared host data, and capture can run on the pipelined worker
+and shared host data
 (`crates/extensions/game/src/world_lines.rs`,
 `crates/rewrites/render-bridge/src/scene_step.rs`).
 

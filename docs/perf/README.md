@@ -84,7 +84,6 @@ Performance work that lives with its area:
 - [x87-native.md](../lifter/x87-native.md), [sse-native.md](../lifter/sse-native.md),
   [x87-transcendentals.md](../lifter/x87-transcendentals.md): floating point
 - [render-thread.md](../graphics/render-thread.md),
-  [pipelined-render.md](../graphics/pipelined-render.md),
   [occlusion-culling.md](../graphics/occlusion-culling.md),
   [layer-draw.md](../graphics/layer-draw.md): rendering
 - [high-framerate.md](../game/high-framerate.md): 60 and 120 fps

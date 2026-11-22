@@ -368,9 +368,9 @@ impl HookRef<'_> {
     /// `Call`/`Obs` (or `ExecCtx`), never live RAM through the runtime,
     /// never host state it shares with the game thread except to read it,
     /// and either returns synchronously or uses [`Call::answer_render_async`]
-    /// for an owned render operation. The pipelined render runs such a chain on its own thread
+    /// for an owned render operation. A second executor runs such a chain on its own thread
     /// against its view instead of falling back
-    /// (docs/graphics/pipelined-render.md).
+    /// (docs/graphics/notes/pipelined-render.md).
     pub fn context_only(self) -> Self {
         self.0.context_only = true;
         self
