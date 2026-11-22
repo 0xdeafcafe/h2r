@@ -1,12 +1,9 @@
-# Allow only the files the image needs. Keep discs, game data and build
-# intermediates out of the Docker context.
+# Allow only the files the image needs. Keep discs, game data, the module
+# (it goes into the private host-data bundle) and build intermediates out of
+# the Docker context.
 *
 !Dockerfile
 !entrypoint.sh
 !stage/
 stage/*
 !stage/h2
-!stage/image/
-stage/image/*
-!stage/image/libh2game.so
-!stage/image/libh2game.so.stamp

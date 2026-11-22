@@ -141,6 +141,9 @@ impl Studio {
         app.poll_convert();
         app.poll_cards();
         app.poll_bot_nav();
+        // An outside editor's saves of the game type script, before the
+        // game link sends the reload they queue.
+        game_script::poll(app);
         self.play.update(app);
         let mut actions = Vec::new();
         self.shortcuts(ui, app, &mut actions);
