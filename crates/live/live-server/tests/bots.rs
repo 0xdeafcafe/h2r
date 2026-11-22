@@ -946,3 +946,36 @@ async fn clanker_social_requests_are_refused_before_append() {
     }
     assert_eq!(h.live.position(), position);
 }
+
+/// The advertise's reply is read-your-writes: a roster asked for straight
+/// after it, with nothing between, finds the session (the same caller on
+/// either home). The two 404s the client tells apart by message are
+/// stable: a session that is not the caller's, and a route the server
+/// does not have.
+#[tokio::test]
+async fn a_roster_asked_straight_after_the_advertise_finds_the_session() {
+    let h = harness().await;
+    let a = h.create("Host").await;
+    let b = h.create("Other").await;
+    for n in 0..5 {
+        let session = host(&h, &a).await;
+        let r = roster(&h, &a, json!({"session_id": session, "count": 2})).await;
+        assert_eq!(r.match_id, session, "advertise {n}");
+        let other = ask(&h, &b, json!({"session_id": session, "count": 1})).await;
+        assert_eq!(other.status, StatusCode::NOT_FOUND);
+        assert_eq!(
+            other.json()["message"],
+            json!("no session of yours by that id")
+        );
+    }
+    let route = h
+        .call(
+            Method::POST,
+            "/v1/no-such-route",
+            &[h.bearer(&a, lxm::GAMES_WRITE)],
+            json!({}).to_string(),
+        )
+        .await;
+    assert_eq!(route.status, StatusCode::NOT_FOUND);
+    assert_eq!(route.json()["message"], json!("no such endpoint"));
+}

@@ -2210,19 +2210,21 @@ or the game's UI state without UI watch. All are read-only except
 - **`ui.lobby.tabs`** (`h2 agent ui.lobby.tabs`, no parameters): the
   pregame lobby's mode strip ([party-lobby.md](../game/party-lobby.md)),
   read on a game boundary (`crates/extensions/game/src/lobby_tabs/strip.rs`).
-  The result is `{place, leader, selected, tabs, notice}`: `place` is
-  `split_screen`, `system_link` or `xbox_live`; `leader` is whether this
-  console leads the party (a member's strip has no glyphs and its bumpers
-  do nothing); `selected` is the tab the lobby is on. `tabs` lists the tabs
-  present in strip order, each `{tab, label, state, reason}` with `tab`
-  one of `matchmaking`, `custom_games`, `forge`, `firefight`, `co_op`,
-  `clankers`, `state` one of `selected`, `on`, `off`, and `reason` the
-  status-line sentence of a tab that cannot run here (else null).
+  The result is `{place, leader, selected, tabs, clanker, notice}`:
+  `place` is `split_screen`, `system_link` or `xbox_live`; `leader` is
+  whether this console leads the party (a member's strip has no glyphs
+  and its bumpers do nothing); `selected` is the tab the lobby is on.
+  `tabs` lists the tabs present in strip order, each `{tab, label, state,
+  reason}` with `tab` one of `multiplayer`, `custom_games`, `forge`,
+  `firefight`, `co_op`, `state` one of `selected`, `on`, `off`, and
+  `reason` the status-line sentence of a tab that cannot run here (else
+  null). `clanker` is, on MULTIPLAYER, whether the lobby's playlist is
+  one the server marks as a Clanker playlist (null on another tab).
   `notice` is the reason the status line shows after a bumper press, for
   four seconds, else null. It returns `UNAVAILABLE` when the pregame
   lobby is not the screen on top or its session cannot be read.
-  For example, a Split Screen lobby's MATCHMAKING entry is
-  `{"tab":"matchmaking","label":"MATCHMAKING","state":"off","reason":"Matchmaking needs Xbox Live."}`.
+  For example, a Split Screen lobby's MULTIPLAYER entry is
+  `{"tab":"multiplayer","label":"MULTIPLAYER","state":"off","reason":"Matchmaking needs Xbox Live."}`.
 
 Screens already moved to Rust (the Video screen, the skulls page, the
 account, co-op and sign-in screens; [feature-engine.md](../engine/feature-engine.md))
@@ -2963,6 +2965,22 @@ their wall time, and `max_ns` is the longest call. `unchanged_lobby_frames`
 counts frames where the seated custom lobby's peer and player records matched
 the previous sample. Subtract two readings in the same session to get a
 window's mean cost (`Δtotal_ns / Δframes`) and cache hit fraction.
+
+The write counters show how often the roster work changes the session's
+membership, which makes the game rebuild what depends on it.
+`write_frames` counts frames that wrote the membership and moved its
+counters: a join, a removal, or a repair. One frame's repairs share one
+bump. `props_writes` counts phantom peer properties rewritten to follow
+this console's. `identity_writes` counts phantom names or looks written
+back into the session's player records. `team_moves` counts team
+rebalance moves. `props_diff_chunks` is a mask of the 8-byte chunks of
+the `0xc8`-byte peer properties that differed on any rewrite: bit `i`
+covers properties bytes `8i` to `8i + 7`, so bit 12 is the map status at
+`+0x60`. In a settled lobby `Δwrite_frames` stays near zero. If it grows
+with `Δframes`, the game is undoing a phantom write every frame. The log
+then says `bots: phantoms: the session's membership was rewritten on 30
+frames in a row (...)` once per run of such frames
+(`crates/live/bots/src/phantom.rs`, `churn_line`).
 
 `profile` contains the card's `summary`, its `archetype`, `favorite_weapon`, the name's
 `try_hard` score and the `weights` active for that difficulty and style.

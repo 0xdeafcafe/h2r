@@ -8,6 +8,7 @@ import { STATS_NAME } from "../src/brand";
 
 let html = "";
 let unsupported = "";
+let medals = "";
 // The router's JSX source (its "solid" export), so it renders on the server too.
 const ROUTER = `${import.meta.dir}/../node_modules/@solidjs/router/dist/index.jsx`;
 
@@ -57,6 +58,7 @@ beforeAll(async () => {
     }));
   html = page(week, "ok");
   unsupported = page(null, "unsupported");
+  medals = page({ ...week, totals: { ...week.totals, medals: { "double-kill": 7, "superbounce": 2, "new-medal": 9 } } }, "ok");
 });
 
 describe("the stats home, rendered", () => {
@@ -125,6 +127,19 @@ describe("the stats home, rendered", () => {
     const report = html.slice(html.indexOf("Server Report"), html.indexOf("Daily Count"));
     expect(report).toContain("Games on Record");
     expect(report).toContain("Accounts");
+  });
+
+  test("Top Medals are the summary's counts for the window, not the browser's", () => {
+    const panel = (h: string) => h.slice(h.indexOf("<h3>Top Medals</h3>"), h.indexOf("</section>", h.indexOf("<h3>Top Medals</h3>")));
+    const p = panel(medals);
+    expect(p).toContain("<small>this week</small>");
+    expect(p.indexOf("new-medal")).toBeLessThan(p.indexOf("Double Kill"));
+    expect(p.indexOf("Double Kill")).toBeLessThan(p.indexOf("Superbounce"));
+    expect(p).toContain("<b>7</b>");
+    expect(medals).not.toContain("Counted in your browser");
+    expect(medals).not.toContain("from loaded games");
+    // The mock's summary counts no medals.
+    expect(panel(html)).toContain("No medals earned in this window.");
   });
 
   test("a server without the summary says so and still shows what is live", () => {

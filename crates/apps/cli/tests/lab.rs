@@ -1144,6 +1144,34 @@ fn a_film_run_records_into_the_hosts_library_and_the_run() {
 }
 
 #[test]
+fn an_own_data_run_plays_on_the_hosts_default_data_root() {
+    let lab = Lab::named("own");
+    let to = lab.dir.join("fetched");
+    let run = |extra: &[&str]| {
+        let mut args = vec![
+            "run", "--name", "Own", "--current", "--level", "03a_oldmombasa", "--frames", "2",
+            "--wait", "--to", to.to_str().unwrap(),
+        ];
+        args.extend_from_slice(extra);
+        lab.local(&args)
+    };
+    // Refused before anything starts.
+    let e = err(&run(&["--own-data", "--fresh-data"]));
+    assert!(e.contains("--own-data") && e.contains("--fresh-data"), "{e}");
+
+    // The lab's own data is passed with --data; --own-data leaves it out,
+    // and the game's request for consent says whose data it is.
+    let id = |v: &str| json(v)["job"]["id"].as_str().unwrap().to_owned();
+    let plain = id(&ok(&run(&[])));
+    let own = id(&ok(&run(&["--own-data"])));
+    let log = |id: &str| fs::read_to_string(to.join(id).join("run.log")).unwrap();
+    assert!(log(&plain).contains("--data "), "{}", log(&plain));
+    assert!(!log(&own).contains("--data"), "{}", log(&own));
+    let meta = fs::read_to_string(lab.root.join("runs").join(&own).join("meta.json")).unwrap();
+    assert!(meta.contains("\"own_data\": true"), "{meta}");
+}
+
+#[test]
 fn record_without_a_host_runs_directly() {
     let dir = scratch("d");
     fs::create_dir_all(&dir).unwrap();

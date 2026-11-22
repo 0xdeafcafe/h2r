@@ -11,13 +11,14 @@ const BITMAP_AT: u32 = AREA + 0x300;
 /// Where the strip's widgets start.
 const OURS: u32 = AREA + 0x1000;
 
-/// Split Screen, no kit map: MATCHMAKING, FIREFIGHT and CLANKERS off.
+/// Split Screen, no kit map: MULTIPLAYER and FIREFIGHT off.
 fn split_screen(leader: bool, selected: Tab) -> Shown {
     Shown {
         place: Place::SplitScreen,
         leader,
         selected,
         row: crate::lobby_tabs::row(Present::ALL, Place::SplitScreen, Facts::default()),
+        clanker: None,
     }
 }
 
@@ -110,7 +111,7 @@ fn one_look_shows_per_tab() {
             .collect();
         assert_eq!(lit, [true], "{dir:?}");
     }
-    // At CUSTOM GAMES, White's way has only MATCHMAKING, which is off.
+    // At CUSTOM GAMES, White's way has only MULTIPLAYER, which is off.
     let s = split_screen(true, Tab::CustomGames);
     show(&mut g, &found, &s).unwrap();
     let white: Vec<bool> = found
@@ -262,15 +263,39 @@ fn the_place_and_the_retail_mode_come_from_the_session() {
     assert_eq!(place(true, Some(2)), Some(Place::XboxLive));
     assert_eq!(place(true, Some(1)), Some(Place::SystemLink));
     assert_eq!(place(true, None), None, "a networked lobby with no session");
-    assert_eq!(retail_mode(false, 0, false), RetailMode::Custom);
-    assert_eq!(retail_mode(true, 6, false), RetailMode::Matchmaking);
-    assert_eq!(retail_mode(true, 7, true), RetailMode::Matchmaking);
-    assert_eq!(retail_mode(true, 1, true), RetailMode::CoOp);
+    assert_eq!(retail_mode(false, 0, None, false), RetailMode::Custom);
+    assert_eq!(retail_mode(true, 6, None, false), RetailMode::Matchmaking);
+    assert_eq!(retail_mode(true, 7, None, true), RetailMode::Matchmaking);
+    assert_eq!(retail_mode(true, 1, None, true), RetailMode::CoOp);
+    // A matchmaking lobby before its search: the squad session's mode 2.
     assert_eq!(
-        retail_mode(false, 6, false),
+        retail_mode(true, 1, Some(SQUAD_MATCHMAKING), false),
+        RetailMode::Matchmaking
+    );
+    assert_eq!(retail_mode(true, 1, Some(1), false), RetailMode::Custom);
+    assert_eq!(
+        retail_mode(false, 6, Some(SQUAD_MATCHMAKING), false),
         RetailMode::Custom,
         "not networked"
     );
+}
+
+/// The squad session's mode is read only while networking is on and the
+/// session is in states 3 to 8, as `0x64160` reads it.
+#[test]
+fn the_squad_mode_is_read_in_a_lobby_state_only() {
+    const S: u32 = 0x0010_0000;
+    let mut g = FakeGuest::new();
+    g.map(0x0052_7000, 0x1000).map(S, 0x8000);
+    g.put_u8(lobby::NETWORKING, 1)
+        .put_u32(lobby::SESSION, S)
+        .put_u32(S + lobby::STATE, 5)
+        .put_u32(S + SQUAD_MODE, SQUAD_MATCHMAKING);
+    assert_eq!(squad_mode(&g), Some(SQUAD_MATCHMAKING));
+    g.put_u32(S + lobby::STATE, 9);
+    assert_eq!(squad_mode(&g), None, "not a lobby state");
+    g.put_u32(S + lobby::STATE, 5).put_u8(lobby::NETWORKING, 0);
+    assert_eq!(squad_mode(&g), None, "Split Screen");
 }
 
 #[test]
@@ -280,20 +305,62 @@ fn a_member_reads_its_tab_from_the_lobby() {
         leader: false,
         retail: RetailMode::Custom,
         kit_map: true,
+        clanker: None,
         facts: Facts {
             kit_maps: true,
             ..Facts::default()
         },
     };
-    let s = shown(&reading, Present::ALL, Mode::Multiplayer, false);
+    let s = shown(&reading, Present::ALL, Mode::Multiplayer);
     assert_eq!(s.selected, Tab::Firefight, "a kit map in a custom lobby");
     let leader = Reading {
         leader: true,
         ..reading
     };
     assert_eq!(
-        shown(&leader, Present::ALL, Mode::Forge, false).selected,
+        shown(&leader, Present::ALL, Mode::Forge).selected,
         Tab::Forge
+    );
+}
+
+/// MULTIPLAYER is one tab for both kinds of playlist: the lobby's playlist
+/// says which, and only MULTIPLAYER reports it.
+#[test]
+fn multiplayer_reports_whether_its_playlist_is_a_clanker_one() {
+    let live = Reading {
+        place: Place::XboxLive,
+        leader: true,
+        retail: RetailMode::Matchmaking,
+        kit_map: false,
+        clanker: Some(true),
+        facts: Facts {
+            playlists: true,
+            ..Facts::default()
+        },
+    };
+    let s = shown(&live, Present::ALL, Mode::Multiplayer);
+    assert_eq!(s.selected, Tab::Multiplayer);
+    assert_eq!(s.clanker, Some(true));
+    assert_eq!(json_of(&s, None)["clanker"], true);
+    let ordinary = Reading {
+        clanker: Some(false),
+        ..live
+    };
+    assert_eq!(
+        shown(&ordinary, Present::ALL, Mode::Forge).selected,
+        Tab::Multiplayer
+    );
+    assert_eq!(
+        json_of(&shown(&ordinary, Present::ALL, Mode::Multiplayer), None)["clanker"],
+        false
+    );
+    let custom = Reading {
+        retail: RetailMode::Custom,
+        ..live
+    };
+    assert_eq!(
+        shown(&custom, Present::ALL, Mode::Multiplayer).clanker,
+        None
     );
 }
 
@@ -306,15 +373,19 @@ fn ui_lobby_tabs_answers_each_tab_with_its_state_and_reason() {
     assert_eq!(v["selected"], "custom_games");
     assert_eq!(v["notice"], "Matchmaking needs Xbox Live.");
     let tabs = v["tabs"].as_array().unwrap();
-    assert_eq!(tabs.len(), 6);
-    assert_eq!(tabs[0]["tab"], "matchmaking");
+    assert_eq!(tabs.len(), 5);
+    assert_eq!(tabs[0]["tab"], "multiplayer");
+    assert_eq!(tabs[0]["label"], "MULTIPLAYER");
     assert_eq!(tabs[0]["state"], "off");
     assert_eq!(tabs[0]["reason"], "Matchmaking needs Xbox Live.");
     assert_eq!(tabs[1]["state"], "selected");
     assert_eq!(tabs[1]["label"], "CUSTOM GAMES");
     assert!(tabs[1]["reason"].is_null());
     assert_eq!(tabs[2]["state"], "on");
-    assert_eq!(tabs[5]["reason"], "Clankermatch needs Xbox Live.");
+    assert_eq!(tabs[3]["tab"], "firefight");
+    assert_eq!(tabs[3]["reason"], Reason::NoKitMap.text());
+    assert_eq!(tabs[4]["tab"], "co_op");
+    assert!(v["clanker"].is_null(), "not on MULTIPLAYER");
     assert!(json_of(&s, None)["notice"].is_null());
 }
 
@@ -391,7 +462,7 @@ fn every_tab_label_fits_its_cell() {
     }
     for (glyph, [_, left, _, right]) in [
         (crate::lobby_tabs::PREV_TEXT, PREV),
-        (crate::lobby_tabs::NEXT_TEXT, NEXT),
+        (crate::lobby_tabs::NEXT_TEXT, next_glyph(&Tab::ALL)),
     ] {
         let w = d.fonts.width(FONT, glyph);
         assert!(w <= i32::from(right - left), "{glyph:?}: {w}");
@@ -432,7 +503,7 @@ fn the_strip_cells_are_inside_the_header_band() {
         }
         assert!(b.rect.top <= BAND_BOTTOM, "{r:?} is in the header band");
     }
-    let mut pieces = vec![PREV, NEXT];
+    let mut pieces = vec![PREV, next_glyph(&Tab::ALL)];
     pieces.extend(cells(&Tab::ALL).into_iter().map(|(_, c)| c));
     for [top, left, bottom, right] in pieces {
         assert!(top <= header.rect.top && bottom >= header.rect.bottom);

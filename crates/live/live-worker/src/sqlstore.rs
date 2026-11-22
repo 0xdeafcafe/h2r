@@ -1400,6 +1400,157 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
+    /// Medals on the Worker's composition, as on a machine (live-server's
+    /// `tests/games.rs`, `the_host_reports_the_games_medals_and_live_serves_them`):
+    /// the host's `GameMedal`s are taken, a made-up id is refused, and the
+    /// game, the stats and the account serve the same medals: the game's
+    /// own, a Superbounce game's bounce medals and Incel at the end.
+    #[tokio::test]
+    async fn the_host_reports_medals_on_the_worker() {
+        use axum::{body::Body, http::Request};
+        use http_body_util::BodyExt;
+        use live_proto::sign::{
+            AccountRequest, EventBody, KeyPair, format_unix, issue_token, parse_time, sign_batch,
+        };
+        use live_proto::{Xuid, lxm};
+        use live_server::{Live, Policy, ServerIdentity, app::Timers};
+        use tower::ServiceExt;
+
+        let path = temp_db("medals");
+        let store = SqlStore::open(Sqlite(pool(&path).await)).await.unwrap();
+        let identity = ServerIdentity::open(path.parent().unwrap(), Some("live.test")).unwrap();
+        let live = Live::start_with(Arc::new(store), identity, Policy::default(), Timers::Driven)
+            .await
+            .unwrap();
+        let call = |method: &'static str, uri: String, auth: Option<String>, body: String| {
+            let live = live.clone();
+            async move {
+                let mut req = Request::builder().method(method).uri(uri);
+                if let Some(a) = auth {
+                    req = req.header("authorization", format!("Bearer {a}"));
+                }
+                let r = live_server::http::router(live)
+                    .oneshot(req.body(Body::from(body)).unwrap())
+                    .await
+                    .unwrap();
+                let status = r.status().as_u16();
+                let body = r.into_body().collect().await.unwrap().to_bytes();
+                (
+                    status,
+                    serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null),
+                )
+            }
+        };
+        let now = live_server::app::now;
+        let key = KeyPair::generate();
+        let (status, created) = call(
+            "POST",
+            "/v1/accounts".into(),
+            None,
+            AccountRequest::sign(&key, "Host", None, "live.test", now()),
+        )
+        .await;
+        assert_eq!(status, 201, "{created}");
+        let xuid = Xuid::parse(created["xuid"].as_str().unwrap()).unwrap();
+        let author = created["id"].as_str().unwrap().to_string();
+        let token = || issue_token(&key, &author, "live.test", lxm::GAMES_WRITE, now());
+        let game = serde_json::json!({
+            "console": "Den", "map": "lockout", "mode": "multiplayer", "variant": "Superbounce",
+            "team_play": false, "tick": 0, "kind": "custom",
+            "players": [
+                {"index": 0, "name": "Host", "xuid": xuid, "team": 0, "local": true},
+                {"index": 1, "name": "Clanker 1", "team": 1, "local": true, "bot": true}
+            ]
+        });
+        let (status, started) =
+            call("POST", "/v1/games".into(), Some(token()), game.to_string()).await;
+        assert_eq!(status, 201, "{started}");
+        let id = started["game_id"].as_str().unwrap().to_string();
+        let at = parse_time(&format_unix(now())).unwrap();
+        let post = |rows: Vec<(&str, Value)>| {
+            let bodies: Vec<EventBody> = rows
+                .into_iter()
+                .map(|(kind, data)| {
+                    EventBody::new(&key, &author, &format!("game-{id}"), kind, data, at)
+                })
+                .collect();
+            call(
+                "POST",
+                format!("/v1/games/{id}/events"),
+                Some(token()),
+                sign_batch(&key, &bodies),
+            )
+        };
+        let (status, body) = post(vec![(
+            "GameMedal",
+            serde_json::json!({"tick": 9, "player": 0, "medal": "hat-trick"}),
+        )])
+        .await;
+        assert_eq!(status, 400, "{body}");
+        let (status, body) = post(vec![
+            (
+                "PlayerKilled",
+                serde_json::json!({"tick": 30, "victim": 1, "killer": 0, "kind": "kill"}),
+            ),
+            (
+                "GameMedal",
+                serde_json::json!({"tick": 30, "player": 0, "medal": "bonecracker"}),
+            ),
+            (
+                "Superbounce",
+                serde_json::json!({"tick": 40, "player": 0, "chain": 1}),
+            ),
+            (
+                "Superbounce",
+                serde_json::json!({"tick": 70, "player": 0, "chain": 2}),
+            ),
+            (
+                "GameEnded",
+                serde_json::json!({"tick": 900, "reason": "finished", "winner": {"player": 0}}),
+            ),
+        ])
+        .await;
+        assert_eq!(status, 201, "{body}");
+
+        let mine = serde_json::json!({
+            "bonecracker": 1, "superbounce": 2, "double-bounce": 1, "incel": 1
+        });
+        let (_, g) = call("GET", format!("/v1/games/{id}"), None, String::new()).await;
+        assert_eq!(
+            g["medals"],
+            serde_json::json!([
+                {"player": 0, "name": "Host", "xuid": xuid, "medals": mine},
+                {"player": 1, "name": "Clanker 1", "medals": {"incel": 1}}
+            ])
+        );
+        let (_, v) = call(
+            "GET",
+            "/v1/stats/summary?window=all".into(),
+            None,
+            String::new(),
+        )
+        .await;
+        assert_eq!(
+            v["totals"]["medals"],
+            serde_json::json!({
+                "bonecracker": 1, "superbounce": 2, "double-bounce": 1, "incel": 2
+            })
+        );
+        let rows = v["players"].as_array().unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0]["medals"], mine);
+        let (status, account) = call(
+            "GET",
+            format!("/v1/accounts/{xuid}/medals"),
+            None,
+            String::new(),
+        )
+        .await;
+        assert_eq!(status, 200, "{account}");
+        assert_eq!(account["medals"], mine);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
     /// Bot accounts on the Worker's composition, as on a machine
     /// (live-server's `tests/bots.rs`, docs/game/bots.md §9.5): a roster
     /// for the host's session issues bot accounts that read by gamertag

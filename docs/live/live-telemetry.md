@@ -505,6 +505,16 @@ finishes the match. With no game running they are dropped. They go to the
 public stats stream and the film (as an `ObjectiveScore` of game type
 `firefight`), not to the private import rows.
 
+`GameMedal` (`tick`, `player`, `medal`) comes from the observer on the
+game's medal award function `GAME_MEDAL` (`0x1970a0`,
+[live-gamestate.md](live-gamestate.md#medals)). The observer looks the
+medal index up in the official table (`medals::official_at`), drops an
+index outside it, and queues the session's `medal`, which sends the event
+at the match clock for a player of the match. The id is the game's own
+(`double-kill`, `carjack`, `flag-save`); Live counts it per player
+([live-api.md](live-api.md#medals)). An image without the hook drops the
+observer with a plan note.
+
 `Superbounce` (`tick`, `player`, `chain`) and `Bounced` (`tick`, `player`)
 come from the superbounce mode through `Telemetry::superbounce` and
 `Telemetry::bounced`, which read the game tick and queue the session's
@@ -571,7 +581,7 @@ were never created.
   outbox (4096) until the server has answered for them. A `GameStarted` is
   created with `POST /v1/games` when it reaches the front; the game's events
   wait behind it. Past the bound the oldest `ActorKilled`, `PlayerKilled`,
-  `ScoreChanged`, `Superbounce`, `Bounced` or `Teabag` is dropped; starts, ends, joins
+  `ScoreChanged`, `GameMedal`, `Superbounce`, `Bounced` or `Teabag` is dropped; starts, ends, joins
   and leaves never are.
 - **Answers.** A signed batch leaves the outbox on its answer. A batched
   socket reports frame refusals as `frame_error`, so the sink can handle

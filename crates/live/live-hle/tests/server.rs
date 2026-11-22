@@ -1782,10 +1782,10 @@ fn the_host_asks_for_a_bot_roster_for_its_session() {
     let session = host.hle.hosted_session().expect("the advertised session");
     assert!(live_proto::session::valid_id(&session), "{session}");
 
+    let hle = Arc::clone(&host.hle);
     let ask = |session: &str| {
         let (tx, rx) = std::sync::mpsc::channel();
-        host.hle
-            .roster_bots(
+        hle.roster_bots(
                 bots::RosterRequest {
                     session_id: session.to_owned(),
                     playlist: None,
@@ -1824,8 +1824,27 @@ fn the_host_asks_for_a_bot_roster_for_its_session() {
             .iter()
             .any(|e| e.kind == bots::ROSTERED && e.data["session_id"] == session.as_str())
     );
-    // Not this console's session: refused, and said so.
-    assert!(ask("0123456789abcdef").is_err());
+    // Not this console's session: refused, and said so, after the
+    // confirmation read found the server without it.
+    let refused = ask("0123456789abcdef").unwrap_err();
+    assert!(refused.contains("0x80155100"), "{refused}");
+    // Asked at once after each advertise, with no pause between: the
+    // request only goes out once the server has the session, so it is
+    // rostered every time.
+    for _ in 0..3 {
+        assert_eq!(
+            host.call(
+                "XOnlineMatchSessionCreate",
+                &[1, 7, 0, 0, 1, MATCH_ATTR, 0, OUT]
+            ),
+            0
+        );
+        let create = host.u32(OUT);
+        assert_eq!(host.wait(create), TASK_SUCCESS);
+        let session = host.hle.hosted_session().expect("the advertised session");
+        let roster = ask(&session).expect("a roster straight after the advertise");
+        assert_eq!(roster.match_id, session);
+    }
 }
 
 /// A Clanker signed in as a bot account the server leased to this console

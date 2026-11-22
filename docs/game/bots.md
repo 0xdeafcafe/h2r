@@ -3090,6 +3090,16 @@ ran. They now join the lobby as a real peer does.
   leave the membership revision alone. A pending join and a matchmaking
   party follow their respective join checks. The host looks up player
   datums only during a hosted game.
+- **One bump per frame.** A frame's repairs of seated phantoms (their
+  properties following the host's, a name or look the host rebuilt, a
+  team move) move the membership counters once, after all of them, not
+  once per phantom, so the game rebuilds what depends on the membership
+  once (`Phantoms::tick`, `Repairs`). `bots.stats` counts the frames that
+  wrote and each kind of repair ([agent-api.md](../runtime/agent-api.md#bot-combat)).
+  Thirty writing frames in a row mean the game undoes a repair every
+  frame; the log says so once per run (`bots: phantoms: the session's
+  membership was rewritten on 30 frames in a row (...)`), with the
+  property chunks that differed.
 - **Teams.** A phantom with no team asked for (the Clankers page's
   bots; a Clankermatch's come balanced) goes, in a team game, to the team
   with the fewest session players of red, blue and any other a player is
@@ -3208,16 +3218,30 @@ the game).** Read from the log tail and the disassembly; no run yet.
   owners (h1convert / h1map), with the stream's address in the dump.
 - **The roster refusal** (`no roster from Live (the server refused:
   0x80155100)`). Live HLE gives `0x80155100` for a 404 or 409 on `POST
-  /v1/games/bots` (`live_hle::client`, `Work::Bots`). The roster
+  /v1/games/bots` (`live_hle::client`, `Worker::roster`). The roster
   handler's only 404 is `no session of yours by that id` (the session
   looked up by id with the caller as its host, `live_server::bots`); it
-  has no 409. So the server did not have session `8615d3735dc12a62` as
-  the caller's when asked, at once after it was advertised. Not a
-  7-bot limit (the count is cut to the room, and none is a 400), and
-  custom games ask without a playlist, which is allowed. The server's log
-  line for the request says which: a model that had not applied the new
-  session yet (the Workers home reads its own copy), or another account
-  asking than the one that made it.
+  has no 409. Not a 7-bot limit (the count is cut to the room, and none
+  is a 400), and custom games ask without a playlist, which is allowed.
+  Not an ordering race: the driver learns the session id only from the
+  server's create reply (`Intent::Put` in `live_hle::sessions`), the
+  create is applied before it answers (`Live::wait_applied`, on the
+  Workers hub too, which is one `Live`), and the client's one worker
+  thread runs the roster request after it, as the account that made the
+  session (`Active::matches`). Tests hold that for both homes
+  (`live-server/tests/bots.rs`, `live-hle/tests/server.rs`). What stays
+  is a 404 the client could not tell apart: the same status comes from a
+  route the server does not have (`no such endpoint`: a server older than
+  the roster endpoint, or a Worker hub still on an older release, see
+  docs/live/live-worker.md), which the client reported as a refused
+  session. The roster request now goes out after a read of the session as
+  its host confirms the server has it (a bounded wait under `Retry`),
+  and the 404's message decides the result: a missing route is
+  `CANNOT_ACCESS_SERVICE`, a missing session `0x80155100`. Either way the
+  game log carries a `live: roster:` line with the status, the session,
+  the account and the server's message. If the refusal persists, that
+  line says which it is; for a missing route, probe `POST /v1/games/bots`
+  on the deployed Live and redeploy the hub.
 - **The local bots in the game.** `join gate port 1..3: screen 0xe7 ...
   signed_in true: waits` is the gate saying the bots are signed in
   already, so it has nothing to do: `waits` is every gate line out of a
@@ -3852,7 +3876,13 @@ human playlists, whatever the Live menu chose last. The log says
 `clankermatch: Game Setup list: Switch To: Clankermatch row added (N
 rows)` at each Game Setup, then `clankermatch: Switch To: Clankermatch:
 opening the clanker playlists` and `clankermatch: the playlists are the
-clanker hoppers` at the press.
+clanker hoppers` at the press. The party lobby's Game Setup then drops
+every Switch To row, this one with retail's (`lobby_mode::arrange`):
+the mode strip changes mode, and its MULTIPLAYER tab is the one
+matchmaking lobby. There, action 9 reads Change Playlist... and lists
+the clanker and the human hoppers on one page (`clankermatch::Scope::All`),
+so the playlist picked is the Clanker or non-Clanker choice
+([party-lobby.md](party-lobby.md#the-tabs)).
 
 ### 8.4 Search and lobby (built: the empty search)
 
@@ -5101,7 +5131,11 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
      The match host creates the peers as the hosted game starts
      (`crates/extensions/game/src/clankers.rs`,
      `crates/extensions/game/src/bot_glue.rs`). See §5 for peer admission
-     and §9.1 for the Live roster.
+     and §9.1 for the Live roster. The page's bots sit only in a custom
+     game's lobby (retail mode 2: the party lobby's CUSTOM GAMES, FORGE
+     and FIREFIGHT tabs, `clankers::admits_page`). In the co-op and the
+     matchmaking lobby they stand down and come back on a custom tab
+     (`Driver::set_lobby`, [party-lobby.md](party-lobby.md#clankers-by-tab)).
    - **Nav meshes early.** A map picked in the lobby's map list with
      Clankers on, or Clankers coming on after a map was picked, asks
      `bots::autonav::build_soon` for its mesh (`clankers::map_picked`).

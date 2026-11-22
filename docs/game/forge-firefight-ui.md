@@ -234,8 +234,13 @@ back by `h1_options_row::rewrite_rows`):
 | Tab | Rows |
 |---|---|
 | CUSTOM GAMES | retail's, with ours as they are |
-| FORGE | Change Map..., Forge Map... (action 15), then the rest; Clanker Options... and Firefight Options... are hidden |
-| FIREFIGHT | Change Map..., Firefight Options..., then the rest; the game type row is hidden |
+| FORGE | Change Map..., Forge Map... (action 15), then the rest with Clanker Options...; Firefight Options... is hidden |
+| FIREFIGHT | Change Map..., Firefight Options..., then the rest with Clanker Options...; the game type row is hidden |
+
+Every tab's list loses the Switch To rows: the strip changes the mode
+([party-lobby.md](party-lobby.md#the-lobby-by-tab)). Clanker Options...
+seats its Clankers in all three tabs
+([party-lobby.md](party-lobby.md#clankers-by-tab)).
 
 - **Forge Map...** opens the value picker (`kit.picker.forge-map`) over
   Game Setup with New and the saved maps (`forge::saved_names`); its

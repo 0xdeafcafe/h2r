@@ -7,7 +7,7 @@ import type { WireEvent, Xuid } from "../api/types";
 import {
   byTag, memberProperties, normalizeTeam, teamProperties, type FriendsDoc, type Team, type TeamIdentity,
 } from "../api/social";
-import { countMedals, gameAwards, type MedalId } from "./derive";
+import { gameMedalCounts } from "./derive";
 import { authorXuid } from "./verify";
 import { isCampaign, isWinner, type GameState, type LiveState } from "./reducer";
 
@@ -138,7 +138,9 @@ export interface TeamGame {
 
 export interface TeamRecord {
   games: TeamGame[]; together: number; wins: number; kills: number; deaths: number;
-  medals: Map<MedalId, number>;
+  /** The server's medals for the members' slots in their finished games
+   *  together. */
+  medals: Map<string, number>;
   /** Campaign games two or more members played in co-op, newest first.
    *  They count for nothing above: wins and K/D are multiplayer only. */
   campaign: GameState[];
@@ -151,7 +153,7 @@ export interface TeamRecord {
 export function teamRecord(s: LiveState, members: Iterable<Xuid>): TeamRecord {
   const ids = new Set(members);
   const out: TeamGame[] = [];
-  const medals = new Map<MedalId, number>();
+  const medals = new Map<string, number>();
   const campaign: GameState[] = [];
   for (const gid of s.gameOrder) {
     const g = s.games[gid];
@@ -172,7 +174,7 @@ export function teamRecord(s: LiveState, members: Iterable<Xuid>): TeamRecord {
     const won = g.status === "ended" && side.some((p) => isWinner(g, p));
     const slots = side.map((p) => p.index);
     if (g.status === "ended") {
-      for (const [medal, count] of countMedals(gameAwards(g), new Set(slots))) {
+      for (const [medal, count] of gameMedalCounts(g, slots)) {
         medals.set(medal, (medals.get(medal) ?? 0) + count);
       }
     }

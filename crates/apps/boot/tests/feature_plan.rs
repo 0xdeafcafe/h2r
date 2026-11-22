@@ -71,6 +71,7 @@ feature aim-assist: on
 0x0015ce70 PLAYER_KILLED: observe_before [live-telemetry:kill] -> original
 0x00185be0 PLAYER_CONTROL_UPDATE: before [aim-assist:touch player's aim assist (open)] -> original -> after [aim-assist:touch player's aim assist (close)]
 0x0018f000 GAME_ACTIVATE: before [aim-assist:weapon aim assist] -> original -> observe_after [level-boot:loaded mark, live-telemetry:match start]
+0x001970a0 GAME_MEDAL: observe_before [live-telemetry:medal] -> original
 0x001a02d0 LOCALE_FIND: implement engine-leaves:locale_string_id_find
 0x001a0310 LOCALE_EXISTS: implement engine-leaves:locale_string_id_exists
 0x001a50a0 AIM_ASSIST_PARAMS: original -> after [aim-assist:touch player's weapon cone]

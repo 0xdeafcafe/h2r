@@ -9,7 +9,7 @@ use live_proto::{
 use serde::de::DeserializeOwned;
 use serde_json::json;
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     collections::BTreeMap,
     io::Read,
     sync::{
@@ -427,6 +427,7 @@ impl Service {
                     grace: options.connection_grace,
                     ping_batch: true,
                     retry_after: Cell::new(None),
+                    last_message: RefCell::new(String::new()),
                 };
                 let mut next_ping = Instant::now() + options.heartbeat_interval;
                 loop {
@@ -697,6 +698,9 @@ struct Worker {
     ping_batch: bool,
     /// The last error answer's `Retry-After`, for [`Worker::retried`].
     retry_after: Cell<Option<Duration>>,
+    /// The last error answer's `message`, for a caller that must tell two
+    /// refusals with one status apart ([`Worker::roster`]).
+    last_message: RefCell<String>,
 }
 #[derive(Clone, Copy)]
 enum Error {
@@ -816,6 +820,11 @@ impl Worker {
                 let mut data = Vec::new();
                 let _ = response.into_reader().take(4096).read_to_end(&mut data);
                 let body = serde_json::from_slice::<serde_json::Value>(&data).ok();
+                *self.last_message.borrow_mut() = body
+                    .as_ref()
+                    .and_then(|v| v["message"].as_str())
+                    .unwrap_or_default()
+                    .to_owned();
                 if body.as_ref().is_some_and(|v| v["error"] == "banned") {
                     return Error::Banned;
                 }
@@ -943,6 +952,65 @@ impl Worker {
         self.agent
             .request(method, &format!("{}{path}", c.api))
             .set("authorization", &format!("Bearer {token}"))
+    }
+    /// `POST /games/bots` for `session`, once the server has confirmed it
+    /// has the session for `user`: a roster is filed under a session of the
+    /// caller's, and the server refuses (404) one it does not have. The
+    /// confirmation is a read of the session as its host (a bounded number
+    /// of tries under [`Retry`], the first at once), so the request never
+    /// goes ahead of an advertise the server has not applied. A 404 is told
+    /// apart by the server's message: the route missing (a server older
+    /// than the roster endpoint, or a Worker hub still on an older release)
+    /// is not a refused session.
+    fn roster(&self, user: &Identity, session: &str, body: &str) -> Result<Reply, u32> {
+        let attempts = self.retry.attempts.max(1);
+        let mut wait = self.retry.backoff;
+        for attempt in 1..=attempts {
+            match self.fetch_match(user, session) {
+                Err(Error::Status(404)) if attempt < attempts => {
+                    std::thread::sleep(wait.min(self.retry.max_wait));
+                    wait = wait.saturating_mul(2);
+                }
+                Err(Error::Status(404)) => {
+                    eprintln!(
+                        "live: roster: the server has no session {session} for {} ({})",
+                        user.gamertag,
+                        self.last_message.borrow()
+                    );
+                    return Err(MATCH_INVALID_SESSION);
+                }
+                // Any other answer is the roster request's to meet.
+                _ => break,
+            }
+        }
+        // Sent once: a roster request is not safe to repeat.
+        self.response(
+            self.request("POST", "/games/bots", user, lxm::GAMES_WRITE)
+                .set("content-type", "application/json"),
+            Some(body),
+            64 * 1024,
+        )
+        .and_then(|b| {
+            serde_json::from_slice::<live_proto::bots::Roster>(&b).map_err(|_| Error::Protocol)
+        })
+        .map(Reply::Roster)
+        .map_err(|e| match e {
+            Error::Status(code @ (404 | 409)) => {
+                let message = self.last_message.borrow().clone();
+                eprintln!(
+                    "live: roster: the server answered {code} for session {session} as {}: {message}",
+                    user.gamertag
+                );
+                if code == 404 && message == "no such endpoint" {
+                    // No roster endpoint here: not a session the server lacks.
+                    CANNOT_ACCESS_SERVICE
+                } else {
+                    MATCH_INVALID_SESSION
+                }
+            }
+            Error::Status(400 | 413 | 422) => INVALID_ARGUMENT,
+            _ => e.result(),
+        })
     }
     fn identities(&self, accounts: &[Account]) -> Result<BTreeMap<u64, Identity>, Error> {
         let mut users = BTreeMap::new();
@@ -2152,23 +2220,7 @@ impl Worker {
                     .or_else(|| active.users.values().next())
                     .ok_or(NO_USER)?;
                 let body = serde_json::to_string(request).map_err(|_| INVALID_ARGUMENT)?;
-                // Sent once: a roster request is not safe to repeat.
-                self.response(
-                    self.request("POST", "/games/bots", user, lxm::GAMES_WRITE)
-                        .set("content-type", "application/json"),
-                    Some(&body),
-                    64 * 1024,
-                )
-                .and_then(|b| {
-                    serde_json::from_slice::<live_proto::bots::Roster>(&b)
-                        .map_err(|_| Error::Protocol)
-                })
-                .map(Reply::Roster)
-                .map_err(|e| match e {
-                    Error::Status(404 | 409) => MATCH_INVALID_SESSION,
-                    Error::Status(400 | 413 | 422) => INVALID_ARGUMENT,
-                    _ => e.result(),
-                })
+                self.roster(user, &request.session_id, &body)
             }
             Work::BotCard(xuid) => {
                 let active = self
@@ -2628,6 +2680,7 @@ mod tests {
             grace: Duration::from_secs(90),
             ping_batch: true,
             retry_after: Cell::new(None),
+            last_message: RefCell::new(String::new()),
         };
         worker.ping();
         assert_eq!(worker.metrics.pings.load(Ordering::Acquire), 2);

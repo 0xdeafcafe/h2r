@@ -605,6 +605,7 @@ mod tests {
             ]),
             map_id: None,
             skulls: None,
+            medals: Vec::new(),
         };
         let scoreboard = vec![
             PlayerScore { index: 0, score: 15, kills: 14, deaths: 9, assists: 2 },

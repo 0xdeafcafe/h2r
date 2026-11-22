@@ -8,7 +8,7 @@ import { A, useParams } from "@solidjs/router";
 import { live } from "../state/live";
 import { social } from "../state/social";
 import { teamRecord } from "../state/social-model";
-import { OUTCOME_WORDS, campaignOutcome, rankIndex, serviceRecord } from "../state/derive";
+import { OUTCOME_WORDS, campaignOutcome, rankIndex, serviceRecord, topMedalCounts } from "../state/derive";
 import RankIcon from "../components/RankIcon";
 import { gameTypeLine } from "../state/gametype";
 import { ROLE_LABEL, leaderOf, roleOf, sortedMembers, type Team, type TeamMember } from "../api/social";
@@ -105,7 +105,7 @@ function ClanBody(props: { team: Team }) {
   const t = () => props.team;
   const rec = createMemo(() => teamRecord(live.state, Object.keys(t().members)));
   const members = createMemo(() => sortedMembers(t()));
-  const medals = createMemo(() => [...rec().medals].sort((a, b) => b[1] - a[1]));
+  const medals = createMemo(() => topMedalCounts(rec().medals));
   const lead = () => leaderOf(t());
   return (
     <>
@@ -175,7 +175,7 @@ function ClanBody(props: { team: Team }) {
                 </For>
               </div>
             </div>
-            <p class="s-soc-foot"><Derived note="Counted from the loaded multiplayer games where at least two current members played together. Medals come from recorded kills in finished games. Campaign games count separately.">Derived from loaded shared games</Derived></p>
+            <p class="s-soc-foot"><Derived note="Counted from the loaded multiplayer games where at least two current members played together. Medals are the server's count for the members in finished games. Campaign games count separately.">Derived from loaded shared games</Derived></p>
           </div>
           <Title class="s-title--tabs">Recent Games Together</Title>
           <div id="games" class="s-matte" style={{ padding: "8px" }}>

@@ -350,6 +350,12 @@ export interface Bounced { tick: number; player: number; chain?: number }
 /** A teabag: `player` crouched over the body of `victim`
  *  (docs/game/teabag.md). Neither earns `incel` in that game. */
 export interface Teabag { tick: number; player: number; victim: number }
+/** One of Halo 2's own medals, awarded by the game and reported by the host
+ *  (docs/live/live-api.md, "Medals"). `medal` is its id ("double-kill").
+ *  Our modes' medals (the bounce family, `incel`) are never events: Live
+ *  works them out, and they reach the site through the game reads and the
+ *  stats. */
+export interface GameMedal { tick: number; player: number; medal: string }
 export interface ScoreChanged { tick: number; players: PlayerScore[]; teams?: TeamScore[] | null }
 /** `{team}` in team games, `{player}` (slot index) otherwise, null for a draw or quit. */
 export type Winner = { team: number } | { player: number };
@@ -392,7 +398,18 @@ export interface GameSummary extends GameKindFields, DedicatedHostFields {
   ended_at?: string | null;
   players: GamePlayer[];
   teams?: TeamScore[] | null;
+  /** Every medal so far, one row per participant in join order (a seat
+   *  taken again after a leave is a new row), only those with one; left out
+   *  when the game has none. Bots included (no `xuid`). */
+  medals?: GameMedalRow[];
 }
+
+/** One participant's medals in a game: counts by medal id. */
+export interface GameMedalRow { player: number; name: string; xuid?: Xuid | null; medals: Record<string, number> }
+
+/** `GET /v1/accounts/{gamertag or xuid}/medals`: the account's medals over
+ *  every game it played, all time. */
+export interface AccountMedals { xuid: Xuid; medals: Record<string, number>; position: number }
 
 export interface KillRecord extends PlayerKilled { position?: number; at?: string }
 export interface BounceRecord extends Superbounce { position?: number; at?: string }

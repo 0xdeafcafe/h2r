@@ -38,15 +38,21 @@ pub enum Event {
     /// A teabag (docs/game/teabag.md). Both players lose the chance of an
     /// `incel` `Medal`, which the Tracker writes at `GameEnded`.
     Teabag(game::Teabag),
+    /// A medal the game itself awarded (one of `medals::OFFICIAL`). The
+    /// Tracker follows it with its `Medal`.
+    GameMedal(game::GameMedal),
     /// The scoreboard reports the count. It does not identify which victim.
     Assist {
         player: u32,
         count: u32,
     },
+    /// A medal of the game ([`medals::Projection`]): the game's own after
+    /// its `GameMedal`, a bounce medal after its `Superbounce` or
+    /// `Bounced`, `incel` at `GameEnded`. Live works these out itself
+    /// from the stats records, so it passes over this one.
     Medal {
         player: u32,
-        /// Match tick of the qualifying kill. Last-word can be announced
-        /// after another participant has taken the killer's slot.
+        /// Match tick of the award.
         earned_at: u64,
         medal: String,
     },
@@ -108,8 +114,14 @@ impl Event {
             Self::Superbounce(e) => Some((game::SUPERBOUNCE, json!(e))),
             Self::Bounced(e) => Some((game::BOUNCED, json!(e))),
             Self::Teabag(e) => Some((game::TEABAG, json!(e))),
+            Self::GameMedal(e) => Some((game::GAME_MEDAL, json!(e))),
             _ => None,
         }
+    }
+
+    /// The game event `kind` with `data`, as Live stores it.
+    pub fn from_game(kind: &str, data: &Value) -> Result<Self, String> {
+        serde_json::from_value(json!({"kind": kind, "data": data})).map_err(|e| e.to_string())
     }
 }
 
@@ -139,8 +151,8 @@ impl Record {
 
     /// Inspect the bounded JSON envelope and borrow its raw data. Live only
     /// materialises its game records: the six of the first films, then
-    /// `Superbounce`, `Bounced` and `Teabag`. A reader without a kind
-    /// passes over it.
+    /// `Superbounce`, `Bounced`, `Teabag` and `GameMedal`. A reader without
+    /// a kind passes over it.
     /// A new
     /// presentation or highlight kind can therefore arrive before a server
     /// update, and a busy firefight allocates no hit or shot payloads here.
@@ -171,6 +183,7 @@ impl Record {
             game::SUPERBOUNCE => Event::Superbounce(body(row.data)?),
             game::BOUNCED => Event::Bounced(body(row.data)?),
             game::TEABAG => Event::Teabag(body(row.data)?),
+            game::GAME_MEDAL => Event::GameMedal(body(row.data)?),
             _ => return Ok(None),
         };
         Ok(event.telemetry().map(|(kind, data)| (row.tick, kind, data)))
@@ -181,15 +194,12 @@ impl Record {
 /// action ages and the damage ring. State lasts for one match.
 #[derive(Default)]
 pub struct Tracker {
-    medals: medals::Tally,
-    /// Who completes the game without a teabag, by generation.
-    incel: medals::Incel,
+    /// The game's medals, and who holds each seat: the same slot may hold
+    /// a different participant after a leave.
+    medals: medals::Projection,
+    /// Each participant's medals so far, for the menu.
+    awarded: BTreeMap<u32, BTreeMap<String, u32>>,
     participants: BTreeMap<u32, super::PlayerSummary>,
-    ended: bool,
-    // The same slot may hold a different participant after a leave.
-    generations: BTreeMap<u32, u32>,
-    next_generation: u32,
-    last_scoring: Option<(u32, u64)>,
     vehicles: BTreeMap<String, (String, Option<u32>)>,
     scores: BTreeMap<u32, (u32, i64)>,
     team_scores: BTreeMap<i32, i64>,
@@ -199,20 +209,10 @@ pub struct Tracker {
 }
 
 impl Tracker {
-    fn generation(&mut self, slot: u32) -> u32 {
-        if let Some(generation) = self.generations.get(&slot) {
-            return *generation;
-        }
-        let generation = self.next_generation;
-        self.next_generation += 1;
-        self.generations.insert(slot, generation);
-        generation
-    }
-
+    /// After the projection has seen the join.
     fn join(&mut self, player: &game::Player) -> Result<(), String> {
         let seat = u8::try_from(player.index).map_err(|_| "film player seat exceeds 255")?;
-        let generation = self.generation(player.index);
-        self.incel.joined(generation);
+        let generation = self.medals.generation(player.index);
         self.participants.insert(
             generation,
             super::PlayerSummary {
@@ -265,7 +265,7 @@ impl Tracker {
                 rows.push(participant.clone());
                 rows.len() - 1
             });
-            rows[index].medals = self.medals.counts(generation, self.ended);
+            rows[index].medals = self.awarded.get(&generation).cloned().unwrap_or_default();
         }
     }
 
@@ -275,12 +275,14 @@ impl Tracker {
         data: &Value,
         fallback_tick: u64,
     ) -> Result<Vec<Record>, String> {
-        let event: Event = serde_json::from_value(json!({"kind": kind, "data": data}))
-            .map_err(|e| e.to_string())?;
+        let event = Event::from_game(kind, data)?;
+        if matches!(event, Event::GameStarted(_)) {
+            *self = Self::default();
+        }
+        let awards = self.medals.apply(&event);
         let mut extra = Vec::new();
         let tick = match &event {
             Event::GameStarted(start) => {
-                *self = Self::default();
                 for player in &start.game.players {
                     self.join(player)?;
                 }
@@ -304,32 +306,11 @@ impl Tracker {
                 fallback_tick
             }
             Event::PlayerLeft(e) => {
-                self.generations.remove(&e.index);
                 self.scores.remove(&e.index);
                 self.vehicles.remove(&format!("p{}", e.index));
                 fallback_tick
             }
-            Event::PlayerKilled(kill) => {
-                self.incel.killed();
-                let victim = self.generation(kill.victim);
-                let killer = kill
-                    .killer
-                    .filter(|&k| k != kill.victim && kill.kind == "kill");
-                let scoring = killer.map(|slot| {
-                    self.last_scoring = Some((slot, kill.tick));
-                    self.generation(slot)
-                });
-                self.medals.kill_with(kill.tick, scoring, victim, |medal| {
-                    if let Some(player) = killer {
-                        extra.push(Event::Medal {
-                            player,
-                            earned_at: kill.tick,
-                            medal: medal.into(),
-                        });
-                    }
-                });
-                kill.tick
-            }
+            Event::PlayerKilled(kill) => kill.tick,
             Event::ActorKilled(e) => e.tick,
             Event::FirefightScore(e) => {
                 let total = self.firefight_scores.entry(e.player).or_default();
@@ -343,34 +324,10 @@ impl Tracker {
                 e.tick
             }
             Event::FirefightEnded(e) => e.tick,
-            Event::Superbounce(bounce) => {
-                let player = self.generation(bounce.player);
-                self.medals.bounce_with(player, bounce.chain, bounce.monster, |medal| {
-                    extra.push(Event::Medal {
-                        player: bounce.player,
-                        earned_at: bounce.tick,
-                        medal: medal.into(),
-                    });
-                });
-                bounce.tick
-            }
-            Event::Bounced(death) => {
-                let player = self.generation(death.player);
-                self.medals.bounced_with(player, |medal| {
-                    extra.push(Event::Medal {
-                        player: death.player,
-                        earned_at: death.tick,
-                        medal: medal.into(),
-                    });
-                });
-                death.tick
-            }
-            Event::Teabag(bag) => {
-                let giver = self.generation(bag.player);
-                let victim = self.generation(bag.victim);
-                self.incel.teabag(giver, victim);
-                bag.tick
-            }
+            Event::Superbounce(bounce) => bounce.tick,
+            Event::Bounced(death) => death.tick,
+            Event::Teabag(bag) => bag.tick,
+            Event::GameMedal(medal) => medal.tick,
             Event::ScoreChanged(e) => {
                 self.score_changes(
                     &e.players,
@@ -380,43 +337,26 @@ impl Tracker {
                 e.tick
             }
             Event::GameEnded(e) => {
-                let first = !std::mem::replace(&mut self.ended, true);
                 self.score_changes(&e.players, &[], &mut extra);
-                if let Some((player, earned_at)) = self
-                    .last_scoring
-                    .filter(|_| self.medals.last_word().is_some())
-                {
-                    extra.push(Event::Medal {
-                        player,
-                        earned_at,
-                        medal: "last-word".into(),
-                    });
-                }
-                // Everyone still in the game who completed it without a
-                // teabag, in slot order (docs/game/teabag.md, "The medal").
-                let incel: Vec<(u32, u32)> = self
-                    .generations
-                    .iter()
-                    .filter(|&(_, g)| {
-                        first
-                            && self.participants.contains_key(g)
-                            && self.incel.earns(*g, &e.reason)
-                    })
-                    .map(|(&slot, &g)| (slot, g))
-                    .collect();
-                for (slot, generation) in incel {
-                    self.medals.incel_with(generation, |medal| {
-                        extra.push(Event::Medal {
-                            player: slot,
-                            earned_at: e.tick,
-                            medal: medal.into(),
-                        });
-                    });
-                }
                 e.tick
             }
             _ => return Err(format!("unsupported telemetry event {kind}")),
         };
+        // Each medal the event awards, at its tick, after the event and
+        // the score records it gave.
+        for award in awards {
+            *self
+                .awarded
+                .entry(award.participant)
+                .or_default()
+                .entry(award.medal.into())
+                .or_default() += 1;
+            extra.push(Event::Medal {
+                player: award.player,
+                earned_at: award.tick,
+                medal: award.medal.into(),
+            });
+        }
         Ok(std::iter::once(event)
             .chain(extra)
             .map(|event| Record { tick, event })
@@ -431,9 +371,9 @@ impl Tracker {
     ) {
         for p in players {
             if let Some(participant) = self
-                .generations
-                .get(&p.index)
-                .and_then(|g| self.participants.get_mut(g))
+                .medals
+                .participant(p.index)
+                .and_then(|g| self.participants.get_mut(&g))
             {
                 participant.score = p.score;
             }
@@ -768,6 +708,44 @@ mod tests {
                 )
                 .unwrap();
         }
+        // The game's own award: a stats record, then its medal.
+        let medal = tracker
+            .event(
+                game::GAME_MEDAL,
+                &json!({"tick":6,"player":2,"medal":"double-kill"}),
+                6,
+            )
+            .unwrap();
+        assert_eq!(
+            medal.iter().map(|r| (r.tick, r.event.clone())).collect::<Vec<_>>(),
+            [
+                (
+                    6,
+                    Event::GameMedal(game::GameMedal {
+                        tick: 6,
+                        player: 2,
+                        medal: "double-kill".into()
+                    })
+                ),
+                (
+                    6,
+                    Event::Medal {
+                        player: 2,
+                        earned_at: 6,
+                        medal: "double-kill".into()
+                    }
+                ),
+            ]
+        );
+        assert_eq!(
+            Record::decode_telemetry(&medal[0].encode().unwrap()).unwrap(),
+            Some((
+                6,
+                game::GAME_MEDAL,
+                json!({"tick":6,"player":2,"medal":"double-kill"})
+            ))
+        );
+        assert_eq!(Record::decode_telemetry(&medal[1].encode().unwrap()).unwrap(), None);
         tracker
             .event(game::PLAYER_LEFT, &json!({"index":2}), 7)
             .unwrap();
@@ -799,10 +777,8 @@ mod tests {
         assert!(rows[0].medals.is_empty());
         assert_eq!(rows[0].score, 42);
         assert_eq!(rows[1].score, 17);
-        assert_eq!(
-            rows[1].medals,
-            BTreeMap::from([("opening-act".into(), 1), ("twofer".into(), 1)])
-        );
+        // Kills alone award nothing: only the game's Double Kill.
+        assert_eq!(rows[1].medals, BTreeMap::from([("double-kill".into(), 1)]));
         assert_eq!(rows[2].name, "Opponent");
     }
 

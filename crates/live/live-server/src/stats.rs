@@ -19,6 +19,12 @@
 //! kills or spree, nor their deaths. A bot's superbounces and bounce
 //! deaths count in the totals and in no row. The game record keeps them all.
 //!
+//! Medals (docs/live/live-api.md, "Medals") are counted as each game's
+//! [`medals::Projection`] awards them: Halo 2's own from the host's
+//! `GameMedal`s, our modes' from their events, the same projection the
+//! film and the read model run. Totals count everyone's, bots' included;
+//! a row an account's.
+//!
 //! Firefight (docs/game/firefight.md, "Scoring and stats") is its own
 //! section of the summary, [`firefight::Summary`], folded from the host's
 //! `FirefightScore` and `FirefightEnded`. It is not multiplayer's kills and
@@ -32,6 +38,7 @@ use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use live_proto::Xuid;
+use live_proto::film::events::medals;
 use live_proto::firefight::{self, FirefightEnded, FirefightScore};
 use live_proto::game::{self, GameEnded, GameStarted, Winner};
 use live_proto::sign::{format_time, parse_time};
@@ -92,6 +99,8 @@ pub struct Totals {
     pub bounced: u64,
     /// Teabags, every player's (docs/game/teabag.md).
     pub teabags: u64,
+    /// Medals by id, every player's ([`medals::Projection`]).
+    pub medals: BTreeMap<String, u64>,
 }
 
 impl Totals {
@@ -113,6 +122,13 @@ impl Totals {
         self.bounces += o.bounces;
         self.bounced += o.bounced;
         self.teabags += o.teabags;
+        add_medals(&mut self.medals, &o.medals);
+    }
+}
+
+fn add_medals(to: &mut BTreeMap<String, u64>, from: &BTreeMap<String, u64>) {
+    for (id, n) in from {
+        *to.entry(id.clone()).or_default() += n;
     }
 }
 
@@ -136,6 +152,7 @@ struct PlayerAgg {
     bounced: u64,
     teabags_given: u64,
     teabags_received: u64,
+    medals: BTreeMap<String, u64>,
 }
 
 impl PlayerAgg {
@@ -158,6 +175,7 @@ impl PlayerAgg {
         self.bounced += o.bounced;
         self.teabags_given += o.teabags_given;
         self.teabags_received += o.teabags_received;
+        add_medals(&mut self.medals, &o.medals);
     }
 }
 
@@ -367,6 +385,8 @@ struct LiveGame {
     spree: HashMap<u32, u64>,
     /// The Firefight result was counted (a repeat counts nothing).
     firefight_ended: bool,
+    /// Works the game's medals out of its events.
+    medals: medals::Projection,
 }
 
 /// The account a player's stats go to: none for a bot.
@@ -423,8 +443,15 @@ impl Inner {
             return;
         };
         self.prune(at);
+        // Before the event itself: a game's end takes the game away.
+        if b.kind != game::GAME_STARTED {
+            self.medals(id, &b.kind, &b.data, at);
+        }
         match b.kind.as_str() {
-            game::GAME_STARTED => self.started(e, at),
+            game::GAME_STARTED => {
+                self.started(e, at);
+                self.medals(id, &b.kind, &b.data, at);
+            }
             game::PLAYER_JOINED => {
                 let Some(d) = data::<game::PlayerJoined>(e) else {
                     return;
@@ -531,6 +558,7 @@ impl Inner {
             xuids: ng.players.iter().filter_map(account).collect(),
             spree: HashMap::new(),
             firefight_ended: false,
+            medals: medals::Projection::default(),
         };
         let coop = campaign && (ng.players.len() > 1 || ng.online == Some(true));
         let players: Vec<(Xuid, String)> = ng
@@ -681,6 +709,45 @@ impl Inner {
             }
         });
         self.hour(at, add);
+    }
+
+    /// The medals game event `kind` awards count in the totals, and in the
+    /// earner's row when it is a player with an account and not a bot.
+    fn medals(&mut self, id: &str, kind: &str, data: &Value, at: i64) {
+        let Some(g) = self.games.get_mut(id) else {
+            return;
+        };
+        let awards = g.medals.game_event(kind, data);
+        if awards.is_empty() {
+            return;
+        }
+        let earned: Vec<(&'static str, Option<(Xuid, String)>)> = awards
+            .iter()
+            .map(|a| {
+                let row = g
+                    .slots
+                    .get(&a.player)
+                    .filter(|_| !g.bots.contains(&a.player))
+                    .and_then(|(x, name, _)| x.map(|x| (x, name.clone())));
+                (a.medal, row)
+            })
+            .collect();
+        self.bump(at, |b| {
+            for (medal, row) in &earned {
+                *b.totals.medals.entry((*medal).to_owned()).or_default() += 1;
+                if let Some((x, name)) = row {
+                    *b.player(*x, name, at)
+                        .medals
+                        .entry((*medal).to_owned())
+                        .or_default() += 1;
+                }
+            }
+        });
+        self.hour(at, |t| {
+            for (medal, _) in &earned {
+                *t.medals.entry((*medal).to_owned()).or_default() += 1;
+            }
+        });
     }
 
     /// A teabag counts in the totals, and in the giver's and the
@@ -879,6 +946,7 @@ impl Inner {
                 bounced: p.bounced,
                 teabags_given: p.teabags_given,
                 teabags_received: p.teabags_received,
+                medals: p.medals.clone(),
             })
             .collect();
         players.sort_by(|a, b| (b.kills, b.games, &a.xuid).cmp(&(a.kills, a.games, &b.xuid)));
@@ -966,6 +1034,8 @@ pub struct PlayerRow {
     /// Teabags this player gave, and got (docs/game/teabag.md).
     pub teabags_given: u64,
     pub teabags_received: u64,
+    /// Medals by id ([`medals::Projection`]).
+    pub medals: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -1086,6 +1156,19 @@ impl Stats {
         self.inner.read().unwrap().summary(days, now)
     }
 
+    /// Account `x`'s medals over every game it played, by id: of every
+    /// game when `all` (admins), else of the public ones. Empty for an
+    /// account with none.
+    pub fn account_medals(&self, x: Xuid, all: bool) -> BTreeMap<String, u64> {
+        let inner = if all { &self.inner } else { &self.public }.read().unwrap();
+        inner
+            .all
+            .players
+            .get(&x)
+            .map(|p| p.medals.clone())
+            .unwrap_or_default()
+    }
+
     /// The public fold's share of an event: none yet (held), or the
     /// events to fold now.
     fn public_share(&self, event: &RecordedEvent) -> Vec<RecordedEvent> {
@@ -1097,12 +1180,14 @@ impl Stats {
             b.kind.as_str(),
             game::GAME_STARTED
                 | game::PLAYER_JOINED
+                | game::PLAYER_LEFT
                 | game::PLAYER_KILLED
                 | game::FIREFIGHT_SCORE
                 | game::FIREFIGHT_ENDED
                 | game::SUPERBOUNCE
                 | game::BOUNCED
                 | game::TEABAG
+                | game::GAME_MEDAL
                 | game::GAME_ENDED
         ) {
             return Vec::new();
@@ -1157,6 +1242,23 @@ pub async fn get_summary(
         .summary(window, crate::app::now(), all)
         .ok_or_else(|| invalid("window is today, 7d, 30d or all"))?;
     Ok(crate::http::json(StatusCode::OK, &*v))
+}
+
+/// `GET /v1/accounts/{who}/medals`: an account's medals over every game it
+/// played (docs/live/live-api.md, "Medals").
+pub async fn get_account_medals(
+    State(live): State<Arc<Live>>,
+    headers: HeaderMap,
+    axum::extract::Path(who): axum::extract::Path<String>,
+) -> Result<Response, ApiError> {
+    let viewer = live.read_viewer(crate::http::bearer(&headers))?;
+    let xuid = {
+        let s = live.model.read();
+        crate::ranks::xuid_of(&s, &who).ok_or_else(|| crate::app::not_found("no such account"))?
+    };
+    let medals = live.stats.account_medals(xuid, viewer.is_admin());
+    let body = json!({"xuid": xuid, "medals": medals, "position": live.position()});
+    Ok(crate::http::json(StatusCode::OK, &body))
 }
 
 #[cfg(test)]

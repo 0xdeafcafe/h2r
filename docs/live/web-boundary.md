@@ -78,8 +78,8 @@ The protocol has one thing, Xbox Live Teams; the site has two faces of it.
 - **Teams** are the dashboard's: the service feature. Creating a team,
   recruiting, answering, roles, leaving; the team list on your account.
 - **Clans** are the stats site's: a team seen as a Halo record, with its roster
-  and a service record with shared games, wins, kills and medals derived
-  from loaded game data. Other ideas for the clan record:
+  and a service record with shared games, wins and kills derived from loaded
+  game data, and the server's medals for its members' slots. Other ideas for the clan record:
   - clan versus clan history, from games where two clans' members met;
   - clan leaderboards by window, beside the player ones;
   - a clan's game history and "clan of the week";
@@ -91,7 +91,8 @@ The protocol has one thing, Xbox Live Teams; the site has two faces of it.
   only the events that make the record: games, players joining and
   leaving games, results, kills, scores and rank changes.
   `web/src/stats/eventKinds.ts` defines the allowed event kinds and streams.
-  Medals are derived from game kills.
+  Halo 2's own medals arrive as `GameMedal` events; the site counts no
+  medals itself (docs/live/live-api.md, "Medals").
 - **Dashboard: the raw log** (`/dash/admin/events`): every event, every
   stream the API makes available to the signed-in admin. Open **Event Log**
   from dashboard Settings or the Live admin hub. The log opens at the

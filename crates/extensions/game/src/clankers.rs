@@ -516,7 +516,10 @@ struct Seating {
 }
 
 impl Seating {
-    fn of(want: Want, fill: Option<&Fill>) -> Seating {
+    /// The seats for `want`, or `fill`'s while a Clankermatch fills; the
+    /// page's bots only where the lobby `admits` them ([`admits_page`]).
+    fn of(want: Want, fill: Option<&Fill>, admits: bool) -> Seating {
+        let count = if admits { want.count } else { 0 };
         match fill {
             Some(f) => Seating {
                 count: f.bots,
@@ -527,8 +530,8 @@ impl Seating {
                 host_team: f.host_team.filter(|t| u32::from(*t) < f.teams).unwrap_or(0),
             },
             None => Seating {
-                count: want.count,
-                seated: want.count,
+                count,
+                seated: count,
                 fill: false,
                 teams: 0,
                 skill: request_skill(want.difficulty),
@@ -768,6 +771,20 @@ pub struct Driver {
     fill: Mutex<Option<Fill>>,
     /// The host player's team, as [`frame`] last read it.
     host_team: Mutex<Option<u8>>,
+    /// The lobby up takes the page's bots ([`admits_page`]); as [`frame`]
+    /// last read it, and true before any lobby is read.
+    admits: AtomicBool,
+}
+
+/// Whether a lobby in retail mode `retail` takes the page's Clankers: a
+/// custom game's lobby (the party lobby's CUSTOM GAMES, FORGE and
+/// FIREFIGHT tabs), whose Game Setup has the Clanker Options row. A co-op
+/// campaign lobby has no row and keeps its seats for people; a matchmaking
+/// lobby (MULTIPLAYER) gets a Clanker playlist's own bots, from its roster
+/// once its search hosts ([`Driver::tick_match`]), never the page's
+/// (docs/game/party-lobby.md, "Clankers by tab").
+pub fn admits_page(retail: crate::lobby_tabs::RetailMode) -> bool {
+    retail == crate::lobby_tabs::RetailMode::Custom
 }
 
 /// The bot accounts among `own`: rostered phantoms whose players the game
@@ -801,6 +818,7 @@ impl Driver {
             reported: AtomicBool::new(false),
             fill: Mutex::new(None),
             host_team: Mutex::new(None),
+            admits: AtomicBool::new(true),
         }
     }
 
@@ -1082,6 +1100,7 @@ impl Driver {
         let seating = Seating::of(
             want,
             self.fill.lock().unwrap_or_else(|e| e.into_inner()).as_ref(),
+            self.admits.load(Ordering::Relaxed),
         );
         let mut own = self.own.lock().unwrap_or_else(|e| e.into_inner());
         let mut log = Vec::new();
@@ -1255,6 +1274,33 @@ impl Driver {
         *self.host_team.lock().unwrap_or_else(|e| e.into_inner()) = team;
     }
 
+    /// The lobby up, in retail mode `retail`: the page's bots stand down in
+    /// a lobby that does not take them ([`admits_page`]) and come back in
+    /// one that does, the last [`Want`] applied again on a change. Lines
+    /// for the log.
+    pub fn set_lobby(&self, retail: crate::lobby_tabs::RetailMode) -> Vec<String> {
+        let admits = admits_page(retail);
+        if self.admits.swap(admits, Ordering::Relaxed) == admits {
+            return Vec::new();
+        }
+        let mut log = vec![if admits {
+            "a custom game's lobby: the Clanker Options bots are seated".to_owned()
+        } else {
+            format!(
+                "a {} lobby: the Clanker Options bots stand down",
+                match retail {
+                    crate::lobby_tabs::RetailMode::CoOp => "co-op campaign",
+                    _ => "matchmaking",
+                }
+            )
+        }];
+        let want = *self.last.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(want) = want {
+            log.extend(self.apply(want));
+        }
+        log
+    }
+
     /// Follows the Clankermatch this console hosts, at `now`: a clanker
     /// hopper's lobby starts a fill, its bots join on their schedule, and
     /// it ends when the console hosts another kind of session or none for
@@ -1383,8 +1429,14 @@ static DRIVER: Mutex<Option<std::sync::Weak<Driver>>> = Mutex::new(None);
 /// Once a frame, from the bots' frame hook: every second or so, asks
 /// for a roster again if the hosted Live session changed
 /// ([`Driver::refresh`]). Never waits on the server. `host_team` reads
-/// the host player's team from the game; it is called twice a second.
-pub fn frame(n: u64, host_team: impl FnOnce() -> Option<u8>) {
+/// the host player's team from the game and `lobby` the lobby's retail
+/// mode (`None` while it cannot be read: left as it was,
+/// [`Driver::set_lobby`]); each is called twice a second.
+pub fn frame(
+    n: u64,
+    host_team: impl FnOnce() -> Option<u8>,
+    lobby: impl FnOnce() -> Option<crate::lobby_tabs::RetailMode>,
+) {
     // Twice a second: a Clankermatch's bots join 0.5 to 3 s apart.
     if n % 15 != 0 {
         return;
@@ -1396,6 +1448,11 @@ pub fn frame(n: u64, host_team: impl FnOnce() -> Option<u8>) {
         .and_then(|w| w.upgrade());
     let Some(d) = d else { return };
     d.set_host_team(host_team());
+    if let Some(retail) = lobby() {
+        for line in d.set_lobby(retail) {
+            eprintln!("clankers: {line}");
+        }
+    }
     for line in d.tick_match(std::time::Instant::now()) {
         eprintln!("clankers: {line}");
     }

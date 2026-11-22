@@ -85,6 +85,8 @@ impl Phantoms {
             batch: None,
             lobby_membership: Default::default(),
             maintenance,
+            write_streak: 0,
+            churn_said: false,
         };
         Ok(())
     }

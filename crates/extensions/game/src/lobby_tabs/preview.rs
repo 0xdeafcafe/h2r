@@ -67,11 +67,12 @@ fn sample(place: Place, leader: bool, tab: Tab, facts: Facts, present: Present) 
         leader,
         retail: p.retail,
         kit_map: tab == Tab::Firefight,
+        clanker: (tab == Tab::Multiplayer).then_some(false),
         facts,
     };
     Sample {
         present,
-        shown: shown(&reading, present, p.mode, p.clanker),
+        shown: shown(&reading, present, p.mode),
     }
 }
 
@@ -96,7 +97,6 @@ impl Page for TabsPage {
     fn states(&self) -> Vec<(String, Sample)> {
         let facts = Facts {
             playlists: true,
-            clanker_playlists: true,
             kit_maps: true,
             remote_members: false,
         };
@@ -186,8 +186,8 @@ mod tests {
             "split-screen.custom-games",
             "split-screen.forge",
             "system-link.firefight",
-            "xbox-live.matchmaking",
-            "xbox-live.clankers",
+            "xbox-live.multiplayer",
+            "xbox-live.co-op",
             "system-link.member",
         ] {
             assert!(names.iter().any(|n| n == want), "{want}: {names:?}");
