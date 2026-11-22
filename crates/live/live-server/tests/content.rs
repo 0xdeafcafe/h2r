@@ -479,7 +479,7 @@ async fn packages_are_signed_checked_and_listed() {
     );
 
     let r = publish(&h, &u, &d).await;
-    assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.json());
     let body = r.json();
     assert_eq!(body["map"]["map_id"], id.to_string());
     assert_eq!(body["missing"], json!([]));
@@ -698,7 +698,7 @@ async fn moderation_hides_deletes_blocks_and_refuses_sessions() {
             json!({"reason": "offensive name"}).to_string(),
         )
         .await;
-    assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.json());
     let view = h
         .call(
             Method::GET,
@@ -956,7 +956,8 @@ async fn a_ranked_session_names_a_script_the_ranked_policy_takes() {
         ..session(flags, Some(3), None)
     };
     let slayer = rules::compile(rules::builtin::SLAYER).unwrap().id().to_string();
-    assert_eq!(advertise(&h, &u, &with("ranked", &slayer)).await.status, StatusCode::CREATED);
+    let r = advertise(&h, &u, &with("ranked", &slayer)).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.json());
     // A script Live does not know cannot be checked, so a ranked game refuses it.
     let unknown = "ee".repeat(32);
     let r = advertise(&h, &u, &with("ranked", &unknown)).await;
@@ -980,7 +981,8 @@ async fn a_ranked_session_names_a_script_the_ranked_policy_takes() {
     let hash = rules::compile(builder).unwrap().id().to_string();
     let r = advertise(&h, &u, &with("ranked", &hash)).await;
     assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.error());
-    assert!(r.error().contains("capability forge.move is not allowed in a ranked game"), "{}", r.error());
+    let message = r.json()["message"].as_str().unwrap_or("").to_string();
+    assert!(message.contains("capability forge.move is not allowed in a ranked game"), "{message}");
     assert_eq!(advertise(&h, &u, &with("hopper", &hash)).await.status, StatusCode::CREATED);
 }
 
@@ -1039,7 +1041,7 @@ async fn ranked_sessions_take_retail_or_pinned_maps_only() {
         json!([{"hopper_id": 3, "map_ids": [modded.to_string()]}])
     );
     let r = advertise(&h, &u, &session("hopper", Some(3), Some(modded))).await;
-    assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.json());
     assert_eq!(
         r.json()["session"]["advertisement"]["map_id"],
         modded.to_string()
