@@ -70,10 +70,10 @@ fn source_line(source: &Source) -> String {
     let short = |commit: &str| display_field(&commit.chars().take(7).collect::<String>(), 7);
     match source {
         Source::Branch { name, commit } => {
-            format!("lab/{} at {}", display_field(name, 20), short(commit))
+            format!("lab/{} at {}", display_field(name, 16), short(commit))
         }
         Source::Rev { rev, commit } => {
-            format!("{} at {}", display_field(rev, 20), short(commit))
+            format!("{} at {}", display_field(rev, 16), short(commit))
         }
         Source::Current { commit: Some(c) } => format!("installed image at {}", short(c)),
         Source::Current { commit: None } => "installed image".into(),
@@ -83,8 +83,8 @@ fn source_line(source: &Source) -> String {
 /// The dialog's text: who asks, what the job is called, what it does, which
 /// code it runs. Five lines at most.
 fn body(request: &Request) -> String {
-    let who = display_field(&request.requester, 16);
-    let name = display_field(&request.name, 36);
+    let who = display_field(&request.requester, 12);
+    let name = display_field(&request.name, 26);
     let action = match (request.operation, request.builds_image) {
         (Operation::Build, _) => "build",
         (Operation::Run, false) => "run",
@@ -95,11 +95,12 @@ fn body(request: &Request) -> String {
     let time = match request.estimate_seconds {
         0 => "duration varies".into(),
         n @ 1..=59 => format!("about {n} sec"),
-        n => format!("about {} min", n.div_ceil(60)),
+        n @ 60..=5940 => format!("about {} min", n.div_ceil(60)),
+        _ => "over 1 h 39 min".into(),
     };
     let mut facts = Vec::new();
     if let Some(level) = request.level.as_deref().filter(|l| !l.trim().is_empty()) {
-        facts.push(format!("level {}", display_field(level, 12)));
+        facts.push(format!("level {}", display_field(level, 8)));
     }
     if request.own_data {
         facts.push("your own data".into());
