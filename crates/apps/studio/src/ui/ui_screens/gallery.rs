@@ -214,7 +214,7 @@ pub fn show(ui: &Ui, app: &mut App, st: &mut GalleryUi, gpu: &mut Gpu<'_>, at: B
                             [pos[0] + size[0], pos[1] + size[1]],
                             [0.0, 0.0],
                             [1.0, 1.0],
-                            [1.0, 1.0, 1.0, 1.0],
+                            theme::IMAGE,
                         );
                     }
                     None => message = Some(t.error.clone().unwrap_or_else(|| "no texture".into())),
